@@ -42,9 +42,9 @@
 // `forge-frontend-typecheck` (TypeScript diagnostics, file/line/col
 // anchored at the project-relative source path; severity follows
 // forge.yaml's lint.frontend.typecheck, error by default) and
-// `forge-frontend-typecheck-unavailable` (warning — the check could NOT
-// run because deps aren't installed or no compiler resolves; escalates
-// to a gating error under --strict). A consumer that treats "unavailable"
+// `forge-frontend-typecheck-unavailable` (the check could NOT run because
+// deps aren't installed or no compiler resolves; graded like the rest of
+// the family below). A consumer that treats "unavailable"
 // as clean is asserting something the report never claims: a typecheck
 // that could not run is not a typecheck that passed.
 //
@@ -52,12 +52,18 @@
 // about one lane, and every lane that can fail to execute names the
 // condition with its own rule id:
 //
+//	golangci-lint-unavailable              — no golangci-lint can analyze the module
+//	buf-lint-unavailable                   — buf.yaml present, buf not on PATH
 //	forge-frontend-typecheck-unavailable   — no compiler / deps not installed
 //	forge-frontend-lint-unavailable        — frontend dir missing / deps not installed
 //	typed-config-guardrail-unavailable     — golangci-lint never reported
 //
-// All three are warnings by default and errors that flip `ok` under
-// --strict. The rule id is what makes them machine-legible: before it
+// One policy grades them all (applyGapPolicy, lint_skip.go): from a GATING
+// lane the finding is an error and flips `ok` to false; from an advisory
+// lane (the guardrail, or a typecheck dialled to warn) it is a warning,
+// promoted to an error by --strict; and a lane accepted by --allow-skip or
+// forge.yaml lint.allow_skip reports it at info, its message ending
+// "SKIPPED (allowed: <reason>)". The rule id is what makes them machine-legible: before it
 // existed, the guardrail reported "could not run" under the SAME rule id
 // and severity as its real findings, so `forge lint --json` answered
 // "ok": true over a check that never executed and no consumer could tell.
@@ -94,7 +100,6 @@ import (
 	"github.com/reliant-labs/forge/internal/linter/migrationlint"
 	"github.com/reliant-labs/forge/internal/linter/scaffolds"
 	"github.com/reliant-labs/forge/internal/projectstore"
-	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // Severity values used in the JSON report. These now match the canonical
@@ -264,10 +269,15 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 		return buildLintJSONReport(findings, gated), nil
 	}
 
+	allow, err := lintAllowances(flags, cfg)
+	if err != nil {
+		return nil, err
+	}
 	return collectAllLintersJSON(ctx, lintRunOptions{
 		reportFormat:  !flags.autoFix(),
 		strict:        flags.strict,
 		skipFrontends: flags.skipFrontends,
+		allowSkip:     allow,
 		paths:         paths,
 		cfg:           cfg,
 		scope:         scope,
@@ -401,6 +411,7 @@ func collectAllLintersJSON(ctx context.Context, opts lintRunOptions, cwd string)
 		fix:           false,
 		strict:        opts.strict,
 		skipFrontends: opts.skipFrontends,
+		allowSkip:     opts.allowSkip,
 		paths:         opts.paths,
 		cfg:           opts.cfg,
 		cwd:           cwd,
@@ -966,7 +977,7 @@ func parseDigitsLint(s string) int {
 func collectGolangciLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
 	out, err := rc.execGolangci(golangciGateArgs(rc))
 	if err != nil {
-		return []lintJSONFinding{golangciUnresolvedFinding(err, lintSevError)}, true
+		return []lintJSONFinding{golangciUnresolvedFinding(err, ruleGolangciUnavailable)}, false
 	}
 	if out.err != nil {
 		fs := externalLinesToFindings(out.combined(), "golangci-lint", lintSevError)
@@ -1015,19 +1026,19 @@ const (
 func collectTypedAccessGuardJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 	if reason := typedAccessGuardUnconfigured(rc.cwd); reason != "" {
 		return []lintJSONFinding{{
-			Severity: unavailableSeverity(rc.strict),
+			Severity: lintSevWarning,
 			Rule:     ruleTypedAccessGuardUnavailable,
 			Message:  "typed-config guardrail did NOT run: " + reason,
 			FixHint:  typedAccessGuardUnconfiguredHint,
-		}}, rc.strict, nil
+		}}, false, nil
 	}
 	run, err := rc.execGolangci(golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, rc.goPackages()))
 	if err != nil {
-		return []lintJSONFinding{golangciUnresolvedFinding(err, unavailableSeverity(rc.strict))}, rc.strict, nil
+		return []lintJSONFinding{golangciUnresolvedFinding(err, ruleTypedAccessGuardUnavailable)}, false, nil
 	}
 	if run.err != nil {
 		out := []lintJSONFinding{{
-			Severity: unavailableSeverity(rc.strict),
+			Severity: lintSevWarning,
 			Rule:     ruleTypedAccessGuardUnavailable,
 			Message:  fmt.Sprintf("typed-config guardrail did NOT run: golangci-lint exited %v", run.err),
 			FixHint:  typedAccessGuardUnavailableHint,
@@ -1037,7 +1048,7 @@ func collectTypedAccessGuardJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error
 		// collector used to capture it and then drop it on the floor,
 		// leaving the consumer an exit status and no cause.
 		out = append(out, externalLinesToFindings(run.combined(), ruleTypedAccessGuardUnavailable, lintSevInfo)...)
-		return out, rc.strict, nil
+		return out, false, nil
 	}
 	fs := anchoredFindings(externalLinesToFindings(run.combined(), ruleTypedAccessGuard, lintSevWarning))
 	return fs, false, nil
@@ -1092,8 +1103,8 @@ func collectBufLintJSON(ctx context.Context) ([]lintJSONFinding, bool) {
 		return nil, false
 	}
 	if _, err := exec.LookPath("buf"); err != nil {
-		return []lintJSONFinding{{Severity: lintSevError, Rule: "buf", Message: bufMissingError().Error(),
-			FixHint: "run `forge tools install buf`, or install buf " + templates.BufVersion + " onto PATH"}}, true
+		return []lintJSONFinding{{Severity: lintSevWarning, Rule: ruleBufLintUnavailable,
+			Message: bufMissingReason, FixHint: bufMissingFix()}}, false
 	}
 	cmd := exec.CommandContext(ctx, "buf", "lint")
 	var buf strings.Builder
@@ -1115,6 +1126,10 @@ func collectBufLintJSON(ctx context.Context) ([]lintJSONFinding, bool) {
 // genuinely did not apply, over a GATING step. Warning by default, error
 // (and gating) under --strict, matching ruleFrontendTypecheckUnavailable.
 const ruleFrontendLintUnavailable = "forge-frontend-lint-unavailable"
+
+// ruleBufLintUnavailable tags a project with a buf.yaml on a machine with no
+// buf: the buf lint lane could NOT run.
+const ruleBufLintUnavailable = "buf-lint-unavailable"
 
 // collectFrontendLintJSON mirrors runFrontendLinters / lintFrontendDir
 // but captures npm output instead of streaming it. Failed scripts gate
@@ -1162,16 +1177,15 @@ func collectFrontendLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
 
 	var out []lintJSONFinding
 	gated := false
+	// Graded by applyGapPolicy (lint_skip.go): this lane gates, so a
+	// frontend it could not lint fails the run unless the skip is accepted.
 	unavailable := func(msg, hint string) {
 		out = append(out, lintJSONFinding{
-			Severity: unavailableSeverity(rc.strict),
+			Severity: lintSevWarning,
 			Rule:     ruleFrontendLintUnavailable,
 			Message:  msg,
 			FixHint:  hint,
 		})
-		if rc.strict {
-			gated = true
-		}
 	}
 	for _, f := range frontends {
 		if !dirExists(f.dir) {
@@ -1192,7 +1206,7 @@ func collectFrontendLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
 		// perfectly lintable.
 		if !anyAncestorHasNodeModules(f.dir, ".") {
 			unavailable(fmt.Sprintf("%s: node_modules not found in %s or any ancestor — eslint did NOT run", f.name, f.dir),
-				fmt.Sprintf("run `npm install` in %s (or at the workspace root), then re-run `forge lint`", f.dir))
+				npmInstallFix(f.dir))
 			continue
 		}
 		scripts, err := readPackageScripts(pkgJSON)

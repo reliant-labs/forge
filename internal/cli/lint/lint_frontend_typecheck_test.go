@@ -3,6 +3,7 @@ package lint
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -156,14 +157,15 @@ func cfgWithFrontends(names ...string) *config.ProjectConfig {
 }
 
 // runLane runs the typecheck lane's JSON collector against the fixture in the
-// current directory.
+// current directory, graded as the drivers grade it (applyGapPolicy), so a
+// typecheck that could not run reads as it does in a real run.
 func runLane(t *testing.T, cfg *config.ProjectConfig, strict bool) ([]lintJSONFinding, bool) {
 	t.Helper()
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	fs, gated, collectErr := collectFrontendTypecheckJSON(&lintRunCtx{
+	fs, gated, collectErr := collectGraded(t, findStep(t, "frontend typecheck"), &lintRunCtx{
 		ctx: context.Background(), cfg: cfg, cwd: cwd, strict: strict,
 	})
 	if collectErr != nil {
@@ -301,11 +303,12 @@ func TestFrontendTypecheck_NoFrontendsIsCleanNoOp(t *testing.T) {
 	}
 }
 
-// TestFrontendTypecheck_MissingNodeModulesDegradesHonestly: the load-bearing
+// TestFrontendTypecheck_MissingNodeModulesFailsHonestly: the load-bearing
 // honesty invariant. A check that could not run must never look like a check
-// that passed — it surfaces as a WARNING with a fix hint (not an info/skip
-// that a consumer filters out, and not a bogus type error).
-func TestFrontendTypecheck_MissingNodeModulesDegradesHonestly(t *testing.T) {
+// that passed — it surfaces under its own rule with a fix hint (not an
+// info/skip that a consumer filters out, and not a bogus type error), and
+// since the lane gates, it fails the run (lint_skip.go).
+func TestFrontendTypecheck_MissingNodeModulesFailsHonestly(t *testing.T) {
 	root := t.TempDir()
 	writeFrontend(t, root, frontendFixture{
 		name:     "web",
@@ -316,15 +319,15 @@ func TestFrontendTypecheck_MissingNodeModulesDegradesHonestly(t *testing.T) {
 	inDir(t, root)
 
 	fs, gated := runLane(t, cfgWithFrontends("web"), false)
-	if gated {
-		t.Error("missing node_modules must NOT gate by default — deps not being installed is not a code defect")
+	if !gated {
+		t.Error("a gating typecheck that could not run must fail the run — a check that did not run is not a check that passed")
 	}
 	un := findingsWithRule(fs, ruleFrontendTypecheckUnavailable)
 	if len(un) != 1 {
 		t.Fatalf("want exactly one %s finding, got %d: %+v", ruleFrontendTypecheckUnavailable, len(un), fs)
 	}
-	if un[0].Severity != lintSevWarning {
-		t.Errorf("unavailable severity = %q, want %q — an info/skip finding lets a consumer mistake 'did not run' for 'passed'", un[0].Severity, lintSevWarning)
+	if un[0].Severity != lintSevError {
+		t.Errorf("unavailable severity = %q, want %q — an info/skip finding lets a consumer mistake 'did not run' for 'passed'", un[0].Severity, lintSevError)
 	}
 	if !strings.Contains(un[0].Message, "node_modules") || !strings.Contains(un[0].Message, "did NOT run") {
 		t.Errorf("unavailable message must name what is missing AND say the check did not run, got %q", un[0].Message)
@@ -334,21 +337,23 @@ func TestFrontendTypecheck_MissingNodeModulesDegradesHonestly(t *testing.T) {
 	}
 }
 
-// TestFrontendTypecheck_StrictEscalatesUnavailable: --strict is the existing
-// vocabulary for "advisory findings must gate", so it is what a CI job uses to
-// insist the typecheck actually ran.
-func TestFrontendTypecheck_StrictEscalatesUnavailable(t *testing.T) {
+// TestFrontendTypecheck_StrictDoesNotChangeUnavailable: --strict means
+// "advisory findings become errors"; a gating typecheck that could not run
+// fails without it, and the same with it.
+func TestFrontendTypecheck_StrictDoesNotChangeUnavailable(t *testing.T) {
 	root := t.TempDir()
 	writeFrontend(t, root, frontendFixture{name: "web", tsconfig: true, tscExit: -1})
 	inDir(t, root)
 
-	fs, gated := runLane(t, cfgWithFrontends("web"), true)
-	if !gated {
-		t.Fatal("--strict must gate when the typecheck could not run")
-	}
-	un := findingsWithRule(fs, ruleFrontendTypecheckUnavailable)
-	if len(un) != 1 || un[0].Severity != lintSevError {
-		t.Errorf("--strict must promote the unavailable finding to an error, got %+v", fs)
+	for _, strict := range []bool{false, true} {
+		fs, gated := runLane(t, cfgWithFrontends("web"), strict)
+		if !gated {
+			t.Fatalf("strict=%v: a gating typecheck that could not run must fail the run", strict)
+		}
+		un := findingsWithRule(fs, ruleFrontendTypecheckUnavailable)
+		if len(un) != 1 || un[0].Severity != lintSevError {
+			t.Errorf("strict=%v: want one error unavailable finding, got %+v", strict, fs)
+		}
 	}
 }
 
@@ -362,8 +367,8 @@ func TestFrontendTypecheck_DepsPresentButNoCompiler(t *testing.T) {
 	inDir(t, root)
 
 	fs, gated := runLane(t, cfgWithFrontends("web"), false)
-	if gated {
-		t.Error("an unresolvable compiler must not gate by default")
+	if !gated {
+		t.Error("an unresolvable compiler is a typecheck that could not run, which fails the run")
 	}
 	un := findingsWithRule(fs, ruleFrontendTypecheckUnavailable)
 	if len(un) != 1 {
@@ -712,7 +717,7 @@ func TestFrontendTypecheck_TextModeMirrorsJSONVerdict(t *testing.T) {
 	}{
 		{"clean", frontendFixture{name: "web", tsconfig: true, tscExit: 0}, false, false},
 		{"type error", frontendFixture{name: "web", tsconfig: true, tscExit: 2, tscOutput: "src/a.ts(1,1): error TS1: x"}, false, true},
-		{"unavailable", frontendFixture{name: "web", tsconfig: true, tscExit: -1}, false, false},
+		{"unavailable", frontendFixture{name: "web", tsconfig: true, tscExit: -1}, false, true},
 		{"unavailable strict", frontendFixture{name: "web", tsconfig: true, tscExit: -1}, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -729,8 +734,17 @@ func TestFrontendTypecheck_TextModeMirrorsJSONVerdict(t *testing.T) {
 			textErr := runFrontendTypecheckText(rc)
 			restore()
 
-			_, gated, _ := collectFrontendTypecheckJSON(rc)
-			if (textErr != nil) != tc.wantError {
+			// The text driver grades a lane that could not run with
+			// judgeGap, the structured one with applyGapPolicy.
+			step := findStep(t, "frontend typecheck")
+			textFails := textErr != nil
+			var unavail *laneUnavailableError
+			if errors.As(textErr, &unavail) {
+				verdict, _ := rc.judgeGap(step.name, laneGates(step, rc))
+				textFails = verdict == gapFails
+			}
+			_, gated, _ := collectGraded(t, step, rc)
+			if textFails != tc.wantError {
 				t.Errorf("text-mode error = %v, want error=%v", textErr, tc.wantError)
 			}
 			if gated != tc.wantError {

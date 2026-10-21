@@ -117,9 +117,12 @@ type lintLaneTally struct {
 	// A hole in the coverage, and the reason `skipped` and `passed` are
 	// different values.
 	unavailable []string
-	// failed reports whether any lane reported problems (or, under
-	// --strict, was unavailable) — the same bool that decides the exit
-	// code.
+	// allowed are lanes that could not run and were accepted by name
+	// (--allow-skip / lint.allow_skip). Compatible with a pass, and named.
+	allowed []string
+	// failed reports whether any lane reported problems, or a gating lane
+	// could not run and was not accepted — the same bool that decides the
+	// exit code.
 	failed bool
 }
 
@@ -171,6 +174,9 @@ func lintGateSummary(status gateVerdict, tally lintLaneTally) string {
 	}
 	if len(tally.unavailable) > 0 {
 		fmt.Fprintf(&b, "; %d could NOT run (%s)", len(tally.unavailable), strings.Join(tally.unavailable, ", "))
+	}
+	if len(tally.allowed) > 0 {
+		fmt.Fprintf(&b, "; %d SKIPPED (allowed) (%s)", len(tally.allowed), strings.Join(tally.allowed, ", "))
 	}
 	if len(tally.skipped) > 0 {
 		fmt.Fprintf(&b, "; %d skipped (%s)", len(tally.skipped), strings.Join(tally.skipped, ", "))
@@ -230,12 +236,18 @@ func runLintTallied(ctx context.Context, flags lintFlags, paths []string) (lintL
 		err := runLint(ctx, flags, paths)
 		return lintLaneTally{ran: lanes, failed: err != nil}, err
 	}
+	cfg := lintConfigOrNil()
+	allow, err := lintAllowances(flags, cfg)
+	if err != nil {
+		return lintLaneTally{failed: true}, err
+	}
 	return runAllLinters(ctx, lintRunOptions{
 		fix:           flags.autoFix(),
 		strict:        flags.strict,
 		skipFrontends: flags.skipFrontends,
+		allowSkip:     allow,
 		paths:         paths,
-		cfg:           lintConfigOrNil(),
+		cfg:           cfg,
 	})
 }
 
@@ -350,12 +362,16 @@ func lintGateDetails(tally lintLaneTally) map[string]any {
 		"lanes_ran":         len(tally.ran),
 		"lanes_skipped":     len(tally.skipped),
 		"lanes_unavailable": len(tally.unavailable),
+		"lanes_allowed":     len(tally.allowed),
 	}
 	// The NAMES only for the lanes whose absence changes what the gate
 	// means. Listing every lane that ran would be the bulk of the payload
 	// and tells a reader nothing they would act on.
 	if len(tally.unavailable) > 0 {
 		details["unavailable"] = tally.unavailable
+	}
+	if len(tally.allowed) > 0 {
+		details["allowed"] = tally.allowed
 	}
 	if len(tally.skipped) > 0 {
 		details["skipped"] = tally.skipped

@@ -401,6 +401,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Parallel generates no longer fail pinning a codegen tool.** When the
+  protoc plugin on PATH does not match go.mod, forge installs the pinned one
+  into its cache. Two forge processes doing so at once (every fresh project's
+  first generate pins) could read a binary the other was still writing, and
+  failed with "installed binary reports unknown". The install now writes into
+  a private directory and renames the finished binary into place.
 - **`forge generate` composes correctly when go.mod is behind the tree.** The
   composition graph types every node with one package load, and that load
   fails outright on a go.mod that needs updating: a fresh clone, a

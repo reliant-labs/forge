@@ -541,6 +541,8 @@ func parseSetupAuth(t *testing.T) (*ast.FuncDecl, string) {
 	out, err := ProjectTemplates().Render("app-auth.go.tmpl", struct {
 		Module             string
 		Graph, HasDatabase bool
+		NoJWTConfig        bool
+		AuthConfigType     string
 	}{Module: "example.com/proj"})
 	if err != nil {
 		t.Fatalf("render app-auth.go.tmpl: %v", err)

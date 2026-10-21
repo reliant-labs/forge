@@ -15,7 +15,8 @@
 //
 // Run<Root> supervises what Build constructed (lifecyclekit.Supervise): start
 // in construction order, so a listener accepts traffic only after everything
-// it reaches is up; on stop, drain and close in reverse. Which of Run, Drain,
+// it reaches is up; on stop, drain and close in reverse. Plan<Root> is that
+// order as data, for a test that must not construct the nodes. Which of Run, Drain,
 // Close and Ready a node has was read off its type when this file was
 // generated — nothing here inspects a value at run time.
 package app
@@ -186,6 +187,26 @@ func (g *Graph) Run{{.TypeName}}(ctx context.Context, policy lifecyclekit.Policy
 	}
 	return g.b.Supervise(ctx, policy, g.Probes, probes...)
 {{- end}}
+}
+
+// Plan{{.TypeName}} is the {{.Name}} root's plan, read off compose.go when this
+// file was generated: every node Build{{.TypeName}} constructs, in order, and
+// the lifecycle methods each one's type has. Run{{.TypeName}} starts the
+// supervised ones in this order and stops them in reverse, so a test pins the
+// stop order (Plan.Stop) without constructing anything.
+{{- if not .ServesProbes}}
+// The probe listener comes first: it starts before every node and stops after
+// them.
+{{- end}}
+func Plan{{.TypeName}}() graphkit.Plan {
+	return graphkit.Plan{
+{{- if not .ServesProbes}}
+		{Name: "probe_listener", Run: true, Drain: true, Close: true, Ready: true},
+{{- end}}
+{{- range .PlanNodes}}
+		{Name: "{{.Name}}"{{if .Run}}, Run: true{{end}}{{if .Drain}}, Drain: true{{end}}{{if .Close}}, Close: true{{end}}{{if .Ready}}, Ready: true{{end}}},
+{{- end}}
+	}
 }
 {{end}}
 {{- if .ProbeListener}}

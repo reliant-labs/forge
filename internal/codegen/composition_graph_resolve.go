@@ -202,6 +202,16 @@ func (r *graphResolver) resolve(n *graphNode, df DepsField) (resolved, *graphPro
 
 	// 6. Optional.
 	if df.Optional {
+		// A struct value cannot be nil: an optional one with no provider is
+		// its zero value (`auth.Provider{}`), which is what "absent" means
+		// for a field of that type.
+		if want != nil && want != types.Typ[types.Invalid] {
+			if _, isStruct := want.Underlying().(*types.Struct); isStruct {
+				if imps, unknown := typeExprImports(df.Type, imports); len(unknown) == 0 {
+					return resolved{Expr: df.Type + "{}", Comment: "optional — no provider: the zero value", Imports: imps}, nil
+				}
+			}
+		}
 		return resolved{Expr: "nil", Comment: "optional — no provider"}, nil
 	}
 	return resolved{}, &graphProblem{Node: n.Name, Field: df.Name, Type: df.Type}

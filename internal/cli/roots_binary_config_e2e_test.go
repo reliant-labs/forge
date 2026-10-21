@@ -119,8 +119,8 @@ func TestE2EBinaryConfigRootsReachTheirOwnConfig(t *testing.T) {
 	tickPath := filepath.Join(projectDir, "internal", "workers", "tick", "worker.go")
 	mustReplaceInFile(t, tickPath, "\tConfig *config.Config\n", "\tEvery  string\n\tRegion string\n")
 	mustReplaceInFile(t, tickPath, "\n\t\"github.com/test/rbc/pkg/config\"\n", "\n")
-	mustReplaceInFile(t, tickPath, `w.deps.Logger.Info("worker started", "worker", w.Name())`,
-		`w.deps.Logger.Info("worker started", "worker", w.Name(), "every", w.deps.Every, "region", w.deps.Region)`)
+	mustReplaceInFile(t, tickPath, `w.deps.Logger.InfoContext(ctx, "worker started", "worker", w.Name())`,
+		`w.deps.Logger.InfoContext(ctx, "worker started", "worker", w.Name(), "every", w.deps.Every, "region", w.deps.Region)`)
 	tickTest := filepath.Join(projectDir, "internal", "workers", "tick", "worker_test.go")
 	if src, err := os.ReadFile(tickTest); err == nil {
 		out := strings.ReplaceAll(string(src), "\t\tConfig: &config.Config{},\n", "")
@@ -220,7 +220,7 @@ worker_env = sorted([_k for _k in config_gen.workloadEnvMap(appcfg.rbc_process, 
 	}
 	for _, k := range envs.Worker {
 		if slices.Contains(envs.API, k) && !slices.Contains([]string{"PORT", "LOG_LEVEL", "LOG_FORMAT", "ENVIRONMENT"}, k) && !strings.HasPrefix(k, "CORS_") &&
-			!strings.HasPrefix(k, "TLS_") && !slices.Contains([]string{"PPROF_ADDR", "PRE_STOP_DELAY", "SHUTDOWN_TIMEOUT", "SECURITY_HEADERS_ENABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "READ_MAX_BYTES", "SEND_MAX_BYTES"}, k) {
+			!strings.HasPrefix(k, "TLS_") && !slices.Contains([]string{"PPROF_ADDR", "PRE_STOP_DELAY", "SHUTDOWN_TIMEOUT", "SECURITY_HEADERS_ENABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "READ_MAX_BYTES", "SEND_MAX_BYTES", "LIVENESS_PATHS", "READINESS_PATHS"}, k) {
 			t.Errorf("both roots reach %s, which is no process field", k)
 		}
 	}

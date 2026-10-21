@@ -60,6 +60,11 @@ jobs:
           # to the commit.
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
+      # `forge generate` reads the scaffold's applied schema through an embedded
+      # postgres, and the scaffold's own `go test` boots one; both fetch it from
+      # Maven Central on a cold cache and 429 under load. See the action.
+      - uses: ./.github/actions/embedded-postgres-cache
+
       - name: Put $HOME/go/bin on PATH
         run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
 

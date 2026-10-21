@@ -24,6 +24,9 @@ type LoginBrokerTemplateData struct {
 	// one keeps a local constant so this file still compiles against the
 	// middleware it actually has.
 	MiddlewareDeclaresSessionCookie bool
+	// ConfigType is the pkg/config type the broker reads its idp_* / oidc_*
+	// settings from — the config that declares them; "" is Config.
+	ConfigType string
 }
 
 // middlewareSessionCookieDecl matches the constant the scaffolded
@@ -61,6 +64,14 @@ func GenerateLoginBroker(modulePath, projectName, projectDir string) error {
 		// this file and it stays gone.
 		return nil
 	}
+	configType, declared := configDeclaring(projectDir, brokerConfigFields)
+	if !declared && GraphComposition(projectDir) {
+		// No config the binary loads declares the broker's settings, so
+		// it could read none of them: nothing to scaffold (providers.go
+		// wires no sign-in routes). Not recorded, so declaring them later
+		// births it.
+		return nil
+	}
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
 		return fmt.Errorf("create internal/app dir: %w", err)
 	}
@@ -69,6 +80,7 @@ func GenerateLoginBroker(modulePath, projectName, projectDir string) error {
 		Module:                          modulePath,
 		Name:                            projectName,
 		MiddlewareDeclaresSessionCookie: middlewareSessionCookieDecl.Match(mw),
+		ConfigType:                      configType,
 	})
 	if err != nil {
 		return fmt.Errorf("render app-login-broker.go.tmpl: %w", err)

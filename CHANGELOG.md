@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`Plan<Root>()`: each root's start and stop order as data.** `graph_gen.go`
+  emits a static `graphkit.Plan` per root — every node `Build<Root>`
+  constructs, in order, with the lifecycle methods its type has, the probe
+  listener first for a root that serves no probes. `Plan.Start` / `Plan.Stop`
+  are the order `Run<Root>` supervises, so a project pins a root's stop
+  order in a unit test without a database or a broker (roots plan F7).
+- **Each root's process settings come from the configs its command loads,
+  and a root declares whether it migrates.** In a binary_config project
+  (`(forge.v1.binary_config)` `command`/`subtrees`), `rootSpec.Configs` hands
+  `runRoot` the configs a root's command loaded *before* the policy runs, and
+  the scaffolded `serverkitConfig(cfg, root.Configs)` reads the port, drain
+  budget, logging, TLS and database settings from whichever of them declares
+  each (most specific last), so `server api` and `server worker` listen and
+  drain on their own command config's values. `//forge:root <name>
+  migrate=apply|wait|none` says what the process does about the schema;
+  `wait` blocks — `/readyz` naming `schema` — until another process has
+  applied the migrations (`migratekit.AwaitSchema`,
+  `serverkit.AwaitMigrationsContext`). The default is unchanged: apply when
+  the root reaches the database. The scaffolded `serve.go` and `providers.go`
+  now read only the root config's own fields off `*config.Config`, so a
+  binary whose root config holds only blocks compiles (it read the union of
+  every config message's field names). A project whose binary loads one
+  config renders as before.
+- **Probe paths are configurable, and the deploy follows the process
+  (`forge/pkg/serverkit`).** `serverkit.Config.Probes`
+  (`ProbePaths{Live, Ready []string}`; empty is `/healthz`, `/readyz`, so
+  defaults are unchanged) names the paths the process answers its liveness and
+  readiness probes on. Several paths per probe are allowed: the first is
+  canonical and the rest are aliases. The boot probes, `serverkit.Run`'s
+  listener and a `serverkit.Probes` surface (`Probes.Paths`) all serve them, and
+  `ProbePaths.Validate` rejects a path no listener can serve. The scaffold
+  declares `liveness_paths` / `readiness_paths` (`LIVENESS_PATHS` /
+  `READINESS_PATHS`, reached by every root) and projects them in `serve.go`.
+  The KCL lowering's default probe for a forge-built workload reads the same
+  env values, and `PORT`, so a pod is probed where its process answers. A
+  declared probe is kept. `Probes.Handle(path, h)` adds a probe-surface route,
+  such as a `/flow-health` on the probe port. A composition-graph node that
+  only calls `g.Probes.Handle` / `AddReadyCheck` no longer counts as serving
+  the probes, so its root keeps its probe listener. Existing projects:
+  `migrations/v0.1.47` section 3.
 - **Roots can be declared one at a time: resolution follows reach.** A
   root's process builds only the closure its fields reach, but `forge
   generate` demanded a provider for every Deps field of every discovered
@@ -365,6 +405,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Client's bun handle runs on a pgdialect wrapper (`db.Dialect()` is no
   longer a `*pgdialect.Dialect`).
 
+- **`api.rest` runs on vanguard v0.5, and no longer hides the mux's other
+  routes.** vanguard v0.5 serves REST from a connect-go v2 `*connect.Server`
+  (`vanguard.Mount`) and removed `Service` / `NewService` / `NewTranscoder`.
+  `serverkit.RESTHandler` keeps its signature: each mounted service is
+  registered as `vanguard.ForwardService` over a Connect client whose
+  transport serves the call with the mux in process, so a REST request is
+  answered by the same handler and interceptor chain as its Connect URL, and
+  that handler sees the REST caller's address, TLS state and Host. A request
+  the mux has a route for now always goes to the mux: under v0.4's transcoder
+  every non-Connect route on it (the login broker's `/auth/*`) answered 404
+  once REST was on. Two v0.5 behaviors to know about. A streaming rpc maps to
+  REST only when its streamed side is a `google.api.HttpBody` (v0.4 sent
+  JSON lines). Annotating any other streaming rpc fails the REST routes at
+  startup, and the server then serves Connect only.
 - **The tracing rules flag only code a trace can reach.** Three constructions
   were reported that cut no trace, and are no longer: in a project whose
   observability is off (derived off with no server: a CLI or a library), the

@@ -40,6 +40,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -53,7 +54,7 @@ import (
 var processConfigFields = []string{
 	"Port", "OtlpEndpoint", "PprofAddr", "TlsCertPath", "TlsKeyPath", "LogFormat", "LogLevel",
 	"Environment", "ReadMaxBytes", "SendMaxBytes", "SecurityHeadersEnabled", "CorsAllowCredentials",
-	"CorsOrigins", "PreStopDelay", "ShutdownTimeout",
+	"CorsOrigins", "PreStopDelay", "ShutdownTimeout", "LivenessPaths", "ReadinessPaths",
 }
 
 // databaseConfigFields are the fields a root reaches when it reaches the
@@ -228,15 +229,7 @@ func loadProcessConfigs(projectDir string) *processConfigs {
 // processConfigsFrom is loadProcessConfigs over parsed messages, for the
 // primary binary binary ("" when the project has none).
 func processConfigsFrom(messages []ConfigMessage, binary string) *processConfigs {
-	root := BuildConfigTemplateData(messages).RootConfigMessage
-	if root == "" {
-		for _, m := range messages {
-			if binary != "" && m.Binary == binary && len(m.Command) == 0 && len(m.Subtrees) == 0 {
-				root = m.Name
-				break
-			}
-		}
-	}
+	root := rootConfigMessageName(messages, binary)
 	if root == "" {
 		return nil
 	}
@@ -456,17 +449,31 @@ func (m *configModel) ordered(in reached) []ConfigLeaf {
 	return out
 }
 
+// addServeFields adds the serve fields m declares as its own leaves: the
+// process fields, and the database fields when the process opens the
+// database.
+func (m *configModel) addServeFields(into reached, opensDB bool) {
+	for _, f := range serveConfigFields(opensDB) {
+		if _, block := m.blocks[f]; !block {
+			m.addGo(into, f)
+		}
+	}
+}
+
+// serveConfigFields is the fields runRoot may read off a config: the process
+// fields, then — for a process that opens the database — the database ones.
+func serveConfigFields(opensDB bool) []string {
+	out := append([]string{}, processConfigFields...)
+	if opensDB {
+		out = append(out, databaseConfigFields...)
+	}
+	return out
+}
+
 // rootConfig is the root config one root reaches.
 func (m *configModel) rootConfig(v graphRootView, reads map[string]nodeConfigReads) []ConfigLeaf {
 	got := reached{}
-	for _, f := range processConfigFields {
-		m.addGo(got, f)
-	}
-	if v.Migrate {
-		for _, f := range databaseConfigFields {
-			m.addGo(got, f)
-		}
-	}
+	m.addServeFields(got, v.opensDB())
 	for _, node := range v.Reach {
 		m.addRead(got, reads[node][rootConfigInput])
 	}
@@ -498,6 +505,10 @@ func markProcessConfig(views []graphRootView, pc *processConfigs, reads map[stri
 		for _, in := range pc.inputs {
 			var readers []string
 			got := reached{}
+			// The serve fields the config declares are runRoot's to read for
+			// every process that loads it, as the root config's are (the
+			// scaffolded serverkitConfig reads them off root.Configs).
+			in.model.addServeFields(got, v.opensDB())
 			for _, node := range v.Reach {
 				if r := reads[node][in.msg.Name]; r != nil {
 					readers = append(readers, node)
@@ -576,9 +587,21 @@ func graphRoots(views []graphRootView) []GraphRoot {
 }
 
 // GraphRoots assembles a graph-mode project's graph and returns its roots as
-// processes, writing nothing; nil for a legacy-composition project.
+// processes, writing nothing; nil for a legacy-composition project, and nil
+// for one generate has not composed yet.
+//
+// Not composed yet means no internal/app/compose.go: a fresh scaffold, or one
+// whose bootstrap generate failed. Its providers are not written either, so a
+// graph assembled from that tree is a fraction of the one generate composes —
+// a server root that reaches no database — and config_gen.k's ROOTS then
+// refused the scaffold's own workloads ("config_secrets names [DATABASE_URL],
+// which root \"server\" does not reach"), so no env rendered. nil sends the
+// caller to DefaultServerRoot: what a scaffold's server reaches.
 func GraphRoots(projectDir string) ([]GraphRoot, error) {
 	if !GraphComposition(projectDir) {
+		return nil, nil
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, "internal", "app", "compose.go")); err != nil {
 		return nil, nil
 	}
 	in, err := graphLintInput(projectDir)
@@ -590,4 +613,58 @@ func GraphRoots(projectDir string) ([]GraphRoot, error) {
 		return nil, err
 	}
 	return graphRoots(m.rootViews), nil
+}
+
+// ServeConfigInput is one of the primary binary's configs beside the root
+// config — a subtree or command config (#957), or the binary's own root
+// config beside a project-global AppConfig — as the scaffolded serve.go reads
+// it: in a process whose command loads it, each serve field it declares (the
+// listen port, the drain budget, logging, the database URL …) stands in for
+// the root config's.
+type ServeConfigInput struct {
+	// Name is the config message: the rootConfigs field (roots_gen.go) the
+	// loaded value is handed to runRoot in.
+	Name string
+	// Doc names the processes that load it, for a comment.
+	Doc string
+	// Fields are the serve fields it declares as its own leaves, by Go name.
+	Fields map[string]bool
+}
+
+// ServeConfigInputs is every config the primary binary binds beside its root
+// config, least specific first — the binary's own root config, the subtree
+// configs (shallowest path first), the command configs — so that in a process
+// loading several, the most specific config's setting is the one that holds.
+// nil for a project whose binary loads only the root config.
+func ServeConfigInputs(messages []ConfigMessage, projectDir string) []ServeConfigInput {
+	pc := processConfigsFrom(messages, primaryBinaryName(projectDir))
+	if pc == nil {
+		return nil
+	}
+	specificity := func(m *ConfigMessage) int {
+		switch {
+		case len(m.Command) > 0:
+			return 1 << 20
+		case len(m.Subtrees) > 0:
+			depth := len(m.Subtrees[0])
+			for _, p := range m.Subtrees[1:] {
+				depth = min(depth, len(p))
+			}
+			return depth
+		}
+		return 0
+	}
+	inputs := append([]configInput(nil), pc.inputs...)
+	sort.SliceStable(inputs, func(i, j int) bool { return specificity(inputs[i].msg) < specificity(inputs[j].msg) })
+	var out []ServeConfigInput
+	for _, in := range inputs {
+		si := ServeConfigInput{Name: in.msg.Name, Doc: in.scope(pc.binary), Fields: map[string]bool{}}
+		for _, f := range serveConfigFields(true) {
+			if _, block := in.model.blocks[f]; !block && len(in.model.byGo[f]) > 0 {
+				si.Fields[f] = true
+			}
+		}
+		out = append(out, si)
+	}
+	return out
 }

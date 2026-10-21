@@ -75,6 +75,14 @@ type Server struct {
 type Worker struct {
 	Tick *tick.Worker
 }
+
+// Both runs the two: the worker stops first, then the API.
+//
+//forge:root both
+type Both struct {
+	Tick *tick.Worker
+	API  *APIListener
+}
 `
 	if err := os.WriteFile(filepath.Join(projectDir, "internal", "app", "roots.go"), []byte(rootsGo), 0o644); err != nil {
 		t.Fatal(err)
@@ -141,6 +149,45 @@ worker_args = _tick.args
 		t.Errorf("the worker root reaches less than the api root: worker %d keys, api %d", len(workerEnv), len(apiEnv))
 	}
 
+	// ── Plan<Root>: the start and stop order, without a database ────────
+	// The worker root really builds (it opens nothing), so its plan is
+	// pinned against Built(); the two-field root's stop order is its field
+	// order, each field's dependencies after it.
+	writeFileE2E(t, filepath.Join(projectDir, "internal", "app", "plan_e2e_test.go"), `package app_test
+
+import (
+	"context"
+	"log/slog"
+	"slices"
+	"testing"
+
+	"github.com/test/roots/internal/app"
+	"github.com/test/roots/pkg/config"
+)
+
+func TestPlanIsWhatBuildConstructs(t *testing.T) {
+	g := &app.Graph{Ctx: context.Background(), Cfg: &config.Config{}, Log: slog.Default()}
+	if _, err := g.BuildWorker(); err != nil {
+		t.Fatal(err)
+	}
+	plan := app.PlanWorker()
+	if got, want := g.Built(), plan.Names()[1:]; !slices.Equal(got, want) {
+		t.Errorf("Built() = %v, PlanWorker().Names() = %v", got, plan.Names())
+	}
+	if got := plan.Stop(); !slices.Equal(got, []string{"tick", "probe_listener"}) {
+		t.Errorf("PlanWorker().Stop() = %v", got)
+	}
+	both := app.PlanBoth().Stop()
+	if len(both) < 3 || both[0] != "tick" || both[1] != "api_listener" || slices.Index(both, "db") < 1 {
+		t.Errorf("PlanBoth().Stop() = %v: the first field stops first, then the second, then what it reaches", both)
+	}
+	if slices.Contains(both, "probe_listener") || slices.Contains(app.PlanServer().Names(), "probe_listener") {
+		t.Error("a root whose API listener serves the probes has no probe listener of its own")
+	}
+}
+`)
+	runCmd(t, projectDir, "go", "test", "-count=1", "-run", "TestPlanIsWhatBuildConstructs", "./internal/app/")
+
 	bin := filepath.Join(projectDir, "roots-bin")
 	runCmd(t, projectDir, "go", "build", "-o", bin, "./cmd/roots")
 	help := runCmdStdout(t, projectDir, bin, "--help")
@@ -183,12 +230,19 @@ func bootRoot(t *testing.T, bin, projectDir, dsn, command string, want map[strin
 // process's environment.
 func bootRootArgs(t *testing.T, bin, projectDir string, env, args []string, want map[string]int) string {
 	t.Helper()
+	return bootRootOnPort(t, bin, projectDir, "PORT", env, args, want)
+}
+
+// bootRootOnPort is bootRootArgs for a root whose listen port is the config
+// field behind portEnv — a command config's own port.
+func bootRootOnPort(t *testing.T, bin, projectDir, portEnv string, env, args []string, want map[string]int) string {
+	t.Helper()
 	command := strings.Join(args, " ")
 	port := freePortE2E(t)
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = projectDir
 	cmd.Env = append(append(os.Environ(),
-		fmt.Sprintf("PORT=%d", port),
+		fmt.Sprintf("%s=%d", portEnv, port),
 		"ENVIRONMENT=development",
 		"PPROF_ADDR=",
 		"PRE_STOP_DELAY=-1s",

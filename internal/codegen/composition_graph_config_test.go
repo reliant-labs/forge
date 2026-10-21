@@ -126,7 +126,7 @@ func TestProcessConfigFieldsAreWhatRunRootReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	all := map[string]bool{}
-	for _, m := range regexp.MustCompile(`index \.ConfigFields "(\w+)"`).FindAllStringSubmatch(string(raw), -1) {
+	for _, m := range regexp.MustCompile(`(?:index \.ConfigFields|\.Serves) "(\w+)"`).FindAllStringSubmatch(string(raw), -1) {
 		all[m[1]] = true
 	}
 	out, err := templates.ProjectTemplates().Render("cmd-tree-serve-graph.go.tmpl", CmdServerTemplateData{Module: "example.com/x", Name: "x", ConfigFields: all})

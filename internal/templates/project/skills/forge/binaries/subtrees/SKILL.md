@@ -30,3 +30,21 @@ cli, err := config.LoadCLIConfig(cmd)      // refuses a command under none of th
 - Any two configs one process can load together — root and anything, a subtree config and a command or subtree config at or below it — may not declare the same env var, flag or top-level field; `generate` refuses the pair, naming a process that loads both. Siblings no process loads together may compose the same block: one definition, two values.
 - KCL: `<bin>ProcessEnvMap` adds every subtree config whose path prefixes the workload's argv path, so `app server api`'s Deployment carries none of `CLIConfig`. Add the instance to `<bin>_process` in each env's config.k.
 - Composition graph: each subtree and command config of the primary binary is a graph input (`g.<Message>`). A root's process loads the ones over its command path, and its reach is the fields its closure reads of them (`architecture`, "Roots and commands"). `roots_gen.go` registers a subtree config's flags on its path's command.
+
+## Roots: each command's settings, and its migrations
+
+Each root's command loads its own configs beside the root config, and
+`rootSpec.Configs` (a generated `rootConfigs`, `nil` per config its command
+does not load) hands them to `runRoot` before the policy runs. The scaffolded
+`serverkitConfig(cfg, root.Configs)` reads the listen port, drain budget,
+logging, TLS and database settings from whichever loaded config declares
+them — a command config over a subtree config over the root config — so a
+role whose port and drain live in its own command config listens and drains
+on them. A setting under another name (a `health_port`, a `drain` block) is
+yours to read in the same function: serve.go is owned.
+
+`//forge:root worker command=server,worker migrate=wait` leaves the schema to
+another process: `apply` migrates before building the root (the default for a
+root that reaches the database), `wait` blocks until the schema is current
+(`/readyz` names `schema`; `migratekit.AwaitSchema`), and `none` leaves it
+alone. `runRoot` reads `root.Migrate` / `root.AwaitMigrations`.

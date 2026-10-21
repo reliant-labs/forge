@@ -51,7 +51,7 @@ func TestSQLConn_JoinsABeginTxTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeginTx: %v", err)
 	}
-	err = tx.RunTx(ctx, Serializable, func(ctx context.Context) error {
+	err = tx.Join(ctx, func(ctx context.Context) error {
 		if _, err := c.SQLConn(ctx).ExecContext(ctx, `INSERT INTO tx_notes (id, body) VALUES ($1, 'b')`, "sql"); err != nil {
 			return err
 		}

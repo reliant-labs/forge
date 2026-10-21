@@ -22,7 +22,7 @@ func (r *Repo) RunTx(ctx context.Context, fn func(ctx context.Context) error) er
 }
 
 // unsetOptions left everything to the old defaults: SERIALIZABLE, 7 attempts.
-var unsetOptions = orm.Serializable
+var unsetOptions = orm.TxOptions{Isolation: orm.Serializable, MaxAttempts: orm.DefaultTxMaxAttempts}
 
 // Shapes are the call shapes, by name.
 func Shapes(c *orm.Client) map[string]func(ctx context.Context, p Probe) error {
@@ -48,10 +48,10 @@ func Shapes(c *orm.Client) map[string]func(ctx context.Context, p Probe) error {
 			return c.RunTx(ctx, orm.ReadCommitted.WithMaxAttempts(orm.DefaultTxMaxAttempts), inCtx(ctx, p))
 		},
 		"RunTxWithOptions{ReadCommitted,1}": func(ctx context.Context, p Probe) error {
-			return c.RunTx(ctx, orm.TxOptions{Isolation: orm.IsolationReadCommitted, MaxAttempts: 1}, inCtx(ctx, p))
+			return c.RunTx(ctx, orm.TxOptions{Isolation: orm.ReadCommitted, MaxAttempts: 1}, inCtx(ctx, p))
 		},
 		"RunTxWithOptions{RepeatableRead,3}": func(ctx context.Context, p Probe) error {
-			return c.RunTx(ctx, orm.TxOptions{Isolation: orm.IsolationRepeatableRead, MaxAttempts: 3}, inCtx(ctx, p))
+			return c.RunTx(ctx, orm.TxOptions{Isolation: orm.RepeatableRead, MaxAttempts: 3}, inCtx(ctx, p))
 		},
 		"RunTxWithOptions{ReadOnly}": func(ctx context.Context, p Probe) error {
 			return c.RunTx(ctx, orm.Serializable.WithReadOnly(), inCtx(ctx, p))
@@ -86,7 +86,7 @@ func Shapes(c *orm.Client) map[string]func(ctx context.Context, p Probe) error {
 			}
 			defer func() { _ = tx.Rollback() }()
 			// The *Tx BeginTx returned joins, as it always did.
-			return tx.RunTx(ctx, orm.Serializable, func(ctx context.Context) error { return p(ctx, tx) })
+			return tx.Join(ctx, func(ctx context.Context) error { return p(ctx, tx) })
 		},
 		"BeginDetached{}": func(ctx context.Context, p Probe) error {
 			tx, err := c.BeginDetached(ctx, orm.Serializable.WithMaxAttempts(1))

@@ -53,7 +53,7 @@ func TestInTx_TracksTheCarriedTransaction(t *testing.T) {
 	if InTx(ctx) {
 		t.Error("InTx = true for the ctx BeginDetached was called with; it carries nothing")
 	}
-	if err := tx.RunTx(ctx, Serializable, func(ctx context.Context) error {
+	if err := tx.Join(ctx, func(ctx context.Context) error {
 		if !InTx(ctx) {
 			t.Error("InTx = false inside tx.RunTx")
 		}
@@ -98,7 +98,7 @@ func TestBeginDetached_OutlivesTheCallThatOpenedIt(t *testing.T) {
 	}
 
 	// Code written against the plain client joins it through tx.RunTx.
-	if err := tx.RunTx(ctx, Serializable, func(ctx context.Context) error { return insertNote(ctx, c, "joined") }); err != nil {
+	if err := tx.Join(ctx, func(ctx context.Context) error { return insertNote(ctx, c, "joined") }); err != nil {
 		t.Fatalf("tx.RunTx insert: %v", err)
 	}
 	if err := tx.Commit(); err != nil {

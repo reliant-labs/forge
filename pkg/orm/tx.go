@@ -28,8 +28,8 @@ import (
 // # Isolation is the caller's choice, and there is no default
 //
 // Every writable transaction names its isolation level and its retry budget
-// at the call site, as a TxOptions value: [Serializable] or [ReadCommitted]
-// (or [RepeatableRead]), adjusted with WithMaxAttempts / WithReadOnly. An
+// at the call site: [Serializable] or [ReadCommitted] (or [RepeatableRead]),
+// refined with WithMaxAttempts / WithReadOnly into a [TxOptions]. An
 // unset level is rejected with ErrInvalidTxOptions naming the call site. The
 // two levels make opposite correctness arguments, so neither is a safe thing
 // to inherit:
@@ -336,15 +336,16 @@ func innermostTx(ctx context.Context) *txState {
 //     that asked for retries would be promising something nobody performs.
 //
 // Statements run through the returned *Tx (its Exec/Query/QueryRow and
-// Bun()); tx.RunTx(ctx, opts, fn) hands fn a ctx that carries it, so
-// generated stores and pkg/crud join it like any RunTx. AfterCommit callbacks
+// Bun()); tx.Join(ctx, fn) hands fn a ctx that carries it, so generated
+// stores and pkg/crud join it like any RunTx. AfterCommit callbacks
 // registered in that ctx run on Commit.
 //
 // It is also the low-level primitive: the one way to begin a transaction
 // the caller ends. (Client.BeginTx, which took *sql.TxOptions and so could
 // silently inherit the database's default level, is gone.)
-func (c *Client) BeginDetached(ctx context.Context, opts TxOptions) (*Tx, error) {
-	if err := opts.validate("BeginDetached", true); err != nil {
+func (c *Client) BeginDetached(ctx context.Context, policy TxPolicy) (*Tx, error) {
+	opts, err := resolveTxPolicy(policy, "BeginDetached", true)
+	if err != nil {
 		return nil, err
 	}
 	tx, err := c.beginTx(ctx, opts)
@@ -356,11 +357,11 @@ func (c *Client) BeginDetached(ctx context.Context, opts TxOptions) (*Tx, error)
 
 // BeginDetached on a *Tx opens a NEW transaction on the same database, not
 // a nested one: see Client.BeginDetached. It never joins t.
-func (t *Tx) BeginDetached(ctx context.Context, opts TxOptions) (*Tx, error) {
+func (t *Tx) BeginDetached(ctx context.Context, policy TxPolicy) (*Tx, error) {
 	if t.client == nil {
 		return nil, NewTransactionError("begin", errors.New("orm: Tx has no originating Client"))
 	}
-	return t.client.BeginDetached(ctx, opts)
+	return t.client.BeginDetached(ctx, policy)
 }
 
 // ─── RunTx on *Client ─────────────────────────────────────────────────────
@@ -386,8 +387,9 @@ func (t *Tx) BeginDetached(ctx context.Context, opts TxOptions) (*Tx, error) {
 // fn's error is returned verbatim, so svcerr sentinels and domain errors
 // survive. A transaction still conflicting after its last attempt returns a
 // svcerr.Aborted error (the driver error is kept as its cause).
-func (c *Client) RunTx(ctx context.Context, opts TxOptions, fn func(ctx context.Context) error) error {
-	if err := opts.validate("RunTx", false); err != nil {
+func (c *Client) RunTx(ctx context.Context, policy TxPolicy, fn func(ctx context.Context) error) error {
+	opts, err := resolveTxPolicy(policy, "RunTx", false)
+	if err != nil {
 		return err
 	}
 	if ambientTx(ctx, c.bun.DB) != nil {
@@ -465,7 +467,7 @@ func (c *Client) beginTx(ctx context.Context, opts TxOptions) (*Tx, error) {
 	if err != nil {
 		return nil, err
 	}
-	if opts.ReadOnly && opts.Isolation == IsolationSerializable {
+	if opts.ReadOnly && opts.Isolation == Serializable {
 		if _, err := tx.tx.ExecContext(ctx, "SET TRANSACTION READ ONLY DEFERRABLE"); err != nil {
 			_ = tx.Rollback()
 			return nil, fmt.Errorf("set transaction read only deferrable: %w", err)
@@ -476,31 +478,37 @@ func (c *Client) beginTx(ctx context.Context, opts TxOptions) (*Tx, error) {
 
 // ─── RunTx on *Tx: always a join ───────────────────────────────────────────
 
-// RunTx on a *Tx runs fn inside THIS transaction, with a ctx that carries it,
-// so code written against the plain client (generated delegates, stores,
-// pkg/crud) participates. It never begins, commits, retries or rolls back:
-// the owner of the *Tx does. This is how code holding an explicit handle from
-// RunTransaction calls a service written with RunTx. opts are validated, as
-// on Client.RunTx, and otherwise ignored.
-func (t *Tx) RunTx(ctx context.Context, opts TxOptions, fn func(ctx context.Context) error) error {
-	if err := opts.validate("RunTx", false); err != nil {
-		return err
-	}
-	return t.join(ctx, fn)
-}
-
-// join runs fn with a ctx carrying t.
-func (t *Tx) join(ctx context.Context, fn func(ctx context.Context) error) error {
+// Join runs fn inside THIS transaction, with a ctx that carries it, so code
+// written against the plain client (generated delegates, stores, pkg/crud)
+// participates. It never begins, commits, retries or rolls back: the owner of
+// the *Tx does, and the transaction keeps the level it was begun at. This is
+// how code holding an explicit handle — from BeginDetached, or
+// RunTransaction — calls a service written with RunTx.
+//
+// It takes no policy because it decides none: a level spelled at a join
+// would claim an isolation the transaction may not have.
+func (t *Tx) Join(ctx context.Context, fn func(ctx context.Context) error) error {
 	if t.state == nil {
 		return fn(ctx)
 	}
 	return fn(withTx(ctx, t.state))
 }
 
-// RunTxReadOnly on a *Tx is a join; see RunTx. The read-only request is
+// RunTx on a *Tx is a join: see Join. It exists so *Tx satisfies Context —
+// code written against Context (a service's RunTx(ctx, orm.Serializable, …))
+// composes into a transaction it was handed. The policy is validated, as on
+// Client.RunTx, and otherwise ignored. Holding a *Tx, call Join.
+func (t *Tx) RunTx(ctx context.Context, policy TxPolicy, fn func(ctx context.Context) error) error {
+	if _, err := resolveTxPolicy(policy, "RunTx", false); err != nil {
+		return err
+	}
+	return t.Join(ctx, fn)
+}
+
+// RunTxReadOnly on a *Tx is a join; see Join. The read-only request is
 // ignored because the transaction's mode is already fixed.
 func (t *Tx) RunTxReadOnly(ctx context.Context, fn func(ctx context.Context) error) error {
-	return t.join(ctx, fn)
+	return t.Join(ctx, fn)
 }
 
 // ─── retry policy ──────────────────────────────────────────────────────────

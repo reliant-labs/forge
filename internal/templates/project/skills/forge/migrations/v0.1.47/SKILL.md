@@ -361,8 +361,8 @@ lists nothing from sibling Services.
 
 Use when Go code calls `RunTx(ctx, fn)`, `RunTxWithOptions`,
 `RunTransaction(ctx, fn)`, `RunTransactionWithOptions`, or an `*orm.Client`'s
-`BeginTx`. pkg/orm's openers now take an `orm.TxOptions` that must name its
-level and attempt budget (`orm.Serializable`, `orm.ReadCommitted`); the old
+`BeginTx`. pkg/orm's openers now take a policy that names the level and
+carries the attempt budget (`orm.Serializable`, `orm.ReadCommitted`); the old
 calls no longer compile, and an unset level is rejected at run time.
 `forge fix tx-isolation` (run by `forge project upgrade`) spells every old
 call out exactly as it ran — then the level choice is yours. Load

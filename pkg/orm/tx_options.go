@@ -9,47 +9,93 @@ import (
 	"strings"
 )
 
-// Isolation selects a transaction's isolation level.
+// Isolation is a transaction's isolation level, and the policy every opener
+// takes: RunTx(ctx, orm.Serializable, fn), BeginDetached(ctx,
+// orm.ReadCommitted). Each level carries the attempt budget it needs —
+// Serializable and RepeatableRead are retried on 40001 / 40P01 up to
+// DefaultTxMaxAttempts, ReadCommitted runs once — and WithMaxAttempts /
+// WithReadOnly refine it into a TxOptions.
 //
-// It has no default. The zero value is UNSET, and every transaction opener
-// rejects it: SERIALIZABLE and READ COMMITTED make opposite correctness
-// arguments (the database proves serializability, versus a lock or a single
-// statement does), so whichever one a blank field silently meant would be
-// wrong for the code written for the other. Spell the level with
-// [Serializable], [RepeatableRead] or [ReadCommitted].
+// It has no default. The zero value is UNSET, and every opener rejects it:
+// SERIALIZABLE and READ COMMITTED make opposite correctness arguments (the
+// database proves serializability, versus a lock or a single statement does),
+// so whichever one a blank value silently meant would be wrong for the code
+// written for the other.
 type Isolation int
 
 const (
-	// IsolationSerializable is SERIALIZABLE: postgres aborts with 40001 any
-	// transaction it cannot order serially against the others, which is what
-	// makes read-check-write correct with no locks — provided the aborted
-	// transaction is retried. See [Serializable].
-	IsolationSerializable Isolation = iota + 1
+	// Serializable is SERIALIZABLE, retried on 40001 / 40P01 up to
+	// DefaultTxMaxAttempts. Correct for read-check-write with NO locks: the
+	// database aborts the loser of a race and the retry re-reads committed
+	// state. fn may run more than once. Do not take a lock inside it
+	// (forgeconv-tx-lock-under-serializable): the snapshot predates the lock
+	// wait, so the waiter wakes into stale data and fails 40001.
+	Serializable Isolation = iota + 1
 
-	// IsolationRepeatableRead is postgres snapshot isolation: every
-	// statement sees the snapshot taken at the transaction's first query,
-	// and a write to a row changed since then fails with 40001. It does NOT
-	// detect write skew — two transactions each reading what the other
-	// writes — which SERIALIZABLE does. See [RepeatableRead].
-	IsolationRepeatableRead
+	// RepeatableRead is REPEATABLE READ (snapshot isolation), retried on
+	// 40001 / 40P01 up to DefaultTxMaxAttempts. Every statement sees the
+	// snapshot taken at the first one; a write to a row changed since fails
+	// with 40001. It does NOT detect write skew — two transactions each
+	// reading what the other writes — which SERIALIZABLE does.
+	RepeatableRead
 
-	// IsolationReadCommitted is postgres's own default. Each STATEMENT sees
-	// rows committed before it began, so two reads in one transaction may
-	// disagree and read-then-write has no protection against a lost update
-	// unless a lock (SELECT … FOR UPDATE, pg_advisory_xact_lock) provides it.
-	// It takes no predicate locks and cannot raise 40001. See [ReadCommitted].
-	IsolationReadCommitted
+	// ReadCommitted is READ COMMITTED, one attempt. Each STATEMENT sees the
+	// rows committed before it began, so read-then-write is protected from a
+	// lost update only by a lock it takes (SELECT … FOR UPDATE,
+	// pg_advisory_xact_lock) — or by being one statement. It takes no
+	// predicate locks and never raises 40001, so it has nothing to retry
+	// unless it can deadlock; then say so with WithMaxAttempts.
+	ReadCommitted
 )
+
+// DefaultTxMaxAttempts is the attempt budget Serializable and RepeatableRead
+// carry: one try plus six retries.
+//
+// Sized from reliant's measurement on a single hot row under SERIALIZABLE
+// (5 writes per writer): with 3 retries the failure rate was 0% at 4
+// concurrent writers, 5% at 8 and 8.8% at 16; at 32 writers every write
+// completed within one further attempt. Six retries covers 32-way contention
+// with margin, and because a transaction that does not conflict never sleeps,
+// the extra headroom costs nothing on the uncontended path.
+const DefaultTxMaxAttempts = 7
+
+// TxPolicy is what a transaction opener takes: an Isolation constant, or a
+// TxOptions refined from one. Only this package implements it.
+type TxPolicy interface {
+	txOptions() TxOptions
+}
+
+func (i Isolation) txOptions() TxOptions {
+	return TxOptions{Isolation: i, MaxAttempts: i.attempts()}
+}
+
+// attempts is the budget the level carries; 0 for an unset or unknown one.
+func (i Isolation) attempts() int {
+	switch i {
+	case Serializable, RepeatableRead:
+		return DefaultTxMaxAttempts
+	case ReadCommitted:
+		return 1
+	}
+	return 0
+}
+
+// WithMaxAttempts returns the level with the attempt budget n (1 = no retry).
+func (i Isolation) WithMaxAttempts(n int) TxOptions { return i.txOptions().WithMaxAttempts(n) }
+
+// WithReadOnly returns the level as a READ ONLY transaction (DEFERRABLE under
+// SERIALIZABLE; see TxOptions.ReadOnly).
+func (i Isolation) WithReadOnly() TxOptions { return i.txOptions().WithReadOnly() }
 
 // sqlLevel maps an Isolation onto database/sql's constants. Only a validated
 // level reaches it.
 func (i Isolation) sqlLevel() sql.IsolationLevel {
 	switch i {
-	case IsolationReadCommitted:
+	case ReadCommitted:
 		return sql.LevelReadCommitted
-	case IsolationRepeatableRead:
+	case RepeatableRead:
 		return sql.LevelRepeatableRead
-	case IsolationSerializable:
+	case Serializable:
 		return sql.LevelSerializable
 	}
 	panic(fmt.Sprintf("orm: unvalidated isolation %d", int(i)))
@@ -58,11 +104,11 @@ func (i Isolation) sqlLevel() sql.IsolationLevel {
 // String names the isolation level as postgres spells it.
 func (i Isolation) String() string {
 	switch i {
-	case IsolationReadCommitted:
+	case ReadCommitted:
 		return "read committed"
-	case IsolationRepeatableRead:
+	case RepeatableRead:
 		return "repeatable read"
-	case IsolationSerializable:
+	case Serializable:
 		return "serializable"
 	case 0:
 		return "unset"
@@ -70,19 +116,16 @@ func (i Isolation) String() string {
 	return fmt.Sprintf("Isolation(%d)", int(i))
 }
 
-// TxOptions is a transaction's policy: its isolation level, its access mode
-// and how many times it may run. Every opener takes one — RunTx,
-// RunTransaction and BeginDetached — and every field that decides behaviour
-// must be set: the zero value is rejected.
-//
-// Name one of the three levels and adjust it, rather than writing the
-// struct out:
+// TxOptions is a transaction's full policy: its isolation level, its access
+// mode and how many times it may run. Derive one from a level rather than
+// writing the struct out:
 //
 //	db.RunTx(ctx, orm.Serializable, fn)                     // retried up to DefaultTxMaxAttempts
 //	db.RunTx(ctx, orm.ReadCommitted, fn)                    // one attempt
 //	db.RunTx(ctx, orm.ReadCommitted.WithMaxAttempts(3), fn) // retried on deadlock (40P01)
-//	tx, err := db.BeginDetached(ctx, orm.ReadCommitted)
+//	tx, err := db.BeginDetached(ctx, orm.Serializable.WithReadOnly().WithMaxAttempts(1))
 //
+// Every field that decides behaviour must be set: the zero value is rejected.
 // The level and the retry budget are stated together on purpose: retry is
 // what makes SERIALIZABLE correct (an aborted transaction that is not re-run
 // is a failed request), and what READ COMMITTED needs almost never.
@@ -109,45 +152,12 @@ type TxOptions struct {
 
 	// MaxAttempts bounds how many times fn runs: 1 is no retry, N re-runs fn
 	// from the top on 40001 / 40P01 until N attempts have failed. Required
-	// (at least 1). BeginDetached and BeginTx hand the transaction to the
-	// caller, so they cannot retry and require exactly 1.
+	// (at least 1). BeginDetached hands the transaction to the caller, so it
+	// cannot retry and requires exactly 1.
 	MaxAttempts int
 }
 
-// DefaultTxMaxAttempts is the attempt budget [Serializable] and
-// [RepeatableRead] carry: one try plus six retries.
-//
-// Sized from reliant's measurement on a single hot row under SERIALIZABLE
-// (5 writes per writer): with 3 retries the failure rate was 0% at 4
-// concurrent writers, 5% at 8 and 8.8% at 16; at 32 writers every write
-// completed within one further attempt. Six retries covers 32-way contention
-// with margin, and because a transaction that does not conflict never sleeps,
-// the extra headroom costs nothing on the uncontended path.
-const DefaultTxMaxAttempts = 7
-
-// The three isolation levels, each with the retry budget it needs. Treat them
-// as constants: derive a variant with WithMaxAttempts / WithReadOnly, never by
-// assigning to them.
-var (
-	// Serializable is SERIALIZABLE, retried on 40001 / 40P01 up to
-	// DefaultTxMaxAttempts. Correct for read-check-write with NO locks: the
-	// database aborts the loser of a race and the retry re-reads committed
-	// state. Do not take a lock inside it (forgeconv-tx-lock-under-
-	// serializable): the waiter wakes into a stale snapshot and fails 40001.
-	Serializable = TxOptions{Isolation: IsolationSerializable, MaxAttempts: DefaultTxMaxAttempts}
-
-	// RepeatableRead is REPEATABLE READ (snapshot isolation), retried on
-	// 40001 / 40P01 up to DefaultTxMaxAttempts. A consistent snapshot for a
-	// multi-statement read or report; it does not prevent write skew.
-	RepeatableRead = TxOptions{Isolation: IsolationRepeatableRead, MaxAttempts: DefaultTxMaxAttempts}
-
-	// ReadCommitted is READ COMMITTED, one attempt. Correct for a single
-	// statement, or for read-check-write whose correctness comes from a lock
-	// it takes (SELECT … FOR UPDATE, pg_advisory_xact_lock). It never raises
-	// 40001, so it has nothing to retry unless it can deadlock; then say so
-	// with WithMaxAttempts.
-	ReadCommitted = TxOptions{Isolation: IsolationReadCommitted, MaxAttempts: 1}
-)
+func (o TxOptions) txOptions() TxOptions { return o }
 
 // WithMaxAttempts returns o with the attempt budget n (1 = no retry).
 func (o TxOptions) WithMaxAttempts(n int) TxOptions {
@@ -168,7 +178,7 @@ func (o TxOptions) String() string {
 	b.WriteString(o.Isolation.String())
 	if o.ReadOnly {
 		b.WriteString(" read only")
-		if o.Isolation == IsolationSerializable {
+		if o.Isolation == Serializable {
 			b.WriteString(" deferrable")
 		}
 	}
@@ -180,38 +190,43 @@ func (o TxOptions) String() string {
 	return b.String()
 }
 
-// ErrInvalidTxOptions is returned by a transaction opener handed a TxOptions
-// that does not say what it means: an unset (or unknown) isolation level, an
-// unset attempt budget, or a retry budget on an opener that cannot retry. The
-// error names the call site. Nothing is begun.
+// ErrInvalidTxOptions is returned by a transaction opener handed a policy
+// that does not say what it means: none at all, an unset (or unknown)
+// isolation level, an unset attempt budget, or a retry budget on an opener
+// that cannot retry. The error names the call site. Nothing is begun.
 var ErrInvalidTxOptions = errors.New("orm: invalid transaction options")
 
-// validate rejects options that leave a decision to a default. op names the
-// opener ("RunTx", "BeginDetached", …) for the error; detached is true for
-// an opener that hands the transaction to the caller and so cannot retry.
-func (o TxOptions) validate(op string, detached bool) error {
+// resolveTxPolicy turns the policy an opener was handed into validated
+// options. op names the opener ("RunTx", "BeginDetached", …) for the error;
+// detached is true for an opener that hands the transaction to the caller and
+// so cannot retry.
+func resolveTxPolicy(p TxPolicy, op string, detached bool) (TxOptions, error) {
+	if p == nil {
+		return TxOptions{}, fmt.Errorf("%w: %s at %s passes no policy — pass orm.Serializable or orm.ReadCommitted (see orm.Isolation)", ErrInvalidTxOptions, op, callSite())
+	}
+	o := p.txOptions()
 	var problem string
 	switch {
 	case o.Isolation == 0:
-		problem = "names no isolation level — pass orm.Serializable or orm.ReadCommitted (see orm.TxOptions)"
-	case o.Isolation < IsolationSerializable || o.Isolation > IsolationReadCommitted:
+		problem = "names no isolation level — pass orm.Serializable or orm.ReadCommitted (see orm.Isolation)"
+	case o.Isolation < Serializable || o.Isolation > ReadCommitted:
 		problem = fmt.Sprintf("names an unknown isolation level %d", int(o.Isolation))
 	case o.MaxAttempts < 1:
-		problem = fmt.Sprintf("sets no attempt budget (MaxAttempts %d) — use orm.%s, or .WithMaxAttempts(n) with n ≥ 1", o.MaxAttempts, levelVar(o.Isolation))
+		problem = fmt.Sprintf("sets no attempt budget (MaxAttempts %d) — use orm.%s, or orm.%s.WithMaxAttempts(n) with n ≥ 1", o.MaxAttempts, levelName(o.Isolation), levelName(o.Isolation))
 	case detached && o.MaxAttempts != 1:
-		problem = fmt.Sprintf("asks for %d attempts, but the caller owns this transaction and %s cannot retry it — pass orm.%s.WithMaxAttempts(1)", o.MaxAttempts, op, levelVar(o.Isolation))
+		problem = fmt.Sprintf("asks for %d attempts, but the caller owns this transaction and %s cannot retry it — pass orm.%s.WithMaxAttempts(1)", o.MaxAttempts, op, levelName(o.Isolation))
 	default:
-		return nil
+		return o, nil
 	}
-	return fmt.Errorf("%w: %s at %s %s", ErrInvalidTxOptions, op, callSite(), problem)
+	return TxOptions{}, fmt.Errorf("%w: %s at %s %s", ErrInvalidTxOptions, op, callSite(), problem)
 }
 
-// levelVar is the package-level TxOptions var that spells level.
-func levelVar(level Isolation) string {
+// levelName is the constant that spells level.
+func levelName(level Isolation) string {
 	switch level {
-	case IsolationReadCommitted:
+	case ReadCommitted:
 		return "ReadCommitted"
-	case IsolationRepeatableRead:
+	case RepeatableRead:
 		return "RepeatableRead"
 	}
 	return "Serializable"

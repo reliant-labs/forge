@@ -349,7 +349,7 @@ func TestRunTx_JoinsAnAmbientTransaction(t *testing.T) {
 }
 
 // A handle from the legacy RunTransaction can call into code written with
-// RunTx: handle.RunTx gives fn a ctx carrying the handle's transaction, so
+// RunTx: handle.Join gives fn a ctx carrying the handle's transaction, so
 // queries made with the plain client join it.
 func TestTxHandle_RunTxCarriesTheHandlesTransaction(t *testing.T) {
 	c := newTxTestClient(t)
@@ -359,7 +359,7 @@ func TestTxHandle_RunTxCarriesTheHandlesTransaction(t *testing.T) {
 		if _, err := tx.Exec(ctx, "INSERT INTO tx_notes (id, body) VALUES ('via-handle', 'b')"); err != nil {
 			return err
 		}
-		return tx.RunTx(ctx, Serializable, func(ctx context.Context) error {
+		return tx.RunTx(ctx, ReadCommitted, func(ctx context.Context) error {
 			// The plain client, with the derived ctx, sees the handle's
 			// uncommitted row.
 			n, err := c.Bun().NewSelect().Model((*txNote)(nil)).Count(ctx)
@@ -367,7 +367,7 @@ func TestTxHandle_RunTxCarriesTheHandlesTransaction(t *testing.T) {
 				return err
 			}
 			if n != 1 {
-				t.Errorf("client query inside handle.RunTx saw %d rows, want 1", n)
+				t.Errorf("client query inside handle.Join saw %d rows, want 1", n)
 			}
 			return insertNote(ctx, c, "via-client")
 		})
@@ -477,7 +477,7 @@ func TestAfterCommit(t *testing.T) {
 	t.Run("RunTransaction commits run callbacks registered through the handle", func(t *testing.T) {
 		var fired atomic.Int32
 		err := c.RunTransaction(ctx, ReadCommitted, func(tx Context) error {
-			return tx.RunTx(ctx, Serializable, func(ctx context.Context) error {
+			return tx.RunTx(ctx, ReadCommitted, func(ctx context.Context) error {
 				return AfterCommit(ctx, func(context.Context) { fired.Add(1) })
 			})
 		})

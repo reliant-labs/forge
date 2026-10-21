@@ -211,8 +211,8 @@ func (t *Tx) QueryRow(ctx context.Context, query string, args ...interface{}) *s
 // Without this, an interactor that wraps its work in RunTransaction could
 // not be composed into another interactor that had already opened one. opts
 // are validated, as everywhere, and otherwise ignored.
-func (t *Tx) RunTransaction(ctx context.Context, opts TxOptions, fn func(Context) error) error {
-	if err := opts.validate("RunTransaction", false); err != nil {
+func (t *Tx) RunTransaction(ctx context.Context, policy TxPolicy, fn func(Context) error) error {
+	if _, err := resolveTxPolicy(policy, "RunTransaction", false); err != nil {
 		return err
 	}
 	return fn(t)
@@ -236,7 +236,7 @@ func (c *Client) begin(ctx context.Context, opts *sql.TxOptions) (*Tx, error) {
 // Prefer RunTx for new code. RunTransaction is the handle-passing form: fn
 // receives only a handle, not a ctx carrying the transaction, so code called
 // with the OUTER ctx and the plain client does not participate; use the
-// handle, or call handle.RunTx to get such a ctx.
+// handle, or call handle.Join to get such a ctx.
 //
 // opts mean exactly what they mean to RunTx: orm.ReadCommitted runs fn once,
 // orm.Serializable re-runs it on 40001 / 40P01, so fn must then have no
@@ -246,8 +246,9 @@ func (c *Client) begin(ctx context.Context, opts *sql.TxOptions) (*Tx, error) {
 // It does join a transaction ctx already carries for this database (from
 // RunTx), handing fn a handle on that transaction, so legacy code composes
 // inside a RunTx exactly as RunTx composes inside it.
-func (c *Client) RunTransaction(ctx context.Context, opts TxOptions, fn func(ctx Context) error) error {
-	if err := opts.validate("RunTransaction", false); err != nil {
+func (c *Client) RunTransaction(ctx context.Context, policy TxPolicy, fn func(ctx Context) error) error {
+	opts, err := resolveTxPolicy(policy, "RunTransaction", false)
+	if err != nil {
 		return err
 	}
 	if st := ambientTx(ctx, c.bun.DB); st != nil {

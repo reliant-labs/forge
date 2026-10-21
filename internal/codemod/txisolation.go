@@ -26,8 +26,9 @@ import (
 // 40001/40P01 up to seven times) when the level was left unset, while
 // Client.BeginTx and RunTransaction with nil options began at the database's
 // default, READ COMMITTED, once. Porting code from one to the other changed
-// its isolation without a diff line saying so. Every opener now takes an
-// orm.TxOptions that must name its level and its attempt budget.
+// its isolation without a diff line saying so. Every opener now takes a
+// policy that must name its level and its attempt budget: orm.Serializable,
+// orm.ReadCommitted, orm.RepeatableRead, or an orm.TxOptions refined from one.
 //
 // The rewrite is behaviour-preserving by construction: it spells out exactly
 // what each call did before and NEVER chooses a different level. Whether a
@@ -61,16 +62,19 @@ func init() {
 		Long: `Make every pkg/orm transaction name its isolation, exactly as it ran before.
 
 forge v0.1.47 removed the default isolation level. RunTx, RunTransaction and
-BeginDetached now take an orm.TxOptions that must name the level and the
-attempt budget (orm.Serializable, orm.ReadCommitted, orm.RepeatableRead,
-adjusted with WithMaxAttempts / WithReadOnly); an unset level is rejected with
-orm.ErrInvalidTxOptions. RunTxWithOptions, RunTransactionWithOptions and
-Client.BeginTx are gone.
+BeginDetached now take a policy that names the level and carries the attempt
+budget (orm.Serializable, orm.ReadCommitted, orm.RepeatableRead, refined with
+WithMaxAttempts / WithReadOnly into an orm.TxOptions); an unset level is
+rejected with orm.ErrInvalidTxOptions. RunTxWithOptions,
+RunTransactionWithOptions, Client.BeginTx and orm.IsolationDefault are gone,
+and orm.IsolationSerializable / IsolationReadCommitted / IsolationRepeatableRead
+are orm.Serializable / ReadCommitted / RepeatableRead.
 
 This rewrites every call on a pkg/orm handle to the explicit form that keeps
 what it did:
 
   RunTx(ctx, fn)                      → RunTx(ctx, orm.Serializable, fn)          serializable, 7 attempts
+  tx.RunTx(ctx, fn) on an *orm.Tx     → tx.Join(ctx, fn)                          a join: its own level
   RunTxWithOptions(ctx, opts, fn)     → RunTx(ctx, <opts spelled out>, fn)
   BeginDetached(ctx, orm.TxOptions{}) → BeginDetached(ctx, orm.Serializable.WithMaxAttempts(1))
   RunTransaction(ctx, fn)             → RunTransaction(ctx, orm.ReadCommitted, fn) read committed, 1 attempt
@@ -106,8 +110,7 @@ func runTxIsolation(dir string, write bool) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	module := goModulePath(dir)
-	if module == "" || len(candidates) == 0 || (!mentionsORM && module != forgeModule) {
+	if goModulePath(dir) == "" || len(candidates) == 0 || !mentionsORM {
 		return Report{}, nil
 	}
 
@@ -185,7 +188,9 @@ func txPass(absDir string, candidates map[string]bool, overlay map[string][]byte
 
 	done := map[string]bool{}
 	for _, p := range pkgs {
-		if p.TypesInfo == nil || p.Types == nil {
+		// pkg/orm is the definition, not a consumer: its own literals are
+		// what the policies are built from.
+		if p.TypesInfo == nil || p.Types == nil || p.Types.Path() == ormPath {
 			continue
 		}
 		for _, file := range p.Syntax {
@@ -220,10 +225,6 @@ func txPass(absDir string, candidates map[string]bool, overlay map[string][]byte
 	return rep, retyped, nil
 }
 
-// forgeModule is forge's own module: its pkg/orm files name the package
-// without importing it.
-const forgeModule = "github.com/reliant-labs/forge"
-
 func goModulePath(dir string) string {
 	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 	if err != nil {
@@ -250,7 +251,7 @@ type txRewriter struct {
 	file   *ast.File
 	src    []byte
 	rel    string
-	prefix string // "orm." — or "" inside package orm itself
+	prefix string // how the file names pkg/orm: "orm."
 
 	edits   []txEdit
 	handled map[*ast.CompositeLit]bool
@@ -270,18 +271,15 @@ func rewriteTxFile(p *packages.Package, file *ast.File, src []byte, rel string) 
 		fset: p.Fset, info: p.TypesInfo, file: file, src: src, rel: rel,
 		handled: map[*ast.CompositeLit]bool{}, impls: map[string]bool{},
 	}
-	ormName, addImport := "", false
-	if p.Types.Path() != ormPath {
-		ormName = importName(file, ormPath, "orm")
-		if ormName == "" {
-			addImport = true
-			ormName = "orm"
-			if nameTaken(file, ormName) {
-				ormName = "forgeorm"
-			}
+	ormName, addImport := importName(file, ormPath, "orm"), false
+	if ormName == "" {
+		addImport = true
+		ormName = "orm"
+		if nameTaken(file, ormName) {
+			ormName = "forgeorm"
 		}
-		r.prefix = ormName + "."
 	}
+	r.prefix = ormName + "."
 	r.walk()
 	if len(r.edits) == 0 {
 		return nil, r.rep, false, nil
@@ -346,6 +344,24 @@ func (r *txRewriter) replace(n ast.Node, text string) {
 	r.edits = append(r.edits, txEdit{start: r.off(n.Pos()), end: r.off(n.End()), text: text})
 }
 
+// edited reports whether n overlaps a replacement already made.
+func (r *txRewriter) edited(n ast.Node) bool {
+	start, end := r.off(n.Pos()), r.off(n.End())
+	for _, e := range r.edits {
+		if e.end > e.start && start < e.end && e.start < end {
+			return true
+		}
+	}
+	return false
+}
+
+// renamedIsolation maps the pre-v0.1.47 Isolation constants to their names
+// now. IsolationDefault meant SERIALIZABLE.
+var renamedIsolation = map[string]string{
+	"IsolationDefault": "Serializable", "IsolationSerializable": "Serializable",
+	"IsolationRepeatableRead": "RepeatableRead", "IsolationReadCommitted": "ReadCommitted",
+}
+
 func (r *txRewriter) insertAfter(n ast.Node, text string) {
 	at := r.off(n.End())
 	r.edits = append(r.edits, txEdit{start: at, end: at, text: text})
@@ -370,25 +386,34 @@ func (r *txRewriter) walk() {
 		}
 		return true
 	})
-	// Method values (db.RunTx passed as a func) and the literals no call
-	// consumed.
+	// Method values (db.RunTx passed as a func), the literals no call
+	// consumed, and the old Isolation constant names.
 	ast.Inspect(r.file, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.SelectorExpr:
+			if newName, old := renamedIsolation[n.Sel.Name]; old && r.isORMPackage(n.X) && !r.edited(n) {
+				r.replace(n.Sel, newName)
+				r.usedORM = true
+				r.rep.Rewrites = append(r.rep.Rewrites, fmt.Sprintf("%s: %s → %s", r.site(n), r.text(n), r.text(n.X)+"."+newName))
+				return false
+			}
 			if !calls[n] && r.isOldMethodValue(n) {
-				r.rep.Next = append(r.rep.Next, fmt.Sprintf("%s: %s is used as a value; its signature changed (it takes an orm.TxOptions now) — rewrite the use by hand", r.site(n), r.text(n)))
+				r.rep.Next = append(r.rep.Next, fmt.Sprintf("%s: %s is used as a value; its signature changed (it takes an orm isolation policy now) — rewrite the use by hand", r.site(n), r.text(n)))
 			}
 		case *ast.CompositeLit:
 			if r.handled[n] || !r.isTxOptionsLit(n) {
 				return true
 			}
 			r.handled[n] = true
-			if text, desc, note, ok := r.mapTxOptionsLit(n, false); ok {
-				r.replace(n, text)
-				r.rep.Rewrites = append(r.rep.Rewrites, fmt.Sprintf("%s: %s → %s  [%s]", r.site(n), oneLine(r.text(n)), text, desc))
-			} else if note != "" {
+			text, desc, note, ok := r.mapTxOptionsLit(n, false, true)
+			if note != "" {
 				r.rep.Next = append(r.rep.Next, note)
 			}
+			if !ok {
+				return true // its old constant names are still renamed
+			}
+			r.replace(n, text)
+			r.rep.Rewrites = append(r.rep.Rewrites, fmt.Sprintf("%s: %s → %s  [%s]", r.site(n), oneLine(r.text(n)), text, desc))
 			return false
 		}
 		return true
@@ -408,6 +433,13 @@ func (r *txRewriter) call(call *ast.CallExpr, sel *ast.SelectorExpr) {
 	recv := oneLine(r.text(sel.X))
 	switch name {
 	case "RunTx":
+		if r.isTxHandle(sel.X) {
+			// A join: the transaction keeps the level it was begun at, so
+			// spelling one here would claim an isolation it may not have.
+			r.replace(sel.Sel, "Join")
+			r.rep.Rewrites = append(r.rep.Rewrites, fmt.Sprintf("%s: %s.RunTx(ctx, fn) → %s.Join(ctx, fn)  [a join: the transaction's own level]", r.site(call), recv, recv))
+			return
+		}
 		r.insertAfter(call.Args[0], ", "+r.orm("Serializable"))
 		r.rep.Rewrites = append(r.rep.Rewrites, fmt.Sprintf("%s: %s.RunTx(ctx, fn) → %s.RunTx(ctx, %s, fn)  [serializable, 7 attempts]", r.site(call), recv, recv, r.orm("Serializable")))
 	case "RunTransaction":
@@ -425,7 +457,7 @@ func (r *txRewriter) call(call *ast.CallExpr, sel *ast.SelectorExpr) {
 			// Decided here, with the opener's semantics, rather than by
 			// the literal pass below.
 			r.handled[lit] = true
-			text, d, note, ok := r.mapTxOptionsLit(lit, detached)
+			text, d, note, ok := r.mapTxOptionsLit(lit, detached, false)
 			if note != "" {
 				r.rep.Next = append(r.rep.Next, note)
 			}
@@ -467,6 +499,13 @@ func (r *txRewriter) call(call *ast.CallExpr, sel *ast.SelectorExpr) {
 		r.beganTx = r.beganTx || name == "BeginTx"
 		r.rep.Rewrites = append(r.rep.Rewrites, fmt.Sprintf("%s: %s.%s(ctx, %s%s → %s.%s(ctx, %s%s  [%s]", r.site(call), recv, name, oneLine(r.text(call.Args[1])), argsTail(call), recv, target, text, argsTail(call), desc))
 	}
+}
+
+// isTxHandle reports whether x is statically an *orm.Tx — a transaction
+// someone else began, which RunTx on it only joins.
+func (r *txRewriter) isTxHandle(x ast.Expr) bool {
+	tv, ok := r.info.Types[x]
+	return ok && tv.Type != nil && namedIn(tv.Type, ormPath, "Tx")
 }
 
 // isORMCall reports whether call is one of pkg/orm's transaction openers in
@@ -553,10 +592,10 @@ func lookupMethod(t types.Type, name string) (*types.Func, bool) {
 func inORM(fn *types.Func) bool { return fn.Pkg() != nil && fn.Pkg().Path() == ormPath }
 
 // takesTxOptions reports whether fn has orm's new opener shape:
-// (ctx, orm.TxOptions, fn).
+// (ctx, orm.TxPolicy, fn).
 func takesTxOptions(fn *types.Func) bool {
 	sig, ok := fn.Type().(*types.Signature)
-	return ok && sig.Params().Len() == 3 && namedIn(sig.Params().At(1).Type(), ormPath, "TxOptions")
+	return ok && sig.Params().Len() == 3 && namedIn(sig.Params().At(1).Type(), ormPath, "TxPolicy", "TxOptions")
 }
 
 func namedIn(t types.Type, path string, names ...string) bool {
@@ -608,6 +647,24 @@ func (r *txRewriter) isTxOptionsLit(lit *ast.CompositeLit) bool {
 	return ok && pn.Imported().Path() == ormPath
 }
 
+// oldIsolationNames are the pre-v0.1.47 Isolation constants, by value.
+// IsolationDefault (0) meant SERIALIZABLE; the other three kept their
+// values under their new names.
+var oldIsolationNames = map[string]int{
+	"IsolationDefault": 0, "IsolationSerializable": oldSerializable,
+	"IsolationRepeatableRead": oldRepeatableRead, "IsolationReadCommitted": oldReadCommitted,
+}
+
+// isORMPackage reports whether x names the imported pkg/orm.
+func (r *txRewriter) isORMPackage(x ast.Expr) bool {
+	id, ok := x.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	pn, ok := r.info.Uses[id].(*types.PkgName)
+	return ok && pn.Imported().Path() == ormPath
+}
+
 // The old isolation enum: IsolationDefault (0) meant SERIALIZABLE.
 const (
 	oldSerializable   = 1
@@ -619,7 +676,9 @@ const (
 // an unset level was SERIALIZABLE, an unset (≤ 0) MaxAttempts was 7, and
 // BeginDetached ignored MaxAttempts (one attempt). ok is false when lit is
 // already valid (nothing to do) or cannot be decided (note says why).
-func (r *txRewriter) mapTxOptionsLit(lit *ast.CompositeLit, detached bool) (text, desc, note string, ok bool) {
+// typed is true where the literal must stay an orm.TxOptions (a variable, a
+// field, a return value) rather than any policy an opener takes.
+func (r *txRewriter) mapTxOptionsLit(lit *ast.CompositeLit, detached, typed bool) (text, desc, note string, ok bool) {
 	level, levelKnown := 0, true
 	readOnly, readOnlySrc := false, ""
 	attempts, attemptsSrc := 0, ""
@@ -676,7 +735,7 @@ func (r *txRewriter) mapTxOptionsLit(lit *ast.CompositeLit, detached bool) (text
 	case attempts <= 0:
 		attempts = defaultTxMaxAttempts
 	}
-	text = r.policyExpr(level, attempts, attemptsSrc, readOnly, readOnlySrc)
+	text = r.policyExpr(level, attempts, attemptsSrc, readOnly, readOnlySrc, typed)
 	desc = policyDesc(level, attempts, attemptsSrc, readOnly, readOnlySrc)
 	return text, desc, note, true
 }
@@ -686,14 +745,12 @@ const defaultTxMaxAttempts = 7
 
 var levelVars = map[int]string{oldSerializable: "Serializable", oldRepeatableRead: "RepeatableRead", oldReadCommitted: "ReadCommitted"}
 
-var levelConsts = map[int]string{oldSerializable: "IsolationSerializable", oldRepeatableRead: "IsolationRepeatableRead", oldReadCommitted: "IsolationReadCommitted"}
-
 var levelNames = map[int]string{oldSerializable: "serializable", oldRepeatableRead: "repeatable read", oldReadCommitted: "read committed"}
 
 // policyExpr is the shortest spelling of a policy: the level's var, with
 // WithMaxAttempts when the budget differs from the var's own and
 // WithReadOnly when it reads only.
-func (r *txRewriter) policyExpr(level, attempts int, attemptsSrc string, readOnly bool, readOnlySrc string) string {
+func (r *txRewriter) policyExpr(level, attempts int, attemptsSrc string, readOnly bool, readOnlySrc string, typed bool) string {
 	n := attemptsSrc
 	if n == "" {
 		n = fmt.Sprint(attempts)
@@ -702,7 +759,7 @@ func (r *txRewriter) policyExpr(level, attempts int, attemptsSrc string, readOnl
 		}
 	}
 	if readOnlySrc != "" {
-		return fmt.Sprintf("%s{Isolation: %s, ReadOnly: %s, MaxAttempts: %s}", r.orm("TxOptions"), r.orm(levelConsts[level]), readOnlySrc, n)
+		return fmt.Sprintf("%s{Isolation: %s, ReadOnly: %s, MaxAttempts: %s}", r.orm("TxOptions"), r.orm(levelVars[level]), readOnlySrc, n)
 	}
 	s := r.orm(levelVars[level])
 	if readOnly {
@@ -712,8 +769,13 @@ func (r *txRewriter) policyExpr(level, attempts int, attemptsSrc string, readOnl
 	if level == oldReadCommitted {
 		own = 1
 	}
-	if attemptsSrc != "" || attempts != own {
+	switch {
+	case attemptsSrc != "" || attempts != own:
 		s += ".WithMaxAttempts(" + n + ")"
+	case typed && !readOnly:
+		// A bare level is an orm.Isolation; where an orm.TxOptions is
+		// declared, spell the struct.
+		return fmt.Sprintf("%s{Isolation: %s, MaxAttempts: %s}", r.orm("TxOptions"), r.orm(levelVars[level]), n)
 	}
 	return s
 }
@@ -792,19 +854,19 @@ func (r *txRewriter) mapSQLOptions(e ast.Expr) (text, desc, note string, ok bool
 	if readOnly && level == oldSerializable {
 		note = "SERIALIZABLE READ ONLY now also runs DEFERRABLE (no predicate locks, cannot fail 40001; it may wait briefly at its first statement)"
 	}
-	return r.policyExpr(level, 1, "", readOnly, ""), policyDesc(level, 1, "", readOnly, ""), note, true
+	return r.policyExpr(level, 1, "", readOnly, "", false), policyDesc(level, 1, "", readOnly, ""), note, true
 }
 
 // isolationValue is the old-enum value of an orm.Isolation expression.
 func (r *txRewriter) isolationValue(e ast.Expr) (int, bool) {
 	switch x := e.(type) {
 	case *ast.SelectorExpr:
-		if x.Sel.Name == "IsolationDefault" {
-			return 0, true
+		if v, old := oldIsolationNames[x.Sel.Name]; old && r.isORMPackage(x.X) {
+			return v, true
 		}
 	case *ast.Ident:
-		if x.Name == "IsolationDefault" {
-			return 0, true
+		if v, old := oldIsolationNames[x.Name]; old {
+			return v, true
 		}
 	}
 	tv, ok := r.info.Types[e]
@@ -860,7 +922,7 @@ func (r *txRewriter) implementation(fd *ast.FuncDecl) {
 		return
 	}
 	r.impls[name] = true
-	r.rep.Next = append(r.rep.Next, fmt.Sprintf("%s: %s implements orm.Context with the old transaction methods — give it RunTx(ctx, opts orm.TxOptions, fn), RunTransaction(ctx, opts orm.TxOptions, fn) and BeginDetached(ctx, opts orm.TxOptions), and delete RunTxWithOptions", r.site(fd), name))
+	r.rep.Next = append(r.rep.Next, fmt.Sprintf("%s: %s implements orm.Context with the old transaction methods — give it RunTx(ctx, policy orm.TxPolicy, fn), RunTransaction(ctx, policy orm.TxPolicy, fn) and BeginDetached(ctx, policy orm.TxPolicy), and delete RunTxWithOptions", r.site(fd), name))
 }
 
 // argsTail closes a call's rendering: ", fn)" when a function follows the

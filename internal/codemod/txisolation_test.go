@@ -47,10 +47,11 @@ func TestTxIsolation_KeepsEveryShapesWireLevelAndAttempts(t *testing.T) {
 	if got, want := readFile(t, dir, "shapes.go"), readFile(t, fixture, "shapes.go.golden"); got != want {
 		t.Errorf("rewritten shapes.go differs from shapes.go.golden:\n%s", got)
 	}
-	// 17 calls (Repo.RunTx and database/sql's BeginTx untouched) plus the
-	// unsetOptions literal.
-	if len(rep.Rewrites) != 18 {
-		t.Errorf("%d rewrites, want 18:\n%s", len(rep.Rewrites), strings.Join(rep.Rewrites, "\n"))
+	// 17 calls (Repo.RunTx and database/sql's BeginTx untouched), the
+	// unsetOptions literal, and the two old constant names left in literals
+	// that were already explicit.
+	if len(rep.Rewrites) != 20 {
+		t.Errorf("%d rewrites, want 20:\n%s", len(rep.Rewrites), strings.Join(rep.Rewrites, "\n"))
 	}
 	for _, line := range rep.Rewrites {
 		if strings.Contains(line, "repo.RunTx") || strings.Contains(line, " db.BeginTx") {
@@ -100,15 +101,20 @@ func TestTxIsolation_PolicyExpr(t *testing.T) {
 		{oldSerializable, 7, true, "orm.Serializable.WithReadOnly()", "serializable read only deferrable, 7 attempts"},
 	}
 	for _, tc := range cases {
-		if got := r.policyExpr(tc.level, tc.attempts, "", tc.readOnly, ""); got != tc.want {
+		if got := r.policyExpr(tc.level, tc.attempts, "", tc.readOnly, "", false); got != tc.want {
 			t.Errorf("policyExpr(%d, %d, %v) = %q, want %q", tc.level, tc.attempts, tc.readOnly, got, tc.want)
 		}
 		if got := policyDesc(tc.level, tc.attempts, "", tc.readOnly, ""); got != tc.desc {
 			t.Errorf("policyDesc(%d, %d, %v) = %q, want %q", tc.level, tc.attempts, tc.readOnly, got, tc.desc)
 		}
 	}
-	if got := r.policyExpr(oldSerializable, 0, "", false, "ro"); got != "orm.TxOptions{Isolation: orm.IsolationSerializable, ReadOnly: ro, MaxAttempts: 0}" {
+	if got := r.policyExpr(oldSerializable, 0, "", false, "ro", false); got != "orm.TxOptions{Isolation: orm.Serializable, ReadOnly: ro, MaxAttempts: 0}" {
 		t.Errorf("computed ReadOnly spelled %q", got)
+	}
+	// Where an orm.TxOptions is declared, a bare level (an orm.Isolation)
+	// would not compile: the struct is spelled.
+	if got := r.policyExpr(oldReadCommitted, 1, "", false, "", true); got != "orm.TxOptions{Isolation: orm.ReadCommitted, MaxAttempts: 1}" {
+		t.Errorf("typed read committed spelled %q", got)
 	}
 }
 

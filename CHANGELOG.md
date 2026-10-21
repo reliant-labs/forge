@@ -19,20 +19,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FOR UPDATE` lock, moved from READ COMMITTED to SERIALIZABLE and dropped
   updates under contention. Now `RunTx(ctx, opts, fn)`,
   `RunTransaction(ctx, opts, fn)` and `BeginDetached(ctx, opts)` take an
-  `orm.TxOptions` that must name its isolation and attempt budget —
-  `orm.Serializable` (7 attempts), `orm.ReadCommitted` (1 attempt) or
-  `orm.RepeatableRead`, adjusted with `WithMaxAttempts` / `WithReadOnly` —
-  and an unset level (or budget) is rejected with `orm.ErrInvalidTxOptions`
-  naming the call site. One primitive rather than `RunTxSerializable` /
-  `RunTxReadCommitted`: the level is a value, so it composes with every
-  opener and passes through a wrapper unchanged instead of multiplying
-  method names, and the retry budget sits beside the level it belongs to.
-  `RunTxWithOptions`, `RunTransactionWithOptions`, `Client.BeginTx` and
-  `orm.IsolationDefault` are removed; `RunTxReadOnly(ctx, fn)` keeps its
+  `orm.TxPolicy` naming its isolation, which carries its attempt budget —
+  the constants `orm.Serializable` (7 attempts), `orm.ReadCommitted` (1
+  attempt) and `orm.RepeatableRead`, refined with `WithMaxAttempts` /
+  `WithReadOnly` into an `orm.TxOptions` — and an unset level (or budget) is
+  rejected with `orm.ErrInvalidTxOptions` naming the call site. One primitive
+  rather than `RunTxSerializable` / `RunTxReadCommitted`: the level is a
+  value, so it composes with every opener (RunTx, RunTransaction,
+  BeginDetached) and passes through a wrapper unchanged instead of
+  multiplying method names, and the retry budget is visible beside the level
+  it belongs to. A required argument is as close to a compile error as Go
+  allows; the zero value is the runtime error. `RunTxWithOptions`,
+  `RunTransactionWithOptions`, `Client.BeginTx` and `orm.IsolationDefault`
+  are removed, and `orm.IsolationSerializable` / `IsolationReadCommitted` /
+  `IsolationRepeatableRead` are renamed `orm.Serializable` / `ReadCommitted`
+  / `RepeatableRead`; `RunTxReadOnly(ctx, fn)` keeps its
   shape (SERIALIZABLE READ ONLY DEFERRABLE — a transaction that cannot write
   has one right level). `RunTransaction` honours the attempt budget like
   `RunTx` and reports an exhausted 40001/40P01 as `svcerr.Aborted`;
-  `BeginDetached` cannot retry and requires `MaxAttempts == 1`.
+  `BeginDetached` cannot retry and requires `MaxAttempts == 1`. A `*Tx`
+  someone else began is joined with `tx.Join(ctx, fn)`, which takes no
+  level: one spelled at a join would claim an isolation the transaction may
+  not have (`Tx.RunTx` remains, for `orm.Context`).
 - **Rendered pods set `enableServiceLinks: false`. Behavior change.**
   Kubernetes injects `<SERVICE>_PORT=tcp://ip:port`, `<SERVICE>_SERVICE_HOST`
   and `<SERVICE>_SERVICE_PORT` into every pod for every Service in its

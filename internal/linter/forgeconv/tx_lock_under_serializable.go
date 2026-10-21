@@ -24,8 +24,8 @@
 //
 // The analysis is syntactic: the level is read from the options argument as
 // written (orm.Serializable / orm.RepeatableRead and their With… variants,
-// or an orm.TxOptions literal naming IsolationSerializable /
-// IsolationRepeatableRead), and the lock from the SQL string literals (and
+// or an orm.TxOptions literal whose Isolation is one of them), and the
+// lock from the SQL string literals (and
 // the string constants they name) in the transaction's body — the closure
 // passed to RunTx / RunTransaction, the package function named there, or,
 // for BeginDetached, the rest of the function that opened it. A lock taken
@@ -322,9 +322,9 @@ func (l txLockLint) lockingLevel(e ast.Expr) (string, bool) {
 						return "", false
 					}
 					switch v.Sel.Name {
-					case "IsolationSerializable":
+					case "Serializable":
 						level = "serializable"
-					case "IsolationRepeatableRead":
+					case "RepeatableRead":
 						level = "repeatable read"
 					}
 				}
@@ -362,20 +362,15 @@ func (l txLockLint) findLock(nodes []ast.Node, opener *ast.CallExpr) (string, to
 			}
 			switch x := n.(type) {
 			case *ast.CallExpr:
-				if x != opener {
-					if sel, ok := x.Fun.(*ast.SelectorExpr); ok {
-						switch sel.Sel.Name {
-						case "RunTx", "RunTransaction", "BeginDetached", "RunTxReadOnly":
-							return false
-						case "For":
-							if len(x.Args) == 1 {
-								if s, ok := stringLit(x.Args[0]); ok && bunForLock.MatchString(s) {
-									name, at = `.For("UPDATE")`, x.Pos()
-									return false
-								}
-							}
-						}
-					}
+				if x == opener {
+					return true
+				}
+				switch lockCallKind(x) {
+				case "opener":
+					return false
+				case "for-update":
+					name, at = `.For("UPDATE")`, x.Pos()
+					return false
 				}
 			case *ast.BasicLit:
 				if s, ok := stringLit(x); ok && check(s, x.Pos()) {
@@ -395,6 +390,28 @@ func (l txLockLint) findLock(nodes []ast.Node, opener *ast.CallExpr) (string, to
 		}
 	}
 	return "", token.NoPos, false
+}
+
+// lockCallKind classifies a call met in a transaction body: "opener" for a
+// nested transaction opener (its own finding, not looked into),
+// "for-update" for bun's .For("UPDATE"), "" otherwise.
+func lockCallKind(call *ast.CallExpr) string {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return ""
+	}
+	switch sel.Sel.Name {
+	case "RunTx", "RunTransaction", "BeginDetached", "RunTxReadOnly":
+		return "opener"
+	case "For":
+		if len(call.Args) != 1 {
+			return ""
+		}
+		if s, ok := stringLit(call.Args[0]); ok && bunForLock.MatchString(s) {
+			return "for-update"
+		}
+	}
+	return ""
 }
 
 // stringLit is the value of a string literal, or of a concatenation of them.

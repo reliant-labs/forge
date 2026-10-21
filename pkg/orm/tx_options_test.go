@@ -22,25 +22,36 @@ func TestTxOptions_UnsetLevelIsRejectedNamingTheCallSite(t *testing.T) {
 
 	type opener struct {
 		name string
-		run  func(TxOptions) (error, int)
+		run  func(TxPolicy) (error, int)
 	}
 	line := func() int { _, _, l, _ := runtime.Caller(1); return l }
 	openers := []opener{
-		{"Client.RunTx", func(o TxOptions) (error, int) { return c.RunTx(ctx, o, fn), line() }},
-		{"Client.RunTransaction", func(o TxOptions) (error, int) { return c.RunTransaction(ctx, o, handleFn), line() }},
-		{"Client.BeginDetached", func(o TxOptions) (error, int) { _, err := c.BeginDetached(ctx, o); return err, line() }},
-		{"Tx.RunTx (a join)", func(o TxOptions) (error, int) { return tx.RunTx(ctx, o, fn), line() }},
-		{"Tx.RunTransaction (a join)", func(o TxOptions) (error, int) { return tx.RunTransaction(ctx, o, handleFn), line() }},
+		{"Client.RunTx", func(o TxPolicy) (error, int) { return c.RunTx(ctx, o, fn), line() }},
+		{"Client.RunTransaction", func(o TxPolicy) (error, int) { return c.RunTransaction(ctx, o, handleFn), line() }},
+		{"Client.BeginDetached", func(o TxPolicy) (error, int) { _, err := c.BeginDetached(ctx, o); return err, line() }},
+		{"Tx.RunTx (a join)", func(o TxPolicy) (error, int) { return tx.RunTx(ctx, o, fn), line() }},
+		{"Tx.RunTransaction (a join)", func(o TxPolicy) (error, int) { return tx.RunTransaction(ctx, o, handleFn), line() }},
 	}
+	// Built by mutation rather than as literals: `forge fix tx-isolation`
+	// would (rightly, in old code) spell a level-less literal out.
+	var zero TxOptions
+	readOnlyNoLevel := ReadCommitted.WithReadOnly()
+	readOnlyNoLevel.Isolation = 0
+	unknown := ReadCommitted.WithMaxAttempts(1)
+	unknown.Isolation = 9
+	noBudget := ReadCommitted.WithMaxAttempts(0)
 	bad := []struct {
 		name string
-		opts TxOptions
+		opts TxPolicy
 		want string
 	}{
-		{"zero value", TxOptions{}, "names no isolation level"},
-		{"read only, no level", TxOptions{ReadOnly: true, MaxAttempts: 1}, "names no isolation level"},
-		{"unknown level", TxOptions{Isolation: 9, MaxAttempts: 1}, "unknown isolation level 9"},
-		{"level without attempts", TxOptions{Isolation: IsolationReadCommitted}, "sets no attempt budget"},
+		{"nil policy", nil, "passes no policy"},
+		{"zero TxOptions", zero, "names no isolation level"},
+		{"zero Isolation", Isolation(0), "names no isolation level"},
+		{"read only, no level", readOnlyNoLevel, "names no isolation level"},
+		{"unknown level", unknown, "unknown isolation level 9"},
+		{"unknown bare level", Isolation(9), "unknown isolation level 9"},
+		{"level without attempts", noBudget, "sets no attempt budget"},
 		{"negative attempts", Serializable.WithMaxAttempts(-1), "sets no attempt budget"},
 	}
 	for _, op := range openers {
@@ -75,32 +86,30 @@ func TestTxOptions_UnsetLevelIsRejectedNamingTheCallSite(t *testing.T) {
 // The three levels carry the budgets the package documents, and the
 // modifiers derive variants without touching them.
 func TestTxOptions_LevelsAndModifiers(t *testing.T) {
+	var zero TxOptions
 	cases := []struct {
 		opts TxOptions
 		want string
 	}{
-		{Serializable, "serializable, 7 attempts"},
-		{RepeatableRead, "repeatable read, 7 attempts"},
-		{ReadCommitted, "read committed, 1 attempt"},
+		{Serializable.txOptions(), "serializable, 7 attempts"},
+		{RepeatableRead.txOptions(), "repeatable read, 7 attempts"},
+		{ReadCommitted.txOptions(), "read committed, 1 attempt"},
 		{Serializable.WithMaxAttempts(1), "serializable, 1 attempt"},
 		{Serializable.WithReadOnly(), "serializable read only deferrable, 7 attempts"},
 		{ReadCommitted.WithReadOnly().WithMaxAttempts(3), "read committed read only, 3 attempts"},
-		{TxOptions{}, "unset, 0 attempts"},
+		{zero, "unset, 0 attempts"},
 	}
 	for _, tc := range cases {
 		if got := tc.opts.String(); got != tc.want {
 			t.Errorf("%#v.String() = %q, want %q", tc.opts, got, tc.want)
 		}
 	}
-	if Serializable.MaxAttempts != DefaultTxMaxAttempts || Serializable.ReadOnly || Serializable.Isolation != IsolationSerializable {
-		t.Errorf("a modifier changed Serializable: %#v", Serializable)
-	}
-	for _, o := range []TxOptions{Serializable, RepeatableRead, ReadCommitted} {
-		if err := o.validate("RunTx", false); err != nil {
-			t.Errorf("%v rejected: %v", o, err)
+	for _, p := range []TxPolicy{Serializable, RepeatableRead, ReadCommitted, Serializable.WithReadOnly(), TxOptions{Isolation: ReadCommitted, MaxAttempts: 2}} {
+		if _, err := resolveTxPolicy(p, "RunTx", false); err != nil {
+			t.Errorf("%v rejected: %v", p, err)
 		}
 	}
-	if err := ReadCommitted.validate("BeginDetached", true); err != nil {
+	if _, err := resolveTxPolicy(ReadCommitted, "BeginDetached", true); err != nil {
 		t.Errorf("ReadCommitted rejected by BeginDetached: %v", err)
 	}
 }

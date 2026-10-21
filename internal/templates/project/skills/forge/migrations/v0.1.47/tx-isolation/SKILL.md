@@ -24,20 +24,23 @@ line saying so. Lock-based code moved onto `RunTx` dropped updates under
 contention (the waiter wakes into a stale snapshot and fails `40001`), and
 lock-free code moved onto `RunTransaction` would double-apply.
 
-Now every opener takes an `orm.TxOptions` that must name its level and its
-attempt budget, and the zero value is rejected with `orm.ErrInvalidTxOptions`
-naming the call site:
+Now every opener takes an `orm.TxPolicy` — a level constant
+(`orm.Serializable`, `orm.ReadCommitted`, `orm.RepeatableRead`) carrying its
+attempt budget, or an `orm.TxOptions` refined from one — and an unset level is
+rejected with `orm.ErrInvalidTxOptions` naming the call site:
 
 | Before | After |
 |---|---|
 | `RunTx(ctx, fn)` | `RunTx(ctx, orm.Serializable, fn)` — serializable, 7 attempts |
 | `RunTxWithOptions(ctx, opts, fn)` | `RunTx(ctx, opts, fn)` |
+| `tx.RunTx(ctx, fn)` on an `*orm.Tx` | `tx.Join(ctx, fn)` — a join keeps the transaction's own level |
 | `RunTransaction(ctx, fn)` | `RunTransaction(ctx, orm.ReadCommitted, fn)` — read committed, 1 attempt |
 | `RunTransactionWithOptions(ctx, nil, fn)` | `RunTransaction(ctx, orm.ReadCommitted, fn)` |
 | `client.BeginTx(ctx, nil)` | `client.BeginDetached(ctx, orm.ReadCommitted)` |
 | `BeginDetached(ctx, orm.TxOptions{})` | `BeginDetached(ctx, orm.Serializable.WithMaxAttempts(1))` |
 | `orm.TxOptions{Isolation: orm.IsolationReadCommitted}` (7 attempts) | `orm.ReadCommitted.WithMaxAttempts(orm.DefaultTxMaxAttempts)` |
-| `orm.IsolationDefault` | gone — `orm.IsolationSerializable` |
+| `orm.IsolationSerializable` / `IsolationReadCommitted` / `IsolationRepeatableRead` | `orm.Serializable` / `ReadCommitted` / `RepeatableRead` |
+| `orm.IsolationDefault` | gone — `orm.Serializable` |
 
 `RunTxReadOnly(ctx, fn)` is unchanged (SERIALIZABLE READ ONLY DEFERRABLE): a
 transaction that cannot write has one right level. `BeginDetached` (and the
@@ -45,8 +48,8 @@ transaction that cannot write has one right level. `BeginDetached` (and the
 `RunTransaction` now honours the attempt budget like `RunTx`, and reports an
 exhausted `40001`/`40P01` as `svcerr.Aborted` (the driver error kept as its
 cause). An `orm.Context` implementation — a test double — needs the new
-method set: `RunTx(ctx, opts, fn)`, `RunTransaction(ctx, opts, fn)`, no
-`RunTxWithOptions`.
+method set: `RunTx(ctx, policy orm.TxPolicy, fn)`, `RunTransaction(ctx, policy, fn)`,
+`BeginDetached(ctx, policy)`, no `RunTxWithOptions`.
 
 ### What to do
 

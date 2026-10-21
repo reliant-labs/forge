@@ -63,7 +63,7 @@ func e(ctx context.Context, db orm.Context) error {
 }
 
 func f(ctx context.Context, db orm.Context) error {
-	return db.RunTransaction(ctx, orm.TxOptions{Isolation: orm.IsolationRepeatableRead, MaxAttempts: 2}, func(tx orm.Context) error { // LOCK TABLE
+	return db.RunTransaction(ctx, orm.TxOptions{Isolation: orm.RepeatableRead, MaxAttempts: 2}, func(tx orm.Context) error { // LOCK TABLE
 		_, err := tx.Exec(ctx, "LOCK TABLE jobs IN EXCLUSIVE MODE")
 		return err
 	})

@@ -41,9 +41,9 @@ statement sent to B.
 
 ## Choose the level: there is no default
 
-Every writable transaction names its isolation and its attempt budget, as an
-`orm.TxOptions` — `RunTx(ctx, opts, fn)`, `RunTransaction(ctx, opts, fn)`,
-`BeginDetached(ctx, opts)`. An unset level is rejected with
+Every writable transaction names its isolation, and with it its attempt
+budget — `RunTx(ctx, orm.Serializable, fn)`, `RunTransaction(ctx, orm.ReadCommitted, fn)`,
+`BeginDetached(ctx, orm.ReadCommitted)`. An unset level is rejected with
 `orm.ErrInvalidTxOptions`, naming the call site. The two levels make
 **opposite** correctness arguments, so neither is safe to inherit:
 
@@ -53,8 +53,9 @@ Every writable transaction names its isolation and its attempt budget, as an
 | `orm.ReadCommitted` | READ COMMITTED, 1 attempt | a **lock** (`SELECT … FOR UPDATE`, `pg_advisory_xact_lock`) makes writers take turns, or the work is one statement | lock-based code, single-statement writes, counters allocated in one `UPDATE … RETURNING` |
 | `orm.RepeatableRead` | REPEATABLE READ, 7 attempts | one snapshot for the whole transaction | multi-statement reads/reports that write; it does not prevent write skew |
 
-Adjust with `.WithMaxAttempts(n)` (`orm.ReadCommitted.WithMaxAttempts(3)` to
-survive deadlocks) and `.WithReadOnly()`. A transaction that only reads takes
+Refine one with `.WithMaxAttempts(n)` (`orm.ReadCommitted.WithMaxAttempts(3)`
+to survive deadlocks) and `.WithReadOnly()`, which return an `orm.TxOptions`
+(also accepted, written out, as `orm.TxOptions{Isolation: orm.ReadCommitted, MaxAttempts: 3}`). A transaction that only reads takes
 no level: `s.deps.DB.RunTxReadOnly(ctx, fn)` is SERIALIZABLE READ ONLY
 DEFERRABLE — one consistent snapshot, no predicate locks, never aborted —
 because postgres rejects every write in it, so there is no lost update to
@@ -172,8 +173,8 @@ func (s *svc) LockRun(ctx context.Context, key int64) (release func(), err error
 - **No retry**, so the options must say one attempt: `orm.ReadCommitted`, or
   `orm.Serializable.WithMaxAttempts(1)`. `orm.Serializable` itself is
   rejected — it promises retries nobody performs. A `40001` comes back to you.
-- `tx.RunTx(ctx, opts, fn)` hands `fn` a `ctx` carrying it (a join: `opts` are
-  checked, then ignored), so stores and generated delegates join it;
+- `tx.Join(ctx, fn)` hands `fn` a `ctx` carrying it (the transaction keeps
+  the level it was begun at), so stores and generated delegates join it;
   `orm.AfterCommit` callbacks registered there run on `Commit`.
 - It is the only way to begin a caller-owned transaction: `Client.BeginTx`,
   which took `*sql.TxOptions` and silently inherited the database default, is
@@ -222,7 +223,7 @@ handle-passing API, and pairs with the stores' `WithTx(tx)`. Its options mean
 exactly what they mean to `RunTx` (`orm.ReadCommitted` runs `fn` once,
 `orm.Serializable` retries it). Its `fn` receives a handle, not a
 transaction-carrying `ctx`, so code called with the outer `ctx` and the plain
-client does NOT participate — use the handle, or `tx.RunTx(ctx, opts, fn)` to
+client does NOT participate — use the handle, or `tx.Join(ctx, fn)` to
 get such a `ctx`. It joins a `RunTx` transaction already in `ctx`. Write new
 code with `RunTx`.
 
@@ -253,7 +254,7 @@ err := client.RunTx(ctx, orm.Serializable, func(ctx context.Context) error {
   uses the first.
 - A layer that owns its own transaction loop (its own retry policy) opens
   each attempt with `client.BeginDetached(ctx, opts.WithMaxAttempts(1))`, runs
-  its work under `tx.RunTx(ctx, opts, fn)`, and ends it with `tx.Commit()` /
+  its work under `tx.Join(ctx, fn)`, and ends it with `tx.Commit()` /
   `tx.Rollback()`: the ORM and `DBTX` both join it, and `orm.AfterCommit`
   callbacks run on its `Commit`.
 

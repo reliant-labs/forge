@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/lib/pq"
+
 	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
@@ -17,7 +18,7 @@ func TestTxOptions_EachOpenerBeginsAtItsLevel(t *testing.T) {
 
 	type wire struct{ isolation, readOnly, deferrable string }
 	levels := []struct {
-		opts TxOptions
+		opts TxPolicy
 		want wire
 	}{
 		{Serializable, wire{"serializable", "off", "off"}},
@@ -43,7 +44,7 @@ func TestTxOptions_EachOpenerBeginsAtItsLevel(t *testing.T) {
 		}
 	}
 	for _, l := range levels {
-		t.Run(l.opts.String(), func(t *testing.T) {
+		t.Run(l.opts.txOptions().String(), func(t *testing.T) {
 			t.Run("RunTx", func(t *testing.T) {
 				if err := c.RunTx(ctx, l.opts, func(ctx context.Context) error {
 					probe(t, ctx, c, l.want)
@@ -61,7 +62,7 @@ func TestTxOptions_EachOpenerBeginsAtItsLevel(t *testing.T) {
 				}
 			})
 			t.Run("BeginDetached", func(t *testing.T) {
-				tx, err := c.BeginDetached(ctx, l.opts.WithMaxAttempts(1))
+				tx, err := c.BeginDetached(ctx, l.opts.txOptions().WithMaxAttempts(1))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -81,7 +82,7 @@ func TestTxOptions_AttemptsFollowThePolicy(t *testing.T) {
 	conflict := &pq.Error{Code: "40001", Message: "could not serialize access"}
 
 	cases := []struct {
-		opts TxOptions
+		opts TxPolicy
 		want int
 	}{
 		{ReadCommitted, 1},
@@ -90,7 +91,7 @@ func TestTxOptions_AttemptsFollowThePolicy(t *testing.T) {
 		{Serializable.WithMaxAttempts(1), 1},
 	}
 	for _, tc := range cases {
-		t.Run(tc.opts.String(), func(t *testing.T) {
+		t.Run(tc.opts.txOptions().String(), func(t *testing.T) {
 			for name, run := range map[string]func(func() error) error{
 				"RunTx": func(f func() error) error {
 					return c.RunTx(ctx, tc.opts, func(context.Context) error { return f() })

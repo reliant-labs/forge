@@ -60,7 +60,7 @@ type Context interface {
 	//
 	// Prefer RunTx for new code; see Client.RunTransaction for how the two
 	// relate. opts are required, exactly as for RunTx.
-	RunTransaction(ctx context.Context, opts TxOptions, fn func(Context) error) error
+	RunTransaction(ctx context.Context, policy TxPolicy, fn func(Context) error) error
 
 	// RunTx runs fn in a transaction at opts' isolation, CARRIED BY the ctx
 	// fn receives, re-running fn on 40001 / 40P01 up to opts.MaxAttempts.
@@ -77,7 +77,7 @@ type Context interface {
 	// On the interface for the same reason as RunTransaction: `DB
 	// orm.Context` is the handle forge injects, so `s.deps.DB.RunTx(…)` has
 	// to compile against it.
-	RunTx(ctx context.Context, opts TxOptions, fn func(ctx context.Context) error) error
+	RunTx(ctx context.Context, policy TxPolicy, fn func(ctx context.Context) error) error
 
 	// RunTxReadOnly is RunTx as SERIALIZABLE READ ONLY DEFERRABLE: no
 	// predicate locks, never aborted by a conflict. See TxOptions.ReadOnly.
@@ -95,7 +95,7 @@ type Context interface {
 	// On the interface for the same reason as RunTx: code written against
 	// the injected `DB orm.Context` must not need the concrete *Client to
 	// hold a transaction across calls.
-	BeginDetached(ctx context.Context, opts TxOptions) (*Tx, error)
+	BeginDetached(ctx context.Context, policy TxPolicy) (*Tx, error)
 
 	// Dialect returns the SQL dialect (postgres — forge is postgres-pinned).
 	// The raw-SQL escape hatch needs it: a hand-written handler that builds

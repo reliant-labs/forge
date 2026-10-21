@@ -67,7 +67,10 @@ type lintFlags struct {
 	generatedDrift    bool
 	strict            bool
 	skipFrontends     bool
-	jsonOut           bool
+	// allowSkip is --allow-skip: `<lane>[,<lane>…]=<reason>` values
+	// accepting that a gating lane may not run (lint_skip.go).
+	allowSkip []string
+	jsonOut   bool
 	// quiet prints only failing lanes, their error findings and the
 	// verdict (lint_structured.go).
 	quiet bool
@@ -325,7 +328,10 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.graph, "graph", false, "Check the composition graph (internal/app) as a whole: every component and provider is reached by some root, and every listener serves only services of its chain's audience. FAILS the build on an error (graph mode only)")
 	cmd.Flags().BoolVar(&flags.configReach, "config-reach", false, "Flag config fields that no binary and no frontend loads — with per-binary configs, an unbound config message generates but is never loaded (warnings only)")
 	cmd.Flags().BoolVar(&flags.slowTests, "slow-tests", false, "Fail on a Go test that does slow work without being marked slow — execs go/forge/kcl/node/npm/git/docker/…, drives containers, or dials an external host, with no testkit.Slow(t, why) or testing.Short() guard on its path — so it runs in the blocking -short tier, and a file its child process reads is invisible to the test cache")
-	cmd.Flags().BoolVar(&flags.strict, "strict", false, "Escalate advisory findings to errors so they fail the build / CI: RPCs missing a (forge.v1.method) auth-posture annotation, and any lane that could NOT run (frontend typecheck or eslint with deps not installed; typed-config guardrail when golangci-lint never reported)")
+	cmd.Flags().BoolVar(&flags.strict, "strict", false, "Escalate advisory findings to errors so they fail the build / CI: RPCs missing a (forge.v1.method) auth-posture annotation, contract refusals in a tree with no forge.yaml, and an advisory lane's own could-not-run report (the typed-config guardrail when golangci-lint never reported). Not needed for a gating lane that could NOT run: that always fails, unless --allow-skip accepts it")
+	// No backticks (see --optional-deps-guard): cobra would take the quoted
+	// span as the argument placeholder.
+	cmd.Flags().StringArrayVar(&flags.allowSkip, "allow-skip", nil, "Accept that a gating lane may NOT run here, by name and with a reason: LANE[,LANE...]=REASON (repeatable), e.g. --allow-skip 'frontend-typecheck=frontends typecheck in the web job'. A gating lane that could not run (a tool missing, a frontend with no node_modules) fails forge lint otherwise; an accepted one is listed as SKIPPED (allowed) in the verdict. forge.yaml lint.allow_skip is the project-level form. Accepts only could-not-run: a lane that ran and found problems still fails")
 	cmd.Flags().BoolVar(&flags.tracing, "tracing", false, "Report where a request's trace is cut: a log call made with a context in scope but not passed it (no trace_id), an *http.Client or database pool opened without forge's traced constructors, a contract package constructed without its generated decorator. With --fix, rewrites every log call to its ...Context form and every undecorated contract construction to NewInstrumented; forge.yaml lint.tracing.log_wrappers adds the project's own logging helpers")
 	cmd.Flags().BoolVar(&flags.skipFrontends, "skip-frontends", false, "Skip the whole frontend lane (eslint/stylelint + TypeScript typecheck + static-export) for a backend-only gate that needs no Node toolchain")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Apply the mechanical fixes in place (Go formatting, the tracing log rewrite, frontend prettier, eslint --fix), each Go rewrite type-checked and taken back if it breaks its package. Never golangci-lint fixes. Off by default: lint is a gate and reports")
@@ -576,10 +582,15 @@ func runAllLintersText(ctx context.Context, flags lintFlags, paths []string) err
 	// No flags set — run ALL linters, each skipping gracefully if tool not
 	// available. Report-only is the default (lint_check.go); --fix applies
 	// the mechanical fixers first, each Go rewrite verified.
+	allow, err := lintAllowances(flags, cfg)
+	if err != nil {
+		return err
+	}
 	_, err = runAllLinters(ctx, lintRunOptions{
 		fix:           flags.autoFix(),
 		strict:        flags.strict,
 		skipFrontends: flags.skipFrontends,
+		allowSkip:     allow,
 		paths:         paths,
 		cfg:           cfg,
 	})
@@ -598,8 +609,10 @@ type lintRunOptions struct {
 	reportFormat  bool
 	strict        bool
 	skipFrontends bool
-	paths         []string
-	cfg           *config.ProjectConfig
+	// allowSkip is the parsed --allow-skip + lint.allow_skip (lint_skip.go).
+	allowSkip skipAllowances
+	paths     []string
+	cfg       *config.ProjectConfig
 	// scope restricts findings to files under the --scope paths; nil is
 	// the whole project (lint_structured.go).
 	scope *lintScope
@@ -1322,6 +1335,13 @@ func ensureEnvDefault(env []string, key, defaultValue string) []string {
 // the gate document and the final human line are rendered from one tally and
 // cannot disagree about whether a lane ran.
 func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, error) {
+	return runLinterSteps(ctx, opts, lintPipeline())
+}
+
+// runLinterSteps is runAllLinters over an explicit step list, so the text
+// driver's verdict can be tested against steps whose behaviour the test
+// controls.
+func runLinterSteps(ctx context.Context, opts lintRunOptions, steps []linterStep) (lintLaneTally, error) {
 	fmt.Println("🔍 Running all linters...")
 	fmt.Println()
 
@@ -1353,6 +1373,7 @@ func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, err
 		fix:           fix,
 		strict:        opts.strict,
 		skipFrontends: opts.skipFrontends,
+		allowSkip:     opts.allowSkip,
 		paths:         opts.paths,
 		cfg:           opts.cfg,
 		cwd:           cwd,
@@ -1364,7 +1385,8 @@ func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, err
 	// have rewritten is a finding. Printed as the diff the rewrite would
 	// apply, and counted as a failed gating lane so the exit code, the
 	// verdict line and --gate-json all say so.
-	var ranGating, skippedGating, unavailable, failedLanes []string
+	var ranGating, skippedGating, failedLanes, advisoryUnavailable, allowedNames []string
+	var unavailable, allowed []laneGap
 	if !fix && cwd != "" {
 		{
 			n := runFormatCheck(ctx, os.Stdout, cwd, opts.paths, opts.skipFrontends, opts.cfg)
@@ -1386,7 +1408,7 @@ func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, err
 	// unavailable is the third bucket: lanes that were supposed to execute
 	// and could not. See laneUnavailableError for why they are neither
 	// "ran" nor "skipped".
-	for _, step := range lintPipeline() {
+	for _, step := range steps {
 		run, skipMsg := step.shouldRun(rc)
 		if !run {
 			// A skip message prints a ⚠️ line; a silent skip (directory
@@ -1411,16 +1433,21 @@ func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, err
 		case errors.As(err, &unavail):
 			// Deliberately NOT appended to ranGating: counting a lane that
 			// produced no verdict would be the final line claiming coverage
-			// this run does not have.
-			unavailable = append(unavailable, step.name)
-			marker := "⚠️ "
-			if rc.strict {
-				marker = "❌"
+			// this run does not have. What it does to the run is
+			// judgeGap's call (lint_skip.go).
+			verdict, why := rc.judgeGap(step.name, laneGates(step, rc))
+			g := gapFromError(step.name, unavail, verdict, why)
+			printGap(g)
+			switch verdict {
+			case gapFails:
+				unavailable = append(unavailable, g)
 				hasFailed = true
-				failedLanes = append(failedLanes, step.name)
+			case gapAllowed:
+				allowed = append(allowed, g)
+				allowedNames = append(allowedNames, step.name)
+			default:
+				advisoryUnavailable = append(advisoryUnavailable, step.name)
 			}
-			fmt.Fprintf(os.Stderr, "  %s %s did NOT run: %s\n     ↳ %s\n",
-				marker, step.name, unavail.reason, unavail.fixHint)
 		default:
 			// It ran and reported problems — that IS coverage, so the lane
 			// counts as having run even though it failed.
@@ -1434,7 +1461,8 @@ func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, err
 	}
 
 	tally := lintLaneTally{
-		ran: ranGating, skipped: skippedGating, unavailable: unavailable, failed: hasFailed,
+		ran: ranGating, skipped: skippedGating, allowed: allowedNames,
+		unavailable: append(gapNames(unavailable), advisoryUnavailable...), failed: hasFailed,
 	}
 
 	if !hasFailed {
@@ -1444,14 +1472,17 @@ func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, err
 	// lanes — so the last line of the run says what to fix even when the
 	// ❌ lines above it have scrolled away.
 	return tally, lintVerdict{
-		ran: ranGating, skipped: skippedGating, unavailable: unavailable, failed: failedLanes,
+		ran: ranGating, skipped: skippedGating, failed: failedLanes,
+		unavailable: unavailable, advisoryUnavailable: advisoryUnavailable, allowed: allowed,
 	}.render(os.Stdout)
 }
 
 // reportLintVerdict renders the final line of a passing (or proved-nothing)
-// `forge lint` from what actually ran. See lintVerdict.render.
-func reportLintVerdict(w io.Writer, ranGating, skippedGating, unavailable []string) error {
-	return lintVerdict{ran: ranGating, skipped: skippedGating, unavailable: unavailable}.render(w)
+// `forge lint` from what actually ran. advisoryUnavailable are ADVISORY lanes
+// that could not run; a gating lane that could not run fails the run and is
+// a laneGap on lintVerdict.unavailable instead. See lintVerdict.render.
+func reportLintVerdict(w io.Writer, ranGating, skippedGating, advisoryUnavailable []string) error {
+	return lintVerdict{ran: ranGating, skipped: skippedGating, advisoryUnavailable: advisoryUnavailable}.render(w)
 }
 
 // lintVerdict is what a run proved, in lanes — the input to the final line
@@ -1460,11 +1491,20 @@ func reportLintVerdict(w io.Writer, ranGating, skippedGating, unavailable []stri
 type lintVerdict struct {
 	// ran are the gating lanes that executed, failed ones included.
 	ran []string
-	// skipped are gating lanes that did not apply (tool absent, feature off).
+	// skipped are gating lanes that did not apply (feature off,
+	// --skip-frontends, no Go package under --scope).
 	skipped []string
-	// unavailable are lanes that were supposed to execute and could not.
-	unavailable []string
-	// failed are the lanes that fail the build.
+	// unavailable are gating lanes that were supposed to execute and could
+	// not. Each fails the run (lint_skip.go).
+	unavailable []laneGap
+	// advisoryUnavailable are advisory lanes that could not run: named,
+	// never counted as passed, but not a failure — their findings could
+	// not fail the run either.
+	advisoryUnavailable []string
+	// allowed are lanes that could not run and were accepted by name
+	// (--allow-skip / lint.allow_skip): SKIPPED (allowed).
+	allowed []laneGap
+	// failed are the lanes that ran and fail the build.
 	failed []string
 	// unscoped are whole-project lanes a --scope run did not run.
 	unscoped []string
@@ -1478,70 +1518,77 @@ type lintVerdict struct {
 // prints as `Error: …`, the last line of the run either way.
 //
 // The rule: a verdict may only claim what the run proved. A failure names
-// the lanes that failed, so the last line alone says what to fix. Zero
-// gating linters executed means the run proved nothing and must fail; a
-// partial run must name the lanes it skipped rather than round up to "All
-// linters passed!"; a lane that was supposed to execute and could NOT must
-// be named too, because its absence is the one thing a green last line
-// would hide; and a scoped run says it proved only its slice.
+// the lanes that failed, so the last line alone says what to fix. A gating
+// lane that could NOT run is a failure too, named with its reason and the
+// command that fixes it — its absence is the one thing a green last line
+// would hide. Zero gating linters executed means the run proved nothing and
+// must fail; a partial run must name the lanes it skipped, the skips it was
+// told to accept, and the advisory lanes that could not run, rather than
+// round up to "All linters passed!"; and a scoped run says it proved only
+// its slice.
 func (v lintVerdict) render(w io.Writer) error {
-	if len(v.failed) > 0 {
-		what := fmt.Sprintf("%d gating linter(s) failed: %s", len(v.failed), strings.Join(v.failed, ", "))
-		// A lane that failed BECAUSE it could not run (--strict) is already
-		// named; list only the ones that could not run and did not fail.
-		failed := make(map[string]bool, len(v.failed))
-		for _, f := range v.failed {
-			failed[f] = true
+	if len(v.failed) > 0 || len(v.unavailable) > 0 {
+		var what, fix []string
+		if len(v.failed) > 0 {
+			what = append(what, fmt.Sprintf("%d gating linter(s) failed: %s", len(v.failed), strings.Join(v.failed, ", ")))
+			fix = append(fix, "address the findings above under each ❌ lane")
 		}
-		var alsoUnavailable []string
-		for _, u := range v.unavailable {
-			if !failed[u] {
-				alsoUnavailable = append(alsoUnavailable, u)
+		if len(v.unavailable) > 0 {
+			what = append(what, fmt.Sprintf("%d lane(s) could NOT run: %s", len(v.unavailable), describeGaps(v.unavailable)))
+			for _, g := range v.unavailable {
+				fix = append(fix, g.lane+": "+g.fix)
 			}
+			fix = append(fix, acceptSkipHint(v.unavailable))
 		}
-		if len(alsoUnavailable) > 0 {
-			what += "; could NOT run: " + strings.Join(alsoUnavailable, ", ")
-		}
-		return cliutil.UserErr("forge lint", what+v.suffix(), "",
-			"address the findings above under each ❌ lane; re-run 'forge lint' to confirm")
+		fix = append(fix, "re-run 'forge lint' to confirm")
+		return cliutil.UserErr("forge lint", strings.Join(what, "; ")+v.suffix(), "", strings.Join(fix, "; "))
 	}
 
 	if len(v.ran) == 0 {
-		detail := "no gating linter was applicable here"
-		switch {
-		case len(v.unavailable) > 0 && len(v.skipped) > 0:
-			detail = "could not run: " + strings.Join(v.unavailable, ", ") +
-				"; skipped: " + strings.Join(v.skipped, ", ")
-		case len(v.unavailable) > 0:
-			detail = "could not run: " + strings.Join(v.unavailable, ", ")
-		case len(v.skipped) > 0:
-			detail = "skipped: " + strings.Join(v.skipped, ", ")
+		var detail []string
+		if len(v.advisoryUnavailable) > 0 {
+			detail = append(detail, "could not run: "+strings.Join(v.advisoryUnavailable, ", "))
+		}
+		if len(v.allowed) > 0 {
+			detail = append(detail, "SKIPPED (allowed): "+describeAllowed(v.allowed))
+		}
+		if len(v.skipped) > 0 {
+			detail = append(detail, "skipped: "+strings.Join(v.skipped, ", "))
+		}
+		if len(detail) == 0 {
+			detail = append(detail, "no gating linter was applicable here")
 		}
 		return cliutil.UserErr("forge lint",
 			"no gating linter ran — this run proved nothing"+v.suffix(),
-			detail,
+			strings.Join(detail, "; "),
 			"install the missing tools ('forge tools install golangci-lint buf') and re-run from the project root")
 	}
 
-	// A lane that could not run demotes the headline. A SKIP is the project
-	// saying "this does not apply here" and is compatible with a ✅; a lane
-	// that was supposed to execute and did not is a hole in the coverage the
-	// verdict would otherwise be claiming.
-	if len(v.unavailable) > 0 {
-		line := fmt.Sprintf("⚠️  %d gating linter(s) passed; %d could NOT run (%s)",
-			len(v.ran), len(v.unavailable), strings.Join(v.unavailable, ", "))
-		if len(v.skipped) > 0 {
-			line += fmt.Sprintf("; %d skipped (%s)", len(v.skipped), strings.Join(v.skipped, ", "))
-		}
-		// The hint goes ABOVE the verdict so the verdict stays the last line.
-		fmt.Fprintln(w, "   ↳ a lane that could not run is not a lane that passed — re-run, or pass --strict to fail on it")
-		fmt.Fprintln(w, line+v.suffix())
-		return nil
+	// Everything the headline must not round up over: lanes that could not
+	// run but do not fail the run (advisory, or accepted by name), then
+	// lanes that did not apply.
+	var extras []string
+	if len(v.advisoryUnavailable) > 0 {
+		extras = append(extras, fmt.Sprintf("%d could NOT run (%s) — advisory, so it does not fail the run",
+			len(v.advisoryUnavailable), strings.Join(v.advisoryUnavailable, ", ")))
+	}
+	if len(v.allowed) > 0 {
+		extras = append(extras, fmt.Sprintf("%d SKIPPED (allowed): %s", len(v.allowed), describeAllowed(v.allowed)))
+	}
+	if len(v.skipped) > 0 {
+		extras = append(extras, fmt.Sprintf("%d skipped (%s)", len(v.skipped), strings.Join(v.skipped, ", ")))
 	}
 
-	if len(v.skipped) > 0 {
-		fmt.Fprintf(w, "✅ %d gating linter(s) passed; %d skipped (%s)%s\n",
-			len(v.ran), len(v.skipped), strings.Join(v.skipped, ", "), v.suffix())
+	// An advisory lane that could not run demotes the headline: it is a
+	// hole in the coverage, even though it cannot fail the run.
+	if len(v.advisoryUnavailable) > 0 {
+		// The hint goes ABOVE the verdict so the verdict stays the last line.
+		fmt.Fprintln(w, "   ↳ a lane that could not run is not a lane that passed — fix the cause above, or pass --strict to fail on it")
+		fmt.Fprintf(w, "⚠️  %d gating linter(s) passed; %s%s\n", len(v.ran), strings.Join(extras, "; "), v.suffix())
+		return nil
+	}
+	if len(extras) > 0 {
+		fmt.Fprintf(w, "✅ %d gating linter(s) passed; %s%s\n", len(v.ran), strings.Join(extras, "; "), v.suffix())
 		return nil
 	}
 	if v.scope != "" {
@@ -1598,17 +1645,18 @@ func (v lintVerdict) suffix() string {
 //
 // laneUnavailableError gives the condition a name any lane can return. The
 // driver routes it to its own bucket: never counted as a gating linter that
-// passed, always named in the final verdict, and escalated to a build failure
-// under --strict — the same escalation the frontend typecheck lane already
-// documents for its own "could not run" (see lint_frontend_typecheck.go).
+// passed, always named in the final verdict, and graded by judgeGap
+// (lint_skip.go): a GATING lane that could not run fails the run unless
+// --allow-skip / lint.allow_skip accepts it by name.
 //
-// Deliberately NOT a hard failure by default. These lanes are advisory BY
-// DESIGN: in `warn` mode the generated .golangci.yml leaves forbidigo out of
-// linters.enable, so nothing gates on the guardrail's FINDINGS. Gating on its
-// ABSENCE would be strictly stronger than gating on its presence, and it
-// would fail `forge lint` over something outside the project entirely —
-// another process holding a machine-global lock. Honest and visible is the
-// fix; --strict is the gate for callers who want one.
+// An ADVISORY lane that could not run — the guardrail — is NOT a failure by
+// default. It is advisory BY DESIGN: in `warn` mode the generated
+// .golangci.yml leaves forbidigo out of linters.enable, so nothing gates on
+// the guardrail's FINDINGS. Gating on its ABSENCE would be strictly stronger
+// than gating on its presence, and it would fail `forge lint` over something
+// outside the project entirely. Its "could not run" is an advisory finding,
+// so --strict — advisory findings become errors — is the gate for callers who
+// want one.
 type laneUnavailableError struct {
 	// reason completes "<lane> did NOT run: <reason>".
 	reason string
@@ -1676,7 +1724,9 @@ func runGolangciLint(rc *lintRunCtx) error {
 
 	out, err := rc.execGolangci(golangciGateArgs(rc))
 	if err != nil {
-		return err
+		// No golangci-lint that can analyze this module, and none could
+		// be provisioned: the lane could NOT run (lint_skip.go).
+		return laneUnavailable(golangciUnresolvedFix, "%v", err)
 	}
 	out.print()
 	if out.err != nil {
@@ -1743,12 +1793,20 @@ const typedAccessGuardUnavailableHint = "read the golangci-lint output above —
 	"NOT the cause: forge runs it with --allow-serial-runners (or --allow-parallel-runners inside its own heavy slot), so a " +
 	"contended lock waits its turn instead of failing"
 
-// bufMissingError is the buf lint lane's failure on a project that has a
-// buf.yaml and a machine with no buf: the lane used to be skipped, and
-// `forge lint` passed without ever linting a proto.
-func bufMissingError() error {
-	return fmt.Errorf("buf is not on PATH, so the buf lint lane cannot run — and a gating lane that did not run cannot pass. "+
-		"Fix: run `forge tools install buf` (it installs buf %s), or `go install %s@v%s` with its GOBIN on PATH, then re-run `forge lint`",
+// bufMissingError is the buf lint lane on a project that has a buf.yaml and
+// a machine with no buf: the lane used to be skipped, and `forge lint` passed
+// without ever linting a proto. It is a lane that could NOT run, so it fails
+// the run unless --allow-skip accepts it (lint_skip.go).
+func bufMissingError() *laneUnavailableError {
+	return &laneUnavailableError{reason: bufMissingReason, fixHint: bufMissingFix()}
+}
+
+// bufMissingReason completes "buf lint did NOT run: …".
+const bufMissingReason = "buf is not on PATH, so the buf lint lane cannot run"
+
+// bufMissingFix is the command that installs the buf forge pins.
+func bufMissingFix() string {
+	return fmt.Sprintf("run `forge tools install buf` (it installs buf %s), or `go install %s@v%s` with its GOBIN on PATH, then re-run `forge lint`",
 		templates.BufVersion, bufModulePath, templates.BufVersion)
 }
 
@@ -1884,6 +1942,7 @@ func runFrontendLintersFromConfig(ctx context.Context, cfg *config.ProjectConfig
 type frontendLintOutcomes struct {
 	failed      bool
 	unavailable []string
+	fixes       []string
 }
 
 func (o *frontendLintOutcomes) record(err error) {
@@ -1893,6 +1952,7 @@ func (o *frontendLintOutcomes) record(err error) {
 	var unavail *laneUnavailableError
 	if errors.As(err, &unavail) {
 		o.unavailable = append(o.unavailable, unavail.reason)
+		o.fixes = append(o.fixes, unavail.fixHint)
 		return
 	}
 	o.failed = true
@@ -1903,9 +1963,7 @@ func (o *frontendLintOutcomes) verdict() error {
 		return fmt.Errorf("frontend linting failed")
 	}
 	if len(o.unavailable) > 0 {
-		return laneUnavailable(
-			"run `npm install` in the frontend(s) named above and re-run `forge lint`, or pass --skip-frontends for a backend-only gate",
-			"%s", strings.Join(o.unavailable, "; "))
+		return laneUnavailable(strings.Join(o.fixes, "; "), "%s", strings.Join(o.unavailable, "; "))
 	}
 	return nil
 }
@@ -1938,14 +1996,16 @@ func lintFrontendDir(ctx context.Context, name, feDir, feType string, cssHealth,
 	// legitimately absent in a fully installed tree — which is the layout
 	// forge's own dev bridge creates. See anyAncestorHasNodeModules.
 	// A fresh checkout has none; install rather than report a lane that never
-	// ran. An install that fails is a failure of this lane, not "unavailable".
+	// ran. An install that fails leaves eslint unrun: a lane that could NOT
+	// run, which fails the run unless --allow-skip accepts it (lint_skip.go).
 	if !anyAncestorHasNodeModules(feDir, ".") {
 		if err := frontenddeps.Ensure(ctx, "[lint]", name, feDir, "", true); err != nil {
-			return fmt.Errorf("%s: dependencies are not installed and installing them failed — eslint did NOT run: %w", name, err)
+			return laneUnavailable(npmInstallFix(feDir),
+				"%s: dependencies are not installed and installing them failed — eslint did NOT run: %v", name, err)
 		}
 	}
 	if !anyAncestorHasNodeModules(feDir, ".") {
-		return laneUnavailable(fmt.Sprintf("run `npm install` in %s (or at the workspace root), then re-run `forge lint`", feDir),
+		return laneUnavailable(npmInstallFix(feDir),
 			"%s: node_modules not found in %s or any ancestor — eslint did NOT run", name, feDir)
 	}
 

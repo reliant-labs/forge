@@ -1385,6 +1385,26 @@ type LintConfig struct {
 
 	// Tracing configures the tracing lane (`forge lint --tracing`).
 	Tracing TracingLintConfig `yaml:"tracing,omitempty"`
+
+	// AllowSkip accepts, by name and with a reason, a gating lane that
+	// could NOT run. Such a lane fails `forge lint` by default — a check
+	// that did not run is not a check that passed — so this is the
+	// project-level opt-out, the forge.yaml twin of `forge lint
+	// --allow-skip`. An accepted lane is still listed as SKIPPED (allowed)
+	// in the verdict, with its reason. It accepts only "could not run": a
+	// lane that ran and found problems still fails.
+	AllowSkip []LintSkipAllowance `yaml:"allow_skip,omitempty"`
+}
+
+// LintSkipAllowance is one lint.allow_skip entry. Read by the lint
+// command (internal/cli/lint/lint_skip.go), which refuses an entry with an
+// unknown lane or an empty reason.
+type LintSkipAllowance struct {
+	// Lane is the lane's name as the verdict prints it ("frontend lint")
+	// or its flag spelling ("frontend-lint").
+	Lane string `yaml:"lane"`
+	// Reason says why the lane may not run here. Required.
+	Reason string `yaml:"reason"`
 }
 
 // TracingLintConfig configures `forge lint --tracing`.

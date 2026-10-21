@@ -56,10 +56,12 @@ import (
 type lintRunCtx struct {
 	ctx context.Context
 	fix bool
-	// strict escalates advisory security findings to errors in the steps
-	// that honor it (the forge-convention proto step's
-	// method-auth-annotation rule, and the frontend typecheck lane's
-	// "could not run" verdict). Plumbed from `forge lint --strict`.
+	// strict escalates advisory findings to errors in the steps that
+	// honor it (the forge-convention proto step's method-auth-annotation
+	// rule, the contract gate's codegen-unavailable downgrade, and an
+	// ADVISORY lane's own "could not run" report). It does not touch a
+	// gating lane that could not run: that fails without it
+	// (lint_skip.go). Plumbed from `forge lint --strict`.
 	strict bool
 	// skipFrontends drops the whole frontend lane — both the eslint /
 	// stylelint step and the typecheck step. Plumbed from
@@ -73,6 +75,10 @@ type lintRunCtx struct {
 	// structured drivers (collectLintOutcomes) read it — see
 	// lint_structured.go.
 	scope *lintScope
+
+	// allowSkip is the lanes this run accepts may not run (--allow-skip and
+	// forge.yaml lint.allow_skip), lane name → reason. See lint_skip.go.
+	allowSkip skipAllowances
 
 	// golangciMemo is this run's golangci-lint resolution (see
 	// golangci_toolchain.go), so the gating lane and the advisory guardrail
@@ -91,6 +97,12 @@ type linterStep struct {
 	// (scopeByFile / scopeByPackages / scopeWholeProject). Required: the
 	// zero value is invalid, so a new lane must decide.
 	scope scopeMode
+
+	// gatesIn, when set, narrows gates for this project: a lane the
+	// project dialled to advisory (lint.frontend.typecheck: warn) does not
+	// fail the run when it could NOT run either, since its findings could
+	// not fail it (lint_skip.go). nil means gates as declared.
+	gatesIn func(rc *lintRunCtx) bool
 
 	// shouldRun reports whether the step executes. When it returns
 	// run=false with a non-empty skipMsg, text mode prints "⚠️  "+skipMsg
@@ -286,9 +298,10 @@ func lintPipeline() []linterStep {
 		// severity dial, which is what a project downgrades or disables —
 		// so `warn` mode returns nil here and never trips this gate.
 		{
-			name:  "frontend typecheck",
-			gates: true,
-			scope: scopeByFile,
+			name:    "frontend typecheck",
+			gates:   true,
+			gatesIn: func(rc *lintRunCtx) bool { return typecheckGates(rc.cfg) },
+			scope:   scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if rc.skipFrontends {
 					return false, "--skip-frontends — skipping frontend typecheck"

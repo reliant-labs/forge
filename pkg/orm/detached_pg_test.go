@@ -78,7 +78,7 @@ func TestDetached_WritesOnThePoolAndSurviveTheCallersRollback(t *testing.T) {
 		}},
 	}
 
-	err := c.RunTx(ctx, func(ctx context.Context) error {
+	err := c.RunTx(ctx, Serializable, func(ctx context.Context) error {
 		if err := insertNote(ctx, c, "caller"); err != nil {
 			return err
 		}
@@ -130,11 +130,11 @@ func TestDetached_RunTxBeginsItsOwnTransaction(t *testing.T) {
 	c := newTxTestClient(t)
 	ctx := context.Background()
 
-	err := c.RunTx(ctx, func(outer context.Context) error {
+	err := c.RunTx(ctx, Serializable, func(outer context.Context) error {
 		if err := insertNote(outer, c, "caller"); err != nil {
 			return err
 		}
-		inner := c.RunTx(Detached(outer), func(ctx context.Context) error {
+		inner := c.RunTx(Detached(outer), Serializable, func(ctx context.Context) error {
 			if !c.InTx(ctx) {
 				t.Error("InTx is false inside a detached RunTx")
 			}
@@ -170,7 +170,7 @@ func TestDetached_ExplicitTxHandleIsUnaffected(t *testing.T) {
 	c := newTxTestClient(t)
 	ctx := context.Background()
 
-	tx, err := c.BeginTx(ctx, nil)
+	tx, err := c.BeginDetached(ctx, ReadCommitted)
 	if err != nil {
 		t.Fatalf("BeginTx: %v", err)
 	}

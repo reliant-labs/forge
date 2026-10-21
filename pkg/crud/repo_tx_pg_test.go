@@ -56,7 +56,7 @@ func TestRunTx_RepoMethodsSeeUncommittedWrites(t *testing.T) {
 	invoices := NewRepo[txInvoice]()
 	outside := context.Background()
 
-	err := db.RunTx(outside, func(ctx context.Context) error {
+	err := db.RunTx(outside, orm.Serializable, func(ctx context.Context) error {
 		inv := &txInvoice{ID: "inv-1", TotalCents: 100}
 		if err := invoices.Create(ctx, db, inv); err != nil {
 			return err
@@ -93,7 +93,7 @@ func TestRunTx_RepoMethodsSeeUncommittedWrites(t *testing.T) {
 	}
 
 	// Delete inside a transaction that rolls back leaves the row in place.
-	_ = db.RunTx(outside, func(ctx context.Context) error {
+	_ = db.RunTx(outside, orm.Serializable, func(ctx context.Context) error {
 		if err := invoices.Delete(ctx, db, "inv-1"); err != nil {
 			t.Fatalf("Delete inside RunTx: %v", err)
 		}
@@ -156,9 +156,10 @@ func seedInvoice(t *testing.T, db *orm.Client) {
 	}
 }
 
-// Two concurrent "pay the remaining balance" transactions: under RunTx
-// exactly one lands. The other is aborted by postgres (40001), retried by
-// RunTx, re-reads the COMMITTED invoice, and takes the refusal branch.
+// Two concurrent "pay the remaining balance" transactions: under
+// orm.Serializable exactly one lands. The other is aborted by postgres
+// (40001), retried by RunTx, re-reads the COMMITTED invoice, and takes the
+// refusal branch.
 func TestRunTx_ConcurrentReadCheckWrite_ExactlyOneEffectLands(t *testing.T) {
 	db := newTxRepoTestDB(t)
 	seedInvoice(t, db)
@@ -173,7 +174,7 @@ func TestRunTx_ConcurrentReadCheckWrite_ExactlyOneEffectLands(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs[i] = db.RunTx(context.Background(), func(ctx context.Context) error {
+			errs[i] = db.RunTx(context.Background(), orm.Serializable, func(ctx context.Context) error {
 				return payRemaining(ctx, db, invoices, payments,
 					[]string{"pay-a", "pay-b"}[i], 100, &bothRead, &attempts[i])
 			})
@@ -212,12 +213,13 @@ func TestRunTx_ConcurrentReadCheckWrite_ExactlyOneEffectLands(t *testing.T) {
 	}
 }
 
-// Premise: the SAME code under the handle-passing RunTransaction (database
-// default isolation, READ COMMITTED, one attempt) double-pays. Both writers
-// act on the stale balance and both commit — a lost update on paid_cents and
-// two payments for one balance. This is the race the hand-written
-// SELECT … FOR UPDATE helpers existed to close, and why the state-transition
-// recipe is RunTx rather than RunTransaction.
+// Premise: the SAME code under orm.ReadCommitted (one attempt) double-pays.
+// Both writers act on the stale balance and both commit — a lost update on
+// paid_cents and two payments for one balance. This is the race the
+// hand-written SELECT … FOR UPDATE helpers existed to close, why the
+// lock-free state-transition recipe is orm.Serializable, and why the level
+// has no default: it was READ COMMITTED here before v0.1.47, through the
+// same-looking call that meant SERIALIZABLE on RunTx.
 func TestRunTransaction_Premise_ReadCommittedReadCheckWriteDoublePays(t *testing.T) {
 	db := newTxRepoTestDB(t)
 	seedInvoice(t, db)
@@ -233,7 +235,7 @@ func TestRunTransaction_Premise_ReadCommittedReadCheckWriteDoublePays(t *testing
 		go func() {
 			defer wg.Done()
 			ctx := context.Background()
-			errs[i] = db.RunTransaction(ctx, func(tx orm.Context) error {
+			errs[i] = db.RunTransaction(ctx, orm.ReadCommitted, func(tx orm.Context) error {
 				return payRemaining(ctx, tx, invoices, payments,
 					[]string{"pay-a", "pay-b"}[i], 100, &bothRead, &attempts[i])
 			})

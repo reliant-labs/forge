@@ -29,6 +29,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Transaction isolation has no default; every writable transaction names
+  its level.** pkg/orm had two opposite defaults: `RunTx`,
+  `RunTxWithOptions` and `BeginDetached` with an unset level began
+  SERIALIZABLE (RunTx retrying 40001/40P01 up to seven times), while
+  `Client.BeginTx` and `RunTransaction` with nil options began at the
+  database's READ COMMITTED, once. Two reliant ports changed isolation
+  silently through that gap — `MergeWorktreeCleanupMetadata` relied on a
+  `FOR UPDATE` lock, moved from READ COMMITTED to SERIALIZABLE and dropped
+  updates under contention. Now `RunTx(ctx, opts, fn)`,
+  `RunTransaction(ctx, opts, fn)` and `BeginDetached(ctx, opts)` take an
+  `orm.TxPolicy` naming its isolation, which carries its attempt budget —
+  the constants `orm.Serializable` (7 attempts), `orm.ReadCommitted` (1
+  attempt) and `orm.RepeatableRead`, refined with `WithMaxAttempts` /
+  `WithReadOnly` into an `orm.TxOptions` — and an unset level (or budget) is
+  rejected with `orm.ErrInvalidTxOptions` naming the call site. One primitive
+  rather than `RunTxSerializable` / `RunTxReadCommitted`: the level is a
+  value, so it composes with every opener (RunTx, RunTransaction,
+  BeginDetached) and passes through a wrapper unchanged instead of
+  multiplying method names, and the retry budget is visible beside the level
+  it belongs to. A required argument is as close to a compile error as Go
+  allows; the zero value is the runtime error. `RunTxWithOptions`,
+  `RunTransactionWithOptions`, `Client.BeginTx` and `orm.IsolationDefault`
+  are removed, and `orm.IsolationSerializable` / `IsolationReadCommitted` /
+  `IsolationRepeatableRead` are renamed `orm.Serializable` / `ReadCommitted`
+  / `RepeatableRead`; `RunTxReadOnly(ctx, fn)` keeps its
+  shape (SERIALIZABLE READ ONLY DEFERRABLE — a transaction that cannot write
+  has one right level). `RunTransaction` honours the attempt budget like
+  `RunTx` and reports an exhausted 40001/40P01 as `svcerr.Aborted`;
+  `BeginDetached` cannot retry and requires `MaxAttempts == 1`. A `*Tx`
+  someone else began is joined with `tx.Join(ctx, fn)`, which takes no
+  level: one spelled at a join would claim an isolation the transaction may
+  not have (`Tx.RunTx` remains, for `orm.Context`).
 - **Rendered pods set `enableServiceLinks: false`. Behavior change.**
   Kubernetes injects `<SERVICE>_PORT=tcp://ip:port`, `<SERVICE>_SERVICE_HOST`
   and `<SERVICE>_SERVICE_PORT` into every pod for every Service in its
@@ -42,6 +74,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   next deploy rolls every forge-rendered pod once, and a standalone Job gets a
   new spec-hash name. A workload that reads `*_SERVICE_HOST` / `*_SERVICE_PORT`
   must move to DNS or explicit env, or opt in: `migrations/v0.1.47`, section 4.
+
+### Added
+
+- **`forge fix tx-isolation`** (run by `forge project upgrade` on crossing
+  v0.1.47): rewrites every pkg/orm transaction call to the explicit form that
+  keeps its behaviour exactly — `RunTx(ctx, fn)` → `orm.Serializable`,
+  `RunTransaction(ctx, fn)` and `BeginTx(ctx, nil)` → `orm.ReadCommitted`,
+  each `orm.TxOptions` literal spelled out — and prints every site. It never
+  chooses a different level. Type-aware, so a project's own `RunTx` and
+  database/sql's `BeginTx` are untouched, and it works after the forge pin
+  has moved (when the old calls no longer compile). A scratch module holding
+  every old call shape begins each transaction at the same level, with the
+  same number of attempts, before and after (`internal/codemod`).
+- **`forgeconv-tx-lock-under-serializable`** (`forge lint --conventions`):
+  a SERIALIZABLE or REPEATABLE READ transaction whose body takes a lock —
+  `SELECT … FOR UPDATE`, bun's `.For("UPDATE")`, `pg_advisory_xact_lock`,
+  `LOCK TABLE` — in a literal or a named constant, in the closure, the
+  package function passed as it, or the rest of the function that opened a
+  `BeginDetached`. The snapshot predates the lock wait, so the waiter wakes
+  into stale data and fails 40001; the fix is `orm.ReadCommitted` (keep the
+  lock) or dropping the lock. A warning; an error under `--strict`.
 
 ### Fixed
 

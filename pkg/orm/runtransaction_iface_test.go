@@ -20,7 +20,7 @@ import (
 // interface, this file stops building.
 func TestContextInterfaceExposesRunTransaction(t *testing.T) {
 	var runViaInterface func(Context) error = func(db Context) error {
-		return db.RunTransaction(context.Background(), func(tx Context) error {
+		return db.RunTransaction(context.Background(), ReadCommitted, func(tx Context) error {
 			if tx == nil {
 				t.Fatal("RunTransaction handed fn a nil Context")
 			}
@@ -42,7 +42,7 @@ func TestContextInterfaceExposesRunTransaction(t *testing.T) {
 func TestTxRunTransactionJoins(t *testing.T) {
 	tx := &Tx{}
 	var got Context
-	if err := tx.RunTransaction(context.Background(), func(inner Context) error {
+	if err := tx.RunTransaction(context.Background(), ReadCommitted, func(inner Context) error {
 		got = inner
 		return nil
 	}); err != nil {
@@ -53,7 +53,7 @@ func TestTxRunTransactionJoins(t *testing.T) {
 	}
 
 	sentinel := context.Canceled
-	if err := tx.RunTransaction(context.Background(), func(Context) error {
+	if err := tx.RunTransaction(context.Background(), ReadCommitted, func(Context) error {
 		return sentinel
 	}); err != sentinel {
 		t.Errorf("fn's error must propagate to the transaction owner; got %v", err)

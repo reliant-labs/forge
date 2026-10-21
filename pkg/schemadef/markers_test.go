@@ -138,3 +138,31 @@ func TestCheckMarkers_NamesEveryProblemWithItsObject(t *testing.T) {
 		t.Errorf("a valid schema is rejected: %v", err)
 	}
 }
+
+// forge:closed-set is a constraint marker read on a CHECK: the generate that
+// reads the catalog accepts it there, rejects it on a foreign key, rejects
+// forge:ref on a CHECK, and rejects a misspelling with a suggestion.
+func TestCheckMarkers_ClosedSetOnCheckConstraints(t *testing.T) {
+	table := func(checkComment, fkComment string) []Table {
+		return []Table{{
+			Name:        "access_tokens",
+			Checks:      []CheckConstraint{{Name: "access_tokens_scopes", Comment: checkComment}},
+			ForeignKeys: []ForeignKey{{Name: "access_tokens_org_fkey", Column: "org_id", Comment: fkComment}},
+		}}
+	}
+	if err := CheckMarkers(table("forge:closed-set accesstoken.AllScopes", "forge:ref authoritative")); err != nil {
+		t.Fatalf("closed-set on a CHECK and ref on an FK are both read: %v", err)
+	}
+	for name, tc := range map[string]struct{ check, fk, want string }{
+		"closed-set on a foreign key": {"", "forge:closed-set accesstoken.AllScopes", "constraint access_tokens_org_fkey on access_tokens: forge:closed-set is read on a CHECK constraint"},
+		"ref on a check":              {"forge:ref authoritative", "", "constraint access_tokens_scopes on access_tokens: forge:ref is read on a FOREIGN KEY constraint"},
+		"misspelled":                  {"forge:closed-sets accesstoken.AllScopes", "", "did you mean forge:closed-set?"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := CheckMarkers(table(tc.check, tc.fk))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}

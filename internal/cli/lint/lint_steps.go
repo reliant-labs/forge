@@ -642,6 +642,26 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 13d-ter. Closed-sets — a CHECK declared `forge:closed-set <set>`
+		// must list exactly that Go set (see lint_closed_sets.go). Gates: a
+		// value Go grants and the CHECK refuses fails every write of it.
+		{
+			name:  "closed-sets lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && dirExists(migrationsDirFor(rc.cfg)), ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runClosedSetsLint(rc.cwd, rc.cfg)
+			},
+			errFormat: "❌ closed-sets lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectClosedSetsJSON(rc.cwd, rc.cfg)
+				return fs, len(fs) > 0, err
+			},
+		},
+
 		// 13d-quinquies. ShellBuild-tokens — flags a retired forge
 		// substitution token (${TARGETARCH}, ${IMAGE}, …) left in a
 		// ShellBuild cmd. GATES, unlike its advisory neighbours, because

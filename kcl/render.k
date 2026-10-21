@@ -1262,6 +1262,7 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         tolerations = w.tolerations
         podAnnotations = w.podAnnotations
         priorityClassName = w.priorityClassName
+        enableServiceLinks = w.enableServiceLinks
         strategy = w.strategy
         securityContext = w.securityContext
         terminationGracePeriodSeconds = w.terminationGracePeriodSeconds
@@ -1391,6 +1392,7 @@ _LOCAL_REFUSED: {str:str} = {
     "tolerations": "a local process is not scheduled onto nodes"
     "podAnnotations": "a local process has no pod to annotate"
     "priorityClassName": "a local process is not scheduled, so there is no pod to rank"
+    "enableServiceLinks": "a local process has no pod, so Kubernetes injects no service links"
     "strategy": "a local process has no Deployment to roll out; forge env up starts it once"
     "securityContext": "a local process runs as the user who started it"
     "terminationGracePeriodSeconds": "a local process is stopped by forge env down, not by a kubelet"

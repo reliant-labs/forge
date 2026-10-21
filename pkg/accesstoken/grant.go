@@ -94,6 +94,7 @@ var daemonBindableScopes = []Scope{
 	ScopeDeployRead, ScopeDeployWrite,
 	ScopeSecretRead, ScopeSecretWrite,
 	ScopeDomainRead, ScopeDomainWrite,
+	ScopeIdentityRead, ScopeIdentityManage,
 }
 
 // bindableToDaemon reports whether scope may ride a daemon-bound token.

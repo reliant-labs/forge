@@ -112,7 +112,7 @@ says why its lanes are shaped the way they are; read it before moving a check be
 lanes. `ci.yml`'s `CI gate` job prints every job's wall time and the critical path on each
 run — watch it when you add a test.
 
-**Pull request** (`ci.yml`, 8 jobs; `docs-skills.yml` when prose or skills change):
+**Pull request** and **merge-queue entry** (`ci.yml`, 8 jobs, on every pull request — no path filter):
 
 - **Test (-short)** — the `-short` tier, no `-race`, as 2 package shards
   (`scripts/ci-test-shard.sh` over `scripts/ci-test-packages.sh short I N`).
@@ -128,9 +128,17 @@ run — watch it when you add a test.
   `forge ci validate-kcl`.
 - **Quick checks** — the pre-commit hooks (go-vet-mod skipped: Lint runs it), the Go and
   npm dependency-license allowlists, and `forge ci vuln-scan --go`.
-- A pull request that touches only `docs/**`, root `*.md` or skills skips `ci.yml`;
-  `docs-skills.yml` runs the `-short` tests that read those files and the pre-commit hooks
-  over the changed files.
+- `CI gate` is the main ruleset's required check, and `main` merges through a merge queue:
+  each queued pull request runs this tier again (`merge_group`) over main plus the entries
+  ahead of it, and lands only if `CI gate` is green there. So `ci.yml` has no path filter
+  (a skipped workflow never reports the required check), and a job picks its tier with one
+  of the two `if:` spellings in its header; `internal/ciguard` holds both.
+- **Merging:** `gh pr merge <n> --squash --auto` queues the PR; it lands when `CI gate` is
+  green on the queue's run. No account bypasses the ruleset, so `--admin` is refused. When
+  a PR's only reds are reds main already has, label it `ci:main-red` and re-run its `CI gate`
+  job alone: `scripts/ci-main-red.sh` passes the gate only if every failed test (or, for a
+  job with no test names, the failed job and step) also fails on main's latest run, and
+  never for a Dependabot PR. Fix main rather than reach for the label when you can.
 
 **Push to main** (and `workflow_dispatch` on any branch) adds:
 

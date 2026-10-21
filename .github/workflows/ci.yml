@@ -4,20 +4,22 @@ name: CI
 on:
   push:
     branches: [main]
+  # NO PATH FILTER. `CI gate` is the main ruleset's required check, and a
+  # workflow a path filter skips never reports it: a docs-only pull request
+  # would wait on it forever. A job-level `if:` would keep the skip and still
+  # report, but it needs a detect-changes job that every other job waits
+  # behind — one more runner queue (median 7 minutes on 2026-10-20) on every
+  # pull request, to save a few runner-minutes on the ~4% that are prose only
+  # (5 of the 120 merged before 2026-10-21). So a prose-only pull request runs
+  # the whole pull-request tier, which also covers what docs-skills.yml used
+  # to: the skills and docs/ readers run in the -short shards, and the
+  # pre-commit hooks in quick-checks.
   pull_request:
     branches: [main]
-    # A pull request that touches only prose skips this workflow: nothing here
-    # reads docs/ or the root *.md files under -short. Skills ARE embedded in
-    # the binary, so a skills-only change is not unchecked — docs-skills.yml
-    # runs the packages that read them (and docs/). A path filter that skips a
-    # whole workflow leaves any REQUIRED check it owns pending forever; none
-    # is required today (the main ruleset has no status-check rule). If one
-    # becomes required, require `CI gate` from a workflow that always runs, or
-    # move this filter into a job-level `if:`.
-    paths-ignore:
-      - "docs/**"
-      - "*.md"
-      - "internal/templates/project/skills/**"
+  # The merge queue: each queued pull request is tested as main plus the
+  # entries ahead of it, and lands only if `CI gate` passes on that. It gets
+  # the pull-request tier (see `tier` below), not the push-to-main one.
+  merge_group:
   # Run the push-to-main tier (full mode, -race, Windows) on any branch.
   workflow_dispatch:
 
@@ -35,6 +37,16 @@ permissions:
 #   lint              golangci-lint (root and pkg/), go vet, go vet -tags e2e
 #   verify-generated  forge generate is a no-op, KCL validates
 #   quick-checks      pre-commit hooks, Go and npm dependency licenses, govulncheck
+#
+# A MERGE-QUEUE entry (merge_group) gets exactly the pull-request tier, run
+# over main plus the entries ahead of it. The slow tier stays on main: in the
+# queue it would hold every merge behind a 30-minute run, so a failure only it
+# finds (e2e, the guards, full -race, native Windows) is still bisected from
+# main. Jobs select their tier with
+#   pull-request tier: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+#   push-to-main tier: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+# and internal/ciguard holds every job to one of the two (or to neither: a job
+# with no `if:` runs in both).
 #
 # A PUSH TO MAIN (and workflow_dispatch) gets everything the pull request got
 # except the sharded and flake lanes, plus the slow tier:
@@ -259,7 +271,7 @@ jobs:
   # already holds a result for replays it.
   test-short:
     name: Test (-short) ${{ matrix.shard }}
-    if: ${{ github.event_name == 'pull_request' }}
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -317,11 +329,12 @@ jobs:
   # instead of in somebody else's pull request weeks later.
   flake-gate:
     name: Flake gate (new/edited tests, -race -count=3)
-    if: ${{ github.event_name == 'pull_request' }}
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      # Depth 2: the merge commit and its first parent, the base branch's tip.
+      # Depth 2: the merge commit and its first parent, the base branch's tip
+      # (in the merge queue: the entry's commit and the one ahead of it).
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
@@ -443,7 +456,7 @@ jobs:
   # the same reason.
   test:
     name: Test
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -516,7 +529,7 @@ jobs:
 
   test-cli:
     name: Test (internal/cli)
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -578,7 +591,7 @@ jobs:
   # cache budget is 10 GB (see "Build-cache note").
   test-short-warm:
     name: Test (-short whole tier, then guards)
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -669,7 +682,7 @@ jobs:
   # instead: the windows build and vet, from Linux, in a couple of minutes.
   windows:
     name: Windows
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: windows-latest
     defaults:
       run:
@@ -762,7 +775,7 @@ jobs:
   # for no data dependency.
   build:
     name: Build (-trimpath) + go-licenses
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -917,7 +930,8 @@ jobs:
   #   pre-commit   the hooks in .pre-commit-config.yaml, so CI catches
   #                contributors who haven't installed pre-commit locally (hook
   #                versions are pinned there). go-vet-mod is skipped: lint runs
-  #                `go vet ./...` against its warm build cache.
+  #                `go vet ./...` against its warm build cache. proto-generated
+  #                is skipped: verify-generated runs the complete check.
   #   licenses     blocks a change that pulls a non-permissive license into
   #                the Go import graph or the published web-runtime package.
   #                The risk is linking, not hosting: running unmodified
@@ -973,7 +987,7 @@ jobs:
       - name: pre-commit
         uses: pre-commit/action@v3.0.1
         env:
-          SKIP: go-vet-mod
+          SKIP: go-vet-mod,proto-generated
       # The checker reads each dependency's LICENSE out of the module cache,
       # so the modules must be downloaded first. No build required.
       - name: Download modules
@@ -1037,9 +1051,9 @@ jobs:
 
   # CI gate: one check that is red exactly when any job above failed or was
   # cancelled (a skipped job — a main-only lane on a pull request — is not a
-  # failure). It is the check to require if a ruleset ever requires one, so a
-  # job added above must be added to `needs` too; internal/ciguard fails if
-  # one is missing. It also writes every job's wall time and the run's
+  # failure). It is the main ruleset's required check and the one the merge
+  # queue waits for, so its `name:` must not change, and a job added above
+  # must be added to `needs` too; internal/ciguard fails on either. It also writes every job's wall time and the run's
   # critical path to the run summary (scripts/ci-run-timings.sh), so the
   # pull-request budget is visible on every run.
   gate:
@@ -1061,6 +1075,8 @@ jobs:
     permissions:
       contents: read
       actions: read
+      # The main-red override reads the pull request's labels.
+      pull-requests: read
     steps:
       - uses: actions/checkout@v7
       - name: Job wall times
@@ -1068,15 +1084,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         # Reporting only: a failed API call must not turn the gate red.
         run: scripts/ci-run-timings.sh || echo "::warning::could not read this run's job timings"
+      # A red run passes only through the main-red override: a pull request
+      # labelled `ci:main-red` whose every failure also fails on main's latest
+      # run (scripts/ci-main-red.sh says exactly what is matched, and refuses
+      # Dependabot). It is the one way past this gate: no account bypasses
+      # the main ruleset. After labelling, re-run this job alone
+      # (`gh run rerun <run> --job <gate job id>`); the other jobs keep their
+      # results.
       - name: Every job passed
         env:
           RESULTS: ${{ toJSON(needs) }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           red=$(jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "\(.key): \(.value.result)"' <<<"$RESULTS")
-          if [ -n "$red" ]; then
-            echo "::error::not every job passed:"
-            echo "$red"
-            exit 1
+          if [ -z "$red" ]; then
+            echo "every job passed or was skipped"
+            exit 0
           fi
-          echo "every job passed or was skipped"
+          echo "not every job passed:"
+          echo "$red"
+          if scripts/ci-main-red.sh; then
+            echo "::warning::CI gate passed over main's reds (ci:main-red); see the run summary"
+            exit 0
+          fi
+          echo "::error::not every job passed"
+          exit 1

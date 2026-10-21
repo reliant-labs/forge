@@ -558,6 +558,8 @@ func RenderObservabilityAgent(s ObservabilityAgentSpec, ctx ObservabilityContext
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: name,
+					// Same default as every forge pod: no service-link env.
+					EnableServiceLinks: new(false),
 					// Every node, tainted ones included: a node without the
 					// agent is a node whose pods have nowhere local to send.
 					Tolerations: []corev1.Toleration{{Operator: corev1.TolerationOpExists}},

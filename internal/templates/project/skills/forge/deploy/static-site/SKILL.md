@@ -178,3 +178,11 @@ hosted origin tries `<path>`, then `<path>.html`, then `<path>/index.html`.
 Anything else route-shaped falls back to the site's root `index.html`. Every
 link the scaffold generates resolves to the file for its own route.
 `frontend/serving` covers hosts that only map directories to `index.html`.
+
+A missing file that is not route-shaped (`/assets/app-1a2b.js`) is a 404,
+never the HTML fallback. The frontend's content-hashed asset directory
+(`asset_dir`: `_next/static` for Next.js, `assets` for Vite) is published as
+the site's `assetDir`: files under it are served
+`public, max-age=31536000, immutable`, everything else `no-cache`, and the
+previous releases' copies stay serveable after a deploy, so a tab opened
+before it can still lazy-load the chunks it was built against.

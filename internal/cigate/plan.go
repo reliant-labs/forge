@@ -339,6 +339,11 @@ func (p planner) checksLane() []Check {
 			// a cold cache on a loaded machine crosses 5m and exits 4
 			// ("Timeout exceeded") with 0 issues, a red gate over clean code.
 			Argv: []string{"golangci-lint", "run", "--allow-serial-runners"},
+			// In its own heavy slot the lint drops golangci-lint's
+			// machine-global lock: the slot bounds the memory the lock
+			// protected, and keeping both ran every golangci-lint on the
+			// machine one at a time while each waiter held a slot.
+			SlotArgv: []string{"golangci-lint", "run", "--allow-parallel-runners"},
 		})
 	}
 	if ci.LintBuf && ci.HasServices {

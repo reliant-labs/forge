@@ -96,14 +96,16 @@ know the type name.
 
 **Transactions live on `DB orm.Context`, not on the store.** Declare
 `DB orm.Context` (forge already wires it) beside your stores and wrap the
-use case in `s.deps.DB.RunTx(ctx, func(ctx context.Context) error { … })`.
+use case in `s.deps.DB.RunTx(ctx, orm.Serializable, func(ctx context.Context) error { … })`.
 Every store method and generated delegate called with that `ctx` joins the
-transaction — no handle to thread, nothing to rebind. It is SERIALIZABLE and
-retried on conflict, so a read-check-write state transition needs **no
+transaction — no handle to thread, nothing to rebind. The level is always
+named — there is no default: `orm.Serializable` is SERIALIZABLE and retried on
+conflict, so a read-check-write state transition needs **no
 `SELECT … FOR UPDATE` lock helper**, and `fn` may run more than once (side
-effects go in `orm.AfterCommit`). The guarantees, the state-transition recipe
-and how the older `RunTransaction`/`WithTx` relate are in
-`service-layer/transactions`.
+effects go in `orm.AfterCommit`); `orm.ReadCommitted` (one attempt) is for
+code whose correctness comes from a lock. Never both. The guarantees, the
+choice, the state-transition recipe and how the older
+`RunTransaction`/`WithTx` relate are in `service-layer/transactions`.
 
 Two measured runs missed this and hand-wrote the layer anyway: 723 lines across
 four packages in one, 464 across two in the other, almost all of it one-line

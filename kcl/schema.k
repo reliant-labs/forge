@@ -3259,7 +3259,10 @@ schema Frontend:
     # convention — "assets" for vite (build.assetsDir), "_next/static" for
     # nextjs, none for rn. Set it when the build moves its assets.
     # OnFirebase marks it immutable and keeps previous releases' copies
-    # serveable (OnFirebase.keep_asset_releases).
+    # serveable (OnFirebase.keep_asset_releases). OnHosted publishes it as
+    # the StaticSite's `assetDir`, and the platform does the same: those
+    # files are served immutable, everything else no-cache, and previous
+    # releases' copies stay serveable for tabs opened before a deploy.
     asset_dir?: str
     # NO `domains` HERE. A hosted custom hostname is not spec — it is a
     # control-plane resource, created once for the org and BOUND to one

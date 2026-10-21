@@ -88,4 +88,25 @@
 // OTLP logs exporter (OTEL_LOGS_EXPORTER=otlp or Config.OTLPLogs) is off by
 // default and is MUTUALLY EXCLUSIVE with that collection: it does not replace
 // stdout, so enabling both ships every line twice.
+//
+// # Error records
+//
+// A log record at ERROR or above is a server error event, and NewLogHandler
+// gives it what an issue is grouped by, on both shipping paths (the stdout
+// line and the OTLP bridge), and nothing at lower levels:
+//
+//   - code.function.name, code.file.path, code.line.number: the call site,
+//     read from the record's PC, so a logger that builds its own record and
+//     calls Handler().Handle directly (Temporal's slog adapter) names its
+//     caller rather than a handler frame.
+//   - exception.type and exception.message: the innermost error of the
+//     record's first error-valued attribute (svcerr's withheld cause first,
+//     then Unwrap to the end, the first branch of a multi-error). Type is
+//     %T; the message is bounded to MaxExceptionMessage (1 KiB). Attributes
+//     the call site already set are kept.
+//   - exception.stacktrace, from LogPanic only. LogPanic is what every
+//     recover path in forge calls; its record's PC is the panicking frame, so
+//     panics group by where they happened, not by where they were recovered.
+//   - error.group, from ErrorGroup(ctx, name) only: an explicit issue name
+//     for the failure whose derived grouping is wrong.
 package observe

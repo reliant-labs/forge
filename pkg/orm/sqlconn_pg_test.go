@@ -17,7 +17,7 @@ func TestDBTX_JoinsRunTxAndRollsBackWithIt(t *testing.T) {
 	ctx := context.Background()
 	sqlc := c.DBTX()
 
-	err := c.RunTx(ctx, func(ctx context.Context) error {
+	err := c.RunTx(ctx, Serializable, func(ctx context.Context) error {
 		if !c.InTx(ctx) {
 			t.Error("InTx is false inside RunTx")
 		}
@@ -47,11 +47,11 @@ func TestSQLConn_JoinsABeginTxTransaction(t *testing.T) {
 	c := newTxTestClient(t)
 	ctx := context.Background()
 
-	tx, err := c.BeginTx(ctx, nil)
+	tx, err := c.BeginDetached(ctx, ReadCommitted)
 	if err != nil {
 		t.Fatalf("BeginTx: %v", err)
 	}
-	err = tx.RunTx(ctx, func(ctx context.Context) error {
+	err = tx.Join(ctx, func(ctx context.Context) error {
 		if _, err := c.SQLConn(ctx).ExecContext(ctx, `INSERT INTO tx_notes (id, body) VALUES ($1, 'b')`, "sql"); err != nil {
 			return err
 		}
@@ -94,7 +94,7 @@ func TestDBTX_DoesNotDeadlockOnARowTheTransactionLocked(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := c.RunTx(ctx, func(ctx context.Context) error {
+	err := c.RunTx(ctx, Serializable, func(ctx context.Context) error {
 		if _, err := c.Bun().NewUpdate().Model((*txNote)(nil)).Set("body = ?", "orm").Where("id = ?", "locked").Exec(ctx); err != nil {
 			return err
 		}
@@ -118,7 +118,7 @@ func TestDBTX_DoesNotDeadlockOnARowTheTransactionLocked(t *testing.T) {
 func TestSQLConn_AFinishedTransactionResolvesToThePool(t *testing.T) {
 	c := newTxTestClient(t)
 	var leaked context.Context
-	if err := c.RunTx(context.Background(), func(ctx context.Context) error {
+	if err := c.RunTx(context.Background(), Serializable, func(ctx context.Context) error {
 		leaked = ctx
 		return nil
 	}); err != nil {

@@ -35,3 +35,25 @@ func TestHostedStaticSpec_CarriesNoDomains(t *testing.T) {
 // naming the member, not a value forge drops — is pinned by
 // kcl/tests/closedschema_frontend_domains.k, which runs the closed schema
 // through the same render this package uses.
+
+// A hosted frontend publishes its content-hashed asset directory, so the
+// platform can cache it forever and keep previous releases' copies serveable
+// for tabs opened before a deploy (OnFirebase's keep_asset_releases, on the
+// hosted runtime).
+//
+// MUTATION VERIFIED RED: dropping `AssetDir: f.AssetDir` from
+// hostedStaticSpec fails this.
+func TestHostedStaticSpec_CarriesAssetDir(t *testing.T) {
+	spec := hostedStaticSpec(FrontendEntity{Name: "web", AssetDir: "assets"})
+	raw, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"assetDir":"assets","keepReleases":10}`
+	if string(raw) != want {
+		t.Errorf("published StaticSite spec:\n got %s\nwant %s", raw, want)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Errorf("the published spec does not validate: %v", err)
+	}
+}

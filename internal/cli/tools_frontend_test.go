@@ -74,7 +74,14 @@ func newToolsInstallFixture(t *testing.T, pkgJSON string) toolsInstallFixture {
 	write(filepath.Join(bin, "npm"), "#!/bin/sh\n"+
 		"printf '%s\\n' \"$*\" >> '"+npmLog+"'\n"+
 		"printf '{\"lockfileVersion\":3,\"rewritten\":\"by npm on linux\"}\\n' > package-lock.json\n", 0o755)
-	write(filepath.Join(bin, "go"), "#!/bin/sh\nexit 0\n", 0o755)
+	// A go that does what `go install` does: the binary lands in $GOBIN,
+	// which forge stages in a temp dir before renaming it into GOBIN.
+	// PATH holds only this directory, hence the absolute chmod.
+	write(filepath.Join(bin, "go"), "#!/bin/sh\n"+
+		"case \"$1 $2\" in\n"+
+		"'env GOBIN') echo '"+bin+"' ;;\n"+
+		"install*) spec=\"${2%@*}\"; f=\"$GOBIN/${spec##*/}\"; printf '#!/bin/sh\\nexit 0\\n' > \"$f\"; /bin/chmod 755 \"$f\" ;;\n"+
+		"esac\nexit 0\n", 0o755)
 	for _, tool := range requiredProtoTools {
 		write(filepath.Join(bin, tool.Binary), "#!/bin/sh\nexit 0\n", 0o755)
 	}

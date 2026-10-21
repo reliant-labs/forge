@@ -411,7 +411,8 @@ func TestRootsGen_LoadsAndRegistersEachConfig(t *testing.T) {
 		views[i].TypeName = strings.ToUpper(views[i].Name[:1]) + views[i].Name[1:]
 	}
 	cmds, top := rootCommandViews(views)
-	src, err := renderGoTemplate("roots_gen.go.tmpl", rootsGenView{Module: "example.com/rbc", Commands: cmds, Top: top, Fmt: true})
+	inputs := processConfigsFrom(binConfigMessages(), "rbc").inputViews()
+	src, err := renderGoTemplate("roots_gen.go.tmpl", rootsGenView{Module: "example.com/rbc", Commands: cmds, Top: top, Fmt: true, ConfigInputs: inputs})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +442,7 @@ func TestRootsGen_LoadsAndRegistersEachConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := string(src); strings.Contains(s, `"fmt"`) || strings.Contains(s, "Reach(cmd") || !strings.Contains(s, "Run: (*app.Graph).RunServer,") {
+	if s := string(src); strings.Contains(s, `"fmt"`) || strings.Contains(s, "Reach(cmd") || strings.Contains(s, "rootConfigs") || !strings.Contains(s, "Run: (*app.Graph).RunServer,") {
 		t.Errorf("a root with no loads renders as before:\n%s", s)
 	}
 }

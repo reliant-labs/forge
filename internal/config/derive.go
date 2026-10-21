@@ -313,20 +313,32 @@ func ApplyDerivedDefaults(c *ProjectConfig) {
 // forge.yaml mapping in hand, so an absent FIELD inside a present section
 // still gets its derived default.
 //
-// A nil root reproduces the historical whole-section behaviour, which is what
-// the no-node callers want: they are filling a config nobody hand-wrote, so
-// there are no user-written keys to respect.
+// A nil root reproduces the historical whole-section behaviour: a section
+// that is entirely zero takes the default, and a section with ANY value is
+// left exactly as it is. With no node there is no telling which of its keys
+// the user wrote, and a non-zero section is either theirs or already
+// defaulted — so re-applying to a config that already went through the
+// loader is a no-op on every section. It used to overwrite every section
+// wholesale: the generate pipeline's frontend-inventory step re-derives a
+// LOADED config, and that wiped database.orm.package (the ORM then
+// projected into internal/db and the sweep deleted internal/store), the
+// ci.vuln_scan exemptions, and every other section the user had written.
 func ApplyDerivedDefaultsFromNode(c *ProjectConfig, root *yaml.Node) {
 	d := sectionDefaults(c)
-	present := map[string]bool{}
-	if root != nil {
-		present = presentKeys(root)
+	if root == nil {
+		fillZeroSection(&c.Database, d.Database)
+		fillZeroSection(&c.CI, d.CI)
+		fillZeroSection(&c.Deploy, d.Deploy)
+		fillZeroSection(&c.K8s, d.K8s)
+		fillZeroSection(&c.Lint, d.Lint)
+	} else {
+		present := presentKeys(root)
+		fillSectionDefaults(&c.Database, d.Database, "database", present)
+		fillSectionDefaults(&c.CI, d.CI, "ci", present)
+		fillSectionDefaults(&c.Deploy, d.Deploy, "deploy", present)
+		fillSectionDefaults(&c.K8s, d.K8s, "k8s", present)
+		fillSectionDefaults(&c.Lint, d.Lint, "lint", present)
 	}
-	fillSectionDefaults(&c.Database, d.Database, "database", present)
-	fillSectionDefaults(&c.CI, d.CI, "ci", present)
-	fillSectionDefaults(&c.Deploy, d.Deploy, "deploy", present)
-	fillSectionDefaults(&c.K8s, d.K8s, "k8s", present)
-	fillSectionDefaults(&c.Lint, d.Lint, "lint", present)
 	// Tree-derived state runs AFTER the section fill, and in dependency
 	// order: the database (feature derivation reads it), the workspaces
 	// layout, then the features that read both.

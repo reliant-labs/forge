@@ -303,18 +303,17 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 			return fmt.Errorf("generate contract for %s: %w", rel, genErr)
 		}
 
-		// Observability decorator. A package opts in via the `// forge:constructor`
-		// marker on its constructor (the Phase-2 signal) OR the legacy owned
-		// observe_chain.go seam — and NOT via a package-level `// forge:no-observe`
-		// opt-out; paired with a New that returns the Service-contract interface,
-		// forge (re)generates the slim middleware_gen.go wrapper from that
-		// interface — the same ParseContract that drove the mock, so the two
-		// never drift. Otherwise remove any stale decorator, so opting out (the
-		// no-observe marker, or deleting both marker and seam) leaves nothing
-		// behind. Handler packages return a concrete *Service and are excluded by
-		// the ctorType==ifaceName gate inside ShouldInstrumentComponent
-		// (otelconnect owns the edge). Method-level `// forge:no-observe` still
-		// generates the decorator; those methods delegate directly (SkipObserve).
+		// Observability decorator. Every package whose New returns its
+		// Service-contract interface gets one unless it opts out with a
+		// package-level `// forge:no-observe`: forge (re)generates the slim
+		// middleware_gen.go wrapper from that interface — the same
+		// ParseContract that drove the mock, so the two never drift. An
+		// opted-out package has any stale decorator removed. Handler packages
+		// return a concrete *Service and are excluded by the
+		// ctorType==ifaceName gate inside ShouldInstrumentComponent
+		// (otelconnect owns the edge). Method-level `// forge:no-observe`
+		// still generates the decorator; those methods delegate directly
+		// (SkipObserve).
 		obsCF, obsErr := contract.ParseContractWith(contractPath, contractOpts.Resolver)
 		if obsErr != nil {
 			return fmt.Errorf("parse contract for observability decorator %s: %w", rel, obsErr)
@@ -327,19 +326,15 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 			// exactly. One wrapper per package, so spans/metrics keep the
 			// clean "<pkg>.<Method>" op.
 			opNamespace := obsCF.Package
-			// The decorator calls the OWNED seam newObserveChain. A package
-			// opted in by `// forge:constructor` alone — a hand-written
-			// component, or one converted from an exclusion — has no seam, and
-			// emitting the decorator without it made generate's own build
-			// fail on `undefined: newObserveChain`. Scaffold the seam once,
-			// exactly as `forge scaffold package` does; after that it is yours.
+			// The chain comes from the package's owned newObserveChain seam
+			// when it declares one, and from observe.DefaultComponentChain
+			// otherwise — nothing is scaffolded into a package to make the
+			// decorator compile.
+			var defaultChain *contract.DefaultChain
 			if !codegen.DetectObserveChainSeam(path) {
-				if seamErr := scaffoldObserveChainSeam(projectDir, path, rel, cfg); seamErr != nil {
-					return fmt.Errorf("scaffold observe_chain.go for %s: %w", rel, seamErr)
-				}
-				fmt.Printf("  ✅ Scaffolded %s/observe_chain.go (the owned observability seam `// forge:constructor` opted into — yours to edit)\n", rel)
+				defaultChain = componentDefaultChain(projectDir, rel, cfg)
 			}
-			if _, decErr := contract.WriteObservedDecorator(obsCF, path, ifaceName, mw.Constructor, mw.Struct, opNamespace, contractOpts); decErr != nil {
+			if _, decErr := contract.WriteObservedDecorator(obsCF, path, ifaceName, mw.Constructor, mw.Struct, opNamespace, defaultChain, contractOpts); decErr != nil {
 				return fmt.Errorf("generate observability decorator for %s: %w", rel, decErr)
 			}
 		} else if remErr := contract.RemoveObservedDecorator(path); remErr != nil {
@@ -631,24 +626,39 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs 
 	// migration code based on ConfigFields["AutoMigrate"]; removing it
 	// prevents the template from emitting app.AutoMigrate() calls that
 	// reference the ungenerated pkg/app/migrate.go.
-	configFields := codegen.ConfigFieldNamesFromMessages(messages)
+	// Only the ROOT config's own fields: serve.go reads them off
+	// *config.Config, which is that one message (codegen.RootConfigFieldNames).
+	configFields := codegen.RootConfigFieldNames(messages, projectDir)
+	// And the serve fields of each config the binary loads beside it.
+	inputs := codegen.ServeConfigInputs(messages, projectDir)
 	if !features.MigrationsEnabled() {
-		delete(configFields, "AutoMigrate")
-		delete(configFields, "DatabaseUrl")
-		delete(configFields, "MaxOpenConns")
-		delete(configFields, "MaxIdleConns")
-		delete(configFields, "ConnMaxIdleTime")
-		delete(configFields, "ConnMaxLifetime")
+		for _, fields := range append([]map[string]bool{configFields}, inputFields(inputs)...) {
+			delete(fields, "AutoMigrate")
+			delete(fields, "DatabaseUrl")
+			delete(fields, "MaxOpenConns")
+			delete(fields, "MaxIdleConns")
+			delete(fields, "ConnMaxIdleTime")
+			delete(fields, "ConnMaxLifetime")
+		}
 	}
 
 	// Re-render the primary binary's cmd/<bin>/cmd/serve.go so it stays in
 	// sync with the config fields.
-	if err := codegen.GenerateCmdServerWithFields(configFields, projectDir, cs); err != nil {
+	if err := codegen.GenerateCmdServerForConfigs(configFields, inputs, projectDir, cs); err != nil {
 		return nil, fmt.Errorf("failed to regenerate cmd/<bin>/cmd/serve.go: %w", err)
 	}
 
 	fmt.Println("  ✅ Regenerated cmd/<bin>/cmd/serve.go")
 	return configFields, nil
+}
+
+// inputFields is each input's serve-field set.
+func inputFields(inputs []codegen.ServeConfigInput) []map[string]bool {
+	out := make([]map[string]bool, len(inputs))
+	for i, in := range inputs {
+		out[i] = in.Fields
+	}
+	return out
 }
 
 // generatePerEnvDeployConfig emits the KCL config files. It writes the ONE
@@ -878,41 +888,18 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 	return nil
 }
 
-// scaffoldObserveChainSeam writes the owned observe_chain.go into a component
-// package that opted into the generated decorator with `// forge:constructor`
-// but has no newObserveChain of its own. Write-if-absent: the caller checks
-// DetectObserveChainSeam first, and an existing observe_chain.go (a seam under
-// another shape, or one the user is mid-edit on) is never overwritten.
-func scaffoldObserveChainSeam(projectDir, pkgDir, rel string, cfg *config.ProjectConfig) error {
-	target := filepath.Join(pkgDir, "observe_chain.go")
-	if _, err := os.Stat(target); err == nil {
-		return fmt.Errorf("%s/observe_chain.go exists but declares no newObserveChain; "+
-			"add `func newObserveChain() *observe.ComponentChain` to it (see `forge skill load observability`)", rel)
+// componentDefaultChain is what a decorator for the package at rel (relative
+// to projectDir) passes observe.DefaultComponentChain: the same scope, metric
+// namespace and success log level the scaffolded observe_chain.go seam would
+// use, so a package that later writes the seam starts from identical behavior.
+func componentDefaultChain(projectDir, rel string, cfg *config.ProjectConfig) *contract.DefaultChain {
+	scope := filepath.ToSlash(rel)
+	if modPath, err := codegen.GetModulePath(projectDir); err == nil {
+		scope = modPath + "/" + scope
 	}
-	modPath, err := codegen.GetModulePath(projectDir)
-	if err != nil {
-		return err
-	}
-	logLevel := config.ObservabilityConfig{}.SlogLevelExpr()
+	level := config.ObservabilityConfig{}.SlogLevelExpr()
 	if cfg != nil {
-		logLevel = cfg.Observability.SlogLevelExpr()
+		level = cfg.Observability.SlogLevelExpr()
 	}
-	data := struct {
-		Name       string
-		ImportPath string
-		Module     string
-		Flavor     string
-		LogLevel   string
-	}{
-		Name:       filepath.Base(pkgDir),
-		ImportPath: strings.TrimPrefix(rel, "internal/"),
-		Module:     modPath,
-		LogLevel:   logLevel,
-	}
-	content, err := templates.InternalPkgTemplates().Render("observe_chain.go.tmpl", data)
-	if err != nil {
-		return err
-	}
-	checksums.RecordPreWriteAbs(target) // journaled: a failed run removes it
-	return atomicfile.WriteFile(target, content, 0o644)
+	return &contract.DefaultChain{Scope: scope, Name: filepath.Base(filepath.FromSlash(rel)), LogLevel: level}
 }

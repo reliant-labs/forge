@@ -18,7 +18,7 @@ import (
 // duration, and error status.
 //
 // THIS IS THE EXTENSION SEAM. The generated decorator is uniform and never
-// needs editing; shape observability HERE:
+// needs editing; shape this package's observability HERE:
 //
 //   - add a project middleware (implement observe.ComponentMiddleware and
 //     append it — e.g. an in-process timeout or rate-limit layer);
@@ -45,14 +45,12 @@ import (
 // suppressed=<n>. Any call over 1s is always written, with slow=true.
 //
 // To opt the package OUT, put `// forge:no-observe` on the package clause (or
-// on a single Service method to skip just that one). The opt-out wins over
-// every opt-in.
+// on a single Service method to skip just that one).
 //
-// Deleting this file does NOT opt out. A scaffold stamps BOTH the
-// `// forge:constructor` marker on `func New` and this seam, and either one
-// alone still instruments the package (see ShouldInstrumentComponent) — the
-// seam exists only so projects predating the marker keep working. The marker
-// is the current mechanism.
+// This file is OPTIONAL. Without it the decorator builds
+// observe.DefaultComponentChain, which is what this body assembles; delete it
+// if you never change it. Deleting it does NOT opt out — every contract
+// package is instrumented by default.
 func newObserveChain() *observe.ComponentChain {
 	scope := "{{.Module}}/internal/{{.ImportPath}}"
 	logger := slog.Default()

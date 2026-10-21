@@ -28,7 +28,7 @@ func TestRootCommandPath_NameOrCommandOption(t *testing.T) {
 		{name: "gw", opts: []string{"command=Server"}, err: "not a cobra command name"},
 		{name: "gw", opts: []string{"command="}, err: "not a cobra command name"},
 	} {
-		got, err := rootCommandPath(tc.name, tc.opts)
+		got, _, err := rootOptions(tc.name, tc.opts)
 		if tc.err != "" {
 			if err == nil || !strings.Contains(err.Error(), tc.err) {
 				t.Errorf("%s %v: err = %v, want %q", tc.name, tc.opts, err, tc.err)
@@ -140,7 +140,7 @@ func TestEmitRootCommands_WritesOneCommandPerRoot(t *testing.T) {
 		{Name: "server", TypeName: "Server", Command: []string{"server"}, Migrate: true, Fields: []graphRootFieldView{{Accessor: "APIListener"}}, Plan: "db → api_listener"},
 		{Name: "worker", TypeName: "Worker", Command: []string{"worker"}, Fields: []graphRootFieldView{{Accessor: "Tick"}}, Plan: "tick"},
 	}
-	if err := emitRootCommands(dir, "example.com/demo", roots, nil, &warn); err != nil {
+	if err := emitRootCommands(dir, "example.com/demo", roots, nil, nil, &warn); err != nil {
 		t.Fatal(err)
 	}
 	if warn.Len() != 0 {
@@ -172,7 +172,7 @@ func TestEmitRootCommands_ATreeWithoutRunRootKeepsCompiling(t *testing.T) {
 	}
 	var warn bytes.Buffer
 	roots := []graphRootView{{Name: "worker", TypeName: "Worker", Command: []string{"worker"}}}
-	if err := emitRootCommands(dir, "example.com/demo", roots, nil, &warn); err != nil {
+	if err := emitRootCommands(dir, "example.com/demo", roots, nil, nil, &warn); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
@@ -195,6 +195,32 @@ func (g *Graph) newTick() (*tick.Worker, error) { return tick.New(tick.Deps{Logg
 	nodes := []*graphNode{{Name: "APIListener"}, {Name: "Tick"}}
 	reads := graphComposeInputReads(src, nodes)
 	if !reads["APIListener"]["Probes"] || reads["Tick"]["Probes"] || !reads["Tick"]["Log"] {
+		t.Fatalf("reads = %v", reads)
+	}
+}
+
+// A node that only adds to the probe surface — a /flow-health route, a ready
+// check — does not serve it: the root keeps its probe listener. One that
+// takes Front does serve it.
+func TestGraphComposeInputReads_RegisteringOnTheProbesIsNotServingThem(t *testing.T) {
+	src := `package app
+
+func (g *Graph) newFlowHealth() (*FlowHealth, error) {
+	f := NewFlowHealth(FlowHealthDeps{Logger: g.Log})
+	if err := g.Probes.Handle("/flow-health", f); err != nil {
+		return nil, err
+	}
+	g.Probes.AddReadyCheck(f.Check())
+	return f, nil
+}
+
+func (g *Graph) newSideListener() (*serverkit.Listener, error) {
+	return serverkit.NewListener(serverkit.ListenerDeps{Front: g.Probes.Front()})
+}
+`
+	nodes := []*graphNode{{Name: "FlowHealth"}, {Name: "SideListener"}}
+	reads := graphComposeInputReads(src, nodes)
+	if reads["FlowHealth"]["Probes"] || !reads["FlowHealth"]["Log"] || !reads["SideListener"]["Probes"] {
 		t.Fatalf("reads = %v", reads)
 	}
 }

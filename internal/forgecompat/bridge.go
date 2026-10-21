@@ -263,8 +263,13 @@ func ResolveTag(dir, tag string) string {
 	return rev
 }
 
+// gitIn runs a read-only git command in dir, which is a checkout forge does
+// not own (the forge checkout a project is bridged to, often another
+// worktree's). --no-optional-locks: without it `git status` refreshes the
+// index's stat cache and rewrites .git/index whenever a file's mtime moved,
+// a write into someone else's checkout from a command that only reads.
 func gitIn(dir string, args ...string) (string, error) {
-	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
+	out, err := exec.Command("git", append([]string{"--no-optional-locks", "-C", dir}, args...)...).Output()
 	if err != nil {
 		return "", err
 	}

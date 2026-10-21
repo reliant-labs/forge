@@ -89,6 +89,7 @@ func writeStoreInterfaces(root string, orm config.ORMConfig, entities []config.P
 func renderStoreInterfaces(pkgName string, entities []config.PlanEntity) []byte {
 	var b strings.Builder
 
+	writeORMGeneratedHeader(&b, "the APPLIED schema (db/migrations) — the CRUD delegates of every <entity>_orm_gen.go beside it.")
 	fmt.Fprintf(&b, "package %s\n\n", pkgName)
 	b.WriteString("import (\n\t\"context\"\n\n\t\"github.com/reliant-labs/forge/pkg/orm\"\n)\n\n")
 
@@ -162,7 +163,8 @@ func writeEntityStore(b *strings.Builder, ent config.PlanEntity) {
 	fmt.Fprintf(b, "\t// Create%s inserts a new %s row (plain INSERT, never an upsert).\n", msgName, msgName)
 	fmt.Fprintf(b, "\tCreate%s(ctx context.Context, msg *%s) error\n\n", msgName, msgName)
 	fmt.Fprintf(b, "\t// Get%sByID retrieves a %s by primary key. A missing row is\n", msgName, msgName)
-	fmt.Fprintf(b, "\t// svcerr.NotFound(%q).\n", lower)
+	fmt.Fprintf(b, "\t// svcerr.NotFound(%q), also errors.Is(err, orm.ErrNoRows): the answer\n", lower)
+	b.WriteString("\t// every by-key method gives a missing row.\n")
 	fmt.Fprintf(b, "\tGet%sByID(ctx context.Context, id %s) (*%s, error)\n\n", msgName, pkGoType, msgName)
 	fmt.Fprintf(b, "\t// List%s retrieves %s rows with optional QueryOption filtering.\n", msgName, msgName)
 	fmt.Fprintf(b, "\tList%s(ctx context.Context, opts ...orm.QueryOption) ([]*%s, error)\n\n", msgName, msgName)

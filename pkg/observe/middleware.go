@@ -177,7 +177,16 @@ type Deps struct {
 	// its full duration, and BEFORE Auth, so authentication's own lookups
 	// (a token store query, an introspection call) run inside the budget.
 	// Passing it as an Extra lands it after Auth, which bounds nothing Auth
-	// does. nil sets no deadline here.
+	// does.
+	//
+	// The slot has serverkit.NewChain's rule, because NewChain builds on
+	// Chain: nil is Deadline{} — every unary RPC bounded by
+	// DefaultUnaryDeadline (30s), streams unbounded, a unary RPC still
+	// running after DefaultSlowAfter logged at WARN through Logger — and
+	// serverkit.NoDeadline drops it. A Deadline (or *Deadline) that names no
+	// Logger gets Logger. Any other interceptor here replaces forge's and
+	// runs in the same position. Chain does not validate a Deadline; NewChain
+	// does (Deadline.Validate).
 	Deadline connect.Interceptor
 
 	// Auth is the project's authentication interceptor — the value
@@ -221,16 +230,19 @@ type Deps struct {
 // for Extras:
 //
 //  0. Trace                — the server span (Deps.Trace, when non-nil),
-//     then the pprof labels naming it. Outside everything below, so the span
-//     covers recovery, logging and auth, and their log lines carry its ids.
+//     then the pprof labels naming it and the traceresponse header returning
+//     its context to the caller (TraceResponseInterceptor). Outside everything
+//     below, so the span covers recovery, logging and auth, and their log
+//     lines carry its ids.
 //  1. RecoveryInterceptor   — observes panics from everything below.
 //  2. RequestIDInterceptor — mints/propagates the correlation id early.
 //  3. LoggingInterceptor   — every failure; every success, or a sample
 //     of them when sampling is turned on.
 //  4. TracingInterceptor   — one OTel span per RPC.
 //  5. MetricsInterceptor   — calls/errors/duration.
-//  6. Deadline             — the RPC's time budget (when non-nil). Ahead of
-//     auth, so authenticating runs inside the RPC's deadline.
+//  6. Deadline             — the RPC's time budget: Deps.Deadline, Deadline{}
+//     when nil, none for serverkit.NoDeadline. Ahead of auth, so
+//     authenticating runs inside the RPC's deadline.
 //  7. Auth                 — authenticate (when non-nil). Inner to
 //     observability so auth failures are still logged / traced / counted.
 //  8. Audit                — durable audit record (when non-nil); runs
@@ -241,12 +253,13 @@ type Deps struct {
 //
 // nil collaborator fields are simply skipped — the chain has no fixed
 // length (unlike the observability-only DefaultMiddlewares, which keeps a
-// stable length via no-op interceptors). A worker process passing all-nil
-// application collaborators gets the pure observability chain.
+// stable length via no-op interceptors) — except Deadline, whose nil is
+// forge's default budget. A worker process passing all-nil application
+// collaborators gets the observability chain plus that budget.
 func Chain(deps Deps) []connect.Interceptor {
 	var chain []connect.Interceptor
 	if deps.Trace != nil {
-		chain = append(chain, deps.Trace, profileLabelsInterceptor())
+		chain = append(chain, deps.Trace, profileLabelsInterceptor(), TraceResponseInterceptor())
 	}
 	chain = append(chain,
 		RecoveryInterceptor(deps.Logger),
@@ -255,8 +268,8 @@ func Chain(deps Deps) []connect.Interceptor {
 		TracingInterceptor(deps.Tracer),
 		MetricsInterceptor(deps.Meter),
 	)
-	if deps.Deadline != nil {
-		chain = append(chain, deps.Deadline)
+	if deadline := deadlineSlot(deps.Deadline, deps.Logger); deadline != nil {
+		chain = append(chain, deadline)
 	}
 	if deps.Auth != nil {
 		chain = append(chain, deps.Auth)

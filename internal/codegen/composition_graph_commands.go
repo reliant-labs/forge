@@ -10,9 +10,10 @@
 // policy cannot know without the graph, both read off the root's reach at
 // generate time:
 //
-//   - Migrate: the closure reaches the database, so the process migrates
-//     before building it (a worker root that never touches the database
-//     never runs a migration);
+//   - Migrate / AwaitMigrations: what the process does about the schema
+//     before building it — the root's `migrate=apply|wait|none` option, or,
+//     by default, apply when the closure reaches the database (a worker root
+//     that never touches the database never runs a migration);
 //   - the probes: a root whose closure serves no g.Probes (no API listener)
 //     gets a probe listener of its own from Run<Root> (graph_gen.go), so
 //     every process answers /healthz and /readyz on the server address.
@@ -89,9 +90,24 @@ func graphComposeInputReads(src string, nodes []*graphNode) map[string]map[strin
 			continue
 		}
 		recv := fd.Recv.List[0].Names[0].Name
+		// g.Probes as the receiver of a method other than Front — a node
+		// adding a route (Handle) or a check (AddReadyCheck) — uses the
+		// probe surface without serving it, so it does not count as a read
+		// of "Probes" (which is what drops the root's probe listener).
+		registersOnly := map[*ast.SelectorExpr]bool{}
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			if outer, ok := n.(*ast.SelectorExpr); ok && outer.Sel.Name != "Front" {
+				if inner, ok := outer.X.(*ast.SelectorExpr); ok && inner.Sel.Name == "Probes" {
+					if id, ok := inner.X.(*ast.Ident); ok && id.Name == recv {
+						registersOnly[inner] = true
+					}
+				}
+			}
+			return true
+		})
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
 			sel, ok := n.(*ast.SelectorExpr)
-			if !ok {
+			if !ok || registersOnly[sel] {
 				return true
 			}
 			if id, ok := sel.X.(*ast.Ident); ok && id.Name == recv && reservedGraphNames[sel.Sel.Name] {
@@ -107,7 +123,9 @@ func graphComposeInputReads(src string, nodes []*graphNode) map[string]map[strin
 }
 
 // markRootReach sets what each root's process policy reads off its reach:
-// whether a node in it serves g.Probes, and whether it reaches the database.
+// whether a node in it serves g.Probes, whether it reaches the database, and
+// so — unless the root's migrate= option says otherwise — whether its process
+// applies the migrations.
 func markRootReach(views []graphRootView, inputReads map[string]map[string]bool, byName map[string]*graphNode, u *graphUniverse) {
 	for i := range views {
 		v := &views[i]
@@ -116,10 +134,26 @@ func markRootReach(views []graphRootView, inputReads map[string]map[string]bool,
 				v.ServesProbes = true
 			}
 			if n := byName[name]; n != nil && u.isDatabase(n) {
-				v.Migrate = true
+				v.ReachesDB = true
 			}
 		}
+		switch v.MigratePolicy {
+		case migrateApply:
+			v.Migrate = true
+		case migrateWait:
+			v.AwaitMigrations = true
+		case migrateNone:
+		default:
+			v.Migrate = v.ReachesDB
+		}
 	}
+}
+
+// opensDB reports whether the root's process opens the database at all: its
+// closure reaches it, or the process migrates or waits for the migrations
+// before building it. Such a process reads the database fields.
+func (v graphRootView) opensDB() bool {
+	return v.ReachesDB || v.Migrate || v.AwaitMigrations
 }
 
 // isDatabase reports whether n's value is a database pool: a *sql.DB, a
@@ -178,6 +212,9 @@ type rootsGenView struct {
 	Module   string
 	Commands []rootCmdView
 	Top      []string
+	// ConfigInputs are the primary binary's configs beside the root config:
+	// rootConfigs' fields.
+	ConfigInputs []graphConfigInputView
 	// Fmt is true when some root's command loads a config of its own.
 	Fmt bool
 }
@@ -266,7 +303,7 @@ const rootsGenFile = "roots_gen.go"
 
 // emitRootCommands writes cmd/<bin>/cmd/roots_gen.go for the primary binary,
 // or retires it — with a warning — when the tree has no runRoot to call.
-func emitRootCommands(projectDir, module string, roots []graphRootView, cs *checksums.FileChecksums, warn io.Writer) error {
+func emitRootCommands(projectDir, module string, roots []graphRootView, inputs []graphConfigInputView, cs *checksums.FileChecksums, warn io.Writer) error {
 	treeDir := primaryCmdTreeDir(projectDir)
 	if treeDir == "" {
 		return nil
@@ -288,7 +325,7 @@ func emitRootCommands(projectDir, module string, roots []graphRootView, cs *chec
 			filepath.ToSlash(filepath.Join(treeDir, "root.go")))
 	}
 	cmds, top := rootCommandViews(roots)
-	view := rootsGenView{Module: module, Commands: cmds, Top: top}
+	view := rootsGenView{Module: module, Commands: cmds, Top: top, ConfigInputs: inputs}
 	for _, r := range roots {
 		view.Fmt = view.Fmt || len(r.Loads) > 0
 	}

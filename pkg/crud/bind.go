@@ -48,6 +48,12 @@ import (
 // appender produced) is inlined as before, which keeps it correct at the
 // cost of a varying text for that one value.
 //
+// Every other statement the repo runs (Create, Upsert, List, Count, …) goes
+// through bun's executor and is bound by the connection orm.Client hands bun
+// (pkg/orm/bind.go), which re-renders it with a binding dialect. These
+// statements bind here instead because they are the hottest: rendered once,
+// with no second render.
+//
 // Two things are deliberately left to bun:
 //
 //   - A model with bun model hooks (BeforeAppendModel, Before/AfterSelect,

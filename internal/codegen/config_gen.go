@@ -678,8 +678,16 @@ func configTemplateField(f ConfigField, goPath string) ConfigTemplateField {
 // app.SetupAuth() unconditionally (auth is code now, not config), so no
 // auth-provider field is threaded here.
 type CmdServerTemplateData struct {
-	Module       string
+	Module string
+	// ConfigFields are the root config's own fields (RootConfigFieldNames):
+	// the `cfg.<X>` reads the templates may make.
 	ConfigFields map[string]bool
+
+	// ConfigInputs are the primary binary's configs beside the root config,
+	// each with the serve fields it declares (ServeConfigInputs). The graph
+	// serve.go reads those off root.Configs; empty for a binary that loads
+	// one config, which renders exactly as before.
+	ConfigInputs []ServeConfigInput
 
 	// Name is the primary binary's name — the cmd/<Name>/ leaf. The
 	// scaffold-once command-tree templates reference it when they explain
@@ -691,10 +699,26 @@ type CmdServerTemplateData struct {
 	Name string
 
 	// RESTEnabled mirrors forge.yaml `api.rest: true`. When set the cmd
-	// composition site builds a vanguard transcoder over the mounted
-	// services' Connect paths and serves it in place of the bare mux.
+	// composition site serves vanguard's REST routes for the mounted
+	// services in front of the bare mux (serverkit.RESTHandler).
 	// Filled by generateCmdServerData from projectAPIRESTEnabled.
 	RESTEnabled bool
+}
+
+// Serves reports whether some config the binary loads declares the serve
+// field name: the root config, or a config beside it (ConfigInputs). The
+// templates gate an import, or a step that needs the field wherever it is
+// declared, on it.
+func (d CmdServerTemplateData) Serves(name string) bool {
+	if d.ConfigFields[name] {
+		return true
+	}
+	for _, in := range d.ConfigInputs {
+		if in.Fields[name] {
+			return true
+		}
+	}
+	return false
 }
 
 // GenerateCmdServer re-renders cmd/server.go with config field awareness.
@@ -705,7 +729,8 @@ type CmdServerTemplateData struct {
 // out of `forge project audit`'s orphan/user-edited lists. A nil cs is tolerated.
 func GenerateCmdServer(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error {
 	return generateCmdServerData(CmdServerTemplateData{
-		ConfigFields: ConfigFieldNamesFromMessages(messages),
+		ConfigFields: RootConfigFieldNames(messages, targetDir),
+		ConfigInputs: ServeConfigInputs(messages, targetDir),
 	}, targetDir, cs)
 }
 
@@ -713,8 +738,16 @@ func GenerateCmdServer(messages []ConfigMessage, targetDir string, cs *checksums
 // config field map (e.g. with migration fields stripped when the
 // migrations feature is disabled).
 func GenerateCmdServerWithFields(configFields map[string]bool, targetDir string, cs *checksums.FileChecksums) error {
+	return GenerateCmdServerForConfigs(configFields, nil, targetDir, cs)
+}
+
+// GenerateCmdServerForConfigs is GenerateCmdServerWithFields for a binary
+// that binds configs beside its root config: inputs are those configs
+// (ServeConfigInputs), stripped the same way.
+func GenerateCmdServerForConfigs(configFields map[string]bool, inputs []ServeConfigInput, targetDir string, cs *checksums.FileChecksums) error {
 	return generateCmdServerData(CmdServerTemplateData{
 		ConfigFields: configFields,
+		ConfigInputs: inputs,
 	}, targetDir, cs)
 }
 
@@ -1038,6 +1071,104 @@ func ConfigFieldNamesFromMessages(messages []ConfigMessage) map[string]bool {
 	return names
 }
 
+// RootConfigFieldNames returns the Go field names the ROOT config declares at
+// its top level: the message `config.Config` aliases — the project's
+// AppConfig, or, when every message is bound to a binary, the primary
+// binary's own root config. Those are the only `cfg.<X>` reads a template may
+// make off *config.Config. A field of another binary's config, of a command
+// or subtree config, of a frontend config, or of a block the root config
+// composes is not one: `cfg.Port` on a root config with no port does not
+// compile. Empty when the project has no root config.
+func RootConfigFieldNames(messages []ConfigMessage, projectDir string) map[string]bool {
+	names := make(map[string]bool)
+	root := rootConfigMessageName(messages, primaryBinaryName(projectDir))
+	for _, msg := range messages {
+		if msg.Name != root {
+			continue
+		}
+		for _, f := range msg.Fields {
+			names[f.GoName] = true
+		}
+	}
+	return names
+}
+
+// jwtConfigFields are the root-config-shaped fields the scaffolded
+// internal/app/auth.go's JWT validator reads; brokerConfigFields the ones
+// internal/app/login_broker.go reads.
+var (
+	jwtConfigFields = []string{"JwtSigningMethod", "JwtIssuer", "JwtAudience", "JwtJwksUrl", "JwtSecret",
+		"JwtRolesClaim", "JwtJwksSnapshotFile", "JwtJwksSnapshot", "JwtJwksSnapshotMaxAge"}
+	brokerConfigFields = []string{"IdpBase", "IdpHost", "IdpBrokerToken", "IdpBrokerTokenFile",
+		"OidcClientId", "OidcRedirectUri", "Environment"}
+)
+
+// configDeclaring names the config of the primary binary a scaffold reading
+// goNames reads them from: the one that declares every one of them at its top
+// level — the root config ("", which the templates spell Config), else the
+// first config beside it that does (its message name). found is false when no
+// config the binary loads declares them all; the scaffold then reads none of
+// them (F1: a scaffold may only read fields some config declares).
+func configDeclaring(projectDir string, goNames []string) (typeName string, found bool) {
+	messages, err := ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config"))
+	if err != nil || len(messages) == 0 {
+		return "", true // no parsed config yet: the default scaffold's AppConfig
+	}
+	return configDeclaringIn(messages, projectDir, goNames)
+}
+
+// configDeclaringIn is configDeclaring over parsed messages.
+func configDeclaringIn(messages []ConfigMessage, projectDir string, goNames []string) (typeName string, found bool) {
+	declares := func(fields map[string]bool) bool {
+		for _, n := range goNames {
+			if !fields[n] {
+				return false
+			}
+		}
+		return true
+	}
+	if declares(RootConfigFieldNames(messages, projectDir)) {
+		return "", true
+	}
+	if pc := processConfigsFrom(messages, primaryBinaryName(projectDir)); pc != nil {
+		for _, in := range pc.inputs {
+			own := map[string]bool{}
+			for _, f := range in.msg.Fields {
+				own[f.GoName] = true
+			}
+			if declares(own) {
+				return in.msg.Name, true
+			}
+		}
+	}
+	return "", false
+}
+
+// primaryBinaryName is the primary binary's name — its cmd/<bin>/cmd tree's
+// <bin> — or "" when the project has no command tree.
+func primaryBinaryName(projectDir string) string {
+	treeDir := primaryCmdTreeDir(projectDir)
+	if treeDir == "" {
+		return ""
+	}
+	return filepath.Base(filepath.Dir(treeDir))
+}
+
+// rootConfigMessageName is the message config.Config aliases: the first
+// unbound root message (AppConfig), else binary's own root config — bound to
+// it with neither a command nor subtrees. "" when there is neither.
+func rootConfigMessageName(messages []ConfigMessage, binary string) string {
+	if root := BuildConfigTemplateData(messages).RootConfigMessage; root != "" {
+		return root
+	}
+	for _, m := range messages {
+		if binary != "" && m.Binary == binary && len(m.Command) == 0 && len(m.Subtrees) == 0 {
+			return m.Name
+		}
+	}
+	return ""
+}
+
 // DefaultConfigFieldNames returns the field names from the default scaffold
 // config proto. Used at initial project scaffold time before the config
 // proto has been parsed by the generator.
@@ -1289,6 +1420,29 @@ func DefaultConfigMessages() []ConfigMessage {
 					Flag:         "security-headers-enabled",
 					DefaultValue: "true",
 					Description:  "Set OWASP security response headers (CSP, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, HSTS in production). Disable only if a dedicated edge proxy already sets them.",
+				},
+				{
+					// The probe paths: the KCL lowering reads the same env
+					// values for a forge-built workload's default probe. Keep
+					// in step with internal/templates/project/config.proto.tmpl.
+					Name:         "liveness_paths",
+					GoName:       "LivenessPaths",
+					GoType:       "string",
+					ProtoType:    "string",
+					EnvVar:       "LIVENESS_PATHS",
+					Flag:         "liveness-paths",
+					DefaultValue: "/healthz",
+					Description:  "Comma-separated paths the liveness probe answers on (200 while the process runs). The first is the one the deploy probes; the rest are aliases, for a platform that probes a fixed path (/health).",
+				},
+				{
+					Name:         "readiness_paths",
+					GoName:       "ReadinessPaths",
+					GoType:       "string",
+					ProtoType:    "string",
+					EnvVar:       "READINESS_PATHS",
+					Flag:         "readiness-paths",
+					DefaultValue: "/readyz",
+					Description:  "Comma-separated paths the readiness probe answers on (503 while booting, draining, or a dependency is down). The first is the one the deploy probes; the rest are aliases (/ready).",
 				},
 			},
 		},

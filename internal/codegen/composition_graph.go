@@ -168,6 +168,11 @@ type graphRoot struct {
 	// Command is the cobra command path that runs the root
 	// (cmd/<bin>/cmd/roots_gen.go): the `command=a,b` option, else [Name].
 	Command []string
+	// Migrate is the `migrate=` option: what the root's process does about
+	// the schema before it builds the root — migrateApply, migrateWait or
+	// migrateNone. "" (no option) is the default: apply when the root
+	// reaches the database, otherwise nothing.
+	Migrate string
 	// TypeName is the root struct's Go name: Build<TypeName> / Run<TypeName>.
 	TypeName string
 	// Generated is the default root forge emits when none is declared.
@@ -363,11 +368,11 @@ func graphRootFromStruct(fset *token.FileSet, ts *ast.TypeSpec, st *ast.StructTy
 		rootName = naming.ToKebabCase(ts.Name.Name)
 	}
 	r := graphRoot{Name: rootName, TypeName: ts.Name.Name, File: rel, Line: fset.Position(ts.Pos()).Line}
-	cmdPath, err := rootCommandPath(rootName, opts)
+	cmdPath, migrate, err := rootOptions(rootName, opts)
 	if err != nil {
 		return graphRoot{}, fmt.Errorf("%s:%d: root %s: %w", r.File, r.Line, ts.Name.Name, err)
 	}
-	r.Command = cmdPath
+	r.Command, r.Migrate = cmdPath, migrate
 	for _, f := range st.Fields.List {
 		typ := printType(fset, f.Type)
 		if len(f.Names) == 0 {
@@ -433,8 +438,8 @@ func findAppStruct(projectDir string, names []string, want string) *ast.StructTy
 	return nil
 }
 
-// rootDirective reads `//forge:root [name] [command=a,b]` off a type's doc
-// comment: the root's name and its options, unparsed.
+// rootDirective reads `//forge:root [name] [command=a,b] [migrate=…]` off a
+// type's doc comment: the root's name and its options, unparsed.
 func rootDirective(doc *ast.CommentGroup) (name string, opts []string, ok bool) {
 	if doc == nil {
 		return "", nil, false
@@ -447,24 +452,49 @@ func rootDirective(doc *ast.CommentGroup) (name string, opts []string, ok bool) 
 	return "", nil, false
 }
 
-// rootCommandPath parses a root's options into the cobra command path that
-// runs it: `command=server,api` is `<bin> server api`; with no command option
-// the path is the root's name. Command words are lower-case cobra names.
-func rootCommandPath(name string, opts []string) ([]string, error) {
-	path := []string{name}
+// The `migrate=` values: what a root's process does about the schema before
+// it builds the root.
+const (
+	// migrateApply applies every pending migration (the default for a
+	// root that reaches the database).
+	migrateApply = "apply"
+	// migrateWait applies nothing and blocks until the schema is current:
+	// another process — a migrate=apply root, or a deploy job — applies it.
+	migrateWait = "wait"
+	// migrateNone leaves the schema alone (the default for a root that
+	// never reaches the database).
+	migrateNone = "none"
+)
+
+// rootOptions parses a root's options: the cobra command path that runs it,
+// and its migrate policy. `command=server,api` is `<bin> server api`; with no
+// command option the path is the root's name. Command words are lower-case
+// cobra names. `migrate=apply|wait|none` is the policy; with no migrate
+// option it is "" — the default, decided by reach (graphRootView.Migrate).
+func rootOptions(name string, opts []string) (path []string, migrate string, err error) {
+	path = []string{name}
 	for _, o := range opts {
 		key, val, found := strings.Cut(o, "=")
-		if !found || key != "command" {
-			return nil, fmt.Errorf("unknown //forge:root option %q: the one option is command=<word>[,<word>…], the command path that runs the root", o)
+		switch {
+		case found && key == "command":
+			path = strings.Split(val, ",")
+		case found && key == "migrate":
+			switch val {
+			case migrateApply, migrateWait, migrateNone:
+				migrate = val
+			default:
+				return nil, "", fmt.Errorf("migrate=%s is not a migrate policy: migrate=apply (the process applies the migrations), migrate=wait (it waits until another process has), or migrate=none (it leaves the schema alone)", val)
+			}
+		default:
+			return nil, "", fmt.Errorf("unknown //forge:root option %q: the options are command=<word>[,<word>…], the command path that runs the root, and migrate=apply|wait|none, what its process does about the schema", o)
 		}
-		path = strings.Split(val, ",")
 	}
 	for _, w := range path {
 		if !commandWordRE.MatchString(w) {
-			return nil, fmt.Errorf("command word %q is not a cobra command name: lower-case letters, digits and dashes, starting with a letter", w)
+			return nil, "", fmt.Errorf("command word %q is not a cobra command name: lower-case letters, digits and dashes, starting with a letter", w)
 		}
 	}
-	return path, nil
+	return path, migrate, nil
 }
 
 // fileImportAliases maps each import's name in file (explicit alias, or the

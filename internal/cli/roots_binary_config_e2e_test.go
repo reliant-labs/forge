@@ -66,6 +66,11 @@ message ApiConfig {
     default_value: "hi"
     description: "The API's greeting."
   }];
+  map<string, bool> flags = 3 [(forge.v1.config) = {
+    env_prefix: "API_FLAG_"
+    env_suffix: "_ENABLED"
+    description: "The API's feature flags, API_FLAG_<NAME>_ENABLED."
+  }];
 }
 
 // WorkerConfig is the ` + "`rbc server worker`" + ` process's config.
@@ -119,8 +124,8 @@ func TestE2EBinaryConfigRootsReachTheirOwnConfig(t *testing.T) {
 	tickPath := filepath.Join(projectDir, "internal", "workers", "tick", "worker.go")
 	mustReplaceInFile(t, tickPath, "\tConfig *config.Config\n", "\tEvery  string\n\tRegion string\n")
 	mustReplaceInFile(t, tickPath, "\n\t\"github.com/test/rbc/pkg/config\"\n", "\n")
-	mustReplaceInFile(t, tickPath, `w.deps.Logger.Info("worker started", "worker", w.Name())`,
-		`w.deps.Logger.Info("worker started", "worker", w.Name(), "every", w.deps.Every, "region", w.deps.Region)`)
+	mustReplaceInFile(t, tickPath, `w.deps.Logger.InfoContext(ctx, "worker started", "worker", w.Name())`,
+		`w.deps.Logger.InfoContext(ctx, "worker started", "worker", w.Name(), "every", w.deps.Every, "region", w.deps.Region)`)
 	tickTest := filepath.Join(projectDir, "internal", "workers", "tick", "worker_test.go")
 	if src, err := os.ReadFile(tickTest); err == nil {
 		out := strings.ReplaceAll(string(src), "\t\tConfig: &config.Config{},\n", "")
@@ -173,7 +178,7 @@ type Worker struct {
 	gen := strings.Join(strings.Fields(readFileE2E(t, filepath.Join(projectDir, "cmd", "rbc", "cmd", "roots_gen.go"))), " ")
 	for _, want := range []string{
 		`config.RegisterServerConfigFlags(serverCmd)`,
-		`apiConfig, err := config.LoadApiConfigReach(cmd, []string{ "signing_key", "greeting", })`,
+		`apiConfig, err := config.LoadApiConfigReach(cmd, []string{ "signing_key", "greeting", "flags", })`,
 		`serverConfig, err := config.LoadServerConfigReach(cmd, []string{ "audit_sink", })`,
 		`serverConfig, err := config.LoadServerConfigReach(cmd, []string{ "region", })`,
 		`workerConfig, err := config.LoadWorkerConfigReach(cmd, []string{ "tick_every", })`,
@@ -220,10 +225,21 @@ worker_env = sorted([_k for _k in config_gen.workloadEnvMap(appcfg.rbc_process, 
 	}
 	for _, k := range envs.Worker {
 		if slices.Contains(envs.API, k) && !slices.Contains([]string{"PORT", "LOG_LEVEL", "LOG_FORMAT", "ENVIRONMENT"}, k) && !strings.HasPrefix(k, "CORS_") &&
-			!strings.HasPrefix(k, "TLS_") && !slices.Contains([]string{"PPROF_ADDR", "PRE_STOP_DELAY", "SHUTDOWN_TIMEOUT", "SECURITY_HEADERS_ENABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "READ_MAX_BYTES", "SEND_MAX_BYTES"}, k) {
+			!strings.HasPrefix(k, "TLS_") && !slices.Contains([]string{"PPROF_ADDR", "PRE_STOP_DELAY", "SHUTDOWN_TIMEOUT", "SECURITY_HEADERS_ENABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "READ_MAX_BYTES", "SEND_MAX_BYTES", "LIVENESS_PATHS", "READINESS_PATHS"}, k) {
 			t.Errorf("both roots reach %s, which is no process field", k)
 		}
 	}
+
+	// ── pkg/config.Roots: ROOTS as Go, and the boot load over an env ─────
+	// The data is ROOTS exactly; ValidateRootEnv accepts a correct env and
+	// names a missing required var, a misspelt family entry, a value the
+	// process refuses, and a variable the root never reads.
+	rootsProbe := filepath.Join(projectDir, "deploy", "kcl", "roots_dump.k")
+	writeFileE2E(t, rootsProbe, "import config_gen\n\nroots = config_gen.ROOTS\n")
+	writeFileE2E(t, filepath.Join(projectDir, "pkg", "config", "testdata", "roots.json"),
+		runCmdStdout(t, projectDir, forgeBin, "kcl", "eval", rootsProbe, "-S", "roots", "--format", "json"))
+	writeFileE2E(t, filepath.Join(projectDir, "pkg", "config", "roots_e2e_test.go"), rootsValidateTest)
+	runCmd(t, projectDir, "go", "test", "-count=1", "-run", "TestRoots", "./pkg/config/")
 
 	// ── Boot ─────────────────────────────────────────────────────────────
 	bin := filepath.Join(projectDir, "rbc-bin")
@@ -264,3 +280,91 @@ worker_env = sorted([_k for _k in config_gen.workloadEnvMap(appcfg.rbc_process, 
 		t.Errorf("`server api` started the worker its root does not reach:\n%s", apiLog)
 	}
 }
+
+// rootsValidateTest is the scaffolded project's own test of pkg/config's
+// Roots, the way a deployment repo importing it would test its envs.
+const rootsValidateTest = `package config_test
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"slices"
+	"strings"
+	"testing"
+
+	forgeconfig "github.com/reliant-labs/forge/pkg/config"
+
+	"github.com/test/rbc/pkg/config"
+)
+
+func TestRootsAreROOTS(t *testing.T) {
+	raw, err := os.ReadFile("testdata/roots.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kcl map[string]struct {
+		Args            []string ` + "`json:\"args\"`" + `
+		Env             []string ` + "`json:\"env\"`" + `
+		Secrets         []string ` + "`json:\"secrets\"`" + `
+		RequiredSecrets []string ` + "`json:\"required_secrets\"`" + `
+	}
+	if err := json.Unmarshal(raw, &kcl); err != nil {
+		t.Fatal(err)
+	}
+	if len(kcl) != len(config.Roots()) {
+		t.Fatalf("ROOTS has %d roots, config.Roots %d", len(kcl), len(config.Roots()))
+	}
+	for _, r := range config.Roots() {
+		k, ok := kcl[r.Name]
+		if !ok {
+			t.Fatalf("ROOTS has no root %q", r.Name)
+		}
+		norm := func(s []string) []string { return append([]string{}, s...) }
+		if !slices.Equal(norm(k.Args), r.Args) || !slices.Equal(norm(k.Env), r.Env()) || !slices.Equal(norm(k.Secrets), r.Secrets()) || !slices.Equal(norm(k.RequiredSecrets), r.RequiredSecrets()) {
+			t.Errorf("root %q: ROOTS %+v\nconfig.Roots args %v env %v secrets %v required %v", r.Name, k, r.Args, r.Env(), r.Secrets(), r.RequiredSecrets())
+		}
+	}
+}
+
+func TestRootsValidateEnv(t *testing.T) {
+	good := map[string]string{
+		"DATABASE_URL":         "postgres://x@db/x",
+		"API_SIGNING_KEY":      "k",
+		"AUDIT_SINK":           "s3://audit",
+		"API_FLAG_BETA_ENABLED": "true",
+	}
+	if problems := config.ValidateRootEnv("api", good); len(problems) != 0 {
+		t.Fatalf("a correct api env has no problems: %v", problems)
+	}
+	bad := map[string]string{
+		"DATABASE_URL":          "postgres://x@db/x",
+		"API_SIGNING_KEY":       "k",
+		"API_FLAG_BETA_ENABLD":  "true",
+		"API_FLAG_DARK_ENABLED": "maybe",
+		"TICK_EVERY":            "1s",
+	}
+	problems := config.ValidateRootEnv("api", bad)
+	var all []string
+	var unreached []string
+	for _, p := range problems {
+		all = append(all, p.Error())
+		var u *forgeconfig.UnreachedVarError
+		if errors.As(p, &u) {
+			unreached = append(unreached, u.Name)
+		}
+	}
+	joined := strings.Join(all, "\n")
+	for _, want := range []string{"required config field audit_sink is not set", "API_FLAG_BETA_ENABLD is under the config family prefix API_FLAG_", "invalid value \"maybe\""} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("problems lack %q:\n%s", want, joined)
+		}
+	}
+	if !slices.Equal(unreached, []string{"TICK_EVERY"}) {
+		t.Errorf("unreached = %v, want [TICK_EVERY]:\n%s", unreached, joined)
+	}
+	if problems := config.ValidateRootEnv("nope", good); len(problems) != 1 || !strings.Contains(problems[0].Error(), "the roots are") {
+		t.Errorf("an unknown root is one problem naming the roots: %v", problems)
+	}
+}
+`

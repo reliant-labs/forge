@@ -95,34 +95,6 @@ func TestLoadProject_ConfigGuard_ValidValues(t *testing.T) {
 	}
 }
 
-func TestLoadProject_ConfigGuard_InvalidEnforceComponentObserve(t *testing.T) {
-	in := validBaseYAML + "config:\n  enforce_component_observe: nonsense\n"
-	_, err := LoadProject([]byte(in), "forge.yaml")
-	ve := requireValidationError(t, err)
-	if !containsAll(ve.Error(), "config.enforce_component_observe", "nonsense", "error", "off") {
-		t.Errorf("expected enum-rejection error listing valid values, got:\n%s", ve.Error())
-	}
-}
-
-func TestLoadProject_ConfigGuard_EnforceComponentObserveValidValues(t *testing.T) {
-	for _, v := range []string{"off", "error", "Off"} {
-		in := validBaseYAML + "config:\n  enforce_component_observe: " + v + "\n"
-		if _, err := LoadProject([]byte(in), "forge.yaml"); err != nil {
-			t.Errorf("value %q should load clean, got: %v", v, err)
-		}
-	}
-}
-
-func TestLoadProject_ConfigGuard_EnforceComponentObserveAbsentDefaultsToError(t *testing.T) {
-	cfg, err := LoadProject([]byte(validBaseYAML), "forge.yaml")
-	if err != nil {
-		t.Fatalf("clean load: %v", err)
-	}
-	if got := cfg.Config.EffectiveEnforceComponentObserve(); got != EnforceComponentObserveError {
-		t.Errorf("absent enforce_component_observe → %q, want error", got)
-	}
-}
-
 // TestLoadProject_DockerBaseImages_RejectedAsUnknownKey asserts the base-image
 // surface is fully GONE: forge is base-image-agnostic, so a forge.yaml that
 // still carries the old `docker.base_images` block fails the strict loader as

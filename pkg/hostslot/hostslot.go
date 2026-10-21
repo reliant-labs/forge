@@ -624,6 +624,9 @@ func (q queue) enqueue(rec record) (*ticket, error) {
 		if err != nil {
 			return nil, fmt.Errorf("file a slot ticket: %w", err)
 		}
+		if ticketFiled != nil {
+			ticketFiled(path)
+		}
 		if err := lockFreshTicket(f); err != nil {
 			_ = f.Close()
 			_ = os.Remove(path)
@@ -634,23 +637,34 @@ func (q queue) enqueue(rec record) (*ticket, error) {
 	}
 }
 
-// lockFreshTicket locks a ticket this process just created. Nobody else owns
-// it, but another waiter's queue scan may be probing it at this very moment
-// (alive takes the lock for an instant to tell a live ticket from a dead one),
-// so a busy lock means "try again", not failure. The probe lets go within
-// microseconds; the bound only keeps a broken lock from spinning forever.
+// ticketFiled, when set (tests only), runs the moment a new ticket exists
+// under its name and before its waiter has locked it.
+var ticketFiled func(path string)
+
+// freshTicketLockWait bounds how long a waiter keeps trying to lock the
+// ticket it just created.
+const freshTicketLockWait = time.Second
+
+// lockFreshTicket locks a ticket this waiter has just created. Between the
+// create and the lock the file is visible and unlocked, and another waiter's
+// alive() probe may hold its lock right then: the probe takes the lock to
+// test for a dead waiter, sees a ticket younger than ticketGrace, and lets
+// go at once without removing it. A single try lost that race, and Acquire
+// failed a healthy wait with "lock slot ticket …" (TestAcquire_
+// NeverMoreThanNHolders, one Linux CI run in ~30). So try until the probe
+// lets go; the bound is far above a probe's microseconds and far below the
+// grace, so a ticket is never reaped while its waiter is still locking it.
 func lockFreshTicket(f *os.File) error {
-	deadline := time.Now().Add(ticketGrace)
+	deadline := time.Now().Add(freshTicketLockWait)
 	for {
 		ok, err := tryLock(f)
-		if err != nil {
+		switch {
+		case err != nil:
 			return err
-		}
-		if ok {
+		case ok:
 			return nil
-		}
-		if time.Now().After(deadline) {
-			return errors.New("held by another process for longer than a queue probe takes")
+		case time.Now().After(deadline):
+			return errors.New("another process holds the lock on a ticket this one just created")
 		}
 		time.Sleep(time.Millisecond)
 	}

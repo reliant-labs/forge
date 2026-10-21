@@ -184,6 +184,9 @@ type txState struct {
 	// never be handed a statement meant for database B.
 	db *sql.DB
 	tx bun.Tx
+	// conn is tx as the connection bun runs this transaction's statements
+	// on, their values bound (bind_conn.go).
+	conn *bindConn
 
 	// outer is the context RunTx/BeginTx was called with — the caller's
 	// context, without this transaction in it. After-commit callbacks
@@ -554,16 +557,22 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 //
 // A query built off an explicit *Tx handle (tx.Bun()) never reaches here:
 // bun pins its connection, so an explicit handle always wins.
-type ambientResolver struct{ db *sql.DB }
-
-func (r ambientResolver) ResolveConn(ctx context.Context, _ bun.Query) bun.IConn {
-	if st := ambientTx(ctx, r.db); st != nil {
-		return st.tx.Tx
-	}
-	return nil
+//
+// What it resolves is a bindConn — the transaction's, or the pool's — which
+// sends the statement with its values bound (bind_conn.go).
+type ambientResolver struct {
+	db   *sql.DB
+	pool *bindConn
 }
 
-func (ambientResolver) Close() error { return nil }
+func (r *ambientResolver) ResolveConn(ctx context.Context, _ bun.Query) bun.IConn {
+	if st := ambientTx(ctx, r.db); st != nil && st.conn != nil {
+		return st.conn
+	}
+	return r.pool
+}
+
+func (*ambientResolver) Close() error { return nil }
 
 // ambientDB is the bun.IDB Client.Bun() returns: the *bun.DB, with its three
 // direct-execution methods made transaction-aware.

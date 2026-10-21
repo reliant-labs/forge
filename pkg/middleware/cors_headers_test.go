@@ -58,7 +58,7 @@ func TestCORS_DefaultsAreUnchanged(t *testing.T) {
 	if want := "Content-Type, Connect-Protocol-Version, Connect-Timeout-Ms, Authorization, Traceparent, Tracestate, X-Request-Id, Forge-Via"; got.Get("Access-Control-Allow-Headers") != want {
 		t.Errorf("Allow-Headers = %q, want %q", got.Get("Access-Control-Allow-Headers"), want)
 	}
-	if want := "Connect-Protocol-Version, x-forge-error-reason"; got.Get("Access-Control-Expose-Headers") != want {
+	if want := "Connect-Protocol-Version, x-forge-error-reason, Traceresponse"; got.Get("Access-Control-Expose-Headers") != want {
 		t.Errorf("Expose-Headers = %q, want %q", got.Get("Access-Control-Expose-Headers"), want)
 	}
 }

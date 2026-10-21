@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/extra/bunotel"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
@@ -24,6 +23,9 @@ import (
 type Client struct {
 	bun     *bun.DB
 	dialect Dialect
+	// bunDialect is the dialect bun runs with; transactions opened on this
+	// client bind their statements through it (bind.go).
+	bunDialect *forgeDialect
 }
 
 // NewClient opens a new ORM client on jackc/pgx, the driver forge's
@@ -59,8 +61,11 @@ func NewClientWithDB(db *sql.DB, dialectName string) (*Client, error) {
 		return nil, err
 	}
 	// The resolver is what makes a transaction carried in ctx (RunTx) reach
-	// every query built off this handle — see ambientResolver in tx.go.
-	bdb := bun.NewDB(db, pgdialect.New(), bun.WithConnResolver(ambientResolver{db: db}))
+	// every query built off this handle — see ambientResolver in tx.go — and
+	// the connection it resolves binds each statement's values (bind.go).
+	fd := newForgeDialect()
+	bdb := bun.NewDB(db, fd, bun.WithConnResolver(&ambientResolver{db: db, pool: &bindConn{conn: db, dialect: fd}}))
+	bdb.AddQueryHook(bindHook{})
 	// bunotel records the ORM's query histogram (go.sql.query_timing) and, on
 	// a pool not traced at the driver, a span per query. A pool that is
 	// (serverkit.OpenDB, NewClient — pkg/observe/dbtrace) already has its span
@@ -71,7 +76,7 @@ func NewClientWithDB(db *sql.DB, dialectName string) (*Client, error) {
 		hookOpts = append(hookOpts, bunotel.WithTracerProvider(tracenoop.NewTracerProvider()))
 	}
 	bdb.AddQueryHook(bunotel.NewQueryHook(hookOpts...))
-	return &Client{bun: bdb, dialect: dialect}, nil
+	return &Client{bun: bdb, dialect: dialect, bunDialect: fd}, nil
 }
 
 func requirePostgres(dialectName string) error {
@@ -139,8 +144,14 @@ type Tx struct {
 	client *Client
 }
 
-// Bun returns the transaction as a bun.IDB.
-func (t *Tx) Bun() bun.IDB { return t.tx }
+// Bun returns the transaction as a bun.IDB. Queries built on it run in the
+// transaction with their values bound, as on Client.Bun().
+func (t *Tx) Bun() bun.IDB {
+	if t.state == nil || t.state.conn == nil {
+		return t.tx
+	}
+	return txBun{Tx: t.tx, conn: t.state.conn}
+}
 
 // Dialect returns the SQL dialect (postgres), so raw-SQL handlers running
 // inside a transaction get the same Placeholder()/QuoteIdentifier() seam as
@@ -211,7 +222,7 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 	if err != nil {
 		return nil, err
 	}
-	state := &txState{db: c.bun.DB, tx: tx, outer: ctx}
+	state := &txState{db: c.bun.DB, tx: tx, outer: ctx, conn: &bindConn{conn: tx.Tx, dialect: c.bunDialect}}
 	return &Tx{tx: tx, dialect: c.dialect, state: state, client: c}, nil
 }
 

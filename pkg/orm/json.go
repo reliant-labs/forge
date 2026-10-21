@@ -16,6 +16,13 @@ import (
 //
 // A nil/empty slice round-trips as SQL NULL so the column stays cleanly
 // nullable and scans back to the zero value.
+//
+// It is also how a `?` argument says "this is a JSON document". A slice
+// passed through Arg binds as a postgres ARRAY, never as JSON, so a value a
+// json/jsonb operand needs is wrapped explicitly — and bound, as a text
+// parameter postgres parses with jsonb's input function:
+//
+//	q.Where("labels @> ?", orm.JSON([]string{"urgent"}))
 func JSON(v any) driver.Valuer { return jsonValue{v: v} }
 
 type jsonValue struct{ v any }

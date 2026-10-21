@@ -203,3 +203,97 @@ func TestScanParams_SkipsQuotedText(t *testing.T) {
 		t.Fatal("wrong site")
 	}
 }
+
+// A slice passed through Arg is a postgres array — the encoding pgx gives a
+// []T and a model's `,array` column — on every path a `?` argument reaches:
+// a builder's Where, NewRaw, and the WithWhere filters List is built from.
+// JSON is never inferred; it is spelled JSON(v). []byte stays bytea.
+func TestBind_ArgSliceIsAPostgresArray(t *testing.T) {
+	db, fd := newBindDB(t)
+	kinds := []string{"a", `b"c`}
+	var nilKinds []string
+	for _, tc := range []struct {
+		name string
+		q    schema.QueryAppender
+		stmt string
+		args []any
+	}{{
+		name: "builder: a []string is a text array",
+		q:    db.NewSelect().Model((*bindRow)(nil)).Column("id").Where("body = ANY(?)", Arg(kinds)),
+		stmt: `SELECT "r"."id" FROM "bind_rows" AS "r" WHERE (body = ANY($1))`,
+		args: []any{`{"a","b\"c"}`},
+	}, {
+		name: "builder: a []int64 is an integer array",
+		q:    db.NewSelect().Model((*bindRow)(nil)).Column("id").Where("seq = ANY(?)", Arg([]int64{1, 2})),
+		stmt: `SELECT "r"."id" FROM "bind_rows" AS "r" WHERE (seq = ANY($1))`,
+		args: []any{`{1,2}`},
+	}, {
+		name: "builder: a pointer to a slice is the slice's array",
+		q:    db.NewSelect().Model((*bindRow)(nil)).Column("id").Where("tags @> ?", Arg(&kinds)),
+		stmt: `SELECT "r"."id" FROM "bind_rows" AS "r" WHERE (tags @> $1)`,
+		args: []any{`{"a","b\"c"}`},
+	}, {
+		name: "NewRaw: a slice argument is an array",
+		q:    db.NewRaw("SELECT id FROM bind_rows WHERE body = ANY(?) AND id = ?", Arg(kinds), "x"),
+		stmt: `SELECT id FROM bind_rows WHERE body = ANY($1) AND id = $2`,
+		args: []any{`{"a","b\"c"}`, "x"},
+	}, {
+		name: "List filters: WithWhere Eq on an array column",
+		q:    applyOpts(db.NewSelect().Model((*bindRow)(nil)).Column("id"), WhereEq("tags", kinds)),
+		stmt: `SELECT "r"."id" FROM "bind_rows" AS "r" WHERE ("tags" = $1)`,
+		args: []any{`{"a","b\"c"}`},
+	}, {
+		name: "JSON is spelled, not inferred",
+		q:    db.NewSelect().Model((*bindRow)(nil)).Column("id").Where("meta @> ?", Arg(JSON(map[string]string{"k": "v"}))).Where("meta @> ?", JSON(kinds)),
+		stmt: `SELECT "r"."id" FROM "bind_rows" AS "r" WHERE (meta @> $1) AND (meta @> $2)`,
+		args: []any{`{"k":"v"}`, `["a","b\"c"]`},
+	}, {
+		name: "[]byte stays bytea",
+		q:    db.NewSelect().Model((*bindRow)(nil)).Column("id").Where("blob = ?", Arg([]byte{1, 2})),
+		stmt: `SELECT "r"."id" FROM "bind_rows" AS "r" WHERE (blob = $1)`,
+		args: []any{[]byte{1, 2}},
+	}, {
+		name: "a nil slice is NULL",
+		q:    db.NewSelect().Model((*bindRow)(nil)).Column("id").Where("tags = ?", Arg(nilKinds)),
+		stmt: `SELECT "r"."id" FROM "bind_rows" AS "r" WHERE (tags = NULL)`,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			inline, stmt, args, ok := bindOf(t, db, fd, tc.q)
+			if tc.args == nil {
+				if ok {
+					t.Fatalf("bound %s %v; want it sent as rendered", stmt, args)
+				}
+				if inline != tc.stmt {
+					t.Fatalf("inline\n got %s\nwant %s", inline, tc.stmt)
+				}
+				return
+			}
+			if !ok {
+				t.Fatalf("not bound: %s", inline)
+			}
+			if stmt != tc.stmt {
+				t.Fatalf("stmt\n got %s\nwant %s", stmt, tc.stmt)
+			}
+			if !reflect.DeepEqual(args, tc.args) {
+				t.Fatalf("args\n got %#v\nwant %#v", args, tc.args)
+			}
+		})
+	}
+}
+
+// An element type pgdialect has no array encoding for does not panic the
+// render: it falls back to what bun writes for the value.
+func TestBind_ArgUnsupportedSliceDoesNotPanic(t *testing.T) {
+	db, _ := newBindDB(t)
+	q := db.NewSelect().Model((*bindRow)(nil)).Column("id").Where("meta = ?", Arg([]func(){nil}))
+	// bun reports the unsupported value as an error or in the rendered
+	// text; either is fine as long as nothing panicked.
+	_, _ = q.AppendQuery(db.QueryGen(), nil)
+}
+
+func applyOpts(q *bun.SelectQuery, opts ...QueryOption) *bun.SelectQuery {
+	for _, o := range opts {
+		o(q)
+	}
+	return q
+}

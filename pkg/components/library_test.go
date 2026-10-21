@@ -72,7 +72,7 @@ func TestLibraryCategories(t *testing.T) {
 		CategoryCharts:   3,
 		CategoryDiagrams: 6,
 		CategoryDeck:     7,
-		CategoryUI:       45,
+		CategoryUI:       46,
 	}
 
 	for cat, want := range expected {
@@ -268,8 +268,8 @@ func TestLibraryList(t *testing.T) {
 
 	// List all
 	all := lib.List("", "")
-	if len(all) != 76 {
-		t.Errorf("list all should return 76 components, got %d", len(all))
+	if len(all) != 77 {
+		t.Errorf("list all should return 77 components, got %d", len(all))
 	}
 
 	// List filtered by category
@@ -301,12 +301,22 @@ func TestLibraryFindSimilar(t *testing.T) {
 func TestFormFieldAutoBinding(t *testing.T) {
 	lib := NewLibrary()
 
+	ctxSrc, err := lib.Get("form_field_context")
+	if err != nil {
+		t.Fatalf("get form_field_context: %v", err)
+	}
+	if !strings.Contains(ctxSrc, "export const FormFieldContext") {
+		t.Error("form_field_context.tsx must export FormFieldContext for auto-binding")
+	}
+
 	form, err := lib.Get("form")
 	if err != nil {
 		t.Fatalf("get form: %v", err)
 	}
-	if !strings.Contains(form, "FormFieldContext") {
-		t.Error("form.tsx must export FormFieldContext for auto-binding")
+	// The context lives in its own module so form.tsx exports only
+	// components (react-refresh/only-export-components).
+	if strings.Contains(form, "createContext") {
+		t.Error("form.tsx must import FormFieldContext from ./form_field_context, not create it")
 	}
 	if !strings.Contains(form, "React.useId()") {
 		t.Error("form.tsx FormField must mint id via React.useId()")

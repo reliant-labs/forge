@@ -56,8 +56,8 @@ func TestReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile failed: %v", err)
 	}
-	if result.Requeue {
-		t.Error("unexpected requeue")
+	if result != (reconcile.Result{}) {
+		t.Errorf("unexpected requeue: %+v", result)
 	}
 }
 
@@ -82,7 +82,7 @@ func TestReconcileNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile should not error for not-found: %v", err)
 	}
-	if result.Requeue {
-		t.Error("unexpected requeue")
+	if result != (reconcile.Result{}) {
+		t.Errorf("unexpected requeue: %+v", result)
 	}
 }

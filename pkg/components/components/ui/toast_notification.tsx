@@ -5,7 +5,7 @@
  *
  * Forge event bus integration example:
  *
- *   import { useEvent, useEmit } from "@/lib/event-context";
+ *   import { useEvent } from "@/lib/use-event";
  *   import ToastNotification from "@/components/ui/toast_notification";
  *
  *   function ToastContainer() {

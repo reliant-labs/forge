@@ -16,8 +16,9 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AuthContextProvider, useAuth } from "./context";
+import { AuthContextProvider } from "./context";
 import { RouteGuard } from "./route-guard";
+import { useAuth } from "./use-auth";
 {{- if .HasTypedConfig}}
 
 // The mode is read through the typed config module, exactly as the app

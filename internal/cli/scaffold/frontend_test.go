@@ -69,7 +69,7 @@ func TestRunAddFrontend_DerivesTheFrontendAndLeavesForgeYAMLAlone(t *testing.T) 
 	dir := withTempProject(t, freshServiceForgeYAML)
 	markServiceProject(t, dir)
 
-	if err := runFrontend(context.Background(), "dashboard", 0, "", "", "", "", nil); err != nil {
+	if err := runFrontend(context.Background(), testFactory(), frontendArgs{name: "dashboard"}); err != nil {
 		t.Fatalf("runFrontend: %v", err)
 	}
 
@@ -123,7 +123,7 @@ func TestRunAddFrontend_TypeFollowsKind(t *testing.T) {
 			dir := withTempProject(t, freshServiceForgeYAML)
 			markServiceProject(t, dir)
 
-			if err := runFrontend(context.Background(), "app", 0, tc.kind, "", "", "", nil); err != nil {
+			if err := runFrontend(context.Background(), testFactory(), frontendArgs{name: "app", kind: tc.kind}); err != nil {
 				t.Fatalf("runFrontend(kind=%q): %v", tc.kind, err)
 			}
 			cfg, err := generator.ReadProjectConfig(filepath.Join(dir, "forge.yaml"))
@@ -161,7 +161,7 @@ func TestRunAddFrontend_RoutesLandInKCL(t *testing.T) {
 	}
 	t.Chdir(root)
 
-	if err := runFrontend(t.Context(), "ops", 0, "", "", "", "", []string{"users", "usage-events"}); err != nil {
+	if err := runFrontend(t.Context(), testFactory(), frontendArgs{name: "ops", routes: []string{"users", "usage-events"}}); err != nil {
 		t.Fatalf("runFrontend: %v", err)
 	}
 	for _, env := range []string{"dev", "prod"} {

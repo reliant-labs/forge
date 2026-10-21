@@ -57,6 +57,11 @@ This scaffolds internal/<name>/ with:
   cache.go           empty stub — fill in TTL + per-host rate budget,
                      or delete the file if the adapter is fully local
 
+It ends with a 'forge generate' run, which compiles the adapter's config
+block (config.<Name>Config) and wires the adapter into
+internal/app/compose.go, so the next 'forge lint' is green. --no-generate
+skips it.
+
 This is equivalent to 'forge scaffold package --type adapter <name>'; that
 form stays wired for existing scripts. Use whichever is shorter for you.
 
@@ -66,7 +71,7 @@ Example:
   forge scaffold adapter stripe
   forge scaffold adapter pricing_feed`,
 		Args: cobra.ExactArgs(1),
-		RunE: f.Gen.RunPackageNew,
+		RunE: packageNewThenGenerate(f),
 	}
 
 	// runPackageNew reads --type and --kind off the command. The adapter
@@ -82,6 +87,7 @@ Example:
 	// dedicated subcommand. Hide it so `--help` shows a clean surface.
 	_ = cmd.Flags().MarkHidden("type")
 	_ = cmd.Flags().MarkHidden("kind")
+	cmd.Flags().Bool("no-generate", false, noGenerateFlagUsage)
 
 	return cmd
 }

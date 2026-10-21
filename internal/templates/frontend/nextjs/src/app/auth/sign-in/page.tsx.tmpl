@@ -16,13 +16,11 @@
 import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
-import {
-  PasswordRequirements,
-  usePasswordPolicy,
-} from "@/components/password-requirements";
+import { PasswordRequirements } from "@/components/password-requirements";
 import Button from "@/components/ui/button";
-import { useAuth } from "@/lib/auth/context";
 import { AuthError, signIn, signUp, type PasswordRule } from "@/lib/auth/native-login";
+import { useAuth } from "@/lib/auth/use-auth";
+import { usePasswordPolicy } from "@/lib/auth/use-password-policy";
 import { joinBasePath } from "@/lib/basepath_gen";
 
 function SignIn() {

@@ -20,7 +20,7 @@ const DIGEST = /^[a-z0-9]+:[0-9a-f]{16,}$/i;
 const HEX_SHA = /^[0-9a-f]{12,}$/i;
 
 /** How many characters `value` shows by default — see `MonoProps.length`. */
-export function monoLength(value: string): number | undefined {
+function monoLength(value: string): number | undefined {
   if (DIGEST.test(value)) return 19;
   if (HEX_SHA.test(value)) return 8;
   return undefined;

@@ -405,6 +405,8 @@ var coreComponents = []string{
 	// with a framework-aware version (see linkComponentForDir).
 	"link",
 	"button",
+	// The context input, label, select and form import ("./form_field_context").
+	"form_field_context",
 	"input",
 	"label",
 	"form",
@@ -571,7 +573,7 @@ import React from "react";
 const EXTERNAL_HREF = /^(?:[a-z][a-z0-9+.-]*:)?\/\//i;
 
 /** True for absolute/external URLs that must bypass client routing. */
-export function isExternalHref(href: string): boolean {
+function isExternalHref(href: string): boolean {
   return (
     EXTERNAL_HREF.test(href) ||
     href.startsWith("mailto:") ||
@@ -619,7 +621,7 @@ import React from "react";
 const EXTERNAL_HREF = /^(?:[a-z][a-z0-9+.-]*:)?\/\//i;
 
 /** True for absolute/external URLs that must bypass client routing. */
-export function isExternalHref(href: string): boolean {
+function isExternalHref(href: string): boolean {
   return (
     EXTERNAL_HREF.test(href) ||
     href.startsWith("mailto:") ||

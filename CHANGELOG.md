@@ -299,6 +299,37 @@ generate` runs the same check. `project new` never took a heavy slot and still
 
 ### Fixed
 
+- **Every `forge scaffold <noun>` leaves the project lint-green, with no
+  `forge generate` after it.** `scaffold frontend` wrote
+  `proto/config/v1/<fe>_config.proto` and stopped, so `gen/forge_descriptor.json`
+  was stale and `forge lint`'s convention and graph lanes refused it until the
+  user ran `forge generate`; `scaffold adapter` did the same to `config.proto`
+  (and `config.<Name>Config` did not exist yet), and `scaffold package` left
+  `observe_chain.go` unreferenced until generate wrote `middleware_gen.go`.
+  All three, and `forge package new`, now end with a full generate run, as
+  `scaffold service` and `scaffold rpc` already did; `--no-generate` skips it
+  for a round that stages several scaffolds. A failed run keeps what the
+  scaffold wrote and exits non-zero. Three templates were red on their own:
+  the operator's `doc.go` and the binary's `Run` doc carried space-indented
+  doc-comment code blocks gofmt rewrites, and every CRD declared
+  `addKnownTypes_<Type>` (revive `var-naming`, now `addKnown<Type>Types`),
+  left a doubled blank line in its config and composite types (gofmt), and
+  tested the deprecated `ctrl.Result.Requeue` (staticcheck SA1019). New
+  guards: `TestE2EScaffoldNounsLeaveLintGreen` scaffolds each noun into a fresh
+  project and runs `forge lint` straight after it, and the `-short`
+  `TestComponentScaffolds_GoIsFormattedAndNamedForLint` checks what the
+  operator, crd, binary, worker and webhook scaffolds write.
+- **A fresh vite-spa frontend has zero eslint warnings.** It opened with nine
+  `react-refresh/only-export-components` warnings: files that exported a hook,
+  a context or a helper beside their component, which defeats Fast Refresh.
+  The non-components moved to modules of their own — `useAuth` to
+  `src/lib/auth/use-auth.ts`, `useEvent`/`useEventBus` to `src/lib/use-event.ts`,
+  `usePasswordPolicy` to `src/lib/auth/use-password-policy.ts`,
+  `brandThemeToCssVars` to `src/lib/theme/brand-theme.ts`, `FormFieldContext`
+  to the new `form_field_context` library component, and the provider stack
+  out of `main.tsx` into `src/providers.tsx`; `isExternalHref` and
+  `monoLength` are no longer exported. The rule is unchanged. The frontend
+  lint e2e tests now fail on any eslint warning, not only on errors.
 - **A fresh `forge project new` passes its own `forge lint` again.** The login
   broker (`internal/app/login_broker.go`) took `ctx` second in
   `writePasswordRejection`, which revive's `context-as-argument` rejects; the

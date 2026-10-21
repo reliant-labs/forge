@@ -1,37 +1,15 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { RouterProvider } from "@tanstack/react-router";
-import { QueryClientProvider } from "@tanstack/react-query";
 
 import { installDevLogging } from "@reliantlabs/forge-web-runtime";
 
 import "./index.css";
-import { router } from "./routes";
-import { queryClient } from "@/lib/query-client";
-import { EventBusProvider } from "@/lib/event-context";
-import { AuthContextProvider } from "@/lib/auth/context";
 import { initTelemetry } from "@/lib/otel_gen";
 
-// There is no auth-token bridge here, and that is the design rather than an
-// omission. Sign-in is native: the browser POSTs credentials to this app's
-// own API, the server runs the OIDC flow, and the session comes back as an
-// HttpOnly cookie. Nothing in this bundle can read that cookie — which is
-// the point, since a token no script can reach is a token an XSS cannot
-// steal — and nothing has to, because the browser attaches it to requests
-// automatically. A component that fetched a token to hand to the transport
-// would have nothing to fetch.
-function App() {
-  const isDev = import.meta.env.DEV;
-  return (
-    <QueryClientProvider client={queryClient}>
-      <EventBusProvider devMode={isDev}>
-        <AuthContextProvider>
-          <RouterProvider router={router} />
-        </AuthContextProvider>
-      </EventBusProvider>
-    </QueryClientProvider>
-  );
-}
+import { Providers } from "./providers";
+
+// The entry point mounts the app and defines no component of its own: the
+// provider stack is ./providers.tsx, so React Fast Refresh can hot-swap it.
 
 // Start browser telemetry (the HyperDX SDK: errors, console, fetch/XHR spans,
 // web vitals, to the same-origin /_otel route). A no-op while telemetry is off
@@ -61,6 +39,6 @@ if (!rootEl) {
 
 createRoot(rootEl).render(
   <StrictMode>
-    <App />
+    <Providers />
   </StrictMode>,
 );

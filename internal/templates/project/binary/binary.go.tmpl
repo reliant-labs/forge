@@ -37,42 +37,43 @@ func (r *Runner) Name() string { return "{{.Name}}" }
 // here. The default body is a "wait for shutdown" placeholder so a
 // freshly scaffolded binary builds and exits cleanly on Ctrl-C.
 //
-// Common shapes:
+// Common shapes. An HTTP/proxy server:
 //
-//   - HTTP/proxy server:
-//       srv := &http.Server{Addr: ":" + r.deps.Config.Port, Handler: ...}
-//       errCh := make(chan error, 1)
-//       go func() { errCh <- srv.ListenAndServe() }()
-//       select {
-//       case <-ctx.Done():
-//           shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-//           defer cancel()
-//           return srv.Shutdown(shutdownCtx)
-//       case err := <-errCh:
-//           return err
-//       }
+//	srv := &http.Server{Addr: ":" + r.deps.Config.Port, Handler: ...}
+//	errCh := make(chan error, 1)
+//	go func() { errCh <- srv.ListenAndServe() }()
+//	select {
+//	case <-ctx.Done():
+//		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+//		defer cancel()
+//		return srv.Shutdown(shutdownCtx)
+//	case err := <-errCh:
+//		return err
+//	}
 //
-//   - NATS / queue consumer loop:
-//       for {
-//           select {
-//           case <-ctx.Done():
-//               return nil
-//           case msg := <-r.deps.NATS.Messages():
-//               r.handle(ctx, msg)
-//           }
-//       }
+// A NATS / queue consumer loop:
 //
-//   - Periodic ticker:
-//       t := time.NewTicker(r.interval)
-//       defer t.Stop()
-//       for {
-//           select {
-//           case <-ctx.Done():
-//               return nil
-//           case <-t.C:
-//               r.tick(ctx)
-//           }
-//       }
+//	for {
+//		select {
+//		case <-ctx.Done():
+//			return nil
+//		case msg := <-r.deps.NATS.Messages():
+//			r.handle(ctx, msg)
+//		}
+//	}
+//
+// A periodic ticker:
+//
+//	t := time.NewTicker(r.interval)
+//	defer t.Stop()
+//	for {
+//		select {
+//		case <-ctx.Done():
+//			return nil
+//		case <-t.C:
+//			r.tick(ctx)
+//		}
+//	}
 func (r *Runner) Run(ctx context.Context) error {
 	r.deps.Logger.InfoContext(ctx, "{{.Name}} runtime entered (placeholder Run body)")
 

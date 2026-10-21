@@ -34,15 +34,13 @@ import {
 import { useState } from "react";
 
 import { ForgotPasswordForm } from "@/components/forgot-password-form";
-import {
-  PasswordRequirements,
-  usePasswordPolicy,
-} from "@/components/password-requirements";
+import { PasswordRequirements } from "@/components/password-requirements";
 import { ResetPasswordForm } from "@/components/reset-password-form";
 import Button from "@/components/ui/button";
-import { useAuth } from "@/lib/auth/context";
 import { AuthError, signIn, signUp, type PasswordRule } from "@/lib/auth/native-login";
 import { RouteGuard } from "@/lib/auth/route-guard";
+import { useAuth } from "@/lib/auth/use-auth";
+import { usePasswordPolicy } from "@/lib/auth/use-password-policy";
 {{- end}}
 
 import App from "./App";

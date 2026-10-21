@@ -36,6 +36,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"github.com/reliant-labs/forge/internal/closedset"
 	"github.com/reliant-labs/forge/internal/codegen"
 	entityscaffold "github.com/reliant-labs/forge/internal/scaffold"
 	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
@@ -357,6 +358,13 @@ func markerSpecs() []MarkerSpec {
 			Effect:    "Declares which route is authoritative when a table reaches the same parent two ways (a direct FK and a longer FK chain) — `authoritative` (this edge is the truth), `derived-from=<column>` (seed this column from the named edge), or `independent` (unrelated facts). Consumed by `forge db seed`'s diamond resolution; undeclared diamonds are refused rather than silently seeded inconsistently. Full grammar and worked examples: the `db/seeding` skill.",
 			Placement: "COMMENT ON CONSTRAINT <fk_name> ON <table> IS 'forge:ref ...'; in a migration — on the FOREIGN KEY constraint, NOT a column comment.",
 			Example:   "COMMENT ON CONSTRAINT orders_patient_id_fkey ON orders IS 'forge:ref derived-from=prescription_id';",
+		},
+		{
+			Name:      schemadef.ColumnMarkerClosedSet,
+			AppliesTo: "column",
+			Effect:    "Declares that a CHECK's value list mirrors a closed Go set. `forge lint` (the closed-sets lane, on by default; `--closed-sets` alone) reads the CHECK the migrations LAST defined for the constraint — `col <@ ARRAY[…]` for an array column, `col = ANY (ARRAY[…])` or `col IN (…)` for a scalar — and fails when its values differ from the set, naming the missing and extra values and printing the forward migration (`forge db migration new --closed-set <constraint>` writes it). The set is a forge-exported name (" + strings.Join(closedset.Names(), ", ") + ") or a project set's qualified Go name, `<import path>.<Var>`, whose initializer is a literal of constants; forge type-checks it and runs nothing. postgres drops a constraint's comment with the constraint, so a migration that replaces the CHECK must re-issue the COMMENT — the lane reports a declaration lost that way.",
+			Placement: "COMMENT ON CONSTRAINT <check_name> ON <table> IS 'forge:closed-set <set>'; in a migration, after the CHECK exists — on the CHECK constraint, NOT the column.",
+			Example:   "COMMENT ON CONSTRAINT access_tokens_scopes ON access_tokens IS 'forge:closed-set accesstoken.AllScopes';",
 		},
 		{
 			Name:      schemadef.ColumnMarkerVersion,

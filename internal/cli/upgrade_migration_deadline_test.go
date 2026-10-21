@@ -49,6 +49,9 @@ func TestDeadlineMigration_Detection(t *testing.T) {
 		"serve.go with the deadline":      {filepath.Join("cmd", "app", "cmd", "serve.go"), currentChain, false},
 		"providers.go with the deadline":  {filepath.Join("internal", "app", "providers.go"), currentChain, false},
 		"no chain at all":                 {filepath.Join("cmd", "app", "cmd", "serve.go"), "package cmd\n", false},
+		// Section 2: the legacy composition.
+		"the legacy NewComponents": {filepath.Join("internal", "app", "compose.go"), "package app\n\nfunc NewComponents(infra *Infra) (*Components, error) { return nil, nil }\n", true},
+		"the legacy Infra":         {filepath.Join("internal", "app", "providers.go"), "package app\n\ntype Infra struct{}\n", true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()

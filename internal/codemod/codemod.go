@@ -42,6 +42,11 @@ type Report struct {
 	// Next is what the codemod could not decide, as the exact edits left to
 	// make, in order. Empty when the rewrite is the whole job.
 	Next []string
+	// Blocked are the shapes that stop a restructuring codemod from
+	// writing anything — each with its file:line and the edit that clears
+	// it. A codemod that reports any rewrites nothing: a conversion that
+	// compiles but silently changes what a process does is worse than none.
+	Blocked []string
 	// Verify are the commands that prove the result. Empty means the
 	// default: go build, forge generate, forge lint.
 	Verify []string
@@ -68,6 +73,10 @@ type Codemod struct {
 	// restructuring is run on request, after the person running it has read
 	// what it does.
 	Upgrade bool
+	// CleanTree marks a codemod that replaces files wholesale: `forge fix`
+	// refuses to run it over uncommitted changes (unless --allow-dirty), so
+	// `git diff` is the review and `git checkout .` the undo.
+	CleanTree bool
 	// Run rewrites the project at dir. With write false it changes nothing
 	// and reports what it would rewrite.
 	Run func(dir string, write bool) (Report, error)

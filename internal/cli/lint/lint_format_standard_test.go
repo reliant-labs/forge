@@ -174,8 +174,8 @@ func TestLintHelpSaysItFixesByDefault(t *testing.T) {
 	}
 	for _, flag := range []string{"scope", "quiet"} {
 		usage := cmd.Flags().Lookup(flag).Usage
-		if !strings.Contains(usage, "--no-fix") {
-			t.Errorf("--%s usage does not say auto-fix applies and --no-fix stops it: %q", flag, usage)
+		if !strings.Contains(usage, "--no-fix") || !strings.Contains(usage, "--check") || !strings.Contains(usage, "CI") {
+			t.Errorf("--%s usage does not say auto-fix applies and that CI, --check or --no-fix stops it: %q", flag, usage)
 		}
 	}
 	if long := strings.Join(strings.Fields(cmd.Long), " "); !strings.Contains(long, "never rewrites a file the project's own formatter gate accepts") ||

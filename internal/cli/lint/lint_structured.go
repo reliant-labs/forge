@@ -500,12 +500,16 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 	case targeted:
 		// A targeted lane never auto-fixes, in text mode or here.
 	default:
-		if !flags.noFix {
+		fix, note := resolveFixMode(flags)
+		if note != "" {
+			fmt.Fprintln(os.Stderr, note)
+		}
+		if fix {
 			fixed = structuredFixPrePass(ctx, cwd, cfg, scope, flags.skipFrontends)
 		}
 		outcomes = collectLintOutcomes(&lintRunCtx{
 			ctx:           ctx,
-			fix:           !flags.noFix,
+			fix:           fix,
 			strict:        flags.strict,
 			skipFrontends: flags.skipFrontends,
 			paths:         paths,
@@ -514,6 +518,9 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 			scope:         scope,
 			golangciMemo:  newGolangciMemo(productionGolangciToolchain()),
 		})
+		if !fix {
+			outcomes = append(outcomes, formatOutcome(ctx, cwd, cfg, scope, paths, flags.skipFrontends))
+		}
 	}
 	os.Stdout = realStdout
 	if err != nil {

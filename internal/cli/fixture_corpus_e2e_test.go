@@ -462,11 +462,12 @@ func TestE2EFixtureCorpusKalshiShaped(t *testing.T) {
 	dir := t.TempDir()
 	start := time.Now()
 
-	runCmd(t, dir, forgeBin, "project", "new", "kalshishape",
+	newOut := runCmdKeep(t, dir, forgeBin, "project", "new", "kalshishape",
 		"--mod", "example.com/kalshishape",
 		"--service", "engine",
 	)
 	projectDir := filepath.Join(dir, "kalshishape")
+	requireComposedE2E(t, projectDir, newOut)
 	addCorpusForgePkgReplace(t, projectDir)
 
 	// ── Workers: snake_case multi-word names, one cron ────────────────

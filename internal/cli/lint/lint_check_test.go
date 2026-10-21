@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -201,6 +202,9 @@ func TestFormatOutcome_GatesAndCarriesTheDiff(t *testing.T) {
 // The frontend half: prettier --list-different names the files, nothing is
 // written, and the diff comes from formatting on stdin.
 func TestCollectFrontendFormatPending_WritesNothing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub prettier is a POSIX shell script")
+	}
 	root := t.TempDir()
 	fe := filepath.Join(root, "frontends", "web")
 	src := filepath.Join(fe, "src", "a.ts")

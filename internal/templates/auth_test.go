@@ -27,6 +27,8 @@ func TestRenderAppAuthTemplate(t *testing.T) {
 	data := struct {
 		Module             string
 		Graph, HasDatabase bool
+		NoJWTConfig        bool
+		AuthConfigType     string
 	}{Module: "example.com/myproject"}
 
 	content, err := ProjectTemplates().Render("app-auth.go.tmpl", data)
@@ -359,6 +361,8 @@ func TestAPIKeysSkillDescribesTheScaffold(t *testing.T) {
 		"internal/app/auth.go": render("app-auth.go.tmpl", struct {
 			Module             string
 			Graph, HasDatabase bool
+			NoJWTConfig        bool
+			AuthConfigType     string
 		}{Module: "example.com/demo"}),
 		"cmd/<bin>/cmd/serve.go": render("cmd-tree-serve.go.tmpl", struct {
 			Module       string

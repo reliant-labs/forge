@@ -22,6 +22,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Edges to an undeclared, non-ShellBuild or image-less workload are refused at
   render, and cycles before any build runs; `--plan` shows each edge.
   Independent builds still run in parallel.
+- **`NewInstrumented`: a contract's constructor, already decorated, so every
+  construction site is one rename from traced.** `middleware_gen.go` now
+  declares `NewInstrumented` beside the decorator, with `New`'s exact
+  parameters and results, returning the decorated value. `forge generate`
+  keeps `compose.go` wrapped, but most real projects construct components in
+  `providers.go` and `*_wire.go` files too: in the control plane, after every
+  contract package gained a decorator, none of its 46 hand-wired constructions
+  used it, so its traces were unchanged. `forge-tracing-contract-uninstrumented`
+  now autofixes every such call by renaming `New` to `NewInstrumented`, which
+  is valid wherever a call can appear (including `x, err := pkg.New(…)` and
+  `return pkg.New(…)`) and changes no type, and renames a `NewInstrumented`
+  back to `New` when its package opts out. `forge lint --tracing` applies it;
+  the full sweep applies it where the rule is at error.
+
+- **Each root's config reach as importable Go: `pkg/config/roots_gen.go`.**
+  A graph-mode project's generated `pkg/config` now has `Roots()`,
+  `RootNamed(name)` and `ValidateRootEnv(name, env)`. These are the same reach
+  `deploy/kcl/config_gen.k`'s `ROOTS` projects, generated from the same data
+  in the same step. For each root: its name and command path, every env var it
+  reaches (config, path, type, required, sensitive, aliases), the env families
+  it reaches, and the configs its process loads with the fields its command
+  demands. `forgeconfig.Root.Validate(env)` runs the boot load over a rendered
+  env instead of the process's, with no flags, and returns every problem rather
+  than the first. It catches a missing required var, a value the process would
+  refuse (a bare-number duration, a value outside allowed_values, a misspelt
+  env-family entry), and, as `*UnreachedVarError`, every var the root never
+  reads. The repo that keeps a deployment's values can then check them against
+  the binary's own schema, per root, in a Go test at its pinned version.
 - **`Plan<Root>()`: each root's start and stop order as data.** `graph_gen.go`
   emits a static `graphkit.Plan` per root — every node `Build<Root>`
   constructs, in order, with the lifecycle methods its type has, the probe
@@ -29,14 +57,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are the order `Run<Root>` supervises, so a project pins a root's stop
   order in a unit test without a database or a broker (roots plan F7).
 - **Each root's process settings come from the configs its command loads,
-  and a root declares whether it migrates.** In a binary_config project
+  and a root declares whether it migrates.** In a binary*config project
   (`(forge.v1.binary_config)` `command`/`subtrees`), `rootSpec.Configs` hands
-  `runRoot` the configs a root's command loaded *before* the policy runs, and
+  `runRoot` the configs a root's command loaded \_before* the policy runs, and
   the scaffolded `serverkitConfig(cfg, root.Configs)` reads the port, drain
   budget, logging, TLS and database settings from whichever of them declares
   each (most specific last), so `server api` and `server worker` listen and
-  drain on their own command config's values. `//forge:root <name>
-  migrate=apply|wait|none` says what the process does about the schema;
+  drain on their own command config's values.
+  `//forge:root <name> migrate=apply|wait|none` says what the process does
+  about the schema;
   `wait` blocks — `/readyz` naming `schema` — until another process has
   applied the migrations (`migratekit.AwaitSchema`,
   `serverkit.AwaitMigrationsContext`). The default is unchanged: apply when
@@ -63,8 +92,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the probes, so its root keeps its probe listener. Existing projects:
   `migrations/v0.1.47` section 3.
 - **Roots can be declared one at a time: resolution follows reach.** A
-  root's process builds only the closure its fields reach, but `forge
-  generate` demanded a provider for every Deps field of every discovered
+  root's process builds only the closure its fields reach, but
+  `forge generate` demanded a provider for every Deps field of every discovered
   component, so a project with 33 handlers could not declare a gateway root
   without first wiring all of them. Now a Deps field forge cannot fill fails
   generate only on a node some root reaches (as before, with the same
@@ -385,6 +414,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A generated store reports a missing row one way.** `Get<E>ByID`,
+  `Get<E>ByPK` and a view's `Get<E>ByID` returned `svcerr.NotFound`, while
+  `Update<E>`, `Update<E>Masked`, `Delete<E>` and `Delete<E>ByPK` returned
+  `orm.ErrNoRows`, so a caller touching both checked both. `crud.Repo` now
+  answers every by-key miss (and `crud.ScopedGet`'s) with
+  `svcerr.NotFound("<entity>")` carrying `orm.ErrNoRows` as its cause:
+  `svcerr.IsNotFound(err)` and `errors.Is(err, orm.ErrNoRows)` (=
+  `sql.ErrNoRows`) are both true. `svcerr.NotFound` is the answer because it
+  is the domain category `svcerr.Wrap` maps to CodeNotFound and a service can
+  return as-is; the sentinel stays reachable so a Persist closure that
+  swallows it (absent-is-success) and every existing check keep working. The
+  generated delegates now only forward, and no longer import `errors` or
+  `pkg/svcerr`. **Migration note:** nothing that checked either error breaks;
+  `ignoreNotFound`-style helpers that test both can test one. Two checks
+  that never fired now do: `errors.Is(err, sql.ErrNoRows)` after a `Get…`,
+  and `svcerr.IsNotFound(err)` after an Update or Delete. A caller that
+  compared the error with `==` (never correct: it was wrapped) or matched its
+  text sees `"<entity> not found"` in place of `"sql: no rows in result set"`.
+- **`Create<E>` and `Upsert<E>` keep a caller-set `updated_at`.** Managed
+  timestamps follow explicit-beats-default, the rule a `NOT NULL DEFAULT`
+  column follows: `created_at` and `updated_at` get now only when unset (zero
+  time, `nil`, `""`), and a value the caller set is kept — Create overwrote
+  `updated_at` unconditionally, so rows that carry their own times (reliant's
+  drafts and scenarios) had to bypass it. `Upsert` writes the same
+  `updated_at` on either branch. `Update`/`UpdateMasked` still always
+  re-stamp `updated_at`. **Migration note:** a Create of a struct that still
+  holds a stale non-zero `updated_at` (copied from another row) now stores
+  that value; zero it, or set it to now, to stamp.
+- **`List<E>` with no limit returns every row instead of the first 10,000.**
+  A limit-less `crud.Repo.List` was capped at 10,000 rows with no error and
+  no flag, so a table that outgrew it silently returned a wrong answer. The
+  cap is gone: no `orm.WithLimit` means all matching rows, as `ListAll`
+  already did. Bound a read with `orm.WithLimit`, or walk a growing table a
+  page at a time (`WhereGt` on the key + `WithOrderBy` + `WithLimit`). The
+  paged List rpcs are unchanged: they clamp `page_size` to `MaxPageSize` and
+  always pass their own limit. **Migration note:** a direct caller that
+  relied on the cap to bound memory must now pass `orm.WithLimit`.
+
 - **Every ORM statement is sent with its values as bind parameters, not just
   the by-key ones.** bun formats values into the SQL text, so under pgx's
   default statement cache each new id, timestamp or body was a new statement
@@ -402,8 +469,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `orm.ArgList(slice)` — the way to bind an integer `?` argument, which bun
   formats without consulting the dialect. A value stays a literal where a
   parameter would change its meaning (positional `ORDER BY`, typed literals,
-  bare arguments of `"any"` functions such as `jsonb_build_object`, `? IS
-  NULL`, `ON CONFLICT … DO` targets), and a statement forge cannot prove
+  bare arguments of `"any"` functions such as `jsonb_build_object`,
+  `? IS NULL`, `ON CONFLICT … DO` targets), and a statement forge cannot prove
   equal to bun's text, or that is not DML, runs as bun rendered it.
   `orm.Literal(v)` keeps one value in the text (a constant a partial index's
   predicate is proved from); `orm.InlineValues(ctx)` turns binding off for a

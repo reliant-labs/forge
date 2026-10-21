@@ -225,6 +225,16 @@ type LoadOption func(*loadOptions)
 
 type loadOptions struct {
 	required map[string]bool // nil: every field
+	// env is the environment read: the process's unless Root.Validate
+	// hands the load a rendered one.
+	env environ
+	// alongside are configs the process loads beside this one that no
+	// cobra command records (Root.Validate's, which has no command): their
+	// env names and families claim variables under a shared prefix.
+	alongside []protoreflect.MessageDescriptor
+	// collect, when set, receives every problem the load finds and the load
+	// goes on (loadOptions.report); nil ends it at the first, as at boot.
+	collect *[]error
 }
 
 // RequiredWithin makes `required: true` apply only to the named fields — the
@@ -373,7 +383,15 @@ func Validate(msg proto.Message) error {
 	return validateMessage(msg.ProtoReflect())
 }
 
+// validateMessage stops at the first violation.
 func validateMessage(m protoreflect.Message) error {
+	return validateMessageReport(m, func(err error) error { return err })
+}
+
+// validateMessageReport hands each violation to report, and stops when report
+// returns an error — at the first, for validateMessage; never, for a load that
+// collects every problem.
+func validateMessageReport(m protoreflect.Message, report func(error) error) error {
 	fields := m.Descriptor().Fields()
 
 	var (
@@ -389,7 +407,7 @@ func validateMessage(m protoreflect.Message) error {
 
 		// Recurse into nested config blocks first.
 		if isConfigBlock(fd) {
-			if err := validateMessage(m.Get(fd).Message()); err != nil {
+			if err := validateMessageReport(m.Get(fd).Message(), report); err != nil {
 				return err
 			}
 			continue
@@ -405,14 +423,18 @@ func validateMessage(m protoreflect.Message) error {
 		if vals := opt.GetAllowedValues(); len(vals) > 0 && isEnvFamily(opt) && fd.IsMap() && fd.MapValue().Kind() == protoreflect.StringKind {
 			for _, got := range familyValues(m, fd) {
 				if got != "" && !containsStr(vals, got) {
-					return fmt.Errorf("config field %s: value %q is not one of the allowed values %v", fd.Name(), got, vals)
+					if err := report(fmt.Errorf("config field %s: value %q is not one of the allowed values %v", fd.Name(), got, vals)); err != nil {
+						return err
+					}
 				}
 			}
 		}
 		if vals := opt.GetAllowedValues(); len(vals) > 0 && isStringField(fd) {
 			for _, got := range stringValues(m, fd) {
 				if got != "" && !containsStr(vals, got) {
-					return fmt.Errorf("config field %s: value %q is not one of the allowed values %v", fd.Name(), got, vals)
+					if err := report(fmt.Errorf("config field %s: value %q is not one of the allowed values %v", fd.Name(), got, vals)); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -442,13 +464,17 @@ func validateMessage(m protoreflect.Message) error {
 		certSet := tlsCert != ""
 		keySet := tlsKey != ""
 		if certSet != keySet {
-			return fmt.Errorf("TLS is half-configured: set BOTH the TLS cert and key (role=TLS_CERT/TLS_KEY) or NEITHER — exactly one was provided")
+			if err := report(fmt.Errorf("TLS is half-configured: set BOTH the TLS cert and key (role=TLS_CERT/TLS_KEY) or NEITHER — exactly one was provided")); err != nil {
+				return err
+			}
 		}
 	}
 
 	// CORS: wildcard origin + credentials is spec-invalid.
 	if haveCORSOrigins && haveCORSCred && corsAllowCreds && hasWildcardOrigin(corsOrigins) {
-		return fmt.Errorf("CORS misconfiguration: a wildcard origin (\"*\") MUST NOT be combined with credentials (role=CORS_ALLOW_CREDENTIALS=true); name explicit origins instead")
+		if err := report(fmt.Errorf("CORS misconfiguration: a wildcard origin (\"*\") MUST NOT be combined with credentials (role=CORS_ALLOW_CREDENTIALS=true); name explicit origins instead")); err != nil {
+			return err
+		}
 	}
 
 	return nil

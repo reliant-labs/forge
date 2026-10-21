@@ -54,14 +54,14 @@ func envNames(opt *forgepb.ConfigFieldOptions) []string {
 // An alias carrying `values` supplies the field's value mapped from its own,
 // and only for a value the map names: any other value is another tool's
 // business, so it reads as unset and the next name is tried (aliasValue).
-func lookupFieldEnv(opt *forgepb.ConfigFieldOptions) (name, value string, ok bool) {
+func lookupFieldEnv(opt *forgepb.ConfigFieldOptions, env environ) (name, value string, ok bool) {
 	if n := opt.GetEnvVar(); n != "" {
-		if v, set := lookupEnv(n); set {
+		if v, set := env.lookupEnv(n); set {
 			return n, v, true
 		}
 	}
 	for _, a := range opt.GetEnvVarAliases() {
-		if v, set := aliasValue(a); set {
+		if v, set := aliasValue(a, env); set {
 			return a.GetName(), v, true
 		}
 	}
@@ -71,11 +71,11 @@ func lookupFieldEnv(opt *forgepb.ConfigFieldOptions) (name, value string, ok boo
 // aliasValue is what one alias supplies: its value, or for a value-mapped
 // alias the field value its value maps to; ok is false when it supplies
 // nothing (unset, "", or a value the map does not name).
-func aliasValue(a *forgepb.EnvVarAlias) (string, bool) {
+func aliasValue(a *forgepb.EnvVarAlias, env environ) (string, bool) {
 	if a.GetName() == "" {
 		return "", false
 	}
-	v, set := lookupEnv(a.GetName())
+	v, set := env.lookupEnv(a.GetName())
 	if !set {
 		return "", false
 	}
@@ -104,14 +104,14 @@ func aliasLabel(a *forgepb.EnvVarAlias) string {
 // noticeDeprecatedAliases writes one line to w for each deprecated alias of
 // the field that is set. supplier is the variable the env layer read the
 // value from ("" when none was set).
-func noticeDeprecatedAliases(w io.Writer, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions, supplier string) {
+func noticeDeprecatedAliases(w io.Writer, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions, supplier string, env environ) {
 	primary := opt.GetEnvVar()
 	for _, a := range opt.GetEnvVarAliases() {
 		name := a.GetName()
 		if !a.GetDeprecated() || name == "" {
 			continue
 		}
-		if _, set := aliasValue(a); !set {
+		if _, set := aliasValue(a, env); !set {
 			continue // unset, or a value-mapped alias set to a value it does not honour
 		}
 		if name == supplier {
@@ -151,10 +151,10 @@ func envSourcesPhrase(opt *forgepb.ConfigFieldOptions) string {
 // emptyEnvNote is the clause a required-field error adds when any of the
 // field's variables is present but empty, so nobody goes looking for a
 // variable that is in fact set. "" when none is.
-func emptyEnvNote(opt *forgepb.ConfigFieldOptions) string {
+func emptyEnvNote(opt *forgepb.ConfigFieldOptions, env environ) string {
 	var empty []string
 	for _, n := range envNames(opt) {
-		if envSetButEmpty(n) {
+		if env.envSetButEmpty(n) {
 			empty = append(empty, n)
 		}
 	}

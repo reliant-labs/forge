@@ -1346,25 +1346,13 @@ func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
 	}
 }
 
-// TestGeneratePlanORM_GetClassifiesMissingRow pins the ONE place the
-// generated ORM classifies a storage error: Get.
-//
-// The delegate used to hand back the raw orm.ErrNoRows sentinel, so every
-// hand-written RPC that loads a row re-derived the same three lines —
-// `if errors.Is(err, orm.ErrNoRows) { return svcerr.NotFound("<entity>") }`
-// — once per entity. A real run wrote that block three times in ONE file
-// (loadOrder, loadPrescription, loadProduct). The generated CRUD path never
-// paid it (crud.mapRepoErr classifies), which is what made it invisible;
-// pkg/svcerr's own doc comment cites exactly this per-package duplication as
-// its reason for existing.
-//
-// The asymmetry is deliberate and is asserted here so it cannot be
-// "tidied": Update and Delete keep the sentinel. pkg/crud documents
-// swallowing orm.ErrNoRows in an entity's Persist closure as the supported
-// way to opt into absent-is-success (AIP-135 allow_missing), and classifying
-// it in those delegates would break the one escape hatch forge points users
-// at.
-func TestGeneratePlanORM_GetClassifiesMissingRow(t *testing.T) {
+// TestGeneratePlanORM_ByKeyDelegatesForwardTheRepoMiss pins where a missing
+// row is classified: in crud.Repo, which answers every by-key verb's miss
+// with svcerr.NotFound (still errors.Is-true for orm.ErrNoRows). The Get
+// delegate used to translate the sentinel itself while Update and Delete
+// forwarded it raw, so callers of both checked both. Every delegate now
+// forwards, and the file needs neither errors nor svcerr.
+func TestGeneratePlanORM_ByKeyDelegatesForwardTheRepoMiss(t *testing.T) {
 	root := t.TempDir()
 	entities := []config.PlanEntity{{
 		Name:       "Prescription",
@@ -1383,34 +1371,26 @@ func TestGeneratePlanORM_GetClassifiesMissingRow(t *testing.T) {
 	}
 	code := string(content)
 
-	// The Get delegate classifies the missing row itself.
-	if !strings.Contains(code, "\tif errors.Is(err, orm.ErrNoRows) {\n\t\treturn nil, svcerr.NotFound(\"prescription\")\n\t}") {
-		t.Errorf("GetPrescriptionByID must map the missing row to svcerr.NotFound(%q); got:\n%s",
-			"prescription", code)
-	}
-	// A bare `return prescriptionRepo.Get(...)` is the pre-fix shape: the
-	// sentinel escaping to every caller.
-	if strings.Contains(code, "\treturn prescriptionRepo.Get(ctx, db, id)\n") {
-		t.Error("GetPrescriptionByID must not forward the raw repo error — that is the orm.ErrNoRows leak")
-	}
-	// The classification needs its imports; the type-check test compiles the
-	// result, this names them so a silent drop is legible.
-	for _, imp := range []string{`"errors"`, `"github.com/reliant-labs/forge/pkg/svcerr"`} {
-		if !strings.Contains(code, imp) {
-			t.Errorf("generated ORM file should import %s for the Get classification", imp)
+	for _, fwd := range []string{
+		"\treturn prescriptionRepo.Get(ctx, db, id)\n",
+		"\treturn prescriptionRepo.Update(ctx, db, msg, opts...)\n",
+		"\treturn prescriptionRepo.UpdateMasked(ctx, db, msg, fields)\n",
+		"\treturn prescriptionRepo.Delete(ctx, db, id)\n",
+	} {
+		if !strings.Contains(code, fwd) {
+			t.Errorf("delegate must forward the repo's answer: missing %q in\n%s", fwd, code)
 		}
 	}
-
-	// Write delegates stay on the sentinel — the documented absent-is-success
-	// escape hatch reads it.
-	if !strings.Contains(code, "\treturn prescriptionRepo.Delete(ctx, db, id)\n") {
-		t.Error("DeletePrescription must stay a pure delegate: pkg/crud's Persist-closure escape hatch matches orm.ErrNoRows")
+	if strings.Contains(code, "if errors.Is(err, orm.ErrNoRows)") {
+		t.Error("a delegate re-classifies the missing row; crud.Repo already does, for every by-key verb")
 	}
-	if !strings.Contains(code, "\treturn prescriptionRepo.Update(ctx, db, msg, opts...)\n") {
-		t.Error("UpdatePrescription must stay a pure delegate: pkg/crud's Persist-closure escape hatch matches orm.ErrNoRows")
+	for _, imp := range []string{`"errors"`, `"github.com/reliant-labs/forge/pkg/svcerr"`} {
+		if strings.Contains(code, imp) {
+			t.Errorf("generated ORM file imports %s, which nothing in it uses any more", imp)
+		}
 	}
-	if n := strings.Count(code, "return nil, svcerr.NotFound("); n != 1 {
-		t.Errorf("exactly one delegate (Get) classifies the missing row; got %d svcerr.NotFound call(s)", n)
+	if !strings.Contains(code, `svcerr.NotFound("prescription")`) {
+		t.Error("GetPrescriptionByID's doc must name the not-found answer")
 	}
 }
 

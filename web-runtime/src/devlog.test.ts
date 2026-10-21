@@ -54,7 +54,8 @@ function stubDom(): { fire: (type: string, event?: unknown) => void } {
 
 function bodyEntries(init?: RequestInit): Entry[] {
   const parsed = JSON.parse(String(init?.body)) as
-    { entries?: Entry[] } | Entry;
+    | { entries?: Entry[] }
+    | Entry;
   const entries = (parsed as { entries?: Entry[] }).entries;
   return entries ?? [parsed as Entry];
 }

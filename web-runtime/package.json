@@ -1,6 +1,6 @@
 {
   "name": "@reliantlabs/forge-web-runtime",
-  "version": "0.6.0",
+  "version": "0.5.0",
   "description": "The forge frontend runtime: Connect interceptor stack, session, error boundary, toast queue, <Resource> container, W3C trace propagation and the HyperDX browser SDK wiring (errors, console, network, traces; replay off by default). The web twin of forge/pkg.",
   "license": "Apache-2.0",
   "//repository note": "REQUIRED for `npm publish --provenance`, not decoration. npm cross-checks this against the repository in the signed provenance statement and rejects the publish with a 422 if they disagree — an absent field reads as \"\" and fails that comparison. `directory` names the subdirectory this package lives in, so the provenance points at the real source. Omitting this is what made the first 0.3.1 publish fail AFTER the tarball had been signed and written to the sigstore transparency log.",

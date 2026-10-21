@@ -3,6 +3,7 @@ package migratekit
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -66,8 +67,14 @@ func TestAwaitSchemaVerdicts(t *testing.T) {
 	if err := AwaitSchema(ctx, db, release(olderFiles), "migrations", fast); err != nil {
 		t.Errorf("a schema at the embedded migrations must satisfy the waiter: %v", err)
 	}
-	if err := AwaitSchema(ctx, db, fstest.MapFS{}, "migrations", fast); err != nil {
-		t.Errorf("a binary embedding no migrations has nothing to wait for: %v", err)
+	for _, none := range []fstest.MapFS{nil, {"migrations/README.md": {Data: []byte("none yet")}}} {
+		var fsys fs.FS
+		if none != nil {
+			fsys = none
+		}
+		if err := AwaitSchema(ctx, db, fsys, "migrations", fast); err != nil {
+			t.Errorf("a binary embedding no migrations has nothing to wait for: %v", err)
+		}
 	}
 
 	err := AwaitSchema(ctx, db, release(merged(olderFiles, compatibleThird)), "migrations", fast)

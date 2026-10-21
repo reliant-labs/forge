@@ -960,14 +960,16 @@ func validateProjectFields(cfg *ProjectConfig, root *yaml.Node) []validationIssu
 			fix:    "add 'name: <project-name>' near the top of forge.yaml.",
 		})
 	}
-	if strings.TrimSpace(cfg.ModulePath) == "" {
+	// A static site has no Go module, so it has no module path to declare
+	// (HasGoModule). The moment it gains a go.mod the field is required again.
+	if strings.TrimSpace(cfg.ModulePath) == "" && cfg.HasGoModule() {
 		out = append(out, validationIssue{
 			line:   rootLine,
 			column: rootCol,
 			msg:    "'module_path' is required but missing or empty",
 			fix:    "add 'module_path: github.com/<org>/<project>' near the top of forge.yaml.",
 		})
-	} else if !looksLikeGoModulePath(cfg.ModulePath) {
+	} else if strings.TrimSpace(cfg.ModulePath) != "" && !looksLikeGoModulePath(cfg.ModulePath) {
 		// Existing-but-invalid: point at the actual `module_path:` line.
 		line, col := findNodePos(root, []string{"module_path"})
 		out = append(out, validationIssue{

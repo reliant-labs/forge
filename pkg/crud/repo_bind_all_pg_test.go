@@ -116,13 +116,13 @@ func TestStatementsSentToPostgresCarryNoValues(t *testing.T) {
 			return db.Bun().NewRaw("SELECT id FROM widgets WHERE name = ? AND id < ?", name, orm.Arg(bigID)).Scan(ctx, &ids)
 		}, name},
 		{"RunTx", func() error {
-			return db.RunTx(ctx, func(ctx context.Context) error {
+			return db.RunTx(ctx, orm.Serializable, func(ctx context.Context) error {
 				_, err := repo.List(ctx, db, orm.WhereEq("name", other))
 				return err
 			})
 		}, other},
 		{"explicit Tx handle", func() error {
-			return db.RunTransaction(ctx, func(tx orm.Context) error {
+			return db.RunTransaction(ctx, orm.ReadCommitted, func(tx orm.Context) error {
 				var rows []widget
 				return tx.Bun().NewSelect().Model(&rows).Where("name = ?", other).Scan(ctx)
 			})

@@ -44,10 +44,13 @@ import (
 // otherwise have to remember to write by hand, in every handler,
 // correctly. Generated once and named is strictly better than remembered
 // five times. An application that needs the check and the write to be
-// atomic wraps the closure body in s.deps.DB.RunTx: both statements then
-// run in one SERIALIZABLE transaction carried by ctx, and a concurrent
-// owner change aborts this one and re-runs the check against the committed
-// row.
+// atomic wraps the closure body in s.deps.DB.RunTx(ctx, orm.Serializable,
+// …): both statements then run in one SERIALIZABLE transaction carried by
+// ctx, and a concurrent owner change aborts this one and re-runs the check
+// against the committed row. It must be orm.Serializable — the level has no
+// default — because nothing here locks the row: at orm.ReadCommitted the
+// check and the write would each see their own committed snapshot and the
+// race would be back.
 //
 // # Zero options is the untouched path
 //

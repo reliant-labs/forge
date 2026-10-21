@@ -104,7 +104,7 @@ and they call `internal/db/` and other collaborators through `s.deps`. Load
 | An rpc's logic: validation, auth checks, state transitions, DB calls | the `*Service` method in `internal/handlers/<svc>/rpc_<name>.go` (CRUD: the shim in `handlers_crud.go`) | `api` |
 | Errors crossing the rpc boundary | `return nil, svcerr.Wrap(err)` — never a per-service `connect.Code` switch (`forgeconv-no-handler-error-mapping`) | `api` |
 | Logic that deserves transport-free tests, or that a worker or another service also calls | a standalone package — `{{.CLI}} scaffold package <name>` writes `internal/<name>/contract.go`, and the handler takes it as a Deps interface | `service-layer`, `interactor` |
-| Read-check-write transactions | `s.deps.DB.RunTx(ctx, func(ctx context.Context) error { … })` | `service-layer/transactions` |
+| Read-check-write transactions | `s.deps.DB.RunTx(ctx, orm.Serializable, func(ctx context.Context) error { … })` — every transaction names its level (no default): `orm.Serializable` for lock-free read-check-write, `orm.ReadCommitted` when a lock (`FOR UPDATE`, advisory) is what makes it correct, never both | `service-layer/transactions` |
 | Wiring (constructing services, middleware chains, dep injection) | `internal/app/providers.go` (yours — what fills a Deps field); `internal/app/compose.go` (also yours; forge reconciles the component set and Deps keys) | `services` |
 | DB schema | migrations under `db/migrations/` (the source of truth — entities/ORM are projected FROM the applied schema) | `db` |
 

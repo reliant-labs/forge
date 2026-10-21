@@ -117,7 +117,7 @@ insert. The interceptor never writes a row for a mutation that did not happen.
 transaction:
 
 ```go
-err := s.deps.DB.RunTx(ctx, func(ctx context.Context) error {
+err := s.deps.DB.RunTx(ctx, orm.Serializable, func(ctx context.Context) error {
     v, err := rotate(ctx, s.deps.DB, req.Msg.GetSecretId())
     if err != nil {
         return err

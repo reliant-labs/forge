@@ -169,7 +169,7 @@ func (m *MigrationManager) Migrate(ctx context.Context) error {
 		}
 
 		// Run migration in a transaction
-		err := m.client.RunTransaction(ctx, func(tx Context) error {
+		err := m.client.RunTransaction(ctx, ReadCommitted, func(tx Context) error {
 			if err := migration.Up(ctx, tx); err != nil {
 				return fmt.Errorf("migration %s failed: %w", migration.Version, err)
 			}
@@ -222,7 +222,7 @@ func (m *MigrationManager) MigrateTo(ctx context.Context, targetVersion string) 
 		}
 
 		// Run migration in a transaction
-		err := m.client.RunTransaction(ctx, func(tx Context) error {
+		err := m.client.RunTransaction(ctx, ReadCommitted, func(tx Context) error {
 			if err := migration.Up(ctx, tx); err != nil {
 				return fmt.Errorf("migration %s failed: %w", migration.Version, err)
 			}
@@ -605,7 +605,7 @@ func (m *MigrationManager) AutoMigrate(ctx context.Context, schemas []TableSchem
 	}
 
 	// Generate and execute migrations in a transaction
-	return m.client.RunTransaction(ctx, func(tx Context) error {
+	return m.client.RunTransaction(ctx, ReadCommitted, func(tx Context) error {
 		for _, diff := range diffs {
 			if !diff.HasChanges() {
 				continue

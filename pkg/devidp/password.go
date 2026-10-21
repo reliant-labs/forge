@@ -58,6 +58,10 @@ var ErrInvalidResetCode = errors.New("the reset code is not valid for this user"
 // new code — which is why a caller must be able to tell this apart from
 // ErrInvalidResetCode.
 type PasswordPolicyError struct {
+	// Rule is the complexity rule the issuer reported, or "" when it
+	// reported one this package does not know. The issuer names only the
+	// first rule a password breaks; PasswordPolicy.Unmet lists them all.
+	Rule PasswordRule
 	// Reason is the issuer's own description ("Password is too short"),
 	// safe and useful to show the person who typed it.
 	Reason string
@@ -137,6 +141,41 @@ func (c *Client) FindUserByEmail(ctx context.Context, email string) (User, error
 	return matches[0], nil
 }
 
+// FindUserByID resolves a user id to the human user it names. ErrUserNotFound
+// when there is none, or when it is a machine account.
+func (c *Client) FindUserByID(ctx context.Context, id string) (User, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return User{}, fmt.Errorf("a user id is required")
+	}
+	body, err := c.getJSON(ctx, "/v2/users/"+url.PathEscape(id))
+	if err != nil {
+		var apiErr *apiError
+		if errors.As(err, &apiErr) && apiErr.status == 404 {
+			return User{}, ErrUserNotFound
+		}
+		return User{}, fmt.Errorf("get user: %w", err)
+	}
+	var out struct {
+		User struct {
+			UserID             string `json:"userId"`
+			PreferredLoginName string `json:"preferredLoginName"`
+			Human              *struct {
+				Email struct {
+					Email string `json:"email"`
+				} `json:"email"`
+			} `json:"human"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return User{}, fmt.Errorf("decode user: %w", err)
+	}
+	if out.User.Human == nil || out.User.UserID == "" {
+		return User{}, ErrUserNotFound
+	}
+	return User{ID: out.User.UserID, LoginName: out.User.PreferredLoginName, Email: out.User.Human.Email.Email}, nil
+}
+
 // loginNameFor resolves what a person typed into the login name the issuer
 // creates sessions by.
 //
@@ -162,6 +201,66 @@ func (c *Client) loginNameFor(ctx context.Context, typed string) string {
 		return typed
 	}
 	return user.LoginName
+}
+
+// SendPasswordResetLink asks the issuer to EMAIL the user a link to set a new
+// password. urlTemplate is the link's shape, with the issuer's placeholders:
+//
+//	https://app.example.com/auth/reset?userID={{.UserID}}&code={{.Code}}&orgID={{.OrgID}}
+//
+// ── This sends mail only if the instance has an SMTP provider ───────────
+//
+// The call SUCCEEDS either way. An instance with no SMTP configuration (every
+// customer instance, unless its environment declares `smtp`) accepts the
+// request, queues a notification nothing can deliver, and tells the caller
+// nothing. A nil error therefore means "the issuer accepted the request", never
+// "an email arrived".
+//
+// The code travels only in the email. This function never returns it, so a
+// request handler that calls it cannot leak one to the person asking.
+func (c *Client) SendPasswordResetLink(ctx context.Context, userID, urlTemplate string) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return fmt.Errorf("a user id is required to request a password reset")
+	}
+	link := map[string]any{"notificationType": "NOTIFICATION_TYPE_Email"}
+	if urlTemplate != "" {
+		link["urlTemplate"] = urlTemplate
+	}
+	if _, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/password_reset", map[string]any{"sendLink": link}); err != nil {
+		return fmt.Errorf("request password reset link: %w", err)
+	}
+	return nil
+}
+
+// MintPasswordResetCode asks the issuer for a reset code and returns it to
+// the CALLER instead of mailing it.
+//
+// THE RETURNED CODE IS THE CREDENTIAL. Whoever holds it can set the user's
+// password. It belongs in a server log in development, or in a channel the
+// account's owner controls (an SMS, a chat message, an admin screen only they
+// can see) — never in a response to the request that asked for it, which is
+// anyone on the internet. A handler that returned it from a "forgot password"
+// endpoint would turn that endpoint into "take over any account".
+func (c *Client) MintPasswordResetCode(ctx context.Context, userID string) (string, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return "", fmt.Errorf("a user id is required to request a password reset")
+	}
+	body, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/password_reset", map[string]any{"returnCode": map[string]any{}})
+	if err != nil {
+		return "", fmt.Errorf("mint password reset code: %w", err)
+	}
+	var out struct {
+		VerificationCode string `json:"verificationCode"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", fmt.Errorf("decode password reset code: %w", err)
+	}
+	if out.VerificationCode == "" {
+		return "", fmt.Errorf("the issuer accepted the reset request for user %q but returned no code", userID)
+	}
+	return out.VerificationCode, nil
 }
 
 // PasswordReset is one redemption of a reset code. Every field is required.
@@ -233,10 +332,11 @@ func classifyResetError(err error) error {
 	if !errors.As(err, &apiErr) {
 		return fmt.Errorf("reset password: %w", err)
 	}
-	id, message := apiErr.errorID()
+	id, _ := apiErr.errorID()
+	if policy := policyErrorFrom(apiErr); policy != nil {
+		return policy
+	}
 	switch {
-	case strings.HasPrefix(id, policyErrorPrefix):
-		return &PasswordPolicyError{Reason: message}
 	case strings.HasPrefix(id, codeErrorPrefix), id == codeNotFoundID:
 		return fmt.Errorf("%w: %s", ErrInvalidResetCode, err.Error())
 	default:

@@ -40,8 +40,12 @@ a flag. The environment must already exist in this project.
 
 --user takes a user id or an exact email address (see 'users').
 
-Inviting sends an email link for the recipient to set their own credential.
-There is no password option, seed account or implicit recipient. Roles managed
+Inviting creates the account (or grants roles to an existing one) and asks the
+instance to email a code. No mail is sent unless the environment declares smtp
+in KCL: without it the call succeeds and delivers nothing, so hand the person a
+password-set code through a channel you control (the deploy/managed-identity
+skill, "What an invitation does, and does not, do"). There is no password
+option, seed account or implicit recipient. Roles managed
 in deploy/kcl/identity.k (members_from = "declared") are read-only here.`,
 	}
 	cmd.AddCommand(newCloudIdentityStatusCmd(), newCloudIdentityUsersCmd(), newCloudIdentityInviteCmd())
@@ -248,10 +252,11 @@ func newCloudIdentityInviteCmd() *cobra.Command {
 	var email string
 	var roles []string
 	cmd := &cobra.Command{
-		Use: "invite <env> --email <address> --role <role>", Short: "Email an invitation and grant console-managed roles (org admin)",
+		Use: "invite <env> --email <address> --role <role>", Short: "Create an account (or grant roles) and ask for an invitation email (org admin)",
 		Long: `Invite this explicit email address; repeat --role for multiple roles.
-The recipient sets their own credential using the invitation email. An existing
-account receives the requested roles (created=false). The server refuses unknown
+The account is created and the instance is asked to email a code, but mail
+goes out only when the environment declares smtp; otherwise nothing is sent and
+the person needs a password-set code from you. An existing account receives the requested roles (created=false). The server refuses unknown
 or declared/read-only roles, a credential without identity:manage and an
 identity that is not ready. Such a refusal is an error, never a fallback to a seeded password.`,
 		Args: cobra.ExactArgs(1),
@@ -284,7 +289,7 @@ identity that is not ready. Such a refusal is an error, never a fallback to a se
 			if f.json {
 				return writeJSONDocument(cmd.OutOrStdout(), doc)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Invitation requested for %s (user %s, created=%t).\nThe recipient sets their credential through the invitation email.\n", email, doc.UserID, doc.Created)
+			fmt.Fprintf(cmd.OutOrStdout(), "Invitation requested for %s (user %s, created=%t).\nNo mail is sent unless the environment declares smtp; otherwise hand the person a password-set code yourself.\n", email, doc.UserID, doc.Created)
 			return nil
 		},
 	}

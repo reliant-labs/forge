@@ -224,7 +224,7 @@ Each dep is filled by its interface, so swapping the real in-process adapter for
 
 - **The outbound boundary itself** (third-party calls, response mapping) — see `adapter`.
 - **The Service / Deps / New shape** — see `service-layer`.
-- **Transactions** — declare `DB orm.Context` and wrap the steps in `s.deps.DB.RunTx(ctx, fn)`: every dep that writes through forge's ORM with `fn`'s `ctx` joins it (a dep's own `RunTx` joins too), and `orm.AfterCommit` carries the post-commit event. See `service-layer/transactions`.
+- **Transactions** — declare `DB orm.Context` and wrap the steps in `s.deps.DB.RunTx(ctx, orm.Serializable, fn)` (lock-free read-check-write; `orm.ReadCommitted` when a lock is the correctness argument — there is no default level): every dep that writes through forge's ORM with `fn`'s `ctx` joins it (a dep's own `RunTx` joins too), and `orm.AfterCommit` carries the post-commit event. See `service-layer/transactions`.
 - **Handler-side validation and error wrapping** — see `api`.
 - **Translating vendor errors into svcerr sentinels at the boundary** — see `service-layer`'s errors section and `forge/pkg/svcerr`.
 <!-- @forge-only:end -->

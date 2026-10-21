@@ -124,6 +124,13 @@ type Check struct {
 	Tools []Tool
 
 	Argv []string
+	// SlotArgv, when set, runs instead of Argv while the check holds a host
+	// heavy slot of its own. A tool with its own machine-global mutex drops
+	// it here, because the slot already bounds what the mutex protected
+	// (golangci-lint: --allow-parallel-runners instead of
+	// --allow-serial-runners). Without a slot of its own — the limit is off,
+	// or the gate itself runs inside a parent's slot — Argv runs.
+	SlotArgv []string
 	// Dir is project-relative; empty is the project root.
 	Dir string
 	Env []string
@@ -903,9 +910,13 @@ func (s *scheduler) execute(c Check, slotEnv []string) (res Result, ran bool) {
 		w = io.MultiWriter(w, full)
 	}
 
-	s.out.printf("▶ %s  %s\n", c.Name, strings.Join(c.Argv, " "))
+	argv := c.Argv
+	if len(slotEnv) > 0 && len(c.SlotArgv) > 0 {
+		argv = c.SlotArgv
+	}
+	s.out.printf("▶ %s  %s\n", c.Name, strings.Join(argv, " "))
 	start := s.now()
-	err := s.exec(s.ctx, dir, env, c.Argv, w)
+	err := s.exec(s.ctx, dir, env, argv, w)
 	res.Duration = s.now().Sub(start)
 
 	switch {

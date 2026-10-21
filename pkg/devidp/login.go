@@ -3,6 +3,7 @@ package devidp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -358,6 +359,14 @@ func (c *Client) Register(ctx context.Context, reg Registration) (string, error)
 		},
 	})
 	if err != nil {
+		// A rejected password comes back as a *PasswordPolicyError the
+		// caller can branch on, rather than as a paraphrase to parse.
+		var apiErr *apiError
+		if errors.As(err, &apiErr) {
+			if policy := policyErrorFrom(apiErr); policy != nil {
+				return "", fmt.Errorf("create account for %q: %w", email, policy)
+			}
+		}
 		return "", fmt.Errorf("create account for %q: %w", email, err)
 	}
 

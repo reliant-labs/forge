@@ -29,6 +29,11 @@
 //	                                    a comment, a string literal, or a
 //	                                    jsonb ?/?|/?& operator
 //	                                    (see bun_placeholders.go)
+//	forgeconv-tx-lock-under-serializable a SERIALIZABLE transaction whose
+//	                                    body takes a lock (FOR UPDATE, an
+//	                                    advisory lock, LOCK TABLE); warning,
+//	                                    error under --strict
+//	                                    (see tx_lock_under_serializable.go)
 //	forgeconv-deps-surface              a Deps interface field declares
 //	                                    methods the package never calls
 //	forgeconv-no-container-deps         a Deps field holds a container
@@ -134,10 +139,9 @@ func (r Result) FormatText() string {
 // LintOptions tunes the proto convention analyzers. The zero value is
 // the default (advisory) posture; callers opt into stricter gating.
 type LintOptions struct {
-	// Strict escalates advisory security findings to errors. No rule
-	// currently escalates on it, but the field is kept so `forge lint
-	// --strict` plumbing and its callers stay stable for the next rule that
-	// wants a gating posture.
+	// Strict escalates advisory findings to errors: the least-knowledge
+	// rules and forgeconv-tx-lock-under-serializable. No proto rule
+	// escalates on it.
 	Strict bool
 }
 

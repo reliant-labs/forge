@@ -18,6 +18,10 @@
 //	who am I →  GET  /auth/session   → identity, or not authenticated
 //	sign out →  POST /auth/logout    → cookie cleared
 //
+//	what must a password contain →  GET  /auth/password-policy
+//	forgot password              →  POST /auth/forgot  → reset link requested
+//	reset password               →  POST /auth/reset   → password set, signed in
+//
 // ── Why the token is not here ─────────────────────────────────────────
 //
 // The session cookie is HttpOnly, so this code CANNOT read it — and that
@@ -99,18 +103,46 @@ export interface Registration {
   familyName?: string;
 }
 
+/** One clause of the password policy. The names are the server's wire spelling. */
+export type PasswordRule =
+  | "min_length"
+  | "uppercase"
+  | "lowercase"
+  | "number"
+  | "symbol";
+
+/**
+ * What a password must contain, as the identity provider enforces it.
+ *
+ * Served by GET /auth/password-policy. The provider is the authority: this is
+ * what the forms SHOW and check while the person types, and a password that
+ * passes every check here can still be refused.
+ */
+export interface PasswordPolicy {
+  min_length: number;
+  has_uppercase: boolean;
+  has_lowercase: boolean;
+  has_number: boolean;
+  has_symbol: boolean;
+}
+
 /**
  * Thrown when the API refuses a request. `status` lets a screen tell
  * "wrong credentials" (401) from "the service is down" (5xx), which are
  * very different things to tell a user.
+ *
+ * `unmet` is set when the PASSWORD was what was refused: every policy rule it
+ * breaks, as the server evaluated them. A screen can mark exactly those.
  */
 export class AuthError extends Error {
   readonly status: number;
+  readonly unmet: PasswordRule[];
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, unmet: PasswordRule[] = []) {
     super(message);
     this.name = "AuthError";
     this.status = status;
+    this.unmet = unmet;
   }
 }
 
@@ -169,6 +201,10 @@ export async function fetchIdentity(): Promise<Identity> {
 }
 
 async function post(path: string, body: unknown): Promise<Identity> {
+  return (await request(path, body)) as Identity;
+}
+
+async function request(path: string, body: unknown): Promise<unknown> {
   let response: Response;
   try {
     response = await fetch(`${apiOrigin()}${path}`, {
@@ -190,27 +226,135 @@ async function post(path: string, body: unknown): Promise<Identity> {
   }
 
   if (!response.ok) {
-    throw new AuthError(await errorMessage(response), response.status);
+    throw await rejection(response);
   }
-  return (await response.json()) as Identity;
+  return response.json();
 }
 
 /**
- * The server's message when it has one.
+ * Asks the server to email a password-reset link.
  *
- * It is already safe to display: sign-in failures are deliberately generic
- * (a form that distinguishes "no such user" from "wrong password" is a
- * user-enumeration oracle), while sign-up failures are specific because
- * the person filling in the form has to read them to fix it.
+ * Resolves with the server's message, which is the same whether or not the
+ * address has an account. THAT IS NOT A PROMISE THAT MAIL ARRIVES: the link is
+ * sent by the identity provider, which sends mail only when the app's
+ * identity has SMTP configured (forge.ManagedIdentity.smtp). See
+ * src/app/auth/forgot (Next.js) or the /auth/forgot route (Vite).
  */
-async function errorMessage(response: Response): Promise<string> {
+export async function forgotPassword(email: string): Promise<string> {
+  const body = (await request("/auth/forgot", { email })) as { message?: string };
+  return body.message ?? "If that address has an account, a reset link is on its way.";
+}
+
+/** The three values the reset link carries (userID and code), plus the new password. */
+export interface PasswordReset {
+  userID: string;
+  code: string;
+  password: string;
+}
+
+/**
+ * Sets a new password with the code from a reset link.
+ *
+ * Resolves with the identity: `authenticated` is true when the server also
+ * signed the person in (the common case) and false when the password was set
+ * but that follow-up sign-in failed, in which case send them to sign in.
+ */
+export async function resetPassword(reset: PasswordReset): Promise<Identity> {
+  return post("/auth/reset", reset);
+}
+
+/**
+ * Reads what a password must contain, or null when the server cannot say.
+ *
+ * Null is a normal answer, not an error to show: the requirements are
+ * guidance, the server checks the password regardless, and a form with no
+ * checklist still works. The checklist is an upgrade, never a dependency.
+ */
+export async function fetchPasswordPolicy(): Promise<PasswordPolicy | null> {
   try {
-    const body = (await response.json()) as { error?: string };
-    if (body.error) return body.error;
+    const response = await fetch(`${apiOrigin()}/auth/password-policy`, {
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) return null;
+    return (await response.json()) as PasswordPolicy;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Every rule of the policy `password` breaks, in display order.
+ *
+ * The character classes match the identity provider's: A-Z, a-z, 0-9, and a
+ * symbol is anything else (a space counts). GUIDANCE ONLY — the server
+ * decides.
+ */
+export function unmetRules(policy: PasswordPolicy, password: string): PasswordRule[] {
+  const unmet: PasswordRule[] = [];
+  if (policy.min_length > 0 && [...password].length < policy.min_length) {
+    unmet.push("min_length");
+  }
+  if (policy.has_uppercase && !/[A-Z]/.test(password)) unmet.push("uppercase");
+  if (policy.has_lowercase && !/[a-z]/.test(password)) unmet.push("lowercase");
+  if (policy.has_number && !/[0-9]/.test(password)) unmet.push("number");
+  if (policy.has_symbol && !/[^A-Za-z0-9]/.test(password)) unmet.push("symbol");
+  return unmet;
+}
+
+/** The rules the policy actually has, in display order. */
+export function activeRules(policy: PasswordPolicy): PasswordRule[] {
+  const rules: PasswordRule[] = [];
+  if (policy.min_length > 0) rules.push("min_length");
+  if (policy.has_uppercase) rules.push("uppercase");
+  if (policy.has_lowercase) rules.push("lowercase");
+  if (policy.has_number) rules.push("number");
+  if (policy.has_symbol) rules.push("symbol");
+  return rules;
+}
+
+/** One rule as the phrase a checklist shows: "At least 8 characters". */
+export function describeRule(policy: PasswordPolicy, rule: PasswordRule): string {
+  switch (rule) {
+    case "min_length":
+      return `At least ${policy.min_length} characters`;
+    case "uppercase":
+      return "An uppercase letter";
+    case "lowercase":
+      return "A lowercase letter";
+    case "number":
+      return "A number";
+    case "symbol":
+      return "A symbol";
+  }
+}
+
+/**
+ * The refusal as an AuthError.
+ *
+ * The server's message is already safe to display: sign-in failures are
+ * deliberately generic (a form that distinguishes "no such user" from "wrong
+ * password" is a user-enumeration oracle), while sign-up and reset failures
+ * are specific because the person filling in the form has to read them to fix
+ * it — a rejected password names the rules it breaks.
+ */
+async function rejection(response: Response): Promise<AuthError> {
+  try {
+    const body = (await response.json()) as { error?: string; unmet?: PasswordRule[] };
+    if (body.error) {
+      return new AuthError(
+        body.error,
+        response.status,
+        Array.isArray(body.unmet) ? body.unmet : [],
+      );
+    }
   } catch {
     // Fall through.
   }
-  return response.status >= 500
-    ? "The sign-in service is unavailable. Please try again."
-    : "Those credentials were not accepted.";
+  return new AuthError(
+    response.status >= 500
+      ? "The sign-in service is unavailable. Please try again."
+      : "Those credentials were not accepted.",
+    response.status,
+  );
 }

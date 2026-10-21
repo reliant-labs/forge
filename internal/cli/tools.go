@@ -337,14 +337,12 @@ func goInstallTool(ctx context.Context, binary, spec string, force bool) error {
 		}
 	}
 	fmt.Printf("📦 Installing %-26s (go install %s)\n", binary, spec)
-	installCmd := goexec.Graceful(exec.CommandContext(ctx, "go", "install", spec))
-	installCmd.Env = goexec.Env()
-	out, err := installCmd.CombinedOutput()
+	gobin, err := goBinDir(ctx)
 	if err != nil {
+		return fmt.Errorf("install %s: %w", binary, err)
+	}
+	if err := installIntoGOBIN(ctx, binary, spec, gobin); err != nil {
 		fmt.Fprintf(os.Stderr, "  ❌ go install %s failed: %v\n", spec, err)
-		if len(out) > 0 {
-			fmt.Fprintln(os.Stderr, string(out))
-		}
 		return fmt.Errorf("install %s: %w", binary, err)
 	}
 	// Verify it landed on PATH (catches GOBIN/GOPATH-not-on-PATH).
@@ -357,6 +355,28 @@ func goInstallTool(ctx context.Context, binary, spec string, force bool) error {
 }
 
 const goBinHint = "Add $(go env GOBIN) (or $(go env GOPATH)/bin if GOBIN is unset) to PATH."
+
+// installIntoGOBIN installs spec's binary into gobin atomically: `go install`
+// writes into a temp dir inside gobin (one filesystem), and the finished
+// binary is renamed over any old one. `go install` straight into GOBIN
+// rewrites the file in place, so a process starting it — a parallel forge
+// generate's buf or protoc-gen-go — could run a half-written binary. The
+// same fix as the pinned-tool cache (installPinnedTool).
+func installIntoGOBIN(ctx context.Context, binary, spec, gobin string) error {
+	if err := os.MkdirAll(gobin, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.MkdirTemp(gobin, ".forge-install-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(tmp) }()
+	if err := goInstallPinned(ctx, spec, tmp); err != nil {
+		return err
+	}
+	name := binary + exeSuffix()
+	return os.Rename(filepath.Join(tmp, name), filepath.Join(gobin, name))
+}
 
 // installPinnedGolangciLint installs forge's pinned golangci-lint into GOBIN,
 // built with the toolchain that compiles this module — the only build that

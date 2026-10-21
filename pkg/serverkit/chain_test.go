@@ -146,7 +146,7 @@ func TestNewChain_DefaultsAndOmits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewChain (all omitted): %v", err)
 	}
-	core := len(observe.Chain(observe.Deps{Auth: auth}))
+	core := len(observe.Chain(observe.Deps{Auth: auth, Deadline: serverkit.NoDeadline}))
 	if n := len(bare.Interceptors()); n != core {
 		t.Fatalf("all defaults omitted: %d interceptors, want observe's core plus auth (%d)", n, core)
 	}

@@ -3,8 +3,11 @@ package crud
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"strings"
 
 	"github.com/reliant-labs/forge/pkg/orm"
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // Scoped* compose a primary-key operation with an ADDITIONAL predicate.
@@ -53,7 +56,8 @@ import (
 // did — the extra machinery costs nothing until someone uses it.
 
 // scopedLookup runs the PK-plus-predicate SELECT shared by every helper
-// below, returning orm.ErrNoRows when no row satisfies both. The list
+// below, returning a not-found error (svcerr.NotFound, errors.Is-true for
+// orm.ErrNoRows) when no row satisfies both. The list
 // delegate applies the repository's own read scoping (soft delete), so
 // the composed predicate narrows that scope rather than replacing it.
 func scopedLookup[Ent any](
@@ -75,7 +79,10 @@ func scopedLookup[Ent any](
 		return zero, err
 	}
 	if len(rows) == 0 {
-		return zero, fmt.Errorf("%s = %v: %w", pkColumn, id, orm.ErrNoRows)
+		// The same answer the PK delegate gives a missing row (Repo's
+		// notFound): svcerr.NotFound, errors.Is-true for orm.ErrNoRows.
+		return zero, fmt.Errorf("%s = %v: %w", pkColumn, id,
+			svcerr.WithCause(svcerr.NotFound(entityLabelOf[Ent]()), orm.ErrNoRows))
 	}
 	return rows[0], nil
 }
@@ -84,7 +91,8 @@ func scopedLookup[Ent any](
 //
 // With no opts it delegates to get verbatim. With opts it runs a single
 // SELECT carrying both the PK and the caller's predicate; a row that
-// exists but does not satisfy the predicate reports orm.ErrNoRows, which
+// exists but does not satisfy the predicate reports the same not-found error
+// an unknown id gets (svcerr.NotFound, errors.Is-true for orm.ErrNoRows), which
 // HandleGet maps to NotFound — the same answer an unknown id gets.
 func ScopedGet[Ent any](
 	ctx context.Context,
@@ -165,4 +173,14 @@ func ScopedUpdateMasked[Ent any](
 		return err
 	}
 	return update(ctx, entity, fields)
+}
+
+// entityLabelOf is the entity a not-found error names for rows of type Ent
+// (a model or a pointer to one): its type name, lower-cased, as Repo names it.
+func entityLabelOf[Ent any]() string {
+	t := reflect.TypeFor[Ent]()
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return strings.ToLower(t.Name())
 }

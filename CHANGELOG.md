@@ -286,9 +286,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Every env renders on a project generate has not composed yet.** On a
-  fresh scaffold whose bootstrap generate failed, `forge generate --steps
-  env-config` (which `forge project rescaffold` runs) read each root's config
-  reach off a graph with no `compose.go`, no providers and no descriptor: it
+  fresh scaffold whose bootstrap generate failed, the env-config step preset
+  (which `forge project rescaffold` runs) read each root's config reach off a graph with no `compose.go`, no providers and no descriptor: it
   claimed the roots reach almost nothing, or that there was no root config at
   all. `config_gen.k` then either lost `workloadEnvMap`, which each env's
   `main.k` calls, or refused the scaffold's own

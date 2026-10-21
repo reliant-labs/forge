@@ -6,7 +6,9 @@
 #
 # On a pull request, actions/checkout checks out the merge commit
 # (refs/pull/N/merge), whose first parent is the base branch's tip — so with
-# fetch-depth: 2, `HEAD^1..HEAD` is exactly what the pull request changes.
+# fetch-depth: 2, `HEAD^1..HEAD` is exactly what the pull request changes. In
+# the merge queue (merge_group) HEAD is the entry's squash commit and HEAD^1 is
+# main plus the entries ahead of it, so the range is again this change alone.
 #
 # WHY. "Passed on re-run" is never an acceptable verdict here, and the cheapest
 # moment to catch a flaky test is before it lands: once merged, an

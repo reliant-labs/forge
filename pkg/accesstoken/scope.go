@@ -92,6 +92,19 @@ const (
 	// already owns, and must not be able to change which names those are —
 	// the same separation cluster:manage has from deploy:write.
 	ScopeDomainWrite Scope = "domain:write"
+
+	// ScopeIdentityRead reads an environment's managed identity: its status
+	// and the end users of its instance, with their roles.
+	ScopeIdentityRead Scope = "identity:read"
+	// ScopeIdentityManage administers those end users: invite, change roles,
+	// lock, delete, end sessions, issue password-set codes, and export the
+	// instance. Implies identity:read at the point of use.
+	//
+	// ITS OWN PRODUCT, NOT A DEPLOY ACTION. It acts on the PEOPLE who sign in
+	// to the org's apps, not on the org's infrastructure: a code it issues
+	// sets an end user's password. deploy:write ships a release and must not
+	// be able to take over the accounts of the people who use it.
+	ScopeIdentityManage Scope = "identity:manage"
 )
 
 // AllScopes is the closed set, grouped by product, least authority first.
@@ -111,6 +124,8 @@ var AllScopes = []Scope{
 	ScopeSecretWrite,
 	ScopeDomainRead,
 	ScopeDomainWrite,
+	ScopeIdentityRead,
+	ScopeIdentityManage,
 }
 
 // ParseScope maps a wire string onto a known Scope. An unknown string is an
@@ -199,6 +214,8 @@ func (s Set) Permits(want Scope) bool {
 		return s.Has(ScopeSecretWrite)
 	case ScopeDomainRead:
 		return s.Has(ScopeDomainWrite)
+	case ScopeIdentityRead:
+		return s.Has(ScopeIdentityManage)
 	default:
 		return false
 	}

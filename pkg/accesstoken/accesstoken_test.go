@@ -140,6 +140,52 @@ func TestDomainScopes_AreTheirOwnAuthority(t *testing.T) {
 	}
 }
 
+// TestIdentityScopes_AreTheirOwnAuthority pins identity:read/identity:manage
+// as a product of their own. identity:manage issues codes that set an end
+// user's password, so nothing outside it may imply it, and it implies nothing
+// beyond identity:read.
+func TestIdentityScopes_AreTheirOwnAuthority(t *testing.T) {
+	for raw, want := range map[string]Scope{
+		"identity:read":   ScopeIdentityRead,
+		"identity:manage": ScopeIdentityManage,
+	} {
+		got, ok := ParseScope(raw)
+		if !ok || got != want {
+			t.Fatalf("ParseScope(%s) = %q, %v", raw, got, ok)
+		}
+	}
+	if !SetOf(ScopeIdentityManage).Permits(ScopeIdentityRead) {
+		t.Error("identity:manage must permit identity:read at the point of use")
+	}
+	if SetOf(ScopeIdentityRead).Permits(ScopeIdentityManage) {
+		t.Error("identity:read must not permit identity:manage")
+	}
+	im := SetOf(ScopeIdentityManage)
+	for _, other := range AllScopes {
+		if other != ScopeIdentityManage && other != ScopeIdentityRead && im.Permits(other) {
+			t.Errorf("identity:manage permitted %s", other)
+		}
+		if other != ScopeIdentityManage && SetOf(other).Permits(ScopeIdentityManage) {
+			t.Errorf("%s permitted identity:manage", other)
+		}
+		if other != ScopeIdentityManage && other != ScopeIdentityRead && SetOf(other).Permits(ScopeIdentityRead) {
+			t.Errorf("%s permitted identity:read", other)
+		}
+	}
+	for _, s := range []Scope{ScopeIdentityRead, ScopeIdentityManage} {
+		if RequiresActingUser(s) {
+			t.Errorf("%s must not require an acting user: an org token may administer identity", s)
+		}
+		// A Reliant agent's session credential is daemon-bound; on-demand
+		// elevation keeps the binding, so the scope must be able to ride it.
+		g := Grant{OrgID: "org", Name: "n", Scopes: SetOf(ScopeDaemonConnect, s), ActingUserID: "u",
+			Resource: &Resource{Kind: ResourceDaemon, ID: "d"}}
+		if err := g.Validate(time.Now()); err != nil {
+			t.Errorf("a daemon-bound token carrying %s: %v", s, err)
+		}
+	}
+}
+
 // TestDomainScopes_NeedNoActingUser: a domain is org property, so an org CI
 // token manages one without acting as a person — the same as deploy and secret.
 func TestDomainScopes_NeedNoActingUser(t *testing.T) {

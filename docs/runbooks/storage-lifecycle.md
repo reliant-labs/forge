@@ -374,7 +374,16 @@ A non-main worktree is **removable** only if all hold:
   matched anywhere in the path, or, with a leading `/`, only from the
   worktree's root: the defaults `/.tools` (pinned tools) and `/tmp` (scratch)
   are root-anchored, so `web/tmp` is not covered. `data/`, `.env*`, `.forge/hostinfra/`, `*.db`, `*.sqlite` and `secrets/` are
-  never rebuildable, even if a policy lists them;
+  never rebuildable, even if a policy lists them. An ignored path that is not
+  on the allowlist is still not data (so does not hold the worktree) when it is
+  a regular file that is a **generated** file (first line `Code generated … DO NOT
+  EDIT.`, unless the never-list names the path) or a **byte-identical copy of
+  the same path in the repository's main checkout** (this applies to the
+  never-list too: nothing is lost). A copy that differs, or exists only in the
+  worktree, holds, and the hold names the main checkout. A main-checkout path
+  that is a symlink back into the worktree or out of the main checkout is not a
+  copy. A symlink inside the worktree is that worktree's own entry: it is never
+  followed, and its target is never touched;
 - no hidden edits: no `--skip-worktree` / `--assume-unchanged` entries
   (`hidden-changes`), which status and `git worktree remove` cannot see;
 - no nested repository: no `.git` at any depth but the worktree's own

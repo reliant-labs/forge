@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Each root's process settings come from the configs its command loads,
+  and a root declares whether it migrates.** In a binary_config project
+  (`(forge.v1.binary_config)` `command`/`subtrees`), `rootSpec.Configs` hands
+  `runRoot` the configs a root's command loaded *before* the policy runs, and
+  the scaffolded `serverkitConfig(cfg, root.Configs)` reads the port, drain
+  budget, logging, TLS and database settings from whichever of them declares
+  each (most specific last), so `server api` and `server worker` listen and
+  drain on their own command config's values. `//forge:root <name>
+  migrate=apply|wait|none` says what the process does about the schema;
+  `wait` blocks — `/readyz` naming `schema` — until another process has
+  applied the migrations (`migratekit.AwaitSchema`,
+  `serverkit.AwaitMigrationsContext`). The default is unchanged: apply when
+  the root reaches the database. The scaffolded `serve.go` and `providers.go`
+  now read only the root config's own fields off `*config.Config`, so a
+  binary whose root config holds only blocks compiles (it read the union of
+  every config message's field names). A project whose binary loads one
+  config renders as before.
 - **Probe paths are configurable, and the deploy follows the process
   (`forge/pkg/serverkit`).** `serverkit.Config.Probes`
   (`ProbePaths{Live, Ready []string}`; empty is `/healthz`, `/readyz`, so

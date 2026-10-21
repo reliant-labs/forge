@@ -6,10 +6,11 @@
 // ONE COMMAND PER ROOT. A root is what a process runs; its command is its
 // `command=` path (`//forge:root api command=server,api` is `<bin> server
 // api`), or its name. Every command runs its root through runRoot, the
-// process policy in serve.go (yours), handing it the two facts read off the
-// root's reach when this file was generated: whether the root reaches the
-// database (Migrate), and how to build and supervise it (Run). Splitting a
-// process is a new root in internal/app, never a new command here.
+// process policy in serve.go (yours), handing it the facts read off the
+// root's reach and its //forge:root options when this file was generated:
+// what its process does about the schema (Migrate, AwaitMigrations), and how
+// to build and supervise it (Run). Splitting a process is a new root in
+// internal/app, never a new command here.
 package cmd
 
 import (
@@ -30,16 +31,40 @@ import (
 type rootSpec struct {
 	// Name is the root's name (//forge:root <name>).
 	Name string
-	// Migrate is true when the root reaches the database: the process
-	// migrates before building it.
+	// Migrate is true when the process applies the migrations before
+	// building the root: the root reaches the database, or declares
+	// migrate=apply (and does not declare migrate=wait or migrate=none).
 	Migrate bool
+	// AwaitMigrations is true when the root declares migrate=wait: the
+	// process applies nothing, and blocks until another process — a
+	// migrate=apply root, or a deploy job — has brought the schema current.
+	AwaitMigrations bool
 	// Config is every config field the root reaches, by path; runRoot
 	// demands only these (config.LoadReach). nil: every field.
 	Config []string
+{{- if .ConfigInputs}}
+	// Configs are the configs the root's command loaded beside the root
+	// config, so the policy can read its settings from them — a role's
+	// port, drain budget and logging — before anything is built. Run hands
+	// the same values to the graph.
+	Configs rootConfigs
+{{- end}}
 	// Run builds the root on g — exactly the closure its fields reach — and
 	// supervises it under policy until ctx ends or a node fails.
 	Run func(g *app.Graph, ctx context.Context, policy lifecyclekit.Policy) error
 }
+{{- if .ConfigInputs}}
+
+// rootConfigs holds each config the primary binary binds beside its root
+// config (proto/config's (forge.v1.binary_config)): nil in a process whose
+// command does not load it.
+type rootConfigs struct {
+{{- range .ConfigInputs}}
+	// {{.Name}} is {{.Doc}}.
+	{{.Name}} *config.{{.Name}}
+{{- end}}
+}
+{{- end}}
 
 // rootCommands returns the command tree's root commands; newRootCmd
 // (root.go) adds each.
@@ -67,6 +92,9 @@ func rootCommands(deps Deps) []*cobra.Command {
 			return runRoot(cmd.Context(), deps, rootSpec{
 				Name:    "{{.Root.Name}}",
 				Migrate: {{.Root.Migrate}},
+{{- if .Root.AwaitMigrations}}
+				AwaitMigrations: true,
+{{- end}}
 {{- if .Root.HasConfig}}
 				Config: []string{
 {{- range .Root.Config}}
@@ -75,6 +103,11 @@ func rootCommands(deps Deps) []*cobra.Command {
 				},
 {{- end}}
 {{- if .Root.Loads}}
+				Configs: rootConfigs{
+{{- range .Root.Loads}}
+					{{.Message}}: {{.LoadVar}},
+{{- end}}
+				},
 				Run: func(g *app.Graph, ctx context.Context, policy lifecyclekit.Policy) error {
 {{- range .Root.Loads}}
 					g.{{.Message}} = {{.LoadVar}}

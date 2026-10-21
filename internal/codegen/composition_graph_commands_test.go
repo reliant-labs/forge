@@ -28,7 +28,7 @@ func TestRootCommandPath_NameOrCommandOption(t *testing.T) {
 		{name: "gw", opts: []string{"command=Server"}, err: "not a cobra command name"},
 		{name: "gw", opts: []string{"command="}, err: "not a cobra command name"},
 	} {
-		got, err := rootCommandPath(tc.name, tc.opts)
+		got, _, err := rootOptions(tc.name, tc.opts)
 		if tc.err != "" {
 			if err == nil || !strings.Contains(err.Error(), tc.err) {
 				t.Errorf("%s %v: err = %v, want %q", tc.name, tc.opts, err, tc.err)
@@ -140,7 +140,7 @@ func TestEmitRootCommands_WritesOneCommandPerRoot(t *testing.T) {
 		{Name: "server", TypeName: "Server", Command: []string{"server"}, Migrate: true, Fields: []graphRootFieldView{{Accessor: "APIListener"}}, Plan: "db → api_listener"},
 		{Name: "worker", TypeName: "Worker", Command: []string{"worker"}, Fields: []graphRootFieldView{{Accessor: "Tick"}}, Plan: "tick"},
 	}
-	if err := emitRootCommands(dir, "example.com/demo", roots, nil, &warn); err != nil {
+	if err := emitRootCommands(dir, "example.com/demo", roots, nil, nil, &warn); err != nil {
 		t.Fatal(err)
 	}
 	if warn.Len() != 0 {
@@ -172,7 +172,7 @@ func TestEmitRootCommands_ATreeWithoutRunRootKeepsCompiling(t *testing.T) {
 	}
 	var warn bytes.Buffer
 	roots := []graphRootView{{Name: "worker", TypeName: "Worker", Command: []string{"worker"}}}
-	if err := emitRootCommands(dir, "example.com/demo", roots, nil, &warn); err != nil {
+	if err := emitRootCommands(dir, "example.com/demo", roots, nil, nil, &warn); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {

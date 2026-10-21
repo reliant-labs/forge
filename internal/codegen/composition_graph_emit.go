@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -73,9 +74,18 @@ type graphRootView struct {
 	// probe listener of its own on the server address, so every process
 	// answers /healthz and /readyz.
 	ServesProbes bool
-	// Migrate is true when the closure reaches the database, so the process
-	// migrates before building the root.
+	// ReachesDB is true when the closure reaches the database.
+	ReachesDB bool
+	// MigratePolicy is the root's `migrate=` option as declared ("" when it
+	// declares none).
+	MigratePolicy string
+	// Migrate is true when the process applies the migrations before
+	// building the root: migrate=apply, or, by default, a root whose closure
+	// reaches the database.
 	Migrate bool
+	// AwaitMigrations is true when the process instead waits until another
+	// has applied them (migrate=wait).
+	AwaitMigrations bool
 	// Command is the cobra command path that runs the root.
 	Command []string
 	// Config is every config field the root reaches; HasConfig is false
@@ -182,7 +192,7 @@ func GenerateGraph(in GraphGenInput) error {
 		*in.Roots = graphRoots(m.rootViews)
 	}
 	// cmd/<bin>/cmd/roots_gen.go: one command per root.
-	return emitRootCommands(in.ProjectDir, in.ModulePath, m.rootViews, in.Checksums, in.warnings())
+	return emitRootCommands(in.ProjectDir, in.ModulePath, m.rootViews, m.configs.inputViews(), in.Checksums, in.warnings())
 }
 
 // graphModel is the composition graph of one project as generate sees it:
@@ -385,6 +395,7 @@ func graphRootViews(roots []graphRoot, nodes []*graphNode, u *graphUniverse, edg
 		}
 		v := rootViewLazy(r, edges, lazy)
 		v.Command = r.Command
+		v.MigratePolicy = r.Migrate
 		rootViews = append(rootViews, v)
 	}
 	return rootViews, nil
@@ -531,7 +542,7 @@ func addGraphRouteNodes(in GraphGenInput, compNode map[string]*graphNode, add fu
 	}
 	routesView.Imports = sortedImports(routesImports, "fmt", "log/slog", "net/http", "strings", "connectrpc.com/connect",
 		"github.com/reliant-labs/forge/pkg/middleware", "github.com/reliant-labs/forge/pkg/mountkit",
-		"github.com/reliant-labs/forge/pkg/mountkit/inventory", in.ModulePath+"/pkg/middleware")
+		"github.com/reliant-labs/forge/pkg/mountkit/inventory", "github.com/reliant-labs/forge/pkg/authn")
 	return routesView, nil
 }
 
@@ -851,26 +862,73 @@ func sortedImports(m map[string]string, fixed ...string) []graphImport {
 	return out
 }
 
+// providersGraphData is providers-graph.go.tmpl's input.
+type providersGraphData struct {
+	Module                   string
+	HasDatabase, RESTEnabled bool
+	ConfigFields             map[string]bool
+	// AuthConfigType and BrokerConfigType are the pkg/config types auth.go
+	// and login_broker.go read (configDeclaring; "" is Config), and
+	// NoBrokerConfig is true when no config declares the broker's fields.
+	AuthConfigType, BrokerConfigType string
+	NoBrokerConfig                   bool
+	// NoProjectAuthInterceptor: the project's pkg/middleware declares no
+	// NewAuthInterceptor (projectDeclaresAuthInterceptor).
+	NoProjectAuthInterceptor bool
+}
+
+// projectAuthInterceptorDecl matches the auth interceptor the scaffolded
+// pkg/middleware/middleware.go declares.
+var projectAuthInterceptorDecl = regexp.MustCompile(`(?m)^func NewAuthInterceptor\(`)
+
+// projectDeclaresAuthInterceptor reports whether the project's pkg/middleware
+// declares NewAuthInterceptor — forge's scaffold does, a project with a
+// middleware package of its own may not, and providers.go's UserAuth then
+// builds forge's authn interceptor instead of calling a function that is not
+// there. A project with no pkg/middleware yet is about to get forge's.
+func projectDeclaresAuthInterceptor(projectDir string) bool {
+	dir := filepath.Join(projectDir, "pkg", "middleware")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return true
+	}
+	scaffolded := false
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") {
+			continue
+		}
+		if !strings.HasSuffix(n, "_gen.go") {
+			scaffolded = true
+		}
+		if src, err := os.ReadFile(filepath.Join(dir, n)); err == nil && projectAuthInterceptorDecl.Match(src) {
+			return true
+		}
+	}
+	return !scaffolded
+}
+
 // GenerateGraphProviders scaffolds a graph-mode project's owned
 // internal/app/providers.go (the default providers: the database pool and
 // ORM, the outbound HTTP client, the user audience's authenticator, chain and
 // API listener, pprof) and auth.go, each exactly once.
 func GenerateGraphProviders(modulePath, databaseDriver, projectDir string) error {
 	hasDB := databaseDriver != ""
-	if err := GenerateAuthSetupData(projectDir, AuthSetupTemplateData{Module: modulePath, Graph: true, HasDatabase: hasDB}); err != nil {
+	// auth.go and login_broker.go read the config that declares their
+	// fields — a command config's, in a binary_config project — or none.
+	authConfig, hasJWT := configDeclaring(projectDir, jwtConfigFields)
+	brokerConfig, hasBroker := configDeclaring(projectDir, brokerConfigFields)
+	if err := GenerateAuthSetupData(projectDir, AuthSetupTemplateData{Module: modulePath, Graph: true, HasDatabase: hasDB, AuthConfigType: authConfig, NoJWTConfig: !hasJWT}); err != nil {
 		return err
 	}
 	rel := filepath.Join("internal", "app", "providers.go")
 	configFields := DefaultConfigFieldNames()
 	if msgs, err := ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config")); err == nil && len(msgs) > 0 {
-		configFields = ConfigFieldNamesFromMessages(msgs)
+		configFields = RootConfigFieldNames(msgs, projectDir)
 	}
-	data := struct {
-		Module       string
-		HasDatabase  bool
-		RESTEnabled  bool
-		ConfigFields map[string]bool
-	}{Module: modulePath, HasDatabase: hasDB, RESTEnabled: projectAPIRESTEnabled(projectDir), ConfigFields: configFields}
+	data := providersGraphData{Module: modulePath, HasDatabase: hasDB, RESTEnabled: projectAPIRESTEnabled(projectDir), ConfigFields: configFields,
+		AuthConfigType: authConfig, BrokerConfigType: brokerConfig, NoBrokerConfig: !hasBroker,
+		NoProjectAuthInterceptor: !projectDeclaresAuthInterceptor(projectDir)}
 	content, err := templates.ProjectTemplates().Render("providers-graph.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render providers-graph.go.tmpl: %w", err)

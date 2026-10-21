@@ -119,8 +119,8 @@ func TestE2EBinaryConfigRootsReachTheirOwnConfig(t *testing.T) {
 	tickPath := filepath.Join(projectDir, "internal", "workers", "tick", "worker.go")
 	mustReplaceInFile(t, tickPath, "\tConfig *config.Config\n", "\tEvery  string\n\tRegion string\n")
 	mustReplaceInFile(t, tickPath, "\n\t\"github.com/test/rbc/pkg/config\"\n", "\n")
-	mustReplaceInFile(t, tickPath, `w.deps.Logger.Info("worker started", "worker", w.Name())`,
-		`w.deps.Logger.Info("worker started", "worker", w.Name(), "every", w.deps.Every, "region", w.deps.Region)`)
+	mustReplaceInFile(t, tickPath, `w.deps.Logger.InfoContext(ctx, "worker started", "worker", w.Name())`,
+		`w.deps.Logger.InfoContext(ctx, "worker started", "worker", w.Name(), "every", w.deps.Every, "region", w.deps.Region)`)
 	tickTest := filepath.Join(projectDir, "internal", "workers", "tick", "worker_test.go")
 	if src, err := os.ReadFile(tickTest); err == nil {
 		out := strings.ReplaceAll(string(src), "\t\tConfig: &config.Config{},\n", "")

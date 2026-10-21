@@ -183,12 +183,19 @@ func bootRoot(t *testing.T, bin, projectDir, dsn, command string, want map[strin
 // process's environment.
 func bootRootArgs(t *testing.T, bin, projectDir string, env, args []string, want map[string]int) string {
 	t.Helper()
+	return bootRootOnPort(t, bin, projectDir, "PORT", env, args, want)
+}
+
+// bootRootOnPort is bootRootArgs for a root whose listen port is the config
+// field behind portEnv — a command config's own port.
+func bootRootOnPort(t *testing.T, bin, projectDir, portEnv string, env, args []string, want map[string]int) string {
+	t.Helper()
 	command := strings.Join(args, " ")
 	port := freePortE2E(t)
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = projectDir
 	cmd.Env = append(append(os.Environ(),
-		fmt.Sprintf("PORT=%d", port),
+		fmt.Sprintf("%s=%d", portEnv, port),
 		"ENVIRONMENT=development",
 		"PPROF_ADDR=",
 		"PRE_STOP_DELAY=-1s",

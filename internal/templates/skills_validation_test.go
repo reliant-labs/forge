@@ -1490,6 +1490,8 @@ func TestAuthSkillsProviderClaimsMatchTheScaffold(t *testing.T) {
 	authGo, err := templates.ProjectTemplates().Render("app-auth.go.tmpl", struct {
 		Module             string
 		Graph, HasDatabase bool
+		NoJWTConfig        bool
+		AuthConfigType     string
 	}{Module: "example.com/demo"})
 	if err != nil {
 		t.Fatalf("render app-auth.go.tmpl: %v", err)

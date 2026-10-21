@@ -26,19 +26,44 @@
 package app
 
 import (
+{{- if not .NoJWTConfig}}
 	"context"
 	"fmt"
 	"time"
+{{- end}}
 
 	"github.com/reliant-labs/forge/pkg/auth"
+{{- if not .NoJWTConfig}}
 	"github.com/reliant-labs/forge/pkg/oauth2"
+{{- end}}
 
 	"{{.Module}}/pkg/config"
 )
+{{- if not .NoJWTConfig}}
 
 // discoveryTimeout bounds the one OIDC discovery request SetupAuth makes at
 // boot when the JWKS URL is derived from jwt_issuer rather than configured.
 const discoveryTimeout = 10 * time.Second
+{{- end}}
+
+{{- if .NoJWTConfig}}
+
+// SetupAuth returns the authenticator this service checks every request's
+// credential with.
+//
+// No config this binary loads declares the jwt_* settings forge's default
+// bearer-token validator reads (jwt_jwks_url, jwt_issuer, jwt_secret, …), so
+// there is none to build, and SetupAuth returns nil: a process whose root
+// reaches the user authenticator (NewUserAuth, providers.go) then REFUSES TO
+// START, fail-closed, naming the missing validator. Build the authenticator
+// your product uses here — any auth.NewAuthenticator over a validator — or
+// declare the jwt_* fields on the config of the process that serves users
+// (cfg is that config) and wire forge's JWT validator (`forge skill load auth`).
+func SetupAuth(cfg *config.{{or .AuthConfigType "Config"}}) (*auth.Authenticator, error) {
+	return nil, nil
+}
+
+{{- else}}
 
 // SetupAuth returns the authenticator this service checks every request's
 // credential with. It routes a credential by its shape: an API key ("fk_…")
@@ -126,7 +151,7 @@ const discoveryTimeout = 10 * time.Second
 // HOW a presented token is checked. There is no env var, and no value of
 // any field read below, that makes this server serve a protected RPC to an
 // anonymous caller.
-func SetupAuth(cfg *config.Config) (*auth.Authenticator, error) {
+func SetupAuth(cfg *config.{{or .AuthConfigType "Config"}}) (*auth.Authenticator, error) {
 	jwksURL := cfg.JwtJwksUrl
 	snapshot := auth.JWKSSnapshot{
 		File:   cfg.JwtJwksSnapshotFile,
@@ -193,6 +218,8 @@ func SetupAuth(cfg *config.Config) (*auth.Authenticator, error) {
 	}
 	return auth.NewAuthenticator(validator.Validate), nil
 }
+
+{{- end}}
 
 // APIKeyValidator returns the validator API keys are checked with — a
 // credential that starts with apikey.KeyPrefix ("fk_"), presented as

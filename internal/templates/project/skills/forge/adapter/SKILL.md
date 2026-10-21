@@ -163,12 +163,11 @@ Plus a `cache.go` stub for any local caching the adapter needs (delete it if you
 
 ## Marker comments and lint enforcement
 
-Every adapter package's `contract.go` carries a `// forge:outbound-io` marker on the package doc, and its `func New` carries `// forge:constructor` (the observability opt-in — see below).
+Every adapter package's `contract.go` carries a `// forge:outbound-io` marker on the package doc, and its `func New` carries `// forge:constructor`.
 
 `// forge:outbound-io` is named for what it ASSERTS, not for the pattern: *this package calls out to a third-party system and serves nothing inbound.* That is the only part of "adapter" a linter can check, and naming the marker after it means you can tell when to stamp it by reading it. Stamp it on any package that is an outbound boundary, whether or not you would have called it an adapter. Two rules read it:
 
 - `forgeconv-outbound-io-no-rpc` — a package carrying the marker must not register Connect RPC handlers. An inbound handler contradicts the claim; the RPC surface is the actual service, and this package is the dependency underneath it.
-- `enforce-component-observe` — a wired component that made no observability decision (neither `// forge:constructor` nor `// forge:no-observe`) is an ERROR. Because `// forge:outbound-io` means the package does I/O by definition, the suggestion is always `// forge:constructor`; scaffolds stamp it, so a fresh adapter is already green. Kill-switch: `config.enforce_component_observe: off`.
 
 ## Wiring: construct in the explicit composition
 

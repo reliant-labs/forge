@@ -9,12 +9,12 @@
 // come from one parse of contract.go.
 //
 // The generated decorator is deliberately SLIM: one wrapper method per
-// interface method, each a one-liner routing through the in-process
-// observe.ComponentChain assembled in the OWNED observe_chain.go seam
-// (newObserveChain). The decorator names no middleware and bakes no parameter
-// (log level, sampling, which layers) — that policy lives in the owned seam
-// and forge.yaml. This is the in-process twin of the Connect edge interceptor
-// chain, configured the same way.
+// interface method, each a one-liner routing through an in-process
+// observe.ComponentChain — observe.DefaultComponentChain, or the chain the
+// OPTIONAL owned observe_chain.go seam (newObserveChain) assembles when the
+// package declares one. The decorator names no middleware itself. This is the
+// in-process twin of the Connect edge interceptor chain, configured the same
+// way.
 package contract
 
 import (
@@ -38,6 +38,20 @@ const observeLibImport = "github.com/reliant-labs/forge/pkg/observe"
 // calls to obtain its per-package chain. Defined in observe_chain.go (the
 // user-owned extension seam), same package as the decorator.
 const observeChainSeamFunc = "newObserveChain"
+
+// slogImport is imported by a decorator that builds the default chain (its
+// success log level is a slog.Level constant).
+const slogImport = "log/slog"
+
+// DefaultChain is what a decorator passes observe.DefaultComponentChain when
+// its package declares no newObserveChain seam: the tracer/meter scope, the
+// metric namespace, and the Go expression for the success log level
+// (config.ObservabilityConfig.SlogLevelExpr, e.g. "slog.LevelDebug").
+type DefaultChain struct {
+	Scope    string
+	Name     string
+	LogLevel string
+}
 
 // decoratorReceiver is the receiver every generated wrapper method declares.
 // A contract parameter of the same name is renamed in the wrapper instead
@@ -68,7 +82,8 @@ type observedData struct {
 	Iface       string
 	Constructor string
 	StructName  string
-	SeamFunc    string
+	ChainExpr   string
+	ChainSource string
 	Methods     []observedMethod
 }
 
@@ -77,9 +92,9 @@ var observedTmpl = template.Must(template.New("observed").Parse(`// Code generat
 // Source: contract.go (the {{ .Iface }} interface) in this package.
 //
 // One wrapper method per {{ .Iface }} method, each routing through the
-// in-process middleware chain assembled in the owned observe_chain.go
-// ({{ .SeamFunc }}). Adding a method to {{ .Iface }} regenerates this file —
-// there is no wrapper to maintain by hand.
+// in-process middleware chain {{ .ChainSource }}.
+// Adding a method to {{ .Iface }} regenerates this file — there is no wrapper
+// to maintain by hand.
 package {{ .Package }}
 
 {{ if .Imports -}}
@@ -90,12 +105,12 @@ import (
 
 // {{ .Constructor }} wraps inner so every {{ .Iface }} method
 // routes through the per-package observability chain (span, metrics, structured
-// logging, panic-recovery) assembled by {{ .SeamFunc }} in observe_chain.go. The
-// composition site emits
+// logging, panic-recovery). The composition site emits
 // {{ .Package }}.{{ .Constructor }}({{ .Package }}.New(...))
-// automatically while that owned seam is present and New returns {{ .Iface }}.
+// automatically while New returns {{ .Iface }}; a package-level forge:no-observe
+// marker opts the package out.
 func {{ .Constructor }}(inner {{ .Iface }}) {{ .Iface }} {
-	return &{{ .StructName }}{inner: inner, chain: {{ .SeamFunc }}()}
+	return &{{ .StructName }}{inner: inner, chain: {{ .ChainExpr }}}
 }
 
 // {{ .StructName }} decorates the inner {{ .Iface }}. It has no behavior of
@@ -120,12 +135,16 @@ func ({{ $.Receiver }} *{{ $.StructName }}) {{ .Name }}({{ .Signature }}){{ if .
 // for a single-impl package, carrying an extra concrete-type segment when the
 // package has multiple wrapped constructors.
 //
+// def is nil when the package declares the owned newObserveChain seam, which
+// the decorator then calls; otherwise the decorator builds
+// observe.DefaultComponentChain from it.
+//
 // Returns (false, nil) when ifaceName is not declared in cf (nothing to wrap)
 // — the caller treats that the same as "package not instrumented". When
 // opts.ProjectRoot is set the write goes through the checksums chokepoint
 // (Tier-1, hash-stamped, disown-aware); otherwise a raw write is used (the
 // add-package stub path, adopted into the manifest on the next full generate).
-func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNamespace string, opts Options) (bool, error) {
+func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNamespace string, def *DefaultChain, opts Options) (bool, error) {
 	if ifaceName == "" {
 		ifaceName = "Service"
 	}
@@ -169,12 +188,21 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 	data := observedData{
 		Package:     cf.Package,
 		Receiver:    decoratorReceiver,
-		Imports:     observedImports(cf, *target),
+		Imports:     observedImports(cf, *target, def != nil),
 		Iface:       ifaceName,
 		Constructor: ctorName,
 		StructName:  structName,
-		SeamFunc:    observeChainSeamFunc,
+		ChainExpr:   observeChainSeamFunc + "()",
+		ChainSource: "assembled by " + observeChainSeamFunc + " in observe_chain.go",
 		Methods:     methods,
+	}
+	if def != nil {
+		level := def.LogLevel
+		if level == "" {
+			level = "slog.LevelDebug"
+		}
+		data.ChainExpr = fmt.Sprintf("observe.DefaultComponentChain(%q, %q, %s)", def.Scope, def.Name, level)
+		data.ChainSource = "observe.DefaultComponentChain builds (an owned\n// observe_chain.go seam replaces it)"
 	}
 
 	var buf bytes.Buffer
@@ -324,7 +352,7 @@ func renderObservedBody(m MethodDef, opNamespace string) string {
 // wrapped interface's signatures reference (reusing collectImports, the mock
 // generator's resolver), plus "context" (the wrapper bodies always take/lift a
 // context) and the observe library. Deterministic order for stable codegen.
-func observedImports(cf *File, iface InterfaceDef) []observedImport {
+func observedImports(cf *File, iface InterfaceDef, defaultChain bool) []observedImport {
 	paths := collectImports(cf, []InterfaceDef{iface})
 
 	set := map[string]bool{}
@@ -345,6 +373,9 @@ func observedImports(cf *File, iface InterfaceDef) []observedImport {
 		}
 	}
 	set[observeLibImport] = true
+	if defaultChain {
+		set[slogImport] = true
+	}
 
 	out := make([]observedImport, 0, len(set))
 	for p := range set {

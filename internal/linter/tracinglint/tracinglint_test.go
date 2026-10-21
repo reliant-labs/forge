@@ -334,30 +334,35 @@ func TestContractUninstrumented(t *testing.T) {
 			"func NewServiceWithForgeMiddleware(s Service) Service { return s }\n",
 		"internal/billing/internal_use.go": "package billing\n\nfunc self() Service { return New(Deps{}) }\n",
 		"internal/plain/plain.go":          "package plain\n\nfunc New() int { return 0 }\n",
+		// Instrumented, but its decorator is not generated yet: compose.go
+		// would not wrap it either, so it is not flagged.
+		"internal/fresh/contract.go": "package fresh\n\ntype Service interface{ Do() }\n\ntype Deps struct{}\n\nfunc New(Deps) Service { return nil }\n",
 		"internal/app/providers.go": `package app
 
 import (
 	"example.com/app/internal/billing"
+	"example.com/app/internal/fresh"
 	"example.com/app/internal/plain"
 )
 
 func wire() error {
-	_ = billing.New(billing.Deps{}) // 9: unwrapped
+	_ = billing.New(billing.Deps{}) // 10: unwrapped
 	_ = billing.NewServiceWithForgeMiddleware(billing.New(billing.Deps{}))
 	inst := billing.New(billing.Deps{})
 	_ = billing.NewServiceWithForgeMiddleware(inst)
 	_ = plain.New() // not instrumented
+	_ = fresh.New(fresh.Deps{}) // no decorator generated yet
 	return nil
 }
 `,
 		"internal/app/providers_test.go": "package app\n\nimport \"example.com/app/internal/billing\"\n\nvar _ = billing.New(billing.Deps{})\n",
 	})
-	instrumented := func(dir string) bool { return filepath.Base(dir) == "billing" }
+	instrumented := func(dir string) bool { return filepath.Base(dir) == "billing" || filepath.Base(dir) == "fresh" }
 	res, err := Lint(root, Options{Instrumented: instrumented})
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertHits(t, res, RuleContractUninstrumented+" internal/app/providers.go:9")
+	assertHits(t, res, RuleContractUninstrumented+" internal/app/providers.go:10")
 	if r := res.Findings[0].Remediation; !strings.Contains(r, "billing.NewServiceWithForgeMiddleware(billing.New(…))") {
 		t.Errorf("remediation does not name the decorator: %s", r)
 	}

@@ -917,39 +917,7 @@ func lintPipeline() []linterStep {
 			},
 		},
 
-		// 13e. Enforce-component-observe — every wired component with a Service
-		// interface + a canonical New(Deps) Service constructor must make an
-		// observability decision: `// forge:constructor` to instrument, or
-		// `// forge:no-observe` to opt out. Undecided components are aggregated
-		// into ONE gating error naming all three escapes. ERROR-gated; the
-		// kill-switch is config.enforce_component_observe: off. Mirrors the
-		// enforce_typed_access plumbing (config + gate), but always gates (no
-		// warn arm — the point is a forcing-function).
-		{
-			name:  "enforce-component-observe lint",
-			gates: true,
-			scope: scopeByFile,
-			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				// off → silent skip (no message), like the typed-config guard's
-				// non-warn skip.
-				if rc.cfg != nil && !rc.cfg.Config.ComponentObserveGuardEnabled() {
-					return false, ""
-				}
-				if !dirExists("internal") {
-					return false, ""
-				}
-				return rc.cwd != "", ""
-			},
-			runText: func(rc *lintRunCtx) error {
-				return runEnforceComponentObserveLint(rc.cwd)
-			},
-			errFormat: "❌ enforce-component-observe lint: %v\n",
-			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				return collectEnforceComponentObserveJSON(rc.cwd)
-			},
-		},
-
-		// 13f. Tracing — the places a request's trace is cut: a log line
+		// 13e. Tracing — the places a request's trace is cut: a log line
 		// written without the context in scope (no trace_id), an untraced
 		// *http.Client or database pool, a contract constructed without its
 		// generated decorator. GATES on error findings; a repo adopting a

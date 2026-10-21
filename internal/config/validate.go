@@ -935,21 +935,6 @@ func validateConfigGuard(cfg *ProjectConfig, root *yaml.Node) []validationIssue 
 		}
 	}
 
-	if raw := strings.TrimSpace(cfg.Config.EnforceComponentObserve); raw != "" {
-		switch strings.ToLower(raw) {
-		case EnforceComponentObserveOff, EnforceComponentObserveError:
-			// valid
-		default:
-			line, col := findNodePos(root, []string{"config", "enforce_component_observe"})
-			out = append(out, validationIssue{
-				line:   line,
-				column: col,
-				msg:    fmt.Sprintf("config.enforce_component_observe value %q is invalid", cfg.Config.EnforceComponentObserve),
-				fix:    "use one of: error, off (absent defaults to error).",
-			})
-		}
-	}
-
 	return out
 }
 

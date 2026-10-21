@@ -1,6 +1,6 @@
 ---
 name: observability/component-chain
-description: The in-process middleware chain — RPC-edge interceptors, the generated middleware_gen.go component decorator, the owned observe_chain.go seam, success-log sampling, opting in/out, and the enforce-component-observe lint.
+description: The in-process middleware chain — RPC-edge interceptors, the generated middleware_gen.go component decorator, the owned observe_chain.go seam, success-log sampling, and opting out.
 ---
 
 # Observability: the component middleware chain
@@ -163,31 +163,30 @@ append `observe.WithSuccessSampling(d)` to its `observe.LogMiddleware`.
 `0` (or a negative window) logs every success. When a layer is given more
 than one `WithSuccessSampling`, the last one wins.
 
-### Opting in and out
+### On by default; opting out
 
-- **Opt in** — `// forge:constructor` on the `func New` doc comment. Scaffolds
-  stamp it by default, so a new component is born instrumented. (Presence of the
-  owned `observe_chain.go` seam also opts a package in, for backward
-  compatibility.)
+- **Every contract package is instrumented** — a package whose constructor
+  returns its `Service` interface gets `middleware_gen.go`, and compose.go
+  constructs it wrapped, with no marker and no seam. Without
+  `observe_chain.go` the decorator builds `observe.DefaultComponentChain`
+  (recovery, span, metrics, log at `observability.log_level`); write the seam
+  to change that one package. `forge generate` also rewraps (or unwraps) a
+  construction compose.go already has when the decision changes.
 - **Opt a package out** — `// forge:no-observe` on the constructor (or the
   package / contract-interface doc). No decorator is generated and the
-  composition site falls back to the unwrapped `pkg.New(...)`.
+  composition site falls back to the unwrapped `pkg.New(...)`. Do it for a
+  hot, trivial package (a pure function called in a loop), not to save spans
+  in general: a trace with no business-method spans cannot say where a
+  request spent its time.
 - **Opt ONE method out** — `// forge:no-observe` on that interface method's doc
   comment. The decorator still satisfies the interface, but that method
   delegates straight to the inner impl, around the chain.
 - **Handler packages are never wrapped** — they return a concrete `*Service`
   and otelconnect already owns the RPC edge; wrapping would change the
   `Components` field type.
-
-### The forcing function: `enforce-component-observe`
-
-A wired component (a `Service` interface + a `New(Deps) Service` constructor)
-that makes NO observability decision — neither marker — is flagged by the
-`enforce-component-observe` lint: one aggregated ERROR naming every undecided
-component with an I/O-aware suggestion (deps that touch a DB/adapter/client/HTTP
-type are nudged toward `// forge:constructor`; a pure-compute component toward
-`// forge:no-observe`). Kill-switch: `config.enforce_component_observe: off` in
-forge.yaml (the sibling of `config.enforce_typed_access`).
+- **Constructions you write by hand** (in `providers.go`, or a `*_wire.go`)
+  are yours: wrap them yourself —
+  `infra.X = pkg.NewServiceWithForgeMiddleware(pkg.New(...))`.
 
 For a one-off child span or metric at a single call site (rather than a whole
 decorator), `observe.LogCall` / `observe.TraceCall` / `observe.NewCallMetrics`

@@ -304,6 +304,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The tracing rules flag only code a trace can reach.** Three constructions
+  were reported that cut no trace, and are no longer: in a project whose
+  observability is off (derived off with no server: a CLI or a library), the
+  top-level `internal/` and `cmd/` trees and every `package main`, which run
+  only in its own untraced binaries — its importable packages are still
+  linted, since they run inside the traced servers that import them; a pool
+  opened only to look its driver up (every use `.Driver()` or `.Close()`,
+  how `dbtrace.Open` builds a traced pool from a driver name); and an
+  `*http.Client` in a file that exports telemetry over OTLP, which is
+  untraced on purpose (a traced exporter traces its own exports). forge's
+  own `forge lint` is green again: its library code now logs with the
+  request context, and opens its HTTP clients and pools traced
+  (`pkg/oauth2`, `pkg/identity`, `pkg/orm`, `pkg/migratekit`, `pkg/pgtest`,
+  `pkg/testkit`, …). `pkg/pgtest` handles are pgx under dbtrace, as
+  production's pool is.
+- **`forge lint`'s format pre-pass never rewrites a `testdata` fixture.** The
+  go tool and the gate never read one, and an analyzer fixture's want lines
+  depend on its exact layout.
 - **A freshly scaffolded operator passes `forge lint --contract`.** An
   `internal/operators/<name>` package declaring `SetupWithManager` is exempt
   from `requirecontract` structurally, as a worker is.

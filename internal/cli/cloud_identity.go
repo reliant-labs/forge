@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/mail"
 	"strings"
 	"text/tabwriter"
@@ -40,13 +41,15 @@ a flag. The environment must already exist in this project.
 
 --user takes a user id or an exact email address (see 'users').
 
-Inviting creates the account (or grants roles to an existing one) and asks the
-instance to email a code. No mail is sent unless the environment declares smtp
-in KCL: without it the call succeeds and delivers nothing, so hand the person a
-password-set code through a channel you control (the deploy/managed-identity
-skill, "What an invitation does, and does not, do"). There is no password
-option, seed account or implicit recipient. Roles managed
-in deploy/kcl/identity.k (members_from = "declared") are read-only here.`,
+Inviting creates the account (or grants roles to an existing one) and, for an
+account with no credential yet, issues a one-time password-set code; reset
+issues one for any account. The code is emailed only where the environment
+declares smtp in KCL ('status' shows "Mail:"). Without smtp the control plane
+refuses both rather than send nothing: pass --return-code to have the code
+handed back, and deliver it yourself through a channel you control. The code is
+a credential. There is no password option, seed account or implicit recipient.
+Roles managed in deploy/kcl/identity.k (members_from = "declared") are
+read-only here.`,
 	}
 	cmd.AddCommand(newCloudIdentityStatusCmd(), newCloudIdentityUsersCmd(), newCloudIdentityInviteCmd())
 	cmd.AddCommand(newCloudIdentityUserVerbs()...)
@@ -121,6 +124,45 @@ type identityStatusDocument struct {
 	GraceUntil           string                 `json:"graceUntil,omitempty"`
 	ExportURLAvailable   bool                   `json:"exportUrlAvailable"`
 	Refused              string                 `json:"refused,omitempty"`
+	// MailDelivery is controlplane.v1.IdentityMailDelivery: whether the
+	// instance can email invitations and reset links.
+	MailDelivery string `json:"mailDelivery,omitempty"`
+}
+
+// mailDeliveryText says what an invitation or a reset does on this instance.
+func mailDeliveryText(v string) string {
+	switch v {
+	case "IDENTITY_MAIL_DELIVERY_SMTP":
+		return "smtp (invitation and reset codes are emailed)"
+	case "IDENTITY_MAIL_DELIVERY_NONE":
+		return "none (invite and reset need --return-code; you deliver the code)"
+	case "", "IDENTITY_MAIL_DELIVERY_UNSPECIFIED":
+		return "not reported by this control plane"
+	}
+	return v
+}
+
+// identityPasswordCodeWire is controlplane.v1.IdentityPasswordCode: the
+// one-time password-set code --return-code hands back. It is a credential.
+type identityPasswordCodeWire struct {
+	Code      string `json:"code"`
+	ExpiresAt string `json:"expiresAt,omitempty"`
+	ResetURL  string `json:"resetUrl,omitempty"`
+}
+
+// writePasswordCode prints a returned code: the env's reset link when the
+// identity declares one to build it from, else the bare code.
+func writePasswordCode(w io.Writer, c *identityPasswordCodeWire) {
+	expires := "within the hour"
+	if c.ExpiresAt != "" {
+		expires = "at " + c.ExpiresAt
+	}
+	fmt.Fprintf(w, "Password-set code — a credential: give it only to this person, over a channel you control. Single use; it expires %s.\n", expires)
+	if c.ResetURL != "" {
+		fmt.Fprintf(w, "  %s\n", c.ResetURL)
+		return
+	}
+	fmt.Fprintf(w, "  code: %s\n  (the identity declares no login URI or domain, so there is no reset link to fill in)\n", c.Code)
 }
 
 func newCloudIdentityStatusCmd() *cobra.Command {
@@ -145,7 +187,7 @@ func newCloudIdentityStatusCmd() *cobra.Command {
 			if !doc.HasInstance {
 				fmt.Fprintln(out, "No managed identity instance.")
 			} else {
-				fmt.Fprintf(out, "State: %s\nIssuer: %s\n", doc.State, doc.Issuer)
+				fmt.Fprintf(out, "State: %s\nIssuer: %s\nMail: %s\n", doc.State, doc.Issuer, mailDeliveryText(doc.MailDelivery))
 				for _, app := range doc.Apps {
 					fmt.Fprintf(out, "App: %s (client %s)\n", app.Name, app.ClientID)
 				}
@@ -243,22 +285,26 @@ func newCloudIdentityUsersCmd() *cobra.Command {
 
 type identityInviteDocument struct {
 	jsonEnvelope
-	UserID  string `json:"userId"`
-	Created bool   `json:"created"`
+	UserID  string                    `json:"userId"`
+	Created bool                      `json:"created"`
+	Code    *identityPasswordCodeWire `json:"code,omitempty"`
 }
 
 func newCloudIdentityInviteCmd() *cobra.Command {
 	var f cloudIdentityFlags
 	var email string
 	var roles []string
+	var returnCode bool
 	cmd := &cobra.Command{
-		Use: "invite <env> --email <address> --role <role>", Short: "Create an account (or grant roles) and ask for an invitation email (org admin)",
+		Use: "invite <env> --email <address> --role <role>", Short: "Create an account (or grant roles) and issue a password-set code (org admin)",
 		Long: `Invite this explicit email address; repeat --role for multiple roles.
-The account is created and the instance is asked to email a code, but mail
-goes out only when the environment declares smtp; otherwise nothing is sent and
-the person needs a password-set code from you. An existing account receives the requested roles (created=false). The server refuses unknown
-or declared/read-only roles, a credential without identity:manage and an
-identity that is not ready. Such a refusal is an error, never a fallback to a seeded password.`,
+An existing account receives the requested roles (created=false). An account
+with no credential yet is issued a one-time password-set code: emailed where
+the environment declares smtp, or, with --return-code, printed here for you to
+deliver. Without smtp and without --return-code the control plane refuses the
+invitation before writing anything. The server also refuses unknown or
+declared/read-only roles, a credential without identity:manage and an identity
+that is not ready. A refusal is an error, never a fallback to a seeded password.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			address, err := mail.ParseAddress(email)
@@ -278,6 +324,9 @@ identity that is not ready. Such a refusal is an error, never a fallback to a se
 				return err
 			}
 			req["email"], req["roles"] = email, roles
+			if returnCode {
+				req["returnCode"] = true
+			}
 			var doc identityInviteDocument
 			if err := client.Call(cmd.Context(), procIdentityInvite, req, &doc); err != nil {
 				return fmt.Errorf("invite identity user: %w", err)
@@ -289,11 +338,19 @@ identity that is not ready. Such a refusal is an error, never a fallback to a se
 			if f.json {
 				return writeJSONDocument(cmd.OutOrStdout(), doc)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Invitation requested for %s (user %s, created=%t).\nNo mail is sent unless the environment declares smtp; otherwise hand the person a password-set code yourself.\n", email, doc.UserID, doc.Created)
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Invited %s (user %s, created=%t).\n", email, doc.UserID, doc.Created)
+			switch {
+			case doc.Code != nil:
+				writePasswordCode(out, doc.Code)
+			case returnCode:
+				fmt.Fprintln(out, "The account already has a credential, so no code was issued (`forge cloud identity reset --return-code` issues one).")
+			}
 			return nil
 		},
 	}
 	f.register(cmd)
+	cmd.Flags().BoolVar(&returnCode, "return-code", false, "Print the password-set code instead of emailing it (it is a credential; needed where the environment declares no smtp)")
 	cmd.Flags().StringVar(&email, "email", "", "Explicit recipient email address (required; never inferred)")
 	cmd.Flags().StringArrayVar(&roles, "role", nil, "Console-managed role to grant (required; repeat for multiple roles)")
 	_ = cmd.MarkFlagRequired("email")

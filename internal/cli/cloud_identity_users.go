@@ -105,14 +105,15 @@ func (f *identityUserFlags) targetUser(ctx context.Context, env string) (cloudCa
 
 type identityActionDocument struct {
 	jsonEnvelope
-	UserID          string   `json:"userId"`
-	Action          string   `json:"action"`
-	Roles           []string `json:"roles,omitempty"`
-	SessionsRevoked int32    `json:"sessionsRevoked,omitempty"`
+	UserID          string                    `json:"userId"`
+	Action          string                    `json:"action"`
+	Roles           []string                  `json:"roles,omitempty"`
+	SessionsRevoked int32                     `json:"sessionsRevoked,omitempty"`
+	Code            *identityPasswordCodeWire `json:"code,omitempty"`
 }
 
 // simpleIdentityVerb builds a per-user verb whose only output is that it
-// happened: reset, lock, unlock.
+// happened: lock, unlock.
 func simpleIdentityVerb(use, short, long, proc, action, done string) *cobra.Command {
 	var f identityUserFlags
 	cmd := &cobra.Command{
@@ -204,6 +205,58 @@ func joinRoles(roles []string) string {
 	return strings.Join(roles, ", ")
 }
 
+func newCloudIdentityResetCmd() *cobra.Command {
+	var f identityUserFlags
+	var returnCode bool
+	cmd := &cobra.Command{
+		Use: "reset <env> --user <id|email>", Short: "Issue a user a one-time password-set code (org admin)",
+		Long: `Issue the user a one-time password-set code. It is emailed as a reset link
+where the environment declares smtp; with --return-code it is printed here
+instead, for you to deliver over a channel you control (it is a credential).
+Without smtp ('status' shows "Mail: none") the control plane refuses a reset
+without --return-code rather than send nothing. The user's current password
+keeps working until the code is redeemed.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := f.validate(); err != nil {
+				return err
+			}
+			client, req, label, err := f.targetUser(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if returnCode {
+				req["returnCode"] = true
+			}
+			var resp struct {
+				Code *identityPasswordCodeWire `json:"code"`
+			}
+			if err := client.Call(cmd.Context(), procIdentityResetPassword, req, &resp); err != nil {
+				return fmt.Errorf("identity reset: %w", err)
+			}
+			if returnCode && (resp.Code == nil || resp.Code.Code == "") {
+				return fmt.Errorf("identity reset: the control plane issued no code for %s", label)
+			}
+			doc := identityActionDocument{UserID: fmt.Sprint(req["userId"]), Action: "reset", Code: resp.Code}
+			doc.stamp(nil)
+			if f.json {
+				return writeJSONDocument(cmd.OutOrStdout(), doc)
+			}
+			out := cmd.OutOrStdout()
+			if resp.Code == nil {
+				_, err := fmt.Fprintf(out, "Password reset link emailed to %s.\n", label)
+				return err
+			}
+			fmt.Fprintf(out, "Password-set code issued for %s.\n", label)
+			writePasswordCode(out, resp.Code)
+			return nil
+		},
+	}
+	f.register(cmd)
+	cmd.Flags().BoolVar(&returnCode, "return-code", false, "Print the password-set code instead of emailing it (it is a credential; needed where the environment declares no smtp)")
+	return cmd
+}
+
 func newCloudIdentityDeleteCmd() *cobra.Command {
 	var f identityUserFlags
 	var yes bool
@@ -290,9 +343,7 @@ valid until they expire.`,
 func newCloudIdentityUserVerbs() []*cobra.Command {
 	return []*cobra.Command{
 		newCloudIdentitySetRolesCmd(),
-		simpleIdentityVerb("reset", "Email a user a link to set a new password (org admin)",
-			"Email the user a link to set a new password. Whether the environment's identity\ncan send mail at all is shown by `forge cloud identity status`.",
-			procIdentityResetPassword, "reset", "Password reset requested for"),
+		newCloudIdentityResetCmd(),
 		simpleIdentityVerb("lock", "Block a user from signing in (org admin)",
 			"Block sign-in for the user. Reversible with `forge cloud identity unlock`.",
 			procIdentityLockUser, "lock", "Locked"),

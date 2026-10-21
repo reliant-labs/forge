@@ -2408,6 +2408,46 @@ schema ShellBuild(Build):
         the commit the project pins for it: the go.mod require of the
         module the checkout declares, or a `GitSource` naming its repo.
         Check the sibling out at its pin before `--release`.
+      * built_images — images this command builds FROM, by the workload
+        that builds them: `NAME = "<workload>"`. Forge builds each named
+        workload FIRST, in the same invocation, and runs this command with
+        NAME in its environment set to the exact image that build pushed,
+        `<repository>@sha256:<digest>`. The dependency's state (and the
+        release) records that same digest, so what this image was built
+        FROM is what the release says was built.
+
+    BUILT_IMAGES IS HOW ONE IMAGE IS BUILT FROM ANOTHER. A parent pinned by
+    a hand-edited digest constant drifts from the parent forge actually
+    builds: the constant names bytes nobody rebuilt, a rebuilt parent ships
+    nowhere until someone copies its digest across, and the release ledger
+    never learns which parent a child was built on. A digest cannot be
+    composed in KCL — a render happens before any build, and a digest names
+    bytes that do not exist yet — so the edge is declared here and forge
+    resolves it at build time:
+
+        _runtime = fw.Workload {
+            name = "runtime"
+            kind = "tool"
+            runtime = forge.BuildOnly {}
+            image = "ghcr.io/acme/runtime"
+            build = forge.ShellBuild {cmd = "./scripts/build-runtime.sh"}
+        }
+        _app = fw.Workload {
+            name = "app"
+            ...
+            build = forge.ShellBuild {
+                cmd = "docker build --build-arg BASE=$BASE ... && docker push ..."
+                built_images = {BASE = "runtime"}
+            }
+        }
+
+    The named workload must be another ShellBuild workload with an image in
+    the same environment. `forge env build <env> --target app` builds
+    `runtime` too, because `app` cannot be built without it; a dependency
+    that fails, or pushes nothing whose digest forge can resolve, fails
+    every build that names it rather than handing it a mutable tag.
+    Dependencies form a DAG — a cycle is refused before anything runs —
+    and independent builds still run in parallel.
 
     Forge once substituted a fixed ${IMAGE}/${TAG}/${REGISTRY}/
     ${TARGETARCH}/… vocabulary into `cmd`. It no longer does, and a
@@ -2435,11 +2475,22 @@ schema ShellBuild(Build):
     # also how a `${NAME}` spelling in the command gets resolved — by the
     # shell, from here.
     env: {str: str} = {}
+    # Images this command builds FROM: ENV_NAME = the workload whose build
+    # pushes it. Forge builds that workload first and sets ENV_NAME to
+    # `<repository>@sha256:<digest>` — the exact image it pushed. See the
+    # docstring.
+    built_images: {str: str} = {}
 
     check:
         type == "shell", "ShellBuild.type must be 'shell'"
         cmd, "ShellBuild.cmd is required"
         not (cwd and source), "ShellBuild.cwd and source are mutually exclusive"
+        all name in built_images { regex.match(name, r"^[A-Za-z_][A-Za-z0-9_]*$") }, \
+            "ShellBuild.built_images keys are the environment variable names the command reads, so each must be a valid one ([A-Za-z_][A-Za-z0-9_]*)"
+        all name in built_images { built_images[name] != "" }, \
+            "ShellBuild.built_images values name the workload whose built image the variable carries; an empty name builds nothing"
+        all name in built_images { name not in env }, \
+            "ShellBuild.built_images and env both set the same variable; forge sets a built_images variable to the image it built, so a static value in env could only contradict it"
 
 schema RemoteBuild(Build):
     """Build this service's image on a HOSTED build service rather than on

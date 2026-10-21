@@ -344,12 +344,15 @@ func planExternalBuilds(in planInputs) []buildPlanStep {
 	if len(svcs) == 0 {
 		return nil
 	}
-	units, aliases, err := externalBuildUnits(svcs, in.opts, in.resolvedTag, in.projectDir)
+	// The same schedule the build runs, so a conflict or an edge the build
+	// would refuse (a cycle, a parent this build does not produce) fails the
+	// plan.
+	graph, aliases, err := externalBuildSchedule(svcs, in.opts, in.resolvedTag, in.projectDir)
 	if err != nil {
 		return []buildPlanStep{{kind: "external", name: svcs[0].Name, what: "ShellBuild", problem: err.Error()}}
 	}
 	var out []buildPlanStep
-	for _, owner := range units {
+	for _, owner := range graph.order {
 		spec := externalBuildSpec(owner, in.opts, in.resolvedTag, in.projectDir)
 		step := buildPlanStep{kind: "external", name: spec.Service, what: fmt.Sprintf("ShellBuild (tag %s)", spec.Tag)}
 		if consumers := aliases[owner.Name]; len(consumers) > 0 {
@@ -358,6 +361,13 @@ func planExternalBuilds(in planInputs) []buildPlanStep {
 				names = append(names, svc.Name)
 			}
 			step.what += "; shared artifact for " + strings.Join(names, ", ")
+		}
+		for _, edge := range graph.edges[owner.Name] {
+			from := "after " + edge.Workload
+			if edge.Owner == "" {
+				from = edge.Workload + " carried from the base"
+			}
+			step.what += fmt.Sprintf("; built FROM %s (%s)", from, edge.Env)
 		}
 		out = append(out, step)
 	}

@@ -68,11 +68,18 @@ func externalBuildArtifacts(services []WorkloadEntity, opts buildOptions, tag, p
 		if env == nil {
 			env = map[string]string{}
 		}
+		// built_images is part of the recipe: the same command built FROM a
+		// different parent is a different image. Nil and empty are one recipe.
+		builtImages := svc.EffectiveBuiltImages()
+		if len(builtImages) == 0 {
+			builtImages = nil
+		}
 		identity, err := json.Marshal(struct {
 			Cmd, Cwd, Platform, InputsFile string
 			Env                            map[string]string
+			BuiltImages                    map[string]string
 			Source                         any
-		}{spec.BuildCmd, cwd, platform, svc.Build.InputsFile, env, externalDeclaredSource(svc)})
+		}{spec.BuildCmd, cwd, platform, svc.Build.InputsFile, env, builtImages, externalDeclaredSource(svc)})
 		if err != nil {
 			return nil, err
 		}

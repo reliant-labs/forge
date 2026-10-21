@@ -133,6 +133,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is a digest of the uncommitted changes' bytes, a build is published only if
   nothing is there yet, and the generate cache's mid-run check judges the
   forge that actually ran instead of re-reading its path.
+- **A delegated forge's bytes no longer depend on the caller's `GOFLAGS`.**
+  The build inherited them, and they are not in its cache key, so a caller
+  with `GOFLAGS=-trimpath` and one without built two different forges of
+  one checkout. The generate cache then saw "the forge binary changed"
+  between two runs that both ran the cached build. The build now pins
+  `GOFLAGS=-trimpath`. The e2e suite also stopped writing its shard log into
+  the checkout, which rebuilt the bridged forge on nearly every invocation.
 - **Docs no longer promise mail that is never sent.** The
   `deploy/managed-identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
   mail through a platform relay and that an invitation emails a link. Neither is

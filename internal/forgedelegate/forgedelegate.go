@@ -292,8 +292,17 @@ func safeName(v string) string {
 // fetched straight from GitHub because the module proxy lags a fresh commit by
 // ~20 minutes, and the checksum database cannot know a commit that new.
 // GOWORK=off keeps a go.work above the temp directory from being consulted.
+//
+// GOFLAGS is pinned, not inherited: a cached forge must be a function of its
+// cache key, and the caller's GOFLAGS is not in the key. Inherited, a caller
+// with GOFLAGS=-trimpath and one without built different bytes for one
+// source, so two forges of one checkout fingerprinted differently and the
+// generate cache saw "the forge binary changed" between two runs that both
+// ran "the build of checkout X". A non-empty value also overrides `go env -w
+// GOFLAGS`. -trimpath because that is how a release is built; the DevForgeRoot
+// ldflag, not the compiled paths, is what tells a delegated build its checkout.
 func buildEnvExtra(more ...string) []string {
-	extra := []string{"GOWORK=off"}
+	extra := []string{"GOWORK=off", "GOFLAGS=-trimpath"}
 	if os.Getenv("GOPRIVATE") == "" {
 		extra = append(extra, "GOPRIVATE=github.com/reliant-labs/*")
 	}

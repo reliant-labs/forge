@@ -33,6 +33,50 @@ func newResolver(t *testing.T) (*Resolver, *[]string, *bytes.Buffer) {
 	return &Resolver{Log: &log, Install: fakeInstall(t, &calls)}, &calls, &log
 }
 
+// A delegated build is a function of the source, not of the caller's GOFLAGS:
+// the cache key does not carry them, so two callers that differ only there
+// must get the same bytes. On CI, e2e tests that run forge under
+// GOFLAGS=-trimpath and ones that do not built two different forges of one
+// checkout, and the generate cache reported "the forge binary changed".
+func TestGoBuild_BytesDoNotDependOnCallerGOFLAGS(t *testing.T) {
+	if testing.Short() {
+		t.Skip("execs `go build` twice; runs in task test")
+	}
+	src := t.TempDir()
+	mustWrite := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(src, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite("go.mod", "module example.com/fakeforge\n\ngo 1.21\n")
+	mustWrite("cmd/forge/main.go", "package main\n\nfunc main() { panic(\"where am I\") }\n")
+
+	build := func(goflags string) []byte {
+		t.Helper()
+		// Explicit both ways, so a `go env -w GOFLAGS` on this machine
+		// cannot make the two callers agree by accident.
+		t.Setenv("GOFLAGS", goflags)
+		out := filepath.Join(t.TempDir(), exeName())
+		if err := goBuild(context.Background(), src, out); err != nil {
+			t.Fatalf("goBuild with GOFLAGS=%s: %v", goflags, err)
+		}
+		b, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	plain, trimmed := build("-trimpath=false"), build("-trimpath")
+	if !bytes.Equal(plain, trimmed) {
+		t.Fatalf("one source built two different forges (%d vs %d bytes) depending on the caller's GOFLAGS; a cache keyed by the source cannot hold both", len(plain), len(trimmed))
+	}
+}
+
 // The first request for a pin builds it; every later one reuses the build.
 func TestPinned_BuildsOnceThenHitsCache(t *testing.T) {
 	r, calls, log := newResolver(t)

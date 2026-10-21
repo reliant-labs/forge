@@ -152,12 +152,14 @@ type graphNode struct {
 	Services []*graphNode
 	// Pos orders providers by their declaration in internal/app.
 	Pos int
-	// File and Line locate a provider's func; Standby and AuthAudience are
-	// its //forge:standby and //forge:audience directives (graphProvider).
+	// File and Line locate a provider's func; Standby, AuthAudience and
+	// RootOnly are its //forge:standby, //forge:audience and
+	// //forge:root-only directives (graphProvider).
 	File         string
 	Line         int
 	Standby      bool
 	AuthAudience string
+	RootOnly     []string
 }
 
 // graphRoot is one root: a struct in internal/app whose fields select the
@@ -214,16 +216,50 @@ type graphProvider struct {
 	// --graph` compares with the audience of every service a listener
 	// serves through a chain over it.
 	Audience string
+	// RootOnly is `//forge:root-only <root>[,<root>...]` on the provider
+	// func: the roots whose closures alone may hold the node. Resolution
+	// never fills another node's interface-typed field with it (only a
+	// field of its very type), and generate fails when any other root
+	// reaches it — a root-specific variant (the worker's privileged daemon
+	// router) can never be handed to a process it was not built for.
+	RootOnly []string
 }
 
 // rootDirectiveRE matches `//forge:root` with an optional name and options.
 var rootDirectiveRE = regexp.MustCompile(`^//\s*forge:root(?:\s+([A-Za-z][\w-]*))?((?:\s+\S+)*)\s*$`)
 
-// standbyDirectiveRE and audienceDirectiveRE read a provider func's doc.
+// standbyDirectiveRE, audienceDirectiveRE and rootOnlyDirectiveRE read a
+// provider func's doc.
 var (
 	standbyDirectiveRE  = regexp.MustCompile(`^//\s*forge:standby\b`)
 	audienceDirectiveRE = regexp.MustCompile(`^//\s*forge:audience\s+([a-z][a-z0-9_-]*)\s*$`)
+	rootOnlyDirectiveRE = regexp.MustCompile(`^//\s*forge:root-only\b(.*)$`)
+	rootOnlyNameRE      = regexp.MustCompile(`^[A-Za-z][\w-]*$`)
 )
+
+// rootOnlyDirective is the roots a `//forge:root-only a,b` line names: nil
+// without the directive, an error when it names none or a malformed one.
+func rootOnlyDirective(doc *ast.CommentGroup) ([]string, error) {
+	if doc == nil {
+		return nil, nil
+	}
+	for _, c := range doc.List {
+		m := rootOnlyDirectiveRE.FindStringSubmatch(c.Text)
+		if m == nil {
+			continue
+		}
+		var names []string
+		for _, part := range strings.Split(m[1], ",") {
+			name := strings.TrimSpace(part)
+			if !rootOnlyNameRE.MatchString(name) {
+				return nil, fmt.Errorf("%q: //forge:root-only names the roots that alone may reach the node, comma-separated (//forge:root-only worker or //forge:root-only api,worker)", strings.TrimSpace(c.Text))
+			}
+			names = append(names, name)
+		}
+		return names, nil
+	}
+	return nil, nil
+}
 
 // hasDirective reports whether doc carries a line matching re.
 func hasDirective(doc *ast.CommentGroup, re *regexp.Regexp) bool {
@@ -322,6 +358,10 @@ func discoverAppDeclsAndGroups(projectDir string) (providers []graphProvider, ro
 			if st == nil {
 				continue
 			}
+			rootOnly, rerr := rootOnlyDirective(fd.Doc)
+			if rerr != nil {
+				return nil, nil, nil, fmt.Errorf("%s:%d: New%s: %w", rel, fset.Position(fd.Pos()).Line, x, rerr)
+			}
 			pos++
 			providers = append(providers, graphProvider{
 				Name:     x,
@@ -335,6 +375,7 @@ func discoverAppDeclsAndGroups(projectDir string) (providers []graphProvider, ro
 				Pos:      pos,
 				Standby:  hasDirective(fd.Doc, standbyDirectiveRE),
 				Audience: audienceDirective(fd.Doc),
+				RootOnly: rootOnly,
 			})
 		}
 	}

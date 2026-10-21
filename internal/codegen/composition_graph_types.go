@@ -226,7 +226,11 @@ func (u *graphUniverse) producersOf(want types.Type, self string, nodes []*graph
 		switch {
 		case types.Identical(t, want):
 			identical = append(identical, n)
-		case types.AssignableTo(t, want):
+		case types.AssignableTo(t, want) && len(n.RootOnly) == 0:
+			// A //forge:root-only node fills only a field of its very
+			// type: an interface it happens to satisfy is no request
+			// for that root's variant, and could hand it to a node
+			// another root reaches.
 			assignable = append(assignable, n)
 		}
 	}

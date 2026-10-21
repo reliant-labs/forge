@@ -362,6 +362,9 @@ func (m *graphModel) wire(in GraphGenInput, resolver *graphResolver, roots []gra
 	if m.rootViews, err = graphRootViews(m.roots, built, m.u, m.edges, m.lazy); err != nil {
 		return err
 	}
+	if err := checkRootOnlyReach(m.rootViews, built, m.edges); err != nil {
+		return err
+	}
 	markRootReach(m.rootViews, graphComposeInputReads(m.compose, built), m.byName, m.u)
 	return markProcessConfig(m.rootViews, m.configs, graphComposeInputConfigReads(m.compose, built, m.configs.inputNames()))
 }
@@ -382,6 +385,7 @@ func addGraphProviderNodes(providers []graphProvider, add func(*graphNode) error
 			Deps: p.Deps, DepsKeys: p.DepsKeys, DepsFound: true,
 			SrcImports: p.Imports, Pos: p.Pos,
 			File: p.File, Line: p.Line, Standby: p.Standby, AuthAudience: p.Audience,
+			RootOnly: p.RootOnly,
 		}
 		if err := add(n); err != nil {
 			return err

@@ -557,6 +557,13 @@ func markerSpecs() []MarkerSpec {
 			Example:   "// Run cloud server components\n//\n// Each subcommand starts one server role.\n//\n//forge:group server",
 		},
 		{
+			Name:      "forge:root-only",
+			AppliesTo: "function",
+			Effect:    "Scopes a provider to the named roots: a root-specific variant of a component (reliant's worker-only daemon router, which may act on a trigger's delegated token). Resolution fills only a Deps field of the provider's very type with it, never an interface it satisfies, and generate fails when a root it does not name reaches it — however compose.go draws the edge.",
+			Placement: "on the provider func's doc comment, unspaced",
+			Example:   "//forge:root-only worker\nfunc NewWorkerDaemonRouter(d WorkerDaemonRouterDeps) (*WorkerDaemonRouter, error)",
+		},
+		{
 			Name:      "forge:standby",
 			AppliesTo: "function",
 			Effect:    "Keeps a provider ready for components to come: `forge lint --graph` does not require a root to reach it.",

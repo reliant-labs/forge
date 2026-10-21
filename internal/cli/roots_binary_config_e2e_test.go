@@ -26,7 +26,8 @@ import "forge/v1/forge.proto";
 
 option go_package = "github.com/test/rbc/gen/config/v1;configv1";
 
-// ServerConfig is every ` + "`rbc server ...`" + ` process's config.
+// ServerConfig is every ` + "`rbc server ...`" + ` process's config: the
+// region and audit sink a node reads, the telemetry settings runRoot reads.
 message ServerConfig {
   option (forge.v1.binary_config) = {
     binary: "rbc"
@@ -44,6 +45,16 @@ message ServerConfig {
     flag: "audit-sink"
     required: true
     description: "Where the API writes audit records."
+  }];
+  // Read by the owned process policy (serve.go), never by a node.
+  string otel_service_name = 3 [(forge.v1.config) = {
+    env_var: "OTEL_SERVICE_NAME"
+    default_value: "rbc"
+    description: "Service name the process reports telemetry under."
+  }];
+  bool prometheus_enabled = 4 [(forge.v1.config) = {
+    env_var: "PROMETHEUS_ENABLED"
+    description: "Serve Prometheus metrics."
   }];
 }
 
@@ -101,7 +112,12 @@ message WorkerConfig {
 //   - the worker root boots with none of the api's required settings — not
 //     its command config's credential, not the shared subtree config's
 //     field only the api reads, not the database — and the api refuses to
-//     start without them.
+//     start without them;
+//   - what the owned serve.go reads of a loaded config (its telemetry
+//     settings, through a helper of its own) is every root's reach: in
+//     roots_gen.go's loads, in ROOTS and in Roots(), whose Validate does
+//     not call it unreached;
+//   - the `server` group command's help is its //forge:group comment.
 func TestE2EBinaryConfigRootsReachTheirOwnConfig(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
@@ -138,9 +154,26 @@ func TestE2EBinaryConfigRootsReachTheirOwnConfig(t *testing.T) {
 	mustReplaceInFile(t, composePath, "\treturn item.New(item.Deps{\n\t\tLogger: g.Log,\n\t\tConfig: g.Cfg,\n\t})",
 		"\treturn item.New(item.Deps{\n\t\tLogger:    g.Log,\n\t\tConfig:    g.Cfg,\n\t\tAuditSink: g.ServerConfig.GetAuditSink(),\n\t})")
 
+	// The owned process policy reads the subtree config's telemetry
+	// settings, through a helper of its own.
+	servePath := filepath.Join(projectDir, "cmd", "rbc", "cmd", "serve.go")
+	mustReplaceInFile(t, servePath, "\tslog.SetDefault(logger)\n", "\tslog.SetDefault(logger)\n\tlogger.Info(\"telemetry\", telemetryAttrs(root.Configs.ServerConfig)...)\n")
+	writeFileE2E(t, servePath, readFileE2E(t, servePath)+`
+// telemetryAttrs is what the process reports of its telemetry settings.
+func telemetryAttrs(c *config.ServerConfig) []any {
+	return []any{"otel_service_name", c.GetOtelServiceName(), "prometheus_enabled", c.GetPrometheusEnabled()}
+}
+`)
+
 	writeFileE2E(t, filepath.Join(projectDir, "internal", "app", "roots.go"), `package app
 
 import "github.com/test/rbc/internal/workers/tick"
+
+// Run the rbc server roles
+//
+// Each subcommand runs one role of a split deployment.
+//
+//forge:group server
 
 // API is what `+"`rbc server api`"+` runs.
 //
@@ -179,8 +212,8 @@ type Worker struct {
 	for _, want := range []string{
 		`config.RegisterServerConfigFlags(serverCmd)`,
 		`apiConfig, err := config.LoadApiConfigReach(cmd, []string{ "signing_key", "greeting", "flags", })`,
-		`serverConfig, err := config.LoadServerConfigReach(cmd, []string{ "audit_sink", })`,
-		`serverConfig, err := config.LoadServerConfigReach(cmd, []string{ "region", })`,
+		`serverConfig, err := config.LoadServerConfigReach(cmd, []string{ "audit_sink", "otel_service_name", "prometheus_enabled", })`,
+		`serverConfig, err := config.LoadServerConfigReach(cmd, []string{ "region", "otel_service_name", "prometheus_enabled", })`,
 		`workerConfig, err := config.LoadWorkerConfigReach(cmd, []string{ "tick_every", })`,
 		`g.WorkerConfig = workerConfig`,
 	} {
@@ -218,6 +251,11 @@ worker_env = sorted([_k for _k in config_gen.workloadEnvMap(appcfg.rbc_process, 
 			t.Errorf("%s reaches the api (its closure reads it) and not the worker:\napi:    %v\nworker: %v", k, envs.API, envs.Worker)
 		}
 	}
+	for _, k := range []string{"OTEL_SERVICE_NAME", "PROMETHEUS_ENABLED"} {
+		if !slices.Contains(envs.API, k) || !slices.Contains(envs.Worker, k) {
+			t.Errorf("%s, which runRoot reads, reaches every root:\napi:    %v\nworker: %v", k, envs.API, envs.Worker)
+		}
+	}
 	for _, k := range []string{"REGION", "TICK_EVERY"} {
 		if !slices.Contains(envs.Worker, k) || slices.Contains(envs.API, k) {
 			t.Errorf("%s reaches the worker and not the api:\napi:    %v\nworker: %v", k, envs.API, envs.Worker)
@@ -225,7 +263,7 @@ worker_env = sorted([_k for _k in config_gen.workloadEnvMap(appcfg.rbc_process, 
 	}
 	for _, k := range envs.Worker {
 		if slices.Contains(envs.API, k) && !slices.Contains([]string{"PORT", "LOG_LEVEL", "LOG_FORMAT", "ENVIRONMENT"}, k) && !strings.HasPrefix(k, "CORS_") &&
-			!strings.HasPrefix(k, "TLS_") && !slices.Contains([]string{"PPROF_ADDR", "PRE_STOP_DELAY", "SHUTDOWN_TIMEOUT", "SECURITY_HEADERS_ENABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "READ_MAX_BYTES", "SEND_MAX_BYTES", "LIVENESS_PATHS", "READINESS_PATHS"}, k) {
+			!strings.HasPrefix(k, "TLS_") && !slices.Contains([]string{"PPROF_ADDR", "PRE_STOP_DELAY", "SHUTDOWN_TIMEOUT", "SECURITY_HEADERS_ENABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "READ_MAX_BYTES", "SEND_MAX_BYTES", "LIVENESS_PATHS", "READINESS_PATHS", "OTEL_SERVICE_NAME", "PROMETHEUS_ENABLED"}, k) {
 			t.Errorf("both roots reach %s, which is no process field", k)
 		}
 	}
@@ -245,9 +283,20 @@ worker_env = sorted([_k for _k in config_gen.workloadEnvMap(appcfg.rbc_process, 
 	bin := filepath.Join(projectDir, "rbc-bin")
 	runCmd(t, projectDir, "go", "build", "-o", bin, "./cmd/rbc")
 
+	// The group command's help is its //forge:group comment.
+	if help := runCmdStdout(t, projectDir, bin, "server", "--help"); !strings.HasPrefix(help, "Each subcommand runs one role of a split deployment.") {
+		t.Errorf("`rbc server --help` is not the //forge:group help:\n%s", help)
+	}
+	if help := runCmdStdout(t, projectDir, bin, "--help"); !strings.Contains(help, "Run the rbc server roles") {
+		t.Errorf("`rbc --help` lists `server` without its declared Short:\n%s", help)
+	}
+
 	// The worker starts with every api-only setting unset, required or not.
-	none := []string{"DATABASE_URL=", "API_SIGNING_KEY=", "AUDIT_SINK=", "TICK_EVERY=2s", "REGION=eu"}
+	none := []string{"DATABASE_URL=", "API_SIGNING_KEY=", "AUDIT_SINK=", "TICK_EVERY=2s", "REGION=eu", "PROMETHEUS_ENABLED=true"}
 	workerLog := bootRootArgs(t, bin, projectDir, none, []string{"server", "worker"}, nil)
+	if !strings.Contains(workerLog, `"prometheus_enabled":true`) {
+		t.Errorf("`server worker`'s runRoot never read PROMETHEUS_ENABLED:\n%s", workerLog)
+	}
 	if !strings.Contains(workerLog, `"worker":"tick"`) || !strings.Contains(workerLog, `"every":"2s"`) || !strings.Contains(workerLog, `"region":"eu"`) {
 		t.Errorf("`server worker` never started the tick worker with its own config:\n%s", workerLog)
 	}
@@ -333,6 +382,9 @@ func TestRootsValidateEnv(t *testing.T) {
 		"API_SIGNING_KEY":      "k",
 		"AUDIT_SINK":           "s3://audit",
 		"API_FLAG_BETA_ENABLED": "true",
+		// Read by runRoot (serve.go), not by a node: still the root's.
+		"OTEL_SERVICE_NAME":  "rbc-api",
+		"PROMETHEUS_ENABLED": "true",
 	}
 	if problems := config.ValidateRootEnv("api", good); len(problems) != 0 {
 		t.Fatalf("a correct api env has no problems: %v", problems)

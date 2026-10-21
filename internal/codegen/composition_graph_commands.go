@@ -245,7 +245,9 @@ type rootsGenView struct {
 
 // rootCommandViews lays the roots' command paths out as a cobra tree: one
 // command per distinct path prefix, parents before children, in path order.
-func rootCommandViews(roots []graphRootView) ([]rootCmdView, []string) {
+// A group command's help is its declared //forge:group comment's (groups, by
+// path), else generated.
+func rootCommandViews(roots []graphRootView, groups map[string]groupHelp) ([]rootCmdView, []string) {
 	byPath := map[string]*graphRootView{}
 	prefixes := map[string]bool{}
 	for i := range roots {
@@ -296,6 +298,8 @@ func rootCommandViews(roots []graphRootView) ([]rootCmdView, []string) {
 			if r.Short == "" {
 				v.Long = fmt.Sprintf("Run the %s root of the composition graph (internal/app): build every node its fields reach, dependencies first, then supervise them until a signal or a failing node. Start order (stop is the reverse): %s.", r.Name, r.Plan)
 			}
+		} else if h, ok := groups[p]; ok {
+			v.Short, v.Long = h.Short, h.Long
 		} else {
 			v.Short = fmt.Sprintf("The %s roots", p)
 		}
@@ -333,7 +337,7 @@ const rootsGenFile = "roots_gen.go"
 
 // emitRootCommands writes cmd/<bin>/cmd/roots_gen.go for the primary binary,
 // or retires it — with a warning — when the tree has no runRoot to call.
-func emitRootCommands(projectDir, module string, roots []graphRootView, inputs []graphConfigInputView, rootMsg string, cs *checksums.FileChecksums, warn io.Writer) error {
+func emitRootCommands(projectDir, module string, roots []graphRootView, groups map[string]groupHelp, inputs []graphConfigInputView, rootMsg string, cs *checksums.FileChecksums, warn io.Writer) error {
 	treeDir := primaryCmdTreeDir(projectDir)
 	if treeDir == "" {
 		return nil
@@ -354,7 +358,7 @@ func emitRootCommands(projectDir, module string, roots []graphRootView, inputs [
 		fmt.Fprintf(warn, "  ⚠️  %s never calls rootCommands(deps), so none of the roots' commands is on the command tree: add `root.AddCommand(rootCommands(deps)...)` to newRootCmd\n",
 			filepath.ToSlash(filepath.Join(treeDir, "root.go")))
 	}
-	cmds, top := rootCommandViews(roots)
+	cmds, top := rootCommandViews(roots, groups)
 	view := rootsGenView{Module: module, Commands: cmds, Top: top, ConfigInputs: inputs, RootFlagsHomed: rootFlags}
 	for _, r := range roots {
 		view.Fmt = view.Fmt || len(r.Loads) > 0

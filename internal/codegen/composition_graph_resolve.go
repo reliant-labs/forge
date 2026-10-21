@@ -13,9 +13,10 @@
 //  3. a framework SEAM: the clock, the id generator, a generated store
 //     (<orm pkg>.NewStore over whatever node produces the orm.Context);
 //  4. a PRODUCER, by type: the one node whose value is assignable to the
-//     field (an identical type wins over a merely assignable one). Two or
-//     more is an AMBIGUITY — a generate error until compose.go's owned
-//     expression picks one. Names never resolve;
+//     field (an identical type wins over a merely assignable one; a
+//     //forge:root-only node is offered only to a field of its very type).
+//     Two or more is an AMBIGUITY — a generate error until compose.go's
+//     owned expression picks one. Names never resolve;
 //  5. a scalar: the config field of that name, else its zero value (with a
 //     hint that configuration belongs in a block);
 //  6. an optional (`forge:optional-dep`) field with no producer: nil;

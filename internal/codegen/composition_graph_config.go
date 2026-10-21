@@ -3,12 +3,14 @@
 // Per-root config, derived from reach (docs/design/composition-graph.md §2
 // P2, §9.4; composition graph PR 6). A root's process reads exactly:
 //
-//   - the PROCESS fields — what runRoot (cmd/<bin>/cmd/serve.go) projects onto
-//     serverkit.Config for every root: address, TLS, logging, telemetry,
-//     payload caps, the drain budget (processConfigFields);
-//   - the DATABASE fields, when the root reaches the database (the same fact
-//     that makes it migrate): the URL, the pool tuning, auto-migrate
-//     (databaseConfigFields);
+//   - the PROCESS fields — every field the owned process policy, runRoot
+//     (cmd/<bin>/cmd/serve.go), reads for every root: address, TLS, logging,
+//     telemetry, payload caps, the drain budget — read off serve.go itself
+//     (composition_graph_process_reads.go), or, with no runRoot yet, the ones
+//     the scaffolded serve.go reads (processConfigFields);
+//   - of those, the DATABASE fields only when the root reaches the database
+//     (the same fact that makes it migrate): the URL, the pool tuning,
+//     auto-migrate (databaseConfigFields);
 //   - every field a node in its closure reads through compose.go's value
 //     expressions: `g.Cfg.X` / `g.Cfg.GetX()` is field X (a whole config
 //     block when X is one), `g.Cfg.X.Y` the block leaf Y, and `g.Cfg` handed
@@ -40,6 +42,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -183,6 +186,10 @@ type processConfigs struct {
 	rootName string
 	root     *configModel
 	inputs   []configInput
+	// process is what the command tree's runRoot reads of each config, by
+	// graph input (composition_graph_process_reads.go); nil when the tree
+	// declares no runRoot, and the scaffolded serve.go's fields stand in.
+	process nodeConfigReads
 }
 
 // rootMessage is the root config's message name; "" without configs.
@@ -477,6 +484,30 @@ func (m *configModel) ordered(in reached) []ConfigLeaf {
 	return out
 }
 
+// addProcessFields adds what runRoot reads of m, the config read through
+// graph input input, for every process that loads it: the fields the owned
+// serve.go reads (pc.process), or — with no runRoot to read — the serve
+// fields the scaffolded one does. A database field is the reach of a process
+// that opens the database alone.
+func (pc *processConfigs) addProcessFields(m *configModel, input string, into reached, opensDB bool) {
+	if pc.process == nil {
+		m.addServeFields(into, opensDB)
+		return
+	}
+	got := reached{}
+	m.addRead(got, pc.process[input])
+	if !opensDB {
+		for _, f := range databaseConfigFields {
+			if _, block := m.blocks[f]; !block {
+				for _, l := range m.byGo[f] {
+					delete(got, l.Path)
+				}
+			}
+		}
+	}
+	maps.Copy(into, got)
+}
+
 // addServeFields adds the serve fields m declares as its own leaves: the
 // process fields, and the database fields when the process opens the
 // database.
@@ -499,9 +530,10 @@ func serveConfigFields(opensDB bool) []string {
 }
 
 // rootConfig is the root config one root reaches.
-func (m *configModel) rootConfig(v graphRootView, reads map[string]nodeConfigReads) []ConfigLeaf {
+func (pc *processConfigs) rootConfig(v graphRootView, reads map[string]nodeConfigReads) []ConfigLeaf {
+	m := pc.root
 	got := reached{}
-	m.addServeFields(got, v.opensDB())
+	pc.addProcessFields(m, rootConfigInput, got, v.opensDB())
 	for _, node := range v.Reach {
 		m.addRead(got, reads[node][rootConfigInput])
 	}
@@ -527,16 +559,16 @@ func markProcessConfig(views []graphRootView, pc *processConfigs, reads map[stri
 	var problems []string
 	for i := range views {
 		v := &views[i]
-		v.Config = pc.root.rootConfig(*v, reads)
+		v.Config = pc.rootConfig(*v, reads)
 		v.HasConfig = true
 		v.Loads = nil
 		for _, in := range pc.inputs {
 			var readers []string
 			got := reached{}
-			// The serve fields the config declares are runRoot's to read for
-			// every process that loads it, as the root config's are (the
-			// scaffolded serverkitConfig reads them off root.Configs).
-			in.model.addServeFields(got, v.opensDB())
+			// What runRoot reads of the config is reached by every process
+			// that loads it, as the root config's is (serverkitConfig reads
+			// it off root.Configs).
+			pc.addProcessFields(in.model, in.msg.Name, got, v.opensDB())
 			for _, node := range v.Reach {
 				if r := reads[node][in.msg.Name]; r != nil {
 					readers = append(readers, node)

@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **What the owned `runRoot` reads is every root's config reach.** `generate`
+  reads `cmd/<bin>/cmd/serve.go` the way it reads compose.go: `cfg` from
+  `config.LoadReach`, `root.Configs.<Msg>`, and each config value handed to a
+  function of the command tree, by the same selector rules. A setting the
+  process policy reads under its own name (an `observability` block's
+  `OTEL_*`, `PROMETHEUS_ENABLED`, a `health_port`) is now in `ROOTS`, in
+  `pkg/config` `Roots()` (so `Validate` no longer calls it unreached) and in
+  what `LoadReach` demands; before, only forge's own serve-field names counted.
+  A database field still counts only for a root that opens the database, and
+  a tree with no runRoot keeps the scaffolded serve fields.
+- **`//forge:group <path>` declares a group command's help.** A comment of its
+  own in `internal/app`, read by the root doc's rule (first paragraph the
+  Short, the rest the Long), replaces roots_gen.go's generic "The server roots"
+  on the group command above `server api` / `server gateway`. A path no root
+  runs beneath, or a root's own command, is a generate error.
+- **`forge cloud identity invite|reset --return-code`** hands the one-time
+  password-set code back (with the env's `/auth/reset` link filled in) for you
+  to deliver, the only way to invite or reset where the environment declares no
+  `smtp`: the control plane refuses both there rather than send nothing.
+  `status` prints `Mail: none|smtp` (`mailDelivery` in `--json`). `reset` now
+  says it emailed a link, and `invite` no longer claims an unsent email
+  succeeded. The `deploy/managed-identity` skill describes every verb, the
+  `identity:read` / `identity:manage` scopes (machine credentials carrying them
+  are accepted; a Reliant session is elevated on demand) and the code flow; it
+  had said machine credentials were refused and that an invitation's code could
+  not be redeemed by `/auth/reset`.
+- **`pkg/secretaccess` and `pkg/secretgen`: the pure halves of store-backed
+  secrets.** `secretaccess.Derive` maps `{scope, clusters, per-namespace secret
+  names}` to OpenBao JWT auth mounts (`jwt-<cluster>`), roles (one per cluster
+  and namespace, bound to the namespace's `reliant-secrets` service account and
+  the cluster's audience, issuing 10 minute batch tokens) and ACL policies that
+  grant `read` on exact paths only: no globs, no list, no metadata, unless a
+  `WildcardRead` carries a reason. Output is deterministic, so forge's converge
+  Job and a hosted control plane derive identical documents; `Widen` and
+  `Removed` implement widen-then-narrow around a promotion. `secretgen`
+  generates the declared kinds (`random`, `password` with one character of every
+  class, `ec_p256_pkcs8`, `rsa_2048`, `ec_p256_selfsigned`) and `Mint` writes
+  them create-only, refusing to complete a half-written key pair. A docker smoke
+  against OpenBao 2.6.2 (skipped under `-short`) proves JWT roles accept
+  `token_type=batch` and that the derived policy reads exactly the declared
+  names.
+
 - **`forge cloud identity` administers users, not just reads them.** New verbs,
   each one rpc of `controlplane.v1.IdentityService`: `set-roles <env> --user
 <id|email> --role a --role b` (or `--none`), `reset`, `lock`, `unlock`,

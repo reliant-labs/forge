@@ -593,11 +593,11 @@ func TestAnnotations_GoMarkerNamesMatchRecognizers(t *testing.T) {
 		// so it has no codegen recognizer to pin here.
 		"forge:optional-checked": true,
 		// Read by unexported scanners outside codegen's exported surface —
-		// the composition graph's directive scan (root, standby, audience;
-		// pinned in codegen's go_markers_test.go and composition-graph
-		// tests), internal/config's no-orm scan (derive_test.go), the
-		// unscoped_auth audit, and the banner lint.
-		"forge:root": true, "forge:standby": true, "forge:audience": true,
+		// the composition graph's directive scan (root, group, standby,
+		// audience, root-only; pinned in codegen's go_markers_test.go and
+		// composition-graph tests), internal/config's no-orm scan
+		// (derive_test.go), the unscoped_auth audit, and the banner lint.
+		"forge:root": true, "forge:standby": true, "forge:audience": true, "forge:group": true, "forge:root-only": true,
 		"forge:no-orm": true, "forge:auth-unscoped-ok": true, "forge:allow": true,
 		// Read by forgeconv-tx-lock-under-serializable, which parses it
 		// and reports a malformed one (forgeconv's

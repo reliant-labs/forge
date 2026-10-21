@@ -508,6 +508,19 @@ type pipelineFlags struct {
 // and generateMu (withGenerateLock), because several callers must hold
 // them across more than the pipeline — a scaffold command's own writes,
 // rescaffold's deletions, --explain's before/after scans.
+// printSkippedChecks says which of the run's checks the flags skip.
+func printSkippedChecks(flags pipelineFlags) {
+	switch {
+	case flags.SkipValidateNote != "":
+		fmt.Println(flags.SkipValidateNote)
+	case flags.SkipValidate:
+		fmt.Println("⏩ --skip-validate: the final compile check (validate generated code) will be skipped")
+	}
+	if flags.SkipPreChecks {
+		fmt.Println("⚠️  pre-codegen contract check skipped via --skip-pre-checks")
+	}
+}
+
 func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	ctx, err := newPipelineContextWithFlags(projectDir, flags)
 	if err != nil {
@@ -535,15 +548,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		return nil
 	}
 
-	switch {
-	case flags.SkipValidateNote != "":
-		fmt.Println(flags.SkipValidateNote)
-	case flags.SkipValidate:
-		fmt.Println("⏩ --skip-validate: the final compile check (validate generated code) will be skipped")
-	}
-	if flags.SkipPreChecks {
-		fmt.Println("⚠️  pre-codegen contract check skipped via --skip-pre-checks")
-	}
+	printSkippedChecks(flags)
 
 	// Per-run side-render redirect tracking (--explain-drift), the
 	// heal-notice dedupe set, and the heal opt-in start empty/off on

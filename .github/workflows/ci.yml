@@ -340,7 +340,11 @@ jobs:
       - name: go vet -tags e2e
         run: |
           set -euo pipefail
-          mapfile -t pkgs < <(git grep -lE '^//go:build.*\be2e\b' -- '*.go' | xargs -n1 dirname | sort -u | sed 's|^|./|')
+          # testdata/ is excluded: the go command never builds it, and a
+          # fixture there (codemod's legacy project, #998) is a copy of
+          # someone else's code, not a package of this module. Naming it
+          # explicitly made `go vet` compile it ("undefined: freePort").
+          mapfile -t pkgs < <(git grep -lE '^//go:build.*\be2e\b' -- '*.go' ':(exclude,glob)**/testdata/**' | xargs -n1 dirname | sort -u | sed 's|^|./|')
           if [ "${#pkgs[@]}" -eq 0 ]; then
             echo "::error::no file carries the e2e build tag — this check would inspect nothing"
             exit 1

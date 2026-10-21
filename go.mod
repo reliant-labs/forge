@@ -2,7 +2,7 @@ module github.com/reliant-labs/forge
 
 go 1.27.0
 
-toolchain go1.27.2
+toolchain go1.27.3
 
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.2
@@ -10,7 +10,7 @@ require (
 	cel.dev/cel-go v0.32.0
 	connectrpc.com/connect v1.21.1
 	connectrpc.com/otelconnect v0.12.0
-	connectrpc.com/vanguard v0.5.0
+	connectrpc.com/vanguard v0.4.0
 	github.com/BurntSushi/toml v1.6.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.49.0
 	github.com/MicahParks/keyfunc/v3 v3.8.2

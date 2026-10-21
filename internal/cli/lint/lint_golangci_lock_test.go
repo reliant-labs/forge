@@ -19,8 +19,13 @@
 package lint
 
 import (
+	"context"
+	"io"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/pkg/hostslot"
 )
 
 // contendedUnlessSerialStub is golangci-lint while another instance holds the
@@ -81,23 +86,42 @@ func TestGolangciLanesQueueForTheMachineLock(t *testing.T) {
 	})
 }
 
-// TestGolangciRunArgsNeverDropsTheLock pins the half of the choice the stub
-// cannot see. --allow-parallel-runners would ALSO get past a contended lock,
-// by not taking it at all — and two full golangci-lint runs at once can
-// exhaust a small machine's memory, which is why the lock exists.
-func TestGolangciRunArgsNeverDropsTheLock(t *testing.T) {
-	args := golangciRunArgs([]string{"--fix"}, []string{"./internal/..."})
-	got := strings.Join(args, " ")
-	if args[0] != "run" {
+// TestGolangciRunArgsKeepTheLockOutsideAnOwnSlot pins the half of the choice
+// the stub cannot see. --allow-parallel-runners would ALSO get past a
+// contended lock, by not taking it at all — and two full golangci-lint runs at
+// once can exhaust a small machine's memory, which is why the lock exists.
+// Only a heavy slot of this process's own bounds that, so only there may the
+// lock go: inside one, keeping it serialized every lint on the machine while
+// each waiter held a slot it could not use.
+func TestGolangciRunArgsKeepTheLockOutsideAnOwnSlot(t *testing.T) {
+	t.Setenv(hostslot.EnvDir, t.TempDir())
+	t.Setenv(hostslot.EnvHeld, "")
+	t.Setenv(hostslot.SlotsEnv(hostslot.Heavy), "2")
+	argv := func() string {
+		return strings.Join(golangciRunArgs([]string{"--fix"}, []string{"./internal/..."}), " ")
+	}
+
+	got := argv()
+	if !strings.HasPrefix(got, "run ") {
 		t.Errorf("argv must start with the run subcommand: %q", got)
 	}
-	if !strings.Contains(got, "--allow-serial-runners") {
-		t.Errorf("argv does not wait for the lock: %q", got)
-	}
-	if strings.Contains(got, "--allow-parallel-runners") {
-		t.Errorf("argv drops golangci-lint's lock entirely, so concurrent full runs can OOM the machine: %q", got)
+	if !strings.Contains(got, "--allow-serial-runners") || strings.Contains(got, "--allow-parallel-runners") {
+		t.Errorf("outside a slot the argv must wait for golangci-lint's lock, not drop it: %q", got)
 	}
 	if !strings.HasSuffix(got, "--fix ./internal/...") {
 		t.Errorf("extra flags and paths must be passed through in order: %q", got)
+	}
+
+	release, err := cmdutil.HoldHeavySlot(context.Background(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inSlot := argv()
+	release()
+	if !strings.Contains(inSlot, "--allow-parallel-runners") || strings.Contains(inSlot, "--allow-serial-runners") {
+		t.Errorf("inside its own heavy slot the argv must drop golangci-lint's lock: %q", inSlot)
+	}
+	if after := argv(); !strings.Contains(after, "--allow-serial-runners") {
+		t.Errorf("after the slot is released the argv must wait for the lock again: %q", after)
 	}
 }

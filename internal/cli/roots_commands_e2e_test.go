@@ -244,6 +244,9 @@ func bootRootOnPort(t *testing.T, bin, projectDir, portEnv string, env, args []s
 	cmd.Env = append(append(os.Environ(),
 		fmt.Sprintf("%s=%d", portEnv, port),
 		"ENVIRONMENT=development",
+		// The assertions read JSON log lines; a LOG_FORMAT=text in the
+		// caller's environment (a forge env up shell) must not change that.
+		"LOG_FORMAT=json",
 		"PPROF_ADDR=",
 		"PRE_STOP_DELAY=-1s",
 	), env...)

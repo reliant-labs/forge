@@ -671,17 +671,20 @@ func TestE2EFixtureCorpusFrontendBasePath(t *testing.T) {
 	//   - NO entity pages are emitted (they follow the marker), so the
 	//     nav must advertise NO entity routes — the 404-wall pin further
 	//     down.
+	// Each rpc is marked `// forge:custom`, which is what says so: an
+	// unmarked CRUD-named rpc over a wire message with no table is refused
+	// by generate (#962, codegen.UnmatchedCRUDRPCs).
 	// Historically the RPCs were bare verbs (Create/Get/...) which matched
 	// no entity at all and produced a hollow frontend; the convention names
 	// here are the regression guard for that.
 	apiProto := filepath.Join(projectDir, "proto", "services", "api", "v1", "api.proto")
 	proto := readFileE2E(t, apiProto)
 	proto = strings.Replace(proto, "  // TODO: Add your RPC methods here.",
-		"  rpc CreateItem(CreateItemRequest) returns (CreateItemResponse);\n"+
-			"  rpc GetItem(GetItemRequest) returns (GetItemResponse);\n"+
-			"  rpc UpdateItem(UpdateItemRequest) returns (UpdateItemResponse);\n"+
-			"  rpc DeleteItem(DeleteItemRequest) returns (DeleteItemResponse);\n"+
-			"  rpc ListItems(ListItemsRequest) returns (ListItemsResponse);", 1)
+		"  // forge:custom\n  rpc CreateItem(CreateItemRequest) returns (CreateItemResponse);\n"+
+			"  // forge:custom\n  rpc GetItem(GetItemRequest) returns (GetItemResponse);\n"+
+			"  // forge:custom\n  rpc UpdateItem(UpdateItemRequest) returns (UpdateItemResponse);\n"+
+			"  // forge:custom\n  rpc DeleteItem(DeleteItemRequest) returns (DeleteItemResponse);\n"+
+			"  // forge:custom\n  rpc ListItems(ListItemsRequest) returns (ListItemsResponse);", 1)
 	if !strings.Contains(proto, "rpc ListItems(") {
 		t.Fatalf("could not author RPCs into the scaffolded api.proto — the stub's TODO anchor moved:\n%s", proto)
 	}
@@ -2953,7 +2956,7 @@ func TestCorpusTradeTextTimestamps(t *testing.T) {
 	if err := db.CreateTrade(ctx, dbc, tr); err != nil {
 		t.Fatalf("CreateTrade against the TEXT-timestamp schema: %v", err)
 	}
-	if tr.Id == "" {
+	if tr.ID == "" {
 		t.Error("CreateTrade should mint a ULID id")
 	}
 	if tr.CreatedAt == "" || tr.UpdatedAt == "" {
@@ -2966,7 +2969,7 @@ func TestCorpusTradeTextTimestamps(t *testing.T) {
 		t.Errorf("updated_at is not RFC3339Nano text: %q (%v)", tr.UpdatedAt, err)
 	}
 
-	got, err := db.GetTradeByID(ctx, dbc, tr.Id)
+	got, err := db.GetTradeByID(ctx, dbc, tr.ID)
 	if err != nil {
 		t.Fatalf("GetTradeByID: %v", err)
 	}
@@ -2980,7 +2983,7 @@ func TestCorpusTradeTextTimestamps(t *testing.T) {
 	if err := db.UpdateTrade(ctx, dbc, got); err != nil {
 		t.Fatalf("UpdateTrade: %v", err)
 	}
-	re, err := db.GetTradeByID(ctx, dbc, tr.Id)
+	re, err := db.GetTradeByID(ctx, dbc, tr.ID)
 	if err != nil {
 		t.Fatalf("re-read after update: %v", err)
 	}

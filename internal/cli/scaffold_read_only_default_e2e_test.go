@@ -5,6 +5,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -24,12 +25,14 @@ import (
 //	--- FAIL: TestCRUD_Gadget_Lifecycle
 //	    create #1: invalid_argument: create gadget: a field value violates a constraint
 //
-// The op now writes the column's own DEFAULT for anything the request does
-// not carry. The second half of the test is the reason that lives in the op
-// and NOT in a `nullzero`/`default:` bun tag: Bun cannot tell "unset" from
-// "zero", so a tag would silently store true for an explicit false on a
-// hand-written `DEFAULT true` column. The op can tell, because it knows
-// which columns the request carried.
+// A field the request does not carry is now left UNSET, and the database
+// applies the column's own DEFAULT (F12.5, #990): the born enum column is
+// ,nullzero (its CHECK rejects the zero, so Create omits a zero), and a scalar
+// whose DEFAULT is not its Go zero is a pointer whose nil is unset. The
+// second half of the test is why that distinction lives in the entity type
+// and not in a `default:` bun tag: Bun reads every zero as unset, so a tag
+// would silently store true for an explicit false on a hand-written
+// `DEFAULT true` column. A *bool can tell.
 func TestE2EScaffoldReadOnlyColumnTakesItsSchemaDefault(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
@@ -65,12 +68,12 @@ func TestE2EScaffoldReadOnlyColumnTakesItsSchemaDefault(t *testing.T) {
 
 	opsPath := filepath.Join(projectDir, "internal", "handlers", "widget", "handlers_crud_ops_gen.go")
 	createOp := sliceBetweenCLI(readFileE2E(t, opsPath), "func (s *Service) crudCreateGadgetOp()", "Persist:")
-	// TONE_WARM, not TONE_UNSPECIFIED: the born migration defaults an enum
-	// column to the first REAL member, so what the server sets for a
-	// read-only field is a state the domain actually has. The two halves
-	// compose — the column DEFAULT is what the create op pastes.
-	if !strings.Contains(createOp, `e.Tone = "TONE_WARM"`) {
-		t.Errorf("the create op must write the enum column's DEFAULT for a read-only field:\n%s", createOp)
+	// The op pastes no DEFAULT: the database applies it. The born migration
+	// defaults an enum column to the first REAL member (TONE_WARM), so what a
+	// read-only field gets is a state the domain actually has — and the
+	// born lifecycle test above proves the create succeeds against the CHECK.
+	if strings.Contains(createOp, "e.Tone =") {
+		t.Errorf("the create op must leave a read-only enum to the column DEFAULT:\n%s", createOp)
 	}
 	if strings.Contains(createOp, "UNSPECIFIED") {
 		t.Errorf("a read-only enum must not be born at the proto zero:\n%s", createOp)
@@ -88,19 +91,19 @@ func TestE2EScaffoldReadOnlyColumnTakesItsSchemaDefault(t *testing.T) {
 	runCmd(t, projectDir, forgeBin, "generate")
 
 	createOp = sliceBetweenCLI(readFileE2E(t, opsPath), "func (s *Service) crudCreateGadgetOp()", "Persist:")
-	if !strings.Contains(createOp, "e.Priority = 5") {
-		t.Errorf("the create op must write the hand-written DEFAULT 5 for a read-only column:\n%s", createOp)
+	if strings.Contains(createOp, "e.Priority =") {
+		t.Errorf("the create op must leave a read-only column to its hand-written DEFAULT 5:\n%s", createOp)
 	}
 	// `active` IS on the create request: its value comes from the caller and
 	// nothing may substitute the column default for an explicit false.
-	if !strings.Contains(createOp, "e.Active = req.Active") {
-		t.Errorf("a client-settable column must come from the request:\n%s", createOp)
+	if !strings.Contains(createOp, "v := req.Active") || !strings.Contains(createOp, "e.Active = &v") {
+		t.Errorf("a client-settable column must come from the request, explicit false included:\n%s", createOp)
 	}
 	if strings.Contains(createOp, "e.Active = true") {
 		t.Errorf("the column DEFAULT was written over a client-settable field — an explicit false would be lost:\n%s", createOp)
 	}
-	if strings.Contains(readFileE2E(t, filepath.Join(projectDir, "internal", "db", "gadget_orm_gen.go")), "nullzero") {
-		t.Errorf("the ORM must not mark a NOT NULL non-timestamp column nullzero: Bun cannot tell unset from zero")
+	if orm := readFileE2E(t, filepath.Join(projectDir, "internal", "db", "gadget_orm_gen.go")); !regexp.MustCompile(`\bActive\s+\*bool\b`).MatchString(orm) {
+		t.Errorf("a DEFAULT true column must be a *bool, so an explicit false is stored rather than read as unset:\n%s", orm)
 	}
 
 	runCmd(t, projectDir, "go", "test", "-count=1", "./internal/handlers/widget/")

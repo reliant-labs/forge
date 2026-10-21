@@ -406,6 +406,7 @@ func generateSteps() []GenStep {
 		// step below — there is no auth-config codegen step.
 		{Name: "open-procedure set (pkg/middleware)", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepAuthProcedures, Tag: "codegen"},
 		{Name: "webhook routes", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.codegen=false", Run: stepWebhookRoutes, Tag: "codegen"},
+		{Name: "go mod tidy (pre-composition)", Gate: feature(config.FeaturesConfig.CodegenEnabled), GateReason: "features.codegen=false", Run: stepGoModTidyPreComposition, Tag: "tools", Writes: writesBothTidies},
 		{Name: "internal/app composition (hybrid DI)", Gate: feature(config.FeaturesConfig.CodegenEnabled), GateReason: "features.codegen=false", Run: stepInternalAppComposition, Tag: "codegen"},
 		{Name: "go mod tidy (pre-wiring)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepGoModTidyPreWiring, Tag: "tools", Writes: writesBothTidies},
 		{Name: "cmd/commands.go (user extension point)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepCmdCommands, Tag: "codegen"},
@@ -585,6 +586,7 @@ var stepPresetAllowlist = map[string]map[string]bool{
 		// cmd/<bin>/cmd/workers/<name>.go subcommand — the behavior the
 		// preset previously got for free from the composition step.
 		"cmd command groups (services/workers/operators)": true,
+		"go mod tidy (pre-composition)":                   true,
 		"go mod tidy (pre-wiring)":                        true,
 		"cmd/commands.go (user extension point)":          true,
 		"per-service test helpers":                        true,
@@ -2354,6 +2356,41 @@ func stepGoModTidyPreWiring(ctx *pipelineContext) error {
 	}
 	if err := runGoModTidyRoot(ctx.ProjectDir); err != nil {
 		fmt.Fprintf(os.Stderr, "  ⚠️  pre-wiring go mod tidy (root) failed (continuing; wiring codegen may degrade to its unproven/TODO fallbacks): %v\n", err)
+	}
+	return nil
+}
+
+// stepGoModTidyPreComposition runs `go mod tidy` (gen/ first, then root)
+// BEFORE the composition step, on a project generate has composed before.
+//
+// The composition graph reads what each node IS off one go/packages load of
+// internal/app and the component packages: the type a provider produces, the
+// lifecycle methods a listener has, whether a node is the database. That load
+// fails outright when go.mod or go.sum is behind the tree ("updates to go.mod
+// needed") — a fresh clone whose replace was just added, a hand-edited
+// go.mod, a dependency bump — and the graph then degrades to names alone. It
+// is not a small degradation: no node is typed, so no root field is a
+// listener, the server root holds no nodes, and generate writes a
+// graph_gen.go with no lifecycle, a roots_gen.go that reaches no database
+// and a config_gen.k that refuses the scaffold's own
+// `config_secrets = ["DATABASE_URL"]`. The tidy after composition
+// (stepGoModTidyPreWiring) repairs go.mod, so the NEXT run is right: output
+// that depends on the run count, not the tree.
+//
+// A project with no internal/app/compose.go yet has nothing for the load to
+// read (and its cmd imports an internal/app that does not exist, so a tidy
+// would only fail), so this is a no-op there; the post-composition tidy
+// covers the cold tree. Best-effort like that one: a tree whose imports do
+// not resolve degrades as before, with a warning saying so.
+func stepGoModTidyPreComposition(ctx *pipelineContext) error {
+	if _, err := os.Stat(filepath.Join(ctx.ProjectDir, "internal", "app", "compose.go")); err != nil {
+		return nil
+	}
+	if err := runGoModTidyGen(ctx.ProjectDir); err != nil {
+		fmt.Fprintf(os.Stderr, "  ⚠️  pre-composition go mod tidy (gen/) failed (continuing; the composition graph may not type-check and degrade to names): %v\n", err)
+	}
+	if err := runGoModTidyRoot(ctx.ProjectDir); err != nil {
+		fmt.Fprintf(os.Stderr, "  ⚠️  pre-composition go mod tidy (root) failed (continuing; the composition graph may not type-check and degrade to names): %v\n", err)
 	}
 	return nil
 }

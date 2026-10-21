@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -59,7 +60,7 @@ func TestE2ECmdAsCodeSubcommands(t *testing.T) {
 	// root's into roots_gen.go, and runs through serve.go's runRoot.
 	assertPathNotExistsE2E(t, filepath.Join(cmdDir, "server.go"))
 	rootsGo := readFileE2E(t, filepath.Join(cmdDir, "roots_gen.go"))
-	if !strings.Contains(rootsGo, `rootSpec{Name: "server",`) || !strings.Contains(rootsGo, "Run: (*app.Graph).RunServer}") {
+	if !regexp.MustCompile(`rootSpec\{\s*Name:\s*"server",`).MatchString(rootsGo) || !regexp.MustCompile(`\bRun:\s*\(\*app\.Graph\)\.RunServer,`).MatchString(rootsGo) {
 		t.Errorf("`server` must run the graph's server root through runRoot:\n%s", rootsGo)
 	}
 

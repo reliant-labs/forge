@@ -86,18 +86,24 @@ message ListTasksRequest {
 
 	ops := readFileE2E(t, filepath.Join(projectDir, "internal", "handlers", "tasks", "handlers_crud_ops_gen.go"))
 	for _, want := range []string{
-		"e.Status = 1 // status: an unset enum stores the column DEFAULT", // fromProto: the declared DEFAULT, not 0
-		"e.Status = int64(m.Status)",                                      // …a sent value stores its NUMBER
-		"if m.FallbackStatus != nil && *m.FallbackStatus != 0 {",          // optional → nullable: unset is NULL
-		"e.History = append(e.History, int64(v))",
-		"m.Status = pb.TaskStatus(e.Status)", // toProto: the number IS the wire value
-		"out of range for the int32 wire field",
+		// fromProto: a sent value stores its NUMBER. INTEGER is int32 (#991)
+		// and, DEFAULT 1 not being its zero, a pointer whose nil is unset —
+		// so an unset enum is omitted and the database stores its DEFAULT
+		// (F12.5, #990).
+		"v := int32(m.Status)",
+		"e.Status = &v",
+		"if m.FallbackStatus != nil && *m.FallbackStatus != 0 {", // optional → nullable: unset is NULL
+		"e.History = append(e.History, int32(v))",
+		"m.Status = pb.TaskStatus(*e.Status)", // toProto: the number IS the wire value
 		"m.History = append(m.History, pb.TaskStatus(v))",
 		`orm.WhereEq("status", int32(*req.Status))`, // the filter binds the number
 	} {
 		if !strings.Contains(ops, want) {
 			t.Errorf("ops file should contain %q; got:\n%s", want, ops)
 		}
+	}
+	if strings.Contains(ops, "e.Status = 1") {
+		t.Error("the create op must leave an unset enum to the column DEFAULT, not paste its literal")
 	}
 	if strings.Contains(ops, `orm.WhereEq("status", (*req.Status).String())`) {
 		t.Error("an integer enum column's filter must not bind the value name (Postgres integer = text)")

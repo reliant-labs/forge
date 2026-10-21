@@ -60,7 +60,9 @@ func TestE2EUnmountedServiceIsFailClosed(t *testing.T) {
 	if !strings.Contains(apiProto, rpcTODO) {
 		t.Fatalf("scaffolded api.proto no longer carries the RPC TODO anchor:\n%s", apiProto)
 	}
-	apiProto = strings.Replace(apiProto, rpcTODO, "  rpc Ping(PingRequest) returns (PingResponse) {}\n", 1)
+	// NO_SIDE_EFFECTS: Ping reads, and an rpc that is neither a read verb
+	// nor marked so must declare an activity event (forgeconv-activity-declared).
+	apiProto = strings.Replace(apiProto, rpcTODO, "  rpc Ping(PingRequest) returns (PingResponse) {\n    option idempotency_level = NO_SIDE_EFFECTS;\n  }\n", 1)
 	apiProto += "\nmessage PingRequest {}\n\nmessage PingResponse {\n  string ok = 1;\n}\n"
 	if err := os.WriteFile(apiProtoPath, []byte(apiProto), 0o644); err != nil {
 		t.Fatalf("write api.proto: %v", err)

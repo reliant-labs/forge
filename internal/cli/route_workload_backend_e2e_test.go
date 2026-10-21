@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -70,7 +71,6 @@ func TestE2ERouteToOnHostWorkloadReachesHostProcess(t *testing.T) {
 	hostPort, stopHost := startHostProbeServer(t, wantBody)
 	defer stopHost()
 
-	gatewayHostPort := freePortE2E(t)
 	const listenerPort = 80
 
 	// ── Render the env through forge's own KCL module ──────────────────
@@ -90,7 +90,7 @@ func TestE2ERouteToOnHostWorkloadReachesHostProcess(t *testing.T) {
 	// ── Throwaway cluster, named and deleted by name ───────────────────
 	cluster := e2eClusterName(t)
 	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
-	createK3dClusterF2(t, ctx, cluster, gatewayHostPort, listenerPort, kubeconfig)
+	gatewayHostPort := createK3dClusterF2(t, ctx, cluster, listenerPort, kubeconfig)
 
 	installEnvoyGateway(t, ctx, kubeconfig)
 
@@ -138,7 +138,6 @@ func TestE2ERouteTrafficHealthCheckExpects401(t *testing.T) {
 	unhealthyPort, stopUnhealthy := startRegistryStyleServer(t, 404)
 	defer stopUnhealthy()
 
-	gatewayHostPort := freePortE2E(t)
 	const listenerPort = 80
 
 	manifests := renderHealthCheckEnv(t, healthCheckEnvParams{
@@ -150,7 +149,7 @@ func TestE2ERouteTrafficHealthCheckExpects401(t *testing.T) {
 
 	cluster := e2eClusterName(t)
 	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
-	createK3dClusterF2(t, ctx, cluster, gatewayHostPort, listenerPort, kubeconfig)
+	createK3dClusterF2(t, ctx, cluster, listenerPort, kubeconfig)
 
 	installEnvoyGateway(t, ctx, kubeconfig)
 	kubectlApplyManifests(t, ctx, kubeconfig, manifests)
@@ -472,7 +471,17 @@ func e2eClusterName(t *testing.T) string {
 	return "adr3-f2-" + strings.Trim(name, "-")
 }
 
-func createK3dClusterF2(t *testing.T, ctx context.Context, name string, hostPort, listenerPort int, kubeconfig string) {
+// createK3dClusterF2 creates the test's cluster and returns the host port its
+// loadbalancer publishes listenerPort on.
+//
+// Docker picks that port, at the moment it binds it. The test used to pick it
+// itself (freePortE2E: listen on :0, close, hand the number over), and in the
+// seconds between that close and k3d starting the loadbalancer anything on the
+// runner could take the port — a parallel test's k3d cluster draws its API
+// port from the same range. CI hit exactly that: "Bind for 0.0.0.0:34433
+// failed: port is already allocated" (E2E Suite run 39510866508). A port no
+// one chose ahead of time cannot be taken first.
+func createK3dClusterF2(t *testing.T, ctx context.Context, name string, listenerPort int, kubeconfig string) int {
 	t.Helper()
 	// Registered BEFORE the create, so a create that fails partway is still
 	// deleted by name.
@@ -487,7 +496,7 @@ func createK3dClusterF2(t *testing.T, ctx context.Context, name string, hostPort
 	// server's exit and last log lines.
 	if err := createK3dCluster(ctx, name, []string{"cluster", "create", name,
 		"--servers", "1", "--agents", "0",
-		"--port", fmt.Sprintf("%d:%d@loadbalancer", hostPort, listenerPort),
+		"--port", fmt.Sprintf("%d@loadbalancer", listenerPort),
 		// k3s bundles Traefik, whose svclb claims the loadbalancer's port 80
 		// and answers its own "404 page not found" — Envoy never sees the
 		// request. The test's gateway is Envoy, so Traefik must not exist.
@@ -515,6 +524,18 @@ func createK3dClusterF2(t *testing.T, ctx context.Context, name string, hostPort
 	if _, err := os.Stat(kubeconfig); err != nil {
 		t.Fatalf("k3d did not write a kubeconfig to %s: %v\n%s", kubeconfig, err, out)
 	}
+
+	lb := "k3d-" + name + "-serverlb"
+	published := runE2E(t, ctx, "", nil, "docker", "port", lb, fmt.Sprintf("%d/tcp", listenerPort))
+	for _, line := range strings.Split(strings.TrimSpace(published), "\n") {
+		if i := strings.LastIndex(line, ":"); i >= 0 {
+			if port, err := strconv.Atoi(strings.TrimSpace(line[i+1:])); err == nil && port > 0 {
+				return port
+			}
+		}
+	}
+	t.Fatalf("%s publishes no host port for %d/tcp: %q", lb, listenerPort, published)
+	return 0
 }
 
 func deleteK3dClusterF2(t *testing.T, name string) {

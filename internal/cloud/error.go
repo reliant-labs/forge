@@ -19,6 +19,25 @@ import (
 // case-insensitive, so the canonicalization does not matter.
 const ReasonHeader = "x-forge-error-reason"
 
+// The reasons a control plane gives, in ReasonHeader, for refusing a bearer
+// that claims to be an access token. They say WHICH way the credential is dead,
+// so forge can word the fix and decide whether asking for a fresh one can help.
+const (
+	// ReasonAccessTokenExpired: the token existed and its expiry has passed.
+	ReasonAccessTokenExpired = "access_token_expired"
+	// ReasonAccessTokenRevoked: the token was revoked.
+	ReasonAccessTokenRevoked = "access_token_revoked"
+	// ReasonAccessTokenUnknown: well-formed, but this control plane has no
+	// such token — typically a token minted for another environment.
+	ReasonAccessTokenUnknown = "access_token_unknown"
+	// ReasonAccessTokenMalformed: not the shape of an access token at all.
+	ReasonAccessTokenMalformed = "access_token_malformed"
+	// ReasonAccessTokenUnavailable: the control plane could not check the
+	// token. NOT a verdict on it: retrying later is the right response, and
+	// signing in again is not.
+	ReasonAccessTokenUnavailable = "access_token_unavailable"
+)
+
 // Error is a failed control-plane call, as a TYPE rather than a sentence.
 //
 // WHY THIS EXISTS. Call used to flatten every failure into a formatted
@@ -110,6 +129,10 @@ func (e *Error) HasCode(code string) bool { return e != nil && e.Code == code }
 // HasReason reports whether this failure carries the given domain reason.
 func (e *Error) HasReason(reason string) bool { return e != nil && e.Reason == reason }
 
+// Unauthenticated reports whether the control plane refused the credential
+// itself (HTTP 401), as opposed to refusing what it may do (403).
+func (e *Error) Unauthenticated() bool { return e != nil && e.HTTPStatus == http.StatusUnauthorized }
+
 // DetailJSON returns the protojson payload of the first detail whose type
 // matches typeName, and whether one was found.
 //
@@ -200,14 +223,27 @@ func (c *Client) connectError(procedure string, resp *http.Response, raw []byte)
 		detail = detail[:500] + "…"
 	}
 
+	cred := c.credential()
 	switch resp.StatusCode {
+	case http.StatusServiceUnavailable:
+		if out.Reason == ReasonAccessTokenUnavailable {
+			// Our side could not check the token. Telling the user to sign in
+			// again would send them round a loop that cannot fix it.
+			out.message = fmt.Sprintf(
+				"%s could not be authorized: the control plane at %s could not verify the credential right now (HTTP %d%s)\n"+
+					"fix: retry in a moment; the credential itself has not been judged invalid%s",
+				procedure, c.Endpoint.URL, resp.StatusCode, codeSuffix(out.Code), detailSuffix(detail))
+			break
+		}
+		out.message = fmt.Sprintf("%s failed (HTTP %d%s) against %s%s",
+			procedure, resp.StatusCode, codeSuffix(out.Code), c.Endpoint.URL, detailSuffix(detail))
 	case http.StatusUnauthorized, http.StatusForbidden:
 		out.message = fmt.Sprintf(
 			"%s rejected the credential (HTTP %d%s)\n"+
 				"  endpoint:   %s   (declared by env %q)\n"+
 				"  credential: from %s\n%s%s",
 			procedure, resp.StatusCode, codeSuffix(out.Code), c.Endpoint.URL, c.Endpoint.Env,
-			c.Credential.From, authFix(detail, c.Endpoint.TokenEnv, c.Credential), detailSuffix(detail))
+			cred.From, credentialProblem(out.Reason)+authFix(detail, c.Endpoint.TokenEnv, cred), detailSuffix(detail))
 	case http.StatusNotImplemented:
 		out.message = fmt.Sprintf("%s is not implemented by %s%s", procedure, c.Endpoint.URL, detailSuffix(detail))
 	default:
@@ -232,6 +268,23 @@ func detailSuffix(detail string) string {
 		return ""
 	}
 	return "\n  server said: " + detail
+}
+
+// credentialProblem says, in one line, which way a rejected credential is dead,
+// when the server told us. Empty for a server that sent no reason (an older
+// control plane), in which case authFix's generic remedy stands alone.
+func credentialProblem(reason string) string {
+	switch reason {
+	case ReasonAccessTokenExpired:
+		return "The credential has expired.\n"
+	case ReasonAccessTokenRevoked:
+		return "The credential was revoked, so it will not work again.\n"
+	case ReasonAccessTokenUnknown:
+		return "The control plane does not recognize this credential: it may belong to another environment, or have been deleted.\n"
+	case ReasonAccessTokenMalformed:
+		return "The credential is not a valid access token (truncated or mistyped?).\n"
+	}
+	return ""
 }
 
 var missingScopeRe = regexp.MustCompile(`\b([a-z]+:(?:read|write|manage))\b scope`)

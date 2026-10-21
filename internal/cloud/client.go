@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
@@ -42,6 +44,10 @@ type Client struct {
 	// was missing. In memory only: they live at most an hour and are never
 	// written to the credentials file.
 	elevated elevationCache
+
+	// credMu guards Credential, which a refresh from the credential helper
+	// replaces.
+	credMu sync.Mutex
 }
 
 // NewClient builds a Client with a bounded default timeout. A deploy CLI
@@ -65,7 +71,15 @@ func NewClient(ep Endpoint, cred Credential) *Client {
 // on those fields — never on the message text, which is display copy the
 // server is free to improve.
 func (c *Client) Call(ctx context.Context, procedure string, req, out any) error {
-	err := c.call(ctx, procedure, req, out, c.Credential.Token)
+	err := c.call(ctx, procedure, req, out, c.credential().Token)
+	if rejectedAsUnauthenticated(err) {
+		// The credential itself was refused (expired, revoked, ...), before any
+		// handler ran, so asking for a fresh one and repeating the call once
+		// cannot double an effect.
+		if fresh, ok := c.refreshedCredential(); ok {
+			err = c.call(ctx, procedure, req, out, fresh.Token)
+		}
+	}
 	scope, ok := c.elevationScope(err)
 	if !ok {
 		return err
@@ -74,7 +88,28 @@ func (c *Client) Call(ctx context.Context, procedure string, req, out any) error
 	if elevErr != nil {
 		return annotateElevation(err, scope, elevErr)
 	}
-	return c.call(ctx, procedure, req, out, token)
+	err = c.call(ctx, procedure, req, out, token)
+	if rejectedAsUnauthenticated(err) {
+		// The elevated token we held was refused (revoked, or expired by a
+		// skewed clock). Trade for a new one, once.
+		if fresh, ferr := c.reelevatedToken(ctx, scope, token); ferr == nil && fresh != token {
+			return c.call(ctx, procedure, req, out, fresh)
+		}
+	}
+	return err
+}
+
+// rejectedAsUnauthenticated reports a 401: the bearer was refused, as opposed to
+// what it may do (403) or an outage.
+func rejectedAsUnauthenticated(err error) bool {
+	var apiErr *Error
+	return errors.As(err, &apiErr) && apiErr.Unauthenticated()
+}
+
+func (c *Client) credential() Credential {
+	c.credMu.Lock()
+	defer c.credMu.Unlock()
+	return c.Credential
 }
 
 // call is one HTTP round trip with an explicit bearer.

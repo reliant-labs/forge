@@ -4757,8 +4757,9 @@ schema IdentityMachineUser:
 
 schema IdentitySMTP:
     """A bring-your-own mail relay. `password` is a ManagedSecret: a NAME in
-    the env's secret store, never the password. Omit it and mail goes through
-    the platform's relay, under a per-org cap."""
+    the env's secret store, never the password. Omit it and the instance sends
+    NO mail (no invitation, no password-reset link): there is no platform
+    relay."""
     host: str
     port: int = 587
     user: str = ""

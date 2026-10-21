@@ -36,7 +36,7 @@ identity = forge.ManagedIdentity {share_with = "staging"}
 | `applications` | derived when empty: one `native_broker` named `<env>:api` for the workload `api`, else one per service workload. `redirect_uris`, `logout_uris`, `login_uri` are literal overrides |
 | `consumers` | derived when empty: every service workload on a runtime that can reach the instance. `fields = forge.IdentityFields {...}` remaps an output to a non-standard config field (an app validating two issuers); `deliver_only = True` is the general "deliver, I will read the Secret myself" escape hatch: the control plane still writes `forge-identity-<name>` (+ `-jwks`) to the workload's cluster, but forge projects nothing into the workload (no env, no volumes) and does not refuse hand-set values. Use it for a workload that reads the Secret itself, or while adopting an identity whose workload still reads legacy config; flip it off to let forge fill the typed config |
 | `machine_users` | `name`, `roles`, `key_secret` + `cluster`: where its key is delivered (hosted instance); a host-run one keeps the key in the env's secret store |
-| `smtp` | `host`, `port`, `user`, `sender`, `password = forge.ManagedSecret {name = ...}`: a **name**, never the password. Omit it and mail goes through the platform relay |
+| `smtp` | `host`, `port`, `user`, `sender`, `password = forge.ManagedSecret {name = ...}`: a **name**, never the password. **Omit it and the instance sends no mail at all**: there is no platform relay |
 | `seed_users` | only in an env that declares `lifecycle = "local"` or `"ephemeral"` |
 | `domain` | your own issuer domain; needs `public = True` (or hosted login) |
 | `public` | ask for a public route. **Private by default** |
@@ -56,7 +56,23 @@ forge cloud identity invite prod --email person@example.com --role member
 # Continue a listing: forge cloud identity users prod --page-token <nextPageToken> --json
 ```
 
-Choose the recipient explicitly; never infer the owner's email from the agent's session. The invitation action emails a link so the recipient sets their own credential. There is no password flag, bootstrap password or production seed user. The response reports `userId` and `created` (false for an existing account receiving roles), never a password or token. Status and listings return safe metadata; all three commands accept `--json`.
+Choose the recipient explicitly; never infer the owner's email from the agent's session. There is no password flag, bootstrap password or production seed user. The response reports `userId` and `created` (false for an existing account receiving roles), never a password or token. Status and listings return safe metadata; all three commands accept `--json`.
+
+### What an invitation does, and does not, do
+
+**No mail is sent unless the environment declares `smtp`.** `invite` creates the account (or grants roles to an existing one) and asks the instance to email a code; an instance with no SMTP provider accepts that and delivers nothing, and nothing reports the failure. Declare `smtp` and the email is sent. Also, the invitation's code verifies the **email address**; it is not a password code, so the scaffolded `/auth/reset` cannot redeem it.
+
+**forge scaffolds no invite flow.** What it scaffolds is public sign-up (below) and self-serve password reset (`auth/frontend`). To build invites by hand:
+
+1. Create the account: `IdentityService.InviteUser` (or `forge cloud identity invite`), which also grants roles. Keep the returned `userId`.
+2. Mint a one-time password code from the app's broker: `devidp.MintPasswordResetCode(ctx, userID)`.
+3. Hand the person `<your app>/auth/reset?userID=<id>&code=<code>` through a channel you control (your own mailer, a message, an admin screen). The scaffolded `/auth/reset` page redeems it, sets their password and signs them in.
+
+The code is the credential: never return it from an endpoint anyone can call.
+
+### Public sign-up is on by default
+
+The scaffolded broker mounts `POST /auth/register`, so **anyone who can reach the app can create an account** and is signed in. That is how a real user gets a credential today when mail is not configured. For an invite-only app, delete that route in `internal/app/login_broker.go` and the "Create an account" toggle in the sign-in screen, then build invites as above.
 
 The endpoint comes from that env's `ControlPlane` KCL. Credentials use the usual precedence: `--token`, declared token env var, stored endpoint login, then the host session helper (so under Reliant, no extra login is needed). The org comes from the authenticated control plane; the env ID is looked up by exact project/name. There is no org override. A **human session** is required: members may read; inviting requires an **org admin**, and machine credentials are refused. Standalone users can authenticate with `forge login`.
 

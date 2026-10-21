@@ -115,6 +115,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the wire error. Writing `svcerr.Wrap` in a handler stays correct. A project
   that assembles its own interceptor list instead of `serverkit.NewChain` adds
   `svcerr.Interceptor()` itself.
+- **`observe.Chain` and `observe.DefaultMiddlewares` install the svcerr
+  interceptor too.** A project that built its chain with `observe.Chain` (not
+  `serverkit.NewChain`) silently kept the old `code = unknown` for
+  `return nil, svcerr.PermissionDenied(…)`; nothing failed, and only this file
+  mentioned the fix. Both builders now end the chain with `svcerr.Interceptor()`,
+  innermost, and `serverkit.NewChain` gets it through `observe.Chain`. Installing
+  it yourself as well is harmless: an `svcerr.Interceptor()` passed in `Extras` is
+  moved to the innermost position, never run twice (`svcerr.IsInterceptor`,
+  `svcerr.WithInterceptor`). The chain is one longer than before, so code that
+  indexes into it by position past the extras should account for the new tail.
 - **`forge project new` no longer compiles the scaffold before returning.** The
   bootstrap generate skips its final `go build` and deploy-KCL render unless you
   pass `--verify`. That tail was the one CPU-saturating step (40s of the

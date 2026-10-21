@@ -49,7 +49,7 @@ func (d dialectOnlyDB) QueryRow(context.Context, string, ...any) *sql.Row { retu
 // RunTransaction runs fn against this same fake: the meta-classification
 // path never opens a real transaction, and a fake that silently skipped fn
 // would hide a caller that expected its body to run.
-func (d dialectOnlyDB) RunTx(ctx context.Context, fn func(context.Context) error) error {
+func (d dialectOnlyDB) RunTx(ctx context.Context, _ orm.TxOptions, fn func(context.Context) error) error {
 	return fn(ctx)
 }
 
@@ -57,11 +57,7 @@ func (d dialectOnlyDB) RunTxReadOnly(ctx context.Context, fn func(context.Contex
 	return fn(ctx)
 }
 
-func (d dialectOnlyDB) RunTxWithOptions(ctx context.Context, _ orm.TxOptions, fn func(context.Context) error) error {
-	return fn(ctx)
-}
-
-func (d dialectOnlyDB) RunTransaction(ctx context.Context, fn func(orm.Context) error) error {
+func (d dialectOnlyDB) RunTransaction(ctx context.Context, _ orm.TxOptions, fn func(orm.Context) error) error {
 	return fn(d)
 }
 

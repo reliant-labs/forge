@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Transaction isolation has no default; every writable transaction names
+  its level.** pkg/orm had two opposite defaults: `RunTx`,
+  `RunTxWithOptions` and `BeginDetached` with an unset level began
+  SERIALIZABLE (RunTx retrying 40001/40P01 up to seven times), while
+  `Client.BeginTx` and `RunTransaction` with nil options began at the
+  database's READ COMMITTED, once. Two reliant ports changed isolation
+  silently through that gap — `MergeWorktreeCleanupMetadata` relied on a
+  `FOR UPDATE` lock, moved from READ COMMITTED to SERIALIZABLE and dropped
+  updates under contention. Now `RunTx(ctx, opts, fn)`,
+  `RunTransaction(ctx, opts, fn)` and `BeginDetached(ctx, opts)` take an
+  `orm.TxOptions` that must name its isolation and attempt budget —
+  `orm.Serializable` (7 attempts), `orm.ReadCommitted` (1 attempt) or
+  `orm.RepeatableRead`, adjusted with `WithMaxAttempts` / `WithReadOnly` —
+  and an unset level (or budget) is rejected with `orm.ErrInvalidTxOptions`
+  naming the call site. One primitive rather than `RunTxSerializable` /
+  `RunTxReadCommitted`: the level is a value, so it composes with every
+  opener and passes through a wrapper unchanged instead of multiplying
+  method names, and the retry budget sits beside the level it belongs to.
+  `RunTxWithOptions`, `RunTransactionWithOptions`, `Client.BeginTx` and
+  `orm.IsolationDefault` are removed; `RunTxReadOnly(ctx, fn)` keeps its
+  shape (SERIALIZABLE READ ONLY DEFERRABLE — a transaction that cannot write
+  has one right level). `RunTransaction` honours the attempt budget like
+  `RunTx` and reports an exhausted 40001/40P01 as `svcerr.Aborted`;
+  `BeginDetached` cannot retry and requires `MaxAttempts == 1`.
+
+### Added
+
+- **`forge fix tx-isolation`** (run by `forge project upgrade` on crossing
+  v0.1.47): rewrites every pkg/orm transaction call to the explicit form that
+  keeps its behaviour exactly — `RunTx(ctx, fn)` → `orm.Serializable`,
+  `RunTransaction(ctx, fn)` and `BeginTx(ctx, nil)` → `orm.ReadCommitted`,
+  each `orm.TxOptions` literal spelled out — and prints every site. It never
+  chooses a different level. Type-aware, so a project's own `RunTx` and
+  database/sql's `BeginTx` are untouched, and it works after the forge pin
+  has moved (when the old calls no longer compile). A scratch module holding
+  every old call shape begins each transaction at the same level, with the
+  same number of attempts, before and after (`internal/codemod`).
+- **`forgeconv-tx-lock-under-serializable`** (`forge lint --conventions`):
+  a SERIALIZABLE or REPEATABLE READ transaction whose body takes a lock —
+  `SELECT … FOR UPDATE`, bun's `.For("UPDATE")`, `pg_advisory_xact_lock`,
+  `LOCK TABLE` — in a literal or a named constant, in the closure, the
+  package function passed as it, or the rest of the function that opened a
+  `BeginDetached`. The snapshot predates the lock wait, so the waiter wakes
+  into stale data and fails 40001; the fix is `orm.ReadCommitted` (keep the
+  lock) or dropping the lock. A warning; an error under `--strict`.
+
 ### Fixed
 
 - **Tracing remediation says `--fix`.** Lint became report-only by default,

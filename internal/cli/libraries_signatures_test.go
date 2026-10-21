@@ -181,7 +181,7 @@ func TestSignatures_AnswerTheQuestionsTheWaveAsked(t *testing.T) {
 		}
 	}
 	// `go doc .../orm Context` — three separate threads.
-	for _, want := range []string{"Bun() bun.IDB", "RunTransaction(ctx context.Context, fn func(Context) error) error"} {
+	for _, want := range []string{"Bun() bun.IDB", "RunTransaction(ctx context.Context, opts TxOptions, fn func(Context) error) error"} {
 		if decl := find("orm", "Context"); !strings.Contains(decl, want) {
 			t.Errorf("orm.Context is missing %q:\n%s", want, decl)
 		}

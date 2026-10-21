@@ -200,7 +200,7 @@ func TestStore_JoinsTheOrmTransaction(t *testing.T) {
 	ev := Event{Scope: "p1", Actor: User("sean", "sean"), Verb: "rotate", Target: Target{Kind: "secret", ID: "s1"}}
 
 	boom := errors.New("mutation failed")
-	err := client.RunTx(ctx, func(ctx context.Context) error {
+	err := client.RunTx(ctx, orm.Serializable, func(ctx context.Context) error {
 		if err := Record(ctx, store, ev); err != nil {
 			return err
 		}
@@ -213,7 +213,7 @@ func TestStore_JoinsTheOrmTransaction(t *testing.T) {
 		t.Fatalf("rolled-back transaction left %d events", len(page.Events))
 	}
 
-	if err := client.RunTx(ctx, func(ctx context.Context) error { return Record(ctx, store, ev) }); err != nil {
+	if err := client.RunTx(ctx, orm.Serializable, func(ctx context.Context) error { return Record(ctx, store, ev) }); err != nil {
 		t.Fatal(err)
 	}
 	if page, _ := store.List(ctx, Filter{Scope: "p1"}); len(page.Events) != 1 {

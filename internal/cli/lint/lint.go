@@ -876,6 +876,14 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 		return combined, notes, false, fmt.Errorf("forge convention lint (bun placeholders) failed: %w", err)
 	}
 	goFindings = append(goFindings, bunRes.Findings...)
+	// A SERIALIZABLE transaction that takes a lock (FOR UPDATE, an advisory
+	// lock, LOCK TABLE): the waiter wakes into a stale snapshot and fails
+	// 40001. Warning; an error under --strict.
+	txLockRes, err := forgeconv.LintTxLockUnderSerializable(".", opts)
+	if err != nil {
+		return combined, notes, false, fmt.Errorf("forge convention lint (tx lock under serializable) failed: %w", err)
+	}
+	goFindings = append(goFindings, txLockRes.Findings...)
 
 	applied := suppress.ApplyFiles("", goFindings, os.ReadFile)
 	combined.Findings = append(combined.Findings, applied.Kept...)

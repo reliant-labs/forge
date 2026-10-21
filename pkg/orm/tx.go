@@ -25,11 +25,31 @@ import (
 // *Client. Nothing threads a tx handle through signatures, so a service is
 // written once and composes into any caller's transaction.
 //
-// The default is SERIALIZABLE, retried on serialization failure and deadlock
-// (SQLSTATE 40001 / 40P01). That pairing is what makes the ordinary
-// read-check-write shape correct with no explicit locking:
+// # Isolation is the caller's choice, and there is no default
 //
-//	err := s.deps.DB.RunTx(ctx, func(ctx context.Context) error {
+// Every writable transaction names its isolation level and its retry budget
+// at the call site, as a TxOptions value: [Serializable] or [ReadCommitted]
+// (or [RepeatableRead]), adjusted with WithMaxAttempts / WithReadOnly. An
+// unset level is rejected with ErrInvalidTxOptions naming the call site. The
+// two levels make opposite correctness arguments, so neither is a safe thing
+// to inherit:
+//
+//   - [Serializable] — SERIALIZABLE, retried on serialization failure and
+//     deadlock (SQLSTATE 40001 / 40P01) up to DefaultTxMaxAttempts. The
+//     database proves the transaction equivalent to some serial order, so
+//     read-check-write is correct WITHOUT locks. A lock taken inside it is
+//     the trap: the writer that waited on it wakes into a stale snapshot and
+//     fails 40001, surviving only by retrying (forgeconv-tx-lock-under-
+//     serializable flags it).
+//   - [ReadCommitted] — READ COMMITTED, one attempt. Each statement sees what
+//     was committed before it began, so read-check-write is correct only
+//     when a lock (SELECT … FOR UPDATE, pg_advisory_xact_lock) or a single
+//     statement makes it so. It never raises 40001.
+//
+// Serializable is what makes the ordinary read-check-write shape correct
+// with no explicit locking:
+//
+//	err := s.deps.DB.RunTx(ctx, orm.Serializable, func(ctx context.Context) error {
 //	    inv, err := db.GetInvoiceByID(ctx, s.deps.DB, id)
 //	    if err != nil {
 //	        return err
@@ -59,115 +79,10 @@ import (
 // The transaction is one database connection. Do not use the ctx handed to fn
 // from several goroutines at once.
 
-// Isolation selects a transaction's isolation level.
-//
-// The zero value is IsolationDefault, which means SERIALIZABLE — deliberately,
-// so the weaker choice is always the one spelled out at the call site, and a
-// zero-valued TxOptions can never silently drop a guarantee.
-type Isolation int
-
-const (
-	// IsolationDefault is SERIALIZABLE. Correct for anything that reads and
-	// then writes based on what it read.
-	IsolationDefault Isolation = iota
-
-	// IsolationSerializable is the explicit spelling of the default, for a
-	// call site where serializability is load-bearing and should be stated
-	// rather than inherited.
-	IsolationSerializable
-
-	// IsolationRepeatableRead is postgres snapshot isolation: every
-	// statement sees the snapshot taken at the transaction's first query,
-	// and a write to a row changed since then fails with 40001 (retried).
-	// It does NOT detect write skew — two transactions each reading what the
-	// other writes — which SERIALIZABLE does.
-	IsolationRepeatableRead
-
-	// IsolationReadCommitted is postgres's own default. Each STATEMENT sees
-	// rows committed before it began, so two reads in one transaction may
-	// disagree and read-then-write has no protection against a lost update.
-	// It takes no predicate locks and cannot raise 40001, which makes it a
-	// strict win for a single-statement transaction and a correctness
-	// decision — one that needs a reason at the call site — for anything
-	// longer.
-	IsolationReadCommitted
-)
-
-// sqlLevel maps an Isolation onto database/sql's constants.
-func (i Isolation) sqlLevel() sql.IsolationLevel {
-	switch i {
-	case IsolationReadCommitted:
-		return sql.LevelReadCommitted
-	case IsolationRepeatableRead:
-		return sql.LevelRepeatableRead
-	default:
-		return sql.LevelSerializable
-	}
-}
-
-// String names the isolation level as postgres spells it.
-func (i Isolation) String() string {
-	switch i {
-	case IsolationReadCommitted:
-		return "read committed"
-	case IsolationRepeatableRead:
-		return "repeatable read"
-	default:
-		return "serializable"
-	}
-}
-
-// TxOptions configures RunTxWithOptions. The zero value is a read-write
-// SERIALIZABLE transaction with the default retry budget — what RunTx uses.
-type TxOptions struct {
-	// Isolation selects the isolation level. Zero value = SERIALIZABLE.
-	Isolation Isolation
-
-	// ReadOnly runs the transaction READ ONLY, and under SERIALIZABLE also
-	// DEFERRABLE.
-	//
-	// That second half is the point. A SERIALIZABLE read takes predicate
-	// locks over whatever it touched (the whole relation, for a read no index
-	// serves), and those locks are what make two writers on unrelated rows
-	// abort each other. A SERIALIZABLE READ ONLY DEFERRABLE transaction takes
-	// NO predicate locks and can never fail with 40001: it waits at its first
-	// statement for a snapshot guaranteed free of later conflicts, then runs
-	// outside the serialization graph entirely — neither suffering conflicts
-	// nor causing them for concurrent writers.
-	//
-	// The cost is that wait, which can briefly delay a read on a busy
-	// database. A write inside a read-only transaction is rejected by
-	// postgres outright, so a mislabelled path fails loudly.
-	ReadOnly bool
-
-	// MaxAttempts bounds how many times fn runs. Zero (or negative) means the
-	// default, DefaultTxMaxAttempts; 1 disables retry — useful for measuring
-	// contention rather than surviving it, never for a production writer.
-	MaxAttempts int
-}
-
-// DefaultTxMaxAttempts is the attempt budget a zero TxOptions gets: one try
-// plus six retries.
-//
-// Sized from reliant's measurement on a single hot row under SERIALIZABLE
-// (5 writes per writer): with 3 retries the failure rate was 0% at 4
-// concurrent writers, 5% at 8 and 8.8% at 16; at 32 writers every write
-// completed within one further attempt. Six retries covers 32-way contention
-// with margin, and because a transaction that does not conflict never sleeps,
-// the extra headroom costs nothing on the uncontended path.
-const DefaultTxMaxAttempts = 7
-
 const (
 	txBaseRetryDelay = 50 * time.Millisecond
 	txMaxRetryDelay  = 1 * time.Second
 )
-
-func (o TxOptions) maxAttempts() int {
-	if o.MaxAttempts <= 0 {
-		return DefaultTxMaxAttempts
-	}
-	return o.MaxAttempts
-}
 
 // ErrNoTransaction is returned by AfterCommit when ctx carries no active
 // transaction to defer the callback to.
@@ -385,7 +300,7 @@ func innermostTx(ctx context.Context) *txState {
 //	    if orm.InTx(ctx) {
 //	        return nil, errors.New("LockRun needs its own transaction; call it outside RunTx")
 //	    }
-//	    tx, err := db.BeginDetached(ctx, orm.TxOptions{Isolation: orm.IsolationReadCommitted})
+//	    tx, err := db.BeginDetached(ctx, orm.ReadCommitted)
 //	    if err != nil {
 //	        return nil, err
 //	    }
@@ -414,15 +329,25 @@ func innermostTx(ctx context.Context) *txState {
 //   - Its lifetime is bounded by ctx. database/sql rolls the transaction
 //     back when ctx is cancelled, which is usually the right release for a
 //     request-scoped lock. Pass context.WithoutCancel(ctx) to outlive it.
-//   - No retry. opts.MaxAttempts is ignored: a serialization failure is
-//     returned to the caller, who decides whether to run the unit again.
+//   - No retry. opts.MaxAttempts must be 1 — orm.ReadCommitted, or
+//     orm.Serializable.WithMaxAttempts(1) — and anything else is rejected
+//     with ErrInvalidTxOptions: a serialization failure is returned to the
+//     caller, who decides whether to run the unit again, and a call site
+//     that asked for retries would be promising something nobody performs.
 //
 // Statements run through the returned *Tx (its Exec/Query/QueryRow and
-// Bun()); tx.RunTx(ctx, fn) hands fn a ctx that carries it, so generated
-// stores and pkg/crud join it like any RunTx. AfterCommit callbacks
+// Bun()); tx.RunTx(ctx, opts, fn) hands fn a ctx that carries it, so
+// generated stores and pkg/crud join it like any RunTx. AfterCommit callbacks
 // registered in that ctx run on Commit.
+//
+// It is also the low-level primitive: the one way to begin a transaction
+// the caller ends. (Client.BeginTx, which took *sql.TxOptions and so could
+// silently inherit the database's default level, is gone.)
 func (c *Client) BeginDetached(ctx context.Context, opts TxOptions) (*Tx, error) {
-	tx, err := c.beginTx(ctx, opts.Isolation.sqlLevel(), opts.ReadOnly)
+	if err := opts.validate("BeginDetached", true); err != nil {
+		return nil, err
+	}
+	tx, err := c.beginTx(ctx, opts)
 	if err != nil {
 		return nil, NewTransactionError("begin", err)
 	}
@@ -440,56 +365,66 @@ func (t *Tx) BeginDetached(ctx context.Context, opts TxOptions) (*Tx, error) {
 
 // ─── RunTx on *Client ─────────────────────────────────────────────────────
 
-// RunTx runs fn in a SERIALIZABLE transaction carried by the ctx fn receives,
-// retrying on serialization failure and deadlock. fn MAY RUN MORE THAN ONCE;
-// see the package documentation in tx.go and AfterCommit.
+// RunTx runs fn in a transaction at opts' isolation, carried by the ctx fn
+// receives, running it up to opts.MaxAttempts times: a 40001 / 40P01 failure
+// rolls the attempt back and re-runs fn from the top. With orm.Serializable
+// fn MAY RUN MORE THAN ONCE; see the package documentation in tx.go and
+// AfterCommit. opts has no default — see TxOptions — and an unset level is
+// rejected with ErrInvalidTxOptions before anything begins.
 //
 // If ctx already carries an active transaction on this database, RunTx JOINS
 // it: fn runs inside the enclosing transaction, and committing, rolling back
 // and retrying stay with whoever opened it. That is what lets a service wrap
-// its own work in RunTx and still compose into a caller's larger one.
+// its own work in RunTx and still compose into a caller's larger one. opts
+// are still validated — a call site that names no level is wrong whether or
+// not it happens to join — and otherwise IGNORED: the enclosing transaction
+// exists and its mode cannot change mid-flight. That is safe in the direction
+// that matters — a read-only call joining a read-write transaction just reads
+// — and the reverse, a write joining a read-only transaction, is rejected by
+// postgres at the write, which is exactly where the mistake is.
 //
 // fn's error is returned verbatim, so svcerr sentinels and domain errors
 // survive. A transaction still conflicting after its last attempt returns a
 // svcerr.Aborted error (the driver error is kept as its cause).
-func (c *Client) RunTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	return c.RunTxWithOptions(ctx, TxOptions{}, fn)
-}
-
-// RunTxReadOnly is RunTx for a transaction that only reads: SERIALIZABLE
-// READ ONLY DEFERRABLE. See TxOptions.ReadOnly for why that matters.
-func (c *Client) RunTxReadOnly(ctx context.Context, fn func(ctx context.Context) error) error {
-	return c.RunTxWithOptions(ctx, TxOptions{ReadOnly: true}, fn)
-}
-
-// RunTxWithOptions is RunTx with explicit options.
-//
-// When ctx already carries an active transaction on this database, opts are
-// IGNORED and fn joins it: the enclosing transaction exists and its mode
-// cannot change mid-flight. That is safe in the direction that matters — a
-// read-only call joining a read-write transaction just reads — and the
-// reverse, a write joining a read-only transaction, is rejected by postgres
-// at the write, which is exactly where the mistake is.
-func (c *Client) RunTxWithOptions(ctx context.Context, opts TxOptions, fn func(ctx context.Context) error) error {
+func (c *Client) RunTx(ctx context.Context, opts TxOptions, fn func(ctx context.Context) error) error {
+	if err := opts.validate("RunTx", false); err != nil {
+		return err
+	}
 	if ambientTx(ctx, c.bun.DB) != nil {
 		return fn(ctx)
 	}
+	return runAttempts(ctx, opts, func() error { return c.runTxAttempt(ctx, opts, fn) })
+}
 
-	maxAttempts := opts.maxAttempts()
-	for attempt := 1; ; attempt++ {
-		err := c.runTxAttempt(ctx, opts, fn)
+// RunTxReadOnly is RunTx for a transaction that only reads: SERIALIZABLE
+// READ ONLY DEFERRABLE, orm.Serializable.WithReadOnly(). See
+// TxOptions.ReadOnly for why that matters.
+//
+// It needs no level argument because a read-only transaction has one right
+// answer: postgres rejects every write in it, so the lost update the level
+// choice guards against cannot happen, and SERIALIZABLE READ ONLY DEFERRABLE
+// is the strongest snapshot at no conflict cost.
+func (c *Client) RunTxReadOnly(ctx context.Context, fn func(ctx context.Context) error) error {
+	return c.RunTx(ctx, Serializable.WithReadOnly(), fn)
+}
+
+// runAttempts runs attempt up to opts.MaxAttempts times, sleeping between
+// tries, for as long as it fails retryably (40001 / 40P01).
+func runAttempts(ctx context.Context, opts TxOptions, attempt func() error) error {
+	for n := 1; ; n++ {
+		err := attempt()
 		if err == nil {
 			return nil
 		}
 		if !isRetryableTxError(err) {
 			return err
 		}
-		if attempt >= maxAttempts {
+		if n >= opts.MaxAttempts {
 			return svcerr.WithCause(
 				svcerr.Aborted("the operation conflicted with concurrent changes; retry it"),
-				fmt.Errorf("orm: transaction still conflicting after %d attempts: %w", attempt, err))
+				fmt.Errorf("orm: transaction still conflicting after %d attempts: %w", n, err))
 		}
-		if err := sleepCtx(ctx, txRetryDelay(attempt)); err != nil {
+		if err := sleepCtx(ctx, txRetryDelay(n)); err != nil {
 			return err
 		}
 	}
@@ -498,7 +433,7 @@ func (c *Client) RunTxWithOptions(ctx context.Context, opts TxOptions, fn func(c
 // runTxAttempt runs ONE attempt: begin, fn, commit — rolling back if fn fails
 // or panics.
 func (c *Client) runTxAttempt(ctx context.Context, opts TxOptions, fn func(ctx context.Context) error) (err error) {
-	tx, err := c.beginTx(ctx, opts.Isolation.sqlLevel(), opts.ReadOnly)
+	tx, err := c.beginTx(ctx, opts)
 	if err != nil {
 		return NewTransactionError("begin", err)
 	}
@@ -525,12 +460,12 @@ func (c *Client) runTxAttempt(ctx context.Context, opts TxOptions, fn func(ctx c
 // combination where DEFERRABLE buys "no predicate locks, cannot be aborted"
 // (see TxOptions.ReadOnly). database/sql has no DEFERRABLE flag, so it is set
 // as the transaction's first statement.
-func (c *Client) beginTx(ctx context.Context, level sql.IsolationLevel, readOnly bool) (*Tx, error) {
-	tx, err := c.BeginTx(ctx, &sql.TxOptions{Isolation: level, ReadOnly: readOnly})
+func (c *Client) beginTx(ctx context.Context, opts TxOptions) (*Tx, error) {
+	tx, err := c.begin(ctx, &sql.TxOptions{Isolation: opts.Isolation.sqlLevel(), ReadOnly: opts.ReadOnly})
 	if err != nil {
 		return nil, err
 	}
-	if readOnly && level == sql.LevelSerializable {
+	if opts.ReadOnly && opts.Isolation == IsolationSerializable {
 		if _, err := tx.tx.ExecContext(ctx, "SET TRANSACTION READ ONLY DEFERRABLE"); err != nil {
 			_ = tx.Rollback()
 			return nil, fmt.Errorf("set transaction read only deferrable: %w", err)
@@ -545,8 +480,17 @@ func (c *Client) beginTx(ctx context.Context, level sql.IsolationLevel, readOnly
 // so code written against the plain client (generated delegates, stores,
 // pkg/crud) participates. It never begins, commits, retries or rolls back:
 // the owner of the *Tx does. This is how code holding an explicit handle from
-// RunTransaction calls a service written with RunTx.
-func (t *Tx) RunTx(ctx context.Context, fn func(ctx context.Context) error) error {
+// RunTransaction calls a service written with RunTx. opts are validated, as
+// on Client.RunTx, and otherwise ignored.
+func (t *Tx) RunTx(ctx context.Context, opts TxOptions, fn func(ctx context.Context) error) error {
+	if err := opts.validate("RunTx", false); err != nil {
+		return err
+	}
+	return t.join(ctx, fn)
+}
+
+// join runs fn with a ctx carrying t.
+func (t *Tx) join(ctx context.Context, fn func(ctx context.Context) error) error {
 	if t.state == nil {
 		return fn(ctx)
 	}
@@ -556,12 +500,7 @@ func (t *Tx) RunTx(ctx context.Context, fn func(ctx context.Context) error) erro
 // RunTxReadOnly on a *Tx is a join; see RunTx. The read-only request is
 // ignored because the transaction's mode is already fixed.
 func (t *Tx) RunTxReadOnly(ctx context.Context, fn func(ctx context.Context) error) error {
-	return t.RunTx(ctx, fn)
-}
-
-// RunTxWithOptions on a *Tx is a join; opts are ignored. See RunTx.
-func (t *Tx) RunTxWithOptions(ctx context.Context, _ TxOptions, fn func(ctx context.Context) error) error {
-	return t.RunTx(ctx, fn)
+	return t.join(ctx, fn)
 }
 
 // ─── retry policy ──────────────────────────────────────────────────────────

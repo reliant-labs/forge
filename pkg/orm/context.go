@@ -59,35 +59,38 @@ type Context interface {
 	// transaction without knowing which it is in.
 	//
 	// Prefer RunTx for new code; see Client.RunTransaction for how the two
-	// relate.
-	RunTransaction(ctx context.Context, fn func(Context) error) error
+	// relate. opts are required, exactly as for RunTx.
+	RunTransaction(ctx context.Context, opts TxOptions, fn func(Context) error) error
 
-	// RunTx runs fn in a SERIALIZABLE transaction CARRIED BY the ctx fn
-	// receives, retrying on serialization failure and deadlock. Every query
-	// made with that ctx against this database — generated delegates,
-	// stores, pkg/crud, raw SQL — joins the transaction, with no handle to
-	// thread. fn may run more than once, so it must have no effect outside
-	// the database; defer those with AfterCommit. A ctx that already carries
-	// a transaction on this database is joined, not nested.
+	// RunTx runs fn in a transaction at opts' isolation, CARRIED BY the ctx
+	// fn receives, re-running fn on 40001 / 40P01 up to opts.MaxAttempts.
+	// Every query made with that ctx against this database — generated
+	// delegates, stores, pkg/crud, raw SQL — joins the transaction, with no
+	// handle to thread. A ctx that already carries a transaction on this
+	// database is joined, not nested.
+	//
+	// opts has no default: name orm.Serializable (read-check-write with no
+	// locks; fn may run more than once, so defer effects outside the
+	// database with AfterCommit) or orm.ReadCommitted (correctness from a
+	// lock or a single statement; one attempt). See TxOptions.
 	//
 	// On the interface for the same reason as RunTransaction: `DB
 	// orm.Context` is the handle forge injects, so `s.deps.DB.RunTx(…)` has
 	// to compile against it.
-	RunTx(ctx context.Context, fn func(ctx context.Context) error) error
+	RunTx(ctx context.Context, opts TxOptions, fn func(ctx context.Context) error) error
 
 	// RunTxReadOnly is RunTx as SERIALIZABLE READ ONLY DEFERRABLE: no
 	// predicate locks, never aborted by a conflict. See TxOptions.ReadOnly.
+	// It takes no level: a transaction that cannot write has one right one.
 	RunTxReadOnly(ctx context.Context, fn func(ctx context.Context) error) error
-
-	// RunTxWithOptions is RunTx with explicit isolation, read-only mode and
-	// retry budget. Options are ignored when joining.
-	RunTxWithOptions(ctx context.Context, opts TxOptions, fn func(ctx context.Context) error) error
 
 	// BeginDetached opens a NEW transaction the caller owns and must end
 	// with Commit or Rollback — one that outlives the call that opened it,
 	// such as a transaction-scoped advisory lock released later. It never
 	// joins the transaction ctx carries (on *Tx it opens a sibling on the
-	// same database) and never retries. See Client.BeginDetached.
+	// same database) and never retries, so opts.MaxAttempts must be 1
+	// (orm.ReadCommitted, orm.Serializable.WithMaxAttempts(1)). See
+	// Client.BeginDetached.
 	//
 	// On the interface for the same reason as RunTx: code written against
 	// the injected `DB orm.Context` must not need the concrete *Client to

@@ -1,6 +1,6 @@
 ---
 name: transactions
-description: Transactions in a forge service — s.deps.DB.RunTx carries a SERIALIZABLE, conflict-retried transaction in ctx so stores and generated delegates join it; orm.AfterCommit for side effects; the lock-free state-transition recipe; how RunTransaction/WithTx relate.
+description: Transactions in a forge service — s.deps.DB.RunTx(ctx, orm.Serializable|orm.ReadCommitted, fn) carries the transaction in ctx so stores and generated delegates join it; there is no default isolation, and choosing the level is choosing a correctness argument (no locks + retry, or a lock + one attempt); orm.AfterCommit for side effects; the lock-free state-transition recipe; BeginDetached; how RunTransaction/WithTx relate.
 ---
 
 # Transactions: `RunTx` carries the transaction in `ctx`
@@ -12,12 +12,12 @@ wires, so it costs nothing:
 
 ```go
 type Deps struct {
-    DB        orm.Context      // the transaction boundary: DB.RunTx(ctx, …)
+    DB        orm.Context      // the transaction boundary: DB.RunTx(ctx, orm.Serializable, …)
     Estimates db.EstimateStore // the data surface
     Jobs      db.JobStore
 }
 
-err := s.deps.DB.RunTx(ctx, func(ctx context.Context) error {
+err := s.deps.DB.RunTx(ctx, orm.Serializable, func(ctx context.Context) error {
     est, err := s.deps.Estimates.GetEstimateByID(ctx, id) // joins: ctx carries the tx
     if err != nil {
         return err
@@ -34,28 +34,58 @@ delegates (`db.GetJobByID(ctx, s.deps.DB, id)`), `pkg/crud`, `db.Bun()`
 builders and raw SQL through `s.deps.DB` — runs inside the transaction. There
 is no handle to thread and nothing to rebind. A `RunTx` whose `ctx` already
 carries a transaction on the same database **joins** it (its options are
-ignored), so a service method that wraps its own work in `RunTx` composes into
-a caller's larger one unchanged. A transaction is only ever used for its own
-database: a `ctx` carrying one for database A never runs a statement sent to B.
+checked, then ignored), so a service method that wraps its own work in `RunTx`
+composes into a caller's larger one unchanged. A transaction is only ever used
+for its own database: a `ctx` carrying one for database A never runs a
+statement sent to B.
+
+## Choose the level: there is no default
+
+Every writable transaction names its isolation and its attempt budget, as an
+`orm.TxOptions` — `RunTx(ctx, opts, fn)`, `RunTransaction(ctx, opts, fn)`,
+`BeginDetached(ctx, opts)`. An unset level is rejected with
+`orm.ErrInvalidTxOptions`, naming the call site. The two levels make
+**opposite** correctness arguments, so neither is safe to inherit:
+
+| Spelling | Level, attempts | Correct because | Use for |
+|---|---|---|---|
+| `orm.Serializable` | SERIALIZABLE, retried on `40001`/`40P01` up to `orm.DefaultTxMaxAttempts` (7) | the database aborts the loser of any race and the retry re-reads committed state | read-check-write with **no locks** — the default choice for a state transition |
+| `orm.ReadCommitted` | READ COMMITTED, 1 attempt | a **lock** (`SELECT … FOR UPDATE`, `pg_advisory_xact_lock`) makes writers take turns, or the work is one statement | lock-based code, single-statement writes, counters allocated in one `UPDATE … RETURNING` |
+| `orm.RepeatableRead` | REPEATABLE READ, 7 attempts | one snapshot for the whole transaction | multi-statement reads/reports that write; it does not prevent write skew |
+
+Adjust with `.WithMaxAttempts(n)` (`orm.ReadCommitted.WithMaxAttempts(3)` to
+survive deadlocks) and `.WithReadOnly()`. A transaction that only reads takes
+no level: `s.deps.DB.RunTxReadOnly(ctx, fn)` is SERIALIZABLE READ ONLY
+DEFERRABLE — one consistent snapshot, no predicate locks, never aborted —
+because postgres rejects every write in it, so there is no lost update to
+choose a defence against.
+
+**Never mix the two arguments.** A lock inside `orm.Serializable` is the trap:
+the snapshot is taken before the lock wait, so the writer that waited wakes
+into stale data and fails `40001` — it survives only by retrying, and with one
+attempt it simply fails. `forge lint --conventions` reports it as
+`forgeconv-tx-lock-under-serializable` (an error under `--strict`). Pick one:
+keep the lock and run at `orm.ReadCommitted`, or keep `orm.Serializable` and
+delete the lock. And the reverse: read-check-write at `orm.ReadCommitted`
+**without** a lock double-applies under concurrency — pkg/crud's
+`TestRunTransaction_Premise_ReadCommittedReadCheckWriteDoublePays` shows two
+payments landing on one balance.
 
 ## What `RunTx` guarantees, and what it asks of you
 
-- **SERIALIZABLE by default**, retried with jittered backoff on serialization
-  failure and deadlock (SQLSTATE `40001` / `40P01`), up to
-  `orm.DefaultTxMaxAttempts`. Still conflicting after that → a `svcerr.Aborted`
-  error, which `svcerr.Wrap` maps to `CodeAborted`.
-- **`fn` may run more than once.** A retry rolls back the failed attempt's
-  database work and calls `fn` again from the top, so `fn` must have no effect
-  outside the database. Send the email, publish the event, enqueue the job with
-  `orm.AfterCommit(ctx, func(ctx context.Context) { … })` — it runs once,
-  after the outermost commit; a rolled-back or retried attempt discards it.
-  Outside a transaction `AfterCommit` returns `orm.ErrNoTransaction`.
+- **It runs `fn` up to `opts.MaxAttempts` times**, with jittered backoff, while
+  it fails with serialization failure or deadlock (SQLSTATE `40001` /
+  `40P01`). Still conflicting after the last attempt → a `svcerr.Aborted`
+  error (the driver error kept as its cause), which `svcerr.Wrap` maps to
+  `CodeAborted`.
+- **With `orm.Serializable`, `fn` may run more than once.** A retry rolls back
+  the failed attempt's database work and calls `fn` again from the top, so
+  `fn` must have no effect outside the database. Send the email, publish the
+  event, enqueue the job with `orm.AfterCommit(ctx, func(ctx context.Context) { … })`
+  — it runs once, after the outermost commit; a rolled-back or retried attempt
+  discards it. Outside a transaction `AfterCommit` returns
+  `orm.ErrNoTransaction`.
 - `fn`'s own error comes back verbatim, so your sentinels survive.
-- `s.deps.DB.RunTxReadOnly(ctx, fn)` for a multi-statement read that must see
-  one consistent snapshot (SERIALIZABLE READ ONLY DEFERRABLE: no predicate
-  locks, never aborted). `RunTxWithOptions(ctx, orm.TxOptions{…}, fn)` sets
-  `Isolation`, `ReadOnly` or `MaxAttempts` explicitly; anything weaker than
-  SERIALIZABLE is a correctness decision that needs a reason at the call site.
 - The transaction is one connection: don't fan `ctx` out to goroutines inside
   `fn`.
 
@@ -68,7 +98,7 @@ check the transition is legal, write the change. That is the whole method —
 ```go
 func (s *svc) RecordPayment(ctx context.Context, in RecordPaymentInput) (Invoice, error) {
     var out *db.Invoice
-    err := s.deps.DB.RunTx(ctx, func(ctx context.Context) error {
+    err := s.deps.DB.RunTx(ctx, orm.Serializable, func(ctx context.Context) error {
         inv, err := s.deps.Invoices.GetInvoiceByID(ctx, in.InvoiceID) // get
         if err != nil {
             return err
@@ -115,7 +145,8 @@ func (s *svc) LockRun(ctx context.Context, key int64) (release func(), err error
     if orm.InTx(ctx) { // a second connection would deadlock on the caller's locks
         return nil, svcerr.FailedPrecondition("LockRun needs its own transaction")
     }
-    tx, err := s.deps.DB.BeginDetached(ctx, orm.TxOptions{Isolation: orm.IsolationReadCommitted})
+    // READ COMMITTED: the advisory lock is the correctness argument.
+    tx, err := s.deps.DB.BeginDetached(ctx, orm.ReadCommitted)
     if err != nil {
         return nil, err
     }
@@ -138,10 +169,15 @@ func (s *svc) LockRun(ctx context.Context, key int64) (release func(), err error
 - **You end it**: every path calls `Commit` or `Rollback`. Its lifetime is
   also bounded by `ctx` — cancelling `ctx` rolls it back (pass
   `context.WithoutCancel(ctx)` to outlive the request).
-- **No retry**: a `40001` comes back to you.
-- `tx.RunTx(ctx, fn)` hands `fn` a `ctx` carrying it, so stores and generated
-  delegates join it; `orm.AfterCommit` callbacks registered there run on
-  `Commit`.
+- **No retry**, so the options must say one attempt: `orm.ReadCommitted`, or
+  `orm.Serializable.WithMaxAttempts(1)`. `orm.Serializable` itself is
+  rejected — it promises retries nobody performs. A `40001` comes back to you.
+- `tx.RunTx(ctx, opts, fn)` hands `fn` a `ctx` carrying it (a join: `opts` are
+  checked, then ignored), so stores and generated delegates join it;
+  `orm.AfterCommit` callbacks registered there run on `Commit`.
+- It is the only way to begin a caller-owned transaction: `Client.BeginTx`,
+  which took `*sql.TxOptions` and silently inherited the database default, is
+  gone.
 
 ## A write that must survive the caller's rollback: `orm.Detached`
 
@@ -152,7 +188,7 @@ the attempt happened, so it has to commit even when the work rolls back.
 own autocommit statement, outside every transaction `ctx` carries:
 
 ```go
-err := s.deps.DB.RunTx(ctx, func(ctx context.Context) error {
+err := s.deps.DB.RunTx(ctx, orm.Serializable, func(ctx context.Context) error {
     // Committed now, kept if the transaction below rolls back or retries.
     if err := db.CreateLedgerEntry(orm.Detached(ctx), s.deps.DB, entry); err != nil {
         return err
@@ -165,11 +201,11 @@ err := s.deps.DB.RunTx(ctx, func(ctx context.Context) error {
   generated delegates, `pkg/crud`, `db.Bun()`, the raw `Exec`/`Query`,
   `SQLConn`/`DBTX`, `orm.InTx` and `client.InTx` (both false). An explicit
   `*Tx` handle is unaffected.
-- `s.deps.DB.RunTx(orm.Detached(ctx), fn)` is a detached *transaction*:
+- `s.deps.DB.RunTx(orm.Detached(ctx), opts, fn)` is a detached *transaction*:
   a new one, carried in the `ctx` fn receives as usual.
-- Under `RunTx` it runs **once per attempt** — a retried transaction writes it
-  again. Make the write idempotent, or use `orm.AfterCommit` when it should
-  exist only if the work committed.
+- Under a retrying `RunTx` it runs **once per attempt** — a retried
+  transaction writes it again. Make the write idempotent, or use
+  `orm.AfterCommit` when it should exist only if the work committed.
 - Never for anything that must roll back with the caller, never to read the
   caller's uncommitted rows (it sees only committed ones), and never against a
   row the caller has written or locked: the detached statement waits on that
@@ -181,13 +217,14 @@ its own.
 
 ## `RunTransaction` and `WithTx`
 
-`RunTransaction(ctx, func(tx orm.Context) error)` is the older,
-handle-passing API: database-default isolation, one attempt, no retry. It is
-kept for existing callers and pairs with the stores' `WithTx(tx)`. Its `fn`
-receives a handle, not a transaction-carrying `ctx`, so code called with the
-outer `ctx` and the plain client does NOT participate — use the handle, or
-`tx.RunTx(ctx, fn)` to get such a `ctx`. It joins a `RunTx` transaction
-already in `ctx`. Write new code with `RunTx`.
+`RunTransaction(ctx, opts, func(tx orm.Context) error)` is the older,
+handle-passing API, and pairs with the stores' `WithTx(tx)`. Its options mean
+exactly what they mean to `RunTx` (`orm.ReadCommitted` runs `fn` once,
+`orm.Serializable` retries it). Its `fn` receives a handle, not a
+transaction-carrying `ctx`, so code called with the outer `ctx` and the plain
+client does NOT participate — use the handle, or `tx.RunTx(ctx, opts, fn)` to
+get such a `ctx`. It joins a `RunTx` transaction already in `ctx`. Write new
+code with `RunTx`.
 
 ## sqlc and hand SQL in the same transaction
 
@@ -200,7 +237,7 @@ transaction has locked):
 ```go
 queries := pgdb.New(client.DBTX()) // sqlc: every call joins ctx's RunTx
 
-err := client.RunTx(ctx, func(ctx context.Context) error {
+err := client.RunTx(ctx, orm.Serializable, func(ctx context.Context) error {
     if err := queries.InsertAuditRow(ctx, row); err != nil { // sqlc, in the tx
         return err
     }
@@ -214,19 +251,35 @@ err := client.RunTx(ctx, func(ctx context.Context) error {
 - `client.InTx(ctx)` asks about THIS pool; `orm.InTx(ctx)` about the
   innermost transaction on any. A layer deciding whether to join or begin
   uses the first.
-- A layer that owns its own transaction loop (its own retry policy) opens it
-  with `client.BeginTx`, runs its work under `tx.RunTx(ctx, fn)`, and ends it
-  with `tx.Commit()` / `tx.Rollback()`: the ORM and `DBTX` both join it, and
-  `orm.AfterCommit` callbacks run on its `Commit`.
+- A layer that owns its own transaction loop (its own retry policy) opens
+  each attempt with `client.BeginDetached(ctx, opts.WithMaxAttempts(1))`, runs
+  its work under `tx.RunTx(ctx, opts, fn)`, and ends it with `tx.Commit()` /
+  `tx.Rollback()`: the ORM and `DBTX` both join it, and `orm.AfterCommit`
+  callbacks run on its `Commit`.
 
-## Migrating hand-written lock helpers
+## Porting a transaction: keep its level
 
-A `Lock<Entity>(ctx, tx, id)` that runs `SELECT … FOR UPDATE` becomes the
-generated `Get<Entity>ByID(ctx, s.deps.DB, id)` (or the store's method) called
-with `RunTx`'s `ctx`; the `RunTransaction(ctx, func(tx orm.Context) …)`
-around it becomes `s.deps.DB.RunTx(ctx, func(ctx context.Context) …)`, and
-every `tx` argument inside becomes `s.deps.DB`. Delete the helper. Move any
-side effect inside the closure into `orm.AfterCommit`.
+A port from hand SQL, sqlc or `RunTransaction` onto `RunTx` keeps the level
+the code was written for. Lock-based code (`SELECT … FOR UPDATE`, an advisory
+lock) was correct at READ COMMITTED and stays there: `orm.ReadCommitted`.
+Moving it to `orm.Serializable` silently changes its argument — the lock now
+fights the snapshot, and under contention writers fail `40001` instead of
+waiting their turn.
+
+To drop the lock instead — usually the better end state — convert the whole
+transaction to the lock-free recipe: a `Lock<Entity>(ctx, tx, id)` that runs
+`SELECT … FOR UPDATE` becomes the generated `Get<Entity>ByID(ctx, s.deps.DB, id)`
+(or the store's method) called with `RunTx`'s `ctx`; the
+`RunTransaction(ctx, orm.ReadCommitted, func(tx orm.Context) …)` around it
+becomes `s.deps.DB.RunTx(ctx, orm.Serializable, func(ctx context.Context) …)`,
+and every `tx` argument inside becomes `s.deps.DB`. Delete the helper. Move
+any side effect inside the closure into `orm.AfterCommit`.
+
+Upgrading from a forge with default levels: `forge fix tx-isolation` spells
+every old call out exactly as it ran (`RunTx(ctx, fn)` →
+`orm.Serializable`; `RunTransaction(ctx, fn)` and `BeginTx(ctx, nil)` →
+`orm.ReadCommitted`) and lists each site; then review the
+`forgeconv-tx-lock-under-serializable` findings. See `migrations/v0.1.47`.
 
 See also: `service-layer` for the Deps/store shape, `db/crud-overrides` for
 read-check-write inside a CRUD op override.

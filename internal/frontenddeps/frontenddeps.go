@@ -79,16 +79,15 @@ func lockfilePackageManager(dir, fallback string) string {
 }
 
 // installArgs returns the install verb and flags. Frozen mode needs a
-// lockfile to honour; npm without one falls back to `install`.
+// lockfile to honour; npm without one — at the root it actually installs
+// at, see NpmInstallVerb — falls back to `install`.
 func installArgs(runner, dir string, frozen bool) []string {
 	if !frozen {
 		return []string{"install"}
 	}
 	switch runner {
 	case "npm":
-		if _, err := os.Stat(filepath.Join(dir, "package-lock.json")); err == nil {
-			return []string{"ci"}
-		}
+		return []string{NpmInstallVerb(dir)}
 	case "pnpm":
 		return []string{"install", "--frozen-lockfile"}
 	case "yarn":

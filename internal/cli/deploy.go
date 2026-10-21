@@ -4505,6 +4505,11 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 		// clusters like the Secret check — the local dev cluster's CRDs are
 		// reconciled by the same up/deploy flow.
 		opts.ServedKinds = cluster.KubectlServedKinds{}
+		// A StatefulSet whose declared volume cannot be converged (a shrink, a
+		// changed class, a class that cannot expand) fails here, naming it,
+		// instead of as an immutable-field rejection mid-apply or a wedged
+		// Flux tree. Same decision the resize Job makes.
+		opts.VolumeResize = cluster.KubectlVolumeResize{}
 		// Declared external Secret prerequisites (forge.ExternalSecret): each
 		// in its OWN declared namespace, verified against the live target. A
 		// declared-required-but-absent Secret/key BLOCKS — the converse of

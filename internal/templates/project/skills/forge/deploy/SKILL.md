@@ -302,6 +302,10 @@ config and domain links; a standalone site starts at `deploy/static-site`.
 
 PDB lint + stale-PDB prune: deploy/pdb.
 
+Raising a StatefulSet's declared volume size (immutable `volumeClaimTemplates`) is
+converged by a pre-rollout Job forge renders; a shrink is refused:
+deploy/statefulset-volumes.
+
 ## Pod priority on shared nodes
 
 Declare `priorityClassName` on nodes shared with ranked pods, or yours get

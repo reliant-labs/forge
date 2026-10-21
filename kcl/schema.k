@@ -4471,6 +4471,43 @@ schema Manifests:
         not name or regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "Manifests.name '${name}' must be an RFC-1123 label (it is a --target)"
         not delivery_unit or regex.match(delivery_unit, r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$"), "Manifests.delivery_unit '${delivery_unit}' must be letters, digits, '.', '_' and '-' (it is a path segment in the bundle)"
 
+schema StatefulSetResize:
+    """How forge converges a StatefulSet whose declared volume size GREW.
+
+    A StatefulSet's volumeClaimTemplates are immutable, so raising a declared
+    size (`clickhouse_disk = "50Gi"` -> "100Gi") makes every apply of the new
+    render fail. Forge fixes that itself, with no declaration: for each
+    StatefulSet that has volumeClaimTemplates it renders a PRE-ROLLOUT Job
+    ahead of the rollout, in the same delivery unit, that
+
+      1. grows each existing PersistentVolumeClaim to the declared size (the
+         StorageClass must allow volume expansion; if it does not, the Job
+         fails and nothing is changed),
+      2. deletes the StatefulSet with --cascade=orphan, so its pods keep
+         running while the rollout recreates it with the new templates.
+
+    It does nothing when the sizes already match, refuses a shrink or any other
+    change to a template with a message naming it, and runs under a
+    namespace-scoped identity the bundle declares itself. The Job gates the
+    rollout under `forge env deploy` and under a Flux-applied bundle alike.
+
+    It is rendered for every env except `lifecycle = "local"` or "ephemeral",
+    whose scratch clusters forge converges directly. This block only tunes it:
+
+        statefulset_resize = forge.StatefulSetResize {image = "mirror.example/k8s:1.34"}
+        statefulset_resize = forge.StatefulSetResize {disabled = True}
+    """
+    # The Job's image: anything with `kubectl` and `jq` on PATH. Unset is a
+    # digest-pinned alpine/k8s. Set it to a mirror when the cluster cannot pull
+    # from Docker Hub, or to pin a kubectl matching the cluster.
+    image?: str
+    # Render no resize Job: a raised volume size then fails the apply, as it
+    # did before, and the volume is resized by hand.
+    disabled?: bool = False
+
+    check:
+        not image or regex.match(image, r"^[^\s]+$"), "StatefulSetResize.image '${image}' must be an image reference with no whitespace"
+
 schema DeliveryUnit:
     """A delivery unit: a named slice of an env that a Flux-applied bundle
     delivers as its own trees (cluster × unit × phase), in a declared order.
@@ -4978,6 +5015,9 @@ schema Bundle:
     # The delivery units this env's bundle is split into, and their order.
     # See forge.DeliveryUnit. Empty: every object is in `base`.
     delivery_units: [DeliveryUnit] = []
+    # Tunes the pre-rollout Job that converges a StatefulSet whose declared
+    # volume grew. Rendered by default; see forge.StatefulSetResize.
+    statefulset_resize?: StatefulSetResize
     # Kubernetes YAML emitted by a command at render time (kustomize,
     # jsonnet, any tool); shipped in the bundle. See forge.Generated.
     generated: [Generated] = []

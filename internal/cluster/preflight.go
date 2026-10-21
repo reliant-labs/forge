@@ -703,6 +703,13 @@ type PreflightOpts struct {
 	// the CRD gate (local dev / nothing to verify).
 	ServedKinds ServedKindChecker
 
+	// VolumeResize judges every StatefulSet the bundle renders against the
+	// live one, so a change to its volumeClaimTemplates that no resize can
+	// converge (a shrink, a changed storage class, a claim whose class cannot
+	// expand) BLOCKS before anything is applied. Runs only with a Context.
+	// Nil disables the check. See VolumeResizeChecker.
+	VolumeResize VolumeResizeChecker
+
 	// Images checks image existence against the registry.
 	Images ImageChecker
 
@@ -990,6 +997,18 @@ type PreflightResult struct {
 	// populated when a ServedKindChecker is configured (an undeclared discovery
 	// surface can't assert a kind is missing).
 	MissingCRDs []string
+	// VolumeResizeRefusals is the sorted list of "<namespace>/<name>: <reason>"
+	// entries for StatefulSets whose declared volumeClaimTemplates differ from
+	// the live ones in a way the pre-rollout resize Job (and the direct-apply
+	// recovery) REFUSES: a shrink, a changed storage class or access mode, or a
+	// claim that must grow whose StorageClass does not allow expansion. These
+	// BLOCK: the apply would fail on the immutable field, and a Flux-applied
+	// copy would wedge its whole tree.
+	VolumeResizeRefusals []string
+	// VolumeResizeWarnings are the StatefulSets whose live volumes could not
+	// be read (a transport or permission failure). They do NOT block, and are
+	// printed so a clean-looking run is not mistaken for a checked one.
+	VolumeResizeWarnings []string
 	// MissingRequiredSecretKeys maps "<namespace>/<secret>" (as
 	// "<context>:<namespace>/<secret>" when the run spans more than one
 	// cluster) to the sorted list
@@ -1029,6 +1048,7 @@ func (r PreflightResult) OK() bool {
 		len(r.UnverifiableImages) == 0 &&
 		len(r.ArchMismatchImages) == 0 &&
 		len(r.MissingCRDs) == 0 &&
+		len(r.VolumeResizeRefusals) == 0 &&
 		len(r.MissingRequiredSecretKeys) == 0 &&
 		len(r.ByteMatchMismatches) == 0 &&
 		len(r.UndeclaredSecretMounts) == 0
@@ -1086,6 +1106,9 @@ func PreflightReport(ctx context.Context, opts PreflightOpts) (PreflightResult, 
 	// too (an undeclared target arch, or an unreadable manifest) — surface
 	// them so a later exec-format-error isn't a surprise.
 	for _, w := range result.ArchWarnings {
+		fmt.Printf("preflight: %s\n", w)
+	}
+	for _, w := range result.VolumeResizeWarnings {
 		fmt.Printf("preflight: %s\n", w)
 	}
 	if result.OK() {
@@ -1226,6 +1249,13 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts) (PreflightResul
 		checkServedKinds(ctx, opts, &wg, sink)
 	}
 
+	// StatefulSet volume check — one read of each live StatefulSet that has
+	// volumeClaimTemplates, judged by the same pkg/stsresize.Decide the resize
+	// Job and the direct-apply recovery use.
+	if opts.VolumeResize != nil && hasContext {
+		checkVolumeResize(ctx, opts, &wg, sink)
+	}
+
 	// Cluster-credentialed image checker — resolve the bundle's
 	// imagePullSecrets from the TARGET cluster into a temp DOCKER_CONFIG so an
 	// AUTH-DENIED local-daemon lookup can be RETRIED with the credentials the
@@ -1301,6 +1331,8 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts) (PreflightResul
 	sort.Strings(result.ArchMismatchImages)
 	sort.Strings(result.ArchWarnings)
 	sort.Strings(result.MissingCRDs)
+	sort.Strings(result.VolumeResizeRefusals)
+	sort.Strings(result.VolumeResizeWarnings)
 	return result, nil
 }
 
@@ -2140,6 +2172,13 @@ func FormatPreflightReport(r PreflightResult) string {
 		}
 	}
 
+	if len(r.VolumeResizeRefusals) > 0 {
+		b.WriteString("\n  StatefulSet volumes that cannot be converged (volumeClaimTemplates are immutable; only a LARGER storage request is):\n")
+		for _, m := range r.VolumeResizeRefusals {
+			fmt.Fprintf(&b, "    - %s\n", m)
+		}
+	}
+
 	if len(r.MissingRequiredSecretKeys) > 0 {
 		b.WriteString("\n  DECLARED external Secret prerequisites missing (forge.ExternalSecret — provision out-of-band):\n")
 		writeMissingKeyBlock(&b, "Secret", r.MissingRequiredSecretKeys)
@@ -2195,6 +2234,12 @@ func FormatPreflightReport(r PreflightResult) string {
 		b.WriteString("      it carries GA Gateway, HTTPRoute, GRPCRoute and ListenerSet. Use the\n")
 		b.WriteString("      experimental channel ONLY for an x-k8s.io alpha kind, and never on a\n")
 		b.WriteString("      local cluster alone — it would diverge dev from the cloud.\n")
+	}
+	if len(r.VolumeResizeRefusals) > 0 {
+		b.WriteString("  - declare the StatefulSet volume(s) above at the live size or larger, and leave their storage\n")
+		b.WriteString("      class and access modes alone. A volume cannot shrink; to move data to a smaller or different\n")
+		b.WriteString("      volume, restore into a new StatefulSet. A claim whose StorageClass lacks allowVolumeExpansion\n")
+		b.WriteString("      must have expansion enabled on the class first.\n")
 	}
 	if len(r.MissingRequiredSecretKeys) > 0 {
 		b.WriteString("  - provision the DECLARED external Secret(s) above out-of-band in their\n")

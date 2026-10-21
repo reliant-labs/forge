@@ -21,6 +21,8 @@ THE OUTPUT (internal/cli/testdata/render_contract/ pins it per runtime):
                               when declared (a list, possibly empty)
     clusters, cluster_target, kubeconfig_secrets, connected_clusters
     network_policy            the env NetworkPolicy bundle's inputs, or null
+    statefulset_resize        {image, disabled} tuning of the StatefulSet
+                              volume-resize Job, present only when declared
     workloads[]               EVERY workload, of every runtime:
         {name, kind, image, build, runtime, spec}
           image   — the REPOSITORY forge builds it into, registry host
@@ -1910,6 +1912,13 @@ render = lambda bundle: Bundle -> any {
         # appear only when declared, so an env without units renders as before.
         if bundle.delivery_units:
             "delivery_units": [{"name": u.name, "after": u.after if u.after != Undefined else None} for u in bundle.delivery_units]
+        # The pre-rollout StatefulSet volume-resize Job's tuning; the key
+        # appears only when declared. The Job itself is rendered by Go.
+        if bundle.statefulset_resize:
+            "statefulset_resize": {
+                "image": bundle.statefulset_resize.image
+                "disabled": bundle.statefulset_resize.disabled
+            }
         "manifests": _manifests(bundle, _entities)
     }
 }

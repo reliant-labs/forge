@@ -216,18 +216,25 @@ func (r *Resolver) Bridge(ctx context.Context, dir, stamp string) (Result, error
 	return Result{Path: bin, Source: "forge built from checkout " + dir}, nil
 }
 
-// publish moves a finished build into the cache. A binary already there wins:
-// two processes building the same version race to rename, and both results are
-// the same bytes.
+// publish moves a finished build into the cache, only if nothing is there
+// yet. A binary already there wins: another process published that version
+// first, and may be RUNNING it. os.Rename replaces an existing file on Unix,
+// so a second build of one entry swapped the executable under a forge that
+// was mid-run — which then saw "the forge binary changed while generate
+// ran". A hard link creates the name only if it is absent, atomically.
 func publish(from, to string) error {
 	if _, err := os.Stat(from); err != nil {
 		return fmt.Errorf("the build produced no %s: %w", filepath.Base(from), err)
 	}
-	if err := os.Rename(from, to); err != nil {
+	if err := os.Link(from, to); err != nil {
 		if st, serr := os.Stat(to); serr == nil && !st.IsDir() {
-			return nil
+			return nil // published first by another process: keep it
 		}
-		return err
+		// A filesystem without hard links: fall back to the rename, which
+		// is still atomic for a name nobody holds yet.
+		if rerr := os.Rename(from, to); rerr != nil {
+			return rerr
+		}
 	}
 	return nil
 }

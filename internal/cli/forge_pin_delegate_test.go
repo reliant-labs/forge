@@ -9,9 +9,11 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/internal/forgedelegate"
 )
 
@@ -231,5 +233,24 @@ func TestPinDelegateOnlyFor(t *testing.T) {
 		if got := pinDelegateOnlyFor(rel); got != want {
 			t.Errorf("pinDelegateOnlyFor(%q) = %v, want %v", rel, got, want)
 		}
+	}
+}
+
+// The build a linked checkout delegates to is keyed by the checkout's
+// content: a touch that changes no byte reuses it, an edit does not.
+func TestBridgeStamp_FollowsContentNotMtime(t *testing.T) {
+	base := forgecompat.Checkout{Head: "abc123", Dirty: true, DirtyDigest: "d1", LastEditAt: time.Unix(100, 0)}
+	touched := base
+	touched.LastEditAt = time.Unix(200, 0)
+	if bridgeStamp(base) != bridgeStamp(touched) {
+		t.Errorf("an mtime-only change named a new build: %q vs %q", bridgeStamp(base), bridgeStamp(touched))
+	}
+	edited := base
+	edited.DirtyDigest = "d2"
+	if bridgeStamp(base) == bridgeStamp(edited) {
+		t.Error("an edit reused the old build")
+	}
+	if got := bridgeStamp(forgecompat.Checkout{Head: "abc123"}); got != "abc123" {
+		t.Errorf("a clean checkout's stamp = %q, want its HEAD", got)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -226,5 +227,60 @@ func TestRunVersion(t *testing.T) {
 func TestSafeName(t *testing.T) {
 	if got := safeName("v1/../x y+dirty"); strings.ContainsAny(got, "/ +") {
 		t.Errorf("unsafe: %q", got)
+	}
+}
+
+// Two processes that build one cache entry at once must agree on the binary,
+// and the second must never replace the first's: the first may already be
+// RUNNING it. os.Rename over an existing name did exactly that on Unix, and
+// the running forge then saw "the forge binary changed while generate ran".
+func TestBridge_ConcurrentBuildsNeverReplaceAPublishedBinary(t *testing.T) {
+	r, _, _ := newResolver(t)
+	checkout := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(checkout, "cmd", "forge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	slowStarted, fastDone := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	r.Build = func(_ context.Context, _, out string) error {
+		if calls.Add(1) == 1 { // the slow build: finishes after the fast one published
+			close(slowStarted)
+			<-fastDone
+			return atomicfile.WriteFile(out, []byte("slow build\n"), 0o755)
+		}
+		return atomicfile.WriteFile(out, []byte("fast build\n"), 0o755)
+	}
+	type result struct {
+		res Result
+		err error
+	}
+	slow := make(chan result, 1)
+	go func() {
+		res, err := r.Bridge(context.Background(), checkout, "abc")
+		slow <- result{res, err}
+	}()
+	<-slowStarted
+	fast, err := r.Bridge(context.Background(), checkout, "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, err := os.ReadFile(fast.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(fastDone)
+	s := <-slow
+	if s.err != nil {
+		t.Fatal(s.err)
+	}
+	after, err := os.ReadFile(fast.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(running) {
+		t.Fatalf("a later build replaced the published binary a caller was handed: %q -> %q", running, after)
+	}
+	if s.res.Path != fast.Path {
+		t.Errorf("the two builds resolved different paths: %s vs %s", s.res.Path, fast.Path)
 	}
 }

@@ -290,3 +290,65 @@ func TestReadCheckout_DoesNotRewriteTheIndex(t *testing.T) {
 		t.Fatal("ReadCheckout rewrote .git/index of the checkout it only reads")
 	}
 }
+
+// A checkout's identity is the bytes of its uncommitted changes, not their
+// mtimes: a touch that changes nothing (an npm build, an editor, another
+// agent) must not name a new forge build, and a real edit must.
+func TestReadCheckout_DirtyDigestFollowsContentNotMtime(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q")
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a.go", "package a\n")
+	run("add", "a.go")
+	run("commit", "-q", "-m", "init")
+	read := func() Checkout {
+		t.Helper()
+		c, ok := ReadCheckout(dir)
+		if !ok {
+			t.Fatal("ReadCheckout: not a checkout")
+		}
+		return c
+	}
+	if c := read(); c.DirtyDigest != "" {
+		t.Fatalf("a clean checkout has digest %q", c.DirtyDigest)
+	}
+	write("a.go", "package a\n\nvar X = 1\n")
+	write("untracked.txt", "x\n")
+	first := read()
+	if first.DirtyDigest == "" {
+		t.Fatal("a dirty checkout has no digest")
+	}
+	later := time.Now().Add(time.Hour)
+	for _, name := range []string{"a.go", "untracked.txt"} {
+		if err := os.Chtimes(filepath.Join(dir, name), later, later); err != nil {
+			t.Fatal(err)
+		}
+	}
+	touched := read()
+	if touched.DirtyDigest != first.DirtyDigest {
+		t.Errorf("touching files without changing a byte moved the digest: %s -> %s", first.DirtyDigest, touched.DirtyDigest)
+	}
+	if !touched.LastEditAt.After(first.LastEditAt) {
+		t.Fatal("precondition: the touch moved the newest mtime, which the digest must ignore")
+	}
+	write("untracked.txt", "y\n")
+	if read().DirtyDigest == first.DirtyDigest {
+		t.Error("an edit to an untracked file did not move the digest")
+	}
+}

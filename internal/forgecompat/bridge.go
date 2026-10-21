@@ -1,11 +1,15 @@
 package forgecompat
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -223,6 +227,11 @@ type Checkout struct {
 	// LastEditAt is the newest modification among dirty files. A deleted
 	// file has no mtime and counts as edited now.
 	LastEditAt time.Time
+	// DirtyDigest identifies the CONTENT of the uncommitted changes: each
+	// dirty path, its status and its bytes ("" when clean). Two reads of a
+	// checkout whose files hold the same bytes agree, whatever touched their
+	// mtimes; a build keyed by it is rebuilt only when the source moved.
+	DirtyDigest string
 }
 
 // ReadCheckout reads dir with git. ok is false when dir is not a git
@@ -235,6 +244,7 @@ func ReadCheckout(dir string) (Checkout, bool) {
 	c := Checkout{Dir: dir, Head: head}
 	if status, err := gitIn(dir, "status", "--porcelain", "-z", "--untracked-files=all"); err == nil {
 		c.Dirty, c.LastEditAt = dirtyEdits(dir, status)
+		c.DirtyDigest = dirtyDigest(dir, status)
 	}
 	if logPath, err := gitIn(dir, "rev-parse", "--git-path", "logs/HEAD"); err == nil && logPath != "" {
 		if !filepath.IsAbs(logPath) {
@@ -301,6 +311,53 @@ func dirtyEdits(dir, status string) (bool, time.Time) {
 		}
 	}
 	return dirty, newest
+}
+
+// dirtyDigest hashes the uncommitted changes `git status --porcelain -z`
+// lists: each entry's status, path and content, in path order. A deleted
+// file hashes as deleted, a symlink as its target. "" when nothing is dirty.
+func dirtyDigest(dir, status string) string {
+	type entry struct{ code, path string }
+	var dirty []entry
+	entries := strings.Split(status, "\x00")
+	for i := 0; i < len(entries); i++ {
+		e := entries[i]
+		if len(e) < 4 {
+			continue
+		}
+		code, path := e[:2], e[3:]
+		if code[0] == 'R' || code[0] == 'C' {
+			i++ // a rename/copy is followed by its source path
+		}
+		dirty = append(dirty, entry{code, path})
+	}
+	if len(dirty) == 0 {
+		return ""
+	}
+	sort.Slice(dirty, func(i, j int) bool { return dirty[i].path < dirty[j].path })
+	h := sha256.New()
+	for _, e := range dirty {
+		fmt.Fprintf(h, "%s %s\x00", e.code, e.path)
+		p := filepath.Join(dir, e.path)
+		switch st, err := os.Lstat(p); {
+		case err != nil:
+			h.Write([]byte("deleted"))
+		case st.Mode()&os.ModeSymlink != 0:
+			target, _ := os.Readlink(p)
+			h.Write([]byte("symlink:" + target))
+		case st.Mode().IsRegular():
+			if f, err := os.Open(p); err == nil {
+				_, _ = io.Copy(h, f)
+				_ = f.Close()
+			} else {
+				h.Write([]byte("unreadable"))
+			}
+		default:
+			fmt.Fprintf(h, "mode:%v", st.Mode().Type())
+		}
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // SkewKind names how a binary and its bridged checkout disagree.

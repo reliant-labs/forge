@@ -122,6 +122,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A delegated forge's build is keyed by content, and a running forge is
+  never replaced.** A command handed to the forge built from a linked
+  checkout found that build by the checkout's HEAD plus the newest mtime of
+  its uncommitted files, so anything that touched the tree (an npm build, an
+  editor, a parallel test) named a new build. Two processes building one
+  entry each published theirs with a rename that replaced the other's binary
+  while it ran. A generate running from that binary then reported "the forge
+  binary changed while generate ran" and recorded no fixed point. Now the key
+  is a digest of the uncommitted changes' bytes, a build is published only if
+  nothing is there yet, and the generate cache's mid-run check judges the
+  forge that actually ran instead of re-reading its path.
 - **Docs no longer promise mail that is never sent.** The
   `deploy/managed-identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
   mail through a platform relay and that an invitation emails a link. Neither is

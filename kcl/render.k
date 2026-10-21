@@ -1347,6 +1347,22 @@ _check_before = lambda workloads: [any] -> bool {
     True
 }
 
+# ShellBuild.built_images names a workload forge can build an image for in
+# THIS environment: another ShellBuild workload that declares an image. The
+# build resolves the edge to the digest that workload pushed, so an edge to a
+# workload the env does not declare, to one built some other way, or to
+# itself is refused here — at render, naming the edge — rather than at the
+# build, after other images have already been pushed.
+_check_built_images = lambda workloads: [any] -> bool {
+    _builders = [w.name for w in workloads if w.build and w.build.type == "shell" and w.image]
+    _edges = [[w.name, v, b] for w in workloads if w.build and w.build.type == "shell" for v, b in w.build.built_images]
+    _bad = ["${e[0]}.${e[1]} -> ${e[2]}" for e in _edges if e[2] == e[0] or e[2] not in _builders]
+    assert len(_bad) == 0, \
+        "ShellBuild.built_images must name ANOTHER workload in this environment that is built by a ShellBuild and declares an image (forge passes it the digest that build pushed): " \
+        + ", ".join(_bad) + ". ShellBuild workloads with an image: " + (", ".join(_builders) or "none") + "."
+    True
+}
+
 # ---------------------------------------------------------------------------
 # The RUNTIME MASK (ADR 0002 §3; P2 map §6.2).
 #
@@ -1782,6 +1798,7 @@ _manifests = lambda b: Bundle, entities: [any] -> [any] {
 
 render = lambda bundle: Bundle -> any {
     _ok = _check_before(bundle.workloads)
+    _built_images_ok = _check_built_images(bundle.workloads)
     _entities = [_lower(w, bundle) for w in bundle.workloads]
     _pt = _primary_target(bundle)
     {
@@ -2259,6 +2276,8 @@ _render_shell_build = lambda b: ShellBuild -> any {
         if b.source:
             "source": {"repo": b.source.repo, "ref": b.source.ref, "subdir": b.source.subdir}
         "env": b.env if b.env else {}
+        if b.built_images:
+            "built_images": b.built_images
     }
 }
 

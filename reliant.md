@@ -124,10 +124,10 @@ run — watch it when you add a test.
   Linux, and the windows/arm64 build of `cmd/forge`.
 - **Lint** — golangci-lint over the root and over `pkg/` (under `pkg/.golangci.yml`),
   `go vet ./...`, and `go vet -tags e2e` over the e2e-tagged packages.
-- **Verify generated code, KCL, vulnerabilities** — `forge ci verify-generated`,
-  `forge ci validate-kcl`, `forge ci vuln-scan --go`, on one forge install.
-- **Quick checks** — the pre-commit hooks (go-vet-mod skipped: Lint runs it) and the Go and
-  npm dependency-license allowlists.
+- **Verify Generated Code + Validate KCL** — `forge ci verify-generated` and
+  `forge ci validate-kcl`.
+- **Quick checks** — the pre-commit hooks (go-vet-mod skipped: Lint runs it), the Go and
+  npm dependency-license allowlists, and `forge ci vuln-scan --go`.
 - A pull request that touches only `docs/**`, root `*.md` or skills skips `ci.yml`;
   `docs-skills.yml` runs the `-short` tests that read those files and the pre-commit hooks
   over the changed files.

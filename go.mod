@@ -9,8 +9,9 @@ require (
 	buf.build/go/protovalidate v1.4.0
 	cel.dev/cel-go v0.32.0
 	connectrpc.com/connect v1.21.1
+	connectrpc.com/connect/v2 v2.0.0
 	connectrpc.com/otelconnect v0.12.0
-	connectrpc.com/vanguard v0.4.0
+	connectrpc.com/vanguard v0.5.0
 	github.com/BurntSushi/toml v1.6.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.49.0
 	github.com/MicahParks/keyfunc/v3 v3.8.2
@@ -100,7 +101,6 @@ require (
 	cloud.google.com/go/iam v1.13.0 // indirect
 	cloud.google.com/go/monitoring v1.30.0 // indirect
 	cloud.google.com/go/storage v1.66.0 // indirect
-	connectrpc.com/connect/v2 v2.0.0 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/ClickHouse/ch-go v0.74.0 // indirect

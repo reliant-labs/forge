@@ -691,8 +691,8 @@ type CmdServerTemplateData struct {
 	Name string
 
 	// RESTEnabled mirrors forge.yaml `api.rest: true`. When set the cmd
-	// composition site builds a vanguard transcoder over the mounted
-	// services' Connect paths and serves it in place of the bare mux.
+	// composition site serves vanguard's REST routes for the mounted
+	// services in front of the bare mux (serverkit.RESTHandler).
 	// Filled by generateCmdServerData from projectAPIRESTEnabled.
 	RESTEnabled bool
 }

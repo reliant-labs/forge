@@ -100,7 +100,8 @@ func TestGenerateInject_TypeTopoOrder(t *testing.T) {
 		t.Fatalf("User must be constructed before Billing:\n%s", out)
 	}
 	// Billing's Users field is filled by the producer's local var (suffixed
-	// "Inst" so it never shadows the package import alias), not infra.
+	// "Inst" so it never shadows the package import alias), not infra. (The
+	// fixtures declare no middleware_gen.go, so nothing is wrapped.)
 	if !strings.Contains(out, "Users: userInst,") {
 		t.Fatalf("Billing.Users should be wired to the user producer var:\n%s", out)
 	}
@@ -852,6 +853,12 @@ func writeObservedPackage(t *testing.T, projectDir, leaf, pkg string, fallible b
 	if err := os.WriteFile(filepath.Join(dir, "observe_chain.go"), []byte(seam), 0o644); err != nil {
 		t.Fatalf("write observe_chain: %v", err)
 	}
+	// The decorator the contracts step writes before compose is assembled;
+	// compose wraps only a component whose decorator is declared.
+	decorator := "package " + pkg + "\n\nfunc NewServiceWithForgeMiddleware(inner Service) Service { return &forgeMiddlewareService{inner: inner} }\n\ntype forgeMiddlewareService struct{ Service; inner Service }\n"
+	if err := os.WriteFile(filepath.Join(dir, "middleware_gen.go"), []byte(decorator), 0o644); err != nil {
+		t.Fatalf("write middleware_gen: %v", err)
+	}
 }
 
 // TestGenerateCompose_WrappedObservedPackage: a package with an observe_chain.go
@@ -1026,10 +1033,8 @@ func TestGenerateCompose_ReconcileAddsWrappedPackage(t *testing.T) {
 //
 // — the decorator was assigned to a Components field nothing reads, while the
 // one real caller got the undecorated instance. Every call through the
-// producer bypassed the observability chain the package was opted into, and
-// `forge lint --enforce-component-observe` still reported "every wired
-// component has an observability decision" because a decorator HAD been
-// constructed. Silent capability loss with a green guard.
+// producer bypassed the observability chain the package was opted into,
+// although a decorator HAD been constructed. Silent capability loss.
 func TestGenerateCompose_WrappedProducerInjectsDecorated(t *testing.T) {
 	dir := newInjectProject(t)
 	writeObservedPackage(t, dir, "stripe", "stripe", false)

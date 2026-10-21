@@ -73,11 +73,14 @@ type Result struct {
 	Source string
 }
 
+// CacheDirEnv relocates the builds the resolver keeps (default
+// <user cache dir>/forge/pinned), for read-only home directories and test
+// isolation.
+const CacheDirEnv = "FORGE_PINNED_CACHE"
+
 // Resolver finds or builds forge binaries. The zero value is usable; the func
 // fields are seams for tests and default to the real thing.
 type Resolver struct {
-	// CacheDir is where builds live. Default: <user cache dir>/forge/pinned.
-	CacheDir string
 	// Log receives the notice that a build is starting (a minute of silence
 	// reads as a hang).
 	Log io.Writer
@@ -100,12 +103,12 @@ func (r *Resolver) logw() io.Writer {
 }
 
 func (r *Resolver) cacheDir() (string, error) {
-	if r.CacheDir != "" {
-		return r.CacheDir, nil
+	if dir := strings.TrimSpace(os.Getenv(CacheDirEnv)); dir != "" {
+		return dir, nil
 	}
 	base, err := os.UserCacheDir()
 	if err != nil {
-		return "", fmt.Errorf("no user cache directory to keep the pinned forge in: %w", err)
+		return "", fmt.Errorf("no user cache directory to keep the pinned forge in (set %s): %w", CacheDirEnv, err)
 	}
 	return filepath.Join(base, "forge", "pinned"), nil
 }

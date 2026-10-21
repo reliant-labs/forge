@@ -458,3 +458,77 @@ func (g *Graph) newAlpaca() (alpaca.Service, error) {
 		})
 	}
 }
+
+// An existing new<X> method follows its node's instrument decision: a node
+// that became instrumented is wrapped in its decorator (both constructor
+// shapes), and one that opted out is unwrapped — while the literal pass
+// still reconciles the Deps keys in the same run.
+func TestReconcileGraphCompose_SyncsTheDecoratorWrap(t *testing.T) {
+	existingFor := func(body string) string {
+		return graphComposeHeader + `
+import (
+	"log/slog"
+
+	"example.com/p/internal/handlers/alpha"
+)
+
+func (g *Graph) newAlpha() (*alpha.Service, error) {
+` + body + `
+}
+
+func (g *Graph) newStore() (*Store, error) {
+	return NewStore(StoreDeps{Ctx: g.Ctx})
+}
+`
+	}
+	cases := []struct {
+		name     string
+		wrapped  bool
+		fallible bool
+		body     string
+		want     []string
+		absent   string
+	}{
+		{
+			name: "fallible becomes wrapped", wrapped: true, fallible: true,
+			body: "\treturn alpha.New(alpha.Deps{Logger: slog.Default()})",
+			want: []string{"svc, err := alpha.New(alpha.Deps{", "Store: g.Store(),", "return alpha.NewServiceWithForgeMiddleware(svc), nil"},
+		},
+		{
+			name: "infallible becomes wrapped", wrapped: true, fallible: false,
+			body: "\treturn alpha.New(alpha.Deps{Logger: slog.Default()}), nil",
+			want: []string{"return alpha.NewServiceWithForgeMiddleware(alpha.New(alpha.Deps{", "})), nil"},
+		},
+		{
+			name: "opted out is unwrapped", wrapped: false, fallible: true,
+			body:   "\tsvc, err := alpha.New(alpha.Deps{Logger: slog.Default()})\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn alpha.NewServiceWithForgeMiddleware(svc), nil",
+			want:   []string{"return svc, nil"},
+			absent: "WithForgeMiddleware",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			nodes, r := graphFixture()
+			nodes[0].Deps[1].Type = "*Store"
+			nodes[0].Fallible = tc.fallible
+			nodes[0].Wrapped = tc.wrapped
+			nodes[0].MiddlewareCtor = "NewServiceWithForgeMiddleware"
+			out, problems, err := reconcileGraphCompose(existingFor(tc.body), nodes, r)
+			if err != nil || len(problems) > 0 {
+				t.Fatalf("err=%v problems=%+v", err, problems)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(squash(out), squash(want)) {
+					t.Errorf("compose.go lacks %q:\n%s", want, out)
+				}
+			}
+			if tc.absent != "" && strings.Contains(out, tc.absent) {
+				t.Errorf("compose.go still has %q:\n%s", tc.absent, out)
+			}
+			again, _, err := reconcileGraphCompose(out, nodes, r)
+			if err != nil || again != out {
+				t.Errorf("not converged after one pass (err=%v):\n%s", err, again)
+			}
+		})
+	}
+}

@@ -26,6 +26,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   binary whose root config holds only blocks compiles (it read the union of
   every config message's field names). A project whose binary loads one
   config renders as before.
+- **A failed request names the trace it landed in, in the browser.** Every
+  forge server now answers each Connect call, failed ones included, with the
+  W3C `traceresponse` header naming its server span
+  (`observe.TraceResponseInterceptor`, inside the trace slot of
+  `observe.Chain`), and `middleware.DefaultCORSExposeHeaders` exposes it.
+  `@reliantlabs/forge-web-runtime` reads it (next release, 0.6.0): `ConnectClientError.traceId`
+  is the server's trace (or, without the header, the trace of the traceparent
+  the runtime sent), a dev log line that logs such an error ends in
+  `trace_id=<id>`, and `reportException` adds it as `server.trace_id`. So one
+  id joins a screenshot of an error, the browser's record, and every server
+  span and log line of the request.
+
+- **Every contract package is instrumented by default.** A package whose
+  constructor returns its `Service` interface now gets `middleware_gen.go`
+  (one span, the call metrics and a failure log per method), and compose.go
+  constructs it wrapped, with no `// forge:constructor` marker and no
+  `observe_chain.go` seam. The gate on those two had left every package that
+  predated the scaffold silently untraced: 26 of the control plane's 46,
+  including its hottest business paths, so most of its traces were a single
+  span. Without a seam the decorator builds the new
+  `observe.DefaultComponentChain(scope, name, level)`, which is what the
+  scaffolded seam assembles. Nothing is scaffolded into the package, and the
+  seam is now an optional override. `forge generate` also brings an existing
+  compose.go construction in line when the decision changes, in both the
+  `NewComponents` and the composition-graph (`new<X>` method) shapes: it wraps
+  a component that is now instrumented, and unwraps one that gained
+  `// forge:no-observe`. `// forge:no-observe` on the package or on one method
+  remains the opt-out. Constructions written by hand (`providers.go`,
+  `*_wire.go`) are yours to wrap; `forge lint --tracing`'s
+  `forge-tracing-contract-uninstrumented` finds them, with the same decision.
 
 - **`orm.Client.DBTX`, `SQLConn(ctx)` and `InTx(ctx)`: sqlc and hand-written
   database/sql code join the ORM's transaction.** A project porting onto the
@@ -746,6 +776,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dashboard forge#880 generated until it was patched by hand.
   `internal/obsdash`'s HyperDX renderer refuses a field through `CheckField`,
   and a test holds the two to the same vocabulary.
+
+### Removed
+
+- **The `enforce-component-observe` lint and `config.enforce_component_observe`.**
+  It failed a package that had made no observability decision. Being
+  instrumented is now the default decision, so there is nothing left for it
+  to enforce. Delete the key if your forge.yaml sets it.
 
 ### Fixed
 

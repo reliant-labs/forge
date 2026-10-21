@@ -19,7 +19,7 @@
 // identity of the work it causes:
 //
 //   - it can graft our spans into a trace it owns (an attacker's id, or a
-//     victim tenant's), polluting or attributing someone else's trace;
+//     victim's), polluting or attributing someone else's trace;
 //   - it can set the sampled flag, and under a parent-based sampler force or
 //     suppress recording — a cheap amplification lever against the trace
 //     pipeline, or a way to hide its own requests from it;

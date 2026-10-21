@@ -216,18 +216,25 @@ func (r *Resolver) Bridge(ctx context.Context, dir, stamp string) (Result, error
 	return Result{Path: bin, Source: "forge built from checkout " + dir}, nil
 }
 
-// publish moves a finished build into the cache. A binary already there wins:
-// two processes building the same version race to rename, and both results are
-// the same bytes.
+// publish moves a finished build into the cache, only if nothing is there
+// yet. A binary already there wins: another process published that version
+// first, and may be RUNNING it. os.Rename replaces an existing file on Unix,
+// so a second build of one entry swapped the executable under a forge that
+// was mid-run — which then saw "the forge binary changed while generate
+// ran". A hard link creates the name only if it is absent, atomically.
 func publish(from, to string) error {
 	if _, err := os.Stat(from); err != nil {
 		return fmt.Errorf("the build produced no %s: %w", filepath.Base(from), err)
 	}
-	if err := os.Rename(from, to); err != nil {
+	if err := os.Link(from, to); err != nil {
 		if st, serr := os.Stat(to); serr == nil && !st.IsDir() {
-			return nil
+			return nil // published first by another process: keep it
 		}
-		return err
+		// A filesystem without hard links: fall back to the rename, which
+		// is still atomic for a name nobody holds yet.
+		if rerr := os.Rename(from, to); rerr != nil {
+			return rerr
+		}
 	}
 	return nil
 }
@@ -296,6 +303,7 @@ func buildEnvExtra(more ...string) []string {
 	return append(extra, more...)
 }
 
+// goInstall installs pkg into gobin. GOFLAGS is pinned, as in goBuild.
 func goInstall(ctx context.Context, pkg, gobin string) error {
 	cwd, err := os.MkdirTemp("", "forge-install-")
 	if err != nil {
@@ -304,16 +312,27 @@ func goInstall(ctx context.Context, pkg, gobin string) error {
 	defer func() { _ = os.RemoveAll(cwd) }()
 	cmd := exec.CommandContext(ctx, "go", "install", pkg)
 	cmd.Dir = cwd
-	cmd.Env = goexec.Env(buildEnvExtra("GOBIN=" + gobin)...)
+	cmd.Env = goexec.WithTrimpath(goexec.Env(buildEnvExtra("GOBIN="+gobin, "GOFLAGS=-trimpath")...))
 	return runCaptured(cmd)
 }
 
+// goBuild builds the forge in checkout dir to out. GOFLAGS is pinned rather
+// than inherited: a cached forge must be a function of its cache key, and the
+// caller's GOFLAGS is not in the key. Inherited, a caller with
+// GOFLAGS=-trimpath and one without built different bytes from one source, so
+// two forges of one checkout fingerprinted differently, and the generate cache
+// saw "the forge binary changed" between two runs that both ran "the build of
+// checkout X". A non-empty value also overrides `go env -w GOFLAGS`. The flag
+// is -trimpath because that is how a release is built; the DevForgeRoot
+// ldflag, not the compiled paths, tells a delegated build its checkout.
+// (WithTrimpath around a value that already says -trimpath changes nothing;
+// it is how internal/goexec's guard knows the setting keeps -trimpath.)
 func goBuild(ctx context.Context, dir, out string) error {
 	cmd := exec.CommandContext(ctx, "go", "build", "-buildvcs=true",
 		"-ldflags", "-X "+modulePath+"/internal/buildinfo.DevForgeRoot="+dir,
 		"-o", out, "./cmd/forge")
 	cmd.Dir = dir
-	cmd.Env = goexec.Env(buildEnvExtra()...)
+	cmd.Env = goexec.WithTrimpath(goexec.Env(buildEnvExtra("GOFLAGS=-trimpath")...))
 	return runCaptured(cmd)
 }
 

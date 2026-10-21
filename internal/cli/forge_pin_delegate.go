@@ -31,7 +31,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/forgecompat"
@@ -123,7 +122,7 @@ func delegateTargetFor(projectRoot string) (t delegateTarget, ok bool) {
 		return delegateTarget{
 			binary:   rep.Binary.Name,
 			checkout: rep.Bridge.Dir,
-			stamp:    rep.Checkout.Head + "+" + strconv.FormatBool(rep.Checkout.Dirty) + "@" + strconv.FormatInt(rep.Checkout.LastEditAt.UnixNano(), 10),
+			stamp:    bridgeStamp(rep.Checkout),
 		}, true
 	}
 	pin, binary, skewed, devTag := pinSkewFor(projectRoot)
@@ -131,6 +130,19 @@ func delegateTargetFor(projectRoot string) (t delegateTarget, ok bool) {
 		return delegateTarget{}, false
 	}
 	return delegateTarget{pin: pin, binary: binary, devTag: devTag}, true
+}
+
+// bridgeStamp identifies a linked checkout's CONTENT for the build cache:
+// HEAD plus a digest of the uncommitted changes' bytes. It used to be HEAD,
+// dirty and the newest dirty file's mtime, so anything that touched the tree
+// — an npm build, an editor, a parallel test, another agent — named a new
+// build without changing a byte of forge, and two builds made under one
+// stamp could differ (the source moved between the stamp and the build).
+func bridgeStamp(c forgecompat.Checkout) string {
+	if c.DirtyDigest == "" {
+		return c.Head
+	}
+	return c.Head + "+" + c.DirtyDigest
 }
 
 // delegateToPinned hands the running command to the forge projectRoot wants.

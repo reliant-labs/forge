@@ -438,13 +438,22 @@ jobs:
           printf '  ok       %-24s %s\n' "docker daemon" "$server"
 
       # ── The partition. Planned once by prepare, printed and checked here.
+      #
+      # Every file this job writes lives in $RESULTS, OUTSIDE the checkout.
+      # The tests bridge their projects to this checkout, and a bridged forge
+      # is rebuilt whenever the checkout's uncommitted bytes change: a JSON
+      # log growing in the checkout root rebuilt forge on nearly every forge
+      # invocation of the shard.
       - name: Assign this shard its tests
         env:
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ needs.prepare.outputs.count }}
+          RESULTS: ${{ runner.temp }}/shard-results
         run: |
           set -euo pipefail
           plan="$RUNNER_TEMP/e2e-dist/plan"
+          mkdir -p "$RESULTS"
+          cd "$RESULTS"
           cp "$plan/selected-tests.txt" all-tests.txt
           cp "$plan/shard-$SHARD.txt" shard-tests.txt
           total=$(wc -l < all-tests.txt | tr -d ' ')
@@ -484,10 +493,11 @@ jobs:
       - name: Run this shard
         env:
           FORGE_E2E_BINARY: ${{ runner.temp }}/e2e-dist/bin/forge
+          RESULTS: ${{ runner.temp }}/shard-results
         run: |
           set -euo pipefail
-          RUN="^($(paste -sd'|' shard-tests.txt))$"
-          out="$PWD/e2e-shard-${{ matrix.shard }}.json"
+          RUN="^($(paste -sd'|' "$RESULTS/shard-tests.txt"))$"
+          out="$RESULTS/e2e-shard-${{ matrix.shard }}.json"
           cd internal/cli
           go tool test2json -t -p github.com/reliant-labs/forge/internal/cli \
             "$RUNNER_TEMP/e2e-dist/e2e.test" -test.v=test2json -test.paniconexit0 \
@@ -502,8 +512,12 @@ jobs:
       # shrinking coverage behind a green check.
       - name: This shard ran everything it was assigned
         if: always()
+        env:
+          RESULTS: ${{ runner.temp }}/shard-results
         run: |
           set -euo pipefail
+          mkdir -p "$RESULTS"
+          cd "$RESULTS"
           f="e2e-shard-${{ matrix.shard }}.json"
           # This step is always(), so it can land after the assignment step
           # itself failed. Say that plainly instead of dying on an unbound var.
@@ -529,10 +543,12 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: e2e-shard-${{ matrix.shard }}
+          # Three files of one directory: the artifact keeps them at its
+          # root, the layout the ledger reads.
           path: |
-            e2e-shard-${{ matrix.shard }}.json
-            shard-tests.txt
-            all-tests.txt
+            ${{ runner.temp }}/shard-results/e2e-shard-${{ matrix.shard }}.json
+            ${{ runner.temp }}/shard-results/shard-tests.txt
+            ${{ runner.temp }}/shard-results/all-tests.txt
           retention-days: 7
           if-no-files-found: error
 

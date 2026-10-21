@@ -806,3 +806,39 @@ func TestBufLocalPluginNames(t *testing.T) {
 		t.Fatalf("bufLocalPluginNames = %v", got)
 	}
 }
+
+// The forge that ran is the forge that produced the outputs, and it cannot
+// change under its own process. A delegated forge runs from a shared cache
+// entry another process may publish over or prune mid-run (CI:
+// TestE2EFixtureCorpusKalshiShaped / ZeroService, "the forge binary changed
+// while generate ran"); re-reading os.Executable afterwards called the run
+// impure for a file the run never read again. The next run sees the new
+// binary and runs in full — that half is TestGenerateCacheEveryInputClassInvalidates.
+func TestGenerateCacheRecordIgnoresTheExecutablePathMovingMidRun(t *testing.T) {
+	f := newCacheFixture(t)
+	withCacheSystem(t, f)
+	withPipelineSteps(t, []GenStep{{
+		Name: "render KCL",
+		Gate: always,
+		Run: func(*pipelineContext) error {
+			f.writeExec(t, "forge", "#!/bin/sh\necho forge v2, published over the running one\n")
+			return nil
+		},
+	}})
+	var runErr error
+	out := captureStdout(t, func() { runErr = runGeneratePipelineFlags(f.root, pipelineFlags{Cache: true}) })
+	if runErr != nil {
+		t.Fatalf("pipeline: %v\n%s", runErr, out)
+	}
+	if !strings.Contains(out, "Recorded as a verified fixed point") {
+		t.Fatalf("a binary replaced at the running forge's path must not block the record:\n%s", out)
+	}
+	m := loadGenerateCacheManifest(f.root)
+	if m == nil {
+		t.Fatal("no manifest recorded")
+	}
+	// The record names the forge that ran, so the replaced one does not match.
+	if c := openGenerateCache(f.root, pipelineFlags{Cache: true}, snapshotWorkTree(f.root), f.sys()); func() bool { ok, _ := c.verdict(); return ok }() {
+		t.Error("the next run, under the replaced binary, must not skip")
+	}
+}

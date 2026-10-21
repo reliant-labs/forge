@@ -32,6 +32,13 @@ var (
 	syncFile   = func(f *os.File) error { return f.Sync() }
 )
 
+// Replace renames oldPath over newPath: atomic, like os.Rename, and on
+// Windows retried for a moment while another handle has newPath open, which
+// makes MoveFileEx refuse the replace ("Access is denied") for that instant
+// only. For a file built elsewhere and moved into place (a binary `go
+// install`ed into a staging dir).
+func Replace(oldPath, newPath string) error { return replaceFile(oldPath, newPath) }
+
 // WriteFile writes data to path atomically. It is a drop-in for os.WriteFile:
 // a new file gets perm (subject to the umask); an existing regular file keeps
 // its current permission bits and perm is ignored; a symlink is written

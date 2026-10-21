@@ -186,6 +186,10 @@ func graphLiteralEdits(src string, off func(token.Pos) int, lit *ast.CompositeLi
 // reconcileGraphCompose returns compose.go reconciled against nodes, the
 // keys it could not resolve, and an error when the file cannot be parsed or
 // the result does not format.
+//
+// With problems, the returned source is a DRAFT — every key that did resolve,
+// none that did not — which is never written: the caller reads the edges it
+// draws to decide which nodes a root reaches (reconcileGraphComposeFile).
 func reconcileGraphCompose(existing string, nodes []*graphNode, r *graphResolver) (string, []graphProblem, error) {
 	src := existing
 	if strings.TrimSpace(src) == "" {
@@ -237,9 +241,6 @@ func reconcileGraphCompose(existing string, nodes []*graphNode, r *graphResolver
 		edits = append(edits, litEdits...)
 		problems = append(problems, litProblems...)
 	}
-	if len(problems) > 0 {
-		return "", problems, nil
-	}
 
 	sort.Slice(edits, func(i, j int) bool { return edits[i].start > edits[j].start })
 	out := src
@@ -253,7 +254,7 @@ func reconcileGraphCompose(existing string, nodes []*graphNode, r *graphResolver
 	if err != nil {
 		return "", nil, err
 	}
-	return formatted, nil, nil
+	return formatted, problems, nil
 }
 
 // fixGraphComposeImports adds the imports the reconciled text names, drops a

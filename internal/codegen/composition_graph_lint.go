@@ -12,6 +12,9 @@
 //     provider kept for components to come says so with //forge:standby.
 //     An internal package NOTHING consumes yet (every freshly scaffolded
 //     one) is a pending warning, not an error: see pendingPackageFinding.
+//     A node no root reaches whose Deps forge cannot fill is left out of
+//     the emitted graph rather than failing generate; it is always an
+//     error here (unbuiltFinding, composition_graph_reach.go).
 //   - AUDIENCE. For every listener (a node whose value is a
 //     serverkit.Listener), the audience of each service its routes reach
 //     must be the audience of the authenticator its chain reaches (a
@@ -148,6 +151,12 @@ func (m *graphModel) unreachableFindings() []GraphFinding {
 		if reached[n.Name] {
 			continue
 		}
+		if why, left := m.unbuilt[n.Name]; left {
+			if f, ok := m.unbuiltFinding(n, why, audienceOf[n.Name]); ok {
+				out = append(out, f)
+			}
+			continue
+		}
 		switch n.Kind {
 		case nodeComponent:
 			if n.Role == "internal" && !consumed[n.Name] {
@@ -177,6 +186,32 @@ func (m *graphModel) unreachableFindings() []GraphFinding {
 		}
 	}
 	return out
+}
+
+// unbuiltFinding reports a node no root reaches that forge cannot construct
+// (composition_graph_reach.go). It is an ERROR whatever else holds — a
+// package nothing consumes, a //forge:standby provider — because before reach
+// scoped resolution it failed generate, and the default posture must keep
+// every error a project had. Route sets and the operators' manager are
+// reported through their members.
+func (m *graphModel) unbuiltFinding(n *graphNode, why unbuiltNode, audience string) (GraphFinding, bool) {
+	const tail = "; once a root reaches it, generate names every provider it still lacks"
+	switch n.Kind {
+	case nodeComponent:
+		return GraphFinding{
+			Rule: GraphRuleUnreachable, Error: true,
+			File:    filepath.ToSlash(n.Comp.ImportPath),
+			Message: fmt.Sprintf("%s is reachable from no root (%s), and forge cannot construct it — %s — so it is left out of graph_gen.go: no process builds it", n.Doc, m.rootNames(), why.describe()),
+			Fix:     m.unreachableComponentFix(n, audience) + tail,
+		}, true
+	case nodeProvider:
+		return GraphFinding{
+			Rule: GraphRuleUnreachable, Error: true, File: n.File, Line: n.Line,
+			Message: fmt.Sprintf("provider New%s (%s) is reachable from no root (%s), and forge cannot construct it — %s — so it is left out of graph_gen.go", n.Name, n.Type, m.rootNames(), why.describe()),
+			Fix:     fmt.Sprintf("take %s in the Deps of a node a root reaches, or delete New%s", n.Type, n.Name) + tail,
+		}, true
+	}
+	return GraphFinding{}, false
 }
 
 // consumed is every node some other node's compose.go method names — called

@@ -442,7 +442,7 @@ func (g *Graph) newAlpaca() (alpaca.Service, error) {
 `)
 			var warnings strings.Builder
 			in := GraphGenInput{GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"}, Warnings: &warnings}
-			_, out, disowned, err := reconcileGraphComposeFile(in, nil, &graphResolver{module: "example.com/proj"})
+			_, out, disowned, _, err := reconcileGraphComposeFile(in, nil, &graphResolver{module: "example.com/proj"}, nil)
 			if err != nil || disowned {
 				t.Fatalf("reconcileGraphComposeFile: disowned=%v err=%v", disowned, err)
 			}

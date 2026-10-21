@@ -503,11 +503,11 @@ func lintPipeline() []linterStep {
 				return rc.cwd != "", ""
 			},
 			runText: func(rc *lintRunCtx) error {
-				return runGraphLint(rc.cwd)
+				return runGraphLint(rc.cwd, rc.cfg)
 			},
 			errFormat: "❌ graph lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				fs, err := collectGraphJSON(rc.cwd)
+				fs, err := collectGraphJSON(rc.cwd, rc.cfg)
 				return fs, anyErrorFinding(fs), err
 			},
 		},

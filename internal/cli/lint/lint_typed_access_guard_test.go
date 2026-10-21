@@ -200,8 +200,10 @@ func TestTypedAccessGuardRefusesUnconfiguredConfig(t *testing.T) {
 		t.Fatalf("json: want one could-not-run finding naming the config file, got %+v", fs)
 	}
 
+	// The lane is advisory, so its could-not-run is an advisory finding:
+	// --strict is what makes it fail the run (lint_skip.go).
 	rc.strict = true
-	if _, gated, _ := collectTypedAccessGuardJSON(rc); !gated {
+	if _, gated, _ := collectGraded(t, findStep(t, "typed-config guardrail"), rc); !gated {
 		t.Error("json: --strict must gate on a guardrail that could not run")
 	}
 	if _, err := os.Stat(marker); err == nil {

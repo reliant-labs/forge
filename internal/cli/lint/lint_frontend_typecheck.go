@@ -36,15 +36,15 @@
 //
 // HONEST DEGRADATION. A typecheck that could not run is never reported
 // as a typecheck that passed. Missing node_modules / unresolvable
-// compiler produce a WARNING finding with rule
-// `forge-frontend-typecheck-unavailable` and a fix hint, not silence and
-// not a bogus type error. Warning rather than hard failure because
-// "deps aren't installed yet" is not a code defect: `forge lint` has to
-// stay usable on a fresh clone, in a backend-only container, and in CI
-// matrices that split the Go and Node jobs. Callers who disagree have
-// two escalations that need no new vocabulary: `--strict` promotes the
-// unavailable warning to a gating error, and `--json` exposes the rule
-// id so a consumer can grep for exactly this condition.
+// compiler produce a finding with rule
+// `forge-frontend-typecheck-unavailable` and the command that fixes it,
+// not silence and not a bogus type error. The lane gates, so a typecheck
+// that could not run FAILS the run (lint_skip.go): a CI job that splits
+// the Go and Node work says so with --skip-frontends (no frontend lane in
+// this run) or `--allow-skip frontend-typecheck=<why>` / forge.yaml
+// lint.allow_skip (this lane may not run here), and either is named in
+// the verdict. A project that dialled lint.frontend.typecheck to `warn`
+// made the lane advisory, so its could-not-run is a warning there.
 
 package lint
 
@@ -275,16 +275,19 @@ func typecheckFrontend(ctx context.Context, t frontendTarget, projectRoot string
 	// a failure.
 	if !anyAncestorHasNodeModules(t.dir, projectRoot) {
 		if err := frontenddeps.Ensure(ctx, "[lint]", t.name, t.dir, "", true); err != nil {
-			res.status = typecheckFailed
-			res.command = "install frontend dependencies"
-			res.output = fmt.Sprintf("dependencies are not installed and installing them failed — typecheck did NOT run: %v", err)
+			// The compiler never ran, so this is a typecheck that could NOT
+			// run — which fails a gating lane (lint_skip.go) and, unlike a
+			// type error, is what --allow-skip can accept.
+			res.status = typecheckUnavailable
+			res.reason = fmt.Sprintf("dependencies are not installed and installing them failed — typecheck did NOT run: %v", err)
+			res.fixHint = npmInstallFix(t.dir)
 			return res
 		}
 	}
 	if !anyAncestorHasNodeModules(t.dir, projectRoot) {
 		res.status = typecheckUnavailable
 		res.reason = "node_modules not installed — typecheck did NOT run"
-		res.fixHint = fmt.Sprintf("run `npm install` in %s (or at the workspace root), then re-run `forge lint`", t.dir)
+		res.fixHint = npmInstallFix(t.dir)
 		return res
 	}
 
@@ -336,7 +339,7 @@ func typecheckFrontend(ctx context.Context, t frontendTarget, projectRoot string
 	if isCommandNotFound(runErr, out) {
 		res.status = typecheckUnavailable
 		res.reason = "the `typecheck` script's tool is not installed — typecheck did NOT run"
-		res.fixHint = fmt.Sprintf("run `npm install` in %s so the script's compiler resolves", t.dir)
+		res.fixHint = npmInstallFix(t.dir) + " (the `typecheck` script's compiler comes from node_modules)"
 		return res
 	}
 
@@ -449,16 +452,6 @@ func typecheckGates(cfg *config.ProjectConfig) bool {
 	return cfg.Lint.Frontend.EffectiveTypecheck() == "error"
 }
 
-// unavailableSeverity returns the severity for a check that could not
-// run: a warning by default, escalated to a gating error under --strict.
-// See the file header for why the default is not a hard failure.
-func unavailableSeverity(strict bool) string {
-	if strict {
-		return lintSevError
-	}
-	return lintSevWarning
-}
-
 // runFrontendTypecheckText is the text-mode action for pipeline step 5b.
 // Per-frontend output is buffered by typecheckFrontend and printed here
 // in target order, so concurrency never interleaves two compilers'
@@ -476,7 +469,8 @@ func runFrontendTypecheckText(rc *lintRunCtx) error {
 	}
 
 	gates := typecheckGates(rc.cfg)
-	failed, unavailable := 0, 0
+	failed := 0
+	var unavailable, fixes []string
 	for _, r := range results {
 		switch r.status {
 		case typecheckNotApplicable:
@@ -485,13 +479,14 @@ func runFrontendTypecheckText(rc *lintRunCtx) error {
 			header()
 			fmt.Printf("  ✓ %s: typecheck passed\n", r.target.name)
 		case typecheckUnavailable:
+			// Reported once, by the driver, as the lane that could NOT
+			// run (laneUnavailableError) — what that does to the run is
+			// judgeGap's call, not this lane's.
 			header()
-			marker := "⚠️ "
-			if rc.strict {
-				marker = "❌"
-				unavailable++
+			unavailable = append(unavailable, r.target.name+": "+r.reason)
+			if !contains(fixes, r.fixHint) {
+				fixes = append(fixes, r.fixHint)
 			}
-			fmt.Fprintf(os.Stderr, "  %s %s: %s\n     ↳ %s\n", marker, r.target.name, r.reason, r.fixHint)
 		case typecheckFailed:
 			header()
 			marker := "❌"
@@ -509,12 +504,15 @@ func runFrontendTypecheckText(rc *lintRunCtx) error {
 	}
 
 	switch {
-	case failed > 0 && unavailable > 0:
-		return fmt.Errorf("%d frontend(s) reported type errors, %d could not be checked", failed, unavailable)
+	case failed > 0 && len(unavailable) > 0:
+		// A real failure outranks the gap, as in the eslint lane; the
+		// frontends that could not be checked are named alongside it.
+		return fmt.Errorf("%d frontend(s) reported type errors; could NOT typecheck: %s (%s)",
+			failed, strings.Join(unavailable, "; "), strings.Join(fixes, "; "))
 	case failed > 0:
 		return fmt.Errorf("%d frontend(s) reported type errors", failed)
-	case unavailable > 0:
-		return fmt.Errorf("%d frontend(s) could not be typechecked (--strict)", unavailable)
+	case len(unavailable) > 0:
+		return laneUnavailable(strings.Join(fixes, "; "), "%s", strings.Join(unavailable, "; "))
 	}
 	return nil
 }
@@ -528,7 +526,6 @@ func collectFrontendTypecheckJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, erro
 	results := runFrontendTypechecks(rc.ctx, targets, rc.cwd)
 
 	gates := typecheckGates(rc.cfg)
-	unavailableSev := unavailableSeverity(rc.strict)
 
 	var out []lintJSONFinding
 	gated := false
@@ -539,16 +536,14 @@ func collectFrontendTypecheckJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, erro
 		case typecheckPassed:
 			continue
 		case typecheckUnavailable:
+			// Graded by applyGapPolicy (lint_skip.go).
 			out = append(out, lintJSONFinding{
 				File:     r.target.dir,
-				Severity: unavailableSev,
+				Severity: lintSevWarning,
 				Rule:     ruleFrontendTypecheckUnavailable,
 				Message:  fmt.Sprintf("%s: %s", r.target.name, r.reason),
 				FixHint:  r.fixHint,
 			})
-			if rc.strict {
-				gated = true
-			}
 		case typecheckFailed:
 			sev := lintSevError
 			if !gates {

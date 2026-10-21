@@ -101,6 +101,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`forge lint` fails when a gating lane could NOT run.** A frontend with no
+  `node_modules` (or whose install failed), a typecheck with no compiler, a
+  `buf.yaml` with no `buf` on PATH, or no golangci-lint that can analyze the
+  module now exits non-zero by default. The last line names the lane, the
+  reason and the command that fixes it (`npm ci` in the frontend's install
+  root, `forge tools install buf`, ...). Before, such a run printed `⚠️ N gating
+  linter(s) passed; M could NOT run (...)` and exited 0 unless you passed
+  `--strict`. That flag also turned every advisory finding into an error, so a
+  gate that only wanted "fail when a lane did not run" had to grep the verdict
+  text. The same applies to `--quiet`, `--scope`, `--json` (`"ok": false`) and
+  `--gate-json`.
+  - **Accept a skip by name, with a reason.** Use
+    `forge lint --allow-skip 'frontend-typecheck=typechecked in the web job'`
+    (repeatable; `lane,lane=reason` names several) or, in forge.yaml:
+    ```yaml
+    lint:
+      allow_skip:
+        - lane: frontend-typecheck
+          reason: typechecked in the web job
+    ```
+    A lane is named as the verdict prints it (`frontend typecheck`) or with
+    dashes (`frontend-typecheck`). An accepted lane that could not run is listed
+    as `SKIPPED (allowed): <lane> — <reason>` and does not fail the run. An
+    unknown lane or an empty reason is refused, and a lane that ran and found
+    problems still fails. `--skip-frontends` still drops the whole frontend
+    lane for a backend-only run.
+  - **`--strict` has one meaning: advisory findings become errors.** It no
+    longer has any effect on a gating lane that could not run. The one
+    could-not-run case it still escalates is the advisory typed-config
+    guardrail's, because that report is itself an advisory finding. The same
+    holds for a frontend typecheck dialled to `lint.frontend.typecheck: warn`:
+    it is advisory, so when it cannot run it warns instead of failing.
+  - A lane that `--scope` does not select (frontend lint, graph, and the other
+    whole-project lanes) is still reported as `not scoped, so not run` and does
+    not fail. The same goes for a frontend outside the scope that could not be
+    checked.
+  - New `-unavailable` rule ids in `--json`: `buf-lint-unavailable` (it used to
+    be `buf`) and `golangci-lint-unavailable` (it used to be `external`).
+  - **Migration:** a CI job that passed only because a lane silently did not
+    run now fails. You can fix the cause (install the tool, run `npm ci`). Or,
+    if the job is meant not to run that lane, opt it out with `--allow-skip
+    '<lane>=<why>'` or `lint.allow_skip`. A gate that grepped the verdict for
+    `could NOT run` to get this failure can drop the grep and trust the exit
+    code.
 - **A handler's `svcerr` error reaches the client with its Connect code,
   wrapped or not.** `return nil, svcerr.PermissionDenied("…")` used to arrive as
   `code = unknown`, because the constructors build sentinels and connect-go maps

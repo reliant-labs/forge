@@ -294,7 +294,7 @@ func TestResolveGolangciLint_MissingAndUnbuildableFails(t *testing.T) {
 	if err := gate.runText(rc); err == nil || !strings.Contains(err.Error(), "forge tools install") {
 		t.Errorf("text gate: want the lane to fail with the fix, got %v", err)
 	}
-	fs, gated, err := gate.collect(rc)
+	fs, gated, err := collectGraded(t, gate, rc)
 	if err != nil || !gated || len(fs) != 1 || fs[0].Severity != lintSevError {
 		t.Errorf("json gate: want one gating error finding, got gated=%v err=%v %+v", gated, err, fs)
 	}
@@ -322,7 +322,7 @@ func TestGolangciLanesReportUnresolvedToolchain(t *testing.T) {
 	if err := gate.runText(rc); err == nil || !strings.Contains(err.Error(), "go1.26.2") {
 		t.Fatalf("text gate: want the actionable error, got %v", err)
 	}
-	fs, gated, err := gate.collect(rc)
+	fs, gated, err := collectGraded(t, gate, rc)
 	if err != nil || !gated || len(fs) != 1 || fs[0].Severity != lintSevError || !strings.Contains(fs[0].Message, "go 1.27") {
 		t.Fatalf("json gate: want one gating error finding naming the mismatch, got gated=%v err=%v %+v", gated, err, fs)
 	}
@@ -460,7 +460,7 @@ func TestGolangciExportDataSkew_PinCannotReadEitherFailsWithRunbook(t *testing.T
 	f.outputs[pinned] = f.outputs[f.onPath]
 	rc := f.runCtx(dir)
 
-	fs, gated, err := findStep(t, "golangci-lint").collect(rc)
+	fs, gated, err := collectGraded(t, findStep(t, "golangci-lint"), rc)
 	if err != nil || !gated || len(fs) != 1 || mentionsBogusReport(fs) {
 		t.Fatalf("want exactly one gating finding, the runbook; got gated=%v err=%v findings=%+v", gated, err, fs)
 	}
@@ -490,7 +490,7 @@ func TestGolangciExportDataSkew_UnbuildablePinNamesTheFix(t *testing.T) {
 	f, dir, _ := newExportSkewFake(t)
 	f.installErr = errors.New("dial tcp: lookup proxy.golang.org: no such host")
 
-	fs, gated, _ := findStep(t, "golangci-lint").collect(f.runCtx(dir))
+	fs, gated, _ := collectGraded(t, findStep(t, "golangci-lint"), f.runCtx(dir))
 	if !gated || len(fs) != 1 || mentionsBogusReport(fs) {
 		t.Fatalf("want one gating runbook finding, got gated=%v %+v", gated, fs)
 	}
@@ -516,7 +516,7 @@ func TestGolangciExportDataSkew_ThePinIsNotRebuilt(t *testing.T) {
 	f, dir, _ := newExportSkewFake(t)
 	f.versions[f.onPath] = "v2.14.0"
 
-	fs, gated, _ := findStep(t, "golangci-lint").collect(f.runCtx(dir))
+	fs, gated, _ := collectGraded(t, findStep(t, "golangci-lint"), f.runCtx(dir))
 	if !gated || len(fs) != 1 || !strings.Contains(fs[0].Message, "golangci-lint@latest") {
 		t.Fatalf("want the runbook for a pin that is too old, got gated=%v %+v", gated, fs)
 	}

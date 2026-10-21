@@ -222,15 +222,16 @@ func TestTypedAccessGuardJSONDistinguishesRanFromDidNotRun(t *testing.T) {
 	})
 }
 
-// TestTypedAccessGuardJSONStrictFlipsOK: --strict is the documented
-// escalation for "could not run", and the only thing a machine reading `ok`
-// responds to. Without it, `ok: true` over a check that never executed is
-// only defensible because the report NAMES the absence; with it, the report
-// must actually be not-ok.
+// TestTypedAccessGuardJSONStrictFlipsOK: the guardrail is ADVISORY, so its
+// "could not run" is an advisory finding and --strict — advisory findings
+// become errors — is what flips `ok`. Without it, `ok: true` over a check
+// that never executed is only defensible because the report NAMES the
+// absence and the lane's own findings could not fail the run either. (A
+// GATING lane that could not run fails without --strict: lint_skip_test.go.)
 func TestTypedAccessGuardJSONStrictFlipsOK(t *testing.T) {
 	fakeGolangciLint(t, contendedLockStub)
 
-	fs, gated, err := collectTypedAccessGuardJSON(testRunCtx(t, true))
+	fs, gated, err := collectGraded(t, findStep(t, "typed-config guardrail"), testRunCtx(t, true))
 	if err != nil {
 		t.Fatalf("collect: %v", err)
 	}
@@ -272,7 +273,8 @@ func TestFrontendLintDirUnavailableWhenDepsMissing(t *testing.T) {
 // TestCollectFrontendLintJSONUnavailableIsNotASkip: "skipped" is the report's
 // word for a lane that did not APPLY. A frontend forge was told to lint and
 // could not is a different thing, and a consumer filtering out info/"skipped"
-// noise would have dropped it entirely.
+// noise would have dropped it entirely. The lane gates, so it fails the run —
+// with or without --strict.
 func TestCollectFrontendLintJSONUnavailableIsNotASkip(t *testing.T) {
 	// Declared frontend paths are project-relative and the lane runs from
 	// the project root, so the fixture chdirs there rather than handing
@@ -291,13 +293,14 @@ func TestCollectFrontendLintJSONUnavailableIsNotASkip(t *testing.T) {
 	rc := testRunCtx(t, false)
 	rc.cfg = cfg
 
-	got, gatedNonStrict := collectFrontendLintJSON(rc)
-	if gatedNonStrict {
-		t.Error("a frontend that could not be linted must not gate without --strict")
+	step := findStep(t, "frontend lint")
+	got, gatedNonStrict, _ := collectGraded(t, step, rc)
+	if !gatedNonStrict {
+		t.Error("a frontend that could not be linted must fail the run: the lane gates")
 	}
 	f := findRule(t, got, ruleFrontendLintUnavailable)
-	if f.Severity != lintSevWarning {
-		t.Errorf("severity = %q, want warning", f.Severity)
+	if f.Severity != lintSevError {
+		t.Errorf("severity = %q, want error", f.Severity)
 	}
 	for _, x := range got {
 		if x.Rule == "skipped" && strings.Contains(x.Message, "node_modules") {
@@ -306,7 +309,7 @@ func TestCollectFrontendLintJSONUnavailableIsNotASkip(t *testing.T) {
 	}
 
 	rc.strict = true
-	strictFindings, strictGated := collectFrontendLintJSON(rc)
+	strictFindings, strictGated, _ := collectGraded(t, step, rc)
 	if !strictGated {
 		t.Error("--strict did not gate on a frontend that could not be linted")
 	}

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **ERROR log records carry the inputs an issue is grouped by.** Every record at
+  ERROR or above that goes through `observe.NewLogHandler` (the stdout line and
+  the OTLP logs bridge alike) now has `code.function.name`, `code.file.path` and
+  `code.line.number` from the record's PC, and, when it carries an error,
+  `exception.type` (`%T`) and `exception.message` (1 KiB bound) of the
+  *innermost* error: svcerr's withheld cause first, then `Unwrap` to the end,
+  the first branch of a multi-error. Below ERROR nothing is added and nothing is
+  allocated. The PC is the logger's, so a call into `Handler().Handle` with a
+  caller-built record (Temporal's slog adapter, Sentry ELECTRON-CM) names that
+  caller instead of a frame inside the handler chain.
+- **`observe.LogPanic`** logs a recovered panic with `exception.stacktrace`,
+  `exception.type`/`message` and the PANICKING frame as its call site, not the
+  recover site. `RecoveryInterceptor` (unary and stream), `RecoverMiddleware`
+  and `middleware.HTTPStack`'s recovery use it; the old `stack` attribute is
+  now `exception.stacktrace`.
+- **`observe.ErrorGroup(ctx, name)`** returns the opt-in `error.group`
+  attribute, the escape hatch for pinning a record to a named issue.
+
 ### Fixed
 
 - **Tracing remediation says `--fix`.** Lint became report-only by default,

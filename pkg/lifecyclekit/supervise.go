@@ -195,13 +195,13 @@ func Supervise(ctx context.Context, policy Policy, nodes ...Node) error {
 	begun := time.Now()
 	if s.start(ctx) {
 		drainer.MarkReady()
-		logger.Info("supervise: started", "nodes", len(nodes), "elapsed", time.Since(begun).Round(time.Millisecond))
+		logger.InfoContext(ctx, "supervise: started", "nodes", len(nodes), "elapsed", time.Since(begun).Round(time.Millisecond))
 		select {
 		case <-ctx.Done():
 		case <-s.stopped:
 		}
 	}
-	logger.Info("supervise: stopping", "reason", s.reason(ctx))
+	logger.InfoContext(ctx, "supervise: stopping", "reason", s.reason(ctx))
 	s.stopping()
 
 	drainer.Begin()
@@ -213,7 +213,7 @@ func Supervise(ctx context.Context, policy Policy, nodes ...Node) error {
 	drainer.Complete()
 	if policy.Flush != nil {
 		if err := policy.Flush(shutdownCtx); err != nil {
-			logger.Error("telemetry flush error", "error", err)
+			logger.ErrorContext(ctx, "telemetry flush error", "error", err)
 		}
 	}
 	return s.failure()
@@ -294,10 +294,10 @@ func (s *supervisor) launch(ctx context.Context, n Node) *run {
 		switch {
 		case err == nil || errors.Is(err, context.Canceled):
 			if !stopping {
-				s.logger.Info("supervise: node finished", "node", n.Name)
+				s.logger.InfoContext(ctx, "supervise: node finished", "node", n.Name)
 			}
 		case stopping:
-			s.logger.Error("supervise: node failed while stopping", "node", n.Name, "error", err)
+			s.logger.ErrorContext(ctx, "supervise: node failed while stopping", "node", n.Name, "error", err)
 		default:
 			s.fail(n.Name, err)
 		}
@@ -323,7 +323,7 @@ func (s *supervisor) awaitReady(ctx context.Context, i int) bool {
 			return true
 		}
 		if !logged && time.Since(waiting) > 5*time.Second {
-			s.logger.Info("supervise: waiting for node to be ready", "node", n.Name, "error", err)
+			s.logger.InfoContext(ctx, "supervise: waiting for node to be ready", "node", n.Name, "error", err)
 			logged = true
 		}
 		timer := time.NewTimer(wait)
@@ -433,20 +433,20 @@ func (s *supervisor) stopNode(ctx context.Context, drainer *serverkit.Drainer, i
 	attrs := []any{"node", n.Name}
 	if n.Drain != nil {
 		if err := n.Drain(ctx); err != nil {
-			s.logger.Error("supervise: drain error", "node", n.Name, "error", err)
+			s.logger.ErrorContext(ctx, "supervise: drain error", "node", n.Name, "error", err)
 			attrs = append(attrs, "drain_error", err.Error())
 		}
 	}
 	if r != nil {
 		r.cancel()
 		if !awaitRun(ctx, r) {
-			s.logger.Error("supervise: node did not stop within the shutdown budget", "node", n.Name)
+			s.logger.ErrorContext(ctx, "supervise: node did not stop within the shutdown budget", "node", n.Name)
 			attrs = append(attrs, "run_still_running", true)
 		}
 	}
 	if n.Close != nil {
 		if err := n.Close(ctx); err != nil {
-			s.logger.Error("supervise: close error", "node", n.Name, "error", err)
+			s.logger.ErrorContext(ctx, "supervise: close error", "node", n.Name, "error", err)
 			attrs = append(attrs, "close_error", err.Error())
 		}
 	}

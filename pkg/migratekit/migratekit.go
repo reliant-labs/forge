@@ -51,6 +51,8 @@ import (
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
+
+	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
 )
 
 // Schemes the DSN normalizer understands. Exported so a caller (or a test)
@@ -162,7 +164,7 @@ func Open(opts Options) (*Migrator, error) {
 		_ = src.Close()
 		return nil, fmt.Errorf("open embedded migrations (%s): %w", dir, err)
 	}
-	db, err := sql.Open("pgx/v5", sqlDSN(opts.DSN))
+	db, err := dbtrace.Open("pgx/v5", sqlDSN(opts.DSN))
 	if err != nil {
 		_ = src.Close()
 		return nil, fmt.Errorf("open migrator: %w", err)

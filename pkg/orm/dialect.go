@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
 )
 
 // Dialect defines the interface for database-specific implementations.
@@ -362,7 +364,7 @@ func openWithDialect(dialectName, dsn string) (*sql.DB, Dialect, error) {
 		return nil, nil, err
 	}
 
-	db, err := sql.Open(dialect.DriverName(), dsn)
+	db, err := dbtrace.Open(dialect.DriverName(), dsn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open database: %w", err)
 	}

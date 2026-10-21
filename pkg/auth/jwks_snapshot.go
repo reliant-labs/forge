@@ -272,10 +272,10 @@ func (f *fallbackKeys) retryLive(ctx context.Context, resolve jwksResolver, init
 			// Its refresh goroutine is bound to ctx, which the validator's
 			// stop func cancels.
 			f.live.Store(live)
-			f.log.Info("issuer JWKS reachable again; now verifying against live keys (snapshot retained only for rotation overlap)")
+			f.log.InfoContext(ctx, "issuer JWKS reachable again; now verifying against live keys (snapshot retained only for rotation overlap)")
 			return
 		}
-		f.log.Warn("issuer JWKS still unreachable; continuing on the JWKS snapshot",
+		f.log.WarnContext(ctx, "issuer JWKS still unreachable; continuing on the JWKS snapshot",
 			"error", err, "retry_in", min(delay*2, maxDelay).String())
 		delay = min(delay*2, maxDelay)
 	}

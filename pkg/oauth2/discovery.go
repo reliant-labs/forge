@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // maxMetadataBytes caps a discovery document read. Real documents are a few
@@ -91,7 +93,7 @@ func Discover(ctx context.Context, client HTTPDoer, issuer string) (*ProviderMet
 	req.Header.Set("Accept", "application/json")
 
 	if client == nil {
-		client = &http.Client{Timeout: DefaultExchangeTimeout}
+		client = observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: DefaultExchangeTimeout})
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -159,7 +161,7 @@ func DiscoverAuthorizationServer(ctx context.Context, client HTTPDoer, server st
 	}
 	req.Header.Set("Accept", "application/json")
 	if client == nil {
-		client = &http.Client{Timeout: DefaultExchangeTimeout}
+		client = observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: DefaultExchangeTimeout})
 	}
 	resp, err := client.Do(req)
 	if err != nil {

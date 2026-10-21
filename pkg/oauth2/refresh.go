@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // RefreshRequest describes a refresh-token redemption (RFC 6749 §6).
@@ -199,7 +201,7 @@ func (e *Exchanger) Refresh(ctx context.Context, req RefreshRequest) (*Refreshed
 
 	doer := e.Client
 	if doer == nil {
-		doer = &http.Client{Timeout: DefaultExchangeTimeout}
+		doer = observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: DefaultExchangeTimeout})
 	}
 	resp, err := doer.Do(httpReq)
 	if err != nil {

@@ -14,6 +14,11 @@
 // a client that demonstrably falls back to an untraced transport (no
 // Transport, nil, http.DefaultTransport, a bare *http.Transport) is flagged.
 // A pgx pool is flagged only when its function never sets a Tracer.
+//
+// Two constructions are untraced by design and never flagged: a pool opened
+// only to look its driver up (probesDriverOnly — how a traced pool is built
+// from a driver name), and a client in a file that exports telemetry over
+// OTLP (exportsTelemetry — tracing an exporter traces its own exports).
 
 package tracinglint
 
@@ -32,7 +37,7 @@ const httpPath = "net/http"
 // the package-level default client.
 func rawHTTPClientFindings(f *goFile) []finding.Finding {
 	httpName := f.importName(httpPath)
-	if httpName == "" {
+	if httpName == "" || exportsTelemetry(f) {
 		return nil
 	}
 	var out []finding.Finding
@@ -90,6 +95,22 @@ func rawHTTPClientFindings(f *goFile) []finding.Finding {
 		})
 	})
 	return out
+}
+
+// exportsTelemetry reports a file that speaks OTLP — it imports an OTLP
+// exporter or marshaller (otlptracehttp, pprofileotlp, …). Its client sends
+// telemetry, and is untraced on purpose: a traced exporter opens a span per
+// export, which the next export carries, which opens another, forever.
+func exportsTelemetry(f *goFile) bool {
+	for _, p := range f.imports {
+		if !strings.HasPrefix(p, "go.opentelemetry.io/") {
+			continue
+		}
+		if strings.Contains(p[strings.LastIndex(p, "/")+1:], "otlp") {
+			return true
+		}
+	}
+	return false
 }
 
 // untracedTransport explains why the client literal's transport is untraced,
@@ -246,6 +267,9 @@ func rawSQLOpenFindings(f *goFile) []finding.Finding {
 				if path == "" || !o.match(path) || !o.funcs[sel.Sel.Name] || (o.unlessTracer && setsTracer) {
 					continue
 				}
+				if probesDriverOnly(body, call) {
+					continue
+				}
 				out = append(out, finding.Finding{
 					Rule:        RuleRawSQLOpen,
 					Severity:    finding.SeverityError,
@@ -259,6 +283,46 @@ func rawSQLOpenFindings(f *goFile) []finding.Finding {
 		})
 	})
 	return out
+}
+
+// probesDriverOnly reports a pool opened only to look its driver up:
+//
+//	probe, err := sql.Open(name, dsn)
+//	d := probe.Driver()
+//	_ = probe.Close()
+//
+// database/sql resolves a registered driver by name only through Open, so
+// this is how a traced pool is built from a driver name (dbtrace.Open does
+// exactly this). A pool whose every use is .Driver() or .Close() never runs
+// a statement, so it has no query to leave out of a trace.
+func probesDriverOnly(body ast.Node, call *ast.CallExpr) bool {
+	var pool *ast.Ident
+	ast.Inspect(body, func(n ast.Node) bool {
+		if as, ok := n.(*ast.AssignStmt); ok && len(as.Rhs) == 1 && as.Rhs[0] == call && len(as.Lhs) > 0 {
+			pool, _ = as.Lhs[0].(*ast.Ident)
+		}
+		return pool == nil
+	})
+	if pool == nil || pool.Name == "_" {
+		return false
+	}
+	allowed := map[*ast.Ident]bool{pool: true}
+	ast.Inspect(body, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok && (sel.Sel.Name == "Driver" || sel.Sel.Name == "Close") {
+			if id, ok := sel.X.(*ast.Ident); ok && id.Name == pool.Name {
+				allowed[id] = true
+			}
+		}
+		return true
+	})
+	only := true
+	ast.Inspect(body, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok && id.Name == pool.Name && !allowed[id] {
+			only = false
+		}
+		return only
+	})
+	return only
 }
 
 // mentionsTracer reports a `.Tracer = …` assignment or a `Tracer: …` field in

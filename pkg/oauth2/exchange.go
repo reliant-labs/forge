@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // maxTokenResponseBytes caps how much of a token response is read. A token
@@ -251,7 +253,7 @@ func (e *Exchanger) Exchange(ctx context.Context, req TokenRequest) (*Token, err
 
 	doer := e.Client
 	if doer == nil {
-		doer = &http.Client{Timeout: DefaultExchangeTimeout}
+		doer = observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: DefaultExchangeTimeout})
 	}
 	resp, err := doer.Do(httpReq)
 	if err != nil {

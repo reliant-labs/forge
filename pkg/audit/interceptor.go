@@ -79,6 +79,6 @@ func (s storeSink) Record(ctx context.Context, e middleware.AuditEvent) {
 		entry.Metadata = map[string]string{"trace_id": e.TraceID}
 	}
 	if err := s.store.Log(ctx, entry); err != nil {
-		s.logger.Error("audit db write failed", "error", err, "procedure", e.Procedure)
+		s.logger.ErrorContext(ctx, "audit db write failed", "error", err, "procedure", e.Procedure)
 	}
 }

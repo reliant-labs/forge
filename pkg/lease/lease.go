@@ -217,7 +217,7 @@ func (l *Locker) Run(ctx context.Context, name string, fn func(ctx context.Conte
 		if !ok {
 			return nil // ctx done
 		}
-		l.opt.Logger.Info("lease acquired", "lease", name)
+		l.opt.Logger.InfoContext(ctx, "lease acquired", "lease", name)
 
 		leaderCtx, cancel := context.WithCancel(ctx)
 		go func() {
@@ -236,7 +236,7 @@ func (l *Locker) Run(ctx context.Context, name string, fn func(ctx context.Conte
 		case ctx.Err() != nil:
 			return nil
 		case lost:
-			l.opt.Logger.Warn("lease lost; contending again", "lease", name, "cause", sess.cause())
+			l.opt.Logger.WarnContext(ctx, "lease lost; contending again", "lease", name, "cause", sess.cause())
 			continue
 		case err != nil && !errors.Is(err, context.Canceled):
 			return err
@@ -284,7 +284,7 @@ func (l *Locker) contend(ctx context.Context, name string, key int64) (*session,
 			return sess, true
 		case err != nil && ctx.Err() == nil && err.Error() != lastErr:
 			lastErr = err.Error() // log each distinct failure once, not every poll
-			l.opt.Logger.Warn("lease: cannot reach the database; standing by", "lease", name, "error", err)
+			l.opt.Logger.WarnContext(ctx, "lease: cannot reach the database; standing by", "lease", name, "error", err)
 		}
 		wait := l.opt.RetryInterval
 		wait += time.Duration(rand.Int64N(int64(wait)/5 + 1))

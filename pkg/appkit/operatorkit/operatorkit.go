@@ -211,7 +211,7 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []C
 
 	cfg, err := ctrl.GetConfig()
 	if err != nil {
-		logger.Warn("operators disabled: no Kubernetes cluster reachable", "error", err)
+		logger.WarnContext(ctx, "operators disabled: no Kubernetes cluster reachable", "error", err)
 		return nil
 	}
 
@@ -227,7 +227,7 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []C
 	// opts a host process back in.
 	leaderNS := opts.LeaderElectionNamespace
 	if leaderNS == "" && !runningInCluster() {
-		logger.Warn("operators disabled: not running in-cluster and Options.LeaderElectionNamespace is empty; set it to run operators from a host process")
+		logger.WarnContext(ctx, "operators disabled: not running in-cluster and Options.LeaderElectionNamespace is empty; set it to run operators from a host process")
 		return nil
 	}
 
@@ -294,10 +294,10 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []C
 		if err := c.SetupWithManager(mgr); err != nil {
 			return fmt.Errorf("setting up controller %q: %w", c.Name, err)
 		}
-		logger.Info("registered operator controller", "controller", c.Name)
+		logger.InfoContext(ctx, "registered operator controller", "controller", c.Name)
 	}
 
-	logger.Info("starting controller manager")
+	logger.InfoContext(ctx, "starting controller manager")
 	return mgr.Start(ctx)
 }
 

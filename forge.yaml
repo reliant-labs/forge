@@ -104,4 +104,5 @@ contracts:
     - "internal/forgecompat" # Pure version/skew decisions over go.mod/go.work text plus a read of the checkout's git state; Bridge/BridgeReport are data records whose exported methods are renderers (Line/Undo), not a swappable service.
     - "internal/hostedimage" # Pure and offline by design (the package doc forbids a call): the push-base rule and Finding's wording, so there is no I/O boundary to mock.
     - "internal/ledgerfile" # The machine-scoped file store of pkg/release's records. Its consumers (internal/cli) already hold it behind their own narrow bindingStore/releaseLedger interfaces; a second, package-side contract would be one-implementation indirection.
+    - "internal/forgedelegate" # Concrete resolver for the pinned forge: its seams (Version, Same, Install, Build) are injectable func fields the cli tests already fake, and Exec replaces the process, so a one-implementation interface would add indirection and no substitution point.
     - "internal/procguard" # Structural lineage rule over the kernel process table; Lineage is an immutable value and the table read is the package's own OS-specific lookup, not an injected collaborator.

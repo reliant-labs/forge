@@ -200,7 +200,7 @@ func (i *interceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			return resp, err
 		}
 		if decl.Writer == WriterHandler {
-			i.deps.Logger.Warn("activity: rpc declares writer HANDLER but its handler did not call activity.Record; the interceptor wrote the event",
+			i.deps.Logger.WarnContext(ctx, "activity: rpc declares writer HANDLER but its handler did not call activity.Record; the interceptor wrote the event",
 				"procedure", c.procedure)
 		}
 		var respMsg protoreflect.Message
@@ -211,7 +211,7 @@ func (i *interceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		}
 		ev := c.event(respMsg)
 		if ev.Target.ID == "" {
-			i.deps.Logger.Warn("activity: declared target id is empty in this call; the event is recorded without one",
+			i.deps.Logger.WarnContext(ctx, "activity: declared target id is empty in this call; the event is recorded without one",
 				"procedure", c.procedure, "path", decl.TargetID.Spec)
 		}
 		i.write(ctx, ev)
@@ -242,7 +242,7 @@ func (i *interceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) co
 		}
 		err := next(context.WithValue(ctx, callKey{}, c), conn)
 		if err == nil && !c.recorded.Load() {
-			i.deps.Logger.Warn("activity: streaming rpc succeeded without calling activity.Record; no event was written",
+			i.deps.Logger.WarnContext(ctx, "activity: streaming rpc succeeded without calling activity.Record; no event was written",
 				"procedure", c.procedure)
 		}
 		return err
@@ -276,7 +276,7 @@ func (i *interceptor) write(ctx context.Context, ev Event) {
 		if i.failures != nil {
 			i.failures.Add(ctx, 1, metric.WithAttributes(attribute.String("procedure", ev.Procedure)))
 		}
-		i.deps.Logger.Error("activity: write failed; the rpc succeeded and its event is lost",
+		i.deps.Logger.ErrorContext(ctx, "activity: write failed; the rpc succeeded and its event is lost",
 			"procedure", ev.Procedure, "verb", ev.Verb, "target_kind", ev.Target.Kind,
 			"target_id", ev.Target.ID, "error", err)
 	}

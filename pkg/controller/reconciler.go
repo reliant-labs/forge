@@ -215,7 +215,7 @@ func (r *Reconciler[T]) run(
 		return r.settle(ctx, logger.With("duration", dur), key, blank, result, err, "reconcile failed")
 	}
 	r.transientStreaks().clear(key)
-	logger.Info("reconciled", "duration", dur)
+	logger.InfoContext(ctx, "reconciled", "duration", dur)
 	r.recordEvent(blank, "Reconciled", fmt.Sprintf("reconciled in %s", dur))
 	return result, nil
 }
@@ -231,7 +231,7 @@ func (r *Reconciler[T]) settle(
 	if r.TransientGrace < 0 || !IsTransient(err) {
 		streaks.clear(key)
 		if failedMessage != "" {
-			logger.Error(failedMessage, "error", err)
+			logger.ErrorContext(ctx, failedMessage, "error", err)
 		}
 		r.recordEvent(obj, "ReconcileFailed", err.Error())
 		return result, err
@@ -246,7 +246,7 @@ func (r *Reconciler[T]) settle(
 		if failedMessage == "" {
 			failedMessage = "reconcile failed"
 		}
-		logger.Error(failedMessage+": transient error persisted past grace", "error", err,
+		logger.ErrorContext(ctx, failedMessage+": transient error persisted past grace", "error", err,
 			"transient_for", since, "attempts", attempts, "grace", grace)
 		r.recordEvent(obj, "ReconcileFailed", err.Error())
 		return result, err

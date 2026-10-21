@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // Client talks to a running Zitadel instance.
@@ -62,7 +64,7 @@ const requestTimeout = 15 * time.Second
 // httpClient returns the HTTP client, building the default on first use.
 func (c *Client) httpClient() *http.Client {
 	if c.http == nil {
-		c.http = &http.Client{Timeout: requestTimeout}
+		c.http = observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: requestTimeout})
 	}
 	return c.http
 }

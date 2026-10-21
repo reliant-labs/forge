@@ -66,6 +66,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/reliant-labs/forge/pkg/auth"
+	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/orm"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
@@ -336,7 +337,8 @@ func NewConnectClient[C any](
 ) (*httptest.Server, C) {
 	t.Helper()
 	srv := NewTestServer(t, func(mux *http.ServeMux) { register(mux, handlerOpts...) })
-	return srv, newClient(http.DefaultClient, srv.URL)
+	// Traced, so a test's own span is the parent of the server's.
+	return srv, newClient(observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: -1}), srv.URL)
 }
 
 // ServerPrincipal returns a handler option that installs a test principal in

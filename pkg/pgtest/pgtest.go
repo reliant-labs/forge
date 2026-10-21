@@ -47,6 +47,8 @@ import (
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx" — production's driver
+
+	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
 )
 
 // EnvBaseURL names the env var that, when set, points pgtest at an
@@ -66,7 +68,7 @@ const DriverName = "pgx"
 // open opens a handle on dsn with DriverName. Every connection pgtest makes
 // goes through it, so the driver is chosen in one place.
 func open(dsn string) (*sql.DB, error) {
-	return sql.Open(DriverName, dsn)
+	return dbtrace.Open(DriverName, dsn)
 }
 
 // server is the lazily-booted shared instance for THIS process. baseURL is

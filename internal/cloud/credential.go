@@ -268,6 +268,53 @@ func helperCredential(argv []string, ep Endpoint) (Credential, error) {
 	return cred, nil
 }
 
+// refreshedCredential asks the credential helper again after the control plane
+// refused the one this client holds, and adopts the answer when it is a
+// DIFFERENT token. ok is false when there is nothing new to try: the client's
+// credential did not come from the helper (a flag, an env var or a login the
+// user chose is never swapped for something else), the helper is gone, or it
+// handed back the same token — in which case a retry could only repeat the
+// refusal.
+//
+// The helper, not forge, knows whether its session can mint a replacement: it
+// answers from its own cache when that is still good and mints when it is not.
+func (c *Client) refreshedCredential() (Credential, bool) {
+	cur := c.credential()
+	if cur.Source != SourceHelper {
+		return Credential{}, false
+	}
+	helperValue := os.Getenv(cloudcred.HelperEnv)
+	if strings.TrimSpace(helperValue) == "" {
+		return Credential{}, false
+	}
+	argv, err := cloudcred.ParseCommand(helperValue)
+	if err != nil {
+		return Credential{}, false
+	}
+	forgetHelperCredential(argv, c.Endpoint)
+	fresh, err := helperCredential(argv, c.Endpoint)
+	if err != nil || fresh.Token == "" || fresh.Token == cur.Token {
+		return Credential{}, false
+	}
+	c.credMu.Lock()
+	c.Credential = fresh
+	c.credMu.Unlock()
+	return fresh, true
+}
+
+// forgetHelperCredential drops this process's memo of the helper's token for
+// ep, so the next helperCredential asks the helper rather than replaying a
+// token the control plane has just refused.
+func forgetHelperCredential(argv []string, ep Endpoint) {
+	endpointKey, err := credentials.Normalize(ep.URL)
+	if err != nil {
+		return
+	}
+	helperMemo.Lock()
+	defer helperMemo.Unlock()
+	delete(helperMemo.entries, endpointKey+"\x00"+cloudcred.FormatCommand(argv))
+}
+
 // CredentialOrder is the resolution order in one line, for help text and
 // errors that explain where a credential comes from.
 const CredentialOrder = "--token, then the env's declared token_env, then what `forge login` stored, " +

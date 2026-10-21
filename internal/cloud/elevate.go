@@ -49,7 +49,7 @@ func (c *Client) elevationScope(err error) (string, bool) {
 	if !errors.As(err, &apiErr) || apiErr.HTTPStatus != 403 {
 		return "", false
 	}
-	switch c.Credential.Source {
+	switch c.credential().Source {
 	case SourceLogin, SourceHelper:
 	default:
 		return "", false
@@ -78,7 +78,7 @@ func (c *Client) elevatedToken(ctx context.Context, scope string) (string, error
 	}
 	// The exchange is authenticated by the base credential. It is a plain
 	// call, not Call, so a refusal cannot recurse into another elevation.
-	if err := c.call(ctx, procExchangeToken, map[string]any{"scopes": []string{scope}}, &resp, c.Credential.Token); err != nil {
+	if err := c.call(ctx, procExchangeToken, map[string]any{"scopes": []string{scope}}, &resp, c.credential().Token); err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(resp.Secret) == "" {
@@ -93,6 +93,18 @@ func (c *Client) elevatedToken(ctx context.Context, scope string) (string, error
 	}
 	c.elevated.entries[scope] = elevatedToken{token: resp.Secret, expiresAt: expires}
 	return resp.Secret, nil
+}
+
+// reelevatedToken forgets rejected for scope and exchanges again. The cache is
+// only dropped when it still holds the rejected token, so a concurrent caller
+// that already replaced it keeps its newer one.
+func (c *Client) reelevatedToken(ctx context.Context, scope, rejected string) (string, error) {
+	c.elevated.mu.Lock()
+	if cached, ok := c.elevated.entries[scope]; ok && cached.token == rejected {
+		delete(c.elevated.entries, scope)
+	}
+	c.elevated.mu.Unlock()
+	return c.elevatedToken(ctx, scope)
 }
 
 // annotateElevation keeps the ORIGINAL refusal — it is what the user's command

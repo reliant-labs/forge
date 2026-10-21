@@ -237,6 +237,31 @@ and each is runnable on its own:
 
 Run `task ci` locally before pushing to reproduce the whole CI gate.
 
+## `forge lint` under CI: report-only
+
+Locally `forge lint` auto-fixes deterministic-safe issues (gofmt/goimports,
+prettier, golangci `--fix`, eslint `--fix`) and then gates. On a CI runner that
+is the wrong default: the checkout is thrown away, so a fixer that quietly
+repairs it turns "this commit is unformatted" into a green build.
+
+So when the `CI` environment variable is set (GitHub Actions, GitLab, CircleCI
+and the rest set it) `forge lint` is **report-only** without being told to: it
+writes nothing, prints the unified diff each fix would have applied, and exits
+non-zero if any is pending. Say so explicitly anywhere with `--check` (also
+spelled `--no-fix`); force fixing even under CI with `--fix`.
+
+| Where            | Flags     | Result                                       |
+| ---------------- | --------- | -------------------------------------------- |
+| your machine     | none      | fixes in place, then gates                   |
+| your machine     | `--check` | report-only, non-zero if anything is pending |
+| CI (`CI` is set) | none      | report-only, non-zero if anything is pending |
+| CI (`CI` is set) | `--fix`   | fixes in place, then gates                   |
+
+A pending fix is a failing `format` lane in the verdict and in `--gate-json`
+evidence, so a pipeline needs no flag to get the strict behaviour. To fix what
+CI reported, run `forge lint` locally and commit the result. `--json` is
+always detect-only, and so are the targeted lanes (`--contract`, `--db`, …).
+
 ## Linting the workflows themselves
 
 Forge has no dedicated CI-workflow analyzer. What covers the workflows today:

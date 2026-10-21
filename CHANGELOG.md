@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge lint` is report-only under CI, and `--check` says so anywhere.** The
+  auto-fix default (#843) is right on a developer's machine and wrong on a CI
+  runner, where the checkout is thrown away: a fixer that quietly repairs it
+  turns "this commit is unformatted" into a green build. When the `CI`
+  environment variable is set (GitHub Actions, GitLab and the rest set it;
+  `GITHUB_ACTIONS` also counts), `forge lint` now writes nothing, prints the
+  unified diff each fix would have applied (gofmt/goimports and prettier), and
+  fails with a `format` lane in the verdict, `--gate-json` evidence and the
+  exit code, so CI fails on unformatted code with the exact change to make.
+  `--check` is the clear name for the same thing anywhere, and `--no-fix`
+  remains as its spelling. `--fix`, a no-op until now, forces fixing even under
+  CI. A local run with no flags still auto-fixes. The report and the fixer share
+  one walk, so they cannot disagree about which files are pending, and the
+  scaffolded release workflow and the `ci` and `deploy` skills now rely on it
+  instead of passing a flag. `--json` and the targeted lanes were already
+  detect-only.
 - **`forge fix composition-graph`: the upgrade path off the legacy
   composition** (composition graph PR 7). It converts what forge scaffolded —
   Infra / OpenInfra, NewComponents, lifecycle.go, ServeSpec and the
@@ -694,6 +710,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge lint ./internal/x/...` no longer reformats packages you did not name.**
+  The auto-fix pre-pass (`gofmt`/`goimports`, then `golangci-lint --fix` and the
+  frontend formatter) honoured `--scope`, but ignored the positional package
+  paths of `forge lint [paths...]`: naming one package still rewrote every Go
+  file in the project, including ones another agent was editing in the same
+  checkout. The Go format pre-pass now touches only files under the named
+  paths (a whole-module pattern such as `./...` is still the whole tree), and
+  the frontend formatter, which cannot be confined to Go paths, does not run
+  when paths are named. A bare `forge lint` still auto-fixes the whole project,
+  `--scope` still confines it to the scope, and `--no-fix` and `--json` still
+  write nothing.
 - The `wireRelease.Commits` comment in `internal/cli/hosted_ledger.go` named
   `DeployRelease.commits` as tag 13; the control plane's proto declares it as tag 14.
 - **`lint.rules` in `forge.yaml` now re-grades every `forge lint --conventions`

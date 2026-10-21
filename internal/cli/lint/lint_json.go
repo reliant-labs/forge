@@ -265,6 +265,7 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 	}
 
 	return collectAllLintersJSON(ctx, lintRunOptions{
+		reportFormat:  !flags.autoFix(),
 		strict:        flags.strict,
 		skipFrontends: flags.skipFrontends,
 		paths:         paths,
@@ -391,7 +392,7 @@ func collectSingleLinterJSON(
 // finding so JSON consumers can tell "clean" from "didn't run"; a silent skip
 // (directory absent) contributes nothing.
 func collectAllLintersJSON(ctx context.Context, opts lintRunOptions, cwd string) (*lintJSONReport, error) {
-	findings, gated := flattenLintOutcomes(collectLintOutcomes(&lintRunCtx{
+	outcomes := collectLintOutcomes(&lintRunCtx{
 		ctx:           ctx,
 		fix:           false,
 		strict:        opts.strict,
@@ -400,7 +401,11 @@ func collectAllLintersJSON(ctx context.Context, opts lintRunOptions, cwd string)
 		cfg:           opts.cfg,
 		cwd:           cwd,
 		scope:         opts.scope,
-	}))
+	})
+	if opts.reportFormat {
+		outcomes = append(outcomes, formatOutcome(ctx, cwd, opts.cfg, opts.scope, opts.paths, opts.skipFrontends))
+	}
+	findings, gated := flattenLintOutcomes(outcomes)
 	return buildLintJSONReport(findings, gated), nil
 }
 

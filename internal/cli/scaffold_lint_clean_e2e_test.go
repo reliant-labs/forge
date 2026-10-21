@@ -403,8 +403,10 @@ enum ProductStatus {
 	generatedTSBefore := snapshotGeneratedTSE2E(t, feDir)
 
 	// THE INVARIANT: `forge lint` exits 0 on the fresh scaffold, frontend
-	// lane included. Default (not --no-fix) so the eslint --fix pre-pass runs.
-	lintOut, lintErr := runFrontendLintE2E(t, projectDir, forgeBin, "lint")
+	// lane included. --fix (not --no-fix), because the eslint --fix pre-pass
+	// is what this lane exercises and CI=true would otherwise make the run
+	// report-only.
+	lintOut, lintErr := runFrontendLintE2E(t, projectDir, forgeBin, "lint", "--fix")
 	if lintErr != nil {
 		t.Fatalf("forge lint must exit 0 on a freshly-scaffolded project (frontend lane), got: %v\n%s", lintErr, lintOut)
 	}

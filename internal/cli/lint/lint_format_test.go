@@ -202,3 +202,49 @@ func TestFormatGoTree_AlreadyCanonicalNoOp(t *testing.T) {
 		t.Errorf("changed = %v, want none (already-canonical file must be a no-op)", changed)
 	}
 }
+
+// `forge lint ./internal/mine/` says "this is the part I am working on", and
+// the format pre-pass used to ignore it and rewrite every package in the
+// project, including files another agent was editing. Named paths bound the
+// pre-pass like --scope does; no paths, or the whole module, is the whole tree.
+func TestKeepForPaths(t *testing.T) {
+	keep := keepForPaths([]string{"./internal/mine/...", "cmd/tool/main.go"})
+	for rel, want := range map[string]bool{
+		"internal/mine/a.go":     true,
+		"internal/mine/sub/b.go": true,
+		"cmd/tool/main.go":       true,
+		"internal/mineral/a.go":  false,
+		"internal/theirs/c.go":   false,
+		"cmd/tool/other.go":      false,
+		"pkg/internal/mine/a.go": false,
+	} {
+		if got := keep(rel); got != want {
+			t.Errorf("keep(%q) = %v, want %v", rel, got, want)
+		}
+	}
+	for _, whole := range [][]string{nil, {}, {"."}, {"./..."}, {"..."}, {"./internal/mine", "./..."}} {
+		if keepForPaths(whole) != nil {
+			t.Errorf("keepForPaths(%v) restricts the run; it names the whole module", whole)
+		}
+	}
+}
+
+func TestFormatPrePass_PositionalPathsLeaveOtherPackagesAlone(t *testing.T) {
+	root := newFormatProject(t)
+	mine := writeFile(t, root, "internal/mine/a.go", unformattedGo)
+	theirs := writeFile(t, root, "internal/theirs/c.go", unformattedGo)
+
+	changed, err := formatGoTreeFiltered(root, keepForPaths([]string{"./internal/mine/..."}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed) != 1 || changed[0] != filepath.Join("internal", "mine", "a.go") {
+		t.Fatalf("changed = %v, want only internal/mine/a.go", changed)
+	}
+	if got, _ := os.ReadFile(theirs); string(got) != unformattedGo {
+		t.Error("a package outside the named path was rewritten")
+	}
+	if got, _ := os.ReadFile(mine); string(got) == unformattedGo {
+		t.Error("the named package was not formatted")
+	}
+}

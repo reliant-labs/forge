@@ -386,6 +386,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Every ORM statement is sent with its values as bind parameters, not just
+  the by-key ones.** bun formats values into the SQL text, so under pgx's
+  default statement cache each new id, timestamp or body was a new statement
+  to Parse, Describe and plan, and churned the connection's 512-entry cache;
+  F12.8 bound only `Get`/`Update`/`UpdateMasked`/`Delete`. Measured in
+  reliant: a message save through `NewRaw` was 35–80% slower than the same
+  statement with `$N`, and an append through the builder cost 16x the bytes
+  and 3x the allocations. Now the connection an `orm.Client` hands bun (pool,
+  `RunTx` ctx, or `Tx.Bun()`) re-renders each statement with a binding
+  dialect and sends one text per statement shape: generated
+  `Create`/`Upsert`/`List`/`ListAll`/`Count`, every bun builder query and
+  `NewRaw`. Bound: every model column value (numbers included), every
+  string, time, `[]byte` and JSON `?` argument, the values of
+  `orm.WhereEq`/`WhereIn`/… , and anything wrapped in the new `orm.Arg(v)` /
+  `orm.ArgList(slice)` — the way to bind an integer `?` argument, which bun
+  formats without consulting the dialect. A value stays a literal where a
+  parameter would change its meaning (positional `ORDER BY`, typed literals,
+  bare arguments of `"any"` functions such as `jsonb_build_object`, `? IS
+  NULL`, `ON CONFLICT … DO` targets), and a statement forge cannot prove
+  equal to bun's text, or that is not DML, runs as bun rendered it.
+  `orm.Literal(v)` keeps one value in the text (a constant a partial index's
+  predicate is proved from); `orm.InlineValues(ctx)` turns binding off for a
+  ctx. `BenchmarkBoundStatements` (pkg/crud): statements prepared per call
+  1.0 → 0.0005 for Create, List, Count and `NewRaw`.
+
+  **Migration note.** A `?` value the planner needs at plan time — the
+  constant of a partial-index predicate — must now be written into the SQL
+  or passed as `orm.Literal(v)`: a generic plan cannot prove a predicate from
+  a parameter. Text written into the SQL itself is never bound. `Tx.Bun()`
+  now returns a wrapper over `bun.Tx`, not the `bun.Tx` itself, and the
+  Client's bun handle runs on a pgdialect wrapper (`db.Dialect()` is no
+  longer a `*pgdialect.Dialect`).
+
 - **`api.rest` runs on vanguard v0.5, and no longer hides the mux's other
   routes.** vanguard v0.5 serves REST from a connect-go v2 `*connect.Server`
   (`vanguard.Mount`) and removed `Service` / `NewService` / `NewTranscoder`.

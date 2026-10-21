@@ -45,8 +45,9 @@ const (
 type QueryOption func(*bun.SelectQuery)
 
 // WithWhere adds a WHERE clause. Identifiers are bound via Bun's `?`
-// placeholders with bun.Ident, so column names are safely quoted and
-// values safely parameterized.
+// placeholders with bun.Ident, so column names are safely quoted; the value
+// goes through Arg (IN lists through ArgList), so it is sent as a bind
+// parameter whatever its type (bind.go).
 func WithWhere(column string, op Operator, value any) QueryOption {
 	return func(q *bun.SelectQuery) {
 		switch op {
@@ -55,15 +56,15 @@ func WithWhere(column string, op Operator, value any) QueryOption {
 		case IsNotNull:
 			q.Where("? IS NOT NULL", bun.Ident(column))
 		case In:
-			q.Where("? IN (?)", bun.Ident(column), bun.In(value))
+			q.Where("? IN (?)", bun.Ident(column), ArgList(value))
 		case NotIn:
-			q.Where("? NOT IN (?)", bun.Ident(column), bun.In(value))
+			q.Where("? NOT IN (?)", bun.Ident(column), ArgList(value))
 		case ILike:
-			q.Where("? ILIKE ?", bun.Ident(column), value)
+			q.Where("? ILIKE ?", bun.Ident(column), Arg(value))
 		case Like:
-			q.Where("? LIKE ?", bun.Ident(column), value)
+			q.Where("? LIKE ?", bun.Ident(column), Arg(value))
 		default:
-			q.Where("? "+string(op)+" ?", bun.Ident(column), value)
+			q.Where("? "+string(op)+" ?", bun.Ident(column), Arg(value))
 		}
 	}
 }

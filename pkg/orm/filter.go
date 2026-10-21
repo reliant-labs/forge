@@ -68,7 +68,7 @@ func WhereILikeAny(columns []string, value any) QueryOption {
 		}
 		q.WhereGroup(" AND ", func(sq *bun.SelectQuery) *bun.SelectQuery {
 			for _, col := range columns {
-				sq = sq.WhereOr("? ILIKE ?", bun.Ident(col), value)
+				sq = sq.WhereOr("? ILIKE ?", bun.Ident(col), Arg(value))
 			}
 			return sq
 		})

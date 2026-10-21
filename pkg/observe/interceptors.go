@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"runtime/debug"
 	"time"
 
 	"connectrpc.com/connect"
@@ -353,11 +352,8 @@ func (i *recoveryInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFun
 	return connect.UnaryFunc(func(ctx context.Context, req connect.AnyRequest) (resp connect.AnyResponse, err error) {
 		defer func() {
 			if r := recover(); r != nil {
-				i.logger.ErrorContext(ctx, "panic recovered",
-					"procedure", req.Spec().Procedure,
-					"panic", r,
-					"stack", string(debug.Stack()),
-				)
+				LogPanic(ctx, i.logger, "panic recovered", r,
+					slog.String("procedure", req.Spec().Procedure))
 				err = connect.NewError(connect.CodeInternal, panicError(r))
 				resp = nil
 			}
@@ -374,11 +370,8 @@ func (i *recoveryInterceptor) WrapStreamingHandler(next connect.StreamingHandler
 	return connect.StreamingHandlerFunc(func(ctx context.Context, conn connect.StreamingHandlerConn) (err error) {
 		defer func() {
 			if r := recover(); r != nil {
-				i.logger.ErrorContext(ctx, "panic recovered in stream",
-					"procedure", conn.Spec().Procedure,
-					"panic", r,
-					"stack", string(debug.Stack()),
-				)
+				LogPanic(ctx, i.logger, "panic recovered in stream", r,
+					slog.String("procedure", conn.Spec().Procedure))
 				err = connect.NewError(connect.CodeInternal, panicError(r))
 			}
 		}()

@@ -2,9 +2,12 @@ package graphkit_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -46,6 +49,7 @@ type graph struct {
 	poolErr   error
 	poolPanic bool
 	cycle     bool
+	poolGate  chan struct{} // when set, the pool's constructor blocks until it closes
 }
 
 func (g *graph) count(n string) { g.built[n]++ }
@@ -53,6 +57,9 @@ func (g *graph) count(n string) { g.built[n]++ }
 func (g *graph) Pool() *pool {
 	return graphkit.Get(&g.b, &g.m.Pool, "pool", func() (*pool, error) {
 		g.count("pool")
+		if g.poolGate != nil {
+			<-g.poolGate
+		}
 		if g.poolPanic {
 			panic("boom")
 		}
@@ -290,5 +297,149 @@ func TestSupervise_FirstNodesStartBeforeAndStopAfterTheGraph(t *testing.T) {
 	defer mu.Unlock()
 	if got := strings.Join(events, ", "); got != "probe run, probe close" {
 		t.Fatalf("events = %s", got)
+	}
+}
+
+// progress records the construction a Builder reports, as "+name" when a
+// constructor starts and "-name" (or "-name!" on an error) when it ends.
+type progress struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (p *progress) Constructing(node string) func(error) {
+	p.record("+" + node)
+	return func(err error) {
+		if err != nil {
+			p.record("-" + node + "!")
+			return
+		}
+		p.record("-" + node)
+	}
+}
+
+func (p *progress) record(e string) {
+	p.mu.Lock()
+	p.events = append(p.events, e)
+	p.mu.Unlock()
+}
+
+func (p *progress) String() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return strings.Join(p.events, " ")
+}
+
+func TestReportTo_ConstructionNestsDependenciesInside(t *testing.T) {
+	g := newGraph()
+	p := &progress{}
+	g.b.ReportTo(p)
+	if err := g.b.Build("server", func() { g.Listener(); g.Handler() }); err != nil {
+		t.Fatal(err)
+	}
+	// A memoized node is not reported again: handler's second access
+	// constructs nothing.
+	if got, want := p.String(), "+listener +handler +pool -pool -handler -listener"; got != want {
+		t.Fatalf("progress = %q, want %q", got, want)
+	}
+}
+
+func TestReportTo_AFailureEndsEveryNodeThatReachedIt(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*graph)
+		want string
+	}{
+		{"error", func(g *graph) { g.poolErr = errors.New("dial refused") }, "+listener +handler +pool -pool! -handler! -listener!"},
+		{"panic", func(g *graph) { g.poolPanic = true }, "+listener +handler +pool -pool! -handler! -listener!"},
+		{"cycle", func(g *graph) { g.cycle = true }, "+listener +handler +pool -pool! -handler! -listener!"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newGraph()
+			tc.set(g)
+			p := &progress{}
+			g.b.ReportTo(p)
+			if err := g.b.Build("server", func() { g.Listener() }); err == nil {
+				t.Fatal("Build succeeded")
+			}
+			if got := p.String(); got != tc.want {
+				t.Fatalf("progress = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestReportTo_BootProbesNameTheNodeUnderConstruction is the whole hook: a
+// constructor blocked at boot is named in the boot probes' /readyz as
+// building, beside nothing yet built, and the body flips once it is built.
+func TestReportTo_BootProbesNameTheNodeUnderConstruction(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ctx, boot, err := serverkit.StartBootProbes(context.Background(), serverkit.Config{Addr: addr}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer boot.Close()
+
+	g := newGraph()
+	g.poolGate = make(chan struct{})
+	g.b.ReportTo(serverkit.BootProbesFrom(ctx))
+	built := make(chan error, 1)
+	go func() { built <- g.b.Build("worker", func() { g.Handler() }) }()
+
+	readyz := func() (int, string) {
+		t.Helper()
+		resp, gerr := http.Get("http://" + addr + serverkit.DefaultReadinessPath)
+		if gerr != nil {
+			t.Fatalf("GET readyz: %v", gerr)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		var body struct {
+			Status string `json:"status"`
+			Checks []struct {
+				Name   string `json:"name"`
+				OK     bool   `json:"ok"`
+				Detail string `json:"detail"`
+			} `json:"checks"`
+		}
+		if derr := json.NewDecoder(resp.Body).Decode(&body); derr != nil {
+			t.Fatalf("decode readyz: %v", derr)
+		}
+		parts := []string{body.Status}
+		for _, c := range body.Checks {
+			parts = append(parts, fmt.Sprintf("%s=%t/%s", c.Name, c.OK, c.Detail))
+		}
+		return resp.StatusCode, strings.Join(parts, " ")
+	}
+
+	want := "not_ready handler=false/building pool=false/building"
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		code, got := readyz()
+		if code != http.StatusServiceUnavailable {
+			t.Fatalf("readyz while booting = %d %s, want 503", code, got)
+		}
+		if got == want {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("readyz = %q, want %q", got, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	close(g.poolGate)
+	if err := <-built; err != nil {
+		t.Fatal(err)
+	}
+	// Built, the nodes are ok — and still 503: the process serves nothing
+	// until a listener takes the address over.
+	if code, got := readyz(); code != http.StatusServiceUnavailable || got != "not_ready pool=true/ handler=true/" {
+		t.Fatalf("readyz once built = %d %q, want 503 \"not_ready pool=true/ handler=true/\"", code, got)
 	}
 }

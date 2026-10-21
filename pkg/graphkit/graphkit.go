@@ -21,6 +21,10 @@
 // node the root never reached panics instead of constructing it on a first
 // request.
 //
+// While it builds, a Builder reports each node's construction to a Progress
+// (ReportTo) — in a generated graph, the boot probes, so /readyz names the
+// node whose constructor is blocking boot.
+//
 // A Builder is used from one goroutine while it builds. After Build, reading
 // an already-built node is safe from any goroutine.
 package graphkit
@@ -44,11 +48,30 @@ type Memo[T any] struct {
 
 // Builder is one graph's construction state. The zero value is ready to use.
 type Builder struct {
-	path   []string // the nodes being constructed, outermost first
-	sealed bool
-	root   string
-	built  []builtNode // completion order: every node after its dependencies
+	path     []string // the nodes being constructed, outermost first
+	sealed   bool
+	root     string
+	built    []builtNode // completion order: every node after its dependencies
+	progress Progress
 }
+
+// Progress is told about each node's construction as it happens: Constructing
+// as a node's constructor starts, and the done it returns as that constructor
+// ends — with its error, nil once the node is built. Nodes nest: a node's
+// dependencies start and end inside it, so the latest started and not yet
+// done is the constructor actually running. A dependency's failure ends every
+// node that reached it, each with that error. Construction is sequential: one
+// goroutine, one node's constructor at a time.
+//
+// serverkit's boot probes satisfy it, so a root's /readyz names the node
+// boot is waiting on.
+type Progress interface {
+	Constructing(node string) (done func(err error))
+}
+
+// ReportTo sets where construction progress goes from now on; nil reports
+// nowhere. Call it before Build.
+func (b *Builder) ReportTo(p Progress) { b.progress = p }
 
 type builtNode struct {
 	name string
@@ -116,21 +139,35 @@ func Get[T any](b *Builder, m *Memo[T], name string, ctor func() (T, error), nod
 // dependency's failure) passes through untouched.
 func construct[T any](b *Builder, name string, ctor func() (T, error)) (v T, err error) {
 	b.path = append(b.path, name)
+	var done func(error)
+	if b.progress != nil {
+		done = b.progress.Constructing(name)
+	}
 	defer func() {
 		// Popped however ctor ends, so a failure caught by Catch leaves no
 		// stale path behind to read as a cycle on the next accessor.
 		b.path = b.path[:len(b.path)-1]
 		if r := recover(); r != nil {
 			if be, ok := r.(*buildError); ok {
+				report(done, be)
 				panic(be)
 			}
 			if e, ok := r.(error); ok && errors.Is(e, ErrSealed) {
+				report(done, e)
 				panic(r)
 			}
 			err = fmt.Errorf("panic: %v", r)
 		}
+		report(done, err)
 	}()
 	return ctor()
+}
+
+// report ends a node's construction on its Progress, if one was told.
+func report(done func(error), err error) {
+	if done != nil {
+		done(err)
+	}
 }
 
 func rootSuffix(root string) string {

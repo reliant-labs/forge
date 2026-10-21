@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Boot `/readyz` names the graph node boot is waiting on.** A composition
+  root's boot probes used to answer `503 {"status":"not_ready"}` with no checks
+  for the whole of graph construction, so a constructor that blocked — a
+  provider waiting on another role's migrations, a dial that retries — left a
+  stuck pod with no signal. `graphkit.Builder` now reports each node's
+  construction to a `graphkit.Progress` (`ReportTo`; one method,
+  `Constructing(node) (done func(error))`), which `*serverkit.BootProbes`
+  satisfies, and the generated graph's `build` reports to the boot probes on
+  `Graph.Ctx`. During boot `/readyz` lists every node already built
+  (`{"name":"pool","ok":true}`, completion order), then each under
+  construction (`{"name":"db_repo","ok":false,"detail":"building"}`, outermost
+  first), then the dependencies serverkit waits on (`schema`, the database).
+  Check names are graph node names. A node constructing for more than 10s is
+  logged (`boot: still constructing a graph node`, naming the innermost node
+  and the path that reached it) every 10s, and again when it finishes.
+  Post-build readiness is unchanged. Existing projects: `forge generate`.
 - **The schema for platform secrets: `forge.OpenBao`, `forge.ExternalSecretsOperator`
   and store-backed `forge.ExternalSecret`s (declarations only, nothing renders yet).**
   Two opt-in components on the Bundle, like `observability` and `identity`:

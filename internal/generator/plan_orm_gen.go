@@ -403,6 +403,7 @@ type ormField struct {
 	nullable    bool   // nullable column → pointer struct field
 	hasDefault  bool   // column has a DB DEFAULT (server-supplied value)
 	columnDef   string // the DEFAULT expression verbatim, when hasDefault
+	isIdentity  bool   // GENERATED ... AS IDENTITY (no DEFAULT in the catalog)
 	// softDeleteNative is true on the deleted_at field when soft delete is
 	// active AND the column projects to a proper time type (TIMESTAMPTZ →
 	// time.Time). Bun's built-in ,soft_delete owns it; the generated CRUD
@@ -946,9 +947,10 @@ func lowerFirst(s string) string {
 // introspected schema into Bun's native tag vocabulary so Bun owns the
 // behaviour forge used to hand-roll. The column name is always present.
 //
-//   - PRIMARY KEY                → ,pk; a server-allocated integer PK
-//     (SERIAL/IDENTITY/BIGSERIAL) also gets ,autoincrement so Bun reads
-//     the DB-assigned value back via RETURNING.
+//   - PRIMARY KEY                → ,pk; a key the DATABASE allocates also
+//     gets ,autoincrement, so a zero key is left to the database and Bun
+//     reads the assigned value back via RETURNING. What allocates it is the
+//     applied schema, never the key's type (see serverAllocatedKey).
 //   - deleted_at soft-delete     → ,soft_delete,nullzero — Bun's BUILT-IN
 //     soft delete. NewSelect auto-excludes deleted rows, a plain
 //     NewDelete stamps deleted_at, WhereAllWithDeleted/ForceDelete opt
@@ -974,8 +976,7 @@ func bunTag(f ormField) string {
 		parts = append(parts, "soft_delete", "nullzero")
 	case f.isPK:
 		parts = append(parts, "pk")
-		if isIntegerGoType(f.goType) {
-			// SERIAL/IDENTITY: server-allocated, read back via RETURNING.
+		if serverAllocatedKey(f) {
 			parts = append(parts, "autoincrement")
 		}
 	default:
@@ -1152,11 +1153,16 @@ func writeEntityStruct(b *strings.Builder, msgName, tableName string, fields []o
 	b.WriteString("}\n\n")
 }
 
-// isIntegerGoType reports whether the projected Go type is an integer —
-// the PK kinds that are server-allocated (BIGSERIAL / SERIAL / rowid),
-// at the width the column declares (codegen.GoIntType).
-func isIntegerGoType(goType string) bool {
-	return goType == "int64" || goType == "int32" || goType == "int16"
+// serverAllocatedKey reports whether the database allocates the key column
+// f when an INSERT leaves it zero: an identity column, or one with any
+// DEFAULT — a serial's nextval(...), gen_random_uuid(), a literal (the same
+// rule as schemadef.Column.DatabaseSupplied). The key's type says nothing:
+// `integer PRIMARY KEY` with no DEFAULT is a key the caller sets, and
+// marking it ,autoincrement made Create drop the caller's id and fail NOT
+// NULL (reliant's legacy_credential_copy). It holds per column, so each
+// member of a composite key answers for itself.
+func serverAllocatedKey(f ormField) bool {
+	return f.isIdentity || f.hasDefault
 }
 
 // ── managed-timestamp stamping (type-aware) ────────────────────────────
@@ -1241,6 +1247,7 @@ func resolveORMFields(ent config.PlanEntity) []ormField {
 			references:  e.References,
 			hasDefault:  strings.TrimSpace(e.Default) != "",
 			columnDef:   strings.TrimSpace(e.Default),
+			isIdentity:  e.Identity,
 			isGenerated: e.Generated,
 			isSecret:    e.Secret,
 			isImmutable: e.Immutable,

@@ -55,6 +55,7 @@ func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 			NotNull:      c.NotNull,
 			Default:      c.Default,
 			Generated:    c.IsGenerated,
+			Identity:     c.IsIdentity,
 			Secret:       secretCols[c.Name],
 			Immutable:    c.Immutable,
 			Version:      c.Version,

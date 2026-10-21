@@ -1290,10 +1290,12 @@ func readGeneratedORM(t *testing.T, root, name string) string {
 //
 // Kalshi fr-fd061aed2b: Create<X> INSERTed the id column from msg.Id —
 // always 0 for BIGSERIAL rows — so every writer routed around the ORM.
-// Integer PKs are server-allocated: Create omits the id column and
+// A BIGSERIAL PK is server-allocated: Create omits the id column and
 // scans the database-assigned value back into msg (RETURNING where the
 // dialect supports it, LastInsertId otherwise), mirroring the string-PK
-// ULID chokepoint.
+// ULID chokepoint. What makes it server-allocated is the sequence DEFAULT
+// the applied schema reports, not the integer type — see
+// TestGeneratePlanORM_AutoincrementFollowsTheSchemaNotTheKeyType.
 func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
 	root := t.TempDir()
 
@@ -1302,7 +1304,7 @@ func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
 			Name:       "Hypothesis",
 			Timestamps: true,
 			Fields: []config.PlanEntityField{
-				{Name: "id", Type: "int64", PrimaryKey: true, NotNull: true},
+				{Name: "id", Type: "int64", PrimaryKey: true, NotNull: true, Default: "nextval('hypotheses_id_seq'::regclass)"},
 				{Name: "title", Type: "string", NotNull: true},
 				{Name: "created_at", Type: "time", NotNull: true},
 				{Name: "updated_at", Type: "time", NotNull: true},
@@ -1343,6 +1345,78 @@ func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
 	// Get/Delete keep the int64 PK signature.
 	if !strings.Contains(code, "func GetHypothesisByID(ctx context.Context, db orm.Context, id int64)") {
 		t.Error("GetHypothesisByID should take an int64 id")
+	}
+}
+
+// TestGeneratePlanORM_AutoincrementFollowsTheSchemaNotTheKeyType pins the
+// rule that a key is ,autoincrement only when the applied schema gives it a
+// server-side value — serial/bigserial (a nextval DEFAULT), an identity
+// column, or any other DEFAULT — and never because of its type.
+//
+// reliant's legacy_credential_copy declares `id integer PRIMARY KEY CHECK
+// (id = 1)`: no DEFAULT, no sequence. Typed as an integer it was tagged
+// ,autoincrement, so pkg/crud's Create left the caller's id out of the
+// INSERT and every write failed NOT NULL. The same guess covered each
+// integer member of a composite key; a uuid key whose DEFAULT is
+// gen_random_uuid() is the converse, a string key the database allocates.
+func TestGeneratePlanORM_AutoincrementFollowsTheSchemaNotTheKeyType(t *testing.T) {
+	field := func(e config.PlanEntityField) config.PlanEntityField {
+		e.PrimaryKey, e.NotNull = true, true
+		return e
+	}
+	cases := []struct {
+		name   string
+		fields []config.PlanEntityField
+		want   []string // each key field's line, whitespace-collapsed
+	}{
+		{
+			name:   "integer key with no default is the caller's",
+			fields: []config.PlanEntityField{field(config.PlanEntityField{Name: "id", Type: "int32"})},
+			want:   []string{"ID int32 `bun:\"id,pk\"`"},
+		},
+		{
+			name:   "serial key is allocated",
+			fields: []config.PlanEntityField{field(config.PlanEntityField{Name: "id", Type: "int32", Default: "nextval('things_id_seq'::regclass)"})},
+			want:   []string{"ID int32 `bun:\"id,pk,autoincrement\"`"},
+		},
+		{
+			name:   "identity key is allocated though the catalog reports no default",
+			fields: []config.PlanEntityField{field(config.PlanEntityField{Name: "id", Type: "int64", Identity: true})},
+			want:   []string{"ID int64 `bun:\"id,pk,autoincrement\"`"},
+		},
+		{
+			name:   "uuid key with gen_random_uuid() is allocated",
+			fields: []config.PlanEntityField{field(config.PlanEntityField{Name: "id", Type: "string", Default: "gen_random_uuid()"})},
+			want:   []string{"ID string `bun:\"id,pk,autoincrement\"`"},
+		},
+		{
+			name:   "text key with no default is the caller's (Create ULID-fills an empty one)",
+			fields: []config.PlanEntityField{field(config.PlanEntityField{Name: "id", Type: "string"})},
+			want:   []string{"ID string `bun:\"id,pk\"`"},
+		},
+		{
+			name: "composite integer key with no defaults is the caller's, member by member",
+			fields: []config.PlanEntityField{
+				field(config.PlanEntityField{Name: "org_id", Type: "int64"}),
+				field(config.PlanEntityField{Name: "seq", Type: "int32"}),
+			},
+			want: []string{"OrgID int64 `bun:\"org_id,pk\"`", "Seq int32 `bun:\"seq,pk\"`"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			fields := append(tc.fields, config.PlanEntityField{Name: "note", Type: "string", NotNull: true})
+			if err := GeneratePlanORM(root, config.ORMConfig{}, []config.PlanEntity{{Name: "Thing", Fields: fields}}, nil); err != nil {
+				t.Fatalf("GeneratePlanORM: %v", err)
+			}
+			code := strings.Join(strings.Fields(readGeneratedORM(t, root, "thing_orm_gen.go")), " ")
+			for _, w := range tc.want {
+				if !strings.Contains(code, w) {
+					t.Errorf("want %s in the generated struct:\n%s", w, code)
+				}
+			}
+		})
 	}
 }
 

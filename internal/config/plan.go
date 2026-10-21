@@ -87,6 +87,10 @@ type PlanEntityField struct {
 	// computes it, so the ORM emits ,scanonly (never written on
 	// INSERT/UPDATE).
 	Generated bool `yaml:"generated,omitempty" json:"generated,omitempty"`
+	// Identity marks a GENERATED ... AS IDENTITY column. Postgres reports no
+	// DEFAULT for one, so with Default it is what says the database
+	// allocates a key (the ORM's ,autoincrement) — never the key's type.
+	Identity bool `yaml:"identity,omitempty" json:"identity,omitempty"`
 	// Secret marks a column backed by a `// forge:secret` wire field: the
 	// read path never packs it (a client always reads it back as ""), so the
 	// generated repo's Spec.SecretColumns preserves it on a maskless

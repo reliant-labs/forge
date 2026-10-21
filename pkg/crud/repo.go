@@ -66,8 +66,8 @@ type meta struct {
 	entityLabel   string // the entity in a not-found error: entityName, lower-cased
 	pkColumn      string // primary-key column name ("" for a composite key)
 	pkGoField     string // primary-key struct field (Go) name
-	pkAutoInc     bool   // server-allocated PK (SERIAL/IDENTITY) → RETURNING
-	pkIsString    bool   // string PK → ULID-generate when empty on Create
+	pkAutoInc     bool   // server-allocated PK (,autoincrement: identity or DEFAULT) → RETURNING
+	pkIsString    bool   // string PK → ULID-generate when empty on Create, unless pkAutoInc
 	nativeSoftDel bool   // Bun owns soft delete (,soft_delete time column)
 	// legacyTextSoftDel: a deleted_at column Bun's ,soft_delete did not
 	// claim (a TEXT column it cannot round-trip a time.Time through), so
@@ -734,16 +734,20 @@ func (r *Repo[M]) fillULIDColumns(entity *M) {
 // ─── Create ────────────────────────────────────────────────────────────
 
 // Create inserts a new row. Plain INSERT, never an upsert: a duplicate PK is
-// a real error. Chokepoint invariants (matching the pre-generic emitter):
-// a string PK is ULID-generated when empty; a server-allocated integer PK is
-// excluded from the INSERT and read back via RETURNING; managed timestamps
-// are stamped; nil array fields are normalized to {}.
+// a real error. Chokepoint invariants:
+//   - a server-allocated PK (,autoincrement: the schema gives the key an
+//     identity or a DEFAULT) left at its zero is excluded from the INSERT
+//     and read back via RETURNING; a key the caller set is inserted as set;
+//   - any other string PK is ULID-generated when empty — never one the
+//     database allocates, whose DEFAULT (gen_random_uuid()) knows the
+//     column's type and a ULID does not;
+//   - managed timestamps are stamped; nil array fields are normalized to {}.
 func (r *Repo[M]) Create(ctx context.Context, db orm.Context, entity *M) error {
 	r.ensureMeta(db)
 	ctx, span := r.startSpan(ctx, "Create")
 	defer span.End()
 
-	if r.m.pkIsString {
+	if r.m.pkIsString && !r.m.pkAutoInc {
 		pk := r.pkFieldValue(entity)
 		if pk.IsValid() && pk.Kind() == reflect.String && pk.String() == "" {
 			pk.SetString(ulid.Make().String())
@@ -757,7 +761,9 @@ func (r *Repo[M]) Create(ctx context.Context, db orm.Context, entity *M) error {
 
 	q := r.returnDatabaseFilled(r.excludeGeneratedColumns(db.Bun().NewInsert().Model(entity)), entity)
 	if r.m.pkAutoInc {
-		q = q.ExcludeColumn(r.m.pkColumn)
+		if pk := r.pkFieldValue(entity); !pk.IsValid() || pk.IsZero() {
+			q = q.ExcludeColumn(r.m.pkColumn)
+		}
 	}
 	if _, err := q.Exec(ctx); err != nil {
 		recordErr(span, err)

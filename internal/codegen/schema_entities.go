@@ -550,6 +550,7 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 			DeclType:     c.DeclType,
 			Default:      c.Default,
 			IsGenerated:  c.IsGenerated,
+			IsIdentity:   c.IsIdentity,
 			Immutable:    c.HasMarker(schemadef.ColumnMarkerImmutable),
 			Version:      c.HasMarker(schemadef.ColumnMarkerVersion),
 			FillStrategy: fillStrategy,

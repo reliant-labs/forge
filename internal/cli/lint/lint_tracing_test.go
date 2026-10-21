@@ -138,3 +138,31 @@ func TestTracingJSONNeverFixes(t *testing.T) {
 		t.Fatalf("--json rewrote the file:\n%s", src)
 	}
 }
+
+// A fix run's report names what each rewrite did. It once called every
+// rewrite a log call, so a run that only renamed constructions to
+// NewInstrumented reported "34 log call(s) rewritten".
+func TestDescribeTracingFixNamesTheRewrite(t *testing.T) {
+	cases := []struct {
+		rule string
+		want string
+	}{
+		{tracinglint.RuleLogWithoutCtx, "2 log call(s) rewritten"},
+		{tracinglint.RuleContractUninstrumented, "2 contract construction(s) renamed"},
+	}
+	for _, c := range cases {
+		got := describeTracingFix(tracinglint.Fixed{File: "a.go", Rule: c.rule, Count: 2})
+		if !strings.HasPrefix(got, c.want) {
+			t.Errorf("%s: got %q, want it to start %q", c.rule, got, c.want)
+		}
+		if c.rule == tracinglint.RuleContractUninstrumented && strings.Contains(got, "log call") {
+			t.Errorf("a construction rename is reported as a log call: %q", got)
+		}
+		if !tracingAutoFixable(c.rule) {
+			t.Errorf("%s is rewritten by --tracing, so it must count as auto-fixable", c.rule)
+		}
+	}
+	if tracingAutoFixable(tracinglint.RuleRawSQLOpen) {
+		t.Error("raw-sql-open is not rewritten by --tracing")
+	}
+}

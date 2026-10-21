@@ -439,6 +439,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge lint --tracing` says what each rewrite did.** Its fix report
+  called every rewrite a log call, so a run that only renamed contract
+  constructions to `NewInstrumented` printed "34 log call(s) rewritten to pass
+  the request context" across 23 files. Each file now reports in the words of
+  the rule that rewrote it (`describeTracingFix`), the summary counts
+  rewrites, and the "can be rewritten automatically" hint counts
+  contract-uninstrumented warnings as well as log ones.
 - **A generated store reports a missing row one way.** `Get<E>ByID`,
   `Get<E>ByPK` and a view's `Get<E>ByID` returned `svcerr.NotFound`, while
   `Update<E>`, `Update<E>Masked`, `Delete<E>` and `Delete<E>ByPK` returned

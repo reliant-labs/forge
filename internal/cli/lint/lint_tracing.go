@@ -139,32 +139,32 @@ func runTracingLint(cwd string, cfg *config.ProjectConfig, fix, explicit bool) e
 	rewrote := 0
 	for _, f := range run.fixed {
 		rewrote += f.Count
-		fmt.Printf("  ✎ %s: %d log call(s) rewritten to pass the request context\n", f.File, f.Count)
+		fmt.Printf("  ✎ %s: %s\n", f.File, describeTracingFix(f))
 	}
 	if len(run.findings) == 0 {
 		if rewrote > 0 {
-			fmt.Printf("✓ tracing lint clean after rewriting %d log call(s)\n", rewrote)
+			fmt.Printf("✓ tracing lint clean after %d rewrite(s)\n", rewrote)
 		} else {
 			fmt.Println("✓ tracing lint clean — logs carry their context; HTTP clients, database pools and contracts are traced")
 		}
 		return nil
 	}
-	errs, logWarns := 0, 0
+	errs, fixableWarns := 0, 0
 	for _, f := range run.findings {
 		icon := "⚠"
 		if f.Severity == finding.SeverityError {
 			icon = "❌"
 			errs++
-		} else if f.Rule == tracinglint.RuleLogWithoutCtx {
-			logWarns++
+		} else if tracingAutoFixable(f.Rule) {
+			fixableWarns++
 		}
 		fmt.Printf("  %s [%s] %s:%d\n      %s\n", icon, f.Rule, f.File, f.Line, f.Message)
 		if f.Remediation != "" {
 			fmt.Printf("      → %s\n", f.Remediation)
 		}
 	}
-	if logWarns > 0 && !explicit {
-		fmt.Printf("\n  %d log call(s) can be rewritten automatically: run `forge lint --tracing`.\n", logWarns)
+	if fixableWarns > 0 && !explicit {
+		fmt.Printf("\n  %d finding(s) can be rewritten automatically: run `forge lint --tracing`.\n", fixableWarns)
 	}
 	if errs == 0 {
 		fmt.Println("(warnings only — not failing the build)")
@@ -174,6 +174,26 @@ func runTracingLint(cwd string, cfg *config.ProjectConfig, fix, explicit bool) e
 		fmt.Sprintf("%d place(s) where a request's trace is cut", errs), "",
 		"fix each finding above, or suppress one with `// forge:lint-disable-next-line <rule>: <reason>`; "+
 			"to adopt a rule gradually set it to warn under forge.yaml lint.rules — see 'forge skill load observability'")
+}
+
+// describeTracingFix says what a rewrite did to one file, in the words of
+// the rule that made it: a fix run renames constructions as well as
+// rewriting log calls, and a report that calls both "log calls" misleads.
+func describeTracingFix(f tracinglint.Fixed) string {
+	switch f.Rule {
+	case tracinglint.RuleContractUninstrumented:
+		return fmt.Sprintf("%d contract construction(s) renamed to match the package's decorator (New ↔ NewInstrumented)", f.Count)
+	case tracinglint.RuleLogWithoutCtx:
+		return fmt.Sprintf("%d log call(s) rewritten to pass the request context", f.Count)
+	default:
+		return fmt.Sprintf("%d %s finding(s) rewritten", f.Count, f.Rule)
+	}
+}
+
+// tracingAutoFixable reports whether `forge lint --tracing` rewrites a
+// finding of rule itself.
+func tracingAutoFixable(rule string) bool {
+	return rule == tracinglint.RuleLogWithoutCtx || rule == tracinglint.RuleContractUninstrumented
 }
 
 // collectTracingJSON is the JSON arm. It never rewrites: --json is

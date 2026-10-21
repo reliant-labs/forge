@@ -111,7 +111,8 @@ and --no-fix spell the same thing explicitly; --json is always detect-only.)
 residue: it formats your Go source (never generated files) to the project's
 own gate — gofmt, plus goimports' import grouping with the local-prefixes your
 golangci-lint config declares, only when that config enables goimports —
-rewrites log calls to pass their context (tracing lint), runs each frontend's
+rewrites log calls to pass their context and contract constructions to
+their traced NewInstrumented (tracing lint), runs each frontend's
 own prettier over the src/ files you own, and runs eslint --fix on frontends.
 It never rewrites a file the project's own formatter gate accepts, and it
 never applies golangci-lint's fixes: staticcheck's and gocritic's rewrites
@@ -186,7 +187,8 @@ Examples:
                                  # log call that drops the ctx in scope, a
                                  # raw *http.Client or sql.Open, a contract
                                  # built without its decorator) and rewrite
-                                 # each log call to its ...Context form
+                                 # each log call to its ...Context form and
+                                 # each such New to NewInstrumented
   forge lint --proto-options     # Flag a (forge.v1.*) annotation naming an
                                  # option field forge's descriptors do not
                                  # define — it compiles, and forge reads it
@@ -322,7 +324,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.configReach, "config-reach", false, "Flag config fields that no binary and no frontend loads — with per-binary configs, an unbound config message generates but is never loaded (warnings only)")
 	cmd.Flags().BoolVar(&flags.slowTests, "slow-tests", false, "Fail on a Go test that does slow work without being marked slow — execs go/forge/kcl/node/npm/git/docker/…, drives containers, or dials an external host, with no testkit.Slow(t, why) or testing.Short() guard on its path — so it runs in the blocking -short tier, and a file its child process reads is invisible to the test cache")
 	cmd.Flags().BoolVar(&flags.strict, "strict", false, "Escalate advisory findings to errors so they fail the build / CI: RPCs missing a (forge.v1.method) auth-posture annotation, and any lane that could NOT run (frontend typecheck or eslint with deps not installed; typed-config guardrail when golangci-lint never reported)")
-	cmd.Flags().BoolVar(&flags.tracing, "tracing", false, "Report where a request's trace is cut: a log call made with a context in scope but not passed it (no trace_id), an *http.Client or database pool opened without forge's traced constructors, a contract package constructed without its generated decorator. With --fix, rewrites every log call to its ...Context form; forge.yaml lint.tracing.log_wrappers adds the project's own logging helpers")
+	cmd.Flags().BoolVar(&flags.tracing, "tracing", false, "Report where a request's trace is cut: a log call made with a context in scope but not passed it (no trace_id), an *http.Client or database pool opened without forge's traced constructors, a contract package constructed without its generated decorator. With --fix, rewrites every log call to its ...Context form and every undecorated contract construction to NewInstrumented; forge.yaml lint.tracing.log_wrappers adds the project's own logging helpers")
 	cmd.Flags().BoolVar(&flags.skipFrontends, "skip-frontends", false, "Skip the whole frontend lane (eslint/stylelint + TypeScript typecheck + static-export) for a backend-only gate that needs no Node toolchain")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Apply the mechanical fixes in place (Go formatting, the tracing log rewrite, frontend prettier, eslint --fix), each Go rewrite type-checked and taken back if it breaks its package. Never golangci-lint fixes. Off by default: lint is a gate and reports")
 	cmd.Flags().BoolVar(&flags.check, "check", false, "Report only: write nothing, print the diff each fix would apply, and exit non-zero if any is pending. The default; beats --fix (also spelled --no-fix)")

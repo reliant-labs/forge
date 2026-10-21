@@ -6,6 +6,8 @@ import (
 	"connectrpc.com/connect"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // DefaultMiddlewareDeps is the dependency bag for DefaultMiddlewares.
@@ -79,6 +81,11 @@ type DefaultMiddlewareDeps struct {
 //     appends Extras in the order supplied; callers control inter-Extra
 //     ordering.
 //
+//  7. svcerr.Interceptor  — always last, next to the handler: a handler's
+//     svcerr error becomes its Connect error before any layer above reads
+//     it. Not a slot; an svcerr.Interceptor passed in Extras is moved here,
+//     not run twice.
+//
 // # Auth-first vs auth-last
 //
 // A reasonable alternative is "auth at position 1, before everything
@@ -109,8 +116,7 @@ func DefaultMiddlewares(deps DefaultMiddlewareDeps) []connect.Interceptor {
 		TracingInterceptor(deps.Tracer),
 		MetricsInterceptor(deps.Meter),
 	}
-	chain = append(chain, deps.Extras...)
-	return chain
+	return append(chain, svcerr.WithInterceptor(deps.Extras)...)
 }
 
 // Deps is the EXPLICIT-COLLABORATOR dependency bag for [Chain], the
@@ -250,6 +256,11 @@ type Deps struct {
 //  9. RateLimit            — throttle (when non-nil); keyed off the
 //     authenticated subject auth attached, so it follows auth.
 //  10. Extras              — remaining project interceptors, in order.
+//  11. svcerr.Interceptor  — always last, next to the handler, so a handler's
+//     svcerr error becomes its Connect error (PermissionDenied is
+//     permission_denied, not unknown) before audit, logging and metrics read
+//     it. Not a slot: an svcerr.Interceptor passed in Extras is moved here,
+//     not run twice.
 //
 // nil collaborator fields are simply skipped — the chain has no fixed
 // length (unlike the observability-only DefaultMiddlewares, which keeps a
@@ -280,6 +291,5 @@ func Chain(deps Deps) []connect.Interceptor {
 	if deps.RateLimit != nil {
 		chain = append(chain, deps.RateLimit)
 	}
-	chain = append(chain, deps.Extras...)
-	return chain
+	return append(chain, svcerr.WithInterceptor(deps.Extras)...)
 }

@@ -17,10 +17,34 @@ import (
 // `svcerr.Wrap` in a handler stays correct. An error nothing recognises
 // becomes CodeInternal with [InternalMessage], never its raw text.
 //
-// Install it innermost, next to the handler (serverkit.NewChain does), so
-// every interceptor outside it — audit, logging, metrics — sees the wire
-// error rather than the sentinel.
+// Forge's chain builders (observe.Chain, observe.DefaultMiddlewares and
+// serverkit.NewChain) install it innermost, next to the handler, so every
+// interceptor outside it — audit, logging, metrics — sees the wire error
+// rather than the sentinel. A project that assembles a chain by hand adds it
+// last; passing it to a builder as well is harmless, since the builders
+// replace a copy they find with their own innermost one (see [IsInterceptor]).
 func Interceptor() connect.Interceptor { return interceptor{} }
+
+// IsInterceptor reports whether i is the interceptor [Interceptor] returns.
+// Chain builders use it to install exactly one, innermost, however many the
+// caller passed.
+func IsInterceptor(i connect.Interceptor) bool {
+	_, ok := i.(interceptor)
+	return ok
+}
+
+// WithInterceptor returns extras with every [Interceptor] removed and one
+// appended last — the position innermost to the handler. The input slice is
+// not modified.
+func WithInterceptor(extras []connect.Interceptor) []connect.Interceptor {
+	out := make([]connect.Interceptor, 0, len(extras)+1)
+	for _, i := range extras {
+		if !IsInterceptor(i) {
+			out = append(out, i)
+		}
+	}
+	return append(out, Interceptor())
+}
 
 type interceptor struct{}
 

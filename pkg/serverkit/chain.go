@@ -28,7 +28,6 @@ import (
 	"github.com/reliant-labs/forge/pkg/authn"
 	"github.com/reliant-labs/forge/pkg/middleware"
 	"github.com/reliant-labs/forge/pkg/observe"
-	"github.com/reliant-labs/forge/pkg/svcerr"
 	"github.com/reliant-labs/forge/pkg/validate"
 )
 
@@ -262,10 +261,7 @@ func NewChain(deps ChainDeps) (*Chain, error) {
 	if validator != nil {
 		extras = append(extras, validator)
 	}
-	// Innermost, always: a handler's svcerr error becomes its Connect error
-	// before audit, logging and metrics read it. Not a slot — a handler
-	// that returns its own *connect.Error passes through unchanged.
-	extras = append(extras, svcerr.Interceptor())
+	// observe.Chain appends svcerr.Interceptor after these, innermost.
 	interceptors := observe.Chain(observe.Deps{
 		Logger: logger,
 		Trace:  trace,

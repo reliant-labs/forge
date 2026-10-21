@@ -117,7 +117,7 @@ login` credential is traded for the scope the control plane's 403 names, for
   module now exits non-zero by default. The last line names the lane, the
   reason and the command that fixes it (`npm ci` in the frontend's install
   root, `forge tools install buf`, ...). Before, such a run printed `⚠️ N gating
-  linter(s) passed; M could NOT run (...)` and exited 0 unless you passed
+linter(s) passed; M could NOT run (...)` and exited 0 unless you passed
   `--strict`. That flag also turned every advisory finding into an error, so a
   gate that only wanted "fail when a lane did not run" had to grep the verdict
   text. The same applies to `--quiet`, `--scope`, `--json` (`"ok": false`) and
@@ -152,7 +152,7 @@ login` credential is traded for the scope the control plane's 403 names, for
   - **Migration:** a CI job that passed only because a lane silently did not
     run now fails. You can fix the cause (install the tool, run `npm ci`). Or,
     if the job is meant not to run that lane, opt it out with `--allow-skip
-    '<lane>=<why>'` or `lint.allow_skip`. A gate that grepped the verdict for
+'<lane>=<why>'` or `lint.allow_skip`. A gate that grepped the verdict for
     `could NOT run` to get this failure can drop the grep and trust the exit
     code.
 - **A handler's `svcerr` error reaches the client with its Connect code,
@@ -168,6 +168,16 @@ login` credential is traded for the scope the control plane's 403 names, for
   the wire error. Writing `svcerr.Wrap` in a handler stays correct. A project
   that assembles its own interceptor list instead of `serverkit.NewChain` adds
   `svcerr.Interceptor()` itself.
+- **`observe.Chain` and `observe.DefaultMiddlewares` install the svcerr
+  interceptor too.** A project that built its chain with `observe.Chain` (not
+  `serverkit.NewChain`) silently kept the old `code = unknown` for
+  `return nil, svcerr.PermissionDenied(…)`; nothing failed, and only this file
+  mentioned the fix. Both builders now end the chain with `svcerr.Interceptor()`,
+  innermost, and `serverkit.NewChain` gets it through `observe.Chain`. Installing
+  it yourself as well is harmless: an `svcerr.Interceptor()` passed in `Extras` is
+  moved to the innermost position, never run twice (`svcerr.IsInterceptor`,
+  `svcerr.WithInterceptor`). The chain is one longer than before, so code that
+  indexes into it by position past the extras should account for the new tail.
 - **`forge project new` no longer compiles the scaffold before returning.** The
   bootstrap generate skips its final `go build` and deploy-KCL render unless you
   pass `--verify`. That tail was the one CPU-saturating step (40s of the

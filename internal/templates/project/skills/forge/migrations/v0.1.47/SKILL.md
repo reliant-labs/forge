@@ -22,7 +22,7 @@ Use when `cmd/<bin>/cmd/serve.go` or `internal/app/providers.go` calls
 
     trace → recovery → request-id → logging → tracing → metrics →
     deadline → auth → audit → rate-limit → extras → activity → stream-drain →
-    protovalidate
+    protovalidate → svcerr (`observe.Chain` always ends with it)
 
 It runs **before** Auth, so authenticating — a token-store query, an
 introspection call — runs inside the RPC's budget, and a stalled credential

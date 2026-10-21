@@ -53,6 +53,8 @@ This delegates to a `Things` domain package; a simpler RPC would query `s.deps.R
 
 ## Error mapping — use `svcerr`, do NOT hand-roll a helper
 
+Every forge chain builder (`serverkit.NewChain`, `observe.Chain`, `observe.DefaultMiddlewares`) ends the chain with `svcerr.Interceptor()`, so a bare `return nil, svcerr.PermissionDenied("…")` already reaches the client as `permission_denied`. Calling `svcerr.Wrap` yourself stays correct (it is idempotent). A chain you build without those builders must end with `svcerr.Interceptor()` itself, or the client sees `unknown`.
+
 Every handler uses `svcerr.Wrap(err)` from `github.com/reliant-labs/forge/pkg/svcerr`. The library owns the service-error → connect-error mapping; do **not** re-implement it per service.
 
 > **Need a signature from a `forge/pkg` library?** `forge project libraries svcerr` prints its full exported API — several packages at once, e.g. `forge project libraries svcerr crud orm`. Do **not** grep forge's source tree for it, and do not use bare `go doc <pkg>`: that renders a struct as `struct{ ... }` with no methods, which is why a measured run grepped `pkg/crud/repo.go` fourteen times for one signature.

@@ -372,6 +372,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge generate` composes correctly when go.mod is behind the tree.** The
+  composition graph types every node with one package load, and that load
+  fails outright on a go.mod that needs updating: a fresh clone, a
+  just-added `replace`, a dependency bump. The graph then fell back to names
+  alone. The server root held no nodes, `graph_gen.go` lost every node's
+  lifecycle, and `config_gen.k` refused the scaffold's own
+  `config_secrets = ["DATABASE_URL"]`. The tidy that ran after composition
+  repaired go.mod, so only the next run was right. A
+  `go mod tidy (pre-composition)` step now runs first on any project generate
+  has composed before.
 - **Every ORM statement is sent with its values as bind parameters, not just
   the by-key ones.** bun formats values into the SQL text, so under pgx's
   default statement cache each new id, timestamp or body was a new statement

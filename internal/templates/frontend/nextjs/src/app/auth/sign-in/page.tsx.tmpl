@@ -21,9 +21,9 @@ import {
   usePasswordPolicy,
 } from "@/components/password-requirements";
 import Button from "@/components/ui/button";
-import { joinBasePath } from "@/lib/basepath_gen";
 import { useAuth } from "@/lib/auth/context";
 import { AuthError, signIn, signUp, type PasswordRule } from "@/lib/auth/native-login";
+import { joinBasePath } from "@/lib/basepath_gen";
 
 function SignIn() {
   const searchParams = useSearchParams();

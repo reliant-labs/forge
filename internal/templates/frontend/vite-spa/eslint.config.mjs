@@ -216,6 +216,10 @@ const config = [
       "coverage/**",
       // Protobuf-es output is regenerated on every `buf generate` run.
       "src/gen/**",
+      // The runtime config `forge generate` renders per environment: a
+      // generated classic script that assigns window.__FORGE_CONFIG__, which
+      // the module-scoped rules above would read as an undefined global.
+      "public/config.js",
     ],
   },
   js.configs.recommended,

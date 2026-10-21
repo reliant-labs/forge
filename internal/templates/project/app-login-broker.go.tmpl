@@ -290,7 +290,7 @@ func (b *loginBroker) handleRegister(w http.ResponseWriter, r *http.Request) {
 		b.logger.WarnContext(r.Context(), "registration rejected", "email", req.Email, "error", err)
 		var policyErr *devidp.PasswordPolicyError
 		if errors.As(err, &policyErr) {
-			b.writePasswordRejection(w, r.Context(), req.Password, policyErr)
+			b.writePasswordRejection(r.Context(), w, req.Password, policyErr)
 			return
 		}
 		writeAuthError(w, http.StatusBadRequest, registrationMessage(err))
@@ -438,7 +438,7 @@ type passwordRejection struct {
 // or the password breaks none of the rules this file knows (a rule a newer
 // issuer added), the issuer's own reason is the answer: still specific, just
 // not a checklist.
-func (b *loginBroker) writePasswordRejection(w http.ResponseWriter, ctx context.Context, password string, rejected *devidp.PasswordPolicyError) {
+func (b *loginBroker) writePasswordRejection(ctx context.Context, w http.ResponseWriter, password string, rejected *devidp.PasswordPolicyError) {
 	policy, perr := b.passwordPolicy(ctx)
 	var unmet []devidp.PasswordRule
 	if perr == nil {
@@ -668,7 +668,7 @@ func (b *loginBroker) handleReset(w http.ResponseWriter, r *http.Request) {
 		// stays valid (verified). That attempt tested nothing an attacker
 		// could use, so it is handed back.
 		b.resetByUser.refund(userID)
-		b.writePasswordRejection(w, ctx, req.Password, policyErr)
+		b.writePasswordRejection(ctx, w, req.Password, policyErr)
 		return
 	case errors.Is(err, devidp.ErrInvalidResetCode):
 		b.logger.WarnContext(ctx, "password reset rejected: bad code", "user_id", userID, "error", err)

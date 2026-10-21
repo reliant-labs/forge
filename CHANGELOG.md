@@ -1259,6 +1259,34 @@ identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
   hands a revision to Flux: kustomize-controller dry-runs every object of a
   Kustomization before applying any, so one such StatefulSet otherwise stops the
   whole unit converging, and its per-object force would delete the pods.
+- **A raised StatefulSet volume now converges under Flux too: forge renders a
+  pre-rollout resize Job.** Direct apply could repair the rejection after the
+  fact; a reconciler cannot (Flux dry-runs every object of a Kustomization before
+  applying any, so one raised `volumeClaimTemplates` size wedged the whole tree,
+  and forge was not in the loop). The render now carries the repair: for each
+  (cluster, namespace, delivery unit) that holds a StatefulSet with
+  `volumeClaimTemplates` it emits a `sts-volume-resize-<unit>-<hash>` Job, with a
+  ServiceAccount, Role, RoleBinding and NetworkPolicy, in the unit's `pre` phase.
+  The bundle's `pre` tree is what the `rollout` tree waits on and direct apply
+  gates workloads on the same Job, so it runs before the StatefulSet is applied
+  by either. It grows each claim smaller than the declared size, then deletes the
+  StatefulSet with `--cascade=orphan` so the rollout recreates it with the new
+  templates and adopts the running pods; it is a no-op when the sizes match or
+  the StatefulSet is absent, and idempotent (the Job name hashes the declared
+  volumes). A shrink, or any change to a template other than a larger storage
+  request, exits 2: the Job's `podFailurePolicy` fails it at once and the deploy
+  stops with the reason. The Job's RBAC is namespace-scoped (`get`/`delete` on
+  the named StatefulSets, `get`/`list`/`patch` on PVCs, nothing cluster-scoped);
+  whether a claim may grow is learned from a server-side dry-run patch before the
+  first write. The script is embedded in `pkg/stsresize` (`Script`, `Build`) and
+  tested against `Decide` over one table so the two cannot drift. The image is a
+  digest-pinned `alpine/k8s`; `Bundle.statefulset_resize = forge.StatefulSetResize
+{image = ..., disabled = True}` replaces or removes it. It is not rendered for
+  `lifecycle = "local"`/`"ephemeral"` envs. `forge env deploy`'s preflight now also
+  compares each rendered StatefulSet's volumes with the live ones and blocks a
+  shrink (or any unconvergeable template change) by name before anything is
+  applied (`volume_resize_refused` in `--json`). See `deploy/statefulset-volumes`.
+  An env with a StatefulSet gains a `pre` tree and its objects on its next bundle.
 - `forge cloud identity status|users|invite <env>`: inspect hosted managed identity,
   page/search users, and email an invitation with explicit `--email` and repeatable
   `--role`. Uses the authenticated org and exact project/environment lookup;

@@ -52,11 +52,23 @@
 //
 // # Who calls it
 //
-// Whatever applies a render: forge's direct apply runs it when an apply fails
-// on a StatefulSet's immutable spec (internal/cluster), and a reconciler's
-// converger runs [Converge] for each StatefulSet of a revision before handing
-// the revision to Flux. The decision is pure ([Decide]); the cluster access is
-// the [Cluster] interface, so each applier supplies its own client.
+// Two callers run the procedure, by two routes that share one decision:
+//
+//   - forge's direct apply runs [Converge] when an apply fails on a
+//     StatefulSet's immutable spec (internal/cluster). It holds a cluster
+//     client, so it uses the [Cluster] interface.
+//   - A reconciled bundle has no such caller: Flux dry-runs every object of a
+//     Kustomization before applying any, so one rejected StatefulSet stops the
+//     whole tree, and nothing of forge's runs before it. The render therefore
+//     carries the procedure itself: [Build] makes a pre-rollout Job (with the
+//     namespace-scoped identity it runs as) whose container runs [Script], the
+//     same steps in shell and jq. The bundle orders a pre tree ahead of the
+//     rollout tree, so the Job runs first and every write stays inside an
+//     identity the bundle declares.
+//
+// The decision is pure ([Decide]); the cluster access is the [Cluster]
+// interface. script_test.go runs [Script] and [Decide] over one table so the
+// two cannot drift.
 package stsresize
 
 import (

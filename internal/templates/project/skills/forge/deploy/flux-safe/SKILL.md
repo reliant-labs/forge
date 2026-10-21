@@ -38,6 +38,12 @@ to-do list for the move onto Flux: fix it before listing the unit in
   Deployment and a Job are not stamped (a Service releases its LoadBalancer
   address); annotate those yourself if you mean it.
 
+- A StatefulSet with `volumeClaimTemplates` gets a pre-rollout **resize Job** (a
+  hash-named, TTL-free Job in the unit's `pre` tree, so it passes the rules above) that
+  grows its claims when the declared size grew. Flux dry-runs every object of a tree
+  before applying any, so without it one raised size would wedge the whole unit:
+  `deploy/statefulset-volumes`.
+
 ## Budgets
 
 Each tree in the bundle records `budget_seconds`: the largest `progressDeadlineSeconds`

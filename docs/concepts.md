@@ -77,6 +77,19 @@ today — CI workflows through the same mapper `forge generate` uses — and it
 refuses a path that still exists, so it never overwrites your bytes (that is
 `forge project upgrade --force <path>`, which shows the diff first).
 
+A scaffold the project should never have — including one forge has not
+written yet, or one whose birth broke the very `forge generate` it was born in
+and was rolled back with its record — is **declined** instead of deleted:
+
+```bash
+forge project disown cmd/app/cmd/serve.go --absent --reason "serve.go turns composition on; our roots land later"
+```
+
+The decline is a `"declined": "<reason>"` entry in `.forge/scaffolded.json`,
+written outside `generate`, so a failed run's rollback (which restores that
+file to its pre-run bytes) keeps it. `forge project scaffolded` lists declines
+with their reasons; `forge project rescaffold <path>` re-adopts one.
+
 ### Self-certifying files
 
 Every forge-owned file embeds a SHA-256 of its own body:

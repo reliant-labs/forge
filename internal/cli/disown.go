@@ -42,11 +42,12 @@ func newDisownCmd() *cobra.Command {
 	var (
 		reason string
 		dryRun bool
+		absent bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "disown <path>... --reason <text>",
-		Short: "Permanently transfer a forge-generated file to user ownership (one-way)",
+		Short: "Permanently transfer a forge-generated file to user ownership (one-way), or decline a scaffold (--absent)",
 		Long: `Transfer one or more forge-owned (Tier-1) generated files to user ownership.
 
 After disowning, forge NEVER touches the file again: no regeneration, no
@@ -70,16 +71,29 @@ Prefer NOT disowning when you can: most customizations have a designated
 user-owned home (pkg/app/setup.go / app_extras.go,
 …) that survives every regenerate.
 
-Example:
-  forge project disown pkg/app/wire_gen.go --reason "custom connection-pool wiring forge can't express"`,
+--absent declines a SCAFFOLD-ONCE file instead: forge never writes it in this
+project. Use it for a scaffold the project does not want at all — one whose
+very presence would change the build (a cmd tree's serve.go switches internal/app
+composition on) — including one forge has not written yet, or one a failed
+generate wrote and then rolled back. The decline is recorded with its reason in
+` + checksums.ScaffoldedFile + `, which a failed ` + "`forge generate`" + ` restores rather than
+loses. Re-adopt it with ` + "`forge project rescaffold <path>`" + `.
+
+Examples:
+  forge project disown pkg/app/wire_gen.go --reason "custom connection-pool wiring forge can't express"
+  forge project disown cmd/app/cmd/serve.go cmd/app/cmd/metrics.go --absent --reason "serve.go turns composition on; our roots land later"`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if absent {
+				return runDisownAbsent(cmd.OutOrStdout(), args, reason, dryRun)
+			}
 			return runDisown(args, reason, dryRun)
 		},
 	}
 
-	cmd.Flags().StringVar(&reason, "reason", "", "WHY forge's generated code couldn't express what you needed (required; recorded in .forge/disowned.json)")
+	cmd.Flags().StringVar(&reason, "reason", "", "WHY forge's generated code couldn't express what you needed (required; recorded in .forge/disowned.json, or "+checksums.ScaffoldedFile+" with --absent)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would change without writing .forge/disowned.json")
+	cmd.Flags().BoolVar(&absent, "absent", false, "Decline scaffold-once files: forge never writes them in this project (recorded in "+checksums.ScaffoldedFile+")")
 
 	// Writes .forge/disowned.json, one of the state files the merge driver merges.
 	return cmdutil.ConfiguresClone(cmd)

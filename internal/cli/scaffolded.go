@@ -80,17 +80,25 @@ Examples:
 				_, _ = fmt.Fprintf(out, "No scaffold-once files recorded — %s is empty or absent.\n", checksums.ScaffoldedFile)
 				return nil
 			}
-			_, _ = fmt.Fprintf(out, "%d scaffold-once file(s) recorded in %s (%d absent):\n",
-				len(all), checksums.ScaffoldedFile, len(absent))
+			declined := checksums.DeclinedScaffolds(root)
+			_, _ = fmt.Fprintf(out, "%d scaffold-once file(s) recorded in %s (%d absent, %d declined):\n",
+				len(all), checksums.ScaffoldedFile, len(absent), len(declined))
 			for _, p := range all {
-				status := "present"
-				if absentSet[p] {
-					status = "ABSENT "
+				status := "present "
+				switch {
+				case absentSet[p]:
+					status = "ABSENT  "
+				case declined[p] != "":
+					status = "DECLINED"
 				}
-				_, _ = fmt.Fprintf(out, "  %s  %s\n", status, p)
+				line := fmt.Sprintf("  %s  %s", status, p)
+				if why := declined[p]; why != "" {
+					line += "  — " + why
+				}
+				_, _ = fmt.Fprintln(out, line)
 			}
-			if len(absent) > 0 {
-				_, _ = fmt.Fprintf(out, "\nRe-create an absent one: %s\n", rescaffoldCmd("<path>"))
+			if len(absent) > 0 || len(declined) > 0 {
+				_, _ = fmt.Fprintf(out, "\nRe-create an absent or declined one: %s\n", rescaffoldCmd("<path>"))
 			}
 			return nil
 		},

@@ -64,12 +64,10 @@ this file is the thin entry point.`,
 }
 
 func run{{.Package | pascalCase}}(cmd *cobra.Command, _ []string) error {
+	// Load validates: a value the config's annotations reject fails here.
 	cfg, err := config.Load(cmd)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
-	}
-	if verr := config.Validate(cfg); verr != nil {
-		return fmt.Errorf("invalid configuration: %w", verr)
 	}
 
 	// cmdkit.Logger is the paved-path logger: JSON at info on STDERR, with

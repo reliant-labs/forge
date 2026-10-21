@@ -86,6 +86,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/forgecompat"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // devLinkDir is the project-relative directory holding the workspace-member
@@ -185,7 +187,7 @@ func reconcileNpmrc(path string) (userOwned bool, err error) {
 	if string(existing) == devNpmrcBody {
 		return false, nil
 	}
-	return false, os.WriteFile(path, []byte(devNpmrcBody), 0o644)
+	return false, atomicfile.WriteFile(path, []byte(devNpmrcBody), 0o644)
 }
 
 // devBridgeIgnoreEntries are the paths forge must ensure are ignored before it
@@ -420,13 +422,13 @@ func reconcileWorkspaceRoot(path, want string) error {
 	existing, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		return os.WriteFile(path, []byte(want), 0o644)
+		return atomicfile.WriteFile(path, []byte(want), 0o644)
 	case err != nil:
 		return err
 	case string(existing) == want || !isForgeOwnedWorkspaceRoot(path):
 		return nil
 	}
-	return os.WriteFile(path, []byte(want), 0o644)
+	return atomicfile.WriteFile(path, []byte(want), 0o644)
 }
 
 // ensureRelativeSymlink makes linkPath a symlink to targetDir, expressed
@@ -497,7 +499,7 @@ func ensureGitignoreEntries(path string, want []string) error {
 	for _, entry := range missing {
 		b.WriteString(entry + "\n")
 	}
-	return os.WriteFile(path, []byte(b.String()), 0o644)
+	return atomicfile.WriteFile(path, []byte(b.String()), 0o644)
 }
 
 // gitignoreHasEntry reports whether body already ignores entry, ignoring

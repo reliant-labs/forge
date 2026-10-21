@@ -2,6 +2,9 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,22 +80,66 @@ func TestMergeGenerated_BodyConflictsStillConflict(t *testing.T) {
 	}
 }
 
-// gen/forge_descriptor.json's source_hash is a digest of every .proto, so any
-// two proto-changing branches change it.
-func TestMergeGenerated_DescriptorSourceHash(t *testing.T) {
-	desc := func(hash, field string) []byte {
-		return []byte("{\n  \"source_hash\": \"" + hash + "\",\n  \"services\": [\n    \"a\",\n    \"b\",\n    \"c\",\n    \"d\",\n    \"e\"" + field + "\n  ]\n}\n")
+// gen/forge_descriptor.json stamps one entry per .proto. Two branches that
+// edit different protos change different entries, and the merge of the two
+// stamps must be the stamp of the merged tree — even when the entries sit on
+// neighbouring lines, which git's line merge calls a conflict.
+func TestMergeGenerated_DescriptorSourcesMergeKeyByKey(t *testing.T) {
+	desc := func(services []string, sources map[string]string) []byte {
+		b, err := json.MarshalIndent(struct {
+			Services []string          `json:"services"`
+			Configs  []string          `json:"configs"`
+			Sources  map[string]string `json:"sources"`
+		}{services, nil, sources}, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return append(b, '\n')
 	}
-	base := desc("h0", "")
-	ours := []byte(strings.Replace(string(desc("h1", "")), "    \"a\",\n", "    \"a\",\n    \"a2\",\n", 1))
-	theirs := desc("h2", ",\n    \"f\"")
+	base := desc([]string{"a", "b", "c", "d"},
+		map[string]string{"a.proto": "a0", "b.proto": "b0", "c.proto": "c0", "e.proto": "e0"})
+	// ours edits a.proto and adds a service; theirs edits b.proto (the
+	// neighbouring line), adds d2.proto and deletes e.proto.
+	ours := desc([]string{"a", "a2", "b", "c", "d"},
+		map[string]string{"a.proto": "a1", "b.proto": "b0", "c.proto": "c0", "e.proto": "e0"})
+	theirs := desc([]string{"a", "b", "c", "d", "f"},
+		map[string]string{"a.proto": "a0", "b.proto": "b1", "c.proto": "c0", "d2.proto": "d1"})
+
 	merged, clean, err := mergeGenerated(context.Background(), base, ours, theirs, 7)
 	if err != nil || !clean {
 		t.Fatalf("clean=%v err=%v:\n%s", clean, err, merged)
 	}
-	if !strings.Contains(string(merged), `"source_hash": "h1"`) || !strings.Contains(string(merged), `"a2"`) || !strings.Contains(string(merged), `"f"`) {
-		t.Errorf("merged descriptor:\n%s", merged)
+	var got struct {
+		Services []string          `json:"services"`
+		Sources  map[string]string `json:"sources"`
 	}
+	if err := json.Unmarshal(merged, &got); err != nil {
+		t.Fatalf("merged descriptor is not JSON: %v\n%s", err, merged)
+	}
+	if want := []string{"a", "a2", "b", "c", "d", "f"}; strings.Join(got.Services, ",") != strings.Join(want, ",") {
+		t.Errorf("services = %v, want %v", got.Services, want)
+	}
+	want := map[string]string{"a.proto": "a1", "b.proto": "b1", "c.proto": "c0", "d2.proto": "d1"}
+	if fmt.Sprint(got.Sources) != fmt.Sprint(want) {
+		t.Errorf("sources = %v, want the stamp of the merged tree %v", got.Sources, want)
+	}
+	// Byte-for-byte what forge writes for that descriptor, so the merge
+	// leaves nothing for the next generate to reformat.
+	if string(merged) != string(desc(got.Services, want)) {
+		t.Errorf("merged descriptor is not in forge's own rendering:\n%s", merged)
+	}
+
+	t.Run("both sides edited one proto: ours wins, and the next generate restamps", func(t *testing.T) {
+		theirs := desc([]string{"a", "b", "c", "d"},
+			map[string]string{"a.proto": "a9", "b.proto": "b0", "c.proto": "c0", "e.proto": "e0"})
+		merged, clean, err := mergeGenerated(context.Background(), base, ours, theirs, 7)
+		if err != nil || !clean {
+			t.Fatalf("clean=%v err=%v:\n%s", clean, err, merged)
+		}
+		if !strings.Contains(string(merged), `"a.proto": "a1"`) {
+			t.Errorf("want ours' entry:\n%s", merged)
+		}
+	})
 }
 
 // stampedRender is a Tier-1 file as forge writes it: the body certified by a
@@ -344,5 +391,204 @@ func TestEnsureGeneratedMergeDriver_OptOutsAndEphemeralBinaries(t *testing.T) {
 	ensureGeneratedMergeDriver(dir)
 	if got := configured(dir); got != want {
 		t.Errorf("a forge that is not the pin rewrote a usable driver: %q, want %q", got, want)
+	}
+}
+
+// `forge db migration rebase` (any project command) used to write the merge
+// driver into the repository's SHARED git settings and say one line that named
+// neither the files nor who else it affects. info/attributes and .git/config
+// live in the COMMON git directory, so every linked worktree — every other
+// agent's checkout — changes with them. The notice must say exactly what was
+// written, where, to how many worktrees, and how to undo it; and say nothing
+// when nothing changed.
+func TestEnsureGeneratedMergeDriver_NoticeNamesWhatChangedAndWhoSharesIt(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	repo := t.TempDir()
+	gitT(t, repo, "init", "-q", "-b", "main")
+	writeTreeFileT(t, filepath.Join(repo, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\n")
+	writeTreeFileT(t, filepath.Join(repo, "README"), "x\n")
+	gitT(t, repo, "add", "-A")
+	gitT(t, repo, "commit", "-qm", "init")
+	other := filepath.Join(t.TempDir(), "other-worktree")
+	gitT(t, repo, "worktree", "add", "-q", "-b", "other", other)
+
+	prev := mergeDriverExecutable
+	t.Cleanup(func() { mergeDriverExecutable = prev })
+	mergeDriverExecutable = func() (string, error) { return "/opt/forge/bin/forge", nil }
+	prevCheck := mergeDriverPinCheck
+	t.Cleanup(func() { mergeDriverPinCheck = prevCheck })
+	mergeDriverPinCheck = func(string) (string, string, bool) { return "", "", false }
+	for _, e := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS", "FORGE_NO_HOOKS"} {
+		t.Setenv(e, "")
+	}
+
+	var first strings.Builder
+	ensureGeneratedMergeDriverTo(&first, other) // run from the LINKED worktree
+	notice := first.String()
+	common := strings.TrimSpace(gitT(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+	// The notice names the attributes file as git reports it — git's own
+	// separators, forward slashes even on Windows — so the expectation asks
+	// git the same question rather than building it with filepath.Join.
+	attributes := strings.TrimSpace(gitT(t, other, "rev-parse", "--path-format=absolute", "--git-path", "info/attributes"))
+	for _, want := range []string{
+		"shared by 2 worktrees",
+		common,
+		attributes,
+		"merge.forge-generated.driver = '/opt/forge/bin/forge' ",
+		"this worktree only; was: unset",
+		"git config --worktree --unset merge.forge-generated.driver",
+		"delete the \"forge merge-generated\" block from info/attributes",
+		"FORGE_NO_MERGE_DRIVER=1",
+	} {
+		if !strings.Contains(notice, want) {
+			t.Errorf("the notice does not say %q:\n%s", want, notice)
+		}
+	}
+
+	// The scope the notice describes is real: the driver is this worktree's
+	// alone, and the primary worktree is untouched.
+	if got := gitConfig(t, other, "merge.forge-generated.driver"); !strings.HasPrefix(got, "'/opt/forge/bin/forge'") {
+		t.Errorf("the worktree that ran does not have the driver: %q", got)
+	}
+	if got := gitConfig(t, repo, "merge.forge-generated.driver"); got != "" {
+		t.Errorf("a worktree-scoped driver reached the primary worktree: %q", got)
+	}
+
+	var second strings.Builder
+	ensureGeneratedMergeDriverTo(&second, other)
+	if second.Len() != 0 {
+		t.Errorf("a run that changed nothing spoke:\n%s", second.String())
+	}
+
+	var optedOut strings.Builder
+	t.Setenv("FORGE_NO_MERGE_DRIVER", "1")
+	if err := os.Remove(filepath.Join(common, "info", "attributes")); err != nil {
+		t.Fatal(err)
+	}
+	ensureGeneratedMergeDriverTo(&optedOut, other)
+	if optedOut.Len() != 0 {
+		t.Errorf("an opted-out run spoke:\n%s", optedOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(common, "info", "attributes")); err == nil {
+		t.Error("an opted-out run wrote info/attributes")
+	}
+}
+
+// The driver command is a per-checkout fact: it names ONE forge binary, and
+// worktrees of a repository are on different branches with different pins.
+// Written to the shared .git/config, the last forge to run decided the driver
+// for every worktree and one agent's command changed another agent's merges.
+// It goes to this worktree's own config instead.
+func TestEnsureGeneratedMergeDriver_DriverCommandIsPerWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	repo := t.TempDir()
+	gitT(t, repo, "init", "-q", "-b", "main")
+	writeTreeFileT(t, filepath.Join(repo, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\n")
+	writeTreeFileT(t, filepath.Join(repo, "README"), "x\n")
+	gitT(t, repo, "add", "-A")
+	gitT(t, repo, "commit", "-qm", "init")
+	wtA := filepath.Join(t.TempDir(), "wt-a")
+	wtB := filepath.Join(t.TempDir(), "wt-b")
+	gitT(t, repo, "worktree", "add", "-q", "-b", "a", wtA)
+	gitT(t, repo, "worktree", "add", "-q", "-b", "b", wtB)
+
+	prevExe, prevCheck := mergeDriverExecutable, mergeDriverPinCheck
+	t.Cleanup(func() { mergeDriverExecutable, mergeDriverPinCheck = prevExe, prevCheck })
+	mergeDriverPinCheck = func(string) (string, string, bool) { return "", "", false }
+	for _, e := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS", "FORGE_NO_HOOKS", mergeDriverSharedEnv} {
+		t.Setenv(e, "")
+	}
+
+	mergeDriverExecutable = func() (string, error) { return "/pins/a/forge", nil }
+	var noticeA strings.Builder
+	ensureGeneratedMergeDriverTo(&noticeA, wtA)
+	mergeDriverExecutable = func() (string, error) { return "/pins/b/forge", nil }
+	var noticeB strings.Builder
+	ensureGeneratedMergeDriverTo(&noticeB, wtB)
+
+	if got := gitConfig(t, wtA, "merge.forge-generated.driver"); !strings.HasPrefix(got, "'/pins/a/forge'") {
+		t.Errorf("worktree A merges with %q, want its own forge", got)
+	}
+	if got := gitConfig(t, wtB, "merge.forge-generated.driver"); !strings.HasPrefix(got, "'/pins/b/forge'") {
+		t.Errorf("worktree B merges with %q: A's run overwrote it, or B's never landed", got)
+	}
+	if got := gitConfig(t, repo, "merge.forge-generated.driver"); got != "" {
+		t.Errorf("the primary worktree inherited a driver another worktree set: %q", got)
+	}
+	if out, err := exec.Command("git", "-C", repo, "config", "--local", "--get", "merge.forge-generated.driver").Output(); err == nil {
+		t.Errorf("the driver command leaked into the shared config: %s", out)
+	}
+	if !strings.Contains(noticeA.String(), "extensions.worktreeConfig = true (shared)") ||
+		!strings.Contains(noticeA.String(), "(this worktree only; was: unset)") {
+		t.Errorf("the first run must say it flipped the one shared switch, and that the driver is this worktree's:\n%s", noticeA.String())
+	}
+	if strings.Contains(noticeB.String(), "extensions.worktreeConfig") {
+		t.Errorf("the switch is flipped once, not announced again:\n%s", noticeB.String())
+	}
+
+	t.Run("opt back into the shared config", func(t *testing.T) {
+		repo2 := t.TempDir()
+		gitT(t, repo2, "init", "-q", "-b", "main")
+		writeTreeFileT(t, filepath.Join(repo2, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\n")
+		t.Setenv(mergeDriverSharedEnv, "1")
+		mergeDriverExecutable = func() (string, error) { return "/pins/s/forge", nil }
+		ensureGeneratedMergeDriverTo(io.Discard, repo2)
+		if got := gitT(t, repo2, "config", "--local", "--get", "merge.forge-generated.driver"); !strings.HasPrefix(got, "'/pins/s/forge'") {
+			t.Errorf("%s=1 did not keep the command in the shared config: %q", mergeDriverSharedEnv, got)
+		}
+		if ext := gitConfig(t, repo2, "extensions.worktreeConfig"); ext != "" {
+			t.Errorf("%s=1 still flipped extensions.worktreeConfig", mergeDriverSharedEnv)
+		}
+	})
+}
+
+// A project whose committed .gitattributes already routes forge's files
+// (every scaffolded project) needs no second copy in the shared
+// info/attributes.
+func TestEnsureGeneratedMergeDriver_CommittedRoutesNeedNoSharedCopy(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	repo := t.TempDir()
+	gitT(t, repo, "init", "-q", "-b", "main")
+	writeTreeFileT(t, filepath.Join(repo, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\n")
+	attrs, err := os.ReadFile(filepath.Join("..", "templates", "project", ".gitattributes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTreeFileT(t, filepath.Join(repo, ".gitattributes"), string(attrs))
+	prev := mergeDriverExecutable
+	t.Cleanup(func() { mergeDriverExecutable = prev })
+	mergeDriverExecutable = func() (string, error) { return "/opt/forge/bin/forge", nil }
+	for _, e := range []string{"FORGE_NO_MERGE_DRIVER", mergeDriverSharedEnv} {
+		t.Setenv(e, "")
+	}
+	var out strings.Builder
+	ensureGeneratedMergeDriverTo(&out, repo)
+	if _, err := os.Stat(filepath.Join(repo, ".git", "info", "attributes")); err == nil {
+		data, _ := os.ReadFile(filepath.Join(repo, ".git", "info", "attributes"))
+		t.Errorf("routes the repository already commits were copied into the shared info/attributes:\n%s", data)
+	}
+	if strings.Contains(out.String(), "info/attributes") {
+		t.Errorf("the notice claims a write that did not happen:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "merge.forge-generated.driver") {
+		t.Errorf("the notice omits the one thing that was written:\n%s", out.String())
+	}
+	if got := gitConfig(t, repo, "merge.forge-generated.driver"); got == "" {
+		t.Error("the driver command was not set")
+	}
+
+	// A project that commits no routes still gets the shared block.
+	repo2 := t.TempDir()
+	gitT(t, repo2, "init", "-q", "-b", "main")
+	writeTreeFileT(t, filepath.Join(repo2, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\n")
+	ensureGeneratedMergeDriverTo(io.Discard, repo2)
+	if data, _ := os.ReadFile(filepath.Join(repo2, ".git", "info", "attributes")); !strings.Contains(string(data), mergeAttributesBegin) {
+		t.Errorf("a project with no committed routes lost them:\n%s", data)
 	}
 }

@@ -55,7 +55,10 @@ func TestCRUDEntityTables(t *testing.T) {
 		{Name: "WatchTasks", ServerStreaming: true},
 	}}}
 	got := crudEntityTables(services)
-	if want := []string{"tasks", "usage_events"}; !reflect.DeepEqual(got, want) {
+	// Each entity names its conventional plural and its singular table
+	// (codegen.EntityTableCandidates); the one that does not exist is
+	// ignored by seedplan.ScopeTables.
+	if want := []string{"tasks", "task", "usage_events", "usage_event"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("crudEntityTables = %v, want %v", got, want)
 	}
 }

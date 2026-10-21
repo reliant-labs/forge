@@ -10,6 +10,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/naming"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // MethodTemplateData holds per-method data for the embedded service templates.
@@ -207,7 +209,7 @@ func GenerateMock(svc ServiceDef, projectDir, mockDir string, cs *checksums.File
 		return MockResult{}, err
 	}
 	prev, readErr := os.ReadFile(mockFile)
-	if err := os.WriteFile(mockFile, buf.Bytes(), 0o644); err != nil {
+	if err := atomicfile.WriteFile(mockFile, buf.Bytes(), 0o644); err != nil {
 		return MockResult{}, err
 	}
 	return MockResult{Wrote: true, Changed: readErr != nil || !bytes.Equal(prev, buf.Bytes())}, nil

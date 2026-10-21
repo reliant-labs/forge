@@ -96,15 +96,15 @@ message Order {
 	// ── projection: every json column is CONVERTED, in both directions ──
 	ops := readFileE2E(t, filepath.Join(projectDir, "internal", "handlers", "orders", "handlers_crud_ops_gen.go"))
 	for _, want := range []string{
-		"orm.MarshalJSONBList(m.LineItems)",                 // fromProto: repeated message
-		"orm.UnmarshalJSONBList(e.LineItems, &m.LineItems)", // toProto
-		"orm.MarshalJSONBMessage(m.ShipTo)",                 // singular message
-		"orm.UnmarshalJSONBMessage(e.ShipTo, &m.ShipTo)",    //
-		"if m.GiftTo != nil {",                              // nullable: SQL NULL for absent
-		"orm.UnmarshalJSONBMessage(*e.GiftTo, &m.GiftTo)",   //
-		"orm.MarshalJSONBMap(m.Labels)",                     // map of scalars
-		"orm.UnmarshalJSONBMap(e.Labels, &m.Labels)",        //
-		"orm.MarshalJSONBList(req.LineItems)",               // the CREATE path, too
+		"orm.MarshalJSONBList(m.LineItems)",                         // fromProto: repeated message
+		"orm.UnmarshalJSONBList(string(e.LineItems), &m.LineItems)", // toProto: a JSONB column is []byte (#991)
+		"orm.MarshalJSONBMessage(m.ShipTo)",                         // singular message
+		"orm.UnmarshalJSONBMessage(string(e.ShipTo), &m.ShipTo)",    //
+		"if m.GiftTo != nil {",                                      // nullable: SQL NULL for absent
+		"orm.UnmarshalJSONBMessage(string(e.GiftTo), &m.GiftTo)",    // nullable: a nil []byte
+		"orm.MarshalJSONBMap(m.Labels)",                             // map of scalars
+		"orm.UnmarshalJSONBMap(string(e.Labels), &m.Labels)",        //
+		"orm.MarshalJSONBList(req.LineItems)",                       // the CREATE path, too
 	} {
 		if !strings.Contains(ops, want) {
 			t.Errorf("ops file should contain %q; got:\n%s", want, ops)
@@ -117,7 +117,7 @@ message Order {
 	}
 	// The create path must not stamp the column DEFAULT over a value the
 	// request carried — that is how the line items were lost.
-	if strings.Contains(ops, `e.LineItems = "[]"`) {
+	if strings.Contains(ops, `e.LineItems = "[]"`) || strings.Contains(ops, `e.LineItems = []byte("[]")`) {
 		t.Errorf("create must not overwrite a supplied value with the column DEFAULT; ops:\n%s", ops)
 	}
 

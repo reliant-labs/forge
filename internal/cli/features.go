@@ -161,7 +161,7 @@ func featureReason(cfg *config.ProjectConfig, name config.FeatureName, on bool) 
 			return "(db/migrations exists)"
 		}
 		if service && cfg.Database.Driver != "" && cfg.Database.Driver != "none" {
-			return "(//forge:no-orm in internal/db)"
+			return "(//forge:no-orm in " + cfg.Database.ORM.PackageDir() + ")"
 		}
 		return "(no db/migrations)"
 	case config.FeatureFrontend:

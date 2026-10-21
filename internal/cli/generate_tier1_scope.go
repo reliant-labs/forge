@@ -56,6 +56,8 @@ func tier1OwnerGate(relPath string) func(*pipelineContext) bool {
 //   - exact:  full relative-path equality (e.g. "pkg/app/migrate.go").
 //   - prefix: trailing-slash directory prefix matching every path under a
 //     directory (e.g. "internal/db/").
+//   - suffix: base-name suffix, in any directory (e.g. "_orm_gen.go", the
+//     ORM's files wherever database.orm.package puts them).
 //   - glob:   suffix-aware shell glob applied per segment using
 //     path.Match semantics (e.g.
 //     "internal/handlers/*/handlers_crud_ops_gen.go",
@@ -64,6 +66,7 @@ func tier1OwnerGate(relPath string) func(*pipelineContext) bool {
 type tier1OwnerEntry struct {
 	exact  string
 	prefix string
+	suffix string
 	glob   string
 	gate   func(*pipelineContext) bool
 }
@@ -74,6 +77,9 @@ func (e tier1OwnerEntry) match(relPath string) bool {
 	}
 	if e.prefix != "" {
 		return strings.HasPrefix(relPath, e.prefix)
+	}
+	if e.suffix != "" {
+		return strings.HasSuffix(path.Base(relPath), e.suffix)
 	}
 	if e.glob != "" {
 		// path/filepath.Match handles `*` per-segment (does NOT cross
@@ -138,14 +144,16 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 	// exactly as for the ORM entries below.
 	{glob: "internal/handlers/*/handlers_crud_ops_gen.go", gate: gateCRUDProjection},
 
-	// internal/db/orm_shared.go + internal/db/*_orm.go are emitted by
+	// <orm package>/orm_shared_gen.go + *_orm_gen.go are emitted by
 	// stepInternalDBORM (M3: the ORM emitter records its outputs in the
 	// manifest so `forge project disown` works on them and audit doesn't see
 	// orphans). When the ORM step is gated off (features.orm=false or
 	// no services), absence from WrittenThisRun is uninformative and
-	// the stale sweep must leave the tracked entity code alone.
-	{exact: "internal/db/orm_shared_gen.go", gate: gateORMHasServices},
-	{glob: "internal/db/*_orm_gen.go", gate: gateORMHasServices},
+	// the stale sweep must leave the tracked entity code alone. Matched by
+	// name in any directory: database.orm.package moves them out of
+	// internal/db.
+	{suffix: "orm_shared_gen.go", gate: gateORMHasServices},
+	{suffix: "_orm_gen.go", gate: gateORMHasServices},
 
 	// frontends/<name>/src/hooks/*-hooks.ts is emitted by
 	// stepFrontendHooks. Gated on frontend feature + HasServices

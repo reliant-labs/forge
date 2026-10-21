@@ -23,9 +23,8 @@ import (
 // the zero are identical on the wire — so "the caller did not say" is the
 // ONLY thing the zero can mean, and what an unsaid value stores is what the
 // schema's DEFAULT declares. These tests pin that the generated write path
-// says so in code you can read, with no ORM tag magic (the reasoning
-// schemaDefaultAssigns already documents for columns the request never
-// carried; this is the same answer for columns it carries unset).
+// leaves it unset — the defaulted column is a pointer field, nil until set
+// (ColumnInsertDefault) — and the INSERT omits it so the DEFAULT fires.
 
 // enumUnsetEntity builds an entity with one enum wire field over one TEXT
 // column, so a test can vary only the column's nullability and DEFAULT.
@@ -58,18 +57,19 @@ func TestEnumWrite_UnsetStoresTheColumnDefault(t *testing.T) {
 	}
 	from := strings.Join(conv.FromProtoAssigns, "\n")
 
-	// The DEFAULT is the value an unset enum stores...
-	if !strings.Contains(from, `e.Status = "ORDER_STATUS_OPEN"`) {
-		t.Errorf("an unset enum must store the column DEFAULT; got:\n%s", from)
-	}
-	// ...and a value the caller DID send still wins.
-	if !strings.Contains(from, "if m.Status != 0 {\n\t\te.Status = m.Status.String()\n\t}") {
-		t.Errorf("a set enum must still store its own value name; got:\n%s", from)
+	// The column is a pointer field (its DEFAULT is not the zero): an unset
+	// enum leaves it nil, so the INSERT omits it and the DEFAULT fires; a
+	// value the caller DID send is written through the pointer.
+	if !strings.Contains(from, "if m.Status != 0 {\n\t\tv := m.Status.String()\n\t\te.Status = &v\n\t}") {
+		t.Errorf("an unset enum must leave the defaulted column unset; got:\n%s", from)
 	}
 	// The unguarded form — the assignment as the block's own first
 	// statement — is what made the DEFAULT unreachable.
 	if strings.HasPrefix(from, "e.Status = m.Status.String()") {
 		t.Errorf("unguarded assignment writes the sentinel on an unset enum, so the DEFAULT can never fire:\n%s", from)
+	}
+	if strings.Contains(from, `"ORDER_STATUS_OPEN"`) {
+		t.Errorf("the DEFAULT is the database's to apply, not a literal pasted into Go:\n%s", from)
 	}
 }
 
@@ -88,9 +88,8 @@ func TestEnumWrite_UnsetOnACreateRequestStoresTheColumnDefault(t *testing.T) {
 		t.Fatalf("enum over a defaulted TEXT column must map: %+v", unmapped)
 	}
 	got := strings.Join(assigns, "\n")
-	if !strings.Contains(got, `e.Status = "ORDER_STATUS_OPEN"`) ||
-		!strings.Contains(got, "if req.Status != 0 {\n\t\te.Status = req.Status.String()\n\t}") {
-		t.Errorf("create op must let an unset enum land the column DEFAULT; got:\n%s", got)
+	if !strings.Contains(got, "if req.Status != 0 {\n\t\tv := req.Status.String()\n\t\te.Status = &v\n\t}") {
+		t.Errorf("create op must leave an unset enum to the column DEFAULT; got:\n%s", got)
 	}
 }
 

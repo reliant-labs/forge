@@ -10,6 +10,8 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // hostedEnvNames are the deployed envs `forge project new` scaffolds, in
@@ -39,7 +41,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		return err
 	}
 	kclModPath := filepath.Join(deployDir, "kcl.mod")
-	if err := os.WriteFile(kclModPath, kclModContent, 0644); err != nil {
+	if err := atomicfile.WriteFile(kclModPath, kclModContent, 0644); err != nil {
 		return fmt.Errorf("write kcl.mod: %w", err)
 	}
 
@@ -81,6 +83,9 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	for _, e := range envs {
 		var apiSecrets []string
 		data := templates.EnvTemplateData{
+			// A new project composes with the graph, so its API is bound to
+			// the `server` root and its env is what that root reaches.
+			Roots:       true,
 			ProjectName: g.Name,
 			EnvName:     e.env,
 			// The API holds the dev env's `-api` port key in every
@@ -108,7 +113,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(destPath, content, 0644); err != nil {
+		if err := atomicfile.WriteFile(destPath, content, 0644); err != nil {
 			return fmt.Errorf("write %s/main.k: %w", e.env, err)
 		}
 		if e.env != codegen.DevEnvName {
@@ -142,7 +147,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 			if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 				return err
 			}
-			if err := os.WriteFile(destPath, content, 0644); err != nil {
+			if err := atomicfile.WriteFile(destPath, content, 0644); err != nil {
 				return fmt.Errorf("write %s: %w", f.dest, err)
 			}
 		}
@@ -315,7 +320,7 @@ func ScaffoldWorkloadsKCL(projectDir, modulePath, projectName string, components
 	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(dest, content, 0644)
+	return atomicfile.WriteFile(dest, content, 0644)
 }
 
 // generateDevConfig writes the k3d cluster configuration for local development.
@@ -335,7 +340,7 @@ func (g *ProjectGenerator) generateDevConfig() error {
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(destPath, content, 0644)
+	return atomicfile.WriteFile(destPath, content, 0644)
 }
 
 // generateObservability writes the local ClickStack's two owned inputs: the
@@ -356,7 +361,7 @@ func (g *ProjectGenerator) generateObservability() error {
 		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(destPath, content, 0644); err != nil {
+		if err := atomicfile.WriteFile(destPath, content, 0644); err != nil {
 			return err
 		}
 	}
@@ -375,7 +380,7 @@ func (g *ProjectGenerator) generateDockerCompose() error {
 		return fmt.Errorf("render docker-compose.yml: %w", err)
 	}
 	destPath := filepath.Join(g.Path, "docker-compose.yml")
-	if err := os.WriteFile(destPath, content, 0644); err != nil {
+	if err := atomicfile.WriteFile(destPath, content, 0644); err != nil {
 		return err
 	}
 	return g.generateIDPSteps()
@@ -395,7 +400,7 @@ func (g *ProjectGenerator) generateIDPSteps() error {
 	if err != nil {
 		return fmt.Errorf("render idp-steps.yaml: %w", err)
 	}
-	return os.WriteFile(filepath.Join(g.Path, "idp-steps.yaml"), content, 0644)
+	return atomicfile.WriteFile(filepath.Join(g.Path, "idp-steps.yaml"), content, 0644)
 }
 
 // ScaffoldIdentityKCL writes deploy/kcl/identity.k, the one ManagedIdentity
@@ -413,5 +418,5 @@ func ScaffoldIdentityKCL(projectDir, projectName string) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(dest, content, 0644)
+	return atomicfile.WriteFile(dest, content, 0644)
 }

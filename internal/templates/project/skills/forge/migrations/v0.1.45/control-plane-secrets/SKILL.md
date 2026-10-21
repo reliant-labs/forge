@@ -34,4 +34,3 @@ Use when an env declares a control plane (`control_plane = forge.ControlPlane {}
 ### Verify
 
 `forge env shape <env> --json | jq .shape.control_plane_secrets` lists the Secret; a first `forge env deploy` where it does not exist yet passes the preflight.
-

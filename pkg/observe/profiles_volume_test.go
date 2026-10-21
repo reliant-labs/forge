@@ -141,6 +141,49 @@ func TestHeapSparseSnapshotsPreserveSemantics(t *testing.T) {
 	}
 }
 
+// The default heap export keeps only the live-heap types. Their totals, units,
+// time and trace link must match the full snapshot's, and the allocation-only
+// stacks must not ride along in the dictionary.
+func TestHeapLiveOnlyKeepsTotalsAndShrinksTheDictionary(t *testing.T) {
+	p := heapFixture(300) // stacks 0, 100 and 200 are live; stack 0 carries the link
+	full, err := pprofToOTLP(encode(t, p), testResource())
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := pprofToOTLP(encode(t, p), testResource(), "alloc_objects", "alloc_space")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullTotals, liveTotals := profileTotals(full), profileTotals(live)
+	if len(liveTotals) != 2 || liveTotals["inuse_objects"] != fullTotals["inuse_objects"] || liveTotals["inuse_space"] != fullTotals["inuse_space"] {
+		t.Fatalf("live-only totals %v, want the full snapshot's inuse totals of %v", liveTotals, fullTotals)
+	}
+	if live.SampleCount() != 6 {
+		t.Fatalf("live-only rows = %d, want 3 live stacks x 2 types", live.SampleCount())
+	}
+	profs := live.ResourceProfiles().At(0).ScopeProfiles().At(0).Profiles()
+	for i := 0; i < profs.Len(); i++ {
+		prof := profs.At(i)
+		if int64(prof.Time()) != p.TimeNanos {
+			t.Fatal("changed snapshot time")
+		}
+		if prof.Samples().At(0).LinkIndex() == 0 {
+			t.Fatal("lost the trace link of the live stack")
+		}
+	}
+	if got, all := live.Dictionary().FunctionTable().Len(), full.Dictionary().FunctionTable().Len(); got*10 > all {
+		t.Errorf("live-only dictionary has %d functions of the full snapshot's %d: allocation-only stacks rode along", got, all)
+	}
+	// The cumulative types alone (alloc opted in, heap not) keep theirs too.
+	alloc, err := pprofToOTLP(encode(t, p), testResource(), "inuse_objects", "inuse_space")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if at := profileTotals(alloc); at["alloc_space"] != fullTotals["alloc_space"] || at["alloc_objects"] != fullTotals["alloc_objects"] || len(at) != 2 {
+		t.Fatalf("alloc-only totals %v, want the full snapshot's %v", at, fullTotals)
+	}
+}
+
 // This is a transport replay proof, NOT a claim of ClickHouse exactly-once.
 // An ambiguous response can persist a duplicate; the sender must not regenerate
 // IDs or expand rows when the same captured payload is retried.
@@ -185,8 +228,9 @@ func TestHeapVolumeEvidence(t *testing.T) {
 	if testing.Short() {
 		t.Skip("60 realistic repeated snapshots and wire encoding; runs in task test")
 	}
-	var beforeRows, afterRows, beforeBytes, afterBytes, sparseRows, sparseBytes int
+	var beforeRows, beforeBytes, sparseRows, sparseBytes, allocRows, allocBytes, defaultRows, defaultBytes int
 	start := time.Date(2026, 10, 15, 17, 0, 0, 0, time.UTC)
+	settings := profileSettings{cpu: true, heap: true, heapInterval: DefaultHeapInterval}
 	for minute := 0; minute < 60; minute++ {
 		p := heapFixture(1000 + minute*10) // growing historical stacks, ~1% live
 		p.TimeNanos = start.Add(time.Duration(minute) * time.Minute).UnixNano()
@@ -217,14 +261,32 @@ func TestHeapVolumeEvidence(t *testing.T) {
 		}
 		sparseRows += pd.SampleCount()
 		sparseBytes += len(b)
-		// Hypothetical 15m cadence only: production cadence is unchanged.
-		if minute%15 == 0 {
-			afterRows += pd.SampleCount()
-			afterBytes += len(b)
+		if minute%15 != 0 {
+			continue
 		}
+		// The opt-in alloc profile: every heap type at the 15m heap cadence.
+		allocRows += pd.SampleCount()
+		allocBytes += len(b)
+		// The default: the live heap alone, at the 15m heap cadence.
+		live, err := pprofToOTLP(encode(t, p), testResource(), settings.heapDrops()...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err = pprofileotlp.NewExportRequestFromProfiles(live).MarshalProto()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defaultRows += live.SampleCount()
+		defaultBytes += len(b)
 	}
-	t.Logf("one simulated hour: baseline rows=%d OTLP bytes=%d; sparse only rows=%d bytes=%d; sparse + 15m heap rows=%d bytes=%d", beforeRows, beforeBytes, sparseRows, sparseBytes, afterRows, afterBytes)
-	if afterRows*20 >= beforeRows || afterBytes*10 >= beforeBytes {
+	t.Logf("one simulated hour: legacy rows=%d OTLP bytes=%d; previous default (sparse, every heap type every minute) rows=%d bytes=%d; alloc opted in (every heap type, 15m) rows=%d bytes=%d; default (live heap, 15m) rows=%d bytes=%d",
+		beforeRows, beforeBytes, sparseRows, sparseBytes, allocRows, allocBytes, defaultRows, defaultBytes)
+	if allocRows*20 >= beforeRows || allocBytes*10 >= beforeBytes {
 		t.Fatal("full snapshot amplification not bounded as expected")
+	}
+	// ~1% of the fixture's stacks are live, so the default keeps about 1/15 of
+	// 1% of the previous default's heap rows.
+	if defaultRows*500 >= sparseRows {
+		t.Fatalf("default heap rows %d not bounded below 0.2%% of the previous default's %d", defaultRows, sparseRows)
 	}
 }

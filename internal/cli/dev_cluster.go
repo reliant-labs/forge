@@ -27,7 +27,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -376,19 +378,23 @@ func runK3dClusterCreateCommand(ctx context.Context, args []string) error {
 	return cmd.Run()
 }
 
-// mergeK3dKubeconfig repairs the finalization step skipped when Forge cancels
-// a wedged create client after the cluster is already running. It is also safe
-// after a normal create: merge is an idempotent update and deliberately does
-// not switch the caller's active context.
+// mergeK3dKubeconfig writes the cluster's k3d-<name> context into the default
+// kubeconfig, under withKubeconfigLock. It is THE merge after every create —
+// createK3dCluster tells `k3d cluster create` not to write the kubeconfig,
+// because that write is unlocked — and it also repairs a wedged create client
+// cancelled after the cluster was already running. Merge is an idempotent
+// update and deliberately does not switch the caller's active context.
 func mergeK3dKubeconfig(ctx context.Context, name string) error {
-	cmd := exec.CommandContext(ctx, "k3d", "kubeconfig", "merge", name,
-		"--kubeconfig-merge-default", "--kubeconfig-switch-context=false")
-	cmd.Stdout = nil
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("merge kubeconfig for k3d cluster %q: %w", name, err)
-	}
-	return nil
+	return withKubeconfigLock(func() error {
+		cmd := exec.CommandContext(ctx, "k3d", "kubeconfig", "merge", name,
+			"--kubeconfig-merge-default", "--kubeconfig-switch-context=false")
+		cmd.Stdout = nil
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("merge kubeconfig for k3d cluster %q: %w", name, err)
+		}
+		return nil
+	})
 }
 
 // cleanupK3dStartTools removes the disposable helper k3d leaves behind when
@@ -519,22 +525,162 @@ func startK3dCluster(ctx context.Context, name string) error {
 // starts. k3d 5.9.0 can reach a fully running cluster and then wedge while
 // injecting CoreDNS host aliases; authoritative running state plus Forge's
 // subsequent readiness/DNS reconciliation is sufficient to continue safely.
+//
+// It also rides out one k3s crash during boot. k3d waits for a server's
+// "k3s is up and running" log line and gives up the moment the container
+// restarts ("stopped returning log lines: … status=restarting"), although
+// Docker's restart policy would have brought k3s back. That failure happens
+// entirely inside `k3d cluster create`, before forge has sent the cluster a
+// single request, and the same arguments succeed on the next try: CI saw it
+// once, two seconds into a server's boot, in a run whose other creates were
+// identical and passed. So a create that fails WITH a restarted server is
+// deleted and made again, once, and the server's exit and last log lines
+// are printed as the reason. Any other failure is returned as before.
 func createK3dCluster(ctx context.Context, name string, args []string) error {
 	var storageErr error
 	args, storageErr = addClusterStorageArgsFn(args)
 	if storageErr != nil {
 		return storageErr
 	}
-	if err := runK3dClusterLifecycle(ctx, name, "create",
-		func(commandCtx context.Context) error {
-			return runK3dClusterCreateCommandFn(commandCtx, args)
-		},
-		lookupK3dStateAfterCreateFn,
-		cleanupK3dCreateToolsFn,
-	); err != nil {
-		return err
+	// The context is merged below, under the kubeconfig lock; see
+	// kubeconfig_lock.go for the lost-update this prevents.
+	args = withoutKubeconfigWrites(args)
+	// Keep a failed cluster's nodes, so a crashed server's logs can be read,
+	// and roll back ourselves. Only for a cluster that does not exist yet: a
+	// create that fails because the name is taken must never delete what was
+	// already there.
+	ownRollback := false
+	if pre, err := lookupK3dStateAfterCreateFn(ctx, name); err == nil && !pre.Exists && !slices.Contains(args, "--no-rollback") {
+		args = append(slices.Clone(args), "--no-rollback")
+		ownRollback = true
 	}
-	return mergeK3dKubeconfigFn(ctx, name)
+	var firstCrash string
+	for attempt := 1; ; attempt++ {
+		var seen bootCrashWatch
+		err := runK3dClusterLifecycle(ctx, name, "create",
+			func(commandCtx context.Context) error {
+				if !ownRollback {
+					return runK3dClusterCreateCommandFn(commandCtx, args)
+				}
+				return seen.run(commandCtx, name, func(c context.Context) error {
+					return runK3dClusterCreateCommandFn(c, args)
+				})
+			},
+			lookupK3dStateAfterCreateFn,
+			cleanupK3dCreateToolsFn,
+		)
+		crash := seen.reason()
+		if err == nil && crash == "" {
+			return mergeK3dKubeconfigFn(ctx, name)
+		}
+		if !ownRollback || ctx.Err() != nil {
+			if err == nil {
+				err = fmt.Errorf("k3d cluster create %q: a server restarted during boot", name)
+			}
+			return err
+		}
+		if crash == "" {
+			crash = k3dServerBootCrashFn(ctx, name)
+		}
+		if err == nil {
+			err = fmt.Errorf("k3d cluster create %q: a server restarted during boot", name)
+		}
+		if derr := deleteK3dClusterFn(ctx, name); derr != nil {
+			fmt.Fprintf(os.Stderr, "  warning: roll back the failed k3d cluster %q: %v\n", name, derr)
+		}
+		switch {
+		case crash == "":
+			return err
+		case attempt == 1:
+			firstCrash = crash
+			fmt.Fprintf(os.Stderr, "  warning: k3s exited while k3d cluster %q was booting, and k3d does not wait out a server restart — "+
+				"deleted it, creating it once more. What the server said:\n%s\n", name, indentLines(crash, "    "))
+			continue
+		default:
+			return fmt.Errorf("%w\nk3s exited during boot on both attempts.\nfirst attempt:\n%s\nsecond attempt:\n%s",
+				err, indentLines(firstCrash, "    "), indentLines(crash, "    "))
+		}
+	}
+}
+
+// k3dServerBootCrashFn is the seam for k3dServerBootCrash.
+var k3dServerBootCrashFn = k3dServerBootCrash
+
+// k3dBootCrashPoll is how often a create checks its servers for a restart.
+var k3dBootCrashPoll = time.Second
+
+// bootCrashWatch watches a create's servers for a restart while the create
+// runs, and cancels the k3d client when one happens. Not every k3d reports a
+// restarted server: depending on version and Docker, its readiness wait
+// either fails ("stopped returning log lines: … status=restarting") or keeps
+// following a log stream that has ended until its own timeout. Watching the
+// containers decides the crash the same way in both cases, at once.
+type bootCrashWatch struct {
+	mu    sync.Mutex
+	crash string
+}
+
+func (w *bootCrashWatch) run(ctx context.Context, name string, create func(context.Context) error) error {
+	watchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t := time.NewTicker(k3dBootCrashPoll)
+		defer t.Stop()
+		for {
+			select {
+			case <-watchCtx.Done():
+				return
+			case <-t.C:
+			}
+			if r := k3dServerBootCrashFn(watchCtx, name); r != "" {
+				w.mu.Lock()
+				w.crash = r
+				w.mu.Unlock()
+				cancel()
+				return
+			}
+		}
+	}()
+	err := create(watchCtx)
+	cancel()
+	<-done
+	return err
+}
+
+func (w *bootCrashWatch) reason() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.crash
+}
+
+// k3dServerBootCrash reports why a failed create's server crashed during
+// boot, or "" when no server container restarted (then the failure is not
+// the k3s boot crash createK3dCluster rides out). Read before the rollback
+// deletes the containers: their state and last log lines are the reason.
+func k3dServerBootCrash(ctx context.Context, name string) string {
+	out, err := exec.CommandContext(ctx, "docker", "ps", "-a",
+		"--filter", "label=k3d.cluster="+name, "--filter", "label=k3d.role=server",
+		"--format", "{{.Names}}").Output()
+	if err != nil {
+		return ""
+	}
+	var reasons []string
+	for _, node := range strings.Fields(string(out)) {
+		state, err := exec.CommandContext(ctx, "docker", "inspect", "--format",
+			"{{.RestartCount}} {{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} {{.State.Error}}", node).Output()
+		if err != nil {
+			continue
+		}
+		restarts, rest, _ := strings.Cut(strings.TrimSpace(string(state)), " ")
+		if restarts == "0" && !strings.HasPrefix(rest, "restarting") {
+			continue
+		}
+		logs, _ := exec.CommandContext(ctx, "docker", "logs", "--tail", "25", node).CombinedOutput()
+		reasons = append(reasons, fmt.Sprintf("%s: restarts=%s %s\n%s", node, restarts, strings.TrimSpace(rest), strings.TrimSpace(string(logs))))
+	}
+	return strings.Join(reasons, "\n")
 }
 
 // pinKubectlContext sets the current kubectl context to k3d-<name>.
@@ -543,13 +689,15 @@ func createK3dCluster(ctx context.Context, name string, args []string) error {
 // rest of `forge cluster` from leaking commands into a non-dev context.
 func pinKubectlContext(ctx context.Context, clusterName string) error {
 	target := "k3d-" + clusterName
-	cmd := exec.CommandContext(ctx, "kubectl", "config", "use-context", target)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("kubectl config use-context %s: %w", target, err)
-	}
-	return nil
+	return withKubeconfigLock(func() error {
+		cmd := exec.CommandContext(ctx, "kubectl", "config", "use-context", target)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("kubectl config use-context %s: %w", target, err)
+		}
+		return nil
+	})
 }
 
 // currentKubectlContext returns the current kubectl context name, or ""
@@ -799,13 +947,18 @@ var renderEnvClustersFn = func(ctx context.Context, env string) ([]ClusterEntity
 var (
 	reconcileEnvClustersFn = reconcileDeclaredClusters
 	deleteK3dClusterFn     = func(ctx context.Context, name string) error {
-		del := exec.CommandContext(ctx, "k3d", "cluster", "delete", name)
-		del.Stdout = os.Stdout
-		del.Stderr = os.Stderr
-		if err := del.Run(); err != nil {
-			return fmt.Errorf("k3d cluster delete %s: %w", name, err)
-		}
-		return nil
+		// `k3d cluster delete` removes the context from the default
+		// kubeconfig — a whole-file rewrite like any other, so it takes the
+		// kubeconfig lock (kubeconfig_lock.go).
+		return withKubeconfigLock(func() error {
+			del := exec.CommandContext(ctx, "k3d", "cluster", "delete", name)
+			del.Stdout = os.Stdout
+			del.Stderr = os.Stderr
+			if err := del.Run(); err != nil {
+				return fmt.Errorf("k3d cluster delete %s: %w", name, err)
+			}
+			return nil
+		})
 	}
 )
 

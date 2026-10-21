@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/jinzhu/inflection"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -110,15 +112,28 @@ type CRUDMethod struct {
 	Operation string             // "create", "get", "list", "update", "delete"
 }
 
+// DBImportLine is DBImport spelled as a line of an import block.
+func (d CRUDTemplateData) DBImportLine() string {
+	if alias, path, ok := strings.Cut(d.DBImport, " "); ok {
+		return alias + " " + strconv.Quote(path)
+	}
+	return strconv.Quote(d.DBImport)
+}
+
 // CRUDTemplateData holds all data needed to render the CRUD handlers template.
 type CRUDTemplateData struct {
-	Package       string // Go package name, e.g. "patients"
-	Module        string // Go module path, e.g. "github.com/demo-project"
-	ProtoPackage  string // e.g. "proto/services/patients"
-	DBPackagePath string // e.g. "github.com/demo-project/gen/db/v1"
-	HasPagination bool   // true if any list method uses pagination
-	HasFilters    bool   // true if any list method has filter fields
-	HasOrderBy    bool   // true if any list method has order_by
+	Package      string // Go package name, e.g. "patients"
+	Module       string // Go module path, e.g. "github.com/demo-project"
+	ProtoPackage string // e.g. "proto/services/patients"
+	// DBImport is the generated ORM package as an import spec: its path, or
+	// "db <path>" when database.orm.package names a package that is not
+	// called db. Every generated CRUD file qualifies the ORM as `db.`, so a
+	// relocated ORM is imported under that name rather than threading a
+	// second qualifier through every template.
+	DBImport      string
+	HasPagination bool // true if any list method uses pagination
+	HasFilters    bool // true if any list method has filter fields
+	HasOrderBy    bool // true if any list method has order_by
 	// NeedsORM is true when the ops file names pkg/orm — which every real
 	// op now does, because the get/update/delete scoping seams are typed
 	// in orm.QueryOption. Also set by a list feature or a jsonb create
@@ -616,6 +631,7 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 		return CRUDResult{}, err
 	}
 	data.Package = pkg
+	data.DBImport = ORMImportSpec(modulePath, ProjectORMPackage(projectDir))
 
 	// Tier-1 projection: the per-entity wiring ops + conversion helpers.
 	// Emitted when at least one method passed shape validation OR a wired
@@ -910,11 +926,11 @@ func crudShimImports(data CRUDTemplateData) []string {
 		// rows via the generated <entity>ToProto helper.
 		imports = append(imports,
 			"github.com/reliant-labs/forge/pkg/svcerr",
-			data.Module+"/internal/db")
+			data.DBImport)
 	} else if needsDB {
 		// The forge:fill=handler scaffold's op.Entity wrapper and the
 		// scoping scaffold's op wrappers both name the *db.<Entity> type.
-		imports = append(imports, data.Module+"/internal/db")
+		imports = append(imports, data.DBImport)
 	}
 	// orm reaches this file from either scaffold — the custom-read-shape
 	// body's filters or the scoping predicate — so it is added once,
@@ -1024,6 +1040,7 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, unshim
 	for _, imp := range crudShimImports(CRUDTemplateData{
 		Module:       data.Module,
 		ProtoPackage: data.ProtoPackage,
+		DBImport:     data.DBImport,
 		CRUDMethods:  missing,
 	}) {
 		content = ensureImportLine(content, imp)
@@ -1677,7 +1694,7 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, helperEntit
 		Package:          pkg,
 		Module:           modulePath,
 		ProtoPackage:     protoPackage,
-		DBPackagePath:    modulePath + "/internal/db",
+		DBImport:         ORMImportSpec(modulePath, config.ORMConfig{}),
 		HasPagination:    hasPagination,
 		HasFilters:       hasFilters,
 		HasOrderBy:       hasOrderBy,

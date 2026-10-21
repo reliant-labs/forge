@@ -21,7 +21,7 @@ import "github.com/reliant-labs/forge/internal/config"
 // finer-grained mocking can stub one method at a time.
 type Service interface { //nolint:interfacebloat // one method per emitted artifact family, which is the point: the doc above promises callers can stub a single emission. Narrowing it would mean several interfaces every caller has to hold at once.
 	// Plan-mode generators.
-	GeneratePlanORM(root, modulePath, serviceName string, entities []config.PlanEntity, cs *FileChecksums) error
+	GeneratePlanORM(root string, orm config.ORMConfig, entities []config.PlanEntity, cs *FileChecksums) error
 	GeneratePlanProtoFile(root, modulePath, serviceName string, rpcs []config.PlanRPC, entities []config.PlanEntity) error
 
 	// Component scaffolders.

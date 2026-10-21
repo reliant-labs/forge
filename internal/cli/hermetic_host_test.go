@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -41,6 +42,9 @@ func init() { hostToolTripwireSetup = installHostToolTripwire }
 // test reads from its OWN environment, not this one; files outside the module
 // are not part of the cache key.
 func installHostToolTripwire() (func() error, error) {
+	// A k3d create watches its server containers through docker; unit tests
+	// see no restarts unless they stub one (the e2e lanes keep the real one).
+	k3dServerBootCrashFn = func(context.Context, string) string { return "" }
 	if runtime.GOOS == "windows" {
 		return func() error { return nil }, nil
 	}

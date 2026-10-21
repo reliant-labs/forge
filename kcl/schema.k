@@ -2408,6 +2408,46 @@ schema ShellBuild(Build):
         the commit the project pins for it: the go.mod require of the
         module the checkout declares, or a `GitSource` naming its repo.
         Check the sibling out at its pin before `--release`.
+      * built_images — images this command builds FROM, by the workload
+        that builds them: `NAME = "<workload>"`. Forge builds each named
+        workload FIRST, in the same invocation, and runs this command with
+        NAME in its environment set to the exact image that build pushed,
+        `<repository>@sha256:<digest>`. The dependency's state (and the
+        release) records that same digest, so what this image was built
+        FROM is what the release says was built.
+
+    BUILT_IMAGES IS HOW ONE IMAGE IS BUILT FROM ANOTHER. A parent pinned by
+    a hand-edited digest constant drifts from the parent forge actually
+    builds: the constant names bytes nobody rebuilt, a rebuilt parent ships
+    nowhere until someone copies its digest across, and the release ledger
+    never learns which parent a child was built on. A digest cannot be
+    composed in KCL — a render happens before any build, and a digest names
+    bytes that do not exist yet — so the edge is declared here and forge
+    resolves it at build time:
+
+        _runtime = fw.Workload {
+            name = "runtime"
+            kind = "tool"
+            runtime = forge.BuildOnly {}
+            image = "ghcr.io/acme/runtime"
+            build = forge.ShellBuild {cmd = "./scripts/build-runtime.sh"}
+        }
+        _app = fw.Workload {
+            name = "app"
+            ...
+            build = forge.ShellBuild {
+                cmd = "docker build --build-arg BASE=$BASE ... && docker push ..."
+                built_images = {BASE = "runtime"}
+            }
+        }
+
+    The named workload must be another ShellBuild workload with an image in
+    the same environment. `forge env build <env> --target app` builds
+    `runtime` too, because `app` cannot be built without it; a dependency
+    that fails, or pushes nothing whose digest forge can resolve, fails
+    every build that names it rather than handing it a mutable tag.
+    Dependencies form a DAG — a cycle is refused before anything runs —
+    and independent builds still run in parallel.
 
     Forge once substituted a fixed ${IMAGE}/${TAG}/${REGISTRY}/
     ${TARGETARCH}/… vocabulary into `cmd`. It no longer does, and a
@@ -2435,11 +2475,22 @@ schema ShellBuild(Build):
     # also how a `${NAME}` spelling in the command gets resolved — by the
     # shell, from here.
     env: {str: str} = {}
+    # Images this command builds FROM: ENV_NAME = the workload whose build
+    # pushes it. Forge builds that workload first and sets ENV_NAME to
+    # `<repository>@sha256:<digest>` — the exact image it pushed. See the
+    # docstring.
+    built_images: {str: str} = {}
 
     check:
         type == "shell", "ShellBuild.type must be 'shell'"
         cmd, "ShellBuild.cmd is required"
         not (cwd and source), "ShellBuild.cwd and source are mutually exclusive"
+        all name in built_images { regex.match(name, r"^[A-Za-z_][A-Za-z0-9_]*$") }, \
+            "ShellBuild.built_images keys are the environment variable names the command reads, so each must be a valid one ([A-Za-z_][A-Za-z0-9_]*)"
+        all name in built_images { built_images[name] != "" }, \
+            "ShellBuild.built_images values name the workload whose built image the variable carries; an empty name builds nothing"
+        all name in built_images { name not in env }, \
+            "ShellBuild.built_images and env both set the same variable; forge sets a built_images variable to the image it built, so a static value in env could only contradict it"
 
 schema RemoteBuild(Build):
     """Build this service's image on a HOSTED build service rather than on
@@ -2856,7 +2907,9 @@ schema FrontendConfig:
     # normally "/_otel", which the dev server proxies (and a deployed
     # environment's ingress must route) to a collector's OTLP/HTTP port. The
     # browser holds no collector address and no secret. In dev, unset =>
-    # "/_otel"; in a deployed environment, unset or "off" => telemetry is off.
+    # "/_otel". On forge.OnHosted, unset => "/_otel" too: the platform answers
+    # it on the site's own origin. On any other deployed runtime, unset or
+    # "off" => telemetry is off. "off" always turns it off.
     otel_endpoint?: str
     # The environment name the browser reports as
     # deployment.environment.name, the key the backend uses. Unset => the forge
@@ -2967,6 +3020,113 @@ schema WorkloadURL(tiers.WorkloadURLRef):
     check:
         name == workload, "WorkloadURL: set `workload` only; `name` is derived from it"
 
+schema Funnel:
+    """A product funnel: the ordered events a user journey passes through.
+
+        forge.Funnel {
+            id = "onboarding"
+            title = "Onboarding"
+            steps = ["signup_started", "workspace_created", "first_chat"]
+            window = "7d"
+            by = "user"
+        }
+
+    `steps` are the event names the app passes to `track()` (forge-web-runtime),
+    in order. forge renders each declared funnel as one `funnel` panel on the
+    project's frontend dashboard: how many journeys reached each step within
+    `window` of their first one, counted per browser `session` or per `user`.
+    """
+    # The panel's stable id (the panel is `funnel-<id>`).
+    id: str
+    # The panel's title. Unset: the id.
+    title?: str
+    # The event names, in order: 2 to 10, each distinct.
+    steps: [str]
+    # How long a journey may take from its first step to its last: a number
+    # and a unit of s, m, h or d ("30m", "1h", "7d").
+    window: str = "1h"
+    # What identifies one journey: the browser "session" or the "user".
+    by: str = "session"
+
+    check:
+        regex.match(id, r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"), \
+            "Funnel.id '${id}' is not a valid id: letters, digits, '-', '_' and '.', starting with a letter or digit"
+        len(steps) >= 2 and len(steps) <= 10, \
+            "Funnel '${id}' has ${len(steps)} steps: a funnel has 2 to 10"
+        all s in steps { s.strip() != "" and len(s) <= 128 }, \
+            "Funnel '${id}'.steps must be non-empty event names of at most 128 characters"
+        len({s: True for s in steps}) == len(steps), \
+            "Funnel '${id}'.steps repeats a step: each event name may appear once"
+        regex.match(window, r"^[1-9][0-9]{0,3}[smhd]$"), \
+            "Funnel '${id}'.window '${window}' is not a window: a number and a unit of s, m, h or d, like \"1h\" or \"7d\""
+        by in ["session", "user"], \
+            "Funnel '${id}'.by must be 'session' | 'user'"
+
+schema FrontendErrors:
+    """Which browser errors a frontend does not want as issues.
+
+        forge.FrontendErrors {ignore = ["AbortError", "re:^Failed to fetch"]}
+
+    An entry is matched against the error's type and its message. A plain
+    entry is an exact match on the type, or a substring of the message; an
+    entry beginning `re:` is a regular expression (RE2 syntax) matched against
+    the message. An issue that matches is created IGNORED: the raw events are
+    still stored, so the filter is reversible.
+    """
+    ignore: [str] = []
+
+    check:
+        len(ignore) <= 100, "FrontendErrors.ignore allows at most 100 entries"
+        all e in ignore { e.strip() != "" and len(e) <= 256 }, \
+            "FrontendErrors.ignore entries must be non-empty and at most 256 characters"
+        all e in ignore { not e.startswith("re:") or (len(e) > 3 and regex.compile(e[3:])) }, \
+            "FrontendErrors.ignore has a 're:' entry that is not a valid regular expression"
+        len({e: True for e in ignore}) == len(ignore), \
+            "FrontendErrors.ignore lists an entry twice"
+
+schema BrowserTelemetry:
+    """What a frontend declares about its browser telemetry beyond the
+    environment's observability signals (Observability.signals.browser and
+    .replay still decide whether anything is collected at all).
+
+        forge.Frontend {
+            name = "web"
+            telemetry = forge.BrowserTelemetry {
+                console_capture = False
+                errors = forge.FrontendErrors {ignore = ["AbortError"]}
+                funnels = [forge.Funnel {id = "onboarding", steps = ["signup_started", "first_chat"]}]
+            }
+        }
+
+    `console_capture` and `replay_sample_rate` reach the browser through the
+    runtime config document (config.js), so one build promotes across
+    environments and each environment sets its own.
+    """
+    # Ship `console.*` output as spans. False for an app whose console is
+    # noisy or carries data that must not leave the browser.
+    console_capture: bool = True
+    # The share of SESSIONS recorded when session replay is on (the env opts
+    # in with Observability.signals.replay), 0..1. The decision is made once
+    # per session in the browser.
+    replay_sample_rate: float = 1.0
+    # What happens to the build's source maps. "publish" moves them out of the
+    # served tree and keeps them for symbolicating errors; "public" serves
+    # them (an open-source app that wants that); "off" drops them.
+    sourcemaps: str = "publish"
+    # Errors that are not issues.
+    errors: FrontendErrors = FrontendErrors {}
+    # Product funnels rendered as `funnel` panels on the project's frontend
+    # dashboard. A funnel id is unique within a frontend.
+    funnels: [Funnel] = []
+
+    check:
+        replay_sample_rate >= 0.0 and replay_sample_rate <= 1.0, \
+            "BrowserTelemetry.replay_sample_rate must be between 0.0 and 1.0"
+        sourcemaps in ["publish", "public", "off"], \
+            "BrowserTelemetry.sourcemaps must be 'publish' | 'public' | 'off'"
+        len({f.id: True for f in funnels}) == len(funnels), \
+            "BrowserTelemetry.funnels declares a funnel id twice: each funnel needs its own id"
+
 schema Frontend:
     """A web or mobile frontend: a dev server, or a static build forge
     publishes. WHERE it runs is its `runtime`, chosen per frontend exactly
@@ -3047,6 +3207,10 @@ schema Frontend:
     # SAME env stream as env_vars; an explicit env_vars entry wins on the
     # same variable (forge warns). See FrontendConfig.
     config?: FrontendConfig
+    # Browser telemetry beyond the env's observability signals: product
+    # funnels today. See BrowserTelemetry. Not for a `rn` frontend, which has
+    # no browser SDK.
+    telemetry?: BrowserTelemetry
     # Which entities this frontend gets generated CRUD pages for: route
     # SLUGS as they appear on disk and in the URL — the plural, kebab-cased
     # entity name ("llm-keys", "usage-events"). Empty (the default) means
@@ -3160,6 +3324,8 @@ schema Frontend:
         dev_runner in ["npm", "pnpm", "yarn"], \
             "Frontend.dev_runner must be 'npm' | 'pnpm' | 'yarn'"
         port > 0 and port < 65536, "Frontend.port must be 1..65535"
+        telemetry == Undefined or type != "rn", \
+            "Frontend '${name}'.telemetry is for a browser frontend; a 'rn' frontend runs no browser SDK"
         "none" not in routes or len(routes) == 1, \
             "Frontend '${name}'.routes combines \"none\" with route slugs ${routes}: use [\"none\"] for no generated pages, OR list the slugs you want — not both"
         not public_dir or not public_dir.startswith("/"), \
@@ -4013,9 +4179,20 @@ schema ObservabilityRetention:
     traces_days: int = 0
     metrics_days: int = 0
     logs_days: int = 0
+    # Browser telemetry on the hosted platform, in days (the platform's browser
+    # telemetry tables' TTLs). Unlike the hints above these are never "backend default": each
+    # has a stated default, recorded in the release shape only when it moves.
+    # Session replay is the heaviest and the most sensitive, so it is capped
+    # lowest.
+    replay_days: int = 14
+    errors_days: int = 30
+    product_events_days: int = 90
 
     check:
         traces_days >= 0 and metrics_days >= 0 and logs_days >= 0, "ObservabilityRetention days must be >= 0"
+        replay_days >= 1 and replay_days <= 30, "ObservabilityRetention.replay_days must be 1..30 (session replay is retained at most 30 days)"
+        errors_days >= 1 and errors_days <= 365, "ObservabilityRetention.errors_days must be 1..365"
+        product_events_days >= 1 and product_events_days <= 365, "ObservabilityRetention.product_events_days must be 1..365"
 
 schema ObservabilityAgent:
     """The per-node collector forge renders on cluster runtimes (a

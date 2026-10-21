@@ -357,7 +357,7 @@ mirror config inside k3d resolves that reference at pull time).`,
 // nothing references it until the ledger that records its digest exists, and
 // the ledger (not the tag) is what every promote and deploy reads.
 func releaseImageTag(opts buildOptions) string {
-	return opts.release
+	return releaseVersionTag(opts.release)
 }
 
 // validateReleaseFlags enforces that `forge env build <env> --release <ver>` is
@@ -567,6 +567,26 @@ func resolveBuildImageTag(ctx context.Context, entities *KCLEntities, opts build
 	return t, "git describe --tags --always --dirty", nil
 }
 
+// refreshBuildRuntimeConfigs renders the frontend runtime config documents a
+// build ships (see the comment at its call site in runBuild): this env's when
+// one is named, otherwise the dev document if it is missing. Best-effort: a
+// failure warns and the build proceeds on the existing document.
+func refreshBuildRuntimeConfigs(cfg *config.ProjectConfig, entities *KCLEntities, env string) {
+	if env == "" {
+		if n, err := ensureDevRuntimeConfigs(cfg, projectDirForKCL()); err != nil {
+			fmt.Printf("[build]   Warning: frontend runtime config: %v\n", err)
+		} else if n > 0 {
+			fmt.Printf("[build]   Rendered %d missing dev frontend runtime config(s)\n", n)
+		}
+		return
+	}
+	if changed, err := refreshFrontendRuntimeConfigs(cfg, projectDirForKCL(), env, frontendRuntimeOverlays(entities)); err != nil {
+		fmt.Printf("[build]   Warning: frontend runtime config: %v (building with the previously generated config.js)\n", err)
+	} else if changed > 0 {
+		fmt.Printf("[build]   Refreshed %d frontend runtime config(s) from env %q\n", changed, env)
+	}
+}
+
 func runBuild(ctx context.Context, opts buildOptions) error {
 	cfg, err := prepareBuild(opts)
 	if err != nil {
@@ -669,6 +689,12 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	if err := preflightRealBuild(ctx, entities, opts); err != nil {
 		return err
 	}
+	// Refuse conflicting writers, and built_images edges that cannot be
+	// scheduled, before ANY build or push, not after earlier lanes have
+	// published images. The dispatcher and --plan use this too.
+	if _, _, err := externalBuildSchedule(externalBuildServices(entities), opts, resolvedTag, projectDirForKCL()); err != nil {
+		return err
+	}
 	registerBuildStorage(ctx, projectDirForKCL(), entities, push)
 
 	// Create output directory
@@ -707,19 +733,8 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// gitignored), so render just that file rather than the whole generate
 	// pipeline a missing config.js used to trigger (see
 	// generatedCodeNeedsRefresh).
-	if opts.env == "" && len(frontends) > 0 {
-		if n, ferr := ensureDevRuntimeConfigs(cfg, projectDirForKCL()); ferr != nil {
-			fmt.Printf("[build]   Warning: frontend runtime config: %v\n", ferr)
-		} else if n > 0 {
-			fmt.Printf("[build]   Rendered %d missing dev frontend runtime config(s)\n", n)
-		}
-	}
-	if opts.env != "" && len(frontends) > 0 {
-		if changed, ferr := refreshFrontendRuntimeConfigs(cfg, projectDirForKCL(), opts.env, frontendRuntimeOverlays(entities)); ferr != nil {
-			fmt.Printf("[build]   Warning: frontend runtime config: %v (building with the previously generated config.js)\n", ferr)
-		} else if changed > 0 {
-			fmt.Printf("[build]   Refreshed %d frontend runtime config(s) from env %q\n", changed, opts.env)
-		}
+	if len(frontends) > 0 {
+		refreshBuildRuntimeConfigs(cfg, entities, opts.env)
 	}
 
 	start := time.Now()
@@ -1090,6 +1105,22 @@ func narrowBuildEntities(projectName string, entities *KCLEntities, opts buildOp
 	if entities == nil {
 		return nil
 	}
+	// Whatever the narrowing below keeps, it keeps the images those builds
+	// are built FROM (ShellBuild.built_images): naming one workload cannot
+	// mean building it on a parent nobody built. A composition is the one
+	// exception — its selection is explicit, and an unselected parent is
+	// carried from the base, which the build resolves instead.
+	full := entities
+	narrowed := narrowBuildEntitiesBySelection(projectName, entities, opts)
+	if opts.composition != nil {
+		return narrowed
+	}
+	return withBuiltImageDependencies(full, narrowed)
+}
+
+// narrowBuildEntitiesBySelection is the narrowing --target and the
+// orchestrator's targets select, before built_images dependencies are added.
+func narrowBuildEntitiesBySelection(projectName string, entities *KCLEntities, opts buildOptions) *KCLEntities {
 	// opts.targets is the orchestrator's channel (set by `forge env up`).
 	// Validated by the caller (`forge env up` / `forge env deploy`), which
 	// owns the "unknown target" message and its available-names list.
@@ -1705,6 +1736,9 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 			"  A release built without --push has only a local tag, which can't be promoted across envs", version, env, version)
 	}
 
+	// The source maps each hosted site's last build filed, beside the site.
+	harvestSourcemapsArtifacts(projectDir, env, entities, artifacts)
+
 	// Source-pinned frontends (Firebase SPAs fetched via forge.GitSource)
 	// carry no image and so contribute no build state. Record each one's
 	// resolved commit so the release covers the whole environment, not just
@@ -1760,6 +1794,9 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	if err := pinStorageRelease(rel); err != nil {
 		return releaseCutOutcome{}, err
 	}
+	// The source history this release adds, while the checkout is at its
+	// commit — see release_commits.go.
+	rel.Commits = captureReleaseCommits(ctx, projectDir, rel, ledger.Releases, os.Stderr)
 	created, err := ledger.Releases.Cut(ctx, rel)
 	if err != nil {
 		return releaseCutOutcome{}, fmt.Errorf("--release %s: record the release in %s: %w", version, ledger.Releases.Location(), err)

@@ -39,6 +39,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/procguard"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // upCacheDir is the machine-local root every stack record lives under.
@@ -133,7 +135,7 @@ func recordProjectDir(projectID, dir string) {
 		return
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := atomicfile.WriteFile(tmp, data, 0o644); err != nil {
 		return
 	}
 	if err := os.Rename(tmp, path); err != nil {

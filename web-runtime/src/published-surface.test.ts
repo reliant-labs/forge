@@ -185,6 +185,20 @@ describe("the published surface", () => {
     }
   });
 
+  it("keeps track, setTelemetryUser and disableTelemetry IN the barrel, free of imports", () => {
+    // Components call these without importing the SDK, so they must resolve
+    // for a frontend that never installed @hyperdx/browser. track.ts imports
+    // nothing; the SDK-side sink is installed by the ./telemetry subpath.
+    const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
+    for (const symbol of ["track", "setTelemetryUser", "disableTelemetry"]) {
+      expect(barrel.includes(symbol), `barrel must export ${symbol}`).toBe(
+        true,
+      );
+    }
+    const trackJs = readFileSync(join(pkgDir, "dist", "track.js"), "utf8");
+    expect(trackJs).not.toMatch(/^\s*import\s/m);
+  });
+
   it("keeps the money helpers IN the barrel, free of imports", () => {
     // The frontend skill tells pages to import these from the barrel rather
     // than hand-roll them. money.ts imports nothing, which is what earns it a

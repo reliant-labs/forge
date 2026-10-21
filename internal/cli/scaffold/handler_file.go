@@ -24,6 +24,8 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/naming"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // newHandlerFileCmd is the cobra surface for `forge scaffold handler-file <svc> <name>`.
@@ -118,7 +120,7 @@ func runHandlerFile(svc, name string) error {
 	}
 
 	content := buildHandlerFileStub(pkg, fileName)
-	if err := os.WriteFile(targetPath, []byte(content), 0o644); err != nil {
+	if err := atomicfile.WriteFile(targetPath, []byte(content), 0o644); err != nil {
 		return cliutil.WrapUserErr(ctxLabel, "write handler file", targetPath,
 			"verify the directory is writable", err)
 	}

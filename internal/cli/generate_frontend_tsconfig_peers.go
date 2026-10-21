@@ -11,6 +11,8 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/webruntimepeers"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // The tsconfig `paths` peer-pin reconcile, for projects that predate it.
@@ -241,7 +243,7 @@ func writeTsconfig(path string, body []byte) bool {
 		mode = info.Mode().Perm()
 	}
 	checksums.RecordPreWriteAbs(path) // journaled: a failed run restores it
-	return os.WriteFile(path, body, mode) == nil
+	return atomicfile.WriteFile(path, body, mode) == nil
 }
 
 // pathsKeyRe matches an existing mapping for pkg anywhere in the file — the

@@ -89,8 +89,9 @@ const forgeModulePath = "github.com/reliant-labs/forge"
 //	  ./cmd/forge
 //
 // (see the `dev` target in the Makefile / Taskfile and CONTRIBUTING.md).
-// Released and CI builds never pass this ldflag, so it stays "" for anything
-// a user installs.
+// Released builds never pass this ldflag, so it stays "" for anything a user
+// installs. The e2e corpus stamps the binary it tests (devForgeRootLDFlag in
+// internal/cli/scaffold_e2e_test.go), which is never shipped.
 //
 // Its only consumer is the project scaffolder (internal/cli/new.go): on a dev
 // build it writes a gitignored go.work into the freshly-created project that

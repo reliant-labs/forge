@@ -68,8 +68,9 @@ in ClickHouse; HyperDX cannot draw flamegraphs, so this exports them:
   forge observe profile --trace 0af7651916cd43dd8448eb211c80319c   # CPU burned inside one trace
   forge observe profile --service api --format folded | flamegraph.pl > api.svg
 
-Sample types: cpu (nanoseconds), alloc_space / inuse_space / alloc_objects /
-inuse_objects (heap), goroutine. Raw samples (and so --trace) are kept 72h; the
+Sample types: cpu (nanoseconds) and inuse_space / inuse_objects (live heap) by
+default; alloc_space / alloc_objects and goroutine only from a workload whose
+profiling block turns them on (see forge skill load observability/profiles). Raw samples (and so --trace) are kept 72h; the
 per-minute aggregate behind --since is kept 30 days. --sql prints the query so
 you can run it yourself against the ClickStack ClickHouse.
 

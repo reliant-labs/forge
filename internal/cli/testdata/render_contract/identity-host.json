@@ -103,6 +103,7 @@
     "network_policy": null,
     "overrides": {},
     "project": "acme",
+    "release_manifest_consumers": [],
     "rendered_secrets": [],
     "required_dns": [],
     "required_secrets": [],
@@ -115,15 +116,18 @@
           "flags": [],
           "goarch": null,
           "goos": null,
+          "inputs_file": null,
           "ldflags": [],
           "output_name": "acme",
           "tags": [],
-          "type": "go"
+          "type": "go",
+          "unit": null
         },
         "build_image": "acme",
         "image": "acme",
         "kind": "service",
         "name": "api",
+        "release_inputs": {},
         "runtime": {
           "air_config": null,
           "delve_port": 2345,

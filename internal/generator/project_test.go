@@ -502,7 +502,6 @@ func TestProjectGeneratorKindServiceDefault(t *testing.T) {
 	// Service-shaped scaffolding must still be present. (cmd/mysvc/main.go is
 	// not in the list — see assertCompositionRootDeferred below.)
 	mustExist := []string{
-		filepath.Join(root, "cmd", "mysvc", "cmd", "server.go"),
 		filepath.Join(root, "cmd", "mysvc", "cmd", "version.go"),
 		filepath.Join(root, "pkg", "middleware", "middleware.go"),
 		filepath.Join(root, "Dockerfile"),
@@ -514,6 +513,10 @@ func TestProjectGeneratorKindServiceDefault(t *testing.T) {
 		}
 	}
 	assertCompositionRootDeferred(t, root, "mysvc")
+	// A new project composes with the graph: there is no server.go — `server`
+	// is the default root's command, generated into roots_gen.go by the
+	// codegen pipeline (composition graph PR 4).
+	assertPathNotExists(t, filepath.Join(root, "cmd", "mysvc", "cmd", "server.go"))
 
 	// forge.yaml omits kind: for the default service kind —
 	// EffectiveKind() on the loaded config must resolve it.
@@ -1264,10 +1267,11 @@ func TestFeatureFlag_AllEnabled(t *testing.T) {
 	assertPathExists(t, filepath.Join(root, "db", "migrations"))
 	assertPathExists(t, filepath.Join(root, "cmd", "all-features", "cmd", "db.go"))
 
-	// Codegen. server.go is the anchor rather than serve.go: both are
-	// codegen-gated, but serve.go is scaffold-once and born in the codegen
-	// pipeline, not in this lane.
-	assertPathExists(t, filepath.Join(root, "cmd", "all-features", "cmd", "server.go"))
+	// Codegen. db.go (above) is this lane's codegen anchor: serve.go is born
+	// in the codegen pipeline, and a graph-mode project has no server.go —
+	// each root's command, `server` included, is generated into
+	// roots_gen.go there.
+	assertPathNotExists(t, filepath.Join(root, "cmd", "all-features", "cmd", "server.go"))
 	// OTel is owned by serverkit — no cmd/otel.go shim.
 	assertPathNotExists(t, filepath.Join(root, "cmd", "otel.go"))
 	assertPathExists(t, filepath.Join(root, "proto"))

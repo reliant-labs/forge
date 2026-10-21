@@ -11,6 +11,8 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/naming"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // The cron scheduler the --kind cron worker template compiles against. The
@@ -71,7 +73,7 @@ func GenerateWorkerFiles(root, modulePath, workerName, kind, schedule string) er
 	if err != nil {
 		return fmt.Errorf("render worker.go: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(workerDir, "worker.go"), workerContent, 0644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(workerDir, "worker.go"), workerContent, 0644); err != nil {
 		return err
 	}
 
@@ -80,7 +82,7 @@ func GenerateWorkerFiles(root, modulePath, workerName, kind, schedule string) er
 	if err != nil {
 		return fmt.Errorf("render worker_test.go: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(workerDir, "worker_test.go"), testContent, 0644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(workerDir, "worker_test.go"), testContent, 0644); err != nil {
 		return err
 	}
 

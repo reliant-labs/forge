@@ -42,7 +42,6 @@ package lint
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 
 	"github.com/reliant-labs/forge/internal/codegen"
@@ -131,16 +130,16 @@ func lintPipeline() []linterStep {
 			// Takes package arguments, so --scope narrows what it RUNS on
 			// (the slow lane), not just what it reports.
 			scope: scopeByPackages,
-			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				if _, err := exec.LookPath("golangci-lint"); err != nil {
-					return false, "golangci-lint not found on PATH — skipping"
-				}
-				return true, ""
-			},
+			// Always runs. A golangci-lint missing from PATH is NOT a skip:
+			// it used to be, and `forge lint` passed on a machine that had
+			// never run golangci-lint (reliant's CI). The resolution builds
+			// forge's pin instead, or fails this lane naming the fix.
+			shouldRun: func(*lintRunCtx) (bool, string) { return true, "" },
 			// The binary is chosen per module (golangci_toolchain.go): the
-			// one on PATH may be built with a Go older than the module's go
-			// directive, or unable to read the export data the module's
-			// toolchain writes, and either way golangci-lint cannot lint it.
+			// one on PATH may be missing, built with a Go older than the
+			// module's go directive, or unable to read the export data the
+			// module's toolchain writes, and each way golangci-lint cannot
+			// lint it.
 			runText:   runGolangciLint,
 			errFormat: "❌ golangci-lint failed: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
@@ -174,9 +173,8 @@ func lintPipeline() []linterStep {
 				if rc.cfg == nil || rc.cfg.Config.EffectiveEnforceTypedAccess() != config.EnforceTypedAccessWarn {
 					return false, ""
 				}
-				if _, err := exec.LookPath("golangci-lint"); err != nil {
-					return false, "golangci-lint not found on PATH — skipping typed-config guardrail"
-				}
+				// No PATH check: it shares the gating lane's resolution,
+				// which provisions a missing golangci-lint.
 				return true, ""
 			},
 			runText:   runTypedAccessGuardAdvisory,
@@ -212,12 +210,11 @@ func lintPipeline() []linterStep {
 			name:  "buf lint",
 			gates: true,
 			scope: scopeByFile,
-			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				if _, err := exec.LookPath("buf"); err != nil {
-					return false, "buf not found on PATH — skipping buf lint"
-				}
-				return true, ""
-			},
+			// Always runs: with no buf.yaml there is nothing to lint and the
+			// lane passes trivially; with one and no buf on PATH the lane
+			// FAILS (errBufMissing) rather than skipping — a gating lane
+			// that did not run must never let `forge lint` pass.
+			shouldRun: func(*lintRunCtx) (bool, string) { return true, "" },
 			runText: func(rc *lintRunCtx) error {
 				return runBufLint(rc.ctx)
 			},
@@ -489,6 +486,32 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 13d-bis2. Composition graph — every component and provider is
+		// reached by a root, and every listener serves its chain's
+		// audience. GATES on errors: in graph mode a service no root
+		// reaches is a service no process serves, which the boot-time
+		// RequireComplete gate used to fail on. A whole-graph fact, so it
+		// cannot be scoped to a file.
+		{
+			name:  "graph lint",
+			gates: true,
+			scope: scopeWholeProject,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if !dirExists("internal/app") {
+					return false, ""
+				}
+				return rc.cwd != "", ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runGraphLint(rc.cwd, rc.cfg)
+			},
+			errFormat: "❌ graph lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectGraphJSON(rc.cwd, rc.cfg)
+				return fs, anyErrorFinding(fs), err
+			},
+		},
+
 		// 13d-ter. Component-drift — reports components the code declares
 		// that deploy/kcl/workloads.k does not (and vice versa). forge does
 		// not regenerate that file, so this is what notices when the two
@@ -595,12 +618,13 @@ func lintPipeline() []linterStep {
 			collect:   collectIdentityShareJSON,
 		},
 
-		// 13d-bis. Column-markers — flags a COMMENT ON COLUMN/CONSTRAINT
-		// whose text contains forge: but matches no known column marker
-		// (see lint_column_markers.go). Warnings only.
+		// 13d-bis. Column-markers — flags a COMMENT ON TABLE/VIEW/COLUMN/
+		// CONSTRAINT carrying a forge: marker that object does not read
+		// (see lint_column_markers.go). Gates: `forge generate` refuses the
+		// same comment, and this is its file:line half.
 		{
 			name:  "column-markers lint",
-			gates: false,
+			gates: true,
 			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if dirExists(migrationsDirFor(rc.cfg)) {
@@ -611,10 +635,10 @@ func lintPipeline() []linterStep {
 			runText: func(rc *lintRunCtx) error {
 				return runColumnMarkersLint(rc.cfg)
 			},
-			errFormat: "⚠️  column-markers lint: %v\n",
+			errFormat: "❌ column-markers lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectColumnMarkersJSON(rc.cfg)
-				return fs, false, err
+				return fs, len(fs) > 0, err
 			},
 		},
 
@@ -661,6 +685,27 @@ func lintPipeline() []linterStep {
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectProtoMarkersJSON(protoDirDefault)
 				return fs, false, err
+			},
+		},
+
+		// 13d-ter-bis. Go-markers — the same check for .go comments, which
+		// GATES: a `//forge:` directive comment has one purpose, so a name no
+		// recognizer reads, or a known marker in a spelling its parser
+		// ignores (`//forge:exclude-contract — why`), is a no-op the author
+		// cannot see (lint_go_markers.go).
+		{
+			name:  "go-markers lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "", ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runGoMarkersLint(rc.cwd)
+			},
+			errFormat: "❌ go-markers lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectGoMarkersJSON(rc.cwd)
 			},
 		},
 
@@ -894,36 +939,25 @@ func lintPipeline() []linterStep {
 			},
 		},
 
-		// 13e. Enforce-component-observe — every wired component with a Service
-		// interface + a canonical New(Deps) Service constructor must make an
-		// observability decision: `// forge:constructor` to instrument, or
-		// `// forge:no-observe` to opt out. Undecided components are aggregated
-		// into ONE gating error naming all three escapes. ERROR-gated; the
-		// kill-switch is config.enforce_component_observe: off. Mirrors the
-		// enforce_typed_access plumbing (config + gate), but always gates (no
-		// warn arm — the point is a forcing-function).
+		// 13e. Tracing — the places a request's trace is cut: a log line
+		// written without the context in scope (no trace_id), an untraced
+		// *http.Client or database pool, a contract constructed without its
+		// generated decorator. GATES on error findings; a repo adopting a
+		// rule dials it to warn in lint.rules. Under --fix the full sweep
+		// rewrites only where a rule is at error; `forge lint --tracing
+		// --fix` is the migration. See lint_tracing.go.
 		{
-			name:  "enforce-component-observe lint",
+			name:  "tracing lint",
 			gates: true,
 			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				// off → silent skip (no message), like the typed-config guard's
-				// non-warn skip.
-				if rc.cfg != nil && !rc.cfg.Config.ComponentObserveGuardEnabled() {
-					return false, ""
-				}
-				if !dirExists("internal") {
-					return false, ""
-				}
-				return rc.cwd != "", ""
+				return rc.cwd != "" && hasGoModule(rc.cwd), ""
 			},
 			runText: func(rc *lintRunCtx) error {
-				return runEnforceComponentObserveLint(rc.cwd)
+				return runTracingLint(rc.cwd, rc.cfg, rc.fix, false)
 			},
-			errFormat: "❌ enforce-component-observe lint: %v\n",
-			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				return collectEnforceComponentObserveJSON(rc.cwd)
-			},
+			errFormat: "❌ tracing lint: %v\n",
+			collect:   collectTracingJSON,
 		},
 
 		// 14b. No-dotenv — forge projects declare config in KCL and keep

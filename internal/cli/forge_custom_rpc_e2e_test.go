@@ -114,10 +114,10 @@ func auditE2E(t *testing.T, projectDir, forgeBin string) map[string]struct {
 
 // TestE2EForgeCustomRPC drives `// forge:custom` through the real pipeline.
 //
-//  1. A table whose five CRUD-named rpcs are all marked is NO entity: no ORM
-//     struct in internal/db (the `Task redeclared` collision a project with
-//     its own Task type hit), five stubs and test rows, no CRUD wiring — and
-//     the project builds. ListGizmos's plain `project_id` filter, which the
+//  1. A table whose five CRUD-named rpcs are all marked is no CRUD entity:
+//     five stubs and test rows, no CRUD wiring — and the project builds. It
+//     keeps its store: the ORM projects every table, whatever its rpcs
+//     (`forge:no-entity` on the table is the store opt-out). ListGizmos's plain `project_id` filter, which the
 //     CRUD projection would reject for naming no column, is the author's.
 //  2. The audit lists the rpcs as custom and finds none unhandled.
 //  3. Marking an rpc that WAS CRUD refuses generate while its shim still
@@ -136,10 +136,10 @@ func TestE2EForgeCustomRPC(t *testing.T) {
 		"\n// forge:entity\nmessage Gadget { string name = 2; }\n")
 	runCmd(t, projectDir, forgeBin, "scaffold")
 
-	// ── (1) an all-custom table is no entity ─────────────────────────────
+	// ── (1) an all-custom table is no CRUD entity, but keeps its store ────
 	widgetDir := filepath.Join(projectDir, "internal", "handlers", "widget")
-	if _, err := os.Stat(filepath.Join(projectDir, "internal", "db", "gizmo_orm_gen.go")); err == nil {
-		t.Error("internal/db/gizmo_orm_gen.go exists although every Gizmo rpc is forge:custom")
+	if _, err := os.Stat(filepath.Join(projectDir, "internal", "db", "gizmo_orm_gen.go")); err != nil {
+		t.Errorf("every Gizmo rpc is forge:custom, but the gizmos table must still get its store: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(projectDir, "internal", "db", "gadget_orm_gen.go")); err != nil {
 		t.Errorf("the unmarked Gadget entity lost its ORM: %v", err)

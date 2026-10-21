@@ -52,13 +52,27 @@ package contract
 //
 // Multi-implementation is an EXPORTED interface declared in the package with
 // at least two distinct non-test, non-generated named types in the module
-// implementing it, at least one of them IN the package itself. The
-// in-package requirement is what keeps the house rule — declare interfaces at
-// the consumer — from tripping it: a consumer-side seam (reconcile.Observer)
-// is implemented elsewhere, not by the package that declares it. A strategy
-// registry (an exported `Register*` func taking the interface) is the one
-// multi-impl shape the contracts skill names as legitimately excluded, and is
-// exempt.
+// implementing it, at least one of them IN the package itself, that the
+// package does not itself CONSUME. Both conditions keep the house rule —
+// declare interfaces at the consumer, WET over DRY — from tripping it:
+//
+//   - a consumer-side seam implemented only elsewhere (reconcile.Observer) has
+//     no in-package implementation;
+//   - a consumer-side seam the package also ships a default for is still a
+//     seam. reliant's accountlimits declares `TokenSource` for its Fetcher's
+//     `Tokens` field, with an in-package `StoredTokens` and the real one in
+//     llm/drivers. Two implementations and one of them in-package, so the
+//     gate refused the package's exclusion and prescribed a contract.go — for
+//     an interface the package NEEDS, not one it offers. consumesInterface
+//     tells the two apart: the package holds the interface in a struct field
+//     or takes it as a parameter, on something that is neither an
+//     implementation of it (a decorator's `next`) nor a producer of it (a
+//     constructor or combinator returning it). That is the same line the
+//     analyzer draws for Deps seams ("a requirement, not an offer").
+//
+// A strategy registry (an exported `Register*` func taking the interface) is
+// the one multi-impl shape the contracts skill names as legitimately
+// excluded, and is exempt.
 //
 // # Exemptions
 //
@@ -534,7 +548,9 @@ func isLoopbackHost(host string) bool {
 // multiImplInterface returns the first exported, non-empty interface declared
 // in p (in non-test, non-generated source) that has >= 2 implementations in
 // the module, at least one of them declared in p. A strategy registry — an
-// exported `Register*` func accepting the interface — is exempt.
+// exported `Register*` func accepting the interface — is exempt, and so is an
+// interface p itself consumes (consumesInterface): a seam p needs is not a
+// contract p offers, whatever implements it.
 func multiImplInterface(p *packages.Package, candidates []*types.TypeName) (string, []string, bool) {
 	scope := p.Types.Scope()
 	names := scope.Names() // sorted
@@ -550,7 +566,7 @@ func multiImplInterface(p *packages.Package, candidates []*types.TypeName) (stri
 		if isNonSourceFile(p.Fset.Position(tn.Pos()).Filename) {
 			continue
 		}
-		if hasRegistryFunc(p, tn.Type()) {
+		if hasRegistryFunc(p, tn.Type()) || consumesInterface(p, tn.Type(), iface) {
 			continue
 		}
 		var impls []string
@@ -573,6 +589,104 @@ func multiImplInterface(p *packages.Package, candidates []*types.TypeName) (stri
 		}
 	}
 	return "", nil, false
+}
+
+// consumesInterface reports whether p's non-test, non-generated source takes
+// t (interface iface) as a dependency: as the type of a struct field, or of a
+// function or method parameter — directly or as the element of a pointer,
+// slice, array, map or channel. Two declarations are not consumers, because
+// they are the provider's own shapes:
+//
+//   - a struct, or a method on a type, that implements t: a decorator's
+//     `next Store` or a fan-out over `[]Store` IS a Store;
+//   - a function or method returning t: a constructor or combinator
+//     (`func Wrap(s Store) Store`) produces the contract rather than needing
+//     it.
+func consumesInterface(p *packages.Package, t types.Type, iface *types.Interface) bool {
+	implements := func(typ types.Type) bool {
+		if typ == nil {
+			return false
+		}
+		if ptr, ok := typ.(*types.Pointer); ok {
+			typ = ptr.Elem()
+		}
+		if _, isIface := typ.Underlying().(*types.Interface); isIface {
+			return false
+		}
+		return types.Implements(typ, iface) || types.Implements(types.NewPointer(typ), iface)
+	}
+	takes := func(fields *ast.FieldList) bool {
+		if fields == nil {
+			return false
+		}
+		for _, f := range fields.List {
+			expr := f.Type
+			if ell, ok := expr.(*ast.Ellipsis); ok {
+				expr = ell.Elt // a variadic `...T` records no type of its own
+			}
+			if refersTo(p.TypesInfo.TypeOf(expr), t) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, f := range p.Syntax {
+		if isNonSourceFile(p.Fset.Position(f.Pos()).Filename) {
+			continue
+		}
+		for _, decl := range f.Decls {
+			switch d := decl.(type) {
+			case *ast.GenDecl:
+				for _, spec := range d.Specs {
+					ts, ok := spec.(*ast.TypeSpec)
+					if !ok {
+						continue
+					}
+					st, ok := ts.Type.(*ast.StructType)
+					if !ok {
+						continue
+					}
+					if obj := p.TypesInfo.Defs[ts.Name]; obj != nil && implements(obj.Type()) {
+						continue
+					}
+					if takes(st.Fields) {
+						return true
+					}
+				}
+			case *ast.FuncDecl:
+				if d.Recv != nil && len(d.Recv.List) > 0 && implements(p.TypesInfo.TypeOf(d.Recv.List[0].Type)) {
+					continue
+				}
+				if d.Type.Results != nil && takes(d.Type.Results) {
+					continue
+				}
+				if takes(d.Type.Params) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// refersTo reports whether typ is t, or a pointer, slice, array, map (key or
+// value) or channel of it.
+func refersTo(typ, t types.Type) bool {
+	switch u := typ.(type) {
+	case nil:
+		return false
+	case *types.Pointer:
+		return refersTo(u.Elem(), t)
+	case *types.Slice:
+		return refersTo(u.Elem(), t)
+	case *types.Array:
+		return refersTo(u.Elem(), t)
+	case *types.Map:
+		return refersTo(u.Key(), t) || refersTo(u.Elem(), t)
+	case *types.Chan:
+		return refersTo(u.Elem(), t)
+	}
+	return types.Identical(typ, t)
 }
 
 // hasRegistryFunc reports whether p exports a `Register*` function — or a

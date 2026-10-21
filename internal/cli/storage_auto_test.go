@@ -101,3 +101,34 @@ func TestRunAutoGCIsBoundedAndRecorded(t *testing.T) {
 		t.Fatalf("attempt not recorded as failed: %+v ok=%v", attempt, ok)
 	}
 }
+
+// TestUpReclaimsStorage_OnlyForAStackThatRunsHere: the pass shells out to
+// docker, so a frontend-only env — nothing of ours on this machine but its dev
+// servers — never starts it, and neither does a run that failed its cluster
+// gate.
+func TestUpReclaimsStorage_OnlyForAStackThatRunsHere(t *testing.T) {
+	parse := func(contract string) *KCLEntities {
+		t.Helper()
+		e, err := parseKCLEntities([]byte(contract))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		return e
+	}
+	frontendOnly := parse(`{"frontends": [{"name": "web", "path": "frontends/web", "port": 3000}]}`)
+	hostAPI := parse(`{"workloads": [{"name": "api", "kind": "service", "runtime": {"type": "host", "runner": "go-run"}, "build": {"type": "go", "cmd": "./cmd/api"}, "spec": {"kind": "service"}}]}`)
+	for _, tc := range []struct {
+		name       string
+		e          *KCLEntities
+		clusterErr error
+		want       bool
+	}{
+		{"frontend-only env", frontendOnly, nil, false},
+		{"host workload", hostAPI, nil, true},
+		{"host workload, cluster gate failed", hostAPI, errors.New("rollout failed"), false},
+	} {
+		if got := upReclaimsStorage(tc.e, tc.clusterErr); got != tc.want {
+			t.Errorf("%s: upReclaimsStorage = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

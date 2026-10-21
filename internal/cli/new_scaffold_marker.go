@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // scaffoldInProgress is `forge project new`'s undo for a scaffold that fails
@@ -35,7 +37,7 @@ func beginScaffold(targetPath string, inPlace bool) (*scaffoldInProgress, error)
 	if err := os.MkdirAll(filepath.Dir(s.markerPath), 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create project directory: %w", err)
 	}
-	if err := os.WriteFile(s.markerPath, []byte("forge scaffold in progress\n"), 0o644); err != nil {
+	if err := atomicfile.WriteFile(s.markerPath, []byte("forge scaffold in progress\n"), 0o644); err != nil {
 		return nil, fmt.Errorf("failed to write scaffold marker: %w", err)
 	}
 	return s, nil

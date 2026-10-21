@@ -13,6 +13,9 @@ import {
   RouteGuard, // signed-in render gate
   Resource, // the list tristate + cursor pagination
   reportException, // record a caught error with the browser telemetry SDK
+  track, // record a product event (funnel step) on the current session
+  setTelemetryUser, // attach an opaque user id to every span and replay
+  disableTelemetry, // stop recording for the rest of the page load (consent)
   formatMinorUnits, // exact money display; parseMinorUnits for input
 } from "@reliantlabs/forge-web-runtime";
 ```
@@ -89,6 +92,49 @@ Next.js consumers keep `transpilePackages: ["@reliantlabs/forge-web-runtime"]`
 build — it is no longer "these are `.tsx` files" but "these modules carry
 `"use client"` and Next has to process them rather than treat the package as
 an opaque external."
+
+## Browser telemetry (`/telemetry`)
+
+`initBrowserTelemetry` starts the HyperDX browser SDK once per page load
+(errors, console, fetch/XHR, page loads, web vitals, optional replay) and ships
+to this origin's `/_otel`. It is a no-op without a DOM or an endpoint and never
+throws.
+
+```ts
+import { initBrowserTelemetry } from "@reliantlabs/forge-web-runtime/telemetry";
+
+await initBrowserTelemetry({
+  serviceName: "web",
+  serviceVersion: import.meta.env.VITE_APP_VERSION, // the forge build id
+  frontend: "web", // resource attribute forge.frontend
+  endpoint: "/_otel",
+  consoleCapture: false, // log/info/warn/debug only; console.error(err) is still an error
+  replay: true,
+  replaySampleRate: 0.1, // 0..1 of SESSIONS; decided once, held in sessionStorage
+});
+```
+
+`track`, `setTelemetryUser` and `disableTelemetry` come from the barrel, so a
+component can call them without importing the SDK. They are safe anywhere: no-ops
+on the server, and calls made while the SDK chunk is still loading are held
+(at most 100) and replayed in order.
+
+- `track(name, props?)` — one `custom-action` span. At most 20 props; keys
+  `[a-z0-9_.]{1,64}`; values string, number or boolean; strings are redacted for
+  credential shapes and cut to 256 chars. Not for user content.
+- `setTelemetryUser(id | null)` — the `userId` global attribute. Opaque id only,
+  never an email. `null` clears it.
+- `disableTelemetry()` — stops the replay recorder and silences `track`,
+  `setTelemetryUser` and `reportException` until the next page load. It cannot
+  recall spans already batched, and the SDK's auto-instrumentation has no off
+  switch once running: an app that must send nothing without consent should not
+  call `initBrowserTelemetry` before it has it.
+
+Privacy is forced, not configurable: when replay records, all text and inputs
+are masked, canvas is never recorded, `img, picture, video, audio, iframe,
+object, embed` are blocked, images are not inlined and fonts are not collected.
+fetch/XHR spans have their `http.url` / `url.full` stripped of query string and
+fragment; request and response bodies and headers are not captured.
 
 ## The DOM-free interceptors entry point
 

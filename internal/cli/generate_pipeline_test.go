@@ -73,7 +73,9 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"internal package contracts",
 		"open-procedure set (pkg/middleware)",
 		"webhook routes",
+		"go mod tidy (pre-composition)",
 		"internal/app composition (hybrid DI)",
+		"root env schema (pkg/config/roots_gen.go)",
 		"go mod tidy (pre-wiring)",
 		"cmd/commands.go (user extension point)",
 		"per-service test helpers",
@@ -187,7 +189,7 @@ func TestGenerateStepsGatesAreSideEffectFree(t *testing.T) {
 		{"with cfg + services + db", &pipelineContext{
 			ProjectDir: ".", AbsPath: "/abs/.",
 			Cfg:         &config.ProjectConfig{Name: "sample"},
-			HasServices: true, HasDB: true, HasConfig: true,
+			HasServices: true, HasConfig: true,
 		}},
 		{"with cfg + frontends", &pipelineContext{
 			ProjectDir: ".", AbsPath: "/abs/.",
@@ -479,10 +481,7 @@ func pipelineContextEqual(a, b *pipelineContext) bool {
 	if a.ProjectDir != b.ProjectDir || a.AbsPath != b.AbsPath || a.Force != b.Force {
 		return false
 	}
-	if a.HasServices != b.HasServices || a.HasAPI != b.HasAPI {
-		return false
-	}
-	if a.HasDB != b.HasDB || a.HasConfig != b.HasConfig {
+	if a.HasServices != b.HasServices || a.HasConfig != b.HasConfig {
 		return false
 	}
 	if a.HasWorkers != b.HasWorkers || a.HasOperators != b.HasOperators {
@@ -507,4 +506,60 @@ func pipelineContextEqual(a, b *pipelineContext) bool {
 		return false
 	}
 	return true
+}
+
+// TestGenerateConfigLoaderPrecedesEveryGoTypeCheck pins that pkg/config's
+// generated loader exists before any step compiles or type-checks the
+// project's Go. Hand-written code routinely calls a Load<Msg> /
+// Register<Msg>Flags that the same run generates (a new command config and
+// its first caller land in one change); a step that type-checks the tree
+// before the config loader step would fail on `undefined: config.Load<Msg>`
+// and force a temporary shim (reliant P4 reported needing one).
+func TestGenerateConfigLoaderPrecedesEveryGoTypeCheck(t *testing.T) {
+	names := stepNames(generateSteps())
+	at := map[string]int{}
+	for i, n := range names {
+		at[n] = i
+	}
+	loader, ok := at["config loader (proto/config)"]
+	if !ok {
+		t.Fatal("no config loader step")
+	}
+	// Each of these loads the project's Go with go/packages or the compiler.
+	for _, n := range []string{
+		"go mod tidy (pre-composition)",
+		"internal/app composition (hybrid DI)",
+		"go mod tidy (pre-wiring)",
+		"go mod tidy (root)",
+		"go build (validate generated code)",
+	} {
+		i, ok := at[n]
+		if !ok {
+			t.Errorf("step %q is gone; re-check which steps type-check Go", n)
+			continue
+		}
+		if i < loader {
+			t.Errorf("step %q (#%d) runs before the config loader (#%d): hand-written code calling a Load<Msg> this run generates would not compile there", n, i, loader)
+		}
+	}
+}
+
+// The composition graph types every node with one go/packages load, which
+// fails outright on a go.mod that is behind the tree — and the graph then
+// degrades to names: no listener, a server root holding no nodes, a
+// config_gen.k refusing the scaffold's own DATABASE_URL (TestE2ESelfCert*
+// on a fresh clone). So a tidy must run BEFORE it, not only after.
+func TestGenerateTidiesBeforeTheCompositionTypeLoad(t *testing.T) {
+	names := stepNames(generateSteps())
+	at := map[string]int{}
+	for i, n := range names {
+		at[n] = i
+	}
+	tidy, ok := at["go mod tidy (pre-composition)"]
+	if !ok {
+		t.Fatal("no pre-composition tidy step")
+	}
+	if compose := at["internal/app composition (hybrid DI)"]; tidy > compose {
+		t.Errorf("the pre-composition tidy (#%d) runs after the composition step (#%d)", tidy, compose)
+	}
 }

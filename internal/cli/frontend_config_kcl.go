@@ -9,6 +9,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/kclrender"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // loadFrontendRuntimeConfig renders each frontend's runtime config
@@ -65,7 +67,7 @@ func loadFrontendRuntimeConfig(projectDir, env string, configs []codegen.Fronten
 	}
 
 	probePath := filepath.Join(envDir, fmt.Sprintf("zz_forge_frontend_config_probe_%d.k", os.Getpid()))
-	if err := os.WriteFile(probePath, []byte(probe), 0o644); err != nil {
+	if err := atomicfile.WriteFile(probePath, []byte(probe), 0o644); err != nil {
 		return nil, fmt.Errorf("write frontend config probe: %w", err)
 	}
 	defer func() { _ = os.Remove(probePath) }()

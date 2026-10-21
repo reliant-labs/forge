@@ -10,6 +10,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/config"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 func (g *ProjectGenerator) writeProjectConfig() error {
@@ -87,7 +89,7 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 	data = append(header, data...)
 
 	destPath := filepath.Join(g.Path, "forge.yaml")
-	if err := os.WriteFile(destPath, data, 0644); err != nil {
+	if err := atomicfile.WriteFile(destPath, data, 0644); err != nil {
 		return err
 	}
 
@@ -309,7 +311,7 @@ func SetProjectConfigScalarPath(path string, keys []string, value any) error {
 	}
 
 	lines[idx] = string(runes[:start]) + rendered + tail
-	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
+	return atomicfile.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
 }
 
 // renderScalar encodes value as a single-line YAML scalar with whatever
@@ -374,7 +376,7 @@ func insertProjectConfigBlock(path string, raw []byte, parent *yaml.Node, keys [
 	out = append(out, lines[:insertAt]...)
 	out = append(out, block...)
 	out = append(out, lines[insertAt:]...)
-	return os.WriteFile(path, []byte(strings.Join(out, "\n")), 0644)
+	return atomicfile.WriteFile(path, []byte(strings.Join(out, "\n")), 0644)
 }
 
 // blockEndLine returns the 0-based line index just past the last line any

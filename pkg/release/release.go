@@ -338,6 +338,12 @@ type Release struct {
 	// Provenance is where the release's images were built from. Nil on a
 	// release recorded before it existed.
 	Provenance *Provenance `json:"provenance,omitempty"`
+	// Commits is the source history this release adds over the release it
+	// was cut after ([CaptureCommitRange]). Nil when none was recorded: a
+	// non-git tree, a forge that predates it, or a capture that failed. Like
+	// Provenance it is evidence about the release and not part of its
+	// identity — [Release.SameContent] ignores it.
+	Commits *CommitRange `json:"commits,omitempty"`
 	// CreatedAt is when the release was cut.
 	CreatedAt time.Time `json:"created_at"`
 	// CreatedBy is who cut it, when the backend knows (a hosted ledger
@@ -375,6 +381,14 @@ func (r Release) Validate() error {
 	if r.Provenance != nil {
 		if err := r.Provenance.Validate(); err != nil {
 			return fmt.Errorf("release %q: %w", r.Version, err)
+		}
+	}
+	if r.Commits != nil {
+		if err := r.Commits.Validate(); err != nil {
+			return fmt.Errorf("release %q: %w", r.Version, err)
+		}
+		if r.Commits.BaseRelease == r.Version {
+			return fmt.Errorf("%w: release %q names itself as the base of its commit range", ErrInvalid, r.Version)
 		}
 	}
 	if err := r.Run.Validate(); err != nil {

@@ -3096,10 +3096,10 @@ func TestBuildEntityConv(t *testing.T) {
 	fromProto := strings.Join(conv.FromProtoAssigns, "\n")
 
 	// Plain NOT NULL scalar: direct assignment both ways.
-	if !strings.Contains(toProto, "m.Id = e.Id") {
+	if !strings.Contains(toProto, "m.Id = e.ID") {
 		t.Error("missing direct toProto assignment for id")
 	}
-	if !strings.Contains(fromProto, "e.Id = m.Id") {
+	if !strings.Contains(fromProto, "e.ID = m.Id") {
 		t.Error("missing direct fromProto assignment for id")
 	}
 

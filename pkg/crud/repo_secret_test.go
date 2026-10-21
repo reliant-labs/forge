@@ -3,6 +3,7 @@ package crud
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 
 	"github.com/uptrace/bun"
@@ -62,6 +63,10 @@ func (d dialectOnlyDB) RunTxWithOptions(ctx context.Context, _ orm.TxOptions, fn
 
 func (d dialectOnlyDB) RunTransaction(ctx context.Context, fn func(orm.Context) error) error {
 	return fn(d)
+}
+
+func (d dialectOnlyDB) BeginDetached(context.Context, orm.TxOptions) (*orm.Tx, error) {
+	return nil, errors.New("dialectOnlyDB opens no transactions")
 }
 func (d dialectOnlyDB) Dialect() orm.Dialect { return nil }
 

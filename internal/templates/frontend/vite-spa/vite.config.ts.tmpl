@@ -176,6 +176,14 @@ export default defineConfig(({ command, mode }) => {
         "@": path.resolve(__dirname, "./src"),
       },
     },
+    build: {
+      // forge asks for source maps when IT builds for a deploy
+      // (FORGE_SOURCEMAPS=1) and then moves them out of the served tree, so
+      // they can symbolicate errors without being public. Any other build
+      // (a Docker image, a local `npm run build`) emits none, because
+      // nothing there would take them out of the output.
+      sourcemap: process.env.FORGE_SOURCEMAPS === "1",
+    },
     server: {
       port: 5173,
       host: true,

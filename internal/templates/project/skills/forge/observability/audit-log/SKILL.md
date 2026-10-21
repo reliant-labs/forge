@@ -1,13 +1,13 @@
 ---
 name: observability/audit-log
-description: A queryable, DB-persisted audit trail on forge/pkg/audit — the audit_log table you own, the DB-backed audit interceptor in observe.Chain, and a scoped ListAuditEvents read RPC over the same store. The slog-only audit record every RPC already writes needs none of it.
+description: A queryable, DB-persisted audit trail on forge/pkg/audit — the audit_log table you own, the DB-backed audit interceptor in the serverkit chain, and a scoped ListAuditEvents read RPC over the same store. The slog-only audit record every RPC already writes needs none of it.
 ---
 
 # Audit log
 
-Every RPC already produces a structured audit record: the scaffold wires
-`fmw.AuditInterceptor(logger, middleware.ClaimsFromContext)` into the `Audit`
-field of `observe.Chain(observe.Deps{…})` in the generated `cmd serve.go`. That
+Every RPC already produces a structured audit record: `serverkit.NewChain`
+fills its `Audit` slot with `fmw.AuditInterceptor` over the caller's claims by
+default (the chain the generated `cmd serve.go` builds). That
 is slog-only — the record goes to your logs (queryable in HyperDX) with
 `log_type=audit`, message `audit.event`.
 
@@ -31,17 +31,17 @@ app-specific read-side (the table + the RPC) is code you own.
    `procedure`, and `timestamp` for the query filters.
 
 2. **Wire the DB-backed interceptor** from the library — one line. Construct
-   the store and swap the base `Audit` field in `cmd serve.go`'s
-   `observe.Deps`:
+   the store and set the `Audit` slot of `cmd serve.go`'s
+   `serverkit.ChainDeps`, replacing the default:
 
    ```go
    import "github.com/reliant-labs/forge/pkg/audit"
 
    store := audit.NewDBAuditStore(db)
-   chainDeps := observe.Deps{
-       // ...recovery/logging/tracing/metrics/auth/ratelimit as scaffolded...
+   chain, err := serverkit.NewChain(serverkit.ChainDeps{
+       // ...Auth, RateLimit, caps as scaffolded...
        Audit: audit.Interceptor(logger, middleware.ClaimsFromContext, store),
-   }
+   })
    ```
 
    If your migration puts the table in a schema, say which:

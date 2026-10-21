@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // revive's `exported` rule is OFF in the scaffolded .golangci.yml
@@ -264,7 +266,7 @@ func runExportedGate(t *testing.T, projectDir, gateConfig string) []string {
 	t.Helper()
 	cmd := exec.Command("golangci-lint", golangciLintRunArgs("--config", gateConfig, "./...")...)
 	cmd.Dir = projectDir
-	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS="))
 	out, err := cmd.CombinedOutput()
 	findings := parseExportedFindings(string(out))
 	if err != nil && len(findings) == 0 {
@@ -305,7 +307,7 @@ func assertExportedGateCanFail(t *testing.T, projectDir, gateConfig string) {
 
 	cmd := exec.Command("golangci-lint", golangciLintRunArgs("--config", gateConfig, "./internal/pricing/")...)
 	cmd.Dir = projectDir
-	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS="))
 	out, _ := cmd.CombinedOutput()
 	if !strings.Contains(string(out), "ExportedGateProbe") {
 		t.Fatalf("the `revive: exported` lane did not report a deliberately undocumented exported type. "+

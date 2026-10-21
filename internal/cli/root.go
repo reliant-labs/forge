@@ -147,11 +147,13 @@ authored protos, in one call.`,
 			// what the binary file is named.
 			cmdutil.RecordCmdRoute(rootCmd)
 
-			// Self-heal git-hook activation (idempotent, best-effort).
-			// No-op unless we're in a forge project that ships .githooks/ (see
-			// ensureGitHooksActivated), and skipped for commands that
-			// opt out (see skipHookActivationAnnotation).
-			if !hookActivationSkipped(cmd) {
+			// Self-heal the clone's git setup — hook activation and the
+			// generated-file merge driver (idempotent, best-effort). Only
+			// commands that write generated or state files do it
+			// (cmdutil.ConfiguresClone): a read-only or slot command must
+			// never touch .git/config, which every linked worktree shares.
+			// skipHookActivationAnnotation opts a writing command back out.
+			if cmdutil.ConfiguresCloneFor(cmd) && !hookActivationSkipped(cmd) {
 				if root, err := cmdutil.FindProjectRoot(); err == nil && root != "" {
 					ensureGitHooksActivated(root)
 					ensureGeneratedMergeDriver(root)
@@ -278,6 +280,9 @@ authored protos, in one call.`,
 	// that clears the refusal in ledger_unimported.go.
 	rootCmd.AddCommand(newLedgerCmd())
 	rootCmd.AddCommand(newGateCmd())
+	// `frontend` operates on built frontends; today its one noun is the source
+	// maps of a build forge did not run (`forge frontend sourcemaps push`).
+	rootCmd.AddCommand(newFrontendGroupCmd())
 	// `project` is the project-structure noun: the commands that create,
 	// retire, or INSPECT a project as a whole (new/delete/disown/migrate/
 	// upgrade/map/graph/introspect/features/annotations). The flat members

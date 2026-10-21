@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Recording which forge build last generated a tree.
@@ -51,7 +53,7 @@ func recordGeneratingBuild(projectDir string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return
 	}
-	_ = os.WriteFile(path, []byte(buildinfo.Identity()+"\n"), 0o644)
+	_ = atomicfile.WriteFile(path, []byte(buildinfo.Identity()+"\n"), 0o644)
 }
 
 // readGeneratingBuild returns the recorded identity of the forge build that

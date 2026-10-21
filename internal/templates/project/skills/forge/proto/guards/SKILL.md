@@ -87,4 +87,3 @@ matches no known marker, naming the file, the line and the closest real marker:
 Warnings only: it never fails the build, since an unrecognized marker might be
 a future forge version's or prose that happens to contain `forge:`. It runs in
 the default `forge lint` pass whenever a `proto/` tree exists.
-

@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/envutil"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Ensure is the install step shared by `forge env up`, `forge build` and
@@ -77,16 +79,15 @@ func lockfilePackageManager(dir, fallback string) string {
 }
 
 // installArgs returns the install verb and flags. Frozen mode needs a
-// lockfile to honour; npm without one falls back to `install`.
+// lockfile to honour; npm without one — at the root it actually installs
+// at, see NpmInstallVerb — falls back to `install`.
 func installArgs(runner, dir string, frozen bool) []string {
 	if !frozen {
 		return []string{"install"}
 	}
 	switch runner {
 	case "npm":
-		if _, err := os.Stat(filepath.Join(dir, "package-lock.json")); err == nil {
-			return []string{"ci"}
-		}
+		return []string{NpmInstallVerb(dir)}
 	case "pnpm":
 		return []string{"install", "--frozen-lockfile"}
 	case "yarn":
@@ -226,5 +227,5 @@ func installStamp(dir string) string {
 // markInstallOK records a completed install. Best-effort: a tree that
 // cannot be stamped just falls back to the mtime heuristic next time.
 func markInstallOK(dir string) {
-	_ = os.WriteFile(installStamp(dir), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
+	_ = atomicfile.WriteFile(installStamp(dir), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
 }

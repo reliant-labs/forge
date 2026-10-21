@@ -13,6 +13,8 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // generateFrontendNav re-renders the sidebar navigation and dashboard page
@@ -383,7 +385,7 @@ func emitScaffoldOnceIfMissing(projectDir, relPath, tmplPath string, data templa
 		return fmt.Errorf("mkdir for %s: %w", relPath, err)
 	}
 	checksums.RecordPreWriteAbs(full) // journaled: a failed run removes it
-	if err := os.WriteFile(full, content, 0o644); err != nil {
+	if err := atomicfile.WriteFile(full, content, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", relPath, err)
 	}
 	checksums.RecordScaffold(projectDir, relPath)
@@ -702,7 +704,7 @@ func emitScaffoldUntilTouched(projectDir, relPath, tmplPath string, data templat
 		return fmt.Errorf("mkdir for %s: %w", relPath, err)
 	}
 	checksums.RecordPreWriteAbs(full) // journaled: a failed run removes it
-	if err := os.WriteFile(full, content, 0o644); err != nil {
+	if err := atomicfile.WriteFile(full, content, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", relPath, err)
 	}
 	checksums.RecordScaffoldWithHash(projectDir, relPath, content)

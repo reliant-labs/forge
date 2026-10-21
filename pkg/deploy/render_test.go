@@ -7,11 +7,13 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/serverkit/drainbudget"
 )
 
 var ctx = Context{Namespace: "acme-prod", PartOf: "proj"}
@@ -233,7 +235,10 @@ func TestProbesSplit(t *testing.T) {
 	}
 }
 
-// TestGracePeriod ports expand.k:239-253 and its _duration_seconds parser.
+// TestGracePeriod: PRE_STOP_DELAY + SHUTDOWN_TIMEOUT + a 5s margin, each read
+// by serverkit's rule — zero is the default, negative is none — so the grace
+// period is exactly what the server will spend. "0s" used to render 0 while
+// the server spent its 30s default, and the kubelet SIGKILLed mid-drain.
 func TestGracePeriod(t *testing.T) {
 	for _, c := range []struct {
 		env  []v1alpha1.EnvVar
@@ -242,8 +247,12 @@ func TestGracePeriod(t *testing.T) {
 		{nil, 40},
 		{[]v1alpha1.EnvVar{{Name: "PRE_STOP_DELAY", Value: "10s"}, {Name: "SHUTDOWN_TIMEOUT", Value: "1m"}}, 75},
 		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "1h"}}, 3610},
-		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "1m30s"}}, 40}, // not <int><unit>: fallback
-		{[]v1alpha1.EnvVar{{Name: "PRE_STOP_DELAY", Value: "7"}}, 42},
+		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "1m30s"}}, 100},
+		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "1500ms"}}, 12}, // rounded up
+		{[]v1alpha1.EnvVar{{Name: "PRE_STOP_DELAY", Value: "7s"}}, 42},
+		{[]v1alpha1.EnvVar{{Name: "PRE_STOP_DELAY", Value: "0s"}, {Name: "SHUTDOWN_TIMEOUT", Value: "0s"}}, 40},   // zero: the defaults
+		{[]v1alpha1.EnvVar{{Name: "PRE_STOP_DELAY", Value: "-1s"}}, 35},                                           // negative: no pause
+		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "-1s"}}, 10},                                         // negative: no window
 		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", ManagedSecret: &v1alpha1.ManagedSecretRef{Name: "X"}}}, 40}, // a reference has no literal
 	} {
 		w := svc("api")
@@ -251,6 +260,61 @@ func TestGracePeriod(t *testing.T) {
 		pod := podOf(objects(t, render(t, v1alpha1.ProfileFull, w))["Deployment/api"])
 		if got := get(pod, "terminationGracePeriodSeconds"); got != c.want {
 			t.Errorf("env %v: grace = %v, want %v", c.env, got, c.want)
+		}
+	}
+}
+
+// TestGracePeriodAgreesWithTheServersReader pins that the grace period is
+// derived from the same reading of PRE_STOP_DELAY / SHUTDOWN_TIMEOUT a server
+// main gets from drainbudget.FromEnv: for every value a server accepts, the
+// pod's grace is the server's effective pre-stop + shutdown, each rounded up,
+// plus the margin. A private copy of the rule drifted once (it read "-1s" as
+// malformed); this is the check that the two readers cannot.
+func TestGracePeriodAgreesWithTheServersReader(t *testing.T) {
+	ceil := func(d time.Duration) float64 { return float64((d + time.Second - 1) / time.Second) }
+	for _, pair := range [][2]string{
+		{"", ""}, {"0", "0s"}, {"10s", "1m"}, {"7s", "45s"}, {"-1s", "30s"}, {"-1s", "-1s"},
+		{"500ms", "1500ms"}, {"1m30s", "1h"},
+	} {
+		m := map[string]string{drainbudget.EnvPreStopDelay: pair[0], drainbudget.EnvShutdownTimeout: pair[1]}
+		b, err := drainbudget.FromEnv(func(k string) string { return m[k] })
+		if err != nil {
+			t.Fatalf("FromEnv(%v): %v", m, err)
+		}
+		w := svc("api")
+		for k, v := range m {
+			if v != "" {
+				w.Spec.Env = append(w.Spec.Env, v1alpha1.EnvVar{Name: k, Value: v})
+			}
+		}
+		pod := podOf(objects(t, render(t, v1alpha1.ProfileFull, w))["Deployment/api"])
+		want := ceil(b.PreStop()) + ceil(b.Shutdown()) + graceMarginSeconds
+		if got := get(pod, "terminationGracePeriodSeconds"); got != want {
+			t.Errorf("env %v: grace = %v, the server's budget implies %v", m, got, want)
+		}
+	}
+}
+
+// TestGracePeriodRefusesWhatTheServerRefuses: a drain value the server's
+// config loader refuses at boot (a bare number, an interpolation, a typo)
+// fails the render, naming the workload and the variable. It used to render
+// the DEFAULT grace period for it — a pod whose grace period was derived from
+// a budget its process would never run, because it would never start.
+func TestGracePeriodRefusesWhatTheServerRefuses(t *testing.T) {
+	for _, env := range [][]v1alpha1.EnvVar{
+		{{Name: "SHUTDOWN_TIMEOUT", Value: "30"}},
+		{{Name: "PRE_STOP_DELAY", Value: "-1"}},
+		{{Name: "SHUTDOWN_TIMEOUT", Value: "${X}"}},
+	} {
+		w := svc("api")
+		w.Spec.Env = env
+		_, err := RenderWorkloads([]v1alpha1.Workload{w}, v1alpha1.ProfileFull, ctx)
+		if err == nil {
+			t.Errorf("env %v: rendered, want an error the server's loader would also give", env)
+			continue
+		}
+		if !strings.Contains(err.Error(), `"api"`) || !strings.Contains(err.Error(), env[0].Name) {
+			t.Errorf("env %v: error must name the workload and the variable; got: %v", env, err)
 		}
 	}
 }

@@ -62,8 +62,9 @@ reload). Anything else runs `go run`, its argv DERIVED from the workload's
 `forge build dev` pushes, with the same `args`.
 
 Rebinding is editing one line: `_on_k3d(_api)` runs the API as a pod. To run
-ONE service alone (to debug it), bind `_on_host(wl.item)` and take it out of
-`server`'s mount (cmd/acme/cmd/server.go), or both serve it. To vary HOW
+ONE service alone (to debug it), bind `_on_host(wl.item)` and give it a root
+of its own (a `//forge:root` struct in internal/app — `architecture`, "Roots
+and commands") that `server`'s root no longer holds, or both serve it. To vary HOW
 something launches per run without an edit, declare a render option and read
 it in the binding (`runner = option("host_runner") or "air"`, then `-D
 host_runner=go-run`).

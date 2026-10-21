@@ -14,6 +14,8 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/database"
 	"github.com/reliant-labs/forge/internal/migrationver"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // resolveDSN returns the explicit --dsn flag value, falling back to the
@@ -381,7 +383,7 @@ func runDBSquash(ctx context.Context, opts squashOptions) error {
 	if err := checkWrittenForgeAdoption(content, squashed); err != nil {
 		return fmt.Errorf("the baseline for %s: %w", upPath, err)
 	}
-	if err := os.WriteFile(upPath, []byte(content), 0o644); err != nil {
+	if err := atomicfile.WriteFile(upPath, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("write baseline up: %w", err)
 	}
 

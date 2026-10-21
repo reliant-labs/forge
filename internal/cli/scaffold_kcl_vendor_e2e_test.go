@@ -27,7 +27,6 @@ import (
 //     named as the fix, and one `forge generate` migrates all three.
 //  4. Idempotent: a second `forge generate` leaves kcl.mod byte-identical.
 func TestE2EScaffoldKCLModuleFromTheBinary(t *testing.T) {
-	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 
 	forgeBin := buildforgeBinary(t)
@@ -38,6 +37,7 @@ func TestE2EScaffoldKCLModuleFromTheBinary(t *testing.T) {
 		"--service", "item",
 	)
 	projectDir := filepath.Join(dir, "kclmoduleapp")
+	addCorpusForgePkgReplace(t, projectDir)
 	deployMod := filepath.Join(projectDir, "deploy", "kcl", "kcl.mod")
 	vendorDir := filepath.Join(projectDir, ".forge-kcl")
 

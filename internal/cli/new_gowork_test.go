@@ -3,11 +3,13 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/mod/modfile"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // starterGoWork is the workspace the project generator emits before the dev
@@ -184,5 +186,38 @@ func TestWriteDevForgeGoWork_NoGoWorkNoCreate(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(dir, "go.work")); !os.IsNotExist(err) {
 		t.Errorf("expected no go.work to be created, stat err = %v", err)
+	}
+}
+
+// --forge-root names the checkout for a binary that cannot find its own (any
+// -trimpath build): the bridge uses it, and a path that is not a forge
+// checkout refuses before anything is written.
+func TestWriteDevForgeGoWork_ForgeRootFlag(t *testing.T) {
+	dir, workPath := starterProject(t)
+	stampRoot(t, "")
+	buildinfo.SetDiscoveredForgeRoot("")
+	t.Cleanup(buildinfo.ClearDiscoveredForgeRoot)
+	t.Setenv(buildinfo.ForgeRootEnv, "")
+
+	checkout := t.TempDir()
+	writeGoModIn(t, checkout, "module github.com/reliant-labs/forge\n\ngo 1.26\n")
+	if err := os.MkdirAll(filepath.Join(checkout, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	explicitForgeRoot = checkout
+	t.Cleanup(func() { explicitForgeRoot = "" })
+
+	if err := checkScaffoldCanResolveForge(config.ProjectKindService, true, nil); err != nil {
+		t.Fatalf("a named checkout was refused: %v", err)
+	}
+	writeDevForgeGoWork(dir, true)
+	if got := usePaths(t, workPath); !containsUse(got, checkout) {
+		t.Errorf("go.work uses %v, want the named checkout %s", got, checkout)
+	}
+
+	explicitForgeRoot = t.TempDir()
+	err := checkScaffoldCanResolveForge(config.ProjectKindService, true, nil)
+	if err == nil || !strings.Contains(err.Error(), "is not a forge checkout") {
+		t.Errorf("a directory that is not a forge checkout: %v", err)
 	}
 }

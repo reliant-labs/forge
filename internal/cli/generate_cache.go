@@ -89,6 +89,7 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/shadowdb"
+	"github.com/reliant-labs/forge/pkg/hostslot"
 )
 
 const (
@@ -330,11 +331,18 @@ func fingerprintGenerate(root string, snap *workTreeSnapshot, outputs, outputDir
 		if err != nil {
 			return nil, err
 		}
-		fp.files["gowork:"+work] = id
+		// A go.work inside the project is keyed by its project-relative
+		// path, like every other project file, so a copy of the project
+		// elsewhere (verify-generated's scratch) fingerprints the same.
+		key := work
+		if rel, rerr := filepath.Rel(root, work); rerr == nil && within(root, work) {
+			key = filepath.ToSlash(rel)
+		}
+		fp.files["gowork:"+key] = id
 		if id, err = pathIdentity(work + ".sum"); err != nil {
 			return nil, err
 		}
-		fp.files["gowork:"+work+".sum"] = id
+		fp.files["gowork:"+key+".sum"] = id
 	}
 	extern, err := generateCacheExternalModules(root, snap, environ)
 	if err != nil {
@@ -648,6 +656,13 @@ func generateCacheExtraFiles(root string, snap *workTreeSnapshot) []string {
 	for _, rel := range gitIgnoredFiles(root) {
 		name := path.Base(rel)
 		if strings.HasPrefix(name, ".forge-tmp-") || (path.Dir(rel) == ".forge" && generateCacheIgnoredState[name]) {
+			continue
+		}
+		// An installed tree is covered by npm's record of it, above. A
+		// node_modules that is a symlink (verify-generated's scratch copy
+		// links the checkout's) arrives here as a file; its directory twin
+		// is collapsed out, and both must fingerprint alike.
+		if name == "node_modules" {
 			continue
 		}
 		set[rel] = true
@@ -978,12 +993,24 @@ var generateCacheEnvIgnored = map[string]bool{
 	"GOMEMLIMIT":                 true,
 	"GOTRACEBACK":                true,
 	"GOCOVERDIR":                 true,
+
+	// Host-slot bookkeeping: which slot a run holds, and where slots
+	// live. FORGE_SLOT_HELD is a fresh token per holder, so keying on it
+	// made every run under a gate (or `forge slot run`) a miss, and every
+	// record made there one no later run could match.
+	hostslot.EnvHeld: true,
+	hostslot.EnvDir:  true,
 }
 
 // generateCacheEnvRelevant reports whether an environment variable is part of
 // the key. PATH is not: what it resolves is, tool by tool.
 func generateCacheEnvRelevant(name string) bool {
 	if generateCacheEnvIgnored[name] {
+		return false
+	}
+	// FORGE_<CLASS>_SLOTS sizes a host-slot class: how many runs share the
+	// machine, never what one of them writes.
+	if strings.HasPrefix(name, "FORGE_") && strings.HasSuffix(name, "_SLOTS") {
 		return false
 	}
 	switch name {
@@ -1344,6 +1371,9 @@ func fingerprintKeyPath(root, key string) (p string, isFile bool) {
 	}
 	for _, prefix := range []string{"ext:", "gowork:", "goenv:"} {
 		if rest, ok := strings.CutPrefix(key, prefix); ok {
+			if p := filepath.FromSlash(rest); !filepath.IsAbs(p) {
+				return filepath.Join(root, p), true // a go.work inside the project
+			}
 			return filepath.FromSlash(rest), true
 		}
 	}

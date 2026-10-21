@@ -33,6 +33,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/pkg/observe/metrics"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // MetricsSchemaArtifact is the schema's path relative to the build output
@@ -72,7 +74,7 @@ func emitMetricsSchema(ctx context.Context, w io.Writer, outputDir, crossArch st
 			fmt.Fprintf(w, "[build] metrics schema not written: %v\n", err)
 			return
 		}
-		if err := os.WriteFile(dest, raw, 0o644); err != nil {
+		if err := atomicfile.WriteFile(dest, raw, 0o644); err != nil {
 			fmt.Fprintf(w, "[build] metrics schema not written: %v\n", err)
 			return
 		}

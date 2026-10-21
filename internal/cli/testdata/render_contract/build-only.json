@@ -20,6 +20,7 @@
     "network_policy": null,
     "overrides": {},
     "project": "acme",
+    "release_manifest_consumers": [],
     "rendered_secrets": [],
     "required_dns": [],
     "required_secrets": [],
@@ -32,15 +33,18 @@
           "flags": [],
           "goarch": null,
           "goos": null,
+          "inputs_file": null,
           "ldflags": [],
           "output_name": "acme-cli",
           "tags": [],
-          "type": "go"
+          "type": "go",
+          "unit": null
         },
         "build_image": "acme-cli",
         "image": "acme-cli",
         "kind": "tool",
         "name": "cli",
+        "release_inputs": {},
         "runtime": {
           "build_variants": [
             {
@@ -72,15 +76,18 @@
           "build_contexts": {},
           "context": null,
           "dockerfile": "images/base/Dockerfile",
+          "inputs_file": null,
           "output_name": null,
           "platform": null,
           "target": null,
-          "type": "docker"
+          "type": "docker",
+          "unit": null
         },
         "build_image": "workspace-base",
         "image": "workspace-base",
         "kind": "tool",
         "name": "workspace-base",
+        "release_inputs": {},
         "runtime": {
           "build_variants": [],
           "type": "build-only"

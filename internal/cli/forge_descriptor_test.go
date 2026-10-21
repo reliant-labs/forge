@@ -7,8 +7,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/compiler/protogen"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
@@ -66,6 +68,23 @@ func TestDescriptorParsesErrors_PreservesAuthRequired(t *testing.T) {
 	}
 	if len(method.Errors) != 1 || method.Errors[0] != "NotFound" {
 		t.Errorf("Errors = %v, want [NotFound]", method.Errors)
+	}
+}
+
+// (forge.v1.method).timeout reaches codegen.Method.Timeout, which projects
+// into pkg/middleware/procedures_gen.go's ProcedureDeadlines. Unset stays
+// zero: the chain's Deadline slot default, not "no deadline".
+func TestDescriptorParsesTimeout(t *testing.T) {
+	method := codegen.Method{Name: "Export"}
+	applyMethodOptions(&method, &forgev1.MethodOptions{Timeout: durationpb.New(2 * time.Minute)})
+	if method.Timeout != 2*time.Minute {
+		t.Errorf("Timeout = %s, want 2m0s", method.Timeout)
+	}
+
+	unset := codegen.Method{Name: "Get"}
+	applyMethodOptions(&unset, &forgev1.MethodOptions{})
+	if unset.Timeout != 0 {
+		t.Errorf("unset Timeout = %s, want 0 (the slot's default)", unset.Timeout)
 	}
 }
 

@@ -49,7 +49,7 @@ func TestRenderScopedCRUDShim_CreateStampsTheOwner(t *testing.T) {
 	// Create stamps the column from the caller rather than filtering on
 	// it: a create that read company_id off the wire would let any
 	// caller file a row under another principal's name.
-	if !strings.Contains(got, "e.CompanyId = owner") {
+	if !strings.Contains(got, "e.CompanyID = owner") {
 		t.Errorf("rendered Create shim must stamp the owner field from the caller\n---\n%s", got)
 	}
 	if strings.Contains(got, `orm.WhereEq("company_id", owner)`) {
@@ -75,7 +75,7 @@ func TestRenderScopedCRUDShim_UpdateGuardsTheStoredRow(t *testing.T) {
 	// Both halves are needed: the predicate is checked against the STORED
 	// row so a caller cannot take ownership by rewriting company_id in
 	// the request, and the stamp keeps the written row on the same owner.
-	if !strings.Contains(got, "op.Persist = func(") || !strings.Contains(got, "e.CompanyId = owner") {
+	if !strings.Contains(got, "op.Persist = func(") || !strings.Contains(got, "e.CompanyID = owner") {
 		t.Errorf("Update needs BOTH the stored-row predicate and the stamp\n---\n%s", got)
 	}
 }

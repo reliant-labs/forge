@@ -132,25 +132,33 @@ func NewComponents(infra *Infra) (*Components, error) {
 
 The serve path (`cmd/<bin>/cmd/serve.go`) then applies the typed `Mount<Svc>` method values onto a `serverkit.Server` and calls `srv.RequireMounted(...)`.
 
+- **Per-service handler options are a value, passed explicitly.** Every service shares the serve path's interceptor chain. To give one service more (an extra interceptor, its own read limit, its own HTTP stack), build the generated `app.MountOptions` — one `[]mountkit.Option` field per service — in owned code and name one of its methods as the mount: `ServeSpec{Mount: app.MountOptions{Worktree: []mountkit.Option{mountkit.WithHandlerOptions(connect.WithInterceptors(wake))}}.MountAll, ...}` in `server.go`, or `.MountWorktree` in that service's subcommand. `mountkit.WithHandlerOptions` comes after the shared chain, so the shared interceptors wrap it.
+
 - **Selection is code.** To stop serving a service, stop constructing it in `NewComponents` and stop mounting it. To serve it elsewhere, construct it in that binary's composition. No `forge.yaml` edit, no string match.
 - **The `Deps` interface is the seam.** A consumer's field is `Users user.Service`, never the concrete type — it can't tell whether it got the in-process instance, a Connect client, or a mock. Splitting a service into its own Deployment later is a one-line swap in `NewComponents` (`billing.New(billing.Deps{Users: userclient.New(conn)})`) with the consumer untouched.
 - **Per-binary singletons are natural.** A dep that must be one instance within each process (e.g. `enforcement` in both the server and the workspace-proxy) is one field on the owned `Infra`, opened once in `OpenInfra` and shared across the components.
 - **A `// forge:unmanaged` service is not a component.** Its proto declares it but its handlers live outside `internal/handlers/` (in-place adoption — see `migration`), so forge emits no `Mount<Svc>`, compose entry, inventory row or subcommand for it. Mount its handler yourself, onto the same `srv.Mux` with the same handler options, and the generated open-procedure set still covers its public rpcs. `RequireComplete` checks exactly `app.Inventory`, so it neither demands nor blocks on an unmanaged service. Deleting the marker adopts it: the next `forge generate` scaffolds it like a new service.
 - **`serverkit.Run` takes a composed server with typed mounts, not service-name strings.** It runs handlers + workers + operators + lifecycle; *which* of each is decided by what `NewComponents` constructed and the serve path mounted. There is no `args`/`names` variadic, no name-matched wiring.
+- **The interceptor chain and the listener are components.** `serve.go` builds the chain with `serverkit.NewChain(serverkit.ChainDeps{Auth: …})` (every slot defaulted except `Auth`, which is required) and hands it to `serverkit.Server.Chain`; `serverkit.Run` serves one `serverkit.Listener` over it. A process that serves a second kind of caller — daemons, operators — builds a second chain and a second `serverkit.NewListener(ListenerDeps{Config, Chain, Routes})` on its own address, and a listener refuses to start when a mounted service's `(forge.v1.service).audience` differs from its chain's. Depth: `auth` (audiences), `services/shutdown` (running listeners without `Run`).
+- **Shutdown is Run's, and it drains.** Readiness flips, the pre-stop pause runs, then unary requests finish while long-lived streams (SSE, websockets, Connect streams) are ended inside the budget. Mark a plain-HTTP streaming route with `serverkit.LongLived(h)`. Depth: `forge skill load services/shutdown`.
 
-## Subcommands are real cobra, not a projected string table
+## Commands are roots, not one per service
 
-Each service gets its own file at `cmd/<bin>/cmd/services/<name>.go` — forge-owned (Tier-1, `forge project disown` to take it), exporting a real cobra command with its own flags, help, and a jumpable Go symbol:
+A project on the composition graph has no per-service, per-worker or
+per-operator subcommand. A process is a **root** — a `//forge:root` struct in
+`internal/app` whose fields select the subgraph it builds — and every root gets
+one generated cobra command in `cmd/<bin>/cmd/roots_gen.go`, which runs it
+through `runRoot`, the owned process policy in `serve.go`. With no root
+declared the one command is `server`, running every service, worker and
+operator. To run a service alone, declare a root that holds only it; the
+`architecture` skill ("Roots and commands") has the worked example. Custom
+NON-root subcommands go in the user-owned `cmd/<bin>/cmd/commands.go`
+(`userCommands(deps)`) — see the `binaries` skill.
 
-```go
-// cmd/<bin>/cmd/services/billing.go — generated
-func NewBillingCmd(deps cmd.Deps) *cobra.Command {
-    // ...RunE:
-    return cmd.Serve(c.Context(), deps, cmd.ServeSpec{Mount: (*app.Components).MountBilling})
-}
-```
-
-The mount is the typed METHOD EXPRESSION, named directly — no name→func lookup anywhere on the run path. `cmd/<bin>/cmd/server.go` is the all-services command and mounts `(*app.Components).MountAll`; there is no `server [services...]` string-matching and no generated `cmd/services_gen.go`. Custom NON-service subcommands go in the user-owned `cmd/<bin>/cmd/commands.go` (`userCommands(deps)`) — see the `binaries` skill.
+A project still on the legacy `Infra` / `NewComponents` composition keeps its
+generated `cmd/<bin>/cmd/services/<name>.go` per-service commands
+(`cmd.Serve(c.Context(), deps, cmd.ServeSpec{Mount: (*app.Components).MountBilling})`)
+until it migrates.
 
 ## Inventory (introspection only)
 

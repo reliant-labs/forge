@@ -457,7 +457,18 @@ func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvR
 		// through Shape.Encode is what guarantees the server stores the
 		// same bytes `forge env shape` printed, rather than whatever
 		// Go's marshaller happened to emit for the struct.
-		shape, err := shapeWireFields(*ref.Shape)
+		declared := *ref.Shape
+		if declared.HasFrontendTelemetry() {
+			// The control plane strict-decodes this shape, so a part it
+			// predates would be refused whole. Asked only when there is
+			// something to withhold: every other declaration costs no call.
+			reader, rerr := HostedBundleReader(ctx, c)
+			if rerr != nil {
+				return wireEnvironment{}, false, fmt.Errorf("ensure environment %q: %w", ref.Name, rerr)
+			}
+			declared = reader.LimitShape(declared)
+		}
+		shape, err := shapeWireFields(declared)
 		if err != nil {
 			return wireEnvironment{}, false, fmt.Errorf("ensure environment %q: %w", ref.Name, err)
 		}

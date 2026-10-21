@@ -45,6 +45,8 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // rpcDeclaredInServiceProtoDir reports whether any .proto file under the
@@ -289,7 +291,7 @@ func writeBareRPCStub(ctxLabel, handlerDir, pkg, rpcName, pbImportPath string, m
 	}
 
 	content := buildRPCHandlerStub(pkg, rpcName, pbImportPath, mode)
-	if err := os.WriteFile(targetPath, []byte(content), 0o644); err != nil {
+	if err := atomicfile.WriteFile(targetPath, []byte(content), 0o644); err != nil {
 		return cliutil.WrapUserErr(ctxLabel, "write rpc file", targetPath,
 			"verify the directory is writable", err)
 	}

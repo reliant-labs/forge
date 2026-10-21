@@ -48,12 +48,14 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/pkg/deploy"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/stsresize"
 )
 
 // RolloutMode is what Apply does after the manifests land.
@@ -1904,6 +1906,19 @@ func applyStreamInNamespace(ctx context.Context, kctx, namespace, manifests stri
 			func() (string, string, error) { return applyOnce(ctx, kctx, namespace, manifests) },
 			func(t strategyTarget) error {
 				return kubectlPatchStrategy(ctx, kctx, t, namespace)
+			},
+		)
+	}
+	// The volume-resize recovery wraps the strategy-healed apply the same
+	// way, for a StatefulSet whose declared volume size grew: it grows the
+	// claims and orphan-recreates the object (volume_resize_recovery.go).
+	// StatefulSet is not recreatable, so the immutable recovery outside never
+	// touches one.
+	withStrategy := apply
+	apply = func() (string, string, error) {
+		return applyWithVolumeResizeRecovery(manifests, namespace, withStrategy,
+			func(desired *appsv1.StatefulSet) (stsresize.Plan, error) {
+				return stsresize.Converge(ctx, kubectlStatefulSets{kctx: kctx}, desired)
 			},
 		)
 	}

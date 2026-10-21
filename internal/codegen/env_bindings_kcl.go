@@ -9,6 +9,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // An env's deploy/kcl/<env>/main.k BINDS each workload to where it runs, one
@@ -138,6 +140,9 @@ func APIWorkloadStanza(modulePath, projectName string, extraSecrets ...string) s
 	fmt.Fprintf(&b, "    image = %q\n", ScaffoldImageRef(modulePath, projectName))
 	fmt.Fprintf(&b, "    build = %s\n", projectGoBuild(projectName))
 	fmt.Fprintf(&b, "    args = %s\n", kclStringList([]string{ServerSubcommand}))
+	// The composition graph's default root: config_gen.workloadEnvMap gives
+	// the API exactly the config `server` reaches.
+	fmt.Fprintf(&b, "    root = %q\n", ServerSubcommand)
 	fmt.Fprintf(&b, "    ports = [fw.Port {name = \"http\", port = %d, expose = True}]\n", config.DefaultServePort)
 	fmt.Fprintf(&b, "    config_secrets = %s\n", kclStringList(append([]string{"DATABASE_URL"}, extraSecrets...)))
 	b.WriteString("}")
@@ -279,7 +284,7 @@ func AppendEnvBinding(projectDir, projectName, env, kind, workloadName string) (
 	if kind == WorkloadKindService && ownLine {
 		updated = claimAPIPortKey(updated, body, workloadName)
 	}
-	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+	if err := atomicfile.WriteFile(path, []byte(updated), 0o644); err != nil {
 		return EnvBindingResult{}, err
 	}
 	res.Applied = true

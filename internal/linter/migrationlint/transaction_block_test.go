@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lib/pq"
-
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
@@ -185,14 +183,14 @@ func TestLintTransactionBlockAgreesWithPostgres(t *testing.T) {
 				}
 			}
 			err = execAsOneQuery(db, tc.body)
-			var pqErr *pq.Error
+			var pgErr interface{ SQLState() string }
 			switch {
 			case tc.sqlstate == "" && err != nil:
 				t.Errorf("the rules accept this file, but postgres refuses it: %v", err)
-			case tc.sqlstate != "" && !errors.As(err, &pqErr):
+			case tc.sqlstate != "" && !errors.As(err, &pgErr):
 				t.Errorf("the rules refuse this file with SQLSTATE %s, but postgres answered %v", tc.sqlstate, err)
-			case tc.sqlstate != "" && string(pqErr.Code) != tc.sqlstate:
-				t.Errorf("postgres refused with SQLSTATE %s (%v), the rules name %s", pqErr.Code, err, tc.sqlstate)
+			case tc.sqlstate != "" && pgErr.SQLState() != tc.sqlstate:
+				t.Errorf("postgres refused with SQLSTATE %s (%v), the rules name %s", pgErr.SQLState(), err, tc.sqlstate)
 			}
 		})
 	}

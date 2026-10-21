@@ -39,6 +39,11 @@ type Policy struct {
 	// GoCacheGiB is the size the shared Go caches are trimmed down to,
 	// oldest first, when age alone leaves them larger.
 	GoCacheGiB uint64 `json:"go_cache_gib"`
+	// GoCacheVolumePercent caps that budget at this share of the volume the
+	// cache lives on, so the default works on a 40 GiB build volume as well as
+	// on a 1 TB laptop: the budget is the smaller of go_cache_gib and this
+	// share. Zero means the default (15); 100 leaves go_cache_gib alone.
+	GoCacheVolumePercent int `json:"go_cache_volume_percent,omitempty"`
 	// SourceCacheUnused is how long a cross-repo source clone may go
 	// unresolved before it becomes an eviction candidate. Longer than the
 	// image and build-cache windows because the cost of being wrong is a
@@ -190,6 +195,9 @@ func (p Policy) Validate() error {
 	}
 	if p.SourceCacheKeep < 1 {
 		return fmt.Errorf("storage: source_cache_keep must retain at least one clone per repository, got %d", p.SourceCacheKeep)
+	}
+	if p.GoCacheVolumePercent < 0 || p.GoCacheVolumePercent > 100 {
+		return fmt.Errorf("storage: go_cache_volume_percent must be 1-100 (0 means the default %d), got %d", defaultGoCacheVolumePercent, p.GoCacheVolumePercent)
 	}
 	if p.MaxDeletesPerPass < 0 || p.DeleteRatePerSec < 0 || p.MaxDockerRemovalsPerPass < 0 {
 		return fmt.Errorf("storage: max_deletes_per_pass, delete_rate_per_sec and max_docker_removals_per_pass must be positive (0 means the default), got %d, %d and %d", p.MaxDeletesPerPass, p.DeleteRatePerSec, p.MaxDockerRemovalsPerPass)

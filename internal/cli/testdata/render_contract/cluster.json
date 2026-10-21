@@ -365,6 +365,7 @@
     },
     "overrides": {},
     "project": "acme",
+    "release_manifest_consumers": [],
     "rendered_secrets": [],
     "required_dns": [],
     "required_secrets": [],
@@ -381,15 +382,18 @@
           "flags": [],
           "goarch": null,
           "goos": null,
+          "inputs_file": null,
           "ldflags": [],
           "output_name": "acme",
           "tags": [],
-          "type": "go"
+          "type": "go",
+          "unit": null
         },
         "build_image": "localhost:5050/acme",
         "image": "localhost:5050/acme",
         "kind": "service",
         "name": "api",
+        "release_inputs": {},
         "runtime": {
           "cluster": "k3d-acme",
           "connected_cluster": null,
@@ -469,15 +473,18 @@
           "flags": [],
           "goarch": null,
           "goos": null,
+          "inputs_file": null,
           "ldflags": [],
           "output_name": "acme",
           "tags": [],
-          "type": "go"
+          "type": "go",
+          "unit": null
         },
         "build_image": "localhost:5050/acme",
         "image": "localhost:5050/acme",
         "kind": "job",
         "name": "migrate",
+        "release_inputs": {},
         "runtime": {
           "cluster": "k3d-acme",
           "connected_cluster": null,
@@ -526,15 +533,18 @@
           "flags": [],
           "goarch": null,
           "goos": null,
+          "inputs_file": null,
           "ldflags": [],
           "output_name": "acme",
           "tags": [],
-          "type": "go"
+          "type": "go",
+          "unit": null
         },
         "build_image": "localhost:5050/acme",
         "image": "localhost:5050/acme",
         "kind": "cron",
         "name": "nightly",
+        "release_inputs": {},
         "runtime": {
           "cluster": "k3d-acme",
           "connected_cluster": null,
@@ -592,6 +602,7 @@
         "image": "",
         "kind": "service",
         "name": "nats",
+        "release_inputs": {},
         "runtime": {
           "cluster": "k3d-acme",
           "connected_cluster": null,
@@ -635,15 +646,18 @@
           "flags": [],
           "goarch": null,
           "goos": null,
+          "inputs_file": null,
           "ldflags": [],
           "output_name": "acme",
           "tags": [],
-          "type": "go"
+          "type": "go",
+          "unit": null
         },
         "build_image": "localhost:5050/acme",
         "image": "localhost:5050/acme",
         "kind": "operator",
         "name": "workspace",
+        "release_inputs": {},
         "runtime": {
           "cluster": "k3d-acme",
           "connected_cluster": null,

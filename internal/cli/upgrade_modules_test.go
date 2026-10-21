@@ -64,6 +64,15 @@ func TestUpgradeModulesOfflineCompatibility(t *testing.T) {
 		t.Skip("real Go subprocesses and module resolution; runs in task test")
 	}
 	t.Setenv("GOPROXY", upgradeModuleProxy(t))
+	// The fixture proxy must be the ONLY source. A developer machine with
+	// GOPRIVATE=github.com/reliant-labs/* (in the environment or in `go env -w`)
+	// otherwise sends forge's module straight to git, where the fixture
+	// versions do not exist. GOENV=off drops the go env file; the empty values
+	// clear the process environment.
+	t.Setenv("GOENV", "off")
+	t.Setenv("GOPRIVATE", "")
+	t.Setenv("GONOPROXY", "")
+	t.Setenv("GONOSUMDB", "")
 	t.Setenv("GOSUMDB", "off")
 	t.Setenv("GOWORK", "off")
 	t.Setenv("GOTOOLCHAIN", "local")

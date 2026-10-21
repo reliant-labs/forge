@@ -76,17 +76,23 @@ func TestReconcileForgePin_NoForgeRequireLeavesPin(t *testing.T) {
 	}
 }
 
-// A hop that carries a codemod (or a migration) is `forge project upgrade`'s
-// to cross: moving the baseline silently would make upgrade skip it. Generate
-// leaves the pin and names the command.
+// A hop whose codemod still has something to rewrite is `forge project
+// upgrade`'s to cross: moving the baseline silently would make upgrade skip
+// it. Generate leaves the pin and names both commands. A codemod with
+// nothing to rewrite here holds nothing back.
 func TestReconcileForgePin_HopNeedingUpgradeIsLeftToUpgrade(t *testing.T) {
-	const key = "0.1->0.2"
-	codemodRegistry[key] = func(string) (CodemodReport, error) { return CodemodReport{}, nil }
-	t.Cleanup(func() { delete(codemodRegistry, key) })
+	const forgeYAML = "name: app\nmodule_path: example.com/app\nforge_version: v0.1.45\n"
+	const goMod = "module example.com/app\n\ngo 1.24\n\nrequire github.com/reliant-labs/forge v0.1.46\n"
 
-	const forgeYAML = "name: app\nmodule_path: example.com/app\nforge_version: v0.1.9\n"
-	dir, ctx := writePinProject(t, forgeYAML,
-		"module example.com/app\n\ngo 1.24\n\nrequire github.com/reliant-labs/forge v0.2.0\n")
+	dir, ctx := writePinProject(t, forgeYAML, goMod)
+	lifecycle := filepath.Join(dir, "internal", "app", "lifecycle.go")
+	if err := os.MkdirAll(filepath.Dir(lifecycle), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const src = "package app\n\nimport \"github.com/reliant-labs/forge/pkg/lifecyclekit\"\n\nvar _ lifecyclekit.Options\n"
+	if err := os.WriteFile(lifecycle, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	out := captureStdout(t, func() {
 		if err := stepReconcileForgePin(ctx); err != nil {
 			t.Fatalf("stepReconcileForgePin: %v", err)
@@ -95,7 +101,22 @@ func TestReconcileForgePin_HopNeedingUpgradeIsLeftToUpgrade(t *testing.T) {
 	if got, _ := os.ReadFile(filepath.Join(dir, "forge.yaml")); string(got) != forgeYAML {
 		t.Errorf("generate moved the pin across a hop that needs `forge project upgrade`:\n%s", got)
 	}
-	if !strings.Contains(out, "project upgrade") {
-		t.Errorf("leaving the pin must name `forge project upgrade`, got:\n%s", out)
+	if !strings.Contains(out, "project upgrade") || !strings.Contains(out, "forge fix operatorkit") {
+		t.Errorf("leaving the pin must name `forge project upgrade` and `forge fix operatorkit`, got:\n%s", out)
+	}
+	if got, _ := os.ReadFile(lifecycle); string(got) != src {
+		t.Errorf("generate must not run the codemod itself:\n%s", got)
+	}
+
+	// The same hop over a project with nothing for the codemod to rewrite
+	// moves the pin.
+	clean, cleanCtx := writePinProject(t, forgeYAML, goMod)
+	captureStdout(t, func() {
+		if err := stepReconcileForgePin(cleanCtx); err != nil {
+			t.Fatalf("stepReconcileForgePin: %v", err)
+		}
+	})
+	if got, _ := os.ReadFile(filepath.Join(clean, "forge.yaml")); !strings.Contains(string(got), "forge_version: v0.1.46") {
+		t.Errorf("a hop with no codemod work left must move the pin:\n%s", got)
 	}
 }

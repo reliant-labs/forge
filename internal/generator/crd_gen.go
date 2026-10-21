@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/naming"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // CRDShape is the reconciler scaffold style chosen at scaffold time.
@@ -139,7 +141,7 @@ func GenerateCRDFiles(in CRDGenInput) error {
 		if err != nil {
 			return fmt.Errorf("render crd groupversion.go: %w", err)
 		}
-		if err := os.WriteFile(gvPath, gvContent, 0644); err != nil {
+		if err := atomicfile.WriteFile(gvPath, gvContent, 0644); err != nil {
 			return fmt.Errorf("write %s: %w", gvPath, err)
 		}
 	}
@@ -151,7 +153,7 @@ func GenerateCRDFiles(in CRDGenInput) error {
 		return fmt.Errorf("render crd types.go: %w", err)
 	}
 	typesPath := filepath.Join(apiDir, lowerName+"_types.go")
-	if err := os.WriteFile(typesPath, typesContent, 0644); err != nil {
+	if err := atomicfile.WriteFile(typesPath, typesContent, 0644); err != nil {
 		return fmt.Errorf("write %s: %w", typesPath, err)
 	}
 
@@ -161,7 +163,7 @@ func GenerateCRDFiles(in CRDGenInput) error {
 		return fmt.Errorf("render crd controller.go: %w", err)
 	}
 	controllerPath := filepath.Join(operatorDir, lowerName+"_controller.go")
-	if err := os.WriteFile(controllerPath, controllerContent, 0644); err != nil {
+	if err := atomicfile.WriteFile(controllerPath, controllerContent, 0644); err != nil {
 		return fmt.Errorf("write %s: %w", controllerPath, err)
 	}
 
@@ -171,7 +173,7 @@ func GenerateCRDFiles(in CRDGenInput) error {
 		return fmt.Errorf("render crd controller_test.go: %w", err)
 	}
 	testPath := filepath.Join(operatorDir, lowerName+"_controller_test.go")
-	if err := os.WriteFile(testPath, testContent, 0644); err != nil {
+	if err := atomicfile.WriteFile(testPath, testContent, 0644); err != nil {
 		return fmt.Errorf("write %s: %w", testPath, err)
 	}
 
@@ -196,7 +198,7 @@ func GenerateCRDFiles(in CRDGenInput) error {
 		kclPath := filepath.Join(kclLibDir, lowerName+"_crd.k")
 		// Don't overwrite a hand-extended CRD KCL on re-run.
 		if _, err := os.Stat(kclPath); os.IsNotExist(err) {
-			if err := os.WriteFile(kclPath, crdKclContent, 0644); err != nil {
+			if err := atomicfile.WriteFile(kclPath, crdKclContent, 0644); err != nil {
 				return fmt.Errorf("write %s: %w", kclPath, err)
 			}
 		}

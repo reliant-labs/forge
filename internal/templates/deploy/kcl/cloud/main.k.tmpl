@@ -63,7 +63,7 @@ import .config as appcfg
 # OTEL_SERVICE_NAME is not set here: forge.render gives every workload its
 # own name unless its env sets one.
 _configured = lambda w: fw.Workload -> fw.Workload {
-    w | {env = config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env}
+    w | {env = {{if .Roots}}config_gen.workloadEnvMap(appcfg.app_config, w){{else}}config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets){{end}} | w.env}
 }
 
 # ---------------------------------------------------------------------------
@@ -77,14 +77,16 @@ _configured = lambda w: fw.Workload -> fw.Workload {
 # registry, and forge composes that address (<registry>/<org>/{{.ProjectName}}/<name>)
 # from your credential. DATABASE_URL is the managed database's{{if .HasFrontend}}; a
 # service's CORS_ORIGINS is the hosted frontend's URL, which the platform
-# allocates{{end}}.
+# allocates, and CORS_ALLOW_CREDENTIALS lets the browser send the session
+# cookie /auth/login sets: the site and the API are different origins, so
+# without it sign-in answers 200 and every call after it 401s{{end}}.
 _hosted = lambda w: fw.Workload -> fw.Workload {
     _c = _configured(w)
     _c | {
         image = w.image[w.image.rfind("/") + 1:] if w.image else w.image
         env = _c.env \
             | ({{if .DatabaseDisabled}}{}{{else}}{DATABASE_URL = forge.DatabaseRef {name = _db.name}} if "DATABASE_URL" in w.config_secrets else {}{{end}}){{if .HasFrontend}} \
-            | ({CORS_ORIGINS = forge.WorkloadURL {workload = "{{.FrontendName}}"}} if w.kind == "service" else {}){{end}}
+            | ({CORS_ORIGINS = forge.WorkloadURL {workload = "{{.FrontendName}}"}, CORS_ALLOW_CREDENTIALS = "true"} if w.kind == "service" else {}){{end}}
         runtime = forge.OnHosted {}
     }
 }

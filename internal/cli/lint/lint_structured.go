@@ -88,7 +88,7 @@ const (
 // targetedWholeProjectLanes are the targeted-only lanes (not in the
 // pipeline table) that cannot be scoped. config-reach reports config FIELDS
 // no binary loads — a fact about the project, carrying no file.
-var targetedWholeProjectLanes = map[string]bool{"config-reach": true}
+var targetedWholeProjectLanes = map[string]bool{"config-reach": true, "graph": true}
 
 // targetedPackageLanes are the targeted lanes that take Go package
 // arguments, mirroring scopeByPackages.
@@ -500,12 +500,13 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 	case targeted:
 		// A targeted lane never auto-fixes, in text mode or here.
 	default:
-		if !flags.noFix {
+		fix := resolveFixMode(flags)
+		if fix {
 			fixed = structuredFixPrePass(ctx, cwd, cfg, scope, flags.skipFrontends)
 		}
 		outcomes = collectLintOutcomes(&lintRunCtx{
 			ctx:           ctx,
-			fix:           !flags.noFix,
+			fix:           fix,
 			strict:        flags.strict,
 			skipFrontends: flags.skipFrontends,
 			paths:         paths,
@@ -514,6 +515,9 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 			scope:         scope,
 			golangciMemo:  newGolangciMemo(productionGolangciToolchain()),
 		})
+		if !fix {
+			outcomes = append(outcomes, formatOutcome(ctx, cwd, cfg, scope, paths, flags.skipFrontends))
+		}
 	}
 	os.Stdout = realStdout
 	if err != nil {
@@ -534,14 +538,15 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 // run applies, without their progress output, and returns how many files it
 // changed. Under --scope only files inside the scope are touched and the
 // frontend formatter does not run (frontend lint cannot be scoped).
-// golangci-lint --fix and eslint --fix are applied inside their own lanes
-// (rc.fix), as in text mode.
+// eslint --fix is applied inside its own lane (rc.fix), as in text mode;
+// golangci-lint never fixes (lint_check.go).
 func structuredFixPrePass(ctx context.Context, cwd string, cfg *config.ProjectConfig, scope *lintScope, skipFrontends bool) int {
 	var keep func(rel string) bool
 	if scope != nil {
 		keep = scope.contains
 	}
-	changed, err := formatGoTreeFiltered(cwd, keep)
+	changed, reverted, err := formatGoTreeVerified(cwd, keep, fixTypecheck)
+	printRevertedGoFixes(os.Stderr, "auto-format pre-pass", reverted)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  auto-format pre-pass: %v\n", err)
 	}

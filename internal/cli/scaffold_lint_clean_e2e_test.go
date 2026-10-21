@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // TestE2EFreshScaffoldLintExitsZero is the acceptance gate for the
@@ -63,8 +65,14 @@ func TestE2EFreshScaffoldLintExitsZero(t *testing.T) {
 	protoPath := filepath.Join(projectDir, "proto", "services", "orders", "v1", "orders.proto")
 	proto := readFileE2E(t, protoPath)
 	proto = strings.Replace(proto, "  // TODO: Add your RPC methods here.",
-		"  rpc ArchiveOrder(ArchiveOrderRequest) returns (ArchiveOrderResponse);\n"+
-			"  rpc CreateApiKey(CreateApiKeyRequest) returns (CreateApiKeyResponse);", 1)
+		// Custom mutations declare their activity event (or none), as
+		// forgeconv-activity-declared requires.
+		"  rpc ArchiveOrder(ArchiveOrderRequest) returns (ArchiveOrderResponse) {\n"+
+			"    option (forge.v1.method) = { activity: { verb: \"archive\", target: { kind: \"order\", id: \"id\" } } };\n"+
+			"  }\n"+
+			"  rpc CreateApiKey(CreateApiKeyRequest) returns (CreateApiKeyResponse) {\n"+
+			"    option (forge.v1.method) = { activity: { none: \"fixture: the key is not persisted\" } };\n"+
+			"  }", 1)
 	proto += `
 // forge:entity
 message Order {
@@ -227,7 +235,7 @@ func TestE2EComponentScaffoldsLintClean(t *testing.T) {
 		t.Errorf("a freshly scaffolded adapter must not trip forge-config-deps:\n%s", out)
 	}
 	compose := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "compose.go"))
-	for _, want := range []string{"infra.Cfg.GetBlobstore()", "infra.Cfg.GetPricing()"} {
+	for _, want := range []string{"g.Cfg.GetBlobstore()", "g.Cfg.GetPricing()"} {
 		if !strings.Contains(compose, want) {
 			t.Errorf("compose.go must fill the adapter's config block from the loaded config (%s):\n%s", want, compose)
 		}
@@ -397,8 +405,10 @@ enum ProductStatus {
 	generatedTSBefore := snapshotGeneratedTSE2E(t, feDir)
 
 	// THE INVARIANT: `forge lint` exits 0 on the fresh scaffold, frontend
-	// lane included. Default (not --no-fix) so the eslint --fix pre-pass runs.
-	lintOut, lintErr := runFrontendLintE2E(t, projectDir, forgeBin, "lint")
+	// lane included. --fix (not --no-fix), because the eslint --fix pre-pass
+	// is what this lane exercises and CI=true would otherwise make the run
+	// report-only.
+	lintOut, lintErr := runFrontendLintE2E(t, projectDir, forgeBin, "lint", "--fix")
 	if lintErr != nil {
 		t.Fatalf("forge lint must exit 0 on a freshly-scaffolded project (frontend lane), got: %v\n%s", lintErr, lintOut)
 	}
@@ -641,7 +651,7 @@ func runFrontendLintE2E(t *testing.T, dir, name string, args ...string) (string,
 	// golangciLockIsolationEnv: `forge lint` shells out to golangci-lint, which
 	// otherwise contends on one machine-global lock with every other test's lint
 	// step. See the block comment in scaffold_e2e_test.go.
-	cmd.Env = append(os.Environ(), "GOFLAGS=", golangciLockIsolationEnv(t))
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=", golangciLockIsolationEnv(t)))
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }
@@ -690,7 +700,7 @@ func runLintE2E(t *testing.T, dir, extraPathDir, name string, args ...string) (s
 	cmd.Dir = dir
 	// os/exec keeps the LAST duplicate of an env key, so appending the
 	// modified PATH after os.Environ() makes it win.
-	cmd.Env = append(os.Environ(),
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(),
 		"GOFLAGS=",
 		"GOPROXY=https://proxy.golang.org,direct",
 		"PATH="+extraPathDir+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -698,7 +708,7 @@ func runLintE2E(t *testing.T, dir, extraPathDir, name string, args ...string) (s
 		// one machine-global lock with every other test's lint step. See the
 		// block comment in scaffold_e2e_test.go.
 		golangciLockIsolationEnv(t),
-	)
+	))
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }

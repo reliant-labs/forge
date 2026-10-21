@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/webruntimepeers"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // PinLayout names WHICH node_modules a frontend's tsconfig peer pins resolve
@@ -356,7 +358,7 @@ func ReconcileTsconfigPins(path string, decide PinDecision) bool {
 	if info, statErr := os.Stat(path); statErr == nil {
 		mode = info.Mode().Perm()
 	}
-	return os.WriteFile(path, body, mode) == nil
+	return atomicfile.WriteFile(path, body, mode) == nil
 }
 
 // isDir reports whether path exists and is a directory.

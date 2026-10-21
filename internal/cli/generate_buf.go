@@ -10,7 +10,10 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/nodeengine"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // runBufGenerateGo runs buf generate using the project's buf.gen.yaml for Go stubs.
@@ -103,7 +106,7 @@ func writeDefaultBufGenYaml(projectDir string) error {
     opt:
       - paths=source_relative
 `
-	return os.WriteFile(filepath.Join(projectDir, "buf.gen.yaml"), []byte(config), 0644)
+	return atomicfile.WriteFile(filepath.Join(projectDir, "buf.gen.yaml"), []byte(config), 0644)
 }
 
 // runBufGenerateTypeScript runs buf generate for TypeScript stubs in a Next.js frontend.
@@ -163,7 +166,7 @@ plugins:
       - target=ts
       - import_extension=.js
 `, feSlash, feSlash, feSlash)
-		if err := os.WriteFile(feBufGen, []byte(tsConfig), 0644); err != nil {
+		if err := atomicfile.WriteFile(feBufGen, []byte(tsConfig), 0644); err != nil {
 			return fmt.Errorf("failed to write TypeScript buf config: %w", err)
 		}
 	}
@@ -321,7 +324,7 @@ plugins:
       - target=ts
       - import_extension=.js
 `, feSlash, feSlash)
-		if err := os.WriteFile(bufGenPath, []byte(body), 0o644); err != nil {
+		if err := atomicfile.WriteFile(bufGenPath, []byte(body), 0o644); err != nil {
 			return fmt.Errorf("write packages/api/buf.gen.yaml: %w", err)
 		}
 	}
@@ -394,7 +397,9 @@ plugins:
 //
 // `npm ci` is preferred because a lockfile is the exact thing this needs to
 // reproduce, and it is what CI runs; without a lockfile there is nothing for
-// `ci` to honour, so we fall back to `npm install`. A failure returns an error
+// `ci` to honour, so we fall back to `npm install`. "Without a lockfile" means
+// at the root npm actually installs at, which is not the frontend when a
+// workspace root adopts it — see frontenddeps.NpmInstallVerb. A failure returns an error
 // naming the frontend, the directory, and the command — the run still fails,
 // because the alternative is the silent skip this whole path exists to
 // prevent.
@@ -418,10 +423,7 @@ func ensureTSPluginInstalled(feName, projectDir, feDir string) error {
 	if err := nodeengine.Check(absFeDir); err != nil {
 		return fmt.Errorf("%s: @bufbuild/protoc-gen-es is not installed, and npm was not run: %w", feName, err)
 	}
-	verb := "ci"
-	if _, err := os.Stat(filepath.Join(absFeDir, "package-lock.json")); err != nil {
-		verb = "install"
-	}
+	verb := frontenddeps.NpmInstallVerb(absFeDir)
 	fmt.Printf("📦 %s: node_modules missing — running `npm %s` in %s so protoc-gen-es exists\n",
 		feName, verb, feDir)
 

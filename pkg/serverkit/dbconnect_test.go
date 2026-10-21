@@ -313,6 +313,54 @@ func TestAutoMigrateContext_MigrationFailureIsNotRetried(t *testing.T) {
 	_ = d
 }
 
+// TestAwaitMigrationsContext_NamesTheSchemaWhileItWaits: a migrate=wait
+// process dials (retrying), then blocks in the await with "schema" pending on
+// the boot /readyz — whatever AutoMigrate says — and proceeds once it returns.
+func TestAwaitMigrationsContext_NamesTheSchemaWhileItWaits(t *testing.T) {
+	t.Parallel()
+	addr := freeAddr(t)
+	name, _ := registerFake(t, 2)
+	cfg := serverkit.Config{Addr: addr, AutoMigrate: false, DatabaseURL: "ignored", DBDriver: name, DBConnectTimeout: 5 * time.Second}
+	ctx, boot, err := serverkit.StartBootProbes(t.Context(), cfg, bufLogger(&syncBuf{}))
+	if err != nil {
+		t.Fatalf("StartBootProbes: %v", err)
+	}
+	defer boot.Close()
+
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- serverkit.AwaitMigrationsContext(ctx, cfg, bufLogger(&syncBuf{}), func(ctx context.Context, db *sql.DB, _ *slog.Logger) error {
+			if db == nil {
+				return errors.New("no database handed to the await")
+			}
+			<-release
+			return nil
+		})
+	}()
+
+	var raw string
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if _, _, raw = getJSON(t, "http://"+addr+"/readyz"); strings.Contains(raw, `"name":"schema"`) {
+			break
+		}
+	}
+	if !strings.Contains(raw, `"name":"schema"`) {
+		t.Fatalf("readyz does not name the schema while the process waits for it: %s", raw)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("AwaitMigrationsContext: %v", err)
+	}
+	if _, _, raw = getJSON(t, "http://"+addr+"/readyz"); strings.Contains(raw, `"name":"schema"`) {
+		t.Errorf("the schema stays pending after the wait returned: %s", raw)
+	}
+
+	if err := serverkit.AwaitMigrationsContext(t.Context(), serverkit.Config{}, nil, nil); err == nil || !strings.Contains(err.Error(), "DatabaseURL") {
+		t.Errorf("a waiter with no database must say so; got %v", err)
+	}
+}
+
 func TestConfigNormalize_FillsDBConnectTimeout(t *testing.T) {
 	t.Parallel()
 	var cfg serverkit.Config

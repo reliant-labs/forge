@@ -36,5 +36,5 @@ func snapshotShapeInput(s release.Snapshot) (ShapeInput, error) {
 		return ShapeInput{}, fmt.Errorf("%w: sealed snapshot requires recorded shape declaration", release.ErrInvalid)
 	}
 	d := s.Declaration.Canonical()
-	return ShapeInput{Kind: d.Kind, Workloads: d.Workloads, Secrets: d.Secrets, Domains: d.Domains, Clusters: d.Clusters, Manifests: SnapshotStream(s), SyncedSecrets: s.SecretRefs, StatefulWorkloads: s.StatefulWorkloads, ControlPlaneSecrets: d.ControlPlaneSecrets, Alerts: d.Alerts, AlertRoutes: d.AlertRoutes, ObservabilityPolicy: d.ObservabilityPolicy, DeliveryPolicy: d.DeliveryPolicy, Identity: d.Identity, Applier: d.Applier, Units: d.Units}, nil
+	return ShapeInput{Kind: d.Kind, Workloads: d.Workloads, Secrets: d.Secrets, Domains: d.Domains, Clusters: d.Clusters, Manifests: SnapshotStream(s), SyncedSecrets: s.SecretRefs, StatefulWorkloads: s.StatefulWorkloads, ControlPlaneSecrets: d.ControlPlaneSecrets, Alerts: d.Alerts, AlertRoutes: d.AlertRoutes, ObservabilityPolicy: d.ObservabilityPolicy, FrontendTelemetry: d.FrontendTelemetry, DeliveryPolicy: d.DeliveryPolicy, Identity: d.Identity, Applier: d.Applier, Units: d.Units}, nil
 }

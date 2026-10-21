@@ -8,6 +8,8 @@ import (
 	"sort"
 
 	"github.com/reliant-labs/forge/internal/config"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // openAPIPluginBinary is the name of the protoc-gen-connect-openapi
@@ -92,7 +94,7 @@ func runOpenAPIGenerate(projectDir string, cfg *config.ProjectConfig) error {
 func runOpenAPIForService(projectDir, serviceProtoDir string) error {
 	tmpl := openapiBufTemplate("openapi")
 	tmpPath := filepath.Join(projectDir, "buf.gen.openapi.yaml")
-	if err := os.WriteFile(tmpPath, []byte(tmpl), 0o644); err != nil {
+	if err := atomicfile.WriteFile(tmpPath, []byte(tmpl), 0o644); err != nil {
 		return fmt.Errorf("write ephemeral openapi template: %w", err)
 	}
 	defer func() { _ = os.Remove(tmpPath) }()

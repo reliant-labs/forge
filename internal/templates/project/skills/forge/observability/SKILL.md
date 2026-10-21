@@ -99,7 +99,12 @@ not from how the call site spelled its log line:
 | `server` | our system failed, or cannot tell that it did not | Internal, Unknown, DataLoss, Unavailable, any unrecognised error | ERROR | yes |
 | `server` | server-side, but "retry", not "page" | DeadlineExceeded, Aborted, Unimplemented | WARN | no |
 | `user` | the caller or user must act; the system behaved correctly | InvalidArgument, NotFound, AlreadyExists, PermissionDenied, Unauthenticated, FailedPrecondition (InsufficientBalance, Expired), OutOfRange, ResourceExhausted (PlanLimit), or `svcerr.WithClass(err, svcerr.ClassUser)` | INFO (`observe.WithUserErrorLevel`) | no |
-| `canceled` | the caller went away | `context.Canceled`, CodeCanceled | same as `user` | no |
+| `canceled` | one end went away: the caller, or this replica draining for a rollout | `context.Canceled`, CodeCanceled, `svcerr.ErrServerDraining` / `svcerr.Draining(…)` | same as `user` | no |
+
+A drain is also an **expected outcome** in every logging layer without being
+declared: a call this replica ended because it is shutting down (a stream's
+`Unavailable("gateway draining")`) is written like a success, with
+`expected=true`, never at ERROR. See `services/shutdown`.
 
 Nothing is hidden: a user error is still written, with `error`,
 `error_class=user` and `code`, at a level production keeps — it just stops
@@ -162,6 +167,7 @@ Apps never learn the collector's backend. The platform renders the standard Open
 | `OTEL_SDK_DISABLED=true` | every export off |
 | `OTEL_LOGS_EXPORTER=otlp` | the explicit switch for OTLP logs (off by default) |
 | `OTEL_PROFILES_EXPORTER=none` | turns continuous profiling off (the runtime profiles whenever an endpoint is set); the declaration renders it wherever profiles are off (`observability/profiles`); typed equivalent `observe.Config.ProfilesDisabled` |
+| `FORGE_PROFILES` / `FORGE_PROFILES_HEAP_INTERVAL` | which profiles are captured (`cpu,heap` by default; `alloc`, `goroutine`, `mutex`, `block` are opt-in; `none` for nothing) and the heap cadence (`15m` by default). A workload's `profiling` block renders them; typed equivalent `observe.Config.Profiles`, which they win over (`observability/profiles`) |
 | `OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT` | where profiles go: a FULL URL used as given (`http://127.0.0.1:4328/v1development/profiles`). Unset, profiles follow the base endpoint and gain `/v1development/profiles`. Headers, protocol, timeout and compression follow the per-signal `OTEL_EXPORTER_OTLP_PROFILES_*` variables |
 
 `Config.OTLPEndpoint` (the typed `otlp_endpoint` config field) overrides the endpoint variables; protocol and headers always come from the environment. With no endpoint nothing is exported, but `/metrics` still works and the W3C TraceContext+Baggage propagator is **always** installed, so `traceparent` is honoured and forwarded regardless. With export on, Go runtime metrics are recorded too.
@@ -183,7 +189,7 @@ The server writes JSON lines to stdout; a record logged with a context holding a
 
 ## Continuous profiles
 
-Every process with an OTLP endpoint profiles itself (`pkg/observe`): a 10s CPU profile plus heap and goroutine snapshots about once a minute, **pushed** over OTLP to the `otel-profiles` collector, which writes them into ClickStack's ClickHouse. On by default with the local ClickStack; elsewhere `signals.profiles` on the env's `forge.Observability` governs it. HyperDX draws no flamegraphs: `forge observe profile --service api -o api.pb.gz`, then `go tool pprof -http=: api.pb.gz`. Depth (defaults, cost, tables, trace links, SQL): `forge skill load observability/profiles`.
+Every process with an OTLP endpoint profiles itself (`pkg/observe`): a 10s CPU profile about once a minute and a live-heap snapshot every 15 minutes (allocation, goroutine, mutex and block profiles are opt-in per workload), **pushed** over OTLP to the `otel-profiles` collector, which writes them into ClickStack's ClickHouse. On by default with the local ClickStack; elsewhere `signals.profiles` on the env's `forge.Observability` governs it. HyperDX draws no flamegraphs: `forge observe profile --service api -o api.pb.gz`, then `go tool pprof -http=: api.pb.gz`. Depth (defaults, cost, tables, trace links, SQL): `forge skill load observability/profiles`.
 
 ## Resource identity
 
@@ -198,16 +204,16 @@ In HyperDX → Search → Metrics (or a chart tile), pick the metric by name. Th
 ## In-process component observability (the middleware chain)
 
 Forge instruments three boundaries: the RPC edge (the interceptor chain built
-by `observe.Chain` in `cmd/<bin>/cmd/serve.go`: one span, one metric sample and
+by `serverkit.NewChain` in `cmd/<bin>/cmd/serve.go`: one span, one metric sample and
 one log record per RPC), every internal component→component call (a
 generated `middleware_gen.go` decorator routed through the owned
 `observe_chain.go` seam), and the ORM (`pkg/orm` registers the `bunotel` hook,
-so each query is a child span). Success-log sampling, opting a component in or
-out, and the `enforce-component-observe` lint: `observability/component-chain`.
+so each query is a child span). Every contract package is decorated by default.
+Success-log sampling and opting a component out: `observability/component-chain`.
 
 ## Audit log
 
-Every RPC already writes a structured audit record to your logs (`log_type=audit`, message `audit.event`, from `fmw.AuditInterceptor` in `observe.Chain`). For a DB-persisted audit trail you can query and page through (a compliance record, an admin `ListAuditEvents` RPC) on `forge/pkg/audit`: `observability/audit-log`.
+Every RPC already writes a structured audit record to your logs (`log_type=audit`, message `audit.event`, from `fmw.AuditInterceptor`, the default `Audit` slot of `serverkit.NewChain`). For a DB-persisted audit trail you can query and page through (a compliance record, an admin `ListAuditEvents` RPC) on `forge/pkg/audit`: `observability/audit-log`.
 
 ## Outbound instrumentation
 
@@ -222,6 +228,13 @@ Every RPC already writes a structured audit record to your logs (`log_type=audit
   with `observe.NewClientStack` (forge/pkg/observe) — otelconnect client
   interceptor, request-ID forwarding, timeout — then
   `genconnect.NewXClient(stack.HTTPClient, baseURL, stack.ClientOptions...)`.
+
+## Keeping a request in one trace
+
+`forge lint` gates on the places app code cuts a trace: a log call that drops
+the `ctx` in scope, a raw `*http.Client` or `sql.Open`, a contract built
+without its decorator. `forge lint --tracing` runs them alone, and with
+`--fix` rewrites the log calls and the constructions: `observability/tracing-lint`.
 
 ## Opting out (hosted observability is opt-out)
 

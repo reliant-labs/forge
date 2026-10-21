@@ -25,6 +25,7 @@ package cli
 // --allow-version-skew (or FORGE_ALLOW_VERSION_SKEW=1) proceeds anyway.
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"regexp"
@@ -36,6 +37,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/forgecompat"
+	"github.com/reliant-labs/forge/internal/forgedelegate"
 )
 
 // pinGatedCommands are the commands, relative to forge's root, that refuse
@@ -219,43 +221,94 @@ func pinSkewRefusal(projectRoot, pin, binary, what string) error {
 	fmt.Fprintf(&b, "this forge is %s, but %s/forge.yaml pins forge_version %s.\n", binary, projectRoot, pin)
 	fmt.Fprintf(&b, "  `%s` rewrites or produces files from the binary's own templates, so it runs only under the pinned forge —\n", what)
 	b.WriteString("  a different one silently rewrites unrelated generated files.\n")
-	b.WriteString("  Run it with the pinned forge, installing nothing:\n")
-	fmt.Fprintf(&b, "      %s\n", forgecompat.RunPinnedCommand(pin, forgeInvocationArgs()))
-	b.WriteString("  or install the pinned forge (from outside the project's module):\n")
-	fmt.Fprintf(&b, "      cd \"$(mktemp -d)\" && GOPRIVATE='github.com/reliant-labs/*' go install github.com/reliant-labs/forge/cmd/forge@%s\n", pin)
-	if cur := buildinfo.Current(); cur.Embedded {
-		host := cur.Embedder
-		if host == "" {
-			host = "another binary"
-		}
-		fmt.Fprintf(&b, "  This forge is embedded in %s, so installing forge does not change `%s`: use the `go run` form above,\n"+
-			"  or rebuild/upgrade %s so it embeds the pinned forge.\n", host, Name(), host)
-	}
+	writePinSkewRemedy(&b, "  ", pin, buildinfo.Current())
 	fmt.Fprintf(&b, "  If the PIN is what is wrong, move it deliberately: `%s project upgrade`.\n", Name())
 	fmt.Fprintf(&b, "  To proceed anyway, knowingly (forge developers): --%s, or %s=1", allowVersionSkewFlag, allowVersionSkewEnv)
 	return fmt.Errorf("%s", b.String())
 }
 
-// checkForgePinSkew is the root command's check, for cmd. It warns on w, and
-// returns a refusal for a pin-gated command unless allowed.
+// checkForgePinSkew is the root command's check, for cmd. A command that
+// depends on which forge ran it is handed to the forge the project wants
+// (forge_pin_delegate.go); when that is not possible, or the command is not
+// one of those, it warns on w, and returns a refusal for a pin-gated command
+// unless allowed.
 func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error {
+	if forgedelegate.Delegated() {
+		return nil
+	}
 	projectRoot, err := cmdutil.FindProjectRoot()
 	if err != nil || projectRoot == "" {
 		return nil
 	}
+	rel := strings.TrimSpace(strings.TrimPrefix(cmd.CommandPath(), root.CommandPath()))
+	readOnlyFlags, gated := pinGateFor(rel)
+	readOnly := readOnlyRun(cmd, readOnlyFlags)
+	overridden := allow || forgecompat.SkewOverridden()
+
+	var delegateErr error
+	if !overridden && delegationWanted(rel, readOnly) && !pinDelegationDisabled {
+		if t, ok := delegateTargetFor(projectRoot); ok && !t.devAgainstTag(rel) {
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			handed, err := delegateToPinned(ctx, w, projectRoot, t, forgeInvocationArgs())
+			if handed {
+				return nil
+			}
+			delegateErr = err
+		}
+	}
+
 	pin, binary, skewed, devAgainstTag := pinSkewFor(projectRoot)
 	if !skewed {
 		return nil
 	}
-	rel := strings.TrimSpace(strings.TrimPrefix(cmd.CommandPath(), root.CommandPath()))
-	if readOnlyFlags, gated := pinGateFor(rel); gated && !readOnlyRun(cmd, readOnlyFlags) &&
-		!(devAgainstTag && !pinBuildCommands[rel]) &&
-		!allow && !forgecompat.SkewOverridden() {
-		return pinSkewRefusal(projectRoot, pin, binary, "forge "+rel)
+	if gated && !readOnly && !(devAgainstTag && !pinBuildCommands[rel]) && !overridden {
+		err := pinSkewRefusal(projectRoot, pin, binary, "forge "+rel)
+		if note := delegationFailure(delegateErr); note != "" {
+			return fmt.Errorf("%s\n%s", err, strings.TrimSuffix(note, "\n"))
+		}
+		return err
 	}
-	_, _ = fmt.Fprintf(w, "⚠️  this forge is %s, but forge.yaml pins forge_version %s — a different forge than the project's.\n"+
-		"   Install the pinned one: go install github.com/reliant-labs/forge/cmd/forge@%s\n", binary, pin, pin)
+	_, _ = fmt.Fprint(w, pinSkewWarning(pin, binary, buildinfo.Current()))
+	if note := delegationFailure(delegateErr); note != "" {
+		_, _ = fmt.Fprint(w, "  "+strings.TrimPrefix(note, "  "))
+	}
 	return nil
+}
+
+// pinSkewWarning is what a command that is not refused prints under skew. It
+// gives the refusal's remedy: an embedded forge (`reliant forge`) is not
+// changed by installing forge, so "go install" alone sent people in a circle.
+func pinSkewWarning(pin, binary string, cur buildinfo.Build) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "⚠️  this forge is %s, but forge.yaml pins forge_version %s — a different forge than the project's.\n", binary, pin)
+	writePinSkewRemedy(&b, "   ", pin, cur)
+	return b.String()
+}
+
+// writePinSkewRemedy writes how to run the pinned forge instead of this one,
+// each line prefixed by indent. Running it with `go run` works everywhere;
+// installing it helps only a standalone forge, so an embedded one is told to
+// upgrade its host instead.
+func writePinSkewRemedy(b *strings.Builder, indent, pin string, cur buildinfo.Build) {
+	fmt.Fprintf(b, "%sRun it with the pinned forge, installing nothing:\n", indent)
+	fmt.Fprintf(b, "%s    %s\n", indent, forgecompat.RunPinnedCommand(pin, forgeInvocationArgs()))
+	if !cur.Embedded {
+		fmt.Fprintf(b, "%sor install the pinned forge (from outside the project's module):\n", indent)
+		fmt.Fprintf(b, "%s    cd \"$(mktemp -d)\" && GOPRIVATE='github.com/reliant-labs/*' go install github.com/reliant-labs/forge/cmd/forge@%s\n", indent, pin)
+		return
+	}
+	host := cur.Embedder
+	if i := strings.LastIndex(host, "/"); i >= 0 {
+		host = host[i+1:]
+	}
+	if host == "" {
+		host = "the binary embedding it"
+	}
+	fmt.Fprintf(b, "%sThis forge is embedded in %s, so installing forge does not change `%s`:\n", indent, host, Name())
+	fmt.Fprintf(b, "%suse the `go run` form above, or upgrade %s so it embeds the pinned forge.\n", indent, host)
 }
 
 // refuseGenerateUnderPinSkew is the check for the paths that run the

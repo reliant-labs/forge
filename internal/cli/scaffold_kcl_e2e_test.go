@@ -29,7 +29,6 @@ import (
 // named skip, and CI — which installs kcl in e2e-suite.yml — gets a hard
 // failure if that install ever stops working.
 func TestE2EScaffoldKCLRendersDevManifest(t *testing.T) {
-	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	requireTool(t, "kcl")
 
@@ -45,6 +44,7 @@ func TestE2EScaffoldKCLRendersDevManifest(t *testing.T) {
 	)
 
 	projectDir := filepath.Join(dir, "kclapp")
+	addCorpusForgePkgReplace(t, projectDir)
 
 	// Locate the dev manifest. The test is intentionally explicit about
 	// the path so a regression that moves the file surfaces here.

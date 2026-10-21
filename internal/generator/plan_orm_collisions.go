@@ -14,6 +14,7 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 // ormOutput is one file the ORM projection is about to write into
@@ -50,14 +51,14 @@ type ormNameCollision struct {
 // consumer and owned file relies on); what this adds is the answer. Each
 // collision names the project's declaration and the entity behind it, and the
 // error names the three ways to resolve it: keep that table off forge's ORM
-// (`// forge:custom` on its CRUD-named rpcs, the per-entity opt-out — the
+// (`COMMENT ON TABLE … 'forge:no-entity'`, the per-table opt-out — the
 // incremental path off a hand-written or sqlc data layer), hand the name to
 // forge, or opt the whole package out with `//forge:no-orm`.
 //
 // A file the ORM itself owns is not the project's: this run's outputs, stale
 // ORM files the sweep reclaims, and the retired forge-written types.go.
 // Internal test files (package db) share the namespace and are read too.
-func checkORMNameCollisions(dbDir string, entities []config.PlanEntity, outputs []ormOutput) error {
+func checkORMNameCollisions(dbDir, relDir string, entities []config.PlanEntity, outputs []ormOutput) error {
 	declaredBy := map[string]ormOutput{} // name → the ORM output declaring it
 	for _, out := range outputs {
 		for _, name := range packageLevelNames(out.src) {
@@ -105,7 +106,7 @@ func checkORMNameCollisions(dbDir string, entities []config.PlanEntity, outputs 
 			}
 			collisions = append(collisions, ormNameCollision{
 				name:   d.Name,
-				at:     fmt.Sprintf("internal/db/%s:%d", name, fset.Position(d.Pos()).Line),
+				at:     fmt.Sprintf("%s/%s:%d", relDir, name, fset.Position(d.Pos()).Line),
 				entity: out.entity,
 				table:  tables[out.entity],
 				file:   out.file,
@@ -116,24 +117,14 @@ func checkORMNameCollisions(dbDir string, entities []config.PlanEntity, outputs 
 		return nil
 	}
 	sort.Slice(collisions, func(i, j int) bool { return collisions[i].at < collisions[j].at })
-	return &ORMCollisionError{collisions: collisions}
+	return &ORMCollisionError{collisions: collisions, dir: relDir}
 }
 
 // ORMCollisionError is the refusal checkORMNameCollisions returns: the names
 // the project already declares, and how to resolve each entity.
-//
-// The per-entity advice names the rpcs to mark `// forge:custom`. Which rpcs
-// those are is a fact about the services, which this package does not read,
-// so the caller that does fills EntityRPCs (codegen.EntityRPCs). Without it the
-// advice names no rpc rather than guess: it used to list the CRUD quintet the
-// entity's name implies (CreateMessage, GetMessage, UpdateMessage,
-// DeleteMessage, ListMessages) when reliant declared one of them, on a
-// different service than the rest of the list suggested.
 type ORMCollisionError struct {
 	collisions []ormNameCollision
-	// EntityRPCs maps an entity to its declared, unmarked CRUD-named rpcs,
-	// each rendered "Service.Rpc (proto/…/x.proto:14)".
-	EntityRPCs map[string][]string
+	dir        string // the ORM package directory, e.g. "internal/db"
 }
 
 // Entities returns the entities whose names collide, sorted.
@@ -152,37 +143,27 @@ func (e *ORMCollisionError) Entities() []string {
 
 func (e *ORMCollisionError) Error() string {
 	var b strings.Builder
-	b.WriteString("forge's ORM would redeclare names your internal/db already declares (one Go package, so both cannot compile):\n")
+	fmt.Fprintf(&b, "forge's ORM would redeclare names your %s already declares (one Go package, so both cannot compile):\n", e.dir)
 	tables := map[string]string{}
 	for _, c := range e.collisions {
 		if c.entity == "" {
-			fmt.Fprintf(&b, "  - %s, declared at %s — forge declares it in internal/db/%s for every entity\n", c.name, c.at, c.file)
+			fmt.Fprintf(&b, "  - %s, declared at %s — forge declares it in %s/%s for every entity\n", c.name, c.at, e.dir, c.file)
 			continue
 		}
-		fmt.Fprintf(&b, "  - %s, declared at %s — forge declares it in internal/db/%s for entity %s (table %s)\n", c.name, c.at, c.file, c.entity, c.table)
+		fmt.Fprintf(&b, "  - %s, declared at %s — forge declares it in %s/%s for entity %s (table %s)\n", c.name, c.at, e.dir, c.file, c.entity, c.table)
 		tables[c.entity] = c.table
 	}
-	b.WriteString("Resolve each entity one of three ways:\n")
-	entities := e.Entities()
-	if len(entities) == 0 {
-		b.WriteString("  - keep the tables off forge's ORM while your code owns them: put `// forge:custom` above each of their CRUD-named rpcs;\n")
-	}
-	for _, ent := range entities {
+	b.WriteString("Resolve it one of these ways:\n")
+	fmt.Fprintf(&b, "  - give the projection a package of its own: `database: {orm: {package: internal/store}}` in forge.yaml — your %s keeps its names, and the generated rows, stores and CRUD wiring move to internal/store;\n", e.dir)
+	for _, ent := range e.Entities() {
 		table := tables[ent]
-		rpcs, known := e.EntityRPCs[ent]
-		switch {
-		case known && len(rpcs) > 0:
-			fmt.Fprintf(&b, "  - keep %s off forge's ORM while your code owns it: put `// forge:custom` above each declared rpc that makes it an entity — %s. "+
-				"With none of them CRUD, %s is plain schema and forge projects nothing for it;\n",
-				table, strings.Join(rpcs, ", "), table)
-		default:
-			fmt.Fprintf(&b, "  - keep %s off forge's ORM while your code owns it: put `// forge:custom` above each of its declared CRUD-named rpcs "+
-				"(`forge project shapes --kind rpc --grep %s` lists them) — with none of them CRUD, %s is plain schema and forge projects nothing for it;\n",
-				table, ent, table)
-		}
+		fmt.Fprintf(&b, "  - keep %s off forge's ORM while your code owns it: in a migration, `COMMENT ON TABLE %s IS '%s'` — "+
+			"the table is then plain schema, with no store and no CRUD wiring (a `// forge:custom` rpc does not do this: "+
+			"the store is projected from every table, whatever its rpcs);\n",
+			table, table, schemadef.TableMarkerNoEntity)
 	}
 	b.WriteString("  - hand the name to forge: delete or rename your declaration (sqlc output: a `rename:` in sqlc.yaml) and use the generated one;\n")
-	b.WriteString("  - or opt the whole data layer out with `//forge:no-orm: <why>` in internal/db's package doc.")
+	fmt.Fprintf(&b, "  - or opt the whole data layer out with `//forge:no-orm: <why>` in %s's package doc.", e.dir)
 	return b.String()
 }
 

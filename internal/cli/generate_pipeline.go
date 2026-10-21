@@ -121,6 +121,12 @@ type GenStep struct {
 // flags) lives here so we parse once at step 0 instead of 3× across
 // the pipeline (see FORGE_REVIEW_CODEBASE.md Tier 2.5).
 type pipelineContext struct {
+	// graphRoots is the composition graph's roots as processes, set by the
+	// internal/app composition step (graphRootsSet) and read by the deploy
+	// config step, which projects their config reach into config_gen.k.
+	graphRoots    []codegen.GraphRoot
+	graphRootsSet bool
+
 	// Inputs (set in newPipelineContextWithFlags).
 	ProjectDir string
 	AbsPath    string
@@ -233,8 +239,6 @@ type pipelineContext struct {
 
 	// Proto-tree presence flags — populated once in stepDetectProtoDirs.
 	HasServices  bool
-	HasAPI       bool
-	HasDB        bool
 	HasConfig    bool
 	HasWorkers   bool
 	HasOperators bool
@@ -258,6 +262,11 @@ type pipelineContext struct {
 	ModulePath       string
 	EntityDefs       []codegen.EntityDef
 	ConfigFields     map[string]bool
+
+	// rendered caches renderedFrontends for the run: the frontends each
+	// environment's KCL declares, read once however many steps ask.
+	rendered     []renderedEnvFrontend
+	renderedRead bool
 
 	// registry is the memoized parse of the user-owned
 	// pkg/app/services.go registration file (what this binary serves —
@@ -388,7 +397,7 @@ func generateSteps() []GenStep {
 		{Name: "frontend CRUD pages", Gate: gateFrontendHasServices, GateReason: "no services in forge.yaml or features.frontend=false", Run: stepFrontendPages, Tag: "frontend"},
 		{Name: "frontend nav + dashboard", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendNav, Tag: "frontend"},
 		{Name: "service stubs", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepServiceStubs, Tag: "codegen"},
-		{Name: "internal/db/ ORM (entity-driven)", Gate: gateORMHasServices, GateReason: "no Connect services defined or features.orm=false", Run: stepInternalDBORM, Tag: "codegen"},
+		{Name: "internal/db/ ORM (entity-driven)", Gate: gateORMHasServices, GateReason: "no services/workers/operators or features.orm=false", Run: stepInternalDBORM, Tag: "codegen"},
 		{Name: "CRUD handlers", Gate: gateCRUDProjection, GateReason: "no Connect services defined, features.codegen=false, or features.orm=false", Run: stepCRUDHandlers, Tag: "codegen"},
 		{Name: "service mocks", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepServiceMocks, Tag: "codegen"},
 		{Name: "internal package contracts", Gate: gateContractsEnabled, GateReason: "features.contracts=false", Run: stepInternalContracts, Tag: "codegen"},
@@ -397,7 +406,10 @@ func generateSteps() []GenStep {
 		// step below — there is no auth-config codegen step.
 		{Name: "open-procedure set (pkg/middleware)", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepAuthProcedures, Tag: "codegen"},
 		{Name: "webhook routes", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.codegen=false", Run: stepWebhookRoutes, Tag: "codegen"},
+		{Name: "go mod tidy (pre-composition)", Gate: feature(config.FeaturesConfig.CodegenEnabled), GateReason: "features.codegen=false", Run: stepGoModTidyPreComposition, Tag: "tools", Writes: writesBothTidies},
 		{Name: "internal/app composition (hybrid DI)", Gate: feature(config.FeaturesConfig.CodegenEnabled), GateReason: "features.codegen=false", Run: stepInternalAppComposition, Tag: "codegen"},
+		// AFTER composition: it projects the roots composition just read.
+		{Name: "root env schema (pkg/config/roots_gen.go)", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasConfig), GateReason: "no proto/config/ directory or features.codegen=false", Run: stepRootsEnvSchema, Tag: "codegen"},
 		{Name: "go mod tidy (pre-wiring)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepGoModTidyPreWiring, Tag: "tools", Writes: writesBothTidies},
 		{Name: "cmd/commands.go (user extension point)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepCmdCommands, Tag: "codegen"},
 		{Name: "per-service test helpers", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrapTesting, Tag: "codegen"},
@@ -483,7 +495,7 @@ func generateSteps() []GenStep {
 		// emitter is a function of what is on disk, and a project with no
 		// api/ directory — most of them — does nothing here.
 		{Name: "CRD KCL manifests (api/ Go types)", Gate: gateDeployEnabled, GateReason: "features.deploy=false", Run: stepCRDKCL, Tag: "deploy"},
-		{Name: "entity-aware seed data", Gate: and(feature(config.FeaturesConfig.MigrationsEnabled), hasDBOrServices), GateReason: "no proto/db or proto/services or features.migrations=false", Run: stepEntitySeeds, Tag: "migrations"},
+		{Name: "entity-aware seed data", Gate: and(feature(config.FeaturesConfig.MigrationsEnabled), hasServices), GateReason: "no services (an entity is a table a service's CRUD rpcs name) or features.migrations=false", Run: stepEntitySeeds, Tag: "migrations"},
 		{Name: "frontend mocks + transport", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendMocks, Tag: "frontend"},
 		{Name: "repoint renamed *_gen frontend imports", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendRenamedImports, Tag: "frontend"},
 		{Name: "retire delivered agent skills", Gate: always, Run: stepRetireAgentSkills, Tag: "tools"},
@@ -576,6 +588,7 @@ var stepPresetAllowlist = map[string]map[string]bool{
 		// cmd/<bin>/cmd/workers/<name>.go subcommand — the behavior the
 		// preset previously got for free from the composition step.
 		"cmd command groups (services/workers/operators)": true,
+		"go mod tidy (pre-composition)":                   true,
 		"go mod tidy (pre-wiring)":                        true,
 		"cmd/commands.go (user extension point)":          true,
 		"per-service test helpers":                        true,
@@ -876,12 +889,6 @@ func hasAnyEntrypoint(ctx *pipelineContext) bool {
 	return ctx.HasServices || ctx.HasWorkers || ctx.HasOperators
 }
 
-// hasDBOrServices is the entity-source precondition: either proto/db
-// (migrations) or proto/services (entity structs) can produce entities.
-func hasDBOrServices(ctx *pipelineContext) bool {
-	return ctx.HasDB || ctx.HasServices
-}
-
 // The gates below are referenced from other files (generate_tier1_scope.go,
 // generate_retire_disowns.go) or directly from tests, so they keep their
 // named definitions; their bodies are expressed via the combinators for
@@ -905,8 +912,13 @@ func gateOpenAPIEnabled(ctx *pipelineContext) bool {
 	)(ctx)
 }
 
+// gateORMHasServices gates the ORM projection. The store is projected from
+// the applied schema, not from the services' CRUD rpcs, so it needs no
+// service — only an entrypoint, because the go mod tidy that resolves the
+// ORM's imports (forge/pkg/crud, bun) is gated on one. features.orm is
+// already off without a database driver or under `//forge:no-orm`.
 func gateORMHasServices(ctx *pipelineContext) bool {
-	return and(feature(config.FeaturesConfig.ORMEnabled), hasServices)(ctx)
+	return and(feature(config.FeaturesConfig.ORMEnabled), hasAnyEntrypoint)(ctx)
 }
 
 // gateCRUDProjection gates the CRUD handler projection. It AND-s the ORM
@@ -1000,7 +1012,7 @@ func stepLoadConfig(ctx *pipelineContext) error {
 		// was a fully-silent fallback that turned every "I deleted
 		// forge.yaml by mistake" into "why is my generate emitting
 		// nothing structural?" — see B2 in the loud-by-default backlog.
-		fmt.Fprintln(os.Stderr, "ℹ️  No forge.yaml found; using directory convention scanning (proto/, proto/services/, proto/api/, proto/db/)")
+		fmt.Fprintln(os.Stderr, "ℹ️  No forge.yaml found; generating from proto/ alone (the steps that read forge.yaml are skipped)")
 		ctx.Cfg = nil
 		return nil
 	}
@@ -1285,7 +1297,7 @@ func stepAnnounceProject(ctx *pipelineContext) error {
 }
 
 // populateComponentPresence fills the proto-tree presence flags
-// (HasServices/HasAPI/HasDB/HasConfig) and the worker/operator presence
+// (HasServices/HasConfig) and the worker/operator presence
 // flags on ctx. Returns the RAW operator presence (before the
 // experimental-feature suppression) so stepDetectProtoDirs can print
 // its one-line skip message exactly once.
@@ -1313,8 +1325,6 @@ func populateComponentPresence(ctx *pipelineContext) (rawHasOperators bool) {
 	// step. stepParseServicesAndModule later reconciles this to the exact
 	// descriptor count. See projectDefinesConnectServices.
 	ctx.HasServices = projectDefinesConnectServices(ctx.ProjectDir)
-	ctx.HasAPI = dirExists(filepath.Join(ctx.ProjectDir, "proto", "api"))
-	ctx.HasDB = dirExists(filepath.Join(ctx.ProjectDir, "proto", "db"))
 	// Config protos, not the directory: an empty proto/config (a CLI
 	// scaffold leaves one) would have the loader write a pkg/config that
 	// imports gen/config/v1, which nothing generates.
@@ -1322,8 +1332,7 @@ func populateComponentPresence(ctx *pipelineContext) (rawHasOperators bool) {
 	// HasWorkers / HasOperators are BOOLEAN presence gates (does the project
 	// have any worker/operator at all), NOT an enumeration of the set — generate
 	// does zero worker/operator discovery. They gate the bootstrap family of
-	// steps (hasAnyEntrypoint) exactly like HasDB/HasConfig gate on proto dir
-	// existence.
+	// steps (hasAnyEntrypoint) exactly like HasConfig gates on config protos.
 	ctx.HasWorkers = hasComponentDir(ctx.ProjectDir, "internal/workers")
 	rawHasOperators = hasComponentDir(ctx.ProjectDir, "internal/operators")
 	ctx.HasOperators = rawHasOperators
@@ -1466,34 +1475,16 @@ func stepRecordGeneratingBuild(ctx *pipelineContext) error {
 }
 
 // stepDetectProtoDirs populates the proto-tree presence flags
-// (HasServices/HasAPI/HasDB/HasConfig) and worker/operator presence.
-// Was inline at lines 188-213 of the pre-refactor pipeline. Also
-// short-circuits with an error when the directory-scan fallback is
-// active and there are no proto files anywhere.
+// (HasServices/HasConfig) and worker/operator presence. Without forge.yaml
+// the protos are all generate has to go on, so a tree with none is an error.
 func stepDetectProtoDirs(ctx *pipelineContext) error {
 	rawHasOperators := populateComponentPresence(ctx)
 	if rawHasOperators && !ctx.HasOperators {
 		fmt.Println("[generate] operator scaffolds detected but features.operators is off — skipping operator codegen")
 	}
 
-	if ctx.Cfg == nil && !ctx.HasServices && !ctx.HasAPI && !ctx.HasDB && !ctx.HasConfig {
-		return fmt.Errorf("no proto files found in proto/api, proto/services, proto/db, or proto/config")
-	}
-	if ctx.Cfg == nil {
-		fmt.Println("🔍 Detected proto directories:")
-		if ctx.HasAPI {
-			fmt.Println("  ✓ proto/api/ (API messages)")
-		}
-		if ctx.HasServices {
-			fmt.Println("  ✓ Connect service definitions")
-		}
-		if ctx.HasDB {
-			fmt.Println("  ✓ proto/db/ (Database models)")
-		}
-		if ctx.HasConfig {
-			fmt.Println("  ✓ proto/config/ (Config definitions)")
-		}
-		fmt.Println()
+	if ctx.Cfg == nil && len(discoverProtoSubdirs(ctx.ProjectDir)) == 0 {
+		return fmt.Errorf("no forge.yaml and no .proto files under proto/: nothing to generate from")
 	}
 	return nil
 }
@@ -1976,8 +1967,11 @@ func stepServiceStubs(ctx *pipelineContext) error {
 // Columns). The entity struct lives in the same file as its ORM; the
 // old internal/db/types.go proto-alias file is gone (entities are no
 // longer proto messages).
+//
+// The entity set is every applied table (codegen.ParseORMEntities), not the
+// CRUD join: CRUD wiring keys on CRUD rpcs, the store does not.
 func stepInternalDBORM(ctx *pipelineContext) error {
-	entities, entErr := codegen.ParseEntityProtos(ctx.ProjectDir)
+	entities, entErr := codegen.ParseORMEntities(ctx.ProjectDir)
 	if entErr != nil {
 		ctx.ORMFailure = entErr
 		return ctx.warnOrFail("entity parsing for ORM generation", entErr)
@@ -1985,44 +1979,19 @@ func stepInternalDBORM(ctx *pipelineContext) error {
 	if len(entities) == 0 {
 		return nil
 	}
-	svcName := ""
-	for _, e := range entities {
-		if n := codegen.ServiceNameFromProtoFile(e.ProtoFile); n != "" {
-			svcName = n
-			break
-		}
-	}
 	planEntities := codegen.EntityDefsToPlanEntities(entities)
-	if err := withDeclaredEntityRPCs(ctx,
-		generator.GeneratePlanORM(ctx.ProjectDir, ctx.ModulePath, svcName, planEntities, ctx.Checksums)); err != nil {
+	orm := config.ORMPackage(ctx.Cfg)
+	if err := generator.GeneratePlanORM(ctx.ProjectDir, orm, planEntities, ctx.Checksums); err != nil {
 		// Recorded whether or not --strict makes it fatal: without --strict
 		// the run continues, and every step that consumes the ORM must say
 		// it was skipped instead of reporting output it never wrote.
 		ctx.ORMFailure = err
 		return ctx.warnOrFail("ORM generation", err)
 	}
-	// GeneratePlanORM retires a forge-written internal/db/types.go (the
-	// proto-entity era's alias file) itself — and only a forge-written one.
-	fmt.Printf("  ✅ Generated internal/db/ (%d entity ORM files)\n", len(entities))
+	// GeneratePlanORM retires a forge-written types.go (the proto-entity
+	// era's alias file) itself — and only a forge-written one.
+	fmt.Printf("  ✅ Generated %s/ (%d entity ORM files)\n", orm.PackageDir(), len(entities))
 	return nil
-}
-
-// withDeclaredEntityRPCs fills an ORM name-collision refusal with the rpcs
-// this project declares for each colliding entity, so its advice names them
-// (with file:line) instead of the five a CRUD quintet would have. Any other
-// error, and nil, pass through.
-func withDeclaredEntityRPCs(ctx *pipelineContext, err error) error {
-	var collision *generator.ORMCollisionError
-	if !errors.As(err, &collision) {
-		return err
-	}
-	collision.EntityRPCs = map[string][]string{}
-	for entity, rpcs := range codegen.EntityRPCs(ctx.ProjectDir, ctx.Services, collision.Entities()) {
-		for _, r := range rpcs {
-			collision.EntityRPCs[entity] = append(collision.EntityRPCs[entity], r.String())
-		}
-	}
-	return err
 }
 
 // stepCRUDHandlers — was Step 4b.
@@ -2058,6 +2027,17 @@ func stepCRUDHandlers(ctx *pipelineContext) error {
 	rows, err := ctx.rowServiceDefs()
 	if err != nil {
 		return err
+	}
+	// A CRUD-named rpc whose entity has a wire message but no table would
+	// fall through to a pb-through stub with nothing saying why. Refused by
+	// name here, under the CRUD step's own gate: with the ORM off every
+	// CRUD-named rpc is a stub by design.
+	unmatched, err := codegen.ParseUnmatchedCRUDRPCs(ctx.ProjectDir)
+	if err != nil {
+		return fmt.Errorf("CRUD handler generation failed: match CRUD rpcs to tables: %w", err)
+	}
+	if err := codegen.UnmatchedCRUDRPCsError(unmatched); err != nil {
+		return fmt.Errorf("CRUD handler generation failed: %w", err)
 	}
 	if err := generateCRUDHandlers(rows, ctx.ModulePath, ctx.ProjectDir, ctx.Checksums); err != nil {
 		return fmt.Errorf("CRUD handler generation failed: %w", err)
@@ -2139,16 +2119,17 @@ func stepWebhookRoutes(ctx *pipelineContext) error {
 // output: any *_orm.go file, or the legacy internal/db/types.go from
 // older projects.
 //
-// Returns an error only when the internal/db scan itself fails (e.g.
-// I/O permission). A missing internal/db directory is simply "off".
+// Returns an error only when the ORM package scan itself fails (e.g. I/O
+// permission). A missing directory is simply "off". The directory is
+// database.orm.package (default internal/db).
 func deriveOrmEnabled(projectDir string) (bool, error) {
-	dbDir := filepath.Join(projectDir, "internal", "db")
-	entries, err := os.ReadDir(dbDir)
+	ormDir := codegen.ProjectORMPackage(projectDir).PackageDir()
+	entries, err := os.ReadDir(filepath.Join(projectDir, filepath.FromSlash(ormDir)))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("scan internal/db for ORM output: %w", err)
+		return false, fmt.Errorf("scan %s for ORM output: %w", ormDir, err)
 	}
 	for _, e := range entries {
 		if e.IsDir() {
@@ -2216,10 +2197,38 @@ func stepInternalAppComposition(ctx *pipelineContext) error {
 		return err
 	}
 
-	if err := generateHybridComposition(rows, packages, modulePath, dbDriver, ormEnabled, ctx.ProjectDir, webhookServices, ctx.Checksums); err != nil {
+	roots, err := generateHybridComposition(rows, packages, modulePath, dbDriver, ormEnabled, ctx.ProjectDir, webhookServices, ctx.Checksums)
+	if err != nil {
 		return fmt.Errorf("internal/app composition generation failed: %w", err)
 	}
+	ctx.graphRoots, ctx.graphRootsSet = roots, true
 	return nil
+}
+
+// stepRootsEnvSchema writes pkg/config/roots_gen.go: each root's config reach
+// as Go another module imports (codegen.GenerateRootsGo) — the reach
+// config_gen.k's ROOTS projects, for a project with or without deploy envs.
+func stepRootsEnvSchema(ctx *pipelineContext) error {
+	var roots []codegen.GraphRoot
+	if ctx.graphRootsSet {
+		roots = ctx.graphRoots
+	}
+	return codegen.GenerateRootsGo(ctx.ProjectDir, roots, ctx.Checksums)
+}
+
+// rootsForDeployConfig is the roots config_gen.k projects: the ones the
+// composition step read this run, else (a run that did not compose — a
+// narrowed --steps run) the graph assembled afresh. A graph that does not
+// assemble projects no ROOTS; generate's own composition step reports why.
+func (ctx *pipelineContext) rootsForDeployConfig() []codegen.GraphRoot {
+	if ctx.graphRootsSet {
+		return ctx.graphRoots
+	}
+	roots, err := codegen.GraphRoots(ctx.ProjectDir)
+	if err != nil {
+		return nil
+	}
+	return roots
 }
 
 // stepCmdGroups anchors the dir-nested per-component command-group subpackages
@@ -2364,6 +2373,41 @@ func stepGoModTidyPreWiring(ctx *pipelineContext) error {
 	return nil
 }
 
+// stepGoModTidyPreComposition runs `go mod tidy` (gen/ first, then root)
+// BEFORE the composition step, on a project generate has composed before.
+//
+// The composition graph reads what each node IS off one go/packages load of
+// internal/app and the component packages: the type a provider produces, the
+// lifecycle methods a listener has, whether a node is the database. That load
+// fails outright when go.mod or go.sum is behind the tree ("updates to go.mod
+// needed") — a fresh clone whose replace was just added, a hand-edited
+// go.mod, a dependency bump — and the graph then degrades to names alone. It
+// is not a small degradation: no node is typed, so no root field is a
+// listener, the server root holds no nodes, and generate writes a
+// graph_gen.go with no lifecycle, a roots_gen.go that reaches no database
+// and a config_gen.k that refuses the scaffold's own
+// `config_secrets = ["DATABASE_URL"]`. The tidy after composition
+// (stepGoModTidyPreWiring) repairs go.mod, so the NEXT run is right: output
+// that depends on the run count, not the tree.
+//
+// A project with no internal/app/compose.go yet has nothing for the load to
+// read (and its cmd imports an internal/app that does not exist, so a tidy
+// would only fail), so this is a no-op there; the post-composition tidy
+// covers the cold tree. Best-effort like that one: a tree whose imports do
+// not resolve degrades as before, with a warning saying so.
+func stepGoModTidyPreComposition(ctx *pipelineContext) error {
+	if _, err := os.Stat(filepath.Join(ctx.ProjectDir, "internal", "app", "compose.go")); err != nil {
+		return nil
+	}
+	if err := runGoModTidyGen(ctx.ProjectDir); err != nil {
+		fmt.Fprintf(os.Stderr, "  ⚠️  pre-composition go mod tidy (gen/) failed (continuing; the composition graph may not type-check and degrade to names): %v\n", err)
+	}
+	if err := runGoModTidyRoot(ctx.ProjectDir); err != nil {
+		fmt.Fprintf(os.Stderr, "  ⚠️  pre-composition go mod tidy (root) failed (continuing; the composition graph may not type-check and degrade to names): %v\n", err)
+	}
+	return nil
+}
+
 // stepCIWorkflows — was Step 8b.
 // Renders .github/workflows/*.yml from forge.yaml. Non-fatal: CI/CD
 // is opt-in and most local-dev iterations don't need it regenerated.
@@ -2474,6 +2518,11 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 	}
 	announceDerivedObservability(os.Stdout, ctx)
 	return ctx.warnOrFail("observability dashboards", func() error {
+		funnels, err := declaredFunnels(ctx.renderedFrontends())
+		if err != nil {
+			return err
+		}
+		in.Funnels = funnels
 		written, err := obsdash.Write(ctx.AbsPath, in, ctx.Checksums)
 		if err != nil {
 			return err
@@ -2533,7 +2582,7 @@ func stepWorkloadsKCL(ctx *pipelineContext) error {
 // config_gen + its config.k to project config into env_vars.
 func stepPerEnvDeployConfig(ctx *pipelineContext) error {
 	return ctx.warnOrFail("per-env deploy config generation",
-		generatePerEnvDeployConfig(ctx.ProjectDir, ctx.Cfg, ctx.Checksums))
+		generatePerEnvDeployConfig(ctx.ProjectDir, ctx.Cfg, ctx.Checksums, ctx.rootsForDeployConfig))
 }
 
 // stepIngressK3dPorts derives the k3d host→cluster port mappings

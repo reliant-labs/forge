@@ -103,6 +103,26 @@ func (s hostedRecordStore) RecordBundle(ctx context.Context, b release.BundleRec
 		ctx, b.Env, envID, blobs.Repository, blobs.Manifest, blobs.Config, b.Run, blobs.ManifestsLayer)
 }
 
+// BundleReader is what this control plane's strict bundle decoder accepts:
+// the optional document features its DeployService/GetCapabilities names.
+//
+// A control plane that does not serve the RPC (it predates it, so it predates
+// every feature) and one that serves it without the field both name NO
+// feature, and get the document their decoder knew. Any other failure is an
+// error rather than a guess: a server that answered nothing about what it
+// decodes is not evidence that it decodes nothing, and the RecordBundle that
+// follows would meet the same failure.
+func (s hostedRecordStore) BundleReader(ctx context.Context) (*release.BundleReader, error) {
+	return deploytarget.HostedBundleReader(ctx, s.client)
+}
+
+// bundleReaderReporter is a recorder that can say what its decoder accepts.
+// Only the hosted backend has a second party to ask; a recorder without it is
+// read by this forge (nil reader: every feature).
+type bundleReaderReporter interface {
+	BundleReader(ctx context.Context) (*release.BundleReader, error)
+}
+
 // hostedKindForRecord maps a shape's env kind to the hosted kind an ensure
 // carries — the inverse of hostedControlPlaneKindName.
 //
@@ -138,8 +158,9 @@ func (s hostedRecordStore) envID(ctx context.Context, env string) (string, error
 // are what keep a method rename from silently dropping a store out of a
 // capability its consumers type-assert for.
 var (
-	_ sessionReporter = hostedRecordStore{}
-	_ bundleRecorder  = hostedRecordStore{}
+	_ sessionReporter      = hostedRecordStore{}
+	_ bundleRecorder       = hostedRecordStore{}
+	_ bundleReaderReporter = hostedRecordStore{}
 )
 
 // Bundles is the configured bundle client.

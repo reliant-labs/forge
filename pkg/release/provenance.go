@@ -41,6 +41,14 @@ type Provenance struct {
 	// dirty (the bytes are no commit's) or the commit is unknown. It is a
 	// claim like Branch, not authority.
 	CommitTime *time.Time `json:"commit_time,omitempty"`
+	// CommitSubject is Commit's subject line (the first line of its message)
+	// and CommitAuthor its author's name, as git reported them, so a release
+	// can be read as "abc1234 fix(gateway): …, by alice" without a repository
+	// at hand. Set whenever Commit is, dirty or not: a dirty build's Commit is
+	// the base it was built on, and Dirty says the bytes are more than that.
+	// Claims like Branch. The subject is bounded at [MaxCommitSubjectBytes].
+	CommitSubject string `json:"commit_subject,omitempty"`
+	CommitAuthor  string `json:"commit_author,omitempty"`
 	// Branch is the symbolic ref at build time; empty on a detached HEAD.
 	Branch string `json:"branch,omitempty"`
 	// Tag is an exact tag at HEAD, if any.
@@ -110,6 +118,15 @@ func (p Provenance) Validate() error {
 	}
 	if p.CommitTime != nil && p.Commit == "" {
 		return fmt.Errorf("%w: provenance names a commit time but no commit", ErrInvalid)
+	}
+	if (p.CommitSubject != "" || p.CommitAuthor != "") && p.Commit == "" {
+		return fmt.Errorf("%w: provenance names a commit subject or author but no commit", ErrInvalid)
+	}
+	if err := validateCommitText("provenance commit subject", p.CommitSubject, MaxCommitSubjectBytes); err != nil {
+		return err
+	}
+	if err := validateCommitText("provenance commit author", p.CommitAuthor, MaxCommitAuthorBytes); err != nil {
+		return err
 	}
 	if p.Attestation != nil && (p.Attestation.Provider == "" || p.Attestation.Subject == "") {
 		return fmt.Errorf("%w: provenance attestation needs a provider and a subject", ErrInvalid)

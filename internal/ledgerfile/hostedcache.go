@@ -97,7 +97,10 @@ type QueuedPromotion struct {
 	ExpectedPromotionID string        `json:"expected_promotion_id,omitempty"`
 	PromotedBy          release.Actor `json:"promoted_by,omitempty"`
 	Note                string        `json:"note,omitempty"`
-	QueuedAt            time.Time     `json:"queued_at"`
+	// Targets is the deploy's scope (release.Promotion.Targets), replayed
+	// with it so the control plane records what the offline deploy moved.
+	Targets  []string  `json:"targets,omitempty"`
+	QueuedAt time.Time `json:"queued_at"`
 	// CacheRefreshedAt is the age of the cache this was decided from.
 	CacheRefreshedAt time.Time `json:"cache_refreshed_at"`
 	// AfterKey is the queued record this one was made on top of, when an

@@ -971,6 +971,11 @@ type ShellBuild struct {
 	// SourceDir is invocation-local; the declaration stays intact for provenance.
 	SourceDir string            `json:"-"`
 	Env       map[string]string `json:"env,omitempty"`
+	// BuiltImages maps an env var the command reads to the workload whose
+	// built image it carries. The build runs each named workload first and
+	// sets the var to the `<repository>@sha256:<digest>` it pushed — see
+	// externalBuildGraph.
+	BuiltImages map[string]string `json:"built_images,omitempty"`
 }
 
 // RemoteBuildSource mirrors the kcl/schema.k GitSource as it appears
@@ -1080,6 +1085,10 @@ type FrontendEntity struct {
 	// with explicit EnvVars winning on a variable collision. See
 	// EffectiveEnvVars.
 	Config *FrontendConfigEntity `json:"config,omitempty"`
+	// Telemetry is the browser telemetry the frontend declares beyond the
+	// env's observability signals (kcl/schema.k BrowserTelemetry). nil when
+	// it declares none.
+	Telemetry *FrontendTelemetryEntity `json:"telemetry,omitempty"`
 	// Routes is the CRUD-page allowlist (kcl/schema.k Frontend.routes): route
 	// slugs, or the single value "none". Empty means every CRUD entity.
 	Routes []string `json:"routes,omitempty"`
@@ -1136,6 +1145,14 @@ type FrontendEntity struct {
 	// Release is the release version this build ships under (the deploy's
 	// bound release), "" when there is none.
 	Release string `json:"-"`
+	// Project is the forge project name, handed to the build so the source
+	// map manifest names it. Not rendered per frontend.
+	Project string `json:"-"`
+
+	// Sourcemaps is "publish" (the default when empty), "public" or "off":
+	// whether the built source maps leave the served tree for a sidecar, are
+	// served, or are dropped. See deploytarget.Sourcemaps*.
+	Sourcemaps string `json:"sourcemaps,omitempty"`
 }
 
 // FrontendConfigEntity mirrors the kcl/schema.k FrontendConfig — the
@@ -1151,6 +1168,26 @@ type FrontendConfigEntity struct {
 	OTELEndpoint      string `json:"otel_endpoint,omitempty"`
 	Environment       string `json:"environment,omitempty"`
 	TelemetryDisabled bool   `json:"telemetry_disabled,omitempty"`
+}
+
+// FrontendTelemetryEntity mirrors kcl/schema.k BrowserTelemetry.
+type FrontendTelemetryEntity struct {
+	ConsoleCapture   bool    `json:"console_capture"`
+	ReplaySampleRate float64 `json:"replay_sample_rate"`
+	Sourcemaps       string  `json:"sourcemaps,omitempty"`
+	Errors           struct {
+		Ignore []string `json:"ignore,omitempty"`
+	} `json:"errors"`
+	Funnels []FunnelEntity `json:"funnels,omitempty"`
+}
+
+// FunnelEntity mirrors kcl/schema.k Funnel, window and by already defaulted.
+type FunnelEntity struct {
+	ID     string   `json:"id"`
+	Title  string   `json:"title,omitempty"`
+	Steps  []string `json:"steps"`
+	Window string   `json:"window"`
+	By     string   `json:"by"`
 }
 
 // EffectiveEnvVars is the frontend's env-var stream forge injects at dev
@@ -1235,6 +1272,11 @@ type ObservabilityEntity struct {
 		TracesDays  int `json:"traces_days"`
 		MetricsDays int `json:"metrics_days"`
 		LogsDays    int `json:"logs_days"`
+		// The browser-telemetry tables' TTLs, in days (always rendered,
+		// defaulted by the schema).
+		ReplayDays        int `json:"replay_days"`
+		ErrorsDays        int `json:"errors_days"`
+		ProductEventsDays int `json:"product_events_days"`
 	} `json:"retention"`
 	Agent struct {
 		Namespace      string `json:"namespace"`
@@ -1883,6 +1925,15 @@ func (w WorkloadEntity) EffectiveBuildCwd() string {
 func (w WorkloadEntity) EffectiveBuildEnv() map[string]string {
 	if sh := w.shell(); sh != nil {
 		return sh.Env
+	}
+	return nil
+}
+
+// EffectiveBuiltImages is the shell build's built_images edges (env var ->
+// workload). nil for a non-shell build.
+func (w WorkloadEntity) EffectiveBuiltImages() map[string]string {
+	if sh := w.shell(); sh != nil {
+		return sh.BuiltImages
 	}
 	return nil
 }

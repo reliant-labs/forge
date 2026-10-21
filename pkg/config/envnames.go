@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -49,27 +50,69 @@ func envNames(opt *forgepb.ConfigFieldOptions) []string {
 
 // lookupFieldEnv resolves a field's env layer: the first of its names set to
 // something other than "". name is the variable that supplied the value.
-func lookupFieldEnv(opt *forgepb.ConfigFieldOptions) (name, value string, ok bool) {
-	for _, n := range envNames(opt) {
-		if v, set := lookupEnv(n); set {
+//
+// An alias carrying `values` supplies the field's value mapped from its own,
+// and only for a value the map names: any other value is another tool's
+// business, so it reads as unset and the next name is tried (aliasValue).
+func lookupFieldEnv(opt *forgepb.ConfigFieldOptions, env environ) (name, value string, ok bool) {
+	if n := opt.GetEnvVar(); n != "" {
+		if v, set := env.lookupEnv(n); set {
 			return n, v, true
+		}
+	}
+	for _, a := range opt.GetEnvVarAliases() {
+		if v, set := aliasValue(a, env); set {
+			return a.GetName(), v, true
 		}
 	}
 	return "", "", false
 }
 
+// aliasValue is what one alias supplies: its value, or for a value-mapped
+// alias the field value its value maps to; ok is false when it supplies
+// nothing (unset, "", or a value the map does not name).
+func aliasValue(a *forgepb.EnvVarAlias, env environ) (string, bool) {
+	if a.GetName() == "" {
+		return "", false
+	}
+	v, set := env.lookupEnv(a.GetName())
+	if !set {
+		return "", false
+	}
+	if m := a.GetValues(); len(m) > 0 {
+		mapped, known := m[v]
+		return mapped, known
+	}
+	return v, true
+}
+
+// aliasLabel names an alias for help text and errors: the variable, or for a
+// value-mapped one the settings it honours ("DEBUG=1|true").
+func aliasLabel(a *forgepb.EnvVarAlias) string {
+	m := a.GetValues()
+	if len(m) == 0 {
+		return a.GetName()
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return a.GetName() + "=" + strings.Join(keys, "|")
+}
+
 // noticeDeprecatedAliases writes one line to w for each deprecated alias of
 // the field that is set. supplier is the variable the env layer read the
 // value from ("" when none was set).
-func noticeDeprecatedAliases(w io.Writer, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions, supplier string) {
+func noticeDeprecatedAliases(w io.Writer, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions, supplier string, env environ) {
 	primary := opt.GetEnvVar()
 	for _, a := range opt.GetEnvVarAliases() {
 		name := a.GetName()
 		if !a.GetDeprecated() || name == "" {
 			continue
 		}
-		if _, set := lookupEnv(name); !set {
-			continue
+		if _, set := aliasValue(a, env); !set {
+			continue // unset, or a value-mapped alias set to a value it does not honour
 		}
 		if name == supplier {
 			fmt.Fprintf(w, "warning: %s is a deprecated name for %s (config field %s); set %s instead\n",
@@ -93,16 +136,25 @@ func noticeWriter(cmd *cobra.Command) io.Writer {
 // envSourcesPhrase names the variables a field reads, for an error message:
 // "DAEMON_LISTEN_PORT", or "DAEMON_LISTEN_PORT or TOOLS_DAEMON_PORT".
 func envSourcesPhrase(opt *forgepb.ConfigFieldOptions) string {
-	return strings.Join(envNames(opt), " or ")
+	var names []string
+	if v := opt.GetEnvVar(); v != "" {
+		names = append(names, v)
+	}
+	for _, a := range opt.GetEnvVarAliases() {
+		if a.GetName() != "" {
+			names = append(names, aliasLabel(a))
+		}
+	}
+	return strings.Join(names, " or ")
 }
 
 // emptyEnvNote is the clause a required-field error adds when any of the
 // field's variables is present but empty, so nobody goes looking for a
 // variable that is in fact set. "" when none is.
-func emptyEnvNote(opt *forgepb.ConfigFieldOptions) string {
+func emptyEnvNote(opt *forgepb.ConfigFieldOptions, env environ) string {
 	var empty []string
 	for _, n := range envNames(opt) {
-		if envSetButEmpty(n) {
+		if env.envSetButEmpty(n) {
 			empty = append(empty, n)
 		}
 	}
@@ -126,7 +178,7 @@ func flagUsage(opt *forgepb.ConfigFieldOptions) string {
 	}
 	for _, a := range opt.GetEnvVarAliases() {
 		if a.GetName() != "" && !a.GetDeprecated() {
-			names = append(names, a.GetName())
+			names = append(names, aliasLabel(a))
 		}
 	}
 	desc := opt.GetDescription()

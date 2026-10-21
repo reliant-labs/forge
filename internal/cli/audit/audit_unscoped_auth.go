@@ -646,12 +646,12 @@ func ownerEntityFor(method codegen.Method, ownerTables map[string]string) (entit
 	if op == "list" {
 		name = inflection.Singular(name)
 	}
-	candidate := naming.Pluralize(naming.ToSnakeCase(name))
-	col, owned := ownerTables[candidate]
-	if !owned {
-		return "", "", ""
+	for _, candidate := range codegen.EntityTableCandidates(name) {
+		if col, owned := ownerTables[candidate]; owned {
+			return name, candidate, col
+		}
 	}
-	return name, candidate, col
+	return "", "", ""
 }
 
 // newUnscopedFinding builds one finding, resolving the owned entity

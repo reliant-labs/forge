@@ -303,7 +303,8 @@ func profileFromEmail(email string) map[string]any {
 // an account in prod. Asking what credentials the account HAS is also strictly
 // more conservative: a member who set a password, passkey or IdP link is
 // skipped, so a working credential is never invalidated. Any method counts,
-// not only a password.
+// not only a password. A member the caller still holds a live code for
+// (Options.HeldSignInCode) keeps it.
 func (p *run) ensureSignInPath(ctx context.Context, email, uid string) error {
 	var methods struct {
 		AuthMethodTypes []string `json:"authMethodTypes"`
@@ -312,6 +313,10 @@ func (p *run) ensureSignInPath(ctx context.Context, email, uid string) error {
 		return fmt.Errorf("read authentication methods: %w", err)
 	}
 	if len(methods.AuthMethodTypes) > 0 {
+		p.rep.Credentialed = append(p.rep.Credentialed, email)
+		return nil
+	}
+	if p.o.HeldSignInCode != nil && p.o.HeldSignInCode(email) {
 		return nil
 	}
 	var out struct {
@@ -327,7 +332,7 @@ func (p *run) ensureSignInPath(ctx context.Context, email, uid string) error {
 		return errors.New("the instance accepted the password-reset request but returned no code")
 	}
 	p.rep.change(Issued, "sign-in code", email, "")
-	p.rep.SignInCodes = append(p.rep.SignInCodes, SignInCode{Email: email, Code: out.VerificationCode})
+	p.rep.SignInCodes = append(p.rep.SignInCodes, SignInCode{Email: email, Code: out.VerificationCode, ExpiresAt: p.o.Now().Add(SignInCodeLifetime)})
 	return nil
 }
 

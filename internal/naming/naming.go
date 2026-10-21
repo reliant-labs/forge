@@ -208,20 +208,23 @@ func EntityListFieldName(entityName string) string {
 }
 
 // ColumnGoName is the Go field name forge's generated ORM gives a column
-// on a db.<Entity> struct: title-case each '_'/'-'-separated segment, no
-// initialisms ("id" → "Id", "org_id" → "OrgId", "address_line_2" →
-// "AddressLine2", "base64item" → "Base64item").
+// on a db.<Entity> struct: title-case each '_'/'-'-separated segment, then
+// spell Go initialisms in capitals the way gofmt-era Go code does ("id" →
+// "ID", "org_id" → "OrgID", "api_key" → "APIKey", "address_line_2" →
+// "AddressLine2", "base64item" → "Base64item", "user_ids" → "UserIds" — a
+// plural is not an initialism, as in staticcheck ST1003).
 //
 // This is FORGE's rule for FORGE's types, and it is deliberately not
 // protoc-gen-go's: the generated pb field over the same name can differ
-// ("base64item" → Base64Item, "address_line_2" → AddressLine_2). A
-// conversion between the two structs must spell each side with its own
-// rule — GoFieldName for the pb message, this for the db struct. It once
-// claimed to match protoc-gen-go, and every pb field reference built from
-// it broke on the first name with a digit in it.
+// ("id" → Id, "base64item" → Base64Item, "address_line_2" →
+// AddressLine_2). A conversion between the two structs must spell each side
+// with its own rule — GoFieldName for the pb message, this for the db
+// struct. It once claimed to match protoc-gen-go, and every pb field
+// reference built from it broke on the first name with a digit in it.
 //
-// Changing it renames ORM struct fields in every existing project, so it
-// stays as it is.
+// It used to apply no initialisms ("Id", "UserId"), for no reason but that
+// changing it renames ORM struct fields in every existing project; the
+// store is Go, and Go spells these ID and UserID (reliant P5b, F12.6).
 func ColumnGoName(s string) string {
 	var b strings.Builder
 	upNext := true
@@ -237,7 +240,7 @@ func ColumnGoName(s string) string {
 			b.WriteRune(r)
 		}
 	}
-	return b.String()
+	return applyGoInitialisms(b.String())
 }
 
 // ToKebabCase converts a name to kebab-case, treating known initialisms

@@ -39,7 +39,7 @@ func TestGeneratePlanORM_CertifiesOutputs(t *testing.T) {
 		}},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, cs); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, cs); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
 
@@ -75,7 +75,7 @@ func TestGeneratePlanORM_DisownedFileLeftAlone(t *testing.T) {
 			{Name: "id", Type: "string", PrimaryKey: true, NotNull: true},
 		}},
 	}
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, cs); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, cs); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
 
@@ -91,7 +91,7 @@ func TestGeneratePlanORM_DisownedFileLeftAlone(t *testing.T) {
 		t.Fatalf("DisownPaths: %v", err)
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, cs); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, cs); err != nil {
 		t.Fatalf("GeneratePlanORM after disown: %v", err)
 	}
 	got, err := os.ReadFile(full)
@@ -107,7 +107,7 @@ func TestGeneratePlanORM_DisownedFileLeftAlone(t *testing.T) {
 	if err := os.Remove(full); err != nil {
 		t.Fatal(err)
 	}
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, cs); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, cs); err != nil {
 		t.Fatalf("GeneratePlanORM re-adoption: %v", err)
 	}
 	got, err = os.ReadFile(full)
@@ -139,7 +139,7 @@ func TestGeneratePlanORM_StaleSweepRespectsOwnership(t *testing.T) {
 			{Name: "id", Type: "string", PrimaryKey: true, NotNull: true},
 		}}
 	}
-	if err := GeneratePlanORM(root, "example.com/app", "api",
+	if err := GeneratePlanORM(root, config.ORMConfig{},
 		[]config.PlanEntity{idOnly("Item"), idOnly("Gone"), idOnly("Kept")}, cs); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestGeneratePlanORM_StaleSweepRespectsOwnership(t *testing.T) {
 	}
 
 	// Regenerate with Gone and Kept both removed from the entity set.
-	if err := GeneratePlanORM(root, "example.com/app", "api",
+	if err := GeneratePlanORM(root, config.ORMConfig{},
 		[]config.PlanEntity{idOnly("Item")}, cs); err != nil {
 		t.Fatalf("GeneratePlanORM after removal: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestGeneratePlanORM_StaleSweepKeepsHandEditedFiles(t *testing.T) {
 			{Name: "id", Type: "string", PrimaryKey: true, NotNull: true},
 		}}
 	}
-	if err := GeneratePlanORM(root, "example.com/app", "api",
+	if err := GeneratePlanORM(root, config.ORMConfig{},
 		[]config.PlanEntity{idOnly("Item"), idOnly("Edited")}, cs); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestGeneratePlanORM_StaleSweepKeepsHandEditedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api",
+	if err := GeneratePlanORM(root, config.ORMConfig{},
 		[]config.PlanEntity{idOnly("Item")}, cs); err != nil {
 		t.Fatalf("GeneratePlanORM after removal: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestGeneratePlanORM_NilChecksumsTolerated(t *testing.T) {
 			{Name: "id", Type: "string", PrimaryKey: true, NotNull: true},
 		}},
 	}
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("GeneratePlanORM with nil cs: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, ormRel("item_orm_gen.go"))); err != nil {
@@ -251,7 +251,7 @@ func TestGeneratePlanORM_AdoptsUntrackedExistingFiles(t *testing.T) {
 			{Name: "id", Type: "string", PrimaryKey: true, NotNull: true},
 		}},
 	}
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, cs); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, cs); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
 

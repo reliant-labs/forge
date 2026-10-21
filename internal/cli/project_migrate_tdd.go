@@ -36,6 +36,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // migrateTDDFlags holds the flag values for `forge project migrate tdd`.
@@ -231,12 +233,12 @@ func migrateTDDFile(path string, dryRun bool) (migrateResult, error) {
 		// Save the unformatted version under .bad so the user can inspect.
 		// Don't overwrite the original — that would be the worst kind of
 		// silent corruption.
-		_ = os.WriteFile(path+".migrate-tdd.bad", newSrc, 0o644)
+		_ = atomicfile.WriteFile(path+".migrate-tdd.bad", newSrc, 0o644)
 		return migrateResult{}, fmt.Errorf("gofmt failed (saved as %s.migrate-tdd.bad): %w", path, fmtErr)
 	}
 
 	if !dryRun {
-		if err := os.WriteFile(path, formatted, 0o644); err != nil {
+		if err := atomicfile.WriteFile(path, formatted, 0o644); err != nil {
 			return migrateResult{}, fmt.Errorf("write: %w", err)
 		}
 	}

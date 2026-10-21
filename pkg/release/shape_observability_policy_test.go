@@ -107,3 +107,126 @@ func TestShapeObservabilityPolicy_Off(t *testing.T) {
 		t.Errorf("Off wrong for %+v", p)
 	}
 }
+
+func TestShape_ObservabilityRetentionDefaultsAreTheAbsenceOfOne(t *testing.T) {
+	defaults := &ShapeRetention{ReplayDays: DefaultReplayDays, ErrorsDays: DefaultErrorsDays, ProductEventsDays: DefaultProductEventsDays}
+	spelled := Shape{Kind: EnvSelfManaged, ObservabilityPolicy: &ShapeObservabilityPolicy{Enabled: true, Retention: defaults}}
+	bare := Shape{Kind: EnvSelfManaged, ObservabilityPolicy: &ShapeObservabilityPolicy{Enabled: true}}
+	a, err := spelled.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := bare.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a) != string(b) || strings.Contains(string(a), "retention") {
+		t.Errorf("a producer that spells the defaults out must encode like one that declares nothing:\n%s\n%s", a, b)
+	}
+}
+
+func TestShape_ObservabilityRetentionRoundTripAndBounds(t *testing.T) {
+	in := Shape{Kind: EnvSelfManaged, ObservabilityPolicy: &ShapeObservabilityPolicy{
+		Enabled: true, OptIn: []string{ObsOptInReplay},
+		Retention: &ShapeRetention{ReplayDays: 7, ErrorsDays: 60, ProductEventsDays: 180},
+	}}
+	b, err := in.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"retention":{"replay_days":7,"errors_days":60,"product_events_days":180}`) {
+		t.Errorf("retention not encoded: %s", b)
+	}
+	var out Shape
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := out.Validate(); err != nil {
+		t.Fatalf("round-tripped retention is invalid: %v", err)
+	}
+	if !reflect.DeepEqual(out.ObservabilityPolicy.Retention, in.ObservabilityPolicy.Retention) {
+		t.Errorf("round trip changed retention: %+v", out.ObservabilityPolicy.Retention)
+	}
+	for name, r := range map[string]*ShapeRetention{
+		"replay over the cap":  {ReplayDays: MaxReplayDays + 1, ErrorsDays: 30, ProductEventsDays: 90},
+		"errors zero":          {ReplayDays: 14, ErrorsDays: 0, ProductEventsDays: 90},
+		"product events over":  {ReplayDays: 14, ErrorsDays: 30, ProductEventsDays: MaxProductEventsDays + 1},
+		"a half-set retention": {ReplayDays: 7},
+	} {
+		bad := Shape{Kind: EnvSelfManaged, ObservabilityPolicy: &ShapeObservabilityPolicy{Enabled: true, Retention: r}}
+		if err := bad.Validate(); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: Validate = %v, want ErrInvalid", name, err)
+		}
+	}
+}
+
+func TestShape_FrontendTelemetryCanonicalAndValidated(t *testing.T) {
+	f := func(id string) ShapeFunnel {
+		return ShapeFunnel{ID: id, Steps: []string{"a", "b"}, Window: "1h", By: "session"}
+	}
+	in := Shape{Kind: EnvSelfManaged, FrontendTelemetry: []ShapeFrontendTelemetry{
+		{Frontend: "web", Sourcemaps: SourcemapsPublish}, // default: dropped
+		{Frontend: "zeta", Funnels: []ShapeFunnel{f("b"), f("a")}},
+		{Frontend: "admin", Sourcemaps: SourcemapsOff, ErrorsIgnore: []string{"AbortError", "re:^Failed"}},
+	}}
+	canon := in.Canonical()
+	if len(canon.FrontendTelemetry) != 2 || canon.FrontendTelemetry[0].Frontend != "admin" || canon.FrontendTelemetry[1].Frontend != "zeta" {
+		t.Fatalf("canonical = %+v, want admin and zeta (sorted), the default entry dropped", canon.FrontendTelemetry)
+	}
+	if z := canon.FrontendTelemetry[1]; z.Funnels[0].ID != "a" || z.Funnels[1].ID != "b" {
+		t.Errorf("funnels not sorted by id: %+v", z.Funnels)
+	}
+	if in.FrontendTelemetry[1].Funnels[0].ID != "b" {
+		t.Error("Canonical sorted the caller's funnels in place")
+	}
+	if err := canon.Validate(); err != nil {
+		t.Fatalf("a valid declaration is refused: %v", err)
+	}
+	if !canon.HasFrontendTelemetry() || (Shape{Kind: EnvSelfManaged}).HasFrontendTelemetry() {
+		t.Error("HasFrontendTelemetry wrong")
+	}
+	none := Shape{Kind: EnvSelfManaged, FrontendTelemetry: []ShapeFrontendTelemetry{{Frontend: "web"}}}
+	if b, _ := none.Encode(); strings.Contains(string(b), "frontend_telemetry") {
+		t.Errorf("a frontend that declares nothing must leave no key behind: %s", b)
+	}
+
+	for name, bad := range map[string]ShapeFrontendTelemetry{
+		"no frontend":       {Funnels: []ShapeFunnel{f("a")}},
+		"bad sourcemaps":    {Frontend: "web", Sourcemaps: "inline"},
+		"empty filter":      {Frontend: "web", ErrorsIgnore: []string{" "}},
+		"one step":          {Frontend: "web", Funnels: []ShapeFunnel{{ID: "a", Steps: []string{"x"}, Window: "1h", By: "user"}}},
+		"bad by":            {Frontend: "web", Funnels: []ShapeFunnel{{ID: "a", Steps: []string{"x", "y"}, Window: "1h", By: "device"}}},
+		"duplicate funnel":  {Frontend: "web", Funnels: []ShapeFunnel{f("a"), f("a")}},
+		"funnel without id": {Frontend: "web", Funnels: []ShapeFunnel{f("")}},
+	} {
+		if err := (Shape{Kind: EnvSelfManaged, FrontendTelemetry: []ShapeFrontendTelemetry{bad}}).Validate(); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: Validate = %v, want ErrInvalid", name, err)
+		}
+	}
+	twice := Shape{Kind: EnvSelfManaged, FrontendTelemetry: []ShapeFrontendTelemetry{{Frontend: "web", Sourcemaps: SourcemapsOff}, {Frontend: "web", Sourcemaps: SourcemapsPublic}}}
+	if err := twice.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a frontend named twice: Validate = %v", err)
+	}
+}
+
+// A reader that predates the feature gets a shape it can strict-decode: the
+// telemetry parts are gone, nothing else is, and the caller's shape is intact.
+func TestBundleReader_LimitShapeWithholdsFrontendTelemetry(t *testing.T) {
+	full := Shape{Kind: EnvSelfManaged,
+		ObservabilityPolicy: &ShapeObservabilityPolicy{Enabled: true, OptIn: []string{ObsOptInReplay}, Retention: &ShapeRetention{ReplayDays: 7, ErrorsDays: 30, ProductEventsDays: 90}},
+		FrontendTelemetry:   []ShapeFrontendTelemetry{{Frontend: "web", Sourcemaps: SourcemapsOff}},
+	}
+	old := (&BundleReader{}).LimitShape(full)
+	if old.FrontendTelemetry != nil || old.ObservabilityPolicy.Retention != nil || !old.ObservabilityPolicy.OptedIn(ObsOptInReplay) {
+		t.Errorf("an old reader's shape = %+v", old)
+	}
+	if full.FrontendTelemetry == nil || full.ObservabilityPolicy.Retention == nil {
+		t.Error("LimitShape modified its argument")
+	}
+	if got := (&BundleReader{Features: BundleDocFeatures()}).LimitShape(full); !reflect.DeepEqual(got, full) {
+		t.Errorf("a reader of every feature must get the shape whole: %+v", got)
+	}
+	if got := (*BundleReader)(nil).LimitShape(full); !reflect.DeepEqual(got, full) {
+		t.Error("the nil reader (this forge's own ledger) must get the shape whole")
+	}
+}

@@ -8,20 +8,20 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 )
 
-// TestLintAutoFixDefaultOn pins the auto-fix-then-gate contract at the flag
-// layer: `forge lint` with no flags auto-fixes (noFix defaults false, so the
-// effective !noFix is true), and --no-fix is the explicit opt-out. The legacy
-// --fix flag still parses (back-compat) but is no longer required.
-func TestLintAutoFixDefaultOn(t *testing.T) {
+// TestLintReportOnlyByDefault pins the gate contract at the flag layer: a
+// bare `forge lint` writes nothing; --fix is the one way to rewrite, and
+// --no-fix / --check still beat it.
+func TestLintReportOnlyByDefault(t *testing.T) {
 	cases := []struct {
-		name       string
-		args       []string
-		wantAutoFx bool
+		name    string
+		args    []string
+		wantFix bool
 	}{
-		{"default (no flags) auto-fixes", nil, true},
-		{"--no-fix opts out", []string{"--no-fix"}, false},
-		{"legacy --fix still parses, stays on", []string{"--fix"}, true},
+		{"default (no flags) is report-only", nil, false},
+		{"--no-fix is report-only", []string{"--no-fix"}, false},
+		{"--fix fixes", []string{"--fix"}, true},
 		{"--no-fix wins over --fix", []string{"--fix", "--no-fix"}, false},
+		{"--check wins over --fix", []string{"--fix", "--check"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -29,13 +29,12 @@ func TestLintAutoFixDefaultOn(t *testing.T) {
 			if err := cmd.Flags().Parse(tc.args); err != nil {
 				t.Fatalf("Parse(%v): %v", tc.args, err)
 			}
-			noFix, err := cmd.Flags().GetBool("no-fix")
-			if err != nil {
-				t.Fatalf("GetBool(no-fix): %v", err)
-			}
-			// runLint derives the effective auto-fix as !noFix.
-			if got := !noFix; got != tc.wantAutoFx {
-				t.Errorf("effective auto-fix = %v, want %v", got, tc.wantAutoFx)
+			var f lintFlags
+			f.fix, _ = cmd.Flags().GetBool("fix")
+			f.noFix, _ = cmd.Flags().GetBool("no-fix")
+			f.check, _ = cmd.Flags().GetBool("check")
+			if got := f.autoFix(); got != tc.wantFix {
+				t.Errorf("autoFix = %v, want %v", got, tc.wantFix)
 			}
 		})
 	}
@@ -170,18 +169,20 @@ func TestFormatGoTree_LeavesBrokenFileUntouched(t *testing.T) {
 }
 
 // TestFormatGoTree_SkipsVendorAndNodeModules proves the walk prunes heavy /
-// non-owned trees so it never rewrites dependency or build output.
+// non-owned trees so it never rewrites dependency or build output, nor a
+// testdata fixture (forge's own slowtest fixture was rewritten by every lint).
 func TestFormatGoTree_SkipsVendorAndNodeModules(t *testing.T) {
 	root := newFormatProject(t)
 	writeFile(t, root, "internal/vendor/dep/x.go", unformattedGo)
 	writeFile(t, root, "pkg/node_modules/x.go", unformattedGo)
+	writeFile(t, root, "internal/linter/x/testdata/src/a/a_test.go", unformattedGo)
 
 	changed, err := formatGoTree(root)
 	if err != nil {
 		t.Fatalf("formatGoTree: %v", err)
 	}
 	if len(changed) != 0 {
-		t.Errorf("changed = %v, want none (vendor/node_modules must be skipped)", changed)
+		t.Errorf("changed = %v, want none (vendor/node_modules/testdata must be skipped)", changed)
 	}
 }
 
@@ -200,5 +201,51 @@ func TestFormatGoTree_AlreadyCanonicalNoOp(t *testing.T) {
 	}
 	if len(changed) != 0 {
 		t.Errorf("changed = %v, want none (already-canonical file must be a no-op)", changed)
+	}
+}
+
+// `forge lint ./internal/mine/` says "this is the part I am working on", and
+// the format pre-pass used to ignore it and rewrite every package in the
+// project, including files another agent was editing. Named paths bound the
+// pre-pass like --scope does; no paths, or the whole module, is the whole tree.
+func TestKeepForPaths(t *testing.T) {
+	keep := keepForPaths([]string{"./internal/mine/...", "cmd/tool/main.go"})
+	for rel, want := range map[string]bool{
+		"internal/mine/a.go":     true,
+		"internal/mine/sub/b.go": true,
+		"cmd/tool/main.go":       true,
+		"internal/mineral/a.go":  false,
+		"internal/theirs/c.go":   false,
+		"cmd/tool/other.go":      false,
+		"pkg/internal/mine/a.go": false,
+	} {
+		if got := keep(rel); got != want {
+			t.Errorf("keep(%q) = %v, want %v", rel, got, want)
+		}
+	}
+	for _, whole := range [][]string{nil, {}, {"."}, {"./..."}, {"..."}, {"./internal/mine", "./..."}} {
+		if keepForPaths(whole) != nil {
+			t.Errorf("keepForPaths(%v) restricts the run; it names the whole module", whole)
+		}
+	}
+}
+
+func TestFormatPrePass_PositionalPathsLeaveOtherPackagesAlone(t *testing.T) {
+	root := newFormatProject(t)
+	mine := writeFile(t, root, "internal/mine/a.go", unformattedGo)
+	theirs := writeFile(t, root, "internal/theirs/c.go", unformattedGo)
+
+	changed, err := formatGoTreeFiltered(root, keepForPaths([]string{"./internal/mine/..."}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed) != 1 || changed[0] != filepath.Join("internal", "mine", "a.go") {
+		t.Fatalf("changed = %v, want only internal/mine/a.go", changed)
+	}
+	if got, _ := os.ReadFile(theirs); string(got) != unformattedGo {
+		t.Error("a package outside the named path was rewritten")
+	}
+	if got, _ := os.ReadFile(mine); string(got) == unformattedGo {
+		t.Error("the named package was not formatted")
 	}
 }

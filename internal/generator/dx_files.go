@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // generateDXFiles writes developer-experience and operations scaffolding:
@@ -61,13 +63,8 @@ func (g *ProjectGenerator) generateDXFiles() error {
 		}
 	}
 	if g.isService() && g.Features.ObservabilityEnabled() {
-		if err := g.generateRunbookAndSLO(); err != nil {
-			return fmt.Errorf("write docs/runbook+slo: %w", err)
-		}
-	}
-	if g.isService() && g.Features.ObservabilityEnabled() {
-		if err := g.generatePrometheusRules(); err != nil {
-			return fmt.Errorf("write prometheus-rules: %w", err)
+		if err := g.generateRunbook(); err != nil {
+			return fmt.Errorf("write docs/runbook.md: %w", err)
 		}
 	}
 	if g.isService() && g.Features.ORMEnabled() {
@@ -152,10 +149,10 @@ func (g *ProjectGenerator) generateVSCodeConfig() error {
 	if err := os.MkdirAll(vscodeDir, 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(vscodeDir, "settings.json"), []byte(settings), 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(vscodeDir, "settings.json"), []byte(settings), 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(vscodeDir, "extensions.json"), []byte(extensions), 0o644)
+	return atomicfile.WriteFile(filepath.Join(vscodeDir, "extensions.json"), []byte(extensions), 0o644)
 }
 
 // generateDevcontainer writes .devcontainer/devcontainer.json. The base
@@ -246,7 +243,7 @@ func (g *ProjectGenerator) generateDevcontainer() error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "devcontainer.json"), []byte(content), 0o644)
+	return atomicfile.WriteFile(filepath.Join(dir, "devcontainer.json"), []byte(content), 0o644)
 }
 
 // generateBootstrapScript writes scripts/bootstrap.sh, a one-shot
@@ -332,7 +329,7 @@ main "$@"
 	}
 	// Mode 0755: executable so contributors can run it directly; `bash
 	// scripts/bootstrap.sh` in devcontainer.json still works regardless.
-	return os.WriteFile(filepath.Join(dir, "bootstrap.sh"), []byte(content), 0o755)
+	return atomicfile.WriteFile(filepath.Join(dir, "bootstrap.sh"), []byte(content), 0o755)
 }
 
 // generateSecurityPolicy writes SECURITY.md at the repo root. We derive
@@ -405,7 +402,7 @@ For bug reports, feature requests, or general contribution questions,
 see [CONTRIBUTING.md](CONTRIBUTING.md).
 `, g.Name, contact)
 
-	return os.WriteFile(filepath.Join(g.Path, "SECURITY.md"), []byte(content), 0o644)
+	return atomicfile.WriteFile(filepath.Join(g.Path, "SECURITY.md"), []byte(content), 0o644)
 }
 
 // forgeGeneratedPathPattern matches every path `forge generate` writes (and
@@ -544,14 +541,14 @@ repos:
         stages: [commit-msg]
         additional_dependencies: ["@commitlint/config-conventional"]
 `
-	if err := os.WriteFile(filepath.Join(g.Path, ".pre-commit-config.yaml"), []byte(content), 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(g.Path, ".pre-commit-config.yaml"), []byte(content), 0o644); err != nil {
 		return err
 	}
 
 	// commitlint config so the pre-commit hook knows which ruleset to use.
 	commitlintRC := `module.exports = { extends: ['@commitlint/config-conventional'] };
 `
-	return os.WriteFile(filepath.Join(g.Path, ".commitlintrc.js"), []byte(commitlintRC), 0o644)
+	return atomicfile.WriteFile(filepath.Join(g.Path, ".commitlintrc.js"), []byte(commitlintRC), 0o644)
 }
 
 // generateGitHooks writes the committed, tracked git hooks under
@@ -623,7 +620,7 @@ if command -v pre-commit >/dev/null 2>&1 && [ -f .pre-commit-config.yaml ]; then
 	exec pre-commit run --hook-stage pre-commit
 fi
 `
-	if err := os.WriteFile(filepath.Join(dir, "pre-commit"), []byte(preCommit), 0o755); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(dir, "pre-commit"), []byte(preCommit), 0o755); err != nil {
 		return err
 	}
 
@@ -642,7 +639,7 @@ set -e
 forge lint
 forge project audit
 `
-	if err := os.WriteFile(filepath.Join(dir, "pre-push"), []byte(prePush), 0o755); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(dir, "pre-push"), []byte(prePush), 0o755); err != nil {
 		return err
 	}
 
@@ -657,7 +654,7 @@ if command -v pre-commit >/dev/null 2>&1 && [ -f .pre-commit-config.yaml ]; then
 	exec pre-commit run --hook-stage commit-msg --commit-msg-filename "$1"
 fi
 `
-	return os.WriteFile(filepath.Join(dir, "commit-msg"), []byte(commitMsg), 0o755)
+	return atomicfile.WriteFile(filepath.Join(dir, "commit-msg"), []byte(commitMsg), 0o755)
 }
 
 // forgeManagedHookHeader starts the second line (the one after the shebang)
@@ -691,7 +688,7 @@ func (g *ProjectGenerator) generatePreCommitWorkflow() error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(dest, []byte(preCommitWorkflow), 0o644)
+	return atomicfile.WriteFile(dest, []byte(preCommitWorkflow), 0o644)
 }
 
 // preCommitWorkflowPath is where generatePreCommitWorkflow writes, and the
@@ -802,7 +799,7 @@ Conventions read off real columns (no annotations):
 
 | columns                  | behavior                                         |
 |--------------------------|--------------------------------------------------|
-| ` + "`deleted_at`" + `             | soft delete: DELETE becomes UPDATE, reads filter ` + "`IS NULL`" + ` |
+| ` + "`deleted_at`" + `             | soft delete: DELETE becomes UPDATE, reads filter ` + "`IS NULL`" + ` (` + "`forge:no-soft-delete`" + ` on the column opts out) |
 | ` + "`created_at`" + ` + ` + "`updated_at`" + ` | managed timestamps (stamped by the ORM)   |
 | text columns             | spanned by the generated list ` + "`search`" + ` filter   |
 
@@ -864,7 +861,7 @@ The task loads every file in ` + "`db/seeds/`" + ` in lexicographic order via
 ` + "`psql $DATABASE_URL`" + `. Write each seed with ` + "`ON CONFLICT DO NOTHING`" + ` (or
 the equivalent) so re-running is safe.
 `
-	return os.WriteFile(filepath.Join(g.Path, "db", "README.md"), []byte(readme), 0o644)
+	return atomicfile.WriteFile(filepath.Join(g.Path, "db", "README.md"), []byte(readme), 0o644)
 }
 
 // generateSeeds documents the runtime seed model and scaffolds the
@@ -917,7 +914,7 @@ This directory is yours: forge scaffolds it once and never regenerates it.
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(readme), 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(dir, "README.md"), []byte(readme), 0o644); err != nil {
 		return err
 	}
 
@@ -1113,172 +1110,30 @@ func BenchmarkHealthz(b *testing.B) {
 	}
 }
 `
-	if err := os.WriteFile(filepath.Join(dir, "k6", "smoke.js"), []byte(k6), 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(dir, "k6", "smoke.js"), []byte(k6), 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(readme), 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(dir, "README.md"), []byte(readme), 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "healthz_bench_test.go"), []byte(goBench), 0o644)
+	return atomicfile.WriteFile(filepath.Join(dir, "healthz_bench_test.go"), []byte(goBench), 0o644)
 }
 
-// generateRunbookAndSLO writes docs/runbook.md and docs/slo.md starter
-// templates with TODO placeholders.
-func (g *ProjectGenerator) generateRunbookAndSLO() error {
+// generateRunbook writes docs/runbook.md: where this project's telemetry,
+// generated dashboards and generated alerts are, and what each built-in alert
+// means. It names only what forge ships (ClickStack, the dashboards under
+// deploy/observability/dashboards/, the defaults tuned through forge.Alerts),
+// so it is useful from the first generate rather than a form of TODOs.
+func (g *ProjectGenerator) generateRunbook() error {
+	content, err := templates.ProjectTemplates().Render("runbook.md.tmpl", struct{ Name string }{g.Name})
+	if err != nil {
+		return fmt.Errorf("render runbook.md.tmpl: %w", err)
+	}
 	dir := filepath.Join(g.Path, "docs")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-
-	runbook := fmt.Sprintf(`# Runbook — %s
-
-## Service overview
-
-%[1]s is a Connect RPC service. TODO: add a short description.
-
-## Ownership
-
-- **Team:** TODO
-- **On-call rotation:** TODO (link to PagerDuty / Opsgenie)
-
-## Common alerts
-
-### HighErrorRate
-
-- **Meaning:** 5xx rate exceeds threshold.
-- **Diagnostic steps:**
-  1. Check application logs: `+"`"+`kubectl logs -l app=%[1]s`+"`"+`
-  2. Check downstream dependencies.
-  3. Check recent deployments.
-
-### HighLatency
-
-- **Meaning:** p95 latency exceeds threshold.
-- **Diagnostic steps:**
-  1. Check for traffic spike (Grafana dashboard).
-  2. Check DB slow queries.
-  3. Check CPU/memory pressure.
-
-### ProbeFailure
-
-- **Meaning:** /healthz or /readyz is failing.
-- **Diagnostic steps:**
-  1. Check pod status: `+"`"+`kubectl get pods -l app=%[1]s`+"`"+`
-  2. Check OOM kills.
-  3. Check networking / DNS.
-
-## Dashboards & Logs
-
-- **Grafana:** TODO (link)
-- **Logs:** TODO (link to Loki / CloudWatch)
-- **Traces:** TODO (link to Jaeger / Tempo)
-
-## Emergency contacts
-
-| Role | Contact |
-|------|--------|
-| Primary on-call | TODO |
-| Engineering lead | TODO |
-| Platform team | TODO |
-`, g.Name)
-
-	slo := fmt.Sprintf(`# SLO — %s
-
-Service Level Objectives for %[1]s.
-
-## Availability
-
-- **Target:** 99.9%% (three nines)
-- **Measurement:** ratio of successful (non-5xx) responses to total requests
-- **Window:** rolling 30 days
-
-## Latency
-
-- **Target:** p95 < 250ms
-- **Measurement:** server-side request duration histogram
-- **Window:** rolling 30 days
-
-## Error rate
-
-- **Target:** < 0.1%% of requests return 5xx
-- **Measurement:** 5xx count / total request count
-- **Window:** rolling 30 days
-
-## Error budget policy
-
-1. When the error budget is consumed < 50%%: normal development velocity.
-2. When the error budget is consumed 50-99%%: prioritize reliability work.
-3. When the error budget is exhausted: freeze non-critical changes,
-   focus entirely on restoring reliability.
-
-## Review cadence
-
-Review SLOs quarterly. Adjust targets based on actual traffic patterns
-and business requirements.
-`, g.Name)
-
-	if err := os.WriteFile(filepath.Join(dir, "runbook.md"), []byte(runbook), 0o644); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, "slo.md"), []byte(slo), 0o644)
-}
-
-// generatePrometheusRules writes deploy/observability/prometheus-rules.yaml
-// with stub alert rules.
-func (g *ProjectGenerator) generatePrometheusRules() error {
-	dir := filepath.Join(g.Path, "deploy", "observability")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-
-	rules := fmt.Sprintf(`# Prometheus alert rule stubs for %s.
-# Adjust thresholds and labels to match your environment.
-# Import into Prometheus via the rule_files config directive.
-groups:
-  - name: %[1]s.rules
-    rules:
-      # The runtime's RPC edge metric is otelconnect's rpc.server.duration —
-      # a MILLISECONDS histogram exported as rpc_server_duration_milliseconds
-      # with labels rpc_service / rpc_method and per-protocol status codes
-      # (rpc_connect_rpc_error_code is set on connect errors only;
-      # rpc_grpc_status_code / rpc_grpc_web_status_code are always set, 0 = ok).
-      - alert: HighErrorRate
-        expr: |
-          1 - (
-            sum(rate(rpc_server_duration_milliseconds_count{job="%[1]s",rpc_connect_rpc_error_code="",rpc_grpc_status_code=~"0|",rpc_grpc_web_status_code=~"0|"}[5m]))
-            /
-            sum(rate(rpc_server_duration_milliseconds_count{job="%[1]s"}[5m]))
-          ) > 0.01
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "High RPC error rate on %[1]s"
-          description: "More than 1%% of RPCs are returning errors for 5 minutes."
-
-      - alert: HighLatency
-        expr: |
-          histogram_quantile(0.95,
-            sum(rate(rpc_server_duration_milliseconds_bucket{job="%[1]s"}[5m])) by (le)
-          ) > 250
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High p95 latency on %[1]s"
-          description: "p95 latency exceeds 250ms for 5 minutes."
-
-      - alert: ProbeFailure
-        expr: probe_success{job="%[1]s-probe"} == 0
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Health probe failing for %[1]s"
-          description: "Blackbox probe has been failing for 2 minutes."
-`, g.Name)
-
-	return os.WriteFile(filepath.Join(dir, "prometheus-rules.yaml"), []byte(rules), 0o644)
+	return atomicfile.WriteFile(filepath.Join(dir, "runbook.md"), content, 0o644)
 }
 
 // generateDBReadme writes db/README.md: where the schema lives, what forge
@@ -1290,7 +1145,7 @@ func (g *ProjectGenerator) generateDBReadme() error {
 	if err := os.MkdirAll(filepath.Join(g.Path, "db"), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(g.Path, "db", "README.md"), []byte(dbReadme), 0o644)
+	return atomicfile.WriteFile(filepath.Join(g.Path, "db", "README.md"), []byte(dbReadme), 0o644)
 }
 
 // dbReadme is the scaffolded db/README.md.

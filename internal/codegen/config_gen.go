@@ -86,6 +86,9 @@ type ConfigTemplateBlockField struct {
 
 // ConfigTemplateData is the top-level data passed to the config.go template.
 type ConfigTemplateData struct {
+	// Graph is a composition-graph project: the loader gains LoadReach, the
+	// load each root's process runs (cmd/<bin>/cmd/roots_gen.go).
+	Graph bool
 	// Fields is every leaf field — root fields plus component config-block
 	// leaves — in declaration order, with GoPath set. Drives RegisterFlags
 	// and Load so block leaves get the exact same env/flag/default
@@ -191,6 +194,9 @@ type BinaryConfig struct {
 	// config (["server", "api"]); empty for the binary's ROOT config. See
 	// ConfigMessage.Command.
 	Command []string
+	// Subtrees are the command paths at or below which this config is
+	// loaded; empty unless it is a subtree config. See ConfigMessage.Subtrees.
+	Subtrees [][]string
 	// MessageName is the config message's proto name (e.g. "AdminConfig") —
 	// the generated Go type this binary's Config aliases.
 	MessageName string
@@ -205,16 +211,35 @@ type BinaryConfig struct {
 	// Blocks are the config blocks this message composes, in declaration
 	// order — the shared definitions, named so the template can reach them.
 	Blocks []ConfigBlockRef
-	// BinaryHasRootConfig reports, on a command config, whether its binary
+	// BinaryHasRootConfig reports, on a command or subtree config, whether its binary
 	// also binds a root config. That root config owns the --config file flag
 	// (persistent on the binary's root), so the command config registers its
 	// leaves alone rather than a second --config shadowing the inherited one.
 	BinaryHasRootConfig bool
+	// Reach is true when the loader also gets Load<Msg>Reach: a config of a
+	// composition-graph project's primary binary, which roots_gen.go loads
+	// with each root's reach (markReachLoaders).
+	Reach bool
+}
+
+// markReachLoaders marks the configs whose loader gains Load<Msg>Reach: in a
+// composition-graph project, the primary binary's (the ones roots_gen.go
+// loads). Nothing else calls one, so no other binary's — and no project
+// without a command tree for the roots — gets it.
+func markReachLoaders(data *ConfigTemplateData, primaryBinary string) {
+	for i := range data.BinaryConfigs {
+		bc := &data.BinaryConfigs[i]
+		bc.Reach = data.Graph && primaryBinary != "" && bc.Binary == primaryBinary
+	}
 }
 
 // Process is the process this config is loaded by, as typed at a shell:
 // "reliant" for a root config, "reliant server api" for a command config.
 func (bc BinaryConfig) Process() string {
+	if len(bc.Subtrees) > 0 {
+		// Several processes: name the first subtree's, marked as a subtree.
+		return strings.TrimSpace(bc.Binary+" "+strings.Join(bc.Subtrees[0], " ")) + " …"
+	}
 	return ConfigMessage{Binary: bc.Binary, Command: bc.Command}.ProcessName()
 }
 
@@ -238,6 +263,31 @@ func (bc BinaryConfig) CommandGoArgs() string {
 	return strings.Join(q, ", ")
 }
 
+// SubtreeLines renders each subtree path as typed at a shell, below the
+// binary ("daemon", "auth login").
+func (bc BinaryConfig) SubtreeLines() []string {
+	out := make([]string, len(bc.Subtrees))
+	for i, p := range bc.Subtrees {
+		out[i] = strings.Join(p, " ")
+	}
+	return out
+}
+
+// SubtreesGoArgs renders Subtrees as Go []string literals
+// (`[]string{"daemon"}, []string{"open"}`), for the generated loader's
+// subtree check.
+func (bc BinaryConfig) SubtreesGoArgs() string {
+	parts := make([]string, len(bc.Subtrees))
+	for i, p := range bc.Subtrees {
+		q := make([]string, len(p))
+		for j, c := range p {
+			q[j] = strconv.Quote(c)
+		}
+		parts[i] = "[]string{" + strings.Join(q, ", ") + "}"
+	}
+	return strings.Join(parts, ", ")
+}
+
 // BinaryConfigsFromMessages resolves the per-binary config surfaces from a
 // project's parsed config messages: one BinaryConfig per message carrying a
 // (forge.v1.binary_config) annotation — a binary's root config or one of its
@@ -259,7 +309,7 @@ func BinaryConfigsFromMessages(messages []ConfigMessage) []BinaryConfig {
 		if m.Binary == "" {
 			continue
 		}
-		bc := BinaryConfig{Binary: m.Binary, Command: m.Command, MessageName: m.Name}
+		bc := BinaryConfig{Binary: m.Binary, Command: m.Command, Subtrees: m.Subtrees, MessageName: m.Name}
 		for _, f := range m.Fields {
 			// A message-typed field naming another config message is a
 			// composed block — a shared DEFINITION. Its leaves keep their
@@ -285,12 +335,13 @@ func BinaryConfigsFromMessages(messages []ConfigMessage) []BinaryConfig {
 	}
 	hasRoot := map[string]bool{}
 	for _, bc := range out {
-		if len(bc.Command) == 0 {
+		if len(bc.Command) == 0 && len(bc.Subtrees) == 0 {
 			hasRoot[bc.Binary] = true
 		}
 	}
 	for i := range out {
-		out[i].BinaryHasRootConfig = len(out[i].Command) > 0 && hasRoot[out[i].Binary]
+		scoped := len(out[i].Command) > 0 || len(out[i].Subtrees) > 0
+		out[i].BinaryHasRootConfig = scoped && hasRoot[out[i].Binary]
 	}
 	return out
 }
@@ -627,8 +678,16 @@ func configTemplateField(f ConfigField, goPath string) ConfigTemplateField {
 // app.SetupAuth() unconditionally (auth is code now, not config), so no
 // auth-provider field is threaded here.
 type CmdServerTemplateData struct {
-	Module       string
+	Module string
+	// ConfigFields are the root config's own fields (RootConfigFieldNames):
+	// the `cfg.<X>` reads the templates may make.
 	ConfigFields map[string]bool
+
+	// ConfigInputs are the primary binary's configs beside the root config,
+	// each with the serve fields it declares (ServeConfigInputs). The graph
+	// serve.go reads those off root.Configs; empty for a binary that loads
+	// one config, which renders exactly as before.
+	ConfigInputs []ServeConfigInput
 
 	// Name is the primary binary's name — the cmd/<Name>/ leaf. The
 	// scaffold-once command-tree templates reference it when they explain
@@ -640,10 +699,26 @@ type CmdServerTemplateData struct {
 	Name string
 
 	// RESTEnabled mirrors forge.yaml `api.rest: true`. When set the cmd
-	// composition site builds a vanguard transcoder over the mounted
-	// services' Connect paths and serves it in place of the bare mux.
+	// composition site serves vanguard's REST routes for the mounted
+	// services in front of the bare mux (serverkit.RESTHandler).
 	// Filled by generateCmdServerData from projectAPIRESTEnabled.
 	RESTEnabled bool
+}
+
+// Serves reports whether some config the binary loads declares the serve
+// field name: the root config, or a config beside it (ConfigInputs). The
+// templates gate an import, or a step that needs the field wherever it is
+// declared, on it.
+func (d CmdServerTemplateData) Serves(name string) bool {
+	if d.ConfigFields[name] {
+		return true
+	}
+	for _, in := range d.ConfigInputs {
+		if in.Fields[name] {
+			return true
+		}
+	}
+	return false
 }
 
 // GenerateCmdServer re-renders cmd/server.go with config field awareness.
@@ -654,7 +729,8 @@ type CmdServerTemplateData struct {
 // out of `forge project audit`'s orphan/user-edited lists. A nil cs is tolerated.
 func GenerateCmdServer(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error {
 	return generateCmdServerData(CmdServerTemplateData{
-		ConfigFields: ConfigFieldNamesFromMessages(messages),
+		ConfigFields: RootConfigFieldNames(messages, targetDir),
+		ConfigInputs: ServeConfigInputs(messages, targetDir),
 	}, targetDir, cs)
 }
 
@@ -662,8 +738,16 @@ func GenerateCmdServer(messages []ConfigMessage, targetDir string, cs *checksums
 // config field map (e.g. with migration fields stripped when the
 // migrations feature is disabled).
 func GenerateCmdServerWithFields(configFields map[string]bool, targetDir string, cs *checksums.FileChecksums) error {
+	return GenerateCmdServerForConfigs(configFields, nil, targetDir, cs)
+}
+
+// GenerateCmdServerForConfigs is GenerateCmdServerWithFields for a binary
+// that binds configs beside its root config: inputs are those configs
+// (ServeConfigInputs), stripped the same way.
+func GenerateCmdServerForConfigs(configFields map[string]bool, inputs []ServeConfigInput, targetDir string, cs *checksums.FileChecksums) error {
 	return generateCmdServerData(CmdServerTemplateData{
 		ConfigFields: configFields,
+		ConfigInputs: inputs,
 	}, targetDir, cs)
 }
 
@@ -711,6 +795,14 @@ func generateCmdServerData(data CmdServerTemplateData, targetDir string, cs *che
 		{"cmd-tree-server.go.tmpl", "server.go"},
 		{"cmd-tree-version.go.tmpl", "version.go"},
 		{"cmd-tree-metrics.go.tmpl", "metrics.go"},
+	}
+	if GraphComposition(targetDir) {
+		// The composition graph: serve.go is runRoot, the process policy
+		// every root runs under, and there is no server.go — each root's
+		// command, `server` included, is generated into roots_gen.go
+		// (GenerateGraph).
+		scaffolds[0].tmpl = "cmd-tree-serve-graph.go.tmpl"
+		scaffolds = append(scaffolds[:1], scaffolds[2:]...)
 	}
 	// db.go is birthed only when the project HAS a migration story:
 	// cmd/<bin>/cmd/root.go gates its newDBCmd(deps) call on the same
@@ -896,7 +988,7 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 				// every one of its commands — and so its whole component
 				// graph — loads. A command config is one process's surface
 				// and cannot stand in for it.
-				if bc.Binary == primaryBinary && len(bc.Command) == 0 {
+				if bc.Binary == primaryBinary && len(bc.Command) == 0 && len(bc.Subtrees) == 0 {
 					data.PrimaryConfigMessage = bc.MessageName
 					data.PrimaryConfigPathEnv = bc.PathEnv()
 					break
@@ -939,6 +1031,12 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 	}
 	data.Module = modulePath
 	data.ProjectConfigPathEnv = forgeconfig.ConfigPathEnvFor(projectConfigName(targetDir, modulePath))
+	data.Graph = GraphComposition(targetDir)
+	primaryBinary := ""
+	if treeDir := primaryCmdTreeDir(targetDir); treeDir != "" {
+		primaryBinary = filepath.Base(filepath.Dir(treeDir))
+	}
+	markReachLoaders(&data, primaryBinary)
 
 	if err := validateConfigPathEnvs(data); err != nil {
 		return err
@@ -971,6 +1069,104 @@ func ConfigFieldNamesFromMessages(messages []ConfigMessage) map[string]bool {
 		}
 	}
 	return names
+}
+
+// RootConfigFieldNames returns the Go field names the ROOT config declares at
+// its top level: the message `config.Config` aliases — the project's
+// AppConfig, or, when every message is bound to a binary, the primary
+// binary's own root config. Those are the only `cfg.<X>` reads a template may
+// make off *config.Config. A field of another binary's config, of a command
+// or subtree config, of a frontend config, or of a block the root config
+// composes is not one: `cfg.Port` on a root config with no port does not
+// compile. Empty when the project has no root config.
+func RootConfigFieldNames(messages []ConfigMessage, projectDir string) map[string]bool {
+	names := make(map[string]bool)
+	root := rootConfigMessageName(messages, primaryBinaryName(projectDir))
+	for _, msg := range messages {
+		if msg.Name != root {
+			continue
+		}
+		for _, f := range msg.Fields {
+			names[f.GoName] = true
+		}
+	}
+	return names
+}
+
+// jwtConfigFields are the root-config-shaped fields the scaffolded
+// internal/app/auth.go's JWT validator reads; brokerConfigFields the ones
+// internal/app/login_broker.go reads.
+var (
+	jwtConfigFields = []string{"JwtSigningMethod", "JwtIssuer", "JwtAudience", "JwtJwksUrl", "JwtSecret",
+		"JwtRolesClaim", "JwtJwksSnapshotFile", "JwtJwksSnapshot", "JwtJwksSnapshotMaxAge"}
+	brokerConfigFields = []string{"IdpBase", "IdpHost", "IdpBrokerToken", "IdpBrokerTokenFile",
+		"OidcClientId", "OidcRedirectUri", "Environment"}
+)
+
+// configDeclaring names the config of the primary binary a scaffold reading
+// goNames reads them from: the one that declares every one of them at its top
+// level — the root config ("", which the templates spell Config), else the
+// first config beside it that does (its message name). found is false when no
+// config the binary loads declares them all; the scaffold then reads none of
+// them (F1: a scaffold may only read fields some config declares).
+func configDeclaring(projectDir string, goNames []string) (typeName string, found bool) {
+	messages, err := ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config"))
+	if err != nil || len(messages) == 0 {
+		return "", true // no parsed config yet: the default scaffold's AppConfig
+	}
+	return configDeclaringIn(messages, projectDir, goNames)
+}
+
+// configDeclaringIn is configDeclaring over parsed messages.
+func configDeclaringIn(messages []ConfigMessage, projectDir string, goNames []string) (typeName string, found bool) {
+	declares := func(fields map[string]bool) bool {
+		for _, n := range goNames {
+			if !fields[n] {
+				return false
+			}
+		}
+		return true
+	}
+	if declares(RootConfigFieldNames(messages, projectDir)) {
+		return "", true
+	}
+	if pc := processConfigsFrom(messages, primaryBinaryName(projectDir)); pc != nil {
+		for _, in := range pc.inputs {
+			own := map[string]bool{}
+			for _, f := range in.msg.Fields {
+				own[f.GoName] = true
+			}
+			if declares(own) {
+				return in.msg.Name, true
+			}
+		}
+	}
+	return "", false
+}
+
+// primaryBinaryName is the primary binary's name — its cmd/<bin>/cmd tree's
+// <bin> — or "" when the project has no command tree.
+func primaryBinaryName(projectDir string) string {
+	treeDir := primaryCmdTreeDir(projectDir)
+	if treeDir == "" {
+		return ""
+	}
+	return filepath.Base(filepath.Dir(treeDir))
+}
+
+// rootConfigMessageName is the message config.Config aliases: the first
+// unbound root message (AppConfig), else binary's own root config — bound to
+// it with neither a command nor subtrees. "" when there is neither.
+func rootConfigMessageName(messages []ConfigMessage, binary string) string {
+	if root := BuildConfigTemplateData(messages).RootConfigMessage; root != "" {
+		return root
+	}
+	for _, m := range messages {
+		if binary != "" && m.Binary == binary && len(m.Command) == 0 && len(m.Subtrees) == 0 {
+			return m.Name
+		}
+	}
+	return ""
 }
 
 // DefaultConfigFieldNames returns the field names from the default scaffold
@@ -1084,7 +1280,7 @@ func DefaultConfigMessages() []ConfigMessage {
 					EnvVar:       "PRE_STOP_DELAY",
 					Flag:         "pre-stop-delay",
 					DefaultValue: "5s",
-					Description:  "Duration to wait after flipping readiness to false before beginning HTTP shutdown. Gives load balancers time to observe the failing probe and stop routing new traffic (Go duration).",
+					Description:  "Duration to wait after flipping readiness to false before beginning HTTP shutdown. Gives load balancers time to observe the failing probe and stop routing new traffic (Go duration; 0 is the default, negative is no pause).",
 				},
 				{
 					Name:         "shutdown_timeout",
@@ -1094,7 +1290,7 @@ func DefaultConfigMessages() []ConfigMessage {
 					EnvVar:       "SHUTDOWN_TIMEOUT",
 					Flag:         "shutdown-timeout",
 					DefaultValue: "30s",
-					Description:  "Maximum time to wait for in-flight requests and workers to drain during graceful shutdown (Go duration).",
+					Description:  "Maximum time to wait for in-flight requests and workers to drain during graceful shutdown (Go duration; 0 is the default, negative is no window).",
 				},
 				{
 					Name:         "log_format",
@@ -1224,6 +1420,29 @@ func DefaultConfigMessages() []ConfigMessage {
 					Flag:         "security-headers-enabled",
 					DefaultValue: "true",
 					Description:  "Set OWASP security response headers (CSP, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, HSTS in production). Disable only if a dedicated edge proxy already sets them.",
+				},
+				{
+					// The probe paths: the KCL lowering reads the same env
+					// values for a forge-built workload's default probe. Keep
+					// in step with internal/templates/project/config.proto.tmpl.
+					Name:         "liveness_paths",
+					GoName:       "LivenessPaths",
+					GoType:       "string",
+					ProtoType:    "string",
+					EnvVar:       "LIVENESS_PATHS",
+					Flag:         "liveness-paths",
+					DefaultValue: "/healthz",
+					Description:  "Comma-separated paths the liveness probe answers on (200 while the process runs). The first is the one the deploy probes; the rest are aliases, for a platform that probes a fixed path (/health).",
+				},
+				{
+					Name:         "readiness_paths",
+					GoName:       "ReadinessPaths",
+					GoType:       "string",
+					ProtoType:    "string",
+					EnvVar:       "READINESS_PATHS",
+					Flag:         "readiness-paths",
+					DefaultValue: "/readyz",
+					Description:  "Comma-separated paths the readiness probe answers on (503 while booting, draining, or a dependency is down). The first is the one the deploy probes; the rest are aliases (/ready).",
 				},
 			},
 		},

@@ -9,6 +9,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/clickstack"
 	"github.com/reliant-labs/forge/pkg/deploy"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // frontendOTLPEnv is the collector address a frontend dev server gets: the
@@ -195,7 +197,7 @@ func prepareLocalCollector(projectDir string, e *KCLEntities) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, clickstack.ForwarderConfigFile), []byte(cfg), 0o644)
+	return atomicfile.WriteFile(filepath.Join(dir, clickstack.ForwarderConfigFile), []byte(cfg), 0o644)
 }
 
 // forwarderConfig renders the local forwarder's pipelines for o.

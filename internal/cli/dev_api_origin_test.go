@@ -52,7 +52,7 @@ func TestDevFrontendReachesEveryService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := generatePerEnvDeployConfig(dir, cfg, cs); err != nil {
+	if err := generatePerEnvDeployConfig(dir, cfg, cs, nil); err != nil {
 		t.Fatalf("generate per-env config: %v", err)
 	}
 

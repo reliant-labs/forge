@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 
+	"connectrpc.com/connect"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 
@@ -26,7 +27,9 @@ import (
 //     the generated ConnectPath constant, not the kebab runtime name.
 //   - svc must implement mountkit.Registrar (mountkit panics otherwise —
 //     a non-service in the mount loop is a boot-time programming error).
-//   - mountOpts forward to mountkit (e.g. mountkit.WithHTTPStack).
+//   - mountOpts forward to mountkit: mountkit.WithHandlerOptions adds Connect
+//     handler options to this service alone, after HandlerOpts (so the shared
+//     chain wraps them); mountkit.WithHTTPStack wraps its plain-HTTP routes.
 //
 // Mount panics if Server.Mux is nil: a composition root calling Mount has
 // opted into the Mux ergonomics, so a nil Mux is a wiring bug to surface
@@ -35,8 +38,17 @@ func (s *Server) Mount(connectPath string, svc any, mountOpts ...mountkit.Option
 	if s.Mux == nil {
 		panic("serverkit: Server.Mount called with nil Server.Mux — set srv.Mux = http.NewServeMux() before mounting")
 	}
-	mountkit.RegisterService(s.Mux, svc, s.HandlerOpts, mountOpts...)
+	mountkit.RegisterService(s.Mux, svc, s.handlerOptions(), mountOpts...)
 	s.Mounted(connectPath)
+}
+
+// handlerOptions is what the Mount helpers build a service with: HandlerOpts,
+// or the Chain's options when HandlerOpts is unset.
+func (s *Server) handlerOptions() []connect.HandlerOption {
+	if s.HandlerOpts == nil && s.Chain != nil {
+		return s.Chain.HandlerOptions()
+	}
+	return s.HandlerOpts
 }
 
 // RequireMounted is the boot-time completeness guardrail: it verifies that

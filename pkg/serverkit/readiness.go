@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -40,8 +41,17 @@ import (
 // the body NAMES the failing dependency and stops there — no error text, no
 // dial string, no host. `{"status":"not_ready","checks":[{"name":"database",
 // "ok":false}]}` is enough for an operator to know where to look; the
-// underlying error is logged at ERROR server-side, where the same operator
-// can read it and an attacker cannot.
+// underlying error is logged server-side, where the same operator can read
+// it and an attacker cannot.
+//
+// LOGGING IS PER TRANSITION, NOT PER PROBE. A failing check is logged once,
+// at WARN, when it starts failing, and once, at INFO, when it recovers. The
+// probe runs every few seconds on every replica, so a line per failing probe
+// turned one dependency outage into a flood at probe frequency — into the
+// log pipeline and, at the ERROR it used to be, into the error tracker.
+// Never ERROR: a readiness check failing is the probe doing its job (the
+// replica leaves rotation), not a fault in this process. While a check stays
+// failing, each probe's error is at DEBUG.
 
 // ReadyCheck is one DEPENDENCY probe evaluated on every /readyz request.
 //
@@ -51,8 +61,9 @@ import (
 // belongs in a FlowCheck (/flow-health), which is polled deliberately
 // rather than continuously.
 //
-// A non-nil error means NOT READY. The error is logged server-side and
-// never returned to the caller; only Name appears in the response.
+// A non-nil error means NOT READY. The error is logged server-side (at WARN
+// when the check starts failing) and never returned to the caller; only
+// Name appears in the response.
 type ReadyCheck struct {
 	// Name identifies the dependency in the /readyz JSON ("database",
 	// "cache", "queue"). It is the only per-check detail that goes out.
@@ -97,7 +108,7 @@ func DBReadyCheck(name string, db *sql.DB) ReadyCheck {
 // readyzResponse is the JSON body of /readyz. Additive: new fields may
 // appear; existing keys keep their meaning.
 type readyzResponse struct {
-	Status string              `json:"status"` // "ready" | "not_ready"
+	Status string              `json:"status"` // "ready" | "not_ready" | "draining"
 	Checks []readyzCheckStatus `json:"checks,omitempty"`
 }
 
@@ -108,9 +119,9 @@ type readyzCheckStatus struct {
 	OK   bool   `json:"ok"`
 }
 
-// readyzHandler builds the GET /readyz handler.
+// readyzHandler builds the GET /readyz handler (Drainer.ReadinessHandler).
 //
-// ready is the listener-bound / not-draining gate; when it is false the
+// gate is the listener-bound / not-draining gate; when it is closed the
 // checks are skipped entirely, because a process that has not bound or is
 // already draining is not ready regardless of what its dependencies say
 // (and probing them during shutdown only slows the drain).
@@ -118,9 +129,34 @@ type readyzCheckStatus struct {
 // All checks share ONE deadline rather than getting one each, so the
 // endpoint's worst-case latency stays bounded as checks are added — a
 // probe with a timeoutSeconds cannot be asked to wait N × timeout.
-func readyzHandler(ready *atomic.Bool, checks []ReadyCheck, timeout time.Duration, logger *slog.Logger) http.HandlerFunc {
+func readyzHandler(gate *Drainer, checks []ReadyCheck, timeout time.Duration, logger *slog.Logger) http.HandlerFunc {
+	return readyzHandlerFunc(gate, func() []ReadyCheck { return checks }, timeout, logger)
+}
+
+// readyzHandlerFunc is readyzHandler over a check set read per request, for
+// Probes, whose checks can grow after the handler is built. Each check's
+// transition state is keyed by its position, which is stable because the set
+// only ever grows at the end.
+func readyzHandlerFunc(gate *Drainer, source func() []ReadyCheck, timeout time.Duration, logger *slog.Logger) http.HandlerFunc {
+	var (
+		statesMu sync.Mutex
+		states   []*checkState
+	)
+	stateFor := func(i int) *checkState {
+		statesMu.Lock()
+		defer statesMu.Unlock()
+		for len(states) <= i {
+			states = append(states, &checkState{})
+		}
+		return states[i]
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !ready.Load() {
+		checks := source()
+		if gate.Draining() {
+			writeReadyz(w, http.StatusServiceUnavailable, readyzResponse{Status: "draining"})
+			return
+		}
+		if !gate.Ready() {
 			writeReadyz(w, http.StatusServiceUnavailable, readyzResponse{Status: "not_ready"})
 			return
 		}
@@ -130,15 +166,14 @@ func readyzHandler(ready *atomic.Bool, checks []ReadyCheck, timeout time.Duratio
 
 		resp := readyzResponse{Status: "ready"}
 		allOK := true
-		for _, c := range checks {
+		for i, c := range checks {
 			err := c.Check(ctx)
 			if err != nil {
 				allOK = false
-				// The operator's copy of the truth. The client's copy is
-				// the check name and `"ok": false`.
-				logger.ErrorContext(ctx, "readiness check failed",
-					"check", c.Name, "error", err)
 			}
+			// The operator's copy of the truth. The client's copy is the
+			// check name and `"ok": false`.
+			stateFor(i).observe(ctx, logger, c.Name, err)
 			resp.Checks = append(resp.Checks, readyzCheckStatus{Name: c.Name, OK: err == nil})
 		}
 
@@ -148,6 +183,34 @@ func readyzHandler(ready *atomic.Bool, checks []ReadyCheck, timeout time.Duratio
 			return
 		}
 		writeReadyz(w, http.StatusOK, resp)
+	}
+}
+
+// checkState is one check's last outcome, so only a change is logged.
+// Concurrent probes race on it; the swap makes exactly one of them log each
+// transition.
+type checkState struct {
+	failing atomic.Bool
+	since   atomic.Int64 // UnixNano the current failure began
+}
+
+// observe logs err if it changes the check's state: WARN on the first
+// failure, INFO on the recovery (with how long it failed), DEBUG for a
+// failure that continues.
+func (s *checkState) observe(ctx context.Context, logger *slog.Logger, name string, err error) {
+	if err != nil {
+		if s.failing.CompareAndSwap(false, true) {
+			s.since.Store(time.Now().UnixNano())
+			logger.WarnContext(ctx, "readiness check failing; this replica is not ready until it passes",
+				"check", name, "error", err)
+			return
+		}
+		logger.DebugContext(ctx, "readiness check still failing", "check", name, "error", err)
+		return
+	}
+	if s.failing.CompareAndSwap(true, false) {
+		logger.InfoContext(ctx, "readiness check recovered", "check", name,
+			"failed_for", time.Since(time.Unix(0, s.since.Load())).Round(time.Millisecond))
 	}
 }
 

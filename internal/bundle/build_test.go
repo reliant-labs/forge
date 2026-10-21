@@ -497,3 +497,73 @@ func TestBuildManifestOrderSurvivesTenDocuments(t *testing.T) {
 		}
 	}
 }
+
+// D4/G11: the document describes every object it hashes, one summary per
+// shape object and joined by key, so a release can be diffed against the
+// previous one without either's manifests — and that description survives the
+// strict decode a backend reads it with.
+func TestBuildSummarizesEveryObject(t *testing.T) {
+	built := mustBuild(t, buildFixture())
+	decoded, err := release.DecodeBundleDoc(built.ConfigBlob())
+	if err != nil {
+		t.Fatalf("the config blob does not strictly decode: %v", err)
+	}
+	if len(decoded.Objects) != len(decoded.Shape.Objects) || len(decoded.Objects) == 0 {
+		t.Fatalf("%d summaries for %d objects", len(decoded.Objects), len(decoded.Shape.Objects))
+	}
+	parts := 0
+	for i, o := range decoded.Shape.Objects {
+		s := decoded.Objects[i]
+		if s.Key != o.Key() {
+			t.Fatalf("summary %d is for %s, object %d is %s: they must be in shape order", i, s.Key, i, o.Key())
+		}
+		parts += len(s.Parts)
+		if o.Kind == "Deployment" && !strings.Contains(s.Summary, "containers") {
+			t.Errorf("deployment %s summary = %q", o.Name, s.Summary)
+		}
+	}
+	if parts == 0 {
+		t.Fatal("no object recorded any part digest")
+	}
+}
+
+// A bundle recorded on a control plane that predates forge#850 must carry
+// none of #850's document fields: that control plane strict-decodes the
+// config blob and refuses the whole bundle for one unknown key. The reader
+// is what the recorder said it decodes; the document is built for it.
+func TestBuildWritesOnlyTheDocumentFeaturesItsReaderDecodes(t *testing.T) {
+	in := buildFixture()
+	in.Provenance.CommitSubject = "fix: something"
+	in.Provenance.CommitAuthor = "Reliant"
+
+	full := mustBuild(t, in)
+	if full.Doc.Provenance.CommitSubject == "" || len(full.Doc.Objects) == 0 {
+		t.Fatalf("the fixture must exercise the optional parts: subject %q, %d summaries", full.Doc.Provenance.CommitSubject, len(full.Doc.Objects))
+	}
+
+	in.Reader = &release.BundleReader{} // a control plane that names no feature
+	old := mustBuild(t, in)
+	var top struct {
+		Objects    *json.RawMessage           `json:"objects"`
+		Provenance map[string]json.RawMessage `json:"provenance"`
+	}
+	if err := json.Unmarshal(old.ConfigBlob(), &top); err != nil {
+		t.Fatal(err)
+	}
+	_, subject := top.Provenance["commit_subject"]
+	_, author := top.Provenance["commit_author"]
+	if top.Objects != nil || subject || author {
+		t.Fatalf("a bundle for a reader with no features carries forge#850 keys (objects=%v subject=%v author=%v)", top.Objects != nil, subject, author)
+	}
+	if old.Doc.Provenance.Commit != full.Doc.Provenance.Commit || old.Doc.ConfigDigest != full.Doc.ConfigDigest {
+		t.Fatal("limiting the document changed what it describes")
+	}
+	if old.Digest == full.Digest {
+		t.Fatal("the two documents differ, so the bundles must too: the digest covers the config blob")
+	}
+
+	in.Reader = &release.BundleReader{Features: release.BundleDocFeatures()}
+	if again := mustBuild(t, in); again.Digest != full.Digest {
+		t.Fatalf("a reader of every feature must get the same bundle as the nil reader: %s vs %s", again.Digest, full.Digest)
+	}
+}

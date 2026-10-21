@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/naming"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // GenerateOperatorBinaryOnly scaffolds an operator package WITHOUT a
@@ -85,7 +87,7 @@ package %s
 `, operatorPackage, name, group, version, name, version, operatorPackage, operatorPackage, modulePath, operatorPackage)
 
 	docPath := filepath.Join(operatorDir, "doc.go")
-	if err := os.WriteFile(docPath, []byte(doc), 0644); err != nil {
+	if err := atomicfile.WriteFile(docPath, []byte(doc), 0644); err != nil {
 		return fmt.Errorf("write doc.go: %w", err)
 	}
 
@@ -194,7 +196,7 @@ func AddToScheme(scheme *runtime.Scheme) error {
 `, operatorPackage, name, group, version)
 
 	opPath := filepath.Join(operatorDir, "operator.go")
-	if err := os.WriteFile(opPath, []byte(op), 0644); err != nil {
+	if err := atomicfile.WriteFile(opPath, []byte(op), 0644); err != nil {
 		return fmt.Errorf("write operator.go: %w", err)
 	}
 	return nil

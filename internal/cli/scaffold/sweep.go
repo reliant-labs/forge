@@ -126,7 +126,9 @@ Examples:
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the full plan (phase 1+2 predictions) and write nothing")
 	addNounCmds(cmd, f)
 	holdProjectLock(cmd, f)
-	return cmd
+	// Every noun writes generated and state files: set up the clone's
+	// merge driver and hooks for them.
+	return cmdutil.ConfiguresClone(cmd)
 }
 
 // sweepSummary accumulates the phase outcomes for the final

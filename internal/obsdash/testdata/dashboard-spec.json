@@ -2462,43 +2462,33 @@
           "height": 6
         },
         {
-          "id": "top-js-errors",
-          "title": "Top JS errors",
-          "kind": "table",
+          "id": "issues",
+          "title": "Issues",
+          "description": "Errors grouped by cause (type, message and the top in-app frames): new and regressed first, then the most frequent. A string-only console.error is not an issue.",
+          "kind": "issues",
           "signal": "traces",
-          "series": [
-            {
-              "label": "occurrences",
-              "agg": "count"
-            },
-            {
-              "label": "sessions",
-              "agg": "count_distinct",
-              "field": "resource.attr.rum.sessionId"
-            }
-          ],
           "where": [
             {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"
-            },
-            {
-              "field": "span.status",
-              "op": "eq",
-              "value": "error"
-            },
-            {
-              "field": "span.attr.component",
-              "op": "not_in",
-              "values": [
-                "fetch",
-                "xml-http-request"
-              ]
             }
           ],
-          "groupBy": [
-            "span.attr.error.message"
+          "width": 24,
+          "height": 9
+        },
+        {
+          "id": "sessions-with-errors",
+          "title": "Sessions with errors",
+          "description": "Sessions that hit an error, newest first; a session that was recorded links to its replay.",
+          "kind": "sessions",
+          "signal": "traces",
+          "where": [
+            {
+              "field": "resource.attr.rum.sessionId",
+              "op": "exists"
+            }
           ],
+          "hasError": true,
           "width": 24,
           "height": 8
         },
@@ -2660,6 +2650,127 @@
           "unit": "ms",
           "width": 6,
           "height": 4
+        },
+        {
+          "id": "vitals-by-route",
+          "title": "Web vitals by route",
+          "description": "p75 per page. LCP good at 2500 ms or less and poor above 4000 ms; INP 200 / 500 ms; CLS 0.1 / 0.25.",
+          "kind": "table",
+          "signal": "traces",
+          "series": [
+            {
+              "label": "lcp p75",
+              "agg": "quantile",
+              "quantile": 0.75,
+              "field": "span.attr.lcp",
+              "where": [
+                {
+                  "field": "span.attr.lcp",
+                  "op": "exists"
+                }
+              ],
+              "thresholds": {
+                "good": 2500,
+                "poor": 4000
+              }
+            },
+            {
+              "label": "inp p75",
+              "agg": "quantile",
+              "quantile": 0.75,
+              "field": "span.attr.inp",
+              "where": [
+                {
+                  "field": "span.attr.inp",
+                  "op": "exists"
+                }
+              ],
+              "thresholds": {
+                "good": 200,
+                "poor": 500
+              }
+            },
+            {
+              "label": "cls p75",
+              "agg": "quantile",
+              "quantile": 0.75,
+              "field": "span.attr.cls",
+              "where": [
+                {
+                  "field": "span.attr.cls",
+                  "op": "exists"
+                }
+              ],
+              "thresholds": {
+                "good": 0.1,
+                "poor": 0.25
+              }
+            },
+            {
+              "label": "samples",
+              "agg": "count",
+              "where": [
+                {
+                  "field": "span.attr.lcp",
+                  "op": "exists"
+                }
+              ]
+            }
+          ],
+          "where": [
+            {
+              "field": "resource.attr.rum.sessionId",
+              "op": "exists"
+            },
+            {
+              "field": "span.name",
+              "op": "eq",
+              "value": "webvitals"
+            }
+          ],
+          "groupBy": [
+            "span.attr.location.href"
+          ],
+          "width": 24,
+          "height": 8
+        },
+        {
+          "id": "errors-by-release",
+          "title": "JS errors by release",
+          "description": "The same error spans as above, one line per service.version (the build id), so a release that introduced a regression shows as its own line. Release markers are drawn from the ledger.",
+          "kind": "line",
+          "signal": "traces",
+          "series": [
+            {
+              "label": "errors",
+              "agg": "count"
+            }
+          ],
+          "where": [
+            {
+              "field": "resource.attr.rum.sessionId",
+              "op": "exists"
+            },
+            {
+              "field": "span.status",
+              "op": "eq",
+              "value": "error"
+            },
+            {
+              "field": "span.attr.component",
+              "op": "not_in",
+              "values": [
+                "fetch",
+                "xml-http-request"
+              ]
+            }
+          ],
+          "groupBy": [
+            "resource.attr.service.version"
+          ],
+          "unit": "count",
+          "width": 24,
+          "height": 7
         },
         {
           "id": "page-load",

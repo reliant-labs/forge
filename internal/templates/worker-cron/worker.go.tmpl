@@ -63,7 +63,7 @@ func (w *Worker) Name() string { return "{{.Name | kebabCase}}" }
 
 // Start sets up the cron scheduler and blocks until ctx is cancelled.
 func (w *Worker) Start(ctx context.Context) error {
-	w.deps.Logger.Info("cron worker started", "worker", w.Name(), "schedule", Schedule)
+	w.deps.Logger.InfoContext(ctx, "cron worker started", "worker", w.Name(), "schedule", Schedule)
 
 	// baseCancel lets Stop() signal in-flight Run invocations even if the
 	// caller's parent ctx is still live.
@@ -85,7 +85,7 @@ func (w *Worker) Start(ctx context.Context) error {
 
 // Stop gracefully shuts down the cron scheduler, waiting for any running job to finish.
 func (w *Worker) Stop(ctx context.Context) error {
-	w.deps.Logger.Info("cron worker stopping", "worker", w.Name())
+	w.deps.Logger.InfoContext(ctx, "cron worker stopping", "worker", w.Name())
 	if w.baseCancel != nil {
 		// Signal in-flight Run before waiting on cron.Stop()'s wait group.
 		w.baseCancel()

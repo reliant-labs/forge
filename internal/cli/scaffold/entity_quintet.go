@@ -22,6 +22,8 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // entityFieldsFromSchemaDefs maps a message's SchemaFieldDef list (from
@@ -247,7 +249,7 @@ func completeEntityCRUDProto(root, serviceProtoPath, entityDeclFile, entity stri
 	if len(msgTexts) > 0 {
 		content = strings.TrimRight(content, "\n") + "\n\n" + strings.Join(msgTexts, "\n")
 	}
-	if err := os.WriteFile(serviceProtoPath, []byte(content), 0o644); err != nil {
+	if err := atomicfile.WriteFile(serviceProtoPath, []byte(content), 0o644); err != nil {
 		return nil, err
 	}
 	return res, nil

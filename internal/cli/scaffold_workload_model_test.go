@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -106,7 +107,7 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 		if err := cr.Validate(deployv1alpha1.ProfileRestricted); err != nil {
 			t.Errorf("hosted api spec does not validate under ProfileRestricted: %v", err)
 		}
-		assertServeProbes(t, "hosted api", it.Workload.Probes)
+		assertServeProbes(t, "hosted api", it.Workload.Probes, 8080)
 	}
 	if !admittedService {
 		t.Fatalf("the hosted env admitted no `api` Workload (items: %+v)", items)
@@ -202,7 +203,10 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 	if _, ok := devW["item"]; ok {
 		t.Errorf("dev runs item as its own process beside the API that already serves it")
 	}
-	assertServeProbes(t, "dev api", devW["api"].Spec.Probes)
+	// The probe targets the port the process listens on — its PORT, which
+	// dev allocates per machine (#1023: the default probe reads the
+	// workload's own env, so the pod's probe and the route cannot drift).
+	assertServeProbes(t, "dev api", devW["api"].Spec.Probes, envPortE2E(t, devW["api"].Spec.Env))
 	if got := strings.Join(devW["migrate"].Spec.Args, " "); got != "db migrate up" {
 		t.Errorf("dev migrate args = %q", got)
 	}
@@ -241,7 +245,7 @@ func scaffoldWorkloadModelProject(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := generatePerEnvDeployConfig(dir, cfg, cs); err != nil {
+	if err := generatePerEnvDeployConfig(dir, cfg, cs, nil); err != nil {
 		t.Fatalf("generate per-env config: %v", err)
 	}
 	return dir
@@ -276,14 +280,30 @@ func writeEnv(t *testing.T, dir, env, mainK, from string) {
 	}
 }
 
-func assertServeProbes(t *testing.T, where string, p *deployv1alpha1.Probes) {
+func assertServeProbes(t *testing.T, where string, p *deployv1alpha1.Probes, wantPort int32) {
 	t.Helper()
 	if p == nil {
 		t.Fatalf("%s: no probes in the spec — the lowering must write /readyz + /healthz for a service forge builds", where)
 	}
-	if p.ReadinessPath != "/readyz" || p.LivenessPath != "/healthz" || p.Port != 8080 {
-		t.Errorf("%s: probes = %+v, want /readyz + /healthz on :8080", where, *p)
+	if p.ReadinessPath != "/readyz" || p.LivenessPath != "/healthz" || p.Port != wantPort {
+		t.Errorf("%s: probes = %+v, want /readyz + /healthz on :%d", where, *p, wantPort)
 	}
+}
+
+// envPortE2E is the workload's PORT env value, which the default probe
+// targets; 8080 when unset.
+func envPortE2E(t *testing.T, env []deployv1alpha1.EnvVar) int32 {
+	t.Helper()
+	for _, e := range env {
+		if e.Name == "PORT" {
+			n, err := strconv.Atoi(e.Value)
+			if err != nil {
+				t.Fatalf("PORT = %q is not a number", e.Value)
+			}
+			return int32(n)
+		}
+	}
+	return 8080
 }
 
 // assertClusterDeploymentProbed expands a render's output.manifests through

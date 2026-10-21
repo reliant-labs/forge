@@ -37,9 +37,10 @@ func Register(s Strategy) { registry[s.Name()] = s }
 It is the per-package equivalent of a `contracts.exclude` entry in `forge.yaml`: the package is skipped by the canonical-shape check, by bootstrap wiring, and by mock generation together. The trade is real — **no contract means no generated mock, no observability decorator and no seam** — so the marker costs something at lint time:
 
 - **A bare marker is a lint error** (`forge-exclude-contract-reason`). Write why, the same way a suppressed error-severity rule needs a reason. Codegen still honours a bare marker, so a missing reason never breaks `forge generate`; it fails `forge lint`.
+- **The reason follows a colon, and only a colon.** `//forge:exclude-contract — why` (an em-dash, a hyphen, a bare space) is NOT the directive: the package is not excluded. `forge lint` reports it (`forge-go-markers`, with file:line and the expected form), and so does the contract finding it leaves behind. The same lint fails on any `//forge:<name>` forge does not read — a typo is a silent no-op otherwise. `forge project annotations --kind go` lists every Go-source marker and its form.
 - **The marker is refused outright on two shapes, whatever the reason says**:
   - `forge-exclude-contract-outbound-io`: the package calls an outbound-I/O entry point — an HTTP client, `database/sql`/pgx, a controller-runtime or client-go client, a gRPC/Connect client, NATS, Redis, an OCI registry client, or a cloud SDK. (Naming those types in a struct is fine; *calling* them is the signal. Local file I/O is not a signal.) **Fix:** make it an adapter — `contract.go` with `// forge:outbound-io` and a narrow `Service`, and `// forge:constructor` on `New(Deps)` (see `adapter`).
-  - `forge-exclude-contract-multi-impl`: the package declares an exported interface with two or more implementations in the module, at least one of them in the package itself. An interface with interchangeable implementations IS the contract. **Fix:** move it to `contract.go` (mark it `//forge:contract` if it is not named `Service`).
+  - `forge-exclude-contract-multi-impl`: the package declares an exported interface with two or more implementations in the module, at least one of them in the package itself, and does not consume it. An interface with interchangeable implementations IS the contract. **Fix:** move it to `contract.go` (mark it `//forge:contract` if it is not named `Service`). A seam the package declares because it NEEDS it — the type of one of its struct fields or parameters, on something that neither implements nor returns it — is not refused, even with an in-package default: declare interfaces where they are consumed.
 
 **The only legitimate reasons**, and they are few:
 
@@ -97,7 +98,7 @@ What it keeps and what it drops:
 | `middleware_gen.go` decorator | kept when `New` carries `// forge:constructor`; whoever constructs it wraps it: `pkg.New<Iface>WithForgeMiddleware(pkg.New(deps))` |
 | a `compose.go` field and construction, an `Infra` field, `Deps` resolution | **none** |
 | `helpers_gen_test.go` (`NewTest<Pkg>`) | none — there is no forge-built instance for it to stand in for; test against `New(Deps{…})` with the mocks |
-| `enforce-component-observe` | not demanded — forge does not construct it, so it does not decide the wrap |
+| the decorator wrap at the construction site | yours — forge generates `middleware_gen.go`, but whoever constructs the package decides whether to call it |
 | `forge project audit` / `forge project graph` | listed, with `composition: not-a-component` and the reason |
 
 The three package markers answer different questions — pick by what is true:

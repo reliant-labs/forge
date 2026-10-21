@@ -18,7 +18,7 @@ const testStall = 100 * time.Millisecond
 func serveWriteStallTest(t *testing.T, cfg Config, handler http.Handler) string {
 	t.Helper()
 	cfg.Normalize()
-	server := newHTTPServer(cfg, handler)
+	server := NewHTTPServer(cfg, handler, nil)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -159,7 +159,7 @@ func TestNewHTTPServerNoWholeResponseWriteTimeout(t *testing.T) {
 	t.Parallel()
 	cfg := Config{Addr: ":0"}
 	cfg.Normalize()
-	server := newHTTPServer(cfg, http.NewServeMux())
+	server := NewHTTPServer(cfg, http.NewServeMux(), nil)
 	if server.WriteTimeout != 0 {
 		t.Errorf("WriteTimeout = %s; use WriteStallTimeout instead", server.WriteTimeout)
 	}
@@ -202,5 +202,36 @@ func TestWriteStallGuardKeepAliveDeadlineDoesNotLeak(t *testing.T) {
 	_ = response.Body.Close()
 	if !reused {
 		t.Fatal("second request did not reuse the connection")
+	}
+}
+
+// The connection timeouts come from Config: zero takes the defaults
+// (10s/30s/120s), a positive value is used as given, and a negative one
+// disables the timeout.
+func TestNewHTTPServerTimeoutsFromConfig(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name               string
+		in                 Config
+		header, read, idle time.Duration
+		h2Max              int
+	}{
+		{"defaults", Config{}, 10 * time.Second, 30 * time.Second, 120 * time.Second, 0},
+		{"given", Config{ReadHeaderTimeout: 5 * time.Second, ReadTimeout: time.Minute, IdleTimeout: time.Hour, HTTP2MaxConcurrentStreams: 1000}, 5 * time.Second, time.Minute, time.Hour, 1000},
+		{"disabled", Config{ReadHeaderTimeout: -1, ReadTimeout: -1, IdleTimeout: -1}, 0, 0, 0, 0},
+	} {
+		cfg := tc.in
+		cfg.Addr = ":0"
+		cfg.Normalize()
+		s := NewHTTPServer(cfg, http.NewServeMux(), nil)
+		if s.ReadHeaderTimeout != tc.header || s.ReadTimeout != tc.read || s.IdleTimeout != tc.idle {
+			t.Errorf("%s: header/read/idle = %v/%v/%v, want %v/%v/%v", tc.name, s.ReadHeaderTimeout, s.ReadTimeout, s.IdleTimeout, tc.header, tc.read, tc.idle)
+		}
+		if s.HTTP2 == nil || s.HTTP2.MaxConcurrentStreams != tc.h2Max {
+			t.Errorf("%s: HTTP2 = %+v, want MaxConcurrentStreams %d", tc.name, s.HTTP2, tc.h2Max)
+		}
+		if s.Protocols == nil || !s.Protocols.HTTP1() || !s.Protocols.HTTP2() || !s.Protocols.UnencryptedHTTP2() {
+			t.Errorf("%s: Protocols = %v, want HTTP/1.1, HTTP/2 and h2c", tc.name, s.Protocols)
+		}
 	}
 }

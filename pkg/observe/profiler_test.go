@@ -225,7 +225,7 @@ func clearProfilesEnv(t *testing.T) {
 	clearOTelEnv(t)
 	for _, k := range []string{EnvProfilesExporter, EnvOTLPProfilesEndpoint, "OTEL_EXPORTER_OTLP_PROFILES_PROTOCOL",
 		"OTEL_EXPORTER_OTLP_PROFILES_HEADERS", "OTEL_EXPORTER_OTLP_COMPRESSION", "OTEL_EXPORTER_OTLP_PROFILES_COMPRESSION",
-		"OTEL_EXPORTER_OTLP_TIMEOUT", "OTEL_EXPORTER_OTLP_PROFILES_TIMEOUT"} {
+		"OTEL_EXPORTER_OTLP_TIMEOUT", "OTEL_EXPORTER_OTLP_PROFILES_TIMEOUT", EnvProfiles, EnvProfilesHeapInterval} {
 		t.Setenv(k, "")
 	}
 }
@@ -264,6 +264,14 @@ func TestProfilesCanBeSwitchedOff(t *testing.T) {
 		t.Error("switching profiles off disabled traces")
 	}
 	t.Setenv(EnvProfilesExporter, "")
+	t.Setenv(EnvProfiles, "none")
+	if exportEnabled(signalProfiles, Config{}) {
+		t.Error("FORGE_PROFILES=none did not turn profiles off")
+	}
+	t.Setenv(EnvProfiles, "")
+	if exportEnabled(signalProfiles, Config{Profiles: ProfilesConfig{Types: []ProfileType{}}}) {
+		t.Error("an empty Config.Profiles.Types did not turn profiles off")
+	}
 	t.Setenv("OTEL_SDK_DISABLED", "true")
 	if exportEnabled(signalProfiles, Config{}) {
 		t.Error("OTEL_SDK_DISABLED=true must disable profiles too")
@@ -409,12 +417,16 @@ func TestSetupWithProfilesOffStartsNoProfiler(t *testing.T) {
 
 // ── the loop ─────────────────────────────────────────────────────────────
 
-// testProfiler is a profiler whose clock and collector are fakes.
+// testProfiler is a profiler whose clock and collector are fakes, capturing the
+// default profile set.
 func testProfiler(probe func(context.Context) error, send func(context.Context, pprofile.Profiles) error) *profiler {
+	settings, _ := resolveProfileSettings(ProfilesConfig{})
 	return &profiler{
 		res:      testResource(),
 		interval: time.Minute,
 		window:   10 * time.Millisecond,
+		settings: settings,
+		now:      time.Now,
 		probe:    probe,
 		send:     send,
 		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -446,26 +458,42 @@ func TestCycleSkipsEverythingWhenTheCollectorIsUnreachable(t *testing.T) {
 	}
 }
 
-func TestCycleSendsCPUHeapAndGoroutineProfiles(t *testing.T) {
-	var mu sync.Mutex
-	types := map[string]bool{}
-	var ids []pprofile.ProfileID
-	p := testProfiler(
-		func(context.Context) error { return nil },
-		func(_ context.Context, pd pprofile.Profiles) error {
-			mu.Lock()
-			defer mu.Unlock()
-			strs := pd.Dictionary().StringTable()
-			profs := pd.ResourceProfiles().At(0).ScopeProfiles().At(0).Profiles()
-			for i := 0; i < profs.Len(); i++ {
-				types[strs.At(int(profs.At(i).SampleType().TypeStrindex()))] = true
-				ids = append(ids, profs.At(i).ProfileID())
-			}
-			return nil
-		},
-	)
+// recordingSender records the sample types of every profile sent.
+type recordingSender struct {
+	mu    sync.Mutex
+	types map[string]int
+	ids   []pprofile.ProfileID
+}
+
+func (r *recordingSender) send(_ context.Context, pd pprofile.Profiles) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.types == nil {
+		r.types = map[string]int{}
+	}
+	strs := pd.Dictionary().StringTable()
+	profs := pd.ResourceProfiles().At(0).ScopeProfiles().At(0).Profiles()
+	for i := 0; i < profs.Len(); i++ {
+		r.types[strs.At(int(profs.At(i).SampleType().TypeStrindex()))]++
+		r.ids = append(r.ids, profs.At(i).ProfileID())
+	}
+	return nil
+}
+
+func (r *recordingSender) snapshot() map[string]int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := map[string]int{}
+	for k, v := range r.types {
+		out[k] = v
+	}
+	return out
+}
+
+// busyCPU gives the CPU profiler something to see until the test ends.
+func busyCPU(t *testing.T) {
 	stop := make(chan struct{})
-	go func() { // something for the CPU profiler to see
+	go func() {
 		for {
 			select {
 			case <-stop:
@@ -475,26 +503,63 @@ func TestCycleSendsCPUHeapAndGoroutineProfiles(t *testing.T) {
 			}
 		}
 	}()
-	defer close(stop)
+	t.Cleanup(func() { close(stop) })
+}
+
+func TestCycleSendsTheDefaultProfiles(t *testing.T) {
+	rec := &recordingSender{}
+	p := testProfiler(func(context.Context) error { return nil }, rec.send)
+	busyCPU(t)
 	p.window = 300 * time.Millisecond
 	p.sleep = sleepCtx
 
 	if err := p.safeCycle(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if types["samples"] {
+	types := rec.snapshot()
+	if types["samples"] > 0 {
 		t.Error("the redundant samples type was exported")
 	}
-	for _, want := range []string{"alloc_space", "inuse_space", "goroutine"} {
-		if !types[want] {
-			t.Errorf("sample type %q never exported; got %v", want, types)
+	for _, want := range []string{"cpu", "inuse_space", "inuse_objects"} {
+		if types[want] == 0 {
+			t.Errorf("default sample type %q never exported; got %v", want, types)
 		}
 	}
-	for _, id := range ids {
+	// Cumulative allocation counters and goroutine stacks are opt-in: they
+	// were 97.7% and 0.6% of production's stored profile rows.
+	for _, off := range []string{"alloc_space", "alloc_objects", "goroutine"} {
+		if types[off] > 0 {
+			t.Errorf("opt-in sample type %q exported by default; got %v", off, types)
+		}
+	}
+	for _, id := range rec.ids {
 		if id.IsEmpty() {
 			t.Error("exported a profile with an empty profile ID")
+		}
+	}
+}
+
+func TestCycleSendsTheOptInProfilesWhenSelected(t *testing.T) {
+	clearProfilesEnv(t)
+	t.Setenv(EnvProfiles, "alloc,goroutine")
+	rec := &recordingSender{}
+	p := testProfiler(func(context.Context) error { return nil }, rec.send)
+	p.settings, _ = resolveProfileSettings(ProfilesConfig{})
+
+	if err := p.safeCycle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	types := rec.snapshot()
+	for _, want := range []string{"alloc_space", "alloc_objects", "goroutine"} {
+		if types[want] == 0 {
+			t.Errorf("selected sample type %q never exported; got %v", want, types)
+		}
+	}
+	// The selection replaces the default set: no CPU, and alloc without heap
+	// exports the cumulative types alone.
+	for _, off := range []string{"cpu", "inuse_space", "inuse_objects"} {
+		if types[off] > 0 {
+			t.Errorf("unselected sample type %q exported; got %v", off, types)
 		}
 	}
 }

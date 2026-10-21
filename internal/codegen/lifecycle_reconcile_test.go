@@ -1,10 +1,12 @@
 package codegen
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -47,10 +49,41 @@ func mustGenerateLifecycle(t *testing.T, in InjectGenInput) {
 	}
 }
 
+// assertValidGo fails unless src parses AND names every package it imports.
+// An unused import is a compile error, not a style nit: a lifecycle.go that
+// imported lifecyclekit with no worker to wrap failed every fresh project's
+// first generate ("lifecyclekit imported and not used"), while a parse-only
+// check passed it.
 func assertValidGo(t *testing.T, name, src string) {
 	t.Helper()
-	if _, err := parser.ParseFile(token.NewFileSet(), name, src, parser.SkipObjectResolution); err != nil {
+	file, err := parser.ParseFile(token.NewFileSet(), name, src, parser.SkipObjectResolution)
+	if err != nil {
 		t.Fatalf("%s is not valid Go: %v\n----\n%s", name, err, src)
+	}
+	used := map[string]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok {
+			if id, ok := sel.X.(*ast.Ident); ok {
+				used[id.Name] = true
+			}
+		}
+		return true
+	})
+	for _, imp := range file.Imports {
+		path, _ := strconv.Unquote(imp.Path.Value)
+		// The package name is the alias when there is one, else the last path
+		// element: true of every import these files carry (the hyphenated
+		// controller-runtime is always aliased).
+		pkg := path[strings.LastIndex(path, "/")+1:]
+		if imp.Name != nil {
+			pkg = imp.Name.Name
+		}
+		if pkg == "_" || pkg == "." {
+			continue
+		}
+		if !used[pkg] {
+			t.Fatalf("%s imports %q and never uses it (a compile error):\n----\n%s", name, path, src)
+		}
 	}
 }
 
@@ -70,6 +103,7 @@ func TestGenerateLifecycle_ReconcileAddsWorkerAfterScaffold(t *testing.T) {
 	if strings.Contains(first, "WorkerNightly") {
 		t.Fatalf("scaffold emit must not carry a worker yet:\n%s", first)
 	}
+	assertValidGo(t, "lifecycle.go", first)
 
 	// `forge scaffold worker nightly` — the worker package appears on disk.
 	writeComponentDeps(t, dir, "internal/workers", "nightly", "nightly",

@@ -94,3 +94,26 @@ for this environment`: nothing compares the live objects with the applied
 bundle yet. `forge env deploy <env> <version> --live-diff` runs a client-side
 `kubectl diff` of the release's bundle against the cluster when you need to
 see it.
+
+## What a release and a promotion record
+
+**A scoped deploy records what it moved.** The promotion carries `targets`
+(the `--target` names, or the env's shippable frontends for
+`--frontends-only`), so the ledger never claims the whole env runs a release
+only part of it took; `release.Promotion.Moved(component)` answers per
+workload, and the plan prints `scope` and `scoped: only <x> moved`.
+Re-deploying the bound release scoped records nothing new; a whole deploy
+after a scoped one is a real move (`COMPLETES A SCOPED DEPLOY`). Where the
+env's control plane converges promotions (a hub, or hosted tiers) a scoped
+deploy of a NEW release is refused before anything is written: the control
+plane would move more than the scope names.
+
+**A release records its source history.** The cut stores its commit's
+subject and author (`provenance.commit_subject` / `commit_author`) and the
+commits it adds over the newest earlier release it descends from (`commits`:
+at most 100, with `truncated`, and a `total` that is 0 when a shallow clone
+could not count them). Every bundle carries a one-line summary and
+per-section digests for each object (`objects`). `release.CompareCommits`,
+`CompareArtifacts` and `CompareObjects` say what changed between two
+releases with no repository or manifests at hand; a control plane serves
+the same answer as `DeployService.CompareReleases`.

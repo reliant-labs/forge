@@ -50,6 +50,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // TierSpecPackage is the Go package the tier specs live in.
@@ -686,5 +688,5 @@ func WriteTierKCL(forgeRoot, pkgPath string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
 	}
-	return body, os.WriteFile(path, []byte(body), 0o644)
+	return body, atomicfile.WriteFile(path, []byte(body), 0o644)
 }

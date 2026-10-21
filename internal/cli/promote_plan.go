@@ -387,6 +387,9 @@ type promotePlanBinding struct {
 	PromotionID string `json:"promotion_id,omitempty"`
 	// Release is the version the env runs now. Empty when unbound.
 	Release string `json:"release,omitempty"`
+	// Targets is the current entry's scope: the components a scoped deploy
+	// moved to Release. Empty when the whole release moved.
+	Targets []string `json:"targets,omitempty"`
 	// PromotedAt is RFC3339 for when this binding was WRITTEN — not when
 	// it was deployed. Promote moves a pointer; deploy moves bytes.
 	PromotedAt string `json:"promoted_at,omitempty"`
@@ -463,6 +466,10 @@ type promotePlan struct {
 	Current promotePlanBinding `json:"current"`
 	// Target is the release being promoted to.
 	Target promotePlanTarget `json:"target"`
+	// Scope is the components this promote moves when the deploy is scoped
+	// (`--target`, `--frontends-only`), recorded on the promotion as its
+	// Targets. Empty when the whole release moves.
+	Scope []string `json:"scope,omitempty"`
 	// Direction is where the target sits relative to the current release.
 	// `behind` moves the env BACKWARDS — possible, never an undo, and the
 	// single most consequential thing on this screen to misread.
@@ -706,6 +713,13 @@ type promotePlanOptions struct {
 	Releases releaseLedger
 	// Git reads the commit range. Nil uses real git.
 	Git promoteGitReader
+	// Scope is the deploy's scope (deployScopeTargets): put on the plan and
+	// recorded on the promotion as its Targets. Nil for an unscoped deploy.
+	Scope []string
+	// Ledger is the env's resolved ledger, read only to refuse a Scope its
+	// control plane would widen (refuseConvergedScope). The zero value
+	// refuses nothing.
+	Ledger envLedger
 }
 
 // computePromotePlan builds the whole change set WITHOUT writing anything.
@@ -821,6 +835,7 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 	if hadPrev {
 		plan.Current.PromotionID = prev.ID
 		plan.Current.Release = prev.Release
+		plan.Current.Targets = prev.Targets
 		plan.Current.PromotedAt = formatLedgerTime(prev.PromotedAt)
 		if rel, found := byVersion[prev.Release]; found {
 			currentRel, currentKnown = rel, true
@@ -883,7 +898,7 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 		Reverts:      plan.Direction == promoteDirectionBehind,
 	})
 
-	return plan, nil
+	return scopePromotePlan(plan, opts.Scope, opts.Ledger)
 }
 
 // applyPromotePlan writes the binding the plan describes.
@@ -910,6 +925,7 @@ func applyPromotePlan(ctx context.Context, bindings bindingStore, plan *promoteP
 		Kind:       plan.Kind,
 		Resolved:   plan.targetResolved,
 		Sources:    plan.targetSources,
+		Targets:    plan.Scope,
 		PromotedBy: w.By,
 		Note:       w.Note,
 		Gates:      w.Gates,
@@ -1361,6 +1377,9 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 
 	if plan.Current.Bound {
 		fmt.Fprintf(out, "  current   %s (promoted %s, promotion %s)\n", plan.Current.Release, plan.Current.PromotedAt, plan.Current.PromotionID)
+		if len(plan.Current.Targets) > 0 {
+			fmt.Fprintf(out, "            scoped: only %s moved to %s\n", strings.Join(plan.Current.Targets, ", "), plan.Current.Release)
+		}
 		if plan.Current.NotApplied {
 			live := "(the ledger cannot say)"
 			if plan.Current.LiveRelease != "" {
@@ -1390,6 +1409,9 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 		fmt.Fprintf(out, "  [DIRTY TREE — these bytes match no reviewable commit]")
 	}
 	fmt.Fprintln(out)
+	if len(plan.Scope) > 0 {
+		fmt.Fprintf(out, "  scope     %s  (a scoped deploy: only these move, and the promotion records it)\n", strings.Join(plan.Scope, ", "))
+	}
 	// The direction line is printed with the state's own word in it, not
 	// as a symbol: a reader skimming for "am I going forwards" must not
 	// have to decode an arrow.

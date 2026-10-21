@@ -49,6 +49,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/database"
 	"github.com/reliant-labs/forge/pkg/migratekit/compat"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // squashGooseTable is goose's default version table, the one migratekit
@@ -135,7 +137,7 @@ func runDBSquashFromDSN(ctx context.Context, w io.Writer, opts squashOptions) er
 	if err := checkWrittenAdoption(content, goose); err != nil {
 		return fmt.Errorf("the baseline for %s: %w", upPath, err)
 	}
-	if err := os.WriteFile(upPath, []byte(content), 0o644); err != nil {
+	if err := atomicfile.WriteFile(upPath, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("write baseline up: %w", err)
 	}
 

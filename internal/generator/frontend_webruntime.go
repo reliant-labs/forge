@@ -44,6 +44,8 @@ import (
 	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/webruntimepeers"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // WebRuntimePackage is the npm package name of forge's frontend runtime
@@ -54,7 +56,7 @@ const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 // not bridged to a local checkout. Keep the major.minor pointed at
 // web-runtime/package.json's version — TestWebRuntimePublishedRangeTracksPackage
 // fails the build when the two drift apart.
-const webRuntimePublishedRange = "^0.4.0"
+const webRuntimePublishedRange = "^0.6.0"
 
 // webRuntimeDepRe matches the package's entry wherever it already appears in a
 // package.json, capturing everything up to (but not including) the value so a
@@ -303,7 +305,7 @@ func ensureWebRuntimeDependency(projectDir, relDir, label string) {
 			WebRuntimePackage, pkgPath)
 		return
 	}
-	if err := os.WriteFile(pkgPath, []byte(text), info.Mode().Perm()); err != nil {
+	if err := atomicfile.WriteFile(pkgPath, []byte(text), info.Mode().Perm()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", pkgPath, err)
 		return
 	}
@@ -404,7 +406,7 @@ func EnsureBrowserTelemetryDependencies(projectDir, feRelDir, feName string) {
 		fmt.Fprintf(os.Stderr, "warning: declaring %s in %s would have produced invalid JSON; left unchanged\n", browserSDKPackage, pkgPath)
 		return
 	}
-	if err := os.WriteFile(pkgPath, []byte(text), info.Mode().Perm()); err != nil {
+	if err := atomicfile.WriteFile(pkgPath, []byte(text), info.Mode().Perm()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", pkgPath, err)
 		return
 	}

@@ -6,11 +6,11 @@ import (
 	"strings"
 )
 
-// procGetOrganization is the one control-plane call that answers "which
+// ProcGetOrganization is the one control-plane call that answers "which
 // organization does this credential act for". The server derives the answer
 // from the authenticated token row — never from anything the client sends. The
 // method's name is the control plane's identifier and cannot be renamed here.
-const procGetOrganization = "controlplane.v1.DeployService/GetTenant"
+const ProcGetOrganization = "controlplane.v1.DeployService/GetTenant"
 
 // Caller is the one method ResolveOrganization needs.
 type Caller interface {
@@ -33,7 +33,7 @@ func ResolveOrganization(ctx context.Context, c Caller) (string, error) {
 			OrgID string `json:"orgId"`
 		} `json:"tenant"`
 	}
-	if err := c.Call(ctx, procGetOrganization, map[string]any{}, &resp); err != nil {
+	if err := c.Call(ctx, ProcGetOrganization, map[string]any{}, &resp); err != nil {
 		return "", fmt.Errorf("resolve the credential's organization: %w", err)
 	}
 	org := strings.TrimSpace(resp.Org.OrgID)

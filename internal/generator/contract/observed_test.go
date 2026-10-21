@@ -32,7 +32,7 @@ func genDecorator(t *testing.T, dir, iface, ns string) string {
 	// pipeline passes for a package whose New returns `iface`.
 	ctorName := "New" + iface + "WithForgeMiddleware"
 	structName := "forgeMiddleware" + iface
-	written, err := WriteObservedDecorator(cf, dir, iface, ctorName, structName, ns, Options{})
+	written, err := WriteObservedDecorator(cf, dir, iface, ctorName, structName, ns, nil, Options{})
 	if err != nil {
 		t.Fatalf("WriteObservedDecorator: %v", err)
 	}
@@ -232,7 +232,7 @@ type Other interface{ Do() }
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	written, err := WriteObservedDecorator(cf, dir, "Service", "NewServiceWithForgeMiddleware", "forgeMiddlewareService", "x", Options{})
+	written, err := WriteObservedDecorator(cf, dir, "Service", "NewServiceWithForgeMiddleware", "forgeMiddlewareService", "x", nil, Options{})
 	if err != nil {
 		t.Fatalf("WriteObservedDecorator: %v", err)
 	}
@@ -411,5 +411,141 @@ type Service interface {
 	if !strings.Contains(got, "err := o.chain.Run") {
 		t.Errorf("an UNNAMED result list declares no `err` in scope, so the body must "+
 			"still open with `err :=`:\n%s", got)
+	}
+}
+
+// A package with no newObserveChain seam gets a decorator that builds
+// observe.DefaultComponentChain itself, so nothing has to be scaffolded into
+// the package for the decorator to compile.
+func TestObservedDecorator_DefaultChainWithoutSeam(t *testing.T) {
+	dir := writeContract(t, `package billing
+
+import "context"
+
+type Service interface {
+	Charge(ctx context.Context, cents int64) error
+}
+`)
+	cf, err := ParseContract(filepath.Join(dir, "contract.go"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	def := &DefaultChain{Scope: "example.com/x/internal/billing", Name: "billing", LogLevel: "slog.LevelInfo"}
+	if _, err := WriteObservedDecorator(cf, dir, "Service", "NewServiceWithForgeMiddleware", "forgeMiddlewareService", "billing", def, Options{}); err != nil {
+		t.Fatalf("WriteObservedDecorator: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "middleware_gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	for _, want := range []string{
+		`chain: observe.DefaultComponentChain("example.com/x/internal/billing", "billing", slog.LevelInfo)}`,
+		`"log/slog"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("decorator lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "newObserveChain") {
+		t.Errorf("decorator without a seam calls newObserveChain:\n%s", out)
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), "middleware_gen.go", out, 0); err != nil {
+		t.Fatalf("decorator does not parse: %v", err)
+	}
+}
+
+// NewInstrumented mirrors New exactly — parameters (named, unnamed, variadic,
+// imported types) and results (fallible or not) — so instrumenting a
+// construction is a rename that changes no type.
+func TestObservedDecorator_NewInstrumented(t *testing.T) {
+	const contract = `package billing
+
+import "context"
+
+type Service interface {
+	Charge(ctx context.Context, cents int64) error
+}
+`
+	cases := []struct {
+		name    string
+		service string
+		want    []string
+		absent  bool
+	}{
+		{
+			name: "fallible, imported and variadic params",
+			service: `package billing
+
+import "log/slog"
+
+type Deps struct{}
+type Option func()
+
+func New(deps Deps, log *slog.Logger, opts ...Option) (Service, error) { return nil, nil }
+`,
+			want: []string{
+				"func NewInstrumented(deps Deps, log *slog.Logger, opts ...Option) (Service, error) {",
+				"instrumentedInner, instrumentedErr := New(deps, log, opts...)",
+				"return NewServiceWithForgeMiddleware(instrumentedInner), nil",
+				`"log/slog"`,
+			},
+		},
+		{
+			name: "single result, unnamed param",
+			service: `package billing
+
+type Deps struct{}
+
+func New(Deps) Service { return nil }
+`,
+			want: []string{
+				"func NewInstrumented(p0 Deps) Service {",
+				"return NewServiceWithForgeMiddleware(New(p0))",
+			},
+		},
+		{
+			name: "a user-owned NewInstrumented is never shadowed",
+			service: `package billing
+
+func New() Service { return nil }
+
+func NewInstrumented() Service { return New() }
+`,
+			absent: true,
+		},
+		{
+			name: "New returning a concrete type gets none",
+			service: `package billing
+
+type impl struct{ Service }
+
+func New() *impl { return nil }
+`,
+			absent: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeContract(t, contract)
+			if err := os.WriteFile(filepath.Join(dir, "service.go"), []byte(tc.service), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			out := genDecorator(t, dir, "Service", "billing")
+			if _, err := parser.ParseFile(token.NewFileSet(), "middleware_gen.go", out, 0); err != nil {
+				t.Fatalf("decorator does not parse: %v\n%s", err, out)
+			}
+			if tc.absent {
+				if strings.Contains(out, "func NewInstrumented") {
+					t.Fatalf("NewInstrumented must not be generated:\n%s", out)
+				}
+				return
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(out, w) {
+					t.Errorf("decorator lacks %q:\n%s", w, out)
+				}
+			}
+		})
 	}
 }

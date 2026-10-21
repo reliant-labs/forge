@@ -18,7 +18,10 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/pkg/activity"
 	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // descriptorStageDir is the per-invocation staging directory under the
@@ -32,16 +35,18 @@ const descriptorStageDir = ".descriptor.d"
 // It aggregates all data the generate.go pipeline needs from proto descriptors.
 // NOTE: this mirrors codegen.ForgeDescriptor — the writer's view of the same
 // file the reader parses. Every field must stay in sync with it, INCLUDING
-// SourceHash: a field added on one side only would produce a file the other
+// Sources: a field added on one side only would produce a file the other
 // side silently ignores.
 type ForgeDescriptor struct {
 	Services []codegen.ServiceDef    `json:"services"`
 	Configs  []codegen.ConfigMessage `json:"configs"`
 
-	// SourceHash fingerprints the .proto files this descriptor came from.
-	// codegen.loadDescriptor REFUSES a descriptor whose hash does not match
-	// the protos on disk, so an unstamped file reads as stale.
-	SourceHash string `json:"source_hash,omitempty"`
+	// Sources fingerprints the .proto files this descriptor came from, one
+	// entry per file (codegen.DescriptorSources). codegen.loadDescriptor
+	// REFUSES a descriptor whose entries do not match the protos on disk. It
+	// is the LAST field: the merge driver settles the block key by key
+	// (mergeDescriptorSources), so its position must stay fixed.
+	Sources map[string]string `json:"sources"`
 }
 
 // generateDescriptor extracts services, entities, and configs from all proto
@@ -203,11 +208,11 @@ func MergeDescriptorFragments(descriptorOut string) error {
 		merged.Configs = append(merged.Configs, frag.Configs...)
 	}
 
-	// Stamp the fingerprint of the protos this descriptor was extracted from.
-	// descriptorOut is <projectDir>/gen, so the project root is its parent.
-	// Without this the file is an unverifiable cache, and loadDescriptor
-	// refuses it — see codegen.DescriptorSourceHash.
-	merged.SourceHash = codegen.DescriptorSourceHash(filepath.Dir(descriptorOut))
+	// Stamp the fingerprints of the protos this descriptor was extracted
+	// from. descriptorOut is <projectDir>/gen, so the project root is its
+	// parent. Without this the file is an unverifiable cache — see
+	// codegen.DescriptorSources.
+	merged.Sources = codegen.DescriptorSources(filepath.Dir(descriptorOut))
 
 	out, err := json.MarshalIndent(merged, "", "  ")
 	if err != nil {
@@ -216,7 +221,7 @@ func MergeDescriptorFragments(descriptorOut string) error {
 	outPath := filepath.Join(descriptorOut, "forge_descriptor.json")
 	// A text file ends in a newline; without one every end-of-file fixer
 	// rewrites the generated file and the next generate rewrites it back.
-	if err := os.WriteFile(outPath, append(out, '\n'), 0o644); err != nil {
+	if err := atomicfile.WriteFile(outPath, append(out, '\n'), 0o644); err != nil {
 		return fmt.Errorf("write forge_descriptor.json: %w", err)
 	}
 
@@ -240,9 +245,43 @@ func applyMethodOptions(method *codegen.Method, mo *forgev1.MethodOptions) {
 	if len(mo.Errors) > 0 {
 		method.Errors = append([]string(nil), mo.Errors...)
 	}
+	if mo.Timeout != nil {
+		method.Timeout = mo.Timeout.AsDuration()
+	}
 	// auth_required (above) is the one access annotation forge reads: it
 	// feeds pkg/middleware/procedures_gen.go, which the auth interceptor
-	// enforces fail-closed. Authorization stays handler logic.
+	// enforces fail-closed. Authorization stays handler logic. timeout feeds
+	// the same file's ProcedureDeadlines, the chain's Deadline slot.
+}
+
+// methodActivity records md's activity declaration through
+// forge/pkg/activity — the resolver the runtime interceptor uses — so the
+// lint (forgeconv-activity-declared) reads the runtime's own verdict rather
+// than re-deriving the rules.
+func methodActivity(md protoreflect.MethodDescriptor) *codegen.MethodActivity {
+	a := &codegen.MethodActivity{Mutating: activity.IsMutating(md)}
+	decl, err := activity.Resolve(md)
+	switch {
+	case err != nil:
+		a.Error = err.Error()
+	case decl == nil:
+	case decl.None != "":
+		a.Declared, a.None = true, decl.None
+	default:
+		a.Declared, a.Verb, a.TargetKind, a.Implied, a.Writer = true, decl.Verb, decl.TargetKind, decl.Implied, decl.Writer.String()
+	}
+	return a
+}
+
+// serviceAudience reads `(forge.v1.service).audience`, defaulting to "user"
+// — the same default serverkit.ServiceAudience applies at boot.
+func serviceAudience(svc *protogen.Service) string {
+	if opts := svc.Desc.Options(); opts != nil {
+		if so, ok := proto.GetExtension(opts, forgev1.E_Service).(*forgev1.ServiceOptions); ok && so.GetAudience() != "" {
+			return so.GetAudience()
+		}
+	}
+	return "user"
 }
 
 // extractService builds a codegen.ServiceDef from a protogen.Service.
@@ -273,6 +312,7 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 		ProtoFile: file.Desc.Path(),
 		Messages:  make(map[string][]codegen.MessageFieldDef),
 		Unmanaged: codegen.CommentMarksUnmanaged(serviceMarkerComments(svc)),
+		Audience:  serviceAudience(svc),
 	}
 
 	for _, m := range svc.Methods {
@@ -310,6 +350,8 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 				}
 			}
 		}
+
+		method.Activity = methodActivity(m.Desc)
 
 		sd.Methods = append(sd.Methods, method)
 
@@ -795,6 +837,15 @@ func noticeLegacyEntityAnnotation(file *protogen.File, msg *protogen.Message) {
 		file.Desc.Path(), msg.Desc.Name())
 }
 
+// configMapValueType names a map field's value kind ("string", "bool"),
+// or "" for a field that is not a map.
+func configMapValueType(f *protogen.Field) string {
+	if !f.Desc.IsMap() {
+		return ""
+	}
+	return protoKindToString(f.Desc.MapValue().Kind())
+}
+
 // configFieldRoleString maps the ConfigFieldRole enum to the bare enum
 // spelling stored on codegen.ConfigField.Role ("" for UNSPECIFIED so old
 // descriptors and unannotated fields serialize identically). Config codegen
@@ -877,7 +928,7 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 
 		var aliases []codegen.EnvVarAlias
 		for _, a := range cf.GetEnvVarAliases() {
-			aliases = append(aliases, codegen.EnvVarAlias{Name: a.GetName(), Deprecated: a.GetDeprecated()})
+			aliases = append(aliases, codegen.EnvVarAlias{Name: a.GetName(), Deprecated: a.GetDeprecated(), Values: a.GetValues()})
 		}
 		configFields = append(configFields, codegen.ConfigField{
 			Name:          string(f.Desc.Name()),
@@ -886,6 +937,10 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 			ProtoType:     protoKindToString(f.Desc.Kind()),
 			EnvVar:        cf.GetEnvVar(),
 			EnvVarAliases: aliases,
+			EnvPrefix:     cf.GetEnvPrefix(),
+			EnvSuffix:     cf.GetEnvSuffix(),
+			MapValueType:  configMapValueType(f),
+			AllowedValues: cf.GetAllowedValues(),
 			Flag:          cf.GetFlag(),
 			DefaultValue:  cf.GetDefaultValue(),
 			Required:      cf.GetRequired(),
@@ -903,12 +958,13 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 	}
 
 	protoFile, line := configMessageLocation(msg)
-	binary, command := configMessageBinary(msg)
+	binary, command, subtrees := configMessageBinary(msg)
 	return codegen.ConfigMessage{
 		Name:      string(msg.Desc.Name()),
 		Fields:    configFields,
 		Binary:    binary,
 		Command:   command,
+		Subtrees:  subtrees,
 		Frontend:  configMessageFrontend(msg),
 		ProtoFile: protoFile,
 		Line:      line,
@@ -960,20 +1016,25 @@ func configMessageFrontend(msg *protogen.Message) string {
 
 // configMessageBinary reads the message-level (forge.v1.binary_config)
 // annotation — the cmd/<name> leaf whose process loads this config, and the
-// cobra command path below it (empty for the binary's root config). Both
-// empty when the message carries no annotation, which is the common
-// single-AppConfig project and also every shared block (BaseConfig) composed
-// onto the per-binary configs.
-func configMessageBinary(msg *protogen.Message) (string, []string) {
+// cobra command path below it (empty for the binary's root config), and the
+// subtree paths a subtree config is loaded at or below. All empty when the
+// message carries no annotation, which is the common single-AppConfig
+// project and also every shared block (BaseConfig) composed onto the
+// per-binary configs.
+func configMessageBinary(msg *protogen.Message) (string, []string, [][]string) {
 	opts := msg.Desc.Options()
 	if opts == nil {
-		return "", nil
+		return "", nil, nil
 	}
 	bc, ok := proto.GetExtension(opts, forgev1.E_BinaryConfig).(*forgev1.BinaryConfigOptions)
 	if !ok || bc == nil {
-		return "", nil
+		return "", nil, nil
 	}
-	return bc.GetBinary(), bc.GetCommand()
+	var subtrees [][]string
+	for _, p := range bc.GetSubtrees() {
+		subtrees = append(subtrees, p.GetPath())
+	}
+	return bc.GetBinary(), bc.GetCommand(), subtrees
 }
 
 // messageHasConfigFields reports whether any DIRECT field of msg

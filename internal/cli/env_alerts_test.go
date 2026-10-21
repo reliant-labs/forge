@@ -99,8 +99,8 @@ func TestResolveShapeAlerts_UserRulesPlusEnabledDefaults(t *testing.T) {
 	for _, a := range got {
 		by[a.Alert] = a
 	}
-	if len(got) != 12 {
-		t.Fatalf("got %d alerts %v, want OrdersBacklog + error-rate + p95 + frontend + 5 metadata + DeployFailed + 2 quota levels (silent disabled, Off dropped)", len(got), by)
+	if len(got) != 15 {
+		t.Fatalf("got %d alerts %v, want OrdersBacklog + error-rate + p95 + frontend errors + LCP + 5 metadata + 2 frontend issue markers + DeployFailed + 2 quota levels (silent disabled, Off dropped)", len(got), by)
 	}
 	if by["OrdersBacklog"].Source != release.AlertSourceUser || by["ServiceErrorRateHigh"].Source != release.AlertSourceDefault || by["ServiceErrorRateHigh"].DefaultID != "error-rate" {
 		t.Errorf("sources wrong: %+v", by)
@@ -144,8 +144,8 @@ func TestResolveShapeAlerts_DefaultsAreScopedToTheEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 12 {
-		t.Fatalf("an env that declares nothing still gets the 12 defaults, got %d", len(got))
+	if len(got) != 15 {
+		t.Fatalf("an env that declares nothing still gets the 15 defaults, got %d", len(got))
 	}
 	for _, a := range got {
 		if strings.Contains(a.Expr, "'dev'") {
@@ -204,8 +204,8 @@ func TestResolveShapeAlerts_MetadataOptOutLeavesNoMetadataRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 7 {
-		t.Fatalf("got %d alerts, want the 4 telemetry rules plus the 3 platform rules and none of the 5 metadata rules", len(got))
+	if len(got) != 10 {
+		t.Fatalf("got %d alerts, want the 5 telemetry rules plus the 5 platform rules and none of the 5 metadata rules", len(got))
 	}
 	for _, a := range got {
 		switch a.DefaultID {

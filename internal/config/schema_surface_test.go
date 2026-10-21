@@ -94,12 +94,19 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			want: []string{"command", "reason"},
 		},
 		{
-			// Only migration_safety is authored. The driver and migrations
+			// Only migration_safety and orm are authored. The driver and migrations
 			// directory derive from db/migrations existing, and the dev seed
 			// has no configuration at all.
 			name: "DatabaseConfig",
 			typ:  reflect.TypeFor[DatabaseConfig](),
-			want: []string{"migration_safety"},
+			want: []string{"migration_safety", "orm"},
+		},
+		{
+			// orm.package: where the generated data layer lands, read by
+			// the ORM emitter and every consumer through config.ORMPackage.
+			name: "ORMConfig",
+			typ:  reflect.TypeFor[ORMConfig](),
+			want: []string{"package"},
 		},
 		{
 			// The per-migration exemption is the `-- forge:allow-destructive`
@@ -120,7 +127,18 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 		{
 			name: "LintConfig",
 			typ:  reflect.TypeFor[LintConfig](),
-			want: []string{"frontend", "handler_file_max_loc", "rules"},
+			want: []string{"frontend", "handler_file_max_loc", "rules", "tracing"},
+		},
+		{
+			// tracing: read by the tracing lane (internal/cli/lint/lint_tracing.go).
+			name: "TracingLintConfig",
+			typ:  reflect.TypeFor[TracingLintConfig](),
+			want: []string{"log_wrappers"},
+		},
+		{
+			name: "LogWrapperConfig",
+			typ:  reflect.TypeFor[LogWrapperConfig](),
+			want: []string{"call", "context_call"},
 		},
 		{
 			// proto_package: read by generator.ResolveServiceProtoPackage,

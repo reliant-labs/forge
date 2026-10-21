@@ -12,7 +12,6 @@ import (
 // field names match what the templates reference. This is a regression test
 // for the DatabaseURL vs DatabaseUrl naming mismatch.
 func TestE2EScaffoldConfigNaming(t *testing.T) {
-	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
@@ -24,6 +23,7 @@ func TestE2EScaffoldConfigNaming(t *testing.T) {
 	)
 
 	projectDir := filepath.Join(dir, "cfgtest")
+	addCorpusForgePkgReplace(t, projectDir)
 
 	// Generate code (produces pkg/config/config.go from config.proto)
 	runCmd(t, projectDir, forgeBin, "generate")
@@ -76,7 +76,6 @@ func TestE2EScaffoldConfigNaming(t *testing.T) {
 // scaffold both proto/forge/v1/forge.proto AND proto/forge/options/v1/*.proto,
 // which would produce conflicting extension tag numbers and break buf generate.
 func TestE2EScaffoldNoConflictingProtos(t *testing.T) {
-	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
@@ -88,6 +87,7 @@ func TestE2EScaffoldNoConflictingProtos(t *testing.T) {
 	)
 
 	projectDir := filepath.Join(dir, "protocheck")
+	addCorpusForgePkgReplace(t, projectDir)
 
 	// Check which proto annotation format was scaffolded.
 	hasOptionsV1 := fileExists(filepath.Join(projectDir, "proto", "forge", "options", "v1", "entity.proto"))

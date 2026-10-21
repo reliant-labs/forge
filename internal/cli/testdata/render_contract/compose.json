@@ -20,6 +20,7 @@
     "network_policy": null,
     "overrides": {},
     "project": "acme",
+    "release_manifest_consumers": [],
     "rendered_secrets": [],
     "required_dns": [],
     "required_secrets": [],
@@ -31,6 +32,7 @@
         "image": "",
         "kind": "service",
         "name": "postgres",
+        "release_inputs": {},
         "runtime": {
           "env": {
             "POSTGRES_PORT": "5433"
@@ -65,6 +67,7 @@
         "image": "",
         "kind": "service",
         "name": "nats",
+        "release_inputs": {},
         "runtime": {
           "env": {},
           "env_file": ".env.dev",

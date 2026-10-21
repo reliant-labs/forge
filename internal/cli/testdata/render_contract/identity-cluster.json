@@ -321,6 +321,7 @@
     "network_policy": null,
     "overrides": {},
     "project": "acme",
+    "release_manifest_consumers": [],
     "rendered_secrets": [],
     "required_dns": [],
     "required_secrets": [],
@@ -332,6 +333,7 @@
         "image": "",
         "kind": "service",
         "name": "api",
+        "release_inputs": {},
         "runtime": {
           "cluster": "gke_acme_prod",
           "connected_cluster": "acme-prod",
@@ -471,6 +473,7 @@
         "image": "",
         "kind": "worker",
         "name": "worker",
+        "release_inputs": {},
         "runtime": {
           "cluster": "gke_acme_prod",
           "connected_cluster": "acme-prod",

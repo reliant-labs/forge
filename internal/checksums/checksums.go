@@ -68,6 +68,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // On-disk state files, project-relative.
@@ -597,7 +599,7 @@ func saveStateFile(root, relPath string, n int, v any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(full, append(data, '\n'), 0o644)
+	return atomicfile.WriteFile(full, append(data, '\n'), 0o644)
 }
 
 // Hash returns the sha256 hex digest of content.
@@ -774,7 +776,7 @@ func WriteGeneratedFileOutcome(root, relPath string, content []byte, cs *FileChe
 	// Capture the pre-run bytes BEFORE the first write so a failed run can
 	// be rolled back to a clean pre-regen tree (fr-40f7ec9bd9).
 	recordPreWrite(root, relPath)
-	if err := atomicWriteFile(fullPath, stamped, 0o644); err != nil {
+	if err := atomicfile.WriteFile(fullPath, stamped, 0o644); err != nil {
 		return WriteOutcome{}, err
 	}
 	MarkWrittenThisRun(relPath)
@@ -832,7 +834,7 @@ func writeUnstampable(root, relPath string, content []byte, cs *FileChecksums, f
 		return WriteOutcome{}, err
 	}
 	recordPreWrite(root, relPath)
-	if err := atomicWriteFile(fullPath, content, 0o644); err != nil {
+	if err := atomicfile.WriteFile(fullPath, content, 0o644); err != nil {
 		return WriteOutcome{}, err
 	}
 	if cs != nil {
@@ -850,46 +852,6 @@ func writeUnstampable(root, relPath string, content []byte, cs *FileChecksums, f
 // the tier they're emitting.
 func WriteGeneratedFileTier1(root, relPath string, content []byte, cs *FileChecksums, force bool) (bool, error) {
 	return WriteGeneratedFile(root, relPath, content, cs, force)
-}
-
-// atomicWriteFile writes content to path via a same-directory temp file
-// followed by an atomic rename, so a reader (or a resumed run) never sees a
-// half-written file. A plain os.WriteFile truncates-then-writes: if the
-// process dies mid-write — the daemon disconnecting mid-`forge generate` —
-// the target is left partial. That is exactly how a generated JSON artifact
-// ended up truncated, and unparseable to every reader of it
-// (fr F9). rename(2) within one directory is atomic on every filesystem forge
-// targets, so the file is either the old bytes or the complete new bytes,
-// never a prefix. The temp file is cleaned up on any error before the rename.
-func atomicWriteFile(path string, content []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".forge-tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpName)
-		}
-	}()
-	if _, err := tmp.Write(content); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return err
-	}
-	cleanup = false // renamed into place; nothing left to remove
-	return nil
 }
 
 // WriteScaffoldIfMissing writes a scaffold ("yours") file exactly ONCE,
@@ -922,7 +884,7 @@ func WriteScaffoldIfMissing(root, relPath string, content []byte) (bool, error) 
 		return false, err
 	}
 	recordPreWrite(root, relPath)
-	if err := atomicWriteFile(fullPath, content, 0o644); err != nil {
+	if err := atomicfile.WriteFile(fullPath, content, 0o644); err != nil {
 		return false, err
 	}
 	RecordScaffold(root, relPath)
@@ -1128,7 +1090,7 @@ func RestampWritten(root string, cs *FileChecksums) {
 		if !ok || bytes.Equal(restamped, content) {
 			continue
 		}
-		_ = os.WriteFile(full, restamped, 0o644)
+		_ = atomicfile.WriteFile(full, restamped, 0o644)
 	}
 }
 
@@ -1152,7 +1114,7 @@ func (cs *FileChecksums) DisownPaths(root string, relPaths []string, reason stri
 			return err
 		}
 		if stripped := StripMarker(content); len(stripped) != len(content) {
-			if werr := os.WriteFile(full, stripped, 0o644); werr != nil {
+			if werr := atomicfile.WriteFile(full, stripped, 0o644); werr != nil {
 				return werr
 			}
 		}

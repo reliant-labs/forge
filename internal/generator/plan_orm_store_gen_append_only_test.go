@@ -39,7 +39,7 @@ func appendOnlyStoreEntities() []config.PlanEntity {
 func appendOnlyStoreSource(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", appendOnlyStoreEntities(), nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, appendOnlyStoreEntities(), nil); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(root, "internal", "db", storeGenFile))
@@ -135,8 +135,8 @@ func TestStoreInterfaces_MutableEntityKeepsItsMutators(t *testing.T) {
 	body := storeInterfaceBody(t, src, "InvoiceStore")
 
 	for _, want := range []string{
-		"UpdateInvoice(ctx context.Context, msg *Invoice) error",
-		"UpdateInvoiceMasked(ctx context.Context, msg *Invoice, fields []string) error",
+		"UpdateInvoice(ctx context.Context, msg *Invoice, opts ...crud.UpdateOption) error",
+		"UpdateInvoiceMasked(ctx context.Context, msg *Invoice, fields []string, opts ...crud.UpdateOption) error",
 		"DeleteInvoice(ctx context.Context, id string) error",
 	} {
 		if !strings.Contains(body, want) {
@@ -153,7 +153,7 @@ func TestStoreInterfaces_MutableEntityKeepsItsMutators(t *testing.T) {
 func appendOnlyORMSource(t *testing.T, snake string) string {
 	t.Helper()
 	root := t.TempDir()
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", appendOnlyStoreEntities(), nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, appendOnlyStoreEntities(), nil); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(root, "internal", "db", snake+"_orm_gen.go"))
@@ -208,7 +208,7 @@ func TestPlanORM_MutableEntityKeepsItsPackageLevelMutators(t *testing.T) {
 
 	for _, want := range []string{
 		"func UpdateInvoice(ctx context.Context, db orm.Context, msg *Invoice, opts ...crud.UpdateOption) error",
-		"func UpdateInvoiceMasked(ctx context.Context, db orm.Context, msg *Invoice, fields []string) error",
+		"func UpdateInvoiceMasked(ctx context.Context, db orm.Context, msg *Invoice, fields []string, opts ...crud.UpdateOption) error",
 		"func DeleteInvoice(ctx context.Context, db orm.Context, id string) error",
 	} {
 		if !strings.Contains(src, want) {
@@ -222,7 +222,7 @@ func TestPlanORM_MutableEntityKeepsItsPackageLevelMutators(t *testing.T) {
 // reader to look for a symbol forge deliberately refuses to emit.
 func TestPlanORM_AppendOnlyRepoExtSeamDoesNotAdvertiseMutators(t *testing.T) {
 	root := t.TempDir()
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", appendOnlyStoreEntities(), nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, appendOnlyStoreEntities(), nil); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(root, "internal", "db", "payment_repo_ext.go"))

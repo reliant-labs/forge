@@ -11,6 +11,8 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/webruntimepeers"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // The vitest `resolve.dedupe` reconcile, for projects that predate it.
@@ -151,5 +153,5 @@ func addDedupeToConfig(path string) bool {
 		mode = info.Mode().Perm()
 	}
 	checksums.RecordPreWriteAbs(path) // journaled: a failed run restores it
-	return os.WriteFile(path, out.Bytes(), mode) == nil
+	return atomicfile.WriteFile(path, out.Bytes(), mode) == nil
 }

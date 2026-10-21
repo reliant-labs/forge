@@ -20,7 +20,7 @@ var envExempt = map[string]string{
 	// so it can fetch modules a fresh checkout has not downloaded, and
 	// honours the caller's GOFLAGS inside one. It is a checker, not a
 	// generator: nothing it writes is diffed against a CI regenerate.
-	"internal/cli/lint/contract_inprocess.go:runContractAnalysisInProcess": "lint's loader sets its own -mod policy",
+	"internal/cli/lint/contract_inprocess.go:loadPackagesForAnalysis": "lint's loader (contract and slow-tests lanes) sets its own -mod policy",
 	// The guard recognises the qualified goexec.Env; inside package goexec the
 	// same call is spelled Env(), and a nil env defaults to it.
 	"internal/goexec/pkgpatterns.go:ExcludeNodeModules": "defaults to Env() (unqualified inside goexec); callers pass their own",
@@ -76,7 +76,7 @@ func TestGoToolchainCallsUseEnv(t *testing.T) {
 			if !ok || fn.Body == nil {
 				continue
 			}
-			starts, usesEnv, configless := scanToolchainUse(fn.Body)
+			starts, usesEnv, configless := scanToolchainUse(fn.Body, f.Name.Name == "goexec")
 			for _, pos := range configless {
 				p := fset.Position(pos)
 				offenders = append(offenders, rel+":"+strconv.Itoa(p.Line)+" in "+fn.Name.Name+
@@ -124,7 +124,7 @@ func TestGoToolchainCallsUseEnv(t *testing.T) {
 }
 
 // scanToolchainUse reports where body starts the go toolchain and whether it
-// calls goexec.Env anywhere (closures included — a command built in one
+// calls goexec.Env (or CheckEnv, which starts from it) anywhere (closures included — a command built in one
 // often gets its Env in the enclosing function).
 //
 // configless are controller-tools loads made through the convenience forms
@@ -133,16 +133,20 @@ func TestGoToolchainCallsUseEnv(t *testing.T) {
 // process environment and no call site can scrub it. They were found the
 // hard way: an end-to-end run of `forge generate` on control-plane under
 // GOFLAGS=-mod=mod showed the CRD and deepcopy loads still receiving it.
-func scanToolchainUse(body *ast.BlockStmt) (starts []token.Pos, usesEnv bool, configless []token.Pos) {
+func scanToolchainUse(body *ast.BlockStmt, inGoexec bool) (starts []token.Pos, usesEnv bool, configless []token.Pos) {
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.CallExpr:
 			pkg, name := selectorOf(n.Fun)
+			// Inside goexec itself Env is called unqualified.
+			if id, ok := n.Fun.(*ast.Ident); ok && inGoexec {
+				pkg, name = "goexec", id.Name
+			}
 			if sel, ok := n.Fun.(*ast.SelectorExpr); ok && (sel.Sel.Name == "ForRoots" || sel.Sel.Name == "LoadRoots") {
 				configless = append(configless, n.Pos())
 			}
 			switch {
-			case pkg == "goexec" && name == "Env":
+			case pkg == "goexec" && (name == "Env" || name == "CheckEnv"):
 				usesEnv = true
 			case pkg == "exec" && (name == "Command" || name == "CommandContext"):
 				argIdx := 0

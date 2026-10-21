@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
@@ -188,17 +189,19 @@ func writePreflightHeaders(w http.ResponseWriter, allowHeaders string) {
 }
 
 // DefaultCORSAllowHeaders are the request headers every forge server admits
-// cross-origin: Connect's protocol headers, the bearer token, and the trace
-// context and request id the generated clients attach.
+// cross-origin: Connect's protocol headers, the bearer token, the trace
+// context and request id the generated clients attach, and Forge-Via, which
+// names the client to the activity stream (forge/pkg/activity.ViaHeader).
 var DefaultCORSAllowHeaders = []string{
 	"Content-Type", "Connect-Protocol-Version", "Connect-Timeout-Ms",
-	"Authorization", "Traceparent", "Tracestate", "X-Request-Id",
+	"Authorization", "Traceparent", "Tracestate", "X-Request-Id", "Forge-Via",
 }
 
 // DefaultCORSExposeHeaders are the response headers every forge server lets a
-// cross-origin client read: Connect's protocol version and the forge
-// error-reason header the generated frontend runtime keys typed errors on.
-var DefaultCORSExposeHeaders = []string{"Connect-Protocol-Version", svcerr.ReasonHeader}
+// cross-origin client read: Connect's protocol version, the forge error-reason
+// header the generated frontend runtime keys typed errors on, and traceresponse,
+// which names the server span the runtime stamps on errors and reports.
+var DefaultCORSExposeHeaders = []string{"Connect-Protocol-Version", svcerr.ReasonHeader, observe.TraceResponseHeader}
 
 // CORSOption extends a CORS policy beyond the defaults.
 //

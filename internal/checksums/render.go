@@ -23,6 +23,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Side-render directory roots, project-relative. Exposed as constants
@@ -54,7 +56,7 @@ func WriteSideRenderNoBase(root, relPath string, content []byte) error {
 	if err := os.MkdirAll(filepath.Dir(renderPath), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(renderPath, content, 0o644)
+	return atomicfile.WriteFile(renderPath, content, 0o644)
 }
 
 // CleanSideRenders removes both side-render files for relPath. Called

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/migrationver"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 var migrationNameSanitizer = regexp.MustCompile(`[^a-z0-9_]+`)
@@ -92,7 +94,7 @@ func writeNewFile(path, contents string) error {
 		return fmt.Errorf("failed to stat %s: %w", path, err)
 	}
 
-	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+	if err := atomicfile.WriteFile(path, []byte(contents), 0o644); err != nil {
 		return fmt.Errorf("failed to write %s: %w", path, err)
 	}
 	return nil

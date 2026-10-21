@@ -8,7 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"time"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 {{- if .HasConfig}}
 
 	"{{.Module}}/pkg/config"
@@ -48,9 +49,8 @@ func New(deps Deps) (Service, error) {
 	httpClient := deps.HTTPClient
 	if httpClient == nil {
 		// Defaulted so a minimal wiring (logger + config only) still works
-		// in dev/tests. Production wiring passes infra.DefaultClient()
-		// instead — same timeout, plus the instrumented transport.
-		httpClient = &http.Client{Timeout: 30 * time.Second}
+		// in dev/tests — the same traced client production wiring passes.
+		httpClient = observe.NewHTTPClient(observe.HTTPClientOptions{})
 	}
 	return &client{
 		deps: deps,

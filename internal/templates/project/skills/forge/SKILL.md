@@ -128,8 +128,9 @@ rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse);
 ```
 
 It is then custom everywhere (stub, test row, no shim, no page). Mark every
-CRUD-named rpc of a table and the table is no entity: no ORM struct in
-`internal/db`, no page, no seed root.
+CRUD-named rpc of a table and the table gets no CRUD wiring, page or seed root.
+It keeps its store: the ORM projects every applied table, rpcs or not; keep a
+table off it with `COMMENT ON TABLE t IS 'forge:no-entity'`.
 
 Every rpc is closed to unauthenticated callers unless it carries
 `auth_required: false` (`proto`, `auth`).
@@ -332,4 +333,4 @@ forge skill search migration  # find one by keyword
 - Uncertain proto/migration/annotation syntax: draft it, run `forge generate`, read the error, fix. Never reverse-engineer forge's `internal/**` source.
 - One service per proto package; its owned and generated files co-locate in one `internal/handlers/<svc>/`.
 - Use `task test` (what CI runs), not raw `go test`; iterate on `task test:short -- ./internal/<pkg>/...`.
-- Gate with `forge lint`, and never pipe it through `head`: the verdict is the LAST line. `forge lint --quiet` prints only what failed plus the verdict. `forge lint --scope internal/handlers/<svc> --scope proto/services/<svc>` lints only your slice of a shared checkout — the whole-project lanes (frontend lint, component-drift, config-reach) are skipped and named, so run it unscoped before merging. Run one lane with its flag (`--read-only-fields`, `--computed-fields`, `--static-export`, `--conventions`, `--migration-safety`; `forge lint --help` lists them all), or name several (`--conventions --contract`) to run each under one verdict. An unwritten `forge:read-only` or `forge:computed` field fails lint, except while the service still holds forge's own unwired rpc stubs — then it warns `pending: implement <Rpc>`. A Next.js frontend that must be a static export (`output: static`, or bound to `forge.OnHosted`/`OnBucket`/`OnFirebase` in any env) fails `--static-export` on anything the export refuses — a `[id]` route, a server action, `cookies()`, next/image without `unoptimized` — each with its file:line and fix.
+- Gate with `forge lint`, and never pipe it through `head`: the verdict is the LAST line. `forge lint --quiet` prints only what failed plus the verdict. `forge lint --scope internal/handlers/<svc> --scope proto/services/<svc>` lints only your slice of a shared checkout — the whole-project lanes (frontend lint, graph, component-drift, config-reach) are skipped and named, so run it unscoped before merging. Run one lane with its flag (`--read-only-fields`, `--computed-fields`, `--static-export`, `--conventions`, `--migration-safety`; `forge lint --help` lists them all), or name several (`--conventions --contract`) to run each under one verdict. An unwritten `forge:read-only` or `forge:computed` field fails lint, except while the service still holds forge's own unwired rpc stubs — then it warns `pending: implement <Rpc>`. A Next.js frontend that must be a static export (`output: static`, or bound to `forge.OnHosted`/`OnBucket`/`OnFirebase` in any env) fails `--static-export` on anything the export refuses — a `[id]` route, a server action, `cookies()`, next/image without `unoptimized` — each with its file:line and fix.

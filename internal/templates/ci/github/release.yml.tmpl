@@ -73,9 +73,13 @@ jobs:
           version: 3.x
           repo-token: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
       - name: Lint
+        # Report-only because GitHub sets CI=true (forge lint writes nothing
+        # under CI and fails on any file a fixer would rewrite, printing the
+        # diff), so the release is cut from the commit that was reviewed, not
+        # from a checkout lint repaired on the way. No flag needed.
         run: |
           mkdir -p gates
-          forge lint --no-fix --gate-json gates/lint.json
+          forge lint --gate-json gates/lint.json
       - name: Test
         # Through the Taskfile, the one definition of the suite — never a
         # second spelling of `go test` that could drift from it. `-json` is

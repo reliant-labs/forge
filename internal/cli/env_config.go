@@ -32,6 +32,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -44,16 +45,46 @@ type envConfigWorkload struct {
 	Name string            `json:"name"`
 	Kind string            `json:"kind"` // service | job | frontend | operator | cronjob
 	Env  map[string]string `json:"env,omitempty"`
+	// MissingSecrets are the secrets this workload declares that the env's
+	// secret store cannot supply. Their variables are absent from Env. Only
+	// local (OnHost/OnCompose) workloads are resolved, so only they report.
+	MissingSecrets []envConfigMissingSecret `json:"missing_secrets,omitempty"`
+}
+
+// envConfigMissingSecret is one declared secret the store lacks: the
+// variable, and the Secret and key it is declared to come from. Never a value.
+type envConfigMissingSecret struct {
+	Name   string `json:"name"`
+	Secret string `json:"secret"`
+	Key    string `json:"key"`
 }
 
 // envConfigReport is the whole environment, ordered for stable output.
 type envConfigReport struct {
 	Env       string              `json:"env"`
 	Workloads []envConfigWorkload `json:"workloads"`
+	// SecretStore names where missing secrets would be set, when any are.
+	SecretStore string `json:"secret_store,omitempty"`
+}
+
+// missingSecrets is every workload's gap, deduplicated by variable name.
+func (r envConfigReport) missingSecrets() []envConfigMissingSecret {
+	seen := map[string]bool{}
+	var out []envConfigMissingSecret
+	for _, w := range r.Workloads {
+		for _, m := range w.MissingSecrets {
+			if !seen[m.Name] {
+				seen[m.Name] = true
+				out = append(out, m)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 func newEnvConfigCmd() *cobra.Command {
-	var jsonOut bool
+	var jsonOut, strict bool
 	var nameFilter string
 
 	cmd := &cobra.Command{
@@ -76,7 +107,13 @@ which variables a project uses, so pick the one you want:
   ` + Name() + ` env config dev --json | jq -r '.workloads[].env.DATABASE_URL // empty'
 
   # connect to whatever this project calls its database
-  psql "$(` + Name() + ` env config dev --json | jq -r '.workloads[].env.DATABASE_URL // empty' | head -1)"`,
+  psql "$(` + Name() + ` env config dev --json | jq -r '.workloads[].env.DATABASE_URL // empty' | head -1)"
+
+A declared secret the env's secret store cannot supply is reported, not
+fatal: its variable is left out, it is listed on stderr (and under
+"missing_secrets" in --json), and the command still exits 0. Running a process
+without it is the error, so ` + Name() + ` env exec and env up refuse. Pass --strict to
+fail here too.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			envName := args[0]
 			projectDir := projectDirForKCL()
@@ -85,10 +122,15 @@ which variables a project uses, so pick the one you want:
 			if err != nil {
 				return err
 			}
-			report, err := resolvedEnvConfigReport(cmd.Context(), projectDir, envName, entities, nameFilter)
+			mode := secretsReported
+			if strict {
+				mode = secretsRequired
+			}
+			report, err := resolvedEnvConfigReport(cmd.Context(), projectDir, envName, entities, nameFilter, mode)
 			if err != nil {
 				return err
 			}
+			reportMissingSecrets(cmd.ErrOrStderr(), envName, report)
 
 			if jsonOut {
 				enc := json.NewEncoder(cmd.OutOrStdout())
@@ -101,7 +143,30 @@ which variables a project uses, so pick the one you want:
 
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON")
 	cmd.Flags().StringVar(&nameFilter, "workload", "", "Only this workload (service, job, frontend, operator or cronjob)")
+	cmd.Flags().BoolVar(&strict, "strict", false, "Fail (exit 1) when a declared secret is missing from the secret store, as env exec does, instead of reporting it")
 	return cmd
+}
+
+// reportMissingSecrets warns, on stderr, about declared secrets the store
+// lacks. stderr so a --json document on stdout stays exactly the document.
+func reportMissingSecrets(w io.Writer, env string, report envConfigReport) {
+	missing := report.missingSecrets()
+	if len(missing) == 0 {
+		return
+	}
+	store := report.SecretStore
+	if store == "" {
+		store = "the secret store"
+	}
+	fmt.Fprintf(w, "warning: %d declared secret(s) are missing from %s and are left out of the output below:\n", len(missing), store)
+	width := 0
+	for _, m := range missing {
+		width = max(width, len(m.Name))
+	}
+	for _, m := range missing {
+		fmt.Fprintf(w, "    %-*s   (Secret %s/%s)\n", width, m.Name, m.Secret, m.Key)
+	}
+	fmt.Fprintf(w, "  fix: %s secret set --env %s <KEY>. %s env exec and env up refuse until they are set.\n", Name(), env, Name())
 }
 
 // collectEnvConfigWorkloads flattens every workload kind into one ordered

@@ -71,6 +71,7 @@
     "network_policy": null,
     "overrides": {},
     "project": "acme",
+    "release_manifest_consumers": [],
     "rendered_secrets": [],
     "required_dns": [],
     "required_secrets": [],
@@ -85,6 +86,7 @@
         "image": "",
         "kind": "service",
         "name": "api",
+        "release_inputs": {},
         "runtime": {
           "platform": "amd64",
           "type": "hosted"

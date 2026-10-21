@@ -416,10 +416,12 @@ func snapshotPublishFrontends(ctx context.Context, s release.Snapshot, dryRun bo
 			case FrontendRuntimeFirebase:
 				fb := frontendToFirebase(f)
 				fb.RuntimeConfigJS = js
+				fb.SourcemapPublisher = sourcemapPublisherForEnv(ctx, env)
 				return (deploytarget.FirebaseProvider{ProjectDir: f.Path}).Deploy(ctx, deploytarget.ServiceGroup{Env: env, Frontends: []deploytarget.FirebaseFrontend{fb}})
 			case FrontendRuntimeBucket:
 				ss := frontendToStaticSite(f)
 				ss.RuntimeConfigJS = js
+				ss.SourcemapPublisher = sourcemapPublisherForEnv(ctx, env)
 				return (deploytarget.StaticSiteProvider{ProjectDir: f.Path}).Deploy(ctx, deploytarget.ServiceGroup{Env: env, StaticSites: []deploytarget.StaticSiteFrontend{ss}})
 			}
 			return fmt.Errorf("unsupported frozen frontend runtime")
@@ -463,6 +465,7 @@ func snapshotPublishFrontendsWith(ctx context.Context, s release.Snapshot, dryRu
 		f.Path = filepath.Join(res.Dir, filepath.FromSlash(entry.Source.Subdir), filepath.FromSlash(entry.CodeSubdir))
 		f.SourceCommit = entry.Source.Commit
 		f.Release = entry.Release
+		f.Project = s.Project
 		if err := a.preflight(ctx, f); err != nil {
 			return err
 		}

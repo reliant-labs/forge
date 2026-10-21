@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // The forge KCL module used to ship `forge.registry(default)` — a lambda that
@@ -59,7 +61,7 @@ func MigrateRegistryHelper(projectDir string) ([]string, error) {
 		// Journaled, so a `forge generate` that fails later rolls the edit
 		// back instead of reporting an unchanged tree (#271).
 		checksums.RecordPreWriteAbs(path)
-		if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		if err := atomicfile.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", path, err)
 		}
 		changed = append(changed, projectRel(projectDir, path))

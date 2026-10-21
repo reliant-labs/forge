@@ -1,10 +1,13 @@
 package codegen
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jinzhu/inflection"
@@ -12,6 +15,7 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/shadowdb"
 	"github.com/reliant-labs/forge/pkg/schemadef"
+	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
 // ownerMarkerTokenRE matches a `forge:owner` declaration as a WHOLE
@@ -57,6 +61,9 @@ func BuildSchemaEntities(projectDir string, services []ServiceDef) ([]EntityDef,
 	if len(tables) == 0 {
 		return nil, nil
 	}
+	if err := schemadef.CheckMarkers(tables); err != nil {
+		return nil, err
+	}
 	return entitiesForTables(tables, services), nil
 }
 
@@ -64,18 +71,15 @@ func BuildSchemaEntities(projectDir string, services []ServiceDef) ([]EntityDef,
 // itself, with the schema already introspected. Split out so the join's
 // rules can be tested without a shadow database.
 func entitiesForTables(tables []schemadef.Table, services []ServiceDef) []EntityDef {
-	tableByName := make(map[string]schemadef.Table, len(tables))
-	for _, t := range tables {
-		tableByName[t.Name] = t
-	}
+	idx := indexEntityTables(tables)
 
 	seen := map[string]bool{}
 	var entities []EntityDef
 	for _, svc := range services {
 		for _, m := range svc.Methods {
-			// A `// forge:custom` rpc claims no entity: when every
-			// CRUD-named rpc of a table carries it, the table stays plain
-			// schema — no ORM struct, page or seed root.
+			// A `// forge:custom` rpc claims no CRUD entity: when every
+			// CRUD-named rpc of a table carries it, the table gets no CRUD
+			// wiring, page or seed root (its store is BuildORMEntities').
 			op, name := CRUDShape(m)
 			if op == "" {
 				continue
@@ -87,7 +91,7 @@ func entitiesForTables(tables []schemadef.Table, services []ServiceDef) []Entity
 			if seen[key] {
 				continue
 			}
-			table, ok := tableByName[naming.Pluralize(naming.ToSnakeCase(name))]
+			table, ok := idx.lookup(name)
 			if !ok {
 				continue
 			}
@@ -122,6 +126,310 @@ func entitiesForTables(tables []schemadef.Table, services []ServiceDef) []Entity
 	}
 	sort.Slice(entities, func(i, j int) bool { return entities[i].Name < entities[j].Name })
 	return entities
+}
+
+// BuildORMEntities is the DATA LAYER's entity set: every applied BASE
+// TABLE, projected whether or not a service declares CRUD rpcs for it.
+//
+// It is deliberately wider than BuildSchemaEntities. That join decides
+// what gets CRUD wiring, pages and seed roots — wire-facing projections
+// that need a wire message. The store needs nothing from the wire: its
+// struct is the table's columns, its delegates are keyed by the table's
+// primary key. Gating it on CRUD rpcs made a project whose rpcs are all
+// custom (`// forge:custom`), or whose tables have no rpc at all, get no
+// data layer whatsoever — the schema was the truth and nothing projected
+// it.
+//
+// A table opts out with `COMMENT ON TABLE t IS 'forge:no-entity'`
+// (schemadef.TableMarkerNoEntity); the project opts out with
+// `//forge:no-orm`.
+func BuildORMEntities(projectDir string, services []ServiceDef) ([]EntityDef, error) {
+	tables, err := shadowdb.Tables(projectDir, filepath.Join(projectDir, "db", "migrations"))
+	if err != nil {
+		return nil, err
+	}
+	if len(tables) == 0 {
+		return nil, nil
+	}
+	views, err := shadowdb.Views(projectDir, filepath.Join(projectDir, "db", "migrations"))
+	if err != nil {
+		return nil, err
+	}
+	if err := schemadef.CheckMarkers(append(tables, views...)); err != nil {
+		return nil, err
+	}
+	entities, notes, err := ormEntitiesForTables(append(tables, views...), services)
+	for _, n := range notes {
+		fmt.Println("ℹ️  " + n)
+	}
+	return entities, err
+}
+
+// ormEntitiesForTables is the pure half of BuildORMEntities. A table the
+// CRUD join claims keeps that entity verbatim (its name is the wire
+// message's, and its wire fields carry `forge:secret`), so the ORM and the
+// CRUD wiring that compiles against it agree on every name. Every other
+// table is named from the table itself (TableEntityName).
+//
+// notes are one-line reasons for tables left out of the projection; err
+// names two tables that would project to the same Go name, which cannot
+// both be declared in one package.
+func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef) (entities []EntityDef, notes []string, err error) {
+	var baseTables []schemadef.Table
+	for _, t := range tables {
+		if !t.IsView { // a view is never a CRUD entity
+			baseTables = append(baseTables, t)
+		}
+	}
+	byTable := map[string]EntityDef{}
+	for _, e := range entitiesForTables(baseTables, services) {
+		byTable[e.TableName] = e
+	}
+
+	owner := map[string]string{} // entity name (lowercased) → table
+	sorted := append([]schemadef.Table(nil), tables...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	for _, t := range sorted {
+		if t.NoEntity() {
+			continue
+		}
+		if t.IsView {
+			e, ok := viewEntityDef(t)
+			if !ok {
+				continue
+			}
+			key := strings.ToLower(e.Name)
+			if prev, dup := owner[key]; dup {
+				return nil, notes, fmt.Errorf("%s and the view %s both project to the entity %s, and one package cannot declare it twice: rename one",
+					prev, t.Name, e.Name)
+			}
+			owner[key] = t.Name
+			entities = append(entities, e)
+			continue
+		}
+		e, joined := byTable[t.Name]
+		if !joined {
+			// A composite key projects too: its store addresses a row by
+			// the whole key (Get<E>ByPK / Delete<E>ByPK / Upsert<E>). Only
+			// the CRUD join, whose rpcs take ONE id, leaves it out.
+			if len(t.PKCols) == 0 {
+				notes = append(notes, fmt.Sprintf("%s has no primary key — no entity is projected; query it via db.Bun().", t.Name))
+				continue
+			}
+			e = buildEntityDef(TableEntityName(t), t, ServiceDef{})
+		}
+		key := strings.ToLower(e.Name)
+		if prev, dup := owner[key]; dup {
+			return nil, notes, fmt.Errorf("tables %s and %s both project to the entity %s, and one package cannot declare it twice: "+
+				"opt one out with `COMMENT ON TABLE %s IS '%s'`, or rename it",
+				prev, t.Name, e.Name, t.Name, schemadef.TableMarkerNoEntity)
+		}
+		owner[key] = t.Name
+		entities = append(entities, e)
+	}
+	sort.Slice(entities, func(i, j int) bool { return entities[i].Name < entities[j].Name })
+	return entities, notes, nil
+}
+
+// viewEntityDef projects a VIEW opted in with `forge:entity` as a read-only
+// entity, ok=false for one that did not opt in. Its key is the column
+// `forge:entity key=<column>` names, else `id` when the view has one, else
+// none (List/Count only). The catalog cannot say whether a view column is
+// nullable, so every column but the key is — its Go field a pointer.
+func viewEntityDef(v schemadef.Table) (EntityDef, bool) {
+	declared, key := v.DeclaresEntity()
+	if !declared {
+		return EntityDef{}, false
+	}
+	if key == "" {
+		for _, c := range v.Columns {
+			if c.Name == "id" {
+				key = "id"
+			}
+		}
+	}
+	for i := range v.Columns {
+		if v.Columns[i].Name == key {
+			v.Columns[i].IsPK, v.Columns[i].NotNull = true, true
+			v.PKCols = []string{key}
+		}
+	}
+	e := buildEntityDef(TableEntityName(v), v, ServiceDef{})
+	e.ReadOnly = true
+	// A view is a derived read: no managed timestamps to stamp, no soft
+	// delete to scope by (a deleted_at the view exposes is just a column).
+	e.SoftDelete, e.Timestamps, e.AppendOnly = false, false, false
+	e.Constraints = nil
+	if len(v.PKCols) == 0 {
+		e.PkField, e.PkGoType = "", ""
+	}
+	return e, true
+}
+
+// TableEntityName is the Go name of the entity a table projects to when no
+// CRUD rpc names it: the singular of the table, camel-cased the way
+// protoc-gen-go camel-cases a message name (`message_content_blocks` →
+// MessageContentBlock, `api_keys` → ApiKey, `provider_backoff` →
+// ProviderBackoff). Spelled like a wire message on purpose: the day a
+// service adds `Get<E>` over the table, the CRUD join names the entity
+// after that message, and the two spellings must already agree.
+//
+// A `forge:entity-name=<Name>` declaration in the table's COMMENT wins
+// (schemadef.TableMarkerEntityName): it is how a table whose name derives
+// to the wrong thing says what it holds.
+func TableEntityName(t schemadef.Table) string {
+	if declared := t.DeclaredEntityName(); declared != "" {
+		return declared
+	}
+	return naming.GoCamelCase(inflection.Singular(t.Name))
+}
+
+// entityTables resolves a CRUD rpc's entity name to the table behind it.
+type entityTables struct {
+	byTable map[string]schemadef.Table
+	byName  map[string]schemadef.Table // lower-cased TableEntityName → table
+}
+
+// indexEntityTables indexes every table that can be an entity — all but
+// `forge:no-entity` ones, which are plain schema on both sides: no store,
+// and no CRUD wiring over a store that does not exist.
+func indexEntityTables(tables []schemadef.Table) entityTables {
+	idx := entityTables{byTable: map[string]schemadef.Table{}, byName: map[string]schemadef.Table{}}
+	sorted := append([]schemadef.Table(nil), tables...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	for _, t := range sorted {
+		if t.NoEntity() {
+			continue
+		}
+		idx.byTable[t.Name] = t
+		key := strings.ToLower(TableEntityName(t))
+		if _, dup := idx.byName[key]; !dup || t.DeclaredEntityName() != "" {
+			idx.byName[key] = t
+		}
+	}
+	return idx
+}
+
+// lookup finds the table an entity name means. The table's own entity name
+// decides first — a `forge:entity-name` declaration, else the singular of
+// the table, which is what matches a singular-named table such as
+// `daemon_attachment` to DaemonAttachment. The conventional plural and the
+// literal singular of the name follow, for an entity whose spelling differs
+// from its table's derivation only by initialism case (`APIKey` over
+// `api_keys`).
+func (idx entityTables) lookup(entity string) (schemadef.Table, bool) {
+	if t, ok := idx.byName[strings.ToLower(entity)]; ok {
+		return t, true
+	}
+	for _, cand := range EntityTableCandidates(entity) {
+		if t, ok := idx.byTable[cand]; ok {
+			return t, true
+		}
+	}
+	return schemadef.Table{}, false
+}
+
+// EntityTableCandidates are the table names an entity name maps to by
+// convention, in order: the plural (`Bookmark` → `bookmarks`, what forge
+// births) and the singular (`daemon_attachment`). A consumer that holds
+// table names but not the catalog — the seed scope, the ownership audit —
+// tries these; the join itself also honors `forge:entity-name`.
+func EntityTableCandidates(entity string) []string {
+	snake := naming.ToSnakeCase(entity)
+	plural := naming.Pluralize(snake)
+	if plural == snake {
+		return []string{snake}
+	}
+	return []string{plural, snake}
+}
+
+// UnmatchedCRUDRPC is a CRUD-named rpc that names a wire message but no
+// table: forge would stub it, and nothing in the tree would say why.
+type UnmatchedCRUDRPC struct {
+	Service, RPC, Entity string
+	GoName               string   // the rpc's *Service method name
+	Looked               []string // the table names it looked for
+}
+
+// UnmatchedCRUDRPCs lists every unary, unmarked CRUD-named rpc on a managed
+// service whose entity has a wire message but matches no table.
+//
+// It used to be silence: the rpc fell through to a pb-through stub and
+// served Unimplemented, which is how six of reliant's `Get<E>` rpcs over
+// singular-named tables (`daemon_attachment`, `provider_backoff`) became
+// stubs nobody asked for. An rpc whose entity has no wire message is not
+// listed (the name alone is no evidence of an entity — see
+// declaresWireMessage), nor is one on a descriptor with no message
+// inventory, which cannot tell.
+func UnmatchedCRUDRPCs(tables []schemadef.Table, services []ServiceDef) []UnmatchedCRUDRPC {
+	idx := indexEntityTables(tables)
+	var out []UnmatchedCRUDRPC
+	for _, svc := range services {
+		if svc.Unmanaged || (len(svc.SchemaFiles) == 0 && len(svc.Schemas) == 0 && len(svc.Messages) == 0) {
+			continue
+		}
+		for _, m := range svc.Methods {
+			op, name := CRUDShape(m)
+			if op == "" {
+				continue
+			}
+			if op == "list" {
+				name = inflection.Singular(name)
+			}
+			if _, ok := idx.lookup(name); ok || !declaresWireMessage(svc, name) {
+				continue
+			}
+			out = append(out, UnmatchedCRUDRPC{Service: svc.Name, RPC: m.Name, Entity: name, GoName: m.GoName(), Looked: EntityTableCandidates(name)})
+		}
+	}
+	return out
+}
+
+// WithoutHandImplemented drops the rpcs projectDir's handler packages
+// implement by hand: a CRUD-named rpc over no table that the author wrote
+// (a computed ListArchivedChats, a GetRun over a workflow engine) is
+// custom in fact, and nothing about it is silent. What stays is an rpc
+// with no method at all, or only forge's `forge:gen unwired-stub` — the
+// one that would serve Unimplemented with nothing saying why.
+func WithoutHandImplemented(projectDir string, unmatched []UnmatchedCRUDRPC) []UnmatchedCRUDRPC {
+	type scan struct{ existing, stubs map[string]bool }
+	dirs := map[string]scan{}
+	var out []UnmatchedCRUDRPC
+	for _, u := range unmatched {
+		sc, ok := dirs[u.Service]
+		if !ok {
+			if res, err := ResolveServiceComponent(projectDir, u.Service); err == nil {
+				if existing, err := ScanExistingMethods(res.Dir, false); err == nil {
+					for name := range ScanHandlersCrudMethods(res.Dir) {
+						existing[name] = true
+					}
+					sc = scan{existing: existing, stubs: ScanUnwiredStubMethods(res.Dir)}
+				}
+			}
+			dirs[u.Service] = sc
+		}
+		if sc.existing[u.GoName] && !sc.stubs[u.GoName] {
+			continue
+		}
+		out = append(out, u)
+	}
+	return out
+}
+
+// UnmatchedCRUDRPCsError renders UnmatchedCRUDRPCs as one refusal, nil for
+// none.
+func UnmatchedCRUDRPCsError(unmatched []UnmatchedCRUDRPC) error {
+	if len(unmatched) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString("CRUD-named rpcs whose entity has a wire message but no table, and no implementation but forge's Unimplemented stub — nothing would say why:\n")
+	for _, u := range unmatched {
+		fmt.Fprintf(&b, "  - %s.%s: entity %s, no table %s\n", u.Service, u.RPC, u.Entity, strings.Join(u.Looked, " or "))
+	}
+	b.WriteString("Resolve each one: write the table's migration (or birth it with `forge scaffold`); if the table exists under another name, " +
+		"declare what it holds with `COMMENT ON TABLE <table> IS 'forge:entity-name=<Entity>'`; or, if the rpc is not CRUD, put `// forge:custom` above it.")
+	return errors.New(b.String())
 }
 
 // FrontendEntities is the subset of entities the frontend projections (CRUD
@@ -229,6 +537,8 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 	}
 
 	// Columns: the applied schema, verbatim.
+	pools := seedplan.PoolsFromTables([]schemadef.Table{table})[table.Name]
+	bounds := seedplan.BoundsFromTables([]schemadef.Table{table})[table.Name]
 	for _, c := range table.Columns {
 		fillStrategy, _ := c.FillStrategy()
 		e.Columns = append(e.Columns, EntityColumn{
@@ -240,24 +550,32 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 			DeclType:     c.DeclType,
 			Default:      c.Default,
 			IsGenerated:  c.IsGenerated,
+			IsIdentity:   c.IsIdentity,
 			Immutable:    c.HasMarker(schemadef.ColumnMarkerImmutable),
 			Version:      c.HasMarker(schemadef.ColumnMarkerVersion),
 			FillStrategy: fillStrategy,
 			Owner:        declaresOwnerMarker(c.Comment),
+			GoType:       c.GoTypeOverride(),
+			ZeroRejected: checkRejectsZero(c, pools[c.Name], bounds[c.Name]),
 		})
 	}
 
-	// PK: single-column keys only. BuildSchemaEntities filters out
-	// composite-PK tables before calling this function (see there), so
-	// table.PKCols is always length 0 or 1 here. The "id" fallback below
-	// covers only the length-0 case — a table with no declared PK at all.
+	// PK: the CRUD projection keys on ONE column. BuildSchemaEntities
+	// filters composite-PK tables out before calling this function; the
+	// ORM set keeps them (their store takes the whole key, read off the
+	// columns' IsPK), and for those PkField stays empty rather than naming
+	// one key column as if it were the key. The "id" fallback covers only a
+	// table with no declared PK at all.
 	e.PkField = "id"
 	e.PkGoType = "string"
+	if len(table.PKCols) > 1 {
+		e.PkField, e.PkGoType = "", ""
+	}
 	if len(table.PKCols) == 1 {
 		e.PkField = table.PKCols[0]
 		for _, c := range table.Columns {
 			if c.Name == e.PkField {
-				e.PkGoType = canonicalGoTypeMust(string(c.Type), c.IsArray)
+				e.PkGoType = ColumnGoType(string(c.Type), c.DeclType, c.IsArray)
 			}
 		}
 	}
@@ -271,6 +589,32 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 	// the secret value. Drop any secret field's column from SearchColumns.
 	e.SearchColumns = dropSecretSearchColumns(e.SearchColumns, e.Fields)
 	return e
+}
+
+// checkRejectsZero reports whether the table's single-column CHECKs keep c
+// from ever holding its Go zero: an enum vocabulary (`col IN (...)`) that
+// lacks the empty string or 0, or a numeric bound that excludes 0. Only scalar columns
+// are judged; anything the CHECK parsers do not read answers false — the
+// zero is then presumed storable, which is the safe side (a pointer field).
+func checkRejectsZero(c schemadef.Column, pool []string, bound seedplan.NumBound) bool {
+	if c.IsArray {
+		return false
+	}
+	switch c.Type {
+	case schemadef.TypeString:
+		return len(pool) > 0 && !slices.Contains(pool, "")
+	case schemadef.TypeInt, schemadef.TypeFloat:
+		if len(pool) > 0 {
+			for _, v := range pool {
+				if f, err := strconv.ParseFloat(v, 64); err != nil || f == 0 {
+					return false
+				}
+			}
+			return true
+		}
+		return (bound.Min != nil && *bound.Min > 0) || (bound.Max != nil && *bound.Max < 0)
+	}
+	return false
 }
 
 // dropSecretSearchColumns removes columns backed by a `// forge:secret` wire
@@ -333,12 +677,20 @@ func CanonicalGoTypeOK(canonical string, isArray bool) (goType string, ok bool) 
 	case "string":
 		base = "string"
 	case "json":
-		// A json column holds a document; the entity carries its text. A
-		// json ARRAY column (jsonb[]) is []string for the same reason —
-		// each element is one document.
-		base = "string"
+		// A json column holds a document: json.RawMessage, the bytes of
+		// one, which Bun binds and scans as JSON and encoding/json embeds
+		// verbatim — lossless, with no text round trip. A json ARRAY column
+		// (jsonb[]) stays []string: each element is one document's text.
+		if isArray {
+			return "[]string", true
+		}
+		return "json.RawMessage", true
 	case "int64":
 		base = "int64"
+	case "int32", "int16":
+		// The width-refined integers (GoIntType): `integer` / `smallint`
+		// columns, which hold no more than these.
+		base = canonical
 	case "float64":
 		base = "float64"
 	case "bool":
@@ -358,6 +710,35 @@ func CanonicalGoTypeOK(canonical string, isArray bool) (goType string, ok bool) 
 		return "[]" + base, true
 	}
 	return base, true
+}
+
+// GoIntType refines the canonical int64 of an integer column to the
+// narrowest Go type that holds every value of its declared width:
+// `integer`/`int4`/`serial` → int32, `smallint`/`int2`/`smallserial` →
+// int16, anything else (bigint) → int64. Lossless and idiomatic: a 32-bit
+// column read into int64 claims a range it can never return, and every
+// write needs a guard the column itself already enforces.
+func GoIntType(declType string) string {
+	d := strings.ToUpper(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(declType), "[]")))
+	switch d {
+	case "INTEGER", "INT", "INT4", "SERIAL", "SERIAL4":
+		return "int32"
+	case "SMALLINT", "INT2", "SMALLSERIAL", "SERIAL2":
+		return "int16"
+	}
+	return "int64"
+}
+
+// ColumnGoType is the Go type a column projects to on the entity struct
+// (the NOT NULL variant): CanonicalGoTypeOK of its canonical type, with an
+// integer narrowed to its declared width (GoIntType). It is the one
+// projection the ORM struct (via EntityDefToPlanEntity's plan type) and the
+// CRUD conversions read.
+func ColumnGoType(canonical, declType string, isArray bool) string {
+	if canonical == "int64" {
+		canonical = GoIntType(declType)
+	}
+	return canonicalGoTypeMust(canonical, isArray)
 }
 
 // canonicalGoTypeMust projects a column type that is known to be canonical

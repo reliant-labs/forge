@@ -201,6 +201,7 @@
     "network_policy": null,
     "overrides": {},
     "project": "acme",
+    "release_manifest_consumers": [],
     "rendered_secrets": [],
     "required_dns": [],
     "required_secrets": [],
@@ -217,15 +218,18 @@
           "flags": [],
           "goarch": null,
           "goos": null,
+          "inputs_file": null,
           "ldflags": [],
           "output_name": "acme",
           "tags": [],
-          "type": "go"
+          "type": "go",
+          "unit": null
         },
         "build_image": "acme",
         "image": "acme",
         "kind": "service",
         "name": "api",
+        "release_inputs": {},
         "runtime": {
           "air_config": ".air.toml",
           "delve_port": 2345,
@@ -284,15 +288,18 @@
           "flags": [],
           "goarch": null,
           "goos": null,
+          "inputs_file": null,
           "ldflags": [],
           "output_name": "acme",
           "tags": [],
-          "type": "go"
+          "type": "go",
+          "unit": null
         },
         "build_image": "acme",
         "image": "acme",
         "kind": "job",
         "name": "migrate",
+        "release_inputs": {},
         "runtime": {
           "air_config": null,
           "delve_port": 2345,
@@ -335,6 +342,7 @@
         "image": "",
         "kind": "service",
         "name": "nats",
+        "release_inputs": {},
         "runtime": {
           "env": {},
           "env_file": null,
@@ -362,15 +370,18 @@
           "flags": [],
           "goarch": null,
           "goos": null,
+          "inputs_file": null,
           "ldflags": [],
           "output_name": "acme",
           "tags": [],
-          "type": "go"
+          "type": "go",
+          "unit": null
         },
         "build_image": "localhost:5050/acme",
         "image": "localhost:5050/acme",
         "kind": "service",
         "name": "search",
+        "release_inputs": {},
         "runtime": {
           "cluster": "k3d-acme",
           "connected_cluster": null,
@@ -435,15 +446,18 @@
           "flags": [],
           "goarch": null,
           "goos": null,
+          "inputs_file": null,
           "ldflags": [],
           "output_name": "acme",
           "tags": [],
-          "type": "go"
+          "type": "go",
+          "unit": null
         },
         "build_image": "localhost:5050/acme",
         "image": "localhost:5050/acme",
         "kind": "worker",
         "name": "billing",
+        "release_inputs": {},
         "runtime": {
           "platform": "amd64",
           "type": "hosted"
@@ -488,15 +502,18 @@
           "flags": [],
           "goarch": null,
           "goos": null,
+          "inputs_file": null,
           "ldflags": [],
           "output_name": "acme-cli",
           "tags": [],
-          "type": "go"
+          "type": "go",
+          "unit": null
         },
         "build_image": "acme-cli",
         "image": "acme-cli",
         "kind": "tool",
         "name": "cli",
+        "release_inputs": {},
         "runtime": {
           "build_variants": [],
           "type": "build-only"

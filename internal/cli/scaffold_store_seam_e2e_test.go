@@ -112,12 +112,12 @@ message Widget {
 
 	compose := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "compose.go"))
 	for _, want := range []string{
-		"db.NewStore(infra.ORM).Widgets()",
-		"db.NewStore(infra.ORM)",
+		"db.NewStore(g.ORM()).Widgets()",
+		"db.NewStore(g.ORM())",
 		`"example.com/storeapp/internal/db"`,
 	} {
 		if !strings.Contains(compose, want) {
-			t.Errorf("compose.go must wire the store from the ORM Infra already owns, missing %q:\n%s", want, compose)
+			t.Errorf("compose.go must wire the store from the graph's ORM node, missing %q:\n%s", want, compose)
 		}
 	}
 

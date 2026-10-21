@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Two writer tiers, made legible.
@@ -49,7 +51,7 @@ func writeForgeOwned(root, relPath string, content []byte, cs *checksums.FileChe
 // dropped and later user edits remain invisible to forge.
 func writeUserScaffold(path string, content []byte) error {
 	checksums.RecordPreWriteAbs(path)
-	return os.WriteFile(path, canonicalizeUserGo(path, content), 0o644)
+	return atomicfile.WriteFile(path, canonicalizeUserGo(path, content), 0o644)
 }
 
 // canonicalizeUserGo runs a user-scaffold .go write through the same canonical
@@ -143,7 +145,7 @@ func writeUserScaffoldIfAbsent(path string, content []byte) (bool, error) {
 	// Journal the (absent) pre-run state so a failed pipeline run deletes
 	// this file along with everything else it wrote — see writeUserScaffold.
 	checksums.RecordPreWriteAbs(path)
-	if err := os.WriteFile(path, canonicalizeUserGo(path, content), 0o644); err != nil {
+	if err := atomicfile.WriteFile(path, canonicalizeUserGo(path, content), 0o644); err != nil {
 		return false, err
 	}
 	if ok {

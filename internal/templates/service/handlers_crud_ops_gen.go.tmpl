@@ -28,7 +28,7 @@ import (
 {{- end}}
 
 	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
-	"{{.Module}}/internal/db"
+	{{.DBImportLine}}
 )
 {{- range .Entities}}
 

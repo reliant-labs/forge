@@ -13,6 +13,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/forgecompat"
+	"github.com/reliant-labs/forge/internal/forgedelegate"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/pkg/cloudcred"
 	"github.com/reliant-labs/forge/pkg/hostslot"
@@ -40,6 +42,8 @@ const defaultTestOrg = "4f3c2b1a-0000-4000-8000-000000000001"
 // the real root command, so the plugin under test is the production one rather
 // than a stand-in that could drift from it.
 func TestMain(m *testing.M) {
+	// No test hands its command to another forge: see pinDelegationDisabled.
+	pinDelegationDisabled = true
 	// No test reaches a control plane for its organization: the credential's
 	// org is stated, by default here and per-test by stubControlPlaneOrg.
 	// hosted_org_test.go pins the real call separately.
@@ -104,6 +108,14 @@ func TestMain(m *testing.M) {
 	// test timeout for it. The slot tests (slot_test.go) set their own.
 	_ = os.Setenv(hostslot.SlotsEnv(hostslot.Heavy), "off")
 	_ = os.Unsetenv(hostslot.EnvHeld)
+	// Nor does a test inherit the host's answer to "may this forge run a
+	// project pinned to another one". A Reliant agent's shell exports
+	// FORGE_ALLOW_VERSION_SKEW (and a delegated forge FORGE_VERSION_DELEGATED);
+	// either turns every pin-skew refusal and hand-off off, so
+	// TestForgePinSkew_* and TestDelegation_* failed on such a host and passed
+	// on a clean one. Tests that want them set them with t.Setenv.
+	_ = os.Unsetenv(forgecompat.SkewOverrideEnv)
+	_ = os.Unsetenv(forgedelegate.MarkerEnv)
 	if token, ok := fakeCredentialHelperInvocation(os.Args[1:]); ok {
 		// The test binary re-executed as a credential helper (see
 		// useFakeCredentialHelper): answer the real protocol and exit.

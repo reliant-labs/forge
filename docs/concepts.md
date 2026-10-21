@@ -2,7 +2,9 @@
 
 Why Forge is shaped the way it is. Read this after
 [getting started](getting-started.md), when you want the reasoning rather
-than the steps.
+than the steps. For how to use it — deploys, environments, observability,
+troubleshooting — see the
+[Forge user guide](https://docs.reliantlabs.io/forge/overview).
 
 Most of what follows exists because the alternative was tried and something
 broke. Where that is true, the incident is named.
@@ -74,6 +76,19 @@ That re-creates each absent path the way forge scaffolds it for this project
 today — CI workflows through the same mapper `forge generate` uses — and it
 refuses a path that still exists, so it never overwrites your bytes (that is
 `forge project upgrade --force <path>`, which shows the diff first).
+
+A scaffold the project should never have — including one forge has not
+written yet, or one whose birth broke the very `forge generate` it was born in
+and was rolled back with its record — is **declined** instead of deleted:
+
+```bash
+forge project disown cmd/app/cmd/serve.go --absent --reason "serve.go turns composition on; our roots land later"
+```
+
+The decline is a `"declined": "<reason>"` entry in `.forge/scaffolded.json`,
+written outside `generate`, so a failed run's rollback (which restores that
+file to its pre-run bytes) keeps it. `forge project scaffolded` lists declines
+with their reasons; `forge project rescaffold <path>` re-adopts one.
 
 ### Self-certifying files
 
@@ -481,6 +496,13 @@ code; `forge.OnCompose` hands it to docker compose; `forge.BuildOnly`
 builds and never runs it. A field a runtime cannot honour — `namespacedRBAC` on a
 host process, sidecars on the hosted runtime — fails at render, naming the
 workload and field, rather than being silently dropped.
+
+Deploying is one verb for every runtime: `forge env deploy <env>` builds,
+cuts an immutable release, prints a plan of what changes, and writes nothing
+until the plan is approved; promotion moves a release between environments by
+digest, and there is no rollback command, because recovery is a roll forward.
+The [environments and deploys](https://docs.reliantlabs.io/forge/environments-and-deploys)
+guide walks it.
 
 Maturity is not uniform, and the docs should not pretend otherwise:
 

@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // FrontendConfigJSName is the filename of the runtime config document
@@ -102,6 +104,18 @@ type FirebaseFrontend struct {
 	// (NEXT_PUBLIC_* / VITE_*). Layered on top of os.Environ().
 	BuildEnv map[string]string
 
+	// Project is the forge project name (recorded in the source map manifest).
+	Project string
+
+	// VersionEnvVar is the variable the bundle reads service.version from
+	// (NEXT_PUBLIC_APP_VERSION / VITE_APP_VERSION); forge injects the build id
+	// into it unless BuildEnv sets it. Empty injects nothing.
+	VersionEnvVar string
+
+	// Sourcemaps is "publish" (default), "public" or "off". See the
+	// Sourcemaps* constants.
+	Sourcemaps string
+
 	// RuntimeConfigJS is this ENVIRONMENT's rendered runtime config
 	// document — the `window.__FORGE_CONFIG__ = {...}` script the browser
 	// loads before any bundle code runs, produced from the environment's
@@ -114,6 +128,12 @@ type FirebaseFrontend struct {
 	// configuration. Empty means the frontend declares no typed config —
 	// nothing is written and the assembled layout is unchanged.
 	RuntimeConfigJS string
+
+	// SourcemapPublisher files the source maps the build extracts (F1) so
+	// errors can be symbolicated: pushed to the platform registry when the
+	// env's observability is hosted, kept on disk otherwise. nil files nothing
+	// (the maps are still extracted, and never served).
+	SourcemapPublisher SourcemapPublisher
 
 	// Spec is the FirebaseHosting deploy config.
 	Spec FirebaseHostingSpec
@@ -224,8 +244,11 @@ func (p FirebaseProvider) Deploy(ctx context.Context, group ServiceGroup) error 
 // to its Firebase Hosting site. dryRun prints the plan and skips every
 // side effect.
 func (p FirebaseProvider) deployFrontends(ctx context.Context, fes []FirebaseFrontend, dryRun bool) error {
-	for _, fe := range fes {
+	for i, fe := range fes {
 		if err := p.deployOne(ctx, fe, dryRun); err != nil {
+			if i > 0 {
+				return afterShipping(err)
+			}
 			return err
 		}
 	}
@@ -262,6 +285,9 @@ func (p FirebaseProvider) stageInput(fe FirebaseFrontend) StageInput {
 		RuntimeConfigJS: fe.RuntimeConfigJS,
 		ProjectDir:      p.ProjectDir,
 		StagingRoot:     staging,
+		Project:         fe.Project,
+		VersionEnvVar:   fe.VersionEnvVar,
+		Sourcemaps:      fe.Sourcemaps,
 	}
 }
 
@@ -305,7 +331,7 @@ func (p FirebaseProvider) buildPlan(fe FirebaseFrontend) (firebasePlan, error) {
 func (p FirebaseProvider) deployOne(ctx context.Context, fe FirebaseFrontend, dryRun bool) error {
 	plan, err := p.buildPlan(fe)
 	if err != nil {
-		return err
+		return shippedNothing(err)
 	}
 
 	if dryRun {
@@ -314,27 +340,10 @@ func (p FirebaseProvider) deployOne(ctx context.Context, fe FirebaseFrontend, dr
 	}
 
 	runner := p.runner()
-	fmt.Printf("  [firebase] %s: building (%s) in %s...\n",
-		plan.Stage.Name, strings.Join(plan.Stage.BuildCmd, " "), plan.Stage.FrontendDir)
-
-	// Build + assemble — the shared static staging step.
-	if err := runStagePlan(ctx, runner, plan.Stage); err != nil {
-		return err
-	}
-
-	// Retain — put the previous releases' hashed assets back into the
-	// tree, so a tab opened before this deploy can still load its chunks.
-	if err := p.retainAssets(ctx, plan.Stage.Name, plan.Stage.StagingDir, plan.Retention); err != nil {
-		return err
-	}
-
-	// Configure phase — firebase.json + .firebaserc next to the staging
-	// tree (in its parent, which is the firebase deploy workdir).
-	if err := os.WriteFile(filepath.Join(plan.DeployWorkdir, "firebase.json"), []byte(plan.FirebaseJSON), 0o644); err != nil {
-		return fmt.Errorf("firebase %s: write firebase.json: %w", plan.Stage.Name, err)
-	}
-	if err := os.WriteFile(filepath.Join(plan.DeployWorkdir, ".firebaserc"), []byte(plan.FirebaseRC), 0o644); err != nil {
-		return fmt.Errorf("firebase %s: write .firebaserc: %w", plan.Stage.Name, err)
+	// Everything before `firebase deploy` is local: the live site is
+	// untouched until it runs (frontend_not_shipped.go).
+	if err := p.prepare(ctx, runner, fe, plan); err != nil {
+		return shippedNothing(err)
 	}
 
 	// Deploy phase — firebase deploy from the workdir so it picks up the
@@ -345,6 +354,48 @@ func (p FirebaseProvider) deployOne(ctx context.Context, fe FirebaseFrontend, dr
 		return fmt.Errorf("firebase %s: deploy: %w", plan.Stage.Name, err)
 	}
 	fmt.Printf("  [firebase] %s: deployed.\n", plan.Stage.Name)
+	return nil
+}
+
+// prepare is everything a Firebase deploy does before it writes the site:
+// build and assemble the tree, file its source maps, carry the live release's
+// assets into it, and write firebase.json + .firebaserc beside it.
+func (p FirebaseProvider) prepare(ctx context.Context, runner commandRunner, fe FirebaseFrontend, plan firebasePlan) error {
+	fmt.Printf("  [firebase] %s: building (%s) in %s...\n",
+		plan.Stage.Name, strings.Join(plan.Stage.BuildCmd, " "), plan.Stage.FrontendDir)
+
+	// Build + assemble — the shared static staging step.
+	res, err := runStagePlan(ctx, runner, plan.Stage)
+	if err != nil {
+		return err
+	}
+	reportStageResult("firebase", plan.Stage.Name, res)
+
+	// File the source maps BEFORE anything goes live: a build whose maps could
+	// not be filed would reach production unsymbolicatable, so a failure here
+	// stops the deploy with the previous release still serving.
+	if err := FileStageSourcemaps(ctx, fe.SourcemapPublisher, "firebase", plan.Stage.Project, plan.Stage.Name, res); err != nil {
+		return err
+	}
+
+	// Retain — put the previous releases' hashed assets back into the
+	// tree, so a tab opened before this deploy can still load its chunks.
+	if err := p.retainAssets(ctx, plan.Stage.Name, plan.Stage.StagingDir, plan.Retention); err != nil {
+		return err
+	}
+	// Retention adds files after the stage's own guard ran.
+	if err := guardNoSourceMaps(plan.Stage.StagingDir, plan.Stage.Sourcemaps); err != nil {
+		return fmt.Errorf("firebase %s: %w", plan.Stage.Name, err)
+	}
+
+	// Configure phase — firebase.json + .firebaserc next to the staging
+	// tree (in its parent, which is the firebase deploy workdir).
+	if err := atomicfile.WriteFile(filepath.Join(plan.DeployWorkdir, "firebase.json"), []byte(plan.FirebaseJSON), 0o644); err != nil {
+		return fmt.Errorf("firebase %s: write firebase.json: %w", plan.Stage.Name, err)
+	}
+	if err := atomicfile.WriteFile(filepath.Join(plan.DeployWorkdir, ".firebaserc"), []byte(plan.FirebaseRC), 0o644); err != nil {
+		return fmt.Errorf("firebase %s: write .firebaserc: %w", plan.Stage.Name, err)
+	}
 	return nil
 }
 

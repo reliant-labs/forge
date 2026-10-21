@@ -217,7 +217,7 @@ func buildAnnotationsSpec(kind string) (AnnotationsSpec, error) {
 
 // goMarkerKinds are the AppliesTo values of the markers read out of .go
 // source rather than proto or SQL: what `--kind go` lists.
-var goMarkerKinds = []string{"package", "contract", "constructor", "deps-field", "function"}
+var goMarkerKinds = []string{"package", "contract", "constructor", "deps-field", "function", "root", "declaration"}
 
 func filterMarkers(in []MarkerSpec, appliesTo ...string) []MarkerSpec {
 	want := make(map[string]bool, len(appliesTo))
@@ -317,7 +317,7 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      codegen.ProtoMarkerCustom,
 			AppliesTo: "method",
-			Effect:    "Declares this rpc custom whatever its name. Without it a unary rpc named exactly Create<E>/Get<E>/Update<E>/Delete<E>/List<Es>, where <E> has a table and a wire message, is CRUD and gets generic CRUD wiring. Marked, it is custom on both sides of the wire: a pb-through stub in rpc_<name>.go plus a scaffold test row, no CRUD shim or op, no entity page, a hook that invalidates at service scope, and it is exempt from the list-filter lint. It makes no entity, so when EVERY CRUD-named rpc of a table carries it the table is plain schema — no ORM struct in internal/db, no page, no seed root: the per-entity opt-out, one rpc at a time. Use it instead of renaming an rpc to dodge detection. Marking an rpc that was CRUD stops forge generating its crud<Rpc>Op, so generate refuses while a shim still calls it — delete that method (or replace its body) first. A near-miss spelling, or the marker on a service or message, fails generate.",
+			Effect:    "Declares this rpc custom whatever its name. Without it a unary rpc named exactly Create<E>/Get<E>/Update<E>/Delete<E>/List<Es>, where <E> has a table and a wire message, is CRUD and gets generic CRUD wiring. Marked, it is custom on both sides of the wire: a pb-through stub in rpc_<name>.go plus a scaffold test row, no CRUD shim or op, no entity page, a hook that invalidates at service scope, and it is exempt from the list-filter lint. It makes no CRUD entity, so when EVERY CRUD-named rpc of a table carries it the table gets no CRUD wiring, no page and no seed root — but it keeps its store: the ORM projects every table whatever its rpcs (`forge:no-entity` on the table is the store opt-out). Use it instead of renaming an rpc to dodge detection. Marking an rpc that was CRUD stops forge generating its crud<Rpc>Op, so generate refuses while a shim still calls it — delete that method (or replace its body) first. A near-miss spelling, or the marker on a service or message, fails generate.",
 			Placement: "full-line comment directly above the `rpc` line. Never trailing: protobuf hands a comment after an rpc (same line, or the line below followed by a blank line) to THAT rpc even when it was written for the next one, so generate refuses a trailing marker, and refuses a marker written above an rpc that the compiled descriptor did not attach to it.",
 			Example:   "// forge:custom — creating a task also wires its dependencies and fires triggers.\nrpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse);",
 		},
@@ -372,6 +372,20 @@ func markerSpecs() []MarkerSpec {
 			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:fill=ulid'; or 'forge:fill=handler'; in a migration",
 			Example:   "COMMENT ON COLUMN customers.company_id IS 'forge:fill=handler';",
 		},
+		{
+			Name:      schemadef.ColumnMarkerGoType,
+			AppliesTo: "column",
+			Effect:    "Declares the Go type the column projects to on the generated entity struct, in place of the one its SQL type maps to (TEXT → string, INTEGER → int32, SMALLINT → int16, BIGINT → int64, JSONB → json.RawMessage, …): a named enum type over an integer column, `map[string]any` or a struct over a json column, `time.Duration` over a bigint. The type must scan from and bind to the column by Bun's own rules. A nullable column gets a pointer unless the type is already a pointer, slice or map. A qualified type names its import path — `<path>.<Type>`, with `<path>;<package>.<Type>` when the package name is not the path's last element (the go_package convention). forge generates no wire conversion for the column: a CRUD rpc whose wire message carries it fails `forge generate` naming it — convert it in the owned shim, or keep it off the wire.",
+			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:go-type=<type>'; in a migration",
+			Example:   "COMMENT ON COLUMN message_content_blocks.block_type IS 'forge:go-type=github.com/acme/app/gen/app/v1;appv1.ContentBlockType';",
+		},
+		{
+			Name:      schemadef.ColumnMarkerNoSoftDelete,
+			AppliesTo: "column",
+			Effect:    "Declares the table's `deleted_at` an ordinary nullable timestamp instead of forge's soft-delete tombstone — for an ARCHIVE stamp, where an archived row must stay readable and writable and a delete must delete. Without it a time-typed deleted_at IS the soft-delete convention: Bun's `,soft_delete` tag, Get/List/Update skip rows where it is set, Delete stamps it, and ListAll<E> reads every row. Declared, the column gets no soft-delete tag, Get/List see every row, Update and an update_mask may write the column, Delete is a hard DELETE, no ListAll<E> is generated, and the generated list/detail pages show the column. Only meaningful on deleted_at; on any other column `forge generate` and `forge lint` reject it.",
+			Placement: "COMMENT ON COLUMN <table>.deleted_at IS 'forge:no-soft-delete'; in a migration",
+			Example:   "COMMENT ON COLUMN worktrees.deleted_at IS 'forge:no-soft-delete — the archive stamp; archived worktrees stay readable';",
+		},
 		// ── Table-comment markers ──
 		//
 		// The same catalog-comment mechanism as the column markers above,
@@ -385,6 +399,27 @@ func markerSpecs() []MarkerSpec {
 			Effect:    "Declares the TABLE an immutable ledger: BOTH generated routes to a write lose Update/UpdateMasked/Delete — the <Entity>Store interface and its adapter, and the package-level delegates in <entity>_orm_gen.go — so `db.DeleteX(ctx, tx, id)` does not resolve and a call that would rewrite or erase a row is a compile error rather than a runtime rejection. (Narrowing only the interface left the exported delegates reopening the same write, which decayed the guarantee back to a SQLSTATE P0001.) Reads, Create and WithTx are untouched. The generated test factory takes no overrides (applying one means UPDATEing the row it just inserted), and an Update/Delete RPC declared against the table fails `forge generate` by name, since there is no delegate left for the op to call. This is the STORAGE half of the `forge:append-only` proto marker and the half that every post-birth pass reads — the proto marker is a birth-time instruction (it writes the trigger and omits the Update/Delete RPCs) that nothing carries forward. `forge scaffold entity --from-proto` emits this declaration alongside the guard trigger; declare it by hand on a table a hand-written migration made append-only. A table forge made append-only BEFORE this declaration existed needs no migration: its `<table>_append_only` guard trigger is read as the same declaration, matched by that exact name (an updated_at stamper is also BEFORE UPDATE and means the opposite).",
 			Placement: "COMMENT ON TABLE <table> IS 'forge:append-only'; in a migration — on the TABLE, not a column.",
 			Example:   "COMMENT ON TABLE payments IS 'forge:append-only — rows are inserted and read, never rewritten or erased.';",
+		},
+		{
+			Name:      schemadef.TableMarkerNoEntity,
+			AppliesTo: "table",
+			Effect:    "Keeps the TABLE out of the generated data layer: no <entity>_orm_gen.go struct, no <Entity>Store, no delegates, no factory — and no CRUD wiring, since a CRUD-named rpc over it has no store to call (it is custom, as if the table did not exist). Without it every applied BASE TABLE is projected, whether or not any service declares a CRUD rpc for it: the store follows the schema, not the wire, so `// forge:custom` rpcs do not take a table off the store. Declare it on a table hand-written SQL owns (another tool's bookkeeping, a partition parent), or on one whose projected name collides with a declaration of yours while you port onto the store. `//forge:no-orm` is the same opt-out for the whole data layer.",
+			Placement: "COMMENT ON TABLE <table> IS 'forge:no-entity'; in a migration — on the TABLE, not a column.",
+			Example:   "COMMENT ON TABLE goose_db_version IS 'forge:no-entity — goose owns it';",
+		},
+		{
+			Name:      schemadef.TableMarkerEntityName,
+			AppliesTo: "table",
+			Effect:    "Names the entity the TABLE holds, for a table whose name derives to something else. Without it the entity is named from the table — the singular, camel-cased (`message_content_blocks` → MessageContentBlock, `daemon_attachment` → DaemonAttachment) — and a CRUD rpc's entity <E> finds its table by that name, by the plural of <E> (`bookmarks`) or by its singular (`daemon_attachment`). Declared, the store is named <Name> and a `Get<Name>`/`List<Names>`/… rpc over a <Name> message is CRUD over this table. A CRUD-named rpc whose entity has a wire message but matches no table, and that no handler implements by hand, fails `forge generate` by name rather than serving forge's Unimplemented stub — this declaration is one of its fixes.",
+			Placement: "COMMENT ON TABLE <table> IS 'forge:entity-name=<Name>'; in a migration — on the TABLE, not a column.",
+			Example:   "COMMENT ON TABLE tbl_widget_v2 IS 'forge:entity-name=Widget';",
+		},
+		{
+			Name:      schemadef.ViewMarkerEntity,
+			AppliesTo: "table", // on a VIEW — the table-level catalog comment of a relation that is not a base table
+			Effect:    "Opts a VIEW (regular or materialized) into the generated data layer as a READ-ONLY entity: the row struct (named from the view: `chats_with_activity` → ChatsWithActivity), List<E>/Count<E>, and Get<E>ByID by its key column — `id` when the view has one, or the column `forge:entity key=<column>` names; a keyless view gets List/Count only. Nothing writes: no Create/Update/Delete delegate or store method is generated, so a write through a view is a compile error. The catalog cannot say whether a view column is nullable, so every column but the key projects as a pointer (the key must never be NULL). Views without the marker are not projected — most are reporting conveniences nothing in Go reads.",
+			Placement: "COMMENT ON VIEW <view> IS 'forge:entity'; (or COMMENT ON MATERIALIZED VIEW) in a migration, optionally 'forge:entity key=<column>'.",
+			Example:   "COMMENT ON VIEW chats_with_activity IS 'forge:entity — the sidebar row';",
 		},
 		{
 			Name:      schemadef.ColumnMarkerOwner,
@@ -418,14 +453,14 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      "forge:constructor",
 			AppliesTo: "constructor",
-			Effect:    "Names this function as the package's component constructor when it is not the canonical `New`, and opts the package IN to the generated observability decorator (middleware_gen.go), so every component-to-component call on the interface gets a span, a metric and panic recovery. Scaffolds stamp it by default, so a generated package is born instrumented.",
+			Effect:    "Names this function as the package's component constructor when it is not the canonical `New`. (It no longer decides instrumentation: every package whose constructor returns its contract gets the generated observability decorator, middleware_gen.go, unless it carries `forge:no-observe`.)",
 			Placement: "on the constructor's doc comment",
 			Example:   "// NewClient builds the client.\n// forge:constructor\nfunc NewClient(d Deps) (Service, error)",
 		},
 		{
 			Name:      "forge:no-observe",
 			AppliesTo: "constructor",
-			Effect:    "Opts out of the generated observability decorator. On the constructor it exempts the whole package; on a single interface method it routes just that method around the chain. The opt-out wins over every opt-in.",
+			Effect:    "Opts out of the generated observability decorator, which every package whose constructor returns its contract gets by default. On the constructor it exempts the whole package (no middleware_gen.go, and compose.go constructs it unwrapped); on a single interface method it routes just that method around the chain.",
 			Placement: "on the constructor's doc comment (whole package), or above one interface method",
 			Example:   "type Service interface {\n\t// forge:no-observe\n\tHealthz() error\n}",
 		},
@@ -439,7 +474,7 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      "forge:exclude-contract",
 			AppliesTo: "package",
-			Effect:    "Opts the package out of contract codegen entirely — no canonical-shape check, no wiring, and NO generated mock. The per-package equivalent of listing it in forge.yaml `contracts.exclude`. REQUIRES a reason (`forge:exclude-contract: <why>`); a bare marker is a `forge lint` error. Refused outright on a package that does outbound I/O (make it an adapter) or owns a multi-implementation interface (that interface is the contract). Legitimate for pure functions, test-support, API/CRD types, a strategy registry.",
+			Effect:    "Opts the package out of contract codegen entirely — no canonical-shape check, no wiring, and NO generated mock. The per-package equivalent of listing it in forge.yaml `contracts.exclude`. REQUIRES a reason (`forge:exclude-contract: <why>`); a bare marker is a `forge lint` error. Refused outright on a package that does outbound I/O (make it an adapter) or owns a multi-implementation interface it offers (that interface is the contract — a seam the package itself consumes, as a field or parameter, does not count). Legitimate for pure functions, test-support, API/CRD types, a strategy registry.",
 			Placement: "package doc comment, or a free-standing comment in any of the package's .go files",
 			Example:   "//forge:exclude-contract: strategy registry — one constructor per algorithm\npackage strategyregistry",
 		},
@@ -470,6 +505,69 @@ func markerSpecs() []MarkerSpec {
 			Effect:    "Declares that calling this function resolves the caller: it reads the authenticated principal the auth interceptor put on the request context. Forge's own seam (middleware.GetUser / ClaimsFromContext in the scaffolded pkg/middleware) needs no marker. A project with its own auth package marks its accessors, and the unscoped_auth audit then counts a handler that calls one — through the import that binds the declaring package in that file, or through a helper in the handler's own package — as resolving the caller, and names it in its hint. Package-level functions only: a marker on a method is reported as ignored, because a call site does not name its receiver's type. `forge project audit --json` lists the declarations it found under unscoped_auth's caller_resolvers.",
 			Placement: "on the function's doc comment, spaced or unspaced, as the whole comment line",
 			Example:   "// GetUserIDFromContext returns the signed-in user's id.\n//\n//forge:resolves-caller\nfunc GetUserIDFromContext(ctx context.Context) (string, bool)",
+		},
+		{
+			Name:      "forge:contract",
+			AppliesTo: "contract",
+			Effect:    "Synonym of `forge:service`: declares this interface the package's contract when it is not named `Service`. `contract` reads better on a non-service package.",
+			Placement: "on the interface's doc comment",
+			Example:   "// forge:contract\ntype Store interface { Get(ctx context.Context, id string) (Row, error) }",
+		},
+		{
+			Name:      "forge:provided",
+			AppliesTo: "package",
+			Effect:    "Synonym of `forge:external-component`: the component is hand-constructed in providers.go, and the injector skips it.",
+			Placement: "package doc comment, or a free-standing comment in any of the package's .go files",
+			Example:   "// forge:provided\npackage natsbus",
+		},
+		{
+			Name:      "forge:no-orm",
+			AppliesTo: "package",
+			Effect:    "Switches the generated data layer off for the project: no <entity>_orm_gen.go structs, stores or factories under internal/db. The opt-out sits in the package it exempts; the reason is not required, but write one.",
+			Placement: "package doc comment of internal/db (spaced or unspaced); a reason follows a colon or a space",
+			Example:   "//forge:no-orm: the repository is hand-written; entities are not projected\npackage db",
+		},
+		{
+			Name:      "forge:placeholder",
+			AppliesTo: "deps-field",
+			Effect:    "Records the type a Deps field typed `any` is waiting for — a placeholder left until the dependency it names exists. While the field is still `any`, the wire-coverage lint errors on it as unresolved: the marker is a TODO forge can count, not a way to wire `any`.",
+			Placement: "leading or trailing comment on the Deps field; the type follows a colon",
+			Example:   "type Deps struct {\n\tUserRepo any // forge:placeholder: user.Repository\n}",
+		},
+		{
+			Name:      "forge:root",
+			AppliesTo: "root",
+			Effect:    "Declares a struct in internal/app as a process ROOT: its fields are the nodes that process runs, and forge generates its command into roots_gen.go. With no root declared, the generated default `server` root runs every component. Options: command=<word>[,<word>…] (the command path that runs it) and migrate=apply|wait|none (what its process does about the schema); an unknown option fails generate.",
+			Placement: "on the struct's doc comment, unspaced",
+			Example:   "//forge:root api command=serve migrate=apply\ntype API struct { ... }",
+		},
+		{
+			Name:      "forge:standby",
+			AppliesTo: "function",
+			Effect:    "Keeps a provider ready for components to come: `forge lint --graph` does not require a root to reach it.",
+			Placement: "on the provider func's doc comment, unspaced",
+			Example:   "//forge:standby\nfunc NewMailer(d MailerDeps) (Mailer, error)",
+		},
+		{
+			Name:      "forge:audience",
+			AppliesTo: "function",
+			Effect:    "Names the trust domain an authenticator provider authenticates; `forge lint --graph` compares it with the audience of every service a listener serves through a chain over it.",
+			Placement: "on the provider func's doc comment, unspaced, with exactly one lower-case word",
+			Example:   "//forge:audience daemon\nfunc NewDaemonAuthenticator(d AuthDeps) (Authenticator, error)",
+		},
+		{
+			Name:      "forge:auth-unscoped-ok",
+			AppliesTo: "function",
+			Effect:    "Acknowledges that an authenticated rpc is intentionally global, so the unscoped_auth audit lists it as acknowledged rather than unscoped. The reason is required: the marker alone is the unfalsifiable comment the audit exists to replace.",
+			Placement: "on the handler method's doc comment; the reason follows a colon",
+			Example:   "// forge:auth-unscoped-ok: the plan catalog is the same for every caller\nfunc (s *Service) ListPlans(...)",
+		},
+		{
+			Name:      "forge:allow",
+			AppliesTo: "declaration",
+			Effect:    "The user-owned (Tier-3) marker on a declaration in a scaffold-once file: forge's banner lint reads it as \"this is yours\". Scaffolds stamp it; it changes no codegen.",
+			Placement: "on the declaration's doc comment, unspaced",
+			Example:   "// yours: scaffolded once, never touched again\n//\n//forge:allow\ntype Infra struct { ... }",
 		},
 	}
 }
@@ -738,9 +836,10 @@ type optionMeta struct{ effect, deflt string }
 var methodOptionMeta = map[string]optionMeta{
 	"auth_required":   {"Whether the method requires authentication; overrides the service AuthConfig default. Live metadata in forge map/graph.", "true (fail-closed: auth required when unset)"},
 	"idempotent":      {"Marks the method safe to retry without side effects.", "false"},
-	"timeout":         {"Server-side per-method timeout; zero means use the service default.", "0s (service default)"},
+	"timeout":         {"Server-side deadline for the rpc, projected into pkg/middleware/procedures_gen.go (ProcedureDeadlines) and enforced by the chain's Deadline slot, which runs ahead of auth so the credential lookup is bounded too. Negative is no server deadline.", "unset (serverkit.DefaultUnaryDeadline, 30s, for a unary rpc; none for a stream)"},
 	"idempotency_key": {"Convention marker advising callers to supply an idempotency key; forge does not enforce or inspect it.", "false"},
 	"errors":          {"Declared Connect/gRPC error codes the method may return (e.g. NotFound, InvalidArgument); informational, surfaced to handler authors.", "[] (no declared errors)"},
+	"activity":        {"The typed activity event a successful call records: verb, target {kind, id, label} (field paths into the request, or the response with a response. prefix), env, scope, detail, writer; or none: \"<why>\" for a mutation that records nothing. forge/pkg/activity's interceptor writes it. CRUD-shaped Create/Update/Delete rpcs imply theirs.", "unset (CRUD implied, or nothing recorded)"},
 }
 
 // Source: internal/assets/proto/forge/v1/forge.proto (ServiceOptions) +
@@ -752,6 +851,7 @@ var serviceOptionMeta = map[string]optionMeta{
 	"visibility":   {"How the service is exposed: SERVICE_VISIBILITY_API (Connect/HTTP gateway) or SERVICE_VISIBILITY_INTERNAL (inter-service only).", "SERVICE_VISIBILITY_UNSPECIFIED (defaults to API)"},
 	"dependencies": {"Other services this service depends on.", "[]"},
 	"auth":         {"Service-wide authentication defaults (AuthConfig.auth_required / auth_provider); individual methods override via (forge.v1.method).auth_required.", ""},
+	"audience":     {"The trust domain whose callers the service serves (\"user\", or a project-chosen name such as \"daemon\" or \"operator\"). A serverkit.Listener refuses to start when it mounts a service whose audience differs from its chain's Authenticator.Audience().", "\"user\""},
 }
 
 func optionSpecsFromDescriptor(fields protoreflect.FieldDescriptors, meta map[string]optionMeta) []OptionSpec {

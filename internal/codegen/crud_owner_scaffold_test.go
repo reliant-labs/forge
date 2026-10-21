@@ -136,7 +136,7 @@ func TestOwnerColumn_ScaffoldsScopingOnEveryShape(t *testing.T) {
 		"op.Persist = func(ctx context.Context, e *db.Crew, opts ...orm.QueryOption) error",
 		// Create stamps from the caller, never from the wire.
 		"op.Entity = func(ctx context.Context, r *pb.CreateCrewRequest) (*db.Crew, error)",
-		"e.CompanyId = owner",
+		"e.CompanyID = owner",
 		// The column is named in the predicate, not left as a TODO.
 		`orm.WhereEq("company_id", owner)`,
 	} {

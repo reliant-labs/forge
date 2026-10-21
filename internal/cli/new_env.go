@@ -14,6 +14,8 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/kclrender"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // newNewEnvCmd builds `forge env new <name>` — scaffold a new deploy
@@ -330,7 +332,7 @@ func scaffoldEnvFromTemplateBinds(projectDir, srcDir, envDir, template, name str
 		return nil, fmt.Errorf("create %s: %w", envDir, err)
 	}
 	for _, dst := range written {
-		if err := os.WriteFile(dst, []byte(prepared[dst]), 0o644); err != nil {
+		if err := atomicfile.WriteFile(dst, []byte(prepared[dst]), 0o644); err != nil {
 			return nil, fmt.Errorf("write %s: %w", dst, err)
 		}
 	}

@@ -52,6 +52,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -163,25 +164,29 @@ func attachEmbedded() (url string, port uint32, mode int, err error) {
 		// Can't coordinate (no lockfile). Boot our own, standalone: correct
 		// but unshared. This is the rare degraded path; the common fan-out
 		// always has a working lock.
-		u, p, ep, berr := bootEmbedded()
-		if berr != nil {
-			return "", 0, 0, berr
-		}
-		retainEmbedded(ep)
-		return u, p, poolModeStandalone, nil
+		return bootStandalone()
 	}
 	defer unlock()
 
 	st := readPoolState()
 	st.Users = prunePIDs(st.Users)
-	if st.URL != "" && st.Port != 0 && sharedAlive(st.Port, st.URL) {
-		// Reuse the live shared server.
-		st.Users = addPID(st.Users, os.Getpid())
-		writePoolState(st)
-		return st.URL, st.Port, poolModePooled, nil
+	if st.URL != "" && st.Port != 0 {
+		switch probeShared(st.Port, st.URL, len(st.Users) > 0) {
+		case sharedReady:
+			// Reuse the live shared server.
+			st.Users = addPID(st.Users, os.Getpid())
+			writePoolState(st)
+			return st.URL, st.Port, poolModePooled, nil
+		case sharedBusy:
+			// Alive, in use, and still not answering: leave it to the
+			// processes using it and run on a server of our own.
+			return bootStandalone()
+		case sharedGone:
+		}
 	}
 
-	// Absent, dead, or unreachable: clean any dead remnant, then boot fresh.
+	// Absent, dead, or wedged with nobody using it: clean any remnant, then
+	// boot fresh.
 	if st.Port != 0 {
 		stopSharedByPort(st.Port)
 	}
@@ -220,14 +225,71 @@ func detachEmbedded(port uint32) {
 	writePoolState(st)
 }
 
-// sharedAlive reports whether the shared server recorded at port/url is both
-// running (its postmaster PID is alive) and reachable with working creds.
-func sharedAlive(port uint32, url string) bool {
-	pidFile := filepath.Join(runtimeDir(port), "data", "postmaster.pid")
-	if _, alive := postmaster(pidFile); !alive {
-		return false
+// bootStandalone boots an embedded server for this process alone and marks
+// it as this process's (ownerFile), so no other process's reaper takes it.
+func bootStandalone() (url string, port uint32, mode int, err error) {
+	u, p, ep, berr := bootEmbedded()
+	if berr != nil {
+		return "", 0, 0, berr
 	}
-	return CanReach(url)
+	retainEmbedded(ep)
+	_ = os.WriteFile(filepath.Join(runtimeDir(p), ownerFile), []byte(strconv.Itoa(os.Getpid())), 0o644)
+	return u, p, poolModeStandalone, nil
+}
+
+// ownerFile, in a standalone server's runtime dir, holds the pid of the one
+// process using it. While that process lives, reapStaleInstances leaves the
+// server alone however old it is.
+const ownerFile = "forge-owner.pid"
+
+// sharedPatience is how long an attaching process keeps trying to reach a
+// shared server whose postmaster is alive before it stops believing it will
+// answer. A var so tests can shorten it.
+var sharedPatience = 30 * time.Second
+
+type sharedVerdict int
+
+const (
+	// sharedGone: no live postmaster, or one that never answered and that
+	// nobody uses — replace it.
+	sharedGone sharedVerdict = iota
+	// sharedReady: reachable — reuse it.
+	sharedReady
+	// sharedBusy: the postmaster is alive and in use but did not answer
+	// within sharedPatience — never stop it; run beside it.
+	sharedBusy
+)
+
+// probeShared decides what an attaching process may do with the shared server
+// recorded at port/url.
+//
+// A server that does not answer a probe is NOT therefore dead. On a loaded
+// machine, or one that just woke from sleep, a postmaster can take seconds to
+// fork a backend. The probe used to allow 2s to connect and 3s to ping and
+// then `pg_ctl stop -m fast` the server — under every other process using it,
+// which saw 57P01 "terminating connection due to administrator command" and
+// 57P03 "the database system is shutting down" mid-test. So: a dead postmaster
+// is gone at once; a live one is retried for sharedPatience (on the monotonic
+// clock, so a wall-clock jump neither shortens nor stretches the wait); and if
+// it still does not answer, it is stopped only when nobody else uses it.
+func probeShared(port uint32, url string, inUse bool) sharedVerdict {
+	pidFile := filepath.Join(runtimeDir(port), "data", "postmaster.pid")
+	start := time.Now()
+	for {
+		if _, alive := postmaster(pidFile); !alive {
+			return sharedGone
+		}
+		if CanReach(url) {
+			return sharedReady
+		}
+		if time.Since(start) >= sharedPatience {
+			if inUse {
+				return sharedBusy
+			}
+			return sharedGone
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 // stopSharedByPort tears down the embedded server whose data dir is

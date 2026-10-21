@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lib/pq"
 	"github.com/uptrace/bun"
 
@@ -213,8 +214,8 @@ func TestRunTx_IsolationAndReadOnlyModes(t *testing.T) {
 		attempts++
 		return insertNote(ctx, c, "nope")
 	})
-	var pqErr *pq.Error
-	if !errors.As(err, &pqErr) || pqErr.Code != "25006" {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "25006" {
 		t.Fatalf("write in RunTxReadOnly: got %v, want SQLSTATE 25006", err)
 	}
 	if attempts != 1 {

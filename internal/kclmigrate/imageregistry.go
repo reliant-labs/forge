@@ -28,6 +28,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // ImageRegistryResult is what a migration run did or refused to do.
@@ -312,7 +314,7 @@ func ImageRegistry(projectDir string, apply bool) (ImageRegistryResult, error) {
 		return res, err
 	}
 	if apply && newWorkloads != workloadsSrc {
-		if err := os.WriteFile(filepath.Join(kclDir, "workloads.k"), []byte(newWorkloads), 0o644); err != nil {
+		if err := atomicfile.WriteFile(filepath.Join(kclDir, "workloads.k"), []byte(newWorkloads), 0o644); err != nil {
 			return res, fmt.Errorf("write workloads.k: %w", err)
 		}
 	}
@@ -434,7 +436,7 @@ func (s stripReport) apply(kclDir string, write bool) (rewrites, dropped []strin
 		if !write {
 			continue
 		}
-		if err := os.WriteFile(filepath.Join(kclDir, relOf(file)), []byte(s.changed[file]), 0o644); err != nil {
+		if err := atomicfile.WriteFile(filepath.Join(kclDir, relOf(file)), []byte(s.changed[file]), 0o644); err != nil {
 			return rewrites, dropped, fmt.Errorf("write %s: %w", file, err)
 		}
 	}

@@ -6,10 +6,12 @@ import (
 	"fmt"
 
 	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/extra/bunotel"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
-	_ "github.com/lib/pq" // PostgreSQL driver (database/sql registration)
+	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
+
+	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx"
 )
 
 // Client is the forge ORM handle. Post-Phase-2 it is a thin wrapper over
@@ -21,14 +23,19 @@ import (
 type Client struct {
 	bun     *bun.DB
 	dialect Dialect
+	// bunDialect is the dialect bun runs with; transactions opened on this
+	// client bind their statements through it (bind.go).
+	bunDialect *forgeDialect
 }
 
-// NewClient opens a new ORM client. dialectName must be "postgres".
+// NewClient opens a new ORM client on jackc/pgx, the driver forge's
+// servers open their pool with (serverkit.OpenDB). dialectName must be
+// "postgres".
 func NewClient(dialectName, dsn string) (*Client, error) {
 	if err := requirePostgres(dialectName); err != nil {
 		return nil, err
 	}
-	sqldb, err := sql.Open("postgres", dsn)
+	sqldb, err := dbtrace.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -54,13 +61,22 @@ func NewClientWithDB(db *sql.DB, dialectName string) (*Client, error) {
 		return nil, err
 	}
 	// The resolver is what makes a transaction carried in ctx (RunTx) reach
-	// every query built off this handle — see ambientResolver in tx.go.
-	bdb := bun.NewDB(db, pgdialect.New(), bun.WithConnResolver(ambientResolver{db: db}))
-	// Trace ORM SQL onto the active OTel span (forge's observability
-	// convention). The generated layer also opens per-op spans; this adds
-	// the SQL statement attributes.
-	bdb.AddQueryHook(bunotel.NewQueryHook())
-	return &Client{bun: bdb, dialect: dialect}, nil
+	// every query built off this handle — see ambientResolver in tx.go — and
+	// the connection it resolves binds each statement's values (bind.go).
+	fd := newForgeDialect()
+	bdb := bun.NewDB(db, fd, bun.WithConnResolver(&ambientResolver{db: db, pool: &bindConn{conn: db, dialect: fd}}))
+	bdb.AddQueryHook(bindHook{})
+	// bunotel records the ORM's query histogram (go.sql.query_timing) and, on
+	// a pool not traced at the driver, a span per query. A pool that is
+	// (serverkit.OpenDB, NewClient — pkg/observe/dbtrace) already has its span
+	// for every statement, ORM or hand-written, so bunotel's would be a
+	// duplicate: keep its metric, drop its spans.
+	var hookOpts []bunotel.Option
+	if dbtrace.IsTraced(db) {
+		hookOpts = append(hookOpts, bunotel.WithTracerProvider(tracenoop.NewTracerProvider()))
+	}
+	bdb.AddQueryHook(bunotel.NewQueryHook(hookOpts...))
+	return &Client{bun: bdb, dialect: dialect, bunDialect: fd}, nil
 }
 
 func requirePostgres(dialectName string) error {
@@ -123,10 +139,19 @@ type Tx struct {
 	// callbacks. It is shared with every ctx RunTx derives from this
 	// transaction, so Commit runs what AfterCommit registered there.
 	state *txState
+	// client is the Client the transaction was opened on, so BeginDetached
+	// on a *Tx can open a sibling transaction on the same pool.
+	client *Client
 }
 
-// Bun returns the transaction as a bun.IDB.
-func (t *Tx) Bun() bun.IDB { return t.tx }
+// Bun returns the transaction as a bun.IDB. Queries built on it run in the
+// transaction with their values bound, as on Client.Bun().
+func (t *Tx) Bun() bun.IDB {
+	if t.state == nil || t.state.conn == nil {
+		return t.tx
+	}
+	return txBun{Tx: t.tx, conn: t.state.conn}
+}
 
 // Dialect returns the SQL dialect (postgres), so raw-SQL handlers running
 // inside a transaction get the same Placeholder()/QuoteIdentifier() seam as
@@ -197,8 +222,8 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 	if err != nil {
 		return nil, err
 	}
-	state := &txState{db: c.bun.DB, tx: tx, outer: ctx}
-	return &Tx{tx: tx, dialect: c.dialect, state: state}, nil
+	state := &txState{db: c.bun.DB, tx: tx, outer: ctx, conn: &bindConn{conn: tx.Tx, dialect: c.bunDialect}}
+	return &Tx{tx: tx, dialect: c.dialect, state: state, client: c}, nil
 }
 
 // RunTransaction executes fn within a transaction, committing on success
@@ -225,7 +250,7 @@ func (c *Client) RunTransaction(ctx context.Context, fn func(ctx Context) error)
 // are ignored when it joins a ctx-carried transaction.
 func (c *Client) RunTransactionWithOptions(ctx context.Context, opts *sql.TxOptions, fn func(ctx Context) error) error {
 	if st := ambientTx(ctx, c.bun.DB); st != nil {
-		return fn(&Tx{tx: st.tx, dialect: c.dialect, state: st})
+		return fn(&Tx{tx: st.tx, dialect: c.dialect, state: st, client: c})
 	}
 	tx, err := c.BeginTx(ctx, opts)
 	if err != nil {

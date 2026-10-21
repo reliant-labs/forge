@@ -39,6 +39,8 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // managedEntityField is one field forge injects at birth: the proto
@@ -126,7 +128,7 @@ func injectManagedEntityFields(protoPath, entity string, timestamps, softDelete 
 	if needsTimestamp {
 		content = ensureProtoImport(content, "google/protobuf/timestamp.proto")
 	}
-	if err := os.WriteFile(protoPath, []byte(content), 0o644); err != nil {
+	if err := atomicfile.WriteFile(protoPath, []byte(content), 0o644); err != nil {
 		return nil, err
 	}
 	return added, nil

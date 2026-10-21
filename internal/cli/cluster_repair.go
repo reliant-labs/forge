@@ -1,14 +1,18 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -39,12 +43,24 @@ var (
 	k3sProcessGrace        = 20 * time.Second
 	k3sProcessPollInterval = 2 * time.Second
 
+	// k3sObserveTimeout bounds a foreground diagnostic start. The drift
+	// failure surfaces within seconds of "Starting k3s"; a start that runs
+	// this long without failing has nothing to show.
+	k3sObserveTimeout = 60 * time.Second
+
 	runningClusterNodesReadyFn = clusterNodesReadyOnce
 	containerHasK3sProcessFn   = containerHasK3sProcess
 	inspectDockerK3dNodeFn     = inspectDockerK3dNode
 	dockerLogsSinceStartFn     = dockerLogsSinceStart
+	observeK3sStartFn          = observeK3sStart
 	repairK3sNodeIPDriftFn     = repairK3sNodeIPDrift
+	nodeReadyHeartbeatsFn      = kubectlNodeReadyHeartbeats
+	nodeContainerStartedAtFn   = containerStartedAt
 )
+
+// errK3sExitedDuringWait reports that k3s was alive when a readiness wait
+// began and gone before the API confirmed Ready.
+var errK3sExitedDuringWait = errors.New("k3s exited before its nodes reported Ready")
 
 // dockerK3dNodeInspect is the subset of `docker container inspect` needed to
 // recover a k3d server after Docker assigns it a different dynamic IP. Docker
@@ -90,7 +106,19 @@ func ensureRunningK3dClusterHealthy(ctx context.Context, c ClusterEntity) error 
 		fmt.Printf("  cluster %q did not confirm nodes Ready: %v\n", c.Name, probeErr)
 		fmt.Printf("  k3s is running in %s, so this is a not-yet, not a failure — retrying for up to %s...\n",
 			node, nodeReadyWaitBudget)
-		return waitNodeReady(ctx, c.Name)
+		// "Running" is a sample, not a verdict. The node-IP drift failure
+		// kills k3s a few seconds AFTER it logs "k3s is up and running" and
+		// its API starts answering, so a node sampled in that window looks
+		// alive. Keep watching the process while waiting: if it exits, this
+		// is the failure path below, not a timeout to report.
+		waitErr := waitNodeReadyWhile(ctx, c.Name, func(ctx context.Context) (bool, error) {
+			return waitForK3sProcess(ctx, node)
+		})
+		if !errors.Is(waitErr, errK3sExitedDuringWait) {
+			return waitErr
+		}
+		fmt.Printf("  k3s in %s exited while forge waited for its API — diagnosing why...\n", node)
+		probeErr = waitErr
 	}
 
 	info, err := inspectDockerK3dNodeFn(ctx, node)
@@ -102,9 +130,23 @@ func ensureRunningK3dClusterHealthy(ctx context.Context, c ClusterEntity) error 
 		return err
 	}
 	if !strings.Contains(logs, k3sNodeIPDriftFailure) {
-		return fmt.Errorf(
-			"container %s is running but its k3s process exited; the known Docker node-IP drift failure was not found in current-start logs (inspect with `docker logs %s`). The Kubernetes API reported: %v",
-			node, node, probeErr)
+		// `docker logs` is not a reliable witness. A Docker Desktop VM that
+		// stops uncleanly can leave NUL bytes in a container's json-file log,
+		// and Docker's reader silently returns nothing past them — for the
+		// rest of that container's life. Observe a start directly instead of
+		// concluding "unknown failure" from logs that cannot be read.
+		fmt.Printf("  %s's current-start logs do not say why k3s exited — starting k3s once in the foreground to observe it...\n", node)
+		observed, observeErr := observeK3sStartFn(ctx, node, info.Args)
+		if observeErr != nil {
+			return fmt.Errorf(
+				"container %s is running but its k3s process exited; its current-start logs do not show why, and a foreground start could not be observed: %w. The Kubernetes API reported: %v",
+				node, observeErr, probeErr)
+		}
+		if !strings.Contains(observed, k3sNodeIPDriftFailure) {
+			return fmt.Errorf(
+				"container %s is running but its k3s process exited; neither its current-start logs nor a foreground start showed the known Docker node-IP drift failure. The Kubernetes API reported: %v\nLast output of the foreground start:%s",
+				node, probeErr, formatCommandStderr(observed))
+		}
 	}
 	if effectiveServers(c) != 1 || c.Agents != 0 {
 		return fmt.Errorf(
@@ -141,6 +183,9 @@ func clusterNodesReadyOnce(ctx context.Context, clusterName string) (bool, error
 		"wait", "--for=condition=Ready", "nodes", "--all",
 		"--timeout="+nodeReadyProbeCondition.String()).CombinedOutput()
 	if err == nil {
+		if err := verifyNodesReadyThisBoot(probeCtx, kctx); err != nil {
+			return false, err
+		}
 		return true, nil
 	}
 	// Only the parent ctx being live tells us the deadline was OURS; a
@@ -150,6 +195,91 @@ func clusterNodesReadyOnce(ctx context.Context, clusterName string) (bool, error
 			nodeReadyProbeTimeout, formatCommandStderr(string(out)))
 	}
 	return false, fmt.Errorf("%w%s", err, formatCommandStderr(string(out)))
+}
+
+// verifyNodesReadyThisBoot rejects a Ready verdict the CURRENT boot did not
+// produce. Node conditions are persisted in the datastore, so the instant a
+// restarted k3s API answers, every node still reads Ready=True as written by
+// the kubelet of the PREVIOUS boot — and keeps reading it until the node
+// lifecycle controller's grace period expires. `kubectl wait
+// --for=condition=Ready` accepts that stale record immediately. A k3s that is
+// about to exit (Docker node-IP drift kills it seconds after its API comes up)
+// therefore passes the wait, forge reports the cluster healthy, and the next
+// step fails with an opaque "Unable to connect to the server: EOF".
+//
+// The kubelet stamps lastHeartbeatTime on its first status sync after it
+// starts, so a heartbeat older than the node container's start is proof the
+// Ready status is a leftover. Nodes that are not containers on this Docker
+// host (zero start time) are not judged.
+func verifyNodesReadyThisBoot(ctx context.Context, kctx string) error {
+	heartbeats, err := nodeReadyHeartbeatsFn(ctx, kctx)
+	if err != nil {
+		return err
+	}
+	started := make(map[string]time.Time, len(heartbeats))
+	for node := range heartbeats {
+		startedAt, err := nodeContainerStartedAtFn(ctx, node)
+		if err != nil {
+			return err
+		}
+		started[node] = startedAt
+	}
+	if stale := staleReadyNodes(heartbeats, started); len(stale) > 0 {
+		return fmt.Errorf(
+			"node(s) %s read Ready only from status persisted before the node container last started — this boot's kubelet has not reported yet",
+			strings.Join(stale, ", "))
+	}
+	return nil
+}
+
+// staleReadyNodes returns, sorted, the nodes whose Ready heartbeat predates
+// their container's start. Heartbeats carry whole-second precision, so the
+// start is truncated to match before comparing.
+func staleReadyNodes(heartbeats, started map[string]time.Time) []string {
+	var stale []string
+	for node, heartbeat := range heartbeats {
+		startedAt := started[node]
+		if startedAt.IsZero() {
+			continue
+		}
+		if heartbeat.IsZero() || heartbeat.Before(startedAt.Truncate(time.Second)) {
+			stale = append(stale, node)
+		}
+	}
+	sort.Strings(stale)
+	return stale
+}
+
+// kubectlNodeReadyHeartbeats reads every node's Ready-condition
+// lastHeartbeatTime. A node without one maps to the zero time.
+func kubectlNodeReadyHeartbeats(ctx context.Context, kctx string) (map[string]time.Time, error) {
+	out, err := exec.CommandContext(ctx, "kubectl", "--context", kctx, "get", "nodes", "-o",
+		`jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].lastHeartbeatTime}{"\n"}{end}`).
+		CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("read node heartbeats in %s: %w%s", kctx, err, formatCommandStderr(string(out)))
+	}
+	return parseNodeReadyHeartbeats(string(out))
+}
+
+func parseNodeReadyHeartbeats(out string) (map[string]time.Time, error) {
+	heartbeats := map[string]time.Time{}
+	for _, line := range strings.Split(out, "\n") {
+		name, stamp, _ := strings.Cut(strings.TrimSpace(line), "\t")
+		if name == "" {
+			continue
+		}
+		var heartbeat time.Time
+		if stamp = strings.TrimSpace(stamp); stamp != "" {
+			parsed, err := time.Parse(time.RFC3339, stamp)
+			if err != nil {
+				return nil, fmt.Errorf("parse Ready heartbeat %q for node %s: %w", stamp, name, err)
+			}
+			heartbeat = parsed
+		}
+		heartbeats[name] = heartbeat
+	}
+	return heartbeats, nil
 }
 
 // waitForK3sProcess reports whether k3s is running inside the node, treating
@@ -271,6 +401,121 @@ func k3dEntrypointPID(ctx context.Context, node string) (int, error) {
 		return 0, fmt.Errorf("%s: %w", node, err)
 	}
 	return pid, nil
+}
+
+// observeK3sStart starts the node's k3s server once, in the foreground and
+// with its original arguments, and returns the tail of what it printed. It is
+// the diagnosis of last resort for a node whose k3s exited without leaving a
+// readable trace in `docker logs`.
+//
+// k3d's entrypoint is paused for the duration, as in repairK3sNodeIPDrift:
+// its uncordon loop would otherwise succeed against the observed k3s, fall
+// through to `wait` on the original (dead) k3s, exit, and let Docker restart
+// the container mid-observation. The observed k3s is always stopped before
+// the entrypoint resumes, leaving the node exactly as it was found.
+func observeK3sStart(ctx context.Context, node string, containerArgs []string) (string, error) {
+	if len(containerArgs) == 0 || containerArgs[0] != "server" {
+		return "", fmt.Errorf("unexpected k3d server command args %q", containerArgs)
+	}
+	entrypointPID, err := k3dEntrypointPID(ctx, node)
+	if err != nil {
+		return "", err
+	}
+	if out, err := exec.CommandContext(ctx, "docker", "exec", node,
+		"kill", "-STOP", strconv.Itoa(entrypointPID)).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("pause k3d entrypoint in %s: %w: %s", node, err, strings.TrimSpace(string(out)))
+	}
+	defer func() {
+		_ = exec.Command("docker", "exec", node, "killall", "-TERM", "k3s").Run()
+		waitK3sStopped(node)
+		_ = exec.Command("docker", "exec", node, "kill", "-CONT", strconv.Itoa(entrypointPID)).Run()
+	}()
+
+	observeCtx, cancel := context.WithTimeout(ctx, k3sObserveTimeout)
+	defer cancel()
+	watcher := newK3sStartWatcher(40, cancel)
+	cmd := exec.CommandContext(observeCtx, "docker", append([]string{"exec", node, "/bin/k3s"}, containerArgs...)...)
+	cmd.Stdout = watcher
+	cmd.Stderr = watcher
+	cmd.WaitDelay = 5 * time.Second
+	runErr := cmd.Run()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", ctxErr
+	}
+	if runErr != nil && observeCtx.Err() == nil && watcher.Lines() == "" {
+		return "", fmt.Errorf("docker exec %s /bin/k3s: %w", node, runErr)
+	}
+	return watcher.Lines(), nil
+}
+
+// waitK3sStopped gives a TERMed k3s a bounded moment to exit, so the
+// entrypoint is never resumed while a second k3s still holds the ports.
+func waitK3sStopped(node string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	for {
+		running, err := containerHasK3sProcess(ctx, node)
+		if err != nil || !running {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+// k3sStartWatcher is the io.Writer an observed k3s start prints into. It keeps
+// the last few lines and calls stop as soon as the drift signature appears —
+// the observation has its answer, and every further second is a second k3s
+// spends half-started on someone's machine.
+type k3sStartWatcher struct {
+	mu      sync.Mutex
+	partial []byte
+	tail    []string
+	limit   int
+	stop    func()
+}
+
+func newK3sStartWatcher(limit int, stop func()) *k3sStartWatcher {
+	return &k3sStartWatcher{limit: limit, stop: stop}
+}
+
+func (w *k3sStartWatcher) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.partial = append(w.partial, p...)
+	for {
+		i := bytes.IndexByte(w.partial, '\n')
+		if i < 0 {
+			break
+		}
+		w.addLine(string(w.partial[:i]))
+		w.partial = w.partial[i+1:]
+	}
+	return len(p), nil
+}
+
+func (w *k3sStartWatcher) addLine(line string) {
+	w.tail = append(w.tail, line)
+	if len(w.tail) > w.limit {
+		w.tail = w.tail[len(w.tail)-w.limit:]
+	}
+	if strings.Contains(line, k3sNodeIPDriftFailure) && w.stop != nil {
+		w.stop()
+	}
+}
+
+// Lines returns the retained tail, including any unterminated final line.
+func (w *k3sStartWatcher) Lines() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	lines := w.tail
+	if len(w.partial) > 0 {
+		lines = append(slices.Clone(lines), string(w.partial))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // repairK3sNodeIPDrift performs the upstream-recommended safe-mode recovery:

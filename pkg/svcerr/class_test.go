@@ -49,6 +49,12 @@ func TestClassify_ByKind(t *testing.T) {
 		{"canceled sentinel", svcerr.Canceled("stopped"), svcerr.ClassCanceled},
 		{"connect canceled", connect.NewError(connect.CodeCanceled, errors.New("client closed")), svcerr.ClassCanceled},
 
+		// This replica went away: a rollout drained it. The client reads
+		// Unavailable, and still nobody has to act.
+		{"server draining", svcerr.Draining("gateway draining: reconnect"), svcerr.ClassCanceled},
+		{"bare draining sentinel", svcerr.ErrServerDraining, svcerr.ClassCanceled},
+		{"draining behind a handler's label", svcerr.WithCause(svcerr.Internal("stream ended"), svcerr.ErrServerDraining), svcerr.ClassCanceled},
+
 		// Our system failed, or cannot tell that it did not.
 		{"unrecognised raw error", errors.New("pq: connection refused"), svcerr.ClassServer},
 		{"internal", svcerr.Internal("write failed"), svcerr.ClassServer},

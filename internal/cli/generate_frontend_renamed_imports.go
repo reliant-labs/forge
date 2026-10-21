@@ -9,6 +9,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // The frontend Tier-1 `_gen` rename, from the importer's side.
@@ -169,7 +171,7 @@ func rewriteRenamedImportsInFile(path string, renames []renamedFrontendModule) b
 	}
 	// Journaled: a run that fails later restores the import it repointed.
 	checksums.RecordPreWriteAbs(path)
-	if err := os.WriteFile(path, updated, mode); err != nil {
+	if err := atomicfile.WriteFile(path, updated, mode); err != nil {
 		return false
 	}
 	return true

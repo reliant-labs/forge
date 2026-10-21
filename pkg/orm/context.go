@@ -83,6 +83,17 @@ type Context interface {
 	// retry budget. Options are ignored when joining.
 	RunTxWithOptions(ctx context.Context, opts TxOptions, fn func(ctx context.Context) error) error
 
+	// BeginDetached opens a NEW transaction the caller owns and must end
+	// with Commit or Rollback — one that outlives the call that opened it,
+	// such as a transaction-scoped advisory lock released later. It never
+	// joins the transaction ctx carries (on *Tx it opens a sibling on the
+	// same database) and never retries. See Client.BeginDetached.
+	//
+	// On the interface for the same reason as RunTx: code written against
+	// the injected `DB orm.Context` must not need the concrete *Client to
+	// hold a transaction across calls.
+	BeginDetached(ctx context.Context, opts TxOptions) (*Tx, error)
+
 	// Dialect returns the SQL dialect (postgres — forge is postgres-pinned).
 	// The raw-SQL escape hatch needs it: a hand-written handler that builds
 	// its own SQL string calls db.Dialect().Placeholder(i) for $N parameter

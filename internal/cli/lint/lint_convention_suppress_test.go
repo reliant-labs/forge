@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 	"github.com/reliant-labs/forge/internal/linter/suppress"
 	"github.com/reliant-labs/forge/internal/projectstore"
@@ -168,5 +169,29 @@ func TestConventionLane_ContractNamesAnchorsOnTheDeclaration(t *testing.T) {
 	}
 	if filepath.Base(names.File) != "client.go" {
 		t.Errorf("finding should point at client.go where New is declared, got %s:%d", names.File, names.Line)
+	}
+}
+
+// `lint.rules` is the repo-wide severity dial for EVERY forge convention
+// rule, not only the frontend one it was first wired to. Red before:
+// collectConventionFindings applied it to forgeconv-frontend-process-env
+// alone, so a downgrade of any other rule was accepted and ignored.
+func TestConventionLane_LintRulesRegradesEveryRule(t *testing.T) {
+	writeConventionTree(t, noDirective)
+	cfg := &config.ProjectConfig{Name: "m", ModulePath: "example.com/m"}
+	cfg.Lint.Rules = map[string]string{
+		"forgeconv-deps-are-interfaces":             "warn",
+		"forgeconv-internal-package-contract-names": "off",
+	}
+	factory.SetProjectStoreLoader(func() (*projectstore.Store, error) {
+		return projectstore.New(cfg), nil
+	})
+
+	fs := conventionFindings(t, true)
+	if deps, ok := findingFor(fs, "forgeconv-deps-are-interfaces"); !ok || deps.Severity != forgeconv.SeverityWarning {
+		t.Errorf("lint.rules warn must downgrade deps-are-interfaces: %+v", deps)
+	}
+	if names, ok := findingFor(fs, "forgeconv-internal-package-contract-names"); ok {
+		t.Errorf("lint.rules off must drop contract-names: %+v", names)
 	}
 }

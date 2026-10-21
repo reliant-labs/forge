@@ -60,7 +60,7 @@ func scaffoldForRender(t *testing.T, name string, services []string, frontend st
 	if err := g.Generate(); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(tmp, "deploy/kcl/config_gen.k"), []byte(hostedConfigGenStub), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmp, "deploy/kcl/config_gen.k"), []byte(hostedConfigGenStub+serverRootStub(t, "DATABASE_URL", "IDP_BROKER_TOKEN")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, env := range []string{"dev", "staging", "prod"} {
@@ -187,8 +187,14 @@ func TestFreshScaffoldRendersEveryEnvHosted(t *testing.T) {
 				}
 				spec, _ := f["runtime_config_spec"].(map[string]any)
 				if len(tc.services) == 0 {
-					if len(spec) != 0 {
+					// A site with no API names none, but a hosted frontend
+					// ships browser telemetry to the platform's own-origin
+					// ingest by default.
+					if _, hasAPI := spec["API_URL"]; hasAPI || len(spec) != 1 {
 						t.Errorf("%s: a site with no API names one: %#v", env, spec)
+					}
+					if ep, _ := spec["OTEL_ENDPOINT"].(map[string]any); ep["value"] != "/_otel" {
+						t.Errorf("%s: a hosted frontend must default OTEL_ENDPOINT to /_otel, got %#v", env, spec)
 					}
 					continue
 				}
@@ -270,6 +276,12 @@ func TestHostedFrontendReachesEveryService(t *testing.T) {
 		}
 		if cors := vars["CORS_ORIGINS"]["workloadURL"]; cors == nil {
 			t.Errorf("%s/%s: the API does not accept the site's browser calls (CORS_ORIGINS = %#v)", env, target, vars["CORS_ORIGINS"])
+		}
+		// Native sign-in answers with a session cookie set by the API's origin,
+		// and the site is another origin: unless the API allows credentials,
+		// the browser drops the cookie and every call after sign-in is 401.
+		if got := vars["CORS_ALLOW_CREDENTIALS"]["value"]; got != "true" {
+			t.Errorf("%s/%s: CORS_ALLOW_CREDENTIALS = %#v, want \"true\": the site's sign-in cookie never reaches the API", env, target, vars["CORS_ALLOW_CREDENTIALS"])
 		}
 		if db := vars["DATABASE_URL"]["databaseRef"]; db == nil {
 			t.Errorf("%s/%s: the API does not read the managed database (DATABASE_URL = %#v)", env, target, vars["DATABASE_URL"])

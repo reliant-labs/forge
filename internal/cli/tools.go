@@ -14,9 +14,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/cli/lint"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/goexec"
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // frontendTSPluginPackage is the npm package providing the local TS codegen
@@ -96,14 +98,17 @@ func resolveToolVersion(ctx context.Context, projectDir string, t protoTool, ove
 func newToolsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "tools",
-		Short: "Manage developer tooling forge depends on (proto plugins, etc.)",
+		Short: "Manage developer tooling forge depends on (proto plugins, linters, etc.)",
 		Long: `Manage developer tooling that forge expects on PATH but does not ship.
 
 Subcommands:
   install   Install the codegen tools forge runs (protoc-gen-go,
             protoc-gen-connect-go, goimports) via 'go install', at the
             versions this project's go.mod resolves, and check that every
-            frontend declares its TypeScript plugin.
+            frontend declares its TypeScript plugin. Name a tool to install
+            just it — including the lint tools 'forge lint' gates with
+            (golangci-lint, buf), at forge's pins.
+  pins      Print the tool versions this forge pins, for CI to read.
 
 Forge scaffolds buf.gen.yaml with 'local:' plugins by default so that
 'forge generate' works without any BSR (buf.build) authentication.
@@ -111,6 +116,7 @@ Those local plugins must be on PATH; this command installs them.`,
 	}
 
 	cmd.AddCommand(newToolsInstallCmd())
+	cmd.AddCommand(newToolsPinsCmd())
 
 	return cmdutil.StrictGroup(cmd)
 }
@@ -122,40 +128,53 @@ func newToolsInstallCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "install",
-		Short: "Install codegen tools (protoc-gen-go, protoc-gen-connect-go, goimports)",
+		Use:   "install [tool...]",
+		Short: "Install codegen tools (protoc-gen-go, protoc-gen-connect-go, goimports), or the named tools (golangci-lint, buf)",
 		Long: `Install the codegen tools forge needs on PATH for the default
 local:-plugin buf.gen.yaml workflow, plus goimports, which formats every Go
-file forge generates.
+file forge generates. Name tools to install just those, including the lint
+tools 'forge lint' gates with: golangci-lint and buf.
 
-Each tool is installed at the version this project's go.mod resolves for it
-(google.golang.org/protobuf, connectrpc.com/connect, golang.org/x/tools) —
-the version the committed generated code was produced with — falling back to
-@latest when go.mod does not contain the module. --version overrides that for
-every tool.
+Each codegen tool is installed at the version this project's go.mod resolves
+for it (google.golang.org/protobuf, connectrpc.com/connect,
+golang.org/x/tools) — the version the committed generated code was produced
+with — falling back to @latest when go.mod does not contain the module.
+--version overrides that for every codegen tool.
 
-By default, tools already present on PATH are skipped. Use --force to
-re-install them.
+The lint tools install at forge's pins ('forge tools pins'), never at
+--version. golangci-lint is built with the Go toolchain this module compiles
+with: one built with an older Go cannot analyze it. 'forge lint' builds that
+same golangci-lint into its own cache when PATH has none, so installing it
+only saves that one-time build — a CI job needs no install step for it.
+
+By default, tools already present on PATH are skipped — golangci-lint only
+when it is forge's pin built with a new-enough Go. Use --force to re-install
+them.
 
 The TypeScript plugin, @bufbuild/protoc-gen-es, is not installed here. It
 is an ordinary devDependency of each frontend, so the frontend's own
-'npm ci' installs it at the version its lockfile pins. This command only
-checks that every frontend whose buf.gen.yaml runs it declares it, and
-fails with the edit to make when one does not. It never runs npm and never
-writes a frontend's package.json or package-lock.json — with or without
---force.
+'npm ci' installs it at the version its lockfile pins. With no tool named,
+this command checks that every frontend whose buf.gen.yaml runs it declares
+it, and fails with the edit to make when one does not. It never runs npm and
+never writes a frontend's package.json or package-lock.json — with or
+without --force.
 
 Examples:
   forge tools install
   forge tools install --version v1.34.2
-  forge tools install --force`,
+  forge tools install --force
+  forge tools install golangci-lint
+  forge tools install golangci-lint buf`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			goErr := runToolsInstall(cmd.Context(), version, force)
+			goErr := runToolsInstall(cmd.Context(), version, force, args...)
+			if len(args) > 0 {
+				return goErr
+			}
 			return errors.Join(goErr, checkFrontendTSPlugins())
 		},
 	}
 
-	cmd.Flags().StringVar(&version, "version", "", "Version passed to 'go install' for every tool (e.g. latest, v1.34.2); default: the version go.mod resolves, else latest")
+	cmd.Flags().StringVar(&version, "version", "", "Version passed to 'go install' for every codegen tool (e.g. latest, v1.34.2); default: the version go.mod resolves, else latest. The lint tools always install at forge's pins")
 	cmd.Flags().BoolVar(&force, "force", false, "Reinstall the Go tools even when already on PATH (never touches a frontend's npm dependencies)")
 
 	return cmd
@@ -252,53 +271,155 @@ func declaresTSPlugin(path string) (bool, error) {
 	return dev || prod, nil
 }
 
-// runToolsInstall installs the required proto plugins. Returns the first
-// install error (if any) but always tries every tool so users see the
-// full picture.
-func runToolsInstall(ctx context.Context, version string, force bool) error {
+// lintTools are the tools `forge tools install <name>` installs at forge's
+// pins on request: the binaries `forge lint`'s gating lanes run. They are not
+// in the no-argument default, which installs only what `forge generate` needs
+// (and runs in `forge project new` and every scaffolded verify-generated job);
+// `forge lint` builds its own pinned golangci-lint when PATH has none, so
+// installing it is an optimisation, never a prerequisite.
+var lintTools = []string{"buf", "golangci-lint"}
+
+// runToolsInstall installs the named tools — the required codegen tools when
+// none are named. Returns the first install error (if any) but always tries
+// every tool so users see the full picture.
+func runToolsInstall(ctx context.Context, version string, force bool, names ...string) error {
 	if _, err := exec.LookPath("go"); err != nil {
 		return fmt.Errorf("'go' not found on PATH — install Go before running '%s tools install'", Name())
 	}
-
-	var firstErr error
+	known := map[string]func() error{
+		"buf": func() error {
+			// buf lint only needs a buf, so any one on PATH will do.
+			return goInstallTool(ctx, "buf", bufModulePath+"@v"+templates.BufVersion, force)
+		},
+		"golangci-lint": func() error { return installPinnedGolangciLint(ctx, force) },
+	}
+	var order []string
 	for _, t := range requiredProtoTools {
-		if !force {
-			if _, err := exec.LookPath(t.Binary); err == nil {
-				fmt.Printf("✅ %-26s already installed (use --force to reinstall)\n", t.Binary)
-				continue
-			}
+		known[t.Binary] = func() error {
+			return goInstallTool(ctx, t.Binary, t.Module+"@"+resolveToolVersion(ctx, ".", t, version), force)
 		}
-
-		spec := t.Module + "@" + resolveToolVersion(ctx, ".", t, version)
-		fmt.Printf("📦 Installing %-26s (go install %s)\n", t.Binary, spec)
-		installCmd := goexec.Graceful(exec.CommandContext(ctx, "go", "install", spec))
-		installCmd.Env = goexec.Env()
-		out, err := installCmd.CombinedOutput()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  ❌ go install %s failed: %v\n", spec, err)
-			if len(out) > 0 {
-				fmt.Fprintln(os.Stderr, string(out))
-			}
-			if firstErr == nil {
-				firstErr = fmt.Errorf("install %s: %w", t.Binary, err)
-			}
-			continue
+		order = append(order, t.Binary)
+	}
+	if len(names) == 0 {
+		names = order
+	}
+	for _, n := range names {
+		if known[n] == nil {
+			return cliutil.UserErr("forge tools install", fmt.Sprintf("no installable tool named %q", n), "",
+				"one of: "+strings.Join(append(order, lintTools...), ", "))
 		}
-		// Verify it landed on PATH (catches GOBIN/GOPATH-not-on-PATH).
-		if _, err := exec.LookPath(t.Binary); err != nil {
-			fmt.Fprintf(os.Stderr, "  ⚠️  Installed %s but it is not on PATH. Add $(go env GOBIN) (or $(go env GOPATH)/bin if GOBIN is unset) to PATH.\n", t.Binary)
-			if firstErr == nil {
-				firstErr = fmt.Errorf("%s installed but not on PATH", t.Binary)
-			}
-			continue
-		}
-		fmt.Printf("  ✅ %s installed\n", t.Binary)
 	}
 
+	var firstErr error
+	for _, n := range names {
+		if err := known[n](); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	if firstErr != nil {
 		return firstErr
 	}
 	fmt.Println()
-	fmt.Println("✅ All required codegen tools installed.")
+	fmt.Println("✅ All requested tools installed.")
 	return nil
+}
+
+// bufModulePath is the package `go install` builds buf from.
+const bufModulePath = "github.com/bufbuild/buf/cmd/buf"
+
+// goInstallTool installs spec with `go install` unless binary is already on
+// PATH (and force is unset), and checks that it landed on PATH.
+func goInstallTool(ctx context.Context, binary, spec string, force bool) error {
+	if !force {
+		if _, err := exec.LookPath(binary); err == nil {
+			fmt.Printf("✅ %-26s already installed (use --force to reinstall)\n", binary)
+			return nil
+		}
+	}
+	fmt.Printf("📦 Installing %-26s (go install %s)\n", binary, spec)
+	installCmd := goexec.Graceful(exec.CommandContext(ctx, "go", "install", spec))
+	installCmd.Env = goexec.Env()
+	out, err := installCmd.CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  ❌ go install %s failed: %v\n", spec, err)
+		if len(out) > 0 {
+			fmt.Fprintln(os.Stderr, string(out))
+		}
+		return fmt.Errorf("install %s: %w", binary, err)
+	}
+	// Verify it landed on PATH (catches GOBIN/GOPATH-not-on-PATH).
+	if _, err := exec.LookPath(binary); err != nil {
+		fmt.Fprintf(os.Stderr, "  ⚠️  Installed %s but it is not on PATH. %s\n", binary, goBinHint)
+		return fmt.Errorf("%s installed but not on PATH", binary)
+	}
+	fmt.Printf("  ✅ %s installed\n", binary)
+	return nil
+}
+
+const goBinHint = "Add $(go env GOBIN) (or $(go env GOPATH)/bin if GOBIN is unset) to PATH."
+
+// installPinnedGolangciLint installs forge's pinned golangci-lint into GOBIN,
+// built with the toolchain that compiles this module — the only build that
+// can analyze it. Unlike the other tools, a golangci-lint already on PATH is
+// kept only when it IS that build: another version reports other findings
+// than CI's, and one built with an older Go cannot lint the module at all.
+func installPinnedGolangciLint(ctx context.Context, force bool) error {
+	const binary = "golangci-lint"
+	pin := lint.GolangciLintPin()
+	path, why := lint.GolangciLintOnPath(".")
+	if why == "" && !force {
+		fmt.Printf("✅ %-26s %s already installed at %s (use --force to reinstall)\n", binary, pin, path)
+		return nil
+	}
+	gobin, err := goBinDir(ctx)
+	if err != nil {
+		return fmt.Errorf("install %s: %w", binary, err)
+	}
+	reason := ""
+	if path != "" && why != "" {
+		reason = " — " + path + " " + why
+	}
+	fmt.Printf("📦 Installing %-26s (go install %s@%s with this module's Go toolchain, into %s)%s\n",
+		binary, lint.GolangciLintModule(), pin, gobin, reason)
+	toolchain, err := lint.InstallGolangciLint(ctx, ".", gobin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  ❌ building golangci-lint %s with %s failed: %v\n", pin, toolchain, err)
+		return fmt.Errorf("install %s: %w", binary, err)
+	}
+	path, why = lint.GolangciLintOnPath(".")
+	switch {
+	case path == "":
+		fmt.Fprintf(os.Stderr, "  ⚠️  Installed %s into %s but it is not on PATH. %s\n", binary, gobin, goBinHint)
+		return fmt.Errorf("%s installed but not on PATH", binary)
+	case why != "":
+		// Another golangci-lint ahead of GOBIN on PATH. forge lint still
+		// copes (it builds its own when that one cannot lint the module),
+		// but it is not the pin.
+		fmt.Fprintf(os.Stderr, "  ⚠️  Installed %s %s into %s, but PATH resolves %s first, which %s — put %s ahead of it on PATH.\n",
+			binary, pin, gobin, path, why, gobin)
+	default:
+		fmt.Printf("  ✅ %s %s installed (built with %s)\n", binary, pin, toolchain)
+	}
+	return nil
+}
+
+// goBinDir is where `go install` puts binaries: GOBIN, else the first
+// GOPATH entry's bin.
+func goBinDir(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, "go", "env", "GOBIN", "GOPATH")
+	cmd.Env = goexec.Env()
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("go env GOBIN GOPATH: %w", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if len(lines) > 0 && strings.TrimSpace(lines[0]) != "" {
+		return strings.TrimSpace(lines[0]), nil
+	}
+	if len(lines) > 1 {
+		if first := filepath.SplitList(strings.TrimSpace(lines[1])); len(first) > 0 && first[0] != "" {
+			return filepath.Join(first[0], "bin"), nil
+		}
+	}
+	return "", errors.New("go env reports neither GOBIN nor GOPATH")
 }

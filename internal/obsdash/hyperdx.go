@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/pkg/dashspec"
 )
 
 // PinnedHyperDX is the HyperDX / ClickStack version the rendered JSON is
@@ -197,6 +199,9 @@ func renderDashboard(d Dashboard) (HyperDXDashboard, error) {
 			return hd, fmt.Errorf("duplicate panel id %q", p.ID)
 		}
 		seen[p.ID] = true
+		if !hyperDXDraws(p) {
+			continue
+		}
 		w, h := p.Width, p.Height
 		if w <= 0 || w > gridColumns {
 			w = gridColumns
@@ -220,7 +225,23 @@ func renderDashboard(d Dashboard) (HyperDXDashboard, error) {
 	return hd, nil
 }
 
-const gridColumns = 24
+const gridColumns = dashspec.GridColumns
+
+// hyperDXDraws reports whether HyperDX can draw p. It cannot draw the
+// console's own kinds (its UI already plays replay and searches spans), and it
+// has no equivalent of a top-N bar over groups, a value-bucketed heatmap of a
+// field, a raw SQL panel or arbitrary arithmetic across series: those panels
+// are the console's, and a HyperDX dashboard leaves them out rather than draw
+// something that means something else.
+func hyperDXDraws(p Panel) bool {
+	switch {
+	case IsConsoleKind(p.Kind), p.Formula != "":
+		return false
+	case p.Kind == KindBar, p.Kind == KindHeatmap, p.Kind == KindSQL:
+		return false
+	}
+	return true
+}
 
 func renderChart(p Panel) (HyperDXChart, error) {
 	where, err := predicatesSQL(p.Signal, p.Where)
@@ -366,6 +387,11 @@ func isNumericField(f string) bool { return f == "span.duration" }
 
 // fieldSQL maps a semantic field to the ClickStack column expression for sig.
 func fieldSQL(sig Signal, f string) (string, error) {
+	// The vocabulary is dashspec's: a field it refuses is refused here with
+	// the same error, so the validator and this renderer cannot disagree.
+	if err := dashspec.CheckField(sig, f); err != nil {
+		return "", err
+	}
 	switch {
 	case f == FieldService:
 		return "ServiceName", nil

@@ -25,6 +25,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/google/pprof/profile"
 	pproftrans "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/pprof"
@@ -47,8 +48,10 @@ const (
 
 // pprofToOTLP converts one runtime/pprof profile (gzip or raw protobuf) into
 // OTLP profiles carrying res as their resource. It returns an empty Profiles
-// (SampleCount() == 0) for a profile that recorded nothing.
-func pprofToOTLP(r io.Reader, res *resource.Resource) (pprofile.Profiles, error) {
+// (SampleCount() == 0) for a profile that recorded nothing. Sample types named
+// in drop are left out (the heap profile's types that are not selected); the
+// last remaining type is never dropped.
+func pprofToOTLP(r io.Reader, res *resource.Resource, drop ...string) (pprofile.Profiles, error) {
 	p, err := profile.Parse(r)
 	if err != nil {
 		return pprofile.Profiles{}, fmt.Errorf("parse pprof: %w", err)
@@ -57,6 +60,23 @@ func pprofToOTLP(r io.Reader, res *resource.Resource) (pprofile.Profiles, error)
 		return pprofile.NewProfiles(), nil
 	}
 	dropSampleType(p, redundantSampleType)
+	if len(drop) > 0 {
+		for _, name := range drop {
+			dropSampleType(p, name)
+		}
+		// A stack that is zero in every kept type would only become zero rows,
+		// which the sparse filter removes anyway. Removing it here lets the
+		// locations, functions and strings only it referenced go too: without
+		// that, a live-heap snapshot still carries the dictionary of every
+		// allocation site the process ever had.
+		p.Sample = slices.DeleteFunc(p.Sample, func(s *profile.Sample) bool {
+			return !slices.ContainsFunc(s.Value, func(v int64) bool { return v != 0 })
+		})
+		if len(p.Sample) == 0 {
+			return pprofile.NewProfiles(), nil
+		}
+		pruneUnreferenced(p)
+	}
 	links := extractLinks(p)
 
 	out, err := pproftrans.ConvertPprofToProfiles(p)
@@ -142,6 +162,29 @@ func dropSampleType(p *profile.Profile, name string) {
 	if p.DefaultSampleType == name {
 		p.DefaultSampleType = ""
 	}
+}
+
+// pruneUnreferenced removes the locations no sample uses, then the functions
+// and mappings no remaining location uses. (profile.Compact would too, but on a
+// runtime heap profile its output fails the OTLP translator with "numeric units
+// with multiple values".)
+func pruneUnreferenced(p *profile.Profile) {
+	locs := map[*profile.Location]bool{}
+	for _, s := range p.Sample {
+		for _, l := range s.Location {
+			locs[l] = true
+		}
+	}
+	p.Location = slices.DeleteFunc(p.Location, func(l *profile.Location) bool { return !locs[l] })
+	fns, maps := map[*profile.Function]bool{}, map[*profile.Mapping]bool{}
+	for _, l := range p.Location {
+		maps[l.Mapping] = true
+		for _, ln := range l.Line {
+			fns[ln.Function] = true
+		}
+	}
+	p.Function = slices.DeleteFunc(p.Function, func(f *profile.Function) bool { return !fns[f] })
+	p.Mapping = slices.DeleteFunc(p.Mapping, func(m *profile.Mapping) bool { return !maps[m] })
 }
 
 type linkRef struct {

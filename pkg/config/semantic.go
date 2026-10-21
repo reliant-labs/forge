@@ -143,6 +143,56 @@ func CheckCommandPath(cmd *cobra.Command, configName string, want ...string) err
 		configName, configName, strings.Join(want, " "))
 }
 
+// RegisterInheritedFlags registers EVERY config-bound leaf of msg — its own
+// and those of the blocks it composes — as PERSISTENT flags on cmd, and NOT
+// the --config file flag.
+//
+// It is the registration for a SUBTREE config ((forge.v1.binary_config)
+// .subtrees) whose binary also has a root config: called on each subtree's
+// command, every command beneath inherits the flags, while --config stays the
+// root config's (persistent on the binary's root, inherited everywhere). A
+// subtree config with no root config beside it registers with
+// RegisterPersistentFlags, which adds --config itself.
+func RegisterInheritedFlags(cmd *cobra.Command, msg proto.Message) error {
+	recordFileMessage(cmd, msg)
+	return RegisterFlagsScoped(cmd.PersistentFlags(), msg, ScopeAll)
+}
+
+// CheckCommandSubtree refuses to load a subtree config from a command that
+// lies under none of its subtrees. configName names the config message and
+// subtrees are its (forge.v1.binary_config).subtrees paths, each below the
+// binary's root ([]string{"daemon"} covers `daemon` and every command under
+// it).
+//
+// It is CheckCommandPath's twin for a config several commands load: its
+// flags are persistent on each subtree's command, so a command outside every
+// subtree would load it without them. A detached or nil cmd is not checked,
+// as for CheckCommandPath.
+func CheckCommandSubtree(cmd *cobra.Command, configName string, subtrees ...[]string) error {
+	if cmd == nil || !cmd.HasParent() {
+		return nil
+	}
+	var got []string
+	for c := cmd; c.HasParent(); c = c.Parent() {
+		got = append([]string{c.Name()}, got...)
+	}
+	for _, want := range subtrees {
+		if len(want) <= len(got) && strings.Join(got[:len(want)], " ") == strings.Join(want, " ") {
+			return nil
+		}
+	}
+	paths := make([]string, len(subtrees))
+	for i, p := range subtrees {
+		paths[i] = fmt.Sprintf("%q", strings.Join(p, " "))
+	}
+	return fmt.Errorf(
+		"config: %s is declared for the commands at or below %s ((forge.v1.binary_config).subtrees), "+
+			"but `%s` loaded it. Its flags are registered on those commands (Register%sFlags), so a command "+
+			"outside them would load it without them: call Load%s from a command under one of them, "+
+			"or add this command's path to the annotation in proto/config",
+		configName, strings.Join(paths, ", "), cmd.CommandPath(), configName, configName)
+}
+
 // quoteJoin renders a command path as the annotation's list elements.
 func quoteJoin(items []string) string {
 	q := make([]string, len(items))
@@ -166,8 +216,40 @@ func registerConfigFileFlag(cmd *cobra.Command, msg proto.Message) {
 // option.
 // It is the cobra-facing alias of LoadInto. cmd may be nil (env + defaults
 // only). Sensitive fields resolve from env / Secret mount only.
-func Load(cmd *cobra.Command, msg proto.Message) error {
-	return LoadInto(cmd, msg)
+func Load(cmd *cobra.Command, msg proto.Message, opts ...LoadOption) error {
+	return LoadInto(cmd, msg, opts...)
+}
+
+// LoadOption narrows what a load demands of the configuration.
+type LoadOption func(*loadOptions)
+
+type loadOptions struct {
+	required map[string]bool // nil: every field
+	// env is the environment read: the process's unless Root.Validate
+	// hands the load a rendered one.
+	env environ
+	// alongside are configs the process loads beside this one that no
+	// cobra command records (Root.Validate's, which has no command): their
+	// env names and families claim variables under a shared prefix.
+	alongside []protoreflect.MessageDescriptor
+	// collect, when set, receives every problem the load finds and the load
+	// goes on (loadOptions.report); nil ends it at the first, as at boot.
+	collect *[]error
+}
+
+// RequiredWithin makes `required: true` apply only to the named fields — the
+// ones the process reaches, by path from the root message ("database_url",
+// "stripe.secret_key"). A process running one root of the composition graph
+// loads with the fields that root reaches (cmd/<bin>/cmd/roots_gen.go), so a
+// worker that never opens the database does not demand DATABASE_URL, and
+// its workload is not handed the credential to satisfy it. Every field still
+// loads and validates; only the "must be set" demand narrows.
+func RequiredWithin(paths ...string) LoadOption {
+	set := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		set[p] = true
+	}
+	return func(o *loadOptions) { o.required = set }
 }
 
 // LoadTyped is the generic convenience: it allocates a fresh T, loads it,
@@ -178,10 +260,10 @@ func Load(cmd *cobra.Command, msg proto.Message) error {
 //
 // It mirrors the generated Load(cmd) (*Config, error) signature shape so a
 // project can drop the generated loader and call this directly.
-func LoadTyped[T proto.Message](cmd *cobra.Command) (T, error) {
+func LoadTyped[T proto.Message](cmd *cobra.Command, opts ...LoadOption) (T, error) {
 	var zero T
 	msg := zero.ProtoReflect().New().Interface()
-	if err := LoadInto(cmd, msg); err != nil {
+	if err := LoadInto(cmd, msg, opts...); err != nil {
 		return zero, err
 	}
 	return msg.(T), nil
@@ -301,7 +383,15 @@ func Validate(msg proto.Message) error {
 	return validateMessage(msg.ProtoReflect())
 }
 
+// validateMessage stops at the first violation.
 func validateMessage(m protoreflect.Message) error {
+	return validateMessageReport(m, func(err error) error { return err })
+}
+
+// validateMessageReport hands each violation to report, and stops when report
+// returns an error — at the first, for validateMessage; never, for a load that
+// collects every problem.
+func validateMessageReport(m protoreflect.Message, report func(error) error) error {
 	fields := m.Descriptor().Fields()
 
 	var (
@@ -317,7 +407,7 @@ func validateMessage(m protoreflect.Message) error {
 
 		// Recurse into nested config blocks first.
 		if isConfigBlock(fd) {
-			if err := validateMessage(m.Get(fd).Message()); err != nil {
+			if err := validateMessageReport(m.Get(fd).Message(), report); err != nil {
 				return err
 			}
 			continue
@@ -330,10 +420,21 @@ func validateMessage(m protoreflect.Message) error {
 
 		// allowed_values closed-set check. A repeated string field is a
 		// closed set PER ELEMENT — every element must be in the set.
+		if vals := opt.GetAllowedValues(); len(vals) > 0 && isEnvFamily(opt) && fd.IsMap() && fd.MapValue().Kind() == protoreflect.StringKind {
+			for _, got := range familyValues(m, fd) {
+				if got != "" && !containsStr(vals, got) {
+					if err := report(fmt.Errorf("config field %s: value %q is not one of the allowed values %v", fd.Name(), got, vals)); err != nil {
+						return err
+					}
+				}
+			}
+		}
 		if vals := opt.GetAllowedValues(); len(vals) > 0 && isStringField(fd) {
 			for _, got := range stringValues(m, fd) {
 				if got != "" && !containsStr(vals, got) {
-					return fmt.Errorf("config field %s: value %q is not one of the allowed values %v", fd.Name(), got, vals)
+					if err := report(fmt.Errorf("config field %s: value %q is not one of the allowed values %v", fd.Name(), got, vals)); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -363,13 +464,17 @@ func validateMessage(m protoreflect.Message) error {
 		certSet := tlsCert != ""
 		keySet := tlsKey != ""
 		if certSet != keySet {
-			return fmt.Errorf("TLS is half-configured: set BOTH the TLS cert and key (role=TLS_CERT/TLS_KEY) or NEITHER — exactly one was provided")
+			if err := report(fmt.Errorf("TLS is half-configured: set BOTH the TLS cert and key (role=TLS_CERT/TLS_KEY) or NEITHER — exactly one was provided")); err != nil {
+				return err
+			}
 		}
 	}
 
 	// CORS: wildcard origin + credentials is spec-invalid.
 	if haveCORSOrigins && haveCORSCred && corsAllowCreds && hasWildcardOrigin(corsOrigins) {
-		return fmt.Errorf("CORS misconfiguration: a wildcard origin (\"*\") MUST NOT be combined with credentials (role=CORS_ALLOW_CREDENTIALS=true); name explicit origins instead")
+		if err := report(fmt.Errorf("CORS misconfiguration: a wildcard origin (\"*\") MUST NOT be combined with credentials (role=CORS_ALLOW_CREDENTIALS=true); name explicit origins instead")); err != nil {
+			return err
+		}
 	}
 
 	return nil

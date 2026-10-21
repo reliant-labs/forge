@@ -394,6 +394,18 @@ func lintInternalContracts(rootDir string, excludes []string) (forgeconv.Result,
 // contract surfaces all three at once (Service / Deps / New) rather
 // than drip-feeding one violation per re-run.
 func lintInternalContractPackage(relContractPath, pkgDir string) ([]forgeconv.Finding, error) {
+	// The shape exists so the server composition can construct the
+	// package: `<pkg>.<Constructor>(<pkg>.Deps{...})`, typed off the
+	// contract. A `//forge:not-a-component` package is one the composition
+	// never constructs — something else builds it — so there is nothing
+	// for the shape to make bindable. Before this check, such a package
+	// passed only by accident of the interface-catalogue early-out, and
+	// deleting an unrelated private interface (a scan helper) flipped it
+	// to three findings demanding Service/Deps/New.
+	if codegen.HasNotAComponentDirective(pkgDir) {
+		return nil, nil
+	}
+
 	facts, err := scanPackageContractShape(pkgDir)
 	if err != nil {
 		return nil, err
@@ -508,7 +520,9 @@ type contractShapeFacts struct {
 // a package's `//forge:exclude-contract` when an exported interface it
 // declares has two or more implementations in the module — correctly, because
 // interchangeable implementations ARE a contract — and prescribes moving the
-// interface into a contract.go. Doing that makes the package a contract
+// interface into a contract.go. (It no longer refuses an interface the
+// package itself consumes — a Deps or struct-field seam — so a seam reaches
+// this rule only when its author chose a contract.go for it.) Doing that makes the package a contract
 // package, at which point the shape rule used to demand a constructor
 // returning that interface.
 //

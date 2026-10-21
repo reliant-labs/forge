@@ -13,8 +13,10 @@ import (
 // generateHybridComposition emits the internal/app composition layer
 // (PASS 1, additive). Scaffold-once owned files (providers.go, post_build.go)
 // are written before the generated injector so its Infra-field resolution
-// sees the Infra struct on the first pass too.
-func generateHybridComposition(services []codegen.ServiceDef, packages []codegen.BootstrapPackageData, modulePath, databaseDriver string, ormEnabled bool, projectDir string, webhookServices map[string]bool, cs *checksums.FileChecksums) error {
+// sees the Infra struct on the first pass too. It returns a graph-mode
+// project's roots, the reach config_gen.k projects as ROOTS; a legacy
+// composition has none.
+func generateHybridComposition(services []codegen.ServiceDef, packages []codegen.BootstrapPackageData, modulePath, databaseDriver string, ormEnabled bool, projectDir string, webhookServices map[string]bool, cs *checksums.FileChecksums) ([]codegen.GraphRoot, error) {
 	// NO len()==0 early-return: the generated cmd/server.go imports
 	// internal/app unconditionally (OpenInfra → Build → PostBuild → mount via
 	// Inventory → serverkit.Run), so internal/app must be a non-empty,
@@ -32,18 +34,43 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 	// reads lives in compose.go. Without the inventory both files stay frozen
 	// at first-emit and every later `forge scaffold worker|operator` leaves
 	// a tree that does not compile.
-	workers, err := codegen.WorkerDataFromSpecs(codegen.DiscoverWorkerSpecs(projectDir), projectDir)
+	workers, operators, err := discoverSupervised(projectDir)
 	if err != nil {
-		return fmt.Errorf("discover workers: %w", err)
+		return nil, err
 	}
-	operators, err := codegen.OperatorDataFromSpecs(codegen.DiscoverOperatorSpecs(projectDir), projectDir)
-	if err != nil {
-		return fmt.Errorf("discover operators: %w", err)
+
+	// The composition graph (docs/design/composition-graph.md): provider
+	// funcs in providers.go, one constructor method per node in compose.go,
+	// the generated accessors and roots in graph_gen.go, the per-audience
+	// route sets in routes_gen.go. A project whose internal/app still holds
+	// the legacy Infra / NewComponents composition keeps the legacy
+	// generators below until it migrates.
+	if codegen.GraphComposition(projectDir) {
+		if err := codegen.GenerateGraphProviders(modulePath, databaseDriver, projectDir); err != nil {
+			return nil, fmt.Errorf("failed to scaffold internal/app/providers.go: %w", err)
+		}
+		if err := generateLoginBroker(modulePath, projectDir); err != nil {
+			return nil, err
+		}
+		var roots []codegen.GraphRoot
+		if err := codegen.GenerateGraph(codegen.GraphGenInput{
+			GenContext:      codegen.GenContext{ProjectDir: projectDir, ModulePath: modulePath, Checksums: cs},
+			Services:        services,
+			Packages:        packages,
+			Workers:         workers,
+			Operators:       operators,
+			WebhookServices: webhookServices,
+			Roots:           &roots,
+		}); err != nil {
+			return nil, fmt.Errorf("failed to generate the composition graph (internal/app): %w", err)
+		}
+		fmt.Println("  ✅ Generated internal/app composition graph (compose.go + graph_gen.go + routes_gen.go)")
+		return roots, nil
 	}
 
 	// Owned, scaffold-once (never overwritten after first emit).
 	if err := codegen.GenerateProviders(modulePath, databaseDriver, ormEnabled, projectDir); err != nil {
-		return fmt.Errorf("failed to scaffold internal/app/providers.go: %w", err)
+		return nil, fmt.Errorf("failed to scaffold internal/app/providers.go: %w", err)
 	}
 
 	// Owned, scaffold-once internal/app/auth.go (SetupAuth). Co-located
@@ -52,7 +79,7 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 	// calls app.SetupAuth. Authentication is code now, not forge.yaml
 	// config — the user edits SetupAuth to pick the validator.
 	if err := generateAuthSetup(modulePath, projectDir); err != nil {
-		return fmt.Errorf("failed to scaffold internal/app/auth.go: %w", err)
+		return nil, fmt.Errorf("failed to scaffold internal/app/auth.go: %w", err)
 	}
 
 	// Explicit per-binary component construction site (compose.go: Components +
@@ -66,7 +93,7 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 		Workers:    workers,
 		Operators:  operators,
 	}); err != nil {
-		return fmt.Errorf("failed to generate internal/app/compose.go: %w", err)
+		return nil, fmt.Errorf("failed to generate internal/app/compose.go: %w", err)
 	}
 
 	// Supervised-component surface (workers/operators) over *Components —
@@ -79,19 +106,23 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 		Workers:    workers,
 		Operators:  operators,
 	}); err != nil {
-		return fmt.Errorf("failed to generate internal/app/lifecycle.go: %w", err)
+		return nil, fmt.Errorf("failed to generate internal/app/lifecycle.go: %w", err)
 	}
 
 	// Typed per-service mount surface + data-only inventory (mounts_services.go).
-	// PROTO-DERIVED: regenerates every run from the service set (no
-	// worker/operator input — workers/operators never appear in the mount surface).
+	// PROTO-DERIVED: regenerates every run from the service set. Workers and
+	// operators never appear in the mount surface, but they are counted for
+	// collision naming exactly as compose.go counts them: a service whose
+	// package a worker shares is c.SvcX there, and Mount<Svc> must read it.
 	if err := codegen.GenerateInventory(codegen.InventoryGenInput{
 		GenContext:      codegen.GenContext{ProjectDir: projectDir, ModulePath: modulePath, Checksums: cs},
 		Services:        services,
 		Packages:        packages,
+		Workers:         workers,
+		Operators:       operators,
 		WebhookServices: webhookServices,
 	}); err != nil {
-		return fmt.Errorf("failed to generate internal/app/mounts_services.go: %w", err)
+		return nil, fmt.Errorf("failed to generate internal/app/mounts_services.go: %w", err)
 	}
 
 	// NOTE: the REAL per-component cmd-group subcommands (dir-nested under
@@ -106,7 +137,7 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 	// generateCmdGroups + stepCmdGroups.
 
 	fmt.Println("  ✅ Generated internal/app composition layer (compose.go + mounts_services.go + lifecycle.go)")
-	return nil
+	return nil, nil
 }
 
 // generateCmdGroups anchors the dir-nested per-component command-group
@@ -148,17 +179,42 @@ func generateCmdGroups(services []codegen.ServiceDef, projectDir string, cs *che
 	if pkgErr != nil {
 		packages = nil
 	}
-	// No Workers/Operators: cmd groups emit only proto-derived service
-	// subcommands + the anchor files + the scaffold-once main.go. Per-worker /
-	// per-operator subcommands are OWNED code scaffolded once by `forge scaffold`.
+	// Workers and operators get no subcommand here — theirs are OWNED code
+	// scaffolded once by `forge scaffold` — but they are counted for the same
+	// collision naming compose.go and the inventory use, so a service whose
+	// package a worker shares calls MountSvcX, the mount that exists. The
+	// composition step already ran this discovery and failed on an error, so
+	// one here is not swallowed into a silently wrong name either.
+	workers, operators, err := discoverSupervised(projectDir)
+	if err != nil {
+		return err
+	}
 	if err := codegen.GenerateCmdGroups(codegen.CmdServiceGroupInput{
-		Bin:      bin,
-		Services: names,
-		Packages: packages,
+		Bin:       bin,
+		Services:  names,
+		Packages:  packages,
+		Workers:   workers,
+		Operators: operators,
 	}, projectDir, cs); err != nil {
 		return fmt.Errorf("failed to generate cmd/%s command-group subcommands: %w", bin, err)
 	}
 	return nil
+}
+
+// discoverSupervised reads the project's workers and operators from their
+// internal/{workers,operators}/<pkg>/ directories. Every generator that
+// resolves component names calls this one function, so the collision counts
+// behind compose.go, the mount surface and the cmd groups cannot disagree.
+func discoverSupervised(projectDir string) ([]codegen.BootstrapWorkerData, []codegen.BootstrapOperatorData, error) {
+	workers, err := codegen.WorkerDataFromSpecs(codegen.DiscoverWorkerSpecs(projectDir), projectDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("discover workers: %w", err)
+	}
+	operators, err := codegen.OperatorDataFromSpecs(codegen.DiscoverOperatorSpecs(projectDir), projectDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("discover operators: %w", err)
+	}
+	return workers, operators, nil
 }
 
 // generateBootstrapTesting regenerates the per-component test helpers (one

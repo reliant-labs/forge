@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
@@ -30,7 +31,10 @@ import (
 // ORM file (kalshi fr-4dfef712e9: disown refused on internal/db/*_orm.go
 // because nothing registered them) and `forge project audit` doesn't see the
 // files as orphans. A nil cs is tolerated (files written, not tracked).
-func GeneratePlanORM(root, modulePath, serviceName string, entities []config.PlanEntity, cs *FileChecksums) error {
+//
+// orm places the projection (database.orm.package, default internal/db):
+// every file lands in that directory and declares its package.
+func GeneratePlanORM(root string, orm config.ORMConfig, entities []config.PlanEntity, cs *FileChecksums) error {
 	if len(entities) == 0 {
 		return nil
 	}
@@ -44,7 +48,9 @@ func GeneratePlanORM(root, modulePath, serviceName string, entities []config.Pla
 		return err
 	}
 
-	dbDir := filepath.Join(root, "internal", "db")
+	relDir := orm.PackageDir()
+	pkgName := orm.PackageName()
+	dbDir := filepath.Join(root, filepath.FromSlash(relDir))
 
 	// Render everything first, so a name the project already declares in
 	// internal/db is refused — naming its declaration — before a single
@@ -55,11 +61,11 @@ func GeneratePlanORM(root, modulePath, serviceName string, entities []config.Pla
 		outputs = append(outputs, ormOutput{
 			file:   naming.ToSnakeCase(ent.Name) + "_orm_gen.go",
 			entity: ent.Name,
-			src:    renderORMEntity(ent, hasRepoExtExtraType(root, ent.Name)),
+			src:    renderORMEntity(pkgName, ent, hasRepoExtExtraType(root, orm, ent.Name)),
 		})
 	}
-	outputs = append(outputs, ormOutput{file: storeGenFile, src: renderStoreInterfaces(entities)})
-	if err := checkORMNameCollisions(dbDir, entities, outputs); err != nil {
+	outputs = append(outputs, ormOutput{file: storeGenFile, src: renderStoreInterfaces(pkgName, entities)})
+	if err := checkORMNameCollisions(dbDir, relDir, entities, outputs); err != nil {
 		return err
 	}
 
@@ -77,22 +83,95 @@ func GeneratePlanORM(root, modulePath, serviceName string, entities []config.Pla
 	for _, ent := range entities {
 		expectedFiles[naming.ToSnakeCase(ent.Name)+"_orm_gen.go"] = true
 	}
-	existing, _ := os.ReadDir(dbDir)
+	sweepStaleORMFiles(root, relDir, expectedFiles, false, cs)
+	// A project that moved its ORM out of internal/db (database.orm.package)
+	// leaves forge's previous projection behind there; reclaim it, store
+	// file included, so two projections of one schema never coexist. The
+	// _repo_ext.go seams are the user's and stay where they are.
+	if relDir != config.DefaultORMPackage {
+		sweepStaleORMFiles(root, config.DefaultORMPackage, nil, true, cs)
+	}
+
+	// internal/db/orm_shared_gen.go is RETIRED. It declared exactly one
+	// symbol, `var ormTracer = otel.Tracer("orm")`, left over from the
+	// pre-generic per-entity ORM that opened its own spans. pkg/crud owns
+	// the tracing now and keeps the same tracer name (crud.repoTracer), so
+	// the generated var has had NO referent since the generic Repo landed:
+	// a rendered project compiles with the file deleted.
+	//
+	// It was also byte-identical in every project ever generated — the
+	// tierguard differential render is what surfaced it — so it was library
+	// code, and dead library code at that, sitting in the user's tree
+	// behind a "do not edit" banner.
+	codegen.RetireGenerated(root, filepath.Join(filepath.FromSlash(relDir), "orm_shared_gen.go"), cs)
+
+	for _, ent := range entities {
+		// The custom-query seam: a scaffold-once, user-owned sibling file
+		// documenting where hand-written / raw-SQL queries for this entity
+		// go, and carrying the <Entity>Extra computed-field type. It reuses
+		// the generated <entity>Repo, the package-level delegates, and db
+		// handle. Routed through the write-if-absent scaffold writer so
+		// it's NEVER overwritten after first scaffold (sibling files in
+		// package db survive the *_orm.go regen sweep below). Written
+		// BEFORE the entity struct so a same-run birth is visible to the
+		// hasRepoExtExtraType check that follows.
+		if err := writeRepoExtSeam(root, orm, ent, cs); err != nil {
+			return fmt.Errorf("scaffold repo-ext seam for entity %s: %w", ent.Name, err)
+		}
+
+		name := naming.ToSnakeCase(ent.Name) + "_orm_gen.go"
+		hasExtra := hasRepoExtExtraType(root, orm, ent.Name)
+		if err := writeORMFile(root, orm, name, renderORMEntity(pkgName, ent, hasExtra), cs); err != nil {
+			return fmt.Errorf("generate ORM for entity %s: %w", ent.Name, err)
+		}
+	}
+
+	// The interface shape of everything just written. Emitted from the SAME
+	// entity slice as the delegates above, so the two cannot describe
+	// different schemas — and carrying compile-time assertions, so a drift
+	// between a delegate and its interface fails at generate time rather
+	// than in a user's package.
+	if err := writeStoreInterfaces(root, orm, entities, cs); err != nil {
+		return fmt.Errorf("generate store interfaces: %w", err)
+	}
+
+	// internal/db/types.go was the proto-entity era's alias file; a stale
+	// alias to a deleted pb type would shadow a generated struct. It is
+	// removed only when forge wrote it: `types.go` is the most ordinary
+	// name a hand-written data layer has, and this used to delete one
+	// unconditionally on the first generate that projected an entity.
+	if body, rerr := os.ReadFile(filepath.Join(dbDir, "types.go")); rerr == nil && forgeWroteFile(body) {
+		if err := checksums.RemoveJournaled(filepath.Join(dbDir, "types.go")); err != nil {
+			return fmt.Errorf("retire %s/types.go: %w", relDir, err)
+		}
+	}
+	return nil
+}
+
+// sweepStaleORMFiles removes forge's ORM output in relDir that this run
+// does not rewrite — an entity whose table is gone, or the pre-rename
+// "_orm.go" spelling — but never a file the user owns (Tier-2 / disowned /
+// hand-edited): a disowned ORM file is the user's content now, and the
+// entity disappearing from the projection doesn't change that. withStore
+// sweeps store_gen.go too, for a directory the ORM has moved out of.
+func sweepStaleORMFiles(root, relDir string, expected map[string]bool, withStore bool, cs *FileChecksums) {
+	dir := filepath.Join(root, filepath.FromSlash(relDir))
+	existing, _ := os.ReadDir(dir)
 	for _, e := range existing {
 		// Both spellings are swept: "_orm_gen.go" is the current name and
 		// "_orm.go" the pre-rename one, so an upgrading project's old copies
 		// are reclaimed by the same pass that prunes deleted entities.
 		nm := e.Name()
 		isORM := strings.HasSuffix(nm, "_orm.go") || strings.HasSuffix(nm, "_orm_gen.go") ||
-			nm == "orm_shared.go"
-		if e.IsDir() || !isORM || expectedFiles[nm] {
+			nm == "orm_shared.go" || (withStore && nm == storeGenFile)
+		if e.IsDir() || !isORM || expected[nm] {
 			continue
 		}
-		rel := filepath.Join("internal", "db", e.Name())
+		rel := filepath.Join(filepath.FromSlash(relDir), nm)
 		if cs.IsDisowned(rel) {
 			continue // user-owned by recorded intent — not forge's to delete
 		}
-		full := filepath.Join(dbDir, e.Name())
+		full := filepath.Join(dir, nm)
 		body, rerr := os.ReadFile(full)
 		if rerr != nil {
 			continue
@@ -112,72 +191,17 @@ func GeneratePlanORM(root, modulePath, serviceName string, entities []config.Pla
 			}
 		}
 	}
-
-	// internal/db/orm_shared_gen.go is RETIRED. It declared exactly one
-	// symbol, `var ormTracer = otel.Tracer("orm")`, left over from the
-	// pre-generic per-entity ORM that opened its own spans. pkg/crud owns
-	// the tracing now and keeps the same tracer name (crud.repoTracer), so
-	// the generated var has had NO referent since the generic Repo landed:
-	// a rendered project compiles with the file deleted.
-	//
-	// It was also byte-identical in every project ever generated — the
-	// tierguard differential render is what surfaced it — so it was library
-	// code, and dead library code at that, sitting in the user's tree
-	// behind a "do not edit" banner.
-	codegen.RetireGenerated(root, filepath.Join("internal", "db", "orm_shared_gen.go"), cs)
-
-	for _, ent := range entities {
-		// The custom-query seam: a scaffold-once, user-owned sibling file
-		// documenting where hand-written / raw-SQL queries for this entity
-		// go, and carrying the <Entity>Extra computed-field type. It reuses
-		// the generated <entity>Repo, the package-level delegates, and db
-		// handle. Routed through the write-if-absent scaffold writer so
-		// it's NEVER overwritten after first scaffold (sibling files in
-		// package db survive the *_orm.go regen sweep below). Written
-		// BEFORE the entity struct so a same-run birth is visible to the
-		// hasRepoExtExtraType check that follows.
-		if err := writeRepoExtSeam(root, ent, cs); err != nil {
-			return fmt.Errorf("scaffold repo-ext seam for entity %s: %w", ent.Name, err)
-		}
-
-		name := naming.ToSnakeCase(ent.Name) + "_orm_gen.go"
-		hasExtra := hasRepoExtExtraType(root, ent.Name)
-		if err := writeORMFile(root, name, renderORMEntity(ent, hasExtra), cs); err != nil {
-			return fmt.Errorf("generate ORM for entity %s: %w", ent.Name, err)
-		}
-	}
-
-	// The interface shape of everything just written. Emitted from the SAME
-	// entity slice as the delegates above, so the two cannot describe
-	// different schemas — and carrying compile-time assertions, so a drift
-	// between a delegate and its interface fails at generate time rather
-	// than in a user's package.
-	if err := writeStoreInterfaces(root, entities, cs); err != nil {
-		return fmt.Errorf("generate store interfaces: %w", err)
-	}
-
-	// internal/db/types.go was the proto-entity era's alias file; a stale
-	// alias to a deleted pb type would shadow a generated struct. It is
-	// removed only when forge wrote it: `types.go` is the most ordinary
-	// name a hand-written data layer has, and this used to delete one
-	// unconditionally on the first generate that projected an entity.
-	if body, rerr := os.ReadFile(filepath.Join(dbDir, "types.go")); rerr == nil && forgeWroteFile(body) {
-		if err := checksums.RemoveJournaled(filepath.Join(dbDir, "types.go")); err != nil {
-			return fmt.Errorf("retire internal/db/types.go: %w", err)
-		}
-	}
-	return nil
 }
 
-// writeRepoExtSeam scaffolds internal/db/<entity>_repo_ext.go ONCE: a
+// writeRepoExtSeam scaffolds <orm package>/<entity>_repo_ext.go ONCE: a
 // discoverable, empty-but-documented home for hand-written queries that
 // reuse the generated CRUD machinery. Scaffold-once ("yours") — once on
 // disk forge never touches it, so the user's custom methods are safe
 // across every future `forge generate`.
-func writeRepoExtSeam(root string, ent config.PlanEntity, _ *FileChecksums) error {
+func writeRepoExtSeam(root string, orm config.ORMConfig, ent config.PlanEntity, _ *FileChecksums) error {
 	name := naming.ToSnakeCase(ent.Name) + "_repo_ext.go"
-	rel := filepath.Join("internal", "db", name)
-	_, err := WriteScaffoldIfMissing(root, rel, renderRepoExtSeam(ent))
+	rel := filepath.Join(filepath.FromSlash(orm.PackageDir()), name)
+	_, err := WriteScaffoldIfMissing(root, rel, renderRepoExtSeam(orm.PackageName(), ent))
 	return err
 }
 
@@ -185,7 +209,7 @@ func writeRepoExtSeam(root string, ent config.PlanEntity, _ *FileChecksums) erro
 // as-is (no unused imports, no undefined references) and shows — in a
 // commented example — how to add a method that reuses the generated
 // repo/delegates and drops to raw SQL via the Bun handle.
-func renderRepoExtSeam(ent config.PlanEntity) []byte {
+func renderRepoExtSeam(pkgName string, ent config.PlanEntity) []byte {
 	msgName := ent.Name
 	pkGoType := "string"
 	for _, f := range resolveORMFields(ent) {
@@ -208,7 +232,18 @@ func renderRepoExtSeam(ent config.PlanEntity) []byte {
 	// The seam must name only the delegates that EXIST. An append-only
 	// entity has no Update/Delete to reuse, and advertising them sends the
 	// reader hunting for a symbol forge deliberately refuses to emit.
-	if ent.AppendOnly {
+	if ent.ReadOnly {
+		fmt.Fprintf(&b, "//      package-level Get%sByID (when the view has a key) / List%s / Count%s —\n", msgName, msgName, msgName)
+		fmt.Fprintf(&b, "//      %s is a read-only VIEW, so nothing writes through it; the\n", msgName)
+	} else if keys := compositeKey(resolveORMFields(ent)); keys != nil {
+		fmt.Fprintf(&b, "//      package-level Get%sByPK / List%s / Create%s / Upsert%s, keyed by\n", msgName, msgName, msgName, msgName)
+		fmt.Fprintf(&b, "//      the whole composite key %s", keyColumns(keys))
+		if ent.AppendOnly {
+			b.WriteString(" (append-only: no Update/Delete)\n")
+		} else {
+			fmt.Fprintf(&b, ", plus Update%s / Delete%sByPK\n", msgName, msgName)
+		}
+	} else if ent.AppendOnly {
 		fmt.Fprintf(&b, "//      package-level Get%sByID / List%s / Create%s — %s is append-only,\n", msgName, msgName, msgName, msgName)
 		b.WriteString("//      so there is no Update/Delete delegate to reuse; correct a bad row\n")
 		b.WriteString("//      by appending its reversal\n")
@@ -241,7 +276,7 @@ func renderRepoExtSeam(ent config.PlanEntity) []byte {
 	fmt.Fprintf(&b, "//\tfunc Active%s(ctx context.Context, db orm.Context) ([]*%s, error) {\n", naming.Pluralize(msgName), msgName)
 	fmt.Fprintf(&b, "//\t\treturn List%s(ctx, db, orm.WhereEq(\"%s\", true))\n", msgName, firstNonPKColumn(ent, pkGoType))
 	b.WriteString("//\t}\n")
-	b.WriteString("package db\n\n")
+	fmt.Fprintf(&b, "package %s\n\n", pkgName)
 
 	extraType := entityExtraTypeName(msgName)
 	fmt.Fprintf(&b, "// %s carries fields on %s that are NOT columns — computed\n", extraType, msgName)
@@ -286,8 +321,8 @@ func entityExtraTypeName(msgName string) string { return msgName + "Extra" }
 // Parse errors and a missing file both answer false: an unparseable
 // seam file is not proof the type exists, and the safe default is never
 // to embed a reference to a type we can't confirm.
-func hasRepoExtExtraType(root, entityName string) bool {
-	path := filepath.Join(root, "internal", "db", naming.ToSnakeCase(entityName)+"_repo_ext.go")
+func hasRepoExtExtraType(root string, orm config.ORMConfig, entityName string) bool {
+	path := filepath.Join(root, filepath.FromSlash(orm.PackageDir()), naming.ToSnakeCase(entityName)+"_repo_ext.go")
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 	if err != nil {
@@ -333,8 +368,8 @@ func firstNonPKColumn(ent config.PlanEntity, _ string) string {
 // documented re-adoption path), and force=true keeps the Tier-1
 // regenerated-every-run semantics (hand-edit protection is the
 // pre-pipeline drift guard's job, same as every other Tier-1 emitter).
-func writeORMFile(root, name string, content []byte, cs *FileChecksums) error {
-	rel := filepath.Join("internal", "db", name)
+func writeORMFile(root string, orm config.ORMConfig, name string, content []byte, cs *FileChecksums) error {
+	rel := filepath.Join(filepath.FromSlash(orm.PackageDir()), name)
 	// First-adoption warning: ORM files written by pre-marker forge are
 	// on disk without a certification marker, so the drift guard can't
 	// yet protect a hand-patch in them (kalshi carried exactly such a
@@ -368,6 +403,7 @@ type ormField struct {
 	nullable    bool   // nullable column → pointer struct field
 	hasDefault  bool   // column has a DB DEFAULT (server-supplied value)
 	columnDef   string // the DEFAULT expression verbatim, when hasDefault
+	isIdentity  bool   // GENERATED ... AS IDENTITY (no DEFAULT in the catalog)
 	// softDeleteNative is true on the deleted_at field when soft delete is
 	// active AND the column projects to a proper time type (TIMESTAMPTZ →
 	// time.Time). Bun's built-in ,soft_delete owns it; the generated CRUD
@@ -375,6 +411,14 @@ type ormField struct {
 	// hand-rolled (Bun's ,soft_delete stamps a time.Time that a TEXT column
 	// can't round-trip — kalshi fr-3fba9166ba style).
 	softDeleteNative bool
+	// softDeleteLegacy is true on a soft-delete deleted_at that does NOT
+	// project to a time (a legacy TEXT column): Bun's ,soft_delete cannot
+	// own it, so it carries a `forge:"soft-delete"` struct tag and
+	// pkg/crud hand-rolls the filter and the stamp. The repo reads soft
+	// delete only from a tag — never from the column's name — so a
+	// deleted_at declared `forge:no-soft-delete` carries neither and is an
+	// ordinary column at runtime too.
+	softDeleteLegacy bool
 	// isGenerated marks a GENERATED ALWAYS AS (...) STORED column →
 	// ,nullzero,skipupdate: postgres rejects the column in an INSERT column
 	// list or an UPDATE SET, but it must still be SELECTed. See bunTag for
@@ -406,6 +450,14 @@ type ormField struct {
 	// struct tag in forge's own namespace (see structTag) —
 	// pkg/crud.Repo.ensureMeta reads it back the same way it reads version.
 	isFillULID bool
+	// insertDefault is how the column's DEFAULT applies when the caller
+	// leaves the field unset (codegen.ColumnInsertDefault): a pointer field
+	// whose nil is the DEFAULT, or ,nullzero on a type whose zero is never
+	// a stored value (a json document, an array with a non-empty DEFAULT).
+	insertDefault codegen.InsertDefault
+	// override is a `forge:go-type` declaration: the struct field's Go type
+	// in place of goType's projection, and the import it needs.
+	override *codegen.GoTypeOverride
 }
 
 // isBunSoftDeleteTimeType reports whether a deleted_at field's projected
@@ -420,13 +472,38 @@ func isBunSoftDeleteTimeType(f ormField) bool {
 // struct: the base type, pointered when the column is nullable
 // (arrays/bytes are reference types already and stay bare).
 func (f ormField) structGoType() string {
+	if f.override != nil {
+		if f.nullable && !f.override.IsReference() {
+			return "*" + f.override.GoType
+		}
+		return f.override.GoType
+	}
 	if f.nullable && !f.isArray && f.goType != "[]byte" {
 		return "*" + f.goType
 	}
 	return f.goType
 }
 
-func renderORMEntity(ent config.PlanEntity, hasExtra bool) []byte {
+// writeORMGeneratedHeader writes the header every fully-generated ORM file
+// opens with, ahead of its package clause: Go's generated-code banner (the
+// exact `^// Code generated .* DO NOT EDIT\.$` line go/ast.IsGenerated,
+// gopls and golangci-lint recognise), the forge-owned note, and the
+// "// Source:" line `forge lint` requires of a _gen file. The forge:hash
+// marker is not written here — the Tier-1 writer stamps it directly under
+// the banner.
+//
+// One writer for every ORM output, because each emitter hand-writing its
+// own header is how store_gen.go shipped with none: linters then treated it
+// as hand-written, `forge lint`'s auto-fix pass rewrote it, and forge's own
+// drift gate failed on the rewrite. The _repo_ext.go seam is user-owned
+// from birth and must never carry it.
+func writeORMGeneratedHeader(b *strings.Builder, source string) {
+	b.WriteString("// Code generated by forge. DO NOT EDIT.\n")
+	b.WriteString("// forge-owned: regenerated every run — do not edit (forge project disown to take ownership)\n")
+	fmt.Fprintf(b, "// Source: %s\n", source)
+}
+
+func renderORMEntity(pkgName string, ent config.PlanEntity, hasExtra bool) []byte {
 	msgName := ent.Name
 	tableName := ent.TableName
 	if tableName == "" {
@@ -463,24 +540,26 @@ func renderORMEntity(ent config.PlanEntity, hasExtra bool) []byte {
 	// "does any field's type MENTION time.Time", not "is any field
 	// time.Time" — the latter left an array-of-instants column referencing
 	// an unimported package.
-	needsTime := false
+	needsTime, needsJSON := false, false
+	var overrideImports []string
 	for _, f := range fields {
-		if strings.Contains(f.goType, "time.Time") {
-			needsTime = true
-			break
+		if f.override != nil {
+			if spec := f.override.ImportSpec(); spec != "" && !slices.Contains(overrideImports, spec) {
+				overrideImports = append(overrideImports, spec)
+			}
+			continue
 		}
+		needsTime = needsTime || strings.Contains(f.goType, "time.Time")
+		needsJSON = needsJSON || strings.Contains(f.goType, "json.RawMessage")
 	}
 
 	var b strings.Builder
 
-	// Header
-	b.WriteString("// Code generated by forge. DO NOT EDIT.\n")
-	b.WriteString("// forge-owned: regenerated every run — do not edit (forge project disown to take ownership)\n")
-	fmt.Fprintf(&b, "// Source: the APPLIED schema (db/migrations) of table %s.\n", tableName)
-	b.WriteString("package db\n\n")
+	writeORMGeneratedHeader(&b, "the APPLIED schema (db/migrations) of table "+tableName+".")
+	fmt.Fprintf(&b, "package %s\n\n", pkgName)
 
 	// Imports
-	writeORMImports(&b, needsTime)
+	writeORMImports(&b, needsTime, needsJSON, overrideImports)
 
 	// The entity struct: a projection of the APPLIED schema, with Bun tags.
 	writeEntityStruct(&b, msgName, tableName, fields, hasExtra)
@@ -528,7 +607,13 @@ func renderORMEntity(ent config.PlanEntity, hasExtra bool) []byte {
 	// ,skipupdate tag on the column itself (see bunTag), where Bun enforces
 	// it. A parallel list of column NAMES in the Spec was the same fact
 	// spelled a second way, unchecked against the struct it described.
-	writeORMRepoAndDelegates(&b, msgName, pkGoType, ent.SoftDelete, ent.AppendOnly)
+	if ent.ReadOnly {
+		writeReadOnlyDelegates(&b, msgName, pkField, tableName)
+	} else if keys := compositeKey(fields); keys != nil {
+		writeCompositeKeyDelegates(&b, msgName, keys, ent.SoftDelete, ent.AppendOnly)
+	} else {
+		writeORMRepoAndDelegates(&b, msgName, pkGoType, ent.SoftDelete, ent.AppendOnly)
+	}
 
 	// gofmt the render so struct-tag/const alignment matches what the
 	// project's gofmt/CI check (and the drift guard) expect. The writers
@@ -545,24 +630,43 @@ func renderORMEntity(ent config.PlanEntity, hasExtra bool) []byte {
 // writeORMImports emits the import block for a generated ORM file. The
 // per-entity CRUD bodies now live in the generic forge/pkg/crud.Repo, so
 // the generated file imports only what the thin delegates and the struct
-// reference: context (delegate signatures), errors + forge/pkg/svcerr (the
-// Get delegate's missing-row classification), forge/pkg/crud (the Repo),
+// reference: context (delegate signatures), forge/pkg/crud (the Repo),
 // forge/pkg/orm (the Context + QueryOption types), and bun (the embedded
 // BaseModel). time is added when any column projects to time.Time. The old
 // per-file fmt/strings/ulid/otel imports are gone — the library owns the
 // tracing, ULID generation, and error wrapping.
-func writeORMImports(b *strings.Builder, needsTime bool) {
+func writeORMImports(b *strings.Builder, needsTime, needsJSON bool, extra []string) {
+	// forge:go-type imports join the group they belong to: a standard
+	// library path (no dot in its first element) beside context, any
+	// other beside bun. format.Source sorts each group and drops a
+	// duplicate of a path the file already imports.
+	var std, third []string
+	for _, spec := range extra {
+		p := spec[strings.Index(spec, `"`)+1:]
+		if first, _, _ := strings.Cut(p, "/"); strings.Contains(first, ".") {
+			third = append(third, spec)
+		} else {
+			std = append(std, spec)
+		}
+	}
 	b.WriteString("import (\n")
 	b.WriteString("\t\"context\"\n")
-	b.WriteString("\t\"errors\"\n")
+	for _, spec := range std {
+		b.WriteString("\t" + spec + "\n")
+	}
+	if needsJSON {
+		b.WriteString("\t\"encoding/json\"\n")
+	}
 	if needsTime {
 		b.WriteString("\t\"time\"\n")
 	}
 	b.WriteString("\n")
 	b.WriteString("\t\"github.com/reliant-labs/forge/pkg/crud\"\n")
 	b.WriteString("\t\"github.com/reliant-labs/forge/pkg/orm\"\n")
-	b.WriteString("\t\"github.com/reliant-labs/forge/pkg/svcerr\"\n")
 	b.WriteString("\t\"github.com/uptrace/bun\"\n")
+	for _, spec := range third {
+		b.WriteString("\t" + spec + "\n")
+	}
 	b.WriteString(")\n\n")
 }
 
@@ -592,29 +696,17 @@ func writeORMRepoAndDelegates(b *strings.Builder, msgName, pkGoType string, soft
 	fmt.Fprintf(b, "\treturn %s.Create(ctx, db, msg)\n", repoVar)
 	b.WriteString("}\n\n")
 
-	// Get. The missing-row answer is CLASSIFIED here, not left as the raw
-	// storage sentinel: svcerr.NotFound is the service-layer category, and a
-	// hand-written RPC can `return nil, err` (or svcerr.Wrap(err)) instead of
-	// re-deriving it. Leaving orm.ErrNoRows on this delegate made every
-	// hand-written loader restate the same three lines — one copy per entity —
-	// which is the exact duplication pkg/svcerr's own doc comment cites as its
-	// reason for existing. The generated CRUD path already classified it
-	// (crud.mapRepoErr), so only the hand-written path was paying.
-	//
-	// Only Get. Update/Delete keep orm.ErrNoRows: pkg/crud documents swallowing
-	// that sentinel in an entity's Persist closure as the supported way to opt
-	// into absent-is-success (AIP-135 allow_missing), and mapping it here would
-	// break the one escape hatch forge tells users to reach for.
+	// Get. A missing row is crud.Repo's not-found error, the one every
+	// by-key verb gives (Get, Update, UpdateMasked, Delete): svcerr.NotFound,
+	// still errors.Is-true for orm.ErrNoRows. The Repo classifies it, so
+	// this delegate — like the others — only forwards.
 	entityLower := strings.ToLower(msgName)
 	fmt.Fprintf(b, "// Get%sByID retrieves a %s by primary key. A missing row is\n", msgName, msgName)
 	fmt.Fprintf(b, "// svcerr.NotFound(%q) — return it as-is from a service or hand it to\n", entityLower)
-	b.WriteString("// svcerr.Wrap in a handler; every other error is the repository's.\n")
+	b.WriteString("// svcerr.Wrap in a handler — and is also errors.Is(err, orm.ErrNoRows);\n")
+	b.WriteString("// Update, UpdateMasked and Delete answer a missing row the same way.\n")
 	fmt.Fprintf(b, "func Get%sByID(ctx context.Context, db orm.Context, id %s) (*%s, error) {\n", msgName, pkGoType, msgName)
-	fmt.Fprintf(b, "\trow, err := %s.Get(ctx, db, id)\n", repoVar)
-	b.WriteString("\tif errors.Is(err, orm.ErrNoRows) {\n")
-	fmt.Fprintf(b, "\t\treturn nil, svcerr.NotFound(%q)\n", entityLower)
-	b.WriteString("\t}\n")
-	b.WriteString("\treturn row, err\n")
+	fmt.Fprintf(b, "\treturn %s.Get(ctx, db, id)\n", repoVar)
 	b.WriteString("}\n\n")
 
 	// List
@@ -658,7 +750,11 @@ func writeORMRepoAndDelegates(b *strings.Builder, msgName, pkGoType string, soft
 	// them, while app code calling this with no options keeps writing every
 	// updatable column. Variadic so every existing call site still compiles.
 	fmt.Fprintf(b, "// Update%s writes the updatable columns of an existing %s by PK\n", msgName, msgName)
-	b.WriteString("// (created_at/PK/deleted_at excluded; updated_at re-stamped) and reads\n")
+	if softDelete {
+		b.WriteString("// (created_at/PK/deleted_at excluded; updated_at re-stamped) and reads\n")
+	} else {
+		b.WriteString("// (created_at/PK excluded; updated_at re-stamped) and reads\n")
+	}
 	b.WriteString("// back every column it did not write, so msg holds the stored row after.\n")
 	b.WriteString("// crud.Preserve(cols...) keeps more columns out of this one write.\n")
 	fmt.Fprintf(b, "func Update%s(ctx context.Context, db orm.Context, msg *%s, opts ...crud.UpdateOption) error {\n", msgName, msgName)
@@ -669,9 +765,10 @@ func writeORMRepoAndDelegates(b *strings.Builder, msgName, pkGoType string, soft
 	fmt.Fprintf(b, "// Update%sMasked writes ONLY the named columns (AIP-134 update_mask;\n", msgName)
 	b.WriteString("// unknown/immutable paths return *orm.UnknownFieldError). It writes a\n")
 	b.WriteString("// forge:read-only column named here: this is how the code that owns one\n")
-	b.WriteString("// sets it, since no client Update can.\n")
-	fmt.Fprintf(b, "func Update%sMasked(ctx context.Context, db orm.Context, msg *%s, fields []string) error {\n", msgName, msgName)
-	fmt.Fprintf(b, "\treturn %s.UpdateMasked(ctx, db, msg, fields)\n", repoVar)
+	b.WriteString("// sets it, since no client Update can. opts are Update's: crud.NoReadBack()\n")
+	b.WriteString("// skips the read-back.\n")
+	fmt.Fprintf(b, "func Update%sMasked(ctx context.Context, db orm.Context, msg *%s, fields []string, opts ...crud.UpdateOption) error {\n", msgName, msgName)
+	fmt.Fprintf(b, "\treturn %s.UpdateMasked(ctx, db, msg, fields, opts...)\n", repoVar)
 	b.WriteString("}\n\n")
 
 	// Delete
@@ -680,6 +777,161 @@ func writeORMRepoAndDelegates(b *strings.Builder, msgName, pkGoType string, soft
 	fmt.Fprintf(b, "func Delete%s(ctx context.Context, db orm.Context, id %s) error {\n", msgName, pkGoType)
 	fmt.Fprintf(b, "\treturn %s.Delete(ctx, db, id)\n", repoVar)
 	b.WriteString("}\n")
+}
+
+// keyParam is one column of a composite primary key, as a delegate
+// parameter.
+type keyParam struct {
+	param   string // the Go parameter name, e.g. "chatId"
+	goType  string
+	goField string // the struct field, e.g. "ChatId"
+	column  string
+}
+
+// compositeKey returns the primary-key columns of a composite-key entity,
+// in declaration order, and nil for a single-column (or absent) key.
+func compositeKey(fields []ormField) []keyParam {
+	var keys []keyParam
+	for _, f := range fields {
+		if f.isPK {
+			keys = append(keys, keyParam{param: keyParamName(f.goName), goType: f.goType, goField: f.goName, column: f.columnName})
+		}
+	}
+	if len(keys) < 2 {
+		return nil
+	}
+	return keys
+}
+
+// keyParamName is a key column's delegate parameter: the field name with
+// its first letter lowered, kept clear of Go keywords and of the names the
+// delegates already bind (ctx, db, msg, row, err).
+func keyParamName(goField string) string {
+	name := lowerFirst(goField)
+	switch name {
+	case "ctx", "db", "msg", "row", "err", "opts", "fields":
+		return name + "Key"
+	}
+	if token.Lookup(name).IsKeyword() {
+		return name + "Key"
+	}
+	return name
+}
+
+// keyParamList spells the key as a parameter list ("chatId string, kind
+// string"), the argument list ("chatId, kind") and the key literal
+// ("&Counter{ChatId: chatId, Kind: kind}").
+func keyParamList(msgName string, keys []keyParam) (params, args, literal string) {
+	var ps, as, ls []string
+	for _, k := range keys {
+		ps = append(ps, k.param+" "+k.goType)
+		as = append(as, k.param)
+		ls = append(ls, k.goField+": "+k.param)
+	}
+	return strings.Join(ps, ", "), strings.Join(as, ", "), "&" + msgName + "{" + strings.Join(ls, ", ") + "}"
+}
+
+// keyColumns names the key for a doc comment: "(chat_id, kind)".
+func keyColumns(keys []keyParam) string {
+	cols := make([]string, len(keys))
+	for i, k := range keys {
+		cols[i] = k.column
+	}
+	return "(" + strings.Join(cols, ", ") + ")"
+}
+
+// writeCompositeKeyDelegates is writeORMRepoAndDelegates for an entity whose
+// primary key spans several columns (reliant P5b, F12.3: counters, join
+// tables). Every by-key verb takes the WHOLE key — Get<E>ByPK and
+// Delete<E>ByPK, one parameter per key column — and Upsert<E> resolves a
+// conflict on all of them. Create, List, Count and Update/UpdateMasked
+// (which address the row by msg's key fields) keep the single-key shape.
+// There is no ULID fill and no cursor pagination: neither has a single
+// column to key on.
+func writeCompositeKeyDelegates(b *strings.Builder, msgName string, keys []keyParam, softDelete, appendOnly bool) {
+	repoVar := lowerFirst(msgName) + "Repo"
+	params, _, literal := keyParamList(msgName, keys)
+	keyDoc := keyColumns(keys)
+	entityLower := strings.ToLower(msgName)
+
+	fmt.Fprintf(b, "// %s is the generic CRUD repository for %s, whose primary key\n", repoVar, msgName)
+	fmt.Fprintf(b, "// is the composite %s. The functions below are thin delegates onto it.\n", keyDoc)
+	fmt.Fprintf(b, "var %s = crud.NewRepo[%s]()\n\n", repoVar, msgName)
+
+	fmt.Fprintf(b, "// Create%s inserts a new %s row (plain INSERT, never an upsert).\n", msgName, msgName)
+	fmt.Fprintf(b, "func Create%s(ctx context.Context, db orm.Context, msg *%s) error {\n", msgName, msgName)
+	fmt.Fprintf(b, "\treturn %s.Create(ctx, db, msg)\n}\n\n", repoVar)
+
+	fmt.Fprintf(b, "// Get%sByPK retrieves the %s whose key %s is the one given. A\n", msgName, msgName, keyDoc)
+	fmt.Fprintf(b, "// missing row is svcerr.NotFound(%q), also errors.Is(err, orm.ErrNoRows),\n", entityLower)
+	b.WriteString("// as from every by-key verb; every other error is the repository's.\n")
+	fmt.Fprintf(b, "func Get%sByPK(ctx context.Context, db orm.Context, %s) (*%s, error) {\n", msgName, params, msgName)
+	fmt.Fprintf(b, "\treturn %s.GetByPK(ctx, db, %s)\n}\n\n", repoVar, literal)
+
+	fmt.Fprintf(b, "// List%s retrieves %s rows with optional QueryOption filtering.\n", msgName, msgName)
+	fmt.Fprintf(b, "func List%s(ctx context.Context, db orm.Context, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, msgName)
+	fmt.Fprintf(b, "\treturn %s.List(ctx, db, opts...)\n}\n\n", repoVar)
+
+	fmt.Fprintf(b, "// Count%s returns the number of matching %s rows.\n", msgName, msgName)
+	fmt.Fprintf(b, "func Count%s(ctx context.Context, db orm.Context, opts ...orm.QueryOption) (int64, error) {\n", msgName)
+	fmt.Fprintf(b, "\treturn %s.Count(ctx, db, opts...)\n}\n\n", repoVar)
+
+	if softDelete {
+		fmt.Fprintf(b, "// ListAll%s retrieves all %s rows including soft-deleted ones.\n", msgName, msgName)
+		fmt.Fprintf(b, "func ListAll%s(ctx context.Context, db orm.Context, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, msgName)
+		fmt.Fprintf(b, "\treturn %s.ListAll(ctx, db, opts...)\n}\n\n", repoVar)
+	}
+
+	fmt.Fprintf(b, "// Upsert%s writes msg by its key %s: INSERT, or on a conflict\n", msgName, keyDoc)
+	b.WriteString("// with an existing row, UPDATE its updatable columns.\n")
+	fmt.Fprintf(b, "func Upsert%s(ctx context.Context, db orm.Context, msg *%s) error {\n", msgName, msgName)
+	fmt.Fprintf(b, "\treturn %s.Upsert(ctx, db, msg)\n}\n", repoVar)
+
+	if appendOnly {
+		return
+	}
+	b.WriteString("\n")
+	fmt.Fprintf(b, "// Update%s writes the updatable columns of the %s msg's key %s\n", msgName, msgName, keyDoc)
+	b.WriteString("// addresses, and reads back every column it did not write.\n")
+	b.WriteString("// crud.Preserve(cols...) keeps more columns out of this one write.\n")
+	fmt.Fprintf(b, "func Update%s(ctx context.Context, db orm.Context, msg *%s, opts ...crud.UpdateOption) error {\n", msgName, msgName)
+	fmt.Fprintf(b, "\treturn %s.Update(ctx, db, msg, opts...)\n}\n\n", repoVar)
+
+	fmt.Fprintf(b, "// Update%sMasked writes ONLY the named columns of the row msg's key\n", msgName)
+	b.WriteString("// addresses (unknown/immutable paths return *orm.UnknownFieldError);\n")
+	b.WriteString("// opts are Update's (crud.NoReadBack() skips the read-back).\n")
+	fmt.Fprintf(b, "func Update%sMasked(ctx context.Context, db orm.Context, msg *%s, fields []string, opts ...crud.UpdateOption) error {\n", msgName, msgName)
+	fmt.Fprintf(b, "\treturn %s.UpdateMasked(ctx, db, msg, fields, opts...)\n}\n\n", repoVar)
+
+	fmt.Fprintf(b, "// Delete%sByPK removes the %s whose key %s is the one given (soft\n", msgName, msgName, keyDoc)
+	b.WriteString("// delete stamps deleted_at when the entity opts in; otherwise a hard DELETE).\n")
+	fmt.Fprintf(b, "func Delete%sByPK(ctx context.Context, db orm.Context, %s) error {\n", msgName, params)
+	fmt.Fprintf(b, "\treturn %s.DeleteByPK(ctx, db, %s)\n}\n", repoVar, literal)
+}
+
+// writeReadOnlyDelegates emits the store of a VIEW opted in with
+// `forge:entity` (reliant P5b, F12.7): List and Count, and Get<E>ByID when
+// the view has a key column. Nothing writes — a view is a derived read, and
+// the absence of Create/Update/Delete makes trying one a compile error.
+func writeReadOnlyDelegates(b *strings.Builder, msgName string, key *ormField, view string) {
+	repoVar := lowerFirst(msgName) + "Repo"
+	fmt.Fprintf(b, "// %s reads the view %s (forge:entity: read-only — no\n", repoVar, view)
+	b.WriteString("// Create, Update or Delete is generated for a view).\n")
+	fmt.Fprintf(b, "var %s = crud.NewRepo[%s]()\n\n", repoVar, msgName)
+	if key != nil {
+		entityLower := strings.ToLower(msgName)
+		fmt.Fprintf(b, "// Get%sByID retrieves the %s row whose %s is id. A missing row is\n", msgName, msgName, key.columnName)
+		fmt.Fprintf(b, "// svcerr.NotFound(%q), also errors.Is(err, orm.ErrNoRows); every other\n", entityLower)
+		b.WriteString("// error is the repository's.\n")
+		fmt.Fprintf(b, "func Get%sByID(ctx context.Context, db orm.Context, id %s) (*%s, error) {\n", msgName, key.goType, msgName)
+		fmt.Fprintf(b, "\treturn %s.Get(ctx, db, id)\n}\n\n", repoVar)
+	}
+	fmt.Fprintf(b, "// List%s retrieves %s rows with optional QueryOption filtering.\n", msgName, msgName)
+	fmt.Fprintf(b, "func List%s(ctx context.Context, db orm.Context, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, msgName)
+	fmt.Fprintf(b, "\treturn %s.List(ctx, db, opts...)\n}\n\n", repoVar)
+	fmt.Fprintf(b, "// Count%s returns the number of matching %s rows.\n", msgName, msgName)
+	fmt.Fprintf(b, "func Count%s(ctx context.Context, db orm.Context, opts ...orm.QueryOption) (int64, error) {\n", msgName)
+	fmt.Fprintf(b, "\treturn %s.Count(ctx, db, opts...)\n}\n", repoVar)
 }
 
 // lowerFirst returns s with its first rune lower-cased (msgName ->
@@ -695,9 +947,10 @@ func lowerFirst(s string) string {
 // introspected schema into Bun's native tag vocabulary so Bun owns the
 // behaviour forge used to hand-roll. The column name is always present.
 //
-//   - PRIMARY KEY                → ,pk; a server-allocated integer PK
-//     (SERIAL/IDENTITY/BIGSERIAL) also gets ,autoincrement so Bun reads
-//     the DB-assigned value back via RETURNING.
+//   - PRIMARY KEY                → ,pk; a key the DATABASE allocates also
+//     gets ,autoincrement, so a zero key is left to the database and Bun
+//     reads the assigned value back via RETURNING. What allocates it is the
+//     applied schema, never the key's type (see serverAllocatedKey).
 //   - deleted_at soft-delete     → ,soft_delete,nullzero — Bun's BUILT-IN
 //     soft delete. NewSelect auto-excludes deleted rows, a plain
 //     NewDelete stamps deleted_at, WhereAllWithDeleted/ForceDelete opt
@@ -723,8 +976,7 @@ func bunTag(f ormField) string {
 		parts = append(parts, "soft_delete", "nullzero")
 	case f.isPK:
 		parts = append(parts, "pk")
-		if isIntegerGoType(f.goType) {
-			// SERIAL/IDENTITY: server-allocated, read back via RETURNING.
+		if serverAllocatedKey(f) {
 			parts = append(parts, "autoincrement")
 		}
 	default:
@@ -735,14 +987,26 @@ func bunTag(f ormField) string {
 			parts = append(parts, "notnull")
 		}
 		if f.hasDefault && (!f.notNull || f.isTimestamp) {
-			// A NOT NULL non-timestamp column (e.g. a bool `default:true`) always
-			// carries a concrete Go zero value on INSERT, so Bun would send that
-			// zero and never let the DB default fire — worse, `default:` here makes
-			// Bun treat the Go zero as "unset" and substitute the default, flipping
-			// an intentional false to true. Only emit ,default: where a Go value can
-			// legitimately be absent: nullable columns, or server-stamped timestamps.
+			// Not on a NOT NULL non-timestamp column (e.g. a bool `default:true`):
+			// `default:` makes Bun treat the Go zero as "unset" and substitute
+			// the default, flipping an intentional false to true. Such a column
+			// says "unset" with its TYPE instead — a pointer whose nil Bun sends
+			// as DEFAULT, or ,nullzero where the zero is never a stored value
+			// (codegen.ColumnInsertDefault). ,default: stays where a Go value can
+			// legitimately be absent: nullable columns, or server-stamped
+			// timestamps.
 			parts = append(parts, "default:"+f.columnDef)
 		}
+	}
+
+	// A column whose Go zero is never a value it stores — a json document
+	// (`""` is not JSON) or an array/bytea with a non-empty DEFAULT — reads
+	// that zero as "unset": ,nullzero makes Bun omit the column from the
+	// INSERT so its DEFAULT fires, and pkg/crud keeps the stored value on a
+	// full-replace Update. (A scalar whose DEFAULT is not its zero is a
+	// pointer instead — see resolveORMFields — because its zero IS a value.)
+	if f.insertDefault == codegen.InsertDefaultNullZero {
+		parts = append(parts, "nullzero")
 	}
 
 	// GENERATED ALWAYS AS (...) STORED: the DB computes it, and postgres
@@ -834,6 +1098,8 @@ func structTag(f ormField) string {
 		return fmt.Sprintf("`%s forge:%q`", bunPart, "version")
 	case f.isFillULID:
 		return fmt.Sprintf("`%s forge:%q`", bunPart, "fill=ulid")
+	case f.softDeleteLegacy:
+		return fmt.Sprintf("`%s forge:%q`", bunPart, "soft-delete")
 	case f.isGenerated:
 		// GENERATED ALWAYS AS (...) STORED. The bun tag's ,nullzero handles
 		// the common INSERT (a zero value marshals to DEFAULT, which
@@ -887,12 +1153,17 @@ func writeEntityStruct(b *strings.Builder, msgName, tableName string, fields []o
 	b.WriteString("}\n\n")
 }
 
-// isIntegerGoType reports whether the projected Go type is an integer —
-// the PK kinds that are server-allocated (BIGSERIAL / SERIAL / rowid).
-// int64 is the only spelling reachable: schemadef canonicalizes every
-// integer column width (SMALLINT through BIGSERIAL) to int64, so a wider
-// list would describe PKs introspection cannot produce.
-func isIntegerGoType(goType string) bool { return goType == "int64" }
+// serverAllocatedKey reports whether the database allocates the key column
+// f when an INSERT leaves it zero: an identity column, or one with any
+// DEFAULT — a serial's nextval(...), gen_random_uuid(), a literal (the same
+// rule as schemadef.Column.DatabaseSupplied). The key's type says nothing:
+// `integer PRIMARY KEY` with no DEFAULT is a key the caller sets, and
+// marking it ,autoincrement made Create drop the caller's id and fail NOT
+// NULL (reliant's legacy_credential_copy). It holds per column, so each
+// member of a composite key answers for itself.
+func serverAllocatedKey(f ormField) bool {
+	return f.isIdentity || f.hasDefault
+}
 
 // ── managed-timestamp stamping (type-aware) ────────────────────────────
 //
@@ -923,8 +1194,9 @@ func resolveORMFields(ent config.PlanEntity) []ormField {
 
 	entries := make([]entry, 0, len(ent.Fields)+4)
 
-	// Auto-add an id primary key field if none exists.
-	if !hasPK {
+	// Auto-add an id primary key field if none exists — never for a view,
+	// whose columns are exactly what it selects.
+	if !hasPK && !ent.ReadOnly {
 		entries = append(entries, entry{PlanEntityField: config.PlanEntityField{
 			Name: "id", Type: "string", PrimaryKey: true, NotNull: true,
 		}})
@@ -975,26 +1247,49 @@ func resolveORMFields(ent config.PlanEntity) []ormField {
 			references:  e.References,
 			hasDefault:  strings.TrimSpace(e.Default) != "",
 			columnDef:   strings.TrimSpace(e.Default),
+			isIdentity:  e.Identity,
 			isGenerated: e.Generated,
 			isSecret:    e.Secret,
 			isImmutable: e.Immutable,
 			isVersion:   e.Version,
 			isFillULID:  e.FillStrategy == schemadef.FillStrategyULID,
 		}
+		base, isArray := strings.CutPrefix(e.Type, "[]")
+		f.insertDefault = codegen.ColumnInsertDefault(codegen.InsertDefaultColumn{
+			Canonical: base, IsArray: isArray, NotNull: e.NotNull, IsPK: e.PrimaryKey,
+			Generated: e.Generated, Version: e.Version, Default: e.Default,
+			ZeroRejected: e.ZeroRejected,
+		})
+		if e.GoType != "" {
+			// validatePlanFieldTypes refused an unparseable spec before
+			// any render ran.
+			if o, err := codegen.ParseGoTypeOverride(e.GoType); err == nil {
+				f.override = &o
+			}
+		}
 		// Nullable column → pointer struct field. Arrays and bytes are
-		// reference types already (NULL scans to nil).
-		f.nullable = !f.isPK && !f.notNull && isNullablePlanType(e.Type)
+		// reference types already (NULL scans to nil). A NOT NULL column
+		// whose DEFAULT is not its Go zero is a pointer too: nil is "unset",
+		// the INSERT omits it and the DEFAULT fires.
+		f.nullable = ((!f.isPK && !f.notNull) || f.insertDefault == codegen.InsertDefaultPointer) && isNullablePlanType(e.Type)
 		fields = append(fields, f)
 	}
 
-	// Mark the soft-delete column when soft delete is active and the
-	// deleted_at column projects to a proper time type — Bun's built-in
-	// ,soft_delete then owns it. A legacy TEXT deleted_at (Go type string)
-	// is left unmarked and keeps the hand-rolled stamp/filter path.
+	// Mark the soft-delete column when soft delete is active. A deleted_at
+	// that projects to a proper time type is Bun's built-in ,soft_delete; a
+	// legacy TEXT deleted_at (Go type string) is tagged for pkg/crud's
+	// hand-rolled stamp/filter path. Without soft delete — no deleted_at,
+	// or one declared forge:no-soft-delete — neither mark is set and the
+	// column is plain.
 	if ent.SoftDelete {
 		for i := range fields {
-			if fields[i].columnName == "deleted_at" && isBunSoftDeleteTimeType(fields[i]) {
+			if fields[i].columnName != "deleted_at" {
+				continue
+			}
+			if isBunSoftDeleteTimeType(fields[i]) {
 				fields[i].softDeleteNative = true
+			} else {
+				fields[i].softDeleteLegacy = true
 			}
 		}
 	}
@@ -1052,6 +1347,11 @@ func planFieldGoType(t string) (string, bool) {
 func validatePlanFieldTypes(entities []config.PlanEntity) error {
 	for _, ent := range entities {
 		for _, f := range ent.Fields {
+			if f.GoType != "" {
+				if _, err := codegen.ParseGoTypeOverride(f.GoType); err != nil {
+					return fmt.Errorf("entity %s field %s: %w", ent.Name, f.Name, err)
+				}
+			}
 			if _, ok := planFieldGoType(f.Type); !ok {
 				return fmt.Errorf(
 					"entity %s field %s: no Go projection for plan field type %q — "+
@@ -1067,8 +1367,9 @@ func validatePlanFieldTypes(entities []config.PlanEntity) error {
 }
 
 // isNullablePlanType returns true when a nullable column of this type
-// becomes a pointer field on the entity struct. Arrays and bytes are
-// reference types already: NULL scans to nil without one.
+// becomes a pointer field on the entity struct. Arrays, bytes and json
+// (json.RawMessage) are reference types already: NULL scans to nil without
+// one.
 func isNullablePlanType(t string) bool {
-	return !strings.HasPrefix(t, "[]") && t != "bytes"
+	return !strings.HasPrefix(t, "[]") && t != "bytes" && t != "json"
 }

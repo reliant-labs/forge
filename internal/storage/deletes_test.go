@@ -348,3 +348,52 @@ func TestTempSweepBacksOffOnDistress(t *testing.T) {
 		t.Fatalf("the sweep kept going after EMFILE: %d unlinks, a=%v b=%v", calls, exists(a), exists(b))
 	}
 }
+
+// TestDeleterOverBudgetAllowance: an allowance lets one layer unlink past its
+// share without spending the pass's cap, so the layers after it keep theirs.
+func TestDeleterOverBudgetAllowance(t *testing.T) {
+	d := newDeleter(Policy{MaxDeletesPerPass: 10, DeleteRatePerSec: 1_000_000_000}, nil, nil)
+	first := d.share(0.5).allowOver(7)
+	granted := 0
+	for first.grant(context.Background()) == nil {
+		granted++
+		if granted > 100 {
+			t.Fatal("allowance never ran out")
+		}
+	}
+	if granted != 5+7 {
+		t.Fatalf("granted %d, want the 5-entry share plus the 7-entry allowance", granted)
+	}
+	if got := d.overBudgetUnlinks(); got != 7 {
+		t.Fatalf("overBudgetUnlinks = %d, want 7", got)
+	}
+	later := d.share(1)
+	n := 0
+	for later.grant(context.Background()) == nil {
+		n++
+	}
+	if n != 5 {
+		t.Fatalf("the next layer got %d unlinks, want the 5 the cap still has", n)
+	}
+}
+
+// TestDeleterOverBudgetAllowanceStillBacksOff: the allowance lifts the cap,
+// not the back-off.
+func TestDeleterOverBudgetAllowanceStillBacksOff(t *testing.T) {
+	d := newDeleter(Policy{MaxDeletesPerPass: 1, DeleteRatePerSec: 1_000_000_000}, emfile, nil).allowOver(100)
+	dir := t.TempDir()
+	for i := 0; i < 3; i++ {
+		p := filepath.Join(dir, fmt.Sprintf("f%d", i))
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		err := d.unlink(context.Background(), p)
+		var b *BackedOffError
+		if i == 0 && !errors.As(err, &b) {
+			t.Fatalf("first EMFILE: %v, want a back-off", err)
+		}
+	}
+	if d.overBudgetUnlinks() != 0 {
+		t.Fatal("granted allowance unlinks after the back-off")
+	}
+}

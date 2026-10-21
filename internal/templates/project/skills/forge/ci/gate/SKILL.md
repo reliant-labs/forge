@@ -49,14 +49,22 @@ Four rules every run obeys:
    tool cache (`$FORGE_TOOLS_CACHE` or the user cache dir) and put first on that
    command's PATH. A copy on PATH at another version is not used, and neither is
    a golangci-lint built with a Go older than your `go.mod`. Your PATH and GOBIN
-   are never touched.
+   are never touched. `forge tools pins [tool]` prints these versions (`--json`
+   for all), so a hand-written workflow reads them from the forge it runs.
+   `forge lint` outside the gate does the same for golangci-lint: with none on
+   PATH it builds the pin into the tool cache once, and when it cannot, the
+   golangci-lint lane FAILS naming `forge tools install golangci-lint`. Likewise
+   a missing buf fails the buf lint lane. A gating lane that did not run is
+   never a pass.
 4. **The table reaches the job summary.** When `$GITHUB_STEP_SUMMARY` is set the
    table is appended to it as Markdown.
 
-`verify-generated` needs the COMMITTED tree (it attributes every change to
-`forge generate`), so on a dirty tree it is `SKIPPED` rather than a misleading
-pass. When it fails it resets the tree it dirtied, so the checks after it judge
-the committed code.
+`verify-generated` never writes the tree: it regenerates a scratch copy of the
+working tree beside the repository (`.<repo>.forge-verify-*`, removed when it
+finishes) and diffs the copy against itself, so every change it reports was
+made by `forge generate`. It judges the working tree as `git add -A` would
+commit it — on a clean checkout, the committed tree — and a dirty tree gets a
+real verdict, not a skip.
 
 Change detection stays in the workflow: skipping jobs a docs-only change cannot
 affect is a cost optimization, and locally you scope by running one lane (or
@@ -98,9 +106,9 @@ each one's time and the gate's wall time. Three things bound the concurrency:
 - **`after`** — a check starts once the checks it names have finished, whatever
   their verdict (rule 1 still holds). `lint-<fe>`, `typecheck-<fe>`,
   `build-<fe>` and `verify-generated` wait for `deps-<fe>`.
-- **Tree mutation** — a check that rewrites tracked files (`verify-generated`,
-  an extra with `mutates_tree: true`) runs ALONE, before every check that reads
-  the tree.
+- **Tree mutation** — a check that rewrites tracked files (an extra with
+  `mutates_tree: true`) runs ALONE, before every check that reads the tree.
+  `verify-generated` is not one: it runs beside the readers.
 - **Host slots** — a `heavy` check (whole-module build, test run, lint, render)
   holds one of the machine's heavy slots while it runs (`ci/slots`), so the
   gate never adds more heavy jobs than the host has room for, and the commands

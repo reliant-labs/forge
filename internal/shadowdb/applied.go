@@ -115,6 +115,25 @@ func Tables(projectDir, migDir string) ([]schemadef.Table, error) {
 	return tpl.Tables(), nil
 }
 
+// Views returns the applied schema's views (schemadef.IntrospectViews) on
+// the same shadow Tables uses, from the same template within a run.
+func Views(projectDir, migDir string) ([]schemadef.Table, error) {
+	tpl, done, err := runTemplate(projectDir, migDir)
+	if errors.Is(err, errOutsideRun) {
+		_, shadow, err := schemadef.ApplyAndIntrospectShadowAt(migDir, Resolve(projectDir))
+		defer shadow.Close()
+		if err != nil || shadow == nil {
+			return nil, err
+		}
+		return schemadef.IntrospectViews(shadow.DB())
+	}
+	if err != nil || tpl == nil {
+		return nil, err
+	}
+	defer done()
+	return tpl.Views(), nil
+}
+
 // Open is Tables plus a PRIVATE live database holding the applied schema,
 // for a reader that must execute SQL against it (verify a fixture against a
 // CHECK, insert a parent row in a rolled-back transaction). The caller owns

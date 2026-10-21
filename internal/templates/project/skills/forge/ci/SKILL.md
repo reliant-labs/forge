@@ -237,6 +237,34 @@ and each is runnable on its own:
 
 Run `task ci` locally before pushing to reproduce the whole CI gate.
 
+## `forge lint` is report-only
+
+`forge lint` is a gate, and a gate reports: everywhere — your machine, an
+agent's loop, a CI runner — it writes nothing, prints the unified diff each
+fix would have applied, and exits non-zero if any is pending. A lint that
+rewrote files used to rewrite other people's: in a shared checkout it
+reformatted files another PR owned, and golangci-lint's `--fix` turned an
+SA9004 finding into a const block that no longer compiled.
+
+`forge lint --fix` applies the mechanical fixes in place, then gates:
+gofmt/goimports formatting, the tracing lint's log-call rewrite, prettier and
+`eslint --fix`. Every Go rewrite is type-checked afterwards, and a fix that
+leaves its package failing is put back and reported. golangci-lint's own
+fixes (staticcheck, gocritic, …) are never applied — they are code changes,
+so they stay findings for you to make.
+
+| Flags                  | Result                                       |
+| ---------------------- | -------------------------------------------- |
+| none                   | report-only, non-zero if anything is pending |
+| `--check` / `--no-fix` | the same, said explicitly                    |
+| `--fix`                | fixes in place (verified), then gates        |
+
+A pending fix is a failing `format` lane in the verdict and in `--gate-json`
+evidence, so a pipeline needs no flag to get the strict behaviour. To fix
+what the gate reported, run `forge lint --fix` and commit the result.
+`--json` is always detect-only, and so are the targeted lanes (`--contract`,
+`--db`, …).
+
 ## Linting the workflows themselves
 
 Forge has no dedicated CI-workflow analyzer. What covers the workflows today:

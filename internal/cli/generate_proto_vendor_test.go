@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/assets"
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -59,10 +60,10 @@ func TestEnsureVendoredProtos_VendorsForgeProtoForAConfigProto(t *testing.T) {
 	}
 }
 
-// Each file is vendored on its own import, and an existing copy is never
-// rewritten: a stale or customized one is `forge lint --vendored-protos`'
-// (and `forge project disown`'s) to deal with.
-func TestEnsureVendoredProtos_OnDemandAndNeverOverwrites(t *testing.T) {
+// Each file is vendored on its own import, and a copy that already matches
+// this forge's is left byte-for-byte alone (a go_package rewrite or a CRLF
+// checkout is not a difference).
+func TestEnsureVendoredProtos_OnDemand(t *testing.T) {
 	dir := t.TempDir()
 	writeProto(t, dir, "proto/services/a/v1/a.proto", `syntax = "proto3";
 package services.a.v1;
@@ -76,16 +77,126 @@ import "buf/validate/validate.proto";
 	}
 
 	writeProto(t, dir, "proto/config/v1/config.proto", configProtoImportingForge)
-	custom := "// customized on purpose\n"
-	writeProto(t, dir, assets.ValidateProtoVendorRelPath, custom)
+	embedded, err := assets.GetValidateProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	crlf := strings.ReplaceAll(string(embedded), "\n", "\r\n")
+	writeProto(t, dir, assets.ValidateProtoVendorRelPath, crlf)
 	if err := ensureVendoredProtos(dir); err != nil {
 		t.Fatal(err)
 	}
 	if !exists(t, dir, assets.ForgeProtoVendorRelPath) {
 		t.Error("forge.proto not vendored once a proto imports it")
 	}
+	if got, _ := os.ReadFile(filepath.Join(dir, filepath.FromSlash(assets.ValidateProtoVendorRelPath))); string(got) != crlf {
+		t.Error("a vendored copy equal to this forge's (but for line endings) was rewritten")
+	}
+}
+
+// staleForgeProto is a vendored forge.proto from an older forge: this
+// binary's copy with its newest declaration missing — the shape reliant had
+// before it hand-synced `audience` (#1046).
+func staleForgeProto(t *testing.T) (stale, current string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := assets.WriteForgeV1Proto(dir); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "forge.proto"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	current = string(b)
+	const decl = "string audience ="
+	i := strings.Index(current, decl)
+	if i < 0 {
+		t.Fatalf("this forge's forge.proto declares no %q; pick another declaration for the fixture", decl)
+	}
+	end := strings.Index(current[i:], "\n")
+	return current[:i] + current[i+end+1:], current
+}
+
+// A vendored forge.proto that differs from this forge's is re-copied and
+// reported. It used to be left as it was forever, so a project pinned to a
+// forge whose forge.proto had gained an option could not use it until the
+// file was synced by hand.
+func TestEnsureVendoredProtos_RefreshesAStaleCopy(t *testing.T) {
+	dir := t.TempDir()
+	writeProto(t, dir, "proto/config/v1/config.proto", configProtoImportingForge)
+	stale, current := staleForgeProto(t)
+	writeProto(t, dir, assets.ForgeProtoVendorRelPath, stale)
+
+	out := captureStdout(t, func() {
+		if err := ensureVendoredProtos(dir); err != nil {
+			t.Fatalf("ensureVendoredProtos: %v", err)
+		}
+	})
+	got, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(assets.ForgeProtoVendorRelPath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != current {
+		t.Error("the stale vendored forge.proto was not refreshed from this forge's copy")
+	}
+	if !strings.Contains(out, "Refreshed "+assets.ForgeProtoVendorRelPath) {
+		t.Errorf("the refresh was not reported; output:\n%s", out)
+	}
+
+	// Refreshed once: the next run finds nothing to do and says nothing.
+	again := captureStdout(t, func() {
+		if err := ensureVendoredProtos(dir); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(again, "Refreshed") {
+		t.Errorf("an up-to-date copy was refreshed again:\n%s", again)
+	}
+}
+
+// A copy the project disowned is its own — a deliberate customization — and
+// is never refreshed.
+func TestEnsureVendoredProtos_KeepsADisownedCopy(t *testing.T) {
+	dir := t.TempDir()
+	writeProto(t, dir, "proto/config/v1/config.proto", configProtoImportingForge)
+	custom := "// customized on purpose\n"
+	writeProto(t, dir, assets.ValidateProtoVendorRelPath, custom)
+	writeProto(t, dir, "proto/services/a/v1/a.proto", "syntax = \"proto3\";\npackage services.a.v1;\nimport \"buf/validate/validate.proto\";\n")
+	cs, err := checksums.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.DisownPaths(dir, []string{assets.ValidateProtoVendorRelPath}, "customized on purpose"); err != nil {
+		t.Fatal(err)
+	}
+	if err := checksums.Save(dir, cs); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureVendoredProtos(dir); err != nil {
+		t.Fatal(err)
+	}
 	if got, _ := os.ReadFile(filepath.Join(dir, filepath.FromSlash(assets.ValidateProtoVendorRelPath))); string(got) != custom {
-		t.Error("an existing vendored copy was overwritten")
+		t.Error("a disowned vendored copy was overwritten")
+	}
+}
+
+// In the module that owns forge.proto's go_package — forge's own repository
+// — proto/forge/v1/forge.proto is the source this binary's copy is built
+// from, not a copy of it, so a forge binary older than the checkout must
+// never overwrite it.
+func TestEnsureVendoredProtos_KeepsTheSourceInItsOwnModule(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module github.com/reliant-labs/forge\n\ngo 1.24\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeProto(t, dir, "proto/config/v1/config.proto", configProtoImportingForge)
+	stale, _ := staleForgeProto(t)
+	writeProto(t, dir, assets.ForgeProtoVendorRelPath, stale)
+	if err := ensureVendoredProtos(dir); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, filepath.FromSlash(assets.ForgeProtoVendorRelPath))); string(got) != stale {
+		t.Error("forge's own source forge.proto was overwritten by the binary's copy")
 	}
 }
 

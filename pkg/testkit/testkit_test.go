@@ -487,3 +487,27 @@ func TestNewMigratedPostgresDB_ChangedMigrationsGetANewTemplate(t *testing.T) {
 		t.Fatalf("the edited migration was not applied (stale template served): %v", err)
 	}
 }
+
+// The database helpers take testing.TB, so a benchmark gets the same
+// migrated, isolated database a test does — measuring a data path on
+// anything else measures a different setup.
+func BenchmarkNewMigratedPostgresDB(b *testing.B) {
+	if testing.Short() {
+		b.Skip("boots real postgres; skipped under -short")
+	}
+	mfs := fstest.MapFS{
+		"migrations/1_init.up.sql": {Data: []byte(`CREATE TABLE users (id BIGINT PRIMARY KEY, name TEXT);`)},
+	}
+	db := testkit.NewMigratedPostgresDB(b, mfs)
+	ctx := context.Background()
+	var id int64
+	for b.Loop() {
+		id++
+		if _, err := db.Exec(ctx, `INSERT INTO users (id, name) VALUES ($1, 'ada')`, id); err != nil {
+			b.Fatalf("insert: %v", err)
+		}
+	}
+	if empty := testkit.NewPostgresDB(b); empty == nil {
+		b.Fatal("NewPostgresDB returned nil")
+	}
+}

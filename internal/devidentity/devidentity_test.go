@@ -3,6 +3,7 @@ package devidentity
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -238,7 +239,8 @@ func TestWriteStore_IsIdempotentAndKeepsTheRest(t *testing.T) {
 	if len(rotated) != 1 || rotated[0] != "IDP_BROKER_TOKEN" {
 		t.Errorf("a rotated token was not written: %v", rotated)
 	}
-	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+	// Windows has no POSIX mode bits: Stat reports 0666 whatever was asked.
+	if fi, _ := os.Stat(path); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("store mode = %v, want 0600", fi.Mode().Perm())
 	}
 }

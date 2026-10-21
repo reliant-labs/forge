@@ -13,6 +13,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/storage"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // storageScheduleInstalledFn is the seam the notice reads through.
@@ -183,7 +185,7 @@ func installLaunchAgent(ctx context.Context, args []string, home string, sched l
 	if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(file, []byte(plist), 0600); err != nil {
+	if err := atomicfile.WriteFile(file, []byte(plist), 0600); err != nil {
 		return err
 	}
 	domain := "gui/" + strconv.Itoa(os.Getuid())
@@ -206,10 +208,10 @@ func installSystemdTimer(ctx context.Context, args []string, home string, sched 
 	}
 	service := "[Unit]\nDescription=" + sched.description + "\n[Service]\nType=oneshot\nTimeoutStartSec=30min\nTimeoutStopSec=120s\nExecStart=" + strings.Join(quoted, " ") + "\nEnvironment=" + strconv.Quote("PATH="+os.Getenv("PATH")) + "\n"
 	timer := "[Unit]\nDescription=" + sched.description + "\n[Timer]\n" + sched.timer + "[Install]\nWantedBy=timers.target\n"
-	if err := os.WriteFile(filepath.Join(dir, sched.unit+".service"), []byte(service), 0600); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(dir, sched.unit+".service"), []byte(service), 0600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, sched.unit+".timer"), []byte(timer), 0600); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(dir, sched.unit+".timer"), []byte(timer), 0600); err != nil {
 		return err
 	}
 	if _, err = storage.Exec(ctx, "systemctl", "--user", "daemon-reload"); err != nil {

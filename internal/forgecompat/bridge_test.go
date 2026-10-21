@@ -1,6 +1,7 @@
 package forgecompat
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -236,5 +237,56 @@ func TestReadCheckout(t *testing.T) {
 
 	if _, ok := ReadCheckout(t.TempDir()); ok {
 		t.Error("a directory that is not a git checkout must not read as one")
+	}
+}
+
+// Reading a bridged checkout must not write it. `git status` normally
+// refreshes the index's stat cache and rewrites .git/index when a tracked
+// file's mtime moved — a write into another worktree's checkout from a check
+// that only reads. Deterministic: the test moves an mtime, then reads.
+func TestReadCheckout_DoesNotRewriteTheIndex(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	cfg := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(cfg, []byte("[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", cfg)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q")
+	file := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(file, []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "a.txt")
+	run("commit", "-q", "-m", "init")
+	// Same content, new mtime: the index's cached stat is now stale.
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(file, later, later); err != nil {
+		t.Fatal(err)
+	}
+	index := filepath.Join(dir, ".git", "index")
+	before, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ReadCheckout(dir); !ok {
+		t.Fatal("ReadCheckout: not a checkout")
+	}
+	after, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("ReadCheckout rewrote .git/index of the checkout it only reads")
 	}
 }

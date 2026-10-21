@@ -322,7 +322,7 @@ func TestDockerfile_VersionVarLdflags(t *testing.T) {
 // TestCmdServerTemplate_ComposesServer verifies the generated serve.go is the
 // EXPLICIT-COMPOSITION SHARED SERVE PIPELINE: open the owned infra
 // (app.OpenInfra), construct the explicit component graph (app.NewComponents —
-// NO by-type injector), build the EXPLICIT interceptor chain via observe.Chain,
+// NO by-type injector), build the EXPLICIT interceptor chain via serverkit.NewChain,
 // apply a TYPED mount FUNCTION (no string selection, no inventory lookup on the
 // run path) onto a serverkit.Server{Mux,HandlerOpts}, and RequireMounted before
 // serverkit.Run. serverkit OWNS OTel, so serve projects OTLPEndpoint +
@@ -350,7 +350,7 @@ func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 	for _, want := range []string{
 		"app.OpenInfra(ctx, cfg, logger)",
 		"app.NewComponents(infra)",
-		"observe.Chain(chainDeps)",
+		"serverkit.NewChain(serverkit.ChainDeps{",
 		"serverkit.Server{",
 	} {
 		if !strings.Contains(rendered, want) {

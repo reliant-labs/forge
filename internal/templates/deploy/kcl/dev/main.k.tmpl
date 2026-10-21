@@ -203,9 +203,9 @@ _env = lambda w: fw.Workload -> {str:} {
     # when the browser is told credentials are allowed. In dev the API and the
     # frontend are on different ports, so without this sign-in "does nothing".
     _sign_in = {CORS_ALLOW_CREDENTIALS = "true"} if w.kind == "service" else {}
-    config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env | _machine | _port | _sign_in
+    {{if .Roots}}config_gen.workloadEnvMap(appcfg.app_config, w){{else}}config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets){{end}} | w.env | _machine | _port | _sign_in
 {{- else}}
-    config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env | _machine | _port
+    {{if .Roots}}config_gen.workloadEnvMap(appcfg.app_config, w){{else}}config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets){{end}} | w.env | _machine | _port
 {{- end}}
 }
 

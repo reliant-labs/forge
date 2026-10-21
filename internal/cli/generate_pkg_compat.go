@@ -148,10 +148,8 @@ func directRetiredPkgRequire(gomod string) (version string, found bool) {
 // `undefined: testkit.StubNotConfigured` deep in validate: an unreleased
 // forge generating into a project pinned to a published one.
 func unreleasableBuildErr(projectDir, projectVersion string) error {
-	root := buildinfo.DevForgeRoot
-	if root == "" {
-		root = buildinfo.DiscoverDevForgeRootFromSource()
-	}
+	resolved, _, _ := buildinfo.ResolveForgeRoot("")
+	root := resolved.Dir
 	bridge := "go work init . && go work use . <path-to-your-forge-checkout>"
 	if root != "" {
 		bridge = fmt.Sprintf("go work init . && go work use . %s", root)

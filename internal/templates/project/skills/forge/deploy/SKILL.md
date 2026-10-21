@@ -110,9 +110,12 @@ unit at a time. See deploy/shape.
   on every runtime. That is what the scaffolded server serves. Declare
   `probes` only to change them. A third-party image with ports gets TCP on
   its first port; a worker or job gets none unless it declares one.
-- **Grace period** from the drain env (`PRE_STOP_DELAY + SHUTDOWN_TIMEOUT`),
-  so a rollout never SIGKILLs a pod mid-drain;
-  `terminationGracePeriodSeconds` overrides it.
+- **Grace period** from the drain env (`PRE_STOP_DELAY + SHUTDOWN_TIMEOUT`
+  + 5s), so a rollout never SIGKILLs a pod mid-drain. Each is read the way
+  the server reads it: unset or zero is the default (5s / 30s), negative is
+  none (no pause; no shutdown window) and adds nothing;
+  `terminationGracePeriodSeconds` overrides it. What the server does inside
+  it: `services/shutdown`.
 - **Rollout safety** above one replica: a PodDisruptionBudget and soft
   topology spread. On nodes shared with ranked pods, also declare
   `priorityClassName` — see `deploy/pod-priority`.
@@ -140,8 +143,8 @@ to a cluster you operate instead. The allowed/refused table: `deploy/hosting`.
 ## Pre-flight checks
 
 ```
-forge lint              # Go + proto + frontend linters (same checks CI runs)
-forge lint --no-fix     # gate only, mutate nothing (CI / read-only)
+forge lint              # Go + proto + frontend linters; fixes formatting in place locally
+forge lint --check      # report only: print the diffs, write nothing (what CI does, by itself)
 task test               # full suite
 forge ci validate-kcl   # every env renders to something applyable
 forge doctor --signal deploy   # probes, resources, Secrets, migrations
@@ -358,7 +361,10 @@ Typed per-env config lives in `deploy/kcl/<env>/config.k` (an `AppConfig`
 instance); `config_gen.appConfigEnvMap(cfg, w.config_secrets)` projects it
 into a workload's `env` map. A `sensitive` field reaches only workloads that
 list it in `config_secrets`, so one feature's missing Secret key cannot stall
-every pod. Anything else is a literal in the workload's `env`:
+every pod. A workload bound to a composition-graph root (`| config_gen.root_of("worker")`)
+takes `config_gen.workloadEnvMap(cfg, w)` instead: exactly the config its root
+reaches — the scaffolded envs already call it (`architecture`, "Roots and
+commands"). Anything else is a literal in the workload's `env`:
 
 ```kcl
 wl.item | {env = {LOG_LEVEL = "debug"}}

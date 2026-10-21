@@ -147,6 +147,35 @@ func shapeObjects(docs []parsedDoc, images map[string]string, statefulWorkloads 
 	return collapseIdentical(out)
 }
 
+// objectSummaries describes every object of shape ([release.SummarizeObject])
+// from the same documents shapeObjects hashed, replicated per cluster the way
+// shapeObjects replicates them, and ordered like shape.Objects. Two documents
+// on one key were already proved identical by collapseIdentical, so the first
+// one's summary is the object's.
+func objectSummaries(docs []parsedDoc, shape release.Shape) []release.ObjectSummary {
+	byKey := map[release.ObjectKey]release.ObjectSummary{}
+	for _, doc := range docs {
+		summary, parts := release.SummarizeObject(doc.meta.kind, doc.body)
+		clusters := doc.clusters
+		if len(clusters) == 0 {
+			clusters = []string{""}
+		}
+		for _, c := range clusters {
+			key := release.ObjectKey{Cluster: c, Kind: doc.meta.kind, Namespace: doc.meta.namespace, Name: doc.meta.name}
+			if _, seen := byKey[key]; !seen {
+				byKey[key] = release.ObjectSummary{Key: key, Summary: summary, Parts: parts}
+			}
+		}
+	}
+	out := make([]release.ObjectSummary, 0, len(shape.Objects))
+	for _, o := range shape.Objects {
+		if s, ok := byKey[o.Key()]; ok {
+			out = append(out, s)
+		}
+	}
+	return release.BoundObjectSummaries(out)
+}
+
 // collapseIdentical resolves two documents that land on ONE ObjectKey, which
 // is what a deploy does to them and therefore what the projection must say.
 //

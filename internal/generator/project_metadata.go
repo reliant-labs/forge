@@ -12,6 +12,8 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // writeProjectMetadata writes everything under .reliant/, the top-level
@@ -98,7 +100,7 @@ func (g *ProjectGenerator) writeProjectJSON(reliantDir string) error {
 	// MarshalIndent emits no final newline; end-of-file-fixer would add one.
 	data = append(data, '\n')
 
-	if err := os.WriteFile(filepath.Join(reliantDir, "project.json"), data, 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(reliantDir, "project.json"), data, 0o644); err != nil {
 		return fmt.Errorf("failed to write .reliant/project.json: %w", err)
 	}
 	return nil
@@ -162,7 +164,7 @@ func (g *ProjectGenerator) generateExamplesReadme() error {
 	if err := os.MkdirAll(examplesDir, 0o755); err != nil {
 		return fmt.Errorf("create examples dir: %w", err)
 	}
-	return os.WriteFile(filepath.Join(examplesDir, "README.md"), content, 0o644)
+	return atomicfile.WriteFile(filepath.Join(examplesDir, "README.md"), content, 0o644)
 }
 
 // generatePkgMiddleware scaffolds the project's thin auth-policy file
@@ -207,7 +209,7 @@ func (g *ProjectGenerator) generatePkgMiddleware() error {
 		if err != nil {
 			return fmt.Errorf("read %s: %w", f.templateName, err)
 		}
-		if err := os.WriteFile(destPath, content, 0644); err != nil {
+		if err := atomicfile.WriteFile(destPath, content, 0644); err != nil {
 			return fmt.Errorf("write %s: %w", f.destName, err)
 		}
 	}
@@ -222,7 +224,7 @@ func (g *ProjectGenerator) generatePkgMiddleware() error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(g.Path, "pkg", "middleware", "procedures_gen.go"), procedures, 0644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(g.Path, "pkg", "middleware", "procedures_gen.go"), procedures, 0644); err != nil {
 		return fmt.Errorf("write procedures_gen.go: %w", err)
 	}
 	return nil
@@ -262,7 +264,7 @@ func RecordFrozenChecksums(projectDir, binary, kind string) error {
 		if !ok || bytes.Equal(restamped, content) {
 			continue
 		}
-		if err := os.WriteFile(fullPath, restamped, 0o644); err != nil {
+		if err := atomicfile.WriteFile(fullPath, restamped, 0o644); err != nil {
 			return fmt.Errorf("re-stamp %s: %w", f.destPath, err)
 		}
 	}

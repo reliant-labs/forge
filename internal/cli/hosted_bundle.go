@@ -102,16 +102,20 @@ type wireAttestation struct {
 // wireProvenance is controlplane.v1.DeploySourceProvenance: where a release
 // or a bundle came from, as the control plane returns it.
 type wireProvenance struct {
-	Repo         string           `json:"repo,omitempty"`
-	Commit       string           `json:"commit,omitempty"`
-	Branch       string           `json:"branch,omitempty"`
-	Tag          string           `json:"tag,omitempty"`
-	Dirty        bool             `json:"dirty,omitempty"`
-	Tree         string           `json:"tree,omitempty"`
-	CommitTime   *time.Time       `json:"commitTime,omitempty"`
-	Worktree     *wireWorktree    `json:"worktree,omitempty"`
-	ForgeVersion string           `json:"forgeVersion,omitempty"`
-	Attestation  *wireAttestation `json:"attestation,omitempty"`
+	Repo       string     `json:"repo,omitempty"`
+	Commit     string     `json:"commit,omitempty"`
+	Branch     string     `json:"branch,omitempty"`
+	Tag        string     `json:"tag,omitempty"`
+	Dirty      bool       `json:"dirty,omitempty"`
+	Tree       string     `json:"tree,omitempty"`
+	CommitTime *time.Time `json:"commitTime,omitempty"`
+	// CommitSubject and CommitAuthor are DeploySourceProvenance tags 11-12:
+	// the commit's subject line and author name, as the cut reported them.
+	CommitSubject string           `json:"commitSubject,omitempty"`
+	CommitAuthor  string           `json:"commitAuthor,omitempty"`
+	Worktree      *wireWorktree    `json:"worktree,omitempty"`
+	ForgeVersion  string           `json:"forgeVersion,omitempty"`
+	Attestation   *wireAttestation `json:"attestation,omitempty"`
 }
 
 // provenanceFromWire converts a returned provenance, validating the claims'
@@ -125,7 +129,7 @@ func provenanceFromWire(w *wireProvenance) (*release.Provenance, error) {
 	p := release.Provenance{
 		Repo: w.Repo, Commit: w.Commit, Branch: w.Branch, Tag: w.Tag,
 		Dirty: w.Dirty, Tree: w.Tree, ForgeVersion: w.ForgeVersion,
-		CommitTime: w.CommitTime,
+		CommitTime: w.CommitTime, CommitSubject: w.CommitSubject, CommitAuthor: w.CommitAuthor,
 	}
 	if wt := w.Worktree; wt != nil {
 		p.Worktree = release.Worktree{Key: wt.Key, Label: wt.Label, Host: wt.HostID}

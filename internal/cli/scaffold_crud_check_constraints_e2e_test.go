@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // forgetScaffoldRecordE2E deletes a scaffold-once file AND its ledger entry,
@@ -54,12 +56,12 @@ func runCmdAllowFail(t *testing.T, dir string, name string, args ...string) (str
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(),
 		"GOFLAGS=",
 		"GONOSUMCHECK=*",
 		"GOPROXY=https://proxy.golang.org,direct",
 		"GONOSUMDB=*",
-	)
+	))
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

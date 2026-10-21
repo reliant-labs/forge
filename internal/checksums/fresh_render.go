@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // RescueFreshRender settles a Tier-1 drift report against what this run
@@ -70,5 +72,5 @@ func RescueFreshRender(root, relPath string, cs *FileChecksums) bool {
 		return true
 	}
 	recordPreWrite(root, relPath)
-	return atomicWriteFile(full, stamped, 0o644) == nil
+	return atomicfile.WriteFile(full, stamped, 0o644) == nil
 }

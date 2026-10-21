@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/reliant-labs/forge/internal/naming"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // GenerateOperatorFiles generates all files for a single operator:
@@ -107,7 +109,7 @@ func GenerateOperatorFilesWithAPI(root, modulePath, name, group, version, apiPac
 	if err != nil {
 		return fmt.Errorf("render types.go: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(apiPackageDir, "types.go"), typesContent, 0644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(apiPackageDir, "types.go"), typesContent, 0644); err != nil {
 		return err
 	}
 
@@ -116,7 +118,7 @@ func GenerateOperatorFilesWithAPI(root, modulePath, name, group, version, apiPac
 	if err != nil {
 		return fmt.Errorf("render controller.go: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(operatorDir, "controller.go"), controllerContent, 0644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(operatorDir, "controller.go"), controllerContent, 0644); err != nil {
 		return err
 	}
 
@@ -125,7 +127,7 @@ func GenerateOperatorFilesWithAPI(root, modulePath, name, group, version, apiPac
 	if err != nil {
 		return fmt.Errorf("render controller_test.go: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(operatorDir, "controller_test.go"), testContent, 0644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(operatorDir, "controller_test.go"), testContent, 0644); err != nil {
 		return err
 	}
 

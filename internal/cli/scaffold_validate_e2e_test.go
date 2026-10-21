@@ -184,19 +184,18 @@ message Widget {
 	}
 
 	// ── ENFORCEMENT POINT 2: the wire interceptor is mounted ──
-	serveMatches, _ := filepath.Glob(filepath.Join(projectDir, "cmd", "*", "cmd", "serve.go"))
-	if len(serveMatches) != 1 {
-		t.Fatalf("expected exactly one cmd/<bin>/cmd/serve.go, got %v", serveMatches)
+	// A new project composes with the graph: the API listener serves every
+	// user route through the UserChain provider, which serverkit.NewChain
+	// builds. Its Validate slot defaults to protovalidate (pkg/validate) and
+	// only serverkit.NoValidate drops it, so the interceptor is mounted
+	// exactly when providers.go builds the chain with NewChain and never
+	// names NoValidate. serverkit's own tests pin the default slot.
+	providers := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "providers.go"))
+	if !strings.Contains(providers, "serverkit.NewChain(serverkit.ChainDeps{") {
+		t.Errorf("internal/app/providers.go does not build the user chain with serverkit.NewChain, whose default Validate slot is the protovalidate interceptor:\n%s", providers)
 	}
-	serve := readFileE2E(t, serveMatches[0])
-	for _, want := range []string{
-		`"github.com/reliant-labs/forge/pkg/validate"`,
-		"validate.Interceptor()",
-		"chainDeps.Extras = append(chainDeps.Extras, validateInt)",
-	} {
-		if !strings.Contains(serve, want) {
-			t.Errorf("cmd/serve.go does not mount the protovalidate interceptor (%q):\n%s", want, serve)
-		}
+	if strings.Contains(providers, "serverkit.NoValidate") {
+		t.Errorf("internal/app/providers.go drops the protovalidate interceptor (serverkit.NoValidate):\n%s", providers)
 	}
 
 	// Inject a runtime test that drives the REAL generated message types

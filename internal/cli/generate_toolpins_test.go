@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const modLineOut = `/x/protoc-gen-go: go1.24.0
@@ -87,5 +88,53 @@ func TestToolMatchesRealBinary(t *testing.T) {
 	}
 	if _, ok := toolMatches(context.Background(), bin, tool, "v0.0.0-nope"); ok {
 		t.Error("mismatched version matched")
+	}
+}
+
+// Parallel forge processes pin the same tool into one cache dir. A reader
+// must never see a binary another install is still writing: that is how
+// `go version -m` read a half-written protoc-gen-connect-go, the pin said
+// "installed binary reports unknown", and a fresh project's bootstrap
+// generate failed in CI (TestE2EFixtureCorpusKalshiShaped).
+func TestInstallPinnedTool_ReadersNeverSeeAPartialBinary(t *testing.T) {
+	full := strings.Repeat("x", 64)
+	prev := goInstallPinned
+	t.Cleanup(func() { goInstallPinned = prev })
+	// A slow writer: the binary appears a byte at a time, like a copy.
+	goInstallPinned = func(_ context.Context, _, gobin string) error {
+		f, err := os.Create(filepath.Join(gobin, "protoc-gen-fake"+exeSuffix()))
+		if err != nil {
+			return err
+		}
+		defer func() { _ = f.Close() }()
+		for i := range full {
+			if _, err := f.WriteString(full[i : i+1]); err != nil {
+				return err
+			}
+			time.Sleep(time.Millisecond)
+		}
+		return nil
+	}
+	tool := protoTool{Binary: "protoc-gen-fake", Module: "example.com/fake/cmd/protoc-gen-fake", VersionModule: "example.com/fake"}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, tool.Binary+exeSuffix())
+
+	done := make(chan error, 1)
+	go func() { done <- installPinnedTool(context.Background(), tool, "v1.0.0", dir, "not found on PATH") }()
+	for running := true; running; {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+			running = false
+		default:
+		}
+		if b, err := os.ReadFile(bin); err == nil && string(b) != full {
+			t.Fatalf("a reader saw a partial binary (%d of %d bytes) while it was being installed", len(b), len(full))
+		}
+	}
+	if b, err := os.ReadFile(bin); err != nil || string(b) != full {
+		t.Fatalf("installed binary = %q, %v; want the complete file", b, err)
 	}
 }

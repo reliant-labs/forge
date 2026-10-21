@@ -67,6 +67,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	forgekcl "github.com/reliant-labs/forge/kcl"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // ModuleName is the KCL package name projects import (`import forge`).
@@ -247,11 +249,11 @@ func materializeInto(root, dir string) error {
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(target, data, 0o644); err != nil {
+		if err := atomicfile.WriteFile(target, data, 0o644); err != nil {
 			return err
 		}
 	}
-	if err := os.WriteFile(filepath.Join(tmp, completeMarker), nil, 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(tmp, completeMarker), nil, 0o644); err != nil {
 		return err
 	}
 	// A leftover partial directory at dir (no completeMarker) blocks the
@@ -394,7 +396,7 @@ func MigrateKclMod(path string) (Result, error) {
 	// Journaled, so a `forge generate` that fails later rolls the kcl.mod
 	// edit back instead of reporting an unchanged tree (#271).
 	checksums.RecordPreWriteAbs(path)
-	if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
+	if err := atomicfile.WriteFile(path, []byte(out), 0o644); err != nil {
 		return Result{}, fmt.Errorf("write %s: %w", path, err)
 	}
 	if err := dropForgeLock(path); err != nil {
@@ -425,7 +427,7 @@ func dropForgeLock(kclModPath string) error {
 		return nil
 	}
 	checksums.RecordPreWriteAbs(lockPath)
-	if err := os.WriteFile(lockPath, stripForgeFromLock(data), 0o644); err != nil {
+	if err := atomicfile.WriteFile(lockPath, stripForgeFromLock(data), 0o644); err != nil {
 		return fmt.Errorf("rewrite %s: %w", lockPath, err)
 	}
 	return nil

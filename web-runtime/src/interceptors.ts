@@ -36,7 +36,7 @@ import { MethodOptions_IdempotencyLevel } from "@bufbuild/protobuf/wkt";
 
 import { ConnectClientError, normalizeError } from "./errors.js";
 import { telemetryReady } from "./telemetry-gate.js";
-import { injectTraceContext } from "./trace.js";
+import { injectTraceContext, traceIdFrom } from "./trace.js";
 
 import type {
   Interceptor,
@@ -110,7 +110,13 @@ export function errorNormalizeInterceptor(
     try {
       return await next(req);
     } catch (err) {
-      const normalized = normalizeError(err);
+      // traceInterceptor (innermost) has written the traceparent onto this
+      // same request by now: the fallback when the server sent no
+      // traceresponse.
+      const normalized = normalizeError(
+        err,
+        traceIdFrom(req.header.get("traceparent")),
+      );
       cfg.onError?.(normalized);
       throw normalized;
     }
@@ -206,5 +212,7 @@ export {
   freshTraceparent,
   injectTraceContext,
   setTraceSampled,
+  traceIdFrom,
   TRACEPARENT_RE,
+  TRACERESPONSE_HEADER,
 } from "./trace.js";

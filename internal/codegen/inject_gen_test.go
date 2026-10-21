@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -100,7 +101,8 @@ func TestGenerateInject_TypeTopoOrder(t *testing.T) {
 		t.Fatalf("User must be constructed before Billing:\n%s", out)
 	}
 	// Billing's Users field is filled by the producer's local var (suffixed
-	// "Inst" so it never shadows the package import alias), not infra.
+	// "Inst" so it never shadows the package import alias), not infra. (The
+	// fixtures declare no middleware_gen.go, so nothing is wrapped.)
 	if !strings.Contains(out, "Users: userInst,") {
 		t.Fatalf("Billing.Users should be wired to the user producer var:\n%s", out)
 	}
@@ -852,6 +854,12 @@ func writeObservedPackage(t *testing.T, projectDir, leaf, pkg string, fallible b
 	if err := os.WriteFile(filepath.Join(dir, "observe_chain.go"), []byte(seam), 0o644); err != nil {
 		t.Fatalf("write observe_chain: %v", err)
 	}
+	// The decorator the contracts step writes before compose is assembled;
+	// compose wraps only a component whose decorator is declared.
+	decorator := "package " + pkg + "\n\nfunc NewServiceWithForgeMiddleware(inner Service) Service { return &forgeMiddlewareService{inner: inner} }\n\ntype forgeMiddlewareService struct{ Service; inner Service }\n"
+	if err := os.WriteFile(filepath.Join(dir, "middleware_gen.go"), []byte(decorator), 0o644); err != nil {
+		t.Fatalf("write middleware_gen: %v", err)
+	}
 }
 
 // TestGenerateCompose_WrappedObservedPackage: a package with an observe_chain.go
@@ -1026,10 +1034,8 @@ func TestGenerateCompose_ReconcileAddsWrappedPackage(t *testing.T) {
 //
 // — the decorator was assigned to a Components field nothing reads, while the
 // one real caller got the undecorated instance. Every call through the
-// producer bypassed the observability chain the package was opted into, and
-// `forge lint --enforce-component-observe` still reported "every wired
-// component has an observability decision" because a decorator HAD been
-// constructed. Silent capability loss with a green guard.
+// producer bypassed the observability chain the package was opted into,
+// although a decorator HAD been constructed. Silent capability loss.
 func TestGenerateCompose_WrappedProducerInjectsDecorated(t *testing.T) {
 	dir := newInjectProject(t)
 	writeObservedPackage(t, dir, "stripe", "stripe", false)
@@ -1525,7 +1531,7 @@ func New(d Deps) (Service, error) { return nil, nil }
 		t.Helper()
 		cmd := exec.Command("go", "build", "./...")
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+		cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off"))
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("%s: go build failed: %v\n%s\n--- compose.go ---\n%s",
 				stage, err, out, readInject(t, dir))
@@ -1665,7 +1671,7 @@ func TestGenerateCompose_ServiceNamedLikeAGeneratedIdentifier(t *testing.T) {
 	}
 	cmd := exec.Command("go", "build", "./internal/...")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod"))
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("compose.go does not compile with services named %v: %v\n%s\n--- compose.go ---\n%s", colliding, err, b, out)
 	}
@@ -1717,7 +1723,7 @@ func TestGenerateCompose_EveryTemplateIdentifierAsAComponentName(t *testing.T) {
 			}
 			cmd := exec.Command("go", "build", "./internal/...")
 			cmd.Dir = dir
-			cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+			cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod"))
 			if b, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("compose.go does not compile with components named %v: %v\n%s\n--- compose.go ---\n%s",
 					names, err, b, readInject(t, dir))
@@ -1745,5 +1751,54 @@ func TestAppTemplateIdentifiers(t *testing.T) {
 		if got[field] {
 			t.Errorf("%q is a selector or field name, not a file-scope identifier", field)
 		}
+	}
+}
+
+// database.orm.package moves the store out of internal/db (reliant P5b,
+// F12.2): the seam is spelled with the ORM package's own name, and a
+// `db.Store` in that project is the project's own internal/db — which the
+// seam must leave to the ordinary resolution paths.
+func TestGenerateInject_StoreSeamFollowsTheORMPackage(t *testing.T) {
+	dir := newInjectProject(t)
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"),
+		[]byte("name: proj\nmodule_path: example.com/proj\ndatabase:\n  orm:\n    package: internal/store\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	storeDir := filepath.Join(dir, "internal", "store")
+	if err := os.MkdirAll(storeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(storeDir, "store_gen.go"),
+		[]byte("package store\n\ntype Store interface {\n\tEstimates() EstimateStore\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tEstimates store.EstimateStore\n\tAll store.Store")
+
+	err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	})
+	if err != nil {
+		t.Fatalf("a relocated generated store must resolve; got: %v", err)
+	}
+	out := readInject(t, dir)
+	for _, want := range []string{
+		"Estimates: store.NewStore(infra.ORM).Estimates(),",
+		"All: store.NewStore(infra.ORM),",
+		`"example.com/proj/internal/store"`,
+	} {
+		if !containsNormalized(out, want) {
+			t.Fatalf("compose.go missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, `"example.com/proj/internal/db"`) {
+		t.Errorf("compose.go imports internal/db for a store that lives in internal/store:\n%s", out)
+	}
+
+	// The project's own internal/db is not the ORM any more: its Store is
+	// not the seam's to provide.
+	if (storeSeam{pkg: "store", dir: "internal/store"}).owns("db.Store") {
+		t.Error("the store seam claimed db.Store although the ORM package is internal/store")
 	}
 }

@@ -34,6 +34,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/pkg/release"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 func newReleaseBundleCmd() *cobra.Command {
@@ -264,7 +266,7 @@ func unpackBundleInto(f bundle.Fetched, dir string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "bundle.json"), append(docJSON, '\n'), 0o644)
+	return atomicfile.WriteFile(filepath.Join(dir, "bundle.json"), append(docJSON, '\n'), 0o644)
 }
 
 // clusterLiveDiff is one cluster's client-side diff of a bundle.
@@ -329,7 +331,7 @@ func liveDiffBundle(ctx context.Context, dir string, clusters []release.BundleCl
 		if text != "" {
 			d.DiffFile = filepath.Join(dir, "diff", sanitizeFileName(c.Cluster)+".diff")
 			if err := os.MkdirAll(filepath.Dir(d.DiffFile), 0o755); err == nil {
-				_ = os.WriteFile(d.DiffFile, []byte(text), 0o644)
+				_ = atomicfile.WriteFile(d.DiffFile, []byte(text), 0o644)
 			}
 		}
 		out = append(out, d)

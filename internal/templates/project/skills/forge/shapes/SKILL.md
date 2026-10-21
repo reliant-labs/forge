@@ -58,4 +58,3 @@ Reach for that rather than `go doc <pkg>`, which collapses every struct and
 interface to `struct{ ... }` and lists no methods — it cannot tell you
 `crud.Repo.UpdateMasked`'s parameters. (For your OWN generated interfaces,
 `go doc ./internal/db Store` is fine: `go doc` renders interfaces in full.)
-

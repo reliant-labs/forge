@@ -50,15 +50,16 @@ import (
 // never mentions internal/db. The reason is not required by the loader.
 const NoORMDirective = "//forge:no-orm"
 
-// hasNoORMMarker reports whether internal/db declares `//forge:no-orm`.
-// Only non-test, non-generated .go files directly in internal/db are read,
+// hasNoORMMarker reports whether the ORM package directory (relDir, by
+// default internal/db) declares `//forge:no-orm`. Only non-test,
+// non-generated .go files directly in it are read,
 // and only line comments — the same scope `//forge:exclude-contract` is
 // honoured in.
-func hasNoORMMarker(projectDir string) bool {
+func hasNoORMMarker(projectDir, relDir string) bool {
 	if projectDir == "" {
 		return false
 	}
-	dir := filepath.Join(projectDir, "internal", "db")
+	dir := filepath.Join(projectDir, filepath.FromSlash(relDir))
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
@@ -77,9 +78,15 @@ func hasNoORMMarker(projectDir string) bool {
 		sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 		found := false
 		for sc.Scan() {
-			line := strings.TrimSpace(sc.Text())
-			if strings.HasPrefix(line, NoORMDirective) {
-				rest := line[len(NoORMDirective):]
+			// Spaced (`// forge:no-orm`) or unspaced, like every other Go
+			// marker: the spaced spelling used to be read as prose, so a
+			// project that wrote it kept its ORM with no word said.
+			text, isComment := strings.CutPrefix(strings.TrimSpace(sc.Text()), "//")
+			if !isComment {
+				continue
+			}
+			text = strings.TrimLeft(text, " \t")
+			if rest, ok := strings.CutPrefix(text, strings.TrimPrefix(NoORMDirective, "//")); ok {
 				if rest == "" || rest[0] == ':' || rest[0] == ' ' || rest[0] == '\t' {
 					found = true
 					break
@@ -208,7 +215,7 @@ func DeriveFeatureDefaults(c *ProjectConfig) map[FeatureName]bool {
 	server := c.hasServerSources()
 	deploy := c.hasDeployTree()
 	return map[FeatureName]bool{
-		FeatureORM:           hasDB && codegen && !hasNoORMMarker(c.projectDir),
+		FeatureORM:           hasDB && codegen && !hasNoORMMarker(c.projectDir, c.Database.ORM.PackageDir()),
 		FeatureCodegen:       codegen,
 		FeatureMigrations:    hasDB && codegen,
 		FeatureCI:            !isLibrary,
@@ -312,20 +319,32 @@ func ApplyDerivedDefaults(c *ProjectConfig) {
 // forge.yaml mapping in hand, so an absent FIELD inside a present section
 // still gets its derived default.
 //
-// A nil root reproduces the historical whole-section behaviour, which is what
-// the no-node callers want: they are filling a config nobody hand-wrote, so
-// there are no user-written keys to respect.
+// A nil root reproduces the historical whole-section behaviour: a section
+// that is entirely zero takes the default, and a section with ANY value is
+// left exactly as it is. With no node there is no telling which of its keys
+// the user wrote, and a non-zero section is either theirs or already
+// defaulted — so re-applying to a config that already went through the
+// loader is a no-op on every section. It used to overwrite every section
+// wholesale: the generate pipeline's frontend-inventory step re-derives a
+// LOADED config, and that wiped database.orm.package (the ORM then
+// projected into internal/db and the sweep deleted internal/store), the
+// ci.vuln_scan exemptions, and every other section the user had written.
 func ApplyDerivedDefaultsFromNode(c *ProjectConfig, root *yaml.Node) {
 	d := sectionDefaults(c)
-	present := map[string]bool{}
-	if root != nil {
-		present = presentKeys(root)
+	if root == nil {
+		fillZeroSection(&c.Database, d.Database)
+		fillZeroSection(&c.CI, d.CI)
+		fillZeroSection(&c.Deploy, d.Deploy)
+		fillZeroSection(&c.K8s, d.K8s)
+		fillZeroSection(&c.Lint, d.Lint)
+	} else {
+		present := presentKeys(root)
+		fillSectionDefaults(&c.Database, d.Database, "database", present)
+		fillSectionDefaults(&c.CI, d.CI, "ci", present)
+		fillSectionDefaults(&c.Deploy, d.Deploy, "deploy", present)
+		fillSectionDefaults(&c.K8s, d.K8s, "k8s", present)
+		fillSectionDefaults(&c.Lint, d.Lint, "lint", present)
 	}
-	fillSectionDefaults(&c.Database, d.Database, "database", present)
-	fillSectionDefaults(&c.CI, d.CI, "ci", present)
-	fillSectionDefaults(&c.Deploy, d.Deploy, "deploy", present)
-	fillSectionDefaults(&c.K8s, d.K8s, "k8s", present)
-	fillSectionDefaults(&c.Lint, d.Lint, "lint", present)
 	// Tree-derived state runs AFTER the section fill, and in dependency
 	// order: the database (feature derivation reads it), the workspaces
 	// layout, then the features that read both.

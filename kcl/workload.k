@@ -302,6 +302,55 @@ schema FlowCheck:
     check:
         path.startswith("/"), "FlowCheck.path must start with '/' (e.g. '/flow-health') — got '${path}'"
 
+# Minutes in a Profiling.heap_interval ("15m", "2h"); 0 when malformed.
+_profiling_minutes = lambda d: str -> int {
+    (int(d[:-1]) * (60 if d.endswith("h") else 1)) if regex.match(d, r"^[0-9]+[mh]$") else 0
+}
+
+schema Profiling:
+    """Which continuous profiles a Go workload captures, overriding the
+    runtime's defaults (forge/pkg/observe, PROFILES.md) for this workload.
+
+    Unset, a workload built on forge/pkg/observe captures a CPU profile of
+    10s every minute and a live-heap snapshot every 15 minutes. Allocation
+    counters, goroutine, mutex and block profiles are off: allocation
+    counters are cumulative since process start, so each snapshot repeats
+    every allocation site the process ever had and grows with uptime (they
+    were 97.7% of production's stored profile rows).
+
+    Declare it to turn a type on for a while, or the heap cadence up:
+
+        wl.worker | {profiling = forge.Profiling {alloc = True, heap_interval = "1m"}}
+
+    It renders FORGE_PROFILES (the selected types) and
+    FORGE_PROFILES_HEAP_INTERVAL, which the runtime reads at start; a value
+    the workload's own `env` sets wins. It never turns profiling on: with
+    profiles off for the env (OTEL_PROFILES_EXPORTER=none) nothing is
+    captured whatever this says.
+    """
+    # A 10s CPU profile every cycle (about once a minute).
+    cpu: bool = True
+    # The live heap (inuse_space, inuse_objects), every heap_interval.
+    heap: bool = True
+    # How often the heap snapshot (and `alloc`, when on) is taken: whole
+    # minutes or hours, "1m" to "24h".
+    heap_interval: str = "15m"
+    # Cumulative allocation counters (alloc_space, alloc_objects), with the
+    # heap snapshot. Exported cumulative, never as deltas.
+    alloc: bool = False
+    # Every goroutine's stack, every cycle.
+    goroutine: bool = False
+    # Mutex contention, every cycle. Also sets the runtime's mutex sampling
+    # rate while the process profiles.
+    mutex: bool = False
+    # Time blocked on channels and sync primitives, every cycle. Also sets the
+    # runtime's block sampling rate while the process profiles.
+    block: bool = False
+
+    check:
+        _profiling_minutes(heap_interval) >= 1 and _profiling_minutes(heap_interval) <= 1440, \
+            "Profiling.heap_interval must be whole minutes or hours between 1m and 24h (e.g. \"15m\", \"1h\") — got '${heap_interval}'"
+
 # ---------------------------------------------------------------------------
 # The workload.
 # ---------------------------------------------------------------------------
@@ -357,6 +406,14 @@ schema Workload:
     # scaffold` does not declare a second workload for one. Nothing renders
     # from it: it never changes what deploys.
     serves?: [str]
+    # The composition-graph ROOT this forge-built workload's process runs: a
+    # //forge:root struct in internal/app, or the default `server`. Bind it
+    # with `| config_gen.root_of("<root>")`, which sets this and the `args`
+    # that run it (an unknown root fails the render), and project the env
+    # with `config_gen.workloadEnvMap(cfg, w)`: exactly the config the root
+    # reaches, so a worker root is never handed the API's credentials.
+    # Authoring-only: nothing renders from it but that env.
+    root?: str
     # GOMEMLIMIT, derived from the container's memory limit. The Go runtime
     # does not read its cgroup limit: left alone, its heap grows toward
     # GOGC's target and the kernel OOM-kills the pod before the collector
@@ -376,6 +433,11 @@ schema Workload:
     # has to hold what the Go runtime does not count (cgo allocations, the
     # mapped binary).
     go_memory_limit_percent?: int
+    # Continuous-profiling override for this workload (see Profiling).
+    # Unset: the runtime's defaults, CPU every minute and the live heap every
+    # 15 minutes. Rendered as FORGE_PROFILES / FORGE_PROFILES_HEAP_INTERVAL on
+    # every runtime that runs a process; the workload's own `env` wins.
+    profiling?: Profiling
 
     # --- v1alpha1.WorkloadSpec ---
     kind: str = "service"
@@ -453,6 +515,12 @@ schema Workload:
         kind != "cron" or schedule, "Workload '${name}': kind='cron' requires a schedule"
         not schedule or schedule in ["@hourly", "@daily", "@weekly", "@monthly", "@yearly"] or len(schedule.split(" ")) == 5, \
             "Workload.schedule must be a named expression (@hourly, @daily, ...) or a 5-field cron expression — got '${schedule}'"
+
+        # --- root ---
+        not root or build, \
+            "Workload '${name}': root '${root}' names a root of a forge-built binary — a workload with no build runs no root"
+        not root or not command, \
+            "Workload '${name}': root '${root}' is run by the binary's own entrypoint and the root's args; drop `command`"
 
         # --- job ---
         kind != "job" or command or args, \

@@ -14,7 +14,8 @@ package config
 //
 // The resolution semantics:
 //
-//   - Precedence: defaults → config file → env (LookupEnv) → flag (only if
+//   - Precedence: defaults → build defaults (stamped with -ldflags, see
+//     builddefaults.go) → config file → env (LookupEnv) → flag (only if
 //     cmd.Flags().Changed), then a required-field check. The file layer
 //     (filelayer.go) loads only when a path is EXPLICITLY given and fails
 //     loudly on a missing/invalid explicit path. See LoadInto.
@@ -32,7 +33,9 @@ package config
 //     Map fields are rejected with a diagnostic naming the field. See
 //     parseValue/parseList.
 //   - A malformed value is an error that aborts loading — never a silent
-//     fallback to the default.
+//     fallback to the default. So is a value the field's annotations reject
+//     (allowed_values, the TLS/CORS role invariants): LoadInto ends with
+//     Validate, so no caller has to remember a second call.
 //   - Durations: a Go duration is recognized ONLY when the proto field is a
 //     google.protobuf.Duration message (no name heuristic — declare the
 //     field as Duration to get typed-duration behavior). String fields stay
@@ -40,7 +43,9 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -75,7 +80,7 @@ func fieldOptions(fd protoreflect.FieldDescriptor) *forgepb.ConfigFieldOptions {
 	// same way the generator skips fields with no annotation. A field is
 	// considered config-bound if it names any binding source.
 	if cfg.GetEnvVar() == "" && len(cfg.GetEnvVarAliases()) == 0 && cfg.GetFlag() == "" &&
-		cfg.GetDefaultValue() == "" && !cfg.GetRequired() {
+		cfg.GetDefaultValue() == "" && !cfg.GetRequired() && cfg.GetEnvPrefix() == "" {
 		return nil
 	}
 	return cfg
@@ -139,8 +144,8 @@ func isConfigBlock(fd protoreflect.FieldDescriptor) bool {
 // The config file's path variable (<BINARY>_CONFIG, filelayer.go) reads
 // through here too, and viper (AllowEmptyEnv is off by default) and
 // caarlos0/env (an empty variable falls back to the default) agree.
-func lookupEnv(name string) (string, bool) {
-	v, ok := os.LookupEnv(name)
+func (e environ) lookupEnv(name string) (string, bool) {
+	v, ok := e.raw(name)
 	if !ok || v == "" {
 		return "", false
 	}
@@ -150,9 +155,38 @@ func lookupEnv(name string) (string, bool) {
 // envSetButEmpty reports whether name is present in the environment with an
 // empty value — the case lookupEnv reads as unset, and which a required-field
 // error names so the operator is not left hunting a variable that IS set.
-func envSetButEmpty(name string) bool {
-	v, ok := os.LookupEnv(name)
+func (e environ) envSetButEmpty(name string) bool {
+	v, ok := e.raw(name)
 	return ok && v == ""
+}
+
+// environ is the environment a load reads: the process's, or — for
+// Root.Validate, which checks an env a deployment renders — a map of one.
+type environ struct {
+	vars map[string]string // nil: the process environment
+}
+
+// raw is one variable as set, "" included.
+func (e environ) raw(name string) (string, bool) {
+	if e.vars == nil {
+		return os.LookupEnv(name)
+	}
+	v, ok := e.vars[name]
+	return v, ok
+}
+
+// environ is every variable as "NAME=value", sorted.
+func (e environ) environ() []string {
+	var names []string
+	if e.vars == nil {
+		names = os.Environ()
+	} else {
+		for k, v := range e.vars {
+			names = append(names, k+"="+v)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // RegisterFlagsFor walks msg's fields and registers one cobra/pflag flag
@@ -348,11 +382,15 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 // LoadInto populates msg in place using the full forge config precedence —
 // later layers OVERRIDE earlier ones:
 //
-//		defaults  →  config file  →  environment  →  flags
-//		(earliest)                                   (wins)
+//		defaults  →  build defaults  →  config file  →  environment  →  flags
+//		(earliest)                                                      (wins)
 //
 //	  - defaults: every annotated field's proto default (sensitive fields get
 //	    none — an inline secret default would be a leak).
+//	  - build defaults: the values this BUILD was stamped with (-ldflags -X
+//	    into the generated pkg/config.BuildDefaults; builddefaults.go), keyed
+//	    by env_var. A stamp that names no field, a sensitive field, or a value
+//	    that does not parse fails the load.
 //	  - config file: when a path is EXPLICITLY given via the --config flag or
 //	    the binary's <BINARY>_CONFIG env var, the file is proto-native
 //	    unmarshaled INTO msg, overlaying the defaults (see filelayer.go). A
@@ -373,11 +411,18 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 // into the message, and consumers read it with .AsDuration(). (A plain
 // string field stays a string; the descriptor has no name heuristic.)
 //
-// The companion semantics — Mode (role=MODE) and Validate
-// (TLS/CORS roles + allowed_values) — live in this package too (semantic.go),
-// as FREE FUNCTIONS over the message. There is no parallel generated struct:
-// a project holds the proto config type and calls these directly.
-func LoadInto(cmd *cobra.Command, msg proto.Message) error {
+// After the layers it checks required fields and then runs Validate (the
+// TLS/CORS role invariants and allowed_values), so a loaded config has
+// already passed every declared check: an out-of-set value fails the load,
+// naming the field. Mode (role=MODE) and Validate live in this package too
+// (semantic.go), as FREE FUNCTIONS over the message; Validate is for a
+// message built by hand, which no load has checked. There is no parallel
+// generated struct: a project holds the proto config type.
+func LoadInto(cmd *cobra.Command, msg proto.Message, opts ...LoadOption) error {
+	var o loadOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	m := msg.ProtoReflect()
 
 	// Layer 1: defaults (the base every later layer overlays).
@@ -385,23 +430,59 @@ func LoadInto(cmd *cobra.Command, msg proto.Message) error {
 		return err
 	}
 
+	// Layer 1b: build-time defaults stamped into the binary
+	// (builddefaults.go): what one BUILD says, above what the source says.
+	if err := applyBuildDefaults(m); err != nil {
+		return err
+	}
+
 	// Layer 2: config file, ONLY when an explicit path is given (--config
 	// flag or the binary's <BINARY>_CONFIG env). A missing/invalid explicit
 	// file aborts LOUDLY here; no path given means this layer is skipped (not
 	// a fallback).
-	if path, source, ok := resolveConfigPath(cmd, msg); ok {
-		if err := applyConfigFile(msg, path, source, sharedFileMessages(cmd, msg)); err != nil {
+	if path, source, ok := resolveConfigPath(cmd, msg, o.env); ok {
+		if err := o.report(applyConfigFile(msg, path, source, o.sharedFileMessages(cmd, msg))); err != nil {
 			return err
 		}
 	}
 
 	// Layers 3 + 4: env then flags overlay onto whatever defaults/file set.
-	if err := applyEnvAndFlags(cmd, m); err != nil {
+	if err := applyEnvAndFlags(cmd, m, &o); err != nil {
+		return err
+	}
+	// An env family's prefix is owned: a variable under it that nothing
+	// claims is a typo, refused rather than silently dropped (envfamily.go).
+	if err := checkFamilyPrefixes(cmd, msg, &o); err != nil {
 		return err
 	}
 
 	// Required fields must be satisfied by SOME layer (default/file/env/flag).
-	return checkRequired(m)
+	if err := checkRequiredWithin(m, "", o.required, &o); err != nil {
+		return err
+	}
+
+	// The declared invariants (allowed_values, the TLS pair, CORS wildcard +
+	// credentials) are part of loading, not a second step a caller may skip:
+	// a config whose annotations reject its resolved values never reaches the
+	// process. Validate stays exported for a message built by hand.
+	return validateMessageReport(m, o.report)
+}
+
+// report hands a load's problem on: with collect set (Root.Validate), it is
+// recorded and the load goes on, so every problem is found; otherwise it ends
+// the load, as at boot.
+func (o *loadOptions) report(err error) error {
+	if err == nil || o.collect == nil {
+		return err
+	}
+	*o.collect = append(*o.collect, err)
+	return nil
+}
+
+// sharedFileMessages is the configs a load of msg from cmd shares its process
+// with: those recorded on cmd's path, and those o names alongside it.
+func (o *loadOptions) sharedFileMessages(cmd *cobra.Command, msg proto.Message) []protoreflect.MessageDescriptor {
+	return append(sharedFileMessages(cmd, msg), o.alongside...)
 }
 
 // DefaultsInto populates msg with the defaults layer alone — the base LoadInto
@@ -450,12 +531,12 @@ func applyDefaults(m protoreflect.Message) error {
 // to something other than "" — see lookupEnv) overrides the current value,
 // then a flag changed on THIS invocation overrides that. A field that
 // neither env nor flag touches keeps whatever defaults/file set.
-func applyEnvAndFlags(cmd *cobra.Command, m protoreflect.Message) error {
+func applyEnvAndFlags(cmd *cobra.Command, m protoreflect.Message, o *loadOptions) error {
 	fields := m.Descriptor().Fields()
 	for i := 0; i < fields.Len(); i++ {
 		fd := fields.Get(i)
 		if isConfigBlock(fd) {
-			if err := applyEnvAndFlags(cmd, m.Mutable(fd).Message()); err != nil {
+			if err := applyEnvAndFlags(cmd, m.Mutable(fd).Message(), o); err != nil {
 				return err
 			}
 			continue
@@ -464,7 +545,7 @@ func applyEnvAndFlags(cmd *cobra.Command, m protoreflect.Message) error {
 		if opt == nil {
 			continue
 		}
-		if err := overlayField(cmd, m, fd, opt); err != nil {
+		if err := o.report(overlayField(cmd, m, fd, opt, o.env)); err != nil {
 			return err
 		}
 	}
@@ -476,11 +557,14 @@ func applyEnvAndFlags(cmd *cobra.Command, m protoreflect.Message) error {
 // no-op that preserves the earlier layer (default/file). Sensitive fields
 // take env (Secret mount) but NEVER a flag — no flag is ever registered for
 // them, and we defensively skip the flag branch even if one were.
-func overlayField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions) error {
+func overlayField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions, env environ) error {
+	if isEnvFamily(opt) {
+		return overlayFamily(m, fd, opt, env) // env only: a family has no flag
+	}
 	// Env layer: env_var, then its aliases in order — the first one set wins
 	// (envnames.go). A malformed value in the name that wins is an error; it
 	// never falls through to the next name.
-	name, v, set := lookupFieldEnv(opt)
+	name, v, set := lookupFieldEnv(opt, env)
 	if set {
 		val, err := parseValue(m, fd, v)
 		if err != nil {
@@ -488,7 +572,11 @@ func overlayField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.Fi
 		}
 		m.Set(fd, val)
 	}
-	noticeDeprecatedAliases(noticeWriter(cmd), fd, opt, name)
+	notices := noticeWriter(cmd)
+	if env.vars != nil {
+		notices = io.Discard // a rendered env is being checked, not a process started
+	}
+	noticeDeprecatedAliases(notices, fd, opt, name, env)
 
 	// Flag layer (wins). Never for sensitive fields.
 	flagName := opt.GetFlag()
@@ -510,13 +598,23 @@ func overlayField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.Fi
 // checkRequired errors if any required field is still unset after all layers
 // have been applied, recursing into nested config blocks. A required field
 // that no layer populated fails fast — the same loud guarantee the single-pass
-// loader gave.
+// loader gave. `required: true` is the only thing that makes a field
+// required here: `sensitive` does not (whether a credential must exist is
+// the deploy pre-flight's question, per workload; see forge.proto's
+// ConfigFieldOptions.optional).
 func checkRequired(m protoreflect.Message) error {
+	return checkRequiredWithin(m, "", nil, &loadOptions{})
+}
+
+// checkRequiredWithin is checkRequired over the fields a process reaches:
+// within names them by path ("database_url", "stripe.secret_key"); nil is
+// every field.
+func checkRequiredWithin(m protoreflect.Message, prefix string, within map[string]bool, o *loadOptions) error {
 	fields := m.Descriptor().Fields()
 	for i := 0; i < fields.Len(); i++ {
 		fd := fields.Get(i)
 		if isConfigBlock(fd) {
-			if err := checkRequired(m.Get(fd).Message()); err != nil {
+			if err := checkRequiredWithin(m.Get(fd).Message(), prefix+string(fd.Name())+".", within, o); err != nil {
 				return err
 			}
 			continue
@@ -525,12 +623,20 @@ func checkRequired(m protoreflect.Message) error {
 		if opt == nil || !opt.GetRequired() {
 			continue
 		}
+		if within != nil && !within[prefix+string(fd.Name())] {
+			continue
+		}
 		if fieldIsEmpty(m, fd) {
-			env, empty := envSourcesPhrase(opt), emptyEnvNote(opt)
+			env, empty := envSourcesPhrase(opt), emptyEnvNote(opt, o.env)
+			var err error
 			if flag := opt.GetFlag(); flag != "" && !opt.GetSensitive() {
-				return fmt.Errorf("required config field %s is not set (env: %s, flag: --%s)%s", fd.Name(), env, flag, empty)
+				err = fmt.Errorf("required config field %s is not set (env: %s, flag: --%s)%s", fd.Name(), env, flag, empty)
+			} else {
+				err = fmt.Errorf("required config field %s is not set (env: %s)%s", fd.Name(), env, empty)
 			}
-			return fmt.Errorf("required config field %s is not set (env: %s)%s", fd.Name(), env, empty)
+			if err := o.report(err); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

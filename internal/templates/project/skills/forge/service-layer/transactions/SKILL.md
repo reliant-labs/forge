@@ -85,7 +85,7 @@ func (s *svc) RecordPayment(ctx context.Context, in RecordPaymentInput) (Invoice
         }
         out = inv // generated balance_cents was scanned back by the write — no re-read
         return orm.AfterCommit(ctx, func(ctx context.Context) {
-            s.deps.Events.PaymentRecorded(ctx, inv.Id) // side effect: after commit, once
+            s.deps.Events.PaymentRecorded(ctx, inv.ID) // side effect: after commit, once
         })
     })
     return toInvoice(out), err
@@ -103,6 +103,82 @@ read-check-write in the transaction, including the next one someone adds.
 Assign whatever the RPC returns from inside `fn` (as `out` above) so the value
 comes from the attempt that committed.
 
+## A transaction that outlives one call: `BeginDetached`
+
+`RunTx` is closure-scoped: the transaction ends when `fn` returns. When a unit
+of work needs a transaction held across returns — a transaction-scoped
+advisory lock taken by one function and released by another — open it with
+`BeginDetached` on the same injected `DB orm.Context`:
+
+```go
+func (s *svc) LockRun(ctx context.Context, key int64) (release func(), err error) {
+    if orm.InTx(ctx) { // a second connection would deadlock on the caller's locks
+        return nil, svcerr.FailedPrecondition("LockRun needs its own transaction")
+    }
+    tx, err := s.deps.DB.BeginDetached(ctx, orm.TxOptions{Isolation: orm.IsolationReadCommitted})
+    if err != nil {
+        return nil, err
+    }
+    if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '5s'"); err != nil {
+        _ = tx.Rollback()
+        return nil, err
+    }
+    if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", key); err != nil {
+        _ = tx.Rollback()
+        return nil, err
+    }
+    return func() { _ = tx.Rollback() }, nil
+}
+```
+
+- It **never joins** the transaction `ctx` carries: it is always a new
+  transaction on its own connection, so inside a caller's `RunTx` its commit
+  survives the caller's rollback. `orm.InTx(ctx)` tells you whether you are
+  inside one.
+- **You end it**: every path calls `Commit` or `Rollback`. Its lifetime is
+  also bounded by `ctx` — cancelling `ctx` rolls it back (pass
+  `context.WithoutCancel(ctx)` to outlive the request).
+- **No retry**: a `40001` comes back to you.
+- `tx.RunTx(ctx, fn)` hands `fn` a `ctx` carrying it, so stores and generated
+  delegates join it; `orm.AfterCommit` callbacks registered there run on
+  `Commit`.
+
+## A write that must survive the caller's rollback: `orm.Detached`
+
+Inside `RunTx` every statement joins the caller's transaction. An audit row,
+a write or idempotency ledger, an attempt counter must not: it records that
+the attempt happened, so it has to commit even when the work rolls back.
+`orm.Detached(ctx)` returns a `ctx` whose calls run on the **pool**, each its
+own autocommit statement, outside every transaction `ctx` carries:
+
+```go
+err := s.deps.DB.RunTx(ctx, func(ctx context.Context) error {
+    // Committed now, kept if the transaction below rolls back or retries.
+    if err := db.CreateLedgerEntry(orm.Detached(ctx), s.deps.DB, entry); err != nil {
+        return err
+    }
+    return db.UpdateJobMasked(ctx, s.deps.DB, job, []string{"status"})
+})
+```
+
+- Everything that resolves the carried transaction honours it: stores,
+  generated delegates, `pkg/crud`, `db.Bun()`, the raw `Exec`/`Query`,
+  `SQLConn`/`DBTX`, `orm.InTx` and `client.InTx` (both false). An explicit
+  `*Tx` handle is unaffected.
+- `s.deps.DB.RunTx(orm.Detached(ctx), fn)` is a detached *transaction*:
+  a new one, carried in the `ctx` fn receives as usual.
+- Under `RunTx` it runs **once per attempt** — a retried transaction writes it
+  again. Make the write idempotent, or use `orm.AfterCommit` when it should
+  exist only if the work committed.
+- Never for anything that must roll back with the caller, never to read the
+  caller's uncommitted rows (it sees only committed ones), and never against a
+  row the caller has written or locked: the detached statement waits on that
+  lock while the caller waits on it, a deadlock postgres cannot see.
+
+`BeginDetached` is the same "never joins" rule for a transaction you hold
+open across calls; `Detached` is for a statement that needs no transaction of
+its own.
+
 ## `RunTransaction` and `WithTx`
 
 `RunTransaction(ctx, func(tx orm.Context) error)` is the older,
@@ -112,6 +188,36 @@ receives a handle, not a transaction-carrying `ctx`, so code called with the
 outer `ctx` and the plain client does NOT participate — use the handle, or
 `tx.RunTx(ctx, fn)` to get such a `ctx`. It joins a `RunTx` transaction
 already in `ctx`. Write new code with `RunTx`.
+
+## sqlc and hand SQL in the same transaction
+
+A project porting onto the ORM keeps sqlc or database/sql code on the same
+pool for a while, and one transaction then holds statements from both. Give
+that code an executor that resolves the transaction from `ctx`, or it runs
+on the pool, outside the transaction (and blocks forever on a row the
+transaction has locked):
+
+```go
+queries := pgdb.New(client.DBTX()) // sqlc: every call joins ctx's RunTx
+
+err := client.RunTx(ctx, func(ctx context.Context) error {
+    if err := queries.InsertAuditRow(ctx, row); err != nil { // sqlc, in the tx
+        return err
+    }
+    return db.UpdateJobMasked(ctx, client, job, []string{"status"}) // ORM, same tx
+})
+```
+
+- `client.DBTX()` resolves on every call; `client.SQLConn(ctx)` is the
+  executor for one statement (`*sql.Tx` inside a transaction, else the
+  `*sql.DB`). Both satisfy sqlc's `DBTX`.
+- `client.InTx(ctx)` asks about THIS pool; `orm.InTx(ctx)` about the
+  innermost transaction on any. A layer deciding whether to join or begin
+  uses the first.
+- A layer that owns its own transaction loop (its own retry policy) opens it
+  with `client.BeginTx`, runs its work under `tx.RunTx(ctx, fn)`, and ends it
+  with `tx.Commit()` / `tx.Rollback()`: the ORM and `DBTX` both join it, and
+  `orm.AfterCommit` callbacks run on its `Commit`.
 
 ## Migrating hand-written lock helpers
 

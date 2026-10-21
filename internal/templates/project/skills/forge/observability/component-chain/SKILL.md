@@ -1,6 +1,6 @@
 ---
 name: observability/component-chain
-description: The in-process middleware chain — RPC-edge interceptors, the generated middleware_gen.go component decorator, the owned observe_chain.go seam, success-log sampling, opting in/out, and the enforce-component-observe lint.
+description: The in-process middleware chain — RPC-edge interceptors, the generated middleware_gen.go component decorator, the owned observe_chain.go seam, success-log sampling, and opting out.
 ---
 
 # Observability: the component middleware chain
@@ -8,16 +8,25 @@ description: The in-process middleware chain — RPC-edge interceptors, the gene
 Forge instruments three boundaries, so a request is observable end to end:
 
 1. **The RPC edge** — every Connect handler runs the interceptor chain built by
-   `observe.Chain(observe.Deps{…})` in `cmd/<bin>/cmd/serve.go` (recovery →
-   request-id → logging → tracing → metrics, then auth → audit → rate-limit,
-   with otelconnect). One span, one metric sample and one log record per RPC:
+   `serverkit.NewChain(serverkit.ChainDeps{…})` in `cmd/<bin>/cmd/serve.go`
+   (otelconnect → recovery → request-id → logging → tracing → metrics, then
+   deadline → auth → audit → rate-limit → activity → stream-drain →
+   protovalidate). One
+   span, one metric sample and one log record per RPC:
    `rpc failed` for every failure, `rpc completed` for every success, and
    `slow=true` on any success over 1s. Success logging can be SAMPLED — see
    [Success-log sampling](#success-log-sampling) below. Tune the layer
-   through `observe.Deps.LogOptions` —
+   through `serverkit.ChainDeps.LogOptions` —
    `observe.WithSuccessLevel(<svc>connect.<Svc><Method>Procedure, slog.LevelDebug)`
    silences one poll, `observe.WithSuccessSampling(d)` fixes this layer's
    sampling window, `observe.WithSlowThreshold(d)` moves the slow line.
+   Those lines are written when an RPC COMPLETES; the chain's Deadline slot
+   (`serverkit.Deadline`) also watches a unary RPC while it runs, logging
+   `rpc still in flight` at WARN after `SlowAfter` (10s) and again every
+   `SlowRepeat` (30s), then `rpc completed slowly` — so a wedged handler shows
+   up in the log tail before its deadline (30s by default; per rpc from
+   `(forge.v1.method).timeout`) ends it. `Deadline.OnSlow` replaces that log,
+   e.g. to count slow calls in a metric too.
 2. **The in-process component boundary** — every internal component→component
    method call (a `contract.go` `Service`) gets one span, one metric sample
    and one log record (every failure, every success unless sampling is on),
@@ -129,10 +138,10 @@ a `--config` file). The scaffolded `serve.go` passes the loaded value to the
 RPC edge's logging interceptor:
 
 ```go
-chainDeps := observe.Deps{
+chain, err := serverkit.NewChain(serverkit.ChainDeps{
     // ...
     LogOptions: []observe.LogOption{observe.WithSuccessSampling(cfg.LogSuccessSampleWindow.AsDuration())},
-}
+})
 ```
 
 forge's `observe` package reads no environment — the window is only ever
@@ -154,31 +163,30 @@ append `observe.WithSuccessSampling(d)` to its `observe.LogMiddleware`.
 `0` (or a negative window) logs every success. When a layer is given more
 than one `WithSuccessSampling`, the last one wins.
 
-### Opting in and out
+### On by default; opting out
 
-- **Opt in** — `// forge:constructor` on the `func New` doc comment. Scaffolds
-  stamp it by default, so a new component is born instrumented. (Presence of the
-  owned `observe_chain.go` seam also opts a package in, for backward
-  compatibility.)
+- **Every contract package is instrumented** — a package whose constructor
+  returns its `Service` interface gets `middleware_gen.go`, and compose.go
+  constructs it wrapped, with no marker and no seam. Without
+  `observe_chain.go` the decorator builds `observe.DefaultComponentChain`
+  (recovery, span, metrics, log at `observability.log_level`); write the seam
+  to change that one package. `forge generate` also rewraps (or unwraps) a
+  construction compose.go already has when the decision changes.
 - **Opt a package out** — `// forge:no-observe` on the constructor (or the
   package / contract-interface doc). No decorator is generated and the
-  composition site falls back to the unwrapped `pkg.New(...)`.
+  composition site falls back to the unwrapped `pkg.New(...)`. Do it for a
+  hot, trivial package (a pure function called in a loop), not to save spans
+  in general: a trace with no business-method spans cannot say where a
+  request spent its time.
 - **Opt ONE method out** — `// forge:no-observe` on that interface method's doc
   comment. The decorator still satisfies the interface, but that method
   delegates straight to the inner impl, around the chain.
 - **Handler packages are never wrapped** — they return a concrete `*Service`
   and otelconnect already owns the RPC edge; wrapping would change the
   `Components` field type.
-
-### The forcing function: `enforce-component-observe`
-
-A wired component (a `Service` interface + a `New(Deps) Service` constructor)
-that makes NO observability decision — neither marker — is flagged by the
-`enforce-component-observe` lint: one aggregated ERROR naming every undecided
-component with an I/O-aware suggestion (deps that touch a DB/adapter/client/HTTP
-type are nudged toward `// forge:constructor`; a pure-compute component toward
-`// forge:no-observe`). Kill-switch: `config.enforce_component_observe: off` in
-forge.yaml (the sibling of `config.enforce_typed_access`).
+- **Constructions you write by hand** (in `providers.go`, or a `*_wire.go`)
+  are yours: wrap them yourself —
+  `infra.X = pkg.NewServiceWithForgeMiddleware(pkg.New(...))`.
 
 For a one-off child span or metric at a single call site (rather than a whole
 decorator), `observe.LogCall` / `observe.TraceCall` / `observe.NewCallMetrics`

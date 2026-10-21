@@ -1,6 +1,6 @@
 ---
 name: write-policy
-description: Who may write a column, and which marker says so — the decision table for forge:read-only vs forge:computed vs forge:generated vs forge:guards vs forge:immutable, row-ownership columns, forge:immutable against accidental full-replace overwrites, and forge:version optimistic concurrency.
+description: Who may write a column, and which marker says so — the decision table for forge:read-only vs forge:computed vs forge:generated vs forge:guards vs forge:immutable, row-ownership columns, forge:immutable against accidental full-replace overwrites, forge:version optimistic concurrency, and how a NOT NULL column's DEFAULT applies to an unset field (pointer or ,nullzero).
 ---
 
 # Column write policy
@@ -117,6 +117,15 @@ response and the entity you hold afterwards report the stored values of an
 immutable, read-only or GENERATED column rather than the ones the request
 carried.
 
+A write whose caller discards the entity — a worker stamping `dispatched_at`
+on a wide row — does not need that read-back, and on a one-column write it is
+most of the cost (a 12-column row: 93 → 39 allocations). Pass
+`crud.NoReadBack()` to make one `Update` or `UpdateMasked` exec-only: no
+`RETURNING`, and the entity keeps what you put in it (plus the stamped
+`updated_at` and advanced `forge:version`). From `_repo_ext.go`, call the
+entity's repo directly: `<entity>Repo.UpdateMasked(ctx, db, e,
+[]string{"dispatched_at"}, crud.NoReadBack())`.
+
 **DB-only columns are not automatically protected.** A column with no matching
 proto field says nothing about whether it may be rewritten — an internal rating
 or a denormalized cache is absent from the API and mutable by design. Only
@@ -171,3 +180,33 @@ choose its own version could satisfy its own concurrency check. Entities with no
 
 See also: `db` for the schema/ORM half, `db/seeding` for `forge:ref` (the same
 `COMMENT ON` vocabulary applied to a foreign-key constraint).
+
+## Unset columns and DEFAULTs
+
+A `NOT NULL` column with a `DEFAULT` says "unset" with its TYPE, so the
+DEFAULT applies when you do not set the field and an explicit zero is still
+stored:
+
+- A scalar whose DEFAULT is not its Go zero (`status INTEGER NOT NULL DEFAULT
+  2`, `active BOOLEAN NOT NULL DEFAULT true`, `kind TEXT NOT NULL DEFAULT
+  'llm'`, any expression) is a **pointer** field: `nil` is unset, `&false` is
+  false.
+- A column whose zero it can never hold keeps its type and takes `,nullzero`:
+  a json document (`""` is not JSON), an array with a non-empty DEFAULT, a
+  scalar a CHECK keeps from its zero (every born enum column).
+- A DEFAULT equal to the zero (`0`, `false`, `''`, `'{}'`) changes nothing.
+
+Unset means one thing on every write: `Create` omits the column so the DEFAULT
+fires, a full-replace `Update` and `Upsert`'s conflict branch keep the stored
+value, and a masked update naming an unset column sets it back to its DEFAULT.
+Reads always fill the pointer. `forge:read-only` columns the create request
+does not carry are left unset the same way, so their DEFAULT is the row's
+initial state.
+
+Managed timestamps follow the same rule. `Create` and `Upsert` stamp
+`created_at` and `updated_at` with now only when the field is unset (zero
+time, `nil`, `""`) and keep a value you set, so an imported or replayed row
+keeps its own times; `Upsert` writes that one `updated_at` on either branch.
+`Update` and `UpdateMasked` always re-stamp `updated_at`: an entity read back
+and written again still carries its old value, which is not a decision. Keep
+a client off a wire `created_at`/`updated_at` with `forge:read-only`.

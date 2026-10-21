@@ -22,16 +22,24 @@
 //
 //   - `next dev` / `forge env up`: next.config.ts rewrites `/_otel/*` to
 //     $OTEL_EXPORTER_OTLP_ENDPOINT (default http://127.0.0.1:4318).
-//   - a deployed static export (`output: static`, the scaffold default) has
-//     no Next.js server, so no rewrite exists there. The deployment's INGRESS
-//     must route `<basePath>/_otel/*` to the collector. Until it does, a
-//     production build sends nothing (the default below is empty there)
-//     rather than POSTing to a 404.
+//   - a frontend on platform hosting (`forge.OnHosted`) is answered by the
+//     platform on its own origin, so forge writes `OTEL_ENDPOINT = "/_otel"`
+//     into its runtime config by default; nothing to declare.
+//   - any other deployed static export (`output: static`, the scaffold
+//     default) has no Next.js server, so no rewrite exists there. The
+//     deployment's INGRESS must route `<basePath>/_otel/*` to the collector,
+//     and the endpoint is declared (below). Until it is, a production build
+//     sends nothing (the default is empty there) rather than POSTing to a 404.
 //
-// Turn export on for a deployed environment by declaring the endpoint in the
-// frontend's KCL `config` block (`otel_endpoint = "/_otel"`), which reaches
-// this module at RUNTIME through config.js (or as NEXT_PUBLIC_OTEL_ENDPOINT
-// at build time). An empty value, or "off", disables it.
+// Declare the endpoint for a deployed environment in the frontend's KCL
+// `config` block (`otel_endpoint = "/_otel"`), which reaches this module at
+// RUNTIME through config.js (or as NEXT_PUBLIC_OTEL_ENDPOINT at build time).
+// An empty value, or "off", disables it.
+//
+// `forge.Frontend.telemetry` reaches this module the same way:
+// `console_capture = False` arrives as CONSOLE_CAPTURE and
+// `replay_sample_rate` as REPLAY_SAMPLE_RATE, both read from config.js so one
+// build promotes across environments.
 //
 // The SDK insists on an apiKey. It is sent a public placeholder (see
 // PLACEHOLDER_API_KEY in the runtime); a collector that enforces ingestion
@@ -67,6 +75,14 @@ function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+// REPLAY_SAMPLE_RATE arrives as a string in the runtime config document. Unset
+// (or anything that is not a number) is "every session" for the runtime, which
+// clamps the rest.
+function rate(value: unknown): number | undefined {
+  const n = Number(text(value));
+  return text(value) !== "" && Number.isFinite(n) ? n : undefined;
+}
+
 /**
  * initTelemetry starts browser telemetry. Call it once from the app shell
  * (providers.tsx already does).
@@ -84,6 +100,9 @@ export function initTelemetry(serviceName = '{{.ProjectName}}-frontend'): void {
     serviceVersion: process.env.NEXT_PUBLIC_APP_VERSION || undefined,
     environment: text(cfg.ENVIRONMENT) || process.env.NEXT_PUBLIC_ENVIRONMENT || undefined,
     serviceNamespace: '{{.ProjectName}}',
+    frontend: '{{.FrontendName}}',
+    consoleCapture: text(cfg.CONSOLE_CAPTURE) !== "false",
+    replaySampleRate: rate(cfg.REPLAY_SAMPLE_RATE),
     endpoint:
       text(cfg.OTEL_ENDPOINT) ||
       process.env.NEXT_PUBLIC_OTEL_ENDPOINT ||

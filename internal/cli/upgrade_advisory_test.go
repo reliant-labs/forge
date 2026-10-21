@@ -38,7 +38,7 @@ func scaffoldAdvisoryProject(t *testing.T) string {
 	}
 	cfg := loadAdvisoryConfig(t, dir)
 	captureStdout(t, func() {
-		if err := generatePerEnvDeployConfig(dir, cfg, cs); err != nil {
+		if err := generatePerEnvDeployConfig(dir, cfg, cs, nil); err != nil {
 			t.Fatalf("generatePerEnvDeployConfig: %v", err)
 		}
 	})

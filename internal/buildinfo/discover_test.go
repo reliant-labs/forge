@@ -3,6 +3,7 @@ package buildinfo
 import (
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"testing"
 )
 
@@ -134,5 +135,75 @@ func TestForgeRootFromFile_ModuleCacheIsNotACheckout(t *testing.T) {
 	mustMkdirAll(t, filepath.Join(checkout, "pkg"))
 	if got := forgeRootFromFile(filepath.Join(checkout, "internal", "x.go")); got != checkout {
 		t.Fatalf("a checkout named %q was rejected: forgeRootFromFile = %q", filepath.Base(checkout), got)
+	}
+}
+
+func forgeCheckout(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	writeGoMod(t, root, "module "+forgeModulePath+"\n\ngo 1.26\n")
+	mustMkdirAll(t, filepath.Join(root, "pkg"))
+	return root
+}
+
+// A stated path is the answer, and a wrong one is an error, never a silent
+// fall-through to some other checkout.
+func TestResolveForgeRoot_Explicit(t *testing.T) {
+	root := forgeCheckout(t)
+	t.Setenv(ForgeRootEnv, "")
+	got, ok, err := ResolveForgeRoot(root)
+	if err != nil || !ok || got.Dir != root {
+		t.Fatalf("flag: %+v ok=%v err=%v", got, ok, err)
+	}
+	t.Setenv(ForgeRootEnv, root)
+	if got, ok, err := ResolveForgeRoot(""); err != nil || !ok || got.Dir != root {
+		t.Fatalf("env: %+v ok=%v err=%v", got, ok, err)
+	}
+	if _, _, err := ResolveForgeRoot(t.TempDir()); err == nil {
+		t.Error("a directory that is not a forge checkout was accepted")
+	}
+	cache := filepath.Join(t.TempDir(), "forge@v0.1.46")
+	mustMkdirAll(t, filepath.Join(cache, "pkg"))
+	writeGoMod(t, cache, "module "+forgeModulePath+"\n\ngo 1.26\n")
+	if _, _, err := ResolveForgeRoot(cache); err == nil {
+		t.Error("a module-cache copy was accepted as a checkout")
+	}
+}
+
+// A -trimpath host binary (reliant) knows only the replace as go.mod wrote it,
+// "../forge", relative to a module whose location it no longer knows.
+func TestForgeRootFromBuildInfoReplace(t *testing.T) {
+	ws := t.TempDir()
+	checkout := filepath.Join(ws, "forge")
+	mustMkdirAll(t, filepath.Join(checkout, "pkg"))
+	writeGoMod(t, checkout, "module "+forgeModulePath+"\n\ngo 1.26\n")
+	host := filepath.Join(ws, "reliant", "bin")
+	mustMkdirAll(t, host)
+
+	info := func(replace *debug.Module) *debug.BuildInfo {
+		return &debug.BuildInfo{
+			Main: debug.Module{Path: "github.com/reliant-labs/reliant"},
+			Deps: []*debug.Module{{Path: forgeModulePath, Version: "v0.1.46", Replace: replace}},
+		}
+	}
+	bases := searchBases(filepath.Join(host, "reliant"))
+	if got, ok := forgeRootFromBuildInfoReplace(info(&debug.Module{Path: "../forge"}), bases); !ok || got != checkout {
+		t.Errorf("relative replace: %q ok=%v, want %q", got, ok, checkout)
+	}
+	if got, ok := forgeRootFromBuildInfoReplace(info(&debug.Module{Path: checkout}), nil); !ok || got != checkout {
+		t.Errorf("absolute replace: %q ok=%v", got, ok)
+	}
+	if _, ok := forgeRootFromBuildInfoReplace(info(nil), bases); ok {
+		t.Error("no replace resolved a checkout")
+	}
+	if _, ok := forgeRootFromBuildInfoReplace(info(&debug.Module{Path: "../elsewhere"}), bases); ok {
+		t.Error("a replace to a directory that does not exist resolved")
+	}
+	if _, ok := forgeRootFromBuildInfoReplace(info(&debug.Module{Path: "example.com/fork", Version: "v1.0.0"}), bases); ok {
+		t.Error("a versioned (non-directory) replace resolved a checkout")
+	}
+	standalone := &debug.BuildInfo{Main: debug.Module{Path: forgeModulePath}}
+	if _, ok := forgeRootFromBuildInfoReplace(standalone, bases); ok {
+		t.Error("standalone forge has no embedding replace")
 	}
 }

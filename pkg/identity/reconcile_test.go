@@ -401,12 +401,51 @@ func TestSignInCodeOnlyForCredentialLessMembers(t *testing.T) {
 	f.mu.Lock()
 	f.users["500"] = &fUser{ID: "500", UserName: "has@example.com", Email: "has@example.com", AuthMethods: []string{"AUTHENTICATION_METHOD_TYPE_PASSWORD"}}
 	f.mu.Unlock()
+	before := f.now()
 	rep, err := r.Reconcile(context.Background(), spec)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(rep.SignInCodes) != 1 || rep.SignInCodes[0].Email != "new@example.com" {
-		t.Errorf("sign-in codes = %+v, want one for new@example.com only", rep.SignInCodes)
+		t.Fatalf("sign-in codes = %+v, want one for new@example.com only", rep.SignInCodes)
+	}
+	if got := rep.SignInCodes[0].ExpiresAt; got.Before(before.Add(SignInCodeLifetime)) || got.After(f.now().Add(SignInCodeLifetime)) {
+		t.Errorf("ExpiresAt = %v, want minting time + %v", got, SignInCodeLifetime)
+	}
+	if len(rep.Credentialed) != 1 || rep.Credentialed[0] != "has@example.com" {
+		t.Errorf("credentialed = %v, want [has@example.com]", rep.Credentialed)
+	}
+}
+
+// A converge loop must not mint over a code the caller still holds: minting
+// invalidates it, and a pass that mints is never quiet.
+func TestHeldSignInCodeIsNotReplaced(t *testing.T) {
+	f := newFake(t)
+	spec := Spec{Project: ProjectSpec{Name: "p"}, Roles: []Role{{Key: "admin", Declared: true, Members: []string{"new@example.com"}}}}
+	held := false
+	r, _ := newRec(t, f, func(o *Options) {
+		o.SignInCodes = true
+		o.HeldSignInCode = func(email string) bool { return held && email == "new@example.com" }
+	})
+	first, err := r.Reconcile(context.Background(), spec)
+	if err != nil || len(first.SignInCodes) != 1 {
+		t.Fatalf("first pass: err=%v codes=%d", err, len(first.SignInCodes))
+	}
+	held = true
+	second, err := r.Reconcile(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.SignInCodes) != 0 || second.Changed() {
+		t.Errorf("a held code was replaced: codes=%d changes=%v", len(second.SignInCodes), second.Changes)
+	}
+	if len(second.Credentialed) != 0 {
+		t.Errorf("credentialed = %v, want none", second.Credentialed)
+	}
+	held = false
+	third, err := r.Reconcile(context.Background(), spec)
+	if err != nil || len(third.SignInCodes) != 1 {
+		t.Fatalf("an expired (no longer held) code was not re-issued: err=%v codes=%d", err, len(third.SignInCodes))
 	}
 }
 

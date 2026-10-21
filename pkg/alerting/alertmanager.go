@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // AlertmanagerNotifier posts to an Alertmanager v2 API. Give it every replica of
@@ -27,7 +29,7 @@ type AlertmanagerNotifier struct {
 // A nil client gets a 10s-timeout default.
 func NewAlertmanagerNotifier(client *http.Client, baseURLs ...string) *AlertmanagerNotifier {
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+		client = observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: 10 * time.Second})
 	}
 	urls := make([]string, 0, len(baseURLs))
 	for _, u := range baseURLs {

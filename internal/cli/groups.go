@@ -19,6 +19,7 @@ import (
 	_ "github.com/reliant-labs/forge/internal/cli/audit"
 	_ "github.com/reliant-labs/forge/internal/cli/component"
 	_ "github.com/reliant-labs/forge/internal/cli/debug"
+	_ "github.com/reliant-labs/forge/internal/cli/fix"
 	_ "github.com/reliant-labs/forge/internal/cli/lint"
 	_ "github.com/reliant-labs/forge/internal/cli/scaffold"
 )

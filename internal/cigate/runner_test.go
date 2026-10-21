@@ -163,12 +163,12 @@ func TestRenderMarkdown(t *testing.T) {
 	}
 }
 
-// A failing verify-generated resets the tree it dirtied.
+// A failing tree-mutating check resets the tree it dirtied.
 func TestRun_OnFailRunsAfterAFailure(t *testing.T) {
 	reset := false
-	c := check("verify-generated", "vg")
+	c := check("format-sql", "fmt")
 	c.OnFail = func(io.Writer) { reset = true }
-	Run(context.Background(), "checks", []Check{c}, Options{Out: io.Discard, Exec: (&fakeExec{fail: map[string]bool{"vg": true}}).run})
+	Run(context.Background(), "checks", []Check{c}, Options{Out: io.Discard, Exec: (&fakeExec{fail: map[string]bool{"fmt": true}}).run})
 	if !reset {
 		t.Error("OnFail did not run after the command failed")
 	}

@@ -4,13 +4,12 @@ package cli
 //
 // WHY. Some generated files carry a line whose value is a fingerprint of
 // OTHER files: the `forge:hash=` header every generated file starts with, the
-// mock fixtures' SEED_FINGERPRINT (a digest of every migration), and
-// gen/forge_descriptor.json's source_hash (a digest of every .proto). Any two
-// branches that each change a migration, a proto, or a generated file's body
-// change that ONE line differently, so git reports a conflict there even when
-// the real changes are nowhere near each other. On 2026-10-07 these were 2 of
-// the 4 real conflicts in control-plane's stale checkout, and every forge pin
-// PR conflicted with every other open branch.
+// mock fixtures' SEED_FINGERPRINT (a digest of every migration). Any two
+// branches that each change a migration or a generated file's body change
+// that ONE line differently, so git reports a conflict there even when the
+// real changes are nowhere near each other. On 2026-10-07 these were 2 of the
+// 4 real conflicts in control-plane's stale checkout, and every forge pin PR
+// conflicted with every other open branch.
 //
 // The fingerprint lines are not content anyone resolves by hand: they are
 // recomputed by the next `forge generate`, and forge's own freshness checks
@@ -19,6 +18,11 @@ package cli
 // lines from the current side. A real conflict in the body is still a
 // conflict; a merge that touched only fingerprints is clean, and the stale
 // fingerprint is exactly what `forge generate` refreshes.
+//
+// gen/forge_descriptor.json's stamp is the exception that needs no refresh:
+// it is one entry per .proto (codegen.DescriptorSources), so the driver
+// merges it key by key and the result IS the stamp of the merged tree
+// (mergeDescriptorSources).
 //
 // Beyond fingerprints, the driver settles the two kinds of file every branch
 // that adds a service changes (P3b friction F16, 33 parallel lanes):
@@ -35,16 +39,23 @@ package cli
 //     saved searches and alert inputs: obsdash.ServicePart), which merges
 //     into the render itself.
 //
-// Wiring is per clone, like core.hooksPath, and needs nothing committed:
-//   - every forge command run in the project (re)writes the driver's command
-//     into .git/config and the attributes that route forge's files to it into
-//     the clone's info/attributes (ensureGeneratedMergeDriver). A project
-//     adopted in place, which never got forge's .gitattributes, merges
-//     through the driver all the same. FORGE_NO_MERGE_DRIVER=1 opts out of
-//     the driver; FORGE_NO_GIT_HOOKS=1 (or FORGE_NO_HOOKS) is about hooks
-//     only and leaves the driver alone.
-//   - a new project's .gitattributes also names the driver, so the routing
-//     is visible in the tree.
+// Wiring is per worktree and needs nothing committed:
+//   - every forge command that writes generated or state files (generate,
+//     scaffold, disown, …: cmdutil.ConfiguresClone) (re)writes the driver's
+//     command into that worktree's own config (ensureGeneratedMergeDriver),
+//     and only when it differs. Read-only and slot commands never write
+//     there. The command names ONE forge binary, and a repository's worktrees
+//     are on different branches with different forge pins, so it is not a
+//     shared fact: in the shared .git/config the last forge to run decided
+//     the driver for every other worktree. It goes in config.worktree, which
+//     needs extensions.worktreeConfig; forge enables that once and says so.
+//   - the attributes that route forge's files to the driver are a committed
+//     .gitattributes in a scaffolded project. A project adopted in place,
+//     which never got forge's .gitattributes, gets the same routes in the
+//     clone's info/attributes (shared by its worktrees, and reported).
+//     FORGE_NO_MERGE_DRIVER=1 opts out of the driver; FORGE_NO_GIT_HOOKS=1
+//     (or FORGE_NO_HOOKS) is about hooks only and leaves the driver alone.
+//     FORGE_MERGE_DRIVER_SHARED=1 keeps the command in the shared config.
 // A clone where forge has not run yet gets git's built-in merge, which is the
 // old behaviour — never worse.
 
@@ -69,6 +80,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // generatedMergeDriver is the driver's name in .gitattributes and .git/config.
@@ -77,7 +90,7 @@ const generatedMergeDriver = "forge-generated"
 // volatileLine matches a generated line whose value is a fingerprint of other
 // files. Group 1 is the line's KEY: two lines with the same key are the same
 // fact, whichever value they carry.
-var volatileLine = regexp.MustCompile(`^(\s*(?://|#|<!--|/?\*)?\s*forge:hash=|export const SEED_FINGERPRINT\s*=|export const SEED_CONFIG_FINGERPRINT\s*=|export const SEED_FINGERPRINT_FILES\s*=|\s*"source_hash"\s*:)`)
+var volatileLine = regexp.MustCompile(`^(\s*(?://|#|<!--|/?\*)?\s*forge:hash=|export const SEED_FINGERPRINT\s*=|export const SEED_CONFIG_FINGERPRINT\s*=|export const SEED_FINGERPRINT_FILES\s*=)`)
 
 // volatilePlaceholder replaces a fingerprint's value while the rest merges.
 const volatilePlaceholder = "__FORGE_MERGE_GENERATED_VOLATILE__"
@@ -130,6 +143,19 @@ func restore(merged []byte, ours, theirs map[string]string) []byte {
 // taken out of the comparison. clean is false when the rest of the file
 // conflicts; merged then carries git's conflict markers.
 func mergeGenerated(ctx context.Context, base, ours, theirs []byte, markerSize int) (merged []byte, clean bool, err error) {
+	// The descriptor's per-proto stamp merges key by key, outside the line
+	// merge (see mergeDescriptorSources); the rest of the file merges below.
+	if rOurs, ourSources, ok := splitDescriptorSources(ours); ok {
+		if rTheirs, theirSources, ok := splitDescriptorSources(theirs); ok {
+			rBase, baseSources, _ := splitDescriptorSources(base)
+			rest, clean, err := mergeGenerated(ctx, rBase, rOurs, rTheirs, markerSize)
+			if err != nil {
+				return nil, false, err
+			}
+			return joinDescriptorSources(rest, mergeDescriptorSources(baseSources, ourSources, theirSources)), clean, nil
+		}
+	}
+
 	nBase, _ := neutralize(base)
 	nOurs, ourLines := neutralize(ours)
 	nTheirs, theirLines := neutralize(theirs)
@@ -141,7 +167,7 @@ func mergeGenerated(ctx context.Context, base, ours, theirs []byte, markerSize i
 	defer func() { _ = os.RemoveAll(dir) }()
 	paths := map[string][]byte{"ours": nOurs, "base": nBase, "theirs": nTheirs}
 	for name, body := range paths {
-		if err := os.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
+		if err := atomicfile.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
 			return nil, false, err
 		}
 	}
@@ -169,6 +195,98 @@ func mergeGenerated(ctx context.Context, base, ours, theirs []byte, markerSize i
 		merged = recertify(merged)
 	}
 	return merged, clean, nil
+}
+
+// descriptorSourcesKey opens the per-proto stamp block of
+// gen/forge_descriptor.json, as json.MarshalIndent writes it (two-space
+// indent; ForgeDescriptor.Sources).
+const descriptorSourcesKey = `  "sources": `
+
+// descriptorSourcesPlaceholder stands in for the stamp block while the rest
+// of the descriptor goes through the line merge.
+const descriptorSourcesPlaceholder = "__FORGE_MERGE_DESCRIPTOR_SOURCES__"
+
+// splitDescriptorSources lifts the per-proto stamp block out of a forge
+// descriptor, leaving a placeholder line, and returns the stamp. ok is false
+// for any file without the block, which then merges as before.
+func splitDescriptorSources(text []byte) (rest []byte, sources map[string]string, ok bool) {
+	lines := strings.SplitAfter(string(text), "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(line, descriptorSourcesKey) {
+			continue
+		}
+		value := strings.TrimPrefix(line, descriptorSourcesKey)
+		end := i
+		if strings.HasPrefix(value, "{") && !strings.HasPrefix(strings.TrimSpace(value), "{}") {
+			for end = i + 1; end < len(lines) && !strings.HasPrefix(lines[end], "  }"); end++ {
+			}
+			if end == len(lines) {
+				return text, nil, false
+			}
+		}
+		block := strings.TrimPrefix(strings.Join(lines[i:end+1], ""), descriptorSourcesKey)
+		trimmed := strings.TrimRight(block, "\n")
+		suffix := ""
+		if strings.HasSuffix(trimmed, ",") {
+			trimmed, suffix = strings.TrimSuffix(trimmed, ","), ","
+		}
+		if err := json.Unmarshal([]byte(trimmed), &sources); err != nil || sources == nil {
+			return text, nil, false
+		}
+		placeholder := descriptorSourcesKey + descriptorSourcesPlaceholder + suffix + block[len(strings.TrimRight(block, "\n")):]
+		out := strings.Join(lines[:i], "") + placeholder + strings.Join(lines[end+1:], "")
+		return []byte(out), sources, true
+	}
+	return text, nil, false
+}
+
+// joinDescriptorSources renders sources where splitDescriptorSources left its
+// placeholder, exactly as forge writes the field.
+func joinDescriptorSources(merged []byte, sources map[string]string) []byte {
+	if sources == nil {
+		sources = map[string]string{}
+	}
+	rendered, err := json.MarshalIndent(sources, "  ", "  ")
+	if err != nil {
+		return merged
+	}
+	return bytes.Replace(merged, []byte(descriptorSourcesPlaceholder), rendered, 1)
+}
+
+// mergeDescriptorSources three-way merges the descriptor's per-proto stamp
+// key by key. Each entry stamps one proto, and a side that left an entry as
+// the base had it made no claim about that proto, so the other side's entry
+// (an edit, an addition or a deletion) stands. This is what git's line merge
+// cannot do: two branches that edit protos whose entries sit on neighbouring
+// lines would conflict, though each entry is the truth about its own file.
+//
+// When both sides changed one entry differently, the proto itself was edited
+// on both sides and its merge matches neither stamp: ours is kept, the
+// descriptor reads as stale, and the next `forge generate` restamps it — the
+// policy every other fingerprint line here follows.
+func mergeDescriptorSources(base, ours, theirs map[string]string) map[string]string {
+	out := map[string]string{}
+	keys := map[string]bool{}
+	for _, m := range []map[string]string{base, ours, theirs} {
+		for k := range m {
+			keys[k] = true
+		}
+	}
+	for k := range keys {
+		b, inBase := base[k]
+		o, inOurs := ours[k]
+		t, inTheirs := theirs[k]
+		if inOurs == inBase && o == b {
+			if inTheirs {
+				out[k] = t
+			}
+			continue
+		}
+		if inOurs {
+			out[k] = o
+		}
+	}
+	return out
 }
 
 // recertify rewrites the forge:hash marker to certify the merged body.
@@ -316,7 +434,7 @@ func newMergeGeneratedCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := os.WriteFile(args[1], merged, 0o644); err != nil {
+			if err := atomicfile.WriteFile(args[1], merged, 0o644); err != nil {
 				return err
 			}
 			if note != "" {
@@ -331,11 +449,11 @@ func newMergeGeneratedCmd() *cobra.Command {
 }
 
 // ensureGeneratedMergeDriver configures the clone to merge forge's files
-// through the driver: the driver command in the repository config, and the
-// attributes routing the project's generated and state files to it in the
-// clone's info/attributes. Both are per clone and shared by every linked
-// worktree, like core.hooksPath. Best-effort and idempotent; it says one line
-// when it changes something.
+// through the driver: the driver command in this worktree's config, and, when
+// the project's committed .gitattributes does not already say so, the
+// attributes routing its generated and state files to it in the clone's
+// info/attributes (shared by every linked worktree). Best-effort and
+// idempotent; when it changes something it says what, where, and who shares it.
 //
 // The attributes live in info/attributes, not .gitattributes, because they
 // must reach every forge project: one adopted in place keeps its own
@@ -361,6 +479,12 @@ func newMergeGeneratedCmd() *cobra.Command {
 // alone — left the driver naming the previous pin's forge: the driver is
 // local git config, not a hook, and the hooks opt-out no longer touches it.
 func ensureGeneratedMergeDriver(root string) {
+	ensureGeneratedMergeDriverTo(os.Stderr, root)
+}
+
+// ensureGeneratedMergeDriverTo is ensureGeneratedMergeDriver with the notice
+// written to w.
+func ensureGeneratedMergeDriverTo(w io.Writer, root string) {
 	if os.Getenv(mergeDriverOptOutEnv) != "" {
 		return
 	}
@@ -369,10 +493,19 @@ func ensureGeneratedMergeDriver(root string) {
 	if exec.CommandContext(context.Background(), "git", "-C", root, "rev-parse", "--is-inside-work-tree").Run() != nil {
 		return
 	}
+	var changes []string
+	wroteAttributes := false
 	// The routes are harmless without a command (git merges a file whose
 	// driver is undefined as text), so they are written even when this
-	// binary cannot be the command.
-	changed := writeMergeAttributes(root)
+	// binary cannot be the command. When the project's committed
+	// .gitattributes already routes the files, nothing is written: the
+	// declaration travels with the repository and needs no per-clone copy.
+	if !committedRoutesCover(root) {
+		if file, ok := writeMergeAttributes(root); ok {
+			wroteAttributes = true
+			changes = append(changes, fmt.Sprintf("%s (shared): routes forge's generated and state files to the driver", file))
+		}
+	}
 	key := "merge." + generatedMergeDriver + ".driver"
 	cur, _ := exec.CommandContext(context.Background(), "git", "-C", root, "config", "--get", key).Output()
 	current := strings.TrimSpace(string(cur))
@@ -382,21 +515,203 @@ func ensureGeneratedMergeDriver(root string) {
 	// what repairs a driver a pin bump left behind. Only the pinned forge
 	// copies a `go run` build of itself somewhere durable.
 	_, _, skewed := mergeDriverPinCheck(root)
-	command, ok := mergeDriverCommand(!skewed)
-	if ok && !skewed {
-		registerPinnedDriver(root, command)
+	var scope configScope
+	scoped := false
+	needScope := func() configScope {
+		if !scoped {
+			var enabled bool
+			scope, enabled = driverConfigScope(root)
+			scoped = true
+			if enabled {
+				changes = append(changes, "extensions.worktreeConfig = true (shared): lets each worktree keep its own driver command")
+			}
+		}
+		return scope
 	}
-	if ok && current != command && (!driverCommandUsable(current) || !skewed) {
-		_ = exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local",
-			"merge."+generatedMergeDriver+".name", "forge-generated files: merge, keeping fingerprint lines for forge generate to refresh").Run()
-		if exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local", key, command).Run() == nil {
-			changed = true
+	var command string
+	var ok bool
+	if registered, have := pinnedDriverCommand(root, mergeDriverIdentity()); have && !skewed {
+		// A binary of this same pinned identity already registered itself
+		// and is still on disk: it IS the pinned forge, so keep it. Without
+		// this, every copy of the pin at a different path — each worktree's
+		// tool-cache install, a `go install`ed one, a durable `go run` copy
+		// — rewrote the config to name itself, and two of them alternating
+		// rewrote it on every run.
+		command, ok = registered, true
+	} else {
+		command, ok = mergeDriverCommand(!skewed)
+	}
+	if ok && !skewed {
+		if sc := needScope(); registerPinnedDriver(root, command, sc) {
+			changes = append(changes, fmt.Sprintf("%s.%s.command = %s (%s): the driver of this forge's identity, for a driver of another pin to hand a merge to",
+				pinnedDriverSection, mergeDriverIdentity(), command, sc.describe()))
 		}
 	}
-	if changed {
-		fmt.Fprintln(os.Stderr,
-			"forge: configured this clone to merge forge's generated and state files through `forge merge-generated` (.git/config, info/attributes). Disable with "+mergeDriverOptOutEnv+"=1.")
+	if ok && current != command && (!driverCommandUsable(current) || !skewed) {
+		sc := needScope()
+		_ = exec.CommandContext(context.Background(), "git", "-C", root, "config", sc.flag(),
+			"merge."+generatedMergeDriver+".name", "forge-generated files: merge, keeping fingerprint lines for forge generate to refresh").Run()
+		if exec.CommandContext(context.Background(), "git", "-C", root, "config", sc.flag(), key, command).Run() == nil {
+			was := "unset"
+			if current != "" {
+				was = current
+			}
+			changes = append(changes, fmt.Sprintf("%s = %s (%s; was: %s)", key, command, sc.describe(), was))
+		}
 	}
+	if len(changes) > 0 {
+		_, _ = fmt.Fprint(w, mergeDriverNotice(root, changes, wroteAttributes))
+	}
+}
+
+// mergeDriverSharedEnv keeps the driver command in the repository's shared
+// config, as forge always did, for tooling that cannot cope with
+// extensions.worktreeConfig.
+const mergeDriverSharedEnv = "FORGE_MERGE_DRIVER_SHARED"
+
+// configScope is where the driver command is written.
+type configScope int
+
+const (
+	// scopeWorktree is this worktree's config.worktree: what only this
+	// checkout merges with. Needs extensions.worktreeConfig.
+	scopeWorktree configScope = iota
+	// scopeShared is the repository's .git/config, read by every linked
+	// worktree.
+	scopeShared
+)
+
+func (s configScope) flag() string {
+	if s == scopeWorktree {
+		return "--worktree"
+	}
+	return "--local"
+}
+
+func (s configScope) describe() string {
+	if s == scopeWorktree {
+		return "this worktree only"
+	}
+	return "shared"
+}
+
+// driverConfigScope picks where the driver command is written, and reports
+// whether it had to enable extensions.worktreeConfig to get there.
+//
+// The command names ONE forge binary by absolute path, and a repository's
+// worktrees are routinely on different branches with different forge pins.
+// In the shared config the last forge to run decides the driver for every
+// worktree, and an agent's command in one checkout changes how another
+// agent's rebase merges. In config.worktree each checkout has its own, so the
+// forge a worktree's own commands run is the forge that merges there.
+//
+// The extension is the one shared change this needs, made once and reported.
+// git has honoured it since 2.20 and go-git accepts it at repository format 0;
+// it is not enabled where git documents a hazard (a bare repository or an
+// explicit core.worktree, whose settings must then move to config.worktree),
+// and FORGE_MERGE_DRIVER_SHARED=1 declines it.
+func driverConfigScope(root string) (scope configScope, enabled bool) {
+	if os.Getenv(mergeDriverSharedEnv) != "" {
+		return scopeShared, false
+	}
+	if gitTrimmed(root, "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig") == "true" {
+		return scopeWorktree, false
+	}
+	if gitTrimmed(root, "config", "--local", "--type=bool", "--get", "core.bare") == "true" ||
+		gitTrimmed(root, "config", "--local", "--get", "core.worktree") != "" {
+		return scopeShared, false
+	}
+	if exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local", "extensions.worktreeConfig", "true").Run() != nil {
+		return scopeShared, false
+	}
+	// Prove the extension took before relying on it: a git too old to know
+	// it rejects --worktree outright (exit 129), where reading a missing key
+	// is a plain exit 1.
+	if exitCode(exec.CommandContext(context.Background(), "git", "-C", root, "config", "--worktree", "--get", "forge.probe")) == 1 {
+		return scopeWorktree, true
+	}
+	_ = exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local", "--unset", "extensions.worktreeConfig").Run()
+	return scopeShared, false
+}
+
+func exitCode(cmd *exec.Cmd) int {
+	err := cmd.Run()
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	if err != nil {
+		return -1
+	}
+	return 0
+}
+
+// committedRoutesCover reports whether the project's committed .gitattributes
+// already routes every file forge's block would. Then the declaration travels
+// with the repository (a scaffolded project has it), and writing the same
+// routes into the shared info/attributes would only be a second copy that
+// every worktree carries.
+func committedRoutesCover(root string) bool {
+	data, err := os.ReadFile(filepath.Join(root, ".gitattributes"))
+	if err != nil {
+		return false
+	}
+	routed := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && !strings.HasPrefix(f[0], "#") {
+			for _, attr := range f[1:] {
+				if attr == "merge="+generatedMergeDriver {
+					routed[f[0]] = true
+				}
+			}
+		}
+	}
+	for _, p := range generatedMergePatterns {
+		if !routed[p] {
+			return false
+		}
+	}
+	return true
+}
+
+// mergeDriverNotice says what ensureGeneratedMergeDriver changed, where, and
+// who else it affects. The scope is the point: .git/config and
+// info/attributes live in the repository's COMMON git directory, which every
+// linked worktree reads, so a change made from one worktree applies to all of
+// them — and to every other agent working in them.
+func mergeDriverNotice(root string, changes []string, wroteAttributes bool) string {
+	common := gitTrimmed(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	var b strings.Builder
+	b.WriteString("forge: set up merging of forge's generated and state files through `forge merge-generated`")
+	if common != "" {
+		fmt.Fprintf(&b, " (git directory %s", common)
+		if n := strings.Count(gitTrimmed(root, "worktree", "list", "--porcelain"), "worktree "); n > 1 {
+			fmt.Fprintf(&b, ", shared by %d worktrees", n)
+		}
+		b.WriteString(")")
+	}
+	b.WriteString(". Changed:\n")
+	for _, c := range changes {
+		b.WriteString("  - " + c + "\n")
+	}
+	b.WriteString("  A setting marked \"this worktree only\" affects no other checkout; one marked \"shared\" affects all of them.\n")
+	undo := fmt.Sprintf("`git config --worktree --unset merge.%s.driver` (without --worktree for a shared one)", generatedMergeDriver)
+	if wroteAttributes {
+		undo += " and delete the \"forge merge-generated\" block from info/attributes"
+	}
+	fmt.Fprintf(&b, "  Undo: %s. Never again: %s=1; keep the command in the shared config: %s=1.\n",
+		undo, mergeDriverOptOutEnv, mergeDriverSharedEnv)
+	return b.String()
+}
+
+// gitTrimmed is `git -C dir args...` trimmed, "" on any failure.
+func gitTrimmed(dir string, args ...string) string {
+	out, err := exec.CommandContext(context.Background(), "git", append([]string{"-C", dir}, args...)...).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // mergeDriverOptOutEnv skips wiring the merge driver into a clone, leaving
@@ -624,27 +939,27 @@ var generatedMergePatterns = []string{
 
 // writeMergeAttributes writes forge's block into the clone's
 // info/attributes, scoped to root's directory within the repository.
-// Reports whether the file changed.
-func writeMergeAttributes(root string) bool {
+// Returns the file and whether it changed.
+func writeMergeAttributes(root string) (string, bool) {
 	attrPath, err := exec.CommandContext(context.Background(), "git", "-C", root, "rev-parse", "--path-format=absolute", "--git-path", "info/attributes").Output()
 	if err != nil {
-		return false
+		return "", false
 	}
 	prefix, err := exec.CommandContext(context.Background(), "git", "-C", root, "rev-parse", "--show-prefix").Output()
 	if err != nil {
-		return false
+		return "", false
 	}
 	block := mergeAttributesBlock(strings.TrimSpace(string(prefix)))
 	file := strings.TrimSpace(string(attrPath))
 	existing, _ := os.ReadFile(file)
 	updated := replaceManagedBlock(string(existing), block)
 	if updated == string(existing) {
-		return false
+		return file, false
 	}
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
-		return false
+		return "", false
 	}
-	return os.WriteFile(file, []byte(updated), 0o644) == nil
+	return file, atomicfile.WriteFile(file, []byte(updated), 0o644) == nil
 }
 
 // mergeAttributesBlock renders the block for a project at prefix (git's

@@ -853,3 +853,195 @@ func TestRebuildableDefaultsIncludeLanguageCaches(t *testing.T) {
 		}
 	}
 }
+
+func excludeInRepo(t *testing.T, repo, patterns string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, ".git", "info", "exclude"), []byte(patterns), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeIn(t *testing.T, root, rel string) {
+	t.Helper()
+	p := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRebuildablePathRegenerableEntries(t *testing.T) {
+	for p, want := range map[string]bool{
+		".forge/tmp/":                  true,
+		".forge/tmp/render-1/main.k":   true,
+		".forge/generate-cache.json":   true,
+		".tools/":                      true,
+		".tools/stamps/buf":            true,
+		".tools/pre-commit/repoabc/":   true,
+		"tmp/":                         true,
+		"tmp/ci/summary.txt":           true,
+		"web/tmp/x":                    false, // tmp is anchored at the worktree root
+		"sub/.tools/state.json":        false, // so is .tools
+		"tmp/data/x":                   false, // the never-list wins inside tmp
+		"tmp/.env":                     false,
+		"tmp/a.db":                     false,
+		".tools/.env":                  false,
+		".tools/secrets/k":             false,
+		".forge/hostinfra/pg/data":     false,
+		".forge/generate-cache.json.x": false,
+		".forge/tmpx/":                 false,
+		"tmpfile":                      false,
+	} {
+		if got := rebuildablePath(p, DefaultWorktreeRebuildable()); got != want {
+			t.Errorf("rebuildablePath(%q) = %v, want %v", p, got, want)
+		}
+	}
+}
+
+func TestWorktreeRegenerableToolOutputDoesNotHold(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
+	for name, rel := range map[string]string{
+		"forge-tmp":            ".forge/tmp/render-123/main.k",
+		"forge-generate-cache": ".forge/generate-cache.json",
+		"tools-bin":            ".tools/bin/golangci-lint",
+		"tools-stamps":         ".tools/stamps/buf-v1.50.0",
+		"tmp":                  "tmp/notes.md",
+		"tmp-ci":               "tmp/ci/summary.txt",
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo, worktree := gitRepoWithWorktree(t)
+			excludeInRepo(t, repo, ".forge/*\n.tools/\ntmp/\n")
+			writeIn(t, worktree, rel)
+			ageDir(t, worktree)
+			fakeLsof(t, unrelatedOpenFile, "exit 0")
+			report := reapOnce(t, Runner{}, repo, true)
+			if _, err := os.Stat(worktree); err == nil || len(report.Removed) != 1 {
+				t.Fatalf("%s: want removed, got removed=%v held=%+v", rel, report.Removed, report.Held)
+			}
+		})
+	}
+}
+
+func TestWorktreeRegenerableEntriesDoNotCoverData(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
+	for name, rel := range map[string]string{
+		"data-in-tmp":     "tmp/data/rows.csv",
+		"env-in-tmp":      "tmp/.env",
+		"db-in-tools":     ".tools/state.db",
+		"tmp-not-at-root": "weird/tmp/thing.bin",
+		"nested-tools":    "weird/.tools/thing.bin",
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo, worktree := gitRepoWithWorktree(t)
+			// A tracked file in tmp/ and .tools/ keeps git from collapsing
+			// each into one "!! dir/" entry that would hide what is inside.
+			excludeInRepo(t, repo, ".tools/*\n!.tools/.keep\ntmp/*\n!tmp/.keep\nweird/\n")
+			writeIn(t, worktree, "tmp/.keep")
+			writeIn(t, worktree, ".tools/.keep")
+			runGit(t, worktree, "add", "tmp/.keep", ".tools/.keep")
+			runGit(t, worktree, "commit", "-q", "-m", "keep dirs")
+			writeIn(t, worktree, rel)
+			ageDir(t, worktree)
+			fakeLsof(t, unrelatedOpenFile, "exit 0")
+			report := reapOnce(t, Runner{}, repo, true)
+			if got := heldReason(report, worktree); got != HoldData {
+				t.Fatalf("%s: held reason = %q, want %q (held %+v)", rel, got, HoldData, report.Held)
+			}
+			if _, err := os.Stat(filepath.Join(worktree, filepath.FromSlash(rel))); err != nil {
+				t.Fatalf("%s was deleted: %v", rel, err)
+			}
+		})
+	}
+}
+
+// preCommitClone makes a hook clone (a full repository with history) at rel.
+func preCommitClone(t *testing.T, checkout, rel string) string {
+	t.Helper()
+	clone := filepath.Join(checkout, filepath.FromSlash(rel))
+	writeIn(t, clone, ".pre-commit-hooks.yaml")
+	runGit(t, clone, "init", "-q", "-b", "main")
+	runGit(t, clone, "add", ".")
+	runGit(t, clone, "commit", "-q", "-m", "hooks")
+	return clone
+}
+
+func TestWorktreePreCommitClonesAreRegenerable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
+	repo, worktree := gitRepoWithWorktree(t)
+	excludeInRepo(t, repo, ".tools/\n")
+	preCommitClone(t, worktree, ".tools/pre-commit/repo1a2b3c")
+	preCommitClone(t, worktree, ".tools/pre-commit/repo4d5e6f")
+	writeIn(t, worktree, ".tools/pre-commit/db.db")
+	ageDir(t, worktree)
+	fakeLsof(t, unrelatedOpenFile, "exit 0")
+	report := reapOnce(t, Runner{}, repo, true)
+	if _, err := os.Stat(worktree); err == nil || len(report.Removed) != 1 {
+		t.Fatalf("want removed, got removed=%v held=%+v", report.Removed, report.Held)
+	}
+}
+
+func TestWorktreeOtherNestedRepositoriesStillHold(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
+	for name, tc := range map[string]struct{ exclude, rel, want string }{
+		"too-deep":      {".tools/\n", ".tools/pre-commit/repo1/sub", HoldNested},
+		"elsewhere":     {".tools/\n", ".tools/other/repo1", HoldNested},
+		"in-tmp":        {"tmp/\n", "tmp/pre-commit/repo1", HoldNested},
+		"pre-commit-at": {".tools/\n", ".tools/pre-commit", HoldNested},
+		"lookalike":     {".tools/\n", ".tools/pre-commit-x/repo1", HoldNested},
+		// /.tools is root-anchored, so sub/.tools is unrecognized data first.
+		"not-anchored": {"sub/\n", "sub/.tools/pre-commit/repo1", HoldData},
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo, worktree := gitRepoWithWorktree(t)
+			excludeInRepo(t, repo, tc.exclude)
+			clone := preCommitClone(t, worktree, tc.rel)
+			ageDir(t, worktree)
+			fakeLsof(t, unrelatedOpenFile, "exit 0")
+			report := reapOnce(t, Runner{}, repo, true)
+			if got := heldReason(report, worktree); got != tc.want {
+				t.Fatalf("held reason = %q, want %q", got, tc.want)
+			}
+			if _, err := os.Stat(clone); err != nil {
+				t.Fatalf("clone deleted: %v", err)
+			}
+		})
+	}
+}
+
+func TestToolCloneNeedsAnIgnoringWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
+	repo, worktree := gitRepoWithWorktree(t)
+	clone := preCommitClone(t, worktree, ".tools/pre-commit/repoX")
+	ctx := context.Background()
+	gitPath := filepath.FromSlash(".tools/pre-commit/repoX/.git")
+	if (Runner{}).toolClone(ctx, worktree, gitPath) {
+		t.Fatal("a clone git does not ignore is the user's, not a tool clone")
+	}
+	excludeInRepo(t, repo, ".tools/\n")
+	if !(Runner{}).toolClone(ctx, worktree, gitPath) {
+		t.Fatal("an ignored pre-commit clone is a tool clone")
+	}
+	if (Runner{}).toolClone(ctx, worktree, ".git") {
+		t.Fatal("the worktree's own .git is never a tool clone")
+	}
+	// A .git FILE (submodule/worktree pointer) is never a regenerable clone.
+	if err := os.Remove(filepath.Join(clone, ".git")); err != nil && os.RemoveAll(filepath.Join(clone, ".git")) != nil {
+		t.Fatal("cannot reset clone")
+	}
+	writeIn(t, clone, ".git")
+	if (Runner{}).toolClone(ctx, worktree, gitPath) {
+		t.Fatal("a .git file is not a tool clone")
+	}
+}

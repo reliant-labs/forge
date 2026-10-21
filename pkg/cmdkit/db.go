@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
 )
 
 // DBOptions configures OpenDB. Only DSN is required; the rest tune the
@@ -52,7 +54,9 @@ func OpenDB(ctx context.Context, opts DBOptions) (*sql.DB, error) {
 		driver = "pgx"
 	}
 
-	db, err := sql.Open(driver, opts.DSN)
+	// Traced like serverkit's pool: a statement run under a span is a child
+	// span of it (pkg/observe/dbtrace).
+	db, err := dbtrace.Open(driver, opts.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("open db (%s): %w", driver, err)
 	}

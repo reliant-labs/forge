@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // runDescriptorGenerate runs buf generate with the protoc-gen-forge plugin (mode=descriptor)
@@ -67,7 +69,7 @@ plugins:
       - descriptor_out=%s
 `, pluginCmd, genDir)
 	tmpFile := filepath.Join(projectDir, "buf.gen.descriptor.yaml")
-	if err := os.WriteFile(tmpFile, []byte(descConfig), 0644); err != nil {
+	if err := atomicfile.WriteFile(tmpFile, []byte(descConfig), 0644); err != nil {
 		return fmt.Errorf("failed to write descriptor buf config: %w", err)
 	}
 	defer func() { _ = os.Remove(tmpFile) }()

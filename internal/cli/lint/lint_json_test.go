@@ -32,7 +32,7 @@ func TestLintJSONReportShape(t *testing.T) {
 		{
 			Severity: lintSevInfo,
 			Rule:     "skipped",
-			Message:  "buf not found on PATH — skipping buf lint",
+			Message:  "contracts feature disabled — skipping contract linter",
 		},
 	}, true)
 
@@ -60,7 +60,7 @@ func TestLintJSONReportShape(t *testing.T) {
     {
       "severity": "info",
       "rule": "skipped",
-      "message": "buf not found on PATH — skipping buf lint"
+      "message": "contracts feature disabled — skipping contract linter"
     }
   ],
   "summary": {

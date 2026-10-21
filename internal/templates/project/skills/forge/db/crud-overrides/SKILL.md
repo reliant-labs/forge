@@ -124,7 +124,7 @@ them:
 // opts — see "Where a per-caller policy attaches" above.)
 op.PersistMasked = func(ctx context.Context, e *db.Job, fields []string, _ ...orm.QueryOption) error {
     return s.deps.DB.RunTx(ctx, func(ctx context.Context) error {
-        stored, err := db.GetJobByID(ctx, s.deps.DB, e.Id) // inside the transaction
+        stored, err := db.GetJobByID(ctx, s.deps.DB, e.ID) // inside the transaction
         if err != nil {
             return err
         }
@@ -176,6 +176,80 @@ AIP-203 asks servers to *ignore* output-only `update_mask` paths; forge refuses
 them instead, because a 200 that silently changed nothing is the failure this
 exists to prevent. An override that wants the AIP behaviour sets
 `op.ReadOnly = nil` and filters the paths in `op.PersistMasked`.
+
+## Hand SQL: two placeholder dialects on one handle
+
+An override, a custom rpc or a `_repo_ext.go` query that drops to hand SQL
+reaches it through the same `orm.Context`, and the two paths take
+**different placeholders**:
+
+| Path | Placeholders | Who binds the arguments |
+|---|---|---|
+| `db.Exec` / `db.Query` / `db.QueryRow` (raw passthrough) | postgres `$1`, `$2`, … | the server (a real bind parameter) |
+| `db.Bun().NewRaw(…)`, every builder method (`Where`, `Set`, `ColumnExpr`, `OrderExpr`, …), `bun.SafeQuery` | bun `?` (in order) or `?0`, `?1`, … (0-based, reusable) | the server: forge sends bun's statement with its values as bind parameters (below) |
+| `db.Bun().ExecContext` / `QueryContext` / `QueryRowContext` | bun `?` | bun, interpolating the values into the SQL text |
+
+```go
+// raw passthrough: native $N
+db.Exec(ctx, `UPDATE run_events SET dispatched_at = now() WHERE id = $1`, id)
+
+// bun: ? / ?N — a ported sqlc query has its $N rewritten to ?N-1
+db.Bun().NewRaw(`INSERT INTO messages (id, chat_id) VALUES (?0, ?1)`, id, chatID).Exec(ctx)
+```
+
+In bun-formatted SQL **every unescaped `?` is a placeholder** — one in a
+`-- comment`, one inside a `'string literal'`, and the jsonb operators `?`,
+`?|` and `?&`. Each consumes the next argument and shifts the rest onto the
+wrong placeholders. Escape a literal one as `\?` (`"\\?"` in an interpreted Go
+string, `\?` in a raw one) — `payload \? 'tool'`, `tags \?| ?` — or use the
+function forms `jsonb_exists`, `jsonb_exists_any`, `jsonb_exists_all`.
+Conversely, a `$1` left in bun-formatted SQL reaches postgres literally with
+nothing bound (`there is no parameter $1`).
+
+`forge lint` catches both in string literals and named constants:
+`forgeconv-bun-dollar-placeholder` and `forgeconv-bun-literal-question-mark`.
+A query assembled at run time is not judged — keep hand SQL in a constant.
+
+### What a bun statement binds
+
+A statement run on `db.Bun()` (a `Client`'s, a `RunTx` ctx's, or an explicit
+`Tx`'s) reaches postgres as one text per statement *shape*, its values bound,
+so pgx prepares it once per connection instead of once per value:
+
+- **Bound:** every column value of a model (INSERT values, UPDATE SET,
+  `WherePK`), numbers included; every string, time, `[]byte` and JSON `?`
+  argument; anything wrapped in `orm.Arg(v)`, and each element of
+  `orm.ArgList(slice)` (bun.In, bound).
+- **Not bound:** an integer or float `?` argument (bun formats it without
+  asking the dialect) — wrap it in `orm.Arg` on a hot statement; NULL,
+  TRUE/FALSE, DEFAULT; and whatever you write into the SQL text itself.
+
+```go
+q.Where("chat_id = ?", chatID).Where("seq > ?", orm.Arg(since)).Where("kind IN (?)", orm.ArgList(kinds))
+```
+
+**Slices: an array, a document, or a list — say which.**
+
+| You pass | It binds as |
+|---|---|
+| `orm.Arg(slice)` (or a pointer to one) | a postgres **array**, as pgx encodes `[]T`: `kind = ANY(?)`, `tags @> ?` |
+| `orm.JSON(v)` | `v`'s JSON text, for a `json`/`jsonb` operand: `labels @> ?` |
+| `orm.ArgList(slice)` | one parameter per element, for `IN (?)` |
+| `orm.Arg([]byte)` / a bare `[]byte` | `bytea` |
+| a **bare** slice `?` argument | bun's default: **JSON** — wrap it in one of the above |
+
+`pgdialect.Array(v)` still works and means the same as `orm.Arg(v)`.
+
+A value stays a literal wherever a parameter would not mean what it meant:
+a positional `ORDER BY ?`, a typed literal (`INTERVAL ?`), a bare argument of a
+function such as `jsonb_build_object(?, …)` (no type for `$1`), `? IS NULL`,
+and an `ON CONFLICT … DO` target. Anything forge cannot prove is bun's
+statement with values turned into parameters runs exactly as bun rendered it.
+
+**A value the planner must see goes in the text.** A generic plan cannot prove
+a partial index's predicate from a parameter: write that constant into the SQL,
+or pass `orm.Literal(v)`. `orm.InlineValues(ctx)` turns binding off for every
+statement run with that ctx.
 
 ## Errors from an override must be classified
 

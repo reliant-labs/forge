@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/pkg/activity"
 )
 
 // Client calls a hosted control plane over Connect's HTTP+JSON binding:
@@ -92,6 +95,10 @@ func (c *Client) call(ctx context.Context, procedure string, req, out any, token
 	// owns its format, and a forge-side assumption about it would break
 	// the day that format changed.
 	httpReq.Header.Set("Authorization", "Bearer "+token)
+	// Forge-Via names the client to the server's activity stream
+	// (forge/pkg/activity): the same command reads "via CLI" from a
+	// terminal and "via CI" from a pipeline.
+	httpReq.Header.Set(activity.ViaHeader, via())
 
 	resp, err := c.httpClient().Do(httpReq)
 	if err != nil {
@@ -124,4 +131,13 @@ func (c *Client) httpClient() *http.Client {
 		return c.HTTP
 	}
 	return http.DefaultClient
+}
+
+// via is the Forge-Via value for this process: "ci" under a CI runner, "cli"
+// otherwise.
+func via() string {
+	if buildinfo.IsCI() {
+		return "ci"
+	}
+	return "cli"
 }

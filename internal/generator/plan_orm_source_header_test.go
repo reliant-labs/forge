@@ -13,7 +13,7 @@ import (
 // so every freshly scaffolded project reported gen-missing-source once per
 // entity — a warning about a file the user is told never to edit.
 func TestRenderORMEntityPassesScaffoldOwnershipLint(t *testing.T) {
-	code := renderORMEntity(constraintTestEntity(nil), false)
+	code := renderORMEntity("db", constraintTestEntity(nil), false)
 
 	if fs := scaffolds.LintGeneratedHeader("internal/db/job_orm_gen.go", code); len(fs) > 0 {
 		t.Fatalf("the generated ORM fails forge's own scaffold-ownership lint: %+v\nheader:\n%s",

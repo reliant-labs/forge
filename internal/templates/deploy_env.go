@@ -10,6 +10,10 @@ import "strings"
 // Bindings, the one line per workload the generator derives from the
 // project's components.
 type EnvTemplateData struct {
+	// Roots is a composition-graph project: a workload's config env comes
+	// from config_gen.workloadEnvMap, which gives one bound to a root
+	// (`root = "server"`) exactly what the root reaches.
+	Roots       bool
 	ProjectName string
 	EnvName     string
 	// PrimaryWorkload names the workload holding the dev env's

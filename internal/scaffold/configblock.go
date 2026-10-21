@@ -11,6 +11,8 @@ import (
 	"text/scanner"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // ConfigRootMessage is the config message a scaffolded component's block is
@@ -177,7 +179,7 @@ func EnsureConfigBlock(configDir string, spec ConfigBlockSpec) (ConfigBlockResul
 	if res.AddedMessage {
 		content = ensureConfigAnnotationImport(content)
 	}
-	if err := os.WriteFile(root.File, []byte(content), 0o644); err != nil { //nolint:gosec // a proto source file in the user's tree, as readable as the rest of it
+	if err := atomicfile.WriteFile(root.File, []byte(content), 0o644); err != nil { //nolint:gosec // a proto source file in the user's tree, as readable as the rest of it
 		return res, err
 	}
 	return res, nil

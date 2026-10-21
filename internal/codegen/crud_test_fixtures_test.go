@@ -158,7 +158,7 @@ func renderFactoriesForTest(t *testing.T, svc ServiceDef, cm CRUDMethod, fx *cru
 	if esp := fx.plans[cm.Entity.TableName]; esp != nil {
 		spec.parentSQL = esp.seedSQL
 	}
-	out := renderEntityFactoryFile("example.com/test", factoryGroup{
+	out := renderEntityFactoryFile("example.com/test/internal/db", factoryGroup{
 		pkg: "shop", pbImport: "example.com/test/gen/services/shop/v1", creates: []createRequestSpec{spec},
 	})
 	if _, err := format.Source(out); err != nil {
@@ -837,7 +837,7 @@ CREATE TABLE products (
 	if specs[0].failure != "" {
 		t.Fatalf("a schema forge can satisfy produced a failing factory: %s", specs[0].failure)
 	}
-	out := renderEntityFactoryFile("example.com/test", factoryGroup{
+	out := renderEntityFactoryFile("example.com/test/internal/db", factoryGroup{
 		pkg: "shop", pbImport: "example.com/test/gen/proto/services/shop/v1", creates: specs,
 	})
 	content := string(out)
@@ -921,7 +921,7 @@ CREATE TABLE credentials (
 			t.Errorf("failure does not name %q:\n%s", want, specs[0].failure)
 		}
 	}
-	out := renderEntityFactoryFile("example.com/test", factoryGroup{
+	out := renderEntityFactoryFile("example.com/test/internal/db", factoryGroup{
 		pkg: "account", pbImport: "example.com/test/gen/services/account/v1", creates: specs,
 	})
 	if _, err := format.Source(out); err != nil {

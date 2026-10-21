@@ -33,7 +33,14 @@ import (
 //     not one.
 //   - CAPPED. One pass unlinks at most max_deletes_per_pass entries across
 //     every layer. Whatever is left is retained, and the next pass continues.
-//     A budget is CONVERGED over several passes, never chased in one.
+//     A budget is CONVERGED over several passes, never chased in one — with
+//     one exception: a cache over its SIZE budget may unlink what it takes to
+//     get back under it (allowOver). Under agent load the Go build cache grows
+//     faster than a capped pass can trim (one pass: 62 GiB estimated against a
+//     20 GiB budget, 6.1 GiB freed before the cap), so a cap there means it
+//     never converges. Pacing and back-off — what the incident below actually
+//     needed — still apply to every one of those unlinks, and the pass's time
+//     slice still ends it.
 //   - BACKED OFF. The first EMFILE, ENFILE, ENOTCONN or EIO from any read or
 //     unlink stops the pass: nothing more is unlinked, and later layers do not
 //     start. Those errors mean the filesystem, or whatever serves it, is in
@@ -117,6 +124,9 @@ type deletePass struct {
 	backoff   *BackedOffError
 	remove    func(string) error
 	sleep     func(context.Context, time.Duration) error
+	// overBudget counts unlinks granted from an over-budget allowance; they
+	// are not in count.
+	overBudget int
 	// objects counts the Docker images and volumes granted this pass,
 	// against objectLimit (max_docker_removals_per_pass).
 	objects     int
@@ -128,6 +138,9 @@ type deletePass struct {
 type deleter struct {
 	pass    *deletePass
 	ceiling int
+	// over is an allowance of unlinks past ceiling that do not count against
+	// the pass's cap (allowOver); nil means none. Guarded by pass.mu.
+	over *int
 }
 
 func newDeleter(p Policy, remove func(string) error, sleep func(context.Context, time.Duration) error) deleter {
@@ -184,6 +197,25 @@ func (d deleter) share(frac float64) deleter {
 	return deleter{pass: p, ceiling: p.count + sub}
 }
 
+// allowOver returns a deleter that, once its own budget is spent, may grant n
+// more unlinks for a cache that is over its size budget. They are paced and
+// backed off like every other unlink, but they are not counted against the
+// pass's cap, so the layers after this one keep their shares.
+func (d deleter) allowOver(n int) deleter {
+	if n <= 0 {
+		return d
+	}
+	d.over = &n
+	return d
+}
+
+// overBudgetUnlinks is how many unlinks the pass granted from allowOver.
+func (d deleter) overBudgetUnlinks() int {
+	d.pass.mu.Lock()
+	defer d.pass.mu.Unlock()
+	return d.pass.overBudget
+}
+
 // backedOff returns the pass's back-off, or nil.
 func (d deleter) backedOff() *BackedOffError {
 	d.pass.mu.Lock()
@@ -205,7 +237,8 @@ func (d deleter) grantLocked(ctx context.Context) error {
 	if p.backoff != nil {
 		return p.backoff
 	}
-	if p.count >= d.ceiling {
+	fromAllowance := p.count >= d.ceiling
+	if fromAllowance && (d.over == nil || *d.over <= 0) {
 		return &CutOffError{Err: fmt.Errorf("%w (%d this pass; max_deletes_per_pass %d): the rest is retained and the next pass continues", errDeleteCap, p.count, p.limit)}
 	}
 	if err := ctx.Err(); err != nil {
@@ -224,7 +257,12 @@ func (d deleter) grantLocked(ctx context.Context) error {
 		p.batchFrom = time.Now()
 	}
 	p.inBatch++
-	p.count++
+	if fromAllowance {
+		*d.over--
+		p.overBudget++
+	} else {
+		p.count++
+	}
 	return nil
 }
 

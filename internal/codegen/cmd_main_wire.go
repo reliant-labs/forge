@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Wiring a new component into cmd/<bin>/main.go.
@@ -148,7 +150,7 @@ func WireComponentIntoMain(root, bin, modulePath, group, ctor string) (WireOutco
 	// along with everything else the run wrote — same discipline as every
 	// other write into a project tree.
 	checksums.RecordPreWriteAbs(path)
-	if err := os.WriteFile(path, out, 0o644); err != nil {
+	if err := atomicfile.WriteFile(path, out, 0o644); err != nil {
 		return WireUnrecognized, fmt.Errorf("write %s: %w", rel, err)
 	}
 	return WireApplied, nil

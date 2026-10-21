@@ -10,6 +10,8 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Re-emitting the files `forge project new` writes.
@@ -254,7 +256,7 @@ func WriteRescaffoldedFile(root, relPath string, content []byte, mode os.FileMod
 	if mode == 0 {
 		mode = 0o644
 	}
-	if err := os.WriteFile(full, content, mode.Perm()); err != nil {
+	if err := atomicfile.WriteFile(full, content, mode.Perm()); err != nil {
 		return err
 	}
 	// WriteFile does not change the mode of an existing file, and a

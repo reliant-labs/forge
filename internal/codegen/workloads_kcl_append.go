@@ -9,6 +9,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // AppendWorkloadStanza adds one workload to a project's
@@ -47,7 +49,7 @@ func AppendWorkloadStanza(projectDir, modulePath, projectName string, c config.C
 	if !ok {
 		return false, nil
 	}
-	if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
+	if err := atomicfile.WriteFile(path, []byte(updated), 0644); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -120,7 +122,7 @@ func AppendOperatorCRD(projectDir, workloadName, kind string) (CRDListEdit, erro
 		if !ok {
 			return CRDListNotEditable, nil
 		}
-		if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		if err := atomicfile.WriteFile(path, []byte(updated), 0o644); err != nil {
 			return CRDListNotEditable, err
 		}
 		return CRDListAdded, nil

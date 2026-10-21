@@ -114,13 +114,9 @@ func assertStaticLinksResolve(t *testing.T, outDir string, links map[string]stri
 // places, which is how this gate spent its life reporting green from a
 // runner that never had Node.
 //
-// Module wiring uses the corpus-style local replaces
-// (addCorpusForgePkgReplace) rather than requirePublishedForgePkg: the
-// published-module probe currently skips on every machine until the
-// pkg release tag is pushed, and THIS test is the only gate on the
-// generated frontend's npm build/test surface — a gate that never runs
-// guards nothing. The published-module path stays covered by the other
-// scaffold e2e tests.
+// Module wiring uses the corpus-style local replace
+// (addCorpusForgePkgReplace), like every scaffold e2e test: the forge
+// under test compiles against forge/pkg from the same commit.
 func TestE2EScaffoldFrontendBuilds(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	requireTool(t, "node", "npm")

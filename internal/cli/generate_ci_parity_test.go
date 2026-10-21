@@ -70,7 +70,7 @@ func TestCIWorkflows_NewAndGenerateRenderIdentically(t *testing.T) {
 					t.Fatal(err)
 				}
 				captureStdout(t, func() {
-					if err := generatePerEnvDeployConfig(dir, cfg, cs); err != nil {
+					if err := generatePerEnvDeployConfig(dir, cfg, cs, nil); err != nil {
 						t.Fatalf("generatePerEnvDeployConfig: %v", err)
 					}
 				})

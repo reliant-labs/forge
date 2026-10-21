@@ -9,6 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const init = vi.fn();
 const recordException = vi.fn();
+const addAction = vi.fn();
+const setGlobalAttributes = vi.fn();
+const stopSessionRecorder = vi.fn();
 
 // The SDK as a bundler hands it back: a module NAMESPACE, whose members are
 // read-only getters at the top level AND the real client under `default`. The
@@ -28,11 +31,35 @@ const client = {
     }
     return recordException(...args);
   },
+  addAction(this: unknown, ...args: unknown[]) {
+    if (this !== client) {
+      throw new TypeError("addAction called on the module namespace");
+    }
+    return addAction(...args);
+  },
+  setGlobalAttributes(this: unknown, ...args: unknown[]) {
+    if (this !== client) {
+      throw new TypeError("setGlobalAttributes called on the module namespace");
+    }
+    return setGlobalAttributes(...args);
+  },
+  stopSessionRecorder(this: unknown, ...args: unknown[]) {
+    if (this !== client) {
+      throw new TypeError("stopSessionRecorder called on the module namespace");
+    }
+    return stopSessionRecorder(...args);
+  },
 };
 
 vi.mock("@hyperdx/browser", () => {
   const ns = { default: client } as Record<string, unknown>;
-  for (const key of ["init", "recordException"] as const) {
+  for (const key of [
+    "init",
+    "recordException",
+    "addAction",
+    "setGlobalAttributes",
+    "stopSessionRecorder",
+  ] as const) {
     Object.defineProperty(ns, key, {
       get: () => client[key],
       enumerable: true,
@@ -45,12 +72,14 @@ const ORIGIN = "http://localhost:3000";
 
 type Telemetry = typeof import("./telemetry.js");
 type Reporter = typeof import("./error-reporter.js");
+type Track = typeof import("./track.js");
 
-async function load(): Promise<{ t: Telemetry; r: Reporter }> {
+async function load(): Promise<{ t: Telemetry; r: Reporter; k: Track }> {
   vi.resetModules();
   return {
     t: await import("./telemetry.js"),
     r: await import("./error-reporter.js"),
+    k: await import("./track.js"),
   };
 }
 
@@ -73,6 +102,9 @@ function dispatch(type: string, event: unknown) {
 beforeEach(() => {
   init.mockReset();
   recordException.mockReset();
+  addAction.mockReset();
+  setGlobalAttributes.mockReset();
+  stopSessionRecorder.mockReset();
 });
 
 afterEach(() => {
@@ -217,7 +249,64 @@ describe("buildSdkOptions", () => {
     const opts = t.buildSdkOptions(base, `${ORIGIN}/_otel`, ORIGIN);
 
     expect(opts.disableReplay).toBe(true);
-    expect(opts).not.toHaveProperty("maskAllInputs");
+  });
+
+  it("forces masking and media blocking whatever the config says", async () => {
+    const { t } = await load();
+    for (const replay of [undefined, false, true]) {
+      const opts = t.buildSdkOptions(
+        // A caller reaching past the types must not weaken any of it.
+        {
+          ...base,
+          replay,
+          maskAllInputs: false,
+          maskAllText: false,
+          recordCanvas: true,
+          blockSelector: "",
+        } as never,
+        `${ORIGIN}/_otel`,
+        ORIGIN,
+      );
+
+      expect(opts.maskAllInputs).toBe(true);
+      expect(opts.maskAllText).toBe(true);
+      expect(opts.recordCanvas).toBe(false);
+      expect(opts.blockSelector).toBe(t.REPLAY_BLOCK_SELECTOR);
+      expect(opts.replay).toEqual({ inlineImages: false, collectFonts: false });
+    }
+    for (const tag of ["img", "picture", "video", "audio", "iframe"]) {
+      expect(t.REPLAY_BLOCK_SELECTOR.split(/,\s*/)).toContain(tag);
+    }
+  });
+
+  it("passes consoleCapture through, and defaults it on", async () => {
+    const { t } = await load();
+    const off = t.buildSdkOptions(
+      { ...base, consoleCapture: false },
+      `${ORIGIN}/_otel`,
+      ORIGIN,
+    );
+    const on = t.buildSdkOptions(base, `${ORIGIN}/_otel`, ORIGIN);
+
+    expect(off.consoleCapture).toBe(false);
+    expect(on.consoleCapture).toBe(true);
+  });
+
+  it("emits forge.frontend only when a frontend is named", async () => {
+    const { t } = await load();
+    const named = t.buildSdkOptions(
+      { ...base, frontend: "reliant-web" },
+      `${ORIGIN}/_otel`,
+      ORIGIN,
+    );
+    const anon = t.buildSdkOptions(base, `${ORIGIN}/_otel`, ORIGIN);
+
+    expect(
+      (named.otelResourceAttributes as Record<string, string>)[
+        "forge.frontend"
+      ],
+    ).toBe("reliant-web");
+    expect(anon.otelResourceAttributes).not.toHaveProperty("forge.frontend");
   });
 
   it("forces all text and all inputs masked whenever replay is enabled", async () => {
@@ -291,6 +380,307 @@ describe("buildSdkOptions", () => {
       "deployment.environment.name": "staging",
       "deployment.environment": "staging",
     });
+  });
+});
+
+describe("fetch and XHR URL query stripping", () => {
+  type Hooked = {
+    propagateTraceHeaderCorsUrls: RegExp[];
+    advancedNetworkCapture: () => boolean;
+    applyCustomAttributesOnSpan: (span: unknown) => void;
+  };
+
+  function span(attributes: Record<string, unknown>) {
+    const set = vi.fn((k: string, v: unknown) => {
+      attributes[k] = v;
+    });
+    return { attributes, setAttribute: set };
+  }
+
+  it("rewrites http.url and url.full on both instrumentations, query and fragment gone", async () => {
+    const { t } = await load();
+    const opts = t.buildSdkOptions(
+      { serviceName: "web" },
+      `${ORIGIN}/_otel`,
+      ORIGIN,
+    );
+    const inst = opts.instrumentations as Record<string, Hooked>;
+
+    for (const kind of ["fetch", "xhr"]) {
+      const s = span({
+        "http.url": "https://api.example.com/v1/items?token=abc&page=2#top",
+        "url.full": "https://api.example.com/v1/items?code=oauth",
+        "http.method": "GET",
+      });
+      inst[kind]!.applyCustomAttributesOnSpan(s);
+
+      expect(s.attributes["http.url"]).toBe("https://api.example.com/v1/items");
+      expect(s.attributes["url.full"]).toBe("https://api.example.com/v1/items");
+      expect(s.attributes["http.method"]).toBe("GET");
+    }
+  });
+
+  it("leaves a clean URL alone and tolerates a span with no URL", async () => {
+    const { t } = await load();
+    const opts = t.buildSdkOptions(
+      { serviceName: "web" },
+      `${ORIGIN}/_otel`,
+      ORIGIN,
+    );
+    const hook = (opts.instrumentations as Record<string, Hooked>).fetch!
+      .applyCustomAttributesOnSpan;
+
+    const clean = span({ "http.url": "https://api.example.com/v1/items" });
+    hook(clean);
+    expect(clean.setAttribute).not.toHaveBeenCalled();
+
+    expect(() => hook(span({}))).not.toThrow();
+    expect(() => hook({ setAttribute: vi.fn() })).not.toThrow();
+  });
+
+  it("restates what the SDK's own fetch/xhr config would have carried", async () => {
+    const { t } = await load();
+    const opts = t.buildSdkOptions(
+      { serviceName: "web", apiOrigins: ["http://localhost:8080"] },
+      `${ORIGIN}/_otel`,
+      ORIGIN,
+    );
+    const inst = opts.instrumentations as Record<string, Hooked>;
+
+    for (const kind of ["fetch", "xhr"]) {
+      // The SDK spreads this object over its own, whole keys at a time.
+      expect(inst[kind]!.propagateTraceHeaderCorsUrls).toEqual(
+        opts.tracePropagationTargets,
+      );
+      expect(inst[kind]!.advancedNetworkCapture()).toBe(false);
+    }
+  });
+
+  it("stripUrlQuery cuts at the first ? or #", async () => {
+    const { t } = await load();
+
+    expect(t.stripUrlQuery("/a/b?x=1")).toBe("/a/b");
+    expect(t.stripUrlQuery("/a/b#frag?x")).toBe("/a/b");
+    expect(t.stripUrlQuery("/a/b")).toBe("/a/b");
+  });
+});
+
+describe("decideReplay", () => {
+  function store() {
+    const m = new Map<string, string>();
+    return {
+      m,
+      getItem: (k: string) => m.get(k) ?? null,
+      setItem: (k: string, v: string) => void m.set(k, v),
+    };
+  }
+
+  it("never records unless replay is on", async () => {
+    const { t } = await load();
+
+    expect(t.decideReplay({}, null, () => 0)).toBe(false);
+    expect(t.decideReplay({ replaySampleRate: 1 }, null, () => 0)).toBe(false);
+    expect(t.decideReplay({ replay: false }, null, () => 0)).toBe(false);
+  });
+
+  it("records every session by default and at rate 1; none at rate 0", async () => {
+    const { t } = await load();
+    const s = store();
+
+    expect(t.decideReplay({ replay: true }, s, () => 0.99)).toBe(true);
+    expect(
+      t.decideReplay({ replay: true, replaySampleRate: 1 }, s, () => 0.99),
+    ).toBe(true);
+    expect(
+      t.decideReplay({ replay: true, replaySampleRate: 0 }, s, () => 0),
+    ).toBe(false);
+    expect(s.m.size).toBe(0);
+  });
+
+  it("samples by the rate and holds the decision for the session", async () => {
+    const { t } = await load();
+    const s = store();
+    const cfg = { replay: true, replaySampleRate: 0.1 };
+
+    expect(t.decideReplay(cfg, s, () => 0.05)).toBe(true);
+    // A later load re-rolling high must not flip a session that is recording.
+    expect(t.decideReplay(cfg, s, () => 0.99)).toBe(true);
+
+    const other = store();
+    expect(t.decideReplay(cfg, other, () => 0.5)).toBe(false);
+    expect(t.decideReplay(cfg, other, () => 0.01)).toBe(false);
+  });
+
+  it("clamps the rate, and treats a non-number as no recording", async () => {
+    const { t } = await load();
+
+    expect(
+      t.decideReplay({ replay: true, replaySampleRate: 7 }, null, () => 0.99),
+    ).toBe(true);
+    expect(
+      t.decideReplay({ replay: true, replaySampleRate: -1 }, null, () => 0),
+    ).toBe(false);
+    expect(
+      t.decideReplay(
+        { replay: true, replaySampleRate: Number.NaN },
+        null,
+        () => 0,
+      ),
+    ).toBe(false);
+    expect(
+      t.decideReplay(
+        { replay: true, replaySampleRate: "1" as unknown as number },
+        null,
+        () => 0,
+      ),
+    ).toBe(false);
+  });
+
+  it("falls back to a fresh draw when storage throws", async () => {
+    const { t } = await load();
+    const broken = {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+    };
+
+    expect(
+      t.decideReplay(
+        { replay: true, replaySampleRate: 0.5 },
+        broken,
+        () => 0.1,
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("initBrowserTelemetry replay wiring", () => {
+  function stubDomWithStorage(sampled?: "1" | "0") {
+    const store = new Map<string, string>();
+    if (sampled) store.set("forge.replay.sampled", sampled);
+    listeners.clear();
+    vi.stubGlobal("window", {
+      location: { origin: ORIGIN },
+      addEventListener: (type: string, fn: Listener) =>
+        listeners.set(type, [...(listeners.get(type) ?? []), fn]),
+      sessionStorage: {
+        getItem: (k: string) => store.get(k) ?? null,
+        setItem: (k: string, v: string) => void store.set(k, v),
+      },
+    });
+  }
+
+  it("starts the recorder only for a sampled session", async () => {
+    stubDomWithStorage("0");
+    const { t } = await load();
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      replay: true,
+      replaySampleRate: 0.5,
+    });
+    expect(
+      (init.mock.calls[0]?.[0] as Record<string, unknown>).disableReplay,
+    ).toBe(true);
+
+    init.mockReset();
+    stubDomWithStorage("1");
+    const again = await load();
+    await again.t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      replay: true,
+      replaySampleRate: 0.5,
+    });
+    expect(
+      (init.mock.calls[0]?.[0] as Record<string, unknown>).disableReplay,
+    ).toBe(false);
+  });
+});
+
+describe("track, setTelemetryUser and disableTelemetry through the SDK", () => {
+  it("holds calls made before the SDK is up, then replays them in order", async () => {
+    stubDom();
+    const { t, k } = await load();
+
+    k.setTelemetryUser("user-1");
+    k.track("signup_started", { plan: "pro" });
+    k.setTelemetryUser("user-2");
+    expect(addAction).not.toHaveBeenCalled();
+
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+
+    expect(addAction).toHaveBeenCalledTimes(1);
+    expect(addAction).toHaveBeenCalledWith("signup_started", { plan: "pro" });
+    // The last user wins; the stale one is not replayed.
+    expect(setGlobalAttributes).toHaveBeenCalledTimes(1);
+    expect(setGlobalAttributes).toHaveBeenCalledWith({ userId: "user-2" });
+
+    k.track("signup_completed");
+    expect(addAction).toHaveBeenLastCalledWith("signup_completed", {});
+  });
+
+  it("clears the user with an empty id on sign-out", async () => {
+    stubDom();
+    const { t, k } = await load();
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+
+    k.setTelemetryUser("u1");
+    k.setTelemetryUser(null);
+
+    expect(setGlobalAttributes).toHaveBeenLastCalledWith({ userId: "" });
+  });
+
+  it("drops held calls when telemetry never starts", async () => {
+    stubDom();
+    const { t, k } = await load();
+
+    k.track("early");
+    await t.initBrowserTelemetry({ serviceName: "web" }); // no endpoint: off
+    expect(addAction).not.toHaveBeenCalled();
+
+    // And nothing resurfaces if telemetry is later started.
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+    expect(addAction).not.toHaveBeenCalled();
+  });
+
+  it("disableTelemetry stops the recorder and silences track, setTelemetryUser and reportException", async () => {
+    stubDom();
+    const { t, r, k } = await load();
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      replay: true,
+    });
+
+    k.disableTelemetry();
+    k.track("after_consent_withdrawn", { a: 1 });
+    k.setTelemetryUser("u1");
+    const reported = r.reportException(new Error("late"));
+
+    expect(stopSessionRecorder).toHaveBeenCalledTimes(1);
+    expect(addAction).not.toHaveBeenCalled();
+    expect(setGlobalAttributes).not.toHaveBeenCalled();
+    // The caller is told no SDK has it, so it can fall back to console.error.
+    expect(reported).toBe(false);
+    expect(recordException).not.toHaveBeenCalled();
+  });
+
+  it("disableTelemetry before init means the SDK is never loaded", async () => {
+    stubDom();
+    const { t, k } = await load();
+
+    k.disableTelemetry();
+    k.track("queued_never");
+
+    await expect(
+      t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" }),
+    ).resolves.toBe(false);
+    expect(init).not.toHaveBeenCalled();
+    expect(addAction).not.toHaveBeenCalled();
   });
 });
 

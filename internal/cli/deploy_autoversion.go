@@ -349,6 +349,11 @@ func firstUnresolvableImage(ctx context.Context, env string, entities *KCLEntiti
 // backend's push base) joined with the name. "" when neither says, which a
 // reuse treats as unverifiable.
 func releaseImageRepository(name string, art release.Artifact) string {
+	// A source map artifact is named for its frontend, not its repository; its
+	// URI is the repository whole.
+	if _, ok := release.SourcemapsFrontend(name); ok && art.URI != "" {
+		return art.URI
+	}
 	if host, _ := ociManifestCoordinates(name); host != "" {
 		return name
 	}

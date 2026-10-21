@@ -219,14 +219,38 @@ const (
 // Clock/IDGen/HTTPClient: an Infra field NAMED after the Deps field wins via
 // the exact-name path, and compose.go is owned, so any bespoke wiring stays a
 // one-line edit.
-const (
-	frameworkStoreAggregateType = "db.Store"
-	frameworkStoreAggregateExpr = "db.NewStore(infra.ORM)"
-)
+//
+// The store lives in the ORM package (database.orm.package, default
+// internal/db), so the seam is spelled with THAT package's name: a consumer
+// importing internal/store declares `store.Store`, and a `db.Store` in that
+// project is the project's own internal/db, which the seam must not claim.
+type storeSeam struct {
+	pkg       string            // the ORM package's name, e.g. "db"
+	dir       string            // its project-relative directory, e.g. "internal/db"
+	accessors map[string]string // qualified per-entity store type → accessor
+}
 
-// frameworkStoreEntityExpr returns the compose expression for a per-entity
-// store dep — `db.NewStore(infra.ORM).<Plural>()`. It returns "" for any type
-// that is not a generated per-entity store, so an unrelated `db.`-qualified
+// aggregateType is the qualified aggregate store type, e.g. `db.Store`.
+func (s storeSeam) aggregateType() string { return s.pkg + ".Store" }
+
+// aggregateExpr is the compose expression for the aggregate store.
+func (s storeSeam) aggregateExpr() string { return s.pkg + ".NewStore(infra.ORM)" }
+
+// source names the generated file, for the compose comment.
+func (s storeSeam) source() string { return "generated store (" + s.dir + "/store_gen.go)" }
+
+// owns reports whether depType is a store type the seam provides.
+func (s storeSeam) owns(depType string) bool {
+	if depType == s.aggregateType() {
+		return true
+	}
+	_, ok := s.accessors[depType]
+	return ok
+}
+
+// entityExpr returns the compose expression for a per-entity store dep —
+// `db.NewStore(infra.ORM).<Plural>()`. It returns "" for any type that is
+// not a generated per-entity store, so an unrelated `db.`-qualified
 // interface never picks up a spurious provider.
 //
 // The accessor set is read from the GENERATED file rather than inferred from
@@ -234,15 +258,12 @@ const (
 // project with no Widget entity and emit code that does not compile; and the
 // accessor spelling is the pluralizer's output, which this package must not
 // re-derive.
-func frameworkStoreEntityExpr(depType string, accessors map[string]string) string {
-	if len(accessors) == 0 {
-		return ""
-	}
-	plural, ok := accessors[depType]
+func (s storeSeam) entityExpr(depType string) string {
+	plural, ok := s.accessors[depType]
 	if !ok {
 		return ""
 	}
-	return "db.NewStore(infra.ORM)." + plural + "()"
+	return s.aggregateExpr() + "." + plural + "()"
 }
 
 // storeAccessorRE matches one accessor line in the generated store interface:
@@ -250,21 +271,24 @@ func frameworkStoreEntityExpr(depType string, accessors map[string]string) strin
 //	Estimates() EstimateStore
 var storeAccessorRE = regexp.MustCompile(`^\t([A-Z]\w*)\(\) ([A-Z]\w*Store)$`)
 
-// parseStoreAccessors reads internal/db/store_gen.go and returns a map of
-// qualified dep type (`db.EstimateStore`) → accessor name (`Estimates`).
+// parseStoreSeam reads the ORM package's store_gen.go and returns the seam:
+// a map of qualified dep type (`db.EstimateStore`) → accessor name
+// (`Estimates`), under the ORM package's name.
 //
 // Reading the generated file is deliberate: it is the only place that knows
 // BOTH which entities exist and what the pluralizer named their accessors, so
 // a rename or a new entity flows through with no second source to keep in
 // sync. An absent file (a project with no entities, or one generated before
-// stores existed) yields an empty map, and every store dep then falls through
+// stores existed) yields no accessors, and every store dep then falls through
 // to the ordinary missing-provider path.
-func parseStoreAccessors(projectDir string) map[string]string {
-	raw, err := os.ReadFile(filepath.Join(projectDir, "internal", "db", "store_gen.go"))
+func parseStoreSeam(projectDir string) storeSeam {
+	orm := ProjectORMPackage(projectDir)
+	seam := storeSeam{pkg: orm.PackageName(), dir: orm.PackageDir()}
+	raw, err := os.ReadFile(filepath.Join(projectDir, filepath.FromSlash(seam.dir), "store_gen.go"))
 	if err != nil {
-		return nil
+		return seam
 	}
-	out := map[string]string{}
+	seam.accessors = map[string]string{}
 	inAggregate := false
 	for _, line := range strings.Split(string(raw), "\n") {
 		switch {
@@ -278,10 +302,10 @@ func parseStoreAccessors(projectDir string) map[string]string {
 			continue
 		}
 		if m := storeAccessorRE.FindStringSubmatch(line); m != nil {
-			out["db."+m[2]] = m[1]
+			seam.accessors[seam.pkg+"."+m[2]] = m[1]
 		}
 	}
-	return out
+	return seam
 }
 
 // InjectGenData is the rendered template input for compose.go.tmpl.
@@ -300,8 +324,10 @@ type InjectGenData struct {
 	// them (unused-import build failure).
 	NeedsTime bool
 	NeedsULID bool
-	// NeedsDBStore gates the internal/db import for a generated-store dep.
-	NeedsDBStore bool
+	// NeedsDBStore gates the ORM package import for a generated-store dep;
+	// DBStoreImport is that package's import path.
+	NeedsDBStore  bool
+	DBStoreImport string
 	// Fields is the Components struct field set (one per component, typed as
 	// its concrete handler/worker/operator type), in stable FieldName order.
 	Fields []composeField
@@ -316,6 +342,11 @@ type InjectGenData struct {
 	// to read that package's composition markers (composeStaleConstructions).
 	// Empty disables both reads.
 	ProjectDir string
+	// Graph is set when the composition graph (GenerateGraph) owns
+	// compose.go: a construction there is a new<X> method, not a Components
+	// field, so composeStaleConstructions names that remedy instead.
+	// Template-invisible.
+	Graph bool
 }
 
 // GenerateCompose emits internal/app/compose.go: the EXPLICIT per-binary
@@ -377,13 +408,13 @@ func GenerateCompose(in InjectGenInput) error {
 	if err != nil {
 		return fmt.Errorf("parse internal/app for Infra fields: %w", err)
 	}
-	storeAccessors := parseStoreAccessors(in.ProjectDir)
+	store := parseStoreSeam(in.ProjectDir)
 
 	// Exact-contract-key resolution, layered with go/types inference so a
 	// consumer-declared narrow interface (or an alias) resolves to the one
 	// component that satisfies it — see producer_assignability.go.
 	baseResolver := NewServiceKeyResolver(comps)
-	inferred, ambiguous := inferInterfaceProducers(in.ProjectDir, comps, baseResolver, infraFields, storeAccessors)
+	inferred, ambiguous := inferInterfaceProducers(in.ProjectDir, comps, baseResolver, infraFields, store)
 	if len(ambiguous) > 0 {
 		return ambiguousProviderError(ambiguous)
 	}
@@ -462,7 +493,7 @@ func GenerateCompose(in InjectGenInput) error {
 		}
 		for _, df := range c.Deps {
 			needsConfig = needsConfig || df.Name == "Config"
-			expr, comment, miss := resolveInjectField(df, c, producerVar, resolver, infraFields, configFields, blocks, matcher, in.RoleRoot(c), storeAccessors)
+			expr, comment, miss := resolveInjectField(df, c, producerVar, resolver, infraFields, configFields, blocks, matcher, in.RoleRoot(c), store)
 			if miss != nil {
 				missing = append(missing, *miss)
 			}
@@ -475,10 +506,10 @@ func GenerateCompose(in InjectGenInput) error {
 				needsTime = true
 			case expr == frameworkIDGenExpr:
 				needsULID = true
-			case strings.HasPrefix(expr, "db.NewStore("):
+			case strings.HasPrefix(expr, store.aggregateExpr()):
 				// Both store forms — the aggregate and a per-entity accessor
-				// off it — are spelled db.NewStore(...), so one prefix gates
-				// the internal/db import for either.
+				// off it — are spelled <pkg>.NewStore(...), so one prefix
+				// gates the ORM package import for either.
 				needsDBStore = true
 			}
 			rc.Assignments = append(rc.Assignments, InjectAssignment{
@@ -516,6 +547,7 @@ func GenerateCompose(in InjectGenInput) error {
 		NeedsTime:         needsTime,
 		NeedsULID:         needsULID,
 		NeedsDBStore:      needsDBStore,
+		DBStoreImport:     in.ModulePath + "/" + store.dir,
 		Fields:            fields,
 		Order:             rendered,
 		HasCycle:          plan.HasCycle(),
@@ -612,10 +644,15 @@ func reconcileComposeAddComponents(existing, freshRender string, data InjectGenD
 	// and converges wholesale.
 	existing, dropped := composeDropStaleDepsKeys(existing, data)
 	out, changed := reconcileComposeAddComponentsAfterDrop(existing, freshRender, data)
-	if changed {
-		return out, true
+	if !changed {
+		out, changed = existing, dropped
 	}
-	return existing, dropped
+	// Last, so it also corrects a construction an additive pass kept as it
+	// was: an existing component whose instrument decision changed.
+	if synced, wrapChanged := composeSyncWrapping(out, data); wrapChanged {
+		return synced, true
+	}
+	return out, changed
 }
 
 func reconcileComposeAddComponentsAfterDrop(existing, freshRender string, data InjectGenData) (string, bool) {
@@ -1057,18 +1094,33 @@ func composeStaleConstructions(existing string, data InjectGenData) []string {
 			return true
 		}
 		rel := strings.TrimPrefix(path, data.Module+"/")
-		switch composition, _ := internalPackageComposition(dir); composition {
-		case CompositionExternal:
-			warnings = append(warnings, fmt.Sprintf(
-				"internal/app/compose.go still constructs %s, which is now //forge:external-component — delete its import, Components field and construction, and put the instance on Infra", rel))
-		case CompositionNotAComponent:
-			warnings = append(warnings, fmt.Sprintf(
-				"internal/app/compose.go still constructs %s, which is now //forge:not-a-component — delete its import, Components field and construction: the server does not have it", rel))
+		composition, _ := internalPackageComposition(dir)
+		if remedy := staleConstructionRemedy(composition, data.Graph); remedy != "" {
+			warnings = append(warnings, fmt.Sprintf("internal/app/compose.go still constructs %s, which is now %s", rel, remedy))
 		}
 		return true
 	})
 	sort.Strings(warnings)
 	return warnings
+}
+
+// staleConstructionRemedy is the marker a package's composition names and
+// what to do about the construction compose.go still holds — "" when the
+// composition does not take the package out of the server. graph selects the
+// composition graph's wording, where a construction is a new<X> method and
+// an instance the server has but does not build comes from a provider func.
+func staleConstructionRemedy(composition string, graph bool) string {
+	switch {
+	case composition == CompositionExternal && graph:
+		return "//forge:external-component — delete its new<X> method and import, and supply the instance from a New<X>(<X>Deps) provider func in internal/app/providers.go"
+	case composition == CompositionExternal:
+		return "//forge:external-component — delete its import, Components field and construction, and put the instance on Infra"
+	case composition == CompositionNotAComponent && graph:
+		return "//forge:not-a-component — delete its new<X> method and import: the server does not have it"
+	case composition == CompositionNotAComponent:
+		return "//forge:not-a-component — delete its import, Components field and construction: the server does not have it"
+	}
+	return ""
 }
 
 // widenDepsElementCut widens one Deps-literal element's byte range so removing
@@ -1318,7 +1370,7 @@ func injectBeforeImportClose(content, lines string) string {
 // should emit, following the priority order in the file header. The third
 // return is non-nil when the field is a required collaborator with a
 // PROVEN-missing provider (generate-time loud error).
-func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]string, resolver TypeResolver, infraFields map[string]InfraField, configFields map[string]InfraField, blocks configBlocks, matcher *InfraAssignabilityMatcher, roleRoot string, storeAccessors map[string]string) (expr, comment string, miss *MissingProvider) {
+func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]string, resolver TypeResolver, infraFields map[string]InfraField, configFields map[string]InfraField, blocks configBlocks, matcher *InfraAssignabilityMatcher, roleRoot string, store storeSeam) (expr, comment string, miss *MissingProvider) {
 	// 1. PRODUCER — another component produces this type (by-type edge).
 	if prodField := resolver.Resolve(c, df.Type); prodField != "" && prodField != c.FieldName {
 		if v, ok := producerVar[prodField]; ok {
@@ -1371,9 +1423,9 @@ func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]s
 			return frameworkClockExpr, "framework clock", nil
 		case frameworkIDGenType:
 			return frameworkIDGenExpr, "framework id generator", nil
-		case frameworkStoreAggregateType:
+		case store.aggregateType():
 			// Every entity's store, bound to the ORM client Infra already owns.
-			return frameworkStoreAggregateExpr, "generated store (internal/db/store_gen.go)", nil
+			return store.aggregateExpr(), store.source(), nil
 		case frameworkHTTPClientType:
 			// Instrumented default client (see the seam const block). The
 			// generic Infra-by-assignability path below would also find a
@@ -1386,8 +1438,8 @@ func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]s
 		// because the set is per-project: it is read from the generated
 		// store file, so a type that merely LOOKS like one in a project
 		// without that entity still falls through to missing-provider.
-		if expr := frameworkStoreEntityExpr(df.Type, storeAccessors); expr != "" {
-			return expr, "generated store (internal/db/store_gen.go)", nil
+		if expr := store.entityExpr(df.Type); expr != "" {
+			return expr, store.source(), nil
 		}
 	}
 
@@ -1831,6 +1883,10 @@ func GenerateLifecycle(in InjectGenInput) error {
 	}
 }
 
+// lifecycleKitImport is the package every Worker<X>() accessor calls
+// (lifecyclekit.WrapWorker) and nothing else in lifecycle.go does.
+const lifecycleKitImport = "github.com/reliant-labs/forge/pkg/lifecyclekit"
+
 // lifecycleWorkerAccessor / lifecycleOperatorAccessor render exactly ONE
 // accessor for injection into an existing lifecycle.go. They mirror
 // lifecycle.go.tmpl's per-component range bodies; the shared gofmt pass in
@@ -1924,6 +1980,11 @@ func reconcileLifecycleAddComponents(existing, freshRender string, data lifecycl
 			return existing, false
 		}
 		out = lifecycleInsertAccessor(out, "func (c *Components) AllWorkers() []serverkit.Worker {", buf.String())
+		// The template imports lifecyclekit only alongside a worker, so the
+		// first accessor added to a worker-less file brings the import too.
+		if !strings.Contains(out, `"`+lifecycleKitImport+`"`) && !strings.Contains(strings.Join(imports, "\n"), lifecycleKitImport) {
+			imports = append(imports, "\t\""+lifecycleKitImport+"\"")
+		}
 		changed = true
 	}
 	for _, o := range data.Operators {
@@ -2072,6 +2133,9 @@ type InjectGenInput struct {
 	Packages  []BootstrapPackageData
 	Workers   []BootstrapWorkerData
 	Operators []BootstrapOperatorData
+	// Graph assembles the components for the composition graph, whose
+	// generated files name identifiers of their own.
+	Graph bool
 	// Warnings receives GenerateCompose's advisory lines — a construction
 	// compose.go keeps that the project no longer composes. Nil means
 	// os.Stderr.
@@ -2144,6 +2208,11 @@ func assembleBuildComponents(in InjectGenInput) ([]BuildComponent, error) {
 	for name := range appTemplateIdentifiers() {
 		taken[name] = true
 	}
+	if in.Graph {
+		for name := range graphTemplateIdentifiers() {
+			taken[name] = true
+		}
+	}
 
 	var comps []BuildComponent
 
@@ -2184,11 +2253,7 @@ func assembleBuildComponents(in InjectGenInput) ([]BuildComponent, error) {
 		// SAME resolver the generator uses (keyed off the concrete return type).
 		// Handler services return *Service, so ShouldInstrumentComponent keeps
 		// them unwrapped (otelconnect owns the RPC edge).
-		wrapped := ShouldInstrumentComponent(res.Dir, ctorType, ifaceName)
-		middlewareCtor := ""
-		if wrapped {
-			middlewareCtor = ResolveMiddlewareWrapper(res.Dir, ifaceName).Constructor
-		}
+		middlewareCtor, wrapped := composeWrapper(res.Dir, ctorType, ifaceName)
 		comps = append(comps, BuildComponent{
 			Name:               runtimeName,
 			FieldName:          fieldName,
@@ -2229,11 +2294,7 @@ func assembleBuildComponents(in InjectGenInput) ([]BuildComponent, error) {
 			// pkg.<MiddlewareCtor>(pkg.New(...)), where MiddlewareCtor comes from
 			// the SAME resolver the generator uses (keyed off the concrete return
 			// type).
-			wrapped := ShouldInstrumentComponent(compDir, ctorType, ifaceName)
-			middlewareCtor := ""
-			if wrapped {
-				middlewareCtor = ResolveMiddlewareWrapper(compDir, ifaceName).Constructor
-			}
+			middlewareCtor, wrapped := composeWrapper(compDir, ctorType, ifaceName)
 			comps = append(comps, BuildComponent{
 				Name:               c.Name,
 				FieldName:          fieldName,
@@ -2269,4 +2330,26 @@ func assembleBuildComponents(in InjectGenInput) ([]BuildComponent, error) {
 	}
 
 	return comps, nil
+}
+
+// composeWrapper decides whether compose.go constructs the component at dir
+// through its generated decorator, and names the decorator's constructor. The
+// component must be instrumented (ShouldInstrumentComponent) AND the decorator
+// must already be declared in its middleware_gen.go: the contracts step writes
+// it before compose is assembled, so in a normal generate the two agree, and a
+// construction is never emitted against a symbol that does not exist yet (a
+// compose assembled before its contracts step — a test, a partial run — stays
+// unwrapped, and the next generate's composeSyncWrapping wraps it).
+func composeWrapper(dir, ctorType, ifaceName string) (ctor string, wrapped bool) {
+	if !ShouldInstrumentComponent(dir, ctorType, ifaceName) {
+		return "", false
+	}
+	if ifaceName == "" {
+		ifaceName = "Service"
+	}
+	w, declared := pinnedMiddlewareWrapper(dir, ifaceName)
+	if !declared {
+		return "", false
+	}
+	return w.Constructor, true
 }

@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Asset retention: a Firebase deploy keeps the previous releases'
@@ -195,6 +197,11 @@ func planAssetCarry(prev *assetManifest, built map[string]string, assetRel strin
 		if _, rebuilt := built[rel]; rebuilt {
 			continue
 		}
+		// A release that predates map extraction may have served maps. They
+		// are never carried forward: carrying one would publish it again.
+		if strings.HasSuffix(rel, ".map") {
+			continue
+		}
 		if !safeAssetPath(rel, assetRel) || !validSHA256(rec.SHA256) {
 			continue
 		}
@@ -324,7 +331,7 @@ func (p FirebaseProvider) fetchCarriedAsset(ctx context.Context, client HTTPDoer
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return err
 		}
-		return os.WriteFile(dst, body, 0o644)
+		return atomicfile.WriteFile(dst, body, 0o644)
 	}
 	return lastErr
 }
@@ -384,7 +391,7 @@ func writeAssetManifest(stagingDir, manifestRel string, m assetManifest) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(dst, append(b, '\n'), 0o644)
+	return atomicfile.WriteFile(dst, append(b, '\n'), 0o644)
 }
 
 // safeAssetPath reports whether rel is a clean, relative slash path strictly

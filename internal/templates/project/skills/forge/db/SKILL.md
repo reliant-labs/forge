@@ -32,16 +32,18 @@ There is no schema DSL and no proto annotation: `db/migrations/*.up.sql` is the 
 
 `db/migrations/` and `db/queries/` are yours and forge never modifies them; `internal/db/<entity>_orm.go` is regenerated.
 
-There is **no `database:` driver or directory setting**: a service project with `db/migrations/` has a postgres database. A hand-written data layer opts out of the generated ORM with `//forge:no-orm: <why>` in the `internal/db` package doc — see `db/orm-and-safety`.
+There is **no `database:` driver or directory setting**: a service project with `db/migrations/` has a postgres database. A hand-written data layer opts out of the generated ORM with `//forge:no-orm: <why>` in the `internal/db` package doc, or moves the projection beside it with `database.orm.package` — see `db/orm-and-safety`.
 
 ## What makes an entity
 
-An entity exists when **both halves** exist:
-
-1. **Wire truth** — a service proto declares the CRUD RPCs (`Create<X>` / `Get<X>` / `Update<X>` / `Delete<X>` / `List<Xs>`).
-2. **Storage truth** — the applied schema has the matching table (pluralized snake_case; `Bookmark` → `bookmarks`).
-
-CRUD RPCs without a table generate **nothing** — honest stubs, no pages, no ORM. Tables without CRUD RPCs are **plain schema**: yours to query by hand, invisible to the CRUD/frontend projections.
+**The store follows the schema; CRUD wiring follows the wire.** Every applied
+table gets an entity struct and `<Entity>Store`, rpcs or not — opt-outs,
+naming and keys: `db/store`. CRUD handlers, pages and seed roots exist when
+**both halves** exist: a service declares the CRUD RPCs (`Create<X>` /
+`Get<X>` / `Update<X>` / `Delete<X>` / `List<Xs>`), and the applied schema has
+the matching table (`db/store`, "Naming"). A CRUD RPC whose entity has a wire
+message but no table, and no hand-written implementation, **fails `forge
+generate`** by name.
 
 ## Starting a new entity
 
@@ -116,7 +118,7 @@ The columns ARE the declaration. The generators read these off the introspected 
 
 | columns | behavior |
 |---------|----------|
-| `deleted_at` | soft delete: DELETE becomes UPDATE, reads filter `IS NULL`, `ListAll*` is the unfiltered variant |
+| `deleted_at` | soft delete: DELETE becomes UPDATE, reads filter `IS NULL`, `ListAll*` is the unfiltered variant; an archive stamp opts out: `db/soft-delete` |
 | `created_at` + `updated_at` | ORM-managed timestamps — type-gated: time columns (`TIMESTAMPTZ` et al) or legacy `TEXT` count; anything else (epoch integers) stays plain schema |
 | text columns | spanned by the generated list `search` filter |
 | `GENERATED ALWAYS AS (…) STORED` | derived column: postgres maintains it, the ORM excludes it from writes, and the seeder skips it |
@@ -171,13 +173,17 @@ Wire evolution stays proto: service-proto messages are the **API truth** and evo
 
 ## Generated ORM semantics
 
-- `Create<Entity>` is a plain `INSERT`, never an upsert. Unset string PKs are generated via `ulid.Make()` at the Create chokepoint. **Integer PKs are server-allocated**: the column is omitted from the INSERT and the database-assigned value is scanned back via `RETURNING` — any caller-provided value is ignored.
+- **Field types are Go's, as wide as the column** (`ID`, `int32`, `json.RawMessage`, `forge:go-type`): `db/orm-and-safety`.
+
+- `Create<Entity>` is a plain `INSERT`, never an upsert. A key the schema fills (serial, identity, any `DEFAULT`) is left to the database when zero and read back via `RETURNING`; a set key is inserted as set. A key with no default is the caller's (an empty string key gets `ulid.Make()`).
 - Writes scan database-computed values back via `RETURNING` — generated columns on every write, DB defaults on insert, unwritten columns on update — so never re-read a row you just wrote.
-- With stampable `created_at` / `updated_at` columns, both are stamped on create and `updated_at` on update; `created_at` is immutable on update. Stamps use the column's projected type: time columns get `time.Now().UTC()`, legacy `TEXT` columns get RFC3339Nano text, nullable columns are stamped through their pointer.
+- **A `NOT NULL` column's `DEFAULT` applies to an unset field**, and an explicit zero is still written: `db/write-policy`.
+- With stampable `created_at` / `updated_at` columns, Create/Upsert stamp each one left unset and keep one you set (`db/write-policy`); Update re-stamps `updated_at`; `created_at` is immutable on update. Stamps use the column's projected type: time columns get `time.Now().UTC()`, legacy `TEXT` columns get RFC3339Nano text, nullable columns are stamped through their pointer.
 - `internal/db/*_orm.go` (and `orm_shared.go`) are Tier-1 self-certifying: each carries an embedded `forge:hash` marker, so hand-edits trip the drift guard in any clone or worktree. `forge project disown internal/db/<entity>_orm.go --reason ...` is the sanctioned one-way exit.
 - Each entity exports `<Entity>Columns`, the declared-column allowlist. `forge/pkg/crud` validates user-supplied `order_by` against it; an undeclared column is `InvalidArgument`, not a silent no-op.
 - Each entity also exports `<Entity>Constraint<Name>` for every named UNIQUE / CHECK / FOREIGN KEY on its table — the value **postgres** reports in a violation, including the names it auto-derives for inline declarations (`UNIQUE` on `jobs.estimate_id` → `jobs_estimate_id_key`) that appear nowhere in your migration text. Branch on them with `orm.ConstraintName(err)` rather than a hand-written string, so renaming a constraint in a migration is a compile error instead of a branch that stops matching. No constant for the primary key: `pkg/crud` generates the id, so nothing branches on a duplicate-PK insert. See `service-layer` for the classification switch.
-- `Get<Entity>ByID` answers a missing row with `svcerr.NotFound("<entity>")` — return or `svcerr.Wrap` it, never re-derive it. `Update`/`Delete` still give `orm.ErrNoRows`. Other repo errors → `Internal`, no SQL on the wire.
+- **Statements are sent with their values bound** — generated CRUD, bun builders and `NewRaw` alike — so each is one prepared statement per shape under pgx's default statement cache (keep it; `default_query_exec_mode=exec` re-plans every statement). An integer `?` argument binds only through `orm.Arg` (`orm.ArgList` for `IN`); `orm.Literal` keeps a value the planner must see in the text: `db/crud-overrides`.
+- Every by-key method (`Get…ByID`/`…ByPK`, `Update`, `UpdateMasked`, `Delete…`) answers a missing row with `svcerr.NotFound("<entity>")`, also `errors.Is(err, orm.ErrNoRows)` — return or `svcerr.Wrap` it, never re-derive it. Other repo errors → `Internal`, no SQL on the wire.
 - A delegate or store called with `s.deps.DB.RunTx`'s `ctx` joins that transaction (no `FOR UPDATE` helpers): `service-layer/transactions`.
 - The delegates above are free functions, so `internal/db/store_gen.go` also exports them as INTERFACES: `<Entity>Store` per entity plus an aggregate `Store`. That is what a service's `Deps` field names — **never hand-write an interface plus a passthrough adapter over the ORM**; forge generates both and asserts they match. Depend on the narrowest one that works.
 - **To see what a store offers, read the interface, not forge:** `go doc ./internal/db <Entity>Store` prints the full method set, and `forge project shapes --kind store` lists every one with its `file:line`. Not forge's generator source — it describes every project, not your schema; a measured run lost 11 turns there.
@@ -237,6 +243,7 @@ Every query goes through ONE data-access path: the generated store, then the own
 
 - **Draft, then `forge generate` — it is the fast, exact oracle.** Let `forge scaffold entity` write the first-draft migration + proto (or hand-write one), then generate, read the error, fix, repeat. A failing `CREATE TABLE`/`ALTER TABLE`, a missing import, or a List filter naming no real column fails loudly. Don't reverse-engineer forge's `internal/**` or exhaustively plan first.
 - **The schema drives the struct, never the reverse.** Need a field on the entity struct? Write the migration that adds the column. Don't hand-edit `gen/` or `internal/db/<entity>_orm.go` — those are the only DB-layer files generate rewrites.
+- **Open the serving pool with `serverkit.OpenDB`** (the scaffolded `openDatabase` does), not `sql.Open`. Besides the bounded connect retry, its `pgx` pool rides through a pooler rollout: a statement a draining PgBouncer refused (`FATAL: server shutting down`, 08P01 — it never ran) is run again on another connection, and closing a connection the pooler already dropped is not an error. To reach the `*pgx.Conn` through `sql.Conn.Raw`, assert `interface{ Conn() *pgx.Conn }`, not `*stdlib.Conn`.
 
 See also: `proto` for the wire half (CRUD RPC naming), `architecture` for the naming-conventions table.
 <!-- @forge-only:end -->

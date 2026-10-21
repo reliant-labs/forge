@@ -146,6 +146,7 @@ func ValidateBinaryConfigBindings(messages []ConfigMessage, binaries []string) e
 	// would be noise.
 	byProcess := map[string][]*ConfigMessage{}
 	var order []string
+	var subtreeConfigs []*ConfigMessage
 	for i := range messages {
 		m := &messages[i]
 		index[m] = i
@@ -153,6 +154,9 @@ func ValidateBinaryConfigBindings(messages []ConfigMessage, binaries []string) e
 			if len(m.Command) > 0 {
 				refuse(m, bindingBadCommand,
 					"`command` names a subcommand path BELOW a binary, and no `binary` is set. Add the binary whose subcommand this is.")
+			} else if len(m.Subtrees) > 0 {
+				refuse(m, bindingBadCommand,
+					"`subtrees` names command paths BELOW a binary, and no `binary` is set. Add the binary whose commands these are.")
 			}
 			continue
 		}
@@ -161,11 +165,22 @@ func ValidateBinaryConfigBindings(messages []ConfigMessage, binaries []string) e
 			refuse(m, bindingBadCommand, detail)
 			valid = false
 		}
+		if detail := subtreesProblem(m); detail != "" {
+			refuse(m, bindingBadCommand, detail)
+			valid = false
+		}
 		if binaries != nil && !known[m.Binary] {
 			refuse(m, bindingUnknownBinary, unknownBinaryDetail(m.Binary, binaries))
 			valid = false
 		}
 		if !valid {
+			continue
+		}
+		if len(m.Subtrees) > 0 {
+			// A subtree config is one of SEVERAL a process may load, so it
+			// has no level to be a duplicate at; what it may not do is share
+			// a leaf with a config loaded beside it (bindingCollisions).
+			subtreeConfigs = append(subtreeConfigs, m)
 			continue
 		}
 		key := processKey(m.Binary, m.Command)
@@ -188,7 +203,16 @@ func ValidateBinaryConfigBindings(messages []ConfigMessage, binaries []string) e
 		}
 	}
 
-	for _, c := range processCollisions(messages, byProcess) {
+	// The configs that bind a process, each once: the first of every
+	// root/command group (a later one is already refused as a duplicate),
+	// and every valid subtree config. In declaration order.
+	var bound []*ConfigMessage
+	for _, key := range order {
+		bound = append(bound, byProcess[key][0])
+	}
+	bound = append(bound, subtreeConfigs...)
+	sort.SliceStable(bound, func(i, j int) bool { return index[bound[i]] < index[bound[j]] })
+	for _, c := range bindingCollisions(messages, bound) {
 		refuse(c.cmd, bindingProcessCollision, c.detail())
 	}
 
@@ -226,80 +250,211 @@ func commandShapeProblem(command []string) string {
 	return ""
 }
 
-// processCollision is one leaf a binary's root config and one of its command
-// configs both declare.
+// subtreesProblem explains why m's `subtrees` cannot mean what they say, or
+// "" when they are well formed (or absent).
+func subtreesProblem(m *ConfigMessage) string {
+	if len(m.Subtrees) == 0 {
+		return ""
+	}
+	if len(m.Command) > 0 {
+		return "`command` and `subtrees` are both set. A config is ONE process's (`command`) or every process at or below some commands (`subtrees`), not both: move the leaves only that one command reads to a config of its own."
+	}
+	for i, p := range m.Subtrees {
+		if len(p) == 0 {
+			return "`subtrees` has an empty path. The empty path is every process of the binary — its root config: drop `subtrees` to declare that."
+		}
+		if detail := commandShapeProblem(p); detail != "" {
+			return "in `subtrees`: " + detail
+		}
+		for j, q := range m.Subtrees {
+			if i != j && isPathPrefix(q, p) && (len(q) < len(p) || j < i) {
+				return fmt.Sprintf("subtree %s lies at or below subtree %s of the same config, which already covers it. Drop %s.",
+					quotedList(p), quotedList(q), quotedList(p))
+			}
+		}
+	}
+	return ""
+}
+
+// isPathPrefix reports whether prefix is a leading part of path (or equal).
+func isPathPrefix(prefix, path []string) bool {
+	if len(prefix) > len(path) {
+		return false
+	}
+	for i := range prefix {
+		if prefix[i] != path[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// sharedProcessPath returns a command path whose process loads both a and b
+// — the deepest point their scopes meet — and whether there is one. Root
+// configs meet everything; a command config meets a subtree config at or
+// above it; two subtree configs meet when one path prefixes the other. Two
+// command configs never meet (one of them would be a duplicate).
+func sharedProcessPath(a, b *ConfigMessage) ([]string, bool) {
+	isRoot := func(m *ConfigMessage) bool { return len(m.Command) == 0 && len(m.Subtrees) == 0 }
+	switch {
+	case a.Binary != b.Binary:
+		return nil, false
+	case isRoot(a) && isRoot(b):
+		return nil, false // the same process twice: a duplicate, refused already
+	case isRoot(a):
+		return representativePath(b), true
+	case isRoot(b):
+		return representativePath(a), true
+	case len(a.Command) > 0 && len(b.Command) > 0:
+		return nil, false
+	case len(a.Command) > 0 || len(b.Command) > 0:
+		cmd, sub := a, b
+		if len(b.Command) > 0 {
+			cmd, sub = b, a
+		}
+		for _, p := range sub.Subtrees {
+			if isPathPrefix(p, cmd.Command) {
+				return cmd.Command, true
+			}
+		}
+		return nil, false
+	}
+	for _, p := range a.Subtrees {
+		for _, q := range b.Subtrees {
+			switch {
+			case isPathPrefix(p, q):
+				return q, true
+			case isPathPrefix(q, p):
+				return p, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// representativePath is one process a non-root config is loaded by: its
+// command, or its first subtree.
+func representativePath(m *ConfigMessage) []string {
+	if len(m.Command) > 0 {
+		return m.Command
+	}
+	if len(m.Subtrees) > 0 {
+		return m.Subtrees[0]
+	}
+	return nil
+}
+
+// scopePhrase names the processes a config is loaded by, for a refusal.
+func scopePhrase(m *ConfigMessage) string {
+	switch {
+	case len(m.Command) > 0:
+		return fmt.Sprintf("the %#q command config", m.ProcessName())
+	case len(m.Subtrees) > 0:
+		paths := make([]string, len(m.Subtrees))
+		for i, p := range m.Subtrees {
+			paths[i] = fmt.Sprintf("%#q", strings.TrimSpace(m.Binary+" "+strings.Join(p, " ")))
+		}
+		return "the subtree config for " + strings.Join(paths, ", ")
+	}
+	return "the binary's root config"
+}
+
+// processCollision is one leaf two configs a single process loads both
+// declare: a binary's root config and any other of its configs, or a subtree
+// config and a command or subtree config its scope meets. root is the wider
+// (or earlier-declared) of the two, cmd the one refused.
 type processCollision struct {
 	root, cmd *ConfigMessage
-	what      string // "env var LOG_LEVEL" / "flag --log-level" / "config file key port"
-	rootPath  string // the leaf on the root config, e.g. "log.level"
+	process   []string // a command path whose process loads both
+	what      string   // "env var LOG_LEVEL" / "flag --log-level" / "config file key port"
+	rootPath  string   // the leaf on root, e.g. "log.level"
 	cmdPath   string
 	fileKey   bool // a top-level field name, not a leaf's env var or flag
+}
+
+func (c processCollision) processName() string {
+	return strings.TrimSpace(c.cmd.Binary + " " + strings.Join(c.process, " "))
 }
 
 func (c processCollision) detail() string {
 	if c.fileKey {
 		return fmt.Sprintf(
-			"%s is also a top-level field of %s, the binary's root config. The %#q process reads both configs from ONE config file (--config, or %s), whose keys are flat across the two, so the file could not say which %s it sets. Rename one of the two fields.",
-			c.what, c.root.Name, c.cmd.ProcessName(), forgeconfig.ConfigPathEnvFor(c.cmd.Binary), c.rootPath)
+			"%s is also a top-level field of %s, %s. The %#q process reads both configs from ONE config file (--config, or %s), whose keys are flat across the two, so the file could not say which %s it sets. Rename one of the two fields.",
+			c.what, c.root.Name, scopePhrase(c.root), c.processName(), forgeconfig.ConfigPathEnvFor(c.cmd.Binary), c.rootPath)
+	}
+	fix := fmt.Sprintf("Declare it once: on %s if every %s process reads it, otherwise on the command configs alone.", c.root.Name, c.root.Binary)
+	if len(c.root.Command) > 0 || len(c.root.Subtrees) > 0 {
+		fix = "Declare it once, on the config whose scope covers every process that reads it."
 	}
 	return fmt.Sprintf(
-		"%s (%s) is also declared by %s (%s), the binary's root config. The %#q process loads both, so it would read one value from two declarations that can drift, and its env projection would carry the key twice. Declare it once: on %s if every %s process reads it, otherwise on the command configs alone.",
-		c.what, c.cmdPath, c.root.Name, c.rootPath, c.cmd.ProcessName(), c.root.Name, c.root.Binary)
+		"%s (%s) is also declared by %s (%s), %s. The %#q process loads both, so it would read one value from two declarations that can drift, and its env projection would carry the key twice. %s",
+		c.what, c.cmdPath, c.root.Name, c.rootPath, scopePhrase(c.root), c.processName(), fix)
 }
 
-// processCollisions finds the leaves a binary's root config shares with one
-// of its command configs. Composed blocks count: they are leaves of the
-// process exactly as declared ones are. Only the FIRST message per process
-// is considered on either side — a second is already refused as a duplicate.
-func processCollisions(messages []ConfigMessage, byProcess map[string][]*ConfigMessage) []processCollision {
+// bindingCollisions finds the leaves two configs of one binary share when
+// some process loads both (sharedProcessPath). Composed blocks count: they
+// are leaves of the process exactly as declared ones are. bound holds each
+// binding once, in declaration order; the root config, when it is one of a
+// pair, is always the side cited and the other the side refused.
+func bindingCollisions(messages []ConfigMessage, bound []*ConfigMessage) []processCollision {
+	isRoot := func(m *ConfigMessage) bool { return len(m.Command) == 0 && len(m.Subtrees) == 0 }
 	var out []processCollision
-	for i := range messages {
-		cmd := &messages[i]
-		if cmd.Binary == "" || len(cmd.Command) == 0 {
-			continue
-		}
-		if group := byProcess[processKey(cmd.Binary, cmd.Command)]; len(group) == 0 || group[0] != cmd {
-			continue // refused for its shape or binary, or a duplicate
-		}
-		roots := byProcess[processKey(cmd.Binary, nil)]
-		if len(roots) == 0 {
-			continue
-		}
-		root := roots[0]
-
-		rootEnv, rootFlag := map[string]string{}, map[string]string{}
-		for _, f := range FlattenFieldsWithBlocks(root.Fields, messages) {
-			if f.EnvVar != "" {
-				rootEnv[f.EnvVar] = f.KCLPath()
-			}
-			if f.Flag != "" && !f.Sensitive {
-				rootFlag[f.Flag] = f.KCLPath()
-			}
-		}
-		for _, f := range FlattenFieldsWithBlocks(cmd.Fields, messages) {
-			if p, dup := rootEnv[f.EnvVar]; dup && f.EnvVar != "" {
-				out = append(out, processCollision{root: root, cmd: cmd,
-					what: "env var " + f.EnvVar, rootPath: p, cmdPath: f.KCLPath()})
+	for j, cmd := range bound {
+		for i, root := range bound {
+			if i == j {
 				continue
 			}
-			if p, dup := rootFlag[f.Flag]; dup && f.Flag != "" && !f.Sensitive {
-				out = append(out, processCollision{root: root, cmd: cmd,
-					what: "flag --" + f.Flag, rootPath: p, cmdPath: f.KCLPath()})
+			// Each pair once: the root is always the cited side; otherwise
+			// the earlier-declared one is.
+			if isRoot(cmd) || (!isRoot(root) && i > j) {
+				continue
 			}
+			process, meet := sharedProcessPath(root, cmd)
+			if !meet {
+				continue
+			}
+			out = append(out, pairCollisions(messages, root, cmd, process)...)
 		}
+	}
+	return out
+}
 
-		// The config FILE is flat across the two messages at the TOP level
-		// only (each message decodes its own keys below it), so a top-level
-		// field name — a composed block's included — is the file's key.
-		rootKeys := map[string]bool{}
-		for _, f := range root.Fields {
-			rootKeys[f.Name] = true
+// pairCollisions lists the env vars, flags and top-level file keys root and
+// cmd both declare.
+func pairCollisions(messages []ConfigMessage, root, cmd *ConfigMessage, process []string) []processCollision {
+	var out []processCollision
+	rootEnv, rootFlag := map[string]string{}, map[string]string{}
+	for _, f := range FlattenFieldsWithBlocks(root.Fields, messages) {
+		if f.EnvVar != "" {
+			rootEnv[f.EnvVar] = f.KCLPath()
 		}
-		for _, f := range cmd.Fields {
-			if rootKeys[f.Name] {
-				out = append(out, processCollision{root: root, cmd: cmd, fileKey: true,
-					what: "config file key " + strconv.Quote(f.Name), rootPath: f.Name, cmdPath: f.Name})
-			}
+		if f.Flag != "" && !f.Sensitive {
+			rootFlag[f.Flag] = f.KCLPath()
+		}
+	}
+	for _, f := range FlattenFieldsWithBlocks(cmd.Fields, messages) {
+		if p, dup := rootEnv[f.EnvVar]; dup && f.EnvVar != "" {
+			out = append(out, processCollision{root: root, cmd: cmd, process: process,
+				what: "env var " + f.EnvVar, rootPath: p, cmdPath: f.KCLPath()})
+			continue
+		}
+		if p, dup := rootFlag[f.Flag]; dup && f.Flag != "" && !f.Sensitive {
+			out = append(out, processCollision{root: root, cmd: cmd, process: process,
+				what: "flag --" + f.Flag, rootPath: p, cmdPath: f.KCLPath()})
+		}
+	}
+
+	// The config FILE is flat across the two messages at the TOP level
+	// only (each message decodes its own keys below it), so a top-level
+	// field name — a composed block's included — is the file's key.
+	rootKeys := map[string]bool{}
+	for _, f := range root.Fields {
+		rootKeys[f.Name] = true
+	}
+	for _, f := range cmd.Fields {
+		if rootKeys[f.Name] {
+			out = append(out, processCollision{root: root, cmd: cmd, process: process, fileKey: true,
+				what: "config file key " + strconv.Quote(f.Name), rootPath: f.Name, cmdPath: f.Name})
 		}
 	}
 	return out
@@ -313,6 +468,13 @@ func bindingLiteral(m ConfigMessage) string {
 	}
 	if len(m.Command) > 0 {
 		parts = append(parts, "command: "+quotedList(m.Command))
+	}
+	if len(m.Subtrees) > 0 {
+		paths := make([]string, len(m.Subtrees))
+		for i, p := range m.Subtrees {
+			paths[i] = "{path: " + quotedList(p) + "}"
+		}
+		parts = append(parts, "subtrees: ["+strings.Join(paths, ", ")+"]")
 	}
 	return "{" + strings.Join(parts, ", ") + "}"
 }

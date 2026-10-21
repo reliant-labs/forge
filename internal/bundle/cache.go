@@ -41,6 +41,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/statefile"
 	"github.com/reliant-labs/forge/pkg/release"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // CacheDirRel is where unpacked bundles live, under the same .forge/ tree as
@@ -189,7 +191,7 @@ func (c *Cache) Get(ctx context.Context, res Resolver, reference string) (Cached
 	if merr != nil {
 		return Cached{}, stats, merr
 	}
-	if werr := os.WriteFile(filepath.Join(staging, docFileName), docBytes, unpackFileMode); werr != nil {
+	if werr := atomicfile.WriteFile(filepath.Join(staging, docFileName), docBytes, unpackFileMode); werr != nil {
 		return Cached{}, stats, fmt.Errorf("write %s: %w", docFileName, werr)
 	}
 

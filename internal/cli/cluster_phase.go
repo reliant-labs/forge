@@ -980,7 +980,15 @@ func kubectlWaitNodesReady(ctx context.Context, kctx string, budget time.Duratio
 	out, err := exec.CommandContext(attemptCtx, "kubectl", "--context", kctx,
 		"wait", "--for=condition=Ready", "nodes", "--all",
 		"--timeout="+budget.String()).CombinedOutput()
-	return string(out), err
+	if err != nil {
+		return string(out), err
+	}
+	// Every caller waits right after a node (re)start, which is exactly when
+	// a Ready condition left over from the previous boot is still on record.
+	if err := verifyNodesReadyThisBoot(attemptCtx, kctx); err != nil {
+		return err.Error(), err
+	}
+	return string(out), nil
 }
 
 // waitNodeReady blocks (bounded) until the cluster's nodes report Ready
@@ -997,6 +1005,15 @@ func kubectlWaitNodesReady(ctx context.Context, kctx string, budget time.Duratio
 // attempt is sized from the REMAINING budget, so the cap is the true
 // wall-clock cap rather than the cap plus one attempt.
 func waitNodeReady(ctx context.Context, clusterName string) error {
+	return waitNodeReadyWhile(ctx, clusterName, nil)
+}
+
+// waitNodeReadyWhile is waitNodeReady for a caller that can tell whether the
+// thing it is waiting on is still alive. After each failed attempt it asks
+// alive; a definite "no" ends the wait with errK3sExitedDuringWait instead of
+// spending the rest of the budget on a process that will never answer. A nil
+// alive, or one that errors, never shortens the wait.
+func waitNodeReadyWhile(ctx context.Context, clusterName string, alive func(context.Context) (bool, error)) error {
 	kctx := "k3d-" + clusterName
 	start := time.Now()
 	deadline := start.Add(nodeReadyWaitBudget)
@@ -1018,6 +1035,14 @@ func waitNodeReady(ctx context.Context, clusterName string) error {
 		lastOut = out
 		if lastOut == "" {
 			lastOut = err.Error()
+		}
+		if alive != nil {
+			if running, aliveErr := alive(ctx); aliveErr == nil && !running {
+				return fmt.Errorf("%w (context %s)%s", errK3sExitedDuringWait, kctx, formatCommandStderr(lastOut))
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 		}
 		if now := time.Now(); lastReport.IsZero() || now.Sub(lastReport) >= nodeReadyReportInterval {
 			lastReport = now

@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/pkg/activity"
 )
 
 // TestClient_Call_AuthenticatesAndReturnsData drives the real transport
@@ -109,5 +112,35 @@ func TestClient_Call_UnimplementedIsReportedAsSuch(t *testing.T) {
 	err := client.Call(context.Background(), "controlplane.v1.DeployService/ListDeployments", map[string]any{}, &struct{}{})
 	if err == nil || !strings.Contains(err.Error(), "not implemented") {
 		t.Fatalf("want an unimplemented-shaped error; got %v", err)
+	}
+}
+
+// Every call names its client in Forge-Via, which the control plane's
+// activity stream records as "via": "cli" from a terminal, "ci" under a
+// pipeline.
+func TestClient_Call_SendsForgeVia(t *testing.T) {
+	for _, tc := range []struct {
+		ci   bool
+		want string
+	}{{false, "cli"}, {true, "ci"}} {
+		buildinfo.SetCI(tc.ci)
+		t.Cleanup(buildinfo.ClearCI)
+		var got string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got = r.Header.Get(activity.ViaHeader)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		ep, err := ResolveEndpoint("prod", &Declaration{Endpoint: srv.URL})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := NewClient(ep, Credential{Token: "t"}).Call(context.Background(), "controlplane.v1.DeployService/ListReleases", map[string]any{}, nil); err != nil {
+			t.Fatalf("Call: %v", err)
+		}
+		srv.Close()
+		if got != tc.want {
+			t.Errorf("CI=%v: %s = %q, want %q", tc.ci, activity.ViaHeader, got, tc.want)
+		}
 	}
 }

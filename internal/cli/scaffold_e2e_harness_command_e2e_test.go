@@ -31,7 +31,6 @@ import (
 // compose one — and requires /healthz. `--help` would not do: cobra answers
 // it before validating positional arguments, so it accepts the broken form.
 func TestE2EScaffoldE2EHarnessCommand(t *testing.T) {
-	requirePublishedForgePkg(t)
 	sharedTestPostgres(t)
 	t.Parallel()
 	forgeBin := buildforgeBinary(t)
@@ -39,6 +38,7 @@ func TestE2EScaffoldE2EHarnessCommand(t *testing.T) {
 
 	runCmd(t, dir, forgeBin, "project", "new", "harnessapp", "--mod", "example.com/harnessapp", "--service", "api-gateway")
 	projectDir := filepath.Join(dir, "harnessapp")
+	addCorpusForgePkgReplace(t, projectDir)
 	runCmd(t, projectDir, forgeBin, "generate")
 	runCmd(t, projectDir, "go", "mod", "tidy")
 	runCmd(t, filepath.Join(projectDir, "gen"), "go", "mod", "tidy")

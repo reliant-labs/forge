@@ -95,6 +95,18 @@ type StaticSiteFrontend struct {
 	// (NEXT_PUBLIC_* / VITE_*).
 	BuildEnv map[string]string
 
+	// Project is the forge project name (recorded in the source map manifest).
+	Project string
+
+	// VersionEnvVar is the variable the bundle reads service.version from
+	// (NEXT_PUBLIC_APP_VERSION / VITE_APP_VERSION); forge injects the build id
+	// into it unless BuildEnv sets it. Empty injects nothing.
+	VersionEnvVar string
+
+	// Sourcemaps is "publish" (default), "public" or "off". See the
+	// Sourcemaps* constants.
+	Sourcemaps string
+
 	// RuntimeConfigJS is this ENVIRONMENT's rendered runtime config
 	// document, written into the assembled tree after every copy. See
 	// FirebaseFrontend.RuntimeConfigJS — identical semantics, and the
@@ -109,6 +121,12 @@ type StaticSiteFrontend struct {
 	// by the control plane after each sync. Mutually exclusive with a
 	// non-empty RuntimeConfigJS.
 	StripRuntimeConfig bool
+
+	// SourcemapPublisher files the source maps the build extracts (F1) so
+	// errors can be symbolicated: pushed to the platform registry when the
+	// env's observability is hosted, kept on disk otherwise. nil files nothing
+	// (the maps are still extracted, and never served).
+	SourcemapPublisher SourcemapPublisher
 
 	// Spec is the StaticSite deploy config.
 	Spec StaticSiteSpec
@@ -234,8 +252,11 @@ func (s StaticSiteSpec) invalidationPolicy() string {
 // frontends off group.StaticSites and the dry-run knob off group.DryRun
 // so this provider dispatches through the registry like every other one.
 func (p StaticSiteProvider) Deploy(ctx context.Context, group ServiceGroup) error {
-	for _, fe := range group.StaticSites {
+	for i, fe := range group.StaticSites {
 		if err := p.deployOne(ctx, fe, group.Env, group.DryRun); err != nil {
+			if i > 0 {
+				return afterShipping(err)
+			}
 			return err
 		}
 	}
@@ -270,6 +291,9 @@ func (p StaticSiteProvider) stageInput(fe StaticSiteFrontend) StageInput {
 		StripRuntimeConfig: fe.StripRuntimeConfig,
 		ProjectDir:         p.ProjectDir,
 		StagingRoot:        staging,
+		Project:            fe.Project,
+		VersionEnvVar:      fe.VersionEnvVar,
+		Sourcemaps:         fe.Sourcemaps,
 	}
 }
 
@@ -284,7 +308,7 @@ func (p StaticSiteProvider) buildPlan(fe StaticSiteFrontend) (staticSitePlan, er
 func (p StaticSiteProvider) deployOne(ctx context.Context, fe StaticSiteFrontend, env string, dryRun bool) error {
 	plan, err := p.buildPlan(fe)
 	if err != nil {
-		return err
+		return shippedNothing(err)
 	}
 
 	if dryRun {
@@ -296,16 +320,28 @@ func (p StaticSiteProvider) deployOne(ctx context.Context, fe StaticSiteFrontend
 	fmt.Printf("  [static-site] %s: building (%s) in %s...\n",
 		plan.Stage.Name, strings.Join(plan.Stage.BuildCmd, " "), plan.Stage.FrontendDir)
 
+	// Everything before the first upload is local: the bucket is untouched
+	// until it runs, so a failure up to there shipped nothing
+	// (frontend_not_shipped.go).
+	//
 	// Build + assemble — the shared static staging step.
-	if err := runStagePlan(ctx, runner, plan.Stage); err != nil {
-		return err
+	res, err := runStagePlan(ctx, runner, plan.Stage)
+	if err != nil {
+		return shippedNothing(err)
+	}
+	reportStageResult("static-site", plan.Stage.Name, res)
+
+	// File the source maps before the release is uploaded or goes live: a
+	// build whose maps could not be filed must not ship unsymbolicatable.
+	if err := FileStageSourcemaps(ctx, fe.SourcemapPublisher, "static-site", plan.Stage.Project, plan.Stage.Name, res); err != nil {
+		return shippedNothing(err)
 	}
 
 	// The artifact's content-addressed identity, computed from the tree
 	// that now exists on disk. Everything downstream keys on it.
 	digest, err := stagingDigest(plan.Stage.StagingDir)
 	if err != nil {
-		return fmt.Errorf("static-site %s: %w", fe.Name, err)
+		return shippedNothing(fmt.Errorf("static-site %s: %w", fe.Name, err))
 	}
 
 	// The digest currently live, read BEFORE this deploy overwrites the

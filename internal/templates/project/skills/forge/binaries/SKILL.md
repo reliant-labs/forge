@@ -164,7 +164,7 @@ message ApiServerConfig {                 // only the `app server api` process
 }
 ```
 
-The binding is keyed on `(binary, command)`. A process loads its binary's root config plus the ONE config declared for its exact command path (command configs do not nest):
+The binding is keyed on `(binary, command)`. A process loads its binary's root config, every SUBTREE config over its path (below), and the ONE config declared for its exact command path:
 
 ```go
 config.RegisterAppConfigFlags(root)            // persistent: every subcommand inherits
@@ -175,7 +175,7 @@ api, err := config.LoadApiServerConfig(cmd)    // refuses any command but `serve
 ```
 
 - `generate` checks each `command` element is one command name. It cannot check the path EXISTS — a cobra tree is built at runtime — so `Load<Msg>` checks it exactly against the real tree and errors, naming both paths, when called from another command.
-- A root config and a command config of one binary may not declare the same env var or flag (one process would read it twice), nor the same top-level field name (one config file serves the process: `binaries/config-files`); `generate` refuses the pair. Compose a shared block onto the root config, not onto each command config.
+- A root config and a command config of one binary may not declare the same env var or flag (one process would read it twice), nor the same top-level field name (one config file serves the process: `binaries/config-files`); `generate` refuses the pair. Compose a shared block onto the root config, not onto each command config, when EVERY process reads it; a subtree config (below) when several commands do.
 - KCL: every config keeps its own `<msg>EnvMap`, and a binary with command configs also gets `config_gen.<bin>ProcessEnvMap(cfgs, argv, config_secrets)`, which projects one workload's env from its own `command + args` — root config plus the matching command config, longest declared path first, `config_secrets` routed to whichever config declares each name. config.k scaffolds the bundle as `<bin>_process`:
 
   ```kcl
@@ -183,6 +183,10 @@ api, err := config.LoadApiServerConfig(cmd)    // refuses any command but `serve
   ```
 
   The subcommand path is read after the argv token naming the binary (`app`, `./cmd/app`, `/app/app`), or from all of argv when none does (`args = ["server", "api"]` on the project image), and ends at the first flag.
+
+### Several commands, not every process: `subtrees`
+
+A setting many commands read but the server roles must not carry (the CLI's server URL and token; a guard policy `daemon start` and `open` share) is a SUBTREE config, `subtrees: [{path: ["daemon"]}, {path: ["open"]}]`: loaded at or below each path, by no other process. Rules, registration and the KCL projection: `binaries/subtrees`.
 
 ### Config files
 

@@ -428,6 +428,9 @@ func wireWorkerIntoTree(cfg *config.ProjectConfig, root, name string) {
 // quiet. Reserved names (the command tree's own server/version/db/…) emit no
 // subcommand at all, so there is nothing to wire.
 func wireServiceIntoTree(cfg *config.ProjectConfig, root, name string) {
+	if codegen.GraphComposition(root) {
+		return // no per-service subcommand: `server` serves every service
+	}
 	runtime, ctor, emitted := codegen.CmdServiceCommand(name)
 	if !emitted {
 		return
@@ -485,6 +488,13 @@ type componentCmdWiring struct {
 
 func wireComponentIntoTree(cfg *config.ProjectConfig, root, name string, w componentCmdWiring) {
 	bin := binaryName(cfg, root)
+	if codegen.GraphComposition(root) {
+		// The composition graph has no per-component subcommands: the
+		// default `server` root runs every worker and operator, and
+		// `forge generate` adds this one to the graph.
+		fmt.Printf("  • %s '%s' joins the composition graph on `forge generate`: `%s server` runs it (internal/app/graph_gen.go)\n", strings.TrimSuffix(w.group, "s"), name, bin)
+		return
+	}
 	field := naming.ToPascalCase(name)
 	module := cfg.ModulePath
 

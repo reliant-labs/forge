@@ -5,6 +5,7 @@ import (
 	"go/token"
 	"strings"
 	"testing"
+	"time"
 )
 
 // `auth_required` used to gate nothing at runtime: the interceptor took its
@@ -156,6 +157,62 @@ func TestRenderOpenProcedures_IsValidGoAndAlwaysAllowsTheProbes(t *testing.T) {
 				t.Errorf("generated file does not declare the symbol pkg/middleware wires into the interceptor:\n%s", src)
 			}
 		})
+	}
+}
+
+// `(forge.v1.method).timeout` is the declaration of an rpc's server-side
+// deadline, and ProcedureDeadlines is its projection: only an rpc that
+// declared one is there, a service with nothing public but a timed rpc still
+// imports its connect package, and the budget is spelled as Go a reader would
+// write.
+func TestOpenProcedures_ProjectsDeclaredTimeouts(t *testing.T) {
+	svcs := []ServiceDef{{
+		Name: "ExportService", Package: "demo.v1",
+		GoPackage: "example.com/app/gen/services/export/v1", PkgName: "exportv1",
+		Methods: []Method{
+			{Name: "Export", AuthRequired: true, Timeout: 2 * time.Minute},
+			{Name: "StartOAuth", AuthRequired: true, Timeout: -time.Second},
+			{Name: "Quick", AuthRequired: true, Timeout: 1500 * time.Millisecond},
+			{Name: "Get", AuthRequired: true},
+		},
+	}}
+	data := BuildOpenProcedures(svcs, "example.com/app")
+	if len(data.Imports) != 1 || data.Imports[0].Alias != "exportv1connect" {
+		t.Fatalf("imports = %v, want the one connect package the timed rpcs live in", data.Imports)
+	}
+	got := map[string]string{}
+	for _, d := range data.Deadlines {
+		got[d.Method] = d.Budget
+	}
+	want := map[string]string{
+		"Export":     "2 * time.Minute",
+		"StartOAuth": "-1 * time.Second",
+		"Quick":      "1500 * time.Millisecond",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("deadlines = %v, want %v (an rpc with no timeout gets the slot's default, not an entry)", got, want)
+	}
+	for m, w := range want {
+		if got[m] != w {
+			t.Errorf("%s budget = %q, want %q", m, got[m], w)
+		}
+	}
+
+	content, err := RenderOpenProcedures(svcs, "example.com/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(content)
+	if _, err := parser.ParseFile(token.NewFileSet(), "procedures_gen.go", src, parser.SkipObjectResolution); err != nil {
+		t.Fatalf("generated file is not valid Go: %v\n----\n%s", err, src)
+	}
+	for _, line := range []string{
+		"var ProcedureDeadlines = map[string]time.Duration{",
+		"exportv1connect.ExportServiceExportProcedure: 2 * time.Minute, // demo.v1.ExportService/Export — timeout: 2m0s",
+	} {
+		if !strings.Contains(src, line) {
+			t.Errorf("generated file lacks %q:\n%s", line, src)
+		}
 	}
 }
 

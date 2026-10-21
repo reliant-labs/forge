@@ -252,17 +252,46 @@ _primary_target = lambda b: Bundle -> any {
 # Go's WorkloadSpec.EffectiveProbes gives a service with ports TCP on its
 # first one. A worker or job gets none unless it declares one.
 # ---------------------------------------------------------------------------
+#
+# The default reads the SAME config the process does: serverkit serves its
+# probes on the paths in LIVENESS_PATHS / READINESS_PATHS (the scaffold's
+# liveness_paths / readiness_paths fields, default /healthz and /readyz) and
+# on the port in PORT, so the default probes the first path of each on that
+# port, read from the workload's own env. The pod's probe and the process's
+# route cannot drift apart.
 _default_probes = lambda w: any -> any {
+    _ready = _probe_path(w, "READINESS_PATHS", "/readyz")
     w.probes if w.probes else (_TProbes {
-        # startupPath = /readyz holds liveness off until the server is ready,
-        # for the whole startup-dependency wait (the database connect retries
-        # for up to DB_CONNECT_TIMEOUT). The window is v1alpha1's
+        # startupPath = readiness holds liveness off until the server is
+        # ready, for the whole startup-dependency wait (the database connect
+        # retries for up to DB_CONNECT_TIMEOUT). The window is v1alpha1's
         # DefaultStartupFailureThreshold.
-        startupPath = "/readyz"
-        readinessPath = "/readyz"
-        livenessPath = "/healthz"
-        port = _http_port(w)
+        startupPath = _ready
+        readinessPath = _ready
+        livenessPath = _probe_path(w, "LIVENESS_PATHS", "/healthz")
+        port = _probe_port(w)
     } if w.build and (w.kind == "service" or (w.kind == "operator" and w.ports)) else Undefined)
+}
+
+# A plain string env value of the workload, or "" (unset, or a reference
+# the lowering cannot read: a secret, a field ref).
+_env_str = lambda w: any, name: str -> str {
+    _v = (w.env or {})[name] if name in (w.env or {}) else None
+    _v if typeof(_v) == "str" else ""
+}
+
+# The first path of a comma-separated probe path list in env `name` — what
+# serverkit.ProbePathList parses — else the default.
+_probe_path = lambda w: any, name: str, default: str -> str {
+    _paths = [_p.strip() for _p in _env_str(w, name).split(",") if _p.strip()]
+    _paths[0] if _paths else default
+}
+
+# The port a default probe targets: the process's PORT when the workload
+# sets it, else its http port.
+_probe_port = lambda w: any -> int {
+    _p = _env_str(w, "PORT")
+    int(_p) if _p and _p.isdigit() else _http_port(w)
 }
 
 # The port a default probe targets: the one named `http`, else the first,
@@ -686,6 +715,22 @@ observability_ttl = lambda o: Observability -> str {
     "${_days * 24}h" if _days > 0 else ""
 }
 
+# The FORGE_PROFILES value for a Profiling: the selected types in the
+# runtime's order (forge/pkg/observe), or "none".
+_profiling_types = lambda p: Profiling -> str {
+    _on = [t[0] for t in [["cpu", p.cpu], ["heap", p.heap], ["alloc", p.alloc], ["goroutine", p.goroutine], ["mutex", p.mutex], ["block", p.block]] if t[1]]
+    ",".join(_on) if _on else "none"
+}
+
+# A workload's `profiling` override, as the variables forge/pkg/observe reads.
+# Nothing when it is unset (the runtime's defaults apply); each key only where
+# the workload's own env leaves it unset.
+_profiling_env = lambda w: any, env: {str:} -> {str:str} {
+    _p = w.profiling if w.profiling else None
+    ({FORGE_PROFILES = _profiling_types(_p)} if _p and not _env_set(env, "FORGE_PROFILES") else {}) \
+        | ({FORGE_PROFILES_HEAP_INTERVAL = _p.heap_interval} if _p and not _env_set(env, "FORGE_PROFILES_HEAP_INTERVAL") else {})
+}
+
 # The keys forge derives for w on rt (only those the author left unset).
 _derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
     _env = w.env if w.env else {}
@@ -694,6 +739,7 @@ _derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
     ({OTEL_SERVICE_NAME = w.name} if _runs and not _env_set(_env, "OTEL_SERVICE_NAME") else {}) \
         | ({OTEL_RESOURCE_ATTRIBUTES = _otel_resource_attributes(bundle)} if _runs and not _env_set(_env, "OTEL_RESOURCE_ATTRIBUTES") else {}) \
         | (_obs_env(rt, bundle, _env) if _runs else {}) \
+        | (_profiling_env(w, _env) if _runs else {}) \
         | ({OTEL_EXPORTER_OTLP_HEADERS_FILE = CONTROL_PLANE_OTLP_DIR + "/" + CONTROL_PLANE_OTLP_FILE} if _cps_wires(w, rt, bundle) else {}) \
         | ({GOMEMLIMIT = _gml} if _gml else {})
 }
@@ -1301,6 +1347,22 @@ _check_before = lambda workloads: [any] -> bool {
     True
 }
 
+# ShellBuild.built_images names a workload forge can build an image for in
+# THIS environment: another ShellBuild workload that declares an image. The
+# build resolves the edge to the digest that workload pushed, so an edge to a
+# workload the env does not declare, to one built some other way, or to
+# itself is refused here — at render, naming the edge — rather than at the
+# build, after other images have already been pushed.
+_check_built_images = lambda workloads: [any] -> bool {
+    _builders = [w.name for w in workloads if w.build and w.build.type == "shell" and w.image]
+    _edges = [[w.name, v, b] for w in workloads if w.build and w.build.type == "shell" for v, b in w.build.built_images]
+    _bad = ["${e[0]}.${e[1]} -> ${e[2]}" for e in _edges if e[2] == e[0] or e[2] not in _builders]
+    assert len(_bad) == 0, \
+        "ShellBuild.built_images must name ANOTHER workload in this environment that is built by a ShellBuild and declares an image (forge passes it the digest that build pushed): " \
+        + ", ".join(_bad) + ". ShellBuild workloads with an image: " + (", ".join(_builders) or "none") + "."
+    True
+}
+
 # ---------------------------------------------------------------------------
 # The RUNTIME MASK (ADR 0002 §3; P2 map §6.2).
 #
@@ -1609,6 +1671,9 @@ _render_observability = lambda b: Bundle -> any {
             "traces_days": _o.retention.traces_days
             "metrics_days": _o.retention.metrics_days
             "logs_days": _o.retention.logs_days
+            "replay_days": _o.retention.replay_days
+            "errors_days": _o.retention.errors_days
+            "product_events_days": _o.retention.product_events_days
         }
         "agent": {
             "namespace": _o.agent.namespace
@@ -1733,6 +1798,7 @@ _manifests = lambda b: Bundle, entities: [any] -> [any] {
 
 render = lambda bundle: Bundle -> any {
     _ok = _check_before(bundle.workloads)
+    _built_images_ok = _check_built_images(bundle.workloads)
     _entities = [_lower(w, bundle) for w in bundle.workloads]
     _pt = _primary_target(bundle)
     {
@@ -2002,7 +2068,39 @@ _frontend_violations = lambda f: Frontend -> [str] {
 # when browser telemetry is off the SDK's ingest path is forced to "off", over
 # anything the author set, because the opt-out is the author's explicit word.
 _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | WorkloadURL} {
-    (f.runtime_config | {OTEL_ENDPOINT = "off"}) if _obs_browser_off(bundle) else f.runtime_config
+    # What forge derives from the frontend's own declarations comes FIRST, so
+    # an author's runtime_config entry for the same key always wins.
+    _merged = _telemetry_runtime_config(f, bundle) | f.runtime_config
+    (_merged | {OTEL_ENDPOINT = "off"}) if _obs_browser_off(bundle) else _merged
+}
+
+# The ingest path the platform answers on a hosted site's own origin.
+_HOSTED_OTEL_PATH = "/_otel"
+
+# True when the author already decided where this frontend's telemetry goes:
+# a runtime_config entry, the typed config's otel_endpoint, or the build
+# variable. The runtime config outranks the build variable in the browser, so
+# deriving a default over any of these would override the author.
+_otel_endpoint_declared = lambda f: Frontend -> bool {
+    "OTEL_ENDPOINT" in f.runtime_config or bool(f.config and f.config.otel_endpoint) \
+        or any e in f.env_vars { e.name == _otel_endpoint_var(f) }
+}
+
+# The runtime config keys derived from `telemetry` and from where the
+# frontend runs. They reach the browser as window.__FORGE_CONFIG__ (a hosted
+# frontend's through the StaticSite spec, which the control plane writes), so
+# one build promotes across envs and each env sets its own.
+#
+#   OTEL_ENDPOINT        a hosted frontend defaults to the platform's /_otel
+#                        unless the author named one (or browser telemetry is
+#                        off, which _runtime_config_declared handles)
+#   CONSOLE_CAPTURE      "false" only; unset means capture
+#   REPLAY_SAMPLE_RATE   only when it is not every session
+_telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
+    _t = f.telemetry
+    ({OTEL_ENDPOINT = _HOSTED_OTEL_PATH} if _frontend_hosted(f) and not _otel_endpoint_declared(f) and not _obs_browser_off(bundle) else {}) \
+        | ({CONSOLE_CAPTURE = "false"} if _t and not _t.console_capture else {}) \
+        | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {})
 }
 
 # The framework's build/dev variable for the browser ingest path.
@@ -2092,7 +2190,9 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         # as the StaticSite spec's runtimeConfig.
         "runtime_config": _rc
         "runtime_config_spec": _rc_spec
-    } | ({"routes": f.routes} if f.routes else {})
+    } | ({"routes": f.routes} if f.routes else {}) \
+      | ({"telemetry": _render_browser_telemetry(f.telemetry)} if f.telemetry else {}) \
+      | ({"sourcemaps": f.telemetry.sourcemaps} if f.telemetry and f.telemetry.sourcemaps != "publish" else {})
 }
 
 # Render an EnvVar to its stable dict form. Unset / empty-string
@@ -2176,6 +2276,8 @@ _render_shell_build = lambda b: ShellBuild -> any {
         if b.source:
             "source": {"repo": b.source.repo, "ref": b.source.ref, "subdir": b.source.subdir}
         "env": b.env if b.env else {}
+        if b.built_images:
+            "built_images": b.built_images
     }
 }
 
@@ -2244,6 +2346,25 @@ _render_frontend_config = lambda c: FrontendConfig -> any {
         "otel_endpoint": c.otel_endpoint if c.otel_endpoint else None
         "environment": c.environment if c.environment else None
         "telemetry_disabled": c.telemetry_disabled
+    }
+}
+
+# Render a BrowserTelemetry to its stable dict form. An unset `telemetry` is
+# omitted from the frontend (see _render_frontend), so a frontend that declares
+# none renders exactly as it did before the field.
+_render_browser_telemetry = lambda t: BrowserTelemetry -> any {
+    {
+        "console_capture": t.console_capture
+        "replay_sample_rate": t.replay_sample_rate
+        "sourcemaps": t.sourcemaps
+        "errors": {"ignore": t.errors.ignore}
+        "funnels": [{
+            "id": f.id
+            "title": f.title if f.title else None
+            "steps": f.steps
+            "window": f.window
+            "by": f.by
+        } for f in t.funnels]
     }
 }
 

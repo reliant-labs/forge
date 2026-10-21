@@ -20,3 +20,13 @@ Every config also loads from a file: `--config <path>` (`.yaml`, `.yml` or `.jso
 
   A key that no config the command loads declares is an error naming them all (`unknown key "grcp_port": no config this command loads has such a field (ApiServerConfig, AppConfig)`), so a misspelling still fails — and so does a key only another process reads: `app server worker` refuses `grpc_port`. Give each process its own file. The configs a command loads are the ones registered on its path (`config.Register<Msg>Flags`).
 - To answer to a different variable, call `forgeconfig.RegisterConfigFlag(root, "MY_APP_CONFIG")` (`forgeconfig` = `github.com/reliant-labs/forge/pkg/config`) on the binary's root command BEFORE `config.Register<Msg>Flags(root)`: the first `--config` registered on a command path names the variable for every load beneath it.
+
+## Build-time defaults
+
+Between the proto `default_value` and the file sits one more layer: values a BUILD carries. A release binary stamped with its environment's endpoints, while `go install` of the same source keeps the proto default:
+
+```bash
+go build -ldflags "-X 'example.com/app/pkg/config.BuildDefaults=APP_SERVER_URL=https://api.example.com&APP_REGION=eu'" ./cmd/app
+```
+
+`BuildDefaults` is one string in URL query form, keyed by each field's `env_var` (escape `&`, `=`, `+`, `%` or a space in a value with `url.QueryEscape`). Precedence: `default_value` < build default < file < env < flags. A key naming no config field of the binary, a `sensitive` field, a duplicate key, or a value that does not parse fails every `Load` naming the key — a stamp is a build defect, never silently ignored.

@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jinzhu/inflection"
 	appsv1 "k8s.io/api/apps/v1"
@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+	"github.com/reliant-labs/forge/pkg/serverkit/drainbudget"
 )
 
 // RenderWorkloads renders an environment's whole workload SET into the
@@ -146,10 +147,6 @@ const (
 	// listens on (kcl/workloads/expand.k:502, schema.k:154-155): serverkit's
 	// standard mux.
 	DefaultServicePort int32 = 8080
-	// Drain defaults when the workload's env does not state them: serverkit's
-	// own (pkg/serverkit/serverkit.go:507-512).
-	defaultPreStopDelaySeconds    = 5
-	defaultShutdownTimeoutSeconds = 30
 	// graceMarginSeconds is expand.k:252's margin above the app's drain.
 	graceMarginSeconds = 5
 	// Job lifecycle (expand.k:720-725). There is deliberately NO
@@ -388,7 +385,7 @@ func (set *workloadSet) gatingJobs(target *workload) []*workload {
 func (set *workloadSet) render(w *workload, ctx Context) ([]runtime.Object, error) {
 	switch w.kind {
 	case v1alpha1.KindService, v1alpha1.KindWorker, v1alpha1.KindOperator:
-		return set.renderLongRunning(w, ctx), nil
+		return set.renderLongRunning(w, ctx)
 	case v1alpha1.KindJob:
 		if w.gatingJob() {
 			// expand.k:731: a job with `before` renders NO standalone Job.
@@ -410,7 +407,7 @@ func (set *workloadSet) render(w *workload, ctx Context) ([]runtime.Object, erro
 // renderLongRunning renders service / worker / operator (expand.k:440-533,
 // :748-777): a Deployment, the service's Service, the PDB, the PVC, the
 // identity and the ingress NetworkPolicy.
-func (set *workloadSet) renderLongRunning(w *workload, ctx Context) []runtime.Object {
+func (set *workloadSet) renderLongRunning(w *workload, ctx Context) ([]runtime.Object, error) {
 	s := w.spec
 	labels := managedLabels(w.name, ctx.PartOf)
 	selector := map[string]string{LabelName: w.name}
@@ -424,7 +421,11 @@ func (set *workloadSet) renderLongRunning(w *workload, ctx Context) []runtime.Ob
 	}
 	pod := set.podSpec(w, ctx, extraEnv)
 	if pod.TerminationGracePeriodSeconds == nil {
-		pod.TerminationGracePeriodSeconds = new(gracePeriodSeconds(s.Env))
+		grace, err := gracePeriodSeconds(s.Env)
+		if err != nil {
+			return nil, fmt.Errorf("workload %q: %w", w.name, err)
+		}
+		pod.TerminationGracePeriodSeconds = new(grace)
 	}
 	if s.Replicas > 1 {
 		pod.TopologySpreadConstraints = spreadConstraints(w.name)
@@ -527,7 +528,7 @@ func (set *workloadSet) renderLongRunning(w *workload, ctx Context) []runtime.Ob
 	if np := set.ingressPolicy(w, ctx); np != nil {
 		objs = append(objs, np)
 	}
-	return objs
+	return objs, nil
 }
 
 // renderJob renders a STANDALONE one-shot (expand.k:638-744).
@@ -931,27 +932,20 @@ func envLiteral(env []v1alpha1.EnvVar, key, fallback string) string {
 	return v
 }
 
-// durationSeconds ports expand.k:159-163 _duration_seconds: seconds from a
-// plain <int><s|m|h> Go duration literal. Anything else ("1m30s", "500ms")
-// falls back rather than rendering a nonsense number.
-func durationSeconds(raw string, fallback int64) int64 {
-	num, mult := raw, int64(1)
-	switch {
-	case strings.HasSuffix(raw, "s"):
-		num = raw[:len(raw)-1]
-	case strings.HasSuffix(raw, "m"):
-		num, mult = raw[:len(raw)-1], 60
-	case strings.HasSuffix(raw, "h"):
-		num, mult = raw[:len(raw)-1], 3600
-	}
-	if num == "" || strings.Trim(num, "0123456789") != "" {
-		return fallback
-	}
-	n, err := strconv.ParseInt(num, 10, 64)
+// drainSeconds is one drain knob's share of the grace period, in whole
+// seconds rounded up so the grace period never undercuts the server. It reads
+// the value with drainbudget — the reader the server's drain uses too: a Go
+// duration ("30s", "1m30s", "500ms"), unset or zero is the default, negative
+// is none. Anything else (a bare number, an interpolation, a typo) is an
+// error: the server's config loader refuses it at boot, so rendering a grace
+// period for it would ship a pod that crash-loops on a budget nobody got.
+func drainSeconds(raw string, def time.Duration) (int64, error) {
+	d, err := drainbudget.Parse(raw)
 	if err != nil {
-		return fallback
+		return 0, err
 	}
-	return n * mult
+	d = drainbudget.Effective(d, def)
+	return int64((d + time.Second - 1) / time.Second), nil
 }
 
 // gracePeriodSeconds ports expand.k:239-253 _grace_period. On SIGTERM
@@ -960,10 +954,16 @@ func durationSeconds(raw string, fallback int64) int64 {
 // so without this the kubelet SIGKILLs mid-drain on every rollout. Derived
 // from the workload's OWN env, so retuning either knob cannot reintroduce
 // the truncation. No preStop hook: the app owns the drain.
-func gracePeriodSeconds(env []v1alpha1.EnvVar) int64 {
-	pre := durationSeconds(envLiteral(env, "PRE_STOP_DELAY", ""), defaultPreStopDelaySeconds)
-	shutdown := durationSeconds(envLiteral(env, "SHUTDOWN_TIMEOUT", ""), defaultShutdownTimeoutSeconds)
-	return pre + shutdown + graceMarginSeconds
+func gracePeriodSeconds(env []v1alpha1.EnvVar) (int64, error) {
+	pre, err := drainSeconds(envLiteral(env, drainbudget.EnvPreStopDelay, ""), drainbudget.DefaultPreStopDelay)
+	if err != nil {
+		return 0, fmt.Errorf("env %s: %w", drainbudget.EnvPreStopDelay, err)
+	}
+	shutdown, err := drainSeconds(envLiteral(env, drainbudget.EnvShutdownTimeout, ""), drainbudget.DefaultShutdownTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("env %s: %w", drainbudget.EnvShutdownTimeout, err)
+	}
+	return pre + shutdown + graceMarginSeconds, nil
 }
 
 // spreadConstraints ports expand.k:255-266: soft (ScheduleAnyway), because a

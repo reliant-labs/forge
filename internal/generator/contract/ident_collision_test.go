@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // TestGenerate_ParamsNamedLikeBodyIdentifiers is the regression test for a
@@ -33,7 +35,7 @@ func TestGenerate_ParamsNamedLikeBodyIdentifiers(t *testing.T) {
 		t.Fatalf("ParseContract: %v", err)
 	}
 	written, err := WriteObservedDecorator(cf, dir, "Service", "NewServiceWithForgeMiddleware",
-		"forgeMiddlewareService", "identcollision", Options{})
+		"forgeMiddlewareService", "identcollision", nil, Options{})
 	if err != nil || !written {
 		t.Fatalf("WriteObservedDecorator: written=%v err=%v", written, err)
 	}
@@ -51,7 +53,7 @@ func TestGenerate_ParamsNamedLikeBodyIdentifiers(t *testing.T) {
 
 	cmd := exec.Command("go", "test", "./...")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		mock, _ := os.ReadFile(filepath.Join(dir, "mock_gen.go"))
 		decorator, _ := os.ReadFile(filepath.Join(dir, "middleware_gen.go"))

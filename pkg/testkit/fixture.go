@@ -64,7 +64,7 @@ type Fixture struct {
 //	db := app.NewMigratedTestDB(t)
 //	fx := testkit.LoadFixture(t, db, "../../db/fixtures/users.json")
 //	// …exercise a read path that expects len(fx.Tables["users"]) rows…
-func LoadFixture(t *testing.T, db orm.Context, path string) *Fixture {
+func LoadFixture(t testing.TB, db orm.Context, path string) *Fixture {
 	t.Helper()
 	raw, err := os.ReadFile(path)
 	if err != nil {

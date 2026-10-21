@@ -81,9 +81,11 @@ option go_package = "{{.Module}}/gen/config/v1;configv1";
 // config.RegisterApiServerConfigFlags on it), config.LoadApiServerConfig
 // refuses to load from any other command, and the worker's Deployment never
 // carries AUTH_API_KEY. Command configs do not nest (`server`'s config is not
-// `server api`'s), and a root and a command config may not declare the same
-// env var, flag, or top-level field name: the process reads both from one
-// config file, whose keys are flat across them. In KCL,
+// `server api`'s); a config several commands read is a SUBTREE config
+// (`subtrees: [{path: ["daemon"]}, {path: ["open"]}]`), loaded at or below
+// each path. Two configs one process loads may not declare the same env var,
+// flag, or top-level field name: the process reads them from one config
+// file, whose keys are flat across them. In KCL,
 // config_gen.<bin>ProcessEnvMap projects a
 // workload's env from its own `command + args`: the root config plus the
 // matching command config, with config_secrets routed to whichever declares
@@ -132,7 +134,7 @@ message AppConfig {
   string cors_allow_headers = 38 [(forge.v1.config) = {
     env_var: "CORS_ALLOW_HEADERS"
     flag: "cors-allow-headers"
-    description: "Comma-separated request headers a browser client may send cross-origin, ADDED to forge's defaults (Content-Type, Connect-Protocol-Version, Connect-Timeout-Ms, Authorization, Traceparent, Tracestate, X-Request-Id). The CORS preflight is answered before any other middleware runs, so a header the web client attaches that is not listed here makes the browser refuse every RPC. Applies in development too, so dev refuses what production would."
+    description: "Comma-separated request headers a browser client may send cross-origin, ADDED to forge's defaults (Content-Type, Connect-Protocol-Version, Connect-Timeout-Ms, Authorization, Traceparent, Tracestate, X-Request-Id, Forge-Via). The CORS preflight is answered before any other middleware runs, so a header the web client attaches that is not listed here makes the browser refuse every RPC. Applies in development too, so dev refuses what production would."
   }];
 
   string cors_expose_headers = 39 [(forge.v1.config) = {
@@ -163,14 +165,14 @@ message AppConfig {
     env_var: "PRE_STOP_DELAY"
     flag: "pre-stop-delay"
     default_value: "5s"
-    description: "Duration to wait after flipping readiness to false before beginning HTTP shutdown. Gives load balancers time to observe the failing probe and stop routing new traffic (Go duration)."
+    description: "Duration to wait after flipping readiness to false before beginning HTTP shutdown. Gives load balancers time to observe the failing probe and stop routing new traffic (Go duration; 0 is the default, negative is no pause)."
   }];
 
   google.protobuf.Duration shutdown_timeout = 19 [(forge.v1.config) = {
     env_var: "SHUTDOWN_TIMEOUT"
     flag: "shutdown-timeout"
     default_value: "30s"
-    description: "Maximum time to wait for in-flight requests and workers to drain during graceful shutdown (Go duration)."
+    description: "Maximum time to wait for in-flight requests and workers to drain during graceful shutdown (Go duration; 0 is the default, negative is no window)."
   }];
 
   string log_format = 20 [(forge.v1.config) = {
@@ -295,6 +297,25 @@ message AppConfig {
     flag: "security-headers-enabled"
     default_value: "true"
     description: "Set OWASP security response headers (CSP, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, HSTS in production). Disable only if a dedicated edge proxy already sets them."
+  }];
+
+  // The probe paths, on the server port. The deploy reads these same values:
+  // forge's KCL lowering writes a forge-built workload's default probe from
+  // LIVENESS_PATHS / READINESS_PATHS (the first path of each), so the pod is
+  // probed where the process answers. Keep this pair in step with the same
+  // fields in internal/codegen/config_gen.go.
+  string liveness_paths = 46 [(forge.v1.config) = {
+    env_var: "LIVENESS_PATHS"
+    flag: "liveness-paths"
+    default_value: "/healthz"
+    description: "Comma-separated paths the liveness probe answers on (200 while the process runs). The first is the one the deploy probes; the rest are aliases, for a platform that probes a fixed path (/health)."
+  }];
+
+  string readiness_paths = 47 [(forge.v1.config) = {
+    env_var: "READINESS_PATHS"
+    flag: "readiness-paths"
+    default_value: "/readyz"
+    description: "Comma-separated paths the readiness probe answers on (503 while booting, draining, or a dependency is down). The first is the one the deploy probes; the rest are aliases (/ready)."
   }];
 
   string otlp_endpoint = 21 [(forge.v1.config) = {

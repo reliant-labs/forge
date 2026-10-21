@@ -184,6 +184,9 @@ type txState struct {
 	// never be handed a statement meant for database B.
 	db *sql.DB
 	tx bun.Tx
+	// conn is tx as the connection bun runs this transaction's statements
+	// on, their values bound (bind_conn.go).
+	conn *bindConn
 
 	// outer is the context RunTx/BeginTx was called with — the caller's
 	// context, without this transaction in it. After-commit callbacks
@@ -275,12 +278,164 @@ func ambientTx(ctx context.Context, db *sql.DB) *txState {
 //
 // Returns ErrNoTransaction when ctx carries no active transaction.
 func AfterCommit(ctx context.Context, fn func(context.Context)) error {
-	st, _ := ctx.Value(innermostTxKey{}).(*txState)
+	st := innermostTx(ctx)
 	if !st.active() {
 		return ErrNoTransaction
 	}
 	st.addAfterCommit(fn)
 	return nil
+}
+
+// InTx reports whether ctx carries an active transaction — one opened by
+// RunTx (or joined through Tx.RunTx) whose attempt has not yet committed or
+// rolled back. A ctx captured inside RunTx and used after it returned
+// reports false, exactly as its queries then run on the pool.
+//
+// It answers for the innermost transaction, whatever its database — the
+// same one AfterCommit attaches to. Use it where code must behave
+// differently inside a caller's transaction: refuse to take a lock that
+// needs its own transaction (BeginDetached would run on a SECOND
+// connection, and a row the caller's transaction holds would deadlock it
+// against itself), or decide whether a side effect has to be deferred.
+func InTx(ctx context.Context) bool {
+	return innermostTx(ctx).active()
+}
+
+// ─── Detached: one statement outside the caller's transaction ─────────────
+
+// Detached returns a ctx whose ORM and database/sql calls run on the POOL,
+// outside any transaction ctx carries — on every database. It keeps ctx's
+// deadline, cancellation and values; it only hides the transactions.
+//
+//	// The ledger row commits on its own: it records the attempt even when
+//	// the caller's transaction rolls back.
+//	err := db.CreateLedgerEntry(orm.Detached(ctx), s.deps.DB, entry)
+//
+// Every resolution the carried transaction drives honours it: generated
+// delegates, pkg/crud, db.Bun() builders and its ExecContext/QueryContext,
+// the raw Exec/Query/QueryRow passthroughs, SQLConn and DBTX, InTx (false),
+// Client.InTx (false) and AfterCommit (ErrNoTransaction). Each statement is
+// its own autocommit transaction on a pooled connection. RunTx with the
+// detached ctx opens a NEW transaction, which the ctx it hands fn carries as
+// usual, so a detached multi-statement write is
+// `client.RunTx(orm.Detached(ctx), fn)`.
+//
+// It is the statement-sized sibling of BeginDetached: the same "never joins"
+// rule, without a transaction for the caller to end. An explicit handle is
+// not affected — a statement run on a *Tx (tx.Bun(), tx.Exec) is that
+// transaction's whatever ctx it is given.
+//
+// # When to use it
+//
+// For a write that must survive the caller's rollback: an audit record, a
+// write or idempotency ledger, an attempt counter, a failure log. Those are
+// facts about the attempt, and the attempt happened whether or not its work
+// commits.
+//
+// # When not to
+//
+//   - Anything that must roll back with the caller. A detached write is
+//     committed before the caller's transaction ends, and stays committed if
+//     it rolls back or RunTx retries it — so under RunTx it runs once PER
+//     ATTEMPT. Make it idempotent, or record it with AfterCommit if it should
+//     exist only when the work committed.
+//   - Reading the caller's uncommitted writes. A detached read sees only
+//     committed rows.
+//   - Touching a row the caller's transaction has written or locked. The
+//     detached statement runs on a second connection and waits for the
+//     caller's lock, while the caller waits for it to return: a deadlock
+//     postgres cannot see. The same holds when the pool has no connection
+//     to spare — a pool of one deadlocks on the first detached call inside
+//     a transaction.
+func Detached(ctx context.Context) context.Context {
+	return detachedCtx{ctx}
+}
+
+// detachedCtx hides every transaction its parent carries. Transactions
+// opened under it are added above it with withTx and found as usual.
+type detachedCtx struct{ context.Context }
+
+func (d detachedCtx) Value(key any) any {
+	switch key.(type) {
+	case txKey, innermostTxKey:
+		return nil
+	}
+	return d.Context.Value(key)
+}
+
+// innermostTx returns the most recently opened transaction ctx carries,
+// active or not, or nil.
+func innermostTx(ctx context.Context) *txState {
+	if ctx == nil {
+		return nil
+	}
+	st, _ := ctx.Value(innermostTxKey{}).(*txState)
+	return st
+}
+
+// ─── BeginDetached: a transaction that outlives one call ────────────────────
+
+// BeginDetached opens a transaction that the CALLER owns and ends: it stays
+// open across function returns until Commit or Rollback, which is what a
+// closure-scoped RunTx cannot express. The canonical use is a
+// transaction-scoped lock held for the length of a unit of work whose shape
+// is not a single closure:
+//
+//	func LockRun(ctx context.Context, db orm.Context, key int64) (release func(), err error) {
+//	    if orm.InTx(ctx) {
+//	        return nil, errors.New("LockRun needs its own transaction; call it outside RunTx")
+//	    }
+//	    tx, err := db.BeginDetached(ctx, orm.TxOptions{Isolation: orm.IsolationReadCommitted})
+//	    if err != nil {
+//	        return nil, err
+//	    }
+//	    if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", key); err != nil {
+//	        _ = tx.Rollback()
+//	        return nil, err
+//	    }
+//	    return func() { _ = tx.Rollback() }, nil // releasing the lock = ending the tx
+//	}
+//
+// It is "detached" because it never joins the transaction ctx carries: it
+// always begins a NEW one on its own pooled connection, at opts' isolation
+// (READ ONLY, and DEFERRABLE under SERIALIZABLE, when opts.ReadOnly).
+// Inside a caller's RunTx that is a second, independent transaction — its
+// commit survives the caller's rollback, and it blocks on any row the
+// caller's transaction has locked. Check InTx first when that is not what
+// you mean. For a statement (or a closure) that only needs to run outside
+// the caller's transaction, with no transaction of its own to hold open,
+// use Detached(ctx) instead.
+//
+// What the caller takes on, compared with RunTx:
+//
+//   - Ending it. Every path must Commit or Rollback; a leaked transaction
+//     pins a pooled connection and its locks until ctx ends. Rollback after
+//     Commit is a harmless sql.ErrTxDone, so `defer tx.Rollback()` is safe.
+//   - Its lifetime is bounded by ctx. database/sql rolls the transaction
+//     back when ctx is cancelled, which is usually the right release for a
+//     request-scoped lock. Pass context.WithoutCancel(ctx) to outlive it.
+//   - No retry. opts.MaxAttempts is ignored: a serialization failure is
+//     returned to the caller, who decides whether to run the unit again.
+//
+// Statements run through the returned *Tx (its Exec/Query/QueryRow and
+// Bun()); tx.RunTx(ctx, fn) hands fn a ctx that carries it, so generated
+// stores and pkg/crud join it like any RunTx. AfterCommit callbacks
+// registered in that ctx run on Commit.
+func (c *Client) BeginDetached(ctx context.Context, opts TxOptions) (*Tx, error) {
+	tx, err := c.beginTx(ctx, opts.Isolation.sqlLevel(), opts.ReadOnly)
+	if err != nil {
+		return nil, NewTransactionError("begin", err)
+	}
+	return tx, nil
+}
+
+// BeginDetached on a *Tx opens a NEW transaction on the same database, not
+// a nested one: see Client.BeginDetached. It never joins t.
+func (t *Tx) BeginDetached(ctx context.Context, opts TxOptions) (*Tx, error) {
+	if t.client == nil {
+		return nil, NewTransactionError("begin", errors.New("orm: Tx has no originating Client"))
+	}
+	return t.client.BeginDetached(ctx, opts)
 }
 
 // ─── RunTx on *Client ─────────────────────────────────────────────────────
@@ -466,16 +621,22 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 //
 // A query built off an explicit *Tx handle (tx.Bun()) never reaches here:
 // bun pins its connection, so an explicit handle always wins.
-type ambientResolver struct{ db *sql.DB }
-
-func (r ambientResolver) ResolveConn(ctx context.Context, _ bun.Query) bun.IConn {
-	if st := ambientTx(ctx, r.db); st != nil {
-		return st.tx.Tx
-	}
-	return nil
+//
+// What it resolves is a bindConn — the transaction's, or the pool's — which
+// sends the statement with its values bound (bind_conn.go).
+type ambientResolver struct {
+	db   *sql.DB
+	pool *bindConn
 }
 
-func (ambientResolver) Close() error { return nil }
+func (r *ambientResolver) ResolveConn(ctx context.Context, _ bun.Query) bun.IConn {
+	if st := ambientTx(ctx, r.db); st != nil && st.conn != nil {
+		return st.conn
+	}
+	return r.pool
+}
+
+func (*ambientResolver) Close() error { return nil }
 
 // ambientDB is the bun.IDB Client.Bun() returns: the *bun.DB, with its three
 // direct-execution methods made transaction-aware.

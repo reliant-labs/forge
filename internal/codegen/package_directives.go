@@ -105,8 +105,7 @@ const (
 // PACKAGE-level observability markers, returning them in one AST walk:
 //
 //   - hasConstructorMarker: `// forge:constructor` on the constructor's doc
-//     (any name — see IsComponentConstructor) — the
-//     opt-in signal for the generated decorator.
+//     (any name — see IsComponentConstructor).
 //   - hasNoObserve: `// forge:no-observe` on the constructor's doc, the package
 //     doc comment, or the contract interface's doc — the package-level opt-out.
 //
@@ -174,8 +173,7 @@ func observePackageDecision(dir string) (hasConstructorMarker, hasNoObserve bool
 }
 
 // HasConstructorMarker reports whether the package rooted at dir carries the
-// `// forge:constructor` marker on its `func New` doc comment — the opt-in
-// signal for the generated observability decorator.
+// `// forge:constructor` marker on its constructor's doc comment.
 func HasConstructorMarker(dir string) bool {
 	m, _ := observePackageDecision(dir)
 	return m
@@ -403,9 +401,22 @@ func findReasonedDirective(dir, directive string) (ReasonedMarker, bool) {
 // directive in dir's non-test, non-generated files, in file-name then line
 // order.
 func findReasonedDirectives(dir, directive string) []ReasonedMarker {
+	var out []ReasonedMarker
+	forEachPackageComment(dir, func(path string, line int, raw string) {
+		if reason, ok := parseReasonedDirective(raw, directive); ok {
+			out = append(out, ReasonedMarker{File: path, Line: line, Reason: reason})
+		}
+	})
+	return out
+}
+
+// forEachPackageComment calls fn for every comment in dir's non-test,
+// non-generated .go files, in file-name then position order. Unparseable
+// files are skipped: a directive is read best-effort.
+func forEachPackageComment(dir string, fn func(path string, line int, raw string)) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		return
 	}
 	var names []string
 	for _, e := range entries {
@@ -418,7 +429,6 @@ func findReasonedDirectives(dir, directive string) []ReasonedMarker {
 	}
 	sort.Strings(names)
 
-	var out []ReasonedMarker
 	fset := token.NewFileSet()
 	for _, n := range names {
 		path := filepath.Join(dir, n)
@@ -428,15 +438,10 @@ func findReasonedDirectives(dir, directive string) []ReasonedMarker {
 		}
 		for _, cg := range file.Comments {
 			for _, c := range cg.List {
-				reason, ok := parseReasonedDirective(c.Text, directive)
-				if !ok {
-					continue
-				}
-				out = append(out, ReasonedMarker{File: path, Line: fset.Position(c.Pos()).Line, Reason: reason})
+				fn(path, fset.Position(c.Pos()).Line, c.Text)
 			}
 		}
 	}
-	return out
 }
 
 // ParseExcludeContractComment reports whether one raw comment IS the
@@ -447,7 +452,10 @@ func findReasonedDirectives(dir, directive string) []ReasonedMarker {
 //
 // Anything else — prose that mentions the directive, `forge:exclude-contract,
 // forge:outbound-io, …` lists, a different separator — is not the directive,
-// matching every other forge marker's whole-line rule.
+// matching every other forge marker's whole-line rule. A different separator
+// is not silent, though: `//forge:exclude-contract — <why>` is what
+// ClassifyGoMarkerComment calls GoMarkerMalformed, and `forge lint` reports it
+// with its file:line and this form (go_markers.go).
 func ParseExcludeContractComment(raw string) (reason string, ok bool) {
 	return parseReasonedDirective(raw, directiveExcludeContract)
 }
@@ -469,11 +477,9 @@ func parseReasonedDirective(raw, directive string) (reason string, ok bool) {
 // HasOutboundIODirective reports whether the package rooted at dir declares
 // `//forge:outbound-io` in any of its non-test .go files — the marker the
 // adapter scaffold stamps on contract.go. It asserts one property: this
-// package calls OUT to a third-party system and nothing calls in. Two
-// mechanisms read it — the outbound-io-no-rpc contract check (an inbound
-// handler contradicts the claim) and the enforce-component-observe lint's
-// I/O heuristic (an outbound boundary does I/O by definition, so a component
-// depending on one touches I/O).
+// package calls OUT to a third-party system and nothing calls in. The
+// outbound-io-no-rpc contract check reads it (an inbound handler contradicts
+// the claim).
 func HasOutboundIODirective(dir string) bool {
 	return packageHasDirective(dir, "forge:outbound-io")
 }

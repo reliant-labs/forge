@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // fakeGit answers the git calls ComputeAffected makes.
@@ -199,7 +201,7 @@ func TestComputeAffected_RealModule(t *testing.T) {
 	git(t, root, "update-ref", "refs/remotes/origin/main", "HEAD")
 	git(t, root, "checkout", "-q", "-b", "feature")
 	write(t, root, "a/a.go", "package a\n\nfunc A() int { return 2 }\n")
-	env := append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+	env := goexec.WithTrimpath(append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod"))
 	a := ComputeAffected(context.Background(), AffectedInput{Root: root, Env: env})
 	if a.Full {
 		t.Fatalf("full suite: %s", a.Reason)
@@ -209,5 +211,35 @@ func TestComputeAffected_RealModule(t *testing.T) {
 	}
 	if !strings.Contains(a.Line(), "2 of 3 test packages") {
 		t.Errorf("Line = %q", a.Line())
+	}
+}
+
+// A project reached through a symlink (macOS's /var → /private/var under
+// t.TempDir, or a symlinked checkout) gets its package dirs back from go list
+// symlink-resolved. They are still the module's own packages: a changed .go
+// file must map to its package, not force the full suite.
+func TestReadPackageGraph_SymlinkedRoot(t *testing.T) {
+	real := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(real, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	realDir, err := filepath.EvalSymlinks(filepath.Join(real, "a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkgs, err := json.Marshal(listedPackage{ImportPath: "ex.com/m/a", Name: "a", Dir: realDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := readPackageGraph(strings.NewReader(string(pkgs)), link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg, ok := g.owner("a/a.go"); !ok || pkg != "ex.com/m/a" {
+		t.Fatalf("owner(a/a.go) = %q, %v; want ex.com/m/a under a symlinked root", pkg, ok)
 	}
 }

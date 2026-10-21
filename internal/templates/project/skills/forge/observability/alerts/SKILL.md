@@ -77,7 +77,10 @@ The expr check is syntactic. The evaluator re-checks it and runs it read-only wi
 | `error-rate` | `ServiceErrorRateHigh` (critical, 5m) | rpc metrics | server errors / requests > 5% over 5m, per service, at least 20 requests; `user` and `canceled` errors excluded | `enabled = False` |
 | `p95-latency` | `ServiceLatencyP95High` (warning, 10m) | rpc metrics | p95 of `rpc.server.duration` > 1s over 5m, per service, at least 20 requests | same |
 | `service-silent` | `ServiceSilent` (warning) | rpc metrics | no request for 10m by a service that served requests in at least 18 of the previous 24 hours | same |
-| `frontend-js-errors` | `FrontendJSErrorSpike` (warning, 10m) | browser spans | JS error spans in the last 10m > 3x the rate of the 60m before, at least 10 | same |
+| `frontend-js-errors` | `FrontendJSErrorSpike` (warning, 10m) | browser spans | JS error spans in the last 10m > 3x the rate of the 60m before, at least 10; fetch/XHR failures and string-only `console.error("text")` (no exception event) are not counted | same |
+| `frontend-lcp-poor` | `FrontendLCPPoor` (info, 10m) | browser spans | p75 of `webvitals` LCP over 30m > 4000 ms, at least 100 measurements | same |
+| `frontend-new-issue` | `FrontendNewIssue` (warning) | **platform** | the control plane saw a frontend issue born NEW reach 5 or more events or 3 or more sessions within 30m (the thresholds are the control plane's, not tunable params) | same |
+| `frontend-issue-regressed` | `FrontendIssueRegressed` (warning) | **platform** | a resolved frontend issue came back in a later release | same |
 | `crash-loop` | `WorkloadCrashLooping` (critical) | customer metadata | a container's `k8s.container.restarts` grew by at least 3 in 10m, **or** a `CrashLoopBackOff` / "restarting failed container" `BackOff` event in 10m | same, or `signals.metadata = False` |
 | `oom-killed` | `WorkloadOOMKilled` (critical) | customer metadata | a container restarted in the last 10m and `k8s.container.last_terminated_reason` is `OOMKilled`, **or** an `OOMKilling` event | same |
 | `memory-near-limit` | `WorkloadMemoryNearLimit` (warning, 10m) | customer metadata | `k8s.container.memory_limit_utilization` averaged over 5m > 0.9, per container | same |

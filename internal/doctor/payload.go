@@ -171,6 +171,9 @@ func CheckPayloadLimits(_ context.Context, env *Environment) CheckResult {
 		assigned := assignedFields(file)
 		normalized := normalizedReceivers(file)
 		mounting = append(mounting, connectHandlerEvidence(file, fset, rel)...)
+		chainUses, chainProblems := chainCapUses(file, fset, rel)
+		uses = append(uses, chainUses...)
+		problems = append(problems, chainProblems...)
 
 		ast.Inspect(file, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
@@ -278,6 +281,70 @@ func CheckPayloadLimits(_ context.Context, env *Environment) CheckResult {
 		Message:  fmt.Sprintf("%d Connect payload cap(s) set to a non-zero value", len(uses)),
 		Evidence: strings.Join(set, "\n"),
 	}
+}
+
+// serverkitPath is the import path of forge's serverkit, whose NewChain
+// builds the handler options — caps included — from a ChainDeps.
+const serverkitPath = "github.com/reliant-labs/forge/pkg/serverkit"
+
+// chainCapUses reports the payload caps of every serverkit.NewChain call in
+// file. NewChain applies the caps itself and maps a zero (an unset field, or a
+// config value that reads zero) to its 4 MiB default, so a chain is capped
+// unless a cap is a NEGATIVE literal — NewChain's spelling of "no cap".
+func chainCapUses(file *ast.File, fset *token.FileSet, rel string) (uses []capUse, problems []string) {
+	name := ""
+	for _, imp := range file.Imports {
+		if p, err := strconv.Unquote(imp.Path.Value); err == nil && p == serverkitPath {
+			name = pathpkg.Base(p)
+			if imp.Name != nil {
+				name = imp.Name.Name
+			}
+		}
+	}
+	if name == "" || name == "_" {
+		return nil, nil
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Args) != 1 {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "NewChain" {
+			return true
+		}
+		if pkg, ok := sel.X.(*ast.Ident); !ok || pkg.Name != name {
+			return true
+		}
+		fields := map[string]ast.Expr{}
+		if lit, ok := call.Args[0].(*ast.CompositeLit); ok {
+			for _, elt := range lit.Elts {
+				if kv, ok := elt.(*ast.KeyValueExpr); ok {
+					if key, ok := kv.Key.(*ast.Ident); ok {
+						fields[key.Name] = kv.Value
+					}
+				}
+			}
+		}
+		line := fset.Position(call.Pos()).Line
+		for _, f := range []struct{ field, kind string }{
+			{"ReadMaxBytes", "inbound request"},
+			{"SendMaxBytes", "outbound response"},
+		} {
+			use := capUse{file: rel, line: line, option: "NewChain." + f.field, arg: "default 4 MiB"}
+			if v, set := fields[f.field]; set {
+				use.arg = exprString(v)
+				if u, neg := v.(*ast.UnaryExpr); neg && u.Op == token.SUB {
+					problems = append(problems, fmt.Sprintf(
+						"%s:%d: serverkit.ChainDeps{%s: %s} — a negative cap is UNLIMITED %s payloads",
+						rel, line, f.field, use.arg, f.kind))
+				}
+			}
+			uses = append(uses, use)
+		}
+		return true
+	})
+	return uses, problems
 }
 
 // assignedFields collects every struct-field name the file assigns —
@@ -570,6 +637,8 @@ func exprString(e ast.Expr) string {
 		return exprString(node.X) + " " + node.Op.String() + " " + exprString(node.Y)
 	case *ast.ParenExpr:
 		return "(" + exprString(node.X) + ")"
+	case *ast.UnaryExpr:
+		return node.Op.String() + exprString(node.X)
 	default:
 		return strconv.Quote(fmt.Sprintf("%T", e))
 	}

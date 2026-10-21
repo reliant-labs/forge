@@ -66,6 +66,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/reliant-labs/forge/pkg/auth"
+	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/orm"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
@@ -93,7 +94,7 @@ func DiscardLogger() *slog.Logger {
 // rows. The first call in a process boots the shared server (downloading
 // the postgres binary on a fresh machine, or connecting to
 // FORGE_TEST_POSTGRES_URL); subsequent calls only CREATE DATABASE.
-func NewPostgresDB(t *testing.T) orm.Context {
+func NewPostgresDB(t testing.TB) orm.Context {
 	t.Helper()
 	db, cleanup, err := pgtest.New()
 	if err != nil {
@@ -130,7 +131,7 @@ func NewPostgresDB(t *testing.T) orm.Context {
 // production runs — so there is no portability subset to honor. A
 // migration that postgres rejects fails loudly here (t.Fatalf names the
 // file).
-func NewMigratedPostgresDB(t *testing.T, migrations fs.FS) orm.Context {
+func NewMigratedPostgresDB(t testing.TB, migrations fs.FS) orm.Context {
 	t.Helper()
 	key, err := migrationsKey(migrations)
 	if err != nil {
@@ -336,7 +337,8 @@ func NewConnectClient[C any](
 ) (*httptest.Server, C) {
 	t.Helper()
 	srv := NewTestServer(t, func(mux *http.ServeMux) { register(mux, handlerOpts...) })
-	return srv, newClient(http.DefaultClient, srv.URL)
+	// Traced, so a test's own span is the parent of the server's.
+	return srv, newClient(observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: -1}), srv.URL)
 }
 
 // ServerPrincipal returns a handler option that installs a test principal in

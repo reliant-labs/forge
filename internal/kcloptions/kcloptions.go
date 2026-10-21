@@ -74,6 +74,11 @@ var Reserved = map[string]string{
 	// is not a static export; this is how it knows. A caller-supplied value
 	// would let a server build through the refusal.
 	"frontend_outputs": "each frontend's production build shape — read from each frontend's next.config",
+	// An immutable release render binds both from the release snapshot
+	// (kclrender.WithSnapshot / SnapshotDArgs). A caller-supplied pin map
+	// would deploy images the release never recorded.
+	"forge_workload_image_digests": "each workload's per-slot image references — bound from the release snapshot",
+	"forge_immutable_release":      "refuses any unpinned workload image — bound when rendering a release snapshot",
 }
 
 // Option is one render option a project's KCL declares. Type/Default/Help are

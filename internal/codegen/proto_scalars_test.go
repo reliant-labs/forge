@@ -176,14 +176,12 @@ func TestCanonicalGoType_IsTotalOverTheCanonicalVocabulary(t *testing.T) {
 // TestCanonicalGoType_RefusesNonCanonicalTypes pins that the projection
 // reports rather than answers for a type outside the vocabulary.
 //
-// "int32" is in this list deliberately. It is the spelling that reached
-// this projection from internal/generator's planFieldGoType while the
-// total-signature entry point existed: the call got `string` back and an
-// int32 plan field was declared as a Go string, with nothing anywhere
-// reporting it. That entry point is gone and planFieldGoType branches on
-// `ok`, so the refusal below is what that call site now depends on.
+// "int32" and "int16" are NOT in this list: they are the width-refined
+// integer plan types (GoIntType) an `integer` / `smallint` column carries.
+// "uint64" is the shape of the defect this guards — the spelling that once
+// reached this projection and was declared as a Go string in silence.
 func TestCanonicalGoType_RefusesNonCanonicalTypes(t *testing.T) {
-	for _, notCanonical := range []string{"int32", "uint64", "float", "double", "money", ""} {
+	for _, notCanonical := range []string{"uint64", "float", "double", "money", ""} {
 		if _, ok := CanonicalGoTypeOK(notCanonical, false); ok {
 			t.Errorf("CanonicalGoTypeOK(%q) claimed a mapping; %q is not a canonical "+
 				"schema type", notCanonical, notCanonical)

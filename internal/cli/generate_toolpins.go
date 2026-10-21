@@ -178,18 +178,46 @@ func pinCodegenTools(ctx context.Context, projectDir string) (*codegenTools, err
 	return res, nil
 }
 
+// installPinnedTool installs t@version into dir, atomically: `go install`
+// writes into a private temp dir beside it, and the finished binary is
+// renamed into place. Parallel forge processes pin the same tool into the
+// same cache dir (every fresh project's first generate does), and `go
+// install` straight into dir let one process read a binary another was still
+// writing: `go version -m` failed on the half-written file, the pin reported
+// "installed binary reports unknown", and the project's bootstrap generate
+// failed (TestE2EFixtureCorpusKalshiShaped, TestE2EOneCommandPerRoot in CI).
 func installPinnedTool(ctx context.Context, t protoTool, version, dir, have string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return pinError(t, version, have, err)
 	}
+	tmp, err := os.MkdirTemp(dir, ".install-")
+	if err != nil {
+		return pinError(t, version, have, err)
+	}
+	defer func() { _ = os.RemoveAll(tmp) }()
 	spec := t.Module + "@" + version
+	if err := goInstallPinned(ctx, spec, tmp); err != nil {
+		return pinError(t, version, have, fmt.Errorf("go install %s: %w", spec, err))
+	}
+	name := t.Binary + exeSuffix()
+	if err := os.Rename(filepath.Join(tmp, name), filepath.Join(dir, name)); err != nil {
+		// Another process published the same version first: same bytes.
+		if st, serr := os.Stat(filepath.Join(dir, name)); serr != nil || st.IsDir() {
+			return pinError(t, version, have, err)
+		}
+	}
+	return nil
+}
+
+// goInstallPinned runs `go install spec` with GOBIN=gobin. A seam for tests.
+var goInstallPinned = func(ctx context.Context, spec, gobin string) error {
 	cmd := goexec.Graceful(exec.CommandContext(ctx, "go", "install", spec))
-	cmd.Dir = dir
+	cmd.Dir = gobin
 	// GOWORK=off: `go install pkg@version` must not be bent by a go.work
 	// found above the cache dir.
-	cmd.Env = goexec.Env("GOBIN="+dir, "GOWORK=off")
+	cmd.Env = goexec.Env("GOBIN="+gobin, "GOWORK=off")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return pinError(t, version, have, fmt.Errorf("go install %s: %w\n%s", spec, err, strings.TrimSpace(string(out))))
+		return fmt.Errorf("%w\n%s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

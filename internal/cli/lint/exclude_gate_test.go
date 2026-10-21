@@ -128,6 +128,91 @@ type Getter interface{ Get(key string) string }
 
 func Lookup(g Getter, k string) string { return g.Get(k) }
 `,
+		// The reliant accountlimits shape: a seam declared where it is
+		// consumed (the Fetcher's Tokens field), with an in-package default
+		// AND a second implementation elsewhere. Two implementations, one
+		// in-package — but a seam the package NEEDS is not a contract it
+		// offers, so its exclusion stands.
+		"internal/tokens/tokens.go": `// Package tokens polls usage with a caller-supplied token source.
+//
+//forge:exclude-contract: a background poller; callers supply the token source
+package tokens
+
+import "context"
+
+type TokenSource interface {
+	AccessToken(ctx context.Context, accountID string) (string, error)
+}
+
+type StoredTokens struct{}
+
+func (StoredTokens) AccessToken(context.Context, string) (string, error) { return "stored", nil }
+
+type Fetcher struct{ Tokens TokenSource }
+
+func (f *Fetcher) Fetch(ctx context.Context, id string) (string, error) {
+	return f.Tokens.AccessToken(ctx, id)
+}
+`,
+		"internal/refresher/refresher.go": `package refresher
+
+import "context"
+
+type RefreshingTokens struct{}
+
+func (RefreshingTokens) AccessToken(context.Context, string) (string, error) { return "fresh", nil }
+`,
+		// A consumer-declared seam implemented by two OTHER packages and
+		// none here: the house rule in its plainest form.
+		"internal/poller/poller.go": `// Package poller runs on a caller-supplied clock.
+//
+//forge:exclude-contract: a background loop over a caller-supplied clock
+package poller
+
+import "time"
+
+type Clock interface{ Now() time.Time }
+
+type Poller struct{ Clock Clock }
+
+func (p *Poller) Due(at time.Time) bool { return !p.Clock.Now().Before(at) }
+`,
+		"internal/realclock/real.go": `package realclock
+
+import "time"
+
+type Real struct{}
+
+func (Real) Now() time.Time { return time.Now() }
+`,
+		"internal/fixedclock/fixed.go": `package fixedclock
+
+import "time"
+
+type Fixed struct{ At time.Time }
+
+func (f Fixed) Now() time.Time { return f.At }
+`,
+		// A PROVIDER whose own decorator holds the interface and whose
+		// constructor takes and returns it: neither is consumption, so the
+		// two-implementation interface is still the contract and refused.
+		"internal/decorated/decorated.go": `// Package decorated provides a store and its logging decorator.
+//
+//forge:exclude-contract: simple
+package decorated
+
+type Store interface{ Get(key string) string }
+
+type Memory struct{}
+
+func (Memory) Get(string) string { return "" }
+
+type logging struct{ next Store }
+
+func (l logging) Get(k string) string { return l.next.Get(k) }
+
+func WithLogging(s Store) Store { return logging{next: s} }
+`,
 		// A strategy registry: multi-impl by design, exempt.
 		"internal/algos/algos.go": `// Package algos is a strategy registry.
 //
@@ -473,6 +558,27 @@ func TestExcludeGate(t *testing.T) {
 			t.Errorf("an allowance for one rule must not silence the other: %v", rulesOf(ds))
 		}
 	})
+}
+
+// A seam a package declares where it CONSUMES it is not that package's
+// contract, even when the package ships one implementation and another
+// package a second. Red before: reliant's accountlimits was refused for
+// TokenSource (its Fetcher's dependency, implemented by an in-package
+// default and by llm/drivers) and told to move it into a contract.go.
+func TestExcludeGate_ConsumerSeamIsNotTheContract(t *testing.T) {
+	byPkg := excludeGateDiags(t)
+
+	for _, pkg := range []string{"tokens", "poller"} {
+		if ds := byPkg[pkg]; len(ds) != 0 {
+			t.Errorf("%s: a consumer-declared seam was refused as the package's contract: %v", pkg, ds)
+		}
+	}
+	// A provider's decorator field and constructor parameter are its own
+	// shapes, not consumption: the gate still refuses it.
+	ds := byPkg["decorated"]
+	if !hasRule(ds, "forge-exclude-contract-multi-impl") {
+		t.Fatalf("a provider with a decorator escaped the multi-impl refusal: %v", rulesOf(ds))
+	}
 }
 
 // A dial whose target is statically loopback is not outbound I/O; a dial

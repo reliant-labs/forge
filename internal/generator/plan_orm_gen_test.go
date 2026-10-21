@@ -28,7 +28,7 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("GeneratePlanORM() error = %v", err)
 	}
 
@@ -63,7 +63,7 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 	// Struct fields are gofmt-aligned; collapse whitespace before matching
 	// the field declaration (name + Go type + bun tag).
 	collapsedStruct := strings.Join(strings.Fields(code), " ")
-	if !strings.Contains(collapsedStruct, "Id string `bun:\"id,pk\"`") {
+	if !strings.Contains(collapsedStruct, "ID string `bun:\"id,pk\"`") {
 		t.Error("Project struct should carry a bun-tagged string Id (pk) field")
 	}
 	if !strings.Contains(strings.Join(strings.Fields(code), " "), "Description *string") {
@@ -236,11 +236,11 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 	// Field constants (gofmt aligns the `=`, so collapse whitespace before
 	// matching the const declaration).
 	collapsed := strings.Join(strings.Fields(code), " ")
-	if !strings.Contains(collapsed, `ProjectFieldId = "id"`) {
-		t.Error("missing field constant for Id")
+	if !strings.Contains(collapsed, `ProjectFieldID = "id"`) {
+		t.Error("missing field constant for ID")
 	}
-	if !strings.Contains(collapsed, `ProjectFieldOrgId = "org_id"`) {
-		t.Error("missing field constant for OrgId")
+	if !strings.Contains(collapsed, `ProjectFieldOrgID = "org_id"`) {
+		t.Error("missing field constant for OrgID")
 	}
 }
 
@@ -257,7 +257,7 @@ func TestGeneratePlanORM_Minimal(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -357,7 +357,7 @@ func TestGeneratePlanORM_SoftDeleteOnly(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -421,7 +421,7 @@ func TestGeneratePlanORM_TableNameOverride(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -471,7 +471,7 @@ func TestGeneratePlanORM_FieldTypes(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -525,9 +525,9 @@ func TestGeneratePlanORM_FieldTypes(t *testing.T) {
 		t.Error("Bun scans directly; should not emit a scanRecord function")
 	}
 
-	// "json" maps to Go string on the struct; NOT NULL projects ,notnull.
-	if !strings.Contains(collapsedStruct, "Meta string `bun:\"meta,notnull\"`") {
-		t.Error("json NOT NULL column should be a string struct field tagged ,notnull")
+	// "json" maps to json.RawMessage on the struct; NOT NULL projects ,notnull.
+	if !strings.Contains(collapsedStruct, "Meta json.RawMessage `bun:\"meta,notnull\"`") {
+		t.Error("json NOT NULL column should be a json.RawMessage struct field tagged ,notnull")
 	}
 
 	// Array columns are native slices tagged ,array so Bun maps them to
@@ -573,7 +573,7 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -643,7 +643,7 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 func TestGeneratePlanORM_Empty(t *testing.T) {
 	root := t.TempDir()
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", nil, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, nil, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -667,7 +667,7 @@ func TestGeneratePlanORM_MultipleEntities(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -692,7 +692,7 @@ func TestGeneratePlanORM_References(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -729,7 +729,7 @@ func TestGeneratePlanORM_NoSoftDelete(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -784,7 +784,7 @@ func TestGeneratePlanORM_AutoIDWhenNoPK(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -796,7 +796,7 @@ func TestGeneratePlanORM_AutoIDWhenNoPK(t *testing.T) {
 
 	// id should be in field constants (gofmt aligns the `=`).
 	collapsed := strings.Join(strings.Fields(code), " ")
-	if !strings.Contains(collapsed, `WidgetFieldId = "id"`) {
+	if !strings.Contains(collapsed, `WidgetFieldID = "id"`) {
 		t.Error("missing auto-generated id field constant")
 	}
 
@@ -816,7 +816,7 @@ func TestGeneratePlanORM_AutoIDWhenNoPK(t *testing.T) {
 	}
 
 	// The struct carries the id field with a bun pk tag so Bun scans it.
-	if !strings.Contains(strings.Join(strings.Fields(code), " "), "Id string `bun:\"id,pk\"`") {
+	if !strings.Contains(strings.Join(strings.Fields(code), " "), "ID string `bun:\"id,pk\"`") {
 		t.Error("Widget struct should carry a bun-tagged Id field")
 	}
 
@@ -857,7 +857,7 @@ func TestGeneratePlanORM_ExplicitPKNotDuplicated(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -868,12 +868,12 @@ func TestGeneratePlanORM_ExplicitPKNotDuplicated(t *testing.T) {
 	code := string(content)
 
 	// Should NOT have an auto-generated id field constant
-	if strings.Contains(code, `CounterFieldId = "id"`) {
+	if strings.Contains(code, `CounterFieldID = "id"`) {
 		t.Error("should not auto-add id when explicit PK exists")
 	}
 
 	// Should use counter_id as the PK
-	if !strings.Contains(code, `CounterFieldCounterId = "counter_id"`) {
+	if !strings.Contains(code, `CounterFieldCounterID = "counter_id"`) {
 		t.Error("missing counter_id field constant")
 	}
 	if !strings.Contains(code, "func GetCounterByID(ctx context.Context, db orm.Context, id int64)") {
@@ -897,7 +897,7 @@ func TestGeneratePlanORM_UpdateSetColumnsExcludeSpecial(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -965,7 +965,7 @@ func TestGeneratePlanORM_DeclaredTimestampsNotDuplicated(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -1050,7 +1050,7 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -1060,7 +1060,7 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 	}
 	task := string(taskSrc)
 
-	if !strings.Contains(task, "func UpdateTaskMasked(ctx context.Context, db orm.Context, msg *Task, fields []string) error {") {
+	if !strings.Contains(task, "func UpdateTaskMasked(ctx context.Context, db orm.Context, msg *Task, fields []string, opts ...crud.UpdateOption) error {") {
 		t.Error("missing UpdateTaskMasked signature")
 	}
 	maskedIdx := strings.Index(task, "func UpdateTaskMasked(")
@@ -1077,7 +1077,7 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 	// updated_at stamp, soft-delete WHERE) all moved into
 	// pkg/crud.UpdateMasked, tested there against real postgres. The
 	// generator's contract is the delegate that forwards to it.
-	if !strings.Contains(masked, "return taskRepo.UpdateMasked(ctx, db, msg, fields)") {
+	if !strings.Contains(masked, "return taskRepo.UpdateMasked(ctx, db, msg, fields, opts...)") {
 		t.Error("UpdateTaskMasked should delegate to taskRepo.UpdateMasked with the fields slice")
 	}
 	// None of the old inline machinery should survive in the generated file.
@@ -1092,7 +1092,7 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 		t.Fatalf("ReadFile error = %v", err)
 	}
 	note := string(noteSrc)
-	if !strings.Contains(note, "func UpdateNoteMasked(ctx context.Context, db orm.Context, msg *Note, fields []string) error {") {
+	if !strings.Contains(note, "func UpdateNoteMasked(ctx context.Context, db orm.Context, msg *Note, fields []string, opts ...crud.UpdateOption) error {") {
 		t.Error("missing UpdateNoteMasked signature")
 	}
 }
@@ -1127,7 +1127,7 @@ func TestGeneratePlanORM_TextTimestamps_Stamping(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -1197,7 +1197,7 @@ func TestGeneratePlanORM_NullableTimestamps_PointerSafeStamping(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -1259,7 +1259,7 @@ func TestGeneratePlanORM_UnstampableTimestampsSkipped(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -1290,10 +1290,12 @@ func readGeneratedORM(t *testing.T, root, name string) string {
 //
 // Kalshi fr-fd061aed2b: Create<X> INSERTed the id column from msg.Id —
 // always 0 for BIGSERIAL rows — so every writer routed around the ORM.
-// Integer PKs are server-allocated: Create omits the id column and
+// A BIGSERIAL PK is server-allocated: Create omits the id column and
 // scans the database-assigned value back into msg (RETURNING where the
 // dialect supports it, LastInsertId otherwise), mirroring the string-PK
-// ULID chokepoint.
+// ULID chokepoint. What makes it server-allocated is the sequence DEFAULT
+// the applied schema reports, not the integer type — see
+// TestGeneratePlanORM_AutoincrementFollowsTheSchemaNotTheKeyType.
 func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
 	root := t.TempDir()
 
@@ -1302,7 +1304,7 @@ func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
 			Name:       "Hypothesis",
 			Timestamps: true,
 			Fields: []config.PlanEntityField{
-				{Name: "id", Type: "int64", PrimaryKey: true, NotNull: true},
+				{Name: "id", Type: "int64", PrimaryKey: true, NotNull: true, Default: "nextval('hypotheses_id_seq'::regclass)"},
 				{Name: "title", Type: "string", NotNull: true},
 				{Name: "created_at", Type: "time", NotNull: true},
 				{Name: "updated_at", Type: "time", NotNull: true},
@@ -1310,7 +1312,7 @@ func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -1320,7 +1322,7 @@ func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
 	// the DB-assigned value back via RETURNING) moved into pkg/crud, which
 	// detects it off Bun's schema. The generator's contract is the struct
 	// tag that tells Bun the PK is autoincrement: ,pk,autoincrement.
-	if !strings.Contains(strings.Join(strings.Fields(code), " "), "Id int64 `bun:\"id,pk,autoincrement\"`") {
+	if !strings.Contains(strings.Join(strings.Fields(code), " "), "ID int64 `bun:\"id,pk,autoincrement\"`") {
 		t.Error("server-allocated int64 PK should carry the bun ,pk,autoincrement tag")
 	}
 
@@ -1346,25 +1348,85 @@ func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
 	}
 }
 
-// TestGeneratePlanORM_GetClassifiesMissingRow pins the ONE place the
-// generated ORM classifies a storage error: Get.
+// TestGeneratePlanORM_AutoincrementFollowsTheSchemaNotTheKeyType pins the
+// rule that a key is ,autoincrement only when the applied schema gives it a
+// server-side value — serial/bigserial (a nextval DEFAULT), an identity
+// column, or any other DEFAULT — and never because of its type.
 //
-// The delegate used to hand back the raw orm.ErrNoRows sentinel, so every
-// hand-written RPC that loads a row re-derived the same three lines —
-// `if errors.Is(err, orm.ErrNoRows) { return svcerr.NotFound("<entity>") }`
-// — once per entity. A real run wrote that block three times in ONE file
-// (loadOrder, loadPrescription, loadProduct). The generated CRUD path never
-// paid it (crud.mapRepoErr classifies), which is what made it invisible;
-// pkg/svcerr's own doc comment cites exactly this per-package duplication as
-// its reason for existing.
-//
-// The asymmetry is deliberate and is asserted here so it cannot be
-// "tidied": Update and Delete keep the sentinel. pkg/crud documents
-// swallowing orm.ErrNoRows in an entity's Persist closure as the supported
-// way to opt into absent-is-success (AIP-135 allow_missing), and classifying
-// it in those delegates would break the one escape hatch forge points users
-// at.
-func TestGeneratePlanORM_GetClassifiesMissingRow(t *testing.T) {
+// reliant's legacy_credential_copy declares `id integer PRIMARY KEY CHECK
+// (id = 1)`: no DEFAULT, no sequence. Typed as an integer it was tagged
+// ,autoincrement, so pkg/crud's Create left the caller's id out of the
+// INSERT and every write failed NOT NULL. The same guess covered each
+// integer member of a composite key; a uuid key whose DEFAULT is
+// gen_random_uuid() is the converse, a string key the database allocates.
+func TestGeneratePlanORM_AutoincrementFollowsTheSchemaNotTheKeyType(t *testing.T) {
+	field := func(e config.PlanEntityField) config.PlanEntityField {
+		e.PrimaryKey, e.NotNull = true, true
+		return e
+	}
+	cases := []struct {
+		name   string
+		fields []config.PlanEntityField
+		want   []string // each key field's line, whitespace-collapsed
+	}{
+		{
+			name:   "integer key with no default is the caller's",
+			fields: []config.PlanEntityField{field(config.PlanEntityField{Name: "id", Type: "int32"})},
+			want:   []string{"ID int32 `bun:\"id,pk\"`"},
+		},
+		{
+			name:   "serial key is allocated",
+			fields: []config.PlanEntityField{field(config.PlanEntityField{Name: "id", Type: "int32", Default: "nextval('things_id_seq'::regclass)"})},
+			want:   []string{"ID int32 `bun:\"id,pk,autoincrement\"`"},
+		},
+		{
+			name:   "identity key is allocated though the catalog reports no default",
+			fields: []config.PlanEntityField{field(config.PlanEntityField{Name: "id", Type: "int64", Identity: true})},
+			want:   []string{"ID int64 `bun:\"id,pk,autoincrement\"`"},
+		},
+		{
+			name:   "uuid key with gen_random_uuid() is allocated",
+			fields: []config.PlanEntityField{field(config.PlanEntityField{Name: "id", Type: "string", Default: "gen_random_uuid()"})},
+			want:   []string{"ID string `bun:\"id,pk,autoincrement\"`"},
+		},
+		{
+			name:   "text key with no default is the caller's (Create ULID-fills an empty one)",
+			fields: []config.PlanEntityField{field(config.PlanEntityField{Name: "id", Type: "string"})},
+			want:   []string{"ID string `bun:\"id,pk\"`"},
+		},
+		{
+			name: "composite integer key with no defaults is the caller's, member by member",
+			fields: []config.PlanEntityField{
+				field(config.PlanEntityField{Name: "org_id", Type: "int64"}),
+				field(config.PlanEntityField{Name: "seq", Type: "int32"}),
+			},
+			want: []string{"OrgID int64 `bun:\"org_id,pk\"`", "Seq int32 `bun:\"seq,pk\"`"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			fields := append(tc.fields, config.PlanEntityField{Name: "note", Type: "string", NotNull: true})
+			if err := GeneratePlanORM(root, config.ORMConfig{}, []config.PlanEntity{{Name: "Thing", Fields: fields}}, nil); err != nil {
+				t.Fatalf("GeneratePlanORM: %v", err)
+			}
+			code := strings.Join(strings.Fields(readGeneratedORM(t, root, "thing_orm_gen.go")), " ")
+			for _, w := range tc.want {
+				if !strings.Contains(code, w) {
+					t.Errorf("want %s in the generated struct:\n%s", w, code)
+				}
+			}
+		})
+	}
+}
+
+// TestGeneratePlanORM_ByKeyDelegatesForwardTheRepoMiss pins where a missing
+// row is classified: in crud.Repo, which answers every by-key verb's miss
+// with svcerr.NotFound (still errors.Is-true for orm.ErrNoRows). The Get
+// delegate used to translate the sentinel itself while Update and Delete
+// forwarded it raw, so callers of both checked both. Every delegate now
+// forwards, and the file needs neither errors nor svcerr.
+func TestGeneratePlanORM_ByKeyDelegatesForwardTheRepoMiss(t *testing.T) {
 	root := t.TempDir()
 	entities := []config.PlanEntity{{
 		Name:       "Prescription",
@@ -1374,7 +1436,7 @@ func TestGeneratePlanORM_GetClassifiesMissingRow(t *testing.T) {
 			{Name: "patient_id", Type: "string", NotNull: true},
 		},
 	}}
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("GeneratePlanORM() error = %v", err)
 	}
 	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "prescription_orm_gen.go"))
@@ -1383,34 +1445,26 @@ func TestGeneratePlanORM_GetClassifiesMissingRow(t *testing.T) {
 	}
 	code := string(content)
 
-	// The Get delegate classifies the missing row itself.
-	if !strings.Contains(code, "\tif errors.Is(err, orm.ErrNoRows) {\n\t\treturn nil, svcerr.NotFound(\"prescription\")\n\t}") {
-		t.Errorf("GetPrescriptionByID must map the missing row to svcerr.NotFound(%q); got:\n%s",
-			"prescription", code)
-	}
-	// A bare `return prescriptionRepo.Get(...)` is the pre-fix shape: the
-	// sentinel escaping to every caller.
-	if strings.Contains(code, "\treturn prescriptionRepo.Get(ctx, db, id)\n") {
-		t.Error("GetPrescriptionByID must not forward the raw repo error — that is the orm.ErrNoRows leak")
-	}
-	// The classification needs its imports; the type-check test compiles the
-	// result, this names them so a silent drop is legible.
-	for _, imp := range []string{`"errors"`, `"github.com/reliant-labs/forge/pkg/svcerr"`} {
-		if !strings.Contains(code, imp) {
-			t.Errorf("generated ORM file should import %s for the Get classification", imp)
+	for _, fwd := range []string{
+		"\treturn prescriptionRepo.Get(ctx, db, id)\n",
+		"\treturn prescriptionRepo.Update(ctx, db, msg, opts...)\n",
+		"\treturn prescriptionRepo.UpdateMasked(ctx, db, msg, fields, opts...)\n",
+		"\treturn prescriptionRepo.Delete(ctx, db, id)\n",
+	} {
+		if !strings.Contains(code, fwd) {
+			t.Errorf("delegate must forward the repo's answer: missing %q in\n%s", fwd, code)
 		}
 	}
-
-	// Write delegates stay on the sentinel — the documented absent-is-success
-	// escape hatch reads it.
-	if !strings.Contains(code, "\treturn prescriptionRepo.Delete(ctx, db, id)\n") {
-		t.Error("DeletePrescription must stay a pure delegate: pkg/crud's Persist-closure escape hatch matches orm.ErrNoRows")
+	if strings.Contains(code, "if errors.Is(err, orm.ErrNoRows)") {
+		t.Error("a delegate re-classifies the missing row; crud.Repo already does, for every by-key verb")
 	}
-	if !strings.Contains(code, "\treturn prescriptionRepo.Update(ctx, db, msg, opts...)\n") {
-		t.Error("UpdatePrescription must stay a pure delegate: pkg/crud's Persist-closure escape hatch matches orm.ErrNoRows")
+	for _, imp := range []string{`"errors"`, `"github.com/reliant-labs/forge/pkg/svcerr"`} {
+		if strings.Contains(code, imp) {
+			t.Errorf("generated ORM file imports %s, which nothing in it uses any more", imp)
+		}
 	}
-	if n := strings.Count(code, "return nil, svcerr.NotFound("); n != 1 {
-		t.Errorf("exactly one delegate (Get) classifies the missing row; got %d svcerr.NotFound call(s)", n)
+	if !strings.Contains(code, `svcerr.NotFound("prescription")`) {
+		t.Error("GetPrescriptionByID's doc must name the not-found answer")
 	}
 }
 
@@ -1565,7 +1619,7 @@ func widgetEntity() []config.PlanEntity {
 // entity struct embeds it — the seam and its consumer are born together.
 func TestGeneratePlanORM_ComputedFieldSeam_FreshEntity(t *testing.T) {
 	root := t.TempDir()
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", widgetEntity(), nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, widgetEntity(), nil); err != nil {
 		t.Fatalf("GeneratePlanORM() error = %v", err)
 	}
 
@@ -1608,7 +1662,7 @@ func TestGeneratePlanORM_ComputedFieldSeam_ExistingProjectWithoutExtra(t *testin
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", widgetEntity(), nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, widgetEntity(), nil); err != nil {
 		t.Fatalf("GeneratePlanORM() error = %v", err)
 	}
 
@@ -1654,7 +1708,7 @@ func TestGeneratePlanORM_ComputedFieldSeam_ExistingProjectAdoptsExtra(t *testing
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", widgetEntity(), nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, widgetEntity(), nil); err != nil {
 		t.Fatalf("GeneratePlanORM() error = %v", err)
 	}
 

@@ -19,6 +19,11 @@ import (
 // comes from codegen.CmdServiceCommand — the function that names the cobra
 // command — so the two cannot drift. TestE2EScaffoldE2EHarnessCommand (e2e
 // tag) runs that argv against a real scaffold's binary.
+//
+// That holds for a legacy Components project only. A project composed by the
+// graph — every new one — has no per-component subcommands, and the harness
+// ran `<bin> <svc>` there too (`unknown command "api-gateway"`) until
+// TestE2EHarnessServesAGraphProjectWithServer pinned it.
 func TestE2EHarnessServesWithTheCLISubcommand(t *testing.T) {
 	for _, c := range []struct {
 		service string
@@ -32,7 +37,7 @@ func TestE2EHarnessServesWithTheCLISubcommand(t *testing.T) {
 		{"version", `"./bin/demo", "server")`},
 	} {
 		t.Run(c.service, func(t *testing.T) {
-			dir := t.TempDir()
+			dir := legacyComponentsProject(t)
 			if err := GenerateE2ETests(dir, c.service, "example.com/demo", "demo", nil); err != nil {
 				t.Fatalf("GenerateE2ETests: %v", err)
 			}
@@ -55,6 +60,50 @@ func TestE2EHarnessServesWithTheCLISubcommand(t *testing.T) {
 				if !strings.Contains(src, want) {
 					t.Errorf("harness does not set %s for the service it starts", want)
 				}
+			}
+		})
+	}
+}
+
+// legacyComponentsProject is a project whose internal/app still composes with
+// NewComponents, which codegen.GraphComposition reads as the legacy shape.
+func legacyComponentsProject(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	app := filepath.Join(dir, "internal", "app")
+	if err := os.MkdirAll(app, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := "package app\n\ntype Components struct{}\n\nfunc NewComponents() (*Components, error) { return &Components{}, nil }\n"
+	if err := os.WriteFile(filepath.Join(app, "compose.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if codegen.GraphComposition(dir) {
+		t.Fatal("precondition: a NewComponents project must read as legacy")
+	}
+	return dir
+}
+
+// TestE2EHarnessServesAGraphProjectWithServer: a graph project's CLI has no
+// `<bin> <svc>` command — `server` runs the default root, which serves every
+// service — so that is the argv its harness must start.
+func TestE2EHarnessServesAGraphProjectWithServer(t *testing.T) {
+	for _, service := range []string{"membership", "api-gateway"} {
+		t.Run(service, func(t *testing.T) {
+			dir := t.TempDir()
+			if !codegen.GraphComposition(dir) {
+				t.Fatal("precondition: a fresh project composes with the graph")
+			}
+			if err := GenerateE2ETests(dir, service, "example.com/demo", "demo", nil); err != nil {
+				t.Fatalf("GenerateE2ETests: %v", err)
+			}
+			pkg := strings.ReplaceAll(service, "-", "_")
+			main, err := os.ReadFile(filepath.Join(dir, "e2e", pkg, "main_test.go"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := `exec.CommandContext(ctx, "./bin/demo", "server")`; !strings.Contains(string(main), want) {
+				t.Errorf("graph project's harness must start %s:\n%s", want, main)
 			}
 		})
 	}

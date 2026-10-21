@@ -72,6 +72,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Source is a declared cross-repo dependency: a repository, a ref to pin
@@ -477,7 +479,7 @@ func writeMetadata(entry string, m Metadata) error {
 		return fmt.Errorf("encode source metadata: %w", err)
 	}
 	path := filepath.Join(entry, MetadataFile)
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+	if err := atomicfile.WriteFile(path, append(data, '\n'), 0o644); err != nil {
 		return fmt.Errorf("write source metadata %s: %w", path, err)
 	}
 	return nil

@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Preflight is the deploy-time "deployability contract": before a single
@@ -1899,7 +1901,7 @@ func prepareCredentialedCheckers(ctx context.Context, opts PreflightOpts, refs M
 	// docker reads $DOCKER_CONFIG/config.json. The .dockerconfigjson blob IS a
 	// docker config.json ({"auths":{...}}), so it drops straight in. 0600: it
 	// carries registry credentials.
-	if werr := os.WriteFile(filepath.Join(dir, "config.json"), dockerConfig, 0o600); werr != nil {
+	if werr := atomicfile.WriteFile(filepath.Join(dir, "config.json"), dockerConfig, 0o600); werr != nil {
 		cleanup()
 		return nil, nil, noop
 	}

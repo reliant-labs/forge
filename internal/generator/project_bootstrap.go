@@ -7,6 +7,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // generateBootstrapTesting writes the per-service helpers_gen_test.go test
@@ -204,7 +206,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 		if err := os.MkdirAll(destDir, 0755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(destDir, "helpers_gen_test.go"), content, 0644); err != nil {
+		if err := atomicfile.WriteFile(filepath.Join(destDir, "helpers_gen_test.go"), content, 0644); err != nil {
 			return err
 		}
 	}

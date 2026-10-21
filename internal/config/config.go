@@ -30,6 +30,7 @@ package config
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -736,10 +737,55 @@ type DatabaseConfig struct {
 	// MigrationsDir is always db/migrations when there is a database.
 	MigrationsDir   string                `yaml:"-"`
 	MigrationSafety MigrationSafetyConfig `yaml:"migration_safety,omitempty"`
+	// ORM places the generated data layer. Absent, it is internal/db.
+	ORM ORMConfig `yaml:"orm,omitempty"`
 }
 
 // DefaultMigrationsDir is where migrations live.
 const DefaultMigrationsDir = "db/migrations"
+
+// DefaultORMPackage is where the generated data layer lands when
+// database.orm.package is unset.
+const DefaultORMPackage = "internal/db"
+
+// ORMConfig is the generated data layer's placement.
+type ORMConfig struct {
+	// Package is the project-relative directory the ORM projects into —
+	// every <entity>_orm_gen.go, store_gen.go and _repo_ext.go seam — and
+	// so the Go package they declare (its last path element). Empty means
+	// DefaultORMPackage.
+	//
+	// It exists for a project that already has a data layer of its own in
+	// internal/db: there the projection's names (Chat, Message, Store,
+	// NewStore) collide with the project's, one package cannot declare
+	// both, and porting onto the store one table at a time needs the two
+	// to live side by side. `package: internal/store` puts the projection
+	// in its own package; every generated consumer (CRUD wiring, the store
+	// Deps in compose.go, factories, shapes, the drift guard) follows it.
+	Package string `yaml:"package,omitempty"`
+}
+
+// PackageDir is the ORM's project-relative directory, slash-separated.
+func (c ORMConfig) PackageDir() string {
+	if p := strings.Trim(strings.TrimSpace(c.Package), "/"); p != "" {
+		return path.Clean(p)
+	}
+	return DefaultORMPackage
+}
+
+// PackageName is the Go package name the ORM's files declare: the last
+// element of PackageDir.
+func (c ORMConfig) PackageName() string { return path.Base(c.PackageDir()) }
+
+// ORMPackage returns the ORM placement of cfg, the default for a nil cfg —
+// the one accessor every consumer reads, so a project with no forge.yaml
+// and one with no `database.orm` block land in the same place.
+func ORMPackage(cfg *ProjectConfig) ORMConfig {
+	if cfg == nil {
+		return ORMConfig{}
+	}
+	return cfg.Database.ORM
+}
 
 // MigrationSafetyConfig controls migrationlint's three severity dials
 // (unsafe add-column, destructive change, volatile default). An intentional
@@ -1215,21 +1261,6 @@ const (
 	EnforceTypedAccessError = "error"
 )
 
-// enforce-component-observe levels for [ConfigGuardConfig.EnforceComponentObserve].
-//
-//   - error — (default) a wired component with a Service interface + a
-//     canonical New(Deps) Service constructor that has made NO observability
-//     decision (neither `// forge:constructor` nor `// forge:no-observe`) fails
-//     `forge lint`. The forcing-function that makes the in-process
-//     observability decision discoverable instead of silently defaulted.
-//   - off   — disable the check entirely.
-//
-// Unlike enforce_typed_access there is no "warn": the whole point is a gate.
-const (
-	EnforceComponentObserveOff   = "off"
-	EnforceComponentObserveError = "error"
-)
-
 // DefaultLoaderPackage is the package path forge's config-loader codegen
 // emits into a consuming project (generated from
 // proto/config/v1/config.proto via the (forge.v1.config) annotation). It is
@@ -1272,12 +1303,6 @@ type ConfigGuardConfig struct {
 	// Empty resolves to [DefaultLoaderPackage] ("pkg/config"); use
 	// [ConfigGuardConfig.EffectiveLoaderPackage].
 	LoaderPackage string `yaml:"loader_package,omitempty"`
-	// EnforceComponentObserve selects the enforce-component-observe lint
-	// strictness: "error" (default) | "off". Empty resolves to "error" — use
-	// [ConfigGuardConfig.EffectiveEnforceComponentObserve], don't read the raw
-	// string. Unknown values are rejected at load time (validate.go). See the
-	// EnforceComponentObserve* constants for the semantics.
-	EnforceComponentObserve string `yaml:"enforce_component_observe,omitempty"`
 }
 
 // EffectiveEnforceTypedAccess returns the resolved guardrail strictness,
@@ -1316,24 +1341,6 @@ func (c ConfigGuardConfig) TypedAccessGuardEnabled() bool {
 // only in "error" mode; "warn" is advisory, "off" emits nothing).
 func (c ConfigGuardConfig) TypedAccessGuardGates() bool {
 	return c.EffectiveEnforceTypedAccess() == EnforceTypedAccessError
-}
-
-// EffectiveEnforceComponentObserve returns the resolved enforce-component-observe
-// strictness, defaulting an absent/empty value to "error" (the check is on by
-// default). Any value other than a case-insensitive "off" resolves to "error";
-// validation (validate.go) has already rejected non-empty non-{off,error}
-// values, so a typo never silently disables the gate.
-func (c ConfigGuardConfig) EffectiveEnforceComponentObserve() string {
-	if strings.EqualFold(strings.TrimSpace(c.EnforceComponentObserve), EnforceComponentObserveOff) {
-		return EnforceComponentObserveOff
-	}
-	return EnforceComponentObserveError
-}
-
-// ComponentObserveGuardEnabled reports whether the enforce-component-observe
-// lint runs at all (true unless the strictness is "off").
-func (c ConfigGuardConfig) ComponentObserveGuardEnabled() bool {
-	return c.EffectiveEnforceComponentObserve() != EnforceComponentObserveOff
 }
 
 // LintConfig holds lint-related settings.
@@ -1375,6 +1382,31 @@ type LintConfig struct {
 	// The special key "*" applies to every forge rule; an exact rule ID
 	// beats it.
 	Rules map[string]string `yaml:"rules,omitempty"`
+
+	// Tracing configures the tracing lane (`forge lint --tracing`).
+	Tracing TracingLintConfig `yaml:"tracing,omitempty"`
+}
+
+// TracingLintConfig configures `forge lint --tracing`.
+type TracingLintConfig struct {
+	// LogWrappers names the project's own context-free logging helpers —
+	// a `logging.Info(msg, args...)` that calls slog.Info — so
+	// forge-tracing-log-without-ctx flags and rewrites their calls the way
+	// it does slog's own.
+	LogWrappers []LogWrapperConfig `yaml:"log_wrappers,omitempty"`
+}
+
+// LogWrapperConfig is one context-free logging helper and its context-taking
+// replacement.
+type LogWrapperConfig struct {
+	// Call is the helper, as "<import path>.<Func>":
+	// github.com/acme/app/internal/logging.Info.
+	Call string `yaml:"call"`
+	// ContextCall is what a call is rewritten to, as "<import path>.<Func>",
+	// taking the context first and then the helper's arguments unchanged
+	// (log/slog.InfoContext). Empty means "<Call>Context" in the helper's
+	// own package.
+	ContextCall string `yaml:"context_call,omitempty"`
 }
 
 // ValidateRules reports rule-severity entries forge cannot interpret.

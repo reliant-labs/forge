@@ -45,7 +45,7 @@ func (s *Service) handleWebhook{{.Name | pascalCase}}(w http.ResponseWriter, r *
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, middleware.DefaultWebhookMaxBodySize))
 	if err != nil {
-		s.deps.Logger.Error("failed to read webhook body", "error", err)
+		s.deps.Logger.ErrorContext(r.Context(), "failed to read webhook body", "error", err)
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
@@ -53,7 +53,7 @@ func (s *Service) handleWebhook{{.Name | pascalCase}}(w http.ResponseWriter, r *
 	// Verify the signature FIRST — everything below trusts the body, and the
 	// sender is anonymous until the signature checks out.
 	if err := s.verify{{.Name | pascalCase}}Signature(r.Header, body); err != nil {
-		s.deps.Logger.Warn("webhook signature verification failed", "error", err)
+		s.deps.Logger.WarnContext(r.Context(), "webhook signature verification failed", "error", err)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -64,7 +64,7 @@ func (s *Service) handleWebhook{{.Name | pascalCase}}(w http.ResponseWriter, r *
 	// read that header directly and fall back to the helper.
 	eventID := middleware.WebhookEventID(r.Header)
 	if eventID == "" {
-		s.deps.Logger.Warn("webhook missing event ID")
+		s.deps.Logger.WarnContext(r.Context(), "webhook missing event ID")
 		http.Error(w, "missing event ID", http.StatusBadRequest)
 		return
 	}
@@ -72,12 +72,12 @@ func (s *Service) handleWebhook{{.Name | pascalCase}}(w http.ResponseWriter, r *
 	// Idempotency check.
 	processed, err := s.is{{.Name | pascalCase}}WebhookProcessed(r.Context(), eventID)
 	if err != nil {
-		s.deps.Logger.Error("failed to check webhook idempotency", "error", err)
+		s.deps.Logger.ErrorContext(r.Context(), "failed to check webhook idempotency", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if processed {
-		s.deps.Logger.Debug("webhook already processed", "event_id", eventID)
+		s.deps.Logger.DebugContext(r.Context(), "webhook already processed", "event_id", eventID)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -92,7 +92,7 @@ func (s *Service) handleWebhook{{.Name | pascalCase}}(w http.ResponseWriter, r *
 
 	// Process the webhook.
 	if err := s.process{{.Name | pascalCase}}Webhook(r.Context(), event); err != nil {
-		s.deps.Logger.Error("webhook processing failed", "event_id", eventID, "error", err)
+		s.deps.Logger.ErrorContext(r.Context(), "webhook processing failed", "event_id", eventID, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -101,7 +101,7 @@ func (s *Service) handleWebhook{{.Name | pascalCase}}(w http.ResponseWriter, r *
 	// provider's retry of a failed delivery is reprocessed rather than
 	// acknowledged as a duplicate.
 	if err := s.mark{{.Name | pascalCase}}WebhookProcessed(r.Context(), eventID); err != nil {
-		s.deps.Logger.Error("failed to mark webhook as processed", "event_id", eventID, "error", err)
+		s.deps.Logger.ErrorContext(r.Context(), "failed to mark webhook as processed", "event_id", eventID, "error", err)
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -169,7 +169,7 @@ func (s *Service) verify{{.Name | pascalCase}}Signature(headers http.Header, bod
 // process{{.Name | pascalCase}}Webhook processes a verified webhook event.
 // TODO: Implement your webhook processing logic.
 func (s *Service) process{{.Name | pascalCase}}Webhook(ctx context.Context, event middleware.WebhookEvent) error {
-	s.deps.Logger.Info("processing webhook", "source", event.Source, "event_id", event.ID)
+	s.deps.Logger.InfoContext(ctx, "processing webhook", "source", event.Source, "event_id", event.ID)
 
 	// TODO: Parse event.Body and handle different event types.
 	// Example:

@@ -11,6 +11,8 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Shared wire packages deliberately have separate Go packages and directories.
@@ -64,7 +66,7 @@ func reconcileSharedPackageBuf(root, protoPath string, progress io.Writer) error
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, updated, info.Mode().Perm()); err != nil {
+	if err := atomicfile.WriteFile(path, updated, info.Mode().Perm()); err != nil {
 		return err
 	}
 	fmt.Fprintf(progressOrDiscard(progress), "  ✓ buf.yaml lint.except updated for shared proto package %s (%s, %s)\n", pkg, rules[0], rules[1])

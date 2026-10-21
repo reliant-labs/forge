@@ -94,6 +94,7 @@ import (
 	"github.com/reliant-labs/forge/internal/linter/migrationlint"
 	"github.com/reliant-labs/forge/internal/linter/scaffolds"
 	"github.com/reliant-labs/forge/internal/projectstore"
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // Severity values used in the JSON report. These now match the canonical
@@ -264,6 +265,7 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 	}
 
 	return collectAllLintersJSON(ctx, lintRunOptions{
+		reportFormat:  !flags.autoFix(),
 		strict:        flags.strict,
 		skipFrontends: flags.skipFrontends,
 		paths:         paths,
@@ -340,13 +342,15 @@ func collectSingleLinterJSON(
 	case flags.configDeps:
 		return reportUngated(collectConfigDepsJSON(cwd))
 	case flags.columnMarkers:
-		return reportUngated(collectColumnMarkersJSON(cfg))
+		return reportBySeverity(collectColumnMarkersJSON(cfg))
 	case flags.fixtureDrift || flags.crudFixtures:
 		return reportUngated(collectFixtureDriftJSON(cwd, cfg))
 	case flags.timeBucketing:
 		return reportUngated(collectTimeBucketingJSON(cwd, cfg))
 	case flags.protoMarkers:
 		return reportUngated(collectProtoMarkersJSON(protoDirDefault))
+	case flags.goMarkers:
+		return report(collectGoMarkersJSON(cwd))
 	case flags.createNullability:
 		return report(collectCreateNullabilityJSON(protoDirDefault, cwd))
 	case flags.computedFields:
@@ -360,12 +364,18 @@ func collectSingleLinterJSON(
 		return reportUngated(collectGuardedFieldsJSON(cwd, frontendDirsForLint()))
 	case flags.staticExport:
 		return report(collectStaticExportJSON(&lintRunCtx{ctx: ctx, cfg: cfg, cwd: cwd}))
+	case flags.tracing:
+		return report(collectTracingJSON(&lintRunCtx{ctx: ctx, cfg: cfg, cwd: cwd}))
 	case flags.protoOptions:
 		return reportUngated(collectProtoOptionsJSON(protoDirDefault))
 	case flags.vendoredProtos:
 		return report(collectVendoredProtosJSON(cwd))
 	case flags.configReach:
 		return reportUngated(collectConfigReachJSON(cwd, cfg))
+	case flags.graph:
+		return reportBySeverity(collectGraphJSON(cwd, cfg))
+	case flags.slowTests:
+		return report(collectSlowTestsJSON(ctx, paths))
 	}
 
 	return nil, false, nil
@@ -384,7 +394,7 @@ func collectSingleLinterJSON(
 // finding so JSON consumers can tell "clean" from "didn't run"; a silent skip
 // (directory absent) contributes nothing.
 func collectAllLintersJSON(ctx context.Context, opts lintRunOptions, cwd string) (*lintJSONReport, error) {
-	findings, gated := flattenLintOutcomes(collectLintOutcomes(&lintRunCtx{
+	outcomes := collectLintOutcomes(&lintRunCtx{
 		ctx:           ctx,
 		fix:           false,
 		strict:        opts.strict,
@@ -393,7 +403,11 @@ func collectAllLintersJSON(ctx context.Context, opts lintRunOptions, cwd string)
 		cfg:           opts.cfg,
 		cwd:           cwd,
 		scope:         opts.scope,
-	}))
+	})
+	if opts.reportFormat {
+		outcomes = append(outcomes, formatOutcome(ctx, cwd, opts.cfg, opts.scope, opts.paths, opts.skipFrontends))
+	}
+	findings, gated := flattenLintOutcomes(outcomes)
 	return buildLintJSONReport(findings, gated), nil
 }
 
@@ -570,9 +584,9 @@ func collectConfigDepsJSON(projectDir string) ([]lintJSONFinding, error) {
 }
 
 // collectColumnMarkersJSON maps column-markers findings onto the JSON
-// contract. Severity warning across the board — an unrecognized forge:*
-// marker might be a future forge version's, so the finding is a nudge to
-// check the spelling, not a hard failure.
+// contract. Severity error across the board: a forge:* marker forge does not
+// read where it is declared does nothing, and `forge generate` refuses the
+// same catalog comment (schemadef.CheckMarkers).
 func collectColumnMarkersJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, error) {
 	findings, err := collectColumnMarkerFindings(migrationsDirFor(cfg))
 	if err != nil {
@@ -583,9 +597,9 @@ func collectColumnMarkersJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, err
 		out = append(out, lintJSONFinding{
 			File:     f.File,
 			Line:     f.Line,
-			Severity: lintSevWarning,
+			Severity: lintSevError,
 			Rule:     "forge-column-markers",
-			Message:  fmt.Sprintf("unrecognized forge:* marker on %s", f.Object),
+			Message:  fmt.Sprintf("%s on %s does nothing", f.Marker, f.Object),
 			FixHint:  columnMarkerFixHint(f),
 		})
 	}
@@ -1077,6 +1091,10 @@ func collectContractLintJSON(ctx context.Context, paths []string, excludes []str
 func collectBufLintJSON(ctx context.Context) ([]lintJSONFinding, bool) {
 	if _, err := os.Stat("buf.yaml"); os.IsNotExist(err) {
 		return nil, false
+	}
+	if _, err := exec.LookPath("buf"); err != nil {
+		return []lintJSONFinding{{Severity: lintSevError, Rule: "buf", Message: bufMissingError().Error(),
+			FixHint: "run `forge tools install buf`, or install buf " + templates.BufVersion + " onto PATH"}}, true
 	}
 	cmd := exec.CommandContext(ctx, "buf", "lint")
 	var buf strings.Builder

@@ -63,7 +63,8 @@ arguments are logged by Forge.
 			if w.Runtime.Type != RuntimeHost && w.Runtime.Type != RuntimeCompose {
 				return fmt.Errorf("workload %q uses %s: env exec only supports OnHost/OnCompose; use your hosting provider's exec tool or kubectl exec for remote workloads", w.Name, w.Runtime.Type)
 			}
-			report, err := resolvedEnvConfigReport(cmd.Context(), projectDir, args[0], e, w.Name)
+			// Strict: the child would run without a secret it declares.
+			report, err := resolvedEnvConfigReport(cmd.Context(), projectDir, args[0], e, w.Name, secretsRequired)
 			if err != nil {
 				return err
 			}

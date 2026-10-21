@@ -83,7 +83,9 @@ export {
   freshTraceparent,
   injectTraceContext,
   setTraceSampled,
+  traceIdFrom,
   TRACEPARENT_RE,
+  TRACERESPONSE_HEADER,
 } from "./trace.js";
 
 /** Session: the signed-in user, derived from the app's auth state and JWT claims. */
@@ -136,6 +138,24 @@ export {
   setExceptionReporter,
   type ExceptionAttributes,
 } from "./error-reporter.js";
+
+/** The server trace id a failed RPC's error carries (ConnectClientError.traceId). */
+export { SERVER_TRACE_ID_ATTRIBUTE, serverTraceIdOf } from "./trace-id.js";
+
+/**
+ * Product events, the signed-in user and the consent kill-switch for browser
+ * telemetry. Like reportException these are safe to call anywhere — no-ops on
+ * the server and when telemetry is off — and calls made while the SDK is still
+ * loading are held and replayed. The SDK itself arrives through the
+ * "/telemetry" subpath, never the barrel.
+ */
+export {
+  disableTelemetry,
+  setTelemetryUser,
+  track,
+  type TrackProps,
+  type TrackValue,
+} from "./track.js";
 
 /**
  * Dev-only browser log forwarding: mirrors console output and uncaught errors

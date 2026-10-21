@@ -33,6 +33,7 @@ package pgtest
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -45,7 +46,9 @@ import (
 	"time"
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
-	"github.com/lib/pq" // postgres driver (registered as "postgres") + typed errors
+	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx" — production's driver
+
+	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
 )
 
 // EnvBaseURL names the env var that, when set, points pgtest at an
@@ -53,6 +56,20 @@ import (
 // value is a base DSN whose database is "postgres" (the maintenance DB
 // pgtest connects to in order to CREATE DATABASE).
 const EnvBaseURL = "FORGE_TEST_POSTGRES_URL"
+
+// DriverName is the database/sql driver every handle pgtest returns is
+// opened with: jackc/pgx's stdlib adapter, the driver production opens its
+// pool with (serverkit.OpenDB). A test database on a different driver than
+// production tests a different program — arrays, time scanning, prepared
+// statement caching and error types (*pgconn.PgError, not *pq.Error) all
+// differ between pgx and lib/pq.
+const DriverName = "pgx"
+
+// open opens a handle on dsn with DriverName. Every connection pgtest makes
+// goes through it, so the driver is chosen in one place.
+func open(dsn string) (*sql.DB, error) {
+	return dbtrace.Open(DriverName, dsn)
+}
 
 // server is the lazily-booted shared instance for THIS process. baseURL is
 // the maintenance DSN (an external FORGE_TEST_POSTGRES_URL server, or the
@@ -269,7 +286,7 @@ func bootEmbedded() (baseURL string, port uint32, ep *embeddedpostgres.EmbeddedP
 }
 
 func openBase(dsn string) (*sql.DB, error) {
-	db, err := sql.Open("postgres", dsn)
+	db, err := open(dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +334,7 @@ func postgresBinary(runtimeDir string) string {
 // ceiling, not the runtime), so anything this old belongs to a process
 // that died before it could clean up. Generous enough that a live
 // concurrent run is never reaped.
-const staleInstanceAge = 30 * time.Minute
+var staleInstanceAge = 30 * time.Minute // a var so tests can age a server past it
 
 // reapStaleInstances removes forge-pgtest runtime dirs — and SIGKILLs any
 // postgres still bound to them — left behind by test binaries that were
@@ -343,8 +360,9 @@ func reapStaleInstances() {
 	if err != nil {
 		return
 	}
+	inUse := portsInUse()
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || inUse[e.Name()] {
 			continue
 		}
 		dir := filepath.Join(root, e.Name())
@@ -386,6 +404,33 @@ func reapStaleInstances() {
 		reclaimShmSegment(pidFile)
 		_ = os.RemoveAll(dir)
 	}
+}
+
+// portsInUse names the runtime dirs (by port) a live process is still using:
+// the pool's shared server while it has a live user, and every standalone
+// server whose owner is alive. Age says nothing about these. A shared server
+// serves a whole fan-out, which on a loaded machine (or across a sleep, which
+// ages every file by the wall clock) easily outlives staleInstanceAge, and
+// SIGKILLing it killed every test still using it.
+func portsInUse() map[string]bool {
+	in := map[string]bool{}
+	if st := readPoolState(); st.Port != 0 && len(prunePIDs(st.Users)) > 0 {
+		in[strconv.FormatUint(uint64(st.Port), 10)] = true
+	}
+	entries, _ := os.ReadDir(filepath.Join(os.TempDir(), "forge-pgtest"))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(os.TempDir(), "forge-pgtest", e.Name(), ownerFile))
+		if err != nil {
+			continue
+		}
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 && processAlive(pid) {
+			in[e.Name()] = true
+		}
+	}
+	return in
 }
 
 // shmIDFromPidfile parses the System V shared-memory segment id postgres
@@ -469,8 +514,8 @@ func cacheDir() string {
 // of a new machine).
 //
 // Callers own the returned cleanup; tests typically defer it or register
-// it with t.Cleanup. The connection is configured for postgres
-// (database/sql driver "postgres").
+// it with t.Cleanup. The connection is opened with DriverName (pgx), the
+// driver production uses.
 func New() (*sql.DB, func(), error) {
 	return newOnShared("")
 }
@@ -508,7 +553,7 @@ func newOnShared(template string) (*sql.DB, func(), error) {
 	}
 
 	dsn := replaceDBName(s.baseURL, name)
-	db, err := sql.Open("postgres", dsn)
+	db, err := open(dsn)
 	if err != nil {
 		_, _ = s.baseDB.Exec("DROP DATABASE IF EXISTS " + name)
 		return nil, nil, err
@@ -627,7 +672,7 @@ func newAtURL(baseURL, template string) (*sql.DB, func(), error) {
 	}
 
 	dsn := replaceDBName(baseURL, name)
-	db, err := sql.Open("postgres", dsn)
+	db, err := open(dsn)
 	if err != nil {
 		dropAndClose()
 		return nil, nil, err
@@ -792,13 +837,12 @@ func quoteIdent(ident string) string {
 
 // isDuplicateDatabaseErr reports whether err is postgres' duplicate_database
 // (SQLSTATE 42P04) — a concurrent creator won the race between EnsureDatabase's
-// existence check and its CREATE DATABASE. lib/pq returns a raw *pq.Error from
-// Exec (unwrapped), so a direct type assertion suffices.
+// existence check and its CREATE DATABASE. Matched on the SQLSTATE through the
+// driver-neutral SQLState() method, which pgx's *pgconn.PgError and lib/pq's
+// *pq.Error both carry.
 func isDuplicateDatabaseErr(err error) bool {
-	if pqErr, ok := err.(*pq.Error); ok {
-		return pqErr.Code.Name() == "duplicate_database"
-	}
-	return false
+	var sqlState interface{ SQLState() string }
+	return errors.As(err, &sqlState) && sqlState.SQLState() == "42P04"
 }
 
 // CanReach reports whether a postgres server is reachable at baseURL with
@@ -809,7 +853,7 @@ func isDuplicateDatabaseErr(err error) bool {
 // an unreachable or wrong-credential candidate is skipped rather than
 // turned into a hard CREATE DATABASE error.
 func CanReach(baseURL string) bool {
-	db, err := sql.Open("postgres", withConnectTimeout(baseURL, 2))
+	db, err := open(withConnectTimeout(baseURL, 2))
 	if err != nil {
 		return false
 	}
@@ -820,10 +864,9 @@ func CanReach(baseURL string) bool {
 	return db.PingContext(ctx) == nil
 }
 
-// withConnectTimeout appends a lib/pq connect_timeout (seconds) to a DSN so
-// a probe against a dead host fails fast instead of hanging on the OS TCP
-// timeout. Appended unconditionally — a duplicate param is harmless (pq
-// takes the last).
+// withConnectTimeout appends a libpq-style connect_timeout (seconds) to a
+// DSN so a probe against a dead host fails fast instead of hanging on the OS
+// TCP timeout. Appended unconditionally: a duplicate param is harmless.
 func withConnectTimeout(dsn string, seconds int) string {
 	sep := "?"
 	if strings.Contains(dsn, "?") {

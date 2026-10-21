@@ -44,7 +44,7 @@ import (
 {{- end}}
 {{- if .NeedsDBStore}}
 
-	"{{.Module}}/internal/db"
+	"{{.DBStoreImport}}"
 {{- end}}
 {{range .Order}}
 	{{.Alias}} "{{$.Module}}/{{.ImportPath}}"

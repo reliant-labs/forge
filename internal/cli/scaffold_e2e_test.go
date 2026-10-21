@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -15,18 +16,15 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
 	"time"
 
-	"github.com/reliant-labs/forge/internal/templates"
-
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
 // TestE2EScaffoldBasicProject creates a project with a single service,
 // runs generate, and verifies the full toolchain: build, vet, test, lint.
 func TestE2EScaffoldBasicProject(t *testing.T) {
-	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
@@ -35,6 +33,7 @@ func TestE2EScaffoldBasicProject(t *testing.T) {
 	runCmd(t, dir, forgeBin, "project", "new", "basicapp", "--mod", "example.com/basicapp", "--service", "api")
 
 	projectDir := filepath.Join(dir, "basicapp")
+	addCorpusForgePkgReplace(t, projectDir)
 	assertPathExistsE2E(t, filepath.Join(projectDir, "forge.yaml"))
 	assertPathExistsE2E(t, filepath.Join(projectDir, "go.mod"))
 	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "api"))
@@ -77,7 +76,6 @@ func TestE2EScaffoldBasicProject(t *testing.T) {
 // TestE2EScaffoldMultiServiceProject creates a project with multiple services
 // and a frontend, then verifies everything builds.
 func TestE2EScaffoldMultiServiceProject(t *testing.T) {
-	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
@@ -90,6 +88,7 @@ func TestE2EScaffoldMultiServiceProject(t *testing.T) {
 	)
 
 	projectDir := filepath.Join(dir, "multiapp")
+	addCorpusForgePkgReplace(t, projectDir)
 
 	// Verify all services exist
 	for _, svc := range []string{"api", "users", "orders"} {
@@ -133,7 +132,6 @@ func TestE2EScaffoldMultiServiceProject(t *testing.T) {
 // TestE2EScaffoldAddService creates a project, then adds a service using
 // `forge scaffold service`, regenerates, and verifies the build.
 func TestE2EScaffoldAddService(t *testing.T) {
-	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
@@ -144,6 +142,7 @@ func TestE2EScaffoldAddService(t *testing.T) {
 	runCmd(t, dir, forgeBin, "project", "new", "addtest", "--mod", "example.com/addtest", "--service", "api")
 
 	projectDir := filepath.Join(dir, "addtest")
+	addCorpusForgePkgReplace(t, projectDir)
 
 	// Add a new service
 	runCmd(t, projectDir, forgeBin, "scaffold", "service", "billing")
@@ -163,10 +162,10 @@ func TestE2EScaffoldAddService(t *testing.T) {
 	// Build
 	runCmd(t, projectDir, "go", "build", "./...")
 
-	// Verify both services are constructed at the generated §2 composition
-	// site (internal/app/compose.go — the explicit per-binary NewComponents
-	// that replaced the by-type injector and, before it, the name-matched
-	// wire_gen/services_gen path).
+	// Verify both services are constructed at the composition graph's
+	// construction site (internal/app/compose.go — one constructor method per
+	// node, which replaced NewComponents, the by-type injector and, before
+	// it, the name-matched wire_gen/services_gen path).
 	composeContent := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "compose.go"))
 	if !strings.Contains(composeContent, "api.New(") {
 		t.Fatal("expected compose.go to construct the api service")
@@ -190,7 +189,6 @@ func TestE2EScaffoldVersion(t *testing.T) {
 // TestE2EScaffoldServerStartup creates a project and verifies the server
 // can start and respond to health checks.
 func TestE2EScaffoldServerStartup(t *testing.T) {
-	requirePublishedForgePkg(t)
 	// Boot needs a real database (see the DATABASE_URL note below); take it
 	// from the ONE shared embedded server rather than starting another.
 	sharedTestPostgres(t)
@@ -202,6 +200,7 @@ func TestE2EScaffoldServerStartup(t *testing.T) {
 	runCmd(t, dir, forgeBin, "project", "new", "srvtest", "--mod", "example.com/srvtest", "--service", "api")
 
 	projectDir := filepath.Join(dir, "srvtest")
+	addCorpusForgePkgReplace(t, projectDir)
 
 	// Generate code
 	runCmd(t, projectDir, forgeBin, "generate")
@@ -225,7 +224,7 @@ func TestE2EScaffoldServerStartup(t *testing.T) {
 		t.Fatalf("provision boot postgres: %v", err)
 	}
 	defer dsnCleanup()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, serverBin, "server")
@@ -276,82 +275,20 @@ func TestE2EScaffoldServerStartup(t *testing.T) {
 		t.Fatalf("expected 200 from /healthz, got %d", resp.StatusCode)
 	}
 
-	// Verify readiness endpoint
-	resp, err = http.Get(addr + "/readyz")
-	if err != nil {
-		t.Fatalf("readiness check failed: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 from /readyz, got %d", resp.StatusCode)
-	}
-}
-
-// ── Published-module guard ──────────────────────────────────────────────────
-//
-// The scaffold e2e tests below exercise the PUBLISHED-module path: a
-// scaffolded project resolving github.com/reliant-labs/forge/pkg from the
-// module proxy with no local replace (exactly what a real user's first
-// build does). When the published snapshot predates the packages current
-// templates import (appkit/serverkit — true until the pkg/vX.Y.Z release
-// tag is pushed; see the release flow in scripts/release-pkg.sh), these
-// tests cannot pass for environmental reasons. They SKIP with that reason
-// rather than fail, so the plain command stays honest:
-//
-//	go test -tags e2e ./internal/cli/
-//
-// runs everything runnable with zero -run incantations, and the skips
-// disappear by themselves the day the tag is published. The local-replace
-// fixtures (fixture_corpus, lifecycle) are unaffected — they pin current-
-// tree behavior and always run.
-var (
-	publishedPkgOnce sync.Once
-	publishedPkgErr  error
-)
-
-func requirePublishedForgePkg(t *testing.T) {
-	t.Helper()
-	publishedPkgOnce.Do(func() {
-		// Probe EVERY forge/pkg subpackage the templates import, not one
-		// hand-named package. The old probe asked for pkg/appkit, which no
-		// template imports at all — so it resolved against the published
-		// module, reported green, and let eleven tests run a `go mod tidy`
-		// that could not possibly succeed: the scaffold imports
-		// pkg/validate, which landed after the last pkg release tag, and
-		// `go mod tidy` ignores go.work by design.
-		want := templates.ForgePkgImports()
-		if len(want) == 0 {
-			publishedPkgErr = fmt.Errorf("templates report no forge/pkg imports; the probe would be vacuous")
-			return
+	// Readiness. /healthz answers from the top of boot, while the graph is
+	// still constructing and starting its nodes; /readyz opens only once the
+	// root has started them all (Drainer.MarkReady). Reading /readyz once,
+	// right after /healthz, raced that boot and saw 503 — so WAIT for it,
+	// with a bound that still fails a server that never becomes ready.
+	if !waitForServing(t, addr, 15*time.Second) {
+		resp, err := http.Get(addr + "/readyz")
+		status := "unreachable"
+		if err == nil {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			status = fmt.Sprintf("%d %s", resp.StatusCode, body)
 		}
-		dir, err := os.MkdirTemp("", "forge-pkg-probe-")
-		if err != nil {
-			publishedPkgErr = err
-			return
-		}
-		defer os.RemoveAll(dir)
-		init := exec.Command("go", "mod", "init", "probe.local/probe")
-		init.Dir = dir
-		if out, err := init.CombinedOutput(); err != nil {
-			publishedPkgErr = fmt.Errorf("probe init: %v\n%s", err, out)
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-		defer cancel()
-		args := make([]string, 0, len(want)+1)
-		args = append(args, "get")
-		for _, name := range want {
-			args = append(args, "github.com/reliant-labs/forge/pkg/"+name+"@latest")
-		}
-		get := exec.CommandContext(ctx, "go", args...)
-		get.Dir = dir
-		if out, err := get.CombinedOutput(); err != nil {
-			publishedPkgErr = fmt.Errorf("published forge/pkg does not satisfy the scaffold's imports %v "+
-				"(push the pkg release tag — see scripts/release-pkg.sh): %v\n%s", want, err, out)
-		}
-	})
-	if publishedPkgErr != nil {
-		t.Skipf("published-module path unavailable: %v", publishedPkgErr)
+		t.Fatalf("/readyz never answered 200 (last: %s)\nserver output:\n%s", status, serverOutput.String())
 	}
 }
 
@@ -425,10 +362,22 @@ var (
 
 // forgeE2EBinaryEnv names a forge binary already built from this checkout,
 // used instead of building one. e2e-suite.yml's prepare job builds forge once
-// — with the same `go build -o <bin> ./cmd/forge` as below, at the same
-// checkout path — and hands it to every shard, so no shard compiles forge.
-// Unset (a developer's run), the binary is built here as always.
+// — with the same `go build -ldflags <devForgeRootLDFlag> -o <bin> ./cmd/forge`
+// as below, at the same checkout path — and hands it to every shard, so no
+// shard compiles forge. Unset (a developer's run), the binary is built here
+// as always.
 const forgeE2EBinaryEnv = "FORGE_E2E_BINARY"
+
+// devForgeRootLDFlag stamps buildinfo.DevForgeRoot with the checkout the
+// binary under test is built from. Every fixture scaffolds with --link-forge,
+// which needs that checkout. Unstamped, forge recovers it from its compiled
+// source paths, and -trimpath erases those: under GOFLAGS=-trimpath (the Go
+// default in the Reliant workspace image) every scaffolding fixture refused
+// with "cannot locate the checkout it was built from". Without -trimpath the
+// stamp is the path discovery would have found, so nothing else changes.
+func devForgeRootLDFlag(repoRoot string) string {
+	return "-X github.com/reliant-labs/forge/internal/buildinfo.DevForgeRoot=" + repoRoot
+}
 
 func buildforgeBinary(t *testing.T) string {
 	t.Helper()
@@ -456,7 +405,7 @@ func buildforgeBinary(t *testing.T) string {
 		// test to finish must not delete what the rest still execute.
 		registerSharedTempDir(dir)
 		bin := filepath.Join(dir, "forge")
-		cmd := exec.Command("go", "build", "-o", bin, "./cmd/forge")
+		cmd := exec.Command("go", "build", "-ldflags", devForgeRootLDFlag(repoRoot), "-o", bin, "./cmd/forge")
 		cmd.Dir = repoRoot
 		if output, berr := cmd.CombinedOutput(); berr != nil {
 			forgeBinaryErr = fmt.Errorf("failed to build forge binary: %w\n%s", berr, output)
@@ -555,17 +504,38 @@ func addforgeReplace(t *testing.T, genDir string) {
 // runCmd runs a command and fails the test on error.
 func runCmd(t *testing.T, dir string, name string, args ...string) {
 	t.Helper()
+	_ = runCmdKeep(t, dir, name, args...)
+}
+
+// runCmdKeep is runCmd returning the combined output, for a test that must
+// show what a command that "succeeded" printed when a later assertion
+// fails — `forge project new` exits 0 when its bootstrap generate fails.
+func runCmdKeep(t *testing.T, dir string, name string, args ...string) string {
+	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GOFLAGS=",       // Clear any global GOFLAGS
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(),
+		"GOFLAGS=",       // Clear any global GOFLAGS (-trimpath goes back on)
 		"GONOSUMCHECK=*", // Don't check sums for test modules
 		"GOPROXY=https://proxy.golang.org,direct", // Ensure module proxy is set
 		"GONOSUMDB=*", // Don't verify sums for test modules
-	)
+	))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("command %q in %s failed: %v\n%s", append([]string{name}, args...), dir, err, output)
+	}
+	return string(output)
+}
+
+// requireComposedE2E fails, with the output of the commands that should
+// have composed it, when the project has no internal/app/compose.go. Those
+// commands exit 0 when their generate fails (it is non-fatal by design), so
+// without this the failure surfaces later as an unrelated missing file.
+func requireComposedE2E(t *testing.T, projectDir string, outputs ...string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(projectDir, "internal", "app", "compose.go")); err != nil {
+		t.Fatalf("the project was never composed (no internal/app/compose.go: %v); what the commands printed:\n%s",
+			err, strings.Join(outputs, "\n----\n"))
 	}
 }
 

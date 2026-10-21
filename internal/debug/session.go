@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 const sessionFile = ".forge/debug-session.json"
@@ -38,7 +40,7 @@ func saveSession(dir string, session *SessionInfo) error {
 	if err != nil {
 		return fmt.Errorf("marshaling session: %w", err)
 	}
-	return os.WriteFile(path, data, 0o644)
+	return atomicfile.WriteFile(path, data, 0o644)
 }
 
 // clearSession removes the session file from dir.

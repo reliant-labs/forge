@@ -275,7 +275,8 @@ func collectShapes(projectDir string) []shape {
 	rpcs := scanProtos(filepath.Join(projectDir, "proto"))
 	out = append(out, rpcs...)
 	out = append(out, scanMigrations(filepath.Join(projectDir, "db", "migrations"))...)
-	out = append(out, scanStores(filepath.Join(projectDir, "internal", "db"))...)
+	ormDir := codegen.ProjectORMPackage(projectDir).PackageDir()
+	out = append(out, scanStores(filepath.Join(projectDir, filepath.FromSlash(ormDir)), ormDir)...)
 	out = append(out, scanHandlers(projectDir, rpcs)...)
 	out = append(out, scanHooks(filepath.Join(projectDir, "frontends"))...)
 	out = append(out, scanDeployTargets(projectDir)...)
@@ -499,14 +500,14 @@ func scanHandlers(projectDir string, rpcs []shape) []shape {
 // name alone still leaves "and what are its methods" unanswered; `go doc`
 // does render an interface's method set in full, so unlike a struct it is a
 // route that actually terminates.
-func scanStores(root string) []shape {
+func scanStores(root, ormDir string) []shape {
 	var out []shape
 	eachLine(root, ".go", func(rel string, n int, line string) {
 		if strings.HasSuffix(rel, "_test.go") {
 			return
 		}
 		if m := reStoreIface.FindStringSubmatch(line); m != nil {
-			out = append(out, shape{"store", m[1], rel, n, "go doc ./internal/db " + m[1]})
+			out = append(out, shape{"store", m[1], rel, n, "go doc ./" + ormDir + " " + m[1]})
 		}
 	})
 	return out

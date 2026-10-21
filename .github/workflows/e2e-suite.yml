@@ -162,7 +162,7 @@ jobs:
             | grep -vE '^internal/templates/project/skills/' || true)
           if [ -n "$hits" ]; then
             echo "e2e=true" >> "$GITHUB_OUTPUT"
-            { echo "### The E2E Suite runs on this pull request (informational)"; echo; echo "It changes:"; echo; sed 's/^/- `/; s/$/`/' <<<"$hits" | head -40; } >> "$GITHUB_STEP_SUMMARY"
+            { echo "### The E2E Suite runs on this pull request (informational)"; echo; echo "It changes:"; echo; awk '{ printf "- \140%s\140\n", $0 }' <<<"$hits" | head -40; } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "e2e=false" >> "$GITHUB_OUTPUT"
           fi

@@ -295,9 +295,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { label: "-short 1/2, deadcodeguard", shard: "1/2", args: "0 2", guards: "deadcodeguard" }
-          - { label: "-short 2/2, tierguard", shard: "2/2", args: "1 2", guards: "tierguard" }
-          - { label: "removalguard, writeguard", shard: "guards", args: "", guards: "removalguard writeguard" }
+          - label: "-short 1/2, deadcodeguard"
+            shard: "1/2"
+            args: "0 2"
+            guards: "deadcodeguard"
+          - label: "-short 2/2, tierguard"
+            shard: "2/2"
+            args: "1 2"
+            guards: "tierguard"
+          - label: "removalguard, writeguard"
+            shard: "guards"
+            args: ""
+            guards: "removalguard writeguard"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

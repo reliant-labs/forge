@@ -91,7 +91,14 @@ func renderStoreInterfaces(pkgName string, entities []config.PlanEntity) []byte 
 
 	writeORMGeneratedHeader(&b, "the APPLIED schema (db/migrations) — the CRUD delegates of every <entity>_orm_gen.go beside it.")
 	fmt.Fprintf(&b, "package %s\n\n", pkgName)
-	b.WriteString("import (\n\t\"context\"\n\n\t\"github.com/reliant-labs/forge/pkg/orm\"\n)\n\n")
+	// crud is imported for UpdateOption, which only a store with an
+	// Update names: a project whose every entity is append-only or a view
+	// would otherwise fail to build on an unused import.
+	if storesWrite(entities) {
+		b.WriteString("import (\n\t\"context\"\n\n\t\"github.com/reliant-labs/forge/pkg/crud\"\n\t\"github.com/reliant-labs/forge/pkg/orm\"\n)\n\n")
+	} else {
+		b.WriteString("import (\n\t\"context\"\n\n\t\"github.com/reliant-labs/forge/pkg/orm\"\n)\n\n")
+	}
 
 	b.WriteString("// This file gives the generated CRUD delegates an INTERFACE shape, so a\n")
 	b.WriteString("// domain package can depend on persistence the same way it depends on any\n")
@@ -122,6 +129,17 @@ func renderStoreInterfaces(pkgName string, entities []config.PlanEntity) []byte 
 
 // writeEntityStore emits one entity's store interface and the compile-time
 // assertion that the generated delegates satisfy it.
+// storesWrite reports whether any entity's store carries an Update — the
+// only store methods that name a pkg/crud type.
+func storesWrite(entities []config.PlanEntity) bool {
+	for _, ent := range entities {
+		if !ent.AppendOnly && !ent.ReadOnly {
+			return true
+		}
+	}
+	return false
+}
+
 func writeEntityStore(b *strings.Builder, ent config.PlanEntity) {
 	if ent.ReadOnly {
 		writeReadOnlyStore(b, ent)
@@ -184,9 +202,9 @@ func writeEntityStore(b *strings.Builder, ent config.PlanEntity) {
 	// Reads and Create stay: append-only means immutable, not invisible.
 	if !ent.AppendOnly {
 		fmt.Fprintf(b, "\t// Update%s writes every non-skipupdate column of msg.\n", msgName)
-		fmt.Fprintf(b, "\tUpdate%s(ctx context.Context, msg *%s) error\n\n", msgName, msgName)
+		fmt.Fprintf(b, "\tUpdate%s(ctx context.Context, msg *%s, opts ...crud.UpdateOption) error\n\n", msgName, msgName)
 		fmt.Fprintf(b, "\t// Update%sMasked writes only the named fields.\n", msgName)
-		fmt.Fprintf(b, "\tUpdate%sMasked(ctx context.Context, msg *%s, fields []string) error\n\n", msgName, msgName)
+		fmt.Fprintf(b, "\tUpdate%sMasked(ctx context.Context, msg *%s, fields []string, opts ...crud.UpdateOption) error\n\n", msgName, msgName)
 		fmt.Fprintf(b, "\t// Delete%s removes a %s by primary key.\n", msgName, msgName)
 		fmt.Fprintf(b, "\tDelete%s(ctx context.Context, id %s) error\n\n", msgName, pkGoType)
 	}
@@ -214,10 +232,10 @@ func writeEntityStore(b *strings.Builder, ent config.PlanEntity) {
 	// caller holding the adapter directly would compile straight through
 	// the guard.
 	if !ent.AppendOnly {
-		fmt.Fprintf(b, "func (s %s) Update%s(ctx context.Context, msg *%s) error {\n", adapter, msgName, msgName)
-		fmt.Fprintf(b, "\treturn Update%s(ctx, s.db, msg)\n}\n\n", msgName)
-		fmt.Fprintf(b, "func (s %s) Update%sMasked(ctx context.Context, msg *%s, fields []string) error {\n", adapter, msgName, msgName)
-		fmt.Fprintf(b, "\treturn Update%sMasked(ctx, s.db, msg, fields)\n}\n\n", msgName)
+		fmt.Fprintf(b, "func (s %s) Update%s(ctx context.Context, msg *%s, opts ...crud.UpdateOption) error {\n", adapter, msgName, msgName)
+		fmt.Fprintf(b, "\treturn Update%s(ctx, s.db, msg, opts...)\n}\n\n", msgName)
+		fmt.Fprintf(b, "func (s %s) Update%sMasked(ctx context.Context, msg *%s, fields []string, opts ...crud.UpdateOption) error {\n", adapter, msgName, msgName)
+		fmt.Fprintf(b, "\treturn Update%sMasked(ctx, s.db, msg, fields, opts...)\n}\n\n", msgName)
 		fmt.Fprintf(b, "func (s %s) Delete%s(ctx context.Context, id %s) error {\n", adapter, msgName, pkGoType)
 		fmt.Fprintf(b, "\treturn Delete%s(ctx, s.db, id)\n}\n\n", msgName)
 	}
@@ -267,9 +285,9 @@ func writeCompositeKeyStore(b *strings.Builder, ent config.PlanEntity, keys []ke
 	if !ent.AppendOnly {
 		methods = append(methods,
 			method{"Update" + msgName + " writes every non-skipupdate column of msg.",
-				"Update" + msgName + "(ctx context.Context, msg *" + msgName + ") error", "Update" + msgName + "(ctx, s.db, msg)"},
+				"Update" + msgName + "(ctx context.Context, msg *" + msgName + ", opts ...crud.UpdateOption) error", "Update" + msgName + "(ctx, s.db, msg, opts...)"},
 			method{"Update" + msgName + "Masked writes only the named fields.",
-				"Update" + msgName + "Masked(ctx context.Context, msg *" + msgName + ", fields []string) error", "Update" + msgName + "Masked(ctx, s.db, msg, fields)"},
+				"Update" + msgName + "Masked(ctx context.Context, msg *" + msgName + ", fields []string, opts ...crud.UpdateOption) error", "Update" + msgName + "Masked(ctx, s.db, msg, fields, opts...)"},
 			method{"Delete" + msgName + "ByPK removes a " + msgName + " by its whole key.",
 				"Delete" + msgName + "ByPK(ctx context.Context, " + params + ") error", "Delete" + msgName + "ByPK(ctx, s.db, " + args + ")"},
 		)

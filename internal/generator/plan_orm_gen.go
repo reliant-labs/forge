@@ -764,9 +764,10 @@ func writeORMRepoAndDelegates(b *strings.Builder, msgName, pkGoType string, soft
 	fmt.Fprintf(b, "// Update%sMasked writes ONLY the named columns (AIP-134 update_mask;\n", msgName)
 	b.WriteString("// unknown/immutable paths return *orm.UnknownFieldError). It writes a\n")
 	b.WriteString("// forge:read-only column named here: this is how the code that owns one\n")
-	b.WriteString("// sets it, since no client Update can.\n")
-	fmt.Fprintf(b, "func Update%sMasked(ctx context.Context, db orm.Context, msg *%s, fields []string) error {\n", msgName, msgName)
-	fmt.Fprintf(b, "\treturn %s.UpdateMasked(ctx, db, msg, fields)\n", repoVar)
+	b.WriteString("// sets it, since no client Update can. opts are Update's: crud.NoReadBack()\n")
+	b.WriteString("// skips the read-back.\n")
+	fmt.Fprintf(b, "func Update%sMasked(ctx context.Context, db orm.Context, msg *%s, fields []string, opts ...crud.UpdateOption) error {\n", msgName, msgName)
+	fmt.Fprintf(b, "\treturn %s.UpdateMasked(ctx, db, msg, fields, opts...)\n", repoVar)
 	b.WriteString("}\n\n")
 
 	// Delete
@@ -896,9 +897,10 @@ func writeCompositeKeyDelegates(b *strings.Builder, msgName string, keys []keyPa
 	fmt.Fprintf(b, "\treturn %s.Update(ctx, db, msg, opts...)\n}\n\n", repoVar)
 
 	fmt.Fprintf(b, "// Update%sMasked writes ONLY the named columns of the row msg's key\n", msgName)
-	b.WriteString("// addresses (unknown/immutable paths return *orm.UnknownFieldError).\n")
-	fmt.Fprintf(b, "func Update%sMasked(ctx context.Context, db orm.Context, msg *%s, fields []string) error {\n", msgName, msgName)
-	fmt.Fprintf(b, "\treturn %s.UpdateMasked(ctx, db, msg, fields)\n}\n\n", repoVar)
+	b.WriteString("// addresses (unknown/immutable paths return *orm.UnknownFieldError);\n")
+	b.WriteString("// opts are Update's (crud.NoReadBack() skips the read-back).\n")
+	fmt.Fprintf(b, "func Update%sMasked(ctx context.Context, db orm.Context, msg *%s, fields []string, opts ...crud.UpdateOption) error {\n", msgName, msgName)
+	fmt.Fprintf(b, "\treturn %s.UpdateMasked(ctx, db, msg, fields, opts...)\n}\n\n", repoVar)
 
 	fmt.Fprintf(b, "// Delete%sByPK removes the %s whose key %s is the one given (soft\n", msgName, msgName, keyDoc)
 	b.WriteString("// delete stamps deleted_at when the entity opts in; otherwise a hard DELETE).\n")

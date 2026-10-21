@@ -202,6 +202,42 @@ func TestGeneratePlanORM_OutputTypeChecks(t *testing.T) {
 		goFiles = append(goFiles, path)
 	}
 
+	// A caller, compiled with the generated package: every generated
+	// by-key write takes the options its pkg/crud call does, through the
+	// delegates and through the stores, single and composite key alike.
+	// (P5b L4 had to reach for the unexported <e>Repo to pass NoReadBack.)
+	overlay[filepath.Join(synthDir, "zz_update_options_caller.go")] = []byte(`package db
+
+import (
+	"context"
+
+	"github.com/reliant-labs/forge/pkg/crud"
+	"github.com/reliant-labs/forge/pkg/orm"
+)
+
+func callerPassesUpdateOptions(ctx context.Context, d orm.Context, p *Project, c *MessageOrderCounter, ps ProjectStore, cs MessageOrderCounterStore) error {
+	if err := UpdateProjectMasked(ctx, d, p, []string{"name"}, crud.NoReadBack()); err != nil {
+		return err
+	}
+	if err := UpdateProject(ctx, d, p, crud.NoReadBack(), crud.Preserve("name")); err != nil {
+		return err
+	}
+	if err := UpdateMessageOrderCounterMasked(ctx, d, c, []string{"next_seq"}, crud.NoReadBack()); err != nil {
+		return err
+	}
+	if err := ps.UpdateProjectMasked(ctx, p, []string{"name"}, crud.NoReadBack()); err != nil {
+		return err
+	}
+	if err := ps.UpdateProject(ctx, p, crud.NoReadBack()); err != nil {
+		return err
+	}
+	if err := cs.UpdateMessageOrderCounterMasked(ctx, c, []string{"next_seq"}, crud.NoReadBack()); err != nil {
+		return err
+	}
+	return cs.UpdateMessageOrderCounter(ctx, c, crud.NoReadBack())
+}
+`)
+
 	cfg := &packages.Config{
 		Mode:    packages.NeedName | packages.NeedTypes | packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedDeps | packages.NeedImports,
 		Dir:     repoRoot,

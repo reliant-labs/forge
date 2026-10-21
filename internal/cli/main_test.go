@@ -13,6 +13,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/forgecompat"
+	"github.com/reliant-labs/forge/internal/forgedelegate"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/pkg/cloudcred"
 	"github.com/reliant-labs/forge/pkg/hostslot"
@@ -106,6 +108,14 @@ func TestMain(m *testing.M) {
 	// test timeout for it. The slot tests (slot_test.go) set their own.
 	_ = os.Setenv(hostslot.SlotsEnv(hostslot.Heavy), "off")
 	_ = os.Unsetenv(hostslot.EnvHeld)
+	// Nor does a test inherit the host's answer to "may this forge run a
+	// project pinned to another one". A Reliant agent's shell exports
+	// FORGE_ALLOW_VERSION_SKEW (and a delegated forge FORGE_VERSION_DELEGATED);
+	// either turns every pin-skew refusal and hand-off off, so
+	// TestForgePinSkew_* and TestDelegation_* failed on such a host and passed
+	// on a clean one. Tests that want them set them with t.Setenv.
+	_ = os.Unsetenv(forgecompat.SkewOverrideEnv)
+	_ = os.Unsetenv(forgedelegate.MarkerEnv)
 	if token, ok := fakeCredentialHelperInvocation(os.Args[1:]); ok {
 		// The test binary re-executed as a credential helper (see
 		// useFakeCredentialHelper): answer the real protocol and exit.

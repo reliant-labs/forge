@@ -5,13 +5,15 @@
 // to forge.yaml (lint.tracing.log_wrappers, lint.rules), to the suppression
 // directives, and to forge's own instrument decision for contract packages.
 //
-// Autofix. forge-tracing-log-without-ctx has a mechanical fix, applied:
+// Autofix. forge-tracing-log-without-ctx and forge-tracing-contract-
+// uninstrumented have mechanical fixes, applied only under --fix (lint is a
+// gate and reports by default):
 //
-//   - by `forge lint --tracing` (unless --no-fix) at any severity but off —
-//     naming the lane is the request to migrate;
-//   - by the full sweep only where the rule is at error, so pinning a forge
-//     that adds the rule to a repo that dialled it to warn rewrites nothing
-//     until that repo runs the migration itself.
+//   - by `forge lint --tracing --fix` at any severity but off — naming the
+//     lane is the request to migrate;
+//   - by the full sweep (`forge lint --fix`) only where the rule is at error,
+//     so pinning a forge that adds the rule to a repo that dialled it to warn
+//     rewrites nothing until that repo runs the migration itself.
 //
 // A finding a suppression directive covers is never rewritten.
 
@@ -164,7 +166,7 @@ func runTracingLint(cwd string, cfg *config.ProjectConfig, fix, explicit bool) e
 		}
 	}
 	if fixableWarns > 0 && !explicit {
-		fmt.Printf("\n  %d finding(s) can be rewritten automatically: run `forge lint --tracing`.\n", fixableWarns)
+		fmt.Printf("\n  %d finding(s) can be rewritten automatically: run `forge lint --tracing --fix`.\n", fixableWarns)
 	}
 	if errs == 0 {
 		fmt.Println("(warnings only — not failing the build)")
@@ -190,7 +192,7 @@ func describeTracingFix(f tracinglint.Fixed) string {
 	}
 }
 
-// tracingAutoFixable reports whether `forge lint --tracing` rewrites a
+// tracingAutoFixable reports whether `forge lint --tracing --fix` rewrites a
 // finding of rule itself.
 func tracingAutoFixable(rule string) bool {
 	return rule == tracinglint.RuleLogWithoutCtx || rule == tracinglint.RuleContractUninstrumented

@@ -16,7 +16,7 @@
 // and returns the decorated value. Instrumenting a construction is a rename of
 // one identifier, valid in every position a call can appear (an assignment, a
 // return, a struct field, an argument), with no change to any type. That is
-// what `forge lint --tracing` rewrites, and what makes the rule enforceable:
+// what `forge lint --tracing --fix` rewrites, and what makes the rule enforceable:
 // a missed site is a one-token fix, not a refactor.
 
 package contract
@@ -171,7 +171,7 @@ func renderInstrumentedCtor(c instrumentedCtor, iface, ctorName string) string {
 	fmt.Fprintf(&b, "\n// %s is New with its result wrapped in %s: the same\n", InstrumentedCtorName, ctorName)
 	b.WriteString("// parameters and results, so a construction is instrumented by renaming\n")
 	fmt.Fprintf(&b, "// New to %s wherever it is called (providers.go, a *_wire.go\n", InstrumentedCtorName)
-	b.WriteString("// file, another binary). `forge lint --tracing` rewrites any it finds.\n")
+	b.WriteString("// file, another binary). `forge lint --tracing --fix` rewrites any it finds.\n")
 	if c.Fallible {
 		fmt.Fprintf(&b, "func %s(%s) (%s, error) {\n", InstrumentedCtorName, c.Params, iface)
 		fmt.Fprintf(&b, "\tinstrumentedInner, instrumentedErr := New(%s)\n", c.Args)

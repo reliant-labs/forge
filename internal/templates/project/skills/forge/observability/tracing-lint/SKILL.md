@@ -28,6 +28,8 @@ lint:
 ```
 
 Adopting the rules in a big codebase: set them to `warn` under `lint.rules`,
-run `forge lint --tracing` once (it rewrites every log call at any severity
-but off; the full sweep rewrites only at error), fix the rest, then drop the
+run `forge lint --tracing --fix` once (it rewrites every log call and every
+undecorated contract construction at any severity but off; `forge lint --fix`
+rewrites only at error, and without `--fix` nothing is rewritten), fix the
+rest, then drop the
 `warn` entries.

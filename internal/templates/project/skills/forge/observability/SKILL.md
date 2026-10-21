@@ -233,8 +233,8 @@ Every RPC already writes a structured audit record to your logs (`log_type=audit
 
 `forge lint` gates on the places app code cuts a trace: a log call that drops
 the `ctx` in scope, a raw `*http.Client` or `sql.Open`, a contract built
-without its decorator. `forge lint --tracing` runs them alone and rewrites the
-log calls: `observability/tracing-lint`.
+without its decorator. `forge lint --tracing` runs them alone, and with
+`--fix` rewrites the log calls and the constructions: `observability/tracing-lint`.
 
 ## Opting out (hosted observability is opt-out)
 

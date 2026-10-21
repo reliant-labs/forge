@@ -943,9 +943,9 @@ func lintPipeline() []linterStep {
 		// written without the context in scope (no trace_id), an untraced
 		// *http.Client or database pool, a contract constructed without its
 		// generated decorator. GATES on error findings; a repo adopting a
-		// rule dials it to warn in lint.rules. The full sweep autofixes
-		// log-without-ctx only where it is at error; `forge lint --tracing`
-		// is the migration. See lint_tracing.go.
+		// rule dials it to warn in lint.rules. Under --fix the full sweep
+		// rewrites only where a rule is at error; `forge lint --tracing
+		// --fix` is the migration. See lint_tracing.go.
 		{
 			name:  "tracing lint",
 			gates: true,

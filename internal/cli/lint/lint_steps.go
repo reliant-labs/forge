@@ -687,6 +687,27 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 13d-ter-bis. Go-markers — the same check for .go comments, which
+		// GATES: a `//forge:` directive comment has one purpose, so a name no
+		// recognizer reads, or a known marker in a spelling its parser
+		// ignores (`//forge:exclude-contract — why`), is a no-op the author
+		// cannot see (lint_go_markers.go).
+		{
+			name:  "go-markers lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "", ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runGoMarkersLint(rc.cwd)
+			},
+			errFormat: "❌ go-markers lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectGoMarkersJSON(rc.cwd)
+			},
+		},
+
 		// 13d-quater. Create-nullability — a field's `optional` label must
 		// agree between an entity message and its Create<Entity>Request.
 		// The Create request is the one envelope that FLATTENS the entity,

@@ -78,9 +78,15 @@ func hasNoORMMarker(projectDir, relDir string) bool {
 		sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 		found := false
 		for sc.Scan() {
-			line := strings.TrimSpace(sc.Text())
-			if strings.HasPrefix(line, NoORMDirective) {
-				rest := line[len(NoORMDirective):]
+			// Spaced (`// forge:no-orm`) or unspaced, like every other Go
+			// marker: the spaced spelling used to be read as prose, so a
+			// project that wrote it kept its ORM with no word said.
+			text, isComment := strings.CutPrefix(strings.TrimSpace(sc.Text()), "//")
+			if !isComment {
+				continue
+			}
+			text = strings.TrimLeft(text, " \t")
+			if rest, ok := strings.CutPrefix(text, strings.TrimPrefix(NoORMDirective, "//")); ok {
 				if rest == "" || rest[0] == ':' || rest[0] == ' ' || rest[0] == '\t' {
 					found = true
 					break

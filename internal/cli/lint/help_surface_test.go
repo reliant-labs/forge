@@ -107,6 +107,11 @@ func TestLintHelpSurface(t *testing.T) {
 		// is the adoption failure the flag exists to avoid.
 		"gate-json",
 		"generated-drift",
+		// The Go-source twin of proto-markers, and the only place a
+		// `//forge:` comment forge ignores surfaces: reliant's
+		// `//forge:exclude-contract — why` left a package un-excluded while
+		// the contract lint failed with no hint. Visible for the same reason.
+		"go-markers",
 		// A continuous rule about the user's own composition: a service no
 		// root reaches is a service no process serves, and a listener over
 		// the wrong audience's chain lets one trust domain reach another.

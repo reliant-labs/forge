@@ -276,6 +276,7 @@ func lintLaneFlags(f *lintFlags) []lintLaneFlag {
 		{name: "fixture-drift", on: &f.crudFixtures}, // the deprecated --crud-fixtures alias
 		{name: "time-bucketing", on: &f.timeBucketing},
 		{name: "proto-markers", on: &f.protoMarkers},
+		{name: "go-markers", on: &f.goMarkers},
 		{name: "proto-options", on: &f.protoOptions},
 		{name: "create-nullability", on: &f.createNullability},
 		{name: "computed-fields", on: &f.computedFields},

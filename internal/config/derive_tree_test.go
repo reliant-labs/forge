@@ -105,15 +105,18 @@ func TestDeriveFeatures_NoORMMarkerIsScoped(t *testing.T) {
 	cases := map[string]struct {
 		file, body string
 	}{
-		"bare marker":            {"internal/db/doc.go", "//forge:no-orm\npackage db\n"},
-		"marker with reason":     {"internal/db/db.go", "// x\n//forge:no-orm: why\npackage db\n"},
+		"bare marker":        {"internal/db/doc.go", "//forge:no-orm\npackage db\n"},
+		"marker with reason": {"internal/db/db.go", "// x\n//forge:no-orm: why\npackage db\n"},
+		// Spaced, like every other Go marker. It used to be read as prose:
+		// the project kept its ORM and nothing said the marker was ignored.
+		"spaced marker":          {"internal/db/doc.go", "// forge:no-orm: hand-written repository\npackage db\n"},
 		"generated file ignored": {"internal/db/user_gen.go", "//forge:no-orm\npackage db\n"},
 		"test file ignored":      {"internal/db/db_test.go", "//forge:no-orm\npackage db\n"},
 		"other package ignored":  {"internal/other/doc.go", "//forge:no-orm\npackage other\n"},
 		"prefix lookalike":       {"internal/db/doc.go", "//forge:no-orm-ever\npackage db\n"},
 		"mentioned in prose":     {"internal/db/doc.go", "// say //forge:no-orm to opt out\npackage db\n"},
 	}
-	wantOff := map[string]bool{"bare marker": true, "marker with reason": true}
+	wantOff := map[string]bool{"bare marker": true, "marker with reason": true, "spaced marker": true}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			root := serviceTree(t)

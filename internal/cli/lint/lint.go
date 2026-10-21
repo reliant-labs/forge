@@ -1639,7 +1639,7 @@ func golangciRunArgs(extra []string, paths []string) []string {
 // format pre-pass already fixes; everything else stays a finding for the
 // author. rc is taken so the mode is visibly not consulted.
 func golangciGateArgs(rc *lintRunCtx) []string {
-	return golangciRunArgs(nil, rc.paths)
+	return golangciRunArgs(nil, rc.goPackages())
 }
 
 // runGolangciLint runs the gating golangci-lint pass with the binary chosen
@@ -1681,7 +1681,7 @@ func runTypedAccessGuardAdvisory(rc *lintRunCtx) error {
 	if reason := typedAccessGuardUnconfigured(rc.cwd); reason != "" {
 		return laneUnavailable(typedAccessGuardUnconfiguredHint, "%s", reason)
 	}
-	out, err := rc.execGolangci(golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, rc.paths))
+	out, err := rc.execGolangci(golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, rc.goPackages()))
 	if err != nil {
 		return laneUnavailable(typedAccessGuardUnavailableHint, "%v", err)
 	}

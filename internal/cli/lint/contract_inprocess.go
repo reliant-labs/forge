@@ -30,6 +30,7 @@ import (
 	"golang.org/x/tools/go/packages"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/linter/contract"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 )
@@ -205,6 +206,11 @@ func loadPackagesForAnalysis(ctx context.Context, paths []string) ([]*packages.P
 		// skip test files themselves (contract/testfiles.go) — a test
 		// file is not a package's API — so every driver agrees.
 		Tests: true,
+	}
+	// A node_modules package that ships Go source is a package of this
+	// module as far as ./... is concerned, and not the project's to lint.
+	if cwd, werr := os.Getwd(); werr == nil {
+		paths = goexec.ExcludeNodeModules(ctx, cwd, env, paths)
 	}
 	pkgs, err := packages.Load(cfg, paths...)
 	if err != nil {

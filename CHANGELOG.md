@@ -175,6 +175,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server while its owner lives, however old its pid file looks: a fan-out
   outlives the 30-minute stale age, and a sleep ages every file by the wall
   clock.
+- **`forge lint` skips `node_modules` Go packages in a project reached
+  through a symlink.** `go list` reports package directories under the
+  caller's `$PWD` spelling (macOS's `/var`, a symlinked home or worktree),
+  and the filter compared them with the resolved project path. So nothing
+  matched, and golangci-lint and the contract linter linted third-party Go
+  under `node_modules` again. A project directory that was itself a symlink
+  also skipped the search for `node_modules`. Both sides are now resolved.
 
 ### Changed
 

@@ -10,15 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`forge cloud identity` administers users, not just reads them.** New verbs,
-  each one rpc of `controlplane.v1.IdentityService`: `set-roles <env> --user
-  <id|email> --role a --role b` (or `--none`), `reset`, `lock`, `unlock`,
-  `delete` (asks first; `--yes` skips the question; a closed stdin refuses) and
-  `revoke-sessions`. `--user` takes a user id, or an email matched exactly
-  (case-insensitively) through `users`; no match, or two, is a refusal. The
-  scopes are `identity:read` for reads and `identity:manage` for every verb that
-  changes a user. forge presents neither up front: a Reliant session or `forge
-  login` credential is traded for the scope the control plane's 403 names, for
-  an hour, exactly as `deploy:read` and `secret:write` are. An explicit
+  each one rpc of `controlplane.v1.IdentityService`:
+  `set-roles <env> --user <id|email> --role a --role b` (or `--none`), `reset`,
+  `lock`, `unlock`, `delete` (asks first; `--yes` skips the question; a closed
+  stdin refuses) and `revoke-sessions`. `--user` takes a user id, or an email
+  matched exactly (case-insensitively) through `users`; no match, or two, is a
+  refusal. The scopes are `identity:read` for reads and `identity:manage` for
+  every verb that changes a user. forge presents neither up front: a Reliant
+  session or `forge login` credential is traded for the scope the control
+  plane's 403 names, for an hour, exactly as `deploy:read` and `secret:write`
+  are. An explicit
   `--token` is used as given. `invite` is unchanged.
 - **`forge project new --verify`** keeps the compile check at the end of the
   bootstrap generate (see Changed).
@@ -118,9 +119,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bootstrap generate skips its final `go build` and deploy-KCL render unless you
   pass `--verify`. That tail was the one CPU-saturating step (40s of the
   pipeline's 63s on a cold build cache), and it re-proved output that forge's
-  own e2e corpus compiles on every change; your first `go build` or `forge
-  generate` runs the same check. `project new` never took a heavy slot and still
-  does not: pinned by `TestRunNew_TakesNoHeavySlot`.
+  own e2e corpus compiles on every change; your first `go build` or
+  `forge generate` runs the same check. `project new` never took a heavy slot
+  and still does not: pinned by `TestRunNew_TakesNoHeavySlot`.
 - **Transaction isolation has no default; every writable transaction names
   its level.** pkg/orm had two opposite defaults: `RunTx`,
   `RunTxWithOptions` and `BeginDetached` with an unset level began

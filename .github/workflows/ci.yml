@@ -26,17 +26,6 @@ on:
 permissions:
   contents: read
 
-env:
-  # Every go command in every job builds with -trimpath, as `task` does
-  # locally (Taskfile.yml) and as forge's own go invocations do (goexec).
-  # Without it a compiled package's cache key includes its directory, so the
-  # projects the tests scaffold into a fresh t.TempDir() and build compiled
-  # into entries no later run could ever hit — and the trimmed cache main
-  # saves carried them anyway. With it, a package is keyed by module path and
-  # content, wherever it sits. internal/trimpathguard holds the tree to
-  # working under it.
-  GOFLAGS: -trimpath
-
 # ── TWO TIERS ──────────────────────────────────────────────────────────────
 #
 # A PULL REQUEST gets the fast tier: a five-minute MEDIAN wall time, queue
@@ -97,12 +86,18 @@ env:
 #
 # CACHE-SOUND REPLAY. The -short tier is held cache-sound (reliant.md,
 # "Testing tiers"), so a package whose inputs did not change replays main's
-# result instead of running. That needs three things this file provides:
+# result instead of running. That needs two things this file provides:
 # test-short-warm and test-short run the same `go test` flags
 # (scripts/ci-test-shard.sh) under the same environment (the same steps in
-# the same order, so the same PATH); GOFLAGS=-trimpath (below); and file
-# mtimes that depend on content, not on when the checkout happened
-# (scripts/ci-normalize-mtimes.sh says why Go needs that).
+# the same order, so the same PATH); and file mtimes that depend on content,
+# not on when the checkout happened (scripts/ci-normalize-mtimes.sh says why
+# Go needs that).
+#
+# NOT -trimpath, though it would key the tests' scaffolded temp-dir builds
+# reusably: under it a forge test binary cannot show it was built from this
+# checkout (buildinfo.SourceRoot comes from runtime.Caller), so
+# internal/tierguard's renders delegate to a rebuilt checkout forge and fail
+# (forgecompat.AssessSkew, SkewUnverifiable).
 #
 # plus e2e-suite.yml and e2e-scaffold.yml (which also run nightly). Speed on
 # the pull request was chosen over catching everything before merge: a test
@@ -131,7 +126,7 @@ concurrency:
 #
 # Build-cache note (the "Restore Go build cache" steps below).
 #
-# The pull-request jobs (test-short, checks) and build restore through
+# The pull-request jobs (test-short, checks) restore through
 # .github/actions/restore-go-caches with setup-go's `cache: false`: one
 # go-mod entry per go.sum plus the go-build-short scope, both saved by
 # test-short-warm (save-go-caches). The main-only jobs below still spell
@@ -796,10 +791,6 @@ jobs:
   # code change almost never breaks differently, the go-licenses pass, and
   # govulncheck. No `needs:`: it used to wait for lint and every test job, for
   # no data dependency.
-  #
-  # No build cache of its own: the workflow-wide GOFLAGS=-trimpath makes the
-  # -short scope's artifacts the ones this build wants, so it restores that
-  # one and saves nothing (one 620 MB entry fewer in the 10 GB budget).
   build:
     name: Build (-trimpath) + go-licenses + govulncheck
     if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
@@ -809,10 +800,21 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: false
-      - uses: ./.github/actions/restore-go-caches
+          cache: true
+      - name: Note when the Go build cache was restored
+        run: echo "GOCACHE_RESTORED_AT=$(date +%s)" >> "$GITHUB_ENV"
+      - name: Restore Go build cache
+        id: restore-gocache
+        uses: actions/cache/restore@v6
         with:
-          scope: short
+          # -trimpath below is part of the cache identity: artifacts built
+          # with it do not match ones built without, so this job keeps its
+          # own scope rather than sharing the test job's.
+          path: ~/.cache/go-build
+          key: go-build-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-build-build-${{ runner.os }}-
       - name: Go build
         # -trimpath makes builds reproducible across runners;
         # -buildvcs=true stamps the commit/dirty flag into runtime
@@ -859,6 +861,16 @@ jobs:
       - name: Go vulnerability check
         if: ${{ !cancelled() }}
         run: forge ci vuln-scan --go
+      - name: Trim the Go build cache (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/trim-go-build-cache
+      # Main only; see "Build-cache note" at the top of this file.
+      - name: Save Go build cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
   # Every check that is not a Go test, in one job (they were the Verify
   # Generated Code and Quick checks jobs, and before those the pre-commit and

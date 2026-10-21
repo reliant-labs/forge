@@ -127,9 +127,9 @@ job before adding a job.
   three times (`scripts/ci-changed-tests.sh`; no `-race` — that runs on main). A test that
   fails one run in three never merges. `internal/ciguard` fails if the matrix misses an index. No
   `-count=1`: an unchanged package replays main's result, which works because
-  `test-short-warm` runs the same command in the same environment, `GOFLAGS=-trimpath`
-  is set workflow-wide, and `scripts/ci-normalize-mtimes.sh` stamps every tracked file
-  with a content-derived mtime (Go's test cache keys files on mtime, not content).
+  `test-short-warm` runs the same command in the same environment, and
+  `scripts/ci-normalize-mtimes.sh` stamps every tracked file with a content-derived mtime
+  (Go's test cache keys files on mtime, not content).
 - **Checks** — `forge ci verify-generated`, `forge ci validate-kcl`, the pre-commit hooks
   (go-vet-mod skipped), and the Go and npm dependency-license allowlists.
 - `CI gate` is the main ruleset's required check, and `main` merges through a merge queue:

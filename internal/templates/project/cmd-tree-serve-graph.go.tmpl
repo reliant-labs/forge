@@ -341,6 +341,12 @@ func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
 			}
 		}
 {{- end}}
+{{- if index .Fields "LivenessPaths"}}
+		skCfg.Probes.Live = serverkit.ProbePathList(c.LivenessPaths)
+{{- end}}
+{{- if index .Fields "ReadinessPaths"}}
+		skCfg.Probes.Ready = serverkit.ProbePathList(c.ReadinessPaths)
+{{- end}}
 {{- if index .Fields "PreStopDelay"}}
 		skCfg.PreStopDelay = c.PreStopDelay.AsDuration()
 {{- end}}

@@ -346,3 +346,20 @@ func TestScript_ServerDefaultsAreNotChanges(t *testing.T) {
 		t.Fatalf("exit %d, wrote %v\ncalls:\n%s\n%s", run.exit, run.wrote(), run.dump(), run.out)
 	}
 }
+
+// A real API server returns kubectl.kubernetes.io/last-applied-configuration,
+// a JSON document inside a JSON string, so the live object is full of \" and \n.
+// dash's echo interprets those, which turned the object into invalid JSON and
+// failed the Job on the first real cluster; a fake that returned a clean object
+// never showed it.
+func TestScript_LiveObjectWithEscapedJSONAnnotation(t *testing.T) {
+	t.Parallel()
+	d, l := sts(template("data", "100Gi")), sts(storedTemplate("data", "50Gi"))
+	l.Annotations = map[string]string{
+		"kubectl.kubernetes.io/last-applied-configuration": `{"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"annotations":{"note":"line1\nline2 \"quoted\" back\\slash"}}}` + "\n",
+	}
+	run := runScript(t, []*appsv1.StatefulSet{d}, []*appsv1.StatefulSet{l}, []corev1.PersistentVolumeClaim{claim("data-clickhouse-0", "50Gi", ptr("standard-rwo"))})
+	if run.exit != 0 || len(run.wrote()) != 2 {
+		t.Fatalf("exit %d, wrote %v\n%s", run.exit, run.wrote(), run.out)
+	}
+}

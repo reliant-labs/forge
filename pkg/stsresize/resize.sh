@@ -11,8 +11,12 @@ DECLARED=${RESIZE_DECLARED:?RESIZE_DECLARED is required}
 WORK=$(mktemp -d)
 export HOME="$WORK" KUBECACHEDIR="$WORK/cache"
 
-refuse() { echo "REFUSED: $*" >&2; exit 2; }
-fail() { echo "ERROR: $*" >&2; exit 1; }
+refuse() { printf 'REFUSED: %s\n' "$*" >&2; exit 2; }
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+# Every value that reaches jq goes through say(), never echo: in a POSIX sh
+# echo may interpret backslash escapes, and a live object's
+# last-applied-configuration annotation is full of \" and \n.
+say() { printf '%s\n' "$1"; }
 
 # The decision, in one jq program so it reads like stsresize.Decide, which it
 # mirrors: a growth of a template's storage request is the ONLY change it
@@ -77,30 +81,30 @@ CLAIMS='
   | {name: .metadata.name, from: storage, to: $t.to} ]
 '
 
-echo "$DECLARED" | jq -e 'type == "array"' >/dev/null || fail "RESIZE_DECLARED is not a JSON array"
+say "$DECLARED" | jq -e 'type == "array"' >/dev/null || fail "RESIZE_DECLARED is not a JSON array"
 kubectl -n "$NS" get persistentvolumeclaims -o json > "$WORK/pvcs.json" || fail "list claims in $NS"
 
 # Phase 1: decide for every StatefulSet BEFORE writing anything, so a refusal
 # on any of them leaves the namespace exactly as it was.
 : > "$WORK/patches"
 : > "$WORK/orphans"
-for name in $(echo "$DECLARED" | jq -r '.[].name'); do
-  d=$(echo "$DECLARED" | jq -c --arg n "$name" '.[] | select(.name == $n)')
+for name in $(say "$DECLARED" | jq -r '.[].name'); do
+  d=$(say "$DECLARED" | jq -c --arg n "$name" '.[] | select(.name == $n)')
   live=$(kubectl -n "$NS" get statefulset "$name" -o json --ignore-not-found) || fail "read StatefulSet $NS/$name"
   if [ -z "$live" ]; then
     echo "StatefulSet $NS/$name: not present, nothing to converge"
     continue
   fi
-  verdict=$(echo "$live" | jq -c --argjson d "$d" "$JQ_LIB $DECIDE") || fail "judge StatefulSet $NS/$name"
-  status=$(echo "$verdict" | jq -r .status)
+  verdict=$(say "$live" | jq -c --argjson d "$d" "$JQ_LIB $DECIDE") || fail "judge StatefulSet $NS/$name"
+  status=$(say "$verdict" | jq -r .status)
   case "$status" in
-    refuse) refuse "StatefulSet $NS/$name: $(echo "$verdict" | jq -r .reason)" ;;
+    refuse) refuse "StatefulSet $NS/$name: $(say "$verdict" | jq -r .reason)" ;;
     noop) echo "StatefulSet $NS/$name: volume sizes already converged" ;;
     grow)
-      echo "StatefulSet $NS/$name: $(echo "$verdict" | jq -r '[.grown[] | "\(.template) \(.from)->\(.to)"] | join(", ")')"
-      echo "$verdict" | jq -c .grown > "$WORK/grown.json"
+      say "StatefulSet $NS/$name: $(say "$verdict" | jq -r '[.grown[] | "\(.template) \(.from)->\(.to)"] | join(", ")')"
+      say "$verdict" | jq -c .grown > "$WORK/grown.json"
       jq -r --argjson g "$(cat "$WORK/grown.json")" --arg sts "$name" "$JQ_LIB $CLAIMS | .[] | \"\\(.name) \\(.to)\"" "$WORK/pvcs.json" >> "$WORK/patches"
-      echo "$name" >> "$WORK/orphans"
+      say "$name" >> "$WORK/orphans"
       ;;
     *) fail "unexpected verdict for $NS/$name: $verdict" ;;
   esac
@@ -120,7 +124,7 @@ patch_for() { # $1 claim, $2 size, $3.. extra kubectl flags
 while read -r claim size; do
   [ -n "$claim" ] || continue
   if ! out=$(patch_for "$claim" "$size" --dry-run=server 2>&1); then
-    echo "$out" >&2
+    say "$out" >&2
     refuse "claim $NS/$claim cannot grow to $size (the storage class must allow volume expansion)"
   fi
 done < "$WORK/patches"

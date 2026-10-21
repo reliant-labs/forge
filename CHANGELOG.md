@@ -35,6 +35,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are accepted; a Reliant session is elevated on demand) and the code flow; it
   had said machine credentials were refused and that an invitation's code could
   not be redeemed by `/auth/reset`.
+- **`pkg/secretaccess` and `pkg/secretgen`: the pure halves of store-backed
+  secrets.** `secretaccess.Derive` maps `{scope, clusters, per-namespace secret
+  names}` to OpenBao JWT auth mounts (`jwt-<cluster>`), roles (one per cluster
+  and namespace, bound to the namespace's `reliant-secrets` service account and
+  the cluster's audience, issuing 10 minute batch tokens) and ACL policies that
+  grant `read` on exact paths only: no globs, no list, no metadata, unless a
+  `WildcardRead` carries a reason. Output is deterministic, so forge's converge
+  Job and a hosted control plane derive identical documents; `Widen` and
+  `Removed` implement widen-then-narrow around a promotion. `secretgen`
+  generates the declared kinds (`random`, `password` with one character of every
+  class, `ec_p256_pkcs8`, `rsa_2048`, `ec_p256_selfsigned`) and `Mint` writes
+  them create-only, refusing to complete a half-written key pair. A docker smoke
+  against OpenBao 2.6.2 (skipped under `-short`) proves JWT roles accept
+  `token_type=batch` and that the derived policy reads exactly the declared
+  names.
+
 - **`forge cloud identity` administers users, not just reads them.** New verbs,
   each one rpc of `controlplane.v1.IdentityService`: `set-roles <env> --user
 <id|email> --role a --role b` (or `--none`), `reset`, `lock`, `unlock`,

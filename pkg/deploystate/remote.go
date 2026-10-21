@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // Remote implements [Store] against an HTTP+JSON endpoint. Reliant is
@@ -79,7 +81,7 @@ func WithBearerToken(token string) RemoteOption {
 func NewRemote(baseURL string, opts ...RemoteOption) *Remote {
 	r := &Remote{
 		base: strings.TrimSuffix(baseURL, "/"),
-		http: &http.Client{Timeout: 30 * time.Second},
+		http: observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: 30 * time.Second}),
 	}
 	for _, opt := range opts {
 		opt(r)

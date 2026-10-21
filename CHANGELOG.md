@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Roots can be declared one at a time: resolution follows reach.** A
+  root's process builds only the closure its fields reach, but `forge
+  generate` demanded a provider for every Deps field of every discovered
+  component, so a project with 33 handlers could not declare a gateway root
+  without first wiring all of them. Now a Deps field forge cannot fill fails
+  generate only on a node some root reaches (as before, with the same
+  message). A node no root reaches with such a field, and every node that
+  takes it, is left out of `graph_gen.go` — no accessor, no injected
+  constructor; an owned one is kept — and `forge lint --graph` reports it as
+  `forge-graph-unreachable`, always an error. A project whose Deps all resolve,
+  every fresh scaffold, generates byte for byte what it did.
+- **`forge lint --graph` answers to `lint.rules`.** Its findings went straight
+  to the verdict, so `lint.rules: {forge-graph-unreachable: warn}` was accepted
+  and ignored. They now pass through the same `off` / `warn` / `error` dial as
+  every forge rule, which is what holds the unreached components at warn while
+  the roots are declared.
+- **A failed request names the trace it landed in, in the browser.** Every
+  forge server now answers each Connect call, failed ones included, with the
+  W3C `traceresponse` header naming its server span
+  (`observe.TraceResponseInterceptor`, inside the trace slot of
+  `observe.Chain`), and `middleware.DefaultCORSExposeHeaders` exposes it.
+  `@reliantlabs/forge-web-runtime` reads it (next release, 0.6.0): `ConnectClientError.traceId`
+  is the server's trace (or, without the header, the trace of the traceparent
+  the runtime sent), a dev log line that logs such an error ends in
+  `trace_id=<id>`, and `reportException` adds it as `server.trace_id`. So one
+  id joins a screenshot of an error, the browser's record, and every server
+  span and log line of the request.
+
+- **Every contract package is instrumented by default.** A package whose
+  constructor returns its `Service` interface now gets `middleware_gen.go`
+  (one span, the call metrics and a failure log per method), and compose.go
+  constructs it wrapped, with no `// forge:constructor` marker and no
+  `observe_chain.go` seam. The gate on those two had left every package that
+  predated the scaffold silently untraced: 26 of the control plane's 46,
+  including its hottest business paths, so most of its traces were a single
+  span. Without a seam the decorator builds the new
+  `observe.DefaultComponentChain(scope, name, level)`, which is what the
+  scaffolded seam assembles. Nothing is scaffolded into the package, and the
+  seam is now an optional override. `forge generate` also brings an existing
+  compose.go construction in line when the decision changes, in both the
+  `NewComponents` and the composition-graph (`new<X>` method) shapes: it wraps
+  a component that is now instrumented, and unwraps one that gained
+  `// forge:no-observe`. `// forge:no-observe` on the package or on one method
+  remains the opt-out. Constructions written by hand (`providers.go`,
+  `*_wire.go`) are yours to wrap; `forge lint --tracing`'s
+  `forge-tracing-contract-uninstrumented` finds them, with the same decision.
+
 - **`orm.Client.DBTX`, `SQLConn(ctx)` and `InTx(ctx)`: sqlc and hand-written
   database/sql code join the ORM's transaction.** A project porting onto the
   ORM keeps sqlc on the same pool for a while, and until now a sqlc call
@@ -285,6 +332,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The tracing rules flag only code a trace can reach.** Three constructions
+  were reported that cut no trace, and are no longer: in a project whose
+  observability is off (derived off with no server: a CLI or a library), the
+  top-level `internal/` and `cmd/` trees and every `package main`, which run
+  only in its own untraced binaries — its importable packages are still
+  linted, since they run inside the traced servers that import them; a pool
+  opened only to look its driver up (every use `.Driver()` or `.Close()`,
+  how `dbtrace.Open` builds a traced pool from a driver name); and an
+  `*http.Client` in a file that exports telemetry over OTLP, which is
+  untraced on purpose (a traced exporter traces its own exports). forge's
+  own `forge lint` is green again: its library code now logs with the
+  request context, and opens its HTTP clients and pools traced
+  (`pkg/oauth2`, `pkg/identity`, `pkg/orm`, `pkg/migratekit`, `pkg/pgtest`,
+  `pkg/testkit`, …). `pkg/pgtest` handles are pgx under dbtrace, as
+  production's pool is.
+- **`forge lint`'s format pre-pass never rewrites a `testdata` fixture.** The
+  go tool and the gate never read one, and an analyzer fixture's want lines
+  depend on its exact layout.
 - **A freshly scaffolded operator passes `forge lint --contract`.** An
   `internal/operators/<name>` package declaring `SetupWithManager` is exempt
   from `requirecontract` structurally, as a worker is.
@@ -390,10 +455,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shorter deadline still applies, a longer one does not lift it.
   `serverkit.NoDeadline` drops the slot; any other interceptor in it replaces
   forge's and runs in the same pre-auth position. `observe.Deps.Deadline` is
-  the same position in `observe.Chain`. NewChain rejects a `Procedures` key
-  that is not a procedure (`/pkg.v1.Service/Method`). Behaviour change: an
-  existing chain gets the 30s unary default on upgrade with no edit — the
-  `migrations/v0.1.47` playbook says how to declare longer budgets.
+  the same slot in `observe.Chain`, with the same rule — nil is
+  `serverkit.Deadline{}` (logging through the chain's `Logger`),
+  `serverkit.NoDeadline` opts out — because `NewChain` builds on it; the type
+  is `observe.Deadline`, which `serverkit.Deadline` aliases. NewChain rejects a
+  `Procedures` key that is not a procedure (`/pkg.v1.Service/Method`).
+  Behaviour change: an existing chain — `NewChain` or `observe.Chain` — gets
+  the 30s unary default on upgrade with no edit; the `migrations/v0.1.47`
+  playbook says how to declare longer budgets.
 - **`(forge.v1.method).timeout` is enforced.** It was documented as the rpc's
   server-side timeout and read by nothing. `forge generate` now projects it
   into `pkg/middleware/procedures_gen.go` as `ProcedureDeadlines`, and the
@@ -729,8 +798,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `internal/obsdash`'s HyperDX renderer refuses a field through `CheckField`,
   and a test holds the two to the same vocabulary.
 
+### Removed
+
+- **The `enforce-component-observe` lint and `config.enforce_component_observe`.**
+  It failed a package that had made no observability decision. Being
+  instrumented is now the default decision, so there is nothing left for it
+  to enforce. Delete the key if your forge.yaml sets it.
+
 ### Fixed
 
+- **forge rides out a k3s server that crashes while a k3d cluster boots.**
+  k3d waits for a server's "k3s is up and running" log line and gives up the
+  moment the container restarts (`stopped returning log lines: … status=restarting`),
+  although Docker's restart policy brings k3s back. forge now keeps a new
+  cluster's nodes on failure (`--no-rollback`, only for a name that did not
+  exist), and when a server restarted it deletes the half-made cluster and
+  creates it once more, printing the server's exit and last log lines. Any
+  other failure is rolled back and returned as before; a second crash fails
+  with both reasons.
 - **`forge lint ./internal/x/...` no longer reformats packages you did not name.**
   The auto-fix pre-pass (`gofmt`/`goimports`, then `golangci-lint --fix` and the
   frontend formatter) honoured `--scope`, but ignored the positional package

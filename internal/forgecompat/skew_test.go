@@ -23,6 +23,9 @@ import (
 // the KCL half, because the schema does not come from the project's module
 // graph — it comes from the binary.
 func TestDecideRefusesBinaryBehindPin(t *testing.T) {
+	// Decide honours the operator override; a developer shell that sets it
+	// (Reliant does) must not change these verdicts.
+	t.Setenv(SkewOverrideEnv, "")
 	if got := Decide("v0.1.42", "v0.1.42", "v0.1.43", false); got != BehindPin {
 		t.Errorf("Decide(binary v0.1.42, pin v0.1.43) = %v, want BehindPin", got)
 	}

@@ -41,6 +41,12 @@ func uninstrumentedFindings(f *goFile, root, module string, instrumented func(di
 		if dir == ownDir || !instrumented(dir) {
 			continue
 		}
+		// Same rule compose.go's wrapping follows: a package is wrapped only
+		// once its middleware_gen.go declares the decorator, so one not yet
+		// generated is not flagged for a wrapper that does not exist.
+		if _, ok := declaredDecorator(dir); !ok {
+			continue
+		}
 		targets[name] = dir
 	}
 	if len(targets) == 0 {
@@ -109,7 +115,8 @@ func uninstrumentedFindings(f *goFile, root, module string, instrumented func(di
 			if !ok {
 				return true
 			}
-			wrapper := id.Name + "." + decoratorName(dir) + "(" + id.Name + ".New(…))"
+			ctor, _ := declaredDecorator(dir)
+			wrapper := id.Name + "." + ctor + "(" + id.Name + ".New(…))"
 			out = append(out, finding.Finding{
 				Rule:     RuleContractUninstrumented,
 				Severity: finding.SeverityError,
@@ -140,14 +147,16 @@ func memoize(instrumented func(string) bool) func(string) bool {
 	}
 }
 
-// decoratorName is the wrapper constructor middleware_gen.go declares, or the
-// canonical name when it cannot be read.
-func decoratorName(dir string) string {
+// declaredDecorator is the wrapper constructor dir's middleware_gen.go
+// declares, and whether it declares one.
+func declaredDecorator(dir string) (string, bool) {
 	data, err := os.ReadFile(filepath.Join(dir, "middleware_gen.go"))
-	if err == nil {
-		if m := decoratorRE.FindSubmatch(data); m != nil {
-			return string(m[1])
-		}
+	if err != nil {
+		return "", false
 	}
-	return "NewService" + middlewareConstructorSuffix
+	m := decoratorRE.FindSubmatch(data)
+	if m == nil {
+		return "", false
+	}
+	return string(m[1]), true
 }

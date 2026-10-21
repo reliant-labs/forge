@@ -1,25 +1,30 @@
 // Package observe provides observability primitives for forge-generated
 // services: Connect interceptors for logging, tracing, metrics, recovery,
-// and request-id correlation, plus opt-in helpers (LogCall, TraceCall,
-// RecordCall) for explicit per-method instrumentation inside internal
-// packages.
+// and request-id correlation at the RPC edge, and the in-process
+// ComponentChain that forge's generated decorators route every internal
+// Service method through.
 //
-// # Why interceptors, not method-by-method codegen
+// # Where spans come from
 //
-// Earlier forge versions emitted per-package middleware_gen.go,
-// tracing_gen.go and metrics_gen.go wrappers around every contract.go
-// interface. That covered the case where one internal Service called
-// another and you wanted observability at the inner call boundary —
-// but the cost was four generated files per internal package, plus a
-// regeneration step every time a contract changed.
+// A request should read as a tree: the RPC, the business methods it calls,
+// and the SQL and outbound calls those make. Each layer is instrumented where
+// forge owns the boundary, so none of it depends on someone remembering to
+// add a span:
 //
-// In practice almost every observability need is a request-scoped one:
-// "log this RPC", "trace this RPC", "count this RPC". Connect
-// interceptors capture all of those at the handler boundary, once,
-// without per-package codegen. Internal-package observability — when
-// one Service calls another and you want a child span — is expressed
-// opt-in via the Trace/Log/Record helpers: explicit, greppable, and
-// only paid when the user actually wants it.
+//   - the RPC edge: the Connect interceptor chain below (Chain /
+//     DefaultMiddlewares), one server span per call;
+//   - business methods: every contract.go package whose constructor returns
+//     its Service interface gets a generated decorator (middleware_gen.go)
+//     that opens one span per method, records call metrics and logs failures,
+//     through DefaultComponentChain or the package's own observe_chain.go
+//     seam. It is the default; `// forge:no-observe` on the package (or one
+//     method) opts out. compose.go constructs the package wrapped;
+//   - outbound calls: NewClientStack for Connect clients.
+//
+// The per-call helpers (TraceCall, LogCall, RecordCall) remain for code
+// that is not a contract package. They are the exception: an earlier
+// version of this package recommended them over generated decorators, and
+// in practice they were not written — most traces were a single span.
 //
 // # The interceptor chain
 //
@@ -41,22 +46,6 @@
 //	    observe.LoggingInterceptor(logger),
 //	    auth.Interceptor(...),
 //	}
-//
-// # Per-method opt-in inside internal packages
-//
-// When one Service method calls another, wrap the inner call with a
-// helper to produce a child span / log / metric:
-//
-//	func (s *svc) DoThing(ctx context.Context, req Req) (Resp, error) {
-//	    return observe.TraceCall(ctx, tracer, "userstore.Get", func(ctx context.Context) (User, error) {
-//	        return s.userStore.Get(ctx, req.UserID)
-//	    })
-//	}
-//
-// This replaces the auto-generated per-method wrapper with an explicit
-// call site. The mock_gen.go file is still emitted by forge generate
-// (greppable test seam) — only the middleware/tracing/metrics codegen
-// is gone.
 //
 // # The environment contract
 //

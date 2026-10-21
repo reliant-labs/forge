@@ -89,6 +89,7 @@ func writeStoreInterfaces(root string, orm config.ORMConfig, entities []config.P
 func renderStoreInterfaces(pkgName string, entities []config.PlanEntity) []byte {
 	var b strings.Builder
 
+	writeORMGeneratedHeader(&b, "the APPLIED schema (db/migrations) — the CRUD delegates of every <entity>_orm_gen.go beside it.")
 	fmt.Fprintf(&b, "package %s\n\n", pkgName)
 	b.WriteString("import (\n\t\"context\"\n\n\t\"github.com/reliant-labs/forge/pkg/orm\"\n)\n\n")
 

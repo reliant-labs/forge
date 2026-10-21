@@ -28,7 +28,7 @@ func newResolver(t *testing.T) (*Resolver, *[]string, *bytes.Buffer) {
 	t.Helper()
 	var calls []string
 	var log bytes.Buffer
-	t.Setenv(CacheEnv, t.TempDir())
+	t.Setenv(CacheDirEnv, t.TempDir())
 	return &Resolver{Log: &log, Install: fakeInstall(t, &calls)}, &calls, &log
 }
 
@@ -126,7 +126,7 @@ func TestPinned_NoPin(t *testing.T) {
 // The cache keeps the newest few builds and never the one in use.
 func TestPinned_PrunesLeastRecentlyUsed(t *testing.T) {
 	r, _, _ := newResolver(t)
-	cache := os.Getenv(CacheEnv)
+	cache := os.Getenv(CacheDirEnv)
 	old := time.Now().Add(-48 * time.Hour)
 	for i := 0; i < keepVersions+3; i++ {
 		d := filepath.Join(cache, "v0.0."+string(rune('a'+i)))

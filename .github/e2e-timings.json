@@ -41,7 +41,6 @@
   "TestE2ENativeSignInSessionAuthenticatesRPCs": 41,
   "TestE2ENextBuildPrerendersWithInstalledPeerPins": 102,
   "TestE2ENextjsDockerfileStaticImageBuilds": 64,
-  "TestE2ENightlyComponentObserveMarkerAndEnforceLint": 234,
   "TestE2ENightlyScaffoldHandlersFilePlusMarkedEntityCompiles": 45,
   "TestE2ENoORMStubsCRUDNamedRPCs": 44,
   "TestE2EORMRefusesANameTheProjectAlreadyDeclares": 24,

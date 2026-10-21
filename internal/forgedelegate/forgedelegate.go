@@ -73,10 +73,10 @@ type Result struct {
 	Source string
 }
 
-// CacheEnv overrides where pinned builds live (default
-// <user cache dir>/forge/pinned), for read-only home directories, a CI cache
-// restored to a fixed path, and test isolation.
-const CacheEnv = "FORGE_PINNED_CACHE"
+// CacheDirEnv relocates the builds the resolver keeps (default
+// <user cache dir>/forge/pinned), for read-only home directories and test
+// isolation.
+const CacheDirEnv = "FORGE_PINNED_CACHE"
 
 // Resolver finds or builds forge binaries. The zero value is usable; the func
 // fields are seams for tests and default to the real thing.
@@ -102,13 +102,13 @@ func (r *Resolver) logw() io.Writer {
 	return io.Discard
 }
 
-func cacheDir() (string, error) {
-	if dir := strings.TrimSpace(os.Getenv(CacheEnv)); dir != "" {
+func (r *Resolver) cacheDir() (string, error) {
+	if dir := strings.TrimSpace(os.Getenv(CacheDirEnv)); dir != "" {
 		return dir, nil
 	}
 	base, err := os.UserCacheDir()
 	if err != nil {
-		return "", fmt.Errorf("no user cache directory to keep the pinned forge in (set %s): %w", CacheEnv, err)
+		return "", fmt.Errorf("no user cache directory to keep the pinned forge in (set %s): %w", CacheDirEnv, err)
 	}
 	return filepath.Join(base, "forge", "pinned"), nil
 }
@@ -135,7 +135,7 @@ func (r *Resolver) Pinned(ctx context.Context, projectRoot, pin string) (Result,
 		}
 	}
 
-	dir, err := cacheDir()
+	dir, err := r.cacheDir()
 	if err != nil {
 		return Result{}, err
 	}
@@ -179,7 +179,7 @@ func (r *Resolver) Bridge(ctx context.Context, dir, stamp string) (Result, error
 	if st, err := os.Stat(filepath.Join(dir, "cmd", "forge")); err != nil || !st.IsDir() {
 		return Result{}, fmt.Errorf("%s has no cmd/forge to build", dir)
 	}
-	cache, err := cacheDir()
+	cache, err := r.cacheDir()
 	if err != nil {
 		return Result{}, err
 	}

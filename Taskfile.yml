@@ -103,9 +103,9 @@ tasks:
       # THE SAME THREE LANES AS ci.yml, from the same script. Unscoped, this
       # is the whole module — pkg/* included — split by
       # scripts/ci-test-packages.sh exactly as ci.yml's Test, Test
-      # (internal/cli) and Test (guards) jobs split it, with their flags: the
-      # unit and cli lanes under {{.GOTESTRACE}}, the guards at -p 1 without
-      # it (ci.yml's test-guards comment says why; under -race removalguard
+      # (internal/cli) and test-short-warm's guards step split it, with their
+      # flags: the unit and cli lanes under {{.GOTESTRACE}}, the guards at -p 1
+      # without it (ci.yml's "WHY NO -race FOR THE GUARDS" says why; under -race removalguard
       # alone took ~980s). Integration and e2e tests carry build tags and
       # have their own tasks.
       #
@@ -252,7 +252,7 @@ tasks:
       # pkg/.golangci.yml (the typed-config guardrail) instead.
       # golangci-lint discovers that file by walking up from its working
       # directory, so it is only read by a run from pkg/. CI runs the same
-      # pair: ci.yml's lint job, then .github/workflows/library-lint.yml.
+      # pair: ci.yml's lint job runs both.
       - cmd: cd pkg && golangci-lint run
 
   fmt:

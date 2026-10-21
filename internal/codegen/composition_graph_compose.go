@@ -183,6 +183,76 @@ func graphLiteralEdits(src string, off func(token.Pos) int, lit *ast.CompositeLi
 	return edits, problems
 }
 
+// graphWrapEdits brings an existing new<X> method in line with its node's
+// instrument decision (ShouldInstrumentComponent), which the literal pass
+// never looks at: a node that is now instrumented has its returned value
+// wrapped in the generated decorator, and one that is no longer instrumented
+// (it gained `// forge:no-observe`, so its middleware_gen.go is gone) has the
+// wrapper call removed. Every edit is an insertion or a cut OUTSIDE the Deps
+// literal, so it never overlaps graphLiteralEdits'.
+//
+// The shapes renderGraphMethod writes are recognised: `return call, nil`,
+// `return call` (a fallible constructor) and `return alias.MW(svc), nil`. A
+// method in any other shape is the author's and is left alone.
+func graphWrapEdits(off func(token.Pos) int, fd *ast.FuncDecl, n *graphNode) []graphEdit {
+	if n.Comp == nil || fd.Body == nil {
+		return nil
+	}
+	alias := n.importAlias()
+	var wrappers []*ast.CallExpr
+	ast.Inspect(fd.Body, func(node ast.Node) bool {
+		if _, isLit := node.(*ast.FuncLit); isLit {
+			return false
+		}
+		if call, ok := node.(*ast.CallExpr); ok {
+			if _, isWrapper := wrapperArg(call, alias); isWrapper {
+				wrappers = append(wrappers, call)
+			}
+		}
+		return true
+	})
+	switch {
+	case !n.Wrapped && len(wrappers) > 0:
+		var edits []graphEdit
+		for _, call := range wrappers {
+			arg := call.Args[0]
+			edits = append(edits,
+				graphEdit{start: off(call.Pos()), end: off(arg.Pos())},
+				graphEdit{start: off(arg.End()), end: off(call.End())})
+		}
+		return edits
+	case n.Wrapped && n.MiddlewareCtor != "" && len(wrappers) == 0:
+		// Only a method whose body is the single return statement
+		// renderGraphMethod writes for an unwrapped node.
+		if len(fd.Body.List) != 1 {
+			return nil
+		}
+		ret, ok := fd.Body.List[0].(*ast.ReturnStmt)
+		if !ok {
+			return nil
+		}
+		mw := alias + "." + n.MiddlewareCtor
+		switch len(ret.Results) {
+		case 2: // return pkg.New(...), nil
+			v := ret.Results[0]
+			return []graphEdit{
+				{start: off(v.Pos()), end: off(v.Pos()), text: mw + "("},
+				{start: off(v.End()), end: off(v.End()), text: ")"},
+			}
+		case 1: // return pkg.New(...) — fallible
+			v := ret.Results[0]
+			if _, isCall := v.(*ast.CallExpr); !isCall {
+				return nil
+			}
+			return []graphEdit{
+				{start: off(ret.Pos()), end: off(v.Pos()), text: "svc, err := "},
+				{start: off(v.End()), end: off(v.End()), text: "\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn " + mw + "(svc), nil"},
+			}
+		}
+	}
+	return nil
+}
+
 // reconcileGraphCompose returns compose.go reconciled against nodes, the
 // keys it could not resolve, and an error when the file cannot be parsed or
 // the result does not format.
@@ -236,12 +306,20 @@ func reconcileGraphCompose(existing string, nodes []*graphNode, r *graphResolver
 		litEdits, litProblems := graphLiteralEdits(src, off, lit, n, r, addImports)
 		edits = append(edits, litEdits...)
 		problems = append(problems, litProblems...)
+		edits = append(edits, graphWrapEdits(off, fd, n)...)
 	}
 	if len(problems) > 0 {
 		return "", problems, nil
 	}
 
-	sort.Slice(edits, func(i, j int) bool { return edits[i].start > edits[j].start })
+	// Applied back to front. Two insertions at one offset (a literal's last
+	// element ends at its closing brace: the trailing comma and the added
+	// keys) land in the order they were appended: the later one is applied
+	// first, so it ends up after the earlier one in the text.
+	for i, j := 0, len(edits)-1; i < j; i, j = i+1, j-1 {
+		edits[i], edits[j] = edits[j], edits[i]
+	}
+	sort.SliceStable(edits, func(i, j int) bool { return edits[i].start > edits[j].start })
 	out := src
 	for _, e := range edits {
 		out = out[:e.start] + e.text + out[e.end:]

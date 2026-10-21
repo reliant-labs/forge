@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
@@ -197,9 +198,10 @@ var DefaultCORSAllowHeaders = []string{
 }
 
 // DefaultCORSExposeHeaders are the response headers every forge server lets a
-// cross-origin client read: Connect's protocol version and the forge
-// error-reason header the generated frontend runtime keys typed errors on.
-var DefaultCORSExposeHeaders = []string{"Connect-Protocol-Version", svcerr.ReasonHeader}
+// cross-origin client read: Connect's protocol version, the forge error-reason
+// header the generated frontend runtime keys typed errors on, and traceresponse,
+// which names the server span the runtime stamps on errors and reports.
+var DefaultCORSExposeHeaders = []string{"Connect-Protocol-Version", svcerr.ReasonHeader, observe.TraceResponseHeader}
 
 // CORSOption extends a CORS policy beyond the defaults.
 //

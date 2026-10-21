@@ -292,17 +292,8 @@ func safeName(v string) string {
 // fetched straight from GitHub because the module proxy lags a fresh commit by
 // ~20 minutes, and the checksum database cannot know a commit that new.
 // GOWORK=off keeps a go.work above the temp directory from being consulted.
-//
-// GOFLAGS is pinned, not inherited: a cached forge must be a function of its
-// cache key, and the caller's GOFLAGS is not in the key. Inherited, a caller
-// with GOFLAGS=-trimpath and one without built different bytes for one
-// source, so two forges of one checkout fingerprinted differently and the
-// generate cache saw "the forge binary changed" between two runs that both
-// ran "the build of checkout X". A non-empty value also overrides `go env -w
-// GOFLAGS`. -trimpath because that is how a release is built; the DevForgeRoot
-// ldflag, not the compiled paths, is what tells a delegated build its checkout.
 func buildEnvExtra(more ...string) []string {
-	extra := []string{"GOWORK=off", "GOFLAGS=-trimpath"}
+	extra := []string{"GOWORK=off"}
 	if os.Getenv("GOPRIVATE") == "" {
 		extra = append(extra, "GOPRIVATE=github.com/reliant-labs/*")
 	}
@@ -312,6 +303,7 @@ func buildEnvExtra(more ...string) []string {
 	return append(extra, more...)
 }
 
+// goInstall installs pkg into gobin. GOFLAGS is pinned, as in goBuild.
 func goInstall(ctx context.Context, pkg, gobin string) error {
 	cwd, err := os.MkdirTemp("", "forge-install-")
 	if err != nil {
@@ -320,16 +312,27 @@ func goInstall(ctx context.Context, pkg, gobin string) error {
 	defer func() { _ = os.RemoveAll(cwd) }()
 	cmd := exec.CommandContext(ctx, "go", "install", pkg)
 	cmd.Dir = cwd
-	cmd.Env = goexec.Env(buildEnvExtra("GOBIN=" + gobin)...)
+	cmd.Env = goexec.WithTrimpath(goexec.Env(buildEnvExtra("GOBIN="+gobin, "GOFLAGS=-trimpath")...))
 	return runCaptured(cmd)
 }
 
+// goBuild builds the forge in checkout dir to out. GOFLAGS is pinned rather
+// than inherited: a cached forge must be a function of its cache key, and the
+// caller's GOFLAGS is not in the key. Inherited, a caller with
+// GOFLAGS=-trimpath and one without built different bytes from one source, so
+// two forges of one checkout fingerprinted differently, and the generate cache
+// saw "the forge binary changed" between two runs that both ran "the build of
+// checkout X". A non-empty value also overrides `go env -w GOFLAGS`. The flag
+// is -trimpath because that is how a release is built; the DevForgeRoot
+// ldflag, not the compiled paths, tells a delegated build its checkout.
+// (WithTrimpath around a value that already says -trimpath changes nothing;
+// it is how internal/goexec's guard knows the setting keeps -trimpath.)
 func goBuild(ctx context.Context, dir, out string) error {
 	cmd := exec.CommandContext(ctx, "go", "build", "-buildvcs=true",
 		"-ldflags", "-X "+modulePath+"/internal/buildinfo.DevForgeRoot="+dir,
 		"-o", out, "./cmd/forge")
 	cmd.Dir = dir
-	cmd.Env = goexec.Env(buildEnvExtra()...)
+	cmd.Env = goexec.WithTrimpath(goexec.Env(buildEnvExtra("GOFLAGS=-trimpath")...))
 	return runCaptured(cmd)
 }
 

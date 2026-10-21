@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the OTLP logs bridge alike) now has `code.function.name`, `code.file.path` and
   `code.line.number` from the record's PC, and, when it carries an error,
   `exception.type` (`%T`) and `exception.message` (1 KiB bound) of the
-  *innermost* error: svcerr's withheld cause first, then `Unwrap` to the end,
+  _innermost_ error: svcerr's withheld cause first, then `Unwrap` to the end,
   the first branch of a multi-error. Below ERROR nothing is added and nothing is
   allocated. The PC is the logger's, so a call into `Handler().Handle` with a
   caller-built record (Temporal's slog adapter, Sentry ELECTRON-CM) names that
@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now `exception.stacktrace`.
 - **`observe.ErrorGroup(ctx, name)`** returns the opt-in `error.group`
   attribute, the escape hatch for pinning a record to a named issue.
+
 ### Changed
 
 - **Rendered pods set `enableServiceLinks: false`. Behavior change.**

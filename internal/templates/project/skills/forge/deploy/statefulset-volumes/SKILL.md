@@ -65,7 +65,7 @@ clusters, which the direct-apply recovery converges), nor for a StatefulSet with
 
 ## Things to know
 
-- **RBAC is namespace-scoped and narrow:** `get`/`delete` on the named StatefulSets
+- **The Job's permissions are namespace-scoped and narrow:** `get`/`delete` on the named StatefulSets
   only, `get`/`list`/`patch` on PVCs. Nothing cluster-scoped, so the Job learns
   whether a claim may grow from a server-side dry-run patch, not by reading
   StorageClasses.

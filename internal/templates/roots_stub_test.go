@@ -28,9 +28,13 @@ func serverRootStub(t *testing.T, secrets ...string) string {
 		required = secrets[:1]
 	}
 	type view struct{ Name, Args, Env, Secrets, Required string }
-	out, err := templates.ProjectTemplates().Render("config-roots.k.tmpl", struct{ Roots []view }{Roots: []view{{
+	out, err := templates.ProjectTemplates().Render("config-roots.k.tmpl", struct {
+		Roots              []view
+		ConfigType, EnvMap string
+		Argv               bool
+	}{Roots: []view{{
 		Name: `"server"`, Args: `["server"]`, Env: `["PORT"]`, Secrets: q(secrets), Required: q(required),
-	}}})
+	}}, ConfigType: "AppConfig", EnvMap: "appConfigEnvMap"})
 	if err != nil {
 		t.Fatal(err)
 	}

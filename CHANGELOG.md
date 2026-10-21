@@ -25,6 +25,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scaffolded release workflow and the `ci` and `deploy` skills now rely on it
   instead of passing a flag. `--json` and the targeted lanes were already
   detect-only.
+- **`forge fix composition-graph`: the upgrade path off the legacy
+  composition** (composition graph PR 7). It converts what forge scaffolded —
+  Infra / OpenInfra, NewComponents, lifecycle.go, ServeSpec and the
+  per-service / per-worker / per-operator subcommands — onto providers,
+  compose.go constructor methods (every Deps value you set is kept,
+  translated: `infra.DB` → `g.DB().DB`, `c.Tasks` → `g.Tasks()`) and the
+  default `server` root, which runs what `<bin> server` ran. It is all or
+  nothing: an Infra field of your own, a ServeSpec knob, custom supervision, a
+  command calling `Serve` or code naming a retired symbol is listed with its
+  file:line and the edit that clears it, and nothing is written. It runs only
+  on a committed tree (`--allow-dirty`), and a project with no internal/app is
+  told how to adopt the graph by hand instead. `migrations/v0.1.47` section 2
+  is the manual path, with control-plane's `OperatorListener`,
+  `NoKubernetesAPI` and `WorkerLeases` knobs mapped to roots and reach, and the
+  three hand edits a graph project moving to `binary_config` needs.
+
+- **`forge lint --tracing`: the places a request's trace is cut.** Four
+  rules, all at error in the full sweep, over owned non-test Go:
+  `forge-tracing-log-without-ctx` (a `slog.Info`, a `*slog.Logger` level
+  method, or a helper named in `lint.tracing.log_wrappers`, called where a
+  `context.Context` or `*http.Request` parameter is in scope: the line
+  carries no trace_id), `forge-tracing-raw-http-client` (an `*http.Client`
+  with no, nil, default or bare transport; `http.DefaultClient`; `http.Get`),
+  `forge-tracing-raw-sql-open` (`sql.Open`, sqlx, pgx stdlib, and a pgx pool
+  with no tracer, instead of `dbtrace`), and
+  `forge-tracing-contract-uninstrumented` (an instrumented contract's `New`
+  used outside `compose.go` without its `…WithForgeMiddleware` decorator).
+  The log rule autofixes to the `…Context` form, dropping an import the
+  rewrite leaves unused. `forge lint --tracing` applies it at any severity
+  but off; the full sweep only where the rule is at error, so a repo that
+  sets a rule to warn in `lint.rules` while it migrates is not rewritten by a
+  forge pin. Worker scaffolds log with their context.
+- **A trace per unit of background work: `observe.RunRoot`,
+  `lifecyclekit.Every`, and a root span per reconcile in
+  `forge/pkg/controller`.** A loop iteration or a reconcile has no Connect
+  edge to start its trace, so the decorated methods, queries and calls it made
+  were each a one-span trace, or nothing (`dbtrace` opens spans only under a
+  parent). `observe.RunRoot(ctx, name, fn)` runs `fn` under a new root span,
+  never the caller's trace, and records `fn`'s error or panic (the panic is
+  re-raised). `lifecyclekit.Every(name, EveryOptions{Interval}, fn)` is the
+  hand-written ticker worker with that built in: one `worker.<name>.run` root
+  per run, a failed or panicking run logged and the cadence kept.
+  `controller.Reconciler.Run` opens `reconcile <Kind>` around every reconcile,
+  with `k8s.namespace.name` / `k8s.object.name` and the error recorded.
+- **Trace context through Temporal and NATS: `forge/pkg/observe/temporalotel`
+  and `forge/pkg/observe/natsotel`.** `temporalotel.NewInterceptor` is
+  Temporal's `contrib/opentelemetry` interceptor with forge's defaults: the
+  global W3C propagator (the same context Connect, HTTP and NATS carry), the
+  global tracer provider read at span time, and `AllowInvalidParentSpans`, so
+  workflows already in flight keep running. Installed once on `client.Dial`,
+  it also applies to the client's workers, so the request that starts a
+  workflow, the workflow and its activities are one trace; before this,
+  Reliant's hand-rolled interceptor made every activity a root. `natsotel` is
+  Reliant's NATS propagation, lifted: `NewMsg`/`Inject` on publish,
+  `StartConsumerSpan(ctx, subject, header, name)` on consume (core NATS or
+  JetStream), `StartProducerSpan` where the publish deserves a span, with
+  `messaging.*` attributes.
+
+- **Root reach for binary-config projects.** A composition-graph project whose
+  primary binary binds config per command (`(forge.v1.binary_config)`
+  `command` / `subtrees`) used to get no per-root reach: no `LoadReach`
+  narrowing, and no `ROOTS` in `config_gen.k`, so the scaffolded envs'
+  `workloadEnvMap` call did not render. Now each of the binary's configs
+  beside the root config is an `app.Graph` input, `g.<Message>`. A Deps field
+  typed `*config.<Message>` resolves to it. A root's process loads the root
+  config, the subtree configs over its command and its exact command config,
+  and its reach is still per field: the leaves its closure reads of each.
+  `roots_gen.go` loads each config with the new `config.Load<Msg>Reach`
+  (only reached `required` fields are demanded), sets it on the graph, and
+  registers its flags (command configs on their command, subtree configs on
+  their path's command). `Build<Root>` refuses a nil input its closure reads.
+  `ROOTS` carries the union of every loaded config's reached env and projects
+  it through `<bin>ProcessEnvMap`, so `workloadEnvMap(appcfg.<bin>_process, w)`
+  gives each root exactly its env. Generate refuses a closure that reads a
+  config its root's process never loads, and an env var that two loaded
+  configs both declare. Single-AppConfig and legacy projects generate
+  byte-identical output.
+
+- **Release codemods, and `forge fix operatorkit`.** A codemod
+  (`internal/codemod`) is keyed to the release that broke the shape it
+  rewrites, exactly as a migration skill is, and decides from the tree, so it
+  is a no-op on a project without the old shape. `forge project upgrade` runs
+  every rename-class codemod whose release the baseline predates — under
+  `--check` it lists what it would rewrite — and each is also
+  `forge fix <name> [--dry-run]`. The first is `operatorkit` (v0.1.46): every
+  `lifecyclekit.Run` / `Controller` / `Options` reference becomes
+  `operatorkit.*`, the operatorkit import is added and an unused lifecyclekit
+  import dropped. `forge generate` no longer holds the forge pin back over a
+  codemod that has nothing to rewrite in the project. The previous registry
+  was keyed by minor hop, which a patch-release breaking change could never
+  use, and was empty.
+
 - **A forge that is not the project's pinned forge now hands the command to the
   pinned forge instead of refusing.** The forge on PATH (a Reliant workspace
   bundles one) is routinely older than a project's `forge_version`, and
@@ -42,6 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--allow-version-skew` / `FORGE_ALLOW_VERSION_SKEW=1` runs this forge as
   before; if the pinned forge cannot be had (offline, an unpublished version)
   the old refusal returns, now carrying the reason. See `docs/versioning.md`.
+
 - **`observe.TrustRemoteFrom(trusted, opts...)`: continue a caller's trace
   only when the caller is an authenticated internal service.** otelconnect
   answers "adopt the inbound traceparent?" once for every caller:
@@ -862,6 +955,19 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   no longer makes fetched checkouts appear dirty.
 
 ### Changed
+
+- **Least-knowledge lint: the design's severities by default, and the two K3
+  checks.** `forgeconv-deps-surface` (a foreign interface of more than ten
+  methods with unused ones), `forgeconv-no-container-deps` and
+  `forgeconv-deps-no-downcast` are now errors without `--strict`, as
+  composition graph §7 planned one release after they landed as warnings; a
+  fresh scaffold has none. New: `forgeconv-no-getenv` (a component package
+  reading `os.Getenv` / `LookupEnv` / `Environ` — configuration its root's
+  config reach cannot see) is a warning, an error under `--strict`; and
+  `forgeconv-deps-root-config` (a Deps field holding the root
+  `*config.Config`) is reported only under `--strict`, as a warning, because
+  the scaffold still hands every component the root config. `--strict` makes
+  every other least-knowledge finding an error.
 
 - **The entity struct's types are idiomatic and lossless.** Field names spell
   Go initialisms in capitals (`ID`, `OrgID`, `APIKey`; the `<E>Field*` and

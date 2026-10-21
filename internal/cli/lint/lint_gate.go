@@ -282,6 +282,7 @@ func lintLaneFlags(f *lintFlags) []lintLaneFlag {
 		{name: "read-only-fields", on: &f.readOnlyFields},
 		{name: "guarded-fields", on: &f.guardedFields},
 		{name: "static-export", on: &f.staticExport},
+		{name: "tracing", on: &f.tracing},
 		{name: "vendored-protos", on: &f.vendoredProtos},
 		{name: "config-reach", on: &f.configReach},
 		{name: "graph", on: &f.graph},

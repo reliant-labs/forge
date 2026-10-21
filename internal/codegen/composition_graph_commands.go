@@ -32,6 +32,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -167,12 +168,18 @@ type rootCmdView struct {
 	Var, Use, Short, Long string
 	Parent                string
 	Root                  *graphRootView
+	// Registers are the configs whose flags this command carries
+	// (config.Register<Msg>Flags): the command config bound to a root's
+	// command, and each subtree config one of whose paths is this command.
+	Registers []string
 }
 
 type rootsGenView struct {
 	Module   string
 	Commands []rootCmdView
 	Top      []string
+	// Fmt is true when some root's command loads a config of its own.
+	Fmt bool
 }
 
 // rootCommandViews lays the roots' command paths out as a cobra tree: one
@@ -225,9 +232,33 @@ func rootCommandViews(roots []graphRootView) ([]rootCmdView, []string) {
 		} else {
 			v.Short = fmt.Sprintf("The %s roots", p)
 		}
+		v.Registers = commandConfigRegistrations(roots, words)
 		out = append(out, v)
 	}
 	return out, top
+}
+
+// commandConfigRegistrations is the configs whose flags the command at path
+// carries, as #957 homes them: a command config on the command it is bound to
+// (local flags), a subtree config on each of its paths' commands (persistent
+// flags, so every command beneath inherits them). Each once, in the order the
+// roots load them.
+func commandConfigRegistrations(roots []graphRootView, path []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, r := range roots {
+		for _, l := range r.Loads {
+			home := len(l.Command) > 0 && slices.Equal(l.Command, path)
+			for _, p := range l.Subtrees {
+				home = home || slices.Equal(p, path)
+			}
+			if home && !seen[l.Message] {
+				seen[l.Message] = true
+				out = append(out, l.Message)
+			}
+		}
+	}
+	return out
 }
 
 // rootsGenFile is the generated command file, in the command tree's dir.
@@ -257,7 +288,11 @@ func emitRootCommands(projectDir, module string, roots []graphRootView, cs *chec
 			filepath.ToSlash(filepath.Join(treeDir, "root.go")))
 	}
 	cmds, top := rootCommandViews(roots)
-	src, err := renderGoTemplate("roots_gen.go.tmpl", rootsGenView{Module: module, Commands: cmds, Top: top})
+	view := rootsGenView{Module: module, Commands: cmds, Top: top}
+	for _, r := range roots {
+		view.Fmt = view.Fmt || len(r.Loads) > 0
+	}
+	src, err := renderGoTemplate("roots_gen.go.tmpl", view)
 	if err != nil {
 		return err
 	}

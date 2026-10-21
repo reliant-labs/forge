@@ -208,19 +208,15 @@ func runUpgradeWithGo(check, force, showAll bool, forcePaths []string, toVersion
 		fmt.Printf("  forge.yaml: %s → %s\n", describeVersion(cfg.ForgeVersion), describeVersion(target))
 	}
 
-	// Run the per-version codemod chain (deterministic AST rewrites)
-	// BEFORE the template-update upgrade pass. Codemods rewrite
-	// user-owned Tier-2 files (setup.go, handlers.go) which the
-	// template upgrade leaves alone; doing them first keeps the two
-	// concerns separate in the logs and means a codemod failure aborts
-	// before template files get touched.
-	var codemodReport CodemodReport
-	if !check {
-		report, err := runUpgradeCodemods(projectDir, from, target)
-		if err != nil {
-			return err
-		}
-		codemodReport = report
+	// Run the release codemods (deterministic AST rewrites) BEFORE the
+	// template-update upgrade pass. Codemods rewrite user-owned files
+	// (internal/app/lifecycle.go, serve.go) which the template upgrade
+	// leaves alone; doing them first keeps the two concerns separate in
+	// the logs and means a codemod failure aborts before template files
+	// get touched. Under --check they only report.
+	codemodReport, err := runUpgradeCodemods(projectDir, from, target, !check)
+	if err != nil {
+		return err
 	}
 
 	// One-time legacy .forge/checksums.json migration (same conversion
@@ -273,7 +269,7 @@ func runUpgradeWithGo(check, force, showAll bool, forcePaths []string, toVersion
 	// Hard error: this report is the canonical record of what the codemod
 	// rewrote. Silently dropping it strands the user with no account of
 	// what changed under them.
-	if !check && len(codemodReport.Auto) > 0 {
+	if !check && codemodReport.Changed() {
 		if err := writeUpgradeNotes(projectDir, from, target, codemodReport); err != nil {
 			return fmt.Errorf("write UPGRADE_NOTES.md: %w", err)
 		}
@@ -410,26 +406,37 @@ func resolveForceSelection(projectDir string, cfg *config.ProjectConfig, force b
 	return generator.ForcePaths(selected...), nil
 }
 
-// runUpgradeCodemods runs the per-version codemod chain (deterministic AST
-// rewrites) and reports how many rewrites applied / need manual review. A
-// codemod failure is wrapped as an actionable user error. Run BEFORE the
-// template-update pass so a codemod failure aborts before template files get
-// touched.
-func runUpgradeCodemods(projectDir, from, target string) (CodemodReport, error) {
-	report, err := runCodemodChain(projectDir, from, target)
+// runUpgradeCodemods runs the release codemods the upgrade crosses
+// (deterministic AST rewrites of user-owned Go; upgrade_codemod.go) and
+// reports what they rewrote. With write false (--check) it rewrites nothing
+// and lists what it would. A codemod failure is wrapped as an actionable user
+// error. Run BEFORE the template-update pass so a codemod failure aborts
+// before template files get touched.
+func runUpgradeCodemods(projectDir, from, target string, write bool) (CodemodReport, error) {
+	report, err := runCodemodChain(projectDir, from, target, write)
 	if err != nil {
 		return CodemodReport{}, cliutil.WrapUserErr(
 			fmt.Sprintf("forge project upgrade --to %s", target),
 			"codemod chain failed",
 			"",
-			"inspect UPGRADE_NOTES.md (when written) and the codemod log; fix the offending file then re-run upgrade",
+			"fix the offending file (the error names it), then re-run upgrade; each codemod is also `forge fix <name> --dry-run`",
 			err)
 	}
-	if len(report.Auto) > 0 {
-		fmt.Printf("🔧 Applied %d codemod rewrites.\n", len(report.Auto))
-		fmt.Println("    Detail in UPGRADE_NOTES.md (written at the end).")
-		fmt.Println()
+	if !report.Changed() {
+		return report, nil
 	}
+	if write {
+		fmt.Printf("🔧 Applied %d codemod rewrites:\n", len(report.Rewrites))
+	} else {
+		fmt.Printf("🔧 Would apply %d codemod rewrites:\n", len(report.Rewrites))
+	}
+	for _, r := range report.Rewrites {
+		fmt.Printf("    %s\n", r)
+	}
+	if write {
+		fmt.Println("    Detail in UPGRADE_NOTES.md (written at the end).")
+	}
+	fmt.Println()
 	return report, nil
 }
 

@@ -6,11 +6,15 @@
 //	forge fix narrow-deps <pkg>   retype a component's wide foreign Deps
 //	                              interfaces to the calls it makes
 //	                              (forgeconv-deps-surface)
+//	forge fix <codemod>           one release codemod (internal/codemod):
+//	                              the mechanical half of a migration skill
 package fix
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -18,6 +22,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/codemod"
 	"github.com/reliant-labs/forge/internal/depsurface"
 	"github.com/reliant-labs/forge/internal/generator/contract"
 )
@@ -31,7 +37,97 @@ func newCmd(f *factory.Factory) *cobra.Command {
 		Long:  "Codemods that rewrite the project's own code to what a forge lint rule asks for. Each runs only when you name it, and edits files that are yours: review the diff.",
 	}
 	cmd.AddCommand(newNarrowDepsCmd(f))
+	for _, c := range codemod.All() {
+		cmd.AddCommand(newCodemodCmd(f, c))
+	}
 	return cmdutil.StrictGroup(cmd)
+}
+
+// newCodemodCmd is `forge fix <name>` for one release codemod
+// (internal/codemod): run it over the project, or with --dry-run list what
+// it would rewrite.
+func newCodemodCmd(f *factory.Factory, c codemod.Codemod) *cobra.Command {
+	var dryRun, allowDirty bool
+	cmd := &cobra.Command{
+		Use:   c.Name,
+		Short: c.Short,
+		Long:  c.Long + "\n\nThe rest of the " + c.Version + " story is the migration skill: `forge skill load migrations/" + c.Version + "`.",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			root, err := cmdutil.ProjectRoot()
+			if err != nil {
+				return err
+			}
+			if c.CleanTree && !dryRun && !allowDirty {
+				if dirty := uncommitted(root); dirty != "" {
+					return cliutil.UserErr("forge fix "+c.Name,
+						"the project has uncommitted changes:\n"+dirty,
+						"",
+						"commit or stash them first: this codemod replaces files you own, and `git diff` is how you review it (or pass --allow-dirty)")
+				}
+			}
+			rep, err := c.Run(root, !dryRun)
+			if err != nil {
+				return err
+			}
+			printCodemodReport(f.Out, c, rep, dryRun)
+			if len(rep.Blocked) > 0 {
+				return cliutil.UserErr("forge fix "+c.Name,
+					fmt.Sprintf("%d shape(s) the codemod cannot convert without deciding for you; nothing was written", len(rep.Blocked)),
+					"",
+					"clear each item listed above, then re-run; `forge skill load migrations/"+c.Version+"` is the manual path")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "List what would be rewritten; change nothing")
+	if c.CleanTree {
+		cmd.Flags().BoolVar(&allowDirty, "allow-dirty", false, "Run over uncommitted changes")
+	}
+	return cmd
+}
+
+// uncommitted lists the working tree's uncommitted changes (git status
+// --porcelain), "" for a clean tree or a directory git does not track.
+func uncommitted(root string) string {
+	out, err := exec.Command("git", "-C", root, "status", "--porcelain").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimRight(string(out), "\n")
+}
+
+func printCodemodReport(out io.Writer, c codemod.Codemod, rep codemod.Report, dryRun bool) {
+	if len(rep.Blocked) > 0 {
+		fmt.Fprintf(out, "  %s: nothing written — these shapes need your decision first:\n", c.Name)
+		for _, b := range rep.Blocked {
+			fmt.Fprintf(out, "  ✗ %s\n", b)
+		}
+		for _, n := range rep.Next {
+			fmt.Fprintf(out, "\n  Next: %s\n", n)
+		}
+		return
+	}
+	if !rep.Changed() && len(rep.Next) == 0 {
+		fmt.Fprintf(out, "  %s: nothing to rewrite — the project is already in its %s shape\n", c.Name, c.Version)
+		return
+	}
+	mark := "✅"
+	if dryRun {
+		mark = "would rewrite:"
+	}
+	for _, r := range rep.Rewrites {
+		fmt.Fprintf(out, "  %s %s\n", mark, r)
+	}
+	if len(rep.Next) > 0 {
+		fmt.Fprintln(out, "\n  Next:")
+		for i, n := range rep.Next {
+			fmt.Fprintf(out, "  %d. %s\n", i+1, n)
+		}
+	}
+	if !dryRun && len(rep.Verify) > 0 {
+		fmt.Fprintf(out, "\n  Verify: %s\n", strings.Join(rep.Verify, " && "))
+	}
 }
 
 func newNarrowDepsCmd(f *factory.Factory) *cobra.Command {

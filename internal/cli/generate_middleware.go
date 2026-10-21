@@ -785,7 +785,7 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 	}
 
 	if len(perBinary) > 0 {
-		if err := codegen.GenerateConfigNativeSharedPerBinary(rootFields, perBinary, cfg.Name, projectDir, kclDirAbs, cs); err != nil {
+		if err := codegen.GenerateConfigNativeSharedPerBinaryRoots(rootFields, perBinary, graphRootsOrNil(roots), cfg.Name, projectDir, kclDirAbs, cs); err != nil {
 			return fmt.Errorf("emit per-binary KCL config module: %w", err)
 		}
 	} else if err := codegen.GenerateConfigNativeSharedRoots(fields, graphRootsOrNil(roots), cfg.Name, projectDir, kclDirAbs, cs); err != nil {

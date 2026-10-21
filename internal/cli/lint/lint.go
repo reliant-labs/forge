@@ -57,6 +57,7 @@ type lintFlags struct {
 	readOnlyFields    bool
 	guardedFields     bool
 	staticExport      bool
+	tracing           bool
 	vendoredProtos    bool
 	configReach       bool
 	graph             bool
@@ -181,6 +182,11 @@ Examples:
                                  # rewrites, POST handlers, no trailingSlash
                                  # on a bucket). CI's next build is the
                                  # authority; this says it first, file:line
+  forge lint --tracing           # Report where a request's trace is cut (a
+                                 # log call that drops the ctx in scope, a
+                                 # raw *http.Client or sql.Open, a contract
+                                 # built without its decorator) and rewrite
+                                 # each log call to its ...Context form
   forge lint --proto-options     # Flag a (forge.v1.*) annotation naming an
                                  # option field forge's descriptors do not
                                  # define — it compiles, and forge reads it
@@ -315,6 +321,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.configReach, "config-reach", false, "Flag config fields that no binary and no frontend loads — with per-binary configs, an unbound config message generates but is never loaded (warnings only)")
 	cmd.Flags().BoolVar(&flags.slowTests, "slow-tests", false, "Fail on a Go test that does slow work without being marked slow — execs go/forge/kcl/node/npm/git/docker/…, drives containers, or dials an external host, with no testkit.Slow(t, why) or testing.Short() guard on its path — so it runs in the blocking -short tier, and a file its child process reads is invisible to the test cache")
 	cmd.Flags().BoolVar(&flags.strict, "strict", false, "Escalate advisory findings to errors so they fail the build / CI: RPCs missing a (forge.v1.method) auth-posture annotation, and any lane that could NOT run (frontend typecheck or eslint with deps not installed; typed-config guardrail when golangci-lint never reported)")
+	cmd.Flags().BoolVar(&flags.tracing, "tracing", false, "Report where a request's trace is cut: a log call made with a context in scope but not passed it (no trace_id), an *http.Client or database pool opened without forge's traced constructors, a contract package constructed without its generated decorator. Rewrites every log call to its ...Context form unless --no-fix; forge.yaml lint.tracing.log_wrappers adds the project's own logging helpers")
 	cmd.Flags().BoolVar(&flags.skipFrontends, "skip-frontends", false, "Skip the whole frontend lane (eslint/stylelint + TypeScript typecheck + static-export) for a backend-only gate that needs no Node toolchain")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Apply the deterministic-safe fixes (Go formatting, golangci autofixes, frontend prettier, eslint --fix) even when CI is set; they are the default everywhere else")
 	cmd.Flags().BoolVar(&flags.check, "check", false, "Report only: write nothing, print the diff each fix would apply, and exit non-zero if any is pending. The default when CI is set (also spelled --no-fix)")
@@ -504,6 +511,13 @@ func runTargetedLane(ctx context.Context, flags lintFlags, paths []string, lane 
 			return err
 		}
 		return runWithCwd(func(cwd string) error { return runStaticExportLint(ctx, cwd, cfg) })
+	}
+	if flags.tracing {
+		_, cfg, err := loadLintConfig()
+		if err != nil {
+			return err
+		}
+		return runWithCwd(func(cwd string) error { return runTracingLint(cwd, cfg, !flags.noFix, true) })
 	}
 	if flags.protoOptions {
 		return runProtoOptionsLint(protoDirDefault)
@@ -839,8 +853,9 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 	}
 	// Least knowledge (composition graph §2): what every component's Deps
 	// declares against what the package uses through it — wide foreign
-	// interfaces, containers, downcasts. Warnings; --strict applies the
-	// design's severities.
+	// interfaces, containers, downcasts, environment reads, the root config.
+	// The design's severities (§9.2); --strict makes them all errors but the
+	// root config's, which it only reports.
 	if _, err := os.Stat("internal"); err == nil {
 		res, err := forgeconv.LintLeastKnowledge(".", opts)
 		if err != nil {

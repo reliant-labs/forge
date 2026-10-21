@@ -142,6 +142,8 @@ Declaring a root named `server` keeps the `server` command; once any root is dec
 
 **Each root's config is its reach.** Generate reads, per root, the config fields its closure reads (`g.Cfg.X`, `g.Cfg.GetX()`, `g.Cfg.X.Y` in `compose.go`; `g.Cfg` handed on whole is every field), plus the process fields `runRoot` reads and, for a root reaching the database, the database fields. `runRoot` demands only those (`config.LoadReach`), so a worker root starts without `DATABASE_URL`. `deploy/kcl/config_gen.k` projects the same set as `ROOTS`: deploy a root with `fw.Workload {…} | config_gen.root_of("worker")` and `config_gen.workloadEnvMap(cfg, w)` gives it exactly that env — its required credentials, plus the optional ones its `config_secrets` opts into (a credential its root does not reach fails the render, as does an unknown root). The scaffolded `_api` is `root = "server"`. A component that hands on the whole config reaches all of it; a config block of its own is what narrows it.
 
+**A binary that binds config per command** (`(forge.v1.binary_config)` `command` / `subtrees`) reaches across every config its root's process loads. Each of the primary binary's configs beside the root config is a graph input, `g.<Message>` (`*config.<Message>` in a Deps field resolves to it by type). A root at `server api` loads the root config, every subtree config over `server api`, and the `server api` command config; of each it reaches only what its closure reads through `g.<Message>`, with the same selector rules as `g.Cfg`. `roots_gen.go` loads each one with `config.Load<Message>Reach(cmd, reach)` and registers its flags where the binding puts them, so a required field only another root reads is never demanded. `ROOTS` projects the union through `<bin>ProcessEnvMap`, so `workloadEnvMap` takes the env's process bundle (`appcfg.<bin>_process`). Generate refuses a closure that reads a config its root's process does not load, because that field would be nil there.
+
 ### Checking the whole graph, and what each node knows
 
 `forge lint --graph` judges the graph as `forge generate` assembles it, and fails on an error:
@@ -149,17 +151,21 @@ Declaring a root named `server` keeps the `server` command; once any root is dec
 - **Reach.** Every service, package, worker and operator, and every provider, is reached by some root — a node no root reaches is never constructed, so a service in that position is served by no process. A provider kept ready for components to come carries `//forge:standby` on its func (the scaffolded `NewORM` and `NewHTTPClient` do). A sibling binary's service is `// forge:unmanaged` in its proto.
 - **Audience.** Every service a listener's routes reach declares the audience of the authenticator its chain reaches: the provider func that builds it carries `//forge:audience <name>` (the scaffolded `NewUserAuth` is `//forge:audience user`). A daemon service on the user listener is an error before anything boots; the listener refuses the same mismatch at boot.
 
-`forge lint --conventions` reads every component's `Deps` against what the package calls through it (least knowledge — warnings; `--strict` makes the first an error for a foreign interface of more than ten methods, and the other two errors):
+`forge lint --conventions` reads every component's `Deps` against what the package calls through it (least knowledge):
 
-| Rule | Flags |
-|---|---|
-| `forgeconv-deps-surface` | an interface field declaring methods the package never calls through it |
-| `forgeconv-no-container-deps` | a field holding a container: an `internal/app` type, `cmd.Deps`, a `map[string]any` locator, `any` |
-| `forgeconv-deps-no-downcast` | a type assertion turning a field back into a concrete type |
+| Rule | Flags | Severity |
+|---|---|---|
+| `forgeconv-deps-surface` | an interface field declaring methods the package never calls through it | error for a foreign interface of more than ten methods; warning otherwise |
+| `forgeconv-no-container-deps` | a field holding a container: an `internal/app` type, `cmd.Deps`, a `map[string]any` locator, `any` | error |
+| `forgeconv-deps-no-downcast` | a type assertion turning a field back into a concrete type | error |
+| `forgeconv-no-getenv` | `os.Getenv` / `LookupEnv` / `Environ` in a component package: configuration its root's reach cannot see | warning |
+| `forgeconv-deps-root-config` | a field holding the root `*config.Config` instead of the component's own block | `--strict` only, a warning (the scaffold still hands every component the root config) |
+
+`--strict` makes every finding but the last an error.
 
 `forge fix narrow-deps internal/handlers/<svc>` fixes the first: it declares, in the package (its `contract.go`, or `deps.go`), an interface holding exactly the methods the package calls, retypes the field, and writes its mock (`mock_gen.go`, kept in step by `forge generate`). `compose.go` needs no change — the value it hands the field still satisfies the narrower interface.
 
-A project scaffolded before the graph keeps its `Infra`/`OpenInfra` + `NewComponents` composition, and forge generates for it exactly as before, until it migrates: move each `OpenInfra` field into a provider func, delete `compose.go`, `lifecycle.go` and the `Infra` struct, and re-run `forge generate`.
+A project scaffolded before the graph keeps its `Infra`/`OpenInfra` + `NewComponents` composition, and forge generates for it exactly as before, until it migrates: `forge fix composition-graph` converts what forge scaffolded, or lists (writing nothing) each shape of yours it cannot; `migrations/v0.1.47` is the rest of the path.
 
 ## Files NOT to Edit
 

@@ -153,6 +153,36 @@ outer `ctx` and the plain client does NOT participate — use the handle, or
 `tx.RunTx(ctx, fn)` to get such a `ctx`. It joins a `RunTx` transaction
 already in `ctx`. Write new code with `RunTx`.
 
+## sqlc and hand SQL in the same transaction
+
+A project porting onto the ORM keeps sqlc or database/sql code on the same
+pool for a while, and one transaction then holds statements from both. Give
+that code an executor that resolves the transaction from `ctx`, or it runs
+on the pool, outside the transaction (and blocks forever on a row the
+transaction has locked):
+
+```go
+queries := pgdb.New(client.DBTX()) // sqlc: every call joins ctx's RunTx
+
+err := client.RunTx(ctx, func(ctx context.Context) error {
+    if err := queries.InsertAuditRow(ctx, row); err != nil { // sqlc, in the tx
+        return err
+    }
+    return db.UpdateJobMasked(ctx, client, job, []string{"status"}) // ORM, same tx
+})
+```
+
+- `client.DBTX()` resolves on every call; `client.SQLConn(ctx)` is the
+  executor for one statement (`*sql.Tx` inside a transaction, else the
+  `*sql.DB`). Both satisfy sqlc's `DBTX`.
+- `client.InTx(ctx)` asks about THIS pool; `orm.InTx(ctx)` about the
+  innermost transaction on any. A layer deciding whether to join or begin
+  uses the first.
+- A layer that owns its own transaction loop (its own retry policy) opens it
+  with `client.BeginTx`, runs its work under `tx.RunTx(ctx, fn)`, and ends it
+  with `tx.Commit()` / `tx.Rollback()`: the ORM and `DBTX` both join it, and
+  `orm.AfterCommit` callbacks run on its `Commit`.
+
 ## Migrating hand-written lock helpers
 
 A `Lock<Entity>(ctx, tx, id)` that runs `SELECT … FOR UPDATE` becomes the

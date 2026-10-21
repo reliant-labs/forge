@@ -749,7 +749,11 @@ func writeORMRepoAndDelegates(b *strings.Builder, msgName, pkGoType string, soft
 	// them, while app code calling this with no options keeps writing every
 	// updatable column. Variadic so every existing call site still compiles.
 	fmt.Fprintf(b, "// Update%s writes the updatable columns of an existing %s by PK\n", msgName, msgName)
-	b.WriteString("// (created_at/PK/deleted_at excluded; updated_at re-stamped) and reads\n")
+	if softDelete {
+		b.WriteString("// (created_at/PK/deleted_at excluded; updated_at re-stamped) and reads\n")
+	} else {
+		b.WriteString("// (created_at/PK excluded; updated_at re-stamped) and reads\n")
+	}
 	b.WriteString("// back every column it did not write, so msg holds the stored row after.\n")
 	b.WriteString("// crud.Preserve(cols...) keeps more columns out of this one write.\n")
 	fmt.Fprintf(b, "func Update%s(ctx context.Context, db orm.Context, msg *%s, opts ...crud.UpdateOption) error {\n", msgName, msgName)

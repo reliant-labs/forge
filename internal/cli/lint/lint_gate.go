@@ -232,7 +232,6 @@ func runLintTallied(ctx context.Context, flags lintFlags, paths []string) (lintL
 	}
 	return runAllLinters(ctx, lintRunOptions{
 		fix:           flags.autoFix(),
-		note:          fixModeNote(flags),
 		strict:        flags.strict,
 		skipFrontends: flags.skipFrontends,
 		paths:         paths,

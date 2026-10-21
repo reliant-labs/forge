@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A config message's `buf.validate` rules are checked as it loads.** Field
+  rules (a port's range, a positive duration) and message-level CEL
+  (`BILLING_PROVIDER=stripe` needs `STRIPE_SECRET_KEY`) on a `proto/config`
+  message now fail `config.Load*`, so a root's command refuses a bad value in
+  its `RunE`, before `runRoot` binds a port or applies a migration; and
+  `config.Root.Validate` reports every violation over a rendered environment.
+  Each names the field's path, its variable and flag, and its value unless the
+  field is sensitive. `config.Validate` runs them too. A config that declares
+  no rules loads exactly as before.
+
 - **A store-backed `forge.ExternalSecret` now renders the External Secrets Operator
   objects that sync it (SF5).** For each (cluster, namespace) holding one:
   a `reliant-secrets` ServiceAccount, a Role + RoleBinding letting ESO mint that

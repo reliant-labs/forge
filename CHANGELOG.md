@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   database's too, where `Create` used to ULID-fill it and fail 22P02. `Create`
   now leaves only a ZERO server-allocated key to the database; a key the
   caller set is inserted as set.
+- **No lint rewrite path touches `testdata`.** The Go format pass and its
+  report-only diff skip any path with a `testdata` segment (not only a pruned
+  directory), the frontend prettier walk now skips it too, and the structured
+  driver (`--quiet`, `--scope`) no longer hands golangci-lint `--fix` under
+  `forge lint --fix` — the rewrite #1041 removed from the text driver only.
+  The reported rewrite of `internal/linter/slowtest/testdata/src/a/a_test.go`
+  came from the forge embedded in reliant, pinned before #1018.
 - **pgtest's shared server survives a slow moment and a long run.** An
   attaching process probed the cross-process shared embedded server with a
   2s connect and 3s ping and, on a miss, `pg_ctl stop -m fast`ed it — under

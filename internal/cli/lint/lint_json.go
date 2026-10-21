@@ -956,16 +956,13 @@ func parseDigitsLint(s string) int {
 // collectGolangciLintJSON runs golangci-lint with captured output.
 // Non-zero exit gates (same as text mode); the captured diagnostics
 // become findings at error severity. A clean exit contributes nothing.
-// rc.fix applies golangci's safe autofixes first, exactly as text mode
-// does; --json always sets it false (it is detect-only), --quiet sets the
-// default run's value so the two reach the same verdict. A golangci-lint
-// that cannot analyze the module gates as one finding, the runbook.
+// It runs the same never-fix invocation as text mode (golangciGateArgs):
+// under `forge lint --fix --quiet` / `--scope` this lane used to pass --fix
+// on, applying the staticcheck/gocritic rewrites #1041 took out of the text
+// driver. A golangci-lint that cannot analyze the module gates as one
+// finding, the runbook.
 func collectGolangciLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
-	var extra []string
-	if rc.fix {
-		extra = append(extra, "--fix")
-	}
-	out, err := rc.execGolangci(golangciRunArgs(extra, rc.goPackages()))
+	out, err := rc.execGolangci(golangciGateArgs(rc))
 	if err != nil {
 		return []lintJSONFinding{golangciUnresolvedFinding(err, lintSevError)}, true
 	}

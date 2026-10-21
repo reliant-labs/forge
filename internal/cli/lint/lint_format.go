@@ -159,10 +159,7 @@ func walkGoFormat(root string, keep func(rel string) bool, visit func(rel, abs s
 			}
 			if de.IsDir() {
 				switch de.Name() {
-				// testdata: the go tool and the gate never see it, and its
-				// fixtures are written as they are on purpose (an
-				// analyzer's want lines are line-number sensitive).
-				case "node_modules", "vendor", ".git", "testdata":
+				case "node_modules", "vendor", ".git", testdataDir:
 					return filepath.SkipDir
 				}
 				return nil
@@ -175,7 +172,7 @@ func walkGoFormat(root string, keep func(rel string) bool, visit func(rel, abs s
 				rel = path
 			}
 			slashRel := filepath.ToSlash(rel)
-			if isGeneratedGoPath(slashRel) || (keep != nil && !keep(slashRel)) {
+			if isTestdataPath(slashRel) || isGeneratedGoPath(slashRel) || (keep != nil && !keep(slashRel)) {
 				return nil
 			}
 			src, rerr := os.ReadFile(path)
@@ -199,6 +196,26 @@ func walkGoFormat(root string, keep func(rel string) bool, visit func(rel, abs s
 		}
 	}
 	return nil
+}
+
+// testdataDir is the directory name every lint rewrite leaves alone.
+const testdataDir = "testdata"
+
+// isTestdataPath reports whether the slash-separated path rel has a segment
+// named testdata. No fixer — the Go format pass, its report-only diff, or the
+// frontend prettier pass — rewrites or reports such a file: the go tool never
+// builds it, and its fixtures are written as they are on purpose. An
+// analyzer's `// want` lines are line-number sensitive, so regrouping the
+// imports of forge's own internal/linter/slowtest/testdata/src/a/a_test.go
+// broke the analyzer's tests. The walks also prune the directory; this is
+// the per-file rule, so it holds however a path reaches the fixer.
+func isTestdataPath(rel string) bool {
+	for _, seg := range strings.Split(filepath.ToSlash(rel), "/") {
+		if seg == testdataDir {
+			return true
+		}
+	}
+	return false
 }
 
 // keepForPaths turns the positional Go package patterns of `forge lint

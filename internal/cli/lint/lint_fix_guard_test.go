@@ -126,3 +126,20 @@ func TestGolangciGateArgs_NeverFix(t *testing.T) {
 		}
 	}
 }
+
+// The structured driver (--quiet, --scope, --json) runs the same never-fix
+// invocation: `forge lint --fix --quiet` used to hand golangci-lint --fix.
+func TestCollectGolangciLintJSON_NeverFix(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake golangci-lint through a shell subprocess; runs in task test")
+	}
+	fakeGolangciLint(t, `for a in "$@"; do
+  case "$a" in --fix|--fix=*) echo "golangci-lint was asked to fix" >&2; exit 1;; esac
+done
+echo "0 issues."`)
+	rc := testRunCtx(t, false)
+	rc.fix = true
+	if fs, gated := collectGolangciLintJSON(rc); gated || len(fs) != 0 {
+		t.Fatalf("structured golangci-lint lane under --fix: gated=%v findings=%+v", gated, fs)
+	}
+}

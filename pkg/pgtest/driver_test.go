@@ -7,13 +7,13 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
-// Every handle pgtest hands out runs on pgx, the driver production opens its
-// pool with (serverkit.OpenDB). On lib/pq a DB test exercised a different
+// Every handle pgtest hands out runs on pgx under dbtrace, the way production
+// opens its pool (serverkit.OpenDB). On lib/pq a DB test exercised a different
 // program: other array and time scanning, no statement cache, and
 // *pq.Error where production code sees *pgconn.PgError — so a classifier
 // that only matched one of them passed its tests and failed in production.
@@ -23,8 +23,8 @@ func TestHandlesRunTheProductionDriver(t *testing.T) {
 	}
 	key := uniqueKey(t)
 	build := func(db *sql.DB) error {
-		if _, ok := db.Driver().(*stdlib.Driver); !ok {
-			return fmt.Errorf("template build handle driver = %T, want pgx's *stdlib.Driver", db.Driver())
+		if !dbtrace.IsTraced(db) {
+			return fmt.Errorf("template build handle driver = %T, want production's: pgx under dbtrace", db.Driver())
 		}
 		_, err := db.Exec(`CREATE TABLE seeded (v int PRIMARY KEY)`)
 		return err
@@ -40,8 +40,10 @@ func TestHandlesRunTheProductionDriver(t *testing.T) {
 				t.Fatalf("%s: %v", name, err)
 			}
 			t.Cleanup(cleanup)
-			if _, ok := db.Driver().(*stdlib.Driver); !ok {
-				t.Fatalf("driver = %T, want pgx's *stdlib.Driver", db.Driver())
+			// Traced, as production's pool is; the PgError below proves
+			// pgx underneath.
+			if !dbtrace.IsTraced(db) {
+				t.Fatalf("driver = %T, want production's: pgx under dbtrace", db.Driver())
 			}
 
 			// The error a test sees is the error production sees.

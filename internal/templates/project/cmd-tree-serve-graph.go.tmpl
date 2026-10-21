@@ -140,7 +140,7 @@ func runRoot(ctx context.Context, deps Deps, root rootSpec) error {
 		Cfg:       cfg,
 		Log:       logger,
 		ServerCfg: skCfg,
-		Probes:    &serverkit.Probes{Drainer: drainer, Metrics: metrics, Timeout: skCfg.ReadinessTimeout, Logger: logger},
+		Probes:    &serverkit.Probes{Drainer: drainer, Metrics: metrics, Timeout: skCfg.ReadinessTimeout, Logger: logger, Paths: skCfg.Probes},
 	}
 	logger.Info("running root", "root", root.Name)
 	return root.Run(g, ctx, lifecyclekit.Policy{
@@ -238,6 +238,18 @@ func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
 			}
 		}
 	}
+{{- end}}
+{{- if or (index .ConfigFields "LivenessPaths") (index .ConfigFields "ReadinessPaths")}}
+
+	// The probe paths (empty is /healthz, /readyz). The KCL lowering reads
+	// the same LIVENESS_PATHS / READINESS_PATHS for the probe it writes, so
+	// the pod is probed where this process answers.
+{{- end}}
+{{- if index .ConfigFields "LivenessPaths"}}
+	skCfg.Probes.Live = serverkit.ProbePathList(cfg.LivenessPaths)
+{{- end}}
+{{- if index .ConfigFields "ReadinessPaths"}}
+	skCfg.Probes.Ready = serverkit.ProbePathList(cfg.ReadinessPaths)
 {{- end}}
 
 {{- if and (index .ConfigFields "PreStopDelay") (index .ConfigFields "ShutdownTimeout")}}

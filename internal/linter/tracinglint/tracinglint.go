@@ -104,6 +104,15 @@ type Options struct {
 	// gets the generated decorator. nil disables
 	// forge-tracing-contract-uninstrumented.
 	Instrumented func(dir string) bool
+	// LibraryOnly narrows every rule to the code another module can import:
+	// everything outside the top-level internal/ and cmd/ trees that is not
+	// package main. It is for a project that runs no traced process of its
+	// own (forge.yaml observability off, which is the derived default for a
+	// project with no server): its internal packages and its mains run only
+	// in its own binaries, which record no trace, so there is no trace there
+	// for a log line or a client to cut. Its library packages still run
+	// inside the traced processes that import them.
+	LibraryOnly bool
 }
 
 // Fixed is one file the run rewrote.
@@ -146,6 +155,9 @@ func Lint(root string, opts Options) (Result, error) {
 	files, err := loadOwnedGo(root)
 	if err != nil {
 		return Result{}, err
+	}
+	if opts.LibraryOnly {
+		files = libraryFiles(files)
 	}
 	var res Result
 	pkgs := map[string][]*goFile{}
@@ -259,6 +271,21 @@ func loadOwnedGo(root string) ([]*goFile, error) {
 		return nil
 	})
 	return out, err
+}
+
+// libraryFiles keeps the files another module can import (Options.LibraryOnly):
+// not under the top-level internal/ or cmd/, and not package main. A nested
+// internal/ (pkg/x/internal) stays: pkg/x runs it inside its importers.
+func libraryFiles(files []*goFile) []*goFile {
+	out := files[:0:0]
+	for _, f := range files {
+		top, _, _ := strings.Cut(f.rel, "/")
+		if top == "internal" || top == "cmd" || f.file.Name.Name == "main" {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // isGenerated reports the standard "Code generated … DO NOT EDIT." header.

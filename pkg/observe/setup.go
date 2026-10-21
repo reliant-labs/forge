@@ -173,7 +173,7 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, http.H
 		// Best effort by design: a profiling misconfiguration must never keep
 		// the service from starting.
 		if stop, err := startProfiler(ctx, cfg, res); err != nil {
-			slog.Warn("continuous profiling is off", "error", err)
+			slog.WarnContext(ctx, "continuous profiling is off", "error", err)
 		} else {
 			shutdowns = append(shutdowns, stop)
 		}

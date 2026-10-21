@@ -25,8 +25,11 @@ plane (Reliant cloud). `dev` stays local (`forge.OnHost` + `forge.HostInfra`).
 - sets `DATABASE_URL = forge.DatabaseRef {name = _db.name}` on every workload
   listing it in `config_secrets`;
 - sets a service's `CORS_ORIGINS = forge.WorkloadURL {workload = "<site>"}`
-  when the project was born with a frontend (`forge scaffold frontend` later
-  prints the line to add).
+  and `CORS_ALLOW_CREDENTIALS = "true"` when the project was born with a
+  frontend (`forge scaffold frontend` later prints the line to add). The site
+  and the API are different origins and native sign-in's session cookie is
+  the API's: without credentials allowed, `/auth/login` answers 200 and every
+  call after it 401s.
 
 `_hosted_frontend` sets the bare `image` and `runtime_config = _api_config`
 (`{API_URL = forge.WorkloadURL {workload = "api"}}` once `_api` is bound): the

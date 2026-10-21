@@ -1713,8 +1713,10 @@ func AttachEntityMeta(page *PageTemplateData, entity EntityDef, svc ServiceDef) 
 		}
 		// The soft-delete column is machinery, not data: generated reads
 		// filter `deleted_at IS NULL`, so the cell is always empty — a
-		// dead column that makes the UI look broken.
-		if f.Name == "deleted_at" || f.Name == "delete_time" {
+		// dead column that makes the UI look broken. A deleted_at declared
+		// `forge:no-soft-delete` is data (an archive stamp on rows the
+		// list does show), so it gets its column like any other.
+		if (f.Name == "deleted_at" && entity.SoftDelete) || f.Name == "delete_time" {
 			continue
 		}
 

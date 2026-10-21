@@ -157,7 +157,7 @@ not removed it.
 
 SQL is the schema language. Entities are PROJECTIONS of the applied `db/migrations` schema — the columns ARE the declaration. The historical proto entity annotations (`(forge.v1.entity)`, `pk:`, `timestamps:` …) are retired and IGNORED; delete leftovers instead of copying them forward.
 
-- Behavior comes from real columns: `created_at`+`updated_at` ⇒ managed timestamps, `deleted_at` ⇒ soft delete, text columns ⇒ generated list search (`db` skill).
+- Behavior comes from real columns: `created_at`+`updated_at` ⇒ managed timestamps, `deleted_at` ⇒ soft delete (`COMMENT ON COLUMN t.deleted_at IS 'forge:no-soft-delete'` makes it a plain archive stamp), text columns ⇒ generated list search (`db` skill).
 - Access control and row scoping are app-owned handler logic — read the caller via `middleware.GetUser` and add the checks and `WHERE` filters your product needs; forge generates none of it (`auth` + `db` skills).
 - `auth_required` is enforced, fail-closed and per-rpc: unset or `true` needs a valid token, and `auth_required: false` publishes that one rpc (projected into `pkg/middleware/procedures_gen.go`). It decides only WHETHER a caller is signed in; what they may do is the handler logic above.
 - List request filter fields **must** be `optional` — without it, generated filters silently no-op (`{{.CLI}} lint` rejects it: `forgeconv-list-filter-optional`).

@@ -410,6 +410,14 @@ type ormField struct {
 	// hand-rolled (Bun's ,soft_delete stamps a time.Time that a TEXT column
 	// can't round-trip — kalshi fr-3fba9166ba style).
 	softDeleteNative bool
+	// softDeleteLegacy is true on a soft-delete deleted_at that does NOT
+	// project to a time (a legacy TEXT column): Bun's ,soft_delete cannot
+	// own it, so it carries a `forge:"soft-delete"` struct tag and
+	// pkg/crud hand-rolls the filter and the stamp. The repo reads soft
+	// delete only from a tag — never from the column's name — so a
+	// deleted_at declared `forge:no-soft-delete` carries neither and is an
+	// ordinary column at runtime too.
+	softDeleteLegacy bool
 	// isGenerated marks a GENERATED ALWAYS AS (...) STORED column →
 	// ,nullzero,skipupdate: postgres rejects the column in an INSERT column
 	// list or an UPDATE SET, but it must still be SELECTed. See bunTag for
@@ -741,7 +749,11 @@ func writeORMRepoAndDelegates(b *strings.Builder, msgName, pkGoType string, soft
 	// them, while app code calling this with no options keeps writing every
 	// updatable column. Variadic so every existing call site still compiles.
 	fmt.Fprintf(b, "// Update%s writes the updatable columns of an existing %s by PK\n", msgName, msgName)
-	b.WriteString("// (created_at/PK/deleted_at excluded; updated_at re-stamped) and reads\n")
+	if softDelete {
+		b.WriteString("// (created_at/PK/deleted_at excluded; updated_at re-stamped) and reads\n")
+	} else {
+		b.WriteString("// (created_at/PK excluded; updated_at re-stamped) and reads\n")
+	}
 	b.WriteString("// back every column it did not write, so msg holds the stored row after.\n")
 	b.WriteString("// crud.Preserve(cols...) keeps more columns out of this one write.\n")
 	fmt.Fprintf(b, "func Update%s(ctx context.Context, db orm.Context, msg *%s, opts ...crud.UpdateOption) error {\n", msgName, msgName)
@@ -752,9 +764,10 @@ func writeORMRepoAndDelegates(b *strings.Builder, msgName, pkGoType string, soft
 	fmt.Fprintf(b, "// Update%sMasked writes ONLY the named columns (AIP-134 update_mask;\n", msgName)
 	b.WriteString("// unknown/immutable paths return *orm.UnknownFieldError). It writes a\n")
 	b.WriteString("// forge:read-only column named here: this is how the code that owns one\n")
-	b.WriteString("// sets it, since no client Update can.\n")
-	fmt.Fprintf(b, "func Update%sMasked(ctx context.Context, db orm.Context, msg *%s, fields []string) error {\n", msgName, msgName)
-	fmt.Fprintf(b, "\treturn %s.UpdateMasked(ctx, db, msg, fields)\n", repoVar)
+	b.WriteString("// sets it, since no client Update can. opts are Update's: crud.NoReadBack()\n")
+	b.WriteString("// skips the read-back.\n")
+	fmt.Fprintf(b, "func Update%sMasked(ctx context.Context, db orm.Context, msg *%s, fields []string, opts ...crud.UpdateOption) error {\n", msgName, msgName)
+	fmt.Fprintf(b, "\treturn %s.UpdateMasked(ctx, db, msg, fields, opts...)\n", repoVar)
 	b.WriteString("}\n\n")
 
 	// Delete
@@ -884,9 +897,10 @@ func writeCompositeKeyDelegates(b *strings.Builder, msgName string, keys []keyPa
 	fmt.Fprintf(b, "\treturn %s.Update(ctx, db, msg, opts...)\n}\n\n", repoVar)
 
 	fmt.Fprintf(b, "// Update%sMasked writes ONLY the named columns of the row msg's key\n", msgName)
-	b.WriteString("// addresses (unknown/immutable paths return *orm.UnknownFieldError).\n")
-	fmt.Fprintf(b, "func Update%sMasked(ctx context.Context, db orm.Context, msg *%s, fields []string) error {\n", msgName, msgName)
-	fmt.Fprintf(b, "\treturn %s.UpdateMasked(ctx, db, msg, fields)\n}\n\n", repoVar)
+	b.WriteString("// addresses (unknown/immutable paths return *orm.UnknownFieldError);\n")
+	b.WriteString("// opts are Update's (crud.NoReadBack() skips the read-back).\n")
+	fmt.Fprintf(b, "func Update%sMasked(ctx context.Context, db orm.Context, msg *%s, fields []string, opts ...crud.UpdateOption) error {\n", msgName, msgName)
+	fmt.Fprintf(b, "\treturn %s.UpdateMasked(ctx, db, msg, fields, opts...)\n}\n\n", repoVar)
 
 	fmt.Fprintf(b, "// Delete%sByPK removes the %s whose key %s is the one given (soft\n", msgName, msgName, keyDoc)
 	b.WriteString("// delete stamps deleted_at when the entity opts in; otherwise a hard DELETE).\n")
@@ -1083,6 +1097,8 @@ func structTag(f ormField) string {
 		return fmt.Sprintf("`%s forge:%q`", bunPart, "version")
 	case f.isFillULID:
 		return fmt.Sprintf("`%s forge:%q`", bunPart, "fill=ulid")
+	case f.softDeleteLegacy:
+		return fmt.Sprintf("`%s forge:%q`", bunPart, "soft-delete")
 	case f.isGenerated:
 		// GENERATED ALWAYS AS (...) STORED. The bun tag's ,nullzero handles
 		// the common INSERT (a zero value marshals to DEFAULT, which
@@ -1252,14 +1268,21 @@ func resolveORMFields(ent config.PlanEntity) []ormField {
 		fields = append(fields, f)
 	}
 
-	// Mark the soft-delete column when soft delete is active and the
-	// deleted_at column projects to a proper time type — Bun's built-in
-	// ,soft_delete then owns it. A legacy TEXT deleted_at (Go type string)
-	// is left unmarked and keeps the hand-rolled stamp/filter path.
+	// Mark the soft-delete column when soft delete is active. A deleted_at
+	// that projects to a proper time type is Bun's built-in ,soft_delete; a
+	// legacy TEXT deleted_at (Go type string) is tagged for pkg/crud's
+	// hand-rolled stamp/filter path. Without soft delete — no deleted_at,
+	// or one declared forge:no-soft-delete — neither mark is set and the
+	// column is plain.
 	if ent.SoftDelete {
 		for i := range fields {
-			if fields[i].columnName == "deleted_at" && isBunSoftDeleteTimeType(fields[i]) {
+			if fields[i].columnName != "deleted_at" {
+				continue
+			}
+			if isBunSoftDeleteTimeType(fields[i]) {
 				fields[i].softDeleteNative = true
+			} else {
+				fields[i].softDeleteLegacy = true
 			}
 		}
 	}

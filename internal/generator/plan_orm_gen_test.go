@@ -1060,7 +1060,7 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 	}
 	task := string(taskSrc)
 
-	if !strings.Contains(task, "func UpdateTaskMasked(ctx context.Context, db orm.Context, msg *Task, fields []string) error {") {
+	if !strings.Contains(task, "func UpdateTaskMasked(ctx context.Context, db orm.Context, msg *Task, fields []string, opts ...crud.UpdateOption) error {") {
 		t.Error("missing UpdateTaskMasked signature")
 	}
 	maskedIdx := strings.Index(task, "func UpdateTaskMasked(")
@@ -1077,7 +1077,7 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 	// updated_at stamp, soft-delete WHERE) all moved into
 	// pkg/crud.UpdateMasked, tested there against real postgres. The
 	// generator's contract is the delegate that forwards to it.
-	if !strings.Contains(masked, "return taskRepo.UpdateMasked(ctx, db, msg, fields)") {
+	if !strings.Contains(masked, "return taskRepo.UpdateMasked(ctx, db, msg, fields, opts...)") {
 		t.Error("UpdateTaskMasked should delegate to taskRepo.UpdateMasked with the fields slice")
 	}
 	// None of the old inline machinery should survive in the generated file.
@@ -1092,7 +1092,7 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 		t.Fatalf("ReadFile error = %v", err)
 	}
 	note := string(noteSrc)
-	if !strings.Contains(note, "func UpdateNoteMasked(ctx context.Context, db orm.Context, msg *Note, fields []string) error {") {
+	if !strings.Contains(note, "func UpdateNoteMasked(ctx context.Context, db orm.Context, msg *Note, fields []string, opts ...crud.UpdateOption) error {") {
 		t.Error("missing UpdateNoteMasked signature")
 	}
 }
@@ -1374,7 +1374,7 @@ func TestGeneratePlanORM_ByKeyDelegatesForwardTheRepoMiss(t *testing.T) {
 	for _, fwd := range []string{
 		"\treturn prescriptionRepo.Get(ctx, db, id)\n",
 		"\treturn prescriptionRepo.Update(ctx, db, msg, opts...)\n",
-		"\treturn prescriptionRepo.UpdateMasked(ctx, db, msg, fields)\n",
+		"\treturn prescriptionRepo.UpdateMasked(ctx, db, msg, fields, opts...)\n",
 		"\treturn prescriptionRepo.Delete(ctx, db, id)\n",
 	} {
 		if !strings.Contains(code, fwd) {

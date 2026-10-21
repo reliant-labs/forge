@@ -125,8 +125,8 @@ COMMENT ON COLUMN invoices.number IS 'forge:fillmode=handler';
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding for forge:fillmode, got %d: %+v", len(findings), findings)
 	}
-	if findings[0].Marker != "forge:fillmode=handler" {
-		t.Errorf("marker = %q, want forge:fillmode=handler", findings[0].Marker)
+	if findings[0].Marker != "forge:fillmode" {
+		t.Errorf("marker = %q, want forge:fillmode", findings[0].Marker)
 	}
 }
 
@@ -141,9 +141,12 @@ func TestCollectColumnMarkerFindings_MissingDirIsNotAnError(t *testing.T) {
 }
 
 func TestColumnMarkerFixHint_ListsKnownMarkers(t *testing.T) {
-	f := columnMarkerFinding{Object: "invoices.total_cents", Marker: "forge:immutible"}
-	hint := columnMarkerFixHint(f)
-	for _, want := range []string{"forge:immutible", "invoices.total_cents", "forge:immutable", "forge:ref", "forge project annotations --kind column"} {
+	findings := findUnknownColumnMarkers("x.up.sql", `COMMENT ON COLUMN invoices.total_cents IS 'forge:immutible';`)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %+v", findings)
+	}
+	hint := columnMarkerFixHint(findings[0])
+	for _, want := range []string{"forge:immutible", "invoices.total_cents", "forge:immutable", "forge:no-soft-delete", "forge project annotations --kind column"} {
 		if !strings.Contains(hint, want) {
 			t.Errorf("fix hint missing %q:\n%s", want, hint)
 		}
@@ -160,16 +163,55 @@ func TestFormatColumnMarkers_CleanAndDirty(t *testing.T) {
 	buf.Reset()
 	formatColumnMarkers(&buf, []columnMarkerFinding{{
 		File: "db/migrations/0001_x.up.sql", Line: 3,
-		Object: "invoices.total_cents", Marker: "forge:immutible",
+		Object: "invoices.total_cents", Marker: "forge:immutible", Problem: "forge:immutible is not a marker forge reads",
 	}})
 	out := buf.String()
 	for _, want := range []string{
-		"[forge-column-markers] db/migrations/0001_x.up.sql:3",
+		"✗ [forge-column-markers] db/migrations/0001_x.up.sql:3",
 		"forge:immutible",
-		"warnings only",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("dirty output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "warnings only") {
+		t.Errorf("the lane gates; the report must not say it does not:\n%s", out)
+	}
+}
+
+// The lane reads every catalog comment forge declares markers in, with each
+// object's own vocabulary: a table marker on a column, a column marker on a
+// table, an unknown table marker and forge:no-soft-delete off deleted_at all
+// do nothing, and each is a finding. The same comments are clean where they
+// belong.
+func TestCollectColumnMarkerFindings_EveryObjectHasItsOwnVocabulary(t *testing.T) {
+	dir := writeColumnMarkersFixture(t, "0001_sites.up.sql", `
+COMMENT ON TABLE payments IS 'forge:append-only — a ledger';
+COMMENT ON VIEW chats_with_activity IS 'forge:entity key=id';
+COMMENT ON COLUMN worktrees.deleted_at IS 'forge:no-soft-delete — the archive stamp';
+COMMENT ON TABLE invoices IS 'forge:appendonly';
+COMMENT ON TABLE orders IS 'forge:immutable';
+COMMENT ON COLUMN orders.total IS 'forge:no-entity';
+COMMENT ON COLUMN worktrees.archived_at IS 'forge:no-soft-delete';
+COMMENT ON MATERIALIZED VIEW stats IS 'forge:append-only';
+`)
+	findings, err := collectColumnMarkerFindings(dir)
+	if err != nil {
+		t.Fatalf("collectColumnMarkerFindings: %v", err)
+	}
+	want := map[int]string{
+		5: "did you mean forge:append-only?",
+		6: "is a column marker",
+		7: "is a table marker",
+		8: "only applies to the deleted_at column",
+		9: "is a table marker",
+	}
+	if len(findings) != len(want) {
+		t.Fatalf("expected %d findings, got %d: %+v", len(want), len(findings), findings)
+	}
+	for _, f := range findings {
+		if !strings.Contains(f.Problem, want[f.Line]) {
+			t.Errorf("line %d: problem %q, want it to contain %q", f.Line, f.Problem, want[f.Line])
 		}
 	}
 }
@@ -190,8 +232,8 @@ COMMENT ON COLUMN invoices.total_cents IS 'forge:immutible';
 	if f.Rule != "forge-column-markers" {
 		t.Errorf("rule = %q, want forge-column-markers", f.Rule)
 	}
-	if f.Severity != lintSevWarning {
-		t.Errorf("severity = %q, want %q (advisory linter)", f.Severity, lintSevWarning)
+	if f.Severity != lintSevError {
+		t.Errorf("severity = %q, want %q (the lane gates)", f.Severity, lintSevError)
 	}
 	if f.FixHint == "" {
 		t.Error("missing fix_hint")

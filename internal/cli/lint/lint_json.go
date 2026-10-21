@@ -342,7 +342,7 @@ func collectSingleLinterJSON(
 	case flags.configDeps:
 		return reportUngated(collectConfigDepsJSON(cwd))
 	case flags.columnMarkers:
-		return reportUngated(collectColumnMarkersJSON(cfg))
+		return reportBySeverity(collectColumnMarkersJSON(cfg))
 	case flags.fixtureDrift || flags.crudFixtures:
 		return reportUngated(collectFixtureDriftJSON(cwd, cfg))
 	case flags.timeBucketing:
@@ -584,9 +584,9 @@ func collectConfigDepsJSON(projectDir string) ([]lintJSONFinding, error) {
 }
 
 // collectColumnMarkersJSON maps column-markers findings onto the JSON
-// contract. Severity warning across the board — an unrecognized forge:*
-// marker might be a future forge version's, so the finding is a nudge to
-// check the spelling, not a hard failure.
+// contract. Severity error across the board: a forge:* marker forge does not
+// read where it is declared does nothing, and `forge generate` refuses the
+// same catalog comment (schemadef.CheckMarkers).
 func collectColumnMarkersJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, error) {
 	findings, err := collectColumnMarkerFindings(migrationsDirFor(cfg))
 	if err != nil {
@@ -597,9 +597,9 @@ func collectColumnMarkersJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, err
 		out = append(out, lintJSONFinding{
 			File:     f.File,
 			Line:     f.Line,
-			Severity: lintSevWarning,
+			Severity: lintSevError,
 			Rule:     "forge-column-markers",
-			Message:  fmt.Sprintf("unrecognized forge:* marker on %s", f.Object),
+			Message:  fmt.Sprintf("%s on %s does nothing", f.Marker, f.Object),
 			FixHint:  columnMarkerFixHint(f),
 		})
 	}

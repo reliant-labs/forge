@@ -74,6 +74,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"open-procedure set (pkg/middleware)",
 		"webhook routes",
 		"internal/app composition (hybrid DI)",
+		"root env schema (pkg/config/roots_gen.go)",
 		"go mod tidy (pre-wiring)",
 		"cmd/commands.go (user extension point)",
 		"per-service test helpers",

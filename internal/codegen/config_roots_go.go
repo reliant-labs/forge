@@ -24,6 +24,29 @@ import (
 // rootsGoFile is the generated file, in the project's pkg/config.
 var rootsGoFile = filepath.Join("pkg", "config", "roots_gen.go")
 
+// GenerateRootsGo writes pkg/config/roots_gen.go for a graph-mode project's
+// roots — the ones its composition step assembled, which deploy config's
+// ROOTS projects too — whether or not the project deploys with forge's KCL:
+// the binary's env schema is the binary's, and the repo that deploys it may
+// be another. A legacy project, or a graph whose reach is unknown (nil
+// roots), gets none.
+func GenerateRootsGo(projectDir string, roots []GraphRoot, cs *checksums.FileChecksums) error {
+	if !GraphComposition(projectDir) {
+		roots = nil
+	}
+	return emitRootsGo(projectDir, roots, projectRootConfigMessage(projectDir), cs)
+}
+
+// projectRootConfigMessage is the message config.Config aliases, read off
+// proto/config; "" when there is none.
+func projectRootConfigMessage(projectDir string) string {
+	messages, err := ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config"))
+	if err != nil {
+		return ""
+	}
+	return rootConfigMessageName(messages, primaryBinaryName(projectDir))
+}
+
 // emitRootsGo writes pkg/config/roots_gen.go for roots — the roots ROOTS was
 // just rendered from — or retires it when ROOTS is not projected (no roots,
 // or no reach to read them against). rootMessage is the root config's message
@@ -43,8 +66,8 @@ func emitRootsGo(projectDir string, roots []GraphRoot, rootMessage string, cs *c
 	return nil
 }
 
-// rootsGoSource renders roots_gen.go; ok is false exactly when RootsKCLFor
-// renders no ROOTS.
+// rootsGoSource renders roots_gen.go; ok is false when the roots' reach is
+// unknown — as RootsKCLFor renders no ROOTS for them.
 func rootsGoSource(roots []GraphRoot, rootMessage string) (src []byte, ok bool, err error) {
 	if len(roots) == 0 || rootMessage == "" {
 		return nil, false, nil

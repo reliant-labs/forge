@@ -341,7 +341,7 @@ func collectLintOutcomesFrom(rc *lintRunCtx, pipeline []linterStep) []lintStepOu
 				scoped := *rc
 				scoped.paths = pkgs
 				// A scope naming a single .go file still hands the linter
-				// that file's whole package, and golangci-lint --fix would
+				// that file's whole package, and a lane's fixer would
 				// rewrite siblings outside the scope. Detect-only then.
 				scoped.fix = rc.fix && !rc.scope.namesGoFile()
 				stepRC = &scoped

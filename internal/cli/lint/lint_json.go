@@ -951,7 +951,7 @@ func collectGolangciLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
 	if rc.fix {
 		extra = append(extra, "--fix")
 	}
-	out, err := rc.execGolangci(golangciRunArgs(extra, rc.paths))
+	out, err := rc.execGolangci(golangciRunArgs(extra, rc.goPackages()))
 	if err != nil {
 		return []lintJSONFinding{golangciUnresolvedFinding(err, lintSevError)}, true
 	}
@@ -1008,7 +1008,7 @@ func collectTypedAccessGuardJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error
 			FixHint:  typedAccessGuardUnconfiguredHint,
 		}}, rc.strict, nil
 	}
-	run, err := rc.execGolangci(golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, rc.paths))
+	run, err := rc.execGolangci(golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, rc.goPackages()))
 	if err != nil {
 		return []lintJSONFinding{golangciUnresolvedFinding(err, unavailableSeverity(rc.strict))}, rc.strict, nil
 	}

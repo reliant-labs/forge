@@ -1549,7 +1549,7 @@ func runGolangciLint(rc *lintRunCtx) error {
 	if rc.fix {
 		extra = append(extra, "--fix")
 	}
-	out, err := rc.execGolangci(golangciRunArgs(extra, rc.paths))
+	out, err := rc.execGolangci(golangciRunArgs(extra, rc.goPackages()))
 	if err != nil {
 		return err
 	}
@@ -1582,7 +1582,7 @@ func runTypedAccessGuardAdvisory(rc *lintRunCtx) error {
 	if reason := typedAccessGuardUnconfigured(rc.cwd); reason != "" {
 		return laneUnavailable(typedAccessGuardUnconfiguredHint, "%s", reason)
 	}
-	out, err := rc.execGolangci(golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, rc.paths))
+	out, err := rc.execGolangci(golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, rc.goPackages()))
 	if err != nil {
 		return laneUnavailable(typedAccessGuardUnavailableHint, "%v", err)
 	}

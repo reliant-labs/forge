@@ -230,6 +230,13 @@ func (rc *lintRunCtx) moduleDir() string {
 	return dir
 }
 
+// goPackages is rc.paths with any package under a node_modules directory
+// excluded (goexec.ExcludeNodeModules): the Go package patterns every lane
+// that shells golangci-lint passes it.
+func (rc *lintRunCtx) goPackages() []string {
+	return goexec.ExcludeNodeModules(rc.runContext(), rc.moduleDir(), nil, rc.paths)
+}
+
 func (rc *lintRunCtx) runContext() context.Context {
 	if rc.ctx == nil {
 		return context.Background()

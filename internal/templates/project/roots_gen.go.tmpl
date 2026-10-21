@@ -73,6 +73,9 @@ func rootCommands(deps Deps) []*cobra.Command {
 	{{.Var}} := &cobra.Command{
 		Use:   "{{.Use}}",
 		Short: {{printf "%q" .Short}},
+{{- if and (not .Root) .Long}}
+		Long:  {{printf "%q" .Long}},
+{{- end}}
 {{- if .Root}}
 		Long:  {{printf "%q" .Long}},
 		Args:  cobra.NoArgs,

@@ -271,7 +271,7 @@ func TestRootsGen_HandsTheLoadedConfigsToThePolicy(t *testing.T) {
 		views[i].TypeName = strings.ToUpper(views[i].Name[:1]) + views[i].Name[1:]
 	}
 	pc := processConfigsFrom(binConfigMessages(), "rbc")
-	cmds, top := rootCommandViews(views)
+	cmds, top := rootCommandViews(views, nil)
 	src, err := renderGoTemplate("roots_gen.go.tmpl", rootsGenView{Module: "example.com/rbc", Commands: cmds, Top: top, Fmt: true, ConfigInputs: pc.inputViews()})
 	if err != nil {
 		t.Fatal(err)

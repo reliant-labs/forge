@@ -43,6 +43,19 @@ role whose port and drain live in its own command config listens and drains
 on them. A setting under another name (a `health_port`, a `drain` block) is
 yours to read in the same function: serve.go is owned.
 
+What `runRoot` reads is every root's reach, the way what compose.go reads is
+one root's: `generate` reads serve.go itself — `cfg` from `config.LoadReach`,
+`root.Configs.<Msg>`, and each value it hands a function of the command
+tree — so an `observability` block or a `PROMETHEUS_ENABLED` of your own is
+in `ROOTS`, `Roots()` and `LoadReach` with nothing declared. A database field
+counts only for a root that opens the database. A config handed whole to
+another package is the whole of it: pass the fields instead.
+
+A group command (`server` above `server api`) takes its help from a comment
+of its own in `internal/app`, by the root doc's rule — first paragraph the
+Short, the rest the Long — ending `//forge:group server` (a path:
+`//forge:group server,jobs`). Undeclared, it is "The server roots".
+
 `//forge:root worker command=server,worker migrate=wait` leaves the schema to
 another process: `apply` migrates before building the root (the default for a
 root that reaches the database), `wait` blocks until the schema is current

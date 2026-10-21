@@ -196,7 +196,7 @@ func GenerateGraph(in GraphGenInput) error {
 		*in.Roots = graphRoots(m.rootViews)
 	}
 	// cmd/<bin>/cmd/roots_gen.go: one command per root.
-	return emitRootCommands(in.ProjectDir, in.ModulePath, m.rootViews, m.configs.inputViews(), m.configs.rootMessage(), in.Checksums, in.warnings())
+	return emitRootCommands(in.ProjectDir, in.ModulePath, m.rootViews, m.groups, m.configs.inputViews(), m.configs.rootMessage(), in.Checksums, in.warnings())
 }
 
 // graphModel is the composition graph of one project as generate sees it:
@@ -220,6 +220,8 @@ type graphModel struct {
 
 	roots     []graphRoot
 	rootViews []graphRootView
+	// groups is the group commands' declared help, by command path.
+	groups map[string]groupHelp
 	// configs is every config the processes load (nil: no root config).
 	configs *processConfigs
 
@@ -244,13 +246,13 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 	if bad := unconstructibleComponents(in.ProjectDir, comps); len(bad) > 0 {
 		return nil, unconstructibleError(bad)
 	}
-	providers, roots, err := discoverAppDecls(in.ProjectDir)
+	providers, roots, groups, err := discoverAppDeclsAndGroups(in.ProjectDir)
 	if err != nil {
 		return nil, err
 	}
 
 	// Nodes: components, providers, then the generated ones.
-	m := &graphModel{byName: map[string]*graphNode{}, compNode: map[string]*graphNode{}}
+	m := &graphModel{byName: map[string]*graphNode{}, compNode: map[string]*graphNode{}, groups: groups}
 	add := func(n *graphNode) error {
 		if prev, dup := m.byName[n.Name]; dup {
 			return fmt.Errorf("the composition graph has two nodes named %s (%s and %s): every node needs its own accessor g.%s() — rename the provider func", n.Name, prev.Doc, n.Doc, n.Name)
@@ -283,6 +285,10 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 	// Config inputs: each of the primary binary's configs beside the root
 	// config is an app.Graph field, so no node may take its name.
 	m.configs = loadProcessConfigs(in.ProjectDir)
+	if m.configs != nil {
+		// What the owned process policy reads is every root's reach too.
+		m.configs.process = runRootConfigReads(in.ProjectDir, m.configs.configInputs())
+	}
 	for name := range m.configs.configInputs() {
 		if n := m.byName[name]; n != nil {
 			return nil, fmt.Errorf("a node named %s (%s) would collide with app.Graph's %s, the config proto/config's %s message binds to the primary binary — rename the node", name, n.Doc, name, name)
@@ -348,6 +354,9 @@ func (m *graphModel) wire(in GraphGenInput, resolver *graphResolver, roots []gra
 		m.roots = []graphRoot{defaultGraphRoot(built, m.edges)}
 	}
 	if err := checkRootCommands(m.roots); err != nil {
+		return err
+	}
+	if err := checkGroupHelp(m.groups, m.roots); err != nil {
 		return err
 	}
 	if m.rootViews, err = graphRootViews(m.roots, built, m.u, m.edges, m.lazy); err != nil {

@@ -263,13 +263,21 @@ func isGraphGeneratedFile(name string) bool {
 // discoverAppDecls parses the owned internal/app files (everything except
 // compose.go, *_gen.go and tests) for provider funcs and root structs.
 func discoverAppDecls(projectDir string) (providers []graphProvider, roots []graphRoot, err error) {
+	providers, roots, _, err = discoverAppDeclsAndGroups(projectDir)
+	return providers, roots, err
+}
+
+// discoverAppDeclsAndGroups is discoverAppDecls, with the group commands'
+// declared help (`//forge:group`, composition_graph_groups.go).
+func discoverAppDeclsAndGroups(projectDir string) (providers []graphProvider, roots []graphRoot, groups map[string]groupHelp, err error) {
+	groups = map[string]groupHelp{}
 	appDir := filepath.Join(projectDir, "internal", "app")
 	entries, rerr := os.ReadDir(appDir)
 	if rerr != nil {
 		if os.IsNotExist(rerr) {
-			return nil, nil, nil
+			return nil, nil, groups, nil
 		}
-		return nil, nil, rerr
+		return nil, nil, nil, rerr
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
@@ -286,12 +294,15 @@ func discoverAppDecls(projectDir string) (providers []graphProvider, roots []gra
 		fset := token.NewFileSet()
 		file, perr := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
 		if perr != nil {
-			return nil, nil, fmt.Errorf("parse internal/app/%s: %w", n, perr)
+			return nil, nil, nil, fmt.Errorf("parse internal/app/%s: %w", n, perr)
 		}
 		rel := "internal/app/" + n
 		structs, fileRoots, rerr := discoverFileStructsAndRoots(fset, file, rel)
 		if rerr != nil {
-			return nil, nil, rerr
+			return nil, nil, nil, rerr
+		}
+		if gerr := discoverFileGroups(fset, file, rel, groups); gerr != nil {
+			return nil, nil, nil, gerr
 		}
 		roots = append(roots, fileRoots...)
 		imports := fileImportAliases(file)
@@ -327,7 +338,7 @@ func discoverAppDecls(projectDir string) (providers []graphProvider, roots []gra
 			})
 		}
 	}
-	return providers, roots, nil
+	return providers, roots, groups, nil
 }
 
 // discoverFileStructsAndRoots indexes file's struct types by name and reads

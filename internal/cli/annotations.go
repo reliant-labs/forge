@@ -550,6 +550,13 @@ func markerSpecs() []MarkerSpec {
 			Example:   "//forge:root api command=serve migrate=apply\ntype API struct { ... }",
 		},
 		{
+			Name:      "forge:group",
+			AppliesTo: "root",
+			Effect:    "Declares the help of a GROUP command — one roots_gen.go writes only to hold roots' commands (`server` above `server api`). The comment's text is the help by the root doc's rule: the first paragraph the Short, the rest the Long. Undeclared, a group's help is generated. A path no root's command runs beneath, or a root's own command, fails generate.",
+			Placement: "a comment of its own in an owned internal/app file (not a //forge:root's doc), unspaced, last; the path's words comma-separated",
+			Example:   "// Run cloud server components\n//\n// Each subcommand starts one server role.\n//\n//forge:group server",
+		},
+		{
 			Name:      "forge:standby",
 			AppliesTo: "function",
 			Effect:    "Keeps a provider ready for components to come: `forge lint --graph` does not require a root to reach it.",

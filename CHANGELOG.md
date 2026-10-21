@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes a user. forge presents neither up front: a Reliant session or `forge
 login` credential is traded for the scope the control plane's 403 names, for
   an hour, exactly as `deploy:read` and `secret:write` are. An explicit
+  each one rpc of `controlplane.v1.IdentityService`:
+  `set-roles <env> --user <id|email> --role a --role b` (or `--none`), `reset`,
+  `lock`, `unlock`, `delete` (asks first; `--yes` skips the question; a closed
+  stdin refuses) and `revoke-sessions`. `--user` takes a user id, or an email
+  matched exactly (case-insensitively) through `users`; no match, or two, is a
+  refusal. The scopes are `identity:read` for reads and `identity:manage` for
+  every verb that changes a user. forge presents neither up front: a Reliant
+  session or `forge login` credential is traded for the scope the control
+  plane's 403 names, for an hour, exactly as `deploy:read` and `secret:write`
+  are. An explicit
   `--token` is used as given. `invite` is unchanged.
 - **`forge project new --verify`** keeps the compile check at the end of the
   bootstrap generate (see Changed).
@@ -121,6 +131,9 @@ login` credential is traded for the scope the control plane's 403 names, for
   own e2e corpus compiles on every change; your first `go build` or `forge
 generate` runs the same check. `project new` never took a heavy slot and still
   does not: pinned by `TestRunNew_TakesNoHeavySlot`.
+  own e2e corpus compiles on every change; your first `go build` or
+  `forge generate` runs the same check. `project new` never took a heavy slot
+  and still does not: pinned by `TestRunNew_TakesNoHeavySlot`.
 - **Transaction isolation has no default; every writable transaction names
   its level.** pkg/orm had two opposite defaults: `RunTx`,
   `RunTxWithOptions` and `BeginDetached` with an unset level began
@@ -190,6 +203,18 @@ generate` runs the same check. `project new` never took a heavy slot and still
 
 ### Fixed
 
+- **`forge tools install` replaces a GOBIN binary on Windows while something
+  has it open.** The atomic install (#1062) renamed the staged binary over the
+  old one with a bare `os.Rename`, which Windows refuses while any handle, such
+  as a virus scanner or a parallel forge, has the target open. It now retries
+  for a moment, as every `atomicfile` write already does (new
+  `atomicfile.Replace`).
+- **The main-red override judges main's latest run that has a verdict.**
+  `scripts/ci-main-red.sh` compared against main's newest completed run, which
+  is often one a later push cancelled, and refused #1071 because that run
+  (25283f30) had no failed job. It now skips cancelled and unfinished runs. It
+  also drops the CRs a native `jq.exe` writes, which made `TestMainRedOverride`
+  fail on Windows since #1057.
 - **A scaffolded Next.js frontend builds again against `@opentelemetry/api`
   1.10.** That release ships only `.d.mts`/`.d.cts` declarations, the tsconfig
   peer pin was aimed at `dist/index.d.mts`, and Next's webpack read it as
@@ -250,6 +275,13 @@ identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
   server while its owner lives, however old its pid file looks: a fan-out
   outlives the 30-minute stale age, and a sleep ages every file by the wall
   clock.
+- **`forge lint` skips `node_modules` Go packages in a project reached
+  through a symlink.** `go list` reports package directories under the
+  caller's `$PWD` spelling (macOS's `/var`, a symlinked home or worktree),
+  and the filter compared them with the resolved project path. So nothing
+  matched, and golangci-lint and the contract linter linted third-party Go
+  under `node_modules` again. A project directory that was itself a symlink
+  also skipped the search for `node_modules`. Both sides are now resolved.
 
 ### Changed
 

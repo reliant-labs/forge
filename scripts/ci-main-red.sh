@@ -20,8 +20,9 @@
 #   - the pull request carries the `ci:main-red` label;
 #   - it is not a Dependabot pull request: those have no author to come back
 #     and fix what a red showed, so they are never merged over one;
-#   - every failed job of this run is matched on main's latest completed push
-#     run of ci.yml:
+#   - every failed job of this run is matched on main's latest push run of
+#     ci.yml that concluded success or failure (a cancelled or unfinished run
+#     is skipped: it proves nothing about what main fails):
 #       * a job whose log names failing tests (`--- FAIL: TestX`) is matched
 #         when every one of those tests also failed in some job on main;
 #       * a job whose log names none (lint, verify-generated, a build error)
@@ -37,6 +38,13 @@
 # workflow job.
 set -euo pipefail
 export LC_ALL=C # sort and comm must collate alike
+
+# A native jq.exe (Windows, where internal/ciguard's test runs this script
+# under Git Bash) ends every line with CRLF. A single value survived that, but
+# main's list of failed job ids did not: an id carrying a CR names no log, so
+# main named no failing tests and every test match was refused. Drop CRs at
+# the source.
+jq() { command jq "$@" | tr -d '\r'; }
 
 : "${GITHUB_REPOSITORY:?}" "${GITHUB_RUN_ID:?}" "${GITHUB_EVENT_NAME:?}" "${GITHUB_EVENT_PATH:?}"
 repo=$GITHUB_REPOSITORY
@@ -93,8 +101,14 @@ fi
 failed=$(jq -c '[.[] | select(.conclusion == "failure" and .name != "CI gate")]' <<<"$mine")
 [ "$(jq length <<<"$failed")" -gt 0 ] || refuse "no failed job to match"
 
-main_run=$(gh api "repos/$repo/actions/workflows/ci.yml/runs?branch=main&event=push&status=completed&per_page=1" --jq '.workflow_runs[0].id // empty')
-[ -n "$main_run" ] || refuse "found no completed ci.yml run on main to compare with"
+# Main's latest run that finished with a verdict. ci.yml's concurrency group
+# keeps one pending run per ref, so a push to main cancels the run still
+# queued before it, and the newest completed run is often a cancelled one: it
+# ran no job or stopped partway, and a red it never reached reads as green. A
+# run still in progress has no verdict either.
+main_run=$(gh api "repos/$repo/actions/workflows/ci.yml/runs?branch=main&event=push&status=completed&per_page=50" |
+  jq -r '[.workflow_runs[] | select(.conclusion == "success" or .conclusion == "failure")][0].id // empty')
+[ -n "$main_run" ] || refuse "found no ci.yml run on main that finished green or red (in the latest 50 completed) to compare with"
 main_failed=$(run_jobs "$main_run" | jq -c '[.[] | select(.conclusion == "failure")]')
 [ "$(jq length <<<"$main_failed")" -gt 0 ] || refuse "main's latest run ($main_run) is green: every failure here is this change's"
 

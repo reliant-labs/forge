@@ -140,7 +140,7 @@ func TestEmitRootCommands_WritesOneCommandPerRoot(t *testing.T) {
 		{Name: "server", TypeName: "Server", Command: []string{"server"}, Migrate: true, Fields: []graphRootFieldView{{Accessor: "APIListener"}}, Plan: "db → api_listener"},
 		{Name: "worker", TypeName: "Worker", Command: []string{"worker"}, Fields: []graphRootFieldView{{Accessor: "Tick"}}, Plan: "tick"},
 	}
-	if err := emitRootCommands(dir, "example.com/demo", roots, nil, nil, &warn); err != nil {
+	if err := emitRootCommands(dir, "example.com/demo", roots, nil, "", nil, &warn); err != nil {
 		t.Fatal(err)
 	}
 	if warn.Len() != 0 {
@@ -163,6 +163,105 @@ func TestEmitRootCommands_WritesOneCommandPerRoot(t *testing.T) {
 	}
 }
 
+// A root's doc comment is its command's help: the first paragraph the Short,
+// the rest the Long with its line breaks, directives dropped.
+func TestRootHelp_TheDocCommentIsTheCommandsHelp(t *testing.T) {
+	src := `package app
+
+// Run the daemon connection
+// gateway
+//
+// Starts the gateway that manages
+// daemon streams.
+//
+// Designed to run as few replicas.
+//
+//forge:root gateway command=server,gateway
+type Gateway struct{}
+
+//forge:root bare
+type Bare struct{}
+
+// One paragraph only.
+//
+//forge:root one
+type One struct{}
+`
+	file, err := parser.ParseFile(token.NewFileSet(), "roots.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, roots, err := discoverFileStructsAndRoots(token.NewFileSet(), file, "internal/app/roots.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string][2]string{}
+	for _, r := range roots {
+		got[r.Name] = [2]string{r.Short, r.Long}
+	}
+	want := map[string][2]string{
+		"gateway": {"Run the daemon connection gateway", "Starts the gateway that manages\ndaemon streams.\n\nDesigned to run as few replicas."},
+		"bare":    {"", ""},
+		"one":     {"One paragraph only.", ""},
+	}
+	for name, w := range want {
+		if got[name] != w {
+			t.Errorf("%s: help %q, want %q", name, got[name], w)
+		}
+	}
+
+	// roots_gen.go carries it; a root with no doc keeps the generated text.
+	cmds, _ := rootCommandViews([]graphRootView{
+		{Name: "gateway", TypeName: "Gateway", Command: []string{"server", "gateway"}, Short: want["gateway"][0], Long: want["gateway"][1]},
+		{Name: "bare", TypeName: "Bare", Command: []string{"bare"}, Fields: []graphRootFieldView{{Accessor: "Tick"}}, Plan: "tick"},
+	})
+	byUse := map[string]rootCmdView{}
+	for _, c := range cmds {
+		byUse[c.Use] = c
+	}
+	if c := byUse["gateway"]; c.Short != want["gateway"][0] || c.Long != want["gateway"][1] {
+		t.Errorf("gateway command help = %q / %q", c.Short, c.Long)
+	}
+	if c := byUse["bare"]; c.Short != "Run the bare root: tick" || !strings.Contains(c.Long, "Start order") {
+		t.Errorf("bare command help = %q / %q", c.Short, c.Long)
+	}
+}
+
+// A binary-bound root config's flags live on the binary's root command
+// (config.Register<Msg>Flags, persistent). When root.go registers them there,
+// the root commands inherit them, and roots_gen.go does not register them
+// again: a local copy would shadow the inherited flags and move them out of
+// `--help`'s "Global Flags".
+func TestEmitRootCommands_RootConfigFlagsHomedOnTheBinaryRoot(t *testing.T) {
+	roots := []graphRootView{{Name: "worker", TypeName: "Worker", Command: []string{"worker"}, Fields: []graphRootFieldView{{Accessor: "Tick"}}, Plan: "tick"}}
+	serve := "package cmd\n\nfunc runRoot(ctx context.Context, deps Deps, root rootSpec) error { return nil }\n"
+	for _, tc := range []struct {
+		name, root string
+		local      bool
+	}{
+		{"not homed", "package cmd\n\nfunc newRootCmd(deps Deps) { _ = rootCommands(deps) }\n", true},
+		{"homed", "package cmd\n\nfunc newRootCmd(deps Deps) { config.RegisterDemoConfigFlags(root); _ = rootCommands(deps) }\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := cmdTreeFixture(t, serve)
+			if err := os.WriteFile(filepath.Join(dir, "cmd", "demo", "cmd", "root.go"), []byte(tc.root), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var warn bytes.Buffer
+			if err := emitRootCommands(dir, "example.com/demo", roots, nil, "DemoConfig", nil, &warn); err != nil {
+				t.Fatal(err)
+			}
+			src, err := os.ReadFile(filepath.Join(dir, "cmd", "demo", "cmd", "roots_gen.go"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(string(src), "config.RegisterFlags(workerCmd)"); got != tc.local {
+				t.Errorf("roots_gen.go registers the root config's flags on the root command: %v, want %v:\n%s", got, tc.local, src)
+			}
+		})
+	}
+}
+
 func TestEmitRootCommands_ATreeWithoutRunRootKeepsCompiling(t *testing.T) {
 	// A serve.go from before the per-root commands: `server` runs Serve.
 	dir := cmdTreeFixture(t, "package cmd\n\nfunc Serve(ctx context.Context, deps Deps) error { return nil }\n")
@@ -172,7 +271,7 @@ func TestEmitRootCommands_ATreeWithoutRunRootKeepsCompiling(t *testing.T) {
 	}
 	var warn bytes.Buffer
 	roots := []graphRootView{{Name: "worker", TypeName: "Worker", Command: []string{"worker"}}}
-	if err := emitRootCommands(dir, "example.com/demo", roots, nil, nil, &warn); err != nil {
+	if err := emitRootCommands(dir, "example.com/demo", roots, nil, "", nil, &warn); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
@@ -200,17 +299,22 @@ func (g *Graph) newTick() (*tick.Worker, error) { return tick.New(tick.Deps{Logg
 }
 
 // A node that only adds to the probe surface — a /flow-health route, a ready
-// check — does not serve it: the root keeps its probe listener. One that
-// takes Front does serve it.
+// check, behind a nil guard or not — does not serve it: the root keeps its
+// probe listener. One that takes Front does serve it.
 func TestGraphComposeInputReads_RegisteringOnTheProbesIsNotServingThem(t *testing.T) {
 	src := `package app
 
 func (g *Graph) newFlowHealth() (*FlowHealth, error) {
 	f := NewFlowHealth(FlowHealthDeps{Logger: g.Log})
+	if g.Probes == nil {
+		return f, nil
+	}
 	if err := g.Probes.Handle("/flow-health", f); err != nil {
 		return nil, err
 	}
-	g.Probes.AddReadyCheck(f.Check())
+	if nil != g.Probes {
+		g.Probes.AddReadyCheck(f.Check())
+	}
 	return f, nil
 }
 

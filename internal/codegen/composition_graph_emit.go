@@ -60,9 +60,11 @@ type graphRootFieldView struct{ Name, Type, Accessor string }
 
 type graphRootView struct {
 	Name, TypeName string
-	Generated      bool
-	Fields         []graphRootFieldView
-	ForceOrder     []graphRootFieldView
+	// Short and Long are the root's own help (graphRoot.Short/Long).
+	Short, Long string
+	Generated   bool
+	Fields      []graphRootFieldView
+	ForceOrder  []graphRootFieldView
 	// Lazy are the nodes the closure reaches only through a lazy edge (a
 	// method value), forced after the fields so they are built at boot.
 	Lazy []string
@@ -194,7 +196,7 @@ func GenerateGraph(in GraphGenInput) error {
 		*in.Roots = graphRoots(m.rootViews)
 	}
 	// cmd/<bin>/cmd/roots_gen.go: one command per root.
-	return emitRootCommands(in.ProjectDir, in.ModulePath, m.rootViews, m.configs.inputViews(), in.Checksums, in.warnings())
+	return emitRootCommands(in.ProjectDir, in.ModulePath, m.rootViews, m.configs.inputViews(), m.configs.rootMessage(), in.Checksums, in.warnings())
 }
 
 // graphModel is the composition graph of one project as generate sees it:
@@ -767,7 +769,7 @@ func rootView(r *graphRoot, edges map[string][]string) graphRootView {
 // g.X in compose.go): Build also forces every node its closure reaches
 // lazily, so a lazily-used node is constructed at boot, never on first use.
 func rootViewLazy(r *graphRoot, edges, lazy map[string][]string) graphRootView {
-	v := graphRootView{Name: r.Name, TypeName: r.TypeName, Generated: r.Generated}
+	v := graphRootView{Name: r.Name, TypeName: r.TypeName, Short: r.Short, Long: r.Long, Generated: r.Generated}
 	for _, f := range r.Fields {
 		v.Fields = append(v.Fields, graphRootFieldView{Name: f.Name, Type: f.Type, Accessor: f.Node.Name})
 	}

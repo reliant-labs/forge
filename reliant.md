@@ -105,29 +105,33 @@ See the comment block at the top of `internal/cli/fixture_corpus_e2e_test.go` fo
 
 ### CI: what runs where
 
-Two tiers. A **pull request** gets the fast tier, budgeted at about five minutes of wall
-time; a **push to main** gets the slow tier as well. Nothing left CI when the tiers split:
-every check that is off the pull request runs on every push to main. Each workflow's header
-says why its lanes are shaped the way they are; read it before moving a check between
-lanes. `ci.yml`'s `CI gate` job prints every job's wall time and the critical path on each
-run — watch it when you add a test.
+Two tiers. A **pull request** gets the fast tier: a five-minute MEDIAN wall time, runner
+queue included. A **push to main** gets the slow tier as well. Nothing left CI when the
+tiers split: every check that is off the pull request runs on every push to main. Each
+workflow's header says why its lanes are shaped the way they are; read it before moving a
+check between lanes. `ci.yml`'s `CI gate` job prints every job's wall time and the critical
+path on each run — watch it when you add a test.
 
-**Pull request** and **merge-queue entry** (`ci.yml`, 8 jobs, on every pull request — no path filter):
+**The rule for the pull-request tier: a check that cannot fit the budget is not on it.** A
+slow test skips under `-short` and runs on main; a slow job (a linter, a scanner, another
+OS) runs on main. Every job a pull request adds is another runner to queue for (the org
+runs 20 jobs at once, and was saturated half of 2026-10-21), so add a step to an existing
+job before adding a job.
 
-- **Test (-short)** — the `-short` tier, no `-race`, as 2 package shards
-  (`scripts/ci-test-shard.sh` over `scripts/ci-test-packages.sh short I N`).
-  `internal/ciguard` fails if the matrix misses an index. No `-count=1`: unchanged packages
-  replay main's cached results.
-- **Flake gate** — each test the change adds or edits runs three times under the race
-  detector (`scripts/ci-changed-tests.sh`). A test that fails one run in three never merges.
-- **Windows (cross-compile + vet)** — `GOOS=windows` build and vet (tests included) from
-  Linux, and the windows/arm64 build of `cmd/forge`.
-- **Lint** — golangci-lint over the root and over `pkg/` (under `pkg/.golangci.yml`),
-  `go vet ./...`, and `go vet -tags e2e` over the e2e-tagged packages.
-- **Verify Generated Code + Validate KCL** — `forge ci verify-generated` and
-  `forge ci validate-kcl`.
-- **Quick checks** — the pre-commit hooks (go-vet-mod skipped: Lint runs it), the Go and
-  npm dependency-license allowlists, and `forge ci vuln-scan --go`.
+**Pull request** and **merge-queue entry** (`ci.yml`, 5 jobs, on every pull request — no path filter):
+
+- **Test** — three entries: the `-short` tier, no `-race`, as 2 package shards
+  (`scripts/ci-test-shard.sh` over `scripts/ci-test-packages.sh short I N`), and the guards
+  in full mode spread across the entries (`internal/ciguard` holds each to exactly one). The
+  guards-only entry also runs the **flake gate**: each test the change adds or edits runs
+  three times (`scripts/ci-changed-tests.sh`; no `-race` — that runs on main). A test that
+  fails one run in three never merges. `internal/ciguard` fails if the matrix misses an index. No
+  `-count=1`: an unchanged package replays main's result, which works because
+  `test-short-warm` runs the same command in the same environment, `GOFLAGS=-trimpath`
+  is set workflow-wide, and `scripts/ci-normalize-mtimes.sh` stamps every tracked file
+  with a content-derived mtime (Go's test cache keys files on mtime, not content).
+- **Checks** — `forge ci verify-generated`, `forge ci validate-kcl`, the pre-commit hooks
+  (go-vet-mod skipped), and the Go and npm dependency-license allowlists.
 - `CI gate` is the main ruleset's required check, and `main` merges through a merge queue:
   each queued pull request runs this tier again (`merge_group`) over main plus the entries
   ahead of it, and lands only if `CI gate` is green there. So `ci.yml` has no path filter
@@ -146,14 +150,18 @@ run — watch it when you add a test.
   (every package except `internal/cli` and the guards), full mode.
 - **internal/cli** — `ci.yml` Test (internal/cli): the package alone, `-race -count=1`. Its
   subpackages stay in Unit.
+- **Lint** — golangci-lint over the root and over `pkg/` (under `pkg/.golangci.yml`),
+  `go vet ./...`, and `go vet -tags e2e` over the e2e-tagged packages. Main only: run
+  `forge lint` locally to see a finding first.
 - **Test (-short whole tier, then guards)** — the pull-request tier in one job, which saves
-  the `go-build-short` cache the shards restore; then the guards (tierguard, removalguard,
-  deadcodeguard; `-p 1`, full mode, no `-race`). Under `-short` the guards skip their
-  whole-repo work, so pull requests get their fast half only.
-- **Build (-trimpath) + go-licenses** — the release build flags, then the second license
-  opinion; Quick checks covers dependency licenses on every pull request.
+  the `go-build-short` and `go-mod` caches the pull-request jobs restore
+  (`.github/actions/restore-go-caches`); then the guards (tierguard, removalguard,
+  deadcodeguard, writeguard; `-p 1`, full mode, no `-race`), which pull requests also run.
+- **Build (-trimpath) + go-licenses + govulncheck** — the release build flags, the second
+  license opinion (Checks covers dependency licenses on every pull request), and
+  `forge ci vuln-scan --go`.
 - **Windows** — native: build, vet, the `-short` tier of Unit + internal/cli, and a
-  scaffold+render smoke.
+  scaffold+render smoke. (A pull request no longer cross-compiles for Windows.)
 - **e2e** — `e2e-suite.yml`: `prepare` builds the e2e test binary, forge and the codegen
   plugins once and plans 4 shards by recorded duration (`.github/e2e-timings.json`,
   `internal/e2eshard`); the shards run only `TestE2E*` tests, minus `TestE2ENightly*`; a

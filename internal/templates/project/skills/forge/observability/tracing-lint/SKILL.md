@@ -14,7 +14,7 @@ alone:
 | `forge-tracing-log-without-ctx` | `slog.Info(…)` / `logger.Info(…)` where a `ctx` (or `r *http.Request`) is in scope: the line has no trace_id | autofixed to `slog.InfoContext(ctx, …)` |
 | `forge-tracing-raw-http-client` | `&http.Client{}` with no/nil/default transport, `http.DefaultClient`, `http.Get` | `observe.NewHTTPClient(observe.HTTPClientOptions{…})` |
 | `forge-tracing-raw-sql-open` | `sql.Open`, `sqlx.Connect`, a pgx pool with no tracer | `dbtrace.Open(driver, dsn)` |
-| `forge-tracing-contract-uninstrumented` | an instrumented contract's `pkg.New(…)` used without its decorator | `pkg.NewServiceWithForgeMiddleware(pkg.New(…))` |
+| `forge-tracing-contract-uninstrumented` | an instrumented contract's `pkg.New(…)` used without its decorator, anywhere (`providers.go`, `*_wire.go`, another binary) | autofixed to `pkg.NewInstrumented(…)` — New's signature, decorated |
 
 A logging helper of your own (`logging.Info(msg, args...)`) joins the log rule
 through forge.yaml:

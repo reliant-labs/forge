@@ -28,13 +28,13 @@ import (
 	"os"
 {{- end}}
 	"os/signal"
-{{- if index .ConfigFields "CorsOrigins"}}
+{{- if .Serves "CorsOrigins"}}
 	"strings"
 {{- end}}
 	"syscall"
 
 	"github.com/reliant-labs/forge/pkg/lifecyclekit"
-{{- if index .ConfigFields "AutoMigrate"}}
+{{- if .Serves "AutoMigrate"}}
 	"github.com/reliant-labs/forge/pkg/migratekit"
 {{- end}}
 	"github.com/reliant-labs/forge/pkg/serverkit"
@@ -42,12 +42,12 @@ import (
 	"github.com/reliant-labs/forge/pkg/serverkit/drainbudget"
 {{- end}}
 
-{{- if index .ConfigFields "AutoMigrate"}}
+{{- if .Serves "AutoMigrate"}}
 	forgedb "{{.Module}}/db"
 {{- end}}
 	"{{.Module}}/internal/app"
 	"{{.Module}}/pkg/config"
-{{- if index .ConfigFields "AutoMigrate"}}
+{{- if .Serves "AutoMigrate"}}
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" sql driver for DATABASE_URL
 {{- end}}
 )
@@ -63,8 +63,17 @@ func runRoot(ctx context.Context, deps Deps, root rootSpec) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
+{{- if .ConfigInputs}}
+
+	// The process settings come from the root config and from the configs
+	// the root's command loaded beside it (root.Configs, roots_gen.go): a
+	// role whose port and drain budget live in its own command config gets
+	// them, logging included, before anything else runs.
+	skCfg, err := serverkitConfig(cfg, root.Configs)
+{{- else}}
 
 	skCfg, err := serverkitConfig(cfg)
+{{- end}}
 	if err != nil {
 		return err
 	}
@@ -90,16 +99,24 @@ func runRoot(ctx context.Context, deps Deps, root rootSpec) error {
 		return err
 	}
 	defer bootProbes.Close()
-{{- if index .ConfigFields "AutoMigrate"}}
+{{- if .Serves "AutoMigrate"}}
 
 	// Migrate BEFORE building the graph: a service that starts serving
 	// against a schema its migrations have not reached answers requests
 	// with errors that look like bugs. Only a root that reaches the database
-	// migrates — a worker root that never opens it never runs a migration.
+	// migrates — a worker root that never opens it never runs a migration —
+	// unless its //forge:root says otherwise: migrate=wait leaves the
+	// migrations to another process and blocks (/readyz naming "schema")
+	// until the schema is current; migrate=none leaves it alone.
 	if root.Migrate {
 		if merr := serverkit.AutoMigrateContext(ctx, skCfg, logger,
 			migratekit.AutoMigrate(forgedb.Source(), forgedb.SourceDir)); merr != nil {
 			return merr
+		}
+	} else if root.AwaitMigrations {
+		if werr := serverkit.AwaitMigrationsContext(ctx, skCfg, logger,
+			migratekit.AwaitMigrations(forgedb.Source(), forgedb.SourceDir, migratekit.AwaitOptions{})); werr != nil {
+			return werr
 		}
 	}
 {{- end}}
@@ -134,10 +151,20 @@ func runRoot(ctx context.Context, deps Deps, root rootSpec) error {
 	})
 }
 
+{{- if .ConfigInputs}}
+// serverkitConfig projects this project's typed *config.Config — and each
+// config the root's command loaded beside it (configs) — onto the
+// vendor-neutral serverkit.Config, so serverkit needs no compile-time
+// dependency on pkg/config. A setting a loaded config declares stands in for
+// the root config's; the most specific config (a command config over a
+// subtree config) is applied last.
+func serverkitConfig(cfg *config.Config, configs rootConfigs) (serverkit.Config, error) {
+{{- else}}
 // serverkitConfig projects this project's typed *config.Config onto the
 // vendor-neutral serverkit.Config, so serverkit needs no compile-time
 // dependency on pkg/config.
 func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
+{{- end}}
 	skCfg := serverkit.Config{
 {{- if index .ConfigFields "Port"}}
 		Addr: fmt.Sprintf(":%d", cfg.Port),
@@ -244,6 +271,87 @@ func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
 {{- end}}
 {{- if index .ConfigFields "DbConnectTimeout"}}
 	skCfg.DBConnectTimeout = cfg.DbConnectTimeout.AsDuration()
+{{- end}}
+{{- range .ConfigInputs}}
+{{- if .Fields}}
+
+	// {{.Doc}}: its settings, in a process whose command loads it.
+	if c := configs.{{.Name}}; c != nil {
+{{- if index .Fields "Port"}}
+		skCfg.Addr = fmt.Sprintf(":%d", c.Port)
+{{- end}}
+{{- if index .Fields "OtlpEndpoint"}}
+		skCfg.OTLPEndpoint = c.OtlpEndpoint
+{{- end}}
+{{- if index .Fields "PprofAddr"}}
+		skCfg.PprofAddr = c.PprofAddr
+{{- end}}
+{{- if index .Fields "TlsCertPath"}}
+		skCfg.TLSCertPath = c.TlsCertPath
+{{- end}}
+{{- if index .Fields "TlsKeyPath"}}
+		skCfg.TLSKeyPath = c.TlsKeyPath
+{{- end}}
+{{- if index .Fields "LogFormat"}}
+		skCfg.LogFormat = c.LogFormat
+{{- end}}
+{{- if index .Fields "Environment"}}
+		skCfg.Environment = c.Environment
+{{- end}}
+{{- if index .Fields "AutoMigrate"}}
+		skCfg.AutoMigrate = c.AutoMigrate
+{{- end}}
+{{- if index .Fields "DatabaseUrl"}}
+		skCfg.DatabaseURL = c.DatabaseUrl
+{{- end}}
+{{- if index .Fields "ReadMaxBytes"}}
+		skCfg.ReadMaxBytes = int(c.ReadMaxBytes)
+{{- end}}
+{{- if index .Fields "SendMaxBytes"}}
+		skCfg.SendMaxBytes = int(c.SendMaxBytes)
+{{- end}}
+{{- if index .Fields "SecurityHeadersEnabled"}}
+		skCfg.SecurityHeaders = c.SecurityHeadersEnabled
+{{- end}}
+{{- if index .Fields "CorsAllowCredentials"}}
+		skCfg.CORSAllowCredentials = c.CorsAllowCredentials
+{{- end}}
+{{- if index .Fields "LogLevel"}}
+		if uerr := skCfg.LogLevel.UnmarshalText([]byte(c.LogLevel)); uerr != nil {
+			return serverkit.Config{}, fmt.Errorf("invalid log level %q: %w", c.LogLevel, uerr)
+		}
+{{- end}}
+{{- if index .Fields "CorsOrigins"}}
+		skCfg.CORSOrigins = nil
+		for _, o := range strings.Split(c.CorsOrigins, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				skCfg.CORSOrigins = append(skCfg.CORSOrigins, o)
+			}
+		}
+{{- end}}
+{{- if index .Fields "PreStopDelay"}}
+		skCfg.PreStopDelay = c.PreStopDelay.AsDuration()
+{{- end}}
+{{- if index .Fields "ShutdownTimeout"}}
+		skCfg.ShutdownTimeout = c.ShutdownTimeout.AsDuration()
+{{- end}}
+{{- if index .Fields "DbMaxOpenConns"}}
+		skCfg.DBPoolTuning.MaxOpenConns = int(c.DbMaxOpenConns)
+{{- end}}
+{{- if index .Fields "DbMaxIdleConns"}}
+		skCfg.DBPoolTuning.MaxIdleConns = int(c.DbMaxIdleConns)
+{{- end}}
+{{- if index .Fields "DbConnMaxIdleTime"}}
+		skCfg.DBPoolTuning.ConnMaxIdleTime = c.DbConnMaxIdleTime.AsDuration()
+{{- end}}
+{{- if index .Fields "DbConnMaxLifetime"}}
+		skCfg.DBPoolTuning.ConnMaxLifetime = c.DbConnMaxLifetime.AsDuration()
+{{- end}}
+{{- if index .Fields "DbConnectTimeout"}}
+		skCfg.DBConnectTimeout = c.DbConnectTimeout.AsDuration()
+{{- end}}
+	}
+{{- end}}
 {{- end}}
 
 	// Normalize LAST, so nothing downstream can observe a zero-valued

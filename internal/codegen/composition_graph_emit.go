@@ -73,9 +73,18 @@ type graphRootView struct {
 	// probe listener of its own on the server address, so every process
 	// answers /healthz and /readyz.
 	ServesProbes bool
-	// Migrate is true when the closure reaches the database, so the process
-	// migrates before building the root.
+	// ReachesDB is true when the closure reaches the database.
+	ReachesDB bool
+	// MigratePolicy is the root's `migrate=` option as declared ("" when it
+	// declares none).
+	MigratePolicy string
+	// Migrate is true when the process applies the migrations before
+	// building the root: migrate=apply, or, by default, a root whose closure
+	// reaches the database.
 	Migrate bool
+	// AwaitMigrations is true when the process instead waits until another
+	// has applied them (migrate=wait).
+	AwaitMigrations bool
 	// Command is the cobra command path that runs the root.
 	Command []string
 	// Config is every config field the root reaches; HasConfig is false
@@ -179,7 +188,7 @@ func GenerateGraph(in GraphGenInput) error {
 		*in.Roots = graphRoots(m.rootViews)
 	}
 	// cmd/<bin>/cmd/roots_gen.go: one command per root.
-	return emitRootCommands(in.ProjectDir, in.ModulePath, m.rootViews, in.Checksums, in.warnings())
+	return emitRootCommands(in.ProjectDir, in.ModulePath, m.rootViews, m.configs.inputViews(), in.Checksums, in.warnings())
 }
 
 // graphModel is the composition graph of one project as generate sees it:
@@ -365,6 +374,7 @@ func graphRootViews(roots []graphRoot, nodes []*graphNode, u *graphUniverse, edg
 		}
 		v := rootViewLazy(r, edges, lazy)
 		v.Command = r.Command
+		v.MigratePolicy = r.Migrate
 		rootViews = append(rootViews, v)
 	}
 	return rootViews, nil
@@ -815,7 +825,7 @@ func GenerateGraphProviders(modulePath, databaseDriver, projectDir string) error
 	rel := filepath.Join("internal", "app", "providers.go")
 	configFields := DefaultConfigFieldNames()
 	if msgs, err := ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config")); err == nil && len(msgs) > 0 {
-		configFields = ConfigFieldNamesFromMessages(msgs)
+		configFields = RootConfigFieldNames(msgs, projectDir)
 	}
 	data := struct {
 		Module       string

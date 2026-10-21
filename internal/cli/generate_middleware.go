@@ -631,24 +631,39 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs 
 	// migration code based on ConfigFields["AutoMigrate"]; removing it
 	// prevents the template from emitting app.AutoMigrate() calls that
 	// reference the ungenerated pkg/app/migrate.go.
-	configFields := codegen.ConfigFieldNamesFromMessages(messages)
+	// Only the ROOT config's own fields: serve.go reads them off
+	// *config.Config, which is that one message (codegen.RootConfigFieldNames).
+	configFields := codegen.RootConfigFieldNames(messages, projectDir)
+	// And the serve fields of each config the binary loads beside it.
+	inputs := codegen.ServeConfigInputs(messages, projectDir)
 	if !features.MigrationsEnabled() {
-		delete(configFields, "AutoMigrate")
-		delete(configFields, "DatabaseUrl")
-		delete(configFields, "MaxOpenConns")
-		delete(configFields, "MaxIdleConns")
-		delete(configFields, "ConnMaxIdleTime")
-		delete(configFields, "ConnMaxLifetime")
+		for _, fields := range append([]map[string]bool{configFields}, inputFields(inputs)...) {
+			delete(fields, "AutoMigrate")
+			delete(fields, "DatabaseUrl")
+			delete(fields, "MaxOpenConns")
+			delete(fields, "MaxIdleConns")
+			delete(fields, "ConnMaxIdleTime")
+			delete(fields, "ConnMaxLifetime")
+		}
 	}
 
 	// Re-render the primary binary's cmd/<bin>/cmd/serve.go so it stays in
 	// sync with the config fields.
-	if err := codegen.GenerateCmdServerWithFields(configFields, projectDir, cs); err != nil {
+	if err := codegen.GenerateCmdServerForConfigs(configFields, inputs, projectDir, cs); err != nil {
 		return nil, fmt.Errorf("failed to regenerate cmd/<bin>/cmd/serve.go: %w", err)
 	}
 
 	fmt.Println("  ✅ Regenerated cmd/<bin>/cmd/serve.go")
 	return configFields, nil
+}
+
+// inputFields is each input's serve-field set.
+func inputFields(inputs []codegen.ServeConfigInput) []map[string]bool {
+	out := make([]map[string]bool, len(inputs))
+	for i, in := range inputs {
+		out[i] = in.Fields
+	}
+	return out
 }
 
 // generatePerEnvDeployConfig emits the KCL config files. It writes the ONE

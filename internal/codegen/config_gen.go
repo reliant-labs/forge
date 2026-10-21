@@ -678,8 +678,16 @@ func configTemplateField(f ConfigField, goPath string) ConfigTemplateField {
 // app.SetupAuth() unconditionally (auth is code now, not config), so no
 // auth-provider field is threaded here.
 type CmdServerTemplateData struct {
-	Module       string
+	Module string
+	// ConfigFields are the root config's own fields (RootConfigFieldNames):
+	// the `cfg.<X>` reads the templates may make.
 	ConfigFields map[string]bool
+
+	// ConfigInputs are the primary binary's configs beside the root config,
+	// each with the serve fields it declares (ServeConfigInputs). The graph
+	// serve.go reads those off root.Configs; empty for a binary that loads
+	// one config, which renders exactly as before.
+	ConfigInputs []ServeConfigInput
 
 	// Name is the primary binary's name — the cmd/<Name>/ leaf. The
 	// scaffold-once command-tree templates reference it when they explain
@@ -697,6 +705,22 @@ type CmdServerTemplateData struct {
 	RESTEnabled bool
 }
 
+// Serves reports whether some config the binary loads declares the serve
+// field name: the root config, or a config beside it (ConfigInputs). The
+// templates gate an import, or a step that needs the field wherever it is
+// declared, on it.
+func (d CmdServerTemplateData) Serves(name string) bool {
+	if d.ConfigFields[name] {
+		return true
+	}
+	for _, in := range d.ConfigInputs {
+		if in.Fields[name] {
+			return true
+		}
+	}
+	return false
+}
+
 // GenerateCmdServer re-renders cmd/server.go with config field awareness.
 // Called during `forge generate` so that cmd/server.go stays in sync with
 // the actual config proto fields.
@@ -705,7 +729,8 @@ type CmdServerTemplateData struct {
 // out of `forge project audit`'s orphan/user-edited lists. A nil cs is tolerated.
 func GenerateCmdServer(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error {
 	return generateCmdServerData(CmdServerTemplateData{
-		ConfigFields: ConfigFieldNamesFromMessages(messages),
+		ConfigFields: RootConfigFieldNames(messages, targetDir),
+		ConfigInputs: ServeConfigInputs(messages, targetDir),
 	}, targetDir, cs)
 }
 
@@ -713,8 +738,16 @@ func GenerateCmdServer(messages []ConfigMessage, targetDir string, cs *checksums
 // config field map (e.g. with migration fields stripped when the
 // migrations feature is disabled).
 func GenerateCmdServerWithFields(configFields map[string]bool, targetDir string, cs *checksums.FileChecksums) error {
+	return GenerateCmdServerForConfigs(configFields, nil, targetDir, cs)
+}
+
+// GenerateCmdServerForConfigs is GenerateCmdServerWithFields for a binary
+// that binds configs beside its root config: inputs are those configs
+// (ServeConfigInputs), stripped the same way.
+func GenerateCmdServerForConfigs(configFields map[string]bool, inputs []ServeConfigInput, targetDir string, cs *checksums.FileChecksums) error {
 	return generateCmdServerData(CmdServerTemplateData{
 		ConfigFields: configFields,
+		ConfigInputs: inputs,
 	}, targetDir, cs)
 }
 
@@ -1036,6 +1069,53 @@ func ConfigFieldNamesFromMessages(messages []ConfigMessage) map[string]bool {
 		}
 	}
 	return names
+}
+
+// RootConfigFieldNames returns the Go field names the ROOT config declares at
+// its top level: the message `config.Config` aliases — the project's
+// AppConfig, or, when every message is bound to a binary, the primary
+// binary's own root config. Those are the only `cfg.<X>` reads a template may
+// make off *config.Config. A field of another binary's config, of a command
+// or subtree config, of a frontend config, or of a block the root config
+// composes is not one: `cfg.Port` on a root config with no port does not
+// compile. Empty when the project has no root config.
+func RootConfigFieldNames(messages []ConfigMessage, projectDir string) map[string]bool {
+	names := make(map[string]bool)
+	root := rootConfigMessageName(messages, primaryBinaryName(projectDir))
+	for _, msg := range messages {
+		if msg.Name != root {
+			continue
+		}
+		for _, f := range msg.Fields {
+			names[f.GoName] = true
+		}
+	}
+	return names
+}
+
+// primaryBinaryName is the primary binary's name — its cmd/<bin>/cmd tree's
+// <bin> — or "" when the project has no command tree.
+func primaryBinaryName(projectDir string) string {
+	treeDir := primaryCmdTreeDir(projectDir)
+	if treeDir == "" {
+		return ""
+	}
+	return filepath.Base(filepath.Dir(treeDir))
+}
+
+// rootConfigMessageName is the message config.Config aliases: the first
+// unbound root message (AppConfig), else binary's own root config — bound to
+// it with neither a command nor subtrees. "" when there is neither.
+func rootConfigMessageName(messages []ConfigMessage, binary string) string {
+	if root := BuildConfigTemplateData(messages).RootConfigMessage; root != "" {
+		return root
+	}
+	for _, m := range messages {
+		if binary != "" && m.Binary == binary && len(m.Command) == 0 && len(m.Subtrees) == 0 {
+			return m.Name
+		}
+	}
+	return ""
 }
 
 // DefaultConfigFieldNames returns the field names from the default scaffold

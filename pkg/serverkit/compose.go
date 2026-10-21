@@ -114,6 +114,43 @@ func AutoMigrateContext(ctx context.Context, cfg Config, logger *slog.Logger, mi
 	return nil
 }
 
+// schemaDependency is the name a process waiting on another's migrations
+// lists as pending in the boot /readyz body.
+const schemaDependency = "schema"
+
+// AwaitMigrationsContext is AutoMigrateContext's counterpart for a process
+// that leaves the schema to another (a root declared migrate=wait): it dials
+// the database the same way — retrying within Config.DBConnectTimeout — and
+// then blocks in await until the schema is current, with "schema" listed as
+// pending in the boot /readyz body for the whole wait. Unlike
+// AutoMigrateContext it does not consult Config.AutoMigrate: whether some
+// process applies the migrations at boot or a deploy job does, a waiter
+// serves only a current schema.
+//
+// await is migratekit.AwaitMigrations over the binary's embedded migrations;
+// passing it in keeps golang-migrate out of serverkit's link graph, as
+// AutoMigrateContext's migrate does. The connection is closed on every path.
+func AwaitMigrationsContext(ctx context.Context, cfg Config, logger *slog.Logger, await func(context.Context, *sql.DB, *slog.Logger) error) error {
+	if cfg.DatabaseURL == "" {
+		return fmt.Errorf("the process waits for its database's migrations, but DatabaseURL is not set")
+	}
+	cfg.Normalize()
+
+	db, err := OpenDB(ctx, cfg.DBDriver, cfg.DatabaseURL, cfg.DBPoolTuning, cfg.ConnectPolicy(logger))
+	if err != nil {
+		return fmt.Errorf("failed to connect to database to wait for its migrations: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	boot := BootProbesFrom(ctx)
+	boot.pend(schemaDependency)
+	defer boot.clear(schemaDependency)
+	if err := await(ctx, db, logger); err != nil {
+		return fmt.Errorf("waiting for database migrations: %w", err)
+	}
+	return nil
+}
+
 // RecordMounted records every Connect path a typed mount returned, so the
 // boot-time completeness gate can tell mounted services from declared ones.
 //

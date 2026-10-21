@@ -125,6 +125,10 @@ func (g *Graph) newBilling() (*billing.Service, error) {
 
 Every root is a command: `cmd/<bin>/cmd/roots_gen.go` (generated) adds one cobra command per root, named after the root or after its `command=` option — `//forge:root api command=server,api` runs as `<bin> server api`. With no declared root the one command is `server`. Each command hands its root to `runRoot` in the owned `cmd/<bin>/cmd/serve.go` — the one process policy every root runs under (config, logger, boot probes, migrate, telemetry, readiness gate, stop budget). Two facts come from the root's reach, read at generate time: a root that reaches the database migrates first, and a root with no API listener gets a probe-only listener on the server address, so every process answers `/healthz` and `/readyz`.
 
+A root declares what its process does about the schema with `migrate=`: `//forge:root worker command=server,worker migrate=wait`. `apply` migrates before building the root (the default for a root that reaches the database), `wait` migrates nothing and blocks until another process — the `apply` root, or a deploy job — has brought the schema current (`/readyz` names `schema` while it waits; `migratekit.AwaitSchema`), and `none` leaves the schema alone (the default for a root that never opens the database). `runRoot` reads it as `root.Migrate` / `root.AwaitMigrations`.
+
+In a binary that binds configs per command (`(forge.v1.binary_config)` `command`/`subtrees`), each root's command loads its own configs beside the root config, and `rootSpec.Configs` (a generated `rootConfigs`, `nil` per config its command does not load) hands them to `runRoot` before the policy runs. The scaffolded `serverkitConfig(cfg, root.Configs)` reads the listen port, drain budget, logging and database settings from whichever loaded config declares them — a command config over a subtree config over the root config — so a role whose port and drain live in its own command config listens and drains on them. A setting under another name (a `health_port`, a `drain` block) is yours to read in the same function; serve.go is owned.
+
 ```go
 // internal/app, conventionally roots.go — yours
 //forge:root server

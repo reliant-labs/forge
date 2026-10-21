@@ -335,7 +335,7 @@ func forUpgrade(cfg *config.ProjectConfig, projectDir string) projectTemplateDat
 	configFields := codegen.DefaultConfigFieldNames()
 	if projectDir != "" {
 		if msgs, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config")); err == nil && len(msgs) > 0 {
-			configFields = codegen.ConfigFieldNamesFromMessages(msgs)
+			configFields = codegen.RootConfigFieldNames(msgs, projectDir)
 		}
 	}
 

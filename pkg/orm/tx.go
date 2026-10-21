@@ -301,6 +301,68 @@ func InTx(ctx context.Context) bool {
 	return innermostTx(ctx).active()
 }
 
+// ─── Detached: one statement outside the caller's transaction ─────────────
+
+// Detached returns a ctx whose ORM and database/sql calls run on the POOL,
+// outside any transaction ctx carries — on every database. It keeps ctx's
+// deadline, cancellation and values; it only hides the transactions.
+//
+//	// The ledger row commits on its own: it records the attempt even when
+//	// the caller's transaction rolls back.
+//	err := db.CreateLedgerEntry(orm.Detached(ctx), s.deps.DB, entry)
+//
+// Every resolution the carried transaction drives honours it: generated
+// delegates, pkg/crud, db.Bun() builders and its ExecContext/QueryContext,
+// the raw Exec/Query/QueryRow passthroughs, SQLConn and DBTX, InTx (false),
+// Client.InTx (false) and AfterCommit (ErrNoTransaction). Each statement is
+// its own autocommit transaction on a pooled connection. RunTx with the
+// detached ctx opens a NEW transaction, which the ctx it hands fn carries as
+// usual, so a detached multi-statement write is
+// `client.RunTx(orm.Detached(ctx), fn)`.
+//
+// It is the statement-sized sibling of BeginDetached: the same "never joins"
+// rule, without a transaction for the caller to end. An explicit handle is
+// not affected — a statement run on a *Tx (tx.Bun(), tx.Exec) is that
+// transaction's whatever ctx it is given.
+//
+// # When to use it
+//
+// For a write that must survive the caller's rollback: an audit record, a
+// write or idempotency ledger, an attempt counter, a failure log. Those are
+// facts about the attempt, and the attempt happened whether or not its work
+// commits.
+//
+// # When not to
+//
+//   - Anything that must roll back with the caller. A detached write is
+//     committed before the caller's transaction ends, and stays committed if
+//     it rolls back or RunTx retries it — so under RunTx it runs once PER
+//     ATTEMPT. Make it idempotent, or record it with AfterCommit if it should
+//     exist only when the work committed.
+//   - Reading the caller's uncommitted writes. A detached read sees only
+//     committed rows.
+//   - Touching a row the caller's transaction has written or locked. The
+//     detached statement runs on a second connection and waits for the
+//     caller's lock, while the caller waits for it to return: a deadlock
+//     postgres cannot see. The same holds when the pool has no connection
+//     to spare — a pool of one deadlocks on the first detached call inside
+//     a transaction.
+func Detached(ctx context.Context) context.Context {
+	return detachedCtx{ctx}
+}
+
+// detachedCtx hides every transaction its parent carries. Transactions
+// opened under it are added above it with withTx and found as usual.
+type detachedCtx struct{ context.Context }
+
+func (d detachedCtx) Value(key any) any {
+	switch key.(type) {
+	case txKey, innermostTxKey:
+		return nil
+	}
+	return d.Context.Value(key)
+}
+
 // innermostTx returns the most recently opened transaction ctx carries,
 // active or not, or nil.
 func innermostTx(ctx context.Context) *txState {
@@ -340,7 +402,9 @@ func innermostTx(ctx context.Context) *txState {
 // Inside a caller's RunTx that is a second, independent transaction — its
 // commit survives the caller's rollback, and it blocks on any row the
 // caller's transaction has locked. Check InTx first when that is not what
-// you mean.
+// you mean. For a statement (or a closure) that only needs to run outside
+// the caller's transaction, with no transaction of its own to hold open,
+// use Detached(ctx) instead.
 //
 // What the caller takes on, compared with RunTx:
 //

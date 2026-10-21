@@ -143,6 +143,42 @@ func (s *svc) LockRun(ctx context.Context, key int64) (release func(), err error
   delegates join it; `orm.AfterCommit` callbacks registered there run on
   `Commit`.
 
+## A write that must survive the caller's rollback: `orm.Detached`
+
+Inside `RunTx` every statement joins the caller's transaction. An audit row,
+a write or idempotency ledger, an attempt counter must not: it records that
+the attempt happened, so it has to commit even when the work rolls back.
+`orm.Detached(ctx)` returns a `ctx` whose calls run on the **pool**, each its
+own autocommit statement, outside every transaction `ctx` carries:
+
+```go
+err := s.deps.DB.RunTx(ctx, func(ctx context.Context) error {
+    // Committed now, kept if the transaction below rolls back or retries.
+    if err := db.CreateLedgerEntry(orm.Detached(ctx), s.deps.DB, entry); err != nil {
+        return err
+    }
+    return db.UpdateJobMasked(ctx, s.deps.DB, job, []string{"status"})
+})
+```
+
+- Everything that resolves the carried transaction honours it: stores,
+  generated delegates, `pkg/crud`, `db.Bun()`, the raw `Exec`/`Query`,
+  `SQLConn`/`DBTX`, `orm.InTx` and `client.InTx` (both false). An explicit
+  `*Tx` handle is unaffected.
+- `s.deps.DB.RunTx(orm.Detached(ctx), fn)` is a detached *transaction*:
+  a new one, carried in the `ctx` fn receives as usual.
+- Under `RunTx` it runs **once per attempt** — a retried transaction writes it
+  again. Make the write idempotent, or use `orm.AfterCommit` when it should
+  exist only if the work committed.
+- Never for anything that must roll back with the caller, never to read the
+  caller's uncommitted rows (it sees only committed ones), and never against a
+  row the caller has written or locked: the detached statement waits on that
+  lock while the caller waits on it, a deadlock postgres cannot see.
+
+`BeginDetached` is the same "never joins" rule for a transaction you hold
+open across calls; `Detached` is for a statement that needs no transaction of
+its own.
+
 ## `RunTransaction` and `WithTx`
 
 `RunTransaction(ctx, func(tx orm.Context) error)` is the older,

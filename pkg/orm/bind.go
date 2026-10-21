@@ -2,6 +2,7 @@ package orm
 
 import (
 	"bytes"
+	"database/sql/driver"
 	"encoding/hex"
 	"reflect"
 	"strconv"
@@ -402,19 +403,95 @@ type ArgValue struct{ v any }
 //
 //	db.Bun().NewSelect().Model(&rows).Where("seq > ?", orm.Arg(seq))
 //
-// Outside a binding render Arg renders exactly as v would.
+// # Slices are postgres arrays
+//
+// A Go slice or array — or a pointer to one — passed to Arg binds as a
+// postgres ARRAY, the way pgx encodes a []T and the way a model's `,array`
+// column binds:
+//
+//	q.Where("kind = ANY(?)", orm.Arg(kinds))      // kinds []string → text[]
+//	q.Where("tags @> ?", orm.Arg([]string{"a"}))  // array containment
+//
+// The exceptions keep their own encoding: []byte (and any slice of a byte
+// kind, json.RawMessage included) stays bytea or JSON exactly as bun writes
+// it, and a value that renders itself (a schema.QueryAppender or a
+// driver.Valuer) is left to do so. A nil slice is NULL.
+//
+// JSON is never inferred from a slice: say it with JSON(v), which binds v's
+// json.Marshal text (`doc @> ?`, orm.JSON(filter)). For an IN list of
+// one parameter per element, use ArgList.
+//
+// A bare slice passed as a `?` argument WITHOUT Arg is bun's, not forge's:
+// bun writes it as JSON. Wrap it — Arg for an array, JSON for a document.
+//
+// Outside a binding render Arg renders exactly as the bound statement reads.
 func Arg(v any) ArgValue { return ArgValue{v: v} }
 
 // AppendQuery implements schema.QueryAppender.
 func (a ArgValue) AppendQuery(gen schema.QueryGen, b []byte) ([]byte, error) {
+	v := argValue(a.v)
 	bd, ok := gen.Dialect().(*bindDialect)
 	if !ok {
-		return gen.Append(b, a.v), nil
+		return gen.Append(b, v), nil
 	}
 	st := bd.st
-	st.scratch = st.base.Append(st.scratch[:0], a.v)
-	_, isBytes := a.v.([]byte)
+	st.scratch = st.base.Append(st.scratch[:0], v)
+	_, isBytes := v.([]byte)
 	return st.appendLiteral(b, st.scratch, isBytes), nil
+}
+
+// argValue is the value Arg renders for v: v as a postgres array when it is
+// a slice or array (see Arg), else v itself.
+func argValue(v any) any {
+	if !isPGArrayArg(reflect.TypeOf(v)) {
+		return v
+	}
+	if arr, ok := pgArray(v); ok {
+		return arr
+	}
+	return v
+}
+
+var (
+	queryAppenderType = reflect.TypeFor[schema.QueryAppender]()
+	driverValuerType  = reflect.TypeFor[driver.Valuer]()
+)
+
+// isPGArrayArg reports whether a value of type t binds as a postgres array:
+// a slice or array (or a pointer to one) whose elements are not bytes, and
+// which does not render itself.
+func isPGArrayArg(t reflect.Type) bool {
+	if t == nil || rendersItself(t) {
+		return false
+	}
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+		if rendersItself(t) {
+			return false
+		}
+	}
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array:
+		return t.Elem().Kind() != reflect.Uint8
+	}
+	return false
+}
+
+func rendersItself(t reflect.Type) bool {
+	return t.Implements(queryAppenderType) || t.Implements(driverValuerType) ||
+		reflect.PointerTo(t).Implements(queryAppenderType) || reflect.PointerTo(t).Implements(driverValuerType)
+}
+
+// pgArray is pgdialect.Array(v), or ok false for an element type pgdialect
+// has no array encoding for (it panics on those), which then renders as bun
+// would render it.
+func pgArray(v any) (arr *pgdialect.ArrayValue, ok bool) {
+	defer func() {
+		if recover() != nil {
+			arr, ok = nil, false
+		}
+	}()
+	return pgdialect.Array(v), true
 }
 
 // LiteralValue is a value always written into the SQL text. See Literal.

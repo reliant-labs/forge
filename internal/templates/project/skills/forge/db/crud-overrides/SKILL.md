@@ -228,6 +228,18 @@ so pgx prepares it once per connection instead of once per value:
 q.Where("chat_id = ?", chatID).Where("seq > ?", orm.Arg(since)).Where("kind IN (?)", orm.ArgList(kinds))
 ```
 
+**Slices: an array, a document, or a list — say which.**
+
+| You pass | It binds as |
+|---|---|
+| `orm.Arg(slice)` (or a pointer to one) | a postgres **array**, as pgx encodes `[]T`: `kind = ANY(?)`, `tags @> ?` |
+| `orm.JSON(v)` | `v`'s JSON text, for a `json`/`jsonb` operand: `labels @> ?` |
+| `orm.ArgList(slice)` | one parameter per element, for `IN (?)` |
+| `orm.Arg([]byte)` / a bare `[]byte` | `bytea` |
+| a **bare** slice `?` argument | bun's default: **JSON** — wrap it in one of the above |
+
+`pgdialect.Array(v)` still works and means the same as `orm.Arg(v)`.
+
 A value stays a literal wherever a parameter would not mean what it meant:
 a positional `ORDER BY ?`, a typed literal (`INTERVAL ?`), a bare argument of a
 function such as `jsonb_build_object(?, …)` (no type for `$1`), `? IS NULL`,

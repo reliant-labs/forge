@@ -723,7 +723,8 @@ type DeleteOp[Req, Resp any] struct {
 // HandleDelete runs persist -> empty response.
 //
 // A PK that matched no row is a NotFound, not an empty 200: the repository
-// reports orm.ErrNoRows and mapRepoErr maps it exactly as it does for Get.
+// reports its not-found error (svcerr.NotFound, errors.Is-true for
+// orm.ErrNoRows) and mapRepoErr maps it exactly as it does for Get.
 // See crud.requireRowTouched for the reasoning and for the per-entity opt
 // out of absent-is-an-error.
 func HandleDelete[Req, Resp any](op DeleteOp[Req, Resp]) func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error) {

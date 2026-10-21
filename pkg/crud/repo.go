@@ -3,6 +3,7 @@ package crud
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -62,6 +63,7 @@ var repoTracer = otel.Tracer("orm")
 type meta struct {
 	table         string // SQL table name
 	entityName    string // model Go type name (for span names)
+	entityLabel   string // the entity in a not-found error: entityName, lower-cased
 	pkColumn      string // primary-key column name ("" for a composite key)
 	pkGoField     string // primary-key struct field (Go) name
 	pkAutoInc     bool   // server-allocated PK (SERIAL/IDENTITY) → RETURNING
@@ -248,6 +250,7 @@ func (r *Repo[M]) ensureMeta(db orm.Context) {
 
 		r.m.table = tbl.Name
 		r.m.entityName = typ.Name()
+		r.m.entityLabel = strings.ToLower(typ.Name())
 		r.m.columns = make([]string, 0, len(tbl.Fields))
 		r.m.stampFields = map[string]stampField{}
 		r.m.fields = make(map[string]*schema.Field, len(tbl.Fields))
@@ -764,11 +767,13 @@ func (r *Repo[M]) Create(ctx context.Context, db orm.Context, entity *M) error {
 //
 // # Timestamps
 //
-// created_at is stamped only on the INSERT path (when unset, same as
-// Create); updated_at is stamped on both paths. An upsert that rewrote
-// created_at on a conflict would misreport when the row was actually
-// born — the DO UPDATE SET list never names created_at for exactly that
-// reason.
+// Both branches follow Create's rule (stampCreate): a created_at or
+// updated_at the caller set is kept, an unset one is now. created_at is
+// written only on the INSERT path; updated_at is written on both, the same
+// value either way, so the row's updated_at does not depend on which branch
+// ran. An upsert that rewrote created_at on a conflict would misreport
+// when the row was actually born — the DO UPDATE SET list never names
+// created_at for exactly that reason.
 //
 // # Soft delete
 //
@@ -846,8 +851,9 @@ func (r *Repo[M]) updatedAtStampValue(entity *M) any {
 
 // ─── Get ───────────────────────────────────────────────────────────────
 
-// Get retrieves a row by primary key. A missing row satisfies
-// errors.Is(err, orm.ErrNoRows). The legacy-TEXT deleted_at filter is
+// Get retrieves a row by primary key. A missing row is the repo's
+// not-found error (notFound): svcerr.NotFound, and errors.Is-true for
+// orm.ErrNoRows. The legacy-TEXT deleted_at filter is
 // applied; Bun-native soft delete auto-excludes tombstones from the SELECT.
 func (r *Repo[M]) Get(ctx context.Context, db orm.Context, id any) (*M, error) {
 	r.ensureMeta(db)
@@ -861,15 +867,15 @@ func (r *Repo[M]) Get(ctx context.Context, db orm.Context, id any) (*M, error) {
 	r.scopeRead(q)
 	if err := b.get(ctx, span, db, q, entity); err != nil {
 		recordErr(span, err)
-		return nil, fmt.Errorf("get %s by id: %w", r.m.table, err)
+		return nil, r.missErr("get %s by id", err)
 	}
 	return entity, nil
 }
 
 // GetByPK retrieves the row whose primary key equals key's — every key
 // column, so it is how a COMPOSITE-key entity is read (Get takes one id).
-// Only key's primary-key fields are read. A missing row satisfies
-// errors.Is(err, orm.ErrNoRows).
+// Only key's primary-key fields are read. A missing row is the repo's
+// not-found error (notFound).
 func (r *Repo[M]) GetByPK(ctx context.Context, db orm.Context, key *M) (*M, error) {
 	r.ensureMeta(db)
 	ctx, span := r.startSpan(ctx, "Get")
@@ -883,7 +889,7 @@ func (r *Repo[M]) GetByPK(ctx context.Context, db orm.Context, key *M) (*M, erro
 	r.scopeRead(q)
 	if err := bnd.get(ctx, span, db, q, entity); err != nil {
 		recordErr(span, err)
-		return nil, fmt.Errorf("get %s by key: %w", r.m.table, err)
+		return nil, r.missErr("get %s by key", err)
 	}
 	return entity, nil
 }
@@ -918,24 +924,20 @@ func (r *Repo[M]) pkIdents() []any {
 
 // ─── List / Count / ListAll ──────────────────────────────────────────────
 
-// defaultListLimit is the safety cap List applies when the caller supplies
-// no explicit limit. The RPC List path always passes WithLimit(pageSize+1)
-// (pageSize is itself clamped to MaxPageSize), which OVERRIDES this cap —
-// Bun's Limit is last-wins and the caller's option runs after it — so the
-// RPC path is unchanged. The cap only bounds DIRECT repo callers (a worker, a
-// _repo_ext due-scan) that would otherwise issue an unbounded SELECT over a
-// table that grows without limit and load every row into memory. A caller
-// that genuinely needs more must pass an explicit orm.WithLimit. It is a var,
-// not a const, so tests can lower it without seeding a huge table.
-var defaultListLimit = 10000
-
 // List retrieves rows with optional QueryOption filtering/ordering/limit.
 // The legacy-TEXT soft-delete filter is applied; Bun's ,soft_delete excludes
 // tombstones natively.
 //
-// Defense in depth: a default limit (defaultListLimit) is applied BEFORE the
-// caller's options so any explicit orm.WithLimit overrides it; a caller that
-// passes no limit is still bounded rather than scanning an unbounded table.
+// With no orm.WithLimit, List returns EVERY matching row. It used to cap a
+// limit-less call at 10,000 rows, silently: a caller asking for all of a
+// table's rows got the first 10,000 and no sign there were more, which is a
+// wrong answer that only appears once the table grows. A query's answer must
+// not depend on the size of the table it reads. Bounding a read is the
+// caller's decision, made where the caller can act on it: orm.WithLimit for
+// a page, and orm.WhereGt on the key with WithOrderBy + WithLimit to walk a
+// table that grows without bound one page at a time. The paged List rpcs in
+// this package always pass their own clamped page size (MaxPageSize), so the
+// wire stays bounded.
 func (r *Repo[M]) List(ctx context.Context, db orm.Context, opts ...orm.QueryOption) ([]*M, error) {
 	r.ensureMeta(db)
 	ctx, span := r.startSpan(ctx, "List")
@@ -944,10 +946,6 @@ func (r *Repo[M]) List(ctx context.Context, db orm.Context, opts ...orm.QueryOpt
 	var results []*M
 	q := db.Bun().NewSelect().Model(&results)
 	r.scopeRead(q)
-	// Applied first so a caller-supplied WithLimit (last-wins in Bun) takes
-	// precedence — the RPC path always supplies one, so its behavior is
-	// unchanged; only limit-less direct callers get the safety cap.
-	q.Limit(int64(defaultListLimit))
 	for _, opt := range opts {
 		opt(q)
 	}
@@ -1438,11 +1436,11 @@ func (r *Repo[M]) advanceVersion(entity *M) {
 // with no version column returns from the first branch without ever
 // building the query.
 func (r *Repo[M]) requireWriteLanded(ctx context.Context, db orm.Context, res sql.Result, entity *M) error {
-	if err := requireRowTouched(res, "update", r.m.table); err == nil {
+	if err := r.requireRowTouched(res, "update"); err == nil {
 		return nil
 	}
 	if r.m.versionColumn == "" {
-		return fmt.Errorf("update %s: %w", r.m.table, orm.ErrNoRows)
+		return r.notFound("update")
 	}
 
 	// The version predicate is deliberately absent here: this asks only
@@ -1463,7 +1461,7 @@ func (r *Repo[M]) requireWriteLanded(ctx context.Context, db orm.Context, res sq
 		return fmt.Errorf("update %s: classify zero-row write: %w", r.m.table, err)
 	}
 	if !exists {
-		return fmt.Errorf("update %s: %w", r.m.table, orm.ErrNoRows)
+		return r.notFound("update")
 	}
 	return svcerr.Aborted(fmt.Sprintf(
 		"%s was modified by another writer; re-read it and retry", r.m.entityName))
@@ -1489,8 +1487,9 @@ func appendCol(cols []string, c string) []string {
 // CURRENT_TIMESTAMP stamp + deleted_at IS NULL guard (Bun's time.Time stamp
 // can't round-trip a TEXT column). Otherwise it is a hard DELETE.
 //
-// A PK that matched no live row returns orm.ErrNoRows, which pkg/crud maps
-// to CodeNotFound — the same answer Get gives for the same id. See
+// A PK that matched no live row returns the repo's not-found error
+// (notFound), which pkg/crud maps to CodeNotFound — the same answer Get
+// gives for the same id. See
 // requireRowTouched for why that, and not a silent success.
 func (r *Repo[M]) Delete(ctx context.Context, db orm.Context, id any) error {
 	r.ensureMeta(db)
@@ -1508,7 +1507,7 @@ func (r *Repo[M]) Delete(ctx context.Context, db orm.Context, id any) error {
 			recordErr(span, err)
 			return fmt.Errorf("delete %s: %w", r.m.table, err)
 		}
-		if err := requireRowTouched(res, "delete", r.m.table); err != nil {
+		if err := r.requireRowTouched(res, "delete"); err != nil {
 			recordErr(span, err)
 			return err
 		}
@@ -1530,7 +1529,7 @@ func (r *Repo[M]) Delete(ctx context.Context, db orm.Context, id any) error {
 			recordErr(span, err)
 			return fmt.Errorf("delete %s: %w", r.m.table, err)
 		}
-		if err := requireRowTouched(res, "delete", r.m.table); err != nil {
+		if err := r.requireRowTouched(res, "delete"); err != nil {
 			recordErr(span, err)
 			return err
 		}
@@ -1546,7 +1545,7 @@ func (r *Repo[M]) Delete(ctx context.Context, db orm.Context, id any) error {
 		recordErr(span, err)
 		return fmt.Errorf("delete %s: %w", r.m.table, err)
 	}
-	if err := requireRowTouched(res, "delete", r.m.table); err != nil {
+	if err := r.requireRowTouched(res, "delete"); err != nil {
 		recordErr(span, err)
 		return err
 	}
@@ -1589,14 +1588,15 @@ func (r *Repo[M]) DeleteByPK(ctx context.Context, db orm.Context, key *M) error 
 		recordErr(span, err)
 		return fmt.Errorf("delete %s: %w", r.m.table, err)
 	}
-	if err := requireRowTouched(res, "delete", r.m.table); err != nil {
+	if err := r.requireRowTouched(res, "delete"); err != nil {
 		recordErr(span, err)
 		return err
 	}
 	return nil
 }
 
-// requireRowTouched turns a write that matched no row into orm.ErrNoRows.
+// requireRowTouched turns a write that matched no row into the repo's
+// not-found error (see notFound).
 //
 // UPDATE and DELETE report a row count, not sql.ErrNoRows, so a repository
 // that discards the count cannot tell "row deleted" from "no such row" —
@@ -1618,32 +1618,71 @@ func (r *Repo[M]) DeleteByPK(ctx context.Context, db orm.Context, key *M) error 
 //     application-owned filter excluded, or a row already tombstoned.
 //
 // A project that genuinely wants absent-is-success owns the shim: swallow
-// orm.ErrNoRows in that entity's Persist closure in handlers_crud.go.
+// orm.ErrNoRows (still errors.Is-true; see notFound) in that entity's
+// Persist closure in handlers_crud.go.
 //
 // A driver that cannot report the count is treated as "touched" —
 // inventing a not-found out of a missing count would fail a write that
 // actually succeeded.
-func requireRowTouched(res sql.Result, op, table string) error {
+func (r *Repo[M]) requireRowTouched(res sql.Result, op string) error {
 	n, err := res.RowsAffected()
 	if err != nil || n > 0 {
 		return nil
 	}
-	return fmt.Errorf("%s %s: %w", op, table, orm.ErrNoRows)
+	return r.notFound(op)
+}
+
+// notFound is the error every by-key verb — Get, GetByPK, Update,
+// UpdateMasked, Delete, DeleteByPK — answers a missing row with:
+// svcerr.NotFound("<entity>"), carrying orm.ErrNoRows as its cause, wrapped
+// in the operation and table for the log.
+//
+// One answer, so a caller checks one thing. Before, Get's generated delegate
+// said svcerr.NotFound while Update and Delete said orm.ErrNoRows, and every
+// caller that touched both wrote both checks. svcerr.NotFound is the one
+// that is a domain category: it maps to CodeNotFound on the wire through
+// svcerr.Wrap, and a service can return it as-is. orm.ErrNoRows (that is,
+// sql.ErrNoRows) stays reachable through errors.Is because it is the
+// documented way to opt a Persist closure into absent-is-success, and the
+// check every existing caller already has; a miss satisfies both
+// errors.Is(err, svcerr.ErrNotFound) and errors.Is(err, orm.ErrNoRows).
+func (r *Repo[M]) notFound(op string) error {
+	return fmt.Errorf("%s %s: %w", op, r.m.table,
+		svcerr.WithCause(svcerr.NotFound(r.m.entityLabel), orm.ErrNoRows))
+}
+
+// missErr wraps a read's error with format (one %s: the table), as
+// notFound when it is a missing row.
+func (r *Repo[M]) missErr(format string, err error) error {
+	op := fmt.Sprintf(format, r.m.table)
+	if errors.Is(err, orm.ErrNoRows) {
+		return fmt.Errorf("%s: %w", op, svcerr.WithCause(svcerr.NotFound(r.m.entityLabel), orm.ErrNoRows))
+	}
+	return fmt.Errorf("%s: %w", op, err)
 }
 
 // ─── managed-timestamp stamping ──────────────────────────────────────────
 
-// stampCreate sets created_at (when the caller left it unset) and updated_at
-// to now. Fields whose type the repo can't stamp are absent from
-// stampFields and left untouched.
+// stampCreate stamps a new row's managed timestamps: each of created_at and
+// updated_at the caller left unset gets now (one instant for both), and one
+// the caller set is kept. Fields whose type the repo can't stamp are absent
+// from stampFields and left untouched.
+//
+// The rule is explicit-beats-default, the one a NOT NULL DEFAULT column
+// follows (db/write-policy): a managed timestamp is a default, so it fills a
+// gap and never overwrites a value. A row imported, synced or replayed from
+// elsewhere — reliant's drafts and scenarios carry their own — keeps its
+// times; one the caller built fresh is stamped as before. Update is not
+// Create: a full-replace or masked update re-stamps updated_at always
+// (stampUpdated), because an entity read back and written again carries its
+// old updated_at, which is not a decision.
 func (r *Repo[M]) stampCreate(entity *M) {
 	now := time.Now().UTC()
 	v := reflect.ValueOf(entity).Elem()
-	if sf, ok := r.m.stampFields["created_at"]; ok && stampIsEmpty(v.Field(sf.index), sf) {
-		writeStamp(v.Field(sf.index), sf, now)
-	}
-	if sf, ok := r.m.stampFields["updated_at"]; ok {
-		writeStamp(v.Field(sf.index), sf, now)
+	for _, col := range [...]string{"created_at", "updated_at"} {
+		if sf, ok := r.m.stampFields[col]; ok && stampIsEmpty(v.Field(sf.index), sf) {
+			writeStamp(v.Field(sf.index), sf, now)
+		}
 	}
 }
 
@@ -1654,7 +1693,7 @@ func (r *Repo[M]) stampUpdated(entity *M) {
 	}
 }
 
-// stampIsEmpty reports whether a created_at field is unset (so a
+// stampIsEmpty reports whether a managed timestamp field is unset (so a
 // caller-provided value wins): nil pointer, empty string, or zero time.
 func stampIsEmpty(f reflect.Value, sf stampField) bool {
 	if sf.isPtr {

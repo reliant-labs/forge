@@ -74,6 +74,26 @@ type ConfigLeaf struct {
 	EnvVar    string
 	Sensitive bool
 	Required  bool
+	// Type is the field's type as pkg/config.RootVar reports it: its Go
+	// type, or "duration" for a google.protobuf.Duration.
+	Type string
+	// Aliases are the field's other env names (env_var_aliases).
+	Aliases []string
+	// EnvPrefix / EnvSuffix are an env family's (EnvVar is then "").
+	EnvPrefix, EnvSuffix string
+}
+
+// leafOf is field f as a leaf at path.
+func leafOf(f ConfigField, path string) ConfigLeaf {
+	l := ConfigLeaf{Path: path, EnvVar: f.EnvVar, Sensitive: f.Sensitive, Required: f.Required,
+		Type: f.GoType, EnvPrefix: f.EnvPrefix, EnvSuffix: f.EnvSuffix}
+	if f.MessageType == "google.protobuf.Duration" || strings.HasSuffix(f.GoType, "durationpb.Duration") {
+		l.Type = "duration"
+	}
+	for _, a := range f.EnvVarAliases {
+		l.Aliases = append(l.Aliases, a.Name)
+	}
+	return l
 }
 
 // RootConfigLoad is one config beside the root config that a root's process
@@ -252,9 +272,7 @@ func processConfigsFrom(messages []ConfigMessage, binary string) *processConfigs
 // of each block it composes (one nesting level, as elsewhere).
 func newConfigModel(byName map[string]*ConfigMessage, name string) *configModel {
 	m := &configModel{byGo: map[string][]ConfigLeaf{}, blocks: map[string]map[string][]ConfigLeaf{}}
-	leaf := func(f ConfigField, prefix string) ConfigLeaf {
-		return ConfigLeaf{Path: prefix + f.Name, EnvVar: f.EnvVar, Sensitive: f.Sensitive, Required: f.Required}
-	}
+	leaf := func(f ConfigField, prefix string) ConfigLeaf { return leafOf(f, prefix+f.Name) }
 	msg := byName[name]
 	if msg == nil {
 		return m

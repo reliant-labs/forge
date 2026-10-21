@@ -106,7 +106,7 @@ func DefaultServerRoot(fields []ConfigField) GraphRoot {
 		if f.KCLBlock != "" {
 			path = f.KCLBlock + "." + f.Name
 		}
-		r.Config = append(r.Config, ConfigLeaf{Path: path, EnvVar: f.EnvVar, Sensitive: f.Sensitive, Required: f.Required})
+		r.Config = append(r.Config, leafOf(f, path))
 	}
 	return r
 }

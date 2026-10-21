@@ -57,12 +57,12 @@ func (s ctorSite) finding(f *goFile) finding.Finding {
 			File:        f.rel,
 			Line:        f.line(s.sel.Pos()),
 			Message:     fmt.Sprintf("%s.%s no longer exists: the %s package generates no decorator (it opted out with forge:no-observe)", s.alias, InstrumentedCtorName, s.pkg),
-			Remediation: "`forge lint --tracing` rewrites it back to " + s.alias + ".New",
+			Remediation: "`forge lint --tracing --fix` rewrites it back to " + s.alias + ".New",
 		}
 	}
 	rem := "wrap it: " + s.alias + "." + s.wrapper + "(" + s.alias + ".New(…)) — or opt the package out with a package-level `// forge:no-observe`"
 	if s.rename != "" {
-		rem = "call " + s.alias + "." + InstrumentedCtorName + " (New's signature, decorated); `forge lint --tracing` rewrites it — or opt the package out with a package-level `// forge:no-observe`"
+		rem = "call " + s.alias + "." + InstrumentedCtorName + " (New's signature, decorated); `forge lint --tracing --fix` rewrites it — or opt the package out with a package-level `// forge:no-observe`"
 	}
 	return finding.Finding{
 		Rule:     RuleContractUninstrumented,

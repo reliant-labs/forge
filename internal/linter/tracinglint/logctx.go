@@ -24,7 +24,7 @@
 // enclosing function (or an enclosing closure's), or a *http.Request one
 // (`r.Context()`). A call with no context in scope is not flagged — there is
 // no trace to join, and forcing `context.Background()` into it would be
-// noise. So every finding has the same fix, and `forge lint --tracing`
+// noise. So every finding has the same fix, and `forge lint --tracing --fix`
 // applies it:
 //
 //	slog.Info("msg", k, v)       → slog.InfoContext(ctx, "msg", k, v)
@@ -90,7 +90,7 @@ func (s logSite) finding(f *goFile) finding.Finding {
 		Line:     f.line(s.call.Pos()),
 		Message: fmt.Sprintf("%s logs without the context in scope, so the line carries no trace_id and cannot be joined to its request; use %s",
 			s.oldFun, newCall),
-		Remediation: "`forge lint --tracing` rewrites every such call to its …Context form",
+		Remediation: "`forge lint --tracing --fix` rewrites every such call to its …Context form",
 	}
 }
 

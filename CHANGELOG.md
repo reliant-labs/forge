@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Tracing remediation says `--fix`.** Lint became report-only by default,
+  but every tracing finding's remediation, the auto-fix hint, the generated
+  `NewInstrumented` comment and the observability skills still said
+  `forge lint --tracing` rewrites the code. Run as told, it reported the same
+  findings and rewrote nothing (control-plane's 46 contract constructions).
+  They now say `forge lint --tracing --fix`.
 - **pgtest's shared server survives a slow moment and a long run.** An
   attaching process probed the cross-process shared embedded server with a
   2s connect and 3s ping and, on a miss, `pg_ctl stop -m fast`ed it — under

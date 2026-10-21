@@ -211,6 +211,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `protoc-gen-go` at that moment could find nothing, or run a half-written
   binary. The install now builds into a temp directory inside GOBIN and
   renames the result into place.
+- **A k3d server that dies during boot says why.** k3d's entrypoint runs its
+  cgroup, DNS and mount scripts before k3s and writes their output to
+  `/var/log/k3d-entrypoints_*.log`, not to `docker logs`. A server that
+  exited there showed `restarts=1 exit=1` and no log lines. Forge's retry
+  warning now appends the tail of that file, read with `docker cp` so it
+  works on a stopped container.
 - **Tracing remediation says `--fix`.** Lint became report-only by default,
   but every tracing finding's remediation, the auto-fix hint, the generated
   `NewInstrumented` comment and the observability skills still said

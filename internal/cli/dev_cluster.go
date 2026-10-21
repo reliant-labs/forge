@@ -19,13 +19,16 @@
 package cli
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -678,9 +681,48 @@ func k3dServerBootCrash(ctx context.Context, name string) string {
 			continue
 		}
 		logs, _ := exec.CommandContext(ctx, "docker", "logs", "--tail", "25", node).CombinedOutput()
-		reasons = append(reasons, fmt.Sprintf("%s: restarts=%s %s\n%s", node, restarts, strings.TrimSpace(rest), strings.TrimSpace(string(logs))))
+		reason := fmt.Sprintf("%s: restarts=%s %s\n%s", node, restarts, strings.TrimSpace(rest), strings.TrimSpace(string(logs)))
+		if ep := k3dEntrypointLog(ctx, node); ep != "" {
+			reason += "\nk3d entrypoint log:\n" + ep
+		}
+		reasons = append(reasons, reason)
 	}
 	return strings.Join(reasons, "\n")
+}
+
+// k3dEntrypointLog returns the tail of a k3d node's newest entrypoint log
+// (/var/log/k3d-entrypoints_*.log), or "". k3d's entrypoint runs its fix-up
+// scripts (cgroup v2, DNS, mounts) before k3s, with their output in that file
+// rather than on stdout, and exits 1 if one fails — so a server that dies
+// before k3s logs a line has its reason only there. `docker cp` reads it
+// from a stopped or restarting container, where `docker exec` cannot.
+func k3dEntrypointLog(ctx context.Context, node string) string {
+	out, err := exec.CommandContext(ctx, "docker", "cp", node+":/var/log/.", "-").Output()
+	if err != nil {
+		return ""
+	}
+	var newest, body string
+	tr := tar.NewReader(bytes.NewReader(out))
+	for {
+		h, err := tr.Next()
+		if err != nil {
+			break
+		}
+		base := path.Base(h.Name)
+		if !strings.HasPrefix(base, "k3d-entrypoints_") || !strings.HasSuffix(base, ".log") || base <= newest {
+			continue
+		}
+		b, err := io.ReadAll(io.LimitReader(tr, 64<<10))
+		if err != nil {
+			continue
+		}
+		newest, body = base, string(b)
+	}
+	lines := strings.Split(strings.TrimSpace(body), "\n")
+	if len(lines) > 15 {
+		lines = lines[len(lines)-15:]
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 // pinKubectlContext sets the current kubectl context to k3d-<name>.

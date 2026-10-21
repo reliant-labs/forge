@@ -64,7 +64,7 @@ func TestCloudIdentityWire(t *testing.T) {
 			map[string]any{"email": "recipient@example.com", "roles": []any{"member", "operator"}}, []string{`"userId": "new-user"`, `"created": true`, `"ok": true`}},
 		{"existing account", procIdentityInvite, `{"userId":"existing","created":false}`,
 			[]string{"invite", "prod", "--email", "recipient@example.com", "--role", "member"},
-			map[string]any{"email": "recipient@example.com", "roles": []any{"member"}}, []string{"created=false", "invitation email"}},
+			map[string]any{"email": "recipient@example.com", "roles": []any{"member"}}, []string{"created=false", "unless the environment declares smtp"}},
 		{"empty users", procIdentityUsers, `{}`,
 			[]string{"users", "prod", "--json"}, map[string]any{"pageSize": float64(20), "pageToken": ""}, []string{`"users": []`, `"roles": []`}},
 		{"status absent", procIdentityStatus, `{"refused":"identity is not declared"}`,

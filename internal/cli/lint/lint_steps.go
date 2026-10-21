@@ -134,7 +134,16 @@ func lintPipeline() []linterStep {
 			// it used to be, and `forge lint` passed on a machine that had
 			// never run golangci-lint (reliant's CI). The resolution builds
 			// forge's pin instead, or fails this lane naming the fix.
-			shouldRun: func(*lintRunCtx) (bool, string) { return true, "" },
+			// The one exception is a project with no Go module at all (a
+			// static site, config.ProjectConfig.HasGoModule): there is no
+			// package to lint, and golangci-lint fails on `./...`. That is a
+			// lane that does not apply, so it skips silently.
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if rc.cfg != nil && !rc.cfg.HasGoModule() {
+					return false, ""
+				}
+				return true, ""
+			},
 			// The binary is chosen per module (golangci_toolchain.go): the
 			// one on PATH may be missing, built with a Go older than the
 			// module's go directive, or unable to read the export data the
@@ -171,6 +180,10 @@ func lintPipeline() []linterStep {
 			scope: scopeByPackages,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if rc.cfg == nil || rc.cfg.Config.EffectiveEnforceTypedAccess() != config.EnforceTypedAccessWarn {
+					return false, ""
+				}
+				// No Go module, no env reads to guard (see golangci-lint).
+				if !rc.cfg.HasGoModule() {
 					return false, ""
 				}
 				// No PATH check: it shares the gating lane's resolution,
@@ -638,6 +651,26 @@ func lintPipeline() []linterStep {
 			errFormat: "❌ column-markers lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectColumnMarkersJSON(rc.cfg)
+				return fs, len(fs) > 0, err
+			},
+		},
+
+		// 13d-ter. Closed-sets — a CHECK declared `forge:closed-set <set>`
+		// must list exactly that Go set (see lint_closed_sets.go). Gates: a
+		// value Go grants and the CHECK refuses fails every write of it.
+		{
+			name:  "closed-sets lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && dirExists(migrationsDirFor(rc.cfg)), ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runClosedSetsLint(rc.cwd, rc.cfg)
+			},
+			errFormat: "❌ closed-sets lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectClosedSetsJSON(rc.cwd, rc.cfg)
 				return fs, len(fs) > 0, err
 			},
 		},

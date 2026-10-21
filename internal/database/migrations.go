@@ -66,6 +66,9 @@ func CreateMigration(ctx context.Context, name, dir string, opts *MigrationOptio
 		upContents = GeneratePointerComment(sanitizedName, history, time.Now().UTC())
 	}
 
+	if opts.Body != "" {
+		upContents = strings.TrimRight(upContents, "\n") + "\n\n" + opts.Body
+	}
 	if err := writeNewFile(upPath, declaration+upContents); err != nil {
 		return err
 	}

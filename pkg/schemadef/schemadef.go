@@ -171,6 +171,15 @@ const ColumnMarkerImmutable = "forge:immutable"
 // authoritative docs.
 const ColumnMarkerRef = "forge:ref"
 
+// ColumnMarkerClosedSet declares that a CHECK constraint's value list
+// mirrors a closed Go set: `COMMENT ON CONSTRAINT access_tokens_scopes ON
+// access_tokens IS 'forge:closed-set accesstoken.AllScopes'`. Like
+// ColumnMarkerRef it is a constraint comment — on the CHECK, not the column.
+// `forge lint`'s closed-sets lane compares the list the migrations last
+// defined with the named set and prints the migration that reconciles them
+// (internal/closedset).
+const ColumnMarkerClosedSet = "forge:closed-set"
+
 // ColumnMarkerVersion opts a column into optimistic concurrency control:
 // pkg/crud's generic Repo requires Update/UpdateMasked's WHERE clause to
 // still match the caller's last-read value and increments it atomically
@@ -414,7 +423,7 @@ var appendOnlyTableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(TableMarkerApp
 // maintaining its own copy, which is exactly the discoverability gap
 // forge:ref fell into (undiscoverable outside two skill files) that this
 // registry exists to close.
-var KnownColumnMarkers = []string{ColumnMarkerImmutable, ColumnMarkerRef, ColumnMarkerVersion, ColumnMarkerFill, ColumnMarkerOwner, ColumnMarkerGoType, ColumnMarkerNoSoftDelete}
+var KnownColumnMarkers = []string{ColumnMarkerImmutable, ColumnMarkerRef, ColumnMarkerClosedSet, ColumnMarkerVersion, ColumnMarkerFill, ColumnMarkerOwner, ColumnMarkerGoType, ColumnMarkerNoSoftDelete}
 
 // ColumnMarkerNoSoftDelete declares that a table's `deleted_at` column is an
 // ordinary nullable timestamp, not forge's soft-delete tombstone:
@@ -633,6 +642,10 @@ type CheckConstraint struct {
 	// in key order. Single-column for every check forge itself projects
 	// (enum vocabulary, protovalidate bounds, the id-non-empty guard).
 	Columns []string
+	// Comment is the constraint's catalog comment (COMMENT ON CONSTRAINT
+	// ... IS '...'), "" when none — where a CHECK declares the closed set
+	// its value list mirrors (ColumnMarkerClosedSet).
+	Comment string
 }
 
 // CanonicalType is the dialect-neutral type vocabulary the generators
@@ -1388,7 +1401,8 @@ func introspectChecks(ctx context.Context, db Queryer, schema, table string) ([]
 		         FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord)
 		         JOIN pg_attribute a
 		           ON a.attrelid = con.conrelid AND a.attnum = k.attnum
-		       ), '') AS cols
+		       ), '') AS cols,
+		       COALESCE(obj_description(con.oid, 'pg_constraint'), '') AS comment
 		FROM pg_constraint con
 		JOIN pg_class c ON c.oid = con.conrelid
 		JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -1406,7 +1420,7 @@ func introspectChecks(ctx context.Context, db Queryer, schema, table string) ([]
 			ck   CheckConstraint
 			cols string
 		)
-		if err := rows.Scan(&ck.Name, &ck.Def, &cols); err != nil {
+		if err := rows.Scan(&ck.Name, &ck.Def, &cols, &ck.Comment); err != nil {
 			return nil, err
 		}
 		if cols != "" {

@@ -92,7 +92,7 @@ func EffectiveProjectBinary(binary string) string {
 // Fields align with proto/forge/project/v1/project.proto.
 type ProjectConfig struct {
 	Name       string `yaml:"name"`
-	ModulePath string `yaml:"module_path"`
+	ModulePath string `yaml:"module_path,omitempty"`
 	// Kind is the project shape (service|cli|library). It is not a forge.yaml
 	// field: the loader DERIVES it from the project's real sources — the KCL
 	// deploy tree, the pkg/app composition root, internal/handlers/, the

@@ -599,6 +599,10 @@ func TestAnnotations_GoMarkerNamesMatchRecognizers(t *testing.T) {
 		// unscoped_auth audit, and the banner lint.
 		"forge:root": true, "forge:standby": true, "forge:audience": true,
 		"forge:no-orm": true, "forge:auth-unscoped-ok": true, "forge:allow": true,
+		// Read by forgeconv-tx-lock-under-serializable, which parses it
+		// and reports a malformed one (forgeconv's
+		// TestLintTxLockUnderSerializable_ProjectDeclaredOpeners).
+		"forge:tx-opener": true,
 	}
 	for _, m := range filterMarkers(markerSpecs(), goMarkerKinds...) {
 		if !covered[m.Name] {

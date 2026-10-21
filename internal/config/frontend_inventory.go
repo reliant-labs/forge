@@ -171,8 +171,57 @@ func ResolveInventoryAtLoad(cfg *ProjectConfig, projectDir string) {
 	}
 	if projectDir != "" {
 		cfg.Frontends = DiscoverInRepoFrontends(projectDir)
+		if root, ok := DiscoverRootFrontend(projectDir); ok && !hasFrontendNamed(cfg.Frontends, root.Name) {
+			cfg.Frontends = append(cfg.Frontends, root)
+		}
 	}
 	NormalizeFrontendDefaults(cfg)
+}
+
+// RootFrontendName is the name a frontend at the project root is known by
+// until a KCL declaration names it: the name `forge project new --in-place
+// --kind site` declares it under, and the scaffold's default frontend name.
+const RootFrontendName = "web"
+
+// DiscoverRootFrontend finds a static site's frontend: the app at the
+// project root itself (`forge project new --in-place --kind site`), which
+// the frontends/<name> scan cannot see.
+//
+// Admitted only when the project has NO go.mod. A site is its frontend and
+// its deploy envs, nothing else, so the root carrying the framework marker
+// is the frontend; a Go project's root is its module, and a stray
+// vite.config there is not a frontend this rule should guess at — such a
+// project declares its frontend in KCL, which every rendering command reads.
+//
+// It matters because only the generate pipeline renders KCL to learn the
+// frontend inventory (stepDeriveFrontendInventory). Without this, a root
+// frontend was generated for and then neither linted, typechecked nor built
+// by `forge build`: the same divergence ResolveInventoryAtLoad exists to
+// close, for the one layout the directory scan missed.
+func DiscoverRootFrontend(projectDir string) (FrontendConfig, bool) {
+	if fileExists(filepath.Join(projectDir, "go.mod")) || !fileExists(filepath.Join(projectDir, "package.json")) {
+		return FrontendConfig{}, false
+	}
+	feType := frontendTypeFromMarkers(projectDir)
+	if feType == "" || feType == "react-native" {
+		return FrontendConfig{}, false
+	}
+	return FrontendConfig{
+		Name:      RootFrontendName,
+		Type:      feType,
+		BasePath:  basePathFromNextConfig(projectDir),
+		Output:    outputFromNextConfig(projectDir),
+		DevRunner: devRunnerFromLockfile(projectDir, projectDir),
+	}.WithDir("."), true
+}
+
+func hasFrontendNamed(fes []FrontendConfig, name string) bool {
+	for _, fe := range fes {
+		if fe.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // NormalizeFrontendDefaults fills the two per-frontend fields that are
@@ -225,6 +274,19 @@ func MergeFrontendInventory(disk, kcl []FrontendConfig) []FrontendConfig {
 	}
 	for _, k := range kcl {
 		base, found := byName[k.Name]
+		if !found {
+			// The same DIRECTORY discovered under another name is the same
+			// frontend: a site's root app is discovered as RootFrontendName
+			// and may be declared in KCL under any name. The declaration's
+			// name wins, as every field it states does.
+			for name, d := range byName {
+				if d.DeclaredDir() != "" && d.DeclaredDir() == k.DeclaredDir() {
+					base, found = d, true
+					delete(byName, name)
+					break
+				}
+			}
+		}
 		if !found {
 			byName[k.Name] = k
 			continue

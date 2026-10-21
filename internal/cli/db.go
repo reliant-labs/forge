@@ -461,6 +461,7 @@ func newDBMigrationCommand() *cobra.Command {
 
 		backwardCompatible string
 		breaksRollback     string
+		closedSet          string
 	)
 
 	migrationCmd := &cobra.Command{
@@ -526,9 +527,31 @@ Examples:
   forge db migration new add_users_table
   forge db migration new add_preferences --context
   forge db migration new add_preferences --dsn "$DATABASE_URL"
-  forge db migration new add_retired_at --backward-compatible "additive column the previous release never reads"`,
-		Args: cobra.ExactArgs(1),
+  forge db migration new add_retired_at --backward-compatible "additive column the previous release never reads"
+  forge db migration new --closed-set access_tokens_scopes
+
+--closed-set <constraint> writes the migration ` + "`forge lint --closed-sets`" + ` prints for a
+CHECK declared 'forge:closed-set <set>' whose value list differs from the set:
+the CHECK replaced whole with the set's values, the declaration re-issued, and
+the compatibility line (a widening is backward-compatible, a narrowing breaks
+rollback). The name defaults to <constraint>_closed_set.`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if closedSet != "" {
+				return cobra.MaximumNArgs(1)(cmd, args)
+			}
+			return cobra.ExactArgs(1)(cmd, args)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if closedSet != "" {
+				if cmd.Flags().Changed("backward-compatible") || cmd.Flags().Changed("breaks-rollback") {
+					return fmt.Errorf("--closed-set writes its own compatibility line (a widening is backward-compatible, a narrowing breaks rollback); drop --backward-compatible / --breaks-rollback")
+				}
+				name := closedSet + "_closed_set"
+				if len(args) == 1 {
+					name = args[0]
+				}
+				return newClosedSetMigration(cmd.Context(), closedSet, name, resolveMigrationsDir(migDir), dsn, withContext)
+			}
 			for _, flag := range []string{"backward-compatible", "breaks-rollback"} {
 				if v, _ := cmd.Flags().GetString(flag); cmd.Flags().Changed(flag) && strings.TrimSpace(v) == "" {
 					return fmt.Errorf("--%s takes the reason: why the previous release keeps working on this schema, or why it deliberately does not", flag)
@@ -558,6 +581,8 @@ Examples:
 	newCmd.Flags().StringVar(&breaksRollback, "breaks-rollback", "",
 		"declare that the previous release deliberately does NOT keep working on this schema, and `why` (writes \"-- forge:breaks-rollback <why>\")")
 	newCmd.MarkFlagsMutuallyExclusive("backward-compatible", "breaks-rollback")
+	newCmd.Flags().StringVar(&closedSet, "closed-set", "",
+		"write the migration that brings the forge:closed-set CHECK named `constraint` back to its set (what `forge lint --closed-sets` prints)")
 	migrationCmd.AddCommand(newCmd)
 	migrationCmd.AddCommand(newDBMigrationRebaseCommand())
 

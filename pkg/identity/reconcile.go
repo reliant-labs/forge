@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // Options configure a Reconciler.
@@ -92,7 +94,8 @@ func New(opts Options) (*Reconciler, error) {
 		return nil, errors.New("identity: Options.Credential is required")
 	}
 	if opts.HTTPClient == nil {
-		opts.HTTPClient = &http.Client{}
+		// No client timeout: RequestTimeout bounds each call.
+		opts.HTTPClient = observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: -1})
 	}
 	if opts.RequestTimeout <= 0 {
 		opts.RequestTimeout = defaultRequestTimeout

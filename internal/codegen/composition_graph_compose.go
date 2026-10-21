@@ -256,6 +256,10 @@ func graphWrapEdits(off func(token.Pos) int, fd *ast.FuncDecl, n *graphNode) []g
 // reconcileGraphCompose returns compose.go reconciled against nodes, the
 // keys it could not resolve, and an error when the file cannot be parsed or
 // the result does not format.
+//
+// With problems, the returned source is a DRAFT — every key that did resolve,
+// none that did not — which is never written: the caller reads the edges it
+// draws to decide which nodes a root reaches (reconcileGraphComposeFile).
 func reconcileGraphCompose(existing string, nodes []*graphNode, r *graphResolver) (string, []graphProblem, error) {
 	src := existing
 	if strings.TrimSpace(src) == "" {
@@ -308,9 +312,6 @@ func reconcileGraphCompose(existing string, nodes []*graphNode, r *graphResolver
 		problems = append(problems, litProblems...)
 		edits = append(edits, graphWrapEdits(off, fd, n)...)
 	}
-	if len(problems) > 0 {
-		return "", problems, nil
-	}
 
 	// Applied back to front. Two insertions at one offset (a literal's last
 	// element ends at its closing brace: the trailing comma and the added
@@ -331,7 +332,7 @@ func reconcileGraphCompose(existing string, nodes []*graphNode, r *graphResolver
 	if err != nil {
 		return "", nil, err
 	}
-	return formatted, nil, nil
+	return formatted, problems, nil
 }
 
 // fixGraphComposeImports adds the imports the reconciled text names, drops a

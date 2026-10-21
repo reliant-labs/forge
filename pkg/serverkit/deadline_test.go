@@ -15,6 +15,7 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/serverkit"
 )
 
@@ -68,6 +69,12 @@ func newDeadlineServer(t *testing.T, deps serverkit.ChainDeps) *deadlineServer {
 	if err != nil {
 		t.Fatalf("NewChain: %v", err)
 	}
+	return serveDeadline(t, chain.HandlerOptions()...)
+}
+
+// serveDeadline serves deadlineUnary and deadlineStream with opts.
+func serveDeadline(t *testing.T, opts ...connect.HandlerOption) *deadlineServer {
+	t.Helper()
 	s := &deadlineServer{seen: map[string]time.Duration{}}
 	record := func(ctx context.Context, procedure string) {
 		left := time.Duration(-1)
@@ -83,12 +90,12 @@ func newDeadlineServer(t *testing.T, deps serverkit.ChainDeps) *deadlineServer {
 		func(ctx context.Context, _ *connect.Request[emptypb.Empty]) (*connect.Response[emptypb.Empty], error) {
 			record(ctx, deadlineUnary)
 			return connect.NewResponse(&emptypb.Empty{}), nil
-		}, chain.HandlerOptions()...))
+		}, opts...))
 	mux.Handle(deadlineStream, connect.NewServerStreamHandler(deadlineStream,
 		func(ctx context.Context, _ *connect.Request[emptypb.Empty], st *connect.ServerStream[emptypb.Empty]) error {
 			record(ctx, deadlineStream)
 			return st.Send(&emptypb.Empty{})
-		}, chain.HandlerOptions()...))
+		}, opts...))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	s.url = srv.URL
@@ -181,6 +188,37 @@ func TestNewChain_DeadlineBoundsAuthentication(t *testing.T) {
 			t.Fatalf("authenticator saw a deadline %s away, want about DefaultUnaryDeadline (%s)", got, serverkit.DefaultUnaryDeadline)
 		}
 	})
+}
+
+// observe.Chain's Deadline slot has NewChain's one rule, since NewChain builds
+// on it: nil bounds a unary call at DefaultUnaryDeadline, serverkit.NoDeadline
+// leaves it unbounded, and a configured Deadline — control-plane passes one to
+// observe.Chain explicitly — is used as given.
+func TestObserveChain_DeadlineSlot(t *testing.T) {
+	for name, tc := range map[string]struct {
+		deadline connect.Interceptor
+		want     time.Duration // -1: no deadline
+	}{
+		"nil is the default":  {nil, serverkit.DefaultUnaryDeadline},
+		"NoDeadline opts out": {serverkit.NoDeadline, -1},
+		"configured":          {serverkit.Deadline{Unary: 2 * time.Second}, 2 * time.Second},
+		"pointer":             {&serverkit.Deadline{Unary: 3 * time.Second}, 3 * time.Second},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ics := observe.Chain(observe.Deps{Deadline: tc.deadline})
+			srv := serveDeadline(t, connect.WithInterceptors(ics...))
+			if err := srv.callUnary(context.Background()); err != nil {
+				t.Fatalf("call: %v", err)
+			}
+			left := srv.left(deadlineUnary)
+			switch {
+			case tc.want < 0 && left != -1:
+				t.Fatalf("handler saw a deadline %s away, want none", left)
+			case tc.want > 0 && (left <= tc.want-time.Second || left > tc.want):
+				t.Fatalf("handler saw a deadline %s away, want about %s", left, tc.want)
+			}
+		})
+	}
 }
 
 // Which budget an RPC gets: Procedures over Unary, zero or negative meaning

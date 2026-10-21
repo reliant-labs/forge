@@ -74,7 +74,7 @@ func StartBootProbes(ctx context.Context, cfg Config, logger *slog.Logger) (cont
 	})
 	b.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = b.srv.Serve(ln) }()
-	logger.Info("boot probes listening — /readyz fails until the server is composed", "addr", cfg.Addr)
+	logger.InfoContext(ctx, "boot probes listening — /readyz fails until the server is composed", "addr", cfg.Addr)
 	return context.WithValue(ctx, bootKey{}, b), b, nil
 }
 

@@ -1,8 +1,8 @@
 ---
 name: v0.1.47
-description: Upgrade a project to forge v0.1.47. One section per change — (1) the interceptor chain's Deadline slot, ahead of Auth: every unary RPC is now bounded by a 30s server deadline by default and watched for slow calls, and `(forge.v1.method).timeout` is enforced through `middleware.ProcedureDeadlines`, which an owned chain builder passes as `Deadline: serverkit.Deadline{Procedures: middleware.ProcedureDeadlines}`. Use when cmd/<bin>/cmd/serve.go or internal/app/providers.go calls serverkit.NewChain and names no Deadline, or when a project hand-wraps a timeout or watchdog interceptor around its authenticator. (2) The composition graph upgrade path: `forge fix composition-graph` converts the legacy Infra / OpenInfra / NewComponents / lifecycle.go / ServeSpec composition and the per-service, per-worker and per-operator subcommands to providers, compose.go constructor methods and roots, and lists — writing nothing — every shape it cannot convert without deciding for you; ServeSpec knobs become reachability (control-plane's OperatorListener, NoKubernetesAPI and WorkerLeases are the worked example); deploy binds workloads to roots. Use when internal/app declares `type Infra struct` or `func NewComponents`, or a graph project moves to binary_config.
+description: Upgrade a project to forge v0.1.47. One section per change — (1) the interceptor chain's Deadline slot, ahead of Auth: every unary RPC is now bounded by a 30s server deadline by default and watched for slow calls, and `(forge.v1.method).timeout` is enforced through `middleware.ProcedureDeadlines`, which an owned chain builder passes as `Deadline: serverkit.Deadline{Procedures: middleware.ProcedureDeadlines}`. Use when cmd/<bin>/cmd/serve.go or internal/app/providers.go calls serverkit.NewChain or observe.Chain and names no Deadline, or when a project hand-wraps a timeout or watchdog interceptor around its authenticator. (2) The composition graph upgrade path: `forge fix composition-graph` converts the legacy Infra / OpenInfra / NewComponents / lifecycle.go / ServeSpec composition and the per-service, per-worker and per-operator subcommands to providers, compose.go constructor methods and roots, and lists — writing nothing — every shape it cannot convert without deciding for you; ServeSpec knobs become reachability (control-plane's OperatorListener, NoKubernetesAPI and WorkerLeases are the worked example); deploy binds workloads to roots. Use when internal/app declares `type Infra struct` or `func NewComponents`, or a graph project moves to binary_config.
 version: v0.1.47
-detection: grep -qsE '^type Infra struct|^func NewComponents\(' internal/app/*.go && exit 0; for f in cmd/*/cmd/serve.go internal/app/providers.go; do test -f "$f" && grep -qs 'serverkit.NewChain' "$f" && ! grep -qsE 'Deadline:|ProcedureDeadlines' "$f" && exit 0; done; exit 1
+detection: grep -qsE '^type Infra struct|^func NewComponents\(' internal/app/*.go && exit 0; for f in cmd/*/cmd/serve.go internal/app/providers.go; do test -f "$f" && grep -qsE 'serverkit\.NewChain|observe\.Chain\(' "$f" && ! grep -qsE 'Deadline:|ProcedureDeadlines' "$f" && exit 0; done; exit 1
 ---
 
 # Upgrading to v0.1.47
@@ -12,11 +12,13 @@ Each section below is independent: apply the ones whose "Use when" matches.
 ## 1. The Deadline slot: a per-RPC deadline that bounds authentication
 
 Use when `cmd/<bin>/cmd/serve.go` or `internal/app/providers.go` calls
-`serverkit.NewChain` and its `ChainDeps` sets no `Deadline:`.
+`serverkit.NewChain` or `observe.Chain` and sets no `Deadline:`.
 
 ### What changed
 
-`serverkit.ChainDeps` has a `Deadline` slot, between metrics and auth:
+`serverkit.ChainDeps` has a `Deadline` slot, between metrics and auth
+(`observe.Deps.Deadline` is the same slot in `observe.Chain`, which
+`NewChain` builds on):
 
     trace → recovery → request-id → logging → tracing → metrics →
     deadline → auth → audit → rate-limit → extras → activity → stream-drain →
@@ -28,8 +30,12 @@ lookup ends as `DeadlineExceeded` instead of holding the request until the
 client gives up. `Extras` run after Auth and cannot do that, which is why it
 is a slot.
 
-**The default applies without any edit.** A nil `Deadline` is
-`serverkit.Deadline{}`:
+**The default applies without any edit, in both chains.** One rule holds for
+`serverkit.ChainDeps.Deadline` and `observe.Deps.Deadline` alike: nil is
+`serverkit.Deadline{}`, `serverkit.NoDeadline` opts out, and anything else is
+used as given. A project that composes with `observe.Chain` directly — an
+explicit-collaborator `serve.go`, like control-plane's — gets the default
+too. A nil `Deadline` is:
 
 - every unary RPC is bounded by `serverkit.DefaultUnaryDeadline` (30s);
 - streams are unbounded;
@@ -69,6 +75,20 @@ now projected into `pkg/middleware/procedures_gen.go` as
        ...
    })
    ```
+
+   On `observe.Chain` it is the same field:
+
+   ```go
+   interceptors := observe.Chain(observe.Deps{
+       Logger:   logger,
+       Deadline: serverkit.Deadline{Procedures: middleware.ProcedureDeadlines},
+       Auth:     ...,
+   })
+   ```
+
+   A Deadline that names no `Logger` logs its slow calls through the
+   chain's `Logger`, in both chains. A chain that already passes a
+   `serverkit.Deadline` keeps exactly what it set.
 
 3. **Delete any hand-rolled timeout or slow-call interceptor**, in particular
    one merged into the `Auth` slot so that it would wrap authentication. Its

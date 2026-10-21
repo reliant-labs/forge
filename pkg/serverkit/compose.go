@@ -109,7 +109,7 @@ func AutoMigrateContext(ctx context.Context, cfg Config, logger *slog.Logger, mi
 		return fmt.Errorf("auto-migration failed: %w", err)
 	}
 	if logger != nil {
-		logger.Info("db migration completed")
+		logger.InfoContext(ctx, "db migration completed")
 	}
 	return nil
 }

@@ -112,8 +112,7 @@ message ListOrdersRequest {
 	// ── projection: conversions map the enum by NAME, both directions ──
 	ops := readFileE2E(t, filepath.Join(projectDir, "internal", "handlers", "orders", "handlers_crud_ops_gen.go"))
 	for _, want := range []string{
-		`e.Status = "ORDER_STATUS_DRAFT"`,                           // fromProto: unset (the proto zero) stores the column DEFAULT
-		"if m.Status != 0 {\n\t\te.Status = m.Status.String()\n\t}", // …a value the caller sent stores its own name
+		"if m.Status != 0 {\n\t\te.Status = m.Status.String()\n\t}", // fromProto: a value the caller sent stores its own name
 		"if v, ok := pb.OrderStatus_value[e.Status]; ok {",          // toProto: name -> number, LOOKED UP not cast
 		"m.Status = pb.OrderStatus(v)",
 		`return nil, fmt.Errorf("corrupt enum value %q for column status", e.Status)`, // …and a miss is an error
@@ -130,6 +129,12 @@ message ListOrdersRequest {
 		if !strings.Contains(ops, want) {
 			t.Errorf("ops file should contain %q; got:\n%s", want, ops)
 		}
+	}
+	// Unset (the proto zero) leaves the field empty — the born enum column is
+	// ,nullzero, so Create omits it and the database applies its own DEFAULT
+	// (F12.5, #990). The op must not paste the DEFAULT's literal into Go.
+	if strings.Contains(ops, `e.Status = "ORDER_STATUS_DRAFT"`) {
+		t.Errorf("the create op must leave an unset enum to the column DEFAULT, not paste its literal; ops:\n%s", ops)
 	}
 	// The unchecked cast is the bug the checked lookup replaced: it turns a
 	// stored name the proto no longer declares into UNSPECIFIED, silently,

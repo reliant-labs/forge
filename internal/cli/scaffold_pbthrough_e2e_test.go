@@ -153,11 +153,15 @@ func TestE2EPbThroughStubToCrudTransition(t *testing.T) {
 	protoPath := filepath.Join(projectDir, "proto", "services", "catalog", "v1", "catalog.proto")
 
 	// Author a CRUD-SHAPED RPC (GetSprocket) with NO backing table. Its
-	// Sprocket message is present but unmarked — so at first generate it is
-	// a custom RPC (no sprockets entity) and surfaces as an unwired stub.
+	// Sprocket message is present but unmarked, and the rpc is marked
+	// `// forge:custom` — so at first generate it is a custom RPC (no
+	// sprockets entity) and surfaces as an unwired stub. Unmarked, generate
+	// refuses it: a CRUD-named rpc over a wire message with no table and no
+	// hand-written method would serve Unimplemented with nothing saying why
+	// (#962, codegen.UnmatchedCRUDRPCs).
 	proto := readFileE2E(t, protoPath)
 	proto = strings.Replace(proto, "  // TODO: Add your RPC methods here.",
-		"  rpc GetSprocket(GetSprocketRequest) returns (GetSprocketResponse);", 1)
+		"  // forge:custom\n  rpc GetSprocket(GetSprocketRequest) returns (GetSprocketResponse);", 1)
 	proto += "\nmessage GetSprocketRequest { string id = 1; }\n"
 	proto += "message GetSprocketResponse { Sprocket sprocket = 1; }\n"
 	proto += "message Sprocket { string id = 1; string name = 2; }\n"
@@ -179,10 +183,12 @@ func TestE2EPbThroughStubToCrudTransition(t *testing.T) {
 	}
 	runCmd(t, projectDir, "go", "build", "./...")
 
-	// Make the RPC entity-backed: mark Sprocket so `forge scaffold` births
-	// the sprockets table (GetSprocket already present → quintet completion
-	// skips it and injects the other four). Now GetSprocket is a CRUD op.
+	// Make the RPC entity-backed: drop the custom marker and mark Sprocket
+	// so `forge scaffold` births the sprockets table (GetSprocket already
+	// present → quintet completion skips it and injects the other four).
+	// Now GetSprocket is a CRUD op.
 	proto = readFileE2E(t, protoPath)
+	proto = strings.Replace(proto, "  // forge:custom\n  rpc GetSprocket(", "  rpc GetSprocket(", 1)
 	proto = strings.Replace(proto, "message Sprocket {", "// forge:entity\nmessage Sprocket {", 1)
 	if err := os.WriteFile(protoPath, []byte(proto), 0o644); err != nil {
 		t.Fatalf("mark Sprocket entity: %v", err)

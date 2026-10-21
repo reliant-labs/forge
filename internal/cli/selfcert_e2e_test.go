@@ -72,12 +72,16 @@ func gitE2E(t *testing.T, dir string, args ...string) string {
 }
 
 // initGitRepoE2E initializes a repo and makes the initial commit of
-// everything currently in the project dir.
+// everything currently in the project dir. It commits with --no-verify:
+// the scaffold installs the project's own pre-commit hook, which runs
+// whatever hook tools this machine has (goimports over the vendored forge
+// tree), and these tests are about forge's self-certification, not the
+// project's hooks.
 func initGitRepoE2E(t *testing.T, dir, msg string) {
 	t.Helper()
 	gitE2E(t, dir, "init", "-q")
 	gitE2E(t, dir, "add", "-A")
-	gitE2E(t, dir, "commit", "-q", "-m", msg)
+	gitE2E(t, dir, "commit", "-q", "--no-verify", "-m", msg)
 }
 
 // The self-certification machinery is file-agnostic: these tests need A
@@ -274,7 +278,7 @@ func TestE2ESelfCertParallelLaneSubsetCommit(t *testing.T) {
 	gitE2E(t, projectDir, "add", "-f", ".forge")
 	staged := gitE2E(t, projectDir, "diff", "--cached", "--name-only")
 	if strings.TrimSpace(staged) != "" {
-		gitE2E(t, projectDir, "commit", "-q", "-m", "bookkeeping from WIP lane")
+		gitE2E(t, projectDir, "commit", "-q", "--no-verify", "-m", "bookkeeping from WIP lane")
 	}
 
 	// A clean clone of HEAD: the committed Tier-1 files are the green
@@ -547,7 +551,7 @@ func TestE2EGenerateRollbackOnValidateFailure(t *testing.T) {
 	// Commit the green-plus-deliberate-edits state so `git status` after
 	// the run reflects ONLY what the failed generate left behind.
 	gitE2E(t, projectDir, "add", "-A")
-	gitE2E(t, projectDir, "commit", "-q", "-m", "deliberate drift + broken user file")
+	gitE2E(t, projectDir, "commit", "-q", "--no-verify", "-m", "deliberate drift + broken user file")
 
 	// 3. Run generate --force: it rewrites the drifted Tier-1 file, then
 	//    fails go build on the broken user file.

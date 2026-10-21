@@ -165,7 +165,7 @@ Declaring a root named `server` keeps the `server` command; once any root is dec
 
 `forge fix narrow-deps internal/handlers/<svc>` fixes the first: it declares, in the package (its `contract.go`, or `deps.go`), an interface holding exactly the methods the package calls, retypes the field, and writes its mock (`mock_gen.go`, kept in step by `forge generate`). `compose.go` needs no change — the value it hands the field still satisfies the narrower interface.
 
-A project scaffolded before the graph keeps its `Infra`/`OpenInfra` + `NewComponents` composition, and forge generates for it exactly as before, until it migrates: move each `OpenInfra` field into a provider func, delete `compose.go`, `lifecycle.go` and the `Infra` struct, and re-run `forge generate`.
+A project scaffolded before the graph keeps its `Infra`/`OpenInfra` + `NewComponents` composition, and forge generates for it exactly as before, until it migrates: `forge fix composition-graph` converts what forge scaffolded, or lists (writing nothing) each shape of yours it cannot; `migrations/v0.1.47` is the rest of the path.
 
 ## Files NOT to Edit
 

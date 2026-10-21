@@ -110,8 +110,25 @@ func formatGoTree(root string) ([]string, error) {
 // how `forge lint --scope` auto-fixes only its own slice — a scoped run must
 // not reformat a file another agent is in the middle of editing.
 func formatGoTreeFiltered(root string, keep func(rel string) bool) ([]string, error) {
-	std := projectGoFormatStandard(root)
 	var changed []string
+	err := walkGoFormat(root, keep, func(rel, abs string, src, formatted []byte) error {
+		if err := writeFormatted(abs, formatted); err != nil {
+			return err
+		}
+		changed = append(changed, filepath.FromSlash(rel))
+		return nil
+	})
+	return changed, err
+}
+
+// walkGoFormat visits every owned Go file under the project's source trees
+// whose canonical formatting differs from what is on disk, handing visit the
+// slash-separated project-relative path, the absolute path, and the current
+// and canonical bytes. It writes nothing itself: the fixer rewrites in visit,
+// and the report-only check turns the same pair into a diff, so the two can
+// never disagree about which files are pending.
+func walkGoFormat(root string, keep func(rel string) bool, visit func(rel, abs string, src, formatted []byte) error) error {
+	std := projectGoFormatStandard(root)
 	for _, d := range goFormatDirs {
 		base := filepath.Join(root, d)
 		if !dirExists(base) {
@@ -131,67 +148,82 @@ func formatGoTreeFiltered(root string, keep func(rel string) bool) ([]string, er
 			if !strings.HasSuffix(path, ".go") {
 				return nil
 			}
-			if rel, relErr := filepath.Rel(root, path); relErr == nil {
-				slashRel := filepath.ToSlash(rel)
-				if isGeneratedGoPath(slashRel) || (keep != nil && !keep(slashRel)) {
-					return nil
-				}
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				rel = path
 			}
-			rel, cerr := formatGoFile(root, std, path)
-			if cerr != nil {
-				return cerr
+			slashRel := filepath.ToSlash(rel)
+			if isGeneratedGoPath(slashRel) || (keep != nil && !keep(slashRel)) {
+				return nil
 			}
-			if rel != "" {
-				changed = append(changed, rel)
+			src, rerr := os.ReadFile(path)
+			if rerr != nil {
+				return rerr
 			}
-			return nil
+			formatted, ferr := std.format(path, src)
+			if ferr != nil {
+				// Unparseable (broken edit) — not this pass's job to fix;
+				// leave it for the compiler / gate to report with a real
+				// error.
+				return nil //nolint:nilerr // intentional: skip, don't fail the pre-pass
+			}
+			if bytes.Equal(src, formatted) {
+				return nil
+			}
+			return visit(slashRel, path, src, formatted)
 		})
 		if err != nil {
-			return changed, err
+			return err
 		}
 	}
-	return changed, nil
+	return nil
 }
 
-// formatGoFile rewrites path in place if canonical formatting changes its
-// bytes, preserving the file's existing mode. Returns the repo-relative path
-// when it rewrote the file, or "" when the file was already canonical or
-// could not be parsed (left untouched). Only I/O errors are returned.
-func formatGoFile(root string, std goFormatStandard, path string) (string, error) {
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	formatted, err := std.format(path, src)
-	if err != nil {
-		// Unparseable (broken edit) — not this pass's job to fix; leave it
-		// for the compiler / gate to report with a real error.
-		return "", nil //nolint:nilerr // intentional: skip, don't fail the pre-pass
-	}
-	if bytes.Equal(src, formatted) {
-		return "", nil
-	}
+// writeFormatted rewrites path with data, preserving the file's mode.
+func writeFormatted(path string, data []byte) error {
 	mode := fs.FileMode(0o644)
 	if info, statErr := os.Stat(path); statErr == nil {
 		mode = info.Mode().Perm()
 	}
-	if err := atomicfile.WriteFile(path, formatted, mode); err != nil {
-		return "", err
-	}
-	rel, relErr := filepath.Rel(root, path)
-	if relErr != nil {
-		rel = path
-	}
-	return rel, nil
+	return atomicfile.WriteFile(path, data, mode)
 }
 
-// reportFormatPrePass runs formatGoTree and prints a concise summary of the
+// keepForPaths turns the positional Go package patterns of `forge lint
+// [paths...]` into the file filter the format pre-pass honours. No paths, or a
+// pattern naming the whole module (".", "./...", "..."), is the whole tree
+// (nil). Otherwise only files under a named directory, or a named .go file,
+// are rewritten: the paths exist to say "this is the part I am working on",
+// and the pre-pass used to ignore them and reformat every package.
+func keepForPaths(paths []string) func(rel string) bool {
+	var prefixes []string
+	for _, p := range paths {
+		p = strings.TrimSuffix(filepath.ToSlash(filepath.Clean(strings.TrimSpace(p))), "/...")
+		p = strings.TrimPrefix(p, "./")
+		if p == "" || p == "." || p == "..." {
+			return nil
+		}
+		prefixes = append(prefixes, p)
+	}
+	if len(prefixes) == 0 {
+		return nil
+	}
+	return func(rel string) bool {
+		for _, p := range prefixes {
+			if rel == p || strings.HasPrefix(rel, p+"/") {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// reportFormatPrePass runs formatGoTreeFiltered and prints a concise summary of the
 // files it rewrote. A pre-pass error is advisory: it prints a ⚠️ line and
 // never gates, because the deterministic gate (golangci-lint's goimports
 // formatter) still runs behind it and will surface anything the pre-pass
 // could not apply.
-func reportFormatPrePass(cwd string) {
-	changed, err := formatGoTree(cwd)
+func reportFormatPrePass(cwd string, paths []string) {
+	changed, err := formatGoTreeFiltered(cwd, keepForPaths(paths))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  auto-format pre-pass: %v\n", err)
 		return

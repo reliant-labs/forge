@@ -127,7 +127,18 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 		{
 			name: "LintConfig",
 			typ:  reflect.TypeFor[LintConfig](),
-			want: []string{"frontend", "handler_file_max_loc", "rules"},
+			want: []string{"frontend", "handler_file_max_loc", "rules", "tracing"},
+		},
+		{
+			// tracing: read by the tracing lane (internal/cli/lint/lint_tracing.go).
+			name: "TracingLintConfig",
+			typ:  reflect.TypeFor[TracingLintConfig](),
+			want: []string{"log_wrappers"},
+		},
+		{
+			name: "LogWrapperConfig",
+			typ:  reflect.TypeFor[LogWrapperConfig](),
+			want: []string{"call", "context_call"},
 		},
 		{
 			// proto_package: read by generator.ResolveServiceProtoPackage,

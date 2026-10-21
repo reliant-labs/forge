@@ -155,6 +155,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A scaffolded Next.js frontend builds again against `@opentelemetry/api`
+  1.10.** That release ships only `.d.mts`/`.d.cts` declarations, the tsconfig
+  peer pin was aimed at `dist/index.d.mts`, and Next's webpack read it as
+  JavaScript (`Module parse failed: Unexpected token`). Only a `.d.ts` is pinned
+  now; a package with none is pinned by its directory.
 - **Docs no longer promise mail that is never sent.** The `deploy/managed-
   identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
   mail through a platform relay and that an invitation emails a link. Neither is

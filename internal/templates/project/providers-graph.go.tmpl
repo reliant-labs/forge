@@ -30,8 +30,7 @@ import (
 	"net/http"
 
 	"connectrpc.com/connect"
-
-{{- if .NoProjectAuthInterceptor}}
+{{if .NoProjectAuthInterceptor}}
 	"github.com/reliant-labs/forge/pkg/authn"
 {{- end}}
 	fmw "github.com/reliant-labs/forge/pkg/middleware"

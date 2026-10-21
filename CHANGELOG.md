@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`orm.Client.DBTX`, `SQLConn(ctx)` and `InTx(ctx)`: sqlc and hand-written
+  database/sql code join the ORM's transaction.** A project porting onto the
+  ORM keeps sqlc on the same pool for a while, and until now a sqlc call
+  inside `RunTx` ran on the pool: outside the transaction, and blocked
+  forever on a row the transaction had locked. `client.DBTX()` is a sqlc
+  `DBTX` that resolves the transaction `ctx` carries on every call
+  (`pgdb.New(client.DBTX())`); `SQLConn(ctx)` is the executor for one
+  statement; `InTx(ctx)` asks about this pool, where `orm.InTx` asks about
+  the innermost transaction on any. A layer with its own transaction loop
+  opens it with `BeginTx` and runs its work under `tx.RunTx`, so both layers
+  join it from that side too (`service-layer/transactions`).
 - **`forge lint` is report-only under CI, and `--check` says so anywhere.** The
   auto-fix default (#843) is right on a developer's machine and wrong on a CI
   runner, where the checkout is thrown away: a fixer that quietly repairs it

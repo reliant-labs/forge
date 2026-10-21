@@ -472,6 +472,18 @@ func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
 		}
 	}
 {{- end}}
+{{- if or (index .ConfigFields "LivenessPaths") (index .ConfigFields "ReadinessPaths")}}
+
+	// The probe paths (empty is /healthz, /readyz). The KCL lowering reads
+	// the same LIVENESS_PATHS / READINESS_PATHS for the probe it writes, so
+	// the pod is probed where this process answers.
+{{- end}}
+{{- if index .ConfigFields "LivenessPaths"}}
+	skCfg.Probes.Live = serverkit.ProbePathList(cfg.LivenessPaths)
+{{- end}}
+{{- if index .ConfigFields "ReadinessPaths"}}
+	skCfg.Probes.Ready = serverkit.ProbePathList(cfg.ReadinessPaths)
+{{- end}}
 
 {{- if index .ConfigFields "PreStopDelay"}}
 

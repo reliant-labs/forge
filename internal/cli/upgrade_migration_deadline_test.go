@@ -54,6 +54,9 @@ func TestDeadlineMigration_Detection(t *testing.T) {
 		// observe.Chain has the same slot and the same default.
 		"observe.Chain without a deadline":              {filepath.Join("cmd", "app", "cmd", "serve.go"), observeChain, true},
 		"observe.Chain with a deadline (control-plane)": {filepath.Join("cmd", "app", "cmd", "serve.go"), observeChainDeadline, false},
+		// Section 3: the probe surface given the configured paths.
+		"Probes without Paths": {filepath.Join("cmd", "app", "cmd", "serve.go"), "g := &app.Graph{Probes: &serverkit.Probes{Drainer: drainer}}\n", true},
+		"Probes with Paths":    {filepath.Join("cmd", "app", "cmd", "serve.go"), "g := &app.Graph{Probes: &serverkit.Probes{Drainer: drainer, Paths: skCfg.Probes}}\n", false},
 		// Section 2: the legacy composition.
 		"the legacy NewComponents": {filepath.Join("internal", "app", "compose.go"), "package app\n\nfunc NewComponents(infra *Infra) (*Components, error) { return nil, nil }\n", true},
 		"the legacy Infra":         {filepath.Join("internal", "app", "providers.go"), "package app\n\ntype Infra struct{}\n", true},

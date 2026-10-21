@@ -142,6 +142,21 @@ var removals = []removal{
 				},
 			},
 			{
+				Name: "the secret store's existing `tenants/` KV path layout",
+				Reason: "The platform's OpenBao keeps delivered values at `secret/data/tenants/<org>/<env>/<NAME>` " +
+					"(control-plane's tenantsecret.Scope.Path), and pkg/secretaccess derives exact-path " +
+					"policies over that layout so the hosted store and a self-run one share one derivation.\n" +
+					"This is the store's on-disk path segment, a wire identifier that cannot be renamed " +
+					"here without orphaning every stored value; forge ships no tenant column, header, " +
+					"context key or helper on the strength of it. Scoped to the literal `tenants/` path " +
+					"segment and the `\"tenants\"` root constant in that one package, so a TenantID or " +
+					"an X-Tenant-Id header there still fails.",
+				Token: regexp.MustCompile(`tenants/|"tenants"|\btenants\b`),
+				Paths: []string{
+					"pkg/secretaccess/",
+				},
+			},
+			{
 				Name: "Azure's Entra ID tenant, which a Trusted Signing credential belongs to",
 				Reason: "Azure Trusted Signing authenticates as an Entra ID service principal, identified by " +
 					"a tenant id (the Azure directory) and a client id. The desktop-release proposal names " +

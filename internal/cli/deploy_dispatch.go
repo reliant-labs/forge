@@ -765,9 +765,15 @@ func buildHostedGroup(envName string, entities *KCLEntities) (*deploytarget.Serv
 // The spec carries NO domains: a hosted site's custom hostname is an
 // org-scoped control-plane resource bound to this environment
 // (`forge domain add` + `forge domain bind`), never a field forge publishes.
+//
+// assetDir is the frontend's content-hashed asset directory as the render
+// resolved it (declared, else the type's convention). It is what lets the
+// platform cache those files forever and keep previous releases' copies
+// serveable for tabs opened before a deploy — the same two guarantees
+// OnFirebase renders into firebase.json.
 func hostedStaticSpec(f FrontendEntity) *v1alpha1.StaticSiteSpec {
 	keep := int32(v1alpha1.DefaultKeepReleases)
-	spec := &v1alpha1.StaticSiteSpec{BasePath: f.BasePath, KeepReleases: &keep}
+	spec := &v1alpha1.StaticSiteSpec{BasePath: f.BasePath, AssetDir: f.AssetDir, KeepReleases: &keep}
 	if len(f.RuntimeConfigSpec) > 0 {
 		spec.RuntimeConfig = f.RuntimeConfigSpec
 	}

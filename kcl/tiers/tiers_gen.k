@@ -132,6 +132,7 @@ workload_json = lambda v: Workload -> {str:} {
 
 schema StaticSite:
     """StaticSiteSpec is a site served from an object-storage bucket, optionally behind a CDN."""
+    assetDir?: str
     basePath?: str
     bucket?: str
     cdn?: StaticSiteCDN
@@ -145,6 +146,7 @@ schema StaticSite:
     runtimeConfig?: {str:RuntimeConfigValue}
 
     check:
+        assetDir == Undefined or len(assetDir) <= 255, "StaticSite.assetDir must be at most 255 characters"
         basePath == Undefined or regex.match(basePath, "^/.*$"), "StaticSite.basePath must match ^/.*$"
         bucket == Undefined or len(bucket) <= 222, "StaticSite.bucket must be at most 222 characters"
         domains == Undefined or len(domains) <= 8, "StaticSite.domains allows at most 8 entries"
@@ -156,6 +158,7 @@ schema StaticSite:
 
 static_site_json = lambda v: StaticSite -> {str:} {
     _d = {
+        "assetDir": v.assetDir
         "basePath": v.basePath
         "bucket": v.bucket
         "cdn": static_site_cdn_json(v.cdn) if v.cdn else Undefined

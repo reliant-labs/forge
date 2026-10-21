@@ -32,7 +32,7 @@ pre-commit install
 ```
 
 Afterwards the hooks run on every `git commit`. CI runs the same hooks
-(`.github/workflows/ci.yml`'s quick-checks job), so skipping the local install
+(`.github/workflows/ci.yml`'s checks job), so skipping the local install
 only means you'll find out about issues a bit later.
 
 ## Dev loop

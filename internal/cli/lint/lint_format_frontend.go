@@ -115,7 +115,7 @@ func ownedFrontendSources(root, feDir string) ([]string, error) {
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case "node_modules", "gen", ".next":
+			case "node_modules", "gen", ".next", testdataDir:
 				return filepath.SkipDir
 			}
 			return nil
@@ -126,6 +126,9 @@ func ownedFrontendSources(root, feDir string) ([]string, error) {
 		projectRel, relErr := filepath.Rel(root, path)
 		if relErr != nil {
 			return nil //nolint:nilerr // unreachable under a walk rooted inside root; skip rather than fail the fixer
+		}
+		if isTestdataPath(projectRel) {
+			return nil
 		}
 		if checksums.ScaffoldIsPristine(root, projectRel) {
 			return nil

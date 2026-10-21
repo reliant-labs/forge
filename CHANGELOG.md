@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The scaffolded sign-up says what a password needs.** Sign-up used to answer
+  "That password does not meet the requirements." and never name one. The
+  login broker now serves the identity provider's own complexity policy at the
+  unauthenticated `GET /auth/password-policy` (`{min_length, has_uppercase,
+  has_lowercase, has_number, has_symbol}`, read from Zitadel's
+  `GET /v2/settings/password/complexity` with the broker's token, cached for a
+  minute), and a rejected password comes back `400 {error, code:
+  "password_policy", unmet:[...]}` naming **every** rule it breaks (the
+  provider reports only the first). The sign-up and reset forms show the
+  checklist up front and tick it as the person types; the server stays the
+  authority. New in `pkg/devidp`: `Client.PasswordPolicy`, `PasswordPolicy.
+  Unmet/Describe`, and `PasswordPolicyError.Rule`; `Register` now returns a
+  `*PasswordPolicyError` for a weak password. Existing projects keep their
+  owned `internal/app/login_broker.go` and screens; copy the new handlers from
+  a fresh scaffold.
+- **Self-serve password reset in the scaffold.** The broker mounts `POST
+  /auth/forgot` and `POST /auth/reset`, and the Next.js and Vite frontends get
+  static-export-safe `/auth/forgot` and `/auth/reset?userID=&code=&orgID=`
+  pages, so the reset links the control plane produces have somewhere to land.
+  `/auth/forgot` never reveals whether an address has an account and is limited
+  per address and per client IP. The forgot screen says plainly that the email
+  is sent only if the app's identity declares `smtp`. `pkg/devidp` gains
+  `SendPasswordResetLink`, `MintPasswordResetCode` and `FindUserByID`. There is
+  deliberately no scaffolded invite flow.
+
+### Fixed
+
+- **Docs no longer promise mail that is never sent.** The `deploy/managed-
+  identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
+  mail through a platform relay and that an invitation emails a link. Neither is
+  true: with no `smtp`, an instance sends no mail at all. The skill now says so,
+  sketches building invites by hand (`InviteUser` + `MintPasswordResetCode` +
+  `/auth/reset`), and explains that public `/auth/register` is on by default and
+  how to turn it off for an invite-only app.
+
 ### Changed
 
 - **Rendered pods set `enableServiceLinks: false`. Behavior change.**

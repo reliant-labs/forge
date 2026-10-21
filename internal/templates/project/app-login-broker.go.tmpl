@@ -46,12 +46,17 @@
 package app
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/devidp"
@@ -66,10 +71,13 @@ import (
 // frontend is written against these exact paths — change one and change
 // both.
 const (
-	LoginPath    = "POST /auth/login"
-	RegisterPath = "POST /auth/register"
-	LogoutPath   = "POST /auth/logout"
-	SessionPath  = "GET /auth/session"
+	LoginPath          = "POST /auth/login"
+	RegisterPath       = "POST /auth/register"
+	LogoutPath         = "POST /auth/logout"
+	SessionPath        = "GET /auth/session"
+	PasswordPolicyPath = "GET /auth/password-policy"
+	ForgotPath         = "POST /auth/forgot"
+	ResetPath          = "POST /auth/reset"
 )
 
 // SessionCookieName holds the access token.
@@ -119,13 +127,62 @@ func RegisterLoginBroker(mux *http.ServeMux, cfg *config.{{or .ConfigType "Confi
 		// Secure cookies everywhere except local development, where the
 		// dev server is plain http and a Secure cookie would be dropped.
 		secureCookie: cfg.Environment != "development",
+		appBase:      appBaseFrom(cfg.IdpLoginUri),
+
+		forgotByAddress: newAttemptLimiter(3, time.Hour),
+		forgotByIP:      newAttemptLimiter(10, time.Hour),
+		resetByUser:     newAttemptLimiter(5, time.Hour),
 	}
 	mux.Handle(LoginPath, http.HandlerFunc(broker.handleLogin))
 	mux.Handle(LogoutPath, http.HandlerFunc(broker.handleLogout))
 	mux.Handle(SessionPath, http.HandlerFunc(broker.handleSession))
-	// Sign-up. Delete this line for an invite-only product — the issuer
-	// still creates accounts, just not from a public form.
+	// What a password must contain, so the sign-up and reset forms can say
+	// so BEFORE the person types one. Public by design — see handlePasswordPolicy.
+	mux.Handle(PasswordPolicyPath, http.HandlerFunc(broker.handlePasswordPolicy))
+
+	// ── Sign-up: PUBLIC BY DEFAULT ────────────────────────────────────────
+	//
+	// With this route mounted, anyone who can reach the app can create an
+	// account and is signed straight in. That is the right default for a
+	// product anyone may join, and the wrong one for an invite-only product.
+	//
+	// TO MAKE THE APP INVITE-ONLY:
+	//
+	//  1. Delete the next line (and RegisterPath above). The issuer still
+	//     creates accounts — the control plane's invitation action does —
+	//     just not from a public form.
+	//  2. Delete the "Create an account" toggle in the sign-in screen
+	//     (src/app/auth/sign-in/page.tsx, or the sign-in route in
+	//     src/routes.tsx).
+	//
+	// There is NO scaffolded invite flow, and an invitation does not email
+	// anyone unless the environment's identity declares `smtp`
+	// (forge.ManagedIdentity.smtp). Building one by hand is a small job:
+	// create the account (IdentityService.InviteUser, or
+	// `forge cloud identity invite`), then give the person a one-time code
+	// with devidp.MintPasswordResetCode and hand them
+	// <your app>/auth/reset?userID=<id>&code=<code> by any channel you
+	// control — your own mailer, a message, an admin screen. /auth/reset
+	// below redeems it. `forge skill load deploy/managed-identity` has the
+	// sketch.
 	mux.Handle(RegisterPath, http.HandlerFunc(broker.handleRegister))
+
+	// ── Self-serve password reset ─────────────────────────────────────────
+	//
+	// /auth/forgot asks the issuer to EMAIL the person a link to /auth/reset;
+	// /auth/reset redeems the code in that link. Delete both lines (and the
+	// forgot/reset pages) for an app that never lets people reset their own
+	// password.
+	//
+	// WHETHER THAT EMAIL ARRIVES IS NOT UP TO THIS FILE. The issuer sends
+	// mail only when its instance has an SMTP provider, and a customer
+	// instance has none unless the environment declares `smtp`
+	// (forge.ManagedIdentity.smtp). Without it /auth/forgot succeeds, says so
+	// truthfully ("if that address has an account…"), and nothing is
+	// delivered — the issuer has no way to tell this handler. See
+	// handleForgot for delivering the code another way.
+	mux.Handle(ForgotPath, http.HandlerFunc(broker.handleForgot))
+	mux.Handle(ResetPath, http.HandlerFunc(broker.handleReset))
 }
 
 type loginBroker struct {
@@ -134,6 +191,21 @@ type loginBroker struct {
 	logger       *slog.Logger
 	devMode      bool
 	secureCookie bool
+
+	// appBase is the app's public origin plus any base path, with no trailing
+	// slash — the prefix of every link this app emails. Derived from
+	// idp_login_uri (the converged "<app>/auth/sign-in"), never from a request
+	// header: a Host or Origin the caller controls would let anyone mail a
+	// victim a reset link that lands on a site they own.
+	appBase string
+
+	policy policyCache
+
+	// Reset-flow limits. In process: with N replicas the budgets are N times
+	// larger, which is still small (see attemptLimiter).
+	forgotByAddress *attemptLimiter
+	forgotByIP      *attemptLimiter
+	resetByUser     *attemptLimiter
 }
 
 // credentials is what the sign-in form posts.
@@ -216,6 +288,11 @@ func (b *loginBroker) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// leaks anything a sign-up form does not already reveal by
 		// accepting or rejecting the address.
 		b.logger.WarnContext(r.Context(), "registration rejected", "email", req.Email, "error", err)
+		var policyErr *devidp.PasswordPolicyError
+		if errors.As(err, &policyErr) {
+			b.writePasswordRejection(w, r.Context(), req.Password, policyErr)
+			return
+		}
 		writeAuthError(w, http.StatusBadRequest, registrationMessage(err))
 		return
 	}
@@ -326,18 +403,422 @@ func writeAuthError(w http.ResponseWriter, status int, message string) {
 	writeAuthJSON(w, status, map[string]string{"error": message})
 }
 
-// registrationMessage keeps the issuer's explanation when it has one, and
-// falls back to something a person can act on when it does not.
+// registrationMessage turns a non-password rejection into something a person
+// can act on. A rejected PASSWORD never reaches here: the caller answers it
+// with writePasswordRejection, which names the unmet rules.
 func registrationMessage(err error) string {
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "already exists"), strings.Contains(msg, "AlreadyExists"):
 		return "That email address is already registered."
-	case strings.Contains(msg, "Password"), strings.Contains(msg, "password"):
-		return "That password does not meet the requirements."
 	default:
 		return "That account could not be created."
 	}
+}
+
+// passwordRejection is the body of a 400 caused by the password alone.
+//
+// `unmet` is the machine-readable half the forms render as a checklist;
+// `error` is the same thing as a sentence for a client that only reads that.
+// Both come from the ISSUER's policy, which stays the authority — the
+// browser's own checks while typing are guidance.
+type passwordRejection struct {
+	Error string                `json:"error"`
+	Code  string                `json:"code"`
+	Unmet []devidp.PasswordRule `json:"unmet"`
+	Rules devidp.PasswordPolicy `json:"policy"`
+}
+
+// writePasswordRejection answers a password the issuer refused, naming every
+// rule it breaks.
+//
+// The issuer reports only the FIRST broken rule ("Password is too short"). The
+// policy is read and evaluated here so the person learns all of them at once,
+// rather than fixing one and meeting the next. If the policy cannot be read,
+// or the password breaks none of the rules this file knows (a rule a newer
+// issuer added), the issuer's own reason is the answer: still specific, just
+// not a checklist.
+func (b *loginBroker) writePasswordRejection(w http.ResponseWriter, ctx context.Context, password string, rejected *devidp.PasswordPolicyError) {
+	policy, perr := b.passwordPolicy(ctx)
+	var unmet []devidp.PasswordRule
+	if perr == nil {
+		unmet = policy.Unmet(password)
+	}
+	if len(unmet) == 0 && rejected.Rule != "" {
+		unmet = []devidp.PasswordRule{rejected.Rule}
+	}
+
+	message := "That password was not accepted: " + rejected.Reason + "."
+	if perr == nil && len(unmet) > 0 {
+		message = "That password needs " + policy.Describe(unmet) + "."
+	}
+	writeAuthJSON(w, http.StatusBadRequest, passwordRejection{
+		Error: message, Code: "password_policy", Unmet: unmet, Rules: policy,
+	})
+}
+
+// ── Password policy ────────────────────────────────────────────────────
+
+// policyTTL is how long the issuer's password policy is reused. Short enough
+// that an operator changing the policy is reflected within a minute, long
+// enough that a public, unauthenticated endpoint cannot be turned into a
+// stream of calls to the issuer.
+const policyTTL = time.Minute
+
+// policyCache holds the last policy read and when it expires. A failed read
+// is not cached, so the next request retries.
+type policyCache struct {
+	mu      sync.Mutex
+	policy  devidp.PasswordPolicy
+	expires time.Time
+}
+
+// passwordPolicy returns the issuer's password-complexity policy, cached for
+// policyTTL. Concurrent callers on a cold cache each wait on the one lock
+// rather than each calling the issuer.
+func (b *loginBroker) passwordPolicy(ctx context.Context) (devidp.PasswordPolicy, error) {
+	b.policy.mu.Lock()
+	defer b.policy.mu.Unlock()
+	if time.Now().Before(b.policy.expires) {
+		return b.policy.policy, nil
+	}
+	p, err := b.client.PasswordPolicy(ctx)
+	if err != nil {
+		return devidp.PasswordPolicy{}, err
+	}
+	b.policy.policy, b.policy.expires = p, time.Now().Add(policyTTL)
+	return p, nil
+}
+
+// handlePasswordPolicy serves what a password must contain.
+//
+// UNAUTHENTICATED, because the sign-up form needs it before anyone has an
+// account. It discloses nothing a failed sign-up would not: the same rules
+// come back in the rejection. It is cacheable by the browser for the length of
+// the server's own cache, and it is GUIDANCE — the issuer enforces the policy
+// when the password is set.
+func (b *loginBroker) handlePasswordPolicy(w http.ResponseWriter, r *http.Request) {
+	policy, err := b.passwordPolicy(r.Context())
+	if err != nil {
+		b.logger.ErrorContext(r.Context(), "password policy unavailable", "error", err)
+		writeAuthError(w, http.StatusBadGateway, "The password requirements could not be loaded right now.")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", int(policyTTL.Seconds())))
+	_ = json.NewEncoder(w).Encode(policy)
+}
+
+// ── Self-serve password reset ──────────────────────────────────────────
+
+// forgotRequest is what the "forgot password" form posts. Just an address.
+type forgotRequest struct {
+	Email string `json:"email"`
+}
+
+// resetRequest is what the reset form posts. Typed fields, never a forwarded
+// body: this is one dropped field away from "set anyone's password" — see
+// devidp.ResetPassword.
+type resetRequest struct {
+	UserID   string `json:"userID"`
+	Code     string `json:"code"`
+	Password string `json:"password"`
+}
+
+// What the browser is told after a reset request. The same sentence whether or
+// not the address has an account, and whether or not the issuer can mail: a
+// reset form that answers differently is an account-enumeration oracle.
+const (
+	forgotAccepted = "If that address has an account, a reset link is on its way."
+	forgotBusy     = "Too many reset requests. Please wait a while before trying again."
+
+	resetFieldsRequired = "A reset link, a code and a new password are all required."
+	resetCodeRejected   = "That reset link is not valid. Reset links are single-use and expire; request a new one."
+	resetTooMany        = "Too many attempts with that reset link. Please wait an hour, or request a new one."
+	resetUnavailable    = "The password could not be reset right now. Please try again."
+)
+
+// handleForgot requests a password-reset email.
+//
+// ── WHEN NO EMAIL ARRIVES ───────────────────────────────────────────────
+//
+// This asks the issuer to mail the link. The issuer mails only when its
+// instance has an SMTP provider, which a customer instance has only if the
+// environment declares `smtp` (forge.ManagedIdentity.smtp). Without it this
+// handler still answers "if that address has an account, a link is on its
+// way", because that is all it can truthfully say: the issuer accepts the
+// request and delivers nothing, and does not report that to the caller.
+//
+// To deliver the code WITHOUT the issuer's mail — your own mailer, an SMS, a
+// support console — replace the SendPasswordResetLink call below with
+//
+//	code, err := b.client.MintPasswordResetCode(ctx, user.ID)
+//	// …send b.appBase+"/auth/reset?userID="+user.ID+"&code="+code to the
+//	// ADDRESS ON FILE, through a channel only its owner can read.
+//
+// and NEVER put the code in this response. It is the credential: returning it
+// to whoever typed the address turns "forgot password" into "take over any
+// account". The rate limits below still apply, and still matter more: a
+// handler that mints codes on request lets anyone make the account owner's
+// inbox their problem.
+//
+// ── Limits ──────────────────────────────────────────────────────────────
+//
+// Per address AND per client IP, in process. The per-address budget stops one
+// person's inbox being flooded; the per-IP budget stops one client sweeping
+// addresses. Both are charged BEFORE the account lookup and whether or not the
+// address exists, so exhausting a budget tells a guesser nothing.
+func (b *loginBroker) handleForgot(w http.ResponseWriter, r *http.Request) {
+	var req forgotRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {
+		writeAuthError(w, http.StatusBadRequest, "malformed request")
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if email == "" || !strings.Contains(email, "@") {
+		writeAuthError(w, http.StatusBadRequest, "Enter the email address of your account.")
+		return
+	}
+
+	ctx := r.Context()
+	if !b.forgotByIP.reserve(clientIP(r)) || !b.forgotByAddress.reserve(email) {
+		b.logger.WarnContext(ctx, "password reset request refused: rate limited")
+		writeAuthError(w, http.StatusTooManyRequests, forgotBusy)
+		return
+	}
+
+	// Everything past this point answers the same way. The address is never
+	// logged — it is personal data; the user id identifies an account that
+	// exists.
+	user, err := b.client.FindUserByEmail(ctx, email)
+	switch {
+	case errors.Is(err, devidp.ErrUserNotFound):
+		b.logger.InfoContext(ctx, "password reset requested for an address with no single account")
+	case err != nil:
+		b.logger.ErrorContext(ctx, "password reset: user lookup failed", "error", err)
+	default:
+		// The link points at THIS app's reset page. {{"{{"}}.UserID}}, {{"{{"}}.Code}} and
+		// {{"{{"}}.OrgID}} are the issuer's placeholders, filled when it sends.
+		template := ""
+		if b.appBase != "" {
+			template = b.appBase + "/auth/reset?userID={{"{{"}}.UserID}}&code={{"{{"}}.Code}}&orgID={{"{{"}}.OrgID}}"
+		}
+		if b.devMode {
+			// A dev stack has no mail server, so asking the issuer to send
+			// would deliver nothing and leave the flow untestable. Mint the
+			// code instead and put the link in THIS PROCESS'S LOG — never in
+			// the response. Production never takes this branch.
+			code, err := b.client.MintPasswordResetCode(ctx, user.ID)
+			if err != nil {
+				b.logger.ErrorContext(ctx, "password reset: could not mint a dev code", "user_id", user.ID, "error", err)
+			} else {
+				b.logger.InfoContext(ctx, "DEV ONLY: password reset link (no mail server in development)",
+					"user_id", user.ID, "link", fmt.Sprintf("%s/auth/reset?userID=%s&code=%s", b.appBase, user.ID, code))
+			}
+		} else if err := b.client.SendPasswordResetLink(ctx, user.ID, template); err != nil {
+			b.logger.ErrorContext(ctx, "password reset: the issuer refused the request", "user_id", user.ID, "error", err)
+		} else {
+			b.logger.InfoContext(ctx, "password reset link requested", "user_id", user.ID)
+		}
+	}
+	writeAuthJSON(w, http.StatusAccepted, map[string]string{"message": forgotAccepted})
+}
+
+// handleReset redeems a reset code for a new password and signs the person in.
+//
+// ── THE ONE THING NOT TO CHANGE CARELESSLY ──────────────────────────────
+//
+// The broker's credential can set ANY user's password with no code at all, so
+// this handler is one dropped field away from "set anyone's password":
+//
+//  1. An empty code is refused here, and again in devidp.ResetPassword,
+//     before any call reaches the issuer.
+//  2. The request is built from typed fields, never a forwarded body.
+//  3. The issuer never burns a code on failed guesses, so a six-character code
+//     is a brute-force target. resetByUser caps guesses per account; once
+//     spent, even the right code is refused until the window passes.
+//  4. A wrong, expired and used code are one indistinguishable answer.
+func (b *loginBroker) handleReset(w http.ResponseWriter, r *http.Request) {
+	var req resetRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {
+		writeAuthError(w, http.StatusBadRequest, "malformed request")
+		return
+	}
+	userID := strings.TrimSpace(req.UserID)
+	code := strings.TrimSpace(req.Code)
+	if userID == "" || code == "" || req.Password == "" {
+		writeAuthError(w, http.StatusBadRequest, resetFieldsRequired)
+		return
+	}
+
+	ctx := r.Context()
+	if !b.resetByUser.reserve(userID) {
+		b.logger.WarnContext(ctx, "password reset refused: attempt budget spent", "user_id", userID)
+		writeAuthError(w, http.StatusTooManyRequests, resetTooMany)
+		return
+	}
+
+	err := b.client.ResetPassword(ctx, devidp.PasswordReset{UserID: userID, Code: code, NewPassword: req.Password})
+	var policyErr *devidp.PasswordPolicyError
+	switch {
+	case err == nil:
+		b.resetByUser.forget(userID)
+	case errors.As(err, &policyErr):
+		// The code was RIGHT — only the password was refused, and the code
+		// stays valid (verified). That attempt tested nothing an attacker
+		// could use, so it is handed back.
+		b.resetByUser.refund(userID)
+		b.writePasswordRejection(w, ctx, req.Password, policyErr)
+		return
+	case errors.Is(err, devidp.ErrInvalidResetCode):
+		b.logger.WarnContext(ctx, "password reset rejected: bad code", "user_id", userID, "error", err)
+		if b.resetByUser.spent(userID) {
+			writeAuthError(w, http.StatusTooManyRequests, resetTooMany)
+			return
+		}
+		writeAuthError(w, http.StatusUnauthorized, resetCodeRejected)
+		return
+	default:
+		// The issuer or the broker's credential failed; the code was never
+		// judged, so the attempt is not charged.
+		b.resetByUser.refund(userID)
+		b.logger.ErrorContext(ctx, "password reset failed at the issuer", "user_id", userID, "error", err)
+		writeAuthError(w, http.StatusBadGateway, resetUnavailable)
+		return
+	}
+	b.logger.InfoContext(ctx, "password reset", "user_id", userID)
+
+	// They just proved the code AND chose the password; retyping it is pure
+	// friction. If the follow-up sign-in fails the password is still set —
+	// say so with authenticated:false and let the form send them to sign in.
+	user, err := b.client.FindUserByID(ctx, userID)
+	if err == nil {
+		var tokens devidp.Tokens
+		tokens, err = b.client.SignIn(ctx, b.flow, devidp.Credentials{LoginName: user.LoginName, Password: req.Password})
+		if err == nil {
+			b.setSession(w, tokens)
+			writeAuthJSON(w, http.StatusOK, identityFrom(tokens.IDToken))
+			return
+		}
+	}
+	b.logger.WarnContext(ctx, "password reset: password set, but the follow-up sign-in failed", "user_id", userID, "error", err)
+	writeAuthJSON(w, http.StatusOK, identity{Authenticated: false})
+}
+
+// appBaseFrom derives the app's public origin (plus base path) from the
+// converged sign-in URI: "https://app.example.com/base/auth/sign-in" becomes
+// "https://app.example.com/base". Empty when it is not an absolute http(s)
+// URL, in which case the issuer's own default link is used.
+func appBaseFrom(loginURI string) string {
+	u, err := url.Parse(strings.TrimSpace(loginURI))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return ""
+	}
+	path := strings.TrimSuffix(strings.TrimRight(u.Path, "/"), "/auth/sign-in")
+	return u.Scheme + "://" + u.Host + strings.TrimRight(path, "/")
+}
+
+// clientIP is the address to rate-limit by: the connection's peer.
+//
+// Deliberately NOT X-Forwarded-For. A header the caller can set is a header an
+// attacker rotates to get a fresh budget on every request. Behind a reverse
+// proxy every client then shares the proxy's address, and the per-IP budget
+// becomes a global one — safe, if blunt. If your proxy is trusted and you want
+// the real client, read the header HERE, and only from a peer you trust.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// attemptLimiter is a fixed-window budget of attempts per key, in memory.
+//
+// IN MEMORY, PER PROCESS, and that is enough for what it guards: with N
+// replicas an attacker gets N times the budget per window, which against a
+// code space of billions is still negligible and against an inbox is a few
+// extra emails. A restart resets it the same way. A shared store would buy
+// precision nobody needs at the cost of a dependency on the sign-in path.
+//
+// Memory is bounded: an expired window is dropped whenever the table grows
+// past attemptLimiterMaxKeys, so an attacker typing endless addresses cannot
+// grow it without limit.
+type attemptLimiter struct {
+	mu      sync.Mutex
+	max     int
+	window  time.Duration
+	now     func() time.Time
+	entries map[string]*attemptEntry
+}
+
+type attemptEntry struct {
+	used  int
+	since time.Time
+}
+
+const attemptLimiterMaxKeys = 10_000
+
+func newAttemptLimiter(max int, window time.Duration) *attemptLimiter {
+	return &attemptLimiter{max: max, window: window, now: time.Now, entries: map[string]*attemptEntry{}}
+}
+
+// reserve claims one attempt; false when the budget is already spent.
+func (l *attemptLimiter) reserve(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	e := l.entries[key]
+	if e == nil || now.Sub(e.since) > l.window {
+		if len(l.entries) >= attemptLimiterMaxKeys {
+			l.sweep(now)
+		}
+		if len(l.entries) >= attemptLimiterMaxKeys {
+			// Every window is live: refuse rather than grow. Reached only
+			// under a flood of distinct keys.
+			return false
+		}
+		e = &attemptEntry{since: now}
+		l.entries[key] = e
+	}
+	if e.used >= l.max {
+		return false
+	}
+	e.used++
+	return true
+}
+
+// sweep drops every expired window.
+func (l *attemptLimiter) sweep(now time.Time) {
+	for k, e := range l.entries {
+		if now.Sub(e.since) > l.window {
+			delete(l.entries, k)
+		}
+	}
+}
+
+// spent reports whether no attempts remain.
+func (l *attemptLimiter) spent(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	e := l.entries[key]
+	return e != nil && e.used >= l.max
+}
+
+// refund returns an attempt that did not test anything.
+func (l *attemptLimiter) refund(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if e := l.entries[key]; e != nil && e.used > 0 {
+		e.used--
+	}
+}
+
+// forget clears the budget after a success.
+func (l *attemptLimiter) forget(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.entries, key)
 }
 
 // errLoginNotConfigured names what is missing, and how to get it.

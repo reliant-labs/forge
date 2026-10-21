@@ -12,24 +12,40 @@ browser  ── email + password ──▶  your server ──▶ identity provi
          ◀── HttpOnly cookie ───┘                (the whole OIDC flow)
 ```
 
-Four endpoints, and that is the entire contract the browser knows about:
+Seven endpoints, and that is the entire contract the browser knows about:
 
 | call | endpoint | answers with |
 | --- | --- | --- |
 | sign in | `POST /auth/login` | cookie set, identity returned |
-| sign up | `POST /auth/register` | account created **and** signed in, in one call |
+| sign up | `POST /auth/register` | account created **and** signed in, in one call. **Public by default** (see below) |
 | who am I | `GET /auth/session` | the identity, or not-authenticated |
 | sign out | `POST /auth/logout` | cookie cleared |
+| password rules | `GET /auth/password-policy` | `{min_length, has_uppercase, has_lowercase, has_number, has_symbol}`, the identity provider's own policy |
+| forgot password | `POST /auth/forgot` | `202`, the same answer for any address; asks the provider to email a reset link |
+| reset password | `POST /auth/reset` | `{userID, code, password}` redeemed; cookie set when the follow-up sign-in works |
 
 ## What the scaffold ships
 
-- **`src/lib/auth/native-login.ts`** — the only file that talks to those four endpoints. It knows nothing about OIDC: no issuer, no client id, no PKCE, no redirect, no token parsing.
+- **`src/lib/auth/native-login.ts`** — the only file that talks to those endpoints. It knows nothing about OIDC: no issuer, no client id, no PKCE, no redirect, no token parsing.
 - **`src/app/auth/sign-in/page.tsx`** (Next.js) / the `/auth/sign-in` route in `src/routes.tsx` (Vite) — an ordinary form. Deliberately plain starter code; most products restyle sign-in heavily.
+- **`src/components/{password-requirements,forgot-password-form,reset-password-form}.tsx`** and the `/auth/forgot` and `/auth/reset` routes (`src/app/auth/{forgot,reset}/page.tsx` in Next.js, `forgotRoute` / `resetRoute` in `src/routes.tsx` in Vite). Static-export safe: `/auth/reset?userID=…&code=…&orgID=…` reads its query in the browser, which is the shape of the link the control plane gives the provider as its reset template.
 - **`src/lib/auth/route-guard.tsx`** — what an anonymous visitor sees. Without it a signed-out visitor gets the full app shell and then a wall of 401s, which looks like a broken app rather than one asking you to sign in.
 - **`src/lib/auth/context.tsx`** — `useAuth()`, exposing `{ identity, isAuthenticated, isLoading, refresh, logout }`. In mock mode (`MOCK_API` set to `"true"` or `"hybrid"`) it never calls `GET /auth/session`. The identity is instead the fixture user from `createSessionAuthProvider()` in `src/lib/auth/session-provider.ts`, gated on that file's `isMockMode()`. In hybrid the fixture is for the UI only, and forwarded RPCs carry only the browser's real cookie. See the `frontend` skill's mock-mode table.
 - **`src/components/session_nav.tsx`** — the signed-in-user dropdown with a sign-out.
 
-There is **exactly one auth route**. `/auth/callback` belonged to the browser redirect flow — the issuer sent the browser back there with a code — and with the exchange moved server-side there is nothing for it to do.
+There is no `/auth/callback`. It belonged to the browser redirect flow — the issuer sent the browser back there with a code — and with the exchange moved server-side there is nothing for it to do. The auth routes are sign-in, forgot and reset.
+
+## Password requirements
+
+The provider's complexity policy is **per instance**, so the app asks rather than guessing: the broker reads `GET /v2/settings/password/complexity` (readable with the broker's own token) and serves it, cached for a minute, at the unauthenticated `GET /auth/password-policy`. The sign-up and reset forms render it as a checklist **before** the person types, tick rules off as they type, and on a rejection the server answers `400 {error, code: "password_policy", unmet: [...]}` naming **every** rule broken (the provider itself reports only the first). The client checks are guidance; the provider decides. If the policy cannot be read the forms still work, without the checklist.
+
+## Password reset, and when the email actually arrives
+
+`POST /auth/forgot` asks the provider to **email** a link to `/auth/reset`. A customer instance sends mail **only if the environment declares `smtp`** (`forge.ManagedIdentity.smtp`); without it the request succeeds and nothing is delivered, and the provider does not tell the app. The forgot screen says so. It answers identically for an unknown address (no account oracle) and is limited to 3 requests per address and 10 per client IP per hour, in process. In development (no mail server) the broker mints the code and logs the link; it never returns the code. To deliver by another channel, swap `SendPasswordResetLink` for `devidp.MintPasswordResetCode` in `handleForgot`; the code is the credential, so send it only to the address on file. To turn reset off, delete the two broker routes, the routes/pages and the "Forgot your password?" link.
+
+## Invite-only apps
+
+`POST /auth/register` is mounted by default, so **anyone who reaches the app can create an account**. For an invite-only product delete that route in `login_broker.go` and the "Create an account" toggle in the sign-in screen. There is **no scaffolded invite flow**; see `deploy/managed-identity` for how to build one.
 
 ## Why the token is not in JavaScript, and what you get instead
 

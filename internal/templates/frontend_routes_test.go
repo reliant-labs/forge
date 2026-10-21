@@ -102,11 +102,19 @@ func stripComments(src string) string {
 // emittedRoute reports whether path is a route a forge scaffold serves.
 //
 //   - "/" is src/app/page.tsx (Next.js) / the index route (Vite).
+//   - /auth/sign-in, /auth/forgot and /auth/reset are the native sign-in
+//     screens: src/app/auth/*/page.tsx (Next.js) and signInRoute /
+//     forgotRoute / resetRoute in routes.tsx (Vite). A public frontend omits
+//     them and also omits every reference to them.
 //   - Anything whose first segment is a template action is a per-entity route
 //     the page emitters render: /{{.EntitySlug}}, /{{.EntitySlug}}/new, and
 //     the [id] / [id]/edit pages beneath them.
 func emittedRoute(path string) bool {
 	if path == "/" {
+		return true
+	}
+	switch path {
+	case "/auth/sign-in", "/auth/forgot", "/auth/reset":
 		return true
 	}
 	if strings.HasPrefix(path, "/{{") {

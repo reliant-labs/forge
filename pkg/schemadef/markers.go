@@ -46,13 +46,18 @@ func SiteMarkers(site MarkerSite) []string {
 	case SiteColumn:
 		var out []string
 		for _, m := range KnownColumnMarkers {
-			if m != ColumnMarkerRef {
+			if m != ColumnMarkerRef && m != ColumnMarkerClosedSet {
 				out = append(out, m)
 			}
 		}
 		return out
 	case SiteConstraint:
-		return []string{ColumnMarkerRef}
+		// One vocabulary for every constraint kind, because a migration's
+		// COMMENT ON CONSTRAINT does not say which kind it names. Placement
+		// — forge:ref on a FOREIGN KEY, forge:closed-set on a CHECK — is
+		// judged where the kind is known: CheckMarkers over the catalog,
+		// and the closed-sets lint over the migrations.
+		return []string{ColumnMarkerRef, ColumnMarkerClosedSet}
 	}
 	return nil
 }
@@ -168,7 +173,7 @@ type MarkerProblem struct {
 }
 
 // CheckMarkers checks every catalog comment of the applied schema — table,
-// view, column and foreign-key constraint — and returns an error naming each
+// view, column, foreign-key and CHECK constraint — and returns an error naming each
 // forge marker that does nothing where it is declared, nil when there is
 // none. It is what makes a misspelled or misplaced marker fail the generate
 // that reads it, instead of shipping the behaviour it was written to change.
@@ -184,7 +189,14 @@ func CheckMarkers(tables []Table) error {
 			problems = append(problems, located(fmt.Sprintf("column %s.%s", t.Name, c.Name), CommentMarkerProblems(SiteColumn, c.Name, c.Comment))...)
 		}
 		for _, fk := range t.ForeignKeys {
-			problems = append(problems, located(fmt.Sprintf("constraint %s on %s", fk.Name, t.Name), CommentMarkerProblems(SiteConstraint, "", fk.Comment))...)
+			object := fmt.Sprintf("constraint %s on %s", fk.Name, t.Name)
+			problems = append(problems, located(object, CommentMarkerProblems(SiteConstraint, "", fk.Comment))...)
+			problems = append(problems, located(object, misplacedConstraintMarker(fk.Comment, ColumnMarkerClosedSet, "FOREIGN KEY", "CHECK"))...)
+		}
+		for _, ck := range t.Checks {
+			object := fmt.Sprintf("constraint %s on %s", ck.Name, t.Name)
+			problems = append(problems, located(object, CommentMarkerProblems(SiteConstraint, "", ck.Comment))...)
+			problems = append(problems, located(object, misplacedConstraintMarker(ck.Comment, ColumnMarkerRef, "CHECK", "FOREIGN KEY"))...)
 		}
 	}
 	if len(problems) == 0 {
@@ -198,6 +210,17 @@ func CheckMarkers(tables []Table) error {
 	return errors.New("the applied schema's catalog comments carry forge markers that do nothing where they are declared " +
 		"(fix the COMMENT ON in the migration; `forge project annotations --kind column` and `--kind table` list every marker):\n" +
 		strings.Join(lines, "\n"))
+}
+
+// misplacedConstraintMarker reports marker on a constraint of kind is, when
+// only a constraint of kind belongs reads it.
+func misplacedConstraintMarker(comment, marker, is, belongs string) []MarkerProblem {
+	if !slices.Contains(MarkerTokens(comment), marker) {
+		return nil
+	}
+	return []MarkerProblem{{Marker: marker, Problem: fmt.Sprintf(
+		"%s is read on a %s constraint and does nothing on a %s — move the COMMENT ON CONSTRAINT to the %s",
+		marker, belongs, is, belongs)}}
 }
 
 func located(object string, ps []MarkerProblem) []MarkerProblem {

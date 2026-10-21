@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A CHECK that mirrors a Go set declares it, and `forge lint` keeps the two
+  equal.** In a migration, write
+  `COMMENT ON CONSTRAINT access_tokens_scopes ON access_tokens IS 'forge:closed-set accesstoken.AllScopes'`.
+  The new closed-sets lane, which runs by default (`--closed-sets` runs it
+  alone), finds the CHECK the migrations last defined. It reads
+  `col <@ ARRAY[…]`, `col = ANY (ARRAY[…])` or `col IN (…)`, with or without
+  casts, and compares the values with the named set. A mismatch fails the
+  lane, naming the missing and extra values and printing the forward
+  migration. `forge db migration new --closed-set <constraint>` writes that
+  migration. The lane reads migration text, so it
+  needs no database and runs on the `-short` tier. That is the tier where a
+  forge bump adding `identity:read`/`identity:manage` went unnoticed until it
+  turned a project's main red.
+  - forge exports `accesstoken.AllScopes` and `accesstoken.AllResourceKinds`.
+    A project names its own set as `<import path>.<Var>`; forge type-checks
+    that package and executes none of it.
+  - postgres drops a constraint's comment along with the constraint, so the
+    lane also reports a CHECK that was replaced without re-issuing its
+    declaration.
+  - `forge:closed-set` is part of the catalog-marker vocabulary, so
+    `forge generate` and `--column-markers` reject a misspelled marker or one
+    on the wrong constraint kind. `schemadef.CheckConstraint` gains `Comment`.
+- **A project's own transaction openers are judged by
+  `forgeconv-tx-lock-under-serializable`.** A wrapper that takes an
+  `orm.TxPolicy` and runs the transaction itself (reliant's `Repo.RunTx`,
+  which keeps its own retry ladder) declares itself with
+  `//forge:tx-opener level-arg=<n> [body-arg=<n>]` on its func declaration;
+  the lint then finds a lock under SERIALIZABLE in its calls exactly as in
+  `RunTx`'s, matched by name and arity across the project, detached when it
+  takes no body. A marker that does not parse, or sits anywhere but on a func
+  declaration, is an error. The marker is in the `--go-markers` registry.
+  `orm.ResolveTxPolicy` / `orm.ResolveDetachedTxPolicy` validate such an
+  opener's policy as `RunTx` / `BeginDetached` do and return the full
+  options (level, access mode, attempt budget), the error naming the line
+  that called the opener.
 - **The scaffolded sign-up says what a password needs.** Sign-up used to answer
   "That password does not meet the requirements." and never name one. The
   login broker now serves the identity provider's own complexity policy at the

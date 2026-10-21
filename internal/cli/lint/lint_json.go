@@ -343,6 +343,8 @@ func collectSingleLinterJSON(
 		return reportUngated(collectConfigDepsJSON(cwd))
 	case flags.columnMarkers:
 		return reportBySeverity(collectColumnMarkersJSON(cfg))
+	case flags.closedSets:
+		return reportBySeverity(collectClosedSetsJSON(cwd, cfg))
 	case flags.fixtureDrift || flags.crudFixtures:
 		return reportUngated(collectFixtureDriftJSON(cwd, cfg))
 	case flags.timeBucketing:

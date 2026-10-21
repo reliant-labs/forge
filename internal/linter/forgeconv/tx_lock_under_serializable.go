@@ -32,6 +32,24 @@
 // inside a helper the body calls is not seen. A read-only transaction
 // (WithReadOnly) is not judged: it cannot write the row it locked.
 //
+// The openers judged are pkg/orm's (RunTx, RunTransaction, BeginDetached)
+// and every one the project declares. A project's own opener — a wrapper
+// that takes an orm.TxPolicy and runs the transaction itself, typically
+// resolving it with orm.ResolveTxPolicy — says so on its declaration:
+//
+//	//forge:tx-opener level-arg=1
+//	func (r *Repo) RunTx(ctx context.Context, policy orm.TxPolicy, fn func(context.Context) error) error
+//
+// level-arg is the 0-based index of the call argument that names the policy
+// (ctx is argument 0; a method's receiver is not counted). body-arg, when
+// given, is the index of the func argument that is the transaction's body;
+// it defaults to the last func-typed parameter, and an opener with none is
+// detached — like BeginDetached, its transaction runs for the rest of the
+// function that opened it. Calls are matched by name and arity, project
+// wide, as pkg/orm's are. A marker that does not parse, or sits anywhere but
+// on a func declaration, is an error: an ignored opener would leave its
+// calls unjudged without a word.
+//
 // Warning by default; an error under `forge lint --strict`.
 
 package forgeconv
@@ -44,9 +62,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/codegen"
 )
 
 const txLockUnderSerializableRule = "forgeconv-tx-lock-under-serializable"
@@ -68,8 +89,38 @@ var sqlLockPatterns = []struct {
 // for writing.
 var bunForLock = regexp.MustCompile(`(?i)^\s*(NO\s+KEY\s+)?UPDATE\b`)
 
+// txOpener is one transaction opener the lint judges, by the shape of its
+// calls: how many arguments they pass, which names the policy and which is
+// the body (-1: detached — the transaction runs for the rest of the function
+// that opened it). A variadic opener's calls pass at least params-1
+// arguments.
+type txOpener struct {
+	params   int
+	variadic bool
+	levelArg int
+	bodyArg  int
+}
+
+func (o txOpener) matches(args int) bool {
+	if o.variadic {
+		return args >= o.params-1
+	}
+	return args == o.params
+}
+
+// ormTxOpeners are pkg/orm's openers, judged in every project.
+var ormTxOpeners = map[string][]txOpener{
+	"RunTx":          {{params: 3, levelArg: 1, bodyArg: 2}},
+	"RunTransaction": {{params: 3, levelArg: 1, bodyArg: 2}},
+	"BeginDetached":  {{params: 2, levelArg: 1, bodyArg: -1}},
+}
+
+// txOpenerForm is the documented spelling of the opener marker.
+const txOpenerForm = "//forge:tx-opener level-arg=<n> [body-arg=<n>]"
+
 // LintTxLockUnderSerializable walks rootDir for Go files and reports
-// SERIALIZABLE transactions that take a lock. Generated files (gen/,
+// SERIALIZABLE transactions that take a lock — through pkg/orm's openers and
+// every one declared with //forge:tx-opener. Generated files (gen/,
 // *_gen.go), vendor/, node_modules/, testdata/ and pkg/orm itself are
 // skipped. Findings are in deterministic order.
 func LintTxLockUnderSerializable(rootDir string, opts LintOptions) (Result, error) {
@@ -104,14 +155,26 @@ func LintTxLockUnderSerializable(rootDir string, opts LintOptions) (Result, erro
 	fset := token.NewFileSet()
 	byDir := map[string][]parsed{}
 	var dirs []string
+	var declaring []parsed
 	for _, fp := range files {
 		src, rerr := os.ReadFile(fp)
-		if rerr != nil || !strings.Contains(string(src), ormImportPath) {
-			continue // names no orm policy
+		if rerr != nil {
+			continue
 		}
-		file, perr := parser.ParseFile(fset, fp, src, parser.SkipObjectResolution)
+		namesPolicy := strings.Contains(string(src), ormImportPath)
+		declares := strings.Contains(string(src), codegen.TxOpenerMarker)
+		if !namesPolicy && !declares {
+			continue // names no orm policy and declares no opener
+		}
+		file, perr := parser.ParseFile(fset, fp, src, parser.ParseComments|parser.SkipObjectResolution)
 		if perr != nil {
 			continue // the Go toolchain reports parse errors
+		}
+		if declares {
+			declaring = append(declaring, parsed{fp, file})
+		}
+		if !namesPolicy {
+			continue
 		}
 		dir := filepath.Dir(fp)
 		if _, seen := byDir[dir]; !seen {
@@ -120,11 +183,25 @@ func LintTxLockUnderSerializable(rootDir string, opts LintOptions) (Result, erro
 		byDir[dir] = append(byDir[dir], parsed{fp, file})
 	}
 
+	var result Result
+	// The openers the project declares, beside pkg/orm's.
+	openers := map[string][]txOpener{}
+	for _, pf := range declaring {
+		rel, relErr := filepath.Rel(rootDir, pf.path)
+		if relErr != nil {
+			rel = pf.path
+		}
+		declared, bad := declaredTxOpeners(fset, pf.file, filepath.ToSlash(rel))
+		for name, o := range declared {
+			openers[name] = append(openers[name], o...)
+		}
+		result.Findings = append(result.Findings, bad...)
+	}
+
 	severity := SeverityWarning
 	if opts.Strict {
 		severity = SeverityError
 	}
-	var result Result
 	for _, dir := range dirs {
 		consts := map[string]map[string]ast.Expr{}
 		funcs := map[string]map[string]*ast.FuncDecl{}
@@ -152,7 +229,7 @@ func LintTxLockUnderSerializable(rootDir string, opts LintOptions) (Result, erro
 			}
 			l := txLockLint{
 				fset: fset, rel: filepath.ToSlash(rel), orm: ormName, severity: severity,
-				consts: consts[pf.file.Name.Name], funcs: funcs[pf.file.Name.Name],
+				consts: consts[pf.file.Name.Name], funcs: funcs[pf.file.Name.Name], openers: openers,
 			}
 			result.Findings = append(result.Findings, l.file(pf.file)...)
 		}
@@ -174,6 +251,124 @@ type txLockLint struct {
 	severity Severity
 	consts   map[string]ast.Expr
 	funcs    map[string]*ast.FuncDecl
+	// openers are the project's declared openers, by name.
+	openers map[string][]txOpener
+}
+
+// declaredTxOpeners reads the //forge:tx-opener markers in file: the openers
+// its func declarations declare, by name, and a finding for every marker it
+// cannot read — one that does not parse, or one on anything but a func
+// declaration.
+func declaredTxOpeners(fset *token.FileSet, file *ast.File, rel string) (map[string][]txOpener, []Finding) {
+	out := map[string][]txOpener{}
+	var bad []Finding
+	report := func(c *ast.Comment, problem string) {
+		bad = append(bad, Finding{
+			Rule:        txLockUnderSerializableRule,
+			Severity:    SeverityError,
+			File:        rel,
+			Line:        fset.Position(c.Pos()).Line,
+			Message:     fmt.Sprintf("//%s %s, so forge ignores it and the calls it declares go unjudged", codegen.TxOpenerMarker, problem),
+			Remediation: fmt.Sprintf("write %#q on the opener's func declaration: level-arg is the 0-based index of the call argument naming the orm.TxPolicy (ctx is 0, a receiver is not counted); body-arg, the func argument that is the transaction's body, defaults to the last func-typed parameter", txOpenerForm),
+		})
+	}
+	onDecl := map[*ast.Comment]bool{}
+	for _, d := range file.Decls {
+		fd, ok := d.(*ast.FuncDecl)
+		if !ok || fd.Doc == nil {
+			continue
+		}
+		for _, c := range fd.Doc.List {
+			rest, ok := txOpenerMarkerRest(c.Text)
+			if !ok {
+				continue
+			}
+			onDecl[c] = true
+			o, problem := parseTxOpener(rest, fd.Type)
+			if problem != "" {
+				report(c, fmt.Sprintf("on %s %s", fd.Name.Name, problem))
+				continue
+			}
+			out[fd.Name.Name] = append(out[fd.Name.Name], o)
+		}
+	}
+	for _, cg := range file.Comments {
+		for _, c := range cg.List {
+			if _, ok := txOpenerMarkerRest(c.Text); ok && !onDecl[c] {
+				report(c, "is not on a func declaration")
+			}
+		}
+	}
+	return out, bad
+}
+
+// txOpenerMarkerRest returns what follows the marker in a `//forge:tx-opener`
+// or `// forge:tx-opener` comment.
+func txOpenerMarkerRest(text string) (string, bool) {
+	t, ok := strings.CutPrefix(text, "//")
+	if !ok {
+		return "", false
+	}
+	rest, ok := strings.CutPrefix(strings.TrimLeft(t, " \t"), codegen.TxOpenerMarker)
+	if !ok || (rest != "" && rest[0] != ' ' && rest[0] != '\t' && rest[0] != ':') {
+		return "", false // forge:tx-openerX is another word
+	}
+	return rest, true
+}
+
+// parseTxOpener reads a marker's arguments against the declaration's
+// signature. It returns the opener, or what is wrong with the marker.
+func parseTxOpener(rest string, sig *ast.FuncType) (txOpener, string) {
+	var params []ast.Expr // one per parameter, its type
+	if sig.Params != nil {
+		for _, f := range sig.Params.List {
+			for range max(1, len(f.Names)) {
+				params = append(params, f.Type)
+			}
+		}
+	}
+	o := txOpener{params: len(params), levelArg: -1, bodyArg: -1}
+	if n := len(params); n > 0 {
+		_, o.variadic = params[n-1].(*ast.Ellipsis)
+	}
+	isFunc := func(i int) bool { _, ok := params[i].(*ast.FuncType); return ok }
+	bodySet := false
+	for _, field := range strings.Fields(rest) {
+		key, val, ok := strings.Cut(field, "=")
+		n, err := strconv.Atoi(val)
+		if !ok || err != nil {
+			return o, fmt.Sprintf("has %q, not key=<index>", field)
+		}
+		if n < 0 || n >= len(params) {
+			return o, fmt.Sprintf("names argument %d, but it takes %d", n, len(params))
+		}
+		switch key {
+		case "level-arg":
+			o.levelArg = n
+		case "body-arg":
+			if !isFunc(n) {
+				return o, fmt.Sprintf("names argument %d as the body, but it is not a func", n)
+			}
+			o.bodyArg, bodySet = n, true
+		default:
+			return o, fmt.Sprintf("has an unknown key %q (level-arg, body-arg)", key)
+		}
+	}
+	if o.levelArg < 0 {
+		return o, "names no level-arg"
+	}
+	if !bodySet {
+		for i := len(params) - 1; i >= 0; i-- {
+			if isFunc(i) {
+				o.bodyArg = i
+				break
+			}
+		}
+	}
+	if o.levelArg == o.bodyArg {
+		return o, fmt.Sprintf("names argument %d as both the level and the body", o.levelArg)
+	}
+	return o, ""
 }
 
 func (l txLockLint) file(file *ast.File) []Finding {
@@ -207,21 +402,38 @@ func (l txLockLint) file(file *ast.File) []Finding {
 	return findings
 }
 
+// opener returns the opener a call is, matched by its name and arity: a
+// method call (x.RunTx(…)) for any opener, a bare call (runTx(…)) for one
+// the project declares.
+func (l txLockLint) opener(call *ast.CallExpr) (txOpener, bool) {
+	var candidates []txOpener
+	switch fn := call.Fun.(type) {
+	case *ast.SelectorExpr:
+		candidates = slices.Concat(ormTxOpeners[fn.Sel.Name], l.openers[fn.Sel.Name])
+	case *ast.Ident:
+		candidates = l.openers[fn.Name] // pkg/orm's openers are methods
+	}
+	for _, o := range candidates {
+		if o.matches(len(call.Args)) {
+			return o, true
+		}
+	}
+	return txOpener{}, false
+}
+
 // call judges one call: a SERIALIZABLE opener whose body takes a lock.
 func (l txLockLint) call(call *ast.CallExpr, bodies []*ast.BlockStmt) (Finding, bool) {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
+	o, ok := l.opener(call)
 	if !ok {
 		return Finding{}, false
 	}
-	var policy ast.Expr
+	policy := call.Args[o.levelArg]
 	var body []ast.Node
-	switch sel.Sel.Name {
-	case "RunTx", "RunTransaction":
-		if len(call.Args) != 3 {
+	if o.bodyArg >= 0 {
+		if o.bodyArg >= len(call.Args) {
 			return Finding{}, false
 		}
-		policy = call.Args[1]
-		switch fn := call.Args[2].(type) {
+		switch fn := call.Args[o.bodyArg].(type) {
 		case *ast.FuncLit:
 			body = []ast.Node{fn.Body}
 		case *ast.Ident:
@@ -229,19 +441,16 @@ func (l txLockLint) call(call *ast.CallExpr, bodies []*ast.BlockStmt) (Finding, 
 				body = []ast.Node{fd.Body}
 			}
 		}
-	case "BeginDetached":
-		if len(call.Args) != 2 || len(bodies) == 0 {
+	} else {
+		if len(bodies) == 0 {
 			return Finding{}, false
 		}
-		policy = call.Args[1]
 		// The rest of the opening function, from the call on.
 		for _, st := range bodies[len(bodies)-1].List {
 			if st.End() > call.Pos() {
 				body = append(body, st)
 			}
 		}
-	default:
-		return Finding{}, false
 	}
 	level, ok := l.lockingLevel(policy)
 	if !ok || len(body) == 0 {
@@ -365,7 +574,7 @@ func (l txLockLint) findLock(nodes []ast.Node, opener *ast.CallExpr) (string, to
 				if x == opener {
 					return true
 				}
-				switch lockCallKind(x) {
+				switch l.lockCallKind(x) {
 				case "opener":
 					return false
 				case "for-update":
@@ -395,7 +604,10 @@ func (l txLockLint) findLock(nodes []ast.Node, opener *ast.CallExpr) (string, to
 // lockCallKind classifies a call met in a transaction body: "opener" for a
 // nested transaction opener (its own finding, not looked into),
 // "for-update" for bun's .For("UPDATE"), "" otherwise.
-func lockCallKind(call *ast.CallExpr) string {
+func (l txLockLint) lockCallKind(call *ast.CallExpr) string {
+	if _, ok := l.opener(call); ok {
+		return "opener"
+	}
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return ""

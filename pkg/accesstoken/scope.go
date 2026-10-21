@@ -11,8 +11,10 @@ import "strings"
 //
 // THE SET IS CLOSED. A scope that cannot be spelled cannot be granted, which is
 // a stronger guarantee than a handler remembering to refuse it. A store backs
-// this with a database CHECK over the same list; each deployment's test pins
-// its CHECK to AllScopes so neither can gain a member alone.
+// this with a database CHECK over the same list, declared
+// `COMMENT ON CONSTRAINT … IS 'forge:closed-set accesstoken.AllScopes'`, and
+// `forge lint` fails when the CHECK and AllScopes differ, so neither can gain
+// a member alone.
 type Scope string
 
 const (

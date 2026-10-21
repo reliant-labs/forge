@@ -26,7 +26,8 @@ const (
 	ResourceConnector ResourceKind = "connector"
 )
 
-// AllResourceKinds is the closed set; stores pin their CHECK to it.
+// AllResourceKinds is the closed set; a store's CHECK declares
+// 'forge:closed-set accesstoken.AllResourceKinds' and `forge lint` pins it.
 var AllResourceKinds = []ResourceKind{ResourceDaemon, ResourcePort, ResourceConnector}
 
 // Resource is a binding: a kind and an id.

@@ -271,6 +271,7 @@ func lintLaneFlags(f *lintFlags) []lintLaneFlag {
 		{name: "optional-deps-guard", on: &f.optionalDepsGuard},
 		{name: "config-deps", on: &f.configDeps},
 		{name: "column-markers", on: &f.columnMarkers},
+		{name: "closed-sets", on: &f.closedSets},
 		{name: "fixture-drift", on: &f.fixtureDrift},
 		{name: "fixture-drift", on: &f.crudFixtures}, // the deprecated --crud-fixtures alias
 		{name: "time-bucketing", on: &f.timeBucketing},

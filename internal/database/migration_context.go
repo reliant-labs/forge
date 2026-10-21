@@ -30,6 +30,11 @@ type MigrationOptions struct {
 	BackwardCompatible       string
 	BreaksRollback           string
 	RequireCompatDeclaration bool
+
+	// Body is SQL written after the header, for a migration whose content
+	// forge already knows (`forge db migration new --closed-set`). Empty
+	// leaves the file for the author to write.
+	Body string
 }
 
 // MigrationContext holds all gathered context for generating rich migration comments.

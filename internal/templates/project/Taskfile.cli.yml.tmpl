@@ -4,6 +4,20 @@ version: '3'
 # the verbs that have an obvious meaning for a single-binary tool (build,
 # test, lint, fmt). Add more as the project grows.
 
+env:
+  # GOFLAGS gets -trimpath, merged into whatever GOFLAGS you already use (from
+  # the environment, `go env -w` or the toolchain's go.env). Without it Go
+  # hashes each package's ABSOLUTE directory into its build-cache key, so every
+  # worktree and scratch copy of this module (forge ci verify-generated
+  # regenerates in a fresh one every run) compiles the whole module again and
+  # re-runs every test instead of reusing what a sibling already built.
+  # Measured: a second worktree of one commit compiled 267 packages and cached
+  # 0 of 73 test packages without it; 0 and 58 with it. A GOFLAGS already in
+  # your environment wins over this block (Task never overrides one), and
+  # -trimpath=false in it, or in `go env -w GOFLAGS`, opts out.
+  GOFLAGS:
+    sh: 'f="$(go env GOFLAGS 2>/dev/null)"; case " $f " in *" -trimpath"*|*" --trimpath"*) echo "$f" ;; *) echo "${f:+$f }-trimpath" ;; esac'
+
 vars:
   # GOTESTRACE is a TOP-LEVEL var on purpose: only global vars can be
   # overridden from the command line (`task test GOTESTRACE=`), which is how
@@ -14,7 +28,7 @@ vars:
   # machine's host-wide heavy slots: `forge slot run` waits while N other heavy
   # jobs (builds, test lanes, codegen, lints — from any agent, worktree or
   # terminal) are running, because past a handful every one of them slows
-  # down. N comes from the machine (min(CPUs/4, memory GiB/8)); set
+  # down. N comes from the machine (min(CPUs/2, memory GiB/8)); set
   # FORGE_HEAVY_SLOTS=<n> to change it or =off to switch it off. Inside a
   # slot already (a gate check, a parent `forge slot run`) it does not wait.
   # Empty when forge is absent or predates `forge slot` (the probe fails), so

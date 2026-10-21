@@ -369,11 +369,12 @@ func TestDefaultSlots(t *testing.T) {
 	}{
 		{16, 32 * g, 4},                    // the workspace VM
 		{16, 33_291_000_000, 4},            // "32 GiB" as MemTotal reports it, a little under
-		{4, 16 * g, 1},                     // a CI runner
+		{4, 16 * g, 2},                     // a CI runner
+		{16, 128 * g, 8},                   // a workstation: CPU-bound, 2 per slot
 		{8, 16 * g, 2},                     //
 		{64, 32 * g, 4},                    // memory-bound
 		{2, 4 * g, 1},                      // never zero
-		{16, 0, 4},                         // memory unknown: CPUs alone
+		{16, 0, 8},                         // memory unknown: CPUs alone
 		{1.5, 0, 1},                        // a fractional quota
 		{32, 31*g + 300*(1<<20), 4},        // rounds memory to nearest
 		{32, uint64(11.5 * float64(g)), 1}, // 11.5/8 rounds to 1

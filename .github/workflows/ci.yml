@@ -139,6 +139,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Note when the Go build cache was restored
+        run: echo "GOCACHE_RESTORED_AT=$(date +%s)" >> "$GITHUB_ENV"
       # golangci-lint type-checks the whole repo, which is a full compile
       # in all but name. Its own action caches the analyzer results; this
       # caches the Go build artifacts underneath them.
@@ -370,6 +372,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Note when the Go build cache was restored
+        run: echo "GOCACHE_RESTORED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - name: Restore Go build cache
         id: restore-gocache
         uses: actions/cache/restore@v6
@@ -447,6 +451,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Note when the Go build cache was restored
+        run: echo "GOCACHE_RESTORED_AT=$(date +%s)" >> "$GITHUB_ENV"
       # This job compiles far more than it looks: the suite scaffolds real
       # projects and runs real `go build` / `go mod tidy` inside them, and
       # it runs under -race, which is a separate set of build artifacts
@@ -518,6 +524,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Note when the Go build cache was restored
+        run: echo "GOCACHE_RESTORED_AT=$(date +%s)" >> "$GITHUB_ENV"
       # Its own scope: internal/cli's -race test binary and the projects its
       # tests scaffold and build. It falls back to `test`'s scope, which holds
       # the same -race artifacts for every package internal/cli imports.
@@ -578,6 +586,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Note when the Go build cache was restored
+        run: echo "GOCACHE_RESTORED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - name: Restore Go build cache
         id: restore-gocache
         uses: actions/cache/restore@v6
@@ -678,6 +688,8 @@ jobs:
       - name: Locate Go build cache
         id: gocache
         run: echo "dir=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+      - name: Note when the Go build cache was restored
+        run: echo "GOCACHE_RESTORED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - name: Restore Go build cache
         id: restore-gocache
         uses: actions/cache/restore@v6
@@ -758,6 +770,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Note when the Go build cache was restored
+        run: echo "GOCACHE_RESTORED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - name: Restore Go build cache
         id: restore-gocache
         uses: actions/cache/restore@v6
@@ -808,6 +822,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Note when the Go build cache was restored
+        run: echo "GOCACHE_RESTORED_AT=$(date +%s)" >> "$GITHUB_ENV"
       # verify-generated and quick-checks (its vulnerability scan) both run
       # `go install ./cmd/forge` with identical flags, so they share ONE cache
       # scope, which this job saves on main.

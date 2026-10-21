@@ -7,7 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Checks build with `-trimpath`, so worktrees and scratch copies share one
+  build and test cache.** Without it Go hashes every main-module package's
+  absolute directory into its cache key: a fresh worktree of the same commit
+  compiled the whole module again (267 packages, 0 of 73 test packages cached,
+  in control-plane), and `forge ci verify-generated` — which regenerates in a
+  fresh scratch directory every run — recompiled everything in its validate
+  step every time (10.8s against 2.6s with the flag). `forge generate`'s
+  compile check, `forge lint`'s golangci-lint and every `forge ci gate` check
+  now merge `-trimpath` into the effective GOFLAGS (`goexec.CheckEnv` /
+  `WithTrimpath`), and the scaffolded Taskfiles do the same for every task in
+  a top-level `env:` block. A GOFLAGS that already says `-trimpath` or
+  `-trimpath=false` is left alone; debug builds keep absolute paths. Measured
+  with control-plane's own gate: four concurrent `task ci` runs in fresh
+  worktrees went from 182–258s wall (802s summed slot wait) to 103–139s (304s).
+- **Heavy slots default to min(CPUs / 2, memory GiB / 8), not CPUs / 4.**
+  Memory is what protects the machine (the reclaim collapse the old constant
+  was measured against), and it still decides on a 16 vCPU / 32 GiB VM. CPU
+  sharing degrades gracefully instead — four CPU-bound test lanes at once took
+  the same total time as running them in turn — and a heavy job is rarely
+  CPU-bound throughout: four concurrent merge gates on a 16-CPU / 128 GiB Mac
+  left the CPU ~33% idle at 4 slots while 304s of slot wait piled up, and at 8
+  slots the worst gate's wall fell 139s → 116s (164s → 122s on a rerun).
+
 ### Added
+
+- **`NewInstrumented`: a contract's constructor, already decorated, so every
+  construction site is one rename from traced.** `middleware_gen.go` now
+  declares `NewInstrumented` beside the decorator, with `New`'s exact
+  parameters and results, returning the decorated value. `forge generate`
+  keeps `compose.go` wrapped, but most real projects construct components in
+  `providers.go` and `*_wire.go` files too: in the control plane, after every
+  contract package gained a decorator, none of its 46 hand-wired constructions
+  used it, so its traces were unchanged. `forge-tracing-contract-uninstrumented`
+  now autofixes every such call by renaming `New` to `NewInstrumented`, which
+  is valid wherever a call can appear (including `x, err := pkg.New(…)` and
+  `return pkg.New(…)`) and changes no type, and renames a `NewInstrumented`
+  back to `New` when its package opts out. `forge lint --tracing` applies it;
+  the full sweep applies it where the rule is at error.
 
 - **Each root's config reach as importable Go: `pkg/config/roots_gen.go`.**
   A graph-mode project's generated `pkg/config` now has `Roots()`,
@@ -30,14 +69,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are the order `Run<Root>` supervises, so a project pins a root's stop
   order in a unit test without a database or a broker (roots plan F7).
 - **Each root's process settings come from the configs its command loads,
-  and a root declares whether it migrates.** In a binary_config project
+  and a root declares whether it migrates.** In a binary*config project
   (`(forge.v1.binary_config)` `command`/`subtrees`), `rootSpec.Configs` hands
-  `runRoot` the configs a root's command loaded *before* the policy runs, and
+  `runRoot` the configs a root's command loaded \_before* the policy runs, and
   the scaffolded `serverkitConfig(cfg, root.Configs)` reads the port, drain
   budget, logging, TLS and database settings from whichever of them declares
   each (most specific last), so `server api` and `server worker` listen and
-  drain on their own command config's values. `//forge:root <name>
-  migrate=apply|wait|none` says what the process does about the schema;
+  drain on their own command config's values.
+  `//forge:root <name> migrate=apply|wait|none` says what the process does
+  about the schema;
   `wait` blocks — `/readyz` naming `schema` — until another process has
   applied the migrations (`migratekit.AwaitSchema`,
   `serverkit.AwaitMigrationsContext`). The default is unchanged: apply when
@@ -64,8 +104,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the probes, so its root keeps its probe listener. Existing projects:
   `migrations/v0.1.47` section 3.
 - **Roots can be declared one at a time: resolution follows reach.** A
-  root's process builds only the closure its fields reach, but `forge
-  generate` demanded a provider for every Deps field of every discovered
+  root's process builds only the closure its fields reach, but
+  `forge generate` demanded a provider for every Deps field of every discovered
   component, so a project with 33 handlers could not declare a gateway root
   without first wiring all of them. Now a Deps field forge cannot fill fails
   generate only on a node some root reaches (as before, with the same
@@ -441,8 +481,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `orm.ArgList(slice)` — the way to bind an integer `?` argument, which bun
   formats without consulting the dialect. A value stays a literal where a
   parameter would change its meaning (positional `ORDER BY`, typed literals,
-  bare arguments of `"any"` functions such as `jsonb_build_object`, `? IS
-  NULL`, `ON CONFLICT … DO` targets), and a statement forge cannot prove
+  bare arguments of `"any"` functions such as `jsonb_build_object`,
+  `? IS NULL`, `ON CONFLICT … DO` targets), and a statement forge cannot prove
   equal to bun's text, or that is not DML, runs as bun rendered it.
   `orm.Literal(v)` keeps one value in the text (a constant a partial index's
   predicate is proved from); `orm.InlineValues(ctx)` turns binding off for a

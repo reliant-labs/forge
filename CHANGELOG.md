@@ -731,6 +731,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **forge rides out a k3s server that crashes while a k3d cluster boots.**
+  k3d waits for a server's "k3s is up and running" log line and gives up the
+  moment the container restarts (`stopped returning log lines: … status=restarting`),
+  although Docker's restart policy brings k3s back. forge now keeps a new
+  cluster's nodes on failure (`--no-rollback`, only for a name that did not
+  exist), and when a server restarted it deletes the half-made cluster and
+  creates it once more, printing the server's exit and last log lines. Any
+  other failure is rolled back and returned as before; a second crash fails
+  with both reasons.
 - **`forge lint ./internal/x/...` no longer reformats packages you did not name.**
   The auto-fix pre-pass (`gofmt`/`goimports`, then `golangci-lint --fix` and the
   frontend formatter) honoured `--scope`, but ignored the positional package

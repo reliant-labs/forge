@@ -48,6 +48,13 @@ refuse() {
   exit 1
 }
 
+# jq.exe (Windows, where ciguard's tests run this script under Git Bash)
+# ends every line with CRLF, and its --binary opt-out is unknown to other
+# builds. bash drops only the final CR of a $(...), so a word-split list kept
+# one on every id but the last: `jobs/21\r/logs` named no log, and main's
+# failing tests came back empty. pipefail keeps jq's exit status (jq -e).
+jq() { command jq "$@" | tr -d '\r'; }
+
 case "$GITHUB_EVENT_NAME" in
   pull_request) pr=$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH") ;;
   merge_group)

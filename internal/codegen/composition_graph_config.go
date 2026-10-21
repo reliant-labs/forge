@@ -179,8 +179,18 @@ func (c configInput) loadedAt(path []string) bool {
 // root config (g.Cfg) and the primary binary's other configs, by graph input.
 type processConfigs struct {
 	binary string
-	root   *configModel
-	inputs []configInput
+	// rootName is the root config's message name (config.Config aliases it).
+	rootName string
+	root     *configModel
+	inputs   []configInput
+}
+
+// rootMessage is the root config's message name; "" without configs.
+func (pc *processConfigs) rootMessage() string {
+	if pc == nil {
+		return ""
+	}
+	return pc.rootName
 }
 
 // inputNames is every graph input a node may read config through.
@@ -257,7 +267,7 @@ func processConfigsFrom(messages []ConfigMessage, binary string) *processConfigs
 	for i := range messages {
 		byName[messages[i].Name] = &messages[i]
 	}
-	pc := &processConfigs{binary: binary, root: newConfigModel(byName, root)}
+	pc := &processConfigs{binary: binary, rootName: root, root: newConfigModel(byName, root)}
 	for i := range messages {
 		m := &messages[i]
 		if binary == "" || m.Binary != binary || m.Name == root {

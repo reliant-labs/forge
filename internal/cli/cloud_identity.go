@@ -25,19 +25,31 @@ const (
 
 func newCloudIdentityCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use: "identity", Short: "Inspect managed identity and invite users to an environment",
+		Use: "identity", Short: "Inspect managed identity and administer its users",
 		Long: `Manage the identity an environment declares in KCL, using its control plane.
 
-Requires a human session (Reliant's session helper or forge login); machine
-credentials are refused by the server. Members may read; invitations require
-an org admin. The organization is resolved from the authenticated server, not
-a token claim or a flag. The environment must already exist in this project.
+Reads (status, users) need identity:read; every verb that changes a user
+(invite, set-roles, reset, lock, unlock, delete, revoke-sessions) needs
+identity:manage and an org admin. Under Reliant, or after forge login, nothing
+extra is needed: when the control plane answers that the credential lacks one of
+those scopes, forge trades it for the scope on demand (an hour, and only while
+the person behind the session holds the grant), as deploy does for deploy:read.
+A --token or the token env var is used exactly as given and must carry the scope.
+The organization is resolved from the authenticated server, not a token claim or
+a flag. The environment must already exist in this project.
 
-Inviting sends an email link for the recipient to set their own credential.
-There is no password option, seed account or implicit recipient. Roles managed
+--user takes a user id or an exact email address (see 'users').
+
+Inviting creates the account (or grants roles to an existing one) and asks the
+instance to email a code. No mail is sent unless the environment declares smtp
+in KCL: without it the call succeeds and delivers nothing, so hand the person a
+password-set code through a channel you control (the deploy/managed-identity
+skill, "What an invitation does, and does not, do"). There is no password
+option, seed account or implicit recipient. Roles managed
 in deploy/kcl/identity.k (members_from = "declared") are read-only here.`,
 	}
 	cmd.AddCommand(newCloudIdentityStatusCmd(), newCloudIdentityUsersCmd(), newCloudIdentityInviteCmd())
+	cmd.AddCommand(newCloudIdentityUserVerbs()...)
 	return cmdutil.StrictGroup(cmd)
 }
 
@@ -240,12 +252,13 @@ func newCloudIdentityInviteCmd() *cobra.Command {
 	var email string
 	var roles []string
 	cmd := &cobra.Command{
-		Use: "invite <env> --email <address> --role <role>", Short: "Email an invitation and grant console-managed roles (org admin)",
+		Use: "invite <env> --email <address> --role <role>", Short: "Create an account (or grant roles) and ask for an invitation email (org admin)",
 		Long: `Invite this explicit email address; repeat --role for multiple roles.
-The recipient sets their own credential using the invitation email. An existing
-account receives the requested roles (created=false). The server refuses unknown
-or declared/read-only roles, machine credentials and an identity that is not
-ready. Such a refusal is an error, never a fallback to a seeded password.`,
+The account is created and the instance is asked to email a code, but mail
+goes out only when the environment declares smtp; otherwise nothing is sent and
+the person needs a password-set code from you. An existing account receives the requested roles (created=false). The server refuses unknown
+or declared/read-only roles, a credential without identity:manage and an
+identity that is not ready. Such a refusal is an error, never a fallback to a seeded password.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			address, err := mail.ParseAddress(email)
@@ -276,7 +289,7 @@ ready. Such a refusal is an error, never a fallback to a seeded password.`,
 			if f.json {
 				return writeJSONDocument(cmd.OutOrStdout(), doc)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Invitation requested for %s (user %s, created=%t).\nThe recipient sets their credential through the invitation email.\n", email, doc.UserID, doc.Created)
+			fmt.Fprintf(cmd.OutOrStdout(), "Invitation requested for %s (user %s, created=%t).\nNo mail is sent unless the environment declares smtp; otherwise hand the person a password-set code yourself.\n", email, doc.UserID, doc.Created)
 			return nil
 		},
 	}

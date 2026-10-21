@@ -57,6 +57,13 @@ const subscribeToNothing = () => () => {};
 const SIGN_IN_PATH = "/auth/sign-in";
 
 /**
+ * The password-reset screens. Public for the same reason sign-in is: the
+ * person using them has no session — that is why they are resetting.
+ */
+const FORGOT_PATH = "/auth/forgot";
+const RESET_PATH = "/auth/reset";
+
+/**
  * Paths that render without a session.
  *
  * The sign-in route MUST be here: sending an anonymous visitor from the
@@ -67,7 +74,7 @@ const SIGN_IN_PATH = "/auth/sign-in";
  * trade — it posts credentials to this app's own API and the server does the
  * exchange — so a callback path would be a public hole guarding nothing.
  */
-const publicPaths = [SIGN_IN_PATH];
+const publicPaths = [SIGN_IN_PATH, FORGOT_PATH, RESET_PATH];
 
 function isPublicPath(pathname: string): boolean {
   return publicPaths.some(

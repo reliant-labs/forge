@@ -9,6 +9,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge cloud identity` administers users, not just reads them.** New verbs,
+  each one rpc of `controlplane.v1.IdentityService`: `set-roles <env> --user
+  <id|email> --role a --role b` (or `--none`), `reset`, `lock`, `unlock`,
+  `delete` (asks first; `--yes` skips the question; a closed stdin refuses) and
+  `revoke-sessions`. `--user` takes a user id, or an email matched exactly
+  (case-insensitively) through `users`; no match, or two, is a refusal. The
+  scopes are `identity:read` for reads and `identity:manage` for every verb that
+  changes a user. forge presents neither up front: a Reliant session or `forge
+  login` credential is traded for the scope the control plane's 403 names, for
+  an hour, exactly as `deploy:read` and `secret:write` are. An explicit
+  `--token` is used as given. `invite` is unchanged.
+- **`forge project new --verify`** keeps the compile check at the end of the
+  bootstrap generate (see Changed).
+- **A CHECK that mirrors a Go set declares it, and `forge lint` keeps the two
+  equal.** In a migration, write
+  `COMMENT ON CONSTRAINT access_tokens_scopes ON access_tokens IS 'forge:closed-set accesstoken.AllScopes'`.
+  The new closed-sets lane, which runs by default (`--closed-sets` runs it
+  alone), finds the CHECK the migrations last defined. It reads
+  `col <@ ARRAY[…]`, `col = ANY (ARRAY[…])` or `col IN (…)`, with or without
+  casts, and compares the values with the named set. A mismatch fails the
+  lane, naming the missing and extra values and printing the forward
+  migration. `forge db migration new --closed-set <constraint>` writes that
+  migration. The lane reads migration text, so it
+  needs no database and runs on the `-short` tier. That is the tier where a
+  forge bump adding `identity:read`/`identity:manage` went unnoticed until it
+  turned a project's main red.
+  - forge exports `accesstoken.AllScopes` and `accesstoken.AllResourceKinds`.
+    A project names its own set as `<import path>.<Var>`; forge type-checks
+    that package and executes none of it.
+  - postgres drops a constraint's comment along with the constraint, so the
+    lane also reports a CHECK that was replaced without re-issuing its
+    declaration.
+  - `forge:closed-set` is part of the catalog-marker vocabulary, so
+    `forge generate` and `--column-markers` reject a misspelled marker or one
+    on the wrong constraint kind. `schemadef.CheckConstraint` gains `Comment`.
+- **A project's own transaction openers are judged by
+  `forgeconv-tx-lock-under-serializable`.** A wrapper that takes an
+  `orm.TxPolicy` and runs the transaction itself (reliant's `Repo.RunTx`,
+  which keeps its own retry ladder) declares itself with
+  `//forge:tx-opener level-arg=<n> [body-arg=<n>]` on its func declaration;
+  the lint then finds a lock under SERIALIZABLE in its calls exactly as in
+  `RunTx`'s, matched by name and arity across the project, detached when it
+  takes no body. A marker that does not parse, or sits anywhere but on a func
+  declaration, is an error. The marker is in the `--go-markers` registry.
+  `orm.ResolveTxPolicy` / `orm.ResolveDetachedTxPolicy` validate such an
+  opener's policy as `RunTx` / `BeginDetached` do and return the full
+  options (level, access mode, attempt budget), the error naming the line
+  that called the opener.
+- **The scaffolded sign-up says what a password needs.** Sign-up used to answer
+  "That password does not meet the requirements." and never name one. The
+  login broker now serves the identity provider's own complexity policy at the
+  unauthenticated `GET /auth/password-policy`
+  (`{min_length, has_uppercase, has_lowercase, has_number, has_symbol}`, read
+  from Zitadel's `GET /v2/settings/password/complexity` with the broker's
+  token, cached for a minute), and a rejected password comes back
+  `400 {error, code: "password_policy", unmet:[...]}` naming **every** rule it
+  breaks (the provider reports only the first). The sign-up and reset forms show the
+  checklist up front and tick it as the person types; the server stays the
+  authority. New in `pkg/devidp`: `Client.PasswordPolicy`,
+  `PasswordPolicy.Unmet/Describe`, and `PasswordPolicyError.Rule`; `Register` now returns a
+  `*PasswordPolicyError` for a weak password. Existing projects keep their
+  owned `internal/app/login_broker.go` and screens; copy the new handlers from
+  a fresh scaffold.
+- **Self-serve password reset in the scaffold.** The broker mounts
+  `POST /auth/forgot` and `POST /auth/reset`, and the Next.js and Vite frontends get
+  static-export-safe `/auth/forgot` and `/auth/reset?userID=&code=&orgID=`
+  pages, so the reset links the control plane produces have somewhere to land.
+  `/auth/forgot` never reveals whether an address has an account and is limited
+  per address and per client IP. The forgot screen says plainly that the email
+  is sent only if the app's identity declares `smtp`. `pkg/devidp` gains
+  `SendPasswordResetLink`, `MintPasswordResetCode` and `FindUserByID`. There is
+  deliberately no scaffolded invite flow.
 - **ERROR log records carry the inputs an issue is grouped by.** Every record at
   ERROR or above that goes through `observe.NewLogHandler` (the stdout line and
   the OTLP logs bridge alike) now has `code.function.name`, `code.file.path` and
@@ -29,6 +101,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A handler's `svcerr` error reaches the client with its Connect code,
+  wrapped or not.** `return nil, svcerr.PermissionDenied("…")` used to arrive as
+  `code = unknown`, because the constructors build sentinels and connect-go maps
+  anything that is not a `*connect.Error` to unknown; only
+  `svcerr.Wrap(svcerr.PermissionDenied(…))` worked. `serverkit.NewChain` now
+  ends every chain with `svcerr.Interceptor()` (new, in `pkg/svcerr`), which
+  applies `svcerr.Wrap` to whatever the handler returned: a typed error gets its
+  code, an error already wrapped or a `*connect.Error` passes through unchanged,
+  and an error nothing recognises becomes `internal` with
+  `svcerr.InternalMessage`. It sits innermost, so audit, logging and metrics see
+  the wire error. Writing `svcerr.Wrap` in a handler stays correct. A project
+  that assembles its own interceptor list instead of `serverkit.NewChain` adds
+  `svcerr.Interceptor()` itself.
+- **`forge project new` no longer compiles the scaffold before returning.** The
+  bootstrap generate skips its final `go build` and deploy-KCL render unless you
+  pass `--verify`. That tail was the one CPU-saturating step (40s of the
+  pipeline's 63s on a cold build cache), and it re-proved output that forge's
+  own e2e corpus compiles on every change; your first `go build` or `forge
+  generate` runs the same check. `project new` never took a heavy slot and still
+  does not: pinned by `TestRunNew_TakesNoHeavySlot`.
+- **Transaction isolation has no default; every writable transaction names
+  its level.** pkg/orm had two opposite defaults: `RunTx`,
+  `RunTxWithOptions` and `BeginDetached` with an unset level began
+  SERIALIZABLE (RunTx retrying 40001/40P01 up to seven times), while
+  `Client.BeginTx` and `RunTransaction` with nil options began at the
+  database's READ COMMITTED, once. Two reliant ports changed isolation
+  silently through that gap — `MergeWorktreeCleanupMetadata` relied on a
+  `FOR UPDATE` lock, moved from READ COMMITTED to SERIALIZABLE and dropped
+  updates under contention. Now `RunTx(ctx, opts, fn)`,
+  `RunTransaction(ctx, opts, fn)` and `BeginDetached(ctx, opts)` take an
+  `orm.TxPolicy` naming its isolation, which carries its attempt budget —
+  the constants `orm.Serializable` (7 attempts), `orm.ReadCommitted` (1
+  attempt) and `orm.RepeatableRead`, refined with `WithMaxAttempts` /
+  `WithReadOnly` into an `orm.TxOptions` — and an unset level (or budget) is
+  rejected with `orm.ErrInvalidTxOptions` naming the call site. One primitive
+  rather than `RunTxSerializable` / `RunTxReadCommitted`: the level is a
+  value, so it composes with every opener (RunTx, RunTransaction,
+  BeginDetached) and passes through a wrapper unchanged instead of
+  multiplying method names, and the retry budget is visible beside the level
+  it belongs to. A required argument is as close to a compile error as Go
+  allows; the zero value is the runtime error. `RunTxWithOptions`,
+  `RunTransactionWithOptions`, `Client.BeginTx` and `orm.IsolationDefault`
+  are removed, and `orm.IsolationSerializable` / `IsolationReadCommitted` /
+  `IsolationRepeatableRead` are renamed `orm.Serializable` / `ReadCommitted`
+  / `RepeatableRead`; `RunTxReadOnly(ctx, fn)` keeps its
+  shape (SERIALIZABLE READ ONLY DEFERRABLE — a transaction that cannot write
+  has one right level). `RunTransaction` honours the attempt budget like
+  `RunTx` and reports an exhausted 40001/40P01 as `svcerr.Aborted`;
+  `BeginDetached` cannot retry and requires `MaxAttempts == 1`. A `*Tx`
+  someone else began is joined with `tx.Join(ctx, fn)`, which takes no
+  level: one spelled at a join would claim an isolation the transaction may
+  not have (`Tx.RunTx` remains, for `orm.Context`).
 - **Rendered pods set `enableServiceLinks: false`. Behavior change.**
   Kubernetes injects `<SERVICE>_PORT=tcp://ip:port`, `<SERVICE>_SERVICE_HOST`
   and `<SERVICE>_SERVICE_PORT` into every pod for every Service in its
@@ -43,8 +167,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new spec-hash name. A workload that reads `*_SERVICE_HOST` / `*_SERVICE_PORT`
   must move to DNS or explicit env, or opt in: `migrations/v0.1.47`, section 4.
 
+### Added
+
+- **`forge fix tx-isolation`** (run by `forge project upgrade` on crossing
+  v0.1.47): rewrites every pkg/orm transaction call to the explicit form that
+  keeps its behaviour exactly — `RunTx(ctx, fn)` → `orm.Serializable`,
+  `RunTransaction(ctx, fn)` and `BeginTx(ctx, nil)` → `orm.ReadCommitted`,
+  each `orm.TxOptions` literal spelled out — and prints every site. It never
+  chooses a different level. Type-aware, so a project's own `RunTx` and
+  database/sql's `BeginTx` are untouched, and it works after the forge pin
+  has moved (when the old calls no longer compile). A scratch module holding
+  every old call shape begins each transaction at the same level, with the
+  same number of attempts, before and after (`internal/codemod`).
+- **`forgeconv-tx-lock-under-serializable`** (`forge lint --conventions`):
+  a SERIALIZABLE or REPEATABLE READ transaction whose body takes a lock —
+  `SELECT … FOR UPDATE`, bun's `.For("UPDATE")`, `pg_advisory_xact_lock`,
+  `LOCK TABLE` — in a literal or a named constant, in the closure, the
+  package function passed as it, or the rest of the function that opened a
+  `BeginDetached`. The snapshot predates the lock wait, so the waiter wakes
+  into stale data and fails 40001; the fix is `orm.ReadCommitted` (keep the
+  lock) or dropping the lock. A warning; an error under `--strict`.
+
 ### Fixed
 
+- **A scaffolded Next.js frontend builds again against `@opentelemetry/api`
+  1.10.** That release ships only `.d.mts`/`.d.cts` declarations, the tsconfig
+  peer pin was aimed at `dist/index.d.mts`, and Next's webpack read it as
+  JavaScript (`Module parse failed: Unexpected token`). Only a `.d.ts` is pinned
+  now; a package with none is pinned by its directory.
+- **Docs no longer promise mail that is never sent.** The `deploy/managed-
+  identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
+- **Docs no longer promise mail that is never sent.** The
+  `deploy/managed-identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
+  mail through a platform relay and that an invitation emails a link. Neither is
+  true: with no `smtp`, an instance sends no mail at all. The skill now says so,
+  sketches building invites by hand (`InviteUser` + `MintPasswordResetCode` +
+  `/auth/reset`), and explains that public `/auth/register` is on by default and
+  how to turn it off for an invite-only app.
 - **`forge tools install` replaces a GOBIN binary atomically.** It ran
   `go install` straight into GOBIN. When cmd/go cannot rename its build into
   place (a setgid GOBIN, or a `$WORK` on another filesystem), it removes

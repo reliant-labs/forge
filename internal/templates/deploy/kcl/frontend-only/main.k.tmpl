@@ -24,9 +24,10 @@ _on_host_frontend = lambda f: forge.Frontend -> forge.Frontend {
 {{if .HasFrontend}}
 _{{.FrontendIdent}}_frontend = forge.Frontend {
     name = "{{.FrontendName}}"
-    path = "frontends/{{.FrontendName}}"
+{{if .FrontendType}}    type = "{{.FrontendType}}"
+{{end}}    path = "{{.FrontendPath}}"
 {{if .FrontendRoutes}}    routes = [{{range .FrontendRoutes}}{{printf "%q" .}}, {{end}}]
-{{end}}    public_dir = "out"
+{{end}}    public_dir = "{{.FrontendPublicDir}}"
 {{if eq .EnvName "dev"}}    port = plugin.resolve_port("{{.ProjectName}}-dev-{{.FrontendName}}", 3000)
 {{end}}}
 {{end}}

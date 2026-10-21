@@ -130,7 +130,7 @@ func TestDetectExistingFrontendApps(t *testing.T) {
 	if err == nil {
 		t.Fatal("--frontend web beside an existing web/ Next.js app was not refused")
 	}
-	for _, s := range []string{"web/ already holds a Next.js app", "Nothing was written", "path: web", "type: nextjs"} {
+	for _, s := range []string{"web/ already holds a Next.js app", "Nothing was written", `path = "web"`, `type = "nextjs"`} {
 		if !strings.Contains(err.Error(), s) {
 			t.Errorf("refusal lacks %q:\n%s", s, err)
 		}

@@ -191,7 +191,7 @@ func DeriveFrontendWorkspaces(c *ProjectConfig) {
 //	migrations    ⇔ a database AND codegen
 //	ci            ⇔ kind != library
 //	build         ⇔ kind != library
-//	contracts     ⇔ always on (contract.go works for every kind)
+//	contracts     ⇔ a Go module (contract.go works for every kind that has Go)
 //	frontend      ⇔ a frontend exists (frontends/ or KCL) AND codegen
 //	observability ⇔ server sources exist (pkg/app, internal/handlers, proto/services)
 //	hot_reload    ⇔ server sources exist
@@ -214,13 +214,16 @@ func DeriveFeatureDefaults(c *ProjectConfig) map[FeatureName]bool {
 	codegen := c.hasProtos()
 	server := c.hasServerSources()
 	deploy := c.hasDeployTree()
+	// A static site (`forge project new --kind site`) is no Go module, so it
+	// has no contract.go to check. HasGoModule.
+	goModule := c.HasGoModule()
 	return map[FeatureName]bool{
 		FeatureORM:           hasDB && codegen && !hasNoORMMarker(c.projectDir, c.Database.ORM.PackageDir()),
 		FeatureCodegen:       codegen,
 		FeatureMigrations:    hasDB && codegen,
 		FeatureCI:            !isLibrary,
 		FeatureBuild:         !isLibrary,
-		FeatureContracts:     true,
+		FeatureContracts:     goModule,
 		FeatureFrontend:      len(c.Frontends) > 0 && codegen,
 		FeatureObservability: server,
 		FeatureHotReload:     server,

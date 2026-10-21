@@ -245,7 +245,7 @@ func writeEntityStore(b *strings.Builder, ent config.PlanEntity) {
 	// client at construction can be rebound at the site that owns a
 	// RunTransaction:
 	//
-	//	err := client.RunTransaction(ctx, func(tx orm.Context) error {
+	//	err := client.RunTransaction(ctx, orm.ReadCommitted, func(tx orm.Context) error {
 	//	    return svc.deps.Estimates.WithTx(tx).UpdateEstimate(ctx, e)
 	//	})
 	//

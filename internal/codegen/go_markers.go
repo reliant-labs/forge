@@ -108,7 +108,14 @@ var goMarkers = []GoMarker{
 	{Name: "forge:root", Grammar: GoMarkerOwnGrammar, Form: "//forge:root <name> command=<word> migrate=apply|wait|none"},
 	{Name: directiveServiceMarker, Grammar: GoMarkerBare, Form: "// forge:service"},
 	{Name: "forge:standby", Grammar: GoMarkerOwnGrammar, Form: "//forge:standby"},
+	{Name: TxOpenerMarker, Grammar: GoMarkerOwnGrammar, Form: "//forge:tx-opener level-arg=<n> [body-arg=<n>]"},
 }
+
+// TxOpenerMarker declares a project's own transaction opener — a func that
+// takes an orm.TxPolicy and runs the transaction itself — so
+// forgeconv-tx-lock-under-serializable judges its calls as it judges
+// pkg/orm's. That lint parses the marker and reports a malformed one.
+const TxOpenerMarker = "forge:tx-opener"
 
 // KnownGoMarkers returns every Go-source marker name, sorted.
 func KnownGoMarkers() []string {

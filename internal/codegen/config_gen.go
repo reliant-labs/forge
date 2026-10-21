@@ -1100,7 +1100,7 @@ var (
 	jwtConfigFields = []string{"JwtSigningMethod", "JwtIssuer", "JwtAudience", "JwtJwksUrl", "JwtSecret",
 		"JwtRolesClaim", "JwtJwksSnapshotFile", "JwtJwksSnapshot", "JwtJwksSnapshotMaxAge"}
 	brokerConfigFields = []string{"IdpBase", "IdpHost", "IdpBrokerToken", "IdpBrokerTokenFile",
-		"OidcClientId", "OidcRedirectUri", "Environment"}
+		"OidcClientId", "OidcRedirectUri", "IdpLoginUri", "Environment"}
 )
 
 // configDeclaring names the config of the primary binary a scaffold reading

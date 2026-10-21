@@ -112,6 +112,37 @@ constraint instead of a column. `forge db seed` refuses to write rows where an
 undeclared pair disagrees. The vocabulary, the sweep query that finds every
 diamond at once, and which route to pick are in `db/seeding`.
 
+### A CHECK that mirrors a Go set
+
+When a CHECK lists a vocabulary that Go also owns, such as forge's access-token
+scopes, the two must not drift. If Go gains a value the CHECK lacks, every
+write of it fails the constraint. If the CHECK admits a value Go lacks, rows
+holding it cannot be read. Declare which set the CHECK mirrors, on the CHECK:
+
+```sql
+COMMENT ON CONSTRAINT access_tokens_scopes ON access_tokens IS
+    'forge:closed-set accesstoken.AllScopes';
+```
+
+`forge lint` checks every declaration in its closed-sets lane, which runs by
+default (`--closed-sets` runs it alone). It finds the CHECK the migrations last
+defined and reads its list. It reads `col <@ ARRAY[…]` for an array column,
+and `col = ANY (ARRAY[…])` or `col IN (…)` for a scalar, with or without casts.
+If the list differs from the set, the lane names the missing and extra values
+and prints the forward migration that fixes it.
+`forge db migration new --closed-set <constraint>` writes that migration for
+you. The lane needs no database, so it runs on every tier.
+
+- **Set names.** forge exports `accesstoken.AllScopes` and
+  `accesstoken.AllResourceKinds`. Your own set is named by its qualified Go
+  name, `<import path>.<Var>`: a package-level variable initialized by a
+  literal of constants. forge type-checks the package and runs none of its
+  code. An unknown name fails the lane.
+- **Re-declare after replacing the CHECK.** postgres drops a constraint's
+  comment along with the constraint. A migration that replaces the CHECK with
+  DROP + ADD must therefore re-issue the COMMENT, and the fix migration does.
+  The lane reports a declaration that was lost this way.
+
 ## Behavior by convention — real columns, no annotations
 
 The columns ARE the declaration. The generators read these off the introspected schema:
@@ -184,7 +215,7 @@ Wire evolution stays proto: service-proto messages are the **API truth** and evo
 - Each entity also exports `<Entity>Constraint<Name>` for every named UNIQUE / CHECK / FOREIGN KEY on its table — the value **postgres** reports in a violation, including the names it auto-derives for inline declarations (`UNIQUE` on `jobs.estimate_id` → `jobs_estimate_id_key`) that appear nowhere in your migration text. Branch on them with `orm.ConstraintName(err)` rather than a hand-written string, so renaming a constraint in a migration is a compile error instead of a branch that stops matching. No constant for the primary key: `pkg/crud` generates the id, so nothing branches on a duplicate-PK insert. See `service-layer` for the classification switch.
 - **Statements are sent with their values bound** — generated CRUD, bun builders and `NewRaw` alike — so each is one prepared statement per shape under pgx's default statement cache (keep it; `default_query_exec_mode=exec` re-plans every statement). An integer `?` argument binds only through `orm.Arg` (`orm.ArgList` for `IN`); `orm.Literal` keeps a value the planner must see in the text: `db/crud-overrides`.
 - Every by-key method (`Get…ByID`/`…ByPK`, `Update`, `UpdateMasked`, `Delete…`) answers a missing row with `svcerr.NotFound("<entity>")`, also `errors.Is(err, orm.ErrNoRows)` — return or `svcerr.Wrap` it, never re-derive it. Other repo errors → `Internal`, no SQL on the wire.
-- A delegate or store called with `s.deps.DB.RunTx`'s `ctx` joins that transaction (no `FOR UPDATE` helpers): `service-layer/transactions`.
+- A delegate or store called with `RunTx(ctx, orm.Serializable, fn)`'s `ctx` joins it (no `FOR UPDATE` helpers; no default level): `service-layer/transactions`.
 - The delegates above are free functions, so `internal/db/store_gen.go` also exports them as INTERFACES: `<Entity>Store` per entity plus an aggregate `Store`. That is what a service's `Deps` field names — **never hand-write an interface plus a passthrough adapter over the ORM**; forge generates both and asserts they match. Depend on the narrowest one that works.
 - **To see what a store offers, read the interface, not forge:** `go doc ./internal/db <Entity>Store` prints the full method set, and `forge project shapes --kind store` lists every one with its `file:line`. Not forge's generator source — it describes every project, not your schema; a measured run lost 11 turns there.
 

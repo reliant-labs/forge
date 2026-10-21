@@ -137,6 +137,15 @@ func (c *Client) putJSON(ctx context.Context, path string, payload any) ([]byte,
 	return c.sendJSON(ctx, http.MethodPut, path, payload)
 }
 
+func (c *Client) getJSON(ctx context.Context, path string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		strings.TrimRight(c.Base, "/")+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.do(c.withHost(c.authorize(req)))
+}
+
 func (c *Client) sendJSON(ctx context.Context, method, path string, payload any) ([]byte, error) {
 	buf, err := json.Marshal(payload)
 	if err != nil {

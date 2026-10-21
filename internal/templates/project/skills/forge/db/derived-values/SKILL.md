@@ -116,5 +116,5 @@ another table from a generated column. Keep the column plain, mark the proto
 field `// forge:computed`, and write it from the RPC that owns the change (no
 CRUD Update writes it) — `forge lint --computed-fields` then holds you to it
 and fails if nothing assigns it. Do that write inside the same
-`s.deps.DB.RunTx` as the change it summarizes, so the rollup and its inputs
+`s.deps.DB.RunTx(ctx, orm.Serializable, …)` as the change it summarizes, so the rollup and its inputs
 commit together.

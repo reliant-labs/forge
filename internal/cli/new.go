@@ -58,6 +58,9 @@ func newNewCmd() *cobra.Command {
 		// that cannot find its own (see buildinfo.ResolveForgeRoot).
 		forgeRoot string
 		verbose   bool
+		// verify keeps the compile check at the end of the bootstrap
+		// generate. Off by default: see bootstrapPipelineFlags.
+		verify bool
 	)
 
 	cmd := &cobra.Command{
@@ -80,6 +83,9 @@ Pick a project kind with --kind:
                             no proto/services, no deploy/.
   --kind library            Pure Go module: pkg/<name>/ skeleton, no cmd/,
                             no CI workflows by default.
+  --kind site               A static site: adopt the frontend at the root of
+                            the current directory (with --in-place). Writes
+                            forge.yaml and deploy/kcl envs only — no Go.
 
 Use --disable to turn features off at creation time. Each is pinned off in
 forge.yaml's features: block, so a later change to the tree does not turn it
@@ -146,13 +152,13 @@ checkout stop being the same source; drop the bridge with
 			}
 			explicitForgeRoot = forgeRoot
 			defer func() { explicitForgeRoot = "" }()
-			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces, linkForgeRequested(linkForge), verbose, newFrontendOptions{output: frontendOutput, routes: frontendRoutes})
+			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces, linkForgeRequested(linkForge), verbose, verify, newFrontendOptions{output: frontendOutput, routes: frontendRoutes})
 		},
 	}
 
 	cmd.Flags().StringVarP(&projectPath, "path", "p", ".", "Path where to create the project")
 	cmd.Flags().StringVar(&modulePath, "mod", "", "Go module path (e.g., github.com/example/my-project). Defaults to example.com/<name>, so a first project needs no flag; set it to the path you will publish under")
-	cmd.Flags().StringVar(&kindFlag, "kind", "service", "Project kind: service (default), cli, library")
+	cmd.Flags().StringVar(&kindFlag, "kind", "", "Project kind: service (default), cli, library, site (adopt the static frontend at this directory's root, with --in-place)")
 	cmd.Flags().StringSliceVar(&serviceNames, "service", nil, "Name(s) of initial Go services (repeatable or comma-separated). Name services after domain entities (item, order), not the binary. Omit to scaffold zero services and add them later via 'forge scaffold service <entity>'")
 	cmd.Flags().StringSliceVar(&frontendNames, "frontend", nil, "Name(s) of Next.js frontends (can be repeated or comma-separated)")
 	cmd.Flags().StringVar(&frontendOutput, "output", "", "Output for every --frontend: static (default), standalone, or server")
@@ -169,6 +175,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().BoolVar(&frontendWorkspaces, "frontend-workspaces", false, "Opt into pnpm-workspaces layout: emit packages/api + packages/hooks + packages/ui-web shared across all frontends. Off by default; recommended once you have 2+ frontends (web + mobile).")
 	cmd.Flags().BoolVar(&linkForge, "link-forge", false, "Bridge the project to the forge checkout this binary was built from (gitignored go.work 'use' + .forge-link/ for the web runtime). Off by default; required for a service scaffold from an unreleased forge build (also: "+linkForgeEnv+"=1)")
 	cmd.Flags().StringVar(&forgeRoot, "forge-root", "", "The forge checkout --link-forge bridges to (also: "+buildinfo.ForgeRootEnv+"). Default: the checkout this binary was built from, else the go.mod replace it embeds forge through, else the checkout it sits or was started in")
+	cmd.Flags().BoolVar(&verify, "verify", false, "Compile the scaffold before returning: the bootstrap generate then ends with its go build check and a render of every deploy env (adds ~1s warm, ~40s on a cold build cache, and saturates the CPU while it runs). Off by default: the scaffold is deterministic and forge's own e2e corpus compiles it, and your first go build or forge generate pays for the same compile")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print the raw output behind a step forge summarizes in one line (e.g. git's explanation when the initial commit is skipped for want of a git identity)")
 
 	return cmd
@@ -209,13 +216,13 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 		kind = config.ProjectKindService
 	}
 	switch kind {
-	case config.ProjectKindService, config.ProjectKindCLI, config.ProjectKindLibrary:
+	case config.ProjectKindService, config.ProjectKindCLI, config.ProjectKindLibrary, projectKindSite:
 		// ok
 	default:
 		return "", "", "", cliutil.UserErr("forge project new",
-			fmt.Sprintf("invalid --kind %q: valid values are service, cli, library", kindFlag),
+			fmt.Sprintf("invalid --kind %q: valid values are service, cli, library, site", kindFlag),
 			"",
-			"pass --kind=service for a Connect-RPC server, --kind=cli for a Cobra binary, or --kind=library for a pure Go module")
+			"pass --kind=service for a Connect-RPC server, --kind=cli for a Cobra binary, --kind=library for a pure Go module, or --kind=site (with --in-place) to adopt a static frontend")
 	}
 
 	// Validate --buf-plugins. Default 'local' (no BSR auth required); the
@@ -284,14 +291,39 @@ type newFrontendOptions struct {
 }
 
 //nolint:revive,cyclop // Existing cobra flag fan-out; frontend settings travel together.
-func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, disableFeatures []string, harness string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool, linkForge bool, verbose bool, frontend newFrontendOptions) error {
+func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, disableFeatures []string, harness string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool, linkForge bool, verbose, verify bool, frontend newFrontendOptions) error {
 	kindNormalized, bufPluginsNormalized, binaryNormalized, err := validateNewArgs(kindFlag, bufPlugins, binaryMode, serviceNames, frontendNames)
 	if err != nil {
 		return err
 	}
+	if kindNormalized == projectKindSite {
+		if !inPlace {
+			return runNewSite("", projectName, false, force, harness)
+		}
+		targetPath, name, err := resolveNewTargetPath(projectName, projectPath, inPlace, force)
+		if err != nil {
+			return err
+		}
+		return runNewSite(targetPath, name, inPlace, force, harness)
+	}
 	targetPath, projectName, err := resolveNewTargetPath(projectName, projectPath, inPlace, force)
 	if err != nil {
 		return err
+	}
+	// A directory whose ROOT is a frontend app, and which is no Go module, is
+	// a static site. The service scaffold would write a Go server beside it
+	// and never declare the app; say so instead, unless --kind or --service
+	// asked for a backend explicitly.
+	if inPlace && strings.TrimSpace(kindFlag) == "" && len(serviceNames) == 0 && len(frontendNames) == 0 {
+		if _, statErr := os.Stat(filepath.Join(targetPath, "go.mod")); os.IsNotExist(statErr) {
+			if apps := detectExistingFrontendAppsIn(targetPath, []string{"."}); len(apps) > 0 {
+				return cliutil.UserErr("forge project new --in-place",
+					fmt.Sprintf("%s is a %s app at its root, with no Go module", targetPath, apps[0].framework()),
+					"",
+					"adopt it as a static site: forge project new --in-place --kind site --name <name>. "+
+						"To scaffold a Go backend beside it instead, pass --kind service (or --service <entity>)")
+			}
+		}
 	}
 	// An in-place target may be a module that already requires forge. Its
 	// pin is adopted, never moved — see new_inplace_forge_pin.go.
@@ -406,6 +438,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		frontendNames: frontendNames,
 		markerPath:    scaffold.markerPath,
 		verbose:       verbose,
+		verify:        verify,
 	})
 
 	scaffold.finish()
@@ -759,6 +792,8 @@ type newFinalizeInput struct {
 	// in one line (today: the initial commit skipped for want of a git
 	// identity).
 	verbose bool
+	// verify keeps the bootstrap generate's compile check (--verify).
+	verify bool
 }
 
 // finalizeNewProject runs the post-generation phase: install proto codegen
@@ -819,7 +854,7 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	// retry, a bare one would be permanent.
 	if in.kind == config.ProjectKindService {
 		fmt.Println("\n🔧 Bootstrapping generated proto code...")
-		if err := bootstrapGeneratedCode(in.targetPath); err != nil {
+		if err := bootstrapGeneratedCode(in.targetPath, in.verify); err != nil {
 			fmt.Fprintf(os.Stderr, "\n⚠️  Project scaffolded but initial code generation failed: %v\n", err)
 			// A run that reached the end with failed steps kept everything
 			// else it generated; only one that aborted left the tree bare.
@@ -1419,9 +1454,33 @@ func runGoModTidy(ctx context.Context, path string) error {
 	return nil
 }
 
-func bootstrapGeneratedCode(path string) error {
+// bootstrapPipelineFlags is the generate run `project new` ends with.
+//
+// It skips the validation tail (the `go build` compile check and the deploy
+// KCL render) unless the caller asked for it with --verify. That tail is the
+// one step of the scaffold that saturates the CPU: on a cold build cache it
+// was 40s of the pipeline's 63s and ran every package of the new tree through
+// the compiler. It also proves nothing the scaffold does not already
+// guarantee: the output is deterministic and forge's e2e corpus compiles it on
+// every change. The first `go build` or `forge generate` the user runs pays for
+// the same compile, with the build cache warm for it.
+//
+// Nothing here takes a heavy slot. `project new` is an install step the
+// user waits on, not a build lane, and the CPU-bound step that justified a
+// slot is the one this skips.
+func bootstrapPipelineFlags(verify bool) pipelineFlags {
+	if verify {
+		return pipelineFlags{}
+	}
+	return pipelineFlags{
+		SkipValidate:     true,
+		SkipValidateNote: "⏩ compile check skipped (pass --verify to run it here; your first `go build` or `forge generate` runs it anyway)",
+	}
+}
+
+func bootstrapGeneratedCode(path string, verify bool) error {
 	return withGenerateLock(path, func() error {
-		return runGeneratePipeline(path, false)
+		return runGeneratePipelineFlags(path, bootstrapPipelineFlags(verify))
 	})
 }
 

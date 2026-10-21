@@ -209,15 +209,18 @@ func (t *Tx) QueryRow(ctx context.Context, query string, args ...interface{}) *s
 // the owner of the transaction rolls it back.
 //
 // Without this, an interactor that wraps its work in RunTransaction could
-// not be composed into another interactor that had already opened one.
-func (t *Tx) RunTransaction(ctx context.Context, fn func(Context) error) error {
+// not be composed into another interactor that had already opened one. opts
+// are validated, as everywhere, and otherwise ignored.
+func (t *Tx) RunTransaction(ctx context.Context, policy TxPolicy, fn func(Context) error) error {
+	if _, err := resolveTxPolicy(policy, "RunTransaction", false); err != nil {
+		return err
+	}
 	return fn(t)
 }
 
-// BeginTx starts a transaction. It is the low-level primitive: it never
-// joins a ctx-carried transaction, never retries, and leaves Commit or
-// Rollback to the caller. Prefer RunTx.
-func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) {
+// begin starts a database/sql transaction and wraps it. Every opener reaches
+// it through beginTx, with validated options.
+func (c *Client) begin(ctx context.Context, opts *sql.TxOptions) (*Tx, error) {
 	tx, err := c.bun.BeginTx(ctx, opts)
 	if err != nil {
 		return nil, err
@@ -226,33 +229,37 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 	return &Tx{tx: tx, dialect: c.dialect, state: state, client: c}, nil
 }
 
-// RunTransaction executes fn within a transaction, committing on success
-// and rolling back on error or panic. The transaction Context is passed
-// to fn so generated ORM ops transparently use it.
+// RunTransaction executes fn within a transaction at opts' isolation,
+// committing on success and rolling back on error or panic. The transaction
+// Context is passed to fn so generated ORM ops transparently use it.
 //
-// Prefer RunTx for new code. RunTransaction is the handle-passing form and
-// keeps its original semantics — the database's default isolation (or
-// whatever opts asks for), one attempt, no retry — because its existing
-// callers' closures were written for exactly that: re-running them on a
-// serialization failure could repeat side effects they were never written to
-// repeat. fn also receives only a handle, not a ctx carrying the
-// transaction, so code called with the OUTER ctx and the plain client does
-// not participate; use the handle, or call handle.RunTx to get such a ctx.
+// Prefer RunTx for new code. RunTransaction is the handle-passing form: fn
+// receives only a handle, not a ctx carrying the transaction, so code called
+// with the OUTER ctx and the plain client does not participate; use the
+// handle, or call handle.Join to get such a ctx.
+//
+// opts mean exactly what they mean to RunTx: orm.ReadCommitted runs fn once,
+// orm.Serializable re-runs it on 40001 / 40P01, so fn must then have no
+// effect outside the database. There is no default; an unset level is
+// rejected with ErrInvalidTxOptions.
 //
 // It does join a transaction ctx already carries for this database (from
 // RunTx), handing fn a handle on that transaction, so legacy code composes
 // inside a RunTx exactly as RunTx composes inside it.
-func (c *Client) RunTransaction(ctx context.Context, fn func(ctx Context) error) error {
-	return c.RunTransactionWithOptions(ctx, nil, fn)
-}
-
-// RunTransactionWithOptions is RunTransaction with custom tx options. opts
-// are ignored when it joins a ctx-carried transaction.
-func (c *Client) RunTransactionWithOptions(ctx context.Context, opts *sql.TxOptions, fn func(ctx Context) error) error {
+func (c *Client) RunTransaction(ctx context.Context, policy TxPolicy, fn func(ctx Context) error) error {
+	opts, err := resolveTxPolicy(policy, "RunTransaction", false)
+	if err != nil {
+		return err
+	}
 	if st := ambientTx(ctx, c.bun.DB); st != nil {
 		return fn(&Tx{tx: st.tx, dialect: c.dialect, state: st, client: c})
 	}
-	tx, err := c.BeginTx(ctx, opts)
+	return runAttempts(ctx, opts, func() error { return c.runTransactionAttempt(ctx, opts, fn) })
+}
+
+// runTransactionAttempt is one RunTransaction attempt.
+func (c *Client) runTransactionAttempt(ctx context.Context, opts TxOptions, fn func(ctx Context) error) error {
+	tx, err := c.beginTx(ctx, opts)
 	if err != nil {
 		return NewTransactionError("begin", err)
 	}

@@ -74,7 +74,7 @@ func TestRunTx_EveryClientPathJoinsTheCtxTransaction(t *testing.T) {
 	c := newTxTestClient(t)
 	ctx := context.Background()
 
-	err := c.RunTx(ctx, func(ctx context.Context) error {
+	err := c.RunTx(ctx, Serializable, func(ctx context.Context) error {
 		if err := insertNote(ctx, c, "builder"); err != nil {
 			return fmt.Errorf("builder insert: %w", err)
 		}
@@ -123,7 +123,7 @@ func TestRunTx_RollsBackOnErrorAndOnPanic(t *testing.T) {
 	ctx := context.Background()
 
 	sentinel := errors.New("business rule failed")
-	err := c.RunTx(ctx, func(ctx context.Context) error {
+	err := c.RunTx(ctx, Serializable, func(ctx context.Context) error {
 		if err := insertNote(ctx, c, "a"); err != nil {
 			return err
 		}
@@ -142,7 +142,7 @@ func TestRunTx_RollsBackOnErrorAndOnPanic(t *testing.T) {
 				t.Fatal("a panic in fn must propagate out of RunTx")
 			}
 		}()
-		_ = c.RunTx(ctx, func(ctx context.Context) error {
+		_ = c.RunTx(ctx, Serializable, func(ctx context.Context) error {
 			if err := insertNote(ctx, c, "b"); err != nil {
 				return err
 			}
@@ -174,17 +174,17 @@ func TestRunTx_IsolationAndReadOnlyModes(t *testing.T) {
 		readOnly   string
 		deferrable string
 	}{
-		{"RunTx defaults to serializable", func(fn func(context.Context) error) error {
-			return c.RunTx(ctx, fn)
+		{"Serializable is serializable", func(fn func(context.Context) error) error {
+			return c.RunTx(ctx, Serializable, fn)
 		}, "serializable", "off", "off"},
 		{"RunTxReadOnly is serializable read only deferrable", func(fn func(context.Context) error) error {
 			return c.RunTxReadOnly(ctx, fn)
 		}, "serializable", "on", "on"},
-		{"read committed is opt-in", func(fn func(context.Context) error) error {
-			return c.RunTxWithOptions(ctx, TxOptions{Isolation: IsolationReadCommitted}, fn)
+		{"read committed with a retry budget", func(fn func(context.Context) error) error {
+			return c.RunTx(ctx, ReadCommitted.WithMaxAttempts(DefaultTxMaxAttempts), fn)
 		}, "read committed", "off", "off"},
-		{"repeatable read is opt-in", func(fn func(context.Context) error) error {
-			return c.RunTxWithOptions(ctx, TxOptions{Isolation: IsolationRepeatableRead}, fn)
+		{"repeatable read", func(fn func(context.Context) error) error {
+			return c.RunTx(ctx, RepeatableRead, fn)
 		}, "repeatable read", "off", "off"},
 	}
 	for _, tc := range cases {
@@ -230,7 +230,7 @@ func TestRunTx_RetriesSerializationFailureAndDeadlock(t *testing.T) {
 	for _, code := range []pq.ErrorCode{"40001", "40P01"} {
 		t.Run(string(code), func(t *testing.T) {
 			attempts := 0
-			err := c.RunTx(ctx, func(ctx context.Context) error {
+			err := c.RunTx(ctx, Serializable, func(ctx context.Context) error {
 				attempts++
 				if err := insertNote(ctx, c, fmt.Sprintf("%s-%d", code, attempts)); err != nil {
 					return err
@@ -263,7 +263,7 @@ func TestRunTx_RetriesSerializationFailureAndDeadlock(t *testing.T) {
 
 	t.Run("exhausted budget is Aborted and keeps the driver error", func(t *testing.T) {
 		attempts := 0
-		err := c.RunTxWithOptions(ctx, TxOptions{MaxAttempts: 3}, func(ctx context.Context) error {
+		err := c.RunTx(ctx, Serializable.WithMaxAttempts(3), func(ctx context.Context) error {
 			attempts++
 			return &pq.Error{Code: "40001", Message: "could not serialize access"}
 		})
@@ -284,7 +284,7 @@ func TestRunTx_RetriesSerializationFailureAndDeadlock(t *testing.T) {
 
 	t.Run("non-retryable errors run once", func(t *testing.T) {
 		attempts := 0
-		err := c.RunTx(ctx, func(ctx context.Context) error {
+		err := c.RunTx(ctx, Serializable, func(ctx context.Context) error {
 			attempts++
 			return &pq.Error{Code: "23505"} // unique_violation is an answer, not a conflict
 		})
@@ -296,7 +296,7 @@ func TestRunTx_RetriesSerializationFailureAndDeadlock(t *testing.T) {
 	t.Run("cancelled ctx stops the retry loop", func(t *testing.T) {
 		cctx, cancel := context.WithCancel(ctx)
 		attempts := 0
-		err := c.RunTx(cctx, func(ctx context.Context) error {
+		err := c.RunTx(cctx, Serializable, func(ctx context.Context) error {
 			attempts++
 			cancel()
 			return &pq.Error{Code: "40001"}
@@ -315,8 +315,8 @@ func TestRunTx_JoinsAnAmbientTransaction(t *testing.T) {
 	ctx := context.Background()
 	rollback := errors.New("outer rolls back")
 
-	err := c.RunTx(ctx, func(ctx context.Context) error {
-		if err := c.RunTx(ctx, func(ctx context.Context) error {
+	err := c.RunTx(ctx, Serializable, func(ctx context.Context) error {
+		if err := c.RunTx(ctx, Serializable, func(ctx context.Context) error {
 			return insertNote(ctx, c, "inner-runtx")
 		}); err != nil {
 			return err
@@ -329,7 +329,7 @@ func TestRunTx_JoinsAnAmbientTransaction(t *testing.T) {
 			return fmt.Errorf("joined read-only call: %w", err)
 		}
 		// The legacy handle API joins too, and its handle is the same tx.
-		if err := c.RunTransaction(ctx, func(tx Context) error {
+		if err := c.RunTransaction(ctx, ReadCommitted, func(tx Context) error {
 			_, err := tx.Exec(ctx, "INSERT INTO tx_notes (id, body) VALUES ($1, 'b')", "inner-runtransaction")
 			return err
 		}); err != nil {
@@ -349,17 +349,17 @@ func TestRunTx_JoinsAnAmbientTransaction(t *testing.T) {
 }
 
 // A handle from the legacy RunTransaction can call into code written with
-// RunTx: handle.RunTx gives fn a ctx carrying the handle's transaction, so
+// RunTx: handle.Join gives fn a ctx carrying the handle's transaction, so
 // queries made with the plain client join it.
 func TestTxHandle_RunTxCarriesTheHandlesTransaction(t *testing.T) {
 	c := newTxTestClient(t)
 	ctx := context.Background()
 
-	err := c.RunTransaction(ctx, func(tx Context) error {
+	err := c.RunTransaction(ctx, ReadCommitted, func(tx Context) error {
 		if _, err := tx.Exec(ctx, "INSERT INTO tx_notes (id, body) VALUES ('via-handle', 'b')"); err != nil {
 			return err
 		}
-		return tx.RunTx(ctx, func(ctx context.Context) error {
+		return tx.RunTx(ctx, ReadCommitted, func(ctx context.Context) error {
 			// The plain client, with the derived ctx, sees the handle's
 			// uncommitted row.
 			n, err := c.Bun().NewSelect().Model((*txNote)(nil)).Count(ctx)
@@ -367,7 +367,7 @@ func TestTxHandle_RunTxCarriesTheHandlesTransaction(t *testing.T) {
 				return err
 			}
 			if n != 1 {
-				t.Errorf("client query inside handle.RunTx saw %d rows, want 1", n)
+				t.Errorf("client query inside handle.Join saw %d rows, want 1", n)
 			}
 			return insertNote(ctx, c, "via-client")
 		})
@@ -387,7 +387,7 @@ func TestAfterCommit(t *testing.T) {
 	t.Run("fires once after commit, with a ctx that carries no transaction", func(t *testing.T) {
 		var fired atomic.Int32
 		var callbackErr error
-		err := c.RunTx(ctx, func(ctx context.Context) error {
+		err := c.RunTx(ctx, Serializable, func(ctx context.Context) error {
 			if err := insertNote(ctx, c, "committed"); err != nil {
 				return err
 			}
@@ -414,7 +414,7 @@ func TestAfterCommit(t *testing.T) {
 
 	t.Run("never fires on rollback", func(t *testing.T) {
 		var fired atomic.Int32
-		_ = c.RunTx(ctx, func(ctx context.Context) error {
+		_ = c.RunTx(ctx, Serializable, func(ctx context.Context) error {
 			if err := AfterCommit(ctx, func(context.Context) { fired.Add(1) }); err != nil {
 				return err
 			}
@@ -428,7 +428,7 @@ func TestAfterCommit(t *testing.T) {
 	t.Run("a retried attempt's callbacks are discarded", func(t *testing.T) {
 		var firedFor []int
 		attempts := 0
-		err := c.RunTx(ctx, func(ctx context.Context) error {
+		err := c.RunTx(ctx, Serializable, func(ctx context.Context) error {
 			attempts++
 			attempt := attempts
 			if err := AfterCommit(ctx, func(context.Context) { firedFor = append(firedFor, attempt) }); err != nil {
@@ -449,8 +449,8 @@ func TestAfterCommit(t *testing.T) {
 
 	t.Run("a joined call's callback waits for the outermost commit", func(t *testing.T) {
 		var fired atomic.Int32
-		err := c.RunTx(ctx, func(ctx context.Context) error {
-			if err := c.RunTx(ctx, func(ctx context.Context) error {
+		err := c.RunTx(ctx, Serializable, func(ctx context.Context) error {
+			if err := c.RunTx(ctx, Serializable, func(ctx context.Context) error {
 				return AfterCommit(ctx, func(context.Context) { fired.Add(1) })
 			}); err != nil {
 				return err
@@ -476,8 +476,8 @@ func TestAfterCommit(t *testing.T) {
 
 	t.Run("RunTransaction commits run callbacks registered through the handle", func(t *testing.T) {
 		var fired atomic.Int32
-		err := c.RunTransaction(ctx, func(tx Context) error {
-			return tx.RunTx(ctx, func(ctx context.Context) error {
+		err := c.RunTransaction(ctx, ReadCommitted, func(tx Context) error {
+			return tx.RunTx(ctx, ReadCommitted, func(ctx context.Context) error {
 				return AfterCommit(ctx, func(context.Context) { fired.Add(1) })
 			})
 		})
@@ -498,7 +498,7 @@ func TestRunTx_TransactionNeverLeaksAcrossDatabases(t *testing.T) {
 	b := newTxTestClient(t)
 	ctx := context.Background()
 
-	err := a.RunTx(ctx, func(ctx context.Context) error {
+	err := a.RunTx(ctx, Serializable, func(ctx context.Context) error {
 		if err := insertNote(ctx, a, "on-a"); err != nil {
 			return err
 		}
@@ -522,8 +522,8 @@ func TestRunTx_TransactionNeverLeaksAcrossDatabases(t *testing.T) {
 
 	// Nested the other way round, each database finds its OWN transaction:
 	// b's RunTx inside a's does not shadow a's.
-	err = a.RunTx(ctx, func(ctx context.Context) error {
-		return b.RunTx(ctx, func(ctx context.Context) error {
+	err = a.RunTx(ctx, Serializable, func(ctx context.Context) error {
+		return b.RunTx(ctx, Serializable, func(ctx context.Context) error {
 			if err := insertNote(ctx, a, "a-in-nested"); err != nil {
 				return err
 			}
@@ -564,7 +564,7 @@ func TestRunTx_NoCtxTransactionPathUnchanged(t *testing.T) {
 func TestRunTx_FinishedTransactionInCtxFallsBackToPool(t *testing.T) {
 	c := newTxTestClient(t)
 	var leaked context.Context
-	if err := c.RunTx(context.Background(), func(ctx context.Context) error {
+	if err := c.RunTx(context.Background(), Serializable, func(ctx context.Context) error {
 		leaked = ctx
 		return insertNote(ctx, c, "x")
 	}); err != nil {
@@ -590,7 +590,7 @@ func TestRunTx_BunExecContextJoinsInsteadOfSelfDeadlocking(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := c.RunTx(ctx, func(ctx context.Context) error {
+	err := c.RunTx(ctx, Serializable, func(ctx context.Context) error {
 		if _, err := c.Bun().NewUpdate().Model((*txNote)(nil)).
 			Set("body = ?", "locked").Where("id = ?", "row").Exec(ctx); err != nil {
 			return err

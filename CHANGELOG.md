@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **pgtest's shared server survives a slow moment and a long run.** An
+  attaching process probed the cross-process shared embedded server with a
+  2s connect and 3s ping and, on a miss, `pg_ctl stop -m fast`ed it — under
+  every other process using it, which failed mid-test with 57P01
+  "terminating connection due to administrator command" and 57P03 "the
+  database system is shutting down". A loaded or just-woken machine misses
+  that probe routinely (control-plane's integration lane failed that way in
+  four runs in a row). A live postmaster is now retried for 30s on the
+  monotonic clock; if it still does not answer and other processes use it,
+  the newcomer runs on a standalone server of its own and the shared one is
+  left alone. `reapStaleInstances` no longer SIGKILLs (and deletes the data
+  directory of) the pool's server while it has a live user, or a standalone
+  server while its owner lives, however old its pid file looks: a fan-out
+  outlives the 30-minute stale age, and a sleep ages every file by the wall
+  clock.
+
 ### Changed
 
 - **A Go cache budget no trim can reach is reported, not passed over.** The
@@ -97,9 +115,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are the order `Run<Root>` supervises, so a project pins a root's stop
   order in a unit test without a database or a broker (roots plan F7).
 - **Each root's process settings come from the configs its command loads,
-  and a root declares whether it migrates.** In a binary*config project
+  and a root declares whether it migrates.** In a `binary_config` project
   (`(forge.v1.binary_config)` `command`/`subtrees`), `rootSpec.Configs` hands
-  `runRoot` the configs a root's command loaded \_before* the policy runs, and
+  `runRoot` the configs a root's command loaded _before_ the policy runs, and
   the scaffolded `serverkitConfig(cfg, root.Configs)` reads the port, drain
   budget, logging, TLS and database settings from whichever of them declares
   each (most specific last), so `server api` and `server worker` listen and
@@ -454,6 +472,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Parallel generates no longer fail pinning a codegen tool.** When the
+  protoc plugin on PATH does not match go.mod, forge installs the pinned one
+  into its cache. Two forge processes doing so at once (every fresh project's
+  first generate pins) could read a binary the other was still writing, and
+  failed with "installed binary reports unknown". The install now writes into
+  a private directory and renames the finished binary into place.
+- **`forge generate` composes correctly when go.mod is behind the tree.** The
+  composition graph types every node with one package load, and that load
+  fails outright on a go.mod that needs updating: a fresh clone, a
+  just-added `replace`, a dependency bump. The graph then fell back to names
+  alone. The server root held no nodes, `graph_gen.go` lost every node's
+  lifecycle, and `config_gen.k` refused the scaffold's own
+  `config_secrets = ["DATABASE_URL"]`. The tidy that ran after composition
+  repaired go.mod, so only the next run was right. A
+  `go mod tidy (pre-composition)` step now runs first on any project generate
+  has composed before.
 - **`forge lint --tracing` says what each rewrite did.** Its fix report
   called every rewrite a log call, so a run that only renamed contract
   constructions to `NewInstrumented` printed "34 log call(s) rewritten to pass

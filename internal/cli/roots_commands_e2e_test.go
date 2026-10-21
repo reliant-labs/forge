@@ -33,7 +33,7 @@ func TestE2EOneCommandPerRoot(t *testing.T) {
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
-	runCmd(t, dir, forgeBin, "project", "new", "roots", "--mod", "github.com/test/roots", "--service", "api")
+	newOut := runCmdKeep(t, dir, forgeBin, "project", "new", "roots", "--mod", "github.com/test/roots", "--service", "api")
 	projectDir := filepath.Join(dir, "roots")
 	addCorpusForgePkgReplace(t, projectDir)
 
@@ -50,7 +50,8 @@ func TestE2EOneCommandPerRoot(t *testing.T) {
 	if err := os.WriteFile(apiProtoPath, []byte(apiProto), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runCmd(t, projectDir, forgeBin, "scaffold", "worker", "tick")
+	workerOut := runCmdKeep(t, projectDir, forgeBin, "scaffold", "worker", "tick")
+	requireComposedE2E(t, projectDir, newOut, workerOut)
 	// The tick worker needs no configuration: drop the root config the
 	// scaffold hands it, so its root reaches only the process fields (a
 	// component with settings takes a config block of its own).
@@ -244,6 +245,9 @@ func bootRootOnPort(t *testing.T, bin, projectDir, portEnv string, env, args []s
 	cmd.Env = append(append(os.Environ(),
 		fmt.Sprintf("%s=%d", portEnv, port),
 		"ENVIRONMENT=development",
+		// The assertions read JSON log lines; a LOG_FORMAT=text in the
+		// caller's environment (a forge env up shell) must not change that.
+		"LOG_FORMAT=json",
 		"PPROF_ADDR=",
 		"PRE_STOP_DELAY=-1s",
 	), env...)

@@ -21,7 +21,8 @@ func TestE2EEquivalentServiceNamingGeneratedLint(t *testing.T) {
 	addCorpusForgePkgReplace(t, root)
 	proto := filepath.Join(root, "proto/services/api_key/v1/api_key.proto")
 	source := strings.ReplaceAll(readFileE2E(t, proto), "APIKeyService", "ApiKeyService")
-	source = strings.Replace(source, "  // TODO: Add your RPC methods here.", "  rpc CreateApiKey(CreateApiKeyRequest) returns (CreateApiKeyResponse);", 1)
+	source = strings.Replace(source, "  // TODO: Add your RPC methods here.", "  rpc CreateApiKey(CreateApiKeyRequest) returns (CreateApiKeyResponse) {\n"+
+		"    option (forge.v1.method) = { activity: { none: \"a naming fixture: it records nothing\" } };\n  }", 1)
 	source += "\nmessage CreateApiKeyRequest {}\nmessage CreateApiKeyResponse {}\n"
 	writeFileE2E(t, proto, source)
 	runCmd(t, root, bin, "generate")

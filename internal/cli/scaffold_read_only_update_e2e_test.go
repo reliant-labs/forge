@@ -174,7 +174,7 @@ func TestReadOnlyColumnsOnClientUpdate(t *testing.T) {
 	// ── app code owns the lifecycle: the repo-level masked write lands ──
 	shippedAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	if err := dbpkg.UpdateOrderMasked(ctx, db, &dbpkg.Order{
-		Id:            id,
+		ID:            id,
 		Status:        "ORDER_STATUS_SHIPPED",
 		ShippedAt:     &shippedAt,
 		DiscountCents: 25,

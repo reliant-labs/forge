@@ -504,6 +504,14 @@ func addforgeReplace(t *testing.T, genDir string) {
 // runCmd runs a command and fails the test on error.
 func runCmd(t *testing.T, dir string, name string, args ...string) {
 	t.Helper()
+	_ = runCmdKeep(t, dir, name, args...)
+}
+
+// runCmdKeep is runCmd returning the combined output, for a test that must
+// show what a command that "succeeded" printed when a later assertion
+// fails — `forge project new` exits 0 when its bootstrap generate fails.
+func runCmdKeep(t *testing.T, dir string, name string, args ...string) string {
+	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	cmd.Env = goexec.WithTrimpath(append(os.Environ(),
@@ -515,6 +523,19 @@ func runCmd(t *testing.T, dir string, name string, args ...string) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("command %q in %s failed: %v\n%s", append([]string{name}, args...), dir, err, output)
+	}
+	return string(output)
+}
+
+// requireComposedE2E fails, with the output of the commands that should
+// have composed it, when the project has no internal/app/compose.go. Those
+// commands exit 0 when their generate fails (it is non-fatal by design), so
+// without this the failure surfaces later as an unrelated missing file.
+func requireComposedE2E(t *testing.T, projectDir string, outputs ...string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(projectDir, "internal", "app", "compose.go")); err != nil {
+		t.Fatalf("the project was never composed (no internal/app/compose.go: %v); what the commands printed:\n%s",
+			err, strings.Join(outputs, "\n----\n"))
 	}
 }
 

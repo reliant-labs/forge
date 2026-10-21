@@ -73,6 +73,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"internal package contracts",
 		"open-procedure set (pkg/middleware)",
 		"webhook routes",
+		"go mod tidy (pre-composition)",
 		"internal/app composition (hybrid DI)",
 		"root env schema (pkg/config/roots_gen.go)",
 		"go mod tidy (pre-wiring)",
@@ -526,6 +527,7 @@ func TestGenerateConfigLoaderPrecedesEveryGoTypeCheck(t *testing.T) {
 	}
 	// Each of these loads the project's Go with go/packages or the compiler.
 	for _, n := range []string{
+		"go mod tidy (pre-composition)",
 		"internal/app composition (hybrid DI)",
 		"go mod tidy (pre-wiring)",
 		"go mod tidy (root)",
@@ -539,5 +541,25 @@ func TestGenerateConfigLoaderPrecedesEveryGoTypeCheck(t *testing.T) {
 		if i < loader {
 			t.Errorf("step %q (#%d) runs before the config loader (#%d): hand-written code calling a Load<Msg> this run generates would not compile there", n, i, loader)
 		}
+	}
+}
+
+// The composition graph types every node with one go/packages load, which
+// fails outright on a go.mod that is behind the tree — and the graph then
+// degrades to names: no listener, a server root holding no nodes, a
+// config_gen.k refusing the scaffold's own DATABASE_URL (TestE2ESelfCert*
+// on a fresh clone). So a tidy must run BEFORE it, not only after.
+func TestGenerateTidiesBeforeTheCompositionTypeLoad(t *testing.T) {
+	names := stepNames(generateSteps())
+	at := map[string]int{}
+	for i, n := range names {
+		at[n] = i
+	}
+	tidy, ok := at["go mod tidy (pre-composition)"]
+	if !ok {
+		t.Fatal("no pre-composition tidy step")
+	}
+	if compose := at["internal/app composition (hybrid DI)"]; tidy > compose {
+		t.Errorf("the pre-composition tidy (#%d) runs after the composition step (#%d)", tidy, compose)
 	}
 }

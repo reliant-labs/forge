@@ -141,7 +141,7 @@ type UserAuth struct{ serverkit.Authenticator }
 
 // UserAuthDeps is what the authenticator reads.
 type UserAuthDeps struct {
-	Config *config.Config
+	Config *config.{{or .AuthConfigType "Config"}}
 {{- if .HasDatabase}}
 	DB     *DB
 {{- end}}
@@ -236,6 +236,11 @@ type APIListenerDeps struct {
 	Chain     *UserChain
 	Routes    *UserRoutes
 	Probes    *serverkit.Probes
+{{- if .BrokerConfigType}}
+	// Broker is the config login_broker.go reads its idp_* / oidc_*
+	// settings from.
+	Broker *config.{{.BrokerConfigType}}
+{{- end}}
 }
 
 // NewAPIListener mounts the user routes with the user chain — refusing to
@@ -288,14 +293,16 @@ func NewAPIListener(d APIListenerDeps) (*APIListener, error) {
 		Chain:  d.Chain.Chain,
 		Routes: serverkit.RoutesFunc(func(mux *http.ServeMux, opts ...connect.HandlerOption) []string {
 			mounted := d.Routes.Register(mux, opts...)
+{{- if not .NoBrokerConfig}}
 			// NATIVE SIGN-IN: /auth/login, /auth/register, /auth/session and
 			// /auth/logout, gated on configuration (login_broker.go, yours).
-			if err := LoginBrokerConfigured(d.Config); err == nil {
-				RegisterLoginBroker(mux, d.Config, d.Logger)
+			if err := LoginBrokerConfigured(d.{{if .BrokerConfigType}}Broker{{else}}Config{{end}}); err == nil {
+				RegisterLoginBroker(mux, d.{{if .BrokerConfigType}}Broker{{else}}Config{{end}}, d.Logger)
 				d.Logger.Info("native sign-in enabled", "routes", "/auth/login /auth/register /auth/session /auth/logout")
 			} else {
 				d.Logger.Debug("native sign-in not configured", "reason", err)
 			}
+{{- end}}
 			return mounted
 		}),
 		Logger: d.Logger,

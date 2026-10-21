@@ -1093,6 +1093,57 @@ func RootConfigFieldNames(messages []ConfigMessage, projectDir string) map[strin
 	return names
 }
 
+// jwtConfigFields are the root-config-shaped fields the scaffolded
+// internal/app/auth.go's JWT validator reads; brokerConfigFields the ones
+// internal/app/login_broker.go reads.
+var (
+	jwtConfigFields = []string{"JwtSigningMethod", "JwtIssuer", "JwtAudience", "JwtJwksUrl", "JwtSecret",
+		"JwtRolesClaim", "JwtJwksSnapshotFile", "JwtJwksSnapshot", "JwtJwksSnapshotMaxAge"}
+	brokerConfigFields = []string{"IdpBase", "IdpHost", "IdpBrokerToken", "IdpBrokerTokenFile",
+		"OidcClientId", "OidcRedirectUri", "Environment"}
+)
+
+// configDeclaring names the config of the primary binary a scaffold reading
+// goNames reads them from: the one that declares every one of them at its top
+// level — the root config ("", which the templates spell Config), else the
+// first config beside it that does (its message name). found is false when no
+// config the binary loads declares them all; the scaffold then reads none of
+// them (F1: a scaffold may only read fields some config declares).
+func configDeclaring(projectDir string, goNames []string) (typeName string, found bool) {
+	messages, err := ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config"))
+	if err != nil || len(messages) == 0 {
+		return "", true // no parsed config yet: the default scaffold's AppConfig
+	}
+	return configDeclaringIn(messages, projectDir, goNames)
+}
+
+// configDeclaringIn is configDeclaring over parsed messages.
+func configDeclaringIn(messages []ConfigMessage, projectDir string, goNames []string) (typeName string, found bool) {
+	declares := func(fields map[string]bool) bool {
+		for _, n := range goNames {
+			if !fields[n] {
+				return false
+			}
+		}
+		return true
+	}
+	if declares(RootConfigFieldNames(messages, projectDir)) {
+		return "", true
+	}
+	if pc := processConfigsFrom(messages, primaryBinaryName(projectDir)); pc != nil {
+		for _, in := range pc.inputs {
+			own := map[string]bool{}
+			for _, f := range in.msg.Fields {
+				own[f.GoName] = true
+			}
+			if declares(own) {
+				return in.msg.Name, true
+			}
+		}
+	}
+	return "", false
+}
+
 // primaryBinaryName is the primary binary's name — its cmd/<bin>/cmd tree's
 // <bin> — or "" when the project has no command tree.
 func primaryBinaryName(projectDir string) string {

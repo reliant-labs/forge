@@ -541,7 +541,7 @@ func addGraphRouteNodes(in GraphGenInput, compNode map[string]*graphNode, add fu
 	}
 	routesView.Imports = sortedImports(routesImports, "fmt", "log/slog", "net/http", "strings", "connectrpc.com/connect",
 		"github.com/reliant-labs/forge/pkg/middleware", "github.com/reliant-labs/forge/pkg/mountkit",
-		"github.com/reliant-labs/forge/pkg/mountkit/inventory", in.ModulePath+"/pkg/middleware")
+		"github.com/reliant-labs/forge/pkg/mountkit/inventory", "github.com/reliant-labs/forge/pkg/authn")
 	return routesView, nil
 }
 
@@ -867,7 +867,11 @@ func sortedImports(m map[string]string, fixed ...string) []graphImport {
 // API listener, pprof) and auth.go, each exactly once.
 func GenerateGraphProviders(modulePath, databaseDriver, projectDir string) error {
 	hasDB := databaseDriver != ""
-	if err := GenerateAuthSetupData(projectDir, AuthSetupTemplateData{Module: modulePath, Graph: true, HasDatabase: hasDB}); err != nil {
+	// auth.go and login_broker.go read the config that declares their
+	// fields — a command config's, in a binary_config project — or none.
+	authConfig, hasJWT := configDeclaring(projectDir, jwtConfigFields)
+	brokerConfig, hasBroker := configDeclaring(projectDir, brokerConfigFields)
+	if err := GenerateAuthSetupData(projectDir, AuthSetupTemplateData{Module: modulePath, Graph: true, HasDatabase: hasDB, AuthConfigType: authConfig, NoJWTConfig: !hasJWT}); err != nil {
 		return err
 	}
 	rel := filepath.Join("internal", "app", "providers.go")
@@ -876,11 +880,14 @@ func GenerateGraphProviders(modulePath, databaseDriver, projectDir string) error
 		configFields = RootConfigFieldNames(msgs, projectDir)
 	}
 	data := struct {
-		Module       string
-		HasDatabase  bool
-		RESTEnabled  bool
-		ConfigFields map[string]bool
-	}{Module: modulePath, HasDatabase: hasDB, RESTEnabled: projectAPIRESTEnabled(projectDir), ConfigFields: configFields}
+		Module                           string
+		HasDatabase                      bool
+		RESTEnabled                      bool
+		ConfigFields                     map[string]bool
+		AuthConfigType, BrokerConfigType string
+		NoBrokerConfig                   bool
+	}{Module: modulePath, HasDatabase: hasDB, RESTEnabled: projectAPIRESTEnabled(projectDir), ConfigFields: configFields,
+		AuthConfigType: authConfig, BrokerConfigType: brokerConfig, NoBrokerConfig: !hasBroker}
 	content, err := templates.ProjectTemplates().Render("providers-graph.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render providers-graph.go.tmpl: %w", err)

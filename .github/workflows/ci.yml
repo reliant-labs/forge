@@ -69,8 +69,8 @@ permissions:
 #   lint              golangci-lint (root and pkg/), go vet, go vet -tags e2e
 #   test, test-cli    full mode (no -short) under -race
 #   test-short-warm   the whole -short tier, then the guards (full mode, -p 1);
-#                     saves the build and module caches test-short and checks
-#                     restore
+#                     saves the build cache test-short restores and the
+#                     module cache
 #   build             the release build, go-licenses, govulncheck
 #   windows           native Windows: build, vet, -short tests, smoke
 #
@@ -128,9 +128,10 @@ concurrency:
 #
 # The pull-request jobs (test-short, checks) restore through
 # .github/actions/restore-go-caches with setup-go's `cache: false`: one
-# go-mod entry per go.sum plus the go-build-short scope, both saved by
-# test-short-warm (save-go-caches). The main-only jobs below still spell
-# their restores out; what follows applies to both.
+# go-mod entry per go.sum plus a build scope — go-build-short, saved by
+# test-short-warm, and go-build-tools, saved by checks' own run on main
+# (save-go-caches). The main-only jobs below still spell their restores out;
+# what follows applies to both.
 #
 # setup-go's own `cache: true` DOES cache the build cache — it saves
 # `go env GOCACHE` alongside `go env GOMODCACHE`. What it does not do is
@@ -591,10 +592,10 @@ jobs:
   # The pull-request tier, run whole on main, then the guards. Three jobs in
   # one: main's own check that the tier pull requests are judged by still
   # passes (the full jobs above run a superset, but under different flags),
-  # the producer of the go-build-short and go-mod caches the pull-request
-  # jobs (test-short, checks) restore — non-race, -short artifacts and test
-  # results that nothing else on main compiles, forge and its codegen tools,
-  # and the module cache — and the guards (formerly `test-guards`), which
+  # the producer of the go-build-short cache test-short restores and the
+  # go-mod cache every pull-request job does — non-race, -short artifacts and
+  # test results that nothing else on main compiles, and the module cache —
+  # and the guards (formerly `test-guards`), which
   # build without -race too, so they reuse that compile instead of a scope of
   # their own. One job, one entry per cache: the repository's cache budget is
   # 10 GB (see "Build-cache note").
@@ -632,12 +633,6 @@ jobs:
         env:
           CI_TEST_JSON: ${{ runner.temp }}/test-shard.json
         run: scripts/ci-test-shard.sh 0 1
-      # What `checks` builds before it runs anything, so its restore holds it.
-      - name: Build forge and the codegen tools (for checks)
-        if: ${{ !cancelled() }}
-        run: |
-          go install ./cmd/forge
-          forge tools install --force
       - name: Check the test-job partition
         if: ${{ !cancelled() }}
         run: scripts/ci-test-packages.sh check
@@ -899,8 +894,13 @@ jobs:
   #                     dependencies reach every project that installs it.
   #
   # Each check runs whatever the others concluded, so one red does not hide
-  # another. Both tiers; it restores the -short scope (test-short-warm builds
-  # forge and the codegen tools into it) and saves nothing.
+  # another.
+  #
+  # Its own cache scope, `tools`, saved by its own run on main. Not the
+  # -short scope: verify-generated regenerates into a scratch copy of the
+  # checkout and validates it with forge's go invocations, which build with
+  # -trimpath (goexec), so what it compiles is keyed apart from the tests'
+  # artifacts. Restored from the -short scope it ran 250s cold against ~47s.
   checks:
     name: Checks (generated code, KCL, pre-commit, licenses)
     runs-on: ubuntu-latest
@@ -912,8 +912,9 @@ jobs:
           go-version-file: go.mod
           cache: false
       - uses: ./.github/actions/restore-go-caches
+        id: go-caches
         with:
-          scope: short
+          scope: tools
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -1022,6 +1023,13 @@ jobs:
       - name: Full npm license inventory (on failure)
         if: ${{ !cancelled() && steps.npm-licenses.outcome == 'failure' }}
         run: ./scripts/check-npm-licenses.sh --list web-runtime
+      - name: Save the Go caches (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/save-go-caches
+        with:
+          build-key: ${{ steps.go-caches.outputs.build-key }}
+          mod-key: ${{ steps.go-caches.outputs.mod-key }}
+          mod-hit: ${{ steps.go-caches.outputs.mod-hit }}
 
   # CI gate: one check that is red exactly when any job above failed or was
   # cancelled (a skipped job — a main-only lane on a pull request — is not a

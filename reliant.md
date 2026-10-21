@@ -155,7 +155,8 @@ job before adding a job.
   `forge lint` locally to see a finding first.
 - **Test (-short whole tier, then guards)** — the pull-request tier in one job, which saves
   the `go-build-short` and `go-mod` caches the pull-request jobs restore
-  (`.github/actions/restore-go-caches`); then the guards (tierguard, removalguard,
+  (`.github/actions/restore-go-caches`; Checks saves its own `go-build-tools` on main);
+  then the guards (tierguard, removalguard,
   deadcodeguard, writeguard; `-p 1`, full mode, no `-race`), which pull requests also run.
 - **Build (-trimpath) + go-licenses + govulncheck** — the release build flags, the second
   license opinion (Checks covers dependency licenses on every pull request), and

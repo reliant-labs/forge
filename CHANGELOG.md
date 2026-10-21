@@ -10,14 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`forge cloud identity` administers users, not just reads them.** New verbs,
-  each one rpc of `controlplane.v1.IdentityService`: `set-roles <env> --user
-  <id|email> --role a --role b` (or `--none`), `reset`, `lock`, `unlock`,
+  each one rpc of `controlplane.v1.IdentityService`:
+  `set-roles <env> --user <id|email> --role a --role b` (or `--none`),
+  `reset`, `lock`, `unlock`,
   `delete` (asks first; `--yes` skips the question; a closed stdin refuses) and
   `revoke-sessions`. `--user` takes a user id, or an email matched exactly
   (case-insensitively) through `users`; no match, or two, is a refusal. The
   scopes are `identity:read` for reads and `identity:manage` for every verb that
-  changes a user. forge presents neither up front: a Reliant session or `forge
-  login` credential is traded for the scope the control plane's 403 names, for
+  changes a user. forge presents neither up front: a Reliant session or
+  `forge login` credential is traded for the scope the control plane's 403 names, for
   an hour, exactly as `deploy:read` and `secret:write` are. An explicit
   `--token` is used as given. `invite` is unchanged.
 - **`forge project new --verify`** keeps the compile check at the end of the
@@ -118,8 +119,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bootstrap generate skips its final `go build` and deploy-KCL render unless you
   pass `--verify`. That tail was the one CPU-saturating step (40s of the
   pipeline's 63s on a cold build cache), and it re-proved output that forge's
-  own e2e corpus compiles on every change; your first `go build` or `forge
-  generate` runs the same check. `project new` never took a heavy slot and still
+  own e2e corpus compiles on every change; your first `go build` or
+  `forge generate` runs the same check. `project new` never took a heavy slot and still
   does not: pinned by `TestRunNew_TakesNoHeavySlot`.
 - **Transaction isolation has no default; every writable transaction names
   its level.** pkg/orm had two opposite defaults: `RunTx`,
@@ -195,8 +196,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   peer pin was aimed at `dist/index.d.mts`, and Next's webpack read it as
   JavaScript (`Module parse failed: Unexpected token`). Only a `.d.ts` is pinned
   now; a package with none is pinned by its directory.
-- **Docs no longer promise mail that is never sent.** The `deploy/managed-
-  identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
+- **Docs no longer promise mail that is never sent.** The
+  `deploy/managed-identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
 - **Docs no longer promise mail that is never sent.** The
   `deploy/managed-identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
   mail through a platform relay and that an invitation emails a link. Neither is
@@ -211,6 +212,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `protoc-gen-go` at that moment could find nothing, or run a half-written
   binary. The install now builds into a temp directory inside GOBIN and
   renames the result into place.
+- **A k3d server that dies during boot says why.** k3d's entrypoint runs its
+  cgroup, DNS and mount scripts before k3s and writes their output to
+  `/var/log/k3d-entrypoints_*.log`, not to `docker logs`. A server that
+  exited there showed `restarts=1 exit=1` and no log lines. Forge's retry
+  warning now appends the tail of that file, read with `docker cp` so it
+  works on a stopped container.
 - **Tracing remediation says `--fix`.** Lint became report-only by default,
   but every tracing finding's remediation, the auto-fix hint, the generated
   `NewInstrumented` comment and the observability skills still said

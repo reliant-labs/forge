@@ -11,6 +11,8 @@
 // reportException is a no-op, which is what makes it safe to call from any
 // catch block unconditionally.
 
+import { SERVER_TRACE_ID_ATTRIBUTE, serverTraceIdOf } from "./trace-id.js";
+
 /** Span/log attribute values the recorder accepts. */
 export type ExceptionAttributes = Record<string, string | number | boolean>;
 
@@ -51,6 +53,11 @@ export function setExceptionReporter(next: ExceptionReporter | null): void {
  * boundary-caught error to console.error itself, so the recorder installed
  * by `/telemetry` skips an error the SDK has already seen: one failure is
  * one record, never two.
+ *
+ * A failed RPC's error (ConnectClientError) carries the trace the server
+ * recorded it in; it is added as the `server.trace_id` attribute, so the
+ * browser record links to the server's spans and logs. An attribute of that
+ * name passed by the caller wins.
  */
 export function reportException(
   error: unknown,
@@ -60,7 +67,13 @@ export function reportException(
     return false;
   }
   try {
-    reporter(error, attributes);
+    const traceId = serverTraceIdOf(error);
+    reporter(
+      error,
+      traceId
+        ? { [SERVER_TRACE_ID_ATTRIBUTE]: traceId, ...attributes }
+        : attributes,
+    );
   } catch {
     // Telemetry must never break the app.
   }

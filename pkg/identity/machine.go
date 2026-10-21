@@ -408,7 +408,7 @@ func (p *run) dropCred(ctx context.Context, userID, kind, id string) {
 	}
 	err := p.c.call(ctx, http.MethodDelete, "/management/v1/users/"+url.PathEscape(userID)+"/"+kind+"/"+url.PathEscape(id), nil, nil, idem)
 	if err != nil && !isNotFound(err) {
-		p.c.log.Warn("identity: could not delete a credential", "user_id", userID, "kind", kind, "id", id, "err", err.Error())
+		p.c.log.WarnContext(ctx, "identity: could not delete a credential", "user_id", userID, "kind", kind, "id", id, "err", err.Error())
 	}
 }
 

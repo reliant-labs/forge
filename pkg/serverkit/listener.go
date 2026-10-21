@@ -385,7 +385,7 @@ func (l *Listener) Listen(ctx context.Context) error {
 		return fmt.Errorf("listen %s: %w", l.cfg.Addr, err)
 	}
 	l.ln = ln
-	l.logger.Info("server listening", "addr", l.cfg.Addr, "tls", l.cfg.tls())
+	l.logger.InfoContext(ctx, "server listening", "addr", l.cfg.Addr, "tls", l.cfg.tls())
 	return nil
 }
 

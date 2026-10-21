@@ -526,7 +526,11 @@ func runTargetedLane(ctx context.Context, flags lintFlags, paths []string, lane 
 		return runWithCwd(runVendoredProtosLint)
 	}
 	if flags.graph {
-		return runWithCwd(runGraphLint)
+		_, cfg, err := loadLintConfig()
+		if err != nil {
+			return err
+		}
+		return runWithCwd(func(cwd string) error { return runGraphLint(cwd, cfg) })
 	}
 	if flags.configReach {
 		_, cfg, err := loadLintConfig()

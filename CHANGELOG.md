@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Roots can be declared one at a time: resolution follows reach.** A
+  root's process builds only the closure its fields reach, but `forge
+  generate` demanded a provider for every Deps field of every discovered
+  component, so a project with 33 handlers could not declare a gateway root
+  without first wiring all of them. Now a Deps field forge cannot fill fails
+  generate only on a node some root reaches (as before, with the same
+  message). A node no root reaches with such a field, and every node that
+  takes it, is left out of `graph_gen.go` — no accessor, no injected
+  constructor; an owned one is kept — and `forge lint --graph` reports it as
+  `forge-graph-unreachable`, always an error. A project whose Deps all resolve,
+  every fresh scaffold, generates byte for byte what it did.
+- **`forge lint --graph` answers to `lint.rules`.** Its findings went straight
+  to the verdict, so `lint.rules: {forge-graph-unreachable: warn}` was accepted
+  and ignored. They now pass through the same `off` / `warn` / `error` dial as
+  every forge rule, which is what holds the unreached components at warn while
+  the roots are declared.
+- **A failed request names the trace it landed in, in the browser.** Every
+  forge server now answers each Connect call, failed ones included, with the
+  W3C `traceresponse` header naming its server span
+  (`observe.TraceResponseInterceptor`, inside the trace slot of
+  `observe.Chain`), and `middleware.DefaultCORSExposeHeaders` exposes it.
+  `@reliantlabs/forge-web-runtime` reads it (next release, 0.6.0): `ConnectClientError.traceId`
+  is the server's trace (or, without the header, the trace of the traceparent
+  the runtime sent), a dev log line that logs such an error ends in
+  `trace_id=<id>`, and `reportException` adds it as `server.trace_id`. So one
+  id joins a screenshot of an error, the browser's record, and every server
+  span and log line of the request.
+
 - **Every contract package is instrumented by default.** A package whose
   constructor returns its `Service` interface now gets `middleware_gen.go`
   (one span, the call metrics and a failure log per method), and compose.go
@@ -304,6 +332,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The tracing rules flag only code a trace can reach.** Three constructions
+  were reported that cut no trace, and are no longer: in a project whose
+  observability is off (derived off with no server: a CLI or a library), the
+  top-level `internal/` and `cmd/` trees and every `package main`, which run
+  only in its own untraced binaries — its importable packages are still
+  linted, since they run inside the traced servers that import them; a pool
+  opened only to look its driver up (every use `.Driver()` or `.Close()`,
+  how `dbtrace.Open` builds a traced pool from a driver name); and an
+  `*http.Client` in a file that exports telemetry over OTLP, which is
+  untraced on purpose (a traced exporter traces its own exports). forge's
+  own `forge lint` is green again: its library code now logs with the
+  request context, and opens its HTTP clients and pools traced
+  (`pkg/oauth2`, `pkg/identity`, `pkg/orm`, `pkg/migratekit`, `pkg/pgtest`,
+  `pkg/testkit`, …). `pkg/pgtest` handles are pgx under dbtrace, as
+  production's pool is.
+- **`forge lint`'s format pre-pass never rewrites a `testdata` fixture.** The
+  go tool and the gate never read one, and an analyzer fixture's want lines
+  depend on its exact layout.
 - **A freshly scaffolded operator passes `forge lint --contract`.** An
   `internal/operators/<name>` package declaring `SetupWithManager` is exempt
   from `requirecontract` structurally, as a worker is.

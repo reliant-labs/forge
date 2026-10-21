@@ -87,6 +87,8 @@ type graphRootView struct {
 	AwaitMigrations bool
 	// Command is the cobra command path that runs the root.
 	Command []string
+	// PlanNodes is Reach with each node's lifecycle: Plan<Root>().
+	PlanNodes []graphPlanNodeView
 	// Config is every config field the root reaches; HasConfig is false
 	// when the project has no root config message to read reach against.
 	Config    []ConfigLeaf
@@ -383,11 +385,17 @@ func graphRootViews(roots []graphRoot, nodes []*graphNode, u *graphUniverse, edg
 // graphGenViewOf is graph_gen.go's view: every node, the roots, the
 // operators, and the imports their types need.
 func graphGenViewOf(module string, nodes []*graphNode, rootViews []graphRootView, opsView *graphOperatorsView, opNodes []*graphNode) graphGenView {
-	gv := graphGenView{Module: module, Roots: rootViews, Operators: opsView}
-	for _, rv := range rootViews {
+	byName := make(map[string]*graphNode, len(nodes))
+	for _, n := range nodes {
+		byName[n.Name] = n
+	}
+	gv := graphGenView{Module: module, Roots: make([]graphRootView, len(rootViews)), Operators: opsView}
+	for i, rv := range rootViews {
 		if !rv.ServesProbes {
 			gv.ProbeListener = true
 		}
+		rv.PlanNodes = planNodes(rv, byName)
+		gv.Roots[i] = rv
 	}
 	nodeImports := map[string]string{}
 	for _, n := range nodes {

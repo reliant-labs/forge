@@ -177,6 +177,42 @@ func TestCheckReleasePinned_PinnedAndUnboundPass(t *testing.T) {
 	}
 }
 
+// TestCheckReleasePinned_BuildOnlyImageOnlyWhenReferenced: a build-only image
+// is pulled only through a release_inputs reference (workspace-base, handed to
+// daemon pods by a controller), so it must be pinned exactly then. A build-only
+// image nothing references (workspace-runtime, the parent workspace-base is
+// built FROM) renders into no object and must not make a release cut before it
+// existed unrenderable.
+func TestCheckReleasePinned_BuildOnlyImageOnlyWhenReferenced(t *testing.T) {
+	const gar = "us-central1-docker.pkg.dev/acme/prod"
+	entities := &KCLEntities{
+		Workloads: []WorkloadEntity{
+			{Name: "workspace-runtime", Image: gar + "/workspace-runtime", Build: BuildConfigEntity{Type: "shell"}, Runtime: RuntimeEntity{Type: RuntimeBuildOnly}},
+			{Name: "workspace-base", Image: gar + "/workspace-base", Build: BuildConfigEntity{Type: "shell"}, Runtime: RuntimeEntity{Type: RuntimeBuildOnly}},
+			{Name: "controller", Image: gar + "/control-plane", Build: BuildConfigEntity{Type: "go"}, Runtime: RuntimeEntity{Type: RuntimeCluster},
+				ReleaseInputs: map[string]string{"workspace-base": gar + "/workspace-base:v1"}},
+		},
+		ReleaseManifestConsumers: []releaseManifestConsumer{{Name: "prepull", ReleaseInputs: map[string]string{"container:prepull": gar + "/prepull@" + sha("c")}}},
+	}
+	entities.Workloads = append(entities.Workloads, WorkloadEntity{Name: "prepull-image", Image: gar + "/prepull", Build: BuildConfigEntity{Type: "shell"}, Runtime: RuntimeEntity{Type: RuntimeBuildOnly}})
+	pinned := map[string]string{gar + "/control-plane": sha("a"), gar + "/workspace-base": sha("b"), gar + "/prepull": sha("c")}
+	if err := checkReleasePinned(entities, pinned, "v1.0.0", "prod"); err != nil {
+		t.Fatalf("an unreferenced build-only image tripped the release pin check: %v", err)
+	}
+	for _, missing := range []string{gar + "/workspace-base", gar + "/prepull"} {
+		partial := map[string]string{}
+		for k, v := range pinned {
+			if k != missing {
+				partial[k] = v
+			}
+		}
+		err := checkReleasePinned(entities, partial, "v1.0.0", "prod")
+		if err == nil || !strings.Contains(err.Error(), missing) {
+			t.Errorf("a referenced build-only image %s without a digest must be refused, got %v", missing, err)
+		}
+	}
+}
+
 // TestCheckReleasePinned_IgnoresImagesForgeDoesNotBuild: third-party images
 // (declared with their own pinned tag, built by nobody here) and host/compose
 // workloads pull nothing from a release, so they must not trip the guard.

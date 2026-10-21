@@ -3344,12 +3344,20 @@ func releaseArtifactURIs(ctx context.Context, releases releaseLedger, version st
 // third-party images (nats, temporal) are pinned by their own author in the
 // declaration and appear in no release, and a host/compose workload pulls
 // nothing. `--no-digest` is the explicit escape hatch and never reaches here.
+//
+// A BUILD-ONLY image is pulled only through what references it: a workload's
+// or manifest group's `release_inputs` (a controller handing it to the pods it
+// creates, a pre-pull DaemonSet). One nothing references — a parent image
+// another build is built FROM (ShellBuild.built_images) — renders into no
+// object at all, so it has no tag to fall back to and is not checked. Without
+// that, declaring a new build-only image made every release cut before it
+// unrenderable, although none of those releases' objects could change.
 func checkReleasePinned(entities *KCLEntities, digests map[string]string, boundRelease, envName string) error {
 	if boundRelease == "" || entities == nil {
 		return nil
 	}
 	var unpinned []string
-	for _, d := range declaredImageDestinations(entities) {
+	for _, d := range releasePulledDestinations(entities) {
 		if _, ok := digests[d.repository]; ok {
 			continue
 		}
@@ -3375,6 +3383,46 @@ func checkReleasePinned(entities *KCLEntities, digests map[string]string, boundR
 			"  forge env build %s --release <version> --push && forge env deploy %s <version>\n"+
 			"Or deploy without the release's pins, deliberately: forge env deploy %s --no-digest",
 		envName, boundRelease, strings.Join(unpinned, "\n"), known, envName, envName, envName)
+}
+
+// releasePulledDestinations is declaredImageDestinations minus the images no
+// rendered object can pull: a repository every declaring workload builds only
+// (forge.BuildOnly) and no release_inputs names. See checkReleasePinned.
+func releasePulledDestinations(e *KCLEntities) []imageDestination {
+	referenced := map[string]bool{}
+	for _, w := range e.Workloads {
+		for _, ref := range w.ReleaseInputs {
+			referenced[imageRepository(ref)] = true
+		}
+	}
+	for _, m := range e.ReleaseManifestConsumers {
+		for _, ref := range m.ReleaseInputs {
+			referenced[imageRepository(ref)] = true
+		}
+	}
+	buildOnly := map[string]bool{}
+	for _, w := range e.Workloads {
+		if w.Image == "" {
+			continue
+		}
+		repo := imageRepository(w.Image)
+		switch w.Runtime.Type {
+		case RuntimeBuildOnly:
+			if _, seen := buildOnly[repo]; !seen {
+				buildOnly[repo] = true
+			}
+		case RuntimeCluster, RuntimeHosted:
+			buildOnly[repo] = false
+		}
+	}
+	var out []imageDestination
+	for _, d := range declaredImageDestinations(e) {
+		if buildOnly[d.repository] && !referenced[d.repository] {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
 }
 
 // expandLegacyLedgerKeys re-keys a promotion's digest map onto the FULL image

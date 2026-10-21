@@ -28,3 +28,15 @@ The graph itself — providers, `compose.go`, roots and commands, each root's co
 `forge fix narrow-deps internal/handlers/<svc>` fixes the first: it declares, in the package (its `contract.go`, or `deps.go`), an interface holding exactly the methods the package calls, retypes the field, and writes its mock (`mock_gen.go`, kept in step by `forge generate`). `compose.go` needs no change — the value it hands the field still satisfies the narrower interface.
 
 A project scaffolded before the graph keeps its `Infra`/`OpenInfra` + `NewComponents` composition, and forge generates for it exactly as before, until it migrates: `forge fix composition-graph` converts what forge scaffolded, or lists (writing nothing) each shape of yours it cannot; `migrations/v0.1.47` is the rest of the path.
+
+## Pinning a root's start and stop order
+
+`graph_gen.go` emits, per root, `Plan<Root>() graphkit.Plan`: every node `Build<Root>` constructs, in order, with the lifecycle methods its type has (the probe listener first for a root with no API listener). `Plan.Stop()` is the order `Run<Root>` stops the supervised nodes — the root's first field first — so a unit test pins it without constructing a database or a broker:
+
+```go
+func TestGatewayStopsTheHandOverFirst(t *testing.T) {
+	if got := app.PlanGateway().Stop(); got[0] != "daemon_listener" {
+		t.Fatalf("stop order %v", got)
+	}
+}
+```

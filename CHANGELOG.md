@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`Plan<Root>()`: each root's start and stop order as data.** `graph_gen.go`
+  emits a static `graphkit.Plan` per root — every node `Build<Root>`
+  constructs, in order, with the lifecycle methods its type has, the probe
+  listener first for a root that serves no probes. `Plan.Start` / `Plan.Stop`
+  are the order `Run<Root>` supervises, so a project pins a root's stop
+  order in a unit test without a database or a broker (roots plan F7).
 - **Each root's process settings come from the configs its command loads,
   and a root declares whether it migrates.** In a binary_config project
   (`(forge.v1.binary_config)` `command`/`subtrees`), `rootSpec.Configs` hands

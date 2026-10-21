@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A failed request names the trace it landed in, in the browser.** Every
+  forge server now answers each Connect call, failed ones included, with the
+  W3C `traceresponse` header naming its server span
+  (`observe.TraceResponseInterceptor`, inside the trace slot of
+  `observe.Chain`), and `middleware.DefaultCORSExposeHeaders` exposes it.
+  `@reliantlabs/forge-web-runtime` 0.6.0 reads it: `ConnectClientError.traceId`
+  is the server's trace (or, without the header, the trace of the traceparent
+  the runtime sent), a dev log line that logs such an error ends in
+  `trace_id=<id>`, and `reportException` adds it as `server.trace_id`. So one
+  id joins a screenshot of an error, the browser's record, and every server
+  span and log line of the request. The scaffold manifests move to `^0.6.0`
+  once 0.6.0 is published.
+
 - **`forge lint` is report-only under CI, and `--check` says so anywhere.** The
   auto-fix default (#843) is right on a developer's machine and wrong on a CI
   runner, where the checkout is thrown away: a fixer that quietly repairs it

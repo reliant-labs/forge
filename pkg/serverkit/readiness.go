@@ -114,9 +114,12 @@ type readyzResponse struct {
 
 // readyzCheckStatus is one dependency's public status: its NAME and
 // whether it passed. Never the error — see the no-leak contract above.
+// Detail is a fixed word from serverkit's own vocabulary (the boot probes'
+// "building"), never a message from the dependency.
 type readyzCheckStatus struct {
-	Name string `json:"name"`
-	OK   bool   `json:"ok"`
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail,omitempty"`
 }
 
 // readyzHandler builds the GET /readyz handler (Drainer.ReadinessHandler).

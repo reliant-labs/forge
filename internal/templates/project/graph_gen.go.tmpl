@@ -115,6 +115,12 @@ func (g *Graph) build(root string, force func()) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("build %s: set app.Graph's %s before building a root", root, strings.Join(missing, ", "))
 	}
+	// Construction is reported to the boot probes on Ctx (none when Ctx
+	// carries none), so while a constructor blocks boot /readyz names it as
+	// building, beside every node already built.
+	if bp := serverkit.BootProbesFrom(g.Ctx); bp != nil {
+		g.b.ReportTo(bp)
+	}
 	return g.b.Build(root, force)
 }
 

@@ -394,6 +394,18 @@ func lintInternalContracts(rootDir string, excludes []string) (forgeconv.Result,
 // contract surfaces all three at once (Service / Deps / New) rather
 // than drip-feeding one violation per re-run.
 func lintInternalContractPackage(relContractPath, pkgDir string) ([]forgeconv.Finding, error) {
+	// The shape exists so the server composition can construct the
+	// package: `<pkg>.<Constructor>(<pkg>.Deps{...})`, typed off the
+	// contract. A `//forge:not-a-component` package is one the composition
+	// never constructs — something else builds it — so there is nothing
+	// for the shape to make bindable. Before this check, such a package
+	// passed only by accident of the interface-catalogue early-out, and
+	// deleting an unrelated private interface (a scan helper) flipped it
+	// to three findings demanding Service/Deps/New.
+	if codegen.HasNotAComponentDirective(pkgDir) {
+		return nil, nil
+	}
+
 	facts, err := scanPackageContractShape(pkgDir)
 	if err != nil {
 		return nil, err

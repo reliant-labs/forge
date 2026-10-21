@@ -11,8 +11,9 @@
 # every gate forge had.
 #
 # WHEN IT RUNS. Every push to main, nightly (nightly.yml, `select: all`), on
-# demand (workflow_dispatch), and on a pull request only when it carries the
-# `ci:e2e` label. It used to run on every pull request, and at 7-12 minutes a
+# demand (workflow_dispatch), and on a pull request when it carries the
+# `ci:e2e` label OR changes the scaffold, the templates, the code generators
+# or generate (the `changes` job; informational, never part of `CI gate`). It used to run on every pull request, and at 7-12 minutes a
 # shard (20 on average, 42 at worst, for the workflow) it was half of a pull
 # request's wall time. A pull request's budget is about five minutes (ci.yml,
 # "TWO TIERS"), so the suite moved to main, where a regression is bisected
@@ -125,11 +126,59 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Does this pull request change what the suite exercises? The scaffold, the
+  # templates, the code generators and generate itself are what the e2e
+  # tests drive, and their PR tier is unit tests under -short: every one of
+  # October 2026's e2e reds on main came from a change under these paths
+  # that the suite never saw before merging. Such a pull request runs the
+  # suite without the `ci:e2e` label.
+  #
+  # INFORMATIONAL. This workflow is not part of ci.yml's `CI gate`, and no
+  # check of it is required: a red here is a verdict to read before merging,
+  # not a gate. One run per pull-request head: a new push cancels the run in
+  # progress (the concurrency group above). A `labeled` event for some other
+  # label never auto-runs (its run is in a group of its own and would only
+  # duplicate the one already going).
+  changes:
+    name: changes (does the suite apply?)
+    if: ${{ github.event_name == 'pull_request' && github.event.action != 'labeled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      e2e: ${{ steps.paths.outputs.e2e }}
+    steps:
+      - name: Paths the suite exercises
+        id: paths
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename')
+          hits=$(grep -E '^internal/(templates|codegen|generator)/|^internal/cli/(scaffold|generate)' <<<"$files" \
+            | grep -vE '^internal/templates/project/skills/' || true)
+          if [ -n "$hits" ]; then
+            echo "e2e=true" >> "$GITHUB_OUTPUT"
+            { echo "### The E2E Suite runs on this pull request (informational)"; echo; echo "It changes:"; echo; sed 's/^/- `/; s/$/`/' <<<"$hits" | head -40; } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "e2e=false" >> "$GITHUB_OUTPUT"
+          fi
+
   prepare:
     name: prepare (build once, plan shards)
+    needs: [changes]
     # Everything else needs this job, so this one condition gates the
-    # workflow: on a pull request without the label, all of it skips.
-    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:e2e') }}
+    # workflow: on a pull request, it runs with the `ci:e2e` label or when
+    # the change touches what the suite exercises (the `changes` job), and
+    # skips otherwise. `always()` because `changes` is skipped off pull
+    # requests and on `labeled` events.
+    if: >-
+      ${{ always() && (github.event_name != 'pull_request'
+        || contains(github.event.pull_request.labels.*.name, 'ci:e2e')
+        || needs.changes.outputs.e2e == 'true') }}
     runs-on: ubuntu-latest
     env:
       # THE shard count. The suite's matrix and the ledger both read it from

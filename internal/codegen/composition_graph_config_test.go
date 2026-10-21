@@ -1,6 +1,8 @@
 package codegen
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -156,5 +158,46 @@ func TestProcessConfigFieldsAreWhatRunRootReads(t *testing.T) {
 	sort.Strings(extra)
 	if len(missing) > 0 || len(extra) > 0 {
 		t.Errorf("runRoot reads %v that no root is given; the sets name %v runRoot never reads", missing, extra)
+	}
+}
+
+// Before its first generate a project has no descriptor, so proto/config
+// parses to nothing; the config loader and config_gen.k then use the scaffold
+// defaults, and the graph must model that same config. Reading it as "no root
+// config" left every root's reach unknown: config_gen.k lost workloadEnvMap,
+// which each scaffolded env's main.k calls, and no env rendered.
+func TestLoadProcessConfigs_NoDescriptorModelsTheScaffoldDefaults(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/demo\n\ngo 1.24\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pc := loadProcessConfigs(dir)
+	if pc == nil || pc.root == nil {
+		t.Fatal("no root config modelled for a project whose config loader uses the scaffold defaults")
+	}
+	want := ConfigFieldNamesFromMessages(DefaultConfigMessages())
+	if len(pc.root.all) != len(want) {
+		t.Fatalf("root config models %d leaves; the scaffold defaults have %d fields", len(pc.root.all), len(want))
+	}
+	if got := pc.root.byGo["Port"]; len(got) != 1 || got[0].EnvVar != "PORT" {
+		t.Errorf("root config's Port = %+v, want the scaffold default PORT leaf", got)
+	}
+}
+
+// A project generate has not composed yet has no constructors or providers
+// to read reach from, so its reach is unknown (nil) — never the near-empty
+// reach the bare graph would claim, which made config_gen.k refuse the
+// scaffold's own `config_secrets = ["DATABASE_URL"]` so that no env rendered.
+func TestGraphRoots_BeforeTheFirstComposeReachIsUnknown(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/demo\n\ngo 1.24\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	roots, err := GraphRoots(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if roots != nil {
+		t.Fatalf("GraphRoots = %+v before internal/app/compose.go exists, want nil (reach unknown)", roots)
 	}
 }

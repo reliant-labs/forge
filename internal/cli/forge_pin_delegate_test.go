@@ -32,14 +32,13 @@ func armDelegation(t *testing.T) (*handoff, *[]string) {
 		pinDelegationDisabled, pinDelegateResolver, pinDelegateExec = prevDisabled, prevResolver, prevExec
 	})
 	pinDelegationDisabled = false
-	cache := t.TempDir()
+	t.Setenv(forgedelegate.CacheEnv, t.TempDir())
 	pinDelegateResolver = func(w io.Writer) *forgedelegate.Resolver {
 		return &forgedelegate.Resolver{
-			CacheDir: cache,
-			Log:      w,
+			Log: w,
 			Install: func(_ context.Context, pkg, gobin string) error {
 				installs = append(installs, pkg)
-				return atomicfile.WriteFile(filepath.Join(gobin, "forge"), []byte("#!/bin/sh\n"), 0o755)
+				return atomicfile.WriteFile(filepath.Join(gobin, "forge"+exeSuffix()), []byte("#!/bin/sh\n"), 0o755)
 			},
 		}
 	}
@@ -178,8 +177,7 @@ func TestDelegation_UnavailablePinFallsBackToTheRunbook(t *testing.T) {
 	h, _ := armDelegation(t)
 	pinDelegateResolver = func(w io.Writer) *forgedelegate.Resolver {
 		return &forgedelegate.Resolver{
-			CacheDir: t.TempDir(),
-			Log:      w,
+			Log: w,
 			Install: func(_ context.Context, _, _ string) error {
 				return errors.New("dial tcp: lookup proxy.golang.org: no such host")
 			},

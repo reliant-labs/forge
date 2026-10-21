@@ -28,7 +28,8 @@ func newResolver(t *testing.T) (*Resolver, *[]string, *bytes.Buffer) {
 	t.Helper()
 	var calls []string
 	var log bytes.Buffer
-	return &Resolver{CacheDir: t.TempDir(), Log: &log, Install: fakeInstall(t, &calls)}, &calls, &log
+	t.Setenv(CacheEnv, t.TempDir())
+	return &Resolver{Log: &log, Install: fakeInstall(t, &calls)}, &calls, &log
 }
 
 // The first request for a pin builds it; every later one reuses the build.
@@ -125,9 +126,10 @@ func TestPinned_NoPin(t *testing.T) {
 // The cache keeps the newest few builds and never the one in use.
 func TestPinned_PrunesLeastRecentlyUsed(t *testing.T) {
 	r, _, _ := newResolver(t)
+	cache := os.Getenv(CacheEnv)
 	old := time.Now().Add(-48 * time.Hour)
 	for i := 0; i < keepVersions+3; i++ {
-		d := filepath.Join(r.CacheDir, "v0.0."+string(rune('a'+i)))
+		d := filepath.Join(cache, "v0.0."+string(rune('a'+i)))
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -139,14 +141,14 @@ func TestPinned_PrunesLeastRecentlyUsed(t *testing.T) {
 	if _, err := r.Pinned(context.Background(), t.TempDir(), pin); err != nil {
 		t.Fatal(err)
 	}
-	entries, _ := os.ReadDir(r.CacheDir)
+	entries, _ := os.ReadDir(cache)
 	if want := keepVersions + 1; len(entries) != want {
 		t.Fatalf("%d entries kept, want %d", len(entries), want)
 	}
-	if _, err := os.Stat(filepath.Join(r.CacheDir, safeName(pin))); err != nil {
+	if _, err := os.Stat(filepath.Join(cache, safeName(pin))); err != nil {
 		t.Errorf("the build in use was pruned: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(r.CacheDir, "v0.0.a")); err == nil {
+	if _, err := os.Stat(filepath.Join(cache, "v0.0.a")); err == nil {
 		t.Error("the least recently used entry survived")
 	}
 }

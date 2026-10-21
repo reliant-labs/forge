@@ -40,6 +40,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -213,10 +214,21 @@ func (c configInput) scope(binary string) string {
 // AppConfig, or else the primary binary's own root config (the message
 // config.Config aliases, PrimaryConfigMessage) — and every other config the
 // primary binary binds. nil when there is no root config.
+//
+// No config messages — no descriptor yet (a fresh scaffold before its first
+// generate), or none annotated — means the scaffold defaults, exactly as the
+// config loader and config_gen.k have it (generateConfigLoader,
+// generatePerEnvDeployConfig): the graph models the config the process
+// really loads. Reading it as "no root config" left every root's reach
+// unknown, so config_gen.k carried no ROOTS and no workloadEnvMap while each
+// env's main.k calls it, and no env rendered.
 func loadProcessConfigs(projectDir string) *processConfigs {
 	messages, err := ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config"))
-	if err != nil || len(messages) == 0 {
+	if err != nil {
 		return nil
+	}
+	if len(messages) == 0 {
+		messages = DefaultConfigMessages()
 	}
 	binary := ""
 	if treeDir := primaryCmdTreeDir(projectDir); treeDir != "" {
@@ -576,9 +588,19 @@ func graphRoots(views []graphRootView) []GraphRoot {
 }
 
 // GraphRoots assembles a graph-mode project's graph and returns its roots as
-// processes, writing nothing; nil for a legacy-composition project.
+// processes, writing nothing; nil for a legacy-composition project, and for
+// one generate has not composed yet (no internal/app/compose.go — a fresh
+// scaffold whose bootstrap generate failed). There, the constructors reach is
+// read from, and the providers that open the database, do not exist, so the
+// graph would claim the roots reach almost nothing: config_gen.k's ROOTS then
+// refuse the scaffold's own `config_secrets = ["DATABASE_URL"]` and no env
+// renders. nil is "reach unknown", which config_gen.k projects as the default
+// `server` root reaching every field (GenerateConfigNativeSharedRoots).
 func GraphRoots(projectDir string) ([]GraphRoot, error) {
 	if !GraphComposition(projectDir) {
+		return nil, nil
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, "internal", "app", "compose.go")); err != nil {
 		return nil, nil
 	}
 	in, err := graphLintInput(projectDir)

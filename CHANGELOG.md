@@ -455,10 +455,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shorter deadline still applies, a longer one does not lift it.
   `serverkit.NoDeadline` drops the slot; any other interceptor in it replaces
   forge's and runs in the same pre-auth position. `observe.Deps.Deadline` is
-  the same position in `observe.Chain`. NewChain rejects a `Procedures` key
-  that is not a procedure (`/pkg.v1.Service/Method`). Behaviour change: an
-  existing chain gets the 30s unary default on upgrade with no edit — the
-  `migrations/v0.1.47` playbook says how to declare longer budgets.
+  the same slot in `observe.Chain`, with the same rule — nil is
+  `serverkit.Deadline{}` (logging through the chain's `Logger`),
+  `serverkit.NoDeadline` opts out — because `NewChain` builds on it; the type
+  is `observe.Deadline`, which `serverkit.Deadline` aliases. NewChain rejects a
+  `Procedures` key that is not a procedure (`/pkg.v1.Service/Method`).
+  Behaviour change: an existing chain — `NewChain` or `observe.Chain` — gets
+  the 30s unary default on upgrade with no edit; the `migrations/v0.1.47`
+  playbook says how to declare longer budgets.
 - **`(forge.v1.method).timeout` is enforced.** It was documented as the rpc's
   server-side timeout and read by nothing. `forge generate` now projects it
   into `pkg/middleware/procedures_gen.go` as `ProcedureDeadlines`, and the

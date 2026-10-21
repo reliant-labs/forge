@@ -94,6 +94,10 @@ const (
 	NoValidate Omit = "validate"
 )
 
+// OmittedSlot names the slot o drops. It is how observe.Chain, which cannot
+// import serverkit, recognises NoDeadline in observe.Deps.Deadline.
+func (o Omit) OmittedSlot() string { return string(o) }
+
 // WrapUnary is a passthrough; NewChain never installs an Omit.
 func (Omit) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc { return next }
 
@@ -222,13 +226,6 @@ func NewChain(deps ChainDeps) (*Chain, error) {
 	if err != nil {
 		return nil, err
 	}
-	deadline, err := chainSlot(deps.Deadline, NoDeadline, func() (connect.Interceptor, error) {
-		return Deadline{}, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	deadline = deadlineWithLogger(deadline, logger)
 	audit, err := chainSlot(deps.Audit, NoAudit, func() (connect.Interceptor, error) {
 		return middleware.AuditInterceptor(logger, authn.ClaimsFromContext), nil
 	})
@@ -264,9 +261,11 @@ func NewChain(deps ChainDeps) (*Chain, error) {
 		extras = append(extras, validator)
 	}
 	interceptors := observe.Chain(observe.Deps{
-		Logger:     logger,
-		Trace:      trace,
-		Deadline:   deadline,
+		Logger: logger,
+		Trace:  trace,
+		// As given: observe.Chain applies the slot's one rule (nil is
+		// Deadline{} on the chain's logger, NoDeadline drops it).
+		Deadline:   deps.Deadline,
 		Auth:       deps.Auth,
 		Audit:      audit,
 		RateLimit:  deps.RateLimit,
@@ -315,13 +314,13 @@ func validateChainDeps(deps ChainDeps) error {
 	}
 	switch d := deps.Deadline.(type) {
 	case Deadline:
-		if err := d.validate(); err != nil {
+		if err := d.Validate(); err != nil {
 			errs = append(errs, err)
 		}
 	case *Deadline:
 		if d == nil {
 			errs = append(errs, errors.New("ChainDeps.Deadline is a nil *serverkit.Deadline: leave the field nil for the default"))
-		} else if err := d.validate(); err != nil {
+		} else if err := d.Validate(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -370,25 +369,6 @@ func omitName(o Omit) string {
 		return "NoValidate"
 	}
 	return string(o)
-}
-
-// deadlineWithLogger hands a forge Deadline the chain's logger when it names
-// none, so its slow-call log lands where the chain's own logs do.
-func deadlineWithLogger(ic connect.Interceptor, logger *slog.Logger) connect.Interceptor {
-	switch d := ic.(type) {
-	case Deadline:
-		if d.Logger == nil {
-			d.Logger = logger
-		}
-		return d
-	case *Deadline:
-		if d.Logger == nil {
-			c := *d
-			c.Logger = logger
-			return c
-		}
-	}
-	return ic
 }
 
 // payloadCap maps a ChainDeps cap onto connect's, where zero is unlimited.

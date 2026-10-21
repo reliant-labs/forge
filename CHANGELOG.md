@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Probe paths are configurable, and the deploy follows the process
+  (`forge/pkg/serverkit`).** `serverkit.Config.Probes`
+  (`ProbePaths{Live, Ready []string}`; empty is `/healthz`, `/readyz`, so
+  defaults are unchanged) names the paths the process answers its liveness and
+  readiness probes on. Several paths per probe are allowed: the first is
+  canonical and the rest are aliases. The boot probes, `serverkit.Run`'s
+  listener and a `serverkit.Probes` surface (`Probes.Paths`) all serve them, and
+  `ProbePaths.Validate` rejects a path no listener can serve. The scaffold
+  declares `liveness_paths` / `readiness_paths` (`LIVENESS_PATHS` /
+  `READINESS_PATHS`, reached by every root) and projects them in `serve.go`.
+  The KCL lowering's default probe for a forge-built workload reads the same
+  env values, and `PORT`, so a pod is probed where its process answers. A
+  declared probe is kept. `Probes.Handle(path, h)` adds a probe-surface route,
+  such as a `/flow-health` on the probe port. A composition-graph node that
+  only calls `g.Probes.Handle` / `AddReadyCheck` no longer counts as serving
+  the probes, so its root keeps its probe listener. Existing projects:
+  `migrations/v0.1.47` section 3.
 - **Roots can be declared one at a time: resolution follows reach.** A
   root's process builds only the closure its fields reach, but `forge
   generate` demanded a provider for every Deps field of every discovered
@@ -332,6 +349,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`api.rest` runs on vanguard v0.5, and no longer hides the mux's other
+  routes.** vanguard v0.5 serves REST from a connect-go v2 `*connect.Server`
+  (`vanguard.Mount`) and removed `Service` / `NewService` / `NewTranscoder`.
+  `serverkit.RESTHandler` keeps its signature: each mounted service is
+  registered as `vanguard.ForwardService` over a Connect client whose
+  transport serves the call with the mux in process, so a REST request is
+  answered by the same handler and interceptor chain as its Connect URL, and
+  that handler sees the REST caller's address, TLS state and Host. A request
+  the mux has a route for now always goes to the mux: under v0.4's transcoder
+  every non-Connect route on it (the login broker's `/auth/*`) answered 404
+  once REST was on. Two v0.5 behaviors to know about. A streaming rpc maps to
+  REST only when its streamed side is a `google.api.HttpBody` (v0.4 sent
+  JSON lines). Annotating any other streaming rpc fails the REST routes at
+  startup, and the server then serves Connect only.
 - **The tracing rules flag only code a trace can reach.** Three constructions
   were reported that cut no trace, and are no longer: in a project whose
   observability is off (derived off with no server: a CLI or a library), the
@@ -455,10 +486,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shorter deadline still applies, a longer one does not lift it.
   `serverkit.NoDeadline` drops the slot; any other interceptor in it replaces
   forge's and runs in the same pre-auth position. `observe.Deps.Deadline` is
-  the same position in `observe.Chain`. NewChain rejects a `Procedures` key
-  that is not a procedure (`/pkg.v1.Service/Method`). Behaviour change: an
-  existing chain gets the 30s unary default on upgrade with no edit — the
-  `migrations/v0.1.47` playbook says how to declare longer budgets.
+  the same slot in `observe.Chain`, with the same rule — nil is
+  `serverkit.Deadline{}` (logging through the chain's `Logger`),
+  `serverkit.NoDeadline` opts out — because `NewChain` builds on it; the type
+  is `observe.Deadline`, which `serverkit.Deadline` aliases. NewChain rejects a
+  `Procedures` key that is not a procedure (`/pkg.v1.Service/Method`).
+  Behaviour change: an existing chain — `NewChain` or `observe.Chain` — gets
+  the 30s unary default on upgrade with no edit; the `migrations/v0.1.47`
+  playbook says how to declare longer budgets.
 - **`(forge.v1.method).timeout` is enforced.** It was documented as the rpc's
   server-side timeout and read by nothing. `forge generate` now projects it
   into `pkg/middleware/procedures_gen.go` as `ProcedureDeadlines`, and the

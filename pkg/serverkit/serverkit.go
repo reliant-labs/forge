@@ -526,6 +526,14 @@ type Config struct {
 	// are registered. Zero falls back to 2s.
 	ReadinessTimeout time.Duration
 
+	// Probes are the paths the process answers its liveness and readiness
+	// probes on — the boot probes, serverkit.Run's listener and a Probes
+	// surface alike. Empty is DefaultLivenessPath / DefaultReadinessPath.
+	// The scaffold projects them from the liveness_paths / readiness_paths
+	// config fields, which the KCL lowering reads too, so the probe a pod
+	// is given is the one its process serves.
+	Probes ProbePaths
+
 	// ReadHeaderTimeout bounds reading a request's headers (slowloris).
 	// Zero falls back to 10s; negative disables it.
 	ReadHeaderTimeout time.Duration
@@ -621,6 +629,7 @@ func (c *Config) Normalize() {
 	if c.DBConnectTimeout == 0 {
 		c.DBConnectTimeout = DefaultDBConnectTimeout
 	}
+	c.Probes = c.Probes.WithDefaults()
 }
 
 // The drain and probe defaults Normalize applies, shared with Drainer so a

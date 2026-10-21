@@ -691,8 +691,8 @@ type CmdServerTemplateData struct {
 	Name string
 
 	// RESTEnabled mirrors forge.yaml `api.rest: true`. When set the cmd
-	// composition site builds a vanguard transcoder over the mounted
-	// services' Connect paths and serves it in place of the bare mux.
+	// composition site serves vanguard's REST routes for the mounted
+	// services in front of the bare mux (serverkit.RESTHandler).
 	// Filled by generateCmdServerData from projectAPIRESTEnabled.
 	RESTEnabled bool
 }
@@ -1289,6 +1289,29 @@ func DefaultConfigMessages() []ConfigMessage {
 					Flag:         "security-headers-enabled",
 					DefaultValue: "true",
 					Description:  "Set OWASP security response headers (CSP, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, HSTS in production). Disable only if a dedicated edge proxy already sets them.",
+				},
+				{
+					// The probe paths: the KCL lowering reads the same env
+					// values for a forge-built workload's default probe. Keep
+					// in step with internal/templates/project/config.proto.tmpl.
+					Name:         "liveness_paths",
+					GoName:       "LivenessPaths",
+					GoType:       "string",
+					ProtoType:    "string",
+					EnvVar:       "LIVENESS_PATHS",
+					Flag:         "liveness-paths",
+					DefaultValue: "/healthz",
+					Description:  "Comma-separated paths the liveness probe answers on (200 while the process runs). The first is the one the deploy probes; the rest are aliases, for a platform that probes a fixed path (/health).",
+				},
+				{
+					Name:         "readiness_paths",
+					GoName:       "ReadinessPaths",
+					GoType:       "string",
+					ProtoType:    "string",
+					EnvVar:       "READINESS_PATHS",
+					Flag:         "readiness-paths",
+					DefaultValue: "/readyz",
+					Description:  "Comma-separated paths the readiness probe answers on (503 while booting, draining, or a dependency is down). The first is the one the deploy probes; the rest are aliases (/ready).",
 				},
 			},
 		},

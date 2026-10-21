@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -46,6 +44,9 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	}
 	if cfg.Addr == "" {
 		return fmt.Errorf("serverkit.Run: Config.Addr is required")
+	}
+	if err := cfg.Probes.Validate(); err != nil {
+		return fmt.Errorf("serverkit.Run: Config.Probes: %w", err)
 	}
 	if len(srv.Operators) > 0 && srv.RunOperators == nil {
 		return fmt.Errorf("serverkit.Run: Server.Operators is non-empty but Server.RunOperators is nil")
@@ -122,17 +123,12 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 		return err
 	}
 
-	front := map[string]http.Handler{
-		"/healthz": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = io.WriteString(w, "ok\n")
-		}),
-		// /readyz is the ROUTABILITY answer: listener bound, not draining, and
-		// every registered dependency reachable. It is what a rolling deploy
-		// believes, so it runs the checks live on each request rather than
-		// reporting a value latched at boot. See readiness.go.
-		"/readyz": drainer.ReadinessHandler(srv.ReadyChecks, cfg.ReadinessTimeout, logger),
-	}
+	// Liveness and readiness on cfg.Probes (/healthz, /readyz by default).
+	// Readiness is the ROUTABILITY answer: listener bound, not draining, and
+	// every registered dependency reachable. It is what a rolling deploy
+	// believes, so it runs the checks live on each request rather than
+	// reporting a value latched at boot. See readiness.go.
+	front := cfg.Probes.routes(drainer.ReadinessHandler(srv.ReadyChecks, cfg.ReadinessTimeout, logger))
 	// /flow-health: the APP-FLOW assertion endpoint. Mounted only when the
 	// caller registered FlowChecks. Like /healthz + /readyz it sits IN FRONT
 	// of the edge (no CORS/auth) and is STATUS-ONLY — 200 when every check

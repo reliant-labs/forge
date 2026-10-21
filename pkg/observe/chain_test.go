@@ -112,9 +112,13 @@ func TestChain_NilCollaboratorsSkipped(t *testing.T) {
 	}
 	// Chain still has the fixed observability prefix (recovery, request-id,
 	// logging, tracing, metrics) = 5 interceptors, none of which is a
-	// marker.
-	if len(chain) != 5 {
-		t.Errorf("nil-collaborator chain length = %d, want 5 (observability only)", len(chain))
+	// marker, plus the Deadline slot's default: nil is forge's budget, not
+	// none.
+	if len(chain) != 6 {
+		t.Errorf("nil-collaborator chain length = %d, want 6 (observability + the default deadline)", len(chain))
+	}
+	if _, ok := chain[5].(observe.Deadline); !ok {
+		t.Errorf("chain[5] = %T, want the default observe.Deadline", chain[5])
 	}
 }
 

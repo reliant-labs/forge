@@ -100,6 +100,14 @@ forge builds gets `/readyz` + `/healthz` on its `http` port on every runtime.
 See the `deploy` skill for the runtimes and how to rebind one workload (to a
 cluster you operate, say).
 
+A project that runs its components in processes it composes itself — one
+binary whose own subcommands (`public-api`, `admin-api`, `workers`) each mount
+several, so most components of a kind have no workload of their own — gets
+no workload for a new one: the scaffold prints which processes it found and
+the stanza, and leaves the choice to you. Mount it in the subcommand that
+should run it and add it to that workload's `serves`, or paste the stanza to
+give it its own. `forge lint`'s component-drift reads the file the same way.
+
 ## Port Assignment
 
 In a container every service owns `:8080` (the `http` port). In the dev loop

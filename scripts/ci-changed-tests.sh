@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The flake gate: run every test a change ADDS or EDITS three times, under
-# -race, before it merges.
+# The flake gate: run every test a change ADDS or EDITS three times before it
+# merges.
 #
 #   scripts/ci-changed-tests.sh [BASE]      BASE defaults to HEAD^1
 #
@@ -13,9 +13,17 @@
 # WHY. "Passed on re-run" is never an acceptable verdict here, and the cheapest
 # moment to catch a flaky test is before it lands: once merged, an
 # intermittent failure surfaces weeks later in somebody else's pull request,
-# looking like their bug. A test run once proves it CAN pass; three runs under
-# the race detector are a cheap probe that it passes reliably — order
-# dependence, leaked global state, a data race, a timing assumption.
+# looking like their bug. A test run once proves it CAN pass; three runs are a
+# cheap probe that it passes reliably — order dependence, leaked global state,
+# a timing assumption.
+#
+# NO -race. It runs in ci.yml's test-short job, right after the -short tier,
+# so the three runs reuse the test binaries that tier just compiled. -race is
+# a separate build of the whole dependency graph, and restoring it cost the
+# old flake-gate job 55-74s of a pull request's five-minute budget, plus a
+# runner of its own. The race detector runs over every test on each push to
+# main (ci.yml `test`, `test-cli`, full mode), and a race it finds is
+# bisected from there.
 #
 # WHICH TESTS. Top-level Test/Fuzz functions in *_test.go files the change
 # adds or modifies, found two ways in the diff:
@@ -69,7 +77,7 @@ fi
 
 status=0
 {
-  echo "### flake gate: new and edited tests, -race -count=3"
+  echo "### flake gate: new and edited tests, -count=3"
   echo
 } >>"$summary"
 for dir in $(printf '%s\n' "${!by_dir[@]}" | sort); do
@@ -79,12 +87,12 @@ for dir in $(printf '%s\n' "${!by_dir[@]}" | sort); do
   echo "::group::./$dir — $n test(s)"
   echo "$names"
   echo "::endgroup::"
-  if go test -short -race -count=3 -timeout 10m -run "$run" "./$dir"; then
+  if go test -short -count=3 -timeout 10m -run "$run" "./$dir"; then
     echo "- \`./$dir\`: $n test(s) passed 3/3" >>"$summary"
   else
     status=1
     echo "- \`./$dir\`: **FAILED** — one of $n test(s) did not pass three times in a row" >>"$summary"
-    echo "::error::./$dir: a new or edited test did not pass 3 of 3 runs under -race. Reproduce with: go test -race -count=3 -run '$run' ./$dir"
+    echo "::error::./$dir: a new or edited test did not pass 3 of 3 runs. Reproduce with: go test -short -count=3 -run '$run' ./$dir"
   fi
 done
 exit $status

@@ -93,9 +93,27 @@ func graphComposeInputReads(src string, nodes []*graphNode) map[string]map[strin
 		// g.Probes as the receiver of a method other than Front — a node
 		// adding a route (Handle) or a check (AddReadyCheck) — uses the
 		// probe surface without serving it, so it does not count as a read
-		// of "Probes" (which is what drops the root's probe listener).
+		// of "Probes" (which is what drops the root's probe listener). Nor
+		// does comparing it with nil, the guard before such a call.
 		registersOnly := map[*ast.SelectorExpr]bool{}
+		isRecvProbes := func(e ast.Expr) (*ast.SelectorExpr, bool) {
+			sel, ok := e.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Probes" {
+				return nil, false
+			}
+			id, ok := sel.X.(*ast.Ident)
+			return sel, ok && id.Name == recv
+		}
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			if cmp, ok := n.(*ast.BinaryExpr); ok && (cmp.Op == token.EQL || cmp.Op == token.NEQ) {
+				for _, pair := range [][2]ast.Expr{{cmp.X, cmp.Y}, {cmp.Y, cmp.X}} {
+					if sel, ok := isRecvProbes(pair[0]); ok {
+						if id, isIdent := pair[1].(*ast.Ident); isIdent && id.Name == "nil" {
+							registersOnly[sel] = true
+						}
+					}
+				}
+			}
 			if outer, ok := n.(*ast.SelectorExpr); ok && outer.Sel.Name != "Front" {
 				if inner, ok := outer.X.(*ast.SelectorExpr); ok && inner.Sel.Name == "Probes" {
 					if id, ok := inner.X.(*ast.Ident); ok && id.Name == recv {
@@ -217,6 +235,12 @@ type rootsGenView struct {
 	ConfigInputs []graphConfigInputView
 	// Fmt is true when some root's command loads a config of its own.
 	Fmt bool
+	// RootFlagsHomed is true when the command tree's owned files register
+	// the root config's flags themselves (config.Register<RootMsg>Flags,
+	// persistent on the binary's root command, where a binary_config root
+	// config's flags live): the root commands then inherit them, and
+	// registering them again on each would shadow the inherited flags.
+	RootFlagsHomed bool
 }
 
 // rootCommandViews lays the roots' command paths out as a cobra tree: one
@@ -260,12 +284,18 @@ func rootCommandViews(roots []graphRootView) ([]rootCmdView, []string) {
 			for _, f := range r.Fields {
 				fields = append(fields, logName(f.Accessor))
 			}
-			if len(fields) == 0 {
+			switch {
+			case r.Short != "":
+				// The root's doc comment is its help.
+				v.Short, v.Long = r.Short, r.Long
+			case len(fields) == 0:
 				v.Short = fmt.Sprintf("Run the %s root (it holds no nodes)", r.Name)
-			} else {
+			default:
 				v.Short = fmt.Sprintf("Run the %s root: %s", r.Name, strings.Join(fields, ", "))
 			}
-			v.Long = fmt.Sprintf("Run the %s root of the composition graph (internal/app): build every node its fields reach, dependencies first, then supervise them until a signal or a failing node. Start order (stop is the reverse): %s.", r.Name, r.Plan)
+			if r.Short == "" {
+				v.Long = fmt.Sprintf("Run the %s root of the composition graph (internal/app): build every node its fields reach, dependencies first, then supervise them until a signal or a failing node. Start order (stop is the reverse): %s.", r.Name, r.Plan)
+			}
 		} else {
 			v.Short = fmt.Sprintf("The %s roots", p)
 		}
@@ -303,13 +333,13 @@ const rootsGenFile = "roots_gen.go"
 
 // emitRootCommands writes cmd/<bin>/cmd/roots_gen.go for the primary binary,
 // or retires it — with a warning — when the tree has no runRoot to call.
-func emitRootCommands(projectDir, module string, roots []graphRootView, inputs []graphConfigInputView, cs *checksums.FileChecksums, warn io.Writer) error {
+func emitRootCommands(projectDir, module string, roots []graphRootView, inputs []graphConfigInputView, rootMsg string, cs *checksums.FileChecksums, warn io.Writer) error {
 	treeDir := primaryCmdTreeDir(projectDir)
 	if treeDir == "" {
 		return nil
 	}
 	rel := filepath.Join(treeDir, rootsGenFile)
-	policy, registered := cmdTreeRootSeams(filepath.Join(projectDir, treeDir))
+	policy, registered, rootFlags := cmdTreeRootSeams(filepath.Join(projectDir, treeDir), rootMsg)
 	if !policy {
 		RetireGenerated(projectDir, rel, cs)
 		names := make([]string, len(roots))
@@ -325,7 +355,7 @@ func emitRootCommands(projectDir, module string, roots []graphRootView, inputs [
 			filepath.ToSlash(filepath.Join(treeDir, "root.go")))
 	}
 	cmds, top := rootCommandViews(roots)
-	view := rootsGenView{Module: module, Commands: cmds, Top: top, ConfigInputs: inputs}
+	view := rootsGenView{Module: module, Commands: cmds, Top: top, ConfigInputs: inputs, RootFlagsHomed: rootFlags}
 	for _, r := range roots {
 		view.Fmt = view.Fmt || len(r.Loads) > 0
 	}
@@ -340,12 +370,18 @@ func emitRootCommands(projectDir, module string, roots []graphRootView, inputs [
 }
 
 // cmdTreeRootSeams reports whether the command tree's owned files declare
-// runRoot (the process policy roots_gen.go calls) and call rootCommands (so
-// the generated commands reach the tree).
-func cmdTreeRootSeams(treeAbs string) (policy, registered bool) {
+// runRoot (the process policy roots_gen.go calls), call rootCommands (so the
+// generated commands reach the tree), and register the root config's flags
+// themselves — a call of config.Register<rootMsg>Flags, the binary-bound
+// root config's persistent registration (rootFlags).
+func cmdTreeRootSeams(treeAbs, rootMsg string) (policy, registered, rootFlags bool) {
 	entries, err := os.ReadDir(treeAbs)
 	if err != nil {
-		return false, false
+		return false, false, false
+	}
+	homing := ""
+	if rootMsg != "" {
+		homing = "Register" + rootMsg + "Flags"
 	}
 	for _, e := range entries {
 		n := e.Name()
@@ -366,9 +402,14 @@ func cmdTreeRootSeams(treeAbs string) (policy, registered bool) {
 				if id, ok := x.Fun.(*ast.Ident); ok && id.Name == "rootCommands" {
 					registered = true
 				}
+				if sel, ok := x.Fun.(*ast.SelectorExpr); ok && homing != "" && sel.Sel.Name == homing {
+					if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "config" {
+						rootFlags = true
+					}
+				}
 			}
 			return true
 		})
 	}
-	return policy, registered
+	return policy, registered, rootFlags
 }

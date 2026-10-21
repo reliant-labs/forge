@@ -85,8 +85,8 @@ func TestLintFrontendDirInstallsMissingDepsThenRuns(t *testing.T) {
 	}
 }
 
-// If the install itself fails, the lane fails loudly: neither a pass nor the
-// soft "unavailable" classification.
+// If the install itself fails, eslint never ran: the lane could NOT run, which
+// fails the run by default (lint_skip.go) and names the install command.
 func TestLintFrontendDirFailsLoudlyWhenInstallFails(t *testing.T) {
 	if testing.Short() {
 		t.Skip("spawns package-manager / frontend toolchain subprocesses; runs in task test")
@@ -99,11 +99,15 @@ func TestLintFrontendDirFailsLoudlyWhenInstallFails(t *testing.T) {
 		t.Fatal("lane passed although dependencies could not be installed")
 	}
 	var unavail *laneUnavailableError
-	if errors.As(err, &unavail) {
-		t.Fatalf("install failure was downgraded to unavailable: %v", err)
+	if !errors.As(err, &unavail) {
+		t.Fatalf("install failure must be a lane that could NOT run, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "did NOT run") {
-		t.Errorf("error does not say the lane did not run: %v", err)
+	if !strings.Contains(err.Error(), "did NOT run") || !strings.Contains(unavail.fixHint, "npm ") {
+		t.Errorf("want the reason and the install command, got reason=%v fix=%q", err, unavail.fixHint)
+	}
+	rc := &lintRunCtx{}
+	if v, _ := rc.judgeGap("frontend lint", true); v != gapFails {
+		t.Errorf("a gating lane that could not run must fail the run, got verdict %v", v)
 	}
 }
 
@@ -128,10 +132,12 @@ func TestTypecheckFrontendFailsWhenInstallFails(t *testing.T) {
 	dir := freshFrontend(t, `{"scripts":{"typecheck":"tsc --noEmit"}}`)
 
 	res := typecheckFrontend(context.Background(), frontendTarget{name: "web", dir: dir}, dir)
-	if res.status != typecheckFailed {
-		t.Fatalf("status = %v, want failed (a lane that cannot run must not be green or merely a warning)", res.status)
+	// Could NOT run — which fails the gating lane (lint_skip.go) — not a
+	// type error, and never green.
+	if res.status != typecheckUnavailable {
+		t.Fatalf("status = %v, want unavailable (the compiler never ran)", res.status)
 	}
-	if !strings.Contains(res.output, "did NOT run") {
-		t.Errorf("output does not say the typecheck did not run: %q", res.output)
+	if !strings.Contains(res.reason, "did NOT run") || res.fixHint == "" {
+		t.Errorf("want the reason and the fix, got reason=%q fix=%q", res.reason, res.fixHint)
 	}
 }

@@ -88,6 +88,27 @@ func TestExcludeNodeModules(t *testing.T) {
 		}
 	})
 
+	// The module reached through a symlink, named by $PWD: go list then
+	// reports its package dirs under that spelling, not the resolved one.
+	// On macOS every t.TempDir() is reached that way (/var -> /private/var),
+	// which is why lint's TestGolangciLintIgnoresNodeModules and
+	// TestContractLinterIgnoresNodeModules failed there and not on Linux.
+	// The symlink here is the module dir itself, which also covers the walk
+	// for a node_modules dir, which does not descend into a symlinked root.
+	t.Run("a module reached through a symlink named by PWD", func(t *testing.T) {
+		real := with(map[string]string{"web/node_modules/x/bad.go": vetFailing})
+		link := filepath.Join(t.TempDir(), "link")
+		if err := os.Symlink(real, link); err != nil {
+			t.Skipf("cannot symlink: %v", err)
+		}
+		got := ExcludeNodeModules(context.Background(), link, append(Env(), "PWD="+link), []string{"./..."})
+		want := []string{".", "./internal/a"}
+		slices.Sort(got)
+		if !slices.Equal(got, want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
 	t.Run("a broken module returns the patterns for the caller to report", func(t *testing.T) {
 		dir := writeTree(t, map[string]string{
 			"go.mod":                    "this is not a go.mod\n",

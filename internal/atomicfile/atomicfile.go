@@ -90,6 +90,13 @@ func WriteFile(path string, data []byte, perm fs.FileMode) error {
 	return nil
 }
 
+// Replace renames oldPath over newPath, for a file the caller finished
+// writing some other way (a `go install` into a staging dir). It is the
+// rename WriteFile commits with: on Windows, where a replace is refused while
+// any handle — a reader, a virus scanner — has newPath open, it retries for a
+// moment, and a refusal that outlasts that leaves newPath's old content.
+func Replace(oldPath, newPath string) error { return replaceFile(oldPath, newPath) }
+
 // resolveTarget is the file a write to path lands in, with its current info.
 // A symlink resolves to its target, so the link survives the rename. A nil
 // FileInfo means nothing is there yet (or a dangling link); any other Lstat

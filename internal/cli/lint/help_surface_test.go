@@ -52,6 +52,10 @@ func TestLintHelpSurface(t *testing.T) {
 	cmd := newCmd(testFactory())
 
 	assertStringSlicesEqual(t, "lint visible flags", visibleFlagNames(cmd), []string{
+		// User surface: a gating lane that could NOT run fails the run, and
+		// this is the one named, reasoned way to accept it may not. Hidden,
+		// the only way past a missing toolchain would be to drop the gate.
+		"allow-skip",
 		// Report-only: the dry run of the auto-fix default, and what CI gets
 		// without asking. Visible because the CI behaviour is otherwise a
 		// surprise an author only meets on a red build.

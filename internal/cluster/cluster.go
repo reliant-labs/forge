@@ -1390,6 +1390,24 @@ func extractManifestsIn(ctx context.Context, projectDir string, kclOutput []byte
 		return "", nil, err
 	}
 
+	// The pre-rollout Job that converges a StatefulSet whose declared volume
+	// grew. It sits BEFORE the overrides below so an override can address it
+	// like any object forge renders, and after expansion so it sees the
+	// StatefulSets the Workload records expanded into. See
+	// statefulset_resize_job.go.
+	resizeDisabled, resizeImage, err := decodeStatefulSetResize(out["statefulset_resize"])
+	if err != nil {
+		return "", nil, err
+	}
+	lifecycle, _ := out["lifecycle"].(string)
+	items, err = expandStatefulSetResizeJobs(items, resizeJobOpts{
+		Lifecycle: lifecycle, Disabled: resizeDisabled, Image: resizeImage,
+		Namespace: resizeDefaultNamespace(out), ImagePullSecrets: pullSecrets,
+	})
+	if err != nil {
+		return "", nil, err
+	}
+
 	// Bring-your-own YAML (an app chart with delivery = "bundle", a
 	// forge.Generated command) joins the stream HERE, so every consumer of
 	// it — render, shape, direct apply, the bundle — sees the same objects

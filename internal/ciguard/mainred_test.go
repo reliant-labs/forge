@@ -44,13 +44,25 @@ type fakeStep struct {
 	Conclusion string `json:"conclusion"`
 }
 
+// One of main's ci.yml push runs. An unfinished run has no conclusion.
+type fakeRun struct {
+	ID         int    `json:"id"`
+	Conclusion string `json:"conclusion,omitempty"`
+}
+
 type mainRedCase struct {
 	event  string // pull_request, merge_group or push
 	author string
 	labels []string
 	mine   []fakeJob // this run's jobs
-	main   []fakeJob // main's latest run's jobs
+	main   []fakeJob // the jobs of main's run 200
 	logs   map[int]string
+	// main's runs, newest first. Default: run 200 alone, concluded failure
+	// when a job in main failed and success otherwise.
+	runs  []fakeRun
+	other map[int][]fakeJob // the jobs of main's runs other than 200
+	// jq writes CRLF line ends, as a native jq.exe does under Git Bash.
+	crlfJQ bool
 }
 
 const repo = "o/r"
@@ -67,6 +79,13 @@ func passedJob(id int, name string) fakeJob {
 func failLine(test string) string {
 	return "2026-10-21T12:00:00.0000000Z --- FAIL: " + test + " (0.01s)\n" +
 		"2026-10-21T12:00:00.0000000Z     --- FAIL: " + test + "/subtest (0.00s)\n"
+}
+
+// The same failure printed unnested, as a parallel -short shard prints it:
+// the subtest's line at column 0, after its parent's.
+func unnestedFailLine(test string) string {
+	return "2026-10-21T12:00:00.0000000Z --- FAIL: " + test + "/subtest (0.00s)\n" +
+		"2026-10-21T12:00:00.0000000Z --- FAIL: " + test + " (0.01s)\n"
 }
 
 func runMainRed(t *testing.T, c mainRedCase) (string, bool) {
@@ -119,8 +138,29 @@ func runMainRed(t *testing.T, c mainRedCase) (string, bool) {
 	}
 	fixture("repos/"+repo+"/pulls/42", map[string]any{"number": 42, "user": map[string]string{"login": author}, "labels": labels})
 	fixture("repos/"+repo+"/actions/runs/100/jobs", map[string]any{"jobs": c.mine})
-	fixture("repos/"+repo+"/actions/workflows/ci.yml/runs", map[string]any{"workflow_runs": []map[string]int{{"id": 200}}})
+	runs := c.runs
+	if runs == nil {
+		conclusion := "success"
+		for _, j := range c.main {
+			if j.Conclusion == "failure" {
+				conclusion = "failure"
+			}
+		}
+		runs = []fakeRun{{ID: 200, Conclusion: conclusion}}
+	}
+	fixture("repos/"+repo+"/actions/workflows/ci.yml/runs", map[string]any{"workflow_runs": runs})
 	fixture("repos/"+repo+"/actions/runs/200/jobs", map[string]any{"jobs": c.main})
+	for id, jobs := range c.other {
+		fixture("repos/"+repo+"/actions/runs/"+strconv.Itoa(id)+"/jobs", map[string]any{"jobs": jobs})
+	}
+	if c.crlfJQ {
+		jq, err := exec.LookPath("jq")
+		if err != nil {
+			t.Fatal(err)
+		}
+		shim := "#!/usr/bin/env bash\nset -o pipefail\n'" + filepath.ToSlash(jq) + "' \"$@\" | sed 's/$/\\r/'\n"
+		write(filepath.Join(bin, "jq"), []byte(shim), 0o755)
+	}
 	for id, log := range c.logs {
 		fixture("repos/"+repo+"/actions/jobs/"+strconv.Itoa(id)+"/logs", log)
 	}
@@ -184,6 +224,37 @@ func TestMainRedOverride(t *testing.T) {
 			accept: true, want: "tests: TestOnMain",
 		},
 		{
+			name: "the same, through a jq that writes CRLF (Windows)", short: true,
+			c: mainRedCase{event: "pull_request", labels: []string{"ci:main-red"}, crlfJQ: true,
+				mine: []fakeJob{failedJob(11, "Test (-short) 1/2", "Go tests (-short)"), gate},
+				main: mainRed, logs: merge(mainLogs, map[int]string{11: failLine("TestOnMain")})},
+			accept: true, want: "tests: TestOnMain",
+		},
+		{
+			// A push to main cancels the run queued before it, so main's
+			// newest completed run is often cancelled (25283f30's, which
+			// refused #1071 as "green"). It and an unfinished run are skipped.
+			name: "main's newest runs are unfinished and cancelled", short: true,
+			c: mainRedCase{event: "pull_request", labels: []string{"ci:main-red"},
+				mine: []fakeJob{failedJob(11, "Test (-short) 1/2", "Go tests (-short)"), gate},
+				main: mainRed, logs: merge(mainLogs, map[int]string{11: failLine("TestOnMain")}),
+				runs: []fakeRun{{ID: 301}, {ID: 300, Conclusion: "cancelled"}, {ID: 200, Conclusion: "failure"}},
+				other: map[int][]fakeJob{
+					301: {{ID: 41, Name: "Test"}},
+					300: {passedJob(31, "Quick checks"), {ID: 32, Name: "Test", Conclusion: "cancelled"}},
+				}},
+			accept: true, want: "every failure also fails on main (run 200)",
+		},
+		{
+			name: "no run on main finished green or red",
+			c: mainRedCase{event: "pull_request", labels: []string{"ci:main-red"},
+				mine: []fakeJob{failedJob(11, "Test (-short) 1/2", "Go tests (-short)"), gate},
+				main: mainRed, logs: merge(mainLogs, map[int]string{11: failLine("TestOnMain")}),
+				runs:  []fakeRun{{ID: 300, Conclusion: "cancelled"}},
+				other: map[int][]fakeJob{300: {{ID: 32, Name: "Test", Conclusion: "cancelled"}}}},
+			want: "found no ci.yml run on main that finished green or red",
+		},
+		{
 			name: "the same, as a merge-queue entry",
 			c: mainRedCase{event: "merge_group", labels: []string{"ci:main-red"},
 				mine: []fakeJob{failedJob(11, "Test (-short) 1/2", "Go tests (-short)"), gate},
@@ -202,7 +273,25 @@ func TestMainRedOverride(t *testing.T) {
 			c: mainRedCase{event: "pull_request", labels: []string{"ci:main-red"},
 				mine: []fakeJob{failedJob(11, "Test (-short) 1/2", "Go tests (-short)"), gate},
 				main: mainRed, logs: merge(mainLogs, map[int]string{11: failLine("TestOnMain") + failLine("TestNew")})},
-			want: "TestNew do not fail on main",
+			want: "TestNew TestNew/subtest do not fail on main",
+		},
+		{
+			// The subtest is the same test whether or not go test nested
+			// its line under the parent's.
+			name: "a failing subtest main fails nested, printed unnested here", short: true,
+			c: mainRedCase{event: "pull_request", labels: []string{"ci:main-red"},
+				mine: []fakeJob{failedJob(11, "Test (-short) 1/2", "Go tests (-short)"), gate},
+				main: mainRed, logs: merge(mainLogs, map[int]string{11: unnestedFailLine("TestOnMain")})},
+			accept: true, want: "tests: TestOnMain TestOnMain/subtest",
+		},
+		{
+			// ...and a subtest main does not fail is new, even under a
+			// parent that main fails.
+			name: "a new subtest of a test main fails",
+			c: mainRedCase{event: "pull_request", labels: []string{"ci:main-red"},
+				mine: []fakeJob{failedJob(11, "Test (-short) 1/2", "Go tests (-short)"), gate},
+				main: mainRed, logs: merge(mainLogs, map[int]string{11: failLine("TestOnMain") + "--- FAIL: TestOnMain/other (0.00s)\n"})},
+			want: "TestOnMain/other do not fail on main",
 		},
 		{
 			name: "a non-test job that passed on main",

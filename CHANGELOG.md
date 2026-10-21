@@ -22,14 +22,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not be redeemed by `/auth/reset`.
 - **`forge cloud identity` administers users, not just reads them.** New verbs,
   each one rpc of `controlplane.v1.IdentityService`: `set-roles <env> --user
-  <id|email> --role a --role b` (or `--none`), `reset`, `lock`, `unlock`,
+<id|email> --role a --role b` (or `--none`), `reset`, `lock`, `unlock`,
   `delete` (asks first; `--yes` skips the question; a closed stdin refuses) and
   `revoke-sessions`. `--user` takes a user id, or an email matched exactly
   (case-insensitively) through `users`; no match, or two, is a refusal. The
   scopes are `identity:read` for reads and `identity:manage` for every verb that
   changes a user. forge presents neither up front: a Reliant session or `forge
-  login` credential is traded for the scope the control plane's 403 names, for
+login` credential is traded for the scope the control plane's 403 names, for
   an hour, exactly as `deploy:read` and `secret:write` are. An explicit
+  each one rpc of `controlplane.v1.IdentityService`:
+  `set-roles <env> --user <id|email> --role a --role b` (or `--none`), `reset`,
+  `lock`, `unlock`, `delete` (asks first; `--yes` skips the question; a closed
+  stdin refuses) and `revoke-sessions`. `--user` takes a user id, or an email
+  matched exactly (case-insensitively) through `users`; no match, or two, is a
+  refusal. The scopes are `identity:read` for reads and `identity:manage` for
+  every verb that changes a user. forge presents neither up front: a Reliant
+  session or `forge login` credential is traded for the scope the control
+  plane's 403 names, for an hour, exactly as `deploy:read` and `secret:write`
+  are. An explicit
   `--token` is used as given. `invite` is unchanged.
 - **`forge project new --verify`** keeps the compile check at the end of the
   bootstrap generate (see Changed).
@@ -112,6 +122,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`forge lint` fails when a gating lane could NOT run.** A frontend with no
+  `node_modules` (or whose install failed), a typecheck with no compiler, a
+  `buf.yaml` with no `buf` on PATH, or no golangci-lint that can analyze the
+  module now exits non-zero by default. The last line names the lane, the
+  reason and the command that fixes it (`npm ci` in the frontend's install
+  root, `forge tools install buf`, ...). Before, such a run printed `⚠️ N gating
+  linter(s) passed; M could NOT run (...)` and exited 0 unless you passed
+  `--strict`. That flag also turned every advisory finding into an error, so a
+  gate that only wanted "fail when a lane did not run" had to grep the verdict
+  text. The same applies to `--quiet`, `--scope`, `--json` (`"ok": false`) and
+  `--gate-json`.
+  - **Accept a skip by name, with a reason.** Use
+    `forge lint --allow-skip 'frontend-typecheck=typechecked in the web job'`
+    (repeatable; `lane,lane=reason` names several) or, in forge.yaml:
+    ```yaml
+    lint:
+      allow_skip:
+        - lane: frontend-typecheck
+          reason: typechecked in the web job
+    ```
+    A lane is named as the verdict prints it (`frontend typecheck`) or with
+    dashes (`frontend-typecheck`). An accepted lane that could not run is listed
+    as `SKIPPED (allowed): <lane> — <reason>` and does not fail the run. An
+    unknown lane or an empty reason is refused, and a lane that ran and found
+    problems still fails. `--skip-frontends` still drops the whole frontend
+    lane for a backend-only run.
+  - **`--strict` has one meaning: advisory findings become errors.** It no
+    longer has any effect on a gating lane that could not run. The one
+    could-not-run case it still escalates is the advisory typed-config
+    guardrail's, because that report is itself an advisory finding. The same
+    holds for a frontend typecheck dialled to `lint.frontend.typecheck: warn`:
+    it is advisory, so when it cannot run it warns instead of failing.
+  - A lane that `--scope` does not select (frontend lint, graph, and the other
+    whole-project lanes) is still reported as `not scoped, so not run` and does
+    not fail. The same goes for a frontend outside the scope that could not be
+    checked.
+  - New `-unavailable` rule ids in `--json`: `buf-lint-unavailable` (it used to
+    be `buf`) and `golangci-lint-unavailable` (it used to be `external`).
+  - **Migration:** a CI job that passed only because a lane silently did not
+    run now fails. You can fix the cause (install the tool, run `npm ci`). Or,
+    if the job is meant not to run that lane, opt it out with `--allow-skip
+    '<lane>=<why>'` or `lint.allow_skip`. A gate that grepped the verdict for
+    `could NOT run` to get this failure can drop the grep and trust the exit
+    code.
 - **A handler's `svcerr` error reaches the client with its Connect code,
   wrapped or not.** `return nil, svcerr.PermissionDenied("…")` used to arrive as
   `code = unknown`, because the constructors build sentinels and connect-go maps
@@ -130,8 +184,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass `--verify`. That tail was the one CPU-saturating step (40s of the
   pipeline's 63s on a cold build cache), and it re-proved output that forge's
   own e2e corpus compiles on every change; your first `go build` or `forge
-  generate` runs the same check. `project new` never took a heavy slot and still
+generate` runs the same check. `project new` never took a heavy slot and still
   does not: pinned by `TestRunNew_TakesNoHeavySlot`.
+  own e2e corpus compiles on every change; your first `go build` or
+  `forge generate` runs the same check. `project new` never took a heavy slot
+  and still does not: pinned by `TestRunNew_TakesNoHeavySlot`.
 - **Transaction isolation has no default; every writable transaction names
   its level.** pkg/orm had two opposite defaults: `RunTx`,
   `RunTxWithOptions` and `BeginDetached` with an unset level began
@@ -201,13 +258,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge tools install` replaces a GOBIN binary on Windows while something
+  has it open.** The atomic install (#1062) renamed the staged binary over the
+  old one with a bare `os.Rename`, which Windows refuses while any handle, such
+  as a virus scanner or a parallel forge, has the target open. It now retries
+  for a moment, as every `atomicfile` write already does (new
+  `atomicfile.Replace`).
+- **The main-red override judges main's latest run that has a verdict.**
+  `scripts/ci-main-red.sh` compared against main's newest completed run, which
+  is often one a later push cancelled, and refused #1071 because that run
+  (25283f30) had no failed job. It now skips cancelled and unfinished runs. It
+  also drops the CRs a native `jq.exe` writes, which made `TestMainRedOverride`
+  fail on Windows since #1057.
 - **A scaffolded Next.js frontend builds again against `@opentelemetry/api`
   1.10.** That release ships only `.d.mts`/`.d.cts` declarations, the tsconfig
   peer pin was aimed at `dist/index.d.mts`, and Next's webpack read it as
   JavaScript (`Module parse failed: Unexpected token`). Only a `.d.ts` is pinned
   now; a package with none is pinned by its directory.
 - **Docs no longer promise mail that is never sent.** The `deploy/managed-
-  identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
+identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
 - **Docs no longer promise mail that is never sent.** The
   `deploy/managed-identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
   mail through a platform relay and that an invitation emails a link. Neither is
@@ -261,6 +330,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server while its owner lives, however old its pid file looks: a fan-out
   outlives the 30-minute stale age, and a sleep ages every file by the wall
   clock.
+- **`forge lint` skips `node_modules` Go packages in a project reached
+  through a symlink.** `go list` reports package directories under the
+  caller's `$PWD` spelling (macOS's `/var`, a symlinked home or worktree),
+  and the filter compared them with the resolved project path. So nothing
+  matched, and golangci-lint and the contract linter linted third-party Go
+  under `node_modules` again. A project directory that was itself a symlink
+  also skipped the search for `node_modules`. Both sides are now resolved.
 
 ### Changed
 
@@ -1238,6 +1314,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hands a revision to Flux: kustomize-controller dry-runs every object of a
   Kustomization before applying any, so one such StatefulSet otherwise stops the
   whole unit converging, and its per-object force would delete the pods.
+- **A raised StatefulSet volume now converges under Flux too: forge renders a
+  pre-rollout resize Job.** Direct apply could repair the rejection after the
+  fact; a reconciler cannot (Flux dry-runs every object of a Kustomization before
+  applying any, so one raised `volumeClaimTemplates` size wedged the whole tree,
+  and forge was not in the loop). The render now carries the repair: for each
+  (cluster, namespace, delivery unit) that holds a StatefulSet with
+  `volumeClaimTemplates` it emits a `sts-volume-resize-<unit>-<hash>` Job, with a
+  ServiceAccount, Role, RoleBinding and NetworkPolicy, in the unit's `pre` phase.
+  The bundle's `pre` tree is what the `rollout` tree waits on and direct apply
+  gates workloads on the same Job, so it runs before the StatefulSet is applied
+  by either. It grows each claim smaller than the declared size, then deletes the
+  StatefulSet with `--cascade=orphan` so the rollout recreates it with the new
+  templates and adopts the running pods; it is a no-op when the sizes match or
+  the StatefulSet is absent, and idempotent (the Job name hashes the declared
+  volumes). A shrink, or any change to a template other than a larger storage
+  request, exits 2: the Job's `podFailurePolicy` fails it at once and the deploy
+  stops with the reason. The Job's RBAC is namespace-scoped (`get`/`delete` on
+  the named StatefulSets, `get`/`list`/`patch` on PVCs, nothing cluster-scoped);
+  whether a claim may grow is learned from a server-side dry-run patch before the
+  first write. The script is embedded in `pkg/stsresize` (`Script`, `Build`) and
+  tested against `Decide` over one table so the two cannot drift. The image is a
+  digest-pinned `alpine/k8s`; `Bundle.statefulset_resize = forge.StatefulSetResize
+{image = ..., disabled = True}` replaces or removes it. It is not rendered for
+  `lifecycle = "local"`/`"ephemeral"` envs. `forge env deploy`'s preflight now also
+  compares each rendered StatefulSet's volumes with the live ones and blocks a
+  shrink (or any unconvergeable template change) by name before anything is
+  applied (`volume_resize_refused` in `--json`). See `deploy/statefulset-volumes`.
+  An env with a StatefulSet gains a `pre` tree and its objects on its next bundle.
 - `forge cloud identity status|users|invite <env>`: inspect hosted managed identity,
   page/search users, and email an invitation with explicit `--email` and repeatable
   `--role`. Uses the authenticated org and exact project/environment lookup;

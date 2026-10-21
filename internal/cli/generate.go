@@ -500,16 +500,9 @@ type pipelineFlags struct {
 	NoCache bool
 }
 
-// runGeneratePipelineFlags is the canonical entrypoint. Both the
-// shorter runGeneratePipeline (force) and runGeneratePipelineOpts
-// (+ skipValidate) call through here. New flags land on pipelineFlags.
-//
-// It takes no lock itself: the caller holds the project's generate lock
-// and generateMu (withGenerateLock), because several callers must hold
-// them across more than the pipeline — a scaffold command's own writes,
-// rescaffold's deletions, --explain's before/after scans.
-// printSkippedChecks says which of the run's checks the flags skip.
-func printSkippedChecks(flags pipelineFlags) {
+// announceSkippedChecks names, before any step runs, each check this run
+// was told to skip.
+func announceSkippedChecks(flags pipelineFlags) {
 	switch {
 	case flags.SkipValidateNote != "":
 		fmt.Println(flags.SkipValidateNote)
@@ -521,6 +514,26 @@ func printSkippedChecks(flags pipelineFlags) {
 	}
 }
 
+// resetChecksumRunState starts checksums' per-run state over: side-render
+// redirect tracking (--explain-drift), the heal-notice dedupe set, and the
+// heal opt-in, which is off unless this run passed --heal (AutoHeal defaults
+// OFF — the non-destructive behavior).
+func resetChecksumRunState(flags pipelineFlags) {
+	checksums.ResetPerRunState()
+	if flags.Heal {
+		fmt.Println("♻️  --heal: on-disk content matching a PRIOR forge render will be overwritten with the current template")
+		checksums.AutoHeal = true
+	}
+}
+
+// runGeneratePipelineFlags is the canonical entrypoint. Both the
+// shorter runGeneratePipeline (force) and runGeneratePipelineOpts
+// (+ skipValidate) call through here. New flags land on pipelineFlags.
+//
+// It takes no lock itself: the caller holds the project's generate lock
+// and generateMu (withGenerateLock), because several callers must hold
+// them across more than the pipeline — a scaffold command's own writes,
+// rescaffold's deletions, --explain's before/after scans.
 func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	ctx, err := newPipelineContextWithFlags(projectDir, flags)
 	if err != nil {
@@ -548,17 +561,8 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		return nil
 	}
 
-	printSkippedChecks(flags)
-
-	// Per-run side-render redirect tracking (--explain-drift), the
-	// heal-notice dedupe set, and the heal opt-in start empty/off on
-	// every invocation (AutoHeal defaults OFF — the non-destructive
-	// behavior).
-	checksums.ResetPerRunState()
-	if flags.Heal {
-		fmt.Println("♻️  --heal: on-disk content matching a PRIOR forge render will be overwritten with the current template")
-		checksums.AutoHeal = true
-	}
+	announceSkippedChecks(flags)
+	resetChecksumRunState(flags)
 
 	// Arm the stage-then-validate rollback journal (fr-40f7ec9bd9). From
 	// here on, every forge write captures its target's pre-run bytes so a

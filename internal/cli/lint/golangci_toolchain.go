@@ -736,12 +736,23 @@ func golangciExeName() string {
 
 // golangciUnresolvedFinding is the --json / --quiet form of a golangci-lint
 // that cannot analyze this module and could not be replaced: the actionable
-// message rather than golangci-lint's own output.
-func golangciUnresolvedFinding(err error, sev string) lintJSONFinding {
+// message rather than golangci-lint's own output. rule is the lane's
+// `-unavailable` id, so the lane is reported as one that could NOT run and
+// graded by applyGapPolicy (lint_skip.go) — a failure for the gating lane.
+func golangciUnresolvedFinding(err error, rule string) lintJSONFinding {
 	return lintJSONFinding{
-		Severity: sev,
-		Rule:     "external",
+		Severity: lintSevWarning,
+		Rule:     rule,
 		Message:  err.Error(),
-		FixHint:  "run `forge tools install golangci-lint`, or install a golangci-lint that can analyze this module and put it first on PATH (the message names the binary, the Go versions and the command)",
+		FixHint:  golangciUnresolvedFix,
 	}
 }
+
+// golangciUnresolvedFix is the remediation for a golangci-lint that cannot
+// analyze this module.
+const golangciUnresolvedFix = "run `forge tools install golangci-lint`, or install a golangci-lint that can analyze this module " +
+	"and put it first on PATH (the message names the binary, the Go versions and the command)"
+
+// ruleGolangciUnavailable tags the gating golangci-lint lane when no
+// golangci-lint that can analyze the module could be found or provisioned.
+const ruleGolangciUnavailable = "golangci-lint-unavailable"

@@ -290,14 +290,24 @@ type lintStepOutcome struct {
 	findings []lintJSONFinding
 	// gated reports that this lane fails the build.
 	gated bool
+	// gap is set when the lane (or part of it) was supposed to execute
+	// and could not — the `-unavailable` rule family lint_json.go
+	// documents, graded by applyGapPolicy. Such a lane is neither "ran"
+	// nor "skipped", exactly as in the text driver.
+	gap *laneGap
 }
 
-// unavailable reports a lane that was supposed to execute and could not —
-// the `-unavailable` rule family lint_json.go documents. It is neither
-// "ran" nor "skipped", exactly as in the text driver.
-func (o lintStepOutcome) unavailable() bool {
+// failedBeyondGap reports whether the lane failed for a reason other than
+// not running: an error finding that is not its gap headline.
+func (o lintStepOutcome) failedBeyondGap() bool {
+	if !o.gated {
+		return false
+	}
+	if o.gap == nil || o.gap.verdict != gapFails {
+		return true
+	}
 	for _, f := range o.findings {
-		if strings.HasSuffix(f.Rule, "-unavailable") {
+		if f.Severity == lintSevError && !isGapRule(f.Rule) {
 			return true
 		}
 	}
@@ -364,6 +374,7 @@ func collectLintOutcomesFrom(rc *lintRunCtx, pipeline []linterStep) []lintStepOu
 		}
 		o.ran = true
 		o.findings, o.gated = scopeOutcome(rc.scope, fs, gated)
+		applyGapPolicy(&o, laneGates(step, rc), rc)
 		outcomes = append(outcomes, o)
 	}
 	return outcomes
@@ -491,6 +502,10 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 	if err != nil {
 		return err
 	}
+	allow, err := lintAllowances(flags, cfg)
+	if err != nil {
+		return err
+	}
 
 	realStdout := os.Stdout
 	os.Stdout = os.Stderr
@@ -513,6 +528,7 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 			cfg:           cfg,
 			cwd:           cwd,
 			scope:         scope,
+			allowSkip:     allow,
 			golangciMemo:  newGolangciMemo(productionGolangciToolchain()),
 		})
 		if !fix {
@@ -592,12 +608,19 @@ func renderLintOutcomes(w io.Writer, outcomes []lintStepOutcome, quiet bool, sco
 			}
 		}
 
-		if o.unavailable() {
-			v.unavailable = append(v.unavailable, o.name)
-		} else if o.gates {
-			v.ran = append(v.ran, o.name)
+		switch {
+		case o.gap == nil:
+			if o.gates {
+				v.ran = append(v.ran, o.name)
+			}
+		case o.gap.verdict == gapFails:
+			v.unavailable = append(v.unavailable, *o.gap)
+		case o.gap.verdict == gapAllowed:
+			v.allowed = append(v.allowed, *o.gap)
+		default:
+			v.advisoryUnavailable = append(v.advisoryUnavailable, o.name)
 		}
-		if o.gated {
+		if o.failedBeyondGap() {
 			v.failed = append(v.failed, o.name)
 		}
 
@@ -618,6 +641,9 @@ func renderLintOutcomes(w io.Writer, outcomes []lintStepOutcome, quiet bool, sco
 			writeStructuredFindings(w, shown)
 			if len(shown) == 0 {
 				fmt.Fprintf(w, "   (the lane failed without a finding — run `forge lint` for its full output)\n")
+			}
+			if o.gap != nil && o.gap.verdict == gapFails {
+				fmt.Fprintf(w, "      → %s\n", acceptSkipHint([]laneGap{*o.gap}))
 			}
 		case quiet:
 			v.hiddenWarnings += issueCount(warns) + issueCount(errs)
@@ -715,7 +741,9 @@ func tallyFromOutcomes(outcomes []lintStepOutcome) lintLaneTally {
 			if o.skipMsg != "" && o.gates {
 				t.skipped = append(t.skipped, o.name)
 			}
-		case o.unavailable():
+		case o.gap != nil && o.gap.verdict == gapAllowed:
+			t.allowed = append(t.allowed, o.name)
+		case o.gap != nil:
 			t.unavailable = append(t.unavailable, o.name)
 		case o.gates:
 			t.ran = append(t.ran, o.name)

@@ -93,7 +93,7 @@ func startProfiler(ctx context.Context, cfg Config, res *resource.Resource) (fun
 	log := slog.Default().With("component", "profiler")
 	settings, warns := resolveProfileSettings(cfg.Profiles)
 	for _, w := range warns {
-		log.Warn("continuous profiling: ignoring an invalid setting", "error", w)
+		log.WarnContext(ctx, "continuous profiling: ignoring an invalid setting", "error", w)
 	}
 	if !settings.enabled() {
 		return nil, errors.New("no profile type is selected")
@@ -117,7 +117,7 @@ func startProfiler(ctx context.Context, cfg Config, res *resource.Resource) (fun
 		sleep:    sleepCtx,
 		now:      time.Now,
 	}
-	log.Debug("continuous profiling on", "types", joinProfileTypes(settings.types()), "heap_interval", settings.heapInterval)
+	log.DebugContext(ctx, "continuous profiling on", "types", joinProfileTypes(settings.types()), "heap_interval", settings.heapInterval)
 	restoreRates := enableContentionSampling(settings)
 	loopCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	done := make(chan struct{})
@@ -177,13 +177,13 @@ func (p *profiler) run(ctx context.Context) {
 		if err != nil {
 			p.failures++
 			if p.failures == 1 {
-				p.log.Warn("continuous profiling cannot reach the collector; backing off", "error", err)
+				p.log.WarnContext(ctx, "continuous profiling cannot reach the collector; backing off", "error", err)
 			} else {
-				p.log.Debug("continuous profiling cycle failed", "error", err, "consecutive", p.failures)
+				p.log.DebugContext(ctx, "continuous profiling cycle failed", "error", err, "consecutive", p.failures)
 			}
 		} else {
 			if p.failures > 0 {
-				p.log.Info("continuous profiling recovered", "after_failures", p.failures)
+				p.log.InfoContext(ctx, "continuous profiling recovered", "after_failures", p.failures)
 			}
 			p.failures = 0
 		}
@@ -229,7 +229,7 @@ func (p *profiler) cycle(ctx context.Context) error {
 	if p.settings.cpu {
 		var cpu bytes.Buffer
 		if pprof.StartCPUProfile(&cpu) != nil {
-			p.log.Debug("another CPU profile is running; skipping this cycle's CPU profile")
+			p.log.DebugContext(ctx, "another CPU profile is running; skipping this cycle's CPU profile")
 		} else {
 			p.sleep(ctx, p.window)
 			pprof.StopCPUProfile()

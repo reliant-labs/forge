@@ -94,6 +94,25 @@ func TestTracingFixPolicy(t *testing.T) {
 	}
 }
 
+// A project with observability off runs no traced process of its own, so its
+// internal/ packages are out of scope (forge itself: a CLI whose pkg/ runs in
+// its importers' traced servers).
+func TestTracingObservabilityOffLintsLibraryCodeOnly(t *testing.T) {
+	dir := writeTracingProject(t)
+	off := false
+	cfg := &config.ProjectConfig{Features: config.FeaturesConfig{Observability: &off}}
+	run, err := tracingFindings(dir, cfg, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(run.findings) != 0 {
+		t.Fatalf("internal/ linted with observability off: %+v", run.findings)
+	}
+	if run, _ := tracingFindings(dir, nil, false, false); len(run.findings) != 1 {
+		t.Fatalf("observability on: findings = %+v, want the internal/ one", run.findings)
+	}
+}
+
 func TestTracingRejectsMalformedWrapper(t *testing.T) {
 	dir := writeTracingProject(t)
 	cfg := &config.ProjectConfig{Lint: config.LintConfig{Tracing: config.TracingLintConfig{

@@ -13,6 +13,8 @@ import (
 	"time"
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // Fetching the postgres binary, with retry and an honest error.
@@ -144,7 +146,7 @@ func startFetchRelay(upstream string) (*fetchRelay, error) {
 	}
 	r := &fetchRelay{
 		upstream: strings.TrimRight(upstream, "/"),
-		client:   &http.Client{Timeout: fetchPolicy.perAttempt},
+		client:   observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: fetchPolicy.perAttempt}),
 		ln:       ln,
 	}
 	r.srv = &http.Server{Handler: r, ReadHeaderTimeout: 10 * time.Second}

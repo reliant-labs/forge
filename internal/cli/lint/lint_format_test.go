@@ -170,18 +170,20 @@ func TestFormatGoTree_LeavesBrokenFileUntouched(t *testing.T) {
 }
 
 // TestFormatGoTree_SkipsVendorAndNodeModules proves the walk prunes heavy /
-// non-owned trees so it never rewrites dependency or build output.
+// non-owned trees so it never rewrites dependency or build output, nor a
+// testdata fixture (forge's own slowtest fixture was rewritten by every lint).
 func TestFormatGoTree_SkipsVendorAndNodeModules(t *testing.T) {
 	root := newFormatProject(t)
 	writeFile(t, root, "internal/vendor/dep/x.go", unformattedGo)
 	writeFile(t, root, "pkg/node_modules/x.go", unformattedGo)
+	writeFile(t, root, "internal/linter/x/testdata/src/a/a_test.go", unformattedGo)
 
 	changed, err := formatGoTree(root)
 	if err != nil {
 		t.Fatalf("formatGoTree: %v", err)
 	}
 	if len(changed) != 0 {
-		t.Errorf("changed = %v, want none (vendor/node_modules must be skipped)", changed)
+		t.Errorf("changed = %v, want none (vendor/node_modules/testdata must be skipped)", changed)
 	}
 }
 

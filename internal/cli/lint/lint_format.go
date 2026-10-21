@@ -140,7 +140,10 @@ func walkGoFormat(root string, keep func(rel string) bool, visit func(rel, abs s
 			}
 			if de.IsDir() {
 				switch de.Name() {
-				case "node_modules", "vendor", ".git":
+				// testdata: the go tool and the gate never see it, and its
+				// fixtures are written as they are on purpose (an
+				// analyzer's want lines are line-number sensitive).
+				case "node_modules", "vendor", ".git", "testdata":
 					return filepath.SkipDir
 				}
 				return nil

@@ -643,6 +643,53 @@ jobs:
           path: ~/.cache/go-build
           key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
+  # The guards — deadcodeguard, removalguard, tierguard, writeguard — in full
+  # mode, on every pull request AND every push. They were main-only (folded
+  # into test-short-warm), so a phantom field, a removed feature's leftover
+  # reference or a tier violation merged green and turned main red: in
+  # October 2026, two of one round's main reds were guard findings that the
+  # pull request that introduced them never ran. Under -short each guard
+  # skips its whole-repo work, so the sharded -short tier never saw them.
+  #
+  # MEASUREMENT RUN (temporary): three variants, to pick the one that fits a
+  # pull request's ~4-minute job budget without adding three jobs.
+  guards:
+    name: Guards (full) ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { variant: "all -p 3", pkgs: "all", p: 3 }
+          - { variant: "all -p 1", pkgs: "all", p: 1 }
+          - { variant: "tierguard", pkgs: "github.com/reliant-labs/forge/internal/tierguard", p: 1 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Restore Go build cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/go-build
+          key: go-build-short-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-short-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-build-short-${{ runner.os }}-
+            go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Go tests (guards, full mode)
+        run: |
+          pkgs="${{ matrix.pkgs }}"
+          if [ "$pkgs" = all ]; then pkgs=$(scripts/ci-test-packages.sh guards); fi
+          /usr/bin/time -v go test -p ${{ matrix.p }} -count=1 -timeout 30m $pkgs 2>&1 | tee "$RUNNER_TEMP/guards.log"
+          grep -E 'Elapsed|Maximum resident' "$RUNNER_TEMP/guards.log" || true
+
   # ── Windows: first runtime coverage for the cgo-free, Windows-ported CLI ──
   #
   # forge is cgo-free (KCL is loaded through purego) and builds for
@@ -1067,6 +1114,7 @@ jobs:
       - test
       - test-cli
       - test-short-warm
+      - guards
       - windows
       - build
       - verify-generated

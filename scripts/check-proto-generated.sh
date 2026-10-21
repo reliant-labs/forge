@@ -20,8 +20,8 @@
 # a plugin a patch away from go.mod's pin would fail every commit here over a
 # line Verify Generated judges on its own (it installs the pinned plugin).
 #
-# CI skips this hook (ci.yml quick-checks, SKIP): it needs protoc-gen-go, and
-# the verify-generated job already runs the complete check there.
+# CI skips this hook (ci.yml checks, SKIP): it needs protoc-gen-go, and
+# its verify-generated step already runs the complete check there.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"

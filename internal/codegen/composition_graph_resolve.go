@@ -200,7 +200,9 @@ func (r *graphResolver) resolve(n *graphNode, df DepsField) (resolved, *graphPro
 		return resolved{Expr: zeroValueLiteral(df.Type), Comment: fmt.Sprintf("TODO: %s is configuration — declare a config block (see forge architecture skill)", df.Name)}, nil
 	}
 
-	// 6. Optional.
+	// 6. Optional. The comments are placeholders forge recognises again
+	// (optionalPlaceholder): a key still holding one is re-resolved on every
+	// generate, so the provider that arrives later fills it.
 	if df.Optional {
 		// A struct value cannot be nil: an optional one with no provider is
 		// its zero value (`auth.Provider{}`), which is what "absent" means
@@ -208,13 +210,38 @@ func (r *graphResolver) resolve(n *graphNode, df DepsField) (resolved, *graphPro
 		if want != nil && want != types.Typ[types.Invalid] {
 			if _, isStruct := want.Underlying().(*types.Struct); isStruct {
 				if imps, unknown := typeExprImports(df.Type, imports); len(unknown) == 0 {
-					return resolved{Expr: df.Type + "{}", Comment: "optional — no provider: the zero value", Imports: imps}, nil
+					return resolved{Expr: df.Type + "{}", Comment: optionalZeroComment, Imports: imps}, nil
 				}
 			}
 		}
-		return resolved{Expr: "nil", Comment: "optional — no provider"}, nil
+		return resolved{Expr: "nil", Comment: optionalNilComment}, nil
 	}
 	return resolved{}, &graphProblem{Node: n.Name, Field: df.Name, Type: df.Type}
+}
+
+// The comments forge writes beside an optional key it found no producer for.
+const (
+	optionalNilComment  = "optional — no provider"
+	optionalZeroComment = "optional — no provider: the zero value"
+)
+
+// optionalPlaceholder reports whether a key's value and trailing comment are
+// the placeholder forge wrote for an optional field with no producer: `nil`,
+// or a struct type's `T{}`, followed by the matching comment. Such a key is
+// forge's, not the author's — the author never chose nil, there was nothing
+// else to choose — so it is resolved again on every generate instead of
+// freezing the absence: an optional dep whose provider arrives later (a root
+// that comes to reach the node, a provider added after the consumer) is
+// filled. An author who means "absent" for good writes the nil without the
+// comment.
+func optionalPlaceholder(value, comment string) bool {
+	switch strings.TrimSpace(comment) {
+	case optionalNilComment:
+		return value == "nil"
+	case optionalZeroComment:
+		return strings.HasSuffix(value, "{}")
+	}
+	return false
 }
 
 // producersByWrittenType is the string-keyed fallback when go/types could not

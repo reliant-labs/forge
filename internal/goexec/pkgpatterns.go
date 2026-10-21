@@ -26,7 +26,23 @@ import (
 // go.mod, no toolchain) the patterns also come back as given, so the caller
 // reports the real problem itself rather than this helper hiding it.
 func ExcludeNodeModules(ctx context.Context, dir string, env []string, patterns []string) []string {
-	if !anyWildcard(patterns) || !hasNodeModulesDir(dir) {
+	if !anyWildcard(patterns) {
+		return patterns
+	}
+	// Every comparison below is between symlink-resolved paths. The project
+	// may be reached through a symlink (macOS's /var -> /private/var, so
+	// every t.TempDir(); a symlinked home or worktree). WalkDir does not
+	// descend into a root that is itself a symlink, so hasNodeModulesDir
+	// found nothing there. And go list reports a package's Dir under the
+	// caller's $PWD spelling when that names its working directory, so
+	// resolving one side only made every package a "../" path that was never
+	// recognised as under node_modules. Either way the patterns came back
+	// unfiltered.
+	root := dir
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		root = resolved
+	}
+	if !hasNodeModulesDir(root) {
 		return patterns
 	}
 	args := append([]string{"list", "-e", "-f", "{{.Dir}}"}, patterns...)
@@ -42,11 +58,6 @@ func ExcludeNodeModules(ctx context.Context, dir string, env []string, patterns 
 		return patterns
 	}
 
-	// go list reports symlink-resolved directories; resolve dir the same way
-	// so a project reached through a symlink still yields relative paths.
-	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-		dir = resolved
-	}
 	var (
 		kept     []string
 		seen     = map[string]bool{}
@@ -58,7 +69,10 @@ func ExcludeNodeModules(ctx context.Context, dir string, env []string, patterns 
 			continue
 		}
 		pattern := pkgDir
-		if rel, err := filepath.Rel(dir, pkgDir); err == nil && !strings.HasPrefix(rel, "..") {
+		if resolved, err := filepath.EvalSymlinks(pkgDir); err == nil {
+			pkgDir = resolved
+		}
+		if rel, err := filepath.Rel(root, pkgDir); err == nil && !strings.HasPrefix(rel, "..") {
 			if inNodeModules(rel) {
 				excluded = true
 				continue

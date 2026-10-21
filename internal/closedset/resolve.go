@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"golang.org/x/tools/go/packages"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // NewResolver resolves declaration names for the project at dir: a short
@@ -55,6 +57,7 @@ func ResolveGo(dir, qualified string) ([]string, error) {
 	pkgs, err := packages.Load(&packages.Config{
 		Mode: packages.NeedName | packages.NeedTypes | packages.NeedSyntax | packages.NeedTypesInfo,
 		Dir:  dir,
+		Env:  goexec.Env(),
 	}, path)
 	if err != nil {
 		return nil, fmt.Errorf("load package %s: %w", path, err)

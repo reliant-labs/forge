@@ -121,6 +121,10 @@ func graphLiteralEdits(src string, off func(token.Pos) int, lit *ast.CompositeLi
 	)
 	have := map[string]bool{}
 	dropped := map[ast.Expr]bool{}
+	depsField := map[string]DepsField{}
+	for _, df := range n.Deps {
+		depsField[df.Name] = df
+	}
 	for _, el := range lit.Elts {
 		kv, ok := el.(*ast.KeyValueExpr)
 		if !ok {
@@ -135,6 +139,12 @@ func graphLiteralEdits(src string, off func(token.Pos) int, lit *ast.CompositeLi
 			s, e := widenDepsElementCut(src, off(kv.Pos()), off(kv.End()))
 			edits = append(edits, graphEdit{start: s, end: e})
 			dropped[el] = true
+			continue
+		}
+		if df, ok := depsField[id.Name]; ok {
+			if e, ok := placeholderRefill(src, off, kv, n, df, r, addImports); ok {
+				edits = append(edits, e)
+			}
 		}
 	}
 	var lines strings.Builder
@@ -181,6 +191,34 @@ func graphLiteralEdits(src string, off func(token.Pos) int, lit *ast.CompositeLi
 	}
 	edits = append(edits, graphEdit{start: at, end: at, text: text})
 	return edits, problems
+}
+
+// placeholderRefill re-resolves a key that still holds forge's placeholder
+// for an optional field with no producer (optionalPlaceholder): when a
+// producer exists now, the value and its comment are replaced by the
+// resolved expression. Anything else — a value the author wrote, or a
+// placeholder that still has nothing to resolve to — is left alone.
+func placeholderRefill(src string, off func(token.Pos) int, kv *ast.KeyValueExpr, n *graphNode, df DepsField, r *graphResolver, addImports func(map[string]string)) (graphEdit, bool) {
+	start, end := off(kv.Value.Pos()), off(kv.Value.End())
+	eol := strings.IndexByte(src[end:], '\n')
+	if eol < 0 {
+		eol = len(src) - end
+	}
+	rest := src[end : end+eol]
+	comma, comment, ok := strings.Cut(rest, "//")
+	if !ok || strings.TrimSpace(comma) != "," || !optionalPlaceholder(src[start:end], comment) {
+		return graphEdit{}, false
+	}
+	res, prob := r.resolve(n, df)
+	if prob != nil || optionalPlaceholder(res.Expr, res.Comment) {
+		return graphEdit{}, false
+	}
+	addImports(res.Imports)
+	text := res.Expr + ","
+	if res.Comment != "" {
+		text += " // " + res.Comment
+	}
+	return graphEdit{start: start, end: end + eol, text: text}, true
 }
 
 // graphWrapEdits brings an existing new<X> method in line with its node's

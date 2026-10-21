@@ -174,11 +174,11 @@ reaches the component it switched:
   `//forge:audience operator`, an `OperatorChain`, and an `AdminListener` serving
   `OperatorRoutes` — every admin service declares
   `option (forge.v1.service) = {audience: "operator"}`. `forge lint --graph` and
-  the listener's boot check then prove what `internal/app/deployments.go`
-  asserts by hand today: no end-user listener reaches an admin rpc.
+  the listener's boot check then prove what control-plane's hand-written
+  `deployments.go` asserts today: no end-user listener reaches an admin rpc.
 
 ```go
-// internal/app/roots.go — yours
+// internal/app, conventionally roots.go — yours
 //forge:root public-api
 type PublicAPI struct{ API *APIListener }
 

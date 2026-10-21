@@ -72,6 +72,28 @@ delete the lock. And the reverse: read-check-write at `orm.ReadCommitted`
 `TestRunTransaction_Premise_ReadCommittedReadCheckWriteDoublePays` shows two
 payments landing on one balance.
 
+**Your own opener is judged too, once you declare it.** A wrapper that takes
+an `orm.TxPolicy` and runs the transaction itself — a repository `RunTx` with
+a retry ladder of its own — resolves the policy with `orm.ResolveTxPolicy`
+(`orm.ResolveDetachedTxPolicy` when it hands the transaction to its caller),
+which refuses a blank level exactly as `RunTx` does, and says what it is on
+its declaration:
+
+```go
+//forge:tx-opener level-arg=1
+func (r *Repo) RunTx(ctx context.Context, policy orm.TxPolicy, fn func(ctx context.Context) error) error {
+	opts, err := orm.ResolveTxPolicy("Repo.RunTx", policy)
+	…
+}
+```
+
+`level-arg` is the 0-based index of the argument naming the policy (`ctx` is
+0; a receiver is not counted). The body is the last func-typed parameter
+(`body-arg=<n>` to name another); an opener with none is detached, and the
+rest of the function that opened it is its body. The lint then matches calls
+to it by name and arity, project-wide, as it matches pkg/orm's. A marker it
+cannot read — or one not on a func declaration — is an error, not a no-op.
+
 ## What `RunTx` guarantees, and what it asks of you
 
 - **It runs `fn` up to `opts.MaxAttempts` times**, with jittered backoff, while

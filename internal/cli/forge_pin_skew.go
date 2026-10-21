@@ -28,14 +28,16 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/internal/forgedelegate"
 )
@@ -178,8 +180,8 @@ func pinSkew(pin, binary, binaryCommit string) (skewed, ok bool) {
 // forge's own repository, a project bridged to the checkout this binary was
 // built from, a replaced (local) forge, or a side that names no forge.
 func pinSkewFor(projectRoot string) (pin, binary string, skewed, devAgainstTag bool) {
-	cfg, err := config.LoadProjectDir(projectRoot)
-	if err != nil || cfg == nil {
+	cfg, ok := readPinFields(projectRoot)
+	if !ok {
 		return "", "", false, false
 	}
 	// forge's own repository is built and run from source by the people
@@ -212,6 +214,33 @@ func pinSkewFor(projectRoot string) (pin, binary string, skewed, devAgainstTag b
 	}
 	devAgainstTag = !buildinfo.IsDevVersion(pin) && buildinfo.IsDevVersion(binary)
 	return pin, binary, true, devAgainstTag
+}
+
+// pinFields is the slice of forge.yaml the pin comparison needs.
+type pinFields struct {
+	ModulePath   string `yaml:"module_path"`
+	ForgeVersion string `yaml:"forge_version"`
+}
+
+// readPinFields reads forge_version (and module_path) from projectRoot's
+// forge.yaml WITHOUT validating the rest of the file.
+//
+// Validating first is how a newer project locked out an older binary: forge
+// 25283f30 made module_path optional for a site with no go.mod, and a forge
+// from before it rejected that forge.yaml ("'module_path' is required")
+// before it ever read the pin — so it never handed the command to the forge
+// that accepts the file. What this binary thinks of the rest of forge.yaml is
+// irrelevant when the project pins another forge: that one judges it.
+func readPinFields(projectRoot string) (pinFields, bool) {
+	data, err := os.ReadFile(filepath.Join(projectRoot, defaultProjectConfigFile))
+	if err != nil {
+		return pinFields{}, false
+	}
+	var f pinFields
+	if yaml.Unmarshal(data, &f) != nil {
+		return pinFields{}, false
+	}
+	return f, true
 }
 
 // pinSkewRefusal is the runbook printed when a command is refused: which

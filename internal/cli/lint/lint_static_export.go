@@ -51,6 +51,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
@@ -188,6 +189,15 @@ func runStaticExportLint(ctx context.Context, projectDir string, cfg *config.Pro
 		return err
 	}
 	if judged == 0 {
+		if vite := viteFrontendNames(cfg); len(vite) > 0 {
+			// A Vite SPA builds to static files by construction: there is no
+			// server mode for an export to refuse, so there is nothing for
+			// this lane to judge — and saying "no frontend is a static
+			// export" about a site bound to forge.OnHosted would be false.
+			fmt.Printf("  static-export: %s — a Vite build is static by construction, and no Next.js frontend needs checking\n",
+				strings.Join(vite, ", "))
+			return nil
+		}
 		fmt.Println("  static-export: no frontend is a static export (none is a static export or is bound to a static runtime) — nothing to check")
 		return nil
 	}
@@ -227,6 +237,20 @@ func collectStaticExportJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 	}
 	out := findingsToJSON(fs)
 	return out, anyErrorFinding(out), nil
+}
+
+// viteFrontendNames lists the Vite SPAs in the inventory, as "<name> (vite)".
+func viteFrontendNames(cfg *config.ProjectConfig) []string {
+	if cfg == nil {
+		return nil
+	}
+	var out []string
+	for _, fe := range cfg.Frontends {
+		if fe.Type == "vite-spa" {
+			out = append(out, fe.Name+" (vite)")
+		}
+	}
+	return out
 }
 
 // hasNextJSFrontend reports whether the lane can apply at all.

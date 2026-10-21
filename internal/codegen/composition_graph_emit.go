@@ -314,13 +314,14 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 // the roots over them: declared, else the default. A node no root reaches
 // whose Deps do not resolve is left out (composition_graph_reach.go).
 func (m *graphModel) wire(in GraphGenInput, resolver *graphResolver, roots []graphRoot) error {
-	var err error
 	scope := func(draft string, problems []graphProblem) (map[string]unbuiltNode, error) {
 		return m.outOfReach(roots, draft, problems)
 	}
-	if m.existing, m.compose, m.disowned, m.unbuilt, err = reconcileGraphComposeFile(in, m.nodes, resolver, scope); err != nil {
+	f, err := reconcileGraphComposeFile(in, m.nodes, resolver, scope)
+	if err != nil {
 		return err
 	}
+	m.existing, m.compose, m.disowned, m.unbuilt = f.existing, f.compose, f.disowned, f.unbuilt
 	built := m.built()
 	m.edges, m.lazy = graphComposeEdgesLazy(m.compose, built)
 	if cycle := graphCycle(built, m.edges); cycle != nil {
@@ -432,35 +433,36 @@ func graphGenViewOf(module string, nodes []*graphNode, rootViews []graphRootView
 // make: scope returns the nodes to leave out — none of them reached by a root
 // — or the error to fail with, and the file is reconciled again without them.
 // A nil scope fails on any problem.
-func reconcileGraphComposeFile(in GraphGenInput, nodes []*graphNode, resolver *graphResolver, scope reachScope) (existing, compose string, disowned bool, unbuilt map[string]unbuiltNode, err error) {
+func reconcileGraphComposeFile(in GraphGenInput, nodes []*graphNode, resolver *graphResolver, scope reachScope) (graphComposeFile, error) {
 	composeRel := filepath.Join("internal", "app", "compose.go")
 	composeAbs := filepath.Join(in.ProjectDir, composeRel)
 	raw, rerr := os.ReadFile(composeAbs)
 	if rerr != nil && !os.IsNotExist(rerr) {
-		return "", "", false, nil, fmt.Errorf("read internal/app/compose.go: %w", rerr)
+		return graphComposeFile{}, fmt.Errorf("read internal/app/compose.go: %w", rerr)
 	}
-	existing = string(raw)
+	f := graphComposeFile{existing: string(raw)}
 	if disownedFilePresent(in.Checksums, composeRel, composeAbs) {
-		return existing, existing, true, nil, nil
+		f.compose, f.disowned = f.existing, true
+		return f, nil
 	}
-	out, problems, err := reconcileGraphCompose(existing, nodes, resolver)
+	out, problems, err := reconcileGraphCompose(f.existing, nodes, resolver)
 	if err != nil {
-		return "", "", false, nil, err
+		return graphComposeFile{}, err
 	}
 	if len(problems) > 0 {
 		if scope == nil {
-			return "", "", false, nil, graphProblemsError(problems)
+			return graphComposeFile{}, graphProblemsError(problems)
 		}
-		if unbuilt, err = scope(out, problems); err != nil {
-			return "", "", false, nil, err
+		if f.unbuilt, err = scope(out, problems); err != nil {
+			return graphComposeFile{}, err
 		}
 		// The same resolver over fewer nodes: every node kept resolved in
 		// the draft, and resolves the same way again.
-		if out, problems, err = reconcileGraphCompose(existing, withoutNodes(nodes, unbuilt), resolver); err != nil {
-			return "", "", false, nil, err
+		if out, problems, err = reconcileGraphCompose(f.existing, withoutNodes(nodes, f.unbuilt), resolver); err != nil {
+			return graphComposeFile{}, err
 		}
 		if len(problems) > 0 {
-			return "", "", false, nil, graphProblemsError(problems)
+			return graphComposeFile{}, graphProblemsError(problems)
 		}
 	}
 	stale := graphStaleConstructionData(in, nodes)
@@ -468,7 +470,16 @@ func reconcileGraphComposeFile(in GraphGenInput, nodes []*graphNode, resolver *g
 	for _, w := range composeStaleConstructions(out, stale) {
 		fmt.Fprintf(in.warnings(), "  ⚠️  %s\n", w)
 	}
-	return existing, out, false, unbuilt, nil
+	f.compose = out
+	return f, nil
+}
+
+// graphComposeFile is compose.go as generate reconciles it: the file as read,
+// the reconciled source (equal when disowned), and the nodes left out.
+type graphComposeFile struct {
+	existing, compose string
+	disowned          bool
+	unbuilt           map[string]unbuiltNode
 }
 
 // graphStaleConstructionData is the view composeDropStaleDepsKeys and

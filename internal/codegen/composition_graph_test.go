@@ -442,10 +442,11 @@ func (g *Graph) newAlpaca() (alpaca.Service, error) {
 `)
 			var warnings strings.Builder
 			in := GraphGenInput{GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"}, Warnings: &warnings}
-			_, out, disowned, _, err := reconcileGraphComposeFile(in, nil, &graphResolver{module: "example.com/proj"}, nil)
-			if err != nil || disowned {
-				t.Fatalf("reconcileGraphComposeFile: disowned=%v err=%v", disowned, err)
+			f, err := reconcileGraphComposeFile(in, nil, &graphResolver{module: "example.com/proj"}, nil)
+			if err != nil || f.disowned {
+				t.Fatalf("reconcileGraphComposeFile: disowned=%v err=%v", f.disowned, err)
 			}
+			out := f.compose
 			if strings.Contains(out, "Region") {
 				t.Fatalf("compose.go still keys the removed Region field — the project cannot build:\n%s", out)
 			}

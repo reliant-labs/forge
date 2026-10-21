@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Roots can be declared one at a time: resolution follows reach.** A
+  root's process builds only the closure its fields reach, but `forge
+  generate` demanded a provider for every Deps field of every discovered
+  component, so a project with 33 handlers could not declare a gateway root
+  without first wiring all of them. Now a Deps field forge cannot fill fails
+  generate only on a node some root reaches (as before, with the same
+  message). A node no root reaches with such a field, and every node that
+  takes it, is left out of `graph_gen.go` — no accessor, no injected
+  constructor; an owned one is kept — and `forge lint --graph` reports it as
+  `forge-graph-unreachable`, always an error. A project whose Deps all resolve,
+  every fresh scaffold, generates byte for byte what it did.
+- **`forge lint --graph` answers to `lint.rules`.** Its findings went straight
+  to the verdict, so `lint.rules: {forge-graph-unreachable: warn}` was accepted
+  and ignored. They now pass through the same `off` / `warn` / `error` dial as
+  every forge rule, which is what holds the unreached components at warn while
+  the roots are declared.
 - **A failed request names the trace it landed in, in the browser.** Every
   forge server now answers each Connect call, failed ones included, with the
   W3C `traceresponse` header naming its server span

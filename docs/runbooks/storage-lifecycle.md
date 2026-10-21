@@ -377,7 +377,7 @@ A non-main worktree is **removable** only if all hold:
   never rebuildable, even if a policy lists them. An ignored path that is not
   on the allowlist is still not data (so does not hold the worktree) when it is
   a regular file that is a **generated** file (first line `Code generated … DO NOT
-  EDIT.`, unless the never-list names the path) or a **byte-identical copy of
+EDIT.`, unless the never-list names the path) or a **byte-identical copy of
   the same path in the repository's main checkout** (this applies to the
   never-list too: nothing is lost). A copy that differs, or exists only in the
   worktree, holds, and the hold names the main checkout. A main-checkout path

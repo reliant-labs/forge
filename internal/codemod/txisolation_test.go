@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/mod/modfile"
+
 	"github.com/reliant-labs/forge/internal/goexec"
 )
 
@@ -34,13 +36,27 @@ func TestTxIsolation_KeepsEveryShapesWireLevelAndAttempts(t *testing.T) {
 		copyFile(t, filepath.Join(fixture, name), filepath.Join(dir, name))
 	}
 	copyFile(t, filepath.Join(root, "go.sum"), filepath.Join(dir, "go.sum"))
-	gomod := "module example.com/txscratch\n\ngo 1.27.0\n\n" +
-		"require github.com/reliant-labs/forge v0.0.0-00010101000000-000000000000\n\n" +
-		"replace github.com/reliant-labs/forge => " + root + "\n"
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0o644); err != nil {
+	// The scratch module requires exactly what forge requires, so its module
+	// graph is forge's: every go.mod it reads is one forge's own build has
+	// already put in the module cache. `go mod tidy` instead walked modules
+	// outside forge's pruned graph (github.com/davecgh/go-spew@v1.1.1 on a
+	// clean cache), which GOPROXY=off may not fetch: the test failed on any
+	// machine whose cache had not met them (native Windows CI, run
+	// 39629248238).
+	forgeMod, err := modfile.Parse("go.mod", []byte(readFile(t, root, "go.mod")), nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	goCmd(t, dir, "mod", "tidy")
+	var gomod strings.Builder
+	gomod.WriteString("module example.com/txscratch\n\ngo 1.27.0\n\nrequire (\n")
+	gomod.WriteString("\tgithub.com/reliant-labs/forge v0.0.0-00010101000000-000000000000\n")
+	for _, r := range forgeMod.Require {
+		gomod.WriteString("\t" + r.Mod.Path + " " + r.Mod.Version + "\n")
+	}
+	gomod.WriteString(")\n\nreplace github.com/reliant-labs/forge => " + root + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	rep, err := runTxIsolation(dir, true)
 	if err != nil {

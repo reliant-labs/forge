@@ -99,20 +99,7 @@ func GenerateConfigNativeSharedRoots(fields []ConfigField, roots []GraphRoot, pr
 	if roots == nil && GraphComposition(projectDir) {
 		roots = []GraphRoot{DefaultServerRoot(fields)}
 	}
-	if err := emitRootsGo(projectDir, roots, projectRootConfigMessage(projectDir), cs); err != nil {
-		return err
-	}
 	return writeConfigNativeShared(body+RootsKCL(roots), projectDir, kclDirAbs, cs)
-}
-
-// projectRootConfigMessage is the message config.Config aliases, read off
-// proto/config; "" when there is none.
-func projectRootConfigMessage(projectDir string) string {
-	messages, err := ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config"))
-	if err != nil {
-		return ""
-	}
-	return rootConfigMessageName(messages, primaryBinaryName(projectDir))
 }
 
 // GenerateConfigNativeSharedPerBinary is the per-binary form of
@@ -137,19 +124,13 @@ func GenerateConfigNativeSharedPerBinaryRoots(rootFields []ConfigField, perBinar
 	if err != nil {
 		return fmt.Errorf("generate per-binary config module: %w", err)
 	}
-	var projected []GraphRoot
 	if GraphComposition(projectDir) {
 		if env, defaultRoot, ok := perBinaryRootsEnv(projectDir, rootFields, perBinary); ok {
 			if roots == nil {
 				roots = []GraphRoot{defaultRoot}
 			}
 			body += RootsKCLFor(roots, env)
-			projected = roots
 		}
-	}
-	// The same roots, as Go (pkg/config/roots_gen.go) — or none, as ROOTS.
-	if err := emitRootsGo(projectDir, projected, projectRootConfigMessage(projectDir), cs); err != nil {
-		return err
 	}
 	return writeConfigNativeShared(body, projectDir, kclDirAbs, cs)
 }

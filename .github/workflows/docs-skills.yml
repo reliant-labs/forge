@@ -8,9 +8,14 @@
 # version-drift check). So this workflow runs exactly the -short tests that
 # read those files, whenever any of them changes, in about two minutes.
 #
+# It also runs the pre-commit hooks over the files the pull request changed
+# (whitespace, prettier, gitleaks, forbidden strings): ci.yml's quick-checks
+# job runs them over every file, but ci.yml skips a prose-only pull request.
+#
 # On a pull request that also changes Go, ci.yml runs these same packages in
-# its shards; this run is then a cheap duplicate, kept because a path filter
-# cannot say "only these paths" and the duplicate costs only runner time.
+# its shards and the hooks over every file; this run is then a cheap
+# duplicate, kept because a path filter cannot say "only these paths" and the
+# duplicate costs only runner time.
 name: Docs & skills
 
 on:
@@ -36,7 +41,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # Depth 2: the merge commit and its first parent, the base branch's tip.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -58,3 +66,25 @@ jobs:
         run: |
           go test -short ./internal/templates/... ./internal/checksums/...
           go test -short -run '(?i)skill' ./internal/cli/
+      - uses: actions/setup-python@v7
+        if: ${{ !cancelled() }}
+        with:
+          python-version: "3.12"
+      - name: Files this pull request changes
+        id: changed
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          # Deleted files have nothing for a hook to read.
+          files="$(git diff --name-only --diff-filter=d HEAD^1 HEAD | tr '\n' ' ')"
+          echo "files=${files}" >> "$GITHUB_OUTPUT"
+          echo "${files}"
+      # go-vet-mod is a whole-module hook with nothing to say about prose; it
+      # runs in ci.yml's lint job whenever Go changes.
+      - name: pre-commit (changed files)
+        if: ${{ !cancelled() && steps.changed.outputs.files != '' }}
+        uses: pre-commit/action@v3.0.1
+        env:
+          SKIP: go-vet-mod
+        with:
+          extra_args: --files ${{ steps.changed.outputs.files }}

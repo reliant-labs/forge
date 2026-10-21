@@ -13,8 +13,8 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// golangci-lint is installed in six places: forge's own CI (ci.yml,
-// library-lint.yml, e2e-suite.yml), forge's own scripts/bootstrap.sh, and
+// golangci-lint is installed in six places: forge's own CI (ci.yml's two
+// lint steps, e2e-suite.yml), forge's own scripts/bootstrap.sh, and
 // the two copies forge SHIPS — the scaffolded CI workflow and the scaffolded
 // scripts/bootstrap.sh. Every one of them must name the same explicit
 // version, templates.GolangciLintVersion.
@@ -52,7 +52,6 @@ func TestGolangciLintVersionIsPinnedEverywhere(t *testing.T) {
 	workflows := map[string][]byte{}
 	for _, rel := range []string{
 		".github/workflows/ci.yml",
-		".github/workflows/library-lint.yml",
 		".github/workflows/e2e-suite.yml",
 	} {
 		raw, err := os.ReadFile(filepath.Join(root, rel))

@@ -112,7 +112,7 @@ says why its lanes are shaped the way they are; read it before moving a check be
 lanes. `ci.yml`'s `CI gate` job prints every job's wall time and the critical path on each
 run — watch it when you add a test.
 
-**Pull request** (`ci.yml`, plus `pre-commit.yml`, `library-lint.yml`, `license-gate.yml`):
+**Pull request** (`ci.yml`, 8 jobs; `docs-skills.yml` when prose or skills change):
 
 - **Test (-short)** — the `-short` tier, no `-race`, as 2 package shards
   (`scripts/ci-test-shard.sh` over `scripts/ci-test-packages.sh short I N`).
@@ -122,10 +122,15 @@ run — watch it when you add a test.
   detector (`scripts/ci-changed-tests.sh`). A test that fails one run in three never merges.
 - **Windows (cross-compile + vet)** — `GOOS=windows` build and vet (tests included) from
   Linux, and the windows/arm64 build of `cmd/forge`.
-- **compile (-tags e2e)** — `go vet -tags e2e` over the e2e-tagged packages.
-- Lint, Verify Generated Code + Validate KCL, Vulnerability Scan.
-- A pull request that touches only `docs/**`, root `*.md` or skills skips `ci.yml` and
-  `library-lint.yml`; `docs-skills.yml` runs the `-short` tests that read those files.
+- **Lint** — golangci-lint over the root and over `pkg/` (under `pkg/.golangci.yml`),
+  `go vet ./...`, and `go vet -tags e2e` over the e2e-tagged packages.
+- **Verify generated code, KCL, vulnerabilities** — `forge ci verify-generated`,
+  `forge ci validate-kcl`, `forge ci vuln-scan --go`, on one forge install.
+- **Quick checks** — the pre-commit hooks (go-vet-mod skipped: Lint runs it) and the Go and
+  npm dependency-license allowlists.
+- A pull request that touches only `docs/**`, root `*.md` or skills skips `ci.yml`;
+  `docs-skills.yml` runs the `-short` tests that read those files and the pre-commit hooks
+  over the changed files.
 
 **Push to main** (and `workflow_dispatch` on any branch) adds:
 
@@ -133,13 +138,12 @@ run — watch it when you add a test.
   (every package except `internal/cli` and the guards), full mode.
 - **internal/cli** — `ci.yml` Test (internal/cli): the package alone, `-race -count=1`. Its
   subpackages stay in Unit.
-- **Guards** — `ci.yml` Test (guards): tierguard, removalguard, deadcodeguard; `-p 1`, no
-  `-race`. Under `-short` they skip their whole-repo work, so pull requests get their fast
-  half only.
-- **Test (-short, whole tier)** — the pull-request tier in one job; it saves the
-  `go-build-short` cache the shards restore.
-- **Build** (`-trimpath -buildvcs`) and **License Compliance** (go-licenses);
-  `license-gate.yml` checks dependency licenses on every pull request.
+- **Test (-short whole tier, then guards)** — the pull-request tier in one job, which saves
+  the `go-build-short` cache the shards restore; then the guards (tierguard, removalguard,
+  deadcodeguard; `-p 1`, full mode, no `-race`). Under `-short` the guards skip their
+  whole-repo work, so pull requests get their fast half only.
+- **Build (-trimpath) + go-licenses** — the release build flags, then the second license
+  opinion; Quick checks covers dependency licenses on every pull request.
 - **Windows** — native: build, vet, the `-short` tier of Unit + internal/cli, and a
   scaffold+render smoke.
 - **e2e** — `e2e-suite.yml`: `prepare` builds the e2e test binary, forge and the codegen
@@ -161,6 +165,13 @@ median; `scripts/e2e-timings.sh` refreshes the file from a CI run.
 
 A check moves off the pull request only when it is slow AND a failure is rare and cheap to
 bisect from main. Say why in its job comment.
+
+**Fewer, larger jobs, and caches that fit.** The org runs at most 20 jobs at once across
+every repository, so a job is a queue slot as well as ~45-60s of setup: checks that share
+a toolchain share a job (`ci.yml`'s header lists what joined what). The repository's cache
+budget is 10 GB; every scope saved on main is trimmed first to the entries that run used
+(`.github/actions/trim-go-build-cache`), or the scopes outgrow the budget and evict one
+another. Add a job, or a cache scope, only when sharing one is worse.
 
 Build caches: a PR job restores main's cache and never saves one; only pushes to main
 save (`ci.yml`'s "Build-cache note"). A PR's cache is visible to that PR alone, and PR

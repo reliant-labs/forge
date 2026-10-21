@@ -454,3 +454,98 @@ type Service interface {
 		t.Fatalf("decorator does not parse: %v", err)
 	}
 }
+
+// NewInstrumented mirrors New exactly — parameters (named, unnamed, variadic,
+// imported types) and results (fallible or not) — so instrumenting a
+// construction is a rename that changes no type.
+func TestObservedDecorator_NewInstrumented(t *testing.T) {
+	const contract = `package billing
+
+import "context"
+
+type Service interface {
+	Charge(ctx context.Context, cents int64) error
+}
+`
+	cases := []struct {
+		name    string
+		service string
+		want    []string
+		absent  bool
+	}{
+		{
+			name: "fallible, imported and variadic params",
+			service: `package billing
+
+import "log/slog"
+
+type Deps struct{}
+type Option func()
+
+func New(deps Deps, log *slog.Logger, opts ...Option) (Service, error) { return nil, nil }
+`,
+			want: []string{
+				"func NewInstrumented(deps Deps, log *slog.Logger, opts ...Option) (Service, error) {",
+				"instrumentedInner, instrumentedErr := New(deps, log, opts...)",
+				"return NewServiceWithForgeMiddleware(instrumentedInner), nil",
+				`"log/slog"`,
+			},
+		},
+		{
+			name: "single result, unnamed param",
+			service: `package billing
+
+type Deps struct{}
+
+func New(Deps) Service { return nil }
+`,
+			want: []string{
+				"func NewInstrumented(p0 Deps) Service {",
+				"return NewServiceWithForgeMiddleware(New(p0))",
+			},
+		},
+		{
+			name: "a user-owned NewInstrumented is never shadowed",
+			service: `package billing
+
+func New() Service { return nil }
+
+func NewInstrumented() Service { return New() }
+`,
+			absent: true,
+		},
+		{
+			name: "New returning a concrete type gets none",
+			service: `package billing
+
+type impl struct{ Service }
+
+func New() *impl { return nil }
+`,
+			absent: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeContract(t, contract)
+			if err := os.WriteFile(filepath.Join(dir, "service.go"), []byte(tc.service), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			out := genDecorator(t, dir, "Service", "billing")
+			if _, err := parser.ParseFile(token.NewFileSet(), "middleware_gen.go", out, 0); err != nil {
+				t.Fatalf("decorator does not parse: %v\n%s", err, out)
+			}
+			if tc.absent {
+				if strings.Contains(out, "func NewInstrumented") {
+					t.Fatalf("NewInstrumented must not be generated:\n%s", out)
+				}
+				return
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(out, w) {
+					t.Errorf("decorator lacks %q:\n%s", w, out)
+				}
+			}
+		})
+	}
+}

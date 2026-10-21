@@ -75,6 +75,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"webhook routes",
 		"go mod tidy (pre-composition)",
 		"internal/app composition (hybrid DI)",
+		"root env schema (pkg/config/roots_gen.go)",
 		"go mod tidy (pre-wiring)",
 		"cmd/commands.go (user extension point)",
 		"per-service test helpers",

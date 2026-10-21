@@ -259,14 +259,14 @@ func configPathEnv(cmd *cobra.Command, msg proto.Message) string {
 // path variable. A variable set to "" is unset, as every variable the loader
 // reads is (lookupEnv). When this returns ok=false, no file is loaded (normal
 // defaults→env→flags precedence).
-func resolveConfigPath(cmd *cobra.Command, msg proto.Message) (path, source string, ok bool) {
+func resolveConfigPath(cmd *cobra.Command, msg proto.Message, e environ) (path, source string, ok bool) {
 	if cmd != nil {
 		if f := lookupConfigFlag(cmd); f != nil && f.Changed && f.Value.String() != "" {
 			return f.Value.String(), "--" + ConfigFlag, true
 		}
 	}
 	if env := configPathEnv(cmd, msg); env != "" {
-		if v, set := lookupEnv(env); set {
+		if v, set := e.lookupEnv(env); set {
 			return v, "env " + env, true
 		}
 	}

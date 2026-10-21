@@ -15,6 +15,14 @@ the wire. Every applied BASE TABLE gets:
 - an `<E>Store` interface in `store_gen.go` (and the aggregate `Store`);
 - a scaffold-once `<entity>_repo_ext.go` seam for hand-written queries.
 
+Two answers every store gives the same way. A by-key method (`Get<E>ByID`,
+`Get<E>ByPK`, `Update<E>`, `Update<E>Masked`, `Delete<E>`, `Delete<E>ByPK`)
+answers a missing row with `svcerr.NotFound("<entity>")`, which is also
+`errors.Is(err, orm.ErrNoRows)`. `List<E>` with no `orm.WithLimit` returns every
+matching row, uncapped: bound a read yourself, and walk a table that grows
+without bound a page at a time (`WhereGt` on the key + `WithOrderBy` +
+`WithLimit`).
+
 whether or not any service declares rpcs for the table — a table whose
 CRUD-named rpcs are all `// forge:custom`, or that no rpc names at all, still
 has its store. **CRUD wiring** (handlers, pages, seed roots) is the separate,

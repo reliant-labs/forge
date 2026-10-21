@@ -550,9 +550,7 @@ func renderORMEntity(pkgName string, ent config.PlanEntity, hasExtra bool) []byt
 	fmt.Fprintf(&b, "package %s\n\n", pkgName)
 
 	// Imports
-	// Every store but a keyless view's classifies a missing row on Get
-	// (errors.Is + svcerr.NotFound).
-	writeORMImports(&b, needsTime, needsJSON, !ent.ReadOnly || pkField != nil, overrideImports)
+	writeORMImports(&b, needsTime, needsJSON, overrideImports)
 
 	// The entity struct: a projection of the APPLIED schema, with Bun tags.
 	writeEntityStruct(&b, msgName, tableName, fields, hasExtra)
@@ -623,13 +621,12 @@ func renderORMEntity(pkgName string, ent config.PlanEntity, hasExtra bool) []byt
 // writeORMImports emits the import block for a generated ORM file. The
 // per-entity CRUD bodies now live in the generic forge/pkg/crud.Repo, so
 // the generated file imports only what the thin delegates and the struct
-// reference: context (delegate signatures), errors + forge/pkg/svcerr (the
-// Get delegate's missing-row classification), forge/pkg/crud (the Repo),
+// reference: context (delegate signatures), forge/pkg/crud (the Repo),
 // forge/pkg/orm (the Context + QueryOption types), and bun (the embedded
 // BaseModel). time is added when any column projects to time.Time. The old
 // per-file fmt/strings/ulid/otel imports are gone — the library owns the
 // tracing, ULID generation, and error wrapping.
-func writeORMImports(b *strings.Builder, needsTime, needsJSON, needsNotFound bool, extra []string) {
+func writeORMImports(b *strings.Builder, needsTime, needsJSON bool, extra []string) {
 	// forge:go-type imports join the group they belong to: a standard
 	// library path (no dot in its first element) beside context, any
 	// other beside bun. format.Source sorts each group and drops a
@@ -651,18 +648,12 @@ func writeORMImports(b *strings.Builder, needsTime, needsJSON, needsNotFound boo
 	if needsJSON {
 		b.WriteString("\t\"encoding/json\"\n")
 	}
-	if needsNotFound {
-		b.WriteString("\t\"errors\"\n")
-	}
 	if needsTime {
 		b.WriteString("\t\"time\"\n")
 	}
 	b.WriteString("\n")
 	b.WriteString("\t\"github.com/reliant-labs/forge/pkg/crud\"\n")
 	b.WriteString("\t\"github.com/reliant-labs/forge/pkg/orm\"\n")
-	if needsNotFound {
-		b.WriteString("\t\"github.com/reliant-labs/forge/pkg/svcerr\"\n")
-	}
 	b.WriteString("\t\"github.com/uptrace/bun\"\n")
 	for _, spec := range third {
 		b.WriteString("\t" + spec + "\n")
@@ -696,29 +687,17 @@ func writeORMRepoAndDelegates(b *strings.Builder, msgName, pkGoType string, soft
 	fmt.Fprintf(b, "\treturn %s.Create(ctx, db, msg)\n", repoVar)
 	b.WriteString("}\n\n")
 
-	// Get. The missing-row answer is CLASSIFIED here, not left as the raw
-	// storage sentinel: svcerr.NotFound is the service-layer category, and a
-	// hand-written RPC can `return nil, err` (or svcerr.Wrap(err)) instead of
-	// re-deriving it. Leaving orm.ErrNoRows on this delegate made every
-	// hand-written loader restate the same three lines — one copy per entity —
-	// which is the exact duplication pkg/svcerr's own doc comment cites as its
-	// reason for existing. The generated CRUD path already classified it
-	// (crud.mapRepoErr), so only the hand-written path was paying.
-	//
-	// Only Get. Update/Delete keep orm.ErrNoRows: pkg/crud documents swallowing
-	// that sentinel in an entity's Persist closure as the supported way to opt
-	// into absent-is-success (AIP-135 allow_missing), and mapping it here would
-	// break the one escape hatch forge tells users to reach for.
+	// Get. A missing row is crud.Repo's not-found error, the one every
+	// by-key verb gives (Get, Update, UpdateMasked, Delete): svcerr.NotFound,
+	// still errors.Is-true for orm.ErrNoRows. The Repo classifies it, so
+	// this delegate — like the others — only forwards.
 	entityLower := strings.ToLower(msgName)
 	fmt.Fprintf(b, "// Get%sByID retrieves a %s by primary key. A missing row is\n", msgName, msgName)
 	fmt.Fprintf(b, "// svcerr.NotFound(%q) — return it as-is from a service or hand it to\n", entityLower)
-	b.WriteString("// svcerr.Wrap in a handler; every other error is the repository's.\n")
+	b.WriteString("// svcerr.Wrap in a handler — and is also errors.Is(err, orm.ErrNoRows);\n")
+	b.WriteString("// Update, UpdateMasked and Delete answer a missing row the same way.\n")
 	fmt.Fprintf(b, "func Get%sByID(ctx context.Context, db orm.Context, id %s) (*%s, error) {\n", msgName, pkGoType, msgName)
-	fmt.Fprintf(b, "\trow, err := %s.Get(ctx, db, id)\n", repoVar)
-	b.WriteString("\tif errors.Is(err, orm.ErrNoRows) {\n")
-	fmt.Fprintf(b, "\t\treturn nil, svcerr.NotFound(%q)\n", entityLower)
-	b.WriteString("\t}\n")
-	b.WriteString("\treturn row, err\n")
+	fmt.Fprintf(b, "\treturn %s.Get(ctx, db, id)\n", repoVar)
 	b.WriteString("}\n\n")
 
 	// List
@@ -870,12 +849,10 @@ func writeCompositeKeyDelegates(b *strings.Builder, msgName string, keys []keyPa
 	fmt.Fprintf(b, "\treturn %s.Create(ctx, db, msg)\n}\n\n", repoVar)
 
 	fmt.Fprintf(b, "// Get%sByPK retrieves the %s whose key %s is the one given. A\n", msgName, msgName, keyDoc)
-	fmt.Fprintf(b, "// missing row is svcerr.NotFound(%q); every other error is the repository's.\n", entityLower)
+	fmt.Fprintf(b, "// missing row is svcerr.NotFound(%q), also errors.Is(err, orm.ErrNoRows),\n", entityLower)
+	b.WriteString("// as from every by-key verb; every other error is the repository's.\n")
 	fmt.Fprintf(b, "func Get%sByPK(ctx context.Context, db orm.Context, %s) (*%s, error) {\n", msgName, params, msgName)
-	fmt.Fprintf(b, "\trow, err := %s.GetByPK(ctx, db, %s)\n", repoVar, literal)
-	b.WriteString("\tif errors.Is(err, orm.ErrNoRows) {\n")
-	fmt.Fprintf(b, "\t\treturn nil, svcerr.NotFound(%q)\n", entityLower)
-	b.WriteString("\t}\n\treturn row, err\n}\n\n")
+	fmt.Fprintf(b, "\treturn %s.GetByPK(ctx, db, %s)\n}\n\n", repoVar, literal)
 
 	fmt.Fprintf(b, "// List%s retrieves %s rows with optional QueryOption filtering.\n", msgName, msgName)
 	fmt.Fprintf(b, "func List%s(ctx context.Context, db orm.Context, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, msgName)
@@ -929,12 +906,10 @@ func writeReadOnlyDelegates(b *strings.Builder, msgName string, key *ormField, v
 	if key != nil {
 		entityLower := strings.ToLower(msgName)
 		fmt.Fprintf(b, "// Get%sByID retrieves the %s row whose %s is id. A missing row is\n", msgName, msgName, key.columnName)
-		fmt.Fprintf(b, "// svcerr.NotFound(%q); every other error is the repository's.\n", entityLower)
+		fmt.Fprintf(b, "// svcerr.NotFound(%q), also errors.Is(err, orm.ErrNoRows); every other\n", entityLower)
+		b.WriteString("// error is the repository's.\n")
 		fmt.Fprintf(b, "func Get%sByID(ctx context.Context, db orm.Context, id %s) (*%s, error) {\n", msgName, key.goType, msgName)
-		fmt.Fprintf(b, "\trow, err := %s.Get(ctx, db, id)\n", repoVar)
-		b.WriteString("\tif errors.Is(err, orm.ErrNoRows) {\n")
-		fmt.Fprintf(b, "\t\treturn nil, svcerr.NotFound(%q)\n", entityLower)
-		b.WriteString("\t}\n\treturn row, err\n}\n\n")
+		fmt.Fprintf(b, "\treturn %s.Get(ctx, db, id)\n}\n\n", repoVar)
 	}
 	fmt.Fprintf(b, "// List%s retrieves %s rows with optional QueryOption filtering.\n", msgName, msgName)
 	fmt.Fprintf(b, "func List%s(ctx context.Context, db orm.Context, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, msgName)

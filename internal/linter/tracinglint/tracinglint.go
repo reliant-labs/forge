@@ -37,8 +37,10 @@ package tracinglint
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -48,6 +50,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 )
 
@@ -171,11 +174,38 @@ func Lint(root string, opts Options) (Result, error) {
 		instrumented = memoize(opts.Instrumented)
 	}
 	for _, f := range files {
+		// Constructions first: the fix rewrites and reloads f, so every rule
+		// after it reads the file as it now is.
+		if instrumented != nil && module != "" {
+			var fix, report []ctorSite
+			for _, s := range uninstrumentedSites(f, root, module, instrumented) {
+				if s.rename != "" && opts.Fix && (opts.FixFilter == nil || opts.FixFilter(s.finding(f))) {
+					fix = append(fix, s)
+				} else {
+					report = append(report, s)
+				}
+			}
+			if len(fix) > 0 {
+				findings := make([]finding.Finding, 0, len(fix))
+				for _, s := range fix {
+					findings = append(findings, s.finding(f))
+				}
+				n, err := applyCtorFixes(f, fix)
+				switch {
+				case err != nil:
+					return Result{}, err
+				case n > 0:
+					res.Fixed = append(res.Fixed, Fixed{File: f.rel, Rule: RuleContractUninstrumented, Count: n})
+				default:
+					res.Findings = append(res.Findings, findings...)
+				}
+			}
+			for _, s := range report {
+				res.Findings = append(res.Findings, s.finding(f))
+			}
+		}
 		res.Findings = append(res.Findings, rawHTTPClientFindings(f)...)
 		res.Findings = append(res.Findings, rawSQLOpenFindings(f)...)
-		if instrumented != nil && module != "" {
-			res.Findings = append(res.Findings, uninstrumentedFindings(f, root, module, instrumented)...)
-		}
 	}
 	for _, dir := range sortedKeys(pkgs) {
 		loggers := collectLoggerFields(pkgs[dir])
@@ -392,3 +422,31 @@ func sortedKeys[V any](m map[string]V) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+// writeAndReload gofmts out, writes it over f's file, and re-parses f from it.
+// A result that does not gofmt is not written (and is not an error): the
+// caller's sites are then reported instead of fixed — see the n==0 returns.
+func writeAndReload(f *goFile, out []byte) error {
+	formatted, err := format.Source(out)
+	if err != nil {
+		return errNotFixed
+	}
+	info, err := os.Stat(f.abs)
+	if err != nil {
+		return err
+	}
+	if err := atomicfile.WriteFile(f.abs, formatted, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("tracing lint: rewrite %s: %w", f.rel, err)
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, f.abs, formatted, parser.ParseComments|parser.SkipObjectResolution)
+	if err != nil {
+		return fmt.Errorf("tracing lint: re-parse %s: %w", f.rel, err)
+	}
+	f.src, f.fset, f.file, f.imports = formatted, fset, file, fileImports(file)
+	return nil
+}
+
+// errNotFixed marks a rewrite that was abandoned because its result did not
+// gofmt; the sites are reported instead.
+var errNotFixed = errors.New("tracing lint: rewrite abandoned")

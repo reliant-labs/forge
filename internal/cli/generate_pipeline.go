@@ -408,6 +408,8 @@ func generateSteps() []GenStep {
 		{Name: "webhook routes", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.codegen=false", Run: stepWebhookRoutes, Tag: "codegen"},
 		{Name: "go mod tidy (pre-composition)", Gate: feature(config.FeaturesConfig.CodegenEnabled), GateReason: "features.codegen=false", Run: stepGoModTidyPreComposition, Tag: "tools", Writes: writesBothTidies},
 		{Name: "internal/app composition (hybrid DI)", Gate: feature(config.FeaturesConfig.CodegenEnabled), GateReason: "features.codegen=false", Run: stepInternalAppComposition, Tag: "codegen"},
+		// AFTER composition: it projects the roots composition just read.
+		{Name: "root env schema (pkg/config/roots_gen.go)", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasConfig), GateReason: "no proto/config/ directory or features.codegen=false", Run: stepRootsEnvSchema, Tag: "codegen"},
 		{Name: "go mod tidy (pre-wiring)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepGoModTidyPreWiring, Tag: "tools", Writes: writesBothTidies},
 		{Name: "cmd/commands.go (user extension point)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepCmdCommands, Tag: "codegen"},
 		{Name: "per-service test helpers", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrapTesting, Tag: "codegen"},
@@ -2201,6 +2203,17 @@ func stepInternalAppComposition(ctx *pipelineContext) error {
 	}
 	ctx.graphRoots, ctx.graphRootsSet = roots, true
 	return nil
+}
+
+// stepRootsEnvSchema writes pkg/config/roots_gen.go: each root's config reach
+// as Go another module imports (codegen.GenerateRootsGo) — the reach
+// config_gen.k's ROOTS projects, for a project with or without deploy envs.
+func stepRootsEnvSchema(ctx *pipelineContext) error {
+	var roots []codegen.GraphRoot
+	if ctx.graphRootsSet {
+		roots = ctx.graphRoots
+	}
+	return codegen.GenerateRootsGo(ctx.ProjectDir, roots, ctx.Checksums)
 }
 
 // rootsForDeployConfig is the roots config_gen.k projects: the ones the

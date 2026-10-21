@@ -5,6 +5,9 @@ import "testing"
 // TestDecide is the decision table. It is a pure function, so
 // every row is deterministic — no module graph, no network, no toolchain.
 func TestDecide(t *testing.T) {
+	// Decide honours the operator override; a developer shell that sets it
+	// (Reliant does) must not change these verdicts.
+	t.Setenv(SkewOverrideEnv, "")
 	const binary = "v0.1.16"
 	cases := []struct {
 		name    string

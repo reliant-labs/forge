@@ -8,6 +8,8 @@
 // human-presentable message.
 import { Code, ConnectError } from "@connectrpc/connect";
 
+import { TRACERESPONSE_HEADER, traceIdFrom } from "./trace.js";
+
 /**
  * FORGE_ERROR_REASON_HEADER is the Connect trailer/metadata key carrying a
  * stable, machine-readable reason code (snake_case) the backend sets for
@@ -126,6 +128,14 @@ export class ConnectClientError extends Error {
    * never off `message` — message text is display-only.
    */
   readonly reason: string | null;
+  /**
+   * The trace the failed request was recorded in: the server's
+   * `traceresponse` when it sent one, else the trace id of the traceparent
+   * this runtime sent, else null (the request never left the browser). Put it
+   * in a bug report, a toast's "copy details", or a support ticket — it is the
+   * key to every server span and log line of that request.
+   */
+  readonly traceId: string | null;
 
   constructor(args: {
     message: string;
@@ -134,6 +144,7 @@ export class ConnectClientError extends Error {
     status: number;
     retryable: boolean;
     reason?: string | null;
+    traceId?: string | null;
     cause?: unknown;
   }) {
     super(args.message, { cause: args.cause });
@@ -143,6 +154,7 @@ export class ConnectClientError extends Error {
     this.status = args.status;
     this.retryable = args.retryable;
     this.reason = args.reason ?? null;
+    this.traceId = args.traceId ?? null;
   }
 
   /**
@@ -170,14 +182,18 @@ export function isRetryableCode(code: Code): boolean {
 /**
  * normalizeError coerces any thrown value into a ConnectClientError. Already-
  * normalized errors pass through unchanged so the interceptor chain never
- * double-wraps.
+ * double-wraps. `requestTraceId` is the trace id of the traceparent the
+ * request carried, used when the server sent no `traceresponse`.
  *
  * Both `instanceof` checks below match on SHAPE rather than class identity —
  * ours via ConnectClientError's Symbol.hasInstance, ConnectError's via the one
  * @connectrpc/connect ships — so neither branch is missed when a second copy
  * of either package lands in the bundle.
  */
-export function normalizeError(err: unknown): ConnectClientError {
+export function normalizeError(
+  err: unknown,
+  requestTraceId: string | null = null,
+): ConnectClientError {
   if (err instanceof ConnectClientError) {
     return err;
   }
@@ -193,6 +209,10 @@ export function normalizeError(err: unknown): ConnectClientError {
       retryable: isRetryableCode(err.code),
       // Stable machine reason from backend metadata (backend owns the set).
       reason: err.metadata.get(FORGE_ERROR_REASON_HEADER) || null,
+      // The server's own span when it answered; the trace this runtime asked
+      // for when it did not (a proxy error, an older server).
+      traceId:
+        traceIdFrom(err.metadata.get(TRACERESPONSE_HEADER)) ?? requestTraceId,
       cause: err,
     });
   }
@@ -209,6 +229,7 @@ export function normalizeError(err: unknown): ConnectClientError {
       status: networkFault ? 503 : 500,
       retryable: networkFault,
       reason: null,
+      traceId: requestTraceId,
       cause: err,
     });
   }

@@ -624,13 +624,49 @@ func (q queue) enqueue(rec record) (*ticket, error) {
 		if err != nil {
 			return nil, fmt.Errorf("file a slot ticket: %w", err)
 		}
-		if ok, err := tryLock(f); err != nil || !ok {
+		if ticketFiled != nil {
+			ticketFiled(path)
+		}
+		if err := lockFreshTicket(f); err != nil {
 			_ = f.Close()
 			_ = os.Remove(path)
-			return nil, fmt.Errorf("lock slot ticket %s: %v", path, err)
+			return nil, fmt.Errorf("lock slot ticket %s: %w", path, err)
 		}
 		_, _ = f.WriteAt(rec.encode(), 0)
 		return &ticket{f: f, path: path, name: name}, nil
+	}
+}
+
+// ticketFiled, when set (tests only), runs the moment a new ticket exists
+// under its name and before its waiter has locked it.
+var ticketFiled func(path string)
+
+// freshTicketLockWait bounds how long a waiter keeps trying to lock the
+// ticket it just created.
+const freshTicketLockWait = time.Second
+
+// lockFreshTicket locks a ticket this waiter has just created. Between the
+// create and the lock the file is visible and unlocked, and another waiter's
+// alive() probe may hold its lock right then: the probe takes the lock to
+// test for a dead waiter, sees a ticket younger than ticketGrace, and lets
+// go at once without removing it. A single try lost that race, and Acquire
+// failed a healthy wait with "lock slot ticket …" (TestAcquire_
+// NeverMoreThanNHolders, one Linux CI run in ~30). So try until the probe
+// lets go; the bound is far above a probe's microseconds and far below the
+// grace, so a ticket is never reaped while its waiter is still locking it.
+func lockFreshTicket(f *os.File) error {
+	deadline := time.Now().Add(freshTicketLockWait)
+	for {
+		ok, err := tryLock(f)
+		switch {
+		case err != nil:
+			return err
+		case ok:
+			return nil
+		case time.Now().After(deadline):
+			return errors.New("another process holds the lock on a ticket this one just created")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

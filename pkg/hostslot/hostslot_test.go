@@ -510,3 +510,55 @@ func TestSetLabelAndInside(t *testing.T) {
 		t.Fatal("Inside trusts a token whose slot was released")
 	}
 }
+
+// A waiter's new ticket is visible, unlocked, between its create and its
+// lock, and another waiter's alive() probe can hold the lock right then: it
+// takes it to test for a dead waiter, sees a ticket younger than ticketGrace,
+// and lets go. Filing the ticket must ride that out — a single lock attempt
+// failed the whole Acquire ("lock slot ticket …"), which is how
+// TestAcquire_NeverMoreThanNHolders flaked on CI. Deterministic: the hook
+// probes every ticket at exactly that moment.
+func TestEnqueue_SurvivesAProbeOfTheFreshTicket(t *testing.T) {
+	q := queue{dir: t.TempDir()}
+	probed := make(chan struct{}, 1)
+	t.Cleanup(func() { ticketFiled = nil })
+	ticketFiled = func(path string) {
+		if !q.alive(path, filepath.Base(path)) {
+			t.Errorf("a fresh ticket was reaped")
+		}
+		// Hold the lock a while, as a probe on a busy host can.
+		f, err := os.Open(path)
+		if err != nil {
+			t.Errorf("open ticket: %v", err)
+			return
+		}
+		if ok, err := tryLock(f); err != nil || !ok {
+			t.Errorf("the probe could not lock the fresh ticket (ok=%v err=%v): the race did not happen", ok, err)
+			_ = f.Close()
+			return
+		}
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			_ = unlock(f)
+			_ = f.Close()
+			probed <- struct{}{}
+		}()
+	}
+	tk, err := q.enqueue(record{})
+	if err != nil {
+		t.Fatalf("enqueue failed while another waiter probed the new ticket: %v", err)
+	}
+	<-probed
+	defer tk.remove()
+	if q.alive(tk.path, tk.name) != true {
+		t.Fatal("the filed ticket is not held by its waiter")
+	}
+	other, err := os.Open(tk.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if ok, _ := tryLock(other); ok {
+		t.Fatal("the filed ticket is not locked by its waiter")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -32,14 +33,13 @@ func armDelegation(t *testing.T) (*handoff, *[]string) {
 		pinDelegationDisabled, pinDelegateResolver, pinDelegateExec = prevDisabled, prevResolver, prevExec
 	})
 	pinDelegationDisabled = false
-	cache := t.TempDir()
+	t.Setenv(forgedelegate.CacheDirEnv, t.TempDir())
 	pinDelegateResolver = func(w io.Writer) *forgedelegate.Resolver {
 		return &forgedelegate.Resolver{
-			CacheDir: cache,
-			Log:      w,
+			Log: w,
 			Install: func(_ context.Context, pkg, gobin string) error {
 				installs = append(installs, pkg)
-				return atomicfile.WriteFile(filepath.Join(gobin, "forge"), []byte("#!/bin/sh\n"), 0o755)
+				return atomicfile.WriteFile(filepath.Join(gobin, forgeExeName()), []byte("#!/bin/sh\n"), 0o755)
 			},
 		}
 	}
@@ -48,6 +48,15 @@ func armDelegation(t *testing.T) (*handoff, *[]string) {
 		return nil
 	}
 	return &got, &installs
+}
+
+// forgeExeName is the file `go install` writes for cmd/forge on this OS: the
+// stand-in has to land where the resolver looks for the real build.
+func forgeExeName() string {
+	if runtime.GOOS == "windows" {
+		return "forge.exe"
+	}
+	return "forge"
 }
 
 func runCheck(t *testing.T, args ...string) (string, error) {
@@ -178,8 +187,7 @@ func TestDelegation_UnavailablePinFallsBackToTheRunbook(t *testing.T) {
 	h, _ := armDelegation(t)
 	pinDelegateResolver = func(w io.Writer) *forgedelegate.Resolver {
 		return &forgedelegate.Resolver{
-			CacheDir: t.TempDir(),
-			Log:      w,
+			Log: w,
 			Install: func(_ context.Context, _, _ string) error {
 				return errors.New("dial tcp: lookup proxy.golang.org: no such host")
 			},

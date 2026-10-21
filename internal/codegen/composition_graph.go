@@ -175,6 +175,10 @@ type graphRoot struct {
 	Migrate string
 	// TypeName is the root struct's Go name: Build<TypeName> / Run<TypeName>.
 	TypeName string
+	// Short and Long are the help of the root's command, from the root
+	// struct's doc comment (rootHelp): its first paragraph, and the rest.
+	// Both empty without a doc comment: roots_gen.go describes the root.
+	Short, Long string
 	// Generated is the default root forge emits when none is declared.
 	Generated bool
 	Fields    []graphRootField
@@ -355,6 +359,7 @@ func discoverFileStructsAndRoots(fset *token.FileSet, file *ast.File, rel string
 			if err != nil {
 				return nil, nil, err
 			}
+			r.Short, r.Long = rootHelp(doc)
 			roots = append(roots, r)
 		}
 	}
@@ -436,6 +441,28 @@ func findAppStruct(projectDir string, names []string, want string) *ast.StructTy
 		}
 	}
 	return nil
+}
+
+// rootHelp is the help of a root's command, read off the root struct's doc
+// comment, directives dropped: the first paragraph is the command's Short (on
+// one line), the paragraphs after it its Long, line breaks kept. A doc of one
+// paragraph has no Long, so `--help` prints the Short. The doc comment is the
+// one place a root is described, so the command's help and the code's
+// documentation cannot drift apart; notes for the code's readers that do not
+// belong in `--help` go on the fields, or in a comment of their own above it.
+func rootHelp(doc *ast.CommentGroup) (short, long string) {
+	if doc == nil {
+		return "", ""
+	}
+	paras := strings.Split(strings.TrimSpace(doc.Text()), "\n\n")
+	if paras[0] == "" {
+		return "", ""
+	}
+	short = strings.Join(strings.Fields(paras[0]), " ")
+	for i, p := range paras[1:] {
+		paras[i+1] = strings.TrimRight(p, "\n")
+	}
+	return short, strings.TrimSpace(strings.Join(paras[1:], "\n\n"))
 }
 
 // rootDirective reads `//forge:root [name] [command=a,b] [migrate=…]` off a

@@ -302,6 +302,51 @@ func (g *Graph) newAlpha() (*alpha.Service, error) {
 	}
 }
 
+// An optional key forge filled with its "no provider" placeholder is forge's,
+// not the author's: once a producer exists it is resolved, while a nil the
+// author wrote (no placeholder comment) stays nil.
+func TestReconcileGraphCompose_AnOptionalPlaceholderIsFilledOnceAProducerExists(t *testing.T) {
+	nodes, r := graphFixture()
+	nodes[0].Deps[1].Type = "*Store"
+	nodes[0].Deps[1].Optional = true
+	nodes[0].Deps = append(nodes[0].Deps, DepsField{Name: "Mine", Type: "*Store", Optional: true})
+	nodes[0].DepsKeys["Mine"] = true
+	existing := graphComposeHeader + `
+import "example.com/p/internal/handlers/alpha"
+
+func (g *Graph) newAlpha() (*alpha.Service, error) {
+	return alpha.New(alpha.Deps{
+		Logger: g.Log,
+		Store:  nil, // optional — no provider
+		Clock:  nil, // optional — no provider
+		Mine:   nil,
+	})
+}
+`
+	out, problems, err := reconcileGraphCompose(existing, nodes, r)
+	if err != nil || len(problems) > 0 {
+		t.Fatalf("err=%v problems=%+v", err, problems)
+	}
+	for _, want := range []string{"Store: g.Store(),", "Clock: time.Now, // framework clock", "Mine: nil,"} {
+		if !strings.Contains(squash(out), squash(want)) {
+			t.Errorf("compose.go lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "no provider") {
+		t.Errorf("a placeholder survived its producer:\n%s", out)
+	}
+
+	// With still no producer, the placeholder is left exactly as it was.
+	nodes[1].Type = "*Other"
+	again, _, err := reconcileGraphCompose(existing, nodes, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(squash(again), squash("Store:  nil, // optional — no provider")) {
+		t.Errorf("a placeholder with nothing to resolve to was rewritten:\n%s", again)
+	}
+}
+
 func TestReconcileGraphCompose_MissingProviderNamesTheFuncToWrite(t *testing.T) {
 	nodes, r := graphFixture()
 	nodes[0].Deps[1].Type = "*Cache"

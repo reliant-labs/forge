@@ -439,6 +439,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A fresh project's first `forge lint` under CI passes.** `forge lint`'s
+  format lane skips a scaffold file nobody has touched, judged by the birth
+  hash in `.forge/scaffolded.json`. Of a frontend's scaffold, only `nav.tsx`
+  and `dashboard.tsx` were recorded. Every other file read as edited from
+  birth, so under CI, where lint is report-only, a new project failed on 31
+  template files prettier would re-wrap. Every scaffold-once file a frontend
+  scaffold writes, the core UI components and the seeded mock scenario
+  included, is now born with its hash.
 - **A generated store reports a missing row one way.** `Get<E>ByID`,
   `Get<E>ByPK` and a view's `Get<E>ByID` returned `svcerr.NotFound`, while
   `Update<E>`, `Update<E>Masked`, `Delete<E>` and `Delete<E>ByPK` returned

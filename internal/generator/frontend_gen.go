@@ -17,22 +17,38 @@ import (
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
-// refreshedByNavGenerator reports whether a frontend scaffold file is one of
-// the two the nav generator keeps current until the user edits it
-// (internal/cli/generate_frontend_nav.go, emitScaffoldUntilTouched).
+// recordFrontendScaffoldBirth records a frontend scaffold file in the birth
+// ledger with the hash of the bytes that landed, so it is pristine until its
+// author edits it. A forge-generated file is not a scaffold and gets no
+// record (rescaffold.go applies the same rule).
 //
-// These two are special because they must EXIST before they can be correct:
-// layout.tsx imports { Nav } and page.tsx imports the dashboard, so both are
-// written here — before any entity exists — and refreshed later as entities
-// arrive. That refresh is gated on the birth hash recorded at this write.
-// Every other file in the frontend tree is either plain scaffold-once or
-// regenerated from its own input, and needs no hash.
-func refreshedByNavGenerator(destFile string) bool {
-	switch filepath.ToSlash(destFile) {
-	case "src/components/nav.tsx", "src/app/dashboard.tsx":
-		return true
-	default:
-		return false
+// Every scaffold-once file of the tree needs it, not only the two the nav
+// generator keeps current (internal/cli/generate_frontend_nav.go,
+// emitScaffoldUntilTouched, gated on this hash). `forge lint`'s format lane
+// skips a pristine scaffold (ownedFrontendSources): a file forge wrote and
+// nobody touched is not the author's formatting to fix. Without a record it
+// reads as edited from birth, and a fresh project's first lint under CI —
+// report-only there — failed on 31 files its author never opened
+// (TestE2EFreshScaffoldLintExitsZero).
+func recordFrontendScaffoldBirth(root, path string, content []byte) {
+	if IsForgeGenerated(content) {
+		return
+	}
+	if rel, err := filepath.Rel(root, path); err == nil && !strings.HasPrefix(rel, "..") {
+		checksums.RecordScaffoldWithHash(root, rel, content)
+	}
+}
+
+// frontendProjectRoot is the forge project containing frontendDir: the
+// nearest ancestor holding forge.yaml, or "" when there is none.
+func frontendProjectRoot(frontendDir string) string {
+	for dir := filepath.Dir(frontendDir); ; dir = filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, "forge.yaml")); err == nil {
+			return dir
+		}
+		if parent := filepath.Dir(dir); parent == dir {
+			return ""
+		}
 	}
 }
 
@@ -276,19 +292,9 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		if err := atomicfile.WriteFile(destPath, content, 0644); err != nil {
 			return fmt.Errorf("write frontend file %s: %w", destFile, err)
 		}
-		// Record the birth hash for the files the nav generator keeps
-		// current. emitScaffoldUntilTouched refreshes them only while
-		// ScaffoldIsPristine, and that answers false for a path with no
-		// ledger entry — so without this write the two files are frozen as
-		// "user-owned" from birth, and the routes seeded by the first
-		// entity never arrive. Recorded here rather than in the nav
-		// generator because this loop is what writes them first, and the
-		// hash has to match the bytes that actually landed on disk.
-		if rel, relErr := filepath.Rel(root, destPath); relErr == nil {
-			if refreshedByNavGenerator(destFile) {
-				checksums.RecordScaffoldWithHash(root, rel, content)
-			}
-		}
+		// Recorded here, where the file is first written, because the hash
+		// has to match the bytes that actually landed on disk.
+		recordFrontendScaffoldBirth(root, destPath, content)
 	}
 
 	// Emit a nested go.mod so that `go test ./...` from the project root
@@ -326,7 +332,7 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 	// Skipping the per-frontend copy here is what makes the multi-frontend
 	// case stop diverging.
 	if (tmplDir == "nextjs" || tmplDir == "vite-spa") && !opts.Workspaces {
-		if err := installCoreComponents(frontendDir); err != nil {
+		if err := installCoreComponents(root, frontendDir); err != nil {
 			return fmt.Errorf("install core components: %w", err)
 		}
 	}
@@ -451,7 +457,7 @@ var coreComponents = []string{
 
 // installCoreComponents writes core UI components from the component library
 // into the frontend's src/components/ui/ directory.
-func installCoreComponents(frontendDir string) error {
+func installCoreComponents(root, frontendDir string) error {
 	lib := components.NewLibrary()
 	componentsDir := filepath.Join(frontendDir, "src", "components", "ui")
 	if err := os.MkdirAll(componentsDir, 0755); err != nil {
@@ -471,6 +477,7 @@ func installCoreComponents(frontendDir string) error {
 		if err := atomicfile.WriteFile(dest, []byte(content), 0644); err != nil {
 			return fmt.Errorf("write component %s: %w", name, err)
 		}
+		recordFrontendScaffoldBirth(root, dest, []byte(content))
 	}
 	return nil
 }
@@ -500,6 +507,9 @@ func EnsureCoreComponents(frontendDir string) error {
 		}
 		if err := atomicfile.WriteFile(dest, []byte(content), 0644); err != nil {
 			return fmt.Errorf("write component %s: %w", name, err)
+		}
+		if root := frontendProjectRoot(frontendDir); root != "" {
+			recordFrontendScaffoldBirth(root, dest, []byte(content))
 		}
 	}
 	return nil

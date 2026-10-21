@@ -16,14 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are the order `Run<Root>` supervises, so a project pins a root's stop
   order in a unit test without a database or a broker (roots plan F7).
 - **Each root's process settings come from the configs its command loads,
-  and a root declares whether it migrates.** In a binary_config project
+  and a root declares whether it migrates.** In a `binary_config` project
   (`(forge.v1.binary_config)` `command`/`subtrees`), `rootSpec.Configs` hands
-  `runRoot` the configs a root's command loaded *before* the policy runs, and
+  `runRoot` the configs a root's command loaded _before_ the policy runs, and
   the scaffolded `serverkitConfig(cfg, root.Configs)` reads the port, drain
   budget, logging, TLS and database settings from whichever of them declares
   each (most specific last), so `server api` and `server worker` listen and
-  drain on their own command config's values. `//forge:root <name>
-  migrate=apply|wait|none` says what the process does about the schema;
+  drain on their own command config's values.
+  `//forge:root <name> migrate=apply|wait|none` says what the process does
+  about the schema;
   `wait` blocks — `/readyz` naming `schema` — until another process has
   applied the migrations (`migratekit.AwaitSchema`,
   `serverkit.AwaitMigrationsContext`). The default is unchanged: apply when
@@ -50,8 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the probes, so its root keeps its probe listener. Existing projects:
   `migrations/v0.1.47` section 3.
 - **Roots can be declared one at a time: resolution follows reach.** A
-  root's process builds only the closure its fields reach, but `forge
-  generate` demanded a provider for every Deps field of every discovered
+  root's process builds only the closure its fields reach, but
+  `forge generate` demanded a provider for every Deps field of every discovered
   component, so a project with 33 handlers could not declare a gateway root
   without first wiring all of them. Now a Deps field forge cannot fill fails
   generate only on a node some root reaches (as before, with the same
@@ -399,8 +400,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `orm.ArgList(slice)` — the way to bind an integer `?` argument, which bun
   formats without consulting the dialect. A value stays a literal where a
   parameter would change its meaning (positional `ORDER BY`, typed literals,
-  bare arguments of `"any"` functions such as `jsonb_build_object`, `? IS
-  NULL`, `ON CONFLICT … DO` targets), and a statement forge cannot prove
+  bare arguments of `"any"` functions such as `jsonb_build_object`,
+  `? IS NULL`, `ON CONFLICT … DO` targets), and a statement forge cannot prove
   equal to bun's text, or that is not DML, runs as bun rendered it.
   `orm.Literal(v)` keeps one value in the text (a constant a partial index's
   predicate is proved from); `orm.InlineValues(ctx)` turns binding off for a

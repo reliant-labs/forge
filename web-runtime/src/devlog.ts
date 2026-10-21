@@ -59,6 +59,8 @@
 // methods, and the scaffolded call site is an ordinary line in main.tsx /
 // providers.tsx that a project can delete outright.
 
+import { serverTraceIdOf } from "./trace-id.js";
+
 /** Console methods this module mirrors. */
 const LEVELS = ["log", "info", "warn", "error", "debug"] as const;
 
@@ -195,9 +197,17 @@ function capture(level: DevLogPayload["level"], args: unknown[]): void {
     return;
   }
 
+  // A failed RPC's error names the trace the server recorded it in: put it on
+  // the line, so one grep of the trace id finds the browser's report next to
+  // the server's logs in .forge/logs/<env>/.
+  let msg = args.map(render).join(" ");
+  const traceId = args.map(serverTraceIdOf).find((id) => id !== null);
+  if (traceId && !msg.includes(traceId)) {
+    msg += ` trace_id=${traceId}`;
+  }
   const entry: DevLogPayload = {
     level,
-    msg: truncate(args.map(render).join(" ")),
+    msg: truncate(msg),
   };
   const wasEmpty = buffer.length === 0;
   buffer.push(entry);

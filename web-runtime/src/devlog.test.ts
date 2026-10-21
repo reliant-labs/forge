@@ -175,6 +175,29 @@ describe("dev log forwarding", () => {
     ]);
   });
 
+  // A failed RPC's error names the server trace: the line carries it, so one
+  // grep of the id joins the browser line to the server's logs.
+  it("stamps a failed RPC's server trace id on the line", () => {
+    const f = stubFetch();
+    installDevLogging({ dev: true, mirrorToConsole: false });
+
+    const traceId = "0af7651916cd43dd8448eb211c80319c";
+    const err = Object.assign(new Error("not yet"), {
+      name: "ConnectClientError",
+      traceId,
+    });
+    console.warn("save failed:", err);
+    console.log("unrelated");
+    vi.advanceTimersByTime(FLUSH_MS);
+
+    const [failed, plain] = f.all();
+    if (!failed || !plain)
+      throw new Error(`want two lines, got ${f.all().length}`);
+    expect(failed.msg).toMatch(/^save failed: ConnectClientError: not yet/);
+    expect(failed.msg.endsWith(` trace_id=${traceId}`)).toBe(true);
+    expect(plain.msg).toBe("unrelated");
+  });
+
   it("posts batches to the forge endpoint convention as JSON", () => {
     const f = stubFetch();
     installDevLogging({ dev: true, mirrorToConsole: false });

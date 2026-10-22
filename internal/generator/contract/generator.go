@@ -112,6 +112,10 @@ type ParamDef struct {
 // File holds everything extracted from a single contract.go.
 type File struct {
 	Package string
+	// Source is the base name of the file the interfaces were read from —
+	// contract.go, or a package's deps.go — which mock_gen.go's header names
+	// as the file to edit.
+	Source  string
 	Imports map[string]string // alias/name → import path (e.g. "sql" → "database/sql")
 	// ExplicitImports records aliases that were written explicitly in
 	// contract.go (for example `controlplanev1 ".../v1"`). Keeping that
@@ -294,6 +298,7 @@ func ParseContractWith(path string, r *Resolver) (*File, error) {
 
 	cf := &File{
 		Package:          file.Name.Name,
+		Source:           filepath.Base(path),
 		Imports:          make(map[string]string),
 		ExplicitImports:  make(map[string]bool),
 		InterfaceNames:   make(map[string]bool),
@@ -796,6 +801,7 @@ func renderMock(cf *File, opts Options) ([]byte, error) {
 
 	data := templateData{
 		Package:          cf.Package,
+		Source:           cf.sourceName(),
 		Receiver:         mockReceiver,
 		Imports:          imports,
 		Interfaces:       ifaces,
@@ -1278,4 +1284,13 @@ func zeroValue(typeExpr string, interfaceNames map[string]bool, primitiveAliases
 		// the long-standing behavior.
 		return "nil"
 	}
+}
+
+// sourceName is the file the mock header names: Source, or contract.go for
+// a File built without a path.
+func (cf *File) sourceName() string {
+	if cf.Source == "" {
+		return "contract.go"
+	}
+	return cf.Source
 }

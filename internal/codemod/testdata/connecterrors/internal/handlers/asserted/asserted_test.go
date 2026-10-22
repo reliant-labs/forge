@@ -21,3 +21,11 @@ func TestRefuse(t *testing.T) {
 		t.Fatalf("Refuse: %v", got)
 	}
 }
+
+// A second reader in the same package's tests: the report names both
+// (reliant's worktree tests had two, and only one was named).
+func TestRefuseIsConnect(t *testing.T) {
+	if _, ok := Refuse().(*connect.Error); !ok {
+		t.Fatal("Refuse: not a *connect.Error")
+	}
+}

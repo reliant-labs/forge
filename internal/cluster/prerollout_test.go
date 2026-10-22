@@ -146,6 +146,15 @@ case " $* " in
     rm -f "$in"
     for d in $FAKE_DEPLOYMENTS; do echo "$d"; done
     exit 0 ;;
+  *' get externalsecret'*)
+    rm -f "$in"
+    # FAKE_ES_JSON is what the fake ESO reports; secret_order_test.go sets it.
+    # FAKE_ES_NAME singles one ExternalSecret out for FAKE_ES_NAME_JSON.
+    case " $* " in
+      *" $FAKE_ES_NAME "*) [ -n "$FAKE_ES_NAME" ] && { printf '%s\n' "$FAKE_ES_NAME_JSON"; exit 0; } ;;
+    esac
+    [ -n "$FAKE_ES_JSON" ] && { printf '%s\n' "$FAKE_ES_JSON"; exit 0; }
+    echo 'Error from server (NotFound): externalsecrets.external-secrets.io not found' >&2; exit 1 ;;
 esac
 rm -f "$in"
 exit 0

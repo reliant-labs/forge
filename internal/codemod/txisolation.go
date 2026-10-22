@@ -88,11 +88,12 @@ READ COMMITTED for a SERIALIZABLE transaction that takes a lock is yours
 options computed at run time — is listed with the edit to make. Generated
 files, vendor/ and testdata/ are left alone. Re-running it changes nothing.`,
 		Upgrade: true,
+		Scoped:  true,
 		Run:     runTxIsolation,
 	})
 }
 
-func runTxIsolation(dir string, write bool) (Report, error) {
+func runTxIsolation(dir string, opts Options) (Report, error) {
 	candidates := map[string]bool{}
 	mentionsORM := false
 	err := ownedGoFiles(dir, func(rel string, src []byte) error {
@@ -100,7 +101,8 @@ func runTxIsolation(dir string, write bool) (Report, error) {
 			mentionsORM = true
 		}
 		for _, tok := range txTokens {
-			if bytes.Contains(src, tok) {
+			// Out of scope a file is still type-checked, never rewritten.
+			if opts.Scope.Contains(rel) && bytes.Contains(src, tok) {
 				candidates[filepath.Join(dir, filepath.FromSlash(rel))] = true
 				break
 			}
@@ -142,7 +144,7 @@ func runTxIsolation(dir string, write bool) (Report, error) {
 			break
 		}
 	}
-	if write {
+	if opts.Write {
 		paths := make([]string, 0, len(overlay))
 		for path := range overlay {
 			paths = append(paths, path)

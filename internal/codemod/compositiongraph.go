@@ -142,7 +142,8 @@ func (p *cgPlan) remove(rel string, rebirth bool) {
 	}
 }
 
-func runCompositionGraph(dir string, write bool) (Report, error) {
+func runCompositionGraph(dir string, opts Options) (Report, error) {
+	write := opts.Write
 	if _, err := os.Stat(filepath.Join(dir, "internal", "app")); os.IsNotExist(err) {
 		return handComposedReport(dir), nil
 	}

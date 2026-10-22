@@ -4,7 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
+	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/reliant-labs/forge/pkg/deploy/openbao"
 )
@@ -74,5 +79,81 @@ func TestExpandOpenBao_RefusesAnUnknownKeyAndNamesTheRecord(t *testing.T) {
 	}}, nil, nil)
 	if err == nil {
 		t.Fatal("an unknown spec key must be refused: a dropped field is the drift this seam exists to prevent")
+	}
+}
+
+// A bootstrap source delivers the seal key and the Postgres DSN through ESO, so
+// the Secrets the store's pods mount exist only after the operator has synced
+// them. This expands a record carrying a Secret Manager bootstrap through the
+// strict decode and asks the render-time supply gate (CheckSecretSupply) whether
+// anything in the stream provides those Secrets. The ExternalSecrets are the
+// supply: the gate recognises the ESO objects by name.
+func TestExpandOpenBao_BootstrapRecordDecodesAndItsSecretsAreSupplied(t *testing.T) {
+	record := func(withBootstrap bool) map[string]any {
+		spec := map[string]any{
+			"name": "openbao", "namespace": "openbao", "image": "quay.io/openbao/openbao:2.6.2", "replicas": 2,
+			"owner":          "acme.prod",
+			"storage":        map[string]any{"type": "postgres", "postgres": map[string]any{"cloudSQLInstance": "acme:us-central1:pg", "gcpServiceAccount": "pg@acme.iam.gserviceaccount.com", "port": 5432, "database": "openbao", "role": "openbao", "maxParallel": 4}},
+			"listeners":      []any{map[string]any{"port": 8200, "tls": true}},
+			"tls":            map[string]any{"caConfigMap": "openbao-ca", "duration": "8760h"},
+			"seal":           map[string]any{"keyID": "prod-1"},
+			"recoverySecret": "openbao-recovery",
+			"kv":             map[string]any{"mount": "secret", "maxVersions": 10},
+			"ha":             map[string]any{"pdb": true, "zoneSpread": true},
+			"audit":          map[string]any{"stdout": true, "file": true, "filePath": "/openbao/audit/audit.log"},
+			"writer":         map[string]any{"type": "service_account", "serviceAccount": "forge-secret-writer"},
+			"access":         map[string]any{"org": "acme", "env": "prod", "selfCluster": "hub", "clusters": []any{map[string]any{"id": "hub", "audience": "https://openbao.openbao.svc:8200/c/hub"}}},
+		}
+		if withBootstrap {
+			spec["bootstrap"] = map[string]any{
+				"project": "acme-prod", "clusterProject": "acme-prod", "clusterLocation": "us-central1", "clusterName": "prod",
+				"readerServiceAccount": "openbao-bootstrap-reader", "readerGSA": "openbao-bootstrap-reader@acme-prod.iam.gserviceaccount.com",
+				"escrowGSA": "openbao-escrow-writer@acme-prod.iam.gserviceaccount.com", "esoNamespace": "external-secrets",
+				"sealSecretID": "openbao-unseal-prod", "passwordSecretID": "openbao-pg-password-prod", "escrowSecretID": "openbao-recovery-prod",
+			}
+		}
+		return map[string]any{
+			"apiVersion": "forge.dev/v1alpha1", "kind": openbao.Kind,
+			"metadata": map[string]any{"name": "openbao", "namespace": "openbao", "labels": map[string]any{ClusterRoutingLabel: "hub"}},
+			"spec":     spec,
+		}
+	}
+
+	stream := func(withBootstrap bool) string {
+		out, err := expandTierDeclarations([]any{record(withBootstrap)}, nil, nil)
+		if err != nil {
+			t.Fatalf("expand (bootstrap=%v): %v", withBootstrap, err)
+		}
+		var docs []string
+		for _, it := range out {
+			b, err := yaml.Marshal(it)
+			if err != nil {
+				t.Fatal(err)
+			}
+			docs = append(docs, string(b))
+		}
+		return strings.Join(docs, "---\n")
+	}
+
+	// Without a bootstrap source the pods mount two Secrets nothing in the
+	// stream provides: they are the out-of-band prerequisites the render lists.
+	var missing []string
+	for _, m := range CheckSecretSupply(stream(false), nil) {
+		missing = append(missing, m.Secret)
+	}
+	sort.Strings(missing)
+	if want := []string{"openbao-storage", "openbao-unseal"}; !slices.Equal(missing, want) {
+		t.Fatalf("without a bootstrap source the gate should flag %v, got %v", want, missing)
+	}
+
+	// With one, the ExternalSecrets that deliver them are in the stream.
+	s := stream(true)
+	for _, m := range CheckSecretSupply(s, nil) {
+		t.Errorf("with a bootstrap source %s is still undeclared (mounted by %v)", m.Secret, m.Workloads)
+	}
+	for _, want := range []string{"kind: SecretStore", "kind: ExternalSecret", "name: openbao-unseal", "name: openbao-storage", "iam.gke.io/gcp-service-account: openbao-escrow-writer@acme-prod.iam.gserviceaccount.com", "clusterName: prod"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the expanded stream lacks %q", want)
+		}
 	}
 }

@@ -193,17 +193,24 @@ func applyPreRolloutGate(ctx context.Context, opts ApplyOpts, policy RolloutPoli
 		return fmt.Errorf("kubectl apply failed (pre-rollout Jobs; no workload was applied): %w", err)
 	}
 
-	gate := &PreRolloutJobError{Context: opts.Context}
-	for _, job := range phases.preJobRefs {
+	return awaitJobs(ctx, opts, policy, phases.preJobRefs, "pre-rollout")
+}
+
+// awaitJobs waits for every Job in refs to complete and reports ALL that did
+// not, as one *PreRolloutJobError. kind labels them in the progress lines
+// ("pre-rollout", "secret store").
+func awaitJobs(ctx context.Context, opts ApplyOpts, policy RolloutPolicy, refs []jobRef, kind string) error {
+	gate := &PreRolloutJobError{Context: opts.Context, Kind: kind}
+	for _, job := range refs {
 		namespace := job.Namespace
 		if namespace == "" {
 			namespace = opts.Namespace
 		}
-		fmt.Printf("Waiting for pre-rollout Job %q to complete before applying workloads...\n", job.Name)
+		fmt.Printf("Waiting for %s Job %q to complete before applying workloads...\n", kind, job.Name)
 		state, err := WaitJobCompleteObserved(ctx, opts.Context, job.Name, namespace, policy.Timeout)
 		observeRollout(opts, "Job", job.Name, state, err)
 		if err != nil {
-			fmt.Printf("  FAILED: pre-rollout job %s: %v\n", job.Name, err)
+			fmt.Printf("  FAILED: %s job %s: %v\n", kind, job.Name, err)
 			gate.Failures = append(gate.Failures, PreRolloutJobFailure{
 				Job: job.Name, Namespace: namespace, State: state, Timeout: policy.Timeout, Err: err,
 			})
@@ -227,6 +234,9 @@ type PreRolloutJobError struct {
 	// commands the message prints so they can be pasted as-is.
 	Context  string
 	Failures []PreRolloutJobFailure
+	// Kind names the gate in the message: "pre-rollout" when empty, "secret
+	// store" for the store component's own Jobs.
+	Kind string
 }
 
 // PreRolloutJobFailure is one Job that did not complete.
@@ -246,6 +256,10 @@ type PreRolloutJobFailure struct {
 // to go and find them.
 func (e *PreRolloutJobError) Error() string {
 	var b strings.Builder
+	kind := e.Kind
+	if kind == "" {
+		kind = "pre-rollout"
+	}
 	for i, f := range e.Failures {
 		if i > 0 {
 			b.WriteString("\n")
@@ -254,7 +268,7 @@ func (e *PreRolloutJobError) Error() string {
 		if f.State == RolloutStateTimedOut {
 			verdict = fmt.Sprintf("did not complete within %s (timed out; raise it with --rollout-timeout)", f.Timeout)
 		}
-		fmt.Fprintf(&b, "pre-rollout Job %q %s\n", f.Job, verdict)
+		fmt.Fprintf(&b, "%s Job %q %s\n", kind, f.Job, verdict)
 		fmt.Fprintf(&b, "  logs:  kubectl %s\n",
 			strings.Join(KubectlArgs(e.Context, "-n", f.Namespace, "logs", "job/"+f.Job, "--all-containers"), " "))
 		fmt.Fprintf(&b, "  retry: fix the cause, then `kubectl %s` and re-run the deploy (a Job whose spec is unchanged keeps its name, and a failed one stays failed)",

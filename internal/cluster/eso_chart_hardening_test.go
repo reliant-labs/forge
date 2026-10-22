@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -280,6 +281,8 @@ func TestESOChart_ExactObjectSet(t *testing.T) {
 	for _, p := range r.kinds("ValidatingAdmissionPolicyBinding") {
 		bindings = append(bindings, nameOf(p))
 	}
+	sort.Strings(vaps)
+	sort.Strings(bindings)
 	want := "eso-es-policy,eso-store-pin,eso-writers"
 	if strings.Join(vaps, ",") != want || strings.Join(bindings, ",") != want {
 		t.Errorf("policies %v bindings %v, want %s", vaps, bindings, want)

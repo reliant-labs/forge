@@ -81,7 +81,7 @@ func TestLoadInto_RuleViolationValues(t *testing.T) {
 func TestRootValidate_ReportsEveryRuleViolation(t *testing.T) {
 	r := Root{Name: "api", Configs: []RootConfig{{Message: buildRulesMessage(t).Interface()}}}
 	problems := r.Validate(map[string]string{
-		"RULES_GRPC_PORT": "70000",
+		"RULES_GRPC_PORT":        "70000",
 		"RULES_BILLING_PROVIDER": "stripe",
 	})
 	var port, cel bool

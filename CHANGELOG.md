@@ -62,9 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declared), and the OIDC writer.
 
 - **`forge secret` writes and lists store-sourced secrets, and `forge env secrets
-  verify|adopt` migrate a Secret onto ESO (SF10).** A name a store-backed
+verify|adopt` migrate a Secret onto ESO (SF10).** A name a store-backed
   `forge.ExternalSecret` (`forge.StoreSource`) reads or generates now lives in that
   ExternalSecret's store, whatever the env's `secret_provider` is:
+
   - `forge secret set` / `list` reach a `HostedStore` through the control plane's
     write-only API, a `GCPSecretManagerStore` with Application Default
     Credentials, and a self-run `OpenBaoStore` by signing in as the
@@ -74,13 +75,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `forge secret import` copies existing values in, create-only (check-and-set
     0; for Secret Manager, "no usable version yet"), so a re-run can never
     overwrite a value that was rotated since. `--from <ns>/<secret> --map
-    key=NAME` reads a cluster Secret with your kube context; a NAME with a value
+key=NAME` reads a cluster Secret with your kube context; a NAME with a value
     on stdin or `--from-file` imports one. `--to-bootstrap [--project]` writes a
     `BootstrapSecret`'s Secret Manager container. `--dry-run` reads and reports.
   - `forge env secrets verify <env> [<secret>]` compares a live Secret with the
     store's copy per key, and prints `match` / `no-match` and which side is
     missing: by default against `<name>-eso-shadow` (a source with `shadow =
-    True`), or `--against gsm:<project>` for the Secret Manager parity check.
+True`), or `--against gsm:<project>` for the Secret Manager parity check.
   - `forge env secrets adopt <env> <ns>/<secret>` strips the stale
     `kubectl.kubernetes.io/last-applied-configuration` annotation (a full copy of
     the applied values) and asserts nothing owns the Secret by ownerReference.

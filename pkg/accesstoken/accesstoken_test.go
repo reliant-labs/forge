@@ -186,6 +186,73 @@ func TestIdentityScopes_AreTheirOwnAuthority(t *testing.T) {
 	}
 }
 
+// TestFeedbackLoopScopes_AreTheirOwnAuthority pins obs:read, obs:triage and
+// db:query. obs:triage implies obs:read at the point of use and nothing else;
+// db:query is a product of its own that nothing implies and that implies
+// nothing, because an app's data is not its telemetry.
+func TestFeedbackLoopScopes_AreTheirOwnAuthority(t *testing.T) {
+	for raw, want := range map[string]Scope{
+		"obs:read":   ScopeObsRead,
+		"obs:triage": ScopeObsTriage,
+		"db:query":   ScopeDBQuery,
+	} {
+		got, ok := ParseScope(raw)
+		if !ok || got != want {
+			t.Fatalf("ParseScope(%s) = %q, %v", raw, got, ok)
+		}
+		if _, err := NewSet([]string{raw}); err != nil {
+			t.Errorf("NewSet(%s): %v", raw, err)
+		}
+		if !SetOf(want).Permits(want) {
+			t.Errorf("%s must permit itself", want)
+		}
+	}
+	if !SetOf(ScopeObsTriage).Permits(ScopeObsRead) {
+		t.Error("obs:triage must permit obs:read at the point of use")
+	}
+	if SetOf(ScopeObsRead).Permits(ScopeObsTriage) {
+		t.Error("obs:read must not permit obs:triage: a read-only token must not silence an issue")
+	}
+	if SetOf(ScopeObsTriage).Covers(SetOf(ScopeObsRead)) {
+		t.Error("Covers is exact membership: obs:triage alone must not let a holder mint obs:read")
+	}
+	isObs := func(s Scope) bool { return s == ScopeObsRead || s == ScopeObsTriage }
+	for _, other := range AllScopes {
+		if other != ScopeDBQuery && SetOf(other).Permits(ScopeDBQuery) {
+			t.Errorf("%s permitted db:query", other)
+		}
+		if other != ScopeDBQuery && SetOf(ScopeDBQuery).Permits(other) {
+			t.Errorf("db:query permitted %s", other)
+		}
+		if !isObs(other) && (SetOf(other).Permits(ScopeObsRead) || SetOf(other).Permits(ScopeObsTriage)) {
+			t.Errorf("%s permitted an obs scope", other)
+		}
+		if !isObs(other) && (SetOf(ScopeObsRead).Permits(other) || SetOf(ScopeObsTriage).Permits(other)) {
+			t.Errorf("an obs scope permitted %s", other)
+		}
+	}
+}
+
+// TestFeedbackLoopScopes_NeedNoActingUserAndRideADaemon: obs:read gates CI, so
+// an org automation token carries it without acting as a person; a Reliant
+// agent's daemon-bound session credential can carry all three.
+func TestFeedbackLoopScopes_NeedNoActingUserAndRideADaemon(t *testing.T) {
+	for _, s := range []Scope{ScopeObsRead, ScopeObsTriage, ScopeDBQuery} {
+		if RequiresActingUser(s) {
+			t.Errorf("%s must not require an acting user", s)
+		}
+		org := Grant{OrgID: "org", Name: "ci", Scopes: SetOf(s)}
+		if err := org.Validate(time.Now()); err != nil {
+			t.Errorf("an org token carrying %s: %v", s, err)
+		}
+		g := Grant{OrgID: "org", Name: "n", Scopes: SetOf(ScopeDaemonConnect, s), ActingUserID: "u",
+			Resource: &Resource{Kind: ResourceDaemon, ID: "d"}}
+		if err := g.Validate(time.Now()); err != nil {
+			t.Errorf("a daemon-bound token carrying %s: %v", s, err)
+		}
+	}
+}
+
 // TestDomainScopes_NeedNoActingUser: a domain is org property, so an org CI
 // token manages one without acting as a person — the same as deploy and secret.
 func TestDomainScopes_NeedNoActingUser(t *testing.T) {

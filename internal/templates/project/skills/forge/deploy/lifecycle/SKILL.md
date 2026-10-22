@@ -45,6 +45,21 @@ ask an org admin, who can mint
 `forge cloud token create --env <env> --name <n> --scopes <scope>`; export it as
 the env's declared token variable.
 
+### Scopes for reading what a deployed app is doing
+
+Three scopes belong to the feedback loop (observe, then query). Each is its own
+authority: none implies another product's, and `forge cloud token create
+--scopes` accepts them like any other.
+
+| Scope | Allows | Notes |
+|---|---|---|
+| `obs:read` | every telemetry read: traces, logs, metrics, issues, release health | the one an org automation token carries to gate CI on a release's health; needs no acting user |
+| `obs:triage` | changing an issue's triage state (resolve, ignore, unresolve) | implies `obs:read` at the point of use; a read-only token cannot silence an issue |
+| `db:query` | one read-only query against an env's database | implies nothing and is implied by nothing: app data is not telemetry. A real env may restrict it further to people |
+
+`accesstoken.AllScopes` is the closed set; a store's `access_tokens` CHECK must
+list every member (`db/closed-sets`).
+
 ## Where the credential comes from
 
 `--token`, then the env's declared token variable (CI), then what `forge login`

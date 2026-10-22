@@ -1,3 +1,10 @@
+//go:build !windows
+
+// envtest's process package does not compile for windows (controller-runtime
+// v0.25.2 declares signalProcess twice there), so neither does this test; the
+// same tag as pkg/controller/controllertest. deadcodeguard loads every package
+// with GOOS=windows and refuses an unsound load.
+
 package cluster
 
 import (

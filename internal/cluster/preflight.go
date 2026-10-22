@@ -839,6 +839,17 @@ type PreflightOpts struct {
 	// rot) into a fail-fast render-time BLOCK. Empty => only rendered-stream
 	// Secrets count as supply. See SecretSupply / CheckSecretSupply.
 	SecretSupply []SecretSupply
+
+	// StoreExpect and StoreProbe drive the store-source preflight (SF9): the
+	// CRDs, the External Secrets Operator's owner, the store's readiness and
+	// whether the store holds the names the store-backed ExternalSecrets read.
+	// Each expectation names its OWN cluster, so the check runs whatever
+	// opts.Context is. Both must be set for it to run. When it does, the
+	// generic served-kinds gate leaves the external-secrets.io group to it,
+	// because only the store check knows whether THIS deploy installs the
+	// operator that serves those kinds. See CheckStore.
+	StoreExpect []StoreExpectation
+	StoreProbe  StoreProbe
 }
 
 // RequiredSecret is one declared external Secret prerequisite the preflight
@@ -1037,6 +1048,10 @@ type PreflightResult struct {
 	// no-cluster check that ALWAYS runs (incl. dry-run / local clusters) — it's
 	// the complement to the live Secret preflight. See CheckSecretSupply.
 	UndeclaredSecretMounts []UndeclaredSecretMount
+	// Store is the store-source preflight: gaps in how store-backed Secrets
+	// would be delivered (CRDs, operator owner, store readiness, values the
+	// store lacks). Its blocking findings BLOCK; Store.Warnings do not.
+	Store StoreFindings
 }
 
 // OK reports whether nothing was found missing. Inconclusive image warnings
@@ -1051,7 +1066,8 @@ func (r PreflightResult) OK() bool {
 		len(r.VolumeResizeRefusals) == 0 &&
 		len(r.MissingRequiredSecretKeys) == 0 &&
 		len(r.ByteMatchMismatches) == 0 &&
-		len(r.UndeclaredSecretMounts) == 0
+		len(r.UndeclaredSecretMounts) == 0 &&
+		r.Store.Empty()
 }
 
 // wholeSecretMarker is the placeholder listed under a Secret that doesn't
@@ -1109,6 +1125,9 @@ func PreflightReport(ctx context.Context, opts PreflightOpts) (PreflightResult, 
 		fmt.Printf("preflight: %s\n", w)
 	}
 	for _, w := range result.VolumeResizeWarnings {
+		fmt.Printf("preflight: %s\n", w)
+	}
+	for _, w := range result.Store.Warnings {
 		fmt.Printf("preflight: %s\n", w)
 	}
 	if result.OK() {
@@ -1307,6 +1326,24 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts) (PreflightResul
 	// live target (a SecretGetter + a context), like the secretKeyRef check.
 	if opts.Secrets != nil && len(opts.RequiredSecrets) > 0 && len(requiredSecretContexts(opts)) > 0 {
 		checkRequiredSecrets(ctx, opts, refs, &wg, sink)
+	}
+
+	// Store-backed Secrets (forge.StoreSource): the operator and its CRDs, the
+	// store's readiness and whether it holds the names read. Each expectation
+	// carries its own cluster, so this does not wait on opts.Context.
+	if opts.StoreProbe != nil && len(opts.StoreExpect) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			found, err := CheckStore(ctx, opts.StoreProbe, opts.StoreExpect)
+			if err != nil {
+				sink.recordErr(err)
+				return
+			}
+			sink.mu.Lock()
+			sink.result.Store = found
+			sink.mu.Unlock()
+		}()
 	}
 
 	// Cross-secret BYTE-MATCH — for each value_group, read every member's live
@@ -1530,6 +1567,9 @@ func (s preflightSink) recordUnverifiable(ref string, err error, live *liveImage
 // sink.recordErr. Only called when a checker and a target context are set.
 func checkServedKinds(ctx context.Context, opts PreflightOpts, wg *sync.WaitGroup, sink preflightSink) {
 	gvks := CollectManifestGVKs(opts.Manifests)
+	if opts.StoreProbe != nil && len(opts.StoreExpect) > 0 {
+		gvks = withoutGroup(gvks, esoAPIGroup)
+	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -2173,6 +2213,11 @@ func FormatPreflightReport(r PreflightResult) string {
 	}
 
 	writeVolumeResizeBlock(&b, r)
+
+	if blk := FormatStoreFindings(r.Store); blk != "" {
+		b.WriteString(blk)
+		b.WriteString("\n")
+	}
 
 	if len(r.MissingRequiredSecretKeys) > 0 {
 		b.WriteString("\n  DECLARED external Secret prerequisites missing (forge.ExternalSecret — provision out-of-band):\n")

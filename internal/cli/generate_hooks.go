@@ -80,6 +80,15 @@ func runGenerateHooks(projectDir string, hooks []config.GenerateHook, stdout, st
 		cmd := exec.Command(h.Command[0], h.Command[1:]...)
 		cmd.Dir = dir
 		cmd.Env = goexec.Env()
+		// A hook runs the same pinned codegen tools as forge's own steps:
+		// go.mod's buf, protoc-gen-go and protoc-gen-connect-go first on its
+		// PATH (and a `buf` hook execs the pinned buf itself). A hook is
+		// usually a second buf template or a generator over the same protos,
+		// and on PATH's tools it wrote bytes the committed tree, generated
+		// with the pins, did not match.
+		if err := withPinnedTools(cmd, projectDir); err != nil {
+			return fmt.Errorf("generate hook %q: %w", h.Name, err)
+		}
 		cmd.Stdout = stdout
 		cmd.Stderr = stderr
 		if err := cmd.Run(); err != nil {

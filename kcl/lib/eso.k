@@ -164,14 +164,14 @@ _writers_vap = lambda owner: str, eso_user: str, writers: [str], groups: [str] -
 
 # eso-store-pin: what a SecretStore may point at.
 _store_pin_vap = lambda owner: str, sa: str, servers: [str], mounts: [str], audiences: [str], \
-        gcp_projects: [str] -> [any] {
+        gcp_projects: [str], gcp_sas: [str] -> [any] {
     _p = "object.spec.provider"
     _a = "${_p}.vault.auth"
     _only_jwt = "!has(${_a}.appRole) && !has(${_a}.cert) && !has(${_a}.gcp) && !has(${_a}.iam) && !has(${_a}.kubernetes) && !has(${_a}.ldap) && !has(${_a}.tokenSecretRef) && !has(${_a}.userPass)"
     _tok = "${_a}.jwt.kubernetesServiceAccountToken"
     _vault = "has(${_p}.vault) && ${_p}.vault.server in ${_cel_list(servers)} && has(${_a}) && has(${_a}.jwt) && ${_only_jwt} && ${_a}.jwt.path in ${_cel_list(mounts)} && !has(${_a}.jwt.secretRef) && has(${_tok}) && ${_tok}.serviceAccountRef.name == '${sa}' && (!has(${_tok}.serviceAccountRef.namespace) || ${_tok}.serviceAccountRef.namespace == object.metadata.namespace) && has(${_tok}.audiences) && size(${_tok}.audiences) == 1 && ${_tok}.audiences[0] in ${_cel_list(audiences)}"
     _g = "${_p}.gcpsm"
-    _gcp = "has(${_g}) && ${_g}.projectID in ${_cel_list(gcp_projects)} && (!has(${_g}.auth) || (!has(${_g}.auth.secretRef) && !has(${_g}.auth.workloadIdentityFederation))) && (!has(${_g}.auth) || !has(${_g}.auth.workloadIdentity) || ${_g}.auth.workloadIdentity.serviceAccountRef.name == '${sa}')"
+    _gcp = "has(${_g}) && ${_g}.projectID in ${_cel_list(gcp_projects)} && (!has(${_g}.auth) || (!has(${_g}.auth.secretRef) && !has(${_g}.auth.workloadIdentityFederation))) && (!has(${_g}.auth) || !has(${_g}.auth.workloadIdentity) || ${_g}.auth.workloadIdentity.serviceAccountRef.name in ${_cel_list([sa] + gcp_sas)})"
     _vap("eso-store-pin", owner, ["secretstores"], ["CREATE", "UPDATE"], [{
         expression = "${_spec_unchanged} || (${_vault}) || (${_gcp})"
         message = "a SecretStore here may only dial a declared server over JWT auth (a declared mount, audience and the one store service account), or a declared Google project over Workload Identity: any other provider would ship a service-account token or read access somewhere forge did not pin (ExternalSecretsOperator.admission.servers / jwt_mounts / audiences / gcp_projects)"
@@ -269,6 +269,7 @@ eso_chart = lambda e: any, owner: str, derived: any -> {str: any} {
     _mounts = _admission_list("jwt_mounts", _adm.jwt_mounts, derived.jwt_mounts)
     _audiences = _admission_list("audiences", _adm.audiences, derived.audiences)
     _gcp = _admission_list("gcp_projects", _adm.gcp_projects, derived.gcp_projects)
+    _gcp_sas = _admission_list("gcp_service_accounts", [], derived.gcp_service_accounts)
     _eso_user = "system:serviceaccount:${_ns}:${ESO_SERVICE_ACCOUNT}"
     _replicas = e.replicas
     _egress_to = [{ipBlock.cidr = c} for c in _adm.egress_cidrs]
@@ -367,7 +368,7 @@ eso_chart = lambda e: any, owner: str, derived: any -> {str: any} {
         }
     } | ({"priorityClassName": e.priority_class} if e.priority_class else {})
     _admission = _writers_vap(owner, _eso_user, _adm.writers, _adm.writer_groups) \
-        + _store_pin_vap(owner, _adm.store_service_account, _servers, _mounts, _audiences, _gcp) \
+        + _store_pin_vap(owner, _adm.store_service_account, _servers, _mounts, _audiences, _gcp, _gcp_sas) \
         + _es_policy_vap(owner)
     _merged = _deep_merge(_posture, e.values)
     # extraObjects are APPENDED, not replaced: adding one object never costs

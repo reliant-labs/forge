@@ -56,7 +56,7 @@ type rootSpec struct {
 {{- if .ConfigInputs}}
 
 // rootConfigs holds each config the primary binary binds beside its root
-// config (proto/config's (forge.v1.binary_config)): nil in a process whose
+// config (proto/<project>/config/v1's (forge.v1.binary_config)): nil in a process whose
 // command does not load it.
 type rootConfigs struct {
 {{- range .ConfigInputs}}

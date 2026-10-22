@@ -69,6 +69,7 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/configproto"
 	"github.com/reliant-labs/forge/internal/templates"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
@@ -163,7 +164,7 @@ func AdvisoryPaths(files []AdvisoryFile) []string {
 // set worth reporting on.
 //
 // projectDir is the project root: the typed-config presence set a frontend's
-// session-provider.ts / connect.ts render from is read from its proto/config.
+// session-provider.ts / connect.ts render from is read from its proto/<project>/config/v1.
 // It used to be read from the process working directory, so `forge project
 // upgrade -C <dir>` — or any caller not sitting in the project — rendered the
 // untyped variant of those files and reported (or adopted!) the wrong bytes.
@@ -395,7 +396,7 @@ func frontendAdvisoryTypedConfig(root, frontend string) FrontendTypedConfig {
 		}
 	}
 
-	if _, err := os.Stat(filepath.Join(root, FrontendConfigProtoRelPath(frontend))); err == nil {
+	if _, err := os.Stat(filepath.Join(root, FrontendConfigProtoRelPath(configproto.ForProject(root), frontend))); err == nil {
 		return ScaffoldedFrontendTypedConfig()
 	}
 	return FrontendTypedConfig{}

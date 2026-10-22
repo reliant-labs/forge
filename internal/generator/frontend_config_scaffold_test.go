@@ -1,6 +1,8 @@
 package generator
 
 import (
+	"github.com/reliant-labs/forge/internal/configproto"
+
 	"os"
 	"path/filepath"
 	"regexp"
@@ -218,8 +220,8 @@ func scaffoldWithFrontend(t *testing.T, name, frontend string) string {
 func readFrontendConfigProto(t *testing.T, root, frontend string) (body, rel string) {
 	t.Helper()
 	candidates := []string{
-		filepath.Join("proto", "config", "v1", frontend+"_config.proto"),
-		filepath.Join("proto", "config", "v1", "config.proto"),
+		filepath.Join(filepath.FromSlash(configproto.ForProject(root).Dir()), frontend+"_config.proto"),
+		filepath.FromSlash(configproto.ForProject(root).RootPath()),
 	}
 	for _, c := range candidates {
 		data, err := os.ReadFile(filepath.Join(root, c))
@@ -232,7 +234,7 @@ func readFrontendConfigProto(t *testing.T, root, frontend string) (body, rel str
 		body, rel = string(data), c
 	}
 	if body == "" {
-		t.Fatalf("no config proto found under proto/config/v1 (looked for %v)", candidates)
+		t.Fatalf("no config proto found (looked for %v)", candidates)
 	}
 	return body, rel
 }

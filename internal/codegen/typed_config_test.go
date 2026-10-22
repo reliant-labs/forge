@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/configproto"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -24,8 +25,8 @@ func writeTypedConfigFile(t *testing.T, root, rel, body string) {
 
 func TestProjectHasTypedConfig(t *testing.T) {
 	none := t.TempDir()
-	// An empty proto/config/v1 (a CLI scaffold leaves one) is not config.
-	if err := os.MkdirAll(filepath.Join(none, "proto", "config", "v1"), 0o755); err != nil {
+	// An empty config dir (a CLI scaffold leaves one) is not config.
+	if err := os.MkdirAll(filepath.Join(none, filepath.FromSlash(configproto.ForProject(none).Dir())), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if HasConfigProtos(none) || ProjectHasTypedConfig(none) {
@@ -33,7 +34,7 @@ func TestProjectHasTypedConfig(t *testing.T) {
 	}
 
 	protos := t.TempDir()
-	writeTypedConfigFile(t, protos, "proto/config/v1/config.proto", "syntax = \"proto3\";\n")
+	writeTypedConfigFile(t, protos, configproto.ForProject(protos).RootPath(), "syntax = \"proto3\";\n")
 	if !HasConfigProtos(protos) || !ProjectHasTypedConfig(protos) {
 		t.Error("config protos are typed config")
 	}
@@ -75,7 +76,7 @@ func TestServiceTemplate_ConfigOnlyWithTypedConfig(t *testing.T) {
 	}
 
 	with := t.TempDir()
-	writeTypedConfigFile(t, with, "proto/config/v1/config.proto", "syntax = \"proto3\";\n")
+	writeTypedConfigFile(t, with, configproto.ForProject(with).RootPath(), "syntax = \"proto3\";\n")
 	got := render(with)
 	for _, want := range []string{`"example.com/app/pkg/config"`, "Config *config.Config", "Deps.Config is required"} {
 		if !strings.Contains(got, want) {

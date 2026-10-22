@@ -2267,6 +2267,7 @@ func runDeployPreflightForEnv(ctx context.Context, in deployPreflightEnvInput) e
 		// Read from in.entities — the env actually being deployed, the same
 		// value mintDeployKubeconfigSecrets is handed further down.
 		provisionedByDeploy: provisionedByDeployForPreflight(in.entities),
+		storeProbe:          liveStoreProbe(in.envName, topologyEntities),
 		report:              in.report,
 	})
 }
@@ -4221,6 +4222,10 @@ type deployPreflightInput struct {
 	// not block the deploy on a Secret that same deploy creates. See
 	// provisionedByDeployForPreflight.
 	provisionedByDeploy []cluster.ProvisionedSecret
+	// storeProbe answers the store-source preflight (CRDs, operator owner,
+	// store readiness, store names). Nil disables it: tests inject a fake, the
+	// deploy builds the live one in runDeployPreflightForEnv.
+	storeProbe cluster.StoreProbe
 }
 
 // requiredSecretsForPreflight projects the env's declared external Secret
@@ -4234,6 +4239,12 @@ func requiredSecretsForPreflight(entities *KCLEntities) []cluster.RequiredSecret
 	}
 	out := make([]cluster.RequiredSecret, 0, len(entities.RequiredSecrets))
 	for _, s := range entities.RequiredSecrets {
+		// ESO creates an Orphan store-backed Secret AFTER this deploy; demanding
+		// it up front would block the deploy that brings its deliverer. A Merge
+		// one only updates a Secret that exists, so it keeps the check.
+		if s.Source != nil && s.Source.CreationPolicy != "Merge" {
+			continue
+		}
 		out = append(out, cluster.RequiredSecret{
 			Name:       s.Name,
 			Namespace:  s.Namespace,
@@ -4294,10 +4305,12 @@ func provisionedByDeployForPreflight(entities *KCLEntities) []cluster.Provisione
 	if entities != nil {
 		delivered = entities.ControlPlaneSecrets
 	}
-	if len(minted)+len(delivered) == 0 {
+	byStore := storeProvisionedByDeploy(entities)
+	if len(minted)+len(delivered)+len(byStore) == 0 {
 		return nil
 	}
-	out := make([]cluster.ProvisionedSecret, 0, len(minted)+len(delivered))
+	out := make([]cluster.ProvisionedSecret, 0, len(minted)+len(delivered)+len(byStore))
+	out = append(out, byStore...)
 	for _, k := range minted {
 		out = append(out, cluster.ProvisionedSecret{
 			Name:      k.Name,
@@ -4483,6 +4496,19 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 		// up-front blocks the deploy on its own output. See
 		// PreflightOpts.ProvisionedByDeploy.
 		ProvisionedByDeploy: in.provisionedByDeploy,
+	}
+	// Store-backed Secrets (forge.StoreSource): the operator, its CRDs, the
+	// store's readiness and whether it holds the names the ExternalSecrets
+	// read. Whole-env topology, narrowed by --target to what this deploy
+	// installs; each expectation names its own cluster, so it runs for a local
+	// cluster too (a dev OpenBao is a store like any other).
+	if in.storeProbe != nil {
+		if in.entities != nil {
+			opts.StoreExpect = storeExpectations(in.entities, in.targets, storeOwner(in.entities.Project, in.env))
+		}
+		if len(opts.StoreExpect) > 0 {
+			opts.StoreProbe = in.storeProbe
+		}
 	}
 	// Secret + ConfigMap checks only against a REMOTE cluster (see
 	// docstring). An empty or local context leaves opts.Secrets /

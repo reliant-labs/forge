@@ -567,14 +567,14 @@ func packageHasTwoResultNew(dir string) bool {
 	return false
 }
 
-// generateConfigLoader parses proto/config/ for config protos with
+// generateConfigLoader parses proto/<project>/config/v1/ for config protos with
 // ConfigFieldOptions annotations and generates pkg/config/config.go.
 // The features parameter controls which config fields make it into
 // cmd/server.go — when migrations are disabled, migration-related
 // fields (AutoMigrate, DatabaseUrl, pool tuning) are excluded from
 // the server template so it doesn't reference app.AutoMigrate().
 func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs *generator.FileChecksums) (map[string]bool, error) {
-	fmt.Println("🔧 Generating config loader from proto/config/...")
+	fmt.Println("🔧 Generating config loader from proto/<project>/config/v1/...")
 
 	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config"))
 	if err != nil {

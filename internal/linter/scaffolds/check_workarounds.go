@@ -79,7 +79,7 @@ func LintWorkaroundsRoot(root string) (Result, error) {
 			Severity: SeverityWarning,
 			Path:     rel,
 			Message: "pkg/app/testing_extras.go is a hand-rolled stub-repo file forked to bridge `app.NewTest<Svc>` not filling required Deps " +
-				"(FORGE_REVIEW_PROCESS.md §2.2). That gap IS CLOSED: the harness fills every interface-typed Deps field (with its forge mock, or a synthesized stub) — " +
+				"(FORGE_REVIEW_PROCESS.md §2.2). That gap IS CLOSED: computeDepsDoubles fills every interface-typed Deps field (with its forge mock, or a synthesized stub) — " +
 				"including cross-package selector types like `repo.Repository` — and With<Svc>Deps overrides any of them. " +
 				"Should be: delete this file and inject real behavior through With<Svc>Deps(...) in your own _test.go files. " +
 				"A field forge could not resolve is called out by a TODO in NewTest<Svc>, so what still needs hand-rolling is named at the point of use, not carried wholesale here.",

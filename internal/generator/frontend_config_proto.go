@@ -239,7 +239,7 @@ func WriteFrontendConfigProto(root string, layout configproto.Layout, modulePath
 	return assets.WriteTemplateWithData("frontend_config.proto.tmpl", dest, frontendConfigProtoData{
 		TemplateData: layout.TemplateData(modulePath),
 		Frontend:     frontend,
-		MessageName: FrontendConfigMessageName(frontend),
-		APIPort:     apiPort,
+		MessageName:  FrontendConfigMessageName(frontend),
+		APIPort:      apiPort,
 	})
 }

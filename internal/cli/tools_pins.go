@@ -10,6 +10,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/internal/toolpin"
 )
 
 // toolPins are the tool versions this forge pins, keyed by binary name and
@@ -18,13 +19,15 @@ import (
 // asks the forge it runs instead of grepping forge's source out of the module
 // cache.
 func toolPins() map[string]string {
+	root, _ := projectRoot()
 	return map[string]string{
 		"golangci-lint": templates.GolangciLintVersion,
-		"buf":           templates.BufVersion,
-		"govulncheck":   templates.GovulncheckVersion,
-		"go-licenses":   templates.GoLicensesVersion,
-		"prettier":      templates.PrettierVersion,
-		"kcl":           templates.KCLVersion,
+		// The project's buf when its go.mod declares one (internal/toolpin).
+		"buf":         toolpin.BufFor(root).Bare(),
+		"govulncheck": templates.GovulncheckVersion,
+		"go-licenses": templates.GoLicensesVersion,
+		"prettier":    templates.PrettierVersion,
+		"kcl":         templates.KCLVersion,
 	}
 }
 
@@ -42,7 +45,10 @@ With a tool name, print only its version — the form a CI step reads:
   GOLANGCI_LINT_VERSION="$(forge tools pins golangci-lint)"
 
 The versions are this forge binary's, so a workflow that runs the forge its
-go.mod pins reads the matching tool pins with no second place to bump.
+go.mod pins reads the matching tool pins with no second place to bump. The one
+the project can move is buf: inside a project whose go.mod requires
+github.com/bufbuild/buf (` + "`go get -tool github.com/bufbuild/buf/cmd/buf@vX`" + `),
+buf is that version, the one ` + "`forge generate`" + ` and ` + "`forge ci gate`" + ` run.
 
 Examples:
   forge tools pins

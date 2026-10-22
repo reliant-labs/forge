@@ -131,7 +131,7 @@ func OpenVerdictCache(ctx context.Context, in CacheInput) (*VerdictCache, string
 
 	salt := sha256.New()
 	fmt.Fprintf(salt, "forge=%s\n", in.Forge)
-	for _, t := range []Tool{golangciLint, buf, govulncheck, goLicenses} {
+	for _, t := range []Tool{golangciLint, BufTool(in.Root), govulncheck, goLicenses} {
 		fmt.Fprintf(salt, "pin=%s@%s\n", t.Binary, t.Version)
 	}
 	fmt.Fprintf(salt, "go=%s\n", toolVersion(ctx, in.Root, in.Env, "go", "env", "GOVERSION"))

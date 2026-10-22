@@ -19,7 +19,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/goexec"
-	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/internal/toolpin"
 )
 
 // frontendTSPluginPackage is the npm package providing the local TS codegen
@@ -289,8 +289,10 @@ func runToolsInstall(ctx context.Context, version string, force bool, names ...s
 	}
 	known := map[string]func() error{
 		"buf": func() error {
-			// buf lint only needs a buf, so any one on PATH will do.
-			return goInstallTool(ctx, "buf", bufModulePath+"@v"+templates.BufVersion, force)
+			// The buf this project pins (go.mod's, else forge's): the one
+			// `forge generate` and `forge ci gate` run.
+			root, _ := projectRoot()
+			return goInstallTool(ctx, "buf", bufModulePath+"@"+toolpin.BufFor(root).Version, force)
 		},
 		"golangci-lint": func() error { return installPinnedGolangciLint(ctx, force) },
 	}

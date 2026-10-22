@@ -178,8 +178,8 @@ jobs:
       # Pinned, not left to the action's default: verify-generated demands
       # byte-identical output and `buf lint` judges the same files, so buf must
       # not move under them. `forge ci gate` holds the buf on PATH to this same
-      # version (templates.BufVersion), installing it itself when you run
-      # `task ci` with another one.
+      # version — the project's go.mod buf tool when it declares one, else
+      # forge's pin — installing it itself when you run `task ci` with another.
       - name: Install buf
         uses: bufbuild/buf-setup-action@v1
         with:

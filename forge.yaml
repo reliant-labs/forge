@@ -105,4 +105,5 @@ contracts:
     - "internal/hostedimage" # Pure and offline by design (the package doc forbids a call): the push-base rule and Finding's wording, so there is no I/O boundary to mock.
     - "internal/ledgerfile" # The machine-scoped file store of pkg/release's records. Its consumers (internal/cli) already hold it behind their own narrow bindingStore/releaseLedger interfaces; a second, package-side contract would be one-implementation indirection.
     - "internal/forgedelegate" # Concrete resolver for the pinned forge: its seams (Version, Same, Install, Build) are injectable func fields the cli tests already fake, and Exec replaces the process, so a one-implementation interface would add indirection and no substitution point.
+    - "internal/toolpin" # One resolution (which buf a project pins) as a value type; Buf's exported methods are spellings of its version, not a service, and the go.mod lookup is a package seam the tests already stub.
     - "internal/procguard" # Structural lineage rule over the kernel process table; Lineage is an immutable value and the table read is the package's own OS-specific lookup, not an injected collaborator.

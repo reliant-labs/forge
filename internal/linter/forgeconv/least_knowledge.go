@@ -3,7 +3,9 @@
 // package's Deps as internal/depsurface reads it:
 //
 //	forgeconv-deps-surface      an interface Deps field declares methods the
-//	                            package never calls through it (K1)
+//	                            package never needs through it: never calls,
+//	                            and never passes on as an interface that
+//	                            declares them (K1)
 //	forgeconv-no-container-deps a Deps field holds a container: the
 //	                            composition root's types, the command
 //	                            tree's Deps, a locator, `any` (K2)
@@ -101,12 +103,23 @@ func leastKnowledgeFindings(p *depsurface.Package, strict bool) []Finding {
 		}
 		wide := f.Foreign && len(f.Methods) > depsSurfaceWideMethods
 		where := "declared in this package"
-		fix := fmt.Sprintf("delete the methods this package never calls from %s", f.Type)
+		fix := fmt.Sprintf("delete the methods this package never uses from %s", f.Type)
 		if f.Foreign {
 			where = "declared in another package"
-			fix = fmt.Sprintf("`forge fix narrow-deps %s` declares the %d-method interface the package calls, here, and retypes the field (compose.go needs no change)", p.Dir, len(f.Used))
+			fix = fmt.Sprintf("`forge fix narrow-deps %s` declares the %d-method interface the package uses, here, and retypes the field (compose.go needs no change)", p.Dir, len(f.Used))
+			if len(f.Roles) > 0 {
+				fix = fmt.Sprintf("`forge fix narrow-deps %s` declares the %d-method interface the package uses, here — embedding the interfaces it passes the value on as — and retypes the field (compose.go needs no change)", p.Dir, len(f.Used))
+			}
 		}
-		msg := fmt.Sprintf("Deps.%s (%s, %d methods, %s) — the package calls %d of them through it; unused: %s", f.Name, f.Type, len(f.Methods), where, len(f.Used), summarize(unused, 6))
+		uses := "calls"
+		if len(f.Roles) > 0 {
+			roles := make([]string, len(f.Roles))
+			for i, r := range f.Roles {
+				roles[i] = r.Type
+			}
+			uses = "uses (calls, or passes it on as " + summarize(roles, 4) + ")"
+		}
+		msg := fmt.Sprintf("Deps.%s (%s, %d methods, %s) — the package %s %d of them through it; unused: %s", f.Name, f.Type, len(f.Methods), where, uses, len(f.Used), summarize(unused, 6))
 		if len(f.Used) == 0 {
 			msg = fmt.Sprintf("Deps.%s (%s) is never called through — the package does not need it", f.Name, f.Type)
 			fix = "delete the field (and its key in internal/app/compose.go)"

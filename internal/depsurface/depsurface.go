@@ -8,7 +8,8 @@
 // Three rules read it (internal/linter/forgeconv/least_knowledge.go):
 //
 //   - deps-surface: an interface field declares methods the package never
-//     calls through it;
+//     needs through it — never calls, and never passes the value on as an
+//     interface that declares them;
 //   - no-container-deps: a field holds a container — the composition root's
 //     types, the command tree's Deps, a locator, `any`. (The root config
 //     joins the list with K3, when the scaffold gives each component a
@@ -72,11 +73,22 @@ type Field struct {
 	// Foreign is true for a named interface declared in another package
 	// (the consumer did not declare what it needs).
 	Foreign bool
-	// Used are the methods the package calls through the field; Escapes is
-	// true when the field's value also leaves the package's sight (passed
-	// on, stored, returned), so its used set is not the whole story.
-	Used    map[string]bool
-	Escapes bool
+	// Used are the methods the package needs through the field: those it
+	// calls, plus every method of each Role.
+	Used map[string]bool
+	// Roles are the interfaces the field's value is passed on as: a
+	// parameter, a struct field (assigned or in a literal) or a conversion
+	// whose declared type is an interface with methods. Whatever the
+	// receiver does with the value, it does through that interface, so its
+	// method set — as the receiver declares it — bounds what the receiver
+	// needs, and is in Used.
+	Roles []Role
+	// Escapes is true when the value also leaves through something that
+	// bounds nothing — `any`, a concrete type, a return value, a channel, a
+	// map or slice element — so even Used is not the whole story.
+	// EscapeAt is where it first does ("file:line").
+	Escapes  bool
+	EscapeAt string
 	// Downcast is true when the package type-asserts the field to a
 	// concrete type (Package.Downcasts says where).
 	Downcast bool
@@ -98,6 +110,21 @@ func Unused(f Field) []string {
 		}
 	}
 	return out
+}
+
+// Role is one interface a Deps field's value is passed on as.
+type Role struct {
+	// Type is the interface as the consumer would write it
+	// ("threads.Repository"); for an interface literal or a type
+	// parameter's constraint, its methods in braces.
+	Type string
+	// Methods are its exported methods, sorted.
+	Methods []string
+	// Embeddable is true when the consumer can name the interface (a named
+	// interface it may refer to), so a narrowed interface can embed it.
+	Embeddable bool
+
+	typ types.Type
 }
 
 // EnvRead is one read of the process environment.
@@ -276,7 +303,9 @@ func analyzePackage(projectDir, module string, p *packages.Package) *Package {
 				}
 			}
 			sort.Strings(f.Methods)
-			if named, ok := v.Type().(*types.Named); ok && named.Obj().Pkg() != nil && named.Obj().Pkg() != p.Types {
+			// Through an alias too: `type Repository = db.Repository` is
+			// still db's declaration, not the consumer's.
+			if named, ok := types.Unalias(v.Type()).(*types.Named); ok && named.Obj().Pkg() != nil && named.Obj().Pkg() != p.Types {
 				f.Foreign = true
 			}
 		}
@@ -368,9 +397,11 @@ func containerKind(module string, t types.Type) string {
 
 // readUses walks the package's non-test files for selections of a Deps
 // field: a method called (or taken as a value) through it is used; a type
-// assertion on it is a downcast; anything else the value does — passed on,
-// stored, returned — is an escape. A field assigned to a local is followed
-// one step: the local's selections count as the field's.
+// assertion on it is a downcast; passing it on as an interface with methods
+// is a Role, whose methods are used; anything else the value does — passed
+// on as `any` or a concrete type, returned, sent — is an escape. A field
+// assigned to a local is followed one step: the local's selections count as
+// the field's.
 func readUses(p *packages.Package, byVar map[*types.Var]int, out *Package, rel func(token.Pos) (string, int)) {
 	r := &useReader{info: p.TypesInfo, byVar: byVar, alias: map[*types.Var]int{}, aliased: map[ast.Expr]bool{}, out: out, rel: rel}
 	var files []*ast.File
@@ -509,8 +540,217 @@ func (r *useReader) classify(i int, e ast.Expr, stack []ast.Node) {
 		if isNil(r.info, parent.X) || isNil(r.info, parent.Y) {
 			return
 		}
+	case *ast.CallExpr:
+		if r.role(f, r.argType(parent, e)) {
+			return
+		}
+	case *ast.KeyValueExpr:
+		// A keyed struct literal: the key resolves to the field it fills
+		// (a map literal's key is no field).
+		if id, ok := parent.Key.(*ast.Ident); ok && ast.Unparen(parent.Value) == e {
+			if v, ok := r.info.Uses[id].(*types.Var); ok && v.IsField() && r.role(f, v.Type()) {
+				return
+			}
+		}
+	case *ast.CompositeLit:
+		if r.role(f, r.positionalFieldType(parent, e)) {
+			return
+		}
+	case *ast.AssignStmt:
+		// Filling the field (`s.deps.F = v`, a setter) is no use of its
+		// value: the value assigned is the one the package goes on using.
+		for _, lhs := range parent.Lhs {
+			if ast.Unparen(lhs) == e {
+				return
+			}
+		}
+		if len(parent.Lhs) == len(parent.Rhs) {
+			for idx, rhs := range parent.Rhs {
+				if ast.Unparen(rhs) == e && r.role(f, r.info.TypeOf(parent.Lhs[idx])) {
+					return
+				}
+			}
+		}
+	}
+	if !f.Escapes {
+		file, line := r.rel(e.Pos())
+		f.EscapeAt = fmt.Sprintf("%s:%d", file, line)
 	}
 	f.Escapes = true
+}
+
+// role records dest as one of f's Roles, and its methods as used, when dest
+// is an interface with methods: the receiver can do nothing with the value
+// but call them. It reports false for anything that bounds nothing — no
+// type, `any`, a concrete type, a constraint with type terms.
+func (r *useReader) role(f *Field, dest types.Type) bool {
+	if dest == nil {
+		return false
+	}
+	// A type parameter's underlying type is its constraint.
+	iface, ok := dest.Underlying().(*types.Interface)
+	if !ok || !iface.IsMethodSet() || iface.NumMethods() == 0 {
+		return false
+	}
+	var methods []string
+	for j := 0; j < iface.NumMethods(); j++ {
+		if m := iface.Method(j); m.Exported() {
+			methods = append(methods, m.Name())
+		}
+	}
+	sort.Strings(methods)
+	own := r.out.pkg.Types
+	role := Role{Methods: methods, typ: dest}
+	_, isParam := types.Unalias(dest).(*types.TypeParam)
+	if named, ok := types.Unalias(dest).(*types.Named); ok && !isParam {
+		obj := named.Obj()
+		// Store[T] in a generic callee's signature names the callee's T,
+		// which the consumer cannot spell.
+		role.Embeddable = (obj.Pkg() == own || obj.Exported()) && !mentionsTypeParam(named)
+		role.Type = types.TypeString(dest, nameQualifier(own))
+	}
+	if role.Type == "" {
+		role.Type = "interface{ " + strings.Join(methods, "; ") + " }"
+	}
+	for _, m := range methods {
+		f.Used[m] = true
+	}
+	for _, have := range f.Roles {
+		if have.Type == role.Type {
+			return true
+		}
+	}
+	f.Roles = append(f.Roles, role)
+	return true
+}
+
+// mentionsTypeParam reports whether t's type arguments name a type
+// parameter, anywhere a narrowed interface would have to repeat it. A
+// composite type argument it does not walk counts as one, so the role is
+// written out method by method rather than embedded wrongly.
+func mentionsTypeParam(t types.Type) bool {
+	switch x := types.Unalias(t).(type) {
+	case *types.TypeParam:
+		return true
+	case *types.Named:
+		args := x.TypeArgs()
+		for i := 0; i < args.Len(); i++ {
+			if mentionsTypeParam(args.At(i)) {
+				return true
+			}
+		}
+		return false
+	case *types.Basic:
+		return false
+	case *types.Pointer:
+		return mentionsTypeParam(x.Elem())
+	case *types.Slice:
+		return mentionsTypeParam(x.Elem())
+	case *types.Array:
+		return mentionsTypeParam(x.Elem())
+	case *types.Map:
+		return mentionsTypeParam(x.Key()) || mentionsTypeParam(x.Elem())
+	case *types.Chan:
+		return mentionsTypeParam(x.Elem())
+	}
+	return true
+}
+
+// argType is the type the callee declares for e, an argument of call — the
+// parameter's type in the callee's own (uninstantiated) signature, so a
+// type parameter answers with its constraint — or the target type of a
+// conversion. It is nil for a builtin, and for an argument spread into a
+// variadic parameter (`f(xs...)`).
+func (r *useReader) argType(call *ast.CallExpr, e ast.Expr) types.Type {
+	if tv, ok := r.info.Types[call.Fun]; ok && tv.IsType() {
+		return tv.Type
+	}
+	idx := -1
+	for i, a := range call.Args {
+		if ast.Unparen(a) == e {
+			idx = i
+		}
+	}
+	sig := r.declaredSignature(call.Fun)
+	if idx < 0 || sig == nil {
+		return nil
+	}
+	params := sig.Params()
+	if sig.Variadic() && idx >= params.Len()-1 {
+		if call.Ellipsis.IsValid() {
+			return nil
+		}
+		if s, ok := params.At(params.Len() - 1).Type().Underlying().(*types.Slice); ok {
+			return s.Elem()
+		}
+		return nil
+	}
+	if idx >= params.Len() {
+		return nil
+	}
+	return params.At(idx).Type()
+}
+
+// declaredSignature is the signature fun is declared with: a named
+// function's or method's origin (its type parameters intact), or else the
+// signature of fun's type. It is nil for a builtin.
+func (r *useReader) declaredSignature(fun ast.Expr) *types.Signature {
+	fun = ast.Unparen(fun)
+	switch x := fun.(type) {
+	case *ast.IndexExpr:
+		fun = ast.Unparen(x.X)
+	case *ast.IndexListExpr:
+		fun = ast.Unparen(x.X)
+	}
+	var id *ast.Ident
+	switch x := fun.(type) {
+	case *ast.Ident:
+		id = x
+	case *ast.SelectorExpr:
+		// A method expression (T.M) takes the receiver first, which the
+		// method's own signature does not list.
+		if sel, ok := r.info.Selections[x]; !ok || sel.Kind() != types.MethodExpr {
+			id = x.Sel
+		}
+	}
+	if id != nil {
+		switch obj := r.info.Uses[id].(type) {
+		case *types.Builtin:
+			return nil
+		case *types.Func:
+			sig, _ := obj.Origin().Type().(*types.Signature)
+			return sig
+		}
+	}
+	t := r.info.TypeOf(fun)
+	if t == nil {
+		return nil
+	}
+	sig, _ := t.Underlying().(*types.Signature)
+	return sig
+}
+
+// positionalFieldType is the type of the struct field e fills in an
+// unkeyed struct literal, or nil.
+func (r *useReader) positionalFieldType(lit *ast.CompositeLit, e ast.Expr) types.Type {
+	t := r.info.TypeOf(lit)
+	if t == nil {
+		return nil
+	}
+	u := t.Underlying()
+	if p, ok := u.(*types.Pointer); ok {
+		u = p.Elem().Underlying()
+	}
+	st, ok := u.(*types.Struct)
+	if !ok {
+		return nil
+	}
+	for i, el := range lit.Elts {
+		if ast.Unparen(el) == e && i < st.NumFields() {
+			return st.Field(i).Type()
+		}
+	}
+	return nil
 }
 
 func (r *useReader) downcast(field string, at ast.Node, t types.Type) {

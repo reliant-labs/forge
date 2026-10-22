@@ -48,7 +48,10 @@ go build ./... && forge lint
 The codemod moves each `config.v1` file, rewrites its `package` and
 `go_package`, rewrites `import "config/v1/…"` and `config.v1.<Message>`
 references in every other proto, the `<mod>/gen/config/v1` import in your own
-Go (never `gen/` or `*_gen.go`), `gen/config/v1/` imports in frontend
+Go (never `gen/` or `*_gen.go`), Go string literals that are exactly the old
+package or a name in it (`"config.v1"`, `"config.v1.AppConfig"` — e.g.
+`RangeFilesByPackage("config.v1", …)`, which would otherwise silently match
+nothing), `gen/config/v1/` imports in frontend
 sources, and deletes the stale generated `gen/config/v1/` and
 `<fe>/src/gen/config/v1/` trees. It is idempotent: a second run reports
 nothing.
@@ -59,7 +62,9 @@ exists. It keeps a non-default `go_package` and says so.
 ## After
 
 - Fix each `file:line` it lists under **Next** — docs, CI, `buf.yaml`,
-  Taskfile mentions of the old path.
+  Taskfile mentions of the old path, and any Go string that only *contains*
+  `config.v1` (`"/config.v1.AppConfig"`, a concatenation): the codemod rewrites
+  only literals that are exactly the package, so it leaves those for you.
 - Another repo that imported `<mod>/gen/config/v1` directly changes that
   import path once it pins this release (its `pkg/config` imports change
   nothing).

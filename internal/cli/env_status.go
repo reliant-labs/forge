@@ -71,6 +71,12 @@ WHAT ONE ENV'S REPORT CARRIES:
     missing / untagged / unreachable. A hosted env is read through its
     control plane's observer, because forge cannot read a hosted cluster;
   * the ROLLOUT PHASE per workload, as the control plane computes it;
+  * IDENTITY — a hosted env that declares forge.ManagedIdentity gets one line,
+    "identity: ready / provisioning / failed: <reason>", as its control plane
+    reports it. It never changes the exit code here; --wait (and env deploy)
+    waits on it: a release whose rollout succeeded is WAITING ON IDENTITY until
+    the identity is ready (1 if it failed, the timed-out code if it was still
+    provisioning at the deadline);
   * RUNTIME HEALTH — every host service and frontend with its URL, log file
     and whether a listener is accepting right now, plus the compose infra,
     the app's /healthz + /readyz, pprof and the telemetry backends;

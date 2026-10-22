@@ -300,7 +300,13 @@ func TestHarnessStepPresetShape(t *testing.T) {
 	if allow == nil {
 		t.Fatalf("stepPresetAllowlist is missing the %s entry", harnessStepPreset)
 	}
-	for _, step := range []string{"per-service test helpers", "parse services + module path", "load checksums"} {
+	// "internal package contracts" is an input, not a bystander: the
+	// harness installs the mocks it writes (a Deps field whose interface
+	// forge mocks gets that mock, not a stub), and a Deps edit moves them —
+	// a new foreign field of a deps.go-marked handler is a new
+	// Deps-discovered mock. Without it the preset would stub what the full
+	// run mocks.
+	for _, step := range []string{"per-service test helpers", "parse services + module path", "load checksums", "internal package contracts"} {
 		if !allow[step] {
 			t.Errorf("harness preset must include %q", step)
 		}
@@ -311,7 +317,6 @@ func TestHarnessStepPresetShape(t *testing.T) {
 		"descriptor extraction",
 		"internal/app composition (hybrid DI)",
 		"service mocks",
-		"internal package contracts",
 		"CRUD handlers",
 		"frontend hooks",
 		"regenerate infra files",

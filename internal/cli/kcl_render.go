@@ -161,6 +161,9 @@ type KCLEntities struct {
 	// DeliveryPolicy is Bundle.delivery_policy, every control resolved. Nil
 	// when the env declares none (every control at its default).
 	DeliveryPolicy *release.ShapeDeliveryPolicy `json:"delivery_policy,omitempty"`
+	// ReleaseHealth is Bundle.release_health, resolved. Nil when the env
+	// declares none (the defaults).
+	ReleaseHealth *release.ShapeReleaseHealth `json:"release_health,omitempty"`
 	// Identity is Bundle.identity, resolved by the render: the applications
 	// and consumers derived, the deliveries and reserved managed-secret names
 	// listed. Nil when the env declares none. See release.ShapeIdentity: the
@@ -718,6 +721,11 @@ type ControlPlaneSecretEntity struct {
 	// Required is true when a workload reads the Secret without an optional
 	// marker, so its pods wait for the first delivery.
 	Required bool `json:"required,omitempty"`
+	// Delivery is release.ControlPlaneSecretDeliveryStore when the control
+	// plane writes the store and ESO delivers the Secret; Source is then the
+	// floating store source ESO reads.
+	Delivery string             `json:"delivery,omitempty"`
+	Source   *StoreSourceEntity `json:"source,omitempty"`
 }
 
 // DNSRecordEntity mirrors the kcl/schema.k DNSRecord — a DNS record a
@@ -1385,6 +1393,7 @@ type kclRenderRaw struct {
 	Workloads                []kclWorkloadRaw                          `json:"workloads,omitempty"`
 	Observability            *ObservabilityEntity                      `json:"observability,omitempty"`
 	DeliveryPolicy           *release.ShapeDeliveryPolicy              `json:"delivery_policy,omitempty"`
+	ReleaseHealth            *release.ShapeReleaseHealth               `json:"release_health,omitempty"`
 	Identity                 *release.ShapeIdentity                    `json:"identity,omitempty"`
 	Infra                    []HostInfraEntity                         `json:"infra,omitempty"`
 	Frontends                []FrontendEntity                          `json:"frontends,omitempty"`
@@ -1723,6 +1732,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		SecretProvider:           raw.SecretProvider,
 		Observability:            raw.Observability,
 		DeliveryPolicy:           raw.DeliveryPolicy,
+		ReleaseHealth:            raw.ReleaseHealth,
 		Identity:                 raw.Identity,
 		RenderedSecrets:          raw.RenderedSecrets,
 		ControlPlane:             raw.ControlPlane,

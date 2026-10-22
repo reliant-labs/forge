@@ -59,8 +59,11 @@ result. Only the text moves:
    handler's import (`chat.MockNarrow`) for the handler's own mock, through
    the file's existing import of the declaring package for a foreign one
    (`rr.MockPauseController` where the file imports it as `rr`), adding
-   that import where the file has none. The `<Method>Func` fields are the
-   same on both doubles, so nothing else in the test changes.
+   that import where the file has none. A test struct that embeds a stub
+   (`struct{ *chat.StubRepo; ... }`) has the embedded field renamed with it —
+   its composite-literal key and its selectors (`StubRepo:` →
+   `MockRepository:`). The `<Method>Func` fields are the same on both
+   doubles, so nothing else in the test changes.
 2. Fix what it lists under "next": a string literal naming the old stub's
    error (`"StubPause.PauseFunc not set"`) — assert on the mock's
    (`"MockPauseController.PauseFunc not set"`), or better, on the handler's

@@ -96,6 +96,17 @@ func TestInternal(t *testing.T) {
 	}
 }
 `,
+	// A struct embedding a stub in one file, used from another: the
+	// embedded field is named after the type.
+	"internal/handlers/chat/wrapped_test.go": `package chat_test
+
+import "example.com/proj/internal/handlers/chat"
+
+type wrapped struct {
+	*chat.StubPause
+	calls int
+}
+`,
 	"internal/handlers/chat/external_test.go": `package chat_test
 
 import (
@@ -109,8 +120,10 @@ var _ rr.PauseController = (*chat.StubPause)(nil)
 
 func TestExternal(t *testing.T) {
 	_ = chat.Deps{Pause: &chat.StubPause{}, Narrow: &chat.StubNarrow{}, Repo: &chat.StubRepo{}}
-	other := struct{ StubPause int }{}
-	_ = other.StubPause
+	other := struct{ StubNarrow int }{}
+	_ = other.StubNarrow
+	w := &wrapped{StubPause: &chat.StubPause{}}
+	w.StubPause.PauseFunc = nil
 }
 `,
 }
@@ -155,8 +168,10 @@ func TestHarnessMocks_RenamesRetiredStubs(t *testing.T) {
 		"Pause: &rr.MockPauseController{}",
 		"Narrow: &chat.MockNarrow{}",
 		"Repo: &chat.StubRepo{}",
-		"other := struct{ StubPause int }{}", // a field of the same name is not the stub
-		"_ = other.StubPause",
+		"other := struct{ StubNarrow int }{}", // a field of the same name is not the stub
+		"_ = other.StubNarrow",
+		"w := &wrapped{MockPauseController: &rr.MockPauseController{}}", // the embedded field's key
+		"w.MockPauseController.PauseFunc = nil",
 	} {
 		if !strings.Contains(external, want) {
 			t.Errorf("external_test.go lacks %q:\n%s", want, external)
@@ -164,6 +179,9 @@ func TestHarnessMocks_RenamesRetiredStubs(t *testing.T) {
 	}
 	if strings.Count(external, `"example.com/proj/internal/runs"`) != 1 {
 		t.Errorf("external_test.go already imported internal/runs; it must not gain a second import:\n%s", external)
+	}
+	if wrapped := readFile(t, dir, "internal/handlers/chat/wrapped_test.go"); !strings.Contains(wrapped, "*runs.MockPauseController") {
+		t.Errorf("wrapped_test.go must embed the mock, importing internal/runs:\n%s", wrapped)
 	}
 	if got := readFile(t, dir, "internal/handlers/chat/helpers_gen_test.go"); got != harnessMocksProject["internal/handlers/chat/helpers_gen_test.go"] {
 		t.Errorf("the generated harness was rewritten:\n%s", got)

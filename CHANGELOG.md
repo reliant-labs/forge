@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge lint --secrets`: the platform-secrets lane (SF12).** For each env that
+  uses the model (a store-backed `forge.ExternalSecret`, `forge.OpenBao` or
+  `forge.ExternalSecretsOperator`; a project that declares none is not rendered),
+  it judges what the schema cannot see across a whole env, with file:line in the KCL
+  and the escape in every message. Errors gate: `secrets-cluster-kind` (no
+  ClusterSecretStore, ClusterExternalSecret, PushSecret or generator, nor their
+  CRDs); `secrets-es-policy` (creationPolicy Orphan or Merge, deletionPolicy Retain,
+  a namespaced store, explicit keys, a refresh of at least 5m, a target named for
+  itself); `secrets-key-coverage` (every Secret a workload reads is produced by an
+  ExternalSecret, ControlPlaneSecret, rendered Secret, Certificate or CloudNativePG
+  cluster, and lists the key read: ESO rebuilds an Orphan Secret from the declared
+  keys only, so an undeclared key vanishes on the next sync); `secrets-immutable-pin`
+  (an immutable store name is read at exactly version 1 by every source);
+  `secrets-out-of-band-reason` (the reason must explain, not restate "manual");
+  `openbao-wildcard-read` (the rendered access document may not grant a glob read of
+  a value without a real reason); `secrets-single-owner` (two declarations producing
+  one Secret). `secrets-escrow-in-cluster` warns when OpenBao's seal key and
+  recovery output are escrowed in the cluster they protect. `secrets-unreferenced-key`
+  (info) lists declared Secrets and keys no workload reads: the orphan finder. The
+  render now also records each `required_secrets` entry's `out_of_band_reason`,
+  which the lane reads. Waive one finding with `# forge:lint-disable-next-line <rule>: <why>` or
+  dial it in `lint.rules`.
 - **Alerts fire locally: `forge env up` closes the alerting loop.**
   - Beside the local ClickStack, a scaffolded dev env now runs two new pieces:
     - an `alerts` host workload, `forge observe alerts run`, which evaluates the env's `forge.Alerts` continuously with `for` applied;

@@ -906,7 +906,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # Depth 2 for the CHANGELOG.md guard below: the merge commit and its
+      # first parent, the base branch's tip.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      # CHANGELOG.md is written only at release time, by scripts/release-forge.sh,
+      # from the merged PR titles. A pull request that edits it is the conflict
+      # that policy removes (203 of the last 319 commits on main appended under
+      # [Unreleased]), so it fails here, in seconds, before the slow steps. A
+      # step of this job rather than a job of its own: every job a pull request
+      # adds is another runner to queue for. Pull requests only — a merge-queue
+      # entry has no head branch name for the release/* exemption, and the
+      # pull request was already judged when it opened.
+      - name: CHANGELOG.md is not edited by pull requests
+        if: ${{ github.event_name == 'pull_request' }}
+        run: scripts/check-changelog-untouched.sh HEAD^1
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod

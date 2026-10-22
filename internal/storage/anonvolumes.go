@@ -176,12 +176,14 @@ func (r Runner) containerVolumeUse(ctx context.Context) (map[string]bool, error)
 	if len(ids) == 0 {
 		return used, nil
 	}
-	b, err = r.docker(ctx, append([]string{"inspect", "--format", `{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}`}, ids...)...)
+	chunks, err := r.inspectContainers(ctx, ids, "--format", `{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}`)
 	if err != nil {
 		return nil, err
 	}
-	for _, name := range strings.Fields(string(b)) {
-		used[name] = true
+	for _, b := range chunks {
+		for _, name := range strings.Fields(string(b)) {
+			used[name] = true
+		}
 	}
 	return used, nil
 }

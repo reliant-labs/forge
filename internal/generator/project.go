@@ -145,6 +145,17 @@ func (g *ProjectGenerator) isLibrary() bool {
 // Libraries don't; services and CLIs do.
 func (g *ProjectGenerator) hasCmd() bool { return !g.isLibrary() }
 
+// genModule reports whether gen/ is a Go module of its own: the scaffold
+// writes gen/go.mod, the root go.mod requires and replaces it, and go.work
+// uses it. All four follow this one predicate, because a require of a module
+// that was never written fails every go command in the project. gen/ exists
+// only where codegen produces stubs (a CLI gets it too, so that adding protos
+// later just works), and stays in the root module when an in-place adoption
+// already keeps it there (GenInRootModule).
+func (g *ProjectGenerator) genModule() bool {
+	return (g.Features.CodegenEnabled() || g.isCLI()) && !g.GenInRootModule
+}
+
 // binaryName returns the PRIMARY binary name — the leaf of the cmd/<bin>/
 // tree, the Dockerfile `go build ... ./cmd/<bin>` target, and the built
 // binary. It is the project name VERBATIM (hyphens preserved): a project
@@ -201,11 +212,15 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 	}
 
 	// Create directory structure
-	dirs := []string{
-		"gen",
-		// internal/ is intentionally not pre-created. `forge package new <name>`
-		// materializes internal/<name>/ on demand; shipping an empty directory
-		// would just leave a dangling .gitkeep or an untracked empty dir.
+	//
+	// internal/ is intentionally not pre-created. `forge package new <name>`
+	// materializes internal/<name>/ on demand; shipping an empty directory
+	// would just leave a dangling .gitkeep or an untracked empty dir. gen/ is
+	// created only where it is a module (genModule) — a project without
+	// codegen would otherwise ship it empty.
+	var dirs []string
+	if g.genModule() {
+		dirs = append(dirs, "gen")
 	}
 	if g.isService() {
 		dirs = append(dirs, "internal/handlers", "internal/handlers/mocks", "pkg/app", "pkg/middleware")
@@ -373,31 +388,31 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 		{launchTmpl, ".vscode/launch.json"},
 	}
 
-	// go.work + gen/go.mod only matter when there is a gen/ subtree
-	// (i.e. the codegen pipeline produces stubs). Library/CLI projects
-	// without codegen don't need a workspace.
-	//
-	// tools/tools.go pins protoc-gen-go and protoc-gen-connect-go in
-	// go.mod via blank imports under //go:build tools, so contributors
-	// can `go install` them without remembering the module paths. The
-	// runtime `local:` plugins in buf.gen.yaml resolve them via $PATH.
-	//
-	// CLI projects get the same set without codegen, so that adding entity
-	// protos later "just works".
-	//
-	// gen/ becomes its own module unless the project's root module already
-	// owns it (GenInRootModule): then there is no gen/go.mod, and go.work
-	// uses only the root.
+	// buf.yaml, buf.gen.yaml and tools/tools.go only matter when the
+	// codegen pipeline produces stubs. tools/tools.go pins protoc-gen-go and
+	// protoc-gen-connect-go in go.mod via blank imports under //go:build
+	// tools, so contributors can `go install` them without remembering the
+	// module paths; the runtime `local:` plugins in buf.gen.yaml resolve
+	// them via $PATH. CLI projects get the same set without codegen, so that
+	// adding entity protos later "just works".
 	if g.Features.CodegenEnabled() || g.isCLI() {
 		files = append(files,
-			struct{ template, dest string }{"go.work.tmpl", "go.work"},
 			struct{ template, dest string }{"buf.yaml.tmpl", "buf.yaml"},
 			struct{ template, dest string }{"buf.gen.yaml", "buf.gen.yaml"},
 			struct{ template, dest string }{"tools.go.tmpl", "tools/tools.go"},
 		)
-		if !g.GenInRootModule {
-			files = append(files, struct{ template, dest string }{"gen-go.mod.tmpl", "gen/go.mod"})
-		}
+	}
+	// gen/go.mod follows genModule, exactly as go.mod's require of it does.
+	if g.genModule() {
+		files = append(files, struct{ template, dest string }{"gen-go.mod.tmpl", "gen/go.mod"})
+	}
+	// go.work (gitignored, machine-local) for every kind whose code imports
+	// forge — a service imports forge/pkg with or without codegen, and a CLI
+	// with it — because the workspace is what `--link-forge` bridges to an
+	// unreleased forge checkout. A library imports no forge package, so it has
+	// nothing to bridge. The workspace uses gen/ only when gen/ is a module.
+	if !g.isLibrary() {
+		files = append(files, struct{ template, dest string }{"go.work.tmpl", "go.work"})
 	}
 
 	switch {
@@ -507,9 +522,30 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 	// features.codegen=false has no such pass and no services to name — the
 	// bare root IS the finished answer there, so it is written here.
 	// Requires go.mod, written in the file loop above.
+	//
+	// The rest of the command tree root.go consumes is born here too, for
+	// the same reason: the codegen lane that births it otherwise never runs.
+	// root.go is the same file in every shape, so a project without codegen
+	// gets what it calls — `metrics schema` (the one conditional file that
+	// uses registerCommand in every service, and which `forge project
+	// upgrade` already manages for every service-kind project) and the
+	// projection of a composition graph it does not have: rootCommands,
+	// returning no roots (codegen.EmitRootCommandsWithoutGraph, which
+	// `forge generate` keeps current).
 	if g.isService() && !g.Features.CodegenEnabled() {
 		if err := codegen.GenerateCmdMainRoot(g.Path, g.binaryName(), nil); err != nil {
 			return fmt.Errorf("failed to scaffold cmd/<bin>/main.go: %w", err)
+		}
+		for _, f := range []struct{ template, dest string }{
+			{"cmd-tree-metrics.go.tmpl", filepath.Join("cmd", g.binaryName(), "cmd", "metrics.go")},
+			{"internal-metrics.go.tmpl", filepath.Join("internal", "metrics", "metrics.go")},
+		} {
+			if err := assets.WriteTemplateWithData(f.template, filepath.Join(g.Path, f.dest), templateData); err != nil {
+				return fmt.Errorf("failed to create %s: %w", f.dest, err)
+			}
+		}
+		if err := codegen.EmitRootCommandsWithoutGraph(g.Path, nil); err != nil {
+			return fmt.Errorf("failed to scaffold cmd/<bin>/cmd/roots_gen.go: %w", err)
 		}
 	}
 

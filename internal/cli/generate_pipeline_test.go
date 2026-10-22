@@ -75,6 +75,9 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"webhook routes",
 		"go mod tidy (pre-composition)",
 		"internal/app composition (hybrid DI)",
+		// Its features.codegen=false twin: no graph, so no roots — but the
+		// command tree's root.go still calls rootCommands.
+		"root commands without a composition graph",
 		"root env schema (pkg/config/roots_gen.go)",
 		"go mod tidy (pre-wiring)",
 		"cmd/commands.go (user extension point)",

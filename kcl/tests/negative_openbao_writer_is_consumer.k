@@ -12,5 +12,5 @@ output = forge.render(forge.Bundle {
     openbao = forge.OpenBao {
         consumers = [forge.OpenBaoConsumer {name = "x", workload = "forge-secret-writer", delegated = True}]
     }
-    
+
 })

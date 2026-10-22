@@ -785,6 +785,53 @@ func IsClassified(err error) bool {
 	return recognised
 }
 
+// WrapOr is [Wrap] for an error that may or may not already know its code:
+//
+//	rows, err := s.deps.Projects.List(ctx, userID)
+//	if err != nil {
+//	    return nil, svcerr.WrapOr(err, svcerr.Internal("failed to list projects"))
+//	}
+//
+// When err is classified ([IsClassified]: an svcerr kind, a context
+// cancellation or deadline, or a *connect.Error) it is Wrap(err): the
+// verdict someone already made — a store's NotFound, a deadline, a
+// validator's InvalidArgument — reaches the client with its own code and
+// message. Otherwise it is Wrap(WithCause(fallback, err)): the client reads
+// fallback's code, message, reason and class, and err stays the server-side
+// cause the logging interceptor reports (see [Cause]), reachable through
+// errors.Is / errors.As.
+//
+// It replaces two spellings that are each wrong half the time:
+// `connect.NewError(connect.CodeInternal, err)` publishes err's text (a
+// driver's SQL, a DSN, a host) and flattens a NotFound into Internal, and
+// `return nil, svcerr.Internal("failed to list projects")` with err dropped
+// turns a deadline into a server fault and loses the cause from the log.
+//
+// A *connect.Error passes through verbatim, because it is a verdict too:
+// one this process built while it migrates to svcerr, or one a helper
+// returns. That includes a *connect.Error a REMOTE Connect client returned,
+// whose code and message describe the dependency's failure — so the result
+// of a call to another service never goes through WrapOr. Name what this
+// rpc tells its own caller instead:
+//
+//	svcerr.Wrap(svcerr.WithCause(svcerr.Unavailable("billing is unavailable"), remoteErr))
+//
+// WrapOr(nil, _) is nil. A nil fallback is treated as [ErrInternal]. An
+// unclassified fallback is redacted like any other unrecognised error: the
+// client reads [InternalMessage].
+func WrapOr(err, fallback error) error {
+	if err == nil {
+		return nil
+	}
+	if IsClassified(err) {
+		return Wrap(err)
+	}
+	if fallback == nil {
+		fallback = ErrInternal
+	}
+	return Wrap(WithCause(fallback, err))
+}
+
 // WithDetail attaches a structured proto.Message detail to the connect
 // error that ToConnect would build for err. Used when the service
 // layer wants to surface client-readable structured context (e.g., a

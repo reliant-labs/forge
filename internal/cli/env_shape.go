@@ -363,6 +363,10 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 	if aerr != nil {
 		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, aerr)
 	}
+	store, storeErr := shapeStoreSecretsOf(entities)
+	if storeErr != nil {
+		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, storeErr)
+	}
 	split, splitErr := unitSplitOf(entities)
 	if splitErr != nil {
 		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, splitErr)
@@ -387,6 +391,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		Identity:            shapeIdentityOf(entities),
 		Applier:             shapeApplierOf(entities),
 		Units:               split.ShapeUnits(),
+		Store:               store,
 	})
 	if err != nil {
 		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, err)

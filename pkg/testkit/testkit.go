@@ -69,6 +69,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/orm"
 	"github.com/reliant-labs/forge/pkg/pgtest"
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // DiscardLogger returns a slog.Logger that drops every record. Use it as
@@ -328,7 +329,15 @@ func ApplyOptions[C any, O ~func(*C)](cfg *C, opts ...O) *C {
 // want to close it early; it is already registered for cleanup.
 // register matches the generated service's own Register method, which takes
 // variadic connect.HandlerOption alongside the mux; handlerOpts are forwarded
-// to it verbatim (e.g. [ServerPrincipal]).
+// to it (e.g. [ServerPrincipal]), followed by svcerr.Interceptor, innermost.
+//
+// That last one is what production has: forge's chain builders end every
+// handler chain with svcerr.Interceptor, so a handler returning a bare
+// `svcerr.InvalidArgument("…")` answers invalid_argument. A test server
+// without it answered unknown for the same handler — the documented handler
+// shape failed only under test, and an unrecognised error published its raw
+// text here while production redacts it. Passing svcerr.Interceptor yourself
+// stays harmless: Wrap is idempotent.
 func NewConnectClient[C any](
 	t *testing.T,
 	register func(mux *http.ServeMux, opts ...connect.HandlerOption),
@@ -336,7 +345,8 @@ func NewConnectClient[C any](
 	handlerOpts ...connect.HandlerOption,
 ) (*httptest.Server, C) {
 	t.Helper()
-	srv := NewTestServer(t, func(mux *http.ServeMux) { register(mux, handlerOpts...) })
+	opts := append(append([]connect.HandlerOption(nil), handlerOpts...), connect.WithInterceptors(svcerr.Interceptor()))
+	srv := NewTestServer(t, func(mux *http.ServeMux) { register(mux, opts...) })
 	// Traced, so a test's own span is the parent of the server's.
 	return srv, newClient(observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: -1}), srv.URL)
 }

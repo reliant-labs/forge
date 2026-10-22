@@ -317,8 +317,9 @@ the `AppConfig` line, and the Go replacement:
 **`--optional-deps-guard`** finds dereferences of a `forge:optional-dep`
 field that no nil-check protects — a latent panic on the code path where the
 dependency was legitimately not wired. It recognizes early-return guards,
-enclosing guards, and alias-then-check, so it flags the genuinely unguarded
-case.
+enclosing guards, alias-then-check, and a guard inside a same-package helper
+the rpc calls first (`if err := s.gate(ctx); err != nil { return nil, err }`,
+where `gate` nil-checks the deps), so it flags the genuinely unguarded case.
 
 **`--frontend-stores`** flags Zustand stores that import generated Connect
 clients. Server state belongs in the generated React Query hooks; Zustand is

@@ -9,6 +9,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge lint --secrets`: the platform-secrets lane (SF12).** For each env that
+  uses the model (a store-backed `forge.ExternalSecret`, `forge.OpenBao` or
+  `forge.ExternalSecretsOperator`; a project that declares none is not rendered),
+  it judges what the schema cannot see across a whole env, with file:line in the KCL
+  and the escape in every message. Errors gate: `secrets-cluster-kind` (no
+  ClusterSecretStore, ClusterExternalSecret, PushSecret or generator, nor their
+  CRDs); `secrets-es-policy` (creationPolicy Orphan or Merge, deletionPolicy Retain,
+  a namespaced store, explicit keys, a refresh of at least 5m, a target named for
+  itself); `secrets-key-coverage` (every Secret a workload reads is produced by an
+  ExternalSecret, ControlPlaneSecret, rendered Secret, Certificate or CloudNativePG
+  cluster, and lists the key read: ESO rebuilds an Orphan Secret from the declared
+  keys only, so an undeclared key vanishes on the next sync); `secrets-immutable-pin`
+  (an immutable store name is read at exactly version 1 by every source);
+  `secrets-out-of-band-reason` (the reason must explain, not restate "manual");
+  `openbao-wildcard-read` (the rendered access document may not grant a glob read of
+  a value without a real reason); `secrets-single-owner` (two declarations producing
+  one Secret). `secrets-escrow-in-cluster` warns when OpenBao's seal key and
+  recovery output are escrowed in the cluster they protect. `secrets-unreferenced-key`
+  (info) lists declared Secrets and keys no workload reads: the orphan finder. The
+  render now also records each `required_secrets` entry's `out_of_band_reason`,
+  which the lane reads. Waive one finding with `# forge:lint-disable-next-line <rule>: <why>` or
+  dial it in `lint.rules`.
+- **Alerts fire locally: `forge env up` closes the alerting loop.**
+  - Beside the local ClickStack, a scaffolded dev env now runs two new pieces:
+    - an `alerts` host workload, `forge observe alerts run`, which evaluates the env's `forge.Alerts` continuously with `for` applied;
+    - a compose `alertmanager` (the v0.28.1 digest the control plane runs).
+  - The Alertmanager's configuration is rendered by `forge/pkg/alerting/amconfig`, the control plane's own renderer, as org `local` with the env name as its env id. So a route reaches the same receiver locally as in production.
+  - The always-present `reliant-inapp` receiver delivers to the evaluator, which writes one line per alert to `.forge/logs/<env>/alerts.log`.
+  - New KCL:
+    - `forge.Alerts.receivers` (`forge.AlertReceiver`: webhook, slack, pagerduty, autopilot), the receivers of an env forge delivers itself. Their secrets are secret-store keys, written as files.
+    - `forge.Observability.alertmanager_port` / `alerts_port`.
+  - A host workload's `command` that starts with `forge` runs the forge that launched the env. Migration: `migrations/v0.1.47/local-alerting`.
+
+### Fixed
+
+- **`forge observe alerts check` and `forge observe profile` reach the ClickStack `forge env up` started.**
+  - env up runs each env's compose services in their own project (`forge-<id>-<env>`). Both commands exec'd into the default project, so they reported a running ClickStack as not running.
+- **`docker compose up <service>` interpolates the whole compose file with every workload's declared env.**
+  - Bringing up `otel-profiles` (which depends on `clickstack`) with only its own variables recreated `clickstack` on the file's default ports. On a machine running a second stack, the bind failed.
+
+- **`forge/pkg/alerting/amconfig`: the Alertmanager configuration renderer.**
+  Moved verbatim from the control plane, which renders every org's routing
+  with it, so a local stack can render with the SAME code: one route per org
+  matched strictly on `reliant_org_id` with a blackhole default, per-org
+  receiver names, secrets as `*_file` references only, autopilot receivers as
+  continue:true observers. `TestNoRouteDeliversAcrossOrgs` runs over
+  Alertmanager's real routing tree. New: `Settings.AllowHTTPWebhooks` (false
+  by default) lets a local stack, whose receivers are the developer's own
+  machine, use plain-http webhooks; a renderer serving several orgs never sets it.
+
+- **`forge.OpenBao` renders (SF6).** `Bundle.openbao = forge.OpenBao {}` now
+  lowers to a `forge.dev/v1alpha1 OpenBao` record that `pkg/deploy/openbao`
+  expands into the secret store and what converges it. Defaults run: Raft x3 on
+  PVCs with `retry_join` auto-join, TLS from a namespaced self-signed
+  cert-manager CA, a static seal, audit to stdout and a file, a PDB and zone
+  spread. `OpenBaoPostgres` renders a Deployment with the cloud-sql-proxy
+  sidecar over Workload Identity. Two content-addressed Jobs run one embedded
+  `converge.sh`: a pre-rollout **widen** (the union of the applied and new
+  access document) and a post-rollout **converge** (initialise, write the
+  recovery Secret before converging anything, apply the document from
+  `pkg/secretaccess`, narrow what it no longer contains, revoke root).
+  `consumers` become exact-grant roles; `delegated` gets the access-admin policy
+  and no KV capability. A plaintext listener needs a `transitional_reason`, a
+  glob `read` needs a `wildcard_read_reason`, and both are listed in the
+  render's `openbao.warnings`. The release shape now records the store-backed
+  secrets, generated names, pins and both components (`forge env shape`).
+  Left for later: the bootstrap source and recovery escrow (hook seams are in
+  the Job), the `public` endpoint, the Raft snapshot CronJob (refused if
+  declared), and the OIDC writer.
+
+- **`forge secret` writes and lists store-sourced secrets, and `forge env secrets
+verify|adopt` migrate a Secret onto ESO (SF10).** A name a store-backed
+  `forge.ExternalSecret` (`forge.StoreSource`) reads or generates now lives in that
+  ExternalSecret's store, whatever the env's `secret_provider` is:
+
+  - `forge secret set` / `list` reach a `HostedStore` through the control plane's
+    write-only API, a `GCPSecretManagerStore` with Application Default
+    Credentials, and a self-run `OpenBaoStore` by signing in as the
+    `forge-secret-writer` service account with a ten-minute token minted from
+    your own kube context (design N2): no credential is stored, and cluster
+    access is all it needs. `--store` picks one when two stores declare a name.
+  - `forge secret import` copies existing values in, create-only (check-and-set
+    0; for Secret Manager, "no usable version yet"), so a re-run can never
+    overwrite a value that was rotated since. `--from <ns>/<secret> --map
+key=NAME` reads a cluster Secret with your kube context; a NAME with a value
+    on stdin or `--from-file` imports one. `--to-bootstrap [--project]` writes a
+    `BootstrapSecret`'s Secret Manager container. `--dry-run` reads and reports.
+  - `forge env secrets verify <env> [<secret>]` compares a live Secret with the
+    store's copy per key, and prints `match` / `no-match` and which side is
+    missing: by default against `<name>-eso-shadow` (a source with `shadow =
+True`), or `--against gsm:<project>` for the Secret Manager parity check.
+  - `forge env secrets adopt <env> <ns>/<secret>` strips the stale
+    `kubectl.kubernetes.io/last-applied-configuration` annotation (a full copy of
+    the applied values) and asserts nothing owns the Secret by ownerReference.
+
+  No command prints a secret value or any digest of one, and none takes a value
+  as an argument: values come from stdin, `--from-file`, or a store or cluster
+  Secret you already hold. Both are pinned by tests that sweep every command's
+  output and error for a canary in raw, encoded and hashed form, on success and
+  on failure paths where the remote echoes the request.
+
 - **A config message's `buf.validate` rules are checked as it loads.** Field
   rules (a port's range, a positive duration) and message-level CEL
   (`BILLING_PROVIDER=stripe` needs `STRIPE_SECRET_KEY`) on a `proto/config`
@@ -39,7 +140,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that changes every sync, and one namespace configuring one store kind two ways.
   Nothing renders for a Bundle with no `source`.
 
-
 - **A drained Connect stream parked in `Receive` actually ends, and handlers can
   stop their own readers: `serverkit.AbortReceive(ctx)`.** A server-side
   `Receive` reads the request body and no context wakes it; Connect closes the
@@ -57,6 +157,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HTTP/1.1 sets a read deadline, because its `Close` waits for a pending read.
   The response is untouched, and unary routes are unaffected. Skill:
   `services/shutdown`.
+
+- **`svcerr.WrapOr(err, fallback)`: keep a verdict if there is one, otherwise
+  say what failed.** A classified `err` (`svcerr.IsClassified`: an svcerr kind,
+  a context cancellation or deadline, or a `*connect.Error`) is `Wrap(err)`;
+  anything else is `Wrap(WithCause(fallback, err))` — the client reads the
+  fallback's code, message, reason and class, and `err` is the logged cause.
+  It is the one spelling for a collaborator's error, replacing
+  `connect.NewError(connect.CodeInternal, err)` (publishes `err.Error()`,
+  flattens a NotFound) and `svcerr.Internal("…")` with `err` dropped (a deadline
+  becomes a server fault, the cause never logs). `pkg/crud` uses it in place of
+  its private copy, with no change to what it returns. A remote Connect
+  client's error is a `*connect.Error` and would pass through, so never
+  `WrapOr` one: wrap it in your own verdict with `WithCause`.
+
 - **Boot `/readyz` names the graph node boot is waiting on.** A composition
   root's boot probes used to answer `503 {"status":"not_ready"}` with no checks
   for the whole of graph construction, so a constructor that blocked — a
@@ -73,6 +187,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   logged (`boot: still constructing a graph node`, naming the innermost node
   and the path that reached it) every 10s, and again when it finishes.
   Post-build readiness is unchanged. Existing projects: `forge generate`.
+
+- **`forgeconv-handler-connect-error`: every `connect.NewError` in a handler
+  package is a warning.** A `*connect.Error` is never redacted — svcerr's
+  interceptor passes it through as built — so `connect.NewError(code, err)`
+  publishes `err.Error()` and overrides any code `err` already carried. Each
+  finding says which kind it is: a fixed message (`forge fix connect-errors`
+  rewrites it with the same code and message), an error value (use
+  `svcerr.WrapOr`), or `nil`. Generated and test files are skipped. It warns
+  by default so no project goes red on the bump; set
+  `lint.rules: {forgeconv-handler-connect-error: error}` once migrated.
+  **Changed with it:** `forgeconv-no-handler-error-mapping` no longer skips a
+  file that imports svcerr. One `svcerr.Wrap` in a file — or a codemod adding
+  the import — used to silence every mapper beside it without fixing one; a
+  project whose mappers were hidden that way sees them as warnings now.
 
 - **The release shape records store-backed secrets (`pkg/release`, SF3).** A shape
   gains four optional fields a control plane reads to serve a store-backed
@@ -93,6 +221,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plane that does not name it, and omitted when empty, so every shape recorded before
   them encodes and hashes exactly as it did.
 
+- **`forge fix connect-errors`: hand-built Connect errors onto svcerr, without
+  changing a code or a message.** It rewrites every `connect.NewError` whose
+  client-visible code and message an svcerr spelling reproduces exactly —
+  `errors.New("chat not found")` under `CodeNotFound` → `svcerr.NotFound("chat")`,
+  other NotFound prose → `svcerr.WithMessage(svcerr.ErrNotFound, …)`,
+  `fmt.Errorf(f, args…)` without `%w` or an error argument →
+  `svcerr.<Kind>(fmt.Sprintf(f, args…))` — and, in the tests of a package that
+  now returns bare kinds and of its importers, `connect.CodeOf` →
+  `svcerr.Code`. A bare kind is written only in a handler package, where the
+  context is `error` and nothing reads a `*connect.Error` in process in the
+  package, its tests or an importer's code; everywhere else (interceptors, `*connect.Error`
+  results, a package such a reader sees) it is `svcerr.ToConnect(…)`, and a
+  re-run drops the wrapper once the reader reads `svcerr.Code`. Every site it
+  cannot rewrite exactly — an error value (`svcerr.WrapOr` is the reviewed
+  fix), nil, a computed message or code — is listed with its reason. It is
+  type-checked (`go/packages`), idempotent, `--dry-run` prints each rewrite as
+  `file:line: old → new`, and its proof is a corpus whose real-client wire
+  output is identical before and after. Over reliant: 902 sites rewritten (334
+  to bare kinds, 568 kept a `*connect.Error`), 71 test assertions, 341 sites
+  listed, and its build, vet and handler tests pass unchanged. On request
+  only (`forge project upgrade` does not run it); the playbook is
+  `forge skill load migrations/v0.1.47/connect-errors`.
+
 - **The schema for platform secrets: `forge.OpenBao`, `forge.ExternalSecretsOperator`
   and store-backed `forge.ExternalSecret`s (declarations only, nothing renders yet).**
   Two opt-in components on the Bundle, like `observability` and `identity`:
@@ -101,7 +252,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   writer) and `external_secrets_operators = [forge.ExternalSecretsOperator {cluster}]`
   (one hardened, cluster-wide ESO per cluster; a second for one cluster is refused).
   A `forge.ExternalSecret` gains `source = forge.StoreSource {store, data, templates,
-  generate, pin, immutable, refresh, creation_policy, shadow}` over a `HostedStore`,
+generate, pin, immutable, refresh, creation_policy, shadow}` over a `HostedStore`,
   `OpenBaoStore` or `GCPSecretManagerStore`, and `out_of_band_reason` for the ones
   that stay out of band once any is store-backed. `forge.BootstrapSecret` and
   `bootstrap_source = forge.GCPSecretManager {project} | forge.OutOfBand {}` name the
@@ -140,7 +291,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not be redeemed by `/auth/reset`.
 - **`pkg/secretaccess` and `pkg/secretgen`: the pure halves of store-backed
   secrets.** `secretaccess.Derive` maps `{scope, clusters, per-namespace secret
-  names}` to OpenBao JWT auth mounts (`jwt-<cluster>`), roles (one per cluster
+names}` to OpenBao JWT auth mounts (`jwt-<cluster>`), roles (one per cluster
   and namespace, bound to the namespace's `reliant-secrets` service account and
   the cluster's audience, issuing 10 minute batch tokens) and ACL policies that
   grant `read` on exact paths only: no globs, no list, no metadata, unless a
@@ -255,6 +406,32 @@ login` credential is traded for the scope the control plane's 403 names, for
   attribute, the escape hatch for pinning a record to a named issue.
 
 ### Changed
+
+- **`tdd.AssertConnectError` (and `TableRPC`'s `WantErr`) read `svcerr.Code`**,
+  the code `svcerr.Interceptor` sends, instead of `connect.CodeOf`. A handler
+  test calls the `*Service` method directly, so a handler returning a bare
+  `svcerr.NotFound("x")` — the documented shape — read as `unknown`. For a
+  `*connect.Error` the two agree; the one difference is an unclassified error,
+  which now asserts as `internal` (what the client reads) rather than `unknown`.
+- **`testkit.NewConnectClient` serves behind `svcerr.Interceptor`**, innermost,
+  as production's chain builders do — so the generated `NewTest<Svc>Server`
+  answers a handler's bare `svcerr.InvalidArgument("…")` with
+  `invalid_argument`, unary and streaming, where it answered `unknown`; and an
+  unrecognised error reads `internal server error` there as it does in
+  production, instead of its raw text. A test asserting either old answer was
+  asserting what no client in production sees.
+- **Generated proto mocks return
+  `svcerr.Wrap(svcerr.Unimplemented("handler for X not yet implemented"))`**
+  for an unprogrammed rpc, instead of a hand-built `connect.NewError`. The code and message are unchanged, the value
+  is still a `*connect.Error`, and `errors.Is(err, svcerr.ErrUnimplemented)` now
+  holds. Existing projects: `forge generate`.
+- **svcerr's `*connect.Error` policy is documented and pinned**: a hand-built
+  `*connect.Error` reaches the client exactly as built, wrapped text included —
+  redaction applies to what svcerr classifies. The interceptor cannot tell a
+  DSN from text meant for the user (a daemon's git rejection), and rewriting
+  it would change every project's wire on a forge bump; the fix for
+  `connect.NewError(code, err)` is at the call site (`svcerr.WrapOr`). The
+  `api` skill says so.
 
 - **`forge lint` fails when a gating lane could NOT run.** A frontend with no
   `node_modules` (or whose install failed), a typecheck with no compiler, a
@@ -402,6 +579,37 @@ generate` runs the same check. `project new` never took a heavy slot and still
 
 ### Fixed
 
+- **A bridged project no longer rebuilds forge for a file no build reads.**
+  forge's bridge-skew check counted every dirty path in the linked forge
+  checkout as "uncommitted changes the binary was not built from" and handed
+  each command to a forge rebuilt from the checkout, keyed on the newest
+  edit's mtime. A file that cannot reach a build — the e2e shard's test2json
+  log, growing in the checkout's root for the whole run — so rebuilt forge on
+  every command, and a re-run of `forge generate` ran a different binary and
+  never recorded its fixed point (`TestE2EFixtureCorpusCRUDLifecycle`,
+  `CPForgeShaped`, `ZeroService` red on main). Now only a source edit counts:
+  a Go build file, or any file beneath a directory holding a non-test Go
+  package (where `//go:embed` reaches: templates, KCL, skills). A cached
+  bridge build is also keyed on its Go settings (`GOFLAGS`, `CGO_ENABLED`,
+  `GOOS`/`GOARCH`, …) and is never replaced once published, so a process can
+  no longer have the binary it runs swapped for a differently-built one. The
+  e2e shard writes its files under `$RUNNER_TEMP`, outside the checkout.
+- **A project without codegen works straight after `project new`.**
+  `forge project new --disable codegen` (the frontend-only shape) printed "initial
+  code generation failed", and `forge generate`, `go build` and `forge lint` all
+  failed on it. Its go.mod required and replaced a `<mod>/gen` module that only
+  codegen writes; it got no go.work, so `--link-forge` had nothing to bridge;
+  and `cmd/<bin>/cmd/root.go` called `rootCommands`, which only the codegen
+  lane defines. Now gen's require, replace, `gen/go.mod` and go.work's
+  `use gen` follow one predicate, every kind that imports forge gets a go.work,
+  and the scaffold (then `forge generate`) writes a `roots_gen.go` whose
+  `rootCommands` returns no roots, plus the `metrics schema` command every
+  other service has, so root.go is the same file in every shape. The other
+  `--disable` values were already green; `TestE2EProjectNewDisableShapes` now
+  scaffolds, generates, builds and lints every one. `--service` with
+  `--disable codegen`, and `--frontend` with `--disable frontend`, are refused
+  up front: they used to drop the component without a word (the latter left an
+  empty `frontends/<name>/`).
 - **Every `forge scaffold <noun>` leaves the project lint-green, with no
   `forge generate` after it.** `scaffold frontend` wrote
   `proto/config/v1/<fe>_config.proto` and stopped, so `gen/forge_descriptor.json`

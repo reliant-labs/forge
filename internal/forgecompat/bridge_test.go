@@ -127,17 +127,23 @@ func TestAssessSkew(t *testing.T) {
 		{"same commit, clean", Binary{Revision: head, Root: root, BuiltAt: built}, Checkout{Dir: root, Head: head}, 0},
 		{"short revision matches full", Binary{Revision: head[:12]}, Checkout{Dir: root, Head: head}, 0},
 		{"different commit", Binary{Revision: otherRev, Root: root, BuiltAt: built}, Checkout{Dir: root, Head: head}, SkewRevision},
-		{"checkout dirty, binary clean", Binary{Revision: head, Root: root, BuiltAt: built}, Checkout{Dir: root, Head: head, Dirty: true, LastEditAt: before}, SkewCheckoutEdits},
-		{"dirty binary built from these edits", Binary{Revision: head, Modified: true, Root: root, BuiltAt: built}, Checkout{Dir: root, Head: head, Dirty: true, LastEditAt: before}, 0},
-		{"edits newer than the dirty binary", Binary{Revision: head, Modified: true, Root: root, BuiltAt: built}, Checkout{Dir: root, Head: head, Dirty: true, LastEditAt: after}, SkewCheckoutEdits},
-		{"dirty binary from ANOTHER tree", Binary{Revision: head, Modified: true, Root: other, BuiltAt: built}, Checkout{Dir: root, Head: head, Dirty: true, LastEditAt: before}, SkewCheckoutEdits},
+		{"checkout dirty, binary clean", Binary{Revision: head, Root: root, BuiltAt: built}, Checkout{Dir: root, Head: head, Dirty: true, SourceEdits: true, LastSourceEditAt: before}, SkewCheckoutEdits},
+		{"dirty binary built from these edits", Binary{Revision: head, Modified: true, Root: root, BuiltAt: built}, Checkout{Dir: root, Head: head, Dirty: true, SourceEdits: true, LastSourceEditAt: before}, 0},
+		{"edits newer than the dirty binary", Binary{Revision: head, Modified: true, Root: root, BuiltAt: built}, Checkout{Dir: root, Head: head, Dirty: true, SourceEdits: true, LastSourceEditAt: after}, SkewCheckoutEdits},
+		{"dirty binary from ANOTHER tree", Binary{Revision: head, Modified: true, Root: other, BuiltAt: built}, Checkout{Dir: root, Head: head, Dirty: true, SourceEdits: true, LastSourceEditAt: before}, SkewCheckoutEdits},
 		{"binary carries edits the clean checkout lacks", Binary{Revision: head, Modified: true, Root: root, BuiltAt: built}, Checkout{Dir: root, Head: head}, SkewBinaryEdits},
+		// Dirt no build reads — a CI job's test report teed into the root,
+		// growing as it runs — is not skew, however recent.
+		{"checkout dirty with no source edit, binary clean", Binary{Revision: head, Root: root, BuiltAt: built}, Checkout{Dir: root, Head: head, Dirty: true}, 0},
+		{"dirty binary, checkout dirty with no source edit", Binary{Revision: head, Modified: true, Root: root, BuiltAt: built}, Checkout{Dir: root, Head: head, Dirty: true}, 0},
+		{"dirty binary from ANOTHER tree, checkout dirty with no source edit", Binary{Revision: head, Modified: true, Root: other, BuiltAt: built}, Checkout{Dir: root, Head: head, Dirty: true}, SkewBinaryEdits},
+		{"no revision, untouched HEAD, newer edits no build reads", Binary{Root: root, BuiltAt: built}, Checkout{Dir: root, Head: head, HeadMovedAt: before, Dirty: true}, 0},
 
 		// The roofers case: forge embedded in reliant through a workspace
 		// records no forge commit at all.
 		{"no revision, checkout moved after the build", Binary{Root: root, BuiltAt: built, Embedded: true}, Checkout{Dir: root, Head: head, HeadMovedAt: after}, SkewUnverifiable},
 		{"no revision, checkout untouched since the build", Binary{Root: root, BuiltAt: built, Embedded: true}, Checkout{Dir: root, Head: head, HeadMovedAt: before}, 0},
-		{"no revision, untouched HEAD but newer edits", Binary{Root: root, BuiltAt: built}, Checkout{Dir: root, Head: head, HeadMovedAt: before, Dirty: true, LastEditAt: after}, SkewUnverifiable},
+		{"no revision, untouched HEAD but newer edits", Binary{Root: root, BuiltAt: built}, Checkout{Dir: root, Head: head, HeadMovedAt: before, Dirty: true, SourceEdits: true, LastSourceEditAt: after}, SkewUnverifiable},
 		{"no revision, built from another tree", Binary{Root: other, BuiltAt: built}, Checkout{Dir: root, Head: head, HeadMovedAt: before}, SkewUnverifiable},
 		{"no revision, no root, no build time", Binary{}, Checkout{Dir: root, Head: head, HeadMovedAt: before}, SkewUnverifiable},
 	}
@@ -169,7 +175,7 @@ func TestSkewLine(t *testing.T) {
 			[]string{"reliant (built 2026-10-01 01:31) records no forge commit", "which changed after it was built (now 750833054b78)"}},
 		{"embedded, other tree", SkewUnverifiable, Binary{Name: "reliant", Root: "/src/reliant-forge"}, c,
 			[]string{"compiled from /src/reliant-forge"}},
-		{"dirty checkout", SkewCheckoutEdits, Binary{Name: "forge"}, Checkout{Dir: "/src/forge", Head: c.Head, Dirty: true},
+		{"dirty checkout", SkewCheckoutEdits, Binary{Name: "forge"}, Checkout{Dir: "/src/forge", Head: c.Head, Dirty: true, SourceEdits: true},
 			[]string{"at 750833054b78 + uncommitted changes, but forge was not built from those changes"}},
 	}
 	for _, tc := range tests {
@@ -228,11 +234,11 @@ func TestReadCheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 	c, ok = ReadCheckout(dir)
-	if !ok || !c.Dirty {
+	if !ok || !c.Dirty || !c.SourceEdits {
 		t.Fatalf("an edited checkout read as clean: %+v", c)
 	}
-	if !c.LastEditAt.Equal(edited) {
-		t.Errorf("LastEditAt = %v, want the newest edit %v", c.LastEditAt, edited)
+	if !c.LastSourceEditAt.Equal(edited) {
+		t.Errorf("LastSourceEditAt = %v, want the newest edit %v", c.LastSourceEditAt, edited)
 	}
 
 	if _, ok := ReadCheckout(t.TempDir()); ok {
@@ -288,5 +294,69 @@ func TestReadCheckout_DoesNotRewriteTheIndex(t *testing.T) {
 	}
 	if !bytes.Equal(before, after) {
 		t.Fatal("ReadCheckout rewrote .git/index of the checkout it only reads")
+	}
+}
+
+// TestReadCheckout_OnlySourceEditsAreSkew is the e2e shard's case: a CI job
+// tees a growing test report into the root of the forge checkout every
+// fixture bridges. That report is no input to a build of forge, so the
+// checkout is Dirty but has no SourceEdits — while an untracked template
+// beneath a package directory (go:embed reaches it) does count.
+func TestReadCheckout_OnlySourceEditsAreSkew(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	// forge's shape: the root holds only tests; packages live below it.
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/m\n")
+	writeFile(t, filepath.Join(dir, "root_test.go"), "package m\n")
+	writeFile(t, filepath.Join(dir, "CHANGELOG.md"), "# log\n")
+	writeFile(t, filepath.Join(dir, "internal", "templates", "templates.go"), "package templates\n")
+	writeFile(t, filepath.Join(dir, "internal", "templates", "project", "a.tmpl"), "a\n")
+	writeFile(t, filepath.Join(dir, "docs", "guide.md"), "guide\n")
+	git("add", ".")
+	git("commit", "-q", "-m", "init")
+
+	for _, tc := range []struct {
+		name   string
+		edit   func(t *testing.T)
+		source bool
+	}{
+		{"a test report teed into the root", func(t *testing.T) { writeFile(t, filepath.Join(dir, "e2e-shard-0.json"), "{}\n") }, false},
+		{"a tracked doc edited", func(t *testing.T) { writeFile(t, filepath.Join(dir, "docs", "guide.md"), "edited\n") }, false},
+		{"a tracked root file edited", func(t *testing.T) { writeFile(t, filepath.Join(dir, "CHANGELOG.md"), "# edited\n") }, false},
+		{"an untracked template beneath a package", func(t *testing.T) {
+			writeFile(t, filepath.Join(dir, "internal", "templates", "project", "b.tmpl"), "b\n")
+		}, true},
+		{"a tracked template edited", func(t *testing.T) {
+			writeFile(t, filepath.Join(dir, "internal", "templates", "project", "a.tmpl"), "edited\n")
+		}, true},
+		{"an untracked Go file at the root", func(t *testing.T) { writeFile(t, filepath.Join(dir, "scratch.go"), "package m\n") }, true},
+		{"go.mod edited", func(t *testing.T) { writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/m\n\ngo 1.22\n") }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			git("reset", "-q", "--hard")
+			git("clean", "-q", "-fdx")
+			tc.edit(t)
+			c, ok := ReadCheckout(dir)
+			if !ok || !c.Dirty {
+				t.Fatalf("the edited checkout read as clean: %+v, %v", c, ok)
+			}
+			if c.SourceEdits != tc.source {
+				t.Fatalf("SourceEdits = %v, want %v (%+v)", c.SourceEdits, tc.source, c)
+			}
+			if !tc.source && !c.LastSourceEditAt.IsZero() {
+				t.Errorf("LastSourceEditAt = %v with no source edit: a growing report would still move the rebuild key", c.LastSourceEditAt)
+			}
+		})
 	}
 }

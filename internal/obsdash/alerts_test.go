@@ -31,8 +31,8 @@ func TestGoldenDefaultAlertSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rules) != 15 {
-		t.Fatalf("got %d default rules, want the 5 telemetry rules (error rate, latency, silent, JS errors, LCP), the 5 customer-metadata rules, the two frontend issue markers, DeployFailed and the two quota levels", len(rules))
+	if len(rules) != 16 {
+		t.Fatalf("got %d default rules, want the 5 telemetry rules (error rate, latency, silent, JS errors, LCP), the 5 customer-metadata rules, the three issue markers (new, regressed, spike), DeployFailed and the two quota levels", len(rules))
 	}
 	var b strings.Builder
 	for _, r := range rules {
@@ -158,7 +158,7 @@ func TestDefaultsFollowTheProject(t *testing.T) {
 	}
 	feOnly := AlertInput{Project: "x", FrontendService: "x-frontend"}
 	rules, _ = ResolveAlertDefaults(feOnly, "dev", nil)
-	if got := ids(rules); got != "deploy-failed,frontend-issue-regressed,frontend-js-errors,frontend-lcp-poor,frontend-new-issue,observability-quota" {
+	if got := ids(rules); got != "deploy-failed,frontend-js-errors,frontend-lcp-poor,issue-regressed,issue-spike,new-issue,observability-quota" {
 		t.Errorf("a frontend-only project: %q", got)
 	}
 }
@@ -272,7 +272,7 @@ func TestOptingOutOfMetadataSkipsTheMetadataDefaults(t *testing.T) {
 	}
 	// A different category changes nothing here.
 	rules, skipped, _ = ResolveAlertDefaultsFor(in, "dev", nil, []string{"logs", "profiles"})
-	if len(skipped) != 0 || len(rules) != 15 {
+	if len(skipped) != 0 || len(rules) != 16 {
 		t.Errorf("opting out of logs skipped %v and left %d rules", skipped, len(rules))
 	}
 }
@@ -398,6 +398,15 @@ func TestPlatformDefaultsAreExactlyWhatTheControlPlaneInjects(t *testing.T) {
 		"ObservabilityQuotaOver150": {"critical", "0s", "1m",
 			"SELECT 1 AS value WHERE 0 /* reliant:platform observability-quota:over_150 env:{reliant_env_id:String} */",
 			"This org's observability usage is at {{ $value }}% of its monthly allowance; the gateway is limiting ingest"},
+		"NewIssue": {"warning", "0s", "1m",
+			"SELECT 1 AS value WHERE 0 /* reliant:platform new-issue env:{reliant_env_id:String} */",
+			"New issue in {{ $labels.service }} ({{ $labels.env }}): {{ $labels.title }}. Details: {{ $labels.console_url }}"},
+		"IssueRegressed": {"warning", "0s", "1m",
+			"SELECT 1 AS value WHERE 0 /* reliant:platform issue-regressed env:{reliant_env_id:String} */",
+			"A resolved issue came back in {{ $labels.service }} ({{ $labels.env }}): {{ $labels.title }}. Details: {{ $labels.console_url }}"},
+		"IssueSpike": {"warning", "0s", "5m",
+			"SELECT 1 AS value WHERE 0 /* reliant:platform issue-spike env:{reliant_env_id:String} */",
+			"Issue spiking in {{ $labels.service }} ({{ $labels.env }}): {{ $labels.title }}, {{ $value }} events/hour, over 5 times its rate the day before. Details: {{ $labels.console_url }}"},
 	}
 	by := byAlert(rules)
 	for name, w := range want {
@@ -409,16 +418,18 @@ func TestPlatformDefaultsAreExactlyWhatTheControlPlaneInjects(t *testing.T) {
 	}
 }
 
-// The two issue alerts are platform markers like deploy-failed: "new" and
-// "regressed" are state transitions in the control plane's issue registry, so
-// forge records only how the env tuned them and the control plane evaluates
-// them. They exist only for a project that has a frontend.
-func TestFrontendIssueAlertsArePlatformMarkers(t *testing.T) {
+// The issue alerts are platform markers like deploy-failed: "new" and
+// "regressed" are state transitions in the control plane's issue registry and a
+// spike is measured per issue, so forge records only how the env tuned them and
+// the control plane evaluates them. They exist for a project with anything that
+// can raise an issue: a service or a frontend.
+func TestIssueAlertsArePlatformMarkers(t *testing.T) {
 	rules, _ := ResolveAlertDefaults(AlertInputOf(fixture()), "dev", nil)
 	by := byAlert(rules)
 	for name, key := range map[string]string{
-		"FrontendNewIssue":       "frontend-new-issue",
-		"FrontendIssueRegressed": "frontend-issue-regressed",
+		"NewIssue":       "new-issue",
+		"IssueRegressed": "issue-regressed",
+		"IssueSpike":     "issue-spike",
 	} {
 		r, ok := by[name]
 		if !ok {
@@ -438,31 +449,37 @@ func TestFrontendIssueAlertsArePlatformMarkers(t *testing.T) {
 
 	noFrontend := AlertInputOf(Input{Project: "x", Services: fixture().Services})
 	rules, _ = ResolveAlertDefaults(noFrontend, "dev", nil)
+	by = byAlert(rules)
 	for _, r := range rules {
 		if strings.HasPrefix(r.Alert, "Frontend") {
 			t.Errorf("%s applies to a project with no frontend", r.Alert)
 		}
 	}
+	for _, name := range []string{"NewIssue", "IssueRegressed", "IssueSpike"} {
+		if _, ok := by[name]; !ok {
+			t.Errorf("%s does not apply to a project with services and no frontend (server errors are issues too)", name)
+		}
+	}
 }
 
-func TestFrontendIssueAlertsAreTunedAndDisabledByID(t *testing.T) {
+func TestIssueAlertsAreTunedAndDisabledByID(t *testing.T) {
 	in := AlertInputOf(fixture())
 	rules, _ := ResolveAlertDefaults(in, "dev", map[string]AlertTuning{
-		"frontend-new-issue":       {Enabled: true, For: "2m", Labels: map[string]string{"severity": "critical"}},
-		"frontend-issue-regressed": {Enabled: false},
+		"new-issue":       {Enabled: true, For: "2m", Labels: map[string]string{"severity": "critical"}},
+		"issue-regressed": {Enabled: false},
 	})
 	by := byAlert(rules)
-	if r := by["FrontendNewIssue"]; r.For != "2m" || r.Labels["severity"] != "critical" || strings.Contains(r.Expr, " off") {
-		t.Errorf("tuned FrontendNewIssue = %+v", r)
+	if r := by["NewIssue"]; r.For != "2m" || r.Labels["severity"] != "critical" || strings.Contains(r.Expr, " off") {
+		t.Errorf("tuned NewIssue = %+v", r)
 	}
 	// A disabled platform default is still recorded, marked off, so the control
 	// plane does not inject it back.
-	if r := by["FrontendIssueRegressed"]; !strings.HasSuffix(r.Expr, " off */") {
-		t.Errorf("disabled FrontendIssueRegressed = %q, want it recorded as off", r.Expr)
+	if r := by["IssueRegressed"]; !strings.HasSuffix(r.Expr, " off */") {
+		t.Errorf("disabled IssueRegressed = %q, want it recorded as off", r.Expr)
 	}
 
 	// Params are refused: a platform default has none to tune.
-	if err := ValidateAlertTuning(map[string]AlertTuning{"frontend-new-issue": {Enabled: true, Params: map[string]float64{"events": 9}}}); err == nil {
+	if err := ValidateAlertTuning(map[string]AlertTuning{"new-issue": {Enabled: true, Params: map[string]float64{"events": 9}}}); err == nil {
 		t.Error("a param on a platform default must be refused")
 	}
 }
@@ -520,7 +537,7 @@ func TestFrontendDefaultsTakeNoneOfTheNamesAUserRuleMayUse(t *testing.T) {
 	for _, n := range AlertDefaultAlertNames() {
 		names[n] = true
 	}
-	for _, n := range []string{"FrontendNewIssue", "FrontendIssueRegressed", "FrontendLCPPoor", "FrontendJSErrorSpike"} {
+	for _, n := range []string{"NewIssue", "IssueRegressed", "IssueSpike", "FrontendLCPPoor", "FrontendJSErrorSpike"} {
 		if !names[n] {
 			t.Errorf("%s is not reserved", n)
 		}

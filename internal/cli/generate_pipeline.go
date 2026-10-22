@@ -408,6 +408,10 @@ func generateSteps() []GenStep {
 		{Name: "webhook routes", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.codegen=false", Run: stepWebhookRoutes, Tag: "codegen"},
 		{Name: "go mod tidy (pre-composition)", Gate: feature(config.FeaturesConfig.CodegenEnabled), GateReason: "features.codegen=false", Run: stepGoModTidyPreComposition, Tag: "tools", Writes: writesBothTidies},
 		{Name: "internal/app composition (hybrid DI)", Gate: feature(config.FeaturesConfig.CodegenEnabled), GateReason: "features.codegen=false", Run: stepInternalAppComposition, Tag: "codegen"},
+		// The other half of the same projection: with no composition graph
+		// there are no roots, and the command tree's root.go still calls
+		// rootCommands.
+		{Name: "root commands without a composition graph", Gate: and(gateCodegenDisabled, hasGoModule), GateReason: "features.codegen=true (the composition step projects the roots), or " + noGoModuleReason, Run: stepRootCommandsWithoutGraph, Tag: "codegen"},
 		// AFTER composition: it projects the roots composition just read.
 		{Name: "root env schema (pkg/config/roots_gen.go)", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasConfig), GateReason: "no proto/config/ directory or features.codegen=false", Run: stepRootsEnvSchema, Tag: "codegen"},
 		{Name: "go mod tidy (pre-wiring)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepGoModTidyPreWiring, Tag: "tools", Writes: writesBothTidies},
@@ -906,6 +910,11 @@ func hasAnyEntrypoint(ctx *pipelineContext) bool {
 func gateCodegenEnabled(ctx *pipelineContext) bool {
 	return feature(config.FeaturesConfig.CodegenEnabled)(ctx)
 }
+
+// gateCodegenDisabled is the steps that stand in for codegen in a project
+// that has none. The directory-scan fallback (no forge.yaml) counts as
+// codegen on, as everywhere else.
+func gateCodegenDisabled(ctx *pipelineContext) bool { return !gateCodegenEnabled(ctx) }
 
 // gateOpenAPIEnabled fires the OpenAPI spec step. Off by default — the
 // flag is opt-in (api.openapi: true in forge.yaml) so existing projects
@@ -2170,6 +2179,14 @@ func deriveOrmEnabled(projectDir string) (bool, error) {
 // Runs BEFORE the go-mod-tidy steps so the local package is resolvable.
 // Skipped silently when serve.go doesn't exist (CLI/library kinds and
 // codegen-less trees have no serve pipeline that imports internal/app).
+// stepRootCommandsWithoutGraph writes the command tree's roots_gen.go for a
+// project without codegen: no composition graph, so no roots, and root.go's
+// rootCommands call still resolves. A project with no command tree (CLI,
+// library) is a no-op. See codegen.EmitRootCommandsWithoutGraph.
+func stepRootCommandsWithoutGraph(ctx *pipelineContext) error {
+	return codegen.EmitRootCommandsWithoutGraph(ctx.ProjectDir, ctx.Checksums)
+}
+
 func stepInternalAppComposition(ctx *pipelineContext) error {
 	bin := bootstrapBinaryName(ctx.ProjectDir)
 	if _, err := os.Stat(filepath.Join(ctx.ProjectDir, "cmd", bin, "cmd", "serve.go")); err != nil {

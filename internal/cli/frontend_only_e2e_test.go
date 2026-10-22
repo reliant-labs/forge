@@ -64,7 +64,10 @@ func TestE2EFrontendOnlyLifecycle(t *testing.T) {
 		}
 		return out
 	}
-	must(root, "project", "new", "landing", "--mod", "example.com/landing", "--frontend", "web", "--output", "static", "--routes", "none", "--disable", "orm,migrations,codegen,observability,ci,contracts", "--skip-tools", "--link-forge")
+	created := must(root, "project", "new", "landing", "--mod", "example.com/landing", "--frontend", "web", "--output", "static", "--routes", "none", "--disable", "orm,migrations,codegen,observability,ci,contracts", "--skip-tools", "--link-forge")
+	if strings.Contains(created, "code generation failed") {
+		t.Fatalf("project new's own generate run failed on this shape:\n%s", created)
+	}
 	project := filepath.Join(root, "landing")
 	for _, envName := range []string{"dev", "staging", "prod"} {
 		body := readFileE2E(t, filepath.Join(project, "deploy", "kcl", envName, "main.k"))
@@ -82,14 +85,9 @@ func TestE2EFrontendOnlyLifecycle(t *testing.T) {
 		}
 	}
 	// Later frontends must use the same declaration/binder shape and routes.
-	//
-	// --no-generate: `forge scaffold frontend` ends with a generate run, and
-	// on this shape (`--disable codegen`) `forge generate` is red before the
-	// scaffold touches anything — `project new` above already reports "initial
-	// code generation failed" — so the run would fail for reasons this test
-	// does not cover. The declaration and binder shape under test are written
-	// before that run.
-	must(project, "scaffold", "frontend", "docs", "--routes", "none", "--no-generate")
+	// The scaffold ends with a generate run, which must be green on this
+	// shape (TestE2EProjectNewDisableShapes holds every --disable shape to it).
+	must(project, "scaffold", "frontend", "docs", "--routes", "none")
 	must(project, "env", "new", "preview", "--from", "prod", "--bind", "docs=hosted", "--bind", "web=hosted")
 	must(project, "env", "render", "preview")
 	if out, err := run(project, "env", "new", "bad", "--from", "prod", "--bind", "missing=hosted"); err == nil {

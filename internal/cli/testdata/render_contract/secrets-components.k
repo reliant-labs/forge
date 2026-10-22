@@ -1,13 +1,14 @@
 """
 Render contract — the secrets components and a store-backed ExternalSecret.
 
-forge.OpenBao, forge.ExternalSecretsOperator and bootstrap_source are
-DECLARATIONS ONLY (SF1): nothing renders for them yet. A store-backed
-forge.ExternalSecret renders its External Secrets Operator objects into
-`manifests` (SF5): the reliant-secrets ServiceAccount, the token Role and
-RoleBinding, a SecretStore and the ExternalSecret. This golden changes the day
-a component is wired into the output, which is the point: that change is then
-a reviewed contract change.
+forge.ExternalSecretsOperator lowers to one hardened helm chart (SF4) plus an
+`external_secrets_operators` record the release shape projects. forge.OpenBao
+and bootstrap_source are DECLARATIONS ONLY (SF1): nothing renders for them yet.
+A store-backed forge.ExternalSecret renders its External Secrets Operator
+objects into `manifests` (SF5): the reliant-secrets ServiceAccount, the token
+Role and RoleBinding, a SecretStore and the ExternalSecret. This golden changes
+the day a component is wired into the output, which is the point: that change
+is then a reviewed contract change.
 """
 
 # kcl-args: env=staging

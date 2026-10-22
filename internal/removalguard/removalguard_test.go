@@ -162,7 +162,30 @@ var removals = []removal{
 					"kcl/tests/positive_secrets_store_*.k",
 					"internal/cli/testdata/render_contract/secrets-components.json",
 					"pkg/release/store_secrets_test.go",
+					// The component that serves that layout: its tests and
+					// docker smokes read and write the same paths.
+					"pkg/deploy/openbao/openbao_test.go",
+					"pkg/deploy/openbao/smoke_test.go",
+					"kcl/tests/positive_openbao_render.k",
+					"internal/templates/project/skills/forge/secrets/openbao/SKILL.md",
+					// The CLI's store source writes and reads that layout; only
+					// its fakes and tests spell the literal path.
+					"internal/cli/secret_store_source_fakes_test.go",
+					"internal/cli/secret_store_source_smoke_test.go",
+					"internal/cli/secret_store_source_test.go",
 				},
+			},
+			{
+				Name: "the vendored ESO SecretStore CRD's provider fields",
+				Reason: "pkg/deploy/eso/crds/<version>/secretstores.yaml is External Secrets Operator's own CRD, \n" +
+					"embedded byte-for-byte and never edited here. Its provider schemas name other products' \n" +
+					"tenancy: Azure's `tenantId`, Oracle Cloud's `tenancy` OCID, Vault's namespace described as \n" +
+					"multi-tenancy, a `tenant` hostname. They are upstream identifiers that cannot be renamed, \n" +
+					"and none is a forge tenant column, header, context key or helper. Scoped to the \n" +
+					"`tenant`/`tenancy` words (with an `Id`/`Name` suffix) in that one vendored file, so a \n" +
+					"`TenantID` field or an `X-Tenant-Id` header anywhere else, or `tenants/` in it, still fails.",
+				Token: regexp.MustCompile(`(?i)\b(tenant|tenancy)(id|name)?\b`),
+				Paths: []string{"pkg/deploy/eso/crds/*/secretstores.yaml"},
 			},
 			{
 				Name: "Azure's Entra ID tenant, which a Trusted Signing credential belongs to",
@@ -341,6 +364,11 @@ var removals = []removal{
 					// the files carry an `rbac` local naming that bootstrap-manifest struct.
 					"internal/cli/cluster_connect*.go",
 					"internal/templates/project/skills/forge/deploy/cluster-connect/SKILL.md",
+					// The External Secrets Operator chart's `rbac:` values (aggregation,
+					// token-create) and the invariants its skill documents: the
+					// operator's own Kubernetes RBAC, in the render golden and the skill.
+					"internal/cli/testdata/render_contract/secrets-components.json",
+					"internal/templates/project/skills/forge/deploy/external-secrets/SKILL.md",
 					// The Flux chart's controller RBAC (rbac = "namespaced") is Kubernetes
 					// ClusterRoles/RoleBindings for the controllers' ServiceAccounts: pod
 					// identity on the deploy surface, in its skill, runbook and changelog.

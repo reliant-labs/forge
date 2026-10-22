@@ -17,14 +17,24 @@ kcl/render.k) lowers it to:
   * the Secrets the store needs before it can start, as prerequisites the
     deploy preflight blocks on, while the bootstrap source is out of band.
 
+THE BOOTSTRAP SOURCE (Bundle.bootstrap_source) decides where the values the
+store needs BEFORE it can serve a read come from, and where the `operator init`
+output goes:
+
+  * forge.GCPSecretManager: ESO's `gcpsm` store delivers the seal key and the
+    Postgres password over Workload Identity, and the converge Job's escrow hook
+    copies the init output back to the recovery escrow (versions.add only).
+    `generate` on the seal key or the password is minted at deploy by the
+    deployer's own credentials (create-if-absent, `forge env deploy`).
+  * forge.OutOfBand (the default): the two Secrets are prerequisites a person
+    provides and the deploy preflight blocks on. A non-local env whose
+    recovery output then stays inside the cluster it protects gets a render
+    WARNING naming the fix.
+
 WHAT IT DOES NOT DO YET, and says so (each is a later forge change, and each is
 a named refusal or warning here rather than a silent omission):
 
-  * the bootstrap source's delivery of the seal key and DB password, the
-    recovery escrow, and in-cluster generation of StoreSource.generate values:
-    the converge Job already has hook seams for them (Hooks.Escrow,
-    Hooks.Generate);
-  * the `public` endpoint (a warning: nothing is exposed until it lands);
+  * in-cluster generation of StoreSource.generate values (Hooks.Generate);
   * the OIDC writer's role (a warning);
   * the Raft snapshot CronJob (a REFUSAL: a declared backup that does not run
     is worse than none);
@@ -37,8 +47,9 @@ THE THREE PREREQUISITES live here, for every adopter:
     on every render (schema.k OpenBaoListener);
   * no wildcard `read` without a stated reason (schema.k OpenBaoGrant, restated
     in the Go renderer); every reason is listed in `warnings`;
-  * escrow of the seal key and recovery output is the bootstrap source's job
-    (SF7); until then the Secrets are required prerequisites, not invented.
+  * escrow of the seal key and recovery output is the bootstrap source's job:
+    GCPSecretManager delivers and escrows; OutOfBand leaves it to the operator
+    and warns when the recovery output would stay inside the cluster.
 """
 
 import regex
@@ -50,6 +61,10 @@ OPENBAO_KIND = "OpenBao"
 # pkg/secretaccess.DefaultServiceAccount; the SecretStore renderer requests its
 # token and the roles bind to its subject.
 STORE_SERVICE_ACCOUNT = "reliant-secrets"
+
+# The namespace ESO runs in when no ExternalSecretsOperator in this Bundle says
+# otherwise (lib/external_secret.k ESO_DEFAULT_NAMESPACE).
+ESO_DEFAULT_NAMESPACE = "external-secrets"
 
 # The JWT auth mount of a cluster, as pkg/secretaccess.MountName.
 mount_name = lambda cluster_id: str -> str {
@@ -82,9 +97,85 @@ storage_secret = lambda ob: any -> str {
     ob.name + "-storage"
 }
 
+# The bootstrap source's identities. Defaults derive from the store's name, so
+# a store named `openbao` expects `openbao-bootstrap-reader` and
+# `openbao-escrow-writer`; a bare account id gets the bootstrap project's domain.
+# The bootstrap source's optional text fields default to "" in the schema, but
+# arrive from the Bundle as Undefined when a field was never set; `str(Undefined)`
+# is the word "Undefined", so a field is read as text only when it holds some.
+_text = lambda v: any -> str {
+    v if (v != Undefined and typeof(v) == "str") else ""
+}
+_or = lambda first: str, fallback: str -> str {
+    first if first != "" else fallback
+}
+_gsa_email = lambda account: str, project: str -> str {
+    account if ("@" in account) else "${account}@${project}.iam.gserviceaccount.com"
+}
+reader_service_account = lambda ob: any, src: any -> str {
+    _or(_text(src.reader_service_account), ob.name + "-bootstrap-reader")
+}
+reader_gsa = lambda ob: any, src: any -> str {
+    _account = _or(_text(src.reader_gsa), _or(_text(src.reader_service_account), ob.name + "-bootstrap-reader"))
+    _gsa_email(_account, _text(src.project))
+}
+escrow_gsa = lambda ob: any, src: any -> str {
+    _account = _or(_text(src.escrow_gsa), ob.name + "-escrow-writer")
+    _gsa_email(_account, _text(src.project))
+}
+
 # Names derived from the store's own name.
 ca_configmap = lambda ob: any -> str {
     ob.tls.ca_configmap or (ob.name + "-ca")
+}
+
+# ---------------------------------------------------------------------------
+# The public endpoint (OpenBao.public).
+#
+# Two halves: this file decides what the Gateway must serve and what OpenBao
+# opens for it; the objects themselves (route, policies, NetworkPolicy rule) are
+# rendered by Go (pkg/deploy/openbao public.go) from the `public` block of the
+# record. The listener is added to the declared Gateway by kcl/render.k, so the
+# Certificate, the port mapping and the dev-status views all see it.
+# ---------------------------------------------------------------------------
+
+# The listener on the Gateway for the public host, as a plan:
+#   {name, add, tls}   `add` False = the Gateway already serves the host
+#                      (the author declared an HTTPS listener for it, which
+#                      forge uses as it is); `tls` is None to inherit.
+public_plan = lambda ob, gw: any -> any {
+    _existing = [l for l in gw.listeners if l.protocol == "HTTPS" and l.hostname == ob.public.host]
+    # A certificate of its own (never the Gateway's shared one: adding a host
+    # to that would re-issue it, and Let's Encrypt allows five a week), issued
+    # by the Gateway's issuer. gke_certmap and mkcert have no per-listener
+    # form, so the listener inherits.
+    _derived = {"cert_issuer": gw.tls.cert_issuer, "secret_name": ob.name + "-public-tls", "mode": "cert_manager"} if gw.tls and gw.tls.mode == "cert_manager" else None
+    _own = ob.public.tls or _derived
+    assert _existing or _own or (gw.tls and gw.tls.mode in ["gke_certmap", "mkcert"]), \
+        "OpenBao.public.host '${ob.public.host}' needs a certificate, and Gateway '${gw.name}' declares no `tls` to derive one from. Set `tls = forge.GatewayTLS {cert_issuer = \"...\", secret_name = \"...\"}` on the forge.OpenBaoPublic, or declare an HTTPS listener for the host on the Gateway"
+    {
+        "name": _existing[0].name if _existing else ob.name + "-public"
+        "add": not _existing
+        "tls": _own
+    }
+}
+
+# The `public` block of the record. `gateway_namespace` is where forge renders
+# the Bundle's ingress.
+_public = lambda ob, gw: any, plan: any, gateway_namespace: str -> any {
+    {
+        "host": ob.public.host
+        "gateway": gw.name
+        "gatewayNamespace": gateway_namespace
+        "listener": plan.name
+        "requestsPerSecond": ob.public.requests_per_second
+        "perSourceRequestsPerSecond": ob.public.per_source_requests_per_second
+        "maxConnections": ob.public.max_connections
+        "requestTimeout": ob.public.request_timeout
+        "port": ob.public.port
+        "proxyNamespace": ob.public.proxy_namespace
+        "trustedProxyCIDRs": ob.public.trusted_proxy_cidrs
+    }
 }
 
 _listener = lambda l: any -> any {
@@ -161,6 +252,92 @@ _bindings = lambda sources: [any], id: str -> [any] {
     } for n in _namespaces] if len(b["names"]) > 0]
 }
 
+# The GKE cluster behind a kubectl context: `gke_<project>_<location>_<cluster>`
+# is how gcloud names one. Declared fields win. A context is read ONLY when it
+# is wholly a GKE one (four parts, a project id Google would accept, a location
+# and a cluster); anything else (k3d, kind, a hand-made alias) yields nothing and
+# ESO asks the metadata server, rather than being handed a guess it would then
+# refuse at admission.
+_GKE_PROJECT_RE = r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$"
+_GKE_NAME_RE = r"^[a-z][a-z0-9-]*$"
+_gke = lambda target: any, src: any -> any {
+    _parts = target.cluster.split("_") if (target and typeof(target.cluster) == "str") else []
+    _ctx = len(_parts) == 4 and _parts[0] == "gke" and regex.match(_parts[1], _GKE_PROJECT_RE) and regex.match(_parts[2], _GKE_NAME_RE) and regex.match(_parts[3], _GKE_NAME_RE)
+    {
+        "project": _or(_text(src.cluster_project), _parts[1] if _ctx else "")
+        "location": _or(_text(src.cluster_location), _parts[2] if _ctx else "")
+        "name": _or(_text(src.cluster_name), _parts[3] if _ctx else "")
+    }
+}
+
+# The bootstrap source as the Go renderer takes it (pkg/deploy/openbao
+# Bootstrap): only for a GCPSecretManager source. The first ESO install on the
+# store's cluster is the one granted a token for the reader service account and
+# nothing else (no install declared here = the chart's default namespace).
+_bootstrap = lambda ob: any, src: any, eso_namespaces: [str], target: any -> any {
+    _gke_ = _gke(target, src)
+    {
+        "project": src.project
+        if _gke_.project != "":
+            "clusterProject": _gke_.project
+        if _gke_.location != "":
+            "clusterLocation": _gke_.location
+        if _gke_.name != "":
+            "clusterName": _gke_.name
+        "readerServiceAccount": reader_service_account(ob, src)
+        "readerGSA": reader_gsa(ob, src)
+        "escrowGSA": escrow_gsa(ob, src)
+        "esoNamespace": _eso_ns(eso_namespaces)
+        "sealSecretID": ob.seal.key.name
+        "escrowSecretID": ob.recovery.escrow.name
+        if ob.storage.type == "postgres":
+            "passwordSecretID": ob.storage.password.name
+    }
+}
+
+_eso_ns = lambda eso_namespaces: [str] -> str {
+    eso_namespaces[0] if eso_namespaces else ESO_DEFAULT_NAMESPACE
+}
+
+# The resolved Secret Manager delivery the CLI reads (OpenBaoBootstrapEntity).
+_bootstrap_block = lambda ob: any, ctx: any -> any {
+    {
+        "project": ctx.bootstrap_source.project
+        "namespace": ob.namespace
+        "reader_service_account": reader_service_account(ob, ctx.bootstrap_source)
+        "reader_gsa": reader_gsa(ob, ctx.bootstrap_source)
+        "escrow_service_account": ob.name + "-converge"
+        "escrow_gsa": escrow_gsa(ob, ctx.bootstrap_source)
+        "eso_namespace": _eso_ns(ctx.eso_namespaces)
+        "seal_secret": ob.seal.key.name
+        "escrow_secret": ob.recovery.escrow.name
+        if ob.storage.type == "postgres":
+            "password_secret": ob.storage.password.name
+    }
+}
+
+# The bootstrap values this declaration asks forge to MINT when absent, by
+# secret id: only under a GCPSecretManager source (the one place forge has a
+# credential to write with), and only the seal key and the Postgres password
+# (the recovery escrow is written by the converge Job, never minted).
+_bootstrap_generate = lambda ob: any, src: any -> any {
+    _on = True if (src and src.type == "gcpsm") else False
+    _seal = [[ob.seal.key.name, ob.seal.key.generate]] if (_on and ob.seal.key.generate) else []
+    _pw = [[ob.storage.password.name, ob.storage.password.generate]] if (_on and ob.storage.type == "postgres" and ob.storage.password.generate) else []
+    {p[0]: _gen(p[1]) for p in _seal + _pw}
+}
+
+_gen = lambda g: any -> any {
+    {
+        "kind": g.kind
+        "bytes": g.bytes
+        "encoding": g.encoding
+        "prefix": g.prefix
+        "length": g.length
+        "symbols": g.symbols
+    }
+}
+
 # The prerequisites the store needs before it can start, while the bootstrap
 # source is out of band. Under a GCPSecretManager source the bootstrap
 # component delivers them, so they are not declared here.
@@ -173,6 +350,17 @@ _prereq = lambda ob, name: str, key: str, reason: str -> any {
         "reason": reason
         "value_group": None
     }
+}
+
+# What the render says about where the store's escrow lives. A real env (no
+# `lifecycle`) whose bootstrap source is out of band keeps the seal key and the
+# `operator init` output inside the cluster they protect: losing the cluster
+# loses the key, and with it every backup of the store. A warning, not a
+# refusal: out of band is a legitimate choice (a vault, a hand-run escrow)
+# that forge cannot see. `forge lint --secrets` reports the same finding with a
+# file position (secrets-escrow-in-cluster).
+_escrow_warnings = lambda ob: any, ctx: any -> [str] {
+    ["OpenBao '${ob.name}' keeps its seal key and `bao operator init` output inside the cluster they protect: bootstrap_source is out of band (the default), so forge neither delivers the key from, nor escrows the recovery output to, anywhere outside it. Losing the cluster loses the key, and with it every backup of the store. Set `bootstrap_source = forge.GCPSecretManager {project = \"...\"}` to deliver the key from Secret Manager and escrow the recovery output there, or declare the escrow you run yourself with `bootstrap_source = forge.OutOfBand {}` and keep this warning as its reminder"] if (not ctx.lifecycle and (not ctx.bootstrap_source or ctx.bootstrap_source.type == "out_of_band")) else []
 }
 
 _required = lambda ob, bootstrap_source: any -> [any] {
@@ -192,13 +380,24 @@ _required = lambda ob, bootstrap_source: any -> [any] {
 #   secrets            Bundle.required_secrets
 #   eso_namespaces     namespaces of the ESO installs on the same cluster
 #   bootstrap_source   Bundle.bootstrap_source
+#   gateways           Bundle.gateways
+#   ingress_cluster    the kubectl context the Bundle's ingress lands on
+#   ingress_namespace  the namespace it renders into
 #
-# -> {record, block, required, namespace, cluster}
+# -> {record, block, required, public_plan, namespace, cluster}
 render = lambda ob: any, ctx: any -> any {
     _target = ctx.target
     assert _target, "Bundle.openbao has no cluster to run on. Set `runtime = forge.OnCluster {target = <ClusterTarget>}` on the OpenBao, or give the Bundle a cluster_target (or a workload bound to one): the store runs where its cluster_target says"
     assert not (ob.storage.type == "raft" and ob.storage.snapshot), \
         "OpenBao.storage.snapshot is declared, but the Raft snapshot CronJob is not rendered yet, and a backup that is declared and does not run is worse than none. Remove `snapshot` and back the PVCs up some other way (your CSI VolumeSnapshots), or use OpenBaoPostgres storage, which rides the database's own backups"
+
+    _gw = [g for g in ctx.gateways if ob.public and g.name == ob.public.gateway]
+    _gw_cluster = _gw[0].cluster.context if _gw and _gw[0].cluster else ctx.ingress_cluster
+    assert not ob.public or _gw_cluster == _target.cluster, \
+        "OpenBao.public.gateway '${ob.public.gateway if ob.public else ''}' lands on cluster '${_gw_cluster}', but OpenBao runs on '${_target.cluster}'. The route reaches the store through its Service, so both must be on one cluster. Declare the Gateway on that cluster (forge.Gateway.cluster), or run OpenBao where the Gateway is"
+    assert not ob.public or ob.public.port not in [l.port for l in ob.listeners], \
+        "OpenBao.public.port ${ob.public.port if ob.public else 0} is also a listener of the store. The Gateway gets a port of its own so that only it is trusted to set X-Forwarded-For: set forge.OpenBaoPublic.port to a free port"
+    _plan = public_plan(ob, _gw[0]) if ob.public else None
 
     assert ob.listeners[0].tls, "OpenBao.listeners[0] (port ${ob.listeners[0].port}) is plaintext. The first listener carries the cluster port and is the address clients and the converge Job use, so it must be the TLS one: put forge.OpenBaoListener {} first and any transitional plaintext listener after it"
     _id = ctx.cluster_id
@@ -208,6 +407,7 @@ render = lambda ob: any, ctx: any -> any {
     _bindings_ = _bindings(_sources, _id)
     _binding_ns = [b["namespace"] for b in _bindings_]
     _aud = audience(ob, _id)
+    _gsm = True if (ctx.bootstrap_source and ctx.bootstrap_source.type == "gcpsm") else False
     _spec = {
         "name": ob.name
         "namespace": ob.namespace
@@ -232,6 +432,8 @@ render = lambda ob: any, ctx: any -> any {
                 "priorityClass": ob.ha.priority_class
         }
         "audit": {"stdout": ob.audit.stdout, "file": ob.audit.file, "filePath": ob.audit.file_path}
+        if ob.public:
+            "public": _public(ob, _gw[0], _plan, ctx.ingress_namespace)
         if ob.consumers:
             "consumers": [_consumer(c) for c in ob.consumers]
         "writer": _writer(ob.writer)
@@ -249,13 +451,16 @@ render = lambda ob: any, ctx: any -> any {
         # the CA ConfigMap into the latter, so a SecretStore there can name it.
         "ingressNamespaces": sorted({n: 0 for n in ctx.eso_namespaces + _binding_ns})
         "caNamespaces": sorted({n: 0 for n in _binding_ns})
+        if _gsm:
+            "bootstrap": _bootstrap(ob, ctx.bootstrap_source, ctx.eso_namespaces, ctx.target)
     }
 
     _warnings = [
         "OpenBao listener ${l.port} is PLAINTEXT (transitional): ${l.transitional_reason}. Clients that send a service-account token to it expose that token; drop the listener once they speak https" for l in ob.listeners if not l.tls
     ] + [
         "OpenBao consumer '${c.name}' reads ${g.path} by glob: ${g.wildcard_read_reason}" for c in ob.consumers for g in c.grants if g.wildcard_read_reason
-    ] + (["OpenBao.public is declared (${ob.public.host}) but the public endpoint is not rendered by this forge yet: nothing is exposed, and clusters other than this one cannot reach the store"] if ob.public else []) \
+    ] \
+      + _escrow_warnings(ob, ctx) \
       + (["OpenBao.writer is an OIDC writer (role '${ob.writer.role}'): its login role is not rendered by this forge yet, so no one can write values through it. Use the default forge.OpenBaoSAWriter {} until it lands"] if ob.writer.type == "oidc" else [])
 
     {
@@ -290,9 +495,22 @@ render = lambda ob: any, ctx: any -> any {
             # Postgres password, and the recovery escrow the converge Job
             # writes (SF7). The CLI reads this as a typo guard.
             "bootstrap_names": sorted([ob.seal.key.name, ob.recovery.escrow.name] + ([ob.storage.password.name] if ob.storage.type == "postgres" else []))
+            # Which of those the bootstrap source MINTS when they are absent
+            # (BootstrapSecret.generate): `forge env deploy` creates each, once,
+            # with the deployer's credentials. A value the operator provides is
+            # absent here.
+            "bootstrap_generate": _bootstrap_generate(ob, ctx.bootstrap_source)
+            # The Google identities the delivery runs as, for the Google side of
+            # the trust to be provisioned (Workload Identity bindings and IAM).
+            if _gsm:
+                "bootstrap": _bootstrap_block(ob, ctx)
             "warnings": _warnings
         }
         "required": _required(ob, ctx.bootstrap_source)
+        # The listener to add to the public Gateway, or None. render.k applies
+        # it so the Certificate and the port mapping follow. It is not part of
+        # the `openbao` block clients read.
+        "public_plan": _plan
         "namespace": ob.namespace
         "cluster": _target.cluster
     }

@@ -59,7 +59,7 @@ func upgradeCodemods(from, to string) []codemod.Codemod {
 func runCodemodChain(projectDir, from, to string, write bool) (CodemodReport, error) {
 	var merged CodemodReport
 	for _, c := range upgradeCodemods(from, to) {
-		rep, err := c.Run(projectDir, write)
+		rep, err := c.Run(projectDir, codemod.Options{Write: write})
 		if err != nil {
 			return merged, fmt.Errorf("codemod %s (%s): %w", c.Name, c.Version, err)
 		}

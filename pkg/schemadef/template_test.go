@@ -207,7 +207,7 @@ func assertDisjoint(t *testing.T, a, b reflect.Value, path string) {
 func countScratch(t *testing.T, base *sql.DB) int {
 	t.Helper()
 	var n int
-	pattern := fmt.Sprintf("forge_shadow_%d_%%", os.Getpid())
+	pattern := pgtest.ShadowScratchLike()
 	if err := base.QueryRow(`SELECT count(*) FROM pg_database WHERE datname LIKE $1`, pattern).Scan(&n); err != nil {
 		t.Fatalf("count scratch databases: %v", err)
 	}

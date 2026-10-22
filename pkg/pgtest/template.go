@@ -100,40 +100,50 @@ func parseUsedComment(comment string) (time.Time, bool) {
 // the last edit — is gone a day later instead of living as long as the server.
 // A template reaped between two clones is rebuilt on demand.
 //
-// build receives an open handle on the empty database to fill. Connections it
-// leaves open are terminated before the template is published, but it must not
-// need them afterwards.
-func NewFromTemplate(key string, build func(*sql.DB) error) (*sql.DB, func(), error) {
+// build receives an open handle on the empty database to fill, and that
+// database's DSN for a builder that connects itself (a migrator that takes a
+// URL). Connections it leaves open — through either — are terminated before
+// the template is published, and the DSN names a database that stops existing
+// under that name when build returns, so build must not need either afterwards.
+//
+// NewFromTemplate returns the clone twice, as an open handle and as its DSN (a
+// postgres:// URL, the shape NewURL returns), because a test usually needs
+// both: the handle for its own queries, the DSN for whatever connects by URL —
+// a second pool, a migrator, a server it boots as a subprocess. cleanup
+// closes the handle, terminates every other session on the clone, and drops
+// it.
+func NewFromTemplate(key string, build func(db *sql.DB, dsn string) error) (db *sql.DB, dsn string, cleanup func(), err error) {
 	s, err := boot()
 	if err != nil {
-		return nil, nil, err
+		return nil, "", nil, err
 	}
-	name := fmt.Sprintf("forge_test_%d_%d", os.Getpid(), dbCounter.Add(1))
+	name := scratchName(scratchTestPrefix)
 	if err := cloneTemplate(s, key, build, name); err != nil {
-		return nil, nil, err
+		return nil, "", nil, err
 	}
 	baseDB := s.baseDB
 	drop := func() {
 		_, _ = baseDB.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1", name)
 		_, _ = baseDB.Exec("DROP DATABASE IF EXISTS " + name)
 	}
-	db, err := open(replaceDBName(s.baseURL, name))
+	dsn = replaceDBName(s.baseURL, name)
+	db, err = open(dsn)
 	if err != nil {
 		drop()
-		return nil, nil, err
+		return nil, "", nil, err
 	}
 	if err := pingWithRetry(db); err != nil {
 		_ = db.Close()
 		drop()
-		return nil, nil, fmt.Errorf("pgtest: ping %s: %w", name, err)
+		return nil, "", nil, fmt.Errorf("pgtest: ping %s: %w", name, err)
 	}
-	return db, func() { _ = db.Close(); drop() }, nil
+	return db, dsn, func() { _ = db.Close(); drop() }, nil
 }
 
 // cloneTemplate creates database name as a copy of key's template, building
 // the template first when needed. A template another process reaped after
 // this one cached its name is rebuilt once and the clone retried.
-func cloneTemplate(s *server, key string, build func(*sql.DB) error, name string) error {
+func cloneTemplate(s *server, key string, build func(*sql.DB, string) error, name string) error {
 	for attempt := 0; ; attempt++ {
 		tmpl, err := ensureTemplate(s, key, build)
 		if err != nil {
@@ -160,7 +170,7 @@ func forgetTemplate(s *server, key string) {
 	delete(templateNames, s.baseURL+"\x00"+key)
 }
 
-func ensureTemplate(s *server, key string, build func(*sql.DB) error) (string, error) {
+func ensureTemplate(s *server, key string, build func(*sql.DB, string) error) (string, error) {
 	templateMu.Lock()
 	defer templateMu.Unlock()
 	// The cache is per (server, key): a Shutdown followed by a boot may be a
@@ -202,7 +212,8 @@ func ensureTemplate(s *server, key string, build func(*sql.DB) error) (string, e
 			_, _ = conn.ExecContext(ctx, "DROP DATABASE IF EXISTS "+building+" WITH (FORCE)")
 			return "", err
 		}
-		bdb, err := open(replaceDBName(s.baseURL, building))
+		buildDSN := replaceDBName(s.baseURL, building)
+		bdb, err := open(buildDSN)
 		if err != nil {
 			return fail(err)
 		}
@@ -210,7 +221,7 @@ func ensureTemplate(s *server, key string, build func(*sql.DB) error) (string, e
 			_ = bdb.Close()
 			return fail(err)
 		}
-		berr := build(bdb)
+		berr := build(bdb, buildDSN)
 		_ = bdb.Close()
 		if berr != nil {
 			return fail(berr)

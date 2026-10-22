@@ -706,6 +706,27 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 13d-ter-bis. DB-grants — a credential-shaped column nobody declared
+		// forge:secret or forge:readable. Gates: the read-only role is built
+		// to be safe by construction, and an undecided column is a decision
+		// somebody skipped (see lint_db_grants.go).
+		{
+			name:  "db-grants lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && dirExists(migrationsDirFor(rc.cfg)), ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runDBGrantsLint(rc.cwd, rc.cfg)
+			},
+			errFormat: "❌ db-grants lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectDBGrantsJSON(rc.cwd, rc.cfg)
+				return fs, len(fs) > 0, err
+			},
+		},
+
 		// 13d-quinquies. ShellBuild-tokens — flags a retired forge
 		// substitution token (${TARGETARCH}, ${IMAGE}, …) left in a
 		// ShellBuild cmd. GATES, unlike its advisory neighbours, because

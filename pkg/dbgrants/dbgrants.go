@@ -66,10 +66,18 @@ type Table struct {
 	Columns []Column
 }
 
-// Column is one column of a Table. Secret columns are withheld from the role.
+// Column is one column of a Table, with the declarations that decide whether
+// the role may read it (see [Column.Disposition]).
 type Column struct {
-	Name   string
+	Name string
+	// Secret: declared forge:secret (proto field or SQL comment). Withheld.
 	Secret bool
+	// Readable: declared forge:readable <reason>. Granted even when the name
+	// looks like a credential. Secret wins over it.
+	Readable bool
+	// Kind is the column's type class. The zero value, [KindText], is the
+	// stricter reading.
+	Kind ColumnKind
 }
 
 // dollarTag delimits the script's single DO block. An identifier containing it
@@ -154,24 +162,28 @@ func RenderFor(role string, tables []Table) (string, error) {
 	fmt.Fprintf(&b, "    EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA %%I FROM %%I', r.schema, %s);\n", quoteLiteral(role))
 	b.WriteString("  END LOOP;\n\n")
 
-	b.WriteString("  -- tables: the columns the role may read. A forge:secret column is not listed.\n")
+	b.WriteString("  -- tables: the columns the role may read. A forge:secret column, and a credential-shaped one nobody decided, is not listed.\n")
 	b.WriteString("  FOR r IN SELECT g.* FROM (VALUES\n")
 	var rows []string
-	var withheld []string
+	var withheld, withheldUndecided []string
 	for _, schema := range schemas {
 		ts := bySchema[schema]
 		sort.Slice(ts, func(i, j int) bool { return ts[i].Name < ts[j].Name })
 		for _, t := range ts {
-			var open, secret []string
+			var open, secret, undecided []string
 			for _, c := range t.Columns {
-				if c.Secret {
+				switch c.Disposition() {
+				case WithheldSecret:
 					secret = append(secret, c.Name)
-				} else {
+				case WithheldUndecided:
+					undecided = append(undecided, c.Name)
+				default:
 					open = append(open, c.Name)
 				}
 			}
 			sort.Strings(open)
 			sort.Strings(secret)
+			sort.Strings(undecided)
 			lits := make([]string, len(open))
 			for i, c := range open {
 				lits[i] = quoteLiteral(c)
@@ -183,6 +195,9 @@ func RenderFor(role string, tables []Table) (string, error) {
 			rows = append(rows, fmt.Sprintf("    (%s, %s, %s)", quoteLiteral(schema), quoteLiteral(t.Name), arr))
 			if len(secret) > 0 {
 				withheld = append(withheld, fmt.Sprintf("%s.%s: %s", schema, t.Name, strings.Join(secret, ", ")))
+			}
+			if len(undecided) > 0 {
+				withheldUndecided = append(withheldUndecided, fmt.Sprintf("%s.%s: %s", schema, t.Name, strings.Join(undecided, ", ")))
 			}
 		}
 	}
@@ -211,6 +226,13 @@ func RenderFor(role string, tables []Table) (string, error) {
 	if len(withheld) > 0 {
 		b.WriteString("\n-- forge:secret columns withheld from the role:\n")
 		for _, w := range withheld {
+			b.WriteString("--   " + strings.ReplaceAll(w, "\n", " ") + "\n")
+		}
+	}
+	if len(withheldUndecided) > 0 {
+		b.WriteString("\n-- credential-shaped columns nobody decided, withheld until a migration declares\n")
+		b.WriteString("-- COMMENT ON COLUMN t.c IS 'forge:secret'  (stay hidden)  or  'forge:readable <reason>'  (grant):\n")
+		for _, w := range withheldUndecided {
 			b.WriteString("--   " + strings.ReplaceAll(w, "\n", " ") + "\n")
 		}
 	}

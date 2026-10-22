@@ -394,6 +394,20 @@ func markerSpecs() []MarkerSpec {
 			Placement: "COMMENT ON COLUMN <table>.deleted_at IS 'forge:no-soft-delete'; in a migration",
 			Example:   "COMMENT ON COLUMN worktrees.deleted_at IS 'forge:no-soft-delete — the archive stamp; archived worktrees stay readable';",
 		},
+		{
+			Name:      schemadef.ColumnMarkerSecret,
+			AppliesTo: "column",
+			Effect:    "Withholds the column from the database's read-only role (forge_ro, which `forge db query` and the control plane read through): Postgres refuses it by name, through `select *`, `upper(col)` and `row_to_json`. It is the SQL spelling of the proto `// forge:secret` field marker, and the only one a column with no wire field can use — most credential tables (sealed tokens, ciphertext, token hashes) have none. Either spelling withholds the column from the role; only the proto one also strips the field from read responses. A credential-shaped column (token, password, secret, key, ciphertext, sealed, hash …) with neither this nor forge:readable is UNDECIDED: the grants withhold it and `forge lint --db-grants` fails naming it.\n\nThe pattern list: `forge skill load db/query`.",
+			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:secret'; in a migration",
+			Example:   "COMMENT ON COLUMN git_credentials.access_token IS 'forge:secret';",
+		},
+		{
+			Name:      schemadef.ColumnMarkerReadable,
+			AppliesTo: "column",
+			Effect:    "Grants the read-only role a column whose NAME looks like a credential but is not one (`token_hash` of a prompt, a public `api_key_prefix`, a bytea attachment). The reason after the marker is mandatory — it is the review record of an exception to the role's fail-closed default — and `forge generate` rejects a bare `forge:readable`. forge:secret wins when a column declares both. Grants exactly that column; the rest of the table stays as decided.",
+			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:readable <why this is not a credential>'; in a migration",
+			Example:   "COMMENT ON COLUMN usage_events.token_hash IS 'forge:readable — SHA-256 of the prompt, a dedupe key, not of a credential';",
+		},
 		// ── Table-comment markers ──
 		//
 		// The same catalog-comment mechanism as the column markers above,

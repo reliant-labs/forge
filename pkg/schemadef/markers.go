@@ -87,6 +87,13 @@ func CommentMarkerProblems(site MarkerSite, column, comment string) []MarkerProb
 	allowed := SiteMarkers(site)
 	for _, tok := range MarkerTokens(comment) {
 		if slices.Contains(allowed, tok) {
+			if tok == ColumnMarkerReadable && site == SiteColumn {
+				if reason, _ := readableReason(comment); reason == "" {
+					out = append(out, MarkerProblem{Marker: tok, Problem: fmt.Sprintf(
+						"%s needs a reason — `%s <why %s is not a credential>`; the reason is the review record of the exception",
+						tok, tok, column)})
+				}
+			}
 			if tok == ColumnMarkerNoSoftDelete && column != ColDeletedAt {
 				out = append(out, MarkerProblem{Marker: tok, Problem: fmt.Sprintf(
 					"%s only applies to the %s column, the one forge soft-deletes by; on %s it does nothing — remove it",

@@ -25,6 +25,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   logged (`boot: still constructing a graph node`, naming the innermost node
   and the path that reached it) every 10s, and again when it finishes.
   Post-build readiness is unchanged. Existing projects: `forge generate`.
+
+- **The release shape records store-backed secrets (`pkg/release`, SF3).** A shape
+  gains four optional fields a control plane reads to serve a store-backed
+  `forge.ExternalSecret`: `store_secrets` (per cluster, namespace and store, the
+  names the namespace reads, their version pins and `immutable` marks),
+  `generated_secrets` (the values to mint when the store has none, carrying
+  `pkg/secretgen.Spec`'s parameters; `ShapeGeneratedSecret.Spec()` converts),
+  `openbao` and `external_secrets_operators` (which clusters declare the
+  components). `Shape.StoreBindings(store)` returns the `secretaccess.Binding`s of
+  one store, so `secretaccess.Derive` gets exact-path policies from a shape alone.
+  `release.ProjectStoreSecrets` projects the render's records (`required_secrets[]`
+  with a `source`, `openbao`, `external_secrets_operators[]`) into them,
+  deterministically and refusing ambiguity (a Secret that reaches no cluster, two
+  sources that disagree on a pin or a generation); `bundle.ShapeInput.Store` carries
+  the result into the one shape projection. A shape never carries a value: a
+  generated secret is a recipe and a pin is a version. The fields are a bundle-document
+  feature (`shape-store-secrets`, `BundleFeatureStoreSecrets`), withheld from a control
+  plane that does not name it, and omitted when empty, so every shape recorded before
+  them encodes and hashes exactly as it did.
+
 - **The schema for platform secrets: `forge.OpenBao`, `forge.ExternalSecretsOperator`
   and store-backed `forge.ExternalSecret`s (declarations only, nothing renders yet).**
   Two opt-in components on the Bundle, like `observability` and `identity`:

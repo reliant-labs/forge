@@ -44,13 +44,20 @@ const (
 	// strict-decoded on two paths, the bundle document and the environment
 	// declaration, so both are limited by it ([BundleReader.LimitShape]).
 	BundleFeatureFrontendTelemetry = "shape-frontend-telemetry"
+	// BundleFeatureStoreSecrets is Shape.StoreSecrets, Shape.GeneratedSecrets,
+	// Shape.OpenBao and Shape.ExternalSecretsOperators: the store names each
+	// namespace reads, the values to mint, and the components the env
+	// declares. A control plane that predates them cannot derive the access a
+	// store-backed Secret needs, so a shape carrying them is written only to
+	// one that names the feature.
+	BundleFeatureStoreSecrets = "shape-store-secrets"
 )
 
 // BundleDocFeatures is every optional bundle-document feature this version's
 // [DecodeBundleDoc] accepts. A control plane advertises exactly this list, so
 // what it claims to decode and what its decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -86,6 +93,9 @@ func (r *BundleReader) Limit(d BundleDoc) BundleDoc {
 // which a control plane strict-decodes into the same Shape, applies it to the
 // shape it sends. A copy: s is not modified.
 func (r *BundleReader) LimitShape(s Shape) Shape {
+	if !r.Supports(BundleFeatureStoreSecrets) {
+		s.StoreSecrets, s.GeneratedSecrets, s.OpenBao, s.ExternalSecretsOperators = nil, nil, nil, nil
+	}
 	if r.Supports(BundleFeatureFrontendTelemetry) {
 		return s
 	}

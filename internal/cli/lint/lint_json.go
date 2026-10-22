@@ -372,6 +372,8 @@ func collectSingleLinterJSON(
 		// fell through to the WHOLE suite — a targeted gate that silently
 		// ran everything else and reported it under one flag.
 		return reportBySeverity(collectReadOnlyFieldsJSON(cwd, migrationsDirFor(cfg)))
+	case flags.secrets:
+		return report(collectSecretsJSON(&lintRunCtx{ctx: ctx, cfg: cfg, cwd: cwd}))
 	case flags.guardedFields:
 		return reportUngated(collectGuardedFieldsJSON(cwd, frontendDirsForLint()))
 	case flags.staticExport:

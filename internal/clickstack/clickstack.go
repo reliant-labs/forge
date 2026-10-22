@@ -58,4 +58,31 @@ const (
 
 	// CollectorConfig is the project-relative collector pipeline file.
 	CollectorConfig = "deploy/observability/otel-collector.yaml"
+
+	// AlertmanagerService is the compose service (and workload name) of the
+	// local Alertmanager, which delivers what the local evaluator fires.
+	AlertmanagerService = "alertmanager"
+	// EnvAlertmanagerPort is its published loopback port.
+	EnvAlertmanagerPort = "ALERTMANAGER_PORT"
+	// AlertmanagerDir is the project-relative directory `forge env up`
+	// renders the Alertmanager configuration into (gitignored under .forge)
+	// and compose mounts at /etc/alertmanager: AlertmanagerConfigFile, plus
+	// every receiver secret as a file under secrets/ (amconfig.SecretDir).
+	AlertmanagerDir = ".forge/observability/alertmanager"
+	// AlertmanagerConfigFile is the configuration's file name in that dir.
+	AlertmanagerConfigFile = "alertmanager.yml"
+	// AlertRulesFile is the project-relative rules document (pkg/alerting
+	// RulesDocument) `forge env up` writes and the local evaluator reads.
+	AlertRulesFile = ".forge/observability/alert-rules.json"
+	// AlertsInAppTokenFile is the bearer the in-app receiver presents to the
+	// evaluator's alert-log sink, a file under AlertmanagerDir/secrets.
+	AlertsInAppTokenFile = "inapp-token"
+	// AlertsSinkPath is where the evaluator receives the in-app receiver's
+	// deliveries.
+	AlertsSinkPath = "/alerts"
+	// AlertsWorkload is the scaffolded evaluator host workload; its output is
+	// .forge/logs/<env>/alerts.log, the local in-app notifications.
+	AlertsWorkload = "alerts"
+	// AlertOrg is a local stack's one routing org.
+	AlertOrg = "local"
 )

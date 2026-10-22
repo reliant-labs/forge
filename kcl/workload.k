@@ -154,7 +154,10 @@ schema OnHost:
 
     A workload with an explicit `command` runs `command + args` verbatim
     (a sibling repo's binary, a third-party tool). Env comes from the
-    workload's `env`, the same as on every runtime.
+    workload's `env`, the same as on every runtime. A command whose first
+    element is `forge` runs the forge binary running `forge env up` (however
+    it was invoked), never whichever `forge` is first on PATH: a forge
+    process reading what this forge rendered must be the same build.
 
     `listen_ports` are the TCP ports the process itself BINDS: the
     port-conflict pre-flight and the readiness gate check exactly these,

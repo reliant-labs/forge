@@ -70,12 +70,19 @@ team knows.
 - **Diagnose:** `forge env status <env>`. To roll back, deploy the previous
   release: `forge env deploy <env> <release>`.
 
-### FrontendJSErrorSpike, FrontendNewIssue, FrontendIssueRegressed
+### FrontendJSErrorSpike
 
-- **Meaning:** browser errors rose against their baseline, or a new or
-  regressed frontend issue appeared.
-- **Diagnose:** the frontend dashboard and the issue's stack trace in
-  Observability; check which release introduced it.
+- **Meaning:** browser errors rose against their baseline.
+- **Diagnose:** the frontend dashboard and the errors' stack traces in
+  Observability; check which release introduced them.
+
+### NewIssue, IssueRegressed, IssueSpike
+
+- **Meaning:** the issue registry opened a new issue, a resolved one came back
+  in a later release, or an open one's error rate spiked against its previous
+  day. The alert's `issue_id`, `service` and `console_url` labels name the issue.
+- **Diagnose:** open `console_url` for the issue's stack trace and events;
+  check which release introduced it (`first_build` for a new issue).
 
 ## Tuning
 

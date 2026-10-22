@@ -569,6 +569,18 @@ const (
 	ControlPlaneSecretIdentityJWKS = "identity_jwks"
 )
 
+// ControlPlaneSecretDeliveryStore is the Delivery of a control-plane secret the
+// control plane writes into the env's secret store, for ESO to deliver.
+const ControlPlaneSecretDeliveryStore = "store"
+
+// ControlPlaneSecretStoreName is the store name the control plane writes a
+// store-delivered telemetry_token under: one value, `authorization=Bearer
+// <jwt>`. The Secret's keys are derived from it by the ExternalSecret
+// (kcl/lib/external_secret.k TELEMETRY_TOKEN_STORE_NAME is the same string,
+// pinned by a render test), so a control plane that writes this name needs
+// nothing else from forge.
+const ControlPlaneSecretStoreName = "RELIANT_OTEL_HEADERS"
+
 // ControlPlaneSecretKinds is every kind a control-plane secret can have.
 var ControlPlaneSecretKinds = []string{
 	ControlPlaneSecretIdentity, ControlPlaneSecretIdentityJWKS,
@@ -592,6 +604,12 @@ type ShapeControlPlaneSecret struct {
 	// (ControlPlaneSecretTelemetryToken).
 	Kind string   `json:"kind"`
 	Keys []string `json:"keys,omitempty"`
+	// Delivery is ControlPlaneSecretDeliveryStore when the control plane
+	// writes the value into the env's secret store and the External Secrets
+	// Operator delivers it (a floating ExternalSecret); empty means the control
+	// plane pushes the Secret into the cluster itself. The store the value goes
+	// to is in Shape.StoreSecrets, under ControlPlaneSecretStoreName.
+	Delivery string `json:"delivery,omitempty"`
 	// Required says a workload reads the Secret without an optional marker,
 	// so its pods wait for the first delivery instead of starting without it.
 	// The control plane reports such an env as waiting on the delivery.
@@ -1053,6 +1071,12 @@ func (s Shape) Validate() error {
 		}
 		if !containsString(ControlPlaneSecretKinds, c.Kind) {
 			return fmt.Errorf("%w: shape control-plane secret %s: kind %q (expected one of %s)", ErrInvalid, c.Key(), c.Kind, strings.Join(ControlPlaneSecretKinds, ", "))
+		}
+		switch {
+		case c.Delivery != "" && c.Delivery != ControlPlaneSecretDeliveryStore:
+			return fmt.Errorf("%w: shape control-plane secret %s: delivery %q (expected %q or empty)", ErrInvalid, c.Key(), c.Delivery, ControlPlaneSecretDeliveryStore)
+		case c.Delivery == ControlPlaneSecretDeliveryStore && c.Kind != ControlPlaneSecretTelemetryToken:
+			return fmt.Errorf("%w: shape control-plane secret %s: store delivery is defined for the %s kind only", ErrInvalid, c.Key(), ControlPlaneSecretTelemetryToken)
 		}
 		if c.Kind == ControlPlaneSecretIdentity && len(c.Keys) == 0 {
 			return fmt.Errorf("%w: shape control-plane secret %s: an %s secret names its keys, because they depend on the applications", ErrInvalid, c.Key(), ControlPlaneSecretIdentity)

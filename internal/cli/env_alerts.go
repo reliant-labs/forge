@@ -13,6 +13,20 @@ type AlertsEntity struct {
 	Rules    []AlertRuleEntity             `json:"rules"`
 	Defaults map[string]AlertDefaultEntity `json:"defaults"`
 	Routes   []AlertRouteEntity            `json:"routes"`
+	// Receivers are the local stack's (forge.AlertReceiver); a hosted env's
+	// receivers live in the control plane.
+	Receivers []AlertReceiverEntity `json:"receivers"`
+}
+
+// AlertReceiverEntity is one forge.AlertReceiver.
+type AlertReceiverEntity struct {
+	Name             string   `json:"name"`
+	Type             string   `json:"type"`
+	URL              string   `json:"url,omitempty"`
+	Secret           string   `json:"secret,omitempty"`
+	Channel          string   `json:"channel,omitempty"`
+	Severities       []string `json:"severities"`
+	AlwaysAlertnames []string `json:"always_alertnames"`
 }
 
 // AlertRuleEntity is one forge.AlertRule, severity already defaulted.

@@ -1,6 +1,6 @@
 ---
 name: observability/alerts
-description: Alert rules declared in KCL per env — `forge.AlertRule` (Prometheus rule shape, the condition inside a native ClickHouse SQL `expr`), `forge.AlertRoute` (labels to a receiver NAME), `forge.AlertDefault` (tune or disable forge's generated defaults, including the customer-metadata and platform ones), what render refuses, and what lands in the release shape for the control plane.
+description: Alert rules declared in KCL per env — `forge.AlertRule` (Prometheus rule shape, the condition inside a native ClickHouse SQL `expr`), `forge.AlertRoute` (labels to a receiver NAME), `forge.AlertDefault` (tune or disable forge's generated defaults, including the customer-metadata and platform ones), the local loop (`forge env up` evaluates rules continuously and delivers them through a local Alertmanager rendered by the control plane's own renderer; `forge.AlertReceiver`; `.forge/logs/<env>/alerts.log`), what render refuses, and what lands in the release shape for the control plane.
 ---
 
 # Alerts
@@ -67,6 +67,43 @@ The expr check is syntactic. The evaluator re-checks it and runs it read-only wi
 ## Routing
 
 `forge.AlertRoute {match, receiver, continue}`: an alert goes to the first route whose `match` labels it carries; `continue = True` keeps matching so one alert can reach several receivers. A **receiver is a name**, resolved by the control plane to a Slack channel, PagerDuty service and so on. With **no routes declared** the shape records `reliant-inapp` then `slack`: in-app plus Slack, **never a pager**. Declaring routes replaces that, and you own paging.
+
+## Alerts fire locally too
+
+`forge env up dev` closes the loop on your machine, with the same routing as production:
+
+- **`alerts`** (a host workload in `deploy/kcl/dev/main.k`, running `forge observe alerts run`) evaluates the env's rules continuously against the local ClickStack, `for` applied, and posts what fires to the local Alertmanager. It labels alerts `reliant_org_id="local"`, `reliant_env_id=<env>`.
+- **`alertmanager`** (docker-compose.yml) routes them. `forge env up` renders its configuration into `.forge/observability/alertmanager/` with **`forge/pkg/alerting/amconfig`**, the renderer the control plane uses for every org. So a route that reaches `hook` here reaches `hook` there.
+- **`reliant-inapp`** is always present, and locally it is the evaluator's own sink. Every alert it receives becomes one line in **`.forge/logs/dev/alerts.log`**:
+
+  ```
+  ALERT firing   OrdersBacklog severity=critical service=orders — orders backlog is 812
+  ```
+
+Other receivers are declared on the env as `forge.AlertReceiver` entries. Only local stacks use them: a hosted env's receivers live in the control-plane console, and this list is ignored there.
+
+```python
+alerts = forge.Alerts {
+    receivers = [
+        forge.AlertReceiver {name = "hook", type = "webhook", url = "http://localhost:9999/alerts"}
+        forge.AlertReceiver {name = "slack", type = "slack", secret = "SLACK_WEBHOOK_URL"}
+        forge.AlertReceiver {name = "autopilot", type = "autopilot", url = "http://localhost:8080/hooks/<id>", secret = "AUTOPILOT_TOKEN"}
+    ]
+    routes = [
+        forge.AlertRoute {match = {severity = "critical"}, receiver = "hook", continue = True}
+        forge.AlertRoute {match = {}, receiver = "reliant-inapp"}
+    ]
+}
+```
+
+- **`secret` names a key in the env's secret store**, never a value: `forge secret set --env dev SLACK_WEBHOOK_URL` (the value is read from stdin).
+  - forge writes the value as a file that the config references through `*_file`. The value never enters KCL or the config.
+  - A key that is missing leaves its receiver out, and `forge env up` names the key and the fix.
+- **Localhost URLs are rewritten for the container.** forge rewrites `localhost` / `127.0.0.1` to `host.docker.internal`, because Alertmanager runs in a container. A receiver on your machine must therefore listen on `0.0.0.0`.
+- **`autopilot` observes rather than routes.** Each alert whose `severity` is in `severities` (default `critical`, `error`), or whose alertname is in `always_alertnames` (the issue alerts), reaches the automation. The alert then carries on through your routes. No route names an autopilot receiver.
+- **A route to a receiver this env lacks is dropped and reported.** The default `slack` route, with no `slack` receiver declared, is the usual example. It is reported as `not routed: …` and does not fail anything.
+
+Check: `curl -s localhost:<alertmanager port>/api/v2/alerts` shows what is active and which receivers it reached. The port is in the `forge env up` summary. To turn local delivery off, drop the `alerts` and `alertmanager` workloads. `forge observe alerts check` (evaluate once, print what returns now) works either way.
 
 ## The built-in alerts
 

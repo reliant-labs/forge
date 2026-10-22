@@ -5109,9 +5109,81 @@ schema AlertDefault:
         "severity" not in labels or labels["severity"] in _ALERT_SEVERITIES, \
             "AlertDefault: label severity must be one of critical, warning, info"
 
+_ALERT_RECEIVER_TYPES: [str] = ["webhook", "slack", "pagerduty", "autopilot"]
+# A credential in a receiver URL: a query token, a key, or userinfo.
+_ALERT_URL_CREDENTIAL_RE: str = r"(?i)(token=|api[_-]?key|password|secret=|://[^/@]+@)"
+
+schema AlertReceiver:
+    """A receiver of an env whose alerts FORGE delivers: the local stack
+    `forge env up` runs. Its Alertmanager (docker-compose.yml's `alertmanager`)
+    is configured by the same renderer the control plane uses for every hosted
+    env (forge/pkg/alerting/amconfig), so a route that reaches a receiver here
+    reaches the same-named receiver in production. A hosted env's receivers are
+    entered in the control plane console instead; there this list is ignored.
+
+        receivers = [
+            forge.AlertReceiver {name = "hook", type = "webhook", url = "http://localhost:9999/alerts"}
+            forge.AlertReceiver {name = "slack", type = "slack", secret = "SLACK_WEBHOOK_URL", channel = "#alerts"}
+            forge.AlertReceiver {name = "autopilot", type = "autopilot", url = "http://localhost:8080/hooks/...", secret = "AUTOPILOT_TOKEN"}
+        ]
+
+    `secret` names a KEY in the env's secret store
+    (`forge secret set --env dev <KEY>`, value on stdin), never a value:
+
+      * slack     — the incoming-webhook URL (required)
+      * pagerduty — the routing key (required)
+      * webhook   — a bearer token (optional)
+      * autopilot — the automation's bearer token (required)
+
+    `url` is a webhook's or autopilot automation's endpoint. A loopback host
+    (localhost, 127.0.0.1) means THIS machine: forge rewrites it to
+    host.docker.internal for the container, so a receiver on this machine must
+    listen on an address the docker bridge reaches (0.0.0.0, not 127.0.0.1).
+
+    An autopilot receiver observes every alert of the env whose severity is in
+    `severities` or whose alertname is in `always_alertnames`, and routing then
+    continues as declared: no route names it. The defaults are the control
+    plane's.
+
+    `reliant-inapp` is always there and is not declared: locally it is forge's
+    alert log, `.forge/logs/<env>/alerts.log`.
+    """
+    name: str
+    type: str
+    url?: str
+    secret?: str
+    channel?: str
+    severities: [str] = ["critical", "error"]
+    always_alertnames: [str] = ["NewIssue", "IssueRegressed", "IssueSpike"]
+
+    check:
+        regex.match(name, r"^[a-z][a-z0-9_-]{0,62}$"), \
+            "AlertReceiver.name '${name}' must be lowercase letters, digits, '-' and '_' (a route names it)"
+        name not in ALERT_BUILTIN_RECEIVERS[:1], \
+            "AlertReceiver.name 'reliant-inapp' is reserved: it is always there (locally, the alert log)"
+        type in _ALERT_RECEIVER_TYPES, \
+            "AlertReceiver '${name}': type must be one of webhook, slack, pagerduty, autopilot — got '${type}'"
+        type not in ["webhook", "autopilot"] or url, \
+            "AlertReceiver '${name}': a ${type} receiver needs `url`"
+        type in ["webhook", "autopilot"] or not url, \
+            "AlertReceiver '${name}': `url` is for webhook and autopilot receivers; a ${type} receiver's endpoint is its `secret`"
+        not url or regex.match(url, r"^https?://[^/]+"), \
+            "AlertReceiver '${name}': url must be an http(s) URL"
+        not url or not regex.match(url, _ALERT_URL_CREDENTIAL_RE), \
+            "AlertReceiver '${name}': url carries a credential. Put it in the secret store and name the key in `secret`"
+        type not in ["slack", "pagerduty", "autopilot"] or secret, \
+            "AlertReceiver '${name}': a ${type} receiver needs `secret`, the secret-store key holding its credential"
+        not secret or regex.match(secret, r"^[A-Za-z_][A-Za-z0-9_]*$"), \
+            "AlertReceiver '${name}': secret names a secret-store KEY (letters, digits, '_'), never a value"
+        type == "slack" or not channel, \
+            "AlertReceiver '${name}': `channel` is for slack receivers"
+        len(severities) > 0 or len(always_alertnames) > 0, \
+            "AlertReceiver '${name}': severities and always_alertnames are both empty, so nothing would reach it"
+
 schema Alerts:
     """The env's alerting declaration, on `Observability.alerts`: your rules,
-    the tuning of forge's generated defaults, and the routes.
+    the tuning of forge's generated defaults, the routes and, for an env forge
+    delivers itself (the local stack), its receivers.
 
         observability = forge.Observability {
             alerts = forge.Alerts {
@@ -5124,16 +5196,22 @@ schema Alerts:
     With NO `routes`, alerts go to in-app notifications and the org's Slack
     receiver (`reliant-inapp`, `slack`), never to a pager. Declaring `routes` replaces that: you own the
     routing, and one route must have an empty `match` (the default route).
+
+    `receivers` (forge.AlertReceiver) are the local stack's: hosted envs'
+    receivers live in the control plane console.
     """
     rules: [AlertRule] = []
     defaults: {str:AlertDefault} = {}
     routes: [AlertRoute] = []
+    receivers: [AlertReceiver] = []
 
     check:
         len({r.alert: 1 for r in rules}) == len(rules), \
             "Alerts.rules names ${_alert_dups(rules)} twice: an alert name is unique within an env"
         len(routes) == 0 or any r in routes {len(r.match) == 0}, \
             "Alerts.routes has no default route: add forge.AlertRoute {match = {}, receiver = \"<name>\"} so no alert is left unrouted"
+        len({r.name: 1 for r in receivers}) == len(receivers), \
+            "Alerts.receivers names a receiver twice: a receiver name is unique within an env"
 
 schema Observability:
     """Where this environment's telemetry goes. Set on `Bundle.observability`.
@@ -5174,11 +5252,24 @@ schema Observability:
     host processes get OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT aimed at it.
 
         observability = forge.Observability {local_port = _otlp_http_port, profiles_port = _profiles_otlp_port}
+
+    `alertmanager_port` and `alerts_port` close the alerting loop locally:
+    the loopback port of the local Alertmanager (docker-compose.yml's
+    `alertmanager`) and the port of the local evaluator
+    (`forge observe alerts run`, the scaffolded `alerts` host workload), which
+    evaluates `alerts` continuously against the local ClickStack, posts what
+    fires to that Alertmanager, and receives the in-app receiver's deliveries
+    into `.forge/logs/<env>/alerts.log`. With both set and no destination,
+    `forge env up` renders the Alertmanager configuration from `alerts` with
+    the control plane's own renderer. Unset, alerts are only checked
+    (`forge observe alerts check`).
     """
     enabled: bool = True
     destination?: ObservabilityDestination
     local_port: int = 0
     profiles_port: int = 0
+    alertmanager_port: int = 0
+    alerts_port: int = 0
     signals: ObservabilitySignals = ObservabilitySignals {}
     sampling: ObservabilitySampling = ObservabilitySampling {}
     retention: ObservabilityRetention = ObservabilityRetention {}
@@ -5186,10 +5277,14 @@ schema Observability:
     alerts: Alerts = Alerts {}
 
     check:
-        enabled or (len(alerts.rules) == 0 and len(alerts.defaults) == 0 and len(alerts.routes) == 0), \
+        enabled or (len(alerts.rules) == 0 and len(alerts.defaults) == 0 and len(alerts.routes) == 0 and len(alerts.receivers) == 0), \
             "Observability.alerts is declared with enabled = False: alerts evaluate the telemetry, and there is none. Drop the alerts or set enabled = True"
         local_port >= 0 and local_port < 65536, "Observability.local_port must be 0..65535"
         profiles_port >= 0 and profiles_port < 65536, "Observability.profiles_port must be 0..65535"
+        alertmanager_port >= 0 and alertmanager_port < 65536, "Observability.alertmanager_port must be 0..65535"
+        alerts_port >= 0 and alerts_port < 65536, "Observability.alerts_port must be 0..65535"
+        (alertmanager_port == 0) == (alerts_port == 0), \
+            "Observability: alertmanager_port and alerts_port go together (the local Alertmanager delivers its in-app alerts to the evaluator on alerts_port, and the evaluator posts to the Alertmanager). Set both or neither"
         not enabled or not signals.profiles or destination or local_port == 0 or profiles_port > 0, \
             "Observability.signals.profiles = True with the local ClickStack needs profiles_port: ClickStack's own collector cannot store profiles, so they go to docker-compose.yml's `otel-profiles` collector. Set profiles_port to the port it publishes (see migrations/v0.1.45), or leave signals.profiles unset"
         not enabled or sampling.traces_ratio >= 1.0 or destination, \

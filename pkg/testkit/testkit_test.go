@@ -15,6 +15,7 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/auth"
 	"github.com/reliant-labs/forge/pkg/orm"
+	"github.com/reliant-labs/forge/pkg/svcerr"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
@@ -433,6 +434,63 @@ func TestServerPrincipal_DefaultsMatchAuthedContext(t *testing.T) {
 	}
 	if got := resp.Msg.GetFields()["role"].GetStringValue(); got != want.Role {
 		t.Fatalf("role = %q, want AuthedContext's default %q", got, want.Role)
+	}
+}
+
+// kindProcedure / kindStreamProcedure return a bare svcerr kind — the handler
+// shape the api skill documents — from a unary and a server-streaming rpc.
+const (
+	kindProcedure       = "/testkit.test.v1.KindService/Fail"
+	kindStreamProcedure = "/testkit.test.v1.KindService/FailStream"
+)
+
+func kindRegister(mux *http.ServeMux, opts ...connect.HandlerOption) {
+	mux.Handle(kindProcedure, connect.NewUnaryHandler(kindProcedure,
+		func(context.Context, *connect.Request[structpb.Struct]) (*connect.Response[structpb.Struct], error) {
+			return nil, svcerr.InvalidArgument("name is required")
+		}, opts...))
+	mux.Handle(kindStreamProcedure, connect.NewServerStreamHandler(kindStreamProcedure,
+		func(context.Context, *connect.Request[structpb.Struct], *connect.ServerStream[structpb.Struct]) error {
+			return svcerr.NotFound("process")
+		}, opts...))
+}
+
+type kindClient struct {
+	unary  *connect.Client[structpb.Struct, structpb.Struct]
+	stream *connect.Client[structpb.Struct, structpb.Struct]
+}
+
+func newKindClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) kindClient {
+	return kindClient{
+		unary:  connect.NewClient[structpb.Struct, structpb.Struct](httpClient, baseURL+kindProcedure, opts...),
+		stream: connect.NewClient[structpb.Struct, structpb.Struct](httpClient, baseURL+kindStreamProcedure, opts...),
+	}
+}
+
+// TestNewConnectClient_ServesBehindSvcerrInterceptor: the test server ends its
+// chain with svcerr.Interceptor, as production's chain builders do, so a bare
+// svcerr kind reaches the client with its code — unary and streaming. Without
+// it the client read unknown, and only under test.
+func TestNewConnectClient_ServesBehindSvcerrInterceptor(t *testing.T) {
+	t.Parallel()
+	_, client := testkit.NewConnectClient(t, kindRegister, newKindClient, testkit.ServerPrincipal(localWithClaims))
+
+	_, err := client.unary.CallUnary(context.Background(), connect.NewRequest(&structpb.Struct{}))
+	var ce *connect.Error
+	if !errors.As(err, &ce) || ce.Code() != connect.CodeInvalidArgument || ce.Message() != "name is required" {
+		t.Fatalf("unary: client read %v, want invalid_argument \"name is required\"", err)
+	}
+
+	stream, err := client.stream.CallServerStream(context.Background(), connect.NewRequest(&structpb.Struct{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	if stream.Receive() {
+		t.Fatal("stream yielded a message")
+	}
+	if got := connect.CodeOf(stream.Err()); got != connect.CodeNotFound {
+		t.Fatalf("stream: client read %v (%v), want not_found", got, stream.Err())
 	}
 }
 

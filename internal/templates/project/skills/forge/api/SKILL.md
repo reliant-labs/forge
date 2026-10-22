@@ -84,9 +84,26 @@ if err := s.deps.Billing.Charge(ctx, req); err != nil {
 }
 ```
 
+### `svcerr.WrapOr` — keep a verdict if there is one, otherwise say what failed
+
+Most handler errors come from a collaborator that may or may not have classified its failure — a store whose by-key get returns `svcerr.NotFound`, a query that hit the request deadline, a driver error. `svcerr.WrapOr(err, fallback)` is the one spelling for that:
+
+```go
+projects, err := s.deps.Projects.List(ctx, userID)
+if err != nil {
+    return nil, svcerr.WrapOr(err, svcerr.Internal("failed to list projects"))
+}
+```
+
+A classified `err` (`svcerr.IsClassified`: an svcerr kind, `context.Canceled`/`DeadlineExceeded`, or a `*connect.Error`) passes with its own code and message: a miss stays `not_found`, a deadline stays `deadline_exceeded`. Anything else reads `fallback` — its code, message, reason and class — and `err` is the logged cause. It replaces both wrong spellings: `connect.NewError(connect.CodeInternal, err)` (publishes `err.Error()`, flattens a NotFound into Internal) and `return nil, svcerr.Internal("…")` with `err` dropped (a deadline becomes a server fault, and the cause never reaches the log). Do not log `err` at the call site.
+
+**Never `WrapOr` a remote Connect client's error.** It is a `*connect.Error`, so it would pass through — the dependency's code and message (its hostnames) on your wire. Name your own verdict: `svcerr.Wrap(svcerr.WithCause(svcerr.Unavailable("billing is unavailable"), err))`.
+
 To forward a dependency's verdict on purpose, return it (or `svcerr.Wrap` it) directly instead. Server-side the cause stays reachable — `svcerr.Cause(err)`, and `errors.Is`/`errors.As` (so the `svcerr.Is*` predicates too) — except that `errors.As` never yields a `*connect.Error` from a cause. To ask what the client will be told, use `svcerr.Code(err)`, not `svcerr.IsNotFound(err)`. The one thing a cause informs is cancellation: a `context.Canceled` cause still classifies as `ClassCanceled`, so a client disconnect never pages.
 
 Redaction applies only to that fallback: codes you choose (`InvalidArgument`, `NotFound`, …) keep the message you gave them, because it is part of your API. So never put a driver error inside one — `svcerr.InvalidArgument(err.Error())` opts out of every protection above.
+
+**A hand-built `*connect.Error` is never redacted.** `svcerr.Interceptor` passes it through exactly as built, and connect-go publishes its `Message()` either way — so `connect.NewError(code, err)` and `connect.NewError(code, fmt.Errorf("push failed: %w", err))` put `err.Error()` on the wire. That is deliberate (the interceptor cannot tell a DSN from text you meant the user to read — a daemon's git rejection — and rewriting it would change every project's wire on a forge bump), so the fix is at the call site: `svcerr.WrapOr(err, svcerr.Internal("push failed"))`, or, when the underlying text IS for the user, put it in the constructor's argument (`svcerr.FailedPrecondition(daemonMsg)`). In a handler, test with `tdd.AssertConnectError`, which reads `svcerr.Code` — the code the interceptor sends — so a bare `svcerr.NotFound("x")` asserts as `not_found` with no client in the loop.
 
 `forge lint --conventions` warns (`forgeconv-no-handler-error-mapping`) on a re-rolled per-service mapper: two or more `errors.Is`/`errors.As` sentinels whose arms produce a connect error (return a `connect.NewError`, or return or assign a `connect.Code…`). Sentinels that pick something else — a response status, a retry — are not mapping and do not fire.
 

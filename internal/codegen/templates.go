@@ -11,11 +11,13 @@ package mocks
 import (
 {{- if .HasMethods}}
 	"context"
-	"fmt"
 {{- end}}
 	"net/http"
 
 	"connectrpc.com/connect"
+{{- if .HasMethods}}
+	"github.com/reliant-labs/forge/pkg/svcerr"
+{{- end}}
 {{- if .NeedsPb}}
 	pb "{{.GoPackage}}"
 {{- end}}

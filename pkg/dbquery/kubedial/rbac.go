@@ -8,9 +8,9 @@ import (
 	"github.com/reliant-labs/forge/pkg/dbgrants"
 )
 
-// PolicyRules are the namespaced RBAC rules an identity needs to use this
+// PolicyRules are the namespaced Kubernetes Role rules an identity needs to use this
 // package against the named databases (CNPG Cluster names) in one namespace.
-// Put them in a Role (or a ClusterRole bound by RoleBinding) in each tenant
+// Put them in a Role (or a ClusterRole bound by RoleBinding) in each database
 // namespace; declare them from here so the grant and the code that needs it
 // cannot drift.
 //

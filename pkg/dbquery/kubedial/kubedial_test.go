@@ -194,7 +194,7 @@ func TestDialErrors(t *testing.T) {
 		})
 		_, err := NewWithClientset(cs, noPods).Dial(ctx, Target{Namespace: "ns", Service: "db-rw"})
 		if err == nil || !strings.Contains(err.Error(), "PolicyRules") {
-			t.Errorf("err = %v, want the RBAC hint", err)
+			t.Errorf("err = %v, want the Role-rules hint", err)
 		}
 	})
 	t.Run("forward refused", func(t *testing.T) {

@@ -5,8 +5,8 @@
 //
 // It is the transport under [dbquery.Run] wherever the database is not
 // reachable by DNS and IP: `forge db query` against a developer's k3d, and the
-// control plane's QueryDatabase against a tenant's namespace on another
-// cluster. It lives beside pkg/dbquery rather than in it so that dbquery's
+// control plane's QueryDatabase against a customer environment's namespace on
+// another cluster. It lives beside pkg/dbquery rather than in it so that dbquery's
 // core stays free of client-go.
 //
 // # What a connection is
@@ -23,7 +23,7 @@
 // re-resolved on every dial, so a failover is followed by the next connection.
 // A port-forward enters the pod's network namespace through the kubelet, so a
 // NetworkPolicy that admits only same-namespace pods does not stand in the
-// way, which is also why the RBAC below is the access boundary.
+// way, which is also why the Kubernetes Role below is the access boundary.
 //
 // # Choosing the Service
 //
@@ -39,7 +39,7 @@
 // name CNPG's server certificate carries, so sslmode=verify-full holds inside
 // the tunnel and the API server's own TLS is not what protects the session.
 //
-// # RBAC the caller needs
+// # Kubernetes Role rules the caller needs
 //
 // [PolicyRules] returns the exact rules, in a namespaced Role, for the
 // databases the caller may reach. Declare them from that one source:
@@ -47,11 +47,11 @@
 //	pods/portforward   get, create   a port-forward is a GET upgrade to
 //	                                 websocket and a POST for SPDY; since
 //	                                 Kubernetes 1.35 the websocket upgrade also
-//	                                 needs create (AuthorizePodWebsocketUpgradeCreatePermission)
+//	                                 needs create (the API server's pod-websocket-upgrade create-permission gate)
 //	endpointslices     get, list     (discovery.k8s.io) to find ready pods
 //	secrets            get           on exactly <db>-forge-ro and <db>-ca
 //
-// pods/portforward cannot be narrowed to a port or a pod by RBAC, so it admits
+// pods/portforward cannot be narrowed to a port or a pod by a Role, so it admits
 // any port of any pod in the namespace. Give the identity that dials its own
 // Role and ServiceAccount (or impersonation) rather than widening a deploy
 // identity, and rely on the API server's audit log as the second trail.

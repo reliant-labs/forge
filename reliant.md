@@ -81,6 +81,26 @@ obvious place for every domain to special-case. See
 than the behaviour. A reach for a third interface method is the signal to ask
 whether you are modelling the consumer's need or the implementation.
 
+## Never edit CHANGELOG.md in a pull request
+
+`CHANGELOG.md` is written **only at release time, by `scripts/release-forge.sh`**,
+from the titles of the pull requests merged since the previous tag, and the same
+section becomes the GitHub release notes. Nothing reads it per PR. Every PR that
+appended under `[Unreleased]` conflicted with the next one in the merge queue, so
+`ci.yml`'s `checks` job fails a pull request whose diff touches it
+(`scripts/check-changelog-untouched.sh`; `release/*` branches and the
+`chore: release vX.Y.Z` commit are exempt).
+
+So the PR title is the changelog entry — write a good one, in conventional-commit form:
+
+- `feat(scope): what a user can now do` → **Added**
+- `fix(scope): what no longer breaks` → **Fixed**
+- anything else (`refactor`, `docs`, `perf`, `chore`, …) → **Changed**
+- a breaking change: `feat(scope)!: …`, a `BREAKING CHANGE:` footer in the commit
+  body, or a `breaking` label on the PR → listed under **Breaking changes**
+
+A doc comment that says "record it in CHANGELOG.md" means: say it in the PR title.
+
 ## Testing tiers
 
 Run the cheapest tier that answers your question. Wall-clock budgets are

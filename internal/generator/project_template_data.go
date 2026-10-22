@@ -76,6 +76,9 @@ type projectTemplateData struct {
 	// server it will never call. Derived — never a flag — from whether the
 	// project declares a frontend, so it follows `forge scaffold frontend`
 	// on the next `forge generate` with nothing for the user to turn on.
+	// Both lanes ask the same question — is a frontend declared? — and not
+	// whether frontend codegen is on (a frontend-only project has a browser
+	// and no codegen).
 	HasFrontend            bool
 	GoVersion              string
 	GoVersionMinor         string
@@ -246,7 +249,7 @@ func (g *ProjectGenerator) forScaffold() projectTemplateData {
 		ProjectName:            g.Name,
 		FrontendName:           g.FrontendName,
 		FrontendPort:           g.FrontendPort,
-		HasFrontend:            g.Features.FrontendEnabled() && g.FrontendName != "",
+		HasFrontend:            g.FrontendName != "",
 		GoVersion:              goVersion,
 		GoVersionMinor:         goVersionMinor(goVersion),
 		DockerBuilderGoVersion: dockerBuilderGoVersion(goVersion),

@@ -4676,6 +4676,29 @@ schema ControlPlaneSecret:
 
     `Observability.destination.token_from_control_plane = True` declares one of
     these for the node agent automatically.
+
+    DELIVERY. By default the control plane PUSHES the Secret into the cluster
+    through the connected-cluster credential (`delivery = "push"`). With
+    `delivery = "store"` it writes the value into the env's secret store
+    instead and the External Secrets Operator delivers it, as a FLOATING
+    ExternalSecret: no version pin, because a platform-issued token is renewed
+    in place and the consumer re-reads the file the kubelet refreshes.
+
+        forge.ControlPlaneSecret {
+            name = "reliant-otel-auth"
+            cluster = _prod
+            delivery = "store"
+            store = forge.HostedStore {org = "<org id>", env_id = "<env id>"}
+        }
+
+    The store is the control plane's own (a HostedStore), so the writer and the
+    reader share one path. The control plane writes ONE value under
+    `RELIANT_OTEL_HEADERS` (`authorization=Bearer <jwt>`); the Secret's
+    `token` key is derived from it by an ESO template, so the two keys can
+    never disagree about which token is current. `refresh` (default 15m, at
+    least 5m) is how often ESO re-reads. The shape records `delivery = "store"`
+    and the render's `store_secrets`, so the control plane knows to write the
+    store and derives the exact-path read policy for the namespace.
     """
     type: str = "control_plane_secret"
     name: str
@@ -4695,9 +4718,26 @@ schema ControlPlaneSecret:
     # round: optional, so a first deploy is never blocked on it.
     required: bool = False
     reason: str = ""
+    # How the Secret reaches the cluster: "push" (the control plane writes it
+    # through the connected-cluster credential) or "store" (the control plane
+    # writes the env's secret store and ESO delivers it, floating).
+    delivery: "push" | "store" = "push"
+    # The store a `delivery = "store"` Secret is written to and read from: the
+    # env's hosted control plane's own.
+    store?: HostedStore
+    # How often ESO re-reads a store-delivered Secret. At least 5m.
+    refresh: str = "15m"
 
     check:
         type == "control_plane_secret", "ControlPlaneSecret.type must be 'control_plane_secret'"
+        delivery == "push" or store, \
+            "ControlPlaneSecret '${name}' has delivery = \"store\" and no `store`: name the hosted store the control plane writes it to, `store = forge.HostedStore {org = \"<org id>\", env_id = \"<env id>\"}`"
+        delivery == "store" or not store, \
+            "ControlPlaneSecret '${name}' sets `store` but delivers by push: a store only applies to delivery = \"store\". Set delivery = \"store\", or drop `store`"
+        delivery == "push" or kind == "telemetry_token", \
+            "ControlPlaneSecret '${name}': delivery = \"store\" is defined for kind telemetry_token only (the identity kinds are derived from Bundle.identity)"
+        regex.match(refresh, _ALERT_DURATION_RE) and _alert_secs(refresh) >= 300, \
+            "ControlPlaneSecret '${name}'.refresh '${refresh}' must be a duration of at least 5m (e.g. '15m'): a faster loop is a load on the store, and the cluster's admission policy refuses it"
         regex.match(name, r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$") and len(name) <= 253, \
             "ControlPlaneSecret.name '${name}' must be a Kubernetes Secret name (lowercase alphanumerics, '-' and '.')"
         not namespace or regex.match(namespace, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), \
@@ -4981,6 +5021,57 @@ schema DataAccess:
 _data_access_db_query = lambda data_access: DataAccess, lifecycle: str -> str {
     data_access.db_query if data_access and data_access.db_query else ("open" if lifecycle in ["local", "ephemeral"] else "audited")
 }
+
+# The release-health finding codes (pkg/release Health*).
+_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts"]
+
+# A release-health window ("15m", "2h", "90s") in seconds; 0 when malformed.
+_release_health_seconds = lambda w: str -> int {
+    int(w[:-1]) * {"s": 1, "m": 60, "h": 3600}[w[-1]] if regex.match(w, r"^[1-9][0-9]*[smh]$") else 0
+}
+
+schema ReleaseHealth:
+    """How this env's promotions are judged: `forge obs check <env>` and the
+    control plane's release health compare the window after a promotion with
+    the window before it, per service, and report findings.
+
+        release_health = forge.ReleaseHealth {
+            window = "30m"
+            fail_on = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "latency"]
+        }
+
+    A finding in `fail_on` fails the release (exit 1); any other warns. Below
+    `min_requests` after-window requests a service is not judged, and a
+    release with no judged service is inconclusive (exit 2), never a pass.
+
+    Findings: error_rate (the error rate rose by more than
+    `max_error_rate_increase`, a fraction: 0.01 is one percentage point),
+    latency (p95 grew by more than `max_p95_ratio`), new_issue (an issue first
+    seen in this release with `new_issue_min_events` events), regressed_issue,
+    alert_firing (an alert opened after the promotion still fires) and
+    workload_restarts.
+
+    Recorded in the release shape (`release_health`) when any value differs
+    from the default, so every reader judges by this one declaration.
+    """
+    window: str = "15m"
+    min_requests: int = 50
+    max_error_rate_increase: float = 0.01
+    max_p95_ratio: float = 1.5
+    new_issue_min_events: int = 3
+    fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing"]
+
+    check:
+        60 <= _release_health_seconds(window) <= 21600, \
+            "ReleaseHealth.window \"${window}\": use a number and s, m or h (\"15m\"), from 1m to 6h"
+        min_requests >= 1, "ReleaseHealth.min_requests ${min_requests} must be at least 1"
+        0 < max_error_rate_increase <= 1, \
+            "ReleaseHealth.max_error_rate_increase ${max_error_rate_increase} is a fraction: 0.01 is one percentage point"
+        max_p95_ratio > 1, "ReleaseHealth.max_p95_ratio ${max_p95_ratio} must be above 1 (1.5 = 50% slower)"
+        new_issue_min_events >= 1, "ReleaseHealth.new_issue_min_events ${new_issue_min_events} must be at least 1"
+        all c in fail_on { c in _RELEASE_HEALTH_FINDINGS }, \
+            "ReleaseHealth.fail_on names ${[c for c in fail_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
+        isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"
 
 # ---------------------------------------------------------------------------
 # Bundle — the project-level container forge.render() consumes.
@@ -6272,6 +6363,10 @@ schema Bundle:
     # query`). UNSET follows `lifecycle`: open for local/ephemeral, audited
     # otherwise. See DataAccess.
     data_access?: DataAccess
+    # How this env's promotions are judged by `forge obs check` and release
+    # health: the window, the thresholds, and which findings fail. UNSET =
+    # the defaults. See ReleaseHealth.
+    release_health?: ReleaseHealth
     # The env's users (forge.ManagedIdentity): roles, the applications that
     # sign users in, the workloads that read tokens, and where the instance
     # runs. UNSET = no managed identity (bring your own issuer in config.k).

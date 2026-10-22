@@ -1633,6 +1633,19 @@ _render_delivery_policy = lambda p: DeliveryPolicy -> any {
     }
 }
 
+# ReleaseHealth, resolved. The key set is the release shape's
+# `release_health`; the window is in seconds and fail_on is sorted.
+_render_release_health = lambda h: ReleaseHealth -> any {
+    {
+        "window_seconds": _release_health_seconds(h.window)
+        "min_requests": h.min_requests
+        "max_error_rate_increase": h.max_error_rate_increase
+        "max_p95_ratio": h.max_p95_ratio
+        "new_issue_min_events": h.new_issue_min_events
+        "fail_on": sorted(h.fail_on)
+    }
+}
+
 # The declaration, as the Go side (forge env up, the local forwarder) reads it.
 _render_observability = lambda b: Bundle -> any {
     _o = b.observability
@@ -1905,6 +1918,10 @@ render = lambda bundle: Bundle -> any {
         # means audited, never open, so a real env's render is unchanged.
         if _data_access_db_query(bundle.data_access, bundle.lifecycle or "") != "audited":
             "data_access": {"db_query": _data_access_db_query(bundle.data_access, bundle.lifecycle or "")}
+        # The release-health policy, resolved, only when the env declares one.
+        # Go records it in the release shape unless it is all defaults.
+        if bundle.release_health:
+            "release_health": _render_release_health(bundle.release_health)
         # The env's managed identity as DECLARED, with the applications and
         # consumers derived and the deliveries listed. It is release.Shape's
         # `identity` in the shape's own vocabulary.
@@ -2718,7 +2735,7 @@ _render_external_secret = lambda s: ExternalSecret -> any {
     }
 }
 
-_render_store_source = lambda src: StoreSource -> any {
+_render_store_source = lambda src: any -> any {
     {
         "store": {"type": src.store.type, if src.store.type == "gcpsm": "project": src.store.project}
         "data": src.data
@@ -2784,6 +2801,12 @@ _render_control_plane_secret = lambda s: ControlPlaneSecret, bundle: Bundle -> a
         "keys": s.keys if s.keys else CONTROL_PLANE_SECRET_KINDS[s.kind]
         "required": s.required if s.required else None
         "reason": s.reason if s.reason else None
+        # A store-delivered Secret says so and carries the source ESO reads, so
+        # the shape can derive the namespace's read policy. Absent for a push
+        # Secret, which keeps every existing record as it was.
+        if s.delivery == "store":
+            "delivery": "store"
+            "source": _render_store_source(es_lib.cps_source(s))
     }
 }
 

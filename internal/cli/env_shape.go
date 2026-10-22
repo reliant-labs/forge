@@ -388,6 +388,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		FrontendTelemetry:   shapeFrontendTelemetryOf(entities),
 		DeliveryPolicy:      shapeDeliveryPolicyOf(entities),
 		DataAccess:          shapeDataAccessOf(entities),
+		ReleaseHealth:       shapeReleaseHealthOf(entities),
 		Identity:            shapeIdentityOf(entities),
 		Applier:             shapeApplierOf(entities),
 		Units:               split.ShapeUnits(),
@@ -576,6 +577,7 @@ func shapeControlPlaneSecretsOf(e *KCLEntities) []release.ShapeControlPlaneSecre
 			ConnectedCluster: c.ConnectedCluster,
 			Kind:             c.Kind,
 			Keys:             c.Keys,
+			Delivery:         c.Delivery,
 			Required:         c.Required,
 		})
 	}
@@ -671,6 +673,16 @@ func shapeDataAccessOf(e *KCLEntities) *release.ShapeDataAccess {
 		return nil
 	}
 	return e.DataAccess
+}
+
+// shapeReleaseHealthOf projects the env's release-health policy. Nil when the
+// env declares none or only the defaults, so the shape encodes as it did
+// before the field.
+func shapeReleaseHealthOf(e *KCLEntities) *release.ShapeReleaseHealth {
+	if e == nil || e.ReleaseHealth == nil || e.ReleaseHealth.IsDefault() {
+		return nil
+	}
+	return e.ReleaseHealth
 }
 
 // shapeIdentityOf projects the env's managed identity. The render already

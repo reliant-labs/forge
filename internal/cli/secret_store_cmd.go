@@ -1035,7 +1035,7 @@ func secretProviderPathForEnv(ctx context.Context, envName string) string {
 // FileSecrets.generate is the env saying it wants it there. Leaving optional
 // refs out meant a key the env asked forge to generate was never generated
 // whenever the config field behind it is optional (reliant's AUTH_API_KEY:
-// required only when AUTH_MODE=apikey, so optional in the schema), and the
+// required only in its API-key auth mode, so optional in the schema), and the
 // process then refused to start for want of it.
 func generatableSecretNames(e *KCLEntities) []string {
 	seen := map[string]struct{}{}

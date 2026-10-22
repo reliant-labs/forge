@@ -107,6 +107,26 @@ const (
 	// sets an end user's password. deploy:write ships a release and must not
 	// be able to take over the accounts of the people who use it.
 	ScopeIdentityManage Scope = "identity:manage"
+
+	// ScopeObsRead reads an environment's telemetry and what is derived from
+	// it: traces, logs, metrics, issues and release health. Org automation
+	// tokens carry it so CI and agents can gate a deploy on `forge obs check`.
+	ScopeObsRead Scope = "obs:read"
+	// ScopeObsTriage changes an issue's triage state (resolve, ignore,
+	// unresolve). Implies obs:read at the point of use.
+	//
+	// ITS OWN SCOPE, NOT A READ. A read-only automation token must not be
+	// able to silence an alert, so triage is held explicitly even by a
+	// holder that reads.
+	ScopeObsTriage Scope = "obs:triage"
+
+	// ScopeDBQuery runs a read-only query against an environment's database.
+	// Not implied by any other scope and implying none: the data in an
+	// app's database is the app's users' data, a different class of authority
+	// from the telemetry obs:read reads. A real environment's policy may
+	// further restrict it to people (audited); the scope alone never opens
+	// one.
+	ScopeDBQuery Scope = "db:query"
 )
 
 // AllScopes is the closed set, grouped by product, least authority first.
@@ -128,6 +148,9 @@ var AllScopes = []Scope{
 	ScopeDomainWrite,
 	ScopeIdentityRead,
 	ScopeIdentityManage,
+	ScopeObsRead,
+	ScopeObsTriage,
+	ScopeDBQuery,
 }
 
 // ParseScope maps a wire string onto a known Scope. An unknown string is an
@@ -218,6 +241,8 @@ func (s Set) Permits(want Scope) bool {
 		return s.Has(ScopeDomainWrite)
 	case ScopeIdentityRead:
 		return s.Has(ScopeIdentityManage)
+	case ScopeObsRead:
+		return s.Has(ScopeObsTriage)
 	default:
 		return false
 	}

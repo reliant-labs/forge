@@ -146,11 +146,16 @@ const (
 const (
 	PlatformDeployFailed = "deploy-failed"
 	PlatformQuota        = "observability-quota"
-	// The frontend issue alerts need the issue registry (new / regressed are
-	// state transitions, not queries), which the control plane owns.
-	PlatformFrontendNewIssue       = "frontend-new-issue"
-	PlatformFrontendIssueRegressed = "frontend-issue-regressed"
+	// The issue alerts need the issue registry (new / regressed are state
+	// transitions, and a spike is measured per issue), which the control plane
+	// owns. They cover every issue the env has, browser or server.
+	PlatformNewIssue       = "new-issue"
+	PlatformIssueRegressed = "issue-regressed"
+	PlatformIssueSpike     = "issue-spike"
 )
+
+// hasIssues reports whether the env has anything that can raise an issue.
+func hasIssues(in AlertInput) bool { return len(in.Services) > 0 || in.FrontendService != "" }
 
 func hasServices(in AlertInput) bool { return len(in.Services) > 0 }
 
@@ -236,23 +241,33 @@ var alertDefs = []alertDef{
 	},
 	{
 		AlertDefaultInfo: AlertDefaultInfo{
-			ID: PlatformFrontendNewIssue, Alert: "FrontendNewIssue", Title: "A new frontend issue appeared (5 or more events, or 3 or more sessions, within 30 minutes)",
+			ID: PlatformNewIssue, Alert: "NewIssue", Title: "A new issue appeared",
 			Severity: SeverityWarning, For: "0s", Interval: "1m", Signal: "platform",
 			Params: []AlertParam{},
 		},
-		annotations: map[string]string{"summary": "New frontend issue in {{ $labels.service }}: {{ $labels.title }} ({{ $value }} events), first seen in {{ $labels.release }}"},
-		applies:     func(in AlertInput) bool { return in.FrontendService != "" },
-		platform:    []platformRule{{PlatformFrontendNewIssue, "FrontendNewIssue", SeverityWarning}},
+		annotations: map[string]string{"summary": "New issue in {{ $labels.service }} ({{ $labels.env }}): {{ $labels.title }}. Details: {{ $labels.console_url }}"},
+		applies:     hasIssues,
+		platform:    []platformRule{{PlatformNewIssue, "NewIssue", SeverityWarning}},
 	},
 	{
 		AlertDefaultInfo: AlertDefaultInfo{
-			ID: PlatformFrontendIssueRegressed, Alert: "FrontendIssueRegressed", Title: "A resolved frontend issue came back in a later release",
+			ID: PlatformIssueRegressed, Alert: "IssueRegressed", Title: "A resolved issue came back in a later release",
 			Severity: SeverityWarning, For: "0s", Interval: "1m", Signal: "platform",
 			Params: []AlertParam{},
 		},
-		annotations: map[string]string{"summary": "Regressed frontend issue in {{ $labels.service }}: {{ $labels.title }}, back in {{ $labels.release }}"},
-		applies:     func(in AlertInput) bool { return in.FrontendService != "" },
-		platform:    []platformRule{{PlatformFrontendIssueRegressed, "FrontendIssueRegressed", SeverityWarning}},
+		annotations: map[string]string{"summary": "A resolved issue came back in {{ $labels.service }} ({{ $labels.env }}): {{ $labels.title }}. Details: {{ $labels.console_url }}"},
+		applies:     hasIssues,
+		platform:    []platformRule{{PlatformIssueRegressed, "IssueRegressed", SeverityWarning}},
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: PlatformIssueSpike, Alert: "IssueSpike", Title: "An issue's error rate is spiking against its previous day",
+			Severity: SeverityWarning, For: "0s", Interval: "5m", Signal: "platform",
+			Params: []AlertParam{},
+		},
+		annotations: map[string]string{"summary": "Issue spiking in {{ $labels.service }} ({{ $labels.env }}): {{ $labels.title }}, {{ $value }} events/hour, over 5 times its rate the day before. Details: {{ $labels.console_url }}"},
+		applies:     hasIssues,
+		platform:    []platformRule{{PlatformIssueSpike, "IssueSpike", SeverityWarning}},
 	},
 	{
 		AlertDefaultInfo: AlertDefaultInfo{

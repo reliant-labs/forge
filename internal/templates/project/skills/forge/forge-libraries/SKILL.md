@@ -91,6 +91,7 @@ These are the packages people re-implement. The list is judgment, not inventory 
 | a bootstrap harness for integration tests | `forge/pkg/testkit` — discard logger, real postgres via `forge/pkg/pgtest`, httptest harness, claims-bearing `AuthedContext`. Extend it; don't roll your own. |
 | your own JWT / JWKS / HMAC validator | `forge/pkg/auth` for the validators, `forge/pkg/authn` for the interceptor mechanism. Tune the policy hooks in your owned `pkg/middleware/middleware.go`. |
 | API-key generation, hashing, or comparison | `forge/pkg/apikey`. You own the table and the store; these are the get-it-wrong-and-you're-breached parts. |
+| running a user-supplied SQL statement read-only (a query verb, an admin console, an agent tool) | `forge/pkg/dbquery`. A read-only transaction, statement timeout, row and size caps, a single-statement guard, JSON-encodable typed results and an audit hook. `dbquery.Run(ctx, conn, sql, opts)`; never a `BEGIN`/`SET` you assemble yourself. |
 | a CORS / security-headers / request-id / rate-limit middleware | `forge/pkg/middleware`. Your composition root wires the chain; don't photocopy the middlewares. |
 | logging / tracing / metrics interceptors | `forge/pkg/observe`. The scaffold already wires `observe.Chain`; reach in only for opt-in per-method instrumentation. |
 | CRUD lifecycle plumbing in a handler | `forge/pkg/crud`. Forge auto-wires it from your CRUD RPCs — don't bypass it. |

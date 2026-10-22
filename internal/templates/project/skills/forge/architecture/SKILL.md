@@ -44,11 +44,11 @@ internal/                     # the application: components, DI, data access
     routes_gen.go             #     generated: <Audience>Routes route sets, MountOptions, the data-only Inventory
   db/                         #   <entity>_orm.go (generated from schema) + <entity>_repo_ext.go (yours)
 pkg/app/                      # substrate: testing.go (per-component test harness) + migrate.go
-pkg/config/                   # typed config projected from proto/config/v1/config.proto
+pkg/config/                   # typed config projected from the config proto (below)
 pkg/middleware/               # thin owned policy file
 gen/                          # ALL generated stubs/clients/mocks + forge_descriptor.json — never hand-edit
 proto/services/<svc>/v1/      # protobuf service definitions (API contracts)
-proto/config/v1/config.proto  # config truth: every field, its env var, flag, and default
+proto/<project>/config/v1/     # config truth: every field, its env var, flag, default
 db/migrations/                # SQL migrations — THE schema source of truth   (db/queries/ — SQL queries)
 frontends/<name>/             # Next.js frontends (src/app, src/hooks, src/lib)
 deploy/kcl/<env>/             # KCL deployment manifests + per-env config       (e2e/ — end-to-end tests)
@@ -83,7 +83,7 @@ proto/services/<svc>/v1/<svc>.proto
 db/migrations/*.up.sql (shadow-applied to a real ephemeral postgres, introspected) + CRUD RPC shapes
   → forge generate → internal/db/<entity>_orm.go, internal/handlers/<svc>/handlers_crud_ops_gen.go, frontend pages/nav/mocks
 
-proto/config/v1/config.proto → forge generate → pkg/config/ + deploy/kcl/config_gen.k
+proto/<project>/config/v1/config.proto → forge generate → pkg/config/ + deploy/kcl/config_gen.k
 internal/<name>/contract.go (standalone domain packages) → forge generate → internal/<name>/mock_gen.go
 gen/ts/ → forge generate → frontends/<name>/src/hooks/*-hooks.ts
 ```

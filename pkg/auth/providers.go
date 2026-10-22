@@ -81,7 +81,7 @@ type ClerkOpts struct {
 // by [clerkResolver].
 //
 //	// in SetupAuth(cfg *config.Config) — the values are typed config
-//	// fields, declared in proto/config/v1/config.proto and pinned per
+//	// fields, declared in proto/<project>/config/v1/config.proto and pinned per
 //	// environment, never read out of the process environment here.
 //	validator, err := auth.Clerk(auth.ClerkOpts{
 //	    JWKSURL: cfg.JwtJwksUrl,
@@ -172,7 +172,7 @@ type FirebaseOpts struct {
 // mapped by [firebaseResolver] (sub = uid).
 //
 //	// A value this app's config does not carry yet gets a new field in
-//	// proto/config/v1/config.proto — that is the one place a
+//	// proto/<project>/config/v1/config.proto — that is the one place a
 //	// per-deployment value is declared.
 //	validator, err := auth.Firebase(auth.FirebaseOpts{
 //	    ProjectIDs: strings.Split(cfg.FirebaseProjectIds, ","),

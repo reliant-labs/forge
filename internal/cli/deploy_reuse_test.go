@@ -97,7 +97,7 @@ func TestDeployNoVersion_ReusesTheReleaseEnvBuildCut(t *testing.T) {
 			})
 
 			run := func(args ...string) (string, error) {
-				root := NewRootCmd()
+				root := newTestRootCmd(t)
 				var buf bytes.Buffer
 				root.SetOut(&buf)
 				root.SetErr(&buf)

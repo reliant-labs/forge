@@ -402,7 +402,7 @@ var removedSchemaKeys = map[string]string{
 		"jwt_audience / jwt_jwks_url in deploy/kcl/<env>/config.k and jwt_secret " +
 		"in the env's secret provider.",
 	"auth.jwt": "delete the block — jwt_issuer / jwt_audience / jwt_jwks_url are " +
-		"typed config fields (proto/config/v1/config.proto), pinned per env in " +
+		"typed config fields (proto/<project>/config/v1/config.proto), pinned per env in " +
 		"deploy/kcl/<env>/config.k and read by internal/app/auth.go's SetupAuth().",
 	"auth.api_key": "delete the block — auth is owned code now. Build an API-key " +
 		"validator in internal/app/auth.go's SetupAuth() if you need one.",

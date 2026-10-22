@@ -117,7 +117,7 @@ func leastKnowledgeFindings(p *depsurface.Package, strict bool) []Finding {
 		out = append(out, Finding{
 			Rule: RuleNoGetenv, Severity: sev(false), File: e.File, Line: e.Line,
 			Message:     fmt.Sprintf("%s in a component package — configuration the composition never handed it, which its root's config reach (and so its workload's env) cannot see", e.Call),
-			Remediation: "declare the setting in proto/config (a field, or a field of this component's block) and take it through Deps; pkg/config reads the environment, once, for every root",
+			Remediation: "declare the setting in proto/<project>/config/v1 (a field, or a field of this component's block) and take it through Deps; pkg/config reads the environment, once, for every root",
 		})
 	}
 	for _, d := range p.Downcasts {

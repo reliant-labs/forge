@@ -32,7 +32,7 @@ func TestE2ETestHarnessConfigIsProductionDefaults(t *testing.T) {
 	projectDir := filepath.Join(dir, "cfgapp")
 	addCorpusForgePkgReplace(t, projectDir)
 
-	cfgPath := filepath.Join(projectDir, "proto", "config", "v1", "config.proto")
+	cfgPath := filepath.Join(projectDir, "proto", "cfgapp", "config", "v1", "config.proto")
 	src := readFileE2E(t, cfgPath)
 	const anchor = "  reserved 22;\n"
 	if !strings.Contains(src, anchor) {

@@ -12,6 +12,8 @@ package templates
 // having no test.
 
 import (
+	"github.com/reliant-labs/forge/internal/configproto"
+
 	"context"
 	"go/ast"
 	"go/parser"
@@ -411,7 +413,7 @@ var (
 // read; it fails loudly when it finds nothing.
 func parseConfigProtoFields(t *testing.T) map[string]protoConfigField {
 	t.Helper()
-	out, err := ProjectTemplates().Render("config.proto.tmpl", struct{ Module string }{Module: "example.com/proj"})
+	out, err := ProjectTemplates().Render("config.proto.tmpl", configproto.For("proj").TemplateData("example.com/proj"))
 	if err != nil {
 		t.Fatalf("render config.proto.tmpl: %v", err)
 	}

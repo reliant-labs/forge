@@ -25,7 +25,7 @@ import (
 // path with the root name stripped ("scaffold entity", "project audit", …).
 func walkTree(t *testing.T) map[string]*cobra.Command {
 	t.Helper()
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	out := map[string]*cobra.Command{}
 	var walk func(c *cobra.Command, prefix []string)
 	walk = func(c *cobra.Command, prefix []string) {
@@ -106,7 +106,7 @@ func TestScaffoldIsATopLevelVerb(t *testing.T) {
 // no args to the sweep's RunE, and reject an unknown noun as an unknown
 // COMMAND rather than swallowing it as a sweep argument.
 func TestBareScaffoldResolvesToTheSweep(t *testing.T) {
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 
 	resolved, rest, err := root.Find([]string{"scaffold"})
 	if err != nil {
@@ -163,12 +163,12 @@ func TestOldScaffoldSpellingsAreGone(t *testing.T) {
 	}
 
 	// Cobra must report an unknown command, not "did you mean".
-	if _, _, err := NewRootCmd().Find([]string{"project", "add", "entity"}); err != nil {
+	if _, _, err := newTestRootCmd(t).Find([]string{"project", "add", "entity"}); err != nil {
 		// Find only errors at root level; the real check is that the
 		// resolved command is `project` with leftover args, below.
 		t.Logf("Find reported: %v", err)
 	}
-	resolved, rest, _ := NewRootCmd().Find([]string{"project", "add", "entity"})
+	resolved, rest, _ := newTestRootCmd(t).Find([]string{"project", "add", "entity"})
 	if resolved.Name() != "project" {
 		t.Errorf("`forge project add entity` resolved to %q — nothing should match `add`", resolved.CommandPath())
 	}

@@ -645,7 +645,7 @@ func processEnvFixHint(name string, declared map[string]bool) string {
 	}
 	return fmt.Sprintf(
 		"declare %s in the config message annotated `option (forge.v1.frontend_config)` in "+
-			"proto/config/v1/config.proto, run `forge generate`, then read it as "+
+			"proto/<project>/config/v1/config.proto, run `forge generate`, then read it as "+
 			"`loadConfig().%s` (import { loadConfig } from \"@/lib/config_gen\"). "+
 			"If it is genuinely build-time-only and not deployment config, suppress the line with "+
 			"`// forge:lint-disable-next-line %s: <reason>`.",

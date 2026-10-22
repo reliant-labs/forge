@@ -371,7 +371,7 @@ func generateConfigKBodyPerBinary(rootFields []ConfigField, perBinary []BinaryCo
 	b.WriteString("# This project declares PER-BINARY configs: one typed instance below per\n")
 	b.WriteString("# binary (or binary subcommand), each carrying only the values THAT process\n")
 	b.WriteString("# reads. The schemas and their env projections are generated from\n")
-	b.WriteString("# proto/config/v1/config.proto;\n")
+	b.WriteString("# " + configProtoDir(projectName) + "/config.proto;\n")
 	b.WriteString("# add or change FIELDS in the proto, values here. Only fields this env pins\n")
 	b.WriteString("# are set — every other field inherits its schema default.\n\n")
 	b.WriteString(fmt.Sprintf("import %s\n\n", ConfigSchemaModule))
@@ -502,7 +502,7 @@ func generateEnvSecretsBody(sensitive []ConfigField, projectName, envName string
 	b.WriteString("#\n")
 	b.WriteString("# This is the `file` secret provider deploy/kcl/" + envName + "/main.k declares\n")
 	b.WriteString("# (`forge.FileSecrets {path = \"" + filepath.ToSlash(EnvSecretsFileName(envName)) + "\"}`).\n")
-	b.WriteString("# Every config field marked `sensitive: true` in proto/config/v1/config.proto\n")
+	b.WriteString("# Every config field marked `sensitive: true` in " + configProtoDir(projectName) + "/config.proto\n")
 	b.WriteString("# is projected into the manifest as a valueFrom.secretKeyRef, NOT an inline\n")
 	b.WriteString("# value — so its VALUE lives here, keyed by env-var NAME. forge reads this\n")
 	b.WriteString("# file to (a) layer the values onto host processes (`forge env up`) and (b) render\n")
@@ -605,7 +605,7 @@ func generateConfigKBody(fields []ConfigField, projectName, envName string) stri
 	var b strings.Builder
 	b.WriteString("# Per-environment app config VALUES (user-owned — edit here).\n")
 	b.WriteString("# The typed AppConfig schema + projection are generated from\n")
-	b.WriteString("# proto/config/v1/config.proto; this instance supplies the per-env values\n")
+	b.WriteString("# " + configProtoDir(projectName) + "/config.proto; this instance supplies the per-env values\n")
 	b.WriteString("# they project. Only fields this env pins are set — every other field\n")
 	b.WriteString("# inherits its AppConfig schema default.\n\n")
 	// The AppConfig schema lives in the sibling config_gen.k module; KCL does

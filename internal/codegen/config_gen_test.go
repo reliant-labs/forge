@@ -57,7 +57,7 @@ func TestGenerateConfigLoader_ThinAliasShim(t *testing.T) {
 		// Config IS the proto type via a type alias.
 		"type Config = configv1.AppConfig",
 		// Imports the project's generated proto config package and the lib.
-		`configv1 "example.com/proj/gen/config/v1"`,
+		`configv1 "example.com/proj/gen/proj/config/v1"`,
 		`forgeconfig "github.com/reliant-labs/forge/pkg/config"`,
 		// RegisterFlags / Load delegate to the descriptor-driven library.
 		"func RegisterFlags(cmd *cobra.Command)",

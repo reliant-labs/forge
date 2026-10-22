@@ -11,7 +11,7 @@ import (
 func execRoot(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	var buf bytes.Buffer
-	cmd := NewRootCmd()
+	cmd := newTestRootCmd(t)
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 	cmd.SetArgs(args)

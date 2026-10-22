@@ -44,7 +44,7 @@ func TestE2EAllBinaryConfigScaffoldCompiles(t *testing.T) {
 	// the message declaration itself must be unannotated). If the scaffold
 	// ever changes shape, this assertion should be the one that breaks, not
 	// a downstream compile failure with no explanation.
-	configProtoPath := filepath.Join(projectDir, "proto", "config", "v1", "config.proto")
+	configProtoPath := filepath.Join(projectDir, "proto", filepath.Base(projectDir), "config", "v1", "config.proto")
 	configProto := readFileE2E(t, configProtoPath)
 	const unannotatedDecl = "message AppConfig {\n  int32 port = 1"
 	if !strings.Contains(configProto, unannotatedDecl) {
@@ -95,7 +95,7 @@ func TestE2EAllBinaryConfigNoPrimaryBinding_RejectsAtGenerate(t *testing.T) {
 	projectDir := filepath.Join(dir, "orphanapp")
 	addCorpusForgePkgReplace(t, projectDir)
 
-	configProtoPath := filepath.Join(projectDir, "proto", "config", "v1", "config.proto")
+	configProtoPath := filepath.Join(projectDir, "proto", filepath.Base(projectDir), "config", "v1", "config.proto")
 	configProto := readFileE2E(t, configProtoPath)
 
 	// Bind the only config message to a DIFFERENT binary than the primary

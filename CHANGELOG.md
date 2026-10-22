@@ -68,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the type-checked package, the way #1109 resolves another package's,
   with the package's own types unqualified and the sibling file's imports
   carried over.
+- **`forge env down` removes every compose container the env owns, even when one recorded container is already gone.**
+  - Docker 29 reports a missing object as `error: no such object` (lower case); the ownership check only knew `No such object`. A container compose had already removed, which happens on every down because each service's ownership record also lists the dependencies its `up` started, so `clickstack`'s ID is in `otel-profiles`' record too, failed the check with `verify owned container … docker inspect: exit status 1`.
+  - That failure also returned at once, so every record after it was skipped: a ClickStack + otel-profiles stack left `otel-profiles` and `profiles-schema` running.
+  - Absence is now matched in any case, and one container that cannot be verified or removed no longer stops the rest: down settles every record, never removes an unverified container, keeps only the unsettled IDs recorded for the next down, and reports the failures together, labelled `compose containers:` (no longer `host infrastructure:`).
 - **`forge fix connect-errors` sees an As-style helper as a `*connect.Error` reader.**
   - It recognised `errors.As` itself, but not testify's `require.ErrorAs(t, err, &ce)` / `assert.ErrorAs`, a suite's `ErrorAs` method, or a project's own helper: each takes the target as `interface{}`. A handler package whose only reader was one of those got bare kinds, and its tests failed (reliant's `internal/handlers/approval`: four tests).
   - Any call handed a `**connect.Error` is now a reader, so that package keeps `svcerr.ToConnect(…)` and the report names the call.

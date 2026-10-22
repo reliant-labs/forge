@@ -24,6 +24,10 @@ import (
 // returns a value, and nothing in this file could carry one.
 type hostedSecretWriter interface {
 	Set(ctx context.Context, name, value string) (version uint32, err error)
+	// Create is Set with check-and-set 0: it fails when the name already has
+	// a version, which is what `forge secret import` needs so a re-run can
+	// never overwrite a value a person has since rotated.
+	Create(ctx context.Context, name, value string) (version uint32, err error)
 	List(ctx context.Context) ([]hostedSecretSummary, error)
 	Delete(ctx context.Context, name string) error
 }
@@ -57,10 +61,22 @@ type cloudSecretWriter struct {
 }
 
 func (w cloudSecretWriter) Set(ctx context.Context, name, value string) (uint32, error) {
+	return w.set(ctx, name, value, nil)
+}
+
+func (w cloudSecretWriter) Create(ctx context.Context, name, value string) (uint32, error) {
+	zero := uint32(0)
+	return w.set(ctx, name, value, &zero)
+}
+
+func (w cloudSecretWriter) set(ctx context.Context, name, value string, cas *uint32) (uint32, error) {
 	var resp struct {
 		Version uint32 `json:"version"`
 	}
 	req := map[string]any{"environmentId": w.environmentID, "name": name, "secretValue": value}
+	if cas != nil {
+		req["cas"] = *cas
+	}
 	if err := w.client.Call(ctx, procSetSecret, req, &resp); err != nil {
 		// cloud.Client errors quote the server's message, which never
 		// contains the request body — the value does not reach this error.

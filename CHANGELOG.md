@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge secret` writes and lists store-sourced secrets, and `forge env secrets
+  verify|adopt` migrate a Secret onto ESO (SF10).** A name a store-backed
+  `forge.ExternalSecret` (`forge.StoreSource`) reads or generates now lives in that
+  ExternalSecret's store, whatever the env's `secret_provider` is:
+  - `forge secret set` / `list` reach a `HostedStore` through the control plane's
+    write-only API, a `GCPSecretManagerStore` with Application Default
+    Credentials, and a self-run `OpenBaoStore` by signing in as the
+    `forge-secret-writer` service account with a ten-minute token minted from
+    your own kube context (design N2): no credential is stored, and cluster
+    access is all it needs. `--store` picks one when two stores declare a name.
+  - `forge secret import` copies existing values in, create-only (check-and-set
+    0; for Secret Manager, "no usable version yet"), so a re-run can never
+    overwrite a value that was rotated since. `--from <ns>/<secret> --map
+    key=NAME` reads a cluster Secret with your kube context; a NAME with a value
+    on stdin or `--from-file` imports one. `--to-bootstrap [--project]` writes a
+    `BootstrapSecret`'s Secret Manager container. `--dry-run` reads and reports.
+  - `forge env secrets verify <env> [<secret>]` compares a live Secret with the
+    store's copy per key, and prints `match` / `no-match` and which side is
+    missing: by default against `<name>-eso-shadow` (a source with `shadow =
+    True`), or `--against gsm:<project>` for the Secret Manager parity check.
+  - `forge env secrets adopt <env> <ns>/<secret>` strips the stale
+    `kubectl.kubernetes.io/last-applied-configuration` annotation (a full copy of
+    the applied values) and asserts nothing owns the Secret by ownerReference.
+
+  No command prints a secret value or any digest of one, and none takes a value
+  as an argument: values come from stdin, `--from-file`, or a store or cluster
+  Secret you already hold. Both are pinned by tests that sweep every command's
+  output and error for a canary in raw, encoded and hashed form, on success and
+  on failure paths where the remote echoes the request.
+
 - **A config message's `buf.validate` rules are checked as it loads.** Field
   rules (a port's range, a positive duration) and message-level CEL
   (`BILLING_PROVIDER=stripe` needs `STRIPE_SECRET_KEY`) on a `proto/config`

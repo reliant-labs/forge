@@ -44,16 +44,29 @@ var pinDelegateOnlyExcluded = map[string]bool{
 	"env delete": true, "env start": true, "env stop": true,
 }
 
+// pinDelegateJudges are the commands that JUDGE the project — the local CI
+// gate and its checks, and the linters — whose verdict is a function of the
+// forge that ran it: the analyzers, the gate's step list and tool pins, and
+// the forge.yaml schema they validate first are all embedded in the binary.
+// An older forge failed reliant's `forge ci gate --list` outright
+// (`unknown key "lint.tracing"`) and would otherwise judge with rules the
+// project did not pin.
+var pinDelegateJudges = map[string]bool{
+	"lint": true, "ci gate": true, "ci verify-generated": true, "ci validate-kcl": true,
+	"ci migration-safety": true, "ci vuln-scan": true,
+}
+
 // pinDelegateOnlyFor reports whether rel is a command that is not pin-gated
 // (it refuses nothing) but whose output is a function of the forge that ran
 // it: it renders the project's KCL, and forge's KCL schemas are embedded in
-// the binary. An older forge evaluates a newer project's KCL against schemas
+// the binary (an older forge evaluates a newer project's KCL against schemas
 // missing fields the project is entitled to, and KCL blames the project's
-// line (`Cannot add member 'release_dependencies' to schema ...`). These are
-// handed to the pinned forge instead of failing that way.
+// line: `Cannot add member 'release_dependencies' to schema ...`), or it is
+// one of pinDelegateJudges. These are handed to the pinned forge instead of
+// failing, or judging, that way.
 func pinDelegateOnlyFor(rel string) bool {
 	switch {
-	case rel == "kcl" || strings.HasPrefix(rel, "kcl "), rel == "doctor", rel == "project frontends":
+	case rel == "kcl" || strings.HasPrefix(rel, "kcl "), rel == "doctor", rel == "project frontends", pinDelegateJudges[rel]:
 		return true
 	case strings.HasPrefix(rel, "env "):
 		sub := strings.Join(strings.Fields(rel)[:2], " ")

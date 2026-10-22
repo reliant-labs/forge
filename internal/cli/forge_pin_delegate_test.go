@@ -115,7 +115,9 @@ func TestDelegation_RewritingCommandRunsUnderThePinnedForge(t *testing.T) {
 func TestDelegation_RenderCommandsAreHandedOver(t *testing.T) {
 	skewedProject(t)
 	t.Setenv(forgedelegate.MarkerEnv, "")
-	for _, args := range [][]string{{"env", "render", "dev"}, {"env", "shape", "dev"}, {"kcl", "eval", "x.k"}, {"scaffold", "service", "billing"}, {"component", "install", "button"}} {
+	// lint and the gate judge the project with the binary's own analyzers,
+	// step list and forge.yaml schema (pinDelegateJudges).
+	for _, args := range [][]string{{"env", "render", "dev"}, {"env", "shape", "dev"}, {"kcl", "eval", "x.k"}, {"scaffold", "service", "billing"}, {"component", "install", "button"}, {"lint"}, {"ci", "gate", "--list"}} {
 		h, _ := armDelegation(t)
 		if _, err := runCheck(t, args...); err != nil {
 			t.Errorf("forge %v: %v", args, err)
@@ -126,11 +128,12 @@ func TestDelegation_RenderCommandsAreHandedOver(t *testing.T) {
 	}
 }
 
-// Reading is never rerouted: plans, checks, lists and inspection run here.
+// Reading is never rerouted: plans, lists and inspection run here. (Judging
+// the project — lint, the CI gate — is not reading: see pinDelegateJudges.)
 func TestDelegation_ReadOnlyRunsStayLocal(t *testing.T) {
 	skewedProject(t)
 	t.Setenv(forgetDelegated(), "")
-	for _, args := range [][]string{{"generate", "--dry-run"}, {"generate", "--check"}, {"scaffold", "--dry-run"}, {"env", "list"}, {"lint"}, {"project", "audit"}, {"version"}, {"skill", "list"}} {
+	for _, args := range [][]string{{"generate", "--dry-run"}, {"generate", "--check"}, {"scaffold", "--dry-run"}, {"env", "list"}, {"project", "audit"}, {"version"}, {"skill", "list"}} {
 		h, installs := armDelegation(t)
 		if _, err := runCheck(t, args...); err != nil {
 			t.Errorf("forge %v: %v", args, err)
@@ -224,9 +227,10 @@ func TestDelegationTargetFor_PrefersLinkedCheckout(t *testing.T) {
 func TestPinDelegateOnlyFor(t *testing.T) {
 	for rel, want := range map[string]bool{
 		"env render": true, "env shape": true, "env config": true, "env diff": true, "env up": true,
-		"kcl eval": true, "doctor": true,
+		"kcl eval": true, "doctor": true, "project frontends": true,
+		"lint": true, "ci gate": true, "ci verify-generated": true,
 		"env list": false, "env down": false, "env ps": false, "env devstack": false,
-		"lint": false, "version": false, "project audit": false, "generate": false,
+		"version": false, "project audit": false, "generate": false, "ci summarize": false, "slot run": false,
 	} {
 		if got := pinDelegateOnlyFor(rel); got != want {
 			t.Errorf("pinDelegateOnlyFor(%q) = %v, want %v", rel, got, want)

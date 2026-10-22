@@ -27,6 +27,9 @@ import (
 //   - root.go called rootCommands, which only the codegen lane defines (and
 //     its registerCommand registry had no file left to use it).
 //
+// `project new` itself exits non-zero when that first generate fails, so the
+// scaffold step fails the row before the explicit generate does.
+//
 // Each row adds every component its feature allows — a service and a
 // frontend — so the scaffold's generate run exercises as much of the shape
 // as it can. codegen and frontend rows drop the component they leave out:
@@ -81,11 +84,8 @@ func TestE2EProjectNewDisableShapes(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
 			args := append([]string{"project", "new", "shape", "--mod", "example.com/shape", "--disable", tc.disable, "--skip-tools"}, tc.components...)
-			created := runCmdKeep(t, dir, forgeBin, args...)
-			// project new exits 0 when its own generate run fails.
-			if strings.Contains(created, "code generation failed") {
-				t.Fatalf("`forge %s` could not generate its own scaffold:\n%s", strings.Join(args, " "), created)
-			}
+			// project new exits non-zero when its own generate run fails.
+			runCmd(t, dir, forgeBin, args...)
 			projectDir := filepath.Join(dir, "shape")
 
 			runCmdTimeout(t, projectDir, 10*time.Minute, forgeBin, "generate")

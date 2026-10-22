@@ -44,8 +44,7 @@ export function useEvent<K extends keyof EventMap>(
   });
 
   useEffect(() => {
-    return bus.on(event, ((payload: EventMap[K]) => handlerRef.current(payload)) as (
-      payload: EventMap[K],
-    ) => void);
+    return bus.on(event, ((payload: EventMap[K]) =>
+      handlerRef.current(payload)) as (payload: EventMap[K]) => void);
   }, [bus, event]);
 }

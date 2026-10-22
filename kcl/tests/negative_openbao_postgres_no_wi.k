@@ -12,5 +12,5 @@ output = forge.render(forge.Bundle {
     openbao = forge.OpenBao {
         storage = forge.OpenBaoPostgres {password = forge.BootstrapSecret {name = "p"}, cloudsql_instance = "a:b:c"}
     }
-    
+
 })

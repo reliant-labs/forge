@@ -236,3 +236,49 @@ func TestComponentDrift_UndeclaredSaysHowToMarkServed(t *testing.T) {
 		t.Errorf("findings = %+v, want one naming the serves list for reaper", out)
 	}
 }
+
+// TestComponentDrift_ComposedProcessesDeclareTheirKind: control-plane's
+// shape. Its workers all run in `workers`, a process it composes itself, and
+// its operator runs through its own subcommand under a process name. Neither
+// is drift — `forge scaffold` reads the file the same way and declares no
+// workload for them — and neither process is an orphan. A worker with a
+// workload of its own, and a job on a subcommand of its own making, are
+// judged as before.
+func TestComponentDrift_ComposedProcessesDeclareTheirKind(t *testing.T) {
+	dir := scaffoldedWorkloadsProject(t, "demo", false)
+	withWorkers(t, dir, "reaper", "billing_sweep", "sweeper", "spend_snapshot")
+	appendWorkloads(t, dir, `
+_demo_build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}
+
+background = fw.Workload {
+    name = "demo-workers"
+    kind = "worker"
+    build = _demo_build
+    args = ["workers"]
+}
+
+spend = fw.Workload {
+    name = "spend-snapshotter"
+    kind = "worker"
+    build = _demo_build
+    args = ["spend_snapshot"]
+}
+
+prune = fw.Workload {
+    name = "prune"
+    kind = "job"
+    build = _demo_build
+    args = ["cloudsql", "prune-backups"]
+}
+`)
+	findings, err := collectComponentDrift(dir, &config.ProjectConfig{Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := undeclaredNames(findings); len(got) != 0 {
+		t.Errorf("undeclared = %v, want none (reaper, billing_sweep and sweeper run in demo-workers, spend_snapshot in its own subcommand)", got)
+	}
+	if got := strings.Join(orphanNames(findings), ","); got != "prune" {
+		t.Errorf("orphans = %q, want only prune (demo-workers is the project's process, spend-snapshotter runs spend_snapshot)", got)
+	}
+}

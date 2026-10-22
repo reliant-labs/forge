@@ -13,5 +13,5 @@ output = forge.render(forge.Bundle {
     openbao = forge.OpenBao {
         consumers = [forge.OpenBaoConsumer {name = "deployer", workload = "deployer", grants = [forge.OpenBaoGrant {path = "secret/data/envs/*", capabilities = ["read"]}]}]
     }
-    
+
 })

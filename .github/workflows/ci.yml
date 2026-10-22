@@ -747,6 +747,10 @@ jobs:
           GOOS: windows
           GOARCH: arm64
         run: go build -o "$RUNNER_TEMP/forge-arm64.exe" ./cmd/forge
+      # The postgres archive pkg/pgtest boots, from the cache rather than
+      # Maven Central (see the action): an uncached fetch here is how a
+      # registry 404 for a published version turned this job red.
+      - uses: ./.github/actions/embedded-postgres-cache
       - name: Go tests (-short)
         env:
           CGO_ENABLED: "0"

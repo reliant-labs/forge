@@ -69,7 +69,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that changes every sync, and one namespace configuring one store kind two ways.
   Nothing renders for a Bundle with no `source`.
 
-
 - **A drained Connect stream parked in `Receive` actually ends, and handlers can
   stop their own readers: `serverkit.AbortReceive(ctx)`.** A server-side
   `Receive` reads the request body and no context wakes it; Connect closes the
@@ -118,6 +117,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the path that reached it) every 10s, and again when it finishes.
   Post-build readiness is unchanged. Existing projects: `forge generate`.
 
+- **`forgeconv-handler-connect-error`: every `connect.NewError` in a handler
+  package is a warning.** A `*connect.Error` is never redacted — svcerr's
+  interceptor passes it through as built — so `connect.NewError(code, err)`
+  publishes `err.Error()` and overrides any code `err` already carried. Each
+  finding says which kind it is: a fixed message (`forge fix connect-errors`
+  rewrites it with the same code and message), an error value (use
+  `svcerr.WrapOr`), or `nil`. Generated and test files are skipped. It warns
+  by default so no project goes red on the bump; set
+  `lint.rules: {forgeconv-handler-connect-error: error}` once migrated.
+  **Changed with it:** `forgeconv-no-handler-error-mapping` no longer skips a
+  file that imports svcerr. One `svcerr.Wrap` in a file — or a codemod adding
+  the import — used to silence every mapper beside it without fixing one; a
+  project whose mappers were hidden that way sees them as warnings now.
+
 - **The release shape records store-backed secrets (`pkg/release`, SF3).** A shape
   gains four optional fields a control plane reads to serve a store-backed
   `forge.ExternalSecret`: `store_secrets` (per cluster, namespace and store, the
@@ -137,6 +150,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plane that does not name it, and omitted when empty, so every shape recorded before
   them encodes and hashes exactly as it did.
 
+- **`forge fix connect-errors`: hand-built Connect errors onto svcerr, without
+  changing a code or a message.** It rewrites every `connect.NewError` whose
+  client-visible code and message an svcerr spelling reproduces exactly —
+  `errors.New("chat not found")` under `CodeNotFound` → `svcerr.NotFound("chat")`,
+  other NotFound prose → `svcerr.WithMessage(svcerr.ErrNotFound, …)`,
+  `fmt.Errorf(f, args…)` without `%w` or an error argument →
+  `svcerr.<Kind>(fmt.Sprintf(f, args…))` — and, in the tests of a package that
+  now returns bare kinds and of its importers, `connect.CodeOf` →
+  `svcerr.Code`. A bare kind is written only in a handler package, where the
+  context is `error` and nothing reads a `*connect.Error` in process in the
+  package, its tests or an importer's code; everywhere else (interceptors, `*connect.Error`
+  results, a package such a reader sees) it is `svcerr.ToConnect(…)`, and a
+  re-run drops the wrapper once the reader reads `svcerr.Code`. Every site it
+  cannot rewrite exactly — an error value (`svcerr.WrapOr` is the reviewed
+  fix), nil, a computed message or code — is listed with its reason. It is
+  type-checked (`go/packages`), idempotent, `--dry-run` prints each rewrite as
+  `file:line: old → new`, and its proof is a corpus whose real-client wire
+  output is identical before and after. Over reliant: 902 sites rewritten (334
+  to bare kinds, 568 kept a `*connect.Error`), 71 test assertions, 341 sites
+  listed, and its build, vet and handler tests pass unchanged. On request
+  only (`forge project upgrade` does not run it); the playbook is
+  `forge skill load migrations/v0.1.47/connect-errors`.
+
 - **The schema for platform secrets: `forge.OpenBao`, `forge.ExternalSecretsOperator`
   and store-backed `forge.ExternalSecret`s (declarations only, nothing renders yet).**
   Two opt-in components on the Bundle, like `observability` and `identity`:
@@ -145,7 +181,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   writer) and `external_secrets_operators = [forge.ExternalSecretsOperator {cluster}]`
   (one hardened, cluster-wide ESO per cluster; a second for one cluster is refused).
   A `forge.ExternalSecret` gains `source = forge.StoreSource {store, data, templates,
-  generate, pin, immutable, refresh, creation_policy, shadow}` over a `HostedStore`,
+generate, pin, immutable, refresh, creation_policy, shadow}` over a `HostedStore`,
   `OpenBaoStore` or `GCPSecretManagerStore`, and `out_of_band_reason` for the ones
   that stay out of band once any is store-backed. `forge.BootstrapSecret` and
   `bootstrap_source = forge.GCPSecretManager {project} | forge.OutOfBand {}` name the
@@ -184,7 +220,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not be redeemed by `/auth/reset`.
 - **`pkg/secretaccess` and `pkg/secretgen`: the pure halves of store-backed
   secrets.** `secretaccess.Derive` maps `{scope, clusters, per-namespace secret
-  names}` to OpenBao JWT auth mounts (`jwt-<cluster>`), roles (one per cluster
+names}` to OpenBao JWT auth mounts (`jwt-<cluster>`), roles (one per cluster
   and namespace, bound to the namespace's `reliant-secrets` service account and
   the cluster's audience, issuing 10 minute batch tokens) and ACL policies that
   grant `read` on exact paths only: no globs, no list, no metadata, unless a
@@ -472,6 +508,21 @@ generate` runs the same check. `project new` never took a heavy slot and still
 
 ### Fixed
 
+- **A bridged project no longer rebuilds forge for a file no build reads.**
+  forge's bridge-skew check counted every dirty path in the linked forge
+  checkout as "uncommitted changes the binary was not built from" and handed
+  each command to a forge rebuilt from the checkout, keyed on the newest
+  edit's mtime. A file that cannot reach a build — the e2e shard's test2json
+  log, growing in the checkout's root for the whole run — so rebuilt forge on
+  every command, and a re-run of `forge generate` ran a different binary and
+  never recorded its fixed point (`TestE2EFixtureCorpusCRUDLifecycle`,
+  `CPForgeShaped`, `ZeroService` red on main). Now only a source edit counts:
+  a Go build file, or any file beneath a directory holding a non-test Go
+  package (where `//go:embed` reaches: templates, KCL, skills). A cached
+  bridge build is also keyed on its Go settings (`GOFLAGS`, `CGO_ENABLED`,
+  `GOOS`/`GOARCH`, …) and is never replaced once published, so a process can
+  no longer have the binary it runs swapped for a differently-built one. The
+  e2e shard writes its files under `$RUNNER_TEMP`, outside the checkout.
 - **Every `forge scaffold <noun>` leaves the project lint-green, with no
   `forge generate` after it.** `scaffold frontend` wrote
   `proto/config/v1/<fe>_config.proto` and stopped, so `gen/forge_descriptor.json`

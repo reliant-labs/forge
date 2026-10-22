@@ -472,9 +472,10 @@ func TestE2EFixtureCorpusKalshiShaped(t *testing.T) {
 
 	// ── Workers: snake_case multi-word names, one cron ────────────────
 	// --no-generate: scaffold-only; one explicit generate at the end
-	// (the parallel-agent staging pattern the flag exists for). Note the
-	// flag is a `scaffold worker` affordance only — `scaffold package`
-	// below has no such flag and must not be passed one.
+	// (the parallel-agent staging pattern the flag exists for). Every
+	// scaffold below stages this way, `scaffold package` included: since
+	// #1099 it ends with a generate run, and here that run would hit the
+	// refusal this fixture provokes on purpose (step 1) one step early.
 	runCmd(t, projectDir, forgeBin, "scaffold", "worker", "engine_shadow", "--no-generate")
 	runCmd(t, projectDir, forgeBin, "scaffold", "worker", "settlement_processor", "--no-generate")
 	runCmd(t, projectDir, forgeBin, "scaffold", "worker", "book_snapshotter",
@@ -528,7 +529,7 @@ func (w *Worker) RunContext(ctx context.Context) error {
 
 	// marketfeed: the concrete adapter satisfying the worker-local
 	// interface, living in a third package.
-	runCmd(t, projectDir, forgeBin, "scaffold", "package", "marketfeed", "--type", "adapter")
+	runCmd(t, projectDir, forgeBin, "scaffold", "package", "marketfeed", "--type", "adapter", "--no-generate")
 	writeCorpusFile(t, filepath.Join(projectDir, "internal", "marketfeed", "feed.go"), `package marketfeed
 
 import "context"

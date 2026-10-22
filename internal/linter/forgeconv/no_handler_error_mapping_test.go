@@ -61,18 +61,19 @@ func TestHandlerErrorMapping_CleanFixture(t *testing.T) {
 	}
 }
 
-// TestHandlerErrorMapping_SvcerrImportSuppresses verifies that a file
-// already importing forge/pkg/svcerr is treated as "in migration" and
-// the rule stays quiet — even when a leftover toConnectError is still
-// present. Avoids double-warning during a multi-PR migration.
-func TestHandlerErrorMapping_SvcerrImportSuppresses(t *testing.T) {
+// TestHandlerErrorMapping_SvcerrImportDoesNotSuppress: importing
+// forge/pkg/svcerr does not silence the rule. It used to, so one
+// svcerr.Wrap in a file — or a codemod adding the import — hid every
+// mapper beside it without fixing one (F-P7a-2a: reliant's 11 findings
+// would have gone quiet the moment `forge fix connect-errors` ran).
+func TestHandlerErrorMapping_SvcerrImportDoesNotSuppress(t *testing.T) {
 	res, err := LintHandlerErrorMapping(filepath.Join("testdata", "handlers_uses_svcerr"))
 	if err != nil {
 		t.Fatalf("LintHandlerErrorMapping: %v", err)
 	}
 	got := findingsForRule(res.Findings, "forgeconv-no-handler-error-mapping")
-	if len(got) != 0 {
-		t.Fatalf("expected 0 findings when svcerr is imported, got %d:\n%s", len(got), res.FormatText())
+	if len(got) != 1 || !strings.Contains(got[0].Message, "toConnectError") {
+		t.Fatalf("expected the toConnectError mapper beside svcerr.Wrap to be flagged once, got %d:\n%s", len(got), res.FormatText())
 	}
 }
 

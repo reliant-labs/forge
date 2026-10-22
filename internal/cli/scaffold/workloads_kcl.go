@@ -62,6 +62,14 @@ func declareWorkloadInKCL(root string, cfg *config.ProjectConfig, spec component
 			fmt.Printf("\n📝 %s\n", codegen.ServesChoiceHint(cfg.ModulePath, cfg.Name, comp))
 			return
 		}
+		// A project that runs its components of this kind in processes it
+		// composes itself — control-plane mounts every service into
+		// `public-api` or `admin-api` — gets no workload per component:
+		// the new one belongs in one of those, which only its Go knows.
+		if composed := codegen.ComposedProcesses(declared, cfg.Name, inv, comp); len(composed) > 0 {
+			fmt.Printf("\n📝 %s\n", codegen.ComposedProcessHint(cfg.ModulePath, cfg.Name, comp, composed))
+			return
+		}
 	}
 
 	applied, err := codegen.AppendWorkloadStanza(root, cfg.ModulePath, cfg.Name, comp)

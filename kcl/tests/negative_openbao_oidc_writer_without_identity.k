@@ -14,5 +14,5 @@ output = forge.render(forge.Bundle {
     openbao = forge.OpenBao {
         writer = forge.OpenBaoOIDCWriter {role = "admin"}
     }
-    
+
 })

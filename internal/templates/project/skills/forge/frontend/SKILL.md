@@ -166,8 +166,6 @@ Name the workload, never the hostname:
 
 Unknown names are refused at load; on a non-hosted env so is a URL forge cannot know at render time (typically a host service without `listen_ports`, whose port `forge env up` assigns after rendering).
 
-**A frontend whose code is in another repo** (a sibling `path = "../other/web"` in dev, or a source pin) never gets a file written into that repo. forge renders its document to `.forge/runtime-config/<frontend>/config.js` in the declaring project, and `forge env up` passes the path to its dev server as `FORGE_RUNTIME_CONFIG_FILE`. The frontend's `vite.config.ts` serves it with `forgeRuntimeConfig()` from `@reliantlabs/forge-web-runtime/vite` (the vite-spa scaffold includes it; it does nothing when the variable is unset).
-
 A hosted site's own hostname is not a field: `forge domain add` (see `deploy`).
 
 The backend half uses the same reference. A workload's `CORS_ORIGINS` names the site, not its URL:

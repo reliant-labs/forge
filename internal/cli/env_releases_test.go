@@ -117,7 +117,7 @@ func runReleases(t *testing.T, deps releasesDeps, args ...string) (string, error
 	return out.String(), err
 }
 
-func decode(t *testing.T, out string) map[string]any {
+func decodeDoc(t *testing.T, out string) map[string]any {
 	t.Helper()
 	var m map[string]any
 	if err := json.Unmarshal([]byte(out), &m); err != nil {
@@ -132,7 +132,7 @@ func TestEnvReleasesList_JSONHasTheEnvelopeAndMarksTheRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := decode(t, out)
+	doc := decodeDoc(t, out)
 	if doc["schema"] != schemaReleasesList || doc["ok"] != true || doc["exit_code"] != float64(0) || doc["backend"] != "local" {
 		t.Errorf("head = %v %v %v %v", doc["schema"], doc["ok"], doc["exit_code"], doc["backend"])
 	}
@@ -173,7 +173,7 @@ func TestEnvReleasesList_LimitSinceAndFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := decode(t, out)
+	doc := decodeDoc(t, out)
 	if doc["truncated"] != true {
 		t.Errorf("a capped list must say so: %v", doc["truncated"])
 	}
@@ -193,7 +193,7 @@ func TestEnvReleasesList_LimitSinceAndFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := decode(t, out)["entries"].([]any); len(got) != 0 {
+	if got := decodeDoc(t, out)["entries"].([]any); len(got) != 0 {
 		t.Errorf("entries = %v", got)
 	}
 }
@@ -213,7 +213,7 @@ func TestEnvReleasesList_BadInputIsExit1AndAFailureDocument(t *testing.T) {
 		if strings.Contains(args[len(args)-2], "fields") {
 			continue // rejected before any document is written
 		}
-		doc := decode(t, out)
+		doc := decodeDoc(t, out)
 		if doc["ok"] != false || doc["exit_code"] != float64(exitWrong) || doc["error"] == "" {
 			t.Errorf("%v: failure document = %v", args, doc)
 		}
@@ -229,7 +229,7 @@ func TestEnvReleasesList_AnUnreachableLedgerIsExit2(t *testing.T) {
 	if err == nil || exitCodeForError(err) != exitUndetermined {
 		t.Fatalf("err=%v code=%d", err, exitCodeForError(err))
 	}
-	doc := decode(t, out)
+	doc := decodeDoc(t, out)
 	if doc["exit_code"] != float64(exitUndetermined) || doc["ok"] != false {
 		t.Errorf("document = %v", doc)
 	}
@@ -254,7 +254,7 @@ func TestEnvReleasesShow_CommitsPRsAndChangesForALocalPromotion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := decode(t, out)
+	doc := decodeDoc(t, out)
 	entry := doc["entry"].(map[string]any)
 	if entry["version"] != "v2" || entry["direction"] != "ahead" || entry["gate_verdict"] != "failed" {
 		t.Errorf("entry = %v", entry)
@@ -298,7 +298,7 @@ func TestEnvReleasesShow_ARollbackListsWhatItTakesAway(t *testing.T) {
 	if asked != relSHA('a')+".."+relSHA('c') {
 		t.Errorf("git asked for %q", asked)
 	}
-	doc := decode(t, out)
+	doc := decodeDoc(t, out)
 	if entry := doc["entry"].(map[string]any); entry["direction"] != "behind" {
 		t.Errorf("entry = %v", entry)
 	}
@@ -320,7 +320,7 @@ func TestEnvReleasesShow_GitFailureIsANoteNotAnError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := decode(t, out)
+	doc := decodeDoc(t, out)
 	if note, _ := doc["commits_note"].(string); !strings.Contains(note, "bad object") {
 		t.Errorf("commits_note = %q", note)
 	}
@@ -335,7 +335,7 @@ func TestEnvReleasesShow_UnknownRefIsExit1(t *testing.T) {
 	if err == nil || exitCodeForError(err) != exitWrong {
 		t.Fatalf("err=%v code=%d", err, exitCodeForError(err))
 	}
-	if doc := decode(t, out); doc["ok"] != false || !strings.Contains(doc["error"].(string), "v99") {
+	if doc := decodeDoc(t, out); doc["ok"] != false || !strings.Contains(doc["error"].(string), "v99") {
 		t.Errorf("document = %v", doc)
 	}
 }
@@ -360,7 +360,7 @@ func TestEnvReleasesAt_Brackets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := decode(t, out)
+	doc := decodeDoc(t, out)
 	if doc["schema"] != schemaReleasesAt || doc["resolved_from"] != "timestamp" {
 		t.Errorf("head = %v", doc)
 	}
@@ -379,7 +379,7 @@ func TestEnvReleasesAt_Brackets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc = decode(t, out)
+	doc = decodeDoc(t, out)
 	if doc["before_history"] != true || doc["live"] != nil || doc["ok"] != true {
 		t.Errorf("before the first release: %v", doc)
 	}
@@ -391,7 +391,7 @@ func TestEnvReleasesAt_RelativeNowAndFuture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if live := decode(t, out)["live"].(map[string]any); live["version"] != "v1" || live["live"] != true {
+	if live := decodeDoc(t, out)["live"].(map[string]any); live["version"] != "v1" || live["live"] != true {
 		t.Errorf("live now = %v", live)
 	}
 	if _, err := runReleases(t, deps, "at", "prod", "2027-01-01", "--json"); err == nil || exitCodeForError(err) != exitWrong {
@@ -408,7 +408,7 @@ func TestEnvReleasesAt_ATraceIDNeedsAControlPlane(t *testing.T) {
 	if err == nil || exitCodeForError(err) != exitWrong {
 		t.Fatalf("err=%v", err)
 	}
-	if doc := decode(t, out); !strings.Contains(doc["error"].(string), "trace id") {
+	if doc := decodeDoc(t, out); !strings.Contains(doc["error"].(string), "trace id") {
 		t.Errorf("document = %v", doc)
 	}
 }
@@ -505,7 +505,7 @@ func TestEnvReleasesList_CloudCarriesWhoViaAndHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := decode(t, out)
+	doc := decodeDoc(t, out)
 	if doc["backend"] != "cloud" || doc["ledger"] != "https://cp.example" {
 		t.Errorf("backend = %v %v", doc["backend"], doc["ledger"])
 	}
@@ -529,7 +529,7 @@ func TestEnvReleasesList_AControlPlaneWithoutHealthStillListsAndWarns(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := decode(t, out)
+	doc := decodeDoc(t, out)
 	if _, has := doc["entries"].([]any)[0].(map[string]any)["health"]; has {
 		t.Error("an unavailable verdict must be absent, never invented")
 	}
@@ -547,7 +547,7 @@ func TestEnvReleasesAt_ATraceIDResolvesThroughTheControlPlane(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := decode(t, out)
+	doc := decodeDoc(t, out)
 	if doc["resolved_from"] != "trace" {
 		t.Errorf("resolved_from = %v", doc["resolved_from"])
 	}
@@ -574,7 +574,7 @@ func TestEnvReleasesShow_CloudUsesCompareReleases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := decode(t, out)
+	doc := decodeDoc(t, out)
 	ch := doc["changes"].(map[string]any)
 	art := ch["artifacts"].([]any)[0].(map[string]any)
 	if art["change"] != "modified" || art["name"] != "api" || ch["unchanged_artifacts"] != float64(3) || ch["unchanged_objects"] != float64(9) {
@@ -596,7 +596,7 @@ func TestEnvReleasesShow_ACompareFailureIsANoteNotAnError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := decode(t, out)
+	doc := decodeDoc(t, out)
 	if doc["changes"] != nil || !strings.Contains(doc["changes_note"].(string), "could not compare") {
 		t.Errorf("document = %v", doc)
 	}

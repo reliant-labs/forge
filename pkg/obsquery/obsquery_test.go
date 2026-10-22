@@ -495,3 +495,61 @@ func TestOperatorSource(t *testing.T) {
 		}
 	}
 }
+
+func TestTraceOrderDurationDesc(t *testing.T) {
+	newest, err := TraceQuery{Scope: scope(), Limit: 5}.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(newest.SQL, "ORDER BY start DESC, trace_id DESC") {
+		t.Errorf("default order is not newest first:\n%s", newest.SQL)
+	}
+
+	q := TraceQuery{Scope: scope(), Limit: 5, Order: OrderDurationDesc}
+	st, err := q.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertParameterized(t, st)
+	if !strings.Contains(st.SQL, "ORDER BY "+traceDurNanoExpr+" DESC, start DESC, trace_id DESC") {
+		t.Errorf("not slowest first:\n%s", st.SQL)
+	}
+
+	// The cursor continues the slowest-first order by (duration, start, id), and
+	// is refused by a query of the other order.
+	tok := q.NextDurationCursor(t0, "abc", 1234.5)
+	c, err := DecodeTraceCursor(tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DurNano != 1234500000 {
+		t.Errorf("DurNano = %d, want 1234500000", c.DurNano)
+	}
+	q.Cursor = c
+	paged, err := q.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertParameterized(t, paged)
+	if !strings.Contains(paged.SQL, "("+traceDurNanoExpr+", start, trace_id) < (") {
+		t.Errorf("duration keyset missing:\n%s", paged.SQL)
+	}
+	other := TraceQuery{Scope: scope(), Limit: 5, Cursor: c}
+	if _, err := other.Compile(); !isInvalid(err) {
+		t.Errorf("a duration cursor continued a newest-first query: %v", err)
+	}
+
+	if _, err := (TraceQuery{Scope: scope(), Limit: 5, Order: "sideways"}).Compile(); !isInvalid(err) {
+		t.Errorf("unknown order accepted: %v", err)
+	}
+}
+
+// A newest-first token must not change when the order knob is added: tokens
+// minted by a release without Order keep working through a rollout.
+func TestTraceNewestCursorFingerprintIsUnchangedByOrder(t *testing.T) {
+	q := TraceQuery{Scope: scope(), Limit: 5}
+	want := fingerprint(append(q.Scope.Fingerprint(), "false", "0", "")...)
+	if got := q.Fingerprint(); got != want {
+		t.Errorf("newest-first fingerprint changed: %q != %q", got, want)
+	}
+}

@@ -332,8 +332,10 @@ mkdir -p "$NOTES_DIR"
   --generated-out "$NOTES_DIR/generated.md"
 
 # The same prettier the pre-commit hook runs (pinned in .pre-commit-config.yaml,
-# held equal to templates.PrettierVersion by TestPrettierVersionIsPinnedEverywhere),
-# so the release commit passes the hook it will meet on main.
+# held equal to templates.PrettierVersion by TestPrettierVersionIsPinnedEverywhere).
+# This is CHANGELOG.md's ONLY formatter: the pre-commit hooks exclude the file,
+# because no pull request may edit it to fix what they would report. The whole
+# file is formatted, so drift that reached main any other way is fixed here.
 format_changelog() {
   if [ -n "${FORGE_RELEASE_PRETTIER:-}" ]; then
     $FORGE_RELEASE_PRETTIER "$CHANGELOG_FILE"

@@ -3,9 +3,11 @@ package deploytarget
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/statefile"
@@ -88,7 +90,7 @@ func containerLabels(ctx context.Context, runner commandRunner, id string) (map[
 	if err != nil {
 		// A previously removed ID is safe to forget; an unavailable daemon or
 		// permission error is not proof of absence and must preserve the record.
-		if strings.Contains(string(out), "No such object:") || strings.Contains(string(out), "No such container:") {
+		if containerAbsent(out) {
 			return nil, nil
 		}
 		return nil, err
@@ -103,6 +105,17 @@ func containerLabels(ctx context.Context, runner commandRunner, id string) (map[
 		return nil, fmt.Errorf("inspect %s returned %d containers", id, len(rows))
 	}
 	return rows[0].Config.Labels, nil
+}
+
+// containerAbsent reports whether a failed `docker inspect` says the object
+// does not exist. The match is case-insensitive because the CLI changed the
+// spelling: Docker ≤ 28 prints "Error: No such object: <id>", Docker 29 prints
+// "error: no such object: <id>". A case-sensitive match turned every
+// container compose had already replaced into a hard error, and env down
+// stopped before reaching the rest of the stack.
+func containerAbsent(out []byte) bool {
+	msg := strings.ToLower(string(out))
+	return strings.Contains(msg, "no such object") || strings.Contains(msg, "no such container")
 }
 
 // OwnedRunning discovers a compose-only stack without relying on a heartbeat
@@ -143,42 +156,76 @@ func (p ComposeProvider) OwnedRunning(ctx context.Context, env string) (bool, er
 // StopOwned removes only this checkout/env's recorded, revalidated container
 // IDs. Volumes are deliberately retained (docker rm without -v); no compose
 // down, prune, name inference, or recreation from changed YAML is involved.
+//
+// One container that cannot be verified or removed does not stop the
+// teardown: every other record and ID is still processed, and the failures
+// are returned together. A failed ID is never removed (its ownership is
+// unproven) and stays in its record, so the next env down retries exactly
+// that ID; a record whose every ID was settled is deleted.
 func (p ComposeProvider) StopOwned(ctx context.Context, env string) error {
 	pattern := filepath.Join(filepath.Dir(composeOwnedPath(p.projectDir(), env, "_")), "*.json")
 	paths, err := filepath.Glob(pattern)
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, path := range paths {
-		rec, err := statefile.Read[composeOwned](path, "compose ownership")
-		if err != nil {
-			return err
-		}
-		if rec == nil {
-			continue
-		}
-		if rec.Env != env || !sameDirectory(rec.Checkout, p.projectDir()) {
-			return fmt.Errorf("compose ownership record %s belongs to another checkout/environment; refusing removal", path)
-		}
-		for _, id := range rec.IDs {
-			service := rec.Service
-			if rec.Services[id] != "" {
-				service = rec.Services[id]
-			}
-			labels, err := containerLabels(ctx, p.runner(), id)
-			if err != nil {
-				return fmt.Errorf("verify owned container %s: %w", id, err)
-			}
-			if !sameDirectory(labels["com.docker.compose.project.working_dir"], rec.Directory) || labels["com.docker.compose.project"] != rec.Project || labels["com.docker.compose.service"] != service {
-				continue
-			}
-			if err := p.runner().Run(ctx, "docker", "rm", "-f", id); err != nil {
-				return err
-			}
-		}
-		if err := os.Remove(path); err != nil {
-			return err
+		if err := p.stopRecord(ctx, env, path); err != nil {
+			errs = append(errs, err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
+}
+
+// stopRecord settles one ownership record: each recorded ID is removed when
+// its labels still prove it is ours, forgotten when it is gone or now belongs
+// to someone else, and kept when neither could be established.
+func (p ComposeProvider) stopRecord(ctx context.Context, env, path string) error {
+	rec, err := statefile.Read[composeOwned](path, "compose ownership")
+	if err != nil {
+		return err
+	}
+	if rec == nil {
+		return nil
+	}
+	if rec.Env != env || !sameDirectory(rec.Checkout, p.projectDir()) {
+		return fmt.Errorf("compose ownership record %s belongs to another checkout/environment; refusing removal", path)
+	}
+	var errs []error
+	var unsettled []string
+	for _, id := range rec.IDs {
+		service := rec.Service
+		if rec.Services[id] != "" {
+			service = rec.Services[id]
+		}
+		labels, err := containerLabels(ctx, p.runner(), id)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("verify owned container %s (%s): %w", id, service, err))
+			unsettled = append(unsettled, id)
+			continue
+		}
+		if !sameDirectory(labels["com.docker.compose.project.working_dir"], rec.Directory) || labels["com.docker.compose.project"] != rec.Project || labels["com.docker.compose.service"] != service {
+			continue // removed already (nil labels), or the ID is no longer ours
+		}
+		if err := p.runner().Run(ctx, "docker", "rm", "-f", id); err != nil {
+			errs = append(errs, fmt.Errorf("remove owned container %s (%s): %w", id, service, err))
+			unsettled = append(unsettled, id)
+		}
+	}
+	if len(unsettled) == 0 {
+		if err := os.Remove(path); err != nil {
+			errs = append(errs, err)
+		}
+		return errors.Join(errs...)
+	}
+	rec.IDs = unsettled
+	for id := range rec.Services {
+		if !slices.Contains(unsettled, id) {
+			delete(rec.Services, id)
+		}
+	}
+	if err := statefile.Write(path, "compose ownership", rec); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }

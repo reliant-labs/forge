@@ -441,11 +441,11 @@ func renderRuntimeStatus(ctx context.Context, env, signal string, verbose bool) 
 		probeRowsListening(compose, portInUse)
 		renderUpSummary(os.Stdout, env, append(rows, compose...), "down", true, nil, nil)
 	}
-	// Custom domains, for a hosted env that declares any. Printed here
-	// rather than folded into a runtime check because it is not a
-	// pass/fail signal: a domain waiting on DNS is waiting on the author,
-	// and the answer they need is the exact record to set.
-	writeHostedDomainStatus(ctx, os.Stdout, env, entities, readHostedStatusFromDeclaration)
+	// A hosted env's URLs and custom domains. Printed here rather than
+	// folded into a runtime check because neither is a pass/fail signal:
+	// a URL is an answer, and a domain waiting on DNS is waiting on the
+	// author, who needs the exact record to set.
+	writeHostedStatus(ctx, os.Stdout, env, entities, readHostedStatusFromDeclaration)
 	// Printed AFTER the table: the table is the answer most invocations
 	// want, and the checks read as its detail. A project with no host rows
 	// still gets them — its compose infra is runtime state too.
@@ -3854,7 +3854,13 @@ func runUpStop(env string) error {
 	// rather than reporting a successful empty teardown.
 	activateDevStack(context.Background(), projectDir, env, renderToLaunch, inspectBlocks)
 	composeErr := (deploytarget.ComposeProvider{ProjectDir: projectDir}).StopOwned(context.Background(), env)
+	if composeErr != nil {
+		composeErr = fmt.Errorf("compose containers: %w", composeErr)
+	}
 	infraStopped, err := stopHostInfra(env)
+	if err != nil {
+		err = fmt.Errorf("host infrastructure: %w", err)
+	}
 	return reportUpStop(env, projectDir, res, infraStopped, errors.Join(err, composeErr))
 }
 
@@ -3874,7 +3880,7 @@ func reportUpStop(env, projectDir string, res stackStop, infraStopped int, infra
 	}
 	fmt.Println("[down] Only recorded owned Compose containers were selected; volumes and shared containers preserved. Kubernetes workloads/clusters and Docker Desktop were not stopped.")
 	if infraErr != nil {
-		return fmt.Errorf("environment shutdown incomplete: host infrastructure: %w", infraErr)
+		return fmt.Errorf("environment shutdown incomplete: %w", infraErr)
 	}
 	return nil
 }

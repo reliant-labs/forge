@@ -161,6 +161,14 @@ type KCLEntities struct {
 	// DeliveryPolicy is Bundle.delivery_policy, every control resolved. Nil
 	// when the env declares none (every control at its default).
 	DeliveryPolicy *release.ShapeDeliveryPolicy `json:"delivery_policy,omitempty"`
+	// DataAccess is Bundle.data_access, resolved: the declared db_query
+	// policy, else the default the env's lifecycle implies (open for a local
+	// or ephemeral env, audited otherwise). Nil when that is audited, the
+	// default: absence means audited, never open.
+	DataAccess *release.ShapeDataAccess `json:"data_access,omitempty"`
+	// ReleaseHealth is Bundle.release_health, resolved. Nil when the env
+	// declares none (the defaults).
+	ReleaseHealth *release.ShapeReleaseHealth `json:"release_health,omitempty"`
 	// Identity is Bundle.identity, resolved by the render: the applications
 	// and consumers derived, the deliveries and reserved managed-secret names
 	// listed. Nil when the env declares none. See release.ShapeIdentity: the
@@ -687,6 +695,11 @@ type StoreSourceEntity struct {
 	// CreationPolicy is "Orphan" or "Merge": whether ESO rebuilds the Secret's
 	// data from the declared keys only, or merges into what is there.
 	CreationPolicy string `json:"creation_policy,omitempty"`
+	// SecretType is the Kubernetes Secret type ESO gives the synced Secret
+	// when it is not Opaque ("kubernetes.io/basic-auth").
+	SecretType string `json:"secret_type,omitempty"`
+	// Labels are put on the synced Secret.
+	Labels map[string]string `json:"labels,omitempty"`
 	// Shadow syncs into <name>-eso-shadow instead of <name> (migration step 2).
 	Shadow bool `json:"shadow,omitempty"`
 	// Cluster is the kubectl context the Secret lands on when the source
@@ -1390,6 +1403,8 @@ type kclRenderRaw struct {
 	Workloads                []kclWorkloadRaw                          `json:"workloads,omitempty"`
 	Observability            *ObservabilityEntity                      `json:"observability,omitempty"`
 	DeliveryPolicy           *release.ShapeDeliveryPolicy              `json:"delivery_policy,omitempty"`
+	DataAccess               *release.ShapeDataAccess                  `json:"data_access,omitempty"`
+	ReleaseHealth            *release.ShapeReleaseHealth               `json:"release_health,omitempty"`
 	Identity                 *release.ShapeIdentity                    `json:"identity,omitempty"`
 	Infra                    []HostInfraEntity                         `json:"infra,omitempty"`
 	Frontends                []FrontendEntity                          `json:"frontends,omitempty"`
@@ -1728,6 +1743,8 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		SecretProvider:           raw.SecretProvider,
 		Observability:            raw.Observability,
 		DeliveryPolicy:           raw.DeliveryPolicy,
+		DataAccess:               raw.DataAccess,
+		ReleaseHealth:            raw.ReleaseHealth,
 		Identity:                 raw.Identity,
 		RenderedSecrets:          raw.RenderedSecrets,
 		ControlPlane:             raw.ControlPlane,

@@ -26,7 +26,12 @@ type fakeKube struct {
 	patched  []string              // "ns/name -annotation"
 	tokens   []string              // "ns/sa aud=..."
 	tokenErr error
-	proxy    func(serviceProxyRequest) (int, []byte, error)
+
+	configMaps map[string]string // "ns/name/key"
+	forwardTo  string            // host:port a ForwardService tunnel ends at
+	forwards   []string          // "ns/service:port"
+	forwardErr error
+	closed     int
 }
 
 func newFakeKube() *fakeKube { return &fakeKube{secrets: map[string]kubeSecret{}} }
@@ -76,12 +81,33 @@ func (f *fakeKube) MintToken(_ context.Context, ns, sa, aud string, ttl time.Dur
 	return "sa-jwt:" + ns + ":" + sa + ":" + aud, nil
 }
 
-func (f *fakeKube) ServiceProxy(_ context.Context, r serviceProxyRequest) (int, []byte, error) {
-	if f.proxy == nil {
-		return 0, nil, errors.New("no proxy")
+func (f *fakeKube) ConfigMapValue(_ context.Context, ns, name, key string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.configMaps[ns+"/"+name+"/"+key]
+	if !ok {
+		return "", fmt.Errorf("configmap %s/%s: %w", ns, name, errKubeConfigMapNotFound)
 	}
-	return f.proxy(r)
+	return v, nil
 }
+
+func (f *fakeKube) ForwardService(_ context.Context, ns, svc string, port int) (podForward, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forwards = append(f.forwards, fmt.Sprintf("%s/%s:%d", ns, svc, port))
+	if f.forwardErr != nil {
+		return nil, f.forwardErr
+	}
+	return &fakeForward{addr: f.forwardTo, onClose: func() { f.mu.Lock(); f.closed++; f.mu.Unlock() }}, nil
+}
+
+type fakeForward struct {
+	addr    string
+	onClose func()
+}
+
+func (f *fakeForward) Addr() string { return f.addr }
+func (f *fakeForward) Close() error { f.onClose(); return nil }
 
 // writerPolicy is the policy the OpenBao component's converge Job gives the
 // forge-secret-writer role (pkg/deploy/openbao BuildAccess), for the fixture's

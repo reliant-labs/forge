@@ -25,7 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Go spelling of the store name, pinned to the render. The default,
   `delivery = "push"`, is unchanged. Not a deploy prerequisite either way.
 
-
 - **`forge lint --secrets`: the platform-secrets lane (SF12).** For each env that
   uses the model (a store-backed `forge.ExternalSecret`, `forge.OpenBao` or
   `forge.ExternalSecretsOperator`; a project that declares none is not rendered),

@@ -630,5 +630,7 @@ func audienceRoutesName(audience string) string {
 	return naming.ToPascalCase(audience) + "Routes"
 }
 
-// logName is a node's label in errors and logs: its accessor in snake_case.
-func logName(name string) string { return naming.ToSnakeCase(name) }
+// logName is a node's label in errors, logs, the readiness report and the
+// start plan: its accessor in snake_case, split on the words a person reads
+// (GitHubAccess → github_access; naming.ToSnakeCaseWords).
+func logName(name string) string { return naming.ToSnakeCaseWords(name) }

@@ -37,7 +37,7 @@ COMMENT ON CONSTRAINT grants_kind ON grants IS 'forge:closed-set accesstoken.All
 	body, _ := os.ReadFile(written[0])
 	for _, want := range []string{
 		"-- forge:backward-compatible — widens grants_kind",
-		"ADD CONSTRAINT grants_kind CHECK (kind IN ('daemon', 'port', 'connector'));",
+		"ADD CONSTRAINT grants_kind CHECK (kind IN ('daemon', 'port', 'connector', 'environment'));",
 		"COMMENT ON CONSTRAINT grants_kind ON grants IS\n    'forge:closed-set accesstoken.AllResourceKinds';",
 	} {
 		if !strings.Contains(string(body), want) {

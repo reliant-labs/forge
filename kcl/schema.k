@@ -3814,6 +3814,8 @@ _DNS_LABEL_RE: str = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 _DNS_NAME_RE: str = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z]{2,}$"
 # A Secret data key, as Kubernetes defines it.
 _SECRET_KEY_RE: str = r"^[-._a-zA-Z0-9]+$"
+_LABEL_KEY_RE: str = r"^([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$"
+_LABEL_VALUE_RE: str = r"^([A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?)?$"
 # Google Secret Manager secret ids allow hyphens; the stores do not.
 _BOOTSTRAP_NAME_RE: str = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,254}$"
 _GCP_PROJECT_RE: str = r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$"
@@ -3986,6 +3988,13 @@ schema StoreSource:
       * `cluster`   — the kubectl context the Secret lands on. Unset = the
                       Bundle's primary cluster. Placement is declared, never
                       inferred, so an env with several clusters names it.
+      * `secret_type` — the Kubernetes Secret type ESO gives the synced Secret:
+                      "Opaque" (default) or "kubernetes.io/basic-auth", which
+                      is what a CloudNativePG managed role's passwordSecret
+                      must be (keys `username` and `password`).
+      * `labels`    — labels ESO puts on the synced Secret (CloudNativePG
+                      applies a changed password at once only when the Secret
+                      carries `cnpg.io/reload: "true"`).
 
     The set of Secret keys produced (`data` + `templates`) must equal the
     ExternalSecret's `keys`: a key nothing produces is a pod that cannot
@@ -4000,8 +4009,14 @@ schema StoreSource:
     creation_policy: "Orphan" | "Merge" = "Orphan"
     shadow: bool = False
     cluster?: str
+    secret_type: "Opaque" | "kubernetes.io/basic-auth" = "Opaque"
+    labels: {str: str} = {}
 
     check:
+        all k, v in labels { regex.match(k, _LABEL_KEY_RE) and regex.match(v, _LABEL_VALUE_RE) }, \
+            "StoreSource.labels ${labels} must be Kubernetes label keys and values (a key may carry a DNS prefix and a '/'; a value is at most 63 letters, digits, '-', '_' or '.')"
+        secret_type != "kubernetes.io/basic-auth" or ("username" in _ss_keys(StoreSource {store = store, data = data, templates = templates}) and "password" in _ss_keys(StoreSource {store = store, data = data, templates = templates})), \
+            "StoreSource.secret_type 'kubernetes.io/basic-auth' needs the Secret keys `username` and `password` (Kubernetes refuses a basic-auth Secret without them); declare them in `data` and/or `templates`"
         len(data) + len(templates) > 0, \
             "StoreSource produces no Secret key: declare `data` (key -> store name) and/or `templates`"
         all k, _v in data { regex.match(k, _SECRET_KEY_RE) } and all k, _v in templates { regex.match(k, _SECRET_KEY_RE) }, \
@@ -4026,6 +4041,43 @@ schema StoreSource:
             "StoreSource.pin ${sorted([n for n in immutable if n in pin and pin[n] > 1])} is above 1 but the name is `immutable`: it is never rotated in place (rotating it destroys what it protects). Mint a new name and migrate, or drop it from `immutable`"
         regex.match(refresh, _ALERT_DURATION_RE) and _alert_secs(refresh) >= 300, \
             "StoreSource.refresh '${refresh}' must be a duration of at least 5m (e.g. '15m', '1h'): a faster loop is a load on the store, and the cluster's admission policy refuses it"
+
+database_read_only_secret = lambda database: str, namespace: str, store: HostedStore | OpenBaoStore -> ExternalSecret {
+    """The credentials of a ManagedDatabase's read-only role (`forge_ro`), the
+    Secret the database's CloudNativePG Cluster reads as the role's
+    `passwordSecret` and `forge db query` reads to connect.
+
+        required_secrets = [forge.database_read_only_secret("orders", "orders-prod", forge.OpenBaoStore {})]
+
+    Declare it for every ManagedDatabase of the env that has a store, and every
+    env mints it the same way: a random password generated INTO the store once
+    (create-only, never overwritten), pinned to version 1 and `immutable`, so
+    nothing rotates it by accident, and synced by ESO as a
+    `kubernetes.io/basic-auth` Secret named `<database>-forge-ro` (the name the
+    Cluster's managed role points at) carrying the `cnpg.io/reload` label.
+
+    `namespace` is the Cluster's own: CloudNativePG reads the Secret from there.
+    Without this Secret the role cannot log in, the migrator reports the role as
+    missing grants-wise only after CNPG creates it, and `forge db query` has
+    nothing to connect as."""
+    _name = "${database.replace('-', '_').upper()}_FORGE_RO_PASSWORD"
+    ExternalSecret {
+        name = "${database}-forge-ro"
+        namespace = namespace
+        keys = ["password", "username"]
+        reason = "password of the read-only role forge_ro on database ${database} (CloudNativePG managed role passwordSecret; forge db query)"
+        source = StoreSource {
+            store = store
+            data = {"password" = _name}
+            templates = {"username" = "forge_ro"}
+            generate = {"${_name}" = GeneratedSecret {kind = "random", bytes = 24, encoding = "hex"}}
+            pin = {"${_name}" = 1}
+            immutable = [_name]
+            secret_type = "kubernetes.io/basic-auth"
+            labels = {"cnpg.io/reload" = "true"}
+        }
+    }
+}
 
 # --- Bootstrap -------------------------------------------------------------
 
@@ -4473,6 +4525,13 @@ schema ESOAdmission:
                         other than Orphan or Merge, a deletionPolicy other than
                         Retain, a target name other than its own, or a refresh
                         faster than 5m.
+
+    DEFAULTS. `servers`, `jwt_mounts`, `audiences` and `gcp_projects` left
+    empty are derived from the render (an empty list is not a wildcard, so the
+    policies would otherwise refuse the Bundle's own stores): the SecretStores
+    this Bundle renders on the operator's cluster, and the OpenBao component's
+    own server, mount and audience when it runs there. A list you set wins,
+    for that list only.
 
     `scrape_namespaces` may reach the operator's metrics port; `egress_cidrs`
     bounds where the operator may dial on 443 and 6443 (the API server and
@@ -4931,6 +4990,95 @@ schema DeliveryPolicy:
 _delivery_enforced_verifiers = lambda flux_verify: Control, admission_verify: Control, signed_promotions: Control -> [str] {
     (["flux_verify"] if flux_verify.mode == "enforce" else []) + (["admission_verify"] if admission_verify.mode == "enforce" else []) + (["signed_promotions"] if signed_promotions.mode == "enforce" else [])
 }
+
+_DB_QUERY_POLICIES = ["open", "audited", "deny"]
+
+schema DataAccess:
+    """How an env's data may be read from outside the application. Set on
+    `Bundle.data_access`.
+
+        data_access = forge.DataAccess {db_query = "deny"}
+
+    `db_query` is the policy for `forge db query <env>` (and the control plane's
+    QueryDatabase) against this env's database:
+
+      * `open`: anyone with the env may query. The default for a local or
+        ephemeral env, whose data is scratch.
+      * `audited`: only a person holding the `db:query` grant, naming the env and
+        a reason; every call is recorded. The default for every other env.
+      * `deny`: nobody.
+
+    UNSET follows the env's `lifecycle`, so a real env is audited without
+    declaring anything. The policy is recorded in the release shape
+    (`data_access`) and the control plane enforces it from there: a client
+    cannot pick a weaker one.
+
+    Whatever the policy, the query runs as a read-only role that Postgres itself
+    bars from `forge:secret` columns and from every write; this governs who may
+    ask, not what the role can see.
+    """
+    db_query?: str
+
+    check:
+        not db_query or db_query in _DB_QUERY_POLICIES, \
+            "DataAccess.db_query '${db_query}' is not one of ${_DB_QUERY_POLICIES}: open (anyone with the env), audited (a person with the db:query grant, naming the env and a reason) or deny (nobody)"
+
+# The db_query policy an env resolves to: what it declared, else open for a
+# local or ephemeral env and audited for every other one.
+_data_access_db_query = lambda data_access: DataAccess, lifecycle: str -> str {
+    data_access.db_query if data_access and data_access.db_query else ("open" if lifecycle in ["local", "ephemeral"] else "audited")
+}
+
+# The release-health finding codes (pkg/release Health*).
+_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts"]
+
+# A release-health window ("15m", "2h", "90s") in seconds; 0 when malformed.
+_release_health_seconds = lambda w: str -> int {
+    int(w[:-1]) * {"s": 1, "m": 60, "h": 3600}[w[-1]] if regex.match(w, r"^[1-9][0-9]*[smh]$") else 0
+}
+
+schema ReleaseHealth:
+    """How this env's promotions are judged: `forge obs check <env>` and the
+    control plane's release health compare the window after a promotion with
+    the window before it, per service, and report findings.
+
+        release_health = forge.ReleaseHealth {
+            window = "30m"
+            fail_on = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "latency"]
+        }
+
+    A finding in `fail_on` fails the release (exit 1); any other warns. Below
+    `min_requests` after-window requests a service is not judged, and a
+    release with no judged service is inconclusive (exit 2), never a pass.
+
+    Findings: error_rate (the error rate rose by more than
+    `max_error_rate_increase`, a fraction: 0.01 is one percentage point),
+    latency (p95 grew by more than `max_p95_ratio`), new_issue (an issue first
+    seen in this release with `new_issue_min_events` events), regressed_issue,
+    alert_firing (an alert opened after the promotion still fires) and
+    workload_restarts.
+
+    Recorded in the release shape (`release_health`) when any value differs
+    from the default, so every reader judges by this one declaration.
+    """
+    window: str = "15m"
+    min_requests: int = 50
+    max_error_rate_increase: float = 0.01
+    max_p95_ratio: float = 1.5
+    new_issue_min_events: int = 3
+    fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing"]
+
+    check:
+        60 <= _release_health_seconds(window) <= 21600, \
+            "ReleaseHealth.window \"${window}\": use a number and s, m or h (\"15m\"), from 1m to 6h"
+        min_requests >= 1, "ReleaseHealth.min_requests ${min_requests} must be at least 1"
+        0 < max_error_rate_increase <= 1, \
+            "ReleaseHealth.max_error_rate_increase ${max_error_rate_increase} is a fraction: 0.01 is one percentage point"
+        max_p95_ratio > 1, "ReleaseHealth.max_p95_ratio ${max_p95_ratio} must be above 1 (1.5 = 50% slower)"
+        new_issue_min_events >= 1, "ReleaseHealth.new_issue_min_events ${new_issue_min_events} must be at least 1"
+        all c in fail_on { c in _RELEASE_HEALTH_FINDINGS }, \
+            "ReleaseHealth.fail_on names ${[c for c in fail_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
+        isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"
 
 # ---------------------------------------------------------------------------
 # Bundle — the project-level container forge.render() consumes.
@@ -6218,6 +6366,14 @@ schema Bundle:
     # builder, vulnerability gate, approvals, ...). UNSET = every control at
     # its default. See DeliveryPolicy and the `deploy/delivery-policy` skill.
     delivery_policy?: DeliveryPolicy
+    # How this env's data may be read from outside the application (`forge db
+    # query`). UNSET follows `lifecycle`: open for local/ephemeral, audited
+    # otherwise. See DataAccess.
+    data_access?: DataAccess
+    # How this env's promotions are judged by `forge obs check` and release
+    # health: the window, the thresholds, and which findings fail. UNSET =
+    # the defaults. See ReleaseHealth.
+    release_health?: ReleaseHealth
     # The env's users (forge.ManagedIdentity): roles, the applications that
     # sign users in, the workloads that read tokens, and where the instance
     # runs. UNSET = no managed identity (bring your own issuer in config.k).

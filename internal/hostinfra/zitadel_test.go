@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -437,9 +438,11 @@ func TestZitadelVersion_MatchesComposeTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "image: ghcr.io/zitadel/zitadel:" + ZitadelVersion + "\n"
-	if !strings.Contains(string(b), want) {
-		t.Errorf("docker-compose.yml.tmpl does not pin %q; ZitadelVersion and the compose image must move together", want)
+	// The compose image is also pinned by digest; the version tag before it
+	// is what must match.
+	want := regexp.MustCompile(`image: ghcr\.io/zitadel/zitadel:` + regexp.QuoteMeta(ZitadelVersion) + `(@sha256:[0-9a-f]{64})?\n`)
+	if !want.Match(b) {
+		t.Errorf("docker-compose.yml.tmpl does not pin ghcr.io/zitadel/zitadel:%s; ZitadelVersion and the compose image must move together", ZitadelVersion)
 	}
 }
 

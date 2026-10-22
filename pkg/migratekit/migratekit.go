@@ -127,6 +127,9 @@ type Migrator struct {
 	db *sql.DB
 	// source is what this binary embeds, parsed once at Open.
 	source sourceSet
+	// grants is the read-only grants script this binary embeds beside its
+	// migrations, "" when it embeds none (grants.go).
+	grants string
 }
 
 // Open builds a Migrator over the embedded migration set in opts.FS, on one
@@ -164,6 +167,11 @@ func Open(opts Options) (*Migrator, error) {
 		_ = src.Close()
 		return nil, fmt.Errorf("open embedded migrations (%s): %w", dir, err)
 	}
+	grants, _, err := grantsScript(opts.FS, dir)
+	if err != nil {
+		_ = src.Close()
+		return nil, fmt.Errorf("open migrator: %w", err)
+	}
 	db, err := dbtrace.Open("pgx/v5", sqlDSN(opts.DSN))
 	if err != nil {
 		_ = src.Close()
@@ -178,6 +186,7 @@ func Open(opts Options) (*Migrator, error) {
 		return nil, fmt.Errorf("open migrator: %w", err)
 	}
 	mg.db = db
+	mg.grants = grants
 	return mg, nil
 }
 
@@ -329,6 +338,9 @@ type Result struct {
 	// written its first one. Nothing was read or applied. Open refuses that
 	// instead; see AutoMigrate.
 	NothingEmbedded bool
+	// Grants is what the run did with the read-only role's grants (grants.go):
+	// nil when the binary embeds none, or when the schema was ahead of it.
+	Grants *Grants
 }
 
 // Up applies every pending migration.
@@ -412,7 +424,11 @@ func (mg *Migrator) up(ctx context.Context) (res Result, err error) {
 		return res, err
 	}
 	res.Changed, res.Before, res.After = applied.Changed, applied.Before, applied.After
-	return res, recordApplied(ctx, mg.conn, mg.source, res.Before, res.After)
+	if err := recordApplied(ctx, mg.conn, mg.source, res.Before, res.After); err != nil {
+		return res, err
+	}
+	res.Grants, err = applyGrants(ctx, mg.conn, mg.grants)
+	return res, err
 }
 
 // Force sets the recorded version and CLEARS the dirty flag without running

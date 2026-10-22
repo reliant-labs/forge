@@ -25,9 +25,15 @@ A secret is declared once as a reference (EnvVar.secret_ref) and its value
 comes from the env's bundle secret_provider. For a DotenvSecrets provider,
 forge can render the declared cluster secret_refs into k8s Secret objects
 and apply them. ExternalSecrets envs are a no-op (their values are
-provisioned out-of-band).`,
+provisioned out-of-band).
+
+For a Secret ESO syncs from a store (forge.StoreSource), the migration steps are:
+
+  forge secret import      --env prod --from <ns>/<secret> --map key=NAME   # copy in, create-only
+  forge env secrets verify prod <secret>                                    # live vs the store's copy: match / no-match
+  forge env secrets adopt  prod <ns>/<secret>                               # hand the verified Secret to ESO`,
 	}
-	cmd.AddCommand(newSecretsSyncCmd())
+	cmd.AddCommand(newSecretsSyncCmd(), newSecretsVerifyCmd(), newSecretsAdoptCmd())
 	return cmdutil.StrictGroup(cmd)
 }
 

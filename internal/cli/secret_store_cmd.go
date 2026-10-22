@@ -39,6 +39,26 @@ func newSecretCmd() *cobra.Command {
                        (control_plane with no hosted tier) are pulled into
                        memory by ` + "`forge env up`" + ` and nothing else.
 
+A name that a store-backed ExternalSecret (forge.StoreSource) reads or
+generates lives in that ExternalSecret's STORE instead, whatever the env's
+secret_provider is, and set / list / import act on it there:
+
+  forge.HostedStore             the hosted control plane's store — written
+                                through its write-only API.
+  forge.OpenBaoStore            the env's own OpenBao (Bundle.openbao). set
+                                signs in as the forge-rendered
+                                forge-secret-writer service account with a
+                                ten-minute token minted from YOUR kube context,
+                                so it needs cluster access and nothing else.
+  forge.GCPSecretManagerStore   Google Secret Manager, with your Application
+                                Default Credentials.
+
+  forge secret import   copy values that already exist into a store, create-only
+                        (the first step of moving a Secret onto ESO)
+
+Verifying and handing a Secret to ESO are 'forge env secrets verify' and
+'forge env secrets adopt'.
+
 Every command names its environment with a REQUIRED --env flag. There is no
 default and no positional form: the env is the one thing a secret command
 must never guess.
@@ -57,6 +77,7 @@ service references does nothing — config belongs in deploy/kcl/<env>/config.k.
 	cmd.AddCommand(
 		newSecretSetCmd(),
 		newSecretUnsetCmd(),
+		newSecretImportCmd(),
 		newSecretListCmd(),
 		newSecretEnsureCmd(),
 		newSecretMigrateCmd(),
@@ -87,6 +108,7 @@ func requireSecretEnv(env, usage string) (string, error) {
 
 func newSecretSetCmd() *cobra.Command {
 	var fromFile, env string
+	var store storeOptions
 	cmd := &cobra.Command{
 		Use:   "set --env <environment> <KEY>",
 		Short: "Add or replace one secret value (read from stdin)",
@@ -109,11 +131,12 @@ round-trip unchanged.`,
 			if err != nil {
 				return err
 			}
-			return runSecretSet(cmd.Context(), envName, args[0], fromFile, cmd.InOrStdin(), cmd.OutOrStdout())
+			return runSecretSetWith(cmd.Context(), envName, args[0], store, fromFile, cmd.InOrStdin(), cmd.OutOrStdout())
 		},
 	}
 	addSecretEnvFlag(cmd, &env)
 	cmd.Flags().StringVar(&fromFile, "from-file", "", "Read the value from a file instead of stdin")
+	addStoreFlags(cmd, &store)
 	return cmd
 }
 
@@ -334,12 +357,28 @@ func readSecretValue(fromFile string, stdin io.Reader) (string, error) {
 }
 
 func runSecretSet(ctx context.Context, envName, key, fromFile string, stdin io.Reader, out io.Writer) error {
+	return runSecretSetWith(ctx, envName, key, storeOptions{}, fromFile, stdin, out)
+}
+
+func runSecretSetWith(ctx context.Context, envName, key string, store storeOptions, fromFile string, stdin io.Reader, out io.Writer) error {
+	entities, err := renderEntitiesForSecrets(ctx, envName)
+	if err != nil {
+		if !secrets.ValidSecretKey(key) {
+			return fmt.Errorf("%q is not a valid env-var name (want [A-Za-z_][A-Za-z0-9_]*)", key)
+		}
+		return fmt.Errorf("render KCL: %w", err)
+	}
+	// A name a store-backed ExternalSecret reads goes to that store, which
+	// decides what a legal name is (Secret Manager ids allow '-').
+	if handled, err := runStoreSourceSet(ctx, envName, key, entities, store, fromFile, stdin, out); handled || err != nil {
+		return err
+	}
 	if !secrets.ValidSecretKey(key) {
 		return fmt.Errorf("%q is not a valid env-var name (want [A-Za-z_][A-Za-z0-9_]*)", key)
 	}
-	hosted, err := hostedEntitiesFor(ctx, envName)
-	if err != nil {
-		return err
+	var hosted *KCLEntities
+	if isHostedSecretEnv(entities) {
+		hosted = entities
 	}
 	if hosted != nil {
 		value, err := readSecretValue(fromFile, stdin)
@@ -529,7 +568,17 @@ func collectSecretListFacts(ctx context.Context, envName string) (secretListRepo
 	if err != nil {
 		return secretListReport{}, err
 	}
-	return buildSecretListReport(envName, entities, store), nil
+	report := buildSecretListReport(envName, entities, store)
+	if hasStoreSources(entities) {
+		// Names a store-backed ExternalSecret reads live in a store, beside
+		// whatever the secret_provider supplies.
+		sources, err := storeSourceListStore(ctx, envName, entities)
+		if err != nil {
+			return secretListReport{}, err
+		}
+		report = mergeStoreSourceFacts(report, entities, sources)
+	}
+	return report, nil
 }
 
 // secretListStoreFor reads presence facts from whichever provider the env

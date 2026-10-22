@@ -166,6 +166,8 @@ Name the workload, never the hostname:
 
 Unknown names are refused at load; on a non-hosted env so is a URL forge cannot know at render time (typically a host service without `listen_ports`, whose port `forge env up` assigns after rendering).
 
+A `runtime_config` **key** must be one the frontend reads: a field of its `(forge.v1.frontend_config)` message, or one of forge's own runtime keys (`API_URL`, `ENVIRONMENT`, `OTEL_ENDPOINT`, `CONSOLE_CAPTURE`, `REPLAY_SAMPLE_RATE`). `forge generate` writes the frontend's key list to `src/lib/config_schema_gen.json` beside `config_gen.ts`, and every render checks `runtime_config` against it — including from another repo that declares this frontend's environments — so a misspelled key fails the render with a did-you-mean instead of silently leaving the field on its default. A frontend with no config message (no schema file) is not checked.
+
 A hosted site's own hostname is not a field: `forge domain add` (see `deploy`).
 
 The backend half uses the same reference. A workload's `CORS_ORIGINS` names the site, not its URL:

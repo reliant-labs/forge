@@ -148,6 +148,11 @@ func resolveFrontendEntitySources(ctx context.Context, projectDir string, entiti
 		// pinned to `v1.8.1` cannot name its own version.
 		fe.SourceCommit = res.Commit
 		fe.SourceOverridden = res.Overridden
+		// The render could not check this frontend's runtime_config keys:
+		// its code, and so its config schema, was not on disk until now.
+		if err := checkFrontendRuntimeConfigKeys(projectDir, []FrontendEntity{*fe}); err != nil {
+			return err
+		}
 	}
 	return nil
 }

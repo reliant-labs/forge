@@ -162,6 +162,45 @@ func TestFrontendConfigJS_FallsBackWithoutEnvKCL(t *testing.T) {
 	}
 }
 
+// The key schema is written beside config_gen.ts by the same step, so a
+// project declaring this frontend from another repo can check its
+// runtime_config keys against it (checkFrontendRuntimeConfigKeys).
+func TestGenerateFrontendConfigModules_WritesTheKeySchema(t *testing.T) {
+	projectDir := t.TempDir()
+	cfg := &config.ProjectConfig{
+		Name:      "demo",
+		Frontends: []config.FrontendConfig{{Name: "web", Type: "nextjs"}},
+	}
+	messages := []codegen.ConfigMessage{{Name: "WebConfig", Frontend: "web", Fields: testWebFrontendConfig().Fields}}
+	if err := generateFrontendConfigModules(cfg, messages, projectDir, &checksums.FileChecksums{}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, "frontends", "web", filepath.FromSlash(codegen.FrontendConfigSchemaFile)))
+	if err != nil {
+		t.Fatalf("schema not written: %v", err)
+	}
+	schema, ok, err := codegen.ParseFrontendConfigSchema(data)
+	if err != nil || !ok {
+		t.Fatalf("parse schema: ok=%v err=%v\n%s", ok, err, data)
+	}
+	if schema.Frontend != "web" || schema.Message != "WebConfig" {
+		t.Errorf("schema names %q/%q, want web/WebConfig", schema.Frontend, schema.Message)
+	}
+	names := map[string]string{}
+	for _, k := range schema.Keys {
+		names[k.Name] = k.Source
+	}
+	for _, f := range testWebFrontendConfig().Fields {
+		key := f.EnvVar
+		if key == "" {
+			key = f.Name
+		}
+		if names[key] != codegen.FrontendConfigKeySourceConfig {
+			t.Errorf("config field %s is not in the schema as a config key: %v", key, names)
+		}
+	}
+}
+
 func readFrontendConfigJS(t *testing.T, projectDir, frontend string) string {
 	t.Helper()
 	path := filepath.Join(projectDir, "frontends", frontend, "public", codegen.FrontendConfigJSFile)

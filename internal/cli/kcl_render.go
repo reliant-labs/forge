@@ -1633,6 +1633,12 @@ func RenderKCLWith(ctx context.Context, projectDir, env string, extra []string) 
 	if err := refuseUnboundClusterTargets(env, entities); err != nil {
 		return nil, err
 	}
+	// Refused here for the same reason: a runtime_config key the frontend
+	// never reads would otherwise ship, render into config.js, and leave the
+	// field on its default without a word (checkFrontendRuntimeConfigKeys).
+	if err := checkFrontendRuntimeConfigKeys(projectDir, entities.Frontends); err != nil {
+		return nil, err
+	}
 	entities.ControlPlane.bindOrgLookup(env)
 	return entities, nil
 }

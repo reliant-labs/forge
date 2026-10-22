@@ -217,3 +217,24 @@ func TestStaticSiteSpecRefusesBadDomains(t *testing.T) {
 		t.Errorf("a valid pair of domains was refused: %v", err)
 	}
 }
+
+// A hosted workload's URL is allocated by the platform, so the author never
+// wrote it down: deploy and status must both print it, one line per
+// workload, and say nothing for a workload that has none yet.
+func TestFormatHostedURLs(t *testing.T) {
+	cp := &fakeCP{
+		envs:   `{"environments":[{"id":"env-1","name":"prod"}]}`,
+		status: func(int) string { return domainStatusBody },
+	}
+	st, err := ReadHostedStatus(context.Background(), cp, "", "prod")
+	if err != nil {
+		t.Fatalf("ReadHostedStatus: %v", err)
+	}
+	ws := append(st.Workloads, HostedWorkloadStatus{Name: "worker"})
+	if got, want := FormatHostedURLs("  ", ws), "  url web: https://web.example\n"; got != want {
+		t.Errorf("FormatHostedURLs = %q, want %q", got, want)
+	}
+	if FormatHostedURLs("  ", []HostedWorkloadStatus{{Name: "worker"}}) != "" {
+		t.Error("workloads with no URL must format to nothing, so callers can print unconditionally")
+	}
+}

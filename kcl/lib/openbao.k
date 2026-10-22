@@ -24,7 +24,6 @@ a named refusal or warning here rather than a silent omission):
     recovery escrow, and in-cluster generation of StoreSource.generate values:
     the converge Job already has hook seams for them (Hooks.Escrow,
     Hooks.Generate);
-  * the `public` endpoint (a warning: nothing is exposed until it lands);
   * the OIDC writer's role (a warning);
   * the Raft snapshot CronJob (a REFUSAL: a declared backup that does not run
     is worse than none);
@@ -85,6 +84,55 @@ storage_secret = lambda ob: any -> str {
 # Names derived from the store's own name.
 ca_configmap = lambda ob: any -> str {
     ob.tls.ca_configmap or (ob.name + "-ca")
+}
+
+# ---------------------------------------------------------------------------
+# The public endpoint (OpenBao.public).
+#
+# Two halves: this file decides what the Gateway must serve and what OpenBao
+# opens for it; the objects themselves (route, policies, NetworkPolicy rule) are
+# rendered by Go (pkg/deploy/openbao public.go) from the `public` block of the
+# record. The listener is added to the declared Gateway by kcl/render.k, so the
+# Certificate, the port mapping and the dev-status views all see it.
+# ---------------------------------------------------------------------------
+
+# The listener on the Gateway for the public host, as a plan:
+#   {name, add, tls}   `add` False = the Gateway already serves the host
+#                      (the author declared an HTTPS listener for it, which
+#                      forge uses as it is); `tls` is None to inherit.
+public_plan = lambda ob, gw: any -> any {
+    _existing = [l for l in gw.listeners if l.protocol == "HTTPS" and l.hostname == ob.public.host]
+    # A certificate of its own (never the Gateway's shared one: adding a host
+    # to that would re-issue it, and Let's Encrypt allows five a week), issued
+    # by the Gateway's issuer. gke_certmap and mkcert have no per-listener
+    # form, so the listener inherits.
+    _derived = {"cert_issuer": gw.tls.cert_issuer, "secret_name": ob.name + "-public-tls", "mode": "cert_manager"} if gw.tls and gw.tls.mode == "cert_manager" else None
+    _own = ob.public.tls or _derived
+    assert _existing or _own or (gw.tls and gw.tls.mode in ["gke_certmap", "mkcert"]), \
+        "OpenBao.public.host '${ob.public.host}' needs a certificate, and Gateway '${gw.name}' declares no `tls` to derive one from. Set `tls = forge.GatewayTLS {cert_issuer = \"...\", secret_name = \"...\"}` on the forge.OpenBaoPublic, or declare an HTTPS listener for the host on the Gateway"
+    {
+        "name": _existing[0].name if _existing else ob.name + "-public"
+        "add": not _existing
+        "tls": _own
+    }
+}
+
+# The `public` block of the record. `gateway_namespace` is where forge renders
+# the Bundle's ingress.
+_public = lambda ob, gw: any, plan: any, gateway_namespace: str -> any {
+    {
+        "host": ob.public.host
+        "gateway": gw.name
+        "gatewayNamespace": gateway_namespace
+        "listener": plan.name
+        "requestsPerSecond": ob.public.requests_per_second
+        "perSourceRequestsPerSecond": ob.public.per_source_requests_per_second
+        "maxConnections": ob.public.max_connections
+        "requestTimeout": ob.public.request_timeout
+        "port": ob.public.port
+        "proxyNamespace": ob.public.proxy_namespace
+        "trustedProxyCIDRs": ob.public.trusted_proxy_cidrs
+    }
 }
 
 _listener = lambda l: any -> any {
@@ -192,13 +240,24 @@ _required = lambda ob, bootstrap_source: any -> [any] {
 #   secrets            Bundle.required_secrets
 #   eso_namespaces     namespaces of the ESO installs on the same cluster
 #   bootstrap_source   Bundle.bootstrap_source
+#   gateways           Bundle.gateways
+#   ingress_cluster    the kubectl context the Bundle's ingress lands on
+#   ingress_namespace  the namespace it renders into
 #
-# -> {record, block, required, namespace, cluster}
+# -> {record, block, required, public_plan, namespace, cluster}
 render = lambda ob: any, ctx: any -> any {
     _target = ctx.target
     assert _target, "Bundle.openbao has no cluster to run on. Set `runtime = forge.OnCluster {target = <ClusterTarget>}` on the OpenBao, or give the Bundle a cluster_target (or a workload bound to one): the store runs where its cluster_target says"
     assert not (ob.storage.type == "raft" and ob.storage.snapshot), \
         "OpenBao.storage.snapshot is declared, but the Raft snapshot CronJob is not rendered yet, and a backup that is declared and does not run is worse than none. Remove `snapshot` and back the PVCs up some other way (your CSI VolumeSnapshots), or use OpenBaoPostgres storage, which rides the database's own backups"
+
+    _gw = [g for g in ctx.gateways if ob.public and g.name == ob.public.gateway]
+    _gw_cluster = _gw[0].cluster.context if _gw and _gw[0].cluster else ctx.ingress_cluster
+    assert not ob.public or _gw_cluster == _target.cluster, \
+        "OpenBao.public.gateway '${ob.public.gateway if ob.public else ''}' lands on cluster '${_gw_cluster}', but OpenBao runs on '${_target.cluster}'. The route reaches the store through its Service, so both must be on one cluster. Declare the Gateway on that cluster (forge.Gateway.cluster), or run OpenBao where the Gateway is"
+    assert not ob.public or ob.public.port not in [l.port for l in ob.listeners], \
+        "OpenBao.public.port ${ob.public.port if ob.public else 0} is also a listener of the store. The Gateway gets a port of its own so that only it is trusted to set X-Forwarded-For: set forge.OpenBaoPublic.port to a free port"
+    _plan = public_plan(ob, _gw[0]) if ob.public else None
 
     assert ob.listeners[0].tls, "OpenBao.listeners[0] (port ${ob.listeners[0].port}) is plaintext. The first listener carries the cluster port and is the address clients and the converge Job use, so it must be the TLS one: put forge.OpenBaoListener {} first and any transitional plaintext listener after it"
     _id = ctx.cluster_id
@@ -232,6 +291,8 @@ render = lambda ob: any, ctx: any -> any {
                 "priorityClass": ob.ha.priority_class
         }
         "audit": {"stdout": ob.audit.stdout, "file": ob.audit.file, "filePath": ob.audit.file_path}
+        if ob.public:
+            "public": _public(ob, _gw[0], _plan, ctx.ingress_namespace)
         if ob.consumers:
             "consumers": [_consumer(c) for c in ob.consumers]
         "writer": _writer(ob.writer)
@@ -255,7 +316,7 @@ render = lambda ob: any, ctx: any -> any {
         "OpenBao listener ${l.port} is PLAINTEXT (transitional): ${l.transitional_reason}. Clients that send a service-account token to it expose that token; drop the listener once they speak https" for l in ob.listeners if not l.tls
     ] + [
         "OpenBao consumer '${c.name}' reads ${g.path} by glob: ${g.wildcard_read_reason}" for c in ob.consumers for g in c.grants if g.wildcard_read_reason
-    ] + (["OpenBao.public is declared (${ob.public.host}) but the public endpoint is not rendered by this forge yet: nothing is exposed, and clusters other than this one cannot reach the store"] if ob.public else []) \
+    ] \
       + (["OpenBao.writer is an OIDC writer (role '${ob.writer.role}'): its login role is not rendered by this forge yet, so no one can write values through it. Use the default forge.OpenBaoSAWriter {} until it lands"] if ob.writer.type == "oidc" else [])
 
     {
@@ -293,6 +354,10 @@ render = lambda ob: any, ctx: any -> any {
             "warnings": _warnings
         }
         "required": _required(ob, ctx.bootstrap_source)
+        # The listener to add to the public Gateway, or None. render.k applies
+        # it so the Certificate and the port mapping follow. It is not part of
+        # the `openbao` block clients read.
+        "public_plan": _plan
         "namespace": ob.namespace
         "cluster": _target.cluster
     }

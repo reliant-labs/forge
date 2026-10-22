@@ -27,6 +27,7 @@
     ],
     "databases": [],
     "env": "prod",
+    "external_secrets_operators": [],
     "frontends": [],
     "gateways": [],
     "grpc_routes": [],

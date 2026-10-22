@@ -89,6 +89,7 @@ import .lib.crd as crd_lib
 import .lib.build as build_lib
 import .lib.flux as flux_lib
 import .lib.openbao as openbao_lib
+import .lib.external_secret as es_lib
 
 # Bare aliases for schema instantiation inside lambda bodies (KCL v0.11).
 _TWorkload = tiers.Workload
@@ -1787,6 +1788,12 @@ _render_namespace = lambda namespace: str, context: str, primary: any -> any {
 # The lowering of Bundle.openbao, or Undefined: the OpenBao record, the
 # resolved block, and the prerequisite Secrets. The store runs on its own
 # `runtime` target, else the env's primary one.
+_store_cluster_id = lambda b: Bundle, t: ClusterTarget -> str {
+    _wl = [w.runtime.target.connected_cluster for w in b.workloads if w.runtime and w.runtime.type == "cluster" and w.runtime.target.cluster == t.cluster and w.runtime.target.connected_cluster]
+    _eso = [e.cluster.connected_cluster for e in b.external_secrets_operators if typeof(e.cluster) == "ClusterTarget" and e.cluster.cluster == t.cluster and e.cluster.connected_cluster]
+    (b.connected_clusters[t.cluster] if t.cluster in b.connected_clusters else "") or t.connected_cluster or (_wl[0] if _wl else "") or (_eso[0] if _eso else "") or t.cluster
+}
+
 _openbao = lambda b: Bundle -> any {
     _rt = b.openbao.runtime if b.openbao else Undefined
     _target = _rt.target if _rt else _primary_target(b)
@@ -1794,6 +1801,11 @@ _openbao = lambda b: Bundle -> any {
         project = b.project
         env = labels_lib.env_value(b.env)
         target = _target
+        # The id SF5's SecretStores log in under (lib/external_secret.k
+        # _cluster_id, which is private to that module): the mount, role and
+        # audience this component grants must be the ones a SecretStore asks
+        # for. Pinned together by TestOpenBaoAndExternalSecretAgreeOnTheClusterID.
+        cluster_id = _store_cluster_id(b, _target) if _target else ""
         secrets = b.required_secrets
         eso_namespaces = [e.namespace for e in b.external_secrets_operators if _target and _eso_context(e) == _target.cluster]
         bootstrap_source = b.bootstrap_source
@@ -1814,7 +1826,8 @@ _manifests = lambda b: Bundle, entities: [any] -> [any] {
         + [_render_managed_database_record(db, _project) for db in _dbs if db.runtime == "cluster"] \
         + ([_openbao(b).record] if b.openbao else []) \
         + [_place_on_primary(item, _pt) for item in _ingress(b, _ns)] \
-        + [item for g in b.manifests for item in _raw_manifests(g, _pt, _project)],
+        + [item for g in b.manifests for item in _raw_manifests(g, _pt, _project)] \
+        + es_lib.manifests(b, _pt),
         b.env,
     )
 }
@@ -1906,6 +1919,7 @@ render = lambda bundle: Bundle -> any {
         # checklist, and the preflight BLOCK on a required-but-absent Secret.
         "required_secrets": [_render_external_secret(s) for s in bundle.required_secrets] + (_openbao(bundle).required if bundle.openbao else [])
         "required_dns": [_render_dns_record(r) for r in bundle.required_dns]
+        "external_secrets_operators": [_render_eso(e) for e in bundle.external_secrets_operators]
         # The resolved secret store (forge.OpenBao): where it is and how a client
         # logs in. A declaration only; no value.
         if bundle.openbao:
@@ -2659,6 +2673,50 @@ _render_external_secret = lambda s: ExternalSecret -> any {
         "keys": s.keys
         "reason": s.reason if s.reason else None
         "value_group": s.value_group if s.value_group else None
+        # The store a Secret reads from, for the release shape (store_secrets,
+        # generated_secrets, pins). Names and kinds only; a value never appears.
+        if s.source:
+            "source": _render_store_source(s.source)
+    }
+}
+
+_render_store_source = lambda src: StoreSource -> any {
+    {
+        "store": {"type": src.store.type, if src.store.type == "gcpsm": "project": src.store.project}
+        "data": src.data
+        if src.generate:
+            "generate": {n: _render_generated(g) for n, g in src.generate}
+        if src.pin:
+            "pin": src.pin
+        if src.immutable:
+            "immutable": sorted(src.immutable)
+        if src.cluster:
+            "cluster": src.cluster
+    }
+}
+
+_render_generated = lambda g: GeneratedSecret -> any {
+    {
+        "kind": g.kind
+        "bytes": g.bytes
+        "encoding": g.encoding
+        "prefix": g.prefix
+        "length": g.length
+        "symbols": g.symbols
+        "companion": g.companion
+        "common_name": g.common_name
+        "valid_days": g.valid_days
+    }
+}
+
+# The ESO installs, as the shape records them. `connected_cluster` is the name
+# `forge cluster connect` registered, when the cluster has one.
+_render_eso = lambda e: ExternalSecretsOperator -> any {
+    {
+        "cluster": _eso_context(e)
+        "connected_cluster": e.cluster.connected_cluster if typeof(e.cluster) == "ClusterTarget" and e.cluster.connected_cluster else None
+        "namespace": e.namespace
+        "version": e.version
     }
 }
 

@@ -379,8 +379,14 @@ func Mode(msg proto.Message) RuntimeMode {
 // config blocks so a block can carry its own allowed_values fields. The
 // cross-field TLS/CORS checks operate per message level (the role fields of
 // the same message), which is where those pairs naturally live.
+//
+// Then it runs the message's buf.validate rules (rules.go), the invariants a
+// config declares for itself: field ranges and message-level CEL.
 func Validate(msg proto.Message) error {
-	return validateMessage(msg.ProtoReflect())
+	if err := validateMessage(msg.ProtoReflect()); err != nil {
+		return err
+	}
+	return validateRules(msg, func(err error) error { return err })
 }
 
 // validateMessage stops at the first violation.

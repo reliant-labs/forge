@@ -47,7 +47,9 @@ import (
 //
 // "Ended" is a context cancelled with cause svcerr.ErrServerDraining (Ended
 // reports it), so a handler can end the stream with a status its client
-// reconnects on. The soft phase runs AFTER the
+// reconnects on — and its request body's reads aborted with the same cause
+// (AbortReceive), so a handler parked in Receive, which no context wakes,
+// ends too. The soft phase runs AFTER the
 // readiness flip and the pre-stop pause, when this replica is already out of
 // rotation, so those reconnects land on a live replica.
 //
@@ -132,6 +134,9 @@ func (s *Streams) Report() DrainReport {
 // binding is one bound stream.
 type binding struct {
 	cancel context.CancelCauseFunc
+	// body is the stream's request body (Streams.Install), nil when the
+	// request did not come through Install.
+	body *abortableBody
 	// claimed: the handler asked for Draining(ctx) before the drain began,
 	// so the soft phase leaves it running.
 	claimed atomic.Bool
@@ -146,12 +151,18 @@ type binding struct {
 }
 
 // end ends the stream with the drain cause and reports whether this call was
-// the one that ended it.
+// the one that ended it. Ending a stream ends both things its handler can be
+// waiting on: its context, and a Receive parked on its request body, which
+// the context does not wake. The context goes first, so a handler the abort
+// wakes already sees Ended.
 func (b *binding) end() bool {
 	if !b.ended.CompareAndSwap(false, true) {
 		return false
 	}
 	b.cancel(svcerr.ErrServerDraining)
+	if b.body != nil {
+		b.body.abort(svcerr.ErrServerDraining)
+	}
 	return true
 }
 
@@ -195,11 +206,14 @@ func (s *Streams) init() {
 
 // Install makes s the registry for every request h serves: the one LongLived
 // routes and StreamDrainInterceptor bind to, found through the request's
-// context. NewHTTPServer installs its Streams this way; a process with its own
-// server stack wraps its handler with it.
+// context. It also serves each request with a body AbortReceive can end, which
+// is how the drain ends a stream parked in Receive (receive_abort.go).
+// NewHTTPServer installs its Streams this way; a process with its own server
+// stack wraps its handler with it.
 func (s *Streams) Install(h http.Handler) http.Handler {
 	s.init()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = installAbortableBody(w, r)
 		h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), streamsKey{}, s)))
 	})
 }
@@ -219,7 +233,7 @@ func StreamsFrom(ctx context.Context) *Streams {
 // once is harmless.
 func (s *Streams) Bind(parent context.Context) (ctx context.Context, release context.CancelFunc) {
 	s.init()
-	b := &binding{}
+	b := &binding{body: abortableBodyFrom(parent)}
 	var cancel context.CancelCauseFunc
 	ctx, cancel = context.WithCancelCause(context.WithValue(parent, streamsKey{}, s))
 	ctx = context.WithValue(ctx, bindingKey{}, b)
@@ -229,8 +243,7 @@ func (s *Streams) Bind(parent context.Context) (ctx context.Context, release con
 	if s.draining {
 		s.report.Ended++
 		s.mu.Unlock()
-		b.ended.Store(true)
-		cancel(svcerr.ErrServerDraining)
+		b.end()
 		return ctx, func() { cancel(context.Canceled) }
 	}
 	if len(s.bindings) == 0 {

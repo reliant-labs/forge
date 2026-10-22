@@ -9,6 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A config message's `buf.validate` rules are checked as it loads.** Field
+  rules (a port's range, a positive duration) and message-level CEL
+  (`BILLING_PROVIDER=stripe` needs `STRIPE_SECRET_KEY`) on a `proto/config`
+  message now fail `config.Load*`, so a root's command refuses a bad value in
+  its `RunE`, before `runRoot` binds a port or applies a migration; and
+  `config.Root.Validate` reports every violation over a rendered environment.
+  Each names the field's path, its variable and flag, and its value unless the
+  field is sensitive. `config.Validate` runs them too. A config that declares
+  no rules loads exactly as before.
+
+- **A store-backed `forge.ExternalSecret` now renders the External Secrets Operator
+  objects that sync it (SF5).** For each (cluster, namespace) holding one:
+  a `reliant-secrets` ServiceAccount, a Role + RoleBinding letting ESO mint that
+  service account's token and no other (`resourceNames`, matching ESO's
+  `rbac.serviceAccountTokenCreate: false`), one namespaced `SecretStore` per store
+  (the `vault` provider with JWT auth over a projected token for `HostedStore` and
+  `OpenBaoStore`; `gcpsm` over ESO's own Workload Identity for `GCPSecretManagerStore`),
+  and the `ExternalSecret`: one `remoteRef` per store name, `source.pin` as the KV-v2
+  `version` (rotation is a reviewed pin bump), `source.templates` as an ESO v2
+  template, `creationPolicy` Orphan or Merge with `deletionPolicy: Retain` so a store
+  outage or a Flux prune never removes a synced Secret. `shadow = True` syncs to
+  `<name>-eso-shadow` for the migration compare. The login role is the one
+  `pkg/secretaccess` derives, pinned by a test. `StoreSource` gains `cluster` (the
+  context it lands on; default the primary cluster); `HostedStore` gains `org` and
+  `env_id`, the control plane's ids that address its values. Refused at render, each
+  naming its escape: a HostedStore without ids, an OpenBao no other cluster can reach,
+  a GSM store with no ESO Google identity, a template calling a function ESO lacks or
+  that changes every sync, and one namespace configuring one store kind two ways.
+  Nothing renders for a Bundle with no `source`.
+
+
+- **A drained Connect stream parked in `Receive` actually ends, and handlers can
+  stop their own readers: `serverkit.AbortReceive(ctx)`.** A server-side
+  `Receive` reads the request body and no context wakes it; Connect closes the
+  body only after the handler returns. So the drain, which ended streams by
+  cancelling their contexts, never ended a bidi handler blocked in `Receive` (it
+  held the shutdown to the end of the budget), and a handler that read on a
+  goroutine of its own could not stop it before returning — leaving it in
+  `Receive` after the handler returned, which Connect forbids and which races
+  otelconnect's span bookkeeping. `Streams.Install` (every `NewHTTPServer` /
+  `NewListener`) now serves each request with an abortable body; a stream the
+  drain ends has its reads aborted right after its context is cancelled (the
+  read fails with `svcerr.ErrServerDraining`, so the client contract is
+  unchanged), and `serverkit.AbortReceive(ctx)` / `CanAbortReceive(ctx)` let a
+  handler end its own reads (`ErrReceiveAborted`). HTTP/2 closes the body;
+  HTTP/1.1 sets a read deadline, because its `Close` waits for a pending read.
+  The response is untouched, and unary routes are unaffected. Skill:
+  `services/shutdown`.
 - **Boot `/readyz` names the graph node boot is waiting on.** A composition
   root's boot probes used to answer `503 {"status":"not_ready"}` with no checks
   for the whole of graph construction, so a constructor that blocked — a

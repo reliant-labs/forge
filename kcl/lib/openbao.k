@@ -56,11 +56,10 @@ mount_name = lambda cluster_id: str -> str {
     "jwt-" + cluster_id
 }
 
-# The id of the cluster the store runs on: the name `forge cluster connect`
-# registered when there is one, else the kube context folded to the characters
-# a mount name allows.
-cluster_id = lambda target: any -> str {
-    target.connected_cluster or regex.replace(target.cluster, r"[^A-Za-z0-9_-]+", "-")
+# The id of the cluster the store runs on is the caller's (ctx.cluster_id): the
+# one lib/external_secret.k derives for the SecretStores that log in to it.
+_valid_id = lambda id: str -> bool {
+    bool(regex.match(id, r"^[A-Za-z0-9][A-Za-z0-9_-]*$"))
 }
 
 # The URL a client in the cluster reaches the store on (the active-node Service).
@@ -189,6 +188,7 @@ _required = lambda ob, bootstrap_source: any -> [any] {
 #
 #   project, env       the owner stamp and the KV directory (org, env)
 #   target             the ClusterTarget the store runs on
+#   cluster_id         that cluster's id in the store (see lib/external_secret.k)
 #   secrets            Bundle.required_secrets
 #   eso_namespaces     namespaces of the ESO installs on the same cluster
 #   bootstrap_source   Bundle.bootstrap_source
@@ -200,7 +200,9 @@ render = lambda ob: any, ctx: any -> any {
     assert not (ob.storage.type == "raft" and ob.storage.snapshot), \
         "OpenBao.storage.snapshot is declared, but the Raft snapshot CronJob is not rendered yet, and a backup that is declared and does not run is worse than none. Remove `snapshot` and back the PVCs up some other way (your CSI VolumeSnapshots), or use OpenBaoPostgres storage, which rides the database's own backups"
 
-    _id = cluster_id(_target)
+    assert ob.listeners[0].tls, "OpenBao.listeners[0] (port ${ob.listeners[0].port}) is plaintext. The first listener carries the cluster port and is the address clients and the converge Job use, so it must be the TLS one: put forge.OpenBaoListener {} first and any transitional plaintext listener after it"
+    _id = ctx.cluster_id
+    assert _valid_id(_id), "Bundle.openbao runs on cluster '${_id}', which is not usable as a store mount id (letters, digits, '_' and '-'). Register the cluster under a plain name: `connected_cluster` on its forge.ClusterTarget, or Bundle.connected_clusters = {\"${_target.cluster}\" = \"<name>\"}"
     _env = ctx.env or "default"
     _sources = [s for s in ctx.secrets if s.source and s.source.store.type == "openbao"]
     _bindings_ = _bindings(_sources, _id)

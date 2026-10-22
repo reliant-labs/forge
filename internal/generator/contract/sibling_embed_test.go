@@ -118,6 +118,9 @@ func TestGenerate_SiblingFileEmbedMockCompiles(t *testing.T) {
 		assertContains(t, mockPath, ") "+m+"(")
 	}
 	assertEveryQualifierImported(t, mockPath, nil)
+	// The header names the file the roles were read from.
+	assertContains(t, mockPath, "// Source: deps.go in this package.")
+	assertContains(t, mockPath, "// To customize: edit deps.go (")
 	// Prove the mocks satisfy the roles, beyond their own var _ checks.
 	writeTree(t, root, map[string]string{
 		"internal/store/assert_test_only.go": `package store
@@ -134,5 +137,22 @@ var (
 	if out, err := cmd.CombinedOutput(); err != nil {
 		mock, _ := os.ReadFile(mockPath)
 		t.Fatalf("generated mock does not compile: %v\n%s\n---- mock_gen.go ----\n%s", err, out, mock)
+	}
+}
+
+// The mock header names the file it was generated from — deps.go for a
+// package whose roles live there — and contract.go otherwise.
+func TestRenderMock_HeaderNamesItsSource(t *testing.T) {
+	for source, want := range map[string]string{"deps.go": "deps.go", "contract.go": "contract.go", "": "contract.go"} {
+		cf := &File{Package: "store", Source: source, Interfaces: []InterfaceDef{{Name: "Repo"}}}
+		out, err := renderMock(cf, Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range []string{"// Source: " + want + " in this package.", "// To customize: edit " + want + " ("} {
+			if !strings.Contains(string(out), line) {
+				t.Errorf("Source %q: header lacks %q:\n%s", source, line, out)
+			}
+		}
 	}
 }

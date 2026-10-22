@@ -24,7 +24,7 @@ A project with a frontend declares its users once, in `deploy/kcl/identity.k` (`
 
 ## Choosing the validator (owned code, not config)
 
-Authentication is CODE, not a `forge.yaml` provider enum. Each service scaffolds one editable file, `internal/app/auth.go`, whose `SetupAuth` returns the `*auth.Authenticator` `cmd serve.go` mounts — a JWT validator wrapped so API keys can join it later (`auth/api-keys`). Picking a validator is a wiring choice; WHERE this deployment's issuer lives is per-environment DATA on the typed config (declared in `proto/config/v1/config.proto`, pinned in `deploy/kcl/<env>/config.k`). **`SetupAuth` reads no environment variable** — the app has one configuration channel.
+Authentication is CODE, not a `forge.yaml` provider enum. Each service scaffolds one editable file, `internal/app/auth.go`, whose `SetupAuth` returns the `*auth.Authenticator` `cmd serve.go` mounts — a JWT validator wrapped so API keys can join it later (`auth/api-keys`). Picking a validator is a wiring choice; WHERE this deployment's issuer lives is per-environment DATA on the typed config (declared in `proto/<project>/config/v1/config.proto`, pinned in `deploy/kcl/<env>/config.k`). **`SetupAuth` reads no environment variable** — the app has one configuration channel.
 
 `SetupAuth(cfg *config.Config)` is unaffected by per-binary config (`forge skill load binaries`, "Config"): `config.Config` is always a real type, whether it aliases a single project-global `AppConfig` or — in an all-binary-annotated project — the config message bound to the primary server binary. `SetupAuth` never needs to know which.
 

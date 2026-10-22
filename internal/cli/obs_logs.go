@@ -20,7 +20,7 @@ const schemaObsLogs = "forge.obs.logs/v1"
 var obsLogsSchema = obsout.Schema{
 	Name: schemaObsLogs,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services",
 		"query", "query_mode",
 		"logs", "logs.time", "logs.severity", "logs.service", "logs.body", "logs.trace_id", "logs.span_id", "logs.attributes.*",
 		"statements", "statements.purpose", "statements.sql", "statements.params.*",

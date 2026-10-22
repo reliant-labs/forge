@@ -31,6 +31,8 @@ type obsDeps struct {
 	Facts func(ctx context.Context, errOut io.Writer, env string) (obsbackend.Facts, error)
 	// Local builds the backend over the env's local ClickStack.
 	Local func(env string) obsbackend.Backend
+	// Cloud builds the backend over the env's control plane.
+	Cloud func(ctx context.Context, env string) (obsbackend.Cloud, error)
 	// Release looks up the release live in env at a moment.
 	Release func(ctx context.Context, env string, at time.Time) (*liveRelease, error)
 	// Now is the clock.
@@ -47,6 +49,7 @@ func defaultObsDeps(cmd *cobra.Command) obsDeps {
 		Local: func(env string) obsbackend.Backend {
 			return obsbackend.Local{Env: env, Runner: obsbackend.DockerRunner{Exec: localClickstackExec(env), Env: env}}
 		},
+		Cloud:   openObsCloud,
 		Release: liveReleaseAt,
 		Now:     time.Now,
 		Stdout:  cmd.OutOrStdout(),
@@ -58,6 +61,9 @@ func defaultObsDeps(cmd *cobra.Command) obsDeps {
 		}
 		if o.Local != nil {
 			d.Local = o.Local
+		}
+		if o.Cloud != nil {
+			d.Cloud = o.Cloud
 		}
 		if o.Release != nil {
 			d.Release = o.Release
@@ -192,9 +198,8 @@ func obsEnvArg(args []string, at int) string {
 	return "dev"
 }
 
-// open resolves env's backend. A verb calls it once, then queries; verb names
-// the caller in the cloud refusal.
-func (c *obsCommon) open(ctx context.Context, d obsDeps, env, verb string) (obsbackend.Backend, obsbackend.Decision, error) {
+// open resolves env's backend. A verb calls it once, then queries.
+func (c *obsCommon) open(ctx context.Context, d obsDeps, env, _ string) (obsbackend.Backend, obsbackend.Decision, error) {
 	facts, err := d.Facts(ctx, d.Stderr, env)
 	if err != nil {
 		return nil, obsbackend.Decision{}, err
@@ -203,12 +208,14 @@ func (c *obsCommon) open(ctx context.Context, d obsDeps, env, verb string) (obsb
 	if err != nil {
 		return nil, dec, err
 	}
-	switch dec.Backend {
-	case obsbackend.BackendLocal:
+	if dec.Backend == obsbackend.BackendLocal {
 		return d.Local(env), dec, nil
 	}
-	return nil, dec, obsbackend.Undetermined("env %s reads telemetry from the Reliant control plane, and `forge obs %s` does not query it yet (the cloud backend is not built); pass --backend local to read this project's own ClickStack", env, verb).
-		With(obsbackend.Cmd("forge", "obs", verb, env, "--backend", "local"))
+	cb, err := d.Cloud(ctx, env)
+	if err != nil {
+		return nil, dec, err
+	}
+	return cb, dec, nil
 }
 
 // ── rendering ───────────────────────────────────────────────────────────

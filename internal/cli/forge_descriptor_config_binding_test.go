@@ -29,10 +29,10 @@ func boundConfigFile(binary string, msgLine, optLine int32) *descriptorpb.FileDe
 	}
 
 	return &descriptorpb.FileDescriptorProto{
-		Name:       strPtr("config/v1/config.proto"),
-		Package:    strPtr("config.v1"),
+		Name:       strPtr("proj/config/v1/config.proto"),
+		Package:    strPtr("proj.config.v1"),
 		Syntax:     strPtr("proto3"),
-		Options:    &descriptorpb.FileOptions{GoPackage: strPtr("example.com/proj/gen/config/v1;configv1")},
+		Options:    &descriptorpb.FileOptions{GoPackage: strPtr("example.com/proj/gen/proj/config/v1;configv1")},
 		Dependency: []string{"forge/v1/forge.proto"},
 		MessageType: []*descriptorpb.DescriptorProto{{
 			Name:    strPtr("ServerApiConfig"),
@@ -71,8 +71,13 @@ func TestExtractConfigMessage_RecordsBindingPosition(t *testing.T) {
 			if cm.Binary != "x server api" {
 				t.Errorf("Binary = %q", cm.Binary)
 			}
-			if cm.ProtoFile != "config/v1/config.proto" || cm.Line != c.want {
-				t.Errorf("position = %s:%d, want config/v1/config.proto:%d", cm.ProtoFile, cm.Line, c.want)
+			if cm.ProtoFile != "proj/config/v1/config.proto" || cm.Line != c.want {
+				t.Errorf("position = %s:%d, want proj/config/v1/config.proto:%d", cm.ProtoFile, cm.Line, c.want)
+			}
+			// pkg/config imports the package the message generates into,
+			// as its go_package declares it.
+			if cm.GoImportPath != "example.com/proj/gen/proj/config/v1" {
+				t.Errorf("GoImportPath = %q, want example.com/proj/gen/proj/config/v1", cm.GoImportPath)
 			}
 		})
 	}

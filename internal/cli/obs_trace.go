@@ -18,7 +18,7 @@ const schemaObsTrace = "forge.obs.trace/v1"
 var obsTraceSchema = obsout.Schema{
 	Name: schemaObsTrace,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to",
+		"scope", "scope.env", "scope.backend", "scope.from", "scope.to",
 		"query_mode", "trace_id", "start", "release", "release.version", "release.promotion_id", "release.promoted_at", "release.unsettled", "duration_ms", "spans_total", "spans_shown", "capped", "orphans",
 		"errors", "errors.span_id", "errors.service", "errors.name", "errors.message", "errors.exception",
 		"tree", "tree.span_id", "tree.service", "tree.name", "tree.kind", "tree.status", "tree.offset_ms", "tree.duration_ms",

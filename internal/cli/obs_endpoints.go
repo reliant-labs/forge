@@ -17,7 +17,7 @@ const schemaObsEndpoints = "forge.obs.endpoints/v1"
 var obsEndpointsSchema = obsout.Schema{
 	Name: schemaObsEndpoints,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services",
 		"query_mode", "sort",
 		"endpoints", "endpoints.service", "endpoints.name", "endpoints.requests", "endpoints.errors", "endpoints.error_ratio",
 		"endpoints.rate_per_second", "endpoints.p50_ms", "endpoints.p95_ms", "endpoints.p99_ms",

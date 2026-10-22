@@ -180,7 +180,7 @@ func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
 {{- end}}
 {{- if index .ConfigFields "PprofAddr"}}
 		// pprof, ON BY DEFAULT, on its own listener — never the app port.
-		// Defaults to 127.0.0.1:6060 (proto/config/v1/config.proto), so it is
+		// Defaults to 127.0.0.1:6060 (proto/<project>/config/v1/config.proto), so it is
 		// live in every environment and routable from none: no k8s Service,
 		// no route, no published container port. Grab a profile with
 		//

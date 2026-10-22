@@ -23,7 +23,7 @@ const schemaObsQuery = "forge.obs.query/v1"
 var obsQuerySchema = obsout.Schema{
 	Name: schemaObsQuery,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services",
 		"query_mode", "columns", "columns.name", "columns.type", "rows",
 		"statements", "statements.purpose", "statements.sql", "statements.params.*",
 		"suggested",

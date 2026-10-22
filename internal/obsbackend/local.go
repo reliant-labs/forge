@@ -369,18 +369,7 @@ func (l Local) Endpoints(ctx context.Context, req EndpointsRequest) (EndpointsRe
 		}
 		res.Endpoints = append(res.Endpoints, e)
 	}
-	key := map[string]func(Endpoint) float64{
-		"":         func(e Endpoint) float64 { return e.Requests },
-		"requests": func(e Endpoint) float64 { return e.Requests },
-		"rate":     func(e Endpoint) float64 { return e.RatePerSecond },
-		"p95":      func(e Endpoint) float64 { return e.P95Ms },
-		"errors":   func(e Endpoint) float64 { return e.ErrorRatio },
-	}[req.Sort]
-	sort.SliceStable(res.Endpoints, func(i, j int) bool { return key(res.Endpoints[i]) > key(res.Endpoints[j]) })
-	if req.Top > 0 && len(res.Endpoints) > req.Top {
-		res.Omitted = len(res.Endpoints) - req.Top
-		res.Endpoints = res.Endpoints[:req.Top]
-	}
+	rankEndpoints(&res, req)
 	return res, nil
 }
 

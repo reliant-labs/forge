@@ -188,7 +188,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			// (codegen.DetectDepsConfigImport), so the two renders agree.
 			ConfigImport: g.ModulePath + "/pkg/config",
 			// That pkg/config is generated from the scaffolded
-			// proto/config (an AppConfig root), so it declares Defaults():
+			// proto/<project>/config/v1 (an AppConfig root), so it declares Defaults():
 			// the harness builds the config production loads with nothing
 			// set, not an empty one. forge generate reads it back
 			// (codegen.ConfigPackageDeclaresDefaults) to the same answer.

@@ -5,26 +5,22 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/configproto"
 )
 
-// HasConfigProtos reports whether proto/config holds a .proto file — the
-// input the config loader generates pkg/config from. A proto/config
-// directory with no proto in it (a CLI scaffold leaves an empty
-// proto/config/v1) is not one: generating the loader from forge's default
-// fields there writes a pkg/config importing gen/config/v1, which nothing
-// will ever generate.
+// HasConfigProtos reports whether the project's config directory
+// (internal/configproto: proto/<project>/config/v1) holds a .proto file —
+// the input the config loader generates pkg/config from. A config directory
+// with no proto in it (a CLI scaffold leaves an empty one) is not one:
+// generating the loader from forge's default fields there writes a
+// pkg/config importing a config package nothing will ever generate.
+//
+// A project still on the legacy proto/<project>/config/v1 layout reports false here;
+// `forge generate` refuses it before this is consulted (see
+// configproto.LegacyFiles).
 func HasConfigProtos(projectDir string) bool {
-	found := false
-	_ = filepath.WalkDir(filepath.Join(projectDir, "proto", "config"), func(p string, d os.DirEntry, err error) error {
-		if err != nil || found {
-			return nil //nolint:nilerr // an unreadable tree holds no protos we can use
-		}
-		if !d.IsDir() && strings.HasSuffix(p, ".proto") {
-			found = true
-		}
-		return nil
-	})
-	return found
+	return configproto.ForProject(projectDir).HasProtos(projectDir)
 }
 
 // configTypeRE matches a package-level `type Config` declaration.

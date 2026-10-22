@@ -269,7 +269,7 @@ func TestGolangciTypedAccessGuard_TeachingMessage(t *testing.T) {
 	}
 	got := string(out)
 	for _, want := range []string{
-		"proto/config/v1/*.proto",                               // the concrete path to declare settings
+		"proto/<project>/config/v1/*.proto",                     // the concrete path to declare settings
 		"forge generate",                                        // the regenerate step that produces the loader
 		"(forge.v1.config) annotation",                          // the annotation that drives codegen
 		"//nolint:forbidigo on this line",                       // per-line opt-out

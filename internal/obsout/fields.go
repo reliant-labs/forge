@@ -24,15 +24,11 @@ type Schema struct {
 	// Fields are every selectable path, parents included ("logs",
 	// "logs.service").
 	Fields []string
-	// Always are the top-level keys a projection never drops. Zero value:
-	// [DefaultAlways].
-	Always []string
 }
 
-// DefaultAlways are the keys a --fields projection keeps: the head, so a
-// failure is never hidden, and the page, so a truncated list can still be
-// resumed.
-var DefaultAlways = []string{"schema", "ok", "exit_code", "error", "truncated", "omitted", "next_page_token"}
+// alwaysKept are the keys a --fields projection keeps: the head, so a failure
+// is never hidden, and the page, so a truncated list can still be resumed.
+var alwaysKept = []string{"schema", "ok", "exit_code", "error", "truncated", "omitted", "next_page_token"}
 
 // Help is the "Fields:" block for a verb's --help.
 func (s Schema) Help() string {
@@ -43,15 +39,8 @@ func (s Schema) Help() string {
 	for _, f := range fs {
 		b.WriteString("  " + f + "\n")
 	}
-	fmt.Fprintf(&b, "Always kept: %s.\n", strings.Join(s.always(), ", "))
+	fmt.Fprintf(&b, "Always kept: %s.\n", strings.Join(alwaysKept, ", "))
 	return b.String()
-}
-
-func (s Schema) always() []string {
-	if len(s.Always) > 0 {
-		return s.Always
-	}
-	return DefaultAlways
 }
 
 // ParseFields splits a --fields value ("a,b.c") and checks every path against
@@ -132,7 +121,7 @@ func (s Schema) projectJSON(raw []byte, fields []string) ([]byte, error) {
 		return nil, err
 	}
 	keep := &selection{children: map[string]*selection{}}
-	for _, p := range append(append([]string(nil), s.always()...), fields...) {
+	for _, p := range append(append([]string(nil), alwaysKept...), fields...) {
 		keep.add(strings.Split(p, "."))
 	}
 	out, _ := keep.project(v)

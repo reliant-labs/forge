@@ -247,7 +247,7 @@ func (c configInput) scope(binary string) string {
 	return fmt.Sprintf("the %#q binary's root config", binary)
 }
 
-// loadProcessConfigs reads proto/config: the root config — the project's
+// loadProcessConfigs reads proto/<project>/config/v1: the root config — the project's
 // AppConfig, or else the primary binary's own root config (the message
 // config.Config aliases, PrimaryConfigMessage) — and every other config the
 // primary binary binds. nil when there is no root config.

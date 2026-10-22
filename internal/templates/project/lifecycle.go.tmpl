@@ -137,7 +137,7 @@ func HasOperators(c *Components) bool { return len(c.AllOperators()) > 0 }
 // here. A lease name that varies per environment, a lease namespace (needed
 // to run the manager from a host process, outside the cluster), or non-default
 // leader-election timings are config fields — declare them in
-// proto/config/v1/config.proto, thread cfg into this function, and set the
+// proto/<project>/config/v1/config.proto, thread cfg into this function, and set the
 // matching Options field.
 func RunOperators(ctx context.Context, logger *slog.Logger, healthProbeAddr string, ops []OperatorEntry) error {
 	controllers := make([]operatorkit.Controller, 0, len(ops))

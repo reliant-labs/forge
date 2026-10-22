@@ -11,7 +11,7 @@
 // hand-projection boilerplate (their CycleInterval workaround).
 //
 // The supported shape is a component config block: declare a
-// `message <Component>Config { ... }` in proto/config/v1/config.proto
+// `message <Component>Config { ... }` in proto/<project>/config/v1/config.proto
 // with (forge.v1.config) leaf annotations, compose it on AppConfig
 // (`<Component>Config <component> = <tag>;`), and take the generated
 // block as ONE typed Deps field (`Cfg *config.<Component>Config`).
@@ -92,7 +92,7 @@ func configDepsFixHint(f configDepsFinding) string {
 	block := naming.ToPascalCase(f.Package) + "Config"
 	protoField := naming.ToSnakeCase(f.Field)
 	return fmt.Sprintf(
-		"scalar Deps fields are configuration — declare a config block in proto/config/v1/config.proto: `message %s { %s %s = 1 [(forge.v1.config) = {env_var: %q, description: \"...\"}]; }`, compose it on AppConfig (`%s %s = <next tag>;`), run `forge generate`, and replace `%s %s` with `Cfg *config.%s` (internal/app/compose.go fills it from the loaded config by type; per-env values go in deploy/kcl/<env>/config.k as `%s = <value>`)",
+		"scalar Deps fields are configuration — declare a config block in proto/<project>/config/v1/config.proto: `message %s { %s %s = 1 [(forge.v1.config) = {env_var: %q, description: \"...\"}]; }`, compose it on AppConfig (`%s %s = <next tag>;`), run `forge generate`, and replace `%s %s` with `Cfg *config.%s` (internal/app/compose.go fills it from the loaded config by type; per-env values go in deploy/kcl/<env>/config.k as `%s = <value>`)",
 		block, protoScalarType(f.Type), protoField,
 		strings.ToUpper(naming.ToSnakeCase(f.Package))+"_"+strings.ToUpper(protoField),
 		block, naming.ToSnakeCase(f.Package),

@@ -95,6 +95,7 @@ These are the packages people re-implement. The list is judgment, not inventory 
 | a CORS / security-headers / request-id / rate-limit middleware | `forge/pkg/middleware`. Your composition root wires the chain; don't photocopy the middlewares. |
 | logging / tracing / metrics interceptors | `forge/pkg/observe`. The scaffold already wires `observe.Chain`; reach in only for opt-in per-method instrumentation. |
 | a query over your telemetry (logs, traces, metrics, panels, flamegraphs) in ClickHouse | `forge/pkg/obsquery`. Typed requests compile to parameterized SQL over the OTel exporter's tables; the same compiler serves a local ClickStack (`Scope{Database: obsquery.LocalDatabase, Local: true}`) and the hosted control plane. You run the `Stmt`. Raw SQL goes through `SQLPanel`, never string assembly. |
+| deciding whether a release made things worse (error rate, latency, new issues, firing alerts, restarts; PASS / FAIL / INCONCLUSIVE) | `forge/pkg/releasehealth`. Pure: windows around a promotion, thresholds tagged `release_shape \| default \| request`, findings and the verdict. `forge obs check` and the control plane share it; don't re-derive the rule. |
 | CRUD lifecycle plumbing in a handler | `forge/pkg/crud`. Forge auto-wires it from your CRUD RPCs — don't bypass it. |
 | `*sql.DB` scan boilerplate | `forge/pkg/orm`, consumed by the generated `internal/db/<entity>_orm.go`. Schema truth is `db/migrations/`; entities are projections of it. |
 

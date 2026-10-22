@@ -45,7 +45,7 @@ func defaultObsDeps(cmd *cobra.Command) obsDeps {
 	d := obsDeps{
 		Facts: obsFactsFromKCL,
 		Local: func(env string) obsbackend.Backend {
-			return obsbackend.Local{Env: env, Runner: obsbackend.DockerRunner{Exec: localClickstackExec(env), Env: env}}
+			return obsbackend.Local{Env: env, Runner: obsbackend.DockerRunner{Exec: localClickstackExec(env), Env: env}, Ledger: openObsLedger}
 		},
 		Cloud:  openObsCloud,
 		Now:    time.Now,
@@ -96,7 +96,7 @@ func obsFactsFromKCL(ctx context.Context, errOut io.Writer, env string) (obsback
 		return obsbackend.Facts{}, obsbackend.Undetermined("cannot read env %q's declaration: %v", env, err).
 			With(obsbackend.Cmd("forge", "env", "list"))
 	}
-	f := obsbackend.Facts{Env: env, HasHosted: e.HasHosted()}
+	f := obsbackend.Facts{Env: env, HasHosted: e.HasHosted(), ReleaseHealth: e.ReleaseHealth}
 	if o := e.Observability; o != nil {
 		f.Declared, f.Enabled = true, o.Enabled
 		if d := o.Destination; d != nil {
@@ -275,3 +275,8 @@ func explainText(w io.Writer, stmts []obsbackend.Statement) {
 }
 
 func paramNames(m map[string]string) []string { return slices.Sorted(maps.Keys(m)) }
+
+// openObsLedger opens this machine's release ledger for the change feed.
+func openObsLedger() (obsbackend.LedgerReader, error) {
+	return openMachineLedger(projectDirForKCL())
+}

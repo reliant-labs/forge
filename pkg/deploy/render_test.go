@@ -11,6 +11,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"github.com/reliant-labs/forge/pkg/dbgrants"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
 	"github.com/reliant-labs/forge/pkg/serverkit/drainbudget"
@@ -1104,6 +1105,7 @@ func TestRenderManagedDatabase(t *testing.T) {
 		"enableSuperuserAccess": false,
 		"bootstrap":             map[string]any{"initdb": map[string]any{"database": "order_db", "owner": "order_db_app"}},
 		"storage":               map[string]any{"size": "50Gi"},
+		"managed":               map[string]any{"roles": []any{wantReadOnlyRole("order-db")}},
 	}
 	if !reflect.DeepEqual(c["spec"], want) {
 		t.Errorf("Cluster spec = %#v\nwant %#v", c["spec"], want)
@@ -1830,5 +1832,104 @@ func TestRolloutDefaultsAgree(t *testing.T) {
 	}
 	if defaultRolloutPercent != release.DefaultRolloutPercent {
 		t.Errorf("rollout percent: render %q, release %q", defaultRolloutPercent, release.DefaultRolloutPercent)
+	}
+}
+
+// wantReadOnlyRole is the CNPG managed-role entry for the read-only role,
+// written out in full so a change to any attribute is a visible diff.
+func wantReadOnlyRole(database string) map[string]any {
+	return map[string]any{
+		"name":            "forge_ro",
+		"ensure":          "present",
+		"comment":         "forge read-only role: column grants only, no forge:secret column, no write privilege",
+		"login":           true,
+		"superuser":       false,
+		"createdb":        false,
+		"createrole":      false,
+		"replication":     false,
+		"bypassrls":       false,
+		"inherit":         false,
+		"connectionLimit": float64(10),
+		"passwordSecret":  map[string]any{"name": database + "-forge-ro"},
+	}
+}
+
+// TestRenderManagedDatabaseDeclaresTheReadOnlyRole: the Cluster carries the
+// forge_ro managed role, so CNPG converges it and nobody runs a setup step.
+// The role can log in and can do nothing else the platform could mistake for
+// power: no superuser, role or database creation, replication or RLS bypass,
+// and no membership (pg_read_all_data would make the column grants moot).
+func TestRenderManagedDatabaseDeclaresTheReadOnlyRole(t *testing.T) {
+	for _, name := range []string{"order-db", "x"} {
+		objs, err := RenderManagedDatabase(name, v1alpha1.ManagedDatabaseSpec{}, ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := objects(t, objs)["Cluster/"+name]
+		roles, _ := get(c, "spec", "managed", "roles").([]any)
+		if len(roles) != 1 {
+			t.Fatalf("%s: managed.roles = %v, want exactly the read-only role", name, roles)
+		}
+		if !reflect.DeepEqual(roles[0], wantReadOnlyRole(name)) {
+			t.Errorf("%s: managed role = %#v\nwant %#v", name, roles[0], wantReadOnlyRole(name))
+		}
+		role := roles[0].(map[string]any)
+		if _, ok := role["inRoles"]; ok {
+			t.Errorf("%s: the read-only role is a member of %v: it must hold no role", name, role["inRoles"])
+		}
+		if role["passwordSecret"].(map[string]any)["name"] != dbgrants.SecretName(name) {
+			t.Errorf("%s: passwordSecret does not name the contract Secret", name)
+		}
+	}
+}
+
+// TestRenderManagedDatabaseRestoreKeepsTheReadOnlyRole: a database bootstrapped
+// from a backup still declares the role. Managed roles are the Cluster's, not
+// the bootstrap's, and a restored database that lost its read-only role would
+// lose `forge db query` exactly when someone is investigating an incident.
+func TestRenderManagedDatabaseRestoreKeepsTheReadOnlyRole(t *testing.T) {
+	spec := v1alpha1.ManagedDatabaseSpec{Restore: &v1alpha1.DatabaseRestore{SourceDatabase: "order-db"}}
+	objs, err := RenderManagedDatabase("order-db-restored", spec, backupCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := objects(t, objs)["Cluster/order-db-restored"]
+	if roles, _ := get(c, "spec", "managed", "roles").([]any); len(roles) != 1 {
+		t.Errorf("restored Cluster managed.roles = %v, want the read-only role", roles)
+	}
+}
+
+// TestReadOnlyRoleSecret pins the credentials Secret CNPG reads as the role's
+// passwordSecret and a client reads to connect: basic-auth, the role's name,
+// labelled so a password change applies immediately.
+func TestReadOnlyRoleSecret(t *testing.T) {
+	envCtx := ctx
+	envCtx.Env = "prod"
+	sec, err := ReadOnlyRoleSecret("order-db", "s3cret", envCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := objects(t, []*unstructured.Unstructured{sec})["Secret/order-db-forge-ro"]
+	if m == nil {
+		t.Fatalf("Secret name = %q", sec.GetName())
+	}
+	if m["type"] != "kubernetes.io/basic-auth" {
+		t.Errorf("type = %v, want kubernetes.io/basic-auth (CNPG refuses anything else)", m["type"])
+	}
+	sd, _ := m["stringData"].(map[string]any)
+	if sd["username"] != "forge_ro" || sd["password"] != "s3cret" {
+		t.Errorf("stringData = %v", sd)
+	}
+	if get(m, "metadata", "labels", "cnpg.io/reload") != "true" {
+		t.Error("no cnpg.io/reload label: a changed password would wait for CNPG's next reconcile")
+	}
+	if get(m, "metadata", "labels", LabelEnv) != "prod" || get(m, "metadata", "namespace") != ctx.Namespace {
+		t.Errorf("metadata = %v", m["metadata"])
+	}
+	if _, err := ReadOnlyRoleSecret("order-db", "", ctx); err == nil {
+		t.Error("an empty password was accepted: the role would log in with none")
+	}
+	if _, err := ReadOnlyRoleSecret("Not_A_Name", "x", ctx); err == nil {
+		t.Error("an invalid database name was accepted")
 	}
 }

@@ -4892,6 +4892,44 @@ _delivery_enforced_verifiers = lambda flux_verify: Control, admission_verify: Co
     (["flux_verify"] if flux_verify.mode == "enforce" else []) + (["admission_verify"] if admission_verify.mode == "enforce" else []) + (["signed_promotions"] if signed_promotions.mode == "enforce" else [])
 }
 
+_DB_QUERY_POLICIES = ["open", "audited", "deny"]
+
+schema DataAccess:
+    """How an env's data may be read from outside the application. Set on
+    `Bundle.data_access`.
+
+        data_access = forge.DataAccess {db_query = "deny"}
+
+    `db_query` is the policy for `forge db query <env>` (and the control plane's
+    QueryDatabase) against this env's database:
+
+      * `open`: anyone with the env may query. The default for a local or
+        ephemeral env, whose data is scratch.
+      * `audited`: only a person holding the `db:query` grant, naming the env and
+        a reason; every call is recorded. The default for every other env.
+      * `deny`: nobody.
+
+    UNSET follows the env's `lifecycle`, so a real env is audited without
+    declaring anything. The policy is recorded in the release shape
+    (`data_access`) and the control plane enforces it from there: a client
+    cannot pick a weaker one.
+
+    Whatever the policy, the query runs as a read-only role that Postgres itself
+    bars from `forge:secret` columns and from every write; this governs who may
+    ask, not what the role can see.
+    """
+    db_query?: str
+
+    check:
+        not db_query or db_query in _DB_QUERY_POLICIES, \
+            "DataAccess.db_query '${db_query}' is not one of ${_DB_QUERY_POLICIES}: open (anyone with the env), audited (a person with the db:query grant, naming the env and a reason) or deny (nobody)"
+
+# The db_query policy an env resolves to: what it declared, else open for a
+# local or ephemeral env and audited for every other one.
+_data_access_db_query = lambda data_access: DataAccess, lifecycle: str -> str {
+    data_access.db_query if data_access and data_access.db_query else ("open" if lifecycle in ["local", "ephemeral"] else "audited")
+}
+
 # ---------------------------------------------------------------------------
 # Bundle — the project-level container forge.render() consumes.
 # ---------------------------------------------------------------------------
@@ -6178,6 +6216,10 @@ schema Bundle:
     # builder, vulnerability gate, approvals, ...). UNSET = every control at
     # its default. See DeliveryPolicy and the `deploy/delivery-policy` skill.
     delivery_policy?: DeliveryPolicy
+    # How this env's data may be read from outside the application (`forge db
+    # query`). UNSET follows `lifecycle`: open for local/ephemeral, audited
+    # otherwise. See DataAccess.
+    data_access?: DataAccess
     # The env's users (forge.ManagedIdentity): roles, the applications that
     # sign users in, the workloads that read tokens, and where the instance
     # runs. UNSET = no managed identity (bring your own issuer in config.k).

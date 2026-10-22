@@ -53,7 +53,8 @@ import (
 // HANDLER chain — so a bare kind is emitted only in a handler package
 // (a path under handlers/), only where the expression's context type is
 // exactly `error`, and only when no in-process reader of a *connect.Error
-// (connect.CodeOf, errors.As into a *connect.Error, a type assertion), which
+// (connect.CodeOf, errors.As or any other call given a **connect.Error As
+// target — testify's require.ErrorAs, a test helper — a type assertion), which
 // would see a bare kind as something else, is in the package — its code or
 // its tests (a test's connect.CodeOf aside, which is rewritten) — or in the
 // production code of a package importing it. A reader further away is not
@@ -97,7 +98,8 @@ spelling reproduces exactly:
 
 A bare svcerr kind is written only in a handler package, where the expression is
 an error and nothing reads a *connect.Error in process (connect.CodeOf, errors.As
-into one) in the package, its tests, or the code of a package importing it;
+into one, an As-style helper such as testify's require.ErrorAs handed a
+**connect.Error) in the package, its tests, or the code of a package importing it;
 elsewhere (interceptors, clients, a
 *connect.Error-typed result, a package such a reader can see) the same value is
 kept a *connect.Error with svcerr.ToConnect(…), and the report names the reader;
@@ -442,7 +444,7 @@ func (c *connectErrorsRun) report() Report {
 		if c.bareUsed {
 			rep.Next = append(rep.Next,
 				"A bare svcerr kind reaches the client with its code through svcerr.Interceptor, which forge's chain builders (serverkit.NewChain, observe.Chain, observe.DefaultMiddlewares) install innermost. A handler chain you assemble by hand must end with svcerr.Interceptor(), or the client reads unknown.",
-				"In-process readers of a *connect.Error (connect.CodeOf, errors.As into one) in a handler package or a package importing it kept that package's rewrites *connect.Error; one further away is not traced. If handler errors travel further in process, check those readers: svcerr.Code(err) reads the same code for a *connect.Error and a bare kind.")
+				"In-process readers of a *connect.Error (connect.CodeOf, errors.As or an As-style helper into one) in a handler package or a package importing it kept that package's rewrites *connect.Error; one further away is not traced. If handler errors travel further in process, check those readers: svcerr.Code(err) reads the same code for a *connect.Error and a bare kind.")
 		}
 		rep.Verify = []string{"go build ./...", "go vet ./...", "go test ./...", "forge lint --conventions"}
 	}
@@ -974,8 +976,15 @@ func (r *ceRewriter) rewriteCodeOf() {
 }
 
 // connectReaders lists a file's in-process readers of a *connect.Error:
-// connect.CodeOf (when withCodeOf), errors.As into one, and type assertions
-// or switches on one. Each would read a bare svcerr kind differently.
+// connect.CodeOf (when withCodeOf), errors.As into one, any other call handed
+// a **connect.Error As target, and type assertions or switches on one. Each
+// would read a bare svcerr kind differently.
+//
+// The As target is matched by the ARGUMENT's type, not the callee: testify's
+// require.ErrorAs / assert.ErrorAs (and their suite methods) take the target
+// as interface{}, and a project's own helper can be spelled any way, but every
+// one of them is handed `&ce` with ce a *connect.Error, and fails on a bare
+// kind exactly as errors.As does.
 func connectReaders(f ceFile, withCodeOf bool) []string {
 	info, fset := f.pkg.TypesInfo, f.pkg.Fset
 	isConnErr := func(t types.Type) bool {
@@ -992,6 +1001,16 @@ func connectReaders(f ceFile, withCodeOf bool) []string {
 		}
 		return false
 	}
+	// isAsTarget is exactly **connect.Error: the address of a *connect.Error
+	// variable, which is what an As-style call fills in.
+	isAsTarget := func(t types.Type) bool {
+		ptr, ok := t.(*types.Pointer)
+		if !ok {
+			return false
+		}
+		_, ok = ptr.Elem().(*types.Pointer)
+		return ok && isConnErr(ptr.Elem())
+	}
 	var sites []string
 	add := func(n ast.Node, what string) {
 		sites = append(sites, fmt.Sprintf("%s:%d (%s)", f.rel, fset.Position(n.Pos()).Line, what))
@@ -1004,6 +1023,13 @@ func connectReaders(f ceFile, withCodeOf bool) []string {
 				add(x, "connect.CodeOf")
 			case pkg == "errors" && name == "As" && len(x.Args) == 2 && isConnErr(info.TypeOf(x.Args[1])):
 				add(x, "errors.As into a *connect.Error")
+			default:
+				for _, arg := range x.Args {
+					if isAsTarget(info.TypeOf(arg)) {
+						add(x, types.ExprString(x.Fun)+" into a *connect.Error")
+						break
+					}
+				}
 			}
 		case *ast.TypeAssertExpr:
 			if x.Type != nil && isConnErr(info.TypeOf(x.Type)) {

@@ -387,6 +387,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		ObservabilityPolicy: shapeObservabilityPolicyOf(entities),
 		FrontendTelemetry:   shapeFrontendTelemetryOf(entities),
 		DeliveryPolicy:      shapeDeliveryPolicyOf(entities),
+		DataAccess:          shapeDataAccessOf(entities),
 		Identity:            shapeIdentityOf(entities),
 		Applier:             shapeApplierOf(entities),
 		Units:               split.ShapeUnits(),
@@ -659,6 +660,17 @@ func shapeDeliveryPolicyOf(e *KCLEntities) *release.ShapeDeliveryPolicy {
 		return nil
 	}
 	return e.DeliveryPolicy
+}
+
+// shapeDataAccessOf projects the env's data access. Nil when it is the default
+// (audited): the shape then encodes as it did before the field, and absence
+// means "audited", never "open". A local or ephemeral env resolves to open in
+// the render, so it records that.
+func shapeDataAccessOf(e *KCLEntities) *release.ShapeDataAccess {
+	if e == nil || e.DataAccess.IsDefault() {
+		return nil
+	}
+	return e.DataAccess
 }
 
 // shapeIdentityOf projects the env's managed identity. The render already

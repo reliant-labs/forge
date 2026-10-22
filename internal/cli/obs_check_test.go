@@ -516,7 +516,7 @@ const (
 	procReleases = "controlplane.v1.DeployService/ListReleases"
 	procConv     = "controlplane.v1.DeployService/ListConvergences"
 	procActivity = "controlplane.v1.ActivityService/ListActivity"
-	procOrg      = "controlplane.v1.OrganizationService/GetOrganization"
+	procOrg      = cloud.ProcGetOrganization
 )
 
 func changesCaller() *seqCaller {
@@ -565,6 +565,12 @@ func TestObsChangesCloudMergesTheLedgerAndActivity(t *testing.T) {
 	}
 	if sug := fmt.Sprint(doc["suggested"]); !strings.Contains(sug, "forge obs check prod --promotion") {
 		t.Errorf("suggested = %s", sug)
+	}
+	if _, warned := doc["warnings"]; warned {
+		t.Errorf("every source answered, so there is nothing to warn about: %v", doc["warnings"])
+	}
+	if !strings.Contains(out, `"via": "ci"`) {
+		t.Errorf("the promotion row takes its channel from the matching activity event:\n%s", out)
 	}
 	obsGolden(t, "changes.json", out)
 }

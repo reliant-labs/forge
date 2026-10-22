@@ -226,6 +226,8 @@ Dev DSN convention: `postgres://postgres:postgres@localhost:5432/<project>?sslmo
 
 Deployed envs migrate themselves — load the `db/deploy-migrations` skill.
 
+To read an env's rows, `forge db query <env> "<sql>"` (read-only, no `forge:secret` columns): load `db/query`.
+
 `forge db seed apply|status|reset` materializes deterministic dev rows from the applied schema, and `db/seeds/vocab.yaml` teaches it your domain's vocabulary — load the `db/seeding` skill before seeding.
 
 ### Queries

@@ -44,9 +44,40 @@ The workload decides (`--workload`, default `api`):
 
 ## The read-only role
 
-Every ManagedDatabase carries `forge_ro`, a role forge declares on the CNPG Cluster. Its password is in the `<name>-forge-ro` Secret. `forge generate` projects its grants from the applied schema into `db/grants/readonly_gen.sql`, and the migrator applies them after every run. The role may SELECT every column **except** those marked `forge:secret` in the proto, and nothing else: no writes, no sequences, no views.
+Every ManagedDatabase carries `forge_ro`, a role forge declares on the CNPG Cluster. Its password is in the `<name>-forge-ro` Secret. `forge generate` projects its grants from the applied schema into `db/grants/readonly_gen.sql`, and the migrator applies them after every run. The role may SELECT the columns somebody **decided** it may read, and nothing else: no writes, no sequences, no views.
 
 The boundary is Postgres, not a redactor. `select upper(api_key) from …` is refused (`permission_denied`, exit 1) just like `select api_key`. A column added later is unreadable until a migration converges the grants. Don't grant the role more by hand; the next migration revokes it.
+
+`// forge:secret` on a proto field keeps the column settable on Create/Update and drops only the read path (`<entity>ToProto`). Its second effect is the one Postgres enforces, below: `forge generate` leaves the column out of `db/grants/readonly_gen.sql`, and the migrator applies that file after every `db migrate up`, so `forge_ro` is refused it through any expression. The role holds column-level `SELECT` only: no write privilege, no table-level `SELECT`, so a column added later is unreadable until `forge generate` has seen whether it is secret.
+
+### Safe by construction: who decides a column
+
+A column is **withheld** when it is declared `forge:secret`, and also when it is **credential-shaped and undecided**. Everything else is granted. So a project cannot expose a credential by forgetting to mark it, and a table nobody thought about is still queryable.
+
+| Declaration | Where | Effect |
+|---|---|---|
+| `forge:secret` | `// forge:secret` on the entity's proto field, **or** `COMMENT ON COLUMN t.c IS 'forge:secret'` in a migration | withheld. The SQL spelling is the one for a column with no wire field, which is most credential tables |
+| `forge:readable <reason>` | `COMMENT ON COLUMN t.c IS 'forge:readable — SHA-256 of the prompt, not of a credential'` | granted although the name looks like a credential. The reason is mandatory; `forge generate` rejects a bare marker |
+| neither, name looks like a credential | | withheld **and** `forge lint --db-grants` fails, naming `table.column` and both markers |
+
+`forge:secret` wins if a column declares both. `COMMENT ON` replaces the whole comment, so keep an existing `forge:immutable` etc. in the same string.
+
+**Credential-shaped** is judged on the column's name and type, by `dbgrants.CredentialShaped`:
+
+- *Stems*, matched anywhere in the name with underscores ignored: `password`, `passwd`, `passphrase`, `secret`, `credential`, `token`, `bearer`, `ciphertext`, `plaintext`, `encrypted`, `sealed`, `apikey`, `accesskey`, `secretkey`, `privatekey`, `signingkey`, `encryptionkey`, `authkey`, `masterkey`, `licensekey`, `sessionkey`, `recoverycode`, `backupcode`, `resetcode`, `verificationcode`, `authcode`.
+- *Whole words* between underscores (too short to match inside other words): `hash`, `hashed`, `hashes`, `salt`, `jwt`, `otp`, `totp`, `pin`, `pwd`, `cred`, `creds`, `cipher`, `cookie`. `hash` is here for token and password hashes, which are offline-guessing targets; a content hash that is not one takes a `forge:readable`.
+- *Not* credential-shaped: a name whose last word describes a credential rather than holding it (`token_id`, `secret_name`, `credential_type`, `api_key_status`, `…_count`, `…_version`, `…_provider`, `…_scope`), and a number, boolean or timestamp column (`input_tokens bigint`, `token_expires_at timestamptz`).
+- A **`bytea` column** needs a decision whatever it is called: it is opaque by construction.
+
+The list over-approximates on purpose: a false positive costs one `forge:readable <reason>`, a false negative ships a credential. What a name cannot reveal (`value`, `data`, `config` holding a credential) you mark `forge:secret` yourself. `forge project annotations --kind column` prints both markers.
+
+`forge lint --db-grants` is in the default lint run and gates it:
+
+```
+✗ [forge-db-grants-undecided] db/migrations/0003_git.up.sql:7
+    git_credentials.access_token looks like a credential and nobody decided it: forge_ro cannot read it
+    → in a new migration, declare one: COMMENT ON COLUMN git_credentials.access_token IS 'forge:secret'; …
+```
 
 ## Who may query: `data_access`
 

@@ -166,3 +166,62 @@ func TestCheckMarkers_ClosedSetOnCheckConstraints(t *testing.T) {
 		})
 	}
 }
+
+func TestColumnSecretAndReadableDeclarations(t *testing.T) {
+	secret := func(c string) bool { return Column{Comment: c}.DeclaresSecret() }
+	for comment, want := range map[string]bool{
+		"forge:secret":                    true,
+		"forge:secret — a sealed token":   true,
+		"credential. forge:secret":        true,
+		"":                                false,
+		"a secret column":                 false,
+		"forge:secret-ish":                false,
+		"forge:readable not forge:secret": true,
+	} {
+		if got := secret(comment); got != want {
+			t.Errorf("DeclaresSecret(%q) = %v, want %v", comment, got, want)
+		}
+	}
+
+	for comment, want := range map[string]struct {
+		reason   string
+		declared bool
+	}{
+		"forge:readable — content hash, not a credential": {"content hash, not a credential", true},
+		"forge:readable: public key":                      {"public key", true},
+		"forge:readable":                                  {"", true},
+		"forge:readable —":                                {"", true},
+		"forge:readable forge:secret":                     {"", true},
+		"forge:readable-ish because":                      {"", false},
+		"no marker here":                                  {"", false},
+	} {
+		reason, declared := Column{Comment: comment}.ReadableReason()
+		if reason != want.reason || declared != want.declared {
+			t.Errorf("ReadableReason(%q) = (%q, %v), want (%q, %v)", comment, reason, declared, want.reason, want.declared)
+		}
+	}
+}
+
+// A forge:readable with no reason is rejected where it is declared: the reason
+// is the review record of the exception.
+func TestCheckMarkers_ReadableNeedsAReason(t *testing.T) {
+	tables := func(comment string) []Table {
+		return []Table{{Name: "git_credentials", Columns: []Column{{Name: "token_hash", Comment: comment}}}}
+	}
+	if err := CheckMarkers(tables("forge:readable — content hash of the clone URL")); err != nil {
+		t.Errorf("a readable with a reason is rejected: %v", err)
+	}
+	if err := CheckMarkers(tables("forge:secret")); err != nil {
+		t.Errorf("forge:secret on a column is rejected: %v", err)
+	}
+	err := CheckMarkers(tables("forge:readable"))
+	if err == nil || !strings.Contains(err.Error(), "needs a reason") {
+		t.Errorf("a readable with no reason: err = %v, want a 'needs a reason' problem", err)
+	}
+	// Only a column comment carries them.
+	for _, m := range []string{ColumnMarkerSecret, ColumnMarkerReadable} {
+		if problems := CommentMarkerProblems(SiteTable, "", m+" — x"); len(problems) != 1 {
+			t.Errorf("%s on a table comment: %d problems, want 1 (it does nothing there)", m, len(problems))
+		}
+	}
+}

@@ -20,9 +20,12 @@ import (
 // applies the file after every run, so a new table or column is covered by the
 // migration that creates it.
 //
-// A secret column is withheld from the role, and the role holds no table-level
-// SELECT, so a column added later is NOT readable until the next generate has
-// seen whether it is secret. That is the safe direction to be wrong in.
+// A column is withheld when it is declared secret (proto field or SQL
+// `forge:secret` comment) and also when it is credential-shaped and nobody
+// decided (pkg/dbgrants.CredentialShaped): a `forge:readable <reason>` comment
+// is the only way to grant such a column. The role holds no table-level SELECT,
+// so a column added later is NOT readable until the next generate has seen
+// whether it is secret. That is the safe direction to be wrong in.
 //
 // cs is the project's checksum tracker. The file is only written when the
 // project has migrations: the grants ride in the migrations' embed.
@@ -82,8 +85,9 @@ func projectHasSQLMigrations(projectDir string) bool {
 // `forge:custom` one, has no store-side entity to carry the marker, and its
 // secrets must be withheld all the same.
 //
-// What this cannot see: a secret in a table that no wire message names. The
-// marker lives on the wire field, so there is nowhere to declare it.
+// A table no wire message names has no proto field to carry forge:secret, so
+// its secrets are declared in SQL (`COMMENT ON COLUMN t.c IS 'forge:secret'`),
+// and what is not declared is judged by the column's name and type.
 func ReadOnlyGrantTables(tables []schemadef.Table, services []ServiceDef) []dbgrants.Table {
 	var base []schemadef.Table
 	for _, t := range tables {
@@ -126,7 +130,13 @@ func ReadOnlyGrantTables(tables []schemadef.Table, services []ServiceDef) []dbgr
 		}
 		dt := dbgrants.Table{Schema: schema, Name: t.Name}
 		for _, c := range t.Columns {
-			dt.Columns = append(dt.Columns, dbgrants.Column{Name: c.Name, Secret: secretCols[t.Name][c.Name]})
+			_, readable := c.ReadableReason()
+			dt.Columns = append(dt.Columns, dbgrants.Column{
+				Name:     c.Name,
+				Secret:   secretCols[t.Name][c.Name] || c.DeclaresSecret(),
+				Readable: readable,
+				Kind:     grantColumnKind(c),
+			})
 		}
 		out = append(out, dt)
 	}
@@ -137,6 +147,29 @@ func ReadOnlyGrantTables(tables []schemadef.Table, services []ServiceDef) []dbgr
 		return out[i].Name < out[j].Name
 	})
 	return out
+}
+
+// grantColumnKind classifies a column's type for the role's name check. A type
+// forge cannot place is text: the stricter reading.
+func grantColumnKind(c schemadef.Column) dbgrants.ColumnKind {
+	if c.IsArray || !c.TypeKnown {
+		return dbgrants.KindText
+	}
+	switch c.Type {
+	case schemadef.TypeInt, schemadef.TypeFloat, schemadef.TypeBool, schemadef.TypeTime:
+		return dbgrants.KindScalar
+	case schemadef.TypeBytes:
+		return dbgrants.KindBinary
+	}
+	return dbgrants.KindText
+}
+
+// UndecidedReadOnlyColumns is what `forge lint --db-grants` reports: the
+// credential-shaped columns of the applied schema that carry neither
+// forge:secret (proto field or SQL comment) nor forge:readable. The grants
+// withhold them all the same; this is the half that makes the omission loud.
+func UndecidedReadOnlyColumns(tables []schemadef.Table, services []ServiceDef) []dbgrants.Finding {
+	return dbgrants.Undecided(ReadOnlyGrantTables(tables, services))
 }
 
 // ParseReadOnlyGrantsServices returns the services whose messages can carry a

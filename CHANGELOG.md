@@ -39,7 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that changes every sync, and one namespace configuring one store kind two ways.
   Nothing renders for a Bundle with no `source`.
 
-
 - **A drained Connect stream parked in `Receive` actually ends, and handlers can
   stop their own readers: `serverkit.AbortReceive(ctx)`.** A server-side
   `Receive` reads the request body and no context wakes it; Connect closes the
@@ -101,7 +100,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   writer) and `external_secrets_operators = [forge.ExternalSecretsOperator {cluster}]`
   (one hardened, cluster-wide ESO per cluster; a second for one cluster is refused).
   A `forge.ExternalSecret` gains `source = forge.StoreSource {store, data, templates,
-  generate, pin, immutable, refresh, creation_policy, shadow}` over a `HostedStore`,
+generate, pin, immutable, refresh, creation_policy, shadow}` over a `HostedStore`,
   `OpenBaoStore` or `GCPSecretManagerStore`, and `out_of_band_reason` for the ones
   that stay out of band once any is store-backed. `forge.BootstrapSecret` and
   `bootstrap_source = forge.GCPSecretManager {project} | forge.OutOfBand {}` name the
@@ -140,7 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not be redeemed by `/auth/reset`.
 - **`pkg/secretaccess` and `pkg/secretgen`: the pure halves of store-backed
   secrets.** `secretaccess.Derive` maps `{scope, clusters, per-namespace secret
-  names}` to OpenBao JWT auth mounts (`jwt-<cluster>`), roles (one per cluster
+names}` to OpenBao JWT auth mounts (`jwt-<cluster>`), roles (one per cluster
   and namespace, bound to the namespace's `reliant-secrets` service account and
   the cluster's audience, issuing 10 minute batch tokens) and ACL policies that
   grant `read` on exact paths only: no globs, no list, no metadata, unless a

@@ -1220,7 +1220,7 @@ func renderComponentTestHelpers(d componentTestHelperData, dir, projectDir strin
 	if err != nil {
 		return fmt.Errorf("resolve helper path for %s: %w", d.Name, err)
 	}
-	if err := writeForgeOwned(projectDir, rel, content, cs); err != nil {
+	if err := writeSourceDerived(projectDir, rel, content, cs); err != nil {
 		return fmt.Errorf("write %s: %w", rel, err)
 	}
 	return nil

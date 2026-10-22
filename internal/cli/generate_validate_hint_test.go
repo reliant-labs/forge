@@ -106,6 +106,15 @@ gen/db/v1/cycle_run.pb.orm.go:55:18: undefined: orm.TypeDoublePrecision`,
 			},
 		},
 		{
+			name:      "contract-derived-mock-names-its-source",
+			errOutput: "internal/releasehealth/mock_gen.go:25:17: cannot use (*MockService)(nil) as Service value: *MockService does not implement Service (missing method Warm)",
+			wantContains: []string{
+				"generated from contract.go",
+				"forge rewrites it on every 'forge generate'",
+				"did not rewrite it",
+			},
+		},
+		{
 			name:      "no-coordinate-fallthrough",
 			errOutput: "go: updates to go.mod needed; to update it:\n\tgo mod tidy",
 			wantContains: []string{

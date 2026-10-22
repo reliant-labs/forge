@@ -81,7 +81,7 @@ func TestTruthy(t *testing.T) {
 // A skipped check fails the gate, so `forge ci gate` is wired into `ci` as a
 // verb that exists and rejects stray arguments rather than ignoring them.
 func TestCIGateIsRegisteredAndStrictAboutArgs(t *testing.T) {
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	cmd, _, err := root.Find([]string{"ci", "gate"})
 	if err != nil || cmd == nil || cmd.Name() != "gate" {
 		t.Fatalf("forge ci gate is not registered: %v", err)

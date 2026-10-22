@@ -35,7 +35,7 @@ func TestRootVersionNotEmptyWhenUnstamped(t *testing.T) {
 	// Exactly the embedded path: SetVersion is never called.
 	version, buildDate, gitCommit = "", "", ""
 
-	got := NewRootCmd().Version
+	got := newTestRootCmd(t).Version
 
 	for _, bad := range []string{"version  (built , commit )", "(built , commit )"} {
 		if strings.Contains(got, bad) {

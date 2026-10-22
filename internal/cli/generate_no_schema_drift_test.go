@@ -56,7 +56,7 @@ func TestNoSchemaDriftInCommandHelp(t *testing.T) {
 			walk(sub, full)
 		}
 	}
-	walk(NewRootCmd(), "")
+	walk(newTestRootCmd(t), "")
 	if len(offenders) > 0 {
 		t.Fatalf("these commands still advertise \"schema drift\", which forge no longer checks: %s",
 			strings.Join(offenders, ", "))

@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge lint --secrets`: the platform-secrets lane (SF12).** For each env that
+  uses the model (a store-backed `forge.ExternalSecret`, `forge.OpenBao` or
+  `forge.ExternalSecretsOperator`; a project that declares none is not rendered),
+  it judges what the schema cannot see across a whole env, with file:line in the KCL
+  and the escape in every message. Errors gate: `secrets-cluster-kind` (no
+  ClusterSecretStore, ClusterExternalSecret, PushSecret or generator, nor their
+  CRDs); `secrets-es-policy` (creationPolicy Orphan or Merge, deletionPolicy Retain,
+  a namespaced store, explicit keys, a refresh of at least 5m, a target named for
+  itself); `secrets-key-coverage` (every Secret a workload reads is produced by an
+  ExternalSecret, ControlPlaneSecret, rendered Secret, Certificate or CloudNativePG
+  cluster, and lists the key read: ESO rebuilds an Orphan Secret from the declared
+  keys only, so an undeclared key vanishes on the next sync); `secrets-immutable-pin`
+  (an immutable store name is read at exactly version 1 by every source);
+  `secrets-out-of-band-reason` (the reason must explain, not restate "manual");
+  `openbao-wildcard-read` (the rendered access document may not grant a glob read of
+  a value without a real reason); `secrets-single-owner` (two declarations producing
+  one Secret). `secrets-escrow-in-cluster` warns when OpenBao's seal key and
+  recovery output are escrowed in the cluster they protect. `secrets-unreferenced-key`
+  (info) lists declared Secrets and keys no workload reads: the orphan finder. The
+  render now also records each `required_secrets` entry's `out_of_band_reason`,
+  which the lane reads. Waive one finding with `# forge:lint-disable-next-line <rule>: <why>` or
+  dial it in `lint.rules`.
 - **Alerts fire locally: `forge env up` closes the alerting loop.**
   - Beside the local ClickStack, a scaffolded dev env now runs two new pieces:
     - an `alerts` host workload, `forge observe alerts run`, which evaluates the env's `forge.Alerts` continuously with `for` applied;
@@ -22,9 +44,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge fix connect-errors` sees an As-style helper as a `*connect.Error` reader.**
+  - It recognised `errors.As` itself, but not testify's `require.ErrorAs(t, err, &ce)` / `assert.ErrorAs`, a suite's `ErrorAs` method, or a project's own helper: each takes the target as `interface{}`. A handler package whose only reader was one of those got bare kinds, and its tests failed (reliant's `internal/handlers/approval`: four tests).
+  - Any call handed a `**connect.Error` is now a reader, so that package keeps `svcerr.ToConnect(…)` and the report names the call.
 - **`forge observe alerts check` and `forge observe profile` reach the ClickStack `forge env up` started.**
   - env up runs each env's compose services in their own project (`forge-<id>-<env>`). Both commands exec'd into the default project, so they reported a running ClickStack as not running.
 - **`docker compose up <service>` interpolates the whole compose file with every workload's declared env.**
+
   - Bringing up `otel-profiles` (which depends on `clickstack`) with only its own variables recreated `clickstack` on the file's default ports. On a machine running a second stack, the bind failed.
 
 - **`forge/pkg/alerting/amconfig`: the Alertmanager configuration renderer.**
@@ -385,6 +411,13 @@ login` credential is traded for the scope the control plane's 403 names, for
 
 ### Changed
 
+- **`forge project new` exits non-zero when the project's own first generate
+  fails.** It printed "initial code generation failed", then "✅ Project created
+  successfully!" and exited 0, so a script, a CI step or an agent carried on
+  over a project that did not generate (the `--disable codegen` shape stayed
+  broken that way). The rest of the scaffold still finishes (git init,
+  `go mod tidy`) and the files stay; the error says the project is incomplete,
+  what is missing, and the `forge generate` that completes it.
 - **`tdd.AssertConnectError` (and `TableRPC`'s `WantErr`) read `svcerr.Code`**,
   the code `svcerr.Interceptor` sends, instead of `connect.CodeOf`. A handler
   test calls the `*Service` method directly, so a handler returning a bare

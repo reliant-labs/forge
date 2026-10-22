@@ -1912,6 +1912,12 @@ render = lambda bundle: Bundle -> any {
         # defaults.
         if bundle.delivery_policy:
             "delivery_policy": _render_delivery_policy(bundle.delivery_policy)
+        # How the env's data may be read (forge db query), resolved: the
+        # declaration, else what the lifecycle implies. Present only when it
+        # is not "audited", the default of an env with no lifecycle: absence
+        # means audited, never open, so a real env's render is unchanged.
+        if _data_access_db_query(bundle.data_access, bundle.lifecycle or "") != "audited":
+            "data_access": {"db_query": _data_access_db_query(bundle.data_access, bundle.lifecycle or "")}
         # The release-health policy, resolved, only when the env declares one.
         # Go records it in the release shape unless it is all defaults.
         if bundle.release_health:
@@ -2742,6 +2748,10 @@ _render_store_source = lambda src: any -> any {
         if src.templates:
             "templates": src.templates
         "creation_policy": src.creation_policy
+        if src.secret_type != "Opaque":
+            "secret_type": src.secret_type
+        if src.labels:
+            "labels": src.labels
         if src.shadow:
             "shadow": True
         if src.cluster:

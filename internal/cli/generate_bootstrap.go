@@ -8,6 +8,7 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/pkg/dbgrants"
 )
 
 // generateHybridComposition emits the internal/app composition layer
@@ -259,6 +260,20 @@ func generateMigrate(projectDir, modulePath string, cs *checksums.FileChecksums)
 	fmt.Println("🔧 Generating db/embed.go...")
 
 	has := hasSQLMigrations(projectDir)
+	if has {
+		// BEFORE the embed, which names the grants file only once it exists.
+		services, err := codegen.ParseReadOnlyGrantsServices(projectDir)
+		if err != nil {
+			return fmt.Errorf("read services for the read-only grants: %w", err)
+		}
+		wrote, err := codegen.GenerateReadOnlyGrants(projectDir, services, cs)
+		if err != nil {
+			return fmt.Errorf("failed to generate %s: %w", dbgrants.GrantsPath, err)
+		}
+		if wrote {
+			fmt.Println("  ✅ Generated " + dbgrants.GrantsPath + " (the read-only role's grants)")
+		}
+	}
 	if err := codegen.GenerateMigrate(projectDir, modulePath, has, cs); err != nil {
 		return fmt.Errorf("failed to generate db/embed.go: %w", err)
 	}

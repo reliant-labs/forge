@@ -10,6 +10,8 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
+
+	"github.com/reliant-labs/forge/pkg/dbgrants"
 )
 
 // ForceCommand is the forge command that clears a dirty schema, named by
@@ -129,10 +131,16 @@ func Apply(ctx context.Context, db *sql.DB, fsys fs.FS, dir string) (Result, err
 	// openSession binds golang-migrate to a connection it checks out itself,
 	// and Close then closes only that connection, which returns it to the
 	// pool.
+	grants, _, err := grantsScript(fsys, dir)
+	if err != nil {
+		_ = src.Close()
+		return Result{}, err
+	}
 	mg, err := openSession(ctx, db, src, embedded, &postgres.Config{})
 	if err != nil {
 		return Result{}, err
 	}
+	mg.grants = grants
 	defer func() { _ = mg.Close() }()
 
 	var res Result
@@ -193,6 +201,14 @@ func logRun(logger *slog.Logger, res Result, err error) {
 		logf(logger, "migrations applied", "from_version", res.Before.Version, "to_version", res.After.Version)
 	default:
 		logf(logger, "no pending migrations", "version", res.After.Version)
+	}
+	if g := res.Grants; g != nil && err == nil {
+		switch {
+		case g.RoleMissing:
+			logf(logger, "read-only role not provisioned in this database: read-only grants not applied", "role", dbgrants.RoleName)
+		case g.Applied:
+			logf(logger, "read-only grants applied", "role", dbgrants.RoleName)
+		}
 	}
 }
 

@@ -137,3 +137,111 @@ func TestShapeDeliveryPolicyOf(t *testing.T) {
 		}
 	}
 }
+
+// renderDataAccess renders a one-workload env with the given `data_access` and
+// `lifecycle` expressions ("" for none) through the seam `forge env shape` uses.
+func renderDataAccess(t *testing.T, dataAccess, lifecycle string) *KCLEntities {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("-short: renders KCL; runs in task test")
+	}
+	dir := t.TempDir()
+	decl := ""
+	if dataAccess != "" {
+		decl += "data_access = " + dataAccess + "\n    "
+	}
+	if lifecycle != "" {
+		decl += "lifecycle = \"" + lifecycle + "\"\n    "
+	}
+	files := map[string]string{
+		"kcl.mod": "[package]\nname = \"dataaccess\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n",
+		"main.k": `import forge
+import forge.workloads as fw
+
+_k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev"}
+
+output = forge.render(forge.Bundle {
+    project = "demo"
+    ` + decl + `workloads = [fw.Workload {name = "api", image = "ghcr.io/acme/api", runtime = forge.OnCluster {target = _k3d}}]
+})
+`,
+	}
+	for f, c := range files {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kclplugin.Register()
+	out, err := kclrender.Run(dir, dir, nil)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	e, err := parseKCLEntities(out)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return e
+}
+
+// An env with no lifecycle (a real env) that declares nothing is audited, and
+// that is Go's default too: the shape records nothing, and absence reads as
+// audited. The two halves hold the default separately (kcl/schema.k and
+// release.DefaultDataAccess); this keeps them from drifting.
+func TestDataAccessDefaultsAgreeWithKCL(t *testing.T) {
+	e := renderDataAccess(t, "", "")
+	if want := release.DefaultDataAccess(); e.DataAccess.Resolved() != want {
+		t.Errorf("KCL and Go disagree on the default: kcl %+v, go %+v", e.DataAccess.Resolved(), want)
+	}
+	if shapeDataAccessOf(e) != nil {
+		t.Errorf("the default was recorded in the shape: %+v", shapeDataAccessOf(e))
+	}
+}
+
+// A local or ephemeral env defaults to open, and records it: that is how the
+// control plane and a reader tell it from a real env that declared nothing.
+func TestDataAccessLifecycleDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		lifecycle string
+		want      release.DBQueryPolicy
+	}{
+		{"local", release.DBQueryOpen},
+		{"ephemeral", release.DBQueryOpen},
+		{"", release.DBQueryAudited},
+	} {
+		e := renderDataAccess(t, "", tc.lifecycle)
+		if got := e.DataAccess.Resolved().DBQuery; got != tc.want {
+			t.Errorf("lifecycle %q: data_access resolves to %s, want %s", tc.lifecycle, got, tc.want)
+		}
+		recorded := shapeDataAccessOf(e)
+		if tc.want == release.DBQueryAudited && recorded != nil {
+			t.Errorf("lifecycle %q: the default was recorded: %+v", tc.lifecycle, recorded)
+		}
+		if tc.want != release.DBQueryAudited && (recorded == nil || recorded.DBQuery != tc.want) {
+			t.Errorf("lifecycle %q: shape records %+v, want %s", tc.lifecycle, recorded, tc.want)
+		}
+	}
+}
+
+// A declaration wins over the lifecycle's default, in both directions, and is
+// recorded in the shape.
+func TestDataAccessDeclarationOverridesTheLifecycle(t *testing.T) {
+	for _, tc := range []struct {
+		decl, lifecycle string
+		want            release.DBQueryPolicy
+	}{
+		{`forge.DataAccess {db_query = "deny"}`, "", release.DBQueryDeny},
+		{`forge.DataAccess {db_query = "deny"}`, "local", release.DBQueryDeny},
+		{`forge.DataAccess {db_query = "open"}`, "", release.DBQueryOpen},
+		{`forge.DataAccess {db_query = "audited"}`, "local", release.DBQueryAudited},
+		{`forge.DataAccess {}`, "local", release.DBQueryOpen},
+	} {
+		e := renderDataAccess(t, tc.decl, tc.lifecycle)
+		if got := e.DataAccess.Resolved().DBQuery; got != tc.want {
+			t.Errorf("%s with lifecycle %q: data_access resolves to %s, want %s", tc.decl, tc.lifecycle, got, tc.want)
+		}
+	}
+	e := renderDataAccess(t, `forge.DataAccess {db_query = "deny"}`, "")
+	if got := shapeDataAccessOf(e); got == nil || got.DBQuery != release.DBQueryDeny {
+		t.Errorf("a declared deny is not in the shape: %+v", got)
+	}
+}

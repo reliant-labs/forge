@@ -51,10 +51,11 @@
 // FORGE_HOME is honoured first so a test or a sandboxed CI job can redirect
 // the file without touching a developer's real credentials.
 //
-// The CALLER reads those variables and passes them in as Dirs: forge/pkg
-// never reads the ambient environment (internal/pkgguard). Every CLI that
-// shares the file builds Dirs the same way, from the same three variables,
-// which is what makes it one file.
+// DirsFromEnv (env.go) reads those three inputs from the process — the one
+// place this package touches the environment, exempted from internal/pkgguard
+// by name. Every CLI that shares the file calls it rather than reading the
+// variables itself, which is what makes it one file. Dirs stays a plain value
+// for callers (tests, a sandbox) that must place the file explicitly.
 //
 // The directory is named for forge because forge OWNS the format: this package
 // is its only reader and writer, and reliant imports it rather than

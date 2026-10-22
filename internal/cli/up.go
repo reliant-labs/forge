@@ -1125,7 +1125,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 			entities: entities, env: opts.env, background: detach,
 			noInstall: opts.noInstall, targets: opts.targets,
 			frontendArgs: opts.frontendArgs, apiBaseURL: apiBaseURL, procs: procs,
-			secrets: prov.All(),
+			projectDir: projectDir, secrets: prov.All(),
 		})
 		if feFailures > 0 {
 			fmt.Printf("[up] %d frontend(s) failed to start (see above)\n", feFailures)
@@ -3141,6 +3141,9 @@ type frontendLaunch struct {
 	frontendArgs []string
 	apiBaseURL   string
 	procs        *procRegistry
+	// projectDir is the project root, where an out-of-tree frontend's
+	// runtime config document is rendered (.forge/runtime-config/).
+	projectDir string
 	// secrets is the env's resolved secret map (a file store, or a LOCAL
 	// env's pulled values). Each frontend receives only the keys it
 	// DECLARES via env_vars secret_ref.
@@ -3189,6 +3192,17 @@ func buildFrontendDevCmd(ctx context.Context, fl frontendLaunch, fe FrontendEnti
 		cmd.Env = withForcedEnv(cmd.Env, k, v)
 	}
 	cmd.Env = withFrontendTelemetryEnv(cmd.Env, fl.entities, fe, fl.env)
+	// A frontend whose code is in another repository has its runtime config
+	// document in THIS project's .forge/ (writeFrontendRuntimeDocs); point
+	// its dev server at it. A value the user exported wins.
+	if doc := outOfTreeRuntimeConfigFile(fl.projectDir, fe.Name); doc != "" {
+		cmd.Env = withDefaultEnv(cmd.Env, map[string]string{frontendRuntimeConfigFileEnv: doc})
+		if frontendPlatform(fe.Type) != "vite-spa" {
+			// Only Vite has the dev-server half (forge-web-runtime/vite).
+			fmt.Printf("[up] frontend %s: its runtime config is %s, but a %s dev server does not serve %s — "+
+				"the page will read public/config.js from its own tree\n", fe.Name, doc, fe.Type, frontendRuntimeConfigFileEnv)
+		}
+	}
 	return cmd
 }
 

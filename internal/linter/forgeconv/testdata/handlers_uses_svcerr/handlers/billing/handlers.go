@@ -1,5 +1,5 @@
-// Fixture: importing forge/pkg/svcerr suppresses the rule for this
-// file. Migration in flight should not trip the warning.
+// Fixture: importing forge/pkg/svcerr does NOT suppress the rule — a
+// mapper beside svcerr.Wrap is still the mapper svcerr replaces.
 //
 //nolint:all
 package billing
@@ -15,8 +15,7 @@ import (
 
 var ErrLegacy = errors.New("legacy")
 
-// Even with a suspect-named helper still present, presence of the
-// svcerr import marks the file as "in migration" and suppresses.
+// A suspect-named helper next to the svcerr import is still flagged.
 func toConnectError(err error) error {
 	if err == nil {
 		return nil

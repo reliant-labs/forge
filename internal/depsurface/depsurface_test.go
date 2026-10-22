@@ -471,3 +471,28 @@ func TestNarrow_DepsDeclaredInContractGo(t *testing.T) {
 		t.Fatalf("the narrowed module does not build: %v\n%s\ncontract.go:\n%s", err, out, got)
 	}
 }
+
+func TestIfaceName_PrefersTheTypeThenTheFieldThenBoth(t *testing.T) {
+	for _, tc := range []struct {
+		name, typ, field string
+		taken            []string
+		want             string
+		ok               bool
+	}{
+		{"the type's own name when free", "Promoter", "Promoter", nil, "Promoter", true},
+		{"the field's name when the handler's Service takes the type's", "Service", "DaemonService", []string{"Service"}, "DaemonService", true},
+		{"both joined when the field's is taken too", "Store", "Audit", []string{"Store", "Audit"}, "AuditStore", true},
+		{"nothing when all three are taken", "Store", "Audit", []string{"Store", "Audit", "AuditStore"}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			taken := map[string]bool{}
+			for _, n := range tc.taken {
+				taken[n] = true
+			}
+			got, ok := ifaceName(tc.typ, tc.field, taken)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("ifaceName(%q, %q, %v) = %q, %v; want %q, %v", tc.typ, tc.field, tc.taken, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}

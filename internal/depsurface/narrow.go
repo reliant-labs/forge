@@ -197,6 +197,22 @@ func (w *ifaceWriter) qualifier(pkg *types.Package) string {
 	return name
 }
 
+// ifaceName picks the name of the interface narrowed from a field typed
+// typeName: the type's own name when the package does not use it, else the
+// field's name, else the two joined. The field's name comes before the join
+// because the usual collision is a handler's own Service — svcdaemon.Service
+// on Deps.DaemonService is DaemonService, not DaemonServiceService — and a
+// Deps field and a package-scope type never collide (`DaemonService
+// DaemonService` is a legal field).
+func ifaceName(typeName, fieldName string, taken map[string]bool) (string, bool) {
+	for _, n := range []string{typeName, fieldName, fieldName + typeName} {
+		if !taken[n] {
+			return n, true
+		}
+	}
+	return "", false
+}
+
 // declare renders the narrowed interface for f and returns its name.
 func (w *ifaceWriter) declare(f Field) (string, error) {
 	named, ok := types.Unalias(f.typ).(*types.Named)
@@ -204,12 +220,9 @@ func (w *ifaceWriter) declare(f Field) (string, error) {
 		return "", fmt.Errorf("field Deps.%s: %s is not a named interface", f.Name, f.Type)
 	}
 	iface := named.Underlying().(*types.Interface)
-	name := named.Obj().Name()
-	if w.taken[name] {
-		name = f.Name + named.Obj().Name()
-	}
-	if w.taken[name] {
-		return "", fmt.Errorf("field Deps.%s: both %s and %s are taken in package %s — declare the interface by hand", f.Name, named.Obj().Name(), name, w.p.pkg.Name)
+	name, ok := ifaceName(named.Obj().Name(), f.Name, w.taken)
+	if !ok {
+		return "", fmt.Errorf("field Deps.%s: %s, %s and %s%s are all taken in package %s — declare the interface by hand", f.Name, named.Obj().Name(), f.Name, f.Name, named.Obj().Name(), w.p.pkg.Name)
 	}
 	w.taken[name] = true
 	embeds, direct := splitRoles(f)

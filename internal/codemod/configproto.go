@@ -64,6 +64,8 @@ and rewrites what points at them:
   proto/config/v1, gen/config/v1      as paths in the project's own protos, Go,
                                       TS/JS, KCL, YAML, shell and Make files
                                       (TS imports of the generated _pb modules too)
+  proto/config                        the config tree as a whole path, the same
+                                      files (a buf.yaml lint/breaking ignore)
 
 Generated and forge-owned files (gen/, *_gen.go, a forge:hash marker) are not
 touched: forge generate rewrites them.
@@ -97,6 +99,14 @@ var (
 	legacyProtoDirRE = regexp.MustCompile(`\bproto/config/v1\b`)
 	legacyGenDirRE   = regexp.MustCompile(`\bgen/config/v1\b`)
 )
+
+// legacyProtoTreeRE matches the legacy config TREE, proto/config, as a whole
+// path (an optional trailing slash, then anything that cannot continue a
+// path): what a buf.yaml lint or breaking `ignore` names to exempt the config
+// protos. Left behind, that ignore silently re-gates them at their new home.
+// proto/config/v1 is legacyProtoDirRE's; group 1 is the trailing slash,
+// group 2 what follows.
+var legacyProtoTreeRE = regexp.MustCompile(`(?m)\bproto/config(/?)([^\w/.\-]|$)`)
 
 // goProtoPackageLiteralRE matches a Go string literal that is exactly the
 // legacy proto package — "config.v1" — or a fully-qualified name in it —
@@ -153,8 +163,13 @@ func runConfigProtoPackage(dir string, opts Options) (Report, error) {
 	// rewritePaths points the project's own paths at the new layout:
 	// proto/config/v1 → proto/<project>/config/v1 and gen/config/v1 (the Go
 	// and TypeScript output) → gen/<project>/config/v1.
+	tree := path.Dir(layout.Dir()) // proto/<project>/config
+	rewriteTree := func(src []byte) []byte {
+		return legacyProtoTreeRE.ReplaceAll(src, []byte(tree+"${1}${2}"))
+	}
 	rewritePaths := func(src []byte) []byte {
 		out := legacyProtoDirRE.ReplaceAll(src, []byte(layout.Dir()))
+		out = rewriteTree(out)
 		return legacyGenDirRE.ReplaceAll(out, []byte("gen/"+layout.BufDir()))
 	}
 	rewriteProto := func(src []byte) []byte {
@@ -210,6 +225,7 @@ func runConfigProtoPackage(dir string, opts Options) (Report, error) {
 			// project's gen/config/v1 moves when that project does.
 			out = bytes.ReplaceAll(src, []byte(oldGo), []byte(newGo))
 			out = legacyProtoDirRE.ReplaceAll(out, []byte(layout.Dir()))
+			out = rewriteTree(out)
 			// The proto package as a string literal — RangeFilesByPackage(
 			// "config.v1", …) — which the Go compiler cannot flag: it silently
 			// matches nothing once the package moves.
@@ -466,6 +482,7 @@ func removeEmptyDirs(dir string, rels ...string) {
 // paths, a buf-relative path into it, and a name in its package.
 var legacyRefREs = append([]*regexp.Regexp{
 	legacyProtoDirRE,
+	legacyProtoTreeRE,
 	legacyGenDirRE,
 	regexp.MustCompile(`(^|[^\w/])config/v1/\w+\.proto`),
 }, legacyPackageRefREs...)

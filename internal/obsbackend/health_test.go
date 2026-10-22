@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
-	"github.com/reliant-labs/forge/pkg/releasehealth"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/releasehealth"
 )
 
 const healthWire = `{

@@ -15,9 +15,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/reliant-labs/forge/pkg/releasehealth"
 	"github.com/reliant-labs/forge/pkg/obsquery"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/releasehealth"
 )
 
 // localNewIssuesSQL groups server errors by the sfp1 fingerprint over both

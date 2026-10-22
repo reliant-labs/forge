@@ -26,9 +26,9 @@ import (
 
 	"github.com/reliant-labs/forge/internal/obsbackend"
 	"github.com/reliant-labs/forge/internal/obsout"
-	"github.com/reliant-labs/forge/pkg/releasehealth"
 	"github.com/reliant-labs/forge/pkg/obsquery"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/releasehealth"
 )
 
 const schemaObsCheck = "forge.obs.check/v1"

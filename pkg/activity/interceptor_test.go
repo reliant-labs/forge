@@ -68,6 +68,13 @@ func newHarness(t *testing.T, md protoreflect.MethodDescriptor, deps Deps, h han
 	if deps.Logger == nil {
 		deps.Logger = slog.New(slog.NewTextHandler(logs, nil))
 	}
+	if deps.Principal == nil {
+		deps.Principal = ClaimsPrincipal(authn.ClaimsFromContext)
+	}
+	ic, err := Interceptor(deps)
+	if err != nil {
+		t.Fatal(err)
+	}
 	procedure := "/" + string(md.Parent().FullName()) + "/" + string(md.Name())
 	initReq := connect.WithRequestInitializer(func(spec connect.Spec, msg any) error {
 		*msg.(*dynamicpb.Message) = *dynamicpb.NewMessage(spec.Schema.(protoreflect.MethodDescriptor).Input())
@@ -91,7 +98,7 @@ func newHarness(t *testing.T, md protoreflect.MethodDescriptor, deps Deps, h han
 			}
 			return connect.NewResponse(resp), nil
 		},
-		connect.WithSchema(md), initReq, connect.WithInterceptors(claims, Interceptor(deps)),
+		connect.WithSchema(md), initReq, connect.WithInterceptors(claims, ic),
 	)
 	mux := http.NewServeMux()
 	mux.Handle(procedure, handler)
@@ -349,12 +356,57 @@ func TestDefaultVia(t *testing.T) {
 	}
 }
 
-func TestDefaultActor(t *testing.T) {
-	if a := DefaultActor(context.Background()); a.Kind != ActorSystem {
-		t.Errorf("no claims: %+v, want system", a)
+func TestClaimsPrincipal(t *testing.T) {
+	p := ClaimsPrincipal(authn.ClaimsFromContext)
+	if a, s := p.Actor(context.Background()), p.Scope(context.Background()); a.Kind != ActorSystem || s != "" {
+		t.Errorf("no claims: actor %+v scope %q, want system and no scope", a, s)
 	}
-	ctx := authn.ContextWithClaims(context.Background(), &authn.Claims{UserID: "u1"})
-	if a := DefaultActor(ctx); a != (Actor{ID: "u1", Name: "u1", Kind: ActorUser}) {
+	ctx := authn.ContextWithClaims(context.Background(), &authn.Claims{UserID: "u1", OrgID: "org_1"})
+	if a := p.Actor(ctx); a != (Actor{ID: "u1", Name: "u1", Kind: ActorUser}) {
 		t.Errorf("claims without email: %+v", a)
 	}
+	if s := p.Scope(ctx); s != "org_1" {
+		t.Errorf("scope = %q, want the claims' org", s)
+	}
 }
+
+// A guessed caller fails silently: an app whose auth does not stash forge's
+// claims would record every event as system:anonymous. So the interceptor
+// has no default Principal, and building one without it is a boot error.
+func TestInterceptorRequiresPrincipal(t *testing.T) {
+	ic, err := Interceptor(Deps{})
+	if err == nil || ic != nil {
+		t.Fatalf("Interceptor(Deps{}) = %v, %v; want a refusal", ic, err)
+	}
+	if !strings.Contains(err.Error(), "Deps.Principal is required") || !strings.Contains(err.Error(), "ClaimsPrincipal") {
+		t.Errorf("the refusal must name the field and the fix: %v", err)
+	}
+}
+
+// A project's own Principal is what every event records — the seam an app
+// whose auth keeps the caller its own way (not as forge claims) fills. The
+// harness still stashes forge claims for X-Test-User; the event must carry the
+// project's answer, not those.
+func TestInterceptorRecordsTheProjectsPrincipal(t *testing.T) {
+	w := &memWriter{}
+	opt := promoteDecl()
+	opt.Scope = ""
+	md := fixtureRPC(t, fixtureMethod{name: "Promote", activity: opt})
+	h := newHarness(t, md, Deps{Writer: w, Principal: appPrincipal{}}, promoteHandler)
+	if err := h.call(map[string]string{"release_id": "rel_1"}, map[string]string{"X-Test-User": "sean"}); err != nil {
+		t.Fatal(err)
+	}
+	evs := w.got()
+	if len(evs) != 1 {
+		t.Fatalf("wrote %d events, want 1", len(evs))
+	}
+	if got := evs[0]; got.Actor != (Actor{ID: "tok_1", Name: "ci", Kind: ActorMachine}) || got.Scope != "workspace_7" {
+		t.Errorf("event actor %+v scope %q, want the project's machine tok_1 in workspace_7", got.Actor, got.Scope)
+	}
+}
+
+// appPrincipal is a project's own answer: a CI machine credential in a workspace.
+type appPrincipal struct{}
+
+func (appPrincipal) Actor(context.Context) Actor  { return Machine("tok_1", "ci") }
+func (appPrincipal) Scope(context.Context) string { return "workspace_7" }

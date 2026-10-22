@@ -11,6 +11,13 @@ default (the chain the generated `cmd serve.go` builds). That
 is slog-only — the record goes to your logs (queryable in HyperDX) with
 `log_type=audit`, message `audit.event`.
 
+The default reads the caller through `ChainDeps.Auth`'s `Caller()`, which
+`serverkit.AuthFor` fills for forge's authn interceptor. An authenticator that
+does not say how to read its caller (your own interceptor) makes `NewChain`
+refuse a defaulted `Audit` rather than audit every call as anonymous: build it
+with `serverkit.AuthWithCaller(audience, interceptor, lookup)`, pass your own
+`Audit`, or `serverkit.NoAudit` (skill `activity`, "Who the caller is").
+
 For a **queryable, DB-persisted** audit trail (a compliance record you can page
 through, plus an admin `ListAuditEvents` RPC), there is **no pack to install**.
 The mechanical write-side is the versioned `forge/pkg/audit` library; the

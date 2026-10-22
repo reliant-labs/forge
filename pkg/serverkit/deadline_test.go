@@ -15,6 +15,7 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/reliant-labs/forge/pkg/authn"
 	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/serverkit"
 )
@@ -31,6 +32,13 @@ type stallingAuth struct {
 	mu       *sync.Mutex
 	deadline *time.Time
 	ok       *bool
+}
+
+// Claims names forge authn's claims reader, as authn's own interceptor does, so
+// AuthFor gives this fixture a Caller and the chain's default Audit and
+// Activity slots build.
+func (stallingAuth) Claims() func(context.Context) (*authn.Claims, bool) {
+	return authn.ClaimsFromContext
 }
 
 func (a stallingAuth) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
@@ -172,14 +180,14 @@ func TestNewChain_DeadlineBoundsAuthentication(t *testing.T) {
 
 	t.Run("default", func(t *testing.T) {
 		var got time.Duration
-		auth := serverkit.AuthFor(serverkit.AudienceUser, connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
+		auth := serverkit.AuthWithCaller(serverkit.AudienceUser, connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
 			return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 				if d, ok := ctx.Deadline(); ok {
 					got = time.Until(d)
 				}
 				return next(ctx, req)
 			}
-		}))
+		}), authn.ClaimsFromContext)
 		srv := newDeadlineServer(t, serverkit.ChainDeps{Auth: auth})
 		if err := srv.callUnary(context.Background()); err != nil {
 			t.Fatalf("call: %v", err)

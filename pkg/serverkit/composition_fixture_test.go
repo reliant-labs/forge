@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/reliant-labs/forge/pkg/authn"
 	"github.com/reliant-labs/forge/pkg/forgepb"
 	"github.com/reliant-labs/forge/pkg/serverkit"
 )
@@ -85,6 +86,11 @@ func pingRoutes(services ...string) serverkit.RoutesFunc {
 
 // tokenAuth admits a request whose Authorization header is "Bearer <token>".
 type tokenAuth struct{ token string }
+
+// Claims names forge authn's claims reader, as authn's own interceptor does, so
+// AuthFor gives this fixture a Caller and the chain's default Audit and
+// Activity slots build.
+func (tokenAuth) Claims() func(context.Context) (*authn.Claims, bool) { return authn.ClaimsFromContext }
 
 func (a tokenAuth) check(h http.Header) error {
 	if h.Get("Authorization") != "Bearer "+a.token {

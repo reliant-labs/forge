@@ -5,7 +5,7 @@
 // pdata it emits (collector pdata/pprofile) are pinned to the SAME release,
 // v0.162.0, and the local collector that receives them (docker-compose.yml's
 // `otel-profiles`) runs contrib v0.162.0 too. Bump all three in one change,
-// and record it in CHANGELOG.md. Wire compatibility from a newer producer to an
+// and say so in the PR title (the release script writes CHANGELOG.md from it). Wire compatibility from a newer producer to an
 // older receiver was observed (0.162 into 0.155), but is not promised.
 //
 // What the translator leaves to us:

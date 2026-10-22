@@ -356,6 +356,24 @@ func ApplyDerivedDefaultsFromNode(c *ProjectConfig, root *yaml.Node) {
 	c.Features.derived = followPinnedRequirements(DeriveFeatureDefaults(c), c.Features)
 }
 
+// FollowingRequirements returns f with the feature graph applied to its
+// current state exactly as the loader applies it to a derived one
+// (followPinnedRequirements): every unpinned feature whose required feature
+// is off is turned off too, transitively. `forge project new` calls it on the
+// feature set it is about to write a tree for, so the scaffold and every
+// later load of that tree agree — one rule, in one place. Before, the
+// scaffold kept a feature on that the loader then derived off (`--disable
+// codegen` still wrote db/migrations and a database-backed dev env), or
+// carried a hand-copied cascade of the edges.
+func (f FeaturesConfig) FollowingRequirements() FeaturesConfig {
+	current := make(map[FeatureName]bool, len(allFeatureNames))
+	for _, name := range allFeatureNames {
+		current[name] = f.resolve(name)
+	}
+	f.derived = followPinnedRequirements(current, f)
+	return f
+}
+
 // followPinnedRequirements applies forge.yaml's `features:` pins to the
 // derived set and turns OFF every derived (unpinned) feature whose
 // requirement a pin turned off: `deploy: false` takes a derived ingress with

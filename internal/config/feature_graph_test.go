@@ -103,3 +103,44 @@ func TestFeatureDependencies(t *testing.T) {
 		t.Errorf("codegen deps = %v, want none", got)
 	}
 }
+
+// FollowingRequirements is the loader's graph rule applied to a feature set
+// that has not been loaded — what `forge project new` is about to write a
+// tree for. A pin turns off every unpinned dependent, transitively; features
+// that do not depend on it, and pins, are left alone; and the set it returns
+// loads clean against the graph.
+func TestFeaturesConfig_FollowingRequirements(t *testing.T) {
+	var f FeaturesConfig
+	f, _ = f.Pin(FeatureCodegen, false)
+	f, _ = f.Pin(FeatureBuild, false)
+	f = f.FollowingRequirements()
+
+	for _, off := range []FeatureName{FeatureCodegen, FeatureORM, FeatureMigrations, FeatureFrontend, FeatureBuild, FeatureDeploy, FeatureIngress} {
+		if f.resolve(off) {
+			t.Errorf("%s is on; the graph takes it off with codegen/build", off)
+		}
+	}
+	for _, on := range []FeatureName{FeatureCI, FeatureContracts, FeatureObservability, FeatureHotReload} {
+		if !f.resolve(on) {
+			t.Errorf("%s was turned off, but nothing it requires is", on)
+		}
+	}
+	for _, derived := range []FeatureName{FeatureORM, FeatureMigrations, FeatureFrontend, FeatureDeploy} {
+		if f.Pinned(derived) {
+			t.Errorf("%s was pinned: the graph derives it, forge.yaml need not say so", derived)
+		}
+	}
+	cfg := &ProjectConfig{Features: f, Database: DatabaseConfig{Driver: "postgres"}}
+	if issues := validateFeatureGraph(cfg); len(issues) != 0 {
+		t.Errorf("the followed set does not satisfy the graph: %v", issues)
+	}
+
+	// A pinned-on dependent is the user's contradiction, reported by the
+	// validator — never silently flipped.
+	var g FeaturesConfig
+	g, _ = g.Pin(FeatureCodegen, false)
+	g, _ = g.Pin(FeatureFrontend, true)
+	if !g.FollowingRequirements().resolve(FeatureFrontend) {
+		t.Error("a pinned-on frontend was turned off")
+	}
+}

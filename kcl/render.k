@@ -2701,6 +2701,10 @@ _render_external_secret = lambda s: ExternalSecret -> any {
         "keys": s.keys
         "reason": s.reason if s.reason else None
         "value_group": s.value_group if s.value_group else None
+        # Why a Secret is still provisioned out of band in an env that has
+        # store-backed ones: `forge lint --secrets` holds it to a standard.
+        if s.out_of_band_reason:
+            "out_of_band_reason": s.out_of_band_reason
         # The store a Secret reads from, for the release shape (store_secrets,
         # generated_secrets, pins). Names and kinds only; a value never appears.
         if s.source:

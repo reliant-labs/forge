@@ -127,7 +127,7 @@ func runReleasesAt(ctx context.Context, deps releasesDeps, env, when string) (re
 
 	// Everything from before the moment is needed to find the live release;
 	// the source bounds itself by --since only, so give it the moment.
-	data, err := b.Source.Load(ctx, env, releasetimeline.Query{Since: at})
+	data, err := b.Source.Load(ctx, env, at)
 	if err != nil {
 		return releasesAtDoc{}, releasesError("read the release timeline of "+env, err)
 	}

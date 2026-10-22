@@ -104,4 +104,3 @@ func TestForgeStillWorksWithNoHostedEndpoint(t *testing.T) {
 		t.Fatal("`forge cloud` should have subcommands")
 	}
 }
-

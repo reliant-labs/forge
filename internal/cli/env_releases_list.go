@@ -118,7 +118,7 @@ func runReleasesList(ctx context.Context, deps releasesDeps, env, sinceFlag stri
 	if err != nil {
 		return releasesListDoc{}, err
 	}
-	data, err := b.Source.Load(ctx, env, releasetimeline.Query{Since: since})
+	data, err := b.Source.Load(ctx, env, since)
 	if err != nil {
 		return releasesListDoc{}, releasesError("read the release timeline of "+env, err)
 	}

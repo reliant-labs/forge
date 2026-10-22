@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/internal/obsout"
 	"github.com/reliant-labs/forge/internal/releasetimeline"
@@ -437,7 +438,7 @@ func (c *cloudStub) Call(_ context.Context, proc string, req, out any) error {
 }
 
 func cloudDeps(stub *cloudStub) releasesDeps {
-	cl := releasetimeline.Cloud{Client: stub, Project: "app"}
+	cl := releasetimeline.NewCloud(stub, "app")
 	return releasesDeps{
 		open: func(context.Context, string) (releasesBackend, error) {
 			return releasesBackend{Name: backendCloud, Source: cl, Cloud: &cl, Ledger: "https://cp.example"}, nil
@@ -473,8 +474,8 @@ func newCloudStub() *cloudStub {
 				{"id": "c2", "promotionId": "p2", "state": "converged", "observedAt": at(25), "healthyAt": at(26), "firstAttemptAt": at(30)},
 			}}, nil
 		},
-		"controlplane.v1.DeployService/GetTenant": func(map[string]any) (any, error) {
-			return map[string]any{"tenant": map[string]any{"orgId": "org-1"}}, nil
+		cloud.ProcGetOrganization: func(map[string]any) (any, error) {
+			return cloud.OrganizationReply("org-1"), nil
 		},
 		"controlplane.v1.ActivityService/ListActivity": func(map[string]any) (any, error) {
 			return map[string]any{"events": []map[string]any{{"at": at(30), "verb": "promote", "actor": map[string]any{"name": "alice"}, "via": "console",

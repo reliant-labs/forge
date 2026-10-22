@@ -97,7 +97,7 @@ var openReleasesBackend = func(ctx context.Context, env string) (releasesBackend
 	if err != nil {
 		return releasesBackend{}, undeterminedf("reach the control plane of %s: %v", env, err)
 	}
-	c := releasetimeline.Cloud{Client: cloud.NewClient(ep, cred), Project: hostedProjectName()}
+	c := releasetimeline.NewCloud(cloud.NewClient(ep, cred), hostedProjectName())
 	return releasesBackend{Name: backendCloud, Source: c, Cloud: &c, Ledger: ep.URL}, nil
 }
 
@@ -114,7 +114,7 @@ func defaultReleasesDeps() releasesDeps {
 		open: openReleasesBackend,
 		now:  time.Now,
 		commits: func() releasetimeline.CommitLister {
-			return releasetimeline.Git{Dir: projectDirForKCL()}
+			return releasetimeline.NewGit(projectDirForKCL())
 		},
 	}
 }

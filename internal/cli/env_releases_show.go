@@ -155,7 +155,7 @@ func runReleasesShow(ctx context.Context, deps releasesDeps, env, ref string, li
 	}
 	// A reference can name any promotion, however old: read the whole ledger
 	// this source will give, not a recent window.
-	data, err := b.Source.Load(ctx, env, releasetimeline.Query{})
+	data, err := b.Source.Load(ctx, env, time.Time{})
 	if err != nil {
 		return releasesShowDoc{}, releasesError("read the release timeline of "+env, err)
 	}

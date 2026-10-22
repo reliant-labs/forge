@@ -247,7 +247,7 @@ func TestObsCloudEnvReadsTheControlPlane(t *testing.T) {
 		},
 		Now: func() time.Time { return obsNow },
 	}
-	cmd := NewRootCmd()
+	cmd := newTestRootCmd(t)
 	cmd.SetOut(&out)
 	cmd.SetErr(&errb)
 	cmd.SetArgs([]string{"obs", "logs", "prod", "--json"})
@@ -279,7 +279,7 @@ func TestObsCloudUnreachableIsUndetermined(t *testing.T) {
 		},
 		Now: func() time.Time { return obsNow },
 	}
-	cmd := NewRootCmd()
+	cmd := newTestRootCmd(t)
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"obs", "traces", "prod"})

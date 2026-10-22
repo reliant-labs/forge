@@ -2632,7 +2632,7 @@ _render_cluster = lambda c: Cluster -> any {
 # The declared charts plus the one chart each ExternalSecretsOperator lowers
 # to (lib/eso.k). Built through HelmChart so its check: block runs.
 _all_helm_charts = lambda b: Bundle -> [HelmChart] {
-    b.helm_charts + [HelmChart {**eso_lib.eso_chart(e, eso_lib.eso_owner(b.project, b.env))} for e in b.external_secrets_operators]
+    b.helm_charts + [HelmChart {**eso_lib.eso_chart(e, eso_lib.eso_owner(b.project, b.env), es_lib.admission_defaults(b, _primary_target(b), _eso_context(e)))} for e in b.external_secrets_operators]
 }
 
 # Render a HelmChart (platform dependency) to its stable dict form. The

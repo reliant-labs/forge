@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ExternalSecretsOperator.admission` defaults from the render (SF4
+  follow-up).** The `servers`, `jwt_mounts`, `audiences` and `gcp_projects`
+  lists were empty by default, and an empty list is not a wildcard, so the
+  admission policies refused every SecretStore the same Bundle rendered until
+  someone filled them by hand. They now default to what the Bundle renders on
+  that cluster (each store's URL, JWT mount and audience, a `gcpsm` store's
+  project) plus the in-cluster `forge.OpenBao`'s server, mount and audience.
+  An explicit list overrides the derived one for that list only.
+  `TestESODerivedAdmissionAdmitsTheBundlesOwnObjects` applies a Bundle with
+  OpenBao, ESO and one store-backed ExternalSecret to a real kube-apiserver
+  (envtest) with no hand-filled `admission`.
+
 - **`forge/pkg/alerting/amconfig`: the Alertmanager configuration renderer.**
   Moved verbatim from the control plane, which renders every org's routing
   with it, so a local stack can render with the SAME code: one route per org

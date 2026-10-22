@@ -242,6 +242,39 @@ _check_source = lambda b: any, pt: any, s: any -> bool {
     True
 }
 
+# --- Admission defaults -----------------------------------------------------
+
+# What the cluster `ctx`'s External Secrets Operator admits when its
+# `admission` lists are left empty: exactly the SecretStores this Bundle
+# renders there, plus the in-cluster store when forge.OpenBao runs on `ctx`.
+# An empty list is not a wildcard, so without this the three policies would
+# refuse every store the Bundle itself renders. Sorted and de-duplicated.
+#
+#   servers      each store's URL (the hosted endpoint, the component's Service)
+#   jwt_mounts   the JWT auth mount each store logs in on (jwt-<cluster id>)
+#   audiences    the one audience each store requests
+#   gcp_projects the Google project of each gcpsm store
+#
+# The component's own server/mount/audience are admitted even when no
+# ExternalSecret reads from it yet, so adding the first one needs no policy
+# edit. An OpenBaoStore with no component declared is skipped here; the
+# source check refuses it with the real reason.
+admission_defaults = lambda b: any, pt: any, ctx: str -> any {
+    _recs = [
+        _resolve_store(b, pt, s.source, _context(s.source, pt), s.namespace)
+        for s in b.required_secrets if s.source and _context(s.source, pt) == ctx and (s.source.store.type != "openbao" or b.openbao)
+    ]
+    _vault = [st for st in _recs if st.vault]
+    _ob = True if b.openbao and _openbao_context(b, pt) == ctx else False
+    _id = _cluster_id(b, pt, ctx)
+    {
+        "servers": sorted({x: 0 for x in [st.server for st in _vault if st.server] + ([_openbao_service_url(b.openbao)] if _ob else [])})
+        "jwt_mounts": sorted({x: 0 for x in ["jwt-${st.id}" for st in _vault] + (["jwt-${_id}"] if _ob else [])})
+        "audiences": sorted({x: 0 for x in [st.audience for st in _vault] + (["${_openbao_audience_base(b.openbao)}/c/${_id}"] if _ob else [])})
+        "gcp_projects": sorted({x: 0 for x in [st.project for st in _recs if st.type == "gcpsm"]})
+    }
+}
+
 # --- The render --------------------------------------------------------------
 
 _labels = lambda b: any, ctx: str -> {str: str} {

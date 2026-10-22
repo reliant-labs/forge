@@ -241,13 +241,34 @@ _deep_merge = lambda a: any, b: any -> any {
     }
 }
 
-# eso_chart(e, owner, ...) — the forge.HelmChart (as a dict) for one declared
-# ExternalSecretsOperator `e`. `owner` is the component-owner label value.
+# A value that goes into a CEL string literal: no quote, backslash or control
+# character (the same rule as schema.k _ESO_URL_RE).
+_CEL_SAFE_RE = r"^[A-Za-z0-9][A-Za-z0-9._:@/+~%=?&#,-]{0,1000}$"
+
+# admission_list(field, explicit, derived) — the explicit list when the author
+# gave one, else the list derived from the render (lib/external_secret.k
+# admission_defaults). A derived value is checked like an explicit one: it
+# lands in a CEL literal.
+_admission_list = lambda field: str, explicit: [str], derived: [str] -> [str] {
+    _l = explicit if explicit else derived
+    assert all x in _l { regex.match(x, _CEL_SAFE_RE) }, "ExternalSecretsOperator.admission.${field} derived ${[x for x in _l if not regex.match(x, _CEL_SAFE_RE)]}, which cannot be put in an admission policy. Set admission.${field} explicitly"
+    _l
+}
+
+# eso_chart(e, owner, derived) — the forge.HelmChart (as a dict) for one
+# declared ExternalSecretsOperator `e`. `owner` is the component-owner label
+# value. `derived` is what the Bundle's own stores and OpenBao imply for the
+# admission lists (lib/external_secret.k admission_defaults): an
+# `admission` list left empty takes it, one that is set wins.
 # `e` is the schema instance passed as `any` (this file is a sub-package of the
 # module that declares the schema, so it cannot name it).
-eso_chart = lambda e: any, owner: str -> {str: any} {
+eso_chart = lambda e: any, owner: str, derived: any -> {str: any} {
     _ns = e.namespace
     _adm = e.admission
+    _servers = _admission_list("servers", _adm.servers, derived.servers)
+    _mounts = _admission_list("jwt_mounts", _adm.jwt_mounts, derived.jwt_mounts)
+    _audiences = _admission_list("audiences", _adm.audiences, derived.audiences)
+    _gcp = _admission_list("gcp_projects", _adm.gcp_projects, derived.gcp_projects)
     _eso_user = "system:serviceaccount:${_ns}:${ESO_SERVICE_ACCOUNT}"
     _replicas = e.replicas
     _egress_to = [{ipBlock.cidr = c} for c in _adm.egress_cidrs]
@@ -346,7 +367,7 @@ eso_chart = lambda e: any, owner: str -> {str: any} {
         }
     } | ({"priorityClassName": e.priority_class} if e.priority_class else {})
     _admission = _writers_vap(owner, _eso_user, _adm.writers, _adm.writer_groups) \
-        + _store_pin_vap(owner, _adm.store_service_account, _adm.servers, _adm.jwt_mounts, _adm.audiences, _adm.gcp_projects) \
+        + _store_pin_vap(owner, _adm.store_service_account, _servers, _mounts, _audiences, _gcp) \
         + _es_policy_vap(owner)
     _merged = _deep_merge(_posture, e.values)
     # extraObjects are APPENDED, not replaced: adding one object never costs

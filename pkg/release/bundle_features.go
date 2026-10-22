@@ -49,7 +49,9 @@ const (
 	// namespace reads, the values to mint, and the components the env
 	// declares. A control plane that predates them cannot derive the access a
 	// store-backed Secret needs, so a shape carrying them is written only to
-	// one that names the feature.
+	// one that names the feature. It also owns
+	// ShapeControlPlaneSecret.Delivery: a control plane that cannot read the
+	// store bindings cannot write the store, so it is left delivering by push.
 	BundleFeatureStoreSecrets = "shape-store-secrets"
 	// BundleFeatureReleaseHealth is Shape.ReleaseHealth: the thresholds the
 	// env's promotions are judged by (forge.ReleaseHealth). A control plane
@@ -99,6 +101,13 @@ func (r *BundleReader) Limit(d BundleDoc) BundleDoc {
 func (r *BundleReader) LimitShape(s Shape) Shape {
 	if !r.Supports(BundleFeatureStoreSecrets) {
 		s.StoreSecrets, s.GeneratedSecrets, s.OpenBao, s.ExternalSecretsOperators = nil, nil, nil, nil
+		if slices.ContainsFunc(s.ControlPlaneSecrets, func(c ShapeControlPlaneSecret) bool { return c.Delivery != "" }) {
+			cps := slices.Clone(s.ControlPlaneSecrets)
+			for i := range cps {
+				cps[i].Delivery = ""
+			}
+			s.ControlPlaneSecrets = cps
+		}
 	}
 	if !r.Supports(BundleFeatureReleaseHealth) {
 		s.ReleaseHealth = nil

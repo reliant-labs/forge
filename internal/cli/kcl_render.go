@@ -721,6 +721,11 @@ type ControlPlaneSecretEntity struct {
 	// Required is true when a workload reads the Secret without an optional
 	// marker, so its pods wait for the first delivery.
 	Required bool `json:"required,omitempty"`
+	// Delivery is release.ControlPlaneSecretDeliveryStore when the control
+	// plane writes the store and ESO delivers the Secret; Source is then the
+	// floating store source ESO reads.
+	Delivery string             `json:"delivery,omitempty"`
+	Source   *StoreSourceEntity `json:"source,omitempty"`
 }
 
 // DNSRecordEntity mirrors the kcl/schema.k DNSRecord — a DNS record a

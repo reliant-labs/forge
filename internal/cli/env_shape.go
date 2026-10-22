@@ -576,6 +576,7 @@ func shapeControlPlaneSecretsOf(e *KCLEntities) []release.ShapeControlPlaneSecre
 			ConnectedCluster: c.ConnectedCluster,
 			Kind:             c.Kind,
 			Keys:             c.Keys,
+			Delivery:         c.Delivery,
 			Required:         c.Required,
 		})
 	}

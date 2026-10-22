@@ -51,13 +51,17 @@ const (
 	// store-backed Secret needs, so a shape carrying them is written only to
 	// one that names the feature.
 	BundleFeatureStoreSecrets = "shape-store-secrets"
+	// BundleFeatureReleaseHealth is Shape.ReleaseHealth: the thresholds the
+	// env's promotions are judged by (forge.ReleaseHealth). A control plane
+	// that predates it judges with the defaults.
+	BundleFeatureReleaseHealth = "shape-release-health"
 )
 
 // BundleDocFeatures is every optional bundle-document feature this version's
 // [DecodeBundleDoc] accepts. A control plane advertises exactly this list, so
 // what it claims to decode and what its decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureReleaseHealth}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -95,6 +99,9 @@ func (r *BundleReader) Limit(d BundleDoc) BundleDoc {
 func (r *BundleReader) LimitShape(s Shape) Shape {
 	if !r.Supports(BundleFeatureStoreSecrets) {
 		s.StoreSecrets, s.GeneratedSecrets, s.OpenBao, s.ExternalSecretsOperators = nil, nil, nil, nil
+	}
+	if !r.Supports(BundleFeatureReleaseHealth) {
+		s.ReleaseHealth = nil
 	}
 	if r.Supports(BundleFeatureFrontendTelemetry) {
 		return s

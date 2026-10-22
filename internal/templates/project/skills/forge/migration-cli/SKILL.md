@@ -7,7 +7,7 @@ description: Migrate a CLI / library project to forge — --kind cli, second bin
 
 Use this skill when the existing project is a Cobra CLI binary, a code generator, an ops tool, or a pure Go library. For network-facing apps see `migration-service`. For prerequisites and the overall flow see `migration`.
 
-**A CLI/binary is not a wiring-free special case.** It uses the SAME paved path as a server: proto-driven typed `internal/config`, the cmdkit lib (DB open, logger, flag/env binding, report envelope), and `observe`-injected logging. Do NOT hand-roll `os.Getenv`, ad-hoc `slog.Logger`s, hardcoded timeouts, or hand-rolled shutdown — those are the symptoms of a missing paved path, not a CLI convention. `contract.go` is optional for a trivial CLI; the config/logger/shutdown paved path is not.
+**A CLI/binary is not a wiring-free special case.** It uses the SAME paved path as a server: proto-driven typed `internal/config`, the cmdkit lib (DB open, logger, flag/env binding, report envelope), and `obs`-injected logging. Do NOT hand-roll `os.Getenv`, ad-hoc `slog.Logger`s, hardcoded timeouts, or hand-rolled shutdown — those are the symptoms of a missing paved path, not a CLI convention. `contract.go` is optional for a trivial CLI; the config/logger/shutdown paved path is not.
 
 ## Scaffold
 

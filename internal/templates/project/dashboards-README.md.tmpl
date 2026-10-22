@@ -28,7 +28,7 @@ file here that does not end in `_gen.json`.
 every dashboard in the release bundle (`observability/dashboards/`), for the
 Reliant console. A file here with a `panels` array (rather than HyperDX's
 `tiles`) is shipped as it is, and one named like a generated dashboard replaces
-it. `forge observe dashboards check` validates them and lists what would ship.
+it. `forge obs dashboards check` validates them and lists what would ship.
 
 Tiles name their source (`Logs`, `Traces`, `Metrics`); the local stack binds
 the names to this database's source ids for you.

@@ -144,7 +144,7 @@ chain, err := serverkit.NewChain(serverkit.ChainDeps{
 })
 ```
 
-forge's `observe` package reads no environment — the window is only ever
+forge's `obs` package reads no environment — the window is only ever
 the one its caller passed. So an older project adopts it by adding the field
 to its AppConfig and that one `LogOptions` line to its owned `serve.go`; a
 server that is not forge-scaffolded passes `observe.WithSuccessSampling` in

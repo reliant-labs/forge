@@ -14,13 +14,13 @@
 // The declarations are also the schema:
 //
 //	{{.Name}} metrics schema --json      # this binary
-//	forge observe metrics                # a built binary or a running service
+//	forge obs metrics declared                # a built binary or a running service
 //	GET /debug/metrics/schema            # a running service (the pprof listener)
 //
 // `forge build` writes it to bin/observability/metrics-schema.json, which the
 // release carries as observability/metrics-schema.json. A "Custom metrics"
 // dashboard (counters as a rate, histograms as p50/p95/p99, gauges as the last
-// value) is drawn from it by `forge observe metrics --dashboard`.
+// value) is drawn from it by `forge obs metrics declared --dashboard`.
 //
 // HOW TO ADD ONE: copy recordsCreated below, give it a name, and record it
 // from the code that does the thing. Keep the instrument unexported and expose

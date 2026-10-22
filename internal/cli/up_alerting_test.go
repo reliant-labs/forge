@@ -158,9 +158,9 @@ func TestSelfForgeCommand(t *testing.T) {
 	if got := selfForgeCommand([]string{"go", "run", "."}); strings.Join(got, " ") != "go run ." {
 		t.Fatalf("a non-forge command changed: %v", got)
 	}
-	got := selfForgeCommand([]string{"forge", "observe", "alerts", "run"})
+	got := selfForgeCommand([]string{"forge", "obs", "alerts", "run"})
 	exe, _ := os.Executable()
-	if len(got) < 4 || got[0] != exe || strings.Join(got[len(got)-3:], " ") != "observe alerts run" {
+	if len(got) < 4 || got[0] != exe || strings.Join(got[len(got)-3:], " ") != "obs alerts run" {
 		t.Fatalf("forge command = %v, want the running executable then the args", got)
 	}
 }

@@ -43,7 +43,7 @@ func fakeRunner(t *testing.T, seen *[]string) alertQueryRunner {
 func TestObserveAlertsCheck_PrintsWhatFiresWithLabelsAndValues(t *testing.T) {
 	var seen []string
 	var out bytes.Buffer
-	err := runObserveAlertsCheck(context.Background(), &out, io.Discard, observeAlertsCheckOpts{env: "dev", maxRows: 200}, fakeLoader(checkAlerts()), fakeRunner(t, &seen))
+	err := runObsAlertsCheck(context.Background(), &out, io.Discard, obsAlertsCheckOpts{env: "dev", maxRows: 200}, fakeLoader(checkAlerts()), fakeRunner(t, &seen))
 	if err == nil {
 		t.Error("a rule that errored must make the command fail")
 	}
@@ -70,7 +70,7 @@ func TestObserveAlertsCheck_PrintsWhatFiresWithLabelsAndValues(t *testing.T) {
 func TestObserveAlertsCheck_DoesNotApplyForAndSendsNothing(t *testing.T) {
 	var seen []string
 	var out bytes.Buffer
-	_ = runObserveAlertsCheck(context.Background(), &out, io.Discard, observeAlertsCheckOpts{env: "dev", rule: "ServiceErrorRateHigh", maxRows: 200}, fakeLoader(checkAlerts()), fakeRunner(t, &seen))
+	_ = runObsAlertsCheck(context.Background(), &out, io.Discard, obsAlertsCheckOpts{env: "dev", rule: "ServiceErrorRateHigh", maxRows: 200}, fakeLoader(checkAlerts()), fakeRunner(t, &seen))
 	if !strings.Contains(out.String(), "FIRING x2") || !strings.Contains(out.String(), "for 5m") {
 		t.Errorf("%s", out.String())
 	}
@@ -82,7 +82,7 @@ func TestObserveAlertsCheck_DoesNotApplyForAndSendsNothing(t *testing.T) {
 func TestObserveAlertsCheck_JSONAndSQL(t *testing.T) {
 	var seen []string
 	var out bytes.Buffer
-	_ = runObserveAlertsCheck(context.Background(), &out, io.Discard, observeAlertsCheckOpts{env: "dev", rule: "ServiceErrorRateHigh", asJSON: true, maxRows: 200}, fakeLoader(checkAlerts()), fakeRunner(t, &seen))
+	_ = runObsAlertsCheck(context.Background(), &out, io.Discard, obsAlertsCheckOpts{env: "dev", rule: "ServiceErrorRateHigh", asJSON: true, maxRows: 200}, fakeLoader(checkAlerts()), fakeRunner(t, &seen))
 	for _, want := range []string{`"alert": "ServiceErrorRateHigh"`, `"service": "api"`, `"value": 0.2`, `"severity": "critical"`} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("json lacks %s:\n%s", want, out.String())
@@ -90,7 +90,7 @@ func TestObserveAlertsCheck_JSONAndSQL(t *testing.T) {
 	}
 	out.Reset()
 	seen = nil
-	if err := runObserveAlertsCheck(context.Background(), &out, io.Discard, observeAlertsCheckOpts{env: "dev", printSQL: true}, fakeLoader(checkAlerts()), fakeRunner(t, &seen)); err != nil || len(seen) != 0 {
+	if err := runObsAlertsCheck(context.Background(), &out, io.Discard, obsAlertsCheckOpts{env: "dev", printSQL: true}, fakeLoader(checkAlerts()), fakeRunner(t, &seen)); err != nil || len(seen) != 0 {
 		t.Errorf("--sql must not run anything: %v %v", err, seen)
 	}
 	if !strings.Contains(out.String(), "SELECT service, value FROM e") {
@@ -100,10 +100,10 @@ func TestObserveAlertsCheck_JSONAndSQL(t *testing.T) {
 
 func TestObserveAlertsCheck_NoRulesAndUnknownRule(t *testing.T) {
 	var out bytes.Buffer
-	if err := runObserveAlertsCheck(context.Background(), &out, io.Discard, observeAlertsCheckOpts{env: "dev"}, fakeLoader(nil), nil); err != nil || !strings.Contains(out.String(), "declares no alert rules") {
+	if err := runObsAlertsCheck(context.Background(), &out, io.Discard, obsAlertsCheckOpts{env: "dev"}, fakeLoader(nil), nil); err != nil || !strings.Contains(out.String(), "declares no alert rules") {
 		t.Errorf("no rules: %v %q", err, out.String())
 	}
-	if err := runObserveAlertsCheck(context.Background(), &out, io.Discard, observeAlertsCheckOpts{env: "dev", rule: "Nope"}, fakeLoader(checkAlerts()), nil); err == nil || !strings.Contains(err.Error(), "ServiceSilent") {
+	if err := runObsAlertsCheck(context.Background(), &out, io.Discard, obsAlertsCheckOpts{env: "dev", rule: "Nope"}, fakeLoader(checkAlerts()), nil); err == nil || !strings.Contains(err.Error(), "ServiceSilent") {
 		t.Errorf("an unknown --rule should name the rules: %v", err)
 	}
 }

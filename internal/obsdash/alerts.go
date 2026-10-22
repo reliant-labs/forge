@@ -578,7 +578,7 @@ func ResolveAlertDefaultsFor(in AlertInput, env string, tuning map[string]AlertT
 // the id rather than the env's name: customer metadata, which the node agent
 // labels from the namespace. The env id is not known when forge renders, so the
 // SQL carries this token and whoever evaluates the rule binds it (BindEnvID
-// here, for `forge observe alerts check`; the control plane for a deployed env).
+// here, for `forge obs alerts check`; the control plane for a deployed env).
 const EnvIDPlaceholder = "{reliant_env_id:String}"
 
 // BindEnvID replaces EnvIDPlaceholder with envID as a quoted literal.

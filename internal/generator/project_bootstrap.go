@@ -157,6 +157,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			// exist for the template to execute — the post-codegen
 			// GenerateBootstrapTesting pass populates them for real.
 			AutoStubs       []autoStub
+			AutoMocks       []autoStub
 			UnresolvedStubs []unresolvedStub
 			FuncDefaults    []funcDefault
 			FuncTodos       []unresolvedStub

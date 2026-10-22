@@ -340,6 +340,12 @@ type typesResolver struct {
 	// pkgs holds every import path a load was attempted for; a nil value
 	// is one that did not load cleanly.
 	pkgs map[string]*types.Package
+	// dirs maps each cleanly loaded import path to its source directory,
+	// where forgeMock looks for the package's mock_gen.go.
+	dirs map[string]string
+	// mocks caches readForgeMocks per directory: a run asks about one
+	// package's mocks once per Deps field that names it.
+	mocks map[string]forgeMockIndex
 	// loads counts go/packages calls, so a test can hold the batching to
 	// one call per run.
 	loads int
@@ -349,7 +355,12 @@ type typesResolver struct {
 // loads nothing, so a caller that never asks about a foreign package
 // never invokes the toolchain.
 func newTypesResolver(dir string, importPaths []string) *typesResolver {
-	r := &typesResolver{dir: dir, pkgs: map[string]*types.Package{}}
+	r := &typesResolver{
+		dir:   dir,
+		pkgs:  map[string]*types.Package{},
+		dirs:  map[string]string{},
+		mocks: map[string]forgeMockIndex{},
+	}
 	r.load(importPaths)
 	return r
 }
@@ -368,7 +379,9 @@ func (r *typesResolver) load(importPaths []string) {
 		return
 	}
 	cfg := &packages.Config{
-		Mode: packages.NeedName | packages.NeedTypes,
+		// NeedFiles is for dirs: a package's mock_gen.go sits beside its
+		// other files, and the import path alone does not say where.
+		Mode: packages.NeedName | packages.NeedTypes | packages.NeedFiles,
 		Dir:  r.dir,
 		Env:  goexec.Env(),
 	}
@@ -383,6 +396,9 @@ func (r *typesResolver) load(importPaths []string) {
 		}
 		if _, asked := r.pkgs[p.PkgPath]; asked {
 			r.pkgs[p.PkgPath] = p.Types
+			if len(p.GoFiles) > 0 {
+				r.dirs[p.PkgPath] = filepath.Dir(p.GoFiles[0])
+			}
 		}
 	}
 }

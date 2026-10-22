@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
@@ -107,9 +108,25 @@ func writeFrontendRuntimeDocs(cfg *config.ProjectConfig, projectDir string, docs
 		}
 		feDir, ok := fe.Dir(projectDir)
 		if !ok {
-			// No directory in this repository — a cross-repo
-			// source pin, or a path outside the project root.
+			// No directory in this repository — a sibling checkout
+			// (`../reliant/web`) or a cross-repo source pin. Its tree
+			// belongs to another repo, so the document goes to this
+			// project's own .forge/, where the dev server is pointed at
+			// it (FORGE_RUNTIME_CONFIG_FILE, see outOfTreeRuntimeConfigRel).
+			wrote, err := writeOutOfTreeRuntimeDoc(projectDir, fe.Name, body)
+			if err != nil {
+				return changed, err
+			}
+			if wrote {
+				changed++
+			}
 			continue
+		}
+		// The frontend's code is in this tree, so public/config.js is the
+		// document. An out-of-tree copy left from when it was not (the path
+		// moved in) would otherwise keep shadowing it on the dev server.
+		if err := os.Remove(filepath.Join(projectDir, outOfTreeRuntimeConfigRel(fe.Name))); err != nil && !os.IsNotExist(err) {
+			return changed, fmt.Errorf("remove stale out-of-tree config.js for %s: %w", fe.Name, err)
 		}
 		rel := filepath.Join(feDir, staticDir, codegen.FrontendConfigJSFile)
 		// Unchanged is the common case; comparing first keeps a no-op run
@@ -138,4 +155,64 @@ func writeFrontendRuntimeDocs(cfg *config.ProjectConfig, projectDir string, docs
 		}
 	}
 	return changed, nil
+}
+
+// frontendRuntimeConfigFileEnv names the file a frontend's dev server serves
+// as `config.js` instead of its own public/config.js. `forge env up` sets it
+// for a frontend whose code is outside this project; the dev-server half is
+// @reliantlabs/forge-web-runtime/vite's forgeRuntimeConfig plugin, which reads
+// the same name.
+const frontendRuntimeConfigFileEnv = "FORGE_RUNTIME_CONFIG_FILE"
+
+// outOfTreeRuntimeConfigRel is where the runtime config document of a
+// frontend whose code lives OUTSIDE this project is rendered, relative to
+// the project root: .forge/runtime-config/<frontend>/config.js.
+//
+// The other repository's working tree is never written. Its public/ belongs
+// to its own forge and its own git status, and a rendered environment there
+// would be one repo's deploy values committed — or merely dirtying — another
+// repo. The document is a projection of THIS project's env, so it lives in
+// this project's state directory, and the frontend's dev server is told
+// where it is.
+func outOfTreeRuntimeConfigRel(frontend string) string {
+	return filepath.Join(".forge", "runtime-config", frontend, codegen.FrontendConfigJSFile)
+}
+
+// writeOutOfTreeRuntimeDoc writes one out-of-tree document, reporting whether
+// the bytes changed. It is not a Tier-1 file — nothing commits .forge/ — so
+// it carries no checksum stamp and is compared verbatim.
+func writeOutOfTreeRuntimeDoc(projectDir, frontend, body string) (bool, error) {
+	path := filepath.Join(projectDir, outOfTreeRuntimeConfigRel(frontend))
+	if existing, err := os.ReadFile(path); err == nil && string(existing) == body {
+		return false, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, fmt.Errorf("create runtime-config dir for %s: %w", frontend, err)
+	}
+	if err := atomicfile.WriteFile(path, []byte(body), 0o644); err != nil {
+		return false, fmt.Errorf("write out-of-tree config.js for %s: %w", frontend, err)
+	}
+	return true, nil
+}
+
+// outOfTreeRuntimeConfigFile is the absolute path of a frontend's out-of-tree
+// document when one has been rendered, else "". A frontend whose code is in
+// this tree never has one (writeFrontendRuntimeDocs removes a stale copy),
+// so its dev server keeps serving public/config.js.
+func outOfTreeRuntimeConfigFile(projectDir, frontend string) string {
+	if projectDir == "" || frontend == "" {
+		return ""
+	}
+	path := filepath.Join(projectDir, outOfTreeRuntimeConfigRel(frontend))
+	if !filepath.IsAbs(path) {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return ""
+		}
+		path = abs
+	}
+	if info, err := os.Stat(path); err != nil || info.IsDir() {
+		return ""
+	}
+	return path
 }

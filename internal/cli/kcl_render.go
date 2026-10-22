@@ -612,7 +612,7 @@ type HelmChartEntity struct {
 	Values map[string]any `json:"values,omitempty"`
 	// CRDs selects which forge-owned CRD bundle to apply FIRST
 	// (Established-gated) before the chart's controllers: "" (none),
-	// "gateway-api", or "cert-manager". The chart is rendered --skip-crds,
+	// "gateway-api", "cert-manager" or "external-secrets". The chart is rendered --skip-crds,
 	// so forge owns the CRD surface.
 	CRDs string `json:"crds,omitempty"`
 	// Cluster is the kubectl CONTEXT this chart installs into, overriding
@@ -627,6 +627,11 @@ type HelmChartEntity struct {
 	// Cluster` objects into cp-daemon, so CNPG must be installed there and
 	// not in the env's primary control-plane cluster.
 	Cluster string `json:"cluster,omitempty"`
+	// ClusterTarget is true when Cluster came from a forge.ClusterTarget (a
+	// cluster you operate) rather than a forge.Cluster. A target is its own
+	// declaration, so validateChartCluster does not look for it in the env's
+	// k3d clusters.
+	ClusterTarget bool `json:"cluster_target,omitempty"`
 	// Manifests are consumer-declared raw k8s manifest dicts that ride this
 	// chart's `--target` (the `eg` GatewayClass, cert-manager ClusterIssuers)
 	// — the cluster-scoped instances the chart's controller reconciles but
@@ -1286,7 +1291,13 @@ type ObservabilityEntity struct {
 	LocalEndpoint string `json:"local_endpoint,omitempty"`
 	// ProfilesEndpoint is the full URL of the local profiles collector host
 	// processes push to; "" when profiles are off or go to a destination.
-	ProfilesEndpoint string                     `json:"profiles_endpoint,omitempty"`
+	ProfilesEndpoint string `json:"profiles_endpoint,omitempty"`
+	// AlertmanagerPort and AlertsPort are the local alerting loop's loopback
+	// ports: the compose Alertmanager's and the evaluator's (its in-app
+	// sink). Zero when the env runs no local loop (no ports declared, or a
+	// destination instead of the local ClickStack).
+	AlertmanagerPort int                        `json:"alertmanager_port,omitempty"`
+	AlertsPort       int                        `json:"alerts_port,omitempty"`
 	Destination      *ObservabilityDestEntity   `json:"destination,omitempty"`
 	Signals          ObservabilitySignalsEntity `json:"signals"`
 	// Policy is the resolved opt-out, recorded in the release shape.

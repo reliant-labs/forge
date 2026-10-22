@@ -619,12 +619,52 @@ services:
         aliases:
           - otel-profiles
 
+  # ── Local alert delivery ─────────────────────────────────────────────────
+  # The Alertmanager the local evaluator (`forge observe alerts run`, the
+  # `alerts` workload in deploy/kcl/dev/main.k) posts firing alerts to. Its
+  # configuration is NOT written here: `forge env up` renders it into
+  # .forge/observability/alertmanager/ from the env's forge.Alerts with the
+  # control plane's own renderer (forge/pkg/alerting/amconfig), so a route
+  # reaches the same receiver locally as in production. Receivers are
+  # forge.AlertReceiver entries; their secrets come from the env's secret
+  # store as files under secrets/. The default receiver, reliant-inapp,
+  # delivers to the evaluator, which writes .forge/logs/dev/alerts.log.
+  #
+  # The image is the version (and digest) the control plane runs and links
+  # the config loader of, from the Prometheus project's own registry (quay
+  # serves the same digest as Docker Hub, without its anonymous pull limit).
+  # One replica, so gossip is off. host.docker.internal is how it reaches
+  # receivers on this machine (forge rewrites localhost to it).
+  alertmanager:
+    image: quay.io/prometheus/alertmanager:v0.28.1@sha256:27c475db5fb156cab31d5c18a4251ac7ed567746a2483ff264516437a39b15ba
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.listen-address=:9093
+      - --cluster.listen-address=
+    ports:
+      - "127.0.0.1:${ALERTMANAGER_PORT:-9093}:9093" # API + UI
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./.forge/observability/alertmanager:/etc/alertmanager:ro
+      - alertmanager_data:/alertmanager
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9093/-/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    networks:
+      - {{.ProjectName}}-net
+
 volumes:
   postgres_data:
   go_mod_cache:
   go_build_cache:
   clickstack_clickhouse:
   clickstack_mongo:
+  alertmanager_data:
 {{- if .HasFrontend}}
   idp_db_data:
 {{- end}}

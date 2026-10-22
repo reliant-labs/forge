@@ -1,6 +1,6 @@
 ---
 name: observability/alerts
-description: Alert rules declared in KCL per env — `forge.AlertRule` (Prometheus rule shape, the condition inside a native ClickHouse SQL `expr`), `forge.AlertRoute` (labels to a receiver NAME), `forge.AlertDefault` (tune or disable forge's generated defaults, including the customer-metadata and platform ones), what render refuses, and what lands in the release shape for the control plane.
+description: Alert rules declared in KCL per env — `forge.AlertRule` (Prometheus rule shape, the condition inside a native ClickHouse SQL `expr`), `forge.AlertRoute` (labels to a receiver NAME), `forge.AlertDefault` (tune or disable forge's generated defaults, including the customer-metadata and platform ones), the local loop (`forge env up` evaluates rules continuously and delivers them through a local Alertmanager rendered by the control plane's own renderer; `forge.AlertReceiver`; `.forge/logs/<env>/alerts.log`), what render refuses, and what lands in the release shape for the control plane.
 ---
 
 # Alerts
@@ -68,6 +68,43 @@ The expr check is syntactic. The evaluator re-checks it and runs it read-only wi
 
 `forge.AlertRoute {match, receiver, continue}`: an alert goes to the first route whose `match` labels it carries; `continue = True` keeps matching so one alert can reach several receivers. A **receiver is a name**, resolved by the control plane to a Slack channel, PagerDuty service and so on. With **no routes declared** the shape records `reliant-inapp` then `slack`: in-app plus Slack, **never a pager**. Declaring routes replaces that, and you own paging.
 
+## Alerts fire locally too
+
+`forge env up dev` closes the loop on your machine, with the same routing as production:
+
+- **`alerts`** (a host workload in `deploy/kcl/dev/main.k`, running `forge observe alerts run`) evaluates the env's rules continuously against the local ClickStack, `for` applied, and posts what fires to the local Alertmanager. It labels alerts `reliant_org_id="local"`, `reliant_env_id=<env>`.
+- **`alertmanager`** (docker-compose.yml) routes them. `forge env up` renders its configuration into `.forge/observability/alertmanager/` with **`forge/pkg/alerting/amconfig`**, the renderer the control plane uses for every org. So a route that reaches `hook` here reaches `hook` there.
+- **`reliant-inapp`** is always present, and locally it is the evaluator's own sink. Every alert it receives becomes one line in **`.forge/logs/dev/alerts.log`**:
+
+  ```
+  ALERT firing   OrdersBacklog severity=critical service=orders — orders backlog is 812
+  ```
+
+Other receivers are declared on the env as `forge.AlertReceiver` entries. Only local stacks use them: a hosted env's receivers live in the control-plane console, and this list is ignored there.
+
+```python
+alerts = forge.Alerts {
+    receivers = [
+        forge.AlertReceiver {name = "hook", type = "webhook", url = "http://localhost:9999/alerts"}
+        forge.AlertReceiver {name = "slack", type = "slack", secret = "SLACK_WEBHOOK_URL"}
+        forge.AlertReceiver {name = "autopilot", type = "autopilot", url = "http://localhost:8080/hooks/<id>", secret = "AUTOPILOT_TOKEN"}
+    ]
+    routes = [
+        forge.AlertRoute {match = {severity = "critical"}, receiver = "hook", continue = True}
+        forge.AlertRoute {match = {}, receiver = "reliant-inapp"}
+    ]
+}
+```
+
+- **`secret` names a key in the env's secret store**, never a value: `forge secret set --env dev SLACK_WEBHOOK_URL` (the value is read from stdin).
+  - forge writes the value as a file that the config references through `*_file`. The value never enters KCL or the config.
+  - A key that is missing leaves its receiver out, and `forge env up` names the key and the fix.
+- **Localhost URLs are rewritten for the container.** forge rewrites `localhost` / `127.0.0.1` to `host.docker.internal`, because Alertmanager runs in a container. A receiver on your machine must therefore listen on `0.0.0.0`.
+- **`autopilot` observes rather than routes.** Each alert whose `severity` is in `severities` (default `critical`, `error`), or whose alertname is in `always_alertnames` (the issue alerts), reaches the automation. The alert then carries on through your routes. No route names an autopilot receiver.
+- **A route to a receiver this env lacks is dropped and reported.** The default `slack` route, with no `slack` receiver declared, is the usual example. It is reported as `not routed: …` and does not fail anything.
+
+Check: `curl -s localhost:<alertmanager port>/api/v2/alerts` shows what is active and which receivers it reached. The port is in the `forge env up` summary. To turn local delivery off, drop the `alerts` and `alertmanager` workloads. `forge observe alerts check` (evaluate once, print what returns now) works either way.
+
 ## The built-in alerts
 
 `forge generate` writes `deploy/observability/alert-defaults_gen.json` (the project and frontend the defaults are derived from, and the catalog) and each service's entry in `deploy/observability/spec/service-<svc>_gen.json` — the same input as the dashboards, one file per service so parallel branches never conflict. `forge env shape <env>` renders them per env and records them with `source: default`. Every built-in has an id; **one `forge.Alerts.defaults` map tunes or disables all of them**, whichever signal they read.
@@ -79,8 +116,9 @@ The expr check is syntactic. The evaluator re-checks it and runs it read-only wi
 | `service-silent` | `ServiceSilent` (warning) | rpc metrics | no request for 10m by a service that served requests in at least 18 of the previous 24 hours | same |
 | `frontend-js-errors` | `FrontendJSErrorSpike` (warning, 10m) | browser spans | JS error spans in the last 10m > 3x the rate of the 60m before, at least 10; fetch/XHR failures and string-only `console.error("text")` (no exception event) are not counted | same |
 | `frontend-lcp-poor` | `FrontendLCPPoor` (info, 10m) | browser spans | p75 of `webvitals` LCP over 30m > 4000 ms, at least 100 measurements | same |
-| `frontend-new-issue` | `FrontendNewIssue` (warning) | **platform** | the control plane saw a frontend issue born NEW reach 5 or more events or 3 or more sessions within 30m (the thresholds are the control plane's, not tunable params) | same |
-| `frontend-issue-regressed` | `FrontendIssueRegressed` (warning) | **platform** | a resolved frontend issue came back in a later release | same |
+| `new-issue` | `NewIssue` (warning) | **platform** | the control plane's issue registry opened an issue in the last hour (an error first seen within the last day, not ignored or resolved). It fires once per issue and resolves when the hour passes | same |
+| `issue-regressed` | `IssueRegressed` (warning) | **platform** | in the last hour, a resolved issue got an event from a release shipped after it was resolved | same |
+| `issue-spike` | `IssueSpike` (warning, every 5m) | **platform** | an open issue's events per hour over the last one to two hours are at least 5 times its hourly rate over the day before, and at least 20 events (the thresholds are the control plane's, not tunable params) | same |
 | `crash-loop` | `WorkloadCrashLooping` (critical) | customer metadata | a container's `k8s.container.restarts` grew by at least 3 in 10m, **or** a `CrashLoopBackOff` / "restarting failed container" `BackOff` event in 10m | same, or `signals.metadata = False` |
 | `oom-killed` | `WorkloadOOMKilled` (critical) | customer metadata | a container restarted in the last 10m and `k8s.container.last_terminated_reason` is `OOMKilled`, **or** an `OOMKilling` event | same |
 | `memory-near-limit` | `WorkloadMemoryNearLimit` (warning, 10m) | customer metadata | `k8s.container.memory_limit_utilization` averaged over 5m > 0.9, per container | same |

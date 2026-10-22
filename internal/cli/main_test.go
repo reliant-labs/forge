@@ -90,6 +90,9 @@ func TestMain(m *testing.M) {
 	composePublishersFn = func(context.Context, string, *deploytarget.ComposeSpec, string) ([]composePublisher, error) {
 		return nil, errors.New("Cannot connect to the Docker daemon (forge unit-test stand-in)")
 	}
+	composeLabelsFn = func(context.Context, string, string) ([]string, error) {
+		return nil, errors.New("Cannot connect to the Docker daemon (forge unit-test stand-in)")
+	}
 	// Nor does any test reach a deployed site: status probes a cloud env's
 	// shipped frontends at their real URLs.
 	probeDeployedURL = func(context.Context, string) bool { return false }

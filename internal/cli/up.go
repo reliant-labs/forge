@@ -2767,6 +2767,26 @@ func prewarmInfra(ctx context.Context, env string, entities *KCLEntities) error 
 	if err := prepareLocalCollector(projectDir, entities); err != nil {
 		return fmt.Errorf("prepare the local collector (.forge/logs mount, forwarder config): %w", err)
 	}
+	// The local Alertmanager's configuration is rendered before compose
+	// mounts it, from the env's alerts and its secret store's receiver keys.
+	if localAlertingOn(entities) {
+		prov, err := secretProviderFromEntities(entities, projectDir)
+		if err != nil {
+			return fmt.Errorf("prepare the local Alertmanager: secret provider: %w", err)
+		}
+		la, err := prepareLocalAlerting(projectDir, env, entities, prov.All())
+		if err != nil {
+			return fmt.Errorf("prepare the local Alertmanager: %w", err)
+		}
+		printLocalAlerting(os.Stdout, env, la)
+		defer func() {
+			// A container compose did not recreate keeps its old
+			// configuration until told to reload.
+			if err := reloadLocalAlertmanager(ctx, entities.Observability.AlertmanagerPort); err != nil {
+				fmt.Fprintf(os.Stderr, "  local alerting: %v\n", err)
+			}
+		}()
+	}
 	// APPLICATION providers are deliberately absent from this map —
 	// k8s-cluster, external, firebase and static-site are all things the
 	// dev loop deploys later (or not at all), not servers it must dial
@@ -2950,7 +2970,7 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 func hostRunnerSpec(w WorkloadEntity) hostlaunch.RunnerSpec {
 	spec := hostlaunch.RunnerSpec{
 		ProjectDir: projectDirForKCL(),
-		Command:    w.Spec.Command,
+		Command:    selfForgeCommand(w.Spec.Command),
 		Args:       w.Spec.Args,
 	}
 	if h := w.Runtime.Host; h != nil {
@@ -2960,6 +2980,23 @@ func hostRunnerSpec(w WorkloadEntity) hostlaunch.RunnerSpec {
 		spec.GoPkg, spec.OutputName = g.Cmd, g.OutputName
 	}
 	return spec
+}
+
+// selfForgeCommand resolves a host command that starts with `forge` to the
+// forge binary running this env, however it was invoked (a standalone forge,
+// or `reliant forge`). A forge-provided host process (the local alert
+// evaluator) must be the same build as the forge that rendered what it reads:
+// whichever `forge` is first on PATH may be another version, or absent.
+// Every other command is returned as declared.
+func selfForgeCommand(command []string) []string {
+	if len(command) == 0 || command[0] != "forge" {
+		return command
+	}
+	self, err := forgeExecCommand()
+	if err != nil {
+		return command
+	}
+	return append(self, command[1:]...)
 }
 
 // forceHostBindPorts makes the port the process BINDS the same port forge

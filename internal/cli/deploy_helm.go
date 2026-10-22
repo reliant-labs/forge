@@ -25,6 +25,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/reliant-labs/forge/internal/cluster"
+	"github.com/reliant-labs/forge/pkg/deploy/eso"
 )
 
 // marshalManifestDicts serialises a list of raw manifest dicts (the KCL
@@ -103,7 +104,7 @@ func helmChartSpecsFromEntities(ctx context.Context, charts []HelmChartEntity, d
 		if err := validateChartCluster(c, declaredClusters); err != nil {
 			return nil, err
 		}
-		crds, err := fetchHelmChartCRDs(ctx, c)
+		crds, err := fetchHelmChartCRDs(ctx, c, owner)
 		if err != nil {
 			return nil, fmt.Errorf("platform dependency %q: %w", c.Name, err)
 		}
@@ -158,7 +159,7 @@ func helmChartSpecsFromEntities(ctx context.Context, charts []HelmChartEntity, d
 // `k3d-cp-daemon`, reintroducing exactly the drift the reference-typed schema
 // field exists to prevent.
 func validateChartCluster(c HelmChartEntity, declaredClusters []ClusterEntity) error {
-	if c.Cluster == "" {
+	if c.Cluster == "" || c.ClusterTarget {
 		return nil
 	}
 	var known []string
@@ -182,7 +183,7 @@ func validateChartCluster(c HelmChartEntity, declaredClusters []ClusterEntity) e
 // fetchHelmChartCRDs returns the forge-supplied CRD manifest YAML for a
 // chart, per its declared CRD bundle. Empty string when the chart needs no
 // forge CRDs.
-func fetchHelmChartCRDs(ctx context.Context, c HelmChartEntity) (string, error) {
+func fetchHelmChartCRDs(ctx context.Context, c HelmChartEntity, owner string) (string, error) {
 	switch c.CRDs {
 	case "":
 		return "", nil
@@ -206,8 +207,13 @@ func fetchHelmChartCRDs(ctx context.Context, c HelmChartEntity) (string, error) 
 			return "", err
 		}
 		return readFileString(path)
+	case "external-secrets":
+		// forge's own bundle, embedded and pinned to the chart version: the
+		// three CRDs the hardened install uses, stamped with the component
+		// owner so a second env's install is found by label.
+		return eso.CRDs(c.Version, owner)
 	default:
-		return "", fmt.Errorf("unknown crds bundle %q (want '', 'gateway-api', or 'cert-manager')", c.CRDs)
+		return "", fmt.Errorf("unknown crds bundle %q (want '', 'gateway-api', 'cert-manager' or 'external-secrets')", c.CRDs)
 	}
 }
 

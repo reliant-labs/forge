@@ -1,7 +1,7 @@
 """
 Positive test — the render records what `forge lint --secrets` judges: each
 required_secrets entry carries its StoreSource (store kind, data, templates,
-generate, pin, immutable, refresh, creation policy) or its out_of_band_reason,
+generate, pin, immutable, creation policy) or its out_of_band_reason,
 and the output carries bootstrap_source. Declarations only; no value.
 """
 
@@ -47,6 +47,6 @@ assert_bootstrap_source = _out.bootstrap_source.type == "gcpsm" and _out.bootstr
 assert_store = _src.store.type == "gcpsm" and _src.store.project == "acme-prod"
 assert_data_and_templates = _src.data.key == "vault-key" and "urlquery" in _src.templates.dsn
 assert_pin_and_immutable = _src.pin["vault-key"] == 1 and _src.immutable == ["vault-key"]
-assert_policy = _src.creation_policy == "Merge" and _src.refresh == "15m"
-assert_unsourced_carries_its_reason = _by["cloudflare-api-token"].source == None and _by["cloudflare-api-token"].out_of_band_reason == "cert-manager DNS-01 reads it before the store is up"
-assert_sourced_has_no_reason = _by["vault"].out_of_band_reason == None
+assert_policy = _src.creation_policy == "Merge"
+assert_unsourced_carries_its_reason = "source" not in _by["cloudflare-api-token"] and _by["cloudflare-api-token"].out_of_band_reason == "cert-manager DNS-01 reads it before the store is up"
+assert_sourced_has_no_reason = "out_of_band_reason" not in _by["vault"]

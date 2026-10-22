@@ -16,8 +16,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 func init() { factory.Register(newCmd) }

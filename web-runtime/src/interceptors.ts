@@ -202,6 +202,7 @@ export function buildRuntimeInterceptors(
 // never have to fall back to the React-typed barrel to complete the job.
 
 export {
+  codeName,
   ConnectClientError,
   FORGE_ERROR_REASON_HEADER,
   isRetryableCode,

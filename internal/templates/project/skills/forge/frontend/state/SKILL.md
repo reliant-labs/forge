@@ -61,7 +61,7 @@ return <DataList items={query.data} />;
 `SkeletonLoader` and `Status` pulses stop under `prefers-reduced-motion`; loading spinners slow instead of freezing. Add `motion-reduce:` to any `animate-*` you write.
 
 A generated hook's `error` is a `ConnectClientError`, so `userMessage(err)`
-renders it without the backend framing, and `err.reason` / `err.code` are
+renders it without the backend framing, and `err.reason` / `err.codeName` are
 there when a failure needs its own branch. Never render `err.message` and
 never `switch` on its text — see the `frontend-runtime` skill.
 

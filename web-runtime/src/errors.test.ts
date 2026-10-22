@@ -14,15 +14,18 @@
 // backend appended to every message, which is a defect that was fixed on the
 // backend instead (forge/pkg/svcerr).
 import { Code, ConnectError } from "@connectrpc/connect";
-import { describe, expect, it } from "vitest";
+import { codeToString } from "@connectrpc/connect/protocol-connect";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  codeName,
   ConnectClientError,
   FORGE_ERROR_REASON_HEADER,
   normalizeError,
   stripServerFraming,
   userMessage,
 } from "./errors.js";
+import { buildRuntimeInterceptors } from "./interceptors.js";
 
 /**
  * A ConnectClientError from a SECOND COPY of this package: same shape, same
@@ -30,30 +33,37 @@ import {
  * dependencies want different versions of @reliantlabs/forge-web-runtime (it
  * nests the loser), and a bundler produces it whenever one package is pulled
  * in as both ESM and CJS. Declared here rather than imported so the class
- * identity is genuinely different, which is the whole point.
+ * identity is genuinely different, which is the whole point. Its shape is a
+ * ConnectError's (it is one) plus the normalized fields.
  */
 class ForeignConnectClientError extends Error {
-  readonly code: string;
-  readonly connectCode?: number;
+  readonly code: number;
+  readonly codeName: string;
+  readonly metadata: Headers = new Headers();
+  readonly rawMessage: string;
+  details: unknown[] = [];
   readonly status: number;
   readonly retryable: boolean;
   readonly reason: string | null;
+  readonly traceId: string | null = null;
 
   constructor(args: {
     message: string;
-    code: string;
-    connectCode?: number;
+    code: number;
+    codeName: string;
     status: number;
     retryable: boolean;
     reason?: string | null;
   }) {
     super(args.message);
-    this.name = "ConnectClientError";
+    this.name = "ConnectError";
+    this.rawMessage = args.message;
     this.code = args.code;
-    this.connectCode = args.connectCode;
+    this.codeName = args.codeName;
     this.status = args.status;
     this.retryable = args.retryable;
     this.reason = args.reason ?? null;
+    this.cause = undefined;
   }
 }
 
@@ -136,15 +146,16 @@ describe("normalizeError across a package boundary", () => {
   // ConnectClientError`, which compares CLASS IDENTITY, and class identity is
   // per module instance rather than per package. With two copies of this
   // package in one bundle the guard is false for a genuinely-normalized
-  // error, and — because a normalized error's `name` is "ConnectClientError",
-  // not "ConnectError" — it misses the ConnectError branch too and lands in
-  // the generic Error branch, which has no code, no connectCode and no reason
-  // to give. Silent, total, and on every error.
+  // error, and — because a normalized error was not then a ConnectError — it
+  // missed the ConnectError branch too and landed in the generic Error
+  // branch, which has no code and no reason to give. Silent, total, and on
+  // every error. (Today the ConnectError branch would catch it, but would
+  // re-wrap it rather than pass it through.)
   it("passes through an already-normalized error from a second copy of this package", () => {
     const foreign = new ForeignConnectClientError({
       message: "no such patient",
-      code: "not_found",
-      connectCode: Code.NotFound,
+      code: Code.NotFound,
+      codeName: "not_found",
       status: 404,
       retryable: false,
       reason: "patient_not_found",
@@ -152,8 +163,8 @@ describe("normalizeError across a package boundary", () => {
 
     const out = normalizeError(foreign);
 
-    expect(out.code).toBe("not_found");
-    expect(out.connectCode).toBe(Code.NotFound);
+    expect(out.codeName).toBe("not_found");
+    expect(out.code).toBe(Code.NotFound);
     expect(out.status).toBe(404);
     expect(out.reason).toBe("patient_not_found");
     expect(out.retryable).toBe(false);
@@ -164,11 +175,14 @@ describe("normalizeError across a package boundary", () => {
   it("recognises a second copy's ConnectClientError via instanceof", () => {
     const foreign = new ForeignConnectClientError({
       message: "boom",
-      code: "internal",
+      code: Code.Internal,
+      codeName: "internal",
       status: 500,
       retryable: false,
     });
     expect(foreign instanceof ConnectClientError).toBe(true);
+    // ...and connect-es's own shape check accepts it as a ConnectError.
+    expect(foreign instanceof ConnectError).toBe(true);
   });
 
   it("does not mistake an unrelated Error for a normalized one", () => {
@@ -202,10 +216,121 @@ describe("normalizeError across a package boundary", () => {
 
     // Field-for-field identical to the same error from our own copy — the
     // property under test, without blessing a particular `code` spelling.
-    expect(foreign.code).toBe(native.code);
-    expect(foreign.connectCode).toBe(Code.NotFound);
+    expect(foreign.codeName).toBe(native.codeName);
+    expect(foreign.code).toBe(Code.NotFound);
     expect(foreign.status).toBe(404);
     expect(foreign.reason).toBe("patient_not_found");
     expect(foreign.message).toBe("no such patient");
+  });
+});
+
+// ConnectClientError extends ConnectError. An app written against connect-es
+// — `err instanceof ConnectError`, `err.code === Code.X`, `ConnectError.from`,
+// `findDetails`, `metadata.get` — must read a normalized error exactly as it
+// read the raw one, or putting the runtime chain in front of it silently turns
+// every error into Code.Unknown. Both instanceof paths are pinned here.
+describe("ConnectClientError is a ConnectError", () => {
+  const raw = () =>
+    new ConnectError("no such patient", Code.NotFound, {
+      [FORGE_ERROR_REASON_HEADER]: "patient_not_found",
+      "x-other": "kept",
+    });
+
+  it("satisfies instanceof ConnectError AND instanceof ConnectClientError", () => {
+    const out = normalizeError(raw());
+    expect(out instanceof ConnectError).toBe(true);
+    expect(out instanceof ConnectClientError).toBe(true);
+    expect(out).toBeInstanceOf(Error);
+  });
+
+  it("keeps the numeric code, metadata and rawMessage of the error it wraps", () => {
+    const out = normalizeError(raw());
+    expect(out.code).toBe(Code.NotFound);
+    expect(out.codeName).toBe("not_found");
+    expect(out.rawMessage).toBe("no such patient");
+    expect(out.message).toBe("no such patient");
+    expect(out.metadata.get("x-other")).toBe("kept");
+    expect(out.reason).toBe("patient_not_found");
+    expect(out.status).toBe(404);
+    expect(out.retryable).toBe(false);
+  });
+
+  it("keeps the incoming details, so findDetails answers as it did", () => {
+    const err = raw();
+    const detail = {
+      type: "google.rpc.ErrorInfo",
+      value: new Uint8Array([1, 2]),
+    };
+    err.details.push(detail);
+    const out = normalizeError(err);
+    expect(out.details).toEqual([detail]);
+  });
+
+  it("is returned as-is by ConnectError.from (no re-wrap to Unknown)", () => {
+    const out = normalizeError(raw());
+    expect(ConnectError.from(out)).toBe(out);
+    expect(ConnectError.from(out).code).toBe(Code.NotFound);
+  });
+
+  it("is still a ConnectError for failures that never reached a server", () => {
+    const network = normalizeError(new TypeError("Failed to fetch"));
+    expect(network instanceof ConnectError).toBe(true);
+    expect(network.code).toBe(Code.Unavailable);
+    expect(network.retryable).toBe(true);
+
+    const generic = normalizeError(new Error("boom"));
+    expect(generic instanceof ConnectError).toBe(true);
+    expect(generic.code).toBe(Code.Unknown);
+    expect(generic.retryable).toBe(false);
+
+    const aborted = new Error("The user aborted a request.");
+    aborted.name = "AbortError";
+    expect(normalizeError(aborted).code).toBe(Code.Canceled);
+
+    const thrownString = normalizeError("[internal] bare");
+    expect(thrownString instanceof ConnectError).toBe(true);
+    expect(thrownString.message).toBe("bare");
+  });
+
+  it("does not make a plain ConnectError a ConnectClientError", () => {
+    expect(raw() instanceof ConnectClientError).toBe(false);
+  });
+
+  // The adoption path end to end: a consumer that catches what the runtime
+  // chain throws and branches the connect-es way.
+  it("is what the runtime interceptor chain throws, with .code intact", async () => {
+    const onError = vi.fn();
+    const [errorNormalize] = buildRuntimeInterceptors({ onError });
+    if (!errorNormalize) throw new Error("interceptor chain changed shape");
+    const call = errorNormalize(async () => {
+      throw raw();
+    });
+    const caught = await call({
+      header: new Headers(),
+      stream: false,
+    } as never).catch((e: unknown) => e);
+
+    expect(caught instanceof ConnectError).toBe(true);
+    expect(caught instanceof ConnectClientError).toBe(true);
+    expect((caught as ConnectError).code).toBe(Code.NotFound);
+    expect(ConnectError.from(caught).code).toBe(Code.NotFound);
+    expect((caught as ConnectClientError).reason).toBe("patient_not_found");
+    expect(onError).toHaveBeenCalledWith(caught);
+  });
+
+  it("passes a normalized error through unchanged", () => {
+    const once = normalizeError(raw());
+    expect(normalizeError(once)).toBe(once);
+  });
+});
+
+describe("codeName", () => {
+  it("spells every Code the way the Connect protocol does", () => {
+    for (const value of Object.values(Code)) {
+      if (typeof value !== "number") continue;
+      expect(codeName(value)).toBe(codeToString(value));
+    }
+    expect(codeName(Code.NotFound)).toBe("not_found");
+    expect(codeName(Code.DeadlineExceeded)).toBe("deadline_exceeded");
   });
 });

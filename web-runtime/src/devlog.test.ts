@@ -183,7 +183,7 @@ describe("dev log forwarding", () => {
 
     const traceId = "0af7651916cd43dd8448eb211c80319c";
     const err = Object.assign(new Error("not yet"), {
-      name: "ConnectClientError",
+      name: "ConnectError", // a ConnectClientError's name (it is a ConnectError)
       traceId,
     });
     console.warn("save failed:", err);
@@ -193,7 +193,7 @@ describe("dev log forwarding", () => {
     const [failed, plain] = f.all();
     if (!failed || !plain)
       throw new Error(`want two lines, got ${f.all().length}`);
-    expect(failed.msg).toMatch(/^save failed: ConnectClientError: not yet/);
+    expect(failed.msg).toMatch(/^save failed: ConnectError: not yet/);
     expect(failed.msg.endsWith(` trace_id=${traceId}`)).toBe(true);
     expect(plain.msg).toBe("unrelated");
   });

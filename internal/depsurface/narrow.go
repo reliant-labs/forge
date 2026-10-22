@@ -41,7 +41,10 @@ type NarrowResult struct {
 // Narrowed is one field Narrow retyped.
 type Narrowed struct {
 	Field, From, To string
-	Methods         []string
+	// Methods are every method the new interface holds; Embeds are the
+	// interfaces it embeds for the ones the package passes the value on as.
+	Methods []string
+	Embeds  []string
 }
 
 // Skipped is one interface field Narrow left alone, and why.
@@ -50,15 +53,18 @@ type Skipped struct {
 }
 
 // Narrow rewrites every foreign interface field of dir's Deps that declares
-// methods the package never calls to an interface the package declares
-// itself, holding exactly the methods it calls (design §2, K1). The
-// composition still fills the field with the same value: Go satisfies the
-// narrower interface structurally, so compose.go needs no edit.
+// methods the package never needs to an interface the package declares
+// itself, holding exactly the methods it needs (design §2, K1): those it
+// calls, with each interface it passes the value on as (Field.Roles)
+// embedded. The composition still fills the field with the same value: Go
+// satisfies the narrower interface structurally, so compose.go needs no
+// edit, and every call that passes the value on still type-checks.
 //
-// A field whose value the package passes on (Escapes) is left alone — what it
-// needs is not all visible here — as is a field the package never calls
-// through at all (delete it instead), and an interface the package already
-// declares (edit it in place).
+// A field whose value also leaves through something that bounds nothing
+// (Escapes: `any`, a concrete type, a return value) is left alone — what it
+// needs is not all visible here — as is a field the package never uses at
+// all (delete it instead), and an interface the package already declares
+// (edit it in place).
 func Narrow(projectDir, dir string) (*NarrowResult, error) {
 	pkgs, err := Analyze(projectDir, []string{dir})
 	if err != nil {
@@ -96,10 +102,10 @@ func Narrow(projectDir, dir string) (*NarrowResult, error) {
 			res.Skipped = append(res.Skipped, Skipped{f.Name, f.Type, "the package type-asserts it to a concrete type (forgeconv-deps-no-downcast): declare what it needs from that type first"})
 			continue
 		case f.Escapes:
-			res.Skipped = append(res.Skipped, Skipped{f.Name, f.Type, "its value is passed on or stored, so the calls in this package are not everything it needs"})
+			res.Skipped = append(res.Skipped, Skipped{f.Name, f.Type, "its value is also passed on as `any` or a concrete type, or returned (" + f.EscapeAt + "), so what this package uses is not everything it needs"})
 			continue
 		case len(f.Used) == 0:
-			res.Skipped = append(res.Skipped, Skipped{f.Name, f.Type, "the package never calls it: delete the field"})
+			res.Skipped = append(res.Skipped, Skipped{f.Name, f.Type, "the package never calls it or passes it on: delete the field"})
 			continue
 		}
 		name, err := w.declare(f)
@@ -107,7 +113,12 @@ func Narrow(projectDir, dir string) (*NarrowResult, error) {
 			return nil, err
 		}
 		retype[f.Name] = name
-		res.Narrowed = append(res.Narrowed, Narrowed{Field: f.Name, From: f.Type, To: name, Methods: sortedUsed(f)})
+		n := Narrowed{Field: f.Name, From: f.Type, To: name, Methods: sortedUsed(f)}
+		embeds, _ := splitRoles(f)
+		for _, r := range embeds {
+			n.Embeds = append(n.Embeds, r.Type)
+		}
+		res.Narrowed = append(res.Narrowed, n)
 	}
 	if len(retype) == 0 {
 		return res, nil
@@ -188,7 +199,7 @@ func (w *ifaceWriter) qualifier(pkg *types.Package) string {
 
 // declare renders the narrowed interface for f and returns its name.
 func (w *ifaceWriter) declare(f Field) (string, error) {
-	named, ok := f.typ.(*types.Named)
+	named, ok := types.Unalias(f.typ).(*types.Named)
 	if !ok {
 		return "", fmt.Errorf("field Deps.%s: %s is not a named interface", f.Name, f.Type)
 	}
@@ -201,10 +212,17 @@ func (w *ifaceWriter) declare(f Field) (string, error) {
 		return "", fmt.Errorf("field Deps.%s: both %s and %s are taken in package %s — declare the interface by hand", f.Name, named.Obj().Name(), name, w.p.pkg.Name)
 	}
 	w.taken[name] = true
-	fmt.Fprintf(&w.decls, "\n// %s is the part of %s.%s that this package calls through Deps.%s:\n", name, named.Obj().Pkg().Name(), named.Obj().Name(), f.Name)
+	embeds, direct := splitRoles(f)
+	fmt.Fprintf(&w.decls, "\n// %s is the part of %s.%s that this package uses through Deps.%s:\n", name, named.Obj().Pkg().Name(), named.Obj().Name(), f.Name)
 	fmt.Fprintf(&w.decls, "// declared here, by its consumer, so the package knows only what it uses\n// (forge fix narrow-deps). Add a method when the package calls one.\n")
+	if len(embeds) > 0 {
+		fmt.Fprintf(&w.decls, "// The embedded interfaces are what the package passes the value on as.\n")
+	}
 	fmt.Fprintf(&w.decls, "type %s interface {\n", name)
-	for _, m := range sortedUsed(f) {
+	for _, r := range embeds {
+		fmt.Fprintf(&w.decls, "\t%s\n", types.TypeString(r.typ, w.qualifier))
+	}
+	for _, m := range direct {
 		obj, _, _ := types.LookupFieldOrMethod(iface, false, nil, m)
 		fn, ok := obj.(*types.Func)
 		if !ok {
@@ -216,6 +234,45 @@ func (w *ifaceWriter) declare(f Field) (string, error) {
 	}
 	w.decls.WriteString("}\n")
 	return name, nil
+}
+
+// splitRoles divides what f's narrowed interface holds: the Roles it embeds
+// (each nameable one that adds a method the larger ones before it do not
+// cover) and the used methods no embedded role covers, written out.
+func splitRoles(f Field) (embeds []Role, direct []string) {
+	roles := make([]Role, 0, len(f.Roles))
+	for _, r := range f.Roles {
+		if r.Embeddable {
+			roles = append(roles, r)
+		}
+	}
+	sort.SliceStable(roles, func(i, j int) bool {
+		if len(roles[i].Methods) != len(roles[j].Methods) {
+			return len(roles[i].Methods) > len(roles[j].Methods)
+		}
+		return roles[i].Type < roles[j].Type
+	})
+	covered := map[string]bool{}
+	for _, r := range roles {
+		adds := false
+		for _, m := range r.Methods {
+			adds = adds || !covered[m]
+		}
+		if !adds {
+			continue
+		}
+		embeds = append(embeds, r)
+		for _, m := range r.Methods {
+			covered[m] = true
+		}
+	}
+	sort.Slice(embeds, func(i, j int) bool { return embeds[i].Type < embeds[j].Type })
+	for _, m := range sortedUsed(f) {
+		if !covered[m] {
+			direct = append(direct, m)
+		}
+	}
+	return embeds, direct
 }
 
 // render returns target (or base, its pending content) with the

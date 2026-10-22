@@ -508,8 +508,7 @@ func runCmd(t *testing.T, dir string, name string, args ...string) {
 }
 
 // runCmdKeep is runCmd returning the combined output, for a test that must
-// show what a command that "succeeded" printed when a later assertion
-// fails — `forge project new` exits 0 when its bootstrap generate fails.
+// show what a command that succeeded printed when a later assertion fails.
 func runCmdKeep(t *testing.T, dir string, name string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(name, args...)
@@ -529,8 +528,9 @@ func runCmdKeep(t *testing.T, dir string, name string, args ...string) string {
 
 // requireComposedE2E fails, with the output of the commands that should
 // have composed it, when the project has no internal/app/compose.go. Those
-// commands exit 0 when their generate fails (it is non-fatal by design), so
-// without this the failure surfaces later as an unrelated missing file.
+// commands fail when their generate does, but a generate that succeeds
+// without composing would otherwise surface later as an unrelated missing
+// file.
 func requireComposedE2E(t *testing.T, projectDir string, outputs ...string) {
 	t.Helper()
 	if _, err := os.Stat(filepath.Join(projectDir, "internal", "app", "compose.go")); err != nil {

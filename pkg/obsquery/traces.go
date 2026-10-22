@@ -3,6 +3,7 @@ package obsquery
 import (
 	"encoding/base64"
 	"encoding/json"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -27,6 +28,23 @@ func NormalizeTraceID(id string) (string, error) {
 	return strings.ToLower(id), nil
 }
 
+// TraceOrder is the row order of a ListTraces page.
+type TraceOrder string
+
+const (
+	// OrderNewest is newest first, the default (the zero TraceOrder).
+	OrderNewest TraceOrder = ""
+	// OrderDurationDesc is slowest first: the traces to open when latency
+	// regressed. Duration is the trace's wall-clock span (dur_ms), not a
+	// weighted figure, so the sampling weight does not move a trace in the
+	// order; it still weights the RED summaries over the same filters.
+	OrderDurationDesc TraceOrder = "duration_desc"
+)
+
+// traceDurNanoExpr is a trace's duration as the exact integer dur_ms is derived
+// from, so a keyset cursor compares integers, never a rounded float.
+const traceDurNanoExpr = "(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) - min(toUnixTimestamp64Nano(Timestamp)))"
+
 // TraceQuery is a ListTraces request.
 type TraceQuery struct {
 	Scope         Scope
@@ -36,14 +54,20 @@ type TraceQuery struct {
 	// GroupBy are the allowlisted keys the RED summary is split by, valued at
 	// each trace's root span (CompileREDGroups).
 	GroupBy []string
-	Limit   int
-	Cursor  *TraceCursor
+	// Order is the page's row order; the zero value is newest first. It is
+	// part of the cursor's fingerprint: a token only continues the order that
+	// produced it.
+	Order  TraceOrder
+	Limit  int
+	Cursor *TraceCursor
 }
 
 // TraceCursor is the keyset position of the last trace of a page.
 type TraceCursor struct {
 	TsNano  int64  `json:"t"`
 	TraceID string `json:"i"`
+	// DurNano is the last trace's duration, set only for OrderDurationDesc.
+	DurNano int64  `json:"d,omitempty"`
 	Finger  string `json:"f"`
 }
 
@@ -51,13 +75,36 @@ type TraceCursor struct {
 func (q TraceQuery) Fingerprint() string {
 	parts := append(q.Scope.Fingerprint(), strconv.FormatBool(q.ErrorsOnly),
 		strconv.FormatFloat(q.MinDurationMs, 'g', -1, 64), q.RootSpanName)
+	if q.Order != OrderNewest {
+		// Appended only for a non-default order, so newest-first tokens are
+		// byte-identical to what they were before Order existed.
+		parts = append(parts, "order:"+string(q.Order))
+	}
 	return fingerprint(parts...)
 }
 
-// NextCursor builds the page token from the last returned trace.
+// NextCursor builds the page token from the last returned trace of a
+// newest-first page. A duration-ordered page uses NextDurationCursor.
 func (q TraceQuery) NextCursor(start time.Time, traceID string) string {
 	raw, _ := json.Marshal(TraceCursor{TsNano: start.UnixNano(), TraceID: traceID, Finger: q.Fingerprint()})
 	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+// NextDurationCursor builds the page token from the last returned trace of an
+// OrderDurationDesc page; durMs is that row's dur_ms column.
+func (q TraceQuery) NextDurationCursor(start time.Time, traceID string, durMs float64) string {
+	raw, _ := json.Marshal(TraceCursor{
+		TsNano: start.UnixNano(), TraceID: traceID, DurNano: int64(math.Round(durMs * 1e6)), Finger: q.Fingerprint(),
+	})
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+func (q TraceQuery) validateOrder() error {
+	switch q.Order {
+	case OrderNewest, OrderDurationDesc:
+		return nil
+	}
+	return invalid("unknown trace order %q", string(q.Order))
 }
 
 // DecodeTraceCursor parses a page token.
@@ -104,7 +151,12 @@ func (q TraceQuery) perTrace(b *builder, withCursor, withGroups bool) (string, e
 		if q.Cursor.Finger != q.Fingerprint() {
 			return "", invalid("page_token does not belong to this query")
 		}
-		having = append(having, "(start, trace_id) < (fromUnixTimestamp64Nano("+b.i64(q.Cursor.TsNano)+"), "+b.str(q.Cursor.TraceID)+")")
+		if q.Order == OrderDurationDesc {
+			having = append(having, "("+traceDurNanoExpr+", start, trace_id) < ("+b.i64(q.Cursor.DurNano)+
+				", fromUnixTimestamp64Nano("+b.i64(q.Cursor.TsNano)+"), "+b.str(q.Cursor.TraceID)+")")
+		} else {
+			having = append(having, "(start, trace_id) < (fromUnixTimestamp64Nano("+b.i64(q.Cursor.TsNano)+"), "+b.str(q.Cursor.TraceID)+")")
+		}
 	}
 	groupCols := ""
 	if withGroups {
@@ -135,9 +187,13 @@ func (q TraceQuery) perTrace(b *builder, withCursor, withGroups bool) (string, e
 	return sql, nil
 }
 
-// Compile builds the page statement: newest first, one row more than Limit.
+// Compile builds the page statement in q.Order (newest first by default), one
+// row more than Limit.
 func (q TraceQuery) Compile() (Stmt, error) {
 	if err := q.Scope.validate(MaxRangeTraces); err != nil {
+		return Stmt{}, err
+	}
+	if err := q.validateOrder(); err != nil {
 		return Stmt{}, err
 	}
 	if q.Limit <= 0 || q.Limit > MaxTraceLimit {
@@ -148,7 +204,11 @@ func (q TraceQuery) Compile() (Stmt, error) {
 	if err != nil {
 		return Stmt{}, err
 	}
-	return b.stmt(inner + "\nORDER BY start DESC, trace_id DESC\nLIMIT " + strconv.Itoa(q.Limit+1)), nil
+	order := "start DESC, trace_id DESC"
+	if q.Order == OrderDurationDesc {
+		order = traceDurNanoExpr + " DESC, start DESC, trace_id DESC"
+	}
+	return b.stmt(inner + "\nORDER BY " + order + "\nLIMIT " + strconv.Itoa(q.Limit+1)), nil
 }
 
 // CompileRED builds the RED summary over every trace the filters match.

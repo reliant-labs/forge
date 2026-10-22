@@ -293,6 +293,7 @@ func lintLaneFlags(f *lintFlags) []lintLaneFlag {
 		{name: "create-nullability", on: &f.createNullability},
 		{name: "computed-fields", on: &f.computedFields},
 		{name: "read-only-fields", on: &f.readOnlyFields},
+		{name: "secrets", on: &f.secrets},
 		{name: "guarded-fields", on: &f.guardedFields},
 		{name: "static-export", on: &f.staticExport},
 		{name: "tracing", on: &f.tracing},

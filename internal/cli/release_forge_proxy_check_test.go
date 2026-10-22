@@ -40,7 +40,10 @@ func runForgeScriptWithProxy(t *testing.T, repo, proxyBase string, args ...strin
 	script := releaseForgeScriptPath(t)
 	full := append([]string{script, "--repo", repo}, args...)
 	cmd := exec.CommandContext(context.Background(), "bash", full...)
-	cmd.Env = append(os.Environ(), "FORGE_RELEASE_PROXY_BASE="+proxyBase)
+	cmd.Env = append(os.Environ(), "FORGE_RELEASE_PROXY_BASE="+proxyBase,
+		// The fixture has no prettier pin and these tests are about the
+		// proxy gate; formatting the changelog is release_forge_changelog_test.go's.
+		"FORGE_RELEASE_PRETTIER=true")
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

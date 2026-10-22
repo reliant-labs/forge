@@ -161,6 +161,11 @@ func TestLintHelpSurface(t *testing.T) {
 		// lint ITS slice without another agent's half-written file
 		// failing the run.
 		"scope",
+		// Visible: the continuous rule about the user's own secrets
+		// declarations. A Secret a pod reads that nothing produces, a key
+		// ESO drops, and an ExternalSecret that deletes its Secret on a prune
+		// all surface only at deploy or later.
+		"secrets",
 		// Visible: the audit every suppression mechanism's docs promise
 		// (contracts/package-markers names it). Each suppression is
 		// visible at its own site and nowhere together, which is how a

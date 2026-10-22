@@ -2701,6 +2701,10 @@ _render_external_secret = lambda s: ExternalSecret -> any {
         "keys": s.keys
         "reason": s.reason if s.reason else None
         "value_group": s.value_group if s.value_group else None
+        # Why a Secret is still provisioned out of band in an env that has
+        # store-backed ones: `forge lint --secrets` holds it to a standard.
+        if s.out_of_band_reason:
+            "out_of_band_reason": s.out_of_band_reason
         # The store a Secret reads from, for the release shape (store_secrets,
         # generated_secrets, pins). Names and kinds only; a value never appears.
         if s.source:
@@ -2708,7 +2712,7 @@ _render_external_secret = lambda s: ExternalSecret -> any {
     }
 }
 
-_render_store_source = lambda src: StoreSource -> any {
+_render_store_source = lambda src: any -> any {
     {
         "store": {"type": src.store.type, if src.store.type == "gcpsm": "project": src.store.project}
         "data": src.data
@@ -2770,6 +2774,12 @@ _render_control_plane_secret = lambda s: ControlPlaneSecret, bundle: Bundle -> a
         "keys": s.keys if s.keys else CONTROL_PLANE_SECRET_KINDS[s.kind]
         "required": s.required if s.required else None
         "reason": s.reason if s.reason else None
+        # A store-delivered Secret says so and carries the source ESO reads, so
+        # the shape can derive the namespace's read policy. Absent for a push
+        # Secret, which keeps every existing record as it was.
+        if s.delivery == "store":
+            "delivery": "store"
+            "source": _render_store_source(es_lib.cps_source(s))
     }
 }
 

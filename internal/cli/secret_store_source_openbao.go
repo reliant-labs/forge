@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/reliant-labs/forge/pkg/release"
 	"github.com/reliant-labs/forge/pkg/secretaccess"
 )
 
@@ -91,8 +92,33 @@ type OpenBaoEntity struct {
 	Org            string `json:"org,omitempty"`
 	EnvDir         string `json:"env,omitempty"`
 	// BootstrapNames are the BootstrapSecret names the component declares that
-	// a person may import (the seal key and the Postgres password).
+	// a person may import (the seal key, the Postgres password and the recovery
+	// escrow).
 	BootstrapNames []string `json:"bootstrap_names,omitempty"`
+	// BootstrapGenerate are the BootstrapSecrets (by secret id) the deploy
+	// mints when the bootstrap source has none: only under a
+	// GCPSecretManager source, and only the seal key and the Postgres
+	// password.
+	BootstrapGenerate map[string]release.RenderedGeneratedSecret `json:"bootstrap_generate,omitempty"`
+	// Bootstrap is the delivery the component renders under a
+	// GCPSecretManager source: nil under any other.
+	Bootstrap *OpenBaoBootstrapEntity `json:"bootstrap,omitempty"`
+}
+
+// OpenBaoBootstrapEntity is the resolved Secret Manager delivery: the Google
+// identities it runs as, and which secrets it moves. Declarations only.
+type OpenBaoBootstrapEntity struct {
+	Project string `json:"project"`
+	// Namespace is the store's, where both service accounts live.
+	Namespace            string `json:"namespace"`
+	ReaderServiceAccount string `json:"reader_service_account"`
+	ReaderGSA            string `json:"reader_gsa"`
+	EscrowServiceAccount string `json:"escrow_service_account"`
+	EscrowGSA            string `json:"escrow_gsa"`
+	ESONamespace         string `json:"eso_namespace"`
+	SealSecret           string `json:"seal_secret"`
+	PasswordSecret       string `json:"password_secret,omitempty"`
+	EscrowSecret         string `json:"escrow_secret"`
 }
 
 // BootstrapSourceEntity is the rendered Bundle.bootstrap_source.

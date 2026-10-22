@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -319,5 +320,58 @@ func TestPreflight_UndeclaredSecretMountSatisfiedBySupply(t *testing.T) {
 	}
 	if !res.OK() {
 		t.Fatalf("expected OK result, got %+v", res)
+	}
+}
+
+// An external-secrets.io ExternalSecret in the stream supplies the Secret it
+// writes, the way a cert-manager Certificate does: the operator creates it after
+// the apply, so the pods that mount it are not "undeclared".
+func TestCheckSecretSupply_ExternalSecretInTheStreamSuppliesItsTarget(t *testing.T) {
+	const pod = `apiVersion: v1
+kind: Pod
+metadata: {name: p, namespace: ns}
+spec:
+  containers:
+  - name: c
+    image: x
+    env:
+    - {name: A, valueFrom: {secretKeyRef: {name: delivered, key: k}}}
+    - {name: B, valueFrom: {secretKeyRef: {name: by-own-name, key: k}}}
+    - {name: C, valueFrom: {secretKeyRef: {name: nobody, key: k}}}
+`
+	es := func(apiVersion, name, target string) string {
+		spec := "spec: {refreshInterval: 1h, data: []}"
+		if target != "" {
+			spec = "spec: {target: {name: " + target + "}}"
+		}
+		return "apiVersion: " + apiVersion + "\nkind: ExternalSecret\nmetadata: {name: " + name + ", namespace: ns}\n" + spec + "\n"
+	}
+
+	stream := pod + "---\n" + es("external-secrets.io/v1", "es-one", "delivered") + "---\n" + es("external-secrets.io/v1beta1", "by-own-name", "")
+	var got []string
+	for _, m := range CheckSecretSupply(stream, nil) {
+		got = append(got, m.Secret)
+	}
+	if len(got) != 1 || got[0] != "nobody" {
+		t.Errorf("only the Secret no ExternalSecret writes should be undeclared, got %v", got)
+	}
+
+	// The name of the ExternalSecret is not the Secret when target.name differs:
+	// it writes "other", so the pod's "delivered" is still undeclared.
+	var retargeted []string
+	for _, m := range CheckSecretSupply(pod+"---\n"+es("external-secrets.io/v1", "delivered", "other"), nil) {
+		retargeted = append(retargeted, m.Secret)
+	}
+	if !slices.Contains(retargeted, "delivered") {
+		t.Errorf("an ExternalSecret named like a Secret supplied it although its target is another name: undeclared = %v", retargeted)
+	}
+
+	// Another API group's ExternalSecret is not ESO's.
+	var foreign []string
+	for _, m := range CheckSecretSupply(pod+"---\n"+es("example.com/v1", "delivered", "delivered"), nil) {
+		foreign = append(foreign, m.Secret)
+	}
+	if !slices.Contains(foreign, "delivered") {
+		t.Errorf("an ExternalSecret from another API group supplied a Secret: undeclared = %v", foreign)
 	}
 }

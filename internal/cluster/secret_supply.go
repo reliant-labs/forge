@@ -34,6 +34,8 @@ import (
 //   - a Secret rendered into the manifest stream (kind: Secret),
 //   - a cert-manager Certificate in the stream (materialises the Secret named
 //     by its spec.secretName when cert-manager reconciles it),
+//   - an external-secrets.io ExternalSecret in the stream (materialises the
+//     Secret named by its spec.target.name when the operator reconciles it),
 //   - a forge.KubeconfigSecret (mints its named Secret),
 //   - a forge.ExternalSecret (the author's explicit out-of-band promise that
 //     the Secret exists — counts as SATISFIED; the LIVE preflight separately
@@ -172,6 +174,56 @@ func CollectCertManagerSecretNames(manifests string) map[string]struct{} {
 	return names
 }
 
+// CollectExternalSecretsNames returns the set of Secret NAMES that
+// external-secrets.io ExternalSecrets in the stream will materialise: each one's
+// `spec.target.name`, else its own name (ESO writes the Secret named like the
+// ExternalSecret when no target name is given).
+//
+// An ExternalSecret is a PROVIDER of its Secret exactly as a cert-manager
+// Certificate is: the operator writes the Secret when it reconciles the object,
+// in the same apply pass that creates the pods mounting it, so demanding the
+// Secret exist beforehand makes a first deploy unsatisfiable. This is what a
+// bootstrap source needs: the OpenBao component renders the ExternalSecrets that
+// deliver its own seal key and database DSN, and a store that mounts them would
+// otherwise be refused by its own render.
+//
+// Matched on the external-secrets.io API GROUP (any version).
+func CollectExternalSecretsNames(manifests string) map[string]struct{} {
+	names := map[string]struct{}{}
+	for _, doc := range splitDocs(manifests) {
+		var head struct {
+			APIVersion string `yaml:"apiVersion"`
+			Kind       string `yaml:"kind"`
+			Metadata   struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
+			Spec struct {
+				Target struct {
+					Name string `yaml:"name"`
+				} `yaml:"target"`
+			} `yaml:"spec"`
+		}
+		if err := yaml.Unmarshal([]byte(doc), &head); err != nil {
+			continue
+		}
+		if strings.TrimSpace(head.Kind) != "ExternalSecret" {
+			continue
+		}
+		group, _, _ := strings.Cut(strings.TrimSpace(head.APIVersion), "/")
+		if !strings.EqualFold(group, "external-secrets.io") {
+			continue
+		}
+		name := strings.TrimSpace(head.Spec.Target.Name)
+		if name == "" {
+			name = strings.TrimSpace(head.Metadata.Name)
+		}
+		if name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	return names
+}
+
 // UndeclaredSecretMount is one demanded Secret that NO supply in the bundle
 // provides — a back-propagated render-time failure. Workloads carries the
 // names of the workload manifests that mount/reference it (so the error points
@@ -210,6 +262,9 @@ func CheckSecretSupply(manifests string, supplied []SecretSupply) []UndeclaredSe
 	// caller-supplied sources.
 	supply := CollectRenderedSecretNames(manifests)
 	for name := range CollectCertManagerSecretNames(manifests) {
+		supply[name] = struct{}{}
+	}
+	for name := range CollectExternalSecretsNames(manifests) {
 		supply[name] = struct{}{}
 	}
 	for _, s := range supplied {

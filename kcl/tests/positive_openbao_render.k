@@ -82,5 +82,5 @@ assert_names_grouped = _ob[0].spec.access.bindings == [{"cluster": "hub", "names
 assert_ingress = _ob[0].spec.ingressNamespaces == ["external-secrets", "payments"] and _ob[0].spec.caNamespaces == ["payments"]
 assert_block = output.openbao.server_url == "https://openbao.openbao.svc:8200" and output.openbao.auth_mount == "jwt-hub" and output.openbao.self_cluster == "hub"
 assert_audience = output.openbao.audience == "https://openbao.openbao.svc:8200/c/hub"
-assert_warnings = len(output.openbao.warnings) == 2 and "PLAINTEXT" in output.openbao.warnings[0] and "until per-env grants land" in output.openbao.warnings[1]
+assert_warnings = len(output.openbao.warnings) == 3 and "PLAINTEXT" in output.openbao.warnings[0] and "until per-env grants land" in output.openbao.warnings[1] and "inside the cluster they protect" in output.openbao.warnings[2]
 assert_prereqs_for_oob = sorted([s.name for s in output.required_secrets if s.namespace == "openbao"]) == ["openbao-storage", "openbao-unseal"]

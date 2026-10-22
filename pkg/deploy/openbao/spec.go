@@ -115,6 +115,11 @@ type Spec struct {
 	// is applied. Empty = none. The names should be content-addressed so a
 	// changed hook changes the Job.
 	Hooks Hooks `json:"hooks,omitempty"`
+	// Bootstrap delivers the values the store needs before it can serve a read
+	// (the seal key, the Postgres password) from Google Secret Manager through
+	// ESO, and escrows the `operator init` output back to it. Nil = the Secrets
+	// are provided by something else (a prerequisite, or the env's file store).
+	Bootstrap *Bootstrap `json:"bootstrap,omitempty"`
 	// IngressNamespaces are namespaces whose pods may reach the API port:
 	// ESO's, and every namespace that holds a SecretStore for this store.
 	IngressNamespaces []string `json:"ingressNamespaces,omitempty"`
@@ -128,6 +133,38 @@ type Spec struct {
 	ExtraDNSNames []string `json:"extraDNSNames,omitempty"`
 	// Public publishes the store on a Gateway (public.go). Nil = not published.
 	Public *Public `json:"public,omitempty"`
+}
+
+// Bootstrap is the bootstrap source when it is Google Secret Manager. See
+// bootstrap.go for what it renders.
+type Bootstrap struct {
+	// Project is the Google project holding the secrets.
+	Project string `json:"project"`
+	// ReaderServiceAccount is the Kubernetes service account, in the store's
+	// namespace, that the ESO `gcpsm` SecretStore logs in as; ReaderGSA is the
+	// Google service account it is federated to (secretAccessor on the seal
+	// key and the Postgres password only).
+	ReaderServiceAccount string `json:"readerServiceAccount"`
+	ReaderGSA            string `json:"readerGSA"`
+	// EscrowGSA is the Google service account the converge Job's service
+	// account is federated to: versions.add on the recovery escrow only.
+	EscrowGSA string `json:"escrowGSA"`
+	// ClusterProject, ClusterLocation and ClusterName say which GKE cluster the
+	// store runs on, for Workload Identity. All empty = ESO asks the GKE
+	// metadata server, which a NetworkPolicy may block; the project can differ
+	// from Project, where the secrets are.
+	ClusterProject  string `json:"clusterProject,omitempty"`
+	ClusterLocation string `json:"clusterLocation,omitempty"`
+	ClusterName     string `json:"clusterName,omitempty"`
+	// ESONamespace is where the External Secrets Operator runs; it is granted
+	// a token for ReaderServiceAccount and nothing else.
+	ESONamespace string `json:"esoNamespace"`
+	// SealSecretID, PasswordSecretID and EscrowSecretID are the secret ids of
+	// the seal key, the Postgres password (Postgres storage only) and the
+	// recovery escrow.
+	SealSecretID     string `json:"sealSecretID"`
+	PasswordSecretID string `json:"passwordSecretID,omitempty"`
+	EscrowSecretID   string `json:"escrowSecretID"`
 }
 
 // Hooks names the ConfigMaps holding the converge Job's optional hooks.
@@ -377,6 +414,7 @@ func (s Spec) Validate() error {
 	}
 
 	errs = append(errs, s.validatePublic()...)
+	errs = append(errs, s.validateBootstrap()...)
 
 	names := map[string]bool{}
 	for _, c := range s.Consumers {

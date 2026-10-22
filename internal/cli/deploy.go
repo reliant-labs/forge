@@ -1522,6 +1522,16 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 			}
 		}
 
+		// The bootstrap values the secret store needs before it can serve a
+		// read (its seal key, its database password) are minted into the
+		// bootstrap source once, before ESO is asked to deliver them.
+		// Create-if-absent; never an overwrite. See bootstrap_secret.go.
+		if !opts.skipClusterApply {
+			if err := ensureBootstrapSecrets(ctx, fullEntities, dryRun, os.Stdout); err != nil {
+				return err
+			}
+		}
+
 		// Minted kubeconfig Secrets, BEFORE the workloads that mount them
 		// roll out. `env up` mints at the cluster→deploy boundary, which
 		// covers dev and e2e; a cloud env is deployed with `env deploy`

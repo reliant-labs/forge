@@ -125,12 +125,14 @@ func secretDemands(rawDoc string, doc secrets.Doc, place cluster.RefPlacement) [
 	}
 	meta, _ := doc["metadata"].(map[string]any)
 	who := fmt.Sprintf("%v/%v", doc["kind"], meta["name"])
+	labels, _ := meta["labels"].(map[string]any)
+	_, owned := labels["forge.dev/component-owner"]
 	var out []secrets.Demand
 	for ref, keys := range refs.Secrets {
 		if _, pull := refs.ImagePullSecrets[ref]; pull || ref.Name == "" {
 			continue
 		}
-		d := secrets.Demand{Workload: who, Namespace: ref.Namespace, Secret: ref.Name}
+		d := secrets.Demand{Workload: who, Namespace: ref.Namespace, Secret: ref.Name, Component: owned}
 		for k := range keys {
 			if k == "" {
 				d.Whole = true

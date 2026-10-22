@@ -247,3 +247,61 @@ func TestSecretsLaneIsRegisteredAsAGate(t *testing.T) {
 		t.Errorf("--secrets selects %v", got)
 	}
 }
+
+// A real forge.OpenBao render: its own pods read Secrets the component's
+// prerequisites supply (no false coverage finding), and the access document it
+// renders is judged for a glob read whose stated reason states nothing.
+func TestSecretsLaneJudgesARealOpenBaoRender(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL; runs in task test")
+	}
+	t.Cleanup(kclvendor.SetCacheDirForTest(t.TempDir()))
+	const main = `import forge
+
+_hub = forge.ClusterTarget {cluster = "gke_acme_prod", namespace = "acme-prod", platform = "amd64", connected_cluster = "hub"}
+
+output = forge.render(forge.Bundle {
+    project = "acme"
+    env = "prod"
+    cluster_target = _hub
+    bootstrap_source = forge.GCPSecretManager {project = "acme-prod"}
+    openbao = forge.OpenBao {
+        consumers = [
+            forge.OpenBaoConsumer {
+                name = "deployer"
+                workload = "deployer"
+                grants = [forge.OpenBaoGrant {path = "secret/data/tenants/*", capabilities = ["read"], wildcard_read_reason = "todo"}]
+            }
+        ]
+    }
+})
+`
+	root := writeSecretsProject(t, main)
+	res, err := secretsFindings(root, &config.ProjectConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := ruleSet(res.findings)
+	w := got[secrets.RuleWildcardRead]
+	if len(w) != 1 || !strings.Contains(w[0].Message, "secret/data/tenants/*") || w[0].Severity != finding.SeverityError {
+		t.Fatalf("wildcard read: %+v", res.findings)
+	}
+	if len(got[secrets.RuleKeyCoverage]) != 0 {
+		t.Errorf("OpenBao's own pods flagged as reading Secrets nothing supplies: %+v", got[secrets.RuleKeyCoverage])
+	}
+	if len(got[secrets.RuleEscrow]) != 0 {
+		t.Errorf("escrow warned though bootstrap_source is GSM: %+v", got[secrets.RuleEscrow])
+	}
+
+	// With a real reason, nothing is left to say.
+	fixed := strings.Replace(main, `"todo"`, `"the deployer reads every hosted env until per-env grants land (SC1)"`, 1)
+	res, err = secretsFindings(writeSecretsProject(t, fixed), &config.ProjectConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range res.findings {
+		if f.Severity == finding.SeverityError {
+			t.Errorf("an error on a clean OpenBao: %+v", f)
+		}
+	}
+}

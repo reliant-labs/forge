@@ -214,6 +214,14 @@ func TestKeyCoverage(t *testing.T) {
 		}{"ctx", "ns"}
 		wantNone(t, run(r, Demand{Workload: "Deployment/x", Secret: "app", Keys: []string{"password"}}), RuleKeyCoverage)
 	})
+	t.Run("a forge component's own pods, under a GCP bootstrap source", func(t *testing.T) {
+		r := declared
+		r.BootstrapSource = &BootstrapSource{Type: "gcpsm", Project: "p"}
+		d := Demand{Workload: "StatefulSet/openbao", Namespace: "openbao", Secret: "openbao-unseal", Keys: []string{"static-key"}, Component: true}
+		wantNone(t, run(r, d), RuleKeyCoverage)
+		r.BootstrapSource = nil
+		wantOne(t, run(r, d), RuleKeyCoverage, finding.SeverityError, "openbao-unseal")
+	})
 	t.Run("a file provider mints its Secrets at deploy", func(t *testing.T) {
 		r := declared
 		r.SecretProvider = &SecretProvider{Type: "file"}

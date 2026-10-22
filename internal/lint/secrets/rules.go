@@ -326,7 +326,16 @@ func (c *checker) keyCoverage() {
 	if p := c.env.Render.SecretProvider; p != nil && p.Type == "file" {
 		return
 	}
+	// A forge component's own pods read Secrets that are the component's
+	// contract. Under a GCP bootstrap_source the bootstrap component delivers
+	// them and they are declared nowhere in the env, so they are not judged;
+	// under an out-of-band source the component declares them as prerequisites,
+	// and they are judged like any other.
+	bootstrapDelivers := c.env.Render.BootstrapSource != nil && c.env.Render.BootstrapSource.Type == "gcpsm"
 	for _, d := range c.env.Demands {
+		if d.Component && bootstrapDelivers {
+			continue
+		}
 		d.Namespace = c.ns(d.Namespace)
 		var matching []supply
 		for _, s := range sups {

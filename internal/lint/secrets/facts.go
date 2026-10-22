@@ -52,6 +52,9 @@ type Demand struct {
 	// Namespace is where the workload resolves it ("" = the env's default).
 	Namespace string
 	Secret    string
+	// Component says the reader is an object a forge component owns (it carries
+	// the forge.dev/component-owner label), such as OpenBao's own StatefulSet.
+	Component bool
 	// Keys are the keys read by name; Whole says the Secret is read whole
 	// (envFrom, a volume), which reads every key.
 	Keys  []string

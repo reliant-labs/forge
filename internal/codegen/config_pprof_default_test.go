@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/configproto"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -35,7 +36,7 @@ import (
 // declared and is not actually served. So they are pinned together here.
 func TestScaffoldDefaultsPprofOn(t *testing.T) {
 	// The proto template's default_value.
-	out, err := templates.ProjectTemplates().Render("config.proto.tmpl", struct{ Module string }{Module: "example.com/proj"})
+	out, err := templates.ProjectTemplates().Render("config.proto.tmpl", configproto.For("proj").TemplateData("example.com/proj"))
 	if err != nil {
 		t.Fatalf("render config.proto.tmpl: %v", err)
 	}

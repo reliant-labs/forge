@@ -223,7 +223,7 @@ linters:
           msg: >-
             Read configuration from the injected forge config object, not the
             environment directly. Declare new settings in
-            proto/config/v1/*.proto with the (forge.v1.config) annotation, then
+            proto/<project>/config/v1/*.proto with the (forge.v1.config) annotation, then
             run `forge generate` — forge produces a typed loader (pkg/config),
             fails fast when a required value is missing, and wires secrets
             automatically. To opt out: add //nolint:forbidigo on this line, or
@@ -232,7 +232,7 @@ linters:
           msg: >-
             Read configuration from the injected forge config object, not the
             environment directly. Declare new settings in
-            proto/config/v1/*.proto with the (forge.v1.config) annotation, then
+            proto/<project>/config/v1/*.proto with the (forge.v1.config) annotation, then
             run `forge generate` — forge produces a typed loader (pkg/config),
             fails fast when a required value is missing, and wires secrets
             automatically. To opt out: add //nolint:forbidigo on this line, or
@@ -241,7 +241,7 @@ linters:
           msg: >-
             Read configuration from the injected forge config object, not the
             environment directly. Declare new settings in
-            proto/config/v1/*.proto with the (forge.v1.config) annotation, then
+            proto/<project>/config/v1/*.proto with the (forge.v1.config) annotation, then
             run `forge generate` — forge produces a typed loader (pkg/config),
             fails fast when a required value is missing, and wires secrets
             automatically. To opt out: add //nolint:forbidigo on this line, or

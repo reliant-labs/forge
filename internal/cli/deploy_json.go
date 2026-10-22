@@ -1417,6 +1417,18 @@ func deployFindingsFromPreflight(res cluster.PreflightResult) []deployJSONFindin
 		"a StatefulSet's declared volume differs from the live one in a way no resize can converge (a shrink, a changed storage class, or a class that cannot expand)")
 	listed("byte_match_mismatch", res.ByteMatchMismatches, true,
 		"a declared value_group's live Secret values are not identical across the group")
+	listed("store_crd_missing", res.Store.MissingCRDs, true,
+		"a store-backed Secret needs ExternalSecret / SecretStore, which the cluster does not serve and this deploy does not install")
+	listed("store_crd_version", res.Store.IncompatibleCRDs, true,
+		"the cluster's External Secrets Operator does not serve the API version the render emits")
+	listed("store_operator_owner", res.Store.OwnerConflicts, true,
+		"another env owns the cluster's External Secrets Operator, and one cluster has one")
+	listed("store_not_ready", res.Store.StoreNotReady, true,
+		"the OpenBao this env runs has not finished converging, so no SecretStore can log in")
+	listed("store_value_missing", res.Store.MissingStoreNames, true,
+		"the store holds no value for a name an ExternalSecret reads, so its Secret would never fill")
+	listed("store_unverified", res.Store.Warnings, false,
+		"a store could not be asked whether it holds the names read, so they were not verified")
 	// Advisory, and NOT blocking: a transport failure says nothing about the
 	// image. Reported so a consumer knows the gate could not vouch for it.
 	listed("image_warning", res.ImageWarnings, false,

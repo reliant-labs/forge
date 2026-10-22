@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/configproto"
 )
 
 // Every file forge writes into a project must already be what that project's
@@ -85,10 +86,10 @@ func scaffoldConfigProtos(t *testing.T) (string, []string) {
 		Kind:       "service",
 		Features:   config.FeaturesConfig{},
 	}
-	if err := g.createConfigProto(g.forScaffold()); err != nil {
+	if err := g.createConfigProto(); err != nil {
 		t.Fatalf("createConfigProto: %v", err)
 	}
-	if err := WriteFrontendConfigProto(dir, g.ModulePath, "web", 8080); err != nil {
+	if err := WriteFrontendConfigProto(dir, configproto.For(g.Name), g.ModulePath, "web", 8080); err != nil {
 		t.Fatalf("WriteFrontendConfigProto: %v", err)
 	}
 	if err := copyTree(t, filepath.Join("..", "assets", "proto", "forge"), filepath.Join(dir, "proto", "forge")); err != nil {
@@ -97,7 +98,7 @@ func scaffoldConfigProtos(t *testing.T) (string, []string) {
 	if err := os.WriteFile(filepath.Join(dir, "buf.yaml"), []byte("version: v2\nmodules:\n  - path: proto\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return dir, []string{"proto/config/v1/config.proto", "proto/config/v1/web_config.proto"}
+	return dir, []string{"proto/demo/config/v1/config.proto", "proto/demo/config/v1/web_config.proto"}
 }
 
 // The scaffolded config protos are `buf format`-clean: imports before

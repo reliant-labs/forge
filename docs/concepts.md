@@ -54,7 +54,7 @@ library, not as a documentation problem.
 
 | Category                 | What it is                                                   | Regenerated?           |
 | ------------------------ | ------------------------------------------------------------ | ---------------------- |
-| **Libraries you import** | `serverkit`, `svcerr`, `orm`, `crud`, `obs`              | No — versioned, bumped |
+| **Libraries you import** | `serverkit`, `svcerr`, `orm`, `crud`, `obs`                  | No — versioned, bumped |
 | **Generated tables**     | `mock_gen.go`, `<entity>_orm.go`, `handlers_crud_ops_gen.go` | Yes, every run         |
 | **Scaffold-once, owned** | `serve.go`, `providers.go`, `handlers_crud.go`, migrations   | Never after birth      |
 
@@ -306,7 +306,7 @@ the `AppConfig` line, and the Go replacement:
 ⚠ [forge-config-deps] internal/email/resend.go:41:2
     internal/email Deps.APIKey is a naked scalar (string) — scalars are
     configuration, not collaborators
-    → declare a config block in proto/config/v1/config.proto:
+    → declare a config block in proto/<project>/config/v1/config.proto:
       `message EmailConfig { string api_key = 1 [(forge.v1.config) = {
         env_var: "EMAIL_API_KEY" }]; }`,
       compose it on AppConfig (`EmailConfig email = <next tag>;`),

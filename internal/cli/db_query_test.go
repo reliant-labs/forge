@@ -13,16 +13,17 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/dbquery"
 	"github.com/reliant-labs/forge/pkg/pgtest"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// dbQueryFixture is a one-workload render whose api runs as runtime with the
-// given DATABASE_URL.
+// dbQueryFixture is a one-workload render of an open env whose api runs as
+// runtime with the given DATABASE_URL.
 func dbQueryFixture(runtime, dsn string) string {
 	env := ""
 	if dsn != "" {
 		env = fmt.Sprintf(`"env":[{"name":"DATABASE_URL","value":%q}]`, dsn)
 	}
-	return fmt.Sprintf(`{"output":{"workloads":[{"name":"api","kind":"service","runtime":{"type":%q},"spec":{"kind":"service"%s}}]}}`,
+	return fmt.Sprintf(`{"output":{"data_access":{"db_query":"open"},"workloads":[{"name":"api","kind":"service","runtime":{"type":%q},"spec":{"kind":"service"%s}}]}}`,
 		runtime, map[bool]string{true: "," + env, false: ""}[env != ""])
 }
 
@@ -60,24 +61,22 @@ func TestDBQueryRequiresTheEnvAndOneStatement(t *testing.T) {
 }
 
 func TestDBQueryPolicy(t *testing.T) {
-	cluster := []WorkloadEntity{{Name: "api", Runtime: RuntimeEntity{Type: RuntimeCluster}}}
 	for name, tc := range map[string]struct {
 		e    *KCLEntities
-		want string
+		want release.DBQueryPolicy
 	}{
-		"host-only env":          {&KCLEntities{Workloads: []WorkloadEntity{{Name: "api", Runtime: RuntimeEntity{Type: RuntimeHost}}}}, dbQueryOpen},
-		"local cluster":          {&KCLEntities{Lifecycle: lifecycleLocal, Workloads: cluster}, dbQueryOpen},
-		"ephemeral cluster":      {&KCLEntities{Lifecycle: lifecycleEphemeral, Workloads: cluster}, dbQueryOpen},
-		"undeclared cluster":     {&KCLEntities{Workloads: cluster}, dbQueryAudited},
-		"applier is not scratch": {&KCLEntities{Applier: applierForge, Workloads: cluster}, dbQueryAudited},
+		"declared open":  {&KCLEntities{DataAccess: &release.ShapeDataAccess{DBQuery: release.DBQueryOpen}}, release.DBQueryOpen},
+		"declared deny":  {&KCLEntities{DataAccess: &release.ShapeDataAccess{DBQuery: release.DBQueryDeny}}, release.DBQueryDeny},
+		"absent=audited": {&KCLEntities{}, release.DBQueryAudited},
+		"no render":      {nil, release.DBQueryAudited},
 	} {
-		if got := dbQueryPolicy(tc.e); got != tc.want {
+		if got := dbQueryPolicy(tc.e); got != string(tc.want) {
 			t.Errorf("%s: policy %s, want %s", name, got, tc.want)
 		}
 	}
 
-	o := dbQueryOptions{env: "prod"}
-	if err := checkDBQueryPolicy(o, dbQueryOpen); err != nil {
+	open, audited, deny := string(release.DBQueryOpen), string(release.DBQueryAudited), string(release.DBQueryDeny)
+	if err := checkDBQueryPolicy(dbQueryOptions{env: "prod"}, open); err != nil {
 		t.Errorf("open env refused: %v", err)
 	}
 	for _, bad := range []dbQueryOptions{
@@ -86,12 +85,15 @@ func TestDBQueryPolicy(t *testing.T) {
 		{env: "prod", confirmEnv: "staging", reason: "x"},
 		{env: "prod", confirmEnv: "prod", reason: "   "},
 	} {
-		if err := checkDBQueryPolicy(bad, dbQueryAudited); exitCodeForError(err) != exitWrong {
+		if err := checkDBQueryPolicy(bad, audited); exitCodeForError(err) != exitWrong {
 			t.Errorf("%+v on an audited env: err = %v, want exit 1", bad, err)
 		}
 	}
-	if err := checkDBQueryPolicy(dbQueryOptions{env: "prod", confirmEnv: "prod", reason: "ISS-7f3a"}, dbQueryAudited); err != nil {
+	if err := checkDBQueryPolicy(dbQueryOptions{env: "prod", confirmEnv: "prod", reason: "ISS-7f3a"}, audited); err != nil {
 		t.Errorf("confirmed audited query refused: %v", err)
+	}
+	if err := checkDBQueryPolicy(dbQueryOptions{env: "prod", confirmEnv: "prod", reason: "x"}, deny); exitCodeForError(err) != exitWrong {
+		t.Errorf("deny env: err = %v, want exit 1", err)
 	}
 }
 
@@ -223,7 +225,7 @@ func TestDBQueryDirectAgainstPostgres(t *testing.T) {
 	if !doc.OK || doc.Schema != dbQuerySchema || doc.RowCount != 1 || doc.Rows[0][0] != "1" || doc.Columns[0].PGType != "int8" {
 		t.Errorf("json doc %+v", doc)
 	}
-	if doc.Scope != (dbQueryScope{Env: "dev", Transport: "direct", Workload: "api", Policy: dbQueryOpen}) {
+	if doc.Scope != (dbQueryScope{Env: "dev", Transport: "direct", Workload: "api", Policy: string(release.DBQueryOpen)}) {
 		t.Errorf("scope %+v", doc.Scope)
 	}
 

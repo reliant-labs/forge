@@ -117,7 +117,7 @@ func TestTier1DriftSummaryLine_TruncatesLongLists(t *testing.T) {
 // here we pin that PersistentPreRun installs the suppression every
 // subcommand inherits.
 func TestRootCmdPrintsErrorsOnce(t *testing.T) {
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	if !root.SilenceErrors {
 		t.Error("root command must set SilenceErrors: main.go already prints the returned error; cobra printing it too duplicates every failure report")
 	}

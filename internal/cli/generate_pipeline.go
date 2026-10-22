@@ -44,6 +44,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/configproto"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/kclmigrate"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -350,6 +351,10 @@ func generateSteps() []GenStep {
 		{Name: "forge version compatibility", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPkgCompatHandshake, Tag: "validate", ReadOnly: true},
 		{Name: "pre-codegen contract check", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPreCodegenContractCheck, Tag: "validate", ReadOnly: true},
 		{Name: "retired ShellBuild tokens", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepShellBuildTokens, Tag: "validate", ReadOnly: true},
+		// Not skippable: a project on the shared config.v1 layout generates
+		// a pkg/config that panics at init beside any other forge project's,
+		// and the loader below would silently find no config at the new path.
+		{Name: "legacy config proto layout", Gate: always, Run: stepLegacyConfigProto, Tag: "validate", ReadOnly: true},
 		{Name: "migrate env registries onto images", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepMigrateImageRegistry, Tag: "config", Writes: writesKCLMigration},
 		// Sits with the other config migration, AFTER the refusals: a
 		// refusal is only honest if it leaves the tree as it found it, and
@@ -385,7 +390,7 @@ func generateSteps() []GenStep {
 		{Name: "OpenAPI specs (protoc-gen-connect-openapi)", Gate: gateOpenAPIEnabled, GateReason: "api.openapi=false or features.codegen=false", Run: stepOpenAPIGenerate, Tag: "proto", Writes: writesOpenAPI},
 		{Name: "frontend workspaces scaffold", Gate: and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML), GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendWorkspaces, Tag: "frontend"},
 		{Name: "TypeScript stubs (frontends)", Gate: and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML), GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendBufTS, Tag: "frontend", Writes: writesFrontendTS},
-		{Name: "config loader (proto/config)", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasConfig), GateReason: "no proto/config/ directory or features.codegen=false", Run: stepConfigLoader, Tag: "codegen"},
+		{Name: "config loader (proto/<project>/config/v1)", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasConfig), GateReason: "no config protos in proto/<project>/config/v1 or features.codegen=false", Run: stepConfigLoader, Tag: "codegen"},
 		// parse services: needed when the project has proto/services/
 		// (handlers, mocks, CRUD, auth, bootstrap all read ctx.Services) OR
 		// workers/operators (bootstrap still needs ModulePath, even if
@@ -413,7 +418,7 @@ func generateSteps() []GenStep {
 		// rootCommands.
 		{Name: "root commands without a composition graph", Gate: and(gateCodegenDisabled, hasGoModule), GateReason: "features.codegen=true (the composition step projects the roots), or " + noGoModuleReason, Run: stepRootCommandsWithoutGraph, Tag: "codegen"},
 		// AFTER composition: it projects the roots composition just read.
-		{Name: "root env schema (pkg/config/roots_gen.go)", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasConfig), GateReason: "no proto/config/ directory or features.codegen=false", Run: stepRootsEnvSchema, Tag: "codegen"},
+		{Name: "root env schema (pkg/config/roots_gen.go)", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasConfig), GateReason: "no proto/<project>/config/v1/ directory or features.codegen=false", Run: stepRootsEnvSchema, Tag: "codegen"},
 		{Name: "go mod tidy (pre-wiring)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepGoModTidyPreWiring, Tag: "tools", Writes: writesBothTidies},
 		{Name: "cmd/commands.go (user extension point)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepCmdCommands, Tag: "codegen"},
 		{Name: "per-service test helpers", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrapTesting, Tag: "codegen"},
@@ -470,7 +475,7 @@ func generateSteps() []GenStep {
 		// unrenderable (CannotFindModule), which surfaced as five red
 		// `forge doctor` deploy checks on a project shape that is entirely
 		// valid. The step is a function of what is on disk: no envs, no work.
-		{Name: "per-env deploy config", Gate: and(hasForgeYAML, hasConfig, hasDeployEnvs), GateReason: "no proto/config/ directory or no deploy/kcl/<env>/main.k", Run: stepPerEnvDeployConfig, Tag: "deploy"},
+		{Name: "per-env deploy config", Gate: and(hasForgeYAML, hasConfig, hasDeployEnvs), GateReason: "no proto/<project>/config/v1/ directory or no deploy/kcl/<env>/main.k", Run: stepPerEnvDeployConfig, Tag: "deploy"},
 		// AFTER per-env deploy config, deliberately. The frontend's runtime
 		// document is rendered from the dev environment's own KCL, which
 		// means both halves of that render — the generated
@@ -764,31 +769,31 @@ const harnessStepPreset = "harness"
 // `--steps=bootstrap-only --templates-only` a well-defined narrower
 // run rather than a precedence riddle.
 var templatesOnlyStepAllow = map[string]bool{
-	"load project config":                    true,
-	"load checksums":                         true,
-	"migrate legacy checksums manifest":      true,
-	"announce project":                       true,
-	"detect proto directories":               true,
-	"ensure gen/go.mod":                      true,
-	"frontend workspaces scaffold":           true,
-	"config loader (proto/config)":           true,
-	"parse services + module path":           true,
-	"frontend hooks":                         true,
-	"ensure frontend components":             true,
-	"frontend CRUD pages":                    true,
-	"frontend nav + dashboard":               true,
-	"service stubs":                          true,
-	"internal/db/ ORM (entity-driven)":       true,
-	"CRUD handlers":                          true,
-	"service mocks":                          true,
-	"internal package contracts":             true,
-	"webhook routes":                         true,
-	"internal/app composition (hybrid DI)":   true,
-	"cmd/commands.go (user extension point)": true,
-	"per-service test helpers":               true,
-	"db/embed.go (embedded migrations)":      true,
-	"CI workflows":                           true,
-	"regenerate infra files":                 true,
+	"load project config":                       true,
+	"load checksums":                            true,
+	"migrate legacy checksums manifest":         true,
+	"announce project":                          true,
+	"detect proto directories":                  true,
+	"ensure gen/go.mod":                         true,
+	"frontend workspaces scaffold":              true,
+	"config loader (proto/<project>/config/v1)": true,
+	"parse services + module path":              true,
+	"frontend hooks":                            true,
+	"ensure frontend components":                true,
+	"frontend CRUD pages":                       true,
+	"frontend nav + dashboard":                  true,
+	"service stubs":                             true,
+	"internal/db/ ORM (entity-driven)":          true,
+	"CRUD handlers":                             true,
+	"service mocks":                             true,
+	"internal package contracts":                true,
+	"webhook routes":                            true,
+	"internal/app composition (hybrid DI)":      true,
+	"cmd/commands.go (user extension point)":    true,
+	"per-service test helpers":                  true,
+	"db/embed.go (embedded migrations)":         true,
+	"CI workflows":                              true,
+	"regenerate infra files":                    true,
 	// cmd-group anchors are template-driven (cmd-svc/worker/operator-group +
 	// the per-group anchors) and MUST stay after "regenerate infra files" in
 	// the allowlist's logical group — the step itself no-ops until serve.go
@@ -1343,7 +1348,7 @@ func populateComponentPresence(ctx *pipelineContext) (rawHasOperators bool) {
 	// step. stepParseServicesAndModule later reconciles this to the exact
 	// descriptor count. See projectDefinesConnectServices.
 	ctx.HasServices = projectDefinesConnectServices(ctx.ProjectDir)
-	// Config protos, not the directory: an empty proto/config (a CLI
+	// Config protos, not the directory: an empty proto/<project>/config/v1 (a CLI
 	// scaffold leaves one) would have the loader write a pkg/config that
 	// imports gen/config/v1, which nothing generates.
 	ctx.HasConfig = codegen.HasConfigProtos(ctx.ProjectDir)
@@ -1388,6 +1393,29 @@ func stepShellBuildTokens(ctx *pipelineContext) error {
 		return err
 	}
 	return shellbuildtokens.Error(stripFileLocations(findings))
+}
+
+// stepLegacyConfigProto refuses a project whose config protos still declare
+// the package every forge project used to share — `package config.v1` at
+// proto/<project>/config/v1 — and names the codemod that moves them.
+//
+// It is a refusal rather than a fallback reader because the old layout is
+// the defect: the protobuf runtime registers each file by path and each
+// message by full name, process-wide, so two projects on it cannot be
+// linked into one binary (internal/configproto). Reading it would keep
+// generating a pkg/config that panics at init the moment another repo
+// imports it beside its own.
+func stepLegacyConfigProto(ctx *pipelineContext) error {
+	files := configproto.LegacyFiles(ctx.ProjectDir)
+	if len(files) == 0 {
+		return nil
+	}
+	layout := configproto.ForProject(ctx.ProjectDir)
+	return cliutil.UserErr("forge generate",
+		fmt.Sprintf("the config protos declare the shared package %s, which collides with every other forge project's config at init (\"file config/v1/config.proto is already registered\")", configproto.LegacyPackage),
+		strings.Join(files, ", "),
+		fmt.Sprintf("run `%s fix %s` — it moves them to %s, declares package %s and rewrites every import; then re-run `%s generate`",
+			cmdutil.Name(), configproto.LegacyCodemod, layout.Dir(), layout.Package(), cmdutil.Name()))
 }
 
 // stepMigrateImageRegistry moves a project off env-level registries: it removes
@@ -1649,7 +1677,7 @@ func stepFrontendBufTS(ctx *pipelineContext) error {
 }
 
 // stepConfigLoader — was Step 3b.
-// Generate `pkg/config/config.go` from proto/config annotations.
+// Generate `pkg/config/config.go` from proto/<project>/config/v1 annotations.
 // Populates ctx.ConfigFields so the bootstrap step (6) can wire env-
 // var loading without re-parsing the descriptor.
 func stepConfigLoader(ctx *pipelineContext) error {

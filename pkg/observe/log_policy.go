@@ -33,7 +33,7 @@
 // from the ambient environment appears in no config proto, no KCL env block
 // and no typed config object, so nothing the app can read explains why the
 // same binary logs differently on two machines (pkg/.golangci.yml forbids
-// it). A forge app declares log_success_sample_window in proto/config, sets
+// it). A forge app declares log_success_sample_window in proto/<project>/config/v1, sets
 // it per environment in deploy/kcl/<env>/config.k, and its scaffolded
 // serve.go passes the loaded value to Chain as LogOptions — so the value the
 // config loader validated is the value in effect. A package's

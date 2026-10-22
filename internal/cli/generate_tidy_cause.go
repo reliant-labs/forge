@@ -78,7 +78,7 @@ func localImportHint(pkg, modulePath string) string {
 	rel := strings.TrimPrefix(strings.TrimPrefix(pkg, modulePath), "/")
 	switch {
 	case rel == "pkg/config":
-		return " — typed config: add config protos under proto/config (forge generates pkg/config from them), or declare `type Config` in pkg/config yourself"
+		return " — typed config: add config protos under proto/<project>/config/v1 (forge generates pkg/config from them), or declare `type Config` in pkg/config yourself"
 	case strings.HasPrefix(rel, "gen/"):
 		return " — generated stubs: check that buf.gen.yaml writes this proto's Go output to " + rel + " inside this module"
 	}

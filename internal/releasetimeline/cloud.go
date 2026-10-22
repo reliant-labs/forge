@@ -2,10 +2,13 @@ package releasetimeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/pkg/obsquery"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -22,6 +25,8 @@ const (
 	procListConvergences = "controlplane.v1.DeployService/ListConvergences"
 	procCompareReleases  = "controlplane.v1.DeployService/CompareReleases"
 	procListActivity     = "controlplane.v1.ActivityService/ListActivity"
+	procGetTrace         = "controlplane.v1.ObservabilityService/GetTrace"
+	procGetReleaseHealth = "controlplane.v1.ObservabilityService/GetReleaseHealth"
 )
 
 // Scopes are the access-token scopes a cloud read needs.
@@ -326,4 +331,105 @@ func attemptFromWire(w wireConvergence) Attempt {
 		a.FinishedAt = w.ObservedAt
 	}
 	return a
+}
+
+// ErrTraceNotFound is returned by TraceStart when the control plane holds no
+// span of the trace in its retention window.
+var ErrTraceNotFound = errors.New("no such trace in the last 7 days")
+
+// traceWindow is how far back a trace is looked for: the traces TTL, and the
+// most GetTrace accepts. A minute short of it, so the boundary itself is never
+// the reason a request is refused.
+const traceWindow = 7*24*time.Hour - time.Minute
+
+// TraceStart returns when a trace began (its earliest span), which is the
+// instant `env releases at` asks "which release was live" about.
+func TraceStart(ctx context.Context, c Cloud, env, traceID string, now time.Time) (time.Time, error) {
+	tid, err := obsquery.NormalizeTraceID(traceID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	scope, err := c.obsScope(ctx, env)
+	if err != nil {
+		return time.Time{}, err
+	}
+	scope["timeRange"] = map[string]any{
+		"start": now.Add(-traceWindow).UTC().Format(time.RFC3339),
+		"end":   now.UTC().Format(time.RFC3339),
+	}
+	var resp struct {
+		Spans []struct {
+			StartTime time.Time `json:"startTime"`
+		} `json:"spans"`
+	}
+	if err := c.Client.Call(ctx, procGetTrace, map[string]any{"scope": scope, "traceId": tid}, &resp); err != nil {
+		return time.Time{}, fmt.Errorf("get trace %s: %w", tid, err)
+	}
+	var first time.Time
+	for _, s := range resp.Spans {
+		if !s.StartTime.IsZero() && (first.IsZero() || s.StartTime.Before(first)) {
+			first = s.StartTime
+		}
+	}
+	if first.IsZero() {
+		return time.Time{}, fmt.Errorf("%w: %s", ErrTraceNotFound, tid)
+	}
+	return first.UTC(), nil
+}
+
+// ReleaseHealth asks the observability service whether a promotion made
+// things worse. Callers treat a failure as "no verdict", not as a failed read
+// of the timeline: a control plane that predates the RPC answers Unimplemented.
+func ReleaseHealth(ctx context.Context, c Cloud, env, promotionID string) (Health, error) {
+	scope, err := c.obsScope(ctx, env)
+	if err != nil {
+		return Health{}, err
+	}
+	var resp struct {
+		Verdict       string `json:"verdict"`
+		AfterComplete bool   `json:"afterComplete"`
+		Findings      []struct {
+			Message string `json:"message"`
+		} `json:"findings"`
+	}
+	req := map[string]any{"scope": scope, "promotionId": promotionID}
+	if err := c.Client.Call(ctx, procGetReleaseHealth, req, &resp); err != nil {
+		return Health{}, fmt.Errorf("get release health of %s: %w", promotionID, err)
+	}
+	verdict := strings.ToLower(strings.TrimPrefix(resp.Verdict, "RELEASE_VERDICT_"))
+	if verdict == "" || verdict == "unspecified" {
+		return Health{}, fmt.Errorf("the control plane returned no verdict for %s", promotionID)
+	}
+	h := Health{Verdict: verdict}
+	switch {
+	case len(resp.Findings) > 0:
+		h.Detail = resp.Findings[0].Message
+		if n := len(resp.Findings); n > 1 {
+			h.Detail += fmt.Sprintf(" (+%d more)", n-1)
+		}
+	case !resp.AfterComplete:
+		h.Detail = "the after window is still open"
+	}
+	return h, nil
+}
+
+// obsScope is the QueryScope fields every observability read carries: the
+// org, the one environment, and the project when there is one.
+func (c Cloud) obsScope(ctx context.Context, env string) (map[string]any, error) {
+	id, err := c.envID(ctx, env)
+	if err != nil {
+		return nil, err
+	}
+	if id == "" {
+		return nil, fmt.Errorf("the control plane has no environment named %q", env)
+	}
+	org, err := cloud.ResolveOrganization(ctx, c.Client)
+	if err != nil {
+		return nil, err
+	}
+	scope := map[string]any{"orgId": org, "envIds": []string{id}}
+	if c.Project != "" {
+		scope["projectId"] = c.Project
+	}
+	return scope, nil
 }

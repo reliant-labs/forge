@@ -496,3 +496,81 @@ func TestGit_ChangedPathsListsTheMigrationsARangeCarried(t *testing.T) {
 		t.Error("a ref that is not a full object id must be refused")
 	}
 }
+
+func TestTraceStart_IsTheEarliestSpanAndScopedToTheEnvironment(t *testing.T) {
+	cp := cloudFake()
+	cp.respond[procGetTrace] = func(map[string]any) (any, error) {
+		return map[string]any{"spans": []map[string]any{
+			{"startTime": "2026-10-01T12:45:07Z"}, {"startTime": "2026-10-01T12:45:05.5Z"}, {"startTime": "2026-10-01T12:45:06Z"},
+		}}, nil
+	}
+	now := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
+	got, err := TraceStart(context.Background(), Cloud{Client: cp, Project: "app"}, "prod", "ABCDEF0123456789abcdef0123456789", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Equal(time.Date(2026, 10, 1, 12, 45, 5, 500_000_000, time.UTC)) {
+		t.Errorf("start = %v", got)
+	}
+	req := cp.reqs[procGetTrace]
+	scope, _ := req["scope"].(map[string]any)
+	if req["traceId"] != "abcdef0123456789abcdef0123456789" || scope["orgId"] != "org-1" || scope["projectId"] != "app" {
+		t.Errorf("req = %v", req)
+	}
+	if ids, _ := scope["envIds"].([]any); len(ids) != 1 || ids[0] != "env-1" {
+		t.Errorf("envIds = %v", scope["envIds"])
+	}
+	tr, _ := scope["timeRange"].(map[string]any)
+	start, _ := time.Parse(time.RFC3339, tr["start"].(string))
+	if now.Sub(start) > 7*24*time.Hour {
+		t.Errorf("range %v..%v exceeds the 7 day maximum", tr["start"], tr["end"])
+	}
+}
+
+func TestTraceStart_UnknownTraceAndBadIDs(t *testing.T) {
+	cp := cloudFake()
+	cp.respond[procGetTrace] = func(map[string]any) (any, error) { return map[string]any{"spans": []any{}}, nil }
+	_, err := TraceStart(context.Background(), Cloud{Client: cp}, "prod", "abc123", time.Now())
+	if !errors.Is(err, ErrTraceNotFound) {
+		t.Errorf("err = %v", err)
+	}
+	if _, err := TraceStart(context.Background(), Cloud{Client: cp}, "prod", "not hex!", time.Now()); err == nil {
+		t.Error("a malformed trace id must be refused before any call")
+	}
+	if _, err := TraceStart(context.Background(), Cloud{Client: cp}, "ghost", "abc123", time.Now()); err == nil {
+		t.Error("an unknown environment must be an error")
+	}
+}
+
+func TestReleaseHealth(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		resp    map[string]any
+		want    Health
+		wantErr bool
+	}{
+		{"pass", map[string]any{"verdict": "RELEASE_VERDICT_PASS", "afterComplete": true}, Health{Verdict: "pass"}, false},
+		{"fail names its first finding", map[string]any{"verdict": "RELEASE_VERDICT_FAIL", "findings": []map[string]any{{"message": "error rate 4x"}, {"message": "b"}}},
+			Health{Verdict: "fail", Detail: "error rate 4x (+1 more)"}, false},
+		{"inconclusive while the window is open", map[string]any{"verdict": "RELEASE_VERDICT_INCONCLUSIVE"},
+			Health{Verdict: "inconclusive", Detail: "the after window is still open"}, false},
+		{"no verdict is not a verdict", map[string]any{"verdict": "RELEASE_VERDICT_UNSPECIFIED"}, Health{}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := cloudFake()
+			cp.respond[procGetReleaseHealth] = func(map[string]any) (any, error) { return tc.resp, nil }
+			got, err := ReleaseHealth(context.Background(), Cloud{Client: cp}, "prod", "p3")
+			if (err != nil) != tc.wantErr || got != tc.want {
+				t.Errorf("got %+v, %v; want %+v (err=%v)", got, err, tc.want, tc.wantErr)
+			}
+			if cp.reqs[procGetReleaseHealth]["promotionId"] != "p3" {
+				t.Errorf("req = %v", cp.reqs[procGetReleaseHealth])
+			}
+		})
+	}
+	cp := cloudFake()
+	cp.respond[procGetReleaseHealth] = func(map[string]any) (any, error) { return nil, errors.New("unimplemented") }
+	if _, err := ReleaseHealth(context.Background(), Cloud{Client: cp}, "prod", "p3"); err == nil {
+		t.Error("an Unimplemented control plane must surface as an error the caller can soften")
+	}
+}

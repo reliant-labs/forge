@@ -151,11 +151,14 @@ type Entry struct {
 	Live            bool      `json:"live,omitempty"`
 	Direction       Direction `json:"direction,omitempty"`
 	PreviousVersion string    `json:"previous_version,omitempty"`
-	FromEnv         string    `json:"from_env,omitempty"`
-	Actor           string    `json:"actor,omitempty"`
-	Via             string    `json:"via,omitempty"`
-	RunURL          string    `json:"run_url,omitempty"`
-	Note            string    `json:"note,omitempty"`
+	// PreviousBundleID is the bundle the environment ran before this
+	// promotion, for diffing what the move changed.
+	PreviousBundleID string `json:"previous_bundle_id,omitempty"`
+	FromEnv          string `json:"from_env,omitempty"`
+	Actor            string `json:"actor,omitempty"`
+	Via              string `json:"via,omitempty"`
+	RunURL           string `json:"run_url,omitempty"`
+	Note             string `json:"note,omitempty"`
 	// Targets is set when a scoped deploy moved only some components.
 	Targets    []string     `json:"targets,omitempty"`
 	Superseded bool         `json:"superseded_in_flight,omitempty"`
@@ -223,6 +226,7 @@ func Assemble(d Data, since time.Time, limit int) Timeline {
 		default:
 			prev := d.Promotions[i-1]
 			e.PreviousVersion = prev.Release
+			e.PreviousBundleID = prev.BundleID
 			e.Direction, e.Range = direction(prev.Release, p.Release, d.Releases, byVersion)
 		}
 		if p.ID != "" {

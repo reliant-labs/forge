@@ -67,7 +67,9 @@ func ScaffoldProjectInto(projectDir, dst string, cfg *config.ProjectConfig) erro
 	if h, err := ParseHarness(cfg.Harness); err == nil {
 		g.Harness = h
 	}
-	if len(cfg.Frontends) > 0 && cfg.Features.FrontendEnabled() {
+	// A declared frontend, whether or not frontend codegen is on: the
+	// scaffold writes the app for a named frontend (ProjectGenerator.Generate).
+	if len(cfg.Frontends) > 0 {
 		g.FrontendName = cfg.Frontends[0].Name
 	}
 	g.ServiceName = scaffoldServiceName(projectDir, cfg)

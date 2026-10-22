@@ -205,6 +205,11 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 	// emission) does not have to learn about Kind. This keeps the gate in
 	// one place and means existing feature checks still work unchanged.
 	g.applyKindFeatureDefaults()
+	// Then the feature graph, as the loader applies it to every later load
+	// of this tree: a feature whose requirement is off is off here too, so
+	// nothing is written that the project would derive away (--disable
+	// codegen takes the ORM, migrations and frontend codegen with it).
+	g.Features = g.Features.FollowingRequirements()
 
 	// Create project directory
 	if err := os.MkdirAll(g.Path, 0755); err != nil {
@@ -645,7 +650,14 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 
 	// Generate frontend files if specified (services only — frontends are
 	// not meaningful for CLI/library projects).
-	if g.isService() && g.Features.FrontendEnabled() && g.FrontendName != "" {
+	//
+	// Gated on the frontend being NAMED, not on features.frontend: that
+	// feature is frontend CODEGEN (hooks, pages, TS stubs from the protos),
+	// which requires codegen, while the app itself is what --frontend asked
+	// for. A frontend-only project (--disable codegen) has the app and no
+	// frontend codegen. `--frontend` with `--disable frontend` is refused
+	// before anything is written (refuseDisabledComponents).
+	if g.isService() && g.FrontendName != "" {
 		if err := g.generateFrontendFiles(); err != nil {
 			return fmt.Errorf("failed to generate frontend files: %w", err)
 		}

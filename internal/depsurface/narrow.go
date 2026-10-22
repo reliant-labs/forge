@@ -89,6 +89,7 @@ func Narrow(projectDir, dir string) (*NarrowResult, error) {
 	cfg := readLintConfig(projectDir)
 	prefix := cfg.importPrefix(checksums.GoImportsLocalPrefix(projectDir))
 	w := newIfaceWriter(p)
+	w.lint = cfg
 	for path, name := range p.importNames(res.File) {
 		w.imports[path], w.names[name] = name, path
 	}
@@ -114,7 +115,7 @@ func Narrow(projectDir, dir string) (*NarrowResult, error) {
 			res.Skipped = append(res.Skipped, Skipped{f.Name, f.Type, "the package never calls it or passes it on: delete the field"})
 			continue
 		}
-		name, err := w.declare(f)
+		name, entries, err := w.declare(f)
 		if err != nil {
 			return nil, err
 		}
@@ -125,8 +126,8 @@ func Narrow(projectDir, dir string) (*NarrowResult, error) {
 			n.Embeds = append(n.Embeds, r.Type)
 		}
 		res.Narrowed = append(res.Narrowed, n)
-		if entries := len(embeds) + len(n.Methods) - coveredMethods(f, embeds); cfg.interfaceBloatOn && entries > cfg.interfaceBloatMax {
-			res.Bloated = append(res.Bloated, Bloated{name, entries, cfg.interfaceBloatMax, cfg.limitSource()})
+		if cfg.overBloat(entries) {
+			res.Bloated = append(res.Bloated, Bloated{name, entries, cfg.interfaceBloatMax, cfg.limitSource(), cfg.suppressesBloat(entries)})
 		}
 	}
 	if len(retype) == 0 {
@@ -177,6 +178,7 @@ type ifaceWriter struct {
 	imports map[string]string // import path → name used
 	names   map[string]string // name used → import path
 	added   map[string]bool   // imports the declarations introduce
+	lint    lintConfig        // the project's golangci-lint settings
 	decls   bytes.Buffer
 }
 
@@ -206,19 +208,47 @@ func (w *ifaceWriter) qualifier(pkg *types.Package) string {
 	return name
 }
 
-// declare renders the narrowed interface for f and returns its name.
-func (w *ifaceWriter) declare(f Field) (string, error) {
+// ifaceName picks the name of the interface narrowed from a field typed
+// typeName: the type's own name when the package does not use it, else the
+// field's name, else the two joined. The field's name comes before the join
+// because the usual collision is a handler's own Service — svcdaemon.Service
+// on Deps.DaemonService is DaemonService, not DaemonServiceService — and a
+// Deps field and a package-scope type never collide (`DaemonService
+// DaemonService` is a legal field).
+func ifaceName(typeName, fieldName string, taken map[string]bool) (string, bool) {
+	for _, n := range []string{typeName, fieldName, fieldName + typeName} {
+		if !taken[n] {
+			return n, true
+		}
+	}
+	return "", false
+}
+
+// declare renders the narrowed interface for f and returns its name and its
+// entry count as interfacebloat counts them (each written-out method and each
+// embedded interface).
+//
+// An interface wider than the project's interfacebloat limit is written with
+// a reasoned //nolint:interfacebloat, never split to fit. The lint counts an
+// embedded interface as ONE entry, so splitting the methods into embedded
+// roles would pass the counter while the dependency stayed exactly as wide —
+// hiding the very signal the lint exists to give. And the only principled
+// roles are the ones the value is passed on as, which are already embedded;
+// grouping the rest by the function that calls them turns a handler with one
+// shim per rpc into one single-method role per rpc. What narrow-deps writes
+// is, by construction, exactly what the package calls: its width is the
+// package's real dependency, and shrinking it means splitting the package,
+// which is a design decision the codemod cannot make. So it says so, at the
+// type, and the warning names the remedy.
+func (w *ifaceWriter) declare(f Field) (string, int, error) {
 	named, ok := types.Unalias(f.typ).(*types.Named)
 	if !ok {
-		return "", fmt.Errorf("field Deps.%s: %s is not a named interface", f.Name, f.Type)
+		return "", 0, fmt.Errorf("field Deps.%s: %s is not a named interface", f.Name, f.Type)
 	}
 	iface := named.Underlying().(*types.Interface)
-	name := named.Obj().Name()
-	if w.taken[name] {
-		name = f.Name + named.Obj().Name()
-	}
-	if w.taken[name] {
-		return "", fmt.Errorf("field Deps.%s: both %s and %s are taken in package %s — declare the interface by hand", f.Name, named.Obj().Name(), name, w.p.pkg.Name)
+	name, ok := ifaceName(named.Obj().Name(), f.Name, w.taken)
+	if !ok {
+		return "", 0, fmt.Errorf("field Deps.%s: %s, %s and %s%s are all taken in package %s — declare the interface by hand", f.Name, named.Obj().Name(), f.Name, f.Name, named.Obj().Name(), w.p.pkg.Name)
 	}
 	w.taken[name] = true
 	embeds, direct := splitRoles(f)
@@ -226,6 +256,11 @@ func (w *ifaceWriter) declare(f Field) (string, error) {
 	fmt.Fprintf(&w.decls, "// declared here, by its consumer, so the package knows only what it uses\n// (forge fix narrow-deps). Add a method when the package calls one.\n")
 	if len(embeds) > 0 {
 		fmt.Fprintf(&w.decls, "// The embedded interfaces are what the package passes the value on as.\n")
+	}
+	entries := len(embeds) + len(direct)
+	if w.lint.suppressesBloat(entries) {
+		fmt.Fprintf(&w.decls, "//\n//nolint:interfacebloat // forge fix narrow-deps: exactly the %d of %s.%s's %d methods this package calls through Deps.%s, one dependency; shrink it by splitting the package, not the interface.\n",
+			entries, named.Obj().Pkg().Name(), named.Obj().Name(), iface.NumMethods(), f.Name)
 	}
 	fmt.Fprintf(&w.decls, "type %s interface {\n", name)
 	for _, r := range embeds {
@@ -235,14 +270,14 @@ func (w *ifaceWriter) declare(f Field) (string, error) {
 		obj, _, _ := types.LookupFieldOrMethod(iface, false, nil, m)
 		fn, ok := obj.(*types.Func)
 		if !ok {
-			return "", fmt.Errorf("field Deps.%s: %s has no method %s", f.Name, f.Type, m)
+			return "", 0, fmt.Errorf("field Deps.%s: %s has no method %s", f.Name, f.Type, m)
 		}
 		var sig bytes.Buffer
 		types.WriteSignature(&sig, fn.Type().(*types.Signature), w.qualifier)
 		fmt.Fprintf(&w.decls, "\t%s%s\n", m, sig.String())
 	}
 	w.decls.WriteString("}\n")
-	return name, nil
+	return name, entries, nil
 }
 
 // splitRoles divides what f's narrowed interface holds: the Roles it embeds
@@ -335,23 +370,6 @@ func formatFile(fset *token.FileSet, file *ast.File, name, prefix string) ([]byt
 		return nil, fmt.Errorf("format %s: %w", name, err)
 	}
 	return out, nil
-}
-
-// coveredMethods counts the used methods the embedded roles already hold.
-func coveredMethods(f Field, embeds []Role) int {
-	covered := map[string]bool{}
-	for _, r := range embeds {
-		for _, m := range r.Methods {
-			covered[m] = true
-		}
-	}
-	n := 0
-	for m := range f.Used {
-		if covered[m] {
-			n++
-		}
-	}
-	return n
 }
 
 // importNames maps each import of the project-relative file to its name in

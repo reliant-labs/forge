@@ -171,7 +171,12 @@ the package already declares (edit that one).
 The generated code is goimports-clean for the project (stdlib, third-party,
 then the module — or the local-prefixes of its golangci config). A narrowed
 interface still wider than the project's interfacebloat limit (read from its
-golangci config; golangci's default is 10) is reported, with the remedy.`,
+golangci config; golangci's default is 10) is reported, with the remedy. When
+the project's config runs interfacebloat, the type is also written with a
+reasoned //nolint:interfacebloat rather than split into embedded roles to fit:
+the lint counts an embedded interface as one entry, so a split would pass the
+count with the dependency exactly as wide. The interface is what the package
+calls; to shrink it, split the package.`,
 		Example: "  forge fix narrow-deps internal/handlers/tools_daemon",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

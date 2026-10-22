@@ -79,6 +79,7 @@ The policy is recorded in the release shape. For a hosted env the control plane 
 - On failure `error` carries the message, and `reason` carries a stable subcode such as `multiple_statements` or `statement_timeout`.
 - Cells are JSON values. A bigint or numeric beyond 15 digits is a string, so no reader rounds it. Dates, uuids and arrays are Postgres's text. `json`/`jsonb` is inline JSON.
 - `scope.database` is present on the port-forward transport.
+- `release` is the release live in the env when the query ran (`version`, `promotion_id`, `promoted_at`, and `unsettled` when its rollout hadn't finished), read from the env's release ledger. It's absent when nothing was promoted yet; an unreadable ledger warns on stderr and never fails the query. `forge env releases at <env> <time>` answers the same question for any moment.
 
 | Exit | Meaning |
 |---|---|

@@ -121,7 +121,7 @@ connection lost).
 			if o.jsonOut {
 				o.format = "json"
 			}
-			return runDBQuery(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), o)
+			return runDBQuery(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), o)
 		},
 	}
 	cmd.Flags().StringVarP(&o.file, "file", "f", "", "Read the statement from FILE (- for stdin)")
@@ -152,6 +152,9 @@ type dbQueryDocument struct {
 	Scope  *dbQueryScope `json:"scope,omitempty"`
 	// Reason is dbquery's machine-readable refusal subcode, when there is one.
 	Reason string `json:"reason,omitempty"`
+	// Release is the release live in the env when the query ran; absent when
+	// nothing was promoted yet or the ledger could not be read.
+	Release *dbQueryRelease `json:"release,omitempty"`
 	*dbquery.Result
 }
 
@@ -163,8 +166,12 @@ type dbQueryTarget struct {
 	close func()
 }
 
-func runDBQuery(ctx context.Context, stdin io.Reader, out io.Writer, o dbQueryOptions) error {
-	var scope *dbQueryScope
+func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o dbQueryOptions) error {
+	var (
+		scope   *dbQueryScope
+		ranAt   time.Time
+		release *dbQueryRelease
+	)
 	res, err := func() (*dbquery.Result, error) {
 		if err := validateDBQueryFlags(o); err != nil {
 			return nil, err
@@ -190,6 +197,7 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out io.Writer, o dbQueryOp
 			return nil, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("cannot connect to %s's database (workload %q): %s; is it running? (%s env up %s)", o.env, target.scope.Workload, redactDSNError(err, target.dsn), Name(), o.env)}
 		}
 		defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+		ranAt = time.Now().UTC()
 		res, err := dbquery.Run(ctx, conn, sql, dbquery.Options{MaxRows: o.maxRows, Timeout: o.timeout})
 		if err != nil {
 			return nil, dbQueryError(err)
@@ -197,8 +205,11 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out io.Writer, o dbQueryOp
 		return res, nil
 	}()
 
+	if !ranAt.IsZero() {
+		release = stampRelease(ctx, errOut, o.env, ranAt)
+	}
 	if o.format == "json" {
-		doc := dbQueryDocument{Schema: dbQuerySchema, Scope: scope, Result: res}
+		doc := dbQueryDocument{Schema: dbQuerySchema, Scope: scope, Release: release, Result: res}
 		doc.stamp(err)
 		var de *dbquery.Error
 		if errors.As(err, &de) {
@@ -215,7 +226,7 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out io.Writer, o dbQueryOp
 	if o.format == "csv" {
 		return writeDBQueryCSV(out, res)
 	}
-	return writeDBQueryTable(out, res)
+	return writeDBQueryTable(out, res, release)
 }
 
 func validateDBQueryFlags(o dbQueryOptions) error {
@@ -401,7 +412,7 @@ func writeDBQueryCSV(out io.Writer, res *dbquery.Result) error {
 // carries the whole value.
 const maxTableCell = 80
 
-func writeDBQueryTable(out io.Writer, res *dbquery.Result) error {
+func writeDBQueryTable(out io.Writer, res *dbquery.Result, rel *dbQueryRelease) error {
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	names := make([]string, len(res.Columns))
 	for i, c := range res.Columns {
@@ -427,6 +438,9 @@ func writeDBQueryTable(out io.Writer, res *dbquery.Result) error {
 		noun = "row"
 	}
 	footer := fmt.Sprintf("(%d %s, %d ms", res.RowCount, noun, res.DurationMS)
+	if rel != nil {
+		footer += fmt.Sprintf("; release %s", rel.Version)
+	}
 	if res.Truncated {
 		footer += fmt.Sprintf("; truncated by the %s cap, raise --max-rows or narrow the query", res.TruncatedBy)
 	}

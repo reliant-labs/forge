@@ -57,6 +57,10 @@ and rewrites what points at them:
   import "config/v1/<file>.proto"     in every other proto under proto/
   config.v1.<Message> references      in every proto (fully qualified type names)
   "<mod>/gen/config/v1" Go imports    in the project's own Go files
+  "config.v1", "config.v1.Msg"        Go string literals that are exactly the old
+                                      package or a name in it (a registry filter
+                                      such as RangeFilesByPackage("config.v1", …)
+                                      silently matches nothing once it moves)
   proto/config/v1, gen/config/v1      as paths in the project's own protos, Go,
                                       TS/JS, KCL, YAML, shell and Make files
                                       (TS imports of the generated _pb modules too)
@@ -71,8 +75,9 @@ the new package.
 Nothing a config DECLARES changes: fields, annotations, env var names, flags
 and the generated KCL schemas are the same, and the Go package keeps its name
 (configv1). Run forge generate afterwards to regenerate pkg/config, gen/ and
-the descriptor. Remaining mentions of the old layout (docs, an import of another
-project's gen/config/v1) are listed for you; nothing else is decided for you.`,
+the descriptor. Remaining mentions of the old layout (docs, a Go string that only contains config.v1, an import of another
+project's gen/config/v1) are listed
+for you with file:line; nothing else is decided for you.`,
 		Upgrade:   true,
 		CleanTree: true,
 		Run:       runConfigProtoPackage,
@@ -92,6 +97,14 @@ var (
 	legacyProtoDirRE = regexp.MustCompile(`\bproto/config/v1\b`)
 	legacyGenDirRE   = regexp.MustCompile(`\bgen/config/v1\b`)
 )
+
+// goProtoPackageLiteralRE matches a Go string literal that is exactly the
+// legacy proto package — "config.v1" — or a fully-qualified name in it —
+// "config.v1.AppConfig" — in an interpreted or raw literal. A literal that
+// merely contains the package ("/config.v1.AppConfig", "see config.v1") is
+// not matched: whether it should move is a judgement, so it is listed.
+// Group 1 is the opening quote, 2 the optional ".Name" tail, 3 the closing.
+var goProtoPackageLiteralRE = regexp.MustCompile("([\"`])config\\.v1((?:\\.[A-Za-z_][\\w.]*)?)([\"`])")
 
 // foreignConfigImportRE matches a Go import of some module's legacy
 // generated config package.
@@ -197,6 +210,29 @@ func runConfigProtoPackage(dir string, opts Options) (Report, error) {
 			// project's gen/config/v1 moves when that project does.
 			out = bytes.ReplaceAll(src, []byte(oldGo), []byte(newGo))
 			out = legacyProtoDirRE.ReplaceAll(out, []byte(layout.Dir()))
+			// The proto package as a string literal — RangeFilesByPackage(
+			// "config.v1", …) — which the Go compiler cannot flag: it silently
+			// matches nothing once the package moves.
+			out = goProtoPackageLiteralRE.ReplaceAllFunc(out, func(m []byte) []byte {
+				sub := goProtoPackageLiteralRE.FindSubmatch(m)
+				if !bytes.Equal(sub[1], sub[3]) {
+					return m
+				}
+				return []byte(string(sub[1]) + layout.Package() + string(sub[2]) + string(sub[3]))
+			})
+			// legacyMentions skips a file this run rewrites, so list the
+			// mentions the literal rewrite left in it (a file it leaves
+			// alone is listed there).
+			if !bytes.Equal(out, src) {
+				for i, line := range strings.Split(string(out), "\n") {
+					for _, re := range legacyPackageRefREs {
+						if re.MatchString(line) {
+							rep.Next = append(rep.Next, fmt.Sprintf("%s:%d: still names the old proto package config.v1 in a form the codemod cannot rewrite safely — point it at %s", rel, i+1, layout.Package()))
+							break
+						}
+					}
+				}
+			}
 			for _, m := range foreignConfigImportRE.FindAllSubmatch(out, -1) {
 				if string(m[1]) != module {
 					rep.Next = append(rep.Next, fmt.Sprintf("%s: imports %s/gen/config/v1 — another forge project's config package; once it moves too, that import is %s/gen/<its project>/config/v1", rel, m[1], m[1]))
@@ -428,12 +464,17 @@ func removeEmptyDirs(dir string, rels ...string) {
 
 // legacyRefREs match a mention of the legacy layout: its directories as
 // paths, a buf-relative path into it, and a name in its package.
-var legacyRefREs = []*regexp.Regexp{
+var legacyRefREs = append([]*regexp.Regexp{
 	legacyProtoDirRE,
 	legacyGenDirRE,
 	regexp.MustCompile(`(^|[^\w/])config/v1/\w+\.proto`),
-	regexp.MustCompile(`(^|[^\w.])config\.v1\.[A-Za-z_]`),
-	regexp.MustCompile(`\bpackage config\.v1\b`),
+}, legacyPackageRefREs...)
+
+// legacyPackageRefREs match a mention of the legacy proto package by name —
+// config.v1 on its own, or as the prefix of a qualified name — and not a
+// longer package that ends in it (acme.config.v1).
+var legacyPackageRefREs = []*regexp.Regexp{
+	regexp.MustCompile(`(^|[^\w.])config\.v1\b`),
 }
 
 // legacyMentions lists file:line of every remaining mention of the legacy

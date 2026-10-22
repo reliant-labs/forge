@@ -176,6 +176,18 @@ var removals = []removal{
 				},
 			},
 			{
+				Name: "the vendored ESO SecretStore CRD's provider fields",
+				Reason: "pkg/deploy/eso/crds/<version>/secretstores.yaml is External Secrets Operator's own CRD, \n" +
+					"embedded byte-for-byte and never edited here. Its provider schemas name other products' \n" +
+					"tenancy: Azure's `tenantId`, Oracle Cloud's `tenancy` OCID, Vault's namespace described as \n" +
+					"multi-tenancy, a `tenant` hostname. They are upstream identifiers that cannot be renamed, \n" +
+					"and none is a forge tenant column, header, context key or helper. Scoped to the \n" +
+					"`tenant`/`tenancy` words (with an `Id`/`Name` suffix) in that one vendored file, so a \n" +
+					"`TenantID` field or an `X-Tenant-Id` header anywhere else, or `tenants/` in it, still fails.",
+				Token: regexp.MustCompile(`(?i)\b(tenant|tenancy)(id|name)?\b`),
+				Paths: []string{"pkg/deploy/eso/crds/*/secretstores.yaml"},
+			},
+			{
 				Name: "Azure's Entra ID tenant, which a Trusted Signing credential belongs to",
 				Reason: "Azure Trusted Signing authenticates as an Entra ID service principal, identified by " +
 					"a tenant id (the Azure directory) and a client id. The desktop-release proposal names " +
@@ -352,6 +364,11 @@ var removals = []removal{
 					// the files carry an `rbac` local naming that bootstrap-manifest struct.
 					"internal/cli/cluster_connect*.go",
 					"internal/templates/project/skills/forge/deploy/cluster-connect/SKILL.md",
+					// The External Secrets Operator chart's `rbac:` values (aggregation,
+					// token-create) and the invariants its skill documents: the
+					// operator's own Kubernetes RBAC, in the render golden and the skill.
+					"internal/cli/testdata/render_contract/secrets-components.json",
+					"internal/templates/project/skills/forge/deploy/external-secrets/SKILL.md",
 					// The Flux chart's controller RBAC (rbac = "namespaced") is Kubernetes
 					// ClusterRoles/RoleBindings for the controllers' ServiceAccounts: pod
 					// identity on the deploy surface, in its skill, runbook and changelog.

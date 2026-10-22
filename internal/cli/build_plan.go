@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/goexec"
 
@@ -148,11 +149,7 @@ func planBuild(ctx context.Context, in planInputs) buildPlanReport {
 	// 2. Frontend production builds (`npm run build` in each frontend dir).
 	for _, fe := range in.targets.frontends {
 		step := buildPlanStep{kind: "frontend", name: fe.Name, what: "npm run build in " + fe.DeclaredDir()}
-		if in.opts.composition != nil && in.opts.plan && kclFrontendHasSource(in.entities, fe.Name) {
-			step.what = "pending source materialization from immutable Git pin (read-only plan does not fetch)"
-		} else {
-			step.problem = planFrontendBuild(fe.DeclaredDir())
-		}
+		step.problem = planFrontendBuild(fe.DeclaredDir())
 		report.steps = append(report.steps, step)
 	}
 
@@ -271,18 +268,7 @@ func planFrontendBuild(dir string) string {
 // images, and RemoteBuild, which the real build refuses outright.
 func planKCLDockerRemote(in planInputs) []buildPlanStep {
 	var out []buildPlanStep
-	workloads := in.entities.Workloads
-	if in.opts.composition != nil {
-		units, err := compositionBuildUnits(in.entities)
-		if err != nil {
-			return []buildPlanStep{{problem: err.Error()}}
-		}
-		workloads = nil
-		for _, unit := range units {
-			workloads = append(workloads, unit[0])
-		}
-	}
-	for _, svc := range workloads {
+	for _, svc := range in.entities.Workloads {
 		b := svc.Build
 		switch b.Type {
 		case "docker":
@@ -344,20 +330,21 @@ func planExternalBuilds(in planInputs) []buildPlanStep {
 	if len(svcs) == 0 {
 		return nil
 	}
-	units, aliases, err := externalBuildUnits(svcs, in.opts, in.resolvedTag, in.projectDir)
-	if err != nil {
-		return []buildPlanStep{{kind: "external", name: svcs[0].Name, what: "ShellBuild", problem: err.Error()}}
-	}
 	var out []buildPlanStep
-	for _, owner := range units {
-		spec := externalBuildSpec(owner, in.opts, in.resolvedTag, in.projectDir)
-		step := buildPlanStep{kind: "external", name: spec.Service, what: fmt.Sprintf("ShellBuild (tag %s)", spec.Tag)}
-		if consumers := aliases[owner.Name]; len(consumers) > 0 {
-			names := []string{owner.Name}
-			for _, svc := range consumers {
-				names = append(names, svc.Name)
-			}
-			step.what += "; shared artifact for " + strings.Join(names, ", ")
+	for _, svc := range svcs {
+		tag := externalBuildTag(svc, in.resolvedTag, in.opts)
+		spec := buildtarget.Spec{
+			Service:    svc.Name,
+			Image:      svc.Image,
+			Tag:        tag,
+			ProjectDir: in.projectDir,
+			BuildCmd:   svc.EffectiveBuildCmd(),
+			BuildCwd:   svc.EffectiveBuildCwd(),
+			BuildEnv:   svc.EffectiveBuildEnv(),
+		}
+		step := buildPlanStep{kind: "external", name: svc.Name, what: fmt.Sprintf("ShellBuild (tag %s)", tag)}
+		if _, err := buildtarget.ResolveCwd(spec); err != nil {
+			step.problem = err.Error()
 		}
 		out = append(out, step)
 	}

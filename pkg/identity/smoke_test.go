@@ -33,7 +33,7 @@ import (
 )
 
 // zitadelImage is the version the managed-identity deployment pins (FI9 / CI0).
-const zitadelImage = "ghcr.io/zitadel/zitadel:v4.19.5"
+const zitadelImage = "ghcr.io/zitadel/zitadel:v4.19.4"
 
 func docker(t *testing.T, args ...string) string {
 	t.Helper()

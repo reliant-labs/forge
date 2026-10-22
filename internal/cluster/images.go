@@ -54,8 +54,6 @@ type WorkloadImage struct {
 	// what matters, and forge's `job` expansion puts real application images
 	// in init containers.
 	Container string
-	// Init distinguishes a named init slot from a main/sidecar slot.
-	Init bool
 	// Image is the reference exactly as declared, unparsed:
 	// "ghcr.io/acme/api@sha256:..." or "ghcr.io/acme/api:v1.2.3".
 	Image string
@@ -220,13 +218,12 @@ func parseWorkloadImages(raw []byte) ([]WorkloadImage, error) {
 			continue
 		}
 		all := append(append([]containerJSON{}, tmpl.Spec.InitContainers...), tmpl.Spec.Containers...)
-		for i, c := range all {
+		for _, c := range all {
 			if strings.TrimSpace(c.Image) != "" {
 				images = append(images, WorkloadImage{
 					Kind:      item.Kind,
 					Name:      item.Metadata.Name,
 					Container: c.Name,
-					Init:      i < len(tmpl.Spec.InitContainers),
 					Image:     c.Image,
 				})
 			}
@@ -238,7 +235,6 @@ func parseWorkloadImages(raw []byte) ([]WorkloadImage, error) {
 					Kind:      item.Kind,
 					Name:      item.Metadata.Name,
 					Container: c.Name,
-					Init:      i < len(tmpl.Spec.InitContainers),
 					Image:     e.Value,
 					EnvVar:    e.Name,
 				})

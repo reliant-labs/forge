@@ -26,9 +26,7 @@ import (
 //     the generated ConnectPath constant, not the kebab runtime name.
 //   - svc must implement mountkit.Registrar (mountkit panics otherwise —
 //     a non-service in the mount loop is a boot-time programming error).
-//   - mountOpts forward to mountkit: mountkit.WithHandlerOptions adds Connect
-//     handler options to this service alone, after HandlerOpts (so the shared
-//     chain wraps them); mountkit.WithHTTPStack wraps its plain-HTTP routes.
+//   - mountOpts forward to mountkit (e.g. mountkit.WithHTTPStack).
 //
 // Mount panics if Server.Mux is nil: a composition root calling Mount has
 // opted into the Mux ergonomics, so a nil Mux is a wiring bug to surface

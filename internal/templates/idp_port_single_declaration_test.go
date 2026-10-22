@@ -51,12 +51,17 @@ func TestIdPPort_DeclaredOnceInKCL(t *testing.T) {
 		t.Run(tmpl, func(t *testing.T) {
 			src := renderDevMainK(t, tmpl)
 
-			// The persistent free-port resolver chooses once and then reuses the
-			// exact origin, even while busy. A fixed block could land the IdP
-			// on another worktree's HyperDX port (8080 + 100 == 8180).
-			bind := regexp.MustCompile(`_idp_port\s*=\s*plugin\.resolve_port\("demo-dev-idp", 8080\)`)
+			// 1. The port is BOUND to a variable, using the deterministic
+			//    allocator. resolve_port would be wrong here and the choice
+			//    is load-bearing: Zitadel bakes the origin it is reached on
+			//    into the `iss` of every token it mints, so a port that
+			//    steps off a busy neighbour between runs invalidates issued
+			//    tokens and the registered redirect URI.
+			bind := regexp.MustCompile(`_idp_port\s*=\s*plugin\.allocate_port\(`)
 			if !bind.MatchString(src) {
-				t.Fatal("the host IdP must use one stable, availability-checked reservation")
+				t.Fatalf("dev KCL does not bind _idp_port with plugin.allocate_port — " +
+					"the IdP port must be ONE deterministic declaration (resolve_port would let it float, " +
+					"and the issuer cannot float)")
 			}
 
 			// 2. The IdP itself binds it. Without this the declaration moves

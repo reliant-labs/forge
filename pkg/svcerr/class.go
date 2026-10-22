@@ -33,9 +33,8 @@ const (
 	// correctly by refusing. Not a page.
 	ClassUser
 
-	// ClassCanceled: the call was cut short by one end going away — the
-	// caller (context.Canceled, ErrCanceled, CodeCanceled), or this replica
-	// draining for a rollout (ErrServerDraining). Nobody has to act.
+	// ClassCanceled: the caller went away (context.Canceled, ErrCanceled,
+	// CodeCanceled). Nobody has to act.
 	ClassCanceled
 )
 
@@ -76,11 +75,7 @@ type Classed interface {
 //     what the code alone cannot — "the user's machine is offline" travels
 //     as Unavailable, which by kind is a server fault.
 //  3. A cancellation — context.Canceled, ErrCanceled, or a *connect.Error
-//     with CodeCanceled — is ClassCanceled. So is a drain
-//     (ErrServerDraining): the client reads Unavailable, which by kind is a
-//     server fault, but a replica ending its calls because a rollout is
-//     replacing it is the platform working, and one ERROR per connected
-//     client per deploy buried the faults.
+//     with CodeCanceled — is ClassCanceled.
 //  4. Otherwise the kind decides, through the same code the client receives
 //     ([Code]). The client-fault kinds are ClassUser: InvalidArgument,
 //     NotFound, AlreadyExists, PermissionDenied, Unauthenticated,
@@ -121,9 +116,8 @@ func Classify(err error) Class {
 	if class := explicitClass(err); class != ClassNone {
 		return class
 	}
-	// errors.Is, not the client view: a canceled cause counts (see above),
-	// and so does a drain behind a handler's own label.
-	if IsCanceled(err) || IsServerDraining(err) {
+	// errors.Is, not the client view: a canceled cause counts (see above).
+	if IsCanceled(err) {
 		return ClassCanceled
 	}
 	switch Code(err) {

@@ -65,7 +65,6 @@ var constructors = map[string]func(string) error{
 	"PlanLimit":           svcerr.PlanLimit,
 	"InsufficientBalance": svcerr.InsufficientBalance,
 	"Expired":             svcerr.Expired,
-	"Draining":            svcerr.Draining,
 	"ScaffoldStub":        svcerr.ScaffoldStub,
 }
 

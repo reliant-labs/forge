@@ -54,7 +54,6 @@ import (
 	"github.com/reliant-labs/forge/internal/envutil"
 	"github.com/reliant-labs/forge/internal/shellrun"
 	"github.com/reliant-labs/forge/internal/statefile"
-	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // Spec is the per-service build-target shape consumed by the runner.
@@ -98,11 +97,6 @@ type Spec struct {
 	// BuildEnv carries the ShellBuild's declared `env` map, merged onto
 	// the process environment for the command (declared keys win).
 	BuildEnv map[string]string
-
-	// RequireReceipt opts into the immutable-release builder protocol. Legacy
-	// local builds do not claim receipt-backed provenance or automatic reuse.
-	RequireReceipt      bool
-	ExpectedInputDigest string
 }
 
 // commandRunner is the same indirection the deploytarget providers
@@ -209,7 +203,6 @@ type BuildResult struct {
 	SkipMsg  string
 	Duration time.Duration
 	Err      error
-	Receipt  *release.BuildReceipt
 }
 
 // Build runs spec.BuildCmd through `sh -c` after substituting tokens
@@ -265,27 +258,7 @@ func (r Runner) Build(ctx context.Context, spec Spec) BuildResult {
 	// spaces or shell metacharacters. RunInDir with an empty dir leaves
 	// cmd.Dir unset, inheriting the host cwd (== ProjectDir for forge
 	// build) — matching the prior no-cwd behavior.
-	buildEnv := make(map[string]string, len(spec.BuildEnv)+1)
-	for k, v := range spec.BuildEnv {
-		buildEnv[k] = v
-	}
-	// Never leak an outer build invocation's receipt destination into a child.
-	buildEnv[ReceiptPathEnv] = ""
-	var receiptPath string
-	if spec.RequireReceipt {
-		dir, err := os.MkdirTemp("", "forge-build-receipt-*")
-		if err != nil {
-			result.Err = err
-			return result
-		}
-		defer func() { _ = os.RemoveAll(dir) }()
-		receiptPath = filepath.Join(dir, "receipt.json")
-		buildEnv[ReceiptPathEnv] = receiptPath
-	}
-	err := runner.RunShell(ctx, cwd, buildEnv, spec.BuildCmd)
-	if err == nil && spec.RequireReceipt {
-		result.Receipt, err = ReadReceipt(receiptPath, spec.ExpectedInputDigest)
-	}
+	err := runner.RunShell(ctx, cwd, spec.BuildEnv, spec.BuildCmd)
 	result.Err = err
 	result.Duration = time.Since(start)
 	return result

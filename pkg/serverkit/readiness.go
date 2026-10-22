@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 )
 
@@ -96,7 +97,7 @@ func DBReadyCheck(name string, db *sql.DB) ReadyCheck {
 // readyzResponse is the JSON body of /readyz. Additive: new fields may
 // appear; existing keys keep their meaning.
 type readyzResponse struct {
-	Status string              `json:"status"` // "ready" | "not_ready" | "draining"
+	Status string              `json:"status"` // "ready" | "not_ready"
 	Checks []readyzCheckStatus `json:"checks,omitempty"`
 }
 
@@ -107,9 +108,9 @@ type readyzCheckStatus struct {
 	OK   bool   `json:"ok"`
 }
 
-// readyzHandler builds the GET /readyz handler (Drainer.ReadinessHandler).
+// readyzHandler builds the GET /readyz handler.
 //
-// gate is the listener-bound / not-draining gate; when it is closed the
+// ready is the listener-bound / not-draining gate; when it is false the
 // checks are skipped entirely, because a process that has not bound or is
 // already draining is not ready regardless of what its dependencies say
 // (and probing them during shutdown only slows the drain).
@@ -117,13 +118,9 @@ type readyzCheckStatus struct {
 // All checks share ONE deadline rather than getting one each, so the
 // endpoint's worst-case latency stays bounded as checks are added — a
 // probe with a timeoutSeconds cannot be asked to wait N × timeout.
-func readyzHandler(gate *Drainer, checks []ReadyCheck, timeout time.Duration, logger *slog.Logger) http.HandlerFunc {
+func readyzHandler(ready *atomic.Bool, checks []ReadyCheck, timeout time.Duration, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if gate.Draining() {
-			writeReadyz(w, http.StatusServiceUnavailable, readyzResponse{Status: "draining"})
-			return
-		}
-		if !gate.Ready() {
+		if !ready.Load() {
 			writeReadyz(w, http.StatusServiceUnavailable, readyzResponse{Status: "not_ready"})
 			return
 		}

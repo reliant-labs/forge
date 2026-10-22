@@ -72,6 +72,16 @@ func fullyDeclaredShape() release.Shape {
 			Consumers:  []release.ShapeIdentityConsumer{{Workload: "api", Application: "prod:api"}},
 			Deliveries: []release.ShapeIdentityDelivery{delivery},
 		},
+		StoreSecrets: []release.ShapeStoreSecret{{
+			Cluster: "prod-ctx", ConnectedCluster: "prod", Namespace: "app", Store: release.StoreOpenBao,
+			Names: []string{"SIGNING_KEY", "SIGNING_PUB"}, Pins: []release.ShapeStorePin{{Name: "SIGNING_KEY", Version: 2}},
+			Immutable: []string{"SIGNING_PUB"},
+		}},
+		GeneratedSecrets: []release.ShapeGeneratedSecret{{Store: release.StoreOpenBao, Kind: "rsa_2048", Names: []string{"SIGNING_KEY", "SIGNING_PUB"}}},
+		OpenBao:          &release.ShapeOpenBao{Name: "openbao", Namespace: "openbao", Cluster: "prod-ctx", ConnectedCluster: "prod", Image: "quay.io/openbao/openbao:2.6.2"},
+		ExternalSecretsOperators: []release.ShapeExternalSecretsOperator{
+			{Cluster: "prod-ctx", ConnectedCluster: "prod", Namespace: "external-secrets", Version: "2.13.0"},
+		},
 		Applier: release.ApplierForge,
 		Units: []release.ShapeUnit{
 			{Name: "base", Applier: release.UnitApplierForge},

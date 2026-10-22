@@ -437,6 +437,20 @@ type Shape struct {
 	// it is recorded on every ensure. Omitted when empty, so an env that
 	// declares none encodes, and hashes, exactly as it did before the field.
 	ControlPlaneSecrets []ShapeControlPlaneSecret `json:"control_plane_secrets,omitempty"`
+	// StoreSecrets are the store names each namespace of each cluster reads
+	// from a secret store (forge.ExternalSecret with a forge.StoreSource), with
+	// their version pins: what a control plane builds a secretaccess.Request
+	// from. GeneratedSecrets are the values to mint when the store has none,
+	// OpenBao and ExternalSecretsOperators the components the env declares and
+	// where. Names, versions and recipes; never a value. All omitted when the
+	// env declares none, so every shape recorded before them encodes and hashes
+	// exactly as it did; a control plane that predates them refuses the shape,
+	// so they are a bundle-document feature ([BundleFeatureStoreSecrets]). See
+	// store_secrets.go.
+	StoreSecrets             []ShapeStoreSecret             `json:"store_secrets,omitempty"`
+	GeneratedSecrets         []ShapeGeneratedSecret         `json:"generated_secrets,omitempty"`
+	OpenBao                  *ShapeOpenBao                  `json:"openbao,omitempty"`
+	ExternalSecretsOperators []ShapeExternalSecretsOperator `json:"external_secrets_operators,omitempty"`
 	// Alerts are the env's resolved alert rules: its own (forge.AlertRule) plus
 	// the generated defaults it did not disable, each tagged with its source.
 	// The control plane evaluates them; a rollback restores the rules of the
@@ -1048,6 +1062,9 @@ func (s Shape) Validate() error {
 		}
 		delivered[c.Key()] = true
 	}
+	if err := s.validateStoreSecrets(); err != nil {
+		return err
+	}
 	if s.Identity != nil {
 		if err := s.Identity.validate(s.ControlPlaneSecrets); err != nil {
 			return err
@@ -1147,6 +1164,7 @@ func (s Shape) Canonical() Shape {
 			return out.ControlPlaneSecrets[i].Key() < out.ControlPlaneSecrets[j].Key()
 		})
 	}
+	s.canonicalStoreSecrets(&out)
 	if s.ObservabilityPolicy != nil {
 		pol := *s.ObservabilityPolicy
 		pol.Disabled = sortedStrings(pol.Disabled)

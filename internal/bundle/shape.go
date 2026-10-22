@@ -59,6 +59,11 @@ type ShapeInput struct {
 	// destinations; a value never reaches forge.
 	ControlPlaneSecrets []release.ShapeControlPlaneSecret
 
+	// Store is the env's store-backed secrets and the components that serve
+	// them (release.ProjectStoreSecrets over the render), already in shape
+	// vocabulary. The zero value records nothing.
+	Store release.StoreProjection
+
 	// Alerts and AlertRoutes are the env's resolved alert rules and routes,
 	// already in shape vocabulary (see release.ShapeAlert).
 	Alerts      []release.ShapeAlert
@@ -130,7 +135,7 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		Identity:            in.Identity,
 		Applier:             in.Applier,
 		Units:               in.Units,
-	}.Canonical()
+	}.WithStoreSecrets(in.Store).Canonical()
 }
 
 // projectObjects turns the manifest stream into the shape's objects, through

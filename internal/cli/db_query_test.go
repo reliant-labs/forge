@@ -37,7 +37,7 @@ func runDBQueryCmd(t *testing.T, args ...string) (string, error) {
 	// "nothing promoted yet".
 	if !releaseStubbed {
 		prev := liveReleaseAt
-		liveReleaseAt = func(context.Context, string, time.Time) (*dbQueryRelease, error) { return nil, nil }
+		liveReleaseAt = func(context.Context, string, time.Time) (*liveRelease, error) { return nil, nil }
 		t.Cleanup(func() { liveReleaseAt = prev })
 	}
 	cmd := newDBCmd()
@@ -305,12 +305,12 @@ func TestDBQueryStampsTheLiveRelease(t *testing.T) {
 	releaseStubbed = true
 	t.Cleanup(func() { liveReleaseAt, releaseStubbed = prev, false })
 	var asked string
-	liveReleaseAt = func(_ context.Context, env string, at time.Time) (*dbQueryRelease, error) {
+	liveReleaseAt = func(_ context.Context, env string, at time.Time) (*liveRelease, error) {
 		asked = env
 		if at.IsZero() {
 			t.Error("the lookup was not given the query time")
 		}
-		return &dbQueryRelease{Version: "v1.4.2", PromotionID: "p-9", PromotedAt: at.Add(-time.Hour)}, nil
+		return &liveRelease{Version: "v1.4.2", PromotionID: "p-9", PromotedAt: at.Add(-time.Hour)}, nil
 	}
 	out, err := runDBQueryCmd(t, "dev", "select 1 as n", "--json")
 	if err != nil {
@@ -324,7 +324,7 @@ func TestDBQueryStampsTheLiveRelease(t *testing.T) {
 		t.Errorf("table footer: %v\n%s", err, out)
 	}
 
-	liveReleaseAt = func(context.Context, string, time.Time) (*dbQueryRelease, error) {
+	liveReleaseAt = func(context.Context, string, time.Time) (*liveRelease, error) {
 		return nil, errors.New("ledger unreadable")
 	}
 	cmd := newDBCmd()

@@ -31,6 +31,8 @@ type obsDeps struct {
 	Facts func(ctx context.Context, errOut io.Writer, env string) (obsbackend.Facts, error)
 	// Local builds the backend over the env's local ClickStack.
 	Local func(env string) obsbackend.Backend
+	// Release looks up the release live in env at a moment.
+	Release func(ctx context.Context, env string, at time.Time) (*liveRelease, error)
 	// Now is the clock.
 	Now func() time.Time
 	// Stdout and Stderr are the verb's writers.
@@ -45,9 +47,10 @@ func defaultObsDeps(cmd *cobra.Command) obsDeps {
 		Local: func(env string) obsbackend.Backend {
 			return obsbackend.Local{Env: env, Runner: obsbackend.DockerRunner{Exec: localClickstackExec(env), Env: env}}
 		},
-		Now:    time.Now,
-		Stdout: cmd.OutOrStdout(),
-		Stderr: cmd.ErrOrStderr(),
+		Release: liveReleaseAt,
+		Now:     time.Now,
+		Stdout:  cmd.OutOrStdout(),
+		Stderr:  cmd.ErrOrStderr(),
 	}
 	if o := obsDepsOverride; o != nil {
 		if o.Facts != nil {
@@ -55,6 +58,9 @@ func defaultObsDeps(cmd *cobra.Command) obsDeps {
 		}
 		if o.Local != nil {
 			d.Local = o.Local
+		}
+		if o.Release != nil {
+			d.Release = o.Release
 		}
 		if o.Now != nil {
 			d.Now = o.Now

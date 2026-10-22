@@ -9,10 +9,10 @@ import (
 	"github.com/reliant-labs/forge/internal/releasetimeline"
 )
 
-// dbQueryRelease is the release that was live in the env when a query ran:
-// what lets an agent line rows up with the telemetry and the change history
-// (`forge env releases at`, `forge obs issue`).
-type dbQueryRelease struct {
+// liveRelease is the release that was live in an env at a moment (a query, a
+// trace): what lets an agent line rows and telemetry up with the change that
+// shipped (`forge env releases at`).
+type liveRelease struct {
 	Version     string    `json:"version"`
 	PromotionID string    `json:"promotion_id,omitempty"`
 	PromotedAt  time.Time `json:"promoted_at"`
@@ -21,16 +21,16 @@ type dbQueryRelease struct {
 	Unsettled bool `json:"unsettled,omitempty"`
 }
 
-// dbQueryReleaseTimeout bounds the release lookup. It is context for the
+// liveReleaseTimeout bounds the release lookup. It is context for the
 // rows, never a reason to withhold them.
-const dbQueryReleaseTimeout = 10 * time.Second
+const liveReleaseTimeout = 10 * time.Second
 
 // liveReleaseAt reads env's release ledger (the machine ledger or the
 // control plane, as `forge env releases` does) and returns the release live at
 // at. A nil release with a nil error means nothing was promoted yet (a dev
 // env that only ever ran `env up`). A variable so a test can substitute it.
-var liveReleaseAt = func(ctx context.Context, env string, at time.Time) (*dbQueryRelease, error) {
-	ctx, cancel := context.WithTimeout(ctx, dbQueryReleaseTimeout)
+var liveReleaseAt = func(ctx context.Context, env string, at time.Time) (*liveRelease, error) {
+	ctx, cancel := context.WithTimeout(ctx, liveReleaseTimeout)
 	defer cancel()
 	b, err := openReleasesBackend(ctx, env)
 	if err != nil {
@@ -44,17 +44,17 @@ var liveReleaseAt = func(ctx context.Context, env string, at time.Time) (*dbQuer
 }
 
 // releaseFromAt projects the live promotion of an At answer.
-func releaseFromAt(r releasetimeline.AtResult) *dbQueryRelease {
+func releaseFromAt(r releasetimeline.AtResult) *liveRelease {
 	if r.Live == nil {
 		return nil
 	}
-	return &dbQueryRelease{Version: r.Live.Version, PromotionID: r.Live.PromotionID, PromotedAt: r.Live.At.UTC(), Unsettled: r.Unsettled}
+	return &liveRelease{Version: r.Live.Version, PromotionID: r.Live.PromotionID, PromotedAt: r.Live.At.UTC(), Unsettled: r.Unsettled}
 }
 
-// stampRelease looks the live release up, warning on errOut (never failing
-// the query) when the ledger cannot be read.
-func stampRelease(ctx context.Context, errOut io.Writer, env string, at time.Time) *dbQueryRelease {
-	rel, err := liveReleaseAt(ctx, env, at)
+// stampRelease looks the live release up with lookup, warning on errOut
+// (never failing the verb) when the ledger cannot be read.
+func stampRelease(ctx context.Context, lookup func(context.Context, string, time.Time) (*liveRelease, error), errOut io.Writer, env string, at time.Time) *liveRelease {
+	rel, err := lookup(ctx, env, at)
 	if err != nil {
 		fmt.Fprintf(errOut, "warning: the release live in %s is unknown: %v\n", env, err)
 		return nil

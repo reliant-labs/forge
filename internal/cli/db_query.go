@@ -154,7 +154,7 @@ type dbQueryDocument struct {
 	Reason string `json:"reason,omitempty"`
 	// Release is the release live in the env when the query ran; absent when
 	// nothing was promoted yet or the ledger could not be read.
-	Release *dbQueryRelease `json:"release,omitempty"`
+	Release *liveRelease `json:"release,omitempty"`
 	*dbquery.Result
 }
 
@@ -170,7 +170,7 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o d
 	var (
 		scope   *dbQueryScope
 		ranAt   time.Time
-		release *dbQueryRelease
+		release *liveRelease
 	)
 	res, err := func() (*dbquery.Result, error) {
 		if err := validateDBQueryFlags(o); err != nil {
@@ -206,7 +206,7 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o d
 	}()
 
 	if !ranAt.IsZero() {
-		release = stampRelease(ctx, errOut, o.env, ranAt)
+		release = stampRelease(ctx, liveReleaseAt, errOut, o.env, ranAt)
 	}
 	if o.format == "json" {
 		doc := dbQueryDocument{Schema: dbQuerySchema, Scope: scope, Release: release, Result: res}
@@ -412,7 +412,7 @@ func writeDBQueryCSV(out io.Writer, res *dbquery.Result) error {
 // carries the whole value.
 const maxTableCell = 80
 
-func writeDBQueryTable(out io.Writer, res *dbquery.Result, rel *dbQueryRelease) error {
+func writeDBQueryTable(out io.Writer, res *dbquery.Result, rel *liveRelease) error {
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	names := make([]string, len(res.Columns))
 	for i, c := range res.Columns {

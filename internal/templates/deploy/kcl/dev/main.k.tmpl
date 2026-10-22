@@ -350,10 +350,10 @@ _telemetry_workloads = ([fw.Workload {
     # one from PATH. It listens on all interfaces because the Alertmanager
     # container delivers to it through the docker bridge; a bearer token
     # forge generates guards it. Drop this and `alertmanager` to stop local
-    # alerting (`forge observe alerts check` still evaluates once).
+    # alerting (`forge obs alerts check` still evaluates once).
     name = "alerts"
     kind = "worker"
-    command = ["forge", "observe", "alerts", "run", "--env", "{{.EnvName}}",
+    command = ["forge", "obs", "alerts", "run", "--env", "{{.EnvName}}",
         "--alertmanager", "http://127.0.0.1:${_alertmanager_port}", "--listen", "0.0.0.0:${_alerts_port}"]
     runtime = forge.OnHost {listen_ports = [_alerts_port]}
 }]) if _observability else []

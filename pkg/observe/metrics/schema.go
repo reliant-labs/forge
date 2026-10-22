@@ -17,7 +17,7 @@ const SchemaVersion = "forge.metrics/v1"
 // Schema is the machine-readable declaration of every metric a service emits.
 // It is what `<bin> metrics schema --json`, GET /debug/metrics/schema, the
 // release bundle's observability/metrics-schema.json and
-// `forge observe metrics` print.
+// `forge obs metrics declared` print.
 type Schema struct {
 	SchemaVersion string `json:"schema_version"`
 	// Service is the service.name the metrics are reported under.

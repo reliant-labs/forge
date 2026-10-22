@@ -25,7 +25,7 @@ const cliRows = `{"frames":["main.main","main.work"],"unit":"nanoseconds","value
 func TestObserveProfileFoldedForTheOnlyProfiledService(t *testing.T) {
 	run, _ := fakeProfileRunner(`{"service":"api","rows":"9"}`+"\n", cliRows)
 	var out, errb bytes.Buffer
-	err := runObserveProfile(context.Background(), &out, &errb, observeProfileOpts{sampleType: "cpu", since: time.Hour, format: "folded"}, run)
+	err := runObsProfile(context.Background(), &out, &errb, obsProfileOpts{sampleType: "cpu", since: time.Hour, format: "folded"}, run)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestObserveProfileFoldedForTheOnlyProfiledService(t *testing.T) {
 
 func TestObserveProfileAsksWhichServiceWhenSeveralSentProfiles(t *testing.T) {
 	run, _ := fakeProfileRunner(`{"service":"api","rows":"9"}`+"\n"+`{"service":"worker","rows":"3"}`+"\n", cliRows)
-	err := runObserveProfile(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, observeProfileOpts{sampleType: "cpu", since: time.Hour, format: "folded"}, run)
+	err := runObsProfile(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, obsProfileOpts{sampleType: "cpu", since: time.Hour, format: "folded"}, run)
 	if err == nil || !strings.Contains(err.Error(), "api, worker") {
 		t.Errorf("want an error naming both services, got %v", err)
 	}
@@ -44,11 +44,11 @@ func TestObserveProfileAsksWhichServiceWhenSeveralSentProfiles(t *testing.T) {
 
 func TestObserveProfileSaysWhyWhenThereIsNothing(t *testing.T) {
 	run, _ := fakeProfileRunner("", "")
-	err := runObserveProfile(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, observeProfileOpts{sampleType: "cpu", since: time.Hour, format: "folded"}, run)
+	err := runObsProfile(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, obsProfileOpts{sampleType: "cpu", since: time.Hour, format: "folded"}, run)
 	if err == nil || !strings.Contains(err.Error(), "no service has sent profiles") {
 		t.Errorf("got %v", err)
 	}
-	err = runObserveProfile(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, observeProfileOpts{service: "api", sampleType: "cpu", since: time.Hour, format: "folded"}, run)
+	err = runObsProfile(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, obsProfileOpts{service: "api", sampleType: "cpu", since: time.Hour, format: "folded"}, run)
 	if err == nil || !strings.Contains(err.Error(), "no profile samples") {
 		t.Errorf("got %v", err)
 	}
@@ -59,7 +59,7 @@ func TestObserveProfileSQLFlagRunsNothing(t *testing.T) {
 		return nil, errors.New("must not run")
 	}
 	var out bytes.Buffer
-	err := runObserveProfile(context.Background(), &out, &bytes.Buffer{}, observeProfileOpts{service: "api", sampleType: "cpu", since: time.Hour, format: "pprof", printSQL: true}, run)
+	err := runObsProfile(context.Background(), &out, &bytes.Buffer{}, obsProfileOpts{service: "api", sampleType: "cpu", since: time.Hour, format: "pprof", printSQL: true}, run)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,13 +70,13 @@ func TestObserveProfileSQLFlagRunsNothing(t *testing.T) {
 
 func TestObserveProfileRejectsBadInput(t *testing.T) {
 	run, _ := fakeProfileRunner("", "")
-	for name, o := range map[string]observeProfileOpts{
+	for name, o := range map[string]obsProfileOpts{
 		"bad format":         {service: "a", sampleType: "cpu", since: time.Hour, format: "svg"},
 		"span without trace": {service: "a", sampleType: "cpu", since: time.Hour, format: "folded", span: "ab"},
 		"empty range":        {service: "a", sampleType: "cpu", since: 0, format: "folded"},
 		"bad from":           {service: "a", sampleType: "cpu", since: time.Hour, format: "folded", from: "yesterday"},
 	} {
-		if err := runObserveProfile(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, o, run); err == nil {
+		if err := runObsProfile(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, o, run); err == nil {
 			t.Errorf("%s: want an error", name)
 		}
 	}
@@ -85,7 +85,7 @@ func TestObserveProfileRejectsBadInput(t *testing.T) {
 func TestObserveProfileByTraceNeedsNoService(t *testing.T) {
 	run, seen := fakeProfileRunner("", cliRows)
 	var out bytes.Buffer
-	err := runObserveProfile(context.Background(), &out, &bytes.Buffer{}, observeProfileOpts{trace: "0af7651916cd43dd8448eb211c80319c", sampleType: "cpu", since: time.Hour, format: "folded"}, run)
+	err := runObsProfile(context.Background(), &out, &bytes.Buffer{}, obsProfileOpts{trace: "0af7651916cd43dd8448eb211c80319c", sampleType: "cpu", since: time.Hour, format: "folded"}, run)
 	if err != nil {
 		t.Fatal(err)
 	}

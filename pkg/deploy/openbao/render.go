@@ -148,6 +148,7 @@ func Render(s Spec) ([]*unstructured.Unstructured, error) {
 		add(s.pdb())
 	}
 	add(s.networkPolicy())
+	add(s.publicObjects()...)
 
 	conv, err := s.converge(doc)
 	if err != nil {
@@ -224,6 +225,9 @@ func (s Spec) service(name string, headless bool) *corev1.Service {
 			n = "api-" + strconv.Itoa(l.Port)
 		}
 		ports = append(ports, corev1.ServicePort{Name: n, Port: int32(l.Port), TargetPort: intstr.FromInt32(int32(l.Port))})
+	}
+	if s.Public != nil {
+		ports = append(ports, corev1.ServicePort{Name: publicPortName, Port: int32(s.Public.Port), TargetPort: intstr.FromInt32(int32(s.Public.Port))})
 	}
 	svc := &corev1.Service{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
@@ -354,6 +358,7 @@ func (s Spec) serverConfig() (string, error) {
 		w("}\n\n")
 	}
 
+	w("%s", s.publicListener())
 	w("seal \"static\" {\n  current_key_id = %q\n  current_key = \"env://BAO_STATIC_KEY\"\n}\n\n", s.Seal.KeyID)
 	w("telemetry {\n  disable_hostname = true\n  prometheus_retention_time = \"24h\"\n}\n")
 	if s.Audit.Stdout {
@@ -400,6 +405,9 @@ func (s Spec) podTemplate(cfg string) corev1.PodTemplateSpec {
 		ports = append(ports, corev1.ContainerPort{Name: n, ContainerPort: int32(l.Port)})
 	}
 	ports = append(ports, corev1.ContainerPort{Name: "cluster", ContainerPort: ClusterPort})
+	if s.Public != nil {
+		ports = append(ports, corev1.ContainerPort{Name: publicPortName, ContainerPort: int32(s.Public.Port)})
+	}
 
 	mounts := []corev1.VolumeMount{
 		{Name: "config", MountPath: "/etc/bao", ReadOnly: true},
@@ -609,19 +617,23 @@ func (s Spec) networkPolicy() *networkingv1.NetworkPolicy {
 		}
 		from = append(from, peer)
 	}
+	rules := []networkingv1.NetworkPolicyIngressRule{
+		{From: from, Ports: apiPorts},
+		{
+			From:  []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{MatchLabels: s.selector()}}},
+			Ports: append(slices.Clone(apiPorts), port(ClusterPort)),
+		},
+	}
+	if r, ok := s.publicIngressRule(); ok {
+		rules = append(rules, r)
+	}
 	return &networkingv1.NetworkPolicy{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
 		ObjectMeta: s.meta(s.Name),
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{MatchLabels: s.selector()},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{
-				{From: from, Ports: apiPorts},
-				{
-					From:  []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{MatchLabels: s.selector()}}},
-					Ports: append(slices.Clone(apiPorts), port(ClusterPort)),
-				},
-			},
+			Ingress:     rules,
 		},
 	}
 }

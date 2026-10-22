@@ -21,7 +21,10 @@
 //
 //   - SF7 delivers the Secret [BootstrapSecretName] (the static seal key, and
 //     the Postgres password) and may mount an escrow hook at [EscrowHookPath];
-//   - SF8 adds peers to [Spec.IngressFrom] and a listener host to the TLS names;
+//   - SF8 is [Spec.Public] (public.go): the Gateway-side objects, the proxy
+//     NetworkPolicy rule and the X-Forwarded-For stanza. It needs neither
+//     [Spec.IngressFrom] nor [Spec.ExtraDNSNames]: the Gateway re-encrypts to the
+//     Service's own name, so the certificate never carries the public host;
 //   - SF5 reads the server URL, CA ConfigMap, mount and audience from the
 //     resolved `openbao` block KCL emits beside the record.
 //
@@ -123,6 +126,8 @@ type Spec struct {
 	IngressFrom []Peer `json:"ingressFrom,omitempty"`
 	// ExtraDNSNames are added to the server certificate (the public host).
 	ExtraDNSNames []string `json:"extraDNSNames,omitempty"`
+	// Public publishes the store on a Gateway (public.go). Nil = not published.
+	Public *Public `json:"public,omitempty"`
 }
 
 // Hooks names the ConfigMaps holding the converge Job's optional hooks.
@@ -370,6 +375,8 @@ func (s Spec) Validate() error {
 	if s.Access.Org == "" || s.Access.Env == "" || s.Access.SelfCluster == "" {
 		bad("access needs org, env and selfCluster")
 	}
+
+	errs = append(errs, s.validatePublic()...)
 
 	names := map[string]bool{}
 	for _, c := range s.Consumers {

@@ -19,7 +19,7 @@
 //     stray user id can never become a new time series per user;
 //   - can dump the whole declared set as JSON (Schema), which is what
 //     `<bin> metrics schema --json`, GET /debug/metrics/schema and
-//     `forge observe metrics` print and what the custom-metrics dashboard is
+//     `forge obs metrics declared` print and what the custom-metrics dashboard is
 //     generated from.
 //
 // What it does not do: observable (callback) instruments, and instruments that

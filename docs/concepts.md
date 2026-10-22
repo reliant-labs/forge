@@ -54,7 +54,7 @@ library, not as a documentation problem.
 
 | Category                 | What it is                                                   | Regenerated?           |
 | ------------------------ | ------------------------------------------------------------ | ---------------------- |
-| **Libraries you import** | `serverkit`, `svcerr`, `orm`, `crud`, `observe`              | No — versioned, bumped |
+| **Libraries you import** | `serverkit`, `svcerr`, `orm`, `crud`, `obs`                  | No — versioned, bumped |
 | **Generated tables**     | `mock_gen.go`, `<entity>_orm.go`, `handlers_crud_ops_gen.go` | Yes, every run         |
 | **Scaffold-once, owned** | `serve.go`, `providers.go`, `handlers_crud.go`, migrations   | Never after birth      |
 

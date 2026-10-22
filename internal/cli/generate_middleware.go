@@ -131,9 +131,13 @@ func generateWebhookRoutes(reg *serviceRegistry, projectDir string, cs *generato
 	return nil
 }
 
-// contractPathsUnder lists every contract.go the contracts walk below will
-// generate from — same testdata and cfg.Contracts.Exclude pruning — so one
+// contractPathsUnder lists every file the contracts walk below will generate
+// from — each contract.go, and the marked deps.go of a package without one —
+// with the same testdata and cfg.Contracts.Exclude pruning, so one
 // contract.Resolver can be built over all of them before the walk starts.
+// A deps.go left out of the Resolver still generates, but every interface it
+// embeds from another package resolves to nothing: its mock silently lacks
+// those methods and fails generate's build validation.
 // Walk errors are not fatal here: the generating walk reports them.
 func contractPathsUnder(internalDir, projectDir string, cfg *config.ProjectConfig) []string {
 	var paths []string
@@ -150,6 +154,8 @@ func contractPathsUnder(internalDir, projectDir string, cfg *config.ProjectConfi
 		contractPath := filepath.Join(path, "contract.go")
 		if _, statErr := os.Stat(contractPath); statErr == nil {
 			paths = append(paths, contractPath)
+		} else if os.IsNotExist(statErr) && depsurface.HasDepsMarker(path) {
+			paths = append(paths, filepath.Join(path, depsurface.DepsFileName))
 		}
 		return nil
 	})

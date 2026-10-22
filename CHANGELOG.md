@@ -29,6 +29,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that changes every sync, and one namespace configuring one store kind two ways.
   Nothing renders for a Bundle with no `source`.
 
+
+- **A drained Connect stream parked in `Receive` actually ends, and handlers can
+  stop their own readers: `serverkit.AbortReceive(ctx)`.** A server-side
+  `Receive` reads the request body and no context wakes it; Connect closes the
+  body only after the handler returns. So the drain, which ended streams by
+  cancelling their contexts, never ended a bidi handler blocked in `Receive` (it
+  held the shutdown to the end of the budget), and a handler that read on a
+  goroutine of its own could not stop it before returning — leaving it in
+  `Receive` after the handler returned, which Connect forbids and which races
+  otelconnect's span bookkeeping. `Streams.Install` (every `NewHTTPServer` /
+  `NewListener`) now serves each request with an abortable body; a stream the
+  drain ends has its reads aborted right after its context is cancelled (the
+  read fails with `svcerr.ErrServerDraining`, so the client contract is
+  unchanged), and `serverkit.AbortReceive(ctx)` / `CanAbortReceive(ctx)` let a
+  handler end its own reads (`ErrReceiveAborted`). HTTP/2 closes the body;
+  HTTP/1.1 sets a read deadline, because its `Close` waits for a pending read.
+  The response is untouched, and unary routes are unaffected. Skill:
+  `services/shutdown`.
 - **Boot `/readyz` names the graph node boot is waiting on.** A composition
   root's boot probes used to answer `503 {"status":"not_ready"}` with no checks
   for the whole of graph construction, so a constructor that blocked — a

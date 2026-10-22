@@ -9,10 +9,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Alerts fire locally: `forge env up` closes the alerting loop.**
+  - Beside the local ClickStack, a scaffolded dev env now runs two new pieces:
+    - an `alerts` host workload, `forge observe alerts run`, which evaluates the env's `forge.Alerts` continuously with `for` applied;
+    - a compose `alertmanager` (the v0.28.1 digest the control plane runs).
+  - The Alertmanager's configuration is rendered by `forge/pkg/alerting/amconfig`, the control plane's own renderer, as org `local` with the env name as its env id. So a route reaches the same receiver locally as in production.
+  - The always-present `reliant-inapp` receiver delivers to the evaluator, which writes one line per alert to `.forge/logs/<env>/alerts.log`.
+  - New KCL:
+    - `forge.Alerts.receivers` (`forge.AlertReceiver`: webhook, slack, pagerduty, autopilot), the receivers of an env forge delivers itself. Their secrets are secret-store keys, written as files.
+    - `forge.Observability.alertmanager_port` / `alerts_port`.
+  - A host workload's `command` that starts with `forge` runs the forge that launched the env. Migration: `migrations/v0.1.47/local-alerting`.
+
+### Fixed
+
+- **`forge observe alerts check` and `forge observe profile` reach the ClickStack `forge env up` started.**
+  - env up runs each env's compose services in their own project (`forge-<id>-<env>`). Both commands exec'd into the default project, so they reported a running ClickStack as not running.
+- **`docker compose up <service>` interpolates the whole compose file with every workload's declared env.**
+  - Bringing up `otel-profiles` (which depends on `clickstack`) with only its own variables recreated `clickstack` on the file's default ports. On a machine running a second stack, the bind failed.
+
+- **`forge/pkg/alerting/amconfig`: the Alertmanager configuration renderer.**
+  Moved verbatim from the control plane, which renders every org's routing
+  with it, so a local stack can render with the SAME code: one route per org
+  matched strictly on `reliant_org_id` with a blackhole default, per-org
+  receiver names, secrets as `*_file` references only, autopilot receivers as
+  continue:true observers. `TestNoRouteDeliversAcrossOrgs` runs over
+  Alertmanager's real routing tree. New: `Settings.AllowHTTPWebhooks` (false
+  by default) lets a local stack, whose receivers are the developer's own
+  machine, use plain-http webhooks; a renderer serving several orgs never sets it.
+
+- **`forge.OpenBao` renders (SF6).** `Bundle.openbao = forge.OpenBao {}` now
+  lowers to a `forge.dev/v1alpha1 OpenBao` record that `pkg/deploy/openbao`
+  expands into the secret store and what converges it. Defaults run: Raft x3 on
+  PVCs with `retry_join` auto-join, TLS from a namespaced self-signed
+  cert-manager CA, a static seal, audit to stdout and a file, a PDB and zone
+  spread. `OpenBaoPostgres` renders a Deployment with the cloud-sql-proxy
+  sidecar over Workload Identity. Two content-addressed Jobs run one embedded
+  `converge.sh`: a pre-rollout **widen** (the union of the applied and new
+  access document) and a post-rollout **converge** (initialise, write the
+  recovery Secret before converging anything, apply the document from
+  `pkg/secretaccess`, narrow what it no longer contains, revoke root).
+  `consumers` become exact-grant roles; `delegated` gets the access-admin policy
+  and no KV capability. A plaintext listener needs a `transitional_reason`, a
+  glob `read` needs a `wildcard_read_reason`, and both are listed in the
+  render's `openbao.warnings`. The release shape now records the store-backed
+  secrets, generated names, pins and both components (`forge env shape`).
+  Left for later: the bootstrap source and recovery escrow (hook seams are in
+  the Job), the `public` endpoint, the Raft snapshot CronJob (refused if
+  declared), and the OIDC writer.
+
 - **`forge secret` writes and lists store-sourced secrets, and `forge env secrets
-  verify|adopt` migrate a Secret onto ESO (SF10).** A name a store-backed
+verify|adopt` migrate a Secret onto ESO (SF10).** A name a store-backed
   `forge.ExternalSecret` (`forge.StoreSource`) reads or generates now lives in that
   ExternalSecret's store, whatever the env's `secret_provider` is:
+
   - `forge secret set` / `list` reach a `HostedStore` through the control plane's
     write-only API, a `GCPSecretManagerStore` with Application Default
     Credentials, and a self-run `OpenBaoStore` by signing in as the
@@ -22,13 +71,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `forge secret import` copies existing values in, create-only (check-and-set
     0; for Secret Manager, "no usable version yet"), so a re-run can never
     overwrite a value that was rotated since. `--from <ns>/<secret> --map
-    key=NAME` reads a cluster Secret with your kube context; a NAME with a value
+key=NAME` reads a cluster Secret with your kube context; a NAME with a value
     on stdin or `--from-file` imports one. `--to-bootstrap [--project]` writes a
     `BootstrapSecret`'s Secret Manager container. `--dry-run` reads and reports.
   - `forge env secrets verify <env> [<secret>]` compares a live Secret with the
     store's copy per key, and prints `match` / `no-match` and which side is
     missing: by default against `<name>-eso-shadow` (a source with `shadow =
-    True`), or `--against gsm:<project>` for the Secret Manager parity check.
+True`), or `--against gsm:<project>` for the Secret Manager parity check.
   - `forge env secrets adopt <env> <ns>/<secret>` strips the stale
     `kubectl.kubernetes.io/last-applied-configuration` annotation (a full copy of
     the applied values) and asserts nothing owns the Secret by ownerReference.
@@ -523,6 +572,22 @@ generate` runs the same check. `project new` never took a heavy slot and still
   `GOOS`/`GOARCH`, …) and is never replaced once published, so a process can
   no longer have the binary it runs swapped for a differently-built one. The
   e2e shard writes its files under `$RUNNER_TEMP`, outside the checkout.
+- **A project without codegen works straight after `project new`.**
+  `forge project new --disable codegen` (the frontend-only shape) printed "initial
+  code generation failed", and `forge generate`, `go build` and `forge lint` all
+  failed on it. Its go.mod required and replaced a `<mod>/gen` module that only
+  codegen writes; it got no go.work, so `--link-forge` had nothing to bridge;
+  and `cmd/<bin>/cmd/root.go` called `rootCommands`, which only the codegen
+  lane defines. Now gen's require, replace, `gen/go.mod` and go.work's
+  `use gen` follow one predicate, every kind that imports forge gets a go.work,
+  and the scaffold (then `forge generate`) writes a `roots_gen.go` whose
+  `rootCommands` returns no roots, plus the `metrics schema` command every
+  other service has, so root.go is the same file in every shape. The other
+  `--disable` values were already green; `TestE2EProjectNewDisableShapes` now
+  scaffolds, generates, builds and lints every one. `--service` with
+  `--disable codegen`, and `--frontend` with `--disable frontend`, are refused
+  up front: they used to drop the component without a word (the latter left an
+  empty `frontends/<name>/`).
 - **Every `forge scaffold <noun>` leaves the project lint-green, with no
   `forge generate` after it.** `scaffold frontend` wrote
   `proto/config/v1/<fe>_config.proto` and stopped, so `gen/forge_descriptor.json`

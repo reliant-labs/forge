@@ -21,3 +21,27 @@ func composeSpecFor(projectDir, env string, cm *ComposeRuntime) *deploytarget.Co
 	}
 	return spec
 }
+
+// withComposeFileEnv adds to spec.Env what every OTHER workload on the same
+// compose file declares, under the workload's own entries (its own value
+// wins a collision). `docker compose up <svc>` interpolates the WHOLE file
+// and starts, or recreates, whatever <svc> depends_on: otel-profiles depends
+// on clickstack, so bringing it up with only its own variables recreated
+// clickstack on the file's default ports, which on a machine running a
+// second stack belong to that stack, and the bind failed.
+func withComposeFileEnv(spec *deploytarget.ComposeSpec, cm *ComposeRuntime, e *KCLEntities) {
+	if spec == nil || cm == nil || e == nil {
+		return
+	}
+	for _, w := range e.WorkloadsOn(RuntimeCompose) {
+		other := w.Runtime.Compose
+		if other == nil || other == cm || other.File != cm.File || other.Shared != cm.Shared {
+			continue
+		}
+		for k, v := range other.Env {
+			if _, own := spec.Env[k]; !own {
+				spec.Env[k] = v
+			}
+		}
+	}
+}

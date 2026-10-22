@@ -128,6 +128,28 @@ func TestApplyDisableFlags_AllFeatures(t *testing.T) {
 	}
 }
 
+// --disable codegen takes the ORM and migrations with it: both are projections
+// of codegen, so the project derives them off at every load, and a scaffold
+// that still wrote them (db/migrations, a dev env with a database and an API
+// importing the codegen-only config_gen module) failed its first generate.
+// The frontend stays: it is the whole of the frontend-only shape.
+func TestApplyDisableFlags_CodegenTakesItsProjections(t *testing.T) {
+	gen := newTestGen()
+	if err := applyDisableFlags(gen, []string{"codegen"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	f := gen.Features
+	if f.CodegenEnabled() || f.ORMEnabled() || f.MigrationsEnabled() {
+		t.Errorf("codegen=%v orm=%v migrations=%v, want all off", f.CodegenEnabled(), f.ORMEnabled(), f.MigrationsEnabled())
+	}
+	if !f.FrontendEnabled() || !f.CIEnabled() || !f.DeployEnabled() {
+		t.Error("--disable codegen turned off a feature that does not depend on it")
+	}
+	if f.Pinned(config.FeatureMigrations) {
+		t.Error("migrations was pinned: the tree derives it off, so forge.yaml need not say so")
+	}
+}
+
 // TestApplyDisableFlags_DerivedFeaturesRejected: ingress and operators cannot be
 // --disable'd. They are on only when the repo declares a gateway or an operator,
 // and a new project has neither, so there is nothing to turn off — and the
@@ -318,5 +340,37 @@ func TestApplyDisableFlags_WhitespaceHandling(t *testing.T) {
 	}
 	if gen.Features.FrontendEnabled() {
 		t.Error("expected ' frontend ' (with whitespace) to disable frontend")
+	}
+}
+
+// A component asked for by name whose feature --disable leaves out is refused
+// before anything is written. The scaffold used to drop it without a word.
+func TestRefuseDisabledComponents(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		disable   []string
+		services  []string
+		frontends []string
+		wantErr   string
+	}{
+		{name: "service without codegen", disable: []string{"codegen"}, services: []string{"orders"}, wantErr: "--disable codegen"},
+		{name: "case-insensitive", disable: []string{" Codegen "}, services: []string{"orders"}, wantErr: "--disable codegen"},
+		{name: "frontend without frontend", disable: []string{"frontend"}, frontends: []string{"web"}, wantErr: "--disable frontend"},
+		{name: "frontend-only shape", disable: []string{"orm", "migrations", "codegen"}, frontends: []string{"web"}},
+		{name: "service, frontend codegen off elsewhere", disable: []string{"ci"}, services: []string{"orders"}, frontends: []string{"web"}},
+		{name: "nothing asked for", disable: []string{"codegen", "frontend"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := refuseDisabledComponents(tc.disable, tc.services, tc.frontends)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("refused a coherent shape: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want one naming %q", err, tc.wantErr)
+			}
+		})
 	}
 }

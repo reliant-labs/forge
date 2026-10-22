@@ -425,3 +425,9 @@ bundle provider is the single-source model now — prefer it.
   **no** provider/auth fields (no aws-secrets-manager / vault keys).
 - **env_file wins.** Under compose/external, an explicit `env_file`
   overlay overrides the provider-supplied values.
+
+## Running your own secret store
+
+`Bundle.openbao = forge.OpenBao {}` runs a secret store (OpenBao) the env owns,
+and a `forge.ExternalSecret` with `source = forge.StoreSource {...}` reads from
+it through the External Secrets Operator. Load `secrets/openbao`.

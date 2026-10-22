@@ -722,21 +722,64 @@ const mergeDriverOptOutEnv = "FORGE_NO_MERGE_DRIVER"
 // does the job: it passes %P (so it is a forge that merges state files) and
 // its binary still exists.
 func driverCommandUsable(command string) bool {
-	if !strings.HasSuffix(command, "%P") {
+	if !strings.Contains(command, " merge-generated %O %A %B %L %P") {
 		return false
 	}
-	bin := command
+	bin := strings.TrimPrefix(command, driverGuardPrefix)
 	if strings.HasPrefix(bin, "'") {
-		end := strings.Index(bin[1:], "'")
-		if end < 0 {
-			return false
+		var b strings.Builder
+		rest := bin[1:]
+		for {
+			end := strings.Index(rest, "'")
+			if end < 0 {
+				return false
+			}
+			b.WriteString(rest[:end])
+			rest = rest[end+1:]
+			if !strings.HasPrefix(rest, `\''`) {
+				break
+			}
+			b.WriteByte('\'')
+			rest = rest[3:]
 		}
-		bin = bin[1 : end+1]
+		bin = b.String()
 	} else if i := strings.IndexByte(bin, ' '); i >= 0 {
 		bin = bin[:i]
 	}
 	info, err := os.Stat(bin)
 	return err == nil && !info.IsDir()
+}
+
+// driverGuardPrefix opens every driver command forge writes: `[ -x '<bin>' ]`
+// is the test that the named forge still exists (driverCommandLine).
+const driverGuardPrefix = "[ -x "
+
+// driverCommandLine is the command git runs through `sh -c` for one merge: the
+// forge at bin when it still exists, and otherwise a merge that needs no forge.
+//
+// The command names ONE binary by absolute path, and that binary can vanish —
+// the durable copies are pruned to the most recently used identities
+// (keptDriverCopies), a worktree on an older pin outlives its copy, and a
+// removed tool cache takes an installed one. A bare command then dies in the
+// shell with "not found" (127), git reports the file conflicted, and nobody is
+// told why. The fallback merges as git does without a driver; where that
+// conflicts it keeps this side of a generated file, which `generate` rewrites
+// from its inputs anyway, and leaves committed state (.forge/*) conflicted
+// with markers, since a wrong guess there would be written to the tree and
+// trusted. Either way it says which forge is gone and what repairs the driver.
+func driverCommandLine(bin, name string) string {
+	q := "'" + strings.ReplaceAll(bin, "'", `'\''`) + "'"
+	words := strings.Fields(name)
+	words[0] = q
+	hint := name + " generate"
+	return driverGuardPrefix + q + " ] && exec " + strings.Join(words, " ") + " merge-generated %O %A %B %L %P; " +
+		`o=$(mktemp) || exit 1; cp %A "$o"; ` +
+		"git merge-file --marker-size=%L -L ours -L base -L theirs %A %O %B; rc=$?; " +
+		`if [ $rc -eq 0 ]; then rm -f "$o"; exit 0; fi; ` +
+		"case %P in .forge/*|*/.forge/*) rm -f \"$o\"; " +
+		"printf 'forge merge-generated %s: the forge this driver names (%s) is gone; this state file conflicts as git would have it. Run `" + hint + "` with the pinned forge to repair the driver.\\n' %P " + q + " >&2; exit 1;; esac; " +
+		`cat "$o" > %A; rm -f "$o"; ` +
+		"printf 'forge merge-generated %s: the forge this driver names (%s) is gone; kept this side of the generated file. Run `" + hint + "` with the pinned forge to render both sides and repair the driver.\\n' %P " + q + " >&2; exit 0"
 }
 
 // ephemeralExecutable reports whether exe will be gone by the next merge: a
@@ -802,9 +845,7 @@ func mergeDriverCommand(pinned bool) (string, bool) {
 		}
 		exe = durable
 	}
-	words := strings.Fields(cmdutil.Name())
-	words[0] = "'" + strings.ReplaceAll(exe, "'", `'\''`) + "'"
-	return strings.Join(words, " ") + " merge-generated %O %A %B %L %P", true
+	return driverCommandLine(exe, cmdutil.Name()), true
 }
 
 // mergeDriverCacheDir is where durable copies of `go run` forges live, one

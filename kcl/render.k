@@ -1531,11 +1531,35 @@ _stamp_owner = lambda manifest: any, name: str, part_of: str -> any {
     manifest | {metadata = _meta | {labels = labels_lib.owner_labels(_meta.labels if _meta.labels else {}, name, part_of)}}
 }
 
+# The Bundle's Gateways as they are RENDERED: as declared, plus the HTTPS
+# listener forge adds for OpenBao.public (its host, and a certificate of its
+# own). One definition, read by the Gateway, its Certificate and the render
+# output, so none of them disagrees about which listeners exist.
+_gateways_rendered = lambda b: Bundle -> [any] {
+    _plan = _openbao(b).public_plan if b.openbao and b.openbao.public else None
+    [g | {listeners = g.listeners + [_public_listener(b.openbao, _plan)]} if (_plan and _plan.add and g.name == b.openbao.public.gateway) else g for g in b.gateways]
+}
+
+_public_listener = lambda ob: any, plan: any -> any {
+    GatewayListener {
+        name = plan.name
+        port = 443
+        protocol = "HTTPS"
+        hostname = ob.public.host
+        if plan.tls:
+            tls = GatewayTLS {
+                cert_issuer = plan.tls.cert_issuer
+                secret_name = plan.tls.secret_name
+                mode = plan.tls.mode
+            }
+    }
+}
+
 # The Bundle's ingress: Gateways, their Certificates, and the routes on them.
 # All of it is rendered into the PRIMARY namespace.
 _ingress = lambda b: Bundle, ns: str -> [any] {
-    [item for g in b.gateways for item in gw_lib.render_gateway(g, ns)] \
-        + [item for g in b.gateways for item in gw_lib.render_certificate(g, ns)] \
+    [item for g in _gateways_rendered(b) for item in gw_lib.render_gateway(g, ns)] \
+        + [item for g in _gateways_rendered(b) for item in gw_lib.render_certificate(g, ns)] \
         + [item for r in b.http_routes for item in gw_lib.render_http_route(r, b.gateways, ns, b)] \
         + [item for r in b.grpc_routes for item in gw_lib.render_grpc_route(r, b.gateways, ns, b)]
 }
@@ -1836,6 +1860,9 @@ _openbao = lambda b: Bundle -> any {
         secrets = b.required_secrets
         eso_namespaces = [e.namespace for e in b.external_secrets_operators if _target and _eso_context(e) == _target.cluster]
         bootstrap_source = b.bootstrap_source
+        gateways = b.gateways
+        ingress_cluster = _primary_target(b).cluster if _primary_target(b) else ""
+        ingress_namespace = _primary_target(b).namespace if _primary_target(b) else ""
     }) if b.openbao else Undefined
 }
 
@@ -1931,7 +1958,7 @@ render = lambda bundle: Bundle -> any {
         "frontends": [_render_frontend(f, bundle) for f in bundle.frontends]
         "databases": [_render_database(db, bundle) for db in bundle.databases]
         "config_maps": [_render_config_map(cm) for cm in bundle.config_maps]
-        "gateways": [_render_gateway(g) for g in bundle.gateways]
+        "gateways": [_render_gateway(g) for g in _gateways_rendered(bundle)]
         "http_routes": [_render_http_route(r) for r in bundle.http_routes]
         "grpc_routes": [_render_grpc_route(r) for r in bundle.grpc_routes]
         "runtime_classes": [_render_runtime_class(rc) for rc in bundle.runtime_classes]

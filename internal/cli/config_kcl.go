@@ -10,8 +10,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/kclrender"
-
-	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // kclEnvSource is one entry of the config projection
@@ -64,7 +62,7 @@ func (s *kclEnvSource) UnmarshalJSON(b []byte) error {
 // this one source keeps host-run injection, the parity report, and the seed
 // gate from drifting off what a cluster deploy would inject.
 //
-// It evaluates a throwaway probe module (written into the env dir, removed on
+// It evaluates a throwaway probe module (written under the env dir by writeEnvProbe, removed on
 // return) as a SINGLE file, so only the probe's import graph —
 // config_gen + config.k + the forge module — is pulled;
 // the env's main.k (and the components it imports) is not needed. Any
@@ -81,7 +79,7 @@ func loadProjectConfigEnvMap(projectDir, env string) (map[string]kclEnvSource, e
 
 	// The probe outputs the projected env map under a public top-level so KCL
 	// emits it. `import config_gen` resolves from the deploy/kcl package
-	// root; `import .config` is the env's own AppConfig instance.
+	// root; `import ..config` (the probe sits one directory down) is the env's own AppConfig instance.
 	//
 	// With PER-BINARY configs there is no single app_config to project, so
 	// the probe merges every binary's env map instead. That is the honest
@@ -95,11 +93,11 @@ func loadProjectConfigEnvMap(projectDir, env string) (map[string]kclEnvSource, e
 	if perr != nil {
 		return nil, perr
 	}
-	probePath := filepath.Join(envDir, fmt.Sprintf("zz_forge_config_probe_%d.k", os.Getpid()))
-	if err := atomicfile.WriteFile(probePath, []byte(probe), 0o644); err != nil {
+	probePath, cleanup, err := writeEnvProbe(envDir, "config_probe", probe)
+	if err != nil {
 		return nil, fmt.Errorf("write config probe: %w", err)
 	}
-	defer func() { _ = os.Remove(probePath) }()
+	defer cleanup()
 
 	out, err := kclrender.Run(projectDir, probePath, []string{"env=" + env})
 	if err != nil {
@@ -136,7 +134,7 @@ func configProbeSource(projectDir, envDir string) (string, error) {
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "import %s\n", codegen.ConfigSchemaModule)
-	b.WriteString("import .config as appcfg\n\n")
+	b.WriteString("import " + envProbeConfigImport + " as appcfg\n\n")
 	b.WriteString("forge_config_env = ")
 	for i, inst := range instances {
 		_, lambda := codegen.KCLConfigName(inst.schema)

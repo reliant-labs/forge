@@ -154,11 +154,7 @@ func runConfigProtoPackage(dir string, opts Options) (Report, error) {
 		return out
 	}
 
-	type change struct {
-		from, to string // project-relative; from == to for an in-place rewrite
-		content  []byte
-	}
-	var changes []change
+	var changes []configProtoChange
 	legacySet := map[string]bool{}
 	for _, rel := range legacy {
 		legacySet[rel] = true
@@ -178,7 +174,7 @@ func runConfigProtoPackage(dir string, opts Options) (Report, error) {
 		})
 		out = rewritePaths(rewriteProto(out))
 		dest := path.Join(layout.Dir(), path.Base(rel))
-		changes = append(changes, change{from: rel, to: dest, content: out})
+		changes = append(changes, configProtoChange{from: rel, to: dest, content: out})
 		rep.Rewrites = append(rep.Rewrites, fmt.Sprintf("%s → %s: package %s → %s", rel, dest, configproto.LegacyPackage, layout.Package()))
 	}
 
@@ -210,7 +206,7 @@ func runConfigProtoPackage(dir string, opts Options) (Report, error) {
 			out = rewritePaths(src)
 		}
 		if !bytes.Equal(out, src) {
-			changes = append(changes, change{from: rel, to: rel, content: out})
+			changes = append(changes, configProtoChange{from: rel, to: rel, content: out})
 			rep.Rewrites = append(rep.Rewrites, rel+": the config layout's paths → "+layout.Dir())
 		}
 		return nil
@@ -227,34 +223,8 @@ func runConfigProtoPackage(dir string, opts Options) (Report, error) {
 	}
 
 	if write {
-		for _, c := range changes {
-			destAbs := filepath.Join(dir, filepath.FromSlash(c.to))
-			if c.from == c.to {
-				if err := writeFile(destAbs, c.content); err != nil {
-					return rep, err
-				}
-				continue
-			}
-			info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(c.from)))
-			if err != nil {
-				return rep, err
-			}
-			if err := os.MkdirAll(filepath.Dir(destAbs), 0o755); err != nil {
-				return rep, err
-			}
-			if err := atomicfile.WriteFile(destAbs, c.content, info.Mode().Perm()); err != nil {
-				return rep, err
-			}
-			if err := os.Remove(filepath.Join(dir, filepath.FromSlash(c.from))); err != nil {
-				return rep, err
-			}
-		}
-		removeEmptyDirs(dir, configproto.LegacyDir, "proto/config")
-		for _, d := range stale {
-			if err := os.RemoveAll(filepath.Join(dir, filepath.FromSlash(d))); err != nil {
-				return rep, err
-			}
-			removeEmptyDirs(dir, path.Dir(d), path.Dir(path.Dir(d)))
+		if err := applyConfigProtoChanges(dir, changes, stale); err != nil {
+			return rep, err
 		}
 	}
 
@@ -272,6 +242,48 @@ func runConfigProtoPackage(dir string, opts Options) (Report, error) {
 	}
 	rep.Verify = []string{"forge generate", "go build ./...", "forge lint"}
 	return rep, nil
+}
+
+// configProtoChange is one file the codemod writes: from == to for an
+// in-place rewrite, otherwise the file moves.
+type configProtoChange struct {
+	from, to string // project-relative
+	content  []byte
+}
+
+// applyConfigProtoChanges writes the changes, removes the legacy directories
+// that emptied, and deletes the stale generated output.
+func applyConfigProtoChanges(dir string, changes []configProtoChange, stale []string) error {
+	for _, c := range changes {
+		destAbs := filepath.Join(dir, filepath.FromSlash(c.to))
+		if c.from == c.to {
+			if err := writeFile(destAbs, c.content); err != nil {
+				return err
+			}
+			continue
+		}
+		info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(c.from)))
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(destAbs), 0o755); err != nil {
+			return err
+		}
+		if err := atomicfile.WriteFile(destAbs, c.content, info.Mode().Perm()); err != nil {
+			return err
+		}
+		if err := os.Remove(filepath.Join(dir, filepath.FromSlash(c.from))); err != nil {
+			return err
+		}
+	}
+	removeEmptyDirs(dir, configproto.LegacyDir, "proto/config")
+	for _, d := range stale {
+		if err := os.RemoveAll(filepath.Join(dir, filepath.FromSlash(d))); err != nil {
+			return err
+		}
+		removeEmptyDirs(dir, path.Dir(d), path.Dir(path.Dir(d)))
+	}
+	return nil
 }
 
 // rewritable reports whether rel is a file whose mentions of the old

@@ -36,7 +36,7 @@ type cloudEnvResolver struct {
 }
 
 // cloudEnvironment is the subset of controlplane.v1.DeployEnvironment forge
-// reads. Declared locally, like cloudRelease, because forge does not vendor
+// reads. Declared locally because forge does not vendor
 // the control plane's protos.
 type cloudEnvironment struct {
 	ID      string `json:"id"`

@@ -44,6 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge fix connect-errors` sees an As-style helper as a `*connect.Error` reader.**
+  - It recognised `errors.As` itself, but not testify's `require.ErrorAs(t, err, &ce)` / `assert.ErrorAs`, a suite's `ErrorAs` method, or a project's own helper: each takes the target as `interface{}`. A handler package whose only reader was one of those got bare kinds, and its tests failed (reliant's `internal/handlers/approval`: four tests).
+  - Any call handed a `**connect.Error` is now a reader, so that package keeps `svcerr.ToConnect(…)` and the report names the call.
 - **`forge observe alerts check` and `forge observe profile` reach the ClickStack `forge env up` started.**
   - env up runs each env's compose services in their own project (`forge-<id>-<env>`). Both commands exec'd into the default project, so they reported a running ClickStack as not running.
 - **`docker compose up <service>` interpolates the whole compose file with every workload's declared env.**

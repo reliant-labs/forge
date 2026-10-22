@@ -53,7 +53,8 @@ and generated proto mocks return `svcerr.Wrap(svcerr.Unimplemented(…))`.
    A bare kind is written only in a handler package — it reaches the client
    with its code through `svcerr.Interceptor`, which forge's chain builders
    install innermost — and only where nothing reads a `*connect.Error` in
-   process (`connect.CodeOf`, `errors.As` into one) in the package, its tests,
+   process (`connect.CodeOf`, `errors.As` into one, or an As-style helper such
+   as testify's `require.ErrorAs` handed a `**connect.Error`) in the package, its tests,
    or the code of a package importing it;
    those keep `svcerr.ToConnect(…)`, and the report names the reader. A
    `connect.NewError` inside an interceptor stays a `*connect.Error` the same

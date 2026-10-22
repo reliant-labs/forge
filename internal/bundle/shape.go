@@ -76,6 +76,9 @@ type ShapeInput struct {
 	FrontendTelemetry []release.ShapeFrontendTelemetry
 	// DeliveryPolicy is the env's delivery policy, or nil for the defaults.
 	DeliveryPolicy *release.ShapeDeliveryPolicy
+	// ReleaseHealth is the env's release-health policy, or nil for the
+	// defaults.
+	ReleaseHealth *release.ShapeReleaseHealth
 	// Identity is the env's managed identity declaration, or nil when it
 	// declares none.
 	Identity *release.ShapeIdentity
@@ -132,6 +135,7 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		ObservabilityPolicy: in.ObservabilityPolicy,
 		FrontendTelemetry:   in.FrontendTelemetry,
 		DeliveryPolicy:      in.DeliveryPolicy,
+		ReleaseHealth:       in.ReleaseHealth,
 		Identity:            in.Identity,
 		Applier:             in.Applier,
 		Units:               in.Units,

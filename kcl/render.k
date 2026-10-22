@@ -1633,6 +1633,19 @@ _render_delivery_policy = lambda p: DeliveryPolicy -> any {
     }
 }
 
+# ReleaseHealth, resolved. The key set is the release shape's
+# `release_health`; the window is in seconds and fail_on is sorted.
+_render_release_health = lambda h: ReleaseHealth -> any {
+    {
+        "window_seconds": _release_health_seconds(h.window)
+        "min_requests": h.min_requests
+        "max_error_rate_increase": h.max_error_rate_increase
+        "max_p95_ratio": h.max_p95_ratio
+        "new_issue_min_events": h.new_issue_min_events
+        "fail_on": sorted(h.fail_on)
+    }
+}
+
 # The declaration, as the Go side (forge env up, the local forwarder) reads it.
 _render_observability = lambda b: Bundle -> any {
     _o = b.observability
@@ -1899,6 +1912,10 @@ render = lambda bundle: Bundle -> any {
         # defaults.
         if bundle.delivery_policy:
             "delivery_policy": _render_delivery_policy(bundle.delivery_policy)
+        # The release-health policy, resolved, only when the env declares one.
+        # Go records it in the release shape unless it is all defaults.
+        if bundle.release_health:
+            "release_health": _render_release_health(bundle.release_health)
         # The env's managed identity as DECLARED, with the applications and
         # consumers derived and the deliveries listed. It is release.Shape's
         # `identity` in the shape's own vocabulary.

@@ -67,7 +67,7 @@ func TestEnsureGeneratedMergeDriver_PinnedForgeRepairsAStaleDriver(t *testing.T)
 	setPinCheck(t, false)
 	ensureGeneratedMergeDriver(filepath.Join(repo, "svc"))
 	got := gitConfig(t, repo, "merge.forge-generated.driver")
-	if !strings.HasPrefix(got, "'/opt/forge/bin/forge'") || !strings.HasSuffix(got, "merge-generated %O %A %B %L %P") {
+	if !strings.HasPrefix(got, "[ -x '/opt/forge/bin/forge' ]") || !strings.Contains(got, " merge-generated %O %A %B %L %P") {
 		t.Errorf("the pinned forge did not take over a stale driver: %q", got)
 	}
 	if reg := gitConfig(t, repo, pinnedDriverSection+".7410e351b23b.command"); reg != got {
@@ -199,7 +199,7 @@ func TestEnsureGeneratedMergeDriver_GoRunPinRepairsTheDriver(t *testing.T) {
 
 			durable := filepath.Join(cache, "7410e351b23b", "forge")
 			want := gitConfig(t, repo, "merge.forge-generated.driver")
-			if !strings.HasPrefix(want, "'"+durable+"' ") || !strings.HasSuffix(want, " merge-generated %O %A %B %L %P") {
+			if !strings.HasPrefix(want, "[ -x '"+durable+"' ] ") || !strings.Contains(want, " merge-generated %O %A %B %L %P") {
 				t.Fatalf("driver = %q, want the durable copy %s", want, durable)
 			}
 			if reg := gitConfig(t, repo, pinnedDriverSection+".7410e351b23b.command"); reg != want {
@@ -329,7 +329,7 @@ func TestEnsureGeneratedMergeDriver_CopiesOfThePinDoNotFightOverTheDriver(t *tes
 	mergeDriverExecutable = func() (string, error) { return first, nil }
 	ensureGeneratedMergeDriver(filepath.Join(repo, "svc"))
 	want := gitConfig(t, repo, "merge.forge-generated.driver")
-	if !strings.HasPrefix(want, "'"+first+"'") {
+	if !strings.HasPrefix(want, "[ -x '"+first+"' ]") {
 		t.Fatalf("driver = %q, want the first copy", want)
 	}
 	configBefore, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
@@ -352,7 +352,7 @@ func TestEnsureGeneratedMergeDriver_CopiesOfThePinDoNotFightOverTheDriver(t *tes
 	}
 	ensureGeneratedMergeDriver(filepath.Join(repo, "svc"))
 	got := gitConfig(t, repo, "merge.forge-generated.driver")
-	if !strings.HasPrefix(got, "'"+second+"'") {
+	if !strings.HasPrefix(got, "[ -x '"+second+"' ]") {
 		t.Errorf("driver = %q after the registered copy was deleted, want the second copy", got)
 	}
 	if reg := gitConfig(t, repo, pinnedDriverSection+".7410e351b23b.command"); reg != got {

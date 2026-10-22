@@ -296,7 +296,7 @@ func TestEnsureGeneratedMergeDriver_WiresAnyForgeClone(t *testing.T) {
 		t.Fatalf("driver not configured: %v", err)
 	}
 	cmd := strings.TrimSpace(string(got))
-	if !strings.HasPrefix(cmd, "'/opt/forge bin/forge'") || !strings.HasSuffix(cmd, "merge-generated %O %A %B %L %P") {
+	if !strings.HasPrefix(cmd, "[ -x '/opt/forge bin/forge' ]") || !strings.Contains(cmd, " merge-generated %O %A %B %L %P") {
 		t.Errorf("driver command = %q, want the quoted absolute binary and %%P", cmd)
 	}
 	attrs, err := os.ReadFile(filepath.Join(repo, ".git", "info", "attributes"))
@@ -436,7 +436,7 @@ func TestEnsureGeneratedMergeDriver_NoticeNamesWhatChangedAndWhoSharesIt(t *test
 		"shared by 2 worktrees",
 		common,
 		attributes,
-		"merge.forge-generated.driver = '/opt/forge/bin/forge' ",
+		"merge.forge-generated.driver = [ -x '/opt/forge/bin/forge' ] ",
 		"this worktree only; was: unset",
 		"git config --worktree --unset merge.forge-generated.driver",
 		"delete the \"forge merge-generated\" block from info/attributes",
@@ -449,7 +449,7 @@ func TestEnsureGeneratedMergeDriver_NoticeNamesWhatChangedAndWhoSharesIt(t *test
 
 	// The scope the notice describes is real: the driver is this worktree's
 	// alone, and the primary worktree is untouched.
-	if got := gitConfig(t, other, "merge.forge-generated.driver"); !strings.HasPrefix(got, "'/opt/forge/bin/forge'") {
+	if got := gitConfig(t, other, "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '/opt/forge/bin/forge' ]") {
 		t.Errorf("the worktree that ran does not have the driver: %q", got)
 	}
 	if got := gitConfig(t, repo, "merge.forge-generated.driver"); got != "" {
@@ -510,10 +510,10 @@ func TestEnsureGeneratedMergeDriver_DriverCommandIsPerWorktree(t *testing.T) {
 	var noticeB strings.Builder
 	ensureGeneratedMergeDriverTo(&noticeB, wtB)
 
-	if got := gitConfig(t, wtA, "merge.forge-generated.driver"); !strings.HasPrefix(got, "'/pins/a/forge'") {
+	if got := gitConfig(t, wtA, "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '/pins/a/forge' ]") {
 		t.Errorf("worktree A merges with %q, want its own forge", got)
 	}
-	if got := gitConfig(t, wtB, "merge.forge-generated.driver"); !strings.HasPrefix(got, "'/pins/b/forge'") {
+	if got := gitConfig(t, wtB, "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '/pins/b/forge' ]") {
 		t.Errorf("worktree B merges with %q: A's run overwrote it, or B's never landed", got)
 	}
 	if got := gitConfig(t, repo, "merge.forge-generated.driver"); got != "" {
@@ -537,7 +537,7 @@ func TestEnsureGeneratedMergeDriver_DriverCommandIsPerWorktree(t *testing.T) {
 		t.Setenv(mergeDriverSharedEnv, "1")
 		mergeDriverExecutable = func() (string, error) { return "/pins/s/forge", nil }
 		ensureGeneratedMergeDriverTo(io.Discard, repo2)
-		if got := gitT(t, repo2, "config", "--local", "--get", "merge.forge-generated.driver"); !strings.HasPrefix(got, "'/pins/s/forge'") {
+		if got := gitT(t, repo2, "config", "--local", "--get", "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '/pins/s/forge' ]") {
 			t.Errorf("%s=1 did not keep the command in the shared config: %q", mergeDriverSharedEnv, got)
 		}
 		if ext := gitConfig(t, repo2, "extensions.worktreeConfig"); ext != "" {

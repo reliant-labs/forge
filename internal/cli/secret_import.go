@@ -151,6 +151,11 @@ func runSecretImport(ctx context.Context, envName, name string, opts importOptio
 	}
 
 	open := map[storeRef]storeSource{}
+	defer func() {
+		for _, src := range open {
+			closeStoreSource(src)
+		}
+	}()
 	var failed []string
 	for _, d := range dests {
 		if opts.DryRun {

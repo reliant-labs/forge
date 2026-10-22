@@ -48,6 +48,7 @@ func newCmd(f *factory.Factory) *cobra.Command {
 // it would rewrite.
 func newCodemodCmd(f *factory.Factory, c codemod.Codemod) *cobra.Command {
 	var dryRun, allowDirty bool
+	var rawScope []string
 	cmd := &cobra.Command{
 		Use:   c.Name,
 		Short: c.Short,
@@ -58,19 +59,24 @@ func newCodemodCmd(f *factory.Factory, c codemod.Codemod) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			scope, err := codemod.ParseScope(root, rawScope)
+			if err != nil {
+				return cliutil.UserErr("forge fix "+c.Name+" --scope", err.Error(), "",
+					"pass paths inside the project, relative to its root, e.g. --scope internal/handlers/jobs")
+			}
 			if c.CleanTree && !dryRun && !allowDirty {
-				if dirty := uncommitted(root); dirty != "" {
+				if dirty := uncommitted(root, scope); dirty != "" {
 					return cliutil.UserErr("forge fix "+c.Name,
 						"the project has uncommitted changes:\n"+dirty,
 						"",
 						"commit or stash them first: this codemod replaces files you own, and `git diff` is how you review it (or pass --allow-dirty)")
 				}
 			}
-			rep, err := c.Run(root, !dryRun)
+			rep, err := c.Run(root, codemod.Options{Write: !dryRun, Scope: scope})
 			if err != nil {
 				return err
 			}
-			printCodemodReport(f.Out, c, rep, dryRun)
+			printCodemodReport(f.Out, c, rep, dryRun, scope)
 			if len(rep.Blocked) > 0 {
 				return cliutil.UserErr("forge fix "+c.Name,
 					fmt.Sprintf("%d shape(s) the codemod cannot convert without deciding for you; nothing was written", len(rep.Blocked)),
@@ -84,20 +90,27 @@ func newCodemodCmd(f *factory.Factory, c codemod.Codemod) *cobra.Command {
 	if c.CleanTree {
 		cmd.Flags().BoolVar(&allowDirty, "allow-dirty", false, "Run over uncommitted changes")
 	}
+	if c.Scoped {
+		cmd.Flags().StringSliceVar(&rawScope, "scope", nil, "Rewrite only files under `PATH` (repeatable or comma-separated, project-relative), as forge lint --scope lints one slice of a shared checkout. What decides a rewrite is still read from the whole project; only the writes, and the report, are bounded")
+	}
 	return cmd
 }
 
 // uncommitted lists the working tree's uncommitted changes (git status
-// --porcelain), "" for a clean tree or a directory git does not track.
-func uncommitted(root string) string {
-	out, err := exec.Command("git", "-C", root, "status", "--porcelain").Output()
+// --porcelain), "" for a clean tree or a directory git does not track. Under
+// a scope only changes inside it count: another lane's uncommitted work in a
+// shared checkout is not this run's to review.
+func uncommitted(root string, scope *codemod.Scope) string {
+	// Pathspecs resolve against -C's directory, the project root.
+	args := append([]string{"-C", root, "status", "--porcelain", "--"}, scope.Paths()...)
+	out, err := exec.Command("git", args...).Output()
 	if err != nil {
 		return ""
 	}
 	return strings.TrimRight(string(out), "\n")
 }
 
-func printCodemodReport(out io.Writer, c codemod.Codemod, rep codemod.Report, dryRun bool) {
+func printCodemodReport(out io.Writer, c codemod.Codemod, rep codemod.Report, dryRun bool, scope *codemod.Scope) {
 	if len(rep.Blocked) > 0 {
 		fmt.Fprintf(out, "  %s: nothing written — these shapes need your decision first:\n", c.Name)
 		for _, b := range rep.Blocked {
@@ -109,7 +122,11 @@ func printCodemodReport(out io.Writer, c codemod.Codemod, rep codemod.Report, dr
 		return
 	}
 	if !rep.Changed() && len(rep.Next) == 0 {
-		fmt.Fprintf(out, "  %s: nothing to rewrite — the project is already in its %s shape\n", c.Name, c.Version)
+		where := "the project is"
+		if scope != nil {
+			where = scope.String() + " is"
+		}
+		fmt.Fprintf(out, "  %s: nothing to rewrite — %s already in its %s shape\n", c.Name, where, c.Version)
 		return
 	}
 	mark := "✅"

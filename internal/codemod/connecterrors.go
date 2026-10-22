@@ -16,9 +16,6 @@ import (
 	"strings"
 
 	"golang.org/x/tools/go/ast/astutil"
-	"golang.org/x/tools/go/packages"
-
-	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // connecterrors.go — `forge fix connect-errors`: the wire-identical half of
@@ -55,14 +52,41 @@ import (
 // exactly `error`, and only when no in-process reader of a *connect.Error
 // (connect.CodeOf, errors.As or any other call given a **connect.Error As
 // target — testify's require.ErrorAs, a test helper — a type assertion), which
-// would see a bare kind as something else, is in the package — its code or
-// its tests (a test's connect.CodeOf aside, which is rewritten) — or in the
-// production code of a package importing it. A reader further away is not
-// traced, nor is an importer's test: one reads a client's error off the wire,
-// which stays a *connect.Error, and one that does not fails loudly. Everywhere else
-// — interceptors, clients, workers, a *connect.Error-typed return, a package
-// that reads one — the result is svcerr.ToConnect(svcerr.<Kind>(…)): the same
-// *connect.Error, built by svcerr, wherever it goes.
+// would see a bare kind as something else, can see the package's errors:
+//
+//   - in the package — its code or its tests (a test's connect.CodeOf aside,
+//     which is rewritten);
+//   - in the production code of a package importing it (an import by tests
+//     alone is not an edge: those tests are the importer's, and what they
+//     read is theirs);
+//   - in the production code of a package that calls, through an interface
+//     declared in this module, a method a type of the package implements,
+//     where production code hands a value of that type to the interface —
+//     the consumer-declared interface composition wires the handler into,
+//     which imports nothing. (An interface only ever handed a generated
+//     client — a CLI's — has the handler's method set too, but its calls go
+//     over the wire.)
+//
+// A read of an error a Connect client returned — a *connect.Client or
+// generated <svc>connect client method, directly or through a function of
+// this module whose every error is one — is not an in-process reader: that
+// error came off the wire and stays a *connect.Error whatever the handler
+// built. A reader further away is not traced, nor is an importer's test: one
+// that does not read a client's error fails loudly. The report names EVERY
+// reader keeping a package wrapped, and how it reaches the package — on every
+// run, so a re-run after fixing one names the next. Everywhere else —
+// interceptors, clients, workers, a *connect.Error-typed return, a package
+// such a reader can see — the result is svcerr.ToConnect(svcerr.<Kind>(…)):
+// the same *connect.Error, built by svcerr, wherever it goes.
+//
+// --scope bounds the files rewritten, never the analysis: a lane rewrites its
+// own slice of a shared checkout while every reader in the module still
+// counts. A test outside the scope that the rewrite would have switched to
+// svcerr.Code is listed instead; one in the package's own tests keeps the
+// package wrapped (it calls the package directly and would read unknown).
+//
+// Every file:line the report prints is the file as it is on disk when the run
+// ends: after a real run, the rewritten file's lines.
 //
 // Tests are rewritten in one way only: connect.CodeOf(x) → svcerr.Code(x),
 // in the test files of every package that got a bare kind and of every
@@ -99,11 +123,13 @@ spelling reproduces exactly:
 A bare svcerr kind is written only in a handler package, where the expression is
 an error and nothing reads a *connect.Error in process (connect.CodeOf, errors.As
 into one, an As-style helper such as testify's require.ErrorAs handed a
-**connect.Error) in the package, its tests, or the code of a package importing it;
-elsewhere (interceptors, clients, a
-*connect.Error-typed result, a package such a reader can see) the same value is
-kept a *connect.Error with svcerr.ToConnect(…), and the report names the reader;
-once that reader reads svcerr.Code, a re-run drops the wrappers.
+**connect.Error) in the package, its tests, the code of a package importing it,
+or the code of a package calling it through an interface one of its types
+implements. A read of a Connect client's error (off the wire) is not one.
+Elsewhere (interceptors, clients, a *connect.Error-typed result, a package such a
+reader can see) the same value is kept a *connect.Error with svcerr.ToConnect(…),
+and the report names every reader and how it reaches the package, on every run;
+once they read svcerr.Code, a re-run drops the wrappers.
 In the test files of every package that got a bare kind, and of every package
 importing one, connect.CodeOf(x) becomes svcerr.Code(x) — the code the
 interceptor sends, which a handler test calling a *Service method directly needs
@@ -124,331 +150,17 @@ change what clients read:
 
 Generated files, vendor/ and testdata/ are left alone, as is every
 connect.NewError in a test (a fixture). Re-running it changes nothing.
---dry-run prints each rewrite as file:line: old → new, and the worklist.`,
+--dry-run prints each rewrite as file:line: old → new, and the worklist; after a
+real run every file:line is the rewritten file's.
+
+--scope <path> (repeatable) rewrites, and reports on, only files under the paths
+named, for one lane of a shared checkout; readers anywhere in the module still
+keep a package wrapped. A test outside the scope that would have switched to
+svcerr.Code is listed, not rewritten.`,
 		CleanTree: true,
+		Scoped:    true,
 		Run:       runConnectErrors,
 	})
-}
-
-// connectErrorTokens pre-filter the files worth type-checking.
-var connectErrorTokens = [][]byte{[]byte("NewError"), []byte("CodeOf"), []byte("connect.Error")}
-
-func runConnectErrors(dir string, write bool) (Report, error) {
-	candidates := map[string]bool{}
-	err := ownedGoFiles(dir, func(rel string, src []byte) error {
-		// A wrapper an earlier run left (svcerr.ToConnect) is in a file that
-		// may no longer import connect at all.
-		if bytes.Contains(src, []byte(svcerrPath)) && bytes.Contains(src, []byte("ToConnect(")) {
-			candidates[filepath.Join(dir, filepath.FromSlash(rel))] = true
-			return nil
-		}
-		if !bytes.Contains(src, []byte(connectPath)) {
-			return nil
-		}
-		for _, tok := range connectErrorTokens {
-			if bytes.Contains(src, tok) {
-				candidates[filepath.Join(dir, filepath.FromSlash(rel))] = true
-				break
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return Report{}, err
-	}
-	if goModulePath(dir) == "" || len(candidates) == 0 {
-		return Report{}, nil
-	}
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return Report{}, err
-	}
-	// ownedGoFiles reported paths under dir; the loader reports absolute ones.
-	abs := make(map[string]bool, len(candidates))
-	for p := range candidates {
-		a, err := filepath.Abs(p)
-		if err != nil {
-			return Report{}, err
-		}
-		abs[a] = true
-	}
-
-	cfg := &packages.Config{
-		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
-			packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedImports,
-		Dir:   absDir,
-		Env:   goexec.Env(),
-		Tests: true,
-	}
-	pkgs, err := packages.Load(cfg, "./...")
-	if err != nil {
-		return Report{}, fmt.Errorf("load the project's packages: %w", err)
-	}
-	sort.Slice(pkgs, func(i, j int) bool { return pkgs[i].ID < pkgs[j].ID })
-
-	ce := &connectErrorsRun{absDir: absDir, candidates: abs, out: map[string][]byte{}}
-	if err := ce.run(pkgs); err != nil {
-		return Report{}, err
-	}
-	if write {
-		paths := make([]string, 0, len(ce.out))
-		for path := range ce.out {
-			paths = append(paths, path)
-		}
-		sort.Strings(paths)
-		for _, path := range paths {
-			if err := writeFile(path, ce.out[path]); err != nil {
-				return Report{}, err
-			}
-		}
-	}
-	return ce.report(), nil
-}
-
-// ceFile is one candidate file and the package variant it was read from.
-type ceFile struct {
-	pkg  *packages.Package
-	file *ast.File
-	path string // absolute
-	rel  string // slash-separated, relative to the project
-	test bool
-}
-
-type connectErrorsRun struct {
-	absDir     string
-	candidates map[string]bool
-	out        map[string][]byte
-
-	rewrites []string
-	leftHint []leftSite // sites left alone, with why
-	// keptConnect: packages where every rewrite stays a *connect.Error
-	// because the package reads one in process.
-	keptConnect map[string]string
-	touched     map[string]bool
-	bareUsed    bool
-}
-
-// pkgPathOf is the import path a package variant belongs to: the test
-// variant of p and p's external test package both count as p.
-func pkgPathOf(p *packages.Package) string {
-	return strings.TrimSuffix(p.PkgPath, "_test")
-}
-
-func (c *connectErrorsRun) run(pkgs []*packages.Package) error {
-	files := c.collectFiles(pkgs)
-	idx := newReaderIndex(files, pkgs)
-	bare, err := c.rewriteSources(files, idx)
-	if err != nil {
-		return err
-	}
-	return c.rewriteTests(files, idx, bare)
-}
-
-// collectFiles lists each candidate file once: the test variant of a package
-// re-lists its non-test files, and the first variant seen carries the same
-// syntax.
-func (c *connectErrorsRun) collectFiles(pkgs []*packages.Package) []ceFile {
-	var files []ceFile
-	seen := map[string]bool{}
-	for _, p := range pkgs {
-		if p.TypesInfo == nil || p.Types == nil {
-			continue
-		}
-		for _, f := range p.Syntax {
-			tf := p.Fset.File(f.Pos())
-			if tf == nil {
-				continue
-			}
-			path := tf.Name()
-			if !c.candidates[path] || seen[path] {
-				continue
-			}
-			seen[path] = true
-			rel, err := filepath.Rel(c.absDir, path)
-			if err != nil {
-				rel = path
-			}
-			files = append(files, ceFile{pkg: p, file: f, path: path, rel: filepath.ToSlash(rel), test: strings.HasSuffix(path, "_test.go")})
-		}
-	}
-	sort.Slice(files, func(i, j int) bool { return files[i].rel < files[j].rel })
-	return files
-}
-
-// readerIndex knows which packages read a *connect.Error in process, and
-// who imports whom.
-//
-// A test's connect.CodeOf is not a reader — rewriteTests turns it into
-// svcerr.Code — but a test's errors.As into a *connect.Error, or a type
-// assertion on one, is: it would fail on a bare kind, and it is not
-// mechanical to change.
-//
-// A production reader blocks its own package and every package it imports
-// (a value one call away reaches it). A test reader blocks only its own
-// package: a handler package's tests call its functions directly, while a
-// test in an importer — a composition root's route test — reads a client's
-// error off the wire, which stays a *connect.Error.
-type readerIndex struct {
-	prod      map[string][]string        // package → production reader sites
-	tests     map[string][]string        // package → reader sites in its own tests
-	importers map[string]map[string]bool // package → the packages importing it
-}
-
-func newReaderIndex(files []ceFile, pkgs []*packages.Package) *readerIndex {
-	idx := &readerIndex{prod: map[string][]string{}, tests: map[string][]string{}, importers: map[string]map[string]bool{}}
-	for _, f := range files {
-		into := idx.prod
-		if f.test {
-			into = idx.tests
-		}
-		pkg := pkgPathOf(f.pkg)
-		into[pkg] = append(into[pkg], connectReaders(f, !f.test)...)
-	}
-	for _, m := range []map[string][]string{idx.prod, idx.tests} {
-		for pkg := range m {
-			sort.Strings(m[pkg])
-		}
-	}
-	for _, p := range pkgs {
-		for imp := range p.Imports {
-			if idx.importers[imp] == nil {
-				idx.importers[imp] = map[string]bool{}
-			}
-			idx.importers[imp][pkgPathOf(p)] = true
-		}
-	}
-	return idx
-}
-
-// blocker names the reader that keeps pkg's rewrites a *connect.Error — one
-// in the package or its tests, or in the code of a package importing it —
-// or "" when a bare kind is safe. A reader further away is not traced.
-func (idx *readerIndex) blocker(pkg string) string {
-	if rs := idx.prod[pkg]; len(rs) > 0 {
-		return rs[0]
-	}
-	if rs := idx.tests[pkg]; len(rs) > 0 {
-		return rs[0]
-	}
-	var sites []string
-	for q := range idx.importers[pkg] {
-		if q != pkg && len(idx.prod[q]) > 0 {
-			sites = append(sites, idx.prod[q][0])
-		}
-	}
-	sort.Strings(sites)
-	if len(sites) > 0 {
-		return sites[0]
-	}
-	return ""
-}
-
-// rewriteSources rewrites every non-test file's connect.NewError calls, and
-// returns the packages that got a bare svcerr kind.
-func (c *connectErrorsRun) rewriteSources(files []ceFile, idx *readerIndex) (map[string]bool, error) {
-	c.keptConnect = map[string]string{}
-	c.touched = map[string]bool{}
-	bare := map[string]bool{}
-	for _, f := range files {
-		if f.test {
-			continue
-		}
-		pkg := pkgPathOf(f.pkg)
-		blockedBy := ""
-		if isHandlerFile(f.rel) {
-			blockedBy = idx.blocker(pkg)
-		}
-		r, err := newCERewriter(f)
-		if err != nil {
-			return nil, err
-		}
-		r.allowBare = isHandlerFile(f.rel) && blockedBy == ""
-		r.rewriteNewErrors()
-		c.leftHint = append(c.leftHint, r.left...)
-		if len(r.edits) == 0 {
-			continue
-		}
-		if blockedBy != "" {
-			c.keptConnect[pkg] = blockedBy
-		}
-		out, err := r.apply()
-		if err != nil {
-			return nil, err
-		}
-		c.out[f.path] = out
-		c.rewrites = append(c.rewrites, r.done...)
-		c.touched[pkg] = true
-		if r.usedBare {
-			c.bareUsed = true
-			bare[pkg] = true
-		}
-	}
-	return bare, nil
-}
-
-// rewriteTests rewrites connect.CodeOf to svcerr.Code in the tests of the
-// packages that may now hand them a bare svcerr kind where a *connect.Error
-// used to be: the ones that got one, and their direct importers. A package
-// whose rewrites all stayed *connect.Error changed no type, and its tests
-// are left alone.
-func (c *connectErrorsRun) rewriteTests(files []ceFile, idx *readerIndex, bare map[string]bool) error {
-	affected := map[string]bool{}
-	for pkg := range bare {
-		affected[pkg] = true
-		for q := range idx.importers[pkg] {
-			affected[q] = true
-		}
-	}
-	for _, f := range files {
-		if !f.test || !affected[pkgPathOf(f.pkg)] {
-			continue
-		}
-		r, err := newCERewriter(f)
-		if err != nil {
-			return err
-		}
-		r.rewriteCodeOf()
-		if len(r.edits) == 0 {
-			continue
-		}
-		out, err := r.apply()
-		if err != nil {
-			return err
-		}
-		c.out[f.path] = out
-		c.rewrites = append(c.rewrites, r.done...)
-	}
-	return nil
-}
-
-func (c *connectErrorsRun) report() Report {
-	var rep Report
-	rep.Rewrites = c.rewrites
-	used := map[string]bool{}
-	for _, l := range c.leftHint {
-		rep.Next = append(rep.Next, "left as written: "+l.site+" — "+l.why)
-		used[l.why] = true
-	}
-	for _, why := range leftReasons {
-		if used[why] {
-			rep.Next = append(rep.Next, why+": "+leftLegend[why])
-		}
-	}
-	kept := make([]string, 0, len(c.keptConnect))
-	for pkg, site := range c.keptConnect {
-		kept = append(kept, fmt.Sprintf("%s: its rewrites stay *connect.Error (svcerr.ToConnect) because %s reads one in process — switch that reader to svcerr.Code(err) (and errors.As into a *connect.Error to svcerr.Code / the svcerr.Is* predicates), then re-run forge fix connect-errors: it drops the wrappers", pkg, site))
-	}
-	sort.Strings(kept)
-	rep.Next = append(rep.Next, kept...)
-	if rep.Changed() {
-		if c.bareUsed {
-			rep.Next = append(rep.Next,
-				"A bare svcerr kind reaches the client with its code through svcerr.Interceptor, which forge's chain builders (serverkit.NewChain, observe.Chain, observe.DefaultMiddlewares) install innermost. A handler chain you assemble by hand must end with svcerr.Interceptor(), or the client reads unknown.",
-				"In-process readers of a *connect.Error (connect.CodeOf, errors.As or an As-style helper into one) in a handler package or a package importing it kept that package's rewrites *connect.Error; one further away is not traced. If handler errors travel further in process, check those readers: svcerr.Code(err) reads the same code for a *connect.Error and a bare kind.")
-		}
-		rep.Verify = []string{"go build ./...", "go vet ./...", "go test ./...", "forge lint --conventions"}
-	}
-	return rep
 }
 
 // isHandlerFile reports whether rel is under a handlers/ directory — the
@@ -476,9 +188,12 @@ type ceRewriter struct {
 	addImport bool
 
 	edits    []txEdit
-	done     []string
+	done     []ceDone
 	left     []leftSite
 	usedBare bool
+	// keptWrapper: an svcerr.ToConnect an earlier run left, which this run
+	// would drop if a reader did not keep the package on *connect.Error.
+	keptWrapper bool
 }
 
 func newCERewriter(f ceFile) (*ceRewriter, error) {
@@ -518,8 +233,8 @@ func (r *ceRewriter) off(pos token.Pos) int { return r.fset.Position(pos).Offset
 
 func (r *ceRewriter) text(n ast.Node) string { return string(r.src[r.off(n.Pos()):r.off(n.End())]) }
 
-func (r *ceRewriter) site(n ast.Node) string {
-	return fmt.Sprintf("%s:%d", r.f.rel, r.fset.Position(n.Pos()).Line)
+func (r *ceRewriter) site(n ast.Node) ceSite {
+	return ceSite{r.f.rel, r.fset.Position(n.Pos()).Line}
 }
 
 // funcOf returns the package-level function a call's callee resolves to, as
@@ -568,12 +283,12 @@ func (r *ceRewriter) newError(call *ast.CallExpr) {
 	old := strings.Join(strings.Fields(r.text(call)), " ")
 	kind, ok := r.codeKind(call.Args[0])
 	if !ok {
-		r.left = append(r.left, leftSite{fmt.Sprintf("%s: %s", r.site(call), old), leftComputedCode})
+		r.left = append(r.left, leftSite{r.site(call), old, leftComputedCode})
 		return
 	}
 	msg, why := r.message(call.Args[1])
 	if msg == nil {
-		r.left = append(r.left, leftSite{fmt.Sprintf("%s: %s", r.site(call), old), why})
+		r.left = append(r.left, leftSite{r.site(call), old, why})
 		return
 	}
 	expr := r.kindExpr(kind, *msg)
@@ -583,7 +298,7 @@ func (r *ceRewriter) newError(call *ast.CallExpr) {
 		expr = r.svcerrPfx + "ToConnect(" + expr + ")"
 	}
 	r.edits = append(r.edits, txEdit{start: r.off(call.Pos()), end: r.off(call.End()), text: expr})
-	r.done = append(r.done, fmt.Sprintf("%s: %s → %s", r.site(call), old, expr))
+	r.done = append(r.done, ceDone{r.site(call), old + " → " + expr})
 }
 
 // unwrapToConnect drops a svcerr.ToConnect around an svcerr call where a
@@ -591,7 +306,7 @@ func (r *ceRewriter) newError(call *ast.CallExpr) {
 // reader kept on *connect.Error, once that reader reads svcerr.Code. Through
 // svcerr.Interceptor the two are the same error on the wire.
 func (r *ceRewriter) unwrapToConnect(call *ast.CallExpr) {
-	if !r.allowBare || !r.contextIsError(call) {
+	if !r.contextIsError(call) {
 		return
 	}
 	inner, ok := ast.Unparen(call.Args[0]).(*ast.CallExpr)
@@ -601,10 +316,15 @@ func (r *ceRewriter) unwrapToConnect(call *ast.CallExpr) {
 	if pkg, _ := funcOf(r.info, inner); pkg != svcerrPath {
 		return
 	}
+	if !r.allowBare {
+		// Still kept: the report names who keeps it, on this run too.
+		r.keptWrapper = true
+		return
+	}
 	text := r.text(inner)
 	r.usedBare = true
 	r.edits = append(r.edits, txEdit{start: r.off(call.Pos()), end: r.off(call.End()), text: text})
-	r.done = append(r.done, fmt.Sprintf("%s: %s → %s", r.site(call), strings.Join(strings.Fields(r.text(call)), " "), strings.Join(strings.Fields(text), " ")))
+	r.done = append(r.done, ceDone{r.site(call), strings.Join(strings.Fields(r.text(call)), " ") + " → " + strings.Join(strings.Fields(text), " ")})
 }
 
 // codeKind maps a constant connect.Code<X> to svcerr's <X>.
@@ -713,7 +433,8 @@ func (r *ceRewriter) errorValueHint() string { return leftErrorValue }
 
 // leftSite is one connect.NewError the codemod did not rewrite.
 type leftSite struct {
-	site string // file:line: the call
+	at   ceSite
+	call string // the call, whitespace collapsed
 	why  string // one of leftReasons
 }
 
@@ -970,83 +691,9 @@ func (r *ceRewriter) rewriteCodeOf() {
 			return true
 		}
 		r.edits = append(r.edits, txEdit{start: r.off(call.Fun.Pos()), end: r.off(call.Fun.End()), text: r.svcerrPfx + "Code"})
-		r.done = append(r.done, fmt.Sprintf("%s: %s → %sCode", r.site(call), r.text(call.Fun), r.svcerrPfx))
+		r.done = append(r.done, ceDone{r.site(call), fmt.Sprintf("%s → %sCode", r.text(call.Fun), r.svcerrPfx)})
 		return true
 	})
-}
-
-// connectReaders lists a file's in-process readers of a *connect.Error:
-// connect.CodeOf (when withCodeOf), errors.As into one, any other call handed
-// a **connect.Error As target, and type assertions or switches on one. Each
-// would read a bare svcerr kind differently.
-//
-// The As target is matched by the ARGUMENT's type, not the callee: testify's
-// require.ErrorAs / assert.ErrorAs (and their suite methods) take the target
-// as interface{}, and a project's own helper can be spelled any way, but every
-// one of them is handed `&ce` with ce a *connect.Error, and fails on a bare
-// kind exactly as errors.As does.
-func connectReaders(f ceFile, withCodeOf bool) []string {
-	info, fset := f.pkg.TypesInfo, f.pkg.Fset
-	isConnErr := func(t types.Type) bool {
-		for t != nil {
-			ptr, ok := t.(*types.Pointer)
-			if !ok {
-				break
-			}
-			if named, ok := ptr.Elem().(*types.Named); ok && named.Obj().Pkg() != nil &&
-				named.Obj().Pkg().Path() == connectPath && named.Obj().Name() == "Error" {
-				return true
-			}
-			t = ptr.Elem()
-		}
-		return false
-	}
-	// isAsTarget is exactly **connect.Error: the address of a *connect.Error
-	// variable, which is what an As-style call fills in.
-	isAsTarget := func(t types.Type) bool {
-		ptr, ok := t.(*types.Pointer)
-		if !ok {
-			return false
-		}
-		_, ok = ptr.Elem().(*types.Pointer)
-		return ok && isConnErr(ptr.Elem())
-	}
-	var sites []string
-	add := func(n ast.Node, what string) {
-		sites = append(sites, fmt.Sprintf("%s:%d (%s)", f.rel, fset.Position(n.Pos()).Line, what))
-	}
-	ast.Inspect(f.file, func(n ast.Node) bool {
-		switch x := n.(type) {
-		case *ast.CallExpr:
-			switch pkg, name := funcOf(info, x); {
-			case pkg == connectPath && name == "CodeOf" && withCodeOf:
-				add(x, "connect.CodeOf")
-			case pkg == "errors" && name == "As" && len(x.Args) == 2 && isConnErr(info.TypeOf(x.Args[1])):
-				add(x, "errors.As into a *connect.Error")
-			default:
-				for _, arg := range x.Args {
-					if isAsTarget(info.TypeOf(arg)) {
-						add(x, types.ExprString(x.Fun)+" into a *connect.Error")
-						break
-					}
-				}
-			}
-		case *ast.TypeAssertExpr:
-			if x.Type != nil && isConnErr(info.TypeOf(x.Type)) {
-				add(x, "type assertion to *connect.Error")
-			}
-		case *ast.TypeSwitchStmt:
-			for _, cl := range x.Body.List {
-				for _, t := range cl.(*ast.CaseClause).List {
-					if isConnErr(info.TypeOf(t)) {
-						add(t, "type switch on *connect.Error")
-					}
-				}
-			}
-		}
-		return true
-	})
-	return sites
 }
 
 // apply makes the edits and fixes the imports.

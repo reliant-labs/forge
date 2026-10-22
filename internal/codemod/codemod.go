@@ -77,9 +77,105 @@ type Codemod struct {
 	// refuses to run it over uncommitted changes (unless --allow-dirty), so
 	// `git diff` is the review and `git checkout .` the undo.
 	CleanTree bool
-	// Run rewrites the project at dir. With write false it changes nothing
-	// and reports what it would rewrite.
-	Run func(dir string, write bool) (Report, error)
+	// Scoped marks a codemod that honours Options.Scope: `forge fix <name>
+	// --scope <path>` rewrites only the files under the paths named, while
+	// whatever it analyses to decide a rewrite still reads the whole
+	// project. A codemod whose rewrite is one decision over the whole tree
+	// (a restructuring) leaves it false, and `forge fix` offers no --scope.
+	Scoped bool
+	// Run rewrites the project at dir, as opts asks.
+	Run func(dir string, opts Options) (Report, error)
+}
+
+// Options is how one codemod run is asked to behave.
+type Options struct {
+	// Write false changes nothing: the run reports what it would rewrite.
+	Write bool
+	// Scope restricts the files the run may rewrite (and reports on) to
+	// those under its paths. Nil is the whole project. Only a Scoped
+	// codemod is handed one.
+	Scope *Scope
+}
+
+// Scope is a set of project-relative paths — directories or files — that
+// bounds the files a run rewrites. Parallel lanes in one checkout each run a
+// codemod over their own slice, as `forge lint --scope` lints one. A nil
+// *Scope is the whole project, and every method is nil-safe.
+type Scope struct {
+	paths []string // slash-separated, cleaned, sorted
+}
+
+// ParseScope validates raw scope paths against the project at root. Each
+// must exist and lie inside the project: a typo would otherwise scope the
+// run to nothing and report it clean.
+func ParseScope(root string, raw []string) (*Scope, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	s := &Scope{}
+	seen := map[string]bool{}
+	for _, r := range raw {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		abs := r
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(root, abs)
+		}
+		rel, err := filepath.Rel(root, abs)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("%q is outside the project root %s", r, root)
+		}
+		if _, err := os.Stat(abs); err != nil {
+			return nil, fmt.Errorf("%q does not exist: a scope that matches nothing would report a clean run over no files", r)
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == "." {
+			return nil, errors.New("--scope . is the whole project: drop --scope")
+		}
+		if !seen[rel] {
+			seen[rel] = true
+			s.paths = append(s.paths, rel)
+		}
+	}
+	if len(s.paths) == 0 {
+		return nil, errors.New("--scope was given no path")
+	}
+	sort.Strings(s.paths)
+	return s, nil
+}
+
+// Contains reports whether rel — a project-relative path — lies under the
+// scope. Everything does under a nil scope.
+func (s *Scope) Contains(rel string) bool {
+	if s == nil {
+		return true
+	}
+	f := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(rel)), "./")
+	for _, p := range s.paths {
+		if f == p || strings.HasPrefix(f, p+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// Paths returns the scope's project-relative paths, none for the whole
+// project.
+func (s *Scope) Paths() []string {
+	if s == nil {
+		return nil
+	}
+	return append([]string(nil), s.paths...)
+}
+
+// String lists the scope's paths, "" for the whole project.
+func (s *Scope) String() string {
+	if s == nil {
+		return ""
+	}
+	return strings.Join(s.paths, ", ")
 }
 
 var registry []Codemod

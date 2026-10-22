@@ -71,7 +71,7 @@ func Region(c *configv1.AppConfig) string { return c.GetRegion() }
 func TestConfigProtoPackage_MovesTheLegacyLayout(t *testing.T) {
 	dir := writeTree(t, legacyConfigProject)
 
-	dry, err := runConfigProtoPackage(dir, false)
+	dry, err := runConfigProtoPackage(dir, Options{})
 	if err != nil {
 		t.Fatalf("dry run: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestConfigProtoPackage_MovesTheLegacyLayout(t *testing.T) {
 		t.Fatal("--dry-run moved a file")
 	}
 
-	rep, err := runConfigProtoPackage(dir, true)
+	rep, err := runConfigProtoPackage(dir, Options{Write: true})
 	if err != nil {
 		t.Fatalf("codemod: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestConfigProtoPackage_MovesTheLegacyLayout(t *testing.T) {
 		t.Errorf("the README's mention of the old path is not listed: %v", rep.Next)
 	}
 
-	again, err := runConfigProtoPackage(dir, true)
+	again, err := runConfigProtoPackage(dir, Options{Write: true})
 	if err != nil || again.Changed() || len(again.Next) > 0 {
 		t.Errorf("second run is not a no-op: %+v, %v", again, err)
 	}
@@ -155,7 +155,7 @@ func TestConfigProtoPackage_RefusesToOverwrite(t *testing.T) {
 		files[rel] = body
 	}
 	dir := writeTree(t, files)
-	rep, err := runConfigProtoPackage(dir, true)
+	rep, err := runConfigProtoPackage(dir, Options{Write: true})
 	if err != nil {
 		t.Fatal(err)
 	}

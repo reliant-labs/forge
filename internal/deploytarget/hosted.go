@@ -1318,15 +1318,7 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 				// bytes being waited on are no longer what the
 				// env wants, so no amount of further waiting
 				// can make this deploy's question answerable.
-				for _, item := range plan {
-					p.observe(item.Name, cluster.RolloutStateNotWaited, rerr)
-				}
-				werr := fmt.Errorf("hosted env %q: %w", envName, rerr)
-				if policy.Mode == cluster.RolloutWarn {
-					fmt.Printf("  Warning: %v\n", werr)
-					return nil
-				}
-				return werr
+				return p.rolloutSuperseded(envName, rerr, plan, policy)
 			case rerr != nil:
 				// Any other failure is retried a FEW times and
 				// then abandoned in favour of the status poll.
@@ -1384,6 +1376,21 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 		case <-time.After(interval):
 		}
 	}
+}
+
+// rolloutSuperseded ends a wait whose promotion was replaced by a newer one:
+// every workload is observed NOT WAITED, and the error is returned, or only
+// printed under --rollout warn.
+func (p HostedProvider) rolloutSuperseded(envName string, cause error, plan []hostedPlanItem, policy cluster.RolloutPolicy) error {
+	for _, item := range plan {
+		p.observe(item.Name, cluster.RolloutStateNotWaited, cause)
+	}
+	err := fmt.Errorf("hosted env %q: %w", envName, cause)
+	if policy.Mode == cluster.RolloutWarn {
+		fmt.Printf("  Warning: %v\n", err)
+		return nil
+	}
+	return err
 }
 
 // readinessTimedOut ends a wait whose readiness budget ran out. last is the

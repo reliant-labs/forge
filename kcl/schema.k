@@ -580,6 +580,10 @@ _RETRY_TRIGGERS: [str] = [
 # bare number, so a unit is REQUIRED — that mistake renders cleanly and
 # fails at apply time, naming the CRD rather than the field you wrote.
 _DURATION_RE = r"^([0-9]+(\.[0-9]+)?(h|m|s|ms|us|ns))+$"
+# Gateway API's own duration (HTTPRoute timeouts): whole numbers, h/m/s/ms, at most four parts.
+_GATEWAY_DURATION_RE = r"^([0-9]{1,5}(h|m|s|ms)){1,4}$"
+# An IPv4 or IPv6 CIDR, shape only (the Go renderer parses it).
+_CIDR_RE = r"^([0-9]{1,3}(\.[0-9]{1,3}){3}|[0-9a-fA-F:]+:[0-9a-fA-F:]*)/[0-9]{1,3}$"
 
 schema RouteRetries:
     """How a route retries a failed attempt at its backend.
@@ -4293,19 +4297,54 @@ schema OpenBaoAudit:
 
 schema OpenBaoPublic:
     """Publishes the store on a Gateway so clusters elsewhere can read from it.
-    Envoy terminates TLS and re-encrypts to the component's TLS listener.
-    Only the JWT login and the KV read of a value are routed; every other path
-    gets 404. The limits below mirror forge's other public edge and are
-    ceilings against a flood, not quotas.
 
-        public = forge.OpenBaoPublic {host = "secrets.example.com", gateway = "public"}"""
+    forge adds an HTTPS listener for `host` to the Gateway named `gateway`
+    (with its own certificate: `tls`, else the Gateway's issuer and a Secret
+    of its own) and renders, beside OpenBao:
+
+      * an HTTPRoute that routes ONLY a service-account login, a token
+        self-lookup and the read of one KV value (`kubectl get httproute
+        <name>-public -o yaml` lists the matches); every other path gets a
+        404 from Envoy, whatever the method;
+      * a BackendTLSPolicy: Envoy terminates TLS and RE-ENCRYPTS to OpenBao,
+        verifying its certificate against `tls.ca_configmap`;
+      * a BackendTrafficPolicy (body cap, a total and a per-source request
+        limit) and a ClientTrafficPolicy (connection limit, request timeout,
+        no client-supplied X-Forwarded-For, escaped slashes refused);
+      * a listener of OpenBao's own on `port`, which a NetworkPolicy opens to
+        that Gateway's proxy pods and nobody else, and which alone trusts
+        X-Forwarded-For, so the audit log names the client.
+
+    The limits are ceilings against a flood, not quotas, and apply per Envoy
+    replica.
+
+        public = forge.OpenBaoPublic {host = "secrets.example.com", gateway = "public"}
+
+    The Gateway must be on the cluster OpenBao runs on. `tls` is for a
+    certificate the Gateway's own `tls` cannot give (a different issuer);
+    leave it unset to use the Gateway's issuer. To bring your own listener,
+    declare an HTTPS listener with this `host` on the Gateway: forge uses it
+    as it is."""
     host: str
     # The name of a forge.Gateway declared in Bundle.gateways.
     gateway: str = "public"
+    # The listener's certificate. Unset = the Gateway's own tls with a Secret
+    # named <openbao name>-public-tls (a certificate of its own, so no other
+    # host's certificate is re-issued).
+    tls?: GatewayTLS
     requests_per_second: int = 500
     per_source_requests_per_second: int = 50
     max_connections: int = 2000
     request_timeout: str = "30s"
+    # The TLS port OpenBao opens for the Gateway.
+    port: int = 8210
+    # Where Envoy Gateway runs the proxy pods.
+    proxy_namespace: str = "envoy-gateway-system"
+    # The peers OpenBao trusts to set X-Forwarded-For on `port`: the proxy
+    # pods' addresses. The default is every private range, which the
+    # NetworkPolicy already narrows to the proxy pods; narrow it to your pod
+    # CIDR if your CNI does not enforce NetworkPolicy.
+    trusted_proxy_cidrs: [str] = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7"]
 
     check:
         regex.match(host, _DNS_NAME_RE), "OpenBaoPublic.host '${host}' must be a DNS name"
@@ -4314,7 +4353,14 @@ schema OpenBaoPublic:
             "OpenBaoPublic request and connection limits must each be at least 1"
         per_source_requests_per_second <= requests_per_second, \
             "OpenBaoPublic.per_source_requests_per_second (${per_source_requests_per_second}) exceeds requests_per_second (${requests_per_second}): one source could take the whole budget"
-        regex.match(request_timeout, _DURATION_RE), "OpenBaoPublic.request_timeout '${request_timeout}' is not a duration - it needs a unit, e.g. '30s'"
+        regex.match(request_timeout, _GATEWAY_DURATION_RE), "OpenBaoPublic.request_timeout '${request_timeout}' is not a Gateway API duration - whole numbers with h, m, s or ms, e.g. '30s' or '1m30s'. The API server refuses fractions and other units"
+        port > 0 and port < 65536 and port != 8201, "OpenBaoPublic.port ${port} must be 1..65535 and not the cluster port 8201"
+        regex.match(proxy_namespace, _DNS_LABEL_RE), "OpenBaoPublic.proxy_namespace '${proxy_namespace}' must be an RFC-1123 label"
+        len(trusted_proxy_cidrs) > 0, "OpenBaoPublic.trusted_proxy_cidrs is empty: OpenBao would refuse the Gateway, and so every request. Name the ranges the proxy pods get addresses from"
+        all c in trusted_proxy_cidrs { regex.match(c, _CIDR_RE) }, \
+            "OpenBaoPublic.trusted_proxy_cidrs ${[c for c in trusted_proxy_cidrs if not regex.match(c, _CIDR_RE)]} are not CIDRs (10.0.0.0/8, fc00::/7)"
+        not tls or tls.mode != "gke_certmap", \
+            "OpenBaoPublic.tls.mode 'gke_certmap' is a Gateway-level setting (a Certificate Manager map serves every host): declare it on the Gateway's `tls` and leave OpenBaoPublic.tls unset"
 
 schema OpenBaoGrant:
     """One ACL grant for a consumer: a path and the capabilities on it.

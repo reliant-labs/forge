@@ -16,8 +16,9 @@ package cli
 //
 //	OnHost / OnCompose   direct: the workload's resolved DATABASE_URL, exactly
 //	                     what `forge env exec` would hand the process
+//	OnCluster            a port-forward to the CNPG Cluster, as the read-only
+//	                     forge_ro role, on a scratch env (db_query_cluster.go)
 //	OnHosted             the control plane's AppDatabaseService (not yet: exit 2)
-//	OnCluster            a port-forward to the CNPG cluster (not yet: exit 2)
 //
 // Policy: an env that is scratch by declaration (lifecycle local/ephemeral) or
 // targets no cluster at all is "open". Anything else is a real env, and the
@@ -62,6 +63,7 @@ type dbQueryOptions struct {
 	sql        string
 	file       string
 	workload   string
+	database   string
 	maxRows    int
 	timeout    time.Duration
 	format     string
@@ -83,10 +85,15 @@ statement, under row and size caps. Writes, nextval() and a second statement
 are refused: by a lexical guard first (so the message is readable), and by
 Postgres itself regardless.
 
-The connection is the workload's resolved DATABASE_URL (` + "`--workload`" + `, default
-"api"): the same value ` + "`" + Name() + ` env exec` + "`" + ` gives the process. OnHost and OnCompose
-workloads are supported; hosted and cluster databases are not reachable from
-forge yet (exit 2).
+The connection follows the workload (` + "`--workload`" + `, default "api"):
+  OnHost / OnCompose  its resolved DATABASE_URL, the same value
+                      ` + "`" + Name() + ` env exec` + "`" + ` gives the process
+  OnCluster           a port-forward with your kube context to the env's
+                      ManagedDatabase (` + "`--database`" + ` when it has several), as
+                      the read-only forge_ro role; scratch envs only
+                      (lifecycle local or ephemeral)
+Hosted databases, and the databases of real cluster envs, are not reachable
+from forge yet (exit 2).
 
 An env declared scratch (lifecycle local or ephemeral) or with no cluster at
 all is open. Any other env is a real one: pass --confirm-env <env> and a
@@ -124,7 +131,8 @@ connection lost).
 		},
 	}
 	cmd.Flags().StringVarP(&o.file, "file", "f", "", "Read the statement from FILE (- for stdin)")
-	cmd.Flags().StringVar(&o.workload, "workload", "api", "Workload whose DATABASE_URL to query")
+	cmd.Flags().StringVar(&o.workload, "workload", "api", "Workload whose database to query")
+	cmd.Flags().StringVar(&o.database, "database", "", "ManagedDatabase to query, when a cluster env declares several")
 	cmd.Flags().IntVar(&o.maxRows, "max-rows", dbquery.DefaultMaxRows, fmt.Sprintf("Row cap (at most %d)", dbquery.MaxRowsLimit))
 	cmd.Flags().DurationVar(&o.timeout, "timeout", dbquery.DefaultTimeout, fmt.Sprintf("Statement timeout (at most %s)", dbquery.MaxTimeout))
 	cmd.Flags().StringVar(&o.format, "format", "table", "Output format: table, json or csv")
@@ -139,6 +147,7 @@ type dbQueryScope struct {
 	Env       string `json:"env"`
 	Transport string `json:"transport"`
 	Workload  string `json:"workload"`
+	Database  string `json:"database,omitempty"`
 	Policy    string `json:"policy"`
 }
 
@@ -156,6 +165,8 @@ type dbQueryDocument struct {
 type dbQueryTarget struct {
 	dsn   string
 	scope dbQueryScope
+	// close releases the transport (the port-forward), or is nil.
+	close func()
 }
 
 func runDBQuery(ctx context.Context, stdin io.Reader, out io.Writer, o dbQueryOptions) error {
@@ -171,6 +182,9 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out io.Writer, o dbQueryOp
 		target, err := resolveDBQueryTarget(ctx, o)
 		if err != nil {
 			return nil, err
+		}
+		if target.close != nil {
+			defer target.close()
 		}
 		scope = &target.scope
 		if err := checkDBQueryPolicy(o, target.scope.Policy); err != nil {
@@ -264,6 +278,8 @@ func resolveDBQueryTarget(ctx context.Context, o dbQueryOptions) (dbQueryTarget,
 	switch w.Runtime.Type {
 	case RuntimeHost, RuntimeCompose:
 		scope.Transport = "direct"
+	case RuntimeCluster:
+		return resolveDBQueryCluster(ctx, o, e, w)
 	case RuntimeHosted:
 		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("workload %q in %s is hosted: its database is reached through the control plane, which this forge cannot query yet", w.Name, o.env)}
 	default:

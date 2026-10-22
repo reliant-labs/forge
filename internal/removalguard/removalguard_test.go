@@ -173,6 +173,7 @@ var removals = []removal{
 					"internal/cli/secret_store_source_fakes_test.go",
 					"internal/cli/secret_store_source_smoke_test.go",
 					"internal/cli/secret_store_source_test.go",
+					"internal/cli/secret_store_source_tls_test.go",
 				},
 			},
 			{

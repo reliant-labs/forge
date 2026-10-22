@@ -430,7 +430,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		generator.EnsureDevWebRuntimeLink(targetPath)
 	}
 
-	existingRepo := finalizeNewProject(ctx, newFinalizeInput{
+	existingRepo, genErr := finalizeNewProject(ctx, newFinalizeInput{
 		targetPath:    targetPath,
 		kind:          kindNormalized,
 		binary:        binaryNormalized,
@@ -442,9 +442,23 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		verify:        verify,
 	})
 
+	// Finished either way: a failed bootstrap generate keeps the files.
 	scaffold.finish()
-	fmt.Printf("\n✅ Project '%s' created successfully!\n", projectName)
-	printNewNextSteps(projectName, inPlace, kindNormalized, serviceNames, len(frontendNames) > 0)
+	if genErr == nil {
+		fmt.Printf("\n✅ Project '%s' created successfully!\n", projectName)
+		printNewNextSteps(projectName, inPlace, kindNormalized, serviceNames, len(frontendNames) > 0)
+	}
+	printNewProjectNotes(targetPath, existingRepo, merged, existingApps)
+	if genErr != nil {
+		return newBootstrapFailedErr(projectName, targetPath, inPlace, genErr)
+	}
+	return nil
+}
+
+// printNewProjectNotes prints what `project new` found and left alone: the
+// in-place merge, frontend apps already there, an enclosing git repository.
+// They hold whether or not the bootstrap generate succeeded.
+func printNewProjectNotes(targetPath, existingRepo string, merged inPlaceMergeResult, existingApps []existingFrontendApp) {
 	for _, line := range inPlaceMergeSummary(merged) {
 		fmt.Println(line)
 	}
@@ -459,8 +473,6 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		fmt.Printf("\n📁 %s — forge left the repository alone (no git init, no commit). "+
 			"Review `git status` and commit the scaffold yourself.\n", where)
 	}
-
-	return nil
 }
 
 // validateComponentNames refuses, before anything is written, a --service or
@@ -830,7 +842,11 @@ type newFinalizeInput struct {
 // bootstrap proto/Connect codegen (service kind only), re-record frozen-file
 // checksums (bootstrap's goimports -w reformats pkg/* and would otherwise show
 // as user-modified), init git, run go mod tidy, and remove the in-progress
-// marker. Every step is best-effort — failures are warned, never fatal.
+// marker. Every step but one is best-effort — failures are warned, and the
+// rest still run. The exception is the bootstrap generate: a failure there is
+// returned as genErr after everything else has run, so `project new` exits
+// non-zero over a project that does not generate (newBootstrapFailedErr),
+// with the files it wrote kept.
 //
 // Git is only initialised for a target OUTSIDE any existing work tree. When
 // the target is already inside one — an existing product repo converted in
@@ -838,7 +854,7 @@ type newFinalizeInput struct {
 // reconfigure the user's repo, or commit (`git add .` would sweep in every
 // untracked file they have). The work tree's top level is returned so the
 // caller can say so; "" means forge initialised (or tried to) itself.
-func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo string) {
+func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo string, genErr error) {
 	// Auto-install required proto plugins for the default local-plugin
 	// workflow. Skipped for --skip-tools, remote plugins (no local binaries),
 	// and non-service kinds.
@@ -874,27 +890,17 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	// Service projects bootstrap proto/Connect codegen immediately so the
 	// scaffold compiles. CLI/library kinds have no proto/services.
 	//
-	// Non-fatal, and the failure is RECOVERABLE BY RE-RUNNING: everything this
-	// pass owns — gen/, internal/app, and cmd/<bin>/main.go — is either
-	// regenerated or written write-if-absent, so a later `forge generate` fills
-	// in exactly what is missing. That is why the scaffold does not pre-write a
+	// A failure is RECOVERABLE BY RE-RUNNING: everything this pass owns —
+	// gen/, internal/app, and cmd/<bin>/main.go — is either regenerated or
+	// written write-if-absent, so a later `forge generate` fills in exactly
+	// what is missing. That is why the scaffold does not pre-write a
 	// placeholder composition root: an absent main.go gets the real one on
-	// retry, a bare one would be permanent.
+	// retry, a bare one would be permanent. It is also why the failure does
+	// not stop the steps below (git init, go mod tidy): the project they
+	// leave is the one the re-run completes. It is reported, not swallowed.
 	if in.kind == config.ProjectKindService {
 		fmt.Println("\n🔧 Bootstrapping generated proto code...")
-		if err := bootstrapGeneratedCode(in.targetPath, in.verify); err != nil {
-			fmt.Fprintf(os.Stderr, "\n⚠️  Project scaffolded but initial code generation failed: %v\n", err)
-			// A run that reached the end with failed steps kept everything
-			// else it generated; only one that aborted left the tree bare.
-			var stepsFailed *factory.StepsFailedError
-			if errors.As(err, &stepsFailed) {
-				fmt.Fprintln(os.Stderr, "    Everything else was generated; the output of the failed step(s) is missing.")
-				fmt.Fprintf(os.Stderr, "    Fix them, then run '%s generate' to complete it.\n", Name())
-			} else {
-				fmt.Fprintln(os.Stderr, "    The project does NOT build yet: gen/, internal/app/ and the cmd/<bin>/main.go composition root are missing.")
-				fmt.Fprintf(os.Stderr, "    Run '%s generate && %s build' to complete it.\n", Name(), Name())
-			}
-		}
+		genErr = bootstrapGenerate(in.targetPath, in.verify)
 	}
 
 	// Re-record frozen-file checksums after bootstrap (goimports -w reformats
@@ -927,7 +933,36 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	if err := os.Remove(in.markerPath); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "warning: failed to remove scaffold marker: %v\n", err)
 	}
-	return existingRepo
+	return existingRepo, genErr
+}
+
+// bootstrapGenerate is the generate run `project new` ends with. A variable
+// so a test can make it fail without breaking a real project.
+var bootstrapGenerate = bootstrapGeneratedCode
+
+// newBootstrapFailedErr is what `project new` returns when the project it
+// wrote failed its own first generate. That project is not finished — it may
+// not even build — so the command must not exit 0 and print success: a
+// script, a CI step or an agent reading the exit status would carry on over
+// it, which is how a whole project shape (--disable codegen) stayed broken
+// with nothing noticing. The files stay, because a re-run of generate
+// completes them (finalizeNewProject).
+func newBootstrapFailedErr(projectName, targetPath string, inPlace bool, err error) error {
+	what := fmt.Sprintf("project %q was scaffolded at %s, but its initial code generation failed, so it is not complete", projectName, targetPath)
+	// A run that reached the end with failed steps kept everything else it
+	// generated; only one that aborted left the tree bare.
+	var stepsFailed *factory.StepsFailedError
+	if errors.As(err, &stepsFailed) {
+		what += " (everything else was generated; the output of the failed step(s) is missing)"
+	} else {
+		what += " (gen/, internal/app/ and the cmd/<bin>/main.go composition root are missing, so it does not build)"
+	}
+	dir := ""
+	if !inPlace {
+		dir = "cd " + targetPath + " && "
+	}
+	return cliutil.WrapUserErr(Name()+" project new", what, "",
+		fmt.Sprintf("the scaffolded files are kept: fix the failure above, then run `%s%s generate` to complete it", dir, Name()), err)
 }
 
 // printNewNextSteps prints the post-scaffold guidance block. The

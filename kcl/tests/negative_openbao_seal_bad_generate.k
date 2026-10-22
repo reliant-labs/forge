@@ -12,5 +12,5 @@ output = forge.render(forge.Bundle {
     openbao = forge.OpenBao {
         seal = forge.StaticSeal {key = forge.BootstrapSecret {name = "k", generate = forge.GeneratedSecret {bytes = 16}}}
     }
-    
+
 })

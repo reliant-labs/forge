@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -226,5 +227,79 @@ func TestRunVersion(t *testing.T) {
 func TestSafeName(t *testing.T) {
 	if got := safeName("v1/../x y+dirty"); strings.ContainsAny(got, "/ +") {
 		t.Errorf("unsafe: %q", got)
+	}
+}
+
+// Builds that differ only in their Go settings are different binaries — the
+// e2e corpus runs forge both with GOFLAGS=-trimpath and without, and
+// CGO_ENABLED changes the bytes the same way. They get entries of their own,
+// so one never stands in for, or replaces, the other. (CGO_ENABLED rather
+// than GOFLAGS here: the build is a stub, and goexec's trimpath guard holds
+// every GOFLAGS a test sets to carry -trimpath.)
+func TestBridge_KeysOnTheBuildSettings(t *testing.T) {
+	r, _, _ := newResolver(t)
+	checkout := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(checkout, "cmd", "forge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	builds := 0
+	r.Build = func(_ context.Context, _, out string) error {
+		builds++
+		return atomicfile.WriteFile(out, []byte("#!/bin/sh\n"), 0o755)
+	}
+	t.Setenv("CGO_ENABLED", "0")
+	plain, err := r.Bridge(context.Background(), checkout, "abc+false@0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CGO_ENABLED", "1")
+	cgo, err := r.Bridge(context.Background(), checkout, "abc+false@0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builds != 2 || plain.Path == cgo.Path {
+		t.Fatalf("CGO_ENABLED=1 reused the CGO_ENABLED=0 build: %d build(s), %s vs %s", builds, plain.Path, cgo.Path)
+	}
+	if !slices.Contains(buildSettings, "GOFLAGS") {
+		t.Fatal("GOFLAGS is not part of the build-settings key")
+	}
+}
+
+// A binary already published is never replaced: a process may be running it.
+func TestPublish_NeverReplacesAPublishedBinary(t *testing.T) {
+	dir := t.TempDir()
+	to := filepath.Join(dir, "forge")
+	if err := os.WriteFile(to, []byte("first"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := filepath.Join(dir, "forge.new")
+	if err := os.WriteFile(from, []byte("second"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := publish(from, to); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "first" || !os.SameFile(before, after) {
+		t.Fatalf("publish replaced the published binary: now %q", got)
+	}
+
+	fresh := filepath.Join(dir, "fresh")
+	if err := publish(from, fresh); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(fresh); err != nil || string(got) != "second" {
+		t.Fatalf("publish to an empty slot = %q, %v", got, err)
 	}
 }

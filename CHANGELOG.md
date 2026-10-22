@@ -59,7 +59,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that changes every sync, and one namespace configuring one store kind two ways.
   Nothing renders for a Bundle with no `source`.
 
-
 - **A drained Connect stream parked in `Receive` actually ends, and handlers can
   stop their own readers: `serverkit.AbortReceive(ctx)`.** A server-side
   `Receive` reads the request body and no context wakes it; Connect closes the
@@ -172,7 +171,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   writer) and `external_secrets_operators = [forge.ExternalSecretsOperator {cluster}]`
   (one hardened, cluster-wide ESO per cluster; a second for one cluster is refused).
   A `forge.ExternalSecret` gains `source = forge.StoreSource {store, data, templates,
-  generate, pin, immutable, refresh, creation_policy, shadow}` over a `HostedStore`,
+generate, pin, immutable, refresh, creation_policy, shadow}` over a `HostedStore`,
   `OpenBaoStore` or `GCPSecretManagerStore`, and `out_of_band_reason` for the ones
   that stay out of band once any is store-backed. `forge.BootstrapSecret` and
   `bootstrap_source = forge.GCPSecretManager {project} | forge.OutOfBand {}` name the
@@ -211,7 +210,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not be redeemed by `/auth/reset`.
 - **`pkg/secretaccess` and `pkg/secretgen`: the pure halves of store-backed
   secrets.** `secretaccess.Derive` maps `{scope, clusters, per-namespace secret
-  names}` to OpenBao JWT auth mounts (`jwt-<cluster>`), roles (one per cluster
+names}` to OpenBao JWT auth mounts (`jwt-<cluster>`), roles (one per cluster
   and namespace, bound to the namespace's `reliant-secrets` service account and
   the cluster's audience, issuing 10 minute batch tokens) and ACL policies that
   grant `read` on exact paths only: no globs, no list, no metadata, unless a
@@ -499,6 +498,21 @@ generate` runs the same check. `project new` never took a heavy slot and still
 
 ### Fixed
 
+- **A bridged project no longer rebuilds forge for a file no build reads.**
+  forge's bridge-skew check counted every dirty path in the linked forge
+  checkout as "uncommitted changes the binary was not built from" and handed
+  each command to a forge rebuilt from the checkout, keyed on the newest
+  edit's mtime. A file that cannot reach a build — the e2e shard's test2json
+  log, growing in the checkout's root for the whole run — so rebuilt forge on
+  every command, and a re-run of `forge generate` ran a different binary and
+  never recorded its fixed point (`TestE2EFixtureCorpusCRUDLifecycle`,
+  `CPForgeShaped`, `ZeroService` red on main). Now only a source edit counts:
+  a Go build file, or any file beneath a directory holding a non-test Go
+  package (where `//go:embed` reaches: templates, KCL, skills). A cached
+  bridge build is also keyed on its Go settings (`GOFLAGS`, `CGO_ENABLED`,
+  `GOOS`/`GOARCH`, …) and is never replaced once published, so a process can
+  no longer have the binary it runs swapped for a differently-built one. The
+  e2e shard writes its files under `$RUNNER_TEMP`, outside the checkout.
 - **Every `forge scaffold <noun>` leaves the project lint-green, with no
   `forge generate` after it.** `scaffold frontend` wrote
   `proto/config/v1/<fe>_config.proto` and stopped, so `gen/forge_descriptor.json`

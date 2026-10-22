@@ -20,11 +20,11 @@ import (
 // Each declares a required field the OTHER root's closure never reads.
 const rootsBinaryConfigProto = `syntax = "proto3";
 
-package config.v1;
+package rbc.config.v1;
 
 import "forge/v1/forge.proto";
 
-option go_package = "github.com/test/rbc/gen/config/v1;configv1";
+option go_package = "github.com/test/rbc/gen/rbc/config/v1;configv1";
 
 // ServerConfig is every ` + "`rbc server ...`" + ` process's config: the
 // region and audit sink a node reads, the telemetry settings runRoot reads.
@@ -129,9 +129,9 @@ func TestE2EBinaryConfigRootsReachTheirOwnConfig(t *testing.T) {
 	runCmd(t, projectDir, forgeBin, "scaffold", "worker", "tick")
 
 	// The root config binds to the binary; the per-command configs beside it.
-	configProto := filepath.Join(projectDir, "proto", "config", "v1", "config.proto")
+	configProto := filepath.Join(projectDir, "proto", "rbc", "config", "v1", "config.proto")
 	mustReplaceInFile(t, configProto, "message AppConfig {", "message AppConfig {\n  option (forge.v1.binary_config) = {binary: \"rbc\"};\n")
-	writeFileE2E(t, filepath.Join(projectDir, "proto", "config", "v1", "roles.proto"), rootsBinaryConfigProto)
+	writeFileE2E(t, filepath.Join(projectDir, "proto", "rbc", "config", "v1", "roles.proto"), rootsBinaryConfigProto)
 
 	// The api's item handler takes its whole command config and the audit
 	// sink; the worker's tick reads its cadence and the region.

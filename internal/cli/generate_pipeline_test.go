@@ -61,7 +61,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"OpenAPI specs (protoc-gen-connect-openapi)",
 		"frontend workspaces scaffold",
 		"TypeScript stubs (frontends)",
-		"config loader (proto/<project>/config)",
+		"config loader (proto/<project>/config/v1)",
 		"parse services + module path",
 		"frontend hooks",
 		"ensure frontend components",
@@ -525,7 +525,7 @@ func TestGenerateConfigLoaderPrecedesEveryGoTypeCheck(t *testing.T) {
 	for i, n := range names {
 		at[n] = i
 	}
-	loader, ok := at["config loader (proto/<project>/config)"]
+	loader, ok := at["config loader (proto/<project>/config/v1)"]
 	if !ok {
 		t.Fatal("no config loader step")
 	}

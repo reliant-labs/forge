@@ -398,7 +398,7 @@ const noGenerateFlagUsage = "skip the post-scaffold 'forge generate' run (scaffo
 //
 // Without it the scaffold hands the user a tree whose derived files disagree
 // with their sources: `forge scaffold frontend` writes
-// proto/config/v1/<fe>_config.proto, and until generate re-extracts
+// proto/<project>/config/v1/<fe>_config.proto, and until generate re-extracts
 // gen/forge_descriptor.json, `forge lint`'s convention and graph lanes refuse
 // to read the stale descriptor and fail. A scaffold that must be followed by a
 // second command before the project is green is a two-step procedure that
@@ -592,7 +592,7 @@ There is no per-service port: every service in a binary mounts onto the
 SAME Connect mux, and the process listens once on the AppConfig 'port'
 field (env var PORT, default 8080). Change it per environment in
 deploy/kcl/<env>/config.k, or change the default in
-proto/config/v1/config.proto.
+proto/<project>/config/v1/config.proto.
 
 Flags:
   --resume   Re-run a partial scaffold. Skips every output file that
@@ -1579,7 +1579,7 @@ Bringing the environment up registers the new frontend with the dev IdP;
 nothing else to run.
 
 The scaffold ends with a 'forge generate' run, because the frontend's
-config proto (proto/config/v1/<name>_config.proto) is a generate input: the
+config proto (proto/<project>/config/v1/<name>_config.proto) is a generate input: the
 run re-extracts gen/forge_descriptor.json and writes the frontend's typed
 config, so the next 'forge lint' is green. --no-generate skips it, for a
 round that stages several scaffolds and generates once.
@@ -1681,7 +1681,7 @@ func validateFrontendFlags(ctxLabel, kind, output, basePath, authMode string) (f
 //
 // Two names conflict when they CANONICALIZE the same, not only when
 // they are spelled the same. Everything forge derives from a frontend
-// name — the config proto file (proto/config/v1/<name>_config.proto),
+// name — the config proto file (proto/<project>/config/v1/<name>_config.proto),
 // the dev-IdP KCL fragment, the Go package — goes through
 // naming.GoPackage, which folds hyphens to underscores. So "foo-bar"
 // and "foo_bar" are distinct in forge.yaml but name ONE config proto.
@@ -1707,7 +1707,7 @@ func checkFrontendNameConflict(ctxLabel, name string, existing []config.Frontend
 				fmt.Sprintf("frontend %q collides with existing frontend %q: both canonicalize to %q",
 					name, frontend.Name, canonical),
 				fmt.Sprintf("forge derives generated names from the canonical form, so both frontends would "+
-					"claim proto/config/v1/%s_config.proto and deploy/kcl/dev/identity_%s_gen.k",
+					"claim proto/<project>/config/v1/%s_config.proto and deploy/kcl/dev/identity_%s_gen.k",
 					canonical, canonical),
 				fmt.Sprintf("pick a name that canonicalizes differently (hyphens and underscores are "+
 					"equivalent here — %q and %q are the same name to forge), or remove the existing frontend first",

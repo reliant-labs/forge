@@ -262,7 +262,7 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 			"proto/forge/v1",
 		)
 	} else if g.isCLI() {
-		// CLI projects keep proto/forge + proto/config so users can use
+		// CLI projects keep proto/forge + proto/<project>/config/v1 so users can use
 		// forge annotations on data types and config protos if they want.
 		dirs = append(dirs,
 			"proto",
@@ -466,7 +466,7 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 	// cmd/<bin>/main.go is not (see the bootstrap note in cli/new.go): it
 	// is scaffold-once and user-owned, so the FIRST writer wins forever.
 	// This lane only has the DEFAULT config field set; the codegen pipeline
-	// has the project's real one, parsed from proto/config. Birthing it
+	// has the project's real one, parsed from proto/<project>/config/v1. Birthing it
 	// here would permanently freeze a serve.go whose ConfigFields-gated
 	// blocks disagree with the config the project actually has, and
 	// nothing would ever correct it. So the codegen lane births it
@@ -740,7 +740,7 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 // projects. The internal-package templates import {{.Module}}/pkg/config
 // — for service projects that's filled in by the codegen pipeline, but
 // CLI projects don't run codegen so we ship a Config{} stub up front.
-// Users grow it by editing this file (or adding a proto/config/v1
+// Users grow it by editing this file (or adding a proto/<project>/config/v1
 // entry and running `forge generate`).
 func (g *ProjectGenerator) generateCLIConfigStub() error {
 	pkgDir := filepath.Join(g.Path, "pkg", "config")
@@ -751,7 +751,7 @@ func (g *ProjectGenerator) generateCLIConfigStub() error {
 //
 // This file is a stub. Add fields here and load them from environment
 // variables, command-line flags, or a config file as your CLI grows.
-// If you add proto/config/v1/*.proto and run ` + "`forge generate`" + `,
+// If you add proto/<project>/config/v1/*.proto and run ` + "`forge generate`" + `,
 // this file will be regenerated automatically.
 package config
 

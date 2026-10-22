@@ -76,7 +76,7 @@ func For(name string) Layout { return Layout{Slug: Slug(name)} }
 // its forge.yaml, or from its go.mod module path when forge.yaml names none
 // (see [ProjectName]).
 func ForProject(projectDir string) Layout {
-	return For(ProjectName(projectDir, modulePath(projectDir)))
+	return For(ProjectName(projectDir, ModulePath(projectDir)))
 }
 
 // ProjectName is the project's name: forge.yaml's name, else the last
@@ -198,9 +198,9 @@ func (l Layout) HasProtos(projectDir string) bool {
 	return false
 }
 
-// modulePath reads the module path from projectDir's go.mod, "" when it has
+// ModulePath reads the module path from projectDir's go.mod, "" when it has
 // none.
-func modulePath(projectDir string) string {
+func ModulePath(projectDir string) string {
 	data, err := os.ReadFile(filepath.Join(projectDir, "go.mod"))
 	if err != nil {
 		return ""

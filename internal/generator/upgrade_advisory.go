@@ -164,7 +164,7 @@ func AdvisoryPaths(files []AdvisoryFile) []string {
 // set worth reporting on.
 //
 // projectDir is the project root: the typed-config presence set a frontend's
-// session-provider.ts / connect.ts render from is read from its proto/config.
+// session-provider.ts / connect.ts render from is read from its proto/<project>/config/v1.
 // It used to be read from the process working directory, so `forge project
 // upgrade -C <dir>` — or any caller not sitting in the project — rendered the
 // untyped variant of those files and reported (or adopted!) the wrong bytes.

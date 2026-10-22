@@ -1209,7 +1209,7 @@ func DefaultConfigFieldNames() map[string]bool {
 }
 
 // DefaultConfigMessages returns the default scaffold config metadata used
-// before protoc-gen-forge has produced a descriptor for proto/config/config.proto.
+// before protoc-gen-forge has produced a descriptor for proto/<project>/config/v1/config.proto.
 func DefaultConfigMessages() []ConfigMessage {
 	return []ConfigMessage{
 		{

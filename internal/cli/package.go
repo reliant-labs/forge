@@ -256,7 +256,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	}
 
 	// An adapter's settings are configuration, so its base URL is a leaf of
-	// its own config block in proto/config/v1/config.proto rather than a
+	// its own config block in proto/<project>/config/v1/config.proto rather than a
 	// scalar Deps field (which forge-config-deps rejects, and which compose.go
 	// could only ever wire to ""). The proto edit runs first because its
 	// outcome decides which Deps shape the templates render.
@@ -348,7 +348,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	if noGenerate, _ := cmd.Flags().GetBool("no-generate"); data.ConfigBlock != "" && noGenerate {
 		// adapter.go names config.<ConfigBlock>, which pkg/config declares
 		// only once generate has compiled the block the proto edit added.
-		fmt.Printf("\n   Run `forge generate` first: it generates config.%s from proto/config/v1 and wires\n", data.ConfigBlock)
+		fmt.Printf("\n   Run `forge generate` first: it generates config.%s from proto/<project>/config/v1 and wires\n", data.ConfigBlock)
 		fmt.Printf("   internal/%s, with its Cfg, into internal/app/compose.go. Set %s per environment.\n", name, data.ConfigEnvVar)
 	}
 
@@ -356,7 +356,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 }
 
 // ensureAdapterConfigBlock composes the adapter's config block on AppConfig
-// in proto/config/v1 — `message <Name>Config { string base_url = 1 [...]; }`
+// in proto/<project>/config/v1 — `message <Name>Config { string base_url = 1 [...]; }`
 // plus `<Name>Config <name> = <next tag>;` — and returns the block's message
 // name and its base_url env var. The edit is idempotent (an adapter
 // re-scaffolded after its directory was deleted finds its block in place) and

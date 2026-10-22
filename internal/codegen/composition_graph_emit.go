@@ -291,7 +291,7 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 	}
 	for name := range m.configs.configInputs() {
 		if n := m.byName[name]; n != nil {
-			return nil, fmt.Errorf("a node named %s (%s) would collide with app.Graph's %s, the config proto/config's %s message binds to the primary binary — rename the node", name, n.Doc, name, name)
+			return nil, fmt.Errorf("a node named %s (%s) would collide with app.Graph's %s, the config proto/<project>/config/v1's %s message binds to the primary binary — rename the node", name, n.Doc, name, name)
 		}
 		if reservedGraphNames[name] {
 			return nil, fmt.Errorf("config message %s is bound to the primary binary, so it is an app.Graph input of that name — which app.Graph already declares itself: rename the message", name)

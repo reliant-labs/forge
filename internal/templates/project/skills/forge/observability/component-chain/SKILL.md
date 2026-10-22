@@ -131,7 +131,7 @@ app_config: config_gen.AppConfig = {
 }
 ```
 
-`log_success_sample_window` is declared in `proto/config/v1/config.proto`,
+`log_success_sample_window` is declared in `proto/<project>/config/v1/config.proto`,
 so the config loader types and validates it, and it can come from any source
 the loader reads (`--log-success-sample-window`, `LOG_SUCCESS_SAMPLE_WINDOW`,
 a `--config` file). The scaffolded `serve.go` passes the loaded value to the

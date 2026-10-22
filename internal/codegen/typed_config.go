@@ -16,7 +16,7 @@ import (
 // generating the loader from forge's default fields there writes a
 // pkg/config importing a config package nothing will ever generate.
 //
-// A project still on the legacy proto/config/v1 layout reports false here;
+// A project still on the legacy proto/<project>/config/v1 layout reports false here;
 // `forge generate` refuses it before this is consulted (see
 // configproto.LegacyFiles).
 func HasConfigProtos(projectDir string) bool {

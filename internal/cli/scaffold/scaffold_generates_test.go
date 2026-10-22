@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/configproto"
 )
 
 // A scaffold whose writes are generate INPUTS must end with a generate run, or
@@ -43,7 +44,7 @@ func TestRunFrontend_EndsWithGenerate(t *testing.T) {
 				runs++
 				// Generate reads the config proto the scaffold wrote, so it
 				// must run after that write, not before it.
-				if _, err := os.Stat(filepath.Join(root, "proto", "config", "v1", "web_config.proto")); err != nil {
+				if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(configproto.ForProject(root).Dir()), "web_config.proto")); err != nil {
 					t.Errorf("generate ran before the frontend's config proto was written: %v", err)
 				}
 				return nil

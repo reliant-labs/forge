@@ -29,7 +29,7 @@ type Deps struct {
 	HTTPClient *http.Client
 
 	// Cfg is this adapter's configuration: message {{.ConfigBlock}} in
-	// proto/config/v1/config.proto, composed on AppConfig. The composition
+	// proto/<project>/config/v1/config.proto, composed on AppConfig. The composition
 	// site fills it from the loaded config by type, so base_url arrives
 	// from {{.ConfigEnvVar}}, a --config file or deploy/kcl/<env>/config.k.
 	// Add settings (API keys with `sensitive: true`, account IDs) as more

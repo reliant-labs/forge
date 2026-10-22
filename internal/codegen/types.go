@@ -553,7 +553,7 @@ type ConfigField struct {
 	MessageType string `json:",omitempty"`
 
 	// ProtoFile is the path of the proto file declaring this field, e.g.
-	// "proto/config/v1/config.proto". It carries no codegen behavior: it
+	// "proto/<project>/config/v1/config.proto". It carries no codegen behavior: it
 	// exists so a generate-time refusal can NAME the sources it is talking
 	// about. Fields from several protos are flattened into one KCL schema,
 	// so when two of them collide the field name alone does not tell an

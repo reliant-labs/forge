@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A project's config proto is project-unique: `proto/<project>/config/v1/`,
+  `package <project>.config.v1`, go_package `<mod>/gen/<project>/config/v1`.**
+  Every project used to declare `package config.v1` at
+  `proto/config/v1/config.proto`, so two projects' generated config packages
+  linked into one binary panicked at init (`file config/v1/config.proto is already
+  registered`) — the very use `pkg/config/roots_gen.go` documents. `<project>` is
+  forge.yaml's name as a proto segment (`control-plane` → `control_plane`;
+  `internal/configproto`). Env var names, flags, KCL schemas and the Go package
+  name (`configv1`) are unchanged. `forge generate` refuses the old layout and
+  names `forge fix config-proto-package`, which moves the files, rewrites the
+  package, go_package, proto imports and type references, the project's own Go and
+  frontend imports, and deletes the stale generated output (run by
+  `forge project upgrade`; `migrations/v0.1.47/config-proto-package`).
+  pkg/config imports the config messages' Go package as the descriptor records it,
+  and refuses config messages spread over two Go packages.
+
 ### Added
 
 - **`forge.ControlPlaneSecret` can be delivered through the store (SF14).**

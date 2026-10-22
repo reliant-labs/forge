@@ -1346,7 +1346,7 @@ func auditOptionalDepsGuard(projectDir string) audittype.Category {
 // can never resolve them from App/AppExtras, so they regenerate as
 // typed zeros + TODOs forever (kalshi-trader fr-ad24278452) unless the
 // user hand-projects them via AppExtras + setup.go. The supported
-// shape is a component config block in proto/config taken as one typed
+// shape is a component config block in proto/<project>/config/v1 taken as one typed
 // field. Findings are warn-level; the category is additive per the
 // audit-json contract (consumers iterate `.categories | keys[]` and
 // tolerate new entries).
@@ -1365,9 +1365,9 @@ func auditConfigDeps(projectDir string) audittype.Category {
 					return fmt.Sprintf("%s:%d Deps.%s %s", f.File, f.Line, f.Field, f.Type)
 				},
 				func(findingCount, pkgCount int) string {
-					return fmt.Sprintf("%d scalar Deps field(s) across %d package(s) — scalars are configuration; declare component config blocks in proto/config", findingCount, pkgCount)
+					return fmt.Sprintf("%d scalar Deps field(s) across %d package(s) — scalars are configuration; declare component config blocks in proto/<project>/config/v1", findingCount, pkgCount)
 				},
-				fmt.Sprintf("run `%s lint --config-deps` for per-field remediation snippets (declare a <Component>Config message in proto/config/v1/config.proto and take it as `Cfg *config.<Component>Config`)", cmdutil.Name()),
+				fmt.Sprintf("run `%s lint --config-deps` for per-field remediation snippets (declare a <Component>Config message in proto/<project>/config/v1/config.proto and take it as `Cfg *config.<Component>Config`)", cmdutil.Name()),
 			)
 		},
 	)

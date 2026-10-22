@@ -227,6 +227,7 @@ func TestGenerateStepsReadOnlySet(t *testing.T) {
 		"forge version compatibility": true,
 		"pre-codegen contract check":  true,
 		"retired ShellBuild tokens":   true,
+		"legacy config proto layout":  true,
 		"announce project":            true,
 	}
 	got := map[string]bool{}

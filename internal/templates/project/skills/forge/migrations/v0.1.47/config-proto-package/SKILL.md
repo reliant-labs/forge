@@ -16,7 +16,7 @@ Every forge project declared `package config.v1` at
 message by full name in one process-wide registry, and Go's runtime panics at
 init on a duplicate: `file config/v1/config.proto is already registered`. So
 two projects' generated config packages could never be linked into one binary
-— exactly what `pkg/config/roots_gen.go` invites, when another repo imports a
+— exactly what pkg/config's generated `Roots()` invites, when another repo imports a
 project's `pkg/config` to validate a rendered env with `Roots()` /
 `ValidateRootEnv`.
 

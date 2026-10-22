@@ -11,7 +11,7 @@ import (
 // rather than on a hand-built command.
 func runRoot(t *testing.T, args ...string) error {
 	t.Helper()
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&out)
@@ -69,7 +69,7 @@ func TestRemovedTestCommandNamesItsReplacement(t *testing.T) {
 // signpost that still advertises itself is just the old command with extra
 // steps.
 func TestRemovedTestCommandIsHiddenFromHelp(t *testing.T) {
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	for _, c := range root.Commands() {
 		if c.Name() != "test" {
 			continue

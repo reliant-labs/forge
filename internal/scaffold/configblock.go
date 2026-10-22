@@ -17,15 +17,15 @@ import (
 
 // ConfigRootMessage is the config message a scaffolded component's block is
 // composed on: the project-global config every scaffold declares in
-// proto/config/v1/config.proto, which pkg/config's `Config` aliases and
+// proto/<project>/config/v1/config.proto, which pkg/config's `Config` aliases and
 // internal/app/compose.go reads blocks off (infra.Cfg).
 const ConfigRootMessage = "AppConfig"
 
-// ErrNoConfigRoot reports that the project has no proto/config/v1 message
+// ErrNoConfigRoot reports that the project has no config-directory message
 // named ConfigRootMessage to compose a block on: it has no typed config, or
 // it moved entirely to per-binary configs. The caller refuses before writing
 // adapter files and explains how to declare the required config root.
-var ErrNoConfigRoot = errors.New("no " + ConfigRootMessage + " message in proto/config/v1")
+var ErrNoConfigRoot = errors.New("no " + ConfigRootMessage + " message in the config proto directory")
 
 // ConfigBlockSpec is one component config block: a `message <Message>` of
 // annotated leaves, composed on the root config as `<Message> <Field> = N;`.
@@ -66,7 +66,7 @@ type ConfigBlockResult struct {
 	FieldNumber int
 }
 
-// EnsureConfigBlock makes the proto config in configDir (proto/config/v1)
+// EnsureConfigBlock makes the proto config in configDir (proto/<project>/config/v1)
 // declare spec's block and compose it on ConfigRootMessage, writing only the
 // half that is missing. It is a birth-time splice into a file the author owns,
 // held to the same invariants as the managed-field injection

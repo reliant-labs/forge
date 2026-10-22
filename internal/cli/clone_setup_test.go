@@ -100,7 +100,7 @@ func TestWritingCommandsStillSetUpTheClone(t *testing.T) {
 
 // Which commands may set up the clone, read off the real command tree.
 func TestConfiguresCloneCommandSet(t *testing.T) {
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	for _, tc := range []struct {
 		path  string
 		flags map[string]string

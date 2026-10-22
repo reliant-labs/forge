@@ -63,7 +63,7 @@ gen/db/v1/cycle_run.pb.orm.go:55:18: undefined: orm.TypeDoublePrecision`,
 			name:      "pkg-config-undefined",
 			errOutput: `bootstrap.go:42:18: undefined: pkg/config.Foo`,
 			wantContains: []string{
-				"proto/config/",
+				"proto/<project>/config/v1/",
 				"annotated config fields",
 			},
 		},
@@ -157,7 +157,7 @@ internal/bootstrap.go:90:5: imports pkg/config: foo.go:1:1: package config`
 	if !strings.Contains(got, "forge/pkg pin is older") {
 		t.Errorf("orm.Type* classifier did not win against pkg/config classifier:\n  got: %q", got)
 	}
-	if strings.Contains(got, "proto/config/") {
+	if strings.Contains(got, "config/v1/ has annotated") {
 		t.Errorf("orm.Type* classifier should suppress the pkg/config hint; got mixed message: %q", got)
 	}
 }

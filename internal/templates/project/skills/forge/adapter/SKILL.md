@@ -73,7 +73,7 @@ type charger interface { CreateCharge(ctx context.Context, in CreateChargeInput)
 
 ## Configuration
 
-An adapter's settings — base URL, account IDs, API keys, timeouts — are configuration, not dependencies. `forge scaffold adapter <name>` declares a `<Name>Config` message with a `base_url` leaf (env `<NAME>_BASE_URL`) in `proto/config/v1/config.proto`, composes it on `AppConfig`, and the adapter takes the whole block as ONE Deps field:
+An adapter's settings — base URL, account IDs, API keys, timeouts — are configuration, not dependencies. `forge scaffold adapter <name>` declares a `<Name>Config` message with a `base_url` leaf (env `<NAME>_BASE_URL`) in `proto/<project>/config/v1/config.proto`, composes it on `AppConfig`, and the adapter takes the whole block as ONE Deps field:
 
 ```go
 type Deps struct {

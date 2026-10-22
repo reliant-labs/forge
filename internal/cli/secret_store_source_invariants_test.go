@@ -232,7 +232,7 @@ func TestInvariant_RedactionPreservesTheErrorChain(t *testing.T) {
 var valueCarryingNames = []string{"value", "secret", "password", "token", "key-value", "data", "content", "literal", "from-literal", "string"}
 
 func TestInvariant_NoStoreSourceCommandTakesAValueAsAnArgument(t *testing.T) {
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	// Every command that can carry a store-source value.
 	targets := [][]string{
 		{"secret", "set"}, {"secret", "import"}, {"secret", "list"},
@@ -288,7 +288,7 @@ func TestInvariant_NoStoreSourceCommandTakesAValueAsAnArgument(t *testing.T) {
 // argument must fail before anything is written.
 func TestInvariant_SetRejectsAValueGivenAsASecondArgument(t *testing.T) {
 	f := canaryFixture(t)
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	var out, errOut bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&errOut)
@@ -307,7 +307,7 @@ func TestInvariant_SetRejectsAValueGivenAsASecondArgument(t *testing.T) {
 // Every store-source command's own help must tell the truth about where values
 // come from, and none may suggest an argument.
 func TestInvariant_HelpNeverShowsAValueOnTheCommandLine(t *testing.T) {
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	for _, path := range [][]string{{"secret", "set"}, {"secret", "import"}, {"env", "secrets", "verify"}, {"env", "secrets", "adopt"}} {
 		cmd, _, _ := root.Find(path)
 		help := cmd.Long + "\n" + cmd.Example + "\n" + cmd.UseLine()

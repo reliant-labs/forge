@@ -35,7 +35,7 @@ func obsRun(t *testing.T, facts obsbackend.Facts, runner obsbackend.Runner, args
 		Local: func(env string) obsbackend.Backend { return obsbackend.Local{Env: env, Runner: runner} },
 		Now:   func() time.Time { return obsNow },
 	}
-	cmd := NewRootCmd()
+	cmd := newTestRootCmd(t)
 	cmd.SetOut(&out)
 	cmd.SetErr(&errb)
 	cmd.SetArgs(append([]string{"obs"}, args...))
@@ -407,7 +407,7 @@ func TestParseParams(t *testing.T) {
 }
 
 func TestObsGroupHasNoObserveAlias(t *testing.T) {
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	for _, c := range root.Commands() {
 		if c.Name() == "observe" {
 			t.Error("`forge observe` is renamed to `forge obs` with no alias")

@@ -21,6 +21,44 @@ func resetCmdRoute(t *testing.T) {
 	t.Cleanup(cmdutil.ResetCmdRoute)
 }
 
+// newTestRootCmd is the only way a test builds the real root command. Running
+// one records the mount route (cmdutil.RecordCmdRoute) in package state, which
+// changes cmdutil.Name() for every later test in the process ("forge generate"
+// becomes "cli.test generate"); a test that forgot to restore it broke
+// whichever test happened to run next. The route is cleared before the root is
+// built and again when the test ends.
+func newTestRootCmd(t *testing.T) *cobra.Command {
+	t.Helper()
+	resetCmdRoute(t)
+	return NewRootCmd()
+}
+
+// A test that builds the root command through NewRootCmd instead of
+// newTestRootCmd leaks the recorded route into the tests after it. Exempt:
+// TestMain (the re-exec'd plugin process, outside any test) and this file,
+// whose tests reset the route themselves.
+func TestNoTestBuildsTheRootCommandWithoutRestoringTheRoute(t *testing.T) {
+	files, err := filepath.Glob("*_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if f == "main_test.go" || f == "root_selfexec_test.go" {
+			continue
+		}
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(raw), "\n") {
+			code, _, _ := strings.Cut(line, "//")
+			if strings.Contains(code, "NewRootCmd()") && !strings.Contains(code, "return NewRootCmd()") {
+				t.Errorf("%s:%d builds the root command with NewRootCmd(); use newTestRootCmd(t), which restores the recorded route", f, i+1)
+			}
+		}
+	}
+}
+
 // A STANDALONE forge binary must self-invoke as [exe] no matter what the
 // binary file is named. The test binary's basename is not "forge"
 // (…/cli.test), which is exactly the trap: the old basename heuristic

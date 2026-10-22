@@ -140,7 +140,7 @@ func NewMigratedPostgresDB(t testing.TB, migrations fs.FS) orm.Context {
 	}
 	// The migrations are applied ONCE per server (pgtest.NewFromTemplate) and each
 	// test gets a clone, so N tests cost one replay of the chain instead of N.
-	db, cleanup, err := pgtest.NewFromTemplate(key, func(db *sql.DB) error {
+	db, _, cleanup, err := pgtest.NewFromTemplate(key, func(db *sql.DB, _ string) error {
 		if err := applyUpMigrations(db, migrations); err != nil {
 			return err
 		}

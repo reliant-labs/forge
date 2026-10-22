@@ -28,6 +28,14 @@
 // (postgres://user:pass@host:port/postgres?sslmode=disable) to point at
 // an already-running server instead (a dev docker-compose, CI service
 // container, or a detected local postgres) and skip the embedded boot.
+//
+// # Leftovers
+//
+// Every per-caller database is dropped by its cleanup, and its name records the
+// process that owns it. A process that dies before its cleanup runs leaves its
+// databases behind; the next process to reach the server drops each one whose
+// owner is provably gone (owner.go). Templates are reaped by age instead
+// (template.go), since no single process owns one.
 package pgtest
 
 import (
@@ -154,6 +162,9 @@ func startServer() (*server, error) {
 			return nil, err
 		}
 	}
+	// Collect the scratch databases crashed processes left on this server
+	// (owner.go). Once per server per process, before this one adds its own.
+	sweepScratchOnce(db, baseURL)
 	return &server{baseURL: baseURL, baseDB: db, release: release}, nil
 }
 
@@ -529,7 +540,9 @@ func cacheDir() string {
 //
 // Callers own the returned cleanup; tests typically defer it or register
 // it with t.Cleanup. The connection is opened with DriverName (pgx), the
-// driver production uses.
+// driver production uses. A process that dies before its cleanup runs leaves
+// the database behind, and the next process to reach the server drops it: the
+// name records its owner (see owner.go).
 func New() (*sql.DB, func(), error) {
 	return newOnShared("")
 }
@@ -561,7 +574,7 @@ func newOnShared(template string) (*sql.DB, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	name := fmt.Sprintf("forge_test_%d_%d", os.Getpid(), dbCounter.Add(1))
+	name := scratchName(scratchTestPrefix)
 	if _, err := s.baseDB.Exec(createDatabaseSQL(name, template)); err != nil {
 		return nil, nil, fmt.Errorf("pgtest: create database %s: %w", name, err)
 	}
@@ -609,7 +622,7 @@ func NewURL() (dsn string, cleanup func(), err error) {
 	if err != nil {
 		return "", nil, err
 	}
-	name := fmt.Sprintf("forge_test_%d_%d", os.Getpid(), dbCounter.Add(1))
+	name := scratchName(scratchTestPrefix)
 	if _, err := s.baseDB.Exec("CREATE DATABASE " + name); err != nil {
 		return "", nil, fmt.Errorf("pgtest: create database %s: %w", name, err)
 	}
@@ -633,8 +646,9 @@ func NewURL() (dsn string, cleanup func(), err error) {
 // "postgres"): NewAtURL connects there to CREATE the scratch database and
 // never touches whatever application database also lives on the server.
 // The scratch database is dropped-if-exists BEFORE creating it, so a
-// leftover from a crashed prior run (same pid+counter) can never wedge a
-// fresh run; cleanup drops it again.
+// leftover of the same name can never wedge a fresh run; cleanup drops it
+// again. The leftovers a crashed run left under its own names are dropped by
+// the sweep the first NewAtURL of a process makes on a server (owner.go).
 //
 // Callers own the returned cleanup; the generate pipeline defers it.
 func NewAtURL(baseURL string) (*sql.DB, func(), error) {
@@ -669,7 +683,9 @@ func newAtURL(baseURL, template string) (*sql.DB, func(), error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("pgtest: connect to %s: %w", redactDSN(baseURL), err)
 	}
-	name := fmt.Sprintf("forge_shadow_%d_%d", os.Getpid(), dbCounter.Add(1))
+	// A crashed earlier run's scratch databases on this server go first.
+	sweepScratchOnce(base, baseURL)
+	name := scratchName(scratchShadowPrefix)
 	// Drop-if-exists first: robust to a leftover database an earlier run
 	// left behind after a crash before its cleanup could drop it.
 	_, _ = base.Exec("DROP DATABASE IF EXISTS " + name)

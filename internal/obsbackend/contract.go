@@ -19,6 +19,19 @@ type Backend interface {
 	Query(ctx context.Context, req QueryRequest) (QueryResult, error)
 }
 
+// IssueReader is what `forge obs issues|issue` read and write through. Both
+// backends implement it. The local one groups ERROR logs at query time and
+// keeps no state, so its UpdateIssueStatus is always a refusal; the cloud one
+// is the control plane's IssuesService.
+//
+//forge:contract
+type IssueReader interface {
+	ListIssues(ctx context.Context, req ListIssuesRequest) (ListIssuesResult, error)
+	GetIssue(ctx context.Context, req GetIssueRequest) (GetIssueResult, error)
+	ListIssueEvents(ctx context.Context, req ListIssueEventsRequest) (ListIssueEventsResult, error)
+	UpdateIssueStatus(ctx context.Context, req UpdateIssueStatusRequest) (UpdateIssueStatusResult, error)
+}
+
 // HealthReader judges a release: the windows before and after a promotion,
 // per service, and what the release opened (`forge obs check`). The local
 // backend judges from the ClickStack with pkg/releasehealth; the cloud

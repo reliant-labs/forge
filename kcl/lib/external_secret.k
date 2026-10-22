@@ -35,6 +35,7 @@ schemas are accepted as duck-typed inputs, as in lib/gateway.k.
 
 import crypto
 import regex
+import .openbao as openbao_lib
 
 # The ServiceAccount whose token logs in to the store, in every namespace that
 # holds a SecretStore. It is the subject secretaccess pins each role to
@@ -303,6 +304,8 @@ _check_source = lambda b: any, pt: any, s: any -> bool {
 #   jwt_mounts   the JWT auth mount each store logs in on (jwt-<cluster id>)
 #   audiences    the one audience each store requests
 #   gcp_projects the Google project of each gcpsm store
+#   gcp_service_accounts the extra service accounts a gcpsm store may use: the
+#                component's bootstrap reader
 #
 # The component's own server/mount/audience are admitted even when no
 # ExternalSecret reads from it yet, so adding the first one needs no policy
@@ -316,11 +319,17 @@ admission_defaults = lambda b: any, pt: any, ctx: str -> any {
     _vault = [st for st in _recs if st.vault]
     _ob = True if b.openbao and _openbao_context(b, pt) == ctx else False
     _id = _cluster_id(b, pt, ctx)
+    # The component's own bootstrap store (lib/openbao.k): a SecretStore over
+    # Secret Manager in the bootstrap project, which the policy must admit or the
+    # seal key never arrives.
+    _boot = [b.bootstrap_source.project] if (_ob and b.bootstrap_source and b.bootstrap_source.type == "gcpsm") else []
+    _boot_sa = [openbao_lib.reader_service_account(b.openbao, b.bootstrap_source)] if _boot else []
     {
         "servers": sorted({x: 0 for x in [st.server for st in _vault if st.server] + ([_openbao_service_url(b.openbao)] if _ob else [])})
         "jwt_mounts": sorted({x: 0 for x in ["jwt-${st.id}" for st in _vault] + (["jwt-${_id}"] if _ob else [])})
         "audiences": sorted({x: 0 for x in [st.audience for st in _vault] + (["${_openbao_audience_base(b.openbao)}/c/${_id}"] if _ob else [])})
-        "gcp_projects": sorted({x: 0 for x in [st.project for st in _recs if st.type == "gcpsm"]})
+        "gcp_projects": sorted({x: 0 for x in [st.project for st in _recs if st.type == "gcpsm"] + _boot})
+        "gcp_service_accounts": _boot_sa
     }
 }
 

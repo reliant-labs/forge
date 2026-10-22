@@ -65,6 +65,9 @@ func (s Spec) WithDefaults() Spec {
 	if s.CloudSQLProxyImage == "" && s.Storage.Postgres != nil && s.Storage.Postgres.CloudSQLInstance != "" {
 		s.CloudSQLProxyImage = DefaultCloudSQLProxyImage
 	}
+	if s.Bootstrap != nil && s.Hooks.Escrow == "" {
+		s.Hooks.Escrow = EscrowConfigMap(s.Name)
+	}
 	return s
 }
 
@@ -149,6 +152,9 @@ func Render(s Spec) ([]*unstructured.Unstructured, error) {
 	}
 	add(s.networkPolicy())
 	add(s.publicObjects()...)
+	if s.Bootstrap != nil {
+		add(s.bootstrapObjects()...)
+	}
 
 	conv, err := s.converge(doc)
 	if err != nil {
@@ -660,7 +666,11 @@ func (s Spec) converge(doc AccessDoc) ([]any, error) {
 	cm.Labels[LabelName] = s.Name + "-converge"
 
 	base := s.Name + "-converge"
-	sa := s.serviceAccount(ConvergeServiceAccount(s), nil)
+	var saAnnotations map[string]string
+	if s.Bootstrap != nil {
+		saAnnotations = map[string]string{AnnotationGCPServiceAccount: s.Bootstrap.EscrowGSA}
+	}
+	sa := s.serviceAccount(ConvergeServiceAccount(s), saAnnotations)
 	sa.Labels[LabelName] = base
 
 	role := &rbacv1.Role{
@@ -716,17 +726,28 @@ func (s Spec) converge(doc AccessDoc) ([]any, error) {
 		v := intstr.FromInt32(int32(p))
 		return networkingv1.NetworkPolicyPort{Protocol: proto, Port: &v}
 	}
+	egressRules := []networkingv1.NetworkPolicyEgressRule{
+		{To: []networkingv1.NetworkPolicyPeer{{NamespaceSelector: nsSelector("kube-system")}}, Ports: []networkingv1.NetworkPolicyPort{np(53, &udp), np(53, &tcp)}},
+		{To: []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: "0.0.0.0/0"}}}, Ports: []networkingv1.NetworkPolicyPort{np(443, &tcp), np(6443, &tcp)}},
+		{To: []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{MatchLabels: s.selector()}}}, Ports: []networkingv1.NetworkPolicyPort{np(s.apiPort(), &tcp)}},
+	}
+	if s.Bootstrap != nil {
+		// The escrow sink gets its access token from the GKE metadata server
+		// (Workload Identity): 169.254.169.252:988 on GKE 1.21+, and
+		// 169.254.169.254:80 on older nodes. Without these a default-deny
+		// policy leaves the Job unable to authenticate.
+		egressRules = append(egressRules,
+			networkingv1.NetworkPolicyEgressRule{To: []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: "169.254.169.252/32"}}}, Ports: []networkingv1.NetworkPolicyPort{np(988, &tcp)}},
+			networkingv1.NetworkPolicyEgressRule{To: []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: "169.254.169.254/32"}}}, Ports: []networkingv1.NetworkPolicyPort{np(80, &tcp)}},
+		)
+	}
 	egress := &networkingv1.NetworkPolicy{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
 		ObjectMeta: s.meta(base, LabelName, base),
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{LabelName: base}},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
-			Egress: []networkingv1.NetworkPolicyEgressRule{
-				{To: []networkingv1.NetworkPolicyPeer{{NamespaceSelector: nsSelector("kube-system")}}, Ports: []networkingv1.NetworkPolicyPort{np(53, &udp), np(53, &tcp)}},
-				{To: []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: "0.0.0.0/0"}}}, Ports: []networkingv1.NetworkPolicyPort{np(443, &tcp), np(6443, &tcp)}},
-				{To: []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{MatchLabels: s.selector()}}}, Ports: []networkingv1.NetworkPolicyPort{np(s.apiPort(), &tcp)}},
-			},
+			Egress:      egressRules,
 		},
 	}
 	objs = append(objs, egress)
@@ -744,10 +765,14 @@ func (s Spec) converge(doc AccessDoc) ([]any, error) {
 // ownedConfigMaps are the ConfigMaps the converge Job writes: the applied
 // document, and the CA it publishes (only when forge issued the certificate).
 func (s Spec) ownedConfigMaps() []string {
-	if s.TLS.Secret != "" {
-		return []string{s.appliedConfigMap()}
+	owned := []string{s.appliedConfigMap()}
+	if s.TLS.Secret == "" {
+		owned = append(owned, s.TLS.CAConfigMap)
 	}
-	return []string{s.appliedConfigMap(), s.TLS.CAConfigMap}
+	if s.Bootstrap != nil {
+		owned = append(owned, s.EscrowLedger())
+	}
+	return owned
 }
 
 func (s Spec) appliedConfigMap() string { return s.Name + "-access-applied" }
@@ -800,6 +825,11 @@ func (s Spec) convergeJob(phase, cmName string) (*batchv1.Job, error) {
 		// its config.
 		{Name: "OPENBAO_BREAK_GLASS_TOKEN", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: s.Name + "-break-glass"}, Key: "token", Optional: new(true)}}},
+	}
+	if s.Bootstrap != nil {
+		for _, kv := range s.escrowEnv() {
+			env = append(env, corev1.EnvVar{Name: kv[0], Value: kv[1]})
+		}
 	}
 	pod := corev1.PodSpec{
 		ServiceAccountName: ConvergeServiceAccount(s), RestartPolicy: corev1.RestartPolicyNever, EnableServiceLinks: new(false),

@@ -158,12 +158,22 @@ type dbQueryDocument struct {
 	*dbquery.Result
 }
 
-// dbQueryTarget is where a query goes: a DSN and the facts the output reports.
+// dbQueryTarget is where a query goes: a DSN, or a connection config for a
+// transport that dials itself (the port-forward), and the facts the output
+// reports.
 type dbQueryTarget struct {
-	dsn   string
-	scope dbQueryScope
-	// close releases the transport (the port-forward), or is nil.
+	dsn        string
+	connConfig *pgx.ConnConfig
+	scope      dbQueryScope
+	// close releases the transport, or is nil.
 	close func()
+}
+
+func (t dbQueryTarget) connect(ctx context.Context) (*pgx.Conn, error) {
+	if t.connConfig != nil {
+		return pgx.ConnectConfig(ctx, t.connConfig)
+	}
+	return pgx.Connect(ctx, t.dsn)
 }
 
 func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o dbQueryOptions) error {
@@ -191,7 +201,7 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o d
 		if err := checkDBQueryPolicy(o, target.scope.Policy); err != nil {
 			return nil, err
 		}
-		conn, err := pgx.Connect(ctx, target.dsn)
+		conn, err := target.connect(ctx)
 		if err != nil {
 			// The DSN can carry a password; never echo it.
 			return nil, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("cannot connect to %s's database (workload %q): %s; is it running? (%s env up %s)", o.env, target.scope.Workload, redactDSNError(err, target.dsn), Name(), o.env)}

@@ -37,7 +37,7 @@ The workload decides (`--workload`, default `api`):
 | Workload runs | Transport | Connects as |
 |---|---|---|
 | OnHost / OnCompose | **direct**: the workload's resolved `DATABASE_URL`, the same value `forge env exec` gives the process | whatever that URL names |
-| OnCluster, in an env declared `lifecycle = "local"` or `"ephemeral"` | **port-forward**: `kubectl port-forward` with your kube context to the env's ManagedDatabase (`<name>-ro` when it runs standbys, else `<name>-rw`) | `forge_ro` |
+| OnCluster, in an env declared `lifecycle = "local"` or `"ephemeral"` | **port-forward**: a pods/portforward stream through your kube context's API server (needs `pods/portforward` create, `endpointslices` list and `secrets` get on the two database Secrets in the env's namespace) to the env's ManagedDatabase (`<name>-ro` when it runs standbys, else `<name>-rw`) | `forge_ro` |
 | OnCluster in a real env, or OnHosted | not reachable from forge yet: exit 2 | — |
 
 `--database <name>` picks the ManagedDatabase when a cluster env declares several.

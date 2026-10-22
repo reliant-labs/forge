@@ -121,6 +121,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plane that does not name it, and omitted when empty, so every shape recorded before
   them encodes and hashes exactly as it did.
 
+- **`forge fix connect-errors`: hand-built Connect errors onto svcerr, without
+  changing a code or a message.** It rewrites every `connect.NewError` whose
+  client-visible code and message an svcerr spelling reproduces exactly —
+  `errors.New("chat not found")` under `CodeNotFound` → `svcerr.NotFound("chat")`,
+  other NotFound prose → `svcerr.WithMessage(svcerr.ErrNotFound, …)`,
+  `fmt.Errorf(f, args…)` without `%w` or an error argument →
+  `svcerr.<Kind>(fmt.Sprintf(f, args…))` — and, in the tests of a package that
+  now returns bare kinds and of its importers, `connect.CodeOf` →
+  `svcerr.Code`. A bare kind is written only in a handler package, where the
+  context is `error` and nothing reads a `*connect.Error` in process in the
+  package, its tests or an importer's code; everywhere else (interceptors, `*connect.Error`
+  results, a package such a reader sees) it is `svcerr.ToConnect(…)`, and a
+  re-run drops the wrapper once the reader reads `svcerr.Code`. Every site it
+  cannot rewrite exactly — an error value (`svcerr.WrapOr` is the reviewed
+  fix), nil, a computed message or code — is listed with its reason. It is
+  type-checked (`go/packages`), idempotent, `--dry-run` prints each rewrite as
+  `file:line: old → new`, and its proof is a corpus whose real-client wire
+  output is identical before and after. Over reliant: 902 sites rewritten (334
+  to bare kinds, 568 kept a `*connect.Error`), 71 test assertions, 341 sites
+  listed, and its build, vet and handler tests pass unchanged. On request
+  only (`forge project upgrade` does not run it); the playbook is
+  `forge skill load migrations/v0.1.47/connect-errors`.
+
 - **The schema for platform secrets: `forge.OpenBao`, `forge.ExternalSecretsOperator`
   and store-backed `forge.ExternalSecret`s (declarations only, nothing renders yet).**
   Two opt-in components on the Bundle, like `observability` and `identity`:

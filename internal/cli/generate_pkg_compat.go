@@ -104,7 +104,7 @@ func binaryBehindPinErr(projectDir, projectVersion, binaryVersion string) error 
 			"    %s\n"+
 			"  or install the pinned forge (the command above), or if the PIN is what is "+
 			"wrong, move it deliberately with `%s project upgrade`. To proceed anyway: %s=1",
-			forgecompat.RunPinnedCommand(projectVersion, forgeInvocationArgs()),
+			pinnedRunLine(projectDir, projectVersion, forgeInvocationArgs()),
 			Name(), forgecompat.SkewOverrideEnv))
 
 	return fmt.Errorf("%w\n\n%s", base, toolchainDiagnosis(projectDir))
@@ -162,7 +162,7 @@ func unreleasableBuildErr(projectDir, projectVersion string) error {
 			buildinfo.Version(), forgeModuleRequirePath, projectVersion),
 		"",
 		"run this command with the forge the project pins — nothing is installed over the forge on your PATH:\n"+
-			"    "+forgecompat.RunPinnedCommand(projectVersion, forgeInvocationArgs())+
+			"    "+pinnedRunLine(projectDir, projectVersion, forgeInvocationArgs())+
 			"\n  Or, to generate with THIS unreleased forge, bridge the project to its source:\n    "+bridge+
 			"\n  go.work is machine-local; keep it out of version control")
 

@@ -144,8 +144,18 @@ func InstallCommand(version string) string {
 // args are the forge arguments of the refused invocation (no binary name);
 // each is shell-quoted only when it needs to be, so the line pastes as-is.
 func RunPinnedCommand(version string, args []string) string {
+	return RunBinaryCommand("go run "+ModulePath+"/cmd/forge@"+version, args)
+}
+
+// RunBinaryCommand spells the refused command run by a forge that is already on
+// disk: binary (shell-quoted if it needs to be) then the arguments.
+func RunBinaryCommand(binary string, args []string) string {
 	var b strings.Builder
-	b.WriteString("go run " + ModulePath + "/cmd/forge@" + version)
+	if strings.HasPrefix(binary, "go run ") {
+		b.WriteString(binary)
+	} else {
+		b.WriteString(shellWord(binary))
+	}
 	for _, a := range args {
 		b.WriteString(" ")
 		b.WriteString(shellWord(a))

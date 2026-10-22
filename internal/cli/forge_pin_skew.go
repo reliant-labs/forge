@@ -250,7 +250,7 @@ func pinSkewRefusal(projectRoot, pin, binary, what string) error {
 	fmt.Fprintf(&b, "this forge is %s, but %s/forge.yaml pins forge_version %s.\n", binary, projectRoot, pin)
 	fmt.Fprintf(&b, "  `%s` rewrites or produces files from the binary's own templates, so it runs only under the pinned forge —\n", what)
 	b.WriteString("  a different one silently rewrites unrelated generated files.\n")
-	writePinSkewRemedy(&b, "  ", pin, buildinfo.Current())
+	writePinSkewRemedy(&b, "  ", projectRoot, pin, buildinfo.Current())
 	fmt.Fprintf(&b, "  If the PIN is what is wrong, move it deliberately: `%s project upgrade`.\n", Name())
 	fmt.Fprintf(&b, "  To proceed anyway, knowingly (forge developers): --%s, or %s=1", allowVersionSkewFlag, allowVersionSkewEnv)
 	return fmt.Errorf("%s", b.String())
@@ -300,7 +300,7 @@ func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error 
 		}
 		return err
 	}
-	_, _ = fmt.Fprint(w, pinSkewWarning(pin, binary, buildinfo.Current()))
+	_, _ = fmt.Fprint(w, pinSkewWarning(projectRoot, pin, binary, buildinfo.Current()))
 	if note := delegationFailure(delegateErr); note != "" {
 		_, _ = fmt.Fprint(w, "  "+strings.TrimPrefix(note, "  "))
 	}
@@ -310,10 +310,10 @@ func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error 
 // pinSkewWarning is what a command that is not refused prints under skew. It
 // gives the refusal's remedy: an embedded forge (`reliant forge`) is not
 // changed by installing forge, so "go install" alone sent people in a circle.
-func pinSkewWarning(pin, binary string, cur buildinfo.Build) string {
+func pinSkewWarning(projectRoot, pin, binary string, cur buildinfo.Build) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "⚠️  this forge is %s, but forge.yaml pins forge_version %s — a different forge than the project's.\n", binary, pin)
-	writePinSkewRemedy(&b, "   ", pin, cur)
+	writePinSkewRemedy(&b, "   ", projectRoot, pin, cur)
 	return b.String()
 }
 
@@ -321,9 +321,9 @@ func pinSkewWarning(pin, binary string, cur buildinfo.Build) string {
 // each line prefixed by indent. Running it with `go run` works everywhere;
 // installing it helps only a standalone forge, so an embedded one is told to
 // upgrade its host instead.
-func writePinSkewRemedy(b *strings.Builder, indent, pin string, cur buildinfo.Build) {
+func writePinSkewRemedy(b *strings.Builder, indent, projectRoot, pin string, cur buildinfo.Build) {
 	fmt.Fprintf(b, "%sRun it with the pinned forge, installing nothing:\n", indent)
-	fmt.Fprintf(b, "%s    %s\n", indent, forgecompat.RunPinnedCommand(pin, forgeInvocationArgs()))
+	fmt.Fprintf(b, "%s    %s\n", indent, pinnedRunLine(projectRoot, pin, forgeInvocationArgs()))
 	if !cur.Embedded {
 		fmt.Fprintf(b, "%sor install the pinned forge (from outside the project's module):\n", indent)
 		fmt.Fprintf(b, "%s    cd \"$(mktemp -d)\" && GOPRIVATE='github.com/reliant-labs/*' go install github.com/reliant-labs/forge/cmd/forge@%s\n", indent, pin)

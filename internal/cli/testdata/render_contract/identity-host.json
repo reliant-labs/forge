@@ -80,8 +80,11 @@
         "idp_pat_path": ".forge/idp/pat.txt",
         "idp_steps_file": "idp-steps.yaml",
         "name": "pg",
+        "nats_monitor_port": null,
         "password": "postgres",
         "port": 5432,
+        "temporal_namespaces": null,
+        "temporal_ui_port": null,
         "user": "postgres",
         "version": null
       },
@@ -95,8 +98,11 @@
         "idp_pat_path": ".forge/idp/pat.txt",
         "idp_steps_file": "idp-steps.yaml",
         "name": "idp",
+        "nats_monitor_port": null,
         "password": "postgres",
         "port": 8098,
+        "temporal_namespaces": null,
+        "temporal_ui_port": null,
         "user": "postgres",
         "version": null
       }

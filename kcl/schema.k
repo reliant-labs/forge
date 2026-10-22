@@ -1027,6 +1027,21 @@ schema HostInfra:
     declares, so one server backs both and the IdP's schema still cannot
     collide with the app's.
 
+    `nats` runs nats-server (pinned, checksum-verified) on loopback with
+    JetStream on and its store under `data_dir`. It takes no credentials —
+    `user`/`password` describe postgres and are ignored — and the DSN a
+    workload dials is `nats://127.0.0.1:<port>`. `nats_monitor_port` adds the
+    HTTP monitoring endpoint; unset means none.
+
+    `temporal` runs the Temporal CLI's development server (`temporal server
+    start-dev`, pinned and checksum-verified), its state persisted in a SQLite
+    file under `data_dir` so workflow executions survive a restart beside the
+    postgres rows that name them. `temporal_namespaces` are created at launch,
+    and the instance is ready only once each one exists. `port` is the frontend
+    gRPC port the SDK dials; the HTTP API and metrics listeners take free ports
+    the server picks, and the Web UI is off unless `temporal_ui_port` is set.
+    Both engines pin their version in forge: `version`, if set, must equal it.
+
     A zitadel instance's `port` should come from `allocate_port`, not
     `resolve_port`. Zitadel derives the `iss` claim of every token from the
     origin it is reached on, and routes by Host header, so a port that
@@ -1086,10 +1101,31 @@ schema HostInfra:
     # forge.ManagedIdentity.
     idp_pat_path: str = ".forge/idp/pat.txt"
 
+    # ── engine = "nats" only ─────────────────────────────────────────────
+    # The HTTP monitoring port (/healthz, /varz, /jsz). Unset => none.
+    nats_monitor_port?: int
+
+    # ── engine = "temporal" only ─────────────────────────────────────────
+    # Namespaces created at launch; readiness waits for each. Unset => only
+    # Temporal's own "default".
+    temporal_namespaces?: [str]
+    # The Web UI's port. Unset => headless.
+    temporal_ui_port?: int
+
     check:
         regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "HostInfra.name '${name}' must be an RFC-1123 label"
-        engine in ["postgres", "zitadel"], \
-            "HostInfra.engine must be 'postgres' or 'zitadel' (the engines forge supervises natively)"
+        engine in ["postgres", "zitadel", "nats", "temporal"], \
+            "HostInfra.engine must be 'postgres', 'zitadel', 'nats' or 'temporal' (the engines forge supervises natively)"
+        engine == "nats" or not nats_monitor_port, \
+            "HostInfra.nats_monitor_port is for engine 'nats' only ('${name}' is '${engine}')"
+        not nats_monitor_port or (nats_monitor_port > 0 and nats_monitor_port < 65536 and nats_monitor_port != port), \
+            "HostInfra.nats_monitor_port must be 1..65535 and differ from port"
+        engine == "temporal" or (not temporal_namespaces and not temporal_ui_port), \
+            "HostInfra.temporal_namespaces / temporal_ui_port are for engine 'temporal' only ('${name}' is '${engine}')"
+        not temporal_ui_port or (temporal_ui_port > 0 and temporal_ui_port < 65536 and temporal_ui_port != port), \
+            "HostInfra.temporal_ui_port must be 1..65535 and differ from port"
+        not temporal_namespaces or all ns in temporal_namespaces { regex.match(ns, r"^[A-Za-z0-9][A-Za-z0-9._-]*$") }, \
+            "HostInfra.temporal_namespaces ${temporal_namespaces} must each be a Temporal namespace name (letters, digits, '.', '_', '-')"
         port > 0 and port < 65536, "HostInfra.port must be 1..65535"
         database, "HostInfra.database is required"
         user, "HostInfra.user is required"

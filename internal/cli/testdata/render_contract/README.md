@@ -12,7 +12,7 @@ one mixed env. Together they are the §9.1 contract between three parties:
 
 | Case | What it pins |
 |---|---|
-| `host` | `forge.OnHost` workloads: an air service with `listen_ports`, a go-run migrate job. Also a `HostInfra` infra entry, a dev frontend, a `SecretRef` with `optional`, and a WorkloadURL resolved to `localhost` |
+| `host` | `forge.OnHost` workloads: an air service with `listen_ports`, a go-run migrate job. Also `HostInfra` infra entries (postgres, nats with a monitor port, temporal with a namespace), a dev frontend, a `SecretRef` with `optional`, and a WorkloadURL resolved to `localhost` |
 | `compose` | `forge.OnCompose` third-party services: no build, `spec.image` is `""`, and literal env is merged into the compose process `env` |
 | `cluster` | `forge.OnCluster` workloads of every scheduled kind, a third-party image, a cluster `ManagedDatabase`, an opted-in `network_policy`, and the `forge.dev/v1alpha1 Workload` records in `manifests` |
 | `hosted` | `forge.OnHosted` service and job, a hosted database, and a frontend on `forge.OnHosted`. References stay references: `managedSecret` (from a config `SecretRef`'s `store_key`), `databaseRef`, `workloadURL` |

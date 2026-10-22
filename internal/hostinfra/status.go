@@ -77,10 +77,12 @@ func StatusOf(ctx context.Context, projectDir string, spec Spec) (Status, error)
 		return statusPostgres(ctx, spec, dataDir), nil
 	case EngineZitadel:
 		return statusZitadel(ctx, spec, dataDir), nil
+	case EngineNATS:
+		return natsEngine.status(ctx, spec, dataDir), nil
+	case EngineTemporal:
+		return temporalEngine.status(ctx, spec, dataDir), nil
 	default:
-		return Status{DataDir: dataDir}, fmt.Errorf(
-			"host-infra %s: unsupported engine %q (forge supervises %q and %q natively): %w",
-			spec.Name, spec.Engine, EnginePostgres, EngineZitadel, ErrUnsupportedEngine)
+		return Status{DataDir: dataDir}, unsupportedEngine(spec)
 	}
 }
 

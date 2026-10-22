@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge.HostInfra` engines `nats` and `temporal`.** `engine = "nats"` runs a
+  pinned, checksum-verified nats-server (v2.15.1) on loopback with JetStream,
+  its store under `data_dir`; `nats_monitor_port` adds the monitoring endpoint.
+  `engine = "temporal"` runs the Temporal CLI's dev server (1.9.1, Server 1.32.0)
+  with its state persisted under `data_dir`, creates `temporal_namespaces` at
+  launch and is ready only once each describes; the Web UI is off unless
+  `temporal_ui_port` is set, and the HTTP/metrics listeners take free ports, so
+  stacks side by side never collide on a fixed default. Both are supervised like
+  the dev IdP — own session, pidfile-owned, refused when a foreign process holds
+  the port, stopped by `forge env down` — through one shared supervised-binary
+  core (`internal/hostinfra/supervised.go`), so the next such engine is a
+  descriptor rather than another copy of download/extract/pidfile/stop.
+
 - **An identity line in `forge env status` and `forge env deploy` (FI7).** A
   hosted env that declares `forge.ManagedIdentity` shows `identity: ready /
   provisioning / degraded / failed: <reason>`, read from its control plane's

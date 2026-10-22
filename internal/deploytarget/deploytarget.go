@@ -290,6 +290,12 @@ type HostInfraSpec struct {
 	IDPMasterKey    string
 	IDPStepsFile    string
 	IDPPATPath      string
+
+	// engine = "nats" only.
+	NATSMonitorPort int
+	// engine = "temporal" only.
+	TemporalNamespaces []string
+	TemporalUIPort     int
 }
 
 // ErrProviderNotImplemented is the sentinel future providers (Lambda,

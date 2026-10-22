@@ -35,7 +35,11 @@ output = forge.render(forge.Bundle {
             runtime = forge.OnHost {}
         }
     ]
-    infra = [forge.HostInfra {name = "postgres", port = 5433, database = "acme"}]
+    infra = [
+        forge.HostInfra {name = "postgres", port = 5433, database = "acme"}
+        forge.HostInfra {name = "nats", engine = "nats", port = 4223, nats_monitor_port = 8223}
+        forge.HostInfra {name = "temporal", engine = "temporal", port = 7234, temporal_namespaces = ["acme"]}
+    ]
     frontends = [forge.Frontend {name = "web", type = "vite", path = "frontends/web", runtime = forge.OnHost {}}]
     secret_provider = forge.FileSecrets {path = "secrets/dev.yaml"}
 })

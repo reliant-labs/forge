@@ -80,7 +80,7 @@ _workloads = [
 
 | Env | Binders | Notes |
 |---|---|---|
-| `dev` | `_on_host` / `_on_host_job` (services, workers, jobs), `_on_k3d` (operators, crons: a host process cannot be one) | host-run postgres (and dev IdP) via `forge.HostInfra` |
+| `dev` | `_on_host` / `_on_host_job` (services, workers, jobs), `_on_k3d` (operators, crons: a host process cannot be one) | host-run postgres (and dev IdP, NATS, a Temporal dev server) via `forge.HostInfra` |
 | `staging`, `prod` | `_hosted`, `_hosted_frontend`; `_on_cluster`, `_on_bucket` unused | **hosted on Reliant**: a `forge.ManagedDatabase`, `forge.HostedSecrets` |
 
 **Hosting elsewhere is a one-line rebind**: declare `_cluster` / `_bucket`

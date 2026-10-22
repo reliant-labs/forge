@@ -79,8 +79,9 @@ import (
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
-// EnginePostgres is the only engine forge supervises natively today. It
-// matches the `engine` discriminator on the KCL HostInfra schema.
+// EnginePostgres is the first engine forge supervises natively (the others:
+// zitadel.go, nats.go, temporal.go). It matches the `engine` discriminator on
+// the KCL HostInfra schema.
 const EnginePostgres = "postgres"
 
 // DefaultDataDirRel is where a HostInfra instance keeps its state when the
@@ -100,7 +101,8 @@ type Spec struct {
 	// Name is the workload name (e.g. "postgres"). It names the instance in
 	// logs and, by default, its data directory.
 	Name string
-	// Engine selects the implementation. Only EnginePostgres today.
+	// Engine selects the implementation: EnginePostgres, EngineZitadel,
+	// EngineNATS or EngineTemporal.
 	Engine string
 	// Port is the loopback port the server binds — the same number the app's
 	// DSN dials, which is why the environment declares it once and hands it
@@ -145,6 +147,27 @@ type Spec struct {
 	// access token on first boot. It must match what the identity step of `forge env up`
 	// reads — the two are one declaration.
 	IDPPATPath string
+
+	// ── EngineNATS only ───────────────────────────────────────────────
+
+	// NATSMonitorPort is the HTTP monitoring port (`--http_port`). Zero
+	// means no monitoring endpoint.
+	NATSMonitorPort int
+
+	// ── EngineTemporal only ───────────────────────────────────────────
+
+	// TemporalNamespaces are created at launch; readiness waits for every
+	// one of them. Empty means just Temporal's own "default".
+	TemporalNamespaces []string
+	// TemporalUIPort is the Web UI's port. Zero means headless.
+	TemporalUIPort int
+}
+
+// unsupportedEngine is Start/StatusOf's answer for an engine forge has no
+// implementation of.
+func unsupportedEngine(spec Spec) error {
+	return fmt.Errorf("host-infra %s: unsupported engine %q (forge supervises %q, %q, %q and %q natively): %w",
+		spec.Name, spec.Engine, EnginePostgres, EngineZitadel, EngineNATS, EngineTemporal, ErrUnsupportedEngine)
 }
 
 // dataDir resolves the instance's data directory against the project root.
@@ -220,9 +243,12 @@ func Start(ctx context.Context, projectDir string, spec Spec) error {
 		return startPostgres(ctx, projectDir, spec)
 	case EngineZitadel:
 		return startZitadel(ctx, projectDir, spec)
+	case EngineNATS:
+		return natsEngine.start(ctx, projectDir, spec)
+	case EngineTemporal:
+		return temporalEngine.start(ctx, projectDir, spec)
 	default:
-		return fmt.Errorf("host-infra %s: unsupported engine %q (forge supervises %q and %q natively): %w",
-			spec.Name, spec.Engine, EnginePostgres, EngineZitadel, ErrUnsupportedEngine)
+		return unsupportedEngine(spec)
 	}
 }
 
@@ -400,8 +426,13 @@ func Stop(projectDir string, spec Spec) error {
 // still this instance, and still the one that must be stopped; finding it
 // by port would leave it running and report success.
 func StopReport(projectDir string, spec Spec) (stopped bool, err error) {
-	if spec.Engine == EngineZitadel {
+	switch spec.Engine {
+	case EngineZitadel:
 		return stopZitadel(projectDir, spec)
+	case EngineNATS:
+		return natsEngine.stop(projectDir, spec)
+	case EngineTemporal:
+		return temporalEngine.stop(projectDir, spec)
 	}
 	dataDir := spec.dataDir(projectDir)
 	pgCtl := filepath.Join(dataDir, "runtime", "bin", "pg_ctl")

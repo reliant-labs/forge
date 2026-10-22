@@ -297,6 +297,10 @@ _external_secret = lambda b: any, ctx: str, s: any, st: any -> any {
     _src = s.source
     _name = s.name + "-eso-shadow" if _src.shadow else s.name
     _tpl = _src.templates
+    # The template block is needed for derived keys, and also for a Secret whose
+    # type or labels differ from ESO's default (a CloudNativePG basic-auth
+    # password). A source that sets none renders exactly as before.
+    _typed = _src.secret_type != "Opaque"
     {
         apiVersion = "external-secrets.io/v1"
         kind = "ExternalSecret"
@@ -308,11 +312,16 @@ _external_secret = lambda b: any, ctx: str, s: any, st: any -> any {
                 name = _name
                 creationPolicy = "Orphan" if _src.shadow else _src.creation_policy
                 deletionPolicy = "Retain"
-                if _tpl:
+                if _tpl or _typed or _src.labels:
                     template = {
                         engineVersion = "v2"
                         mergePolicy = "Merge"
-                        data = {k: _tpl[k] for k in sorted(_tpl)}
+                        if _typed:
+                            type = _src.secret_type
+                        if _src.labels:
+                            metadata = {labels = {k: _src.labels[k] for k in sorted(_src.labels)}}
+                        if _tpl:
+                            data = {k: _tpl[k] for k in sorted(_tpl)}
                     }
             }
             data = [{

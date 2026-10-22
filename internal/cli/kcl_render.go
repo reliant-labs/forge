@@ -692,6 +692,11 @@ type StoreSourceEntity struct {
 	// CreationPolicy is "Orphan" or "Merge": whether ESO rebuilds the Secret's
 	// data from the declared keys only, or merges into what is there.
 	CreationPolicy string `json:"creation_policy,omitempty"`
+	// SecretType is the Kubernetes Secret type ESO gives the synced Secret
+	// when it is not Opaque ("kubernetes.io/basic-auth").
+	SecretType string `json:"secret_type,omitempty"`
+	// Labels are put on the synced Secret.
+	Labels map[string]string `json:"labels,omitempty"`
 	// Shadow syncs into <name>-eso-shadow instead of <name> (migration step 2).
 	Shadow bool `json:"shadow,omitempty"`
 	// Cluster is the kubectl context the Secret lands on when the source

@@ -2731,6 +2731,10 @@ _render_store_source = lambda src: StoreSource -> any {
         if src.templates:
             "templates": src.templates
         "creation_policy": src.creation_policy
+        if src.secret_type != "Opaque":
+            "secret_type": src.secret_type
+        if src.labels:
+            "labels": src.labels
         if src.shadow:
             "shadow": True
         if src.cluster:

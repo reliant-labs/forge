@@ -3814,6 +3814,8 @@ _DNS_LABEL_RE: str = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 _DNS_NAME_RE: str = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z]{2,}$"
 # A Secret data key, as Kubernetes defines it.
 _SECRET_KEY_RE: str = r"^[-._a-zA-Z0-9]+$"
+_LABEL_KEY_RE: str = r"^([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$"
+_LABEL_VALUE_RE: str = r"^([A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?)?$"
 # Google Secret Manager secret ids allow hyphens; the stores do not.
 _BOOTSTRAP_NAME_RE: str = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,254}$"
 _GCP_PROJECT_RE: str = r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$"
@@ -3986,6 +3988,13 @@ schema StoreSource:
       * `cluster`   — the kubectl context the Secret lands on. Unset = the
                       Bundle's primary cluster. Placement is declared, never
                       inferred, so an env with several clusters names it.
+      * `secret_type` — the Kubernetes Secret type ESO gives the synced Secret:
+                      "Opaque" (default) or "kubernetes.io/basic-auth", which
+                      is what a CloudNativePG managed role's passwordSecret
+                      must be (keys `username` and `password`).
+      * `labels`    — labels ESO puts on the synced Secret (CloudNativePG
+                      applies a changed password at once only when the Secret
+                      carries `cnpg.io/reload: "true"`).
 
     The set of Secret keys produced (`data` + `templates`) must equal the
     ExternalSecret's `keys`: a key nothing produces is a pod that cannot
@@ -4000,8 +4009,14 @@ schema StoreSource:
     creation_policy: "Orphan" | "Merge" = "Orphan"
     shadow: bool = False
     cluster?: str
+    secret_type: "Opaque" | "kubernetes.io/basic-auth" = "Opaque"
+    labels: {str: str} = {}
 
     check:
+        all k, v in labels { regex.match(k, _LABEL_KEY_RE) and regex.match(v, _LABEL_VALUE_RE) }, \
+            "StoreSource.labels ${labels} must be Kubernetes label keys and values (a key may carry a DNS prefix and a '/'; a value is at most 63 letters, digits, '-', '_' or '.')"
+        secret_type != "kubernetes.io/basic-auth" or ("username" in _ss_keys(StoreSource {store = store, data = data, templates = templates}) and "password" in _ss_keys(StoreSource {store = store, data = data, templates = templates})), \
+            "StoreSource.secret_type 'kubernetes.io/basic-auth' needs the Secret keys `username` and `password` (Kubernetes refuses a basic-auth Secret without them); declare them in `data` and/or `templates`"
         len(data) + len(templates) > 0, \
             "StoreSource produces no Secret key: declare `data` (key -> store name) and/or `templates`"
         all k, _v in data { regex.match(k, _SECRET_KEY_RE) } and all k, _v in templates { regex.match(k, _SECRET_KEY_RE) }, \
@@ -4026,6 +4041,43 @@ schema StoreSource:
             "StoreSource.pin ${sorted([n for n in immutable if n in pin and pin[n] > 1])} is above 1 but the name is `immutable`: it is never rotated in place (rotating it destroys what it protects). Mint a new name and migrate, or drop it from `immutable`"
         regex.match(refresh, _ALERT_DURATION_RE) and _alert_secs(refresh) >= 300, \
             "StoreSource.refresh '${refresh}' must be a duration of at least 5m (e.g. '15m', '1h'): a faster loop is a load on the store, and the cluster's admission policy refuses it"
+
+database_read_only_secret = lambda database: str, namespace: str, store: HostedStore | OpenBaoStore -> ExternalSecret {
+    """The credentials of a ManagedDatabase's read-only role (`forge_ro`), the
+    Secret the database's CloudNativePG Cluster reads as the role's
+    `passwordSecret` and `forge db query` reads to connect.
+
+        required_secrets = [forge.database_read_only_secret("orders", "orders-prod", forge.OpenBaoStore {})]
+
+    Declare it for every ManagedDatabase of the env that has a store, and every
+    env mints it the same way: a random password generated INTO the store once
+    (create-only, never overwritten), pinned to version 1 and `immutable`, so
+    nothing rotates it by accident, and synced by ESO as a
+    `kubernetes.io/basic-auth` Secret named `<database>-forge-ro` (the name the
+    Cluster's managed role points at) carrying the `cnpg.io/reload` label.
+
+    `namespace` is the Cluster's own: CloudNativePG reads the Secret from there.
+    Without this Secret the role cannot log in, the migrator reports the role as
+    missing grants-wise only after CNPG creates it, and `forge db query` has
+    nothing to connect as."""
+    _name = "${database.replace('-', '_').upper()}_FORGE_RO_PASSWORD"
+    ExternalSecret {
+        name = "${database}-forge-ro"
+        namespace = namespace
+        keys = ["password", "username"]
+        reason = "password of the read-only role forge_ro on database ${database} (CloudNativePG managed role passwordSecret; forge db query)"
+        source = StoreSource {
+            store = store
+            data = {"password" = _name}
+            templates = {"username" = "forge_ro"}
+            generate = {"${_name}" = GeneratedSecret {kind = "random", bytes = 24, encoding = "hex"}}
+            pin = {"${_name}" = 1}
+            immutable = [_name]
+            secret_type = "kubernetes.io/basic-auth"
+            labels = {"cnpg.io/reload" = "true"}
+        }
+    }
+}
 
 # --- Bootstrap -------------------------------------------------------------
 

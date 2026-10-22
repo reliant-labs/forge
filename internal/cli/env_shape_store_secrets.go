@@ -40,16 +40,20 @@ func shapeStoreSecretsOf(e *KCLEntities) (release.StoreProjection, error) {
 	}
 	primary := e.ClusterTarget.field("cluster")
 
-	in := release.StoreRender{OpenBao: e.OpenBao, ExternalSecretsOperators: e.ExternalSecretsOperators}
+	in := release.StoreRender{ExternalSecretsOperators: e.ExternalSecretsOperators}
 	for i := range in.ExternalSecretsOperators {
 		if in.ExternalSecretsOperators[i].ConnectedCluster == "" {
 			in.ExternalSecretsOperators[i].ConnectedCluster = connected(in.ExternalSecretsOperators[i].Cluster)
 		}
 	}
-	if in.OpenBao != nil && in.OpenBao.ConnectedCluster == "" {
-		ob := *in.OpenBao
-		ob.ConnectedCluster = connected(ob.Cluster)
-		in.OpenBao = &ob
+	if o := e.OpenBao; o != nil {
+		in.OpenBao = &release.RenderedOpenBao{
+			Name: o.Name, Namespace: o.Namespace, Image: o.Image, Cluster: o.Cluster,
+			ConnectedCluster: o.ConnectedCluster,
+		}
+		if in.OpenBao.ConnectedCluster == "" {
+			in.OpenBao.ConnectedCluster = connected(o.Cluster)
+		}
 	}
 
 	for _, s := range e.RequiredSecrets {

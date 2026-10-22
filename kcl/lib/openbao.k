@@ -285,6 +285,11 @@ render = lambda ob: any, ctx: any -> any {
             "service_account": STORE_SERVICE_ACCOUNT
             "org": ctx.project
             "env": _env
+            # The BootstrapSecrets the component declares, which a person may
+            # import (`forge secret import --to-bootstrap`): the seal key, the
+            # Postgres password, and the recovery escrow the converge Job
+            # writes (SF7). The CLI reads this as a typo guard.
+            "bootstrap_names": sorted([ob.seal.key.name, ob.recovery.escrow.name] + ([ob.storage.password.name] if ob.storage.type == "postgres" else []))
             "warnings": _warnings
         }
         "required": _required(ob, ctx.bootstrap_source)

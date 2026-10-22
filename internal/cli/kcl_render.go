@@ -185,10 +185,13 @@ type KCLEntities struct {
 	// forge does NOT create. Drive the render-time checklist + the deploy
 	// preflight BLOCK on a declared-required-but-absent Secret/key.
 	RequiredSecrets []ExternalSecretEntity `json:"required_secrets,omitempty"`
-	// OpenBao is the resolved secret-store component (forge.OpenBao), nil when
-	// the env declares none. ExternalSecretsOperators are the ESO installs.
-	// Both are declarations the release shape records.
-	OpenBao                  *release.RenderedOpenBao                  `json:"openbao,omitempty"`
+	// OpenBao and BootstrapSource are the rendered Bundle.openbao and
+	// Bundle.bootstrap_source: where `forge secret` reaches a self-run store
+	// and where BootstrapSecrets live. Nil when the env declares none.
+	OpenBao         *OpenBaoEntity         `json:"openbao,omitempty"`
+	BootstrapSource *BootstrapSourceEntity `json:"bootstrap_source,omitempty"`
+	// ExternalSecretsOperators are the ESO installs (forge.ExternalSecretsOperator)
+	// the release shape records.
 	ExternalSecretsOperators []release.RenderedExternalSecretsOperator `json:"external_secrets_operators,omitempty"`
 	// RequiredDNS are the env's declared DNS-record prerequisites
 	// (forge.DNSRecord) — surfaced as a render-time checklist note (forge
@@ -664,18 +667,25 @@ type ExternalSecretEntity struct {
 	// that must carry the same logical value (cross-secret byte-match).
 	// Empty => a standalone prereq (no byte-match group).
 	ValueGroup string `json:"value_group,omitempty"`
-	// Source is where the Secret's values come from when ESO syncs it from a
-	// secret store (forge.StoreSource), in the release shape's own
-	// vocabulary. Nil => an out-of-band Secret. Names and kinds only.
-	Source *ExternalSecretSource `json:"source,omitempty"`
+	// Source is the rendered forge.StoreSource: nil for a Secret something
+	// else provisions, set for one ESO syncs from a store.
+	Source *StoreSourceEntity `json:"source,omitempty"`
 }
 
-// ExternalSecretSource is a rendered forge.StoreSource: the release shape's
-// own record (release.RenderedStoreSource) plus the placement the render
-// carries beside it. Cluster is the kubectl context the Secret lands on when
-// the source names one; empty means the env's primary cluster.
-type ExternalSecretSource struct {
+// StoreSourceEntity is a rendered forge.StoreSource: release's own record
+// (store, data, generate, pin, immutable) plus the fields the secret commands
+// read that the release shape does not carry.
+type StoreSourceEntity struct {
 	release.RenderedStoreSource
+	// Templates are the Secret keys ESO renders from the fetched data.
+	Templates map[string]string `json:"templates,omitempty"`
+	// CreationPolicy is "Orphan" or "Merge": whether ESO rebuilds the Secret's
+	// data from the declared keys only, or merges into what is there.
+	CreationPolicy string `json:"creation_policy,omitempty"`
+	// Shadow syncs into <name>-eso-shadow instead of <name> (migration step 2).
+	Shadow bool `json:"shadow,omitempty"`
+	// Cluster is the kubectl context the Secret lands on when the source
+	// names one; empty means the env's primary cluster.
 	Cluster string `json:"cluster,omitempty"`
 }
 
@@ -1376,10 +1386,11 @@ type kclRenderRaw struct {
 	RenderedSecrets          []RenderedSecretEntity                    `json:"rendered_secrets,omitempty"`
 	ControlPlane             *ControlPlaneEntity                       `json:"control_plane,omitempty"`
 	RequiredSecrets          []ExternalSecretEntity                    `json:"required_secrets,omitempty"`
-	OpenBao                  *release.RenderedOpenBao                  `json:"openbao,omitempty"`
-	ExternalSecretsOperators []release.RenderedExternalSecretsOperator `json:"external_secrets_operators,omitempty"`
+	OpenBao                  *OpenBaoEntity                            `json:"openbao,omitempty"`
+	BootstrapSource          *BootstrapSourceEntity                    `json:"bootstrap_source,omitempty"`
 	RequiredDNS              []DNSRecordEntity                         `json:"required_dns,omitempty"`
 	ControlPlaneSecrets      []ControlPlaneSecretEntity                `json:"control_plane_secrets,omitempty"`
+	ExternalSecretsOperators []release.RenderedExternalSecretsOperator `json:"external_secrets_operators,omitempty"`
 	// Manifests is the applyable stream. Parsed loosely: only kind, name
 	// and namespace are read here (see rawManifest).
 	Manifests []rawManifest `json:"manifests,omitempty"`
@@ -1706,6 +1717,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		ControlPlane:             raw.ControlPlane,
 		RequiredSecrets:          raw.RequiredSecrets,
 		OpenBao:                  raw.OpenBao,
+		BootstrapSource:          raw.BootstrapSource,
 		ExternalSecretsOperators: raw.ExternalSecretsOperators,
 		RequiredDNS:              raw.RequiredDNS,
 		ControlPlaneSecrets:      raw.ControlPlaneSecrets,

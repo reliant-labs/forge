@@ -1920,6 +1920,11 @@ render = lambda bundle: Bundle -> any {
         "required_secrets": [_render_external_secret(s) for s in bundle.required_secrets] + (_openbao(bundle).required if bundle.openbao else [])
         "required_dns": [_render_dns_record(r) for r in bundle.required_dns]
         "external_secrets_operators": [_render_eso(e) for e in bundle.external_secrets_operators]
+        # Where the values the store needs to start live (forge.GCPSecretManager
+        # or forge.OutOfBand). A declaration; `forge secret import --to-bootstrap`
+        # reads it for the project.
+        if bundle.bootstrap_source:
+            "bootstrap_source": _render_bootstrap_source(bundle.bootstrap_source)
         # The resolved secret store (forge.OpenBao): where it is and how a client
         # logs in. A declaration only; no value.
         if bundle.openbao:
@@ -2690,6 +2695,11 @@ _render_store_source = lambda src: StoreSource -> any {
             "pin": src.pin
         if src.immutable:
             "immutable": sorted(src.immutable)
+        if src.templates:
+            "templates": src.templates
+        "creation_policy": src.creation_policy
+        if src.shadow:
+            "shadow": True
         if src.cluster:
             "cluster": src.cluster
     }
@@ -2711,6 +2721,10 @@ _render_generated = lambda g: GeneratedSecret -> any {
 
 # The ESO installs, as the shape records them. `connected_cluster` is the name
 # `forge cluster connect` registered, when the cluster has one.
+_render_bootstrap_source = lambda src: any -> any {
+    {"type": src.type, if src.type == "gcpsm": "project": src.project}
+}
+
 _render_eso = lambda e: ExternalSecretsOperator -> any {
     {
         "cluster": _eso_context(e)

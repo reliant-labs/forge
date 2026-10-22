@@ -59,7 +59,9 @@ func envSyncedSecretRefs(entities *KCLEntities, groups []deploytarget.ServiceGro
 			}
 		}
 	}
-	return refs, nil
+	// A Secret the External Secrets Operator delivers is not one forge syncs:
+	// the bundle names the ExternalSecret and ESO writes the Secret.
+	return withoutStoreBacked(refs, entities), nil
 }
 
 func providerResolvesValues(entities *KCLEntities) bool {
@@ -104,8 +106,9 @@ func refuseUnsyncableHostedSecrets(env string, refs []release.BundleSecretRef) e
 		"env %s is reconciled by its control plane, and it needs Secret value(s) forge cannot deliver: %s\n"+
 			"  A bundle never carries a Secret, and forge holds no kubectl context for the clusters the control plane's\n"+
 			"  reconciler applies to. Either:\n"+
-			"    - back them with a provider reference (forge.ExternalSecret / OpenBao), which rides the bundle as a\n"+
-			"      non-secret object; or\n"+
+			"    - back them with a store: give the forge.ExternalSecret a `source = forge.StoreSource {...}` (the\n"+
+			"      External Secrets Operator delivers it; set the value with `forge secret set`), which rides the\n"+
+			"      bundle as a non-secret object; or\n"+
 			"    - run `forge env secrets sync %s` against each cluster yourself before deploying",
 		env, strings.Join(names, ", "), env)
 }

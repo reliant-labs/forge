@@ -24,11 +24,15 @@ const (
 	ResourcePort ResourceKind = "port"
 	// ResourceConnector binds to one MCP connector grant id.
 	ResourceConnector ResourceKind = "connector"
+	// ResourceEnvironment binds to one environment id: a CI token that may
+	// read one env's telemetry (obs:read), triage its issues (obs:triage) or
+	// query its database (db:query), and no other env of the org.
+	ResourceEnvironment ResourceKind = "environment"
 )
 
 // AllResourceKinds is the closed set; a store's CHECK declares
 // 'forge:closed-set accesstoken.AllResourceKinds' and `forge lint` pins it.
-var AllResourceKinds = []ResourceKind{ResourceDaemon, ResourcePort, ResourceConnector}
+var AllResourceKinds = []ResourceKind{ResourceDaemon, ResourcePort, ResourceConnector, ResourceEnvironment}
 
 // Resource is a binding: a kind and an id.
 type Resource struct {
@@ -64,6 +68,11 @@ var scopeResourceRules = map[Scope]struct {
 	// credential. A trigger names the daemon its runs use, so the token is
 	// minted for exactly that one and teardown of the daemon revokes it.
 	ScopeDaemonResume: {kind: ResourceDaemon, required: true},
+	// Allowed, not required: an org-wide obs:read token is the common CI
+	// case, and an env-bound one confines a leaked credential to one env.
+	ScopeObsRead:   {kind: ResourceEnvironment, required: false},
+	ScopeObsTriage: {kind: ResourceEnvironment, required: false},
+	ScopeDBQuery:   {kind: ResourceEnvironment, required: false},
 }
 
 // daemonBindableScopes are the USER-AUTHORITY scopes a token bound to a DAEMON
@@ -226,9 +235,10 @@ func (g Grant) validateResource() error {
 		}
 		rule, bindable := scopeResourceRules[scope]
 		// A DAEMON binding additionally admits the user-authority scopes —
-		// see daemonBindableScopes for why this kind and no other.
-		if !bindable && g.Resource != nil &&
-			g.Resource.Kind == ResourceDaemon && bindableToDaemon(scope) {
+		// see daemonBindableScopes for why this kind and no other. Checked
+		// before the scope's own rule: obs:read binds to an environment, and
+		// may still ride the acting user's daemon credential.
+		if g.Resource != nil && g.Resource.Kind == ResourceDaemon && bindableToDaemon(scope) {
 			continue
 		}
 		switch {
@@ -272,6 +282,20 @@ type Principal struct {
 // BoundTo reports whether the token is bound to exactly this resource.
 func (p *Principal) BoundTo(kind ResourceKind, id string) bool {
 	return p != nil && p.Resource != nil && p.Resource.Kind == kind && p.Resource.ID == id
+}
+
+// MayReadEnvironment reports whether the token may act on environment envID
+// of its org: an environment-bound token on its own environment only; any
+// other token (unbound, or bound to the acting user's daemon) on every
+// environment of the org. Org membership and scopes are the caller's checks.
+func (p *Principal) MayReadEnvironment(envID string) bool {
+	if p == nil {
+		return false
+	}
+	if p.Resource == nil || p.Resource.Kind != ResourceEnvironment {
+		return true
+	}
+	return p.Resource.ID == envID
 }
 
 // MayActOn reports whether the token may act on this resource: an unbound

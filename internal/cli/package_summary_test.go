@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -159,5 +160,17 @@ func TestPackageScaffoldSummary_StillSaysInternalPackage(t *testing.T) {
 
 	if !strings.Contains(summary, "Internal package 'cache'") {
 		t.Errorf("the default package scaffold no longer confirms an internal package:\n%s", summary)
+	}
+}
+
+// The scaffold summary names the construction rule `forge lint --tracing`
+// enforces at the end of a run, so it is learned at scaffold time.
+func TestAdapterScaffoldSummary_NamesNewInstrumented(t *testing.T) {
+	summary, written := scaffoldAdapterCapturingSummary(t, "blobstore")
+	if !slices.Contains(written, "observe_chain.go") {
+		t.Skipf("the adapter scaffold writes no observability seam (%v)", written)
+	}
+	if !strings.Contains(summary, "blobstore.NewInstrumented(") {
+		t.Errorf("the summary does not tell the author to construct the package as blobstore.NewInstrumented:\n%s", summary)
 	}
 }

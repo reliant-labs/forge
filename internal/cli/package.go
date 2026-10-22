@@ -465,6 +465,15 @@ func printScaffoldedPackageSummary(pkgDir, name, pkgType string) {
 		}
 	}
 
+	// A package with the owned observability seam gets a generated decorator,
+	// and `forge lint --tracing` reports any hand construction of it that
+	// calls New. Say so here rather than at the end of the first lint run.
+	if _, statErr := os.Stat(filepath.Join(pkgDir, "observe_chain.go")); statErr == nil {
+		fmt.Printf("\n   Wherever you construct it by hand (providers.go, a *_wire.go, another binary) call\n")
+		fmt.Printf("   %s.NewInstrumented(deps) — New's signature, returned already traced. compose.go is wired by\n", name)
+		fmt.Printf("   `forge generate`; a bare %s.New(...) elsewhere is reported by `forge lint --tracing` (--fix rewrites it).\n", name)
+	}
+
 	// The next step differs by shape: an adapter arrives with a working
 	// HealthCheck to extend, so the work is in adapter.go; the default
 	// package arrives with an empty interface, so the work starts in

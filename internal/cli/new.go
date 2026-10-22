@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -167,7 +168,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().BoolVar(&inPlace, "in-place", false, "Create project in current directory instead of a new subdirectory")
 	cmd.Flags().StringVar(&nameFlag, "name", "", "Project name. Same as the positional arg, and the way to name an --in-place project whose directory (a worktree, a branch checkout) is not the product name; defaults to the directory name")
 	cmd.Flags().BoolVar(&force, "force", false, "With --in-place: scaffold over an existing forge.yaml, and REPLACE every pre-existing file the scaffold writes (README.md, go.mod, Taskfile.yml, …) with forge's version. Without it, existing files are kept and listed. .gitignore is always merged, never replaced")
-	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to leave out of the scaffold (comma-separated): orm, codegen, migrations, ci, build, deploy, contracts, frontend, observability, hot_reload. Each is pinned off in forge.yaml's features: block (orm, which has no key, only steers this scaffold).")
+	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to leave out of the scaffold (comma-separated): "+strings.Join(disableableFeatures, ", ")+". Each is pinned off in forge.yaml's features: block (orm, which has no key, only steers this scaffold).")
 	cmd.Flags().StringVar(&harness, "harness", "reliant", "AI harness conventions to scaffold for. Each writes a memory file; Forge never writes skill files for any harness. reliant (default): reliant.md — skills are read from the forge binary ('forge skill search|load') and discovered via forge.yaml. claude: CLAUDE.md. For non-reliant harnesses, add your own skill telling the agent to run 'forge skill search <query>'. cursor: .cursorrules. copilot: .github/copilot-instructions.md. codex: AGENTS.md. Recorded as 'harness:' in forge.yaml and honored by every later generate")
 	cmd.Flags().BoolVar(&skipTools, "skip-tools", false, "Skip auto-installing protoc-gen-go / protoc-gen-connect-go (run 'forge tools install' later)")
 	cmd.Flags().StringVar(&bufPlugins, "buf-plugins", "local", "Default proto plugin source: 'local' (resolved from PATH; no BSR auth needed) or 'remote' (BSR-hosted, requires login under load)")
@@ -358,7 +359,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		fmt.Printf("Go module path: %s (no --mod given; pass --mod github.com/<you>/%s to set the path you will publish under)\n", modulePath, projectName)
 	}
 
-	if err := validateComponentNames(serviceNames, frontendNames); err != nil {
+	if err := validateComponentNames(serviceNames, frontendNames, disableFeatures); err != nil {
 		return err
 	}
 
@@ -462,10 +463,11 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	return nil
 }
 
-// validateComponentNames refuses a --service or --frontend name that cannot
-// name the directories, packages and proto files scaffolded for it, before
-// anything is written.
-func validateComponentNames(serviceNames, frontendNames []string) error {
+// validateComponentNames refuses, before anything is written, a --service or
+// --frontend name that cannot name the directories, packages and proto files
+// scaffolded for it, and a component whose feature --disable leaves out
+// (refuseDisabledComponents).
+func validateComponentNames(serviceNames, frontendNames, disableFeatures []string) error {
 	for _, svcName := range serviceNames {
 		if err := validateServiceName(svcName); err != nil {
 			return fmt.Errorf("invalid service name %q: %w", svcName, err)
@@ -475,6 +477,32 @@ func validateComponentNames(serviceNames, frontendNames []string) error {
 		if err := validateFrontendName(feName); err != nil {
 			return fmt.Errorf("invalid frontend name %q: %w", feName, err)
 		}
+	}
+	return refuseDisabledComponents(disableFeatures, serviceNames, frontendNames)
+}
+
+// refuseDisabledComponents refuses, before anything is written, a component
+// asked for by name whose feature --disable leaves out. The scaffold used to
+// honour the --disable and drop the component without a word: `--service
+// orders --disable codegen` wrote no service at all (a service IS its proto
+// and the code generated from it), and `--frontend web --disable frontend`
+// left an empty frontends/web/.
+func refuseDisabledComponents(disable, serviceNames, frontendNames []string) error {
+	off := map[string]bool{}
+	for _, name := range disable {
+		off[strings.TrimSpace(strings.ToLower(name))] = true
+	}
+	if off[config.FeatureCodegen] && len(serviceNames) > 0 {
+		return cliutil.UserErr(Name()+" project new --disable codegen",
+			fmt.Sprintf("--service %s asks for a service, and --disable codegen leaves out what a service is made of: its proto and the code generated from it", strings.Join(serviceNames, ",")),
+			"",
+			"drop --service for a project without codegen (a frontend-only project, say), or drop codegen from --disable")
+	}
+	if off[config.FeatureFrontend] && len(frontendNames) > 0 {
+		return cliutil.UserErr(Name()+" project new --disable frontend",
+			fmt.Sprintf("--frontend %s asks for a frontend, and --disable frontend leaves frontends out of the scaffold", strings.Join(frontendNames, ",")),
+			"",
+			"drop one of the two flags")
 	}
 	return nil
 }
@@ -1103,8 +1131,8 @@ const forgeModulePathForBridge = "github.com/reliant-labs/forge"
 // a decision the user makes, and forgecompat.InspectBridge reports whenever it
 // drifts.
 //
-// It augments the starter go.work the generator already emitted (use ., plus
-// gen when gen/ is its own module) with `use <root>`. go.work / go.work.sum are already in the scaffold's
+// It augments the starter go.work the generator emitted for every kind that
+// imports forge (use ., plus gen when gen/ is its own module) with `use <root>`. go.work / go.work.sum are already in the scaffold's
 // .gitignore, so the machine-local path never gets committed.
 func writeDevForgeGoWork(targetPath string, link bool) {
 	if !link {
@@ -1121,8 +1149,9 @@ func writeDevForgeGoWork(targetPath string, link bool) {
 	workPath := filepath.Join(targetPath, "go.work")
 	data, err := os.ReadFile(workPath)
 	if err != nil {
-		// No go.work (e.g. library kind, or codegen disabled) → nothing to
-		// bridge. The scaffold has no gen/ workspace to link.
+		// No go.work: a library, which imports no forge package, so there
+		// is nothing to bridge. Every kind that imports forge — a service
+		// with or without codegen, a CLI — is scaffolded with one.
 		if !os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "warning: could not read go.work for dev forge bridge: %v\n", err)
 		}
@@ -1587,20 +1616,36 @@ func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error 
 				"",
 				"nothing to disable — add the gateway or operator later and the feature turns on")
 		}
-		switch key {
-		case config.FeatureORM, config.FeatureCodegen, config.FeatureMigrations, config.FeatureCI,
-			config.FeatureBuild, config.FeatureContracts, config.FeatureFrontend,
-			config.FeatureObservability, config.FeatureHotReload, config.FeatureDeploy:
-			gen.Features = gen.Features.With(key, false)
-			gen.Features, _ = gen.Features.Pin(key, false)
-		default:
+		if !slices.Contains(disableableFeatures, key) {
 			return cliutil.UserErr("forge project new --disable",
-				fmt.Sprintf("unknown feature %q; valid features: orm, codegen, migrations, ci, build, deploy, contracts, frontend, observability, hot_reload", name),
+				fmt.Sprintf("unknown feature %q; valid features: %s", name, strings.Join(disableableFeatures, ", ")),
 				"",
 				"pick a feature from the list above (comma-separated, repeatable); names are case-insensitive")
 		}
+		gen.Features = gen.Features.With(key, false)
+		gen.Features, _ = gen.Features.Pin(key, false)
+		// The ORM and migrations are projections of codegen
+		// (config/feature_graph.go): a project without codegen derives both
+		// off at every load, so this scaffold must not write them either.
+		// It used to: `--disable codegen` alone still wrote db/migrations
+		// and a dev env with a database and an API, whose main.k imports a
+		// config_gen module only codegen produces — so the project's first
+		// generate failed rendering it. Not pinned: the tree derives them off.
+		if key == config.FeatureCodegen {
+			gen.Features = gen.Features.With(config.FeatureORM, false).With(config.FeatureMigrations, false)
+		}
 	}
 	return nil
+}
+
+// disableableFeatures is every feature `project new --disable` accepts, in
+// the order its help lists them. Each is a project shape forge owes a working
+// scaffold — generate, build and lint green from the first commit — and
+// TestE2EProjectNewDisableShapes scaffolds every one of them.
+var disableableFeatures = []config.FeatureName{
+	config.FeatureORM, config.FeatureCodegen, config.FeatureMigrations, config.FeatureCI,
+	config.FeatureBuild, config.FeatureDeploy, config.FeatureContracts, config.FeatureFrontend,
+	config.FeatureObservability, config.FeatureHotReload,
 }
 
 // rootModuleOwnsGen reports whether the module at dir already owns gen/: dir

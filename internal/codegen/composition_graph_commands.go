@@ -373,6 +373,45 @@ func emitRootCommands(projectDir, module string, roots []graphRootView, groups m
 	return nil
 }
 
+// rootsGenNoGraphTemplate is roots_gen.go for a project with no composition
+// graph.
+const rootsGenNoGraphTemplate = "roots_gen_nograph.go.tmpl"
+
+// EmitRootCommandsWithoutGraph writes cmd/<bin>/cmd/roots_gen.go for a
+// project that has no composition graph (features.codegen=false: no
+// internal/app, so no roots): rootCommands, returning none. root.go is the
+// same file in every shape and calls rootCommands; this is the projection of
+// zero roots onto it, so the tree compiles without a hand edit. With codegen
+// on, the composition step (emitRootCommands) owns the file instead.
+//
+// A tree that declares runRoot already has the graph's roots_gen.go (or the
+// composition step's warning about it); that file is never replaced by this
+// one. A tree whose root.go no longer calls rootCommands gets none — an
+// empty function nothing calls is dead code the project's lint reports.
+func EmitRootCommandsWithoutGraph(projectDir string, cs *checksums.FileChecksums) error {
+	treeDir := primaryCmdTreeDir(projectDir)
+	if treeDir == "" {
+		return nil
+	}
+	rel := filepath.Join(treeDir, rootsGenFile)
+	policy, registered, _ := cmdTreeRootSeams(filepath.Join(projectDir, treeDir), "")
+	if policy {
+		return nil
+	}
+	if !registered {
+		RetireGenerated(projectDir, rel, cs)
+		return nil
+	}
+	src, err := renderGoTemplate(rootsGenNoGraphTemplate, nil)
+	if err != nil {
+		return err
+	}
+	if err := writeForgeOwned(projectDir, rel, src, cs); err != nil {
+		return fmt.Errorf("write %s: %w", rel, err)
+	}
+	return nil
+}
+
 // cmdTreeRootSeams reports whether the command tree's owned files declare
 // runRoot (the process policy roots_gen.go calls), call rootCommands (so the
 // generated commands reach the tree), and register the root config's flags

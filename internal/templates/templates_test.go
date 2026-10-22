@@ -64,6 +64,7 @@ func TestComponentTestHelpersTemplate_MinimalService(t *testing.T) {
 		// lookup succeeds. Element types only need the fields the template
 		// reads.
 		AutoStubs       []struct{ FieldName, StubType, InterfaceQualified string }
+		AutoMocks       []struct{ FieldName, MockType, Interface string }
 		UnresolvedStubs []struct{ FieldName, TypeExpr string }
 		FuncDefaults    []struct {
 			FieldName, Expr      string
@@ -530,6 +531,7 @@ func TestComponentTestHelpersTemplate_PackageContractName(t *testing.T) {
 		MountMethod            string
 
 		AutoStubs       []struct{ FieldName, StubType, InterfaceQualified string }
+		AutoMocks       []struct{ FieldName, MockType, Interface string }
 		UnresolvedStubs []struct{ FieldName, TypeExpr string }
 		FuncDefaults    []struct {
 			FieldName, Expr      string

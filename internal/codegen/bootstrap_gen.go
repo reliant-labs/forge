@@ -537,6 +537,10 @@ type BootstrapTestServiceData struct {
 	// "graceful dev-mode degrade" semantics. See ParseLocalInterfaces +
 	// HasOptionalDepMarker for the detection rules.
 	AutoStubs []DepsAutoStub
+	// AutoMocks lists the Deps fields whose interface forge already mocks
+	// in a mock_gen.go: NewTest<Svc> installs that mock, and no stub is
+	// synthesized for them (see harness_mocks.go).
+	AutoMocks []DepsAutoMock
 	// UnresolvedStubs lists Deps fields whose type is a cross-package
 	// selector forge couldn't resolve (alias not in imports, package
 	// can't load, type isn't an interface). The template emits a
@@ -609,7 +613,9 @@ type DepsFuncDefault struct {
 
 // DepsAutoStub describes one synthesized interface implementation
 // emitted into a service's generated helpers_gen_test.go for a
-// service-owned Deps field. It exists so NewTest<Svc>(t) can construct
+// service-owned Deps field whose interface no forge mock_gen.go covers
+// (one that does gets its DepsAutoMock instead, so a collaborator never
+// has two doubles). It exists so NewTest<Svc>(t) can construct
 // the Service even when the field is required by validateDeps, and it is
 // a programmable double shaped like a contract mock: a <Method>Func field
 // per method, an embedded contractkit.Recorder, and a loud
@@ -740,7 +746,7 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 		// unresolvedStubs surfaces selector types we couldn't resolve
 		// (package failed to load, alias not in imports, type isn't
 		// an interface) so the template can emit a TODO comment.
-		autoStubs, unresolvedStubs := computeAutoStubsWith(handlerDir, depsTypes)
+		autoStubs, autoMocks, unresolvedStubs := computeDepsDoubles(handlerDir, depsTypes)
 		// Func-typed required deps: fill Clock/IDGen with real defaults
 		// (time.Now / ulid), TODO the rest — the harness half of the
 		// Clock/IDGen fix. A func value can't be interface-auto-stubbed.
@@ -781,6 +787,7 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 			Alias:                  pkg, // overwritten below if there's a cross-role collision
 			VarName:                pkg, // overwritten below if there's a cross-role collision
 			AutoStubs:              autoStubs,
+			AutoMocks:              autoMocks,
 			UnresolvedStubs:        unresolvedStubs,
 			FuncDefaults:           funcDefaults,
 			FuncTodos:              funcTodos,
@@ -1076,6 +1083,7 @@ type componentTestHelperData struct {
 	ConstructorType string
 
 	AutoStubs       []DepsAutoStub
+	AutoMocks       []DepsAutoMock
 	UnresolvedStubs []UnresolvedAutoStub
 	FuncDefaults    []DepsFuncDefault
 	FuncTodos       []UnresolvedAutoStub
@@ -1114,6 +1122,7 @@ func writeComponentTestHelpers(data bootstrapTestingTemplateData, projectDir str
 			ProtoConnectImportPath: svc.ProtoConnectImportPath,
 			ProtoConnectPkg:        svc.ProtoConnectPkg,
 			AutoStubs:              svc.AutoStubs,
+			AutoMocks:              svc.AutoMocks,
 			UnresolvedStubs:        svc.UnresolvedStubs,
 			FuncDefaults:           svc.FuncDefaults,
 			FuncTodos:              svc.FuncTodos,
@@ -1355,6 +1364,23 @@ func reconcileAutoStubAliases(services []BootstrapTestServiceData, packages []Bo
 				used[newAlias] = imp.Path
 			}
 		}
+		// A foreign mock's import collides the same way; its one
+		// reference is the qualified MockType.
+		for j := range services[i].AutoMocks {
+			mock := &services[i].AutoMocks[j]
+			for k := range mock.ExtraImports {
+				imp := &mock.ExtraImports[k]
+				existing, taken := used[imp.Alias]
+				if !taken || pathHasSuffix(existing, imp.Path) {
+					used[imp.Alias] = imp.Path
+					continue
+				}
+				newAlias := uniqueStubAlias(imp.Alias, imp.Path, used)
+				mock.MockType = strings.Replace(mock.MockType, imp.Alias+".", newAlias+".", 1)
+				imp.Alias = newAlias
+				used[newAlias] = imp.Path
+			}
+		}
 	}
 }
 
@@ -1436,6 +1462,16 @@ func mergeExtraImports(services []BootstrapTestServiceData) []ExtraImport {
 			// as load-bearing. Filtering on CrossPackage here is what produced
 			// `undefined: proxyauthz` in a generated helpers_gen_test.go.
 			for _, imp := range stub.ExtraImports {
+				if _, ok := seen[imp.Path]; ok {
+					continue
+				}
+				seen[imp.Path] = imp.Alias
+			}
+		}
+		// A mock from the declaring package is referenced through that
+		// package's import.
+		for _, mock := range s.AutoMocks {
+			for _, imp := range mock.ExtraImports {
 				if _, ok := seen[imp.Path]; ok {
 					continue
 				}
@@ -1525,8 +1561,9 @@ var bareDepsFieldNames = map[string]bool{
 
 // computeAutoStubs walks a service's handler directory, parses its
 // Deps struct + locally-declared interfaces, and returns one
-// DepsAutoStub for every Deps field whose type is an
-// interface forge can satisfy with a zero-value stub. The bare-Deps
+// DepsAutoStub for every Deps field whose type is an interface forge
+// mocks nowhere but can satisfy with a synthesized stub (an interface
+// forge DOES mock gets that mock instead — computeDepsDoubles). The bare-Deps
 // pair (Logger / Config) is excluded — the template's default-merge
 // step fills it. A `// forge:optional-dep` field gets a stub too, marked
 // Optional: the type exists for a test to pass, and NewTest<Svc> leaves
@@ -1554,25 +1591,40 @@ var bareDepsFieldNames = map[string]bool{
 // either overrides the field via With<Svc>Deps or hand-rolls a
 // stub — both are existing escape valves.
 func computeAutoStubs(handlerDir, _ string) ([]DepsAutoStub, []UnresolvedAutoStub) {
-	return computeAutoStubsWith(handlerDir, newTypesResolver(handlerDir, nil))
+	stubs, _, unresolved := computeDepsDoubles(handlerDir, newTypesResolver(handlerDir, nil))
+	return stubs, unresolved
 }
 
-// computeAutoStubsWith is computeAutoStubs reading cross-package
-// interfaces through resolver, which GenerateBootstrapTesting shares
-// across every service so their packages load together.
-func computeAutoStubsWith(handlerDir string, resolver *typesResolver) ([]DepsAutoStub, []UnresolvedAutoStub) {
+// computeDepsDoubles decides the double NewTest<Svc> installs for each
+// interface-typed Deps field of the handler at handlerDir, reading
+// cross-package interfaces through resolver, which GenerateBootstrapTesting
+// shares across every service so their packages load together.
+//
+// A field whose interface forge already mocks gets that mock (see
+// harness_mocks.go) and no stub; the rest go through computeAutoStubs'
+// rules above.
+func computeDepsDoubles(handlerDir string, resolver *typesResolver) ([]DepsAutoStub, []DepsAutoMock, []UnresolvedAutoStub) {
 	fields, err := ParseServiceDeps(handlerDir)
 	if err != nil || len(fields) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	locals, _ := ParseLocalInterfaces(handlerDir)
+	imports, _ := collectImports(handlerDir)
 	var stubs []DepsAutoStub
+	var mocks []DepsAutoMock
 	var unresolved []UnresolvedAutoStub
 	for _, f := range fields {
 		if bareDepsFieldNames[f.Name] {
 			continue
 		}
 		t := strings.TrimSpace(f.Type)
+
+		// (0) An interface forge already mocks: the harness installs the
+		// mock, so a collaborator has one double under one name.
+		if mock, ok := mockForField(handlerDir, f, t, imports, resolver); ok {
+			mocks = append(mocks, mock)
+			continue
+		}
 
 		// (1) Bare-identifier interface declared in this package.
 		if iface, ok := locals[t]; ok {
@@ -1647,7 +1699,7 @@ func computeAutoStubsWith(handlerDir string, resolver *typesResolver) ([]DepsAut
 		stubs[i].StubType = "Stub" + stubs[i].FieldName
 		programStubMethods(&stubs[i])
 	}
-	return stubs, unresolved
+	return stubs, mocks, unresolved
 }
 
 // programStubMethods renders each of a stub's methods as a programmable

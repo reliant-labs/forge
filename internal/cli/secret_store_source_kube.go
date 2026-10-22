@@ -159,7 +159,7 @@ func (k *kubeClients) ServiceProxy(ctx context.Context, p serviceProxyRequest) (
 	body, err := res.Raw()
 	if status == 0 {
 		// No response at all: the API server was unreachable or refused the
-		// proxy call itself (RBAC on services/proxy, a missing Service).
+		// proxy call itself (services/proxy denied to the caller, a missing Service).
 		return 0, nil, fmt.Errorf("service proxy %s/%s: %w", p.Namespace, p.Service, err)
 	}
 	// A non-2xx answer from the backend is data, not a transport error.

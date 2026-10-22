@@ -435,12 +435,6 @@ login` credential is traded for the scope the control plane's 403 names, for
 
 ### Changed
 
-- **A scaffolded dev stack pulls nothing from Docker Hub, and every compose image is pinned by digest.**
-  - Docker Hub's anonymous pull limit is per IP, so on a shared address (an office, a CI runner, a cloud sandbox) a first `forge env up` failed with `toomanyrequests`.
-  - postgres now comes from `public.ecr.aws/docker/library` (the Docker Official Images mirror), and the OpenTelemetry collector from the project's own ghcr (also `OTEL_COLLECTOR_IMAGE`, the node agent's).
-  - ClickStack is published only to Docker Hub, so it comes through `mirror.gcr.io`, Google's Docker Hub cache. HyperDX's `docker.hyperdx.io` was rejected because it proxies Docker Hub from one shared IP, which makes the limit worse.
-  - postgres and Zitadel gained digests. Every digest is the one Docker Hub serves, so the bytes are unchanged; to use your own mirror, change the host and keep the digest.
-  - A test fails any scaffolded compose image that names Docker Hub or lacks a digest. Existing projects: `migrations/v0.1.47/image-registries`.
 - **`forge project new` applies the feature graph itself.** The scaffold now
   resolves its feature set with the loader's own rule
   (`FeaturesConfig.FollowingRequirements`, the `followPinnedRequirements` the

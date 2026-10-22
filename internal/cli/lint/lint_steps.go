@@ -626,6 +626,24 @@ func lintPipeline() []linterStep {
 			collect:   collectFluxSafeJSON,
 		},
 
+		// 13d-ter-quater. Secrets — the platform secrets model judged per
+		// env (see lint_secrets.go and internal/lint/secrets). Gates on an
+		// error finding; a project that declares none of the model is not
+		// rendered and passes.
+		{
+			name:  "secrets lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && dirExists(filepath.Join(rc.cwd, deployKCLDirFor(rc.cfg))), ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runSecretsLint(rc.ctx, rc.cwd, rc.cfg)
+			},
+			errFormat: "❌ secrets lint: %v\n",
+			collect:   collectSecretsJSON,
+		},
+
 		// 13d-quater. identity-share-with: a forge.ManagedIdentity share_with
 		// whose owner env is missing, declares no identity, is itself a sharer
 		// or is not hosted. One env's render cannot see another's, so this

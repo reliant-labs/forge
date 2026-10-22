@@ -9,20 +9,10 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// Query bounds what a Source fetches.
-type Query struct {
-	// MaxPromotions caps how many promotions a remote source pages through
-	// (0 = DefaultMaxPromotions). A machine ledger is read whole.
-	MaxPromotions int
-	// Since lets a remote source stop paging once it has reached a promotion
-	// older than this (zero = no bound). One promotion past it is kept, so
-	// the first row inside the window still has a predecessor.
-	Since time.Time
-}
-
-// DefaultMaxPromotions is how many promotions a remote source reads when the
-// query does not say.
-const DefaultMaxPromotions = 500
+// maxPromotions is how many promotions a remote source reads before it stops
+// paging and says the history is truncated. A variable so a test can shrink it
+// instead of serving hundreds of rows.
+var maxPromotions = 500
 
 // LedgerReader is the part of the machine ledger the timeline reads. It is
 // declared here, at its consumer; *ledgerfile.Store satisfies it.
@@ -42,7 +32,7 @@ type Local struct {
 
 // Load reads env's whole local history. A file ledger writes post-promote
 // gates to a side file, so they are joined to their promotion here.
-func (l Local) Load(_ context.Context, env string, _ Query) (Data, error) {
+func (l Local) Load(_ context.Context, env string, _ time.Time) (Data, error) {
 	promos, err := l.Ledger.Promotions(env)
 	if err != nil {
 		return Data{}, fmt.Errorf("read %s promotions: %w", env, err)

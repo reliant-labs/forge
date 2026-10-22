@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -95,7 +96,7 @@ func TestLocal_ReadsAMachineLedgerFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d, err := Local{Ledger: store}.Load(context.Background(), "prod", Query{})
+	d, err := Local{Ledger: store}.Load(context.Background(), "prod", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +135,7 @@ func TestLocal_AnEnvNeverPromotedIsEmptyNotAnError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := Local{Ledger: store}.Load(context.Background(), "nowhere", Query{})
+	d, err := Local{Ledger: store}.Load(context.Background(), "nowhere", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +153,7 @@ func TestLocal_AnUnreadableReleaseLogCostsDirectionsNotTheTimeline(t *testing.T)
 	if _, err := store.AppendPromotion(release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote, Resolved: map[string]string{}}, nil); err != nil {
 		t.Fatal(err)
 	}
-	d, err := Local{Ledger: brokenLedger{store}}.Load(context.Background(), "prod", Query{})
+	d, err := Local{Ledger: brokenLedger{store}}.Load(context.Background(), "prod", time.Time{})
 	if err != nil || len(d.Promotions) != 1 || len(d.Warnings) != 1 {
 		t.Fatalf("err=%v promotions=%d warnings=%v", err, len(d.Promotions), d.Warnings)
 	}
@@ -221,8 +222,8 @@ func cloudFake() *fakeCP {
 				{"id": "c3", "promotionId": "p3", "state": "converged", "observedAt": "2026-10-01T13:02:00Z", "healthyAt": "2026-10-01T13:01:00Z"},
 			}}, nil
 		},
-		"controlplane.v1.DeployService/GetTenant": func(map[string]any) (any, error) {
-			return map[string]any{"tenant": map[string]any{"orgId": "org-1"}}, nil
+		cloud.ProcGetOrganization: func(map[string]any) (any, error) {
+			return cloud.OrganizationReply("org-1"), nil
 		},
 		procListActivity: func(map[string]any) (any, error) {
 			return map[string]any{"events": []map[string]any{
@@ -235,7 +236,7 @@ func cloudFake() *fakeCP {
 
 func TestCloud_AssemblesTheTimelineFromTheLedgerRPCs(t *testing.T) {
 	cp := cloudFake()
-	d, err := Cloud{Client: cp, Project: "app"}.Load(context.Background(), "prod", Query{})
+	d, err := NewCloud(cp, "app").Load(context.Background(), "prod", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,8 +290,10 @@ func TestCloud_AssemblesTheTimelineFromTheLedgerRPCs(t *testing.T) {
 }
 
 func TestCloud_StopsPagingAtMaxAndSaysSo(t *testing.T) {
+	defer func(old int) { maxPromotions = old }(maxPromotions)
+	maxPromotions = 1
 	cp := cloudFake()
-	d, err := Cloud{Client: cp}.Load(context.Background(), "prod", Query{MaxPromotions: 1})
+	d, err := NewCloud(cp, "").Load(context.Background(), "prod", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +304,7 @@ func TestCloud_StopsPagingAtMaxAndSaysSo(t *testing.T) {
 
 func TestCloud_StopsPagingOncePastSince(t *testing.T) {
 	cp := cloudFake()
-	d, err := Cloud{Client: cp}.Load(context.Background(), "prod", Query{Since: time.Date(2026, 10, 1, 12, 50, 0, 0, time.UTC)})
+	d, err := NewCloud(cp, "").Load(context.Background(), "prod", time.Date(2026, 10, 1, 12, 50, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +316,7 @@ func TestCloud_StopsPagingOncePastSince(t *testing.T) {
 
 func TestCloud_UnknownEnvironmentIsEmptyWithAWarning(t *testing.T) {
 	cp := cloudFake()
-	d, err := Cloud{Client: cp, Project: "app"}.Load(context.Background(), "ghost", Query{})
+	d, err := NewCloud(cp, "app").Load(context.Background(), "ghost", time.Time{})
 	if err != nil || len(d.Promotions) != 0 || len(d.Warnings) != 1 {
 		t.Fatalf("err=%v d=%+v", err, d)
 	}
@@ -329,7 +332,7 @@ func TestCloud_SecondaryReadsFailSoft_PrimaryFailsHard(t *testing.T) {
 	for _, p := range []string{procListConvergences, procListActivity, procListReleases} {
 		cp.respond[p] = func(map[string]any) (any, error) { return nil, errors.New("Unimplemented") }
 	}
-	d, err := Cloud{Client: cp}.Load(context.Background(), "prod", Query{})
+	d, err := NewCloud(cp, "").Load(context.Background(), "prod", time.Time{})
 	if err != nil || len(d.Promotions) != 3 || len(d.Warnings) != 3 {
 		t.Fatalf("err=%v promotions=%d warnings=%v", err, len(d.Promotions), d.Warnings)
 	}
@@ -339,7 +342,7 @@ func TestCloud_SecondaryReadsFailSoft_PrimaryFailsHard(t *testing.T) {
 
 	cp = cloudFake()
 	cp.respond[procListPromotions] = func(map[string]any) (any, error) { return nil, errors.New("permission denied") }
-	if _, err := (Cloud{Client: cp}).Load(context.Background(), "prod", Query{}); err == nil || !strings.Contains(err.Error(), "permission denied") {
+	if _, err := (NewCloud(cp, "")).Load(context.Background(), "prod", time.Time{}); err == nil || !strings.Contains(err.Error(), "permission denied") {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -349,7 +352,7 @@ func TestCloud_AmbiguousEnvironmentIsRefused(t *testing.T) {
 	cp.respond[procListEnvironments] = func(map[string]any) (any, error) {
 		return map[string]any{"environments": []map[string]any{{"id": "a", "name": "prod"}, {"id": "b", "name": "prod"}}}, nil
 	}
-	if _, err := (Cloud{Client: cp}).Load(context.Background(), "prod", Query{}); err == nil || !strings.Contains(err.Error(), "refusing to guess") {
+	if _, err := (NewCloud(cp, "")).Load(context.Background(), "prod", time.Time{}); err == nil || !strings.Contains(err.Error(), "refusing to guess") {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -395,7 +398,7 @@ func gitRepo(t *testing.T, subjects ...string) (dir string, shas []string) {
 
 func TestGit_ListsARecordedRangeAndItsPullRequests(t *testing.T) {
 	dir, shas := gitRepo(t, "base (#1)", "add a (#2)", "wip", "add b (#3)")
-	g := Git{Dir: dir}
+	g := NewGit(dir)
 	r := CommitRange{FromCommit: shas[0], ToCommit: shas[3]}
 
 	commits, prs, err := CommitsOf(context.Background(), g, r, 0)
@@ -424,17 +427,17 @@ func TestGit_ListsARecordedRangeAndItsPullRequests(t *testing.T) {
 
 func TestGit_FirstReleaseListsTheWholeHistoryAndUnknownCommitsFail(t *testing.T) {
 	dir, shas := gitRepo(t, "one", "two")
-	commits, _, err := CommitsOf(context.Background(), Git{Dir: dir}, CommitRange{ToCommit: shas[1]}, 0)
+	commits, _, err := CommitsOf(context.Background(), NewGit(dir), CommitRange{ToCommit: shas[1]}, 0)
 	if err != nil || len(commits) != 2 {
 		t.Fatalf("err=%v commits=%d", err, len(commits))
 	}
-	if _, _, err := CommitsOf(context.Background(), Git{Dir: dir}, CommitRange{ToCommit: sha('f')}, 0); err == nil {
+	if _, _, err := CommitsOf(context.Background(), NewGit(dir), CommitRange{ToCommit: sha('f')}, 0); err == nil {
 		t.Error("a commit this checkout lacks must be an error, not an empty list")
 	}
-	if _, _, err := CommitsOf(context.Background(), Git{Dir: dir}, CommitRange{FromCommit: "HEAD~1", ToCommit: shas[1]}, 0); err == nil {
+	if _, _, err := CommitsOf(context.Background(), NewGit(dir), CommitRange{FromCommit: "HEAD~1", ToCommit: shas[1]}, 0); err == nil {
 		t.Error("a ref that is not a full object id must be refused")
 	}
-	if _, _, err := CommitsOf(context.Background(), Git{Dir: dir}, CommitRange{}, 0); err == nil {
+	if _, _, err := CommitsOf(context.Background(), NewGit(dir), CommitRange{}, 0); err == nil {
 		t.Error("a range with no commit must be refused")
 	}
 }
@@ -447,7 +450,7 @@ func TestCompareReleases_ScopesToTheEnvironment(t *testing.T) {
 	var out struct {
 		Unchanged int `json:"unchangedArtifacts"`
 	}
-	if err := CompareReleases(context.Background(), Cloud{Client: cp, Project: "app"}, "v1", "v2", "prod", &out); err != nil {
+	if err := CompareReleases(context.Background(), NewCloud(cp, "app"), "v1", "v2", "prod", &out); err != nil {
 		t.Fatal(err)
 	}
 	req := cp.reqs[procCompareReleases]
@@ -485,14 +488,14 @@ func TestGit_ChangedPathsListsTheMigrationsARangeCarried(t *testing.T) {
 	}
 	to := strings.TrimSpace(string(head))
 
-	got, err := Git{Dir: dir}.ChangedPaths(context.Background(), shas[1], to, "db/migrations")
+	got, err := NewGit(dir).ChangedPaths(context.Background(), shas[1], to, "db/migrations")
 	if err != nil || !reflect.DeepEqual(got, []PathChange{{Status: "A", Path: "db/migrations/20261001_a.up.sql"}}) {
 		t.Errorf("got %+v, err %v", got, err)
 	}
-	if got, err := (Git{Dir: dir}).ChangedPaths(context.Background(), "", to, "db/migrations"); err != nil || got != nil {
+	if got, err := (NewGit(dir)).ChangedPaths(context.Background(), "", to, "db/migrations"); err != nil || got != nil {
 		t.Errorf("a first release has nothing to differ from: %+v %v", got, err)
 	}
-	if _, err := (Git{Dir: dir}).ChangedPaths(context.Background(), "HEAD~1", to); err == nil {
+	if _, err := (NewGit(dir)).ChangedPaths(context.Background(), "HEAD~1", to); err == nil {
 		t.Error("a ref that is not a full object id must be refused")
 	}
 }
@@ -505,7 +508,7 @@ func TestTraceStart_IsTheEarliestSpanAndScopedToTheEnvironment(t *testing.T) {
 		}}, nil
 	}
 	now := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
-	got, err := TraceStart(context.Background(), Cloud{Client: cp, Project: "app"}, "prod", "ABCDEF0123456789abcdef0123456789", now)
+	got, err := TraceStart(context.Background(), NewCloud(cp, "app"), "prod", "ABCDEF0123456789abcdef0123456789", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,14 +533,14 @@ func TestTraceStart_IsTheEarliestSpanAndScopedToTheEnvironment(t *testing.T) {
 func TestTraceStart_UnknownTraceAndBadIDs(t *testing.T) {
 	cp := cloudFake()
 	cp.respond[procGetTrace] = func(map[string]any) (any, error) { return map[string]any{"spans": []any{}}, nil }
-	_, err := TraceStart(context.Background(), Cloud{Client: cp}, "prod", "abc123", time.Now())
+	_, err := TraceStart(context.Background(), NewCloud(cp, ""), "prod", "abc123", time.Now())
 	if !errors.Is(err, ErrTraceNotFound) {
 		t.Errorf("err = %v", err)
 	}
-	if _, err := TraceStart(context.Background(), Cloud{Client: cp}, "prod", "not hex!", time.Now()); err == nil {
+	if _, err := TraceStart(context.Background(), NewCloud(cp, ""), "prod", "not hex!", time.Now()); err == nil {
 		t.Error("a malformed trace id must be refused before any call")
 	}
-	if _, err := TraceStart(context.Background(), Cloud{Client: cp}, "ghost", "abc123", time.Now()); err == nil {
+	if _, err := TraceStart(context.Background(), NewCloud(cp, ""), "ghost", "abc123", time.Now()); err == nil {
 		t.Error("an unknown environment must be an error")
 	}
 }
@@ -559,7 +562,7 @@ func TestReleaseHealth(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cp := cloudFake()
 			cp.respond[procGetReleaseHealth] = func(map[string]any) (any, error) { return tc.resp, nil }
-			got, err := ReleaseHealth(context.Background(), Cloud{Client: cp}, "prod", "p3")
+			got, err := ReleaseHealth(context.Background(), NewCloud(cp, ""), "prod", "p3")
 			if (err != nil) != tc.wantErr || got != tc.want {
 				t.Errorf("got %+v, %v; want %+v (err=%v)", got, err, tc.want, tc.wantErr)
 			}
@@ -570,7 +573,7 @@ func TestReleaseHealth(t *testing.T) {
 	}
 	cp := cloudFake()
 	cp.respond[procGetReleaseHealth] = func(map[string]any) (any, error) { return nil, errors.New("unimplemented") }
-	if _, err := ReleaseHealth(context.Background(), Cloud{Client: cp}, "prod", "p3"); err == nil {
+	if _, err := ReleaseHealth(context.Background(), NewCloud(cp, ""), "prod", "p3"); err == nil {
 		t.Error("an Unimplemented control plane must surface as an error the caller can soften")
 	}
 }

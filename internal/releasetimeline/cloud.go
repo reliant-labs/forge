@@ -121,10 +121,16 @@ type wireActivity struct {
 	Detail map[string]string `json:"detail"`
 }
 
+// NewCloud reads a control plane's ledger for one forge project ("" for every
+// project's releases).
+func NewCloud(client Caller, project string) Cloud {
+	return Cloud{Client: client, Project: project}
+}
+
 // Load reads env's ledger through the control plane. An environment the
 // control plane has never heard of has no history, and says so in a warning
 // rather than failing: a typo and a never-deployed env look the same here.
-func (c Cloud) Load(ctx context.Context, env string, q Query) (Data, error) {
+func (c Cloud) Load(ctx context.Context, env string, since time.Time) (Data, error) {
 	d := Data{Env: env}
 	id, err := c.envID(ctx, env)
 	if err != nil {
@@ -135,10 +141,6 @@ func (c Cloud) Load(ctx context.Context, env string, q Query) (Data, error) {
 		return d, nil
 	}
 
-	max := q.MaxPromotions
-	if max <= 0 {
-		max = DefaultMaxPromotions
-	}
 	var newestFirst []wirePromotion
 	before := ""
 	for {
@@ -159,7 +161,7 @@ func (c Cloud) Load(ctx context.Context, env string, q Query) (Data, error) {
 			break
 		}
 		last := resp.Promotions[len(resp.Promotions)-1]
-		if len(newestFirst) >= max || (!q.Since.IsZero() && last.CreatedAt.Before(q.Since)) {
+		if len(newestFirst) >= maxPromotions || (!since.IsZero() && last.CreatedAt.Before(since)) {
 			d.Truncated = true
 			break
 		}
@@ -192,7 +194,7 @@ func (c Cloud) Load(ctx context.Context, env string, q Query) (Data, error) {
 		d.Attempts = append(d.Attempts, attemptFromWire(v))
 	}
 
-	d.Activity, err = c.activity(ctx, id, q.Since)
+	d.Activity, err = c.activity(ctx, id, since)
 	if err != nil {
 		d.Warnings = append(d.Warnings, fmt.Sprintf("activity unreadable, who/via comes from the ledger only: %v", err))
 	}

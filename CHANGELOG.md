@@ -276,9 +276,9 @@ login` credential is traded for the scope the control plane's 403 names, for
   `svcerr.NotFound("x")` — the documented shape — read as `unknown`. For a
   `*connect.Error` the two agree; the one difference is an unclassified error,
   which now asserts as `internal` (what the client reads) rather than `unknown`.
-- **Generated proto mocks return `svcerr.Wrap(svcerr.Unimplemented("handler
-  for X not yet implemented"))`** for an unprogrammed rpc, instead of a
-  hand-built `connect.NewError`. The code and message are unchanged, the value
+- **Generated proto mocks return
+  `svcerr.Wrap(svcerr.Unimplemented("handler for X not yet implemented"))`**
+  for an unprogrammed rpc, instead of a hand-built `connect.NewError`. The code and message are unchanged, the value
   is still a `*connect.Error`, and `errors.Is(err, svcerr.ErrUnimplemented)` now
   holds. Existing projects: `forge generate`.
 - **svcerr's `*connect.Error` policy is documented and pinned**: a hand-built

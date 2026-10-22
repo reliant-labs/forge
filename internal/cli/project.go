@@ -38,6 +38,7 @@ func newProjectCmd() *cobra.Command {
 	cmd.AddCommand(newAnnotationsCmd())
 	cmd.AddCommand(newCapabilitiesCmd())
 	cmd.AddCommand(newLibrariesCmd())
+	cmd.AddCommand(newProjectFrontendsCmd())
 	// `checkouts` is a project-STRUCTURE read: which copies of this
 	// project exist on this machine, plus the remote main they are
 	// measured against. It belongs on the project noun rather than under

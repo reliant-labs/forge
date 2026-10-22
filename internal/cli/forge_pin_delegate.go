@@ -53,7 +53,7 @@ var pinDelegateOnlyExcluded = map[string]bool{
 // handed to the pinned forge instead of failing that way.
 func pinDelegateOnlyFor(rel string) bool {
 	switch {
-	case rel == "kcl" || strings.HasPrefix(rel, "kcl "), rel == "doctor":
+	case rel == "kcl" || strings.HasPrefix(rel, "kcl "), rel == "doctor", rel == "project frontends":
 		return true
 	case strings.HasPrefix(rel, "env "):
 		sub := strings.Join(strings.Fields(rel)[:2], " ")

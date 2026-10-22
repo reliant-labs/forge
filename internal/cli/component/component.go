@@ -17,6 +17,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 func init() { factory.Register(newCmd) }
@@ -62,7 +63,7 @@ func resolveInstallDir(dir string) string {
 	// for these rather than assuming keeps `--dir /tmp/scratch` literal.
 	for _, marker := range []string{"package.json", "src"} {
 		if _, err := os.Stat(filepath.Join(cleaned, marker)); err == nil {
-			return filepath.Join(cleaned, "src", "components", "ui")
+			return filepath.Join(cleaned, filepath.FromSlash(config.FrontendComponentsDir(cleaned)))
 		}
 	}
 
@@ -86,7 +87,7 @@ func detectComponentsDir() string {
 		if !e.IsDir() {
 			continue
 		}
-		candidate := filepath.Join(frontendsDir, e.Name(), "src", "components", "ui")
+		candidate := filepath.Join(frontendsDir, e.Name(), filepath.FromSlash(config.FrontendComponentsDir(filepath.Join(frontendsDir, e.Name()))))
 		if info, err := os.Stat(filepath.Join(frontendsDir, e.Name(), "src")); err == nil && info.IsDir() {
 			return candidate
 		}

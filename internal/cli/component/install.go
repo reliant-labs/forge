@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/pkg/components"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
@@ -20,8 +21,11 @@ func newInstallCmd(_ *factory.Factory) *cobra.Command {
 		Use:   "install <component-names...>",
 		Short: "Install components into your project",
 		Long: `Install one or more components from the library into your project's
-src/components/ui/ directory. If --dir is not specified, the command
-auto-detects the nearest frontend directory.`,
+src/components/ui/ directory — or the directory the frontend's package.json
+names in "forge": {"components_dir": "..."}. If --dir is not specified, the
+command auto-detects the nearest frontend directory. A component whose file
+name differs only in case from one already there (button.tsx beside
+Button.tsx) is refused: on macOS and Windows that is one file.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			lib := components.NewLibrary()
@@ -49,6 +53,9 @@ auto-detects the nearest frontend directory.`,
 					}
 					return fmt.Errorf("component %q not found", name)
 				}
+				if existing := generator.CaseCollision(dir, name+".tsx"); existing != "" {
+					return generator.CaseCollisionError(dir, name+".tsx", existing)
+				}
 				dest := filepath.Join(dir, name+".tsx")
 				if err := atomicfile.WriteFile(dest, []byte(content), 0o644); err != nil {
 					return fmt.Errorf("write component %s: %w", name, err)
@@ -62,7 +69,7 @@ auto-detects the nearest frontend directory.`,
 			// install into a bare directory still compiles; never
 			// overwrite — scaffolds place a framework-aware version there.
 			linkDest := filepath.Join(dir, "link.tsx")
-			if _, statErr := os.Stat(linkDest); os.IsNotExist(statErr) {
+			if _, statErr := os.Stat(linkDest); os.IsNotExist(statErr) && generator.CaseCollision(dir, "link.tsx") == "" {
 				linkContent, err := lib.Get("link")
 				if err == nil {
 					if err := atomicfile.WriteFile(linkDest, []byte(linkContent), 0o644); err != nil {

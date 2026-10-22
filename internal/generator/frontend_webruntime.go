@@ -412,3 +412,45 @@ func EnsureBrowserTelemetryDependencies(projectDir, feRelDir, feName string) {
 	}
 	fmt.Printf("  + frontend %s: declared %s@%s (browser telemetry); run npm install\n", feName, browserSDKPackage, spec)
 }
+
+// FrontendDependencyNotices is the read-only counterpart of
+// EnsureWebRuntimeDependency + EnsureBrowserTelemetryDependencies, for an
+// ADOPTED frontend (config.FrontendConfig.Adopted): it reports what those
+// would change in package.json instead of changing it, one line each.
+//
+// An adopted app's manifest is its own, reviewed like any other change to
+// it. reliant's web app declared the runtime at ^0.5.0 and the first
+// generate rewrote it to ^0.6.0 — a bump that may well be wanted, but one
+// its owner should make on purpose, in a PR that says so, not one buried
+// among a few hundred generated files. A dev forge build's `file:` bridge is
+// never reported: it is machine-local by definition.
+func FrontendDependencyNotices(projectDir, feRelDir string) []string {
+	feDir := filepath.Join(projectDir, feRelDir)
+	original, err := os.ReadFile(filepath.Join(feDir, "package.json"))
+	if err != nil {
+		return nil
+	}
+	text := string(original)
+	var out []string
+
+	decision := decideWebRuntimeDependency(feDir)
+	if !strings.HasPrefix(decision.spec, "file:") {
+		current, found := currentWebRuntimeSpec(text)
+		switch {
+		case !found:
+			out = append(out, fmt.Sprintf("generated code imports %s, which package.json does not declare — `npm install %s@%s`",
+				WebRuntimePackage, WebRuntimePackage, decision.spec))
+		case decision.authoritative && current != decision.spec:
+			if want := reconcileSpec(current, decision); want != current {
+				out = append(out, fmt.Sprintf("package.json declares %s %s; this forge generates against %s — bump it when you review (`npm install %s@%s`)",
+					WebRuntimePackage, current, want, WebRuntimePackage, want))
+			}
+		}
+	}
+	if spec, ok := webruntimepeers.PeerSpec(browserSDKPackage); ok &&
+		!regexp.MustCompile(`"`+regexp.QuoteMeta(browserSDKPackage)+`"\s*:`).MatchString(text) {
+		out = append(out, fmt.Sprintf("generated src/lib/otel_gen.ts imports %s, which package.json does not declare — `npm install %s@%s`",
+			browserSDKPackage, browserSDKPackage, spec))
+	}
+	return out
+}

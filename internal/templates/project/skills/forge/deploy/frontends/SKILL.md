@@ -21,8 +21,8 @@ no default, and a frontend with no `runtime` is a render error naming it:
 Build facts are the frontend's on every runtime: `public_dir` (default `out`
 for Next.js, `dist` otherwise), `asset_dir`, `base_path`, `bundle`,
 `cache_control` (OnBucket, OnFirebase). A Firebase SPA sets `spa_fallback`.
-A static Next.js frontend needs `output: static` in forge.yaml
-(render refuses others; `forge lint --static-export` lists what an export
+A static Next.js frontend needs `output: "export"` in its own next.config.ts
+(forge reads the build shape from there; render refuses others; `forge lint --static-export` lists what an export
 can't serve); a server build is a workload (`forge.DockerBuild`).
 
 ```kcl

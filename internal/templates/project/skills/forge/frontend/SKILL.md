@@ -13,7 +13,7 @@ Each frontend lives in `frontends/<name>/` as a Next.js App Router app (`forge s
 
 ## Build & serving shapes
 
-`forge.yaml`'s `output:` picks the production shape: `static` (the default, a
+`next.config.ts` picks the production shape: `static` (the default, a
 static export into `out/` that hosted static hosting serves), `standalone` (a
 Node server), or `server`. **Every route must be static**: detail and edit are
 `/<entity>/view?id=…` and `/<entity>/edit?id=…` (`src/lib/entity-routes.ts`),
@@ -164,7 +164,7 @@ Name the workload, never the hostname:
 | **Hosted** (the referrer is a frontend or a workload bound to `forge.OnHosted`) | The control plane: it allocates hostnames and rewrites the document when one moves. | The control plane, after every StaticSite sync (the release carries none). |
 | Everything else (host, compose, cluster, `OnFirebase` / `OnBucket`) | forge, **at render time**: a route to the workload → a custom domain on its exposed port → its host `listen_ports` → a frontend's `port`. | forge: `public/config.js` in dev, per env on a Firebase / bucket deploy. |
 
-Unknown names are refused at load; on a non-hosted env so is a URL forge cannot know at render time (typically a host service without `listen_ports`, whose port `forge env up` assigns after rendering).
+Unknown names are refused at load; off hosting, so is a URL forge cannot know at render time (a host service without `listen_ports`).
 
 A hosted site's own hostname is not a field: `forge domain add` (see `deploy`).
 
@@ -244,7 +244,7 @@ For the full Go / proto / TS / `forge.yaml` casing table, see `architecture` →
 
 ## Sub-skills & rules
 
-Load **state** (decision table, state vs events, ownership), **patterns** (composition, container/presentational, effects, typed boundaries), and `frontend-testing` (what to test, the `mockTransport()` seam, per-layer recipes).
+Load **adopt** (generating into an app forge did not scaffold; the package.json `"forge"` block), **state** (decision table, state vs events, ownership), **patterns** (composition, container/presentational, effects, typed boundaries), and `frontend-testing` (what to test, the `mockTransport()` seam, per-layer recipes).
 
 - Never hand-edit generated files; run `forge generate` after every `.proto` change.
 - Always `create(Schema, {...})` for protobuf messages, never `new Message()`.
@@ -252,4 +252,4 @@ Load **state** (decision table, state vs events, ownership), **patterns** (compo
 - `forge component search <noun>` before hand-writing any UI. Recharts for dashboard charts.
 - Money, dates, enum labels, status colors: `@/lib/format-utils`; money/rate inputs: `parseMinorUnits` / `parseBasisPoints`.
 - React Query hooks for server data, Zustand for client state only (subscribe to slices), event bus for imperative actions — never as a source of truth.
-- Keep forms in react-hook-form + Zod. Never remove the mock-mode banner.
+- Keep forms in react-hook-form + Zod.

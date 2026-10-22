@@ -304,7 +304,9 @@ hand-wrote and then deleted.
 Everything scaffolded is yours from birth; re-running with nothing missing is a
 clean no-op, and `--dry-run` prints the plan. Forge records none of it in
 `forge.yaml`: services, workers, binaries and operators are discovered from the
-code that declares them. Only frontends and packages take a config entry.
+code that declares them. Frontends are too: a directory under `frontends/` (or a
+KCL `forge.Frontend` `path`), with per-frontend codegen knobs in the frontend's
+own package.json `"forge"` block (`frontend` skill). Only packages take a config entry.
 
 If the answer is not on this list, `forge project capabilities` has the full verb
 set — check there before hand-rolling.

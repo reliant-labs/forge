@@ -90,7 +90,7 @@ What it writes, in order:
   - gen/: Go + Connect stubs (buf generate) and gen/forge_descriptor.json,
     the services, rpcs and config messages extracted from the protos
   - each frontend's TypeScript stubs, hooks, CRUD pages, nav and mocks
-  - pkg/config/ from proto/config/, the typed config loader
+  - pkg/config/ from proto/<project>/config/v1/, the typed config loader
   - internal/handlers/<svc>/: a stub for every rpc no handler implements yet,
     and the CRUD wiring of every entity (an entity is a table in the APPLIED
     schema that a service's CRUD rpcs name; the schema comes from running
@@ -1435,7 +1435,7 @@ func isForgeOwnedFile(path string) bool {
 //     forge/pkg pin in both root and gen/ and re-tidy.
 //
 //  2. `undefined:` against the project's own `pkg/config` package —
-//     proto/config/ likely has no annotated config fields yet.
+//     proto/<project>/config/v1/ likely has no annotated config fields yet.
 //
 //  3. Any other error with a coordinate — name the first one and who owns
 //     the file it cites. originOf(rel) answers that for a
@@ -1469,7 +1469,7 @@ func goBuildValidateFixHint(errOutput string, originOf func(rel string) goSource
 		return "forge/pkg pin is older than the codegen plugin (orm.Type* not exported). Run `go get github.com/reliant-labs/forge@latest && go mod tidy` in BOTH the project root and gen/ to bump the pin, then re-run 'forge generate'."
 	}
 	if strings.Contains(errOutput, "pkg/config") {
-		return "ensure proto/config/ has annotated config fields and re-run 'forge generate'"
+		return "ensure proto/<project>/config/v1/ has annotated config fields and re-run 'forge generate'"
 	}
 	if errs := compilerErrorLines(errOutput); len(errs) > 0 {
 		file := errorLineFile(errs[0])

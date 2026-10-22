@@ -90,7 +90,7 @@ func (r *graphResolver) inputFor(want types.Type, written string) (string, bool)
 	// input of its own: *config.<Message> (an alias of the generated
 	// message, either spelling) is g.<Message>.
 	for name := range r.configInputs {
-		if q == "*"+r.module+"/pkg/config."+name || q == "*"+r.module+"/gen/config/v1."+name || written == "*config."+name {
+		if q == "*"+r.module+"/pkg/config."+name || r.isGeneratedConfig(q, name) || written == "*config."+name {
 			return "g." + name, true
 		}
 	}
@@ -345,4 +345,11 @@ func (r *graphResolver) lazyProducers(n *graphNode, want types.Type, written str
 		return nil
 	}
 	return r.producersByWrittenType(n, inner, imports)
+}
+
+// isGeneratedConfig reports whether q names the config message name in the
+// project's generated config package, *<module>/gen/<project>/config/v1
+// (internal/configproto).
+func (r *graphResolver) isGeneratedConfig(q, name string) bool {
+	return strings.HasPrefix(q, "*"+r.module+"/gen/") && strings.HasSuffix(q, "/config/v1."+name)
 }

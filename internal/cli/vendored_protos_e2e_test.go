@@ -30,7 +30,7 @@ func TestE2EGenerateVendorsForgeProtoOnDemand(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(projectDir, "proto", "forge")); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(readFileE2E(t, filepath.Join(projectDir, "proto", "config", "v1", "config.proto")), `import "forge/v1/forge.proto";`) {
+	if !strings.Contains(readFileE2E(t, filepath.Join(projectDir, "proto", "vendorapp", "config", "v1", "config.proto")), `import "forge/v1/forge.proto";`) {
 		t.Fatal("the scaffolded config proto no longer imports forge/v1/forge.proto; this test's premise is gone")
 	}
 

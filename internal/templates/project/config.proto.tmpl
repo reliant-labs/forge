@@ -1,11 +1,11 @@
 syntax = "proto3";
 
-package config.v1;
+package {{.ConfigPackage}};
 
 import "forge/v1/forge.proto";
 import "google/protobuf/duration.proto";
 
-option go_package = "{{.Module}}/gen/config/v1;configv1";
+option go_package = "{{.ConfigGoPackage}}";
 
 // AppConfig defines the application's runtime configuration.
 // Each field maps to an environment variable and/or CLI flag via

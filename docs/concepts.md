@@ -306,7 +306,7 @@ the `AppConfig` line, and the Go replacement:
 ⚠ [forge-config-deps] internal/email/resend.go:41:2
     internal/email Deps.APIKey is a naked scalar (string) — scalars are
     configuration, not collaborators
-    → declare a config block in proto/config/v1/config.proto:
+    → declare a config block in proto/<project>/config/v1/config.proto:
       `message EmailConfig { string api_key = 1 [(forge.v1.config) = {
         env_var: "EMAIL_API_KEY" }]; }`,
       compose it on AppConfig (`EmailConfig email = <next tag>;`),

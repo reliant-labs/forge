@@ -491,7 +491,7 @@ func quotedList(items []string) string {
 // configMessageWhere renders a message's source position as the
 // project-relative "proto/<file>:<line>" an editor can jump to. The
 // descriptor records files relative to the buf module root (proto/), and
-// config protos are always read from proto/config. It degrades rather than
+// config protos are always read from proto/<project>/config/v1. It degrades rather than
 // lying: no file renders "", no line renders the file alone.
 func configMessageWhere(m ConfigMessage) string {
 	if m.ProtoFile == "" {

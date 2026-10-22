@@ -18,3 +18,22 @@ type Backend interface {
 	MetricsQuery(ctx context.Context, req MetricsQueryRequest) (MetricsQueryResult, error)
 	Query(ctx context.Context, req QueryRequest) (QueryResult, error)
 }
+
+// HealthReader judges a release: the windows before and after a promotion,
+// per service, and what the release opened (`forge obs check`). The local
+// backend judges from the ClickStack with pkg/releasehealth; the cloud
+// backend asks the control plane's GetReleaseHealth, which applies the same
+// rule.
+//
+//forge:contract
+type HealthReader interface {
+	ReleaseHealth(ctx context.Context, req HealthRequest) (HealthResult, error)
+}
+
+// ChangesReader lists what changed in an env: promotions, failed deploys and
+// activity (`forge obs changes`).
+//
+//forge:contract
+type ChangesReader interface {
+	Changes(ctx context.Context, req ChangesRequest) (ChangesResult, error)
+}

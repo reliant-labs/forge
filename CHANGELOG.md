@@ -50,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`forge observe alerts check` and `forge observe profile` reach the ClickStack `forge env up` started.**
   - env up runs each env's compose services in their own project (`forge-<id>-<env>`). Both commands exec'd into the default project, so they reported a running ClickStack as not running.
 - **`docker compose up <service>` interpolates the whole compose file with every workload's declared env.**
+
   - Bringing up `otel-profiles` (which depends on `clickstack`) with only its own variables recreated `clickstack` on the file's default ports. On a machine running a second stack, the bind failed.
 
 - **`forge/pkg/alerting/amconfig`: the Alertmanager configuration renderer.**

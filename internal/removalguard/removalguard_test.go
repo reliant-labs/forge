@@ -127,6 +127,21 @@ var removals = []removal{
 				Paths: []string{"CHANGELOG.md"},
 			},
 			{
+				Name: "the External Secrets Operator's vendored upstream CRDs",
+				Reason: "pkg/deploy/eso/crds/<version>/ holds the ESO CustomResourceDefinitions, " +
+					"regenerated verbatim from the pinned upstream chart (`helm template … --show-only " +
+					"templates/crds/<name>.yaml`). Their schemas describe other vendors' identity " +
+					"models: Azure's `tenantId` / `Tenant`, Oracle Cloud's `tenancy` / `tenancyId`, " +
+					"Akeyless' `tenant`, Vault/OpenBao's \"secure multi-tenancy\" namespaces.\n" +
+					"These are upstream field names and descriptions, regenerated on every ESO bump and " +
+					"not editable here without diverging from the chart; they are not a tenant column, " +
+					"header, context key or helper in forge. Scoped to that vendored directory, so a " +
+					"tenant concept anywhere else, including the ESO component's own KCL, skill and Go " +
+					"files, still fails.",
+				Token: regexp.MustCompile(`(?i)[\w-]*tenan[tc]\w*`),
+				Paths: []string{"pkg/deploy/eso/crds/"},
+			},
+			{
 				Name: "the control plane's own organization-lookup RPC, DeployService/GetTenant",
 				Reason: "forge learns which organization a credential acts for by calling the control " +
 					"plane's DeployService.GetTenant, whose response nests the caller's org under a " +
@@ -358,6 +373,12 @@ var removals = []removal{
 					"internal/templates/project/skills/forge/deploy/flux/SKILL.md",
 					"internal/templates/project/skills/forge/migrations/v0.1.46/SKILL.md",
 					"docs/runbooks/flux-patch-and-upgrade.md",
+					// The External Secrets Operator chart's hardening values
+					// (`rbac.serviceAccountTokenCreate`, `rbac.aggregateTo*`):
+					// the chart's own values key, in the component's skill and
+					// in the render-contract golden of its chart values.
+					"internal/templates/project/skills/forge/deploy/external-secrets/SKILL.md",
+					"internal/cli/testdata/render_contract/secrets-components.json",
 					"CHANGELOG.md",
 					"internal/doctor/clusterhealth*.go",
 					"internal/templates/deploy_build_test.go",

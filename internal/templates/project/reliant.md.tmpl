@@ -164,7 +164,7 @@ SQL is the schema language. Entities are PROJECTIONS of the applied `db/migratio
 - One service per `.proto` file (`{{.CLI}} lint` rejects multi-service files; see `proto-split`).
 - Cross-service shared messages go in `proto/shared/v1/types.proto`. No service-to-service proto imports.
 
-Load `proto` and `db` for the full rulesets. `{{.CLI}} lint --conventions` enforces the structural ones (`forgeconv-one-service-per-file`, `forgeconv-list-filter-optional`, `forgeconv-internal-package-contract-names`, `forgeconv-no-handler-error-mapping`).
+Load `proto` and `db` for the full rulesets. `{{.CLI}} lint --conventions` enforces the structural ones (`forgeconv-one-service-per-file`, `forgeconv-list-filter-optional`, `forgeconv-internal-package-contract-names`, `forgeconv-no-handler-error-mapping`, `forgeconv-handler-connect-error`).
 
 ## The scaffolded frontend is starter code
 

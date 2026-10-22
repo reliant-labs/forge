@@ -88,6 +88,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the path that reached it) every 10s, and again when it finishes.
   Post-build readiness is unchanged. Existing projects: `forge generate`.
 
+- **`forgeconv-handler-connect-error`: every `connect.NewError` in a handler
+  package is a warning.** A `*connect.Error` is never redacted — svcerr's
+  interceptor passes it through as built — so `connect.NewError(code, err)`
+  publishes `err.Error()` and overrides any code `err` already carried. Each
+  finding says which kind it is: a fixed message (`forge fix connect-errors`
+  rewrites it with the same code and message), an error value (use
+  `svcerr.WrapOr`), or `nil`. Generated and test files are skipped. It warns
+  by default so no project goes red on the bump; set
+  `lint.rules: {forgeconv-handler-connect-error: error}` once migrated.
+  **Changed with it:** `forgeconv-no-handler-error-mapping` no longer skips a
+  file that imports svcerr. One `svcerr.Wrap` in a file — or a codemod adding
+  the import — used to silence every mapper beside it without fixing one; a
+  project whose mappers were hidden that way sees them as warnings now.
+
 - **The release shape records store-backed secrets (`pkg/release`, SF3).** A shape
   gains four optional fields a control plane reads to serve a store-backed
   `forge.ExternalSecret`: `store_secrets` (per cluster, namespace and store, the

@@ -513,3 +513,55 @@ func TestDaemonResume_IsOneDaemonActingAsOnePerson(t *testing.T) {
 		t.Fatal("a daemon:resume credential escaped its daemon binding")
 	}
 }
+
+// TestEnvironmentBinding pins the env-bound telemetry/database token: obs:read,
+// obs:triage and db:query may be confined to one environment, nothing else may,
+// and the binding confines reads to that environment only.
+func TestEnvironmentBinding(t *testing.T) {
+	now := time.Now()
+	env := &Resource{Kind: ResourceEnvironment, ID: "env-prod"}
+	for _, s := range []Scope{ScopeObsRead, ScopeObsTriage, ScopeDBQuery} {
+		bound := Grant{OrgID: "org", Name: "ci", Scopes: SetOf(s), Resource: env}
+		if err := bound.Validate(now); err != nil {
+			t.Errorf("%s bound to an environment was refused: %v", s, err)
+		}
+		unbound := Grant{OrgID: "org", Name: "ci", Scopes: SetOf(s)}
+		if err := unbound.Validate(now); err != nil {
+			t.Errorf("%s unbound was refused: %v", s, err)
+		}
+	}
+	// Every other scope refuses an environment binding: a deploy token bound
+	// to an env would claim a confinement deploy does not enforce.
+	for _, s := range AllScopes {
+		switch s {
+		case ScopeObsRead, ScopeObsTriage, ScopeDBQuery:
+			continue
+		}
+		g := Grant{OrgID: "org", Name: "x", Scopes: SetOf(s), ActingUserID: "user", Resource: env}
+		if err := g.Validate(now); err == nil {
+			t.Errorf("%s accepted an environment binding", s)
+		}
+	}
+	// obs:read still rides the acting user's daemon credential.
+	daemon := Grant{OrgID: "org", Name: "managed", Scopes: SetOf(ScopeDaemonConnect, ScopeObsRead), ActingUserID: "user", Resource: &Resource{Kind: ResourceDaemon, ID: "d1"}}
+	if err := daemon.Validate(now); err != nil {
+		t.Errorf("obs:read on a daemon credential was refused: %v", err)
+	}
+
+	p := &Principal{Scopes: SetOf(ScopeObsRead), Resource: env}
+	if !p.MayReadEnvironment("env-prod") || p.MayReadEnvironment("env-staging") {
+		t.Error("an environment-bound token escaped its binding")
+	}
+	for name, other := range map[string]*Principal{
+		"unbound":      {Scopes: SetOf(ScopeObsRead)},
+		"daemon-bound": {Scopes: SetOf(ScopeObsRead), Resource: &Resource{Kind: ResourceDaemon, ID: "d1"}},
+	} {
+		if !other.MayReadEnvironment("env-staging") {
+			t.Errorf("a %s token was confined to no environment", name)
+		}
+	}
+	var nilP *Principal
+	if nilP.MayReadEnvironment("env-prod") {
+		t.Error("nil principal authorized")
+	}
+}

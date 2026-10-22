@@ -2,6 +2,7 @@ package cloud
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -42,5 +43,17 @@ func TestResolveOrganization_RefusesAnAnswerWithNoOrg(t *testing.T) {
 	_, err := ResolveOrganization(context.Background(), NewClient(ep, Credential{Token: "t"}))
 	if err == nil || !strings.Contains(err.Error(), "no organization id") {
 		t.Fatalf("an empty org was accepted: %v", err)
+	}
+}
+
+func TestOrganizationReply_IsWhatResolveOrganizationReads(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(OrganizationReply("4f3c2b1a-0000-4000-8000-000000000002"))
+	}))
+	defer srv.Close()
+	ep, _ := ResolveEndpoint("prod", &Declaration{Endpoint: srv.URL})
+	org, err := ResolveOrganization(context.Background(), NewClient(ep, Credential{Token: "t"}))
+	if err != nil || org != "4f3c2b1a-0000-4000-8000-000000000002" {
+		t.Errorf("org = %q, err = %v", org, err)
 	}
 }

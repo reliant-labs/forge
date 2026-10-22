@@ -20,10 +20,15 @@ type CommitLister interface {
 	Commits(ctx context.Context, from, to string, max int) ([]release.Commit, error)
 }
 
-// Git lists commits with the git in Dir. A zero Timeout is 10 seconds.
+// gitTimeout bounds one git run, so a hung checkout cannot hang a verb.
+const gitTimeout = 10 * time.Second
+
+// NewGit lists commits with the git checkout around dir.
+func NewGit(dir string) Git { return Git{Dir: dir} }
+
+// Git lists commits with the git in Dir.
 type Git struct {
-	Dir     string
-	Timeout time.Duration
+	Dir string
 }
 
 // Commits runs `git log from..to`. A commit this checkout lacks (a shallow
@@ -41,11 +46,7 @@ func (g Git) Commits(ctx context.Context, from, to string, max int) ([]release.C
 	if max <= 0 {
 		max = release.MaxRangeCommits
 	}
-	timeout := g.Timeout
-	if timeout <= 0 {
-		timeout = 10 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
 
 	spec := to
@@ -125,11 +126,7 @@ func (g Git) ChangedPaths(ctx context.Context, from, to string, pathspec ...stri
 	if !release.ValidObjectID(from) || !release.ValidObjectID(to) {
 		return nil, fmt.Errorf("a path diff needs two full git object ids")
 	}
-	timeout := g.Timeout
-	if timeout <= 0 {
-		timeout = 10 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
 
 	args := append([]string{"diff", "--name-status", "--no-renames", from + ".." + to, "--"}, pathspec...)

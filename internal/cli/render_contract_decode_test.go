@@ -84,6 +84,21 @@ func TestRenderContract_RuntimeFacts(t *testing.T) {
 		if len(e.Infra) == 0 {
 			t.Error("host golden's HostInfra entry was not decoded into Infra")
 		}
+		// The engine-specific fields survive the decode: render.k's
+		// projection is a whitelist, so a field missing there or here never
+		// reaches the supervisor however correctly the env declares it.
+		for _, hi := range e.Infra {
+			switch hi.Engine {
+			case "nats":
+				if hi.NATSMonitorPort != 8223 {
+					t.Errorf("nats: monitor port %d, want 8223", hi.NATSMonitorPort)
+				}
+			case "temporal":
+				if len(hi.TemporalNamespaces) != 1 || hi.TemporalNamespaces[0] != "acme" {
+					t.Errorf("temporal: namespaces %v, want [acme]", hi.TemporalNamespaces)
+				}
+			}
+		}
 		for _, w := range e.WorkloadsOn(RuntimeHost) {
 			if w.Spec.Image != "" {
 				t.Errorf("%s: host workload carries spec.image %q", w.Name, w.Spec.Image)

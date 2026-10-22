@@ -2060,6 +2060,10 @@ _render_host_infra = lambda d: HostInfra -> any {
         "idp_masterkey": d.idp_masterkey
         "idp_steps_file": d.idp_steps_file
         "idp_pat_path": d.idp_pat_path
+        # engine = "nats" / "temporal" only, projected for the same reason.
+        "nats_monitor_port": d.nats_monitor_port if d.nats_monitor_port else None
+        "temporal_namespaces": d.temporal_namespaces if d.temporal_namespaces else None
+        "temporal_ui_port": d.temporal_ui_port if d.temporal_ui_port else None
     }
 }
 

@@ -112,8 +112,11 @@
         "idp_pat_path": ".forge/idp/pat.txt",
         "idp_steps_file": "idp-steps.yaml",
         "name": "postgres",
+        "nats_monitor_port": null,
         "password": "postgres",
         "port": 5433,
+        "temporal_namespaces": null,
+        "temporal_ui_port": null,
         "user": "postgres",
         "version": null
       }

@@ -929,6 +929,12 @@ type HostInfraEntity struct {
 	IDPMasterKey    string `json:"idp_masterkey,omitempty"`
 	IDPStepsFile    string `json:"idp_steps_file,omitempty"`
 	IDPPATPath      string `json:"idp_pat_path,omitempty"`
+
+	// engine = "nats" only.
+	NATSMonitorPort int `json:"nats_monitor_port,omitempty"`
+	// engine = "temporal" only.
+	TemporalNamespaces []string `json:"temporal_namespaces,omitempty"`
+	TemporalUIPort     int      `json:"temporal_ui_port,omitempty"`
 }
 
 // BuildConfigEntity is the dispatched-by-type view of a workload's build

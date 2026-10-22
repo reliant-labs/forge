@@ -177,7 +177,7 @@ default or request.
 	f.StringVar(&o.release, "release", "", "judge the promotion of this release version (default: the env's current one)")
 	f.StringVar(&o.promotion, "promotion", "", "judge this promotion id")
 	f.DurationVar(&o.window, "window", 0, "width of each window (default: the env's release_health.window, 15m; max 6h)")
-	f.StringVar(&o.since, "since", "", "local env only: when the release started, as a duration ago (20m) or an RFC 3339 time (default: the start of the last `"+Name()+" env up`)")
+	f.StringVar(&o.since, "since", "", "local env only: when the release started, as a duration ago (20m) or an RFC 3339 time (default: the start of the last env up)")
 	f.BoolVar(&o.wait, "wait", false, "poll until the after window has finished")
 	f.DurationVar(&o.timeout, "timeout", 30*time.Minute, "with --wait: give up (exit 8) after this long")
 	f.StringVar(&o.failOn, "fail-on", "", "comma-separated finding codes that fail the release (default: the env's release_health.fail_on): "+strings.Join(release.HealthFindings, ", "))

@@ -64,6 +64,9 @@ var defaultWorktreeRebuildable = []string{
 	".forge/logs", ".forge/workspace-base.tag",
 	// forge's own scratch and its generate fixed-point cache.
 	".forge/tmp", ".forge/generate-cache.json",
+	// forge's build/push state records and the temp files its atomic writes
+	// leave behind when interrupted.
+	".forge/state", ".forge/.forge-tmp-*",
 	"target", ".venv", "venv", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".gradle",
 	// Pinned tools a project installs into its checkout (bin, stamps, tmp,
 	// pre-commit's hook clones): `task tools` puts them back.

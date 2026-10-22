@@ -27,7 +27,8 @@
 //  1. The CI mapper (generator.CIWorkflows) for .github/workflows/* and
 //     dependabot.yml — THE decision about which workflows a project has.
 //     Rendered through `forge generate`'s own CI step, so a rescaffolded
-//     workflow is what generate would have written.
+//     workflow is what generate would have written — that step alone, not
+//     the whole pipeline, when CI files are all the batch needs generated.
 //  2. The rest of the `forge generate` pipeline, for scaffolds it births
 //     (the command tree, internal/app, frontend pages, config.k, ...).
 //  3. The upgrade renderer, for files `forge project upgrade` manages
@@ -104,6 +105,7 @@ Examples:
 			return withGenerateLock(root, func() error {
 				return rescaffoldPaths(cmd.OutOrStdout(), root, store.Config(), args, rescaffoldGenerate{
 					envConfig: func() error { return runGeneratePipelineFlags(root, pipelineFlags{Steps: envConfigStepPreset}) },
+					ci:        func() error { return generateCIWorkflows(root, store.Config(), nil, false) },
 					pipeline:  func() error { return runGeneratePipelineFlags(root, pipelineFlags{}) },
 				})
 			})
@@ -125,6 +127,14 @@ type rescaffoldGenerate struct {
 	// render as rescaffold asks which CI files the project has — see
 	// refuseCIPathsTheProjectLacks. nil skips it.
 	envConfig func() error
+	// ci writes the CI workflows the mapper emits for this project — the
+	// pipeline's "CI workflows" step alone. A batch whose every path that
+	// needs a generate is a CI file runs this instead of the pipeline: a
+	// workflow is rendered from the project's declarations, not from what
+	// codegen writes, so it needs no buf, no frontend toolchain and no
+	// compile (a full generate failed until `npm ci` in a TS plugin
+	// directory, for a rescaffold of ci.yml). nil falls back to pipeline.
+	ci func() error
 	// pipeline runs the `forge generate` pipeline. It is run once, after
 	// every path's birth record is dropped, and only when a path needs it.
 	pipeline func() error
@@ -188,17 +198,22 @@ func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPat
 
 	// Pass 1: the generate pipeline. It owns the CI workflows and every
 	// scaffold whose content depends on the project's current state.
-	needsPipeline := false
+	needsPipeline, onlyCI := false, true
 	for _, p := range paths {
 		if !rescaffoldRenderableByUpgrade(root, cfg, p) {
 			needsPipeline = true
-			break
+			onlyCI = onlyCI && generator.IsCIMapperPath(p)
 		}
 	}
 	// A run that reached the end with failed steps still wrote the rest,
 	// and its writes stand: finish re-creating the paths, then fail with it.
 	var stepsFailed *factory.StepsFailedError
-	if needsPipeline && gen.pipeline != nil {
+	switch {
+	case needsPipeline && onlyCI && gen.ci != nil:
+		if err := gen.ci(); err != nil {
+			return fmt.Errorf("render the CI workflows (re-scaffolding %s): %w", strings.Join(paths, ", "), err)
+		}
+	case needsPipeline && gen.pipeline != nil:
 		if err := gen.pipeline(); err != nil && !errors.As(err, &stepsFailed) {
 			return fmt.Errorf("forge generate (re-scaffolding %s): %w", strings.Join(paths, ", "), err)
 		}

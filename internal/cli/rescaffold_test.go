@@ -468,3 +468,53 @@ func TestRescaffold_EveryScaffoldedFileIsReemittable(t *testing.T) {
 		})
 	}
 }
+
+// A batch whose only generate-needing paths are CI files is rendered by the
+// CI step alone, never the whole pipeline. The pipeline runs buf, the
+// frontend TypeScript plugins and a compile — none of which a workflow is
+// rendered from — so rescaffolding .github/workflows/ci.yml failed until the
+// TS plugin directory's node_modules had been installed. A batch that also
+// names a file only the pipeline writes still runs the pipeline.
+func TestRescaffold_CIOnlyBatchRunsTheCIStepNotThePipeline(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds a full project; runs in task test")
+	}
+	root, cfg := scaffoldForRescaffold(t, nil)
+	const ci = ".github/workflows/ci.yml"
+	born := readRescaffoldFile(t, root, ci)
+	removeRescaffoldFile(t, root, ci)
+
+	ciRan, pipelineRan := false, false
+	gen := rescaffoldGenerate{
+		ci:       func() error { ciRan = true; return generateCIWorkflows(root, cfg, nil, false) },
+		pipeline: func() error { pipelineRan = true; return nil },
+	}
+	var w bytes.Buffer
+	if err := rescaffoldPaths(&w, root, cfg, []string{ci}, gen); err != nil {
+		t.Fatalf("rescaffold: %v\n%s", err, w.String())
+	}
+	if !ciRan || pipelineRan {
+		t.Fatalf("a CI-only batch ran ci=%v pipeline=%v; want the CI step alone", ciRan, pipelineRan)
+	}
+	if got := readRescaffoldFile(t, root, ci); !bytes.Equal(got, born) {
+		t.Errorf("rescaffolded %s differs from what the scaffold wrote\n--- born ---\n%s\n--- rescaffolded ---\n%s", ci, born, got)
+	}
+
+	// The P8 batch: the Taskfile (the upgrade renderer writes it, no
+	// generate at all) beside the CI file. Still the CI step alone, and
+	// both come back.
+	const taskfile = "Taskfile.yml"
+	bornTaskfile := readRescaffoldFile(t, root, taskfile)
+	removeRescaffoldFile(t, root, ci)
+	removeRescaffoldFile(t, root, taskfile)
+	ciRan, pipelineRan = false, false
+	if err := rescaffoldPaths(&w, root, cfg, []string{ci, taskfile}, gen); err != nil {
+		t.Fatalf("rescaffold: %v\n%s", err, w.String())
+	}
+	if !ciRan || pipelineRan {
+		t.Errorf("CI file + Taskfile ran ci=%v pipeline=%v; want the CI step alone", ciRan, pipelineRan)
+	}
+	if got := readRescaffoldFile(t, root, taskfile); !bytes.Equal(got, bornTaskfile) {
+		t.Errorf("rescaffolded %s differs from what the scaffold wrote", taskfile)
+	}
+}

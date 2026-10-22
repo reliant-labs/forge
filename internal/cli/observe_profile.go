@@ -108,9 +108,11 @@ func defaultProfileRunner(ctx context.Context, sql string, params map[string]str
 	if err != nil {
 		return nil, err
 	}
-	args := []string{"exec", "-T", clickstack.Service, "sh", "-c",
+	// The local stack is the dev env's unless only another env's is running
+	// from this checkout (localClickstackComposeArgs picks that one).
+	args := append(localClickstackComposeArgs(ctx, dir, "dev"), "exec", "-T", clickstack.Service, "sh", "-c",
 		`q="$1"; shift; exec clickhouse-client -u "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --query "$q" "$@"`,
-		"sh", sql}
+		"sh", sql)
 	keys := make([]string, 0, len(params))
 	for k := range params {
 		keys = append(keys, k)

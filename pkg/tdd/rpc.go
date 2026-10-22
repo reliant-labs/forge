@@ -34,8 +34,10 @@ type Case[Req, Resp any] struct {
 	// Req is the inbound *connect.Request used in the call.
 	Req *connect.Request[Req]
 
-	// WantErr, if non-zero, asserts the handler returned a connect.Error
-	// with this code. The Check function is not consulted in this case.
+	// WantErr, if non-zero, asserts the handler returned an error the
+	// client reads with this code (svcerr.Code: a *connect.Error, or a bare
+	// svcerr kind the interceptor wraps). The Check function is not
+	// consulted in this case.
 	WantErr connect.Code
 
 	// WantScaffoldStub asserts the handler is still forge's generated
@@ -169,15 +171,23 @@ func AssertScaffoldStub(t *testing.T, err error) {
 	t.Fatalf("expected the generated scaffold stub error, got %v — if you implemented this RPC, replace this row with a real Check / WantErr assertion", err)
 }
 
-// AssertConnectError asserts that err is a non-nil Connect error with the
-// given code. It is the canonical assertion helper used inside TableRPC
-// and is exported for direct use in hand-written tests.
+// AssertConnectError asserts that err is non-nil and that the client would
+// read the given code for it. It is the canonical assertion helper used
+// inside TableRPC and is exported for direct use in hand-written tests.
+//
+// "Would read" is svcerr.Code: the code svcerr.Interceptor sends for err.
+// A handler test calls the *Service method directly, with no interceptor
+// in between, so the error it sees is whatever the handler returned — and a
+// handler may return a bare svcerr kind (`return nil, svcerr.NotFound("x")`)
+// because the interceptor wraps it. connect.CodeOf read that as Unknown,
+// which made the documented handler shape untestable without a client. For
+// a *connect.Error the two agree.
 func AssertConnectError(t *testing.T, err error, want connect.Code) {
 	t.Helper()
 	if err == nil {
 		t.Fatalf("expected connect error with code %s, got nil", want)
 	}
-	if got := connect.CodeOf(err); got != want {
+	if got := svcerr.Code(err); got != want {
 		t.Fatalf("expected connect code %s, got %s (err=%v)", want, got, err)
 	}
 }

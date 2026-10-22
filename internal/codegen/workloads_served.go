@@ -22,6 +22,9 @@ type DeclaredWorkload struct {
 	Name     string
 	BuildCmd string
 	Args     []string
+	// Kind is the literal `kind = "<k>"` (WorkloadKind*), or "" when the
+	// kind is not a string literal forge can read.
+	Kind string
 	// Serves lists the components this workload's process runs besides one
 	// named for itself: the `serves` field, for a subcommand that mounts
 	// several components (control-plane's `admin-api`).
@@ -33,6 +36,8 @@ var (
 	workloadLiteral = regexp.MustCompile(`(?m)^[A-Za-z_][A-Za-z0-9_]*\s*=\s*fw\.Workload\s*\{`)
 	// workloadNameField matches a `name = "<x>"` field on a line of its own.
 	workloadNameField = regexp.MustCompile(`(?m)^\s*name\s*=\s*"([^"]+)"\s*$`)
+	// workloadKindField matches a `kind = "<k>"` field on a line of its own.
+	workloadKindField = regexp.MustCompile(`(?m)^\s*kind\s*=\s*"([^"]+)"\s*$`)
 	// goBuildCmd captures the cmd of a GoBuild literal.
 	goBuildCmd = regexp.MustCompile(`GoBuild\s*\{[^}]*\bcmd\s*=\s*"([^"]+)"`)
 	// buildRef captures a build bound to a variable: `build = _cp_build`.
@@ -69,6 +74,9 @@ func DeclaredWorkloads(src string) map[string]DeclaredWorkload {
 			Name:   m[1],
 			Args:   kclStringListField(body, "args"),
 			Serves: kclStringListField(body, "serves"),
+		}
+		if k := workloadKindField.FindStringSubmatch(body); k != nil {
+			w.Kind = k[1]
 		}
 		if b := goBuildCmd.FindStringSubmatch(body); b != nil {
 			w.BuildCmd = b[1]
@@ -144,16 +152,16 @@ func kclBlockBody(src string, open int) (string, bool) {
 //     every service, worker and operator in one process (cmd-tree-server's
 //     MountAll + AllWorkers + AllOperators). A secondary binary is its own
 //     program and is never served by it.
+//   - A workload running c's OWN subcommand of the project binary under
+//     another name (control-plane's `workspace-controller` runs `workspace`,
+//     the workspace operator's subcommand): that is c's declaration, named
+//     for the process rather than the component.
 //
 // Such a component needs no workload of its own: declaring one would deploy
 // it a second time, as its own Deployment, beside the process that already
 // serves it.
 func ServingWorkload(declared map[string]DeclaredWorkload, projectName string, c config.ComponentConfig) (string, bool) {
-	names := make([]string, 0, len(declared))
-	for name := range declared {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := sortedWorkloadNames(declared)
 	for _, name := range names {
 		if declared[name].ServesComponent(c.Name) {
 			return name, true
@@ -168,7 +176,125 @@ func ServingWorkload(declared map[string]DeclaredWorkload, projectName string, c
 			return w.Name, true
 		}
 	}
+	for _, name := range names {
+		if RunsOwnSubcommand(declared[name], projectName, c) {
+			return name, true
+		}
+	}
 	return "", false
+}
+
+// RunsOwnSubcommand reports whether w runs c's own subcommand of the
+// project binary — the one `forge scaffold` writes in c's stanza.
+func RunsOwnSubcommand(w DeclaredWorkload, projectName string, c config.ComponentConfig) bool {
+	return c.EffectiveKind() != config.ComponentKindBinary &&
+		ProjectBinaryRuns(projectName, w.BuildCmd) && len(w.Args) > 0 && w.Args[0] == componentSubcommand(c)
+}
+
+// ComposedProcesses names the declared workloads through which the project
+// runs its components of c's workload kind in processes it composes itself,
+// when that is how it runs them: control-plane's one binary mounts every
+// service into `public-api` or `admin-api` and runs every worker in
+// `workers`, so no service or worker has a workload of its own.
+//
+// A composed process is a workload of that kind running the project binary
+// through a subcommand that is neither one the cmd tree owns (`server`,
+// `db …`) nor any component's own subcommand, and that does not state its
+// components in `serves` (one that does is read by ServingWorkload, and
+// what it leaves out is left out). Its mount set lives in the
+// project's Go, so forge cannot tell which one, if any, a NEW component
+// belongs to — only that the project's convention is not one workload per
+// component. That convention is read from the other components of the kind:
+// unless most of them run without a workload of their own (their name, or
+// their own subcommand), the project declares per component, and this
+// returns nil. So does a kind that never shares a process (a job, a tool).
+//
+// `forge scaffold` declares nothing for c when this returns workloads, and
+// `forge lint` does not report c undeclared: the two read the file the same
+// way. Listing c in a composed workload's `serves` states where it runs.
+func ComposedProcesses(declared map[string]DeclaredWorkload, projectName string, components []config.ComponentConfig, c config.ComponentConfig) []string {
+	kind := WorkloadKindFor(c.EffectiveKind())
+	if c.EffectiveKind() == config.ComponentKindBinary ||
+		(kind != WorkloadKindService && kind != WorkloadKindWorker && kind != WorkloadKindOperator) {
+		return nil
+	}
+	own := map[string]bool{componentSubcommand(c): true}
+	for _, o := range components {
+		if o.EffectiveKind() != config.ComponentKindBinary {
+			own[componentSubcommand(o)] = true
+		}
+	}
+	names := sortedWorkloadNames(declared)
+	var composed []string
+	for _, name := range names {
+		w := declared[name]
+		// A workload with `serves` has stated what it runs: a component it
+		// does not list is not in it.
+		if w.Kind != kind || w.Serves != nil || !ProjectBinaryRuns(projectName, w.BuildCmd) || len(w.Args) == 0 ||
+			RunsBuiltinSubcommand(w.Args) || own[w.Args[0]] {
+			continue
+		}
+		composed = append(composed, name)
+	}
+	if len(composed) == 0 {
+		return nil
+	}
+	// The convention is what most of the kind's other components do. One
+	// worker with a process of its own beside thirty in `workers` does not
+	// make the thirty-first its own workload; one custom process beside
+	// services that each have their own does not stop the next one getting
+	// its own. With no other component to go by, declare (the default).
+	ownWorkload, shared := 0, 0
+	for _, o := range components {
+		if SameWorkload(o.Name, c.Name) || WorkloadKindFor(o.EffectiveKind()) != kind || o.EffectiveKind() == config.ComponentKindBinary {
+			continue
+		}
+		if hasOwnWorkload(declared, names, projectName, o) {
+			ownWorkload++
+		} else {
+			shared++
+		}
+	}
+	if shared <= ownWorkload {
+		return nil
+	}
+	return composed
+}
+
+// hasOwnWorkload reports whether c is declared by name or run through its
+// own subcommand.
+func hasOwnWorkload(declared map[string]DeclaredWorkload, names []string, projectName string, c config.ComponentConfig) bool {
+	for _, name := range names {
+		if SameWorkload(name, c.Name) || RunsOwnSubcommand(declared[name], projectName, c) {
+			return true
+		}
+	}
+	return false
+}
+
+// ComposedProcessHint is what `forge scaffold` prints, in place of writing,
+// when the project runs components of c's kind in processes it composes
+// (ComposedProcesses).
+func ComposedProcessHint(modulePath, projectName string, c config.ComponentConfig, composed []string) string {
+	var b strings.Builder
+	kind := WorkloadKindFor(c.EffectiveKind())
+	fmt.Fprintf(&b, "%s runs this project's %ss in processes it composes itself (%s),\n",
+		WorkloadsKCLRelPath, kind, strings.Join(composed, ", "))
+	fmt.Fprintf(&b, "   not one workload each, so no workload was declared for %s %q. Either:\n\n", kind, c.Name)
+	fmt.Fprintf(&b, "     - mount it in the subcommand that should run it, and add %q to that\n", c.Name)
+	b.WriteString("       workload's `serves` list so forge knows where it runs, or\n")
+	b.WriteString("     - give it a workload of its own: add this, and its name to ALL:\n\n")
+	b.WriteString(WorkloadStanza(modulePath, projectName, c))
+	return b.String()
+}
+
+func sortedWorkloadNames(declared map[string]DeclaredWorkload) []string {
+	names := make([]string, 0, len(declared))
+	for name := range declared {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // DeclaresServes reports whether any workload in the file declares `serves`

@@ -26,6 +26,7 @@
       }
     ],
     "env": "prod",
+    "external_secrets_operators": [],
     "frontends": [
       {
         "asset_dir": "assets",

@@ -136,9 +136,9 @@
       ]
     },
     {
-      "id": "frontend-new-issue",
-      "alert": "FrontendNewIssue",
-      "title": "A new frontend issue appeared (5 or more events, or 3 or more sessions, within 30 minutes)",
+      "id": "new-issue",
+      "alert": "NewIssue",
+      "title": "A new issue appeared",
       "severity": "warning",
       "for": "0s",
       "interval": "1m",
@@ -146,12 +146,22 @@
       "params": []
     },
     {
-      "id": "frontend-issue-regressed",
-      "alert": "FrontendIssueRegressed",
-      "title": "A resolved frontend issue came back in a later release",
+      "id": "issue-regressed",
+      "alert": "IssueRegressed",
+      "title": "A resolved issue came back in a later release",
       "severity": "warning",
       "for": "0s",
       "interval": "1m",
+      "signal": "platform",
+      "params": []
+    },
+    {
+      "id": "issue-spike",
+      "alert": "IssueSpike",
+      "title": "An issue's error rate is spiking against its previous day",
+      "severity": "warning",
+      "for": "0s",
+      "interval": "5m",
       "signal": "platform",
       "params": []
     },

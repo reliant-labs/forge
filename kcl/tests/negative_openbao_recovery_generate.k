@@ -12,5 +12,5 @@ output = forge.render(forge.Bundle {
     openbao = forge.OpenBao {
         recovery = forge.OpenBaoRecovery {escrow = forge.BootstrapSecret {name = "r", generate = forge.GeneratedSecret {}}}
     }
-    
+
 })

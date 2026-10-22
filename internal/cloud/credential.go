@@ -344,12 +344,8 @@ func loginHint(ep Endpoint) string {
 
 // CredentialsPath is where the shared credentials file lives, from
 // $FORGE_HOME, $XDG_CONFIG_HOME and the home directory. forge/pkg/credentials
-// owns the precedence; the environment is read here, at the application edge.
+// owns both the precedence and the lookup (DirsFromEnv), so forge and every
+// other CLI sharing the file resolve it the same way.
 func CredentialsPath() (string, error) {
-	home, _ := os.UserHomeDir()
-	return credentials.Dirs{
-		ForgeHome:     os.Getenv("FORGE_HOME"),
-		XDGConfigHome: os.Getenv("XDG_CONFIG_HOME"),
-		Home:          home,
-	}.Path()
+	return credentials.PathFromEnv()
 }

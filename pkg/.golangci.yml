@@ -129,6 +129,16 @@ linters:
         linters:
           - forbidigo
 
+      # credentials/env.go reads FORGE_HOME and XDG_CONFIG_HOME — where the
+      # shared credentials file lives, a contract between every CLI that
+      # shares it (forge's own variable and the OS convention), not an app's
+      # configuration. DirsFromEnv is the one spelling of that lookup, so a
+      # consumer cannot drift from `forge login`. Scoped to that one file:
+      # the rest of pkg/credentials still takes its Dirs from the caller.
+      - path: ^credentials/env\.go$
+        linters:
+          - forbidigo
+
       # The prettier guard over the component library reads CI to decide
       # whether a missing npx is a skip (laptop) or a failure (CI). It is a
       # test-harness switch: it never runs in a shipped binary and changes

@@ -80,7 +80,7 @@ func generateFrontendConfigModules(
 			return fmt.Errorf(
 				"config message %s is annotated (forge.v1.frontend_config) = {frontend: %q}, "+
 					"but forge.yaml declares no frontend named %q%s\n\n"+
-					"Either correct the annotation in proto/config/v1/config.proto, or add the "+
+					"Either correct the annotation in proto/<project>/config/v1/config.proto, or add the "+
 					"frontend with `forge scaffold frontend %s`",
 				fc.MessageName, fc.Frontend, fc.Frontend, knownFrontendsSuffix(cfg), fc.Frontend)
 		}

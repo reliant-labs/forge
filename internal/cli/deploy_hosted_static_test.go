@@ -106,6 +106,7 @@ func TestHostedStaticSiteCLIEndToEnd(t *testing.T) {
 // no backend.
 func writeHostedStaticProject(t *testing.T, endpoint string) string {
 	t.Helper()
+	memoizeKCLRenders(t) // the fixture's KCL is static; see memoizeKCLRenders
 	dir := t.TempDir()
 	files := map[string]string{
 		"forge.yaml":         "name: acme\nmodule_path: github.com/example/acme\n\n",

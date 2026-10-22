@@ -61,7 +61,7 @@ func forgeExeName() string {
 
 func runCheck(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	cmd, rest, err := root.Find(args)
 	if err != nil {
 		t.Fatalf("find %v: %v", args, err)

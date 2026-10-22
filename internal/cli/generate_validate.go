@@ -30,14 +30,14 @@ func validateGeneratedProject(projectDir string, cfg *config.ProjectConfig, serv
 	// check kept looking for the pre-rename spelling. It therefore fired on
 	// every healthy project, which is worse than not checking at all: a
 	// warning that is always present is one readers learn to skip, and it
-	// points at "your proto/config/ annotations" when nothing is wrong.
+	// points at "your proto/<project>/config/v1/ annotations" when nothing is wrong.
 	bin := bootstrapBinaryName(projectDir)
 	servePath := filepath.Join(projectDir, "cmd", bin, "cmd", "serve.go")
 	if fileImportsPackage(servePath, "pkg/config") {
 		if !fileExists(filepath.Join(projectDir, "pkg", "config", "config_gen.go")) {
 			warnings = append(warnings,
 				"cmd/"+bin+"/cmd/serve.go imports pkg/config but pkg/config/config_gen.go was not generated. "+
-					"Check your proto/config/ annotations.")
+					"Check your proto/<project>/config/v1/ annotations.")
 		}
 	}
 

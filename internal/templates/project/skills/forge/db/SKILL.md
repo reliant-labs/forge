@@ -72,7 +72,7 @@ The `--from-proto <svc>` batch form sweeps `// forge:entity`-marked messages too
 Everything a marker adds lands in the **user-owned birth migration**, never a forge-owned `_gen` file. Entity-level markers tablize the message, so a marked message needs no separate `// forge:entity` line. Run `forge project annotations --kind entity` (and `--kind field`) for the full list, placement and effect. The storage-side nuances:
 
 - **`// forge:append-only`** — a real **DB trigger** in the birth migration raises on any `UPDATE`/`DELETE`, so no bug or compromised caller can rewrite history. The CRUD quintet completes to Create/Get/List only.
-- **`// forge:secret`** — the column stays real schema truth and settable on Create/Update; only the read path (`<entity>ToProto`) drops it.
+- **`// forge:secret`** — the column stays real schema truth and settable on Create/Update; only the read path (`<entity>ToProto`) drops it. It is also the one marker Postgres enforces: `forge generate` leaves a secret column out of `db/grants/readonly_gen.sql`, and the migrator applies that file after every `db migrate up`, so the read-only `forge_ro` role (the login any outside reader of the database uses) is refused the column by the server, through any expression. The role holds column-level `SELECT` only: no write privilege, no table-level `SELECT`, so a column added later is unreadable until `forge generate` has seen whether it is secret.
 - **`// forge:read-only`** — the input-side mirror: readable but not client-writable (status, computed price, a lifecycle timestamp). The born Create omits it; the generated Update preserves it on a full replace and refuses an `update_mask` naming it (every `forge generate`; vs `forge:immutable`: `db/write-policy`). Your RPCs write it via `db.Update<Entity>Masked`; give the column a DB `DEFAULT` or the first insert lands the zero. Mark it up front: the born `new/page.tsx`, edit form and `handlers_crud_test.go` leave it out.
 - **`// forge:generated <expr>`** — births `<col> <type> NOT NULL GENERATED ALWAYS AS (<expr>) STORED`, the rest of the comment line copied verbatim (NOT NULL unless `optional`; implies `forge:read-only`). Birth tries it against the shadow database first and refuses, at the marker's file and line, an expression postgres rejects. See `db/derived-values`.
 - **`// forge:soft-delete`** — **OPT-IN**: unmarked entities get no `deleted_at` and hard-delete. Beyond the read filter, `ListAll<Entities>` returns tombstones. The `--soft-delete` flag and a message already carrying a `deleted_at` field do the same thing.
@@ -225,6 +225,8 @@ Read `db/recovery` before `forge db migrate force`: it asserts a version without
 Dev DSN convention: `postgres://postgres:postgres@localhost:5432/<project>?sslmode=disable`
 
 Deployed envs migrate themselves — load the `db/deploy-migrations` skill.
+
+To read an env's rows, `forge db query <env> "<sql>"` (read-only, no `forge:secret` columns): load `db/query`.
 
 `forge db seed apply|status|reset` materializes deterministic dev rows from the applied schema, and `db/seeds/vocab.yaml` teaches it your domain's vocabulary — load the `db/seeding` skill before seeding.
 

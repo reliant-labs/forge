@@ -16,7 +16,7 @@ import (
 // A scalar Deps field is configuration with no type to wire it by, so it can
 // only ever be resolved to a typed zero and a TODO (forge-config-deps). The
 // shape that lint asks for instead is a config block — a message of
-// annotated leaves in proto/config/v1/config.proto, composed on AppConfig —
+// annotated leaves in proto/<project>/config/v1/config.proto, composed on AppConfig —
 // taken whole as `Cfg *config.<Block>`. That field DOES have a type, and the
 // loaded Config holds exactly one value of it, so compose.go resolves it the
 // way it resolves every other dependency: by type, to `infra.Cfg.Get<Field>()`.

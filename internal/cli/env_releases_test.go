@@ -629,7 +629,7 @@ func TestParseWhen(t *testing.T) {
 }
 
 func TestEnvReleasesIsRegisteredAndCloudReleasesIsGone(t *testing.T) {
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	if c, _, err := root.Find([]string{"env", "releases", "list"}); err != nil || c.Name() != "list" {
 		t.Errorf("env releases list not registered: %v", err)
 	}

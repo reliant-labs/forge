@@ -209,7 +209,7 @@ func (c *obsCommon) open(ctx context.Context, d obsDeps, env, verb string) (obsb
 
 // obsScope builds the scope echo of a document.
 func obsScope(info obsbackend.Info, n obsbackend.Narrow) obsout.Scope {
-	return obsout.Scope{Env: info.Env, Backend: info.Backend, EnvID: info.EnvID, From: n.Range.From, To: n.Range.To, Services: n.Services}
+	return obsout.Scope{Env: info.Env, Backend: info.Backend, From: n.Range.From, To: n.Range.To, Services: n.Services}
 }
 
 // obsFail renders a verb's failure for --json (a failure document on stdout)

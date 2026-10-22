@@ -302,7 +302,7 @@ func (g *ProjectGenerator) forScaffold() projectTemplateData {
 //
 // projectDir (when non-empty) is used to read the project's go.mod `go`
 // directive so upgrade doesn't silently retarget the project to the host's
-// Go version, and to parse proto/config for the live ConfigFields set. When
+// Go version, and to parse proto/<project>/config/v1 for the live ConfigFields set. When
 // projectDir is empty or go.mod can't be parsed, we fall back to the host's
 // detected version.
 func forUpgrade(cfg *config.ProjectConfig, projectDir string) projectTemplateData {
@@ -335,7 +335,7 @@ func forUpgrade(cfg *config.ProjectConfig, projectDir string) projectTemplateDat
 		}
 	}
 
-	// Parse config fields from proto/config/ so templates can conditionally
+	// Parse config fields from proto/<project>/config/v1/ so templates can conditionally
 	// include code blocks that reference specific config fields.
 	configFields := codegen.DefaultConfigFieldNames()
 	if projectDir != "" {

@@ -222,7 +222,7 @@ func TestCIRun_IsUnderCIAndNotUnderRun(t *testing.T) {
 	// No top-level `run` may resolve: a resurrected dev-server alias would
 	// shadow nothing here, but it would reintroduce the second spelling of
 	// `env up` that V1 removed.
-	for _, c := range NewRootCmd().Commands() {
+	for _, c := range newTestRootCmd(t).Commands() {
 		if c.Name() == "run" {
 			t.Fatal("a top-level `forge run` is registered again — the local lifecycle is `forge env up <env>`")
 		}

@@ -1,6 +1,8 @@
 package templates
 
 import (
+	"github.com/reliant-labs/forge/internal/configproto"
+
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -103,7 +105,7 @@ func TestRenderAppAuthTemplate(t *testing.T) {
 // the deploy projection binds it to a secretKeyRef instead of writing an
 // HS256 signing key into a manifest as a literal.
 func TestConfigProtoTemplate_DeclaresJWTFields(t *testing.T) {
-	content, err := ProjectTemplates().Render("config.proto.tmpl", struct{ Module string }{Module: "example.com/myproject"})
+	content, err := ProjectTemplates().Render("config.proto.tmpl", configproto.For("myproject").TemplateData("example.com/myproject"))
 	if err != nil {
 		t.Fatalf("render config.proto.tmpl: %v", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/configproto"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -24,10 +25,10 @@ import (
 // type-check.
 func TestFrontendConfigTemplateMatchesDeclaredEnvVars(t *testing.T) {
 	src, err := templates.ProjectTemplates().Render("frontend_config.proto.tmpl", frontendConfigProtoData{
-		Module:      "example.com/demo",
-		Frontend:    "web",
-		MessageName: "WebConfig",
-		APIPort:     8080,
+		TemplateData: configproto.For("demo").TemplateData("example.com/demo"),
+		Frontend:     "web",
+		MessageName:  "WebConfig",
+		APIPort:      8080,
 	})
 	if err != nil {
 		t.Fatalf("render frontend_config.proto.tmpl: %v", err)
@@ -102,7 +103,7 @@ func TestFrontendConfigProtoRelPathIsAlwaysLowerSnakeCase(t *testing.T) {
 		"AdminPortal",
 		"admin_portal",
 	} {
-		got := FrontendConfigProtoRelPath(frontend)
+		got := FrontendConfigProtoRelPath(configproto.For("demo"), frontend)
 		base := filepath.Base(got)
 		if !bufFileLowerSnakeCase.MatchString(base) {
 			t.Errorf("FrontendConfigProtoRelPath(%q) = %q; base %q is not lower_snake_case.proto — "+
@@ -117,7 +118,7 @@ func TestFrontendConfigProtoRelPathIsAlwaysLowerSnakeCase(t *testing.T) {
 // generators that never see each other's output. They have to agree for a
 // hyphenated name exactly as they already do for a single-word one.
 func TestFrontendConfigNamesAgreeForHyphenatedFrontend(t *testing.T) {
-	if got, want := filepath.Base(FrontendConfigProtoRelPath("internal-console")), "internal_console_config.proto"; got != want {
+	if got, want := filepath.Base(FrontendConfigProtoRelPath(configproto.For("demo"), "internal-console")), "internal_console_config.proto"; got != want {
 		t.Errorf("proto file = %q, want %q", got, want)
 	}
 	if got, want := FrontendConfigMessageName("internal-console"), "InternalConsoleConfig"; got != want {
@@ -133,9 +134,9 @@ func TestFrontendConfigNamesAgreeForHyphenatedFrontend(t *testing.T) {
 // reconstructible from the scaffold, so overwriting is data loss.
 func TestWriteFrontendConfigProtoLeavesExistingFileAlone(t *testing.T) {
 	root := t.TempDir()
-	rel := FrontendConfigProtoRelPath("web")
+	rel := FrontendConfigProtoRelPath(configproto.For("demo"), "web")
 
-	if err := WriteFrontendConfigProto(root, "example.com/demo", "web", 8080); err != nil {
+	if err := WriteFrontendConfigProto(root, configproto.For("demo"), "example.com/demo", "web", 8080); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
 	first := readFile(t, filepath.Join(root, rel))
@@ -146,7 +147,7 @@ func TestWriteFrontendConfigProtoLeavesExistingFileAlone(t *testing.T) {
 		t.Fatalf("simulate user edit: %v", err)
 	}
 
-	if err := WriteFrontendConfigProto(root, "example.com/demo", "web", 8080); err != nil {
+	if err := WriteFrontendConfigProto(root, configproto.For("demo"), "example.com/demo", "web", 8080); err != nil {
 		t.Fatalf("second write: %v", err)
 	}
 	if got := readFile(t, filepath.Join(root, rel)); got != edited {

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/configproto"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -44,7 +45,7 @@ func writeConfigProto(t *testing.T, src string) (dir, file string) {
 // scaffoldedConfigProto is the config.proto `forge project new` writes.
 func scaffoldedConfigProto(t *testing.T) string {
 	t.Helper()
-	out, err := templates.ProjectTemplates().Render("config.proto.tmpl", struct{ Module string }{Module: "example.com/proj"})
+	out, err := templates.ProjectTemplates().Render("config.proto.tmpl", configproto.For("proj").TemplateData("example.com/proj"))
 	if err != nil {
 		t.Fatalf("render config.proto.tmpl: %v", err)
 	}
@@ -106,7 +107,7 @@ func TestEnsureConfigBlock_ComposesOnTheScaffoldedConfig(t *testing.T) {
 	if root.MaxFieldNumber != before+1 {
 		t.Errorf("AppConfig high-water mark = %d, want %d", root.MaxFieldNumber, before+1)
 	}
-	if !composes(root, "config.v1.AlpacaConfig", "alpaca") {
+	if !composes(root, "proj.config.v1.AlpacaConfig", "alpaca") {
 		t.Errorf("AppConfig does not compose AlpacaConfig as alpaca: %+v", root.Fields)
 	}
 	if block := message(t, dir, "AlpacaConfig"); len(block.Fields) != 1 || block.Fields[0].Name != "base_url" {

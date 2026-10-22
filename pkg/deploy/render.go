@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/reliant-labs/forge/pkg/dbgrants"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
@@ -251,6 +252,78 @@ func DatabaseIdentifiers(name string) (database, role string) {
 	return database, database + "_app"
 }
 
+// ReadOnlyRoleConnectionLimit caps the read-only role's concurrent sessions.
+// It bounds the load an agent's or the platform's queries can put on a primary
+// the application is serving from.
+const ReadOnlyRoleConnectionLimit int64 = 10
+
+// readOnlyRole is the CNPG managed-role entry for dbgrants.RoleName.
+//
+// WHAT THE ROLE IS NOT: a superuser, a creator of roles or databases, a
+// replication or RLS-bypassing role, or a member of any role (pg_read_all_data
+// would make the column grants moot). What it MAY read is decided by the
+// grants the migrator applies (pkg/dbgrants), not here; this entry only makes
+// it exist and log in. CNPG converges it, so nobody runs a setup step.
+//
+// The password is a Secret the EXECUTOR mints (ReadOnlyRoleSecret): a render is
+// pure, and a random password is not.
+func readOnlyRole(database string) map[string]any {
+	return map[string]any{
+		"name":            dbgrants.RoleName,
+		"ensure":          "present",
+		"comment":         "forge read-only role: column grants only, no forge:secret column, no write privilege",
+		"login":           true,
+		"superuser":       false,
+		"createdb":        false,
+		"createrole":      false,
+		"replication":     false,
+		"bypassrls":       false,
+		"inherit":         false,
+		"connectionLimit": ReadOnlyRoleConnectionLimit,
+		"passwordSecret":  map[string]any{"name": dbgrants.SecretName(database)},
+	}
+}
+
+// ReadOnlyRoleSecret renders the kubernetes.io/basic-auth Secret that carries
+// the read-only role's credentials for the ManagedDatabase called name, in
+// ctx.Namespace. CNPG reads it as the managed role's passwordSecret, and a
+// client that queries the database as the role (`forge db query`, the control
+// plane) reads the same Secret.
+//
+// THE CALLER SUPPLIES THE PASSWORD and must create the Secret only if absent:
+// rotating it on every apply would lock out a client that has the old one, and
+// a render that invented a password could not be byte-identical twice. The
+// `cnpg.io/reload` label makes CNPG apply a changed password immediately
+// rather than at its next reconcile.
+func ReadOnlyRoleSecret(name, password string, ctx Context) (*unstructured.Unstructured, error) {
+	if err := ctx.validate(); err != nil {
+		return nil, err
+	}
+	if err := v1alpha1.ValidateDatabaseName(name); err != nil {
+		return nil, err
+	}
+	if password == "" {
+		return nil, errors.New("deploy.ReadOnlyRoleSecret: a read-only role needs a password")
+	}
+	labels := map[string]any{"cnpg.io/reload": "true"}
+	for k, v := range managedLabels(name, ctx.PartOf) {
+		labels[k] = v
+	}
+	obj := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Secret",
+		"type":       "kubernetes.io/basic-auth",
+		"metadata": map[string]any{
+			"name":      dbgrants.SecretName(name),
+			"namespace": ctx.Namespace,
+			"labels":    labels,
+		},
+		"stringData": map[string]any{"username": dbgrants.RoleName, "password": password},
+	}}
+	stampEnv([]*unstructured.Unstructured{obj}, ctx.Env)
+	return obj, nil
+}
+
 // RenderManagedDatabase renders a ManagedDatabase into a CloudNativePG Cluster.
 //
 // This is control-plane's closed shape (manageddatabase.BuildClusterPlan),
@@ -319,6 +392,7 @@ func RenderManagedDatabase(name string, spec v1alpha1.ManagedDatabaseSpec, ctx C
 			"initdb": map[string]any{"database": database, "owner": role},
 		},
 		"storage": map[string]any{"size": fmt.Sprintf("%dGi", spec.StorageGiB)},
+		"managed": map[string]any{"roles": []any{readOnlyRole(name)}},
 	}
 	if p := ctx.DatabasePlacement; p != nil {
 		if len(p.NodeSelector) > 0 {

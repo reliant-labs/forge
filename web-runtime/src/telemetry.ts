@@ -71,6 +71,11 @@
 // endpoint, and it never throws.
 import { trace } from "@opentelemetry/api";
 
+import {
+  captureAttribution,
+  detectAppClient,
+  takeIdentifyProps,
+} from "./attribution.js";
 import { setExceptionReporter } from "./error-reporter.js";
 import { registerTelemetryStartup } from "./telemetry-gate.js";
 import {
@@ -149,6 +154,19 @@ export interface BrowserTelemetryConfig {
   replaySampleRate?: number;
   /** Verbose SDK diagnostics to the console. Default false. */
   debug?: boolean;
+  /**
+   * The `app.client` stamped on every event: `web`, `electron` or `landing`
+   * (any short string is accepted). Unset, it is `electron` inside Electron
+   * and `web` elsewhere.
+   */
+  appClient?: string;
+  /**
+   * localStorage key holding this browser's anonymous visitor id (stamped as
+   * `visitor.id`). Set it to adopt an id a site already keeps, e.g. a landing
+   * page's `reliant.visitor_id`. Default `forge.visitor_id`. A `rid` in the
+   * landing URL wins over it.
+   */
+  visitorIdStorageKey?: string;
 }
 
 /** The slice of the SDK this module calls. Typed here, not imported, so the module loads without it. */
@@ -204,6 +222,14 @@ async function start(
       buildSdkOptions({ ...config, replay }, ingest, window.location.origin),
     );
     tapSdkInputs();
+    // Every span carries where it came from and which visitor made it; the
+    // product-event view reads these as app.client and visitor.id.
+    hdx.setGlobalAttributes?.({
+      "app.client": detectAppClient(config.appClient),
+      "visitor.id": captureAttribution({
+        visitorIdStorageKey: config.visitorIdStorageKey,
+      }),
+    });
     setExceptionReporter((error, attributes) => {
       if (alreadyRecorded(error)) {
         return;
@@ -212,7 +238,15 @@ async function start(
     });
     setTelemetrySink({
       track: (name, attributes) => hdx.addAction?.(name, attributes),
-      setUser: (id) => hdx.setGlobalAttributes?.({ userId: id }),
+      setUser: (id) => {
+        hdx.setGlobalAttributes?.({ userId: id });
+        // The first sign-in of a user in this browser links the visitor to
+        // them: one event, never repeated for the same user.
+        const identify = takeIdentifyProps(id);
+        if (identify) {
+          hdx.addAction?.("user_identified", identify);
+        }
+      },
       disable: () => {
         // Back to "no SDK": reportException returns false, so a caller falls
         // back to console.error and the error does not vanish.

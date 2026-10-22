@@ -48,14 +48,15 @@ the lifecyclekit import from a file that no longer uses it. It is a rename
 and nothing else, so ` + "`forge project upgrade`" + ` runs it on its own when the
 project's baseline predates v0.1.46. Re-running it changes nothing.`,
 		Upgrade: true,
+		Scoped:  true,
 		Run:     runOperatorkit,
 	})
 }
 
-func runOperatorkit(dir string, write bool) (Report, error) {
+func runOperatorkit(dir string, opts Options) (Report, error) {
 	var rep Report
 	err := ownedGoFiles(dir, func(rel string, src []byte) error {
-		if !bytes.Contains(src, []byte(lifecyclekitPath)) {
+		if !opts.Scope.Contains(rel) || !bytes.Contains(src, []byte(lifecyclekitPath)) {
 			return nil
 		}
 		out, moved, err := rewriteOperatorkit(rel, src)
@@ -66,7 +67,7 @@ func runOperatorkit(dir string, write bool) (Report, error) {
 			return nil
 		}
 		rep.Rewrites = append(rep.Rewrites, fmt.Sprintf("%s: lifecyclekit.%s → operatorkit", rel, strings.Join(moved, ", lifecyclekit.")))
-		if !write {
+		if !opts.Write {
 			return nil
 		}
 		return writeFile(filepath.Join(dir, filepath.FromSlash(rel)), out)

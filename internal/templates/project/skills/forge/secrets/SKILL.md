@@ -431,3 +431,7 @@ bundle provider is the single-source model now — prefer it.
 `Bundle.openbao = forge.OpenBao {}` runs a secret store (OpenBao) the env owns,
 and a `forge.ExternalSecret` with `source = forge.StoreSource {...}` reads from
 it through the External Secrets Operator. Load `secrets/openbao`.
+
+Other clusters reach the store through `public`: `forge.OpenBaoPublic {host = ...}`
+publishes it on a Gateway with a path allowlist, re-encrypted TLS, limits and a
+trusted `X-Forwarded-For`. Load `deploy/openbao-public`.

@@ -11,6 +11,7 @@ import (
 	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/codemod"
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
@@ -154,7 +155,7 @@ func pinHopNeedsUpgrade(projectDir, from, to string) string {
 func pendingUpgradeCodemods(projectDir, from, to string) []string {
 	var out []string
 	for _, c := range upgradeCodemods(from, to) {
-		rep, err := c.Run(projectDir, false)
+		rep, err := c.Run(projectDir, codemod.Options{})
 		if err != nil || rep.Changed() {
 			out = append(out, c.Name)
 		}

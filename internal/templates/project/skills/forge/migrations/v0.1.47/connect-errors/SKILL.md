@@ -39,6 +39,25 @@ and generated proto mocks return `svcerr.Wrap(svcerr.Unimplemented(…))`.
    forge fix connect-errors
    ```
 
+   Every `file:line` in the report is the file as it is on disk when the run
+   ends — after a real run, the rewritten file's lines — so the worklist can be
+   committed straight from the run that wrote the diff.
+
+   **One lane of a shared checkout?** Bound the run to your slice, as
+   `forge lint --scope` does:
+
+   ```bash
+   forge fix connect-errors --scope internal/handlers/worktree --scope internal/handlers/project
+   ```
+
+   Only files under the paths are rewritten and reported on; the reader
+   analysis still reads the whole module, so a reader in another lane's
+   package still keeps yours wrapped (and is named). A test outside the scope
+   that the rewrite would switch to `svcerr.Code` is listed, not rewritten —
+   and when that test is the package's OWN (it calls the package directly),
+   the package stays wrapped, with that test named, until the file is in
+   scope. The clean-tree check looks only inside the scope.
+
    It **never changes a code or a message**:
 
    | Before | After |
@@ -53,12 +72,29 @@ and generated proto mocks return `svcerr.Wrap(svcerr.Unimplemented(…))`.
    A bare kind is written only in a handler package — it reaches the client
    with its code through `svcerr.Interceptor`, which forge's chain builders
    install innermost — and only where nothing reads a `*connect.Error` in
-   process (`connect.CodeOf`, `errors.As` into one, or an As-style helper such
-   as testify's `require.ErrorAs` handed a `**connect.Error`) in the package, its tests,
-   or the code of a package importing it;
-   those keep `svcerr.ToConnect(…)`, and the report names the reader. A
-   `connect.NewError` inside an interceptor stays a `*connect.Error` the same
-   way: interceptors run outside `svcerr.Interceptor`.
+   process (`connect.CodeOf`, `errors.As` into one, a type assertion, or an
+   As-style helper such as testify's `require.ErrorAs` handed a
+   `**connect.Error`) where it can see the package's errors:
+
+   | The reader is… | How the report says it reaches the package |
+   |---|---|
+   | in the package's code | `in the package` |
+   | in the package's own tests | `in its own tests, which call it directly` |
+   | in the code of a package that imports it | `internal/app imports it` |
+   | in the code of a package calling it through an interface one of its types implements, where production code hands it that type (the consumer-declared seam composition wires it into — nothing is imported; an interface only ever handed a generated client is not one) | `internal/triggertools calls it through the interface triggertools.TriggerAPI.ListTriggers at …:58, which *trigger.Service implements and internal/app/providers_worker.go:449 hands it` |
+
+   Those packages keep `svcerr.ToConnect(…)`, and the report lists **every**
+   reader keeping each one — file:line, the enclosing function, the kind of
+   read, and the reach — on every run, including a re-run with nothing left to
+   rewrite. Not readers: an import by **tests alone** (those tests are the
+   importer's; what they read is theirs), and a read of an error a **Connect
+   client returned** — a `*connect.Client` / `*ForClient` stream method or a
+   generated `<svc>connect` client, directly or through a function of the
+   module whose every error is one (or `nil`, or a fresh
+   `errors.New`/`fmt.Errorf`): that error came off the wire and stays a
+   `*connect.Error` whatever the handler returns. A reader further away is not
+   traced. A `connect.NewError` inside an interceptor stays a
+   `*connect.Error` the same way: interceptors run outside `svcerr.Interceptor`.
 
    Category D — `if err != nil { return nil, connect.NewError(CodeInternal,
    errors.New("failed to list projects")) }` — becomes
@@ -91,7 +127,8 @@ and generated proto mocks return `svcerr.Wrap(svcerr.Unimplemented(…))`.
    agrees with `connect.CodeOf` for a `*connect.Error` and reads a bare kind;
    an `errors.As` into a `*connect.Error` becomes `svcerr.Code` or an
    `svcerr.Is*` predicate), then re-run `forge fix connect-errors`: it drops the
-   `svcerr.ToConnect(…)` wrappers it left in that package.
+   `svcerr.ToConnect(…)` wrappers it left in that package once no reader is
+   left — and if one is, the re-run names it.
 
 4. **Flip the gate** once `forge lint --conventions` shows no
    `forgeconv-handler-connect-error` and no `forgeconv-no-handler-error-mapping`:

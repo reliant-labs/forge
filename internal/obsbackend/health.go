@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/internal/releasetimeline"
 	"github.com/reliant-labs/forge/pkg/releasehealth"
 )
 
@@ -73,8 +74,28 @@ type Change struct {
 type ChangesResult struct {
 	Changes []Change
 	// Omitted counts rows the Limit cut.
-	Omitted  int
-	Warnings []string
+	Omitted int
+	// Current is the promotion in force at the end of the range, whether or
+	// not it falls inside it; nil when the env has none on record.
+	Current *Change
+	// CurrentUnsettled says Current's rollout had not been reported finished:
+	// a promotion is intent, and the env may still be serving the one before.
+	CurrentUnsettled bool
+	Warnings         []string
+}
+
+// current fills res.Current from tl: the promotion live at end (now when end
+// is zero).
+func (res *ChangesResult) current(tl releasetimeline.Timeline, end time.Time) {
+	if end.IsZero() {
+		end = time.Now()
+	}
+	at := tl.At(end)
+	if at.Live == nil {
+		return
+	}
+	ch := changeOfEntry(*at.Live)
+	res.Current, res.CurrentUnsettled = &ch, at.Unsettled
 }
 
 // unimplemented reports whether err says the control plane does not serve the

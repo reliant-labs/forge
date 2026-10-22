@@ -235,10 +235,6 @@ const cloudIssueJSON = `{"id":"ISS-7f3a","platform":"ISSUE_PLATFORM_SERVER","env
 "firstVersion":"v1.3.0","lastSeenAt":"2026-10-22T11:00:00Z","lastVersion":"v1.4.0","events":"42","affected":"9","version":4,
 "regressedAt":"2026-10-22T09:00:00Z"}`
 
-func cloudFacts() obsbackend.Facts {
-	return obsbackend.Facts{Env: "prod", Declared: true, Enabled: true, HasHosted: true, ControlPlane: "https://cp"}
-}
-
 func obsRunCloud(t *testing.T, fc *fakeCloudCaller, args ...string) (string, string, error) {
 	t.Helper()
 	old := obsDepsOverride

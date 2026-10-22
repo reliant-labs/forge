@@ -26,7 +26,8 @@
       "summary": "deploy of v2 failed ImagePullBackOff",
       "version": "v2",
       "promotion_id": "p2",
-      "actor": "ci"
+      "actor": "ci",
+      "via": "ci"
     },
     {
       "kind": "promotion",
@@ -35,7 +36,8 @@
       "version": "v2",
       "promotion_id": "p2",
       "direction": "unknown",
-      "actor": "ci"
+      "actor": "ci",
+      "via": "ci"
     },
     {
       "kind": "promotion",
@@ -47,9 +49,6 @@
     }
   ],
   "truncated": false,
-  "warnings": [
-    "activity unreadable, who/via comes from the ledger only: resolve the credential's organization: unexpected call controlplane.v1.DeployService/GetTenant"
-  ],
   "suggested": [
     "forge obs check prod --promotion p2",
     "forge env releases show prod p2"

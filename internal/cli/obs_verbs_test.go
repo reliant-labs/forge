@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -80,8 +81,10 @@ func decode(t *testing.T, s string) map[string]any {
 	return m
 }
 
-// scriptedRunner answers by substring and records the statements.
+// scriptedRunner answers by substring and records the statements. It is safe
+// for concurrent use (obs status reads its sections at once).
 type scriptedRunner struct {
+	mu      sync.Mutex
 	ran     []string
 	answers []scriptedAnswer
 	err     error
@@ -93,6 +96,8 @@ type scriptedAnswer struct {
 }
 
 func (s *scriptedRunner) Run(_ context.Context, st obsquery.Stmt, _ obsbackend.Limits) (obsbackend.Result, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.ran = append(s.ran, st.SQL)
 	if s.err != nil {
 		return obsbackend.Result{}, s.err
@@ -289,7 +294,9 @@ func TestObsCloudUnreachableIsUndetermined(t *testing.T) {
 }
 
 // fakeCloudCaller answers procedures with canned JSON and records requests.
+// It is safe for concurrent use.
 type fakeCloudCaller struct {
+	mu      sync.Mutex
 	replies map[string]string
 	errs    map[string]error
 	calls   []fakeCloudCall
@@ -299,6 +306,8 @@ type fakeCloudCall struct{ procedure, body string }
 
 func (f *fakeCloudCaller) Call(_ context.Context, procedure string, req, out any) error {
 	b, _ := json.Marshal(req)
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, fakeCloudCall{procedure, string(b)})
 	if err := f.errs[procedure]; err != nil {
 		return err

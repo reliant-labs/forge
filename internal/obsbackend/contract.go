@@ -38,6 +38,33 @@ type ChangesReader interface {
 	Changes(ctx context.Context, req ChangesRequest) (ChangesResult, error)
 }
 
+// OverviewReader reads the per-service request figures of a range: the
+// first section of `forge obs status`. Both backends implement it; they
+// compile with the same pkg/obsquery overview.
+//
+//forge:contract
+type OverviewReader interface {
+	Overview(ctx context.Context, req OverviewRequest) (OverviewResult, error)
+}
+
+// AlertReader lists the env's active alerts, firing or pending. Only the
+// cloud backend implements it: locally the alert state is the `alerts`
+// workload's own (`forge obs alerts check` evaluates the rules once).
+//
+//forge:contract
+type AlertReader interface {
+	Alerts(ctx context.Context) ([]Alert, error)
+}
+
+// DeliveryReader reads whether the control plane has delivered a working
+// telemetry token into the clusters that ship the env's telemetry. Only the
+// cloud backend implements it: a local stack needs no token.
+//
+//forge:contract
+type DeliveryReader interface {
+	TelemetryDeliveries(ctx context.Context) (DeliveriesResult, error)
+}
+
 // IssueReader is what `forge obs issues|issue` read and write through. Both
 // backends implement it. The local one groups ERROR logs at query time and
 // keeps no state, so its UpdateIssueStatus is always a refusal; the cloud one

@@ -214,6 +214,7 @@ func (c Cloud) Changes(ctx context.Context, req ChangesRequest) (ChangesResult, 
 	}
 	res.Warnings = append(res.Warnings, data.Warnings...)
 	tl := releasetimeline.Assemble(data, req.Range.From, 0)
+	res.current(tl, req.Range.To)
 	for _, e := range tl.Entries {
 		if !req.Range.To.IsZero() && e.At.After(req.Range.To) {
 			continue

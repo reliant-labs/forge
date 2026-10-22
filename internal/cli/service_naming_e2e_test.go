@@ -31,7 +31,7 @@ func TestE2EEquivalentServiceNamingGeneratedLint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("equivalent proto spelling must build and lint: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "Running golangci-lint") {
+	if !strings.Contains(out, "✓ golangci-lint") {
 		t.Fatalf("Go lint did not run:\n%s", out)
 	}
 }

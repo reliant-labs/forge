@@ -51,13 +51,18 @@ const (
 	// store-backed Secret needs, so a shape carrying them is written only to
 	// one that names the feature.
 	BundleFeatureStoreSecrets = "shape-store-secrets"
+	// BundleFeatureDataAccess is Shape.DataAccess: whether the env's database
+	// may be queried (`forge db query`) openly, audited, or not at all. A
+	// control plane that predates it cannot enforce the declaration, so a shape
+	// carrying it is written only to one that names the feature.
+	BundleFeatureDataAccess = "shape-data-access"
 )
 
 // BundleDocFeatures is every optional bundle-document feature this version's
 // [DecodeBundleDoc] accepts. A control plane advertises exactly this list, so
 // what it claims to decode and what its decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -95,6 +100,9 @@ func (r *BundleReader) Limit(d BundleDoc) BundleDoc {
 func (r *BundleReader) LimitShape(s Shape) Shape {
 	if !r.Supports(BundleFeatureStoreSecrets) {
 		s.StoreSecrets, s.GeneratedSecrets, s.OpenBao, s.ExternalSecretsOperators = nil, nil, nil, nil
+	}
+	if !r.Supports(BundleFeatureDataAccess) {
+		s.DataAccess = nil
 	}
 	if r.Supports(BundleFeatureFrontendTelemetry) {
 		return s

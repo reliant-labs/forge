@@ -1886,6 +1886,12 @@ render = lambda bundle: Bundle -> any {
         # defaults.
         if bundle.delivery_policy:
             "delivery_policy": _render_delivery_policy(bundle.delivery_policy)
+        # How the env's data may be read (forge db query), resolved: the
+        # declaration, else what the lifecycle implies. Present only when it
+        # is not "audited", the default of an env with no lifecycle: absence
+        # means audited, never open, so a real env's render is unchanged.
+        if _data_access_db_query(bundle.data_access, bundle.lifecycle or "") != "audited":
+            "data_access": {"db_query": _data_access_db_query(bundle.data_access, bundle.lifecycle or "")}
         # The env's managed identity as DECLARED, with the applications and
         # consumers derived and the deliveries listed. It is release.Shape's
         # `identity` in the shape's own vocabulary.

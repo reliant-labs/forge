@@ -17,6 +17,7 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeatureObjectSummaries:   {"objects"},
 	BundleFeatureFrontendTelemetry: {"shape.frontend_telemetry", "shape.observability_policy.retention"},
 	BundleFeatureStoreSecrets:      {"shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators"},
+	BundleFeatureDataAccess:        {"shape.data_access"},
 }
 
 // snapshotKeys are not features: a snapshot bundle is its own schema, gated
@@ -104,6 +105,7 @@ func fullBundleDoc() BundleDoc {
 			GeneratedSecrets:         []ShapeGeneratedSecret{{Store: StoreHosted, Kind: "random", Names: []string{"STRIPE_KEY"}}},
 			OpenBao:                  &ShapeOpenBao{Name: "openbao", Namespace: "openbao", Cluster: "ctx", Image: "openbao:2"},
 			ExternalSecretsOperators: []ShapeExternalSecretsOperator{{Cluster: "ctx", Namespace: "external-secrets", Version: "2.13.0"}},
+			DataAccess:               &ShapeDataAccess{DBQuery: DBQueryDeny},
 		},
 		Objects:   []ObjectSummary{{Key: api.Key(), Summary: "2 replicas · containers api"}},
 		CreatedAt: time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC),
@@ -166,6 +168,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	wantShape := full.Shape
 	wantShape.FrontendTelemetry = nil
 	wantShape.StoreSecrets, wantShape.GeneratedSecrets, wantShape.OpenBao, wantShape.ExternalSecretsOperators = nil, nil, nil, nil
+	wantShape.DataAccess = nil
 	pol := *wantShape.ObservabilityPolicy
 	pol.Retention = nil
 	wantShape.ObservabilityPolicy = &pol
@@ -198,7 +201,11 @@ func TestANewReaderGetsTheFullDocument(t *testing.T) {
 		t.Errorf("a reader of frontend telemetry only: %+v", telemetry)
 	}
 	stores := (&BundleReader{Features: []string{BundleFeatureStoreSecrets}}).Limit(full)
-	if len(stores.Shape.StoreSecrets) != 1 || stores.Shape.OpenBao == nil || len(stores.Shape.ExternalSecretsOperators) != 1 || stores.Shape.FrontendTelemetry != nil {
+	if len(stores.Shape.StoreSecrets) != 1 || stores.Shape.OpenBao == nil || len(stores.Shape.ExternalSecretsOperators) != 1 || stores.Shape.FrontendTelemetry != nil || stores.Shape.DataAccess != nil {
 		t.Errorf("a reader of store secrets only: %+v", stores)
+	}
+	access := (&BundleReader{Features: []string{BundleFeatureDataAccess}}).Limit(full)
+	if access.Shape.DataAccess == nil || access.Shape.DataAccess.DBQuery != DBQueryDeny || access.Shape.StoreSecrets != nil || access.Shape.FrontendTelemetry != nil {
+		t.Errorf("a reader of data access only: %+v", access)
 	}
 }

@@ -5,6 +5,9 @@
     "config_maps": [],
     "connected_clusters": null,
     "control_plane_secrets": [],
+    "data_access": {
+      "db_query": "open"
+    },
     "databases": [],
     "env": "dev",
     "external_secrets_operators": [],

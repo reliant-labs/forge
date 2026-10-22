@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -466,6 +467,7 @@ func installCoreComponents(root, frontendDir string) error {
 		return fmt.Errorf("create components dir: %w", err)
 	}
 
+	var refused []error
 	for _, name := range coreComponents {
 		content := componentContentForDir(frontendDir, name)
 		if content == "" {
@@ -474,6 +476,10 @@ func installCoreComponents(root, frontendDir string) error {
 				return fmt.Errorf("get component %s: %w", name, err)
 			}
 			content = c
+		}
+		if existing := CaseCollision(componentsDir, name+".tsx"); existing != "" {
+			refused = append(refused, CaseCollisionError(componentsDir, name+".tsx", existing))
+			continue
 		}
 		dest := filepath.Join(componentsDir, name+".tsx")
 		if err := atomicfile.WriteFile(dest, []byte(content), 0644); err != nil {
@@ -481,23 +487,42 @@ func installCoreComponents(root, frontendDir string) error {
 		}
 		recordFrontendScaffoldBirth(root, dest, []byte(content))
 	}
-	return nil
+	return errors.Join(refused...)
 }
 
 // EnsureCoreComponents installs any missing core components into an existing
-// frontend directory. Safe to call repeatedly — only writes files that don't
-// already exist.
+// frontend directory's src/components/ui/. See EnsureCoreComponentsIn.
 func EnsureCoreComponents(frontendDir string) error {
+	return EnsureCoreComponentsIn(frontendDir, "")
+}
+
+// EnsureCoreComponentsIn installs any missing core components into
+// componentsRel (relative to frontendDir; "" = src/components/ui). Safe to
+// call repeatedly.
+//
+// Each component is scaffold-once by the birth ledger, not by presence: one
+// the user deleted stays deleted, the way every other "yours" file does.
+// Outside a forge project there is no ledger, and presence decides. A
+// component whose name collides case-insensitively with a file already in
+// the directory is refused (CaseCollision) while the rest still install;
+// the refusals come back together as one error.
+func EnsureCoreComponentsIn(frontendDir, componentsRel string) error {
 	lib := components.NewLibrary()
-	componentsDir := filepath.Join(frontendDir, "src", "components", "ui")
+	componentsDir := componentsDirFor(frontendDir, componentsRel)
 	if err := os.MkdirAll(componentsDir, 0755); err != nil {
 		return fmt.Errorf("create components dir: %w", err)
 	}
+	root := frontendProjectRoot(frontendDir)
 
+	var refused []error
 	for _, name := range coreComponents {
 		dest := filepath.Join(componentsDir, name+".tsx")
-		if _, err := os.Stat(dest); err == nil {
-			continue // already exists
+		if !componentNeedsBirth(root, dest) {
+			continue
+		}
+		if existing := CaseCollision(componentsDir, name+".tsx"); existing != "" {
+			refused = append(refused, CaseCollisionError(componentsDir, name+".tsx", existing))
+			continue
 		}
 		content := componentContentForDir(frontendDir, name)
 		if content == "" {
@@ -507,14 +532,33 @@ func EnsureCoreComponents(frontendDir string) error {
 			}
 			content = c
 		}
+		checksums.RecordPreWriteAbs(dest) // journaled: a failed run removes it
 		if err := atomicfile.WriteFile(dest, []byte(content), 0644); err != nil {
 			return fmt.Errorf("write component %s: %w", name, err)
 		}
-		if root := frontendProjectRoot(frontendDir); root != "" {
+		if root != "" {
 			recordFrontendScaffoldBirth(root, dest, []byte(content))
 		}
 	}
-	return nil
+	return errors.Join(refused...)
+}
+
+// componentNeedsBirth reports whether a core component at dest is still to
+// be scaffolded: by the ledger inside a project, by absence outside one.
+//
+// Presence is checked first and backfills nothing: a frontend scaffolded
+// before the ledger existed would otherwise gain a ledger line per installed
+// component on its next generate, for no decision anyone made.
+func componentNeedsBirth(root, dest string) bool {
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		return false // present (or unreadable): the user's bytes
+	}
+	if root != "" {
+		if rel, err := filepath.Rel(root, dest); err == nil && !strings.HasPrefix(rel, "..") {
+			return !checksums.ScaffoldRecorded(root, filepath.ToSlash(rel))
+		}
+	}
+	return true
 }
 
 // componentContentForDir returns framework-specific override content for a

@@ -397,10 +397,10 @@ func generateSteps() []GenStep {
 		// Services is empty). Codegen-disabled projects skip it: the
 		// consumers of ctx.Services are all themselves codegen-gated.
 		{Name: "parse services + module path", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasAnyEntrypoint), GateReason: "no services/workers/operators or features.codegen=false", Run: stepParseServicesAndModule, Tag: "codegen"},
-		{Name: "frontend hooks", Gate: gateFrontendHasServices, GateReason: "no services in forge.yaml or features.frontend=false", Run: stepFrontendHooks, Tag: "frontend"},
-		{Name: "ensure frontend components", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendComponents, Tag: "frontend"},
-		{Name: "frontend CRUD pages", Gate: gateFrontendHasServices, GateReason: "no services in forge.yaml or features.frontend=false", Run: stepFrontendPages, Tag: "frontend"},
-		{Name: "frontend nav + dashboard", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendNav, Tag: "frontend"},
+		{Name: "frontend hooks", Gate: gateFrontendHasServices, GateReason: "no services or no frontends, or features.frontend=false", Run: stepFrontendHooks, Tag: "frontend"},
+		{Name: "ensure frontend components", Gate: gateFrontendHasFrontends, GateReason: "no frontends (frontends/<name>/ or a KCL forge.Frontend) or features.frontend=false", Run: stepFrontendComponents, Tag: "frontend"},
+		{Name: "frontend CRUD pages", Gate: gateFrontendHasServices, GateReason: "no services or no frontends, or features.frontend=false", Run: stepFrontendPages, Tag: "frontend"},
+		{Name: "frontend nav + dashboard", Gate: gateFrontendHasFrontends, GateReason: "no frontends (frontends/<name>/ or a KCL forge.Frontend) or features.frontend=false", Run: stepFrontendNav, Tag: "frontend"},
 		{Name: "service stubs", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepServiceStubs, Tag: "codegen"},
 		{Name: "internal/db/ ORM (entity-driven)", Gate: gateORMHasServices, GateReason: "no services/workers/operators or features.orm=false", Run: stepInternalDBORM, Tag: "codegen"},
 		{Name: "CRUD handlers", Gate: gateCRUDProjection, GateReason: "no Connect services defined, features.codegen=false, or features.orm=false", Run: stepCRUDHandlers, Tag: "codegen"},
@@ -485,7 +485,7 @@ func generateSteps() []GenStep {
 		// frontend emitters) meant a first `forge generate` on a fresh
 		// project had nothing to read and silently fell back to proto
 		// defaults, which is the bug this ordering fixes.
-		{Name: "frontend typed config", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendConfig, Tag: "frontend"},
+		{Name: "frontend typed config", Gate: gateFrontendHasFrontends, GateReason: "no frontends (frontends/<name>/ or a KCL forge.Frontend) or features.frontend=false", Run: stepFrontendConfig, Tag: "frontend"},
 		// AFTER the env config modules, deliberately. Which workflows exist
 		// is read off a RENDER of every env (generate_ci_hosted.go: a hosted
 		// env gets release.yml, not deploy.yml), and an env cannot render
@@ -505,8 +505,8 @@ func generateSteps() []GenStep {
 		// api/ directory — most of them — does nothing here.
 		{Name: "CRD KCL manifests (api/ Go types)", Gate: and(gateDeployEnabled, hasGoModule), GateReason: "features.deploy=false, or " + noGoModuleReason, Run: stepCRDKCL, Tag: "deploy"},
 		{Name: "entity-aware seed data", Gate: and(feature(config.FeaturesConfig.MigrationsEnabled), hasServices), GateReason: "no services (an entity is a table a service's CRUD rpcs name) or features.migrations=false", Run: stepEntitySeeds, Tag: "migrations"},
-		{Name: "frontend mocks + transport", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendMocks, Tag: "frontend"},
-		{Name: "repoint renamed *_gen frontend imports", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendRenamedImports, Tag: "frontend"},
+		{Name: "frontend mocks + transport", Gate: gateFrontendHasFrontends, GateReason: "no frontends (frontends/<name>/ or a KCL forge.Frontend) or features.frontend=false", Run: stepFrontendMocks, Tag: "frontend"},
+		{Name: "repoint renamed *_gen frontend imports", Gate: gateFrontendHasFrontends, GateReason: "no frontends (frontends/<name>/ or a KCL forge.Frontend) or features.frontend=false", Run: stepFrontendRenamedImports, Tag: "frontend"},
 		{Name: "retire delivered agent skills", Gate: always, Run: stepRetireAgentSkills, Tag: "tools"},
 		{Name: "go mod tidy (root)", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepGoModTidyRoot, Tag: "tools", Writes: writesRootTidy},
 		{Name: "goimports on generated Go", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepGoimports, Tag: "tools"},
@@ -1838,7 +1838,12 @@ func stepFrontendHooks(ctx *pipelineContext) error {
 	if len(ctx.Services) == 0 {
 		return nil
 	}
-	return ctx.warnOrFail("frontend hooks generation", generateFrontendHooks(ctx.Cfg, ctx.Services, ctx.ProjectDir, ctx.Checksums))
+	if err := ctx.warnOrFail("frontend hooks generation", generateFrontendHooks(ctx.Cfg, ctx.Services, ctx.ProjectDir, ctx.Checksums)); err != nil {
+		return err
+	}
+	// The hooks import owned seams (@/lib/connect, @/lib/test-utils) that a
+	// frontend forge did not scaffold never had. See generate_frontend_seams.go.
+	return ctx.warnOrFail("frontend seams (adopted frontends)", ensureAdoptedFrontendSeams(ctx.Cfg, ctx.Services, ctx.ProjectDir))
 }
 
 // stepFrontendComponents — was Step 3d.

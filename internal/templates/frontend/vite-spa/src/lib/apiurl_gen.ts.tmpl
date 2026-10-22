@@ -6,8 +6,11 @@
 // regenerated on every `forge generate`. Services are discovered from the
 // proto descriptor (not a forge.yaml services block), and the port is the
 // canonical dev port the runtime server binds — so this can't drift from
-// where the backend actually listens. VITE_API_URL always wins when set
-// (see src/lib/connect.ts). Empty string means "no backend" (CLI/library
-// kind) — connect.ts falls back to this floor.
+// where the backend actually listens. It is a FLOOR: src/lib/connect.ts uses
+// the configured API URL (the runtime config, or VITE_API_URL) when there is
+// one and this otherwise, and hands the result to apiBase() — which under the
+// dev server answers with this page's own origin (`/_api`, proxied to the
+// API) instead, unless the dev server runs with FORGE_DEV_API_PROXY=off. See
+// src/lib/api-base.ts. Empty string means "no backend" (CLI/library kind).
 
 export const DEV_API_URL = "{{.APIURL}}";

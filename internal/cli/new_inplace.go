@@ -457,7 +457,7 @@ func resolvePathForCompare(p string) string {
 type existingFrontendApp struct {
 	name string // the frontend name it would take in forge.yaml
 	dir  string // slash-separated, relative to the project root
-	typ  string // forge.yaml frontends[].type: "nextjs" or "vite-spa"
+	typ  string // the inventory type: "nextjs" or "vite-spa"
 }
 
 func (a existingFrontendApp) framework() string {

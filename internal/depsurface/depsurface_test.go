@@ -206,6 +206,11 @@ func TestNarrow_WritesTheConsumerInterfaceAndRetypesTheField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// goimports-formatted with the module as the local group, as every Go
+	// file forge writes: the project's format lint rejects anything else.
+	if !strings.Contains(string(deps), "\t\"context\"\n\n\t\"example.com/fx/internal/store\"\n") {
+		t.Errorf("deps.go's imports are not goimports-grouped (stdlib, then the module):\n%s", deps)
+	}
 	for _, want := range []string{DepsFileMarker, "type Repository interface {", "Get(ctx context.Context, id string) (*store.Daemon, error)", "Put(ctx context.Context, d *store.Daemon) error"} {
 		if !strings.Contains(string(deps), want) {
 			t.Errorf("deps.go lacks %q:\n%s", want, deps)
@@ -469,5 +474,199 @@ func TestNarrow_DepsDeclaredInContractGo(t *testing.T) {
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("the narrowed module does not build: %v\n%s\ncontract.go:\n%s", err, out, got)
+	}
+}
+
+func TestIfaceName_PrefersTheTypeThenTheFieldThenBoth(t *testing.T) {
+	for _, tc := range []struct {
+		name, typ, field string
+		taken            []string
+		want             string
+		ok               bool
+	}{
+		{"the type's own name when free", "Promoter", "Promoter", nil, "Promoter", true},
+		{"the field's name when the handler's Service takes the type's", "Service", "DaemonService", []string{"Service"}, "DaemonService", true},
+		{"both joined when the field's is taken too", "Store", "Audit", []string{"Store", "Audit"}, "AuditStore", true},
+		{"nothing when all three are taken", "Store", "Audit", []string{"Store", "Audit", "AuditStore"}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			taken := map[string]bool{}
+			for _, n := range tc.taken {
+				taken[n] = true
+			}
+			got, ok := ifaceName(tc.typ, tc.field, taken)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("ifaceName(%q, %q, %v) = %q, %v; want %q, %v", tc.typ, tc.field, tc.taken, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+// writeBloatFixture writes a module whose handler calls `used` of the 16
+// methods of a foreign interface, one of them returning a third-party type, so
+// the narrowed interface needs a stdlib, a third-party and a local import.
+func writeBloatFixture(t *testing.T, used int, golangci string) string {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("loads a fixture module through go/packages (a `go list` child process, several seconds); runs in task test")
+	}
+	var methods, calls strings.Builder
+	for i := 1; i <= 16; i++ {
+		fmt.Fprintf(&methods, "\tM%02d(ctx context.Context) error\n", i)
+		if i <= used {
+			fmt.Fprintf(&calls, "\t_ = s.deps.Repo.M%02d(ctx)\n", i)
+		}
+	}
+	files := map[string]string{
+		"go.mod":                  "module example.com/fx\n\ngo 1.22\n\nrequire other.example/lib v0.0.0\n\nreplace other.example/lib => ./third_party/lib\n",
+		"third_party/lib/go.mod":  "module other.example/lib\n\ngo 1.22\n",
+		"third_party/lib/lib.go":  "package lib\n\ntype Thing struct{}\n",
+		"internal/store/store.go": "package store\n\nimport (\n\t\"context\"\n\t\"time\"\n\n\t\"other.example/lib\"\n)\n\ntype Row struct{}\n\ntype Repository interface {\n" + methods.String() + "\tWhen() time.Time\n\tThing() lib.Thing\n\tRow() Row\n}\n",
+		"internal/handlers/tools/service.go": `package tools
+
+import (
+	"context"
+	"time"
+
+	"example.com/fx/internal/store"
+	"other.example/lib"
+)
+
+type Deps struct {
+	Repo store.Repository
+}
+
+type Service struct{ deps Deps }
+
+func (s *Service) Run(ctx context.Context) (time.Time, lib.Thing, store.Row) {
+` + calls.String() + `	return s.deps.Repo.When(), s.deps.Repo.Thing(), s.deps.Repo.Row()
+}
+`,
+	}
+	if golangci != "" {
+		files[".golangci.yml"] = golangci
+	}
+	dir := t.TempDir()
+	for name, src := range files {
+		p := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func TestNarrow_ImportsAreGoimportsGrouped(t *testing.T) {
+	dir := writeBloatFixture(t, 3, "")
+	res, err := Narrow(dir, "internal/handlers/tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "import (\n\t\"context\"\n\t\"time\"\n\n\t\"other.example/lib\"\n\n\t\"example.com/fx/internal/store\"\n)"
+	for _, f := range []string{res.File, "internal/handlers/tools/service.go"} {
+		got, _ := os.ReadFile(filepath.Join(dir, f))
+		if !strings.Contains(string(got), want) {
+			t.Errorf("%s imports are not stdlib / third-party / local grouped:\n%s", f, got)
+		}
+	}
+}
+
+func TestNarrow_ImportsHonourGolangciLocalPrefixes(t *testing.T) {
+	cfg := "version: \"2\"\nformatters:\n  enable:\n    - goimports\n  settings:\n    goimports:\n      local-prefixes:\n        - other.example\n"
+	dir := writeBloatFixture(t, 3, cfg)
+	res, err := Narrow(dir, "internal/handlers/tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, res.File))
+	const want = "\t\"example.com/fx/internal/store\"\n\n\t\"other.example/lib\"\n)"
+	if !strings.Contains(string(got), want) {
+		t.Errorf("other.example is the configured local prefix and goes last:\n%s", got)
+	}
+}
+
+func TestNarrow_WarnsWhenTheNarrowedInterfaceExceedsInterfacebloat(t *testing.T) {
+	cfg := "version: \"2\"\nlinters:\n  enable:\n    - interfacebloat\n  settings:\n    interfacebloat:\n      max: 12\n"
+	// 13 calls + When + Thing + Row = 16 methods > 12.
+	dir := writeBloatFixture(t, 13, cfg)
+	res, err := Narrow(dir, "internal/handlers/tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Bloated) != 1 {
+		t.Fatalf("bloat warnings = %+v", res.Bloated)
+	}
+	b := res.Bloated[0]
+	if b.Interface != "Repository" || b.Methods != 16 || b.Limit != 12 || !strings.Contains(b.LimitSource, ".golangci.yml") || !b.Suppressed {
+		t.Errorf("warning = %+v", b)
+	}
+	if msg := b.String(); !strings.Contains(msg, "nolint:interfacebloat") || !strings.Contains(msg, "split the package") {
+		t.Errorf("message lacks the remedy: %s", msg)
+	}
+	// The project runs interfacebloat, so the type carries the reasoned
+	// directive — directly above it, where golangci-lint reads it — and the
+	// interface is NOT split into embedded roles to dodge the count.
+	deps, _ := os.ReadFile(filepath.Join(dir, res.File))
+	const directive = "//nolint:interfacebloat // forge fix narrow-deps: exactly the 16 of store.Repository's 19 methods this package calls through Deps.Repo, one dependency; shrink it by splitting the package, not the interface.\ntype Repository interface {\n\tM01("
+	if !strings.Contains(string(deps), directive) {
+		t.Errorf("deps.go lacks the reasoned directive above the unsplit type:\n%s", deps)
+	}
+
+	// Under the limit: quiet, and no directive.
+	dir = writeBloatFixture(t, 3, cfg)
+	if res, err = Narrow(dir, "internal/handlers/tools"); err != nil || len(res.Bloated) != 0 {
+		t.Fatalf("6 methods under 12: %+v, %v", res, err)
+	}
+	if deps, _ := os.ReadFile(filepath.Join(dir, res.File)); strings.Contains(string(deps), "nolint") {
+		t.Errorf("an interface under the limit carries a directive:\n%s", deps)
+	}
+}
+
+func TestNarrow_BloatLimitDefaultsToGolangcis(t *testing.T) {
+	dir := writeBloatFixture(t, 8, "") // 8 + 3 = 11 > 10
+	res, err := Narrow(dir, "internal/handlers/tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Bloated) != 1 || res.Bloated[0].Limit != 10 || !strings.Contains(res.Bloated[0].LimitSource, "default") || res.Bloated[0].Suppressed {
+		t.Fatalf("warnings = %+v", res.Bloated)
+	}
+	// No config runs interfacebloat: warned, never suppressed (an unused
+	// directive is noise nolintlint would flag).
+	if deps, _ := os.ReadFile(filepath.Join(dir, res.File)); strings.Contains(string(deps), "nolint") {
+		t.Errorf("a directive for a linter the project does not run:\n%s", deps)
+	}
+}
+
+func TestInterfaceBloatLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name, cfg  string
+		limit      int
+		enabled    bool
+		fromConfig bool
+	}{
+		{"v2 enabled", "version: \"2\"\nlinters:\n  enable: [interfacebloat]\n  settings:\n    interfacebloat:\n      max: 12\n", 12, true, true},
+		{"v2 enabled, default max", "version: \"2\"\nlinters:\n  enable: [interfacebloat]\n", 10, true, true},
+		{"v2 not enabled", "version: \"2\"\nlinters:\n  enable: [errcheck]\n  settings:\n    interfacebloat:\n      max: 12\n", 12, false, true},
+		{"v2 default all", "version: \"2\"\nlinters:\n  default: all\n  disable: [errcheck]\n", 10, true, true},
+		{"v2 default all, disabled", "version: \"2\"\nlinters:\n  default: all\n  disable: [interfacebloat]\n", 10, false, true},
+		{"v1", "linters:\n  enable: [interfacebloat]\nlinters-settings:\n  interfacebloat:\n    max: 7\n", 7, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, ".golangci.yml"), []byte(tc.cfg), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			got := readLintConfig(dir)
+			if !got.found || got.interfaceBloatMax != tc.limit || got.interfaceBloatOn != tc.enabled {
+				t.Errorf("readLintConfig = %+v, want limit %d enabled %v", got, tc.limit, tc.enabled)
+			}
+		})
+	}
+	if got := readLintConfig(t.TempDir()); got.found || got.interfaceBloatMax != 10 || !got.interfaceBloatOn {
+		t.Errorf("no config = %+v, want golangci's default 10, advisory", got)
 	}
 }

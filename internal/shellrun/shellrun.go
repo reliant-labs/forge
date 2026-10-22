@@ -114,8 +114,27 @@ func PortableCommands() map[string]CommandFunc {
 func portableGrep(_ context.Context, dir string, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var quiet, fold, fixed, recursive bool
 	var patterns []string
+	var filter treeFilter
 	i := 0
 	for ; i < len(args) && strings.HasPrefix(args[i], "-") && args[i] != "-"; i++ {
+		// GNU grep's file-selection flags, which detection scripts use to
+		// keep a recursive search to Go sources and out of gen/ and vendor/.
+		// Unsupported, they made the whole command fail (exit 2) — and a
+		// detection that fails reads as "does not apply", silently.
+		if name, value, ok := strings.Cut(args[i], "="); ok {
+			value = strings.Trim(value, `'"`)
+			switch name {
+			case "--include":
+				filter.include = append(filter.include, value)
+				continue
+			case "--exclude":
+				filter.exclude = append(filter.exclude, value)
+				continue
+			case "--exclude-dir":
+				filter.excludeDir = append(filter.excludeDir, value)
+				continue
+			}
+		}
 		switch a := args[i]; a {
 		case "--":
 			i++
@@ -200,7 +219,7 @@ done:
 				fmt.Fprintf(stderr, "grep: %s: is a directory\n", f)
 				return 2
 			}
-			grepTree(p, scan)
+			grepTree(p, filter, scan)
 			continue
 		}
 		fh, oerr := os.Open(p)

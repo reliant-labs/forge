@@ -18,7 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"github.com/reliant-labs/forge/pkg/authn"
+	"github.com/reliant-labs/forge/pkg/auth"
 	"github.com/reliant-labs/forge/pkg/orm"
 )
 
@@ -33,35 +33,45 @@ const ViaAPI = "api"
 // zero.
 const DefaultWriteTimeout = 2 * time.Second
 
-// Deps configures [Interceptor]. Every field has a working default.
-type Deps struct {
-	// Writer persists events. nil is LogWriter(Logger): events are logged,
-	// not stored.
-	Writer Writer
-	// ActorFrom resolves who is calling. nil is [DefaultActor].
-	ActorFrom func(ctx context.Context) Actor
-	// ViaFrom names the channel a request came through. nil is
-	// [DefaultVia].
-	ViaFrom func(ctx context.Context, req connect.AnyRequest) string
-	// ScopeFrom is the scope (an org, a project) of an event whose
-	// declaration names no scope path. nil is [DefaultScope].
-	ScopeFrom func(ctx context.Context) string
-	// Logger reports failed writes and malformed declarations. nil is
-	// slog.Default().
-	Logger *slog.Logger
-	// Meter counts failed writes (forge_activity_write_failures_total). nil
-	// is the global meter provider's.
-	Meter metric.Meter
-	// WriteTimeout bounds one write. Zero is DefaultWriteTimeout.
-	WriteTimeout time.Duration
+// Principal is who is calling and the scope the call acts in: the one thing
+// the interceptor cannot know, because the app's auth decides where it keeps
+// the caller. It is declared here, where it is consumed, and the app
+// implements it over its own auth context — control-plane's activitystream,
+// for one, resolves a machine credential acting for a person to that person.
+//
+// It is REQUIRED ([Interceptor] refuses a nil one). There is no default
+// because a guessed one fails silently: a project whose auth does not stash
+// forge's claims would have every event recorded as system:anonymous with an
+// empty scope, and nothing would say so. A project on forge/pkg/authn names
+// that choice explicitly with [ClaimsPrincipal](authn.ClaimsFromContext).
+type Principal interface {
+	// Actor is the caller of the call on ctx.
+	Actor(ctx context.Context) Actor
+	// Scope is the scope (an org, a project) of an event whose declaration
+	// names no scope path.
+	Scope(ctx context.Context) string
 }
 
-// DefaultActor is the caller authn stashed: a user named by email (or id).
-// With no principal — a call the auth policy let through anonymously — it is
-// the system. A project whose principals include machines (CI tokens, API
-// keys) supplies its own Deps.ActorFrom, since only it knows which they are.
-func DefaultActor(ctx context.Context) Actor {
-	c, ok := authn.ClaimsFromContext(ctx)
+// ClaimsLookup reads the authenticated caller's forge claims from a request
+// context: authn.ClaimsFromContext, or a project's own reader when its auth
+// stashes claims under a key it owns. It is the same shape as
+// middleware.ClaimsLookup and serverkit.CallerLookup.
+type ClaimsLookup = func(ctx context.Context) (*auth.Claims, bool)
+
+// ClaimsPrincipal is the [Principal] of an app whose auth puts forge claims on
+// the context. The actor is a user named by email (or id); a call with no
+// claims — one the auth policy let through anonymously — is the system
+// ("anonymous"). The scope is the claims' OrgID. A project whose principals
+// include machines (CI tokens, API keys) implements Principal itself, since
+// only it knows which callers are machines.
+func ClaimsPrincipal(lookup ClaimsLookup) Principal {
+	return claimsPrincipal{lookup: lookup}
+}
+
+type claimsPrincipal struct{ lookup ClaimsLookup }
+
+func (p claimsPrincipal) Actor(ctx context.Context) Actor {
+	c, ok := p.lookup(ctx)
 	if !ok || c == nil || c.UserID == "" {
 		return System("anonymous")
 	}
@@ -70,6 +80,35 @@ func DefaultActor(ctx context.Context) Actor {
 		name = c.UserID
 	}
 	return User(c.UserID, name)
+}
+
+func (p claimsPrincipal) Scope(ctx context.Context) string {
+	if c, ok := p.lookup(ctx); ok && c != nil {
+		return c.OrgID
+	}
+	return ""
+}
+
+// Deps configures [Interceptor]. Principal is required; every other field has
+// a working default.
+type Deps struct {
+	// Principal names each call's caller and scope. Required: see
+	// [Principal] for why there is no default.
+	Principal Principal
+	// Writer persists events. nil is LogWriter(Logger): events are logged,
+	// not stored.
+	Writer Writer
+	// ViaFrom names the channel a request came through. nil is
+	// [DefaultVia].
+	ViaFrom func(ctx context.Context, req connect.AnyRequest) string
+	// Logger reports failed writes and malformed declarations. nil is
+	// slog.Default().
+	Logger *slog.Logger
+	// Meter counts failed writes (forge_activity_write_failures_total). nil
+	// is the global meter provider's.
+	Meter metric.Meter
+	// WriteTimeout bounds one write. Zero is DefaultWriteTimeout.
+	WriteTimeout time.Duration
 }
 
 // DefaultVia is the request's Forge-Via header, lowercased and limited to a
@@ -95,17 +134,11 @@ func viaRE(v string) bool {
 	return true
 }
 
-// DefaultScope is the caller's org id, or "" when there is none.
-func DefaultScope(ctx context.Context) string {
-	if c, ok := authn.ClaimsFromContext(ctx); ok && c != nil {
-		return c.OrgID
-	}
-	return ""
-}
-
 // Interceptor returns the connect interceptor that writes each declared
 // activity event. Put it after authentication, as close to the handler as
-// the chain allows (serverkit.ChainDeps.Activity does both).
+// the chain allows (serverkit.ChainDeps.Activity does both). It fails when
+// Deps.Principal is nil: an interceptor that cannot name the caller would
+// record every event as anonymous, so it is a boot error instead.
 //
 // Per unary call it resolves the method's declaration once ([Resolve],
 // cached per procedure), runs the handler, and on success extracts the
@@ -113,21 +146,20 @@ func DefaultScope(ctx context.Context) string {
 // best-effort: a write failure is logged and counted and the RPC still
 // succeeds. A failed call writes nothing. An rpc declaring nothing, or
 // `none`, passes straight through.
-func Interceptor(deps Deps) connect.Interceptor {
+func Interceptor(deps Deps) (connect.Interceptor, error) {
+	if deps.Principal == nil {
+		return nil, errors.New("activity.Interceptor: Deps.Principal is required — it names who is calling. " +
+			"An app on forge/pkg/authn passes activity.ClaimsPrincipal(authn.ClaimsFromContext); " +
+			"an app whose auth keeps the caller its own way implements activity.Principal over it")
+	}
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
 	}
 	if deps.Writer == nil {
 		deps.Writer = LogWriter(deps.Logger)
 	}
-	if deps.ActorFrom == nil {
-		deps.ActorFrom = DefaultActor
-	}
 	if deps.ViaFrom == nil {
 		deps.ViaFrom = DefaultVia
-	}
-	if deps.ScopeFrom == nil {
-		deps.ScopeFrom = DefaultScope
 	}
 	if deps.WriteTimeout <= 0 {
 		deps.WriteTimeout = DefaultWriteTimeout
@@ -140,7 +172,7 @@ func Interceptor(deps Deps) connect.Interceptor {
 	if err != nil {
 		deps.Logger.Warn("activity: failure counter unavailable", "error", err)
 	}
-	return &interceptor{deps: deps, failures: failures}
+	return &interceptor{deps: deps, failures: failures}, nil
 }
 
 type interceptor struct {
@@ -235,9 +267,9 @@ func (i *interceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) co
 		}
 		c := &call{
 			decl:      decl,
-			actor:     i.deps.ActorFrom(ctx),
+			actor:     i.deps.Principal.Actor(ctx),
 			via:       viaFromHeader(conn.RequestHeader()),
-			scope:     i.deps.ScopeFrom(ctx),
+			scope:     i.deps.Principal.Scope(ctx),
 			procedure: conn.Spec().Procedure,
 		}
 		err := next(context.WithValue(ctx, callKey{}, c), conn)
@@ -252,9 +284,9 @@ func (i *interceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) co
 func (i *interceptor) newCall(ctx context.Context, decl *Declaration, req connect.AnyRequest) *call {
 	c := &call{
 		decl:      decl,
-		actor:     i.deps.ActorFrom(ctx),
+		actor:     i.deps.Principal.Actor(ctx),
 		via:       i.deps.ViaFrom(ctx, req),
-		scope:     i.deps.ScopeFrom(ctx),
+		scope:     i.deps.Principal.Scope(ctx),
 		procedure: req.Spec().Procedure,
 	}
 	if m, ok := req.Any().(proto.Message); ok {

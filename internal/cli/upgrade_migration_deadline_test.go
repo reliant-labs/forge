@@ -60,6 +60,10 @@ func TestDeadlineMigration_Detection(t *testing.T) {
 		// Section 2: the legacy composition.
 		"the legacy NewComponents": {filepath.Join("internal", "app", "compose.go"), "package app\n\nfunc NewComponents(infra *Infra) (*Components, error) { return nil, nil }\n", true},
 		"the legacy Infra":         {filepath.Join("internal", "app", "providers.go"), "package app\n\ntype Infra struct{}\n", true},
+		// Section 11: the activity caller is never guessed.
+		"activity.Interceptor with ActorFrom (control-plane)": {filepath.Join("cmd", "app", "cmd", "serve.go"),
+			"x := activity.Interceptor(activity.Deps{Writer: w, ActorFrom: activitystream.ActorFrom})\n", true},
+		"activity.DefaultActor": {filepath.Join("internal", "app", "activity.go"), "var a = activity.DefaultActor(ctx)\n", true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()

@@ -166,7 +166,17 @@ needs that interface's methods too: the new interface embeds it, so every call
 that passes the value on still type-checks. A field whose value also leaves as
 ` + "`any`" + `, a concrete type or a return value is left alone (what it needs is
 not all visible here), as is one it never uses (delete it) and an interface
-the package already declares (edit that one).`,
+the package already declares (edit that one).
+
+The generated code is goimports-clean for the project (stdlib, third-party,
+then the module — or the local-prefixes of its golangci config). A narrowed
+interface still wider than the project's interfacebloat limit (read from its
+golangci config; golangci's default is 10) is reported, with the remedy. When
+the project's config runs interfacebloat, the type is also written with a
+reasoned //nolint:interfacebloat rather than split into embedded roles to fit:
+the lint counts an embedded interface as one entry, so a split would pass the
+count with the dependency exactly as wide. The interface is what the package
+calls; to shrink it, split the package.`,
 		Example: "  forge fix narrow-deps internal/handlers/tools_daemon",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -197,6 +207,9 @@ the package already declares (edit that one).`,
 			target := filepath.Join(cwd, filepath.FromSlash(res.File))
 			if err := contract.GenerateWithOptions(target, contract.Options{ProjectRoot: cwd, Resolver: contract.NewResolver(target)}); err != nil {
 				return fmt.Errorf("write the mocks for %s: %w", res.File, err)
+			}
+			for _, b := range res.Bloated {
+				fmt.Fprintf(out, "  ⚠️  %s\n", b)
 			}
 			fmt.Fprintf(out, "  ✅ declared in %s, mocked in %s\n", res.File, filepath.ToSlash(filepath.Join(res.Dir, "mock_gen.go")))
 			return nil

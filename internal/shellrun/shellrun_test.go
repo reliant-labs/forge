@@ -41,6 +41,9 @@ func TestRun_CancelledContext(t *testing.T) {
 func TestPortableGrep(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: x\ndev_target: k3d\n"), 0o644)
+	os.MkdirAll(filepath.Join(dir, "app", "gen"), 0o755)
+	os.WriteFile(filepath.Join(dir, "app", "serve.go"), []byte("ic, err := activity.Interceptor(deps)\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "app", "gen", "x.go"), []byte("var only_in_gen = 1\n"), 0o644)
 	cases := map[string]bool{
 		`grep -q '^dev_target:' forge.yaml`:                      true,
 		`grep -q '^prod_target:' forge.yaml`:                     false,
@@ -49,6 +52,15 @@ func TestPortableGrep(t *testing.T) {
 		`grep -qr 'dev_target' .`:                                true,
 		`grep -qi 'DEV_TARGET' forge.yaml && test -f forge.yaml`: true,
 		`grep -q 'nope' missing.yaml`:                            false,
+		// File selection, as migration detections spell it: only Go
+		// sources, never gen/ or vendor/.
+		`grep -rqs --include='*.go' 'activity\.Interceptor\(' .`:                    true,
+		`grep -rqs --include='*.ts' 'activity\.Interceptor\(' .`:                    false,
+		`grep -rqs --include='*.go' --exclude-dir=app 'activity\.Interceptor\(' .`:  false,
+		`grep -rqs --include='*.go' --exclude-dir=gen 'activity\.Interceptor\(' .`:  true,
+		`grep -rqs --include='*.go' --exclude='serve.go' 'activity\.Interceptor' .`: false,
+		`grep -rqs --include='*.go' 'only_in_gen' .`:                                true,
+		`grep -rqs --include='*.go' --exclude-dir=gen 'only_in_gen' .`:              false,
 	}
 	for script, want := range cases {
 		got := Run(context.Background(), script, Options{Dir: dir, Commands: PortableCommands()}) == nil

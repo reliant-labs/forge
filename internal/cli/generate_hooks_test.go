@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,6 +18,7 @@ import (
 //
 //	write <file>          create <file> in the working directory
 //	require <file> write <out>  fail unless <file> exists, then create <out>
+//	on-path <dir>         fail unless <dir> is on PATH
 //	fail                  exit 3
 func TestGenerateHookHelperProcess(t *testing.T) {
 	if os.Getenv("FORGE_GENERATE_HOOK_HELPER") != "1" {
@@ -36,6 +38,11 @@ func TestGenerateHookHelperProcess(t *testing.T) {
 		case "require":
 			if _, err := os.Stat(args[1]); err != nil {
 				os.Exit(4)
+			}
+			args = args[2:]
+		case "on-path":
+			if !slices.Contains(filepath.SplitList(os.Getenv("PATH")), args[1]) {
+				os.Exit(7)
 			}
 			args = args[2:]
 		case "write":
@@ -92,6 +99,32 @@ func TestRunGenerateHooks_FailureStopsAndNamesTheHook(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(root, "after.txt")); statErr == nil {
 		t.Error("a hook after a failed one must not run")
+	}
+}
+
+// A hook sees the pinned codegen tools on its PATH (prepended), exactly as
+// forge's own buf step does: a hook that runs `buf` or a protoc plugin must not get
+// whichever version the developer's PATH has.
+func TestRunGenerateHooks_PinnedToolsOnPath(t *testing.T) {
+	t.Setenv("FORGE_GENERATE_HOOK_HELPER", "1")
+	root := t.TempDir()
+	pinned := t.TempDir()
+	key := root + "\x00" + os.Getenv("PATH")
+	pinMu.Lock()
+	pinCache[key] = &codegenTools{Dirs: []string{pinned}, paths: map[string]string{}}
+	pinMu.Unlock()
+	t.Cleanup(func() {
+		pinMu.Lock()
+		delete(pinCache, key)
+		pinMu.Unlock()
+	})
+
+	var out bytes.Buffer
+	if err := runGenerateHooks(root, []config.GenerateHook{helperHook("buf", "", "on-path", pinned, "write", "a.txt")}, &out, &out); err != nil {
+		t.Fatalf("runGenerateHooks: %v\n%s", err, out.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "a.txt")); err != nil {
+		t.Errorf("the hook did not see the pinned tool dir on its PATH: %v", err)
 	}
 }
 

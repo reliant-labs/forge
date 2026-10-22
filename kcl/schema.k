@@ -4474,6 +4474,13 @@ schema ESOAdmission:
                         Retain, a target name other than its own, or a refresh
                         faster than 5m.
 
+    DEFAULTS. `servers`, `jwt_mounts`, `audiences` and `gcp_projects` left
+    empty are derived from the render (an empty list is not a wildcard, so the
+    policies would otherwise refuse the Bundle's own stores): the SecretStores
+    this Bundle renders on the operator's cluster, and the OpenBao component's
+    own server, mount and audience when it runs there. A list you set wins,
+    for that list only.
+
     `scrape_namespaces` may reach the operator's metrics port; `egress_cidrs`
     bounds where the operator may dial on 443 and 6443 (the API server and
     the store). Narrow it to your API server and store addresses when they are

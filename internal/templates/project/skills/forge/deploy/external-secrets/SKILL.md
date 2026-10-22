@@ -108,9 +108,17 @@ never wedges a deletion.
 `TestESOAdmissionPolicies` runs all three against a real kube-apiserver with the
 embedded CRDs (`KUBEBUILDER_ASSETS`, see `setup-envtest`); it skips without them.
 
-An empty list is not a wildcard: with `servers = []` no Vault store is admitted.
-The lists are what the SecretStore component (SF5) and the OpenBao component
-(SF6) fill in; until then declare them by hand.
+An empty list is not a wildcard: policies built from `servers = []` would admit
+no Vault store. So `servers`, `jwt_mounts`, `audiences` and `gcp_projects` that
+you leave empty are DERIVED from the same render: each SecretStore the Bundle
+emits on that cluster (its URL, its `jwt-<cluster id>` mount, its one audience,
+a `gcpsm` store's project), plus the in-cluster `forge.OpenBao`'s own server,
+mount and audience when it runs there, admitted even before any ExternalSecret
+reads from it. A list you set replaces the derived one for that list only (the
+others stay derived). A SecretStore this Bundle does not render, for example one
+a project applies by hand, is not derived: name its server in `admission.*`.
+`TestESODerivedAdmissionAdmitsTheBundlesOwnObjects` applies a Bundle's own
+objects to a real kube-apiserver with no hand-filled `admission`.
 
 ## Residual risk
 

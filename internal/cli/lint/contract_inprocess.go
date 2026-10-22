@@ -177,6 +177,21 @@ func runContractAnalysisInProcess(ctx context.Context, paths, excludes []string,
 	return out, nil
 }
 
+// analysisEnv is the loader's environment: base, plus GOWORK=off and
+// -mod=mod outside a go.work workspace, with -trimpath merged into GOFLAGS.
+// An environment GOFLAGS replaces the go env file's, so setting -mod=mod alone
+// dropped the -trimpath a workspace sets there, and every `forge lint` loaded
+// the project into build-cache entries keyed on its worktree's absolute path.
+func analysisEnv(base []string, inWorkspace bool) []string {
+	env := append([]string(nil), base...)
+	if !inWorkspace {
+		env = appendEnvIfUnset(env, "GOWORK", "off")
+		env = appendEnvIfUnset(env, "GOFLAGS", "-mod=mod")
+	}
+	env = ensureEnvDefault(env, "GOPROXY", "https://proxy.golang.org,direct")
+	return goexec.WithTrimpath(env)
+}
+
 // loadPackagesForAnalysis loads paths, test variants included, with the full
 // syntax and type information go/analysis's checker needs. Shared by the
 // in-process analyzer lanes (contract, slow-tests). A package that fails to
@@ -186,12 +201,7 @@ func loadPackagesForAnalysis(ctx context.Context, paths []string) ([]*packages.P
 	// go.work workspace, pin GOWORK=off and -mod=mod so the loader can
 	// fetch missing modules; inside one (forge itself), honour the
 	// workspace so the local pkg/ checkout resolves.
-	env := os.Environ()
-	if !hasWorkspaceGoMod() {
-		env = appendEnvIfUnset(env, "GOWORK", "off")
-		env = appendEnvIfUnset(env, "GOFLAGS", "-mod=mod")
-	}
-	env = ensureEnvDefault(env, "GOPROXY", "https://proxy.golang.org,direct")
+	env := analysisEnv(os.Environ(), hasWorkspaceGoMod())
 
 	cfg := &packages.Config{
 		Context: ctx,

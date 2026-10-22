@@ -226,6 +226,7 @@ func newStorageCmd() *cobra.Command {
 	group.AddCommand(nodes)
 	group.AddCommand(newStorageWorktreesCmd())
 	group.AddCommand(newStorageAutoGCCmd(&path))
+	group.AddCommand(newStorageGoCacheCmd(&path))
 	return cmdutil.StrictGroup(group)
 }
 

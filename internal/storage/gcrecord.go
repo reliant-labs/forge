@@ -52,6 +52,9 @@ type GCResult struct {
 	// safely could — but a budget that is not being held, so it is reported
 	// on every pass until the fill slows.
 	OverBudget []string `json:"over_budget,omitempty"`
+	// GoCaches is what each Go-format cache trim in the pass measured and
+	// did (Runner.OnGoCacheTrim). Set by the caller that ran the pass.
+	GoCaches []GoCacheTrim `json:"go_caches,omitempty"`
 }
 
 // CutOffError marks a layer that stopped at its deadline having made whatever
@@ -243,6 +246,24 @@ func LastFullGC(policyPath string) (GCResult, bool) {
 // LastAutoGC reads the opportunistic pass's attempt record.
 func LastAutoGC(policyPath string) (GCResult, bool) {
 	return readRecord(AutoGCRecordPath(policyPath))
+}
+
+// GoCacheGCRecordPath is the Go-cache pass's record (`forge storage gocache
+// --apply`): its outcome and each cache's GoCacheTrim. It is that pass's own
+// record, apart from the opportunistic one, so a scheduler running both on
+// different cadences can rate-limit each by its own last run.
+func GoCacheGCRecordPath(policyPath string) string {
+	return filepath.Join(filepath.Dir(policyPath), "last-gocache-gc.json")
+}
+
+// RecordGoCacheGC records an applied Go-cache pass.
+func RecordGoCacheGC(policyPath string, r GCResult) error {
+	return writeRecord(policyPath, GoCacheGCRecordPath(policyPath), r)
+}
+
+// LastGoCacheGC reads the Go-cache pass's record.
+func LastGoCacheGC(policyPath string) (GCResult, bool) {
+	return readRecord(GoCacheGCRecordPath(policyPath))
 }
 
 // FullGCStaleAfter is when a successful full pass stops being evidence that

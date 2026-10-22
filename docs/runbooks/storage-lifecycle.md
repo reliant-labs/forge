@@ -59,6 +59,19 @@ minute budget so a first trim of a very large cache can make progress; a pass
 cut off by the deadline stops cleanly and resumes next time. Dry-run
 (`forge storage gc`) prints each candidate and its bytes.
 
+`forge storage gocache --apply` is the Go-cache layer alone, with the whole of
+its budget (`--budget`, default 10m) instead of the slice of a larger pass.
+Schedule it every few minutes on a machine that builds a lot: under agent load
+entries cross the 2h floor at ~25 GiB/h, so between two hourly passes that much
+removable cache sits on the disk (the Reliant daemon runs it every 10 minutes
+on cloud machines). It takes the maintenance lock like every other pass and
+records `last-gocache-gc.json`. Every pass's record carries `go_caches`: each
+cache's estimated size, budget, the bytes inside the floor, the cutoff, what was
+removed, and how many shards the walk covered. A Go-cache step stopped by its
+deadline is recorded under `cut_off_layers`; until 2026-10-22 it was dropped,
+so a trim that ran out of time under load recorded a clean pass while ~46 GiB of
+entries past the floor stayed on disk.
+
 The 2h floor also bounds every budget: what was written in the last two hours
 stays, however often or uncapped the pass runs. A cache that takes in more than
 its budget in that window cannot be trimmed to it. The pass then removes

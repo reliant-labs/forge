@@ -218,6 +218,25 @@ func sorted(xs []string) []string {
 	return out
 }
 
+// GoCacheGC runs only the Go-toolchain caches (GoCaches), with the whole of
+// ctx's budget rather than the slice a full pass gives them.
+//
+// It exists because the shared build cache fills on a different clock from
+// everything else: under agent load ~25 GiB an hour crosses the trim's 2h
+// safety floor, so a trim that runs hourly — or one whose share of a larger
+// pass runs out under load — leaves tens of GiB that could already go on the
+// disk. This pass is cheap enough (one walk of the cache, paced unlinks, no
+// Docker, no registry) to run every few minutes, and it is non-disruptive for
+// the same reason the Go-cache layer of NonDisruptiveGC is.
+func (r Runner) GoCacheGC(ctx context.Context, apply bool) error {
+	if err := r.Policy.Validate(); err != nil {
+		return err
+	}
+	r = r.beginPass(ctx)
+	defer r.endPass()
+	return r.GoCaches(apply)
+}
+
 // NonDisruptiveGC runs only the layers that cannot interrupt anything a
 // developer is currently using: expiring rotated logs, trimming the Go caches,
 // removing dangling images, evicting unused builder cache, the temp sweep and

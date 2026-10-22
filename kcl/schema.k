@@ -3841,17 +3841,25 @@ schema HostedStore:
 
         source = forge.StoreSource {store = forge.HostedStore {}, ...}
 
-    WHERE THE STORE IS REACHED is derived: on the cluster that runs the store
-    it is the in-cluster Service and its internal CA; everywhere else it is
-    the store's public endpoint, which `forge cluster connect` records. `server`
-    and `ca_configmap` override the derivation, for a store behind a proxy of
-    your own."""
+    WHERE THE STORE IS REACHED defaults to Reliant's public secrets endpoint
+    (lib/external_secret.k HOSTED_SECRETS_ENDPOINT). `server` and
+    `ca_configmap` override it, for the cluster that runs the store (its
+    in-cluster Service and internal CA) or a store behind a proxy of your own.
+
+    `org` and `env_id` are the ids the control plane assigned this env's
+    organization and environment. They address its values
+    (`tenants/<org>/<env_id>/<NAME>`) and name the JWT role each namespace logs
+    in with, so a hosted SecretStore cannot be rendered without them. They are
+    not secret. Bind `-D secret_org=... -D secret_env_id=...` instead to keep
+    them out of the KCL."""
     type: "hosted" = "hosted"
-    # The store's base URL. "" = derived.
+    # The store's base URL. "" = Reliant's public secrets endpoint.
     server: str = ""
-    # The ConfigMap holding the CA that signed the store's certificate.
-    # "" = derived.
+    # The ConfigMap holding the CA that signed the store's certificate, in
+    # every namespace that holds a SecretStore. "" = the system roots.
     ca_configmap: str = ""
+    org: str = ""
+    env_id: str = ""
 
     check:
         not server or server.startswith("https://"), \
@@ -3975,6 +3983,9 @@ schema StoreSource:
                       other tooling still writes).
       * `shadow`    — sync to `<name>-eso-shadow` instead, so a value can be
                       compared with the live Secret before it is adopted.
+      * `cluster`   — the kubectl context the Secret lands on. Unset = the
+                      Bundle's primary cluster. Placement is declared, never
+                      inferred, so an env with several clusters names it.
 
     The set of Secret keys produced (`data` + `templates`) must equal the
     ExternalSecret's `keys`: a key nothing produces is a pod that cannot
@@ -3988,6 +3999,7 @@ schema StoreSource:
     refresh: str = "1h"
     creation_policy: "Orphan" | "Merge" = "Orphan"
     shadow: bool = False
+    cluster?: str
 
     check:
         len(data) + len(templates) > 0, \

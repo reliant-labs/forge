@@ -89,6 +89,7 @@ import .lib.crd as crd_lib
 import .lib.build as build_lib
 import .lib.flux as flux_lib
 import .lib.eso as eso_lib
+import .lib.external_secret as es_lib
 
 # Bare aliases for schema instantiation inside lambda bodies (KCL v0.11).
 _TWorkload = tiers.Workload
@@ -1792,7 +1793,8 @@ _manifests = lambda b: Bundle, entities: [any] -> [any] {
         + _obs_agent_records(b, _project) \
         + [_render_managed_database_record(db, _project) for db in _dbs if db.runtime == "cluster"] \
         + [_place_on_primary(item, _pt) for item in _ingress(b, _ns)] \
-        + [item for g in b.manifests for item in _raw_manifests(g, _pt, _project)],
+        + [item for g in b.manifests for item in _raw_manifests(g, _pt, _project)] \
+        + es_lib.manifests(b, _pt),
         b.env,
     )
 }

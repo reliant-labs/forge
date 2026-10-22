@@ -465,7 +465,12 @@ func LoadInto(cmd *cobra.Command, msg proto.Message, opts ...LoadOption) error {
 	// credentials) are part of loading, not a second step a caller may skip:
 	// a config whose annotations reject its resolved values never reaches the
 	// process. Validate stays exported for a message built by hand.
-	return validateMessageReport(m, o.report)
+	if err := validateMessageReport(m, o.report); err != nil {
+		return err
+	}
+	// Then the buf.validate rules the config proto declares (rules.go): a
+	// port's range, a positive duration, a cross-field CEL rule.
+	return validateRules(msg, o.report)
 }
 
 // report hands a load's problem on: with collect set (Root.Validate), it is

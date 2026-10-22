@@ -47,6 +47,10 @@ deployed and `forge scaffold` does not declare a second workload for one:
 
     serves = ["billing-admin", "user-admin"]
 
+When most components of a kind run in such processes and none states
+`serves`, `forge scaffold` declares no workload for a new one either; it
+prints the choice instead.
+
   kind = "service"   Deployment + Service (named ports)
   kind = "worker"    Deployment, no Service (nothing dials it)
   kind = "cron"      CronJob on `schedule` (a process that runs to completion)

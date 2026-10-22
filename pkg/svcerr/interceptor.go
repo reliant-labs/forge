@@ -17,6 +17,31 @@ import (
 // `svcerr.Wrap` in a handler stays correct. An error nothing recognises
 // becomes CodeInternal with [InternalMessage], never its raw text.
 //
+// # What it redacts, and what it does not
+//
+// Redaction applies to what svcerr classifies: an unrecognised error, and
+// any text wrapped around a kind or hidden behind [WithCause]. A
+// *connect.Error is not redacted — it passes through with its code and
+// message exactly as built. That is deliberate, not an oversight:
+//
+//   - A *connect.Error is the handler's explicit verdict, and connect-go
+//     publishes its Message() with or without this interceptor. Rewriting it
+//     here would mean guessing, from the error's type, which text someone
+//     meant a client to read: `connect.NewError(code, fmt.Errorf("push
+//     rejected: %w", err))` carries a driver's DSN in one handler and the
+//     user's own git rejection — the actionable part of the toast — in
+//     another, and they are the same Go type.
+//   - Changing it here would change what every project's clients read the
+//     moment it bumped forge, with no diff in the project to review.
+//
+// So `connect.NewError(code, err)` publishes err.Error() — the leak class
+// svcerr exists to close — and the fix is at the call site: return a kind
+// (`svcerr.WrapOr(err, svcerr.Internal("push failed"))`), with any text a
+// client should read in the constructor's argument
+// (`svcerr.FailedPrecondition(daemonMsg)`). forgeconv-handler-connect-error
+// lists every connect.NewError in a handler package, and `forge fix
+// connect-errors` rewrites the ones with fixed text.
+//
 // Forge's chain builders (observe.Chain, observe.DefaultMiddlewares and
 // serverkit.NewChain) install it innermost, next to the handler, so every
 // interceptor outside it — audit, logging, metrics — sees the wire error

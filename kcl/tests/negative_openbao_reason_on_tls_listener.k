@@ -12,5 +12,5 @@ output = forge.render(forge.Bundle {
     openbao = forge.OpenBao {
         listeners = [forge.OpenBaoListener {transitional_reason = "x"}]
     }
-    
+
 })

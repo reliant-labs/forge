@@ -86,7 +86,7 @@ These are the packages people re-implement. The list is judgment, not inventory 
 
 | Instead of writing… | Adopt |
 |---|---|
-| a parallel set of error sentinels, or a hand-rolled `error → connect.Code` switch | `forge/pkg/svcerr`. The single biggest "I almost ported it before realizing it existed" trap from the migration. Handlers call `svcerr.Wrap(err)`; service code returns the sentinels. |
+| a parallel set of error sentinels, or a hand-rolled `error → connect.Code` switch | `forge/pkg/svcerr`. The single biggest "I almost ported it before realizing it existed" trap from the migration. Handlers call `svcerr.Wrap(err)`; service code returns the sentinels. A collaborator's error that may or may not be classified is `svcerr.WrapOr(err, svcerr.Internal("<what failed>"))` — never a hand-written `if svcerr.IsClassified(err) {…}` pair. |
 | per-RPC table-test boilerplate | `forge/pkg/tdd` (`RunRPCCases`), plus the generated `mock_gen.go` you configure by field. |
 | a bootstrap harness for integration tests | `forge/pkg/testkit` — discard logger, real postgres via `forge/pkg/pgtest`, httptest harness, claims-bearing `AuthedContext`. Extend it; don't roll your own. |
 | your own JWT / JWKS / HMAC validator | `forge/pkg/auth` for the validators, `forge/pkg/authn` for the interceptor mechanism. Tune the policy hooks in your owned `pkg/middleware/middleware.go`. |

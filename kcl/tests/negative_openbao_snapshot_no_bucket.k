@@ -12,5 +12,5 @@ output = forge.render(forge.Bundle {
     openbao = forge.OpenBao {
         storage = forge.OpenBaoRaft {snapshot = forge.OpenBaoSnapshot {bucket = ""}}
     }
-    
+
 })

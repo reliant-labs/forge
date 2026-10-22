@@ -446,10 +446,13 @@ func buildReturnType(m Method, r *mockTypeResolver) string {
 }
 
 func buildReturnStub(m Method) string {
-	// Go convention: error strings should not start with a capital letter and
-	// should not end with punctuation. RPC method names are pascal-cased, so
-	// we format them as a value rather than using them as the first word.
-	errExpr := fmt.Sprintf("connect.NewError(connect.CodeUnimplemented, fmt.Errorf(\"handler for %%s not yet implemented\", %q))", m.Name)
+	// An unprogrammed mock rpc is Unimplemented — a svcerr kind, wrapped so
+	// the value is a *connect.Error too: a test reading it with svcerr.Code,
+	// connect.CodeOf or errors.Is(err, svcerr.ErrUnimplemented) all agree.
+	// Not svcerr.ScaffoldStub: that marks forge's own unwritten handler, and
+	// an unprogrammed mock is not one. The message is unchanged from the
+	// connect.NewError spelling this replaced.
+	errExpr := fmt.Sprintf("svcerr.Wrap(svcerr.Unimplemented(%q))", "handler for "+m.Name+" not yet implemented")
 	switch {
 	case m.ClientStreaming && m.ServerStreaming, m.ServerStreaming:
 		return errExpr

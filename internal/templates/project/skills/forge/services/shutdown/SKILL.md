@@ -73,6 +73,50 @@ reopen the stream (from its resume cursor) when it ends with the trailer. Use
 `RedialOnDrain` for peers that already redial on Unavailable, such as a daemon
 on a bidi stream. A handler's own error is never rewritten.
 
+#### A handler parked in `Receive`
+
+A server-side `stream.Receive()` reads the request body, and **no context wakes
+it** — not the drain's cancel, not the handler's own. Only the client sending,
+the client leaving, or the body being closed does, and Connect closes the body
+only after the handler returns. So the listener (`Streams.Install`, inside
+every `NewHTTPServer`/`NewListener`) serves each request with a body that can
+be ended early, and a stream the drain ends has **both** its context cancelled
+and its `Receive` aborted: a bidi handler blocked in `Receive` returns (the
+error wraps `svcerr.ErrServerDraining`, so the client still gets the contract
+above) instead of pinning the shutdown to the end of the budget.
+
+A handler that reads on a goroutine of its own must stop that goroutine before
+it returns — Connect forbids using a stream after its handler has returned, and
+a straggling `Receive` races otelconnect's span bookkeeping. Cancelling a
+context will not stop it; `serverkit.AbortReceive(ctx)` does:
+
+```go
+func (s *Service) Connect(ctx context.Context, stream *connect.BidiStream[In, Out]) error {
+    if !serverkit.CanAbortReceive(ctx) { // served outside serverkit.NewHTTPServer
+        return connect.NewError(connect.CodeInternal, errors.New("stream handler is misconfigured"))
+    }
+    readerDone := make(chan struct{})
+    defer func() { serverkit.AbortReceive(ctx); <-readerDone }() // join before returning
+    go func() {
+        defer close(readerDone)
+        for {
+            msg, err := stream.Receive() // returns serverkit.ErrReceiveAborted once aborted
+            if err != nil {
+                return
+            }
+            handle(msg)
+        }
+    }()
+    // ... send until done
+}
+```
+
+The response is untouched: the handler still sends and returns its status.
+Unary routes are unaffected — Connect has read their body before the handler
+runs, and the drain aborts only the streams it ends. A test that mounts a
+handler on a bare `httptest` server gets the same body by wrapping it with
+`serverkit.NewStreams().Install(h)`.
+
 A drain is never an incident in the logs: `svcerr.ErrServerDraining` (and
 `svcerr.Draining("your words")`, for a transport that tells its peers itself)
 is classified `error_class=canceled` and is an expected outcome in every

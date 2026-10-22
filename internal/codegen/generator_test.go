@@ -288,6 +288,53 @@ func TestGenerateMock_CrossPackageMessageImports(t *testing.T) {
 	}
 }
 
+// TestGenerateMock_UnprogrammedRPCReturnsSvcerr pins the unprogrammed-rpc
+// error: svcerr.Unimplemented, wrapped so it is a *connect.Error as well, and
+// never a hand-built connect.NewError — which forgeconv-handler-connect-error
+// flags, and which a project with hundreds of mocks would otherwise carry as
+// that many generated findings. The message is the one the connect.NewError
+// spelling produced, so a test pinning it keeps passing.
+func TestGenerateMock_UnprogrammedRPCReturnsSvcerr(t *testing.T) {
+	mockDir := filepath.Join(t.TempDir(), "mocks")
+	svc := ServiceDef{
+		Name:       "OrdersService",
+		Package:    "orders.v1",
+		GoPackage:  "github.com/test/proj/gen/proto/services/orders/v1",
+		PkgName:    "ordersv1",
+		ProtoFile:  "proto/services/orders/v1/orders.proto",
+		ModulePath: "github.com/test/proj",
+		Methods: []Method{
+			{Name: "CreateOrder", InputType: "CreateOrderRequest", OutputType: "CreateOrderResponse"},
+			{Name: "TailOrders", InputType: "TailOrdersRequest", OutputType: "TailOrdersResponse", ServerStreaming: true},
+		},
+	}
+	if _, err := GenerateMock(svc, "", mockDir, nil); err != nil {
+		t.Fatalf("GenerateMock() error = %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(mockDir, "orders_mock_gen.go"))
+	if err != nil {
+		t.Fatalf("read mock: %v", err)
+	}
+	got := string(b)
+	for _, want := range []string{
+		`"github.com/reliant-labs/forge/pkg/svcerr"`,
+		`return nil, svcerr.Wrap(svcerr.Unimplemented("handler for CreateOrder not yet implemented"))`,
+		`return svcerr.Wrap(svcerr.Unimplemented("handler for TailOrders not yet implemented"))`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("mock missing %s:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"connect.NewError", `"fmt"`} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("mock must not contain %s:\n%s", unwanted, got)
+		}
+	}
+	if _, err := format.Source(b); err != nil {
+		t.Errorf("generated mock is not valid Go: %v\n%s", err, got)
+	}
+}
+
 // TestInspectComponentDepsShape_DomainLocalConfig asserts that a
 // package whose Deps.Config field is typed as a package-local Config
 // (e.g. `enforcement.Config`) does NOT get HasConfig=true, because the

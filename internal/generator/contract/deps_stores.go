@@ -187,6 +187,10 @@ type importAliases struct {
 	// packages during this render, and wins over the resolver.
 	resolver *Resolver
 	declared map[string]string
+	// self is the import path of the package the mock is rendered INTO.
+	// Its types are written unqualified and it is never imported: a mock
+	// importing its own package is an import cycle.
+	self string
 }
 
 // packageName is the name an unaliased import of path binds.
@@ -257,6 +261,9 @@ func (r *importAliases) use(path, preferred string, explicit bool) string {
 // type-checked *types.Package): that name is preferred, and an alias is
 // written only when it collides with one already taken.
 func (r *importAliases) useNamed(path, pkgName string) string {
+	if path != "" && path == r.self {
+		return ""
+	}
 	r.declared[path] = pkgName
 	return r.use(path, pkgName, false)
 }

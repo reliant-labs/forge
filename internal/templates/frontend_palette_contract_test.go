@@ -33,6 +33,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/components"
 )
 
 // paletteFiles are the two stylesheets that must declare the same tokens.
@@ -195,43 +197,77 @@ func TestBothScaffoldsDeclareTheSameColorTokens(t *testing.T) {
 	}
 }
 
-// TestEveryScaffoldedComponentTokenIsDeclared closes the loop from the other
-// direction: a semantic utility used anywhere in the shipped frontend
-// surface must resolve to a token the stylesheets actually declare.
-func TestEveryScaffoldedComponentTokenIsDeclared(t *testing.T) {
-	t.Parallel()
+// paletteFamily matches a utility in one of the semantic color FAMILIES the
+// palette owns, capturing the token name. Deliberately narrow: listing the
+// families means a Tailwind built-in like `text-sm` or `border-2` cannot
+// trip it. The capture runs to the end of the hyphenated word, so
+// `bg-warning-hover` is read as `warning-hover` — never as `warning`
+// followed by stray text, which is how an undeclared hover token once
+// passed this check: the old pattern ended in `\b`, and the boundary
+// between `g` and `-` satisfied it.
+var paletteFamily = regexp.MustCompile(`\b(?:bg|text|border|ring|fill|stroke|divide|outline|from|to|via|accent|caret|decoration|placeholder|shadow)-` +
+	`((?:surface|ink|accent|danger|success|warning|on)[a-z-]*)`)
 
-	declared := map[string]bool{}
+// themeTokenSets returns each scaffold kind's declared `--color-*` names,
+// read from its own `@theme` block.
+func themeTokenSets(t *testing.T) map[string]map[string]bool {
+	t.Helper()
+	sets := map[string]map[string]bool{}
 	for kind := range paletteFiles {
 		css := renderPalette(t, kind)
 		block := themeAtBlock.FindStringSubmatch(css)
 		if block == nil {
 			t.Fatalf("%s: no @theme block", paletteFiles[kind])
 		}
+		sets[kind] = map[string]bool{}
 		for k := range parsePaletteBlock(t, paletteFiles[kind], block[1]) {
-			declared[k] = true
+			sets[kind][k] = true
 		}
 	}
+	return sets
+}
 
-	// Longest-first so `bg-accent-surface` is matched as accent-surface and
-	// not as accent followed by stray text.
-	names := make([]string, 0, len(declared))
-	for k := range declared {
-		names = append(names, k)
+// undeclaredPaletteTokens returns every palette utility in src whose token
+// is not in declared, as "class (token)" strings, one per occurrence.
+// Comment lines are skipped — prose may name a token that does not exist —
+// and so is a name that ends in a hyphen, the head of an interpolated class
+// (`bg-accent-${tone}`) whose full name is not in the source to check.
+func undeclaredPaletteTokens(src string, declared map[string]bool) []string {
+	var out []string
+	for _, line := range strings.Split(src, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") || strings.HasPrefix(trimmed, "/*") {
+			continue
+		}
+		for _, m := range paletteFamily.FindAllStringSubmatch(line, -1) {
+			if strings.HasSuffix(m[1], "-") || declared[m[1]] {
+				continue
+			}
+			out = append(out, m[0])
+		}
 	}
-	sort.Slice(names, func(i, j int) bool { return len(names[i]) > len(names[j]) })
+	return out
+}
 
-	// Every semantic utility the templates could reference, built from the
-	// declared token names so the pattern cannot drift from the palette.
-	usage := regexp.MustCompile(`\b(?:bg|text|border|ring|fill|stroke|divide|outline|from|to)-(` +
-		strings.Join(names, "|") + `)\b`)
+// TestEveryScaffoldedComponentTokenIsDeclared closes the loop from the other
+// direction: a semantic utility used anywhere in the shipped frontend
+// surface must resolve to a token EACH stylesheet declares.
+//
+// "Each", not "either": the frontend trees and the component library ship
+// byte-identical into both kinds, so a token one theme lacks is a component
+// that renders transparent in that kind of frontend. The shipped surface is
+// both scaffold trees AND every pkg/components entry — `forge component
+// install` copies those into a project verbatim, so a library component is
+// as much a theme consumer as anything the scaffold writes. Missing the
+// library is how `confirmation_dialog`'s `hover:bg-warning-hover` shipped
+// against a token neither theme declared.
+func TestEveryScaffoldedComponentTokenIsDeclared(t *testing.T) {
+	t.Parallel()
 
-	// Any token-shaped class that is NOT one of the declared names.
-	// Deliberately narrow: it lists the semantic FAMILIES the palette owns,
-	// so a Tailwind built-in like `text-sm` or `border-2` cannot trip it.
-	family := regexp.MustCompile(`\b(?:bg|text|border|ring|fill|stroke|divide|outline)-` +
-		`((?:surface|ink|accent|danger|success|warning|on)[a-z-]*)\b`)
+	sets := themeTokenSets(t)
 
+	type source struct{ rel, content string }
+	var sources []source
 	for _, kind := range []string{"nextjs", "vite-spa"} {
 		files, err := ListFrontendTree(kind)
 		if err != nil {
@@ -249,26 +285,42 @@ func TestEveryScaffoldedComponentTokenIsDeclared(t *testing.T) {
 				// by their own tests and are not palette-bearing shells.
 				continue
 			}
-			for _, line := range strings.Split(string(content), "\n") {
-				trimmed := strings.TrimSpace(line)
-				if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") {
-					continue // prose may name a token that does not exist
-				}
-				for _, m := range family.FindAllStringSubmatch(line, -1) {
-					if declared[m[1]] {
-						continue
-					}
-					// Not declared — but only complain if it really looks
-					// like a palette utility rather than a Tailwind builtin.
-					if usage.MatchString(m[0]) {
-						continue
-					}
-					t.Errorf("%s (%s) uses `%s`, but no --color-%s is declared in either stylesheet.\n"+
-						"Add the token to BOTH globals.css and index.css, or use an existing one.",
-						f.Rel, kind, m[0], m[1])
-				}
+			sources = append(sources, source{kind + ":" + f.Rel, string(content)})
+		}
+	}
+	lib := components.NewLibrary()
+	for _, entry := range lib.Registry() {
+		src, err := lib.Get(entry.Name)
+		if err != nil {
+			t.Fatalf("get component %s: %v", entry.Name, err)
+		}
+		sources = append(sources, source{"pkg/components/components/" + string(entry.Category) + "/" + entry.Name + ".tsx", src})
+	}
+	if len(sources) == 0 {
+		t.Fatal("no sources scanned; the frontend tree or the component library moved")
+	}
+
+	for _, kind := range []string{"nextjs", "vite-spa"} {
+		for _, s := range sources {
+			for _, class := range undeclaredPaletteTokens(s.content, sets[kind]) {
+				t.Errorf("%s uses `%s`, but %s declares no --color-%s.\n"+
+					"Add the token to BOTH globals.css and index.css (light and both dark blocks), or use an existing one.",
+					s.rel, class, paletteFiles[kind], class[strings.Index(class, "-")+1:])
 			}
 		}
+	}
+}
+
+// TestPaletteTokenScanReadsWholeNames pins the scanner itself: a hover or
+// state token whose BASE is declared is still undeclared.
+func TestPaletteTokenScanReadsWholeNames(t *testing.T) {
+	t.Parallel()
+	declared := map[string]bool{"warning": true, "accent": true, "on-accent": true}
+	src := `<button className="bg-warning hover:bg-warning-hover text-on-accent bg-accent/10 bg-accent-${tone}" />
+// prose: bg-made-up-token is fine in a comment`
+	got := undeclaredPaletteTokens(src, declared)
+	if len(got) != 1 || got[0] != "bg-warning-hover" {
+		t.Fatalf("undeclaredPaletteTokens = %v, want exactly [bg-warning-hover]", got)
 	}
 }
 
@@ -331,6 +383,7 @@ var contrastPairs = []contrastPair{
 	{"danger-ink", "danger-surface", 4.5, "error banner text"},
 	{"success-ink", "success-surface", 4.5, "success badge text"},
 	{"on-warning", "warning", 4.5, "the mock-mode banner"},
+	{"on-warning", "warning-hover", 4.5, "label on a hovered warning button"},
 	{"warning-ink", "warning-surface", 4.5, "warning badge text"},
 }
 

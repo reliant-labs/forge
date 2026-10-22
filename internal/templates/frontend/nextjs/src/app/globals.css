@@ -125,6 +125,7 @@
   --color-success-border: oklch(88% 0.07 155deg);
   --color-success-ink: oklch(45% 0.11 155deg); /* success text on a light surface */
   --color-warning: oklch(75% 0.158 75deg); /* caution status: badge dot / solid */
+  --color-warning-hover: oklch(69% 0.135 72deg);
   --color-on-warning: oklch(28% 0.059 75deg); /* text/icon on a warning fill */
   --color-warning-surface: oklch(97% 0.032 85deg); /* warning badge background */
   --color-warning-border: oklch(88% 0.09 85deg);
@@ -159,6 +160,7 @@
     --color-success-border: oklch(42% 0.09 155deg);
     --color-success-ink: oklch(84% 0.13 155deg);
     --color-warning: oklch(80% 0.15 80deg);
+    --color-warning-hover: oklch(86% 0.12 85deg);
     --color-on-warning: oklch(25% 0.05 80deg);
     --color-warning-surface: oklch(32% 0.06 80deg);
     --color-warning-border: oklch(44% 0.09 80deg);
@@ -193,6 +195,7 @@
   --color-success-border: oklch(42% 0.09 155deg);
   --color-success-ink: oklch(84% 0.13 155deg);
   --color-warning: oklch(80% 0.15 80deg);
+  --color-warning-hover: oklch(86% 0.12 85deg);
   --color-on-warning: oklch(25% 0.05 80deg);
   --color-warning-surface: oklch(32% 0.06 80deg);
   --color-warning-border: oklch(44% 0.09 80deg);

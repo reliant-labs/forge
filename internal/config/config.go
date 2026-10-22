@@ -440,8 +440,28 @@ type FrontendConfig struct {
 	// Routes restricts which entities this frontend gets generated CRUD pages
 	// for (KCL `routes`): route SLUGS ("llm-keys"), an ALLOWLIST. Empty means
 	// every CRUD entity. The single value `none` (RoutesNone) means NO
-	// generated pages at all.
+	// generated pages at all. An adopted frontend that declares none gets
+	// `none` (frontend_codegen.go).
 	Routes []string
+	// Adopted reports that forge did not scaffold this frontend — it existed
+	// before forge generated into it. generate writes only Tier-1 codegen and
+	// the owned seams that code imports into an adopted frontend: no starter
+	// components, no CRUD pages, nav or dashboard scaffolds, and no edits to
+	// its package.json. Read off disk (frontendScaffoldedByForge); false for
+	// a FrontendConfig built in code, which is a frontend forge made.
+	Adopted bool
+	// Hooks is the package.json `forge.hooks` allowlist: the proto services
+	// that get generated React Query hooks in this frontend. nil means every
+	// service; an empty list means none. See WantsHooksFor.
+	Hooks []string
+	// ComponentsDir is the package.json `forge.components_dir`: where forge's
+	// component library lives, relative to the frontend directory. "" means
+	// DefaultComponentsDir. Read it through ComponentsDirRel.
+	ComponentsDir string
+	// CodegenProblems are the reasons the frontend's package.json forge block
+	// could not be honoured (an unknown key, an escaping components_dir).
+	// generate refuses to run while any is present.
+	CodegenProblems []string
 }
 
 // RoutesNone is the frontends[].routes value meaning "generate no CRUD

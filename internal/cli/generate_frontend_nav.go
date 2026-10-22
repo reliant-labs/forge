@@ -183,6 +183,18 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 		// emitScaffoldUntilTouched. A greenfield project therefore picks up
 		// its first entity's route, and the moment the user edits either file
 		// it is theirs and forge stops.
+		// ── package.json: the @reliantlabs/forge-web-runtime specifier ──
+		// Re-resolved every run so a project that moved on disk, or one
+		// picked up by a differently-built forge, gets a specifier that
+		// still points somewhere real.
+		reconcileFrontendDependencies(projectDir, feDir, fe)
+
+		// An adopted app has its own layout, home page and navigation;
+		// forge's nav, dashboard and home page are starter code for a
+		// frontend it scaffolded, and are not written into one it did not.
+		if fe.Adopted {
+			continue
+		}
 		navRel := filepath.Join(feDir, "src", "components", "nav.tsx")
 		if err := emitScaffoldUntilTouched(projectDir, navRel, "nextjs/src/components/nav.tsx.tmpl", data, cs); err != nil {
 			return err
@@ -198,13 +210,6 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 		// the route is only missing, never broken, so nothing else surfaces
 		// it. Name the routes and stop; editing is the user's call.
 		reportUnlinkedRoutes(projectDir, navRel, fePages, fe.Name)
-
-		// ── package.json: the @reliantlabs/forge-web-runtime specifier ──
-		// Re-resolved every run so a project that moved on disk, or one
-		// picked up by a differently-built forge, gets a specifier that
-		// still points somewhere real.
-		generator.EnsureWebRuntimeDependency(projectDir, feDir, fe.Name)
-		generator.EnsureBrowserTelemetryDependencies(projectDir, feDir, fe.Name)
 
 		// ── Scaffold ("yours"): page.tsx (user-owned, scaffold-once) ──
 		pageRel := filepath.Join(feDir, "src", "app", "page.tsx")
@@ -254,13 +259,16 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 		}
 		// use-query-resource.ts pairs with <Resource>. It ships in the Vite
 		// static scaffold tree (new projects), so ensure EXISTING projects
-		// pick it up too — emit-if-missing keeps any user edits.
-		if err := ensureViteQueryResourceHook(projectDir, feDir); err != nil {
-			return fmt.Errorf("ensure use-query-resource for %s: %w", fe.Name, err)
+		// pick it up too — emit-if-missing keeps any user edits. Starter
+		// code (only the generated pages import it), so not for an adopted
+		// frontend.
+		if !fe.Adopted {
+			if err := ensureViteQueryResourceHook(projectDir, feDir); err != nil {
+				return fmt.Errorf("ensure use-query-resource for %s: %w", fe.Name, err)
+			}
 		}
 		// ── package.json: the @reliantlabs/forge-web-runtime specifier ──
-		generator.EnsureWebRuntimeDependency(projectDir, feDir, fe.Name)
-		generator.EnsureBrowserTelemetryDependencies(projectDir, feDir, fe.Name)
+		reconcileFrontendDependencies(projectDir, feDir, fe)
 	}
 
 	// ── React Native frontends: emit the apiurl_gen dev floor ──
@@ -287,7 +295,11 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 			return fmt.Errorf("emit apiurl_gen.ts for %s: %w", fe.Name, err)
 		}
 		// ── package.json: the @reliantlabs/forge-web-runtime specifier ──
-		generator.EnsureWebRuntimeDependency(projectDir, feDir, fe.Name)
+		if fe.Adopted {
+			printDependencyNotices(fe.Name, generator.FrontendDependencyNotices(projectDir, feDir))
+		} else {
+			generator.EnsureWebRuntimeDependency(projectDir, feDir, fe.Name)
+		}
 	}
 
 	// ── The dev web-runtime bridge (gitignored, project-wide) ──
@@ -297,6 +309,25 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 	generator.EnsureDevWebRuntimeLink(projectDir)
 
 	return nil
+}
+
+// reconcileFrontendDependencies keeps a web frontend's package.json declaring
+// what forge's generated code imports. A frontend forge scaffolded has its
+// manifest reconciled in place; an ADOPTED one's manifest is the app's own,
+// so forge reports what it would change and changes nothing.
+func reconcileFrontendDependencies(projectDir, feDir string, fe config.FrontendConfig) {
+	if fe.Adopted {
+		printDependencyNotices(fe.Name, generator.FrontendDependencyNotices(projectDir, feDir))
+		return
+	}
+	generator.EnsureWebRuntimeDependency(projectDir, feDir, fe.Name)
+	generator.EnsureBrowserTelemetryDependencies(projectDir, feDir, fe.Name)
+}
+
+func printDependencyNotices(feName string, notices []string) {
+	for _, n := range notices {
+		fmt.Printf("  ℹ️  frontend %s (not scaffolded by forge, so its package.json is left as is): %s\n", feName, n)
+	}
 }
 
 // emitOtelGen renders <tmplSubdir>/src/lib/otel_gen.ts.tmpl into the

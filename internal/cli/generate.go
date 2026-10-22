@@ -724,6 +724,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	}
 	fmt.Println()
 	printGenerateOutcome(os.Stdout, summary, outside, flags, len(steps), totalSteps)
+	printLeftAlone(os.Stdout, checksums.LeftAloneThisRun())
 	// Last, after the journal is committed and the outcome printed: a run
 	// that changed nothing has proven this tree is generate's own output —
 	// unless a step failed soft, in which case its outputs were not
@@ -937,6 +938,21 @@ func printGenerateOutcome(w io.Writer, sum checksums.WriteSummary, outside []str
 		// either a step wrote them directly or another process did while
 		// generate ran. Either way the tree moved, and the reader decides.
 		fmt.Fprintf(w, "   %d of them changed outside forge's writers: %s\n", len(outside), strings.Join(outside, ", "))
+	}
+}
+
+// printLeftAlone names, after the counts, every path a writer declined this
+// run for a reason the user must act on (checksums.NoteLeftAlone): a
+// hand-written file at a path forge generates, TypeScript stubs another
+// generator owns. A refusal printed only by the step that made it scrolls
+// away, and the closing line then reads as though the run did everything.
+func printLeftAlone(w io.Writer, left []checksums.LeftAlone) {
+	if len(left) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "⚠️  %d path(s) left as they are — forge did not write them:\n", len(left))
+	for _, l := range left {
+		fmt.Fprintf(w, "   - %s: %s\n", l.Path, l.Why)
 	}
 }
 

@@ -237,6 +237,7 @@ func ResetPerRunState() {
 	pendingHeals = map[string]pendingHeal{}
 	AutoHeal = false
 	forceScope = nil
+	resetLeftAlone()
 	// The birth ledger is PERSISTENT state, but its in-memory copy is a
 	// cache: a long-lived process (or a test binary building several
 	// projects) must re-read it from disk rather than answer from a

@@ -206,13 +206,15 @@ func DiscoverRootFrontend(projectDir string) (FrontendConfig, bool) {
 	if feType == "" || feType == "react-native" {
 		return FrontendConfig{}, false
 	}
-	return FrontendConfig{
+	fe := FrontendConfig{
 		Name:      RootFrontendName,
 		Type:      feType,
 		BasePath:  basePathFromNextConfig(projectDir),
 		Output:    outputFromNextConfig(projectDir),
 		DevRunner: devRunnerFromLockfile(projectDir, projectDir),
-	}.WithDir("."), true
+	}.WithDir(".")
+	attachFrontendDiskFacts(projectDir, ".", &fe)
+	return fe, true
 }
 
 func hasFrontendNamed(fes []FrontendConfig, name string) bool {
@@ -358,13 +360,15 @@ func DiscoverInRepoFrontends(projectDir string) []FrontendConfig {
 			continue
 		}
 		feDir := filepath.Join(projectDir, rel)
-		out = append(out, FrontendConfig{
+		fe := FrontendConfig{
 			Name:      e.Name(),
 			Type:      feType,
 			BasePath:  basePathFromNextConfig(feDir),
 			Output:    outputFromNextConfig(feDir),
 			DevRunner: devRunnerFromLockfile(projectDir, feDir),
-		}.WithDir(filepath.ToSlash(rel)))
+		}.WithDir(filepath.ToSlash(rel))
+		attachFrontendDiskFacts(projectDir, filepath.ToSlash(rel), &fe)
+		out = append(out, fe)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -504,7 +508,7 @@ func DeriveFrontendsFromKCL(projectDir string, kcl []KCLFrontend) []FrontendConf
 		if basePath == "" {
 			basePath = basePathFromNextConfig(filepath.Join(projectDir, dir))
 		}
-		byName[fe.Name] = FrontendConfig{
+		derived := FrontendConfig{
 			Name:      fe.Name,
 			Type:      normalizeKCLFrontendType(fe.Type),
 			Port:      fe.Port,
@@ -513,6 +517,12 @@ func DeriveFrontendsFromKCL(projectDir string, kcl []KCLFrontend) []FrontendConf
 			Output:    outputFromNextConfig(filepath.Join(projectDir, dir)),
 			Routes:    fe.Routes,
 		}.WithDir(dir)
+		// A KCL `path` pointing at an existing app is the documented way to
+		// adopt one (`forge project new --in-place` prints exactly that
+		// declaration), so it gets the same disk facts as a frontends/<name>
+		// directory: adopted-or-not, and the package.json forge block.
+		attachFrontendDiskFacts(projectDir, filepath.ToSlash(dir), &derived)
+		byName[fe.Name] = derived
 	}
 	if len(byName) == 0 {
 		return nil

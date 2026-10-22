@@ -50,8 +50,19 @@ func ensureFrontendComponents(cfg *config.ProjectConfig, projectDir string) erro
 			// source pin, or a path outside the project root.
 			continue
 		}
+		if fe.Adopted {
+			// The starter set is how a frontend forge SCAFFOLDS gets its
+			// first UI. An adopted app already has one: installing 35
+			// components beside it duplicated the ones it had installed on
+			// purpose and collided with its own Button.tsx / Modal.tsx.
+			// Components arrive one at a time, by request.
+			fmt.Printf("  ℹ️  frontend %s was not scaffolded by forge — its starter components are not installed; "+
+				"`%s component install <name> --dir %s` adds one to %s\n",
+				fe.Name, Name(), feDir, fe.ComponentsDirRel())
+			continue
+		}
 		frontendDir := filepath.Join(projectDir, feDir)
-		if err := generator.EnsureCoreComponents(frontendDir); err != nil {
+		if err := generator.EnsureCoreComponentsIn(frontendDir, fe.ComponentsDir); err != nil {
 			return fmt.Errorf("component install for %s: %w", fe.Name, err)
 		}
 	}
@@ -139,7 +150,8 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 			return err
 		}
 
-		// Per-frontend route allowlist (forge.yaml frontends[].routes). Empty
+		// Per-frontend route allowlist (KCL forge.Frontend.routes, else the
+		// frontend's package.json forge.routes). Empty
 		// means "every CRUD entity" — the historical behavior, and the right
 		// one for a project's only frontend.
 		wantRoute, unknownRoutes := routeFilterFor(fe, liveSlugs)

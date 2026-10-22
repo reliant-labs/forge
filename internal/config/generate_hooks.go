@@ -23,8 +23,11 @@ type GenerateConfig struct {
 //
 // It is the escape hatch for a generator forge does not own: a query
 // generator kept while a project ports onto the ORM (sqlc), a project's own
-// codegen tool, a schema or docs dump. forge does not interpret the command;
-// it runs it, streams its output, and fails the generate if it exits non-zero.
+// codegen tool, a second buf template, a schema or docs dump. forge does not
+// interpret the command; it runs it, streams its output, and fails the
+// generate if it exits non-zero. The command runs with the codegen tools
+// go.mod pins (buf, protoc-gen-go, protoc-gen-connect-go) first on its PATH,
+// the same ones forge's own buf step runs.
 //
 //	generate:
 //	  hooks:

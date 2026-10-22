@@ -42,3 +42,10 @@ func ResolveOrganization(ctx context.Context, c Caller) (string, error) {
 	}
 	return org, nil
 }
+
+// OrganizationReply is the body a control plane answers ProcGetOrganization
+// with, for a fake control plane in a test of code that resolves the org. It
+// lives beside the reader so the wire spelling exists in one file.
+func OrganizationReply(orgID string) map[string]any {
+	return map[string]any{"tenant": map[string]any{"orgId": orgID}}
+}

@@ -67,7 +67,7 @@ func pasteableInvocations(line, name string) [][]string {
 // so callers can pin WHICH command the block names, not just that it exists.
 func resolvePasteable(t *testing.T, args []string) string {
 	t.Helper()
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	resolved, rest, err := root.Find(args)
 	if err != nil {
 		t.Errorf("next-steps command %q does not resolve: %v", strings.Join(args, " "), err)
@@ -229,7 +229,7 @@ func TestNewNextStepsResolveHelper(t *testing.T) {
 	}
 
 	// A command that does not exist must be caught by the resolver.
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	if _, _, err := root.Find([]string{"project", "add", "entity"}); err == nil {
 		var found *cobra.Command
 		for _, c := range root.Commands() {

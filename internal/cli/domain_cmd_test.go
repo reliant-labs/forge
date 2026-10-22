@@ -303,7 +303,7 @@ func TestDomainBind_RefusesTargetAndRedirectTogether(t *testing.T) {
 		{"neither", []string{"domain", "bind", "hounders.club", "--env", "prod"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := NewRootCmd()
+			root := newTestRootCmd(t)
 			root.SetArgs(tc.args)
 			root.SetOut(io.Discard)
 			root.SetErr(io.Discard)

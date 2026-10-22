@@ -114,7 +114,7 @@ func runForge(t *testing.T, args ...string) (string, error) {
 		_, _ = io.Copy(&b, r)
 		done <- b.String()
 	}()
-	cmd := NewRootCmd()
+	cmd := newTestRootCmd(t)
 	cmd.SetArgs(args)
 	var stderr bytes.Buffer
 	cmd.SetErr(&stderr)

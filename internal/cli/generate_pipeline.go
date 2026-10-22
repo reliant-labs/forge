@@ -666,14 +666,18 @@ var stepPresetAllowlist = map[string]map[string]bool{
 	},
 	// The "harness" step preset regenerates the per-component test
 	// harness — each helpers_gen_test.go (NewTest<Svc>, With<Svc>Deps, the
-	// Stub<Field> doubles) — and nothing else: the inner loop after a Deps
+	// Stub<Field> doubles) — and the contract mocks it installs, and nothing
+	// else: the inner loop after a Deps
 	// edit, where the next command is `go test` on that package and a full
 	// run spends minutes re-deriving protos, frontends and deploy config
 	// that the edit cannot have changed.
 	//
 	// It is sound for that edit because the harness is a function of the
 	// component's own Go source (its Deps struct and the interfaces it
-	// names, read fresh from disk), the service list (read from the
+	// names, read fresh from disk), the mock_gen.go files (a field whose
+	// interface forge mocks gets that mock instead of a stub — and a Deps
+	// edit moves the Deps-discovered mocks, so "internal package contracts"
+	// regenerates them first), the service list (read from the
 	// descriptor a full run left, which a Deps edit does not move), and
 	// the internal package set (walked fresh). The prereqs are the ones the
 	// "mocks" preset runs, for the same reasons. A PROTO or migration edit
@@ -691,6 +695,7 @@ var stepPresetAllowlist = map[string]map[string]bool{
 		"detect proto directories":     true,
 		"ensure gen/go.mod":            true,
 		"parse services + module path": true,
+		"internal package contracts":   true,
 		"per-service test helpers":     true,
 		"goimports on generated Go":    true,
 		"rehash tracked files":         true,

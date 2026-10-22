@@ -82,7 +82,7 @@ func TestLintWorkaroundsRoot_TestingExtrasAdviceIsCurrent(t *testing.T) {
 	// The advice must point at the mechanism that EXISTS.
 	for _, want := range []string{
 		"CLOSED",
-		"computeAutoStubs",
+		"computeDepsDoubles",
 		"With<Svc>Deps",
 	} {
 		if !strings.Contains(msg, want) {

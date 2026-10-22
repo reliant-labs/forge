@@ -235,12 +235,16 @@ const cloudIssueJSON = `{"id":"ISS-7f3a","platform":"ISSUE_PLATFORM_SERVER","env
 "firstVersion":"v1.3.0","lastSeenAt":"2026-10-22T11:00:00Z","lastVersion":"v1.4.0","events":"42","affected":"9","version":4,
 "regressedAt":"2026-10-22T09:00:00Z"}`
 
+func issuesCloudFacts() obsbackend.Facts {
+	return obsbackend.Facts{Env: "prod", Declared: true, Enabled: true, HasHosted: true, ControlPlane: "https://cp"}
+}
+
 func obsRunCloud(t *testing.T, fc *fakeCloudCaller, args ...string) (string, string, error) {
 	t.Helper()
 	old := obsDepsOverride
 	t.Cleanup(func() { obsDepsOverride = old })
 	obsDepsOverride = &obsDeps{
-		Facts: func(context.Context, io.Writer, string) (obsbackend.Facts, error) { return cloudFacts(), nil },
+		Facts: func(context.Context, io.Writer, string) (obsbackend.Facts, error) { return issuesCloudFacts(), nil },
 		Cloud: func(_ context.Context, env string) (obsbackend.Cloud, error) {
 			return obsbackend.Cloud{Env: env, EnvID: "env-prod", OrgID: "org-1", Caller: fc}, nil
 		},

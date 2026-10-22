@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -523,6 +524,11 @@ const (
 	procOrg      = cloud.ProcGetOrganization
 )
 
+func orgReplyJSON() string {
+	b, _ := json.Marshal(cloud.OrganizationReply("org-1"))
+	return string(b)
+}
+
 func changesCaller() *seqCaller {
 	return &seqCaller{replies: map[string][]string{
 		procEnvs: {`{"environments":[{"id":"env-prod","name":"prod"}]}`},
@@ -534,7 +540,7 @@ func changesCaller() *seqCaller {
 		procActivity: {`{"events":[
 			{"id":"a1","at":"2026-10-22T11:50:00Z","actor":{"name":"alice"},"verb":"rotate","target":{"kind":"secret","id":"db-pass"},"via":"cli"},
 			{"id":"a2","at":"2026-10-22T11:30:00Z","actor":{"name":"ci"},"verb":"promote","target":{"kind":"release","id":"v2"},"via":"ci"}]}`},
-		procOrg: {`{"tenant":{"orgId":"org-1"}}`},
+		procOrg: {orgReplyJSON()},
 	}}
 }
 
@@ -569,6 +575,12 @@ func TestObsChangesCloudMergesTheLedgerAndActivity(t *testing.T) {
 	}
 	if sug := fmt.Sprint(doc["suggested"]); !strings.Contains(sug, "forge obs check prod --promotion") {
 		t.Errorf("suggested = %s", sug)
+	}
+	if _, warned := doc["warnings"]; warned {
+		t.Errorf("every source answered, so there is nothing to warn about: %v", doc["warnings"])
+	}
+	if !strings.Contains(out, `"via": "ci"`) {
+		t.Errorf("the promotion row takes its channel from the matching activity event:\n%s", out)
 	}
 	obsGolden(t, "changes.json", out)
 }

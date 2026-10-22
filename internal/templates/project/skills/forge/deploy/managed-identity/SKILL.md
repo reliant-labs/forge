@@ -57,8 +57,17 @@ forge cloud identity reset prod --user person@example.com [--return-code]
 forge cloud identity lock|unlock prod --user person@example.com
 forge cloud identity revoke-sessions prod --user person@example.com
 forge cloud identity delete prod --user person@example.com                     # asks; --yes skips the question
+forge cloud identity export prod                  # export every user now; prints a short-lived download URL
 # Continue a listing: forge cloud identity users prod --page-token <nextPageToken> --json
 ```
+
+`users` shows each user's last sign-in (the newest successful password, passkey or IdP check Zitadel recorded; `-` for none) and how many users match across every page. `status` says why there is no instance (not declared, refused, or created on the reconciler's next pass) and names the owner and sharer environments.
+
+`export` exports the instance on demand (every user, password hashes included, in Zitadel's import format; one export per 15 minutes) and prints a signed URL valid for minutes: the URL is a credential, so never paste it anywhere shared. It needs `identity:manage` and, for a person, the `identity:manage` grant as `--return-code` does; it is refused where the control plane has export switched off.
+
+### The identity line of `env status` and `env deploy`
+
+A hosted env that declares `forge.ManagedIdentity` gets one line in `forge env status <env>`, read from its control plane: `identity: ready`, `identity: provisioning (creating)`, `identity: degraded: <delivery>` or `identity: failed: <reason>`. It never changes `env status`'s exit code. `forge env deploy` (and `env status --wait`) **waits on it**: a release whose rollout succeeded reports `rollout succeeded; waiting on identity: …` until the identity is ready. Still provisioning at the deadline is the timed-out exit (retry the wait); failing or degraded at the deadline, or a refused declaration at once, is exit 1. A control plane that cannot be asked (no identity API, a credential without `identity:read`) is reported as `identity: unknown: …` and never holds a deploy.
 
 `--user` takes a user id or an exact email (resolved through `users`; an ambiguous one is refused). Every verb accepts `--json`. Choose the recipient explicitly; never infer the owner's email from the agent's session. There is no password flag, bootstrap password or production seed user, and no response carries a password or token, except the one-time code `--return-code` asks for.
 
@@ -71,7 +80,7 @@ The endpoint comes from that env's `ControlPlane` KCL. Credentials use the usual
 | what | needs |
 |---|---|
 | `status`, `users` | the `identity:read` scope |
-| every verb that changes a user (`invite`, `set-roles`, `reset`, `lock`, `unlock`, `delete`, `revoke-sessions`), and any `--return-code` | `identity:manage` (implies read), held by an **org admin** |
+| every verb that changes a user (`invite`, `set-roles`, `reset`, `lock`, `unlock`, `delete`, `revoke-sessions`), `export`, and any `--return-code` | `identity:manage` (implies read), held by an **org admin** |
 
 A person's session is checked against their org role and their identity grants (owners and admins hold both scopes). A **machine credential** (an org access token, a Reliant agent's session token) is accepted when it is scoped to the org and carries the scope; a `--return-code` from one also needs its acting user to still hold the `identity:manage` grant. A Reliant session or a `forge login` credential does not carry the identity scopes itself: when the control plane answers that one is missing, forge exchanges the credential for exactly that scope (`AccessTokenService/ExchangeToken`, for an hour, in memory only, and only while the person behind it holds the grant) and retries. A `--token` or the token env var is used exactly as given and must already carry the scope.
 

@@ -139,7 +139,17 @@ type envWaitOptions struct {
 	// would also let production read id and endpoint that only a test
 	// ever writes, which is a shape production cannot produce.
 	Target func(ctx context.Context, env string) (waitTarget, error)
+
+	// Identity reads the env's managed identity from the resolved control
+	// plane. Nil is GetIdentityStatus through the target's client
+	// (readIdentityStatus). A test states the control plane's answers here.
+	Identity func(ctx context.Context, target waitTarget) (identityStatusDocument, error)
 }
+
+// wirePhaseWaitingOnIdentity is the wait's own phase for "the rollout
+// succeeded and the env's managed identity is not ready yet". The control
+// plane has no such rollout phase: it is forge's, from two reads.
+const wirePhaseWaitingOnIdentity = "waiting_on_identity"
 
 // waitTarget is a resolved control plane: who to call, which environment, and
 // where that is, for the report.
@@ -227,6 +237,10 @@ type envWaitReport struct {
 	// waiting on a human action, with the action URL. Exit 7 when the
 	// wait ends there.
 	Queued *deployQueuedJSON `json:"queued,omitempty"`
+	// Identity is the env's managed identity at the last read; absent when
+	// the env declares none. A declared one that is not ready holds the
+	// wait after the rollout succeeds (phase waiting_on_identity).
+	Identity *envIdentityReport `json:"identity,omitempty"`
 }
 
 // ─── Resolution ──────────────────────────────────────────────────────────────
@@ -340,13 +354,15 @@ func waitForRollout(ctx context.Context, env string, opts envWaitOptions) (envWa
 		return report, err
 	}
 	client, envID := target.Client, target.EnvironmentID
+	identity := newIdentityWatch(opts, target)
 
 	progress := progressWriter(opts.JSON || opts.WatchJSON)
 	start := time.Now()
 	deadline := start.Add(opts.Timeout)
 	var (
-		succeededAt time.Time
-		lastPhase   string
+		succeededAt      time.Time
+		lastPhase        string
+		lastIdentityLine string
 	)
 	for {
 		rollout, rerr := readRollout(ctx, client, envID, opts.PromotionID)
@@ -386,10 +402,19 @@ func waitForRollout(ctx context.Context, env string, opts envWaitOptions) (envWa
 
 		applyRolloutToReport(&report, rollout, opts.IncludeUnpinned)
 		phase := effectiveRolloutPhase(rollout, opts.IncludeUnpinned)
+		report.Identity = identity.observe(ctx)
+		if phase == wireRolloutPhaseSucceeded && identity.gating() {
+			// The release is serving; the env's identity is not. The wait
+			// is not done until both are.
+			phase = wirePhaseWaitingOnIdentity
+			report.Phase = wirePhaseWaitingOnIdentity
+		}
 		if phase != lastPhase {
 			at := time.Now().UTC()
 			report.Transitions = append(report.Transitions, envWaitTransition{At: at, Phase: rolloutPhaseName(phase)})
-			fmt.Fprintf(progress, "  %s: %s%s\n", env, rolloutPhaseName(phase), parenthesize(rollout.Reason))
+			if phase != wirePhaseWaitingOnIdentity {
+				fmt.Fprintf(progress, "  %s: %s%s\n", env, rolloutPhaseName(phase), parenthesize(rollout.Reason))
+			}
 			if opts.WatchJSON {
 				emitWatchLine(report, at, phase)
 			}
@@ -398,6 +423,20 @@ func waitForRollout(ctx context.Context, env string, opts envWaitOptions) (envWa
 			// leaving the phase restarts it. A rollout that flaps
 			// out of succeeded and back has not been stable.
 			succeededAt = time.Time{}
+		}
+		if phase == wirePhaseWaitingOnIdentity {
+			// One line per change of the identity's state, so a slow
+			// creation reads as progress rather than as a hang.
+			if line := report.Identity.line(); line != lastIdentityLine {
+				fmt.Fprintf(progress, "  %s: rollout succeeded; waiting on %s\n", env, line)
+				lastIdentityLine = line
+			}
+		}
+		// A refused declaration is TERMINAL: only a new deploy changes it,
+		// so waiting can only time out on it.
+		if id := report.Identity; identity.gating() && (id.terminal || (opts.FailFast && id.failing())) {
+			report.WaitedMS = time.Since(start).Milliseconds()
+			return report, identityWaitError(env, report, *id, 0)
 		}
 
 		// The release-binding check runs on the FIRST successful read,
@@ -462,10 +501,16 @@ func waitForRollout(ctx context.Context, env string, opts envWaitOptions) (envWa
 		// disagree about what a phase means.
 		if opts.Once {
 			report.WaitedMS = time.Since(start).Milliseconds()
+			if phase == wirePhaseWaitingOnIdentity {
+				return report, identityWaitError(env, report, *report.Identity, 0)
+			}
 			return report, rolloutSingleReadError(env, report, rollout, phase)
 		}
 		if time.Now().After(deadline) || ctx.Err() != nil {
 			report.WaitedMS = time.Since(start).Milliseconds()
+			if phase == wirePhaseWaitingOnIdentity {
+				return report, identityWaitError(env, report, *report.Identity, opts.Timeout)
+			}
 			return report, rolloutDeadlineError(env, report, rollout, phase, opts.Timeout)
 		}
 		if !sleepUntil(ctx, opts.Interval) {
@@ -708,6 +753,35 @@ func rolloutDeadlineError(env string, report envWaitReport, rollout wireRollout,
 		waitReleaseLabel(report), env, rolloutPhaseName(phase), budget, detail, hint)}
 }
 
+// newIdentityWatch follows the target env's managed identity through the
+// wait (env_identity.go).
+func newIdentityWatch(opts envWaitOptions, target waitTarget) *identityWatch {
+	if opts.Identity != nil {
+		return &identityWatch{read: func(ctx context.Context) (identityStatusDocument, error) { return opts.Identity(ctx, target) }}
+	}
+	return &identityWatch{read: identityReader(target.Client, target.EnvironmentID)}
+}
+
+// identityWaitError is a wait that ended with the rollout serving and the
+// env's managed identity not ready. A refused or failing identity is exit 1
+// (we looked and it is wrong); one still provisioning is exitTimedOut, like a
+// rollout still progressing: retry the wait.
+func identityWaitError(env string, report envWaitReport, id envIdentityReport, budget time.Duration) error {
+	if id.failing() {
+		return &exitCodeError{code: exitWrong, msg: fmt.Sprintf(
+			"rollout of %s to %s succeeded, but the environment's managed identity is not usable — %s\n"+
+				"  Inspect it with: forge cloud identity status %s", waitReleaseLabel(report), env, id.line(), env)}
+	}
+	after := ""
+	if budget > 0 {
+		after = " after " + budget.String()
+	}
+	return &exitCodeError{code: exitTimedOut, msg: fmt.Sprintf(
+		"rollout of %s to %s succeeded, and it is still waiting on its managed identity%s — %s\n"+
+			"  The identity was still provisioning, not failing. Retry the wait (`forge env status %s --wait --promotion %s`); do not re-promote.",
+		waitReleaseLabel(report), env, after, id.line(), env, waitPromotionID(report))}
+}
+
 // queuedRolloutError is a wait that ended on a HELD promotion: exit 7, and the
 // queued block naming what it waits on and where to act. waited is the
 // budget a --wait spent (zero when the wait stopped at the first read).
@@ -808,6 +882,9 @@ func renderEnvWaitText(out io.Writer, report envWaitReport) {
 			fmt.Fprintf(out, "  %s", w.LastError)
 		}
 		fmt.Fprintln(out)
+	}
+	if report.Identity != nil {
+		fmt.Fprintf(out, "  %s\n", report.Identity.line())
 	}
 	// Printed under their own heading, and never mixed in with the pinned
 	// rows, because the two have different authority over the verdict.

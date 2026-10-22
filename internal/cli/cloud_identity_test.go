@@ -79,6 +79,18 @@ func TestCloudIdentityWire(t *testing.T) {
 			[]string{"users", "prod", "--json"}, map[string]any{"pageSize": float64(20), "pageToken": ""}, []string{`"users": []`, `"roles": []`}},
 		{"status absent", procIdentityStatus, `{"refused":"identity is not declared"}`,
 			[]string{"status", "prod"}, nil, []string{"No managed identity instance", "Refused: identity is not declared"}},
+		{"status not enabled", procIdentityStatus, `{"notEnabledReason":"IDENTITY_NOT_ENABLED_REASON_NOT_DECLARED","notEnabledMessage":"This environment declares no managed identity."}`,
+			[]string{"status", "prod"}, nil, []string{"No managed identity instance", "This environment declares no managed identity."}},
+		{"status names environments", procIdentityStatus,
+			`{"hasInstance":true,"state":"IDENTITY_STATE_READY","ownerEnvironmentId":"owner-env","ownerEnvironment":{"id":"owner-env","name":"prod","project":"shop"},"sharerEnvironmentIds":["s1","gone"],"sharerEnvironments":[{"id":"s1","name":"staging","project":"shop"},{"id":"gone"}],"deliveries":[{"kind":"identity","cluster":"c","namespace":"n","name":"x","state":"IDENTITY_DELIVERY_STATE_DELIVERED","lastWrittenAt":"2026-10-22T09:00:00Z"}]}`,
+			[]string{"status", "prod"}, nil, []string{"Owner: shop/prod", "Shared with: shop/staging", "Shared with: gone", "written 2026-10-22T09:00:00Z"}},
+		{"users with last sign-in and a total", procIdentityUsers,
+			`{"users":[{"userId":"u1","email":"active@example.com","state":"IDENTITY_USER_STATE_ACTIVE","lastSignInAt":"2026-10-20T08:30:00Z"},{"userId":"u2","email":"new@example.com","state":"IDENTITY_USER_STATE_INVITED"}],"totalSize":7}`,
+			[]string{"users", "prod"}, map[string]any{"pageSize": float64(20), "pageToken": ""}, []string{"LAST SIGN-IN", "2026-10-20T08:30:00Z", "2 of 7 user(s)"}},
+		{"export", procIdentityExport, `{"exportUrl":"https://storage.example/org/env/on-demand.json?X-Goog-Signature=abc","expiresAt":"2026-10-22T10:10:00Z"}`,
+			[]string{"export", "prod"}, nil, []string{"a credential", "password hash", "https://storage.example/org/env/on-demand.json?X-Goog-Signature=abc", "at 2026-10-22T10:10:00Z"}},
+		{"export json", procIdentityExport, `{"exportUrl":"https://storage.example/x","expiresAt":"2026-10-22T10:10:00Z"}`,
+			[]string{"export", "prod", "--json"}, nil, []string{`"ok": true`, `"exportUrl": "https://storage.example/x"`}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls []string
@@ -220,6 +232,41 @@ func TestCloudIdentityParsing(t *testing.T) {
 		if out, err := executeIdentity(args...); err != nil || !strings.Contains(out, "Usage:") {
 			t.Errorf("help %v: %v %s", args, err, out)
 		}
+	}
+}
+
+// A refused export is the control plane's sentence, and an answer without a
+// URL is an error, never an empty success.
+func TestCloudIdentityExportRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name, reply, want string
+		status            int
+	}{
+		{"disabled", `{"code":"failed_precondition","message":"export is not enabled for this deployment"}`, "export is not enabled", 400},
+		{"no grant", `{"code":"permission_denied","message":"downloading an identity export needs the identity:manage permission, which you do not hold"}`, "identity:manage", 403},
+		{"no url", `{}`, "no download URL", 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.URL.Path == "/"+cloud.ProcGetOrganization:
+					_, _ = fmt.Fprintf(w, `{"%s":{"orgId":"org"}}`, orgResponseKey)
+				case strings.HasSuffix(r.URL.Path, "/ListEnvironments"):
+					_, _ = w.Write([]byte(`{"environments":[{"id":"e","name":"prod","project":"shop"}]}`))
+				default:
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(tc.reply))
+				}
+			}))
+			defer srv.Close()
+			identityTestTarget(t, srv.URL)
+			t.Setenv("IDENTITY_TEST_TOKEN", "human-token")
+			out, err := executeIdentity("export", "prod")
+			if err == nil || !strings.Contains(err.Error(), tc.want) || out != "" {
+				t.Fatalf("out=%q err=%v, want an error naming %q", out, err, tc.want)
+			}
+		})
 	}
 }
 

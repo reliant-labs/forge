@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -91,8 +92,11 @@ func (r Runner) GoCaches(apply bool) error {
 		{"goimports index", 1, 1, Runner.GoimportsIndex},
 	}
 	for _, step := range steps {
-		if parent.Err() != nil {
-			break
+		// A step the slice left no time for is recorded as cut off, never
+		// dropped: a record that omits it reads as a step that finished.
+		if err := parent.Err(); err != nil {
+			failures = append(failures, layerErr("go caches: "+step.name, &CutOffError{Err: err}))
+			continue
 		}
 		if err := budget.backedOff(); err != nil {
 			failures = append(failures, layerErr("go caches: "+step.name, err))
@@ -104,7 +108,14 @@ func (r Runner) GoCaches(apply bool) error {
 		sub.governor = budget.share(step.deletes)
 		err := step.run(sub, apply)
 		cancel()
-		if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		// A step that ended on its deadline did what it reached and resumes
+		// next pass: a cut-off, which the record keeps apart from a failure.
+		// It used to be dropped here, so a trim stopped by its time slice
+		// under load recorded a clean pass while past-floor entries piled up.
+		if err != nil && onlyContextErrors(err) {
+			err = &CutOffError{Err: err}
+		}
+		if err != nil {
 			failures = append(failures, layerErr("go caches: "+step.name, err))
 		}
 	}
@@ -162,7 +173,13 @@ func (r Runner) SharedGoCache(apply bool) error {
 		var err error
 		if root, _, err = r.goEnv(r.hostCtx()); err != nil {
 			r.print("skip shared go build cache (%v)\n", err)
-			return nil
+			// No Go toolchain at all: there is no shared cache to trim. Any
+			// other failure to locate it is a failure, never a clean pass —
+			// it is the one cache that fills the disk.
+			if testing.Testing() || errors.Is(err, exec.ErrNotFound) {
+				return nil
+			}
+			return fmt.Errorf("locate the shared Go build cache: %w", err)
 		}
 	}
 	return r.trimGoBuildCache("shared go build cache", root, apply)
@@ -483,7 +500,24 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 		status = fmt.Sprintf("%s after %d/%d shards; next pass resumes at shard %02x", why, pass.shardsCovered, pass.shardsTotal, shards[(start+pass.shardsCovered)%len(shards)])
 	}
 	r.print("%s: %s %d entries, %.1f GiB (%s)\n", label, map[bool]string{true: "removed", false: "would remove"}[apply], pass.removed, float64(pass.freed)/float64(GiB), status)
-	if young := goCacheYoungBytes(sample, len(shards)); young > budget {
+	young := goCacheYoungBytes(sample, len(shards))
+	if r.OnGoCacheTrim != nil {
+		r.OnGoCacheTrim(GoCacheTrim{
+			Cache: label, Root: root, Applied: apply,
+			EstimatedBytes: estTotal, BudgetBytes: budget, YoungBytes: young,
+			Cutoff: cutoff, Removed: pass.removed, FreedBytes: pass.freed,
+			ShardsCovered: pass.shardsCovered, ShardsTotal: pass.shardsTotal, Finished: pass.finished,
+		})
+	}
+	// A walk the deadline stopped is a cut-off. streamTrimGoCache records
+	// only the stops it causes itself (cap, back-off), so without this a trim
+	// that ran out of time returned nil and its pass recorded a clean finish.
+	if !pass.finished && pass.stop == nil {
+		if err := ctx.Err(); err != nil {
+			pass.stop = &CutOffError{Err: fmt.Errorf("stopped after %d/%d shards: %w", pass.shardsCovered, pass.shardsTotal, err)}
+		}
+	}
+	if young > budget {
 		unreachable := &BudgetUnreachableError{Cache: label, Estimated: estTotal, Budget: budget, Young: young, Floor: goCacheFloor}
 		r.print("WARNING %v\n", unreachable)
 		return errors.Join(pass.stop, unreachable)
@@ -506,6 +540,35 @@ func goCacheYoungBytes(sample goCacheSample, nShards int) uint64 {
 		return 0
 	}
 	return uint64(float64(sample.bytes-old) * float64(nShards) / float64(sample.shards))
+}
+
+// GoCacheTrim is what one trim of one Go-format build cache measured and did.
+// It is recorded in the pass's GCResult (GoCaches), so whoever schedules the
+// pass can see the cache's size, the part no trim may touch, and whether the
+// walk covered every shard, without parsing human output.
+type GoCacheTrim struct {
+	// Cache names the cache ("shared go build cache"); Root is its directory.
+	Cache string `json:"cache"`
+	Root  string `json:"root"`
+	// Applied is false for a dry run, which removes nothing.
+	Applied bool `json:"applied"`
+	// EstimatedBytes is the cache's estimated size before the trim,
+	// BudgetBytes its size budget, and YoungBytes the estimated bytes last
+	// used inside the safety floor, which no trim deletes.
+	EstimatedBytes uint64 `json:"estimated_bytes"`
+	BudgetBytes    uint64 `json:"budget_bytes"`
+	YoungBytes     uint64 `json:"young_bytes"`
+	// Cutoff is the last-use time below which entries were removed.
+	Cutoff time.Time `json:"cutoff"`
+	// Removed and FreedBytes are what the trim removed (or, dry, would have).
+	Removed    int    `json:"removed"`
+	FreedBytes uint64 `json:"freed_bytes"`
+	// ShardsCovered of ShardsTotal were walked to the end; Finished is true
+	// when that is all of them. A trim that did not finish resumes at the
+	// first uncovered shard next pass.
+	ShardsCovered int  `json:"shards_covered"`
+	ShardsTotal   int  `json:"shards_total"`
+	Finished      bool `json:"finished"`
 }
 
 // BudgetUnreachableError marks a cache no trim can bring under its size budget,

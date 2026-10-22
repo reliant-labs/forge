@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -476,8 +477,16 @@ func TestGoCachePartialPassIsNotAFailure(t *testing.T) {
 	defer cancel()
 	time.Sleep(5 * time.Millisecond) // deadline already passed
 	r.Ctx = ctx
-	if err := r.GoCaches(true); err != nil {
-		t.Fatalf("a cut-off pass must not be an error: %v", err)
+	// A cut-off is not a failure, but it is never silent either: the record
+	// names every step the deadline stopped, so a scheduler sees the trim did
+	// not finish instead of a clean pass.
+	err := r.GoCaches(true)
+	if RealFailure(err) != nil {
+		t.Fatalf("a cut-off pass must not be a failure: %v", err)
+	}
+	res := NewGCResult(time.Now(), err)
+	if !res.OK || !slices.Contains(res.CutOffLayers, "go caches: shared build cache") || len(res.CutOffLayers) != 4 {
+		t.Fatalf("every step the deadline stopped must be recorded as cut off: %+v", res)
 	}
 	// And a live pass over a real cache that finishes reports no error and says so.
 	r.Ctx = context.Background()
@@ -487,6 +496,106 @@ func TestGoCachePartialPassIsNotAFailure(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "(finished)") || countEntries(root) != 0 {
 		t.Fatalf("expected a finished pass:\n%s", out.String())
+	}
+}
+
+// TestGoCacheTrimStoppedByItsDeadlineIsACutOff is the 2026-10-22 machine: under
+// load the shared cache's walk outran its slice of the pass, the trim returned
+// nil, and every record said the pass finished while ~46 GiB of entries past
+// the 2h floor stayed on disk. A walk the deadline stops is a cut-off, with
+// how far it got, and the next pass resumes where it stopped.
+func TestGoCacheTrimStoppedByItsDeadlineIsACutOff(t *testing.T) {
+	root := t.TempDir()
+	fillShards(t, root, 32, 10, func(int, int) time.Duration { return 100 * time.Hour })
+	policy := filepath.Join(t.TempDir(), "storage.json")
+	var out strings.Builder
+	r := goRunner(t, &out)
+	r.GoCacheRoot = root
+	r.PolicyPath = policy
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r.Ctx = ctx
+	removed := 0
+	r.governor = newDeleter(Policy{DeleteRatePerSec: 1_000_000_000}, func(p string) error {
+		removed++
+		if removed == 25 {
+			cancel() // the slice ends mid-walk
+		}
+		return os.Remove(p)
+	}, nil)
+	var trims []GoCacheTrim
+	r.OnGoCacheTrim = func(tr GoCacheTrim) { trims = append(trims, tr) }
+
+	err := r.SharedGoCache(true)
+	var co *CutOffError
+	if !errors.As(err, &co) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("a trim its deadline stopped must return a cut-off, got %v\n%s", err, out.String())
+	}
+	if len(trims) != 1 || trims[0].Finished || trims[0].ShardsCovered >= trims[0].ShardsTotal || trims[0].Removed == 0 {
+		t.Fatalf("the trim's report must say how far it got: %+v", trims)
+	}
+	if got := r.loadGoCacheCursor("shared go build cache"); got != trims[0].ShardsCovered {
+		t.Fatalf("next pass must resume at shard %d, cursor %d", trims[0].ShardsCovered, got)
+	}
+	res := NewGCResult(time.Now(), layerErr("go caches: shared build cache", err))
+	if !res.OK || strings.Join(res.CutOffLayers, ",") != "go caches: shared build cache" {
+		t.Fatalf("recorded as %+v", res)
+	}
+}
+
+// TestGoCacheGCGivesTheGoCachesTheWholeBudget: the Go-cache pass runs the
+// Go-cache layer alone — no Docker, no temp sweep — under its own deadline, and
+// a pass that reaches every shard finishes.
+func TestGoCacheGCGivesTheGoCachesTheWholeBudget(t *testing.T) {
+	root := t.TempDir()
+	fillShards(t, root, 16, 5, func(int, int) time.Duration { return 100 * time.Hour })
+	var out strings.Builder
+	r := goRunner(t, &out)
+	r.GoCacheRoot = root
+	r.GolangciCacheRoot = t.TempDir()
+	makeBuildCache(t, r.GolangciCacheRoot)
+	putEntry(t, r.GolangciCacheRoot, "ab", hexName(1, "-a"), 10, 100*time.Hour)
+	r.GoimportsRoot = t.TempDir()
+	r.OpenPaths = func(context.Context) (openfiles.Snapshot, error) { return openfiles.FromPaths(nil), nil }
+	r.ProcessEnv = func(context.Context) (string, error) { return "x", nil }
+	r.Command = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		t.Errorf("the Go-cache pass ran %s; it must not touch Docker or anything outside the Go caches", name)
+		return nil, errors.New("refused")
+	}
+	var trims []GoCacheTrim
+	r.OnGoCacheTrim = func(tr GoCacheTrim) { trims = append(trims, tr) }
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := r.GoCacheGC(ctx, true); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if countEntries(root) != 0 || len(trims) != 2 || !trims[0].Finished {
+		t.Fatalf("remaining=%d trims=%+v\n%s", countEntries(root), trims, out.String())
+	}
+}
+
+// TestGoCacheTrimReportsWhatItMeasured: the report a scheduler reads — size,
+// budget, the part inside the floor, what went, and that the walk finished.
+func TestGoCacheTrimReportsWhatItMeasured(t *testing.T) {
+	// 16 shards x (30 young + 10 past the floor) x 100B against a 40,000B
+	// budget: the young part alone is over it, so the cutoff is the floor.
+	r, root, out := overBudgetCache(t, 30, 10)
+	var trims []GoCacheTrim
+	r.OnGoCacheTrim = func(tr GoCacheTrim) { trims = append(trims, tr) }
+	if err := RealFailure(r.SharedGoCache(true)); err != nil {
+		t.Fatal(err)
+	}
+	if len(trims) != 1 {
+		t.Fatalf("want one report, got %+v\n%s", trims, out)
+	}
+	tr := trims[0]
+	if tr.Cache != "shared go build cache" || tr.Root != root || !tr.Applied || !tr.Finished ||
+		tr.ShardsCovered != 16 || tr.ShardsTotal != 16 || tr.Removed != 16*10 || tr.FreedBytes != 16*10*100 ||
+		tr.EstimatedBytes != 16*40*100 || tr.YoungBytes != 16*30*100 || tr.BudgetBytes != 40_000 {
+		t.Fatalf("report = %+v\n%s", tr, out)
+	}
+	if !tr.Cutoff.Before(time.Now().Add(-goCacheFloor + time.Minute)) {
+		t.Fatalf("cutoff %s is inside the floor", tr.Cutoff)
 	}
 }
 

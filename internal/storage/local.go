@@ -74,6 +74,11 @@ type Runner struct {
 	// REFUSED under test when unset.
 	ProcessEnv func(context.Context) (string, error)
 	OpenPaths  func(context.Context) (openfiles.Snapshot, error)
+	// OnGoCacheTrim, when set, receives what each Go-format cache trim
+	// measured and did (gocache.go). The CLI collects them into the pass's
+	// record. It may be called from the layer's goroutine; it is never called
+	// concurrently.
+	OnGoCacheTrim func(GoCacheTrim)
 
 	// Per-pass state, set by beginPass (passctx.go).
 	passTotal  time.Duration

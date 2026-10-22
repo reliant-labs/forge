@@ -226,13 +226,15 @@ func runAutoGC(ctx context.Context, path string, out io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, opportunisticGCBudget)
 	defer cancel()
 	return storage.WithLock(path, func() error {
-		gcErr := nonDisruptiveGCFn(ctx, maintenanceRunner(policy, path, out))
+		r, trims := recordingGoCacheTrims(maintenanceRunner(policy, path, out))
+		gcErr := nonDisruptiveGCFn(ctx, r)
 		// Recorded whether or not it succeeded: the interval rate-limits
 		// ATTEMPTS, so a machine where this reliably fails (no Docker
 		// daemon, a vanished builder) does not retry on every `forge env
 		// up`. It is recorded as what it was, in this pass's own record and
 		// nowhere else.
 		result := storage.NewGCResult(time.Now(), gcErr)
+		result.GoCaches = *trims
 		if err := storage.RecordAutoGC(path, result); err != nil && gcErr == nil {
 			return err
 		}
@@ -262,6 +264,98 @@ func newStorageAutoGCCmd(policyPath *string) *cobra.Command {
 			return runAutoGC(ctx, *policyPath, cmd.OutOrStdout())
 		},
 	}
+}
+
+// recordingGoCacheTrims returns r set to collect what each Go-cache trim did,
+// and the slice it collects into, for the pass's record.
+func recordingGoCacheTrims(r storage.Runner) (storage.Runner, *[]storage.GoCacheTrim) {
+	trims := &[]storage.GoCacheTrim{}
+	r.OnGoCacheTrim = func(t storage.GoCacheTrim) { *trims = append(*trims, t) }
+	return r, trims
+}
+
+// goCacheGCBudget is the Go-cache pass's default wall time: enough to walk a
+// few hundred thousand entries and unlink tens of thousands at the governor's
+// pace on a loaded machine. A pass it cuts off records the cut-off and the
+// next one resumes at the first shard it did not reach.
+const goCacheGCBudget = 10 * time.Minute
+
+// goCacheGCFn is the pass itself, seamed so the recording around it is
+// testable without real caches.
+var goCacheGCFn = func(ctx context.Context, r storage.Runner, apply bool) error {
+	return r.GoCacheGC(ctx, apply)
+}
+
+// runGoCacheGC is the body of `forge storage gocache`: the Go-toolchain caches
+// alone, under the maintenance lock, recorded in last-gocache-gc.json when it
+// applied. A busy lock means another pass — which trims the Go caches first —
+// is running, and is reported as such by WithLock.
+func runGoCacheGC(ctx context.Context, p storage.Policy, path string, out io.Writer, apply bool, budget time.Duration) error {
+	if budget <= 0 {
+		budget = goCacheGCBudget
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	return storage.WithLock(path, func() error {
+		r, trims := recordingGoCacheTrims(maintenanceRunner(p, path, out))
+		gcErr := goCacheGCFn(ctx, r, apply)
+		result := storage.NewGCResult(time.Now(), gcErr)
+		result.GoCaches = *trims
+		if apply {
+			if err := storage.RecordGoCacheGC(path, result); err != nil && gcErr == nil {
+				return err
+			}
+		}
+		fmt.Fprintf(out, "storage gocache: %s\n", result.Summary())
+		return storage.RealFailure(gcErr)
+	})
+}
+
+// newStorageGoCacheCmd is `forge storage gocache`: trim the Go-toolchain
+// caches now. It is the pass to schedule every few minutes on a machine whose
+// builds outgrow an hourly trim (the Reliant daemon does, on cloud machines).
+func newStorageGoCacheCmd(policyPath *string) *cobra.Command {
+	var apply, dryRun bool
+	var budget time.Duration
+	cmd := &cobra.Command{
+		Use:   "gocache",
+		Short: "Trim the Go build caches now (preview unless --apply); the bounded pass to run every few minutes",
+		Long: `Trim the shared Go build cache, the golangci-lint cache, orphaned private
+Go caches and stale goimports indexes — the Go-cache layer of every other pass,
+alone, with the whole budget to itself.
+
+Entries used in the last 2h are never removed (a running build may be using
+them); past that, the cache is trimmed to go_cache_gib. Under agent load more
+than that budget can be written inside 2h, and entries cross the floor at tens
+of GiB an hour: run this every few minutes so they leave as they cross it,
+rather than piling up until an hourly pass.
+
+With --apply the outcome, including each cache's estimated size, the part
+inside the floor and whether the walk covered every shard, is recorded in
+last-gocache-gc.json beside the policy.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			path := *policyPath
+			if path == "" {
+				var err error
+				if path, err = storage.DefaultPath(); err != nil {
+					return err
+				}
+			}
+			p, err := storage.Load(path)
+			if err != nil {
+				return err
+			}
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return runGoCacheGC(ctx, p, path, cmd.OutOrStdout(), apply, budget)
+		},
+	}
+	cmd.Flags().BoolVar(&apply, "apply", false, "remove what the preview lists")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview only (the default)")
+	cmd.Flags().DurationVar(&budget, "budget", goCacheGCBudget, "wall time for the pass; what it does not reach is resumed by the next one")
+	cmd.MarkFlagsMutuallyExclusive("apply", "dry-run")
+	return cmd
 }
 
 // errAutoGCUnderTest refuses the background launch from a test binary.

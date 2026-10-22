@@ -46,8 +46,10 @@ function apiBaseUrl(): string {
 
 // The forge frontend runtime owns the interceptor stack: brand headers, W3C
 // traceparent propagation (so backend spans join the same trace — always on,
-// no collector required), typed error normalization, and transient-retry
-// with backoff. It ships as @reliantlabs/forge-web-runtime.
+// no collector required), and typed error normalization. It ships as
+// @reliantlabs/forge-web-runtime. Retries are not in the chain: React Query
+// (src/lib/query-client.ts) is the single retry owner, so a mutation is
+// never re-sent.
 //
 // NO TOKEN GETTER, and nothing here sets an Authorization header. Sign-in is
 // native: the browser POSTs credentials to this app's own API, the server
@@ -158,7 +160,25 @@ setApiTransport(transport);
  *   const user = await client.getUser({ id: "1" });
  *
  * Resolves the active transport on every call via the live binding so
- * tests can swap it via setTransport() between cases.
+ * tests can swap it via setTransport() between cases. *
+ * Every generated hook calls connectClient(<Service>), so this function is
+ * the ONE place that decides which transport each service uses. To send
+ * some services to another backend (a second API, a control plane, an
+ * unauthenticated endpoint), route on the descriptor's fully-qualified name
+ * here rather than wrapping the generated hooks:
+ *
+ *   const billing = createConnectTransport({ baseUrl: BILLING_URL, interceptors });
+ *   const routes: Record<string, Transport> = {
+ *     "billing.v1.InvoiceService": billing,
+ *   };
+ *   export function connectClient<S extends DescService>(service: S) {
+ *     return createClient(service, routes[service.typeName] ?? transport);
+ *   }
+ *
+ * Keep the default branch on `transport` (the live binding) so
+ * setTransport() in tests still reaches every service. An app adopting
+ * forge with a transport layer of its own points this at that layer the
+ * same way: forge only ever calls connectClient().
  */
 export function connectClient<S extends DescService>(service: S) {
   return createClient(service, transport);

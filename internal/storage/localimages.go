@@ -111,12 +111,14 @@ func (r Runner) containerImageUse(ctx context.Context) (map[string]bool, error) 
 	if len(ids) == 0 {
 		return used, nil
 	}
-	b, err = r.docker(ctx, append([]string{"inspect", "--format", "{{.Image}} {{.Config.Image}}"}, ids...)...)
+	chunks, err := r.inspectContainers(ctx, ids, "--format", "{{.Image}} {{.Config.Image}}")
 	if err != nil {
 		return nil, err
 	}
-	for _, f := range strings.Fields(string(b)) {
-		used[f] = true
+	for _, b := range chunks {
+		for _, f := range strings.Fields(string(b)) {
+			used[f] = true
+		}
 	}
 	return used, nil
 }
@@ -165,20 +167,20 @@ func (r Runner) backedLocalRegistries(ctx context.Context) (ports, names map[str
 	if len(ids) == 0 {
 		return ports, names, nil
 	}
-	b, err = r.docker(ctx, append([]string{"inspect"}, ids...)...)
+	chunks, err := r.inspectContainers(ctx, ids)
 	if err != nil {
 		return nil, nil, err
 	}
-	var containers []struct {
+	containers, err := decodeInspected[struct {
 		Name       string `json:"Name"`
 		HostConfig struct {
 			PortBindings map[string][]struct {
 				HostPort string `json:"HostPort"`
 			} `json:"PortBindings"`
 		} `json:"HostConfig"`
-	}
-	if err := json.Unmarshal(b, &containers); err != nil {
-		return nil, nil, fmt.Errorf("parse docker inspect: %w", err)
+	}](chunks)
+	if err != nil {
+		return nil, nil, err
 	}
 	for _, c := range containers {
 		names[strings.TrimPrefix(c.Name, "/")] = true

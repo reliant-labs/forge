@@ -39,6 +39,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
 )
@@ -62,15 +63,20 @@ import (
 // half-written main.k, kcl not installed) keeps whatever the cheap half
 // resolved rather than failing generate: failing here would turn a degraded
 // generate into no generate at all.
-func stepDeriveFrontendInventory(ctx *pipelineContext) error {
+func stepDeriveFrontendInventory(ctx *pipelineContext) (err error) {
 	if ctx.Cfg == nil {
 		return nil
 	}
 
 	fromKCL := config.DeriveFrontendsFromKCL(ctx.ProjectDir, kclDeclaredFrontends(ctx.renderedFrontends()))
 	if len(fromKCL) == 0 {
-		return nil
+		return frontendCodegenProblems(ctx.Cfg.Frontends)
 	}
+	defer func() {
+		if err == nil {
+			err = frontendCodegenProblems(ctx.Cfg.Frontends)
+		}
+	}()
 
 	before := len(ctx.Cfg.Frontends)
 	ctx.Cfg.Frontends = config.MergeFrontendInventory(ctx.Cfg.Frontends, fromKCL)
@@ -179,4 +185,22 @@ func deployEnvNames(projectDir string) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// frontendCodegenProblems refuses a run while any frontend's package.json
+// forge block cannot be honoured. A knob forge silently ignored — a
+// misspelt key, a components_dir outside the frontend — would produce the
+// very output its author wrote the block to prevent.
+func frontendCodegenProblems(fes []config.FrontendConfig) error {
+	var lines []string
+	for _, fe := range fes {
+		for _, p := range fe.CodegenProblems {
+			lines = append(lines, fmt.Sprintf("  frontend %s: %s", fe.Name, p))
+		}
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	return fmt.Errorf("frontend codegen settings could not be honoured (fix the \"forge\" block in the frontend's package.json):\n%s",
+		strings.Join(lines, "\n"))
 }

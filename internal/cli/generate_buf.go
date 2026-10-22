@@ -140,6 +140,16 @@ func runBufGenerateTypeScript(fe config.FrontendConfig, cfg *config.ProjectConfi
 		return fmt.Errorf("frontend directory %s not found", feDir)
 	}
 
+	// One writer per stub directory: a project whose own template writes
+	// this frontend's src/gen keeps it. See generate_buf_ts_writers.go.
+	owner, err := decideTSStubOwnership(projectDir, fe.Name, feDir)
+	if err != nil {
+		return err
+	}
+	if owner != tsStubsForge {
+		return nil
+	}
+
 	fmt.Printf("🔨 Generating TypeScript stubs for %s...\n", fe.Name)
 
 	// Ensure the frontend has a buf.gen.yaml with out: relative to project root.

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { forgeRuntimeConfig } from "@reliantlabs/forge-web-runtime/vite";
 // `vitest/config` re-exports vite's defineConfig with the `test` block typed.
 // Importing it from "vite" instead type-errors on `test`, and this file is in
 // the tsconfig `include` list.
@@ -158,7 +159,14 @@ export default defineConfig(({ command, mode }) => {
     // console lines that installDevLogging() posts in src/main.tsx and prints
     // them to this dev server's stdout, which `forge env up` tees to
     // .forge/logs/<env>/frontend_<name>.log. Delete both to opt out.
-    plugins: [react(), tailwindcss(), devLogPlugin()],
+    //
+    // forgeRuntimeConfig serves config.js from FORGE_RUNTIME_CONFIG_FILE when
+    // `forge env up` sets it — which it does when THIS frontend's code is
+    // checked out beside a project that declares it (a `path` outside that
+    // project), so the environment's runtime document reaches the page
+    // without being written into this tree. Unset, it does nothing and
+    // public/config.js is served as usual.
+    plugins: [react(), tailwindcss(), devLogPlugin(), forgeRuntimeConfig()],
     resolve: {
       // Resolve every runtime peer from this project root, whatever the
       // importer. A registry install already resolves that way, so this is

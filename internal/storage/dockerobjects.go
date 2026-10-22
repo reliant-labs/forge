@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -64,4 +66,64 @@ func classifyDockerRemoval(d deleter, what string, err error) (dockerRemoval, er
 // was removed.
 func dockerLayerErr(d deleter, err error) error {
 	return d.observe("docker", dockerDistress(err))
+}
+
+// isNoSuchObject reports whether a docker error says the thing it was asked
+// about does not exist (any of the daemon's and CLI's spellings).
+func isNoSuchObject(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such object") || strings.Contains(msg, "no such container")
+}
+
+// inspectContainers runs `docker inspect <flags...> <ids...>` and returns its
+// output as one or more chunks to be decoded in turn.
+//
+// The ids come from an earlier `docker ps -aq`, and a stack coming down
+// between the two removes a container the plan was about to read. `docker
+// inspect` then exits 1 and the CLI's error carries no output at all, so one
+// vanished container failed the whole pass (`storage gc --apply` exit 1). A
+// container that no longer exists is not a fact the plan needs, so on a
+// no-such-object failure each id is inspected alone and the ones that
+// disappeared are skipped. Any other failure still fails the call.
+func (r Runner) inspectContainers(ctx context.Context, ids []string, flags ...string) ([][]byte, error) {
+	b, err := r.docker(ctx, append(append([]string{"inspect"}, flags...), ids...)...)
+	if err == nil {
+		return [][]byte{b}, nil
+	}
+	if !isNoSuchObject(err) || len(ids) < 2 {
+		if isNoSuchObject(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var chunks [][]byte
+	for _, id := range ids {
+		b, err := r.docker(ctx, append(append([]string{"inspect"}, flags...), id)...)
+		switch {
+		case err == nil:
+			chunks = append(chunks, b)
+		case isNoSuchObject(err):
+			continue
+		default:
+			return nil, err
+		}
+	}
+	return chunks, nil
+}
+
+// decodeInspected decodes every chunk inspectContainers returned as a JSON
+// array and concatenates them.
+func decodeInspected[T any](chunks [][]byte) ([]T, error) {
+	var all []T
+	for _, b := range chunks {
+		var part []T
+		if err := json.Unmarshal(b, &part); err != nil {
+			return nil, fmt.Errorf("parse docker inspect: %w", err)
+		}
+		all = append(all, part...)
+	}
+	return all, nil
 }

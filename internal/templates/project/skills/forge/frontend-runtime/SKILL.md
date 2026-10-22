@@ -1,6 +1,6 @@
 ---
 name: frontend-runtime
-description: The forge frontend runtime, @reliantlabs/forge-web-runtime — the web twin of forge/pkg. Transport interceptor stack (auth, brand, W3C traceparent, error normalization, retry), app-shell providers (session, error boundary, toast host), the generic <Resource> data-table container, and browser telemetry (the HyperDX SDK: errors, console, network, traces — to ClickStack through a same-origin /_otel route).
+description: The forge frontend runtime, @reliantlabs/forge-web-runtime — the web twin of forge/pkg. Transport interceptor stack (error normalization, auth, brand, W3C traceparent; React Query owns retries), app-shell providers (session, error boundary, toast host), the generic <Resource> data-table container, and browser telemetry (the HyperDX SDK: errors, console, network, traces — to ClickStack through a same-origin /_otel route).
 ---
 
 # Frontend Runtime
@@ -60,6 +60,14 @@ Tailwind v4 does not scan `node_modules`, so your stylesheet carries an
 `@source` directive pointing at the package. Keep it — without it every
 utility only the runtime renders vanishes from the built CSS.
 
+A frontend whose code is in ANOTHER repo (a sibling `path = "../other/web"` in
+dev, or a source pin) never has a file written into that repo: forge renders its
+`config.js` to `.forge/runtime-config/<frontend>/config.js` in the declaring
+project, and `forge env up` hands the path to its dev server as
+`FORGE_RUNTIME_CONFIG_FILE`. `forgeRuntimeConfig()` from
+`@reliantlabs/forge-web-runtime/vite` serves it at `<base>config.js` (the
+vite-spa scaffold includes it; it does nothing when the variable is unset).
+
 ## 1. Transport interceptor stack
 
 `connect.ts` builds its Connect interceptors from the runtime:
@@ -74,9 +82,15 @@ const interceptors = buildRuntimeInterceptors({
 });
 ```
 
-The chain (outermost → innermost): **retry → error-normalize → auth →
-brand headers → traceparent**. Every attempt re-runs the whole chain
-(fresh token, fresh traceparent).
+The chain (outermost → innermost): **error-normalize → auth → brand
+headers → traceparent**. There is no retry layer in it: the app's React Query
+client is the single retry owner, because it knows reads from writes — it
+retries transient READ failures and never a mutation. Each React Query retry
+re-runs the queryFn, so every attempt goes through the whole chain again
+(fresh token, fresh traceparent). `retryInterceptor` is still exported,
+idempotency-gated, for code that calls the raw transport outside React Query;
+adding it to the default chain would stack two retry layers and retry
+non-idempotent writes.
 
 **Every field is optional, and the browser frontends supply no `getToken`.**
 They sign in natively: the session is an HttpOnly cookie the browser attaches

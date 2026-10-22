@@ -154,6 +154,14 @@ var removals = []removal{
 				Token: regexp.MustCompile(`tenants/|"tenants"|\btenants\b`),
 				Paths: []string{
 					"pkg/secretaccess/",
+					// The same layout, read by ESO: the SecretStore renderer
+					// composes the remoteRef key, SF3's shape tests and this
+					// renderer's fixtures spell it out.
+					"kcl/lib/external_secret.k",
+					"kcl/schema.k",
+					"kcl/tests/positive_secrets_store_*.k",
+					"internal/cli/testdata/render_contract/secrets-components.json",
+					"pkg/release/store_secrets_test.go",
 				},
 			},
 			{

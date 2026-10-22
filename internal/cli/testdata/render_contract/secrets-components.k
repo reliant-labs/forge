@@ -1,11 +1,13 @@
 """
-Render contract — the secrets components are DECLARATIONS ONLY (SF1).
+Render contract — the secrets components and a store-backed ExternalSecret.
 
-A Bundle that declares forge.OpenBao, forge.ExternalSecretsOperator,
-bootstrap_source and a store-backed forge.ExternalSecret renders exactly what
-it rendered before: the schema accepts the declarations, and no later PR has
-wired them into the output yet. This golden changes the day one does, which is
-the point: that change is then a reviewed contract change.
+forge.OpenBao, forge.ExternalSecretsOperator and bootstrap_source are
+DECLARATIONS ONLY (SF1): nothing renders for them yet. A store-backed
+forge.ExternalSecret renders its External Secrets Operator objects into
+`manifests` (SF5): the reliant-secrets ServiceAccount, the token Role and
+RoleBinding, a SecretStore and the ExternalSecret. This golden changes the day
+a component is wired into the output, which is the point: that change is then
+a reviewed contract change.
 """
 
 # kcl-args: env=staging

@@ -119,7 +119,7 @@ func (p HostInfraProvider) observeOne(ctx context.Context, svc ResolvedService) 
 		}
 	default:
 		item := ObservedItem{Name: svc.Name, Health: HealthHealthy}
-		if st.Version != "" && st.Version != svc.HostInfra.Version && svc.HostInfra.Version != "" {
+		if st.Version != "" && svc.HostInfra.Version != "" && !sameEngineVersion(svc.HostInfra.Engine, st.Version, svc.HostInfra.Version) {
 			// The cluster on disk was created by a different engine
 			// version than the one now declared. It is not broken — it is
 			// serving — but a re-read of the declaration would not
@@ -144,4 +144,14 @@ func portPhrase(port int) string {
 		return ""
 	}
 	return fmt.Sprintf(" on port %d", port)
+}
+
+// sameEngineVersion reports whether a running instance's version is the one
+// declared. A postgres data directory records only its major (PG_VERSION), so
+// a declared "16.9.0" and a reported "16" are the same server.
+func sameEngineVersion(engine, running, declared string) bool {
+	if engine == hostinfra.EnginePostgres {
+		return hostinfra.PostgresMajor(running) == hostinfra.PostgresMajor(declared)
+	}
+	return running == declared
 }

@@ -153,3 +153,24 @@ func TestSecretEnsure_HostedStaysAnError(t *testing.T) {
 		t.Fatal("ensure on a hosted provider must still refuse")
 	}
 }
+
+// A generate key whose only ref is OPTIONAL is still minted: the env naming
+// it in FileSecrets.generate is the statement that it wants a value, and an
+// optional config field (a key required only in one auth mode) is still read
+// when present. Before, it was skipped and the process refused to start.
+func TestGenerateMissingSecrets_CoversOptionalRefs(t *testing.T) {
+	e, store := generateFixture(t, &SecretProviderEntity{Type: "file", Generate: map[string]secrets.GenerateSpec{
+		"AUTH_API_KEY": {Bytes: 24, Encoding: "hex", Prefix: "rdev_"},
+	}})
+	e.Workloads[0].Spec.Env = append(e.Workloads[0].Spec.Env, deployv1alpha1.EnvVar{
+		Name: "AUTH_API_KEY", SecretRef: &deployv1alpha1.SecretKeyRef{Name: "app", Key: "auth_api_key", Optional: true},
+	})
+	got, err := generateMissingSecrets(e, store, map[string]string{}, &bytes.Buffer{})
+	if err != nil || len(got) != 1 || got[0] != "AUTH_API_KEY" {
+		t.Fatalf("generated %v, err %v; want [AUTH_API_KEY]", got, err)
+	}
+	vals, err := secrets.ReadSecretFile(store)
+	if err != nil || !strings.HasPrefix(vals["AUTH_API_KEY"], "rdev_") {
+		t.Fatalf("store holds %q, err %v", vals["AUTH_API_KEY"], err)
+	}
+}

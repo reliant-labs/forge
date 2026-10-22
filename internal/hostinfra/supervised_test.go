@@ -269,3 +269,19 @@ func TestSupervisedEnginesStartAndStop(t *testing.T) {
 		})
 	}
 }
+
+// HostInfra.version is a postgres MAJOR, and embedded-postgres fetches by
+// full release: a bare "16" used to ask Maven for an artifact that does not
+// exist (embedded-postgres-binaries-linux-amd64/16 → 404).
+func TestPostgresVersionResolvesAMajor(t *testing.T) {
+	for in, want := range map[string]string{"16": "16.9.0", "18": "18.3.0", "16.4.0": "16.4.0"} {
+		if got := string(postgresRelease(in)); got != want {
+			t.Errorf("postgresRelease(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for in, want := range map[string]string{"16": "16", "16.9.0": "16", "17.5": "17"} {
+		if got := PostgresMajor(in); got != want {
+			t.Errorf("PostgresMajor(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

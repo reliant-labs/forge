@@ -914,7 +914,7 @@ func generateMissingSecrets(e *KCLEntities, storePath string, present map[string
 	if e == nil || e.SecretProvider == nil || e.SecretProvider.Type != "file" || len(e.SecretProvider.Generate) == 0 {
 		return nil, nil
 	}
-	generated, err := secrets.EnsureGenerated(storePath, e.SecretProvider.Generate, declaredSecretNames(e), present)
+	generated, err := secrets.EnsureGenerated(storePath, e.SecretProvider.Generate, generatableSecretNames(e), present)
 	if err != nil {
 		return nil, fmt.Errorf("generate secrets: %w", err)
 	}
@@ -1029,6 +1029,32 @@ func secretProviderPathForEnv(ctx context.Context, envName string) string {
 // `ensure` that demands a value `up` does not want sends them to invent a
 // placeholder credential — which is a real-looking secret in the store, and
 // defeats the check for every genuinely-missing one after it.
+// generatableSecretNames is what `generate` may mint: every declared secret,
+// and also every OPTIONAL secret ref. An optional ref is still a ref — a
+// workload reads the value when it is there — and naming it in
+// FileSecrets.generate is the env saying it wants it there. Leaving optional
+// refs out meant a key the env asked forge to generate was never generated
+// whenever the config field behind it is optional (reliant's AUTH_API_KEY:
+// required only when AUTH_MODE=apikey, so optional in the schema), and the
+// process then refused to start for want of it.
+func generatableSecretNames(e *KCLEntities) []string {
+	seen := map[string]struct{}{}
+	for _, n := range declaredSecretNames(e) {
+		seen[n] = struct{}{}
+	}
+	for _, r := range secretRefsFromEntities(e) {
+		if r.EnvName != "" && r.Optional {
+			seen[r.EnvName] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func declaredSecretNames(e *KCLEntities) []string {
 	seen := map[string]struct{}{}
 	for _, r := range secretRefsFromEntities(e) {

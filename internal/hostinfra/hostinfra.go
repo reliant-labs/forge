@@ -371,9 +371,45 @@ func postgresConfig(spec Spec, dataDir string) embeddedpostgres.Config {
 		cfg = cfg.CachePath(cache)
 	}
 	if spec.Version != "" {
-		cfg = cfg.Version(embeddedpostgres.PostgresVersion(spec.Version))
+		cfg = cfg.Version(postgresRelease(spec.Version))
 	}
 	return cfg
+}
+
+// postgresReleases maps a postgres MAJOR to the exact release the embedded
+// binaries publish for it. HostInfra.version is documented as a major ("16"),
+// and that is what a project means: prod runs "postgres 16", not a patch
+// release. embedded-postgres fetches by full release ("16.9.0"), and handed a
+// bare "16" it asks Maven for an artifact that does not exist — so the major
+// is resolved here, to the release the library itself pins for it.
+var postgresReleases = map[string]embeddedpostgres.PostgresVersion{
+	"18": embeddedpostgres.V18,
+	"17": embeddedpostgres.V17,
+	"16": embeddedpostgres.V16,
+	"15": embeddedpostgres.V15,
+	"14": embeddedpostgres.V14,
+	"13": embeddedpostgres.V13,
+	"12": embeddedpostgres.V12,
+}
+
+// postgresRelease resolves a declared version: a known major to its pinned
+// release, anything else (an exact "16.9.0") verbatim.
+func postgresRelease(v string) embeddedpostgres.PostgresVersion {
+	if r, ok := postgresReleases[strings.TrimSpace(v)]; ok {
+		return r
+	}
+	return embeddedpostgres.PostgresVersion(v)
+}
+
+// PostgresMajor is the major of a declared or reported postgres version:
+// "16" for "16", "16.9.0" or "16.9". A data directory records only its
+// major (PG_VERSION), so that is the unit two versions are compared in.
+func PostgresMajor(v string) string {
+	v = strings.TrimSpace(v)
+	if i := strings.IndexByte(v, '.'); i >= 0 {
+		return v[:i]
+	}
+	return v
 }
 
 // postgresStartParameters is a dev server's postgresql.conf overrides for a

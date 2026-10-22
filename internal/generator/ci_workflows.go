@@ -8,6 +8,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/internal/toolpin"
 )
 
 // CIWorkflowFile is one scaffolded GitHub Actions file: the template that
@@ -167,7 +168,10 @@ func CIWorkflowsFor(root string, cfg *config.ProjectConfig, in CIInputs) []CIWor
 	}
 
 	ci := templates.CIWorkflowData{
-		ProjectName:  cfg.Name,
+		ProjectName: cfg.Name,
+		// The buf this project pins (go.mod's, else forge's): the one the
+		// gate holds PATH to and `forge generate` runs.
+		BufVersion:   toolpin.BufFor(root).Bare(),
 		HasFrontends: hasFrontends,
 		Frontends:    frontends,
 		HasServices:  hasServices,

@@ -51,6 +51,11 @@ Four rules every run obeys:
    a golangci-lint built with a Go older than your `go.mod`. Your PATH and GOBIN
    are never touched. `forge tools pins [tool]` prints these versions (`--json`
    for all), so a hand-written workflow reads them from the forge it runs.
+   buf is the one a project moves itself, in ONE place: a go.mod tool directive
+   (`go get -tool github.com/bufbuild/buf/cmd/buf@v1.57.0`). The gate,
+   `forge generate`, `forge tools install buf`, `forge tools pins buf` and the
+   scaffolded ci.yml then all run that buf instead of forge's — no Makefile pin,
+   no `$BUF` on PATH.
    `forge lint` outside the gate does the same for golangci-lint: with none on
    PATH it builds the pin into the tool cache once, and when it cannot, the
    golangci-lint lane FAILS naming `forge tools install golangci-lint`. Likewise

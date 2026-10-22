@@ -9,7 +9,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/reliant-labs/forge/internal/cigate"
 	"github.com/reliant-labs/forge/internal/goexec"
+	"github.com/reliant-labs/forge/internal/toolpin"
 )
 
 // Codegen plugins write their own version into the files they emit
@@ -175,7 +177,34 @@ func pinCodegenTools(ctx context.Context, projectDir string) (*codegenTools, err
 		res.Dirs = append(res.Dirs, dir)
 		res.paths[t.Binary] = bin
 	}
+	if err := pinBuf(ctx, projectDir, res); err != nil {
+		return nil, err
+	}
 	return res, nil
+}
+
+// pinBuf runs buf at the version the project's go.mod declares
+// (internal/toolpin), resolved exactly as `forge ci gate` resolves it — the
+// buf on PATH when it already is that version, else a build in the gate's
+// tool cache. A project that declares no buf keeps whichever buf PATH has:
+// the gate still holds that one to forge's pin.
+func pinBuf(ctx context.Context, projectDir string, res *codegenTools) error {
+	b := toolpin.BufFor(projectDir)
+	if !b.Declared() {
+		return nil
+	}
+	dir, err := cigate.NewResolver(projectDir, os.Stdout).Ensure(ctx, cigate.BufTool(projectDir))
+	if err != nil {
+		return fmt.Errorf("buf %s, which go.mod pins (%s), could not be installed: %w\n"+
+			"  fix: run `%s tools install buf`, or put a buf %s on PATH", b.Version, toolpin.BufModule, err, Name(), b.Bare())
+	}
+	if dir == "" {
+		return nil // the buf on PATH is the pin
+	}
+	fmt.Printf("📌 buf resolved to %s (go.mod pins %s) → %s\n", b.Version, b.Version, dir)
+	res.Dirs = append(res.Dirs, dir)
+	res.paths["buf"] = filepath.Join(dir, "buf"+exeSuffix())
+	return nil
 }
 
 // installPinnedTool installs t@version into dir, atomically: `go install`
@@ -247,5 +276,13 @@ func withPinnedTools(cmd *exec.Cmd, projectDir string) error {
 		base = os.Environ()
 	}
 	cmd.Env = pathPrepended(append([]string(nil), base...), c.dirs())
+	// exec.Command resolved the program against THIS process's PATH when cmd
+	// was built (and recorded a not-found in cmd.Err): a pinned buf replaces
+	// that resolution, not just the child's PATH.
+	if len(cmd.Args) > 0 && cmd.Args[0] == "buf" {
+		if p, ok := c.Path("buf"); ok {
+			cmd.Path, cmd.Err = p, nil
+		}
+	}
 	return nil
 }

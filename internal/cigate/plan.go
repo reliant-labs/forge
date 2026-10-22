@@ -15,6 +15,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/internal/toolpin"
 )
 
 // Forge owns the step list below. The scaffolded ci.yml renders the same
@@ -36,6 +37,8 @@ var (
 		VersionArgs: []string{"--version"},
 		VersionRE:   regexp.MustCompile(`has version v?(\d+\.\d+\.\d+)`),
 	}
+	// buf is forge's pin; a project that declares its own in go.mod runs
+	// that one instead (BufTool).
 	buf = Tool{
 		Binary:      "buf",
 		Module:      "github.com/bufbuild/buf/cmd/buf",
@@ -56,6 +59,16 @@ var (
 		Version: templates.GoLicensesVersion,
 	}
 )
+
+// BufTool is the buf the project at root pins (internal/toolpin): its go.mod's
+// github.com/bufbuild/buf when it declares one, forge's pin otherwise. The
+// gate holds PATH to it for verify-generated and buf-lint, so the gate, `forge
+// generate` and the scaffolded ci.yml run one buf.
+func BufTool(root string) Tool {
+	t := buf
+	t.Version = toolpin.BufFor(root).Version
+	return t
+}
 
 // PlanInput is everything the plan is derived from.
 type PlanInput struct {
@@ -321,7 +334,7 @@ func (p planner) checksLane() []Check {
 			Argv:  p.forge("ci", "verify-generated"),
 		}
 		if ci.RunsBufGenerate {
-			vg.Tools = []Tool{buf}
+			vg.Tools = []Tool{BufTool(p.Root)}
 		}
 		out = append(out, vg)
 	}
@@ -351,7 +364,7 @@ func (p planner) checksLane() []Check {
 			Name:  "buf-lint",
 			Lane:  LaneChecks,
 			Group: GroupStatic,
-			Tools: []Tool{buf},
+			Tools: []Tool{BufTool(p.Root)},
 			Argv:  []string{"buf", "lint"},
 		})
 	}

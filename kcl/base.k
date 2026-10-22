@@ -111,8 +111,10 @@ DB_ENV: [EnvVar] = [
 # The OpenTelemetry collector forge renders for the node agent and the local
 # forwarder: contrib, pinned by digest. >= 0.162 is the floor that lets the
 # profiles signal flow (service.profilesSupport). The compose forwarder in
-# docker-compose.yml pins the same reference (a test keeps them equal).
-OTEL_COLLECTOR_IMAGE: str = "otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6"
+# docker-compose.yml pins the same reference (a test keeps them equal). From
+# the OpenTelemetry project's own ghcr (the same digest Docker Hub serves),
+# because a node pulling from Docker Hub anonymously shares its IP's limit.
+OTEL_COLLECTOR_IMAGE: str = "ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6"
 
 # The node-local Service the agent DaemonSet is reached through
 # (internalTrafficPolicy: Local), in `Observability.agent.namespace`.

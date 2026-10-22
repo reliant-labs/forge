@@ -59,12 +59,15 @@ output = forge.render(forge.Bundle {
 })
 `
 
-func renderVAPObjects(t *testing.T) []*unstructured.Unstructured {
+// renderESOBundle renders main.k (a Bundle with one ExternalSecretsOperator)
+// and returns the admission objects riding the ESO chart's extraObjects and
+// every other manifest the render emitted.
+func renderESOBundle(t *testing.T, main string) (vaps, manifests []*unstructured.Unstructured) {
 	t.Helper()
 	dir := t.TempDir()
 	for name, body := range map[string]string{
 		"kcl.mod": "[package]\nname = \"esovap\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n",
-		"main.k":  vapMain,
+		"main.k":  main,
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
@@ -77,6 +80,7 @@ func renderVAPObjects(t *testing.T) []*unstructured.Unstructured {
 	}
 	var contract struct {
 		Output struct {
+			Manifests  []map[string]any `json:"manifests"`
 			HelmCharts []struct {
 				Values struct {
 					ExtraObjects []map[string]any `json:"extraObjects"`
@@ -87,14 +91,55 @@ func renderVAPObjects(t *testing.T) []*unstructured.Unstructured {
 	if err := json.Unmarshal(out, &contract); err != nil || len(contract.Output.HelmCharts) != 1 {
 		t.Fatalf("contract: %v", err)
 	}
-	var objs []*unstructured.Unstructured
 	for _, o := range contract.Output.HelmCharts[0].Values.ExtraObjects {
-		objs = append(objs, &unstructured.Unstructured{Object: o})
+		vaps = append(vaps, &unstructured.Unstructured{Object: o})
 	}
-	if len(objs) != 6 {
-		t.Fatalf("rendered %d admission objects, want 3 policies + 3 bindings", len(objs))
+	if len(vaps) != 6 {
+		t.Fatalf("rendered %d admission objects, want 3 policies + 3 bindings", len(vaps))
 	}
-	return objs
+	for _, o := range contract.Output.Manifests {
+		manifests = append(manifests, &unstructured.Unstructured{Object: o})
+	}
+	return vaps, manifests
+}
+
+func renderVAPObjects(t *testing.T) []*unstructured.Unstructured {
+	t.Helper()
+	vaps, _ := renderESOBundle(t, vapMain)
+	return vaps
+}
+
+// startESOEnvtest starts a kube-apiserver holding the embedded ESO CRDs and
+// returns an admin client (system:masters), skipping when the binaries are
+// absent.
+func startESOEnvtest(t *testing.T) (*rest.Config, client.Client) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("starts kube-apiserver and etcd; runs in task test")
+	}
+	assets := os.Getenv("KUBEBUILDER_ASSETS")
+	if assets == "" {
+		t.Skip("KUBEBUILDER_ASSETS not set (setup-envtest use); the policies are also pinned by the KCL fixtures")
+	}
+	crdFile := filepath.Join(t.TempDir(), "eso-crds.yaml")
+	crds, err := eso.CRDs(eso.ChartVersion, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(crdFile, []byte(crds), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := &envtest.Environment{CRDDirectoryPaths: []string{crdFile}, ErrorIfCRDPathMissing: true, BinaryAssetsDirectory: assets}
+	cfg, err := env.Start()
+	if err != nil {
+		t.Fatalf("start envtest: %v", err)
+	}
+	t.Cleanup(func() { _ = env.Stop() })
+	admin, err := client.New(cfg, client.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg, admin
 }
 
 var (
@@ -146,35 +191,52 @@ data:
 
 const goodTarget = `target: {creationPolicy: Orphan, deletionPolicy: Retain}`
 
+// waitPoliciesActive blocks until each of the three policies refuses an object
+// only it refuses. The API server activates ValidatingAdmissionPolicies
+// asynchronously and independently, so waiting on one says nothing about the
+// others. nonWriter, when set, is a client RBAC lets through but eso-writers
+// must refuse.
+func waitPoliciesActive(t *testing.T, admin, nonWriter client.Client) {
+	t.Helper()
+	ctx := context.Background()
+	probes := map[string]func() *unstructured.Unstructured{
+		"eso-store-pin": func() *unstructured.Unstructured {
+			return esObj(gvkSS, "app", "warmup-pin", `provider: {fake: {data: [{key: a, value: b}]}}`)
+		},
+		"eso-es-policy": func() *unstructured.Unstructured {
+			return esObj(gvkES, "app", "warmup-es", esSpec(goodTarget, "dataFrom: [{extract: {key: some/path}}]"))
+		},
+	}
+	for name, mk := range probes {
+		waitRefused(t, name, func() error { return admin.Create(ctx, mk()) }, func() { _ = admin.Delete(ctx, mk()) })
+	}
+	if nonWriter != nil {
+		mk := func() *unstructured.Unstructured {
+			return esObj(gvkSS, "app", "warmup-writer", vaultStore("https://openbao.openbao.svc:8200", "jwt-hub", "reliant-secrets", "https://secrets.example.com/c/hub"))
+		}
+		waitRefused(t, "eso-writers", func() error { return nonWriter.Create(ctx, mk()) }, func() { _ = admin.Delete(ctx, mk()) })
+	}
+}
+
+func waitRefused(t *testing.T, policy string, try func() error, cleanup func()) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if err := try(); err != nil {
+			return
+		}
+		cleanup()
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never became active", policy)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
 func TestESOAdmissionPolicies(t *testing.T) {
-	if testing.Short() {
-		t.Skip("starts kube-apiserver and etcd; runs in task test")
-	}
-	assets := os.Getenv("KUBEBUILDER_ASSETS")
-	if assets == "" {
-		t.Skip("KUBEBUILDER_ASSETS not set (setup-envtest use); the policies are also pinned by the KCL fixtures")
-	}
+	cfg, admin := startESOEnvtest(t)
 	vaps := renderVAPObjects(t)
 
-	crdFile := filepath.Join(t.TempDir(), "eso-crds.yaml")
-	crds, err := eso.CRDs(eso.ChartVersion, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(crdFile, []byte(crds), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	env := &envtest.Environment{CRDDirectoryPaths: []string{crdFile}, ErrorIfCRDPathMissing: true, BinaryAssetsDirectory: assets}
-	cfg, err := env.Start()
-	if err != nil {
-		t.Fatalf("start envtest: %v", err)
-	}
-	t.Cleanup(func() { _ = env.Stop() })
-
-	admin, err := client.New(cfg, client.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	as := func(user string, groups ...string) client.Client {
 		c := rest.CopyConfig(cfg)
 		c.Impersonate = rest.ImpersonationConfig{UserName: user, Groups: groups}
@@ -236,20 +298,9 @@ provider:
 
 	good := vaultStore("https://openbao.openbao.svc:8200", "jwt-hub", "reliant-secrets", "https://secrets.example.com/c/hub")
 
-	// Policies take a moment to become active: probe until a store the pin must
-	// refuse is refused.
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		p := esObj(gvkSS, "app", "warmup", `provider: {fake: {data: [{key: a, value: b}]}}`)
-		if err := admin.Create(ctx, p); err != nil {
-			break
-		}
-		_ = admin.Delete(ctx, p)
-		if time.Now().After(deadline) {
-			t.Fatal("eso-store-pin never became active")
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
+	// Policies take a moment to become active, each on its own clock: probe
+	// until every one refuses what it must.
+	waitPoliciesActive(t, admin, as("bob"))
 
 	type probe struct {
 		name   string
@@ -413,4 +464,82 @@ data: [{secretKey: k, remoteRef: {key: p}, sourceRef: {storeRef: {kind: ClusterS
 			check(t, c)
 		}
 	})
+}
+
+// A Bundle with OpenBao, an External Secrets Operator and one store-backed
+// ExternalSecret, and NO hand-filled `admission`, must pass its own policies:
+// the server, JWT mount and audience lists are derived from the SecretStores
+// the same render emits and from the OpenBao component. An empty list is not
+// a wildcard, so before the derivation these objects were all refused.
+const derivedAdmissionMain = `import forge
+
+_hub = forge.ClusterTarget {cluster = "envtest", namespace = "acme", platform = "amd64", connected_cluster = "hub"}
+
+output = forge.render(forge.Bundle {
+    project = "fixture"
+    env = "prod"
+    cluster_target = _hub
+    openbao = forge.OpenBao {}
+    external_secrets_operators = [forge.ExternalSecretsOperator {cluster = _hub}]
+    required_secrets = [forge.ExternalSecret {
+        name = "stripe"
+        namespace = "app"
+        keys = ["key"]
+        source = forge.StoreSource {
+            store = forge.OpenBaoStore {}
+            data = {"key" = "STRIPE_KEY"}
+        }
+    }]
+})
+`
+
+func TestESODerivedAdmissionAdmitsTheBundlesOwnObjects(t *testing.T) {
+	cfg, admin := startESOEnvtest(t)
+	_ = cfg
+	vaps, manifests := renderESOBundle(t, derivedAdmissionMain)
+	ctx := context.Background()
+
+	var store, es *unstructured.Unstructured
+	for _, m := range manifests {
+		switch m.GetKind() {
+		case "SecretStore":
+			store = m
+		case "ExternalSecret":
+			es = m
+		}
+	}
+	if store == nil || es == nil {
+		t.Fatalf("the render emitted no SecretStore/ExternalSecret (store=%v es=%v)", store != nil, es != nil)
+	}
+
+	ns := &unstructured.Unstructured{Object: map[string]any{}}
+	ns.SetAPIVersion("v1")
+	ns.SetKind("Namespace")
+	ns.SetName("app")
+	if err := admin.Create(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range vaps {
+		if err := admin.Create(ctx, o); err != nil {
+			t.Fatalf("create %s/%s: %v", o.GetKind(), o.GetName(), err)
+		}
+	}
+
+	waitPoliciesActive(t, admin, nil)
+
+	// Strip server-populated fields the render does not carry; Create takes
+	// the object as rendered.
+	if err := admin.Create(ctx, store); err != nil {
+		t.Fatalf("the Bundle's own SecretStore was refused by its own policies: %v", err)
+	}
+	if err := admin.Create(ctx, es); err != nil {
+		t.Fatalf("the Bundle's own ExternalSecret was refused by its own policies: %v", err)
+	}
+
+	// The derivation widens nothing past the Bundle: a foreign server is still
+	// refused, so the policies are live, not vacuously open.
+	bad := esObj(gvkSS, "app", "foreign", vaultStore("https://evil.example:8200", "jwt-hub", "reliant-secrets", "https://openbao.openbao.svc:8200/c/hub"))
+	if err := admin.Create(ctx, bad); err == nil || !strings.Contains(err.Error(), "may only dial a declared server") {
+		t.Fatalf("a foreign server was not refused by the derived policy: %v", err)
+	}
 }

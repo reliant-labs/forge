@@ -1308,7 +1308,7 @@ func credentialFreeURL(s string) bool {
 // A literal means the credential lives in a git-tracked .k file and in
 // `kubectl get deployment -o yaml` for anyone with read access to the
 // namespace. The correct shape — valueFrom.secretKeyRef — is what a
-// config field marked `sensitive: true` in proto/config/v1/config.proto
+// config field marked `sensitive: true` in proto/<project>/config/v1/config.proto
 // projects to; a credential-bearing field left unmarked is what puts a
 // password back in the manifest.
 //

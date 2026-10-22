@@ -98,6 +98,8 @@ type Source struct {
 	Immutable      []string                   `json:"immutable"`
 	Refresh        string                     `json:"refresh"`
 	CreationPolicy string                     `json:"creation_policy"`
+	SecretType     string                     `json:"secret_type"`
+	Labels         map[string]string          `json:"labels"`
 	Shadow         bool                       `json:"shadow"`
 	Cluster        string                     `json:"cluster"`
 }

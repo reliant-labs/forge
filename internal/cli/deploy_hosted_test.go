@@ -117,7 +117,7 @@ func runForge(t *testing.T, args ...string) (string, error) {
 		_, _ = io.Copy(&b, r)
 		done <- b.String()
 	}()
-	cmd := NewRootCmd()
+	cmd := newTestRootCmd(t)
 	cmd.SetArgs(args)
 	var stderr bytes.Buffer
 	cmd.SetErr(&stderr)
@@ -601,6 +601,34 @@ func TestResolveEnvDestinationNeverFabricatesAnID(t *testing.T) {
 		t.Fatalf("destination = %+v", got)
 	}
 	var _ = cloud.DefaultTokenEnv
+}
+
+// TestWriteHostedStatusNamesEachURL: `forge env status` text mode is where
+// an author looks for a hosted site, and the platform chose its hostname, so
+// the block names every workload's URL — before the custom domains, and
+// even when the env declares none.
+func TestWriteHostedStatusNamesEachURL(t *testing.T) {
+	e := &KCLEntities{ControlPlane: &ControlPlaneEntity{Endpoint: "https://cp.example"},
+		Workloads: []WorkloadEntity{hostedWL("web")}}
+	read := func(context.Context, string, *KCLEntities) (deploytarget.HostedEnvStatus, error) {
+		return deploytarget.HostedEnvStatus{Workloads: []deploytarget.HostedWorkloadStatus{
+			{Name: "api"},
+			{Name: "web", URL: "https://rapid-panther.sites.example"},
+		}}, nil
+	}
+	var out bytes.Buffer
+	writeHostedStatus(context.Background(), &out, "prod", e, read)
+	if got, want := out.String(), "\nhosted (prod):\n  url web: https://rapid-panther.sites.example\n"; got != want {
+		t.Errorf("status block = %q, want %q", got, want)
+	}
+
+	out.Reset()
+	writeHostedStatus(context.Background(), &out, "prod", e, func(context.Context, string, *KCLEntities) (deploytarget.HostedEnvStatus, error) {
+		return deploytarget.HostedEnvStatus{}, errors.New("control plane unreachable")
+	})
+	if out.Len() != 0 {
+		t.Errorf("an unreadable control plane must print nothing here (hosted_note carries it), got %q", out.String())
+	}
 }
 
 // TestHostedArtifactKey: the workload's own artifact name (`image`, what

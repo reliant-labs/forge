@@ -17,6 +17,8 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeatureObjectSummaries:   {"objects"},
 	BundleFeatureFrontendTelemetry: {"shape.frontend_telemetry", "shape.observability_policy.retention"},
 	BundleFeatureStoreSecrets:      {"shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery"},
+	BundleFeatureReleaseHealth:     {"shape.release_health"},
+	BundleFeatureDataAccess:        {"shape.data_access"},
 }
 
 // snapshotKeys are not features: a snapshot bundle is its own schema, gated
@@ -105,6 +107,8 @@ func fullBundleDoc() BundleDoc {
 			OpenBao:                  &ShapeOpenBao{Name: "openbao", Namespace: "openbao", Cluster: "ctx", Image: "openbao:2"},
 			ExternalSecretsOperators: []ShapeExternalSecretsOperator{{Cluster: "ctx", Namespace: "external-secrets", Version: "2.13.0"}},
 			ControlPlaneSecrets:      []ShapeControlPlaneSecret{{Name: "reliant-otel-auth", Namespace: "app", Cluster: "ctx", ConnectedCluster: "c", Kind: ControlPlaneSecretTelemetryToken, Delivery: ControlPlaneSecretDeliveryStore}},
+			DataAccess:               &ShapeDataAccess{DBQuery: DBQueryDeny},
+			ReleaseHealth:            &ShapeReleaseHealth{WindowSeconds: 1800, MinRequests: 100, MaxErrorRateIncrease: 0.02, MaxP95Ratio: 2, NewIssueMinEvents: 5, FailOn: []string{HealthErrorRate}},
 		},
 		Objects:   []ObjectSummary{{Key: api.Key(), Summary: "2 replicas · containers api"}},
 		CreatedAt: time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC),
@@ -132,7 +136,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	for _, p := range strays {
 		strayRoots[p] = true
 	}
-	for _, want := range []string{"objects", "provenance.commit_author", "provenance.commit_subject", "shape.frontend_telemetry", "shape.observability_policy.retention", "shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery"} {
+	for _, want := range []string{"objects", "provenance.commit_author", "provenance.commit_subject", "shape.frontend_telemetry", "shape.observability_policy.retention", "shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery", "shape.release_health"} {
 		if !strayRoots[want] {
 			t.Fatalf("the full document does not stray at %q (strays %v): the fixture or the doc helper no longer exercises it", want, strays)
 		}
@@ -167,6 +171,8 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	wantShape := full.Shape
 	wantShape.FrontendTelemetry = nil
 	wantShape.StoreSecrets, wantShape.GeneratedSecrets, wantShape.OpenBao, wantShape.ExternalSecretsOperators = nil, nil, nil, nil
+	wantShape.ReleaseHealth = nil
+	wantShape.DataAccess = nil
 	wantShape.ControlPlaneSecrets = []ShapeControlPlaneSecret{full.Shape.ControlPlaneSecrets[0]}
 	wantShape.ControlPlaneSecrets[0].Delivery = ""
 	pol := *wantShape.ObservabilityPolicy
@@ -201,8 +207,16 @@ func TestANewReaderGetsTheFullDocument(t *testing.T) {
 		t.Errorf("a reader of frontend telemetry only: %+v", telemetry)
 	}
 	stores := (&BundleReader{Features: []string{BundleFeatureStoreSecrets}}).Limit(full)
-	if len(stores.Shape.StoreSecrets) != 1 || stores.Shape.OpenBao == nil || len(stores.Shape.ExternalSecretsOperators) != 1 || stores.Shape.FrontendTelemetry != nil || stores.Shape.ControlPlaneSecrets[0].Delivery != ControlPlaneSecretDeliveryStore {
+	if len(stores.Shape.StoreSecrets) != 1 || stores.Shape.OpenBao == nil || len(stores.Shape.ExternalSecretsOperators) != 1 || stores.Shape.FrontendTelemetry != nil || stores.Shape.DataAccess != nil || stores.Shape.ControlPlaneSecrets[0].Delivery != ControlPlaneSecretDeliveryStore {
 		t.Errorf("a reader of store secrets only: %+v", stores)
+	}
+	health := (&BundleReader{Features: []string{BundleFeatureReleaseHealth}}).Limit(full)
+	if health.Shape.ReleaseHealth == nil || health.Shape.StoreSecrets != nil || health.Shape.FrontendTelemetry != nil {
+		t.Errorf("a reader of release health only: %+v", health)
+	}
+	access := (&BundleReader{Features: []string{BundleFeatureDataAccess}}).Limit(full)
+	if access.Shape.DataAccess == nil || access.Shape.DataAccess.DBQuery != DBQueryDeny || access.Shape.StoreSecrets != nil || access.Shape.FrontendTelemetry != nil || access.Shape.ReleaseHealth != nil {
+		t.Errorf("a reader of data access only: %+v", access)
 	}
 	if full.Shape.ControlPlaneSecrets[0].Delivery != ControlPlaneSecretDeliveryStore {
 		t.Fatal("Limit modified the control-plane secrets of the document it was given")

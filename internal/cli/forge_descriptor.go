@@ -968,6 +968,8 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 		Frontend:  configMessageFrontend(msg),
 		ProtoFile: protoFile,
 		Line:      line,
+
+		GoImportPath: string(msg.GoIdent.GoImportPath),
 	}, true
 }
 

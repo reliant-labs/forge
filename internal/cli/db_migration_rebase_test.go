@@ -29,7 +29,7 @@ func resolves(t *testing.T, command string) bool {
 	if len(fields) == 0 || fields[0] != "forge" {
 		t.Fatalf("command %q must start with \"forge\"", command)
 	}
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	found, _, err := root.Find(fields[1:])
 	if err != nil {
 		return false

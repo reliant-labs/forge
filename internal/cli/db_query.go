@@ -16,15 +16,15 @@ package cli
 //
 //	OnHost / OnCompose   direct: the workload's resolved DATABASE_URL, exactly
 //	                     what `forge env exec` would hand the process
+//	OnCluster            a port-forward to the CNPG Cluster, as the read-only
+//	                     forge_ro role, on a scratch env (db_query_cluster.go)
 //	OnHosted             the control plane's AppDatabaseService (not yet: exit 2)
-//	OnCluster            a port-forward to the CNPG cluster (not yet: exit 2)
 //
-// Policy: an env that is scratch by declaration (lifecycle local/ephemeral) or
-// targets no cluster at all is "open". Anything else is a real env, and the
-// query needs --confirm-env <env> and a --reason, so nobody reads a real
-// database by mistyping an env name. For a hosted env the control plane
-// enforces this server-side from the recorded shape; locally the flag check is
-// the whole rule.
+// Policy is the env's declared forge.DataAccess db_query: open (a local or
+// ephemeral env's default), audited (any other env's default: the query needs
+// --confirm-env <env> and a --reason, so nobody reads a real database by
+// mistyping an env name) or deny. For a hosted env the control plane enforces
+// it server-side from the recorded shape; locally this check is the rule.
 
 import (
 	"context"
@@ -43,16 +43,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/pkg/dbquery"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // dbQuerySchema names the JSON document's shape.
 const dbQuerySchema = "forge.db.query/v1"
-
-// Query policies (DESIGN §7.5 forge.DataAccess).
-const (
-	dbQueryOpen    = "open"
-	dbQueryAudited = "audited"
-)
 
 // maxDBQueryReason bounds --reason, as the control plane does.
 const maxDBQueryReason = 500
@@ -62,6 +57,7 @@ type dbQueryOptions struct {
 	sql        string
 	file       string
 	workload   string
+	database   string
 	maxRows    int
 	timeout    time.Duration
 	format     string
@@ -83,14 +79,19 @@ statement, under row and size caps. Writes, nextval() and a second statement
 are refused: by a lexical guard first (so the message is readable), and by
 Postgres itself regardless.
 
-The connection is the workload's resolved DATABASE_URL (` + "`--workload`" + `, default
-"api"): the same value ` + "`" + Name() + ` env exec` + "`" + ` gives the process. OnHost and OnCompose
-workloads are supported; hosted and cluster databases are not reachable from
-forge yet (exit 2).
+The connection follows the workload (` + "`--workload`" + `, default "api"):
+  OnHost / OnCompose  its resolved DATABASE_URL, the same value
+                      ` + "`" + Name() + ` env exec` + "`" + ` gives the process
+  OnCluster           a port-forward with your kube context to the env's
+                      ManagedDatabase (` + "`--database`" + ` when it has several), as
+                      the read-only forge_ro role; scratch envs only
+                      (lifecycle local or ephemeral)
+Hosted databases, and the databases of real cluster envs, are not reachable
+from forge yet (exit 2).
 
-An env declared scratch (lifecycle local or ephemeral) or with no cluster at
-all is open. Any other env is a real one: pass --confirm-env <env> and a
---reason.
+The env's data_access policy (forge.DataAccess) decides who may query:
+open (the default of a local or ephemeral env), audited (the default of any
+other env: pass --confirm-env <env> and a --reason) or deny.
 
 Output: a table, or --format json|csv. --json is --format json; the document
 carries ok, exit_code and error like every other forge --json verb, plus
@@ -124,7 +125,8 @@ connection lost).
 		},
 	}
 	cmd.Flags().StringVarP(&o.file, "file", "f", "", "Read the statement from FILE (- for stdin)")
-	cmd.Flags().StringVar(&o.workload, "workload", "api", "Workload whose DATABASE_URL to query")
+	cmd.Flags().StringVar(&o.workload, "workload", "api", "Workload whose database to query")
+	cmd.Flags().StringVar(&o.database, "database", "", "ManagedDatabase to query, when a cluster env declares several")
 	cmd.Flags().IntVar(&o.maxRows, "max-rows", dbquery.DefaultMaxRows, fmt.Sprintf("Row cap (at most %d)", dbquery.MaxRowsLimit))
 	cmd.Flags().DurationVar(&o.timeout, "timeout", dbquery.DefaultTimeout, fmt.Sprintf("Statement timeout (at most %s)", dbquery.MaxTimeout))
 	cmd.Flags().StringVar(&o.format, "format", "table", "Output format: table, json or csv")
@@ -139,6 +141,7 @@ type dbQueryScope struct {
 	Env       string `json:"env"`
 	Transport string `json:"transport"`
 	Workload  string `json:"workload"`
+	Database  string `json:"database,omitempty"`
 	Policy    string `json:"policy"`
 }
 
@@ -156,6 +159,8 @@ type dbQueryDocument struct {
 type dbQueryTarget struct {
 	dsn   string
 	scope dbQueryScope
+	// close releases the transport (the port-forward), or is nil.
+	close func()
 }
 
 func runDBQuery(ctx context.Context, stdin io.Reader, out io.Writer, o dbQueryOptions) error {
@@ -171,6 +176,9 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out io.Writer, o dbQueryOp
 		target, err := resolveDBQueryTarget(ctx, o)
 		if err != nil {
 			return nil, err
+		}
+		if target.close != nil {
+			defer target.close()
 		}
 		scope = &target.scope
 		if err := checkDBQueryPolicy(o, target.scope.Policy); err != nil {
@@ -264,6 +272,8 @@ func resolveDBQueryTarget(ctx context.Context, o dbQueryOptions) (dbQueryTarget,
 	switch w.Runtime.Type {
 	case RuntimeHost, RuntimeCompose:
 		scope.Transport = "direct"
+	case RuntimeCluster:
+		return resolveDBQueryCluster(ctx, o, e, w)
 	case RuntimeHosted:
 		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("workload %q in %s is hosted: its database is reached through the control plane, which this forge cannot query yet", w.Name, o.env)}
 	default:
@@ -283,32 +293,28 @@ func resolveDBQueryTarget(ctx context.Context, o dbQueryOptions) (dbQueryTarget,
 	return dbQueryTarget{dsn: dsn, scope: scope}, nil
 }
 
-// dbQueryPolicy is the env's query policy: open for an env that is scratch by
-// declaration or has no cluster to be real on, audited otherwise. The same
-// predicate as direct apply, minus the transitional applier allowance, which
-// says who applies an env, not that it is disposable.
+// dbQueryPolicy is the env's declared db_query policy (forge.DataAccess,
+// resolved by the render: what the env declared, else open for a local or
+// ephemeral env and audited for any other). Absent means audited, never open.
 func dbQueryPolicy(e *KCLEntities) string {
 	if e == nil {
-		return dbQueryOpen
+		return string(release.DBQueryAudited)
 	}
-	switch e.Lifecycle {
-	case lifecycleLocal, lifecycleEphemeral:
-		return dbQueryOpen
-	}
-	if !kclEntitiesHaveK8sCluster(e) {
-		return dbQueryOpen
-	}
-	return dbQueryAudited
+	return string(e.DataAccess.Resolved().DBQuery)
 }
 
 func checkDBQueryPolicy(o dbQueryOptions, policy string) error {
-	if policy != dbQueryAudited {
+	switch release.DBQueryPolicy(policy) {
+	case release.DBQueryOpen:
 		return nil
+	case release.DBQueryAudited:
+		if o.confirmEnv != o.env || strings.TrimSpace(o.reason) == "" {
+			return exitCodeError{code: exitWrong, msg: fmt.Sprintf("%s is a real environment (data_access db_query = audited): pass --confirm-env %s and --reason \"<why>\" to read its database", o.env, o.env)}
+		}
+		return nil
+	default:
+		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("%s refuses database queries (data_access db_query = %s)", o.env, policy)}
 	}
-	if o.confirmEnv != o.env || strings.TrimSpace(o.reason) == "" {
-		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("%s is a real environment: pass --confirm-env %s and --reason \"<why>\" to read its database", o.env, o.env)}
-	}
-	return nil
 }
 
 // dbQueryError maps a dbquery failure onto the exit table: the request was

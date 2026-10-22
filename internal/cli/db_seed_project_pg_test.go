@@ -107,7 +107,7 @@ func runForgeDB(t *testing.T, args ...string) (string, error) {
 	stdout := os.Stdout
 	os.Stdout = w
 	var cmdOut bytes.Buffer
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	root.SetOut(&cmdOut)
 	root.SetErr(&cmdOut)
 	root.SetArgs(args)

@@ -78,7 +78,7 @@ func DetectDepsDBField(dir string) (bool, error) {
 // The test harness hands a component a config only through this field, so
 // this is the one fact that decides whether the harness needs a config import
 // at all, and which. It used to import `<module>/pkg/config` unconditionally:
-// a project with no typed config (no proto/config, so no pkg/config) got a
+// a project with no typed config (no proto/<project>/config/v1, so no pkg/config) got a
 // helpers_gen_test.go that did not compile for every component, whether or
 // not any of them took a config.
 func DetectDepsConfigImport(dir string) string {

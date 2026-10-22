@@ -23,12 +23,12 @@ import (
 // config (AppConfig) declares none of them.
 const rootsRunRootProto = `syntax = "proto3";
 
-package config.v1;
+package rrr.config.v1;
 
 import "forge/v1/forge.proto";
 import "google/protobuf/duration.proto";
 
-option go_package = "github.com/test/rrr/gen/config/v1;configv1";
+option go_package = "github.com/test/rrr/gen/rrr/config/v1;configv1";
 
 // ApiConfig is the ` + "`rrr server api`" + ` process's config.
 message ApiConfig {
@@ -110,12 +110,12 @@ func TestE2ERunRootReadsEachRolesOwnConfig(t *testing.T) {
 
 	// The root config binds to the binary and gives up every per-role
 	// setting to the command configs.
-	configProto := filepath.Join(projectDir, "proto", "config", "v1", "config.proto")
+	configProto := filepath.Join(projectDir, "proto", "rrr", "config", "v1", "config.proto")
 	mustReplaceInFile(t, configProto, "message AppConfig {", "message AppConfig {\n  option (forge.v1.binary_config) = {binary: \"rrr\"};\n")
 	for _, decl := range []string{"int32 port = 1 [", "google.protobuf.Duration pre_stop_delay = 18 [", "google.protobuf.Duration shutdown_timeout = 19 ["} {
 		dropProtoFieldE2E(t, configProto, decl)
 	}
-	writeFileE2E(t, filepath.Join(projectDir, "proto", "config", "v1", "roles.proto"), rootsRunRootProto)
+	writeFileE2E(t, filepath.Join(projectDir, "proto", "rrr", "config", "v1", "roles.proto"), rootsRunRootProto)
 	writeFileE2E(t, filepath.Join(projectDir, "db", "migrations", "20260101000000_widgets.up.sql"),
 		"-- forge:backward-compatible — a new table nothing reads yet\nCREATE TABLE widgets (id BIGINT PRIMARY KEY);\n")
 

@@ -179,24 +179,30 @@ func resolveEnvDestination(ctx context.Context, envName string, e *KCLEntities, 
 	return out
 }
 
-// writeHostedDomainStatus prints the custom-domain block for a hosted env:
+// writeHostedStatus prints where a hosted env's workloads answer: the
+// platform URL of each workload that has one, then the custom-domain block —
 // per workload, each declared hostname's state, the DNS records still
-// required, and the last error. Silent for an env that is not hosted, that
-// declares no domains, or whose control plane could not be read — the JSON
-// path carries the read failure in `hosted_note`, and repeating it here
-// would put a network error in the middle of a domain report.
+// required, and the last error. Silent for an env that is not hosted or whose
+// control plane could not be read — the JSON path carries the read failure
+// in `hosted_note`, and repeating it here would put a network error in the
+// middle of the report.
 //
-// It exists because a custom domain is the one piece of hosted state whose
-// next action belongs to the AUTHOR, not to forge and not to the platform:
-// until they set the record at their registrar, nothing converges. `forge
-// env status` is where they come to find out what is wrong.
-func writeHostedDomainStatus(ctx context.Context, w io.Writer, envName string, e *KCLEntities, read hostedStatusReader) {
+// The URLs are here because the platform allocates them: the author never
+// wrote the hostname down, so without this block the only way to find a
+// hosted site is to read the platform's own objects. The domains are here
+// because a custom domain is the one piece of hosted state whose next action
+// belongs to the AUTHOR, not to forge and not to the platform: until they
+// set the record at their registrar, nothing converges.
+func writeHostedStatus(ctx context.Context, w io.Writer, envName string, e *KCLEntities, read hostedStatusReader) {
 	if e == nil || read == nil || destinationOf(e) != destinationHosted {
 		return
 	}
 	st, err := read(ctx, envName, e)
 	if err != nil {
 		return
+	}
+	if urls := deploytarget.FormatHostedURLs("  ", st.Workloads); urls != "" {
+		fmt.Fprintf(w, "\nhosted (%s):\n%s", envName, urls)
 	}
 	var printed bool
 	for _, ws := range st.Workloads {

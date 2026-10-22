@@ -6,16 +6,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/configproto"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
 func writeAdapterConfigFixture(t *testing.T, root string) {
 	t.Helper()
-	content, err := templates.ProjectTemplates().Render("config.proto.tmpl", struct{ Module string }{"example.com/testproject"})
+	layout := configproto.ForProject(root)
+	content, err := templates.ProjectTemplates().Render("config.proto.tmpl", layout.TemplateData("example.com/testproject"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(root, "proto", "config", "v1")
+	dir := filepath.Join(root, filepath.FromSlash(layout.Dir()))
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +55,7 @@ func TestAdapterScaffoldRerunIsIdempotent(t *testing.T) {
 	if err := cmd.RunE(cmd, []string{"alpha"}); err != nil {
 		t.Fatal(err)
 	}
-	protoPath := filepath.Join(root, "proto", "config", "v1", "config.proto")
+	protoPath := filepath.Join(root, filepath.FromSlash(configproto.ForProject(root).RootPath()))
 	before, err := os.ReadFile(protoPath)
 	if err != nil {
 		t.Fatal(err)

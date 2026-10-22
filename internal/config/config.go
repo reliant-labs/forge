@@ -1263,7 +1263,7 @@ const (
 
 // DefaultLoaderPackage is the package path forge's config-loader codegen
 // emits into a consuming project (generated from
-// proto/config/v1/config.proto via the (forge.v1.config) annotation). It is
+// proto/<project>/config/v1/config.proto via the (forge.v1.config) annotation). It is
 // the ONE package allowed to read the environment directly; the typed-access
 // guardrail allowlists it so the generated loader can legitimately call
 // os.Getenv / os.LookupEnv.

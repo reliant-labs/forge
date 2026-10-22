@@ -64,7 +64,7 @@ func runStartCmd(t *testing.T) string {
 // rawStartOutput runs the command and returns its stdout verbatim.
 func rawStartOutput(t *testing.T) string {
 	t.Helper()
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&out)
@@ -101,7 +101,7 @@ func TestStartRewritesCommandsToTheMountedName(t *testing.T) {
 // is the first call any agent that has never seen forge makes; a brief it
 // cannot find there saves nobody a round trip.
 func TestStartIsDiscoverableFromRootHelp(t *testing.T) {
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 
 	cmd := findSubcommand(root, "start")
 	if cmd == nil {

@@ -1633,6 +1633,19 @@ _render_delivery_policy = lambda p: DeliveryPolicy -> any {
     }
 }
 
+# ReleaseHealth, resolved. The key set is the release shape's
+# `release_health`; the window is in seconds and fail_on is sorted.
+_render_release_health = lambda h: ReleaseHealth -> any {
+    {
+        "window_seconds": _release_health_seconds(h.window)
+        "min_requests": h.min_requests
+        "max_error_rate_increase": h.max_error_rate_increase
+        "max_p95_ratio": h.max_p95_ratio
+        "new_issue_min_events": h.new_issue_min_events
+        "fail_on": sorted(h.fail_on)
+    }
+}
+
 # The declaration, as the Go side (forge env up, the local forwarder) reads it.
 _render_observability = lambda b: Bundle -> any {
     _o = b.observability
@@ -1899,6 +1912,16 @@ render = lambda bundle: Bundle -> any {
         # defaults.
         if bundle.delivery_policy:
             "delivery_policy": _render_delivery_policy(bundle.delivery_policy)
+        # How the env's data may be read (forge db query), resolved: the
+        # declaration, else what the lifecycle implies. Present only when it
+        # is not "audited", the default of an env with no lifecycle: absence
+        # means audited, never open, so a real env's render is unchanged.
+        if _data_access_db_query(bundle.data_access, bundle.lifecycle or "") != "audited":
+            "data_access": {"db_query": _data_access_db_query(bundle.data_access, bundle.lifecycle or "")}
+        # The release-health policy, resolved, only when the env declares one.
+        # Go records it in the release shape unless it is all defaults.
+        if bundle.release_health:
+            "release_health": _render_release_health(bundle.release_health)
         # The env's managed identity as DECLARED, with the applications and
         # consumers derived and the deliveries listed. It is release.Shape's
         # `identity` in the shape's own vocabulary.
@@ -2645,7 +2668,7 @@ _render_cluster = lambda c: Cluster -> any {
 # The declared charts plus the one chart each ExternalSecretsOperator lowers
 # to (lib/eso.k). Built through HelmChart so its check: block runs.
 _all_helm_charts = lambda b: Bundle -> [HelmChart] {
-    b.helm_charts + [HelmChart {**eso_lib.eso_chart(e, eso_lib.eso_owner(b.project, b.env))} for e in b.external_secrets_operators]
+    b.helm_charts + [HelmChart {**eso_lib.eso_chart(e, eso_lib.eso_owner(b.project, b.env), es_lib.admission_defaults(b, _primary_target(b), _eso_context(e)))} for e in b.external_secrets_operators]
 }
 
 # Render a HelmChart (platform dependency) to its stable dict form. The
@@ -2725,6 +2748,10 @@ _render_store_source = lambda src: any -> any {
         if src.templates:
             "templates": src.templates
         "creation_policy": src.creation_policy
+        if src.secret_type != "Opaque":
+            "secret_type": src.secret_type
+        if src.labels:
+            "labels": src.labels
         if src.shadow:
             "shadow": True
         if src.cluster:

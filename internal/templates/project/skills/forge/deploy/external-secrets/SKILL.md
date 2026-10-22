@@ -108,9 +108,38 @@ never wedges a deletion.
 `TestESOAdmissionPolicies` runs all three against a real kube-apiserver with the
 embedded CRDs (`KUBEBUILDER_ASSETS`, see `setup-envtest`); it skips without them.
 
-An empty list is not a wildcard: with `servers = []` no Vault store is admitted.
-The lists are what the SecretStore component (SF5) and the OpenBao component
-(SF6) fill in; until then declare them by hand.
+An empty list is not a wildcard: policies built from `servers = []` would admit
+no Vault store. So `servers`, `jwt_mounts`, `audiences` and `gcp_projects` that
+you leave empty are DERIVED from the same render: each SecretStore the Bundle
+emits on that cluster (its URL, its `jwt-<cluster id>` mount, its one audience,
+a `gcpsm` store's project), plus the in-cluster `forge.OpenBao`'s own server,
+mount and audience when it runs there, admitted even before any ExternalSecret
+reads from it. A list you set replaces the derived one for that list only (the
+others stay derived). A SecretStore this Bundle does not render, for example one
+a project applies by hand, is not derived: name its server in `admission.*`.
+`TestESODerivedAdmissionAdmitsTheBundlesOwnObjects` applies a Bundle's own
+objects to a real kube-apiserver with no hand-filled `admission`.
+
+## What the deploy preflight checks for store-backed Secrets
+
+A `forge.ExternalSecret` with a `source = forge.StoreSource {...}` is created by
+the operator **after** the deploy, so `forge env deploy` does not demand it up
+front the way it demands an out-of-band Secret. In its place, before anything is
+applied, it checks each cluster that holds one (`internal/cluster/store_preflight.go`):
+
+| It checks | A refusal says |
+|---|---|
+| the `ExternalSecret` and `SecretStore` kinds are served, at `external-secrets.io/v1` (skipped when this deploy installs the operator: its CRDs apply first) | declare `external_secrets_operators` and deploy `--target external-secrets` first, or deploy the env that owns the cluster's operator |
+| one owner per cluster: an operator labelled for another env is refused before any write (an unlabelled one, installed by hand, is adopted) | remove this env's entry and let the owner's bundle own the cluster |
+| an in-cluster `forge.OpenBao` finished converging (its newest converge Job succeeded), unless this deploy applies it | deploy it first with `--target <name>`; the command to inspect the Job is in the message |
+| the store holds a value for every name the ExternalSecrets read, less the names `source.generate` mints. Names and versions only, never a value | `forge secret set <NAME>`, `forge secret import`, or declare it under `source.generate` |
+
+A store that cannot be asked (no credential, control plane unreachable) is a
+**warning**, not a block. A `creationPolicy = "Merge"` Secret only updates one
+that exists, so it keeps the ordinary existence check; Orphan (the default) does not.
+A hub-reconciled env (`ControlPlane`) is not refused for a Secret the operator
+delivers; for one nothing delivers, the refusal names `source = forge.StoreSource`
+first, then `forge env secrets sync`. `--skip-preflight` bypasses all of it.
 
 ## Residual risk
 

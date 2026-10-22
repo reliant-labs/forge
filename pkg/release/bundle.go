@@ -485,6 +485,19 @@ type Shape struct {
 	// recorded before the field encodes and hashes exactly as it did; a
 	// reader treats absence as [DefaultDeliveryPolicy], never as "off".
 	DeliveryPolicy *ShapeDeliveryPolicy `json:"delivery_policy,omitempty"`
+	// DataAccess is how the env's data may be read (forge.DataAccess): today
+	// whether `forge db query` is open, audited or denied. The control plane
+	// enforces it from this recorded shape. Omitted when it is the default, so
+	// every shape recorded before the field encodes and hashes exactly as it
+	// did; a reader treats absence as [DefaultDataAccess], never as "open". A
+	// control plane that predates it refuses the whole shape, so it is a
+	// bundle-document feature ([BundleFeatureDataAccess]).
+	DataAccess *ShapeDataAccess `json:"data_access,omitempty"`
+	// ReleaseHealth is how the env's promotions are judged
+	// (forge.ReleaseHealth): the before/after window, the thresholds, and the
+	// findings that fail a release. Nil when every value is the default; a
+	// reader treats absence as [DefaultReleaseHealth].
+	ReleaseHealth *ShapeReleaseHealth `json:"release_health,omitempty"`
 	// Identity is the env's managed identity as declared
 	// (forge.ManagedIdentity): the instance the control plane's identity
 	// reconciler converges, and which workloads consume it. Names and
@@ -1061,6 +1074,16 @@ func (s Shape) Validate() error {
 			return err
 		}
 	}
+	if s.DataAccess != nil {
+		if err := s.DataAccess.validate(); err != nil {
+			return err
+		}
+	}
+	if s.ReleaseHealth != nil {
+		if err := s.ReleaseHealth.canonical().validate(); err != nil {
+			return err
+		}
+	}
 	delivered := map[string]bool{}
 	for _, c := range s.ControlPlaneSecrets {
 		if strings.TrimSpace(c.Name) == "" || strings.TrimSpace(c.Namespace) == "" || strings.TrimSpace(c.Cluster) == "" {
@@ -1227,6 +1250,19 @@ func (s Shape) Canonical() Shape {
 			out.DeliveryPolicy = &pol
 		} else {
 			out.DeliveryPolicy = nil
+		}
+	}
+	if !s.DataAccess.IsDefault() {
+		da := *s.DataAccess
+		out.DataAccess = &da
+	} else {
+		out.DataAccess = nil
+	}
+	if s.ReleaseHealth != nil {
+		if h := s.ReleaseHealth.canonical(); !s.ReleaseHealth.IsDefault() {
+			out.ReleaseHealth = &h
+		} else {
+			out.ReleaseHealth = nil
 		}
 	}
 	if s.Identity != nil {

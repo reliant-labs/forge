@@ -53,13 +53,22 @@ const (
 	// ShapeControlPlaneSecret.Delivery: a control plane that cannot read the
 	// store bindings cannot write the store, so it is left delivering by push.
 	BundleFeatureStoreSecrets = "shape-store-secrets"
+	// BundleFeatureDataAccess is Shape.DataAccess: whether the env's database
+	// may be queried (`forge db query`) openly, audited, or not at all. A
+	// control plane that predates it cannot enforce the declaration, so a shape
+	// carrying it is written only to one that names the feature.
+	BundleFeatureDataAccess = "shape-data-access"
+	// BundleFeatureReleaseHealth is Shape.ReleaseHealth: the thresholds the
+	// env's promotions are judged by (forge.ReleaseHealth). A control plane
+	// that predates it judges with the defaults.
+	BundleFeatureReleaseHealth = "shape-release-health"
 )
 
 // BundleDocFeatures is every optional bundle-document feature this version's
 // [DecodeBundleDoc] accepts. A control plane advertises exactly this list, so
 // what it claims to decode and what its decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -104,6 +113,12 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 			}
 			s.ControlPlaneSecrets = cps
 		}
+	}
+	if !r.Supports(BundleFeatureReleaseHealth) {
+		s.ReleaseHealth = nil
+	}
+	if !r.Supports(BundleFeatureDataAccess) {
+		s.DataAccess = nil
 	}
 	if r.Supports(BundleFeatureFrontendTelemetry) {
 		return s

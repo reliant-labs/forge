@@ -1295,7 +1295,7 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 				continue
 			}
 		}
-		pending, reasons, domains, err := p.pollOnce(ctx, c, envID, plan)
+		pending, reasons, published, err := p.pollOnce(ctx, c, envID, plan)
 		if rollout {
 			rolloutPending, rolloutReasons, rerr := p.pollRolloutOnce(ctx, c, envID, promotionID, plan)
 			var held *HeldError
@@ -1355,7 +1355,7 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 				pending, reasons, err = nil, nil, rerr
 			default:
 				// The rollout decides readiness; the status read
-				// above contributes only its domains.
+				// above contributes only its URLs and domains.
 				pending, reasons, err = rolloutPending, rolloutReasons, nil
 			}
 		}
@@ -1364,7 +1364,8 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 				p.observe(item.Name, cluster.RolloutStateReady, nil)
 			}
 			fmt.Printf("  readiness: all %d workload(s) ready\n", len(plan))
-			printHostedDomains(plan, domains)
+			printHostedURLs(plan, published)
+			printHostedDomains(plan, published)
 			return nil
 		}
 		if err == nil {
@@ -1373,7 +1374,7 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 			// waiting on a DNS record the author has not set yet is
 			// exactly what a deploy that looks stuck is waiting for,
 			// and the record is actionable right now.
-			printHostedDomains(plan, domains)
+			printHostedDomains(plan, published)
 		}
 		if time.Now().After(deadline) || ctx.Err() != nil {
 			return p.readinessTimedOut(envName, last, err, plan, policy)
@@ -1509,9 +1510,16 @@ func (p HostedProvider) reportHeld(plan []hostedPlanItem, held *HeldError) error
 	return held
 }
 
+// hostedPublished is where one workload answers: its platform URL and its
+// custom domains, as of one status read.
+type hostedPublished struct {
+	URL     string
+	Domains []HostedCustomDomain
+}
+
 // pollOnce reads status once and returns the names still not ready, with a
-// reason for each.
-func (p HostedProvider) pollOnce(ctx context.Context, c HostedCaller, envID string, plan []hostedPlanItem) ([]string, map[string]string, map[string][]HostedCustomDomain, error) {
+// reason for each, and where each workload in the status answers.
+func (p HostedProvider) pollOnce(ctx context.Context, c HostedCaller, envID string, plan []hostedPlanItem) ([]string, map[string]string, map[string]hostedPublished, error) {
 	var resp wireStatusResponse
 	if err := c.Call(ctx, procGetStatus, map[string]any{"environmentId": envID}, &resp); err != nil {
 		return nil, nil, nil, err
@@ -1523,7 +1531,7 @@ func (p HostedProvider) pollOnce(ctx context.Context, c HostedCaller, envID stri
 	}
 	var pending []string
 	reasons := map[string]string{}
-	domains := map[string][]HostedCustomDomain{}
+	published := map[string]hostedPublished{}
 	for _, item := range plan {
 		st, ok := byName[item.Name]
 		if !ok {
@@ -1531,16 +1539,45 @@ func (p HostedProvider) pollOnce(ctx context.Context, c HostedCaller, envID stri
 			reasons[item.Name] = "not in the environment's status yet"
 			continue
 		}
-		if d := customDomainsOf(st.Deployment.Observed); len(d) > 0 {
-			domains[item.Name] = d
+		pub := hostedPublished{Domains: customDomainsOf(st.Deployment.Observed)}
+		if obs := st.Deployment.Observed; obs != nil {
+			pub.URL = obs.URL
 		}
+		published[item.Name] = pub
 		if envConverged || hostedDeploymentReady(st, item.DesiredDigest) {
 			continue
 		}
 		pending = append(pending, item.Name)
 		reasons[item.Name] = describeHostedStatus(st)
 	}
-	return pending, reasons, domains, nil
+	return pending, reasons, published, nil
+}
+
+// printHostedURLs is the deploy summary's answer to "where is it?": the
+// platform URL of every workload that has one, in plan order. Printed once,
+// when the deploy is ready — a URL printed mid-rollout may still serve the
+// previous release.
+func printHostedURLs(plan []hostedPlanItem, published map[string]hostedPublished) {
+	ws := make([]HostedWorkloadStatus, 0, len(plan))
+	for _, item := range plan {
+		ws = append(ws, HostedWorkloadStatus{Name: item.Name, URL: published[item.Name].URL})
+	}
+	fmt.Print(FormatHostedURLs("  ", ws))
+}
+
+// FormatHostedURLs renders one "url <name>: <url>" line per workload that has
+// a platform URL, in the order given; "" when none has one. It is the one
+// spelling `forge env deploy` and `forge env status` share, so the line an
+// author copies a URL from reads the same in both.
+func FormatHostedURLs(indent string, workloads []HostedWorkloadStatus) string {
+	var b strings.Builder
+	for _, w := range workloads {
+		if w.URL == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "%surl %s: %s\n", indent, w.Name, w.URL)
+	}
+	return b.String()
 }
 
 // printHostedDomains is the deploy summary's custom-domain block: per
@@ -1552,13 +1589,10 @@ func (p HostedProvider) pollOnce(ctx context.Context, c HostedCaller, envID stri
 // go and edit DNS at their registrar, which forge cannot do and must not
 // block on. Printing the exact record is what turns "not live" into a next
 // step.
-func printHostedDomains(plan []hostedPlanItem, domains map[string][]HostedCustomDomain) {
-	if len(domains) == 0 {
-		return
-	}
+func printHostedDomains(plan []hostedPlanItem, published map[string]hostedPublished) {
 	var printed bool
 	for _, item := range plan {
-		d := domains[item.Name]
+		d := published[item.Name].Domains
 		if len(d) == 0 {
 			continue
 		}

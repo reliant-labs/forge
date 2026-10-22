@@ -1659,16 +1659,6 @@ func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error 
 		}
 		gen.Features = gen.Features.With(key, false)
 		gen.Features, _ = gen.Features.Pin(key, false)
-		// The ORM and migrations are projections of codegen
-		// (config/feature_graph.go): a project without codegen derives both
-		// off at every load, so this scaffold must not write them either.
-		// It used to: `--disable codegen` alone still wrote db/migrations
-		// and a dev env with a database and an API, whose main.k imports a
-		// config_gen module only codegen produces — so the project's first
-		// generate failed rendering it. Not pinned: the tree derives them off.
-		if key == config.FeatureCodegen {
-			gen.Features = gen.Features.With(config.FeatureORM, false).With(config.FeatureMigrations, false)
-		}
 	}
 	return nil
 }

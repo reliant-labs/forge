@@ -69,7 +69,7 @@ func TestCompositionGraph_ConvertsTheScaffoldedComposition(t *testing.T) {
 	}
 
 	before := snapshot(t, dir)
-	dry, err := runCompositionGraph(dir, false)
+	dry, err := runCompositionGraph(dir, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestCompositionGraph_ConvertsTheScaffoldedComposition(t *testing.T) {
 		t.Fatal("--dry-run wrote")
 	}
 
-	rep, err := runCompositionGraph(dir, true)
+	rep, err := runCompositionGraph(dir, Options{Write: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestCompositionGraph_ConvertsTheScaffoldedComposition(t *testing.T) {
 		t.Errorf("Next does not name the retired subcommands:\n%s", strings.Join(rep.Next, "\n"))
 	}
 
-	again, err := runCompositionGraph(dir, true)
+	again, err := runCompositionGraph(dir, Options{Write: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestCompositionGraph_ConventionalComposeIsRescaffolded(t *testing.T) {
 	if err := os.WriteFile(path, []byte(strings.Replace(string(b), "\t\tDB:     infra.ORM,\n", "", 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runCompositionGraph(dir, true); err != nil {
+	if _, err := runCompositionGraph(dir, Options{Write: true}); err != nil {
 		t.Fatal(err)
 	}
 	if exists(dir, "internal/app/compose.go") || checksums.ScaffoldRecorded(dir, "internal/app/compose.go") {
@@ -195,7 +195,7 @@ func TestCompositionGraph_RefusesBespokeShapesAndWritesNothing(t *testing.T) {
 	}
 	before := snapshot(t, dir)
 
-	rep, err := runCompositionGraph(dir, true)
+	rep, err := runCompositionGraph(dir, Options{Write: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestCompositionGraph_NothingToDo(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	rep, err := runCompositionGraph(dir, true)
+	rep, err := runCompositionGraph(dir, Options{Write: true})
 	if err != nil || rep.Changed() || len(rep.Blocked) > 0 || len(rep.Next) > 0 {
 		t.Fatalf("no internal/app, no binary: %+v, %v", rep, err)
 	}
@@ -250,7 +250,7 @@ func TestCompositionGraph_NothingToDo(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	rep, err = runCompositionGraph(dir, true)
+	rep, err = runCompositionGraph(dir, Options{Write: true})
 	if err != nil || rep.Changed() {
 		t.Fatalf("hand-composed: %+v, %v", rep, err)
 	}

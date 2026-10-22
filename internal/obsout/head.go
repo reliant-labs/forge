@@ -55,8 +55,6 @@ func ExitCodeOf(err error) int {
 type Scope struct {
 	Env     string `json:"env"`
 	Backend string `json:"backend"`
-	// EnvID is the control plane's id of the env; cloud backend only.
-	EnvID string `json:"env_id,omitempty"`
 	// From and To are the half-open range queried, in UTC.
 	From     time.Time `json:"from"`
 	To       time.Time `json:"to"`

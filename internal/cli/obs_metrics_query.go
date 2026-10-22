@@ -33,7 +33,7 @@ const schemaObsMetricsList = "forge.obs.metrics_list/v1"
 var obsMetricsListSchema = obsout.Schema{
 	Name: schemaObsMetricsList,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services",
 		"query_mode",
 		"metrics", "metrics.name", "metrics.type", "metrics.unit", "metrics.description",
 		"statements", "statements.purpose", "statements.sql", "statements.params.*",
@@ -143,7 +143,7 @@ const schemaObsMetricsQuery = "forge.obs.metrics_query/v1"
 var obsMetricsQuerySchema = obsout.Schema{
 	Name: schemaObsMetricsQuery,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services",
 		"query_mode", "metric", "type", "unit", "agg", "step_seconds",
 		"series", "series.labels.*", "series.points", "series.points.time", "series.points.value",
 		"statements", "statements.purpose", "statements.sql", "statements.params.*",

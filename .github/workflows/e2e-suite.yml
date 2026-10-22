@@ -445,28 +445,6 @@ jobs:
           fi
           printf '  ok       %-24s %s\n' "docker daemon" "$server"
 
-      # ── THE CHECKOUT UNDER TEST STAYS CLEAN. Every fixture project bridges
-      # this checkout (go.work `use`), and the prebuilt forge was built from
-      # it clean. A file written into it — even an untracked log — makes
-      # forge's bridge-skew check read "uncommitted changes the binary was
-      # not built from" and hand every command to a forge rebuilt from the
-      # checkout, keyed on the newest edit's mtime. A log that grows while
-      # the tests run moves that key on every command, so a re-run of
-      # `forge generate` runs a different binary and can never reach its
-      # fixed point (TestE2EFixtureCorpusCRUDLifecycle / CPForgeShaped /
-      # ZeroService, intermittently, from b31bfc72b). So the shard's own
-      # files live in $SHARD_OUT, outside the checkout, and this check runs
-      # before the tests and again after them.
-      - name: The checkout under test is clean
-        run: |
-          set -euo pipefail
-          dirty=$(git status --porcelain --untracked-files=all)
-          if [ -n "$dirty" ]; then
-            echo "::error::the checkout the e2e fixtures bridge is dirty before the run — forge would rebuild itself from it; write nothing into it:"
-            echo "$dirty"
-            exit 1
-          fi
-
       # ── The partition. Planned once by prepare, printed and checked here.
       - name: Assign this shard its tests
         env:
@@ -475,7 +453,17 @@ jobs:
         run: |
           set -euo pipefail
           plan="$RUNNER_TEMP/e2e-dist/plan"
-          # Outside the checkout: see "The checkout under test is clean".
+          # Outside the checkout. Every fixture bridges this checkout
+          # (go.work `use`), and this job's files used to land in its root:
+          # all-tests.txt, shard-tests.txt and the test2json log, which grows
+          # for the whole run. forge's bridge-skew check then read the
+          # prebuilt binary as skewed from "uncommitted changes" and handed
+          # every command to a forge rebuilt from the checkout, keyed on the
+          # log's mtime — a different binary for each re-run of `forge
+          # generate`, which so never recorded its fixed point (CRUDLifecycle,
+          # CPForgeShaped, ZeroService on main). forge now counts only edits
+          # a build of it can read (internal/forgecompat sourceEdit); the
+          # shard writes nothing into the code under test regardless.
           out="$RUNNER_TEMP/e2e-shard"
           mkdir -p "$out"
           echo "SHARD_OUT=$out" >> "$GITHUB_ENV"
@@ -571,19 +559,6 @@ jobs:
             ${{ env.SHARD_OUT }}/all-tests.txt
           retention-days: 7
           if-no-files-found: error
-
-      # The same check after the run: a test that wrote into the checkout
-      # (rather than its own t.TempDir) skewed every forge command after it.
-      - name: The tests left the checkout clean
-        if: always()
-        run: |
-          set -euo pipefail
-          dirty=$(git status --porcelain --untracked-files=all)
-          if [ -n "$dirty" ]; then
-            echo "::error::an e2e test wrote into the checkout the fixtures bridge — keep test state in t.TempDir():"
-            echo "$dirty"
-            exit 1
-          fi
 
       - name: Upload generated trees on failure
         if: failure()

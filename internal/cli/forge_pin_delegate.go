@@ -123,7 +123,9 @@ func delegateTargetFor(projectRoot string) (t delegateTarget, ok bool) {
 		return delegateTarget{
 			binary:   rep.Binary.Name,
 			checkout: rep.Bridge.Dir,
-			stamp:    rep.Checkout.Head + "+" + strconv.FormatBool(rep.Checkout.Dirty) + "@" + strconv.FormatInt(rep.Checkout.LastEditAt.UnixNano(), 10),
+			// Keyed on source edits only: an untracked report growing in the
+			// checkout's root must not rebuild forge on every command.
+			stamp: rep.Checkout.Head + "+" + strconv.FormatBool(rep.Checkout.SourceEdits) + "@" + strconv.FormatInt(rep.Checkout.LastSourceEditAt.UnixNano(), 10),
 		}, true
 	}
 	pin, binary, skewed, devTag := pinSkewFor(projectRoot)

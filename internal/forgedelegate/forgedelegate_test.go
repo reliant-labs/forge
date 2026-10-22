@@ -228,3 +228,71 @@ func TestSafeName(t *testing.T) {
 		t.Errorf("unsafe: %q", got)
 	}
 }
+
+// Builds that differ only in their Go settings are different binaries:
+// GOFLAGS=-trimpath changes the bytes. They get entries of their own, so one
+// never stands in for, or replaces, the other.
+func TestBridge_KeysOnTheBuildSettings(t *testing.T) {
+	r, _, _ := newResolver(t)
+	checkout := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(checkout, "cmd", "forge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	builds := 0
+	r.Build = func(_ context.Context, _, out string) error {
+		builds++
+		return atomicfile.WriteFile(out, []byte("#!/bin/sh\n"), 0o755)
+	}
+	t.Setenv("GOFLAGS", "")
+	plain, err := r.Bridge(context.Background(), checkout, "abc+false@0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOFLAGS", "-trimpath")
+	trimmed, err := r.Bridge(context.Background(), checkout, "abc+false@0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builds != 2 || plain.Path == trimmed.Path {
+		t.Fatalf("GOFLAGS=-trimpath reused the plain build: %d build(s), %s vs %s", builds, plain.Path, trimmed.Path)
+	}
+}
+
+// A binary already published is never replaced: a process may be running it.
+func TestPublish_NeverReplacesAPublishedBinary(t *testing.T) {
+	dir := t.TempDir()
+	to := filepath.Join(dir, "forge")
+	if err := os.WriteFile(to, []byte("first"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := filepath.Join(dir, "forge.new")
+	if err := os.WriteFile(from, []byte("second"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := publish(from, to); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "first" || !os.SameFile(before, after) {
+		t.Fatalf("publish replaced the published binary: now %q", got)
+	}
+
+	fresh := filepath.Join(dir, "fresh")
+	if err := publish(from, fresh); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(fresh); err != nil || string(got) != "second" {
+		t.Fatalf("publish to an empty slot = %q, %v", got, err)
+	}
+}

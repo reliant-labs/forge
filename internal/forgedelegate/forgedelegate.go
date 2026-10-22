@@ -174,7 +174,10 @@ func (r *Resolver) Pinned(ctx context.Context, projectRoot, pin string) (Result,
 // Bridge returns a forge built from the checkout at dir, the forge a project
 // bridged to it (go.work `use`, or a directory `replace`) compiles against.
 // stamp must change whenever the checkout's contents do (HEAD plus its
-// uncommitted edits), so an unchanged checkout is built once.
+// uncommitted edits), so an unchanged checkout is built once. The build's own
+// settings join the key (buildSettingsKey): two callers whose GOFLAGS differ
+// (one with -trimpath, one without) build different bytes from the same
+// checkout, and must not share — or replace — one cached binary.
 func (r *Resolver) Bridge(ctx context.Context, dir, stamp string) (Result, error) {
 	if st, err := os.Stat(filepath.Join(dir, "cmd", "forge")); err != nil || !st.IsDir() {
 		return Result{}, fmt.Errorf("%s has no cmd/forge to build", dir)
@@ -183,7 +186,7 @@ func (r *Resolver) Bridge(ctx context.Context, dir, stamp string) (Result, error
 	if err != nil {
 		return Result{}, err
 	}
-	sum := sha256.Sum256([]byte(dir + "\x00" + stamp))
+	sum := sha256.Sum256([]byte(dir + "\x00" + stamp + "\x00" + buildSettingsKey(goexec.Env(buildEnvExtra()...))))
 	entry := filepath.Join(cache, "checkout-"+hex.EncodeToString(sum[:8]), runtime.GOOS+"-"+runtime.GOARCH)
 	bin := filepath.Join(entry, exeName())
 	if st, err := os.Stat(bin); err == nil && !st.IsDir() {
@@ -216,18 +219,50 @@ func (r *Resolver) Bridge(ctx context.Context, dir, stamp string) (Result, error
 	return Result{Path: bin, Source: "forge built from checkout " + dir}, nil
 }
 
-// publish moves a finished build into the cache. A binary already there wins:
-// two processes building the same version race to rename, and both results are
-// the same bytes.
+// buildSettings are the environment variables that change the bytes `go
+// build` / `go install` produce from the same source. GOOS and GOARCH are
+// here as well as in the entry path: the path names the running forge's
+// platform, the variables the one being built.
+var buildSettings = []string{"GOFLAGS", "GOEXPERIMENT", "CGO_ENABLED", "GOOS", "GOARCH", "GOAMD64", "GOARM64", "GOTOOLCHAIN"}
+
+// buildSettingsKey is env's values for buildSettings, the last assignment
+// winning as it does for exec.
+func buildSettingsKey(env []string) string {
+	vals := map[string]string{}
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			vals[k] = v
+		}
+	}
+	var b strings.Builder
+	for _, k := range buildSettings {
+		b.WriteString(k + "=" + vals[k] + "\x00")
+	}
+	return b.String()
+}
+
+// publish moves a finished build into the cache. A binary already there wins
+// and is never replaced: another process may be running it right now, and a
+// generate run that fingerprints its own executable before and after would
+// see it change underneath it. Two processes that build the same entry race;
+// the loser's build is discarded with its temp directory.
 func publish(from, to string) error {
 	if _, err := os.Stat(from); err != nil {
 		return fmt.Errorf("the build produced no %s: %w", filepath.Base(from), err)
 	}
+	// A hard link fails when the target exists, which is the no-replace
+	// rename os.Rename cannot express.
+	lerr := os.Link(from, to)
+	if lerr == nil {
+		return nil
+	}
+	if st, serr := os.Stat(to); serr == nil && !st.IsDir() {
+		return nil
+	}
+	// No hard links on this filesystem: fall back to a rename, which can
+	// replace only a binary that appeared since the Stat just above.
 	if err := os.Rename(from, to); err != nil {
-		if st, serr := os.Stat(to); serr == nil && !st.IsDir() {
-			return nil
-		}
-		return err
+		return fmt.Errorf("publish %s: %w (link: %v)", to, err, lerr)
 	}
 	return nil
 }

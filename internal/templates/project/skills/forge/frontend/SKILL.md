@@ -139,12 +139,12 @@ To stub an RPC, run `forge scaffold scenario <name>` and add a typed handler —
 
 ## Runtime config and backend URLs
 
-A frontend reads its per-env values from `src/lib/config_gen.ts` (`loadConfig()`), which reads `window.__FORGE_CONFIG__`. That global is set by **`<basePath>/config.js`**, a classic blocking `<script>` in the shell's `<head>`: `layout.tsx` for Next.js, `index.html` (`%BASE_URL%config.js`) for Vite. Values arrive at RUNTIME, so one built bundle promotes across environments. Never read `NEXT_PUBLIC_*` / `VITE_*` for a per-env value, because the bundler freezes it at build time.
+A frontend reads its per-env values from `src/lib/config_gen.ts` (`loadConfig()`), which reads `window.__FORGE_CONFIG__`. That global is set by **`<basePath>/config.js`**, a classic blocking `<script>` in the shell's `<head>`: `layout.tsx` for Next.js, `index.html` (`%BASE_URL%config.js`) for Vite. Values arrive at runtime, so one bundle promotes across envs: never read `NEXT_PUBLIC_*` / `VITE_*` for a per-env value (the bundler freezes it).
 
 Two sources are layered into the document, key by key:
 
 1. **Typed config**: the `(forge.v1.frontend_config)` proto message, with per-env values in `deploy/kcl/<env>/config.k`.
-2. **`runtime_config`** on the `forge.Frontend`, which wins on the same key. Use it when a value is **another workload's URL**:
+2. **`runtime_config`** on the `forge.Frontend`, which wins on the same key; an unread key fails the render (`frontend-runtime`). Use it when a value is **another workload's URL**:
 
 ```kcl
 forge.Frontend {
@@ -161,12 +161,10 @@ Name the workload, never the hostname:
 
 | Env | Who resolves `forge.WorkloadURL` | Who writes `config.js` |
 |---|---|---|
-| **Hosted** (the referrer is a frontend or a workload bound to `forge.OnHosted`) | The control plane. It allocates the hostnames and rewrites the document when one moves. | The control plane, after every StaticSite sync. The release artifact carries **no** config.js. |
+| **Hosted** (the referrer is a frontend or a workload bound to `forge.OnHosted`) | The control plane: it allocates hostnames and rewrites the document when one moves. | The control plane, after every StaticSite sync (the release carries none). |
 | Everything else (host, compose, cluster, `OnFirebase` / `OnBucket`) | forge, **at render time**: a route to the workload → a custom domain on its exposed port → its host `listen_ports` → a frontend's `port`. | forge: `public/config.js` in dev, per env on a Firebase / bucket deploy. |
 
 Unknown names are refused at load; on a non-hosted env so is a URL forge cannot know at render time (typically a host service without `listen_ports`, whose port `forge env up` assigns after rendering).
-
-A `runtime_config` **key** must be one the frontend reads: a field of its `(forge.v1.frontend_config)` message, or one of forge's own runtime keys (`API_URL`, `ENVIRONMENT`, `OTEL_ENDPOINT`, `CONSOLE_CAPTURE`, `REPLAY_SAMPLE_RATE`). `forge generate` writes the frontend's key list to `src/lib/config_schema_gen.json` beside `config_gen.ts`, and every render checks `runtime_config` against it — including from another repo that declares this frontend's environments — so a misspelled key fails the render with a did-you-mean instead of silently leaving the field on its default. A frontend with no config message (no schema file) is not checked.
 
 A hosted site's own hostname is not a field: `forge domain add` (see `deploy`).
 

@@ -230,12 +230,84 @@ func TestObsStoppedClickStackExits2NamingForgeEnvUp(t *testing.T) {
 	}
 }
 
-func TestObsCloudEnvIsRefusedUntilTheCloudBackendExists(t *testing.T) {
+// A cloud-resolved env reads through the control plane: the verb builds the
+// cloud backend, and the document names it and the env id.
+func TestObsCloudEnvReadsTheControlPlane(t *testing.T) {
 	f := obsbackend.Facts{Env: "prod", Declared: true, Enabled: true, HasHosted: true, ControlPlane: "https://cp"}
-	_, _, err := obsRun(t, f, &scriptedRunner{}, "logs", "prod")
-	if exitCodeForError(err) != 2 || !strings.Contains(err.Error(), "--backend local") {
-		t.Errorf("err = %v", err)
+	fc := &fakeCloudCaller{replies: map[string]string{
+		"controlplane.v1.ObservabilityService/SearchLogs": `{"logs":[{"timestamp":"2026-10-22T11:59:00Z","severityText":"ERROR","severityNumber":17,"service":"api","body":"boom","traceId":"0af7651916cd43dd8448eb211c80319c"}]}`,
+	}}
+	old := obsDepsOverride
+	t.Cleanup(func() { obsDepsOverride = old })
+	var out, errb bytes.Buffer
+	obsDepsOverride = &obsDeps{
+		Facts: func(context.Context, io.Writer, string) (obsbackend.Facts, error) { return f, nil },
+		Cloud: func(_ context.Context, env string) (obsbackend.Cloud, error) {
+			return obsbackend.Cloud{Env: env, EnvID: "env-prod", OrgID: "org-1", Caller: fc}, nil
+		},
+		Now: func() time.Time { return obsNow },
 	}
+	cmd := NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(&errb)
+	cmd.SetArgs([]string{"obs", "logs", "prod", "--json"})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("%v\n%s", err, errb.String())
+	}
+	doc := decode(t, out.String())
+	scope, _ := doc["scope"].(map[string]any)
+	if scope["backend"] != "cloud" || scope["env_id"] != "env-prod" {
+		t.Errorf("scope %v", scope)
+	}
+	if !strings.Contains(out.String(), "boom") {
+		t.Errorf("the record is missing:\n%s", out.String())
+	}
+	if len(fc.calls) != 1 || !strings.Contains(fc.calls[0].body, `"envIds":["env-prod"]`) || !strings.Contains(fc.calls[0].body, `"orgId":"org-1"`) {
+		t.Errorf("request not bound to the env: %+v", fc.calls)
+	}
+}
+
+// A cloud env whose control plane cannot be reached is "could not look".
+func TestObsCloudUnreachableIsUndetermined(t *testing.T) {
+	f := obsbackend.Facts{Env: "prod", Declared: true, Enabled: true, HasHosted: true, ControlPlane: "https://cp"}
+	old := obsDepsOverride
+	t.Cleanup(func() { obsDepsOverride = old })
+	obsDepsOverride = &obsDeps{
+		Facts: func(context.Context, io.Writer, string) (obsbackend.Facts, error) { return f, nil },
+		Cloud: func(context.Context, string) (obsbackend.Cloud, error) {
+			return obsbackend.Cloud{}, obsbackend.Undetermined("env prod: cannot reach its control plane")
+		},
+		Now: func() time.Time { return obsNow },
+	}
+	cmd := NewRootCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"obs", "traces", "prod"})
+	if err := cmd.ExecuteContext(context.Background()); exitCodeForError(err) != 2 {
+		t.Errorf("err = %v, want exit 2", err)
+	}
+}
+
+// fakeCloudCaller answers procedures with canned JSON and records requests.
+type fakeCloudCaller struct {
+	replies map[string]string
+	errs    map[string]error
+	calls   []fakeCloudCall
+}
+
+type fakeCloudCall struct{ procedure, body string }
+
+func (f *fakeCloudCaller) Call(_ context.Context, procedure string, req, out any) error {
+	b, _ := json.Marshal(req)
+	f.calls = append(f.calls, fakeCloudCall{procedure, string(b)})
+	if err := f.errs[procedure]; err != nil {
+		return err
+	}
+	reply, ok := f.replies[procedure]
+	if !ok {
+		return fmt.Errorf("unexpected call %s", procedure)
+	}
+	return json.Unmarshal([]byte(reply), out)
 }
 
 func TestObsQueryRefusesWritesAndCountsRawQueries(t *testing.T) {

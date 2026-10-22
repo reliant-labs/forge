@@ -23,6 +23,8 @@ const (
 type Info struct {
 	Env     string
 	Backend string
+	// EnvID is the control plane's id for the env, on the cloud backend.
+	EnvID string
 }
 
 // Range is the half-open time range of a query, in UTC.

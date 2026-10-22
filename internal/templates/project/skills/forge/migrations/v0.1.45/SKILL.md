@@ -76,7 +76,7 @@ Use when `deploy/kcl/dev/main.k` declares `_observability` but no `profiles_port
 
 ### Verify
 
-`forge env render dev | grep PROFILES` shows `OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT=http://127.0.0.1:<port>/v1development/profiles` on each host workload. After `forge env up dev` and a minute of traffic, `forge observe profile --list` names your services.
+`forge env render dev | grep PROFILES` shows `OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT=http://127.0.0.1:<port>/v1development/profiles` on each host workload. After `forge env up dev` and a minute of traffic, `forge obs profile --list` names your services.
 
 ## 3. Retired `forge/pkg` module in `gen/go.mod`
 

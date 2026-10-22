@@ -1,7 +1,7 @@
 // Package profilequery reads continuous profiles back out of ClickHouse and
 // writes them in formats other tools open.
 //
-// It is the reusable half of `forge observe profile`: nothing here shells out or
+// It is the reusable half of `forge obs profile`: nothing here shells out or
 // touches a terminal. Stacks come from the tables docker-compose.yml's
 // `profiles-schema` job creates (see profiles-schema.sql in a scaffolded
 // project); Stack is the interchange value, and Pprof, Speedscope and Folded
@@ -182,7 +182,7 @@ func (p Profile) Pprof(w io.Writer) error {
 	if !p.To.IsZero() && p.To.After(p.From) {
 		pp.DurationNanos = p.To.Sub(p.From).Nanoseconds()
 	}
-	pp.Comments = []string{fmt.Sprintf("forge observe profile: service=%s type=%s", p.Service, p.SampleType)}
+	pp.Comments = []string{fmt.Sprintf("forge obs profile: service=%s type=%s", p.Service, p.SampleType)}
 
 	funcs := map[string]*profile.Function{}
 	locs := map[string]*profile.Location{}
@@ -252,7 +252,7 @@ func (p Profile) Speedscope(w io.Writer) error {
 	doc := map[string]any{
 		"$schema":            "https://www.speedscope.app/file-format-schema.json",
 		"name":               prof.Name,
-		"exporter":           "forge observe profile",
+		"exporter":           "forge obs profile",
 		"activeProfileIndex": 0,
 		"shared":             map[string]any{"frames": frames},
 		"profiles":           []sampled{prof},

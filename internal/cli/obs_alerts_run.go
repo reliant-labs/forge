@@ -1,6 +1,6 @@
 package cli
 
-// `forge observe alerts run` — the local alerting loop's evaluator, the
+// `forge obs alerts run` — the local alerting loop's evaluator, the
 // scaffolded `alerts` host workload. It evaluates the rules document
 // `forge env up` renders, continuously, against the local ClickStack (the
 // same Querier `check` uses), posts what fires to the local Alertmanager, and
@@ -32,7 +32,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/alerting/amconfig"
 )
 
-type observeAlertsRunOpts struct {
+type obsAlertsRunOpts struct {
 	env          string
 	alertmanager string
 	listen       string
@@ -40,8 +40,8 @@ type observeAlertsRunOpts struct {
 	maxRows      int
 }
 
-func newObserveAlertsRunCmd() *cobra.Command {
-	o := observeAlertsRunOpts{}
+func newObsAlertsRunCmd() *cobra.Command {
+	o := obsAlertsRunOpts{}
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Evaluate the env's alert rules continuously and deliver what fires through the local Alertmanager",
@@ -61,10 +61,10 @@ workload (deploy/kcl/dev/main.k). It
 The rules file is re-read when it changes, so a re-run of ` + "`forge env up`" + ` updates
 the rules without a restart.
 
-  ` + Name() + ` observe alerts run --env dev --alertmanager http://127.0.0.1:9093 --listen 0.0.0.0:9095`,
+  ` + Name() + ` obs alerts run --env dev --alertmanager http://127.0.0.1:9093 --listen 0.0.0.0:9095`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runObserveAlertsRun(cmd.Context(), cmd.OutOrStdout(), o)
+			return runObsAlertsRun(cmd.Context(), cmd.OutOrStdout(), o)
 		},
 	}
 	f := cmd.Flags()
@@ -76,11 +76,11 @@ the rules without a restart.
 	return cmd
 }
 
-func runObserveAlertsRun(ctx context.Context, stdout io.Writer, o observeAlertsRunOpts) error {
+func runObsAlertsRun(ctx context.Context, stdout io.Writer, o obsAlertsRunOpts) error {
 	if o.alertmanager == "" || o.listen == "" {
 		return errors.New("--alertmanager and --listen are required (the scaffolded `alerts` workload in deploy/kcl/<env>/main.k passes both)")
 	}
-	dir, err := requireProjectDir("observe alerts run")
+	dir, err := requireProjectDir("obs alerts run")
 	if err != nil {
 		return err
 	}

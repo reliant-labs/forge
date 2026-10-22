@@ -147,7 +147,7 @@ func defaultAlertRoutes() []release.ShapeAlertRoute {
 }
 
 // alertSummary is one line per rule for `forge env shape` and
-// `forge observe alerts check`.
+// `forge obs alerts check`.
 func alertSummary(a release.ShapeAlert) string {
 	return fmt.Sprintf("%s [%s, %s, for %s, every %s]", a.Alert, a.Labels["severity"], a.Source, orDash(a.For), orDash(a.Interval))
 }

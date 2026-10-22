@@ -1,6 +1,6 @@
 ---
 name: observability/profiles
-description: Continuous profiles — what pkg/observe captures and pushes over OTLP, when profiling is on (local ClickStack by default, signals.profiles elsewhere), the otel-profiles collector and its ClickHouse tables, and exporting flamegraphs with forge observe profile.
+description: Continuous profiles — what pkg/observe captures and pushes over OTLP, when profiling is on (local ClickStack by default, signals.profiles elsewhere), the otel-profiles collector and its ClickHouse tables, and exporting flamegraphs with forge obs profile.
 ---
 
 # Continuous profiles
@@ -55,13 +55,13 @@ Locally, the `otel-profiles` compose service (stock contrib collector **v0.162.0
 **HyperDX cannot draw flamegraphs**, so export and open them elsewhere:
 
 ```bash
-forge observe profile --list                                   # which services sent profiles
-forge observe profile --service api --since 30m -o api.pb.gz
+forge obs profile --list                                   # which services sent profiles
+forge obs profile --service api --since 30m -o api.pb.gz
 go tool pprof -http=: api.pb.gz                                # flamegraph, top, peek
-forge observe profile --service api --format speedscope -o api.json   # open at speedscope.app
-forge observe profile --trace <trace-id>                       # CPU burned inside one trace (raw tier, last 72h)
-forge observe profile --service api --type inuse_space --format folded | flamegraph.pl > heap.svg
-forge observe profile --service api --sql                      # the query, to run yourself
+forge obs profile --service api --format speedscope -o api.json   # open at speedscope.app
+forge obs profile --trace <trace-id>                       # CPU burned inside one trace (raw tier, last 72h)
+forge obs profile --service api --type inuse_space --format folded | flamegraph.pl > heap.svg
+forge obs profile --service api --sql                      # the query, to run yourself
 ```
 
 Types: `cpu` (nanoseconds) and `inuse_space` (bytes) / `inuse_objects` by default; `alloc_space`/`alloc_objects`, `goroutine`, and the mutex/block `contentions`/`delay` only from a workload that opted in. The same aggregated-flamegraph SQL, to run in HyperDX's SQL console or `clickhouse-client`:

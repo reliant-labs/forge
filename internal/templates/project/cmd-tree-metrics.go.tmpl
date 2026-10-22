@@ -5,9 +5,9 @@
 // The schema is the declared metrics registry (github.com/reliant-labs/forge/
 // pkg/observe/metrics) rendered as JSON (`--json`, the forge.metrics/v1
 // document) or as a table. It is the same document the running service serves
-// at GET /debug/metrics/schema on the pprof listener and that `forge observe
-// metrics` and the release bundle's observability/metrics-schema.json carry,
-// so what you read here is what `forge observe metrics --dashboard` draws.
+// at GET /debug/metrics/schema on the pprof listener and that `forge obs
+// metrics declared` and the release bundle's observability/metrics-schema.json carry,
+// so what you read here is what `forge obs metrics declared --dashboard` draws.
 //
 // WHAT IT LISTS is whatever the binary links in. A metric is declared by the
 // package-level var that creates its instrument, so a package nothing imports

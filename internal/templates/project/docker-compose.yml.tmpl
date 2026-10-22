@@ -584,7 +584,7 @@ services:
   #
   # Tables and TTLs live in deploy/observability/profiles-schema.sql, applied
   # idempotently by `profiles-schema` on every up; the collector writes only
-  # (create_schema: false). Read them back with `forge observe profile`.
+  # (create_schema: false). Read them back with `forge obs profile`.
   #
   # Pinned by digest AND version: the profiles wire format is v1development and
   # changes between releases. pkg/observe's converter is pinned to the same
@@ -631,7 +631,7 @@ services:
           - otel-profiles
 
   # ── Local alert delivery ─────────────────────────────────────────────────
-  # The Alertmanager the local evaluator (`forge observe alerts run`, the
+  # The Alertmanager the local evaluator (`forge obs alerts run`, the
   # `alerts` workload in deploy/kcl/dev/main.k) posts firing alerts to. Its
   # configuration is NOT written here: `forge env up` renders it into
   # .forge/observability/alertmanager/ from the env's forge.Alerts with the

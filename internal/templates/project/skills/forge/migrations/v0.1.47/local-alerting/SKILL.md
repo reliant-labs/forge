@@ -11,13 +11,13 @@ Use when `deploy/kcl/dev/main.k` declares `_observability` but no `alertmanager_
 ## What changed
 
 - `forge env up` now closes the alerting loop locally (`observability/alerts`, "Alerts fire locally too"):
-  - an `alerts` host workload, `forge observe alerts run`, evaluates the env's rules continuously;
+  - an `alerts` host workload, `forge obs alerts run`, evaluates the env's rules continuously;
   - a compose `alertmanager` delivers what fires;
   - the Alertmanager's config is rendered by `forge/pkg/alerting/amconfig`, the control plane's own renderer.
 - The default `reliant-inapp` receiver writes `.forge/logs/<env>/alerts.log`. More receivers are `forge.Alerts.receivers` (`forge.AlertReceiver`).
 - `forge.Observability` gained `alertmanager_port` and `alerts_port`, which are declared together.
 - A host workload whose `command` starts with `forge` now runs the forge that launched the env, not the one on PATH.
-- `forge observe alerts check` and `forge observe profile` now reach the ClickStack in the compose project `forge env up` started (`forge-<id>-<env>`). Before, they named the default project and reported a running ClickStack as not running.
+- `forge obs alerts check` and `forge obs profile` now reach the ClickStack in the compose project `forge env up` started (`forge-<id>-<env>`). Before, they named the default project and reported a running ClickStack as not running.
 
 ## Steps
 

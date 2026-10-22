@@ -72,7 +72,7 @@ The expr check is syntactic. The evaluator re-checks it and runs it read-only wi
 
 `forge env up dev` closes the loop on your machine, with the same routing as production:
 
-- **`alerts`** (a host workload in `deploy/kcl/dev/main.k`, running `forge observe alerts run`) evaluates the env's rules continuously against the local ClickStack, `for` applied, and posts what fires to the local Alertmanager. It labels alerts `reliant_org_id="local"`, `reliant_env_id=<env>`.
+- **`alerts`** (a host workload in `deploy/kcl/dev/main.k`, running `forge obs alerts run`) evaluates the env's rules continuously against the local ClickStack, `for` applied, and posts what fires to the local Alertmanager. It labels alerts `reliant_org_id="local"`, `reliant_env_id=<env>`.
 - **`alertmanager`** (docker-compose.yml) routes them. `forge env up` renders its configuration into `.forge/observability/alertmanager/` with **`forge/pkg/alerting/amconfig`**, the renderer the control plane uses for every org. So a route that reaches `hook` here reaches `hook` there.
 - **`reliant-inapp`** is always present, and locally it is the evaluator's own sink. Every alert it receives becomes one line in **`.forge/logs/dev/alerts.log`**:
 
@@ -103,7 +103,7 @@ alerts = forge.Alerts {
 - **`autopilot` observes rather than routes.** Each alert whose `severity` is in `severities` (default `critical`, `error`), or whose alertname is in `always_alertnames` (the issue alerts), reaches the automation. The alert then carries on through your routes. No route names an autopilot receiver.
 - **A route to a receiver this env lacks is dropped and reported.** The default `slack` route, with no `slack` receiver declared, is the usual example. It is reported as `not routed: …` and does not fail anything.
 
-Check: `curl -s localhost:<alertmanager port>/api/v2/alerts` shows what is active and which receivers it reached. The port is in the `forge env up` summary. To turn local delivery off, drop the `alerts` and `alertmanager` workloads. `forge observe alerts check` (evaluate once, print what returns now) works either way.
+Check: `curl -s localhost:<alertmanager port>/api/v2/alerts` shows what is active and which receivers it reached. The port is in the `forge env up` summary. To turn local delivery off, drop the `alerts` and `alertmanager` workloads. `forge obs alerts check` (evaluate once, print what returns now) works either way.
 
 ## The built-in alerts
 
@@ -142,11 +142,11 @@ defaults = {
 
 ### Customer-metadata rules and the opt-out
 
-The five metadata rules read what the platform's node agent collects without the app's help (restarts and last exit reason, memory against its limit, Kubernetes events). That data is stamped with the env's `reliant.env.id`, not its name, and the id is the control plane's to know. So their SQL carries the placeholder `{reliant_env_id:String}`, which the evaluator binds to a quoted literal; `forge observe alerts check` binds your env name in its place.
+The five metadata rules read what the platform's node agent collects without the app's help (restarts and last exit reason, memory against its limit, Kubernetes events). That data is stamped with the env's `reliant.env.id`, not its name, and the id is the control plane's to know. So their SQL carries the placeholder `{reliant_env_id:String}`, which the evaluator binds to a quoted literal; `forge obs alerts check` binds your env name in its place.
 
 **When the env sets `signals.metadata = False` (or `enabled = False`), none of the five is recorded.** Nothing collects the data, so a rule could only ever return no rows; leaving it out makes that visible in `forge env shape` instead of looking like a healthy workload. Re-enable `metadata` and the next release records them again. A rule that is simply empty because nothing is wrong looks identical to one with no data, so this is the only honest signal.
 
-The two platform ids are different: the control plane raises them from events it owns (a convergence it observed, a quota state it computed), not from a query on your telemetry. Forge records them in the shape as marker rules (`/* reliant:platform … */`, a SELECT that returns no row, so a plain evaluator never fires them) so that your tuning and your `enabled = False` travel with the release. A disabled one is recorded `off`. `forge observe alerts check` lists them as not applicable locally.
+The two platform ids are different: the control plane raises them from events it owns (a convergence it observed, a quota state it computed), not from a query on your telemetry. Forge records them in the shape as marker rules (`/* reliant:platform … */`, a SELECT that returns no row, so a plain evaluator never fires them) so that your tuning and your `enabled = False` travel with the release. A disabled one is recorded `off`. `forge obs alerts check` lists them as not applicable locally.
 
 Quota and deploy alerts go through the same routes, receivers, silences and alert history as every other alert, and carry `reliant_org_id` / `reliant_env_id`. The org-level quota alert is raised once per env of the org, so a route on `severity` and the env's own labels apply to it like any other.
 

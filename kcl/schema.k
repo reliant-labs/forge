@@ -5438,13 +5438,13 @@ schema Observability:
     `alertmanager_port` and `alerts_port` close the alerting loop locally:
     the loopback port of the local Alertmanager (docker-compose.yml's
     `alertmanager`) and the port of the local evaluator
-    (`forge observe alerts run`, the scaffolded `alerts` host workload), which
+    (`forge obs alerts run`, the scaffolded `alerts` host workload), which
     evaluates `alerts` continuously against the local ClickStack, posts what
     fires to that Alertmanager, and receives the in-app receiver's deliveries
     into `.forge/logs/<env>/alerts.log`. With both set and no destination,
     `forge env up` renders the Alertmanager configuration from `alerts` with
     the control plane's own renderer. Unset, alerts are only checked
-    (`forge observe alerts check`).
+    (`forge obs alerts check`).
     """
     enabled: bool = True
     destination?: ObservabilityDestination

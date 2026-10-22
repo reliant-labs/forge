@@ -50,6 +50,7 @@ type wireGate struct {
 
 type wirePromotion struct {
 	ID                  string     `json:"id"`
+	BundleID            string     `json:"bundleId"`
 	ReleaseVersion      string     `json:"releaseVersion"`
 	FromEnvironmentName string     `json:"fromEnvironmentName"`
 	PromotedByUserID    string     `json:"promotedByUserId"`
@@ -266,7 +267,7 @@ func (c Cloud) activity(ctx context.Context, envID string, since time.Time) ([]A
 
 func promotionFromWire(env string, w wirePromotion) release.Promotion {
 	p := release.Promotion{
-		ID: w.ID, Env: env, Release: w.ReleaseVersion, Kind: release.KindPromote,
+		ID: w.ID, BundleID: w.BundleID, Env: env, Release: w.ReleaseVersion, Kind: release.KindPromote,
 		FromEnv:    w.FromEnvironmentName,
 		PromotedBy: release.Actor{User: w.PromotedByUserID, Actor: w.PromotedByActor},
 		Gates:      gatesFromWire(w.Gates), RecordedGates: gatesFromWire(w.RecordedGates),

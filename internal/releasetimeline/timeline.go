@@ -145,6 +145,8 @@ type Entry struct {
 	Version     string    `json:"version"`
 	At          time.Time `json:"at"`
 	PromotionID string    `json:"promotion_id,omitempty"`
+	// BundleID is the rendered bundle the promotion bound, when recorded.
+	BundleID string `json:"bundle_id,omitempty"`
 	// Live marks the environment's current binding.
 	Live            bool      `json:"live,omitempty"`
 	Direction       Direction `json:"direction,omitempty"`
@@ -197,6 +199,7 @@ func Assemble(d Data, since time.Time, limit int) Timeline {
 			Version:     p.Release,
 			At:          p.PromotedAt.UTC(),
 			PromotionID: p.ID,
+			BundleID:    p.BundleID,
 			FromEnv:     p.FromEnv,
 			Actor:       firstNonEmpty(p.PromotedBy.Actor, p.PromotedBy.User),
 			Via:         p.Run.Provider,

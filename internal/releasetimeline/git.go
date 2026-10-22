@@ -107,3 +107,52 @@ func CommitsOf(ctx context.Context, l CommitLister, r CommitRange, max int) ([]r
 	}
 	return commits, PRNumbers(commits), nil
 }
+
+// PathChange is one path a range touched.
+type PathChange struct {
+	// Status is git's one-letter status: A added, M modified, D deleted.
+	Status string `json:"status"`
+	Path   string `json:"path"`
+}
+
+// ChangedPaths lists the paths under pathspec that differ between two
+// commits, for "which migrations did this release carry". An empty from lists
+// nothing: a first release has no earlier commit to differ from.
+func (g Git) ChangedPaths(ctx context.Context, from, to string, pathspec ...string) ([]PathChange, error) {
+	if from == "" {
+		return nil, nil
+	}
+	if !release.ValidObjectID(from) || !release.ValidObjectID(to) {
+		return nil, fmt.Errorf("a path diff needs two full git object ids")
+	}
+	timeout := g.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	args := append([]string{"diff", "--name-status", "--no-renames", from + ".." + to, "--"}, pathspec...)
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = g.Dir
+	raw, err := cmd.Output()
+	if err != nil {
+		msg := ""
+		if ee, ok := err.(*exec.ExitError); ok {
+			msg = ": " + strings.TrimSpace(string(ee.Stderr))
+		}
+		return nil, fmt.Errorf("git diff %s..%s: %w%s", from, to, err, msg)
+	}
+	var out []PathChange
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if line == "" {
+			continue
+		}
+		status, path, ok := strings.Cut(line, "\t")
+		if !ok {
+			return nil, fmt.Errorf("unexpected git diff line %q", line)
+		}
+		out = append(out, PathChange{Status: status, Path: path})
+	}
+	return out, nil
+}

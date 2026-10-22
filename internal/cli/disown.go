@@ -164,7 +164,7 @@ func runDisown(args []string, reason string, dryRun bool) error {
 		}
 		_, hasMarker := checksums.ExtractMarker(content)
 		_, hasFallback := cs.Unstampable[path]
-		if !hasMarker && !hasFallback && !isVendoredProtoPath(path) {
+		if !hasMarker && !hasFallback && !isVendoredProtoPath(path) && !isHooksBarrelRelPath(path) {
 			unknown = append(unknown, path)
 			continue
 		}

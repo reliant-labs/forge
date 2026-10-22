@@ -313,6 +313,57 @@ func TestRunDisown_AcceptsVendoredProtoWithoutMarker(t *testing.T) {
 	}
 }
 
+// A hand-written hooks barrel is the other unmarked path forge names: generate
+// leaves it alone and says `forge project disown <path>` keeps it and silences
+// the notice. The command has to take that advice, and once it has, the
+// barrel writer must skip the file without a notice.
+func TestRunDisown_AcceptsHandWrittenHooksBarrel(t *testing.T) {
+	root := withDisownProjectRoot(t, nil)
+	const rel = "frontends/web/src/hooks/index.ts"
+	const mine = "export { useFullscreen } from './useFullscreen';\n"
+	seedDisownFile(t, root, rel, mine)
+
+	if err := runDisown([]string{rel}, "the app's own hooks barrel", false); err != nil {
+		t.Fatalf("runDisown: %v", err)
+	}
+	cs, err := checksums.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cs.IsDisowned(rel) {
+		t.Fatalf("expected %s to be disowned; disowned set = %v", rel, cs.Disowned)
+	}
+
+	checksums.ResetPerRunState()
+	files := []hookFileEntry{{fileName: "user-service-hooks_gen.ts", nsAlias: "userService", symbols: []string{"useGetUser"}}}
+	if err := writeHooksBarrel(root, rel, files, cs); err != nil {
+		t.Fatalf("writeHooksBarrel: %v", err)
+	}
+	if got := readAdoptionFile(t, root, rel); got != mine {
+		t.Fatalf("disowned barrel was rewritten:\n%s", got)
+	}
+	if why, ok := leftAloneFor(rel); ok {
+		t.Fatalf("a disowned barrel is still named in the summary: %q", why)
+	}
+}
+
+// The barrel allowance is the barrel paths only: an index.ts elsewhere is an
+// ordinary unmarked file.
+func TestIsHooksBarrelRelPath(t *testing.T) {
+	for p, want := range map[string]bool{
+		"frontends/web/src/hooks/index.ts":      true,
+		"src/hooks/index.ts":                    true,
+		"packages/hooks/src/generated/index.ts": true,
+		"frontends/web/src/lib/index.ts":        false,
+		"frontends/web/src/hooks/useThing.ts":   false,
+		"frontends/web/mysrc/hooks/index.ts":    false,
+	} {
+		if got := isHooksBarrelRelPath(p); got != want {
+			t.Errorf("isHooksBarrelRelPath(%q) = %v, want %v", p, got, want)
+		}
+	}
+}
+
 // The marker rule still holds for everything else: an ordinary unmarked
 // file is a scaffold-once "yours" file and there is nothing to disown.
 // The vendored allowance must be a narrow, named exception, not a hole.

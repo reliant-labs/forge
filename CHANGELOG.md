@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge.ControlPlaneSecret` can be delivered through the store (SF14).**
+  `delivery = "store"` (with `store = forge.HostedStore {org, env_id}`) makes the
+  control plane write the value into the env's secret store and the External
+  Secrets Operator deliver it, as a **floating** ExternalSecret: no version pin,
+  because a platform-issued token is renewed in place and its consumers re-read
+  the file the kubelet refreshes. One store name, `RELIANT_OTEL_HEADERS`
+  (`authorization=Bearer <jwt>`), carries the value; the Secret's `token` key is
+  derived from it by an ESO template, so the two keys cannot disagree.
+  `refresh` (default `15m`, at least `5m`) sets the re-read interval. The render
+  record gains `delivery` and `source`; the shape's
+  `control_plane_secrets[].delivery` (bundle feature `shape-store-secrets`) and
+  its `store_secrets` binding tell the control plane to write the store and
+  derive the exact-path read policy. `release.ControlPlaneSecretStoreName` is the
+  Go spelling of the store name, pinned to the render. The default,
+  `delivery = "push"`, is unchanged. Not a deploy prerequisite either way.
+
 - **`forge lint --secrets`: the platform-secrets lane (SF12).** For each env that
   uses the model (a store-backed `forge.ExternalSecret`, `forge.OpenBao` or
   `forge.ExternalSecretsOperator`; a project that declares none is not rendered),

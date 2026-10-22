@@ -70,6 +70,18 @@ func shapeStoreSecretsOf(e *KCLEntities) (release.StoreProjection, error) {
 		}
 		in.Secrets = append(in.Secrets, rs)
 	}
+	// A control-plane Secret delivered through the store reads its value from
+	// the namespace's role like any other source; it lands on its own cluster,
+	// through the connected cluster it was declared with.
+	for _, c := range e.ControlPlaneSecrets {
+		if c.Source == nil {
+			continue
+		}
+		in.Secrets = append(in.Secrets, release.RenderedStoreSecret{
+			Name: c.Name, Namespace: c.Namespace, Source: &c.Source.RenderedStoreSource,
+			Clusters: []release.StoreCluster{{Cluster: c.Cluster, ConnectedCluster: firstNonEmpty(c.ConnectedCluster, connected(c.Cluster))}},
+		})
+	}
 	sort.SliceStable(in.Secrets, func(i, j int) bool {
 		a, b := in.Secrets[i], in.Secrets[j]
 		if a.Namespace != b.Namespace {

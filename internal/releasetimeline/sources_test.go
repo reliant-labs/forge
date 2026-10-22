@@ -199,7 +199,7 @@ func cloudFake() *fakeCP {
 				}}, nil
 			}
 			return map[string]any{"nextBeforePromotionId": "p2", "promotions": []map[string]any{
-				{"id": "p3", "releaseVersion": "v1", "createdAt": "2026-10-01T13:00:00Z", "promotedByActor": "ci",
+				{"id": "p3", "bundleId": "b3", "releaseVersion": "v1", "createdAt": "2026-10-01T13:00:00Z", "promotedByActor": "ci",
 					"run": map[string]any{"provider": "github", "url": "https://ci/3"}, "note": "rollback"},
 				{"id": "p2", "releaseVersion": "v2", "createdAt": "2026-10-01T12:40:00Z", "fromEnvironmentName": "staging",
 					"gates":         []map[string]any{{"name": "lint", "status": "passed"}},
@@ -268,6 +268,9 @@ func TestCloud_AssemblesTheTimelineFromTheLedgerRPCs(t *testing.T) {
 		}
 	}
 	p3, p2 := byID["p3"], byID["p2"]
+	if p3.BundleID != "b3" {
+		t.Errorf("bundle id = %q", p3.BundleID)
+	}
 	if p3.Direction != DirBehind || p3.Actor != "ci" || p3.Via != "github" || p3.Note != "rollback" || !p3.Live {
 		t.Errorf("p3 = %+v", p3)
 	}
@@ -450,5 +453,46 @@ func TestCompareReleases_ScopesToTheEnvironment(t *testing.T) {
 	req := cp.reqs[procCompareReleases]
 	if out.Unchanged != 2 || req["fromVersion"] != "v1" || req["toVersion"] != "v2" || req["environmentId"] != "env-1" || req["project"] != "app" {
 		t.Errorf("out=%+v req=%v", out, req)
+	}
+}
+
+func TestGit_ChangedPathsListsTheMigrationsARangeCarried(t *testing.T) {
+	dir, shas := gitRepo(t, "base", "next")
+	add := func(rel, body string) {
+		t.Helper()
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("db/migrations/20261001_a.up.sql", "select 1;")
+	add("other/x.txt", "x")
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "-q", "-m", "carry a migration (#5)"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+			"GIT_AUTHOR_NAME=Ann", "GIT_AUTHOR_EMAIL=a@example.com", "GIT_COMMITTER_NAME=Ann", "GIT_COMMITTER_EMAIL=a@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	head, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	to := strings.TrimSpace(string(head))
+
+	got, err := Git{Dir: dir}.ChangedPaths(context.Background(), shas[1], to, "db/migrations")
+	if err != nil || !reflect.DeepEqual(got, []PathChange{{Status: "A", Path: "db/migrations/20261001_a.up.sql"}}) {
+		t.Errorf("got %+v, err %v", got, err)
+	}
+	if got, err := (Git{Dir: dir}).ChangedPaths(context.Background(), "", to, "db/migrations"); err != nil || got != nil {
+		t.Errorf("a first release has nothing to differ from: %+v %v", got, err)
+	}
+	if _, err := (Git{Dir: dir}).ChangedPaths(context.Background(), "HEAD~1", to); err == nil {
+		t.Error("a ref that is not a full object id must be refused")
 	}
 }

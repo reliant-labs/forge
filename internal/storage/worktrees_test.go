@@ -877,6 +877,9 @@ func TestRebuildablePathRegenerableEntries(t *testing.T) {
 		".forge/tmp/":                  true,
 		".forge/tmp/render-1/main.k":   true,
 		".forge/generate-cache.json":   true,
+		".forge/state/":                true,
+		".forge/state/build-dev.json":  true,
+		".forge/.forge-tmp-state-1":    true,
 		".tools/":                      true,
 		".tools/stamps/buf":            true,
 		".tools/pre-commit/repoabc/":   true,
@@ -892,6 +895,7 @@ func TestRebuildablePathRegenerableEntries(t *testing.T) {
 		".forge/hostinfra/pg/data":     false,
 		".forge/generate-cache.json.x": false,
 		".forge/tmpx/":                 false,
+		".forge/statex/":               false,
 		"tmpfile":                      false,
 	} {
 		if got := rebuildablePath(p, DefaultWorktreeRebuildable()); got != want {

@@ -733,6 +733,11 @@ func applyRenderedCharts(ctx context.Context, kctx string, charts []renderedChar
 				fmt.Printf("Applying platform dependency %q (helm-rendered)...\n", rc.spec.Name)
 			}
 		}
+		// One External Secrets Operator per cluster: refuse before any write
+		// when another env's install already owns the cluster-scoped CRDs.
+		if err := checkComponentOwner(ctx, chartCtx, rc.spec); err != nil {
+			return err
+		}
 		// Serialize owned charts across apply, inventory commit and prune.
 		// Another writer fails before ANY chart write; locks never expire.
 		if err := applyLockedChart(ctx, chartCtx, rc, applyID, quiet); err != nil {

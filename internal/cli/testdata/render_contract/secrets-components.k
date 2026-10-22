@@ -1,10 +1,10 @@
 """
-Render contract — the secrets components are DECLARATIONS ONLY (SF1).
+Render contract — the secrets components in the render output.
 
-A Bundle that declares forge.OpenBao, forge.ExternalSecretsOperator,
-bootstrap_source and a store-backed forge.ExternalSecret renders exactly what
-it rendered before: the schema accepts the declarations, and no later PR has
-wired them into the output yet. This golden changes the day one does, which is
+forge.ExternalSecretsOperator lowers to one hardened helm chart (SF4) plus an
+`external_secrets_operators` record the release shape projects. forge.OpenBao,
+bootstrap_source and the store-backed forge.ExternalSecret are still
+declarations only; this golden changes the day one of them is wired, which is
 the point: that change is then a reviewed contract change.
 """
 

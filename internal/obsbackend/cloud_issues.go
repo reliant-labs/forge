@@ -268,10 +268,9 @@ func (c Cloud) ListIssueEvents(ctx context.Context, req ListIssueEventsRequest) 
 		return ListIssueEventsResult{}, Undetermined("--explain compiles the local backend's SQL; hosted issues have no statement to show")
 	}
 	in := struct {
-		IssueID   string `json:"issueId"`
-		PageSize  int    `json:"pageSize,omitempty"`
-		PageToken string `json:"pageToken,omitempty"`
-	}{req.ID, req.Limit, req.PageToken}
+		IssueID  string `json:"issueId"`
+		PageSize int    `json:"pageSize,omitempty"`
+	}{req.ID, req.Limit}
 	var out struct {
 		Events        []wireIssueEvent `json:"events"`
 		NextPageToken string           `json:"nextPageToken"`

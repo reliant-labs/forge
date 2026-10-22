@@ -176,9 +176,6 @@ func localFrame(attrs map[string]string) *IssueFrame {
 
 // ListIssueEvents implements IssueReader.
 func (l Local) ListIssueEvents(ctx context.Context, req ListIssueEventsRequest) (ListIssueEventsResult, error) {
-	if req.PageToken != "" {
-		return ListIssueEventsResult{}, Wrong("local issue events have no next page; raise --limit")
-	}
 	fp, err := obsquery.ParseLocalIssueID(req.ID)
 	if err != nil {
 		return ListIssueEventsResult{}, compileErr(err)

@@ -25,8 +25,8 @@ import (
 	"github.com/reliant-labs/forge/internal/releasetimeline"
 )
 
-// DefaultMax is how many commits Find returns when Finder.Max is unset: the
-// last 20 commits touching the culprit file, when no release range is known.
+// DefaultMax bounds the commits Find returns: with no release range known, the
+// last 20 commits touching the culprit file.
 const DefaultMax = 20
 
 // maxFiles bounds how many culprit files one lookup passes to git.
@@ -59,8 +59,6 @@ type Commit struct {
 // Finder lists suspect commits from the git checkout around Dir.
 type Finder struct {
 	Dir string
-	// Max bounds the commits returned; DefaultMax when zero.
-	Max int
 }
 
 var hexRef = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
@@ -116,11 +114,7 @@ func (f Finder) Find(ctx context.Context, commitRange string, files []string) ([
 	} else if strings.TrimSpace(commitRange) != "" {
 		return nil, fmt.Errorf("commit range %q is not <from>..<to> with full or abbreviated commit ids", commitRange)
 	}
-	max := f.Max
-	if max <= 0 {
-		max = DefaultMax
-	}
-	args := append([]string{"log", "--max-count=" + strconv.Itoa(max), "--name-only",
+	args := append([]string{"log", "--max-count=" + strconv.Itoa(DefaultMax), "--name-only",
 		"--format=%x1e%H%x1f%ct%x1f%an%x1f%s", spec, "--"}, paths...)
 	var out strings.Builder
 	if err := f.git(ctx, &out, args...); err != nil {

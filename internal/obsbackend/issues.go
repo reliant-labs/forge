@@ -156,9 +156,8 @@ type GetIssueResult struct {
 // ListIssueEventsRequest lists the newest events of an issue.
 type ListIssueEventsRequest struct {
 	Narrow
-	ID        string
-	Limit     int
-	PageToken string
+	ID    string
+	Limit int
 }
 
 // ListIssueEventsResult is a page of events, newest first.

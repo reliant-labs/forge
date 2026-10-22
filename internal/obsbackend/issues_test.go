@@ -141,9 +141,6 @@ func TestLocalListIssueEvents(t *testing.T) {
 	if err != nil || len(res.Events) != 1 || !res.Truncated || res.Events[0].TraceID != "t1" {
 		t.Errorf("%+v %v", res, err)
 	}
-	if _, err := l.ListIssueEvents(context.Background(), ListIssueEventsRequest{Narrow: narrowC(), ID: "sfp1-" + testFP, Limit: 1, PageToken: "x"}); exitOf(err) != ExitWrong {
-		t.Errorf("local events have no pages: exit %d", exitOf(err))
-	}
 }
 
 // ── cloud ───────────────────────────────────────────────────────────────

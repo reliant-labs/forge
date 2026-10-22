@@ -83,18 +83,11 @@ func TestFindRestrictsToTheRangeAndTheCulpritFiles(t *testing.T) {
 	}
 }
 
-func TestFindWithoutARangeIsTheHistoryOfHeadBoundedByMax(t *testing.T) {
+func TestFindWithoutARangeIsTheHistoryOfHead(t *testing.T) {
 	dir, _ := repo(t)
-	got, err := Finder{Dir: dir, Max: 2}.Find(context.Background(), "", []string{"internal/store/db.go"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 || got[0].Subject != "tweak" || got[1].PR != 12 {
-		t.Errorf("got %+v", got)
-	}
 	all, err := Finder{Dir: dir}.Find(context.Background(), "", []string{"internal/store/db.go"})
-	if err != nil || len(all) != 4 {
-		t.Errorf("default max returned %d (%v), want the 4 commits touching db.go", len(all), err)
+	if err != nil || len(all) != 4 || all[0].Subject != "tweak" || all[2].PR != 11 {
+		t.Errorf("got %d commits (%v), want the 4 touching db.go, newest first: %+v", len(all), err, all)
 	}
 }
 

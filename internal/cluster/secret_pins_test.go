@@ -190,9 +190,7 @@ func TestStampSecretPins_NothingPinnedIsInert(t *testing.T) {
 // apply all read.
 func TestStampSecretPins_ReachesTheExtractedStream(t *testing.T) {
 	var docs []any
-	for _, d := range yamlDocs(t, pinStream("3")) {
-		docs = append(docs, d)
-	}
+	docs = append(docs, yamlDocs(t, pinStream("3"))...)
 	doc, err := json.Marshal(map[string]any{"output": map[string]any{"manifests": docs}})
 	if err != nil {
 		t.Fatal(err)

@@ -219,7 +219,7 @@ func applySecretStages(ctx context.Context, opts ApplyOpts, policy RolloutPolicy
 func toJobRefs(refs []stageRef) []jobRef {
 	out := make([]jobRef, len(refs))
 	for i, r := range refs {
-		out[i] = jobRef{Name: r.Name, Namespace: r.Namespace}
+		out[i] = jobRef(r)
 	}
 	return out
 }

@@ -10,9 +10,11 @@ package release
 // waits for Established). What this classifies is the rest, in apply order:
 //
 //   - [SecretStageBootstrap]: everything the store component renders that is
-//     neither a workload nor a Job, including its OWN SecretStore and
-//     ExternalSecrets (the seal key and database password it needs before it can
-//     start). The ExternalSecrets are awaited before the store rolls;
+//     neither a workload nor a Job: its ServiceAccounts, RBAC, Services,
+//     NetworkPolicy, certificate and its public-endpoint route objects, plus its
+//     OWN SecretStore and ExternalSecrets (the seal key and database password it
+//     needs before it can start). The ExternalSecrets are awaited before the
+//     store rolls; the rest is inert until the store runs;
 //   - [SecretStageStorePre]: the component's pre-rollout Jobs (OpenBao's
 //     `widen`, which grants a name a release adds before anything reads it);
 //   - [SecretStageStore]: the component's workloads and post-rollout Jobs

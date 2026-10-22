@@ -18,13 +18,16 @@ package cli
 //	                     what `forge env exec` would hand the process
 //	OnCluster            a port-forward to the CNPG Cluster, as the read-only
 //	                     forge_ro role, on a scratch env (db_query_cluster.go)
-//	OnHosted             the control plane's AppDatabaseService (not yet: exit 2)
+//	OnHosted             the control plane's AppDatabaseService.QueryDatabase,
+//	                     which runs the same core inside the platform as
+//	                     forge_ro and audits the call (db_query_cloud.go)
 //
-// Policy is the env's declared forge.DataAccess db_query: open (a local or
-// ephemeral env's default), audited (any other env's default: the query needs
+// Policy is the env's forge.DataAccess db_query: open (a local or ephemeral
+// env's default), audited (any other env's default: the query needs
 // --confirm-env <env> and a --reason, so nobody reads a real database by
 // mistyping an env name) or deny. For a hosted env the control plane enforces
-// it server-side from the recorded shape; locally this check is the rule.
+// it from the env's RECORDED shape and forge only passes the confirmation on;
+// for the other transports this checkout's declaration is the rule.
 
 import (
 	"context"
@@ -86,17 +89,23 @@ The connection follows the workload (` + "`--workload`" + `, default "api"):
                       ManagedDatabase (` + "`--database`" + ` when it has several), as
                       the read-only forge_ro role; scratch envs only
                       (lifecycle local or ephemeral)
-Hosted databases, and the databases of real cluster envs, are not reachable
-from forge yet (exit 2).
+  OnHosted            the control plane runs it inside the platform
+                      (AppDatabaseService.QueryDatabase), as forge_ro, and
+                      records it in the audit log and the activity feed
+The databases of real (not scratch) cluster envs are not reachable from forge
+yet (exit 2).
 
 The env's data_access policy (forge.DataAccess) decides who may query:
 open (the default of a local or ephemeral env), audited (the default of any
-other env: pass --confirm-env <env> and a --reason) or deny.
+other env: pass --confirm-env <env> and a --reason) or deny. A hosted env is
+judged by the control plane from the policy its deployed release recorded, and
+an audited one is open to people only (and to a db:query grant).
 
 Output: a table, or --format json|csv. --json is --format json; the document
 carries ok, exit_code and error like every other forge --json verb, plus
 schema "` + dbQuerySchema + `", scope, columns[{name,pg_type}], rows, row_count,
-truncated, truncated_by, cells_truncated, duration_ms and bytes.
+truncated, truncated_by, cells_truncated, duration_ms and bytes; a hosted
+query adds audit{id, sql_sha256, replica}.
 
 Exit codes: 0 rows returned; 1 the statement or the request is wrong (refused
 by the guard or the read-only transaction, a SQL error, a permission error, a
@@ -142,7 +151,9 @@ type dbQueryScope struct {
 	Transport string `json:"transport"`
 	Workload  string `json:"workload"`
 	Database  string `json:"database,omitempty"`
-	Policy    string `json:"policy"`
+	// Policy is the declared db_query policy forge applied. Absent on the
+	// control-plane transport, which applies the env's recorded one.
+	Policy string `json:"policy,omitempty"`
 }
 
 // dbQueryDocument is the --format json document.
@@ -155,6 +166,8 @@ type dbQueryDocument struct {
 	// Release is the release live in the env when the query ran; absent when
 	// nothing was promoted yet or the ledger could not be read.
 	Release *liveRelease `json:"release,omitempty"`
+	// Audit is what the control plane recorded about a hosted query.
+	Audit *dbQueryAudit `json:"audit,omitempty"`
 	*dbquery.Result
 }
 
@@ -164,6 +177,9 @@ type dbQueryTarget struct {
 	scope dbQueryScope
 	// close releases the transport (the port-forward), or is nil.
 	close func()
+	// remote runs the statement elsewhere (the control plane); set instead
+	// of dsn.
+	remote dbQueryRemote
 }
 
 func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o dbQueryOptions) error {
@@ -171,6 +187,7 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o d
 		scope   *dbQueryScope
 		ranAt   time.Time
 		release *liveRelease
+		audit   *dbQueryAudit
 	)
 	res, err := func() (*dbquery.Result, error) {
 		if err := validateDBQueryFlags(o); err != nil {
@@ -188,6 +205,15 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o d
 			defer target.close()
 		}
 		scope = &target.scope
+		if target.remote != nil {
+			ranAt = time.Now().UTC()
+			res, a, database, err := target.remote(ctx, sql)
+			if database != "" {
+				scope.Database = database
+			}
+			audit = a
+			return res, err
+		}
 		if err := checkDBQueryPolicy(o, target.scope.Policy); err != nil {
 			return nil, err
 		}
@@ -209,12 +235,9 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o d
 		release = stampRelease(ctx, liveReleaseAt, errOut, o.env, ranAt)
 	}
 	if o.format == "json" {
-		doc := dbQueryDocument{Schema: dbQuerySchema, Scope: scope, Release: release, Result: res}
+		doc := dbQueryDocument{Schema: dbQuerySchema, Scope: scope, Release: release, Audit: audit, Result: res}
 		doc.stamp(err)
-		var de *dbquery.Error
-		if errors.As(err, &de) {
-			doc.Reason = de.Reason
-		}
+		doc.Reason = dbQueryErrorReason(err)
 		if werr := writeJSONDocument(out, doc); werr != nil {
 			return werr
 		}
@@ -226,7 +249,7 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o d
 	if o.format == "csv" {
 		return writeDBQueryCSV(out, res)
 	}
-	return writeDBQueryTable(out, res, release)
+	return writeDBQueryTable(out, res, release, audit)
 }
 
 func validateDBQueryFlags(o dbQueryOptions) error {
@@ -286,7 +309,8 @@ func resolveDBQueryTarget(ctx context.Context, o dbQueryOptions) (dbQueryTarget,
 	case RuntimeCluster:
 		return resolveDBQueryCluster(ctx, o, e, w)
 	case RuntimeHosted:
-		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("workload %q in %s is hosted: its database is reached through the control plane, which this forge cannot query yet", w.Name, o.env)}
+		scope.Policy = ""
+		return resolveDBQueryHosted(o, scope), nil
 	default:
 		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("workload %q in %s runs %s: its database is not reachable from forge yet", w.Name, o.env, w.Runtime.Type)}
 	}
@@ -412,7 +436,7 @@ func writeDBQueryCSV(out io.Writer, res *dbquery.Result) error {
 // carries the whole value.
 const maxTableCell = 80
 
-func writeDBQueryTable(out io.Writer, res *dbquery.Result, rel *liveRelease) error {
+func writeDBQueryTable(out io.Writer, res *dbquery.Result, rel *liveRelease, audit *dbQueryAudit) error {
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	names := make([]string, len(res.Columns))
 	for i, c := range res.Columns {
@@ -440,6 +464,9 @@ func writeDBQueryTable(out io.Writer, res *dbquery.Result, rel *liveRelease) err
 	footer := fmt.Sprintf("(%d %s, %d ms", res.RowCount, noun, res.DurationMS)
 	if rel != nil {
 		footer += fmt.Sprintf("; release %s", rel.Version)
+	}
+	if audit != nil && audit.ID != "" {
+		footer += fmt.Sprintf("; audit %s", audit.ID)
 	}
 	if res.Truncated {
 		footer += fmt.Sprintf("; truncated by the %s cap, raise --max-rows or narrow the query", res.TruncatedBy)

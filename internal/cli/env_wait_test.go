@@ -49,6 +49,44 @@ type fakeRolloutService struct {
 	unpinned  []wireWorkloadRollout
 	// err, when set, is returned instead of an answer.
 	err error
+
+	// identity scripts GetIdentityStatus like phases script GetRollout: the
+	// nth read gets identity[n], the last repeats. Empty answers {} — an env
+	// that declares no identity. identityErr fails every read.
+	identity      []identityStatusDocument
+	identityErr   error
+	identityCalls int
+}
+
+// identityCall answers the identity reads a wait makes beside GetRollout. They
+// are not recorded in bodies/calls, which are the rollout's.
+func (f *fakeRolloutService) identityCall(procedure string, out any) (bool, error) {
+	var answer any
+	switch procedure {
+	case cloud.ProcGetOrganization:
+		answer = cloud.OrganizationReply("org-1")
+	case procIdentityStatus:
+		f.mu.Lock()
+		f.identityCalls++
+		n := f.identityCalls
+		err := f.identityErr
+		var doc identityStatusDocument
+		if len(f.identity) > 0 {
+			doc = f.identity[min(n, len(f.identity))-1]
+		}
+		f.mu.Unlock()
+		if err != nil {
+			return true, err
+		}
+		answer = doc
+	default:
+		return false, nil
+	}
+	raw, err := json.Marshal(answer)
+	if err != nil {
+		return true, err
+	}
+	return true, json.Unmarshal(raw, out)
 }
 
 func newFakeRollout(phases ...string) *fakeRolloutService {
@@ -56,6 +94,9 @@ func newFakeRollout(phases ...string) *fakeRolloutService {
 }
 
 func (f *fakeRolloutService) Call(_ context.Context, procedure string, req, out any) error {
+	if handled, err := f.identityCall(procedure, out); handled {
+		return err
+	}
 	raw, _ := json.Marshal(req)
 	var body map[string]any
 	_ = json.Unmarshal(raw, &body)

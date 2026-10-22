@@ -105,6 +105,21 @@ func generateFrontendConfigModules(
 			return fmt.Errorf("write config_gen.ts for %s: %w", fe.Name, err)
 		}
 
+		// ── Tier-1: src/lib/config_schema_gen.json ──
+		// The keys a runtime config document for this frontend may carry.
+		// Read at render by whichever project declares this frontend's
+		// environments — possibly another repo, which cannot see this
+		// proto — to refuse a runtime_config key the bundle never reads
+		// (checkFrontendRuntimeConfigKeys).
+		schemaBody, err := codegen.GenerateFrontendConfigSchema(fc)
+		if err != nil {
+			return err
+		}
+		schemaRel := filepath.Join(feDir, filepath.FromSlash(codegen.FrontendConfigSchemaFile))
+		if _, err := checksums.WriteGeneratedFileTier1(projectDir, schemaRel, []byte(schemaBody), cs, true); err != nil {
+			return fmt.Errorf("write config_schema_gen.json for %s: %w", fe.Name, err)
+		}
+
 		// ── Tier-1: the dev runtime document ──
 		staticDir := frontendStaticDir(fe.Type)
 		if staticDir == "" {

@@ -47,6 +47,15 @@ come from the generated `src/lib/config_gen.ts`, which reads
 and hosted deploys all serve the same `{KEY: "value"}` shape, so the
 bundle cannot tell them apart. See `frontend` → "Runtime config and backend URLs".
 
+Every `runtime_config` key must be one the bundle reads: a field of the
+frontend's config message, or a forge runtime key (`API_URL`, `ENVIRONMENT`,
+`OTEL_ENDPOINT`, `CONSOLE_CAPTURE`, `REPLAY_SAMPLE_RATE`). `forge generate`
+lists them in `src/lib/config_schema_gen.json` beside `config_gen.ts`, and every
+render checks the env's `runtime_config` against the frontend directory's copy
+— so a project declaring a frontend from ANOTHER repo gets a did-you-mean on a
+typo instead of a field silently left on its default. No schema file (no config
+message) means no check.
+
 Tailwind v4 does not scan `node_modules`, so your stylesheet carries an
 `@source` directive pointing at the package. Keep it — without it every
 utility only the runtime renders vanishes from the built CSS.

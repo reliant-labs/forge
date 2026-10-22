@@ -57,6 +57,7 @@ type lintFlags struct {
 	createNullability bool
 	computedFields    bool
 	readOnlyFields    bool
+	secrets           bool
 	guardedFields     bool
 	staticExport      bool
 	tracing           bool
@@ -172,6 +173,8 @@ Examples:
                                  # Both WARN instead ("pending: implement X")
                                  # while the service still holds forge's own
                                  # unwired rpc stubs
+  forge lint --secrets           # FAIL on a platform-secrets defect, with
+                                 # file:line and its escape
   forge lint --guarded-fields    # Flag a scaffolded edit page whose
                                  # update_mask still writes a column a
                                  # custom rpc guards (forge:guards) — the
@@ -199,12 +202,9 @@ Examples:
                                  # nowhere
   forge lint --vendored-protos   # Fail when proto/forge/v1/forge.proto has
                                  # drifted from this forge binary's copy
-                                 # (forge's upgrade path does not track it)
   forge lint --config-reach      # Flag config fields no binary or frontend
-                                 # loads (per-binary configs can strand a
-                                 # whole message)
-  forge lint --optional-deps-guard  # Flag unguarded derefs of a
-                                 # // forge:optional-dep field (nil at runtime)
+                                 # loads
+  forge lint --optional-deps-guard  # Flag unguarded derefs of an optional dep
   forge lint --frontend-stores   # Flag Zustand stores holding server data that
                                  # belongs in a generated React Query hook
   forge lint --json              # Machine-readable findings for sub-agents / CI
@@ -321,6 +321,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.createNullability, "create-nullability", false, "Fail when a field's optional label disagrees between an entity message and its Create<Entity>Request — the flattened request drops write presence silently")
 	cmd.Flags().BoolVar(&flags.computedFields, "computed-fields", false, "Flag a forge:computed field that no non-generated Go file assigns — nothing populates it, so the insert takes the column default. FAILS the build, except while the service still holds forge-scaffolded unwired rpc stubs (then a warning naming them)")
 	cmd.Flags().BoolVar(&flags.readOnlyFields, "read-only-fields", false, "Flag a forge:read-only field whose column nothing populates — no non-generated Go file assigns it, no meaningful DEFAULT, not GENERATED — so every row ships as the type's zero with no error anywhere. FAILS the build, except while the service still holds forge-scaffolded unwired rpc stubs (then a warning naming them)")
+	cmd.Flags().BoolVar(&flags.secrets, "secrets", false, "Judge the platform secrets model per env, with file:line: no ClusterSecretStore/ClusterExternalSecret/PushSecret, ExternalSecret policy (Orphan or Merge, Retain, namespaced store, explicit keys), every Secret a workload reads is produced by exactly one declaration that lists the key, an immutable store name is pinned at 1, an out_of_band_reason that explains, no reasonless OpenBao wildcard read, and (warning) an OpenBao escrowed inside its own cluster. FAILS the build on an error; every message names its escape")
 	cmd.Flags().BoolVar(&flags.guardedFields, "guarded-fields", false, "Flag a scaffolded edit page whose update_mask still names a column declared 'forge:guards' — saving the form writes it raw and bypasses the rpc that owns it, and pages are scaffold-once so 'forge generate' cannot repair them (warnings only)")
 	cmd.Flags().BoolVar(&flags.staticExport, "static-export", false, "For each Next.js frontend that must build to a static export (forge.yaml output: static, or bound to forge.OnHosted / OnBucket / OnFirebase in any env), report with file:line what the export cannot serve. FAILS on what next build refuses (a dynamic route without generateStaticParams, server actions, next/headers, next/image without images.unoptimized, a build that is not an export); WARNS on what it silently drops (middleware, non-GET route handlers, ungated rewrites/redirects/headers, a bucket-bound export without trailingSlash)")
 	cmd.Flags().BoolVar(&flags.protoOptions, "proto-options", false, "Flag (forge.v1.*) annotation fields this forge binary's descriptors do not define — a retired or misspelled option field compiles under buf and is read by nothing (warnings only)")
@@ -520,6 +521,13 @@ func runTargetedLane(ctx context.Context, flags lintFlags, paths []string, lane 
 		return runWithCwd(func(cwd string) error {
 			return runReadOnlyFieldsLint(cwd, migrationsDirFor(cfg))
 		})
+	}
+	if flags.secrets {
+		_, cfg, err := loadLintConfig()
+		if err != nil {
+			return err
+		}
+		return runWithCwd(func(cwd string) error { return runSecretsLint(ctx, cwd, cfg) })
 	}
 	if flags.guardedFields {
 		return runWithCwd(func(cwd string) error {

@@ -339,7 +339,7 @@ eso_chart = lambda e: any, owner: str, derived: any -> {str: any} {
             "topologyKey": "kubernetes.io/hostname"
             "whenUnsatisfiable": "ScheduleAnyway"
         }]
-        # Off the kata / workspace pools: a tenant workload's node is never the
+        # Off the kata / workspace pools: a customer workload's node is never the
         # operator's. NotIn also matches a node with no such label.
         "affinity": {
             "nodeAffinity": {

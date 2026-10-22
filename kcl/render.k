@@ -1641,6 +1641,10 @@ _render_observability = lambda b: Bundle -> any {
         "local_port": _o.local_port
         "local_endpoint": _obs_local_endpoint(b) or None
         "profiles_endpoint": _obs_profiles_local_endpoint(b) or None
+        # The local alerting loop (Alertmanager + evaluator): only beside the
+        # local ClickStack, which is what the evaluator queries.
+        "alertmanager_port": _o.alertmanager_port if _o.enabled and not _o.destination and _o.alertmanager_port > 0 else None
+        "alerts_port": _o.alerts_port if _o.enabled and not _o.destination and _o.alerts_port > 0 else None
         "destination": {
             "endpoint": _o.destination.endpoint
             "protocol": _o.destination.protocol
@@ -1690,7 +1694,7 @@ _render_observability = lambda b: Bundle -> any {
         # Alerting is a declaration only: the author's rules (severity
         # defaulted), the tuning of the generated defaults, and the routes. Go
         # resolves the defaults and, absent routes, the in-app + Slack fan-out.
-        if _o.alerts.rules or _o.alerts.defaults or _o.alerts.routes:
+        if _o.alerts.rules or _o.alerts.defaults or _o.alerts.routes or _o.alerts.receivers:
             "alerts": _render_alerts(_o.alerts)
     }
 }
@@ -1714,6 +1718,15 @@ _render_alerts = lambda a: Alerts -> any {
             "params": d.params
         } for id, d in a.defaults}
         "routes": [{"match": r.match, "receiver": r.receiver, "continue": r.continue} for r in a.routes]
+        "receivers": [{
+            "name": r.name
+            "type": r.type
+            "url": r.url if r.url else None
+            "secret": r.secret if r.secret else None
+            "channel": r.channel if r.channel else None
+            "severities": r.severities
+            "always_alertnames": r.always_alertnames
+        } for r in a.receivers]
     }
 }
 
@@ -2688,6 +2701,10 @@ _render_external_secret = lambda s: ExternalSecret -> any {
         "keys": s.keys
         "reason": s.reason if s.reason else None
         "value_group": s.value_group if s.value_group else None
+        # Why a Secret is still provisioned out of band in an env that has
+        # store-backed ones: `forge lint --secrets` holds it to a standard.
+        if s.out_of_band_reason:
+            "out_of_band_reason": s.out_of_band_reason
         # The store a Secret reads from, for the release shape (store_secrets,
         # generated_secrets, pins). Names and kinds only; a value never appears.
         if s.source:

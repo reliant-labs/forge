@@ -445,6 +445,28 @@ jobs:
           fi
           printf '  ok       %-24s %s\n' "docker daemon" "$server"
 
+      # ── THE CHECKOUT UNDER TEST STAYS CLEAN. Every fixture project bridges
+      # this checkout (go.work `use`), and the prebuilt forge was built from
+      # it clean. A file written into it — even an untracked log — makes
+      # forge's bridge-skew check read "uncommitted changes the binary was
+      # not built from" and hand every command to a forge rebuilt from the
+      # checkout, keyed on the newest edit's mtime. A log that grows while
+      # the tests run moves that key on every command, so a re-run of
+      # `forge generate` runs a different binary and can never reach its
+      # fixed point (TestE2EFixtureCorpusCRUDLifecycle / CPForgeShaped /
+      # ZeroService, intermittently, from b31bfc72b). So the shard's own
+      # files live in $SHARD_OUT, outside the checkout, and this check runs
+      # before the tests and again after them.
+      - name: The checkout under test is clean
+        run: |
+          set -euo pipefail
+          dirty=$(git status --porcelain --untracked-files=all)
+          if [ -n "$dirty" ]; then
+            echo "::error::the checkout the e2e fixtures bridge is dirty before the run — forge would rebuild itself from it; write nothing into it:"
+            echo "$dirty"
+            exit 1
+          fi
+
       # ── The partition. Planned once by prepare, printed and checked here.
       - name: Assign this shard its tests
         env:
@@ -453,10 +475,14 @@ jobs:
         run: |
           set -euo pipefail
           plan="$RUNNER_TEMP/e2e-dist/plan"
-          cp "$plan/selected-tests.txt" all-tests.txt
-          cp "$plan/shard-$SHARD.txt" shard-tests.txt
-          total=$(wc -l < all-tests.txt | tr -d ' ')
-          mine=$(wc -l < shard-tests.txt | tr -d ' ')
+          # Outside the checkout: see "The checkout under test is clean".
+          out="$RUNNER_TEMP/e2e-shard"
+          mkdir -p "$out"
+          echo "SHARD_OUT=$out" >> "$GITHUB_ENV"
+          cp "$plan/selected-tests.txt" "$out/all-tests.txt"
+          cp "$plan/shard-$SHARD.txt" "$out/shard-tests.txt"
+          total=$(wc -l < "$out/all-tests.txt" | tr -d ' ')
+          mine=$(wc -l < "$out/shard-tests.txt" | tr -d ' ')
           if [ "$mine" -eq 0 ]; then
             echo "::error::shard $SHARD of $SHARDS was assigned 0 of $total tests"
             exit 1
@@ -465,7 +491,7 @@ jobs:
           # LOG WHAT THIS SHARD RUNS. A shard that covers a subset without
           # saying which subset is the bug this workflow exists to fix.
           echo "::group::shard $SHARD of $SHARDS — $mine of $total tests"
-          cat shard-tests.txt
+          cat "$out/shard-tests.txt"
           echo "::endgroup::"
           {
             echo "### shard $SHARD of $SHARDS"
@@ -494,8 +520,8 @@ jobs:
           FORGE_E2E_BINARY: ${{ runner.temp }}/e2e-dist/bin/forge
         run: |
           set -euo pipefail
-          RUN="^($(paste -sd'|' shard-tests.txt))$"
-          out="$PWD/e2e-shard-${{ matrix.shard }}.json"
+          RUN="^($(paste -sd'|' "$SHARD_OUT/shard-tests.txt"))$"
+          out="$SHARD_OUT/e2e-shard-${{ matrix.shard }}.json"
           cd internal/cli
           go tool test2json -t -p github.com/reliant-labs/forge/internal/cli \
             "$RUNNER_TEMP/e2e-dist/e2e.test" -test.v=test2json -test.paniconexit0 \
@@ -512,13 +538,13 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          f="e2e-shard-${{ matrix.shard }}.json"
           # This step is always(), so it can land after the assignment step
           # itself failed. Say that plainly instead of dying on an unbound var.
-          if [ -z "${EXPECTED_TESTS:-}" ]; then
+          if [ -z "${EXPECTED_TESTS:-}" ] || [ -z "${SHARD_OUT:-}" ]; then
             echo "::error::this shard was never assigned any tests — the assignment step did not complete"
             exit 1
           fi
+          f="$SHARD_OUT/e2e-shard-${{ matrix.shard }}.json"
           [ -s "$f" ] || { echo "::error::shard produced no test output"; exit 1; }
           ran=$(jq -R -r 'fromjson?
                   | select((.Action=="pass" or .Action=="fail" or .Action=="skip") and has("Test"))
@@ -526,7 +552,7 @@ jobs:
           echo "assigned=$EXPECTED_TESTS ran=$ran"
           if [ "$ran" -ne "$EXPECTED_TESTS" ]; then
             echo "::error::shard ${{ matrix.shard }} was assigned $EXPECTED_TESTS tests but reported $ran. Coverage silently shrank — that is the defect this workflow exists to catch, in the workflow itself."
-            comm -23 shard-tests.txt <(jq -R -r 'fromjson?
+            comm -23 "$SHARD_OUT/shard-tests.txt" <(jq -R -r 'fromjson?
                   | select((.Action=="pass" or .Action=="fail" or .Action=="skip") and has("Test"))
                   | select(.Test | contains("/") | not) | .Test' "$f" | sort -u) | sed 's/^/  never reported: /'
             exit 1
@@ -537,12 +563,27 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: e2e-shard-${{ matrix.shard }}
+          # One directory, so the artifact's root holds the three files
+          # directly — the layout the ledger reads.
           path: |
-            e2e-shard-${{ matrix.shard }}.json
-            shard-tests.txt
-            all-tests.txt
+            ${{ env.SHARD_OUT }}/e2e-shard-${{ matrix.shard }}.json
+            ${{ env.SHARD_OUT }}/shard-tests.txt
+            ${{ env.SHARD_OUT }}/all-tests.txt
           retention-days: 7
           if-no-files-found: error
+
+      # The same check after the run: a test that wrote into the checkout
+      # (rather than its own t.TempDir) skewed every forge command after it.
+      - name: The tests left the checkout clean
+        if: always()
+        run: |
+          set -euo pipefail
+          dirty=$(git status --porcelain --untracked-files=all)
+          if [ -n "$dirty" ]; then
+            echo "::error::an e2e test wrote into the checkout the fixtures bridge — keep test state in t.TempDir():"
+            echo "$dirty"
+            exit 1
+          fi
 
       - name: Upload generated trees on failure
         if: failure()

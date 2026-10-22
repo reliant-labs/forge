@@ -8,6 +8,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,6 +46,7 @@ const latencyFinding = `{"code":"RELEASE_FINDING_CODE_LATENCY","service":"api","
 // seqCaller answers a procedure with its replies in turn (the last repeats)
 // and records the requests.
 type seqCaller struct {
+	mu      sync.Mutex
 	replies map[string][]string
 	errs    map[string]error
 	calls   []fakeCloudCall
@@ -52,6 +54,8 @@ type seqCaller struct {
 }
 
 func (s *seqCaller) Call(ctx context.Context, procedure string, req, out any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.n == nil {
 		s.n = map[string]int{}
 	}

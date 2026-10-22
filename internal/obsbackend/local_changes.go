@@ -32,7 +32,9 @@ func (l Local) Changes(ctx context.Context, req ChangesRequest) (ChangesResult, 
 		return res, Undetermined("cannot read %s's release ledger", l.Env).Cause(err)
 	}
 	res.Warnings = append(res.Warnings, data.Warnings...)
-	for _, e := range releasetimeline.Assemble(data, req.Range.From, 0).Entries {
+	tl := releasetimeline.Assemble(data, req.Range.From, 0)
+	res.current(tl, req.Range.To)
+	for _, e := range tl.Entries {
 		if !req.Range.To.IsZero() && e.At.After(req.Range.To) {
 			continue
 		}

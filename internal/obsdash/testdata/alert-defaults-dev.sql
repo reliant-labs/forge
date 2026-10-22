@@ -1,9 +1,6 @@
 -- DeployFailed (deploy-failed) severity=critical for=5m interval=1m
 SELECT 1 AS value WHERE 0 /* reliant:platform deploy-failed env:{reliant_env_id:String} */
 
--- FrontendIssueRegressed (frontend-issue-regressed) severity=warning for=0s interval=1m
-SELECT 1 AS value WHERE 0 /* reliant:platform frontend-issue-regressed env:{reliant_env_id:String} */
-
 -- FrontendJSErrorSpike (frontend-js-errors) severity=warning for=10m interval=1m
 SELECT ServiceName AS service,
        countIf(Timestamp >= now() - INTERVAL 10 MINUTE) AS value
@@ -35,8 +32,14 @@ GROUP BY ServiceName
 HAVING samples >= 100 AND value > 4000
 ORDER BY service
 
--- FrontendNewIssue (frontend-new-issue) severity=warning for=0s interval=1m
-SELECT 1 AS value WHERE 0 /* reliant:platform frontend-new-issue env:{reliant_env_id:String} */
+-- IssueRegressed (issue-regressed) severity=warning for=0s interval=1m
+SELECT 1 AS value WHERE 0 /* reliant:platform issue-regressed env:{reliant_env_id:String} */
+
+-- IssueSpike (issue-spike) severity=warning for=0s interval=5m
+SELECT 1 AS value WHERE 0 /* reliant:platform issue-spike env:{reliant_env_id:String} */
+
+-- NewIssue (new-issue) severity=warning for=0s interval=1m
+SELECT 1 AS value WHERE 0 /* reliant:platform new-issue env:{reliant_env_id:String} */
 
 -- ObservabilityQuotaOver100 (observability-quota) severity=warning for=0s interval=1m
 SELECT 1 AS value WHERE 0 /* reliant:platform observability-quota:over_100 env:{reliant_env_id:String} */

@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Alerts fire locally: `forge env up` closes the alerting loop.**
+  - Beside the local ClickStack, a scaffolded dev env now runs two new pieces:
+    - an `alerts` host workload, `forge observe alerts run`, which evaluates the env's `forge.Alerts` continuously with `for` applied;
+    - a compose `alertmanager` (the v0.28.1 digest the control plane runs).
+  - The Alertmanager's configuration is rendered by `forge/pkg/alerting/amconfig`, the control plane's own renderer, as org `local` with the env name as its env id. So a route reaches the same receiver locally as in production.
+  - The always-present `reliant-inapp` receiver delivers to the evaluator, which writes one line per alert to `.forge/logs/<env>/alerts.log`.
+  - New KCL:
+    - `forge.Alerts.receivers` (`forge.AlertReceiver`: webhook, slack, pagerduty, autopilot), the receivers of an env forge delivers itself. Their secrets are secret-store keys, written as files.
+    - `forge.Observability.alertmanager_port` / `alerts_port`.
+  - A host workload's `command` that starts with `forge` runs the forge that launched the env. Migration: `migrations/v0.1.47/local-alerting`.
+
+### Fixed
+
+- **`forge observe alerts check` and `forge observe profile` reach the ClickStack `forge env up` started.**
+  - env up runs each env's compose services in their own project (`forge-<id>-<env>`). Both commands exec'd into the default project, so they reported a running ClickStack as not running.
+- **`docker compose up <service>` interpolates the whole compose file with every workload's declared env.**
+  - Bringing up `otel-profiles` (which depends on `clickstack`) with only its own variables recreated `clickstack` on the file's default ports. On a machine running a second stack, the bind failed.
+
 - **`forge/pkg/alerting/amconfig`: the Alertmanager configuration renderer.**
   Moved verbatim from the control plane, which renders every org's routing
   with it, so a local stack can render with the SAME code: one route per org
@@ -40,9 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declared), and the OIDC writer.
 
 - **`forge secret` writes and lists store-sourced secrets, and `forge env secrets
-  verify|adopt` migrate a Secret onto ESO (SF10).** A name a store-backed
+verify|adopt` migrate a Secret onto ESO (SF10).** A name a store-backed
   `forge.ExternalSecret` (`forge.StoreSource`) reads or generates now lives in that
   ExternalSecret's store, whatever the env's `secret_provider` is:
+
   - `forge secret set` / `list` reach a `HostedStore` through the control plane's
     write-only API, a `GCPSecretManagerStore` with Application Default
     Credentials, and a self-run `OpenBaoStore` by signing in as the
@@ -52,13 +71,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `forge secret import` copies existing values in, create-only (check-and-set
     0; for Secret Manager, "no usable version yet"), so a re-run can never
     overwrite a value that was rotated since. `--from <ns>/<secret> --map
-    key=NAME` reads a cluster Secret with your kube context; a NAME with a value
+key=NAME` reads a cluster Secret with your kube context; a NAME with a value
     on stdin or `--from-file` imports one. `--to-bootstrap [--project]` writes a
     `BootstrapSecret`'s Secret Manager container. `--dry-run` reads and reports.
   - `forge env secrets verify <env> [<secret>]` compares a live Secret with the
     store's copy per key, and prints `match` / `no-match` and which side is
     missing: by default against `<name>-eso-shadow` (a source with `shadow =
-    True`), or `--against gsm:<project>` for the Secret Manager parity check.
+True`), or `--against gsm:<project>` for the Secret Manager parity check.
   - `forge env secrets adopt <env> <ns>/<secret>` strips the stale
     `kubectl.kubernetes.io/last-applied-configuration` annotation (a full copy of
     the applied values) and asserts nothing owns the Secret by ownerReference.

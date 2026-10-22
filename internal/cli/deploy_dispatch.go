@@ -102,6 +102,7 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 		case RuntimeCompose:
 			cm := w.Runtime.Compose
 			spec := composeSpecFor(projectDirForKCL(), envName, cm)
+			withComposeFileEnv(spec, cm, entities)
 			svcSecrets := secretEnv
 			if composeServiceName(w) == clickstack.ForwarderService {
 				// The forwarder reads its destination headers from one fixed

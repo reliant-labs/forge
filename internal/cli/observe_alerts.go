@@ -41,7 +41,7 @@ func newObserveAlertsCmd() *cobra.Command {
 		Use:   "alerts",
 		Short: "Alert rules declared for an environment",
 	}
-	cmd.AddCommand(newObserveAlertsCheckCmd())
+	cmd.AddCommand(newObserveAlertsCheckCmd(), newObserveAlertsRunCmd())
 	return cmdutil.StrictGroup(cmd)
 }
 
@@ -69,7 +69,7 @@ a rule that errors is reported and does not stop the others.
 Needs the local ClickStack running (` + "`forge env up`" + `).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runObserveAlertsCheck(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), o, defaultAlertShapeLoader, defaultAlertQueryRunner)
+			return runObserveAlertsCheck(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), o, defaultAlertShapeLoader, alertQueryRunnerFor(o.env))
 		},
 	}
 	f := cmd.Flags()
@@ -98,14 +98,22 @@ func defaultAlertShapeLoader(ctx context.Context, errOut io.Writer, env string) 
 	return doc.Shape.Alerts, nil
 }
 
-func defaultAlertQueryRunner(ctx context.Context, sql string, settings map[string]any) ([]byte, error) {
-	dir, err := requireProjectDir("observe alerts check")
+// alertQueryRunnerFor runs a statement in env's local ClickStack, the compose
+// project `forge env up` started it in.
+func alertQueryRunnerFor(env string) alertQueryRunner {
+	return func(ctx context.Context, sql string, settings map[string]any) ([]byte, error) {
+		return runAlertQuery(ctx, env, sql, settings)
+	}
+}
+
+func runAlertQuery(ctx context.Context, env, sql string, settings map[string]any) ([]byte, error) {
+	dir, err := requireProjectDir("observe alerts")
 	if err != nil {
 		return nil, err
 	}
-	args := []string{"exec", "-T", clickstack.Service, "sh", "-c",
+	args := append(localClickstackComposeArgs(ctx, dir, env), "exec", "-T", clickstack.Service, "sh", "-c",
 		`q="$1"; shift; exec clickhouse-client -u "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --format JSONEachRow --output_format_json_quote_64bit_integers=0 --query "$q" "$@"`,
-		"sh", sql}
+		"sh", sql)
 	keys := make([]string, 0, len(settings))
 	for k := range settings {
 		keys = append(keys, k)

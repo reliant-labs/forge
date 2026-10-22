@@ -327,6 +327,37 @@ func traced(ctx context.Context, dsn string) {
 	assertHits(t, res, f+"12", f+"14")
 }
 
+// The remedy for a raw pgx pool names a tracer forge ships. It once named
+// otelpgx, which no project has in go.mod, and an agent hand-wrote a
+// pgx.QueryTracer to follow it.
+func TestRawSQLOpenPgxRemedyIsShippedByForge(t *testing.T) {
+	src := `package db
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+func open(ctx context.Context, dsn string) { _, _ = pgxpool.New(ctx, dsn) }
+`
+	root := writeTree(t, map[string]string{"internal/db/open.go": src})
+	res, err := Lint(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Findings) != 1 {
+		t.Fatalf("want one finding, got %+v", res.Findings)
+	}
+	r := res.Findings[0].Remediation
+	if strings.Contains(r, "otelpgx") {
+		t.Errorf("remediation names otelpgx, which forge does not ship or pin: %s", r)
+	}
+	if !strings.Contains(r, "dbtrace.NewPgxTracer()") {
+		t.Errorf("remediation does not name dbtrace.NewPgxTracer(): %s", r)
+	}
+}
+
 // A pool opened only to look its driver up runs no statement: it is how a
 // traced pool is built from a driver name (dbtrace.Open), not a defect.
 func TestRawSQLOpenDriverProbe(t *testing.T) {

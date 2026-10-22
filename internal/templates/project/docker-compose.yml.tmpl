@@ -1,3 +1,14 @@
+# Images: nothing here pulls from Docker Hub. Its anonymous pull limit is per
+# IP, so an office, a CI runner or a cloud sandbox that shares one address runs
+# out partway through a first `forge env up`. Each image comes from its
+# publisher's own registry where there is one (ghcr for OpenTelemetry and
+# Zitadel, quay for Prometheus), from public.ecr.aws/docker/library (the Docker
+# Official Images mirror) for postgres, and from mirror.gcr.io (Google's Docker
+# Hub cache) for ClickStack, which is published only to Docker Hub.
+#
+# Every image is pinned by digest, so a registry is only transport: what runs
+# is what the digest names, from whichever host serves it. To pull through
+# your own mirror, change the host and keep the digest.
 services:
   # The app's database as a CONTAINER — available, but NOT what the
   # scaffolded dev environment runs.
@@ -16,7 +27,7 @@ services:
   # and set the DSN's port to match the one published below. Nothing else
   # changes; the app cannot tell the difference.
   postgres:
-    image: postgres:17-alpine
+    image: public.ecr.aws/docker/library/postgres:17-alpine@sha256:1bcc18d81671b02906296aad470ec9778a6b71016ce953092024b680bad007b0
     restart: unless-stopped
     mem_limit: 512m
     cpus: 0.5
@@ -222,7 +233,7 @@ services:
   # version under a dev stack turns "login broke today" into an
   # archaeology exercise. Bump deliberately.
   idp:
-    image: ghcr.io/zitadel/zitadel:v4.19.5
+    image: ghcr.io/zitadel/zitadel:v4.19.5@sha256:a586456a208e0db4c633db0ba43c427c24b37846138b8b13ff16ad8e003a18d3
     restart: unless-stopped
     # Backed by `idp-db` below — a postgres container of the IdP's OWN,
     # NOT the app's database.
@@ -356,7 +367,7 @@ services:
   # with the one service that uses it. A project that drops the IdP from
   # deploy/kcl/dev/main.k starts neither.
   idp-db:
-    image: postgres:17-alpine
+    image: public.ecr.aws/docker/library/postgres:17-alpine@sha256:1bcc18d81671b02906296aad470ec9778a6b71016ce953092024b680bad007b0
     restart: unless-stopped
     mem_limit: 256m
     cpus: 0.5
@@ -412,7 +423,7 @@ services:
   # Ports are declared once in deploy/kcl/dev/main.k and handed to compose as
   # CLICKSTACK_*_PORT; the defaults only serve a bare `docker compose up`.
   clickstack:
-    image: clickhouse/clickstack-local:2.40.0@sha256:4690fbfc2f25e2366ca496aabf4ee9e14d6cacb42119b84888b182495e6a5b74
+    image: mirror.gcr.io/clickhouse/clickstack-local:2.40.0@sha256:4690fbfc2f25e2366ca496aabf4ee9e14d6cacb42119b84888b182495e6a5b74
     restart: unless-stopped
     # tini as PID 1: the dashboard-provisioner loop below is a background child
     # of the image's entrypoint and would otherwise be reparented to a shell.
@@ -532,7 +543,7 @@ services:
   # FORGE_OTLP_HEADERS from the env's secret store, never from this file.
   # Apps are unchanged: they keep exporting to the same local port.
   otel-forwarder:
-    image: otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
+    image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
     restart: unless-stopped
     # The gate lets a destination that accepts profiles get them
     # (`signals.profiles = True`); it is inert while no profiles pipeline exists.
@@ -579,7 +590,7 @@ services:
   # changes between releases. pkg/observe's converter is pinned to the same
   # v0.162.0; bump them together.
   profiles-schema:
-    image: clickhouse/clickstack-local:2.40.0@sha256:4690fbfc2f25e2366ca496aabf4ee9e14d6cacb42119b84888b182495e6a5b74
+    image: mirror.gcr.io/clickhouse/clickstack-local:2.40.0@sha256:4690fbfc2f25e2366ca496aabf4ee9e14d6cacb42119b84888b182495e6a5b74
     restart: "no"
     depends_on:
       clickstack:
@@ -599,7 +610,7 @@ services:
       - {{.ProjectName}}-net
 
   otel-profiles:
-    image: otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
+    image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
     restart: unless-stopped
     command:
       - --config=/etc/otelcol/profiles.yaml

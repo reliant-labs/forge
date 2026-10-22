@@ -3815,6 +3815,8 @@ ESO_IMAGE: str = "ghcr.io/external-secrets/external-secrets:v2.13.0@sha256:f799d
 _ENV_SUFFIX: str = ("-" + option("env")) if option("env") else ""
 
 _DNS_LABEL_RE: str = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+# A Google service account: its id, or its email.
+_GSA_RE: str = r"^([a-z][a-z0-9-]{4,28}[a-z0-9]|[^@\s]+@[^@\s]+\.iam\.gserviceaccount\.com)$"
 _DNS_NAME_RE: str = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z]{2,}$"
 # A Secret data key, as Kubernetes defines it.
 _SECRET_KEY_RE: str = r"^[-._a-zA-Z0-9]+$"
@@ -4093,13 +4095,59 @@ schema GCPSecretManager:
 
     The bootstrap set is exactly the values the store needs BEFORE it can
     serve a read (its own unseal key, its database password): they cannot live
-    in the store they bootstrap."""
+    in the store they bootstrap.
+
+    DELIVERY. forge.OpenBao renders an ESO `gcpsm` SecretStore over Workload
+    Identity and an ExternalSecret per value (`<name>-unseal`, and for Postgres
+    `<name>-storage`), and the converge Job writes the `operator init` output
+    back to the recovery escrow. Two Google service accounts carry that, each
+    federated to ONE Kubernetes service account in the store's namespace and
+    each holding one narrow role:
+
+      * `reader_gsa`  <-  `reader_service_account` (the SecretStore logs in as
+                          it): secretmanager.secretAccessor on the seal key and
+                          the Postgres password, and nothing else.
+      * `escrow_gsa`  <-  the converge Job's `<openbao name>-converge`:
+                          secretmanager.versions.add on the recovery escrow
+                          only (it cannot read, list or delete anything).
+
+    The defaults derive from the OpenBao's name, so `openbao-bootstrap-reader`
+    and `openbao-escrow-writer` for a store named `openbao`. A bare name gets
+    `@<project>.iam.gserviceaccount.com`; a full email is used as given. The
+    Workload Identity bindings and the IAM are provisioned outside the Bundle
+    (the Google side of the trust), never by a deploy."""
     type: "gcpsm" = "gcpsm"
     project: str
+    # "" = "<openbao name>-bootstrap-reader".
+    reader_service_account: str = ""
+    # "" = the reader service account's name; a name or an email.
+    reader_gsa: str = ""
+    # "" = "<openbao name>-escrow-writer"; a name or an email.
+    escrow_gsa: str = ""
+    # The GKE cluster the store runs on, for Workload Identity: its project
+    # (which can differ from `project`, where the secrets are), location and
+    # name. "" = read from the cluster's kubectl context when that is a GKE one
+    # (`gke_<project>_<location>_<cluster>`), else left to ESO, which asks the
+    # GKE metadata server (a NetworkPolicy that blocks it breaks the sync).
+    cluster_project: str = ""
+    cluster_location: str = ""
+    cluster_name: str = ""
 
     check:
         regex.match(project, _GCP_PROJECT_RE), \
             "GCPSecretManager.project '${project}' is not a Google Cloud project id (6-30 lowercase letters, digits and hyphens, starting with a letter)"
+        not reader_service_account or regex.match(reader_service_account, _DNS_LABEL_RE), \
+            "GCPSecretManager.reader_service_account '${reader_service_account}' must be an RFC-1123 label: it names a Kubernetes service account"
+        not reader_gsa or regex.match(reader_gsa, _GSA_RE), \
+            "GCPSecretManager.reader_gsa '${reader_gsa}' must be a Google service account id (6-30 lowercase letters, digits and hyphens) or its email (name@project.iam.gserviceaccount.com)"
+        not escrow_gsa or regex.match(escrow_gsa, _GSA_RE), \
+            "GCPSecretManager.escrow_gsa '${escrow_gsa}' must be a Google service account id (6-30 lowercase letters, digits and hyphens) or its email (name@project.iam.gserviceaccount.com)"
+        not cluster_project or regex.match(cluster_project, _GCP_PROJECT_RE), \
+            "GCPSecretManager.cluster_project '${cluster_project}' is not a Google Cloud project id (6-30 lowercase letters, digits and hyphens, starting with a letter)"
+        not cluster_location or regex.match(cluster_location, r"^[a-z][a-z0-9-]*$"), \
+            "GCPSecretManager.cluster_location '${cluster_location}' must be a Google Cloud location (e.g. us-central1 or us-central1-a)"
+        not cluster_name or regex.match(cluster_name, r"^[a-z][a-z0-9-]*$"), \
+            "GCPSecretManager.cluster_name '${cluster_name}' must be a GKE cluster name (lowercase letters, digits and hyphens)"
 
 schema OutOfBand:
     """`bootstrap_source = forge.OutOfBand {}`: bootstrap values are provisioned

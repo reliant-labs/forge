@@ -77,6 +77,7 @@ get)
   [ -d "$d" ] || { echo "Error from server (NotFound): $2 \"$3\" not found" >&2; exit 1; }
   case $5 in
   name) echo "$2/$3" ;;
+  jsonpath={.metadata.uid}) cat "$d/.uid" ;;
   jsonpath=*) k=${5#jsonpath=\{.data.}; k=${k%\}}; k=${k//\\/}; cat "$d/$k" ;;
   esac ;;
 create|apply)
@@ -85,6 +86,7 @@ create|apply)
   d=$S/$dns/$kind-$name
   if [ "$1" = create ] && [ -d "$d" ]; then echo "Error from server (AlreadyExists): $kind \"$name\" already exists" >&2; exit 1; fi
   mkdir -p "$d"
+  [ -f "$d/.uid" ] || echo "uid-$RANDOM-$RANDOM-$RANDOM" >"$d/.uid"
   for k in $(jq -r '.data | keys[]' <<<"$doc"); do jq -j --arg k "$k" '.data[$k]' <<<"$doc" >"$d/$k"; done
   echo "$kind/$name configured" ;;
 *) echo "unsupported: $*" >&2; exit 2 ;;
@@ -107,6 +109,9 @@ type smoke struct {
 	stateDi  string
 	tokenKey any
 	env      map[string]string
+	// dockerArgs are extra `docker run` arguments for the converge container
+	// (mounts, hosts).
+	dockerArgs []string
 }
 
 func b64u(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
@@ -515,6 +520,7 @@ func (s *smoke) converge(phase string, wantExit int) string {
 		"-v", tokenFile + ":/var/run/openbao/token:ro", "-v", filepath.Join(s.dir, "bin") + ":/fakebin:ro",
 		"-v", filepath.Join(s.dir, "raw") + ":/raw:ro", "-v", s.stateDi + ":/state",
 		"--entrypoint", "bash"}
+	args = append(args, s.dockerArgs...)
 	for k, v := range env {
 		args = append(args, "-e", k+"="+v)
 	}

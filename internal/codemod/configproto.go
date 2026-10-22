@@ -103,7 +103,8 @@ var legacyPackageDeclRE = regexp.MustCompile(`(?m)^(\s*)package\s+config\.v1\s*;
 // goPackageOptRE matches a go_package option and captures its value.
 var goPackageOptRE = regexp.MustCompile(`(?m)^(\s*option\s+go_package\s*=\s*)"([^"]*)"(\s*;)`)
 
-func runConfigProtoPackage(dir string, write bool) (Report, error) {
+func runConfigProtoPackage(dir string, opts Options) (Report, error) {
+	write := opts.Write
 	var rep Report
 	legacy := configproto.LegacyFiles(dir)
 	if len(legacy) == 0 {

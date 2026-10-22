@@ -1863,6 +1863,7 @@ _openbao = lambda b: Bundle -> any {
         gateways = b.gateways
         ingress_cluster = _primary_target(b).cluster if _primary_target(b) else ""
         ingress_namespace = _primary_target(b).namespace if _primary_target(b) else ""
+        lifecycle = b.lifecycle
     }) if b.openbao else Undefined
 }
 

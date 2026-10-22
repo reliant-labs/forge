@@ -543,3 +543,97 @@ func TestESODerivedAdmissionAdmitsTheBundlesOwnObjects(t *testing.T) {
 		t.Fatalf("a foreign server was not refused by the derived policy: %v", err)
 	}
 }
+
+// The OpenBao component's bootstrap delivery: a SecretStore over Secret Manager
+// that logs in as the component's reader service account, and the ExternalSecrets
+// that read the seal key and the Postgres password through it. The store-pin
+// policy must admit exactly those, and nothing else over Google.
+const bootstrapAdmissionMain = `import forge
+
+_hub = forge.ClusterTarget {cluster = "gke_acme_us-central1_prod", namespace = "acme-prod", platform = "amd64", connected_cluster = "hub"}
+
+output = forge.render(forge.Bundle {
+    project = "fixture"
+    env = "prod"
+    cluster_target = _hub
+    openbao = forge.OpenBao {
+        namespace = "acme-prod"
+        replicas = 2
+        storage = forge.OpenBaoPostgres {
+            cloudsql_instance = "acme:us-central1:pg"
+            gcp_service_account = "openbao@acme.iam.gserviceaccount.com"
+            password = forge.BootstrapSecret {name = "openbao-pg-password-prod"}
+        }
+    }
+    external_secrets_operators = [forge.ExternalSecretsOperator {cluster = _hub, namespace = "eso"}]
+    bootstrap_source = forge.GCPSecretManager {project = "acme-prod"}
+})
+`
+
+func TestESOBootstrapStoreIsAdmittedByTheDerivedPolicy(t *testing.T) {
+	_, admin := startESOEnvtest(t)
+	vaps, manifests := renderESOBundle(t, bootstrapAdmissionMain)
+	ctx := context.Background()
+
+	items := make([]any, len(manifests))
+	for i, m := range manifests {
+		items[i] = m.Object
+	}
+	expanded, err := expandTierDeclarations(items, nil, nil)
+	if err != nil {
+		t.Fatalf("expand: %v", err)
+	}
+	var stores, ess []*unstructured.Unstructured
+	for _, it := range expanded {
+		u := &unstructured.Unstructured{Object: it.(map[string]any)}
+		switch u.GetKind() {
+		case "SecretStore":
+			stores = append(stores, u)
+		case "ExternalSecret":
+			ess = append(ess, u)
+		}
+	}
+	if len(stores) != 1 || len(ess) != 2 {
+		t.Fatalf("the OpenBao bootstrap rendered %d SecretStores and %d ExternalSecrets, want 1 and 2", len(stores), len(ess))
+	}
+
+	ns := &unstructured.Unstructured{Object: map[string]any{}}
+	ns.SetAPIVersion("v1")
+	ns.SetKind("Namespace")
+	ns.SetName("acme-prod")
+	if err := admin.Create(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range vaps {
+		if err := admin.Create(ctx, o); err != nil {
+			t.Fatalf("create %s/%s: %v", o.GetKind(), o.GetName(), err)
+		}
+	}
+	waitPoliciesActive(t, admin, nil)
+
+	for _, o := range append(stores, ess...) {
+		if err := admin.Create(ctx, o); err != nil {
+			t.Fatalf("the bundle's own %s %s was refused by its own policies: %v", o.GetKind(), o.GetName(), err)
+		}
+	}
+
+	gcp := func(project, sa string) string {
+		return `
+provider:
+  gcpsm:
+    projectID: ` + project + `
+    auth:
+      workloadIdentity:
+        clusterLocation: us-central1
+        clusterName: prod
+        serviceAccountRef: {name: ` + sa + `}`
+	}
+	for name, spec := range map[string]string{
+		"foreign-project": gcp("evil-project", "openbao-bootstrap-reader"),
+		"foreign-sa":      gcp("acme-prod", "some-other-sa"),
+	} {
+		if err := admin.Create(ctx, esObj(gvkSS, "acme-prod", name, spec)); err == nil || !strings.Contains(err.Error(), "may only dial a declared server") {
+			t.Errorf("%s: a store outside the declared project/service account was not refused: %v", name, err)
+		}
+	}
+}

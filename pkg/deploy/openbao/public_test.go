@@ -160,7 +160,7 @@ func TestPublicAllowlist_RoutesOnlyWhatTheDesignLists(t *testing.T) {
 		{"PUT", "/v1/auth/jwt-gke_edge-1/login"},
 		{"GET", "/v1/auth/token/lookup-self"}, // ESO validates a store with this
 		{"GET", "/v1/secret/data/tenants/acme/prod/STRIPE_SECRET_KEY"},
-		{"GET", "/v1/secret/data/tenants/13b10699-0c5d-4b6c-9f43-2c8f0f2d7b3a/13b10699/DB_URL"}, // tenant zero: a UUID org
+		{"GET", "/v1/secret/data/tenants/13b10699-0c5d-4b6c-9f43-2c8f0f2d7b3a/13b10699/DB_URL"}, // a UUID org
 		{"GET", "/v1/secret/data/tenants/acme/prod/_PRIVATE"},
 	}
 	for _, r := range allowed {

@@ -38,7 +38,7 @@ func TestTxIsolation_KeepsEveryShapesWireLevelAndAttempts(t *testing.T) {
 	copyFile(t, filepath.Join(root, "go.sum"), filepath.Join(dir, "go.sum"))
 	writeScratchGoMod(t, root, dir, "example.com/txscratch")
 
-	rep, err := runTxIsolation(dir, true)
+	rep, err := runTxIsolation(dir, Options{Write: true})
 	if err != nil {
 		t.Fatalf("codemod: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestTxIsolation_KeepsEveryShapesWireLevelAndAttempts(t *testing.T) {
 		t.Errorf("Next should name the options passed by variable first, got %q", rep.Next)
 	}
 
-	again, err := runTxIsolation(dir, true)
+	again, err := runTxIsolation(dir, Options{Write: true})
 	if err != nil {
 		t.Fatalf("second run: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestTxIsolation_NothingToDoWithoutORM(t *testing.T) {
 		"go.mod":  "module example.com/plain\n\ngo 1.27.0\n",
 		"main.go": "package main\n\nimport \"database/sql\"\n\nfunc f(db *sql.DB) { _, _ = db.BeginTx(nil, nil) }\n",
 	})
-	rep, err := runTxIsolation(dir, true)
+	rep, err := runTxIsolation(dir, Options{Write: true})
 	if err != nil {
 		t.Fatal(err)
 	}

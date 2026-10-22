@@ -44,6 +44,9 @@ type gsmAPI interface {
 	Access(ctx context.Context, project, id string) ([]byte, error)
 	// List returns the ids of the project's secrets.
 	List(ctx context.Context, project string) ([]string, error)
+	// Disable takes one version out of service. Only the bootstrap mint calls
+	// it, on the version it just added when another writer got there first.
+	Disable(ctx context.Context, project, id string, version uint32) error
 }
 
 // newGSMAPI is the seam commands open Secret Manager through.
@@ -205,6 +208,18 @@ func (g *gsmREST) Access(ctx context.Context, project, id string) ([]byte, error
 		return nil, err
 	}
 	return base64.StdEncoding.DecodeString(p.Payload.Data)
+}
+
+func (g *gsmREST) Disable(ctx context.Context, project, id string, version uint32) error {
+	path := gsmSecretPath(project, id) + "/versions/" + strconv.FormatUint(uint64(version), 10) + ":disable"
+	status, body, err := g.call(ctx, http.MethodPost, path, nil, map[string]any{})
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return gsmError("disable version", status, body)
+	}
+	return nil
 }
 
 func (g *gsmREST) List(ctx context.Context, project string) ([]string, error) {

@@ -9,52 +9,47 @@ package cli
 //	service          <name>-ro when the Cluster runs standbys, else <name>-rw
 //	                 (CloudNativePG's services; a read never loads the primary
 //	                 when a replica exists)
-//	role             forge_ro, the read-only role forge's render declares on
-//	                 every ManagedDatabase, its password in <name>-forge-ro
+//	role             dbgrants.RoleName (forge_ro), the read-only role forge's
+//	                 render declares on every ManagedDatabase; its password is
+//	                 in dbgrants.SecretName (<name>-forge-ro)
 //	database         the ManagedDatabase's database (deploy.DatabaseIdentifiers)
 //
 // The tunnel lives exactly as long as the query: opened by the resolve,
 // closed when the command returns.
 //
-// A REAL OnCluster env (lifecycle unset) is refused: reaching a production
+// The env's data_access policy applies as on every transport. A REAL
+// OnCluster env (lifecycle unset) is refused: reaching a production
 // database through someone's laptop kube context is the control plane's job
 // (its connected-cluster grant), not a tunnel's.
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"net"
-	"net/http"
 	"net/url"
+	"os/exec"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/tools/portforward"
-	"k8s.io/client-go/transport/spdy"
 
+	"github.com/reliant-labs/forge/pkg/dbgrants"
 	"github.com/reliant-labs/forge/pkg/deploy"
 )
 
-// Names the port-forward transport reads. The role and its Secret are what
-// forge's ManagedDatabase render declares (CNPG spec.managed.roles); the
-// services are CloudNativePG's.
-const (
-	dbReadOnlyRole       = "forge_ro"
-	dbReadOnlySecretSufx = "-forge-ro"
-	dbPostgresPort       = 5432
-)
+// dbPostgresPort is the port a CNPG instance serves on.
+const dbPostgresPort = 5432
 
-// dbReadOnlySecretName is the Secret holding forge_ro's password for the
-// ManagedDatabase name.
-func dbReadOnlySecretName(name string) string { return name + dbReadOnlySecretSufx }
+// dbClusterSSLMode is the sslmode of a tunnelled connection. CNPG serves TLS
+// and its pg_hba admits remote clients over hostssl only. A variable so a test
+// can point the transport at a server without TLS.
+var dbClusterSSLMode = "require"
 
 // dbClusterService is the CNPG service a read goes to: a replica when the
 // Cluster has one.
@@ -70,9 +65,8 @@ func dbClusterService(name string, instances int32) string {
 type dbTunnel interface {
 	// Secret reads one Secret's data.
 	Secret(ctx context.Context, namespace, name string) (map[string][]byte, error)
-	// Forward port-forwards a local port to dbPostgresPort on a ready pod
-	// behind service, and returns the local address and the function that
-	// closes the tunnel.
+	// Forward port-forwards a local port to dbPostgresPort behind service,
+	// and returns the local address and the function that closes the tunnel.
 	Forward(ctx context.Context, namespace, service string) (addr string, stop func(), err error)
 }
 
@@ -90,7 +84,7 @@ var newDBTunnel = func(kubeContext string) (dbTunnel, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &kubeDBTunnel{cfg: cfg, cs: cs}, nil
+	return &kubeDBTunnel{kubeContext: kubeContext, cs: cs}, nil
 }
 
 // resolveDBQueryCluster resolves the port-forward target for an OnCluster
@@ -109,14 +103,14 @@ func resolveDBQueryCluster(ctx context.Context, o dbQueryOptions, e *KCLEntities
 	if err != nil {
 		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("database %q in %s: %v", db.Name, o.env, err)}
 	}
-	secretName := dbReadOnlySecretName(db.Name)
+	secretName := dbgrants.SecretName(db.Name)
 	secret, err := tun.Secret(ctx, db.Namespace, secretName)
 	if err != nil {
 		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("database %q in %s: read-only credentials %s/%s: %v (does the database predate forge's read-only role? redeploy %s)", db.Name, o.env, db.Namespace, secretName, err, o.env)}
 	}
 	user, pass := string(secret["username"]), string(secret["password"])
 	if user == "" {
-		user = dbReadOnlyRole
+		user = dbgrants.RoleName
 	}
 	if pass == "" {
 		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("database %q in %s: %s/%s has no password", db.Name, o.env, db.Namespace, secretName)}
@@ -132,7 +126,7 @@ func resolveDBQueryCluster(ctx context.Context, o dbQueryOptions, e *KCLEntities
 		User:     url.UserPassword(user, pass),
 		Host:     addr,
 		Path:     "/" + database,
-		RawQuery: "sslmode=require",
+		RawQuery: "sslmode=" + dbClusterSSLMode,
 	}).String()
 	return dbQueryTarget{
 		dsn:   dsn,
@@ -182,10 +176,11 @@ func databaseNames(ds []DatabaseEntity) string {
 	return out
 }
 
-// kubeDBTunnel is dbTunnel over client-go.
+// kubeDBTunnel is dbTunnel over client-go (the Secret) and kubectl (the
+// port-forward).
 type kubeDBTunnel struct {
-	cfg *rest.Config
-	cs  kubernetes.Interface
+	kubeContext string
+	cs          kubernetes.Interface
 }
 
 func (k *kubeDBTunnel) Secret(ctx context.Context, namespace, name string) (map[string][]byte, error) {
@@ -199,66 +194,58 @@ func (k *kubeDBTunnel) Secret(ctx context.Context, namespace, name string) (map[
 // dbForwardReady bounds how long the tunnel may take to come up.
 const dbForwardReady = 15 * time.Second
 
+// forwardingRE is the line kubectl port-forward prints once the local port
+// listens: "Forwarding from 127.0.0.1:54321 -> 5432".
+var forwardingRE = regexp.MustCompile(`Forwarding from (127\.0\.0\.1:[0-9]+) ->`)
+
+// Forward runs `kubectl port-forward svc/<service> :5432`, as forge's other
+// cluster operations run kubectl: kubectl picks a ready pod behind the
+// service, and the user's kubeconfig (exec plugins included) authenticates.
+// The tunnel is the kubectl process; stop ends it.
 func (k *kubeDBTunnel) Forward(ctx context.Context, namespace, service string) (string, func(), error) {
-	svc, err := k.cs.CoreV1().Services(namespace).Get(ctx, service, metav1.GetOptions{})
+	fwdCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	cmd := exec.CommandContext(fwdCtx, "kubectl", "--context", k.kubeContext, "--namespace", namespace,
+		"port-forward", "--address", "127.0.0.1", "svc/"+service, ":"+strconv.Itoa(dbPostgresPort))
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		cancel()
 		return "", nil, err
 	}
-	if len(svc.Spec.Selector) == 0 {
-		return "", nil, fmt.Errorf("service %s selects no pods", service)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return "", nil, fmt.Errorf("start kubectl: %w", err)
 	}
-	pods, err := k.cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: labels.SelectorFromSet(svc.Spec.Selector).String()})
-	if err != nil {
-		return "", nil, err
+	stop := func() {
+		cancel()
+		_ = cmd.Wait()
 	}
-	pod := readyPod(pods.Items)
-	if pod == "" {
-		return "", nil, fmt.Errorf("no ready pod behind service %s", service)
-	}
-	transport, upgrader, err := spdy.RoundTripperFor(k.cfg)
-	if err != nil {
-		return "", nil, err
-	}
-	target := k.cs.CoreV1().RESTClient().Post().Resource("pods").Namespace(namespace).Name(pod).SubResource("portforward").URL()
-	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, http.MethodPost, target)
-	stopCh, readyCh := make(chan struct{}), make(chan struct{})
-	pf, err := portforward.NewOnAddresses(dialer, []string{"127.0.0.1"}, []string{"0:" + strconv.Itoa(dbPostgresPort)}, stopCh, readyCh, io.Discard, io.Discard)
-	if err != nil {
-		return "", nil, err
-	}
-	errCh := make(chan error, 1)
-	go func() { errCh <- pf.ForwardPorts() }()
-	stop := func() { close(stopCh) }
+	found := make(chan string, 1)
+	go func() {
+		sc := bufio.NewScanner(stdout)
+		for sc.Scan() {
+			if m := forwardingRE.FindStringSubmatch(sc.Text()); m != nil {
+				found <- m[1]
+				break
+			}
+		}
+		// Keep draining so kubectl never blocks on a full pipe.
+		_, _ = io.Copy(io.Discard, stdout)
+		close(found)
+	}()
 	select {
-	case <-readyCh:
-	case err := <-errCh:
-		return "", nil, fmt.Errorf("pod %s: %w", pod, err)
+	case addr, ok := <-found:
+		if ok {
+			return addr, stop, nil
+		}
+		stop()
+		return "", nil, fmt.Errorf("kubectl port-forward exited: %s", strings.TrimSpace(stderr.String()))
 	case <-time.After(dbForwardReady):
 		stop()
-		return "", nil, fmt.Errorf("pod %s: the tunnel did not come up in %s", pod, dbForwardReady)
+		return "", nil, fmt.Errorf("the tunnel did not come up in %s: %s", dbForwardReady, strings.TrimSpace(stderr.String()))
 	case <-ctx.Done():
 		stop()
 		return "", nil, ctx.Err()
 	}
-	ports, err := pf.GetPorts()
-	if err != nil || len(ports) != 1 {
-		stop()
-		return "", nil, fmt.Errorf("pod %s: no forwarded port: %v", pod, err)
-	}
-	return net.JoinHostPort("127.0.0.1", strconv.Itoa(int(ports[0].Local))), stop, nil
-}
-
-// readyPod is the first running pod whose Ready condition is true.
-func readyPod(pods []corev1.Pod) string {
-	for _, p := range pods {
-		if p.Status.Phase != corev1.PodRunning || p.DeletionTimestamp != nil {
-			continue
-		}
-		for _, c := range p.Status.Conditions {
-			if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
-				return p.Name
-			}
-		}
-	}
-	return ""
 }

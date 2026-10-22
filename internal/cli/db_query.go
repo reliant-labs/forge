@@ -20,12 +20,11 @@ package cli
 //	                     forge_ro role, on a scratch env (db_query_cluster.go)
 //	OnHosted             the control plane's AppDatabaseService (not yet: exit 2)
 //
-// Policy: an env that is scratch by declaration (lifecycle local/ephemeral) or
-// targets no cluster at all is "open". Anything else is a real env, and the
-// query needs --confirm-env <env> and a --reason, so nobody reads a real
-// database by mistyping an env name. For a hosted env the control plane
-// enforces this server-side from the recorded shape; locally the flag check is
-// the whole rule.
+// Policy is the env's declared forge.DataAccess db_query: open (a local or
+// ephemeral env's default), audited (any other env's default: the query needs
+// --confirm-env <env> and a --reason, so nobody reads a real database by
+// mistyping an env name) or deny. For a hosted env the control plane enforces
+// it server-side from the recorded shape; locally this check is the rule.
 
 import (
 	"context"
@@ -44,16 +43,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/pkg/dbquery"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // dbQuerySchema names the JSON document's shape.
 const dbQuerySchema = "forge.db.query/v1"
-
-// Query policies (DESIGN §7.5 forge.DataAccess).
-const (
-	dbQueryOpen    = "open"
-	dbQueryAudited = "audited"
-)
 
 // maxDBQueryReason bounds --reason, as the control plane does.
 const maxDBQueryReason = 500
@@ -95,9 +89,9 @@ The connection follows the workload (` + "`--workload`" + `, default "api"):
 Hosted databases, and the databases of real cluster envs, are not reachable
 from forge yet (exit 2).
 
-An env declared scratch (lifecycle local or ephemeral) or with no cluster at
-all is open. Any other env is a real one: pass --confirm-env <env> and a
---reason.
+The env's data_access policy (forge.DataAccess) decides who may query:
+open (the default of a local or ephemeral env), audited (the default of any
+other env: pass --confirm-env <env> and a --reason) or deny.
 
 Output: a table, or --format json|csv. --json is --format json; the document
 carries ok, exit_code and error like every other forge --json verb, plus
@@ -299,32 +293,28 @@ func resolveDBQueryTarget(ctx context.Context, o dbQueryOptions) (dbQueryTarget,
 	return dbQueryTarget{dsn: dsn, scope: scope}, nil
 }
 
-// dbQueryPolicy is the env's query policy: open for an env that is scratch by
-// declaration or has no cluster to be real on, audited otherwise. The same
-// predicate as direct apply, minus the transitional applier allowance, which
-// says who applies an env, not that it is disposable.
+// dbQueryPolicy is the env's declared db_query policy (forge.DataAccess,
+// resolved by the render: what the env declared, else open for a local or
+// ephemeral env and audited for any other). Absent means audited, never open.
 func dbQueryPolicy(e *KCLEntities) string {
 	if e == nil {
-		return dbQueryOpen
+		return string(release.DBQueryAudited)
 	}
-	switch e.Lifecycle {
-	case lifecycleLocal, lifecycleEphemeral:
-		return dbQueryOpen
-	}
-	if !kclEntitiesHaveK8sCluster(e) {
-		return dbQueryOpen
-	}
-	return dbQueryAudited
+	return string(e.DataAccess.Resolved().DBQuery)
 }
 
 func checkDBQueryPolicy(o dbQueryOptions, policy string) error {
-	if policy != dbQueryAudited {
+	switch release.DBQueryPolicy(policy) {
+	case release.DBQueryOpen:
 		return nil
+	case release.DBQueryAudited:
+		if o.confirmEnv != o.env || strings.TrimSpace(o.reason) == "" {
+			return exitCodeError{code: exitWrong, msg: fmt.Sprintf("%s is a real environment (data_access db_query = audited): pass --confirm-env %s and --reason \"<why>\" to read its database", o.env, o.env)}
+		}
+		return nil
+	default:
+		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("%s refuses database queries (data_access db_query = %s)", o.env, policy)}
 	}
-	if o.confirmEnv != o.env || strings.TrimSpace(o.reason) == "" {
-		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("%s is a real environment: pass --confirm-env %s and --reason \"<why>\" to read its database", o.env, o.env)}
-	}
-	return nil
 }
 
 // dbQueryError maps a dbquery failure onto the exit table: the request was

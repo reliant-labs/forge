@@ -96,7 +96,7 @@ func (e *obsCheckHarness) run(t *testing.T, facts obsbackend.Facts, caller obsba
 		},
 		Now: func() time.Time { return e.now },
 	}
-	cmd := NewRootCmd()
+	cmd := newTestRootCmd(t)
 	cmd.SetOut(&out)
 	cmd.SetErr(&errb)
 	cmd.SetArgs(append([]string{"obs"}, args...))

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/reliant-labs/forge/pkg/releasehealth"
 	"github.com/reliant-labs/forge/internal/releasetimeline"
+	"github.com/reliant-labs/forge/pkg/releasehealth"
 )
 
 const (

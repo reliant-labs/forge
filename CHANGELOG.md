@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge.OpenBao` renders (SF6).** `Bundle.openbao = forge.OpenBao {}` now
+  lowers to a `forge.dev/v1alpha1 OpenBao` record that `pkg/deploy/openbao`
+  expands into the secret store and what converges it. Defaults run: Raft x3 on
+  PVCs with `retry_join` auto-join, TLS from a namespaced self-signed
+  cert-manager CA, a static seal, audit to stdout and a file, a PDB and zone
+  spread. `OpenBaoPostgres` renders a Deployment with the cloud-sql-proxy
+  sidecar over Workload Identity. Two content-addressed Jobs run one embedded
+  `converge.sh`: a pre-rollout **widen** (the union of the applied and new
+  access document) and a post-rollout **converge** (initialise, write the
+  recovery Secret before converging anything, apply the document from
+  `pkg/secretaccess`, narrow what it no longer contains, revoke root).
+  `consumers` become exact-grant roles; `delegated` gets the access-admin policy
+  and no KV capability. A plaintext listener needs a `transitional_reason`, a
+  glob `read` needs a `wildcard_read_reason`, and both are listed in the
+  render's `openbao.warnings`. The release shape now records the store-backed
+  secrets, generated names, pins and both components (`forge env shape`).
+  Left for later: the bootstrap source and recovery escrow (hook seams are in
+  the Job), the `public` endpoint, the Raft snapshot CronJob (refused if
+  declared), and the OIDC writer.
+
 - **`forge secret` writes and lists store-sourced secrets, and `forge env secrets
   verify|adopt` migrate a Secret onto ESO (SF10).** A name a store-backed
   `forge.ExternalSecret` (`forge.StoreSource`) reads or generates now lives in that

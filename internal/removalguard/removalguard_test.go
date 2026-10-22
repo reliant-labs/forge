@@ -162,6 +162,12 @@ var removals = []removal{
 					"kcl/tests/positive_secrets_store_*.k",
 					"internal/cli/testdata/render_contract/secrets-components.json",
 					"pkg/release/store_secrets_test.go",
+					// The component that serves that layout: its tests and
+					// docker smokes read and write the same paths.
+					"pkg/deploy/openbao/openbao_test.go",
+					"pkg/deploy/openbao/smoke_test.go",
+					"kcl/tests/positive_openbao_render.k",
+					"internal/templates/project/skills/forge/secrets/openbao/SKILL.md",
 				},
 			},
 			{

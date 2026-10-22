@@ -1,7 +1,6 @@
 package lint
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,32 +149,6 @@ func TestColumnMarkerFixHint_ListsKnownMarkers(t *testing.T) {
 		if !strings.Contains(hint, want) {
 			t.Errorf("fix hint missing %q:\n%s", want, hint)
 		}
-	}
-}
-
-func TestFormatColumnMarkers_CleanAndDirty(t *testing.T) {
-	var buf bytes.Buffer
-	formatColumnMarkers(&buf, nil)
-	if !strings.Contains(buf.String(), "column-markers clean") {
-		t.Errorf("clean output missing success line: %s", buf.String())
-	}
-
-	buf.Reset()
-	formatColumnMarkers(&buf, []columnMarkerFinding{{
-		File: "db/migrations/0001_x.up.sql", Line: 3,
-		Object: "invoices.total_cents", Marker: "forge:immutible", Problem: "forge:immutible is not a marker forge reads",
-	}})
-	out := buf.String()
-	for _, want := range []string{
-		"✗ [forge-column-markers] db/migrations/0001_x.up.sql:3",
-		"forge:immutible",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("dirty output missing %q:\n%s", want, out)
-		}
-	}
-	if strings.Contains(out, "warnings only") {
-		t.Errorf("the lane gates; the report must not say it does not:\n%s", out)
 	}
 }
 

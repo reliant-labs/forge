@@ -16,90 +16,16 @@
 package lint
 
 import (
-	"errors"
 	"fmt"
-	"io"
-	"os"
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/linter/finding"
-	"github.com/reliant-labs/forge/internal/linter/suppress"
 )
 
-// runGraphLint is the text-mode entry point.
-func runGraphLint(projectDir string, cfg *config.ProjectConfig) error {
-	fmt.Println("Running composition-graph lint...")
-	findings, graphMode, err := graphFindings(projectDir, cfg)
-	if err != nil {
-		return err
-	}
-	if !graphMode {
-		fmt.Println("  graph lint skipped — internal/app is the legacy Infra / NewComponents composition, not the composition graph")
-		return nil
-	}
-	if formatGraphFindings(os.Stdout, findings) {
-		return errors.New("the composition graph has errors (see above)")
-	}
-	return nil
-}
-
-// graphFindings judges the graph and re-grades each finding through
-// lint.rules.
-func graphFindings(projectDir string, cfg *config.ProjectConfig) ([]codegen.GraphFinding, bool, error) {
-	findings, graphMode, err := codegen.LintGraph(projectDir)
-	if err != nil || cfg == nil {
-		return findings, graphMode, err
-	}
-	return regradeGraphFindings(findings, cfg.Lint.EffectiveRules()), graphMode, nil
-}
-
-// regradeGraphFindings applies lint.rules to graph findings through the
-// engine every forge rule shares: `off` drops a finding, `warn` keeps it
-// without gating, `error` gates, and an exact rule id beats `*`.
-func regradeGraphFindings(findings []codegen.GraphFinding, rules suppress.RuleSeverities) []codegen.GraphFinding {
-	if len(rules) == 0 {
-		return findings
-	}
-	out := make([]codegen.GraphFinding, 0, len(findings))
-	for _, f := range findings {
-		sev := finding.SeverityWarning
-		if f.Error {
-			sev = finding.SeverityError
-		}
-		adjusted, keep := rules.Override(finding.Finding{Rule: f.Rule, Severity: sev, File: f.File, Line: f.Line, Message: f.Message})
-		if !keep {
-			continue
-		}
-		f.Error = adjusted.Severity == finding.SeverityError
-		out = append(out, f)
-	}
-	return out
-}
-
-// formatGraphFindings writes the human report and reports whether any
-// finding is an error.
-func formatGraphFindings(w io.Writer, findings []codegen.GraphFinding) bool {
-	if len(findings) == 0 {
-		_, _ = fmt.Fprintln(w, "  graph clean — every component and provider is reached by a root, and every listener serves its chain's audience")
-		return false
-	}
-	failed := false
-	for _, f := range findings {
-		mark := "⚠"
-		if f.Error {
-			mark, failed = "✗", true
-		}
-		loc := f.File
-		if f.Line > 0 {
-			loc = fmt.Sprintf("%s:%d", f.File, f.Line)
-		}
-		_, _ = fmt.Fprintf(w, "  %s [%s] %s: %s\n", mark, f.Rule, loc, f.Message)
-		if f.Fix != "" {
-			_, _ = fmt.Fprintf(w, "      → %s\n", f.Fix)
-		}
-	}
-	return failed
+// graphFindings judges the graph. lint.rules grades its findings in the
+// outcome engine, as it does every lane's (lint_rules.go).
+func graphFindings(projectDir string, _ *config.ProjectConfig) ([]codegen.GraphFinding, bool, error) {
+	return codegen.LintGraph(projectDir)
 }
 
 // collectGraphJSON maps graph findings onto the JSON contract; an error

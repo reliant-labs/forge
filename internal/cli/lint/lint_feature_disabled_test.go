@@ -79,12 +79,14 @@ forge_version: v0.0.0-test
 func TestMigrationSafetyFlagRefusesWhenFeatureDisabled(t *testing.T) {
 	lintProject(t, migrationsOffYAML)
 
-	err := runLint(t.Context(), lintFlags{migrationSafety: true}, []string{"./..."})
+	stop := captureStdout(t)
+	err := runLintStructured(t.Context(), lintFlags{migrationSafety: true}, []string{"./..."})
+	report := stop()
 	if err == nil {
 		t.Fatal("forge lint --migration-safety exited 0 with the migrations feature off — " +
 			"a CI job running this flag would go green having checked nothing")
 	}
-	msg := err.Error()
+	msg := report + err.Error()
 	for _, want := range []string{"migrations", "db/migrations"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error must name the flag that turned the lane off and how to turn it back on;\nwant %q in: %s", want, msg)
@@ -113,15 +115,17 @@ forge_version: v0.0.0-test
 		return projectstore.New(cfg), nil
 	})
 
-	err := runLint(t.Context(), lintFlags{contract: true}, []string{"./..."})
+	stop := captureStdout(t)
+	err := runLintStructured(t.Context(), lintFlags{contract: true}, []string{"./..."})
+	report := stop()
 	if err == nil {
 		t.Fatal("forge lint --contract exited 0 with the contracts feature off")
 	}
-	if !strings.Contains(err.Error(), "contracts") {
-		t.Errorf("error should name the contracts feature, got: %v", err)
+	if !strings.Contains(report, "contracts feature is off") {
+		t.Errorf("the report should name the contracts feature, got:\n%s", report)
 	}
-	if strings.Contains(err.Error(), "features.contracts") {
-		t.Errorf("the remedy must not name a forge.yaml key that no longer exists: %v", err)
+	if strings.Contains(report+err.Error(), "features.contracts") {
+		t.Errorf("the remedy must not name a forge.yaml key that no longer exists: %s", report)
 	}
 }
 

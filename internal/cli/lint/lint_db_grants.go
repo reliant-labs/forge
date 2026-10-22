@@ -23,7 +23,6 @@ package lint
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -83,47 +82,6 @@ func (f dbGrantsFinding) fixHint() string {
 type dbGrantsReport struct {
 	Findings   []dbGrantsFinding
 	Unverified string
-}
-
-// runDBGrantsLint is the text-mode entry point.
-func runDBGrantsLint(cwd string, cfg *config.ProjectConfig) error {
-	fmt.Println("Running db-grants lint...")
-	rep, err := collectDBGrantsFindings(cwd, migrationsDirFor(cfg))
-	if err != nil {
-		return err
-	}
-	formatDBGrants(os.Stdout, rep)
-	if rep.Unverified != "" {
-		return fmt.Errorf("db-grants did not run: %s", rep.Unverified)
-	}
-	if len(rep.Findings) > 0 {
-		return fmt.Errorf("%d credential-shaped column(s) with no forge:secret / forge:readable decision", len(rep.Findings))
-	}
-	return nil
-}
-
-func formatDBGrants(w io.Writer, rep dbGrantsReport) {
-	if rep.Unverified != "" {
-		_, _ = fmt.Fprintf(w, "  ✗ [%s] db-grants did NOT run: %s\n", dbGrantsUnverifiedRule, rep.Unverified)
-		return
-	}
-	if len(rep.Findings) == 0 {
-		_, _ = fmt.Fprintln(w, "  db-grants clean — every credential-shaped column is declared forge:secret or forge:readable")
-		return
-	}
-	for _, f := range rep.Findings {
-		loc := f.File
-		if f.File != "" && f.Line > 0 {
-			loc = fmt.Sprintf("%s:%d", f.File, f.Line)
-		}
-		if loc == "" {
-			loc = f.Table
-		}
-		_, _ = fmt.Fprintf(w, "  ✗ [%s] %s\n", dbGrantsRule, loc)
-		_, _ = fmt.Fprintf(w, "      %s\n", f.message())
-		_, _ = fmt.Fprintf(w, "      → %s\n", f.fixHint())
-	}
-	_, _ = fmt.Fprintf(w, "\n%d credential-shaped column(s) with no decision. The read-only role is refused them meanwhile.\n", len(rep.Findings))
 }
 
 // collectDBGrantsFindings is the shared engine behind text mode and

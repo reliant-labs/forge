@@ -104,7 +104,7 @@ func TestE2EProjectNewDisableShapes(t *testing.T) {
 					t.Errorf("lint lane was skipped (%q) — the exit-0 assertion is vacuous:\n%s", banned, out)
 				}
 			}
-			if !strings.Contains(out, "Running golangci-lint") {
+			if !strings.Contains(out, "✓ golangci-lint") {
 				t.Errorf("golangci-lint did not run:\n%s", out)
 			}
 		})

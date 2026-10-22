@@ -228,21 +228,3 @@ func resolveLocalBin(name, feDir, projectRoot string) string {
 		dir = parent
 	}
 }
-
-// reportFrontendFormatPrePass runs formatFrontendTrees and prints a summary,
-// mirroring reportFormatPrePass. Advisory: a failure prints a ⚠️ line and
-// never gates.
-func reportFrontendFormatPrePass(ctx context.Context, cwd string, cfg *config.ProjectConfig) {
-	changed, err := formatFrontendTrees(ctx, cwd, cfg)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠️  frontend auto-format pre-pass: %v\n", err)
-	}
-	if len(changed) == 0 {
-		return
-	}
-	fmt.Printf("🔧 Auto-formatted %d frontend file(s) before gating (prettier):\n", len(changed))
-	for _, c := range changed {
-		fmt.Printf("   • %s\n", c)
-	}
-	fmt.Println()
-}

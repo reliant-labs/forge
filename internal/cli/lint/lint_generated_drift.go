@@ -46,7 +46,6 @@ import (
 	"fmt"
 
 	"github.com/reliant-labs/forge/internal/checksums"
-	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 )
@@ -100,41 +99,6 @@ func generatedDriftFindings(root string) ([]finding.Finding, error) {
 		})
 	}
 	return out, nil
-}
-
-// runGeneratedDriftLint is the text-mode arm. Returns a gating error when
-// any forge-generated file was hand-edited.
-func runGeneratedDriftLint(root string) error {
-	fmt.Println("🔍 Running generated-file drift lint...")
-	fmt.Println()
-
-	findings, err := generatedDriftFindings(root)
-	if err != nil {
-		return err
-	}
-	edited := 0
-	for _, f := range findings {
-		icon := "⚠️ "
-		if f.Severity == finding.SeverityError {
-			icon = "❌"
-			edited++
-		}
-		fmt.Printf("  %s %s\n", icon, f.Message)
-		fmt.Printf("      ↪ %s\n", f.Remediation)
-	}
-	if edited == 0 {
-		if len(findings) == 0 {
-			fmt.Println("✓ no hand-edits to forge-generated files.")
-		} else {
-			fmt.Println("(warnings only — not failing the build)")
-		}
-		return nil
-	}
-	fmt.Println()
-	return cliutil.UserErr("forge lint --generated-drift",
-		fmt.Sprintf("%d forge-generated file(s) were edited after forge wrote them", edited),
-		"",
-		"revert each edit and move the customization to a user-owned file, or `forge project disown <path> --reason \"<why>\"` to take permanent ownership")
 }
 
 // collectGeneratedDriftJSON is the --json arm. The bool is the gating

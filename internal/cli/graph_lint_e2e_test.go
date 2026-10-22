@@ -40,7 +40,7 @@ func TestE2EGraphLintAndNarrowDeps(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
-	if out, err := lint("--graph"); err != nil || !strings.Contains(out, "graph clean") {
+	if out, err := lint("--graph"); err != nil || !strings.Contains(out, "✓ graph") {
 		t.Fatalf("a fresh project must be graph-clean: %v\n%s", err, out)
 	}
 
@@ -77,7 +77,7 @@ message PingResponse {}
 	}
 	runCmd(t, projectDir, forgeBin, "generate")
 	out, err := lint("--graph")
-	if err == nil || !strings.Contains(out, "[forge-graph-unreachable] internal/handlers/tools") || !strings.Contains(out, "DaemonRoutes") {
+	if err == nil || !strings.Contains(out, "internal/handlers/tools [forge-graph-unreachable]") || !strings.Contains(out, "DaemonRoutes") {
 		t.Fatalf("an unreachable daemon service must fail --graph, naming its route set: %v\n%s", err, out)
 	}
 
@@ -140,7 +140,7 @@ func (s *Service) Peek(ctx context.Context, id string) (string, error) {
 	runCmd(t, projectDir, "gofmt", "-w", svcPath)
 	runCmd(t, projectDir, "go", "build", "./...")
 	out, err = lint("--conventions")
-	if err == nil || !strings.Contains(out, "✗ [forgeconv-deps-surface] internal/handlers/alpha/service.go") {
+	if err == nil || !strings.Contains(out, "✗ internal/handlers/alpha/service.go") || !strings.Contains(out, "[forgeconv-deps-surface]") {
 		t.Fatalf("a foreign interface of more than ten methods with unused ones is a deps-surface error: %v\n%s", err, out)
 	}
 

@@ -461,33 +461,3 @@ func TestReadOnlyFields_NoProtoTreeIsClean(t *testing.T) {
 		t.Fatalf("want no findings, got %+v", findings)
 	}
 }
-
-// TestReadOnlyFields_ReportFormatting pins the two report shapes.
-func TestReadOnlyFields_ReportFormatting(t *testing.T) {
-	var clean strings.Builder
-	formatReadOnlyFields(&clean, nil)
-	if !strings.Contains(clean.String(), "read-only-fields clean") {
-		t.Errorf("clean report missing: %q", clean.String())
-	}
-
-	var dirty strings.Builder
-	formatReadOnlyFields(&dirty, []readOnlyFieldFinding{{
-		File: "proto/services/estimates/v1/estimates.proto", Line: 10,
-		Entity: "Estimate", Field: "total_cents", GoField: "TotalCents",
-		Table: "estimates", Default: "0",
-	}})
-	out := dirty.String()
-	for _, want := range []string{
-		"forgeconv-read-only-field-unwritten",
-		"proto/services/estimates/v1/estimates.proto:10",
-		// The verdict line. This rule FAILS the build — see the step's
-		// comment in lint_steps.go — so the report must not read like the
-		// advisory one it used to be.
-		"FAILS the build",
-		"forge:fill=handler",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("report missing %q:\n%s", want, out)
-		}
-	}
-}

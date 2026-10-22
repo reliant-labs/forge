@@ -1458,19 +1458,15 @@ type LogWrapperConfig struct {
 	ContextCall string `yaml:"context_call,omitempty"`
 }
 
-// ValidateRules reports rule-severity entries forge cannot interpret.
+// ValidateRules reports rule-severity entries whose SEVERITY forge cannot
+// interpret ("loud" rather than off / warn / error).
 //
-// This exists because of the failure mode the Override path itself
-// cannot fix: an unknown key is treated as inert (the rule keeps
-// firing), which is the safe direction to fail but also a silent one.
-// A project that misspells `forgeconv-hadler-file-size: off` would
-// otherwise never learn why the rule kept firing. Validating at
-// config-load time turns that silence into a message.
-//
-// Rule IDs are NOT checked against a registry of known rules — a
-// forge.yaml is shared across forge versions, and a rule that exists in
-// the version your colleague runs but not yours must not fail your
-// build. Only the SEVERITY vocabulary is closed.
+// `forge lint` reports each as an error (the lint.rules check,
+// internal/cli/lint/lint_rules.go), together with every KEY it cannot honour —
+// a rule ID no lane emits, another tool's rule, a lane's could-not-run
+// headline. The key half lives with the lanes, because only they know their
+// rule IDs; it can be strict because `forge lint` runs under the project's
+// pinned forge, so the key set is exactly the one that forge grades.
 func (c LintConfig) ValidateRules() []string {
 	if len(c.Rules) == 0 {
 		return nil

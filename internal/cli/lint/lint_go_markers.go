@@ -39,7 +39,6 @@ import (
 	"fmt"
 	"go/scanner"
 	"go/token"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -192,35 +191,6 @@ func findGoMarkers(file string, src []byte) []goMarkerFinding {
 		}
 	}
 	return out
-}
-
-// runGoMarkersLint is the text-mode entry point.
-func runGoMarkersLint(root string) error {
-	fmt.Println("Running go-markers lint...")
-	findings, err := collectGoMarkerFindings(root)
-	if err != nil {
-		return err
-	}
-	formatGoMarkers(os.Stdout, findings)
-	if n := countErrors(findings); n > 0 {
-		return fmt.Errorf("%d //forge: marker(s) forge does not read", n)
-	}
-	return nil
-}
-
-func formatGoMarkers(w io.Writer, findings []finding.Finding) {
-	if len(findings) == 0 {
-		_, _ = fmt.Fprintln(w, "  go-markers clean — every //forge: marker in a .go file is one forge reads, spelled the way it reads it")
-		return
-	}
-	for _, f := range findings {
-		icon := "✗"
-		if f.Severity != finding.SeverityError {
-			icon = "⚠"
-		}
-		_, _ = fmt.Fprintf(w, "  %s [%s] %s:%d: %s\n", icon, f.Rule, f.File, f.Line, f.Message)
-		_, _ = fmt.Fprintf(w, "      → %s\n", f.Remediation)
-	}
 }
 
 // collectGoMarkersJSON maps the findings onto the JSON contract; the bool is

@@ -76,9 +76,6 @@ func TestHostedImageBaseLint_BareImageIsClean(t *testing.T) {
 // project must not be failed on it.
 func TestHostedImageBaseLint_OffBaseNeverGates(t *testing.T) {
 	dir := hostedImageProject(t, "ghcr.io/acme/api")
-	if err := runHostedImageBaseLint(dir, testCfg()); err != nil {
-		t.Errorf("text arm returned an error, which would gate: %v", err)
-	}
 	findings, gated, err := collectHostedImageBaseJSON(&lintRunCtx{cwd: dir, cfg: testCfg()})
 	if err != nil {
 		t.Fatalf("collect: %v", err)

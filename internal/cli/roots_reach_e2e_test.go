@@ -84,7 +84,7 @@ type Worker struct {
 	if err == nil {
 		t.Fatalf("forge lint --graph passed with a component no root reaches:\n%s", out)
 	}
-	if !strings.Contains(out, "✗ [forge-graph-unreachable] internal/workers/reaper") || !strings.Contains(out, "no node produces Deps.Sweeper") {
+	if !strings.Contains(out, "✗ internal/workers/reaper [forge-graph-unreachable]") || !strings.Contains(out, "no node produces Deps.Sweeper") {
 		t.Errorf("lint does not report reaper as unreachable and unconstructible:\n%s", out)
 	}
 
@@ -99,7 +99,7 @@ type Worker struct {
 	if err != nil {
 		t.Fatalf("forge lint --graph failed with forge-graph-unreachable set to warn: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "⚠ [forge-graph-unreachable] internal/workers/reaper") {
+	if !strings.Contains(out, "⚠ internal/workers/reaper [forge-graph-unreachable]") {
 		t.Errorf("the re-graded finding is not reported as a warning:\n%s", out)
 	}
 

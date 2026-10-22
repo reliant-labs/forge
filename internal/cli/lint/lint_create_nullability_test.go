@@ -205,35 +205,6 @@ func TestCreateNullability_MissingProtoDirIsClean(t *testing.T) {
 	}
 }
 
-// TestCreateNullability_ReportFormatting pins the two report shapes: the
-// clean line, and a finding rendered with its rule id so the output is
-// greppable and the rule is attributable.
-func TestCreateNullability_ReportFormatting(t *testing.T) {
-	var clean strings.Builder
-	formatCreateNullability(&clean, nil)
-	if !strings.Contains(clean.String(), "create-nullability clean") {
-		t.Errorf("clean report missing: %q", clean.String())
-	}
-
-	var dirty strings.Builder
-	formatCreateNullability(&dirty, []finding.Finding{{
-		Rule: ruleCreateRequestNullability, Severity: finding.SeverityError,
-		File: "proto/services/crm/v1/crm.proto", Line: 10,
-		Message:     "Customer.source_lead_id is `optional` on the entity but not on CreateCustomerRequest",
-		Remediation: "Add `optional` to source_lead_id",
-	}})
-	out := dirty.String()
-	for _, want := range []string{
-		"forgeconv-create-request-nullability",
-		"proto/services/crm/v1/crm.proto:10",
-		"source_lead_id",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("report missing %q:\n%s", want, out)
-		}
-	}
-}
-
 // reliantShapedProto is the H-RELIANT-CI shape (proto/reliant/v1/chat.proto
 // and friends): a Create request that makes a field optional so the
 // server can default it, over an entity that always has it — plus the

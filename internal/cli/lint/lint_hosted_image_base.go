@@ -28,7 +28,6 @@
 package lint
 
 import (
-	"fmt"
 	"path/filepath"
 
 	"github.com/reliant-labs/forge/internal/config"
@@ -58,14 +57,6 @@ func deployKCLDirFor(cfg *config.ProjectConfig) string {
 		return cfg.K8s.KCLDir
 	}
 	return deployKCLDirDefault
-}
-
-// runHostedImageBaseLint is the text arm. Every finding is a warning.
-func runHostedImageBaseLint(projectDir string, cfg *config.ProjectConfig) error {
-	for _, f := range hostedImageBaseFindings(projectDir, cfg) {
-		fmt.Printf("⚠️  [hosted-image-base] %s\n    → %s\n", f.Message(), f.FixHint())
-	}
-	return nil
 }
 
 // collectHostedImageBaseJSON is the JSON arm. Nothing here gates.

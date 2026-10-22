@@ -16,7 +16,6 @@
 package lint
 
 import (
-	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -27,7 +26,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/kclrender"
@@ -185,13 +183,9 @@ func secretsFindings(projectDir string, cfg *config.ProjectConfig) (secretsLaneR
 		all = append(all, secrets.Check(env, loc)...)
 	}
 
+	// lint.rules grades these in the outcome engine (lint_rules.go).
 	applied := suppress.ApplyFiles(projectDir, all, os.ReadFile)
-	var lintCfg config.LintConfig
-	if cfg != nil {
-		lintCfg = cfg.Lint
-	}
-	kept := lintCfg.EffectiveRules().ApplyAll(applied.Kept)
-	kept = append(kept, applied.Violations...)
+	kept := append(applied.Kept, applied.Violations...)
 	sort.SliceStable(kept, func(i, j int) bool {
 		if kept[i].File != kept[j].File {
 			return kept[i].File < kept[j].File
@@ -211,38 +205,6 @@ func firstLine(err error) string {
 		s = s[:i]
 	}
 	return s
-}
-
-// runSecretsLint is the text arm.
-func runSecretsLint(_ context.Context, projectDir string, cfg *config.ProjectConfig) error {
-	fmt.Println("Running secrets lint...")
-	res, err := secretsFindings(projectDir, cfg)
-	if err != nil {
-		return err
-	}
-	if !res.adopted {
-		fmt.Println("  secrets: no env declares a store-backed ExternalSecret, forge.OpenBao or forge.ExternalSecretsOperator — nothing to check")
-		return nil
-	}
-	errs := 0
-	for _, f := range res.findings {
-		icon := "ℹ️ "
-		switch f.Severity {
-		case finding.SeverityError:
-			icon = "❌"
-			errs++
-		case finding.SeverityWarning:
-			icon = "⚠️ "
-		}
-		fmt.Printf("  %s [%s] %s:%d\n      %s\n      → %s\n", icon, f.Rule, f.File, f.Line, f.Message, f.Remediation)
-	}
-	if errs == 0 {
-		fmt.Printf("✓ secrets: %d env(s) use the platform secrets model; no gating finding\n", res.judged)
-		return nil
-	}
-	return cliutil.UserErr("forge lint --secrets",
-		fmt.Sprintf("%d secrets finding(s)", errs), "",
-		"fix each finding above, or waive one with `# forge:lint-disable-next-line <rule>: <why>` above the line it names")
 }
 
 // collectSecretsJSON is the JSON arm. Error findings gate.

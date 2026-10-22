@@ -1,7 +1,6 @@
 package lint
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,32 +118,6 @@ func TestConfigDepsFixHint_CarriesSnippet(t *testing.T) {
 	} {
 		if !strings.Contains(hint, want) {
 			t.Errorf("fix hint missing %q:\n%s", want, hint)
-		}
-	}
-}
-
-func TestFormatConfigDeps_CleanAndDirty(t *testing.T) {
-	var buf bytes.Buffer
-	formatConfigDeps(&buf, nil)
-	if !strings.Contains(buf.String(), "config-deps clean") {
-		t.Errorf("clean output missing success line: %s", buf.String())
-	}
-
-	buf.Reset()
-	formatConfigDeps(&buf, []configDepsFinding{{
-		File: "internal/workers/trader/worker.go", Line: 12, Col: 2,
-		Role: "internal/workers", Package: "trader",
-		Field: "WTIPersistMaxPerTick", Type: "int",
-	}})
-	out := buf.String()
-	for _, want := range []string{
-		"[forge-config-deps] internal/workers/trader/worker.go:12:2",
-		"Deps.WTIPersistMaxPerTick is a naked scalar (int)",
-		"scalars are configuration",
-		"warnings only",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("dirty output missing %q:\n%s", want, out)
 		}
 	}
 }

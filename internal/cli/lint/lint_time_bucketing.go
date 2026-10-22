@@ -102,15 +102,12 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
-
-	"github.com/reliant-labs/forge/internal/config"
 )
 
 // timeBucketRuleID is the stable rule id, reported in text mode and in
@@ -168,39 +165,6 @@ func timeBucketFixHint(f timeBucketFinding) string {
 			"silences this check. TIMESTAMPTZ remains the right column type: the instant is "+
 			"stored correctly, and only the bucketing needs a zone.",
 		f.Table, f.Column, f.Unit, f.Unit, f.Column, f.Unit, f.Column)
-}
-
-// runTimeBucketingLint is the text-mode entry point.
-func runTimeBucketingLint(cwd string, cfg *config.ProjectConfig) error {
-	fmt.Println("Running time-bucketing lint...")
-	findings, err := collectTimeBucketFindings(cwd, migrationsDirFor(cfg))
-	if err != nil {
-		return err
-	}
-	formatTimeBucketing(os.Stdout, findings)
-	return nil
-}
-
-// formatTimeBucketing writes the human report, matching the sibling
-// advisory lanes: one success line when clean, one ⚠ block per finding.
-func formatTimeBucketing(w io.Writer, findings []timeBucketFinding) {
-	if len(findings) == 0 {
-		// The clean line names the construct this lane examined, not
-		// timezone correctness at large. A reader who takes a narrow
-		// clean line for a broad clearance is worse off than one who saw
-		// no line at all — see formatFixtureDrift for the same reasoning
-		// and the measured cost of getting it wrong.
-		_, _ = fmt.Fprintln(w, "  time-bucketing clean — every date_trunc over a TIMESTAMPTZ column "+
-			"pins its timezone (no two-argument form found)")
-		return
-	}
-	for _, f := range findings {
-		_, _ = fmt.Fprintf(w, "  ⚠ [%s] %s:%d:%d\n", timeBucketRuleID, f.File, f.Line, f.Col)
-		_, _ = fmt.Fprintf(w, "      → %s\n", timeBucketFixHint(f))
-	}
-	_, _ = fmt.Fprintf(w, "\n%d time bucket(s) that move with the deploy host's timezone.\n", len(findings))
-	_, _ = fmt.Fprintln(w, "(warnings only — not failing the build; a local-time bucket can be deliberate, "+
-		"and naming the zone explicitly is how you say so)")
 }
 
 // collectTimeBucketFindings is the shared engine behind text mode and

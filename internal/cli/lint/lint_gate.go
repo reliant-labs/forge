@@ -31,13 +31,10 @@ package lint
 // line says it.
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/reliant-labs/forge/internal/config"
 )
 
 // lintGateName is what the recorded check is called. The verb's own
@@ -184,21 +181,6 @@ func lintGateSummary(status gateVerdict, tally lintLaneTally) string {
 	return b.String()
 }
 
-// runLintWithGate runs lint exactly as it would have run, and writes the
-// gate document from what that ONE run proved.
-//
-// The exit code is the run's own error, returned unchanged — the flag adds a
-// file and changes nothing else. A gate-write failure is reported, because
-// silently not producing the evidence a pipeline asked for is the failure
-// mode this whole primitive exists to remove; but it never masks a lint
-// error, which is the more important of the two.
-func runLintWithGate(ctx context.Context, flags lintFlags, paths []string, gatePath string) error {
-	startedAt := time.Now()
-	tally, lintErr := runLintTallied(ctx, flags, paths)
-
-	return resolveGateRunResult(lintErr, emitLintGate(gatePath, tally, startedAt))
-}
-
 // resolveGateRunResult decides which of the two failures becomes the exit
 // status.
 //
@@ -220,35 +202,6 @@ func resolveGateRunResult(lintErr, gateErr error) error {
 		return lintErr
 	}
 	return gateErr
-}
-
-// runLintTallied is runLint, plus the lane tally when the run was the full
-// sweep.
-//
-// TARGETED LANES (`--contract`, `--db`, …) HAVE NO PIPELINE TALLY, because
-// they are not the pipeline — they are the checks that were named, and `ran`
-// is exactly those. Synthesising that tally keeps the verdict honest: the
-// gate records a pass or a failure for the lanes asked for, never `skipped`,
-// because a targeted lane that was asked for and executed did prove
-// something.
-func runLintTallied(ctx context.Context, flags lintFlags, paths []string) (lintLaneTally, error) {
-	if lanes := selectedLanes(flags); len(lanes) > 0 {
-		err := runLint(ctx, flags, paths)
-		return lintLaneTally{ran: lanes, failed: err != nil}, err
-	}
-	cfg := lintConfigOrNil()
-	allow, err := lintAllowances(flags, cfg)
-	if err != nil {
-		return lintLaneTally{failed: true}, err
-	}
-	return runAllLinters(ctx, lintRunOptions{
-		fix:           flags.autoFix(),
-		strict:        flags.strict,
-		skipFrontends: flags.skipFrontends,
-		allowSkip:     allow,
-		paths:         paths,
-		cfg:           cfg,
-	})
 }
 
 // lintLaneFlag is one `--<linter>` flag: the lane it selects and the field
@@ -342,18 +295,6 @@ func onlyLane(flags lintFlags, lane string) lintFlags {
 		set = set || *l.on
 	}
 	return flags
-}
-
-// lintConfigOrNil loads the project config the way runLint's full-sweep path
-// does, tolerating absence. A parse error is not swallowed: it surfaces from
-// the sweep itself, which loads the config again and fails hard — so this
-// returning nil cannot turn a broken forge.yaml into a silent default.
-func lintConfigOrNil() *config.ProjectConfig {
-	_, cfg, err := loadLintConfig()
-	if err != nil {
-		return nil
-	}
-	return cfg
 }
 
 // lintGateDetails is the structured payload: counts and the lane names.

@@ -1,7 +1,6 @@
 package lint
 
 import (
-	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -80,8 +79,7 @@ func TestFormatCheck_DefaultWritesNothingPrintsDiffAndFails(t *testing.T) {
 		t.Fatalf("precondition: a bare `forge lint` must be report-only")
 	}
 
-	var out bytes.Buffer
-	n := runFormatCheck(context.Background(), &out, root, nil, true, nil)
+	out, n := formatCheckReport(t, root, nil)
 	if n != 1 {
 		t.Fatalf("pending = %d, want 1 (only bar.go is unformatted)", n)
 	}
@@ -91,7 +89,7 @@ func TestFormatCheck_DefaultWritesNothingPrintsDiffAndFails(t *testing.T) {
 	if got, _ := os.ReadFile(other); string(got) != "package foo\n\nfunc Clean() {}\n" {
 		t.Error("report-only mode touched a clean file")
 	}
-	report := out.String()
+	report := out
 	for _, want := range []string{
 		"internal/foo/bar.go",
 		"nothing was written",
@@ -149,12 +147,12 @@ func TestFormatCheck_HonoursPathBounds(t *testing.T) {
 	writeFile(t, root, "internal/mine/a.go", unformattedGo)
 	writeFile(t, root, "internal/theirs/c.go", unformattedGo)
 
-	var out bytes.Buffer
-	if n := runFormatCheck(context.Background(), &out, root, []string{"./internal/mine/..."}, true, nil); n != 1 {
+	out, n := formatCheckReport(t, root, []string{"./internal/mine/..."})
+	if n != 1 {
 		t.Errorf("paths: pending = %d, want 1", n)
 	}
-	if strings.Contains(out.String(), "theirs") {
-		t.Errorf("a package outside the named path is reported:\n%s", out.String())
+	if strings.Contains(out, "theirs") {
+		t.Errorf("a package outside the named path is reported:\n%s", out)
 	}
 
 	scope := &lintScope{root: root, paths: []string{"internal/theirs"}}
@@ -246,4 +244,20 @@ func TestFormatWithFrontends(t *testing.T) {
 	if formatWithFrontends(&lintScope{paths: []string{"x"}}, nil, false) {
 		t.Error("--scope must skip it")
 	}
+}
+
+// formatCheckReport renders the report-only format lane as `forge lint`
+// prints it and returns the report and how many files it would rewrite.
+func formatCheckReport(t *testing.T, root string, paths []string) (string, int) {
+	t.Helper()
+	o := formatOutcome(context.Background(), root, nil, nil, paths, true)
+	var out strings.Builder
+	_ = renderLintOutcomes(&out, []lintStepOutcome{o}, false, nil)
+	n := 0
+	for _, f := range o.findings {
+		if f.Rule == "format" {
+			n++
+		}
+	}
+	return out.String(), n
 }

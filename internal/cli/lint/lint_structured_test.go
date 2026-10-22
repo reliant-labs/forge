@@ -450,7 +450,7 @@ func TestCollectTargetedOutcomeHonoursScope(t *testing.T) {
 // collectTargetedOutcomes and returns that lane's outcome.
 func collectOneTargetedOutcome(t *testing.T, flags lintFlags, root string, scope *lintScope) lintStepOutcome {
 	t.Helper()
-	outcomes, targeted, err := collectTargetedOutcomes(t.Context(), flags, nil, root, nil, nil, scope)
+	outcomes, targeted, err := collectTargetedOutcomes(t.Context(), flags, nil, root, nil, nil, scope, nil)
 	if err != nil || !targeted || len(outcomes) != 1 {
 		t.Fatalf("one lane named: targeted=%v outcomes=%d err=%v", targeted, len(outcomes), err)
 	}
@@ -481,7 +481,7 @@ func TestCollectTargetedOutcomes_EveryNamedLaneRuns(t *testing.T) {
 	}
 
 	outcomes, targeted, err := collectTargetedOutcomes(t.Context(),
-		lintFlags{readOnlyFields: true, computedFields: true}, nil, root, nil, nil, nil)
+		lintFlags{readOnlyFields: true, computedFields: true}, nil, root, nil, nil, nil, nil)
 	if err != nil || !targeted {
 		t.Fatalf("targeted=%v err=%v", targeted, err)
 	}
@@ -538,10 +538,10 @@ func TestRunLint_CombinedLanesTextVerdict(t *testing.T) {
 		return nil, ErrProjectConfigNotFound
 	})
 
-	if err := runLint(t.Context(), lintFlags{computedFields: true}, nil); err != nil {
+	if err := runLintStructured(t.Context(), lintFlags{computedFields: true}, nil); err != nil {
 		t.Fatalf("fixture: --computed-fields alone must pass: %v", err)
 	}
-	err := runLint(t.Context(), lintFlags{computedFields: true, readOnlyFields: true}, nil)
+	err := runLintStructured(t.Context(), lintFlags{computedFields: true, readOnlyFields: true}, nil)
 	if err == nil || !strings.Contains(err.Error(), "1 gating linter(s) failed: read-only-fields") {
 		t.Fatalf("combined text run = %v; want the verdict to name read-only-fields", err)
 	}

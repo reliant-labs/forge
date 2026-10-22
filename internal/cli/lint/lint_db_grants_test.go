@@ -1,7 +1,6 @@
 package lint
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,11 +75,6 @@ func TestDBGrants_ReportsUndecidedCredentialColumns(t *testing.T) {
 		}
 	}
 
-	var out bytes.Buffer
-	formatDBGrants(&out, rep)
-	if !strings.Contains(out.String(), "3 credential-shaped column(s) with no decision") {
-		t.Errorf("report does not count the findings:\n%s", out.String())
-	}
 }
 
 // A decision, in either spelling, clears the finding; an undecided neighbour

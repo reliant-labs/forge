@@ -103,17 +103,6 @@ func identityShareFindings(projectDir string, cfg *config.ProjectConfig) []ident
 	return checkIdentityShares(identities)
 }
 
-func runIdentityShareLint(projectDir string, cfg *config.ProjectConfig) error {
-	fs := identityShareFindings(projectDir, cfg)
-	for _, f := range fs {
-		fmt.Printf("❌ [identity-share-with] env %s: %s\n   fix: %s\n", f.Env, f.Message, f.Fix)
-	}
-	if len(fs) > 0 {
-		return fmt.Errorf("%d identity share_with declaration(s) cannot be honoured", len(fs))
-	}
-	return nil
-}
-
 func collectIdentityShareJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 	var out []lintJSONFinding
 	for _, f := range identityShareFindings(rc.cwd, rc.cfg) {

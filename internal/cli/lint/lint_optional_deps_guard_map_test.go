@@ -344,13 +344,15 @@ func (s *Service) Call(k string) error {
 		t.Errorf("write fix_hint must document the suppression directive: %q", write.FixHint)
 	}
 
-	var text strings.Builder
-	findings, err := collectOptionalDepsGuardFindings(projectDir)
+	js, err := collectOptionalDepsGuardJSON(projectDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	formatOptionalDepsGuard(&text, findings)
+	var text strings.Builder
+	for _, f := range js {
+		text.WriteString(f.Message + "\n")
+	}
 	if !strings.Contains(text.String(), "writes into optional map dep") || !strings.Contains(text.String(), "element of optional map dep") {
-		t.Errorf("text report does not distinguish map findings:\n%s", text.String())
+		t.Errorf("the report does not distinguish map findings:\n%s", text.String())
 	}
 }

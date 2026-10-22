@@ -35,7 +35,6 @@ package lint
 
 import (
 	"fmt"
-	"io"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -130,35 +129,4 @@ func anyErrorFinding(fs []lintJSONFinding) bool {
 		}
 	}
 	return false
-}
-
-// unwrittenFindingText is one finding of either unwritten-column rule as the
-// text report renders it, so the two rules cannot drift in how they show a
-// held verdict.
-type unwrittenFindingText struct {
-	Rule, File string
-	Line       int
-	Hint       string
-	Pending    pendingStubs
-}
-
-// formatUnwrittenFindings writes the shared body of both rules' text report
-// and returns how many findings gate (are not pending).
-func formatUnwrittenFindings(w io.Writer, findings []unwrittenFindingText) (gating int) {
-	for _, f := range findings {
-		icon := "❌"
-		suffix := ""
-		if f.Pending.pending() {
-			icon = "⚠"
-			suffix = " (" + f.Pending.label() + ")"
-		} else {
-			gating++
-		}
-		_, _ = fmt.Fprintf(w, "  %s [%s] %s:%d%s\n", icon, f.Rule, f.File, f.Line, suffix)
-		_, _ = fmt.Fprintf(w, "      → %s\n", f.Hint)
-		if f.Pending.pending() {
-			_, _ = fmt.Fprintf(w, "      ⏳ %s\n", f.Pending.clause())
-		}
-	}
-	return gating
 }

@@ -48,17 +48,11 @@ func TestCommitPolicyStep_GatesOnIgnoredGeneratedCode(t *testing.T) {
 	run("add", "-A")
 	run("commit", "-qm", "init")
 
-	err := runCommitPolicyLint(dir)
-	if err == nil {
-		t.Fatal("commit-policy lint passed a project whose generated code is gitignored")
-	}
-	for _, want := range []string{"pkg/middleware/procedures_gen.go", "git add pkg/middleware/procedures_gen.go"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("text output missing %q:\n%v", want, err)
-		}
-	}
 	fs, gated, err := collectCommitPolicyJSON(dir)
 	if err != nil || !gated || len(fs) != 1 || fs[0].Severity != "error" || fs[0].File != "pkg/middleware/procedures_gen.go" {
-		t.Fatalf("JSON = (%+v, gated=%v, %v); want one gating error on procedures_gen.go", fs, gated, err)
+		t.Fatalf("got (%+v, gated=%v, %v); want one gating error on procedures_gen.go", fs, gated, err)
+	}
+	if !strings.Contains(fs[0].FixHint, "git add pkg/middleware/procedures_gen.go") {
+		t.Errorf("fix hint must name the command that repairs it: %q", fs[0].FixHint)
 	}
 }

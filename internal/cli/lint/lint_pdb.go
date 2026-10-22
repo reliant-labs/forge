@@ -10,7 +10,6 @@ package lint
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -51,13 +50,6 @@ func pdbFindings(ctx context.Context, projectDir string, cfg *config.ProjectConf
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].env < out[j].env })
 	return out
-}
-
-func runPDBLint(ctx context.Context, projectDir string, cfg *config.ProjectConfig) error {
-	for _, f := range pdbFindings(ctx, projectDir, cfg) {
-		fmt.Printf("⚠️  [%s] env %s: %s\n", pdbRuleID, f.env, f.PDBFinding)
-	}
-	return nil
 }
 
 func collectPDBJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {

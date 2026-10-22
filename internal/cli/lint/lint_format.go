@@ -55,7 +55,6 @@ package lint
 
 import (
 	"bytes"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -92,28 +91,6 @@ func isGeneratedGoPath(relPath string) bool {
 		return true
 	}
 	return false
-}
-
-// formatGoTree canonicalizes every .go file under the project's source trees
-// and rewrites those that were not already canonical. Returns the repo-
-// relative paths it changed, in walk order. Best-effort per file: a file that
-// does not parse (a hand-edit that broke the syntax) is left untouched — the
-// real compiler error surfaces at the pipeline's build/gate step, not here.
-func formatGoTree(root string) ([]string, error) {
-	return formatGoTreeFiltered(root, nil)
-}
-
-// formatGoTreeFiltered is formatGoTree restricted to the files keep accepts
-// (project-relative, slash-separated); a nil keep accepts every file. It is
-// how `forge lint --scope` auto-fixes only its own slice — a scoped run must
-// not reformat a file another agent is in the middle of editing.
-//
-// Every rewrite goes through a goFixSet and is verified by check (nil is the
-// real type-check): a file whose package the rewrite left failing to
-// type-check is put back and returned in reverted, never in changed.
-func formatGoTreeFiltered(root string, keep func(rel string) bool) ([]string, error) {
-	changed, _, err := formatGoTreeVerified(root, keep, fixTypecheck)
-	return changed, err
 }
 
 // formatGoTreeVerified is formatGoTreeFiltered with the type-check injected.
@@ -245,26 +222,4 @@ func keepForPaths(paths []string) func(rel string) bool {
 		}
 		return false
 	}
-}
-
-// reportFormatPrePass runs formatGoTreeFiltered and prints a concise summary of the
-// files it rewrote. A pre-pass error is advisory: it prints a ⚠️ line and
-// never gates, because the deterministic gate (golangci-lint's goimports
-// formatter) still runs behind it and will surface anything the pre-pass
-// could not apply.
-func reportFormatPrePass(cwd string, paths []string) {
-	changed, reverted, err := formatGoTreeVerified(cwd, keepForPaths(paths), fixTypecheck)
-	printRevertedGoFixes(os.Stderr, "auto-format pre-pass", reverted)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠️  auto-format pre-pass: %v\n", err)
-		return
-	}
-	if len(changed) == 0 {
-		return
-	}
-	fmt.Printf("🔧 Auto-formatted %d Go file(s) before gating (goimports/gofmt):\n", len(changed))
-	for _, c := range changed {
-		fmt.Printf("   • %s\n", c)
-	}
-	fmt.Println()
 }

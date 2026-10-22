@@ -76,7 +76,6 @@ package lint
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -137,35 +136,6 @@ func configReachFixHint(f configReachFinding) string {
 				"that IS loaded (`%s %s = <next tag>;`), or delete the message.",
 			f.Message, f.Field, f.Message, strings.ToLower(f.Message))
 	}
-}
-
-// runConfigReachLint is the text-mode entry point. Warnings only.
-func runConfigReachLint(projectDir string, cfg *config.ProjectConfig) error {
-	fmt.Println("Running config-reach lint...")
-	findings, err := collectConfigReachFindingsForProject(projectDir, cfg)
-	if err != nil {
-		return err
-	}
-	formatConfigReach(os.Stdout, findings)
-	return nil
-}
-
-// formatConfigReach writes the human report.
-func formatConfigReach(w io.Writer, findings []configReachFinding) {
-	if len(findings) == 0 {
-		_, _ = fmt.Fprintln(w, "  config-reach clean — every config field is loaded by some binary or frontend")
-		return
-	}
-	for _, f := range findings {
-		label := f.Message + "." + f.Field
-		if f.EnvVar != "" {
-			label += " (" + f.EnvVar + ")"
-		}
-		_, _ = fmt.Fprintf(w, "  ⚠ [forge-config-unreachable] %s\n", label)
-		_, _ = fmt.Fprintf(w, "      → %s\n", configReachFixHint(f))
-	}
-	_, _ = fmt.Fprintf(w, "\n%d config field(s) loaded by no binary or frontend.\n", len(findings))
-	_, _ = fmt.Fprintln(w, "(warnings only — not failing the build)")
 }
 
 // collectConfigReachFindingsForProject is the project-level entry: it

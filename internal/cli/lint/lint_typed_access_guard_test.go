@@ -2,7 +2,6 @@ package lint
 
 import (
 	"bytes"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,8 +159,8 @@ func TestTypedAccessGuardCleanRunRendersNothing(t *testing.T) {
 	if err := renderLintOutcomes(&buf, outcomes, false, nil); err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	if out := buf.String(); strings.Contains(out, "typed-config guardrail") || strings.Contains(out, "0 issues") {
-		t.Fatalf("a clean guardrail run printed a warning:\n%s", out)
+	if out := buf.String(); strings.Contains(out, "⚠") || strings.Contains(out, "0 issues") || !strings.Contains(out, "✓ typed-config guardrail") {
+		t.Fatalf("a clean guardrail run must print only its ✓ line:\n%s", out)
 	}
 }
 
@@ -183,21 +182,15 @@ func TestTypedAccessGuardRefusesUnconfiguredConfig(t *testing.T) {
 	rc := testRunCtx(t, false)
 	rc.cwd = dir
 
-	err := runTypedAccessGuardAdvisory(rc)
-	var unavail *laneUnavailableError
-	if !errors.As(err, &unavail) {
-		t.Fatalf("text: want a could-not-run error, got %v", err)
-	}
-	if !strings.Contains(unavail.fixHint, `os\.Getenv`) {
-		t.Errorf("text: the fix hint must name the patterns to add:\n%s", unavail.fixHint)
-	}
-
 	fs, gated, err := collectTypedAccessGuardJSON(rc)
 	if err != nil || gated {
-		t.Fatalf("json: an advisory lane must not gate without --strict: gated=%v err=%v", gated, err)
+		t.Fatalf("an advisory lane must not gate without --strict: gated=%v err=%v", gated, err)
 	}
 	if len(fs) != 1 || fs[0].Rule != ruleTypedAccessGuardUnavailable || !strings.Contains(fs[0].Message, ".golangci.yml") {
-		t.Fatalf("json: want one could-not-run finding naming the config file, got %+v", fs)
+		t.Fatalf("want one could-not-run finding naming the config file, got %+v", fs)
+	}
+	if !strings.Contains(fs[0].FixHint, `os\.Getenv`) {
+		t.Errorf("the fix hint must name the patterns to add:\n%s", fs[0].FixHint)
 	}
 
 	// The lane is advisory, so its could-not-run is an advisory finding:

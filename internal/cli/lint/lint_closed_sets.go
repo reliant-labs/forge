@@ -17,8 +17,6 @@ package lint
 
 import (
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -58,32 +56,6 @@ func indent(s, prefix string) string {
 		lines[i] = prefix + l
 	}
 	return strings.Join(lines, "\n")
-}
-
-func runClosedSetsLint(cwd string, cfg *config.ProjectConfig) error {
-	fmt.Println("Running closed-sets lint...")
-	fs, err := closedSetFindings(cwd, cfg)
-	if err != nil {
-		return err
-	}
-	formatClosedSets(os.Stdout, fs)
-	if len(fs) > 0 {
-		return fmt.Errorf("%d forge:closed-set CHECK(s) out of step with their set", len(fs))
-	}
-	return nil
-}
-
-func formatClosedSets(w io.Writer, fs []closedset.Finding) {
-	if len(fs) == 0 {
-		_, _ = fmt.Fprintln(w, "  closed-sets clean — every forge:closed-set CHECK lists exactly its set")
-		return
-	}
-	for _, f := range fs {
-		_, _ = fmt.Fprintf(w, "  ✗ [forge-closed-set] %s:%d\n", f.File, f.Line)
-		_, _ = fmt.Fprintf(w, "      %s\n", f.Problem)
-		_, _ = fmt.Fprintf(w, "      → %s\n", closedSetFixHint(f))
-	}
-	_, _ = fmt.Fprintf(w, "\n%d forge:closed-set CHECK(s) out of step with their set.\n", len(fs))
 }
 
 // collectClosedSetsJSON maps the findings onto the JSON contract. Severity

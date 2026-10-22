@@ -91,7 +91,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -144,46 +143,6 @@ func computedFieldFixHint(f computedFieldFinding) string {
 		f.Entity, f.Field, codegen.ProtoMarkerComputed, f.GoField,
 		shapeConsequence(protoValueShape(f.Kind, f.TypeName, f.Field)),
 		f.GoField, f.Field, codegen.ProtoMarkerReadOnly)
-}
-
-// runComputedFieldsLint is the text-mode entry point. It returns a gating
-// error when any finding is not held by pending-stub mode.
-func runComputedFieldsLint(projectDir string) error {
-	fmt.Println("Running computed-fields lint...")
-	findings, err := collectComputedFieldFindings(projectDir)
-	if err != nil {
-		return err
-	}
-	if gating := formatComputedFields(os.Stdout, findings); gating > 0 {
-		return fmt.Errorf("%d computed field(s) that nothing populates", gating)
-	}
-	return nil
-}
-
-// formatComputedFields writes the human report and returns how many
-// findings gate.
-func formatComputedFields(w io.Writer, findings []computedFieldFinding) int {
-	if len(findings) == 0 {
-		_, _ = fmt.Fprintln(w, "  computed-fields clean — every forge:computed field is written by app code")
-		return 0
-	}
-	rows := make([]unwrittenFindingText, 0, len(findings))
-	for _, f := range findings {
-		rows = append(rows, unwrittenFindingText{
-			Rule: computedFieldRuleID, File: f.File, Line: f.Line,
-			Hint: computedFieldFixHint(f), Pending: f.Pending,
-		})
-	}
-	gating := formatUnwrittenFindings(w, rows)
-	_, _ = fmt.Fprintf(w, "\n%d computed field(s) that nothing populates.\n", len(findings))
-	if gating > 0 {
-		_, _ = fmt.Fprintln(w, "forge:computed promises your app derives the value, so an unmet one FAILS the build "+
-			"— derive it, or drop the marker to forge:read-only if something this check cannot see writes it.")
-	} else {
-		_, _ = fmt.Fprintln(w, "(warning only while forge-scaffolded stubs remain in the service — "+
-			"implement them and an unwritten field fails the build)")
-	}
-	return gating
 }
 
 // computedFieldRuleID is the rule id both report formats use.

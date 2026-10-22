@@ -49,7 +49,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -118,33 +117,6 @@ func protoScalarType(goType string) string {
 	default:
 		return "string" // string, time.Duration ("5s"), anything exotic
 	}
-}
-
-// runConfigDepsLint is the text-mode entry point. Warnings only.
-func runConfigDepsLint(projectDir string) error {
-	fmt.Println("Running config-deps lint...")
-	findings, err := collectConfigDepsFindings(projectDir)
-	if err != nil {
-		return err
-	}
-	formatConfigDeps(os.Stdout, findings)
-	return nil
-}
-
-// formatConfigDeps writes the human report. Empty findings print a
-// single success line, matching the sibling Deps-shape lints.
-func formatConfigDeps(w io.Writer, findings []configDepsFinding) {
-	if len(findings) == 0 {
-		_, _ = fmt.Fprintln(w, "  config-deps clean — no scalar Deps fields (configuration flows through config blocks)")
-		return
-	}
-	for _, f := range findings {
-		_, _ = fmt.Fprintf(w, "  ⚠ [forge-config-deps] %s:%d:%d\n", f.File, f.Line, f.Col)
-		_, _ = fmt.Fprintf(w, "      %s/%s Deps.%s is a naked scalar (%s) — scalars are configuration, not collaborators\n", f.Role, f.Package, f.Field, f.Type)
-		_, _ = fmt.Fprintf(w, "      → %s\n", configDepsFixHint(f))
-	}
-	_, _ = fmt.Fprintf(w, "\n%d scalar Deps field(s).\n", len(findings))
-	_, _ = fmt.Fprintln(w, "(warnings only — not failing the build)")
 }
 
 // collectConfigDepsFindings is the shared engine behind text mode,

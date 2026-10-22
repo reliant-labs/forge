@@ -52,7 +52,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -205,7 +204,7 @@ func formatFindings(pending []formatPending) []lintJSONFinding {
 			File:     p.File,
 			Severity: lintSevError,
 			Rule:     "format",
-			Message:  p.Tool + " would reformat this file",
+			Message:  p.Tool + " would reformat this file (nothing was written; the diff follows)",
 			FixHint:  "run `forge lint --fix` to apply it",
 		})
 	}
@@ -240,33 +239,4 @@ func formatKeep(scope *lintScope, paths []string) func(rel string) bool {
 // project, and not under --skip-frontends.
 func formatWithFrontends(scope *lintScope, paths []string, skipFrontends bool) bool {
 	return scope == nil && !skipFrontends && keepForPaths(paths) == nil
-}
-
-// printFormatPending prints what report-only mode found, diffs included.
-func printFormatPending(w io.Writer, pending []formatPending) {
-	_, _ = fmt.Fprintf(w, "❌ %s — %d file(s) not formatted; a fix would rewrite them (nothing was written; `forge lint --fix` applies it):\n",
-		formatLaneName, len(pending))
-	for _, p := range pending {
-		_, _ = fmt.Fprintf(w, "   %s (%s)\n", p.File, p.Tool)
-	}
-	_, _ = fmt.Fprintln(w)
-	for _, p := range pending {
-		_, _ = fmt.Fprint(w, p.Diff)
-		if !strings.HasSuffix(p.Diff, "\n") {
-			_, _ = fmt.Fprintln(w)
-		}
-	}
-}
-
-// runFormatCheck is the text driver's report-only pass: it prints the diffs
-// and returns how many files are pending.
-func runFormatCheck(ctx context.Context, w io.Writer, root string, paths []string, skipFrontends bool, cfg *config.ProjectConfig) int {
-	pending, err := collectFormatPending(ctx, root, keepForPaths(paths), formatWithFrontends(nil, paths, skipFrontends), cfg)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "⚠️  format check: %v\n", err)
-	}
-	if len(pending) > 0 {
-		printFormatPending(w, pending)
-	}
-	return len(pending)
 }

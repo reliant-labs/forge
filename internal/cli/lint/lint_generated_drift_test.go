@@ -95,10 +95,7 @@ func TestGeneratedDrift_HandEditedGeneratedFileFails(t *testing.T) {
 		}
 	}
 
-	// And the gating verdict reaches both drivers.
-	if err := runGeneratedDriftLint(root); err == nil {
-		t.Error("runGeneratedDriftLint = nil; want a gating error")
-	}
+	// And the lane gates on it.
 	_, gated, err := collectGeneratedDriftJSON(root)
 	if err != nil {
 		t.Fatalf("collectGeneratedDriftJSON: %v", err)
@@ -131,8 +128,8 @@ func TestGeneratedDrift_CleanTreePasses(t *testing.T) {
 	if len(findings) != 0 {
 		t.Fatalf("clean tree produced findings: %+v", findings)
 	}
-	if err := runGeneratedDriftLint(root); err != nil {
-		t.Errorf("runGeneratedDriftLint on a clean tree = %v, want nil", err)
+	if _, gated, err := collectGeneratedDriftJSON(root); err != nil || gated {
+		t.Errorf("clean tree: gated=%v err=%v, want a pass", gated, err)
 	}
 }
 
@@ -300,9 +297,6 @@ func TestGeneratedDrift_UnverifiedLegacyWarnsButDoesNotGate(t *testing.T) {
 	}
 	if _, gated, cerr := collectGeneratedDriftJSON(root); cerr != nil || gated {
 		t.Errorf("collectGeneratedDriftJSON gated = %v (err %v); want false", gated, cerr)
-	}
-	if err := runGeneratedDriftLint(root); err != nil {
-		t.Errorf("runGeneratedDriftLint = %v, want nil (warning only)", err)
 	}
 }
 

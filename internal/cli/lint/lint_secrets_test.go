@@ -194,7 +194,8 @@ func TestSecretsLaneHonoursTheSharedWaiver(t *testing.T) {
 	}
 }
 
-// forge.yaml lint.rules dials a rule, as it does for every other lane.
+// forge.yaml lint.rules dials a rule, as it does for every other lane — in
+// the outcome engine's one grading pass (lint_rules.go).
 func TestSecretsLaneHonoursLintRules(t *testing.T) {
 	if testing.Short() {
 		t.Skip("renders KCL; runs in task test")
@@ -207,12 +208,21 @@ func TestSecretsLaneHonoursLintRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := ruleSet(res.findings)
-	if len(got[secrets.RuleKeyCoverage]) != 0 {
-		t.Errorf("a rule set to off still fired: %+v", got[secrets.RuleKeyCoverage])
+	graded, _ := gradeLane(effectiveRules(cfg), findingsToJSON(res.findings), true)
+	var coverage, reason []lintJSONFinding
+	for _, f := range graded {
+		switch f.Rule {
+		case secrets.RuleKeyCoverage:
+			coverage = append(coverage, f)
+		case secrets.RuleOutOfBandReason:
+			reason = append(reason, f)
+		}
 	}
-	if f := got[secrets.RuleOutOfBandReason]; len(f) != 1 || f[0].Severity != finding.SeverityWarning {
-		t.Errorf("a rule set to warn: %+v", f)
+	if len(coverage) != 0 {
+		t.Errorf("a rule set to off still fired: %+v", coverage)
+	}
+	if len(reason) != 1 || reason[0].Severity != lintSevWarning {
+		t.Errorf("a rule set to warn: %+v", reason)
 	}
 }
 

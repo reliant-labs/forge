@@ -9,7 +9,6 @@ package lint
 
 import (
 	"context"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -79,15 +78,16 @@ func noForgeYAML() {
 	})
 }
 
-// runBufLaneText runs the text driver over the buf lint lane alone and
-// returns its stdout and verdict.
+// runBufLaneText renders the buf lint lane alone the way `forge lint`
+// prints it (the outcome engine, not --quiet) and returns its report and
+// verdict.
 func runBufLaneText(t *testing.T, opts lintRunOptions) (string, error) {
 	t.Helper()
-	stop := captureStdout(t)
-	_, restoreErr := captureStderr(t)
-	_, err := runLinterSteps(context.Background(), opts, []linterStep{findStep(t, "buf lint")})
-	restoreErr()
-	return stop(), err
+	rc := &lintRunCtx{ctx: context.Background(), strict: opts.strict, allowSkip: opts.allowSkip, cfg: opts.cfg}
+	var out strings.Builder
+	steps := []linterStep{findStep(t, "buf lint"), cleanGatingStep("contract linter")}
+	err := renderLintOutcomes(&out, collectLintOutcomesFrom(rc, steps), false, nil)
+	return out.String(), err
 }
 
 // ── a missing tool fails the run, naming the lane ───────────────────────────
@@ -375,24 +375,6 @@ func TestParseSkipAllowances(t *testing.T) {
 	}
 }
 
-// TestGapFromTextLaneIsJudgedLikeTheStructuredOne: the text driver's
-// laneUnavailableError and the structured `-unavailable` finding go through
-// the same judgeGap, so the two modes cannot disagree.
-func TestGapFromTextLaneIsJudgedLikeTheStructuredOne(t *testing.T) {
-	bufMissingProject(t)
-	step := findStep(t, "buf lint")
-	rc := &lintRunCtx{ctx: context.Background()}
-	var unavail *laneUnavailableError
-	if err := step.runText(rc); !errors.As(err, &unavail) {
-		t.Fatalf("text lane returned %v; want a laneUnavailableError", err)
-	}
-	textVerdict, _ := rc.judgeGap(step.name, laneGates(step, rc))
-	_, gated, _ := collectGraded(t, step, rc)
-	if (textVerdict == gapFails) != gated {
-		t.Errorf("text verdict %v and JSON gated=%v disagree", textVerdict, gated)
-	}
-}
-
 // ── fixtures ────────────────────────────────────────────────────────────────
 
 // cleanGatingStep is a gating lane that runs and finds nothing, so a verdict
@@ -401,7 +383,6 @@ func cleanGatingStep(name string) linterStep {
 	return linterStep{
 		name: name, gates: true, scope: scopeByFile,
 		shouldRun: func(*lintRunCtx) (bool, string) { return true, "" },
-		runText:   func(*lintRunCtx) error { return nil },
 		collect:   func(*lintRunCtx) ([]lintJSONFinding, bool, error) { return nil, false, nil },
 	}
 }

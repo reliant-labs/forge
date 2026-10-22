@@ -121,7 +121,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -201,52 +200,8 @@ func readOnlyFieldFixHint(f readOnlyFieldFinding) string {
 		f.Table, f.Field, schemadef.ColumnMarkerFill)
 }
 
-// runReadOnlyFieldsLint is the text-mode entry point.
-//
-// It returns a gating error for every finding not held by pending-stub mode
-// (lint_pending_stubs.go). See the step's comment in lint_steps.go.
-func runReadOnlyFieldsLint(projectDir, migrationsDir string) error {
-	fmt.Println("Running read-only-fields lint...")
-	findings, err := collectReadOnlyFieldFindings(projectDir, migrationsDir)
-	if err != nil {
-		return err
-	}
-	if gating := formatReadOnlyFields(os.Stdout, findings); gating > 0 {
-		return fmt.Errorf("%d read-only column(s) that nothing populates", gating)
-	}
-	return nil
-}
-
 // readOnlyFieldRuleID is the rule id both report formats use.
 const readOnlyFieldRuleID = "forgeconv-read-only-field-unwritten"
-
-// formatReadOnlyFields writes the human report and returns how many
-// findings gate.
-func formatReadOnlyFields(w io.Writer, findings []readOnlyFieldFinding) int {
-	if len(findings) == 0 {
-		_, _ = fmt.Fprintln(w, "  read-only-fields clean — every forge:read-only column is populated by something")
-		return 0
-	}
-	rows := make([]unwrittenFindingText, 0, len(findings))
-	for _, f := range findings {
-		rows = append(rows, unwrittenFindingText{
-			Rule: readOnlyFieldRuleID, File: f.File, Line: f.Line,
-			Hint: readOnlyFieldFixHint(f), Pending: f.Pending,
-		})
-	}
-	gating := formatUnwrittenFindings(w, rows)
-	_, _ = fmt.Fprintf(w, "\n%d read-only column(s) that nothing populates.\n", len(findings))
-	if gating > 0 {
-		_, _ = fmt.Fprintln(w, "Each one ships as the column's zero with no error, no failing test and "+
-			"no log line — so this FAILS the build rather than warning. Fix the schema or the write "+
-			"path, or declare who populates the column with `COMMENT ON COLUMN <table>.<col> IS "+
-			"'forge:fill=handler'`.")
-	} else {
-		_, _ = fmt.Fprintln(w, "(warning only while forge-scaffolded stubs remain in the service — "+
-			"implement them and an unpopulated column fails the build)")
-	}
-	return gating
-}
 
 // collectReadOnlyFieldFindings is the shared engine behind text mode and
 // `forge lint --json`. A project with no proto tree, or no migrations,

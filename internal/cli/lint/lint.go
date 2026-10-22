@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -18,11 +17,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/contractcheck"
-	"github.com/reliant-labs/forge/internal/frontenddeps"
-	"github.com/reliant-labs/forge/internal/linter/contract"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
-	"github.com/reliant-labs/forge/internal/linter/migrationlint"
-	"github.com/reliant-labs/forge/internal/linter/scaffolds"
 	"github.com/reliant-labs/forge/internal/linter/suppress"
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -128,6 +123,14 @@ fix that leaves one failing is taken back and reported. Under --scope it
 touches only files inside the scope, and naming Go package paths (forge lint
 --fix ./internal/x/...) likewise confines the fixers to those packages.
 
+SEVERITY IS ONE DIAL: forge.yaml lint.rules maps a rule ID — the [rule] each
+finding prints — to error, warn or off, and it grades every forge lane the same
+way in every mode: lint.rules: {forge-config-deps: error} makes the advisory
+config-deps lane gate; {forgeconv-handler-file-size: warn} lets a gating rule
+be adopted gradually; "*" sets every forge rule. Another tool's linters keep
+their own config (.golangci.yml, buf.yaml, eslint), and a key forge does not
+grade — a typo, another tool's rule, a lane's could-not-run — is a lint error.
+
 Examples:
   forge lint                     # Report only: print the diffs, write nothing
   forge lint --fix               # Apply the mechanical fixes, then gate
@@ -226,7 +229,8 @@ Examples:
                                  # skipped and named in the verdict, so run an
                                  # unscoped 'forge lint' before merging
 
-The three advisory rules above are warnings only — they never fail the build.
+The advisory rules above are warnings by default — they fail the build only
+when lint.rules sets them to error.
 
 Additional maintainer/debug flags exist (forge-repo internals, wiring
 audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`,
@@ -265,12 +269,20 @@ func runLintCommand(cmd *cobra.Command, flags lintFlags, args []string) error {
 	switch {
 	case flags.jsonOut:
 		return runLintJSON(cmd.Context(), flags, paths)
-	case flags.quiet || len(flags.scope) > 0:
-		return runLintStructured(cmd.Context(), flags, paths)
-	case flags.gateJSON != "":
-		return runLintWithGate(cmd.Context(), flags, paths, flags.gateJSON)
+	case flags.suggestExcludes:
+		_, cfg, err := loadLintConfig()
+		if err != nil {
+			return err
+		}
+		return runSuggestExcludes(cfg)
+	case flags.suggestBufExcepts:
+		return runSuggestBufExcepts(cmd.Context())
 	}
-	return runLint(cmd.Context(), flags, paths)
+	// Every other mode — the full sweep, the targeted `--<linter>` lanes,
+	// --quiet, --scope and --gate-json — renders the one outcome engine, so
+	// lint.rules, --scope and the gap policy mean the same thing in each
+	// (lint_structured.go, lint_rules.go).
+	return runLintStructured(cmd.Context(), flags, paths)
 }
 
 // registerLintFlags declares every `forge lint` flag and the visible /
@@ -305,8 +317,8 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	// span as the flag's argument-name placeholder, so `// forge:optional-dep`
 	// rendered as `--optional-deps-guard // forge:optional-dep` in --help.
 	// Harmless while the flag was hidden; visible now that it is not.
-	cmd.Flags().BoolVar(&flags.optionalDepsGuard, "optional-deps-guard", false, "Flag unguarded derefs of // forge:optional-dep Deps fields (warnings only; suppress with // forge:optional-checked on the deref line)")
-	cmd.Flags().BoolVar(&flags.configDeps, "config-deps", false, "Flag scalar Deps fields — scalars are configuration; declare a <Component>Config block in proto/<project>/config/v1 and take it as a typed field (warnings only)")
+	cmd.Flags().BoolVar(&flags.optionalDepsGuard, "optional-deps-guard", false, "Flag unguarded derefs of // forge:optional-dep Deps fields (warnings by default, lint.rules forge-optional-deps-guard: error gates them; suppress a confirmed-safe site with // forge:optional-checked on the deref line)")
+	cmd.Flags().BoolVar(&flags.configDeps, "config-deps", false, "Flag scalar Deps fields — scalars are configuration; declare a <Component>Config block in proto/<project>/config/v1 and take it as a typed field (warnings by default, lint.rules forge-config-deps: error gates them)")
 	cmd.Flags().BoolVar(&flags.columnMarkers, "column-markers", false, "Fail on a COMMENT ON TABLE/VIEW/COLUMN/CONSTRAINT carrying a forge: marker that object does not read")
 	cmd.Flags().BoolVar(&flags.closedSets, "closed-sets", false, "Fail when a CHECK declared forge:closed-set <set> does not list exactly that Go set, and print the migration that fixes it")
 	cmd.Flags().BoolVar(&flags.dbGrants, "db-grants", false, "Fail on a credential-shaped column (token, password, key, ciphertext, hash…) that carries neither forge:secret nor forge:readable <reason>: the read-only forge_ro role is refused it until someone decides")
@@ -370,257 +382,10 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	)
 }
 
-// runLint is the text-mode driver: a suggest mode, the lanes the
-// `--<linter>` flags name (selectedLanes), or the full sweep when none is
-// named.
-func runLint(ctx context.Context, flags lintFlags, paths []string) error {
-	if flags.suggestExcludes {
-		_, cfg, err := loadLintConfig()
-		if err != nil {
-			return err
-		}
-		return runSuggestExcludes(cfg)
-	}
-	if flags.suggestBufExcepts {
-		return runSuggestBufExcepts(ctx)
-	}
-	switch lanes := selectedLanes(flags); len(lanes) {
-	case 0:
-		return runAllLintersText(ctx, flags, paths)
-	case 1:
-		return runTargetedLane(ctx, flags, paths, lanes[0])
-	default:
-		return runTargetedLanes(ctx, flags, paths, lanes)
-	}
-}
-
-// runTargetedLanes runs every lane a combined invocation named
-// (`forge lint --conventions --contract`), each exactly as it runs alone,
-// and returns ONE verdict covering all of them: the lanes that failed, or
-// a success line that counts every lane that ran. A lane that fails does not
-// stop the next one, so one run reports everything that is wrong.
-func runTargetedLanes(ctx context.Context, flags lintFlags, paths []string, lanes []string) error {
-	v := lintVerdict{ran: lanes}
-	for _, lane := range lanes {
-		fmt.Printf("\n── forge lint --%s ──\n", lane)
-		if err := runTargetedLane(ctx, flags, paths, lane); err != nil {
-			// The lane's own error, where a lone run would print it; the
-			// verdict below names the lane again as the last line.
-			fmt.Fprintf(os.Stderr, "❌ --%s: %v\n", lane, err)
-			v.failed = append(v.failed, lane)
-		}
-	}
-	fmt.Println()
-	return v.render(os.Stdout)
-}
-
-// runTargetedLane runs one `--<linter>` lane on its own, whatever else flags
-// selects (onlyLane). Each arm is the lane's whole runner, so the chain is
-// the dispatch table and stays flat on purpose.
-//
-//nolint:funlen // one arm per lane; splitting it would hide the table.
-func runTargetedLane(ctx context.Context, flags lintFlags, paths []string, lane string) error {
-	flags = onlyLane(flags, lane)
-	if flags.contract {
-		store, cfg, err := loadLintConfig()
-		if err != nil {
-			return err
-		}
-		if store != nil && !store.Features().ContractsEnabled() {
-			return errFeatureDisabled("--contract", "contracts")
-		}
-		return runContractLinter(ctx, paths, contractExcludesFromConfig(cfg), contractGateOptions(cfg, flags.strict))
-	}
-	if flags.exportedVars {
-		_, cfg, err := loadLintConfig()
-		if err != nil {
-			return err
-		}
-		return runContractLinter(ctx, paths, contractExcludesFromConfig(cfg), contractGateOptions(cfg, flags.strict))
-	}
-	if flags.migrationSafety {
-		store, cfg, err := loadLintConfig()
-		if err != nil {
-			return err
-		}
-		if store != nil && !store.Features().MigrationsEnabled() {
-			return errFeatureDisabled("--migration-safety", "migrations")
-		}
-		return runMigrationSafetyLint(cfg)
-	}
-	if flags.conventions {
-		return runConventionLint(forgeconv.LintOptions{Strict: flags.strict})
-	}
-	if flags.generatedDrift {
-		return runWithCwd(runGeneratedDriftLint)
-	}
-	if flags.frontendStores {
-		return runFrontendStoresLint()
-	}
-	if flags.scaffolds {
-		return runScaffoldsLint()
-	}
-	if flags.tests {
-		return runTestsLint()
-	}
-	if flags.banners {
-		return runBannersLint()
-	}
-	if flags.checkWorkarounds {
-		return runWithCwd(runCheckWorkaroundsLint)
-	}
-	if flags.optionalDepsGuard {
-		return runWithCwd(runOptionalDepsGuardLint)
-	}
-	if flags.configDeps {
-		return runWithCwd(runConfigDepsLint)
-	}
-	if flags.columnMarkers {
-		_, cfg, err := loadLintConfig()
-		if err != nil {
-			return err
-		}
-		return runColumnMarkersLint(cfg)
-	}
-	if flags.closedSets {
-		_, cfg, err := loadLintConfig()
-		if err != nil {
-			return err
-		}
-		return runWithCwd(func(cwd string) error { return runClosedSetsLint(cwd, cfg) })
-	}
-	if flags.dbGrants {
-		_, cfg, err := loadLintConfig()
-		if err != nil {
-			return err
-		}
-		return runWithCwd(func(cwd string) error { return runDBGrantsLint(cwd, cfg) })
-	}
-	if flags.fixtureDrift || flags.crudFixtures {
-		_, cfg, err := loadLintConfig()
-		if err != nil {
-			return err
-		}
-		return runWithCwd(func(cwd string) error { return runFixtureDriftLint(cwd, cfg) })
-	}
-	if flags.timeBucketing {
-		_, cfg, err := loadLintConfig()
-		if err != nil {
-			return err
-		}
-		return runWithCwd(func(cwd string) error { return runTimeBucketingLint(cwd, cfg) })
-	}
-	if flags.protoMarkers {
-		return runProtoMarkersLint(protoDirDefault)
-	}
-	if flags.goMarkers {
-		return runWithCwd(runGoMarkersLint)
-	}
-	if flags.createNullability {
-		return runWithCwd(func(cwd string) error { return runCreateNullabilityLint(protoDirDefault, cwd) })
-	}
-	if flags.computedFields {
-		return runWithCwd(runComputedFieldsLint)
-	}
-	if flags.readOnlyFields {
-		_, cfg, err := loadLintConfig()
-		if err != nil {
-			return err
-		}
-		return runWithCwd(func(cwd string) error {
-			return runReadOnlyFieldsLint(cwd, migrationsDirFor(cfg))
-		})
-	}
-	if flags.secrets {
-		_, cfg, err := loadLintConfig()
-		if err != nil {
-			return err
-		}
-		return runWithCwd(func(cwd string) error { return runSecretsLint(ctx, cwd, cfg) })
-	}
-	if flags.guardedFields {
-		return runWithCwd(func(cwd string) error {
-			return runGuardedFieldsLint(cwd, frontendDirsForLint())
-		})
-	}
-	if flags.staticExport {
-		_, cfg, err := loadLintConfig()
-		if err != nil {
-			return err
-		}
-		return runWithCwd(func(cwd string) error { return runStaticExportLint(ctx, cwd, cfg) })
-	}
-	if flags.tracing {
-		_, cfg, err := loadLintConfig()
-		if err != nil {
-			return err
-		}
-		return runWithCwd(func(cwd string) error { return runTracingLint(cwd, cfg, flags.autoFix(), true) })
-	}
-	if flags.protoOptions {
-		return runProtoOptionsLint(protoDirDefault)
-	}
-	if flags.vendoredProtos {
-		return runWithCwd(runVendoredProtosLint)
-	}
-	if flags.graph {
-		_, cfg, err := loadLintConfig()
-		if err != nil {
-			return err
-		}
-		return runWithCwd(func(cwd string) error { return runGraphLint(cwd, cfg) })
-	}
-	if flags.configReach {
-		_, cfg, err := loadLintConfig()
-		if err != nil {
-			return err
-		}
-		return runWithCwd(func(cwd string) error { return runConfigReachLint(cwd, cfg) })
-	}
-	if flags.slowTests {
-		return runSlowTestsLint(ctx, paths)
-	}
-	// lintLaneFlags names a lane this chain has no arm for. Refuse rather
-	// than run the full sweep under one lane's name.
-	return fmt.Errorf("forge lint --%s has no text-mode runner (lintLaneFlags and runTargetedLane disagree)", lane)
-}
-
-// runAllLintersText is the full sweep, run when no `--<linter>` flag names a
-// lane.
-func runAllLintersText(ctx context.Context, flags lintFlags, paths []string) error {
-	// Load project config for lint defaults. A missing config file is fine
-	// (we fall back to defaults), but a parse/read error should fail hard so
-	// users don't silently lint with the wrong configuration.
-	_, cfg, err := loadLintConfig()
-	if err != nil {
-		return err
-	}
-
-	// No flags set — run ALL linters, each skipping gracefully if tool not
-	// available. Report-only is the default (lint_check.go); --fix applies
-	// the mechanical fixers first, each Go rewrite verified.
-	allow, err := lintAllowances(flags, cfg)
-	if err != nil {
-		return err
-	}
-	_, err = runAllLinters(ctx, lintRunOptions{
-		fix:           flags.autoFix(),
-		strict:        flags.strict,
-		skipFrontends: flags.skipFrontends,
-		allowSkip:     allow,
-		paths:         paths,
-		cfg:           cfg,
-	})
-	return err
-}
-
 // lintRunOptions carries the whole-pipeline inputs from the flag layer to
-// the two drivers (text and JSON). It exists so a new pipeline-wide
-// switch is one field rather than another positional bool on two
-// signatures — the shape the pre-existing (fix, strict, paths, cfg) list
-// was already straining against.
+// the --json sweep (collectAllLintersJSON). It exists so a new
+// pipeline-wide switch is one field rather than another positional bool.
 type lintRunOptions struct {
-	fix bool
 	// reportFormat adds the report-only format lane to a detect-only
 	// collection (--json), so its findings and exit code match the text mode.
 	reportFormat  bool
@@ -652,17 +417,6 @@ func loadLintConfig() (*projectstore.Store, *config.ProjectConfig, error) {
 	return store, cfg, nil
 }
 
-// runWithCwd resolves the current working directory (failing with the shared
-// "getwd" error) and invokes run with it. Factors out the getwd boilerplate
-// the cwd-rooted targeted linters all share.
-func runWithCwd(run func(cwd string) error) error {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("getwd: %w", err)
-	}
-	return run(cwd)
-}
-
 // contractExcludesFromConfig returns the contracts.exclude list from the
 // project config, or nil when no config is loaded.
 func contractExcludesFromConfig(cfg *config.ProjectConfig) []string {
@@ -670,94 +424,6 @@ func contractExcludesFromConfig(cfg *config.ProjectConfig) []string {
 		return nil
 	}
 	return cfg.Contracts.Exclude
-}
-
-// runContractLinter runs the contract-interface analysis IN-PROCESS
-// (see contract_inprocess.go): the analyzers are imported from
-// internal/linter/contract and driven with go/packages +
-// go/analysis/checker inside the forge binary itself, so the analysis
-// is exactly as new as forge — no PATH lookup, no separately-installed
-// binary, no version skew. The historical subprocess driver
-// (resolveContractLintBinary → contractlint on PATH / bin/ / `go run`)
-// let a stale ~/go/bin/contractlint produce phantom violations against
-// a fresh forge with nothing to catch the mismatch.
-func runContractLinter(ctx context.Context, paths []string, excludes []string, gate contract.ExcludeGateOptions) error {
-	fmt.Println("🔍 Running contract interface enforcement linter (in-process)...")
-	fmt.Println()
-
-	diags, err := runContractAnalysisInProcess(ctx, paths, excludes, gate)
-	if err != nil {
-		return cliutil.WrapUserErr("forge lint --contract",
-			"failed to run contract linter", "",
-			"ensure the project builds (`go build ./...`) and go.mod is tidy", err)
-	}
-
-	gating := 0
-	for _, d := range diags {
-		if !d.Warning {
-			gating++
-		}
-	}
-	if gating == 0 {
-		for _, d := range diags {
-			fmt.Println("⚠️  " + d.String())
-		}
-	}
-	if gating > 0 {
-		for _, d := range diags {
-			fmt.Println(d)
-		}
-		fmt.Println()
-		fmt.Println("❌ Contract interface violations found!")
-		fmt.Println()
-		fmt.Println("Exported methods on types implementing contract interfaces must be declared in the interface.")
-		return cliutil.UserErr("forge lint --contract",
-			"contract interface violations found",
-			"",
-			"either declare the exported method in the contract interface, or unexport it (lowercase) if it's helper-only")
-	}
-
-	fmt.Println("✅ No contract interface violations found!")
-	return nil
-}
-
-// runConventionLint runs the forge-convention analyzers (forgeconv) over
-// every .proto file in the project, plus the internal-package contract
-// shape analyzer over every internal/<pkg>/contract.go. These analyzers
-// catch the failure modes the overnight migration kept hitting: messages
-// that look like entities by field-name but lack the explicit annotations
-// forge codegen requires; contract.go files using non-canonical names
-// (Sender/Config/NewSender) that produce broken bootstrap codegen.
-// Findings with severity=error fail `forge lint`; warnings are printed
-// but do not gate the build.
-func runConventionLint(opts forgeconv.LintOptions) error {
-	fmt.Println("Running forge convention rules...")
-
-	combined, notes, hasAny, err := collectConventionFindings(opts)
-	if err != nil {
-		return err
-	}
-	for _, n := range notes {
-		fmt.Println("  ⚠️  " + n)
-	}
-	if !hasAny {
-		return nil
-	}
-
-	if len(combined.Findings) == 0 {
-		fmt.Println("✓ forge conventions passed")
-		return nil
-	}
-
-	fmt.Print(combined.FormatText())
-	if combined.HasErrors() {
-		return cliutil.UserErr("forge lint --conventions",
-			"forge convention violations found",
-			"",
-			"fix the findings above (proto annotations, contract.go names) — see 'forge skill load contracts' and 'forge skill load proto' for the rules")
-	}
-	fmt.Println("(warnings only — not failing the build)")
-	return nil
 }
 
 // collectConventionFindings gathers every forge-convention finding
@@ -965,16 +631,6 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 		combined.Findings = append(combined.Findings, peRes.Findings...)
 	}
 
-	// `lint.rules` re-grades EVERY convention finding, once, here — not rule
-	// by rule at each call site. It used to be applied to the frontend
-	// process-env rule alone, so `lint.rules: {forgeconv-activity-declared:
-	// warn}` (and any other proto or Go-tree rule) was accepted by the config
-	// loader and then silently ignored: the one dial meant for adopting a
-	// newly added rule incrementally did nothing for the rules that need it.
-	if store, err := loadProjectStore(); err == nil && store != nil {
-		combined.Findings = store.Lint().EffectiveRules().ApplyAll(combined.Findings)
-	}
-
 	// If none of proto/, internal/, handlers/, workers/, operators/, or a
 	// frontend dir exist, there's nothing to lint.
 	hasAny := hasProto || hasInternal || hasComponentTree || hasFrontends
@@ -1017,201 +673,6 @@ func frontendDirsForLint() []string {
 	return dirs
 }
 
-// runFrontendStoresLint scans frontends/<name>/src/stores/*.ts and the
-// historic web/src/store/*.ts for files that both spin up a Zustand
-// store AND import a generated Connect client — the canonical
-// "server data in client-only state" foot-gun. Warnings only; the
-// build is never gated. See the frontend/state skill for the
-// canonical placement (generated React Query hooks).
-func runFrontendStoresLint() error {
-	fmt.Println("🔍 Running frontend-stores convention lint...")
-	fmt.Println()
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("getwd: %w", err)
-	}
-
-	res, err := forgeconv.LintFrontendStores(cwd)
-	if err != nil {
-		return fmt.Errorf("frontend-stores lint failed: %w", err)
-	}
-	if len(res.Findings) == 0 {
-		fmt.Println("✓ no frontend store / generated-client mixing detected.")
-		return nil
-	}
-	fmt.Print(res.FormatText())
-	// Warnings only — never gate.
-	fmt.Println("(warnings only — not failing the build)")
-	return nil
-}
-
-// runTestsLint runs test-convention rules. Currently:
-//
-//   - forgeconv-handler-tests-use-tdd: warns when a handler test file
-//     hand-rolls the `tests := []struct{name, call}` shape instead of
-//     `tdd.RunRPCCases`. See `forge skill load
-//     migrations/v0.x-to-tdd-rpccases` for the conversion playbook, or
-//     run `forge project migrate tdd` to convert most files automatically.
-//
-//   - forgeconv-frontend-hook-tests: warns when a generated
-//     frontends/<name>/src/hooks/<svc>-hooks.ts has no sibling test or
-//     `.tsx.starter` waiting to be activated. See the `frontend-testing`
-//     skill.
-//
-//   - forgeconv-frontend-hook-test-shape: ERRORS when a scaffolded hook
-//     test asserts the opposite shape from the hook it exercises — a
-//     query assertion against a useMutation hook, or vice versa. That
-//     pair can never pass, so it is a red suite rather than a coverage
-//     gap, and it gates.
-//
-// The first two are warnings and never gate: they surface drift, not
-// block legitimate pre-`tdd.RunRPCCases` projects or frontends that
-// genuinely don't want hook tests. The shape rule is the exception,
-// because a test that cannot pass is not a matter of taste.
-func runTestsLint() error {
-	fmt.Println("🔍 Running test convention lint...")
-	fmt.Println()
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("getwd: %w", err)
-	}
-
-	handlerRes, err := forgeconv.LintHandlerTests(cwd)
-	if err != nil {
-		return fmt.Errorf("handler-test lint failed: %w", err)
-	}
-	frontendRes, err := forgeconv.LintFrontendHookTests(cwd)
-	if err != nil {
-		return fmt.Errorf("frontend-hook-test lint failed: %w", err)
-	}
-	shapeRes, err := forgeconv.LintFrontendHookTestShape(cwd)
-	if err != nil {
-		return fmt.Errorf("frontend-hook-test-shape lint failed: %w", err)
-	}
-
-	combined := forgeconv.Result{
-		Findings: append(append(append([]forgeconv.Finding{},
-			handlerRes.Findings...), frontendRes.Findings...), shapeRes.Findings...),
-	}
-	if len(combined.Findings) == 0 {
-		fmt.Println("✓ test conventions passed")
-		return nil
-	}
-	fmt.Print(combined.FormatText())
-	if combined.HasErrors() {
-		return fmt.Errorf("a scaffolded hook test contradicts the hook it exercises and cannot pass; " +
-			"fix the block named above, or delete the test file and run `forge project rescaffold <path>` for a fresh one")
-	}
-	fmt.Println("(warnings only — not failing the build)")
-	return nil
-}
-
-// runBannersLint verifies forge's own template files carry the
-// lifecycle banner that matches their tier:
-//
-//   - Tier 1 (forge-owned, regenerated every run): "// Code generated
-//     by forge. DO NOT EDIT." + "// forge-owned: regenerated every run
-//     — do not edit (forge project disown to take ownership)"
-//   - Tier 2 (yours): "// yours: scaffolded once, never touched again
-//     — forge will not overwrite this file"
-//   - Fragments / skip-listed files: banner-less by design.
-//
-// Warnings only — the rule is a hint to template authors that LLMs and
-// humans alike rely on the banner to know whether they may edit the
-// emitted file. Runs only when invoked inside the forge repo (i.e.
-// when `internal/templates/` exists); no-op elsewhere.
-func runBannersLint() error {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("getwd: %w", err)
-	}
-	hasTemplates := dirExists(filepath.Join("internal", "templates"))
-	if !hasTemplates {
-		// No templates to lint — silently skip so the lint stays a no-op
-		// outside the forge repo.
-		return nil
-	}
-
-	fmt.Println("Running lifecycle-banner lint on forge templates...")
-	res, err := scaffolds.BannerLintRoot(cwd)
-	if err != nil {
-		return fmt.Errorf("banner lint failed: %w", err)
-	}
-	if len(res.Findings) == 0 {
-		fmt.Println("  banner lint passed")
-		return nil
-	}
-	fmt.Print(res.FormatText())
-	// Warnings only — never gate.
-	fmt.Println("(warnings only — not failing the build)")
-	return nil
-}
-
-// runCheckWorkaroundsLint flags the canonical cross-lane workarounds that
-// shipped to cpnext during the v0.2 rebuild (cast<X>Repo helpers in
-// pkg/app/wire_gen.go, hand-rolled pkg/app/testing_extras.go, cmd/<name>.go
-// files not declared in forge.yaml's binaries: block). All findings are
-// warnings — never gates the build, but surfaces drift before merge so
-// the corresponding forge primitive can replace the workaround.
-//
-// Wired into runAllLinters so plain `forge lint` runs it; `--check-workarounds`
-// runs ONLY this rule for targeted CI gates.
-func runCheckWorkaroundsLint(root string) error {
-	fmt.Println("🔍 Running cross-lane workaround lint...")
-	fmt.Println()
-
-	res, err := scaffolds.LintWorkaroundsRoot(root)
-	if err != nil {
-		return fmt.Errorf("check-workarounds lint failed: %w", err)
-	}
-	if len(res.Findings) == 0 {
-		fmt.Println("✓ no cross-lane workarounds detected.")
-		return nil
-	}
-	fmt.Print(res.FormatText())
-	// Warnings only — never gate.
-	fmt.Println("(warnings only — not failing the build)")
-	return nil
-}
-
-// runScaffoldsLint enforces the forge ownership boundary:
-//   - surviving FORGE_SCAFFOLD markers are a warning (pending scaffold
-//     work — a fresh scaffold always carries them, so they must never
-//     gate the build)
-//   - _gen files missing the canonical header are an error
-//   - _gen files missing a "Source:" line are a warning
-//
-// The walk skips heavyweight directories (gen/, node_modules/, .git/, …)
-// so it stays cheap on real projects.
-func runScaffoldsLint() error {
-	fmt.Println("🔍 Running scaffold ownership lint...")
-	fmt.Println()
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("getwd: %w", err)
-	}
-
-	res, err := scaffolds.LintRoot(cwd)
-	if err != nil {
-		return fmt.Errorf("scaffold lint failed: %w", err)
-	}
-
-	fmt.Print(res.FormatText())
-	if res.HasErrors() {
-		return cliutil.UserErr("forge lint --scaffolds",
-			"scaffold ownership violations found",
-			"",
-			"ensure _gen files carry the canonical 'Code generated by forge' header (re-run 'forge generate')")
-	}
-	if len(res.Findings) > 0 {
-		fmt.Println("(warnings only — not failing the build)")
-	}
-	return nil
-}
-
 // errFeatureDisabled is what an EXPLICITLY REQUESTED lint returns when its
 // feature is off.
 //
@@ -1238,43 +699,6 @@ func featureTurnOn(feature string) string {
 		return "contracts are on for every project kind; this config forced them off"
 	}
 	return feature + " derives from what exists in the repo"
-}
-
-func errFeatureDisabled(flag, feature string) error {
-	return cliutil.UserErr("forge lint "+flag,
-		fmt.Sprintf("the %s feature is off for this project, so this lint cannot run", feature),
-		"",
-		fmt.Sprintf("%s — or drop %s from this command: "+
-			"an unflagged `forge lint` skips the lane instead of failing. "+
-			"`forge project features` shows why it is off.",
-			featureTurnOn(feature), flag))
-}
-
-func runMigrationSafetyLint(cfg *config.ProjectConfig) error {
-	fmt.Println("🔍 Running SQL migration safety lint...")
-	fmt.Println()
-
-	migrationsDir := filepath.Join("db", "migrations")
-	ruleConfig := migrationlint.DefaultConfig()
-	if cfg != nil {
-		if cfg.Database.MigrationsDir != "" {
-			migrationsDir = cfg.Database.MigrationsDir
-		}
-		ruleConfig = migrationlint.ConfigFromProject(cfg.Database.MigrationSafety)
-	}
-
-	result, err := migrationlint.LintMigrationsDir(migrationsDir, ruleConfig)
-	if err != nil {
-		return fmt.Errorf("migration safety lint failed: %w", err)
-	}
-	fmt.Print(result.FormatText())
-	if result.HasErrors() {
-		return cliutil.UserErr("forge lint --migration-safety",
-			"migration safety violations found",
-			"",
-			migrationlint.PrimaryRemediation(result.Findings))
-	}
-	return nil
 }
 
 // hasWorkspaceGoMod reports whether the go command will run in workspace
@@ -1339,167 +763,6 @@ func ensureEnvDefault(env []string, key, defaultValue string) []string {
 	}
 	// Key not present at all — add it.
 	return append(env, prefix+defaultValue)
-}
-
-// runAllLinters runs every linter, each skipping gracefully if the
-// required tool isn't installed. It is a thin TEXT renderer over the
-// shared linter table (lintPipeline, in lint_steps.go) — the same table
-// the JSON aggregator (collectAllLintersJSON) renders. The ordering,
-// feature gates, dir checks, and gating verdict are declared ONCE in the
-// table; this driver only translates each step into human output.
-// It also returns what the run PROVED, in lanes (lintLaneTally), which is
-// what `--gate-json` records as evidence. Returned rather than recomputed so
-// the gate document and the final human line are rendered from one tally and
-// cannot disagree about whether a lane ran.
-func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, error) {
-	return runLinterSteps(ctx, opts, lintPipeline())
-}
-
-// runLinterSteps is runAllLinters over an explicit step list, so the text
-// driver's verdict can be tested against steps whose behaviour the test
-// controls.
-func runLinterSteps(ctx context.Context, opts lintRunOptions, steps []linterStep) (lintLaneTally, error) {
-	fmt.Println("🔍 Running all linters...")
-	fmt.Println()
-
-	fix := opts.fix
-	cwd := lintCwd()
-
-	// Auto-fix-then-gate: apply the deterministic-safe Go formatter across the
-	// whole source tree (owned + generated) BEFORE the gating pipeline, so
-	// import grouping / gofmt whitespace is fixed in place and never surfaces
-	// as a golangci-lint gate. golangci-lint --fix (fix flag, below) and eslint
-	// --fix (frontend step) cover the rest. Skipped under --no-fix (fix=false).
-	if fix && cwd != "" {
-		reportFormatPrePass(cwd, opts.paths)
-		// The frontend half: prettier over user-owned frontend sources.
-		// eslint --fix (below) does not format — the scaffolded eslint
-		// config deliberately carries no formatting rules — so without this
-		// pass `forge lint` fixed no TS formatting at all, and a scaffolded
-		// file the project's CI prettier check rejected stayed rejected.
-		// --skip-frontends means "no Node toolchain"; honor it here too.
-		// Naming Go paths narrows the run to them, and frontends are not Go
-		// paths, so their formatter does not run (as under --scope).
-		if !opts.skipFrontends && len(opts.paths) == 0 {
-			reportFrontendFormatPrePass(ctx, cwd, opts.cfg)
-		}
-	}
-
-	rc := &lintRunCtx{
-		ctx:           ctx,
-		fix:           fix,
-		strict:        opts.strict,
-		skipFrontends: opts.skipFrontends,
-		allowSkip:     opts.allowSkip,
-		paths:         opts.paths,
-		cfg:           opts.cfg,
-		cwd:           cwd,
-		golangciMemo:  newGolangciMemo(productionGolangciToolchain()),
-	}
-	hasFailed := false
-
-	// Report-only: the fix pre-pass above did not run, so a file it would
-	// have rewritten is a finding. Printed as the diff the rewrite would
-	// apply, and counted as a failed gating lane so the exit code, the
-	// verdict line and --gate-json all say so.
-	var ranGating, skippedGating, failedLanes, advisoryUnavailable, allowedNames []string
-	var unavailable, allowed []laneGap
-	if !fix && cwd != "" {
-		{
-			n := runFormatCheck(ctx, os.Stdout, cwd, opts.paths, opts.skipFrontends, opts.cfg)
-			ranGating = append(ranGating, formatLaneName)
-			if n > 0 {
-				hasFailed = true
-				failedLanes = append(failedLanes, formatLaneName)
-			}
-		}
-	}
-
-	// Which GATING linters actually executed, and which were skipped. The
-	// verdict has to name them: "✅ All linters passed!" was printed
-	// unconditionally, so a machine without golangci-lint and without buf —
-	// a fresh CI runner whose tool install silently failed — got a green
-	// `forge lint` having gated on nothing. The ⚠️ skip lines scrolled past
-	// above; the last line on screen, the one a human and an agent both
-	// read as the answer, claimed every linter passed.
-	// unavailable is the third bucket: lanes that were supposed to execute
-	// and could not. See laneUnavailableError for why they are neither
-	// "ran" nor "skipped".
-	for _, step := range steps {
-		run, skipMsg := step.shouldRun(rc)
-		if !run {
-			// A skip message prints a ⚠️ line; a silent skip (directory
-			// absent / cwd unavailable) prints nothing — a lane that does
-			// not apply to this project shape is not a gap.
-			if skipMsg != "" {
-				fmt.Println("⚠️  " + skipMsg)
-				if step.gates {
-					skippedGating = append(skippedGating, step.name)
-				}
-			}
-			continue
-		}
-
-		err := step.runText(rc)
-		var unavail *laneUnavailableError
-		switch {
-		case err == nil:
-			if step.gates {
-				ranGating = append(ranGating, step.name)
-			}
-		case errors.As(err, &unavail):
-			// Deliberately NOT appended to ranGating: counting a lane that
-			// produced no verdict would be the final line claiming coverage
-			// this run does not have. What it does to the run is
-			// judgeGap's call (lint_skip.go).
-			verdict, why := rc.judgeGap(step.name, laneGates(step, rc))
-			g := gapFromError(step.name, unavail, verdict, why)
-			printGap(g)
-			switch verdict {
-			case gapFails:
-				unavailable = append(unavailable, g)
-				hasFailed = true
-			case gapAllowed:
-				allowed = append(allowed, g)
-				allowedNames = append(allowedNames, step.name)
-			default:
-				advisoryUnavailable = append(advisoryUnavailable, step.name)
-			}
-		default:
-			// It ran and reported problems — that IS coverage, so the lane
-			// counts as having run even though it failed.
-			if step.gates {
-				ranGating = append(ranGating, step.name)
-				hasFailed = true
-				failedLanes = append(failedLanes, step.name)
-			}
-			fmt.Fprintf(os.Stderr, step.errFormat, err)
-		}
-	}
-
-	tally := lintLaneTally{
-		ran: ranGating, skipped: skippedGating, allowed: allowedNames,
-		unavailable: append(gapNames(unavailable), advisoryUnavailable...), failed: hasFailed,
-	}
-
-	if !hasFailed {
-		fmt.Println()
-	}
-	// On failure the verdict is the returned error, which names the failed
-	// lanes — so the last line of the run says what to fix even when the
-	// ❌ lines above it have scrolled away.
-	return tally, lintVerdict{
-		ran: ranGating, skipped: skippedGating, failed: failedLanes,
-		unavailable: unavailable, advisoryUnavailable: advisoryUnavailable, allowed: allowed,
-	}.render(os.Stdout)
-}
-
-// reportLintVerdict renders the final line of a passing (or proved-nothing)
-// `forge lint` from what actually ran. advisoryUnavailable are ADVISORY lanes
-// that could not run; a gating lane that could not run fails the run and is
-// a laneGap on lintVerdict.unavailable instead. See lintVerdict.render.
-func reportLintVerdict(w io.Writer, ranGating, skippedGating, advisoryUnavailable []string) error {
-	return lintVerdict{ran: ranGating, skipped: skippedGating, advisoryUnavailable: advisoryUnavailable}.render(w)
 }
 
 // lintVerdict is what a run proved, in lanes — the input to the final line
@@ -1632,62 +895,6 @@ func (v lintVerdict) suffix() string {
 	return b.String()
 }
 
-// ── "could not run" is not "passed" ─────────────────────────────────────────
-//
-// A lint lane has three outcomes that are not interchangeable, and collapsing
-// any two of them is how a check goes silently absent:
-//
-//   - it did not APPLY — no proto/ tree, feature disabled, tool deliberately
-//     not installed. The shouldRun path; reported as a named skip.
-//   - it RAN — and found problems, or did not. The ordinary error/nil path.
-//   - it could NOT RUN — it was supposed to execute and the attempt failed,
-//     so the lane produced no verdict at all.
-//
-// The third had no vocabulary. runTypedAccessGuardAdvisory caught its
-// golangci-lint failure, printed "⚠️  typed-config guardrail check could not
-// run", and returned nil — so the pipeline never learned the lane was absent.
-// The run exited 0 and the final verdict counted only the lanes that DID run
-// and pronounced the project clean. `forge lint --json` was worse: it emitted
-// "ok": true over a check that never executed, which is precisely the
-// assertion a machine consumer acts on.
-//
-// The trigger is ordinary, not hypothetical. golangci-lint takes an exclusive
-// OS file lock on $TMPDIR/golangci-lint.lock — ONE path shared by every
-// golangci-lint on the machine, not per-project and not in the cache dir —
-// and waits five seconds for it before exiting 3 with "parallel golangci-lint
-// is running". Five seconds is no patience at all against a lint that takes
-// tens of seconds, so an editor's golangci-lint LSP, a sibling CI matrix job,
-// or a monorepo linting two services at once takes that lock between `forge
-// lint`'s two invocations and the guardrail lane evaporates in silence.
-//
-// laneUnavailableError gives the condition a name any lane can return. The
-// driver routes it to its own bucket: never counted as a gating linter that
-// passed, always named in the final verdict, and graded by judgeGap
-// (lint_skip.go): a GATING lane that could not run fails the run unless
-// --allow-skip / lint.allow_skip accepts it by name.
-//
-// An ADVISORY lane that could not run — the guardrail — is NOT a failure by
-// default. It is advisory BY DESIGN: in `warn` mode the generated
-// .golangci.yml leaves forbidigo out of linters.enable, so nothing gates on
-// the guardrail's FINDINGS. Gating on its ABSENCE would be strictly stronger
-// than gating on its presence, and it would fail `forge lint` over something
-// outside the project entirely. Its "could not run" is an advisory finding,
-// so --strict — advisory findings become errors — is the gate for callers who
-// want one.
-type laneUnavailableError struct {
-	// reason completes "<lane> did NOT run: <reason>".
-	reason string
-	// fixHint says what to DO about it.
-	fixHint string
-}
-
-func (e *laneUnavailableError) Error() string { return e.reason }
-
-// laneUnavailable builds the sentinel a lane returns when it could not run.
-func laneUnavailable(fixHint, format string, a ...any) error {
-	return &laneUnavailableError{reason: fmt.Sprintf(format, a...), fixHint: fixHint}
-}
-
 // golangciRunArgs is the ONE place a `golangci-lint run` argv is assembled,
 // so every lane that shells golangci-lint takes golangci-lint's machine-global
 // lock ($TMPDIR/golangci-lint.lock) the same way.
@@ -1733,67 +940,6 @@ func golangciGateArgs(rc *lintRunCtx) []string {
 	return golangciRunArgs(nil, rc.goPackages())
 }
 
-// runGolangciLint runs the gating golangci-lint pass with the binary chosen
-// for this module (golangci_toolchain.go). A golangci-lint that cannot
-// analyze the module fails the lane with the runbook, not its own output.
-func runGolangciLint(rc *lintRunCtx) error {
-	fmt.Println("Running golangci-lint...")
-
-	out, err := rc.execGolangci(golangciGateArgs(rc))
-	if err != nil {
-		// No golangci-lint that can analyze this module, and none could
-		// be provisioned: the lane could NOT run (lint_skip.go).
-		return laneUnavailable(golangciUnresolvedFix, "%v", err)
-	}
-	out.print()
-	if out.err != nil {
-		return out.err
-	}
-
-	fmt.Println("✓ golangci-lint passed")
-	return nil
-}
-
-// runTypedAccessGuardAdvisory runs the env-access guardrail (forbidigo) as a
-// non-failing, advisory pass. It is the `warn` arm of
-// config.enforce_typed_access: the gating `.golangci.yml` run deliberately
-// leaves forbidigo OUT of its `linters.enable` list (so it never fails the
-// build), and this step surfaces the same findings with --issues-exit-code=0
-// so violations are visible but never gate. `error` mode skips this step —
-// there forbidigo is enabled in the main gating run instead.
-//
-// Findings print verbatim. A non-zero exit can only mean the INVOCATION
-// failed — --issues-exit-code=0 already neutralizes the findings exit code —
-// so it is reported as a lane that could not run (laneUnavailableError), not
-// swallowed into a ⚠️ and a nil return. So is a golangci-lint config that
-// does not point forbidigo at env reads: forbidigo would run its own default
-// patterns instead (lint_typed_access_guard.go).
-func runTypedAccessGuardAdvisory(rc *lintRunCtx) error {
-	fmt.Println("Checking typed-config guardrail (advisory)...")
-
-	if reason := typedAccessGuardUnconfigured(rc.cwd); reason != "" {
-		return laneUnavailable(typedAccessGuardUnconfiguredHint, "%s", reason)
-	}
-	out, err := rc.execGolangci(golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, rc.goPackages()))
-	if err != nil {
-		return laneUnavailable(typedAccessGuardUnavailableHint, "%v", err)
-	}
-	out.print()
-	if err := out.err; err != nil {
-		// --issues-exit-code=0 means findings CANNOT produce a non-zero
-		// exit, so getting one here says golangci-lint never got far enough
-		// to report: this lane has no verdict to give. Returning nil (what
-		// this used to do) told the driver the guardrail had run and found
-		// nothing, and `forge lint` exited 0 over a check that never
-		// executed.
-		return laneUnavailable(typedAccessGuardUnavailableHint,
-			"golangci-lint exited %v before the forbidigo pass could report", err)
-	}
-	fmt.Println("✓ typed-config guardrail check complete (advisory). To gate the build on these findings, set " +
-		"config.enforce_typed_access: error in forge.yaml and re-render .golangci.yml (forge project upgrade).")
-	return nil
-}
-
 // typedAccessGuardUnavailableHint is the remediation for a guardrail
 // invocation that never reported.
 //
@@ -1810,14 +956,6 @@ const typedAccessGuardUnavailableHint = "read the golangci-lint output above —
 	"NOT the cause: forge runs it with --allow-serial-runners (or --allow-parallel-runners inside its own heavy slot), so a " +
 	"contended lock waits its turn instead of failing"
 
-// bufMissingError is the buf lint lane on a project that has a buf.yaml and
-// a machine with no buf: the lane used to be skipped, and `forge lint` passed
-// without ever linting a proto. It is a lane that could NOT run, so it fails
-// the run unless --allow-skip accepts it (lint_skip.go).
-func bufMissingError() *laneUnavailableError {
-	return &laneUnavailableError{reason: bufMissingReason, fixHint: bufMissingFix()}
-}
-
 // bufMissingReason completes "buf lint did NOT run: …".
 const bufMissingReason = "buf is not on PATH, so the buf lint lane cannot run"
 
@@ -1829,250 +967,6 @@ func bufMissingFix() string {
 
 // bufModulePath is the package `go install` builds buf from.
 const bufModulePath = "github.com/bufbuild/buf/cmd/buf"
-
-func runBufLint(ctx context.Context) error {
-	if _, err := os.Stat("buf.yaml"); os.IsNotExist(err) {
-		return nil
-	}
-	if _, err := exec.LookPath("buf"); err != nil {
-		return bufMissingError()
-	}
-
-	fmt.Println("Running buf lint...")
-
-	// Capture stdout so we can scan for known migration-pain rules and
-	// print the buf.yaml `except` snippet that resolves them. We still
-	// stream the output to the user's terminal verbatim so nothing is
-	// hidden behind the suggestion.
-	cmd := exec.CommandContext(ctx, "buf", "lint")
-	var bufOut strings.Builder
-	cmd.Stdout = io.MultiWriter(os.Stdout, &bufOut)
-	cmd.Stderr = io.MultiWriter(os.Stderr, &bufOut)
-
-	if err := cmd.Run(); err != nil {
-		printBufLintExceptHint(bufOut.String())
-		return err
-	}
-
-	fmt.Println("✓ buf lint passed")
-	return nil
-}
-
-// printBufLintExceptHint scans buf lint's output for STANDARD rules
-// that legacy / ported .proto files commonly trip and prints the
-// exact buf.yaml `lint.except` snippet that silences them. Migration
-// projects (where the source repo predates the forge convention) tend
-// to hit ALL four of these on the first `forge generate`; surfacing
-// the resolved YAML in-line saves the "look up buf docs → write
-// except → re-run" loop. FRICTION 2026-06-02: cp-forge proto port.
-func printBufLintExceptHint(output string) {
-	candidates := []string{
-		"PACKAGE_VERSION_SUFFIX",
-		"RPC_REQUEST_STANDARD_NAME",
-		"RPC_RESPONSE_STANDARD_NAME",
-		"RPC_REQUEST_RESPONSE_UNIQUE",
-	}
-	var hit []string
-	for _, rule := range candidates {
-		if strings.Contains(output, rule) {
-			hit = append(hit, rule)
-		}
-	}
-	if len(hit) == 0 {
-		return
-	}
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "💡 Migration hint: the rule(s) above are common when porting")
-	fmt.Fprintln(os.Stderr, "   pre-forge .proto files. To silence them, add this to buf.yaml:")
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "     lint:")
-	fmt.Fprintln(os.Stderr, "       use:")
-	fmt.Fprintln(os.Stderr, "         - STANDARD")
-	fmt.Fprintln(os.Stderr, "       except:")
-	for _, rule := range hit {
-		fmt.Fprintf(os.Stderr, "         - %s\n", rule)
-	}
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "   See the proto / proto-breaking skills for context on each rule.")
-}
-
-// runFrontendLinters runs the rule-based frontend linters (eslint, and
-// stylelint when css_health is on) for each frontend defined in the project
-// config. Falls back to directory scanning if no config is available. When fix
-// is set the eslint pass runs with --fix, the frontend half of the
-// auto-fix-then-gate default.
-//
-// TypeScript typechecking is NOT here: it is its own pipeline step
-// (lint_frontend_typecheck.go), so it gets its own severity dial and can
-// still run when a frontend has no `typecheck` npm script. Running it in
-// both lanes would typecheck every frontend twice.
-func runFrontendLinters(ctx context.Context, cfg *config.ProjectConfig, fix bool) error {
-	if cfg != nil && len(cfg.Frontends) > 0 {
-		return runFrontendLintersFromConfig(ctx, cfg, fix)
-	}
-
-	// Fallback: scan frontends/ directory when no config is available
-	if !dirExists("frontends") {
-		return nil
-	}
-
-	entries, err := os.ReadDir("frontends")
-	if err != nil {
-		// The directory is there but unreadable — the lane cannot enumerate
-		// what it was meant to lint. That is "could not run", not "clean".
-		return laneUnavailable("fix the permissions on frontends/ (or declare the frontends in forge.yaml) and re-run",
-			"frontends/ could not be read: %v", err)
-	}
-
-	var outcomes frontendLintOutcomes
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		feDir := filepath.Join("frontends", e.Name())
-		outcomes.record(lintFrontendDir(ctx, e.Name(), feDir, "", false, fix))
-	}
-	return outcomes.verdict()
-}
-
-// runFrontendLintersFromConfig lints frontends using project config entries.
-func runFrontendLintersFromConfig(ctx context.Context, cfg *config.ProjectConfig, fix bool) error {
-	var outcomes frontendLintOutcomes
-	for _, fe := range cfg.Frontends {
-		// Skips a frontend whose code is in another repository: forge
-		// lints what this project owns, and that tree's own forge lints
-		// the rest.
-		feDir, ok := fe.Dir(".")
-		if !ok {
-			continue
-		}
-		outcomes.record(lintFrontendDir(ctx, fe.Name, feDir, fe.Type, cfg.Lint.Frontend.CSSHealth, fix))
-	}
-	return outcomes.verdict()
-}
-
-// frontendLintOutcomes aggregates one lintFrontendDir result per frontend into
-// the lane's single verdict, keeping "a linter failed" and "a linter could not
-// run" apart across a multi-frontend project. A real failure outranks an
-// unavailable one: if eslint actually reported errors somewhere, that is the
-// answer, and the unavailable frontends are reported in the same run's output.
-type frontendLintOutcomes struct {
-	failed      bool
-	unavailable []string
-	fixes       []string
-}
-
-func (o *frontendLintOutcomes) record(err error) {
-	if err == nil {
-		return
-	}
-	var unavail *laneUnavailableError
-	if errors.As(err, &unavail) {
-		o.unavailable = append(o.unavailable, unavail.reason)
-		o.fixes = append(o.fixes, unavail.fixHint)
-		return
-	}
-	o.failed = true
-}
-
-func (o *frontendLintOutcomes) verdict() error {
-	if o.failed {
-		return fmt.Errorf("frontend linting failed")
-	}
-	if len(o.unavailable) > 0 {
-		return laneUnavailable(strings.Join(o.fixes, "; "), "%s", strings.Join(o.unavailable, "; "))
-	}
-	return nil
-}
-
-// lintFrontendDir runs linters for a single frontend directory.
-// feType can be "nextjs" or empty (unknown). When fix is set the npm lint
-// script runs with `-- --fix` so eslint autofixes in place.
-// The two "could not run" exits below (missing directory, missing
-// node_modules) used to print a ⚠️ and return nil. This lane GATES, so a nil
-// return made it count as a gating linter that PASSED — the verdict line
-// claimed coverage over a frontend whose eslint was never invoked. They are
-// classified exactly as the sibling typecheck lane classifies the same two
-// conditions (lint_frontend_typecheck.go: typecheckUnavailable).
-func lintFrontendDir(ctx context.Context, name, feDir, feType string, cssHealth, fix bool) error {
-	if !dirExists(feDir) {
-		return laneUnavailable(fmt.Sprintf("fix the `path:` for frontend %q in forge.yaml, or remove the entry", name),
-			"%s: directory %s not found — eslint did NOT run", name, feDir)
-	}
-
-	pkgJSON := filepath.Join(feDir, "package.json")
-	if _, err := os.Stat(pkgJSON); err != nil {
-		// No package.json at all: not a Node project. A `frontends/`
-		// subdirectory can legitimately be something else (a static export,
-		// shared assets), so this is "does not apply", not "could not run".
-		return nil
-	}
-
-	// Ancestor walk, not a frontend-local stat: an npm/pnpm workspace hoists a
-	// member's dependencies to the workspace root, so this directory is
-	// legitimately absent in a fully installed tree — which is the layout
-	// forge's own dev bridge creates. See anyAncestorHasNodeModules.
-	// A fresh checkout has none; install rather than report a lane that never
-	// ran. An install that fails leaves eslint unrun: a lane that could NOT
-	// run, which fails the run unless --allow-skip accepts it (lint_skip.go).
-	if !anyAncestorHasNodeModules(feDir, ".") {
-		if err := frontenddeps.Ensure(ctx, "[lint]", name, feDir, "", true); err != nil {
-			return laneUnavailable(npmInstallFix(feDir),
-				"%s: dependencies are not installed and installing them failed — eslint did NOT run: %v", name, err)
-		}
-	}
-	if !anyAncestorHasNodeModules(feDir, ".") {
-		return laneUnavailable(npmInstallFix(feDir),
-			"%s: node_modules not found in %s or any ancestor — eslint did NOT run", name, feDir)
-	}
-
-	scripts, err := readPackageScripts(pkgJSON)
-	if err != nil {
-		return fmt.Errorf("%s: read package.json scripts: %w", name, err)
-	}
-
-	fmt.Printf("Running frontend linters for %s...\n", name)
-	hasFailed := false
-
-	if hasPackageScript(scripts, "lint") {
-		// Auto-fix-then-gate: with fix set, run the lint script with `-- --fix`
-		// so eslint applies its deterministic-safe fixes in place before the
-		// verdict, mirroring the Go formatter pre-pass. The re-run below the
-		// script (eslint's own second pass) still gates on anything unfixable.
-		lintArgs := []string{"run", "lint"}
-		if fix {
-			lintArgs = append(lintArgs, "--", "--fix")
-		}
-		if err := runNPMCommand(ctx, feDir, lintArgs...); err != nil {
-			fmt.Fprintf(os.Stderr, "  ❌ %s: npm run lint failed: %v\n", name, err)
-			hasFailed = true
-		} else {
-			fmt.Printf("  ✓ %s: lint passed\n", name)
-		}
-	} else if feType == "nextjs" {
-		fmt.Printf("  ⚠️  %s: no npm lint script found; add one instead of relying on deprecated next lint\n", name)
-	} else {
-		fmt.Printf("  ⚠️  %s: no npm lint script found, skipping lint\n", name)
-	}
-
-	if cssHealth {
-		if hasPackageScript(scripts, "lint:styles") {
-			if err := runNPMCommand(ctx, feDir, "run", "lint:styles"); err != nil {
-				fmt.Fprintf(os.Stderr, "  ❌ %s: npm run lint:styles failed: %v\n", name, err)
-				hasFailed = true
-			} else {
-				fmt.Printf("  ✓ %s: style lint passed\n", name)
-			}
-		} else {
-			fmt.Printf("  ⚠️  %s: css_health enabled but no npm lint:styles script found\n", name)
-		}
-	}
-
-	if hasFailed {
-		return fmt.Errorf("%s: frontend linting failed", name)
-	}
-	return nil
-}
 
 type packageJSONScripts struct {
 	Scripts map[string]string `json:"scripts"`
@@ -2094,13 +988,4 @@ func readPackageScripts(pkgJSON string) (map[string]string, error) {
 func hasPackageScript(scripts map[string]string, name string) bool {
 	_, ok := scripts[name]
 	return ok
-}
-
-// runNPMCommand runs an npm command in the given directory.
-func runNPMCommand(ctx context.Context, dir string, args ...string) error {
-	cmd := exec.CommandContext(ctx, "npm", args...)
-	cmd.Dir = dir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }

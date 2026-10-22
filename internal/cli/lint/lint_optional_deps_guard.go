@@ -152,7 +152,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -235,38 +234,6 @@ func optionalDepsGuardFixHint(f optionalDepsGuardFinding) string {
 	return fmt.Sprintf(
 		"add an early return `if %s == nil { return ... }` at the top of %s, or wrap the use in `if %s != nil { ... }`; %s",
 		f.Expr, f.Method, f.Expr, suppress)
-}
-
-// runOptionalDepsGuardLint is the text-mode entry point. Warnings only
-// — the walker is intentionally not full dataflow (see file header), so
-// findings nudge rather than gate.
-func runOptionalDepsGuardLint(projectDir string) error {
-	fmt.Println("Running optional-deps-guard lint...")
-	findings, err := collectOptionalDepsGuardFindings(projectDir)
-	if err != nil {
-		return err
-	}
-	formatOptionalDepsGuard(os.Stdout, findings)
-	// Warnings only — never gate. The suppression directive exists for
-	// confirmed-safe sites; everything else deserves a human look, not
-	// a broken build.
-	return nil
-}
-
-// formatOptionalDepsGuard writes the human report. Empty findings print
-// a single success line, matching the sibling coverage lints.
-func formatOptionalDepsGuard(w io.Writer, findings []optionalDepsGuardFinding) {
-	if len(findings) == 0 {
-		_, _ = fmt.Fprintln(w, "  optional-deps-guard clean — every optional-dep deref is nil-guarded (or suppressed)")
-		return
-	}
-	for _, f := range findings {
-		_, _ = fmt.Fprintf(w, "  ⚠ [forge-optional-deps-guard] %s:%d:%d\n", f.File, f.Line, f.Col)
-		_, _ = fmt.Fprintf(w, "      %s\n", optionalDepsGuardMessage(f))
-		_, _ = fmt.Fprintf(w, "      → %s\n", optionalDepsGuardFixHint(f))
-	}
-	_, _ = fmt.Fprintf(w, "\n%d unguarded optional-dep deref(s).\n", len(findings))
-	_, _ = fmt.Fprintln(w, "(warnings only — not failing the build)")
 }
 
 // collectOptionalDepsGuardFindings is the shared engine behind text

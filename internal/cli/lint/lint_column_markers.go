@@ -30,7 +30,6 @@ package lint
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -81,20 +80,6 @@ func columnMarkerFixHint(f columnMarkerFinding) string {
 	return fmt.Sprintf("on %s: %s (see `forge project annotations --kind column` / `--kind table`)", f.Object, f.Problem)
 }
 
-// runColumnMarkersLint is the text-mode entry point.
-func runColumnMarkersLint(cfg *config.ProjectConfig) error {
-	fmt.Println("Running column-markers lint...")
-	findings, err := collectColumnMarkerFindings(migrationsDirFor(cfg))
-	if err != nil {
-		return err
-	}
-	formatColumnMarkers(os.Stdout, findings)
-	if len(findings) > 0 {
-		return fmt.Errorf("%d forge:* catalog-comment marker(s) forge does not read", len(findings))
-	}
-	return nil
-}
-
 // migrationsDirFor resolves the migrations directory the same way
 // runMigrationSafetyLint does: cfg's override, or the "db/migrations"
 // default.
@@ -103,20 +88,6 @@ func migrationsDirFor(cfg *config.ProjectConfig) string {
 		return cfg.Database.MigrationsDir
 	}
 	return filepath.Join("db", "migrations")
-}
-
-// formatColumnMarkers writes the human report. Empty findings print a
-// single success line, matching the sibling advisory lints.
-func formatColumnMarkers(w io.Writer, findings []columnMarkerFinding) {
-	if len(findings) == 0 {
-		_, _ = fmt.Fprintln(w, "  column-markers clean — every forge:* catalog comment carries markers forge reads where they are declared")
-		return
-	}
-	for _, f := range findings {
-		_, _ = fmt.Fprintf(w, "  ✗ [forge-column-markers] %s:%d\n", f.File, f.Line)
-		_, _ = fmt.Fprintf(w, "      → %s\n", columnMarkerFixHint(f))
-	}
-	_, _ = fmt.Fprintf(w, "\n%d forge:* catalog-comment marker(s) that do nothing where declared.\n", len(findings))
 }
 
 // collectColumnMarkerFindings is the shared engine behind text mode and

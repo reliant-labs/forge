@@ -1,8 +1,6 @@
 package lint
 
 import (
-	"fmt"
-
 	"github.com/reliant-labs/forge/internal/commitpolicy"
 )
 
@@ -12,19 +10,6 @@ import (
 // gating check rather than a template default — a project keeps the
 // .gitignore it was scaffolded with, and `forge ci verify-generated` cannot
 // see an ignored file.
-
-// runCommitPolicyLint is the text-mode arm.
-func runCommitPolicyLint(root string) error {
-	vs, err := commitpolicy.Check(root)
-	if err != nil {
-		return err
-	}
-	if len(vs) == 0 {
-		return nil
-	}
-	return fmt.Errorf("%d path(s) break forge's commit policy "+
-		"(generated code is committed; machine-local state is not):\n%s", len(vs), commitpolicy.Format(vs))
-}
 
 // collectCommitPolicyJSON is the --json arm. Every violation gates.
 func collectCommitPolicyJSON(root string) ([]lintJSONFinding, bool, error) {

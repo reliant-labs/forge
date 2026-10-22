@@ -1,6 +1,8 @@
 services:
   postgres:
-    image: postgres:17-alpine
+    # Not Docker Hub (its anonymous pull limit is per IP); the same digest as
+    # docker-compose.yml's postgres.
+    image: public.ecr.aws/docker/library/postgres:17-alpine@sha256:1bcc18d81671b02906296aad470ec9778a6b71016ce953092024b680bad007b0
     environment:
       POSTGRES_USER: test
       POSTGRES_PASSWORD: test

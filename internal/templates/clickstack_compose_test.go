@@ -138,7 +138,7 @@ func TestClickstackComposeIsOneLoopbackOnlyService(t *testing.T) {
 
 	// Pinned by digest, and the LOCAL-mode image: the separate collector image
 	// only opens OTLP after a UI registration and then demands a key.
-	if !regexp.MustCompile(`^clickhouse/clickstack-local:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$`).MatchString(svc.Image) {
+	if !regexp.MustCompile(`^mirror\.gcr\.io/clickhouse/clickstack-local:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$`).MatchString(svc.Image) {
 		t.Errorf("image %q is not the clickstack-local image pinned by version and digest", svc.Image)
 	}
 	for _, banned := range []string{"clickstack-otel-collector", "OPAMP_SERVER_URL", "grafana/", "otel-lgtm", "image: mongo", "pyroscope", "alloy", "INGESTION_API_KEY"} {
@@ -239,7 +239,7 @@ func TestComposeRunsAProfilesCollectorAndItsSchemaJob(t *testing.T) {
 	if !ok {
 		t.Fatal("no otel-profiles service: the named seam must be filled")
 	}
-	if !regexp.MustCompile(`^otel/opentelemetry-collector-contrib:0\.(1[6-9]\d|[2-9]\d\d)\.\d+@sha256:[0-9a-f]{64}$`).MatchString(prof.Image) {
+	if !regexp.MustCompile(`^ghcr\.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0\.(1[6-9]\d|[2-9]\d\d)\.\d+@sha256:[0-9a-f]{64}$`).MatchString(prof.Image) {
 		t.Errorf("image %q must be contrib >= 0.162, pinned by version and digest", prof.Image)
 	}
 	if !slices.Contains(prof.Command, "--feature-gates=+service.profilesSupport") {

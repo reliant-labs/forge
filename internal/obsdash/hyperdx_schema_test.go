@@ -239,7 +239,7 @@ func TestRenderedDashboardsPassTheRealSchema(t *testing.T) {
 const ds = readDashboardFiles('/dash');
 console.log('PARSED=' + ds.length + ' TILES=' + ds.reduce((n, d) => n + d.tiles.length, 0));`
 	out, err := exec.Command("docker", "run", "--rm", "--entrypoint", "node", "-v", dir+":/dash:ro",
-		"clickhouse/clickstack-local:"+PinnedHyperDX, "-e", script).CombinedOutput()
+		"mirror.gcr.io/clickhouse/clickstack-local:"+PinnedHyperDX, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("running the real reader: %v\n%s", err, out)
 	}

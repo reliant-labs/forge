@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -229,9 +230,12 @@ func TestSafeName(t *testing.T) {
 	}
 }
 
-// Builds that differ only in their Go settings are different binaries:
-// GOFLAGS=-trimpath changes the bytes. They get entries of their own, so one
-// never stands in for, or replaces, the other.
+// Builds that differ only in their Go settings are different binaries — the
+// e2e corpus runs forge both with GOFLAGS=-trimpath and without, and
+// CGO_ENABLED changes the bytes the same way. They get entries of their own,
+// so one never stands in for, or replaces, the other. (CGO_ENABLED rather
+// than GOFLAGS here: the build is a stub, and goexec's trimpath guard holds
+// every GOFLAGS a test sets to carry -trimpath.)
 func TestBridge_KeysOnTheBuildSettings(t *testing.T) {
 	r, _, _ := newResolver(t)
 	checkout := t.TempDir()
@@ -243,18 +247,21 @@ func TestBridge_KeysOnTheBuildSettings(t *testing.T) {
 		builds++
 		return atomicfile.WriteFile(out, []byte("#!/bin/sh\n"), 0o755)
 	}
-	t.Setenv("GOFLAGS", "")
+	t.Setenv("CGO_ENABLED", "0")
 	plain, err := r.Bridge(context.Background(), checkout, "abc+false@0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("GOFLAGS", "-trimpath")
-	trimmed, err := r.Bridge(context.Background(), checkout, "abc+false@0")
+	t.Setenv("CGO_ENABLED", "1")
+	cgo, err := r.Bridge(context.Background(), checkout, "abc+false@0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if builds != 2 || plain.Path == trimmed.Path {
-		t.Fatalf("GOFLAGS=-trimpath reused the plain build: %d build(s), %s vs %s", builds, plain.Path, trimmed.Path)
+	if builds != 2 || plain.Path == cgo.Path {
+		t.Fatalf("CGO_ENABLED=1 reused the CGO_ENABLED=0 build: %d build(s), %s vs %s", builds, plain.Path, cgo.Path)
+	}
+	if !slices.Contains(buildSettings, "GOFLAGS") {
+		t.Fatal("GOFLAGS is not part of the build-settings key")
 	}
 }
 

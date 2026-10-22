@@ -19,6 +19,7 @@ func lkFixture() *depsurface.Package {
 			{Name: "Clock", File: "internal/handlers/tools/service.go", Line: 11, Type: "Clock", Interface: true, Methods: []string{"Now", "Since"}, Used: map[string]bool{"Now": true}},
 			{Name: "Small", File: "internal/handlers/tools/service.go", Line: 12, Type: "events.Publisher", Interface: true, Foreign: true, Methods: []string{"Publish", "Close"}, Used: map[string]bool{"Publish": true}},
 			{Name: "Passed", File: "internal/handlers/tools/service.go", Line: 13, Type: "db.Repository", Interface: true, Foreign: true, Methods: wide, Used: map[string]bool{"A": true}, Escapes: true},
+			{Name: "Forwarded", File: "internal/handlers/tools/service.go", Line: 16, Type: "db.Repository", Interface: true, Foreign: true, Methods: wide, Used: map[string]bool{"A": true, "B": true, "C": true}, Roles: []depsurface.Role{{Type: "threads.Reader", Methods: []string{"B", "C"}, Embeddable: true}}},
 			{Name: "Bag", File: "internal/handlers/tools/service.go", Line: 14, Type: "any", Interface: true, Container: "`any`", Used: map[string]bool{}},
 			{Name: "Config", File: "internal/handlers/tools/service.go", Line: 15, Type: "*config.Config", RootConfig: true, Used: map[string]bool{}},
 		},
@@ -53,19 +54,22 @@ func lkSeverities(fs []Finding) map[string]Severity {
 // became errors one release after landing as warnings.
 func TestLeastKnowledge_DesignSeveritiesByDefault(t *testing.T) {
 	fs := leastKnowledgeFindings(lkFixture(), false)
-	// Repo, Clock and Small are wider than their use; Passed escapes, so its
-	// calls here are not the whole story; Bag is a container; the downcast;
-	// the env read. The root config is reported only under --strict.
-	if got := len(fs); got != 6 {
+	// Repo, Clock, Small and Forwarded are wider than their use (Forwarded
+	// counting what it is passed on as); Passed escapes into something that
+	// bounds nothing, so its use here is not the whole story; Bag is a
+	// container; the downcast; the env read. The root config is reported
+	// only under --strict.
+	if got := len(fs); got != 7 {
 		t.Fatalf("%d findings: %s", got, lkSummary(fs))
 	}
 	want := map[string]Severity{
-		RuleDepsSurface + "/Deps.Repo":  SeverityError,   // foreign, 12 methods, unused ones
-		RuleDepsSurface + "/Deps.Clock": SeverityWarning, // declared here
-		RuleDepsSurface + "/Deps.Small": SeverityWarning, // foreign but narrow
-		RuleNoContainerDeps:             SeverityError,
-		RuleDepsNoDowncast:              SeverityError,
-		RuleNoGetenv:                    SeverityWarning,
+		RuleDepsSurface + "/Deps.Repo":      SeverityError,   // foreign, 12 methods, unused ones
+		RuleDepsSurface + "/Deps.Clock":     SeverityWarning, // declared here
+		RuleDepsSurface + "/Deps.Small":     SeverityWarning, // foreign but narrow
+		RuleDepsSurface + "/Deps.Forwarded": SeverityError,   // passed on as a role: still wide
+		RuleNoContainerDeps:                 SeverityError,
+		RuleDepsNoDowncast:                  SeverityError,
+		RuleNoGetenv:                        SeverityWarning,
 	}
 	sev := lkSeverities(fs)
 	for k, w := range want {
@@ -75,6 +79,18 @@ func TestLeastKnowledge_DesignSeveritiesByDefault(t *testing.T) {
 	}
 	if _, ok := sev[RuleDepsRootConfig]; ok {
 		t.Errorf("deps-root-config is reported only under --strict while the scaffold hands every component the root config")
+	}
+	for _, f := range fs {
+		if strings.HasPrefix(f.Message, "Deps.Forwarded ") {
+			for _, want := range []string{"uses (calls, or passes it on as threads.Reader) 3 of them", "unused: D, E"} {
+				if !strings.Contains(f.Message, want) {
+					t.Errorf("Forwarded's finding lacks %q: %s", want, f.Message)
+				}
+			}
+			if !strings.Contains(f.Remediation, "embedding the interfaces it passes the value on as") {
+				t.Errorf("Forwarded's fix names no embedding: %s", f.Remediation)
+			}
+		}
 	}
 	if !strings.Contains(fs[0].Remediation, "forge fix narrow-deps internal/handlers/tools") {
 		t.Errorf("a foreign field's fix is narrow-deps: %s", fs[0].Remediation)

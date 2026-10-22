@@ -161,9 +161,12 @@ untouched: the value internal/app/compose.go hands the field still satisfies
 the narrower interface, structurally. Its mock is written beside it
 (mock_gen.go), and ` + "`forge generate`" + ` keeps it in step.
 
-A field whose value the package passes on is left alone (what it needs is not
-all visible here), as is one it never calls (delete it) and an interface the
-package already declares (edit that one).`,
+A field the package passes on as an interface — a parameter, a struct field —
+needs that interface's methods too: the new interface embeds it, so every call
+that passes the value on still type-checks. A field whose value also leaves as
+` + "`any`" + `, a concrete type or a return value is left alone (what it needs is
+not all visible here), as is one it never uses (delete it) and an interface
+the package already declares (edit that one).`,
 		Example: "  forge fix narrow-deps internal/handlers/tools_daemon",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -185,7 +188,11 @@ package already declares (edit that one).`,
 				return nil
 			}
 			for _, n := range res.Narrowed {
-				fmt.Fprintf(out, "  ✅ Deps.%s: %s → %s (%d method(s): %s)\n", n.Field, n.From, n.To, len(n.Methods), strings.Join(n.Methods, ", "))
+				embeds := ""
+				if len(n.Embeds) > 0 {
+					embeds = "embeds " + strings.Join(n.Embeds, ", ") + "; "
+				}
+				fmt.Fprintf(out, "  ✅ Deps.%s: %s → %s (%s%d method(s): %s)\n", n.Field, n.From, n.To, embeds, len(n.Methods), strings.Join(n.Methods, ", "))
 			}
 			target := filepath.Join(cwd, filepath.FromSlash(res.File))
 			if err := contract.GenerateWithOptions(target, contract.Options{ProjectRoot: cwd, Resolver: contract.NewResolver(target)}); err != nil {

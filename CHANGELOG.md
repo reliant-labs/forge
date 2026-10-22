@@ -402,6 +402,21 @@ generate` runs the same check. `project new` never took a heavy slot and still
 
 ### Fixed
 
+- **A bridged project no longer rebuilds forge for a file no build reads.**
+  forge's bridge-skew check counted every dirty path in the linked forge
+  checkout as "uncommitted changes the binary was not built from" and handed
+  each command to a forge rebuilt from the checkout, keyed on the newest
+  edit's mtime. A file that cannot reach a build — the e2e shard's test2json
+  log, growing in the checkout's root for the whole run — so rebuilt forge on
+  every command, and a re-run of `forge generate` ran a different binary and
+  never recorded its fixed point (`TestE2EFixtureCorpusCRUDLifecycle`,
+  `CPForgeShaped`, `ZeroService` red on main). Now only a source edit counts:
+  a Go build file, or any file beneath a directory holding a non-test Go
+  package (where `//go:embed` reaches: templates, KCL, skills). A cached
+  bridge build is also keyed on its Go settings (`GOFLAGS`, `CGO_ENABLED`,
+  `GOOS`/`GOARCH`, …) and is never replaced once published, so a process can
+  no longer have the binary it runs swapped for a differently-built one. The
+  e2e shard writes its files under `$RUNNER_TEMP`, outside the checkout.
 - **Every `forge scaffold <noun>` leaves the project lint-green, with no
   `forge generate` after it.** `scaffold frontend` wrote
   `proto/config/v1/<fe>_config.proto` and stopped, so `gen/forge_descriptor.json`

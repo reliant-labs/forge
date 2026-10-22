@@ -153,12 +153,23 @@ const devMainK = "import workloads as wl\n\n_workloads = [\n    _on_host_job(wl.
 // reaper and returns workloads.k and dev/main.k as they are left.
 func declareProject(t *testing.T, workloadsK string) (string, string) {
 	t.Helper()
+	return declareProjectBeside(t, workloadsK)
+}
+
+// declareProjectBeside is declareProject in a project that already has the
+// named workers.
+func declareProjectBeside(t *testing.T, workloadsK string, workers ...string) (string, string) {
+	t.Helper()
 	root := t.TempDir()
-	for rel, content := range map[string]string{
+	files := map[string]string{
 		"internal/workers/reaper/worker.go": "package reaper\n",
 		codegen.WorkloadsKCLRelPath:         workloadsK,
 		"deploy/kcl/dev/main.k":             devMainK,
-	} {
+	}
+	for _, w := range workers {
+		files["internal/workers/"+w+"/worker.go"] = "package " + w + "\n"
+	}
+	for rel, content := range files {
 		path := filepath.Join(root, rel)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -259,5 +270,55 @@ func TestDeclareWorkload_UneditableListBindsNothing(t *testing.T) {
 	}
 	if dev != devMainK {
 		t.Errorf("dev/main.k bound a workload that was never declared:\n%s", dev)
+	}
+}
+
+// composedWorkers is a project whose workers all run in one process it
+// composes (`demo workers`), the way control-plane runs thirty of them.
+const composedWorkers = migrateDecl + `
+background = fw.Workload {
+    name = "background"
+    kind = "worker"
+    build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}
+    args = ["workers"]
+}
+
+ALL: [fw.Workload] = [migrate, background]
+`
+
+// TestDeclareWorkload_ComposedProcessProjectDeclaresNothing: the #1106
+// defect. A project that runs its components of a kind in processes it
+// composes — no `serves`, no per-component workload — got a standalone
+// workload for each new one, and an env binding for it in every env. It
+// belongs in one of those processes, which only the project's Go knows, so
+// nothing is written.
+func TestDeclareWorkload_ComposedProcessProjectDeclaresNothing(t *testing.T) {
+	workloads, dev := declareProjectBeside(t, composedWorkers, "sweeper", "billing_sweep")
+	if workloads != composedWorkers {
+		t.Errorf("workloads.k changed in a composed-process project:\n%s", workloads)
+	}
+	if dev != devMainK {
+		t.Errorf("dev/main.k bound a workload in a composed-process project:\n%s", dev)
+	}
+}
+
+// TestDeclareWorkload_PerComponentConventionStillDeclares: the same custom
+// process beside workers that each have a workload of their own is not the
+// project's convention, so the new worker is declared and bound as before.
+func TestDeclareWorkload_PerComponentConventionStillDeclares(t *testing.T) {
+	in := strings.Replace(composedWorkers, "ALL: [fw.Workload] = [migrate, background]", `sweeper = fw.Workload {
+    name = "sweeper"
+    kind = "worker"
+    build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}
+    args = ["sweeper"]
+}
+
+ALL: [fw.Workload] = [migrate, background, sweeper]`, 1)
+	workloads, dev := declareProjectBeside(t, in, "sweeper")
+	if !strings.Contains(workloads, "reaper = fw.Workload {") {
+		t.Errorf("workloads.k did not declare reaper:\n%s", workloads)
+	}
+	if !strings.Contains(dev, "wl.reaper") {
+		t.Errorf("dev/main.k not bound:\n%s", dev)
 	}
 }

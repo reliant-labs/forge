@@ -77,6 +77,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HTTP/1.1 sets a read deadline, because its `Close` waits for a pending read.
   The response is untouched, and unary routes are unaffected. Skill:
   `services/shutdown`.
+
+- **`svcerr.WrapOr(err, fallback)`: keep a verdict if there is one, otherwise
+  say what failed.** A classified `err` (`svcerr.IsClassified`: an svcerr kind,
+  a context cancellation or deadline, or a `*connect.Error`) is `Wrap(err)`;
+  anything else is `Wrap(WithCause(fallback, err))` — the client reads the
+  fallback's code, message, reason and class, and `err` is the logged cause.
+  It is the one spelling for a collaborator's error, replacing
+  `connect.NewError(connect.CodeInternal, err)` (publishes `err.Error()`,
+  flattens a NotFound) and `svcerr.Internal("…")` with `err` dropped (a deadline
+  becomes a server fault, the cause never logs). `pkg/crud` uses it in place of
+  its private copy, with no change to what it returns. A remote Connect
+  client's error is a `*connect.Error` and would pass through, so never
+  `WrapOr` one: wrap it in your own verdict with `WithCause`.
+
 - **Boot `/readyz` names the graph node boot is waiting on.** A composition
   root's boot probes used to answer `503 {"status":"not_ready"}` with no checks
   for the whole of graph construction, so a constructor that blocked — a
@@ -93,6 +107,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   logged (`boot: still constructing a graph node`, naming the innermost node
   and the path that reached it) every 10s, and again when it finishes.
   Post-build readiness is unchanged. Existing projects: `forge generate`.
+
+- **`forgeconv-handler-connect-error`: every `connect.NewError` in a handler
+  package is a warning.** A `*connect.Error` is never redacted — svcerr's
+  interceptor passes it through as built — so `connect.NewError(code, err)`
+  publishes `err.Error()` and overrides any code `err` already carried. Each
+  finding says which kind it is: a fixed message (`forge fix connect-errors`
+  rewrites it with the same code and message), an error value (use
+  `svcerr.WrapOr`), or `nil`. Generated and test files are skipped. It warns
+  by default so no project goes red on the bump; set
+  `lint.rules: {forgeconv-handler-connect-error: error}` once migrated.
+  **Changed with it:** `forgeconv-no-handler-error-mapping` no longer skips a
+  file that imports svcerr. One `svcerr.Wrap` in a file — or a codemod adding
+  the import — used to silence every mapper beside it without fixing one; a
+  project whose mappers were hidden that way sees them as warnings now.
 
 - **The release shape records store-backed secrets (`pkg/release`, SF3).** A shape
   gains four optional fields a control plane reads to serve a store-backed
@@ -112,6 +140,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   feature (`shape-store-secrets`, `BundleFeatureStoreSecrets`), withheld from a control
   plane that does not name it, and omitted when empty, so every shape recorded before
   them encodes and hashes exactly as it did.
+
+- **`forge fix connect-errors`: hand-built Connect errors onto svcerr, without
+  changing a code or a message.** It rewrites every `connect.NewError` whose
+  client-visible code and message an svcerr spelling reproduces exactly —
+  `errors.New("chat not found")` under `CodeNotFound` → `svcerr.NotFound("chat")`,
+  other NotFound prose → `svcerr.WithMessage(svcerr.ErrNotFound, …)`,
+  `fmt.Errorf(f, args…)` without `%w` or an error argument →
+  `svcerr.<Kind>(fmt.Sprintf(f, args…))` — and, in the tests of a package that
+  now returns bare kinds and of its importers, `connect.CodeOf` →
+  `svcerr.Code`. A bare kind is written only in a handler package, where the
+  context is `error` and nothing reads a `*connect.Error` in process in the
+  package, its tests or an importer's code; everywhere else (interceptors, `*connect.Error`
+  results, a package such a reader sees) it is `svcerr.ToConnect(…)`, and a
+  re-run drops the wrapper once the reader reads `svcerr.Code`. Every site it
+  cannot rewrite exactly — an error value (`svcerr.WrapOr` is the reviewed
+  fix), nil, a computed message or code — is listed with its reason. It is
+  type-checked (`go/packages`), idempotent, `--dry-run` prints each rewrite as
+  `file:line: old → new`, and its proof is a corpus whose real-client wire
+  output is identical before and after. Over reliant: 902 sites rewritten (334
+  to bare kinds, 568 kept a `*connect.Error`), 71 test assertions, 341 sites
+  listed, and its build, vet and handler tests pass unchanged. On request
+  only (`forge project upgrade` does not run it); the playbook is
+  `forge skill load migrations/v0.1.47/connect-errors`.
 
 - **The schema for platform secrets: `forge.OpenBao`, `forge.ExternalSecretsOperator`
   and store-backed `forge.ExternalSecret`s (declarations only, nothing renders yet).**
@@ -275,6 +326,32 @@ login` credential is traded for the scope the control plane's 403 names, for
   attribute, the escape hatch for pinning a record to a named issue.
 
 ### Changed
+
+- **`tdd.AssertConnectError` (and `TableRPC`'s `WantErr`) read `svcerr.Code`**,
+  the code `svcerr.Interceptor` sends, instead of `connect.CodeOf`. A handler
+  test calls the `*Service` method directly, so a handler returning a bare
+  `svcerr.NotFound("x")` — the documented shape — read as `unknown`. For a
+  `*connect.Error` the two agree; the one difference is an unclassified error,
+  which now asserts as `internal` (what the client reads) rather than `unknown`.
+- **`testkit.NewConnectClient` serves behind `svcerr.Interceptor`**, innermost,
+  as production's chain builders do — so the generated `NewTest<Svc>Server`
+  answers a handler's bare `svcerr.InvalidArgument("…")` with
+  `invalid_argument`, unary and streaming, where it answered `unknown`; and an
+  unrecognised error reads `internal server error` there as it does in
+  production, instead of its raw text. A test asserting either old answer was
+  asserting what no client in production sees.
+- **Generated proto mocks return
+  `svcerr.Wrap(svcerr.Unimplemented("handler for X not yet implemented"))`**
+  for an unprogrammed rpc, instead of a hand-built `connect.NewError`. The code and message are unchanged, the value
+  is still a `*connect.Error`, and `errors.Is(err, svcerr.ErrUnimplemented)` now
+  holds. Existing projects: `forge generate`.
+- **svcerr's `*connect.Error` policy is documented and pinned**: a hand-built
+  `*connect.Error` reaches the client exactly as built, wrapped text included —
+  redaction applies to what svcerr classifies. The interceptor cannot tell a
+  DSN from text meant for the user (a daemon's git rejection), and rewriting
+  it would change every project's wire on a forge bump; the fix for
+  `connect.NewError(code, err)` is at the call site (`svcerr.WrapOr`). The
+  `api` skill says so.
 
 - **`forge lint` fails when a gating lane could NOT run.** A frontend with no
   `node_modules` (or whose install failed), a typecheck with no compiler, a

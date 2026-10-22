@@ -240,12 +240,9 @@ func mapRepoErr(op, entity string, err error) error {
 	// does a context cancellation: a client that went away is not a server
 	// fault. Both used to reach the fallback below, where the code survived
 	// only because svcerr classified a WithCause by its cause (a leak, since
-	// closed) and the message never did.
-	if svcerr.IsClassified(err) {
-		return passClassified(err)
-	}
-	return clientErr(svcerr.WithCause(
-		svcerr.Internal(fmt.Sprintf("%s %s failed", op, entity)), err), ReasonInternal)
+	// closed) and the message never did. svcerr.WrapOr is that decision:
+	// classified passes, anything else reads the fallback.
+	return wrapOrInternal(err, fmt.Sprintf("%s %s failed", op, entity))
 }
 
 // clientErr is the single exit from this package to the wire: it maps a
@@ -315,27 +312,27 @@ func mapFilterErr(err error) error {
 // anything else becomes Internal with safeMsg on the wire and the
 // original retained as a server-side cause.
 func mapClosureErr(err error, safeMsg string) error {
-	if svcerr.IsClassified(err) {
-		return passClassified(err)
-	}
-	// Handed to clientErr UNWRAPPED. Pre-building a *connect.Error here made
-	// svcerr.ToConnect find one already present and pass its message straight
-	// through — which for a driver error is raw SQL, table names and whatever
-	// the DSN contains. Letting svcerr classify it instead routes through
-	// clientSafe, which substitutes InternalMessage on the wire and keeps the
-	// original reachable as a cause for the logging interceptor.
-	return clientErr(svcerr.WithCause(svcerr.Internal(safeMsg), err), ReasonInternal)
+	return wrapOrInternal(err, safeMsg)
 }
 
-// passClassified maps an error the application already classified
-// (svcerr.IsClassified) with its own code and message, stamping ReasonInternal
-// only when it carries no reason of its own, so the vocabulary stays total.
-func passClassified(err error) error {
-	ce := svcerr.ToConnect(err)
-	if ce.Meta().Get(svcerr.ReasonHeader) == "" {
+// wrapOrInternal is this package's svcerr.WrapOr: an error the application
+// already classified (svcerr.IsClassified) passes with its own code and
+// message, and anything else reads Internal safeMsg with the original kept
+// as the server-side cause for the logging interceptor. Either way it stamps
+// ReasonInternal when the result carries no reason of its own, so the
+// vocabulary stays total.
+//
+// The unclassified error is handed to WrapOr UNWRAPPED. Pre-building a
+// *connect.Error here made svcerr.ToConnect find one already present and pass
+// its message straight through — which for a driver error is raw SQL, table
+// names and whatever the DSN contains.
+func wrapOrInternal(err error, safeMsg string) error {
+	out := svcerr.WrapOr(err, svcerr.Internal(safeMsg))
+	var ce *connect.Error
+	if errors.As(out, &ce) && ce.Meta().Get(svcerr.ReasonHeader) == "" {
 		ce.Meta().Set(svcerr.ReasonHeader, ReasonInternal)
 	}
-	return ce
+	return out
 }
 
 // pgFailure is the part of a postgres error the APPLICATION authored: the

@@ -99,7 +99,12 @@ repos:
         # the hook loses. CI then fails on a formatting round-trip neither
         # tool is wrong about.
         files: \.(ts|tsx|js|jsx|json|md|yml|yaml|css)$
-        exclude: ^(gen/|\.forge/|.*\.pb\.go$|.*/skills/.*\.md$)|(^|/)testdata/
+        #
+        # pkg/deploy/*/crds/ is excluded: they are upstream CRDs vendored
+        # byte-for-byte (the ESO chart's, SF4). Reformatting one makes it
+        # differ from the release it claims to be, and the next re-vendor
+        # reverts the hook.
+        exclude: ^(gen/|\.forge/|.*\.pb\.go$|.*/skills/.*\.md$|pkg/deploy/[^/]+/crds/)|(^|/)testdata/
 
   # Compiled binaries do not belong in git: they never diff usefully, they are
   # large forever, and a Go binary embeds the build machine's absolute paths.

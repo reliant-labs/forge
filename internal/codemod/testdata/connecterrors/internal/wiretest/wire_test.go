@@ -23,6 +23,8 @@ import (
 	"example.com/cescratch/internal/handlers/asserted"
 	"example.com/cescratch/internal/handlers/blocked"
 	"example.com/cescratch/internal/handlers/reader"
+	"example.com/cescratch/internal/handlers/suiteas"
+	"example.com/cescratch/internal/handlers/testifyas"
 	"example.com/cescratch/internal/handlers/things"
 	"example.com/cescratch/internal/interceptors"
 )
@@ -64,6 +66,8 @@ func TestWire(t *testing.T) {
 		"handler reader.Lookup "+call(t, true, reader.Lookup()),
 		"handler blocked.Offline "+call(t, true, blocked.Offline()),
 		"handler asserted.Refuse "+call(t, true, asserted.Refuse()),
+		"handler testifyas.Approve "+call(t, true, testifyas.Approve()),
+		"handler suiteas.Deny "+call(t, true, suiteas.Deny()),
 		// An interceptor runs outside svcerr.Interceptor.
 		"outside interceptors.Deny "+call(t, false, interceptors.Deny()),
 		fmt.Sprintf("in-process reader.IsMissing=%v", reader.IsMissing(reader.Lookup())),

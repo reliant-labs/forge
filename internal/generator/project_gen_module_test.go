@@ -146,3 +146,30 @@ func TestProjectGenerator_NoCodegenCommandTreeIsComplete(t *testing.T) {
 		t.Errorf("internal/metrics/metrics.go (imported by metrics.go): %v", err)
 	}
 }
+
+// The scaffold applies the feature graph the loader applies to every later
+// load of the tree it writes: --disable codegen (a pin) takes the ORM and
+// migrations with it, so no db/migrations is written for a project that
+// derives them off, while the frontend the user named is still written — the
+// frontend APP is what --frontend asked for, frontend CODEGEN is the feature
+// that follows codegen.
+func TestProjectGenerator_FollowsTheFeatureGraph(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "proj")
+	g := NewProjectGenerator("proj", root, "example.com/proj")
+	g.FrontendName = "web"
+	g.Features, _ = g.Features.Pin(config.FeatureCodegen, false)
+	if err := g.Generate(); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	f := g.Features
+	if f.ORMEnabled() || f.MigrationsEnabled() || f.FrontendEnabled() {
+		t.Errorf("orm=%v migrations=%v frontend=%v after Generate, want the graph to have taken them off with codegen",
+			f.ORMEnabled(), f.MigrationsEnabled(), f.FrontendEnabled())
+	}
+	if _, err := os.Stat(filepath.Join(root, "db", "migrations")); !os.IsNotExist(err) {
+		t.Errorf("db/migrations written for a project that derives migrations off (stat: %v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "frontends", "web", "package.json")); err != nil {
+		t.Errorf("the named frontend was not written: %v", err)
+	}
+}

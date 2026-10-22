@@ -24,7 +24,6 @@ const (
 // filters (the control plane reserves that field and refuses it).
 type wireIssueScope struct {
 	OrgID     string        `json:"orgId"`
-	ProjectID string        `json:"projectId,omitempty"`
 	EnvIDs    []string      `json:"envIds,omitempty"`
 	Services  []string      `json:"services,omitempty"`
 	TimeRange wireTimeRange `json:"timeRange"`
@@ -35,7 +34,7 @@ func (c Cloud) issueScope(n Narrow) (wireIssueScope, error) {
 		return wireIssueScope{}, Wrong("--filter narrows telemetry attributes and does not apply to issues; use --service")
 	}
 	s := c.scope(n)
-	return wireIssueScope{OrgID: s.OrgID, ProjectID: s.ProjectID, EnvIDs: s.EnvIDs, Services: s.Services, TimeRange: s.TimeRange}, nil
+	return wireIssueScope{OrgID: s.OrgID, EnvIDs: s.EnvIDs, Services: s.Services, TimeRange: s.TimeRange}, nil
 }
 
 // callIssues is call with the one answer an issues read must not blur: a

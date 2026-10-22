@@ -251,7 +251,7 @@ func obsRunCloud(t *testing.T, fc *fakeCloudCaller, args ...string) (string, str
 		Now: func() time.Time { return obsNow },
 	}
 	var out, errb bytes.Buffer
-	cmd := NewRootCmd()
+	cmd := newTestRootCmd(t)
 	cmd.SetOut(&out)
 	cmd.SetErr(&errb)
 	cmd.SetArgs(append([]string{"obs"}, args...))
@@ -398,7 +398,7 @@ func TestObsIssueTriageCloudStaleWriteIsExit1(t *testing.T) {
 }
 
 func TestObsIssuesVerbsAreRegistered(t *testing.T) {
-	cmd := NewRootCmd()
+	cmd := newTestRootCmd(t)
 	for _, path := range [][]string{{"obs", "issues"}, {"obs", "issue"}, {"obs", "issue", "resolve"}, {"obs", "issue", "ignore"}, {"obs", "issue", "unresolve"}} {
 		if c, _, err := cmd.Find(path); err != nil || c.Name() != path[len(path)-1] {
 			t.Errorf("%v not registered: %v", path, err)

@@ -97,7 +97,7 @@ var svcerrConstructors = map[string]bool{
 // svcerrWrappers are the svcerr functions that return nil exactly when
 // their first argument is nil.
 var svcerrWrappers = map[string]bool{
-	"Wrap": true, "WithCause": true, "WithClass": true, "WithDetail": true,
+	"Wrap": true, "WrapOr": true, "WithCause": true, "WithClass": true, "WithDetail": true,
 	"WithMessage": true, "WithReason": true,
 }
 

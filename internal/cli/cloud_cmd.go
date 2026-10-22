@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,7 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -27,7 +25,7 @@ import (
 // The environment NAME is the only input, and that is the whole design:
 // there is no `forge context use`, no current-endpoint file, and nothing
 // a previous command could have left behind that changes the answer.
-// `forge cloud releases staging` and `forge cloud releases prod` resolve
+// `forge cloud status staging` and `forge cloud status prod` resolve
 // two different endpoints in one process because each reads its own
 // env's declaration.
 //
@@ -434,11 +432,10 @@ func credentialsPathForHelp() string {
 // plane an environment declares.
 //
 // It is deliberately NARROW. Only operations backed by an implemented
-// server-side RPC live here — see `forge cloud releases`, whose comment
-// records which of the hosted API's RPCs are real and which are
-// scaffold stubs. Adding a subcommand for a stub would produce a
-// command that looks supported and returns Unimplemented, which is
-// worse than the command not existing.
+// server-side RPC live here. Adding a subcommand for a stub would produce a
+// command that looks supported and returns Unimplemented, which is worse than
+// the command not existing. The release history that `forge cloud releases`
+// once demonstrated lives on the env noun now: `forge env releases`.
 func newCloudCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cloud",
@@ -453,7 +450,6 @@ command hits follows from its env argument — not from any stored
 Authenticate with ` + "`forge login`" + `, or set the declared token env var.`,
 	}
 	cmd.AddCommand(newCloudStatusCmd())
-	cmd.AddCommand(newCloudReleasesCmd())
 	cmd.AddCommand(newCloudTokenCmd())
 	cmd.AddCommand(newCloudIdentityCmd())
 	// StrictGroup, not a bare group: cobra's default would accept
@@ -509,122 +505,9 @@ func newCloudStatusCmd() *cobra.Command {
 	return cmd
 }
 
-// newCloudReleasesCmd lists the caller's releases from the hosted
-// control plane.
-//
-// WHY ListReleases AND NOT ListDeployments. ListDeployments is a
-// scaffold stub server-side: control-plane's
-// internal/handlers/deploy/handlers_deployment.go returns
-// CodeUnimplemented for it, by design, until the deploy domain service
-// is wired. Building this command against it would have produced a
-// forge command that authenticates correctly, reaches the server
-// correctly, and then always fails — proving nothing about the seam.
-//
-// ListReleases (rpc_list_releases.go) is genuinely implemented: it
-// checks the caller's org from their claims and reads a real store. It
-// is therefore the honest choice for the ONE command that demonstrates
-// the whole path end to end.
-func newCloudReleasesCmd() *cobra.Command {
-	var (
-		token      string
-		limit      int
-		jsonOutput bool
-	)
-
-	cmd := &cobra.Command{
-		Use:   "releases <env>",
-		Short: "List releases from the hosted control plane",
-		Long: `List the releases the hosted control plane holds for your organization.
-
-The endpoint comes from <env>'s forge.ControlPlane declaration; the
-credential from --token, then the declared env var, then the credentials file entry for
-that endpoint (` + "`forge login`" + `).
-
-Scope is always the caller's own organization — the request carries no
-organization field, so there is nothing to widen.`,
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ep, cred, err := resolveCloudTarget(cmd.Context(), args[0], token)
-			if err != nil {
-				return err
-			}
-			return runCloudReleases(cmd.Context(), cloud.NewClient(ep, cred), limit, jsonOutput, cmd.OutOrStdout())
-		},
-	}
-	cmd.Flags().StringVar(&token, "token", "", "Credential to use, ahead of the env var and the credentials file")
-	cmd.Flags().IntVar(&limit, "limit", 20, "Maximum releases to return")
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit the raw response as JSON")
-	return cmd
-}
-
-// cloudRelease is the subset of controlplane.v1.DeployRelease forge
-// reads.
-//
-// Declared locally and narrowly ON PURPOSE. forge does not vendor the
-// control plane's protos — that coupling is the thing the whole design
-// avoids — so the shape forge depends on is written down here, in one
-// place, rather than inferred from a generated type. A field forge does
-// not use is a field forge does not break on.
-type cloudRelease struct {
-	ID        string `json:"id"`
-	Version   string `json:"version"`
-	GitCommit string `json:"gitCommit"`
-	GitTag    string `json:"gitTag"`
-	GitDirty  bool   `json:"gitDirty"`
-	CreatedAt string `json:"createdAt"`
-}
-
-type cloudReleasesResponse struct {
-	Releases []cloudRelease `json:"releases"`
-}
-
 // cloudCaller is the one method this command needs from a client.
 // Declared at the CONSUMER so the test can drive it without a real
 // endpoint, and so Client stays a concrete type nothing has to satisfy.
 type cloudCaller interface {
 	Call(ctx context.Context, procedure string, req, out any) error
-}
-
-func runCloudReleases(ctx context.Context, client cloudCaller, limit int, jsonOutput bool, out io.Writer) error {
-	req := map[string]any{}
-	if limit > 0 {
-		req["limit"] = limit
-	}
-
-	var resp cloudReleasesResponse
-	if err := client.Call(ctx, "controlplane.v1.DeployService/ListReleases", req, &resp); err != nil {
-		return err
-	}
-
-	if jsonOutput {
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(resp)
-	}
-
-	if len(resp.Releases) == 0 {
-		fmt.Fprintln(out, "No releases.")
-		return nil
-	}
-
-	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "VERSION\tCOMMIT\tCREATED\tID")
-	for _, r := range resp.Releases {
-		commit := r.GitCommit
-		if len(commit) > 8 {
-			commit = commit[:8]
-		}
-		if r.GitDirty {
-			commit += "+dirty"
-		}
-		if commit == "" {
-			commit = "-"
-		}
-		created := r.CreatedAt
-		if created == "" {
-			created = "-"
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.Version, commit, created, r.ID)
-	}
-	return tw.Flush()
 }

@@ -10,9 +10,9 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// newObserveDashboardsCmd is `forge observe dashboards check`: the validation a
+// newObsDashboardsCmd is `forge obs dashboards check`: the validation a
 // release cut runs, on its own, so a dashboard is fixed before it blocks one.
-func newObserveDashboardsCmd() *cobra.Command {
+func newObsDashboardsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "dashboards",
 		Short: "Work with the dashboards a release carries",
@@ -34,7 +34,7 @@ HyperDX-format file (with "tiles") is for the local HyperDX only and is not ship
 Errors carry the file, line and column of the offending value.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runObserveDashboardsCheck(cmd.OutOrStdout(), outputDir)
+			return runObsDashboardsCheck(cmd.OutOrStdout(), outputDir)
 		},
 	}
 	check.Flags().StringVarP(&outputDir, "output", "o", "bin", "build output directory holding observability/metrics-schema.json")
@@ -42,7 +42,7 @@ Errors carry the file, line and column of the offending value.`,
 	return cmdutil.StrictGroup(cmd)
 }
 
-func runObserveDashboardsCheck(out io.Writer, outputDir string) error {
+func runObsDashboardsCheck(out io.Writer, outputDir string) error {
 	set, err := collectObservabilityFiles(projectDirForKCL(), outputDir)
 	if err != nil {
 		return err

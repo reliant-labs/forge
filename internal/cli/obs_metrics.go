@@ -1,6 +1,6 @@
 package cli
 
-// `forge observe metrics` — print the metrics schema (forge.metrics/v1) of a
+// `forge obs metrics declared` — print the metrics schema (forge.metrics/v1) of a
 // service: every instrument it declares, with unit, attributes and stability.
 //
 // The schema has one author, the declared metrics registry linked into the
@@ -28,17 +28,17 @@ import (
 	"github.com/reliant-labs/forge/pkg/observe/metrics"
 )
 
-type observeMetricsOpts struct {
+type obsMetricsOpts struct {
 	binary, url string
 	asJSON      bool
 	dashboard   bool
 	timeout     time.Duration
 }
 
-func newObserveMetricsCmd() *cobra.Command {
-	var o observeMetricsOpts
+func newObsMetricsDeclaredCmd() *cobra.Command {
+	var o obsMetricsOpts
 	cmd := &cobra.Command{
-		Use:   "metrics",
+		Use:   "declared",
 		Short: "Print the metrics a service declares: name, type, unit, attributes, stability",
 		Long: `Print the declared metrics schema (forge.metrics/v1) of a service.
 
@@ -46,23 +46,23 @@ Every metric a forge service emits is declared in a typed registry, so the full
 list — with each one's type, UCUM unit, attribute keys and stability — can be
 read without running a query. The schema comes from one of two places:
 
-  forge observe metrics                          # the project's built binary (bin/<name>)
-  forge observe metrics --binary ./bin/api       # a specific binary: runs 'metrics schema --json'
-  forge observe metrics --url http://localhost:6060   # a running service's pprof listener
+  forge obs metrics declared                          # the project's built binary (bin/<name>)
+  forge obs metrics declared --binary ./bin/api       # a specific binary: runs 'metrics schema --json'
+  forge obs metrics declared --url http://localhost:6060   # a running service's pprof listener
 
 The same document is served by 'GET /debug/metrics/schema', printed by
 '<bin> metrics schema --json', and written by 'forge build' to
 bin/observability/metrics-schema.json, which a release carries as
 observability/metrics-schema.json.
 
-  forge observe metrics --dashboard > deploy/observability/dashboards/<name>-custom-metrics.json
+  forge obs metrics declared --dashboard > deploy/observability/dashboards/<name>-custom-metrics.json
 
 prints the HyperDX "Custom metrics" dashboard drawn from the schema (counters as
 a rate, histograms as p50/p95/p99, gauges as the last value, grouped by their
 enumerated attributes). It writes nothing itself: commit the file to own it.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runObserveMetrics(cmd.Context(), cmd.OutOrStdout(), o)
+			return runObsMetrics(cmd.Context(), cmd.OutOrStdout(), o)
 		},
 	}
 	f := cmd.Flags()
@@ -74,7 +74,7 @@ enumerated attributes). It writes nothing itself: commit the file to own it.`,
 	return cmd
 }
 
-func runObserveMetrics(ctx context.Context, out io.Writer, o observeMetricsOpts) error {
+func runObsMetrics(ctx context.Context, out io.Writer, o obsMetricsOpts) error {
 	if o.binary != "" && o.url != "" {
 		return fmt.Errorf("--binary and --url are two sources for one schema; pass one")
 	}
@@ -175,7 +175,7 @@ func fetchMetricsSchema(ctx context.Context, base string) ([]byte, error) {
 
 // defaultServiceBinary is the project's built binary, bin/<project>.
 func defaultServiceBinary() (string, error) {
-	dir, err := requireProjectDir("observe metrics")
+	dir, err := requireProjectDir("obs metrics")
 	if err != nil {
 		return "", err
 	}

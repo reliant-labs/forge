@@ -17,7 +17,7 @@ import (
 )
 
 // dockerQuerier is an alerting.Querier that runs inside the ClickHouse container
-// with the evaluator's own guard settings, as `forge observe alerts check` does.
+// with the evaluator's own guard settings, as `forge obs alerts check` does.
 type dockerQuerier struct{ container string }
 
 func (q dockerQuerier) Query(ctx context.Context, _ string, query string, opts alerting.QueryOptions) ([]alerting.Row, error) {

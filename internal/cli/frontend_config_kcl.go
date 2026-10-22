@@ -9,8 +9,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/kclrender"
-
-	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // loadFrontendRuntimeConfig renders each frontend's runtime config
@@ -66,11 +64,11 @@ func loadFrontendRuntimeConfig(projectDir, env string, configs []codegen.Fronten
 		return nil, nil
 	}
 
-	probePath := filepath.Join(envDir, fmt.Sprintf("zz_forge_frontend_config_probe_%d.k", os.Getpid()))
-	if err := atomicfile.WriteFile(probePath, []byte(probe), 0o644); err != nil {
+	probePath, cleanup, err := writeEnvProbe(envDir, "frontend_config_probe", probe)
+	if err != nil {
 		return nil, fmt.Errorf("write frontend config probe: %w", err)
 	}
-	defer func() { _ = os.Remove(probePath) }()
+	defer cleanup()
 
 	out, err := kclrender.Run(projectDir, probePath, []string{"env=" + env})
 	if err != nil {
@@ -233,7 +231,7 @@ func frontendConfigProbeSource(configK string, configs []codegen.FrontendConfig)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "import %s as forge_fcfg\n", codegen.FrontendConfigModule)
-	b.WriteString("import .config as forge_envcfg\n\n")
+	b.WriteString("import " + envProbeConfigImport + " as forge_envcfg\n\n")
 	b.WriteString("forge_frontend_config = {\n")
 	for _, inst := range instances {
 		_, lambda := codegen.KCLFrontendConfigName(inst.messageName)

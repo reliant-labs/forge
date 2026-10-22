@@ -22,4 +22,6 @@
 //
 // The package imports nothing from forge's cli, the control plane or reliant.
 // A verb embeds [Head] (and [Page]) in its own document struct.
+//
+//forge:exclude-contract: a document vocabulary (types and pure functions) that verbs embed and call; there is no behaviour to substitute
 package obsout

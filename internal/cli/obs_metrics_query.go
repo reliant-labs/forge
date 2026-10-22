@@ -272,17 +272,17 @@ func runObsMetricsQuery(ctx context.Context, d obsDeps, env, metric string, o ob
 	fmt.Fprintln(d.Stdout)
 	rows := make([][]string, 0, len(res.Series))
 	for _, s := range res.Series {
-		last, min_, max_ := 0.0, 0.0, 0.0
+		last, lo, hi := 0.0, 0.0, 0.0
 		for i, p := range s.Points {
-			if i == 0 || p.Value < min_ {
-				min_ = p.Value
+			if i == 0 || p.Value < lo {
+				lo = p.Value
 			}
-			if i == 0 || p.Value > max_ {
-				max_ = p.Value
+			if i == 0 || p.Value > hi {
+				hi = p.Value
 			}
 			last = p.Value
 		}
-		rows = append(rows, []string{labelText(s.Labels), strconv.Itoa(len(s.Points)), num(last), num(min_), num(max_)})
+		rows = append(rows, []string{labelText(s.Labels), strconv.Itoa(len(s.Points)), num(last), num(lo), num(hi)})
 	}
 	obsout.Table(d.Stdout, []string{"SERIES", "POINTS", "LAST", "MIN", "MAX"}, rows, 70)
 	if res.SeriesOmitted > 0 {

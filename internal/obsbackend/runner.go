@@ -53,7 +53,9 @@ type Limits struct {
 
 // DefaultLimits are a structured verb's: a generous row cap that throws, so a
 // statement that returns more than its own LIMIT is a bug and not a silent cut.
-var DefaultLimits = Limits{Timeout: 30 * time.Second, MaxRows: obsquery.MaxSQLRows + 1}
+func DefaultLimits() Limits {
+	return Limits{Timeout: 30 * time.Second, MaxRows: obsquery.MaxSQLRows + 1}
+}
 
 func (l Limits) settings() map[string]any {
 	s := alerting.QueryOptions{MaxExecutionTime: l.Timeout, MaxResultRows: l.MaxRows}.Settings()

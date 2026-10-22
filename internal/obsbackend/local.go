@@ -63,7 +63,7 @@ func (l Local) Logs(ctx context.Context, req LogsRequest) (LogsResult, error) {
 	if req.Explain {
 		return res, nil
 	}
-	r, err := l.run(ctx, st, DefaultLimits)
+	r, err := l.run(ctx, st, DefaultLimits())
 	if err != nil {
 		return res, err
 	}
@@ -149,7 +149,7 @@ func (l Local) Traces(ctx context.Context, req TracesRequest) (TracesResult, err
 	if req.Explain {
 		return res, nil
 	}
-	r, err := l.run(ctx, st, DefaultLimits)
+	r, err := l.run(ctx, st, DefaultLimits())
 	if err != nil {
 		return res, err
 	}
@@ -175,7 +175,7 @@ func (l Local) Traces(ctx context.Context, req TracesRequest) (TracesResult, err
 		}
 	}
 	if req.PageToken == "" {
-		rr, err := l.run(ctx, red, DefaultLimits)
+		rr, err := l.run(ctx, red, DefaultLimits())
 		if err != nil {
 			return res, err
 		}
@@ -238,7 +238,7 @@ func (l Local) Trace(ctx context.Context, req TraceRequest) (TraceResult, error)
 	if req.Explain {
 		return res, nil
 	}
-	r, err := l.run(ctx, st, DefaultLimits)
+	r, err := l.run(ctx, st, DefaultLimits())
 	if err != nil {
 		return res, err
 	}
@@ -257,7 +257,7 @@ func (l Local) Trace(ctx context.Context, req TraceRequest) (TraceResult, error)
 			With(Cmd("forge", "obs", "traces", l.Env, "--since", "1h"))
 	}
 	if logLimit > 0 {
-		lr, err := l.run(ctx, lst, DefaultLimits)
+		lr, err := l.run(ctx, lst, DefaultLimits())
 		if err != nil {
 			return res, err
 		}
@@ -343,7 +343,7 @@ func (l Local) Endpoints(ctx context.Context, req EndpointsRequest) (EndpointsRe
 	if req.Explain {
 		return res, nil
 	}
-	r, err := l.run(ctx, st, DefaultLimits)
+	r, err := l.run(ctx, st, DefaultLimits())
 	if err != nil {
 		return res, err
 	}
@@ -397,7 +397,7 @@ func (l Local) MetricsList(ctx context.Context, req MetricsListRequest) (Metrics
 	if req.Explain {
 		return res, nil
 	}
-	r, err := l.run(ctx, st, DefaultLimits)
+	r, err := l.run(ctx, st, DefaultLimits())
 	if err != nil {
 		return res, err
 	}
@@ -466,7 +466,7 @@ func (l Local) MetricsQuery(ctx context.Context, req MetricsQueryRequest) (Metri
 	kind := obsquery.MetricUnknown
 	var kinds []obsquery.MetricType
 	if !req.Explain {
-		lr, err := l.run(ctx, lst, DefaultLimits)
+		lr, err := l.run(ctx, lst, DefaultLimits())
 		if err != nil {
 			return res, err
 		}
@@ -505,7 +505,7 @@ func (l Local) MetricsQuery(ctx context.Context, req MetricsQueryRequest) (Metri
 		}
 		res.Statements = append(res.Statements, stmt("metric attribute keys", dst))
 		if !req.Explain {
-			dr, err := l.run(ctx, dst, DefaultLimits)
+			dr, err := l.run(ctx, dst, DefaultLimits())
 			if err != nil {
 				return res, err
 			}
@@ -536,7 +536,7 @@ func (l Local) MetricsQuery(ctx context.Context, req MetricsQueryRequest) (Metri
 	if req.Explain {
 		return res, nil
 	}
-	r, err := l.run(ctx, st, DefaultLimits)
+	r, err := l.run(ctx, st, DefaultLimits())
 	if err != nil {
 		return res, err
 	}

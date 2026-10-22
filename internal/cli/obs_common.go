@@ -229,9 +229,9 @@ func obsFail(d obsDeps, jsonOut bool, schema string, err error) error {
 // ── structured-vs-raw usage counter (DESIGN §14 D2, condition 2) ────────
 
 const (
-	// QueryModeStructured: the compiler built the statement from typed flags.
+	// QueryModeStructured marks a statement the compiler built from typed flags.
 	QueryModeStructured = "structured"
-	// QueryModeRaw: the caller wrote the SQL (--sql, or a panel's sql).
+	// QueryModeRaw marks a statement the caller wrote (--sql, or a panel's sql).
 	QueryModeRaw = "raw"
 )
 

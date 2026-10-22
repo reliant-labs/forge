@@ -176,8 +176,8 @@ func tracesSuggestions(env string, res obsbackend.TracesResult) []string {
 				break
 			}
 		}
-		cmds = append(cmds, obsout.Command("forge", "obs", "trace", pick.TraceID, env))
-		cmds = append(cmds, obsout.Command("forge", "obs", "logs", env, "--trace", pick.TraceID))
+		cmds = append(cmds, obsout.Command("forge", "obs", "trace", pick.TraceID, env),
+			obsout.Command("forge", "obs", "logs", env, "--trace", pick.TraceID))
 	}
 	return obsout.Suggest(cmds...)
 }

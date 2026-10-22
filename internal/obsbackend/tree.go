@@ -52,38 +52,64 @@ type Tree struct {
 
 // BuildTree arranges spans into a tree under the caps. full lifts them.
 func BuildTree(spans []Span, full bool) Tree {
-	t := Tree{Spans: len(spans)}
+	b := newTreeBuilder(spans, full)
 	if len(spans) == 0 {
-		return t
+		return b.t
+	}
+	b.markFailing()
+	b.markCritical()
+	b.budget = MaxTreeSpans
+	if full {
+		b.budget = len(spans) + 1
+	}
+	for _, r := range b.roots {
+		if b.budget <= 0 && !b.keep(r) {
+			b.t.Capped = true
+			continue
+		}
+		b.t.Roots = append(b.t.Roots, b.build(r, 1))
+	}
+	return b.t
+}
+
+// treeBuilder holds what one BuildTree call computes about a trace.
+type treeBuilder struct {
+	t      Tree
+	full   bool
+	budget int
+	first  time.Time
+	roots  []*Span
+	kids   map[string][]*Span
+	// failing[id]: this span or a descendant failed. critical[id]: on the
+	// critical path.
+	failing, critical map[string]bool
+}
+
+func newTreeBuilder(spans []Span, full bool) *treeBuilder {
+	b := &treeBuilder{
+		t: Tree{Spans: len(spans)}, full: full,
+		kids: map[string][]*Span{}, failing: map[string]bool{}, critical: map[string]bool{},
+	}
+	if len(spans) == 0 {
+		return b
 	}
 	byID := map[string]*Span{}
 	for i := range spans {
 		byID[spans[i].SpanID] = &spans[i]
 	}
-	kids := map[string][]*Span{}
-	var roots []*Span
 	for i := range spans {
 		s := &spans[i]
-		if s.ParentID == "" {
-			roots = append(roots, s)
-			continue
+		switch _, hasParent := byID[s.ParentID]; {
+		case s.ParentID == "":
+			b.roots = append(b.roots, s)
+		case !hasParent:
+			b.roots = append(b.roots, s)
+			b.t.Orphans++
+		default:
+			b.kids[s.ParentID] = append(b.kids[s.ParentID], s)
 		}
-		if _, ok := byID[s.ParentID]; !ok {
-			roots = append(roots, s)
-			t.Orphans++
-			continue
-		}
-		kids[s.ParentID] = append(kids[s.ParentID], s)
 	}
-	order := func(ss []*Span) {
-		sort.SliceStable(ss, func(i, j int) bool {
-			if !ss[i].Start.Equal(ss[j].Start) {
-				return ss[i].Start.Before(ss[j].Start)
-			}
-			return ss[i].SpanID < ss[j].SpanID
-		})
-	}
-	order(roots)
+	orderSpans(b.roots)
 	first, last := spans[0].Start, spans[0].Start.Add(time.Duration(spans[0].DurationNs))
 	for _, s := range spans {
 		if s.Start.Before(first) {
@@ -93,33 +119,46 @@ func BuildTree(spans []Span, full bool) Tree {
 			last = e
 		}
 	}
-	t.Duration = last.Sub(first)
+	b.first, b.t.Duration = first, last.Sub(first)
+	return b
+}
 
-	// failing[id]: this span or any descendant failed (error spans' ancestors
-	// stay expanded so the failure is reachable).
-	failing := map[string]bool{}
+func orderSpans(ss []*Span) {
+	sort.SliceStable(ss, func(i, j int) bool {
+		if !ss[i].Start.Equal(ss[j].Start) {
+			return ss[i].Start.Before(ss[j].Start)
+		}
+		return ss[i].SpanID < ss[j].SpanID
+	})
+}
+
+// markFailing flags every span that failed or has a failing descendant, so an
+// error stays reachable from the root.
+func (b *treeBuilder) markFailing() {
 	var mark func(s *Span) bool
 	mark = func(s *Span) bool {
 		f := isErrorSpan(s)
-		for _, c := range kids[s.SpanID] {
+		for _, c := range b.kids[s.SpanID] {
 			if mark(c) {
 				f = true
 			}
 		}
-		failing[s.SpanID] = f
+		b.failing[s.SpanID] = f
 		return f
 	}
-	for _, r := range roots {
+	for _, r := range b.roots {
 		mark(r)
 	}
-	// Critical path: from each root, follow the child that ends last.
-	critical := map[string]bool{}
+}
+
+// markCritical follows, from each root, the child that ends last.
+func (b *treeBuilder) markCritical() {
 	var walk func(s *Span)
 	walk = func(s *Span) {
-		critical[s.SpanID] = true
+		b.critical[s.SpanID] = true
 		var best *Span
 		var bestEnd time.Time
-		for _, c := range kids[s.SpanID] {
+		for _, c := range b.kids[s.SpanID] {
 			if e := c.Start.Add(time.Duration(c.DurationNs)); best == nil || e.After(bestEnd) {
 				best, bestEnd = c, e
 			}
@@ -128,107 +167,98 @@ func BuildTree(spans []Span, full bool) Tree {
 			walk(best)
 		}
 	}
-	for _, r := range roots {
+	for _, r := range b.roots {
 		walk(r)
 	}
+}
 
-	budget := MaxTreeSpans
-	if full {
-		budget = len(spans) + 1
-	}
-	var build func(s *Span, depth int) *TreeNode
-	// expand reports whether a span must be shown despite the caps.
-	expand := func(s *Span) bool { return failing[s.SpanID] || critical[s.SpanID] }
-	// split reports whether a span keeps its own node instead of folding into
-	// a run of identical siblings: a failing one, or a critical one the path
-	// continues through. A critical LEAF folds in and marks the run.
-	split := func(s *Span) bool { return failing[s.SpanID] || (critical[s.SpanID] && len(kids[s.SpanID]) > 0) }
+// keep reports whether a span must be shown despite the caps.
+func (b *treeBuilder) keep(s *Span) bool {
+	return !b.full && (b.failing[s.SpanID] || b.critical[s.SpanID])
+}
 
-	subtree := func(s *Span) int { // spans under s, itself included
-		n := 1
-		var count func(p *Span)
-		count = func(p *Span) {
-			for _, c := range kids[p.SpanID] {
-				n++
-				count(c)
-			}
-		}
-		count(s)
-		return n
-	}
+// split reports whether a span keeps its own node instead of folding into a
+// run of identical siblings: a failing one, or a critical one the path
+// continues through. A critical LEAF folds in and marks the run.
+func (b *treeBuilder) split(s *Span) bool {
+	return !b.full && (b.failing[s.SpanID] || (b.critical[s.SpanID] && len(b.kids[s.SpanID]) > 0))
+}
 
-	build = func(s *Span, depth int) *TreeNode {
-		nd := &TreeNode{Span: *s, Count: 1, Error: isErrorSpan(s), Critical: critical[s.SpanID], Offset: s.Start.Sub(first)}
-		budget--
-		t.Shown++
-		cs := kids[s.SpanID]
-		order(cs)
-		if !full && depth >= MaxTreeDepth {
-			for _, c := range cs {
-				nd.Hidden += subtree(c)
-			}
-			if nd.Hidden > 0 {
-				t.Capped = true
-			}
-			return nd
-		}
-		// Group runs of identical siblings; a group with an expanded member
-		// is split so that member keeps its own node.
-		type group struct{ members []*Span }
-		var groups []*group
-		index := map[string]*group{}
-		for _, c := range cs {
-			if !full && split(c) {
-				groups = append(groups, &group{members: []*Span{c}})
-				continue
-			}
-			k := c.Service + "\x00" + c.Name + "\x00" + c.StatusCode
-			if g, ok := index[k]; ok {
-				g.members = append(g.members, c)
-				continue
-			}
-			g := &group{members: []*Span{c}}
-			index[k] = g
-			groups = append(groups, g)
-		}
-		for _, g := range groups {
-			if budget <= 0 && !(!full && expand(g.members[0])) {
-				for _, m := range g.members {
-					nd.Hidden += subtree(m)
-				}
-				t.Capped = true
-				continue
-			}
-			if len(g.members) == 1 || full {
-				for _, m := range g.members {
-					nd.Children = append(nd.Children, build(m, depth+1))
-				}
-				continue
-			}
-			run := collapse(g.members, first, &budget, &t.Shown)
-			for _, m := range g.members {
-				run.Critical = run.Critical || critical[m.SpanID]
-			}
-			nd.Children = append(nd.Children, run)
-			// The run itself is shown as ×N; what is not shown is what hangs
-			// under its members.
-			for _, m := range g.members {
-				nd.Hidden += subtree(m) - 1
-			}
-		}
-		if nd.Hidden > 0 {
-			t.Capped = true
-		}
-		return nd
+// size counts the spans under s, itself included.
+func (b *treeBuilder) size(s *Span) int {
+	n := 1
+	for _, c := range b.kids[s.SpanID] {
+		n += b.size(c)
 	}
-	for _, r := range roots {
-		if budget <= 0 && !(!full && expand(r)) {
-			t.Capped = true
+	return n
+}
+
+// groupKids partitions a span's children into runs of identical siblings
+// (same service, name and status); a span that must keep its own node is a
+// run of one.
+func (b *treeBuilder) groupKids(cs []*Span) [][]*Span {
+	var groups [][]*Span
+	index := map[string]int{}
+	for _, c := range cs {
+		if b.split(c) {
+			groups = append(groups, []*Span{c})
 			continue
 		}
-		t.Roots = append(t.Roots, build(r, 1))
+		k := c.Service + "\x00" + c.Name + "\x00" + c.StatusCode
+		if gi, ok := index[k]; ok {
+			groups[gi] = append(groups[gi], c)
+			continue
+		}
+		index[k] = len(groups)
+		groups = append(groups, []*Span{c})
 	}
-	return t
+	return groups
+}
+
+func (b *treeBuilder) build(s *Span, depth int) *TreeNode {
+	nd := &TreeNode{Span: *s, Count: 1, Error: isErrorSpan(s), Critical: b.critical[s.SpanID], Offset: s.Start.Sub(b.first)}
+	b.budget--
+	b.t.Shown++
+	cs := b.kids[s.SpanID]
+	orderSpans(cs)
+	if !b.full && depth >= MaxTreeDepth {
+		for _, c := range cs {
+			nd.Hidden += b.size(c)
+		}
+		b.t.Capped = b.t.Capped || nd.Hidden > 0
+		return nd
+	}
+	for _, g := range b.groupKids(cs) {
+		b.addGroup(nd, g, depth)
+	}
+	b.t.Capped = b.t.Capped || nd.Hidden > 0
+	return nd
+}
+
+// addGroup renders one run of siblings under nd: each member on its own when
+// it is a single span or the caps are lifted, a ×N node otherwise; or counts
+// it hidden when the span budget is spent.
+func (b *treeBuilder) addGroup(nd *TreeNode, g []*Span, depth int) {
+	if b.budget <= 0 && !b.keep(g[0]) {
+		for _, m := range g {
+			nd.Hidden += b.size(m)
+		}
+		b.t.Capped = true
+		return
+	}
+	if len(g) == 1 || b.full {
+		for _, m := range g {
+			nd.Children = append(nd.Children, b.build(m, depth+1))
+		}
+		return
+	}
+	run := collapse(g, b.first, &b.budget, &b.t.Shown)
+	for _, m := range g {
+		run.Critical = run.Critical || b.critical[m.SpanID]
+		// The run is shown as ×N; what is not shown is what hangs under its members.
+		nd.Hidden += b.size(m) - 1
+	}
+	nd.Children = append(nd.Children, run)
 }
 
 // collapse folds a run of identical siblings into one node. Their descendants

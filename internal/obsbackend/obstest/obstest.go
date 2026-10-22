@@ -60,7 +60,7 @@ func Start(t *testing.T) (obsbackend.DockerRunner, Writer) {
 		return out, nil
 	}}
 	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(time.Second) {
-		if _, err := runner.Run(context.Background(), obsquery.Stmt{SQL: "SELECT 1"}, obsbackend.DefaultLimits); err == nil {
+		if _, err := runner.Run(context.Background(), obsquery.Stmt{SQL: "SELECT 1"}, obsbackend.DefaultLimits()); err == nil {
 			break
 		} else if time.Now().After(deadline) {
 			t.Fatalf("clickhouse never became ready: %v", err)

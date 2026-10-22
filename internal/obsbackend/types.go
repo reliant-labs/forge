@@ -1,3 +1,9 @@
+// Package obsbackend reads telemetry for `forge obs`: the env -> backend
+// resolver, the ClickHouse runner, and the local backend over the project's
+// ClickStack. Backend is declared here because the cloud backend (a second
+// implementation) and the CLI's test fakes substitute for it.
+//
+//forge:exclude-contract: the Backend interface is declared in types.go where its request/result vocabulary lives; the concrete types are data and one runner
 package obsbackend
 
 import (

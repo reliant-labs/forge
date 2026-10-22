@@ -276,7 +276,7 @@ func TestDockerRunnerAgainstAStoppedContainer(t *testing.T) {
 		}
 		return out, nil
 	}}
-	_, err := r.Run(context.Background(), obsquery.Stmt{SQL: "SELECT 1"}, obsbackend.DefaultLimits)
+	_, err := r.Run(context.Background(), obsquery.Stmt{SQL: "SELECT 1"}, obsbackend.DefaultLimits())
 	be, ok := err.(*obsbackend.Error)
 	if !ok || be.ExitCode() != obsbackend.ExitUndetermined {
 		t.Fatalf("err = %#v", err)

@@ -74,7 +74,7 @@ func TestDockerRunnerClassifiesFailures(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			r := DockerRunner{Env: "dev", Exec: func(context.Context, string, []string) ([]byte, error) { return nil, c.err }}
-			_, err := r.Run(context.Background(), obsquery.Stmt{SQL: "select 1"}, DefaultLimits)
+			_, err := r.Run(context.Background(), obsquery.Stmt{SQL: "select 1"}, DefaultLimits())
 			var be *Error
 			if !errors.As(err, &be) {
 				t.Fatalf("want *Error, got %T %v", err, err)
@@ -93,7 +93,7 @@ func TestDockerRunnerCancellationIsUndetermined(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	r := DockerRunner{Exec: func(ctx context.Context, _ string, _ []string) ([]byte, error) { return nil, ctx.Err() }}
-	_, err := r.Run(ctx, obsquery.Stmt{SQL: "select 1"}, DefaultLimits)
+	_, err := r.Run(ctx, obsquery.Stmt{SQL: "select 1"}, DefaultLimits())
 	if err == nil || err.(*Error).ExitCode() != ExitUndetermined {
 		t.Errorf("err = %v", err)
 	}

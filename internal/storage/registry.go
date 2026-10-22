@@ -1017,15 +1017,15 @@ func (r Runner) containerReferences(ctx context.Context) ([]string, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	b, err = r.docker(ctx, append([]string{"inspect"}, ids...)...)
+	chunks, err := r.inspectContainers(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
-	var containers []struct {
+	containers, err := decodeInspected[struct {
 		Config struct{ Image string }
 		Image  string
-	}
-	if err := json.Unmarshal(b, &containers); err != nil {
+	}](chunks)
+	if err != nil {
 		return nil, err
 	}
 	var images []string
@@ -1061,15 +1061,15 @@ func (r Runner) verifyConsumers(ctx context.Context, reg Registry, info containe
 		return err
 	}
 	if ids := strings.Fields(string(b)); len(ids) > 0 {
-		b, err = r.docker(ctx, append([]string{"inspect"}, ids...)...)
+		chunks, err := r.inspectContainers(ctx, ids)
 		if err != nil {
 			return err
 		}
-		var nodes []struct {
+		nodes, err := decodeInspected[struct {
 			Config          struct{ Labels map[string]string }
 			NetworkSettings struct{ Networks map[string]any }
-		}
-		if err := json.Unmarshal(b, &nodes); err != nil {
+		}](chunks)
+		if err != nil {
 			return err
 		}
 		for _, n := range nodes {

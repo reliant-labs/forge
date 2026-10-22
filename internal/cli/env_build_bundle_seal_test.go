@@ -62,6 +62,7 @@ func fullyDeclaredShape() release.Shape {
 			Funnels: []release.ShapeFunnel{{ID: "onboarding", Title: "Onboarding", Steps: []string{"signup", "first_chat"}, Window: "7d", By: "user"}},
 		}},
 		DeliveryPolicy: &policy,
+		DataAccess:     &release.ShapeDataAccess{DBQuery: release.DBQueryDeny},
 		Identity: &release.ShapeIdentity{
 			Name: "identity", Runtime: release.IdentityRuntimeHosted,
 			Login: release.ShapeIdentityLogin{Mode: release.IdentityLoginNative},

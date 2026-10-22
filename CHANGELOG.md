@@ -276,6 +276,13 @@ login` credential is traded for the scope the control plane's 403 names, for
   `svcerr.NotFound("x")` — the documented shape — read as `unknown`. For a
   `*connect.Error` the two agree; the one difference is an unclassified error,
   which now asserts as `internal` (what the client reads) rather than `unknown`.
+- **`testkit.NewConnectClient` serves behind `svcerr.Interceptor`**, innermost,
+  as production's chain builders do — so the generated `NewTest<Svc>Server`
+  answers a handler's bare `svcerr.InvalidArgument("…")` with
+  `invalid_argument`, unary and streaming, where it answered `unknown`; and an
+  unrecognised error reads `internal server error` there as it does in
+  production, instead of its raw text. A test asserting either old answer was
+  asserting what no client in production sees.
 - **Generated proto mocks return
   `svcerr.Wrap(svcerr.Unimplemented("handler for X not yet implemented"))`**
   for an unprogrammed rpc, instead of a hand-built `connect.NewError`. The code and message are unchanged, the value

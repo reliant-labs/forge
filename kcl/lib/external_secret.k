@@ -335,11 +335,16 @@ admission_defaults = lambda b: any, pt: any, ctx: str -> any {
 
 # --- The render --------------------------------------------------------------
 
+# `forge.dev/secret-stage: secrets` is what lets the applier order these ahead
+# of the workloads that read them (pkg/release.ClassifySecretStage): the login
+# identity is not an ESO kind, and an ExternalSecret that cannot log in would
+# never sync. Stamped on every object this module renders.
 _labels = lambda b: any, ctx: str -> {str: str} {
     {
         "app.kubernetes.io/managed-by" = "forge"
         "app.kubernetes.io/part-of" = b.project if b.project else "forge"
         "forge.dev/cluster" = ctx
+        "forge.dev/secret-stage" = "secrets"
     }
 }
 
@@ -384,10 +389,19 @@ _remote_key = lambda st: any, name: str -> str {
     name if st.type == "gcpsm" else "tenants/${st.org}/${st.env}/${name}"
 }
 
-_external_secret = lambda b: any, ctx: str, s: any, st: any -> any {
+# What a deploy does about an ExternalSecret (pkg/release.AnnotationSecretSync):
+# a shadow copy gates nothing (no workload reads it), and a store-delivered
+# ControlPlaneSecret is written AFTER the deploy by the control plane, so a
+# deploy that waited for it would wait for a value that cannot exist yet.
+_sync_annotation = lambda src: any, deferred: bool -> {str: str} {
+    {"forge.dev/secret-sync" = "shadow"} if src.shadow else ({"forge.dev/secret-sync" = "deferred"} if deferred else {})
+}
+
+_external_secret = lambda b: any, ctx: str, s: any, st: any, deferred: bool -> any {
     _src = s.source
     _name = s.name + "-eso-shadow" if _src.shadow else s.name
     _tpl = _src.templates
+    _sync = _sync_annotation(_src, deferred)
     # The template block is needed for derived keys, and also for a Secret whose
     # type or labels differ from ESO's default (a CloudNativePG basic-auth
     # password). A source that sets none renders exactly as before.
@@ -395,7 +409,13 @@ _external_secret = lambda b: any, ctx: str, s: any, st: any -> any {
     {
         apiVersion = "external-secrets.io/v1"
         kind = "ExternalSecret"
-        metadata = {name = _name, namespace = s.namespace, labels = _labels(b, ctx)}
+        metadata = {
+            name = _name
+            namespace = s.namespace
+            labels = _labels(b, ctx)
+            if _sync:
+                annotations = _sync
+        }
         spec = {
             refreshInterval = _src.refresh
             secretStoreRef = {name = st.name, kind = "SecretStore"}
@@ -444,14 +464,15 @@ _group_objects = lambda b: any, recs: [any] -> [any] {
     _vault = [st for st in _stores if st.vault]
     (([_service_account(b, _ctx, _ns)] + _token_role(b, _ctx, _ns)) if _vault else []) \
         + [_secret_store(b, _ctx, _ns, st) for st in _stores] \
-        + [_external_secret(b, _ctx, r.secret, r.store) for r in recs]
+        + [_external_secret(b, _ctx, r.secret, r.store, r.deferred) for r in recs]
 }
 
 # Every ESO object the Bundle's store-backed ExternalSecrets need, ordered by
 # (cluster, namespace). Empty, and so a no-op for every other Bundle, when no
 # ExternalSecret has a `source`.
 manifests = lambda b: any, pt: any -> [any] {
-    _sources = [s for s in b.required_secrets if s.source] + cps_secrets(b)
+    _cps = cps_secrets(b)
+    _sources = [s for s in b.required_secrets if s.source] + _cps
     _checked = [_check_source(b, pt, s) for s in _sources]
     _recs = [{
         "ctx": _context(s.source, pt)
@@ -459,6 +480,7 @@ manifests = lambda b: any, pt: any -> [any] {
         "group": "${_context(s.source, pt)}/${s.namespace}"
         "secret": s
         "store": _resolve_store(b, pt, s.source, _context(s.source, pt), s.namespace)
+        "deferred": s in _cps
     } for s in _sources]
     _groups = sorted({r.group: 0 for r in _recs})
     _clash = [r.group + "/" + r.store.name for r in _recs for q in _recs if r.group == q.group and r.store.name == q.store.name and _fingerprint(r.store) != _fingerprint(q.store)]

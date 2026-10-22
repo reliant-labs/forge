@@ -1007,6 +1007,18 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 		earlyNS, remainder = "", manifests
 	}
 	config, rest := PartitionConfigManifests(remainder)
+	// The secret stages come out of the non-config remainder BEFORE the
+	// release's own phases are cut: a store component's Jobs and workloads, and
+	// the env's SecretStores and ExternalSecrets, are applied and proven ahead
+	// of everything the release rolls (secret_order.go). A stream with no
+	// store-backed secret leaves stages empty and rest untouched.
+	stages, err := partitionSecretStages(rest)
+	if err != nil {
+		return nil, err
+	}
+	if stages.active() {
+		rest = stages.rest
+	}
 	phases, err := partitionRolloutPhases(rest)
 	if err != nil {
 		return nil, err
@@ -1096,6 +1108,15 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 			return nil, fmt.Errorf("kubectl apply failed (config): %w", err)
 		}
 	}
+	// The secret ordering: the store, then the SecretStores and ExternalSecrets,
+	// each proven before the next. Held in every rollout mode (see
+	// secret_order.go), and before the migration Jobs: a Job that reads a
+	// store-backed Secret needs it as much as a Deployment does.
+	if stages.active() {
+		if err := applySecretStages(ctx, opts, policy, stages); err != nil {
+			return nil, err
+		}
+	}
 	// The pre-rollout gate. When the stream carries a pre-rollout Job (a
 	// migration, by default every one-shot Job), the support objects and the
 	// Jobs are applied and the Jobs must COMPLETE before a single workload is
@@ -1116,7 +1137,9 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 			fmt.Println("Pre-rollout Jobs complete; applying workloads...")
 		}
 	}
-	if !phases.gated() || strings.TrimSpace(rest) != "" {
+	// A stream the secret stages consumed whole has nothing left to send: kubectl
+	// refuses an empty stream, as it always did here for a gated one.
+	if strings.TrimSpace(rest) != "" || (!phases.gated() && !stages.active()) {
 		if err := policy.classifyApplyResult(KubectlApply(ctx, opts.Context, rest)); err != nil {
 			// Reload uses the shorter "kubectl apply:" wrap; the framed
 			// deploy/up path uses the longer "kubectl apply failed:" form.
@@ -1169,8 +1192,9 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 	// at the gate — the workloads would not have been applied otherwise —
 	// so only the post-rollout Jobs are left to wait on.
 	var jobs []string
+	stageJobs := stages.awaitedJobs()
 	for _, name := range oneShotWaitSet(manifests) {
-		if !phases.awaited(name) {
+		if !phases.awaited(name) && !stageJobs[name] {
 			jobs = append(jobs, name)
 		}
 	}
@@ -1437,6 +1461,12 @@ func extractManifestsIn(ctx context.Context, projectDir string, kclOutput []byte
 	if err != nil {
 		return "", nil, err
 	}
+
+	// A pinned store-backed Secret's version rides its consumers' pod templates,
+	// so moving the pin rolls them (secret_pins.go). After the overrides, so an
+	// override that rewrites a pod template cannot drop it, and so the
+	// annotation is part of the same bytes every consumer of the stream sees.
+	items = stampSecretPins(items)
 
 	var sb strings.Builder
 	for i, it := range items {

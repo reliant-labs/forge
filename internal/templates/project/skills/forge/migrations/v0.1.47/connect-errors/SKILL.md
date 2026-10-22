@@ -81,7 +81,7 @@ and generated proto mocks return `svcerr.Wrap(svcerr.Unimplemented(…))`.
    | in the package's code | `in the package` |
    | in the package's own tests | `in its own tests, which call it directly` |
    | in the code of a package that imports it | `internal/app imports it` |
-   | in the code of a package calling it through an interface one of its types implements, where production code hands it that type (the consumer-declared seam composition wires it into — nothing is imported; an interface only ever handed a generated client is not one) | `internal/triggertools calls it through the interface triggertools.TriggerAPI.ListTriggers at …:58, which *trigger.Service implements and internal/app/providers_worker.go:449 hands it` |
+   | in the code of a package calling it through an interface one of its types implements, where production code hands it that type (the consumer-declared seam composition wires it into — nothing is imported; an interface only ever handed a generated client is not one) | `internal/triggertools calls it through the interface triggertools.TriggerAPI.ListTriggers at …:58, which *trigger.Service implements and internal/app/providers.go:449 hands it` |
 
    Those packages keep `svcerr.ToConnect(…)`, and the report lists **every**
    reader keeping each one — file:line, the enclosing function, the kind of

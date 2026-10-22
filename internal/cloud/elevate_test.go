@@ -181,3 +181,14 @@ func TestMissingScopeRegexKnowsClusterManage(t *testing.T) {
 		t.Fatalf("match = %v", m)
 	}
 }
+
+// The feedback-loop scopes elevate like the rest: a read refused for want of
+// obs:read (or a triage for want of obs:triage) names the scope to exchange for.
+func TestMissingScopeRegexKnowsTheFeedbackLoopScopes(t *testing.T) {
+	for _, scope := range []string{"obs:read", "obs:triage", "db:query"} {
+		m := missingScopeRe.FindStringSubmatch("this credential does not carry the " + scope + " scope")
+		if m == nil || m[1] != scope {
+			t.Errorf("%s: match = %v", scope, m)
+		}
+	}
+}

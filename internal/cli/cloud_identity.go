@@ -58,7 +58,7 @@ read-only here.`,
 }
 
 // Keep KCL rendering outside the HTTP contract tests; production always uses
-// the same per-environment endpoint and credential resolution as cloud releases.
+// the same per-environment endpoint and credential resolution as the rest of `forge cloud`.
 var resolveIdentityCloudTarget = resolveCloudTarget
 
 type cloudIdentityFlags struct {

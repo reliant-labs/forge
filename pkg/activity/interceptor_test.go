@@ -400,13 +400,13 @@ func TestInterceptorRecordsTheProjectsPrincipal(t *testing.T) {
 	if len(evs) != 1 {
 		t.Fatalf("wrote %d events, want 1", len(evs))
 	}
-	if got := evs[0]; got.Actor != (Actor{ID: "tok_1", Name: "ci", Kind: ActorMachine}) || got.Scope != "tenant_7" {
-		t.Errorf("event actor %+v scope %q, want the project's machine tok_1 in tenant_7", got.Actor, got.Scope)
+	if got := evs[0]; got.Actor != (Actor{ID: "tok_1", Name: "ci", Kind: ActorMachine}) || got.Scope != "workspace_7" {
+		t.Errorf("event actor %+v scope %q, want the project's machine tok_1 in workspace_7", got.Actor, got.Scope)
 	}
 }
 
-// appPrincipal is a project's own answer: a CI machine credential in a tenant.
+// appPrincipal is a project's own answer: a CI machine credential in a workspace.
 type appPrincipal struct{}
 
 func (appPrincipal) Actor(context.Context) Actor  { return Machine("tok_1", "ci") }
-func (appPrincipal) Scope(context.Context) string { return "tenant_7" }
+func (appPrincipal) Scope(context.Context) string { return "workspace_7" }

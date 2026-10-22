@@ -2214,10 +2214,7 @@ func FormatPreflightReport(r PreflightResult) string {
 
 	writeVolumeResizeBlock(&b, r)
 
-	if blk := FormatStoreFindings(r.Store); blk != "" {
-		b.WriteString(blk)
-		b.WriteString("\n")
-	}
+	writeStoreBlock(&b, r)
 
 	if len(r.MissingRequiredSecretKeys) > 0 {
 		b.WriteString("\n  DECLARED external Secret prerequisites missing (forge.ExternalSecret — provision out-of-band):\n")
@@ -2754,6 +2751,14 @@ func dockerConfigAuthsFromSecret(secretJSON []byte) map[string]json.RawMessage {
 }
 
 // writeVolumeResizeBlock lists the StatefulSet volumes no resize can converge.
+// writeStoreBlock renders the store-source findings (no-op when none block).
+func writeStoreBlock(b *strings.Builder, r PreflightResult) {
+	if blk := FormatStoreFindings(r.Store); blk != "" {
+		b.WriteString(blk)
+		b.WriteString("\n")
+	}
+}
+
 func writeVolumeResizeBlock(b *strings.Builder, r PreflightResult) {
 	if len(r.VolumeResizeRefusals) == 0 {
 		return

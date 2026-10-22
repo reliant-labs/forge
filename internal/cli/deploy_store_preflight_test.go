@@ -251,3 +251,19 @@ func TestDeployPreflightStoreFindingsAreStructured(t *testing.T) {
 		t.Error("a warning alone must not block")
 	}
 }
+
+// An env the control plane has not seen holds no secrets: the presence probe
+// answers "none present" (a refusal that names the missing names), not an
+// error that would downgrade to a warning and let the deploy go unverified.
+func TestStorePresenceTreatsAnUnknownHostedEnvAsHoldingNothing(t *testing.T) {
+	prev := openStoreSource
+	t.Cleanup(func() { openStoreSource = prev })
+	openStoreSource = func(context.Context, string, *KCLEntities, storeRef, storeOptions, bool) (storeSource, error) {
+		return nil, errHostedEnvNotFound
+	}
+	got, err := storePresence("prod", storeEnv())(context.Background(), "ctx-hub",
+		cluster.StoreRead{Kind: release.StoreHosted, Names: []string{"STRIPE_SECRET_KEY"}})
+	if err != nil || len(got) != 0 {
+		t.Fatalf("got %v, %v: want an empty presence map and no error", got, err)
+	}
+}

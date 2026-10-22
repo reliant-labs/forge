@@ -20,6 +20,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -204,6 +205,11 @@ func storePresence(envName string, e *KCLEntities) func(ctx context.Context, kct
 	return func(ctx context.Context, kctx string, read cluster.StoreRead) (map[string]bool, error) {
 		ref := storeRef{Kind: read.Kind, Project: read.Project}
 		src, err := openStoreSource(ctx, envName, e, ref, storeOptions{KubeContext: kctx}, false)
+		if errors.Is(err, errHostedEnvNotFound) {
+			// An env the control plane has not seen holds no secrets: every name
+			// is missing, the same answer `forge secret list` gives.
+			return map[string]bool{}, nil
+		}
 		if err != nil {
 			return nil, err
 		}

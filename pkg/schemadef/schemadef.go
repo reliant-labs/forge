@@ -67,6 +67,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
@@ -423,7 +424,58 @@ var appendOnlyTableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(TableMarkerApp
 // maintaining its own copy, which is exactly the discoverability gap
 // forge:ref fell into (undiscoverable outside two skill files) that this
 // registry exists to close.
-var KnownColumnMarkers = []string{ColumnMarkerImmutable, ColumnMarkerRef, ColumnMarkerClosedSet, ColumnMarkerVersion, ColumnMarkerFill, ColumnMarkerOwner, ColumnMarkerGoType, ColumnMarkerNoSoftDelete}
+var KnownColumnMarkers = []string{ColumnMarkerImmutable, ColumnMarkerRef, ColumnMarkerClosedSet, ColumnMarkerVersion, ColumnMarkerFill, ColumnMarkerOwner, ColumnMarkerGoType, ColumnMarkerNoSoftDelete, ColumnMarkerSecret, ColumnMarkerReadable}
+
+// ColumnMarkerSecret declares a column the database's read-only role (pkg/dbgrants)
+// must never read: `COMMENT ON COLUMN git_credentials.access_token IS
+// 'forge:secret'`. It is the SQL spelling of the proto `// forge:secret` field
+// marker and the only one a column with no wire field can use — most credential
+// tables have none. Either spelling withholds the column from the role; only
+// the proto one also strips it from read responses.
+const ColumnMarkerSecret = "forge:secret"
+
+// ColumnMarkerReadable declares a column whose name looks like a credential but
+// is not one, so the read-only role may read it: `COMMENT ON COLUMN
+// usage_events.token_hash IS 'forge:readable — a content hash of the prompt, not
+// of a credential'`. The reason is mandatory; it is the review record of an
+// exception to the role's fail-closed default. Secret wins when both are declared.
+const ColumnMarkerReadable = "forge:readable"
+
+var (
+	secretMarkerRE   = regexp.MustCompile(regexp.QuoteMeta(ColumnMarkerSecret) + `(?:[^\w=-]|$)`)
+	readableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(ColumnMarkerReadable) + `(?:[^\w=-]|$)`)
+)
+
+// DeclaresSecret reports whether the column's catalog comment carries
+// ColumnMarkerSecret, matched as a whole token.
+func (c Column) DeclaresSecret() bool { return secretMarkerRE.MatchString(c.Comment) }
+
+// ReadableReason returns the reason a ColumnMarkerReadable declaration gives,
+// and whether the column declares the marker at all. A declaration with no
+// reason returns ("", true): it is declared, and CheckMarkers rejects it.
+func (c Column) ReadableReason() (reason string, declared bool) {
+	return readableReason(c.Comment)
+}
+
+func readableReason(comment string) (string, bool) {
+	loc := readableMarkerRE.FindStringIndex(comment)
+	if loc == nil {
+		return "", false
+	}
+	rest := comment[loc[0]+len(ColumnMarkerReadable):]
+	// Another marker ends the reason; the separator (`—`, `-`, `:`) is not part of it.
+	if i := strings.Index(rest, "forge:"); i >= 0 {
+		rest = rest[:i]
+	}
+	rest = strings.TrimLeft(rest, " \t:;,.-–—=")
+	rest = strings.TrimSpace(rest)
+	for _, r := range rest {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return rest, true
+		}
+	}
+	return "", true
+}
 
 // ColumnMarkerNoSoftDelete declares that a table's `deleted_at` column is an
 // ordinary nullable timestamp, not forge's soft-delete tombstone:

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,6 +35,8 @@ func obsRun(t *testing.T, facts obsbackend.Facts, runner obsbackend.Runner, args
 		Facts: func(context.Context, io.Writer, string) (obsbackend.Facts, error) { return facts, nil },
 		Local: func(env string) obsbackend.Backend { return obsbackend.Local{Env: env, Runner: runner} },
 		Now:   func() time.Time { return obsNow },
+		// Nothing promoted: a verb test is not about the release ledger.
+		Release: func(context.Context, string, time.Time) (*liveRelease, error) { return nil, nil },
 	}
 	cmd := newTestRootCmd(t)
 	cmd.SetOut(&out)
@@ -80,8 +83,10 @@ func decode(t *testing.T, s string) map[string]any {
 	return m
 }
 
-// scriptedRunner answers by substring and records the statements.
+// scriptedRunner answers by substring and records the statements. It is safe
+// for concurrent use (obs status reads its sections at once).
 type scriptedRunner struct {
+	mu      sync.Mutex
 	ran     []string
 	answers []scriptedAnswer
 	err     error
@@ -93,6 +98,8 @@ type scriptedAnswer struct {
 }
 
 func (s *scriptedRunner) Run(_ context.Context, st obsquery.Stmt, _ obsbackend.Limits) (obsbackend.Result, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.ran = append(s.ran, st.SQL)
 	if s.err != nil {
 		return obsbackend.Result{}, s.err
@@ -289,7 +296,9 @@ func TestObsCloudUnreachableIsUndetermined(t *testing.T) {
 }
 
 // fakeCloudCaller answers procedures with canned JSON and records requests.
+// It is safe for concurrent use.
 type fakeCloudCaller struct {
+	mu      sync.Mutex
 	replies map[string]string
 	errs    map[string]error
 	calls   []fakeCloudCall
@@ -299,6 +308,8 @@ type fakeCloudCall struct{ procedure, body string }
 
 func (f *fakeCloudCaller) Call(_ context.Context, procedure string, req, out any) error {
 	b, _ := json.Marshal(req)
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, fakeCloudCall{procedure, string(b)})
 	if err := f.errs[procedure]; err != nil {
 		return err
@@ -482,5 +493,67 @@ func TestObsLogsFollowIsNDJSONDedupedAndEndsWithTheEnvelope(t *testing.T) {
 	}
 	if !strings.Contains(lines[0], `"body":"connection refused"`) || !strings.Contains(lines[2], `"end":true`) || !strings.Contains(lines[2], `"ok":true`) {
 		t.Errorf("lines:\n%s", out.String())
+	}
+}
+
+// traceOnlyBackend answers Trace with one span; nothing else is called.
+type traceOnlyBackend struct {
+	obsbackend.Backend
+	start time.Time
+}
+
+func (b traceOnlyBackend) Info() obsbackend.Info {
+	return obsbackend.Info{Env: "dev", Backend: obsbackend.BackendLocal}
+}
+
+func (b traceOnlyBackend) Trace(_ context.Context, req obsbackend.TraceRequest) (obsbackend.TraceResult, error) {
+	return obsbackend.TraceResult{TraceID: req.TraceID, Spans: []obsbackend.Span{{SpanID: "a", Name: "GET /x", Service: "api", Start: b.start, DurationNs: 1e6}}}, nil
+}
+
+// `obs trace` stamps the release live when the trace started; an unreadable
+// ledger warns and leaves the field out, never failing the verb.
+func TestObsTraceStampsTheLiveRelease(t *testing.T) {
+	start := obsNow.Add(-10 * time.Minute)
+	run := func(release func(context.Context, string, time.Time) (*liveRelease, error)) (string, string, error) {
+		var out, errb bytes.Buffer
+		old := obsDepsOverride
+		t.Cleanup(func() { obsDepsOverride = old })
+		obsDepsOverride = &obsDeps{
+			Facts:   func(context.Context, io.Writer, string) (obsbackend.Facts, error) { return devFacts(), nil },
+			Local:   func(string) obsbackend.Backend { return traceOnlyBackend{start: start} },
+			Now:     func() time.Time { return obsNow },
+			Release: release,
+		}
+		cmd := newTestRootCmd(t)
+		cmd.SetOut(&out)
+		cmd.SetErr(&errb)
+		cmd.SetArgs([]string{"obs", "trace", "0af7651916cd43dd8448eb211c80319c", "dev", "--json"})
+		err := cmd.ExecuteContext(context.Background())
+		return out.String(), errb.String(), err
+	}
+	var askedAt time.Time
+	out, _, err := run(func(_ context.Context, env string, at time.Time) (*liveRelease, error) {
+		askedAt = at
+		return &liveRelease{Version: "v1.4.2", PromotionID: "p-9", PromotedAt: at.Add(-time.Hour)}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !askedAt.Equal(start) {
+		t.Errorf("looked up the release at %v, want the trace start %v", askedAt, start)
+	}
+	rel, _ := decode(t, out)["release"].(map[string]any)
+	if rel["version"] != "v1.4.2" || rel["promotion_id"] != "p-9" {
+		t.Errorf("release %v", rel)
+	}
+
+	out, errOut, err := run(func(context.Context, string, time.Time) (*liveRelease, error) {
+		return nil, errors.New("ledger unreadable")
+	})
+	if err != nil {
+		t.Fatalf("an unreadable ledger failed the verb: %v", err)
+	}
+	if _, ok := decode(t, out)["release"]; ok || !strings.Contains(errOut, "release live in dev is unknown") {
+		t.Errorf("stdout %s stderr %s", out, errOut)
 	}
 }

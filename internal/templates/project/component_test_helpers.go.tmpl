@@ -267,6 +267,18 @@ func newTest{{.FieldName}}Deps(cfg *testConfig) Deps {
 	}
 {{- end}}
 {{- end}}
+{{- range .AutoMocks}}
+{{- if not .Optional}}
+	// {{.FieldName}} ({{.Interface}}) gets the mock forge generates for it,
+	// {{.MockType}}. A test that reaches this dependency sets the methods it
+	// calls — With{{$parent.FieldName}}Deps(Deps{ {{- .FieldName}}: &{{.MockType}}{...}}) — or
+	// supplies a real implementation; an unset method returns
+	// contractkit.MockNotSet, never a nil error.
+	if deps.{{.FieldName}} == nil {
+		deps.{{.FieldName}} = &{{.MockType}}{}
+	}
+{{- end}}
+{{- end}}
 {{- range .UnresolvedStubs}}
 	// TODO: stub {{.TypeExpr}} for the {{.FieldName}} field. {{if .Reason}}{{.Reason}}{{else}}forge couldn't
 	// load the package or the named type isn't an interface{{end}} — hand-roll a
@@ -306,11 +318,14 @@ func newTest{{.FieldName}}Deps(cfg *testConfig) Deps {
 // forge:optional-dep). NewTest{{$svc.FieldName}} leaves the field nil, so a
 // test that says nothing about it runs the code's nil path; a test of the
 // other path passes one: With{{$svc.FieldName}}Deps(Deps{ {{- .FieldName}}: &{{.StubType}}{...}}).
-// It is the same shape as a forge contract mock:
+// forge mocks this interface nowhere (no mock_gen.go has it), so the harness
+// synthesizes this double, the same shape as a forge contract mock:
 {{- else -}}
 // {{.StubType}} stands in for {{.InterfaceQualified}} (Deps.{{.FieldName}}) so
 // NewTest{{$svc.FieldName}} can construct the service even when the field is
-// required by validateDeps. It is the same shape as a forge contract mock:
+// required by validateDeps. forge mocks this interface nowhere (no mock_gen.go
+// has it), so the harness synthesizes this double, the same shape as a forge
+// contract mock:
 {{- end}}
 // program a method by setting its <Method>Func field, and assert calls through
 // the embedded contractkit.Recorder.

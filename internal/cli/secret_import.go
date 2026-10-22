@@ -82,7 +82,7 @@ that holds it (default: Bundle.bootstrap_source's):
 The destination store comes from the ExternalSecret that reads each name
 (--store picks one when two do). Google Secret Manager uses your Application
 Default Credentials. No value is ever printed, and none is taken as an
-argument. --dry-run reads the source and reports what would be created.`,
+argument. --dry-run reads the source and reports what would be created; for a Google\nSecret Manager destination it also checks (metadata only) which names already\nhold a value and would be left alone.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			envName, err := requireSecretEnv(env, "import --env <env> ...")
 			if err != nil {
@@ -101,7 +101,7 @@ argument. --dry-run reads the source and reports what would be created.`,
 	cmd.Flags().StringVar(&opts.FromFile, "from-file", "", "Read the single NAME's value from a file instead of stdin")
 	cmd.Flags().BoolVar(&opts.ToBootstrap, "to-bootstrap", false, "Write a BootstrapSecret's Google Secret Manager container instead of the store")
 	cmd.Flags().StringVar(&opts.Project, "project", "", "With --to-bootstrap: the Google project holding the container (default: Bundle.bootstrap_source's)")
-	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "Read the source and report what would be created; write nothing")
+	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "Read the source and report what would be created or left alone; write nothing")
 	addStoreFlags(cmd, &opts.storeOptions)
 	return cmd
 }
@@ -159,6 +159,14 @@ func runSecretImport(ctx context.Context, envName, name string, opts importOptio
 	var failed []string
 	for _, d := range dests {
 		if opts.DryRun {
+			exists, where, err := dryRunExists(ctx, envName, e, d.ref, d.item.name, opts.storeOptions, open)
+			if err != nil {
+				return err
+			}
+			if exists {
+				fmt.Fprintf(out, "%s: exists in %s, would be left unchanged (create-only; compare it with: forge env secrets verify %s)\n", d.item.name, where, envName)
+				continue
+			}
 			fmt.Fprintf(out, "%s: would create in the %s store (%d bytes)\n", d.item.name, d.ref, len(d.item.value))
 			continue
 		}
@@ -185,6 +193,35 @@ func runSecretImport(ctx context.Context, envName, name string, opts importOptio
 		return fmt.Errorf("%d name(s) were not imported: %s", len(failed), strings.Join(failed, ", "))
 	}
 	return nil
+}
+
+// dryRunExists is the existence check a real create-only write makes, for a
+// dry run: does the store already hold a usable value for name? It reads
+// metadata only (presence lists versions, never a payload).
+//
+// Only Google Secret Manager is consulted. Reaching the hosted store or
+// OpenBao takes a writer sign-in (a minted token, a port-forward), and a dry
+// run is promised to write and mint nothing; Secret Manager is reached with
+// the caller's own ADC, so asking costs nothing the real run would not.
+func dryRunExists(ctx context.Context, envName string, e *KCLEntities, ref storeRef, name string, o storeOptions, open map[storeRef]storeSource) (bool, string, error) {
+	if ref.Kind != release.StoreGCPSecretManager {
+		return false, "", nil
+	}
+	src, ok := open[ref]
+	if !ok {
+		var err error
+		src, err = openStoreSource(ctx, envName, e, ref, o, false)
+		if err != nil {
+			return false, "", err
+		}
+		open[ref] = src
+	}
+	versions, err := src.presence(ctx, []string{name})
+	if err != nil {
+		return false, "", err
+	}
+	_, exists := versions[name]
+	return exists, src.describe(), nil
 }
 
 // importSource reads the values: from a cluster Secret (--from/--map), or one

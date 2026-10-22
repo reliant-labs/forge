@@ -80,11 +80,10 @@ TraceId:abc123
 
 Logs are structured JSON with consistent attribute keys (`procedure`, `request_id`, `trace_id`, `duration_ms`, `user_id`, `status`, `code`, `error_class`). Emit the same attribute keys from your own log sites so dashboards stay queryable. A line that is not JSON (air's rebuild output, a panic) is kept as plain text under the same service.
 
-Or ask ClickHouse directly:
+Or ask from the shell, one JSON document per command (`forge obs status`, `issues`, `logs`, `trace`, `endpoints`, `query --sql`; local ClickStack or, hosted, the control plane). Depth: `observability/query`.
 
 ```bash
-docker compose exec clickstack sh -c 'clickhouse-client -u "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" \
-  -q "SELECT Timestamp, ServiceName, SeverityText, Body FROM default.otel_logs ORDER BY Timestamp DESC LIMIT 20"'
+forge obs logs dev --service api --severity error --json
 ```
 
 ## Error levels: who has to act

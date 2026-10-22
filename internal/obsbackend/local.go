@@ -18,6 +18,10 @@ import (
 type Local struct {
 	Env    string
 	Runner Runner
+	// Ledger opens this machine's release ledger, for `forge obs changes`.
+	// Nil when the caller has none; a read that needs it then fails with a
+	// remedy rather than a panic.
+	Ledger func() (LedgerReader, error)
 }
 
 // Info implements Backend.

@@ -1,6 +1,7 @@
 package depsurface
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -226,6 +227,212 @@ func TestNarrow_WritesTheConsumerInterfaceAndRetypesTheField(t *testing.T) {
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("the narrowed module does not build: %v\n%s", err, out)
+	}
+}
+
+// writeRolesFixture writes a module whose handler takes a 20-method foreign
+// interface, calls one method itself, fills the field in a setter (a write,
+// no use of it), and passes the value on: as two narrower interfaces the
+// callee declares (a parameter, a struct literal field, a struct field
+// assignment), as a type parameter's constraint and as a generic interface
+// in a generic callee's signature. Two other fields leave
+// as `any` and as a return value.
+func writeRolesFixture(t *testing.T) string {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("loads a fixture module through go/packages (a `go list` child process, several seconds); runs in task test")
+	}
+	dir := t.TempDir()
+	var wide, impl strings.Builder
+	for i := 1; i <= 16; i++ {
+		fmt.Fprintf(&wide, "\tM%02d()\n", i)
+		fmt.Fprintf(&impl, "func (*Impl) M%02d() {}\n", i)
+	}
+	files := map[string]string{
+		"go.mod": "module example.com/fx\n\ngo 1.22\n",
+		"internal/store/store.go": `package store
+
+import "context"
+
+type Daemon struct{ ID string }
+
+// Repository is the 20-method repository.
+type Repository interface {
+	Get(ctx context.Context, id string) (*Daemon, error)
+	Put(ctx context.Context, d *Daemon) error
+	Lister
+	Ping()
+` + wide.String() + `}
+
+// Lister is embedded in Repository.
+type Lister interface{ List() []Daemon }
+
+type Impl struct{}
+
+func (*Impl) Get(context.Context, string) (*Daemon, error) { return nil, nil }
+func (*Impl) Put(context.Context, *Daemon) error            { return nil }
+func (*Impl) List() []Daemon                                { return nil }
+func (*Impl) Ping()                                         {}
+` + impl.String(),
+		"internal/threads/threads.go": `package threads
+
+import (
+	"context"
+
+	"example.com/fx/internal/store"
+)
+
+// Reader is the role NewService declares; it embeds store.Lister.
+type Reader interface {
+	Get(ctx context.Context, id string) (*store.Daemon, error)
+	store.Lister
+}
+
+// Writer is the role Deps.Writer declares.
+type Writer interface {
+	Put(ctx context.Context, d *store.Daemon) error
+}
+
+type Service struct{ r Reader }
+
+func NewService(r Reader) *Service { return &Service{r: r} }
+
+type Deps struct{ Writer Writer }
+
+func New(d Deps) *Service { return nil }
+
+func Keep(x any) {}
+
+func Pinger[T interface{ M01() }](t T) {}
+
+// Box is generic: Box[T] in Boxed's signature names Boxed's own T.
+type Box[T any] interface{ M02() }
+
+func Boxed[T any](b Box[T]) {}
+`,
+		"internal/handlers/tools/service.go": `package tools
+
+import (
+	"example.com/fx/internal/store"
+	"example.com/fx/internal/threads"
+)
+
+type Deps struct {
+	Repo     store.Repository
+	Bagged   store.Repository
+	Returned store.Repository
+}
+
+type Service struct {
+	deps   Deps
+	reader threads.Reader
+}
+
+func (s *Service) Wire() {
+	s.deps.Repo.Ping()
+	_ = threads.NewService(s.deps.Repo)
+	_ = threads.New(threads.Deps{Writer: s.deps.Repo})
+	s.reader = s.deps.Repo
+	threads.Pinger(s.deps.Repo)
+	threads.Boxed[int](s.deps.Repo)
+	threads.Keep(s.deps.Bagged)
+	s.deps.Bagged.Ping()
+}
+
+// SetRepo fills the field: a write, not a use of its value.
+func (s *Service) SetRepo(r store.Repository) { s.deps.Repo = r }
+
+func (s *Service) Repo() store.Repository {
+	s.deps.Returned.Ping()
+	return s.deps.Returned
+}
+`,
+	}
+	for name, src := range files {
+		p := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// A field passed on as an interface the callee declares counts that
+// interface's methods as used — the union, not an exemption — while one
+// that leaves as `any` or a return value is still exempt.
+func TestAnalyze_PassingOnAsAnInterfaceAddsItsMethods(t *testing.T) {
+	dir := writeRolesFixture(t)
+	pkgs, err := Analyze(dir, []string{"internal/handlers/tools"})
+	if err != nil || len(pkgs) != 1 {
+		t.Fatalf("analyze: %v (%d packages)", err, len(pkgs))
+	}
+	repo := fieldNamed(t, pkgs[0], "Repo")
+	if len(repo.Methods) != 20 || repo.Escapes {
+		t.Fatalf("Repo: %d methods, Escapes=%v at %s — passing it on as an interface, or filling it, is no escape", len(repo.Methods), repo.Escapes, repo.EscapeAt)
+	}
+	// Ping called; Get+List as threads.Reader (List through its embedded
+	// store.Lister); Put as threads.Writer; M01 as Pinger's constraint; M02
+	// as Box[T].
+	if got := strings.Join(sortedUsed(repo), ","); got != "Get,List,M01,M02,Ping,Put" {
+		t.Errorf("Repo used = %s", got)
+	}
+	var roles []string
+	for _, r := range repo.Roles {
+		roles = append(roles, fmt.Sprintf("%s:%v", r.Type, r.Embeddable))
+	}
+	if got := strings.Join(roles, " "); got != "threads.Reader:true threads.Writer:true interface{ M01 }:false threads.Box[T]:false" {
+		t.Errorf("Repo roles = %s (the struct field assignment is the same Reader, recorded once)", got)
+	}
+	for _, name := range []string{"Bagged", "Returned"} {
+		if f := fieldNamed(t, pkgs[0], name); !f.Escapes || len(f.Used) != 1 {
+			t.Errorf("%s = %+v, want an escape (into %s) with only Ping used", name, f, map[string]string{"Bagged": "any", "Returned": "a return value"}[name])
+		}
+	}
+}
+
+// narrow-deps writes the union: the callee roles embedded, the rest of the
+// used methods spelled out, and the module still builds — every call that
+// passes the value on type-checks against the narrowed interface.
+func TestNarrow_EmbedsTheRolesTheValueIsPassedOnAs(t *testing.T) {
+	dir := writeRolesFixture(t)
+	res, err := Narrow(dir, "internal/handlers/tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Narrowed) != 1 || res.Narrowed[0].Field != "Repo" || strings.Join(res.Narrowed[0].Embeds, ",") != "threads.Reader,threads.Writer" {
+		t.Fatalf("narrowed = %+v", res.Narrowed)
+	}
+	if len(res.Skipped) != 2 {
+		t.Fatalf("skipped = %+v, want Bagged and Returned", res.Skipped)
+	}
+	deps, err := os.ReadFile(filepath.Join(dir, res.File))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"type Repository interface {", "\tthreads.Reader\n", "\tthreads.Writer\n", "\tM01()\n", "\tM02()\n", "\tPing()\n"} {
+		if !strings.Contains(string(deps), want) {
+			t.Errorf("deps.go lacks %q:\n%s", want, deps)
+		}
+	}
+	for _, covered := range []string{"\tGet(", "\tPut(", "\tList("} {
+		if strings.Contains(string(deps), covered) {
+			t.Errorf("deps.go spells out %q, which an embedded role already declares:\n%s", covered, deps)
+		}
+	}
+	cmd := exec.Command("go", "build", "./...")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the narrowed module does not build: %v\n%s\ndeps.go:\n%s", err, out, deps)
+	}
+	pkgs, err := Analyze(dir, []string{"internal/handlers/tools"})
+	if err != nil || len(pkgs) != 1 {
+		t.Fatalf("re-analyze: %v (%d packages)", err, len(pkgs))
+	}
+	if repo := fieldNamed(t, pkgs[0], "Repo"); repo.Foreign || len(Unused(repo)) != 0 {
+		t.Fatalf("after narrowing Repo = %+v", repo)
 	}
 }
 

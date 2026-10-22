@@ -90,7 +90,7 @@ task dev
 | `task dev-up` | Bring up local dev infra with `app-debug` (Delve on :2345) |
 | `task dev-up-prod` | Bring up local dev infra with the production `app` image |
 | `task dev-down` | Tear down local dev infra (`docker compose --profile '*' down`) |
-| `task proto` | Generate protobuf code via `buf generate` |
+| `task generate` | Regenerate everything forge generates, with the forge `forge.yaml` pins |
 | `task clean` | Clean generated files and build artifacts |
 
 Run `task --list` (or just `task`) at any time to see the full set of

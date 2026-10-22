@@ -101,6 +101,11 @@ func TestLintHelpSurface(t *testing.T) {
 		// a postgres foreign-key violation naming a constraint, never the
 		// proto line that caused it.
 		"create-nullability",
+		// Visible: a continuous rule about the user's own schema, and the only
+		// place a credential column the read-only role is refused surfaces by
+		// name. Left hidden, a project would learn forge_ro cannot read a
+		// column from a query failing in production.
+		"db-grants",
 		"fix",
 		// Visible because it is the only place a scaffold-once seed block's
 		// drift is legible: a fixture a later migration rejects fails in

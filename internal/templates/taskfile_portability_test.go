@@ -93,6 +93,11 @@ func externalCommands(t *testing.T, snippet string) []string {
 	// is a command PREFIX (`forge slot run --`, or nothing), so the command
 	// after it is the one to check: it neutralises to nothing.
 	text := strings.ReplaceAll(snippet, "{{.SLOT}}", "")
+	// {{.FORGE}} is the pinned forge, `go run …/cmd/forge@<pin>`: go is what
+	// the shell runs. {{.SCRIPT}} is the npm command line the `frontends`
+	// task runs in each frontend.
+	text = strings.ReplaceAll(text, "{{.FORGE}}", "go")
+	text = strings.ReplaceAll(text, "{{.SCRIPT}}", "npm")
 	text = taskTemplateExpr.ReplaceAllString(text, "x")
 	// Task parses with mvdan's bash dialect.
 	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(text), "")

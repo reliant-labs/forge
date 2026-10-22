@@ -512,6 +512,81 @@ func TestSecretImport_DryRunWritesNothingAndMintsNoToken(t *testing.T) {
 	}
 }
 
+// A dry run makes the same existence check the real create-only write does,
+// from metadata alone, so it never promises "would create" where the real run
+// would refuse.
+func TestSecretImport_DryRunToBootstrapReportsAContainerThatAlreadyHoldsAValue(t *testing.T) {
+	e := importEnv()
+	e.OpenBao.BootstrapNames = []string{"openbao-unseal-prod", "openbao-pg-password-prod"}
+	f := installStoreFixture(t, e)
+	f.kube.put("control-plane-prod", "control-plane-openbao", kubeSecret{Data: map[string][]byte{
+		"unseal": []byte(canary), "pg": []byte(canary + "-pg"),
+	}})
+	f.gsm.secrets["acme-prod/openbao-unseal-prod"] = []string{"already-escrowed"}
+
+	opts := importOptions{
+		DryRun: true, ToBootstrap: true, From: "control-plane-prod/control-plane-openbao",
+		Map: []string{"unseal=openbao-unseal-prod", "pg=openbao-pg-password-prod"},
+	}
+	out, err := run(t, func(o *bytes.Buffer) error {
+		return runSecretImport(context.Background(), "prod", "", opts, strings.NewReader(""), o)
+	})
+	if err != nil {
+		t.Fatalf("dry run: %v\n%s", err, out)
+	}
+	if l := lineOf(out, "openbao-unseal-prod"); !strings.Contains(l, "exists") || strings.Contains(l, "would create") {
+		t.Errorf("a container with a value must be reported as existing:\n%s", out)
+	}
+	if !strings.Contains(lineOf(out, "openbao-pg-password-prod"), "would create") {
+		t.Errorf("an absent container would be created:\n%s", out)
+	}
+	if f.gsm.accessed != 0 {
+		t.Errorf("a dry run read %d payload(s); it may read metadata only", f.gsm.accessed)
+	}
+	if len(f.gsm.created) != 0 || len(f.gsm.secrets["acme-prod/openbao-unseal-prod"]) != 1 {
+		t.Errorf("a dry run wrote: created=%v gsm=%v", f.gsm.created, f.gsm.secrets)
+	}
+	assertNoLeak(t, "dry run", out)
+
+	// And the real run then agrees with what the dry run reported.
+	opts.DryRun = false
+	real, _ := run(t, func(o *bytes.Buffer) error {
+		return runSecretImport(context.Background(), "prod", "", opts, strings.NewReader(""), o)
+	})
+	if !strings.Contains(lineOf(real, "openbao-unseal-prod"), "left unchanged") || !strings.Contains(lineOf(real, "openbao-pg-password-prod"), "created") {
+		t.Errorf("the real run disagrees with the dry run:\n%s", real)
+	}
+}
+
+// A container that exists with no usable version is writable, so the dry run
+// reports it as a create.
+func TestSecretImport_DryRunToBootstrapAContainerWithNoUsableVersionWouldBeCreated(t *testing.T) {
+	e := importEnv()
+	e.OpenBao.BootstrapNames = []string{"openbao-unseal-prod"}
+	f := installStoreFixture(t, e)
+	f.kube.put("control-plane-prod", "control-plane-openbao", kubeSecret{Data: map[string][]byte{"unseal": []byte(canary)}})
+	f.gsm.secrets["acme-prod/openbao-unseal-prod"] = []string{"disabled-one"}
+	f.gsm.disabled["acme-prod/openbao-unseal-prod"] = true
+
+	out, err := run(t, func(o *bytes.Buffer) error {
+		return runSecretImport(context.Background(), "prod", "", importOptions{
+			DryRun: true, ToBootstrap: true, From: "control-plane-prod/control-plane-openbao", Map: []string{"unseal=openbao-unseal-prod"},
+		}, strings.NewReader(""), o)
+	})
+	if err != nil || !strings.Contains(out, "would create") {
+		t.Errorf("err=%v out=%q", err, out)
+	}
+}
+
+func lineOf(out, needle string) string {
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, needle) {
+			return l
+		}
+	}
+	return ""
+}
+
 func TestSecretImport_AFailedWriteIsReportedAndNamed(t *testing.T) {
 	f := installStoreFixture(t, importEnv())
 	seedAppSecrets(f)

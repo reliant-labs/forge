@@ -19,6 +19,21 @@ env:
     sh: 'f="$(go env GOFLAGS 2>/dev/null)"; case " $f " in *" -trimpath"*|*" --trimpath"*) echo "$f" ;; *) echo "${f:+$f }-trimpath" ;; esac'
 
 vars:
+  # FORGE runs the forge THIS PROJECT pins: forge.yaml's forge_version. It
+  # is never whatever `forge` is first on PATH — that is routinely another
+  # version (a bundled forge, a months-old `go install`), and an older forge
+  # rejects a newer forge.yaml ("unknown key") or lints, gates and generates
+  # with templates the project did not pin. `go run module@version` builds
+  # the pinned forge once and then reuses the cached executable.
+  #
+  # Overrides, for forge developers and pins no proxy serves:
+  #   FORGE_BIN=/path/to/forge task ci     (environment), or
+  #   task ci FORGE=forge                  (command line).
+  # A pin that names no published forge (a +dirty build, `dev`) falls back to
+  # the forge on PATH, which then hands the command to the pin when it can.
+  FORGE_YAML:
+    sh: cat forge.yaml
+  FORGE: '{{`{{$pin := index (fromYaml .FORGE_YAML) "forge_version" | default "" | toString}}{{if .FORGE_BIN}}{{.FORGE_BIN}}{{else if or (eq $pin "") (eq $pin "dev") (contains "+" $pin)}}forge{{else}}go run github.com/reliant-labs/forge/cmd/forge@{{$pin}}{{end}}`}}'
   # GOTESTRACE is a TOP-LEVEL var on purpose: only global vars can be
   # overridden from the command line (`task test GOTESTRACE=`), which is how
   # the generated CI workflow passes through forge.yaml's `ci.test.race`.
@@ -37,6 +52,11 @@ vars:
   # verb rejects the flag loudly instead of printing its help and exiting 0
   # without running the tests. `test:short` takes no slot: the scoped inner
   # loop is not heavy and must not queue.
+  #
+  # The one deliberate use of the forge on PATH rather than FORGE: slots are
+  # machine-wide (every project and forge version shares one queue), and this
+  # probe runs on every `task` invocation, so it must cost nothing — never a
+  # `go run`.
   SLOT:
     sh: forge slot status --class heavy >/dev/null 2>&1 && echo 'forge slot run --class heavy --' || true
 
@@ -126,9 +146,7 @@ tasks:
     # inside it skip the queue (they would all be "inside a slot").
     desc: "The whole PR gate locally (what CI runs): ci:checks + test + test:integration, one summary"
     cmds:
-      - cmd: |
-          command -v forge >/dev/null 2>&1 || { echo "forge CLI not on PATH — the CI gate is 'forge ci gate' (https://github.com/reliant-labs/forge)" >&2; exit 1; }
-          forge ci gate all
+      - '{{`{{.FORGE}}`}} ci gate all'
 
   ci:checks:
     # The static and build lane — what the `checks` CI job runs after its one
@@ -137,9 +155,7 @@ tasks:
     # See `task ci` for the semantics; `forge ci gate --list` names every check.
     desc: "Static + build lane of the CI gate: verify-generated, lint, build, vuln-scan, KCL (what the CI `checks` job runs)"
     cmds:
-      - cmd: |
-          command -v forge >/dev/null 2>&1 || { echo "forge CLI not on PATH — the CI gate is 'forge ci gate' (https://github.com/reliant-labs/forge)" >&2; exit 1; }
-          forge ci gate checks
+      - '{{`{{.FORGE}}`}} ci gate checks'
 
   coverage:
     # HTML coverage report at coverage.html. Race testing happens in
@@ -158,21 +174,16 @@ tasks:
     # verify-generate has something to call.
     desc: Run forge generate (contract mocks, etc.)
     cmds:
-      - forge generate
+      - '{{`{{.FORGE}}`}} generate'
 
   verify-generate:
     # CI gate: regenerate everything, then assert nothing changed.
     # Catches silent codegen-mock drift where a contract gains a
     # parameter and the mock_gen.go is not refreshed — a recurring
     # pain point in contract-pack-style codegen packages.
-    desc: Verify generated code is committed up-to-date (CI guard)
+    desc: Verify generated code is committed up to date (forge ci verify-generated)
     cmds:
-      - task: generate
-      - cmd: |
-          if ! git diff --exit-code; then
-            echo "ERROR: Generated files are out of date. Run 'forge generate' (or 'task generate') and commit the result." >&2
-            exit 1
-          fi
+      - '{{`{{.FORGE}}`}} ci verify-generated'
 
   lint:
     desc: Run golangci-lint

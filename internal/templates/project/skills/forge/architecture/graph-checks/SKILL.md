@@ -18,7 +18,7 @@ The graph itself — providers, `compose.go`, roots and commands, each root's co
 
 | Rule | Flags | Severity |
 |---|---|---|
-| `forgeconv-deps-surface` | an interface field declaring methods the package never calls through it | error for a foreign interface of more than ten methods; warning otherwise |
+| `forgeconv-deps-surface` | an interface field declaring methods the package never needs through it: never calls, and never passes on as an interface (a parameter, a struct field) that declares them | error for a foreign interface of more than ten methods; warning otherwise |
 | `forgeconv-no-container-deps` | a field holding a container: an `internal/app` type, `cmd.Deps`, a `map[string]any` locator, `any` | error |
 | `forgeconv-deps-no-downcast` | a type assertion turning a field back into a concrete type | error |
 | `forgeconv-no-getenv` | `os.Getenv` / `LookupEnv` / `Environ` in a component package: configuration its root's reach cannot see | warning |
@@ -26,7 +26,7 @@ The graph itself — providers, `compose.go`, roots and commands, each root's co
 
 `--strict` makes every finding but the last an error.
 
-`forge fix narrow-deps internal/handlers/<svc>` fixes the first: it declares, in the package (its `contract.go`, or `deps.go`), an interface holding exactly the methods the package calls, retypes the field, and writes its mock (`mock_gen.go`, kept in step by `forge generate`). `compose.go` needs no change — the value it hands the field still satisfies the narrower interface.
+`forge fix narrow-deps internal/handlers/<svc>` fixes the first: it declares, in the package (its `contract.go`, or `deps.go`), an interface holding exactly the methods the package uses — those it calls, with each interface it passes the value on as embedded, so every call that hands it on still type-checks — retypes the field, and writes its mock (`mock_gen.go`, kept in step by `forge generate`). `compose.go` needs no change — the value it hands the field still satisfies the narrower interface.
 
 A project scaffolded before the graph keeps its `Infra`/`OpenInfra` + `NewComponents` composition, and forge generates for it exactly as before, until it migrates: `forge fix composition-graph` converts what forge scaffolded, or lists (writing nothing) each shape of yours it cannot; `migrations/v0.1.47` is the rest of the path.
 

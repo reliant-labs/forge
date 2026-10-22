@@ -57,6 +57,11 @@
   "co_occurring_issue_ids": [
     "ISS-1"
   ],
+  "release": {
+    "version": "v1.4.0",
+    "promotion_id": "p-14",
+    "promoted_at": "2026-10-22T09:00:00Z"
+  },
   "first_release": {
     "version": "v1.3.0",
     "git_commit": "abc1234",

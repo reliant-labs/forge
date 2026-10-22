@@ -34,6 +34,7 @@ export {
  * SHOWS an error goes through.
  */
 export {
+  codeName,
   ConnectClientError,
   FORGE_ERROR_REASON_HEADER,
   isRetryableCode,

@@ -797,7 +797,7 @@ type Deps struct {
 	}
 	shared := newTypesResolver(root, depsSelectorImports(dirs))
 	for _, dir := range dirs {
-		got, gotUnresolved := computeAutoStubsWith(dir, shared)
+		got, _, gotUnresolved := computeDepsDoubles(dir, shared)
 		want, wantUnresolved := computeAutoStubs(dir, "")
 		if len(got) == 0 || !reflect.DeepEqual(got, want) || !reflect.DeepEqual(gotUnresolved, wantUnresolved) {
 			t.Errorf("%s: shared resolver stubs = %+v (unresolved %v), per-directory = %+v (unresolved %v)",

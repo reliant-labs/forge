@@ -22,6 +22,7 @@ const (
 	procIdentityStatus = "controlplane.v1.IdentityService/GetIdentityStatus"
 	procIdentityUsers  = "controlplane.v1.IdentityService/ListUsers"
 	procIdentityInvite = "controlplane.v1.IdentityService/InviteUser"
+	procIdentityExport = "controlplane.v1.IdentityService/RequestExport"
 )
 
 func newCloudIdentityCmd() *cobra.Command {
@@ -30,8 +31,8 @@ func newCloudIdentityCmd() *cobra.Command {
 		Long: `Manage the identity an environment declares in KCL, using its control plane.
 
 Reads (status, users) need identity:read; every verb that changes a user
-(invite, set-roles, reset, lock, unlock, delete, revoke-sessions) needs
-identity:manage and an org admin. Under Reliant, or after forge login, nothing
+(invite, set-roles, reset, lock, unlock, delete, revoke-sessions) and export
+need identity:manage and an org admin. Under Reliant, or after forge login, nothing
 extra is needed: when the control plane answers that the credential lacks one of
 those scopes, forge trades it for the scope on demand (an hour, and only while
 the person behind the session holds the grant), as deploy does for deploy:read.
@@ -51,7 +52,7 @@ a credential. There is no password option, seed account or implicit recipient.
 Roles managed in deploy/kcl/identity.k (members_from = "declared") are
 read-only here.`,
 	}
-	cmd.AddCommand(newCloudIdentityStatusCmd(), newCloudIdentityUsersCmd(), newCloudIdentityInviteCmd())
+	cmd.AddCommand(newCloudIdentityStatusCmd(), newCloudIdentityUsersCmd(), newCloudIdentityInviteCmd(), newCloudIdentityExportCmd())
 	cmd.AddCommand(newCloudIdentityUserVerbs()...)
 	return cmdutil.StrictGroup(cmd)
 }
@@ -103,6 +104,27 @@ type identityDeliveryWire struct {
 	State          string `json:"state"`
 	LastError      string `json:"lastError,omitempty"`
 	LastVerifiedAt string `json:"lastVerifiedAt,omitempty"`
+	// LastWrittenAt moves only when the delivered content changed.
+	LastWrittenAt string `json:"lastWrittenAt,omitempty"`
+}
+
+// identityEnvironmentWire is controlplane.v1.IdentityEnvironment: an env id
+// with its name, as the control plane resolved it.
+type identityEnvironmentWire struct {
+	ID      string `json:"id"`
+	Name    string `json:"name,omitempty"`
+	Project string `json:"project,omitempty"`
+}
+
+// label is the env's name (with its project), else its id.
+func (e identityEnvironmentWire) label() string {
+	switch {
+	case e.Name == "":
+		return e.ID
+	case e.Project != "":
+		return e.Project + "/" + e.Name
+	}
+	return e.Name
 }
 
 type identityStatusDocument struct {
@@ -127,6 +149,14 @@ type identityStatusDocument struct {
 	// MailDelivery is controlplane.v1.IdentityMailDelivery: whether the
 	// instance can email invitations and reset links.
 	MailDelivery string `json:"mailDelivery,omitempty"`
+	// NotEnabledReason is controlplane.v1.IdentityNotEnabledReason, and
+	// NotEnabledMessage the same as a sentence: why there is no instance.
+	NotEnabledReason  string `json:"notEnabledReason,omitempty"`
+	NotEnabledMessage string `json:"notEnabledMessage,omitempty"`
+	// OwnerEnvironment and SharerEnvironments are the id fields above with
+	// their names.
+	OwnerEnvironment   *identityEnvironmentWire  `json:"ownerEnvironment,omitempty"`
+	SharerEnvironments []identityEnvironmentWire `json:"sharerEnvironments,omitempty"`
 }
 
 // mailDeliveryText says what an invitation or a reset does on this instance.
@@ -186,13 +216,26 @@ func newCloudIdentityStatusCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 			if !doc.HasInstance {
 				fmt.Fprintln(out, "No managed identity instance.")
+				if doc.NotEnabledMessage != "" {
+					fmt.Fprintln(out, doc.NotEnabledMessage)
+				}
 			} else {
 				fmt.Fprintf(out, "State: %s\nIssuer: %s\nMail: %s\n", doc.State, doc.Issuer, mailDeliveryText(doc.MailDelivery))
+				if o := doc.OwnerEnvironment; o != nil && o.ID != fmt.Sprint(req["environmentId"]) {
+					fmt.Fprintf(out, "Owner: %s (this environment shares its identity)\n", o.label())
+				}
+				for _, sh := range doc.SharerEnvironments {
+					fmt.Fprintf(out, "Shared with: %s\n", sh.label())
+				}
 				for _, app := range doc.Apps {
 					fmt.Fprintf(out, "App: %s (client %s)\n", app.Name, app.ClientID)
 				}
 				for _, d := range doc.Deliveries {
-					fmt.Fprintf(out, "Delivery: %s %s/%s/%s %s %s\n", d.Kind, d.Cluster, d.Namespace, d.Name, d.State, d.LastError)
+					written := ""
+					if d.LastWrittenAt != "" {
+						written = " written " + d.LastWrittenAt
+					}
+					fmt.Fprintf(out, "Delivery: %s %s/%s/%s %s%s %s\n", d.Kind, d.Cluster, d.Namespace, d.Name, d.State, written, d.LastError)
 				}
 			}
 			if doc.Refused != "" {
@@ -208,6 +251,59 @@ func newCloudIdentityStatusCmd() *cobra.Command {
 	return cmd
 }
 
+// identityExportDocument is RequestIdentityExportResponse. The URL is a
+// bearer credential for every user's password hash.
+type identityExportDocument struct {
+	jsonEnvelope
+	ExportURL string `json:"exportUrl"`
+	ExpiresAt string `json:"expiresAt,omitempty"`
+}
+
+func newCloudIdentityExportCmd() *cobra.Command {
+	var f cloudIdentityFlags
+	cmd := &cobra.Command{
+		Use: "export <env>", Short: "Export the identity's users now and print a short-lived download URL (identity:manage)",
+		Long: `Ask the control plane to export the environment's identity instance — every
+user, password hashes included, in Zitadel's import format — and print a signed
+download URL valid for minutes. Requests within the same 15 minutes share one
+export. For a withdrawn identity the URL is for the export written when it was
+withdrawn.
+
+The URL is a credential: anyone holding it can download every user's password
+hash until it expires. It is printed once and never logged; do not paste it
+into a ticket or a chat. Needs identity:manage and, for a person, an org admin
+holding the identity:manage grant. Refused where export is not enabled for the
+control plane, or the instance is not ready.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, req, err := f.target(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			var doc identityExportDocument
+			if err := client.Call(cmd.Context(), procIdentityExport, req, &doc); err != nil {
+				return fmt.Errorf("identity export: %w", err)
+			}
+			if strings.TrimSpace(doc.ExportURL) == "" {
+				return fmt.Errorf("identity export: the control plane answered with no download URL")
+			}
+			doc.stamp(nil)
+			if f.json {
+				return writeJSONDocument(cmd.OutOrStdout(), doc)
+			}
+			out := cmd.OutOrStdout()
+			expires := "within minutes"
+			if doc.ExpiresAt != "" {
+				expires = "at " + doc.ExpiresAt
+			}
+			fmt.Fprintf(out, "Identity export — a credential: it holds every user's password hash. The link expires %s.\n  %s\n", expires, doc.ExportURL)
+			return nil
+		},
+	}
+	f.register(cmd)
+	return cmd
+}
+
 type identityUserWire struct {
 	UserID      string   `json:"userId"`
 	Email       string   `json:"email"`
@@ -215,6 +311,8 @@ type identityUserWire struct {
 	State       string   `json:"state"`
 	Roles       []string `json:"roles"`
 	CreatedAt   string   `json:"createdAt,omitempty"`
+	// LastSignInAt is unset for a user who never signed in.
+	LastSignInAt string `json:"lastSignInAt,omitempty"`
 }
 
 type identityRoleWire struct {
@@ -229,6 +327,8 @@ type identityUsersDocument struct {
 	Users         []identityUserWire `json:"users"`
 	NextPageToken string             `json:"nextPageToken"`
 	Roles         []identityRoleWire `json:"roles"`
+	// TotalSize is how many users match across every page.
+	TotalSize int32 `json:"totalSize,omitempty"`
 }
 
 func newCloudIdentityUsersCmd() *cobra.Command {
@@ -260,12 +360,15 @@ func newCloudIdentityUsersCmd() *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 			tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "EMAIL\tUSER ID\tSTATE\tROLES")
+			fmt.Fprintln(tw, "EMAIL\tUSER ID\tSTATE\tROLES\tLAST SIGN-IN")
 			for _, u := range doc.Users {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", u.Email, u.UserID, u.State, strings.Join(u.Roles, ","))
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", u.Email, u.UserID, u.State, strings.Join(u.Roles, ","), emptyOr(u.LastSignInAt, "-"))
 			}
 			if err := tw.Flush(); err != nil {
 				return err
+			}
+			if doc.TotalSize > 0 {
+				fmt.Fprintf(out, "%d of %d user(s)\n", len(doc.Users), doc.TotalSize)
 			}
 			for _, r := range doc.Roles {
 				fmt.Fprintf(out, "Role: %s (declared/read-only: %t)\n", r.Key, r.Declared)

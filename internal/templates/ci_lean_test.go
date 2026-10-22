@@ -217,7 +217,8 @@ func TestTaskfiles_DeclareTheCILanes(t *testing.T) {
 				}
 			}
 		}
-		for _, want := range []string{"forge ci gate all", "forge ci gate checks"} {
+		// {{.FORGE}}: the pinned forge (taskfile_pinned_forge_test.go).
+		for _, want := range []string{"{{.FORGE}} ci gate all", "{{.FORGE}} ci gate checks"} {
 			if !strings.Contains(all.String(), want) {
 				t.Errorf("%s: ci / ci:checks never run %q", tmpl, want)
 			}

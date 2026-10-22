@@ -86,18 +86,30 @@ and server spans into one trace.
 
 ### Typed errors
 
-Failures are normalized to `ConnectClientError`:
+Failures are normalized to `ConnectClientError`, a **subclass of
+`ConnectError`**: `err instanceof ConnectError` still holds, `.code` is still
+the numeric `Code`, and `.metadata`, `.details`, `findDetails()` and
+`.rawMessage` are the original error's. Code written against connect-es keeps
+working when the runtime chain is put in front of it, so an existing app can
+adopt the runtime one call site at a time. What the normalized error adds:
 
 | field | what it is |
 | --- | --- |
 | `.reason` | **stable machine code** the backend stamps on every error (`"not_found"`, `"duplicate"`, `"reference_in_use"`, …), or `null` |
-| `.code` | canonical Connect code name (`"not_found"`, `"unavailable"`, …) |
+| `.code` | the Connect `Code` (numeric, as on any `ConnectError`) |
+| `.codeName` | its canonical wire name (`"not_found"`, `"unavailable"`, …); `codeName(code)` spells one |
 | `.status` | approximate HTTP status, for telemetry and generic UI |
-| `.retryable` | true for transient failures worth a transparent retry |
+| `.retryable` | true for transient failures (unavailable, deadline-exceeded, aborted, resource-exhausted) |
+| `.traceId` | the trace the failed request was recorded in, or `null` |
 
-Retryable transient failures (unavailable, deadline-exceeded, aborted,
-resource-exhausted) are retried with exponential backoff + jitter (unary only
-— streams are never retried).
+A failure that never reached a server is a `ConnectClientError` too: a
+network fault (`TypeError`) is `Code.Unavailable` and retryable, an aborted
+fetch is `Code.Canceled`, anything else `Code.Unknown`. Its `.name` is
+`"ConnectError"`, which is what connect-es's `instanceof` requires.
+
+The default chain does not retry: React Query owns retries, keyed on
+`.retryable`. `retryInterceptor` is exported for a raw transport used outside
+React Query (idempotent unary rpcs only — streams are never retried).
 
 ```ts
 import {
@@ -108,7 +120,7 @@ import {
 } from "@reliantlabs/forge-web-runtime";
 ```
 
-**The rule: branch on `.reason` (or `.code`), render with `userMessage(err)`,
+**The rule: branch on `.reason` (or `.code` / `.codeName`), render with `userMessage(err)`,
 never match on message text.** Message prose is display-only — it is written
 for humans, it gets reworded, and it is localized eventually; a `switch` on it
 is a bug that ships green.

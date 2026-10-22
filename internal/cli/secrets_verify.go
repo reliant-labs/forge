@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // `forge env secrets verify` and `adopt`: steps 2 and 3 of the per-Secret
@@ -87,7 +89,14 @@ low-entropy secret is as good as the secret to anyone who can guess. The exit
 status is non-zero if any key is not a match.
 
 <secret> is a Secret name, or <namespace>/<name>; omit it to verify every
-store-backed Secret the env declares.`,
+store-backed Secret the env declares.
+
+With --against gsm: and an explicit --map, <secret> need not be declared by any
+store-backed ExternalSecret: the --map keys are the Secret's keys and their
+values the GSM ids to compare with. This is the pre-migration escrow check:
+
+  forge env secrets verify prod control-plane-prod/control-plane-openbao-unseal \
+      --against gsm:reliant-labs-475814 --map static-key=openbao-unseal-prod`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			secret := ""
 			if len(args) == 2 {
@@ -162,7 +171,17 @@ func runSecretsVerify(ctx context.Context, envName, secretArg string, opts secre
 	}
 	targets, err := findStoreSecrets(e, secretArg)
 	if err != nil {
-		return err
+		// An explicit --map against GSM names the Secret's keys and their GSM
+		// ids itself, so it needs no declared ExternalSecret: this is the
+		// escrow check made before a Secret is migrated onto a store.
+		synth, ok, serr := explicitGSMTarget(e, secretArg, opts)
+		if serr != nil {
+			return serr
+		}
+		if !ok {
+			return err
+		}
+		targets = []ExternalSecretEntity{synth}
 	}
 	kube, err := newKubeAccess(kubeContextFor(e, storeOptions{KubeContext: opts.KubeContext}))
 	if err != nil {
@@ -192,6 +211,39 @@ func runSecretsVerify(ctx context.Context, envName, secretArg string, opts secre
 		return err
 	}
 	return printVerify(out, envName, rows, opts.Against)
+}
+
+// explicitGSMTarget builds the Secret to verify from --against gsm: and --map
+// alone, for a Secret no store-backed ExternalSecret declares. ok is false
+// when the flags do not ask for that, and the caller reports the original
+// "no such ExternalSecret" error.
+func explicitGSMTarget(e *KCLEntities, secretArg string, opts secretsVerifyOptions) (es ExternalSecretEntity, ok bool, err error) {
+	if !strings.HasPrefix(opts.Against, "gsm:") || len(opts.Against) == len("gsm:") || len(opts.Map) == 0 || secretArg == "" {
+		return ExternalSecretEntity{}, false, nil
+	}
+	overrides, err := parseGSMMap(opts.Map)
+	if err != nil {
+		return ExternalSecretEntity{}, false, err
+	}
+	ns, name, qualified := strings.Cut(secretArg, "/")
+	if !qualified {
+		ns, name = "", secretArg
+		if e.ClusterTarget != nil {
+			ns = e.ClusterTarget.Namespace
+		}
+	}
+	if ns == "" || name == "" || strings.Contains(name, "/") {
+		return ExternalSecretEntity{}, false, fmt.Errorf("%q is not a Secret no ExternalSecret declares: name it <namespace>/<name>", secretArg)
+	}
+	keys := make([]string, 0, len(overrides))
+	for k := range overrides {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return ExternalSecretEntity{
+		Name: name, Namespace: ns, Keys: keys,
+		Source: &StoreSourceEntity{RenderedStoreSource: release.RenderedStoreSource{Data: overrides}},
+	}, true, nil
 }
 
 // verifyAgainstShadow compares each store-backed Secret with its shadow.

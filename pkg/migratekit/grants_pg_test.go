@@ -54,7 +54,7 @@ func mustRender(t *testing.T, tables ...dbgrants.Table) string {
 
 func usersTable(secretToken bool) dbgrants.Table {
 	return dbgrants.Table{Schema: "public", Name: "users", Columns: []dbgrants.Column{
-		{Name: "id"}, {Name: "email"}, {Name: "api_token", Secret: secretToken},
+		{Name: "id"}, {Name: "email"}, {Name: "api_token", Secret: secretToken, Readable: !secretToken},
 	}}
 }
 

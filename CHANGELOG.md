@@ -9,19 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`forge storage gocache`: the Go-cache trim as its own pass.** The shared
-  build cache, golangci-lint cache, orphaned private caches and goimports
-  indexes, alone, with the whole budget (`--budget`, default 10m) under the
-  maintenance lock; `--apply` records `last-gocache-gc.json`. Meant to run every
-  few minutes where builds outgrow an hourly trim: under agent load entries
-  cross the 2h safety floor at ~25 GiB/h. Every pass's record now carries
-  `go_caches` — each cache's estimated size, budget, bytes inside the floor,
-  cutoff, removals and shard coverage (`storage.GoCacheTrim`). A Go-cache trim
-  stopped by its deadline is now recorded as cut off; it was dropped, so under
-  load a trim that ran out of its slice recorded a clean pass while entries
-  past the floor piled up. A step the slice never reached is recorded as cut
-  off too, and a shared cache that cannot be located (`go env` fails) is a
-  failure rather than a silent skip.
+- **An identity line in `forge env status` and `forge env deploy` (FI7).** A
+  hosted env that declares `forge.ManagedIdentity` shows `identity: ready /
+  provisioning / degraded / failed: <reason>`, read from its control plane's
+  `IdentityService/GetIdentityStatus` (status and `--json`; it never changes
+  `env status`'s exit code). The deploy readiness wait (and `env status --wait`)
+  waits on it: a release whose rollout succeeded is `waiting_on_identity` until
+  the identity is ready. Still provisioning at the deadline is the timed-out
+  exit; failing or degraded at the deadline, or a refused declaration at once,
+  is exit 1. An identity forge cannot read is reported and never holds a deploy.
+- **`forge cloud identity export <env>`** exports the instance on demand
+  (`RequestExport`) and prints a short-lived signed download URL, a credential.
+  `users` gains each user's last sign-in and the total count; `status` names
+  why there is no instance and the owner/sharer environments by name, and each
+  delivery's last write.
 
 - **`forge.ControlPlaneSecret` can be delivered through the store (SF14).**
   `delivery = "store"` (with `store = forge.HostedStore {org, env_id}`) makes the

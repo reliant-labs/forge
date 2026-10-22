@@ -70,6 +70,8 @@ task test              # run tests with race detector
 forge generate                 # regenerate code (use when stale gen is suspected)
 ```
 
+**Ask the running system before reading code.** `forge obs status <env>` says what is wrong now (erroring services, new and regressed issues, alerts, stale telemetry, the release in force); `forge obs issue <id> <env>` gives the culprit, the latest event's trace and the suspect commits; `forge obs trace <trace-id> <env>` and `forge obs logs <env> --trace <trace-id>` give the request itself; `forge db query <env> "<select>"` gives the rows (`db/query`). Each prints one JSON document with `--json` whose `suggested[]` names the next command. Locally they read the ClickStack `forge env up` started, so they work in dev too. Depth: `observability/query`.
+
 **Pick the tool for the job — and know where each stops short:**
 
 - **`forge project introspect handlers` to localize.** Prints every RPC path the assembled

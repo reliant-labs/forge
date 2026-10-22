@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/pkg/obsquery"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // Facts are what an env's resolved KCL says about where its telemetry goes
@@ -22,6 +23,9 @@ type Facts struct {
 	HasHosted bool
 	// ControlPlane is the env's control_plane endpoint; "" when it declares none.
 	ControlPlane string
+	// ReleaseHealth is the env's recorded release-health policy; nil means
+	// every default.
+	ReleaseHealth *release.ShapeReleaseHealth
 }
 
 // Destination is Observability.destination.

@@ -75,6 +75,7 @@ func canaryFixture(t *testing.T) *storeFixture {
 	live := map[string]string{"github_app_private_key": canary, "webhook": canary, "dsn": canary}
 	f.kube.put("control-plane-prod", "control-plane-secrets", secretWith(live, map[string]string{lastAppliedAnnotation: `{"data":{"k":"` + canary + `"}}`}, 0))
 	f.kube.put("control-plane-prod", "control-plane-secrets-eso-shadow", secretWith(live, nil, 0))
+	f.kube.put("control-plane-prod", "escrowed-undeclared", secretWith(live, nil, 0))
 	f.gsm.secrets["acme-prod/GITHUB_APP_PRIVATE_KEY"] = []string{canary}
 	f.gsm.secrets["acme-prod/GITHUB_WEBHOOK_SECRET"] = []string{canary + "-different"}
 	return f
@@ -125,6 +126,17 @@ func TestInvariant_NoCommandPrintsAValueOrItsDigest(t *testing.T) {
 				DryRun: true, From: "control-plane-prod/control-plane-secrets",
 				Map: []string{"github_app_private_key=GITHUB_APP_PRIVATE_KEY"},
 			}, nil, o)
+		},
+		"import --dry-run --to-bootstrap (container exists)": func(t *testing.T, o *bytes.Buffer) error {
+			return runSecretImport(ctx, "prod", "", importOptions{
+				DryRun: true, ToBootstrap: true, From: "control-plane-prod/control-plane-secrets",
+				Map: []string{"github_app_private_key=GITHUB_APP_PRIVATE_KEY", "webhook=GITHUB_WEBHOOK_SECRET"},
+			}, nil, o)
+		},
+		"verify against gsm with an explicit map (undeclared secret)": func(t *testing.T, o *bytes.Buffer) error {
+			return runSecretsVerify(ctx, "prod", "control-plane-prod/escrowed-undeclared", secretsVerifyOptions{
+				Against: "gsm:acme-prod", Map: []string{"github_app_private_key=GITHUB_APP_PRIVATE_KEY", "webhook=GITHUB_WEBHOOK_SECRET"},
+			}, o)
 		},
 		"import from stdin": func(t *testing.T, o *bytes.Buffer) error {
 			return runSecretImport(ctx, "prod", "GITHUB_APP_PRIVATE_KEY", importOptions{}, strings.NewReader(canary), o)

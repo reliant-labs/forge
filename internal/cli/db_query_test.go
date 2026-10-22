@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/reliant-labs/forge/internal/releasetimeline"
 	"github.com/reliant-labs/forge/pkg/dbquery"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -30,6 +33,13 @@ func dbQueryFixture(runtime, dsn string) string {
 // runDBQueryCmd runs `forge db query args...` and returns stdout and the error.
 func runDBQueryCmd(t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	// The release lookup reads a ledger; a test that is not about it sees
+	// "nothing promoted yet".
+	if !releaseStubbed {
+		prev := liveReleaseAt
+		liveReleaseAt = func(context.Context, string, time.Time) (*liveRelease, error) { return nil, nil }
+		t.Cleanup(func() { liveReleaseAt = prev })
+	}
 	cmd := newDBCmd()
 	var out, errout bytes.Buffer
 	cmd.SetOut(&out)
@@ -127,7 +137,7 @@ func fixtureResult() *dbquery.Result {
 
 func TestDBQueryTableAndCSV(t *testing.T) {
 	var table bytes.Buffer
-	if err := writeDBQueryTable(&table, fixtureResult()); err != nil {
+	if err := writeDBQueryTable(&table, fixtureResult(), nil); err != nil {
 		t.Fatal(err)
 	}
 	wantTable := "id  name                  meta     ok\n" +
@@ -260,5 +270,72 @@ func TestDBQueryDirectAgainstPostgres(t *testing.T) {
 	out, err = runDBQueryCmd(t, "dev", "select count(*) from jobs", "--format", "csv")
 	if err != nil || out != "count\n3\n" {
 		t.Errorf("a write landed: %v %q", err, out)
+	}
+}
+
+// releaseStubbed is set by a test that installs its own liveReleaseAt.
+var releaseStubbed bool
+
+func TestReleaseFromAt(t *testing.T) {
+	if releaseFromAt(releasetimeline.AtResult{BeforeHistory: true}) != nil {
+		t.Error("nothing promoted yet is no release")
+	}
+	at := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
+	got := releaseFromAt(releasetimeline.AtResult{Live: &releasetimeline.Entry{Version: "v1.4.2", PromotionID: "p-9", At: at}, Unsettled: true})
+	if got == nil || got.Version != "v1.4.2" || got.PromotionID != "p-9" || !got.PromotedAt.Equal(at) || !got.Unsettled {
+		t.Errorf("%+v", got)
+	}
+}
+
+// The release live when the query ran is stamped on the document and the
+// table footer; a ledger that cannot be read warns and never fails the query.
+func TestDBQueryStampsTheLiveRelease(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots a real postgres (pgtest); runs in task test")
+	}
+	dsn, cleanup, err := pgtest.NewURL()
+	if err != nil {
+		t.Fatalf("pgtest.NewURL: %v", err)
+	}
+	t.Cleanup(cleanup)
+	withKCLFixture(t, dbQueryFixture(RuntimeHost, dsn))
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	prev := liveReleaseAt
+	releaseStubbed = true
+	t.Cleanup(func() { liveReleaseAt, releaseStubbed = prev, false })
+	var asked string
+	liveReleaseAt = func(_ context.Context, env string, at time.Time) (*liveRelease, error) {
+		asked = env
+		if at.IsZero() {
+			t.Error("the lookup was not given the query time")
+		}
+		return &liveRelease{Version: "v1.4.2", PromotionID: "p-9", PromotedAt: at.Add(-time.Hour)}, nil
+	}
+	out, err := runDBQueryCmd(t, "dev", "select 1 as n", "--json")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if asked != "dev" || !strings.Contains(out, `"release": {`) || !strings.Contains(out, `"version": "v1.4.2"`) {
+		t.Errorf("release not stamped (asked %q):\n%s", asked, out)
+	}
+	out, err = runDBQueryCmd(t, "dev", "select 1 as n")
+	if err != nil || !strings.Contains(out, "; release v1.4.2") {
+		t.Errorf("table footer: %v\n%s", err, out)
+	}
+
+	liveReleaseAt = func(context.Context, string, time.Time) (*liveRelease, error) {
+		return nil, errors.New("ledger unreadable")
+	}
+	cmd := newDBCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"query", "dev", "select 1 as n", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("an unreadable ledger failed the query: %v", err)
+	}
+	if strings.Contains(stdout.String(), `"release"`) || !strings.Contains(stderr.String(), "release live in dev is unknown") {
+		t.Errorf("stdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
 	}
 }

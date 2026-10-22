@@ -19,7 +19,7 @@ var obsTraceSchema = obsout.Schema{
 	Name: schemaObsTrace,
 	Fields: []string{
 		"scope", "scope.env", "scope.backend", "scope.from", "scope.to",
-		"query_mode", "trace_id", "start", "duration_ms", "spans_total", "spans_shown", "capped", "orphans",
+		"query_mode", "trace_id", "start", "release", "release.version", "release.promotion_id", "release.promoted_at", "release.unsettled", "duration_ms", "spans_total", "spans_shown", "capped", "orphans",
 		"errors", "errors.span_id", "errors.service", "errors.name", "errors.message", "errors.exception",
 		"tree", "tree.span_id", "tree.service", "tree.name", "tree.kind", "tree.status", "tree.offset_ms", "tree.duration_ms",
 		"tree.count", "tree.min_ms", "tree.p50_ms", "tree.p95_ms", "tree.max_ms", "tree.error", "tree.critical", "tree.hidden",
@@ -68,10 +68,12 @@ type obsTraceLogDoc struct {
 
 type obsTraceDoc struct {
 	obsout.Head
-	Scope         obsout.Scope           `json:"scope"`
-	QueryMode     string                 `json:"query_mode"`
-	TraceID       string                 `json:"trace_id"`
-	Start         time.Time              `json:"start"`
+	Scope     obsout.Scope `json:"scope"`
+	QueryMode string       `json:"query_mode"`
+	TraceID   string       `json:"trace_id"`
+	Start     time.Time    `json:"start"`
+	// Release is the release live in the env when the trace started.
+	Release       *liveRelease           `json:"release,omitempty"`
 	DurationMs    float64                `json:"duration_ms"`
 	SpansTotal    int                    `json:"spans_total"`
 	SpansShown    int                    `json:"spans_shown"`
@@ -159,6 +161,9 @@ func runObsTrace(ctx context.Context, d obsDeps, traceID, env string, o obsTrace
 				doc.Start = s.Start
 			}
 		}
+	}
+	if !doc.Start.IsZero() {
+		doc.Release = stampRelease(ctx, d.Release, d.Stderr, env, doc.Start)
 	}
 	doc.DurationMs = durMs(tree.Duration)
 	doc.SpansTotal, doc.SpansShown, doc.Capped, doc.Orphans = tree.Spans, tree.Shown, tree.Capped || res.SpansTruncated, tree.Orphans

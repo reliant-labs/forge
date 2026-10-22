@@ -31,3 +31,49 @@ type IssueReader interface {
 	ListIssueEvents(ctx context.Context, req ListIssueEventsRequest) (ListIssueEventsResult, error)
 	UpdateIssueStatus(ctx context.Context, req UpdateIssueStatusRequest) (UpdateIssueStatusResult, error)
 }
+
+// HealthReader judges a release: the windows before and after a promotion,
+// per service, and what the release opened (`forge obs check`). The local
+// backend judges from the ClickStack with pkg/releasehealth; the cloud
+// backend asks the control plane's GetReleaseHealth, which applies the same
+// rule.
+//
+//forge:contract
+type HealthReader interface {
+	ReleaseHealth(ctx context.Context, req HealthRequest) (HealthResult, error)
+}
+
+// ChangesReader lists what changed in an env: promotions, failed deploys and
+// activity (`forge obs changes`).
+//
+//forge:contract
+type ChangesReader interface {
+	Changes(ctx context.Context, req ChangesRequest) (ChangesResult, error)
+}
+
+// OverviewReader reads the per-service request figures of a range: the
+// first section of `forge obs status`. Both backends implement it; they
+// compile with the same pkg/obsquery overview.
+//
+//forge:contract
+type OverviewReader interface {
+	Overview(ctx context.Context, req OverviewRequest) (OverviewResult, error)
+}
+
+// AlertReader lists the env's active alerts, firing or pending. Only the
+// cloud backend implements it: locally the alert state is the `alerts`
+// workload's own (`forge obs alerts check` evaluates the rules once).
+//
+//forge:contract
+type AlertReader interface {
+	Alerts(ctx context.Context) ([]Alert, error)
+}
+
+// DeliveryReader reads whether the control plane has delivered a working
+// telemetry token into the clusters that ship the env's telemetry. Only the
+// cloud backend implements it: a local stack needs no token.
+//
+//forge:contract
+type DeliveryReader interface {
+	TelemetryDeliveries(ctx context.Context) (DeliveriesResult, error)
+}

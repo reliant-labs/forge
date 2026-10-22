@@ -146,7 +146,7 @@ export type ServiceMutationHook<Schema extends DescMessage, Response> = (
  * Query's default `Error`. That type is declared on the OPTIONS parameter
  * because React Query takes the result's error type from the same TError it
  * reads there, so `query.error` is a ConnectClientError at every call site
- * with nothing to pass. Typing it as `Error` hid `.reason`, `.code`, `.status`
+ * with nothing to pass. Typing it as `Error` hid `.reason`, `.codeName`, `.status`
  * and `.retryable`, and left `err.message.includes(...)` as the only
  * expression that compiled — the one thing the error contract forbids.
  */

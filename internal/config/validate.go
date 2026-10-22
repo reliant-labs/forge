@@ -993,8 +993,22 @@ func validateProjectFields(cfg *ProjectConfig, root *yaml.Node) []validationIssu
 		})
 	}
 
+	if v := strings.TrimSpace(cfg.Database.PostgresVersion); v != "" && !postgresVersionRE.MatchString(strings.TrimPrefix(v, "v")) {
+		line, col := findNodePos(root, []string{"database", "postgres_version"})
+		out = append(out, validationIssue{
+			line:   line,
+			column: col,
+			msg:    fmt.Sprintf("'database.postgres_version' value %q is not a postgres major or release", cfg.Database.PostgresVersion),
+			fix:    "use the major production runs, quoted: postgres_version: \"16\" (or an exact release such as \"16.9.0\").",
+		})
+	}
+
 	return out
 }
+
+// postgresVersionRE is the shape of database.postgres_version. Which majors
+// can actually boot is pgtest's to say (pgtest.ResolveVersion), when it does.
+var postgresVersionRE = regexp.MustCompile(`^\d+(\.\d+){0,2}$`)
 
 // ormPackageSegmentRE is one directory of database.orm.package: what a Go
 // import path element and, for the last one, a package name can be.

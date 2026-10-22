@@ -146,6 +146,10 @@ type envStatusDocument struct {
 	// control plane down (`--offline-ledger`). Only for an env whose ledger is
 	// a control plane. Never affects the verdict.
 	OfflineCache *offlineCacheReport `json:"offline_cache,omitempty"`
+	// Identity is a hosted env's managed identity (forge.ManagedIdentity) as
+	// its control plane reports it. Absent when the env declares none or is
+	// not hosted. Never affects the verdict.
+	Identity *envIdentityReport `json:"identity,omitempty"`
 }
 
 // envTarget is WHERE an environment runs: the kubectl context and the
@@ -252,6 +256,10 @@ type envStatusOptions struct {
 	// also selects the hosted path, so a test can state the observer's
 	// answer without a control plane.
 	HostedRollout func(ctx context.Context, env, promotionID string) (wireRollout, error)
+	// HostedIdentity reads a HOSTED env's managed identity. Nil reads it from
+	// the same control plane the rollout is read from — unless HostedRollout
+	// is set, when a test that states no identity gets none.
+	HostedIdentity func(ctx context.Context, env string) (identityStatusDocument, error)
 }
 
 // runEnvStatusRelease resolves the binding, reads the cluster, prints a per-image
@@ -335,6 +343,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 		kubeContext, namespace string
 		source                 string
 		queued                 *deployQueuedError
+		identity               *envIdentityReport
 	)
 	if binding.Snapshot != nil {
 		source = "snapshot consumer-slot observation"
@@ -347,7 +356,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 		if !opts.JSON {
 			fmt.Printf("  source   %s (forge cannot read a hosted env's cluster)\n", source)
 		}
-		results, queued = verifyHosted(ctx, envName, binding, opts)
+		results, queued, identity = verifyHostedWithIdentity(ctx, envName, binding, opts)
 	} else {
 		results, kubeContext, namespace = verifyCluster(ctx, projectDir, envName, binding.Resolved, opts)
 	}
@@ -378,6 +387,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 			Records:     &records,
 
 			OfflineCache: offline,
+			Identity:     identity,
 		}
 		if queued != nil {
 			report.Queued = queued.document()
@@ -403,6 +413,9 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 
 	fmt.Printf("\n%d match, %d drifted, %d missing, %d untagged, %d unreachable\n",
 		tally.Match, tally.Drift, tally.Missing, tally.Untagged, tally.Unreachable)
+	if identity != nil {
+		fmt.Println(identity.line())
+	}
 
 	// BEFORE the failure return, not after. A DRIFT whose cause is an apply
 	// that never finished is a different problem from one whose cause is a
@@ -430,21 +443,44 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 // release or nothing, so the per-image rows read as drift — which is true and
 // is not the verdict: the env is where it should be while it waits.
 func verifyHosted(ctx context.Context, envName string, binding release.Promotion, opts envStatusOptions) ([]imageVerification, *deployQueuedError) {
-	read := opts.HostedRollout
-	if read == nil {
-		read = readDeclaredRollout
-	}
+	results, queued, _ := verifyHostedWithIdentity(ctx, envName, binding, opts)
+	return results, queued
+}
+
+// verifyHostedWithIdentity is verifyHosted plus the env's managed identity,
+// read from the same control plane (resolved once). The identity is reported,
+// never judged: it does not change the release verdict.
+func verifyHostedWithIdentity(ctx context.Context, envName string, binding release.Promotion, opts envStatusOptions) ([]imageVerification, *deployQueuedError, *envIdentityReport) {
 	readCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
-	rollout, err := read(readCtx, envName, binding.ID)
+	readRolloutFn, readIdentityFn := opts.HostedRollout, opts.HostedIdentity
+	if readRolloutFn == nil {
+		target, err := resolveDeclaredWaitTarget(readCtx, envName)
+		if err != nil {
+			return unreachableVerifications(binding.Resolved, err), nil, nil
+		}
+		readRolloutFn = func(ctx context.Context, _, promotionID string) (wireRollout, error) {
+			return readRollout(ctx, target.Client, target.EnvironmentID, promotionID)
+		}
+		if readIdentityFn == nil {
+			read := identityReader(target.Client, target.EnvironmentID)
+			readIdentityFn = func(ctx context.Context, _ string) (identityStatusDocument, error) { return read(ctx) }
+		}
+	}
+	rollout, err := readRolloutFn(readCtx, envName, binding.ID)
 	if err != nil {
-		return unreachableVerifications(binding.Resolved, err), nil
+		return unreachableVerifications(binding.Resolved, err), nil, nil
 	}
 	var queued *deployQueuedError
 	if rollout.Phase == wireRolloutPhaseHeld {
 		queued = &deployQueuedError{Env: envName, Release: binding.Release, PromotionID: binding.ID, Holds: rollout.Holds}
 	}
-	return verifyHostedRollout(rollout), queued
+	var identity *envIdentityReport
+	if readIdentityFn != nil {
+		w := &identityWatch{read: func(ctx context.Context) (identityStatusDocument, error) { return readIdentityFn(ctx, envName) }}
+		identity = w.observe(readCtx)
+	}
+	return verifyHostedRollout(rollout), queued, identity
 }
 
 // readDeclaredRollout is the production hosted read: the env's declared

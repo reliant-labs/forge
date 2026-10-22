@@ -218,7 +218,7 @@ func TestBootstrapOnlyStepPresetExcludesStompedSteps(t *testing.T) {
 	}
 	stomped := []string{
 		"CI workflows",                 // .github/workflows/ci.yml
-		"config loader (proto/config)", // pkg/config/config.go (+ cmd/server.go re-render)
+		"config loader (proto/<project>/config)", // pkg/config/config.go (+ cmd/server.go re-render)
 		"frontend mocks + transport",   // frontends/<name>/src/lib/mock-transport.ts
 		"regenerate infra files",       // deploy/ / Dockerfile.* / etc.
 		"per-env deploy config",        // deploy/ env-specific KCL

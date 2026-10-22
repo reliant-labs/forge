@@ -2,13 +2,14 @@ package codegen
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/checksums"
-	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/configproto"
 	"github.com/reliant-labs/forge/internal/templates"
 	forgeconfig "github.com/reliant-labs/forge/pkg/config"
 )
@@ -116,11 +117,17 @@ type ConfigTemplateData struct {
 	RoleModeField string
 	NeedsStrconv  bool
 
-	// Module is the project's Go module path, used by config.go.tmpl to
-	// import the generated proto config package (gen/config/v1). Set by
-	// GenerateConfigLoader; left empty by callers that only need the
-	// field partition (e.g. ConfigBlocksFromMessages).
+	// Module is the project's Go module path. Set by GenerateConfigLoader;
+	// left empty by callers that only need the field partition (e.g.
+	// ConfigBlocksFromMessages).
 	Module string
+	// ConfigImport is the Go package the config messages generate into
+	// (<module>/gen/<project>/config/v1), which config.go.tmpl imports as
+	// configv1; ConfigDir is the proto directory declaring them
+	// (proto/<project>/config/v1). Both set by GenerateConfigLoader — see
+	// internal/configproto for why the project's name is in them.
+	ConfigImport string
+	ConfigDir    string
 
 	// BinaryConfigs are the per-binary config surfaces, one per config
 	// message carrying a (forge.v1.binary_config).binary annotation. EMPTY
@@ -874,16 +881,7 @@ func primaryCmdTreeDir(targetDir string) string {
 // no readable forge.yaml (a generator test) falls back to the last element of
 // the Go module path, skipping a /vN major-version suffix.
 func projectConfigName(targetDir, modulePath string) string {
-	if pc, err := config.LoadProjectDir(targetDir); err == nil && pc.Name != "" {
-		return pc.Name
-	}
-	parts := strings.Split(modulePath, "/")
-	for i := len(parts) - 1; i >= 0; i-- {
-		if p := parts[i]; p != "" && !isMajorVersionSuffix(p) {
-			return p
-		}
-	}
-	return modulePath
+	return configproto.ProjectName(targetDir, modulePath)
 }
 
 // isMajorVersionSuffix reports whether a module path element is a Go
@@ -894,6 +892,35 @@ func isMajorVersionSuffix(s string) bool {
 	}
 	_, err := strconv.Atoi(s[1:])
 	return err == nil
+}
+
+// configGoImport is the one Go package every config message generates
+// into, read off the compiled protos (each message's go_package), or
+// fallback when the descriptor predates GoImportPath. pkg/config names
+// every config message through a single import, so messages spread over
+// two Go packages cannot be shimmed: that is refused here, naming both,
+// rather than emitted as a pkg/config that does not compile.
+func configGoImport(messages []ConfigMessage, fallback string) (string, error) {
+	got := ""
+	var first ConfigMessage
+	for _, m := range messages {
+		if m.GoImportPath == "" {
+			continue
+		}
+		if got == "" {
+			got, first = m.GoImportPath, m
+			continue
+		}
+		if m.GoImportPath != got {
+			return "", fmt.Errorf("config messages generate into two Go packages: %s (%s) is in %s, %s (%s) is in %s; "+
+				"pkg/config imports one config package, so declare every config message in %s with that directory's package and go_package",
+				first.Name, first.ProtoFile, got, m.Name, m.ProtoFile, m.GoImportPath, path.Dir("proto/"+first.ProtoFile))
+		}
+	}
+	if got == "" {
+		return fallback, nil
+	}
+	return got, nil
 }
 
 // validateConfigPathEnvs refuses a config field whose env var — its env_var
@@ -1023,13 +1050,18 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 	}
 
 	// config.go.tmpl is a thin shim that aliases Config to the generated
-	// proto type (gen/config/v1.AppConfig) and wraps the descriptor-driven
-	// loader — it needs the module path for that import.
+	// proto type (<module>/gen/<project>/config/v1.AppConfig) and wraps the
+	// descriptor-driven loader — it needs that package's import path.
 	modulePath, err := GetModulePath(targetDir)
 	if err != nil {
 		return fmt.Errorf("read module path: %w", err)
 	}
 	data.Module = modulePath
+	layout := configproto.ForProject(targetDir)
+	data.ConfigDir = layout.Dir()
+	if data.ConfigImport, err = configGoImport(messages, layout.GoImportPath(modulePath)); err != nil {
+		return err
+	}
 	data.ProjectConfigPathEnv = forgeconfig.ConfigPathEnvFor(projectConfigName(targetDir, modulePath))
 	data.Graph = GraphComposition(targetDir)
 	primaryBinary := ""

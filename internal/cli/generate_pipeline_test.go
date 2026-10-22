@@ -41,6 +41,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"forge version compatibility",
 		"pre-codegen contract check",
 		"retired ShellBuild tokens",
+		"legacy config proto layout",
 		"migrate env registries onto images",
 		// Before every later gate and emitter that reads the frontend
 		// inventory, so it is settled before any of them runs. See
@@ -60,7 +61,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"OpenAPI specs (protoc-gen-connect-openapi)",
 		"frontend workspaces scaffold",
 		"TypeScript stubs (frontends)",
-		"config loader (proto/config)",
+		"config loader (proto/<project>/config)",
 		"parse services + module path",
 		"frontend hooks",
 		"ensure frontend components",
@@ -524,7 +525,7 @@ func TestGenerateConfigLoaderPrecedesEveryGoTypeCheck(t *testing.T) {
 	for i, n := range names {
 		at[n] = i
 	}
-	loader, ok := at["config loader (proto/config)"]
+	loader, ok := at["config loader (proto/<project>/config)"]
 	if !ok {
 		t.Fatal("no config loader step")
 	}

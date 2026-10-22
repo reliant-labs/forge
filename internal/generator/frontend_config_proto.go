@@ -8,22 +8,25 @@ import (
 	"github.com/reliant-labs/forge/internal/assets"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/configproto"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // FrontendConfigProtoRelPath is where a frontend's config message is
-// declared, relative to the project root.
+// declared, relative to the project root: <name>_config.proto beside the
+// project's root config.proto, in layout.Dir().
 //
 // ONE FILE PER CONSUMER, ONE SHARED PACKAGE. The file is per-frontend so
 // that adding a frontend WRITES a new file rather than editing a file that
 // already has content in it — which is what makes `forge scaffold frontend`
 // safe on an existing project without parsing or rewriting anyone's proto.
 //
-// The DIRECTORY is shared (proto/config/v1/), so every config message stays
-// in package config.v1 and therefore in one generated Go package. That is
-// not tidiness: buf's STANDARD lint enforces PACKAGE_DIRECTORY_MATCH, so a
-// per-consumer directory forces a per-consumer proto package, which forces
-// a per-consumer Go package — and pkg/config/config_gen.go imports exactly
+// The DIRECTORY is shared (layout.Dir(), proto/<project>/config/v1/), so
+// every config message stays in the project's one config package and
+// therefore in one generated Go package. That is not tidiness: buf's
+// STANDARD lint enforces PACKAGE_DIRECTORY_MATCH, so a per-consumer
+// directory forces a per-consumer proto package, which forces a
+// per-consumer Go package — and pkg/config/config_gen.go imports exactly
 // one generated config package and names every config message through it.
 // A directory-per-consumer layout does not merely reorganize files; it
 // stops the generated Go config shim from compiling.
@@ -45,8 +48,8 @@ import (
 // snake_case identifier rule (hyphens fold, repeated separators collapse),
 // already used for the Go package, the KCL binding and the handler dir, so
 // routing through it keeps this filename agreeing with them by construction.
-func FrontendConfigProtoRelPath(frontend string) string {
-	return filepath.Join("proto", "config", "v1", naming.GoPackage(frontend)+"_config.proto")
+func FrontendConfigProtoRelPath(layout configproto.Layout, frontend string) string {
+	return filepath.Join(filepath.FromSlash(layout.Dir()), naming.GoPackage(frontend)+"_config.proto")
 }
 
 // FrontendConfigMessageName is the proto message declaring a frontend's
@@ -191,7 +194,7 @@ func WriteScaffoldedFrontendConfigTS(root, projectName, frontend, platform strin
 
 // frontendConfigProtoData is the render input for frontend_config.proto.tmpl.
 type frontendConfigProtoData struct {
-	Module      string
+	configproto.TemplateData
 	Frontend    string
 	MessageName string
 	APIPort     int
@@ -216,11 +219,11 @@ type frontendConfigProtoData struct {
 // It refuses to overwrite an existing file. A project that already declares
 // this frontend's config has values in it (an issuer, a client id) that a
 // re-scaffold must not silently discard.
-func WriteFrontendConfigProto(root, modulePath, frontend string, apiPort int) error {
+func WriteFrontendConfigProto(root string, layout configproto.Layout, modulePath, frontend string, apiPort int) error {
 	if frontend == "" {
 		return nil
 	}
-	rel := FrontendConfigProtoRelPath(frontend)
+	rel := FrontendConfigProtoRelPath(layout, frontend)
 	dest := filepath.Join(root, rel)
 
 	if _, err := os.Stat(dest); err == nil {
@@ -234,8 +237,8 @@ func WriteFrontendConfigProto(root, modulePath, frontend string, apiPort int) er
 	}
 
 	return assets.WriteTemplateWithData("frontend_config.proto.tmpl", dest, frontendConfigProtoData{
-		Module:      modulePath,
-		Frontend:    frontend,
+		TemplateData: layout.TemplateData(modulePath),
+		Frontend:     frontend,
 		MessageName: FrontendConfigMessageName(frontend),
 		APIPort:     apiPort,
 	})

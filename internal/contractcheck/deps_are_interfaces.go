@@ -896,11 +896,11 @@ func isStdlibType(expr ast.Expr, imports map[string]string) bool {
 
 // isGeneratedConfigType reports whether expr names a type from a project's
 // GENERATED config package — `*configv1.IdpConfig` out of
-// `<module>/gen/config/v1`, or the `pkg/config` alias over it.
+// `<module>/gen/<project>/config/v1`, or the `pkg/config` alias over it.
 //
 // Matched on the import path rather than the type name so it cannot be
 // spoofed by naming a repository `FooConfig`: the path is what marks it as
-// forge's own projection of proto/config/v1/config.proto, and those messages
+// forge's own projection of proto/<project>/config/v1, and those messages
 // are exactly the config blocks forge-config-deps asks authors to create.
 func isGeneratedConfigType(expr ast.Expr, imports map[string]string) bool {
 	sel := underlyingSelector(expr)
@@ -915,7 +915,7 @@ func isGeneratedConfigType(expr ast.Expr, imports map[string]string) bool {
 	if !ok {
 		return false
 	}
-	return strings.Contains(importPath, "/gen/config/") ||
+	return (strings.Contains(importPath, "/gen/") && strings.HasSuffix(importPath, "/config/v1")) ||
 		strings.HasSuffix(importPath, "/pkg/config")
 }
 

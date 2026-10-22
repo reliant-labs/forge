@@ -44,6 +44,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/configproto"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/kclmigrate"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -350,6 +351,10 @@ func generateSteps() []GenStep {
 		{Name: "forge version compatibility", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPkgCompatHandshake, Tag: "validate", ReadOnly: true},
 		{Name: "pre-codegen contract check", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPreCodegenContractCheck, Tag: "validate", ReadOnly: true},
 		{Name: "retired ShellBuild tokens", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepShellBuildTokens, Tag: "validate", ReadOnly: true},
+		// Not skippable: a project on the shared config.v1 layout generates
+		// a pkg/config that panics at init beside any other forge project's,
+		// and the loader below would silently find no config at the new path.
+		{Name: "legacy config proto layout", Gate: always, Run: stepLegacyConfigProto, Tag: "validate", ReadOnly: true},
 		{Name: "migrate env registries onto images", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepMigrateImageRegistry, Tag: "config", Writes: writesKCLMigration},
 		// Sits with the other config migration, AFTER the refusals: a
 		// refusal is only honest if it leaves the tree as it found it, and
@@ -385,7 +390,7 @@ func generateSteps() []GenStep {
 		{Name: "OpenAPI specs (protoc-gen-connect-openapi)", Gate: gateOpenAPIEnabled, GateReason: "api.openapi=false or features.codegen=false", Run: stepOpenAPIGenerate, Tag: "proto", Writes: writesOpenAPI},
 		{Name: "frontend workspaces scaffold", Gate: and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML), GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendWorkspaces, Tag: "frontend"},
 		{Name: "TypeScript stubs (frontends)", Gate: and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML), GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendBufTS, Tag: "frontend", Writes: writesFrontendTS},
-		{Name: "config loader (proto/config)", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasConfig), GateReason: "no proto/config/ directory or features.codegen=false", Run: stepConfigLoader, Tag: "codegen"},
+		{Name: "config loader (proto/<project>/config)", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasConfig), GateReason: "no config protos in proto/<project>/config/v1 or features.codegen=false", Run: stepConfigLoader, Tag: "codegen"},
 		// parse services: needed when the project has proto/services/
 		// (handlers, mocks, CRUD, auth, bootstrap all read ctx.Services) OR
 		// workers/operators (bootstrap still needs ModulePath, even if
@@ -1388,6 +1393,29 @@ func stepShellBuildTokens(ctx *pipelineContext) error {
 		return err
 	}
 	return shellbuildtokens.Error(stripFileLocations(findings))
+}
+
+// stepLegacyConfigProto refuses a project whose config protos still declare
+// the package every forge project used to share — `package config.v1` at
+// proto/config/v1 — and names the codemod that moves them.
+//
+// It is a refusal rather than a fallback reader because the old layout is
+// the defect: the protobuf runtime registers each file by path and each
+// message by full name, process-wide, so two projects on it cannot be
+// linked into one binary (internal/configproto). Reading it would keep
+// generating a pkg/config that panics at init the moment another repo
+// imports it beside its own.
+func stepLegacyConfigProto(ctx *pipelineContext) error {
+	files := configproto.LegacyFiles(ctx.ProjectDir)
+	if len(files) == 0 {
+		return nil
+	}
+	layout := configproto.ForProject(ctx.ProjectDir)
+	return cliutil.UserErr("forge generate",
+		fmt.Sprintf("the config protos declare the shared package %s, which collides with every other forge project's config at init (\"file config/v1/config.proto is already registered\")", configproto.LegacyPackage),
+		strings.Join(files, ", "),
+		fmt.Sprintf("run `%s fix %s` — it moves them to %s, declares package %s and rewrites every import; then re-run `%s generate`",
+			cmdutil.Name(), configproto.LegacyCodemod, layout.Dir(), layout.Package(), cmdutil.Name()))
 }
 
 // stepMigrateImageRegistry moves a project off env-level registries: it removes

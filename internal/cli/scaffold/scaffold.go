@@ -46,6 +46,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/configproto"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/nodeengine"
@@ -1828,7 +1829,7 @@ func runFrontend(ctx context.Context, f *factory.Factory, a frontendArgs) error 
 	// writes a NEW per-frontend file, so no config content already on disk
 	// is read, rewritten or reordered, and an existing file for this
 	// frontend is left exactly as it is.
-	if err := generator.WriteFrontendConfigProto(root, cfg.ModulePath, name, apiPort); err != nil {
+	if err := generator.WriteFrontendConfigProto(root, configproto.ForProject(root), cfg.ModulePath, name, apiPort); err != nil {
 		return fmt.Errorf("write frontend config proto: %w", err)
 	}
 

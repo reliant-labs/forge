@@ -1,10 +1,10 @@
 syntax = "proto3";
 
-package config.v1;
+package {{.ConfigPackage}};
 
 import "forge/v1/forge.proto";
 
-option go_package = "{{.Module}}/gen/config/v1;configv1";
+option go_package = "{{.ConfigGoPackage}}";
 
 // {{.MessageName}} is the PUBLIC runtime configuration for the "{{.Frontend}}"
 // frontend.
@@ -19,21 +19,25 @@ option go_package = "{{.Module}}/gen/config/v1;configv1";
 // and `forge scaffold frontend` can add a consumer by writing a NEW file
 // rather than editing one that already has content in it.
 //
-// The package stays `config.v1` — the same package config.proto declares —
+// The package is `{{.ConfigPackage}}` — the same package config.proto declares —
 // and that is load-bearing rather than incidental:
 //
 //   - buf's STANDARD lint enforces PACKAGE_DIRECTORY_MATCH, so a proto's
-//     package must match its directory. Putting this file in its own
-//     DIRECTORY (proto/config/{{.Frontend}}/v1/) would therefore force its own
-//     PACKAGE, which forces its own Go package (gen/config/{{.Frontend}}/v1) —
-//     and pkg/config/config_gen.go imports exactly ONE generated config
-//     package and refers to every config message through it. A per-consumer
-//     directory breaks that shim's compilation, not just its tidiness.
+//     package must match its directory. Putting this file in a directory
+//     of its own would therefore force its own PACKAGE, which forces its
+//     own Go package — and pkg/config/config_gen.go imports exactly ONE
+//     generated config package and refers to every config message through
+//     it. A per-consumer directory breaks that shim's compilation, not just
+//     its tidiness.
 //   - Sharing the package means shared DEFINITIONS need no cross-package
 //     import at all: a block declared in config.proto composes onto a
 //     message here by bare name, so one fact (a collector endpoint, an
 //     API origin) can be declared once and projected into every consumer
 //     that needs it, which is the whole point of the composition model.
+//   - The package (and the directory) carry the PROJECT's name so that it
+//     is unique to this project: the protobuf runtime registers every file
+//     by path and every message by full name, process-wide, so two projects
+//     sharing `config.v1` could never be linked into one binary.
 //
 // The generators do not care either way — they read config messages from
 // the forge descriptor, which protoc-gen-forge builds by walking every

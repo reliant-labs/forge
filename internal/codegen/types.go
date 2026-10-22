@@ -668,11 +668,19 @@ type ConfigMessage struct {
 	// option — or the message itself when the option has no recorded
 	// position — so a generate-time refusal of the binding names the line
 	// an author edits (see ValidateBinaryConfigBindings). ProtoFile is
-	// relative to the buf module root ("config/v1/config.proto"), as on
+	// relative to the buf module root ("acme/config/v1/config.proto"), as on
 	// ConfigField; Line is 1-based and 0 when unknown (a request without
 	// source info). Neither carries codegen behavior.
 	ProtoFile string `json:",omitempty"`
 	Line      int    `json:",omitempty"`
+
+	// GoImportPath is the Go package the message generates into — its
+	// file's go_package ("<module>/gen/acme/config/v1"). pkg/config imports
+	// it, so it is read off the compiled proto rather than re-derived: a
+	// go_package the author changed is followed, not contradicted. Empty in
+	// descriptors written by older forge binaries; the loader then falls
+	// back to the project's configproto layout.
+	GoImportPath string `json:",omitempty"`
 }
 
 // DetermineFieldKind classifies a field based on its ProtoType and GoType.

@@ -10,6 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/assets"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/configproto"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 
@@ -256,7 +257,7 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 			"proto",
 			"proto/api",
 			"proto/services",
-			"proto/config/v1",
+			configproto.For(g.Name).Dir(),
 			"proto/forge",
 			"proto/forge/v1",
 		)
@@ -265,7 +266,7 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 		// forge annotations on data types and config protos if they want.
 		dirs = append(dirs,
 			"proto",
-			"proto/config/v1",
+			configproto.For(g.Name).Dir(),
 			"proto/forge",
 			"proto/forge/v1",
 		)
@@ -347,7 +348,7 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 		// empty service proto stub (written by GenerateServiceFiles, with the
 		// (forge.v1.service) option block but zero RPCs) plus the wired
 		// handler dir. Author your own messages/RPCs, then `forge generate`.
-		if err := g.createConfigProto(templateData); err != nil {
+		if err := g.createConfigProto(); err != nil {
 			return err
 		}
 	} else if g.isCLI() {
@@ -833,9 +834,12 @@ func (g *ProjectGenerator) copyForgeV1Proto() error {
 	return assets.WriteForgeV1Proto(v1Dir)
 }
 
-func (g *ProjectGenerator) createConfigProto(data interface{}) error {
-	destPath := filepath.Join(g.Path, "proto", "config", "v1", "config.proto")
-	return assets.WriteTemplateWithData("config.proto.tmpl", destPath, data)
+// createConfigProto writes the project's root config proto at its
+// project-unique path (internal/configproto: proto/<project>/config/v1).
+func (g *ProjectGenerator) createConfigProto() error {
+	layout := configproto.For(g.Name)
+	destPath := filepath.Join(g.Path, filepath.FromSlash(layout.RootPath()))
+	return assets.WriteTemplateWithData("config.proto.tmpl", destPath, layout.TemplateData(g.ModulePath))
 }
 
 func (g *ProjectGenerator) generateServiceFiles() error {
@@ -887,7 +891,7 @@ func (g *ProjectGenerator) generateFrontendFiles() error {
 	// would consume the annotation.
 	typedConfig := FrontendTypedConfig{}
 	if g.Features.CodegenEnabled() {
-		if err := WriteFrontendConfigProto(g.Path, g.ModulePath, g.FrontendName, g.ServicePort); err != nil {
+		if err := WriteFrontendConfigProto(g.Path, configproto.For(g.Name), g.ModulePath, g.FrontendName, g.ServicePort); err != nil {
 			return fmt.Errorf("write frontend config proto: %w", err)
 		}
 		// Derived from the template just written rather than from the

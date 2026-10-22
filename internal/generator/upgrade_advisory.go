@@ -69,6 +69,7 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/configproto"
 	"github.com/reliant-labs/forge/internal/templates"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
@@ -395,7 +396,7 @@ func frontendAdvisoryTypedConfig(root, frontend string) FrontendTypedConfig {
 		}
 	}
 
-	if _, err := os.Stat(filepath.Join(root, FrontendConfigProtoRelPath(frontend))); err == nil {
+	if _, err := os.Stat(filepath.Join(root, FrontendConfigProtoRelPath(configproto.ForProject(root), frontend))); err == nil {
 		return ScaffoldedFrontendTypedConfig()
 	}
 	return FrontendTypedConfig{}

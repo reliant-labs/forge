@@ -13,6 +13,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/configproto"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/generator/contract"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -385,10 +386,11 @@ func ensureAdapterConfigBlock(root, name string) (block, envVar string, err erro
 			Description: fmt.Sprintf("Base URL of the %s downstream, e.g. https://api.example.com (no trailing slash). The adapter's requests are made against it.", name),
 		}},
 	}
-	res, err := scaffold.EnsureConfigBlock(filepath.Join(root, "proto", "config", "v1"), spec)
+	layout := configproto.ForProject(root)
+	res, err := scaffold.EnsureConfigBlock(filepath.Join(root, filepath.FromSlash(layout.Dir())), spec)
 	switch {
 	case errors.Is(err, scaffold.ErrNoConfigRoot):
-		return "", "", fmt.Errorf("scaffold adapter %s requires proto/config/v1/config.proto with an AppConfig message; declare the config root before scaffolding the adapter (no adapter files were written)", name)
+		return "", "", fmt.Errorf("scaffold adapter %s requires %s with an AppConfig message; declare the config root before scaffolding the adapter (no adapter files were written)", name, layout.RootPath())
 	case err != nil:
 		return "", "", fmt.Errorf("compose the %s config block: %w", block, err)
 	}

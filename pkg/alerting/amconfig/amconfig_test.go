@@ -306,7 +306,7 @@ func TestBadReceiversAreSkippedNotFatal(t *testing.T) {
 }
 
 // A plain-http webhook is refused unless the renderer is a local stack's: in a
-// multi-tenant renderer it would let a customer aim Alertmanager at a
+// renderer serving several orgs it would let a customer aim Alertmanager at a
 // cluster-internal service.
 func TestHTTPWebhooksOnlyWhenAllowed(t *testing.T) {
 	in := Input{Receivers: []Receiver{

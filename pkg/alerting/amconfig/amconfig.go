@@ -10,7 +10,7 @@
 // routes the same way on a laptop as in production. The package knows nothing
 // about where receivers are stored or how the config reaches Alertmanager.
 //
-// An org is the routing tenant: a single-tenant self-hoster uses one.
+// An org is the unit of routing isolation: a self-hoster with one team uses one.
 //
 // # The routing invariant
 //
@@ -149,7 +149,7 @@ type Settings struct {
 	InAppTokenFile string
 	// AllowHTTPWebhooks lets a webhook receiver's url be plain http. Only a
 	// LOCAL stack sets it, where every receiver is the developer's own machine.
-	// A multi-tenant renderer must leave it false: a customer-supplied http URL
+	// A renderer serving several orgs must leave it false: a customer-supplied http URL
 	// could name a cluster-internal service, and Alertmanager would post to it
 	// from inside the cluster.
 	AllowHTTPWebhooks bool

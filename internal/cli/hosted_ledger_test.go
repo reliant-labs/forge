@@ -798,7 +798,7 @@ func TestPromotionKindFromWire_Closed(t *testing.T) {
 // ─── End to end through the command tree ─────────────────────────────────────
 
 // `forge env build prod --release v1 --no-build` → `forge env deploy prod v1` →
-// `forge cloud releases prod`, for an env whose KCL declares forge.ControlPlane,
+// `forge env releases list prod`, for an env whose KCL declares forge.ControlPlane,
 // against the fake control plane. Nothing is written to the project's ledger
 // files: the env's declaration routed every write to the control plane.
 //
@@ -866,12 +866,12 @@ func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
 	if out, err := run("env", "deploy", "prod", "v1", "--yes", "--actor", "ci", "--no-wait"); err != nil {
 		t.Fatalf("forge env deploy: %v\n%s", err, out)
 	}
-	out, err := run("cloud", "releases", "prod", "--json")
+	out, err := run("env", "releases", "list", "prod", "--json", "--since", "2026-01-01")
 	if err != nil {
-		t.Fatalf("forge cloud releases: %v\n%s", err, out)
+		t.Fatalf("forge env releases list: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, `"version": "v1"`) {
-		t.Errorf("cloud releases must list v1, got:\n%s", out)
+	if !strings.Contains(out, `"version": "v1"`) || !strings.Contains(out, `"backend": "cloud"`) {
+		t.Errorf("env releases list must show the hosted promotion of v1, got:\n%s", out)
 	}
 
 	if n := fake.callCount(procCutRelease); n != 1 {

@@ -56,12 +56,12 @@ spec:
   data:
     - secretKey: password
       remoteRef:
-        key: tenants/proj/prod/RELIANT_DB_ROLE_PASSWORD
+        key: secrets/proj/prod/RELIANT_DB_ROLE_PASSWORD
         property: value
         version: "` + version + `"
     - secretKey: floating
       remoteRef:
-        key: tenants/proj/prod/UNPINNED
+        key: secrets/proj/prod/UNPINNED
         property: value
 ---
 apiVersion: apps/v1

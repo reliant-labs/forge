@@ -249,7 +249,7 @@ func renderQueryTable(w io.Writer, res obsbackend.QueryResult) {
 	for i, r := range res.Rows {
 		rows[i] = make([]string, len(r))
 		for j, v := range r {
-			rows[i][j] = cellText(v)
+			rows[i][j] = obsCellText(v)
 		}
 	}
 	obsout.Table(w, header, rows, 80)
@@ -258,7 +258,7 @@ func renderQueryTable(w io.Writer, res obsbackend.QueryResult) {
 	}
 }
 
-func cellText(v any) string {
+func obsCellText(v any) string {
 	switch t := v.(type) {
 	case nil:
 		return ""

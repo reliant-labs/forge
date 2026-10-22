@@ -1,13 +1,12 @@
 // Package obsbackend reads telemetry for `forge obs`: the env -> backend
-// resolver, the ClickHouse runner, and the local backend over the project's
-// ClickStack. Backend is declared here because the cloud backend (a second
-// implementation) and the CLI's test fakes substitute for it.
+// resolver, the ClickHouse runner, and the two backends: the local one over
+// the project's ClickStack and the cloud one over the control plane's
+// ObservabilityService. Backend (contract.go) is what the verbs read through.
 //
-//forge:exclude-contract: the Backend interface is declared in types.go where its request/result vocabulary lives; the concrete types are data and one runner
+//forge:not-a-component: a library the forge CLI calls; the server composes nothing from it
 package obsbackend
 
 import (
-	"context"
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/obsquery"
@@ -54,21 +53,6 @@ type Statement struct {
 	Purpose string            `json:"purpose"`
 	SQL     string            `json:"sql"`
 	Params  map[string]string `json:"params,omitempty"`
-}
-
-// Backend is what a `forge obs` verb reads telemetry through. The local
-// backend (the project's ClickStack) is the first implementation; the cloud
-// backend (the control plane's ObservabilityService) is the second. Both
-// compile with pkg/obsquery.
-type Backend interface {
-	Info() Info
-	Logs(ctx context.Context, req LogsRequest) (LogsResult, error)
-	Traces(ctx context.Context, req TracesRequest) (TracesResult, error)
-	Trace(ctx context.Context, req TraceRequest) (TraceResult, error)
-	Endpoints(ctx context.Context, req EndpointsRequest) (EndpointsResult, error)
-	MetricsList(ctx context.Context, req MetricsListRequest) (MetricsListResult, error)
-	MetricsQuery(ctx context.Context, req MetricsQueryRequest) (MetricsQueryResult, error)
-	Query(ctx context.Context, req QueryRequest) (QueryResult, error)
 }
 
 // ── logs ────────────────────────────────────────────────────────────────

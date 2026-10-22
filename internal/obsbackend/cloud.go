@@ -49,10 +49,11 @@ type Cloud struct {
 // Info implements Backend.
 func (c Cloud) Info() Info { return Info{Env: c.Env, Backend: BackendCloud, EnvID: c.EnvID} }
 
-// Call invokes procedure and maps a failure onto the exit table. Exported for
-// the verbs that read the control plane beyond Backend (issues, release
-// health, status), so every cloud call classifies its errors one way.
-func (c Cloud) Call(ctx context.Context, procedure string, req, out any) error {
+// call invokes procedure and maps a failure onto the exit table. Every cloud
+// read in this package (the Backend methods, and the issue and release-health
+// readers beside them) goes through it, so every one classifies its errors one
+// way.
+func (c Cloud) call(ctx context.Context, procedure string, req, out any) error {
 	if c.Caller == nil {
 		return Undetermined("no control-plane client for env %s", c.Env)
 	}
@@ -126,9 +127,6 @@ func (c Cloud) scope(n Narrow) wireScope {
 	}
 	return s
 }
-
-// Scope is the QueryScope JSON for a request the verbs build themselves.
-func (c Cloud) Scope(n Narrow) any { return c.scope(n) }
 
 // explainer compiles a request the way the control plane will, without
 // running it: --explain on a cloud env prints the statements the shared

@@ -88,6 +88,7 @@ import .lib.capabilities as caps
 import .lib.crd as crd_lib
 import .lib.build as build_lib
 import .lib.flux as flux_lib
+import .lib.openbao as openbao_lib
 
 # Bare aliases for schema instantiation inside lambda bodies (KCL v0.11).
 _TWorkload = tiers.Workload
@@ -1757,7 +1758,8 @@ _render_database = lambda db: any, bundle: Bundle -> any {
 _namespaces = lambda b: Bundle, entities: [any] -> [any] {
     _pt = _primary_target(b)
     _pairs = ([[_pt.cluster, _pt.namespace]] if _pt else []) \
-        + [[e.runtime.cluster, e.runtime.namespace] for e in entities if e.runtime.type == "cluster"]
+        + [[e.runtime.cluster, e.runtime.namespace] for e in entities if e.runtime.type == "cluster"] \
+        + ([[_openbao(b).cluster, _openbao(b).namespace]] if b.openbao else [])
     _uniq = {"${p[0]}/${p[1]}": p for p in _pairs}
     [_render_namespace(p[1], p[0], _pt) for _, p in _uniq]
 }
@@ -1778,6 +1780,26 @@ _render_namespace = lambda namespace: str, context: str, primary: any -> any {
     }
 }
 
+# ---------------------------------------------------------------------------
+# forge.OpenBao (lib/openbao.k). Unset renders nothing.
+# ---------------------------------------------------------------------------
+
+# The lowering of Bundle.openbao, or Undefined: the OpenBao record, the
+# resolved block, and the prerequisite Secrets. The store runs on its own
+# `runtime` target, else the env's primary one.
+_openbao = lambda b: Bundle -> any {
+    _rt = b.openbao.runtime if b.openbao else Undefined
+    _target = _rt.target if _rt else _primary_target(b)
+    openbao_lib.render(b.openbao, {
+        project = b.project
+        env = labels_lib.env_value(b.env)
+        target = _target
+        secrets = b.required_secrets
+        eso_namespaces = [e.namespace for e in b.external_secrets_operators if _target and _eso_context(e) == _target.cluster]
+        bootstrap_source = b.bootstrap_source
+    }) if b.openbao else Undefined
+}
+
 _manifests = lambda b: Bundle, entities: [any] -> [any] {
     _pt = _primary_target(b)
     _ns = _pt.namespace if _pt else ""
@@ -1790,6 +1812,7 @@ _manifests = lambda b: Bundle, entities: [any] -> [any] {
         + [_workload_record(e, _project) for e in entities if e.runtime.type == "cluster" and e.kind != "tool"] \
         + _obs_agent_records(b, _project) \
         + [_render_managed_database_record(db, _project) for db in _dbs if db.runtime == "cluster"] \
+        + ([_openbao(b).record] if b.openbao else []) \
         + [_place_on_primary(item, _pt) for item in _ingress(b, _ns)] \
         + [item for g in b.manifests for item in _raw_manifests(g, _pt, _project)],
         b.env,
@@ -1881,8 +1904,12 @@ render = lambda bundle: Bundle -> any {
             } for g in bundle.generated]
         # Declared external PREREQUISITES forge does NOT create: a render-time
         # checklist, and the preflight BLOCK on a required-but-absent Secret.
-        "required_secrets": [_render_external_secret(s) for s in bundle.required_secrets]
+        "required_secrets": [_render_external_secret(s) for s in bundle.required_secrets] + (_openbao(bundle).required if bundle.openbao else [])
         "required_dns": [_render_dns_record(r) for r in bundle.required_dns]
+        # The resolved secret store (forge.OpenBao): where it is and how a client
+        # logs in. A declaration only; no value.
+        if bundle.openbao:
+            "openbao": _openbao(bundle).block
         "control_plane_secrets": [_render_control_plane_secret(s, bundle) for s in _cps_all(bundle.workloads, bundle.observability, _cps_decl(bundle.workloads, bundle.identity, bundle.env, bundle.project, bundle.control_plane_secrets))]
         # WHERE secret values come from. A declaration only: no secret VALUE
         # ever enters this output.

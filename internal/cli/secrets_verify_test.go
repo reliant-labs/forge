@@ -149,6 +149,65 @@ func TestVerify_AgainstGSMMissingSecretIsNamed(t *testing.T) {
 	}
 }
 
+// With an explicit --map the Secret needs no store-backed ExternalSecret: this
+// is the escrow check made before the Secret is migrated onto a store.
+func TestVerify_AgainstGSMWithAnExplicitMapNeedsNoDeclaredExternalSecret(t *testing.T) {
+	e := storeEnv()
+	e.RequiredSecrets = nil
+	f := installStoreFixture(t, e)
+	f.kube.put("control-plane-prod", "control-plane-openbao-unseal", secretWith(map[string]string{"static-key": canary, "pg": "live-pg"}, nil, 0))
+	f.gsm.secrets["acme-prod/openbao-unseal-prod"] = []string{canary}
+	f.gsm.secrets["acme-prod/openbao-pg-prod"] = []string{"a-different-pg"}
+
+	out, err := verifyOut(t, "control-plane-prod/control-plane-openbao-unseal", secretsVerifyOptions{
+		Against: "gsm:acme-prod", Map: []string{"static-key=openbao-unseal-prod", "pg=openbao-pg-prod"},
+	})
+	if err == nil {
+		t.Fatalf("a differing GSM copy verified:\n%s", out)
+	}
+	if strings.Contains(err.Error(), "declares no store-backed") {
+		t.Fatalf("an explicit --map must not need a declared ExternalSecret: %v", err)
+	}
+	if !regexpLine(out, "static-key", "match") || regexpLine(out, "static-key", "no-match") {
+		t.Errorf("static-key should match:\n%s", out)
+	}
+	if !regexpLine(out, "pg", "no-match") {
+		t.Errorf("pg should differ:\n%s", out)
+	}
+	assertNoLeak(t, "verify with an explicit map", out, errText(err))
+
+	// All matching exits clean.
+	f.gsm.secrets["acme-prod/openbao-pg-prod"] = []string{"live-pg"}
+	out, err = verifyOut(t, "control-plane-prod/control-plane-openbao-unseal", secretsVerifyOptions{
+		Against: "gsm:acme-prod", Map: []string{"static-key=openbao-unseal-prod", "pg=openbao-pg-prod"},
+	})
+	if err != nil || !strings.Contains(out, "all 2 key(s) match") {
+		t.Errorf("err=%v out=%q", err, out)
+	}
+}
+
+// The relaxation is only for an explicit --against gsm: --map naming a Secret:
+// everything else still reports that nothing is declared.
+func TestVerify_WithoutAnExplicitMapAnUndeclaredSecretStillErrors(t *testing.T) {
+	e := storeEnv()
+	e.RequiredSecrets = nil
+	installStoreFixture(t, e)
+	for name, c := range map[string]struct {
+		secret string
+		opts   secretsVerifyOptions
+	}{
+		"shadow mode":      {"ns/s", secretsVerifyOptions{Map: []string{"k=id"}}},
+		"gsm without map":  {"ns/s", secretsVerifyOptions{Against: "gsm:acme-prod"}},
+		"gsm without name": {"", secretsVerifyOptions{Against: "gsm:acme-prod", Map: []string{"k=id"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := verifyOut(t, c.secret, c.opts); err == nil || !strings.Contains(err.Error(), "nothing to verify") {
+				t.Errorf("err = %v", err)
+			}
+		})
+	}
+}
+
 func TestVerify_FlagAndSelectionErrors(t *testing.T) {
 	installStoreFixture(t, verifyEnv(true))
 	if _, err := verifyOut(t, "", secretsVerifyOptions{Against: "s3:bucket"}); err == nil || !strings.Contains(err.Error(), "gsm:<project>") {

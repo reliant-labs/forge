@@ -246,6 +246,8 @@ type fakeGSM struct {
 	disabled map[string]bool
 	created  []string
 	fail     error
+	// accessed counts payload reads, which a metadata-only caller never makes.
+	accessed int
 	// disabledVersions are the single versions taken out of service.
 	disabledVersions map[string]map[uint32]bool
 }
@@ -288,6 +290,7 @@ func (g *fakeGSM) AddVersion(_ context.Context, project, id string, value []byte
 func (g *fakeGSM) Access(_ context.Context, project, id string) ([]byte, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.accessed++
 	vs := g.secrets[project+"/"+id]
 	if len(vs) == 0 {
 		return nil, errors.New("no version")

@@ -33,6 +33,8 @@ type obsDeps struct {
 	Local func(env string) obsbackend.Backend
 	// Cloud builds the backend over the env's control plane.
 	Cloud func(ctx context.Context, env string) (obsbackend.Cloud, error)
+	// Release looks up the release live in env at a moment.
+	Release func(ctx context.Context, env string, at time.Time) (*liveRelease, error)
 	// Now is the clock.
 	Now func() time.Time
 	// Stdout and Stderr are the verb's writers.
@@ -47,10 +49,11 @@ func defaultObsDeps(cmd *cobra.Command) obsDeps {
 		Local: func(env string) obsbackend.Backend {
 			return obsbackend.Local{Env: env, Runner: obsbackend.DockerRunner{Exec: localClickstackExec(env), Env: env}, Ledger: openObsLedger}
 		},
-		Cloud:  openObsCloud,
-		Now:    time.Now,
-		Stdout: cmd.OutOrStdout(),
-		Stderr: cmd.ErrOrStderr(),
+		Cloud:   openObsCloud,
+		Release: liveReleaseAt,
+		Now:     time.Now,
+		Stdout:  cmd.OutOrStdout(),
+		Stderr:  cmd.ErrOrStderr(),
 	}
 	if o := obsDepsOverride; o != nil {
 		if o.Facts != nil {
@@ -61,6 +64,9 @@ func defaultObsDeps(cmd *cobra.Command) obsDeps {
 		}
 		if o.Cloud != nil {
 			d.Cloud = o.Cloud
+		}
+		if o.Release != nil {
+			d.Release = o.Release
 		}
 		if o.Now != nil {
 			d.Now = o.Now

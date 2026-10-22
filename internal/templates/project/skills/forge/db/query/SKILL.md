@@ -48,6 +48,8 @@ Every ManagedDatabase carries `forge_ro`, a role forge declares on the CNPG Clus
 
 The boundary is Postgres, not a redactor. `select upper(api_key) from …` is refused (`permission_denied`, exit 1) just like `select api_key`. A column added later is unreadable until a migration converges the grants. Don't grant the role more by hand; the next migration revokes it.
 
+`// forge:secret` on a proto field keeps the column settable on Create/Update and drops only the read path (`<entity>ToProto`). Its second effect is the one Postgres enforces, below: `forge generate` leaves the column out of `db/grants/readonly_gen.sql`, and the migrator applies that file after every `db migrate up`, so `forge_ro` is refused it through any expression. The role holds column-level `SELECT` only: no write privilege, no table-level `SELECT`, so a column added later is unreadable until `forge generate` has seen whether it is secret.
+
 ### Safe by construction: who decides a column
 
 A column is **withheld** when it is declared `forge:secret`, and also when it is **credential-shaped and undecided**. Everything else is granted. So a project cannot expose a credential by forgetting to mark it, and a table nobody thought about is still queryable.

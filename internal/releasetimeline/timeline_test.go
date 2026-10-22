@@ -77,7 +77,9 @@ func TestAssemble_Directions(t *testing.T) {
 }
 
 func TestAssemble_BehindRowCarriesTheRevertedRange(t *testing.T) {
-	d := Data{Env: "prod", Releases: chain(), Promotions: []release.Promotion{promo("p1", "v3", 30), promo("p2", "v1", 40)}}
+	first := promo("p1", "v3", 30)
+	first.BundleID = "b-p1"
+	d := Data{Env: "prod", Releases: chain(), Promotions: []release.Promotion{first, promo("p2", "v1", 40)}}
 	e := Assemble(d, time.Time{}, 0).Entries[0]
 	if e.Direction != DirBehind || e.Range == nil {
 		t.Fatalf("entry = %+v", e)
@@ -85,7 +87,7 @@ func TestAssemble_BehindRowCarriesTheRevertedRange(t *testing.T) {
 	if !e.Range.Reverts || e.Range.FromRelease != "v3" || e.Range.ToRelease != "v1" || e.Range.Total != 2 {
 		t.Errorf("range = %+v, want a reverting v3->v1 range of 2 commits", *e.Range)
 	}
-	if e.PreviousVersion != "v3" {
+	if e.PreviousVersion != "v3" || e.PreviousBundleID != "b-p1" {
 		t.Errorf("previous = %q", e.PreviousVersion)
 	}
 }

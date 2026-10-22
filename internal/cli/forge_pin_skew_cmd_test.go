@@ -21,7 +21,7 @@ func TestForgePinSkew_DeployUnderAnotherForgeIsRefused(t *testing.T) {
 	buildinfo.Set("v0.1.44-0.20261007053821-3b4499b384de", "", "3b4499b384de")
 	t.Cleanup(func() { buildinfo.Set(prevVersion, "", prevCommit) })
 
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	root.SetArgs([]string{"env", "deploy", "prod", "--explain"})
 	err := root.Execute()
 	if err == nil {
@@ -53,7 +53,7 @@ func skewedProject(t *testing.T) {
 // the command itself.
 func guardVerdict(t *testing.T, args ...string) error {
 	t.Helper()
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	cmd, rest, err := root.Find(args)
 	if err != nil {
 		t.Fatalf("find %v: %v", args, err)
@@ -203,7 +203,7 @@ func TestForgePinSkew_AutoGenerateIsRefused(t *testing.T) {
 // compiled into reliant.
 func TestForgePinSkew_WarningGivesTheRefusalsRemedy(t *testing.T) {
 	skewedProject(t)
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	cmd, _, err := root.Find([]string{"lint"})
 	if err != nil {
 		t.Fatal(err)

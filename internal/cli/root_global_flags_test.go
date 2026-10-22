@@ -23,7 +23,7 @@ import (
 // decision, because it lands on every command in the tree whether or not
 // that command can honor it.
 func TestRootPersistentFlagsArePinned(t *testing.T) {
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 
 	var got []string
 	root.PersistentFlags().VisitAll(func(f *pflag.Flag) { got = append(got, f.Name) })
@@ -51,7 +51,7 @@ func TestRootPersistentFlagsArePinned(t *testing.T) {
 // `forge generate` actually reads, not to an inherited global that swallows
 // it.
 func TestGenerateVerboseShorthandReachesItsConsumer(t *testing.T) {
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	gen, _, err := root.Find([]string{"generate"})
 	if err != nil {
 		t.Fatalf("`forge generate` does not resolve: %v", err)
@@ -100,5 +100,5 @@ func TestFlagValueNamesAreOneWord(t *testing.T) {
 			walk(c)
 		}
 	}
-	walk(NewRootCmd())
+	walk(newTestRootCmd(t))
 }

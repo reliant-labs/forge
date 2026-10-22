@@ -108,7 +108,7 @@ func runInPlace(t *testing.T, dir, kind string, force bool) {
 	if force {
 		args = append(args, "--force")
 	}
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	root.SetArgs(args)
 	if err := root.Execute(); err != nil {
 		t.Fatalf("forge %s: %v", strings.Join(args, " "), err)

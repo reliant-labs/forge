@@ -10,10 +10,20 @@ repos:
       # so "fixing" one silently rewrites the expectation the test exists
       # to check, and the suite goes red for a reason the diff makes look
       # cosmetic.
+      #
+      # CHANGELOG.md is excluded from every formatter here (these two and
+      # prettier below): it has exactly one writer, scripts/release-forge.sh,
+      # which formats the whole file with this file's pinned prettier at
+      # release time, and a pull request may not edit it at all
+      # (scripts/check-changelog-untouched.sh). A hook checking it could only
+      # report drift no pull request is allowed to fix — a doubled blank line
+      # merged before that policy turned every PR's checks red until an admin
+      # bypass on main. The release reformats any such drift; nothing else
+      # needs to. TestChangelogIsFormattedOnlyByTheRelease pins both halves.
       - id: trailing-whitespace
-        exclude: (^|/)testdata/
+        exclude: (^|/)testdata/|^CHANGELOG\.md$
       - id: end-of-file-fixer
-        exclude: (^|/)testdata/
+        exclude: (^|/)testdata/|^CHANGELOG\.md$
       - id: check-merge-conflict
       - id: check-added-large-files
         args: ["--maxkb=1024"]
@@ -104,7 +114,10 @@ repos:
         # byte-for-byte (the ESO chart's, SF4). Reformatting one makes it
         # differ from the release it claims to be, and the next re-vendor
         # reverts the hook.
-        exclude: ^(gen/|\.forge/|.*\.pb\.go$|.*/skills/.*\.md$|pkg/deploy/[^/]+/crds/)|(^|/)testdata/
+        #
+        # CHANGELOG.md: formatted by scripts/release-forge.sh, its only
+        # writer (see the whitespace fixers above).
+        exclude: ^(gen/|\.forge/|.*\.pb\.go$|.*/skills/.*\.md$|pkg/deploy/[^/]+/crds/|CHANGELOG\.md$)|(^|/)testdata/
 
   # Compiled binaries do not belong in git: they never diff usefully, they are
   # large forever, and a Go binary embeds the build machine's absolute paths.

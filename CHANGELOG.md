@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   render now also records each `required_secrets` entry's `out_of_band_reason`,
   which the lane reads. Waive one finding with `# forge:lint-disable-next-line <rule>: <why>` or
   dial it in `lint.rules`.
+- **`forge/pkg/alerting/amconfig`: the Alertmanager configuration renderer.**
+  Moved verbatim from the control plane, which renders every org's routing
+  with it, so a local stack can render with the SAME code: one route per org
+  matched strictly on `reliant_org_id` with a blackhole default, per-org
+  receiver names, secrets as `*_file` references only, autopilot receivers as
+  continue:true observers. `TestNoRouteDeliversAcrossOrgs` runs over
+  Alertmanager's real routing tree. New: `Settings.AllowHTTPWebhooks` (false
+  by default) lets a local stack, whose receivers are the developer's own
+  machine, use plain-http webhooks; a renderer serving several orgs never sets it.
+
 - **`forge.OpenBao` renders (SF6).** `Bundle.openbao = forge.OpenBao {}` now
   lowers to a `forge.dev/v1alpha1 OpenBao` record that `pkg/deploy/openbao`
   expands into the secret store and what converges it. Defaults run: Raft x3 on
@@ -565,6 +575,22 @@ generate` runs the same check. `project new` never took a heavy slot and still
   `GOOS`/`GOARCH`, …) and is never replaced once published, so a process can
   no longer have the binary it runs swapped for a differently-built one. The
   e2e shard writes its files under `$RUNNER_TEMP`, outside the checkout.
+- **A project without codegen works straight after `project new`.**
+  `forge project new --disable codegen` (the frontend-only shape) printed "initial
+  code generation failed", and `forge generate`, `go build` and `forge lint` all
+  failed on it. Its go.mod required and replaced a `<mod>/gen` module that only
+  codegen writes; it got no go.work, so `--link-forge` had nothing to bridge;
+  and `cmd/<bin>/cmd/root.go` called `rootCommands`, which only the codegen
+  lane defines. Now gen's require, replace, `gen/go.mod` and go.work's
+  `use gen` follow one predicate, every kind that imports forge gets a go.work,
+  and the scaffold (then `forge generate`) writes a `roots_gen.go` whose
+  `rootCommands` returns no roots, plus the `metrics schema` command every
+  other service has, so root.go is the same file in every shape. The other
+  `--disable` values were already green; `TestE2EProjectNewDisableShapes` now
+  scaffolds, generates, builds and lints every one. `--service` with
+  `--disable codegen`, and `--frontend` with `--disable frontend`, are refused
+  up front: they used to drop the component without a word (the latter left an
+  empty `frontends/<name>/`).
 - **Every `forge scaffold <noun>` leaves the project lint-green, with no
   `forge generate` after it.** `scaffold frontend` wrote
   `proto/config/v1/<fe>_config.proto` and stopped, so `gen/forge_descriptor.json`

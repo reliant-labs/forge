@@ -86,9 +86,11 @@ type projectTemplateData struct {
 	// but the field is declared here so buf.yaml's dep gate has a known
 	// input shape; the upgrade lane reads the live forge.yaml api.rest value.
 	RESTEnabled bool
-	// GenInRootModule mirrors ProjectGenerator.GenInRootModule: go.work.tmpl
-	// then uses only the root module, because there is no gen/go.mod.
-	GenInRootModule bool
+	// GenModule is ProjectGenerator.genModule: gen/ is a module of its own.
+	// go.mod.tmpl requires and replaces it, and go.work.tmpl uses it, only
+	// then — a project without codegen, or one whose root module owns gen/
+	// (GenInRootModule), has no gen/go.mod to point at.
+	GenModule bool
 	// ForgeVersion is the forge version go.mod.tmpl and gen-go.mod.tmpl pin
 	// (`require github.com/reliant-labs/forge <version>`, no replace): this
 	// binary's version when a proxy serves it, else the newest published
@@ -257,9 +259,9 @@ func (g *ProjectGenerator) forScaffold() projectTemplateData {
 		// REST is off at scaffold time; users opt-in post-scaffold by
 		// editing forge.yaml's `api.rest:` and re-running `forge generate`
 		// (RegenerateInfraFiles re-renders buf.yaml from the live value).
-		RESTEnabled:     false,
-		GenInRootModule: g.GenInRootModule,
-		VersionVar:      g.BuildVersionVar,
+		RESTEnabled: false,
+		GenModule:   g.genModule(),
+		VersionVar:  g.BuildVersionVar,
 		// The same strictness the scaffolded forge.yaml records
 		// (project_config.go): gating for greenfield, advisory for a project
 		// adopted in place (scaffoldTypedAccess).

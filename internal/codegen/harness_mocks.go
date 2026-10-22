@@ -264,3 +264,74 @@ func mockForField(handlerDir string, f DepsField, t string, imports map[string]s
 	m.MockType = mock
 	return m, true
 }
+
+// HarnessMockRename is one Stub<Field> the harness of the component in Dir
+// synthesized before forge filled the field with its interface's mock —
+// what `forge fix harness-mocks` rewrites in that component's tests.
+type HarnessMockRename struct {
+	// Dir is the component's directory, relative to the project root,
+	// slash-separated ("internal/handlers/chat").
+	Dir string
+	// StubType is the retired double ("StubPause").
+	StubType string
+	// MockType is what the harness installs now, spelled from inside the
+	// component's package: bare for its own mock ("MockNarrow"), qualified
+	// for the declaring package's ("runs.MockPauseController").
+	MockType string
+	// Import is the package a qualified MockType is reached through; nil
+	// for a bare one.
+	Import *ExtraImport
+}
+
+// HarnessMockRenames reports, for every handler under
+// projectDir/internal/handlers, each Deps field whose harness double is now
+// a forge mock rather than a Stub<Field>. It reads the same inputs, through
+// the same decision (computeDepsDoubles), as the harness generator — so the
+// codemod renames exactly the stubs a regenerated harness no longer
+// declares, and nothing else.
+func HarnessMockRenames(projectDir string) ([]HarnessMockRename, error) {
+	root := filepath.Join(projectDir, "internal", "handlers")
+	var dirs []string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) && path == root {
+				return filepath.SkipDir
+			}
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if name := d.Name(); path != root && (name == "testdata" || strings.HasPrefix(name, ".")) {
+			return filepath.SkipDir
+		}
+		if fields, ferr := ParseServiceDeps(path); ferr == nil && len(fields) > 0 {
+			dirs = append(dirs, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(dirs) == 0 {
+		return nil, nil
+	}
+	resolver := newTypesResolver(projectDir, depsSelectorImports(dirs))
+	var out []HarnessMockRename
+	for _, dir := range dirs {
+		rel, rerr := filepath.Rel(projectDir, dir)
+		if rerr != nil {
+			return nil, rerr
+		}
+		_, mocks, _ := computeDepsDoubles(dir, resolver)
+		for _, m := range mocks {
+			r := HarnessMockRename{Dir: filepath.ToSlash(rel), StubType: m.StubType, MockType: m.MockType}
+			if len(m.ExtraImports) > 0 {
+				imp := m.ExtraImports[0]
+				r.Import = &imp
+			}
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}

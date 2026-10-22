@@ -27,9 +27,10 @@
 //  1. `testingExtras` — flags `pkg/app/testing_extras.go` files, the
 //     hand-rolled stub-repo workaround for the "scaffold-test factory
 //     doesn't fill required Deps" gap (FORGE_REVIEW_PROCESS.md §2.2).
-//     That gap is CLOSED: `computeAutoStubs` (internal/codegen/
-//     bootstrap_gen.go) synthesizes a stub for every interface-typed
-//     Deps field — bare identifiers and cross-package selectors alike —
+//     That gap is CLOSED: `computeDepsDoubles` (internal/codegen/
+//     bootstrap_gen.go) fills every interface-typed Deps field — with
+//     the forge mock_gen.go mock where one exists, a synthesized stub
+//     otherwise; bare identifiers and cross-package selectors alike —
 //     and `bootstrap_testing.go.tmpl` emits them. The rule is therefore
 //     sharper than when it was written, not obsolete: the file it flags
 //     no longer has a gap to justify it, so the finding is now "delete
@@ -78,7 +79,7 @@ func LintWorkaroundsRoot(root string) (Result, error) {
 			Severity: SeverityWarning,
 			Path:     rel,
 			Message: "pkg/app/testing_extras.go is a hand-rolled stub-repo file forked to bridge `app.NewTest<Svc>` not filling required Deps " +
-				"(FORGE_REVIEW_PROCESS.md §2.2). That gap IS CLOSED: computeAutoStubs synthesizes a stub for every interface-typed Deps field — " +
+				"(FORGE_REVIEW_PROCESS.md §2.2). That gap IS CLOSED: the harness fills every interface-typed Deps field (with its forge mock, or a synthesized stub) — " +
 				"including cross-package selector types like `repo.Repository` — and With<Svc>Deps overrides any of them. " +
 				"Should be: delete this file and inject real behavior through With<Svc>Deps(...) in your own _test.go files. " +
 				"A field forge could not resolve is called out by a TODO in NewTest<Svc>, so what still needs hand-rolling is named at the point of use, not carried wholesale here.",

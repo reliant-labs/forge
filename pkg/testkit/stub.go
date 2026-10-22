@@ -7,9 +7,14 @@ import "fmt"
 //
 // # The stubs
 //
-// The generated test harness auto-stubs every required interface-typed
-// Deps field so NewTest<Service>(t) constructs without the test wiring
-// each collaborator by hand. Each stub is a programmable double: a
+// The generated test harness fills every required interface-typed Deps
+// field so NewTest<Service>(t) constructs without the test wiring each
+// collaborator by hand. Where forge already generates a Mock<Role> for the
+// field's interface (a mock_gen.go), the harness installs that mock and
+// this error is not involved: an unset mock method returns
+// contractkit.MockNotSet. For an interface forge mocks nowhere — a
+// third-party or standard-library one, or a handler-local one outside a
+// forge:deps deps.go — it synthesizes a Stub<Field>, a programmable double: a
 // <Method>Func field per method, plus an embedded contractkit.Recorder.
 // A test that drives a handler through the dependency sets the Func
 // fields for the methods it reaches.

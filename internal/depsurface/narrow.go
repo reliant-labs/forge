@@ -18,6 +18,7 @@ import (
 	"golang.org/x/tools/go/ast/astutil"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
+	"github.com/reliant-labs/forge/internal/checksums"
 )
 
 // DepsFileName is where Narrow declares the interfaces of a package that has
@@ -36,6 +37,9 @@ type NarrowResult struct {
 	File     string
 	Narrowed []Narrowed
 	Skipped  []Skipped
+	// Bloated are the declared interfaces wider than the project's
+	// interfacebloat limit.
+	Bloated []Bloated
 }
 
 // Narrowed is one field Narrow retyped.
@@ -82,6 +86,8 @@ func Narrow(projectDir, dir string) (*NarrowResult, error) {
 	res.File, _ = filepath.Rel(projectDir, target)
 	res.File = filepath.ToSlash(res.File)
 
+	cfg := readLintConfig(projectDir)
+	prefix := cfg.importPrefix(checksums.GoImportsLocalPrefix(projectDir))
 	w := newIfaceWriter(p)
 	for path, name := range p.importNames(res.File) {
 		w.imports[path], w.names[name] = name, path
@@ -119,6 +125,9 @@ func Narrow(projectDir, dir string) (*NarrowResult, error) {
 			n.Embeds = append(n.Embeds, r.Type)
 		}
 		res.Narrowed = append(res.Narrowed, n)
+		if entries := len(embeds) + len(n.Methods) - coveredMethods(f, embeds); cfg.interfaceBloatOn && entries > cfg.interfaceBloatMax {
+			res.Bloated = append(res.Bloated, Bloated{name, entries, cfg.interfaceBloatMax, cfg.limitSource()})
+		}
 	}
 	if len(retype) == 0 {
 		return res, nil
@@ -128,7 +137,7 @@ func Narrow(projectDir, dir string) (*NarrowResult, error) {
 	// When Deps lives in the target itself (a contract package's
 	// contract.go), the declarations are appended to the retyped file.
 	depsFile := filepath.Join(projectDir, filepath.FromSlash(p.DepsFile))
-	retyped, err := retypeFields(depsFile, retype, p.importNames(p.DepsFile))
+	retyped, err := retypeFields(depsFile, retype, p.importNames(p.DepsFile), prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +145,7 @@ func Narrow(projectDir, dir string) (*NarrowResult, error) {
 	if depsFile == target {
 		base = retyped
 	}
-	decls, err := w.render(target, base)
+	decls, err := w.render(target, base, prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -278,7 +287,7 @@ func splitRoles(f Field) (embeds []Role, direct []string) {
 // render returns target (or base, its pending content) with the
 // declarations appended — deps.go, fresh, when absent — and the imports they
 // need.
-func (w *ifaceWriter) render(target string, base []byte) ([]byte, error) {
+func (w *ifaceWriter) render(target string, base []byte, prefix string) ([]byte, error) {
 	src, err := base, error(nil)
 	if src == nil {
 		src, err = os.ReadFile(target)
@@ -298,7 +307,7 @@ func (w *ifaceWriter) render(target string, base []byte) ([]byte, error) {
 		added[p] = w.imports[p]
 	}
 	addImports(fset, file, added)
-	return formatFile(fset, file, target)
+	return formatFile(fset, file, target, prefix)
 }
 
 // addImports adds each path under its name, omitting the name when it is
@@ -313,12 +322,36 @@ func addImports(fset *token.FileSet, file *ast.File, imports map[string]string) 
 	}
 }
 
-func formatFile(fset *token.FileSet, file *ast.File, name string) ([]byte, error) {
+// formatFile prints file as goimports -local prefix would leave it: stdlib,
+// third-party, then the local group, so the project's goimports lint accepts
+// what narrow-deps wrote.
+func formatFile(fset *token.FileSet, file *ast.File, name, prefix string) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := format.Node(&buf, fset, file); err != nil {
 		return nil, fmt.Errorf("format %s: %w", name, err)
 	}
-	return buf.Bytes(), nil
+	out, err := checksums.CanonicalGoSource(prefix, name, buf.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("format %s: %w", name, err)
+	}
+	return out, nil
+}
+
+// coveredMethods counts the used methods the embedded roles already hold.
+func coveredMethods(f Field, embeds []Role) int {
+	covered := map[string]bool{}
+	for _, r := range embeds {
+		for _, m := range r.Methods {
+			covered[m] = true
+		}
+	}
+	n := 0
+	for m := range f.Used {
+		if covered[m] {
+			n++
+		}
+	}
+	return n
 }
 
 // importNames maps each import of the project-relative file to its name in
@@ -342,7 +375,7 @@ func (p *Package) importNames(rel string) map[string]string {
 // retypeFields returns file with the type of each named Deps field
 // rewritten, minus every import (names: path → name in file) nothing uses any
 // more.
-func retypeFields(file string, retype map[string]string, names map[string]string) ([]byte, error) {
+func retypeFields(file string, retype map[string]string, names map[string]string, prefix string) ([]byte, error) {
 	src, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
@@ -402,7 +435,7 @@ func retypeFields(file string, retype map[string]string, names map[string]string
 	for _, d := range drop {
 		astutil.DeleteNamedImport(fset, f, d.name, d.path)
 	}
-	return formatFile(fset, f, file)
+	return formatFile(fset, f, file, prefix)
 }
 
 // usesPackageName reports whether any selector in f is name.X.

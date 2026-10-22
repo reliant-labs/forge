@@ -4631,6 +4631,29 @@ schema ControlPlaneSecret:
 
     `Observability.destination.token_from_control_plane = True` declares one of
     these for the node agent automatically.
+
+    DELIVERY. By default the control plane PUSHES the Secret into the cluster
+    through the connected-cluster credential (`delivery = "push"`). With
+    `delivery = "store"` it writes the value into the env's secret store
+    instead and the External Secrets Operator delivers it, as a FLOATING
+    ExternalSecret: no version pin, because a platform-issued token is renewed
+    in place and the consumer re-reads the file the kubelet refreshes.
+
+        forge.ControlPlaneSecret {
+            name = "reliant-otel-auth"
+            cluster = _prod
+            delivery = "store"
+            store = forge.HostedStore {org = "<org id>", env_id = "<env id>"}
+        }
+
+    The store is the control plane's own (a HostedStore), so the writer and the
+    reader share one path. The control plane writes ONE value under
+    `RELIANT_OTEL_HEADERS` (`authorization=Bearer <jwt>`); the Secret's
+    `token` key is derived from it by an ESO template, so the two keys can
+    never disagree about which token is current. `refresh` (default 15m, at
+    least 5m) is how often ESO re-reads. The shape records `delivery = "store"`
+    and the render's `store_secrets`, so the control plane knows to write the
+    store and derives the exact-path read policy for the namespace.
     """
     type: str = "control_plane_secret"
     name: str
@@ -4650,9 +4673,26 @@ schema ControlPlaneSecret:
     # round: optional, so a first deploy is never blocked on it.
     required: bool = False
     reason: str = ""
+    # How the Secret reaches the cluster: "push" (the control plane writes it
+    # through the connected-cluster credential) or "store" (the control plane
+    # writes the env's secret store and ESO delivers it, floating).
+    delivery: "push" | "store" = "push"
+    # The store a `delivery = "store"` Secret is written to and read from: the
+    # env's hosted control plane's own.
+    store?: HostedStore
+    # How often ESO re-reads a store-delivered Secret. At least 5m.
+    refresh: str = "15m"
 
     check:
         type == "control_plane_secret", "ControlPlaneSecret.type must be 'control_plane_secret'"
+        delivery == "push" or store, \
+            "ControlPlaneSecret '${name}' has delivery = \"store\" and no `store`: name the hosted store the control plane writes it to, `store = forge.HostedStore {org = \"<org id>\", env_id = \"<env id>\"}`"
+        delivery == "store" or not store, \
+            "ControlPlaneSecret '${name}' sets `store` but delivers by push: a store only applies to delivery = \"store\". Set delivery = \"store\", or drop `store`"
+        delivery == "push" or kind == "telemetry_token", \
+            "ControlPlaneSecret '${name}': delivery = \"store\" is defined for kind telemetry_token only (the identity kinds are derived from Bundle.identity)"
+        regex.match(refresh, _ALERT_DURATION_RE) and _alert_secs(refresh) >= 300, \
+            "ControlPlaneSecret '${name}'.refresh '${refresh}' must be a duration of at least 5m (e.g. '15m'): a faster loop is a load on the store, and the cluster's admission policy refuses it"
         regex.match(name, r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$") and len(name) <= 253, \
             "ControlPlaneSecret.name '${name}' must be a Kubernetes Secret name (lowercase alphanumerics, '-' and '.')"
         not namespace or regex.match(namespace, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), \

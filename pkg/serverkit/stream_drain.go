@@ -97,8 +97,10 @@ func (i *streamDrainInterceptor) WrapStreamingHandler(next connect.StreamingHand
 }
 
 // isCancellation reports whether err is how a handler reports that its
-// context was cancelled — or no error at all. Any other error is the
-// handler's own failure and is returned as it is, drain or not.
+// context was cancelled — or no error at all. A Receive the drain aborted
+// (receive_abort.go) fails with svcerr.ErrServerDraining, so a handler that
+// returns that error is drained too. Any other error is the handler's own
+// failure and is returned as it is, drain or not.
 func isCancellation(err error) bool {
 	return err == nil ||
 		errors.Is(err, context.Canceled) ||

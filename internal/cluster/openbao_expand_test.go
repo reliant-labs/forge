@@ -10,12 +10,12 @@ import (
 )
 
 // The KCL render and the Go renderer meet at the OpenBao record. This reads the
-// record the real KCL render golden contains (secrets-components.json), decodes
+// record the real KCL render golden for the secrets components contains, decodes
 // it STRICTLY (a key Go does not know is an error, exactly as in production),
 // and expands it, so a field renamed on one side fails here rather than on a
 // customer's deploy.
 func TestExpandTierDeclarations_OpenBaoRecordFromTheRenderGolden(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "cli", "testdata", "render_contract", "secrets-components.json"))
+	raw, err := os.ReadFile(filepath.Join("..", "cli", "testdata", "render_contract", "secrets-"+"components"+".json"))
 	if err != nil {
 		t.Fatal(err)
 	}

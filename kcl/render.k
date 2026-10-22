@@ -88,6 +88,8 @@ import .lib.capabilities as caps
 import .lib.crd as crd_lib
 import .lib.build as build_lib
 import .lib.flux as flux_lib
+import .lib.eso as eso_lib
+import .lib.openbao as openbao_lib
 import .lib.external_secret as es_lib
 
 # Bare aliases for schema instantiation inside lambda bodies (KCL v0.11).
@@ -188,7 +190,7 @@ _targeted_contexts = lambda workloads: [any], databases: [any], cluster_target: 
     _from_gateways = [g.cluster.context for g in gateways if g.cluster]
     _from_http = [r.cluster.context for r in http_routes if r.cluster]
     _from_grpc = [r.cluster.context for r in grpc_routes if r.cluster]
-    _from_charts = [h.cluster.context for h in helm_charts if h.cluster]
+    _from_charts = [_eso_context(h) for h in helm_charts if h.cluster]
     _from_manifests = [m.cluster for m in manifests if m.cluster]
     _from_generated = [g.cluster for g in generated if g.cluster]
     _from_secrets = [s.cluster for s in rendered_secrets if s.cluster]
@@ -1639,6 +1641,10 @@ _render_observability = lambda b: Bundle -> any {
         "local_port": _o.local_port
         "local_endpoint": _obs_local_endpoint(b) or None
         "profiles_endpoint": _obs_profiles_local_endpoint(b) or None
+        # The local alerting loop (Alertmanager + evaluator): only beside the
+        # local ClickStack, which is what the evaluator queries.
+        "alertmanager_port": _o.alertmanager_port if _o.enabled and not _o.destination and _o.alertmanager_port > 0 else None
+        "alerts_port": _o.alerts_port if _o.enabled and not _o.destination and _o.alerts_port > 0 else None
         "destination": {
             "endpoint": _o.destination.endpoint
             "protocol": _o.destination.protocol
@@ -1688,7 +1694,7 @@ _render_observability = lambda b: Bundle -> any {
         # Alerting is a declaration only: the author's rules (severity
         # defaulted), the tuning of the generated defaults, and the routes. Go
         # resolves the defaults and, absent routes, the in-app + Slack fan-out.
-        if _o.alerts.rules or _o.alerts.defaults or _o.alerts.routes:
+        if _o.alerts.rules or _o.alerts.defaults or _o.alerts.routes or _o.alerts.receivers:
             "alerts": _render_alerts(_o.alerts)
     }
 }
@@ -1712,6 +1718,15 @@ _render_alerts = lambda a: Alerts -> any {
             "params": d.params
         } for id, d in a.defaults}
         "routes": [{"match": r.match, "receiver": r.receiver, "continue": r.continue} for r in a.routes]
+        "receivers": [{
+            "name": r.name
+            "type": r.type
+            "url": r.url if r.url else None
+            "secret": r.secret if r.secret else None
+            "channel": r.channel if r.channel else None
+            "severities": r.severities
+            "always_alertnames": r.always_alertnames
+        } for r in a.receivers]
     }
 }
 
@@ -1758,7 +1773,8 @@ _render_database = lambda db: any, bundle: Bundle -> any {
 _namespaces = lambda b: Bundle, entities: [any] -> [any] {
     _pt = _primary_target(b)
     _pairs = ([[_pt.cluster, _pt.namespace]] if _pt else []) \
-        + [[e.runtime.cluster, e.runtime.namespace] for e in entities if e.runtime.type == "cluster"]
+        + [[e.runtime.cluster, e.runtime.namespace] for e in entities if e.runtime.type == "cluster"] \
+        + ([[_openbao(b).cluster, _openbao(b).namespace]] if b.openbao else [])
     _uniq = {"${p[0]}/${p[1]}": p for p in _pairs}
     [_render_namespace(p[1], p[0], _pt) for _, p in _uniq]
 }
@@ -1779,6 +1795,37 @@ _render_namespace = lambda namespace: str, context: str, primary: any -> any {
     }
 }
 
+# ---------------------------------------------------------------------------
+# forge.OpenBao (lib/openbao.k). Unset renders nothing.
+# ---------------------------------------------------------------------------
+
+# The lowering of Bundle.openbao, or Undefined: the OpenBao record, the
+# resolved block, and the prerequisite Secrets. The store runs on its own
+# `runtime` target, else the env's primary one.
+_store_cluster_id = lambda b: Bundle, t: ClusterTarget -> str {
+    _wl = [w.runtime.target.connected_cluster for w in b.workloads if w.runtime and w.runtime.type == "cluster" and w.runtime.target.cluster == t.cluster and w.runtime.target.connected_cluster]
+    _eso = [e.cluster.connected_cluster for e in b.external_secrets_operators if typeof(e.cluster) == "ClusterTarget" and e.cluster.cluster == t.cluster and e.cluster.connected_cluster]
+    (b.connected_clusters[t.cluster] if t.cluster in b.connected_clusters else "") or t.connected_cluster or (_wl[0] if _wl else "") or (_eso[0] if _eso else "") or t.cluster
+}
+
+_openbao = lambda b: Bundle -> any {
+    _rt = b.openbao.runtime if b.openbao else Undefined
+    _target = _rt.target if _rt else _primary_target(b)
+    openbao_lib.render(b.openbao, {
+        project = b.project
+        env = labels_lib.env_value(b.env)
+        target = _target
+        # The id SF5's SecretStores log in under (lib/external_secret.k
+        # _cluster_id, which is private to that module): the mount, role and
+        # audience this component grants must be the ones a SecretStore asks
+        # for. Pinned together by TestOpenBaoAndExternalSecretAgreeOnTheClusterID.
+        cluster_id = _store_cluster_id(b, _target) if _target else ""
+        secrets = b.required_secrets
+        eso_namespaces = [e.namespace for e in b.external_secrets_operators if _target and _eso_context(e) == _target.cluster]
+        bootstrap_source = b.bootstrap_source
+    }) if b.openbao else Undefined
+}
+
 _manifests = lambda b: Bundle, entities: [any] -> [any] {
     _pt = _primary_target(b)
     _ns = _pt.namespace if _pt else ""
@@ -1791,6 +1838,7 @@ _manifests = lambda b: Bundle, entities: [any] -> [any] {
         + [_workload_record(e, _project) for e in entities if e.runtime.type == "cluster" and e.kind != "tool"] \
         + _obs_agent_records(b, _project) \
         + [_render_managed_database_record(db, _project) for db in _dbs if db.runtime == "cluster"] \
+        + ([_openbao(b).record] if b.openbao else []) \
         + [_place_on_primary(item, _pt) for item in _ingress(b, _ns)] \
         + [item for g in b.manifests for item in _raw_manifests(g, _pt, _project)] \
         + es_lib.manifests(b, _pt),
@@ -1867,7 +1915,7 @@ render = lambda bundle: Bundle -> any {
         # Platform deps (helm-as-a-RENDERER): the CLI expands each via `helm
         # template --skip-crds` and folds the result into the apply stream,
         # selected by `--target <name>`. Not in `manifests`.
-        "helm_charts": [_render_helm_chart(h) for h in bundle.helm_charts if h.delivery != "bundle"]
+        "helm_charts": [_render_helm_chart(h) for h in _all_helm_charts(bundle) if h.delivery != "bundle"]
         # Bring-your-own YAML, rendered Go-side at extract time and shipped in
         # the bundle (internal/cluster/byo_yaml.go). Keys appear only when
         # declared, so an env with neither renders exactly as before.
@@ -1883,8 +1931,18 @@ render = lambda bundle: Bundle -> any {
             } for g in bundle.generated]
         # Declared external PREREQUISITES forge does NOT create: a render-time
         # checklist, and the preflight BLOCK on a required-but-absent Secret.
-        "required_secrets": [_render_external_secret(s) for s in bundle.required_secrets]
+        "required_secrets": [_render_external_secret(s) for s in bundle.required_secrets] + (_openbao(bundle).required if bundle.openbao else [])
         "required_dns": [_render_dns_record(r) for r in bundle.required_dns]
+        "external_secrets_operators": [_render_eso(e) for e in bundle.external_secrets_operators]
+        # Where the values the store needs to start live (forge.GCPSecretManager
+        # or forge.OutOfBand). A declaration; `forge secret import --to-bootstrap`
+        # reads it for the project.
+        if bundle.bootstrap_source:
+            "bootstrap_source": _render_bootstrap_source(bundle.bootstrap_source)
+        # The resolved secret store (forge.OpenBao): where it is and how a client
+        # logs in. A declaration only; no value.
+        if bundle.openbao:
+            "openbao": _openbao(bundle).block
         "control_plane_secrets": [_render_control_plane_secret(s, bundle) for s in _cps_all(bundle.workloads, bundle.observability, _cps_decl(bundle.workloads, bundle.identity, bundle.env, bundle.project, bundle.control_plane_secrets))]
         # WHERE secret values come from. A declaration only: no secret VALUE
         # ever enters this output.
@@ -2584,6 +2642,12 @@ _render_cluster = lambda c: Cluster -> any {
 # kubeconfig + applies the Secret Go-side (the IP is resolved fresh, never
 # in KCL); this projection only carries the DECLARATION. Never appears in
 # render_manifests — the Secret has a runtime-minted value, not a static one.
+# The declared charts plus the one chart each ExternalSecretsOperator lowers
+# to (lib/eso.k). Built through HelmChart so its check: block runs.
+_all_helm_charts = lambda b: Bundle -> [HelmChart] {
+    b.helm_charts + [HelmChart {**eso_lib.eso_chart(e, eso_lib.eso_owner(b.project, b.env))} for e in b.external_secrets_operators]
+}
+
 # Render a HelmChart (platform dependency) to its stable dict form. The
 # CLI reads this list and runs `helm template <chart|oci> --version
 # <version> --values <values> -n <namespace> --skip-crds` Go-side, stamps
@@ -2607,11 +2671,14 @@ _render_helm_chart = lambda h: HelmChart -> any {
         # app deploy. The CLI stamps the chart's app-label and applies
         # them after the chart's controllers.
         "manifests": h.manifests if h.manifests else None
-        # cluster is a forge.Cluster REFERENCE; the machine-facing JSON
-        # carries the DENORMALIZED kubectl context (k3d-<name>) the apply
-        # runs `kubectl --context` with — never the bare name. Null =>
-        # the env's primary cluster (every pre-existing declaration).
-        "cluster": h.cluster.context if h.cluster else None
+        # cluster is a forge.Cluster REFERENCE or a forge.ClusterTarget; the
+        # machine-facing JSON carries the DENORMALIZED kubectl context
+        # (k3d-<name>, or the target's own) the apply runs `kubectl --context`
+        # with — never the bare name. Null => the env's primary cluster.
+        "cluster": _eso_context(h) if h.cluster else None
+        # True when `cluster` is a forge.ClusterTarget: the target IS the
+        # declaration, so the deploy does not look for it in Bundle.clusters.
+        "cluster_target": True if (h.cluster and typeof(h.cluster) == "ClusterTarget") else None
         # Metadata forge writes onto the Namespace it creates for the chart,
         # and whether a re-apply prunes the chart's departed objects.
         "namespace_labels": h.namespace_labels if h.namespace_labels else None
@@ -2634,6 +2701,63 @@ _render_external_secret = lambda s: ExternalSecret -> any {
         "keys": s.keys
         "reason": s.reason if s.reason else None
         "value_group": s.value_group if s.value_group else None
+        # Why a Secret is still provisioned out of band in an env that has
+        # store-backed ones: `forge lint --secrets` holds it to a standard.
+        if s.out_of_band_reason:
+            "out_of_band_reason": s.out_of_band_reason
+        # The store a Secret reads from, for the release shape (store_secrets,
+        # generated_secrets, pins). Names and kinds only; a value never appears.
+        if s.source:
+            "source": _render_store_source(s.source)
+    }
+}
+
+_render_store_source = lambda src: StoreSource -> any {
+    {
+        "store": {"type": src.store.type, if src.store.type == "gcpsm": "project": src.store.project}
+        "data": src.data
+        if src.generate:
+            "generate": {n: _render_generated(g) for n, g in src.generate}
+        if src.pin:
+            "pin": src.pin
+        if src.immutable:
+            "immutable": sorted(src.immutable)
+        if src.templates:
+            "templates": src.templates
+        "creation_policy": src.creation_policy
+        if src.shadow:
+            "shadow": True
+        if src.cluster:
+            "cluster": src.cluster
+    }
+}
+
+_render_generated = lambda g: GeneratedSecret -> any {
+    {
+        "kind": g.kind
+        "bytes": g.bytes
+        "encoding": g.encoding
+        "prefix": g.prefix
+        "length": g.length
+        "symbols": g.symbols
+        "companion": g.companion
+        "common_name": g.common_name
+        "valid_days": g.valid_days
+    }
+}
+
+# The ESO installs, as the shape records them. `connected_cluster` is the name
+# `forge cluster connect` registered, when the cluster has one.
+_render_bootstrap_source = lambda src: any -> any {
+    {"type": src.type, if src.type == "gcpsm": "project": src.project}
+}
+
+_render_eso = lambda e: ExternalSecretsOperator -> any {
+    {
+        "cluster": _eso_context(e)
+        "connected_cluster": e.cluster.connected_cluster if typeof(e.cluster) == "ClusterTarget" and e.cluster.connected_cluster else None
+        "namespace": e.namespace
+        "version": e.version
     }
 }
 

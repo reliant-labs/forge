@@ -12,5 +12,5 @@ output = forge.render(forge.Bundle {
     openbao = forge.OpenBao {
         listeners = [forge.OpenBaoListener {tls = False, transitional_reason = "migrating"}]
     }
-    
+
 })

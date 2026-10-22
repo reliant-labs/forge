@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	pathpkg "path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -216,13 +217,18 @@ type Checkout struct {
 	// Dirty: tracked changes or untracked files (what `go build` stamps as
 	// vcs.modified).
 	Dirty bool
+	// SourceEdits: some of those changes are to a file a build of forge can
+	// read (sourceEdit) — the ones that make a binary built from HEAD a
+	// different forge. A test report a CI job tees into the root, an
+	// editor's scratch notes or a CHANGELOG edit is Dirty but not this.
+	SourceEdits bool
 	// HeadMovedAt is when HEAD last moved in this checkout — a commit, pull,
 	// rebase or checkout — read from the reflog; HEAD's commit time when
 	// there is no reflog.
 	HeadMovedAt time.Time
-	// LastEditAt is the newest modification among dirty files. A deleted
-	// file has no mtime and counts as edited now.
-	LastEditAt time.Time
+	// LastSourceEditAt is the newest modification among the source edits.
+	// A deleted file has no mtime and counts as edited now.
+	LastSourceEditAt time.Time
 }
 
 // ReadCheckout reads dir with git. ok is false when dir is not a git
@@ -234,7 +240,7 @@ func ReadCheckout(dir string) (Checkout, bool) {
 	}
 	c := Checkout{Dir: dir, Head: head}
 	if status, err := gitIn(dir, "status", "--porcelain", "-z", "--untracked-files=all"); err == nil {
-		c.Dirty, c.LastEditAt = dirtyEdits(dir, status)
+		c.Dirty, c.SourceEdits, c.LastSourceEditAt = dirtyEdits(dir, status, packageDirs(dir))
 	}
 	if logPath, err := gitIn(dir, "rev-parse", "--git-path", "logs/HEAD"); err == nil && logPath != "" {
 		if !filepath.IsAbs(logPath) {
@@ -277,10 +283,10 @@ func gitIn(dir string, args ...string) (string, error) {
 }
 
 // dirtyEdits parses `git status --porcelain -z` and returns whether anything
-// is dirty and the newest edit time among the entries.
-func dirtyEdits(dir, status string) (bool, time.Time) {
-	var newest time.Time
-	dirty := false
+// is dirty, whether any entry is a source edit (sourceEdit, over the
+// checkout's package directories pkgDirs), and the newest edit time among
+// the source edits.
+func dirtyEdits(dir, status string, pkgDirs map[string]bool) (dirty, source bool, newest time.Time) {
 	entries := strings.Split(status, "\x00")
 	for i := 0; i < len(entries); i++ {
 		e := entries[i]
@@ -289,9 +295,17 @@ func dirtyEdits(dir, status string) (bool, time.Time) {
 		}
 		dirty = true
 		code, path := e[:2], e[3:]
+		from := ""
 		if code[0] == 'R' || code[0] == 'C' {
 			i++ // a rename/copy is followed by its source path
+			if i < len(entries) {
+				from = entries[i]
+			}
 		}
+		if !sourceEdit(path, pkgDirs) && (from == "" || !sourceEdit(from, pkgDirs)) {
+			continue
+		}
+		source = true
 		mtime := time.Now()
 		if st, err := os.Lstat(filepath.Join(dir, path)); err == nil {
 			mtime = st.ModTime()
@@ -300,7 +314,58 @@ func dirtyEdits(dir, status string) (bool, time.Time) {
 			newest = mtime
 		}
 	}
-	return dirty, newest
+	return dirty, source, newest
+}
+
+// packageDirs is every directory of the checkout holding a non-test Go file,
+// tracked or untracked: the directories whose packages a build of forge can
+// compile, and so the only ones a //go:embed can read beneath (a pattern
+// names files in its package's directory or below it, never above). nil when
+// git cannot list them, which makes every dirty file a source edit.
+func packageDirs(dir string) map[string]bool {
+	out, err := gitIn(dir, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.go")
+	if err != nil {
+		return nil
+	}
+	dirs := map[string]bool{}
+	for _, f := range strings.Split(out, "\x00") {
+		if f == "" || strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		dirs[pathpkg.Dir(f)] = true
+	}
+	return dirs
+}
+
+// sourceEdit reports whether a changed file, rel to the checkout, is one a
+// build of forge can read: a Go build source (Go, assembly, cgo, syso, the
+// module and workspace files), or any file beneath a package directory,
+// where a //go:embed pattern may name it — templates, KCL schemas, skills.
+// Anything else (a test report a CI job tees into the root, docs, editor
+// scratch) cannot change the binary, and counting it as skew would rebuild
+// forge from the checkout for every write to it. With pkgDirs nil (git could
+// not list them) every file counts: an unneeded rebuild beats a missed one.
+func sourceEdit(rel string, pkgDirs map[string]bool) bool {
+	rel = pathpkg.Clean(filepath.ToSlash(rel))
+	switch pathpkg.Base(rel) {
+	case "go.mod", "go.sum", "go.work", "go.work.sum":
+		return true
+	}
+	switch pathpkg.Ext(rel) {
+	case ".go", ".s", ".S", ".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".m", ".f", ".syso":
+		return true
+	}
+	if pkgDirs == nil {
+		return true
+	}
+	for d := pathpkg.Dir(rel); ; d = pathpkg.Dir(d) {
+		if pkgDirs[d] {
+			return true
+		}
+		if d == "." || d == "/" {
+			return false
+		}
+	}
 }
 
 // SkewKind names how a binary and its bridged checkout disagree.
@@ -338,18 +403,22 @@ func AssessSkew(b Binary, c Checkout) (SkewKind, bool) {
 		if !sameRevision(b.Revision, c.Head) {
 			return SkewRevision, true
 		}
-		if c.Dirty {
-			if b.Modified && sameTree && notAfterBuild(c.LastEditAt) {
+		if c.SourceEdits {
+			if b.Modified && sameTree && notAfterBuild(c.LastSourceEditAt) {
 				return 0, false
 			}
 			return SkewCheckoutEdits, true
 		}
-		if b.Modified {
+		// The binary carries uncommitted edits and the checkout has no
+		// source edit: unless this tree is dirty with edits that cannot
+		// reach a build (what stamped the binary modified), they are edits
+		// the checkout lacks.
+		if b.Modified && !(sameTree && c.Dirty) {
 			return SkewBinaryEdits, true
 		}
 		return 0, false
 	}
-	if sameTree && notAfterBuild(c.HeadMovedAt) && (!c.Dirty || notAfterBuild(c.LastEditAt)) {
+	if sameTree && notAfterBuild(c.HeadMovedAt) && (!c.SourceEdits || notAfterBuild(c.LastSourceEditAt)) {
 		return 0, false
 	}
 	return SkewUnverifiable, true
@@ -386,7 +455,7 @@ func samePath(a, b string) bool {
 // SkewLine renders the one-line warning: what disagrees, and the fix.
 func SkewLine(kind SkewKind, b Binary, br Bridge, c Checkout) string {
 	at := short(c.Head)
-	if c.Dirty {
+	if c.SourceEdits {
 		at += " + uncommitted changes"
 	}
 	built := ""

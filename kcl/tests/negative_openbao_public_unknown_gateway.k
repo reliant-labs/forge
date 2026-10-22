@@ -12,5 +12,5 @@ output = forge.render(forge.Bundle {
     openbao = forge.OpenBao {
         public = forge.OpenBaoPublic {host = "secrets.example.com", gateway = "edge"}
     }
-    
+
 })

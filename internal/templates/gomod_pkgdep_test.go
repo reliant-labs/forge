@@ -25,6 +25,7 @@ type goModPkgDepData struct {
 	GoVersion    string
 	RESTEnabled  bool
 	ForgeVersion string
+	GenModule    bool
 }
 
 func renderGoMod(t *testing.T, data goModPkgDepData) string {
@@ -39,7 +40,7 @@ func renderGoMod(t *testing.T, data goModPkgDepData) string {
 func TestGoModTemplate_ForgePkgCleanPin(t *testing.T) {
 	got := renderGoMod(t, goModPkgDepData{
 		Module: "github.com/example/demo", GoVersion: "1.26",
-		ForgeVersion: "v0.3.0",
+		ForgeVersion: "v0.3.0", GenModule: true,
 	})
 	if !strings.Contains(got, "github.com/reliant-labs/forge v0.3.0") {
 		t.Errorf("missing pinned require, got:\n%s", got)
@@ -60,7 +61,7 @@ func TestGoModTemplate_ForgePseudoVersionPin(t *testing.T) {
 	const pseudo = "v0.1.16-0.20260916085636-c01e07ec6ef2"
 	got := renderGoMod(t, goModPkgDepData{
 		Module: "github.com/example/demo", GoVersion: "1.26",
-		ForgeVersion: pseudo,
+		ForgeVersion: pseudo, GenModule: true,
 	})
 	if !strings.Contains(got, "github.com/reliant-labs/forge "+pseudo) {
 		t.Errorf("missing pseudo-version require, got:\n%s", got)
@@ -83,6 +84,25 @@ func TestGoModTemplate_ForgeAbsent(t *testing.T) {
 	})
 	if strings.Contains(got, "reliant-labs/forge") {
 		t.Errorf("empty version: go.mod must not mention forge at all, got:\n%s", got)
+	}
+}
+
+// No gen module (a project without codegen, or one whose root module owns
+// gen/): go.mod neither requires nor replaces one. It once did both, for a
+// gen/go.mod nothing wrote, and every go command in the project failed on it.
+func TestGoModTemplate_NoGenModule(t *testing.T) {
+	got := renderGoMod(t, goModPkgDepData{
+		Module: "github.com/example/demo", GoVersion: "1.26",
+		ForgeVersion: "v0.3.0",
+	})
+	if strings.Contains(got, "github.com/example/demo/gen") {
+		t.Errorf("go.mod names a gen module that does not exist, got:\n%s", got)
+	}
+	if !strings.Contains(got, "github.com/reliant-labs/forge v0.3.0\n)\n") {
+		t.Errorf("the require block lost its forge pin or its shape, got:\n%s", got)
+	}
+	if !strings.HasSuffix(got, ")\n") {
+		t.Errorf("go.mod must end with the require block and one newline, got:\n%q", got)
 	}
 }
 

@@ -2,7 +2,7 @@ go {{.GoVersion}}
 
 use (
 	.
-{{- if not .GenInRootModule}}
+{{- if .GenModule}}
 	gen
 {{- end}}
 )

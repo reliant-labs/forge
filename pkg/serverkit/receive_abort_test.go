@@ -22,7 +22,7 @@ import (
 const (
 	chatService       = "test.abort.v1.Chat"
 	chatProcedure     = "/" + chatService + "/Chat"
-	chatEchoProcedure     = "/" + chatService + "/Echo"
+	chatEchoProcedure = "/" + chatService + "/Echo"
 	parkedProcedure   = "/" + chatService + "/Parked"
 	claimingProcedure = "/" + chatService + "/Claiming"
 )

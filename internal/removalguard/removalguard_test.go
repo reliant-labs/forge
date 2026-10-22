@@ -166,6 +166,10 @@ var removals = []removal{
 					// docker smokes read and write the same paths.
 					"pkg/deploy/openbao/openbao_test.go",
 					"pkg/deploy/openbao/smoke_test.go",
+					"pkg/deploy/openbao/public_test.go",
+					"pkg/deploy/openbao/public_smoke_test.go",
+					"pkg/deploy/openbao/testdata/public.golden.yaml",
+					"internal/templates/project/skills/forge/deploy/openbao-public/SKILL.md",
 					"kcl/tests/positive_openbao_render.k",
 					"internal/templates/project/skills/forge/secrets/openbao/SKILL.md",
 					// The CLI's store source writes and reads that layout; only

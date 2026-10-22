@@ -147,6 +147,13 @@ func startServer() (*server, error) {
 		release()
 		return nil, fmt.Errorf("pgtest: connect to shared postgres: %w", err)
 	}
+	if strings.TrimSpace(os.Getenv(EnvBaseURL)) != "" {
+		if err := checkExternalVersion(context.Background(), db, serverVersion()); err != nil {
+			_ = db.Close()
+			release()
+			return nil, err
+		}
+	}
 	return &server{baseURL: baseURL, baseDB: db, release: release}, nil
 }
 
@@ -226,6 +233,11 @@ func bootEmbedded() (baseURL string, port uint32, ep *embeddedpostgres.EmbeddedP
 	// shared-memory/semaphore tables (see reapStaleInstances).
 	reapStaleInstances()
 
+	choice := serverVersion()
+	if choice.err != nil {
+		return "", 0, nil, choice.err
+	}
+
 	port, err = freePort()
 	if err != nil {
 		return "", 0, nil, fmt.Errorf("pgtest: reserve port: %w", err)
@@ -236,6 +248,8 @@ func bootEmbedded() (baseURL string, port uint32, ep *embeddedpostgres.EmbeddedP
 		pass = "forge"
 	)
 	cfg := embeddedpostgres.DefaultConfig().
+		// The project's postgres, not the library's default (version.go).
+		Version(embeddedpostgres.PostgresVersion(choice.version)).
 		Username(user).
 		Password(pass).
 		Database("postgres").
@@ -264,7 +278,7 @@ func bootEmbedded() (baseURL string, port uint32, ep *embeddedpostgres.EmbeddedP
 	// found matching X". See fetch.go.
 	ep, err = StartEmbedded(cfg)
 	if err != nil {
-		return "", 0, nil, fmt.Errorf("pgtest: start embedded postgres: %w", err)
+		return "", 0, nil, fmt.Errorf("pgtest: start embedded postgres %s: %w", choice.version, err)
 	}
 	// Windows: the server pg_ctl just started holds THIS process's working
 	// directory for its whole life. See cwd_windows.go.
@@ -312,10 +326,10 @@ func pingWithRetry(db *sql.DB) error {
 }
 
 // runtimeDir keeps each embedded server's data directory unique per port
-// so two processes never share one. It lives under the OS temp dir and
-// is cleaned by Stop().
+// so two processes never share one. It lives under the version's
+// instanceRoot and is cleaned by Stop().
 func runtimeDir(port uint32) string {
-	return filepath.Join(os.TempDir(), "forge-pgtest", strconv.FormatUint(uint64(port), 10))
+	return filepath.Join(instanceRoot(), strconv.FormatUint(uint64(port), 10))
 }
 
 // postgresBinary is the postgres executable embedded-postgres extracts under
@@ -355,7 +369,7 @@ var staleInstanceAge = 30 * time.Minute // a var so tests can age a server past 
 // the dir first (as this used to) deleted the pid file and orphaned the
 // segment permanently, so segments piled up even though dirs were cleaned.
 func reapStaleInstances() {
-	root := filepath.Join(os.TempDir(), "forge-pgtest")
+	root := instanceRoot()
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return
@@ -417,12 +431,12 @@ func portsInUse() map[string]bool {
 	if st := readPoolState(); st.Port != 0 && len(prunePIDs(st.Users)) > 0 {
 		in[strconv.FormatUint(uint64(st.Port), 10)] = true
 	}
-	entries, _ := os.ReadDir(filepath.Join(os.TempDir(), "forge-pgtest"))
+	entries, _ := os.ReadDir(instanceRoot())
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(os.TempDir(), "forge-pgtest", e.Name(), ownerFile))
+		b, err := os.ReadFile(filepath.Join(instanceRoot(), e.Name(), ownerFile))
 		if err != nil {
 			continue
 		}

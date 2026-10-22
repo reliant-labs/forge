@@ -38,6 +38,12 @@ stays real at every tier.
   It takes `testing.TB`, so a benchmark gets the same database a test does.
   A template unused for a day (`FORGE_TEST_TEMPLATE_TTL`) is dropped by the next
   run, so a long-lived shared server does not keep one per migration edit.
+- **Tests run on production's Postgres major.** Declare it once in forge.yaml —
+  `database: {postgres_version: "16"}` — and the embedded server boots that
+  major (a passing suite on 18 proves nothing about SQL on 16). Unset, it is the
+  newest major forge ships. `FORGE_TEST_POSTGRES_VERSION=17` overrides it for one
+  run. With `FORGE_TEST_POSTGRES_URL`, a declared version is checked against the
+  server's, so a CI service container on another major fails by name.
 - **One server per run, not one per package.** Every `go test` binary of a
   fan-out shares one Postgres (embedded, or the `FORGE_TEST_POSTGRES_URL` one).
   Do not start a Postgres container per package with testcontainers: N containers

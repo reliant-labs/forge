@@ -94,12 +94,13 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			want: []string{"command", "reason"},
 		},
 		{
-			// Only migration_safety and orm are authored. The driver and migrations
-			// directory derive from db/migrations existing, and the dev seed
-			// has no configuration at all.
+			// Only migration_safety, orm and postgres_version are authored.
+			// The driver and migrations directory derive from db/migrations
+			// existing, and the dev seed has no configuration at all.
+			// postgres_version: read by forge/pkg/pgtest (declaredInForgeYAML).
 			name: "DatabaseConfig",
 			typ:  reflect.TypeFor[DatabaseConfig](),
-			want: []string{"migration_safety", "orm"},
+			want: []string{"migration_safety", "orm", "postgres_version"},
 		},
 		{
 			// orm.package: where the generated data layer lands, read by

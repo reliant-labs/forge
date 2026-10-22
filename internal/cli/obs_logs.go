@@ -59,7 +59,8 @@ type obsLogsOpts struct {
 	trace      string
 	oldest     bool
 	pageToken  string
-	follow     time.Duration
+	follow     bool
+	interval   time.Duration
 }
 
 func newObsLogsCmd() *cobra.Command {
@@ -77,7 +78,7 @@ language (the same one the control plane serves):
 
   ` + Name() + ` obs logs dev 'service:api' --severity error --since 1h
   ` + Name() + ` obs logs dev --trace 0af7651916cd43dd8448eb211c80319c
-  ` + Name() + ` obs logs dev 'body:panic' --follow          # tail, polling every 2s
+  ` + Name() + ` obs logs dev 'body:panic' --follow          # tail, polling every --interval (2s)
   ` + Name() + ` obs logs dev 'service:api' --explain        # the compiled SQL
 
 Newest first; --oldest reverses. --follow polls forward from now and, with
@@ -108,8 +109,8 @@ Newest first; --oldest reverses. --follow polls forward from now and, with
 	f.StringVar(&o.trace, "trace", "", "only the logs of this trace id")
 	f.BoolVar(&o.oldest, "oldest", false, "oldest first")
 	f.StringVar(&o.pageToken, "page-token", "", "resume from a next_page_token")
-	f.DurationVar(&o.follow, "follow", 0, "keep polling for new logs at this interval (bare --follow: 2s)")
-	f.Lookup("follow").NoOptDefVal = "2s"
+	f.BoolVar(&o.follow, "follow", false, "keep polling for new logs (NDJSON with --json); stop with ^C")
+	f.DurationVar(&o.interval, "interval", 2*time.Second, "with --follow, how often to poll")
 	return cmd
 }
 
@@ -135,7 +136,7 @@ func runObsLogs(ctx context.Context, d obsDeps, env, query string, o obsLogsOpts
 	if err != nil {
 		return err
 	}
-	fail := func(err error) error { return obsFail(d, o.out.JSON && o.follow == 0, schemaObsLogs, err) }
+	fail := func(err error) error { return obsFail(d, o.out.JSON && !o.follow, schemaObsLogs, err) }
 	n, err := o.narrow(d.Now())
 	if err != nil {
 		return fail(err)
@@ -148,7 +149,7 @@ func runObsLogs(ctx context.Context, d obsDeps, env, query string, o obsLogsOpts
 		Narrow: n, Query: query, Severities: o.severities, TraceID: o.trace,
 		Oldest: o.oldest, Limit: o.out.Limit, PageToken: o.pageToken,
 	}
-	if o.follow > 0 {
+	if o.follow {
 		return followLogs(ctx, d, b, req, o, fields)
 	}
 	res, err := b.Logs(ctx, req)
@@ -275,7 +276,7 @@ func followLogs(ctx context.Context, d obsDeps, b obsbackend.Backend, req obsbac
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(o.follow):
+		case <-time.After(o.interval):
 		}
 	}
 }

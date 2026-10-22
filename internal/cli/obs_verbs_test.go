@@ -365,3 +365,50 @@ func TestObsGroupHasNoObserveAlias(t *testing.T) {
 		t.Error("no `forge obs` group")
 	}
 }
+
+type cancelAfterRunner struct {
+	inner  obsbackend.Runner
+	calls  int
+	cancel context.CancelFunc
+	after  int
+}
+
+func (c *cancelAfterRunner) Run(ctx context.Context, st obsquery.Stmt, lim obsbackend.Limits) (obsbackend.Result, error) {
+	c.calls++
+	if c.calls >= c.after {
+		c.cancel()
+	}
+	return c.inner.Run(ctx, st, lim)
+}
+
+// --follow --json is NDJSON: one record per line, each row once even when a
+// later poll returns it again, and a closing envelope line on ^C that is a
+// success (ending a follow is how it is used).
+func TestObsLogsFollowIsNDJSONDedupedAndEndsWithTheEnvelope(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	run := &cancelAfterRunner{inner: &scriptedRunner{answers: []scriptedAnswer{logsAnswer()}}, cancel: cancel, after: 3}
+
+	var out bytes.Buffer
+	d := obsDeps{Stdout: &out, Stderr: io.Discard, Now: func() time.Time { return obsNow },
+		Facts: func(context.Context, io.Writer, string) (obsbackend.Facts, error) { return devFacts(), nil },
+		Local: func(env string) obsbackend.Backend { return obsbackend.Local{Env: env, Runner: run} }}
+	var o obsLogsOpts
+	o.out.JSON, o.out.Limit, o.follow, o.interval, o.since = true, 10, true, time.Millisecond, time.Minute
+	if err := runObsLogs(ctx, d, "dev", "", o); err != nil {
+		t.Fatalf("ending a follow is not a failure: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("want 2 records (each once, though every poll returned both) and the envelope, got %d lines:\n%s", len(lines), out.String())
+	}
+	for _, l := range lines {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(l), &m); err != nil {
+			t.Fatalf("not one JSON object per line: %v\n%s", err, l)
+		}
+	}
+	if !strings.Contains(lines[0], `"body":"connection refused"`) || !strings.Contains(lines[2], `"end":true`) || !strings.Contains(lines[2], `"ok":true`) {
+		t.Errorf("lines:\n%s", out.String())
+	}
+}

@@ -128,7 +128,7 @@ func (c *obsCommon) register(cmd *cobra.Command, sinceDefault time.Duration, lim
 	f.StringVar(&c.to, "to", "", "range end, RFC 3339 (default now)")
 	f.StringArrayVar(&c.services, "service", nil, "only this service.name (repeatable)")
 	f.StringArrayVar(&c.filters, "filter", nil, "attribute predicate key=value or key!=value over the allowlisted keys (repeatable)")
-	f.BoolVar(&c.explain, "explain", false, "print the compiled SQL and its parameters instead of running it (a starting point for `obs query --sql`)")
+	f.BoolVar(&c.explain, "explain", false, "print the compiled SQL and its parameters instead of running it (a starting point for obs query --sql)")
 	f.BoolVar(&c.printSQL, "print-sql", false, "alias of --explain")
 }
 

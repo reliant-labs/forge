@@ -184,6 +184,48 @@ data:
 
 const goodTarget = `target: {creationPolicy: Orphan, deletionPolicy: Retain}`
 
+// waitPoliciesActive blocks until each of the three policies refuses an object
+// only it refuses. The API server activates ValidatingAdmissionPolicies
+// asynchronously and independently, so waiting on one says nothing about the
+// others. nonWriter, when set, is a client RBAC lets through but eso-writers
+// must refuse.
+func waitPoliciesActive(t *testing.T, admin, nonWriter client.Client) {
+	t.Helper()
+	ctx := context.Background()
+	probes := map[string]func() *unstructured.Unstructured{
+		"eso-store-pin": func() *unstructured.Unstructured {
+			return esObj(gvkSS, "app", "warmup-pin", `provider: {fake: {data: [{key: a, value: b}]}}`)
+		},
+		"eso-es-policy": func() *unstructured.Unstructured {
+			return esObj(gvkES, "app", "warmup-es", esSpec(goodTarget, "dataFrom: [{extract: {key: some/path}}]"))
+		},
+	}
+	for name, mk := range probes {
+		waitRefused(t, name, func() error { return admin.Create(ctx, mk()) }, func() { _ = admin.Delete(ctx, mk()) })
+	}
+	if nonWriter != nil {
+		mk := func() *unstructured.Unstructured {
+			return esObj(gvkSS, "app", "warmup-writer", vaultStore("https://openbao.openbao.svc:8200", "jwt-hub", "reliant-secrets", "https://secrets.example.com/c/hub"))
+		}
+		waitRefused(t, "eso-writers", func() error { return nonWriter.Create(ctx, mk()) }, func() { _ = admin.Delete(ctx, mk()) })
+	}
+}
+
+func waitRefused(t *testing.T, policy string, try func() error, cleanup func()) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if err := try(); err != nil {
+			return
+		}
+		cleanup()
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never became active", policy)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
 func TestESOAdmissionPolicies(t *testing.T) {
 	cfg, admin := startESOEnvtest(t)
 	vaps := renderVAPObjects(t)
@@ -249,20 +291,9 @@ provider:
 
 	good := vaultStore("https://openbao.openbao.svc:8200", "jwt-hub", "reliant-secrets", "https://secrets.example.com/c/hub")
 
-	// Policies take a moment to become active: probe until a store the pin must
-	// refuse is refused.
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		p := esObj(gvkSS, "app", "warmup", `provider: {fake: {data: [{key: a, value: b}]}}`)
-		if err := admin.Create(ctx, p); err != nil {
-			break
-		}
-		_ = admin.Delete(ctx, p)
-		if time.Now().After(deadline) {
-			t.Fatal("eso-store-pin never became active")
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
+	// Policies take a moment to become active, each on its own clock: probe
+	// until every one refuses what it must.
+	waitPoliciesActive(t, admin, as("bob"))
 
 	type probe struct {
 		name   string
@@ -487,20 +518,7 @@ func TestESODerivedAdmissionAdmitsTheBundlesOwnObjects(t *testing.T) {
 		}
 	}
 
-	// The policies take a moment to become active: wait until one that must
-	// refuse does.
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		p := esObj(gvkSS, "app", "warmup", `provider: {fake: {data: [{key: a, value: b}]}}`)
-		if err := admin.Create(ctx, p); err != nil {
-			break
-		}
-		_ = admin.Delete(ctx, p)
-		if time.Now().After(deadline) {
-			t.Fatal("eso-store-pin never became active")
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
+	waitPoliciesActive(t, admin, nil)
 
 	// Strip server-populated fields the render does not carry; Create takes
 	// the object as rendered.

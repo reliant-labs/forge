@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/reliant-labs/forge/pkg/secretaccess"
 )
@@ -21,11 +22,13 @@ import (
 //
 //  1. mint a ten-minute token for the forge-rendered `forge-secret-writer`
 //     service account with the TokenRequest API, using the operator's kube
-//     context, for the writer audience of this cluster;
-//  2. log in to the cluster's JWT mount with it, as the writer role. That role
-//     (secretaccess.DeriveWriter) is bound to the account and the audience and
-//     carries a policy that can create and update, never read, under the env's
-//     directory, and read metadata (versions, never values);
+//     context, for the audience the render's `openbao` block names;
+//  2. log in to the store's own JWT mount (the block's auth_mount) as the
+//     writer role. The OpenBao component's converge Job creates that role
+//     (pkg/deploy/openbao, RoleWriter): bound to the account and the audience,
+//     with a policy that can create and update, never read, under the env's
+//     directory and read its metadata (versions, never values). The CLI
+//     derives none of that: it logs in to what the render says exists;
 //  3. write with the batch token that login returns. A create-only write
 //     (import) sends check-and-set 0.
 //
@@ -40,46 +43,42 @@ import (
 // capture a write it was already positioned to observe. The component's TLS
 // protects every other client.
 
-// OpenBaoEntity is the rendered Bundle.openbao: what the CLI needs to reach a
-// self-run store. Fields the render omits take the schema's defaults.
+// writerRole is the login role of the forge-secret-writer service account, the
+// name pkg/deploy/openbao creates on the store's own mount (openbao.RoleWriter).
+// It is restated here, not imported: the CLI logs in to a role the component's
+// converge Job made, and a test pins the two names together.
+const writerRole = "forge-secret-writer"
+
+// writerServiceAccount is the account the component renders for the writer
+// (forge.OpenBaoSAWriter's default). The render's `openbao` block does not
+// carry it, so a non-default account is a known gap (see deviations).
+const writerServiceAccount = "forge-secret-writer"
+
+// OpenBaoEntity is the rendered `openbao` block (kcl/lib/openbao.k): where the
+// store is and how a client logs in to it. Declarations only; no value.
 type OpenBaoEntity struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
+	Image     string `json:"image,omitempty"`
 	// Cluster is the kube context the store runs in; ConnectedCluster is the
-	// name `forge cluster connect` registered. The cluster's auth mount id is
-	// the connected name when there is one, else the context.
+	// name `forge cluster connect` registered.
 	Cluster          string `json:"cluster,omitempty"`
 	ConnectedCluster string `json:"connected_cluster,omitempty"`
-	// Service is the Kubernetes Service that fronts the API. Defaults to Name.
-	Service   string `json:"service,omitempty"`
-	Listeners []struct {
-		Port int   `json:"port"`
-		TLS  *bool `json:"tls,omitempty"`
-	} `json:"listeners,omitempty"`
-	KV struct {
-		Mount string `json:"mount,omitempty"`
-	} `json:"kv,omitempty"`
-	Writer struct {
-		Type           string `json:"type,omitempty"`
-		ServiceAccount string `json:"service_account,omitempty"`
-		Role           string `json:"role,omitempty"`
-	} `json:"writer,omitempty"`
-	Seal struct {
-		Key struct {
-			Name string `json:"name"`
-		} `json:"key"`
-	} `json:"seal,omitempty"`
-	Storage struct {
-		Type     string `json:"type"`
-		Password *struct {
-			Name string `json:"name"`
-		} `json:"password,omitempty"`
-	} `json:"storage,omitempty"`
-	Recovery struct {
-		Escrow struct {
-			Name string `json:"name"`
-		} `json:"escrow"`
-	} `json:"recovery,omitempty"`
+	// ServerURL is the in-cluster address (https://<name>.<ns>.svc:<port>).
+	ServerURL   string `json:"server_url,omitempty"`
+	CAConfigMap string `json:"ca_configmap,omitempty"`
+	KVMount     string `json:"kv_mount,omitempty"`
+	// SelfCluster is the store's own cluster id: its auth mount is jwt-<id>.
+	SelfCluster string `json:"self_cluster,omitempty"`
+	AuthMount   string `json:"auth_mount,omitempty"`
+	// Audience is what the cluster's tokens must carry to log in.
+	Audience       string `json:"audience,omitempty"`
+	ServiceAccount string `json:"service_account,omitempty"`
+	Org            string `json:"org,omitempty"`
+	EnvDir         string `json:"env,omitempty"`
+	// BootstrapNames are the BootstrapSecret names the component declares that
+	// a person may import (the seal key and the Postgres password).
+	BootstrapNames []string `json:"bootstrap_names,omitempty"`
 }
 
 // BootstrapSourceEntity is the rendered Bundle.bootstrap_source.
@@ -88,54 +87,14 @@ type BootstrapSourceEntity struct {
 	Project string `json:"project,omitempty"`
 }
 
-func (o *OpenBaoEntity) service() string {
-	if o.Service != "" {
-		return o.Service
-	}
-	if o.Name != "" {
-		return o.Name
-	}
-	return "openbao"
-}
-
-func (o *OpenBaoEntity) namespace() string {
-	if o.Namespace != "" {
-		return o.Namespace
-	}
-	return "openbao"
-}
-
-// apiPort is the first TLS listener's port (the schema requires one).
+// apiPort is the port of ServerURL (https://<name>.<ns>.svc:<port>).
 func (o *OpenBaoEntity) apiPort() int {
-	for _, l := range o.Listeners {
-		if l.TLS == nil || *l.TLS {
-			return l.Port
+	if u, err := url.Parse(o.ServerURL); err == nil {
+		if p, err := strconv.Atoi(u.Port()); err == nil && p > 0 {
+			return p
 		}
 	}
 	return 8200
-}
-
-func (o *OpenBaoEntity) clusterID() string {
-	if o.ConnectedCluster != "" {
-		return o.ConnectedCluster
-	}
-	return o.Cluster
-}
-
-// bootstrapNames lists the BootstrapSecret names the component declares that a
-// person may import: the seal key and the Postgres password. The recovery
-// escrow is excluded because the converge Job writes it from `bao operator
-// init` and nothing is ever imported into it.
-func (o *OpenBaoEntity) bootstrapNames() []string {
-	var out []string
-	if n := o.Seal.Key.Name; n != "" {
-		out = append(out, n)
-	}
-	if o.Storage.Password != nil && o.Storage.Password.Name != "" {
-		out = append(out, o.Storage.Password.Name)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // baoTransport sends one OpenBao API request. The payload and the response are
@@ -186,9 +145,18 @@ type baoStoreSource struct {
 	scope secretaccess.Scope
 	where string
 
-	login secretaccess.WriterLogin
+	login baoWriterLogin
 	kube  kubeAccess
 	token string
+}
+
+// baoWriterLogin is everything a client needs to sign in as the writer.
+type baoWriterLogin struct {
+	LoginPath      string // auth/<auth_mount>/login
+	Role           string
+	Audience       string
+	Namespace      string // of the writer's service account (the store's)
+	ServiceAccount string
 }
 
 func (s *baoStoreSource) describe() string { return s.where }
@@ -198,7 +166,7 @@ func (s *baoStoreSource) signIn(ctx context.Context) error {
 	if s.token != "" {
 		return nil
 	}
-	sa, err := s.kube.MintToken(ctx, s.login.Namespace, s.login.ServiceAccount, s.login.Audience, secretaccess.TokenTTL)
+	sa, err := s.kube.MintToken(ctx, s.login.Namespace, s.login.ServiceAccount, s.login.Audience, tokenTTL)
 	if err != nil {
 		if isNotFound(err) {
 			return fmt.Errorf("%w\nfix: the writer service account is rendered with the OpenBao component; run `forge env deploy` for this env first", err)
@@ -306,7 +274,7 @@ func openBaoStoreSource(ctx context.Context, envName string, e *KCLEntities, o s
 			return nil, nil, err
 		}
 		bao := e.OpenBao
-		return kube, kubeProxyTransport{kube: kube, namespace: bao.namespace(), service: bao.service(), port: bao.apiPort()}, nil
+		return kube, kubeProxyTransport{kube: kube, namespace: bao.Namespace, service: bao.Name, port: bao.apiPort()}, nil
 	})
 }
 
@@ -316,10 +284,6 @@ func openBaoStoreSourceWith(envName string, e *KCLEntities, o storeOptions, conn
 	bao := e.OpenBao
 	if bao == nil {
 		return nil, fmt.Errorf("env %q reads from an OpenBaoStore but declares no Bundle.openbao\nfix: declare `openbao = forge.OpenBao {}` in its KCL", envName)
-	}
-	if bao.Writer.Type == "oidc" {
-		return nil, errors.New("this env's OpenBao writer is forge.OpenBaoOIDCWriter, which `forge secret` does not sign in with yet\n" +
-			"fix: switch the writer to the default (forge.OpenBaoSAWriter {}), which needs only cluster access")
 	}
 	kctx := o.KubeContext
 	if kctx == "" {
@@ -332,33 +296,38 @@ func openBaoStoreSourceWith(envName string, e *KCLEntities, o storeOptions, conn
 	if err != nil {
 		return nil, err
 	}
-	return newOpenBaoSource(envName, e, bao, kube, tr, kctx)
+	return newOpenBaoSource(e, bao, kube, tr, kctx)
 }
 
-func newOpenBaoSource(envName string, e *KCLEntities, bao *OpenBaoEntity, kube kubeAccess, tr baoTransport, kubeContext string) (*baoStoreSource, error) {
-	scope, err := baoScope(e, envName, bao.KV.Mount)
-	if err != nil {
-		return nil, err
+// newOpenBaoSource resolves where the env's values live and how to sign in,
+// from the render's `openbao` block. The directory is the block's (org, env),
+// not the CLI's --env: the component wrote its policy for those.
+func newOpenBaoSource(e *KCLEntities, bao *OpenBaoEntity, kube kubeAccess, tr baoTransport, kubeContext string) (*baoStoreSource, error) {
+	org, env := bao.Org, bao.EnvDir
+	if org == "" {
+		org = e.Project
 	}
-	clusterID := bao.clusterID()
-	if clusterID == "" {
-		clusterID = kubeContext
+	if org == "" || env == "" || bao.AuthMount == "" || bao.Audience == "" {
+		return nil, errors.New("the env's render carries an incomplete `openbao` block (org, env, auth_mount and audience are required to sign in)\n" +
+			"fix: upgrade forge so the render describes the store, then re-run")
 	}
-	sa := bao.Writer.ServiceAccount
-	login, err := secretaccess.WriterRequest{
-		Scope:          scope,
-		Cluster:        secretaccess.Cluster{ID: clusterID},
-		Namespace:      bao.namespace(),
-		ServiceAccount: sa,
-	}.Login()
-	if err != nil {
-		return nil, fmt.Errorf("derive the OpenBao writer login: %w", err)
+	scope := secretaccess.Scope{Mount: bao.KVMount, Org: org, Env: env}
+	if err := scope.Validate(); err != nil {
+		return nil, fmt.Errorf("the OpenBao directory in the render is not usable: %w", err)
 	}
 	return &baoStoreSource{
-		tr: tr, scope: scope, login: login, kube: kube,
-		where: fmt.Sprintf("self-run OpenBao %s/%s (%s)", bao.namespace(), bao.service(), kubeContext),
+		tr: tr, scope: scope, kube: kube,
+		login: baoWriterLogin{
+			LoginPath: "auth/" + bao.AuthMount + "/login", Role: writerRole, Audience: bao.Audience,
+			Namespace: bao.Namespace, ServiceAccount: writerServiceAccount,
+		},
+		where: fmt.Sprintf("self-run OpenBao %s/%s (%s)", bao.Namespace, bao.Name, kubeContext),
 	}, nil
 }
+
+// tokenTTL is the lifetime of the writer's service-account token and of the
+// batch token it buys (both ten minutes, the component's role maximum).
+const tokenTTL = 10 * time.Minute
 
 func isNotFound(err error) bool {
 	return err != nil && (strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "NotFound"))

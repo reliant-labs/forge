@@ -37,8 +37,10 @@ type importOptions struct {
 	// Map is "key=NAME": which store name each Secret key fills.
 	Map []string
 	// ToBootstrap writes to the Secret Manager container of a BootstrapSecret
-	// (Bundle.bootstrap_source) instead of the store.
+	// instead of the store. Project is the Google project holding it; it
+	// defaults to Bundle.bootstrap_source's when the render carries one.
 	ToBootstrap bool
+	Project     string
 	DryRun      bool
 	FromFile    string
 }
@@ -71,9 +73,10 @@ From stdin or a file, one name:
 
 --to-bootstrap writes a BootstrapSecret's Google Secret Manager container (the
 OpenBao seal key and Postgres password, which cannot live in the store they
-bootstrap) in the project of Bundle.bootstrap_source:
+bootstrap). NAME is the container's secret id; --project is the Google project
+that holds it (default: Bundle.bootstrap_source's):
 
-  forge secret import --env prod --to-bootstrap \
+  forge secret import --env prod --to-bootstrap --project acme-prod \
       --from control-plane-prod/control-plane-openbao-unseal --map static-key=openbao-unseal-prod
 
 The destination store comes from the ExternalSecret that reads each name
@@ -96,7 +99,8 @@ argument. --dry-run reads the source and reports what would be created.`,
 	cmd.Flags().StringVar(&opts.From, "from", "", "Cluster Secret to read, as <namespace>/<secret> (uses your kube context)")
 	cmd.Flags().StringSliceVar(&opts.Map, "map", nil, "key=NAME: the Secret key to read and the store name it fills (repeatable, or comma-separated)")
 	cmd.Flags().StringVar(&opts.FromFile, "from-file", "", "Read the single NAME's value from a file instead of stdin")
-	cmd.Flags().BoolVar(&opts.ToBootstrap, "to-bootstrap", false, "Write a BootstrapSecret's Google Secret Manager container (Bundle.bootstrap_source)")
+	cmd.Flags().BoolVar(&opts.ToBootstrap, "to-bootstrap", false, "Write a BootstrapSecret's Google Secret Manager container instead of the store")
+	cmd.Flags().StringVar(&opts.Project, "project", "", "With --to-bootstrap: the Google project holding the container (default: Bundle.bootstrap_source's)")
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "Read the source and report what would be created; write nothing")
 	addStoreFlags(cmd, &opts.storeOptions)
 	return cmd
@@ -270,20 +274,19 @@ func parseKeyMap(entries []string) ([]keyMapping, error) {
 // importDestination decides which store a name is written to.
 func importDestination(e *KCLEntities, envName, name string, opts importOptions) (storeRef, error) {
 	if opts.ToBootstrap {
-		bs := e.BootstrapSource
-		if bs == nil || bs.Type != "gcpsm" || bs.Project == "" {
-			return storeRef{}, fmt.Errorf("--to-bootstrap needs Bundle.bootstrap_source = forge.GCPSecretManager {project = ...} in env %q", envName)
+		project := opts.Project
+		if project == "" && e.BootstrapSource != nil && e.BootstrapSource.Type == "gcpsm" {
+			project = e.BootstrapSource.Project
 		}
-		var names []string
-		if e.OpenBao != nil {
-			names = e.OpenBao.bootstrapNames()
+		if project == "" {
+			return storeRef{}, fmt.Errorf("--to-bootstrap needs the Google project that holds the container: pass --project, or declare Bundle.bootstrap_source = forge.GCPSecretManager {project = ...} in env %q", envName)
 		}
-		for _, n := range names {
-			if n == name {
-				return storeRef{Kind: release.StoreGCPSecretManager, Project: bs.Project}, nil
-			}
+		// A typo guard, not a permission: when the render lists the
+		// component's BootstrapSecrets, the name must be one of them.
+		if e.OpenBao != nil && len(e.OpenBao.BootstrapNames) > 0 && !containsString(e.OpenBao.BootstrapNames, name) {
+			return storeRef{}, fmt.Errorf("%s is not a BootstrapSecret of env %q (declared: %s)", name, envName, orNone(e.OpenBao.BootstrapNames))
 		}
-		return storeRef{}, fmt.Errorf("%s is not a BootstrapSecret of env %q (declared: %s)", name, envName, orNone(names))
+		return storeRef{Kind: release.StoreGCPSecretManager, Project: project}, nil
 	}
 	decls := storeDeclarations(e)
 	ref, found, err := selectStore(decls, name, opts.storeOptions)

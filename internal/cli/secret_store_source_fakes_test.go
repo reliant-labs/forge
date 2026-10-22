@@ -14,7 +14,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/pkg/release"
-	"github.com/reliant-labs/forge/pkg/secretaccess"
 )
 
 // canary is a value no output may ever contain, raw, encoded or digested.
@@ -84,14 +83,29 @@ func (f *fakeKube) ServiceProxy(_ context.Context, r serviceProxyRequest) (int, 
 	return f.proxy(r)
 }
 
-// fakeBao is an in-memory OpenBao that enforces the derived writer policy.
-// It is honest on purpose: a request is allowed only if a rule of the policy
-// the CLI would really be given grants the capability on the path.
+// writerPolicy is the policy the OpenBao component's converge Job gives the
+// forge-secret-writer role (pkg/deploy/openbao BuildAccess), for the fixture's
+// (org, env): create and update on values, read and list on metadata.
+var writerPolicy = []struct {
+	path string
+	caps []string
+}{
+	{"secret/data/tenants/acme/prod/*", []string{"create", "update"}},
+	{"secret/metadata/tenants/acme/prod/*", []string{"list", "read"}},
+	{"secret/metadata/tenants/acme/prod", []string{"list"}},
+}
+
+// fakeBao is an in-memory OpenBao that enforces the writer policy above. It is
+// honest on purpose: a request is allowed only if a rule grants the capability
+// on the path.
 type fakeBao struct {
-	t      *testing.T
-	mu     sync.Mutex
-	doc    secretaccess.Document
-	login  secretaccess.WriterLogin
+	t     *testing.T
+	mu    sync.Mutex
+	rules []struct {
+		path string
+		caps []string
+	}
+	login  baoWriterLogin
 	saJWT  string
 	kv     map[string][]string // path -> versions (values)
 	calls  []string
@@ -99,18 +113,15 @@ type fakeBao struct {
 	failKV int  // answer this HTTP status to KV writes (0 = normal)
 }
 
-func newFakeBao(t *testing.T, wr secretaccess.WriterRequest, kube *fakeKube) *fakeBao {
+func newFakeBao(t *testing.T) *fakeBao {
 	t.Helper()
-	doc, err := secretaccess.DeriveWriter(wr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	login, err := wr.Login()
-	if err != nil {
-		t.Fatal(err)
+	bao := storeEnv().OpenBao
+	login := baoWriterLogin{
+		LoginPath: "auth/" + bao.AuthMount + "/login", Role: writerRole, Audience: bao.Audience,
+		Namespace: bao.Namespace, ServiceAccount: writerServiceAccount,
 	}
 	return &fakeBao{
-		t: t, doc: doc, login: login, kv: map[string][]string{},
+		t: t, rules: writerPolicy, login: login, kv: map[string][]string{},
 		saJWT: "sa-jwt:" + login.Namespace + ":" + login.ServiceAccount + ":" + login.Audience,
 	}
 }
@@ -118,12 +129,12 @@ func newFakeBao(t *testing.T, wr secretaccess.WriterRequest, kube *fakeKube) *fa
 const fakeBaoToken = "b.fake-writer-token"
 
 func (b *fakeBao) allowed(capability, path string) bool {
-	for _, r := range b.doc.Policies[0].Rules {
-		match := r.Path == path || (strings.HasSuffix(r.Path, "*") && strings.HasPrefix(path, strings.TrimSuffix(r.Path, "*")))
+	for _, r := range b.rules {
+		match := r.path == path || (strings.HasSuffix(r.path, "*") && strings.HasPrefix(path, strings.TrimSuffix(r.path, "*")))
 		if !match {
 			continue
 		}
-		for _, c := range r.Capabilities {
+		for _, c := range r.caps {
 			if c == capability {
 				return true
 			}
@@ -277,8 +288,13 @@ func storeEnv() *KCLEntities {
 		Project:       "acme",
 		Env:           "prod",
 		ClusterTarget: &ClusterTargetEntity{Cluster: "ctx-hub", Namespace: "app"},
+		// The rendered `openbao` block (kcl/lib/openbao.k), as the SF6 render
+		// emits it for env "prod" of project "acme" on the hub.
 		OpenBao: &OpenBaoEntity{
 			Name: "openbao", Namespace: "openbao", Cluster: "ctx-hub", ConnectedCluster: "hub",
+			ServerURL: "https://openbao.openbao.svc:8200", CAConfigMap: "openbao-ca", KVMount: "secret",
+			SelfCluster: "hub", AuthMount: "jwt-hub", Audience: "https://openbao.openbao.svc:8200/c/hub",
+			ServiceAccount: "reliant-secrets", Org: "acme", EnvDir: "prod",
 		},
 		BootstrapSource: &BootstrapSourceEntity{Type: "gcpsm", Project: "acme-prod"},
 		RequiredSecrets: []ExternalSecretEntity{
@@ -323,11 +339,7 @@ type storeFixture struct {
 func installStoreFixture(t *testing.T, e *KCLEntities) *storeFixture {
 	t.Helper()
 	f := &storeFixture{t: t, env: e, kube: newFakeKube(), gsm: newFakeGSM(), hosted: &fakeHostedWriter{stored: map[string]uint32{}}}
-	f.bao = newFakeBao(t, secretaccess.WriterRequest{
-		Scope:     secretaccess.Scope{Org: "acme", Env: "prod"},
-		Cluster:   secretaccess.Cluster{ID: "hub"},
-		Namespace: "openbao",
-	}, f.kube)
+	f.bao = newFakeBao(t)
 
 	prevRender, prevKube, prevGSM, prevHosted := renderEntitiesForSecrets, newKubeAccess, newGSMAPI, newHostedSecretWriter
 	renderEntitiesForSecrets = func(context.Context, string) (*KCLEntities, error) { return f.env, nil }

@@ -458,17 +458,3 @@ func redactValue(err error, values ...string) error {
 	}
 	return &redactedError{msg: msg, err: err}
 }
-
-// baoScope is the OpenBao directory of an env: org = the project, env = the
-// env name, the same derivation the component's converge Job uses.
-func baoScope(e *KCLEntities, envName string, kvMount string) (secretaccess.Scope, error) {
-	project := strings.TrimSpace(e.Project)
-	if project == "" {
-		return secretaccess.Scope{}, errors.New("the env's render names no project, so the OpenBao directory cannot be derived (forge.yaml name)")
-	}
-	s := secretaccess.Scope{Mount: kvMount, Org: project, Env: envName}
-	if err := s.Validate(); err != nil {
-		return secretaccess.Scope{}, err
-	}
-	return s, nil
-}

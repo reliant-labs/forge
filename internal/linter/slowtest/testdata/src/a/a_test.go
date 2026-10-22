@@ -13,8 +13,9 @@ import (
 	"helper"
 	"prod"
 
-	"github.com/reliant-labs/forge/pkg/testkit"
 	"github.com/testcontainers/testcontainers-go"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // ---- flagged ----------------------------------------------------------------

@@ -37,7 +37,7 @@ func TestSecretSet_OpenBaoStore_SignsInAsTheWriterAndWrites(t *testing.T) {
 		t.Errorf("stored = %v, want the value with the trailing newline trimmed", got)
 	}
 	// The token is for the writer's own account and audience, minted once.
-	if len(f.kube.tokens) != 1 || f.kube.tokens[0] != "openbao/forge-secret-writer aud=forge-secret-writer/hub" {
+	if len(f.kube.tokens) != 1 || f.kube.tokens[0] != "openbao/forge-secret-writer aud=https://openbao.openbao.svc:8200/c/hub" {
 		t.Errorf("tokens minted = %v", f.kube.tokens)
 	}
 }
@@ -180,18 +180,6 @@ func TestSecretSet_OpenBao_NeedsTheComponentAndAKubeContext(t *testing.T) {
 		return runSecretSet(context.Background(), "prod", "API_KEY", "", strings.NewReader("v"), o)
 	})
 	if err == nil || !strings.Contains(err.Error(), "declares no Bundle.openbao") {
-		t.Errorf("err = %v", err)
-	}
-}
-
-func TestSecretSet_OpenBao_OIDCWriterIsNotSilentlyIgnored(t *testing.T) {
-	e := storeEnv()
-	e.OpenBao.Writer.Type = "oidc"
-	installStoreFixture(t, e)
-	_, err := run(t, func(o *bytes.Buffer) error {
-		return runSecretSet(context.Background(), "prod", "API_KEY", "", strings.NewReader("v"), o)
-	})
-	if err == nil || !strings.Contains(err.Error(), "OIDCWriter") {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -367,10 +355,7 @@ func TestSecretImport_HostedStoreSendsCASZero(t *testing.T) {
 
 func TestSecretImport_ToBootstrapWritesTheGSMContainer(t *testing.T) {
 	e := importEnv()
-	e.OpenBao.Seal.Key.Name = "openbao-unseal-prod"
-	e.OpenBao.Storage.Password = &struct {
-		Name string `json:"name"`
-	}{Name: "openbao-pg-password-prod"}
+	e.OpenBao.BootstrapNames = []string{"openbao-unseal-prod", "openbao-pg-password-prod"}
 	f := installStoreFixture(t, e)
 	f.kube.put("control-plane-prod", "control-plane-openbao-unseal", kubeSecret{Data: map[string][]byte{"static-key": []byte(canary)}})
 
@@ -401,7 +386,7 @@ func TestSecretImport_ToBootstrapWritesTheGSMContainer(t *testing.T) {
 
 func TestSecretImport_ToBootstrapRefusesANameThatIsNotABootstrapSecret(t *testing.T) {
 	e := importEnv()
-	e.OpenBao.Seal.Key.Name = "openbao-unseal-prod"
+	e.OpenBao.BootstrapNames = []string{"openbao-unseal-prod"}
 	f := installStoreFixture(t, e)
 	f.kube.put("ns", "s", kubeSecret{Data: map[string][]byte{"k": []byte("v")}})
 	_, err := run(t, func(o *bytes.Buffer) error {
@@ -415,7 +400,7 @@ func TestSecretImport_ToBootstrapRefusesANameThatIsNotABootstrapSecret(t *testin
 	}
 }
 
-func TestSecretImport_ToBootstrapNeedsAGSMBootstrapSource(t *testing.T) {
+func TestSecretImport_ToBootstrapNeedsAProject(t *testing.T) {
 	e := importEnv()
 	e.BootstrapSource = &BootstrapSourceEntity{Type: "out_of_band"}
 	f := installStoreFixture(t, e)
@@ -423,8 +408,18 @@ func TestSecretImport_ToBootstrapNeedsAGSMBootstrapSource(t *testing.T) {
 	_, err := run(t, func(o *bytes.Buffer) error {
 		return runSecretImport(context.Background(), "prod", "", importOptions{ToBootstrap: true, From: "ns/s", Map: []string{"k=x"}}, strings.NewReader(""), o)
 	})
-	if err == nil || !strings.Contains(err.Error(), "bootstrap_source") {
+	if err == nil || !strings.Contains(err.Error(), "--project") {
 		t.Errorf("err = %v", err)
+	}
+	// --project names it without the render.
+	f.kube.put("ns", "s", kubeSecret{Data: map[string][]byte{"k": []byte("v")}})
+	if _, err := run(t, func(o *bytes.Buffer) error {
+		return runSecretImport(context.Background(), "prod", "", importOptions{ToBootstrap: true, Project: "other-proj", From: "ns/s", Map: []string{"k=x"}}, strings.NewReader(""), o)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.gsm.secrets["other-proj/x"]) != 1 {
+		t.Errorf("gsm = %v", f.gsm.secrets)
 	}
 }
 
@@ -545,7 +540,7 @@ func TestOpenBaoSource_ReusesOneTokenAcrossWrites(t *testing.T) {
 	}
 	// Each command opens its own store; within one, a single sign-in serves
 	// every call.
-	src, err := newOpenBaoSource("prod", storeEnv(), storeEnv().OpenBao, f.kube, f.bao, "ctx-hub")
+	src, err := newOpenBaoSource(storeEnv(), storeEnv().OpenBao, f.kube, f.bao, "ctx-hub")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -563,8 +558,8 @@ func TestOpenBaoSource_ReusesOneTokenAcrossWrites(t *testing.T) {
 func TestOpenBaoSource_AWriterPolicyViolationIsAClearError(t *testing.T) {
 	f := installStoreFixture(t, storeEnv())
 	// Tighten the fake's policy to nothing: a real deployment whose converge Job
-	// has not yet applied the writer role.
-	f.bao.doc.Policies[0].Rules = nil
+	// has not yet applied the writer policy.
+	f.bao.rules = nil
 	_, err := run(t, func(o *bytes.Buffer) error {
 		return runSecretSet(context.Background(), "prod", "API_KEY", "", strings.NewReader("v"), o)
 	})
@@ -579,7 +574,7 @@ func TestOpenBaoSource_ALoginRefusalNamesTheRole(t *testing.T) {
 	_, err := run(t, func(o *bytes.Buffer) error {
 		return runSecretSet(context.Background(), "prod", "API_KEY", "", strings.NewReader("v"), o)
 	})
-	if err == nil || !strings.Contains(err.Error(), f.bao.login.Role) || !strings.Contains(err.Error(), "converge Job") {
+	if err == nil || !strings.Contains(err.Error(), writerRole) || !strings.Contains(err.Error(), "converge Job") {
 		t.Errorf("err = %v", err)
 	}
 }

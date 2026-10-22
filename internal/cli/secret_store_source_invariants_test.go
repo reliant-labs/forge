@@ -25,7 +25,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
 
@@ -231,13 +230,6 @@ func TestInvariant_RedactionPreservesTheErrorChain(t *testing.T) {
 
 // valueCarryingNames are flag names that would take a secret as an argument.
 var valueCarryingNames = []string{"value", "secret", "password", "token", "key-value", "data", "content", "literal", "from-literal", "string"}
-
-func walkCommands(c *cobra.Command, visit func(*cobra.Command)) {
-	visit(c)
-	for _, sub := range c.Commands() {
-		walkCommands(sub, visit)
-	}
-}
 
 func TestInvariant_NoStoreSourceCommandTakesAValueAsAnArgument(t *testing.T) {
 	root := NewRootCmd()

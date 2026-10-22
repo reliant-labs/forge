@@ -12,5 +12,5 @@ output = forge.render(forge.Bundle {
     openbao = forge.OpenBao {
         tls = forge.OpenBaoTLS {secret = "my-tls"}
     }
-    
+
 })

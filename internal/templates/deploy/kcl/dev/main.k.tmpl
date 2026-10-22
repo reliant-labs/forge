@@ -158,9 +158,19 @@ _hyperdx_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-hyperdx", 818
 # `otel-profiles`), which writes into ClickStack's ClickHouse, so it runs only
 # beside ClickStack.
 _profiles_otlp_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-otlp-profiles", 4328) if _observability and not _destination else 0
+# Alerts fire HERE too: the `alerts` workload below evaluates the env's
+# forge.Alerts against the local ClickStack and posts what fires to
+# docker-compose.yml's `alertmanager`, configured by the control plane's own
+# renderer. Its in-app receiver (the default route) lands in
+# .forge/logs/{{.EnvName}}/alerts.log; declare more in
+# `forge.Alerts.receivers` (a webhook, Slack, an Autopilot automation).
+_alertmanager_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-alertmanager", 9093) if _observability and not _destination else 0
+_alerts_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-alerts", 9095) if _observability and not _destination else 0
 
 _observability_decl = forge.Observability {
     local_port = _otlp_http_port
+    alertmanager_port = _alertmanager_port
+    alerts_port = _alerts_port
     # Where host processes push profiles. With the local ClickStack, profiles
     # are ON by default (`signals.profiles` unset); set
     # `signals = forge.ObservabilitySignals {profiles = False}` to turn them off.
@@ -328,6 +338,24 @@ _telemetry_workloads = ([fw.Workload {
         service = "otel-profiles"
         env = {"CLICKSTACK_PROFILES_OTLP_PORT" = str(_profiles_otlp_port)}
     }
+}, fw.Workload {
+    # Local alert delivery (see `_alertmanager_port` above).
+    name = "alertmanager"
+    runtime = forge.OnCompose {
+        service = "alertmanager"
+        env = {"ALERTMANAGER_PORT" = str(_alertmanager_port)}
+    }
+}, fw.Workload {
+    # The evaluator: `forge` here is the forge running `forge env up`, never
+    # one from PATH. It listens on all interfaces because the Alertmanager
+    # container delivers to it through the docker bridge; a bearer token
+    # forge generates guards it. Drop this and `alertmanager` to stop local
+    # alerting (`forge observe alerts check` still evaluates once).
+    name = "alerts"
+    kind = "worker"
+    command = ["forge", "observe", "alerts", "run", "--env", "{{.EnvName}}",
+        "--alertmanager", "http://127.0.0.1:${_alertmanager_port}", "--listen", "0.0.0.0:${_alerts_port}"]
+    runtime = forge.OnHost {listen_ports = [_alerts_port]}
 }]) if _observability else []
 
 {{if .HasFrontend}}_{{.FrontendIdent}}_frontend = forge.Frontend {

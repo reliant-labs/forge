@@ -60,6 +60,8 @@ func TestConnectErrors_WireIdenticalOverTheCorpus(t *testing.T) {
 		"internal/handlers/reader/reader.go",
 		"internal/handlers/blocked/blocked.go",
 		"internal/handlers/asserted/asserted.go",
+		"internal/handlers/testifyas/testifyas.go",
+		"internal/handlers/suiteas/suiteas.go",
 		"internal/interceptors/auth.go",
 	} {
 		got := readFile(t, dir, rel)
@@ -72,7 +74,8 @@ func TestConnectErrors_WireIdenticalOverTheCorpus(t *testing.T) {
 			t.Errorf("rewritten %s differs from %s.golden:\n%s", rel, rel, got)
 		}
 	}
-	for _, rel := range []string{"internal/app/retry.go", "internal/wiretest/wire_test.go", "internal/handlers/asserted/asserted_test.go"} {
+	for _, rel := range []string{"internal/app/retry.go", "internal/wiretest/wire_test.go", "internal/handlers/asserted/asserted_test.go",
+		"internal/handlers/testifyas/testifyas_test.go", "internal/handlers/suiteas/suiteas_test.go"} {
 		if readFile(t, dir, rel) != readFile(t, fixture, rel) {
 			t.Errorf("%s has nothing to rewrite but changed", rel)
 		}
@@ -94,6 +97,10 @@ func TestConnectErrors_WireIdenticalOverTheCorpus(t *testing.T) {
 		"example.com/cescratch/internal/handlers/reader: its rewrites stay *connect.Error (svcerr.ToConnect) because internal/handlers/reader/reader.go:18 (connect.CodeOf)",
 		"example.com/cescratch/internal/handlers/blocked: its rewrites stay *connect.Error (svcerr.ToConnect) because internal/app/retry.go:17 (errors.As into a *connect.Error)",
 		"example.com/cescratch/internal/handlers/asserted: its rewrites stay *connect.Error (svcerr.ToConnect) because internal/handlers/asserted/asserted_test.go:13 (errors.As into a *connect.Error)",
+		// An As-style helper (testify's require.ErrorAs, a suite's ErrorAs
+		// method) is a reader by its **connect.Error argument alone.
+		"example.com/cescratch/internal/handlers/testifyas: its rewrites stay *connect.Error (svcerr.ToConnect) because internal/handlers/testifyas/testifyas_test.go:20 (errorAs into a *connect.Error)",
+		"example.com/cescratch/internal/handlers/suiteas: its rewrites stay *connect.Error (svcerr.ToConnect) because internal/handlers/suiteas/suiteas_test.go:23 (assertions{…}.ErrorAs into a *connect.Error)",
 		"must end with svcerr.Interceptor()",
 	} {
 		if !strings.Contains(next, want) {

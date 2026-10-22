@@ -44,6 +44,9 @@ Forge uses a migration-first database model:
   'forge db migrate' and from the project's own binary alike
 - Entity types are projections of the applied schema (forge generate)
 
+To read an environment's data: 'forge db query <env> "<sql>"' runs one
+read-only statement and prints the rows.
+
 When something is wedged:
 
   A migration failed part-way and the state is marked dirty
@@ -76,6 +79,7 @@ When something is wedged:
 	cmd.AddCommand(newDBSquashCommand())
 	cmd.AddCommand(newDBSeedCommand())
 	cmd.AddCommand(newDBResetCommand())
+	cmd.AddCommand(newDBQueryCommand())
 
 	// Every db subcommand reads its project's files from the -C project
 	// root, never the CWD — see db_paths.go.

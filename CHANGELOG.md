@@ -430,6 +430,17 @@ login` credential is traded for the scope the control plane's 403 names, for
 
 ### Changed
 
+- **`forge project new` applies the feature graph itself.** The scaffold now
+  resolves its feature set with the loader's own rule
+  (`FeaturesConfig.FollowingRequirements`, the `followPinnedRequirements` the
+  loader runs on every load): a `--disable`d feature takes every unpinned
+  feature that requires it with it, so nothing is written that the project
+  would derive away. This replaces the hand-copied codegen → orm/migrations
+  cascade; `--disable codegen` now also turns off frontend codegen, and
+  `--disable build` deploy, exactly as their first load always did. A named
+  frontend's app is scaffolded whether or not frontend codegen is on (the
+  frontend-only shape), and `HasFrontend` (the dev IdP in docker-compose) and
+  rescaffold ask the same question as the upgrade lane: is a frontend declared?
 - **`forge project new` exits non-zero when the project's own first generate
   fails.** It printed "initial code generation failed", then "✅ Project created
   successfully!" and exited 0, so a script, a CI step or an agent carried on

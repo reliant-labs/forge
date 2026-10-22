@@ -27,13 +27,38 @@ What it does, in order:
    already exist;
 2. confirms against the module proxy that the version was never published at a
    **different** commit (see below);
-3. syncs `VERSION` and `internal/buildinfo/VERSION` — which must stay
+3. writes the release's section of `CHANGELOG.md` (see below) and formats it
+   with the prettier the pre-commit hook pins;
+4. syncs `VERSION` and `internal/buildinfo/VERSION` — which must stay
    byte-identical, since `buildinfo` embeds a copy;
-4. builds the module;
-5. tags `vX.Y.Z` and pushes the branch and tag in a single atomic `git push`.
+5. builds the module;
+6. commits, tags `vX.Y.Z` and pushes the branch and tag in a single atomic
+   `git push`;
+7. creates the GitHub release (`gh release create`) with that section as its notes.
 
 `--dry-run` runs every validation and every file edit, prints the plan, then
 restores the tree — no commit, no tag, no push.
+
+### CHANGELOG.md and the GitHub release notes
+
+`CHANGELOG.md` is written **only here**, never in a pull request —
+`scripts/check-changelog-untouched.sh` fails a PR that edits it. The script
+builds the new `## [vX.Y.Z] - <date>` section (`scripts/changelog-release.sh`)
+from the squash commits `(#N)` between the previous `v*` tag and `HEAD` — the
+merged PR titles, read from git so it works offline — and groups them by
+conventional-commit type: `feat` → Added, `fix` → Fixed, everything else →
+Changed. A commit with `!` after its type, a `BREAKING CHANGE:` footer, or a PR
+labelled `breaking` (looked up with `gh pr list` when `gh` is available) goes
+under **Breaking changes** instead. Whatever `## [Unreleased]` held is folded
+into the section once and `[Unreleased]` is left empty, so **the PR title is the
+changelog entry: write a good one.**
+
+After the push, `gh release create vX.Y.Z --verify-tag --notes-file <section>`
+publishes the same section. If that step fails the tag is already pushed and
+immutable; the script says so, prints the retry command, and exits non-zero. A
+section over GitHub's 125000-character body limit (the first release after the
+old per-PR habit folds in a very long `[Unreleased]`) is published as the
+generated bullets plus a link to `CHANGELOG.md`.
 
 ### The immutable-version gate
 

@@ -36,7 +36,7 @@ func TestTxIsolation_KeepsEveryShapesWireLevelAndAttempts(t *testing.T) {
 		copyFile(t, filepath.Join(fixture, name), filepath.Join(dir, name))
 	}
 	copyFile(t, filepath.Join(root, "go.sum"), filepath.Join(dir, "go.sum"))
-	writeScratchGoMod(t, root, dir)
+	writeScratchGoMod(t, root, dir, "example.com/txscratch")
 
 	rep, err := runTxIsolation(dir, true)
 	if err != nil {
@@ -149,7 +149,7 @@ func copyFile(t *testing.T, from, to string) {
 // builds or tests forge downloads those. CI's module cache lacked one
 // (github.com/go-logr/logr@v1.2.2's go.mod) and the test failed before
 // reaching the codemod; a cache from `go mod download` lacks others.
-func writeScratchGoMod(t *testing.T, root, dir string) {
+func writeScratchGoMod(t *testing.T, root, dir, module string) {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
 	if err != nil {
@@ -161,7 +161,7 @@ func writeScratchGoMod(t *testing.T, root, dir string) {
 	}
 	f := &modfile.File{}
 	for _, err := range []error{
-		f.AddModuleStmt("example.com/txscratch"),
+		f.AddModuleStmt(module),
 		f.AddGoStmt(forge.Go.Version),
 		f.AddRequire(forge.Module.Mod.Path, "v0.0.0-00010101000000-000000000000"),
 		f.AddReplace(forge.Module.Mod.Path, "", root, ""),

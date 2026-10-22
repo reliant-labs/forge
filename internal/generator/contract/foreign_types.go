@@ -88,6 +88,25 @@ func embeddedMethods(sel *ast.SelectorExpr, imports map[string]string, r *Resolv
 	return typedMethods(pkg, iface, aliases, func(types.Type) {})
 }
 
+// siblingMethods is the method set of the interface `name` declared in
+// another file of the contract's own package: pkg is that package,
+// type-checked. Nil when it did not load or type, or name is not an
+// interface there — the same honest outcome as embeddedMethods.
+func siblingMethods(pkg *packages.Package, name string, aliases *importAliases) []MethodDef {
+	if pkg == nil || pkg.Types == nil {
+		return nil
+	}
+	obj, _ := pkg.Types.Scope().Lookup(name).(*types.TypeName)
+	if obj == nil {
+		return nil
+	}
+	iface, ok := obj.Type().Underlying().(*types.Interface)
+	if !ok || !typesValid(iface) {
+		return nil
+	}
+	return typedMethods(pkg, iface, aliases, func(types.Type) {})
+}
+
 // dedupeMethodDefs keeps the first method of each name, in order.
 func dedupeMethodDefs(methods []MethodDef) []MethodDef {
 	seen := make(map[string]bool, len(methods))

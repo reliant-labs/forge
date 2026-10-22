@@ -1291,7 +1291,13 @@ type ObservabilityEntity struct {
 	LocalEndpoint string `json:"local_endpoint,omitempty"`
 	// ProfilesEndpoint is the full URL of the local profiles collector host
 	// processes push to; "" when profiles are off or go to a destination.
-	ProfilesEndpoint string                     `json:"profiles_endpoint,omitempty"`
+	ProfilesEndpoint string `json:"profiles_endpoint,omitempty"`
+	// AlertmanagerPort and AlertsPort are the local alerting loop's loopback
+	// ports: the compose Alertmanager's and the evaluator's (its in-app
+	// sink). Zero when the env runs no local loop (no ports declared, or a
+	// destination instead of the local ClickStack).
+	AlertmanagerPort int                        `json:"alertmanager_port,omitempty"`
+	AlertsPort       int                        `json:"alerts_port,omitempty"`
 	Destination      *ObservabilityDestEntity   `json:"destination,omitempty"`
 	Signals          ObservabilitySignalsEntity `json:"signals"`
 	// Policy is the resolved opt-out, recorded in the release shape.

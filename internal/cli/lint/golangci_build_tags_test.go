@@ -30,20 +30,20 @@ func writeTagTree(t *testing.T, files map[string]string) string {
 
 func TestDiscoverBuildTagSets(t *testing.T) {
 	dir := writeTagTree(t, map[string]string{
-		"go.mod":                      "module example.com/m\n\ngo 1.22\n",
-		"a/a.go":                      "package a\n",
-		"a/a_integration_test.go":     "//go:build integration\n\npackage a\n",
-		"b/b_e2e_test.go":             "// Copyright\n\n//go:build e2e && !windows\n\npackage b\n",
-		"c/c_linux.go":                "//go:build linux && amd64\n\npackage c\n",
-		"c/c_ignore.go":               "//go:build ignore\n\npackage main\n",
-		"d/d.go":                      "//go:build !integration\n\npackage d\n",
-		"node_modules/x/x_test.go":    "//go:build nodemodtag\n\npackage x\n",
-		"testdata/t.go":               "//go:build testdatatag\n\npackage t\n",
-		"sub/go.mod":                  "module example.com/sub\n",
-		"sub/s_test.go":               "//go:build othermodule\n\npackage s\n",
-		"e/e.go":                      "package e\n\n// //go:build notaconstraint\n",
-		".hidden/h_test.go":           "//go:build hiddentag\n\npackage h\n",
-		"f/f_test.go":                 "//go:build integration || e2e\n\npackage f\n",
+		"go.mod":                   "module example.com/m\n\ngo 1.22\n",
+		"a/a.go":                   "package a\n",
+		"a/a_integration_test.go":  "//go:build integration\n\npackage a\n",
+		"b/b_e2e_test.go":          "// Copyright\n\n//go:build e2e && !windows\n\npackage b\n",
+		"c/c_linux.go":             "//go:build linux && amd64\n\npackage c\n",
+		"c/c_ignore.go":            "//go:build ignore\n\npackage main\n",
+		"d/d.go":                   "//go:build !integration\n\npackage d\n",
+		"node_modules/x/x_test.go": "//go:build nodemodtag\n\npackage x\n",
+		"testdata/t.go":            "//go:build testdatatag\n\npackage t\n",
+		"sub/go.mod":               "module example.com/sub\n",
+		"sub/s_test.go":            "//go:build othermodule\n\npackage s\n",
+		"e/e.go":                   "package e\n\n// //go:build notaconstraint\n",
+		".hidden/h_test.go":        "//go:build hiddentag\n\npackage h\n",
+		"f/f_test.go":              "//go:build integration || e2e\n\npackage f\n",
 	})
 	got := discoverBuildTags(dir)
 

@@ -315,13 +315,15 @@ func NewInterceptor(p Policy) (connect.Interceptor, error) {
 			return nil, errors.New("authn.NewInterceptor: Policy.Validate and Policy.ValidateContext are both set — " +
 				"a policy has ONE validator; pass it as ValidateContext, or as Validate when it needs no request context")
 		}
+		ic := &interceptor{policy: p}
 		if p.ContextWithClaims == nil {
 			// Default to the library's own claims stash, which
 			// ClaimsFromContext / GetUser read back. A project only
 			// supplies this to use a context key it owns.
-			p.ContextWithClaims = ContextWithClaims
+			ic.policy.ContextWithClaims = ContextWithClaims
+			ic.claims = ClaimsFromContext
 		}
-		return &interceptor{policy: p}, nil
+		return ic, nil
 	default: // modePassthrough
 		// ExternalAuth: another interceptor owns identity, so this one
 		// inspects nothing and attaches no claims.
@@ -335,6 +337,10 @@ func NewInterceptor(p Policy) (connect.Interceptor, error) {
 type passthrough struct{}
 
 func (passthrough) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc { return next }
+
+// Claims is nil: in passthrough mode another interceptor owns identity, and
+// this one puts no claims on any context.
+func (passthrough) Claims() func(context.Context) (*Claims, bool) { return nil }
 func (passthrough) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
 	return next
 }
@@ -345,7 +351,19 @@ func (passthrough) WrapStreamingHandler(next connect.StreamingHandlerFunc) conne
 // interceptor is the Validate-mode implementation.
 type interceptor struct {
 	policy Policy
+	// claims reads back what policy.ContextWithClaims stashes, when this
+	// package knows how: ClaimsFromContext for the default stash, nil for a
+	// project's own.
+	claims func(context.Context) (*Claims, bool)
 }
+
+// Claims is how to read the caller this interceptor admitted from a request
+// context: ClaimsFromContext when it stashes claims with the library's own
+// stash, nil when Policy.ContextWithClaims names a project's own (whose
+// reader only the project has). serverkit.AuthFor reads it, so a chain's
+// caller-recording slots (audit, activity) know who called without being
+// told — and refuse to guess when this is nil.
+func (a *interceptor) Claims() func(context.Context) (*Claims, bool) { return a.claims }
 
 func (a *interceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {

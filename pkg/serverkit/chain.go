@@ -17,6 +17,7 @@ package serverkit
 // mounts a service declared for another audience (listener.go).
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -36,32 +37,71 @@ import (
 const AudienceUser = "user"
 
 // Authenticator is the authentication slot of a Chain: the interceptor that
-// proves who is calling, and the audience — the kind of caller — it admits.
-// Audience is what a Listener compares with each mounted service's declared
-// `(forge.v1.service).audience`.
+// proves who is calling, the audience — the kind of caller — it admits, and
+// how to read the caller it admitted. Audience is what a Listener compares
+// with each mounted service's declared `(forge.v1.service).audience`; Caller
+// is what the chain's caller-recording slots (Audit, Activity) read.
 type Authenticator interface {
 	connect.Interceptor
 	// Audience names the trust domain this authenticator admits: AudienceUser
 	// ("user"), or a name the project chooses ("daemon", "operator").
 	Audience() string
+	// Caller reads, from a request context, the caller this authenticator
+	// admitted, as forge claims. nil means it does not say — its auth keeps
+	// the caller somewhere forge cannot read — and NewChain then refuses to
+	// default Audit or Activity, because both would record every call as
+	// anonymous.
+	Caller() CallerLookup
 }
+
+// CallerLookup reads the authenticated caller's forge claims from a request
+// context: authn.ClaimsFromContext for forge's own auth, or a project's
+// reader over its own auth context. It is the same shape as
+// middleware.ClaimsLookup and activity.ClaimsLookup.
+type CallerLookup = func(ctx context.Context) (*authn.Claims, bool)
 
 // AuthFor pairs an authentication interceptor with the audience it admits —
 // the usual way to fill ChainDeps.Auth:
 //
 //	serverkit.AuthFor(serverkit.AudienceUser, authInterceptor)
 //
-// A nil interceptor or an empty audience is rejected by NewChain.
+// Its Caller is the interceptor's own: forge/pkg/authn's names the claims it
+// stashes (authn.ClaimsFromContext). An interceptor that does not say how to
+// read its caller — a project's own, or authn's with a project-owned
+// Policy.ContextWithClaims — leaves Caller nil; build that one with
+// [AuthWithCaller] instead. A nil interceptor or an empty audience is
+// rejected by NewChain.
 func AuthFor(audience string, interceptor connect.Interceptor) Authenticator {
-	return &audienceAuth{Interceptor: interceptor, audience: audience}
+	var caller CallerLookup
+	if c, ok := interceptor.(interface {
+		Claims() func(context.Context) (*authn.Claims, bool)
+	}); ok {
+		caller = c.Claims()
+	}
+	return &audienceAuth{Interceptor: interceptor, audience: audience, caller: caller}
+}
+
+// AuthWithCaller is AuthFor for an interceptor that keeps the caller its own
+// way: caller reads it back from a request context as forge claims, so the
+// chain's default Audit and Activity record the real caller. A nil caller is
+// rejected by NewChain.
+//
+//	serverkit.AuthWithCaller(serverkit.AudienceUser, appAuth, appauth.Claims)
+func AuthWithCaller(audience string, interceptor connect.Interceptor, caller CallerLookup) Authenticator {
+	return &audienceAuth{Interceptor: interceptor, audience: audience, caller: caller, callerNamed: true}
 }
 
 type audienceAuth struct {
 	connect.Interceptor
 	audience string
+	caller   CallerLookup
+	// callerNamed marks an AuthWithCaller, whose nil caller is a mistake
+	// rather than "this interceptor does not say".
+	callerNamed bool
 }
 
-func (a *audienceAuth) Audience() string { return a.audience }
+func (a *audienceAuth) Audience() string     { return a.audience }
+func (a *audienceAuth) Caller() CallerLookup { return a.caller }
 
 // Omit drops one defaulted slot from a Chain. A nil slot means "forge's
 // default", so leaving a layer out has to be said: ChainDeps{Audit:
@@ -149,8 +189,9 @@ type ChainDeps struct {
 	Deadline connect.Interceptor
 
 	// Audit records who called what, after Auth. nil is
-	// middleware.AuditInterceptor over the claims Auth stashed. NoAudit
-	// drops it.
+	// middleware.AuditInterceptor over Auth's Caller — and a NewChain error
+	// when Auth's Caller is nil, since it would audit every call as
+	// anonymous. NoAudit drops it.
 	Audit connect.Interceptor
 
 	// RateLimit runs after Audit. It has no default — a rate limit is a
@@ -171,9 +212,13 @@ type ChainDeps struct {
 	// `(forge.v1.method).activity` (forge/pkg/activity), after the handler
 	// succeeds. It runs after Auth, so it knows the caller, and next to the
 	// handler, so it judges the handler's own outcome. nil is
-	// activity.Interceptor with no store: declared events are logged, not
-	// persisted. Pass activity.Interceptor(activity.Deps{Writer:
-	// activity.NewStore(db)}) to keep them. NoActivity drops it.
+	// activity.Interceptor with no store, its Principal read from Auth's
+	// Caller (activity.ClaimsPrincipal): declared events are logged, not
+	// persisted. nil is a NewChain error when Auth's Caller is nil, since
+	// every event would name an anonymous actor; pass
+	// activity.Interceptor(activity.Deps{Principal: …}) with the project's
+	// own Principal then. Pass activity.Deps{Writer: activity.NewStore(db)}
+	// to keep events. NoActivity drops it.
 	Activity connect.Interceptor
 
 	// StreamDrain binds every server-streaming and bidi RPC to the drain of
@@ -227,14 +272,17 @@ func NewChain(deps ChainDeps) (*Chain, error) {
 	if err != nil {
 		return nil, err
 	}
+	// validateChainDeps refused a defaulted Audit or Activity over a nil
+	// Caller, so the defaults below always read a real one.
+	caller := deps.Auth.Caller()
 	audit, err := chainSlot(deps.Audit, NoAudit, func() (connect.Interceptor, error) {
-		return middleware.AuditInterceptor(logger, authn.ClaimsFromContext), nil
+		return middleware.AuditInterceptor(logger, caller), nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	activityIC, err := chainSlot(deps.Activity, NoActivity, func() (connect.Interceptor, error) {
-		return activity.Interceptor(activity.Deps{Logger: logger}), nil
+		return activity.Interceptor(activity.Deps{Principal: activity.ClaimsPrincipal(caller), Logger: logger})
 	})
 	if err != nil {
 		return nil, err
@@ -293,8 +341,15 @@ func validateChainDeps(deps ChainDeps) error {
 	case deps.Auth.Audience() == "":
 		errs = append(errs, errors.New("ChainDeps.Auth names no audience: serverkit.AuthFor(serverkit.AudienceUser, interceptor) for the default"))
 	default:
-		if a, ok := deps.Auth.(*audienceAuth); ok && a.Interceptor == nil {
+		a, isAudienceAuth := deps.Auth.(*audienceAuth)
+		if isAudienceAuth && a.Interceptor == nil {
 			errs = append(errs, fmt.Errorf("ChainDeps.Auth (audience %q) wraps a nil interceptor", a.audience))
+		}
+		switch {
+		case isAudienceAuth && a.callerNamed && a.caller == nil:
+			errs = append(errs, fmt.Errorf("ChainDeps.Auth (audience %q): serverkit.AuthWithCaller was given a nil caller", a.audience))
+		case deps.Auth.Caller() == nil:
+			errs = append(errs, callerSlotErrors(deps)...)
 		}
 	}
 	for _, s := range []struct {
@@ -337,6 +392,29 @@ func validateChainDeps(deps ChainDeps) error {
 		return fmt.Errorf("serverkit.NewChain: %w", errors.Join(errs...))
 	}
 	return nil
+}
+
+// callerSlotErrors reports each defaulted caller-recording slot (Audit,
+// Activity) of a chain whose Auth does not say how to read its caller. Their
+// defaults read the caller Auth admitted; with no way to read it, every call
+// would be recorded as anonymous — a log line nobody reads, not an error. So
+// a chain that would do that is not built.
+func callerSlotErrors(deps ChainDeps) []error {
+	why := fmt.Sprintf("ChainDeps.Auth (audience %q) does not say how to read the caller it admits (its Caller is nil: "+
+		"the interceptor is not forge/pkg/authn's with its default claims stash), so", deps.Auth.Audience())
+	var errs []error
+	if deps.Audit == nil {
+		errs = append(errs, fmt.Errorf("%s the default Audit would audit every call as anonymous: build Auth with "+
+			"serverkit.AuthWithCaller(audience, interceptor, lookup), pass Audit: middleware.AuditInterceptor(logger, lookup), "+
+			"or drop it with serverkit.NoAudit", why))
+	}
+	if deps.Activity == nil {
+		errs = append(errs, fmt.Errorf("%s the default Activity would record every event as system:anonymous with no scope: "+
+			"build Auth with serverkit.AuthWithCaller(audience, interceptor, lookup), pass "+
+			"Activity: activity.Interceptor(activity.Deps{Principal: …}) with your own activity.Principal, "+
+			"or drop it with serverkit.NoActivity", why))
+	}
+	return errs
 }
 
 // chainSlot resolves one defaulted slot: the caller's interceptor, nil for its

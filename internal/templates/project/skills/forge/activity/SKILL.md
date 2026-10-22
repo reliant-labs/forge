@@ -83,21 +83,67 @@ store them, give the slot a store:
 import "github.com/reliant-labs/forge/pkg/activity"
 
 store := activity.NewStore(infra.ORM) // *orm.Client: writes join a RunTx
+ic, err := activity.Interceptor(activity.Deps{
+    Writer:    store,
+    Principal: activity.ClaimsPrincipal(authn.ClaimsFromContext),
+})
+if err != nil {
+    return err
+}
 chain, err := serverkit.NewChain(serverkit.ChainDeps{
     // ...Auth and the rest as scaffolded...
-    Activity: activity.Interceptor(activity.Deps{Writer: store}),
+    Activity: ic,
 })
 ```
 
-Each `activity.Deps` field has a default:
+### Who the caller is: the `Principal`
 
-- `ActorFrom`: a user from the caller's claims, or `system` when there is no
-  caller. Supply your own when some principals are machines (CI tokens, API
-  keys), because only your app knows which ones are.
+Every event names an actor and a scope, and only your app's auth knows them.
+`activity.Deps.Principal` is that seam, a two-method interface:
+
+```go
+type Principal interface {
+    Actor(ctx context.Context) activity.Actor  // who is calling
+    Scope(ctx context.Context) string          // the org/project the call acts in
+}
+```
+
+It is **required**: `activity.Interceptor` fails without one. A guessed
+default fails silently. An app whose auth does not put forge's claims on the
+context would record every event as `system:anonymous` with an empty scope,
+and nothing would say so.
+
+- **On `forge/pkg/authn`** (the scaffolded auth):
+  `activity.ClaimsPrincipal(authn.ClaimsFromContext)`. The actor is a user
+  named by email, or `system:anonymous` for an rpc the policy lets through
+  without a token. The scope is the claims' `OrgID`.
+- **Auth that keeps the caller its own way, or principals that are machines**
+  (CI tokens, API keys): implement `Principal` over your auth context. This is
+  control-plane's `activitystream`. A machine credential acting for a person is
+  that person, a credential acting for nobody is `activity.Machine`, and the
+  scope is the caller's org.
+
+`serverkit.NewChain` fills the `Principal` of its **default** slot from
+`ChainDeps.Auth`. `serverkit.AuthFor(audience, interceptor)` recognises
+forge's authn interceptor and reads the claims it stashes. Any other
+interceptor leaves the authenticator's `Caller()` nil, and **`NewChain` then
+refuses to build** rather than default `Activity` (or `Audit`) to an anonymous
+caller. The error names the three ways out:
+
+- `serverkit.AuthWithCaller(audience, interceptor, lookup)`, where `lookup`
+  returns your caller as `*authn.Claims`. This keeps both defaults.
+- `Activity:` the interceptor `activity.Interceptor(activity.Deps{Principal:
+  yourPrincipal})` returns. This is the right choice when actors include
+  machines.
+- `serverkit.NoActivity` (and `serverkit.NoAudit`) for a chain whose rpcs
+  record nothing.
+
+The other `activity.Deps` fields default:
+
 - `ViaFrom`: the `Forge-Via` request header (`console`, `cli`, `ci`), or `api`
   when the header is absent. A browser client that sends this header needs it
   in the CORS allow-list.
-- `ScopeFrom`: the caller's `OrgID`.
+- `Writer`: the log writer. `activity.NewStore` persists.
 
 `serverkit.NoActivity` drops the slot.
 

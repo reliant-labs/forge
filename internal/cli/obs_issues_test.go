@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -239,7 +240,18 @@ func issuesCloudFacts() obsbackend.Facts {
 	return obsbackend.Facts{Env: "prod", Declared: true, Enabled: true, HasHosted: true, ControlPlane: "https://cp"}
 }
 
+// cloudLiveRelease is the release the cloud tests' ledger says was live: v1.4.0,
+// promoted two hours before the moment asked about.
+func cloudLiveRelease(_ context.Context, _ string, at time.Time) (*liveRelease, error) {
+	return &liveRelease{Version: "v1.4.0", PromotionID: "p-14", PromotedAt: at.Add(-2 * time.Hour).UTC()}, nil
+}
+
 func obsRunCloud(t *testing.T, fc *fakeCloudCaller, args ...string) (string, string, error) {
+	t.Helper()
+	return obsRunCloudWith(t, fc, cloudLiveRelease, args...)
+}
+
+func obsRunCloudWith(t *testing.T, fc *fakeCloudCaller, release func(context.Context, string, time.Time) (*liveRelease, error), args ...string) (string, string, error) {
 	t.Helper()
 	old := obsDepsOverride
 	t.Cleanup(func() { obsDepsOverride = old })
@@ -248,7 +260,8 @@ func obsRunCloud(t *testing.T, fc *fakeCloudCaller, args ...string) (string, str
 		Cloud: func(_ context.Context, env string) (obsbackend.Cloud, error) {
 			return obsbackend.Cloud{Env: env, EnvID: "env-prod", OrgID: "org-1", Caller: fc}, nil
 		},
-		Now: func() time.Time { return obsNow },
+		Now:     func() time.Time { return obsNow },
+		Release: release,
 	}
 	var out, errb bytes.Buffer
 	cmd := newTestRootCmd(t)
@@ -311,6 +324,10 @@ func TestObsIssueCloudJSONGolden(t *testing.T) {
 	doc := decode(t, out)
 	if fr := doc["first_release"].(map[string]any); fr["version"] != "v1.3.0" {
 		t.Errorf("first_release = %v", fr)
+	}
+	// Last seen 11:00; the ledger's v1.4.0 was promoted two hours before.
+	if rel := doc["release"].(map[string]any); rel["version"] != "v1.4.0" || rel["promotion_id"] != "p-14" || rel["promoted_at"] != "2026-10-22T09:00:00Z" {
+		t.Errorf("release = %v", rel)
 	}
 	sug := strings.Join(toStrings(doc["suggested"]), "|")
 	for _, want := range []string{"forge obs trace " + issueTrace + " prod", "forge obs logs prod --trace " + issueTrace, "forge obs issue resolve ISS-7f3a prod --in next"} {
@@ -403,5 +420,42 @@ func TestObsIssuesVerbsAreRegistered(t *testing.T) {
 		if c, _, err := cmd.Find(path); err != nil || c.Name() != path[len(path)-1] {
 			t.Errorf("%v not registered: %v", path, err)
 		}
+	}
+}
+
+// The release stamp reads the ledger at the issue's last_seen; an unreadable
+// ledger warns and leaves the field out, never failing the verb.
+func TestObsIssueStampsTheReleaseLiveWhenLastSeen(t *testing.T) {
+	withSuspects(t, func(context.Context, string, []string) ([]suspect.Commit, error) { return nil, nil })
+	fc := func() *fakeCloudCaller {
+		return &fakeCloudCaller{replies: map[string]string{cloudIssue: `{"issue":` + cloudIssueJSON + `}`}}
+	}
+	var askedAt time.Time
+	out, _, err := obsRunCloudWith(t, fc(), func(ctx context.Context, env string, at time.Time) (*liveRelease, error) {
+		askedAt = at
+		return cloudLiveRelease(ctx, env, at)
+	}, "issue", "ISS-7f3a", "prod", "--json", "--events", "0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 10, 22, 11, 0, 0, 0, time.UTC); !askedAt.Equal(want) {
+		t.Errorf("looked the release up at %v, want last_seen %v", askedAt, want)
+	}
+	if _, ok := decode(t, out)["release"]; !ok {
+		t.Errorf("no release:\n%s", out)
+	}
+	text, _, err := obsRunCloud(t, fc(), "issue", "ISS-7f3a", "prod", "--events", "0")
+	if err != nil || !strings.Contains(text, "live when last seen: v1.4.0 (promoted 2026-10-22T09:00:00Z)") {
+		t.Errorf("text (%v):\n%s", err, text)
+	}
+
+	out, errOut, err := obsRunCloudWith(t, fc(), func(context.Context, string, time.Time) (*liveRelease, error) {
+		return nil, errors.New("ledger unreadable")
+	}, "issue", "ISS-7f3a", "prod", "--json", "--events", "0")
+	if err != nil {
+		t.Fatalf("an unreadable ledger failed the verb: %v", err)
+	}
+	if _, ok := decode(t, out)["release"]; ok || !strings.Contains(errOut, "release live in prod is unknown") {
+		t.Errorf("stdout %s stderr %s", out, errOut)
 	}
 }

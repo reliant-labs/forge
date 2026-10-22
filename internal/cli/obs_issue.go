@@ -33,6 +33,7 @@ var obsIssueSchema = obsout.Schema{
 		"frames", "frames.function", "frames.file", "frames.line", "frames.in_app",
 		"by_version", "by_version.version", "by_version.events", "by_version.affected", "by_version.first_seen", "by_version.last_seen",
 		"co_occurring_issue_ids",
+		"release", "release.version", "release.promotion_id", "release.promoted_at", "release.unsettled",
 		"first_release", "first_release.version", "first_release.git_commit", "first_release.commit_range", "first_release.promoted_at",
 		"suspect_commits", "suspect_commits.sha", "suspect_commits.subject", "suspect_commits.author", "suspect_commits.time",
 		"suspect_commits.files", "suspect_commits.pr", "suspect_note",
@@ -90,14 +91,16 @@ type obsSuspectDoc struct {
 
 type obsIssueDoc struct {
 	obsout.Head
-	Scope        obsout.Scope           `json:"scope"`
-	QueryMode    string                 `json:"query_mode"`
-	Issue        obsIssueRowDoc         `json:"issue"`
-	LatestEvent  *obsIssueEventDoc      `json:"latest_event,omitempty"`
-	Events       []obsIssueEventDoc     `json:"events,omitempty"`
-	Frames       []obsIssueFrameDoc     `json:"frames,omitempty"`
-	ByVersion    []obsIssueVersionDoc   `json:"by_version,omitempty"`
-	CoOccurring  []string               `json:"co_occurring_issue_ids,omitempty"`
+	Scope       obsout.Scope         `json:"scope"`
+	QueryMode   string               `json:"query_mode"`
+	Issue       obsIssueRowDoc       `json:"issue"`
+	LatestEvent *obsIssueEventDoc    `json:"latest_event,omitempty"`
+	Events      []obsIssueEventDoc   `json:"events,omitempty"`
+	Frames      []obsIssueFrameDoc   `json:"frames,omitempty"`
+	ByVersion   []obsIssueVersionDoc `json:"by_version,omitempty"`
+	CoOccurring []string             `json:"co_occurring_issue_ids,omitempty"`
+	// Release is the release live in the env when the issue was last seen.
+	Release      *liveRelease           `json:"release,omitempty"`
 	FirstRelease *obsIssueReleaseDoc    `json:"first_release,omitempty"`
 	Suspects     []obsSuspectDoc        `json:"suspect_commits"`
 	SuspectNote  string                 `json:"suspect_note,omitempty"`
@@ -210,6 +213,9 @@ func runObsIssue(ctx context.Context, d obsDeps, id, env string, o obsIssueOpts)
 			doc.Events = append(doc.Events, issueEventDoc(e))
 		}
 	}
+	if !res.Issue.LastSeen.IsZero() {
+		doc.Release = stampRelease(ctx, d.Release, d.Stderr, env, res.Issue.LastSeen)
+	}
 	commitRange := ""
 	if doc.FirstRelease != nil {
 		commitRange = doc.FirstRelease.CommitRange
@@ -278,6 +284,13 @@ func renderIssue(w io.Writer, doc obsIssueDoc) {
 	}
 	fmt.Fprintf(w, "  %d events, %d affected; first %s (%s), last %s (%s)\n", i.Events, i.Affected,
 		i.FirstSeen.UTC().Format(time.RFC3339), orDash(i.FirstVersion), i.LastSeen.UTC().Format(time.RFC3339), orDash(i.LastVersion))
+	if r := doc.Release; r != nil {
+		fmt.Fprintf(w, "  live when last seen: %s (promoted %s)", r.Version, r.PromotedAt.UTC().Format(time.RFC3339))
+		if r.Unsettled {
+			fmt.Fprint(w, ", rollout not reported finished")
+		}
+		fmt.Fprintln(w)
+	}
 	if r := doc.FirstRelease; r != nil {
 		fmt.Fprintf(w, "  first release %s", r.Version)
 		if r.CommitRange != "" {

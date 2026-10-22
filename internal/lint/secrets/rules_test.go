@@ -326,11 +326,11 @@ func accessCM(rules ...map[string]any) Doc {
 
 func TestOpenBaoWildcardRead(t *testing.T) {
 	glob := func(reason string) map[string]any {
-		return map[string]any{"path": "secret/data/tenants/*", "capabilities": []any{"read"}, "reason": reason}
+		return map[string]any{"path": "secret/data/envs/*", "capabilities": []any{"read"}, "reason": reason}
 	}
 	t.Run("no reason", func(t *testing.T) {
 		fs := Check(env(adopted, accessCM(glob(""))), nil)
-		wantOne(t, fs, RuleWildcardRead, finding.SeverityError, "secret/data/tenants/*", "states no reason", "wildcard_read_reason")
+		wantOne(t, fs, RuleWildcardRead, finding.SeverityError, "secret/data/envs/*", "states no reason", "wildcard_read_reason")
 	})
 	t.Run("a placeholder reason", func(t *testing.T) {
 		wantOne(t, Check(env(adopted, accessCM(glob("todo"))), nil), RuleWildcardRead, finding.SeverityError, "which is too short")
@@ -340,14 +340,14 @@ func TestOpenBaoWildcardRead(t *testing.T) {
 	})
 	t.Run("a wildcard that cannot read a value", func(t *testing.T) {
 		wantNone(t, Check(env(adopted, accessCM(
-			map[string]any{"path": "secret/metadata/tenants/*", "capabilities": []any{"read", "list"}},
-			map[string]any{"path": "secret/data/tenants/*", "capabilities": []any{"create", "update"}},
+			map[string]any{"path": "secret/metadata/envs/*", "capabilities": []any{"read", "list"}},
+			map[string]any{"path": "secret/data/envs/*", "capabilities": []any{"create", "update"}},
 			map[string]any{"path": "sys/policies/acl/env-*", "capabilities": []any{"read"}},
-			map[string]any{"path": "secret/data/tenants/acme/prod/NAME", "capabilities": []any{"read"}},
+			map[string]any{"path": "secret/data/envs/acme/prod/NAME", "capabilities": []any{"read"}},
 		)), nil), RuleWildcardRead)
 	})
 	t.Run("a glob in place of the data segment", func(t *testing.T) {
-		wantOne(t, Check(env(adopted, accessCM(map[string]any{"path": "secret/+/tenants/x", "capabilities": []any{"read"}})), nil), RuleWildcardRead, finding.SeverityError)
+		wantOne(t, Check(env(adopted, accessCM(map[string]any{"path": "secret/+/envs/x", "capabilities": []any{"read"}})), nil), RuleWildcardRead, finding.SeverityError)
 	})
 }
 

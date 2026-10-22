@@ -270,7 +270,7 @@ output = forge.render(forge.Bundle {
             forge.OpenBaoConsumer {
                 name = "deployer"
                 workload = "deployer"
-                grants = [forge.OpenBaoGrant {path = "secret/data/tenants/*", capabilities = ["read"], wildcard_read_reason = "todo"}]
+                grants = [forge.OpenBaoGrant {path = "secret/data/envs/*", capabilities = ["read"], wildcard_read_reason = "todo"}]
             }
         ]
     }
@@ -283,7 +283,7 @@ output = forge.render(forge.Bundle {
 	}
 	got := ruleSet(res.findings)
 	w := got[secrets.RuleWildcardRead]
-	if len(w) != 1 || !strings.Contains(w[0].Message, "secret/data/tenants/*") || w[0].Severity != finding.SeverityError {
+	if len(w) != 1 || !strings.Contains(w[0].Message, "secret/data/envs/*") || w[0].Severity != finding.SeverityError {
 		t.Fatalf("wildcard read: %+v", res.findings)
 	}
 	if len(got[secrets.RuleKeyCoverage]) != 0 {

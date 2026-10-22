@@ -67,7 +67,7 @@ func (c Cloud) Logs(ctx context.Context, req LogsRequest) (LogsResult, error) {
 		Logs          []wireLogRecord `json:"logs"`
 		NextPageToken string          `json:"nextPageToken"`
 	}
-	if err := c.Call(ctx, procSearchLogs, in, &out); err != nil {
+	if err := c.call(ctx, procSearchLogs, in, &out); err != nil {
 		return LogsResult{}, err
 	}
 	res := LogsResult{NextPageToken: out.NextPageToken}
@@ -127,7 +127,7 @@ func (c Cloud) Traces(ctx context.Context, req TracesRequest) (TracesResult, err
 		NextPageToken string             `json:"nextPageToken"`
 		RED           *wireRED           `json:"red"`
 	}
-	if err := c.Call(ctx, procListTraces, in, &out); err != nil {
+	if err := c.call(ctx, procListTraces, in, &out); err != nil {
 		return TracesResult{}, err
 	}
 	res := TracesResult{NextPageToken: out.NextPageToken}
@@ -185,7 +185,7 @@ func (c Cloud) Trace(ctx context.Context, req TraceRequest) (TraceResult, error)
 		Spans     []wireSpan `json:"spans"`
 		Truncated bool       `json:"truncated"`
 	}
-	if err := c.Call(ctx, procGetTrace, in, &out); err != nil {
+	if err := c.call(ctx, procGetTrace, in, &out); err != nil {
 		return TraceResult{}, err
 	}
 	if len(out.Spans) == 0 {
@@ -309,7 +309,7 @@ func (c Cloud) queryPanel(ctx context.Context, n Narrow, p obsquery.Panel, step 
 		Explain     bool      `json:"explain,omitempty"`
 	}{c.scope(n), panel, step, n.Explain}
 	var out wirePanelResponse
-	err = c.Call(ctx, procQueryPanel, in, &out)
+	err = c.call(ctx, procQueryPanel, in, &out)
 	return out, err
 }
 
@@ -520,7 +520,7 @@ func (c Cloud) MetricsList(ctx context.Context, req MetricsListRequest) (Metrics
 		} `json:"metrics"`
 		Truncated bool `json:"truncated"`
 	}
-	if err := c.Call(ctx, procListMetrics, in, &out); err != nil {
+	if err := c.call(ctx, procListMetrics, in, &out); err != nil {
 		return MetricsListResult{}, err
 	}
 	res := MetricsListResult{Truncated: out.Truncated}
@@ -564,7 +564,7 @@ func (c Cloud) MetricsQuery(ctx context.Context, req MetricsQueryRequest) (Metri
 		Aggregation     string `json:"aggregation"`
 		SeriesTruncated bool   `json:"seriesTruncated"`
 	}
-	if err := c.Call(ctx, procQueryMetric, in, &out); err != nil {
+	if err := c.call(ctx, procQueryMetric, in, &out); err != nil {
 		return MetricsQueryResult{}, err
 	}
 	res := MetricsQueryResult{

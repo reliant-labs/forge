@@ -252,8 +252,10 @@ export default function ErrorContractPage() {
   if (list.error) {
     const retry: boolean = list.error.retryable;
     const status: number = list.error.status;
-    const code: string = list.error.code;
-    return <p>{` + "`${code} ${status} ${retry} ${userMessage(list.error)}`" + `}</p>;
+    const code: string = list.error.codeName;
+    // A ConnectError subclass: the numeric Code is still .code.
+    const numeric: number = list.error.code;
+    return <p>{` + "`${code} ${numeric} ${status} ${retry} ${userMessage(list.error)}`" + `}</p>;
   }
   return <button onClick={() => create.mutate({ name: "x" })}>create</button>;
 }

@@ -14,10 +14,10 @@
 // write by hand: `useGetOrder(req, options?)` for a read,
 // `useCreateOrder(options?)` for a write. Errors are typed
 // ConnectClientError — the shape the transport's error-normalize interceptor
-// actually throws — so `.reason` (a stable machine code the backend stamps on
-// every error), `.code`, `.status` and `.retryable` are all reachable at the
-// call site, and `userMessage(err)` renders it. Branch on `.reason`, never on
-// message text.
+// actually throws, a ConnectError subclass — so `.reason` (a stable machine
+// code the backend stamps on every error), `.code` / `.codeName`, `.status`
+// and `.retryable` are all reachable at the call site, and `userMessage(err)`
+// renders it. Branch on `.reason`, never on message text.
 //
 // Error toasts are NOT emitted here: the app-wide MutationCache in
 // src/lib/query-client.ts is the single chokepoint, and pages rendering an

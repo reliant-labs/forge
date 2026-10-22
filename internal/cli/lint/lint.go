@@ -174,13 +174,7 @@ Examples:
                                  # while the service still holds forge's own
                                  # unwired rpc stubs
   forge lint --secrets           # FAIL on a platform-secrets defect, with
-                                 # file:line and the escape: a cluster-wide ESO
-                                 # kind, an ExternalSecret that can delete its
-                                 # Secret, a Secret a workload reads that nothing
-                                 # produces (or a key it drops), an unpinned
-                                 # immutable value, a reasonless out-of-band
-                                 # Secret or OpenBao wildcard read, two owners
-                                 # of one Secret; WARN on an in-cluster escrow
+                                 # file:line and its escape
   forge lint --guarded-fields    # Flag a scaffolded edit page whose
                                  # update_mask still writes a column a
                                  # custom rpc guards (forge:guards) — the
@@ -208,12 +202,9 @@ Examples:
                                  # nowhere
   forge lint --vendored-protos   # Fail when proto/forge/v1/forge.proto has
                                  # drifted from this forge binary's copy
-                                 # (forge's upgrade path does not track it)
   forge lint --config-reach      # Flag config fields no binary or frontend
-                                 # loads (per-binary configs can strand a
-                                 # whole message)
-  forge lint --optional-deps-guard  # Flag unguarded derefs of a
-                                 # // forge:optional-dep field (nil at runtime)
+                                 # loads
+  forge lint --optional-deps-guard  # Flag unguarded derefs of an optional dep
   forge lint --frontend-stores   # Flag Zustand stores holding server data that
                                  # belongs in a generated React Query hook
   forge lint --json              # Machine-readable findings for sub-agents / CI

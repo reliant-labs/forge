@@ -195,13 +195,6 @@ func (r Render) storeBacked() bool {
 	return false
 }
 
-func (r Render) primaryCluster() string {
-	if r.ClusterTarget != nil {
-		return r.ClusterTarget.Cluster
-	}
-	return ""
-}
-
 func (r Render) defaultNamespace() string {
 	if r.ClusterTarget != nil {
 		return r.ClusterTarget.Namespace
@@ -266,8 +259,6 @@ func (d Doc) group() string {
 func (d Doc) name() string { return d.str("metadata", "name") }
 
 func (d Doc) namespace() string { return d.str("metadata", "namespace") }
-
-func (d Doc) cluster() string { return d.str("metadata", "labels", "forge.dev/cluster") }
 
 // get walks a path of map keys.
 func (d Doc) get(path ...string) any {

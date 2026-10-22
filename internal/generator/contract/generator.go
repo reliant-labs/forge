@@ -383,6 +383,8 @@ func ParseContractWith(path string, r *Resolver) (*File, error) {
 	// type-checked package. A mock or decorator missing them fails its own
 	// compile-time `var _ Service = ...` check.
 	embedAliases := newImportAliases(cf.Imports, cf.ExplicitImports, r)
+	selfPkg, selfPath := r.selfPackage(dir)
+	embedAliases.self = selfPath
 	for _, entry := range ifaceEntries {
 		if entry.ifaceType.Methods != nil {
 			for _, field := range entry.ifaceType.Methods.List {
@@ -415,26 +417,29 @@ func ParseContractWith(path string, r *Resolver) (*File, error) {
 			}
 		}
 	}
-	// The packages those embedded signatures reference join contract.go's
-	// import set, so collectImports finds them for the mock and the
-	// decorator alike.
-	for _, imp := range embedAliases.neededImports() {
-		if _, ok := cf.Imports[imp.Name]; ok {
-			continue
-		}
-		cf.Imports[imp.Name] = imp.Path
-		if imp.Explicit {
-			cf.ExplicitImports[imp.Name] = true
-		}
-	}
 
 	// Resolve embedded interfaces: collect all methods including those from embeds.
+	//
+	// An embed this file does not declare is declared in another file of
+	// the package (a deps.go role embedding a role from roles.go): its
+	// method set comes from the type-checked package, which NewResolver
+	// loaded for exactly this (embedsSiblingInterface), rendered with the
+	// package's own types unqualified. Without it the mock silently lacked
+	// those methods and generate's build validation failed with "does not
+	// implement".
+	declaredHere := make(map[string]bool, len(ifaceEntries))
+	for _, entry := range ifaceEntries {
+		declaredHere[entry.name] = true
+	}
 	var resolveMethods func(name string, visited map[string]bool) []MethodDef
 	resolveMethods = func(name string, visited map[string]bool) []MethodDef {
 		if visited[name] {
 			return nil
 		}
 		visited[name] = true
+		if !declaredHere[name] {
+			return siblingMethods(selfPkg, name, embedAliases)
+		}
 		methods := append([]MethodDef{}, ifaceMethodMap[name]...)
 		for _, embedded := range ifaceEmbeds[name] {
 			methods = append(methods, resolveMethods(embedded, visited)...)
@@ -451,6 +456,19 @@ func ParseContractWith(path string, r *Resolver) (*File, error) {
 			Methods: dedupeMethodDefs(resolveMethods(entry.name, make(map[string]bool))),
 		}
 		cf.Interfaces = append(cf.Interfaces, iface)
+	}
+	// The packages those embedded signatures reference — another package's,
+	// or a sibling file's (resolved just above) — join contract.go's
+	// import set, so collectImports finds them for the mock and the
+	// decorator alike.
+	for _, imp := range embedAliases.neededImports() {
+		if _, ok := cf.Imports[imp.Name]; ok {
+			continue
+		}
+		cf.Imports[imp.Name] = imp.Path
+		if imp.Explicit {
+			cf.ExplicitImports[imp.Name] = true
+		}
 	}
 
 	// Interfaces this package DEPENDS on but does not declare — the

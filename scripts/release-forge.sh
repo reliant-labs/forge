@@ -37,6 +37,19 @@
 #                 offline release where you have verified BY HAND that the
 #                 version has never been published. See that step's comment.
 #
+# CHANGELOG.md is written HERE and nowhere else. This script builds the new
+# `## [vX.Y.Z] - <date>` section from the squash commits (the merged PR titles)
+# since the previous tag, folds the existing `## [Unreleased]` prose in once,
+# leaves `[Unreleased]` empty, formats the file with the prettier the pre-commit
+# hook pins, commits it with the release, and — after the push — publishes the
+# section as the GitHub release notes. Pull requests never edit the file
+# (scripts/check-changelog-untouched.sh). See scripts/changelog-release.sh.
+#
+# Environment (tests and offline runs):
+#   FORGE_RELEASE_PRETTIER   command to format CHANGELOG.md with, given the
+#                            file as its argument (default: npx prettier@<pin>)
+#   FORGE_RELEASE_GH         the gh binary (default: gh)
+#
 # See docs/releasing.md.
 set -euo pipefail
 
@@ -103,6 +116,11 @@ for f in "${VERSION_FILES[@]}"; do
     exit 1
   fi
 done
+
+if [ ! -f CHANGELOG.md ]; then
+  echo "error: expected CHANGELOG.md not found — the release script writes the new version's section into it" >&2
+  exit 1
+fi
 
 # ── 3. Clean tree ───────────────────────────────────────────────────
 # The WHOLE tree, not just pkg/: this script commits root-module files, so any
@@ -241,7 +259,8 @@ fi
 # forbidden in this repo.
 BACKUP_DIR="$(mktemp -d)"
 RESTORE_ON_EXIT=1
-TOUCHED=("${VERSION_FILES[@]}")
+CHANGELOG_FILE="CHANGELOG.md"
+TOUCHED=("${VERSION_FILES[@]}" "$CHANGELOG_FILE")
 
 restore_tree() {
   if [ "$RESTORE_ON_EXIT" = "1" ]; then
@@ -274,6 +293,85 @@ for f in "${VERSION_FILES[@]}"; do
   printf '%s\n' "$VERSION" > "$f"
 done
 
+# ── 7b. CHANGELOG.md ────────────────────────────────────────────────
+# Written only here, from the merged PR titles since the previous tag. The
+# previous tag is the nearest v* tag reachable from HEAD (web-runtime/* tags do
+# not match); with none, only the Unreleased prose is folded in.
+GH_BIN="${FORGE_RELEASE_GH:-gh}"
+PREV_TAG="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
+RELEASE_DATE="$(date -u +%Y-%m-%d)"
+ORIGIN_URL="$(git config --get remote.origin.url 2>/dev/null || true)"
+GITHUB_REPO=""
+case "$ORIGIN_URL" in
+  git@github.com:*)     GITHUB_REPO="${ORIGIN_URL#git@github.com:}" ;;
+  https://github.com/*) GITHUB_REPO="${ORIGIN_URL#https://github.com/}" ;;
+esac
+GITHUB_REPO="${GITHUB_REPO%.git}"
+
+# git is the source of truth (it works offline); gh only enriches it with the
+# PRs labelled `breaking`, which a conventional-commit title cannot always say.
+BREAKING_PRS=""
+if [ -n "$PREV_TAG" ] && [ -n "$GITHUB_REPO" ] && command -v "$GH_BIN" >/dev/null 2>&1; then
+  prev_date="$(git log -1 --format=%cs "$PREV_TAG")"
+  if BREAKING_PRS="$("$GH_BIN" pr list --repo "$GITHUB_REPO" --state merged --label breaking \
+      --search "merged:>=$prev_date" --limit 200 --json number --jq '.[].number' 2>/dev/null)"; then
+    BREAKING_PRS="$(echo "$BREAKING_PRS" | tr '\n' ' ')"
+  else
+    BREAKING_PRS=""
+    echo "  note: could not ask GitHub for \`breaking\` PRs; only commit titles mark breaking changes"
+  fi
+fi
+
+echo "→ writing CHANGELOG.md: $VERSION from ${PREV_TAG:-<no previous tag>}"
+NOTES_DIR="$BACKUP_DIR/notes"
+mkdir -p "$NOTES_DIR"
+"$(dirname "$0")/changelog-release.sh" \
+  --changelog "$CHANGELOG_FILE" --version "$VERSION" --date "$RELEASE_DATE" \
+  --prev-tag "$PREV_TAG" --breaking-prs "$BREAKING_PRS" \
+  ${GITHUB_REPO:+--repo-url "https://github.com/$GITHUB_REPO"} \
+  --generated-out "$NOTES_DIR/generated.md"
+
+# The same prettier the pre-commit hook runs (pinned in .pre-commit-config.yaml,
+# held equal to templates.PrettierVersion by TestPrettierVersionIsPinnedEverywhere).
+# This is CHANGELOG.md's ONLY formatter: the pre-commit hooks exclude the file,
+# because no pull request may edit it to fix what they would report. The whole
+# file is formatted, so drift that reached main any other way is fixed here.
+format_changelog() {
+  if [ -n "${FORGE_RELEASE_PRETTIER:-}" ]; then
+    $FORGE_RELEASE_PRETTIER "$CHANGELOG_FILE"
+    return
+  fi
+  local pin
+  pin="$(sed -n 's/.*additional_dependencies: \["prettier@\([0-9][0-9.]*\)".*/\1/p' .pre-commit-config.yaml 2>/dev/null | head -n 1)" || pin=""
+  if [ -z "$pin" ]; then
+    echo "error: no prettier pin found in .pre-commit-config.yaml; cannot format CHANGELOG.md" >&2
+    return 1
+  fi
+  npx --yes "prettier@$pin" --write --ignore-unknown "$CHANGELOG_FILE" >/dev/null
+}
+echo "→ formatting CHANGELOG.md with prettier"
+format_changelog
+
+# The release notes are the new section, extracted back out of the formatted
+# file. GitHub caps a release body at 125000 characters; a section that folds a
+# long-lived Unreleased in can exceed it, and then the notes are the generated
+# bullets alone with a pointer to the full section.
+awk -v ver="$VERSION" '
+  /^```/ { fence = !fence }
+  !fence && index($0, "## [" ver "]") == 1 { on = 1; next }
+  on && !fence && /^## / { exit }
+  on { print }
+' "$CHANGELOG_FILE" > "$NOTES_DIR/section.md"
+NOTES_FILE="$NOTES_DIR/section.md"
+if [ "$(wc -c < "$NOTES_FILE")" -gt 120000 ]; then
+  {
+    cat "$NOTES_DIR/generated.md"
+    printf '\nThe full release section, including notes carried over from before this release, is in [CHANGELOG.md](https://github.com/%s/blob/%s/CHANGELOG.md).\n' "${GITHUB_REPO:-reliant-labs/forge}" "$VERSION"
+  } > "$NOTES_DIR/short.md"
+  NOTES_FILE="$NOTES_DIR/short.md"
+  echo "  release notes exceed GitHub's limit; the GitHub release will carry the generated bullets only"
+fi
+
 # ── 8. The module still builds ──────────────────────────────────────
 # There is no submodule require to resolve any more, and therefore no go.sum
 # trap: forge is one module, so a consumer's `go mod download` needs hashes
@@ -290,6 +388,13 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "DRY RUN: all validations passed."
   echo "DRY RUN: would stage: ${TOUCHED[*]}"
   echo "DRY RUN: would commit: chore: release $VERSION"
+  echo "DRY RUN: CHANGELOG.md section that would be written (first 40 lines):"
+  head -n 40 "$NOTES_DIR/section.md" | sed 's/^/DRY RUN:   /'
+  if [ -n "$GITHUB_REPO" ]; then
+    echo "DRY RUN: would run: gh release create $RELEASE_TAG --repo $GITHUB_REPO --notes-file <that section>"
+  else
+    echo "DRY RUN: origin is not on github.com; would skip the GitHub release"
+  fi
   echo "DRY RUN: would tag $RELEASE_TAG at that commit"
   echo "DRY RUN: would push:   git push --atomic origin <release commit>:refs/heads/$BRANCH refs/tags/$RELEASE_TAG"
   echo ""
@@ -303,7 +408,8 @@ fi
 git add -- "${TOUCHED[@]}"
 git commit -q -m "chore: release $VERSION
 
-Sync VERSION and internal/buildinfo/VERSION.
+Sync VERSION and internal/buildinfo/VERSION; write the $VERSION section of
+CHANGELOG.md from the PR titles merged since ${PREV_TAG:-the start}.
 
 Tagged $RELEASE_TAG at this commit."
 
@@ -331,6 +437,29 @@ git push --atomic origin "$RELEASE_SHA:refs/heads/$BRANCH" "refs/tags/$RELEASE_T
 
 echo ""
 echo "✅ committed and pushed $VERSION at $RELEASE_SHA"
+
+# ── 9b. The GitHub release ──────────────────────────────────────────
+# The tag is pushed and immutable by now, so nothing here can un-release it. A
+# failure is reported loudly (and fails the script at the end) with the exact
+# command to retry, but it must not stop the proxy wait below.
+GH_RELEASE_FAILED=0
+if [ -z "$GITHUB_REPO" ]; then
+  echo "→ origin is not on github.com; skipping the GitHub release"
+elif ! command -v "$GH_BIN" >/dev/null 2>&1; then
+  GH_RELEASE_FAILED=1
+  echo "⚠️  gh is not installed; create the GitHub release by hand:" >&2
+  echo "    gh release create $RELEASE_TAG --repo $GITHUB_REPO --title $RELEASE_TAG --notes-file <section of CHANGELOG.md>" >&2
+else
+  PRERELEASE_FLAG=()
+  case "$VERSION" in *-*) PRERELEASE_FLAG=(--prerelease) ;; esac
+  echo "→ creating the GitHub release $RELEASE_TAG"
+  if ! "$GH_BIN" release create "$RELEASE_TAG" --repo "$GITHUB_REPO" --verify-tag \
+      --title "$RELEASE_TAG" --notes-file "$NOTES_FILE" "${PRERELEASE_FLAG[@]}"; then
+    GH_RELEASE_FAILED=1
+    echo "⚠️  $RELEASE_TAG is tagged and pushed, but the GitHub release was not created. Retry with:" >&2
+    echo "    gh release create $RELEASE_TAG --repo $GITHUB_REPO --verify-tag --title $RELEASE_TAG --notes-file <section of CHANGELOG.md>" >&2
+  fi
+fi
 
 # ── 10. Wait for the proxy to ingest the tag ────────────────────────
 # The push above returns as soon as GitHub has the tag. proxy.golang.org has
@@ -370,6 +499,9 @@ if GOPROXY_WAIT_BASE="${GOPROXY_WAIT_BASE:-$PROXY_BASE}" \
   echo "✅ released $VERSION at $RELEASE_SHA"
   echo ""
   echo "Then propagate the bump to consumers — see docs/releasing.md steps 2-3."
+  # The tag, the commit and the module are all out; only the GitHub release
+  # page is missing, and the retry command was printed above.
+  [ "$GH_RELEASE_FAILED" = "0" ] || exit 1
 else
   echo ""
   echo "⚠️  $VERSION is TAGGED AND PUSHED — the release itself succeeded."

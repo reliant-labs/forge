@@ -22,7 +22,6 @@ func run(t *testing.T, fn func(out *bytes.Buffer) error) (string, error) {
 
 func TestSecretSet_OpenBaoStore_SignsInAsTheWriterAndWrites(t *testing.T) {
 	f := installStoreFixture(t, storeEnv())
-	f.kube.proxy = nil
 
 	out, err := run(t, func(o *bytes.Buffer) error {
 		return runSecretSet(context.Background(), "prod", "API_KEY", "", strings.NewReader(canary+"\n"), o)

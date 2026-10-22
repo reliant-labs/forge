@@ -109,7 +109,8 @@ _cluster_id = lambda b: any, pt: any, ctx: str -> str {
     _from_pt = pt.connected_cluster if pt and pt.cluster == ctx and pt.connected_cluster else ""
     _from_wl = [w.runtime.target.connected_cluster for w in b.workloads if w.runtime and w.runtime.type == "cluster" and w.runtime.target.cluster == ctx and w.runtime.target.connected_cluster]
     _from_eso = [e.cluster.connected_cluster for e in b.external_secrets_operators if typeof(e.cluster) == "ClusterTarget" and e.cluster.cluster == ctx and e.cluster.connected_cluster]
-    _from_map or _from_pt or (_from_wl[0] if _from_wl else "") or (_from_eso[0] if _from_eso else "") or ctx
+    _from_cps = [c.cluster.connected_cluster for c in b.control_plane_secrets if c.cluster.cluster == ctx and c.cluster.connected_cluster]
+    _from_map or _from_pt or (_from_wl[0] if _from_wl else "") or (_from_eso[0] if _from_eso else "") or (_from_cps[0] if _from_cps else "") or ctx
 }
 
 # The ESO install a context's SecretStores are served by, declared in this
@@ -143,6 +144,54 @@ _openbao_service_url = lambda ob: any -> str {
 # outside, else its Service.
 _openbao_audience_base = lambda ob: any -> str {
     "https://${ob.public.host}" if ob.public else _openbao_service_url(ob)
+}
+
+# --- forge.ControlPlaneSecret delivered through the store --------------------
+#
+# A ControlPlaneSecret with `delivery = "store"` is a Secret the control plane
+# WRITES TO THE STORE and ESO delivers, as a floating ExternalSecret: no
+# `version`, because the control plane renews the value in place and the
+# consumer re-reads the file the kubelet refreshes. It is rendered by the same
+# code as a `required_secrets` store source (`manifests` below), from the
+# StoreSource-shaped record `cps_source` builds, so the SecretStore, the login
+# role and every refusal are one implementation.
+#
+# THE CONTRACT with the control plane: the store name each kind is written
+# under. forge.ControlPlaneSecret kind telemetry_token writes ONE name,
+# `RELIANT_OTEL_HEADERS` = `authorization=Bearer <jwt>` (the OTEL headers
+# format); the Secret's two keys are the value as-is and the bare token, derived
+# by the template below, so they can never disagree about the current token.
+# pkg/release.ControlPlaneSecretStoreName is the Go spelling, pinned to this by
+# a render test.
+TELEMETRY_TOKEN_STORE_NAME: str = "RELIANT_OTEL_HEADERS"
+_TELEMETRY_HEADERS_KEY: str = "OTEL_EXPORTER_OTLP_HEADERS"
+_TELEMETRY_BEARER_PREFIX: str = "authorization=Bearer "
+
+# The StoreSource-shaped record of one store-delivered ControlPlaneSecret.
+cps_source = lambda s: any -> any {
+    {
+        store = s.store
+        data = {"${_TELEMETRY_HEADERS_KEY}" = TELEMETRY_TOKEN_STORE_NAME}
+        templates = {token = "{{ .${_TELEMETRY_HEADERS_KEY} | trimPrefix \"${_TELEMETRY_BEARER_PREFIX}\" }}"}
+        generate = {}
+        pin = {}
+        immutable = []
+        refresh = s.refresh
+        creation_policy = "Orphan"
+        shadow = False
+        cluster = s.cluster.cluster
+    }
+}
+
+# The ExternalSecret-shaped records of the Bundle's store-delivered
+# ControlPlaneSecrets. Never emitted as `required_secrets`: the deploy must not
+# wait for a Secret the control plane writes after it.
+cps_secrets = lambda b: any -> [any] {
+    [{
+        name = s.name
+        namespace = s.namespace or s.cluster.namespace
+        source = cps_source(s)
+    } for s in b.control_plane_secrets if s.delivery == "store"]
 }
 
 # --- Stores -----------------------------------------------------------------
@@ -242,6 +291,39 @@ _check_source = lambda b: any, pt: any, s: any -> bool {
     True
 }
 
+# --- Admission defaults -----------------------------------------------------
+
+# What the cluster `ctx`'s External Secrets Operator admits when its
+# `admission` lists are left empty: exactly the SecretStores this Bundle
+# renders there, plus the in-cluster store when forge.OpenBao runs on `ctx`.
+# An empty list is not a wildcard, so without this the three policies would
+# refuse every store the Bundle itself renders. Sorted and de-duplicated.
+#
+#   servers      each store's URL (the hosted endpoint, the component's Service)
+#   jwt_mounts   the JWT auth mount each store logs in on (jwt-<cluster id>)
+#   audiences    the one audience each store requests
+#   gcp_projects the Google project of each gcpsm store
+#
+# The component's own server/mount/audience are admitted even when no
+# ExternalSecret reads from it yet, so adding the first one needs no policy
+# edit. An OpenBaoStore with no component declared is skipped here; the
+# source check refuses it with the real reason.
+admission_defaults = lambda b: any, pt: any, ctx: str -> any {
+    _recs = [
+        _resolve_store(b, pt, s.source, _context(s.source, pt), s.namespace)
+        for s in b.required_secrets if s.source and _context(s.source, pt) == ctx and (s.source.store.type != "openbao" or b.openbao)
+    ]
+    _vault = [st for st in _recs if st.vault]
+    _ob = True if b.openbao and _openbao_context(b, pt) == ctx else False
+    _id = _cluster_id(b, pt, ctx)
+    {
+        "servers": sorted({x: 0 for x in [st.server for st in _vault if st.server] + ([_openbao_service_url(b.openbao)] if _ob else [])})
+        "jwt_mounts": sorted({x: 0 for x in ["jwt-${st.id}" for st in _vault] + (["jwt-${_id}"] if _ob else [])})
+        "audiences": sorted({x: 0 for x in [st.audience for st in _vault] + (["${_openbao_audience_base(b.openbao)}/c/${_id}"] if _ob else [])})
+        "gcp_projects": sorted({x: 0 for x in [st.project for st in _recs if st.type == "gcpsm"]})
+    }
+}
+
 # --- The render --------------------------------------------------------------
 
 _labels = lambda b: any, ctx: str -> {str: str} {
@@ -297,6 +379,10 @@ _external_secret = lambda b: any, ctx: str, s: any, st: any -> any {
     _src = s.source
     _name = s.name + "-eso-shadow" if _src.shadow else s.name
     _tpl = _src.templates
+    # The template block is needed for derived keys, and also for a Secret whose
+    # type or labels differ from ESO's default (a CloudNativePG basic-auth
+    # password). A source that sets none renders exactly as before.
+    _typed = _src.secret_type != "Opaque"
     {
         apiVersion = "external-secrets.io/v1"
         kind = "ExternalSecret"
@@ -308,11 +394,16 @@ _external_secret = lambda b: any, ctx: str, s: any, st: any -> any {
                 name = _name
                 creationPolicy = "Orphan" if _src.shadow else _src.creation_policy
                 deletionPolicy = "Retain"
-                if _tpl:
+                if _tpl or _typed or _src.labels:
                     template = {
                         engineVersion = "v2"
                         mergePolicy = "Merge"
-                        data = {k: _tpl[k] for k in sorted(_tpl)}
+                        if _typed:
+                            type = _src.secret_type
+                        if _src.labels:
+                            metadata = {labels = {k: _src.labels[k] for k in sorted(_src.labels)}}
+                        if _tpl:
+                            data = {k: _tpl[k] for k in sorted(_tpl)}
                     }
             }
             data = [{
@@ -351,7 +442,7 @@ _group_objects = lambda b: any, recs: [any] -> [any] {
 # (cluster, namespace). Empty, and so a no-op for every other Bundle, when no
 # ExternalSecret has a `source`.
 manifests = lambda b: any, pt: any -> [any] {
-    _sources = [s for s in b.required_secrets if s.source]
+    _sources = [s for s in b.required_secrets if s.source] + cps_secrets(b)
     _checked = [_check_source(b, pt, s) for s in _sources]
     _recs = [{
         "ctx": _context(s.source, pt)

@@ -43,7 +43,7 @@ func TestHeadersFileSmokeAgainstContribCollector(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker unavailable: " + err.Error())
 	}
-	const image = "otel/opentelemetry-collector-contrib:0.162.0"
+	const image = "ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.162.0"
 
 	run := func(args ...string) string {
 		t.Helper()

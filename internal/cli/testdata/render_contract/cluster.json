@@ -28,6 +28,7 @@
       }
     ],
     "env": "dev",
+    "external_secrets_operators": [],
     "frontends": [],
     "gateways": [],
     "grpc_routes": [],

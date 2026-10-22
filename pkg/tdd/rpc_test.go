@@ -286,6 +286,26 @@ func TestAssertConnectError(t *testing.T) {
 			t.Fatal("AssertConnectError flagged a matching error as failure")
 		}
 	})
+	// A handler may return a bare svcerr kind: svcerr.Interceptor wraps it.
+	// A test calling the *Service method directly sees the bare value, and
+	// must read the code the client would (connect.CodeOf said Unknown).
+	t.Run("bare svcerr kind reads its wire code", func(t *testing.T) {
+		if assertFails(func(t *testing.T) { tdd.AssertConnectError(t, svcerr.NotFound("thing"), connect.CodeNotFound) }) {
+			t.Fatal("a bare svcerr.NotFound must assert as CodeNotFound")
+		}
+		if assertFails(func(t *testing.T) { tdd.AssertConnectError(t, svcerr.ErrUnauthenticated, connect.CodeUnauthenticated) }) {
+			t.Fatal("a bare sentinel must assert as its code")
+		}
+		if !assertFails(func(t *testing.T) { tdd.AssertConnectError(t, svcerr.NotFound("thing"), connect.CodeInternal) }) {
+			t.Fatal("a mismatched code must fail")
+		}
+	})
+	// An error nothing recognises is what the interceptor sends as Internal.
+	t.Run("unclassified error reads as internal", func(t *testing.T) {
+		if assertFails(func(t *testing.T) { tdd.AssertConnectError(t, errors.New("driver"), connect.CodeInternal) }) {
+			t.Fatal("an unclassified error must assert as CodeInternal, the code the client reads")
+		}
+	})
 	t.Run("nil error fails", func(t *testing.T) {
 		fakeT := &testing.T{}
 		// AssertConnectError calls t.Fatalf, which panics with a goexit

@@ -61,13 +61,17 @@ import (
 )
 
 // LintHandlerErrorMapping walks rootDir for Go files under handlers/
-// directories and runs both handler error-mapping rules over each:
+// directories and runs the handler error rules over each:
 //
 //   - forgeconv-no-handler-error-mapping — a hand-rolled service-error →
 //     connect.Error helper (this file). Warning.
 //   - forgeconv-unwrapped-domain-error — a domain error returned across
 //     the RPC boundary with nothing applied to it
 //     (unwrapped_domain_error.go). Error.
+//   - forgeconv-handler-connect-error — a hand-built connect.NewError,
+//     which publishes its error's text unredacted
+//     (handler_connect_error.go). Warning; a project flips it to error
+//     once migrated.
 //
 // Returns findings in deterministic order.
 //
@@ -120,7 +124,9 @@ func LintHandlerErrorMapping(rootDir string) (Result, error) {
 			rel = p
 		}
 		fset := token.NewFileSet()
-		parsed, err := parser.ParseFile(fset, p, nil, parser.SkipObjectResolution)
+		// ParseComments: forgeconv-handler-connect-error skips generated
+		// files, which only their header comment identifies.
+		parsed, err := parser.ParseFile(fset, p, nil, parser.SkipObjectResolution|parser.ParseComments)
 		if err != nil {
 			// A parse failure shouldn't blank the report; emit a warning so
 			// the user knows the file was skipped.
@@ -134,6 +140,7 @@ func LintHandlerErrorMapping(rootDir string) (Result, error) {
 		}
 		result.Findings = append(result.Findings, lintHandlerErrorMappingFile(rel, fset, parsed)...)
 		result.Findings = append(result.Findings, lintUnwrappedDomainErrorFile(rel, fset, parsed)...)
+		result.Findings = append(result.Findings, lintHandlerConnectErrorFile(rel, fset, parsed)...)
 	}
 
 	sort.SliceStable(result.Findings, func(i, j int) bool {
@@ -168,19 +175,14 @@ var suspectMapperNames = map[string]bool{
 // and flags candidate mapping helpers. Returns at most one finding per
 // candidate function — no per-line spam.
 //
-// The svcerr-import suppression below is specific to THIS rule and must
-// not be lifted to the walker: forgeconv-unwrapped-domain-error's most
-// dangerous case is precisely a file that imports svcerr and wraps in
-// three handlers out of four.
+// A file that imports svcerr is linted like any other. It used to be
+// skipped, on the theory that a file on the canonical path keeps a leftover
+// helper on purpose. What that did in practice was let any import of the
+// package — one svcerr.Wrap anywhere in the file, or a codemod adding the
+// import — silence every mapper beside it without fixing one: a switch
+// that maps sentinels to connect codes next to svcerr.Wrap is still the
+// switch svcerr replaces.
 func lintHandlerErrorMappingFile(relPath string, fset *token.FileSet, file *ast.File) []Finding {
-	// Track whether the file imports svcerr already — if so, the user
-	// is already on the canonical path; suppress findings (a hand-rolled
-	// helper sitting next to svcerr.Wrap would surface as a separate
-	// signal during code review).
-	if importsSvcerr(file) {
-		return nil
-	}
-
 	var findings []Finding
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
@@ -212,23 +214,6 @@ func lintHandlerErrorMappingFile(relPath string, fset *token.FileSet, file *ast.
 	}
 
 	return findings
-}
-
-// importsSvcerr reports whether the file imports forge/pkg/svcerr.
-// Suppression heuristic: if the file is already on the canonical path,
-// any leftover helper is intentional (or in-flight migration) — the
-// rule should not double-warn.
-func importsSvcerr(file *ast.File) bool {
-	for _, imp := range file.Imports {
-		if imp.Path == nil {
-			continue
-		}
-		path := strings.Trim(imp.Path.Value, "\"")
-		if strings.HasSuffix(path, "/forge/pkg/svcerr") || strings.HasSuffix(path, "/pkg/svcerr") {
-			return true
-		}
-	}
-	return false
 }
 
 // bodyLooksLikeMapper inspects the function body for the canonical

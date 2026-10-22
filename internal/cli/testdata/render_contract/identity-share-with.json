@@ -13,6 +13,7 @@
     "control_plane_secrets": [],
     "databases": [],
     "env": "preview-142",
+    "external_secrets_operators": [],
     "frontends": [],
     "gateways": [],
     "grpc_routes": [],

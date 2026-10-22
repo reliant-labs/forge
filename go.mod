@@ -8,6 +8,7 @@ require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.2
 	buf.build/go/protovalidate v1.4.0
 	cel.dev/cel-go v0.32.0
+	cloud.google.com/go/auth v0.23.2
 	connectrpc.com/connect v1.21.1
 	connectrpc.com/connect/v2 v2.0.0
 	connectrpc.com/otelconnect v0.12.0
@@ -96,7 +97,6 @@ require (
 require (
 	cel.dev/expr v0.25.3 // indirect
 	cloud.google.com/go v0.123.0 // indirect
-	cloud.google.com/go/auth v0.23.2 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/iam v1.13.0 // indirect

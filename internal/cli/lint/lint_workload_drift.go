@@ -99,6 +99,18 @@ func servesAnyOf(w codegen.DeclaredWorkload, inCode map[string]bool) bool {
 	return false
 }
 
+// runsOwnSubcommandOfAny reports whether w runs some component's own
+// subcommand under a name of its own (`workspace-controller` running
+// `workspace`): that workload is the component's declaration, not an orphan.
+func runsOwnSubcommandOfAny(w codegen.DeclaredWorkload, projectName string, components []config.ComponentConfig) bool {
+	for _, c := range components {
+		if codegen.RunsOwnSubcommand(w, projectName, c) {
+			return true
+		}
+	}
+	return false
+}
+
 // collectComponentDrift compares the project's discovered components against
 // the names declared in deploy/kcl/workloads.k.
 //
@@ -110,9 +122,13 @@ func servesAnyOf(w codegen.DeclaredWorkload, inCode map[string]bool) bool {
 // command of the project binary (runsBuiltinCommand) matches no component by
 // design, so it is never reported as an orphan — which is what kept every
 // fresh scaffold warning about its own `migrate` job. Likewise a component
-// another workload runs (codegen.ServingWorkload: its `serves`, or an
-// all-in-one `server`) is not undeclared, and a workload whose `serves`
-// names a live component is not an orphan.
+// another workload runs (codegen.ServingWorkload: its `serves`, an
+// all-in-one `server`, or its own subcommand under another name) is not
+// undeclared, and a workload whose `serves` names a live component is not an
+// orphan. Nor, in a project that runs a kind of component in processes it
+// composes itself (codegen.ComposedProcesses — control-plane's `public-api`),
+// is a component of that kind undeclared or such a process an orphan: that
+// is the reading that makes `forge scaffold` declare nothing for it.
 func collectComponentDrift(projectDir string, cfg *config.ProjectConfig) ([]componentDriftFinding, error) {
 	if cfg == nil {
 		return nil, nil
@@ -136,16 +152,30 @@ func collectComponentDrift(projectDir string, cfg *config.ProjectConfig) ([]comp
 	}
 
 	inCode := map[string]bool{}
+	// composedBy names the workloads ComposedProcesses reads as the
+	// project's own composed processes: those are not orphans.
+	composedBy := map[string]bool{}
 	var findings []componentDriftFinding
-	for _, c := range codegen.DiscoverProjectComponents(projectDir, cfg.Name) {
+	components := codegen.DiscoverProjectComponents(projectDir, cfg.Name)
+	for _, c := range components {
 		inCode[naming.KCLIdentifier(c.Name)] = true
 		if declaredAs[naming.KCLIdentifier(c.Name)] {
 			continue
 		}
-		// Run by another workload's process — named in its `serves`, or
-		// one `server` that runs everything. Declaring it again would
-		// deploy it twice, so its absence is not drift.
+		// Run by another workload's process — named in its `serves`, one
+		// `server` that runs everything, or its own subcommand under
+		// another name. Declaring it again would deploy it twice, so its
+		// absence is not drift.
 		if _, served := codegen.ServingWorkload(runs, cfg.Name, c); served {
+			continue
+		}
+		// The project runs this kind in processes it composes itself
+		// (control-plane's `public-api`), not one workload each — the same
+		// reading that makes `forge scaffold` declare nothing for it.
+		if composed := codegen.ComposedProcesses(runs, cfg.Name, components, c); len(composed) > 0 {
+			for _, name := range composed {
+				composedBy[name] = true
+			}
 			continue
 		}
 		findings = append(findings, componentDriftFinding{
@@ -164,7 +194,10 @@ func collectComponentDrift(projectDir string, cfg *config.ProjectConfig) ([]comp
 		if inCode[naming.KCLIdentifier(name)] {
 			continue
 		}
-		if w, ok := runs[name]; ok && (runsBuiltinCommand(w, cfg.Name) || servesAnyOf(w, inCode)) {
+		if composedBy[name] {
+			continue
+		}
+		if w, ok := runs[name]; ok && (runsBuiltinCommand(w, cfg.Name) || servesAnyOf(w, inCode) || runsOwnSubcommandOfAny(w, cfg.Name, components)) {
 			continue
 		}
 		orphans = append(orphans, name)

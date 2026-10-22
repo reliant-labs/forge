@@ -185,6 +185,14 @@ type KCLEntities struct {
 	// forge does NOT create. Drive the render-time checklist + the deploy
 	// preflight BLOCK on a declared-required-but-absent Secret/key.
 	RequiredSecrets []ExternalSecretEntity `json:"required_secrets,omitempty"`
+	// OpenBao and BootstrapSource are the rendered Bundle.openbao and
+	// Bundle.bootstrap_source: where `forge secret` reaches a self-run store
+	// and where BootstrapSecrets live. Nil when the env declares none.
+	OpenBao         *OpenBaoEntity         `json:"openbao,omitempty"`
+	BootstrapSource *BootstrapSourceEntity `json:"bootstrap_source,omitempty"`
+	// ExternalSecretsOperators are the ESO installs (forge.ExternalSecretsOperator)
+	// the release shape records.
+	ExternalSecretsOperators []release.RenderedExternalSecretsOperator `json:"external_secrets_operators,omitempty"`
 	// RequiredDNS are the env's declared DNS-record prerequisites
 	// (forge.DNSRecord) — surfaced as a render-time checklist note (forge
 	// can't authoritatively verify external DNS). Empty => none.
@@ -659,6 +667,26 @@ type ExternalSecretEntity struct {
 	// that must carry the same logical value (cross-secret byte-match).
 	// Empty => a standalone prereq (no byte-match group).
 	ValueGroup string `json:"value_group,omitempty"`
+	// Source is the rendered forge.StoreSource: nil for a Secret something
+	// else provisions, set for one ESO syncs from a store.
+	Source *StoreSourceEntity `json:"source,omitempty"`
+}
+
+// StoreSourceEntity is a rendered forge.StoreSource: release's own record
+// (store, data, generate, pin, immutable) plus the fields the secret commands
+// read that the release shape does not carry.
+type StoreSourceEntity struct {
+	release.RenderedStoreSource
+	// Templates are the Secret keys ESO renders from the fetched data.
+	Templates map[string]string `json:"templates,omitempty"`
+	// CreationPolicy is "Orphan" or "Merge": whether ESO rebuilds the Secret's
+	// data from the declared keys only, or merges into what is there.
+	CreationPolicy string `json:"creation_policy,omitempty"`
+	// Shadow syncs into <name>-eso-shadow instead of <name> (migration step 2).
+	Shadow bool `json:"shadow,omitempty"`
+	// Cluster is the kubectl context the Secret lands on when the source
+	// names one; empty means the env's primary cluster.
+	Cluster string `json:"cluster,omitempty"`
 }
 
 // ControlPlaneSecretEntity mirrors the kcl/schema.k ControlPlaneSecret — a
@@ -1331,35 +1359,38 @@ type ObservabilityPolicyEntity struct {
 // decoded in a second step (kclWorkloadRaw) because their build and runtime
 // are tagged unions and their spec is decoded strictly.
 type kclRenderRaw struct {
-	ReleaseManifestConsumers []releaseManifestConsumer    `json:"release_manifest_consumers,omitempty"`
-	Project                  string                       `json:"project,omitempty"`
-	Env                      string                       `json:"env,omitempty"`
-	ImageTag                 string                       `json:"image_tag,omitempty"`
-	Lifecycle                string                       `json:"lifecycle,omitempty"`
-	Applier                  string                       `json:"applier,omitempty"`
-	DeliveryUnits            []deliveryUnitRaw            `json:"delivery_units,omitempty"`
-	HubConverges             *[]string                    `json:"hub_converges,omitempty"`
-	Clusters                 []ClusterEntity              `json:"clusters,omitempty"`
-	ClusterTarget            *ClusterTargetEntity         `json:"cluster_target,omitempty"`
-	KubeconfigSecrets        []KubeconfigSecretEntity     `json:"kubeconfig_secrets,omitempty"`
-	ConnectedClusters        map[string]string            `json:"connected_clusters,omitempty"`
-	Workloads                []kclWorkloadRaw             `json:"workloads,omitempty"`
-	Observability            *ObservabilityEntity         `json:"observability,omitempty"`
-	DeliveryPolicy           *release.ShapeDeliveryPolicy `json:"delivery_policy,omitempty"`
-	Identity                 *release.ShapeIdentity       `json:"identity,omitempty"`
-	Infra                    []HostInfraEntity            `json:"infra,omitempty"`
-	Frontends                []FrontendEntity             `json:"frontends,omitempty"`
-	Gateways                 []GatewayEntity              `json:"gateways,omitempty"`
-	HTTPRoutes               []HTTPRouteEntity            `json:"http_routes,omitempty"`
-	GRPCRoutes               []GRPCRouteEntity            `json:"grpc_routes,omitempty"`
-	Databases                []DatabaseEntity             `json:"databases,omitempty"`
-	HelmCharts               []HelmChartEntity            `json:"helm_charts,omitempty"`
-	SecretProvider           *SecretProviderEntity        `json:"secret_provider,omitempty"`
-	RenderedSecrets          []RenderedSecretEntity       `json:"rendered_secrets,omitempty"`
-	ControlPlane             *ControlPlaneEntity          `json:"control_plane,omitempty"`
-	RequiredSecrets          []ExternalSecretEntity       `json:"required_secrets,omitempty"`
-	RequiredDNS              []DNSRecordEntity            `json:"required_dns,omitempty"`
-	ControlPlaneSecrets      []ControlPlaneSecretEntity   `json:"control_plane_secrets,omitempty"`
+	ReleaseManifestConsumers []releaseManifestConsumer                 `json:"release_manifest_consumers,omitempty"`
+	Project                  string                                    `json:"project,omitempty"`
+	Env                      string                                    `json:"env,omitempty"`
+	ImageTag                 string                                    `json:"image_tag,omitempty"`
+	Lifecycle                string                                    `json:"lifecycle,omitempty"`
+	Applier                  string                                    `json:"applier,omitempty"`
+	DeliveryUnits            []deliveryUnitRaw                         `json:"delivery_units,omitempty"`
+	HubConverges             *[]string                                 `json:"hub_converges,omitempty"`
+	Clusters                 []ClusterEntity                           `json:"clusters,omitempty"`
+	ClusterTarget            *ClusterTargetEntity                      `json:"cluster_target,omitempty"`
+	KubeconfigSecrets        []KubeconfigSecretEntity                  `json:"kubeconfig_secrets,omitempty"`
+	ConnectedClusters        map[string]string                         `json:"connected_clusters,omitempty"`
+	Workloads                []kclWorkloadRaw                          `json:"workloads,omitempty"`
+	Observability            *ObservabilityEntity                      `json:"observability,omitempty"`
+	DeliveryPolicy           *release.ShapeDeliveryPolicy              `json:"delivery_policy,omitempty"`
+	Identity                 *release.ShapeIdentity                    `json:"identity,omitempty"`
+	Infra                    []HostInfraEntity                         `json:"infra,omitempty"`
+	Frontends                []FrontendEntity                          `json:"frontends,omitempty"`
+	Gateways                 []GatewayEntity                           `json:"gateways,omitempty"`
+	HTTPRoutes               []HTTPRouteEntity                         `json:"http_routes,omitempty"`
+	GRPCRoutes               []GRPCRouteEntity                         `json:"grpc_routes,omitempty"`
+	Databases                []DatabaseEntity                          `json:"databases,omitempty"`
+	HelmCharts               []HelmChartEntity                         `json:"helm_charts,omitempty"`
+	SecretProvider           *SecretProviderEntity                     `json:"secret_provider,omitempty"`
+	RenderedSecrets          []RenderedSecretEntity                    `json:"rendered_secrets,omitempty"`
+	ControlPlane             *ControlPlaneEntity                       `json:"control_plane,omitempty"`
+	RequiredSecrets          []ExternalSecretEntity                    `json:"required_secrets,omitempty"`
+	OpenBao                  *OpenBaoEntity                            `json:"openbao,omitempty"`
+	BootstrapSource          *BootstrapSourceEntity                    `json:"bootstrap_source,omitempty"`
+	RequiredDNS              []DNSRecordEntity                         `json:"required_dns,omitempty"`
+	ControlPlaneSecrets      []ControlPlaneSecretEntity                `json:"control_plane_secrets,omitempty"`
+	ExternalSecretsOperators []release.RenderedExternalSecretsOperator `json:"external_secrets_operators,omitempty"`
 	// Manifests is the applyable stream. Parsed loosely: only kind, name
 	// and namespace are read here (see rawManifest).
 	Manifests []rawManifest `json:"manifests,omitempty"`
@@ -1685,6 +1716,9 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		RenderedSecrets:          raw.RenderedSecrets,
 		ControlPlane:             raw.ControlPlane,
 		RequiredSecrets:          raw.RequiredSecrets,
+		OpenBao:                  raw.OpenBao,
+		BootstrapSource:          raw.BootstrapSource,
+		ExternalSecretsOperators: raw.ExternalSecretsOperators,
 		RequiredDNS:              raw.RequiredDNS,
 		ControlPlaneSecrets:      raw.ControlPlaneSecrets,
 		ManifestNamespace:        manifestNamespace(raw.Manifests),

@@ -96,7 +96,18 @@
 //     on `x`. Simple positional `:=`/`=`/`var` aliases are tracked;
 //     re-assigning the alias to anything else drops the tracking
 //     (conservative both ways: the alias stops counting as the field
-//     for derefs AND for guards).
+//     for derefs AND for guards). A copy of the whole Deps value
+//     (`d := s.deps`) roots the bare `d.X` form the same way.
+//
+//  4. Helper guard: a same-package helper that checks the field, called
+//     so its success dominates the deref — `if err := s.gate(ctx,
+//     s.deps.State != nil); err != nil { return err }`, `err :=
+//     s.requireX(); if err != nil { return err }`, `if !s.hasX() {
+//     return }`, or a bare `s.mustHaveX()` that panics. The helper is
+//     summarized once (what holds at each of its success exits, including
+//     bool params it requires true), and the call site applies the
+//     summary; see lint_optional_deps_guard_helpers.go for the shapes and
+//     why the summary under- rather than over-credits.
 //
 // Conservatism trade-offs
 //
@@ -104,16 +115,16 @@
 // finding is severity "warning" and the lint never gates the build.
 // Known sources of false positives, all intentional:
 //
-//   - guards hidden behind helper methods (`if err := s.requireX();
-//     err != nil { return err }`),
+//   - guards behind a package-level func, an interface, or another
+//     package (only methods on the receiver or on Deps are summarized),
 //   - invariants established in Start()/Setup() before the deref runs,
 //   - guards in the caller rather than the deref's own function.
 //
 // The escape hatch for provably-safe sites is the suppression
 // directive: a `// forge:optional-checked` comment on the deref line
 // (or the line directly above) silences the finding. Every finding's
-// fix_hint documents it. Cross-function/inter-procedural analysis is
-// explicitly out of scope — when the walker is unsure, it warns rather
+// fix_hint documents it. Inter-procedural analysis stops at the helper
+// summaries of pattern 4 — when the walker is unsure, it warns rather
 // than stays silent, because the failure mode it protects against is a
 // production nil-panic.
 //
@@ -332,6 +343,9 @@ func scanPackageForUnguardedDerefs(projectDir, pkgDir, role, pkgName string, opt
 		file *ast.File
 	}
 	var walk []parsedFile
+	// all holds every non-test file, generated ones included: a helper a
+	// handler calls may live in any of them.
+	var all []*ast.File
 	types := packageTypeDecls{}
 	fset := token.NewFileSet()
 	for _, e := range entries {
@@ -348,6 +362,7 @@ func scanPackageForUnguardedDerefs(projectDir, pkgDir, role, pkgName string, opt
 			continue
 		}
 		types.collect(file)
+		all = append(all, file)
 		// Generated files (_gen.go) declare types the fields may name, but
 		// are forge-owned and regenerate — flagging them would be noise
 		// the user can't act on.
@@ -356,9 +371,12 @@ func scanPackageForUnguardedDerefs(projectDir, pkgDir, role, pkgName string, opt
 		}
 	}
 
-	optional := make(map[string]optionalFieldShape, len(optionalDeps))
+	pkg := newOptionalGuardPackage(fset)
 	for _, d := range optionalDeps {
-		optional[d.Name] = types.shapeOf(d.Type)
+		pkg.optional[d.Name] = types.shapeOf(d.Type)
+	}
+	for _, f := range all {
+		pkg.collect(f)
 	}
 
 	var findings []optionalDepsGuardFinding
@@ -368,6 +386,7 @@ func scanPackageForUnguardedDerefs(projectDir, pkgDir, role, pkgName string, opt
 		if relErr != nil {
 			rel = fp
 		}
+		imports := fileImports(file)
 
 		// Suppression lines: any comment whose whole content is the
 		// `forge:optional-checked` directive suppresses findings on its
@@ -387,40 +406,11 @@ func scanPackageForUnguardedDerefs(projectDir, pkgDir, role, pkgName string, opt
 			if !ok || fn.Body == nil {
 				continue
 			}
-			w := &optionalGuardWalker{
-				fset:        fset,
-				file:        rel,
-				role:        role,
-				pkg:         pkgName,
-				optional:    optional,
-				suppressed:  suppressed,
-				funcName:    fn.Name.Name,
-				depsIdents:  map[string]bool{},
-				aliases:     map[string]string{},
-				elemAliases: map[string]string{},
-				findings:    &findings,
-			}
-			// Receiver / params typed Deps (or *Deps) root the bare
-			// `d.X` form — methods on Deps itself (validateDeps-style
-			// helpers) and constructors like `func New(deps Deps)`.
-			if fn.Recv != nil {
-				for _, f := range fn.Recv.List {
-					if isDepsType(f.Type) {
-						for _, n := range f.Names {
-							w.depsIdents[n.Name] = true
-						}
-					}
-				}
-			}
-			if fn.Type.Params != nil {
-				for _, f := range fn.Type.Params.List {
-					if isDepsType(f.Type) {
-						for _, n := range f.Names {
-							w.depsIdents[n.Name] = true
-						}
-					}
-				}
-			}
+			w := pkg.newWalker(fn, imports, &findings)
+			w.file = rel
+			w.role = role
+			w.pkg = pkgName
+			w.suppressed = suppressed
 			w.walkStmts(fn.Body.List, map[string]bool{})
 		}
 	}
@@ -472,8 +462,11 @@ type optionalGuardWalker struct {
 	funcName   string
 
 	// depsIdents are identifiers that ARE a Deps value (receiver or
-	// param typed Deps / *Deps) — they root the bare `d.X` form.
-	depsIdents map[string]bool
+	// param typed Deps / *Deps, or a local copy `d := s.deps`) — they
+	// root the bare `d.X` form. depsAliases marks the local copies, which
+	// a re-assignment drops.
+	depsIdents  map[string]bool
+	depsAliases map[string]bool
 
 	// aliases maps a local identifier to the optional field it was
 	// assigned from (`x := s.deps.X` → aliases["x"] = "X"). Guards and
@@ -490,6 +483,31 @@ type optionalGuardWalker struct {
 	elemAliases map[string]string
 
 	findings *[]optionalDepsGuardFinding
+
+	// helpers is the package the function belongs to: the same-package
+	// helpers a call can hide a guard behind (lint_optional_deps_guard_helpers.go).
+	helpers *optionalGuardPackage
+	// imports maps the file's import names to their paths, so a return
+	// can tell `svcerr.Unavailable(...)` from an arbitrary call.
+	imports map[string]string
+	// recvName / recvType are the function's receiver ident and type
+	// name ("s", "Service"); `s.gate(...)` resolves to Service.gate.
+	recvName, recvType string
+
+	// errBindings maps a local error variable to the guards its nil value
+	// proves: `err := s.gate(...)` binds err to gate's summary, so
+	// `if err != nil { return }` guards what gate checked. A binding lives
+	// only in the block that made it (depth), and any re-assignment drops it.
+	errBindings map[string]errBinding
+	depth       int
+
+	// summary is non-nil while the walker summarizes a helper rather than
+	// reporting findings: each normal exit of the helper records the
+	// guards that hold there. closureDepth keeps a closure's returns out
+	// of it, and boolParams names the bool params a guard may rest on.
+	summary      *summaryAccumulator
+	closureDepth int
+	boolParams   map[string]int
 }
 
 // optionalTarget is what an expression denotes, when it denotes an
@@ -561,6 +579,12 @@ func (w *optionalGuardWalker) selectorField(v *ast.SelectorExpr) (string, bool) 
 		// named deps that itself has a same-named field", which is
 		// vanishingly rare and warning-severity anyway.
 		if (x.Sel.Name == "deps" || x.Sel.Name == "Deps") && isIdent(x.X) {
+			// A helper's summary speaks for its receiver's deps only: a
+			// guard on some other value's deps proves nothing at the
+			// call site.
+			if w.summary != nil && unparen(x.X).(*ast.Ident).Name != w.recvName {
+				return "", false
+			}
 			return v.Sel.Name, true
 		}
 	}
@@ -585,6 +609,11 @@ func unparen(e ast.Expr) ast.Expr {
 // report records a finding for the use of field key at expression
 // root, unless the site is suppressed.
 func (w *optionalGuardWalker) report(root ast.Expr, key, use string) {
+	if w.summary != nil {
+		// Summarizing a helper: its own derefs are reported when the
+		// helper itself is walked.
+		return
+	}
 	pos := w.fset.Position(root.Pos())
 	if w.suppressed[pos.Line] || w.suppressed[pos.Line-1] {
 		return
@@ -634,9 +663,19 @@ func exprString(e ast.Expr) string {
 // guards mutate it so the remainder of the block sees the field as
 // safe.
 func (w *optionalGuardWalker) walkStmts(stmts []ast.Stmt, guarded map[string]bool) {
+	w.depth++
 	for _, s := range stmts {
 		w.walkStmt(s, guarded)
 	}
+	// An error binding made in this block does not survive it: the block
+	// may not have run (`if c { err = s.gate() }`), so a later
+	// `err != nil` check outside it proves nothing about gate.
+	for name, b := range w.errBindings {
+		if b.depth >= w.depth {
+			delete(w.errBindings, name)
+		}
+	}
+	w.depth--
 }
 
 func (w *optionalGuardWalker) walkStmt(s ast.Stmt, guarded map[string]bool) {
@@ -654,10 +693,19 @@ func (w *optionalGuardWalker) walkStmt(s ast.Stmt, guarded map[string]bool) {
 		w.walkDeclStmt(v, guarded)
 	case *ast.ExprStmt:
 		w.scanExpr(v.X, guarded)
+		// A call to a helper that returns nothing — `s.mustHaveX()`,
+		// which panics when X is nil — guards what it checked for the
+		// rest of the block.
+		if call, ok := unparen(v.X).(*ast.CallExpr); ok {
+			for k := range w.helperCallGuards(call, helperVoid) {
+				guarded[k] = true
+			}
+		}
 	case *ast.ReturnStmt:
 		for _, r := range v.Results {
 			w.scanExpr(r, guarded)
 		}
+		w.recordReturn(v, guarded)
 	case *ast.BlockStmt:
 		// Bare nested block shares the parent's guard scope — guards
 		// accrued inside it dominate only its own remainder, which the
@@ -701,11 +749,12 @@ func (w *optionalGuardWalker) walkIfStmt(v *ast.IfStmt, guarded map[string]bool)
 	if v.Init != nil {
 		w.walkStmt(v.Init, guarded)
 	}
+	defer w.dropInitBindings(v.Init)
 	// The condition itself can deref (`if s.deps.X.Enabled()`) —
 	// scan it BEFORE applying the guards the condition establishes.
 	w.scanExpr(v.Cond, guarded)
-	neq := w.nilCheckKeys(v.Cond, true) // top-level && terms `X != nil`
-	eq := w.nilCheckKeys(v.Cond, false) // top-level || terms `X == nil`
+	neq := w.condKeys(v.Cond, true) // what holds when the condition is true
+	eq := w.condKeys(v.Cond, false) // what holds when it is false
 	w.walkStmts(v.Body.List, copyGuards(guarded, neq))
 	if v.Else != nil {
 		// All `== nil` terms false on the else path → fields non-nil.
@@ -742,8 +791,14 @@ func (w *optionalGuardWalker) walkAssignStmt(v *ast.AssignStmt, guarded map[stri
 		// checked here.
 		w.checkMapWrite(lhs, guarded)
 		w.scanExpr(lhs, guarded)
+		// A re-assigned variable no longer carries what an earlier
+		// `x != nil` check proved about it.
+		if id, ok := unparen(lhs).(*ast.Ident); ok {
+			delete(guarded, nonNilKeyPrefix+id.Name)
+		}
 	}
 	w.recordAliases(v.Lhs, v.Rhs)
+	w.recordErrBindings(v.Lhs, v.Rhs)
 }
 
 // checkMapWrite reports an assignment target that writes into a map-typed
@@ -783,6 +838,12 @@ func (w *optionalGuardWalker) walkDeclStmt(v *ast.DeclStmt, guarded map[string]b
 				w.bindAlias(n.Name, vs.Values[i])
 			}
 		}
+		names := make([]ast.Expr, len(vs.Names))
+		for i, n := range vs.Names {
+			names[i] = n
+			delete(guarded, nonNilKeyPrefix+n.Name)
+		}
+		w.recordErrBindings(names, vs.Values)
 	}
 }
 
@@ -811,6 +872,7 @@ func (w *optionalGuardWalker) walkSwitchStmt(v *ast.SwitchStmt, guarded map[stri
 	if v.Init != nil {
 		w.walkStmt(v.Init, guarded)
 	}
+	defer w.dropInitBindings(v.Init)
 	if v.Tag != nil {
 		w.scanExpr(v.Tag, guarded)
 	}
@@ -829,8 +891,8 @@ func (w *optionalGuardWalker) walkSwitchStmt(v *ast.SwitchStmt, guarded map[stri
 		for _, cond := range cc.List {
 			w.scanExpr(cond, clauseGuards)
 			if v.Tag == nil {
-				clauseNeq = mergeKeys(clauseNeq, w.nilCheckKeys(cond, true))
-				for k := range w.nilCheckKeys(cond, false) {
+				clauseNeq = mergeKeys(clauseNeq, w.condKeys(cond, true))
+				for k := range w.condKeys(cond, false) {
 					priorEq[k] = true
 				}
 			}
@@ -902,7 +964,18 @@ func (w *optionalGuardWalker) recordAliases(lhs, rhs []ast.Expr) {
 func (w *optionalGuardWalker) bindAlias(name string, value ast.Expr) {
 	delete(w.aliases, name)
 	delete(w.elemAliases, name)
+	if w.depsAliases[name] {
+		delete(w.depsAliases, name)
+		delete(w.depsIdents, name)
+	}
 	if value == nil {
+		return
+	}
+	// `d := s.deps` copies the Deps value: d roots the bare `d.X` form
+	// from here on, for guards and derefs alike.
+	if w.isDepsValue(value) {
+		w.depsAliases[name] = true
+		w.depsIdents[name] = true
 		return
 	}
 	k, kind, ok := w.resolve(value)
@@ -940,7 +1013,11 @@ func (w *optionalGuardWalker) scanExpr(e ast.Expr, guarded map[string]bool) {
 			// re-nil'd between guard and closure execution is possible
 			// in theory but treating it as unguarded would flag the
 			// overwhelmingly common safe pattern.
+			// A return inside the closure leaves the closure, not the
+			// helper being summarized.
+			w.closureDepth++
 			w.walkStmts(v.Body.List, copyGuards(guarded, nil))
+			w.closureDepth--
 			return false
 		case *ast.BinaryExpr:
 			// && / || evaluate left-to-right with short-circuit: a nil
@@ -950,8 +1027,9 @@ func (w *optionalGuardWalker) scanExpr(e ast.Expr, guarded map[string]bool) {
 			// generic walk.
 			if v.Op == token.LAND || v.Op == token.LOR {
 				w.scanExpr(v.X, guarded)
-				wantNeq := v.Op == token.LAND
-				w.scanExpr(v.Y, copyGuards(guarded, w.nilCheckKeys(v.X, wantNeq)))
+				// The right operand of && runs when the left is true; of
+				// ||, when it is false.
+				w.scanExpr(v.Y, copyGuards(guarded, w.condKeys(v.X, v.Op == token.LAND)))
 				return false
 			}
 		case *ast.SelectorExpr:
@@ -996,52 +1074,85 @@ func (w *optionalGuardWalker) checkDeref(child ast.Expr, guarded map[string]bool
 	}
 }
 
-// nilCheckKeys extracts the optional-field keys nil-compared in cond.
+// condKeys extracts the guard keys that hold when cond evaluates to
+// whenTrue:
 //
-//	wantNeq=true:  keys k with a top-level `k != nil` term in an &&
-//	               chain — sound for guarding the then-branch.
-//	wantNeq=false: keys k with a top-level `k == nil` term in an ||
-//	               chain — sound for the else-branch and for
-//	               early-return accrual (short-circuit: k nil forces
-//	               the branch).
+//	whenTrue=true:  `k != nil` terms at the top level of an && chain —
+//	                sound for guarding the then-branch.
+//	whenTrue=false: `k == nil` terms at the top level of an || chain —
+//	                sound for the else-branch and for early-return
+//	                accrual (short-circuit: k nil forces the branch).
 //
-// Mixed/negated shapes (`!(x == nil)`, De Morgan spellings) are not
-// chased — when in doubt the walker flags, and the suppression
-// directive covers the exotic-but-safe leftovers.
-func (w *optionalGuardWalker) nilCheckKeys(cond ast.Expr, wantNeq bool) map[string]bool {
+// `!e` flips the polarity, so `!(x == nil)` and the De Morgan spellings
+// read as their plain forms. Beyond optional fields, the keys include what
+// a same-package helper proves (lint_optional_deps_guard_helpers.go): a nil
+// error from `s.gate(...)` (directly or through a bound `err`), a true
+// result from a bool helper, a true bool param while summarizing, and
+// `x != nil` on a plain local (a pseudo-key, read only by errNonNil).
+// Mixed shapes (an || on the then-branch) are not chased — when in doubt
+// the walker flags, and the suppression directive covers the
+// exotic-but-safe leftovers.
+func (w *optionalGuardWalker) condKeys(cond ast.Expr, whenTrue bool) map[string]bool {
 	out := map[string]bool{}
-	var collect func(e ast.Expr)
-	collect = func(e ast.Expr) {
-		e = unparen(e)
-		be, ok := e.(*ast.BinaryExpr)
-		if !ok {
-			return
+	w.collectCondKeys(cond, whenTrue, out)
+	return out
+}
+
+func (w *optionalGuardWalker) collectCondKeys(e ast.Expr, whenTrue bool, out map[string]bool) {
+	switch v := unparen(e).(type) {
+	case *ast.UnaryExpr:
+		if v.Op == token.NOT {
+			w.collectCondKeys(v.X, !whenTrue, out)
 		}
+	case *ast.BinaryExpr:
 		switch {
-		case wantNeq && be.Op == token.LAND, !wantNeq && be.Op == token.LOR:
-			collect(be.X)
-			collect(be.Y)
-		case wantNeq && be.Op == token.NEQ, !wantNeq && be.Op == token.EQL:
-			if k, isField := w.nilComparedKey(be); isField {
+		case whenTrue && v.Op == token.LAND, !whenTrue && v.Op == token.LOR:
+			w.collectCondKeys(v.X, whenTrue, out)
+			w.collectCondKeys(v.Y, whenTrue, out)
+		case v.Op == token.NEQ, v.Op == token.EQL:
+			operand, ok := nilComparand(v)
+			if !ok {
+				return
+			}
+			if (v.Op == token.NEQ) == whenTrue {
+				// The operand is known non-nil.
+				if k, isField := w.fieldKey(operand); isField {
+					out[k] = true
+				} else if id, isID := operand.(*ast.Ident); isID {
+					out[nonNilKeyPrefix+id.Name] = true
+				}
+				return
+			}
+			// The operand is known nil: for an error a helper returned,
+			// that means the helper succeeded.
+			for k := range w.errorGuards(operand) {
+				out[k] = true
+			}
+		}
+	case *ast.Ident:
+		if _, ok := w.boolParams[v.Name]; ok && whenTrue {
+			out[trueParamKeyPrefix+v.Name] = true
+		}
+	case *ast.CallExpr:
+		if whenTrue {
+			for k := range w.helperCallGuards(v, helperBool) {
 				out[k] = true
 			}
 		}
 	}
-	collect(cond)
-	return out
 }
 
-// nilComparedKey returns the field key when exactly one side of the
-// comparison is the nil ident and the other denotes an optional field.
-func (w *optionalGuardWalker) nilComparedKey(be *ast.BinaryExpr) (string, bool) {
+// nilComparand returns the side of a comparison that is compared against
+// the nil ident.
+func nilComparand(be *ast.BinaryExpr) (ast.Expr, bool) {
 	x, y := unparen(be.X), unparen(be.Y)
-	if isNilIdent(y) {
-		return w.fieldKey(x)
+	switch {
+	case isNilIdent(y):
+		return x, true
+	case isNilIdent(x):
+		return y, true
 	}
-	if isNilIdent(x) {
-		return w.fieldKey(y)
-	}
-	return "", false
+	return nil, false
 }
 
 func isNilIdent(e ast.Expr) bool {

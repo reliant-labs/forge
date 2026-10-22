@@ -14,7 +14,10 @@ description: >-
 # fetched it on every run.
 #
 # The archive lands in <os.UserCacheDir()>/forge/embedded-postgres, which is
-# ~/.cache/forge/embedded-postgres on a Linux runner. Its file name carries
+# ~/.cache/forge/embedded-postgres on a Linux runner, %LocalAppData% on
+# Windows and ~/Library/Caches on macOS — so the path follows runner.os. (The
+# Windows job fetched on every run until it used this action, and a Maven
+# Central 404 for a published 18.3.0 archive turned main red.) Its file name carries
 # the postgres version, so a restore from an older key is still a hit for an
 # unchanged version, and a version bump (a go.sum change: the version is
 # embedded-postgres's default) fetches once and saves under the new key.
@@ -24,6 +27,6 @@ runs:
   steps:
     - uses: actions/cache@v6
       with:
-        path: ~/.cache/forge/embedded-postgres
+        path: ${{ runner.os == 'Windows' && '~/AppData/Local/forge/embedded-postgres' || runner.os == 'macOS' && '~/Library/Caches/forge/embedded-postgres' || '~/.cache/forge/embedded-postgres' }}
         key: embedded-postgres-${{ runner.os }}-${{ hashFiles('go.sum') }}
         restore-keys: embedded-postgres-${{ runner.os }}-

@@ -97,6 +97,7 @@ func newForgeFixtureRepo(t *testing.T) string {
 	write("pkg/svcerr/svcerr.go", "package svcerr\n\n// OK is a placeholder.\nconst OK = true\n")
 	write("cmd/forge/main.go", "package main\n\nfunc main() {}\n")
 	write("VERSION", "v0.1.0\n")
+	write("CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-01-01\n\n### Added\n\n- first\n\n[Unreleased]: https://github.com/reliant-labs/forge/compare/v0.1.0...HEAD\n")
 	write("internal/buildinfo/VERSION", "v0.1.0\n")
 
 	gitIn(t, root, "init", "-q", "-b", "main")
@@ -118,6 +119,14 @@ func newForgeFixtureRepo(t *testing.T) string {
 // for ten minutes on every full run.
 func runForgeScript(t *testing.T, repo string, args ...string) (string, error) {
 	t.Helper()
+	return runForgeScriptEnv(t, repo, nil, args...)
+}
+
+// runForgeScriptEnv is runForgeScript plus extra environment. The CHANGELOG
+// formatter defaults to `true` (a no-op) so no test reaches npm; the tests that
+// care about prettier set FORGE_RELEASE_PRETTIER themselves.
+func runForgeScriptEnv(t *testing.T, repo string, extraEnv []string, args ...string) (string, error) {
+	t.Helper()
 	script := releaseForgeScriptPath(t)
 	full := append([]string{script, "--repo", repo}, args...)
 	cmd := exec.CommandContext(context.Background(), "bash", full...)
@@ -132,7 +141,9 @@ func runForgeScript(t *testing.T, repo string, args ...string) (string, error) {
 		"GOPROXY_WAIT_MAX_SECONDS=20",
 		"GOPROXY_WAIT_FIRST_DELAY=1",
 		"GOPROXY_WAIT_MAX_DELAY=1",
+		"FORGE_RELEASE_PRETTIER=true",
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

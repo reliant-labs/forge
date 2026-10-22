@@ -64,10 +64,8 @@ func TestE2EFrontendOnlyLifecycle(t *testing.T) {
 		}
 		return out
 	}
-	created := must(root, "project", "new", "landing", "--mod", "example.com/landing", "--frontend", "web", "--output", "static", "--routes", "none", "--disable", "orm,migrations,codegen,observability,ci,contracts", "--skip-tools", "--link-forge")
-	if strings.Contains(created, "code generation failed") {
-		t.Fatalf("project new's own generate run failed on this shape:\n%s", created)
-	}
+	// Fails (non-zero) if the project's own first generate does.
+	must(root, "project", "new", "landing", "--mod", "example.com/landing", "--frontend", "web", "--output", "static", "--routes", "none", "--disable", "orm,migrations,codegen,observability,ci,contracts", "--skip-tools", "--link-forge")
 	project := filepath.Join(root, "landing")
 	for _, envName := range []string{"dev", "staging", "prod"} {
 		body := readFileE2E(t, filepath.Join(project, "deploy", "kcl", envName, "main.k"))

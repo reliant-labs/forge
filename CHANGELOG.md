@@ -44,9 +44,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A mock role may embed a role another file of its package declares.** The
+  mock generator read only the file it generates from (`contract.go`, or a
+  marked `deps.go`), so `type Repo interface { Reader; ... }` with `Reader` in
+  `roles.go` produced a `MockRepo` without `Reader`'s methods, and generate's
+  build validation failed with "does not implement". The embed is now resolved
+  from the type-checked package, the way #1109 resolves another package's,
+  with the package's own types unqualified and the sibling file's imports
+  carried over.
+- **`forge fix connect-errors` sees an As-style helper as a `*connect.Error` reader.**
+  - It recognised `errors.As` itself, but not testify's `require.ErrorAs(t, err, &ce)` / `assert.ErrorAs`, a suite's `ErrorAs` method, or a project's own helper: each takes the target as `interface{}`. A handler package whose only reader was one of those got bare kinds, and its tests failed (reliant's `internal/handlers/approval`: four tests).
+  - Any call handed a `**connect.Error` is now a reader, so that package keeps `svcerr.ToConnect(…)` and the report names the call.
 - **`forge observe alerts check` and `forge observe profile` reach the ClickStack `forge env up` started.**
   - env up runs each env's compose services in their own project (`forge-<id>-<env>`). Both commands exec'd into the default project, so they reported a running ClickStack as not running.
 - **`docker compose up <service>` interpolates the whole compose file with every workload's declared env.**
+
   - Bringing up `otel-profiles` (which depends on `clickstack`) with only its own variables recreated `clickstack` on the file's default ports. On a machine running a second stack, the bind failed.
 
 - **`forge/pkg/alerting/amconfig`: the Alertmanager configuration renderer.**
@@ -407,6 +419,24 @@ login` credential is traded for the scope the control plane's 403 names, for
 
 ### Changed
 
+- **`forge project new` applies the feature graph itself.** The scaffold now
+  resolves its feature set with the loader's own rule
+  (`FeaturesConfig.FollowingRequirements`, the `followPinnedRequirements` the
+  loader runs on every load): a `--disable`d feature takes every unpinned
+  feature that requires it with it, so nothing is written that the project
+  would derive away. This replaces the hand-copied codegen → orm/migrations
+  cascade; `--disable codegen` now also turns off frontend codegen, and
+  `--disable build` deploy, exactly as their first load always did. A named
+  frontend's app is scaffolded whether or not frontend codegen is on (the
+  frontend-only shape), and `HasFrontend` (the dev IdP in docker-compose) and
+  rescaffold ask the same question as the upgrade lane: is a frontend declared?
+- **`forge project new` exits non-zero when the project's own first generate
+  fails.** It printed "initial code generation failed", then "✅ Project created
+  successfully!" and exited 0, so a script, a CI step or an agent carried on
+  over a project that did not generate (the `--disable codegen` shape stayed
+  broken that way). The rest of the scaffold still finishes (git init,
+  `go mod tidy`) and the files stay; the error says the project is incomplete,
+  what is missing, and the `forge generate` that completes it.
 - **`tdd.AssertConnectError` (and `TableRPC`'s `WantErr`) read `svcerr.Code`**,
   the code `svcerr.Interceptor` sends, instead of `connect.CodeOf`. A handler
   test calls the `*Service` method directly, so a handler returning a bare

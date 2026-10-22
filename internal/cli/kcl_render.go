@@ -1604,7 +1604,7 @@ var declarationRenders atomic.Int64
 // over nothing else: these are reserved names no project may set.
 func RenderKCLWith(ctx context.Context, projectDir, env string, extra []string) (*KCLEntities, error) {
 	declarationRenders.Add(1)
-	raw, err := renderKCLRaw(ctx, projectDir, env, extra...)
+	raw, err := renderKCLRawHook(ctx, projectDir, env, extra...)
 	if err != nil {
 		return nil, err
 	}
@@ -1621,6 +1621,11 @@ func RenderKCLWith(ctx context.Context, projectDir, env string, extra []string) 
 	entities.ControlPlane.bindOrgLookup(env)
 	return entities, nil
 }
+
+// renderKCLRawHook is renderKCLRaw behind a seam, so a test whose fixture is
+// static can evaluate each distinct render once (memoizeKCLRenders). Nothing
+// outside tests replaces it.
+var renderKCLRawHook = renderKCLRaw
 
 // renderKCLRaw is the side-effecting half — shell or fixture file —
 // kept separate so parseKCLEntities is unit-testable from a literal []byte.

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -153,5 +154,66 @@ func TestChangelogGuardVerdicts(t *testing.T) {
 				t.Errorf("output does not mention %q:\n%s", tc.wantOut, out)
 			}
 		})
+	}
+}
+
+// TestChangelogIsFormattedOnlyByTheRelease pins the other half of the policy:
+// CHANGELOG.md has one writer, release-forge.sh, which formats the whole file
+// with the pinned prettier, so the pre-commit formatters exclude it. A hook
+// that checked it could only report drift no pull request is allowed to fix:
+// a doubled blank line merged before the policy turned every PR's Checks red,
+// and the only way out was an admin bypass on main.
+func TestChangelogIsFormattedOnlyByTheRelease(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", ".pre-commit-config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Repos []struct {
+			Hooks []struct {
+				ID      string `yaml:"id"`
+				Files   string `yaml:"files"`
+				Exclude string `yaml:"exclude"`
+			} `yaml:"hooks"`
+		} `yaml:"repos"`
+	}
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	formatters := map[string]bool{"trailing-whitespace": true, "end-of-file-fixer": true, "prettier": true}
+	for _, repo := range cfg.Repos {
+		for _, h := range repo.Hooks {
+			if !formatters[h.ID] {
+				continue
+			}
+			delete(formatters, h.ID)
+			if h.Exclude == "" {
+				t.Errorf("hook %s excludes nothing; it must exclude CHANGELOG.md", h.ID)
+				continue
+			}
+			re, err := regexp.Compile(h.Exclude)
+			if err != nil {
+				t.Fatalf("hook %s: exclude %q: %v", h.ID, h.Exclude, err)
+			}
+			if !re.MatchString("CHANGELOG.md") {
+				t.Errorf("hook %s formats CHANGELOG.md (exclude %q); only scripts/release-forge.sh may", h.ID, h.Exclude)
+			}
+			// Narrowly: a nested changelog (a fixture, a scaffolded project's)
+			// is still checked.
+			if re.MatchString("docs/CHANGELOG.md") {
+				t.Errorf("hook %s excludes every CHANGELOG.md (exclude %q); only the root one has a release-time formatter", h.ID, h.Exclude)
+			}
+		}
+	}
+	for id := range formatters {
+		t.Errorf("hook %s not found in .pre-commit-config.yaml; update this test", id)
+	}
+
+	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "release-forge.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`prettier@\$pin" --write [^\n]*"\$CHANGELOG_FILE"`).Match(script) {
+		t.Error("scripts/release-forge.sh no longer formats CHANGELOG.md with the pinned prettier; the pre-commit exclusion is then unsafe")
 	}
 }

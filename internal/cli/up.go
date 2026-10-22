@@ -3854,7 +3854,13 @@ func runUpStop(env string) error {
 	// rather than reporting a successful empty teardown.
 	activateDevStack(context.Background(), projectDir, env, renderToLaunch, inspectBlocks)
 	composeErr := (deploytarget.ComposeProvider{ProjectDir: projectDir}).StopOwned(context.Background(), env)
+	if composeErr != nil {
+		composeErr = fmt.Errorf("compose containers: %w", composeErr)
+	}
 	infraStopped, err := stopHostInfra(env)
+	if err != nil {
+		err = fmt.Errorf("host infrastructure: %w", err)
+	}
 	return reportUpStop(env, projectDir, res, infraStopped, errors.Join(err, composeErr))
 }
 
@@ -3874,7 +3880,7 @@ func reportUpStop(env, projectDir string, res stackStop, infraStopped int, infra
 	}
 	fmt.Println("[down] Only recorded owned Compose containers were selected; volumes and shared containers preserved. Kubernetes workloads/clusters and Docker Desktop were not stopped.")
 	if infraErr != nil {
-		return fmt.Errorf("environment shutdown incomplete: host infrastructure: %w", infraErr)
+		return fmt.Errorf("environment shutdown incomplete: %w", infraErr)
 	}
 	return nil
 }

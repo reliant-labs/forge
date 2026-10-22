@@ -4474,6 +4474,13 @@ schema ESOAdmission:
                         Retain, a target name other than its own, or a refresh
                         faster than 5m.
 
+    DEFAULTS. `servers`, `jwt_mounts`, `audiences` and `gcp_projects` left
+    empty are derived from the render (an empty list is not a wildcard, so the
+    policies would otherwise refuse the Bundle's own stores): the SecretStores
+    this Bundle renders on the operator's cluster, and the OpenBao component's
+    own server, mount and audience when it runs there. A list you set wins,
+    for that list only.
+
     `scrape_namespaces` may reach the operator's metrics port; `egress_cidrs`
     bounds where the operator may dial on 443 and 6443 (the API server and
     the store). Narrow it to your API server and store addresses when they are
@@ -4931,6 +4938,57 @@ schema DeliveryPolicy:
 _delivery_enforced_verifiers = lambda flux_verify: Control, admission_verify: Control, signed_promotions: Control -> [str] {
     (["flux_verify"] if flux_verify.mode == "enforce" else []) + (["admission_verify"] if admission_verify.mode == "enforce" else []) + (["signed_promotions"] if signed_promotions.mode == "enforce" else [])
 }
+
+# The release-health finding codes (pkg/release Health*).
+_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts"]
+
+# A release-health window ("15m", "2h", "90s") in seconds; 0 when malformed.
+_release_health_seconds = lambda w: str -> int {
+    int(w[:-1]) * {"s": 1, "m": 60, "h": 3600}[w[-1]] if regex.match(w, r"^[1-9][0-9]*[smh]$") else 0
+}
+
+schema ReleaseHealth:
+    """How this env's promotions are judged: `forge obs check <env>` and the
+    control plane's release health compare the window after a promotion with
+    the window before it, per service, and report findings.
+
+        release_health = forge.ReleaseHealth {
+            window = "30m"
+            fail_on = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "latency"]
+        }
+
+    A finding in `fail_on` fails the release (exit 1); any other warns. Below
+    `min_requests` after-window requests a service is not judged, and a
+    release with no judged service is inconclusive (exit 2), never a pass.
+
+    Findings: error_rate (the error rate rose by more than
+    `max_error_rate_increase`, a fraction: 0.01 is one percentage point),
+    latency (p95 grew by more than `max_p95_ratio`), new_issue (an issue first
+    seen in this release with `new_issue_min_events` events), regressed_issue,
+    alert_firing (an alert opened after the promotion still fires) and
+    workload_restarts.
+
+    Recorded in the release shape (`release_health`) when any value differs
+    from the default, so every reader judges by this one declaration.
+    """
+    window: str = "15m"
+    min_requests: int = 50
+    max_error_rate_increase: float = 0.01
+    max_p95_ratio: float = 1.5
+    new_issue_min_events: int = 3
+    fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing"]
+
+    check:
+        60 <= _release_health_seconds(window) <= 21600, \
+            "ReleaseHealth.window \"${window}\": use a number and s, m or h (\"15m\"), from 1m to 6h"
+        min_requests >= 1, "ReleaseHealth.min_requests ${min_requests} must be at least 1"
+        0 < max_error_rate_increase <= 1, \
+            "ReleaseHealth.max_error_rate_increase ${max_error_rate_increase} is a fraction: 0.01 is one percentage point"
+        max_p95_ratio > 1, "ReleaseHealth.max_p95_ratio ${max_p95_ratio} must be above 1 (1.5 = 50% slower)"
+        new_issue_min_events >= 1, "ReleaseHealth.new_issue_min_events ${new_issue_min_events} must be at least 1"
+        all c in fail_on { c in _RELEASE_HEALTH_FINDINGS }, \
+            "ReleaseHealth.fail_on names ${[c for c in fail_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
+        isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"
 
 # ---------------------------------------------------------------------------
 # Bundle — the project-level container forge.render() consumes.
@@ -6218,6 +6276,10 @@ schema Bundle:
     # builder, vulnerability gate, approvals, ...). UNSET = every control at
     # its default. See DeliveryPolicy and the `deploy/delivery-policy` skill.
     delivery_policy?: DeliveryPolicy
+    # How this env's promotions are judged by `forge obs check` and release
+    # health: the window, the thresholds, and which findings fail. UNSET =
+    # the defaults. See ReleaseHealth.
+    release_health?: ReleaseHealth
     # The env's users (forge.ManagedIdentity): roles, the applications that
     # sign users in, the workloads that read tokens, and where the instance
     # runs. UNSET = no managed identity (bring your own issuer in config.k).

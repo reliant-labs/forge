@@ -74,7 +74,7 @@ func RunOperators(ctx context.Context, logger *slog.Logger) error {
 
 func TestOperatorkit_RenamesAndKeepsLifecyclekitWhenStillUsed(t *testing.T) {
 	dir := writeTree(t, map[string]string{"internal/app/lifecycle.go": lifecycleUsingBoth})
-	rep, err := runOperatorkit(dir, true)
+	rep, err := runOperatorkit(dir, Options{Write: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestOperatorkit_RenamesAndKeepsLifecyclekitWhenStillUsed(t *testing.T) {
 	}
 
 	// Idempotent: the second run finds nothing.
-	again, err := runOperatorkit(dir, true)
+	again, err := runOperatorkit(dir, Options{Write: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func run(ctx context.Context, l *slog.Logger) error {
 }
 `
 	dir := writeTree(t, map[string]string{"cmd/app/run.go": src})
-	if _, err := runOperatorkit(dir, true); err != nil {
+	if _, err := runOperatorkit(dir, Options{Write: true}); err != nil {
 		t.Fatal(err)
 	}
 	if got := readFile(t, dir, "cmd/app/run.go"); got != want {
@@ -144,7 +144,7 @@ var _ ok.Controller
 var _ = lifecyclekit.Options{}
 `
 	dir := writeTree(t, map[string]string{"a.go": src})
-	if _, err := runOperatorkit(dir, true); err != nil {
+	if _, err := runOperatorkit(dir, Options{Write: true}); err != nil {
 		t.Fatal(err)
 	}
 	got := readFile(t, dir, "a.go")
@@ -188,7 +188,7 @@ var _ lifecyclekit.Options
 		"testdata/fixture.go":   moves,
 		"internal/app/moves.go": moves,
 	})
-	rep, err := runOperatorkit(dir, false)
+	rep, err := runOperatorkit(dir, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

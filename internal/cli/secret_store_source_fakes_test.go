@@ -246,6 +246,8 @@ type fakeGSM struct {
 	disabled map[string]bool
 	created  []string
 	fail     error
+	// disabledVersions are the single versions taken out of service.
+	disabledVersions map[string]map[uint32]bool
 }
 
 func newFakeGSM() *fakeGSM {
@@ -291,6 +293,23 @@ func (g *fakeGSM) Access(_ context.Context, project, id string) ([]byte, error) 
 		return nil, errors.New("no version")
 	}
 	return []byte(vs[len(vs)-1]), nil
+}
+
+func (g *fakeGSM) Disable(_ context.Context, project, id string, version uint32) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	k := project + "/" + id
+	if version < 1 || int(version) > len(g.secrets[k]) {
+		return errors.New("secret manager disable version: HTTP 404 NOT_FOUND: no such version")
+	}
+	if g.disabledVersions == nil {
+		g.disabledVersions = map[string]map[uint32]bool{}
+	}
+	if g.disabledVersions[k] == nil {
+		g.disabledVersions[k] = map[uint32]bool{}
+	}
+	g.disabledVersions[k][version] = true
+	return nil
 }
 
 func (g *fakeGSM) List(_ context.Context, project string) ([]string, error) {

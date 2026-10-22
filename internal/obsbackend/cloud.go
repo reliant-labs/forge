@@ -8,7 +8,7 @@ package obsbackend
 // on both.
 //
 // Every request is bounded to one environment (env_ids = [EnvID]) of one
-// organization and project. The control plane's read gate enforces the org,
+// organization; the env id already names its project. The control plane's read gate enforces the org,
 // the env and the caller's authority (membership, or obs:read on a machine
 // token); this side only says what it wants.
 
@@ -39,11 +39,10 @@ const (
 
 // Cloud reads one env's telemetry from the control plane.
 type Cloud struct {
-	Env       string
-	EnvID     string
-	OrgID     string
-	ProjectID string
-	Caller    Caller
+	Env    string
+	EnvID  string
+	OrgID  string
+	Caller Caller
 }
 
 // Info implements Backend.
@@ -102,7 +101,6 @@ type wireAttrFilter struct {
 
 type wireScope struct {
 	OrgID     string           `json:"orgId"`
-	ProjectID string           `json:"projectId,omitempty"`
 	EnvIDs    []string         `json:"envIds,omitempty"`
 	Services  []string         `json:"services,omitempty"`
 	TimeRange wireTimeRange    `json:"timeRange"`
@@ -112,7 +110,7 @@ type wireScope struct {
 // scope is the QueryScope of a request narrowed by n, bounded to this env.
 func (c Cloud) scope(n Narrow) wireScope {
 	s := wireScope{
-		OrgID: c.OrgID, ProjectID: c.ProjectID, Services: n.Services,
+		OrgID: c.OrgID, Services: n.Services,
 		TimeRange: wireTimeRange{Start: n.Range.From.UTC(), End: n.Range.To.UTC()},
 	}
 	if c.EnvID != "" {

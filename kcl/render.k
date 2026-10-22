@@ -36,6 +36,11 @@ THE OUTPUT (internal/cli/testdata/render_contract/ pins it per runtime):
     config_maps, gateways, http_routes, grpc_routes, runtime_classes,
     helm_charts, required_secrets, required_dns, secret_provider,
     rendered_secrets, control_plane
+    required_secrets[]        each {name, namespace, keys, reason, value_group,
+                              out_of_band_reason, source}; `source` is the
+                              rendered StoreSource of a store-backed Secret
+    bootstrap_source          {type: gcpsm|out_of_band, project}, present only
+                              when declared
     manifests[]               the applyable stream: RuntimeClasses,
                               Namespaces, ConfigMaps, one `forge.dev/v1alpha1
                               Workload` record per CLUSTER-bound workload
@@ -1829,6 +1834,13 @@ render = lambda bundle: Bundle -> any {
             "cluster_target": _render_cluster_target(_pt)
         "kubeconfig_secrets": [_render_kubeconfig_secret(k) for k in bundle.kubeconfig_secrets]
         "connected_clusters": bundle.connected_clusters if bundle.connected_clusters else None
+        # Where the secret store's own bootstrap values live: a declaration
+        # only, read by `forge lint --secrets` and the secret commands.
+        if bundle.bootstrap_source:
+            "bootstrap_source": {
+                "type": bundle.bootstrap_source.type
+                "project": bundle.bootstrap_source.project if bundle.bootstrap_source.type == "gcpsm" else None
+            }
         "network_policy": {
             "egress_ports": bundle.network_policy.egress_ports
             # The node agent is the env's collector: the telemetry allow
@@ -2634,6 +2646,39 @@ _render_external_secret = lambda s: ExternalSecret -> any {
         "keys": s.keys
         "reason": s.reason if s.reason else None
         "value_group": s.value_group if s.value_group else None
+        "out_of_band_reason": s.out_of_band_reason if s.out_of_band_reason else None
+        "source": _render_store_source(s.source) if s.source else None
+    }
+}
+
+# Render a StoreSource: which store, which store names feed which Secret keys,
+# and how each is generated, pinned and refreshed. Declarations only; no value.
+# The shape pkg/release (RenderedStoreSource) decodes.
+_render_store_source = lambda src: StoreSource -> any {
+    {
+        "store": {
+            "type": src.store.type
+            "project": src.store.project if src.store.type == "gcpsm" else None
+        }
+        "data": src.data
+        "templates": src.templates if src.templates else None
+        "generate": {n: {
+            "kind": g.kind
+            "bytes": g.bytes
+            "encoding": g.encoding
+            "prefix": g.prefix if g.prefix else None
+            "length": g.length if g.length else None
+            "symbols": g.symbols if g.symbols else None
+            "companion": g.companion if g.companion else None
+            "common_name": g.common_name if g.common_name else None
+            "valid_days": g.valid_days if g.valid_days else None
+        } for n, g in src.generate} if src.generate else None
+        "pin": src.pin if src.pin else None
+        "immutable": src.immutable if src.immutable else None
+        "refresh": src.refresh
+        "creation_policy": src.creation_policy
+        "shadow": src.shadow if src.shadow else None
+        "cluster": src.cluster if src.cluster else None
     }
 }
 

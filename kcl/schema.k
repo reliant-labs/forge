@@ -4513,9 +4513,10 @@ schema ESOAdmission:
         len(egress_cidrs) > 0 and all c in egress_cidrs { regex.match(c, r"^[0-9a-fA-F:.]+/[0-9]{1,3}$") }, \
             "ESOAdmission.egress_cidrs must be a non-empty list of CIDRs (e.g. 10.0.0.0/8)"
 
-# The kubectl context a declaration with a `cluster` reference installs into:
+# The kubectl context a declaration with a `cluster` reference installs into
+# (an ExternalSecretsOperator, or a HelmChart that targets a cluster):
 # a k3d Cluster's derived `.context`, or a ClusterTarget's `cluster`.
-_cluster_ref_context = lambda e: any -> str {
+_eso_context = lambda e: any -> str {
     e.cluster.context if typeof(e.cluster) == "Cluster" else e.cluster.cluster
 }
 
@@ -6246,8 +6247,8 @@ schema Bundle:
             "Bundle.control_plane_secrets: ${_cps_also_provided(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)} also declared as a required_secrets ExternalSecret or a rendered_secrets entry. One Secret has one provider: the control plane delivers it, so drop the other declaration"
         # SECRETS (forge.OpenBao, forge.ExternalSecretsOperator, StoreSource).
         # The structural rules live on the schemas; these need the Bundle.
-        len(_duplicates([_cluster_ref_context(e) for e in external_secrets_operators])) == 0, \
-            "Bundle.external_secrets_operators installs ESO twice on ${_duplicates([_cluster_ref_context(e) for e in external_secrets_operators])}: one cluster has one External Secrets Operator (several fight over the cluster-scoped CRDs and webhook configurations). Remove the duplicate; configure the one with `values`"
+        len(_duplicates([_eso_context(e) for e in external_secrets_operators])) == 0, \
+            "Bundle.external_secrets_operators installs ESO twice on ${_duplicates([_eso_context(e) for e in external_secrets_operators])}: one cluster has one External Secrets Operator (several fight over the cluster-scoped CRDs and webhook configurations). Remove the duplicate; configure the one with `values`"
         len(_openbao_sources(required_secrets)) == 0 or openbao, \
             "Bundle.required_secrets ${[s.name for s in _openbao_sources(required_secrets)]} read from a forge.OpenBaoStore, but the Bundle declares no `openbao`. Declare `openbao = forge.OpenBao {}`, or point the source at a forge.HostedStore or forge.GCPSecretManagerStore"
         len([s.name for s in required_secrets if s.source and s.source.store.type == "hosted"]) == 0 or control_plane, \

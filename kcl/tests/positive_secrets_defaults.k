@@ -1,8 +1,8 @@
 """
 Positive test — forge.OpenBao {} runs with nothing declared: Raft x3 (N1), TLS
 listener, static seal with a generated 32-byte hex key, audit on, a
-service-account writer (N2), exact-path-only consumers. The component renders
-nothing yet (later PRs wire it), so the Bundle still evaluates and renders.
+service-account writer (N2), exact-path-only consumers. The render lowers it to an
+OpenBao record the Go renderer expands (pkg/deploy/openbao).
 """
 
 # kcl-args: env=dev
@@ -11,6 +11,7 @@ import forge
 
 _bundle = forge.Bundle {
     project = "fixture"
+    cluster_target = forge.ClusterTarget {cluster = "k3d-fixture", namespace = "fixture"}
     openbao = forge.OpenBao {}
     bootstrap_source = forge.GCPSecretManager {project = "acme-prod"}
 }

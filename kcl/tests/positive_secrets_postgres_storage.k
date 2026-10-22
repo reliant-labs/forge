@@ -9,6 +9,7 @@ import forge
 _bundle = forge.Bundle {
     project = "fixture"
     env = "prod"
+    cluster_target = forge.ClusterTarget {cluster = "gke_acme_us-central1_prod", namespace = "fixture"}
     openbao = forge.OpenBao {
         storage = forge.OpenBaoPostgres {
             cloudsql_instance = "acme:us-central1:pg"

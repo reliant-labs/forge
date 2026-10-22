@@ -53,6 +53,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/pkg/deploy"
+	"github.com/reliant-labs/forge/pkg/deploy/openbao"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
 	"github.com/reliant-labs/forge/pkg/stsresize"
@@ -1661,9 +1662,12 @@ func expandTierDeclarations(items []any, network *deploy.EnvNetworkPolicy, pullS
 		}
 		var objs []any
 		var err error
-		if m["kind"] == deploy.ObservabilityAgentKind {
+		switch m["kind"] {
+		case deploy.ObservabilityAgentKind:
 			objs, err = expandObservabilityAgent(i, m)
-		} else {
+		case openbao.Kind:
+			objs, err = expandOpenBao(i, m)
+		default:
 			objs, err = expandTierRecord(i, m)
 		}
 		if err != nil {
@@ -1711,6 +1715,45 @@ func expandTierRecord(i int, m map[string]any) ([]any, error) {
 		}
 		r.SetLabels(objLabels)
 		out = append(out, r.Object)
+	}
+	return out, nil
+}
+
+// expandOpenBao renders one OpenBao record (Bundle.openbao) into the secret
+// store's objects, copying the record's labels (cluster route, env stamp) onto
+// every one of them. The component's own owner and part-of labels win: they
+// are what the single-owner check reads.
+func expandOpenBao(i int, m map[string]any) ([]any, error) {
+	var rec struct {
+		APIVersion string `json:"apiVersion"`
+		Kind       string `json:"kind"`
+		Metadata   struct {
+			Name      string            `json:"name"`
+			Namespace string            `json:"namespace"`
+			Labels    map[string]string `json:"labels"`
+		} `json:"metadata"`
+		Spec openbao.Spec `json:"spec"`
+	}
+	if err := decodeStrict(m, &rec); err != nil {
+		return nil, fmt.Errorf("manifest item %d: %w", i, err)
+	}
+	objs, err := openbao.Render(rec.Spec)
+	if err != nil {
+		return nil, fmt.Errorf("render %s: %w", describeManifest(m), err)
+	}
+	out := make([]any, 0, len(objs))
+	for _, o := range objs {
+		labels := o.GetLabels()
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		for _, k := range []string{ClusterRoutingLabel, deploy.LabelEnv} {
+			if v := rec.Metadata.Labels[k]; v != "" {
+				labels[k] = v
+			}
+		}
+		o.SetLabels(labels)
+		out = append(out, o.Object)
 	}
 	return out, nil
 }

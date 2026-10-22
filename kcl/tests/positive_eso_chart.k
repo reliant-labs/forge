@@ -92,5 +92,4 @@ assert_record = output.external_secrets_operators == [{
     connected_cluster = "hub"
     namespace = "external-secrets"
     version = "2.13.0"
-    owner = "fixture.prod"
 }]

@@ -8,4 +8,4 @@ import forge
 output = forge.render(forge.Bundle {project = "fixture", env = "dev"})
 
 assert_no_chart = len(output.helm_charts) == 0
-assert_no_record = "external_secrets_operators" not in output
+assert_no_record = output.external_secrets_operators == []

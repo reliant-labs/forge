@@ -1,6 +1,6 @@
 package cli
 
-// `forge observe alerts check` — evaluate an env's resolved alert rules against
+// `forge obs alerts check` — evaluate an env's resolved alert rules against
 // the local ClickStack's ClickHouse and print what would fire. It drives
 // pkg/alerting's Evaluator (the guard, the row-to-instance mapping, the label
 // rules and the limits are the evaluator's, not re-implemented here), with a
@@ -27,7 +27,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-type observeAlertsCheckOpts struct {
+type obsAlertsCheckOpts struct {
 	env      string
 	rule     string
 	timeout  time.Duration
@@ -36,17 +36,17 @@ type observeAlertsCheckOpts struct {
 	printSQL bool
 }
 
-func newObserveAlertsCmd() *cobra.Command {
+func newObsAlertsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "alerts",
 		Short: "Alert rules declared for an environment",
 	}
-	cmd.AddCommand(newObserveAlertsCheckCmd(), newObserveAlertsRunCmd())
+	cmd.AddCommand(newObsAlertsCheckCmd(), newObsAlertsRunCmd())
 	return cmdutil.StrictGroup(cmd)
 }
 
-func newObserveAlertsCheckCmd() *cobra.Command {
-	o := observeAlertsCheckOpts{}
+func newObsAlertsCheckCmd() *cobra.Command {
+	o := obsAlertsCheckOpts{}
 	cmd := &cobra.Command{
 		Use:   "check",
 		Short: "Evaluate the env's alert rules against the local ClickStack and print what would fire",
@@ -62,14 +62,14 @@ fires in production only once it has kept returning for its ` + "`for`" + `.
 Each expr runs read-only with a timeout and a row cap (--timeout, --max-rows);
 a rule that errors is reported and does not stop the others.
 
-  ` + Name() + ` observe alerts check               # the dev env
-  ` + Name() + ` observe alerts check --env staging
-  ` + Name() + ` observe alerts check --rule ServiceErrorRateHigh --sql
+  ` + Name() + ` obs alerts check               # the dev env
+  ` + Name() + ` obs alerts check --env staging
+  ` + Name() + ` obs alerts check --rule ServiceErrorRateHigh --sql
 
 Needs the local ClickStack running (` + "`forge env up`" + `).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runObserveAlertsCheck(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), o, defaultAlertShapeLoader, alertQueryRunnerFor(o.env))
+			return runObsAlertsCheck(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), o, defaultAlertShapeLoader, alertQueryRunnerFor(o.env))
 		},
 	}
 	f := cmd.Flags()
@@ -107,7 +107,7 @@ func alertQueryRunnerFor(env string) alertQueryRunner {
 }
 
 func runAlertQuery(ctx context.Context, env, sql string, settings map[string]any) ([]byte, error) {
-	dir, err := requireProjectDir("observe alerts")
+	dir, err := requireProjectDir("obs alerts")
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +199,7 @@ func ruleSpecOf(a release.ShapeAlert) (alerting.RuleSpec, error) {
 	return spec, nil
 }
 
-func runObserveAlertsCheck(ctx context.Context, stdout, stderr io.Writer, o observeAlertsCheckOpts, load alertShapeLoader, run alertQueryRunner) error {
+func runObsAlertsCheck(ctx context.Context, stdout, stderr io.Writer, o obsAlertsCheckOpts, load alertShapeLoader, run alertQueryRunner) error {
 	alerts, err := load(ctx, stderr, o.env)
 	if err != nil {
 		return err

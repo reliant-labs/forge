@@ -6,7 +6,7 @@ package cli
 //     control plane's own renderer (forge/pkg/alerting/amconfig) from the
 //     env's declared alerts, with one org ("local") and the env name as its
 //     env id, so a route reaches the same receiver here as in production;
-//   - the evaluator (`forge observe alerts run`, the scaffolded `alerts` host
+//   - the evaluator (`forge obs alerts run`, the scaffolded `alerts` host
 //     workload), which evaluates the env's rules continuously against the
 //     local ClickHouse, posts what fires to that Alertmanager, and receives
 //     the in-app receiver's deliveries into .forge/logs/<env>/alerts.log.

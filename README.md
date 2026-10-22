@@ -431,7 +431,7 @@ The details:
   rendered stream. No fork, no fight with the schema. That's how our control
   plane runs all three today.
 - **`pkg/` is a library you import, not a framework you're stuck inside.**
-  `serverkit`, `svcerr`, `orm`, `auth`, `apikey`, `oauth2`, `observe`,
+  `serverkit`, `svcerr`, `orm`, `auth`, `apikey`, `oauth2`, `obs`,
   `middleware`, `crud`, `tdd`, `testkit`, `pgtest`, `config`, `money`,
   `controller`, `migratekit`, `schemadef`, `seedplan`, `audit`, `validate`, and
   more — `forge project libraries` lists them all with their doc summaries.

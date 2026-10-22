@@ -20,7 +20,7 @@ import (
 //  2. the built binary prints a forge.metrics/v1 document that carries the
 //     built-in metrics AND the project's own declaration, with the project's
 //     service name;
-//  3. `forge observe metrics --binary` reads that same document back.
+//  3. `forge obs metrics declared --binary` reads that same document back.
 func TestE2EScaffoldedBinaryPrintsMetricsSchema(t *testing.T) {
 	t.Parallel()
 	forgeBin := buildforgeBinary(t)
@@ -67,8 +67,8 @@ func TestE2EScaffoldedBinaryPrintsMetricsSchema(t *testing.T) {
 		t.Errorf("table output does not list records_created:\n%s", table)
 	}
 
-	observed := runCmdStdout(t, projectDir, forgeBin, "observe", "metrics", "--binary", bin, "--json")
+	observed := runCmdStdout(t, projectDir, forgeBin, "obs", "metrics", "declared", "--binary", bin, "--json")
 	if _, err := metrics.ParseSchema([]byte(observed)); err != nil {
-		t.Fatalf("`forge observe metrics --binary` did not return a schema: %v\n%s", err, observed)
+		t.Fatalf("`forge obs metrics declared --binary` did not return a schema: %v\n%s", err, observed)
 	}
 }

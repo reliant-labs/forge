@@ -153,7 +153,7 @@ func TestObserveDashboardsCheckListsWhatWouldShip(t *testing.T) {
 	t.Chdir(dir)
 	seedGeneratedDashboards(t, dir, "obs-check-project")
 	var out bytes.Buffer
-	if err := runObserveDashboardsCheck(&out, "bin"); err != nil {
+	if err := runObsDashboardsCheck(&out, "bin"); err != nil {
 		t.Fatalf("check: %v", err)
 	}
 	for _, want := range []string{"observability/dashboards/obs-check-project-overview_gen.json", "would ship"} {

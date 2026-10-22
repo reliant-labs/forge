@@ -1,6 +1,6 @@
 package cli
 
-// `forge observe profile` — export an aggregated continuous profile from the
+// `forge obs profile` — export an aggregated continuous profile from the
 // local ClickStack's ClickHouse as pprof, speedscope JSON or collapsed stacks.
 //
 // HyperDX cannot draw flamegraphs, so for local development the profile is
@@ -26,19 +26,20 @@ import (
 	"github.com/reliant-labs/forge/pkg/profilequery"
 )
 
-func newObserveCmd() *cobra.Command {
+func newObsCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "observe",
-		Short: "Read back what the local observability stack collected",
+		Use:   "obs",
+		Short: "Ask what happened: logs, traces, endpoints, metrics, SQL, profiles and alerts",
 	}
-	cmd.AddCommand(newObserveProfileCmd())
-	cmd.AddCommand(newObserveAlertsCmd())
-	cmd.AddCommand(newObserveMetricsCmd())
-	cmd.AddCommand(newObserveDashboardsCmd())
+	cmd.AddCommand(newObsProfileCmd())
+	cmd.AddCommand(newObsAlertsCmd())
+	cmd.AddCommand(newObsLogsCmd(), newObsTracesCmd(), newObsTraceCmd(), newObsEndpointsCmd(), newObsQueryCmd())
+	cmd.AddCommand(newObsMetricsGroupCmd())
+	cmd.AddCommand(newObsDashboardsCmd())
 	return cmdutil.StrictGroup(cmd)
 }
 
-type observeProfileOpts struct {
+type obsProfileOpts struct {
 	service, sampleType, env string
 	since                    time.Duration
 	from, to                 string
@@ -47,8 +48,8 @@ type observeProfileOpts struct {
 	printSQL, listServices   bool
 }
 
-func newObserveProfileCmd() *cobra.Command {
-	var o observeProfileOpts
+func newObsProfileCmd() *cobra.Command {
+	var o obsProfileOpts
 	cmd := &cobra.Command{
 		Use:   "profile",
 		Short: "Export an aggregated continuous profile as pprof, speedscope or collapsed stacks",
@@ -59,14 +60,14 @@ Apps push a 10s CPU profile plus heap and goroutine snapshots about once a
 minute (pkg/observe, on by default whenever an OTLP endpoint is set). They land
 in ClickHouse; HyperDX cannot draw flamegraphs, so this exports them:
 
-  forge observe profile --service api --since 30m -o api.pb.gz
+  forge obs profile --service api --since 30m -o api.pb.gz
   go tool pprof -http=: api.pb.gz                  # flamegraph, top, source
 
-  forge observe profile --service api --format speedscope -o api.speedscope.json
+  forge obs profile --service api --format speedscope -o api.speedscope.json
   #   open api.speedscope.json at https://www.speedscope.app
 
-  forge observe profile --trace 0af7651916cd43dd8448eb211c80319c   # CPU burned inside one trace
-  forge observe profile --service api --format folded | flamegraph.pl > api.svg
+  forge obs profile --trace 0af7651916cd43dd8448eb211c80319c   # CPU burned inside one trace
+  forge obs profile --service api --format folded | flamegraph.pl > api.svg
 
 Sample types: cpu (nanoseconds) and inuse_space / inuse_objects (live heap) by
 default; alloc_space / alloc_objects and goroutine only from a workload whose
@@ -77,7 +78,7 @@ you can run it yourself against the ClickStack ClickHouse.
 Needs the local ClickStack running (` + "`forge env up`" + `).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runObserveProfile(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), o, defaultProfileRunner)
+			return runObsProfile(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), o, defaultProfileRunner)
 		},
 	}
 	f := cmd.Flags()
@@ -104,7 +105,7 @@ type profileRunner func(ctx context.Context, sql string, params map[string]strin
 // the credentials it already holds. The SQL and every parameter travel as
 // positional arguments of `sh -c`, never interpolated into the script.
 func defaultProfileRunner(ctx context.Context, sql string, params map[string]string) ([]byte, error) {
-	dir, err := requireProjectDir("observe profile")
+	dir, err := requireProjectDir("obs profile")
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +132,7 @@ func defaultProfileRunner(ctx context.Context, sql string, params map[string]str
 	return out, nil
 }
 
-func runObserveProfile(ctx context.Context, stdout, stderr io.Writer, o observeProfileOpts, run profileRunner) (retErr error) {
+func runObsProfile(ctx context.Context, stdout, stderr io.Writer, o obsProfileOpts, run profileRunner) (retErr error) {
 	from, to, err := profileRange(o, time.Now())
 	if err != nil {
 		return err
@@ -189,7 +190,7 @@ func runObserveProfile(ctx context.Context, stdout, stderr io.Writer, o observeP
 		if q.TraceID != "" {
 			what = "trace " + q.TraceID
 		}
-		return fmt.Errorf("no profile samples for %s. Apps push roughly once a minute (the first within ~15s of start), and a trace only collects CPU samples when its spans ran for tens of milliseconds; check `forge observe profile --list`", what)
+		return fmt.Errorf("no profile samples for %s. Apps push roughly once a minute (the first within ~15s of start), and a trace only collects CPU samples when its spans ran for tens of milliseconds; check `forge obs profile --list`", what)
 	}
 
 	var w io.Writer = stdout
@@ -229,7 +230,7 @@ func runObserveProfile(ctx context.Context, stdout, stderr io.Writer, o observeP
 	return nil
 }
 
-func profileRange(o observeProfileOpts, now time.Time) (time.Time, time.Time, error) {
+func profileRange(o obsProfileOpts, now time.Time) (time.Time, time.Time, error) {
 	to := now
 	if o.to != "" {
 		t, err := time.Parse(time.RFC3339, o.to)

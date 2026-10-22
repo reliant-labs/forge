@@ -44,9 +44,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge fix connect-errors` sees an As-style helper as a `*connect.Error` reader.**
+  - It recognised `errors.As` itself, but not testify's `require.ErrorAs(t, err, &ce)` / `assert.ErrorAs`, a suite's `ErrorAs` method, or a project's own helper: each takes the target as `interface{}`. A handler package whose only reader was one of those got bare kinds, and its tests failed (reliant's `internal/handlers/approval`: four tests).
+  - Any call handed a `**connect.Error` is now a reader, so that package keeps `svcerr.ToConnect(…)` and the report names the call.
 - **`forge observe alerts check` and `forge observe profile` reach the ClickStack `forge env up` started.**
   - env up runs each env's compose services in their own project (`forge-<id>-<env>`). Both commands exec'd into the default project, so they reported a running ClickStack as not running.
 - **`docker compose up <service>` interpolates the whole compose file with every workload's declared env.**
+
   - Bringing up `otel-profiles` (which depends on `clickstack`) with only its own variables recreated `clickstack` on the file's default ports. On a machine running a second stack, the bind failed.
 
 - **`forge/pkg/alerting/amconfig`: the Alertmanager configuration renderer.**
@@ -407,6 +411,13 @@ login` credential is traded for the scope the control plane's 403 names, for
 
 ### Changed
 
+- **`forge project new` exits non-zero when the project's own first generate
+  fails.** It printed "initial code generation failed", then "✅ Project created
+  successfully!" and exited 0, so a script, a CI step or an agent carried on
+  over a project that did not generate (the `--disable codegen` shape stayed
+  broken that way). The rest of the scaffold still finishes (git init,
+  `go mod tidy`) and the files stay; the error says the project is incomplete,
+  what is missing, and the `forge generate` that completes it.
 - **`tdd.AssertConnectError` (and `TableRPC`'s `WantErr`) read `svcerr.Code`**,
   the code `svcerr.Interceptor` sends, instead of `connect.CodeOf`. A handler
   test calls the `*Service` method directly, so a handler returning a bare

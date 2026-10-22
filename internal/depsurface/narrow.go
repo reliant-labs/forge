@@ -18,6 +18,7 @@ import (
 	"golang.org/x/tools/go/ast/astutil"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
+	"github.com/reliant-labs/forge/internal/checksums"
 )
 
 // DepsFileName is where Narrow declares the interfaces of a package that has
@@ -139,6 +140,16 @@ func Narrow(projectDir, dir string) (*NarrowResult, error) {
 	decls, err := w.render(target, base)
 	if err != nil {
 		return nil, err
+	}
+	// goimports with the module as the local group, as forge writes every Go
+	// file: go/format alone sorts nothing and leaves an import it added in
+	// the third-party group, which the project's own format lint rejects.
+	local := checksums.GoImportsLocalPrefix(projectDir)
+	if retyped, err = checksums.CanonicalGoSource(local, depsFile, retyped); err != nil {
+		return nil, fmt.Errorf("format %s: %w", depsFile, err)
+	}
+	if decls, err = checksums.CanonicalGoSource(local, target, decls); err != nil {
+		return nil, fmt.Errorf("format %s: %w", target, err)
 	}
 	if depsFile != target {
 		if err := atomicfile.WriteFile(depsFile, retyped, 0o644); err != nil {

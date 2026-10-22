@@ -206,6 +206,11 @@ func TestNarrow_WritesTheConsumerInterfaceAndRetypesTheField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// goimports-formatted with the module as the local group, as every Go
+	// file forge writes: the project's format lint rejects anything else.
+	if !strings.Contains(string(deps), "\t\"context\"\n\n\t\"example.com/fx/internal/store\"\n") {
+		t.Errorf("deps.go's imports are not goimports-grouped (stdlib, then the module):\n%s", deps)
+	}
 	for _, want := range []string{DepsFileMarker, "type Repository interface {", "Get(ctx context.Context, id string) (*store.Daemon, error)", "Put(ctx context.Context, d *store.Daemon) error"} {
 		if !strings.Contains(string(deps), want) {
 			t.Errorf("deps.go lacks %q:\n%s", want, deps)

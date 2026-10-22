@@ -22,7 +22,6 @@ package lint
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -66,8 +65,6 @@ func testRunCtx(t *testing.T, strict bool) *lintRunCtx {
 	return &lintRunCtx{ctx: context.Background(), strict: strict, cwd: writeGuardConfig(t, t.TempDir()), paths: []string{"./..."}}
 }
 
-// ── text mode ───────────────────────────────────────────────────────────────
-
 // TestTypedAccessGuardAdvisoryReportsUnavailable is the core assertion. The
 // lane used to `return nil` here, which is the driver's word for "I ran and
 // found nothing" — the single line that made the whole silent pass possible.
@@ -77,24 +74,25 @@ func TestTypedAccessGuardAdvisoryReportsUnavailable(t *testing.T) {
 	}
 	fakeGolangciLint(t, contendedLockStub)
 
-	err := runTypedAccessGuardAdvisory(testRunCtx(t, false))
-	if err == nil {
-		t.Fatal("guardrail returned nil after golangci-lint exited 3 without reporting — " +
-			"the driver reads that as a lane that ran and passed")
+	fs, gated, err := collectTypedAccessGuardJSON(testRunCtx(t, false))
+	if err != nil || gated {
+		t.Fatalf("an advisory lane that could not run must not gate: gated=%v err=%v", gated, err)
 	}
-	var unavail *laneUnavailableError
-	if !errors.As(err, &unavail) {
-		t.Fatalf("guardrail returned a plain error %v; it must be a laneUnavailableError so the "+
-			"driver can tell 'could not run' from 'ran and failed' (an advisory lane must not gate)", err)
+	var gap *lintJSONFinding
+	for i := range fs {
+		if fs[i].Rule == ruleTypedAccessGuardUnavailable {
+			gap = &fs[i]
+		}
 	}
-	if unavail.fixHint == "" {
-		t.Error("an unavailable lane must say what to do about it; fixHint is empty")
+	if gap == nil {
+		t.Fatalf("guardrail reported no could-not-run finding after golangci-lint exited 3 without reporting — "+
+			"that reads as a lane that ran and passed: %+v", fs)
 	}
 	// The remediation has to send the user to golangci-lint's own output,
 	// which names why it could not start — and must not blame the
 	// machine-global lock, which forge now queues on (golangciRunArgs).
-	if !strings.Contains(unavail.fixHint, "output above") {
-		t.Errorf("fix hint does not point at golangci-lint's own output:\n%s", unavail.fixHint)
+	if !strings.Contains(gap.FixHint, "output above") {
+		t.Errorf("fix hint does not point at golangci-lint's own output:\n%s", gap.FixHint)
 	}
 }
 
@@ -107,8 +105,9 @@ func TestTypedAccessGuardAdvisoryPassesWhenItRuns(t *testing.T) {
 	}
 	fakeGolangciLint(t, `echo "0 issues."; exit 0`)
 
-	if err := runTypedAccessGuardAdvisory(testRunCtx(t, false)); err != nil {
-		t.Fatalf("guardrail reported a problem on a clean run: %v", err)
+	fs, gated, err := collectTypedAccessGuardJSON(testRunCtx(t, false))
+	if err != nil || gated || len(fs) != 0 {
+		t.Fatalf("guardrail reported a problem on a clean run: gated=%v err=%v %+v", gated, err, fs)
 	}
 }
 
@@ -257,16 +256,15 @@ func TestFrontendLintDirUnavailableWhenDepsMissing(t *testing.T) {
 		t.Fatalf("write package.json: %v", err)
 	}
 
-	err := lintFrontendDir(context.Background(), "dashboard", feDir, "", false, false)
-	var unavail *laneUnavailableError
-	if !errors.As(err, &unavail) {
-		t.Fatalf("eslint lane returned %v for a frontend with no node_modules; want laneUnavailableError "+
-			"(this lane gates, so nil counts it as a gating linter that passed)", err)
+	fs, _ := collectFrontendDirJSON(context.Background(), "dashboard", feDir, false, false)
+	if len(fs) != 1 || fs[0].Rule != ruleFrontendLintUnavailable {
+		t.Fatalf("eslint lane returned %+v for a frontend with no node_modules; want its could-not-run finding "+
+			"(this lane gates, so no finding counts it as a gating linter that passed)", fs)
 	}
 	// scaffold_lint_clean_e2e_test.go asserts on this substring to prove the
 	// frontend lane was not vacuously green; keep it findable.
-	if !strings.Contains(unavail.reason, "node_modules not found") {
-		t.Errorf("reason no longer contains the phrase the e2e vacuity guard greps for:\n%s", unavail.reason)
+	if !strings.Contains(fs[0].Message, "node_modules not found") {
+		t.Errorf("reason no longer contains the phrase the e2e vacuity guard greps for:\n%s", fs[0].Message)
 	}
 }
 

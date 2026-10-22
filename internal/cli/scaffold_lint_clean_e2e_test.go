@@ -128,11 +128,11 @@ message CreateApiKeyResponse {}
 			t.Errorf("lint lane was skipped (%q) — the exit-0 assertion is vacuous:\n%s", banned, out)
 		}
 	}
-	if !strings.Contains(out, "Running golangci-lint") {
-		t.Errorf("golangci-lint lane did not run:\n%s", out)
+	if !strings.Contains(out, "✓ golangci-lint") {
+		t.Errorf("golangci-lint lane did not run clean:\n%s", out)
 	}
-	if !strings.Contains(out, "Running contract interface enforcement linter") {
-		t.Errorf("contractlint lane did not run:\n%s", out)
+	if !strings.Contains(out, "✓ contract linter") {
+		t.Errorf("contractlint lane did not run clean:\n%s", out)
 	}
 	// The scaffold's frontend is a static export (`output: static`) bound to
 	// forge.OnHosted in staging and prod, so the static-export lane JUDGES it
@@ -140,7 +140,7 @@ message CreateApiKeyResponse {}
 	// routes, next/image is unoptimized, and the dev log route is POST-only
 	// and dev-guarded. A scaffold this lane flagged would be one whose
 	// staging/prod `npm run build` fails, or whose hosted site lacks pages.
-	if !strings.Contains(out, "✓ static-export clean — 1 static frontend(s)") {
+	if !strings.Contains(out, "static-export clean — 1 static frontend(s)") {
 		t.Errorf("static-export lane did not judge the scaffolded frontend clean:\n%s", out)
 	}
 
@@ -185,7 +185,7 @@ func TestE2EFreshScaffoldLintExitsZeroForEveryKind(t *testing.T) {
 			if strings.Contains(out, "❌") {
 				t.Errorf("forge lint printed error findings on a fresh --kind %s scaffold:\n%s", kind, out)
 			}
-			if !strings.Contains(out, "Running golangci-lint") || strings.Contains(out, "golangci-lint not found") {
+			if !strings.Contains(out, "✓ golangci-lint") || strings.Contains(out, "golangci-lint not found") {
 				t.Errorf("golangci-lint lane did not run — the exit-0 assertion is vacuous:\n%s", out)
 			}
 		})
@@ -269,7 +269,7 @@ func TestE2EComponentScaffoldsLintClean(t *testing.T) {
 	// forge's own forge-config-deps lint reported on every fresh adapter while
 	// compose.go wired it to `BaseURL: "", // TODO`. Zero findings, and both
 	// adapters take their block from the loaded config by type.
-	if !strings.Contains(out, "config-deps clean") || strings.Contains(out, "[forge-config-deps]") {
+	if !strings.Contains(out, "✓ config-deps lint") || strings.Contains(out, "[forge-config-deps]") {
 		t.Errorf("a freshly scaffolded adapter must not trip forge-config-deps:\n%s", out)
 	}
 	compose := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "compose.go"))
@@ -290,8 +290,8 @@ func TestE2EComponentScaffoldsLintClean(t *testing.T) {
 		}
 	}
 	for _, marker := range []string{
-		"Running golangci-lint",
-		"Running contract interface enforcement linter",
+		"✓ golangci-lint",
+		"✓ contract linter",
 	} {
 		if !strings.Contains(out, marker) {
 			t.Errorf("lint lane %q did not run:\n%s", marker, out)
@@ -460,10 +460,10 @@ enum ProductStatus {
 		t.Errorf("frontend lane skipped for missing node_modules — the exit-0 assertion is vacuous:\n%s", lintOut)
 	}
 	for _, marker := range []string{
-		"Running frontend linters for dashboard",
-		"dashboard: lint passed",       // eslint (Defect B lane)
-		"dashboard: typecheck passed",  // tsc
-		"dashboard: style lint passed", // stylelint (Defect A lane)
+		"✓ frontend lint",
+		"dashboard: npm run lint passed",        // eslint (Defect B lane)
+		"dashboard: typecheck passed",           // tsc
+		"dashboard: npm run lint:styles passed", // stylelint (Defect A lane)
 	} {
 		if !strings.Contains(lintOut, marker) {
 			t.Errorf("frontend lane marker %q missing — lane did not fully run:\n%s", marker, lintOut)

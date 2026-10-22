@@ -67,7 +67,6 @@ package lint
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -111,31 +110,6 @@ func guardedFieldFixHint(f guardedFieldFinding) string {
 			"freshly scaffolded page emits. If the guard is wrong, delete the marker instead.",
 		f.Table, f.Column, codegen.ProtoMarkerGuards, f.Table, f.Column,
 		f.ProtoFile, f.ProtoLine, f.GuardedBy, f.GuardedBy, f.Column, f.GuardedBy)
-}
-
-// runGuardedFieldsLint is the text-mode entry point.
-func runGuardedFieldsLint(projectDir string, frontendDirs []string) error {
-	fmt.Println("Running guarded-fields lint...")
-	findings, err := collectGuardedFieldFindings(projectDir, frontendDirs)
-	if err != nil {
-		return err
-	}
-	formatGuardedFields(os.Stdout, findings)
-	return nil
-}
-
-// formatGuardedFields writes the human report.
-func formatGuardedFields(w io.Writer, findings []guardedFieldFinding) {
-	if len(findings) == 0 {
-		_, _ = fmt.Fprintln(w, "  guarded-fields clean — no scaffolded page writes a forge:guards column")
-		return
-	}
-	for _, f := range findings {
-		_, _ = fmt.Fprintf(w, "  ⚠ [forgeconv-guarded-field-written] %s:%d\n", f.File, f.Line)
-		_, _ = fmt.Fprintf(w, "      → %s\n", guardedFieldFixHint(f))
-	}
-	_, _ = fmt.Fprintf(w, "\n%d scaffolded page(s) writing a guarded column.\n", len(findings))
-	_, _ = fmt.Fprintln(w, "(warnings only — not failing the build)")
 }
 
 // guardDecl is one `forge:guards` target with the rpc that declared it and

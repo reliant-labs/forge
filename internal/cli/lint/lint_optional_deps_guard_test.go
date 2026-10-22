@@ -478,39 +478,6 @@ func (s *Service) Call() error {
 	}
 }
 
-// TestOptionalDepsGuard_TextFormat sanity-checks the human formatter on
-// both the empty and non-empty paths.
-func TestOptionalDepsGuard_TextFormat(t *testing.T) {
-	t.Parallel()
-
-	var empty strings.Builder
-	formatOptionalDepsGuard(&empty, nil)
-	if !strings.Contains(empty.String(), "clean") {
-		t.Errorf("empty output = %q, want success line", empty.String())
-	}
-
-	var full strings.Builder
-	formatOptionalDepsGuard(&full, []optionalDepsGuardFinding{{
-		File: "internal/handlers/billing/handlers.go", Line: 42, Col: 9,
-		Role: "internal/handlers", Package: "billing",
-		Field: "SvcBillingHandler", Method: "ListPlans",
-		Expr: "s.deps.SvcBillingHandler",
-	}})
-	out := full.String()
-	for _, needle := range []string{
-		"forge-optional-deps-guard",
-		"internal/handlers/billing/handlers.go:42:9",
-		"Deps.SvcBillingHandler",
-		"ListPlans",
-		"forge:optional-checked",
-		"warnings only",
-	} {
-		if !strings.Contains(out, needle) {
-			t.Errorf("text output missing %q:\n%s", needle, out)
-		}
-	}
-}
-
 // TestOptionalDepsGuard_AuditCategory moved to
 // internal/cli/audit_deps_category_test.go with the audit roll-up it
 // exercises (auditOptionalDepsGuard consumes this package's

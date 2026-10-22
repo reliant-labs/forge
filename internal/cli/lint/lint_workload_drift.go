@@ -209,33 +209,6 @@ func collectComponentDrift(projectDir string, cfg *config.ProjectConfig) ([]comp
 	return findings, nil
 }
 
-// runComponentDrift is the text-mode arm. It prints findings and returns nil
-// — this lint never gates.
-func runComponentDrift(projectDir string, cfg *config.ProjectConfig) error {
-	findings, err := collectComponentDrift(projectDir, cfg)
-	if err != nil {
-		return err
-	}
-	if len(findings) == 0 {
-		return nil
-	}
-	for _, f := range findings {
-		if !f.Undeclared {
-			fmt.Printf("⚠️  %s declares %q, which no Go component matches.\n"+
-				"    Fine if it is infrastructure forge did not generate (NATS, a cache, a sidecar).\n"+
-				"    If its subcommand runs several components, list them in its `serves`.\n"+
-				"    Otherwise delete the entry — the component it named is gone.\n",
-				codegen.WorkloadsKCLRelPath, f.Name)
-			continue
-		}
-		fmt.Printf("⚠️  %s %q has no entry in %s, so no environment deploys it.\n"+
-			"    %s\n"+
-			"    Otherwise add:\n\n%s\n",
-			f.Kind, f.Name, codegen.WorkloadsKCLRelPath, codegen.ServesHint(f.Name), f.Stanza)
-	}
-	return nil
-}
-
 // collectComponentDriftJSON is the JSON arm. Every finding is a warning and
 // the step never gates, matching text mode.
 func collectComponentDriftJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {

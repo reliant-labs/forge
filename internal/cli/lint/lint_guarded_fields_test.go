@@ -181,26 +181,3 @@ func TestGuardedFields_NoProtoTreeIsClean(t *testing.T) {
 		t.Errorf("findings = %+v, want none for a project with no proto tree", findings)
 	}
 }
-
-// TestGuardedFields_FormatsCleanAndDirty pins the two report shapes, since
-// the clean line is what a passing `forge lint` prints and the dirty one is
-// the entire user-visible surface of the rule.
-func TestGuardedFields_FormatsCleanAndDirty(t *testing.T) {
-	var clean strings.Builder
-	formatGuardedFields(&clean, nil)
-	if !strings.Contains(clean.String(), "guarded-fields clean") {
-		t.Errorf("clean report = %q", clean.String())
-	}
-
-	var dirty strings.Builder
-	formatGuardedFields(&dirty, []guardedFieldFinding{{
-		File: "frontends/web/src/app/invoices/edit/page.tsx", Line: 5,
-		Table: "invoices", Column: "amount_paid_cents", GuardedBy: "RecordPayment",
-	}})
-	out := dirty.String()
-	for _, want := range []string{"forgeconv-guarded-field-written", "page.tsx:5", "RecordPayment"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("report missing %q:\n%s", want, out)
-		}
-	}
-}

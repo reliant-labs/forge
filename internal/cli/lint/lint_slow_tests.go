@@ -29,7 +29,6 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/checker"
 
-	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 	"github.com/reliant-labs/forge/internal/linter/slowtest"
 	"github.com/reliant-labs/forge/internal/linter/suppress"
@@ -105,28 +104,6 @@ func runSlowTestAnalysis(ctx context.Context, paths []string) ([]finding.Finding
 		return out[i].Line < out[j].Line
 	})
 	return out, nil
-}
-
-// runSlowTestsLint is the text-mode runner.
-func runSlowTestsLint(ctx context.Context, paths []string) error {
-	fmt.Println("🐢 Running slow-test lint (unmarked slow tests leave the fast tier)...")
-	fs, err := runSlowTestAnalysis(ctx, paths)
-	if err != nil {
-		return cliutil.WrapUserErr("forge lint --slow-tests",
-			"failed to run the slow-test analyzer", "",
-			"ensure the project builds, tests included (`go vet ./...`), and go.mod is tidy", err)
-	}
-	if len(fs) == 0 {
-		fmt.Println("✅ Every test that does slow work is marked slow")
-		return nil
-	}
-	for _, f := range fs {
-		fmt.Printf("  ✗ [%s] %s:%d\n      %s\n", f.Rule, f.File, f.Line, f.Message)
-	}
-	fmt.Println()
-	return cliutil.UserErr("forge lint --slow-tests",
-		fmt.Sprintf("%d test(s) do slow work without being marked slow", len(fs)),
-		"", slowTestsFixHint)
 }
 
 // collectSlowTestsJSON is the structured collector (--json, --quiet, --scope).

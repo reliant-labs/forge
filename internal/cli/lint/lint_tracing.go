@@ -24,7 +24,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/linter/finding"
@@ -110,9 +109,10 @@ func tracingFindings(cwd string, cfg *config.ProjectConfig, fix, explicit bool) 
 			res.Fixed = fixed
 		}
 	}
+	// lint.rules grades the findings in the outcome engine (lint_rules.go);
+	// here it only decides which ones --fix rewrites.
 	applied := suppress.ApplyFiles(cwd, res.Findings, os.ReadFile)
-	kept := rules.ApplyAll(applied.Kept)
-	kept = append(kept, applied.Violations...)
+	kept := append(applied.Kept, applied.Violations...)
 	return tracingRun{findings: kept, fixed: res.Fixed}, nil
 }
 
@@ -129,53 +129,6 @@ func instrumentedComponent(dir string) bool {
 		iface = "Service"
 	}
 	return codegen.ShouldInstrumentComponent(dir, ctorType, iface)
-}
-
-// runTracingLint is the text arm.
-func runTracingLint(cwd string, cfg *config.ProjectConfig, fix, explicit bool) error {
-	fmt.Println("Running tracing lint...")
-	run, err := tracingFindings(cwd, cfg, fix, explicit)
-	if err != nil {
-		return err
-	}
-	rewrote := 0
-	for _, f := range run.fixed {
-		rewrote += f.Count
-		fmt.Printf("  ✎ %s: %s\n", f.File, describeTracingFix(f))
-	}
-	if len(run.findings) == 0 {
-		if rewrote > 0 {
-			fmt.Printf("✓ tracing lint clean after %d rewrite(s)\n", rewrote)
-		} else {
-			fmt.Println("✓ tracing lint clean — logs carry their context; HTTP clients, database pools and contracts are traced")
-		}
-		return nil
-	}
-	errs, fixableWarns := 0, 0
-	for _, f := range run.findings {
-		icon := "⚠"
-		if f.Severity == finding.SeverityError {
-			icon = "❌"
-			errs++
-		} else if tracingAutoFixable(f.Rule) {
-			fixableWarns++
-		}
-		fmt.Printf("  %s [%s] %s:%d\n      %s\n", icon, f.Rule, f.File, f.Line, f.Message)
-		if f.Remediation != "" {
-			fmt.Printf("      → %s\n", f.Remediation)
-		}
-	}
-	if fixableWarns > 0 && !explicit {
-		fmt.Printf("\n  %d finding(s) can be rewritten automatically: run `forge lint --tracing --fix`.\n", fixableWarns)
-	}
-	if errs == 0 {
-		fmt.Println("(warnings only — not failing the build)")
-		return nil
-	}
-	return cliutil.UserErr("forge lint --tracing",
-		fmt.Sprintf("%d place(s) where a request's trace is cut", errs), "",
-		"fix each finding above, or suppress one with `// forge:lint-disable-next-line <rule>: <reason>`; "+
-			"to adopt a rule gradually set it to warn under forge.yaml lint.rules — see 'forge skill load observability'")
 }
 
 // describeTracingFix says what a rewrite did to one file, in the words of
@@ -198,14 +151,26 @@ func tracingAutoFixable(rule string) bool {
 	return rule == tracinglint.RuleLogWithoutCtx || rule == tracinglint.RuleContractUninstrumented
 }
 
-// collectTracingJSON is the JSON arm. It never rewrites: --json is
-// detect-only. Error findings gate.
+// collectTracingJSON is the lane. Under --fix the full sweep rewrites the
+// findings whose rule is at error, and a named run (`forge lint --tracing
+// --fix`, the migration) its warnings too; each rewrite is reported as it
+// lands. --json refuses --fix, so it is detect-only. Error findings gate.
 func collectTracingJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-	run, err := tracingFindings(rc.cwd, rc.cfg, false, false)
+	run, err := tracingFindings(rc.cwd, rc.cfg, rc.fix, rc.targeted)
 	if err != nil {
 		return nil, false, err
 	}
+	for _, f := range run.fixed {
+		fmt.Printf("  ✎ %s: %s\n", f.File, describeTracingFix(f))
+	}
 	out := findingsToJSON(run.findings)
+	if !rc.targeted {
+		for i, f := range out {
+			if f.Severity != lintSevError && tracingAutoFixable(f.Rule) && out[i].FixHint == "" {
+				out[i].FixHint = "`forge lint --tracing --fix` rewrites it"
+			}
+		}
+	}
 	return out, anyErrorFinding(out), nil
 }
 

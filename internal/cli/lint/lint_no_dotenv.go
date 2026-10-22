@@ -211,34 +211,6 @@ func classifyDotenv(name string) string {
 	}
 }
 
-// runNoDotenvLint fails when any .env* file exists in the project.
-func runNoDotenvLint(root string) error {
-	if root == "" {
-		return nil
-	}
-	found, err := findDotenvFiles(root)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("scan for .env files: %w", err)
-	}
-	if len(found) == 0 {
-		return nil
-	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "%d .env file(s) found — forge projects do not use them:\n", len(found))
-	for _, f := range found {
-		fmt.Fprintf(&b, "    %-28s %s\n", f.Path, f.Why)
-	}
-	b.WriteString("\nA dotenv is injected into every host service wholesale, so its values\n")
-	b.WriteString("never have to be declared in KCL — which is how config stops being\n")
-	b.WriteString("reproducible. Declare secrets with `EnvVar.secret_ref` and store the\n")
-	b.WriteString("values with `forge secret set --env <env> <KEY>`.")
-	return errors.New(b.String())
-}
-
 // collectNoDotenvJSON is the JSON-mode view of the same check.
 func collectNoDotenvJSON(root string) ([]lintJSONFinding, error) {
 	if root == "" {
@@ -246,7 +218,10 @@ func collectNoDotenvJSON(root string) ([]lintJSONFinding, error) {
 	}
 	found, err := findDotenvFiles(root)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("scan for .env files: %w", err)
 	}
 	out := make([]lintJSONFinding, 0, len(found))
 	for _, f := range found {
@@ -255,6 +230,9 @@ func collectNoDotenvJSON(root string) ([]lintJSONFinding, error) {
 			Severity: "error",
 			File:     f.Path,
 			Message:  fmt.Sprintf(".env files are not used by forge projects: %s", f.Why),
+			FixHint: "a dotenv is injected into every host service wholesale, so its values never have to be " +
+				"declared in KCL — which is how config stops being reproducible. Declare secrets with " +
+				"`EnvVar.secret_ref` and store the values with `forge secret set --env <env> <KEY>`",
 		})
 	}
 	return out, nil

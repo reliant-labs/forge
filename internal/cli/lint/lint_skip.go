@@ -261,24 +261,6 @@ func contains(list []string, s string) bool {
 	return false
 }
 
-// gapFromError is the text driver's laneGap for a laneUnavailableError.
-func gapFromError(lane string, err *laneUnavailableError, verdict gapVerdict, why string) laneGap {
-	return laneGap{lane: lane, reason: err.reason, fix: err.fixHint, verdict: verdict, allowedBecause: why}
-}
-
-// printGap reports one lane that could not run, where the text driver
-// prints a lane's result. The verdict names it again as the last line.
-func printGap(g laneGap) {
-	switch g.verdict {
-	case gapAllowed:
-		fmt.Fprintf(os.Stderr, "  ⏭  %s SKIPPED (allowed: %s) — did NOT run: %s\n", g.lane, g.allowedBecause, g.reason)
-	case gapFails:
-		fmt.Fprintf(os.Stderr, "  ❌ %s did NOT run: %s\n     ↳ %s\n     ↳ %s\n", g.lane, g.reason, g.fix, acceptSkipHint([]laneGap{g}))
-	default:
-		fmt.Fprintf(os.Stderr, "  ⚠️  %s did NOT run: %s\n     ↳ %s\n", g.lane, g.reason, g.fix)
-	}
-}
-
 // acceptSkipHint names the opt-out for the lanes that could not run.
 func acceptSkipHint(gaps []laneGap) string {
 	names := make([]string, 0, len(gaps))
@@ -305,15 +287,6 @@ func describeAllowed(gaps []laneGap) string {
 		parts = append(parts, fmt.Sprintf("%s — %s", g.lane, g.allowedBecause))
 	}
 	return strings.Join(parts, "; ")
-}
-
-// gapNames lists the lanes of gaps.
-func gapNames(gaps []laneGap) []string {
-	out := make([]string, 0, len(gaps))
-	for _, g := range gaps {
-		out = append(out, g.lane)
-	}
-	return out
 }
 
 // npmInstallFix is the remediation for a frontend whose dependencies are

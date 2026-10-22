@@ -135,22 +135,6 @@ func fluxSafeSeverity(f fluxSafeFinding) finding.Severity {
 	return finding.SeverityWarning
 }
 
-func runFluxSafeLint(ctx context.Context, projectDir string, cfg *config.ProjectConfig) error {
-	errs := 0
-	for _, f := range fluxSafeFindings(ctx, projectDir, cfg) {
-		icon := "⚠️ "
-		if fluxSafeSeverity(f) == finding.SeverityError {
-			icon = "❌"
-			errs++
-		}
-		fmt.Printf("%s [%s] env %s: %s\n", icon, f.Rule, f.env, f.FluxFinding)
-	}
-	if errs > 0 {
-		return fmt.Errorf("%d object(s) are not safe under a reconciler", errs)
-	}
-	return nil
-}
-
 func collectFluxSafeJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 	var out []lintJSONFinding
 	gated := false

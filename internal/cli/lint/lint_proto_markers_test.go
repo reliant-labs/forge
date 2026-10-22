@@ -1,7 +1,6 @@
 package lint
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -240,31 +239,6 @@ func TestCollectProtoMarkerFindings_MissingDirIsNotAnError(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected no findings, got %+v", findings)
-	}
-}
-
-func TestFormatProtoMarkers_CleanAndDirty(t *testing.T) {
-	var buf bytes.Buffer
-	formatProtoMarkers(&buf, nil)
-	if !strings.Contains(buf.String(), "proto-markers clean") {
-		t.Errorf("clean output missing success line: %s", buf.String())
-	}
-
-	buf.Reset()
-	formatProtoMarkers(&buf, []protoMarkerFinding{{
-		File: "proto/services/demo/v1/order.proto", Line: 6,
-		Marker: "forge:server-set", Renamed: codegen.ProtoMarkerReadOnly,
-	}})
-	out := buf.String()
-	for _, want := range []string{
-		"[forge-proto-markers] proto/services/demo/v1/order.proto:6",
-		"forge:server-set",
-		"forge:read-only",
-		"warnings only",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("dirty output missing %q:\n%s", want, out)
-		}
 	}
 }
 

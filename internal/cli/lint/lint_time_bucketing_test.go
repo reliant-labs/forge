@@ -1,7 +1,6 @@
 package lint
 
 import (
-	"bytes"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -252,54 +251,6 @@ func TestTimeBucketing_GeneratedFileAndNoMigrations_Silent(t *testing.T) {
 }
 
 // ── Report shape ─────────────────────────────────────────────────────────
-
-// The clean line must describe the shape this lane actually checked, not
-// give a blanket timezone clearance — a clean line that overstates its scope
-// converts "I did not check that" into "I checked, it is fine".
-func TestTimeBucketing_CleanReportNamesItsScope(t *testing.T) {
-	var buf bytes.Buffer
-	formatTimeBucketing(&buf, nil)
-	out := buf.String()
-	if !strings.Contains(out, "date_trunc") {
-		t.Errorf("clean line does not name the construct it checked:\n%s", out)
-	}
-}
-
-func TestTimeBucketing_ReportIsWarningOnly(t *testing.T) {
-	root := newTelemetryProject(t)
-	writeFile(t, root, "internal/handlers/telemetry/queries.go",
-		goHandlerWith("SELECT date_trunc('day', recorded_at) FROM telemetry_samples"))
-	findings, err := collectTimeBucketFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collect: %v", err)
-	}
-	var buf bytes.Buffer
-	formatTimeBucketing(&buf, findings)
-	out := buf.String()
-	if !strings.Contains(out, "⚠") {
-		t.Errorf("finding is not rendered as a warning:\n%s", out)
-	}
-	if !strings.Contains(out, "warnings only") {
-		t.Errorf("report does not state it is non-gating:\n%s", out)
-	}
-
-	js, err := collectTimeBucketingJSONAt(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("json: %v", err)
-	}
-	if len(js) != 1 {
-		t.Fatalf("got %d JSON findings, want 1", len(js))
-	}
-	if js[0].Severity != lintSevWarning {
-		t.Errorf("severity = %q, want warning", js[0].Severity)
-	}
-	if js[0].Rule != timeBucketRuleID {
-		t.Errorf("rule = %q, want %q", js[0].Rule, timeBucketRuleID)
-	}
-	if js[0].Col == 0 {
-		t.Errorf("JSON finding carries no column")
-	}
-}
 
 func assertNoTimeBucketFindings(t *testing.T, root string) {
 	t.Helper()

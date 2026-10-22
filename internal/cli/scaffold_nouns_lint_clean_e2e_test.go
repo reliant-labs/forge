@@ -121,11 +121,11 @@ func TestE2EScaffoldNounsLeaveLintGreen(t *testing.T) {
 					t.Errorf("lint lane was skipped (%q) — the exit-0 assertion is vacuous:\n%s", banned, out)
 				}
 			}
-			markers := []string{"Running golangci-lint", "Running contract interface enforcement linter"}
+			markers := []string{"✓ golangci-lint", "✓ contract linter"}
 			if tc.frontend != "" {
 				markers = append(markers,
-					"Running frontend linters for "+tc.frontend,
-					tc.frontend+": lint passed",
+					"✓ frontend lint",
+					tc.frontend+": npm run lint passed",
 					tc.frontend+": typecheck passed",
 				)
 			}

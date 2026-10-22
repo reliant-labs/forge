@@ -291,12 +291,11 @@ func TestResolveGolangciLint_MissingAndUnbuildableFails(t *testing.T) {
 
 	rc := f.runCtx(moduleDir(t, "1.27"))
 	gate := findStep(t, "golangci-lint")
-	if err := gate.runText(rc); err == nil || !strings.Contains(err.Error(), "forge tools install") {
-		t.Errorf("text gate: want the lane to fail with the fix, got %v", err)
-	}
 	fs, gated, err := collectGraded(t, gate, rc)
 	if err != nil || !gated || len(fs) != 1 || fs[0].Severity != lintSevError {
-		t.Errorf("json gate: want one gating error finding, got gated=%v err=%v %+v", gated, err, fs)
+		t.Errorf("gate: want one gating error finding, got gated=%v err=%v %+v", gated, err, fs)
+	} else if !strings.Contains(fs[0].Message+fs[0].FixHint, "forge tools install") {
+		t.Errorf("gate: want the fix named, got %+v", fs[0])
 	}
 }
 
@@ -319,18 +318,15 @@ func TestGolangciLanesReportUnresolvedToolchain(t *testing.T) {
 		golangciMemo: &golangciMemo{resolved: true, res: golangciResolution{err: unresolved}}}
 
 	gate := findStep(t, "golangci-lint")
-	if err := gate.runText(rc); err == nil || !strings.Contains(err.Error(), "go1.26.2") {
-		t.Fatalf("text gate: want the actionable error, got %v", err)
-	}
 	fs, gated, err := collectGraded(t, gate, rc)
 	if err != nil || !gated || len(fs) != 1 || fs[0].Severity != lintSevError || !strings.Contains(fs[0].Message, "go 1.27") {
 		t.Fatalf("json gate: want one gating error finding naming the mismatch, got gated=%v err=%v %+v", gated, err, fs)
 	}
 
 	guard := findStep(t, "typed-config guardrail")
-	var unavail *laneUnavailableError
-	if err := guard.runText(rc); !errors.As(err, &unavail) {
-		t.Fatalf("advisory guardrail: want a could-not-run error, got %v", err)
+	gfs, _, err := guard.collect(rc)
+	if err != nil || len(gfs) == 0 || !isGapRule(gfs[0].Rule) {
+		t.Fatalf("advisory guardrail: want a could-not-run finding, got err=%v %+v", err, gfs)
 	}
 }
 
@@ -420,17 +416,17 @@ func TestGolangciExportDataSkew_LintsWithAToolchainBuild(t *testing.T) {
 	}
 }
 
-// TestGolangciExportDataSkew_TextModeAndExitZero covers the other three
+// TestGolangciExportDataSkew_ExitZero covers the gate and the guardrail
 // lanes. The guardrail runs with --issues-exit-code=0, so there the bogus
 // report EXITS 0 and would pass as a warning-level finding: detection must
 // not depend on the exit status.
-func TestGolangciExportDataSkew_TextModeAndExitZero(t *testing.T) {
+func TestGolangciExportDataSkew_ExitZero(t *testing.T) {
 	f, dir, pinned := newExportSkewFake(t)
-	if err := findStep(t, "golangci-lint").runText(f.runCtx(dir)); err != nil {
-		t.Fatalf("text gate: want the re-run's clean verdict, got %v", err)
+	if fs, gated, err := findStep(t, "golangci-lint").collect(f.runCtx(dir)); err != nil || gated {
+		t.Fatalf("gate: want the re-run's clean verdict, got gated=%v err=%v %+v", gated, err, fs)
 	}
 	if want := []string{f.onPath, pinned}; !slices.Equal(f.runs, want) {
-		t.Fatalf("text gate runs = %q, want %q", f.runs, want)
+		t.Fatalf("gate runs = %q, want %q", f.runs, want)
 	}
 
 	f, dir, pinned = newExportSkewFake(t)
@@ -442,13 +438,6 @@ func TestGolangciExportDataSkew_TextModeAndExitZero(t *testing.T) {
 		t.Fatalf("json guardrail runs = %q, want %q", f.runs, want)
 	}
 
-	f, dir, pinned = newExportSkewFake(t)
-	if err := findStep(t, "typed-config guardrail").runText(f.runCtx(dir)); err != nil {
-		t.Fatalf("text guardrail: want the re-run, got %v", err)
-	}
-	if want := []string{f.onPath, pinned}; !slices.Equal(f.runs, want) {
-		t.Fatalf("text guardrail runs = %q, want %q", f.runs, want)
-	}
 }
 
 // TestGolangciExportDataSkew_PinCannotReadEitherFailsWithRunbook is the

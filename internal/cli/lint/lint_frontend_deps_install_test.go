@@ -2,7 +2,6 @@ package lint
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -76,8 +75,8 @@ func TestLintFrontendDirInstallsMissingDepsThenRuns(t *testing.T) {
 	calls := fakeNPM(t, 0)
 	dir := freshFrontend(t, `{"scripts":{"lint":"eslint ."}}`)
 
-	if err := lintFrontendDir(context.Background(), "web", dir, "", false, false); err != nil {
-		t.Fatalf("lane failed after a successful install: %v", err)
+	if fs, gated := collectFrontendDirJSON(context.Background(), "web", dir, false, false); gated || hasGap(fs) {
+		t.Fatalf("lane failed after a successful install: gated=%v %+v", gated, fs)
 	}
 	got := readLog(t, calls)
 	if !strings.HasPrefix(got, "ci\n") || !strings.Contains(got, "run lint") {
@@ -94,16 +93,12 @@ func TestLintFrontendDirFailsLoudlyWhenInstallFails(t *testing.T) {
 	fakeNPM(t, 1)
 	dir := freshFrontend(t, `{"scripts":{"lint":"eslint ."}}`)
 
-	err := lintFrontendDir(context.Background(), "web", dir, "", false, false)
-	if err == nil {
-		t.Fatal("lane passed although dependencies could not be installed")
+	fs, _ := collectFrontendDirJSON(context.Background(), "web", dir, false, false)
+	if len(fs) != 1 || fs[0].Rule != ruleFrontendLintUnavailable {
+		t.Fatalf("install failure must be a lane that could NOT run, got %+v", fs)
 	}
-	var unavail *laneUnavailableError
-	if !errors.As(err, &unavail) {
-		t.Fatalf("install failure must be a lane that could NOT run, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "did NOT run") || !strings.Contains(unavail.fixHint, "npm ") {
-		t.Errorf("want the reason and the install command, got reason=%v fix=%q", err, unavail.fixHint)
+	if !strings.Contains(fs[0].Message, "did NOT run") || !strings.Contains(fs[0].FixHint, "npm ") {
+		t.Errorf("want the reason and the install command, got %+v", fs[0])
 	}
 	rc := &lintRunCtx{}
 	if v, _ := rc.judgeGap("frontend lint", true); v != gapFails {
@@ -140,4 +135,14 @@ func TestTypecheckFrontendFailsWhenInstallFails(t *testing.T) {
 	if !strings.Contains(res.reason, "did NOT run") || res.fixHint == "" {
 		t.Errorf("want the reason and the fix, got reason=%q fix=%q", res.reason, res.fixHint)
 	}
+}
+
+// hasGap reports whether a lane's findings include its could-not-run headline.
+func hasGap(fs []lintJSONFinding) bool {
+	for _, f := range fs {
+		if isGapRule(f.Rule) {
+			return true
+		}
+	}
+	return false
 }

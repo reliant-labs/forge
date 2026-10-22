@@ -452,71 +452,6 @@ func typecheckGates(cfg *config.ProjectConfig) bool {
 	return cfg.Lint.Frontend.EffectiveTypecheck() == "error"
 }
 
-// runFrontendTypecheckText is the text-mode action for pipeline step 5b.
-// Per-frontend output is buffered by typecheckFrontend and printed here
-// in target order, so concurrency never interleaves two compilers'
-// output.
-func runFrontendTypecheckText(rc *lintRunCtx) error {
-	targets := frontendTypecheckTargets(rc.cfg)
-	results := runFrontendTypechecks(rc.ctx, targets, rc.cwd)
-
-	printedHeader := false
-	header := func() {
-		if !printedHeader {
-			fmt.Println("Running frontend typecheck...")
-			printedHeader = true
-		}
-	}
-
-	gates := typecheckGates(rc.cfg)
-	failed := 0
-	var unavailable, fixes []string
-	for _, r := range results {
-		switch r.status {
-		case typecheckNotApplicable:
-			continue
-		case typecheckPassed:
-			header()
-			fmt.Printf("  ✓ %s: typecheck passed\n", r.target.name)
-		case typecheckUnavailable:
-			// Reported once, by the driver, as the lane that could NOT
-			// run (laneUnavailableError) — what that does to the run is
-			// judgeGap's call, not this lane's.
-			header()
-			unavailable = append(unavailable, r.target.name+": "+r.reason)
-			if !contains(fixes, r.fixHint) {
-				fixes = append(fixes, r.fixHint)
-			}
-		case typecheckFailed:
-			header()
-			marker := "❌"
-			if !gates {
-				marker = "⚠️ "
-			}
-			fmt.Fprintf(os.Stderr, "  %s %s: %s reported type errors\n", marker, r.target.name, r.command)
-			if strings.TrimSpace(r.output) != "" {
-				fmt.Fprintln(os.Stderr, indentBlock(r.output, "     "))
-			}
-			if gates {
-				failed++
-			}
-		}
-	}
-
-	switch {
-	case failed > 0 && len(unavailable) > 0:
-		// A real failure outranks the gap, as in the eslint lane; the
-		// frontends that could not be checked are named alongside it.
-		return fmt.Errorf("%d frontend(s) reported type errors; could NOT typecheck: %s (%s)",
-			failed, strings.Join(unavailable, "; "), strings.Join(fixes, "; "))
-	case failed > 0:
-		return fmt.Errorf("%d frontend(s) reported type errors", failed)
-	case len(unavailable) > 0:
-		return laneUnavailable(strings.Join(fixes, "; "), "%s", strings.Join(unavailable, "; "))
-	}
-	return nil
-}
-
 // collectFrontendTypecheckJSON is the --json collector for step 5b. It
 // mirrors runFrontendTypecheckText's verdict exactly; compiler output is
 // normalized through externalLinesToFindings so `file(line,col): message`
@@ -534,7 +469,7 @@ func collectFrontendTypecheckJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, erro
 		case typecheckNotApplicable:
 			continue
 		case typecheckPassed:
-			continue
+			out = append(out, ranNote(fmt.Sprintf("%s: typecheck passed (%s)", r.target.name, r.command)))
 		case typecheckUnavailable:
 			// Graded by applyGapPolicy (lint_skip.go).
 			out = append(out, lintJSONFinding{
@@ -562,16 +497,4 @@ func collectFrontendTypecheckJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, erro
 		}
 	}
 	return out, gated, nil
-}
-
-// indentBlock prefixes every non-empty line of s with indent, for nesting
-// a sub-tool's captured output under its per-frontend marker line.
-func indentBlock(s, indent string) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
-	for i, l := range lines {
-		if strings.TrimSpace(l) != "" {
-			lines[i] = indent + l
-		}
-	}
-	return strings.Join(lines, "\n")
 }

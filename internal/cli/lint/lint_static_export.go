@@ -51,9 +51,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
-	"strings"
 
-	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/linter/finding"
@@ -181,76 +179,20 @@ func staticExportFindings(ctx context.Context, projectDir string, cfg *config.Pr
 	return kept, len(targets), nil
 }
 
-// runStaticExportLint is the text arm.
-func runStaticExportLint(ctx context.Context, projectDir string, cfg *config.ProjectConfig) error {
-	fmt.Println("Running static-export lint...")
-	fs, judged, err := staticExportFindings(ctx, projectDir, cfg, renderStaticBindings)
-	if err != nil {
-		return err
-	}
-	if judged == 0 {
-		if vite := viteFrontendNames(cfg); len(vite) > 0 {
-			// A Vite SPA builds to static files by construction: there is no
-			// server mode for an export to refuse, so there is nothing for
-			// this lane to judge — and saying "no frontend is a static
-			// export" about a site bound to forge.OnHosted would be false.
-			fmt.Printf("  static-export: %s — a Vite build is static by construction, and no Next.js frontend needs checking\n",
-				strings.Join(vite, ", "))
-			return nil
-		}
-		fmt.Println("  static-export: no frontend is a static export (none is a static export or is bound to a static runtime) — nothing to check")
-		return nil
-	}
-	if len(fs) == 0 {
-		fmt.Printf("✓ static-export clean — %d static frontend(s) use nothing a static export cannot serve\n", judged)
-		return nil
-	}
-	errs := 0
-	for _, f := range fs {
-		icon := "⚠"
-		if f.Severity == finding.SeverityError {
-			icon = "❌"
-			errs++
-		}
-		loc := f.File
-		if f.Line > 0 {
-			loc = fmt.Sprintf("%s:%d", f.File, f.Line)
-		}
-		fmt.Printf("  %s [%s] %s\n      %s\n      → %s\n", icon, f.Rule, loc, f.Message, f.Remediation)
-	}
-	fmt.Println()
-	fmt.Println("  `next build` with output: export (CI's `NODE_ENV=production npm run build`, `forge build`, `forge env deploy`) is the authoritative check; this lint reports its failures earlier, with file:line, plus what it cannot see.")
-	if errs == 0 {
-		fmt.Println("(warnings only — not failing the build)")
-		return nil
-	}
-	return cliutil.UserErr("forge lint --static-export",
-		fmt.Sprintf("%d construct(s) a static export cannot serve", errs), "",
-		"fix each finding above (or suppress one with `// forge:lint-disable-next-line <rule>: <reason>`) — see 'forge skill load frontend/serving'")
-}
-
 // collectStaticExportJSON is the JSON arm. Error findings gate.
 func collectStaticExportJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-	fs, _, err := staticExportFindings(rc.ctx, rc.cwd, rc.cfg, renderStaticBindings)
+	fs, judged, err := staticExportFindings(rc.ctx, rc.cwd, rc.cfg, renderStaticBindings)
 	if err != nil {
 		return nil, false, err
 	}
 	out := findingsToJSON(fs)
+	switch {
+	case judged == 0:
+		out = append(out, ranNote("no Next.js frontend is a static export or bound to a static runtime — nothing to check"))
+	case len(out) == 0:
+		out = append(out, ranNote(fmt.Sprintf("static-export clean — %d static frontend(s) use nothing a static export cannot serve", judged)))
+	}
 	return out, anyErrorFinding(out), nil
-}
-
-// viteFrontendNames lists the Vite SPAs in the inventory, as "<name> (vite)".
-func viteFrontendNames(cfg *config.ProjectConfig) []string {
-	if cfg == nil {
-		return nil
-	}
-	var out []string
-	for _, fe := range cfg.Frontends {
-		if fe.Type == "vite-spa" {
-			out = append(out, fe.Name+" (vite)")
-		}
-	}
-	return out
 }
 
 // hasNextJSFrontend reports whether the lane can apply at all.

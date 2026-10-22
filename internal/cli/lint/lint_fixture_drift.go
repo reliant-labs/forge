@@ -76,7 +76,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -86,7 +85,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lib/pq"
 
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/shadowdb"
 	"github.com/reliant-labs/forge/pkg/schemadef"
 )
@@ -165,50 +163,6 @@ type fixtureDriftReport struct {
 	// UnverifiedFile is a root-relative test file the unverified statements
 	// live in, so the JSON finding has somewhere to point.
 	UnverifiedFile string
-}
-
-// runFixtureDriftLint is the text-mode entry point.
-func runFixtureDriftLint(cwd string, cfg *config.ProjectConfig) error {
-	fmt.Println("Running fixture-drift lint...")
-	rep, err := collectFixtureDriftFindings(cwd, migrationsDirFor(cfg))
-	if err != nil {
-		return err
-	}
-	formatFixtureDrift(os.Stdout, rep)
-	return nil
-}
-
-// formatFixtureDrift writes the human report, matching the sibling advisory
-// lanes: one success line when clean, one ⚠ block per finding otherwise.
-//
-// The clean line states exactly what was checked. A clean line that
-// overstates its scope is worse than no line, because it converts "I did not
-// check that" into "I checked, it is fine" — the previous wording of this lane
-// was read as a foreign-key clearance it never gave.
-func formatFixtureDrift(w io.Writer, rep fixtureDriftReport) {
-	if rep.Unverified != "" {
-		_, _ = fmt.Fprintf(w, "  ⚠ [%s] fixture-drift did NOT run: %s\n", fixtureDriftUnverifiedRule, rep.Unverified)
-		_, _ = fmt.Fprintln(w, "      → literal fixtures exist but were not executed; this is not a clean verdict")
-		return
-	}
-	if len(rep.Findings) == 0 {
-		if rep.Statements == 0 {
-			_, _ = fmt.Fprintln(w, "  fixture-drift clean — no scaffolded handlers_crud_test.go carries literal fixture SQL "+
-				"(lifecycle tests build their rows from the regenerated factories_gen_test.go)")
-			return
-		}
-		_, _ = fmt.Fprintf(w, "  fixture-drift clean — all %d literal fixture statement(s) in scaffolded "+
-			"handlers_crud_test.go files execute against the current schema (run in a rolled-back transaction)\n",
-			rep.Statements)
-		return
-	}
-	for _, f := range rep.Findings {
-		_, _ = fmt.Fprintf(w, "  ⚠ [%s] %s:%d\n", fixtureDriftRule, f.File, f.Line)
-		_, _ = fmt.Fprintf(w, "      %s\n", f.message())
-		_, _ = fmt.Fprintf(w, "      → %s\n", fixtureDriftFixHint(f))
-	}
-	_, _ = fmt.Fprintf(w, "\n%d scaffolded fixture statement(s) that the current schema rejects.\n", len(rep.Findings))
-	_, _ = fmt.Fprintln(w, "(warnings only — not failing the build)")
 }
 
 // collectFixtureDriftFindings is the shared engine behind text mode and

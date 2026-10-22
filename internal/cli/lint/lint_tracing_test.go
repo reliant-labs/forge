@@ -87,8 +87,9 @@ func TestTracingFixPolicy(t *testing.T) {
 			if !strings.Contains(src, `slog.Info("b")`) {
 				t.Errorf("a suppressed call was rewritten:\n%s", src)
 			}
-			if len(run.findings) != tc.wantFinds {
-				t.Errorf("findings = %+v, want %d", run.findings, tc.wantFinds)
+			// lint.rules grades what is reported in the outcome engine.
+			if graded, _ := gradeLane(effectiveRules(tc.cfg), findingsToJSON(run.findings), false); len(graded) != tc.wantFinds {
+				t.Errorf("findings = %+v, want %d", graded, tc.wantFinds)
 			}
 		})
 	}

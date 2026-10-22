@@ -317,8 +317,20 @@ func (o lintStepOutcome) failedBeyondGap() bool {
 // collectLintOutcomes runs the pipeline's collectors and returns one outcome
 // per step, applying --scope. It is the engine behind --json, --quiet and
 // --scope; collectAllLintersJSON flattens it.
+//
+// The lint.rules check leads: a dial the run cannot honour is reported with
+// every verdict it would have changed.
 func collectLintOutcomes(rc *lintRunCtx) []lintStepOutcome {
-	return collectLintOutcomesFrom(rc, lintPipeline())
+	return append(lintRulesOutcomes(rc.cfg), collectLintOutcomesFrom(rc, lintPipeline())...)
+}
+
+// lintRulesOutcomes is the lint.rules check as zero or one outcome: none when
+// every entry is honoured, so a clean dial adds nothing to the report.
+func lintRulesOutcomes(cfg *config.ProjectConfig) []lintStepOutcome {
+	if o := lintRulesOutcome(cfg); o.ran {
+		return []lintStepOutcome{o}
+	}
+	return nil
 }
 
 // collectLintOutcomesFrom is collectLintOutcomes over an explicit step list,
@@ -333,6 +345,9 @@ func collectLintOutcomesFrom(rc *lintRunCtx, pipeline []linterStep) []lintStepOu
 			o.skipMsg = skipMsg
 			outcomes = append(outcomes, o)
 			continue
+		}
+		if rc.progress != nil && !(rc.scope != nil && step.scope == scopeWholeProject) {
+			fmt.Fprintf(rc.progress, "▸ %s\n", step.name)
 		}
 		stepRC := rc
 		if rc.scope != nil {
@@ -372,6 +387,9 @@ func collectLintOutcomesFrom(rc *lintRunCtx, pipeline []linterStep) []lintStepOu
 			}}
 			gated = step.gates
 		}
+		// lint.rules grades every lane here, once, before the scope narrows
+		// it (lint_rules.go).
+		fs, gated = gradeLane(effectiveRules(rc.cfg), fs, gated)
 		o.ran = true
 		o.findings, o.gated = scopeOutcome(rc.scope, fs, gated)
 		applyGapPolicy(&o, laneGates(step, rc), rc)
@@ -427,13 +445,17 @@ func collectTargetedOutcomes(
 	store *projectstore.Store,
 	cfg *config.ProjectConfig,
 	scope *lintScope,
+	progress io.Writer,
 ) ([]lintStepOutcome, bool, error) {
 	lanes := selectedLanes(flags)
 	if len(lanes) == 0 {
 		return nil, false, nil
 	}
-	outcomes := make([]lintStepOutcome, 0, len(lanes))
+	outcomes := lintRulesOutcomes(cfg)
 	for _, lane := range lanes {
+		if progress != nil {
+			fmt.Fprintf(progress, "▸ --%s\n", lane)
+		}
 		o, err := collectLaneOutcome(ctx, onlyLane(flags, lane), lane, paths, cwd, store, cfg, scope)
 		if err != nil {
 			return nil, true, err
@@ -479,8 +501,9 @@ func collectLaneOutcome(
 		// running the whole suite under one lane's name.
 		return o, fmt.Errorf("--%s has no structured collector; run it without --quiet/--scope/--json", lane)
 	}
+	fs, gated := gradeLane(effectiveRules(cfg), report.Findings, !report.OK)
 	o.ran = true
-	o.findings, o.gated = scopeOutcome(scope, report.Findings, !report.OK)
+	o.findings, o.gated = scopeOutcome(scope, fs, gated)
 	return o, nil
 }
 
@@ -507,9 +530,15 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 		return err
 	}
 
+	// A human run says where it is as each lane starts; --quiet promises
+	// one line for a clean run, so it does not.
+	var progress io.Writer
+	if !flags.quiet {
+		progress = os.Stderr
+	}
 	realStdout := os.Stdout
 	os.Stdout = os.Stderr
-	outcomes, targeted, err := collectTargetedOutcomes(ctx, flags, paths, cwd, store, cfg, scope)
+	outcomes, targeted, err := collectTargetedOutcomes(ctx, flags, paths, cwd, store, cfg, scope, progress)
 	fixed := 0
 	switch {
 	case targeted:
@@ -529,6 +558,7 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 			cwd:           cwd,
 			scope:         scope,
 			allowSkip:     allow,
+			progress:      progress,
 			golangciMemo:  newGolangciMemo(productionGolangciToolchain()),
 		})
 		if !fix {
@@ -625,6 +655,15 @@ func renderLintOutcomes(w io.Writer, outcomes []lintStepOutcome, quiet bool, sco
 		}
 
 		switch {
+		case !quiet && !o.gated && len(errs)+len(warns) == 0 && o.gap == nil:
+			// A clean lane says it ran, and what it checked: the line that
+			// tells a clean run from a vacuous one.
+			fmt.Fprintf(w, "✓ %s\n", o.name)
+			for _, f := range o.findings {
+				if f.Rule == ruleRanNote {
+					fmt.Fprintf(w, "   · %s\n", f.Message)
+				}
+			}
 		case o.gated:
 			shown := errs
 			if !quiet {
@@ -653,6 +692,16 @@ func renderLintOutcomes(w io.Writer, outcomes []lintStepOutcome, quiet bool, sco
 		}
 	}
 	return v.render(w)
+}
+
+// ruleRanNote marks an info finding a lane adds to say what it checked
+// ("web: npm run lint passed"). It never gates; the human report prints it
+// under the lane's ✓ line, so a clean run shows what it proved.
+const ruleRanNote = "ran"
+
+// ranNote is one such note.
+func ranNote(msg string) lintJSONFinding {
+	return lintJSONFinding{Severity: lintSevInfo, Rule: ruleRanNote, Message: msg}
 }
 
 // issueCount counts the issues a finding list reports. A sub-tool's raw

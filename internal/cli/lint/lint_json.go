@@ -94,6 +94,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/linter/contract"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
@@ -261,7 +262,7 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 	}
 	// Targeted lanes go through the outcome engine, which knows how each
 	// lane honours --scope, and one report covers every lane named.
-	if outcomes, targeted, err := collectTargetedOutcomes(ctx, flags, paths, cwd, store, cfg, scope); targeted {
+	if outcomes, targeted, err := collectTargetedOutcomes(ctx, flags, paths, cwd, store, cfg, scope, nil); targeted {
 		if err != nil {
 			return nil, err
 		}
@@ -381,7 +382,9 @@ func collectSingleLinterJSON(
 	case flags.staticExport:
 		return report(collectStaticExportJSON(&lintRunCtx{ctx: ctx, cfg: cfg, cwd: cwd}))
 	case flags.tracing:
-		return report(collectTracingJSON(&lintRunCtx{ctx: ctx, cfg: cfg, cwd: cwd}))
+		// `forge lint --tracing --fix` is the migration: the named lane fixes
+		// its warnings too (--json refuses --fix, so it stays detect-only).
+		return report(collectTracingJSON(&lintRunCtx{ctx: ctx, cfg: cfg, cwd: cwd, fix: flags.autoFix(), targeted: true}))
 	case flags.protoOptions:
 		return reportUngated(collectProtoOptionsJSON(protoDirDefault))
 	case flags.vendoredProtos:
@@ -1181,6 +1184,22 @@ func collectFrontendLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
 
 	var out []lintJSONFinding
 	gated := false
+	for _, f := range frontends {
+		fs, g := collectFrontendDirJSON(ctx, f.name, f.dir, cssHealth, rc.fix)
+		out = append(out, fs...)
+		gated = gated || g
+	}
+	return out, gated
+}
+
+// collectFrontendDirJSON lints one frontend: its npm lint script (and
+// lint:styles under css_health), with eslint --fix when the run fixes. A
+// frontend with no node_modules gets its dependencies installed first, as a
+// fresh worktree needs; a lane that still cannot run (the install failed, the
+// directory is missing) is a `-unavailable` finding the gap policy grades.
+func collectFrontendDirJSON(ctx context.Context, name, dir string, cssHealth, fix bool) ([]lintJSONFinding, bool) {
+	var out []lintJSONFinding
+	gated := false
 	// Graded by applyGapPolicy (lint_skip.go): this lane gates, so a
 	// frontend it could not lint fails the run unless the skip is accepted.
 	unavailable := func(msg, hint string) {
@@ -1191,69 +1210,78 @@ func collectFrontendLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
 			FixHint:  hint,
 		})
 	}
-	for _, f := range frontends {
-		if !dirExists(f.dir) {
-			unavailable(fmt.Sprintf("%s: directory %s not found — eslint did NOT run", f.name, f.dir),
-				fmt.Sprintf("fix the `path:` for frontend %q in forge.yaml, or remove the entry", f.name))
-			continue
+	if !dirExists(dir) {
+		unavailable(fmt.Sprintf("%s: directory %s not found — eslint did NOT run", name, dir),
+			fmt.Sprintf("fix the `path:` for frontend %q in forge.yaml, or remove the entry", name))
+		return out, gated
+	}
+	pkgJSON := filepath.Join(dir, "package.json")
+	if _, err := os.Stat(pkgJSON); err != nil {
+		// Not a Node project — does not apply, so it contributes nothing.
+		return out, gated
+	}
+	// Walk to the workspace root: an npm/pnpm workspace HOISTS a member's
+	// dependencies, so <feDir>/node_modules is legitimately absent in a
+	// fully installed tree (forge's own dev bridge produces exactly that
+	// layout). A frontend-local-only probe turns that into "eslint did NOT
+	// run" — a lane silently downgraded to advisory on a tree that is
+	// perfectly lintable.
+	if !anyAncestorHasNodeModules(dir, ".") {
+		if err := frontenddeps.Ensure(ctx, "[lint]", name, dir, "", true); err != nil {
+			unavailable(fmt.Sprintf("%s: dependencies are not installed and installing them failed — eslint did NOT run: %v", name, err),
+				npmInstallFix(dir))
+			return out, gated
 		}
-		pkgJSON := filepath.Join(f.dir, "package.json")
-		if _, err := os.Stat(pkgJSON); err != nil {
-			// Not a Node project — does not apply, so it contributes nothing.
-			continue
+	}
+	if !anyAncestorHasNodeModules(dir, ".") {
+		unavailable(fmt.Sprintf("%s: node_modules not found in %s or any ancestor — eslint did NOT run", name, dir),
+			npmInstallFix(dir))
+		return out, gated
+	}
+	scripts, err := readPackageScripts(pkgJSON)
+	if err != nil {
+		out = append(out, lintJSONFinding{Severity: lintSevError, Rule: "external", Message: fmt.Sprintf("%s: read package.json scripts: %v", name, err)})
+		gated = true
+		return out, gated
+	}
+
+	runScript := func(script string) {
+		args := []string{"run", script}
+		// eslint --fix for the lint script when the run auto-fixes (never
+		// for --json, which refuses --fix).
+		if fix && script == "lint" {
+			args = append(args, "--", "--fix")
 		}
-		// Walk to the workspace root: an npm/pnpm workspace HOISTS a member's
-		// dependencies, so <feDir>/node_modules is legitimately absent in a
-		// fully installed tree (forge's own dev bridge produces exactly that
-		// layout). A frontend-local-only probe turns that into "eslint did NOT
-		// run" — a lane silently downgraded to advisory on a tree that is
-		// perfectly lintable.
-		if !anyAncestorHasNodeModules(f.dir, ".") {
-			unavailable(fmt.Sprintf("%s: node_modules not found in %s or any ancestor — eslint did NOT run", f.name, f.dir),
-				npmInstallFix(f.dir))
-			continue
+		cmd := exec.CommandContext(ctx, "npm", args...)
+		cmd.Dir = dir
+		var buf strings.Builder
+		cmd.Stdout = &buf
+		cmd.Stderr = &buf
+		err := cmd.Run()
+		if err == nil {
+			out = append(out, ranNote(fmt.Sprintf("%s: npm run %s passed", name, script)))
 		}
-		scripts, err := readPackageScripts(pkgJSON)
 		if err != nil {
-			out = append(out, lintJSONFinding{Severity: lintSevError, Rule: "external", Message: fmt.Sprintf("%s: read package.json scripts: %v", f.name, err)})
 			gated = true
-			continue
+			out = append(out, lintJSONFinding{
+				Severity: lintSevError,
+				Rule:     "external",
+				Message:  fmt.Sprintf("%s: npm run %s failed: %v", name, script, err),
+			})
+			out = append(out, externalLinesToFindings(buf.String(), "external", lintSevError)...)
 		}
+	}
 
-		runScript := func(script string) {
-			args := []string{"run", script}
-			// eslint --fix for the lint script when the run auto-fixes, as
-			// the text lane does (lintFrontendDir); never for --json.
-			if rc.fix && script == "lint" {
-				args = append(args, "--", "--fix")
-			}
-			cmd := exec.CommandContext(ctx, "npm", args...)
-			cmd.Dir = f.dir
-			var buf strings.Builder
-			cmd.Stdout = &buf
-			cmd.Stderr = &buf
-			if err := cmd.Run(); err != nil {
-				gated = true
-				out = append(out, lintJSONFinding{
-					Severity: lintSevError,
-					Rule:     "external",
-					Message:  fmt.Sprintf("%s: npm run %s failed: %v", f.name, script, err),
-				})
-				out = append(out, externalLinesToFindings(buf.String(), "external", lintSevError)...)
-			}
-		}
-
-		if hasPackageScript(scripts, "lint") {
-			runScript("lint")
+	if hasPackageScript(scripts, "lint") {
+		runScript("lint")
+	} else {
+		out = append(out, skippedFinding(fmt.Sprintf("%s: no npm lint script found, skipping lint", name)))
+	}
+	if cssHealth {
+		if hasPackageScript(scripts, "lint:styles") {
+			runScript("lint:styles")
 		} else {
-			out = append(out, skippedFinding(fmt.Sprintf("%s: no npm lint script found, skipping lint", f.name)))
-		}
-		if cssHealth {
-			if hasPackageScript(scripts, "lint:styles") {
-				runScript("lint:styles")
-			} else {
-				out = append(out, skippedFinding(fmt.Sprintf("%s: css_health enabled but no npm lint:styles script found", f.name)))
-			}
+			out = append(out, skippedFinding(fmt.Sprintf("%s: css_health enabled but no npm lint:styles script found", name)))
 		}
 	}
 	return out, gated

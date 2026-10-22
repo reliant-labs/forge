@@ -1,7 +1,6 @@
 package lint
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 
@@ -195,30 +194,5 @@ func TestCollectConfigReachFindings_TransitiveCompositionIsReachable(t *testing.
 	findings := collectConfigReachFindings(msgs, []string{"server"}, nil)
 	if len(findings) != 0 {
 		t.Fatalf("transitively composed blocks are reachable: %+v", findings)
-	}
-}
-
-func TestFormatConfigReach_ReportsRunbook(t *testing.T) {
-	var buf bytes.Buffer
-	formatConfigReach(&buf, []configReachFinding{{
-		Message: "GhostConfig",
-		Field:   "ghost_url",
-		EnvVar:  "GHOST_URL",
-		Binary:  "ghost",
-		Reason:  configReachNoSuchBinary,
-	}})
-	out := buf.String()
-	for _, want := range []string{"forge-config-unreachable", "GhostConfig", "ghost_url"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("report missing %q:\n%s", want, out)
-		}
-	}
-}
-
-func TestFormatConfigReach_CleanLine(t *testing.T) {
-	var buf bytes.Buffer
-	formatConfigReach(&buf, nil)
-	if !strings.Contains(buf.String(), "clean") {
-		t.Errorf("expected a success line, got %q", buf.String())
 	}
 }

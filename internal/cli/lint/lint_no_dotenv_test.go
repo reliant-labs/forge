@@ -24,8 +24,8 @@ func TestNoDotenvLint_CleanProjectPasses(t *testing.T) {
 	writeDotenvTestFile(t, filepath.Join(root, "deploy", "kcl", "dev", "main.k"))
 	writeDotenvTestFile(t, filepath.Join(root, "secrets", "dev", "STRIPE_SECRET_KEY"))
 
-	if err := runNoDotenvLint(root); err != nil {
-		t.Fatalf("clean project should pass, got: %v", err)
+	if fs := dotenvFindings(t, root); len(fs) != 0 {
+		t.Fatalf("clean project should pass, got: %+v", fs)
 	}
 }
 
@@ -44,12 +44,12 @@ func TestNoDotenvLint_CatchesEveryDotenvSpelling(t *testing.T) {
 			root := t.TempDir()
 			writeDotenvTestFile(t, filepath.Join(root, name))
 
-			err := runNoDotenvLint(root)
-			if err == nil {
-				t.Fatalf("%s should fail the no-dotenv lint", name)
+			fs := dotenvFindings(t, root)
+			if len(fs) != 1 || fs[0].Severity != lintSevError {
+				t.Fatalf("%s should fail the no-dotenv lint, got %+v", name, fs)
 			}
-			if !strings.Contains(err.Error(), name) {
-				t.Fatalf("error should name %s, got: %v", name, err)
+			if fs[0].File != name {
+				t.Fatalf("finding should name %s, got: %+v", name, fs[0])
 			}
 		})
 	}
@@ -61,11 +61,11 @@ func TestNoDotenvLint_MessageGivesTheFix(t *testing.T) {
 	root := t.TempDir()
 	writeDotenvTestFile(t, filepath.Join(root, ".env.dev.secrets"))
 
-	err := runNoDotenvLint(root)
-	if err == nil {
-		t.Fatal("expected failure")
+	fs := dotenvFindings(t, root)
+	if len(fs) != 1 {
+		t.Fatalf("expected one finding, got %+v", fs)
 	}
-	msg := err.Error()
+	msg := fs[0].Message + " " + fs[0].FixHint
 	if !strings.Contains(msg, "forge secret migrate") {
 		t.Fatalf("a *.secrets file should point at `forge secret migrate`, got: %v", msg)
 	}
@@ -81,8 +81,8 @@ func TestNoDotenvLint_SkipsVendoredTrees(t *testing.T) {
 	writeDotenvTestFile(t, filepath.Join(root, "vendor", "x", ".env.dev"))
 	writeDotenvTestFile(t, filepath.Join(root, ".git", ".env"))
 
-	if err := runNoDotenvLint(root); err != nil {
-		t.Fatalf("vendored .env files should be ignored, got: %v", err)
+	if fs := dotenvFindings(t, root); len(fs) != 0 {
+		t.Fatalf("vendored .env files should be ignored, got: %+v", fs)
 	}
 }
 
@@ -91,12 +91,12 @@ func TestNoDotenvLint_CatchesNestedProjectFiles(t *testing.T) {
 	root := t.TempDir()
 	writeDotenvTestFile(t, filepath.Join(root, "frontends", "web", ".env.local"))
 
-	err := runNoDotenvLint(root)
-	if err == nil {
-		t.Fatal("a .env under a project subdirectory should fail")
+	fs := dotenvFindings(t, root)
+	if len(fs) != 1 {
+		t.Fatalf("a .env under a project subdirectory should fail, got %+v", fs)
 	}
-	if !strings.Contains(err.Error(), filepath.Join("frontends", "web", ".env.local")) {
-		t.Fatalf("error should give the relative path, got: %v", err)
+	if fs[0].File != filepath.ToSlash(filepath.Join("frontends", "web", ".env.local")) {
+		t.Fatalf("finding should give the relative path, got: %+v", fs[0])
 	}
 }
 
@@ -162,4 +162,14 @@ func TestNoDotenvLint_RespectsGitignoredDirectories(t *testing.T) {
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("findings = %v, want %v", got, want)
 	}
+}
+
+// dotenvFindings runs the no-dotenv lane over root.
+func dotenvFindings(t *testing.T, root string) []lintJSONFinding {
+	t.Helper()
+	fs, err := collectNoDotenvJSON(root)
+	if err != nil {
+		t.Fatalf("collectNoDotenvJSON: %v", err)
+	}
+	return fs
 }

@@ -1,7 +1,6 @@
 package lint
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 )
@@ -259,11 +258,6 @@ func TestFixtureDrift_UnreachableShadowIsNotClean(t *testing.T) {
 	if rep.Unverified == "" {
 		t.Fatalf("an unreachable shadow must report the lane as not run; got %+v", rep)
 	}
-	var buf bytes.Buffer
-	formatFixtureDrift(&buf, rep)
-	if strings.Contains(buf.String(), "fixture-drift clean") || !strings.Contains(buf.String(), "did NOT run") {
-		t.Errorf("unverified run reads as a verdict:\n%s", buf.String())
-	}
 	js, err := collectFixtureDriftJSONAt(root, "db/migrations")
 	if err != nil {
 		t.Fatal(err)
@@ -358,42 +352,6 @@ func TestMigrationColumns_DropThenRecreateInOneFile(t *testing.T) {
 }
 
 // ── Report shape ──────────────────────────────────────────────────────────
-
-// TestFormatFixtureDrift_CleanLinesSayWhatWasChecked: the two clean lines
-// state their scope exactly — no fixtures at all, or N statements executed —
-// so neither reads as a broader clearance than it is.
-func TestFormatFixtureDrift_CleanLinesSayWhatWasChecked(t *testing.T) {
-	var none bytes.Buffer
-	formatFixtureDrift(&none, fixtureDriftReport{})
-	if !strings.Contains(none.String(), "fixture-drift clean") || !strings.Contains(none.String(), "no scaffolded") {
-		t.Errorf("no-fixture clean line = %q", none.String())
-	}
-	var ran bytes.Buffer
-	formatFixtureDrift(&ran, fixtureDriftReport{Statements: 3})
-	if !strings.Contains(ran.String(), "all 3 literal fixture statement(s)") {
-		t.Errorf("executed clean line = %q", ran.String())
-	}
-}
-
-func TestFormatFixtureDrift_WarnsWithoutGating(t *testing.T) {
-	var buf bytes.Buffer
-	formatFixtureDrift(&buf, fixtureDriftReport{Statements: 1, Findings: []fixtureDriftFinding{{
-		File: estimatesTestPath, Line: 7, Table: `"estimates"`, Code: "23514",
-		Message:    `new row for relation "estimates" violates check constraint "estimates_sent_has_stamp"`,
-		Constraint: "estimates_sent_has_stamp", DeclaredIn: "db/migrations/2_x.up.sql",
-	}}})
-	out := buf.String()
-	for _, want := range []string{
-		"[" + fixtureDriftRule + "] " + estimatesTestPath + ":7",
-		"SQLSTATE 23514",
-		"declared in db/migrations/2_x.up.sql",
-		"warnings only",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("report missing %q:\n%s", want, out)
-		}
-	}
-}
 
 func TestFixtureDriftJSON_SeverityIsWarning(t *testing.T) {
 	skipWithoutPostgres(t)

@@ -1,7 +1,6 @@
 package lint
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -293,30 +292,5 @@ service DemoService {
 	}
 	if findings[0].Message != "forge.v1.AuthConfig" {
 		t.Errorf("message = %q, want the NESTED message forge.v1.AuthConfig", findings[0].Message)
-	}
-}
-
-func TestFormatProtoOptions_ReportsRunbook(t *testing.T) {
-	var buf bytes.Buffer
-	formatProtoOptions(&buf, []protoOptionFinding{{
-		File:      filepath.Join("proto", "services", "demo", "v1", "svc.proto"),
-		Line:      9,
-		Extension: "forge.v1.method",
-		Message:   "forge.v1.MethodOptions",
-		Field:     "authz_public",
-	}})
-	out := buf.String()
-	for _, want := range []string{"forge-proto-options", "svc.proto:9", "authz_public"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("report missing %q:\n%s", want, out)
-		}
-	}
-}
-
-func TestFormatProtoOptions_CleanLine(t *testing.T) {
-	var buf bytes.Buffer
-	formatProtoOptions(&buf, nil)
-	if !strings.Contains(buf.String(), "clean") {
-		t.Errorf("expected a success line, got %q", buf.String())
 	}
 }

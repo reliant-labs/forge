@@ -1,7 +1,6 @@
 package lint
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,9 +54,4 @@ COMMENT ON CONSTRAINT access_tokens_scopes ON access_tokens IS 'forge:closed-set
 		t.Errorf("fix hint: %s", f.FixHint)
 	}
 
-	var out bytes.Buffer
-	formatClosedSets(&out, nil)
-	if !strings.Contains(out.String(), "closed-sets clean") {
-		t.Errorf("clean report: %q", out.String())
-	}
 }

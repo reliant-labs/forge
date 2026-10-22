@@ -12,36 +12,32 @@
 // This file models each linter as a value (linterStep) and builds ONE
 // ordered []linterStep. Each step declares ONCE:
 //
-//   - name        — stable identity (also the JSON collectErr label)
+//   - name        — stable identity (the lane name the verdict prints)
 //   - gates       — whether a hard collection error fails the build
 //   - shouldRun   — the feature-gate / dir-exists / tool-on-PATH guard,
 //                   returning a skip message when the step is a no-op
-//   - runText     — the bespoke human-output action (emoji headers, the
-//                   per-linter "✓ passed" lines); returns a gating-or-nil
-//                   error exactly as the old inline body did
-//   - errFormat   — how runAllLinters reports a non-nil runText error to
-//                   stderr (kept byte-identical to the old inline Fprintf)
-//   - collect     — the JSON-shaped collector (findings + per-step gated)
+//   - collect     — the collector (findings + per-step gated)
 //   - scope       — how the lane honours `forge lint --scope` (by file, by
 //                   Go package, or not at all for a whole-project lane);
 //                   see lint_structured.go
 //
-// The ordered table is then rendered by thin drivers: runAllLinters (text)
-// and collectLintOutcomes (the structured engine behind --json, --quiet and
-// --scope). The output of
-// BOTH formats is byte-identical to the pre-refactor code; TestLintHelpSurface
-// and the lint_json tests are the guardrail.
+// ONE driver walks the table: collectLintOutcomes, the outcome engine every
+// output mode renders (text, --quiet, --scope, --json, --gate-json). It
+// grades each lane's findings through lint.rules (lint_rules.go), so a
+// lane's verdict cannot depend on which mode printed it. There used to be a
+// second, text-only driver with a bespoke printer per lane; lint.rules only
+// reached the four lanes whose printers remembered to apply it.
 //
-// Steps that are advisory in text mode (tests, banners,
-// optional-deps-guard, config-deps, check-workarounds) carry gates=false:
-// their runText errors print a ⚠️ line but never set hasFailed, and their
-// JSON collection errors degrade to a warning finding that never flips ok.
+// Steps that are advisory by default (tests, banners, optional-deps-guard,
+// config-deps, check-workarounds) carry gates=false: their findings are
+// warnings and a hard collection error degrades to a warning finding. A
+// project grades their rules to error through lint.rules like any other.
 
 package lint
 
 import (
 	"context"
-	"os"
+	"io"
 	"path/filepath"
 
 	"github.com/reliant-labs/forge/internal/codegen"
@@ -80,6 +76,15 @@ type lintRunCtx struct {
 	// forge.yaml lint.allow_skip), lane name → reason. See lint_skip.go.
 	allowSkip skipAllowances
 
+	// targeted reports that the lane was named on the command line
+	// (`forge lint --tracing`) rather than run by the full sweep. The
+	// tracing lane fixes its warnings too when it was named.
+	targeted bool
+
+	// progress, when set, gets one line as each lane starts, so a long
+	// human run shows where it is. Nil in the machine-readable modes.
+	progress io.Writer
+
 	// golangciMemo is this run's golangci-lint resolution (see
 	// golangci_toolchain.go), so the gating lane and the advisory guardrail
 	// share one binary — and at most one provisioning build. A pointer, so
@@ -105,25 +110,15 @@ type linterStep struct {
 	gatesIn func(rc *lintRunCtx) bool
 
 	// shouldRun reports whether the step executes. When it returns
-	// run=false with a non-empty skipMsg, text mode prints "⚠️  "+skipMsg
-	// and JSON mode emits a skippedFinding(skipMsg). A false/empty pair
-	// means "silently absent" (directory not present) — no output.
+	// run=false with a non-empty skipMsg, the verdict names the skip and
+	// JSON mode emits a skippedFinding(skipMsg). A false/empty pair means
+	// "silently absent" (directory not present) — no output.
 	shouldRun func(rc *lintRunCtx) (run bool, skipMsg string)
 
-	// runText executes the bespoke human-output action and returns a
-	// gating-or-nil error (the old inline body verbatim).
-	runText func(rc *lintRunCtx) error
-
-	// errFormat is the printf format used to report a non-nil runText
-	// error to stderr. It must contain exactly one %v for the error and
-	// the trailing newline — kept byte-identical to the old inline call.
-	errFormat string
-
-	// collect is the JSON collector. The returned bool is the per-step
-	// gating verdict (mirrors runText's error-gating for findings-level
-	// gating). A non-nil error is a hard collection failure, converted by
-	// the JSON driver into an "external" finding whose severity/gating is
-	// governed by step.gates.
+	// collect runs the lane. The returned bool is the per-step gating
+	// verdict before lint.rules grades it. A non-nil error is a hard
+	// collection failure, converted by the engine into an "external"
+	// finding whose severity/gating is governed by step.gates.
 	collect func(rc *lintRunCtx) ([]lintJSONFinding, bool, error)
 }
 
@@ -161,8 +156,6 @@ func lintPipeline() []linterStep {
 			// module's go directive, or unable to read the export data the
 			// module's toolchain writes, and each way golangci-lint cannot
 			// lint it.
-			runText:   runGolangciLint,
-			errFormat: "❌ golangci-lint failed: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, g := collectGolangciLintJSON(rc)
 				return fs, g, nil
@@ -202,9 +195,7 @@ func lintPipeline() []linterStep {
 				// which provisions a missing golangci-lint.
 				return true, ""
 			},
-			runText:   runTypedAccessGuardAdvisory,
-			errFormat: "⚠️  typed-config guardrail: %v\n",
-			collect:   collectTypedAccessGuardJSON,
+			collect: collectTypedAccessGuardJSON,
 		},
 
 		// 2. Contract interface enforcement.
@@ -221,10 +212,6 @@ func lintPipeline() []linterStep {
 				// contractlint binary to be missing or stale.
 				return true, ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runContractLinter(rc.ctx, rc.paths, contractExcludesFromConfig(rc.cfg), contractGateOptions(rc.cfg, rc.strict))
-			},
-			errFormat: "❌ contract linter failed: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				return collectContractLintJSON(rc.ctx, rc.paths, contractExcludesFromConfig(rc.cfg), contractGateOptions(rc.cfg, rc.strict))
 			},
@@ -240,10 +227,6 @@ func lintPipeline() []linterStep {
 			// FAILS (errBufMissing) rather than skipping — a gating lane
 			// that did not run must never let `forge lint` pass.
 			shouldRun: func(*lintRunCtx) (bool, string) { return true, "" },
-			runText: func(rc *lintRunCtx) error {
-				return runBufLint(rc.ctx)
-			},
-			errFormat: "❌ buf lint failed: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, g := collectBufLintJSON(rc.ctx)
 				return fs, g, nil
@@ -275,10 +258,6 @@ func lintPipeline() []linterStep {
 				}
 				return true, ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runFrontendLinters(rc.ctx, rc.cfg, rc.fix)
-			},
-			errFormat: "❌ Frontend lint failed: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, g := collectFrontendLintJSON(rc)
 				return fs, g, nil
@@ -317,9 +296,7 @@ func lintPipeline() []linterStep {
 				}
 				return true, ""
 			},
-			runText:   runFrontendTypecheckText,
-			errFormat: "❌ Frontend typecheck failed: %v\n",
-			collect:   collectFrontendTypecheckJSON,
+			collect: collectFrontendTypecheckJSON,
 		},
 
 		// 7. SQL migration safety lint.
@@ -333,10 +310,6 @@ func lintPipeline() []linterStep {
 				}
 				return true, ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runMigrationSafetyLint(rc.cfg)
-			},
-			errFormat: "❌ Migration safety lint failed: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				return collectMigrationSafetyJSON(rc.cfg)
 			},
@@ -360,10 +333,6 @@ func lintPipeline() []linterStep {
 				}
 				return false, ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runConventionLint(forgeconv.LintOptions{Strict: rc.strict})
-			},
-			errFormat: "❌ Forge convention lint failed: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				return collectConventionsJSON(forgeconv.LintOptions{Strict: rc.strict})
 			},
@@ -379,10 +348,6 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return true, ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runScaffoldsLint()
-			},
-			errFormat: "❌ Scaffold ownership lint failed: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				return collectScaffoldsJSON(rc.cwd)
 			},
@@ -407,10 +372,6 @@ func lintPipeline() []linterStep {
 				}
 				return true, ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runGeneratedDriftLint(rc.cwd)
-			},
-			errFormat: "❌ generated-file drift lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				return collectGeneratedDriftJSON(rc.cwd)
 			},
@@ -431,10 +392,6 @@ func lintPipeline() []linterStep {
 				}
 				return false, ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runTestsLint()
-			},
-			errFormat: "❌ Test-convention lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				return collectTestsJSON(rc.cwd)
 			},
@@ -452,10 +409,6 @@ func lintPipeline() []linterStep {
 				}
 				return false, ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runBannersLint()
-			},
-			errFormat: "⚠️  Banner lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectBannersJSON(rc.cwd)
 				return fs, false, err
@@ -477,10 +430,6 @@ func lintPipeline() []linterStep {
 				}
 				return false, ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runOptionalDepsGuardLint(rc.cwd)
-			},
-			errFormat: "⚠️  optional-deps-guard lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectOptionalDepsGuardJSON(rc.cwd)
 				return fs, false, err
@@ -502,10 +451,6 @@ func lintPipeline() []linterStep {
 				}
 				return false, ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runConfigDepsLint(rc.cwd)
-			},
-			errFormat: "⚠️  config-deps lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectConfigDepsJSON(rc.cwd)
 				return fs, false, err
@@ -528,10 +473,6 @@ func lintPipeline() []linterStep {
 				}
 				return rc.cwd != "", ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runGraphLint(rc.cwd, rc.cfg)
-			},
-			errFormat: "❌ graph lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectGraphJSON(rc.cwd, rc.cfg)
 				return fs, anyErrorFinding(fs), err
@@ -560,11 +501,7 @@ func lintPipeline() []linterStep {
 				}
 				return true, ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runComponentDrift(rc.cwd, rc.cfg)
-			},
-			errFormat: "⚠️  component-drift lint: %v\n",
-			collect:   collectComponentDriftJSON,
+			collect: collectComponentDriftJSON,
 		},
 
 		// 13d-quater. Hosted-image-base — flags a host-bearing image on a
@@ -586,11 +523,7 @@ func lintPipeline() []linterStep {
 				}
 				return true, ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runHostedImageBaseLint(rc.cwd, rc.cfg)
-			},
-			errFormat: "⚠️  hosted-image-base lint: %v\n",
-			collect:   collectHostedImageBaseJSON,
+			collect: collectHostedImageBaseJSON,
 		},
 
 		// 13d-ter-bis. PDB-blocks-drain — a PodDisruptionBudget that can
@@ -602,11 +535,7 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "" && dirExists(filepath.Join(rc.cwd, deployKCLDirFor(rc.cfg))), ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runPDBLint(rc.ctx, rc.cwd, rc.cfg)
-			},
-			errFormat: "⚠️  pdb-blocks-drain lint: %v\n",
-			collect:   collectPDBJSON,
+			collect: collectPDBJSON,
 		},
 
 		// 13d-ter-ter. Flux-safe — a Job with a TTL or without a spec hash is
@@ -619,11 +548,7 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "" && dirExists(filepath.Join(rc.cwd, deployKCLDirFor(rc.cfg))), ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runFluxSafeLint(rc.ctx, rc.cwd, rc.cfg)
-			},
-			errFormat: "❌ flux-safe lint: %v\n",
-			collect:   collectFluxSafeJSON,
+			collect: collectFluxSafeJSON,
 		},
 
 		// 13d-ter-quater. Secrets — the platform secrets model judged per
@@ -637,11 +562,7 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "" && dirExists(filepath.Join(rc.cwd, deployKCLDirFor(rc.cfg))), ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runSecretsLint(rc.ctx, rc.cwd, rc.cfg)
-			},
-			errFormat: "❌ secrets lint: %v\n",
-			collect:   collectSecretsJSON,
+			collect: collectSecretsJSON,
 		},
 
 		// 13d-quater. identity-share-with: a forge.ManagedIdentity share_with
@@ -655,11 +576,7 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "" && dirExists(filepath.Join(rc.cwd, deployKCLDirFor(rc.cfg))), ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runIdentityShareLint(rc.cwd, rc.cfg)
-			},
-			errFormat: "❌ identity-share-with lint: %v\n",
-			collect:   collectIdentityShareJSON,
+			collect: collectIdentityShareJSON,
 		},
 
 		// 13d-bis. Column-markers — flags a COMMENT ON TABLE/VIEW/COLUMN/
@@ -676,10 +593,6 @@ func lintPipeline() []linterStep {
 				}
 				return false, ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runColumnMarkersLint(rc.cfg)
-			},
-			errFormat: "❌ column-markers lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectColumnMarkersJSON(rc.cfg)
 				return fs, len(fs) > 0, err
@@ -696,10 +609,6 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "" && dirExists(migrationsDirFor(rc.cfg)), ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runClosedSetsLint(rc.cwd, rc.cfg)
-			},
-			errFormat: "❌ closed-sets lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectClosedSetsJSON(rc.cwd, rc.cfg)
 				return fs, len(fs) > 0, err
@@ -717,10 +626,6 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "" && dirExists(migrationsDirFor(rc.cfg)), ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runDBGrantsLint(rc.cwd, rc.cfg)
-			},
-			errFormat: "❌ db-grants lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectDBGrantsJSON(rc.cwd, rc.cfg)
 				return fs, len(fs) > 0, err
@@ -740,10 +645,6 @@ func lintPipeline() []linterStep {
 				// No env KCL means no ShellBuild to check.
 				return dirExists(deployKCLDirDefault), ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runShellBuildTokensLint(deployKCLDirDefault)
-			},
-			errFormat: "✗ shellbuild-tokens lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				return collectShellBuildTokensJSON(deployKCLDirDefault)
 			},
@@ -763,10 +664,6 @@ func lintPipeline() []linterStep {
 				// skip, matching the column check's missing-migrations arm.
 				return dirExists(protoDirDefault), ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runProtoMarkersLint(protoDirDefault)
-			},
-			errFormat: "⚠️  proto-markers lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectProtoMarkersJSON(protoDirDefault)
 				return fs, false, err
@@ -785,10 +682,6 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "", ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runGoMarkersLint(rc.cwd)
-			},
-			errFormat: "❌ go-markers lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				return collectGoMarkersJSON(rc.cwd)
 			},
@@ -811,10 +704,6 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return dirExists(protoDirDefault), ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runCreateNullabilityLint(protoDirDefault, rc.cwd)
-			},
-			errFormat: "❌ create-nullability lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				return collectCreateNullabilityJSON(protoDirDefault, rc.cwd)
 			},
@@ -840,10 +729,6 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return dirExists(protoDirDefault) && rc.cwd != "", ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runComputedFieldsLint(rc.cwd)
-			},
-			errFormat: "❌ computed-fields lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectComputedFieldsJSON(rc.cwd)
 				return fs, anyErrorFinding(fs), err
@@ -884,10 +769,6 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return dirExists(protoDirDefault) && rc.cwd != "", ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runReadOnlyFieldsLint(rc.cwd, migrationsDirFor(rc.cfg))
-			},
-			errFormat: "❌ read-only-fields lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectReadOnlyFieldsJSON(rc.cwd, migrationsDirFor(rc.cfg))
 				return fs, anyErrorFinding(fs), err
@@ -921,10 +802,6 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "", ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runFixtureDriftLint(rc.cwd, rc.cfg)
-			},
-			errFormat: "⚠️  fixture-drift lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectFixtureDriftJSON(rc.cwd, rc.cfg)
 				return fs, false, err
@@ -958,10 +835,6 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "", ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runTimeBucketingLint(rc.cwd, rc.cfg)
-			},
-			errFormat: "⚠️  time-bucketing lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectTimeBucketingJSON(rc.cwd, rc.cfg)
 				return fs, false, err
@@ -990,11 +863,7 @@ func lintPipeline() []linterStep {
 				}
 				return rc.cwd != "" && hasNextJSFrontend(rc.cfg), ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runStaticExportLint(rc.ctx, rc.cwd, rc.cfg)
-			},
-			errFormat: "❌ static-export lint: %v\n",
-			collect:   collectStaticExportJSON,
+			collect: collectStaticExportJSON,
 		},
 
 		// 13d-septies. Guarded-fields — the marker's blind spot. The page
@@ -1014,10 +883,6 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return dirExists(protoDirDefault) && rc.cwd != "", ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runGuardedFieldsLint(rc.cwd, frontendDirsForLint())
-			},
-			errFormat: "⚠️  guarded-fields lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectGuardedFieldsJSON(rc.cwd, frontendDirsForLint())
 				return fs, false, err
@@ -1038,11 +903,7 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "" && hasGoModule(rc.cwd), ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runTracingLint(rc.cwd, rc.cfg, rc.fix, false)
-			},
-			errFormat: "❌ tracing lint: %v\n",
-			collect:   collectTracingJSON,
+			collect: collectTracingJSON,
 		},
 
 		// 14b. No-dotenv — forge projects declare config in KCL and keep
@@ -1056,10 +917,6 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "", ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runNoDotenvLint(rc.cwd)
-			},
-			errFormat: "❌ no-dotenv lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectNoDotenvJSON(rc.cwd)
 				return fs, len(fs) > 0, err
@@ -1079,10 +936,6 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "" && fileExists("forge.yaml"), ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runCommitPolicyLint(rc.cwd)
-			},
-			errFormat: "❌ commit-policy lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				return collectCommitPolicyJSON(rc.cwd)
 			},
@@ -1097,28 +950,10 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "", ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				return runCheckWorkaroundsLint(rc.cwd)
-			},
-			errFormat: "⚠️  check-workarounds lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectWorkaroundsJSON(rc.cwd)
 				return fs, false, err
 			},
 		},
 	}
-}
-
-// lintCwd resolves the working directory for the pipeline, returning ""
-// on error. Text mode historically re-called os.Getwd per cwd-using step
-// and skipped that step when it failed; resolving once and treating ""
-// as "skip the cwd-bound steps" preserves that behavior. (JSON mode
-// already hard-fails on a getwd error before the sweep, so an empty cwd
-// never reaches the JSON driver.)
-func lintCwd() string {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return ""
-	}
-	return cwd
 }

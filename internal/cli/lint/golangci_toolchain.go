@@ -158,13 +158,6 @@ type golangciOutput struct {
 
 func (o golangciOutput) combined() string { return o.stdout + o.stderr }
 
-// print replays a captured run to the terminal. stderr goes first, since
-// golangci-lint logs there before it prints its report.
-func (o golangciOutput) print() {
-	fmt.Fprint(os.Stderr, o.stderr)
-	fmt.Fprint(os.Stdout, o.stdout)
-}
-
 // golangciToolchain is the outside world resolveGolangciLint and
 // execGolangci consult. The zero value is not usable;
 // productionGolangciToolchain wires the real one, tests substitute fakes.

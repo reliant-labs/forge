@@ -82,7 +82,6 @@ package lint
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -153,31 +152,6 @@ func protoOptionFixHint(f protoOptionFinding) string {
 	}
 	fmt.Fprintf(&b, "Remove the field or replace it; see `%s`.", protoOptionDumpCmd)
 	return b.String()
-}
-
-// runProtoOptionsLint is the text-mode entry point. Warnings only.
-func runProtoOptionsLint(protoDir string) error {
-	fmt.Println("Running proto-options lint...")
-	findings, err := collectProtoOptionFindings(protoDir)
-	if err != nil {
-		return err
-	}
-	formatProtoOptions(os.Stdout, findings)
-	return nil
-}
-
-// formatProtoOptions writes the human report.
-func formatProtoOptions(w io.Writer, findings []protoOptionFinding) {
-	if len(findings) == 0 {
-		_, _ = fmt.Fprintln(w, "  proto-options clean — every (forge.v1.*) option field exists in this forge binary's descriptors")
-		return
-	}
-	for _, f := range findings {
-		_, _ = fmt.Fprintf(w, "  ⚠ [forge-proto-options] %s:%d\n", f.File, f.Line)
-		_, _ = fmt.Fprintf(w, "      → %s\n", protoOptionFixHint(f))
-	}
-	_, _ = fmt.Fprintf(w, "\n%d unknown proto option field(s).\n", len(findings))
-	_, _ = fmt.Fprintln(w, "(warnings only — not failing the build)")
 }
 
 // collectProtoOptionFindings is the shared engine behind text mode and

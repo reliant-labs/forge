@@ -143,12 +143,6 @@ func TestComputedFields_GatesAtLeastAsHardAsReadOnly(t *testing.T) {
 		t.Error("neither rule's findings would flip the JSON verdict")
 	}
 
-	if err := runComputedFieldsLint(root); err == nil {
-		t.Error("text-mode --computed-fields exited clean over an unwritten computed field")
-	}
-	if err := runReadOnlyFieldsLint(root, filepath.Join("db", "migrations")); err == nil {
-		t.Error("text-mode --read-only-fields exited clean over an unpopulated column")
-	}
 }
 
 // TestUnwrittenFields_PendingStubsHoldAtWarning is pending-stub mode: right
@@ -172,12 +166,6 @@ func TestUnwrittenFields_PendingStubsHoldAtWarning(t *testing.T) {
 		t.Error("a pending finding flipped the verdict")
 	}
 
-	if err := runComputedFieldsLint(root); err != nil {
-		t.Errorf("text-mode --computed-fields failed on forge's fresh scaffold: %v", err)
-	}
-	if err := runReadOnlyFieldsLint(root, filepath.Join("db", "migrations")); err != nil {
-		t.Errorf("text-mode --read-only-fields failed on forge's fresh scaffold: %v", err)
-	}
 }
 
 // TestUnwrittenFields_ImplementingTheStubRestoresTheError pins the other

@@ -47,7 +47,6 @@ package lint
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -104,35 +103,9 @@ func protoMarkerFixHint(f protoMarkerFinding) string {
 	}
 }
 
-// runProtoMarkersLint is the text-mode entry point.
-func runProtoMarkersLint(protoDir string) error {
-	fmt.Println("Running proto-markers lint...")
-	findings, err := collectProtoMarkerFindings(protoDir)
-	if err != nil {
-		return err
-	}
-	formatProtoMarkers(os.Stdout, findings)
-	return nil
-}
-
 // protoDirDefault is the conventional proto tree forge scaffolds and every
 // forge project keeps its .proto files under.
 const protoDirDefault = "proto"
-
-// formatProtoMarkers writes the human report. Empty findings print a single
-// success line, matching the sibling advisory lints.
-func formatProtoMarkers(w io.Writer, findings []protoMarkerFinding) {
-	if len(findings) == 0 {
-		_, _ = fmt.Fprintln(w, "  proto-markers clean — every forge:* proto comment matches a known marker")
-		return
-	}
-	for _, f := range findings {
-		_, _ = fmt.Fprintf(w, "  ⚠ [forge-proto-markers] %s:%d\n", f.File, f.Line)
-		_, _ = fmt.Fprintf(w, "      → %s\n", protoMarkerFixHint(f))
-	}
-	_, _ = fmt.Fprintf(w, "\n%d unrecognized proto marker(s).\n", len(findings))
-	_, _ = fmt.Fprintln(w, "(warnings only — not failing the build)")
-}
 
 // collectProtoMarkerFindings is the shared engine behind text mode and
 // `forge lint --json`. It walks protoDir for *.proto files and flags every

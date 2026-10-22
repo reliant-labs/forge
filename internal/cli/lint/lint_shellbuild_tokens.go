@@ -22,31 +22,12 @@
 package lint
 
 import (
-	"fmt"
-
 	"github.com/reliant-labs/forge/internal/shellbuildtokens"
 )
 
 // deployKCLDirDefault is the tree that holds a project's hand-written env KCL,
 // which is where every ShellBuild is declared.
 const deployKCLDirDefault = "deploy/kcl"
-
-// runShellBuildTokensLint is the text-mode arm. It prints every finding and
-// returns an error when there is one, so the step gates.
-func runShellBuildTokensLint(dir string) error {
-	findings, err := shellbuildtokens.ScanKCLTree(dir)
-	if err != nil {
-		return err
-	}
-	if len(findings) == 0 {
-		return nil
-	}
-	for _, f := range findings {
-		fmt.Printf("✗ [shellbuild-tokens] %s:%d\n      %s\n      → %s\n",
-			f.File, f.Line, f.Message(), f.Remediation())
-	}
-	return fmt.Errorf("%d retired substitution token(s) in ShellBuild cmd(s); forge runs a cmd verbatim and substitutes nothing", len(findings))
-}
 
 // collectShellBuildTokensJSON is the JSON arm. Every finding is an error and
 // the step gates, matching text mode.

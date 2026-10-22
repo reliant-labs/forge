@@ -73,14 +73,12 @@ package lint
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/assets"
 	"github.com/reliant-labs/forge/internal/checksums"
-	"github.com/reliant-labs/forge/internal/cliutil"
 )
 
 // Severities a vendored-proto finding can carry. Spelled as the JSON
@@ -162,23 +160,6 @@ func vendoredProtoFixHint(f vendoredProtoFinding) string {
 	return b.String()
 }
 
-// runVendoredProtosLint is the text-mode entry point.
-func runVendoredProtosLint(projectDir string) error {
-	fmt.Println("Running vendored-protos lint...")
-	findings, err := collectVendoredProtoFindings(projectDir)
-	if err != nil {
-		return err
-	}
-	formatVendoredProtos(os.Stdout, findings)
-	if !vendoredProtosGate(findings) {
-		return nil
-	}
-	return cliutil.UserErr("forge lint --vendored-protos",
-		fmt.Sprintf("%d vendored proto(s) drifted from the copy embedded in this forge binary", len(findings)),
-		"",
-		"run `forge project upgrade` to re-copy them, or `forge project disown <path> --reason \"<why>\"` to keep a deliberate customization")
-}
-
 // vendoredProtosGate reports whether any finding is severity error — the
 // condition under which text mode exits non-zero.
 func vendoredProtosGate(findings []vendoredProtoFinding) bool {
@@ -188,30 +169,6 @@ func vendoredProtosGate(findings []vendoredProtoFinding) bool {
 		}
 	}
 	return false
-}
-
-// formatVendoredProtos writes the human report.
-func formatVendoredProtos(w io.Writer, findings []vendoredProtoFinding) {
-	if len(findings) == 0 {
-		_, _ = fmt.Fprintln(w, "  vendored-protos clean — every vendored proto matches the copy embedded in this forge binary")
-		return
-	}
-	for _, f := range findings {
-		icon := "⚠"
-		if f.Severity == vendoredSeverityError {
-			icon = "✗"
-		}
-		_, _ = fmt.Fprintf(w, "  %s [forge-vendored-proto-drift] %s\n", icon, f.File)
-		_, _ = fmt.Fprintf(w, "      differs from the copy embedded in this forge binary:\n")
-		for _, line := range strings.Split(strings.TrimRight(f.Diff, "\n"), "\n") {
-			_, _ = fmt.Fprintf(w, "        %s\n", line)
-		}
-		_, _ = fmt.Fprintf(w, "      → %s\n", vendoredProtoFixHint(f))
-	}
-	_, _ = fmt.Fprintf(w, "\n%d vendored proto(s) drifted from this forge binary.\n", len(findings))
-	if !vendoredProtosGate(findings) {
-		_, _ = fmt.Fprintln(w, "(warnings only — not failing the build)")
-	}
 }
 
 // collectVendoredProtoFindings is the shared engine behind text mode and

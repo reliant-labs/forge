@@ -42,8 +42,9 @@ const SeverityOff = "off"
 // disable a rule — it does nothing, and the rule keeps firing. That is
 // the safe direction to fail: the alternative (treating unknown keys as
 // meaningful) is how a misspelling turns into an invisible hole in the
-// gate. The `lint.rules` key IS validated separately at config-load
-// time so the typo is reported rather than merely ignored.
+// gate. `forge lint` also reports every key it cannot honour as an error
+// (internal/cli/lint/lint_rules.go), so the typo is named, not merely
+// ignored.
 func (rs RuleSeverities) Override(f finding.Finding) (finding.Finding, bool) {
 	if len(rs) == 0 {
 		return f, true

@@ -110,7 +110,6 @@ package lint
 
 import (
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -202,21 +201,6 @@ func createNullabilityFixHint(f createNullabilityFinding) string {
 		f.Entity, f.Field, f.Entity)
 }
 
-// runCreateNullabilityLint is the text-mode entry point. projectRoot is
-// where the generated handler ops live (the provenance record).
-func runCreateNullabilityLint(protoDir, projectRoot string) error {
-	fmt.Println("Running create-nullability lint...")
-	findings, err := createNullabilityLintFindings(protoDir, projectRoot)
-	if err != nil {
-		return err
-	}
-	formatCreateNullability(os.Stdout, findings)
-	if n := countErrors(findings); n > 0 {
-		return fmt.Errorf("%d create-request nullability mismatch(es)", n)
-	}
-	return nil
-}
-
 // countErrors counts the gating findings.
 func countErrors(fs []finding.Finding) int {
 	n := 0
@@ -226,24 +210,6 @@ func countErrors(fs []finding.Finding) int {
 		}
 	}
 	return n
-}
-
-// formatCreateNullability writes the human report.
-func formatCreateNullability(w io.Writer, findings []finding.Finding) {
-	if len(findings) == 0 {
-		_, _ = fmt.Fprintln(w, "  create-nullability clean — every forge-generated Create agrees with its entity on field presence")
-		return
-	}
-	for _, f := range findings {
-		glyph := "✖"
-		if f.Severity != finding.SeverityError {
-			glyph = "⚠"
-		}
-		_, _ = fmt.Fprintf(w, "  %s [%s] %s:%d\n", glyph, f.Rule, f.File, f.Line)
-		_, _ = fmt.Fprintf(w, "      → %s\n", f.Remediation)
-	}
-	errs := countErrors(findings)
-	_, _ = fmt.Fprintf(w, "\n%d create-request nullability mismatch(es), %d warning(s).\n", errs, len(findings)-errs)
 }
 
 // createNullabilityLintFindings is the shared engine behind text mode and

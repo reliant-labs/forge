@@ -3,7 +3,6 @@ package lint
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -201,8 +200,9 @@ func TestFrontendTypecheck_CleanFrontendPasses(t *testing.T) {
 	if gated {
 		t.Error("a clean frontend must not gate the lint run")
 	}
-	if len(fs) != 0 {
-		t.Errorf("a clean frontend must contribute no findings, got %d: %+v", len(fs), fs)
+	// Only the lane's note of what it checked: no issue.
+	if len(fs) != 1 || fs[0].Rule != ruleRanNote || fs[0].Severity != lintSevInfo || !strings.Contains(fs[0].Message, "web: typecheck passed") {
+		t.Errorf("a clean frontend must contribute only its ran note, got %d: %+v", len(fs), fs)
 	}
 }
 
@@ -650,7 +650,7 @@ func TestFrontendTypecheck_RunsFrontendsConcurrently(t *testing.T) {
 	inDir(t, root)
 
 	fs, gated := runLane(t, cfgWithFrontends(names...), false)
-	if gated || len(fs) != 0 {
+	if gated || len(fs) != frontends || anyIssue(fs) {
 		t.Fatalf("the lane is SERIALIZING: a compiler timed out waiting for the others to start, "+
 			"so it exited non-zero. gated=%v findings=%+v", gated, fs)
 	}
@@ -702,54 +702,12 @@ func TestResolveLocalTSC_WalksToWorkspaceRootButNotAbove(t *testing.T) {
 	}
 }
 
-// TestFrontendTypecheck_TextModeMirrorsJSONVerdict: the two drivers render the
-// same table, so a divergence in verdict is a bug the step-table refactor
-// exists to prevent.
-func TestFrontendTypecheck_TextModeMirrorsJSONVerdict(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns package-manager / frontend toolchain subprocesses; runs in task test")
+// anyIssue reports whether fs holds anything but a lane's ran notes.
+func anyIssue(fs []lintJSONFinding) bool {
+	for _, f := range fs {
+		if f.Rule != ruleRanNote {
+			return true
+		}
 	}
-	for _, tc := range []struct {
-		name      string
-		fixture   frontendFixture
-		strict    bool
-		wantError bool
-	}{
-		{"clean", frontendFixture{name: "web", tsconfig: true, tscExit: 0}, false, false},
-		{"type error", frontendFixture{name: "web", tsconfig: true, tscExit: 2, tscOutput: "src/a.ts(1,1): error TS1: x"}, false, true},
-		{"unavailable", frontendFixture{name: "web", tsconfig: true, tscExit: -1}, false, true},
-		{"unavailable strict", frontendFixture{name: "web", tsconfig: true, tscExit: -1}, true, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			writeFrontend(t, root, tc.fixture)
-			inDir(t, root)
-			cwd, _ := os.Getwd()
-
-			rc := &lintRunCtx{ctx: context.Background(), cfg: cfgWithFrontends("web"), cwd: cwd, strict: tc.strict}
-
-			// The lane writes its failure lines to stderr; capture so the
-			// test output stays readable.
-			_, restore := captureStderr(t)
-			textErr := runFrontendTypecheckText(rc)
-			restore()
-
-			// The text driver grades a lane that could not run with
-			// judgeGap, the structured one with applyGapPolicy.
-			step := findStep(t, "frontend typecheck")
-			textFails := textErr != nil
-			var unavail *laneUnavailableError
-			if errors.As(textErr, &unavail) {
-				verdict, _ := rc.judgeGap(step.name, laneGates(step, rc))
-				textFails = verdict == gapFails
-			}
-			_, gated, _ := collectGraded(t, step, rc)
-			if textFails != tc.wantError {
-				t.Errorf("text-mode error = %v, want error=%v", textErr, tc.wantError)
-			}
-			if gated != tc.wantError {
-				t.Errorf("JSON gated = %v, want %v (text and JSON must agree)", gated, tc.wantError)
-			}
-		})
-	}
+	return false
 }

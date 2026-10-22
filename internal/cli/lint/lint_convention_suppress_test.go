@@ -175,23 +175,31 @@ func TestConventionLane_ContractNamesAnchorsOnTheDeclaration(t *testing.T) {
 // `lint.rules` is the repo-wide severity dial for EVERY forge convention
 // rule, not only the frontend one it was first wired to. Red before:
 // collectConventionFindings applied it to forgeconv-frontend-process-env
-// alone, so a downgrade of any other rule was accepted and ignored.
+// alone, so a downgrade of any other rule was accepted and ignored. The
+// outcome engine grades every lane now (lint_rules.go); this pins it on the
+// conventions lane's real findings.
 func TestConventionLane_LintRulesRegradesEveryRule(t *testing.T) {
 	writeConventionTree(t, noDirective)
-	cfg := &config.ProjectConfig{Name: "m", ModulePath: "example.com/m"}
-	cfg.Lint.Rules = map[string]string{
+	rules := config.LintConfig{Rules: map[string]string{
 		"forgeconv-deps-are-interfaces":             "warn",
 		"forgeconv-internal-package-contract-names": "off",
-	}
-	factory.SetProjectStoreLoader(func() (*projectstore.Store, error) {
-		return projectstore.New(cfg), nil
-	})
+	}}.EffectiveRules()
 
-	fs := conventionFindings(t, true)
-	if deps, ok := findingFor(fs, "forgeconv-deps-are-interfaces"); !ok || deps.Severity != forgeconv.SeverityWarning {
-		t.Errorf("lint.rules warn must downgrade deps-are-interfaces: %+v", deps)
+	js, gated, err := collectConventionsJSON(forgeconv.LintOptions{Strict: true})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if names, ok := findingFor(fs, "forgeconv-internal-package-contract-names"); ok {
-		t.Errorf("lint.rules off must drop contract-names: %+v", names)
+	fs, _ := gradeLane(rules, js, gated)
+	var deps *lintJSONFinding
+	for i, f := range fs {
+		switch f.Rule {
+		case "forgeconv-deps-are-interfaces":
+			deps = &fs[i]
+		case "forgeconv-internal-package-contract-names":
+			t.Errorf("lint.rules off must drop contract-names: %+v", f)
+		}
+	}
+	if deps == nil || deps.Severity != lintSevWarning {
+		t.Errorf("lint.rules warn must downgrade deps-are-interfaces: %+v", deps)
 	}
 }

@@ -227,29 +227,6 @@ func TestVendoredProtoDiff_IsBounded(t *testing.T) {
 	}
 }
 
-// Text-mode output names the file, the difference and the fix — the
-// runbook contract. Asserted on the formatter so the message the user
-// actually sees is covered, not just the finding struct.
-func TestFormatVendoredProtos_ReportsRunbook(t *testing.T) {
-	var buf bytes.Buffer
-	formatVendoredProtos(&buf, []vendoredProtoFinding{{
-		File:     filepath.Join("proto", "forge", "v1", "forge.proto"),
-		Severity: vendoredSeverityError,
-		Diff:     "-  FrontendConfigOptions frontend_config = 50202;",
-	}})
-	out := buf.String()
-	for _, want := range []string{
-		"forge-vendored-proto-drift",
-		"forge.proto",
-		"frontend_config",
-		"forge project upgrade",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("report missing %q:\n%s", want, out)
-		}
-	}
-}
-
 // The check can only cover files it KNOWS forge vendors, and the whole
 // failure class is "a copied file nobody tracks". So the spec list is
 // pinned against the embedded FS itself: adding a third go:embed'd proto
@@ -302,13 +279,5 @@ func TestVendoredProtoSpecs_CoversEveryEmbeddedProto(t *testing.T) {
 			t.Errorf("vendoredProtoSpecs() reports %q but assets.VendoredProtoRelPaths omits it — "+
 				"this check's `forge project disown` remediation would be refused by that command", spec.RelPath)
 		}
-	}
-}
-
-func TestFormatVendoredProtos_CleanLine(t *testing.T) {
-	var buf bytes.Buffer
-	formatVendoredProtos(&buf, nil)
-	if !strings.Contains(buf.String(), "clean") {
-		t.Errorf("expected a success line, got %q", buf.String())
 	}
 }

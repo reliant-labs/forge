@@ -14,6 +14,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cli"
+	"github.com/reliant-labs/forge/internal/configproto"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
@@ -40,7 +41,7 @@ const (
 //     move to forge/pkg essentially verbatim.
 //   - constant across A/B but differing across A/C → the file names the
 //     user's own module (importing <mod>/internal/app, aliasing
-//     <mod>/gen/config/v1). Its BODY is still not derived from any
+//     <mod>/gen/<project>/config/v1). Its BODY is still not derived from any
 //     declaration, so Tier-1 still buys nothing, but it cannot be a
 //     verbatim forge/pkg file: the fix is library code in forge/pkg plus
 //     the short user-owned scaffold that does the module-specific wiring.
@@ -103,7 +104,7 @@ type fixture struct {
 	// really only being unexercised.
 	PublicRPCs map[string][]string
 	// ConfigBlocks are extra component config messages composed onto
-	// AppConfig in proto/config/v1/config.proto — part of derivation
+	// AppConfig in proto/<project>/config/v1/config.proto — part of derivation
 	// input #1, and the one that pkg/config/config.go tracks. AppConfig's
 	// SHAPE is user-authored, so a fixture that never touches it leaves
 	// the config surface unexercised.
@@ -456,20 +457,28 @@ func retargetGatewayListener(root string, port int) error {
 // with different project names produce comparable keys.
 const binPlaceholder = "<bin>"
 
-// normalizeKey rewrites the project-name path segment under cmd/ to
-// binPlaceholder, so cmd/tgproj/cmd/root.go and cmd/tgother/cmd/root.go
-// are the same logical file. Only that segment is substituted: the rest
-// of the tree does not embed the project name in its paths.
+// normalizeKey rewrites the project-name path segments to binPlaceholder,
+// so cmd/tgproj/cmd/root.go and cmd/tgother/cmd/root.go are the same
+// logical file, and so are proto/tgproj/config/v1/config.proto and
+// proto/tgother/config/v1/config.proto (and their gen/ output). Only those
+// segments are substituted: the rest of the tree does not embed the
+// project name in its paths.
 func normalizeKey(rel, projectName string) string {
 	rel = filepath.ToSlash(rel)
 	if strings.HasPrefix(rel, "cmd/"+projectName+"/") {
 		return "cmd/" + binPlaceholder + "/" + strings.TrimPrefix(rel, "cmd/"+projectName+"/")
 	}
+	slug := configproto.Slug(projectName)
+	for _, root := range []string{"proto/", "gen/"} {
+		if rest, ok := strings.CutPrefix(rel, root+slug+"/config/"); ok {
+			return root + binPlaceholder + "/config/" + rest
+		}
+	}
 	return rel
 }
 
 // addConfigBlocks composes each block onto AppConfig in
-// proto/config/v1/config.proto: the `<Name>Config` message is appended at
+// the project's config.proto (proto/<project>/config/v1): the `<Name>Config` message is appended at
 // file scope and a field referencing it is inserted as the last member of
 // AppConfig. This exercises the user-authored config surface that
 // pkg/config/config.go and the deploy config projections are derived
@@ -485,7 +494,7 @@ func addConfigBlocks(root string, blocks []configBlock) error {
 	if len(blocks) == 0 {
 		return nil
 	}
-	protoPath := filepath.Join(root, "proto", "config", "v1", "config.proto")
+	protoPath := filepath.Join(root, filepath.FromSlash(configproto.ForProject(root).RootPath()))
 	raw, err := os.ReadFile(protoPath)
 	if err != nil {
 		return fmt.Errorf("read config proto: %w", err)
@@ -521,7 +530,7 @@ func addConfigBlocks(root string, blocks []configBlock) error {
 const configBlockFirstTag = 60
 
 // addBinaryConfigs appends each binary-bound config message to
-// proto/config/v1/config.proto at FILE SCOPE.
+// the project's config.proto (proto/<project>/config/v1) at FILE SCOPE.
 //
 // Unlike addConfigBlocks, nothing is composed onto AppConfig: the whole
 // point of `(forge.v1.binary_config)` is that the message is the named
@@ -535,7 +544,7 @@ func addBinaryConfigs(root string, blocks []binaryConfigBlock) error {
 	if len(blocks) == 0 {
 		return nil
 	}
-	protoPath := filepath.Join(root, "proto", "config", "v1", "config.proto")
+	protoPath := filepath.Join(root, filepath.FromSlash(configproto.ForProject(root).RootPath()))
 	raw, err := os.ReadFile(protoPath)
 	if err != nil {
 		return fmt.Errorf("read config proto: %w", err)

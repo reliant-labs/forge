@@ -217,17 +217,17 @@ func TestBootstrapOnlyStepPresetExcludesStompedSteps(t *testing.T) {
 		t.Fatal("stepPresetAllowlist is missing the bootstrap-only entry")
 	}
 	stomped := []string{
-		"CI workflows",                 // .github/workflows/ci.yml
-		"config loader (proto/config)", // pkg/config/config.go (+ cmd/server.go re-render)
-		"frontend mocks + transport",   // frontends/<name>/src/lib/mock-transport.ts
-		"regenerate infra files",       // deploy/ / Dockerfile.* / etc.
-		"per-env deploy config",        // deploy/ env-specific KCL
-		"service stubs",                // service.go / handlers.go scaffolds
-		"CRUD handlers",                // handlers/<svc>/handlers_crud_gen.go
-		"service mocks",                // internal/<svc>/mock_gen.go
-		"frontend hooks",               // frontends/<name>/src/hooks/*-hooks.ts
-		"frontend CRUD pages",          // frontends/<name>/src/app/<svc>/page.tsx
-		"frontend nav + dashboard",     // frontends/<name>/src/components/nav.tsx
+		"CI workflows", // .github/workflows/ci.yml
+		"config loader (proto/<project>/config/v1)", // pkg/config/config.go (+ cmd/server.go re-render)
+		"frontend mocks + transport",                // frontends/<name>/src/lib/mock-transport.ts
+		"regenerate infra files",                    // deploy/ / Dockerfile.* / etc.
+		"per-env deploy config",                     // deploy/ env-specific KCL
+		"service stubs",                             // service.go / handlers.go scaffolds
+		"CRUD handlers",                             // handlers/<svc>/handlers_crud_gen.go
+		"service mocks",                             // internal/<svc>/mock_gen.go
+		"frontend hooks",                            // frontends/<name>/src/hooks/*-hooks.ts
+		"frontend CRUD pages",                       // frontends/<name>/src/app/<svc>/page.tsx
+		"frontend nav + dashboard",                  // frontends/<name>/src/components/nav.tsx
 	}
 	for _, name := range stomped {
 		if allow[name] {

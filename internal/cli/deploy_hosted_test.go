@@ -27,6 +27,9 @@ const hostedTestDigest = "sha256:11111111111111111111111111111111111111111111111
 // it (image, ports, env, resources …).
 func writeHostedProject(t *testing.T, endpoint, apiFields string) string {
 	t.Helper()
+	// The fixture's KCL never changes while a command runs, and one hosted
+	// command evaluates it ~15 times: see memoizeKCLRenders.
+	memoizeKCLRenders(t)
 	dir := t.TempDir()
 	files := map[string]string{
 		"forge.yaml":         "name: acme\nmodule_path: github.com/example/acme\n\n",
@@ -114,7 +117,7 @@ func runForge(t *testing.T, args ...string) (string, error) {
 		_, _ = io.Copy(&b, r)
 		done <- b.String()
 	}()
-	cmd := NewRootCmd()
+	cmd := newTestRootCmd(t)
 	cmd.SetArgs(args)
 	var stderr bytes.Buffer
 	cmd.SetErr(&stderr)

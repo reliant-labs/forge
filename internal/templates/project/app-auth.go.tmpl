@@ -4,7 +4,7 @@
 // Authentication is CODE, not configuration: you pick the validator here.
 // WHERE this deployment's issuer lives is per-environment DATA, and it
 // arrives on the typed config object like every other per-environment value
-// in this app — declared in proto/config/v1/config.proto, pinned per env in
+// in this app — declared in proto/<project>/config/v1/config.proto, pinned per env in
 // deploy/kcl/<env>/config.k, with the secret coming from the env's secret
 // provider. Nothing here reads the environment directly.
 //
@@ -127,7 +127,7 @@ func SetupAuth(cfg *config.{{or .AuthConfigType "Config"}}) (*auth.Authenticator
 //	})
 //
 // A constructor that needs a value this config does not carry (Firebase's
-// project IDs, above) gets a new field in proto/config/v1/config.proto —
+// project IDs, above) gets a new field in proto/<project>/config/v1/config.proto —
 // that is the one place per-deployment values are declared.
 //
 // API keys are not configured here — they are APIKeyValidator's, below.

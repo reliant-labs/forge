@@ -14,7 +14,7 @@ import (
 )
 
 func TestBridgeSkewChecked_GenerateAndLintOnly(t *testing.T) {
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	for name, want := range map[string]bool{"generate": true, "lint": true, "doctor": false, "env": false} {
 		cmd, _, err := root.Find([]string{name})
 		if err != nil || cmd == nil || cmd.Name() != name {

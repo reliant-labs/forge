@@ -29,7 +29,7 @@ func TestSkillLoadPrintsRenderSkillContent(t *testing.T) {
 	for _, arg := range []string{"forge", "forge/forge", "db"} {
 		t.Run(arg, func(t *testing.T) {
 			var out bytes.Buffer
-			root := NewRootCmd()
+			root := newTestRootCmd(t)
 			root.SetOut(&out)
 			root.SetErr(&out)
 			root.SetArgs([]string{"-C", dir, "skill", "load", arg})

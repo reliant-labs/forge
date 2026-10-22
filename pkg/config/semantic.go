@@ -138,7 +138,7 @@ func CheckCommandPath(cmd *cobra.Command, configName string, want ...string) err
 		"config: %s is declared for the %q subcommand ((forge.v1.binary_config).command = [%s]), "+
 			"but `%s` loaded it. Its flags are registered on that subcommand alone "+
 			"(Register%sFlags), so another command would load it without them: call Load%s "+
-			"from the %q command, or correct the annotation in proto/config",
+			"from the %q command, or correct the annotation in proto/<project>/config/v1",
 		configName, strings.Join(want, " "), quoteJoin(want), cmd.CommandPath(),
 		configName, configName, strings.Join(want, " "))
 }
@@ -189,7 +189,7 @@ func CheckCommandSubtree(cmd *cobra.Command, configName string, subtrees ...[]st
 		"config: %s is declared for the commands at or below %s ((forge.v1.binary_config).subtrees), "+
 			"but `%s` loaded it. Its flags are registered on those commands (Register%sFlags), so a command "+
 			"outside them would load it without them: call Load%s from a command under one of them, "+
-			"or add this command's path to the annotation in proto/config",
+			"or add this command's path to the annotation in proto/<project>/config/v1",
 		configName, strings.Join(paths, ", "), cmd.CommandPath(), configName, configName)
 }
 

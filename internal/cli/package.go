@@ -13,6 +13,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/configproto"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/generator/contract"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -255,7 +256,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	}
 
 	// An adapter's settings are configuration, so its base URL is a leaf of
-	// its own config block in proto/config/v1/config.proto rather than a
+	// its own config block in proto/<project>/config/v1/config.proto rather than a
 	// scalar Deps field (which forge-config-deps rejects, and which compose.go
 	// could only ever wire to ""). The proto edit runs first because its
 	// outcome decides which Deps shape the templates render.
@@ -347,7 +348,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	if noGenerate, _ := cmd.Flags().GetBool("no-generate"); data.ConfigBlock != "" && noGenerate {
 		// adapter.go names config.<ConfigBlock>, which pkg/config declares
 		// only once generate has compiled the block the proto edit added.
-		fmt.Printf("\n   Run `forge generate` first: it generates config.%s from proto/config/v1 and wires\n", data.ConfigBlock)
+		fmt.Printf("\n   Run `forge generate` first: it generates config.%s from proto/<project>/config/v1 and wires\n", data.ConfigBlock)
 		fmt.Printf("   internal/%s, with its Cfg, into internal/app/compose.go. Set %s per environment.\n", name, data.ConfigEnvVar)
 	}
 
@@ -355,7 +356,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 }
 
 // ensureAdapterConfigBlock composes the adapter's config block on AppConfig
-// in proto/config/v1 — `message <Name>Config { string base_url = 1 [...]; }`
+// in proto/<project>/config/v1 — `message <Name>Config { string base_url = 1 [...]; }`
 // plus `<Name>Config <name> = <next tag>;` — and returns the block's message
 // name and its base_url env var. The edit is idempotent (an adapter
 // re-scaffolded after its directory was deleted finds its block in place) and
@@ -385,10 +386,11 @@ func ensureAdapterConfigBlock(root, name string) (block, envVar string, err erro
 			Description: fmt.Sprintf("Base URL of the %s downstream, e.g. https://api.example.com (no trailing slash). The adapter's requests are made against it.", name),
 		}},
 	}
-	res, err := scaffold.EnsureConfigBlock(filepath.Join(root, "proto", "config", "v1"), spec)
+	layout := configproto.ForProject(root)
+	res, err := scaffold.EnsureConfigBlock(filepath.Join(root, filepath.FromSlash(layout.Dir())), spec)
 	switch {
 	case errors.Is(err, scaffold.ErrNoConfigRoot):
-		return "", "", fmt.Errorf("scaffold adapter %s requires proto/config/v1/config.proto with an AppConfig message; declare the config root before scaffolding the adapter (no adapter files were written)", name)
+		return "", "", fmt.Errorf("scaffold adapter %s requires %s with an AppConfig message; declare the config root before scaffolding the adapter (no adapter files were written)", name, layout.RootPath())
 	case err != nil:
 		return "", "", fmt.Errorf("compose the %s config block: %w", block, err)
 	}

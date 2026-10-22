@@ -81,7 +81,7 @@ func TestScaffold_EveryDevLauncherServesPermissiveCORS(t *testing.T) {
 func TestScaffold_ConfigDefaultEnvironmentStaysClosed(t *testing.T) {
 	root := scaffoldForDevLaunch(t, "closedapp")
 
-	proto := readFile(t, filepath.Join(root, "proto", "config", "v1", "config.proto"))
+	proto := readFile(t, filepath.Join(root, "proto", filepath.Base(root), "config", "v1", "config.proto"))
 	envField := fieldBlock(t, proto, "string environment")
 	def := quotedOptionValue(t, envField, "default_value")
 

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge/pkg/alerting/amconfig`: the Alertmanager configuration renderer.**
+  Moved verbatim from the control plane, which renders every org's routing
+  with it, so a local stack can render with the SAME code: one route per org
+  matched strictly on `reliant_org_id` with a blackhole default, per-org
+  receiver names, secrets as `*_file` references only, autopilot receivers as
+  continue:true observers. `TestNoRouteDeliversAcrossOrgs` runs over
+  Alertmanager's real routing tree. New: `Settings.AllowHTTPWebhooks` (false
+  by default) lets a local stack, whose receivers are the developer's own
+  machine, use plain-http webhooks; a renderer serving several orgs never sets it.
+
 - **`forge.OpenBao` renders (SF6).** `Bundle.openbao = forge.OpenBao {}` now
   lowers to a `forge.dev/v1alpha1 OpenBao` record that `pkg/deploy/openbao`
   expands into the secret store and what converges it. Defaults run: Raft x3 on

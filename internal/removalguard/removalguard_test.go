@@ -154,6 +154,9 @@ var removals = []removal{
 				Token: regexp.MustCompile(`tenants/|"tenants"|\btenants\b`),
 				Paths: []string{
 					"pkg/secretaccess/",
+					// pkg/release's shape test asserts the exact paths
+					// pkg/secretaccess derives for a store-backed shape.
+					"pkg/release/store_secrets_test.go",
 				},
 			},
 			{

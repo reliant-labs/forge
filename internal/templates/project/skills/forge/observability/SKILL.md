@@ -68,6 +68,10 @@ HyperDX dashboard JSON dropped into `deploy/observability/dashboards/` is loaded
 
 **Alerts** are declared in KCL, not in HyperDX: `forge.AlertRule` (a native ClickHouse SQL `expr`; every returned row is a firing instance), `forge.AlertRoute` (labels to a receiver name) and `forge.AlertDefault` (tune or disable the generated defaults: telemetry, customer-metadata and platform), under `forge.Observability.alerts`. Render refuses a malformed rule; the resolved rules land in the release shape for the control plane to evaluate. Depth: `observability/alerts`.
 
+## Asking from the CLI: `forge obs`
+
+The same data answers from the shell, with one JSON document per command and exit codes a gate can branch on, against the local ClickStack or, for a hosted env, the control plane: `forge obs status` (what is wrong now), `forge obs check` (did the deploy work), `forge obs issues|issue`, `forge obs logs|traces|trace`, `forge obs endpoints`, `forge obs metrics list|query`, `forge obs query --sql`. Reach for these before HyperDX when an agent is asking. Depth: `forge skill load observability/query`.
+
 ## Querying Logs
 
 In HyperDX → Search → Logs, filter on the service (the workload name), severity, or any attribute the log line carried:

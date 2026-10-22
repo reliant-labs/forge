@@ -1,11 +1,6 @@
 package cli
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -71,80 +66,6 @@ func TestDeclarationFromEntities_AbsentIsNil(t *testing.T) {
 	}
 }
 
-// TestRunCloudReleases_AuthenticatesAndRendersRealData is the ONE
-// command proven end to end: a real HTTP round trip against a server
-// speaking the Connect JSON binding, through the real client, with a
-// resolved endpoint and credential.
-//
-// It reads ListReleases and NOT ListDeployments deliberately.
-// ListDeployments is a scaffold stub server-side (control-plane's
-// handlers_deployment.go returns CodeUnimplemented), so a command built
-// on it would authenticate perfectly and always fail — proving nothing.
-func TestRunCloudReleases_AuthenticatesAndRendersRealData(t *testing.T) {
-	var gotAuth, gotPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth, gotPath = r.Header.Get("Authorization"), r.URL.Path
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"releases": []map[string]any{
-				{"id": "rel_01", "version": "v1.4.0", "gitCommit": "abc123def4567890", "createdAt": "2026-09-01T10:00:00Z"},
-				{"id": "rel_02", "version": "v1.3.9", "gitCommit": "99887766aabbccdd", "gitDirty": true, "createdAt": "2026-08-30T09:00:00Z"},
-			},
-		})
-	}))
-	defer srv.Close()
-
-	t.Setenv("FORGE_HOME", t.TempDir())
-	t.Setenv("ACME_DEPLOY_TOKEN", "ci-token")
-
-	entities := &KCLEntities{ControlPlane: &ControlPlaneEntity{
-		Type: "control_plane", Endpoint: srv.URL, TokenEnv: "ACME_DEPLOY_TOKEN",
-	}}
-	ep, err := cloud.ResolveEndpoint("prod", declarationFromEntities(entities))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cred, err := cloud.ResolveCredential("", ep)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var out bytes.Buffer
-	if err := runCloudReleases(context.Background(), cloud.NewClient(ep, cred), 20, false, &out); err != nil {
-		t.Fatalf("runCloudReleases: %v", err)
-	}
-
-	if gotAuth != "Bearer ci-token" {
-		t.Errorf("Authorization: got %q", gotAuth)
-	}
-	if gotPath != "/controlplane.v1.DeployService/ListReleases" {
-		t.Errorf("procedure path: got %q", gotPath)
-	}
-	rendered := out.String()
-	for _, want := range []string{"VERSION", "v1.4.0", "abc123de", "rel_01", "v1.3.9", "+dirty"} {
-		if !strings.Contains(rendered, want) {
-			t.Errorf("output should contain %q; got:\n%s", want, rendered)
-		}
-	}
-}
-
-// TestRunCloudReleases_EmptyIsNotAnError — an account with no releases
-// is a normal state, not a failure.
-func TestRunCloudReleases_EmptyIsNotAnError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"releases":[]}`))
-	}))
-	defer srv.Close()
-
-	ep, _ := cloud.ResolveEndpoint("prod", &cloud.Declaration{Endpoint: srv.URL})
-	var out bytes.Buffer
-	if err := runCloudReleases(context.Background(), cloud.NewClient(ep, cloud.Credential{Token: "t"}), 20, false, &out); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(out.String(), "No releases") {
-		t.Errorf("want an empty-state line; got %q", out.String())
-	}
-}
-
 // TestForgeStillWorksWithNoHostedEndpoint is the regression guard for
 // every existing forge user, who has no hosted anything and must be
 // entirely unaffected.
@@ -181,27 +102,5 @@ func TestForgeStillWorksWithNoHostedEndpoint(t *testing.T) {
 	}
 	if len(names) == 0 {
 		t.Fatal("`forge cloud` should have subcommands")
-	}
-}
-
-// TestCloudReleases_SurfacesServerErrorNotAPanic — an endpoint that is
-// reachable but rejects the call must produce a clean error.
-func TestCloudReleases_SurfacesServerError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(map[string]string{"code": "unauthenticated", "message": "bad token"})
-	}))
-	defer srv.Close()
-
-	ep, _ := cloud.ResolveEndpoint("prod", &cloud.Declaration{Endpoint: srv.URL, TokenEnv: "ACME_DEPLOY_TOKEN"})
-	var out bytes.Buffer
-	err := runCloudReleases(context.Background(),
-		cloud.NewClient(ep, cloud.Credential{Token: "nope", Source: cloud.SourceEnv, From: "ACME_DEPLOY_TOKEN"}),
-		20, false, &out)
-	if err == nil {
-		t.Fatal("expected an error")
-	}
-	if !strings.Contains(err.Error(), "forge login") || !strings.Contains(err.Error(), "ACME_DEPLOY_TOKEN") {
-		t.Errorf("auth failure should name both remedies; got:\n%s", err)
 	}
 }

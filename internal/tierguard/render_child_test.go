@@ -157,7 +157,18 @@ func renderInChild(parent string, fx fixture) (*renderResult, error) {
 	// runs, and generate's version-compatibility check then (correctly)
 	// refuses the unbridged fixture. The guard must not depend on how the
 	// caller's shell is configured, so the child decides its own workspace.
-	cmd.Env = withoutEnv(os.Environ(), "GOWORK")
+	//
+	// Two more the child must own rather than inherit. The renderer IS the
+	// forge under test, so it must not hand a command to a built twin of the
+	// bridged checkout: that exec replaces the child's process and the JSON
+	// below is never written (FORGE_ALLOW_VERSION_SKEW is the "run THIS
+	// forge" switch). And the fixture's initial commit needs a git identity,
+	// which a clean machine or CI container does not have globally.
+	cmd.Env = append(withoutEnv(os.Environ(), "GOWORK"),
+		"FORGE_ALLOW_VERSION_SKEW=1",
+		"GIT_AUTHOR_NAME=forge-tierguard", "GIT_AUTHOR_EMAIL=tierguard@example.com",
+		"GIT_COMMITTER_NAME=forge-tierguard", "GIT_COMMITTER_EMAIL=tierguard@example.com",
+	)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

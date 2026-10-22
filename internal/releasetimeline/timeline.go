@@ -181,6 +181,7 @@ type Timeline struct {
 	Warnings  []string `json:"warnings,omitempty"`
 
 	promos    []Entry // every promotion, oldest first, unfiltered
+	failed    []Entry // every failed or timed-out deploy, newest first, unfiltered
 	truncated bool    // the source did not reach the ledger's start
 }
 
@@ -287,7 +288,7 @@ func Assemble(d Data, since time.Time, limit int) Timeline {
 		pi--
 	}
 
-	t := Timeline{Env: d.Env, Warnings: d.Warnings, promos: promos, truncated: d.Truncated}
+	t := Timeline{Env: d.Env, Warnings: d.Warnings, promos: promos, failed: failed, truncated: d.Truncated}
 	t.Truncated = d.Truncated
 	if !since.IsZero() {
 		kept := entries[:0:0]
@@ -320,6 +321,20 @@ func (t *Timeline) AttachHealth(byPromotion map[string]Health) {
 			t.promos[i].Health = &h
 		}
 	}
+}
+
+// FailuresOf returns the failed and timed-out deploys of one promotion, newest
+// first. A promotion whose deploy never landed has no rollout of its own; its
+// failures are rows of their own in the timeline, and this is how `show`
+// finds the ones that belong to the promotion it is showing.
+func (t Timeline) FailuresOf(promotionID string) []Entry {
+	var out []Entry
+	for _, f := range t.failed {
+		if promotionID != "" && f.PromotionID == promotionID {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // ErrNotFound is returned by Find when no promotion matches.

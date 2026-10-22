@@ -295,3 +295,23 @@ func TestAttachHealth(t *testing.T) {
 		t.Error("Find must see attached health")
 	}
 }
+
+func TestFailuresOf_FindsTheDeploysThatNeverLanded(t *testing.T) {
+	d := Data{
+		Env: "prod", Releases: chain(),
+		Promotions: []release.Promotion{promo("p1", "v1", 30), promo("p2", "v2", 40)},
+		Attempts: []Attempt{
+			{PromotionID: "p2", Status: StatusFailed, FinishedAt: at(41), Reason: "first"},
+			{PromotionID: "p2", Status: StatusTimedOut, FinishedAt: at(50)},
+			{PromotionID: "p1", Status: StatusSucceeded, FinishedAt: at(32)},
+		},
+	}
+	tl := Assemble(d, at(100), 0) // every row filtered out; FailuresOf still sees them
+	got := tl.FailuresOf("p2")
+	if len(got) != 2 || got[0].Rollout.Status != StatusTimedOut || got[1].Rollout.Reason != "first" {
+		t.Errorf("got %+v", got)
+	}
+	if len(tl.FailuresOf("p1")) != 0 || len(tl.FailuresOf("")) != 0 {
+		t.Error("a promotion that landed, or no promotion, has no failures")
+	}
+}

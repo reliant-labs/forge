@@ -739,6 +739,15 @@ type DatabaseConfig struct {
 	MigrationSafety MigrationSafetyConfig `yaml:"migration_safety,omitempty"`
 	// ORM places the generated data layer. Absent, it is internal/db.
 	ORM ORMConfig `yaml:"orm,omitempty"`
+	// PostgresVersion is the postgres the project runs in production — a
+	// major ("16") or an exact release ("16.9.0") — and so the one its
+	// tests run against: forge/pkg/pgtest boots its embedded server at this
+	// version (and checks an external FORGE_TEST_POSTGRES_URL server's
+	// major against it). Empty means pgtest's default, the newest major.
+	// Read by pgtest itself from the nearest forge.yaml, so a bare
+	// `go test` honours it; FORGE_TEST_POSTGRES_VERSION overrides it for
+	// one run.
+	PostgresVersion string `yaml:"postgres_version,omitempty"`
 }
 
 // DefaultMigrationsDir is where migrations live.

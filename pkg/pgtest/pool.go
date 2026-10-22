@@ -61,8 +61,9 @@ import (
 )
 
 // pool state-file layout, alongside the per-instance runtime dirs under
-// os.TempDir()/forge-pgtest. Both are FILES (not dirs), so reapStaleInstances
-// — which only considers directory entries — skips them.
+// instanceRoot() (os.TempDir()/forge-pgtest for the default version). Both
+// are FILES (not dirs), so reapStaleInstances — which only considers
+// directory entries — skips them.
 const (
 	poolStateFile = "pool.json"
 	poolLockFile  = "pool.lock"
@@ -355,7 +356,7 @@ func retainEmbedded(ep *embeddedpostgres.EmbeddedPostgres) {
 
 // --- pool state file I/O (all callers hold the pool lock) ---
 
-func poolRoot() string      { return filepath.Join(os.TempDir(), "forge-pgtest") }
+func poolRoot() string      { return instanceRoot() }
 func poolStatePath() string { return filepath.Join(poolRoot(), poolStateFile) }
 func poolLockPath() string  { return filepath.Join(poolRoot(), poolLockFile) }
 

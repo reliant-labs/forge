@@ -45,6 +45,11 @@ type Resolver struct {
 	// pkgs holds the type-checked in-module packages that declare a
 	// Deps-named interface, by import path.
 	pkgs map[string]*packages.Package
+	// self maps a contract's package directory to that package's import
+	// path, so a contract can find its OWN type-checked package (loaded
+	// when one of its interfaces embeds an interface another file of the
+	// package declares) and render its types unqualified.
+	self map[string]string
 }
 
 // NewResolver resolves, for every contract.go in contractPaths, the names of
@@ -53,7 +58,7 @@ type Resolver struct {
 // interfaces embed from. Contracts are grouped by module so a
 // multi-module caller still gets one load per module.
 func NewResolver(contractPaths ...string) *Resolver {
-	r := &Resolver{names: map[string]string{}, pkgs: map[string]*packages.Package{}}
+	r := &Resolver{names: map[string]string{}, pkgs: map[string]*packages.Package{}, self: map[string]string{}}
 
 	type moduleWork struct {
 		modulePath string
@@ -80,6 +85,17 @@ func NewResolver(contractPaths ...string) *Resolver {
 		}
 		w.dirs = append(w.dirs, dir)
 		w.contracts = append(w.contracts, contractPath)
+		absDir, _ := filepath.Abs(dir)
+		if selfPath := importPathOf(moduleRoot, modulePath, absDir); selfPath != "" {
+			r.self[absDir] = selfPath
+			// An interface here that embeds one declared in ANOTHER file of
+			// the package (a deps.go role embedding a role from roles.go)
+			// has a method set this file's syntax cannot give: the package
+			// is type-checked, like a foreign package an embed names.
+			if embedsSiblingInterface(fset, contractPath) {
+				w.foreign[selfPath] = true
+			}
+		}
 	}
 
 	// need records the name of every package dir's files import
@@ -138,6 +154,77 @@ func NewResolver(contractPaths ...string) *Resolver {
 		r.loadTypes(root, sortedKeys(w.foreign))
 	}
 	return r
+}
+
+// embedsSiblingInterface reports whether an interface declared in
+// contractPath embeds, by bare name, an interface the file does not declare
+// — one declared in another file of the same package.
+func embedsSiblingInterface(fset *token.FileSet, contractPath string) bool {
+	file, err := parser.ParseFile(fset, contractPath, nil, parser.SkipObjectResolution)
+	if err != nil {
+		return false
+	}
+	declared := map[string]bool{}
+	var embeds []string
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			declared[ts.Name.Name] = true
+			it, ok := ts.Type.(*ast.InterfaceType)
+			if !ok || it.Methods == nil {
+				continue
+			}
+			for _, field := range it.Methods.List {
+				if id, ok := field.Type.(*ast.Ident); ok && id.Name != "error" {
+					embeds = append(embeds, id.Name)
+				}
+			}
+		}
+	}
+	for _, name := range embeds {
+		if !declared[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// importPathOf is the import path of the package in dir, inside the module
+// rooted at moduleRoot (the inverse of packageDir); "" when dir is outside it.
+func importPathOf(moduleRoot, modulePath, dir string) string {
+	rel, err := filepath.Rel(moduleRoot, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	if rel == "." {
+		return modulePath
+	}
+	return modulePath + "/" + filepath.ToSlash(rel)
+}
+
+// selfPackage returns the type-checked package a contract in dir belongs
+// to, and its import path. The package is nil when it was not loaded (no
+// interface of the contract embeds a sibling-file interface) or did not type.
+func (r *Resolver) selfPackage(dir string) (*packages.Package, string) {
+	if r == nil {
+		return nil, ""
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, ""
+	}
+	path := r.self[abs]
+	if path == "" {
+		return nil, ""
+	}
+	return r.pkgs[path], path
 }
 
 // embeddedImportPaths returns the import paths of every package an interface

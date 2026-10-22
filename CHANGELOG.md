@@ -44,6 +44,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A mock role may embed a role another file of its package declares.** The
+  mock generator read only the file it generates from (`contract.go`, or a
+  marked `deps.go`), so `type Repo interface { Reader; ... }` with `Reader` in
+  `roles.go` produced a `MockRepo` without `Reader`'s methods, and generate's
+  build validation failed with "does not implement". The embed is now resolved
+  from the type-checked package, the way #1109 resolves another package's,
+  with the package's own types unqualified and the sibling file's imports
+  carried over.
 - **`forge fix connect-errors` sees an As-style helper as a `*connect.Error` reader.**
   - It recognised `errors.As` itself, but not testify's `require.ErrorAs(t, err, &ce)` / `assert.ErrorAs`, a suite's `ErrorAs` method, or a project's own helper: each takes the target as `interface{}`. A handler package whose only reader was one of those got bare kinds, and its tests failed (reliant's `internal/handlers/approval`: four tests).
   - Any call handed a `**connect.Error` is now a reader, so that package keeps `svcerr.ToConnect(…)` and the report names the call.

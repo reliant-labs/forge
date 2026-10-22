@@ -88,6 +88,7 @@ import .lib.capabilities as caps
 import .lib.crd as crd_lib
 import .lib.build as build_lib
 import .lib.flux as flux_lib
+import .lib.eso as eso_lib
 import .lib.openbao as openbao_lib
 import .lib.external_secret as es_lib
 
@@ -189,7 +190,7 @@ _targeted_contexts = lambda workloads: [any], databases: [any], cluster_target: 
     _from_gateways = [g.cluster.context for g in gateways if g.cluster]
     _from_http = [r.cluster.context for r in http_routes if r.cluster]
     _from_grpc = [r.cluster.context for r in grpc_routes if r.cluster]
-    _from_charts = [h.cluster.context for h in helm_charts if h.cluster]
+    _from_charts = [_eso_context(h) for h in helm_charts if h.cluster]
     _from_manifests = [m.cluster for m in manifests if m.cluster]
     _from_generated = [g.cluster for g in generated if g.cluster]
     _from_secrets = [s.cluster for s in rendered_secrets if s.cluster]
@@ -1901,7 +1902,7 @@ render = lambda bundle: Bundle -> any {
         # Platform deps (helm-as-a-RENDERER): the CLI expands each via `helm
         # template --skip-crds` and folds the result into the apply stream,
         # selected by `--target <name>`. Not in `manifests`.
-        "helm_charts": [_render_helm_chart(h) for h in bundle.helm_charts if h.delivery != "bundle"]
+        "helm_charts": [_render_helm_chart(h) for h in _all_helm_charts(bundle) if h.delivery != "bundle"]
         # Bring-your-own YAML, rendered Go-side at extract time and shipped in
         # the bundle (internal/cluster/byo_yaml.go). Keys appear only when
         # declared, so an env with neither renders exactly as before.
@@ -2628,6 +2629,12 @@ _render_cluster = lambda c: Cluster -> any {
 # kubeconfig + applies the Secret Go-side (the IP is resolved fresh, never
 # in KCL); this projection only carries the DECLARATION. Never appears in
 # render_manifests — the Secret has a runtime-minted value, not a static one.
+# The declared charts plus the one chart each ExternalSecretsOperator lowers
+# to (lib/eso.k). Built through HelmChart so its check: block runs.
+_all_helm_charts = lambda b: Bundle -> [HelmChart] {
+    b.helm_charts + [HelmChart {**eso_lib.eso_chart(e, eso_lib.eso_owner(b.project, b.env))} for e in b.external_secrets_operators]
+}
+
 # Render a HelmChart (platform dependency) to its stable dict form. The
 # CLI reads this list and runs `helm template <chart|oci> --version
 # <version> --values <values> -n <namespace> --skip-crds` Go-side, stamps
@@ -2651,11 +2658,14 @@ _render_helm_chart = lambda h: HelmChart -> any {
         # app deploy. The CLI stamps the chart's app-label and applies
         # them after the chart's controllers.
         "manifests": h.manifests if h.manifests else None
-        # cluster is a forge.Cluster REFERENCE; the machine-facing JSON
-        # carries the DENORMALIZED kubectl context (k3d-<name>) the apply
-        # runs `kubectl --context` with — never the bare name. Null =>
-        # the env's primary cluster (every pre-existing declaration).
-        "cluster": h.cluster.context if h.cluster else None
+        # cluster is a forge.Cluster REFERENCE or a forge.ClusterTarget; the
+        # machine-facing JSON carries the DENORMALIZED kubectl context
+        # (k3d-<name>, or the target's own) the apply runs `kubectl --context`
+        # with — never the bare name. Null => the env's primary cluster.
+        "cluster": _eso_context(h) if h.cluster else None
+        # True when `cluster` is a forge.ClusterTarget: the target IS the
+        # declaration, so the deploy does not look for it in Bundle.clusters.
+        "cluster_target": True if (h.cluster and typeof(h.cluster) == "ClusterTarget") else None
         # Metadata forge writes onto the Namespace it creates for the chart,
         # and whether a re-apply prunes the chart's departed objects.
         "namespace_labels": h.namespace_labels if h.namespace_labels else None

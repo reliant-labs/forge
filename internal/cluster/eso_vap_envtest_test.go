@@ -1,0 +1,409 @@
+package cluster
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	"sigs.k8s.io/yaml"
+
+	"github.com/reliant-labs/forge/internal/kclplugin"
+	"github.com/reliant-labs/forge/internal/kclrender"
+	"github.com/reliant-labs/forge/pkg/deploy/eso"
+)
+
+// The three ESO admission policies, run by a REAL kube-apiserver. A CEL
+// expression that parses can still be wrong (a field path that does not exist
+// in the CRD fails closed and denies everything, or a guard that never
+// matches), so the generated policies are applied to an API server holding the
+// embedded CRDs and probed with objects that must be admitted and objects that
+// must be refused.
+//
+// Needs the envtest binaries (KUBEBUILDER_ASSETS): skipped without them and
+// under -short.
+
+const vapMain = `import forge
+
+_hub = forge.ClusterTarget {cluster = "envtest", namespace = "acme"}
+
+output = forge.render(forge.Bundle {
+    project = "fixture"
+    env = "prod"
+    cluster_target = _hub
+    external_secrets_operators = [forge.ExternalSecretsOperator {
+        cluster = _hub
+        admission = forge.ESOAdmission {
+            writers = ["alice"]
+            servers = ["https://openbao.openbao.svc:8200"]
+            jwt_mounts = ["jwt-hub"]
+            audiences = ["https://secrets.example.com/c/hub"]
+            gcp_projects = ["acme-prod"]
+        }
+    }]
+})
+`
+
+func renderVAPObjects(t *testing.T) []*unstructured.Unstructured {
+	t.Helper()
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"kcl.mod": "[package]\nname = \"esovap\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n",
+		"main.k":  vapMain,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kclplugin.Register()
+	out, err := kclrender.Run(dir, dir, nil)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	var contract struct {
+		Output struct {
+			HelmCharts []struct {
+				Values struct {
+					ExtraObjects []map[string]any `json:"extraObjects"`
+				} `json:"values"`
+			} `json:"helm_charts"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(out, &contract); err != nil || len(contract.Output.HelmCharts) != 1 {
+		t.Fatalf("contract: %v", err)
+	}
+	var objs []*unstructured.Unstructured
+	for _, o := range contract.Output.HelmCharts[0].Values.ExtraObjects {
+		objs = append(objs, &unstructured.Unstructured{Object: o})
+	}
+	if len(objs) != 6 {
+		t.Fatalf("rendered %d admission objects, want 3 policies + 3 bindings", len(objs))
+	}
+	return objs
+}
+
+var (
+	gvkSS = schema.GroupVersionKind{Group: "external-secrets.io", Version: "v1", Kind: "SecretStore"}
+	gvkES = schema.GroupVersionKind{Group: "external-secrets.io", Version: "v1", Kind: "ExternalSecret"}
+)
+
+func esObj(gvk schema.GroupVersionKind, ns, name, specYAML string) *unstructured.Unstructured {
+	var spec map[string]any
+	if err := yaml.Unmarshal([]byte(specYAML), &spec); err != nil {
+		panic(err)
+	}
+	u := &unstructured.Unstructured{Object: map[string]any{"spec": spec}}
+	u.SetGroupVersionKind(gvk)
+	u.SetNamespace(ns)
+	u.SetName(name)
+	return u
+}
+
+func vaultStore(server, mount, sa string, audiences ...string) string {
+	quoted := make([]string, len(audiences))
+	for i, s := range audiences {
+		quoted[i] = `"` + s + `"`
+	}
+	return `
+provider:
+  vault:
+    server: "` + server + `"
+    path: secret
+    version: v2
+    auth:
+      jwt:
+        path: ` + mount + `
+        role: r
+        kubernetesServiceAccountToken:
+          serviceAccountRef: {name: ` + sa + `}
+          audiences: [` + strings.Join(quoted, ",") + `]`
+}
+
+func esSpec(target, extra string) string {
+	return `
+secretStoreRef: {kind: SecretStore, name: s}
+` + target + `
+data:
+  - secretKey: k
+    remoteRef: {key: some/path}
+` + extra
+}
+
+const goodTarget = `target: {creationPolicy: Orphan, deletionPolicy: Retain}`
+
+func TestESOAdmissionPolicies(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts kube-apiserver and etcd; runs in task test")
+	}
+	assets := os.Getenv("KUBEBUILDER_ASSETS")
+	if assets == "" {
+		t.Skip("KUBEBUILDER_ASSETS not set (setup-envtest use); the policies are also pinned by the KCL fixtures")
+	}
+	vaps := renderVAPObjects(t)
+
+	crdFile := filepath.Join(t.TempDir(), "eso-crds.yaml")
+	crds, err := eso.CRDs(eso.ChartVersion, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(crdFile, []byte(crds), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := &envtest.Environment{CRDDirectoryPaths: []string{crdFile}, ErrorIfCRDPathMissing: true, BinaryAssetsDirectory: assets}
+	cfg, err := env.Start()
+	if err != nil {
+		t.Fatalf("start envtest: %v", err)
+	}
+	t.Cleanup(func() { _ = env.Stop() })
+
+	admin, err := client.New(cfg, client.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	as := func(user string, groups ...string) client.Client {
+		c := rest.CopyConfig(cfg)
+		c.Impersonate = rest.ImpersonationConfig{UserName: user, Groups: groups}
+		cl, err := client.New(c, client.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cl
+	}
+	ctx := context.Background()
+	mustCreate := func(c client.Client, o *unstructured.Unstructured) {
+		t.Helper()
+		if err := c.Create(ctx, o); err != nil {
+			t.Fatalf("create %s/%s: %v", o.GetKind(), o.GetName(), err)
+		}
+	}
+	for _, ns := range []string{"app", "other"} {
+		n := &unstructured.Unstructured{Object: map[string]any{}}
+		n.SetAPIVersion("v1")
+		n.SetKind("Namespace")
+		n.SetName(ns)
+		mustCreate(admin, n)
+	}
+	// RBAC so that alice and bob reach the admission step at all: the policy
+	// under test is the second gate, not the first.
+	for _, y := range []string{`
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: eso-test}
+rules:
+- {apiGroups: [external-secrets.io], resources: [externalsecrets, secretstores], verbs: ["*"]}
+`, `
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: eso-test}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: eso-test}
+subjects:
+- {apiGroup: rbac.authorization.k8s.io, kind: User, name: alice}
+- {apiGroup: rbac.authorization.k8s.io, kind: User, name: bob}
+`} {
+		u := &unstructured.Unstructured{}
+		if err := yaml.Unmarshal([]byte(y), &u.Object); err != nil {
+			t.Fatal(err)
+		}
+		mustCreate(admin, u)
+	}
+
+	// A store that predates the policies: a webhook provider, the exfiltration
+	// channel eso-store-pin exists to close.
+	legacy := esObj(gvkSS, "app", "legacy", `
+provider:
+  webhook: {url: "https://evil.example/x", result: {jsonPath: "$"}}
+`)
+	mustCreate(admin, legacy)
+
+	for _, o := range vaps {
+		mustCreate(admin, o)
+	}
+
+	good := vaultStore("https://openbao.openbao.svc:8200", "jwt-hub", "reliant-secrets", "https://secrets.example.com/c/hub")
+
+	// Policies take a moment to become active: probe until a store the pin must
+	// refuse is refused.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		p := esObj(gvkSS, "app", "warmup", `provider: {fake: {data: [{key: a, value: b}]}}`)
+		if err := admin.Create(ctx, p); err != nil {
+			break
+		}
+		_ = admin.Delete(ctx, p)
+		if time.Now().After(deadline) {
+			t.Fatal("eso-store-pin never became active")
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	type probe struct {
+		name   string
+		c      client.Client
+		o      *unstructured.Unstructured
+		deny   bool
+		reason string // substring of the refusal
+	}
+	check := func(t *testing.T, p probe) {
+		t.Helper()
+		err := p.c.Create(ctx, p.o)
+		switch {
+		case p.deny && err == nil:
+			_ = p.c.Delete(ctx, p.o)
+			t.Fatalf("%s was admitted, want a refusal containing %q", p.name, p.reason)
+		case p.deny && !strings.Contains(err.Error(), p.reason):
+			t.Fatalf("%s refused for the wrong reason:\n got: %v\nwant: %q", p.name, err, p.reason)
+		case !p.deny && err != nil:
+			t.Fatalf("%s was refused: %v", p.name, err)
+		}
+	}
+
+	t.Run("eso-writers", func(t *testing.T) {
+		alice, bob := as("alice"), as("bob")
+		check(t, probe{"declared writer", alice, esObj(gvkSS, "app", "w-alice", good), false, ""})
+		check(t, probe{"cluster admin group", admin, esObj(gvkSS, "app", "w-admin", good), false, ""})
+		check(t, probe{"RBAC-permitted non-writer", bob, esObj(gvkSS, "app", "w-bob", good), true, "only the declared writers"})
+		check(t, probe{"non-writer ExternalSecret", bob, esObj(gvkES, "app", "w-bob-es", esSpec(goodTarget, "")), true, "only the declared writers"})
+		if err := bob.Delete(ctx, esObj(gvkSS, "app", "w-alice", "{}")); err == nil || !strings.Contains(err.Error(), "only the declared writers") {
+			t.Fatalf("non-writer delete: %v", err)
+		}
+		if err := alice.Delete(ctx, esObj(gvkSS, "app", "w-alice", "{}")); err != nil {
+			t.Fatalf("writer delete: %v", err)
+		}
+	})
+
+	t.Run("eso-store-pin", func(t *testing.T) {
+		const why = "may only dial a declared server"
+		cases := []probe{
+			{"pinned vault JWT store", admin, esObj(gvkSS, "app", "p-good", good), false, ""},
+			{"gcpsm declared project, workload identity", admin, esObj(gvkSS, "app", "p-gcp", `
+provider:
+  gcpsm:
+    projectID: acme-prod
+    auth:
+      workloadIdentity: {clusterLocation: l, clusterName: c, serviceAccountRef: {name: reliant-secrets}}
+`), false, ""},
+			{"foreign server", admin, esObj(gvkSS, "app", "p-server", vaultStore("https://evil.example:8200", "jwt-hub", "reliant-secrets", "https://secrets.example.com/c/hub")), true, why},
+			{"foreign mount", admin, esObj(gvkSS, "app", "p-mount", vaultStore("https://openbao.openbao.svc:8200", "jwt-evil", "reliant-secrets", "https://secrets.example.com/c/hub")), true, why},
+			{"foreign service account", admin, esObj(gvkSS, "app", "p-sa", vaultStore("https://openbao.openbao.svc:8200", "jwt-hub", "default", "https://secrets.example.com/c/hub")), true, why},
+			{"foreign audience", admin, esObj(gvkSS, "app", "p-aud", vaultStore("https://openbao.openbao.svc:8200", "jwt-hub", "reliant-secrets", "https://evil.example")), true, why},
+			{"two audiences", admin, esObj(gvkSS, "app", "p-aud2", vaultStore("https://openbao.openbao.svc:8200", "jwt-hub", "reliant-secrets", "https://secrets.example.com/c/hub", "https://evil.example")), true, why},
+			{"no audience (the provider would default to 'vault')", admin, esObj(gvkSS, "app", "p-noaud", `
+provider:
+  vault:
+    server: "https://openbao.openbao.svc:8200"
+    path: secret
+    auth:
+      jwt:
+        path: jwt-hub
+        role: r
+        kubernetesServiceAccountToken: {serviceAccountRef: {name: reliant-secrets}}
+`), true, why},
+			{"a stored JWT instead of a projected token", admin, esObj(gvkSS, "app", "p-secretref", `
+provider:
+  vault:
+    server: "https://openbao.openbao.svc:8200"
+    path: secret
+    auth:
+      jwt: {path: jwt-hub, role: r, secretRef: {name: tok, key: t}}
+`), true, why},
+			{"token auth", admin, esObj(gvkSS, "app", "p-token", `
+provider:
+  vault:
+    server: "https://openbao.openbao.svc:8200"
+    path: secret
+    auth:
+      tokenSecretRef: {name: tok, key: t}
+`), true, why},
+			{"second auth method beside jwt", admin, esObj(gvkSS, "app", "p-two", `
+provider:
+  vault:
+    server: "https://openbao.openbao.svc:8200"
+    path: secret
+    auth:
+      jwt:
+        path: jwt-hub
+        role: r
+        kubernetesServiceAccountToken: {serviceAccountRef: {name: reliant-secrets}, audiences: ["https://secrets.example.com/c/hub"]}
+      userPass: {path: up, username: u, secretRef: {name: tok, key: t}}
+`), true, why},
+			{"a service account in another namespace", admin, esObj(gvkSS, "app", "p-ns", `
+provider:
+  vault:
+    server: "https://openbao.openbao.svc:8200"
+    path: secret
+    auth:
+      jwt:
+        path: jwt-hub
+        role: r
+        kubernetesServiceAccountToken: {serviceAccountRef: {name: reliant-secrets, namespace: other}, audiences: ["https://secrets.example.com/c/hub"]}
+`), true, why},
+			{"gcpsm undeclared project", admin, esObj(gvkSS, "app", "p-gcp2", `
+provider: {gcpsm: {projectID: evil-project, auth: {workloadIdentity: {clusterLocation: l, clusterName: c, serviceAccountRef: {name: reliant-secrets}}}}}
+`), true, why},
+			{"gcpsm with a stored key", admin, esObj(gvkSS, "app", "p-gcp3", `
+provider: {gcpsm: {projectID: acme-prod, auth: {secretRef: {secretAccessKeySecretRef: {name: k, key: k}}}}}
+`), true, why},
+			{"webhook provider", admin, esObj(gvkSS, "app", "p-webhook", `provider: {webhook: {url: "https://evil.example/x", result: {jsonPath: "$"}}}`), true, why},
+			{"fake provider", admin, esObj(gvkSS, "app", "p-fake", `provider: {fake: {data: [{key: a, value: b}]}}`), true, why},
+		}
+		for _, c := range cases {
+			check(t, c)
+		}
+
+		// A policy tightened over an existing store never wedges it: a change
+		// that leaves spec alone (finalizers, annotations) is admitted, a change
+		// to spec is judged.
+		l := legacy.DeepCopy()
+		if err := admin.Get(ctx, client.ObjectKeyFromObject(l), l); err != nil {
+			t.Fatal(err)
+		}
+		l.SetAnnotations(map[string]string{"touched": "yes"})
+		if err := admin.Update(ctx, l); err != nil {
+			t.Fatalf("a spec-neutral update of a pre-existing store was refused: %v", err)
+		}
+		l.Object["spec"] = map[string]any{"provider": map[string]any{"webhook": map[string]any{"url": "https://evil.example/y", "result": map[string]any{"jsonPath": "$"}}}}
+		if err := admin.Update(ctx, l); err == nil || !strings.Contains(err.Error(), why) {
+			t.Fatalf("a spec change to a non-conforming store: %v", err)
+		}
+		if err := admin.Delete(ctx, l); err != nil {
+			t.Fatalf("deleting a non-conforming store must stay possible: %v", err)
+		}
+	})
+
+	t.Run("eso-es-policy", func(t *testing.T) {
+		cases := []probe{
+			{"conforming ExternalSecret", admin, esObj(gvkES, "app", "e-good", esSpec(goodTarget, "refreshInterval: 5m")), false, ""},
+			{"merge adoption", admin, esObj(gvkES, "app", "e-merge", esSpec(`target: {creationPolicy: Merge, deletionPolicy: Retain}`, "")), false, ""},
+			{"its own name as target", admin, esObj(gvkES, "app", "e-self", esSpec(`target: {name: e-self, creationPolicy: Orphan, deletionPolicy: Retain}`, "")), false, ""},
+			{"dataFrom", admin, esObj(gvkES, "app", "e-datafrom", esSpec(goodTarget, "dataFrom: [{extract: {key: some/path}}]")), true, "may not use dataFrom"},
+			{"default creationPolicy (Owner)", admin, esObj(gvkES, "app", "e-owner", esSpec(`target: {name: e-owner}`, "")), true, "creationPolicy must be Orphan or Merge"},
+			{"no target at all (defaults to Owner)", admin, esObj(gvkES, "app", "e-notarget", esSpec("", "")), true, "creationPolicy must be Orphan or Merge"},
+			{"creationPolicy None", admin, esObj(gvkES, "app", "e-none", esSpec(`target: {creationPolicy: None, deletionPolicy: Retain}`, "")), true, "creationPolicy must be Orphan or Merge"},
+			{"deletionPolicy Delete", admin, esObj(gvkES, "app", "e-delete", esSpec(`target: {creationPolicy: Orphan, deletionPolicy: Delete}`, "")), true, "deletionPolicy must be Retain"},
+			{"another Secret's name", admin, esObj(gvkES, "app", "e-other", esSpec(`target: {name: victim, creationPolicy: Orphan, deletionPolicy: Retain}`, "")), true, "named like itself"},
+			{"refresh under five minutes", admin, esObj(gvkES, "app", "e-fast", esSpec(goodTarget, "refreshInterval: 1m")), true, "at least 5m"},
+			{"a ClusterSecretStore reference", admin, esObj(gvkES, "app", "e-css", `
+secretStoreRef: {kind: ClusterSecretStore, name: s}
+target: {creationPolicy: Orphan, deletionPolicy: Retain}
+data: [{secretKey: k, remoteRef: {key: some/path}}]
+`), true, "only a namespaced SecretStore"},
+			{"a generic target", admin, esObj(gvkES, "app", "e-manifest", esSpec(`target: {creationPolicy: Orphan, deletionPolicy: Retain, manifest: {apiVersion: v1, kind: ConfigMap}}`, "")), true, "generic target"},
+			{"a per-entry sourceRef", admin, esObj(gvkES, "app", "e-sourceref", `
+secretStoreRef: {kind: SecretStore, name: s}
+target: {creationPolicy: Orphan, deletionPolicy: Retain}
+data: [{secretKey: k, remoteRef: {key: p}, sourceRef: {storeRef: {kind: ClusterSecretStore, name: x}}}]
+`), true, "sourceRef"},
+		}
+		for _, c := range cases {
+			check(t, c)
+		}
+	})
+}

@@ -3474,8 +3474,13 @@ schema HelmChart:
                         "gateway-api" — the pinned standard-channel Gateway
                           API CRDs (Envoy Gateway).
                         "cert-manager" — cert-manager's CRDs at `version`.
+                        "external-secrets" — the External Secrets Operator
+                          CRDs forge installs (ExternalSecret, SecretStore,
+                          GeneratorState) at `version`; the chart that
+                          forge.ExternalSecretsOperator renders.
       * `cluster`   — which cluster to install this chart into, in a
-                      multi-cluster env. See below.
+                      multi-cluster env. A forge.Cluster (k3d) or a
+                      forge.ClusterTarget (any cluster you operate). See below.
       * `namespace_labels` / `namespace_annotations` — labels and
                       annotations forge puts on the Namespace it creates
                       for the chart. See NAMESPACE METADATA below.
@@ -3507,6 +3512,11 @@ schema HelmChart:
     riding `manifests` all run against THAT cluster's context. Unset (the
     default, and every existing declaration) means the env's primary
     cluster, so those renders and applies are unchanged.
+
+    A forge.ClusterTarget is itself the declaration (its `cluster` is the
+    kubectl context), so it needs no entry in `Bundle.clusters`. That is how
+    an operator lands on a cluster forge does not create, such as a GKE
+    daemon cluster.
 
     A `cluster` naming a Cluster the env does not declare is an ERROR at
     deploy time, not a fallback to the primary — the failure this closes
@@ -3602,11 +3612,12 @@ schema HelmChart:
     version: str
     namespace: str
     values: {str: any} = {}
-    crds: "" | "gateway-api" | "cert-manager" = ""
-    # Which cluster to install this chart into (a forge.Cluster REFERENCE;
-    # the render denormalizes its `.context`). Unset => the env's primary
-    # cluster. See the CLUSTER TARGETING block above.
-    cluster?: Cluster
+    crds: "" | "gateway-api" | "cert-manager" | "external-secrets" = ""
+    # Which cluster to install this chart into: a forge.Cluster REFERENCE (the
+    # render denormalizes its `.context`) or a forge.ClusterTarget (a cluster
+    # you operate; its `cluster` IS the kubectl context). Unset => the env's
+    # primary cluster. See the CLUSTER TARGETING block above.
+    cluster?: Cluster | ClusterTarget
     # Raw k8s manifests that ride WITH this platform dep: applied (and
     # excluded from a bare `forge env deploy <env>`) on the SAME `--target=<name>`
     # axis as the chart, stamped with the chart's `app.kubernetes.io/name` and
@@ -3810,6 +3821,11 @@ _GCP_PROJECT_RE: str = r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$"
 _CLOUDSQL_RE: str = r"^[^:\s]+:[a-z0-9-]+:[a-z0-9-]+$"
 # Characters allowed in a policy path. The path is rendered into HCL, so a
 # quote or a brace in it would be an injection, not a typo.
+# A user or group name as the admission policies embed it in an expression: no
+# quote or backslash can occur, so a name can never close the string literal.
+_ESO_PRINCIPAL_RE: str = r"^[A-Za-z0-9][A-Za-z0-9._:@/+-]{0,252}$"
+# A URL or mount/audience as the same policies embed it.
+_ESO_URL_RE: str = r"^[A-Za-z0-9][A-Za-z0-9._:@/+~%=?&#,-]{0,1000}$"
 _POLICY_PATH_RE: str = r"^[A-Za-z0-9_./+*-]+$"
 _BAO_CAPABILITIES: [str] = ["create", "read", "update", "patch", "delete", "list"]
 # A cron expression of five space-separated fields.
@@ -4420,6 +4436,8 @@ schema ExternalSecretsOperator:
     # GCPSecretManagerStore (and a GCP bootstrap source) can be read over
     # Workload Identity. "" = none.
     gcp_service_account: str = ""
+    # Inputs to the admission policies forge installs beside the operator.
+    admission: ESOAdmission = ESOAdmission {}
     values: {str: any} = {}
 
     check:
@@ -4430,8 +4448,74 @@ schema ExternalSecretsOperator:
         not gcp_service_account or regex.match(gcp_service_account, r"^[^@\s]+@[^@\s]+\.iam\.gserviceaccount\.com$"), \
             "ExternalSecretsOperator.gcp_service_account '${gcp_service_account}' must be a Google service account email (name@project.iam.gserviceaccount.com)"
 
-# The kubectl context an ESO declaration installs into: a k3d Cluster's
-# derived `.context`, or a ClusterTarget's `cluster`.
+schema ESOAdmission:
+    """What the ValidatingAdmissionPolicies installed beside the operator
+    enforce. All three fail closed: a name not listed here is refused, and the
+    refusal says which field to extend.
+
+        eso-writers     only `writers` (users) and `writer_groups` may create,
+                        update or delete an ExternalSecret or SecretStore. The
+                        operator itself and the cluster's own controllers
+                        (garbage collection, namespace deletion) are always
+                        allowed. Name your apply identity here: a GKE binding's
+                        Google service account email, or the ServiceAccount
+                        `forge cluster connect` minted
+                        (`system:serviceaccount:<ns>:forge-connect-<cluster>-<env>`).
+        eso-store-pin   a SecretStore may use only a `vault` provider that
+                        dials one of `servers` with JWT auth on one of
+                        `jwt_mounts`, asking for one of `audiences` as the
+                        `store_service_account` (default `reliant-secrets`), or a `gcpsm`
+                        provider over Workload Identity for one of
+                        `gcp_projects`. Every other provider (a `webhook`
+                        provider is an exfiltration channel) is refused.
+        eso-es-policy   an ExternalSecret may not use `dataFrom`, a
+                        ClusterSecretStore, a generic target, a creationPolicy
+                        other than Orphan or Merge, a deletionPolicy other than
+                        Retain, a target name other than its own, or a refresh
+                        faster than 5m.
+
+    `scrape_namespaces` may reach the operator's metrics port; `egress_cidrs`
+    bounds where the operator may dial on 443 and 6443 (the API server and
+    the store). Narrow it to your API server and store addresses when they are
+    stable. `egress_ports` lists those ports (the API server, and the store:
+    8200 is OpenBao's default listener). `store_service_account` is the one
+    service account a SecretStore may ask a token for."""
+    writers: [str] = []
+    writer_groups: [str] = ["system:masters"]
+    servers: [str] = []
+    jwt_mounts: [str] = []
+    audiences: [str] = []
+    gcp_projects: [str] = []
+    store_service_account: str = "reliant-secrets"
+    scrape_namespaces: [str] = []
+    egress_cidrs: [str] = ["0.0.0.0/0"]
+    egress_ports: [int] = [443, 6443, 8200]
+
+    check:
+        all w in writers { regex.match(w, _ESO_PRINCIPAL_RE) }, \
+            "ESOAdmission.writers ${[w for w in writers if not regex.match(w, _ESO_PRINCIPAL_RE)]} are not user names: letters, digits and . _ - : @ / + only"
+        all g in writer_groups { regex.match(g, _ESO_PRINCIPAL_RE) }, \
+            "ESOAdmission.writer_groups ${[g for g in writer_groups if not regex.match(g, _ESO_PRINCIPAL_RE)]} are not group names: letters, digits and . _ - : @ / + only"
+        all s in servers { s.startswith("https://") and regex.match(s, _ESO_URL_RE) }, \
+            "ESOAdmission.servers ${[s for s in servers if not (s.startswith('https://') and regex.match(s, _ESO_URL_RE))]} must be https:// URLs: a SecretStore sends a service-account token to them"
+        all m in jwt_mounts { regex.match(m, _ESO_URL_RE) }, \
+            "ESOAdmission.jwt_mounts ${[m for m in jwt_mounts if not regex.match(m, _ESO_URL_RE)]} are not auth mount names"
+        all a in audiences { regex.match(a, _ESO_URL_RE) }, \
+            "ESOAdmission.audiences ${[a for a in audiences if not regex.match(a, _ESO_URL_RE)]} are not token audiences"
+        all p in gcp_projects { regex.match(p, _GCP_PROJECT_RE) }, \
+            "ESOAdmission.gcp_projects ${[p for p in gcp_projects if not regex.match(p, _GCP_PROJECT_RE)]} are not Google Cloud project ids"
+        all n in scrape_namespaces { regex.match(n, _DNS_LABEL_RE) and len(n) <= 63 }, \
+            "ESOAdmission.scrape_namespaces entries must be namespace names (RFC-1123 labels)"
+        regex.match(store_service_account, _DNS_LABEL_RE), \
+            "ESOAdmission.store_service_account '${store_service_account}' must be a service account name (an RFC-1123 label)"
+        len(egress_ports) > 0 and all p in egress_ports { p > 0 and p < 65536 }, \
+            "ESOAdmission.egress_ports must be a non-empty list of ports (1..65535)"
+        len(egress_cidrs) > 0 and all c in egress_cidrs { regex.match(c, r"^[0-9a-fA-F:.]+/[0-9]{1,3}$") }, \
+            "ESOAdmission.egress_cidrs must be a non-empty list of CIDRs (e.g. 10.0.0.0/8)"
+
+# The kubectl context a declaration with a `cluster` reference installs into
+# (an ExternalSecretsOperator, or a HelmChart that targets a cluster):
+# a k3d Cluster's derived `.context`, or a ClusterTarget's `cluster`.
 _eso_context = lambda e: any -> str {
     e.cluster.context if typeof(e.cluster) == "Cluster" else e.cluster.cluster
 }

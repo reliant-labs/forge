@@ -90,6 +90,15 @@ Redaction applies only to that fallback: codes you choose (`InvalidArgument`, `N
 
 `forge lint --conventions` warns (`forgeconv-no-handler-error-mapping`) on a re-rolled per-service mapper: two or more `errors.Is`/`errors.As` sentinels whose arms produce a connect error (return a `connect.NewError`, or return or assign a `connect.Code…`). Sentinels that pick something else — a response status, a retry — are not mapping and do not fire.
 
+It also warns (`forgeconv-handler-connect-error`) on every `connect.NewError` in a handler package, phrased for its shape: a fixed message (the svcerr constructor with the same code and message replaces it: `svcerr.InvalidArgument("id is required")`), an error value (it publishes `err.Error()` unredacted — use `svcerr.WrapOr`), or `nil`. Importing svcerr does not silence either rule. Once a project has none left, it makes them gates in `forge.yaml`:
+
+```yaml
+lint:
+  rules:
+    forgeconv-handler-connect-error: error
+    forgeconv-no-handler-error-mapping: error
+```
+
 ### Domain sentinels
 
 Return domain failures with `svcerr` sentinels (not bespoke ones) — the bare sentinel (`return nil, svcerr.ErrNotFound`) when there's no detail, or the constructor (`svcerr.NotFound("thing")`, `svcerr.FailedPrecondition("no billing account")`) when a human-readable detail belongs in the string. Both preserve the sentinel for `errors.Is` / `svcerr.Code`. The full set covers every `connect.Code`:

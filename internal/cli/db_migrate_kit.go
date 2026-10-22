@@ -29,9 +29,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 
+	"github.com/reliant-labs/forge/pkg/dbgrants"
 	"github.com/reliant-labs/forge/pkg/migratekit"
 	"github.com/reliant-labs/forge/pkg/migratekit/compat"
 	"github.com/reliant-labs/forge/pkg/seedplan"
@@ -48,7 +50,7 @@ func projectMigrations(migDir string) ([]compat.Migration, error) {
 // already been decided, and turning a failed cleanup into a non-zero exit
 // would fail a run whose schema change landed.
 func withProjectMigrator(w io.Writer, dsn, migDir string, fn func(*migratekit.Migrator) error) error {
-	m, err := migratekit.Open(migratekit.Options{FS: os.DirFS(migDir), DSN: dsn})
+	m, err := migratekit.Open(projectMigratorOptions(migDir, dsn))
 	if err != nil {
 		return err
 	}
@@ -58,6 +60,18 @@ func withProjectMigrator(w io.Writer, dsn, migDir string, fn func(*migratekit.Mi
 		}
 	}()
 	return fn(m)
+}
+
+// projectMigratorOptions is migratekit.Open's input for the migrations in
+// migDir. A project's migrations directory sits beside db/grants/, the
+// read-only role's grants the migrator applies after every run
+// (pkg/migratekit/grants.go), exactly as the embedded set does, so the set is
+// opened from the directory ABOVE it. Any other layout is opened as it is.
+func projectMigratorOptions(migDir, dsn string) migratekit.Options {
+	if filepath.Base(migDir) == "migrations" {
+		return migratekit.Options{FS: os.DirFS(filepath.Dir(migDir)), Dir: "migrations", DSN: dsn}
+	}
+	return migratekit.Options{FS: os.DirFS(migDir), DSN: dsn}
 }
 
 // runMigrateUp applies every pending migration in migDir.
@@ -99,6 +113,7 @@ func runMigrateUp(w io.Writer, dsn, migDir string) error {
 
 // reportMigrateUp prints what an Up did, in the scaffolded binary's words.
 func reportMigrateUp(w io.Writer, res migratekit.Result) {
+	defer reportGrants(w, res)
 	if a := res.Adopted; a != nil {
 		_, _ = fmt.Fprintln(w, a.String())
 	}
@@ -116,6 +131,20 @@ func reportMigrateUp(w io.Writer, res migratekit.Result) {
 		return
 	}
 	_, _ = fmt.Fprintf(w, "migrations applied: %d -> %d\n", res.Before.Version, res.After.Version)
+}
+
+// reportGrants says what a run did with the read-only role's grants, when the
+// project has any. A missing role is said plainly: it is the normal state of a
+// database nobody provisioned the role for, and the reason `forge db query`
+// has nothing to connect as.
+func reportGrants(w io.Writer, res migratekit.Result) {
+	switch g := res.Grants; {
+	case g == nil:
+	case g.RoleMissing:
+		_, _ = fmt.Fprintf(w, "read-only grants not applied: this database has no %s role\n", dbgrants.RoleName)
+	case g.Applied:
+		_, _ = fmt.Fprintf(w, "read-only grants applied (%s)\n", dbgrants.RoleName)
+	}
 }
 
 // runMigrateStatus reports the schema's version against the migrations in

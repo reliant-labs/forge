@@ -485,6 +485,14 @@ type Shape struct {
 	// recorded before the field encodes and hashes exactly as it did; a
 	// reader treats absence as [DefaultDeliveryPolicy], never as "off".
 	DeliveryPolicy *ShapeDeliveryPolicy `json:"delivery_policy,omitempty"`
+	// DataAccess is how the env's data may be read (forge.DataAccess): today
+	// whether `forge db query` is open, audited or denied. The control plane
+	// enforces it from this recorded shape. Omitted when it is the default, so
+	// every shape recorded before the field encodes and hashes exactly as it
+	// did; a reader treats absence as [DefaultDataAccess], never as "open". A
+	// control plane that predates it refuses the whole shape, so it is a
+	// bundle-document feature ([BundleFeatureDataAccess]).
+	DataAccess *ShapeDataAccess `json:"data_access,omitempty"`
 	// ReleaseHealth is how the env's promotions are judged
 	// (forge.ReleaseHealth): the before/after window, the thresholds, and the
 	// findings that fail a release. Nil when every value is the default; a
@@ -1066,6 +1074,11 @@ func (s Shape) Validate() error {
 			return err
 		}
 	}
+	if s.DataAccess != nil {
+		if err := s.DataAccess.validate(); err != nil {
+			return err
+		}
+	}
 	if s.ReleaseHealth != nil {
 		if err := s.ReleaseHealth.canonical().validate(); err != nil {
 			return err
@@ -1238,6 +1251,12 @@ func (s Shape) Canonical() Shape {
 		} else {
 			out.DeliveryPolicy = nil
 		}
+	}
+	if !s.DataAccess.IsDefault() {
+		da := *s.DataAccess
+		out.DataAccess = &da
+	} else {
+		out.DataAccess = nil
 	}
 	if s.ReleaseHealth != nil {
 		if h := s.ReleaseHealth.canonical(); !s.ReleaseHealth.IsDefault() {

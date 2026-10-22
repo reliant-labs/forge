@@ -60,6 +60,14 @@ Tailwind v4 does not scan `node_modules`, so your stylesheet carries an
 `@source` directive pointing at the package. Keep it — without it every
 utility only the runtime renders vanishes from the built CSS.
 
+A frontend whose code is in ANOTHER repo (a sibling `path = "../other/web"` in
+dev, or a source pin) never has a file written into that repo: forge renders its
+`config.js` to `.forge/runtime-config/<frontend>/config.js` in the declaring
+project, and `forge env up` hands the path to its dev server as
+`FORGE_RUNTIME_CONFIG_FILE`. `forgeRuntimeConfig()` from
+`@reliantlabs/forge-web-runtime/vite` serves it at `<base>config.js` (the
+vite-spa scaffold includes it; it does nothing when the variable is unset).
+
 ## 1. Transport interceptor stack
 
 `connect.ts` builds its Connect interceptors from the runtime:

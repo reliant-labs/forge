@@ -2,13 +2,18 @@ package cli
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/secretaccess"
@@ -35,13 +40,22 @@ import (
 // Nothing is stored: the kubeconfig is the trust root, the token lives for the
 // command, and OpenBao's audit device records every write.
 //
-// The store is reached through the API server's service proxy, so the
-// operator needs `services/proxy` on the OpenBao Service and no network path
-// to the pod. The API server does not verify the backend's certificate on that
-// hop; the request carries only a ten-minute token that can write values, so a
-// party able to impersonate the backend inside the cluster's network could
-// capture a write it was already positioned to observe. The component's TLS
-// protects every other client.
+// THE STORE IS REACHED OVER A PORT-FORWARD, WITH ITS CERTIFICATE VERIFIED.
+// The API server's service proxy would not do: its transport to the backend is
+// built with InsecureSkipVerify (kube-apiserver's CreateProxyTransport: "proxying
+// to pods and services is IP-based... don't expect to be able to verify the
+// hostname"), and that is the API server dialing, so the client cannot supply a
+// CA. A request that carries a write-capable token across an unverified hop is
+// the exposure a verified one closes. A port-forward is a raw byte stream
+// between the CLI and the pod, so the TLS handshake is the CLI's own, end to
+// end, and it verifies against the CA the component publishes (the ConfigMap
+// named by the render's `openbao.ca_configmap`, in the store's namespace) for
+// the name the certificate answers to (the host of the render's server_url).
+// There is no fallback to an unverified connection: a CA that is absent or does
+// not match is an error that names the fix, before any token leaves the CLI.
+//
+// The operator needs `get` on configmaps, services and pods, and `create` on
+// pods/portforward, in the store's namespace.
 
 // writerRole is the login role of the forge-secret-writer service account, the
 // name pkg/deploy/openbao creates on the store's own mount (openbao.RoleWriter).
@@ -103,40 +117,160 @@ type baoTransport interface {
 	do(ctx context.Context, method, path string, query url.Values, token string, payload any) (status int, body map[string]any, err error)
 }
 
-// kubeProxyTransport reaches the store through the API server's service proxy.
-type kubeProxyTransport struct {
-	kube      kubeAccess
-	namespace string
-	service   string
-	port      int
+// caKey is the ConfigMap key the OpenBao component publishes the CA under.
+const caKey = "ca.crt"
+
+// requestTimeout bounds one store request, including the TLS handshake.
+const requestTimeout = 30 * time.Second
+
+// maxStoreResponse bounds how much of a response is read.
+const maxStoreResponse = 8 << 20
+
+// tunnelTransport reaches the store through a port-forward to one of its pods,
+// speaking TLS to it end to end. The tunnel opens on the first request and
+// lives until Close, so a command's requests share it.
+type tunnelTransport struct {
+	kube        kubeAccess
+	namespace   string
+	service     string
+	port        int
+	host        string // the name the certificate answers to
+	caConfigMap string
+
+	mu     sync.Mutex
+	client *http.Client
+	fwd    podForward
+	closed bool
 }
 
-func (t kubeProxyTransport) do(ctx context.Context, method, path string, query url.Values, token string, payload any) (int, map[string]any, error) {
-	var raw []byte
+func newTunnelTransport(kube kubeAccess, bao *OpenBaoEntity) *tunnelTransport {
+	host := bao.Name + "." + bao.Namespace + ".svc"
+	if u, err := url.Parse(bao.ServerURL); err == nil && u.Hostname() != "" {
+		host = u.Hostname()
+	}
+	return &tunnelTransport{
+		kube: kube, namespace: bao.Namespace, service: bao.Name, port: bao.apiPort(),
+		host: host, caConfigMap: bao.CAConfigMap,
+	}
+}
+
+// connect reads the CA, then opens the tunnel. The CA comes first: with none,
+// no connection is made at all.
+func (t *tunnelTransport) connect(ctx context.Context) (*http.Client, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return nil, errors.New("the OpenBao connection is closed")
+	}
+	if t.client != nil {
+		return t.client, nil
+	}
+	if t.caConfigMap == "" {
+		return nil, errors.New("the env's render names no CA for the OpenBao component (openbao.ca_configmap)\n" +
+			"fix: upgrade forge so the render describes the store, then re-run; the CLI will not talk to the store without verifying its certificate")
+	}
+	pemCA, err := t.kube.ConfigMapValue(ctx, t.namespace, t.caConfigMap, caKey)
+	if err != nil {
+		if errors.Is(err, errKubeConfigMapNotFound) {
+			return nil, fmt.Errorf("%w\nfix: the OpenBao component publishes its CA to this ConfigMap when it converges; run `forge env deploy` for this env first. The CLI will not talk to the store without verifying its certificate", err)
+		}
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM([]byte(pemCA)) {
+		return nil, fmt.Errorf("configmap %s/%s holds no PEM certificate under %q", t.namespace, t.caConfigMap, caKey)
+	}
+	fwd, err := t.kube.ForwardService(ctx, t.namespace, t.service, t.port)
+	if err != nil {
+		return nil, err
+	}
+	addr := fwd.Addr()
+	t.fwd = fwd
+	t.client = &http.Client{
+		Timeout: requestTimeout,
+		// A redirect would carry the token to wherever it points.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+			},
+			TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: t.host, MinVersion: tls.VersionTLS12},
+		},
+	}
+	return t.client, nil
+}
+
+// Close ends the tunnel. Safe to call more than once.
+func (t *tunnelTransport) Close() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.closed = true
+	if t.client != nil {
+		t.client.CloseIdleConnections()
+		t.client = nil
+	}
+	if t.fwd != nil {
+		err := t.fwd.Close()
+		t.fwd = nil
+		return err
+	}
+	return nil
+}
+
+func (t *tunnelTransport) do(ctx context.Context, method, path string, query url.Values, token string, payload any) (int, map[string]any, error) {
+	var body io.Reader
 	if payload != nil {
 		b, err := json.Marshal(payload)
 		if err != nil {
 			return 0, nil, err
 		}
-		raw = b
+		body = strings.NewReader(string(b))
 	}
-	headers := map[string]string{"Content-Type": "application/json"}
-	if token != "" {
-		headers["X-Vault-Token"] = token
-	}
-	status, body, err := t.kube.ServiceProxy(ctx, serviceProxyRequest{
-		Namespace: t.namespace, Scheme: "https", Service: t.service, Port: t.port,
-		Method: method, Path: "v1/" + path, Query: query, Headers: headers, Body: raw,
-	})
+	client, err := t.connect(ctx)
 	if err != nil {
 		return 0, nil, err
 	}
-	var out map[string]any
-	if len(strings.TrimSpace(string(body))) > 0 {
-		// A proxy error page is not JSON; the status carries the answer then.
-		_ = json.Unmarshal(body, &out)
+	u := "https://" + net.JoinHostPort(t.host, strconv.Itoa(t.port)) + "/v1/" + path
+	if len(query) > 0 {
+		u += "?" + query.Encode()
 	}
-	return status, out, nil
+	req, err := http.NewRequestWithContext(ctx, method, u, body)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("X-Vault-Token", token)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, t.explain(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxStoreResponse))
+	if err != nil {
+		return 0, nil, fmt.Errorf("read the OpenBao response: %w", err)
+	}
+	var out map[string]any
+	if len(strings.TrimSpace(string(raw))) > 0 {
+		// A non-JSON body (an error page) leaves out nil; the status carries the answer.
+		_ = json.Unmarshal(raw, &out)
+	}
+	return resp.StatusCode, out, nil
+}
+
+// explain names the fix when the failure is the certificate not verifying.
+func (t *tunnelTransport) explain(err error) error {
+	var unknown x509.UnknownAuthorityError
+	var host x509.HostnameError
+	var invalid x509.CertificateInvalidError
+	switch {
+	case errors.As(err, &unknown), errors.As(err, &host), errors.As(err, &invalid):
+		return fmt.Errorf("the OpenBao certificate did not verify against the CA in configmap %s/%s for %q: %w\n"+
+			"fix: the CA must be the one that signed the store's current certificate; run `forge env deploy` for this env to re-publish it. Nothing was sent to the store",
+			t.namespace, t.caConfigMap, t.host, err)
+	}
+	return fmt.Errorf("reach OpenBao %s/%s over a port-forward: %w", t.namespace, t.service, err)
 }
 
 // baoStoreSource is the self-run store, signed in as the writer.
@@ -160,6 +294,14 @@ type baoWriterLogin struct {
 }
 
 func (s *baoStoreSource) describe() string { return s.where }
+
+// Close ends the connection to the store, if the transport holds one.
+func (s *baoStoreSource) Close() error {
+	if c, ok := s.tr.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
+}
 
 // signIn exchanges a freshly minted service-account token for a batch token.
 func (s *baoStoreSource) signIn(ctx context.Context) error {
@@ -273,8 +415,7 @@ func openBaoStoreSource(ctx context.Context, envName string, e *KCLEntities, o s
 		if err != nil {
 			return nil, nil, err
 		}
-		bao := e.OpenBao
-		return kube, kubeProxyTransport{kube: kube, namespace: bao.Namespace, service: bao.Name, port: bao.apiPort()}, nil
+		return kube, newTunnelTransport(kube, e.OpenBao), nil
 	})
 }
 

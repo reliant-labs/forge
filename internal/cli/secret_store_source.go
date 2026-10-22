@@ -167,6 +167,14 @@ type storeSource interface {
 	presence(ctx context.Context, names []string) (map[string]uint32, error)
 }
 
+// closeStoreSource ends whatever a store source holds open (the OpenBao
+// tunnel). A source that holds nothing is not an io.Closer.
+func closeStoreSource(src storeSource) {
+	if c, ok := src.(io.Closer); ok {
+		_ = c.Close()
+	}
+}
+
 // errStoreValueExists is a create-only write that found a value.
 var errStoreValueExists = errors.New("the store already holds a value for this name")
 
@@ -275,6 +283,7 @@ func runStoreSourceSet(ctx context.Context, envName, key string, e *KCLEntities,
 	if err != nil {
 		return true, err
 	}
+	defer closeStoreSource(src)
 	version, err := src.put(ctx, key, value, false)
 	if err != nil {
 		return true, redactValue(fmt.Errorf("set %s in the %s store: %w", key, ref.Kind, err), value)
@@ -330,6 +339,7 @@ func storeSourceListStore(ctx context.Context, envName string, e *KCLEntities) (
 			return secretListStore{}, fmt.Errorf("%s store: %w", ref, err)
 		}
 		versions, err := src.presence(ctx, dedupeSorted(byStore[ref]))
+		closeStoreSource(src)
 		if err != nil {
 			return secretListStore{}, fmt.Errorf("%s store: %w", ref, err)
 		}

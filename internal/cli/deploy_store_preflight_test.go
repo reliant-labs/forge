@@ -220,3 +220,34 @@ func (noOperatorProbe) Presence(_ context.Context, _ string, r cluster.StoreRead
 	}
 	return out, nil
 }
+
+// The structured findings mirror PreflightResult.OK(): every blocking store
+// finding is reported as blocking, and a store that could not be asked is not.
+func TestDeployPreflightStoreFindingsAreStructured(t *testing.T) {
+	res := cluster.PreflightResult{Store: cluster.StoreFindings{
+		MissingCRDs:       []string{"cluster c does not serve ExternalSecret"},
+		OwnerConflicts:    []string{"owned by other.dev"},
+		StoreNotReady:     []string{"openbao has not converged"},
+		MissingStoreNames: []string{"the hosted store holds no value for A"},
+		Warnings:          []string{"could not ask the gcpsm store"},
+	}}
+	if res.OK() {
+		t.Fatal("blocking store findings must make the result not OK")
+	}
+	blocking := map[string]bool{}
+	for _, f := range deployFindingsFromPreflight(res) {
+		blocking[f.Check] = f.Blocking
+	}
+	for _, check := range []string{"store_crd_missing", "store_operator_owner", "store_not_ready", "store_value_missing"} {
+		if b, ok := blocking[check]; !ok || !b {
+			t.Errorf("%s: present=%v blocking=%v, want a blocking finding", check, ok, b)
+		}
+	}
+	if b, ok := blocking["store_unverified"]; !ok || b {
+		t.Errorf("store_unverified: present=%v blocking=%v, want an advisory finding", ok, b)
+	}
+	warnOnly := cluster.PreflightResult{Store: cluster.StoreFindings{Warnings: []string{"w"}}}
+	if !warnOnly.OK() {
+		t.Error("a warning alone must not block")
+	}
+}

@@ -37,3 +37,16 @@ type HealthReader interface {
 type ChangesReader interface {
 	Changes(ctx context.Context, req ChangesRequest) (ChangesResult, error)
 }
+
+// IssueReader is what `forge obs issues|issue` read and write through. Both
+// backends implement it. The local one groups ERROR logs at query time and
+// keeps no state, so its UpdateIssueStatus is always a refusal; the cloud one
+// is the control plane's IssuesService.
+//
+//forge:contract
+type IssueReader interface {
+	ListIssues(ctx context.Context, req ListIssuesRequest) (ListIssuesResult, error)
+	GetIssue(ctx context.Context, req GetIssueRequest) (GetIssueResult, error)
+	ListIssueEvents(ctx context.Context, req ListIssueEventsRequest) (ListIssueEventsResult, error)
+	UpdateIssueStatus(ctx context.Context, req UpdateIssueStatusRequest) (UpdateIssueStatusResult, error)
+}

@@ -22,6 +22,9 @@
 //     Give the loop a root span (lifecyclekit does) and its queries appear
 //     under it.
 //
+// A native pgx / pgxpool connection (no database/sql) gets the same spans from
+// NewPgxTracer, assigned to cfg.ConnConfig.Tracer.
+//
 // Metrics are not emitted here: the pool metrics come from
 // RegisterDBStatsMetrics-style registration elsewhere, and the ORM's query
 // histogram (go.sql.query_timing) from pkg/orm.

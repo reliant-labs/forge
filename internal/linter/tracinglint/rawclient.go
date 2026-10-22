@@ -236,7 +236,7 @@ var sqlOpeners = []sqlOpener{
 				(strings.HasSuffix(p, "/pgxpool") || isDigits(strings.TrimPrefix(p, "github.com/jackc/pgx/v")))
 		},
 		funcs:        map[string]bool{"New": true, "NewWithConfig": true, "Connect": true, "ConnectConfig": true},
-		remediation:  "set a tracer on the config before connecting (cfg.ConnConfig.Tracer, e.g. otelpgx.NewTracer()), or open through database/sql with dbtrace",
+		remediation:  "set a tracer on the config before connecting: cfg.ConnConfig.Tracer = dbtrace.NewPgxTracer() (github.com/reliant-labs/forge/pkg/observe/dbtrace), or open through database/sql with dbtrace.Open",
 		unlessTracer: true,
 	},
 }

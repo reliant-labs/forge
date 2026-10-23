@@ -4,10 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/pkg/dbquery"
 )
 
 // fakeQueryDatabase is a control plane that answers QueryDatabase with reply
@@ -35,8 +40,16 @@ func (f *fakeQueryDatabase) Call(_ context.Context, procedure string, req, out a
 // withHostedDB points the hosted transport at fake, as env "env-prod-1".
 func withHostedDB(t *testing.T, fake *fakeQueryDatabase) {
 	t.Helper()
+	withHostedCaller(t, fake)
+}
+
+// withHostedCaller points the hosted transport at caller, as env "env-prod-1".
+func withHostedCaller(t *testing.T, caller dbQueryCaller) {
+	t.Helper()
 	prev := dbQueryCloudOpen
-	dbQueryCloudOpen = func(context.Context, string) (dbQueryCaller, string, error) { return fake, "env-prod-1", nil }
+	dbQueryCloudOpen = func(context.Context, string, time.Duration) (dbQueryCaller, string, error) {
+		return caller, "env-prod-1", nil
+	}
 	t.Cleanup(func() { dbQueryCloudOpen = prev })
 }
 
@@ -173,5 +186,168 @@ func TestDBQueryHostedErrorsMapToTheExitTable(t *testing.T) {
 				t.Errorf("scope = %+v", doc.Scope)
 			}
 		})
+	}
+}
+
+// truncatedReply is a QueryDatabase answer cut by a cap, with n rows kept.
+func truncatedReply(n int) string {
+	rows := make([]string, n)
+	for i := range rows {
+		rows[i] = `{"values":[` + strconv.Itoa(i) + `]}`
+	}
+	return `{"columns":[{"name":"n","pgType":"int8"}],"rows":[` + strings.Join(rows, ",") + `],"truncated":true,"durationMs":"3"}`
+}
+
+// The control plane says only "truncated". The row cap trips exactly when the
+// rows kept reach --max-rows, so fewer rows than that means the response-size
+// cap cut it, and raising --max-rows would not help.
+func TestDBQueryHostedTruncatedByFollowsTheRowCap(t *testing.T) {
+	withKCLFixture(t, hostedDBQueryFixture("open"))
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	for _, tc := range []struct {
+		name, maxRows string
+		kept          int
+		want          string
+	}{
+		{"fewer rows than the cap: bytes", "50", 3, "bytes"},
+		{"rows reached the cap", "3", 3, "rows"},
+		{"no rows kept", "50", 0, "bytes"},
+		{"the default cap", "", dbquery.DefaultMaxRows, "rows"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withHostedDB(t, &fakeQueryDatabase{reply: truncatedReply(tc.kept)})
+			args := []string{"prod", "select n from t", "--json"}
+			if tc.maxRows != "" {
+				args = append(args, "--max-rows", tc.maxRows)
+			}
+			out, err := runDBQueryCmd(t, args...)
+			if err != nil {
+				t.Fatalf("%v\n%s", err, out)
+			}
+			var doc dbQueryDocument
+			if err := json.Unmarshal([]byte(out), &doc); err != nil {
+				t.Fatal(err)
+			}
+			if !doc.Truncated || doc.TruncatedBy != tc.want {
+				t.Errorf("truncated=%v truncated_by=%q, want %q", doc.Truncated, doc.TruncatedBy, tc.want)
+			}
+		})
+	}
+}
+
+// A control plane that cannot be reached is found out before the query is
+// said to have run: no release lookup (which would ask the same dead
+// endpoint again, and warn a second time for the same cause).
+func TestDBQueryHostedUnreachableDoesNotLookUpTheRelease(t *testing.T) {
+	withKCLFixture(t, hostedDBQueryFixture("open"))
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	prevOpen := dbQueryCloudOpen
+	dbQueryCloudOpen = func(context.Context, string, time.Duration) (dbQueryCaller, string, error) {
+		return nil, "", exitCodeError{code: exitUndetermined, msg: "env prod: cannot reach its control plane: dial tcp: connection refused"}
+	}
+	prevRelease := liveReleaseAt
+	lookups := 0
+	liveReleaseAt = func(context.Context, string, time.Time) (*liveRelease, error) {
+		lookups++
+		return nil, errors.New("cannot reach its control plane")
+	}
+	releaseStubbed = true
+	t.Cleanup(func() { dbQueryCloudOpen, liveReleaseAt, releaseStubbed = prevOpen, prevRelease, false })
+
+	out, err := runDBQueryCmd(t, "prod", "select 1", "--json")
+	if exitCodeForError(err) != exitUndetermined {
+		t.Fatalf("exit = %d (%v)", exitCodeForError(err), err)
+	}
+	if lookups != 0 {
+		t.Errorf("the release was looked up %d time(s) for a query that never reached the control plane", lookups)
+	}
+	if !strings.Contains(out, "cannot reach its control plane") {
+		t.Errorf("doc:\n%s", out)
+	}
+}
+
+// A refused credential keeps forge's remedy: which credential was used and how
+// to get the missing scope, not only the control plane's one line.
+func TestDBQueryHostedForbiddenKeepsTheRemedy(t *testing.T) {
+	withKCLFixture(t, hostedDBQueryFixture("open"))
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"code":"permission_denied","message":"this credential does not carry the db:query scope"}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := cloud.NewClient(cloud.Endpoint{Env: "prod", URL: srv.URL, TokenEnv: "FORGE_TOKEN"}, cloud.Credential{Token: "t", Source: cloud.SourceFlag, From: "--token"})
+	withHostedCaller(t, client)
+
+	out, err := runDBQueryCmd(t, "prod", "select 1", "--json")
+	if exitCodeForError(err) != exitWrong {
+		t.Fatalf("exit = %d (%v)", exitCodeForError(err), err)
+	}
+	var doc dbQueryDocument
+	if jerr := json.Unmarshal([]byte(out), &doc); jerr != nil {
+		t.Fatal(jerr)
+	}
+	for _, want := range []string{"lacks the db:query scope", "fix:", "credential: from --token", "does not carry the db:query scope"} {
+		if !strings.Contains(doc.Error, want) {
+			t.Errorf("error lacks %q:\n%s", want, doc.Error)
+		}
+	}
+}
+
+// The HTTP client must outlast the statement: cp runs it for --timeout plus a
+// grace, and a client that gives up first turns cp's typed DeadlineExceeded
+// into "could not be reached" (and holds cp's in-flight slot until the server
+// notices). The open is handed the statement timeout to size it.
+func TestDBQueryHostedHTTPClientOutlastsTheStatement(t *testing.T) {
+	ep := cloud.Endpoint{Env: "prod", URL: "http://cp.invalid"}
+	for _, stmt := range []time.Duration{0, time.Second, dbquery.MaxTimeout} {
+		eff := stmt
+		if eff == 0 {
+			eff = dbquery.DefaultTimeout
+		}
+		c := newDBQueryCloudClient(ep, cloud.Credential{}, stmt)
+		if c.HTTP == nil || c.HTTP.Timeout < eff+hostedQueryGrace+5*time.Second {
+			t.Errorf("--timeout %s: HTTP timeout %v does not outlast the statement plus cp's grace", stmt, c.HTTP.Timeout)
+		}
+	}
+
+	withKCLFixture(t, hostedDBQueryFixture("open"))
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	var got time.Duration
+	prev := dbQueryCloudOpen
+	dbQueryCloudOpen = func(_ context.Context, _ string, stmt time.Duration) (dbQueryCaller, string, error) {
+		got = stmt
+		return &fakeQueryDatabase{reply: queryDatabaseReply}, "env-prod-1", nil
+	}
+	t.Cleanup(func() { dbQueryCloudOpen = prev })
+	if out, err := runDBQueryCmd(t, "prod", "select 1", "--timeout", "25s", "--json"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if got != 25*time.Second {
+		t.Errorf("the open was given %v, want the statement timeout 25s", got)
+	}
+}
+
+// A 403 that is not about a scope (the env's policy, a missing grant) is the
+// control plane's refusal of the request: its message, not "sign in again".
+func TestDBQueryHostedPolicyRefusalIsNotACredentialProblem(t *testing.T) {
+	withKCLFixture(t, hostedDBQueryFixture("open"))
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"code":"permission_denied","message":"querying this environment's database is disabled by its data_access policy"}`))
+	}))
+	t.Cleanup(srv.Close)
+	withHostedCaller(t, cloud.NewClient(cloud.Endpoint{Env: "prod", URL: srv.URL, TokenEnv: "FORGE_TOKEN"}, cloud.Credential{Token: "t", Source: cloud.SourceFlag, From: "--token"}))
+	out, err := runDBQueryCmd(t, "prod", "select 1", "--json")
+	if exitCodeForError(err) != exitWrong {
+		t.Fatalf("exit = %d (%v)", exitCodeForError(err), err)
+	}
+	var doc dbQueryDocument
+	_ = json.Unmarshal([]byte(out), &doc)
+	if !strings.Contains(doc.Error, "data_access policy") || strings.Contains(doc.Error, "forge login") || strings.Contains(doc.Error, "rejected the credential") {
+		t.Errorf("error = %q", doc.Error)
 	}
 }

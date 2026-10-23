@@ -122,6 +122,20 @@ func (e *Error) Error() string {
 		e.Procedure, e.HTTPStatus, codeSuffix(e.Code), e.Endpoint, detailSuffix(e.Message))
 }
 
+// MissingScope reports the scope a 403 says the credential lacks (the
+// server's message names it as "<scope> scope"), so a caller can tell a
+// credential that needs a scope from a request the server refused.
+func (e *Error) MissingScope() (string, bool) {
+	if e == nil || e.HTTPStatus != http.StatusForbidden {
+		return "", false
+	}
+	m := missingScopeRe.FindStringSubmatch(e.Message)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
 // HasCode reports whether this failure carries the given Connect code. Use
 // it instead of matching message text.
 func (e *Error) HasCode(code string) bool { return e != nil && e.Code == code }

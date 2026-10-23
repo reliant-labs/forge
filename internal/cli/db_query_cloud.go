@@ -19,7 +19,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
@@ -36,12 +38,12 @@ type dbQueryCaller interface {
 
 // dbQueryCloudOpen resolves env's control plane and the control plane's id
 // for the env. A variable so a test can substitute a fake control plane.
-var dbQueryCloudOpen = func(ctx context.Context, env string) (dbQueryCaller, string, error) {
+var dbQueryCloudOpen = func(ctx context.Context, env string, stmtTimeout time.Duration) (dbQueryCaller, string, error) {
 	ep, cred, err := resolveCloudTarget(ctx, env, "")
 	if err != nil {
 		return nil, "", exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("env %s: cannot reach its control plane: %v", env, err)}
 	}
-	client := cloud.NewClient(ep, cred)
+	client := newDBQueryCloudClient(ep, cred, stmtTimeout)
 	id, err := deploytarget.LookupHostedEnvironment(ctx, client, hostedProjectName(), env)
 	if errors.Is(err, deploytarget.ErrHostedEnvironmentNotFound) {
 		return nil, "", exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("env %s does not exist on its control plane yet: nothing has been deployed to it (%s env deploy %s)", env, Name(), env)}
@@ -50,6 +52,31 @@ var dbQueryCloudOpen = func(ctx context.Context, env string) (dbQueryCaller, str
 		return nil, "", dbQueryCloudError(err)
 	}
 	return client, id, nil
+}
+
+const (
+	// hostedQueryGrace is how long past the statement timeout the control
+	// plane keeps the query's context (cp internal/appdb).
+	hostedQueryGrace = 2 * time.Second
+	// hostedTransportMargin covers everything around the statement: the
+	// control plane's checks and audit write, and its tunnel to the env's
+	// cluster (a kube API port-forward, set up per query).
+	hostedTransportMargin = 15 * time.Second
+)
+
+// newDBQueryCloudClient is the control-plane client of a hosted query. Its
+// HTTP timeout outlasts the statement: cloud's 30s default is shorter than
+// --timeout's 30s maximum plus the control plane's grace, and a client that
+// gives up first turns the control plane's typed DeadlineExceeded
+// (statement_timeout) into "could not be reached", while the control plane
+// holds the caller's one in-flight slot until it notices the disconnect.
+func newDBQueryCloudClient(ep cloud.Endpoint, cred cloud.Credential, stmtTimeout time.Duration) *cloud.Client {
+	if stmtTimeout <= 0 {
+		stmtTimeout = dbquery.DefaultTimeout
+	}
+	client := cloud.NewClient(ep, cred)
+	client.HTTP = &http.Client{Timeout: stmtTimeout + hostedQueryGrace + hostedTransportMargin}
+	return client
 }
 
 // dbQueryAudit is what the control plane recorded about a hosted query.
@@ -68,17 +95,21 @@ type dbQueryAudit struct {
 type dbQueryRemote func(ctx context.Context, sql string) (*dbquery.Result, *dbQueryAudit, string, error)
 
 // resolveDBQueryHosted is the target of a hosted workload: no DSN, a remote
-// run through the control plane.
-func resolveDBQueryHosted(o dbQueryOptions, scope dbQueryScope) dbQueryTarget {
+// run through the control plane. The control plane is resolved here, before
+// anything is said to have run, as the port-forward transport sets up its
+// tunnel at resolve time: an unreachable control plane or a signed-out
+// caller fails the resolve, and no release is looked up for a query that
+// never reached it.
+func resolveDBQueryHosted(ctx context.Context, o dbQueryOptions, scope dbQueryScope) (dbQueryTarget, error) {
+	caller, envID, err := dbQueryCloudOpen(ctx, o.env, o.timeout)
+	if err != nil {
+		return dbQueryTarget{}, err
+	}
 	scope.Transport = "control-plane"
 	scope.Database = o.database
 	return dbQueryTarget{scope: scope, remote: func(ctx context.Context, sql string) (*dbquery.Result, *dbQueryAudit, string, error) {
-		caller, envID, err := dbQueryCloudOpen(ctx, o.env)
-		if err != nil {
-			return nil, nil, "", err
-		}
 		return queryDatabaseHosted(ctx, caller, envID, o, sql)
-	}}
+	}}, nil
 }
 
 type wireQueryDatabase struct {
@@ -123,14 +154,17 @@ func queryDatabaseHosted(ctx context.Context, caller dbQueryCaller, envID string
 	if err := caller.Call(ctx, procQueryDatabase, body, &w); err != nil {
 		return nil, nil, "", dbQueryCloudError(err)
 	}
-	res, err := resultOfWire(w)
+	res, err := resultOfWire(w, o.maxRows)
 	if err != nil {
 		return nil, nil, "", exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("the control plane's answer is unreadable: %v", err)}
 	}
 	return res, &dbQueryAudit{ID: w.AuditID, SQLSHA256: w.SQLSHA256, Replica: w.Replica}, w.Database, nil
 }
 
-func resultOfWire(w wireQueryDatabase) (*dbquery.Result, error) {
+// resultOfWire converts the reply. maxRows is the row cap the request asked
+// for (0: dbquery's default), which is how the cap that cut a truncated
+// result is told apart: the control plane says only that one did.
+func resultOfWire(w wireQueryDatabase, maxRows int) (*dbquery.Result, error) {
 	res := &dbquery.Result{Columns: make([]dbquery.Column, len(w.Columns)), Rows: make([][]any, 0, len(w.Rows)), Truncated: w.Truncated}
 	for i, c := range w.Columns {
 		res.Columns[i] = dbquery.Column{Name: c.Name, PGType: c.PGType}
@@ -149,12 +183,16 @@ func resultOfWire(w wireQueryDatabase) (*dbquery.Result, error) {
 	}
 	res.RowCount = len(res.Rows)
 	if res.Truncated {
-		// The control plane does not say which cap cut the result. With rows
-		// kept it is the row cap, the one a caller can raise; with none, the
-		// response-size cap.
-		res.TruncatedBy = "rows"
-		if res.RowCount == 0 {
-			res.TruncatedBy = "bytes"
+		// The row cap trips exactly when the rows kept reach it; the
+		// response-size cap trips mid-stream and keeps what it read. So fewer
+		// rows than the cap means bytes, where raising --max-rows would not
+		// help.
+		if maxRows <= 0 {
+			maxRows = dbquery.DefaultMaxRows
+		}
+		res.TruncatedBy = "bytes"
+		if res.RowCount >= maxRows {
+			res.TruncatedBy = "rows"
 		}
 	}
 	res.DurationMS = w.DurationMS.Int64()
@@ -216,8 +254,13 @@ func dbQueryCloudError(err error) error {
 	if !errors.As(err, &ce) {
 		return dbQueryCloudFailure{code: exitUndetermined, msg: fmt.Sprintf("the control plane could not be reached: %v", err), err: err}
 	}
+	// The control plane's own sentence, except where forge knows the fix: a
+	// refused credential (401), and a 403 that names a scope the credential
+	// lacks. There cloud renders which credential was used and how to get
+	// the scope. A 403 for the env's policy or a missing grant is a refusal
+	// of the request, where "sign in again" would be wrong advice.
 	msg := ce.Message
-	if msg == "" {
+	if _, missingScope := ce.MissingScope(); msg == "" || ce.Unauthenticated() || ce.Code == cloud.CodeUnauthenticated || missingScope {
 		msg = ce.Error()
 	}
 	code := exitUndetermined

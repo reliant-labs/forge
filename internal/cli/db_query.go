@@ -216,6 +216,8 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o d
 		}
 		scope = &target.scope
 		if target.remote != nil {
+			// The control plane was reached at resolve; the remote is the
+			// call itself.
 			ranAt = time.Now().UTC()
 			res, a, database, err := target.remote(ctx, sql)
 			if database != "" {
@@ -320,7 +322,7 @@ func resolveDBQueryTarget(ctx context.Context, o dbQueryOptions) (dbQueryTarget,
 		return resolveDBQueryCluster(ctx, o, e, w)
 	case RuntimeHosted:
 		scope.Policy = ""
-		return resolveDBQueryHosted(o, scope), nil
+		return resolveDBQueryHosted(ctx, o, scope)
 	default:
 		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("workload %q in %s runs %s: its database is not reachable from forge yet", w.Name, o.env, w.Runtime.Type)}
 	}

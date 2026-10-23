@@ -33,6 +33,9 @@ type jsonEnvelope struct {
 	// verb succeeded. Omitted rather than empty so a consumer can test for
 	// the key.
 	Error string `json:"error,omitempty"`
+	// The error's structure — code, reason, scopes (json_error_facts.go).
+	// Absent on success and when the error carries none.
+	jsonErrorFacts
 }
 
 // stamp fills the envelope from the error the verb is returning. err == nil
@@ -48,6 +51,7 @@ func (e *jsonEnvelope) stamp(err error) {
 	} else {
 		e.Error = ""
 	}
+	e.jsonErrorFacts = errorFactsOf(err)
 }
 
 // exitCodeForError is the process status an error produces — the SAME

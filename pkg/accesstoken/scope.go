@@ -306,3 +306,39 @@ func JoinScopes(scopes []Scope) string {
 	}
 	return strings.Join(out, ", ")
 }
+
+// ReasonScopeMissing is the error reason (svcerr.ReasonHeader) a server gives
+// when the caller authenticated but its credential, or the person it acts
+// for, lacks a scope the call needs. Signing in again does not fix it; a
+// grant does. Carry the missing scopes in [ScopesHeader].
+const ReasonScopeMissing = "scope_missing"
+
+// ScopesHeader is the Connect error-metadata key that names the scopes a
+// [ReasonScopeMissing] refusal is about, comma-separated with no spaces
+// ("deploy:write,secret:read"; [ScopesHeaderValue]). Structured so a client
+// can say which grant to ask for without parsing the message. A server
+// attaches it with svcerr.WithMetadata; forge's CORS defaults expose it.
+const ScopesHeader = "x-forge-error-scopes"
+
+// ScopesHeaderValue renders scopes for [ScopesHeader].
+func ScopesHeaderValue[S ~string](scopes []S) string {
+	out := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		if s := strings.TrimSpace(string(scope)); s != "" {
+			out = append(out, s)
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+// ParseScopesHeader reads a [ScopesHeader] value back into its scopes, in
+// order. Blank entries are dropped; an empty value is nil.
+func ParseScopesHeader(value string) []string {
+	var out []string
+	for _, s := range strings.Split(value, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}

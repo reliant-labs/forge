@@ -846,6 +846,8 @@ type deployJSONReport struct {
 	ExitCode int  `json:"exit_code"`
 	// Error is the failure message when OK is false.
 	Error string `json:"error,omitempty"`
+	// The error's structure — code, reason, scopes (json_error_facts.go).
+	jsonErrorFacts
 }
 
 // deployJSONReleaseDecision is the release decision, whole.
@@ -1274,6 +1276,7 @@ func (r *deployReport) finish(err error, elapsed time.Duration) {
 	if err != nil {
 		r.doc.Error = err.Error()
 	}
+	r.doc.jsonErrorFacts = errorFactsOf(err)
 	if elapsed > 0 {
 		r.doc.DurationMS = elapsed.Milliseconds()
 	}

@@ -350,7 +350,13 @@ You write none of the wiring. `src/lib/otel_gen.ts` (regenerated every
 `initBrowserTelemetry` from `@reliantlabs/forge-web-runtime/telemetry`, and
 `providers.tsx` (Next.js) / `main.tsx` (Vite) call its `initTelemetry()` once.
 It is idempotent, a no-op without a DOM or while telemetry is off, and never
-throws. The SDK is the page's **only** tracer provider: it replaces the old
+throws.
+
+The frontend reports `service.name` `<project>-<frontend>` (e.g. `shop-web`),
+exported from the same file as `SERVICE_NAME`. The generated frontend dashboard
+and frontend alert defaults filter on exactly that value. Code that starts the
+SDK itself instead of calling `initTelemetry()` must pass `SERVICE_NAME` as
+`serviceName`: any other name is invisible to the generated observability. The SDK is the page's **only** tracer provider: it replaces the old
 OTel web wiring rather than joining it, because two providers cannot both
 register globally.
 

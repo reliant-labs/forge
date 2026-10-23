@@ -3,11 +3,14 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/obsdash"
 )
 
 // TestGenerateFrontendNav_EmitsOtel pins src/lib/otel_gen.ts as a Tier-1 file,
@@ -50,9 +53,10 @@ func TestGenerateFrontendNav_EmitsOtel(t *testing.T) {
 		// providers.tsx imports exactly this symbol; if it moves, the
 		// scaffold stops compiling.
 		"export function initTelemetry(",
-		// The service name is baked from forge.yaml, which is why the file
-		// has to be regenerated rather than frozen at scaffold time.
-		"demo-frontend",
+		// The service name is baked from the project and frontend names,
+		// which is why the file has to be regenerated rather than frozen at
+		// scaffold time.
+		"export const SERVICE_NAME = 'demo-web';",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("otel.ts missing %q; got:\n%s", want, s)
@@ -152,5 +156,73 @@ func TestGenerateFrontendNav_OtelForNextJSAndViteNotNative(t *testing.T) {
 	// bundler inlines only its own.
 	if body, err := os.ReadFile(otel("admin")); err == nil && strings.Contains(string(body), "process.env") {
 		t.Errorf("vite otel_gen.ts reads process.env, which Vite does not inline:\n%s", body)
+	}
+}
+
+// TestOtelServiceNameIsWhatTheObservabilityFilters is the contract between the
+// two halves forge generates for a web frontend: the service.name its
+// otel_gen.ts reports (SERVICE_NAME, what the browser SDK sends) and the
+// service.name the generated frontend dashboard and frontend alert defaults
+// filter on. They were derived separately once — "<project>-frontend" in the
+// observability, while a runtime reported "<project>-<frontend>" — and every
+// frontend alert matched nothing. Both now read naming.FrontendServiceName;
+// this test reads the generated file, not the function, so a template that
+// stops using it fails here.
+func TestOtelServiceNameIsWhatTheObservabilityFilters(t *testing.T) {
+	projectDir := t.TempDir()
+	cfg := &config.ProjectConfig{
+		Name: "demo",
+		Frontends: []config.FrontendConfig{
+			{Name: "web", Type: "nextjs"},
+			{Name: "admin", Type: "vite-spa"},
+			{Name: "mobile", Type: "react-native"},
+		},
+	}
+	if err := generateFrontendNav(cfg, nil, projectDir, nil, &checksums.FileChecksums{}); err != nil {
+		t.Fatalf("generateFrontendNav: %v", err)
+	}
+	serviceName := regexp.MustCompile(`(?m)^export const SERVICE_NAME = '([^']+)';$`)
+	var reported []string
+	for _, fe := range []string{"web", "admin"} {
+		body, err := os.ReadFile(filepath.Join(projectDir, "frontends", fe, "src", "lib", "otel_gen.ts"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := serviceName.FindStringSubmatch(string(body))
+		if m == nil {
+			t.Fatalf("frontends/%s otel_gen.ts declares no SERVICE_NAME:\n%s", fe, body)
+		}
+		if !strings.Contains(string(body), "serviceName: SERVICE_NAME,") {
+			t.Errorf("frontends/%s initTelemetry does not report SERVICE_NAME:\n%s", fe, body)
+		}
+		reported = append(reported, m[1])
+	}
+	if want := []string{"demo-web", "demo-admin"}; !slices.Equal(reported, want) {
+		t.Errorf("otel_gen.ts SERVICE_NAMEs = %v, want %v", reported, want)
+	}
+
+	in := obsdash.Input{Project: cfg.Name, Frontends: observedFrontends(cfg)}
+	if got := obsdash.AlertInputOf(in).FrontendServices; !slices.Equal(got, reported) {
+		t.Errorf("alert defaults filter on %v, the runtimes report %v", got, reported)
+	}
+	var frontend *obsdash.Dashboard
+	for _, d := range obsdash.Build(in).Dashboards {
+		if d.ID == "frontend" {
+			frontend = &d
+		}
+	}
+	if frontend == nil {
+		t.Fatal("no frontend dashboard")
+	}
+	for _, p := range frontend.Panels {
+		if p.Kind == obsdash.KindFunnel {
+			continue // product events, scoped by their own steps
+		}
+		scoped := slices.ContainsFunc(p.Where, func(w obsdash.Predicate) bool {
+			return w.Field == obsdash.FieldService && w.Op == obsdash.OpIn && slices.Equal(w.Values, reported)
+		})
+		if !scoped {
+			t.Errorf("frontend panel %s is not scoped to service.name IN %v: %+v", p.ID, reported, p.Where)
+		}
 	}
 }

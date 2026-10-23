@@ -78,7 +78,7 @@ type FrontendHookMethod struct {
 	ClientMethod string
 	InputType    string // "GetUserRequest"
 	OutputType   string // "GetUserResponse"
-	IsQuery      bool   // true for Get/List/Search, false for mutations
+	IsQuery      bool   // true for NO_SIDE_EFFECTS rpcs and Get/List/Search…, false for mutations (isQueryRPC)
 	// EntityScope is the camelCase singular CRUD entity this method
 	// operates on ("task" for ListTasks/GetTask/CreateTask), derived
 	// from the RPC-name CRUD pattern. Empty for non-CRUD methods.
@@ -125,7 +125,8 @@ var queryPrefixes = []string{
 //
 // An imperative RPC that genuinely opens with a read word — or a bespoke
 // verb this cannot know about — carries `// forge:mutation` in the proto;
-// see internal/cli/generate_frontend_hooks.go.
+// see internal/cli/generate_frontend_hooks.go. A read whose name is no verb
+// at all (Health, Version) declares NO_SIDE_EFFECTS; see isQueryRPC.
 func isQueryMethod(name string) bool {
 	for _, prefix := range queryPrefixes {
 		rest, ok := strings.CutPrefix(name, prefix)
@@ -141,6 +142,23 @@ func isQueryMethod(name string) bool {
 		}
 	}
 	return false
+}
+
+// isQueryRPC decides whether m's generated hook is a useQuery.
+//
+// The proto's own declaration comes first: `option idempotency_level =
+// NO_SIDE_EFFECTS;` is protobuf's standard statement that an rpc only reads,
+// the one connect-es already acts on, and the one forge/pkg/activity reads
+// to exempt a read from declaring an activity event. Without it a read named
+// as a noun — Health, Ready, Info, Version — fell through the verb list and
+// came out a useMutation, so a caller had to hand-build its query key.
+//
+// Only NO_SIDE_EFFECTS reads as a read. IDEMPOTENT is a write that is safe
+// to repeat (SetFlag), and the unset default promises nothing, so both leave
+// the decision to the name, exactly as before the option was consulted.
+// `// forge:mutation` is applied after this and still wins.
+func isQueryRPC(m Method) bool {
+	return m.NoSideEffects || isQueryMethod(m.Name)
 }
 
 // ToCamelCaseFromPascalExport is the exported wrapper around the
@@ -224,7 +242,7 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 			continue
 		}
 
-		isQuery := isQueryMethod(m.Name)
+		isQuery := isQueryRPC(m)
 		if isQuery {
 			data.HasQueries = true
 		} else {

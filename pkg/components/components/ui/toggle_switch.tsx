@@ -19,7 +19,7 @@ import { FormFieldContext } from "./form_field_context";
  * its name, so a screen reader says "Notifications, switch, on — Sends a
  * desktop alert…" rather than one long name.
  *
- * The off track is `border-strong`, not a surface token: a surface-coloured
+ * The off track is `bg-border-strong`, not a surface token: a surface-coloured
  * track on a surface-coloured card is invisible, and the off state is the one
  * a user has to be able to see to know there is a control at all.
  */

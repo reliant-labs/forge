@@ -858,7 +858,7 @@ func TestDeployReportFinish_ExitCodeMatchesTextMode(t *testing.T) {
 			}
 			// The code reported must be the code the process will actually
 			// exit with — same resolution main() performs.
-			if got := deployJSONExitCode(tc.err); got != doc.ExitCode {
+			if got := exitCodeForError(tc.err); got != doc.ExitCode {
 				t.Errorf("reported exit_code %d disagrees with the resolver's %d", doc.ExitCode, got)
 			}
 			if tc.err != nil && doc.Error == "" {

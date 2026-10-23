@@ -91,7 +91,7 @@ func runObsMetricsList(ctx context.Context, d obsDeps, env string, o obsMetricsL
 	}
 	fields, err := o.out.Parsed(obsMetricsListSchema)
 	if err != nil {
-		return err
+		return obsFail(d, o.out.JSON, schemaObsMetricsList, err)
 	}
 	fail := func(err error) error { return obsFail(d, o.out.JSON, schemaObsMetricsList, err) }
 	n, err := o.narrow(d.Now())
@@ -225,7 +225,7 @@ func runObsMetricsQuery(ctx context.Context, d obsDeps, env, metric string, o ob
 	}
 	fields, err := o.out.Parsed(obsMetricsQuerySchema)
 	if err != nil {
-		return err
+		return obsFail(d, o.out.JSON, schemaObsMetricsQuery, err)
 	}
 	fail := func(err error) error { return obsFail(d, o.out.JSON, schemaObsMetricsQuery, err) }
 	n, err := o.narrow(d.Now())

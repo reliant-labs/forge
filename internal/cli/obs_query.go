@@ -113,7 +113,7 @@ func runObsQuery(ctx context.Context, d obsDeps, env string, o obsQueryOpts) err
 	}
 	fields, err := o.out.Parsed(obsQuerySchema)
 	if err != nil {
-		return err
+		return obsFail(d, o.out.JSON, schemaObsQuery, err)
 	}
 	fail := func(err error) error { return obsFail(d, o.out.JSON, schemaObsQuery, err) }
 	n, err := o.narrow(d.Now())

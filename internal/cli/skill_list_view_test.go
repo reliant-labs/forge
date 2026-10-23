@@ -189,3 +189,32 @@ func TestSkillListJSONIsUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// TestSkillListGroupExpandsSubSkills pins the discovery path for a collapsed
+// sub-skill: the default view shows only `observability +N`, so the group name
+// must expand to the sub-skills' full paths, and each must load by that path.
+// `skill list <group>` used to ignore its argument and print the whole catalog.
+func TestSkillListGroupExpandsSubSkills(t *testing.T) {
+	got := runSkillList(t, "observability")
+	for _, path := range []string{"observability ", "observability/query", "observability/alerts"} {
+		if !strings.Contains(got, path) {
+			t.Errorf("`skill list observability` does not list %q:\n%s", path, got)
+		}
+	}
+	if strings.Contains(got, "\ndb ") || strings.Contains(got, "START HERE") {
+		t.Errorf("`skill list observability` printed the whole catalog:\n%s", got)
+	}
+
+	body, err := RenderSkillContentAt("", "observability/query", SkillAudienceAll, "forge")
+	if err != nil || !strings.Contains(string(body), "forge obs check") {
+		t.Errorf("observability/query does not load: %v", err)
+	}
+
+	cmd := newSkillListCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"no-such-group"})
+	if err := cmd.Execute(); err == nil {
+		t.Error("an unknown group listed successfully")
+	}
+}

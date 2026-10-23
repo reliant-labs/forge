@@ -79,7 +79,7 @@ func runObsChanges(ctx context.Context, d obsDeps, env string, o obsChangesOpts)
 	}
 	fields, err := o.out.Parsed(obsChangesSchema)
 	if err != nil {
-		return err
+		return obsFail(d, o.out.JSON, schemaObsChanges, err)
 	}
 	fail := func(err error) error { return obsFail(d, o.out.JSON, schemaObsChanges, err) }
 	rng, err := resolveRange(d.Now(), o.since, o.from, o.to)

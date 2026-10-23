@@ -270,6 +270,10 @@ func saveScaffoldLedgerLocked(root string) {
 	if err != nil {
 		abs = root
 	}
+	if scaffoldDeferred[abs] > 0 {
+		scaffoldDeferredDirty[abs] = true
+		return
+	}
 	led := scaffoldLedgers[abs]
 	reported := scaffoldAbsentReported[abs]
 	full := filepath.Join(abs, ScaffoldedFile)
@@ -290,6 +294,51 @@ func saveScaffoldLedgerLocked(root string) {
 		return
 	}
 	_ = atomicfile.WriteFile(full, append(data, '\n'), 0o644)
+}
+
+// scaffoldDeferred counts the open DeferScaffoldLedger batches per root, and
+// scaffoldDeferredDirty marks roots whose ledger changed while one was open.
+// Guarded by scaffoldMu.
+var (
+	scaffoldDeferred      = map[string]int{}
+	scaffoldDeferredDirty = map[string]bool{}
+)
+
+// DeferScaffoldLedger holds back root's ledger writes until the returned
+// function runs, then writes the ledger once if anything changed.
+//
+// Every birth record rewrites the whole file (marshal, temp file, fsync,
+// rename), so a scaffold that records N files writes it N times — quadratic
+// in the project's size, and for a frontend's few hundred files most of the
+// time `forge project new` spends. The in-memory ledger is authoritative the
+// whole time; only the file waits. A process that dies inside the batch loses
+// the records of the scaffold it was writing, which is the state a
+// half-written scaffold is already in.
+//
+// Batches nest. Safe to call from any goroutine.
+func DeferScaffoldLedger(root string) (flush func()) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		abs = root
+	}
+	scaffoldMu.Lock()
+	scaffoldDeferred[abs]++
+	scaffoldMu.Unlock()
+	return func() {
+		scaffoldMu.Lock()
+		defer scaffoldMu.Unlock()
+		if scaffoldDeferred[abs]--; scaffoldDeferred[abs] > 0 {
+			return
+		}
+		delete(scaffoldDeferred, abs)
+		dirty := scaffoldDeferredDirty[abs]
+		delete(scaffoldDeferredDirty, abs)
+		// A cache reset inside the batch dropped the ledger the dirty mark
+		// was about; writing the (now empty) memo would delete the file.
+		if _, loaded := scaffoldLedgers[abs]; dirty && loaded {
+			saveScaffoldLedgerLocked(abs)
+		}
+	}
 }
 
 // ScaffoldRecorded reports whether forge has EVER scaffolded relPath in

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/assets"
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/configproto"
@@ -206,6 +207,8 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 	// emission) does not have to learn about Kind. This keeps the gate in
 	// one place and means existing feature checks still work unchanged.
 	g.applyKindFeatureDefaults()
+	// One ledger write for the whole scaffold, not one per file it records.
+	defer checksums.DeferScaffoldLedger(g.Path)()
 	// Then the feature graph, as the loader applies it to every later load
 	// of this tree: a feature whose requirement is off is off here too, so
 	// nothing is written that the project would derive away (--disable

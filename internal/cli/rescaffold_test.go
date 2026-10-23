@@ -434,6 +434,13 @@ func TestRescaffold_EveryScaffoldedFileIsReemittable(t *testing.T) {
 		"library": func(g *generator.ProjectGenerator) { g.Kind = config.ProjectKindLibrary },
 	} {
 		t.Run(name, func(t *testing.T) {
+			// Each file's rescaffold asks the CI mapper which envs are hosted
+			// and which frontends exist, and that is a KCL evaluation of every
+			// env — hundreds of byte-identical evaluations of an unchanged
+			// deploy/kcl, 85% of this test's CPU. See memoizeKCLRenders: a
+			// file that is itself under deploy/kcl changes the digest and
+			// re-evaluates.
+			memoizeKCLRenders(t)
 			root, cfg := scaffoldForRescaffold(t, shape)
 			var files []string
 			_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {

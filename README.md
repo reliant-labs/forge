@@ -29,8 +29,10 @@ and the CDN — one static site per org is free (each environment's site
 counts). An existing Vite or Next.js app
 is adopted in place with `forge project new --in-place --kind site`
 (`forge skill load deploy/static-site`). For a PWA, forge builds, hosts and
-ships it; the service worker and manifest are yours. When the site grows a
-waitlist or a checkout, the API goes in the same project.
+ships it; the service worker and manifest are yours. A new site is
+`forge project new <name> --kind site`: the app at the root, no Go. When it
+grows a waitlist or a checkout, the API is its own forge project beside it,
+reached by URL.
 
 ## Why teams pick it up
 

@@ -105,8 +105,16 @@ var daemonBindableScopes = []Scope{
 	ScopeSecretRead, ScopeSecretWrite,
 	ScopeDomainRead, ScopeDomainWrite,
 	ScopeIdentityRead, ScopeIdentityManage,
-	ScopeObsRead, ScopeObsTriage,
+	ScopeObsRead, ScopeObsTriage, ScopeObsWrite,
 	ScopeDBQuery,
+	// Org administration rides a daemon binding so a managed daemon can do
+	// everything its acting user can. This is a CEILING, not a grant: the
+	// minting site clips to the user's current org grants, an exchange
+	// attenuates to the caller's held scopes, and token:write can never mint
+	// a scope its holder lacks (Covers). Port and connector bindings remain
+	// closed to all of these.
+	ScopeClusterManage,
+	ScopeTokenRead, ScopeTokenWrite,
 }
 
 // bindableToDaemon reports whether scope may ride a daemon-bound token.

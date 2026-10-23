@@ -216,7 +216,34 @@ func TestFeedbackLoopScopes_AreTheirOwnAuthority(t *testing.T) {
 	if SetOf(ScopeObsTriage).Covers(SetOf(ScopeObsRead)) {
 		t.Error("Covers is exact membership: obs:triage alone must not let a holder mint obs:read")
 	}
-	isObs := func(s Scope) bool { return s == ScopeObsRead || s == ScopeObsTriage }
+	if got, ok := ParseScope("obs:write"); !ok || got != ScopeObsWrite {
+		t.Fatalf("ParseScope(obs:write) = %q, %v", got, ok)
+	}
+	if !SetOf(ScopeObsWrite).Permits(ScopeObsRead) {
+		t.Error("obs:write must permit obs:read at the point of use")
+	}
+	if SetOf(ScopeObsRead).Permits(ScopeObsWrite) || SetOf(ScopeObsTriage).Permits(ScopeObsWrite) {
+		t.Error("neither obs:read nor obs:triage may permit obs:write")
+	}
+	if SetOf(ScopeObsWrite).Permits(ScopeObsTriage) {
+		t.Error("obs:write must not permit obs:triage: authoring dashboards is not silencing issues")
+	}
+	if SetOf(ScopeObsWrite).Covers(SetOf(ScopeObsRead)) {
+		t.Error("Covers is exact membership: obs:write alone must not let a holder mint obs:read")
+	}
+	if RequiresActingUser(ScopeObsWrite) {
+		t.Error("obs:write must not require an acting user: org automation may author")
+	}
+	ow := Grant{OrgID: "org", Name: "n", Scopes: SetOf(ScopeDaemonConnect, ScopeObsWrite), ActingUserID: "u",
+		Resource: &Resource{Kind: ResourceDaemon, ID: "d"}}
+	if err := ow.Validate(time.Now()); err != nil {
+		t.Errorf("obs:write on a daemon-bound token: %v", err)
+	}
+	envBound := Grant{OrgID: "org", Name: "n", Scopes: SetOf(ScopeObsWrite), Resource: &Resource{Kind: ResourceEnvironment, ID: "e"}}
+	if err := envBound.Validate(time.Now()); err == nil {
+		t.Error("obs:write must not be confinable to one environment: what it writes is org-wide")
+	}
+	isObs := func(s Scope) bool { return s == ScopeObsRead || s == ScopeObsTriage || s == ScopeObsWrite }
 	for _, other := range AllScopes {
 		if other != ScopeDBQuery && SetOf(other).Permits(ScopeDBQuery) {
 			t.Errorf("%s permitted db:query", other)
@@ -224,10 +251,10 @@ func TestFeedbackLoopScopes_AreTheirOwnAuthority(t *testing.T) {
 		if other != ScopeDBQuery && SetOf(ScopeDBQuery).Permits(other) {
 			t.Errorf("db:query permitted %s", other)
 		}
-		if !isObs(other) && (SetOf(other).Permits(ScopeObsRead) || SetOf(other).Permits(ScopeObsTriage)) {
+		if !isObs(other) && (SetOf(other).Permits(ScopeObsRead) || SetOf(other).Permits(ScopeObsTriage) || SetOf(other).Permits(ScopeObsWrite)) {
 			t.Errorf("%s permitted an obs scope", other)
 		}
-		if !isObs(other) && (SetOf(ScopeObsRead).Permits(other) || SetOf(ScopeObsTriage).Permits(other)) {
+		if !isObs(other) && (SetOf(ScopeObsRead).Permits(other) || SetOf(ScopeObsTriage).Permits(other) || SetOf(ScopeObsWrite).Permits(other)) {
 			t.Errorf("an obs scope permitted %s", other)
 		}
 	}
@@ -326,14 +353,15 @@ func TestGrant_Validate(t *testing.T) {
 		}, ErrInvalidGrant},
 		"unknown binding kind": {func(g *Grant) { g.Resource = &Resource{Kind: "bucket", ID: "b"} }, ErrInvalidGrant},
 		"binding with no id":   {func(g *Grant) { g.Resource = &Resource{Kind: ResourceDaemon} }, ErrInvalidGrant},
-		// cluster:manage and token:* are org-ADMINISTRATION authority, not a
-		// person's authority over their own resources, so they stay unbindable
-		// on every kind — including a daemon. See daemonBindableScopes.
-		"org-administration scope bound to a daemon": {func(g *Grant) {
-			g.Scopes = SetOf(ScopeClusterManage)
+		// Org-administration scopes ride a daemon binding (an acting user's
+		// daemon does what the user can) but never a port or connector one.
+		"org-administration scope bound to a port": {func(g *Grant) {
+			g.Scopes = SetOf(ScopeProxyPort, ScopeClusterManage)
+			g.Resource = &Resource{Kind: ResourcePort, ID: PortResourceID("d1", 80)}
 		}, ErrInvalidGrant},
-		"token scope bound to a daemon": {func(g *Grant) {
-			g.Scopes = SetOf(ScopeTokenWrite)
+		"token scope bound to a connector": {func(g *Grant) {
+			g.Scopes = SetOf(ScopeMCPConnector, ScopeTokenWrite)
+			g.Resource = &Resource{Kind: ResourceConnector, ID: "c1"}
 		}, ErrInvalidGrant},
 		// A user-authority scope may ride a DAEMON binding but not a port one:
 		// a share link has no acting user, so deploy authority on it would be
@@ -563,5 +591,24 @@ func TestEnvironmentBinding(t *testing.T) {
 	var nilP *Principal
 	if nilP.MayReadEnvironment("env-prod") {
 		t.Error("nil principal authorized")
+	}
+}
+
+// TestOrgAdministrationRidesADaemonBinding pins that cluster:manage and
+// token:* may be carried by an acting user's daemon-bound token, and that an
+// environment binding still refuses them.
+func TestOrgAdministrationRidesADaemonBinding(t *testing.T) {
+	now := time.Now()
+	for _, s := range []Scope{ScopeClusterManage, ScopeTokenRead, ScopeTokenWrite} {
+		g := Grant{OrgID: "org", Name: "n", Scopes: SetOf(ScopeDaemonConnect, s), ActingUserID: "u",
+			Resource: &Resource{Kind: ResourceDaemon, ID: "d"}}
+		if err := g.Validate(now); err != nil {
+			t.Errorf("a daemon-bound token carrying %s: %v", s, err)
+		}
+		g.Resource = &Resource{Kind: ResourceEnvironment, ID: "e"}
+		g.Scopes = SetOf(s)
+		if err := g.Validate(now); err == nil {
+			t.Errorf("%s accepted an environment binding", s)
+		}
 	}
 }

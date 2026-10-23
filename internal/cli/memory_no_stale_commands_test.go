@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -25,10 +26,7 @@ import (
 func TestMemoryTemplateNamesNoRemovedCommands(t *testing.T) {
 	t.Parallel()
 
-	rendered, err := templates.ProjectTemplates().Render("reliant.md.tmpl", struct {
-		Name string
-		CLI  string
-	}{Name: "demo", CLI: "forge"})
+	rendered, err := templates.ProjectTemplates().Render("reliant.md.tmpl", generator.ProjectMemoryData{Name: "demo", CLI: "forge"})
 	if err != nil {
 		t.Fatalf("render reliant.md.tmpl: %v", err)
 	}

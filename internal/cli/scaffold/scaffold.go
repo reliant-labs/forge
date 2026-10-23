@@ -132,6 +132,20 @@ func addNounCmds(cmd *cobra.Command, f *factory.Factory) {
 // only makes sense for server-shaped projects — CLI and library kinds have
 // no Connect-RPC server to attach handlers to.
 func requireServiceKind(root, action string) error {
+	// A static site (`forge project new --kind site`) has no Go module: its
+	// frontend is the app at its root and nothing else is there — the shape
+	// config.DiscoverRootFrontend admits. Every scaffold behind this check
+	// writes Go and proto into a module the site does not have, and used to
+	// fail half-way through its generate, leaving proto/ behind. Refuse
+	// first, and say what to do instead.
+	if _, site := config.DiscoverRootFrontend(root); site {
+		return cliutil.UserErr(fmt.Sprintf("forge scaffold %s", action),
+			fmt.Sprintf("'forge scaffold %s' needs a Go module, and this project is a static site (no go.mod): its frontend is the app at the project root, with no backend", action),
+			"",
+			"give the API its own forge project beside the site — 'forge project new <name>-api --service <entity>' — deploy it, "+
+				"and point the site at its URL with a build-time env_vars entry (NEXT_PUBLIC_* / VITE_*) or runtime_config "+
+				"on the frontend in deploy/kcl/<env>/main.k; 'forge skill load deploy/static-site' (Growing a backend)")
+	}
 	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {

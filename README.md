@@ -7,8 +7,10 @@ environments, secrets that never land in git, errors that can't leak your
 database password to a stranger, and linters that catch the bugs review
 doesn't.
 
-It generates Go and Next.js wired over [Connect RPC](https://connectrpc.com),
-and it deploys anything — including code it never compiled.
+It covers the whole range: a landing page, marketing or docs site, SPA or PWA
+with no backend at all; a web or mobile app over a Go API, generated as Go plus
+Next.js, Vite or Expo wired over [Connect RPC](https://connectrpc.com); and
+anything in between. And it deploys anything — including code it never compiled.
 
 That second half matters more than it sounds, so it's worth saying plainly up
 front: Forge has opinions, and none of them are walls. It ships an ORM you can
@@ -18,12 +20,17 @@ operate, or hosted infrastructure we operate for you. Our own control plane
 builds three services out of a **separate repository** that Forge never
 compiles.
 
-It is not only for apps with a backend. A landing page, a marketing site or a
-docs site is a forge project with one static frontend and no services. It gets
-the same environments, build-once releases and promotion, and ships to hosted
-static hosting that owns the bucket and the CDN
-(`forge skill load deploy/static-site`). When the site grows a waitlist or a
-checkout, the API goes in the same project.
+A frontend with no backend is a first-class forge project, not a degenerate
+one. A landing page, a marketing or docs site, an SPA or a PWA is a project with
+one static frontend and no services. It gets the same environments, build-once
+releases and promotion, a dev loop with no database or cluster, custom domains,
+per-env config without a rebuild, and hosted static hosting that owns the bucket
+and the CDN — one static site per org is free (each environment's site
+counts). An existing Vite or Next.js app
+is adopted in place with `forge project new --in-place --kind site`
+(`forge skill load deploy/static-site`). For a PWA, forge builds, hosts and
+ships it; the service worker and manifest are yours. When the site grows a
+waitlist or a checkout, the API goes in the same project.
 
 ## Why teams pick it up
 

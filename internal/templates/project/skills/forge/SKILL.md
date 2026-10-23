@@ -1,6 +1,6 @@
 ---
 name: forge
-description: Start here, and this is enough. The end-to-end greenfield sequence (apps, and where static sites branch off), the entity-authoring rules, what scaffold births, the four commands that print forge's whole surface, and the pre-flight checklist that stops you hand-writing what forge already scaffolds.
+description: Start here for any project — static site, SPA, landing page, docs site, web/mobile app or API. The two paths (frontend-only sites, and apps with an API), the entity-authoring rules, what scaffold births, the four commands that print forge's whole surface, and the pre-flight checklist that stops you hand-writing what forge already scaffolds.
 ---
 
 # Forge — start here
@@ -9,12 +9,23 @@ Self-sufficient for greenfield work: empty directory to a running app without
 loading another skill. Depth is named at the point you would need it — load it
 then, not before.
 
-**Building a landing page, marketing site, docs site or SPA with no backend of
-its own?** That is a static site, and forge ships it too: a static export bound
-to hosted static hosting (the platform owns the bucket and the CDN), with envs,
-build-once releases and promotion from day 0. An existing one is adopted in
-place: `forge project new --in-place --kind site`. Load `deploy/static-site`
-instead of reading on: the service sequence below is for apps with an API.
+## Two paths, both first-class
+
+**A frontend with no backend of its own** — a landing page, marketing site,
+docs site, SPA or PWA — is a **static site**, and it is a complete forge
+project, not a stripped-down one. It gets dev/staging/prod envs from day 0,
+`forge env up dev` with no database or cluster, build-once releases promoted by
+digest, hosted static hosting (the platform owns the bucket, the CDN and the
+hostname; one static site per org is free, and each env's site counts), custom
+domains, per-env runtime
+config without a rebuild, and the component library. Adopt an existing Vite or
+Next.js app in place with `forge project new --in-place --kind site`. Either
+way, **load `deploy/static-site` now** — it is the whole path, and the service
+sequence below does not apply. (For a PWA, forge builds, hosts and ships it;
+the service worker and manifest are yours to add.)
+
+**An app with an API** — services, a database, a frontend over generated
+Connect RPC hooks — follows the sequence below.
 
 ## Greenfield, end to end
 
@@ -54,6 +65,7 @@ deployment unit, not a domain entity, so forge never invents a service from its 
 | `--service <name>` | repeatable or comma-separated. Name after a domain entity, never after the binary |
 | `--frontend <name>` | repeatable or comma-separated Next.js frontends |
 | `--in-place` | scaffold into the current directory; takes no positional name |
+| `--kind site` | `--in-place` only: adopts the Vite or Next.js app at the directory root as a frontend-only project — writes `forge.yaml` and the `deploy/kcl` envs, no Go (`deploy/static-site`) |
 | `--name` | names an `--in-place` project whose directory is a worktree or branch name rather than the product |
 | `--path <dir>` | parent directory for the project (default `.`) |
 
@@ -275,7 +287,9 @@ forge env deploy prod      # build → push → release → plan → apply
 forge env status prod      # then verify
 ```
 
-Everything hosted, static sites included, needs billing.
+One static site per org is free. A second static site (another env's
+included) or anything that runs compute — a service, worker, job, managed
+database or image build — needs billing.
 Without it the deploy is **queued, not refused** and goes live once billing is set up: `env deploy` exits **7** and prints the billing link. Give
 the user that link; don't retry; then verify. Under Reliant you are signed in:
 never ask for `forge login`. Depth: `deploy`, `deploy/hosting`, `deploy/static-site`.

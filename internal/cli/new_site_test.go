@@ -153,6 +153,9 @@ var siteGoArtifacts = []string{
 // that app would write — one project shape for both entry points — and
 // nothing of the Go project.
 func TestGreenfieldSiteIsFrontendOnly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the whole `project new --kind site`, which execs git (init + initial commit); runs in task test")
+	}
 	t.Setenv("FORGE_SKIP_NPM_INSTALL", "1")
 	for _, tc := range []struct {
 		kind, feType, publicDir string
@@ -226,6 +229,9 @@ func TestGreenfieldSiteIsFrontendOnly(t *testing.T) {
 // `--in-place` in an empty directory is a greenfield site there; the
 // directory's README and dotfiles stay.
 func TestGreenfieldSiteInPlaceInAnEmptyDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the whole `project new --kind site`, which execs git (init + initial commit); runs in task test")
+	}
 	t.Setenv("FORGE_SKIP_NPM_INSTALL", "1")
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# mine\n"), 0o600); err != nil {

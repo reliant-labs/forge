@@ -154,18 +154,8 @@ checkout stop being the same source; drop the bridge with
 			}
 			frontendOutput = strings.ToLower(strings.TrimSpace(frontendOutput))
 			frontendRoutes = scaffold.NormalizeRouteSlugs(frontendRoutes)
-			if strings.EqualFold(strings.TrimSpace(kindFlag), projectKindSite) {
-				if cmd.Flags().Changed("output") || cmd.Flags().Changed("routes") {
-					return cliutil.UserErr("forge project new --kind site",
-						"--output and --routes shape an app frontend; a site is always a static export with no generated pages",
-						"",
-						"drop them (--frontend-kind nextjs|vite-spa picks the site's starter)")
-				}
-			} else if cmd.Flags().Changed("frontend-kind") {
-				return cliutil.UserErr("forge project new",
-					"--frontend-kind picks a static site's starter, so it needs --kind site",
-					"",
-					"add --kind site, or drop --frontend-kind (an app's frontend kind is chosen by `forge scaffold frontend --kind`)")
+			if err := checkSiteFrontendFlags(cmd, kindFlag); err != nil {
+				return err
 			}
 			if (cmd.Flags().Changed("output") || cmd.Flags().Changed("routes")) && len(frontendNames) == 0 {
 				return fmt.Errorf("--output and --routes require --frontend")
@@ -203,6 +193,28 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print the raw output behind a step forge summarizes in one line (e.g. git's explanation when the initial commit is skipped for want of a git identity)")
 
 	return cmd
+}
+
+// checkSiteFrontendFlags refuses the frontend flags that do not fit the
+// project kind: --output/--routes shape an app frontend, never a site;
+// --frontend-kind picks a site's starter, so it needs --kind site.
+func checkSiteFrontendFlags(cmd *cobra.Command, kindFlag string) error {
+	if strings.EqualFold(strings.TrimSpace(kindFlag), projectKindSite) {
+		if cmd.Flags().Changed("output") || cmd.Flags().Changed("routes") {
+			return cliutil.UserErr("forge project new --kind site",
+				"--output and --routes shape an app frontend; a site is always a static export with no generated pages",
+				"",
+				"drop them (--frontend-kind nextjs|vite-spa picks the site's starter)")
+		}
+		return nil
+	}
+	if cmd.Flags().Changed("frontend-kind") {
+		return cliutil.UserErr("forge project new",
+			"--frontend-kind picks a static site's starter, so it needs --kind site",
+			"",
+			"add --kind site, or drop --frontend-kind (an app's frontend kind is chosen by `forge scaffold frontend --kind`)")
+	}
+	return nil
 }
 
 // defaultModulePath returns the Go module path a new project uses: --mod when

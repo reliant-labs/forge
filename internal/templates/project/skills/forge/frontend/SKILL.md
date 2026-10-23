@@ -1,15 +1,15 @@
 ---
 name: frontend
-description: Write Next.js frontends — generated hooks, the component library, Tailwind v4, the output/base_path build shapes, visual verification, and Connect RPC clients.
+description: Frontends with or without a backend — Next.js static exports, Vite SPAs, Expo: the component library, Tailwind v4, build shapes, runtime config, visual verification, and generated Connect RPC hooks when there is an API.
 ---
 
 # Frontend Development in Forge
 
 ## Project structure
 
-Each frontend lives in `frontends/<name>/` as a Next.js App Router app (`forge scaffold frontend <name>`): `src/app/`, `src/components/`, `src/hooks/`, `src/lib/`. Generated TypeScript lives in this frontend's own `src/gen/` — import it as `@/gen/...`, never from the project-root `gen/` (that tree is Go).
+No backend needed: with no services it is a static site (`deploy/static-site`) and all but the hooks applies. Each frontend lives in `frontends/<name>/` — by default a Next.js App Router app (`forge scaffold frontend <name>`): `src/app/`, `src/components/`, `src/hooks/`, `src/lib/`. Generated TypeScript lives in this frontend's own `src/gen/` — import it as `@/gen/...`, never from the project-root `gen/` (that tree is Go).
 
-`--kind` also takes `mobile` (Expo React Native: `app/` screens, the same hooks/lib/stores adapted — the event bus gains `app:background`/`app:foreground`, the UI store `drawerOpen`/`bottomSheetOpen`) and `vite-spa` (`--output`/`--base-path` are web-only).
+`--kind` also takes `vite-spa` and `mobile` (Expo React Native: `app/` screens; events gain `app:background`/`app:foreground`). `--output`/`--base-path` are web-only.
 
 ## Build & serving shapes
 
@@ -39,7 +39,7 @@ forge component install card_grid
 
 **Every component already uses this project's theme tokens** (`ink`, `surface`, `border`, `accent`, `danger`, `success`, `warning` and their `-surface`/`-border`/`-ink` variants), so installing one never means re-theming it. A raw palette class like `bg-blue-600` in a component is a forge bug to report — not a reason to hand-write your own.
 
-Reach for these before writing markup yourself. **✓ already ships in `src/components/ui/`** — import it, do not rebuild it; the rest are one `forge component install` away:
+**✓ already ships in `src/components/ui/`** — import it, do not rebuild it; the rest are one `forge component install` away:
 
 | About to build | Use |
 |---|---|
@@ -229,7 +229,7 @@ Created by `forge scaffold frontend`, yours to modify:
 ## Dev workflow
 
 ```bash
-forge env up dev   # Full stack: infra + Go (hot reload) + Next.js; reads deploy/kcl/<env>/
+forge env up dev   # infra + services (hot reload) + frontends; reads deploy/kcl/<env>/
 forge generate     # After any .proto change
 ```
 
@@ -248,7 +248,6 @@ Load **state** (decision table, state vs events, ownership), **patterns** (compo
 
 - Never hand-edit generated files; run `forge generate` after every `.proto` change.
 - Always `create(Schema, {...})` for protobuf messages, never `new Message()`.
-- `"use client"` only when needed; verify visually with BOTH `take_snapshot` and `take_screenshot`.
 - `forge component search <noun>` before hand-writing any UI. Recharts for dashboard charts.
 - Money, dates, enum labels, status colors: `@/lib/format-utils`; money/rate inputs: `parseMinorUnits` / `parseBasisPoints`.
 - React Query hooks for server data, Zustand for client state only (subscribe to slices), event bus for imperative actions — never as a source of truth.

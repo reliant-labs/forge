@@ -1,6 +1,6 @@
 ---
 name: forge-libraries
-description: Adopt-or-port judgment for forge's public libraries — forge/pkg for Go and @reliantlabs/forge-web-runtime for the frontend. Read this BEFORE porting a utility from an existing codebase — the equivalent may already exist. `forge project libraries <pkg>` prints any package's full signatures; never read forge's source to find one.
+description: Adopt-or-port judgment for forge's Go and frontend libraries — forge/pkg and @reliantlabs/forge-web-runtime. Read this BEFORE porting a utility from an existing codebase — the equivalent may already exist. `forge project libraries <pkg>` prints any package's full signatures; never read forge's source to find one.
 emit: both
 ---
 

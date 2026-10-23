@@ -1,6 +1,6 @@
 ---
 name: testing
-description: "What forge gives you to test with — testkit's real-postgres harness, generated contract mocks, pkg/tdd, the task test lanes and their build tags."
+description: "Testing Go services and packages — testkit's real-postgres harness, generated contract mocks, pkg/tdd, the task test lanes and their build tags."
 emit: both
 ---
 

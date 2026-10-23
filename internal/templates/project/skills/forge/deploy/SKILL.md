@@ -1,6 +1,6 @@
 ---
 name: deploy
-description: Ship code — declare workloads once, bind each one to a runtime per env (host, cluster, hosted), build, deploy, verify, roll forward. Static sites ship through the same model (deploy/static-site).
+description: Ship anything — static sites, SPAs, services, workers: declare each workload once, bind it to a runtime per env (host, cluster, hosted), build, deploy, verify, roll forward. A frontend-only site: deploy/static-site.
 ---
 
 # Ship It

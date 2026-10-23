@@ -98,16 +98,21 @@ func NewRootCmd() *cobra.Command {
 	var rootCmd *cobra.Command
 	rootCmd = &cobra.Command{
 		Use:   "forge",
-		Short: "Connect RPC development framework for LLM-optimized applications",
-		Long: `Forge is a development framework where everything communicates via
-Connect RPC interfaces, purpose-built for LLM-driven development.
+		Short: "Build, run and ship static sites, SPAs, web/mobile apps and APIs, LLM-first",
+		Long: `Forge takes a project from an empty directory to production, purpose-built
+for LLM-driven development: environments, build-once releases, hosting,
+observability and linters from day 0.
 
-It enables easy mocking, middleware injection, spec-driven development,
-and component swapping - all while maintaining a single, consistent
-interface pattern throughout the entire stack.
+A landing page, docs site, SPA or PWA with no backend is a complete forge
+project: one static frontend on hosted static hosting, no server to run.
+Adopt an existing Vite or Next.js app with
+'forge project new --in-place --kind site' ('forge skill load
+deploy/static-site').
 
-New here? Run 'forge start' — the whole path from an empty directory to
-authored protos, in one call.`,
+An app with an API adds Go services defined in proto and wired over Connect
+RPC — generated handlers, typed frontend hooks, mocks and middleware, one
+consistent interface pattern through the stack. 'forge start' walks that path
+from an empty directory to authored protos, in one call.`,
 		Version: versionLine(),
 		// SilenceErrors: cobra never prints the error itself — main()
 		// owns the single, final "Error: ..." line. Without this every

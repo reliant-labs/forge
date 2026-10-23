@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.9.0 minted and stamped `visitor.id` the moment the SDK started, so a site with a
   Necessary-only tier (reliantlabs.io) stored an identifier its visitors had not
   consented to. `attributionTouch: "first"` keeps the first captured campaign for
-  good; the barrel now exports `getAttribution` and the attribution storage keys, so
+  good; the barrel now exports `getAttribution`, `UTM_PARAMS` and the attribution storage keys, so
   a site can stamp campaign values on its own events and erase them on withdrawal.
 
 - **An identity line in `forge env status` and `forge env deploy` (FI7).** A

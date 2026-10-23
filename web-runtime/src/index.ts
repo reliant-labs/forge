@@ -169,6 +169,7 @@ export {
 export {
   ATTRIBUTION_STORAGE_KEY,
   IDENTIFIED_USER_STORAGE_KEY,
+  UTM_PARAMS,
   VISITOR_ID_STORAGE_KEY,
   getAttribution,
   withAttribution,

@@ -183,7 +183,7 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, http.H
 	}
 
 	// Last, because the providers flush through these transports first.
-	shutdowns = append(shutdowns, closeIdleHeaderTransports)
+	shutdowns = append(shutdowns, closeIdleOTLPTransports)
 	return func(ctx context.Context) error {
 		errs := make([]error, 0, len(shutdowns))
 		for _, f := range shutdowns {

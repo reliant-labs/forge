@@ -759,6 +759,103 @@ describe("app.client, visitor.id and user_identified", () => {
     ]);
   });
 
+  // A two-tier consent site: error telemetry for everyone, the visitor id only
+  // with analytics consent.
+  function stubDomWithLocalStorage(search = "") {
+    const store = new Map<string, string>();
+    stubDom();
+    const w = window as unknown as Record<string, unknown>;
+    (w.location as Record<string, string>).search = search;
+    w.localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+    };
+    return store;
+  }
+
+  it("with attribution: false creates, stores and stamps no visitor id", async () => {
+    const store = stubDomWithLocalStorage("?utm_source=news");
+    const { t, k } = await load();
+    const index = await import("./index.js");
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      appClient: "landing",
+      attribution: false,
+    });
+
+    expect(setGlobalAttributes).toHaveBeenCalledWith({ "app.client": "landing" });
+    expect(store.size).toBe(0);
+    expect(index.withAttribution("https://app.example.com/")).toBe(
+      "https://app.example.com/",
+    );
+    k.setTelemetryUser("user-1");
+    expect(
+      addAction.mock.calls.filter(([name]) => name === "user_identified"),
+    ).toEqual([]);
+  });
+
+  it("enableAttribution stamps the visitor id on a running SDK", async () => {
+    const store = stubDomWithLocalStorage();
+    const { t } = await load();
+    const index = await import("./index.js");
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      attribution: false,
+      attributionTouch: "first",
+      visitorIdStorageKey: "site.visitor_id",
+    });
+    setGlobalAttributes.mockReset();
+
+    // The landing query string, kept from page load past a client-side navigation.
+    t.enableAttribution({ search: "?utm_source=news" });
+    t.enableAttribution();
+
+    expect(setGlobalAttributes).toHaveBeenCalledTimes(1);
+    const id = (setGlobalAttributes.mock.calls[0]?.[0] as Record<string, string>)[
+      "visitor.id"
+    ];
+    expect(id).toMatch(/^[A-Za-z0-9_-]{8,64}$/);
+    expect(store.get("site.visitor_id")).toBe(id);
+    expect(index.getAttribution()).toEqual({ utm_source: "news" });
+    expect(index.withAttribution("https://app.example.com/")).toBe(
+      `https://app.example.com/?rid=${id}&utm_source=news`,
+    );
+  });
+
+  it("enableAttribution before the SDK starts stamps it at start", async () => {
+    stubDomWithLocalStorage();
+    const { t } = await load();
+    t.enableAttribution();
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      attribution: false,
+    });
+
+    expect(setGlobalAttributes).toHaveBeenCalledWith({
+      "app.client": "web",
+      "visitor.id": expect.stringMatching(/^[A-Za-z0-9_-]{8,64}$/),
+    });
+  });
+
+  it("enableAttribution is a no-op after disableTelemetry", async () => {
+    const store = stubDomWithLocalStorage();
+    const { t, k } = await load();
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      attribution: false,
+    });
+    k.disableTelemetry();
+    setGlobalAttributes.mockReset();
+    t.enableAttribution();
+
+    expect(setGlobalAttributes).not.toHaveBeenCalled();
+    expect(store.size).toBe(0);
+  });
+
   it("does not identify on sign-out", async () => {
     stubDom();
     const { t, k } = await load();

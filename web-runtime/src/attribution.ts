@@ -17,8 +17,21 @@
 //
 // Nothing here runs until initBrowserTelemetry does, and that is the point an
 // app gates on consent. Before it (or after disableTelemetry) captureAttribution
-// stores nothing and withAttribution returns the URL untouched. Dependency-free
-// apart from track.ts, like it.
+// stores nothing and withAttribution returns the URL untouched.
+//
+// A site whose consent has two tiers — error telemetry for everyone, a visitor
+// id only with analytics consent — starts telemetry with `attribution: false`
+// and calls enableAttribution() (telemetry.ts) once analytics is granted. Until
+// then no visitor id is created, read or stamped, and nothing is captured.
+//
+// ── First or last touch ──────────────────────────────────────────────────
+//
+// By default a visit that carries `rid`/`utm_*` replaces what was stored: last
+// touch wins, which is right for the app (each hop from the marketing site
+// carries that site's own view). A marketing site that attributes acquisition
+// to the FIRST campaign that brought a visitor passes `attributionTouch:
+// "first"`: once a record is stored, later visits never replace it.
+// Dependency-free apart from track.ts, like it.
 import { isTelemetryDisabled } from "./track.js";
 
 /** localStorage key of the captured `{rid, utm_*}` record. */
@@ -170,16 +183,21 @@ function readStoredAttribution(): Attribution {
   }
 }
 
+/** Which captured record wins when a visit carries new attribution. */
+export type AttributionTouch = "first" | "last";
+
 /**
  * Start attribution for this page load: record `rid` and `utm_*` from the URL
- * (a visit that carries any replaces what was stored — last touch wins; one
- * that carries none keeps it) and note which storage key holds this browser's
- * own visitor id. Called by initBrowserTelemetry, i.e. only once telemetry may
- * run. Returns the visitor id. Never throws.
+ * and note which storage key holds this browser's own visitor id. A visit that
+ * carries any replaces what was stored (`touch: "last"`, the default) or is
+ * ignored once a record exists (`"first"`); one that carries none keeps it.
+ * Called by initBrowserTelemetry and enableAttribution, i.e. only once
+ * telemetry may run. Returns the visitor id. Never throws.
  */
 export function captureAttribution(options?: {
   search?: string;
   visitorIdStorageKey?: string;
+  touch?: AttributionTouch;
 }): string {
   if (isTelemetryDisabled()) {
     return "";
@@ -192,7 +210,10 @@ export function captureAttribution(options?: {
     options?.search ??
     (typeof window !== "undefined" ? (window.location?.search ?? "") : "");
   const incoming = parseAttribution(search);
-  if (Object.keys(incoming).length > 0) {
+  const keep =
+    options?.touch === "first" &&
+    Object.keys(readStoredAttribution()).length > 0;
+  if (Object.keys(incoming).length > 0 && !keep) {
     memory = incoming;
     write(ATTRIBUTION_STORAGE_KEY, JSON.stringify(incoming));
   } else {

@@ -62,6 +62,47 @@ func TestGenerateFrontendConfigTS_NumericFieldCoerces(t *testing.T) {
 	}
 }
 
+// A bool field reaches the bundle as JSON from config.js, and as TEXT from a
+// runtime_config value (KCL `{str: str}`), a proto default_value or a
+// server-side process.env read. z.coerce.boolean() is Boolean(v), so the text
+// "false" validated as true: a flag an environment turned off arrived on.
+func TestGenerateFrontendConfigTS_BoolFieldReadsTextForms(t *testing.T) {
+	fc := FrontendConfig{
+		Frontend: "web", MessageName: "WebConfig",
+		Fields: []ConfigField{{
+			Name: "disable_tls", GoName: "DisableTls", GoType: "bool",
+			ProtoType: "bool", EnvVar: "DISABLE_TLS", DefaultValue: "false",
+		}},
+	}
+	out, err := GenerateFrontendConfigTS(fc, "demo", "vite")
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if strings.Contains(out, "z.coerce.boolean()") {
+		t.Errorf("bool field must not use z.coerce.boolean(), which reads \"false\" as true:\n%s", out)
+	}
+	for _, want := range []string{
+		"DISABLE_TLS: z.preprocess(configBool, z.boolean().default(false))",
+		"function configBool(v: unknown): unknown {",
+		`if (s === "false" || s === "0") return false;`,
+		`if (s === "") return undefined;`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("generated TS missing %q:\n%s", want, out)
+		}
+	}
+
+	// The helper is emitted only when a bool field needs it: an unused
+	// function fails a frontend compiled with noUnusedLocals.
+	plain, err := GenerateFrontendConfigTS(sampleFrontendConfig(), "demo", "vite")
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if !frontendConfigHasBool(sampleFrontendConfig()) && strings.Contains(plain, "configBool") {
+		t.Errorf("configBool emitted for a config with no bool field:\n%s", plain)
+	}
+}
+
 // React Native has no server-render path, so the non-window branch must not
 // emit process.env plumbing it would never use.
 func TestGenerateFrontendConfigTS_ReactNativeHasNoServerBranch(t *testing.T) {

@@ -114,6 +114,9 @@ func GenerateFrontendConfigTS(fc FrontendConfig, projectName, platform string) (
 	b.WriteString(serverSideRawConfig(fc, platform))
 	b.WriteString("}\n\n")
 
+	// ── Mode-dependent required keys ────────────────────────────────────
+	b.WriteString(requiredWhenTS(fc))
+
 	// ── Validation ──────────────────────────────────────────────────────
 	b.WriteString(configLoaderBody(fc, projectName))
 
@@ -166,11 +169,24 @@ func configLoaderBody(fc FrontendConfig, projectName string) string {
 	b.WriteString(" */\n")
 	fmt.Fprintf(&b, "export function loadConfig(): %s {\n", typeName)
 	b.WriteString("  if (cached) return cached;\n\n")
-	b.WriteString("  const parsed = configSchema.safeParse(rawConfig());\n")
-	b.WriteString("  if (!parsed.success) {\n")
-	b.WriteString("    const problems = parsed.error.issues\n")
-	b.WriteString("      .map((i) => `  • ${i.path.join(\".\") || \"(root)\"}: ${i.message}`)\n")
-	b.WriteString("      .join(\"\\n\");\n")
+	if frontendConfigHasRequiredWhen(fc) {
+		// The mode-dependent keys are judged on the RAW document: a default
+		// does not satisfy them (see missingRequiredConfig).
+		b.WriteString("  const raw = rawConfig();\n")
+		b.WriteString("  const parsed = configSchema.safeParse(raw);\n")
+		b.WriteString("  const missing = missingRequiredConfig(raw);\n")
+		b.WriteString("  if (!parsed.success || missing.length > 0) {\n")
+		b.WriteString("    const problems = [\n")
+		b.WriteString("      ...(parsed.success ? [] : parsed.error.issues.map((i) => `  • ${i.path.join(\".\") || \"(root)\"}: ${i.message}`)),\n")
+		b.WriteString("      ...missing.map((m) => `  • ${m.key}: required when ${m.when.key} is \"${m.when.equals}\"`),\n")
+		b.WriteString("    ].join(\"\\n\");\n")
+	} else {
+		b.WriteString("  const parsed = configSchema.safeParse(rawConfig());\n")
+		b.WriteString("  if (!parsed.success) {\n")
+		b.WriteString("    const problems = parsed.error.issues\n")
+		b.WriteString("      .map((i) => `  • ${i.path.join(\".\") || \"(root)\"}: ${i.message}`)\n")
+		b.WriteString("      .join(\"\\n\");\n")
+	}
 	b.WriteString("    throw new Error(\n")
 	fmt.Fprintf(&b, "      `frontend %q: invalid runtime configuration\\n\\n${problems}\\n\\n` +\n", fc.Frontend)
 	fmt.Fprintf(&b, "        `These values are rendered by KCL into config.js. Fix them in\\n` +\n")

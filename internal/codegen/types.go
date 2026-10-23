@@ -591,6 +591,20 @@ type ConfigField struct {
 	// name. Never serialized: it is derived from MessageType on every run.
 	KCLBlock     string `json:"-"`
 	KCLBlockType string `json:"-"`
+
+	// RequiredWhen is (forge.v1.config).required_when: the conditions, over
+	// sibling fields, under which the runtime document must carry a value for
+	// this field other than its default. Frontend configs only
+	// (ValidateFrontendConfigs refuses it elsewhere). `json:",omitempty"`
+	// keeps old descriptors readable (additive contract).
+	RequiredWhen []ConfigCondition `json:",omitempty"`
+}
+
+// ConfigCondition is one (forge.v1.config).required_when entry: true when the
+// sibling field named Field (its proto name) holds Equals.
+type ConfigCondition struct {
+	Field  string
+	Equals string
 }
 
 // EnvVarAlias is one (forge.v1.config).env_var_aliases entry.

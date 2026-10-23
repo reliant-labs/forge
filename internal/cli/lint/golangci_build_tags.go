@@ -16,7 +16,10 @@ package lint
 
 import (
 	"bufio"
+	"go/ast"
 	"go/build/constraint"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"path"
@@ -57,8 +60,14 @@ var knownGOARCH = map[string]bool{
 	"sparc": true, "sparc64": true, "wasm": true,
 }
 
+// toolPinTag is the conventional tag of a tools.go file. It pins tool
+// dependencies with blank imports of `package main` programs, which the Go
+// type checker refuses ("is a program, not an importable package"), so a pass
+// under it can only fail. It is never a project's own build.
+const toolPinTag = "tools"
+
 func isToolchainTag(tag string) bool {
-	return builtinTags[tag] || knownGOOS[tag] || knownGOARCH[tag] || strings.HasPrefix(tag, "go1.")
+	return tag == toolPinTag || builtinTags[tag] || knownGOOS[tag] || knownGOARCH[tag] || strings.HasPrefix(tag, "go1.")
 }
 
 // hostTag reports the tags true on the machine linting.
@@ -77,6 +86,7 @@ func hostTag(tag string) bool {
 // builds. Tags sort, and so do directories.
 func discoverBuildTags(root string) []buildTagPackages {
 	byTag := map[string]map[string]bool{}
+	hasCode := map[string]bool{}
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -109,11 +119,15 @@ func discoverBuildTags(root string) []buildTagPackages {
 		if rel != "." {
 			dir = "./" + filepath.ToSlash(rel)
 		}
+		pin := isToolPinFile(p)
 		for _, tag := range exprTags(expr) {
 			if isToolchainTag(tag) {
 				continue
 			}
 			if builtOnlyUnder(expr, tag) {
+				if !pin {
+					hasCode[tag] = true
+				}
 				if byTag[tag] == nil {
 					byTag[tag] = map[string]bool{}
 				}
@@ -124,6 +138,9 @@ func discoverBuildTags(root string) []buildTagPackages {
 	})
 	var out []buildTagPackages
 	for tag, set := range byTag {
+		if !hasCode[tag] {
+			continue // every file under it is a tool pin: nothing to lint
+		}
 		dirs := make([]string, 0, len(set))
 		for d := range set {
 			dirs = append(dirs, d)
@@ -158,6 +175,27 @@ func goBuildExpr(p string) constraint.Expr {
 		}
 	}
 	return nil
+}
+
+// isToolPinFile reports a Go file that declares nothing but blank imports:
+// the shape of tools.go under whatever tag a project gave it.
+func isToolPinFile(p string) bool {
+	f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution)
+	if err != nil || len(f.Decls) == 0 {
+		return false
+	}
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok != token.IMPORT {
+			return false
+		}
+		for _, sp := range gd.Specs {
+			if is, ok := sp.(*ast.ImportSpec); !ok || is.Name == nil || is.Name.Name != "_" {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func exprTags(e constraint.Expr) []string {

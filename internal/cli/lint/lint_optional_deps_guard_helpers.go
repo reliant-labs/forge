@@ -98,7 +98,7 @@ var svcerrConstructors = map[string]bool{
 // their first argument is nil.
 var svcerrWrappers = map[string]bool{
 	"Wrap": true, "WrapOr": true, "WithCause": true, "WithClass": true, "WithDetail": true,
-	"WithMessage": true, "WithReason": true,
+	"WithMessage": true, "WithReason": true, "WithMetadata": true,
 }
 
 // helperKind is the result shape of a summarizable helper.

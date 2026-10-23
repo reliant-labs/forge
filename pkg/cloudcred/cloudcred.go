@@ -107,6 +107,14 @@ type ResponseError struct {
 	Code ErrorCode `json:"code"`
 	// Message is actionable and safe to print; it never contains a token.
 	Message string `json:"message"`
+	// Reason is the stable reason the minting server gave, when it gave one
+	// (its svcerr.ReasonHeader) — "scope_missing" for a denial over missing
+	// authority. forge reports it in its --json documents so a host's UI
+	// can route on it without parsing Message. Optional.
+	Reason string `json:"reason,omitempty"`
+	// Scopes are the scopes a "scope_missing" refusal names (the server's
+	// accesstoken.ScopesHeader). Optional.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // Response is what the helper writes to stdout. Exactly one of Token and
@@ -146,6 +154,10 @@ func (t Token) Expired(now time.Time, margin time.Duration) bool {
 type HelperError struct {
 	Code    ErrorCode
 	Message string
+	// Reason and Scopes carry the minting server's structured refusal, when
+	// it gave one; see ResponseError. Optional, and never part of Is.
+	Reason string
+	Scopes []string
 }
 
 func (e *HelperError) Error() string {
@@ -262,7 +274,8 @@ func (r Response) token(helper string) (Token, error) {
 		if msg == "" {
 			msg = fmt.Sprintf("credential helper %s refused (%s)", helper, r.Error.Code)
 		}
-		return Token{}, &HelperError{Code: code, Message: msg}
+		return Token{}, &HelperError{Code: code, Message: msg,
+			Reason: strings.TrimSpace(r.Error.Reason), Scopes: r.Error.Scopes}
 	}
 	if strings.TrimSpace(r.Token) == "" {
 		return Token{}, fmt.Errorf("credential helper %s answered with neither a token nor an error", helper)
@@ -303,7 +316,9 @@ func Serve(ctx context.Context, r io.Reader, w io.Writer, mint func(context.Cont
 		if !errors.As(err, &he) {
 			he = &HelperError{Code: CodeUnavailable, Message: err.Error()}
 		}
-		return writeResponse(w, Response{Error: &ResponseError{Code: he.Code, Message: he.Message}})
+		return writeResponse(w, Response{Error: &ResponseError{
+			Code: he.Code, Message: he.Message, Reason: he.Reason, Scopes: he.Scopes,
+		}})
 	}
 	if strings.TrimSpace(tok.Token) == "" {
 		return writeResponse(w, Response{Error: &ResponseError{

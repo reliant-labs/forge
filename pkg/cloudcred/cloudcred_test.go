@@ -339,3 +339,34 @@ func TestRemoveLegacyHostDeposits_MissingFileIsANoop(t *testing.T) {
 		t.Fatalf("a purge with nothing to remove must not create the file (stat: %v)", err)
 	}
 }
+
+// TestServeAndToken_CarryTheServersReason: a host's denial can say WHY in
+// structure (scope_missing, and which scopes), and both halves of the
+// protocol keep it, so forge's --json document can report it.
+func TestServeAndToken_CarryTheServersReason(t *testing.T) {
+	var out strings.Builder
+	in := strings.NewReader(`{"version":1,"endpoint":"https://cp.example.com"}`)
+	err := Serve(context.Background(), in, &out, func(context.Context, Request) (Token, error) {
+		return Token{}, &HelperError{Code: CodeDenied, Message: "ask an admin",
+			Reason: "scope_missing", Scopes: []string{"deploy:write", "secret:read"}}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp Response
+	if err := json.Unmarshal([]byte(out.String()), &resp); err != nil {
+		t.Fatal(err)
+	}
+	_, err = resp.token("helper")
+	var he *HelperError
+	if !errors.As(err, &he) {
+		t.Fatalf("err = %v, want a *HelperError", err)
+	}
+	if he.Code != CodeDenied || he.Message != "ask an admin" || he.Reason != "scope_missing" ||
+		strings.Join(he.Scopes, ",") != "deploy:write,secret:read" {
+		t.Fatalf("refusal = %+v", he)
+	}
+	if !errors.Is(err, &HelperError{Code: CodeDenied}) {
+		t.Error("Is still matches on the code alone")
+	}
+}

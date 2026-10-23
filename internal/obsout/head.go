@@ -1,8 +1,9 @@
 package obsout
 
 import (
-	"errors"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/exitcode"
 )
 
 // Head is the common head of every agent document. Embed it first in a verb's
@@ -23,30 +24,15 @@ type Head struct {
 // Stamp fills the head from the error the verb is about to return. It takes the
 // error rather than a code so the two cannot diverge: an error that carries an
 // ExitCode() int (forge's exitCodeError) reports that code, any other error is
-// 1 ("we looked, and it is wrong").
+// 1 ("we looked, and it is wrong"); internal/exitcode is the one resolution.
 func (h *Head) Stamp(schema string, err error) {
 	h.Schema = schema
 	h.OK = err == nil
-	h.ExitCode = ExitCodeOf(err)
+	h.ExitCode = exitcode.Of(err)
 	h.Error = ""
 	if err != nil {
 		h.Error = err.Error()
 	}
-}
-
-// ExitCodeOf is the process status an error produces. It is the resolution
-// internal/cli.exitCodeForError performs (a test there pins the agreement).
-func ExitCodeOf(err error) int {
-	if err == nil {
-		return 0
-	}
-	var coded interface{ ExitCode() int }
-	if errors.As(err, &coded) {
-		if c := coded.ExitCode(); c != 0 {
-			return c
-		}
-	}
-	return 1
 }
 
 // Scope echoes what a query was resolved against, so a document is

@@ -88,6 +88,9 @@ type Config struct {
 // It returns a shutdown function (flushes/stops the providers), an http.Handler
 // for /metrics, and any error.
 func Setup(ctx context.Context, cfg Config) (func(context.Context) error, http.Handler, error) {
+	if cfg.ServiceVersion != "" {
+		SetAppVersion(cfg.ServiceVersion)
+	}
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		propagation.Baggage{},

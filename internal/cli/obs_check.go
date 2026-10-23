@@ -196,7 +196,7 @@ func runObsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) err
 	started := d.Now()
 	fields, err := o.out.Parsed(obsCheckSchema)
 	if err != nil {
-		return err
+		return obsFail(d, o.out.JSON, schemaObsCheck, err)
 	}
 	doc, err := obsCheck(ctx, d, env, o)
 	// The gate is evidence about the attempt, whatever its outcome; a check

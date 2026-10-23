@@ -727,7 +727,7 @@ const (
 
 	MaxReplayDays        = 30
 	MaxErrorsDays        = 365
-	MaxProductEventsDays = 365
+	MaxProductEventsDays = 400
 )
 
 // ShapeRetention is how long the platform keeps each browser-telemetry table

@@ -613,11 +613,18 @@ describe("track, setTelemetryUser and disableTelemetry through the SDK", () => {
 
     await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
 
-    expect(addAction).toHaveBeenCalledTimes(1);
-    expect(addAction).toHaveBeenCalledWith("signup_started", { plan: "pro" });
-    // The last user wins; the stale one is not replayed.
-    expect(setGlobalAttributes).toHaveBeenCalledTimes(1);
+    expect(addAction).toHaveBeenCalledTimes(2);
+    expect(addAction).toHaveBeenNthCalledWith(1, "signup_started", {
+      plan: "pro",
+    });
+    // The last user wins; the stale one is not replayed or identified.
+    expect(addAction).toHaveBeenNthCalledWith(
+      2,
+      "user_identified",
+      expect.objectContaining({ visitor_id: expect.any(String) }),
+    );
     expect(setGlobalAttributes).toHaveBeenCalledWith({ userId: "user-2" });
+    expect(setGlobalAttributes).not.toHaveBeenCalledWith({ userId: "user-1" });
 
     k.track("signup_completed");
     expect(addAction).toHaveBeenLastCalledWith("signup_completed", {});
@@ -663,7 +670,9 @@ describe("track, setTelemetryUser and disableTelemetry through the SDK", () => {
 
     expect(stopSessionRecorder).toHaveBeenCalledTimes(1);
     expect(addAction).not.toHaveBeenCalled();
-    expect(setGlobalAttributes).not.toHaveBeenCalled();
+    expect(setGlobalAttributes).not.toHaveBeenCalledWith(
+      expect.objectContaining({ userId: expect.anything() }),
+    );
     // The caller is told no SDK has it, so it can fall back to console.error.
     expect(reported).toBe(false);
     expect(recordException).not.toHaveBeenCalled();
@@ -698,5 +707,64 @@ describe("resolveIngestUrl", () => {
     expect(t.resolveIngestUrl(undefined, ORIGIN)).toBeNull();
     expect(t.resolveIngestUrl("  ", ORIGIN)).toBeNull();
     expect(t.resolveIngestUrl("OFF", ORIGIN)).toBeNull();
+  });
+});
+
+describe("app.client, visitor.id and user_identified", () => {
+  it("stamps app.client and visitor.id as global attributes at init", async () => {
+    stubDom();
+    const { t } = await load();
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      appClient: "landing",
+    });
+
+    expect(setGlobalAttributes).toHaveBeenCalledWith({
+      "app.client": "landing",
+      "visitor.id": expect.stringMatching(/^[A-Za-z0-9_-]{8,64}$/),
+    });
+  });
+
+  it("defaults app.client to web", async () => {
+    stubDom();
+    const { t } = await load();
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+
+    expect(setGlobalAttributes).toHaveBeenCalledWith(
+      expect.objectContaining({ "app.client": "web" }),
+    );
+  });
+
+  it("adopts rid and utm from the URL and reports them once per user", async () => {
+    const rid = "0b8f3c2e-6a1d-4f7e-9c55-2d1e8a7b4c90";
+    stubDom();
+    (
+      window as unknown as { location: Record<string, string> }
+    ).location.search = `?rid=${rid}&utm_source=news`;
+    const { t, k } = await load();
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+
+    expect(setGlobalAttributes).toHaveBeenCalledWith(
+      expect.objectContaining({ "visitor.id": rid }),
+    );
+
+    k.setTelemetryUser("user-1");
+    k.setTelemetryUser("user-1");
+    const identified = addAction.mock.calls.filter(
+      ([name]) => name === "user_identified",
+    );
+    expect(identified).toEqual([
+      ["user_identified", { visitor_id: rid, utm_source: "news" }],
+    ]);
+  });
+
+  it("does not identify on sign-out", async () => {
+    stubDom();
+    const { t, k } = await load();
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+
+    k.setTelemetryUser(null);
+    expect(addAction).not.toHaveBeenCalled();
   });
 });

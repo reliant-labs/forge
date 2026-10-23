@@ -2,7 +2,6 @@ package cli
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -1270,7 +1269,7 @@ func (r *deployReport) finish(err error, elapsed time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.doc.OK = err == nil
-	r.doc.ExitCode = deployJSONExitCode(err)
+	r.doc.ExitCode = exitCodeForError(err)
 	if err != nil {
 		r.doc.Error = err.Error()
 	}
@@ -1304,22 +1303,6 @@ func (r *deployReport) emit() error {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-// deployJSONExitCode is the process status an error produces — the SAME
-// resolution main() performs, so the reported code is the one the shell sees
-// rather than a guess that happens to agree most of the time.
-func deployJSONExitCode(err error) int {
-	if err == nil {
-		return 0
-	}
-	var coded interface{ ExitCode() int }
-	if errors.As(err, &coded) {
-		if code := coded.ExitCode(); code != 0 {
-			return code
-		}
-	}
-	return 1
-}
 
 // classifyDeployImage reads a rendered image reference and says how it is
 // bound. The digest form is authoritative: "@sha256:" in the reference means

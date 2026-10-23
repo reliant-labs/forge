@@ -38,7 +38,8 @@ The workload decides (`--workload`, default `api`):
 |---|---|---|
 | OnHost / OnCompose | **direct**: the workload's resolved `DATABASE_URL`, the same value `forge env exec` gives the process | whatever that URL names |
 | OnCluster, in an env declared `lifecycle = "local"` or `"ephemeral"` | **port-forward**: a pods/portforward stream through your kube context's API server (needs `pods/portforward` create, `endpointslices` list and `secrets` get on the two database Secrets in the env's namespace) to the env's ManagedDatabase (`<name>-ro` when it runs standbys, else `<name>-rw`) | `forge_ro` |
-| OnCluster in a real env, or OnHosted | not reachable from forge yet: exit 2 | — |
+| OnHosted | **control plane**: `AppDatabaseService.QueryDatabase` runs the same read-only core inside the platform (`<name>-ro` when there are replicas) and writes an audit row and an activity event, with your credential (under Reliant, the helper) | `forge_ro` |
+| OnCluster in a real env | not reachable from forge yet: exit 2 | — |
 
 `--database <name>` picks the ManagedDatabase when a cluster env declares several.
 
@@ -93,7 +94,7 @@ data_access = forge.DataAccess {db_query = "audited"}
 | `audited` | a person | `--confirm-env <env>` (the env name again) and `--reason "…"` (at most 500 characters). The default for every other env |
 | `deny` | nobody | — |
 
-The policy is recorded in the release shape. For a hosted env the control plane enforces it server-side and audits every call; a client flag cannot weaken it.
+The policy is recorded in the release shape. For a hosted env the control plane enforces the **recorded** one (not this checkout's KCL) and audits every call; a client flag cannot weaken it. On a hosted audited env it is people only (an org automation token is refused) and needs the `db:query` grant (owners and admins hold it); a machine token on an open env needs the `db:query` scope. One query per person per env at a time, 30 a minute.
 
 ## Output for agents
 
@@ -109,14 +110,15 @@ The policy is recorded in the release shape. For a hosted env the control plane 
 - `ok` and `exit_code` are computed from the same error the process exits with.
 - On failure `error` carries the message, and `reason` carries a stable subcode such as `multiple_statements` or `statement_timeout`.
 - Cells are JSON values. A bigint or numeric beyond 15 digits is a string, so no reader rounds it. Dates, uuids and arrays are Postgres's text. `json`/`jsonb` is inline JSON.
-- `scope.database` is present on the port-forward transport.
+- `scope.database` is present on the port-forward and control-plane transports. On the control-plane transport `scope.policy` is absent (the control plane applied the recorded one) and `audit` carries `id` (the audit_log row), `sql_sha256` and `replica` (`ro` or `rw`); the table footer names the audit id.
+- A hosted refusal keeps the control plane's `reason`: `confirmation_required` (pass `--confirm-env` and `--reason`), `credential_missing` (the env's `forge_ro` is not provisioned yet), `rate_limited`, `query_in_flight`, or the executor's subcode.
 - `release` is the release live in the env when the query ran (`version`, `promotion_id`, `promoted_at`, and `unsettled` when its rollout hadn't finished), read from the env's release ledger. It's absent when nothing was promoted yet; an unreadable ledger warns on stderr and never fails the query. `forge env releases at <env> <time>` answers the same question for any moment.
 
 | Exit | Meaning |
 |---|---|
 | 0 | rows returned |
 | 1 | the statement or the request is wrong: the guard, the read-only transaction, a SQL error, a permission error, the env's policy |
-| 2 | forge could not look: no database reachable, the tunnel, a timeout, a lost connection |
+| 2 | forge could not look: no database reachable, the tunnel, a timeout, a lost connection; hosted: the control plane unreachable, signed out, rate limited, or the read-only role not provisioned |
 
 Treat exit 2 as "not answered", never as "no rows".
 

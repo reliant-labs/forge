@@ -2,10 +2,11 @@ package cli
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/reliant-labs/forge/internal/exitcode"
 )
 
 // The ONE --json envelope every hosted deploy verb carries.
@@ -58,18 +59,7 @@ func (e *jsonEnvelope) stamp(err error) {
 // unclassified failure is a failure we DID observe. Defaulting the other way
 // would let an ordinary bug read as "could not look", which is the one
 // answer CI treats as retryable.
-func exitCodeForError(err error) int {
-	if err == nil {
-		return exitOK
-	}
-	var coded interface{ ExitCode() int }
-	if errors.As(err, &coded) {
-		if code := coded.ExitCode(); code != exitOK {
-			return code
-		}
-	}
-	return exitWrong
-}
+func exitCodeForError(err error) int { return exitcode.Of(err) }
 
 // emitJSONDocument writes one document to stdout, indented, per the house
 // convention every other --json command follows.

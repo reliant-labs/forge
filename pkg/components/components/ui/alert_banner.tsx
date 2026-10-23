@@ -10,8 +10,16 @@ type AlertVariant = "info" | "success" | "warning" | "error";
  * and a string prop forces the caller to rebuild the icon/variant/layout
  * scaffolding by hand to get one link into the sentence. A plain string still
  * satisfies ReactNode, so existing call sites are unaffected.
+ *
+ * Every other `<div>` attribute (`id`, `className`, `tabIndex`, `aria-*`,
+ * `data-*`) and a ref reach the root, as Card's and Input's do. A banner that
+ * owns its root is a banner a caller cannot name, focus or find: an error
+ * summary that must take focus when a submit fails, and say what failed, had
+ * to wrap this one in a second `role="alert"` box (two announcements) or
+ * rebuild it. `role` defaults to "alert"; pass `role="status"` for a banner
+ * that should not interrupt.
  */
-interface AlertBannerProps {
+interface AlertBannerProps extends Omit<React.HTMLAttributes<HTMLDivElement>, "title"> {
   variant?: AlertVariant;
   title?: React.ReactNode;
   message: React.ReactNode;
@@ -93,14 +101,10 @@ const icons: Record<AlertVariant, React.ReactNode> = {
   ),
 };
 
-export default function AlertBanner({
-  variant = "info",
-  title,
-  message,
-  dismissible,
-  onDismiss,
-  action,
-}: AlertBannerProps) {
+const AlertBanner = React.forwardRef<HTMLDivElement, AlertBannerProps>(function AlertBanner(
+  { variant = "info", title, message, dismissible, onDismiss, action, className, ...rest },
+  ref,
+) {
   const [visible, setVisible] = useState(true);
   const config = variantConfig[variant];
 
@@ -112,7 +116,14 @@ export default function AlertBanner({
   }
 
   return (
-    <div className={`rounded-lg border p-4 ${config.bg} ${config.border}`} role="alert">
+    <div
+      ref={ref}
+      role="alert"
+      {...rest}
+      className={["rounded-lg border p-4", config.bg, config.border, className ?? ""]
+        .filter(Boolean)
+        .join(" ")}
+    >
       <div className="flex items-start gap-3">
         <div className={`flex-shrink-0 ${config.icon}`}>{icons[variant]}</div>
         <div className="flex-1 min-w-0">
@@ -153,4 +164,6 @@ export default function AlertBanner({
       </div>
     </div>
   );
-}
+});
+
+export default AlertBanner;

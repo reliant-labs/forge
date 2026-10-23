@@ -416,8 +416,8 @@ const MinReadinessStepSec = 60
 // k8s.container.restarts gauges. It is a pure function of stored telemetry, so a
 // verdict derived from it needs no reader to have looked at the time.
 //
-// A pod counts as ready in a bucket when EVERY one of its containers' latest
-// readiness value in the bucket is 1. A bucket in which a workload delivered
+// A pod counts as ready in a bucket when EVERY sample of EVERY one of its
+// containers in the bucket is 1, so a dip inside a coarse bucket is not lost. A bucket in which a workload delivered
 // no readiness sample has no row: a gap is missing data, never a healthy bucket,
 // and the reader must treat it so. Restarts are the growth of the counter
 // between consecutive samples of a container (a decrease is a reset and counts
@@ -454,7 +454,7 @@ func (q Workloads) Readiness(stepSec int64) (Stmt, error) {
 		"  SELECT env, workload, bucket, toUInt64(count()) AS pods, toUInt64(countIf(pr = 1)) AS ready, toFloat64(0) AS restarts, '' AS exit FROM (\n" +
 		"    SELECT env, workload, pod, bucket, min(cv) AS pr FROM (\n" +
 		"      SELECT " + wlEnv + " AS env, " + wlWorkload + " AS workload, " + wlContainer + " AS container, " + wlPod + " AS pod,\n" +
-		"             toStartOfInterval(TimeUnix, toIntervalSecond(" + readyStep + ")) AS bucket, argMax(Value, TimeUnix) AS cv\n" +
+		"             toStartOfInterval(TimeUnix, toIntervalSecond(" + readyStep + ")) AS bucket, min(Value) AS cv\n" +
 		"      FROM " + table + "\n      " + where(readyConds) + "\n" +
 		"      GROUP BY env, workload, container, pod, bucket\n" +
 		"    ) GROUP BY env, workload, pod, bucket\n" +

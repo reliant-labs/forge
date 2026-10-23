@@ -73,6 +73,7 @@ import { trace } from "@opentelemetry/api";
 
 import {
   captureAttribution,
+  type AttributionTouch,
   detectAppClient,
   takeIdentifyProps,
 } from "./attribution.js";
@@ -167,6 +168,21 @@ export interface BrowserTelemetryConfig {
    * landing URL wins over it.
    */
   visitorIdStorageKey?: string;
+  /**
+   * Start visitor attribution with the SDK. Default true. Pass false when the
+   * visitor id needs a consent the page does not have yet (error telemetry for
+   * everyone, a visitor id only with analytics consent): no visitor id is
+   * created, read or stamped, nothing is captured from the URL, withAttribution
+   * returns URLs untouched and `user_identified` never fires, until the app
+   * calls enableAttribution().
+   */
+  attribution?: boolean;
+  /**
+   * `last` (default): a visit carrying `rid`/`utm_*` replaces the stored
+   * record. `first`: the first stored record is kept for good — a marketing
+   * site attributing acquisition to the campaign that first brought a visitor.
+   */
+  attributionTouch?: AttributionTouch;
 }
 
 /** The slice of the SDK this module calls. Typed here, not imported, so the module loads without it. */
@@ -179,6 +195,52 @@ interface HyperDXClient {
 }
 
 let started: Promise<boolean> | null = null;
+
+// Attribution state shared by start() and enableAttribution(): whichever runs
+// second does the stamping, so the call order does not matter.
+let attributionWanted = false;
+let attributionOptions: { search?: string } = {};
+let runningConfig: BrowserTelemetryConfig | null = null;
+let runningClient: HyperDXClient | null = null;
+
+function captureVisitor(config: BrowserTelemetryConfig): string {
+  return captureAttribution({
+    search: attributionOptions.search,
+    visitorIdStorageKey: config.visitorIdStorageKey,
+    touch: config.attributionTouch,
+  });
+}
+
+/**
+ * Turn on visitor attribution for a page that started telemetry with
+ * `attribution: false`, once the consent it needs is granted: from here on
+ * every event carries `visitor.id`, withAttribution stamps links and the first
+ * sign-in emits `user_identified`. Pass `search` (the landing URL's query
+ * string, kept from page load) when a client-side navigation may have dropped
+ * it since. Safe to call before init resolves, more than once, and on the
+ * server; a no-op after disableTelemetry().
+ */
+export function enableAttribution(options?: { search?: string }): void {
+  if (typeof window === "undefined" || isTelemetryDisabled()) {
+    return;
+  }
+  if (options?.search !== undefined) {
+    attributionOptions = { search: options.search };
+  }
+  if (attributionWanted) {
+    return;
+  }
+  attributionWanted = true;
+  if (runningClient && runningConfig) {
+    try {
+      runningClient.setGlobalAttributes?.({
+        "visitor.id": captureVisitor(runningConfig),
+      });
+    } catch {
+      // Telemetry must never break the app.
+    }
+  }
+}
 
 /**
  * initBrowserTelemetry starts the HyperDX browser SDK once per page load and
@@ -224,12 +286,20 @@ async function start(
     tapSdkInputs();
     // Every span carries where it came from and which visitor made it; the
     // product-event view reads these as app.client and visitor.id.
-    hdx.setGlobalAttributes?.({
+    // With attribution deferred (attribution: false), visitor.id joins them
+    // when enableAttribution() runs.
+    if (config.attribution !== false) {
+      attributionWanted = true;
+    }
+    const globals: Record<string, string> = {
       "app.client": detectAppClient(config.appClient),
-      "visitor.id": captureAttribution({
-        visitorIdStorageKey: config.visitorIdStorageKey,
-      }),
-    });
+    };
+    if (attributionWanted) {
+      globals["visitor.id"] = captureVisitor(config);
+    }
+    hdx.setGlobalAttributes?.(globals);
+    runningClient = hdx;
+    runningConfig = config;
     setExceptionReporter((error, attributes) => {
       if (alreadyRecorded(error)) {
         return;

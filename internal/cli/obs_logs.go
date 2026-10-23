@@ -134,7 +134,7 @@ func runObsLogs(ctx context.Context, d obsDeps, env, query string, o obsLogsOpts
 	}
 	fields, err := o.out.Parsed(obsLogsSchema)
 	if err != nil {
-		return err
+		return obsFail(d, o.out.JSON && !o.follow, schemaObsLogs, err)
 	}
 	fail := func(err error) error { return obsFail(d, o.out.JSON && !o.follow, schemaObsLogs, err) }
 	n, err := o.narrow(d.Now())

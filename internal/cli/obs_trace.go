@@ -128,7 +128,7 @@ func runObsTrace(ctx context.Context, d obsDeps, traceID, env string, o obsTrace
 	}
 	fields, err := o.out.Parsed(obsTraceSchema)
 	if err != nil {
-		return err
+		return obsFail(d, o.out.JSON, schemaObsTrace, err)
 	}
 	fail := func(err error) error { return obsFail(d, o.out.JSON, schemaObsTrace, err) }
 	n, err := o.narrow(d.Now())

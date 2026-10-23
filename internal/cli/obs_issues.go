@@ -164,7 +164,7 @@ func runObsIssues(ctx context.Context, d obsDeps, env string, o obsIssuesOpts) e
 	}
 	fields, err := o.out.Parsed(obsIssuesSchema)
 	if err != nil {
-		return err
+		return obsFail(d, o.out.JSON, schemaObsIssues, err)
 	}
 	fail := func(err error) error { return obsFail(d, o.out.JSON, schemaObsIssues, err) }
 	if err := o.validate(); err != nil {

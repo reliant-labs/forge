@@ -88,7 +88,7 @@ func runObsEndpoints(ctx context.Context, d obsDeps, env string, o obsEndpointsO
 	}
 	fields, err := o.out.Parsed(obsEndpointsSchema)
 	if err != nil {
-		return err
+		return obsFail(d, o.out.JSON, schemaObsEndpoints, err)
 	}
 	fail := func(err error) error { return obsFail(d, o.out.JSON, schemaObsEndpoints, err) }
 	n, err := o.narrow(d.Now())

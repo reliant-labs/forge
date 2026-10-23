@@ -183,7 +183,7 @@ func runObsStatus(ctx context.Context, d obsDeps, env string, o obsStatusOpts) e
 	}
 	fields, err := o.out.Parsed(obsStatusSchema)
 	if err != nil {
-		return err
+		return obsFail(d, o.out.JSON, schemaObsStatus, err)
 	}
 	fail := func(err error) error { return obsFail(d, o.out.JSON, schemaObsStatus, err) }
 	rng, err := resolveRange(d.Now(), o.since, o.from, o.to)

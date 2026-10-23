@@ -4,6 +4,7 @@ package components
 import (
 	"embed"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -109,7 +110,7 @@ var registry = []Entry{
 	{Name: "modal", Category: CategoryUI, Description: "Generic modal dialog with header, body, footer sections. Supports ESC close, overlay click, and multiple sizes.", Tags: []string{"ui", "modal", "dialog", "overlay", "admin", "crud"}},
 	{Name: "skeleton_loader", Category: CategoryUI, Description: "Configurable skeleton loading states for text, cards, table rows, list items, form fields, and custom shapes.", Tags: []string{"ui", "skeleton", "loading", "placeholder", "admin"}},
 	{Name: "alert_banner", Category: CategoryUI, Description: "Info, success, warning, and error banner for top of page. Dismissible with optional action button. title/message take composed ReactNode, so a banner can carry a link or emphasis inside the sentence.", Tags: []string{"ui", "alert", "banner", "notification", "admin"}},
-	{Name: "toggle_switch", Category: CategoryUI, Description: "Toggle/switch input with label, description, disabled state, and multiple sizes.", Tags: []string{"ui", "toggle", "switch", "input", "form", "admin"}},
+	{Name: "toggle_switch", Category: CategoryUI, Description: "On/off switch (role=switch) with an optional visible label (aria-labelledby) and description (aria-describedby), an ariaLabel for a switch named elsewhere, id/FormField binding for an external label, className, disabled state, and three sizes.", Tags: []string{"ui", "toggle", "switch", "input", "form", "admin"}},
 	{Name: "activity_feed", Category: CategoryUI, Description: "Timeline of recent activity/events with user avatars, relative timestamps, and connecting lines.", Tags: []string{"ui", "activity", "feed", "timeline", "admin", "dashboard"}},
 	{Name: "metric_card", Category: CategoryUI, Description: "Single metric display with trend indicator, sparkline chart, and optional link.", Tags: []string{"ui", "metric", "stat", "dashboard", "analytics", "admin"}},
 
@@ -117,6 +118,7 @@ var registry = []Entry{
 	{Name: "link", Category: CategoryUI, Description: "Navigation primitive other components route through (PageHeader actions, RowActionsMenu hrefs). Framework-neutral anchor by default; forge scaffolds overwrite it with a next/link or tanstack-router aware version so internal hrefs get client routing + basePath handling. External http(s)/mailto/tel hrefs always render a plain <a>.", Tags: []string{"ui", "primitive", "link", "navigation", "routing"}},
 	{Name: "button", Category: CategoryUI, Description: "Generic button primitive with primary/secondary/outline/ghost/danger variants, sizes, and loading state.", Tags: []string{"ui", "primitive", "button", "form", "action"}},
 	{Name: "input", Category: CategoryUI, Description: "Generic text input primitive with sizes, invalid state, and forwarded refs. Pair with the Label primitive.", Tags: []string{"ui", "primitive", "input", "form"}},
+	{Name: "textarea", Category: CategoryUI, Description: "Generic multi-line text primitive, Input's sibling: same border, focus ring, invalid and disabled styling, three sizes, resize control, forwarded refs and FormField auto-binding.", Tags: []string{"ui", "primitive", "textarea", "input", "form", "multiline"}},
 	{Name: "label", Category: CategoryUI, Description: "Form field label primitive with optional required-asterisk affordance.", Tags: []string{"ui", "primitive", "label", "form"}},
 	{Name: "form", Category: CategoryUI, Description: "Form structural primitives — Form root plus FormField, FormError, FormActions for consistent layout and error display.", Tags: []string{"ui", "primitive", "form", "validation"}},
 	{Name: "form_field_context", Category: CategoryUI, Description: "FormFieldContext — the id a FormField shares with the Label and control inside it. Imported by form, label, input and select; read it to make a custom control auto-bind the same way.", Tags: []string{"ui", "primitive", "form", "context"}},
@@ -254,6 +256,43 @@ func (l *Library) Get(name string) (string, error) {
 	}
 
 	return string(content), nil
+}
+
+// siblingImport matches a component's import of another library component
+// installed beside it: `from "./form_field_context"`.
+var siblingImport = regexp.MustCompile(`from\s+["']\./([a-z0-9_]+)["']`)
+
+// Dependencies returns every library component that name imports, directly
+// or through another dependency, sorted. Components install into one flat
+// directory, so a `./x` import is a sibling file the install must also write:
+// installing `input` alone into an empty directory otherwise leaves an import
+// of `./form_field_context` that does not resolve.
+func (l *Library) Dependencies(name string) ([]string, error) {
+	seen := map[string]bool{name: true}
+	queue := []string{name}
+	var deps []string
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		src, err := l.Get(cur)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range siblingImport.FindAllStringSubmatch(src, -1) {
+			dep := m[1]
+			if seen[dep] {
+				continue
+			}
+			seen[dep] = true
+			if _, ok := byName[dep]; !ok {
+				continue // a sibling the project supplies, not the library
+			}
+			deps = append(deps, dep)
+			queue = append(queue, dep)
+		}
+	}
+	sort.Strings(deps)
+	return deps, nil
 }
 
 // GetEntry retrieves the metadata entry for a component by name.

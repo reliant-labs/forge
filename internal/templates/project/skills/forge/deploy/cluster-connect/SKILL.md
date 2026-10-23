@@ -152,6 +152,46 @@ forge cluster connect prod-us --context ... --env prod \
   replaces the policy at once but leaves old delivery Roles for you to prune.
   `disconnect` removes all of it. `--dry-run` prints every object.
 
+## The secret-store issuer: registered at connect, refreshed by re-running it
+
+A cluster that reads store-backed Secrets (`forge.StoreSource`) logs in to the
+secret store with a token its own API server signed. The store verifies it
+against **that cluster's keys**, so connect registers the cluster's
+service-account issuer with the control plane (secrets design §2.2). Nothing is
+stored in your cluster and the store never calls back into it.
+
+```bash
+forge cluster connect prod-us --context ... --env prod                    # --issuer auto
+forge cluster connect k3d-dev --context k3d-dev --env dev --issuer upload  # a cluster the store cannot reach
+```
+
+| `--issuer` | What happens |
+|---|---|
+| `auto` (default) | `discover` on a GKE context, `upload` elsewhere. If the issuer cannot be read, or the control plane declines it, the cluster **still connects for deploys** and connect prints why nothing was registered. |
+| `discover` | The store fetches `<issuer>/.well-known/openid-configuration` itself. For an issuer reachable from the internet (GKE's is). |
+| `upload` | forge reads `/.well-known/openid-configuration` and `/openid/v1/jwks` through `--context` and sends the key set. For a private cluster or k3d. A failure is an error, before anything is written. |
+| `skip` | Leaves the registration (and the grant) as it is. |
+| `withdraw` | Removes it; the store stops trusting the cluster. |
+
+- **Public keys only.** A key set holding a private or symmetric member is never
+  sent (the control plane refuses one too).
+- **An upload is a snapshot; re-run connect to follow a key rotation.** The same
+  command re-reads the set and replaces the registration; connect says whether
+  the set is unchanged or REPLACED. A cluster nobody re-connects keeps trusting
+  its old keys, and a login with a new key fails until you do.
+- **The grant gains `get` on `/openid/v1/jwks`** (a non-resource URL, so it sits in
+  the binding's ClusterRole even at namespace scope), shown by `--dry-run`.
+- **The store's id for the cluster is the control plane's to assign** and is
+  unique across all organizations: the first to register a name owns it. Connect
+  prints it (`store id`, and the auth mount `jwt-<id>`) and keeps it in
+  `.forge/state/cluster-issuer-<name>.json`. If it is not the name you gave,
+  use it as `connected_cluster`: a SecretStore renders its mount and audience from
+  that name.
+- **k3s / k3d** signs with `https://kubernetes.default.svc.cluster.local`, which
+  the control plane refuses (a `.local` host). Start the API server with
+  `--kube-apiserver-arg=service-account-issuer=https://kubernetes.default.svc`
+  (k3d: `--k3s-arg "--kube-apiserver-arg=service-account-issuer=https://kubernetes.default.svc@server:*"`).
+
 ## Binding an environment to it
 
 Registering a cluster does not point anything at it. An environment names it:
@@ -185,7 +225,8 @@ plane never dials it.
 forge cluster disconnect prod-us --env prod --context gke_acme_us-central1_prod
 ```
 
-Two halves, in this order: the control plane revokes the credential first, then
+Two halves, in this order: the control plane revokes the credential first (its
+registered issuer goes with the cluster), then
 forge deletes everything it created for this cluster, **found by label** (every
 binding's Roles, ClusterRoles and bindings, each token ServiceAccount and
 Secret, and the delivery policy). A token revoked server-side is already

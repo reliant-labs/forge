@@ -220,6 +220,11 @@ func permissions(body map[string]any) []string {
 	for _, r := range rules {
 		rule, _ := r.(map[string]any)
 		names := strings.Join(stringsOf(rule["resourceNames"]), ",")
+		for _, u := range stringsOf(rule["nonResourceURLs"]) {
+			for _, v := range stringsOf(rule["verbs"]) {
+				out = append(out, where+": "+v+" url "+u)
+			}
+		}
 		for _, g := range stringsOf(rule["apiGroups"]) {
 			if g == "" {
 				g = "core"
@@ -278,6 +283,9 @@ func yamlLines(body map[string]any) []string {
 		rule, _ := r.(map[string]any)
 		verbs := stringsOf(rule["verbs"])
 		sort.Strings(verbs)
+		for _, u := range stringsOf(rule["nonResourceURLs"]) {
+			rules = append(rules, fmt.Sprintf("rule     url %s: %s", u, strings.Join(verbs, ",")))
+		}
 		names := stringsOf(rule["resourceNames"])
 		sort.Strings(names)
 		for _, g := range stringsOf(rule["apiGroups"]) {

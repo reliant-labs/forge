@@ -91,6 +91,10 @@ type connectRBAC struct {
 	// DeliverySubject is an optional dedicated delivery identity, bound
 	// alongside the connect identity.
 	DeliverySubject *deliverySubject
+	// IssuerJWKS adds `get` on the cluster's JWKS path, for the control plane to
+	// re-read the signing keys it registered (a non-resource URL, so it can only
+	// live in a ClusterRole).
+	IssuerJWKS bool
 }
 
 func (r connectRBAC) bindingName() string { return connectBindingName(r.ClusterName, r.Env) }
@@ -135,8 +139,13 @@ func (o rbacObject) yaml() string {
 	return string(b)
 }
 
+// jwksRule is the one non-resource rule a binding may hold.
+func jwksRule() map[string]any {
+	return map[string]any{"nonResourceURLs": []any{oidcJWKSPath}, "verbs": []any{"get"}}
+}
+
 func rulesBody(rules []ruleSpec) []any {
-	out := make([]any, 0, len(rules))
+	out := make([]any, 0, len(rules)+1)
 	for _, r := range rules {
 		rule := map[string]any{
 			"apiGroups": []any{r.Ref.Group},
@@ -197,9 +206,17 @@ func (r connectRBAC) binding(kind, namespace, roleKind string) rbacObject {
 func (r connectRBAC) grantObjects() []rbacObject {
 	name := r.bindingName()
 	var out []rbacObject
+	// clusterRules wraps a ClusterRole's rules, adding the JWKS read when asked.
+	clusterRules := func(rules []ruleSpec) map[string]any {
+		body := rulesBody(rules)
+		if r.IssuerJWKS {
+			body = append(body, jwksRule())
+		}
+		return map[string]any{"rules": body}
+	}
 	if r.Plan.Cluster {
 		out = append(out,
-			r.object("ClusterRole", "", name, map[string]any{"rules": rulesBody(r.Plan.ClusterRules)}),
+			r.object("ClusterRole", "", name, clusterRules(r.Plan.ClusterRules)),
 			r.binding("ClusterRoleBinding", "", "ClusterRole"))
 		return sortObjects(out)
 	}
@@ -217,14 +234,19 @@ func (r connectRBAC) grantObjects() []rbacObject {
 			r.object("Role", ns, name, map[string]any{"rules": rulesBody(rules)}),
 			r.binding("RoleBinding", ns, "Role"))
 	}
-	if len(r.Plan.PinnedNamespaces) > 0 {
+	if len(r.Plan.PinnedNamespaces) > 0 || r.IssuerJWKS {
 		// Namespace is cluster-scoped. get/update/patch pinned by name lets
 		// Flux server-side-apply the Namespace object the render carries;
 		// create cannot be pinned, so the namespace must already exist (connect
 		// checks), and delete is withheld so a prune can never remove one.
-		rules := []ruleSpec{{Ref: refNamespaces, Names: r.Plan.PinnedNamespaces, Verbs: []string{"get", "patch", "update"}}}
+		// The same ClusterRole carries the JWKS read: a non-resource URL has no
+		// namespace to be granted in.
+		var rules []ruleSpec
+		if len(r.Plan.PinnedNamespaces) > 0 {
+			rules = []ruleSpec{{Ref: refNamespaces, Names: r.Plan.PinnedNamespaces, Verbs: []string{"get", "patch", "update"}}}
+		}
 		out = append(out,
-			r.object("ClusterRole", "", name, map[string]any{"rules": rulesBody(rules)}),
+			r.object("ClusterRole", "", name, clusterRules(rules)),
 			r.binding("ClusterRoleBinding", "", "ClusterRole"))
 	}
 	return sortObjects(out)

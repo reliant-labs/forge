@@ -769,7 +769,7 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 	// Cluster entity in hand, so it projects only the ports fragment. A
 	// project that declares CIDRs declares them on a forge.Cluster, which is
 	// the declarative `forge env up` path (cluster_phase.go).
-	effective, cleanupCfg, err := mergeK3dConfig(configPath, k3dConfigOverlay{HostPorts: ingressOn})
+	effective, cleanupCfg, err := mergeK3dConfig(configPath, k3dConfigOverlay{HostPorts: ingressOn, PublicIssuer: true})
 	if err != nil {
 		return err
 	}

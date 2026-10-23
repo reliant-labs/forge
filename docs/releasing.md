@@ -26,7 +26,13 @@ What it does, in order:
 1. validates the version shape, a **clean tree**, and that the tag does not
    already exist;
 2. confirms against the module proxy that the version was never published at a
-   **different** commit (see below);
+   **different** commit (see below), then requires the latest full `ci.yml` run
+   at the exact source `HEAD` to have succeeded. PR/merge-queue runs do not
+   count: `Test`, `Test (internal/cli)`, and
+   `Test (-short whole tier, then guards)` must each succeed, even if `CI gate`
+   waived an existing red. Missing, queued, failed, or unreadable proof blocks
+   the release before files change; wait for main or dispatch full CI at that
+   commit. `gh` authentication is required for GitHub publication;
 3. writes the release's section of `CHANGELOG.md` (see below) and formats it
    with the prettier the pre-commit hook pins;
 4. syncs `VERSION` and `internal/buildinfo/VERSION` — which must stay

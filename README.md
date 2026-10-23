@@ -25,7 +25,8 @@ one. A landing page, a marketing or docs site, an SPA or a PWA is a project with
 one static frontend and no services. It gets the same environments, build-once
 releases and promotion, a dev loop with no database or cluster, custom domains,
 per-env config without a rebuild, and hosted static hosting that owns the bucket
-and the CDN — one static site per org is free. An existing Vite or Next.js app
+and the CDN — one static site per org is free (each environment's site
+counts). An existing Vite or Next.js app
 is adopted in place with `forge project new --in-place --kind site`
 (`forge skill load deploy/static-site`). For a PWA, forge builds, hosts and
 ships it; the service worker and manifest are yours. When the site grows a

@@ -16,7 +16,8 @@ docs site, SPA or PWA — is a **static site**, and it is a complete forge
 project, not a stripped-down one. It gets dev/staging/prod envs from day 0,
 `forge env up dev` with no database or cluster, build-once releases promoted by
 digest, hosted static hosting (the platform owns the bucket, the CDN and the
-hostname; one static site per org is free), custom domains, per-env runtime
+hostname; one static site per org is free, and each env's site counts), custom
+domains, per-env runtime
 config without a rebuild, and the component library. Adopt an existing Vite or
 Next.js app in place with `forge project new --in-place --kind site`. Either
 way, **load `deploy/static-site` now** — it is the whole path, and the service

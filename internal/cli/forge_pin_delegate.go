@@ -31,6 +31,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -170,6 +171,20 @@ func delegateToPinned(ctx context.Context, w io.Writer, projectRoot string, t de
 		return false, err
 	}
 	return true, nil
+}
+
+// pinnedRunLine is the command that runs args under the forge the project
+// pins, for a message to hand back. The project's own .tools/bin/forge is
+// named when it reports the pin (nothing to download or build); otherwise the
+// `go run` form, which fetches and builds the pin into Go's cache.
+func pinnedRunLine(projectRoot, pin string, args []string) string {
+	if local, ok := pinDelegateResolver(io.Discard).LocalPinned(context.Background(), projectRoot, pin); ok {
+		if abs, err := filepath.Abs(local); err == nil {
+			local = abs
+		}
+		return forgecompat.RunBinaryCommand(local, args)
+	}
+	return forgecompat.RunPinnedCommand(pin, args)
 }
 
 // delegationWanted reports whether the command at rel should be handed over:

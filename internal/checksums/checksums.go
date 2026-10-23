@@ -655,6 +655,31 @@ type WriteOutcome struct {
 // write changed the file's bytes as well as whether it landed — what a
 // progress line needs to say "updated" only when something was.
 func WriteGeneratedFileOutcome(root, relPath string, content []byte, cs *FileChecksums, force bool) (WriteOutcome, error) {
+	return writeGeneratedFileOutcome(root, relPath, content, cs, force, false)
+}
+
+// WriteDerivedFileOutcome is WriteGeneratedFileOutcome for a file that is a
+// pure function of a hand-written source sitting beside it (a contract
+// package's mock_gen.go and decorator, rendered from contract.go).
+//
+// The non-destructive heal default exists because a deliberate edit can be
+// byte-identical to an older render of a TEMPLATE, and forge cannot tell
+// the two apart. For a source-derived file that ambiguity does not exist in
+// the way the default assumes: after the author edits the source, the
+// previous render is stale by construction, and "an older render, left
+// untouched" is exactly the state that keeps a stale mock — which no longer
+// compiles against the edited contract — from being regenerated, with
+// validation then blaming the generated file. So a pristine older render is
+// refreshed here without --heal or a --force scope, and without the heal
+// notice (the source changed; nothing was reverted).
+//
+// A file whose bytes were EDITED after forge stamped it is still a hand-edit
+// and is skipped unless force applies, exactly as for any Tier-1 file.
+func WriteDerivedFileOutcome(root, relPath string, content []byte, cs *FileChecksums, force bool) (WriteOutcome, error) {
+	return writeGeneratedFileOutcome(root, relPath, content, cs, force, true)
+}
+
+func writeGeneratedFileOutcome(root, relPath string, content []byte, cs *FileChecksums, force, derived bool) (WriteOutcome, error) {
 	relPath = slashKey(relPath)
 
 	// Record the Tier-1 emit TARGET before any disown-skip below: forge
@@ -725,11 +750,11 @@ func WriteGeneratedFileOutcome(root, relPath string, content []byte, cs *FileChe
 				// overwrite: skip and say so loudly via NoHealSkipFn.
 				// Healing (overwrite) requires explicit opt-in — AutoHeal
 				// (--heal) for the whole tree, or this file's --force scope.
-				if !AutoHeal && !forceApplies(relPath, force) {
+				if !derived && !AutoHeal && !forceApplies(relPath, force) {
 					noticeHealOnce(relPath)
 					return WriteOutcome{}, nil
 				}
-				if _, pending := pendingHeals[relPath]; !pending {
+				if _, pending := pendingHeals[relPath]; !pending && !derived {
 					pendingHeals[relPath] = pendingHeal{oldBody: oldBody, trigger: healTriggerFor(relPath, force)}
 				}
 			}
@@ -750,11 +775,11 @@ func WriteGeneratedFileOutcome(root, relPath string, content []byte, cs *FileChe
 				// clean-file analogue of Pristine-but-stale, so the same
 				// non-destructive default applies: skip loudly unless the
 				// user opted in via --heal or this file's --force scope.
-				if !AutoHeal && !forceApplies(relPath, force) {
+				if !derived && !AutoHeal && !forceApplies(relPath, force) {
 					noticeHealOnce(relPath)
 					return WriteOutcome{}, nil
 				}
-				if _, pending := pendingHeals[relPath]; !pending {
+				if _, pending := pendingHeals[relPath]; !pending && !derived {
 					pendingHeals[relPath] = pendingHeal{oldBody: embedded, trigger: healTriggerFor(relPath, force)}
 				}
 			case !forceApplies(relPath, force):

@@ -81,17 +81,29 @@ func samePath(a, b string) bool {
 // Field 22 is starttime in clock ticks since boot; comm (field 2) may contain
 // spaces and parens, so fields are counted from the LAST ')'.
 func linuxStartTime(stat string, bootTime time.Time, ticksPerSec int64) (time.Time, bool) {
-	i := strings.LastIndexByte(stat, ')')
-	if i < 0 || ticksPerSec <= 0 {
-		return time.Time{}, false
-	}
-	fields := strings.Fields(stat[i+1:])
-	if len(fields) < 20 {
-		return time.Time{}, false
-	}
-	ticks, err := strconv.ParseInt(fields[19], 10, 64)
-	if err != nil || ticks < 0 {
+	ticks, ok := linuxStartTicks(stat)
+	if !ok || ticksPerSec <= 0 {
 		return time.Time{}, false
 	}
 	return bootTime.Add(time.Duration(ticks) * time.Second / time.Duration(ticksPerSec)), true
+}
+
+// linuxStartTicks is field 22 of /proc/<pid>/stat: the process's start time in
+// clock ticks since boot. Unlike a wall-clock start time it never moves — btime
+// shifts whenever the wall clock is stepped — so it identifies a process for as
+// long as the kernel runs.
+func linuxStartTicks(stat string) (int64, bool) {
+	i := strings.LastIndexByte(stat, ')')
+	if i < 0 {
+		return 0, false
+	}
+	fields := strings.Fields(stat[i+1:])
+	if len(fields) < 20 {
+		return 0, false
+	}
+	ticks, err := strconv.ParseInt(fields[19], 10, 64)
+	if err != nil || ticks < 0 {
+		return 0, false
+	}
+	return ticks, true
 }

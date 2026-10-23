@@ -120,19 +120,31 @@ func exeName() string {
 	return "forge"
 }
 
+// LocalPinned reports the project's own .tools/bin/forge when it exists and
+// reports the pinned version. It runs the binary (`forge version`), never
+// builds anything.
+func (r *Resolver) LocalPinned(ctx context.Context, projectRoot, pin string) (string, bool) {
+	if r.Version == nil || r.Same == nil {
+		return "", false
+	}
+	local := filepath.Join(projectRoot, ".tools", "bin", exeName())
+	if st, err := os.Stat(local); err != nil || st.IsDir() {
+		return "", false
+	}
+	if got, err := r.Version(ctx, local); err != nil || !r.Same(pin, got) {
+		return "", false
+	}
+	return local, true
+}
+
 // Pinned returns the forge named by pin (forge.yaml's forge_version), for the
 // project at projectRoot.
 func (r *Resolver) Pinned(ctx context.Context, projectRoot, pin string) (Result, error) {
 	if strings.TrimSpace(pin) == "" {
 		return Result{}, errors.New("forge.yaml pins no forge_version")
 	}
-	if r.Version != nil && r.Same != nil {
-		local := filepath.Join(projectRoot, ".tools", "bin", exeName())
-		if st, err := os.Stat(local); err == nil && !st.IsDir() {
-			if got, err := r.Version(ctx, local); err == nil && r.Same(pin, got) {
-				return Result{Path: local, Source: "the project's .tools/bin/forge"}, nil
-			}
-		}
+	if local, ok := r.LocalPinned(ctx, projectRoot, pin); ok {
+		return Result{Path: local, Source: "the project's .tools/bin/forge"}, nil
 	}
 
 	dir, err := r.cacheDir()

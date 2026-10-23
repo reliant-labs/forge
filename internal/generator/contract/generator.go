@@ -841,7 +841,7 @@ func writeMock(cf *File, dir string, opts Options) error {
 		if relErr != nil {
 			return fmt.Errorf("compute project-relative mock path: %w", relErr)
 		}
-		if _, werr := checksums.WriteGeneratedFile(opts.ProjectRoot, rel, formatted, opts.Checksums, true); werr != nil {
+		if _, werr := checksums.WriteDerivedFileOutcome(opts.ProjectRoot, rel, formatted, opts.Checksums, true); werr != nil {
 			return fmt.Errorf("write %s: %w", rel, werr)
 		}
 		return nil

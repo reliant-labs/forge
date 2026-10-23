@@ -470,6 +470,15 @@ type fakeConnectCaller struct {
 	requests map[string]map[string]any
 	// noBindingIdentity makes ConnectCluster return no per-binding identity.
 	noBindingIdentity bool
+	// storeClusterID is the id the store assigns an uploaded issuer; the cluster
+	// name when empty.
+	storeClusterID string
+	// refuseIssuer makes ConnectCluster refuse a request that carries an issuer,
+	// the way the control plane does (it checks before it connects anything).
+	refuseIssuer error
+	// connects counts ConnectCluster calls; issuers records each request's issuer.
+	connects int
+	issuers  []any
 }
 
 func (f *fakeConnectCaller) Call(_ context.Context, procedure string, req, out any) error {
@@ -487,9 +496,31 @@ func (f *fakeConnectCaller) Call(_ context.Context, procedure string, req, out a
 			r.Clusters = f.clusters
 		}
 	case procConnectCluster:
+		f.connects++
+		m, _ := req.(map[string]any)
+		iss, hasIssuer := m["issuer"]
+		f.issuers = append(f.issuers, iss)
+		if hasIssuer && f.refuseIssuer != nil {
+			return f.refuseIssuer
+		}
 		if r, ok := out.(*wireConnectClusterResponse); ok {
 			name, _ := f.requests[procedure]["name"].(string)
 			r.Cluster = wireConnectedCluster{ID: "cl_new", Name: name}
+			if reg, ok := iss.(map[string]any); ok && reg["issuer"] != nil {
+				id := f.storeClusterID
+				if id == "" {
+					id = name
+				}
+				w := &wireClusterIssuer{StoreClusterID: id, Issuer: reg["issuer"].(string), Discover: reg["discover"] == true}
+				if j, ok := reg["jwks"].(string); ok {
+					var set struct {
+						Keys []json.RawMessage `json:"keys"`
+					}
+					_ = json.Unmarshal([]byte(j), &set)
+					w.KeyCount = int32(len(set.Keys))
+				}
+				r.Cluster.Issuer = w
+			}
 			if !f.noBindingIdentity {
 				r.BindingIdentity = wireBindingIdentity{GCPServiceAccount: "fc-prod-ab12@acme.iam.gserviceaccount.com"}
 			}

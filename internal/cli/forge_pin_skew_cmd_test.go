@@ -216,7 +216,7 @@ func TestForgePinSkew_WarningGivesTheRefusalsRemedy(t *testing.T) {
 		t.Errorf("the warning does not give the go run form %q:\n%s", want, warn.String())
 	}
 
-	embedded := pinSkewWarning(skewTestPin, skewTestBinary,
+	embedded := pinSkewWarning(".", skewTestPin, skewTestBinary,
 		buildinfo.Build{Embedded: true, Embedder: "github.com/reliant-labs/reliant"})
 	for _, want := range []string{
 		"go run github.com/reliant-labs/forge/cmd/forge@" + skewTestPin,

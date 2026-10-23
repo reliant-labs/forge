@@ -1436,6 +1436,21 @@ func isForgeOwnedFile(path string) bool {
 	return checksums.Verify(content) != checksums.NoMarker
 }
 
+// contractDerivedSource names the hand-written file a contract package's
+// generated artifact is rendered from, or "" when file is not one. The
+// decision is the file's name: these four are exactly what contract codegen
+// owns in a package directory (generator/contract: retirableArtifacts), and
+// helpers_gen_test.go is the harness rendered from the same package's Deps.
+func contractDerivedSource(file string) string {
+	switch filepath.Base(file) {
+	case "mock_gen.go", "middleware_gen.go", "tracing_gen.go", "metrics_gen.go":
+		return "contract.go (or deps.go)"
+	case "helpers_gen_test.go":
+		return "the Deps struct in service.go"
+	}
+	return ""
+}
+
 // goBuildValidateFixHint inspects the `go build ./...` stderr captured
 // by runGoBuildValidate and returns the most-actionable single-line
 // remediation tip for the failure pattern seen.
@@ -1495,6 +1510,12 @@ func goBuildValidateFixHint(errOutput string, originOf func(rel string) goSource
 		}
 		switch origin {
 		case originGenerated:
+			if src := contractDerivedSource(file); src != "" {
+				return file + " is generated from " + src + " beside it and forge rewrites it on every 'forge generate'; " +
+					"do not edit it. A compile error in it means this run did not rewrite it (it is disowned, or its bytes " +
+					"were edited after forge wrote them — 'forge project audit' names which) or " + src + " no longer " +
+					"parses the way the rest of the package expects. Fix that and re-run 'forge generate'; the file follows"
+			}
 			return file + " is generated — do not edit it. Fix what it was generated from (proto, migrations, " +
 				"or the hand-written code it references) and re-run 'forge generate'; if those are correct, " +
 				"this is a forge bug worth reporting"

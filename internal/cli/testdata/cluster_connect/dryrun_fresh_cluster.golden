@@ -3,6 +3,7 @@
   address      https://34.1.2.3
   cloudCluster projects/acme/locations/us-central1/clusters/prod
   caPem        9 bytes, read from context gke_acme_us-central1_prod
+  issuer       none sent: not read: --live-from reviews offline
   selector     app.kubernetes.io/managed-by=forge,forge.dev/connected-cluster=prod-us,forge.dev/binding-env=prod
 
 Grant diff  forge-connect-prod-us-prod  on context gke_acme_us-central1_prod
@@ -20,11 +21,12 @@ live       capture <live>
       + rule     rbac.authorization.k8s.io/clusterroles: bind,create,delete,escalate,get,list,patch,update,watch
       + rule     rbac.authorization.k8s.io/rolebindings: create,delete,get,list,patch,update,watch
       + rule     rbac.authorization.k8s.io/roles: bind,escalate
+      + rule     url /openid/v1/jwks: get
 + ClusterRoleBinding forge-connect-prod-us-prod  new
       + roleRef  ClusterRole/forge-connect-prod-us-prod
       + subject  User fc-prod-ab12@acme.iam.gserviceaccount.com
 
-newly granted permissions (52):
+newly granted permissions (53):
   cluster: bind rbac.authorization.k8s.io/clusterroles
   cluster: bind rbac.authorization.k8s.io/roles
   cluster: create apps/deployments
@@ -49,6 +51,7 @@ newly granted permissions (52):
   cluster: get core/services
   cluster: get rbac.authorization.k8s.io/clusterroles
   cluster: get rbac.authorization.k8s.io/rolebindings
+  cluster: get url /openid/v1/jwks
   cluster: list apps/deployments
   cluster: list apps/replicasets
   cluster: list core/configmaps
@@ -192,6 +195,10 @@ unexpected kind is Forbidden, but that is a tripwire, not a boundary. Prefer --a
       verbs:
       - bind
       - escalate
+    - nonResourceURLs:
+      - /openid/v1/jwks
+      verbs:
+      - get
     ---
     apiVersion: rbac.authorization.k8s.io/v1
     kind: ClusterRoleBinding

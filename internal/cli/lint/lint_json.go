@@ -979,10 +979,35 @@ func parseDigitsLint(s string) int {
 // It runs the same never-fix invocation as text mode (golangciGateArgs):
 // under `forge lint --fix --quiet` / `--scope` this lane used to pass --fix
 // on, applying the staticcheck/gocritic rewrites #1041 took out of the text
-// driver. A golangci-lint that cannot analyze the module gates as one
+// driver. Files behind a project-defined build tag get a pass of their own
+// (golangci_build_tags.go). A golangci-lint that cannot analyze the module gates as one
 // finding, the runbook.
 func collectGolangciLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
-	out, err := rc.execGolangci(golangciGateArgs(rc))
+	fs, gated := golangciPass(rc, golangciGateArgs(rc))
+	if len(fs) > 0 && fs[0].Rule == ruleGolangciUnavailable {
+		return fs, gated
+	}
+	// One more pass per build tag that gates files in the tree, over the
+	// packages holding them (golangci_build_tags.go).
+	inConfig := map[string]bool{}
+	configTags := golangciConfigBuildTags(rc.moduleDir())
+	for _, t := range configTags {
+		inConfig[t] = true
+	}
+	for _, set := range scopeBuildTags(discoverBuildTags(rc.moduleDir()), rc.goPackages()) {
+		if inConfig[set.tag] {
+			continue
+		}
+		tags := strings.Join(append(append([]string{}, configTags...), set.tag), ",")
+		more, g := golangciPass(rc, golangciRunArgs([]string{"--build-tags=" + tags}, set.dirs))
+		fs, gated = mergeFindings(fs, more), gated || g
+	}
+	return fs, gated
+}
+
+// golangciPass is one golangci-lint run: its findings, and whether it gates.
+func golangciPass(rc *lintRunCtx, args []string) ([]lintJSONFinding, bool) {
+	out, err := rc.execGolangci(args)
 	if err != nil {
 		return []lintJSONFinding{golangciUnresolvedFinding(err, ruleGolangciUnavailable)}, false
 	}
@@ -994,6 +1019,23 @@ func collectGolangciLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
 		return fs, true
 	}
 	return nil, false
+}
+
+// mergeFindings appends the findings of more that base does not already hold:
+// a package with both default and tagged files is linted by two passes, and a
+// finding in a default file would otherwise print twice.
+func mergeFindings(base, more []lintJSONFinding) []lintJSONFinding {
+	seen := make(map[lintJSONFinding]bool, len(base))
+	for _, f := range base {
+		seen[f] = true
+	}
+	for _, f := range more {
+		if !seen[f] {
+			seen[f] = true
+			base = append(base, f)
+		}
+	}
+	return base
 }
 
 // Rule ids contributed by the typed-config guardrail lane.

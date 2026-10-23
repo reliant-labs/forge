@@ -22,7 +22,7 @@ func TestHandlesRunTheProductionDriver(t *testing.T) {
 		t.Skip("boots real postgres; skipped under -short")
 	}
 	key := uniqueKey(t)
-	build := func(db *sql.DB) error {
+	build := func(db *sql.DB, _ string) error {
 		if !dbtrace.IsTraced(db) {
 			return fmt.Errorf("template build handle driver = %T, want production's: pgx under dbtrace", db.Driver())
 		}
@@ -30,8 +30,11 @@ func TestHandlesRunTheProductionDriver(t *testing.T) {
 		return err
 	}
 	handles := map[string]func() (*sql.DB, func(), error){
-		"New":             pgtest.New,
-		"NewFromTemplate": func() (*sql.DB, func(), error) { return pgtest.NewFromTemplate(key, build) },
+		"New": pgtest.New,
+		"NewFromTemplate": func() (*sql.DB, func(), error) {
+			db, _, cleanup, err := pgtest.NewFromTemplate(key, build)
+			return db, cleanup, err
+		},
 	}
 	for name, open := range handles {
 		t.Run(name, func(t *testing.T) {

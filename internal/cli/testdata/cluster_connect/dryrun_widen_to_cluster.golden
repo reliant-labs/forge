@@ -3,6 +3,7 @@
   address      https://34.1.2.3
   cloudCluster projects/acme/locations/us-central1/clusters/prod
   caPem        9 bytes, read from context gke_acme_us-central1_prod
+  issuer       none sent: not read: --live-from reviews offline
   selector     app.kubernetes.io/managed-by=forge,forge.dev/connected-cluster=prod-us,forge.dev/binding-env=prod
 
 Grant diff  forge-connect-prod-us-prod  on context gke_acme_us-central1_prod
@@ -19,6 +20,7 @@ live       capture <live>
       + rule     core/namespaces: create,delete,get,list,patch,update,watch
       + rule     core/pods: get,list,watch
       + rule     core/services: create,delete,get,list,patch,update,watch
+        rule     url /openid/v1/jwks: get
 = ClusterRoleBinding forge-connect-prod-us-prod  unchanged
 - Role acme-prod/forge-connect-prod-us-prod  removed (connect prunes it)
       - rule     apps/deployments: create,delete,get,list,patch,update,watch
@@ -166,6 +168,10 @@ unexpected kind is Forbidden, but that is a tripwire, not a boundary. Prefer --a
       - patch
       - update
       - watch
+    - nonResourceURLs:
+      - /openid/v1/jwks
+      verbs:
+      - get
     ---
     apiVersion: rbac.authorization.k8s.io/v1
     kind: ClusterRoleBinding

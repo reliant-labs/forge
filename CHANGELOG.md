@@ -153,37 +153,6 @@ True`), or `--against gsm:<project>` for the Secret Manager parity check.
   output and error for a canary in raw, encoded and hashed form, on success and
   on failure paths where the remote echoes the request.
 
-- **`forge project new <name> --kind site` starts a new static site with no
-  Go in it.** A landing page, marketing or docs site, SPA or PWA used to get a
-  whole Go project (go.mod, cmd/, internal/, proto/, Dockerfile, compose,
-  Taskfile) around its frontend. Now it gets a starter app at the root — a
-  Next.js static export (`--frontend-kind nextjs`, the default) or a Vite SPA
-  (`--frontend-kind vite-spa`) — plus exactly the forge.yaml and
-  `deploy/kcl/{dev,staging,prod}` an adoption writes, so a new site and an
-  adopted one (`--in-place --kind site` inside an existing Vite/Next.js app)
-  are one project shape. `--in-place --kind site` in an empty directory is a
-  new site there. The starter mirrors the browser console to
-  `.forge/logs/<env>/frontend_<name>.log` under `forge env up`.
-
-- **A static site's framework memory is a frontend-only quick reference.**
-  The memory rendered for a project with no Go module and an app at its root
-  no longer says "This is a Go project" or leads with gopls, proto, handler
-  and migration rules: it covers envs, `env up dev`, the static export,
-  releases, hosted static hosting, custom domains, frontend logs,
-  `frontend/design` and how to add an API later.
-
-- **Every scaffold that writes Go or proto refuses in a static site, first.**
-  `forge scaffold service` (and rpc, frontend, worker, …) in a site used to
-  fail half-way through its generate and leave `proto/` behind; it now stops
-  before writing, names the site, and says how to add an API (its own forge
-  project, reached by URL).
-
-- **The free hosted static tier is stated precisely in the framework memory.**
-  One hosted static site per org is free (1 GiB), counted across
-  environments; a second env's site, any hosted workload or managed database
-  needs billing and is queued (exit 7) until it is set up. The memory used to
-  say every hosted site needed billing.
-
 - **A config message's `buf.validate` rules are checked as it loads.** Field
   rules (a port's range, a positive duration) and message-level CEL
   (`BILLING_PROVIDER=stripe` needs `STRIPE_SECRET_KEY`) on a `proto/config`

@@ -544,6 +544,28 @@ func TestPageChromeTakesComposedContent(t *testing.T) {
 	}
 }
 
+// TestAlertBannerRootIsAddressable: a banner whose root takes no attributes
+// cannot be named, focused or found. An error summary that must take focus
+// when a submit fails (and be announced by its title) had to wrap AlertBanner
+// in a second role="alert" box — announced twice — or rebuild it. The root
+// takes every <div> attribute and a ref, as Card's and Input's do.
+func TestAlertBannerRootIsAddressable(t *testing.T) {
+	src, err := NewLibrary().Get("alert_banner")
+	if err != nil {
+		t.Fatalf("get alert_banner: %v", err)
+	}
+	for _, want := range []string{
+		`extends Omit<React.HTMLAttributes<HTMLDivElement>, "title">`,
+		`React.forwardRef<HTMLDivElement, AlertBannerProps>`,
+		`ref={ref}`,
+		`{...rest}`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("alert_banner.tsx: missing %q — the banner's root must take a ref and every <div> attribute", want)
+		}
+	}
+}
+
 // TestListChromeCanBeControlled: forge's generated list pages read their
 // filters from the URL (useTypedSearchParams), so a component that OWNS its
 // selection cannot participate in the convention forge ships — the URL and the

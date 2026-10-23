@@ -784,7 +784,9 @@ describe("app.client, visitor.id and user_identified", () => {
       attribution: false,
     });
 
-    expect(setGlobalAttributes).toHaveBeenCalledWith({ "app.client": "landing" });
+    expect(setGlobalAttributes).toHaveBeenCalledWith({
+      "app.client": "landing",
+    });
     expect(store.size).toBe(0);
     expect(index.withAttribution("https://app.example.com/")).toBe(
       "https://app.example.com/",
@@ -813,9 +815,9 @@ describe("app.client, visitor.id and user_identified", () => {
     t.enableAttribution();
 
     expect(setGlobalAttributes).toHaveBeenCalledTimes(1);
-    const id = (setGlobalAttributes.mock.calls[0]?.[0] as Record<string, string>)[
-      "visitor.id"
-    ];
+    const id = (
+      setGlobalAttributes.mock.calls[0]?.[0] as Record<string, string>
+    )["visitor.id"];
     expect(id).toMatch(/^[A-Za-z0-9_-]{8,64}$/);
     expect(store.get("site.visitor_id")).toBe(id);
     expect(index.getAttribution()).toEqual({ utm_source: "news" });

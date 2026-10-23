@@ -3,6 +3,7 @@
   address      https://34.1.2.3
   cloudCluster projects/acme/locations/us-central1/clusters/prod
   caPem        9 bytes, read from context gke_acme_us-central1_prod
+  issuer       none sent: not read: --live-from reviews offline
   selector     app.kubernetes.io/managed-by=forge,forge.dev/connected-cluster=prod-us,forge.dev/binding-env=prod
 
 Grant diff  forge-connect-prod-us-prod  on context gke_acme_us-central1_prod
@@ -12,6 +13,7 @@ live       capture <live>
 
 + ClusterRole forge-connect-prod-us-prod  new
       + rule     core/namespaces: get,patch,update  only acme-prod
+      + rule     url /openid/v1/jwks: get
 + ClusterRoleBinding forge-connect-prod-us-prod  new
       + roleRef  ClusterRole/forge-connect-prod-us-prod
       + subject  User fc-prod-ab12@acme.iam.gserviceaccount.com
@@ -25,8 +27,9 @@ live       capture <live>
       + roleRef  Role/forge-connect-prod-us-prod
       + subject  User fc-prod-ab12@acme.iam.gserviceaccount.com
 
-newly granted permissions (30):
+newly granted permissions (31):
   cluster: get core/namespaces [acme-prod]
+  cluster: get url /openid/v1/jwks
   cluster: patch core/namespaces [acme-prod]
   cluster: update core/namespaces [acme-prod]
   namespace acme-prod: create apps/deployments
@@ -80,6 +83,10 @@ summary    +4 new  ~0 changed  -0 removed  =0 unchanged
       - get
       - patch
       - update
+    - nonResourceURLs:
+      - /openid/v1/jwks
+      verbs:
+      - get
     ---
     apiVersion: rbac.authorization.k8s.io/v1
     kind: ClusterRoleBinding

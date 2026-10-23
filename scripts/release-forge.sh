@@ -52,6 +52,7 @@
 #
 # See docs/releasing.md.
 set -euo pipefail
+RELEASE_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DRY_RUN=0
 REPO_ROOT=""
@@ -248,6 +249,22 @@ else
     echo "Release a NEW version instead. Treat $VERSION as burned and skip it." >&2
     exit 1
   fi
+fi
+
+# ── 6. Full tests at the exact source commit must be green ──────────
+# A fast premerge green is not a release proof. Local fixture remotes have
+# no GitHub CI; published GitHub releases fail closed, including dry runs.
+RELEASE_ORIGIN="$(git config --get remote.origin.url 2>/dev/null || true)"
+RELEASE_REPO=""
+case "$RELEASE_ORIGIN" in
+  git@github.com:*) RELEASE_REPO="${RELEASE_ORIGIN#git@github.com:}" ;;
+  https://github.com/*) RELEASE_REPO="${RELEASE_ORIGIN#https://github.com/}" ;;
+  ssh://git@github.com/*) RELEASE_REPO="${RELEASE_ORIGIN#ssh://git@github.com/}" ;;
+esac
+if [ -n "$RELEASE_REPO" ]; then
+  bash "$RELEASE_SCRIPT_DIR/check-release-tests.sh" "${RELEASE_REPO%.git}" "$(git rev-parse HEAD)"
+else
+  echo "→ local/non-GitHub remote: no hosted full-test proof (not a GitHub publication)"
 fi
 
 # ── 7. Edit the release files ───────────────────────────────────────

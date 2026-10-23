@@ -119,6 +119,15 @@ const (
 	// able to silence an alert, so triage is held explicitly even by a
 	// holder that reads.
 	ScopeObsTriage Scope = "obs:triage"
+	// ScopeObsWrite authors the org's observability workspace: dashboards
+	// (save, restore, archive, promote) and anything else a person edits in
+	// the telemetry console. Implies obs:read at the point of use.
+	//
+	// ITS OWN SCOPE, NOT TRIAGE. obs:triage changes the state of an issue; this
+	// changes shared, versioned artifacts the whole org reads. Neither implies
+	// the other, so a token that silences alerts cannot rewrite dashboards and
+	// the reverse. Never bound to an environment: what it writes is org-wide.
+	ScopeObsWrite Scope = "obs:write"
 
 	// ScopeDBQuery runs a read-only query against an environment's database.
 	// Not implied by any other scope and implying none: the data in an
@@ -150,6 +159,7 @@ var AllScopes = []Scope{
 	ScopeIdentityManage,
 	ScopeObsRead,
 	ScopeObsTriage,
+	ScopeObsWrite,
 	ScopeDBQuery,
 }
 
@@ -242,7 +252,7 @@ func (s Set) Permits(want Scope) bool {
 	case ScopeIdentityRead:
 		return s.Has(ScopeIdentityManage)
 	case ScopeObsRead:
-		return s.Has(ScopeObsTriage)
+		return s.Has(ScopeObsTriage) || s.Has(ScopeObsWrite)
 	default:
 		return false
 	}

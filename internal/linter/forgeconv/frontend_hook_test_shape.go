@@ -6,8 +6,9 @@
 // test (mutateAsync) against a useQuery hook. Either one can NEVER pass.
 //
 // Why this can happen at all, when one classification feeds both files.
-// generateFrontendHooks computes the query/mutation split once — the name
-// heuristic in codegen.isQueryMethod, then the `// forge:mutation` override
+// generateFrontendHooks computes the query/mutation split once — the
+// NO_SIDE_EFFECTS option or the name heuristic in codegen.isQueryRPC, then
+// the `// forge:mutation` override
 // — and renders BOTH the hooks file and its starter test from that single
 // decision. The two therefore agree the moment they are written.
 //
@@ -25,8 +26,11 @@
 //     isSuccess on a mutation that nothing fires.
 //   - an author adds `// forge:mutation` to an RPC the heuristic read as a
 //     query. Same flip, same frozen test.
+//   - an author declares `idempotency_level = NO_SIDE_EFFECTS` on an RPC the
+//     heuristic read as a mutation (Health, Version). The opposite flip: the
+//     test still calls mutateAsync on what is now a useQuery.
 //
-// Neither case is a template bug, and neither is reachable by making the
+// None of these cases is a template bug, and neither is reachable by making the
 // emitters share a classifier — they already do. The gap is that nothing
 // NOTICES the frozen half. `forge generate` writes the hook and skips the
 // test in silence; the existing forgeconv-frontend-hook-tests rule only
@@ -281,7 +285,8 @@ func hookShapeFinding(hookName string, actual, asserted hookShape, testPath, rel
 		Line:     1,
 		Message: why + " The hooks file is regenerated every run while this test is scaffold-once, " +
 			"so the two drift apart whenever an RPC's query/mutation classification changes — " +
-			"forge sharpening the name heuristic, or a `// forge:mutation` marker being added to the proto.",
+			"forge sharpening the name heuristic, a `// forge:mutation` marker being added to the proto, " +
+			"or the rpc declaring `idempotency_level = NO_SIDE_EFFECTS`.",
 		Remediation: remedy,
 	}
 }

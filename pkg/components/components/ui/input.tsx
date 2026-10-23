@@ -52,7 +52,16 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(function Input(
     .filter(Boolean)
     .join(" ");
 
-  return <input ref={ref} id={resolvedId} type={type ?? "text"} className={composed} {...rest} />;
+  return (
+    <input
+      ref={ref}
+      id={resolvedId}
+      type={type ?? "text"}
+      aria-invalid={invalid || undefined}
+      className={composed}
+      {...rest}
+    />
+  );
 });
 
 export default Input;

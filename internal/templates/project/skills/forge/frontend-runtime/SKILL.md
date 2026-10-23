@@ -63,10 +63,10 @@ required in every mode. A field required only in one MODE says so with
 `required_when`, a condition on a sibling string field:
 
 ```protobuf
-string auth_mode = 6 [(forge.v1.config) = {env_var: "AUTH_MODE", allowed_values: ["cloud"]}];
+string hosting = 6 [(forge.v1.config) = {env_var: "HOSTING", allowed_values: ["cloud"]}];
 string api_url = 1 [(forge.v1.config) = {
   env_var: "API_URL"
-  required_when: [{field: "auth_mode", equals: "cloud"}]
+  required_when: [{field: "hosting", equals: "cloud"}]
 }];
 ```
 

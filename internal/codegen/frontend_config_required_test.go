@@ -7,11 +7,11 @@ import (
 )
 
 // A managed deployment's frontend: self-hosted on its defaults, and in
-// AUTH_MODE=cloud unable to run without its endpoints.
+// HOSTING=cloud unable to run without its endpoints.
 func cloudFrontendConfig() FrontendConfig {
-	cloud := []ConfigCondition{{Field: "auth_mode", Equals: "cloud"}}
+	cloud := []ConfigCondition{{Field: "hosting", Equals: "cloud"}}
 	return FrontendConfig{Frontend: "web", MessageName: "WebConfig", Fields: []ConfigField{
-		{Name: "auth_mode", EnvVar: "AUTH_MODE", ProtoType: "string", AllowedValues: []string{"cloud"}},
+		{Name: "hosting", EnvVar: "HOSTING", ProtoType: "string", AllowedValues: []string{"cloud"}},
 		{Name: "api_url", EnvVar: "API_URL", ProtoType: "string", RequiredWhen: cloud},
 		{Name: "supabase_url", EnvVar: "SUPABASE_URL", ProtoType: "string", DefaultValue: "http://127.0.0.1:54321", RequiredWhen: cloud},
 		{Name: "region", EnvVar: "REGION", ProtoType: "string", Required: true},
@@ -32,7 +32,7 @@ func TestGenerateFrontendConfigSchema_CarriesRequiredness(t *testing.T) {
 	for _, k := range doc.Keys {
 		keys[k.Name] = k
 	}
-	cloud := []RequiredWhenKey{{Key: "AUTH_MODE", Equals: "cloud"}}
+	cloud := []RequiredWhenKey{{Key: "HOSTING", Equals: "cloud"}}
 	if k := keys["API_URL"]; !reflect.DeepEqual(k.RequiredWhen, cloud) || k.Required || k.Default != "" {
 		t.Errorf("API_URL = %+v", k)
 	}
@@ -73,15 +73,15 @@ func TestFrontendConfigSchema_MissingRequired(t *testing.T) {
 		want []string
 	}{
 		"self-hosted": {map[string]string{"REGION": "eu"}, nil},
-		"cloud, nothing set": {map[string]string{"REGION": "eu", "AUTH_MODE": "cloud"}, []string{
-			`API_URL (required when AUTH_MODE is "cloud")`, `SUPABASE_URL (required when AUTH_MODE is "cloud")`,
+		"cloud, nothing set": {map[string]string{"REGION": "eu", "HOSTING": "cloud"}, []string{
+			`API_URL (required when HOSTING is "cloud")`, `SUPABASE_URL (required when HOSTING is "cloud")`,
 		}},
-		"cloud, supabase at its default": {map[string]string{"REGION": "eu", "AUTH_MODE": "cloud", "API_URL": "https://a", "SUPABASE_URL": "http://127.0.0.1:54321"}, []string{
-			`SUPABASE_URL (required when AUTH_MODE is "cloud")`,
+		"cloud, supabase at its default": {map[string]string{"REGION": "eu", "HOSTING": "cloud", "API_URL": "https://a", "SUPABASE_URL": "http://127.0.0.1:54321"}, []string{
+			`SUPABASE_URL (required when HOSTING is "cloud")`,
 		}},
-		"cloud, complete":  {map[string]string{"REGION": "eu", "AUTH_MODE": "cloud", "API_URL": "https://a", "SUPABASE_URL": "https://sb"}, nil},
+		"cloud, complete":  {map[string]string{"REGION": "eu", "HOSTING": "cloud", "API_URL": "https://a", "SUPABASE_URL": "https://sb"}, nil},
 		"region empty":     {map[string]string{"REGION": " "}, []string{"REGION (required)"}},
-		"api_url is blank": {map[string]string{"REGION": "eu", "AUTH_MODE": "cloud", "API_URL": "", "SUPABASE_URL": "https://sb"}, []string{`API_URL (required when AUTH_MODE is "cloud")`}},
+		"api_url is blank": {map[string]string{"REGION": "eu", "HOSTING": "cloud", "API_URL": "", "SUPABASE_URL": "https://sb"}, []string{`API_URL (required when HOSTING is "cloud")`}},
 	} {
 		if got := judge(tc.doc); !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("%s: missing = %q, want %q", name, got, tc.want)
@@ -96,8 +96,8 @@ func TestGenerateFrontendConfigTS_EnforcesRequiredWhenOnTheRawDocument(t *testin
 	}
 	for _, want := range []string{
 		"export function missingRequiredConfig(raw: Record<string, unknown> = rawConfig()): MissingConfigKey[] {",
-		`{ key: "API_URL", when: [{ key: "AUTH_MODE", equals: "cloud" }] },`,
-		`{ key: "SUPABASE_URL", default: "http://127.0.0.1:54321", when: [{ key: "AUTH_MODE", equals: "cloud" }] },`,
+		`{ key: "API_URL", when: [{ key: "HOSTING", equals: "cloud" }] },`,
+		`{ key: "SUPABASE_URL", default: "http://127.0.0.1:54321", when: [{ key: "HOSTING", equals: "cloud" }] },`,
 		"const missing = missingRequiredConfig(raw);",
 		"if (!parsed.success || missing.length > 0) {",
 	} {
@@ -125,8 +125,8 @@ func TestRenderFrontendConfigSchema_ChecksRequiredWhen(t *testing.T) {
 	}
 	for _, want := range []string{
 		"\n    check:\n",
-		`auth_mode != "cloud" or api_url, "API_URL is required when AUTH_MODE is \"cloud\""`,
-		`auth_mode != "cloud" or (supabase_url and supabase_url != "http://127.0.0.1:54321"), `,
+		`hosting != "cloud" or api_url, "API_URL is required when HOSTING is \"cloud\""`,
+		`hosting != "cloud" or (supabase_url and supabase_url != "http://127.0.0.1:54321"), `,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("KCL schema lacks %q:\n%s", want, out)

@@ -135,11 +135,11 @@ func TestCheckFrontendRuntimeConfigKeys_SkipsWhatItCannotCheck(t *testing.T) {
 // schema requires in the mode the document selects, and the document lacks
 // (or leaves at the self-hosted default), is refused at render, naming each.
 var cloudSchemaFields = []codegen.ConfigField{
-	{Name: "auth_mode", EnvVar: "AUTH_MODE", ProtoType: "string", AllowedValues: []string{"cloud"}},
+	{Name: "hosting", EnvVar: "HOSTING", ProtoType: "string", AllowedValues: []string{"cloud"}},
 	{Name: "api_url", EnvVar: "API_URL", ProtoType: "string",
-		RequiredWhen: []codegen.ConfigCondition{{Field: "auth_mode", Equals: "cloud"}}},
+		RequiredWhen: []codegen.ConfigCondition{{Field: "hosting", Equals: "cloud"}}},
 	{Name: "supabase_url", EnvVar: "SUPABASE_URL", ProtoType: "string", DefaultValue: "http://127.0.0.1:54321",
-		RequiredWhen: []codegen.ConfigCondition{{Field: "auth_mode", Equals: "cloud"}}},
+		RequiredWhen: []codegen.ConfigCondition{{Field: "hosting", Equals: "cloud"}}},
 	{Name: "region", EnvVar: "REGION", ProtoType: "string", Required: true},
 }
 
@@ -148,7 +148,7 @@ func TestCheckFrontendRuntimeConfigKeys_RefusesAMissingRequiredKey(t *testing.T)
 	projectDir, rel := writeFrontendSchema(t, cloudSchemaFields...)
 	err := checkFrontendRuntimeConfigKeys(projectDir, []FrontendEntity{{
 		Name: "reliant-web", Path: rel,
-		RuntimeConfig: map[string]string{"AUTH_MODE": "cloud", "SUPABASE_URL": "http://127.0.0.1:54321"},
+		RuntimeConfig: map[string]string{"HOSTING": "cloud", "SUPABASE_URL": "http://127.0.0.1:54321"},
 	}})
 	if err == nil {
 		t.Fatal("a cloud document without API_URL, with SUPABASE_URL at its default and without REGION was accepted")
@@ -156,8 +156,8 @@ func TestCheckFrontendRuntimeConfigKeys_RefusesAMissingRequiredKey(t *testing.T)
 	msg := err.Error()
 	for _, want := range []string{
 		"Frontend 'reliant-web'.runtime_config is missing 3 keys",
-		`API_URL (required when AUTH_MODE is "cloud")`,
-		`SUPABASE_URL (required when AUTH_MODE is "cloud")`,
+		`API_URL (required when HOSTING is "cloud")`,
+		`SUPABASE_URL (required when HOSTING is "cloud")`,
 		"REGION (required)",
 		"../reliant/web/src/lib/config_schema_gen.json",
 	} {
@@ -173,12 +173,12 @@ func TestCheckFrontendRuntimeConfigKeys_AcceptsTheModesItsDocumentMeets(t *testi
 	ref := deployv1alpha1.RuntimeConfigValue{WorkloadURL: &deployv1alpha1.WorkloadURLRef{Name: "api"}}
 	cloud := "cloud"
 	for name, fe := range map[string]FrontendEntity{
-		"self-hosted (no AUTH_MODE)": {RuntimeConfig: map[string]string{"REGION": "eu"}},
-		"cloud, every key set":       {RuntimeConfig: map[string]string{"REGION": "eu", "AUTH_MODE": "cloud", "API_URL": "https://api", "SUPABASE_URL": "https://sb"}},
+		"self-hosted (no HOSTING)": {RuntimeConfig: map[string]string{"REGION": "eu"}},
+		"cloud, every key set":     {RuntimeConfig: map[string]string{"REGION": "eu", "HOSTING": "cloud", "API_URL": "https://api", "SUPABASE_URL": "https://sb"}},
 		"cloud, API_URL another workload's URL": {
 			RuntimeConfig: map[string]string{"REGION": "eu", "SUPABASE_URL": "https://sb"},
 			RuntimeConfigSpec: map[string]deployv1alpha1.RuntimeConfigValue{
-				"AUTH_MODE": {Value: &cloud}, "API_URL": ref,
+				"HOSTING": {Value: &cloud}, "API_URL": ref,
 			},
 		},
 	} {
@@ -207,7 +207,7 @@ func TestCheckFrontendRuntimeConfigKeys_LeavesAnInTreeFrontendToItsKCLSchema(t *
 		t.Fatal(err)
 	}
 	if err := checkFrontendRuntimeConfigKeys(projectDir, []FrontendEntity{{
-		Name: "web", Path: "frontends/web", RuntimeConfig: map[string]string{"AUTH_MODE": "cloud"},
+		Name: "web", Path: "frontends/web", RuntimeConfig: map[string]string{"HOSTING": "cloud"},
 	}}); err != nil {
 		t.Errorf("in-tree overlay judged as the whole document: %v", err)
 	}

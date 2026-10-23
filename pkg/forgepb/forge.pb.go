@@ -1331,12 +1331,12 @@ type ConfigFieldOptions struct {
 	// deployment, where the default is a self-hosted value), or the field
 	// would not need the condition.
 	//
-	//   string auth_mode = 6 [(forge.v1.config) = {
-	//     env_var: "AUTH_MODE", allowed_values: ["cloud"]
+	//   string hosting = 6 [(forge.v1.config) = {
+	//     env_var: "HOSTING", allowed_values: ["cloud"]
 	//   }];
 	//   string api_url = 1 [(forge.v1.config) = {
 	//     env_var: "API_URL"
-	//     required_when: [{field: "auth_mode", equals: "cloud"}]
+	//     required_when: [{field: "hosting", equals: "cloud"}]
 	//   }];
 	//
 	// It is for a (forge.v1.frontend_config) message, whose values arrive in
@@ -1491,7 +1491,7 @@ func (x *ConfigFieldOptions) GetRequiredWhen() []*ConfigCondition {
 // message, by its runtime value (see ConfigFieldOptions.required_when).
 type ConfigCondition struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Field is the PROTO name of a sibling string field ("auth_mode"), not its
+	// Field is the PROTO name of a sibling string field ("hosting"), not its
 	// env_var: the condition is part of the message, and a rename of the
 	// field's env spelling must not silently detach it.
 	Field string `protobuf:"bytes,1,opt,name=field,proto3" json:"field,omitempty"`

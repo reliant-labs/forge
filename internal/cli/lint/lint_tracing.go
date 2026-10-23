@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
@@ -112,7 +113,7 @@ func tracingFindings(cwd string, cfg *config.ProjectConfig, fix, explicit bool) 
 	// lint.rules grades the findings in the outcome engine (lint_rules.go);
 	// here it only decides which ones --fix rewrites.
 	applied := suppress.ApplyFiles(cwd, res.Findings, os.ReadFile)
-	kept := append(applied.Kept, applied.Violations...)
+	kept := append(slices.Clone(applied.Kept), applied.Violations...)
 	return tracingRun{findings: kept, fixed: res.Fixed}, nil
 }
 

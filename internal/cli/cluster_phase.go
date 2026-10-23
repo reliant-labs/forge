@@ -150,6 +150,43 @@ func clusterCreateFlags(c ClusterEntity) []string {
 		flags = append(flags, "--api-port", fmt.Sprintf("0.0.0.0:%d", c.APIPort))
 	}
 	flags = append(flags, k3sCIDRArgs(c)...)
+	flags = append(flags, k3sIssuerFlags()...)
+	return flags
+}
+
+const (
+	// k3sPublicIssuer is the service-account issuer forge gives every k3d
+	// cluster it creates. Stock k3s signs with
+	// https://kubernetes.default.svc.cluster.local, a `.local` host the control
+	// plane refuses when `forge cluster connect` registers the issuer.
+	k3sPublicIssuer = "https://kubernetes.default.svc"
+	// k3sLegacyIssuer is k3s's own default issuer. It stays accepted so tokens
+	// minted by components that still name it keep validating.
+	k3sLegacyIssuer = k3sPublicIssuer + ".cluster.local"
+
+	k3sIssuerArgKey = "--kube-apiserver-arg=service-account-issuer="
+)
+
+// k3sIssuerArgs returns the k3s server args that make a new cluster sign with
+// k3sPublicIssuer. kube-apiserver signs with the FIRST service-account-issuer
+// and accepts every one listed, so the legacy issuer follows it. api-audiences
+// must be restated because k3s sets it from its default issuer (plus "k3s");
+// the legacy audience and "k3s" are kept so in-cluster tokens still validate.
+func k3sIssuerArgs() []string {
+	return []string{
+		k3sIssuerArgKey + k3sPublicIssuer,
+		k3sIssuerArgKey + k3sLegacyIssuer,
+		"--kube-apiserver-arg=api-audiences=" + k3sPublicIssuer + "," + k3sLegacyIssuer + ",k3s",
+	}
+}
+
+// k3sIssuerFlags is k3sIssuerArgs as `k3d cluster create --k3s-arg` flags, on
+// every server node (see k3sCIDRArgs for why `server:*`).
+func k3sIssuerFlags() []string {
+	var flags []string
+	for _, a := range k3sIssuerArgs() {
+		flags = append(flags, "--k3s-arg", a+"@server:*")
+	}
 	return flags
 }
 
@@ -298,10 +335,11 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, declared []Clus
 		}
 
 		cfgPath, cleanup, err := mergeK3dConfig(c.Config, k3dConfigOverlay{
-			HostPorts:   c.HostPorts,
-			APIPort:     c.APIPort,
-			ClusterCIDR: c.ClusterCIDR,
-			ServiceCIDR: c.ServiceCIDR,
+			HostPorts:    c.HostPorts,
+			APIPort:      c.APIPort,
+			ClusterCIDR:  c.ClusterCIDR,
+			ServiceCIDR:  c.ServiceCIDR,
+			PublicIssuer: true,
 		})
 		if err != nil {
 			return fmt.Errorf("merge k3d config for cluster %q: %w", c.Name, err)

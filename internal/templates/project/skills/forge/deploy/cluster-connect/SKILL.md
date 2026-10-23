@@ -188,7 +188,10 @@ forge cluster connect k3d-dev --context k3d-dev --env dev --issuer upload  # a c
   use it as `connected_cluster`: a SecretStore renders its mount and audience from
   that name.
 - **k3s / k3d** signs with `https://kubernetes.default.svc.cluster.local`, which
-  the control plane refuses (a `.local` host). Start the API server with
+  the control plane refuses (a `.local` host). A k3d cluster forge creates is
+  already started with the public issuer first (the `.cluster.local` issuer and
+  audience stay accepted for in-cluster tokens); a cluster created before that,
+  or by hand, needs it. Start the API server with
   `--kube-apiserver-arg=service-account-issuer=https://kubernetes.default.svc`
   (k3d: `--k3s-arg "--kube-apiserver-arg=service-account-issuer=https://kubernetes.default.svc@server:*"`).
 

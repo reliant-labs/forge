@@ -15,7 +15,7 @@ package cli
 //
 //   - the grant forge renders for the control plane's identity lets exactly
 //     that identity `get /openid/v1/jwks`, and without it the same request is
-//     Forbidden (a non-resource URL rule, on a real RBAC authorizer);
+//     Forbidden (a non-resource URL rule, enforced by a real API server);
 //   - the issuer and key set that connect UPLOADS verify a token the API server
 //     itself signed (TokenRequest), and the token's `iss` is the issuer sent.
 //
@@ -249,7 +249,7 @@ func TestEnvtestConnect_GrantAndUploadAgainstARealAPIServer(t *testing.T) {
 	ec := connectToEnvtest(t)
 
 	// 1. The grant forge applied is what lets the binding's identity read the key
-	//    set, through a real RBAC authorizer.
+	//    set, through a real API server.
 	raw, err := getPath(ec.binding, oidcJWKSPath)
 	if err != nil {
 		t.Fatalf("after connect, the binding's GET %s: %v", oidcJWKSPath, err)

@@ -3969,7 +3969,12 @@ func devClusterCreateArgs() (args []string, cleanup func(), err error) {
 	cleanup = func() {}
 	k3dConfig := filepath.Join("deploy", "k3d.yaml")
 	if _, statErr := os.Stat(k3dConfig); statErr == nil {
-		args = []string{"cluster", "create", "--config", k3dConfig}
+		merged, cleanupCfg, mergeErr := mergeK3dConfig(k3dConfig, k3dConfigOverlay{PublicIssuer: true})
+		if mergeErr != nil {
+			return nil, cleanup, mergeErr
+		}
+		cleanup = cleanupCfg
+		args = []string{"cluster", "create", "--config", merged.path}
 	} else {
 		// Fallback create path (no project-level deploy/k3d.yaml).
 		// Write a temp registries.yaml that mirrors the canonical
@@ -3993,6 +3998,7 @@ func devClusterCreateArgs() (args []string, cleanup func(), err error) {
 			"--servers", "1",
 			"--no-lb",
 		}
+		args = append(args, k3sIssuerFlags()...)
 	}
 	args, err = addClusterStorageArgsFn(args)
 	if err != nil {

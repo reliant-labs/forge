@@ -280,13 +280,17 @@ type k3dConfigOverlay struct {
 	APIPort     int
 	ClusterCIDR string
 	ServiceCIDR string
+	// PublicIssuer projects the service-account issuer a forge-created cluster
+	// signs with (k3sPublicIssuer) as k3s server args. A config that already
+	// sets its own service-account-issuer is left alone.
+	PublicIssuer bool
 }
 
 // empty reports whether there is nothing to project, in which case the user's
 // own config file is handed back untouched (no temp file, formatting and
 // comments preserved).
 func (o k3dConfigOverlay) empty() bool {
-	return !o.HostPorts && o.APIPort <= 0 && o.ClusterCIDR == "" && o.ServiceCIDR == ""
+	return !o.HostPorts && o.APIPort <= 0 && o.ClusterCIDR == "" && o.ServiceCIDR == "" && !o.PublicIssuer
 }
 
 func mergeK3dConfig(userPath string, overlay k3dConfigOverlay) (k3dConfigPath, func(), error) {
@@ -299,7 +303,7 @@ func mergeK3dConfig(userPath string, overlay k3dConfigOverlay) (k3dConfigPath, f
 			spliceFragment = false
 		}
 	}
-	if !spliceFragment && overlay.APIPort <= 0 && overlay.ClusterCIDR == "" && overlay.ServiceCIDR == "" {
+	if !spliceFragment && overlay.APIPort <= 0 && overlay.ClusterCIDR == "" && overlay.ServiceCIDR == "" && !overlay.PublicIssuer {
 		return k3dConfigPath{path: userPath}, cleanup, nil
 	}
 
@@ -323,6 +327,11 @@ func mergeK3dConfig(userPath string, overlay k3dConfigOverlay) (k3dConfigPath, f
 	}
 	if merged, err = spliceK3dCIDRs(merged, overlay.ClusterCIDR, overlay.ServiceCIDR); err != nil {
 		return k3dConfigPath{}, cleanup, err
+	}
+	if overlay.PublicIssuer {
+		if merged, err = spliceK3dIssuer(merged); err != nil {
+			return k3dConfigPath{}, cleanup, err
+		}
 	}
 	// Nothing to project: hand back the user's own file so its formatting and
 	// comments are untouched and no temp file is created.
@@ -475,6 +484,48 @@ func spliceK3dCIDRs(userYAML []byte, clusterCIDR, serviceCIDR string) ([]byte, e
 	out, err := yaml.Marshal(doc)
 	if err != nil {
 		return nil, fmt.Errorf("re-encode k3d config with the declared CIDRs: %w", err)
+	}
+	return out, nil
+}
+
+// spliceK3dIssuer appends the k3sIssuerArgs to a config's
+// options.k3s.extraArgs so a config-file cluster signs with k3sPublicIssuer,
+// exactly as the flag path does. The config stays authoritative where it
+// speaks: one that already sets a service-account-issuer is returned
+// untouched, never merged with a second source of truth.
+func spliceK3dIssuer(userYAML []byte) ([]byte, error) {
+	var doc map[string]any
+	if err := yaml.Unmarshal(userYAML, &doc); err != nil {
+		return nil, fmt.Errorf("parse k3d config to set the service-account issuer: %w", err)
+	}
+	if doc == nil {
+		doc = map[string]any{}
+	}
+	options, _ := doc["options"].(map[string]any)
+	if options == nil {
+		options = map[string]any{}
+		doc["options"] = options
+	}
+	k3s, _ := options["k3s"].(map[string]any)
+	if k3s == nil {
+		k3s = map[string]any{}
+		options["k3s"] = k3s
+	}
+	existing, _ := k3s["extraArgs"].([]any)
+	for _, e := range existing {
+		if m, ok := e.(map[string]any); ok {
+			if arg, _ := m["arg"].(string); strings.HasPrefix(strings.TrimSpace(arg), k3sIssuerArgKey) {
+				return userYAML, nil
+			}
+		}
+	}
+	for _, a := range k3sIssuerArgs() {
+		existing = append(existing, map[string]any{"arg": a, "nodeFilters": []any{"server:*"}})
+	}
+	k3s["extraArgs"] = existing
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("re-encode k3d config with the service-account issuer: %w", err)
 	}
 	return out, nil
 }

@@ -62,8 +62,23 @@ func WriteSiteScaffold(dir, projectName string, harness Harness, fe SiteFrontend
 	// The machine-local state a site's forge commands write (the subset of
 	// the service scaffold's .gitignore a site can produce). An in-place
 	// adoption merges it into the app's own .gitignore.
-	if err := writeSiteFile(dir, ".gitignore", []byte(siteGitignore)); err != nil {
+	if err := appendSiteGitignore(dir); err != nil {
 		return err
+	}
+
+	// The framework memory, for a harness that does not render it live:
+	// reliant renders it from the forge binary on every session
+	// (RenderProjectMemory), so only the others get a file — the same rule
+	// the service scaffold follows (writeProjectMetadata). It is rendered
+	// as a SITE's memory: the frontend-only quick reference, not the Go one.
+	if harness != HarnessReliant && harness != "" {
+		memory, err := templates.ProjectTemplates().Render("reliant.md.tmpl", ProjectMemoryData{Name: projectName, CLI: cliName(), Site: true})
+		if err != nil {
+			return fmt.Errorf("render project memory: %w", err)
+		}
+		if err := writeSiteFile(dir, harness.MemoryFilePath(), memory); err != nil {
+			return err
+		}
 	}
 
 	kclMod, err := templates.DeployTemplates().Render("kcl/kcl.mod.tmpl", struct{ ProjectName string }{projectName})
@@ -114,6 +129,19 @@ secrets/
 !.forge/promotions/
 !.forge/promotions/*.jsonl
 `
+
+// appendSiteGitignore writes siteGitignore as dir's .gitignore, or appends it
+// to the one already there (a greenfield site's starter writes its own first).
+func appendSiteGitignore(dir string) error {
+	content := []byte(siteGitignore)
+	if existing, err := os.ReadFile(filepath.Join(dir, ".gitignore")); err == nil {
+		if len(existing) > 0 && existing[len(existing)-1] != '\n' {
+			existing = append(existing, '\n')
+		}
+		content = append(append(existing, '\n'), content...)
+	}
+	return writeSiteFile(dir, ".gitignore", content)
+}
 
 func writeSiteFile(dir, rel string, content []byte) error {
 	dest := filepath.Join(dir, rel)

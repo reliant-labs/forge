@@ -130,6 +130,15 @@ on the server, and calls made while the SDK chunk is still loading are held
   switch once running: an app that must send nothing without consent should not
   call `initBrowserTelemetry` before it has it.
 
+- Attribution (`appClient`, `visitorIdStorageKey`, `withAttribution(url)`): init
+  stamps `app.client` (`electron` inside Electron, else `web`; pass `"landing"`
+  from a marketing site) and `visitor.id` on every event, and reads `rid` and
+  `utm_source|medium|campaign|term|content` from the URL into localStorage. The
+  first `setTelemetryUser(id)` per user also emits one `user_identified` event
+  with `visitor_id` and the stored utm values. `withAttribution(url)` appends
+  `rid` and the utm values to an outbound absolute URL, and is the identity
+  before init or after `disableTelemetry()`.
+
 Privacy is forced, not configurable: when replay records, all text and inputs
 are masked, canvas is never recorded, `img, picture, video, audio, iframe,
 object, embed` are blocked, images are not inlined and fonts are not collected.

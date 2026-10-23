@@ -90,6 +90,132 @@ it. The frontend dashboard's **Web vitals by route** table uses it for the p75
 of LCP, INP and CLS, and **JS errors by release** splits the error spans by
 `service.version` (the build id).
 
+## Product events
+
+A **product event** is a named thing a user did or that happened to them
+(`project_created`, `subscription_started`). On the hosted platform they land in
+the per-environment ClickHouse `product_events` table, which keeps them far
+longer than logs or traces. Dashboards read it with `sql` and `funnel` panels.
+
+### The contract
+
+An event is one OTel **log record** at INFO (never a span: server traces are
+sampled) carrying these attributes. This is the seam between the emitters and the
+table; all of them follow it.
+
+| attribute | meaning |
+|---|---|
+| `event.name` | `product.<snake_name>`; required, and the only thing the table selects on |
+| `user.id` | the authenticated user id (the auth subject); empty when anonymous |
+| `visitor.id` | the anonymous visitor id, when known |
+| `session.id` | the client session id, when known |
+| `app.client` | `backend`, `web`, `electron` or `landing` |
+| `app.version` | the emitting app's version |
+| `product.<key>` | one property per key; stored in `Props` with the `product.` prefix stripped |
+
+Bounds, enforced by both emitters and again by the table's view: at most 32
+properties, each value at most 256 characters (longer is truncated). Product
+events are not a way to keep logs longer. Browser events keep their existing
+path (HyperDX `custom-action` spans into the same table); the web runtime
+stamps `app.client` and `visitor.id` on them.
+
+### Emitting from Go
+
+```go
+observe.Track(ctx, "project_created", slog.String("template", "go"), slog.Int("repos", 2))
+```
+
+`observe.Track(ctx, name, attrs...)` writes the record through the context's
+logger (`observe.FromContext`), sets `app.client="backend"` and `app.version`
+(from `observe.Config.ServiceVersion`, or `observe.SetAppVersion`), and takes
+`user.id` from the claims forge's auth interceptor put in `ctx`: a handler
+needs no extra step, a background job has no user and so emits an anonymous
+event. A name that is not snake_case (`^[a-z][a-z0-9_]{0,63}$`) is dropped with
+a warning. Property values become strings; keep them low-cardinality and
+never put secrets or personal data in them. A `slog.Group` flattens to
+`group.key`.
+
+### Emitting from the browser
+
+```ts
+import { track, setTelemetryUser, withAttribution } from "@reliantlabs/forge-web-runtime";
+
+track("onboarding_completed", { plan: "pro" });   // after initBrowserTelemetry
+setTelemetryUser(session.user.id);                // also emits user_identified, once per user
+```
+
+`initBrowserTelemetry({ appClient })` stamps `app.client` (`electron` inside
+Electron, else `web`; pass `landing` from a marketing site) and `visitor.id` on
+every event, and reads `rid` and `utm_source|medium|campaign|term|content` from
+the URL into storage. The first `setTelemetryUser(id)` for a user emits one
+`user_identified {visitor_id, utm_*}`, which is how a funnel joins a visitor to a
+user. A marketing site wraps its outbound links in `withAttribution(url)` so the
+app sees the `rid` and utm values. All of it is behind the same consent gate as
+`track`: nothing is stored or appended until `initBrowserTelemetry` runs, and
+not after `disableTelemetry()`.
+
+### Retention
+
+`forge.Observability.retention.product_events_days` (1 to 400, default 90) is
+how long the environment asks the platform to keep product events. The platform
+may grant less (a plan can cap it); a new value applies to rows written after
+it, not to rows already stored.
+
+### Panels over `product_events`
+
+Columns: `Timestamp`, `ServiceName`, `EnvId`, `SessionId`, `UserId`, `EventName`
+(the name without the `product.` prefix) and `Props` (a map, `Props['plan']`).
+`DESCRIBE product_events` lists what else the table keeps. A `sql` panel binds
+the dashboard scope (`{from:DateTime64(9)}`, `{to:DateTime64(9)}`,
+`{step:UInt32}`, `{envs:Array(String)}`); a first `DateTime` column draws a time
+series.
+
+Daily active users:
+
+```json
+{
+  "id": "dau",
+  "title": "Daily active users",
+  "kind": "sql",
+  "sql": "SELECT toStartOfDay(Timestamp) AS day, uniqExact(UserId) AS users FROM product_events WHERE Timestamp >= {from:DateTime64(9)} AND Timestamp < {to:DateTime64(9)} AND UserId != '' GROUP BY day ORDER BY day"
+}
+```
+
+Events by name, and a property breakdown (swap in a property you emit):
+
+```json
+{
+  "id": "events-by-name",
+  "title": "Events by name",
+  "kind": "sql",
+  "sql": "SELECT EventName, count() AS events, uniqExact(UserId) AS users FROM product_events WHERE Timestamp >= {from:DateTime64(9)} AND Timestamp < {to:DateTime64(9)} GROUP BY EventName ORDER BY events DESC LIMIT 50"
+}
+```
+
+```json
+{
+  "id": "subscriptions-by-plan",
+  "title": "Subscriptions started by plan",
+  "kind": "sql",
+  "sql": "SELECT toStartOfDay(Timestamp) AS day, Props['plan'] AS plan, count() AS started FROM product_events WHERE EventName = 'subscription_started' AND Timestamp >= {from:DateTime64(9)} AND Timestamp < {to:DateTime64(9)} GROUP BY day, plan ORDER BY day"
+}
+```
+
+A funnel counted per user:
+
+```json
+{
+  "id": "activation",
+  "title": "Activation funnel",
+  "kind": "funnel",
+  "signal": "traces",
+  "funnel": { "steps": ["user_identified", "project_created", "onboarding_completed"], "window": "7d", "by": "user" }
+}
+```
+
+Put them in a dashboard file you own (`deploy/observability/dashboards/<name>.json`,
+see Overriding); `forge obs dashboards check` validates it.
+
 ## Overriding
 
 Never edit a `*_gen.json`: forge rewrites it and refuses a hand-edit as drift.

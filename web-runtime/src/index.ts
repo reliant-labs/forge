@@ -159,6 +159,18 @@ export {
 } from "./track.js";
 
 /**
+ * Visitor identity and campaign attribution: `withAttribution(url)` appends
+ * this browser's `rid` and captured `utm_*` to an outbound link (a marketing
+ * site pointing at the app); the runtime reads them on arrival and emits one
+ * `user_identified` event at first sign-in. Consent-gated like track().
+ */
+export {
+  withAttribution,
+  type AppClient,
+  type Attribution,
+} from "./attribution.js";
+
+/**
  * Dev-only browser log forwarding: mirrors console output and uncaught errors
  * to the dev server, which prints them into
  * `.forge/logs/<env>/frontend_<name>.log`. No-ops unless `dev: true`, and the

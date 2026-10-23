@@ -66,7 +66,7 @@ func TestSmoke_UploadedJWKSLogsInToARealOpenBao(t *testing.T) {
 	b.root(http.MethodPut, "auth/"+mnt+"/config", map[string]any{
 		"jwt_validation_pubkeys": pemKeysOf(t, ec.jwks), "bound_issuer": ec.issuer,
 	})
-	b.root(http.MethodPut, "sys/policies/acl/"+role, map[string]any{"policy": `path "secret/data/tenants/acme/prod/X" { capabilities = ["read"] }`})
+	b.root(http.MethodPut, "sys/policies/acl/"+role, map[string]any{"policy": `path "secret/data/example/prod/X" { capabilities = ["read"] }`})
 	b.root(http.MethodPut, "auth/"+mnt+"/role/"+role, map[string]any{
 		"role_type": "jwt", "user_claim": "sub", "bound_audiences": []string{aud},
 		"bound_subject":  "system:serviceaccount:default:reliant-secrets",

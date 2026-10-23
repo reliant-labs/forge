@@ -15,10 +15,11 @@ import { createPortal } from "react-dom";
  *     clips it. It opens below the trigger and flips above when there is no
  *     room, is clamped to the viewport, and follows the trigger on scroll and
  *     resize.
- *   - Escape closes it and returns focus to the trigger. The keydown is
- *     marked handled (preventDefault + stopPropagation), so a dialog it sits
- *     in — or any app-level Escape handler that honours `defaultPrevented` —
- *     does not also close.
+ *   - Escape closes it and returns focus to the trigger, wherever focus is.
+ *     An open popover is the top layer, so it takes the key first (a
+ *     capture listener on window) and claims it: a dialog it sits in, or an
+ *     app-level shortcut bound to Escape, does not also act. Stacked
+ *     popovers close one per press, newest first.
  *   - A pointer press outside the trigger and panel closes it, and so does
  *     focus leaving both (Tab out of the panel).
  *   - Opening moves focus into the panel: its first focusable element when
@@ -73,8 +74,8 @@ export interface PopoverProps {
   /** Moves focus into the panel when it opens; replaces the default. */
   onOpenFocus?: (panel: HTMLElement, via: PopoverOpenVia) => void;
   /**
-   * Extra keydown handling inside the panel (DropdownMenu's arrow keys). Runs
-   * before the panel's own Escape handling; preventDefault() claims the key.
+   * Extra keydown handling inside the panel (DropdownMenu's arrow keys);
+   * preventDefault() claims the key.
    */
   onPanelKeyDown?: (event: KeyboardEvent) => void;
   disabled?: boolean;
@@ -85,6 +86,9 @@ const GAP = 4;
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+// Open popovers, oldest first; Escape belongs to the newest.
+const openStack: symbol[] = [];
 
 // useLayoutEffect warns during server rendering; the panel only ever renders
 // in the browser, so the effect is only needed there.
@@ -225,8 +229,7 @@ export default function Popover({
   }, [open, close]);
 
   // The panel's own keys and focus loss. Native listeners rather than JSX
-  // handlers: the panel is a dialog/menu container, not a control, and they
-  // run before any handler further out (a dialog the popover sits in).
+  // handlers: the panel is a dialog/menu container, not a control.
   const panelKeyDown = useRef(onPanelKeyDown);
   panelKeyDown.current = onPanelKeyDown;
   useEffect(() => {
@@ -234,10 +237,6 @@ export default function Popover({
     if (!open || !panel) return;
     function onKeyDown(e: KeyboardEvent) {
       panelKeyDown.current?.(e);
-      if (e.defaultPrevented || e.key !== "Escape") return;
-      e.preventDefault();
-      e.stopPropagation();
-      close();
     }
     function onFocusOut(e: FocusEvent) {
       const next = e.relatedTarget as Node | null;
@@ -254,6 +253,24 @@ export default function Popover({
     };
   }, [open, close]);
 
+  // Escape, from anywhere: window capture runs before any other listener.
+  useEffect(() => {
+    if (!open) return;
+    const id = Symbol("popover");
+    openStack.push(id);
+    function onEscape(e: KeyboardEvent) {
+      if (e.key !== "Escape" || openStack[openStack.length - 1] !== id) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      close();
+    }
+    window.addEventListener("keydown", onEscape, true);
+    return () => {
+      window.removeEventListener("keydown", onEscape, true);
+      openStack.splice(openStack.indexOf(id), 1);
+    };
+  }, [open, close]);
+
   const triggerProps: PopoverTriggerProps = {
     ref: (node) => {
       triggerRef.current = node;
@@ -265,10 +282,6 @@ export default function Popover({
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         if (!open) toggle(e.key === "ArrowUp" ? "keyboard-last" : "keyboard");
-      } else if (e.key === "Escape" && open) {
-        e.preventDefault();
-        e.stopPropagation();
-        close();
       }
     },
     "aria-haspopup": role,

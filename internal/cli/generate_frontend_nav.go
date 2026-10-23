@@ -222,6 +222,24 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 		}
 	}
 
+	if err := generateViteFrontends(cfg, projectDir, cs); err != nil {
+		return err
+	}
+	if err := generateReactNativeFrontends(cfg, projectDir, cs); err != nil {
+		return err
+	}
+
+	// ── The dev web-runtime bridge (gitignored, project-wide) ──
+	// Per-project rather than per-frontend: it is one npm workspace root
+	// covering frontends/*, so it is reconciled once after every frontend's
+	// tracked manifest has been settled at its published range.
+	generator.EnsureDevWebRuntimeLink(projectDir)
+
+	return nil
+}
+
+// generateViteFrontends writes the Vite SPA frontends' generated files.
+func generateViteFrontends(cfg *config.ProjectConfig, projectDir string, cs *checksums.FileChecksums) error {
 	// ── Vite SPA frontends ──
 	// The Next-only nav/dashboard/basepath files above don't apply here, so
 	// this is a separate, minimal loop.
@@ -270,7 +288,11 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 		// ── package.json: the @reliantlabs/forge-web-runtime specifier ──
 		reconcileFrontendDependencies(projectDir, feDir, fe)
 	}
+	return nil
+}
 
+// generateReactNativeFrontends writes the React Native frontends' generated files.
+func generateReactNativeFrontends(cfg *config.ProjectConfig, projectDir string, cs *checksums.FileChecksums) error {
 	// ── React Native frontends: emit the apiurl_gen dev floor ──
 	// RN scaffolds carry no nav/dashboard/runtime and, like Vite, used to
 	// lean on a scaffold-once .env.local for EXPO_PUBLIC_API_URL. With that
@@ -301,13 +323,6 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 			generator.EnsureWebRuntimeDependency(projectDir, feDir, fe.Name)
 		}
 	}
-
-	// ── The dev web-runtime bridge (gitignored, project-wide) ──
-	// Per-project rather than per-frontend: it is one npm workspace root
-	// covering frontends/*, so it is reconciled once after every frontend's
-	// tracked manifest has been settled at its published range.
-	generator.EnsureDevWebRuntimeLink(projectDir)
-
 	return nil
 }
 

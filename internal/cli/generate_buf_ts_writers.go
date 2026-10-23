@@ -188,7 +188,7 @@ func foreignTSStubs(absGenDir string) string {
 		n, _ := f.Read(head)
 		_ = f.Close()
 		m := esGeneratedHeaderRE.FindSubmatch(head[:n])
-		if m == nil || sameParams(string(m[2]), forgeTSStubParams) {
+		if len(m) < 3 || sameParams(string(m[2]), forgeTSStubParams) {
 			return nil
 		}
 		gen := fmt.Sprintf("%s with parameter %q", m[1], string(m[2]))

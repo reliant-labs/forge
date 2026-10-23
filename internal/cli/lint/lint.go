@@ -83,13 +83,8 @@ type lintFlags struct {
 	showSuppressed bool
 }
 
-func newCmd(_ *factory.Factory) *cobra.Command {
-	var flags lintFlags
-
-	cmd := &cobra.Command{
-		Use:   "lint [paths...]",
-		Short: "Run linters on the project (report-only: writes nothing unless --fix)",
-		Long: `Run various linters on the Forge project.
+// lintLongHelp is `forge lint --help`'s long description.
+const lintLongHelp = `Run various linters on the Forge project.
 
 This command will:
 - Run standard Go linters (golangci-lint)
@@ -233,7 +228,15 @@ The advisory rules above are warnings by default — they fail the build only
 when lint.rules sets them to error.
 
 Additional maintainer/debug flags exist (forge-repo internals, wiring
-audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`,
+audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`
+
+func newCmd(_ *factory.Factory) *cobra.Command {
+	var flags lintFlags
+
+	cmd := &cobra.Command{
+		Use:   "lint [paths...]",
+		Short: "Run linters on the project (report-only: writes nothing unless --fix)",
+		Long:  lintLongHelp,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runLintCommand(cmd, flags, args)
 		},

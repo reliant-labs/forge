@@ -2,7 +2,6 @@ package schemadef
 
 import (
 	"database/sql"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -212,7 +211,7 @@ func TestOpenShadowAt_ReplayErrorLeavesNothingOpen(t *testing.T) {
 	scratch := func() int {
 		t.Helper()
 		var n int
-		pattern := fmt.Sprintf("forge_shadow_%d_%%", os.Getpid())
+		pattern := pgtest.ShadowScratchLike()
 		if err := base.QueryRow(`SELECT count(*) FROM pg_database WHERE datname LIKE $1`, pattern).Scan(&n); err != nil {
 			t.Fatalf("count scratch databases: %v", err)
 		}

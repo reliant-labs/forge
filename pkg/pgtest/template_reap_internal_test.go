@@ -80,7 +80,7 @@ func TestNewFromTemplate_ReapsStaleTemplates(t *testing.T) {
 
 	suffix := fmt.Sprintf("reap_%d", time.Now().UnixNano())
 	var builds atomic.Int32
-	build := func(db *sql.DB) error {
+	build := func(db *sql.DB, _ string) error {
 		builds.Add(1)
 		_, err := db.Exec(`CREATE TABLE seeded (v int)`)
 		return err
@@ -88,7 +88,7 @@ func TestNewFromTemplate_ReapsStaleTemplates(t *testing.T) {
 
 	// A template this process uses, then ages past the TTL.
 	staleKey := "stale_" + suffix
-	_, cleanup, err := NewFromTemplate(staleKey, build)
+	_, _, cleanup, err := NewFromTemplate(staleKey, build)
 	if err != nil {
 		t.Fatalf("NewFromTemplate(stale): %v", err)
 	}
@@ -116,7 +116,7 @@ func TestNewFromTemplate_ReapsStaleTemplates(t *testing.T) {
 	delete(templatesReaped, s.baseURL)
 	templateMu.Unlock()
 	freshKey := "fresh_" + suffix
-	_, cleanup, err = NewFromTemplate(freshKey, build)
+	_, _, cleanup, err = NewFromTemplate(freshKey, build)
 	if err != nil {
 		t.Fatalf("NewFromTemplate(fresh): %v", err)
 	}
@@ -141,7 +141,7 @@ func TestNewFromTemplate_ReapsStaleTemplates(t *testing.T) {
 	// This process still has the reaped template's name cached: the next
 	// clone rebuilds it rather than failing on a missing template.
 	before := builds.Load()
-	db, cleanup, err := NewFromTemplate(staleKey, build)
+	db, _, cleanup, err := NewFromTemplate(staleKey, build)
 	if err != nil {
 		t.Fatalf("NewFromTemplate after its template was reaped: %v", err)
 	}

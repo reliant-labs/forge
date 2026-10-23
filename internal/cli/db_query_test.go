@@ -137,7 +137,7 @@ func fixtureResult() *dbquery.Result {
 
 func TestDBQueryTableAndCSV(t *testing.T) {
 	var table bytes.Buffer
-	if err := writeDBQueryTable(&table, fixtureResult(), nil); err != nil {
+	if err := writeDBQueryTable(&table, fixtureResult(), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	wantTable := "id  name                  meta     ok\n" +
@@ -162,7 +162,6 @@ func TestDBQueryTableAndCSV(t *testing.T) {
 
 func TestDBQueryRefusesTransportsItCannotReach(t *testing.T) {
 	for _, tc := range []struct{ runtime, dsn string }{
-		{RuntimeHosted, ""},
 		{RuntimeCluster, ""},
 		{RuntimeHost, ""}, // no DATABASE_URL declared
 	} {

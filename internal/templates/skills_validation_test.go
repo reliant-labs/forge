@@ -422,7 +422,7 @@ var knownDotForgeEntries = map[string]bool{
 	"ci":                    true, // forge ci gate's per-check logs, .forge/ci/<lane>/<check>.log when git does not ignore tmp/ (cli.gateLogDir)
 	"observability":         true, // forge env up renders the local forwarder's pipeline into .forge/observability/forwarder.yaml (clickstack.ForwarderConfigDir)
 	"identity":              true, // forge env up writes a host-run managed identity's non-secret outputs to .forge/identity/<name>.json (internal/cli/up_identity.go)
-	"runtime-config":        true, // forge env up renders an out-of-tree frontend's config.js to .forge/runtime-config/<fe>/config.js (cli.outOfTreeRuntimeConfigRel)
+	"runtime-config":        true, // forge env up renders an out-of-tree frontend's config.js into .forge/runtime-config/<frontend>/config.js (internal/cli/frontend_config_refresh.go)
 	"debug":                 true,
 	"debug-session.json":    true,
 	"migrations.json":       true,

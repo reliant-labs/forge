@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,7 +23,7 @@ func TestNewFromTemplate_BuildsOnceAndClonesIsolated(t *testing.T) {
 	}
 	key := uniqueKey(t)
 	var builds atomic.Int32
-	build := func(db *sql.DB) error {
+	build := func(db *sql.DB, _ string) error {
 		builds.Add(1)
 		_, err := db.Exec(`CREATE TABLE seeded (v int); INSERT INTO seeded VALUES (42)`)
 		return err
@@ -35,7 +36,7 @@ func TestNewFromTemplate_BuildsOnceAndClonesIsolated(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			db, cleanup, err := pgtest.NewFromTemplate(key, build)
+			db, _, cleanup, err := pgtest.NewFromTemplate(key, build)
 			if err != nil {
 				t.Errorf("NewFromTemplate %d: %v", i, err)
 				return
@@ -74,10 +75,10 @@ func TestNewFromTemplate_FailedBuildIsNotPublished(t *testing.T) {
 	}
 	key := uniqueKey(t)
 	boom := errors.New("boom")
-	if _, _, err := pgtest.NewFromTemplate(key, func(*sql.DB) error { return boom }); !errors.Is(err, boom) {
+	if _, _, _, err := pgtest.NewFromTemplate(key, func(*sql.DB, string) error { return boom }); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want the build error", err)
 	}
-	db, cleanup, err := pgtest.NewFromTemplate(key, func(db *sql.DB) error {
+	db, _, cleanup, err := pgtest.NewFromTemplate(key, func(db *sql.DB, _ string) error {
 		_, err := db.Exec(`CREATE TABLE ok (id int)`)
 		return err
 	})
@@ -90,14 +91,89 @@ func TestNewFromTemplate_FailedBuildIsNotPublished(t *testing.T) {
 	}
 }
 
+// NewFromTemplate hands out URLs as well as handles: build gets the template's
+// DSN, for a builder that connects itself (a migrator that takes a URL), and
+// the caller gets the clone's, for a second pool or a subprocess. Both name the
+// database the handle beside them is connected to, and a session opened on the
+// clone's DSN does not keep cleanup from dropping it.
+func TestNewFromTemplate_ReturnsTheCloneDSN(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots real postgres; skipped under -short")
+	}
+	key := uniqueKey(t)
+	build := func(db *sql.DB, dsn string) error {
+		// Build through the URL alone, as a migrator would.
+		other, err := sql.Open(pgtest.DriverName, dsn)
+		if err != nil {
+			return err
+		}
+		defer other.Close()
+		var viaURL, viaHandle string
+		if err := other.QueryRow(`SELECT current_database()`).Scan(&viaURL); err != nil {
+			return err
+		}
+		if err := db.QueryRow(`SELECT current_database()`).Scan(&viaHandle); err != nil {
+			return err
+		}
+		if viaURL != viaHandle {
+			return fmt.Errorf("build DSN names %s, the build handle %s", viaURL, viaHandle)
+		}
+		_, err = other.Exec(`CREATE TABLE built_by_url (v int); INSERT INTO built_by_url VALUES (9)`)
+		return err
+	}
+	db, dsn, cleanup, err := pgtest.NewFromTemplate(key, build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(dsn, "postgres://") {
+		t.Fatalf("dsn = %q, want a postgres:// URL like NewURL's", dsn)
+	}
+	second, err := sql.Open(pgtest.DriverName, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	var viaDSN, viaHandle string
+	if err := second.QueryRow(`SELECT current_database()`).Scan(&viaDSN); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT current_database()`).Scan(&viaHandle); err != nil {
+		t.Fatal(err)
+	}
+	if viaDSN != viaHandle {
+		t.Fatalf("the returned DSN names %s, the returned handle %s", viaDSN, viaHandle)
+	}
+	var v int
+	if err := second.QueryRow(`SELECT v FROM built_by_url`).Scan(&v); err != nil || v != 9 {
+		t.Fatalf("the clone lacks what build wrote through its DSN: v=%d err=%v", v, err)
+	}
+	if _, err := second.Exec(`INSERT INTO built_by_url VALUES (10)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM built_by_url`).Scan(&v); err != nil || v != 2 {
+		t.Fatalf("a write through the DSN is not visible on the handle: count=%d err=%v", v, err)
+	}
+
+	cleanup()
+	probe, _, probeCleanup, err := pgtest.NewFromTemplate(key, build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer probeCleanup()
+	var n int
+	if err := probe.QueryRow(`SELECT count(*) FROM pg_database WHERE datname = $1`, viaHandle).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("clone %s survived cleanup while a second pool held it open (n=%d, err=%v)", viaHandle, n, err)
+	}
+}
+
 // The clone is dropped by its cleanup.
 func TestNewFromTemplate_CleanupDropsTheClone(t *testing.T) {
 	if testing.Short() {
 		t.Skip("boots real postgres; skipped under -short")
 	}
 	key := uniqueKey(t)
-	build := func(db *sql.DB) error { _, err := db.Exec(`CREATE TABLE x (id int)`); return err }
-	db, cleanup, err := pgtest.NewFromTemplate(key, build)
+	build := func(db *sql.DB, _ string) error { _, err := db.Exec(`CREATE TABLE x (id int)`); return err }
+	db, _, cleanup, err := pgtest.NewFromTemplate(key, build)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +182,7 @@ func TestNewFromTemplate_CleanupDropsTheClone(t *testing.T) {
 		t.Fatal(err)
 	}
 	cleanup()
-	other, cleanup2, err := pgtest.NewFromTemplate(key, build)
+	other, _, cleanup2, err := pgtest.NewFromTemplate(key, build)
 	if err != nil {
 		t.Fatal(err)
 	}

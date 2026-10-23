@@ -64,6 +64,8 @@ type wireConnectedCluster struct {
 	// EnvironmentIDs are the live environments targeting this cluster. A
 	// non-empty list blocks removal server-side.
 	EnvironmentIDs []string `json:"environmentIds,omitempty"`
+	// Issuer is the secret-store issuer registered for the cluster, if any.
+	Issuer *wireClusterIssuer `json:"issuer,omitempty"`
 }
 
 // wireBindingIdentity is the principal the CONTROL PLANE presents to this
@@ -79,23 +81,7 @@ type wireConnectClusterResponse struct {
 	BindingIdentity wireBindingIdentity  `json:"bindingIdentity"`
 }
 
-func newClusterConnectCmd() *cobra.Command {
-	var (
-		kubeContext string
-		authFlag    string
-		envName     string
-		token       string
-		dryRun      bool
-		applyScope  string
-		liveFrom    string
-		bindingGSA  string
-		delivery    []string
-		deliverySub string
-	)
-	cmd := &cobra.Command{
-		Use:   "connect <name>",
-		Short: "Register a Kubernetes cluster the control plane may deploy into, as one env's binding",
-		Long: `Register a cluster you operate, by address, and grant ONE env's binding exactly
+const clusterConnectLong = `Register a cluster you operate, by address, and grant ONE env's binding exactly
 what that env's render applies there.
 
   forge cluster connect prod-us --context gke_acme_us-central1_prod --env prod
@@ -160,8 +146,50 @@ update, patch and delete on the named Secrets, plus create — which RBAC cannot
 limit by name, so a ValidatingAdmissionPolicy admits only the named
 namespace/name pairs, only as type Opaque, for the delivery identities only.
 --delivery-subject (user:<name> or serviceaccount:<ns>/<name>) binds a second,
-dedicated delivery identity alongside the binding's identity.`,
-		Args: cobra.ExactArgs(1),
+dedicated delivery identity alongside the binding's identity.
+
+SECRET-STORE ISSUER — connect also tells the control plane which service-account
+issuer the cluster's pods are signed by, so the secret store can verify the
+projected token an External Secrets Operator logs in with, against the cluster's
+OWN keys (no stored credential, no call back into the cluster). forge reads the
+issuer and key set from the API server through --context:
+
+  --issuer auto      (default) discover on GKE, upload elsewhere; if the issuer
+                     cannot be read or the control plane refuses it, the cluster
+                     still connects for deploys and forge says what is missing
+  --issuer discover  the store fetches <issuer>/.well-known/openid-configuration
+                     itself; the issuer must be reachable from the internet
+  --issuer upload    forge sends /openid/v1/jwks: for a cluster the store cannot
+                     reach (private, k3d). PUBLIC keys only; a set holding a
+                     private or symmetric key is never sent. A snapshot: re-run
+                     connect after a signing-key rotation to refresh it
+  --issuer skip      leave the registration as it is
+  --issuer withdraw  remove it; the store stops trusting the cluster
+
+The binding's grant gains 'get' on /openid/v1/jwks. The store's id for the
+cluster (its auth mount is jwt-<id>) is assigned by the control plane, is global
+across organizations, and is printed and kept in
+.forge/state/cluster-issuer-<name>.json; use it as the connected cluster name.`
+
+func newClusterConnectCmd() *cobra.Command {
+	var (
+		kubeContext string
+		authFlag    string
+		envName     string
+		token       string
+		dryRun      bool
+		applyScope  string
+		liveFrom    string
+		bindingGSA  string
+		delivery    []string
+		deliverySub string
+		issuerFlag  string
+	)
+	cmd := &cobra.Command{
+		Use:   "connect <name>",
+		Short: "Register a Kubernetes cluster the control plane may deploy into, as one env's binding",
+		Long:  clusterConnectLong,
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			secrets, err := parseDeliverySecrets(delivery)
 			if err != nil {
@@ -172,6 +200,10 @@ dedicated delivery identity alongside the binding's identity.`,
 				return err
 			}
 			scope, err := parseApplyScope(applyScope)
+			if err != nil {
+				return err
+			}
+			issuerMode, err := parseIssuerMode(issuerFlag)
 			if err != nil {
 				return err
 			}
@@ -187,6 +219,7 @@ dedicated delivery identity alongside the binding's identity.`,
 				BindingGSA:      bindingGSA,
 				DeliverySecrets: secrets,
 				DeliverySubject: subject,
+				Issuer:          issuerMode,
 				Out:             cmd.OutOrStdout(),
 				ErrOut:          cmd.ErrOrStderr(),
 			})
@@ -202,6 +235,7 @@ dedicated delivery identity alongside the binding's identity.`,
 	cmd.Flags().StringVar(&bindingGSA, "binding-gsa", "", "With --dry-run on gcp: the binding's GCP service account, to review the exact subject")
 	cmd.Flags().StringArrayVar(&delivery, "delivery-secret", nil,
 		"<namespace>/<name> of a Secret the control plane may write and renew (repeatable)")
+	cmd.Flags().StringVar(&issuerFlag, "issuer", issuerAuto, "Register the cluster's service-account issuer with the secret store: auto, discover, upload, skip or withdraw")
 	cmd.Flags().StringVar(&deliverySub, "delivery-subject", "",
 		"Also bind the delivery grant to this dedicated identity: user:<name> or serviceaccount:<namespace>/<name>")
 	return cmd
@@ -259,8 +293,10 @@ type clusterConnectOptions struct {
 	// DeliverySecrets / DeliverySubject: see connectRBAC.
 	DeliverySecrets []deliverySecret
 	DeliverySubject *deliverySubject
-	Out             io.Writer
-	ErrOut          io.Writer
+	// Issuer is the --issuer mode; empty is auto.
+	Issuer string
+	Out    io.Writer
+	ErrOut io.Writer
 }
 
 // clusterConnectClient resolves the endpoint and credential for an env and
@@ -353,9 +389,21 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 	if rbac, err = planConnectRBAC(ctx, opts, target, rbac); err != nil {
 		return err
 	}
+	issuerMode, err := parseIssuerMode(opts.Issuer)
+	if err != nil {
+		return err
+	}
+	// Read through the owner's context before anything is written, so an
+	// explicit --issuer that cannot be satisfied stops the run with the cluster
+	// untouched.
+	issuerPlan, err := planConnectIssuer(ctx, issuerMode, target.Context, target.Auth == authGCP, opts.LiveFrom != "")
+	if err != nil {
+		return err
+	}
+	rbac.IssuerJWKS = issuerMode != issuerSkip && issuerMode != issuerWithdraw
 
 	if opts.DryRun {
-		return runConnectDryRun(ctx, opts, name, target, rbac)
+		return runConnectDryRun(ctx, opts, name, target, rbac, issuerPlan)
 	}
 	if opts.LiveFrom != "" || opts.BindingGSA != "" {
 		return fmt.Errorf("--live-from and --binding-gsa review a grant and apply nothing: they are --dry-run only")
@@ -415,6 +463,9 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 	if target.Auth == authGCP {
 		req["cloudCluster"] = target.CloudCluster
 	}
+	if wire, ok := issuerPlan.wire(); ok {
+		req["issuer"] = wire
+	}
 	if target.Auth == authToken {
 		// Read AFTER the apply, because the token controller populates the
 		// Secret asynchronously — a read immediately after creation finds it
@@ -431,7 +482,17 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 	}
 
 	var resp wireConnectClusterResponse
-	if err := client.Call(ctx, procConnectCluster, req, &resp); err != nil {
+	err = client.Call(ctx, procConnectCluster, req, &resp)
+	if err != nil && issuerPlan.registers() && issuerMode == issuerAuto && issuerRefusal(err) {
+		// The control plane checks the issuer BEFORE it connects anything, so
+		// nothing was registered: retry for deploys alone and say why the
+		// store was left out. An explicit --issuer stays an error.
+		issuerPlan = connectIssuerPlan{Requested: issuerMode, Mode: issuerSkip, Note: "the control plane declined it:\n" + indentIssuerNote(err.Error(), "    ") + issuerHint(issuerPlan.Issuer)}
+		delete(req, "issuer")
+		resp = wireConnectClusterResponse{}
+		err = client.Call(ctx, procConnectCluster, req, &resp)
+	}
+	if err != nil {
 		return fmt.Errorf("connect cluster %q: %w", name, err)
 	}
 	if resp.Cluster.ID == "" {
@@ -454,6 +515,7 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 	}
 
 	writeConnectSummary(opts.Out, resp.Cluster, target)
+	reportConnectIssuer(opts.Out, name, opts.Env, issuerPlan, resp.Cluster.Issuer)
 	writeGrantInstructions(opts.Out, rbac, gke)
 	fmt.Fprintf(opts.Out, "\nPoint an environment at it in deploy/kcl/<env>/main.k:\n\n"+
 		"    forge.ClusterTarget {\n        cluster = %q\n        namespace = \"...\"\n        connected_cluster = %q\n    }\n",
@@ -464,7 +526,7 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 // runConnectDryRun prints the RBAC diff and what would be sent. It contacts
 // no control plane and writes nothing; the only cluster contact is the
 // read-only get of the binding's own labelled objects (skipped by --live-from).
-func runConnectDryRun(ctx context.Context, opts clusterConnectOptions, name string, target connectTarget, rbac connectRBAC) error {
+func runConnectDryRun(ctx context.Context, opts clusterConnectOptions, name string, target connectTarget, rbac connectRBAC, issuer connectIssuerPlan) error {
 	if target.Auth == authGCP {
 		rbac.BindingGSA = strings.TrimSpace(opts.BindingGSA)
 		if rbac.BindingGSA == "" {
@@ -484,6 +546,7 @@ func runConnectDryRun(ctx context.Context, opts clusterConnectOptions, name stri
 	if target.Auth == authToken {
 		fmt.Fprintf(out, "  token        minted on apply, sent write-only, never printed\n")
 	}
+	writeIssuerDryRun(out, issuer)
 	fmt.Fprintf(out, "  selector     %s\n\n", rbac.bindingSelector())
 
 	var (
@@ -674,6 +737,7 @@ func runClusterDisconnect(ctx context.Context, name, kubeContext, envName, token
 		return fmt.Errorf("disconnect cluster %q: %w", name, err)
 	}
 	fmt.Fprintf(out, "deregistered %s (%s)\n", name, id)
+	_ = removeConnectIssuerRecord(name)
 
 	if strings.TrimSpace(kubeContext) == "" {
 		fmt.Fprintf(out, "\nNo --context given, so nothing was deleted in the cluster. To clean up, every object forge\n"+
@@ -764,4 +828,26 @@ func lookupConnectedCluster(ctx context.Context, c cloudCaller, name string) (st
 // needing to know the parent's shape.
 func clusterConnectCommands() []*cobra.Command {
 	return []*cobra.Command{newClusterConnectCmd(), newClusterDisconnectCmd()}
+}
+
+// writeIssuerDryRun says what the run would send about the issuer.
+func writeIssuerDryRun(out io.Writer, p connectIssuerPlan) {
+	switch {
+	case p.registers() && p.Issuer != "":
+		keys := "the store fetches the keys itself"
+		if p.Mode == issuerUpload {
+			keys = fmt.Sprintf("%d public key(s) uploaded, set %s", p.KeyCount, p.Fingerprint)
+		}
+		fmt.Fprintf(out, "  issuer       %s (%s; %s)\n", p.Issuer, p.Mode, keys)
+	case p.Mode == issuerWithdraw:
+		fmt.Fprintf(out, "  issuer       would be withdrawn\n")
+	case p.Note != "":
+		fmt.Fprintf(out, "  issuer       none sent: %s\n", p.Note)
+	default:
+		fmt.Fprintf(out, "  issuer       left as it is\n")
+	}
+}
+
+func indentIssuerNote(s, prefix string) string {
+	return prefix + strings.ReplaceAll(strings.TrimRight(s, "\n"), "\n", "\n"+prefix)
 }

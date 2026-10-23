@@ -411,6 +411,7 @@ func TestDryRun_FreshClusterGolden_ClusterScope(t *testing.T) {
 func TestDryRun_WideningGolden(t *testing.T) {
 	// Capture the namespace-scope grant, as the cluster holds it.
 	narrow := testRBAC(t, authGCP, applyScope{Namespaces: []string{"acme-prod"}})
+	narrow.IssuerJWKS = true
 	var live strings.Builder
 	live.WriteString("apiVersion: v1\nkind: List\nitems:\n")
 	for _, o := range narrow.grantObjects() {

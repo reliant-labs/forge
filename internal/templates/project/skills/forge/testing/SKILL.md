@@ -38,6 +38,13 @@ stays real at every tier.
   It takes `testing.TB`, so a benchmark gets the same database a test does.
   A template unused for a day (`FORGE_TEST_TEMPLATE_TTL`) is dropped by the next
   run, so a long-lived shared server does not keep one per migration edit.
+  A test's own database is named after the process that made it, so one a
+  crashed run left behind is dropped by the next run that reaches the server,
+  and never one whose process is still running.
+- **Need the database's URL too?** `pgtest.NewFromTemplate` returns the clone
+  as a handle AND its DSN (`db, dsn, cleanup, err`), and hands its `build`
+  func the template's DSN beside the handle — for a migrator that takes a URL,
+  a second pool, or a server the test boots as a subprocess.
 - **Tests run on production's Postgres major.** Declare it once in forge.yaml —
   `database: {postgres_version: "16"}` — and the embedded server boots that
   major (a passing suite on 18 proves nothing about SQL on 16). Unset, it is the

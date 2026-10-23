@@ -2,7 +2,6 @@ package shadowdb
 
 import (
 	"database/sql"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -90,7 +89,7 @@ func (p appliedProject) fresh(t *testing.T) []schemadef.Table {
 func (p appliedProject) scratch(t *testing.T) int {
 	t.Helper()
 	var n int
-	pattern := fmt.Sprintf("forge_shadow_%d_%%", os.Getpid())
+	pattern := pgtest.ShadowScratchLike()
 	if err := p.base.QueryRow(`SELECT count(*) FROM pg_database WHERE datname LIKE $1`, pattern).Scan(&n); err != nil {
 		t.Fatalf("count shadow databases: %v", err)
 	}

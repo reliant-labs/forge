@@ -93,6 +93,17 @@ func TestMain(m *testing.M) {
 	composeLabelsFn = func(context.Context, string, string) ([]string, error) {
 		return nil, errors.New("Cannot connect to the Docker daemon (forge unit-test stand-in)")
 	}
+	// Nor does any test read a real cluster's issuer, or leave the record of a
+	// registration (.forge/state/cluster-issuer-*.json) in the source tree.
+	// "Unreadable" is the hermetic answer: connect then carries on without an
+	// issuer, as it does against a cluster that publishes none. A test that
+	// registers one serves it with stubIssuer (cluster_connect_issuer_test.go).
+	connectAPIGet = func(context.Context, string, string) ([]byte, error) {
+		return nil, errors.New("unit tests do not read a cluster's API server")
+	}
+	if dir, err := os.MkdirTemp("", "forge-cli-state-"); err == nil {
+		connectStateDir = func() string { return dir }
+	}
 	// Nor does any test reach a deployed site: status probes a cloud env's
 	// shipped frontends at their real URLs.
 	probeDeployedURL = func(context.Context, string) bool { return false }

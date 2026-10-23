@@ -229,7 +229,7 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 		if relErr != nil {
 			return false, fmt.Errorf("compute project-relative decorator path: %w", relErr)
 		}
-		if _, werr := checksums.WriteGeneratedFile(opts.ProjectRoot, rel, formatted, opts.Checksums, true); werr != nil {
+		if _, werr := checksums.WriteDerivedFileOutcome(opts.ProjectRoot, rel, formatted, opts.Checksums, true); werr != nil {
 			return false, fmt.Errorf("write %s: %w", rel, werr)
 		}
 		return true, nil

@@ -3,6 +3,7 @@
   address      https://34.1.2.3
   cloudCluster projects/acme/locations/us-central1/clusters/prod
   caPem        9 bytes, read from context gke_acme_us-central1_prod
+  issuer       none sent: not read: --live-from reviews offline
   selector     app.kubernetes.io/managed-by=forge,forge.dev/connected-cluster=prod-us,forge.dev/binding-env=prod
 
 Grant diff  forge-connect-prod-us-prod  on context gke_acme_us-central1_prod
@@ -41,6 +42,10 @@ summary    +0 new  ~0 changed  -0 removed  =4 unchanged
       - get
       - patch
       - update
+    - nonResourceURLs:
+      - /openid/v1/jwks
+      verbs:
+      - get
     ---
     apiVersion: rbac.authorization.k8s.io/v1
     kind: ClusterRoleBinding

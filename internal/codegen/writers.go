@@ -39,6 +39,16 @@ func writeForgeOwned(root, relPath string, content []byte, cs *checksums.FileChe
 	return err
 }
 
+// writeSourceDerived is writeForgeOwned for a file that is a pure function of
+// hand-written Go beside it (a component's helpers_gen_test.go, rendered from
+// its Deps struct). A pristine older render of such a file is stale by
+// construction once the source moves, so it is refreshed rather than left for
+// --heal — see checksums.WriteDerivedFileOutcome.
+func writeSourceDerived(root, relPath string, content []byte, cs *checksums.FileChecksums) error {
+	_, err := checksums.WriteDerivedFileOutcome(root, relPath, content, cs, true)
+	return err
+}
+
 // writeUserScaffold writes a one-time user-scaffold file. Deliberately not
 // checksum-tracked: forge writes it once and leaves later edits to the user.
 //

@@ -2,46 +2,34 @@ package cli
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"io"
+	"math/big"
+	"net"
 	"net/url"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/reliant-labs/forge/pkg/dbgrants"
+	"github.com/reliant-labs/forge/pkg/dbquery/kubedial"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
-
-func TestDBClusterServicePrefersAReplica(t *testing.T) {
-	if got := dbClusterService("app", 1); got != "app-rw" {
-		t.Errorf("one instance: %s", got)
-	}
-	if got := dbClusterService("app", 3); got != "app-ro" {
-		t.Errorf("with standbys: %s", got)
-	}
-}
-
-func TestForwardingLine(t *testing.T) {
-	for line, want := range map[string]string{
-		"Forwarding from 127.0.0.1:54321 -> 5432": "127.0.0.1:54321",
-		"Forwarding from [::1]:54321 -> 5432":     "",
-		"Handling connection for 54321":           "",
-	} {
-		got := ""
-		if m := forwardingRE.FindStringSubmatch(line); m != nil {
-			got = m[1]
-		}
-		if got != want {
-			t.Errorf("%q: %q, want %q", line, got, want)
-		}
-	}
-}
 
 func TestSelectQueryDatabase(t *testing.T) {
 	e := &KCLEntities{Databases: []DatabaseEntity{
@@ -61,34 +49,25 @@ func TestSelectQueryDatabase(t *testing.T) {
 	}
 }
 
-// fakeDBTunnel stands in for the cluster: it serves the read-only Secret and
-// "forwards" to a real Postgres, recording what the transport asked for.
-type fakeDBTunnel struct {
-	t                      *testing.T
-	db, namespace, service string
-	secret                 map[string][]byte
-	addr                   string
-	stopped                bool
+// fakeDBPods stands in for the cluster's port-forward: it "forwards" every
+// stream to a real Postgres and records which pod was asked for.
+type fakeDBPods struct {
+	mu    sync.Mutex
+	calls []string
+	addr  string
 }
 
-func (f *fakeDBTunnel) Secret(_ context.Context, namespace, name string) (map[string][]byte, error) {
-	if namespace != f.namespace || name != dbgrants.SecretName(f.db) {
-		f.t.Errorf("read secret %s/%s, want %s/%s", namespace, name, f.namespace, dbgrants.SecretName(f.db))
-	}
-	return f.secret, nil
-}
-
-func (f *fakeDBTunnel) Forward(_ context.Context, namespace, service string) (string, func(), error) {
-	f.service = service
-	if namespace != f.namespace {
-		f.t.Errorf("forward in namespace %s, want %s", namespace, f.namespace)
-	}
-	return f.addr, func() { f.stopped = true }, nil
+func (f *fakeDBPods) DialPod(_ context.Context, namespace, pod string, port int) (io.ReadWriteCloser, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, fmt.Sprintf("%s/%s:%d", namespace, pod, port))
+	f.mu.Unlock()
+	return net.Dial("tcp", f.addr)
 }
 
 // End to end through the port-forward transport against a real Postgres: the
-// read-only Secret is read, the replica service is chosen, the query runs as
-// that role in the ManagedDatabase's database, and the tunnel is closed.
+// read-only Secret and CA are read through the kube client, the replica
+// service's ready pod is dialled, the query runs as that role in the
+// ManagedDatabase's database, and the tunnel is closed.
 func TestDBQueryClusterThroughTheTunnel(t *testing.T) {
 	if testing.Short() {
 		t.Skip("boots a real postgres (pgtest); runs in task test")
@@ -126,17 +105,33 @@ func TestDBQueryClusterThroughTheTunnel(t *testing.T) {
 	// one: a pgtest name has no hyphen for it to fold.
 	dbName := strings.TrimPrefix(u.Path, "/")
 
-	fake := &fakeDBTunnel{t: t, db: dbName, namespace: "demo", addr: u.Host,
-		secret: map[string][]byte{"username": []byte(role), "password": []byte("pw")}}
-	prevTunnel, prevSSL := newDBTunnel, dbClusterSSLMode
-	newDBTunnel = func(kubeContext string) (dbTunnel, error) {
+	ready := true
+	cs := fake.NewClientset([]runtime.Object{
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "demo", Name: dbgrants.SecretName(dbName)},
+			Data: map[string][]byte{"username": []byte(role), "password": []byte("pw")}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "demo", Name: kubedial.CASecretName(dbName)},
+			Data: map[string][]byte{"ca.crt": testCAPEM(t)}},
+		&discoveryv1.EndpointSlice{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "demo", Name: dbName + "-ro-x", Labels: map[string]string{discoveryv1.LabelServiceName: dbName + "-ro"}},
+			Ports:      []discoveryv1.EndpointPort{{Port: new(int32(5432))}},
+			Endpoints: []discoveryv1.Endpoint{{
+				Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+				TargetRef:  &corev1.ObjectReference{Kind: "Pod", Name: dbName + "-2"},
+			}},
+		},
+	}...)
+	pods := &fakeDBPods{addr: u.Host}
+	prevClient, prevTweak := newDBQueryClient, dbClusterConnTweak
+	newDBQueryClient = func(kubeContext string) (*kubedial.Client, error) {
 		if kubeContext != "k3d-demo" {
 			t.Errorf("kube context %q, want the database's cluster", kubeContext)
 		}
-		return fake, nil
+		return kubedial.NewWithClientset(cs, pods), nil
 	}
-	dbClusterSSLMode = "disable"
-	t.Cleanup(func() { newDBTunnel, dbClusterSSLMode = prevTunnel, prevSSL })
+	// The test Postgres has no TLS; the verification itself is covered in
+	// pkg/dbquery/kubedial.
+	dbClusterConnTweak = func(c *pgx.ConnConfig) { c.TLSConfig = nil }
+	t.Cleanup(func() { newDBQueryClient, dbClusterConnTweak = prevClient, prevTweak })
 
 	withKCLFixture(t, fmt.Sprintf(`{"output":{"lifecycle":"local","data_access":{"db_query":"open"},
 		"workloads":[{"name":"api","kind":"service","runtime":{"type":"cluster"},"spec":{"kind":"service"}}],
@@ -158,11 +153,11 @@ func TestDBQueryClusterThroughTheTunnel(t *testing.T) {
 	if !doc.OK || len(doc.Rows) != 1 || doc.Scope.Transport != "port-forward" || doc.Scope.Database != dbName {
 		t.Errorf("doc %+v", doc)
 	}
-	if fake.service != dbName+"-ro" {
-		t.Errorf("forwarded to %s, want the replica service", fake.service)
-	}
-	if !fake.stopped {
-		t.Error("the tunnel was left open")
+	pods.mu.Lock()
+	calls := append([]string(nil), pods.calls...)
+	pods.mu.Unlock()
+	if len(calls) == 0 || calls[0] != "demo/"+dbName+"-2:5432" {
+		t.Errorf("forwarded to %v, want the ready pod behind the replica service", calls)
 	}
 
 	// The role's grants are the boundary: a column it was not granted is
@@ -172,48 +167,40 @@ func TestDBQueryClusterThroughTheTunnel(t *testing.T) {
 	}
 }
 
-// fakeKubectl puts a kubectl on PATH that runs script.
-func fakeKubectl(t *testing.T, script string) {
-	t.Helper()
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte("#!/bin/sh\n"+script), 0o755); err != nil {
-		t.Fatal(err)
+// A database whose read-only Secret is missing is not queried: the command
+// says why and how to fix it, exit 2.
+func TestDBQueryClusterWithoutTheReadOnlyRole(t *testing.T) {
+	prevClient := newDBQueryClient
+	newDBQueryClient = func(string) (*kubedial.Client, error) {
+		return kubedial.NewWithClientset(fake.NewClientset(), &fakeDBPods{}), nil
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() { newDBQueryClient = prevClient })
+	withKCLFixture(t, `{"output":{"lifecycle":"local","data_access":{"db_query":"open"},
+		"workloads":[{"name":"api","kind":"service","runtime":{"type":"cluster"},"spec":{"kind":"service"}}],
+		"databases":[{"name":"ledger","runtime":"cluster","cluster":"k3d-demo","namespace":"demo","spec":{"instances":1}}]}}`)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	_, err := runDBQueryCmd(t, "dev", "select 1")
+	if exitCodeForError(err) != exitUndetermined || err == nil || !strings.Contains(err.Error(), "ledger-forge-ro") || !strings.Contains(err.Error(), "redeploy") {
+		t.Errorf("err = %v, want exit 2 naming the missing secret and the fix", err)
+	}
 }
 
-// The kubectl tunnel: the address kubectl reports, its arguments, and a stop
-// that ends the process.
-func TestKubeDBTunnelForward(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("a shell-script kubectl")
-	}
-	args := filepath.Join(t.TempDir(), "args")
-	fakeKubectl(t, `echo "$@" > `+args+`
-echo "Forwarding from 127.0.0.1:54321 -> 5432"
-echo "Forwarding from [::1]:54321 -> 5432"
-exec sleep 30
-`)
-	k := &kubeDBTunnel{kubeContext: "k3d-demo"}
-	start := time.Now()
-	addr, stop, err := k.Forward(context.Background(), "demo", "ledger-ro")
+// testCAPEM is a throwaway CA certificate: the transport only parses it, as
+// the test Postgres speaks no TLS.
+func testCAPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if addr != "127.0.0.1:54321" {
-		t.Errorf("addr %q", addr)
+	tpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "test-ca"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
 	}
-	stop()
-	if time.Since(start) > 10*time.Second {
-		t.Error("stop did not end kubectl")
+	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
 	}
-	got, _ := os.ReadFile(args)
-	if want := "--context k3d-demo --namespace demo port-forward --address 127.0.0.1 svc/ledger-ro :5432"; strings.TrimSpace(string(got)) != want {
-		t.Errorf("kubectl %s, want %s", got, want)
-	}
-
-	fakeKubectl(t, `echo 'error: services "ledger-ro" not found' >&2; exit 1`)
-	if _, _, err := k.Forward(context.Background(), "demo", "ledger-ro"); err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Errorf("a failing kubectl: %v", err)
-	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }

@@ -54,11 +54,7 @@ func (c *Client) elevationScope(err error) (string, bool) {
 	default:
 		return "", false
 	}
-	m := missingScopeRe.FindStringSubmatch(apiErr.Message)
-	if m == nil {
-		return "", false
-	}
-	return m[1], true
+	return apiErr.MissingScope()
 }
 
 // elevatedToken returns a live elevated token for scope, exchanging for one

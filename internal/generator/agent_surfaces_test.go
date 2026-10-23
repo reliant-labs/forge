@@ -39,7 +39,7 @@ func TestAgentSurfacesPerHarness(t *testing.T) {
 	for h, files := range want {
 		t.Run(string(h), func(t *testing.T) {
 			root := t.TempDir()
-			if err := writeAgentSurfaces(root, "demo", h); err != nil {
+			if err := writeAgentSurfaces(root, "demo", h, false); err != nil {
 				t.Fatal(err)
 			}
 			got := writtenFiles(t, root)
@@ -63,7 +63,7 @@ func TestAgentsMDIsTheSingleRenderedGuide(t *testing.T) {
 	}
 	for _, h := range ValidHarnesses() {
 		root := t.TempDir()
-		if err := writeAgentSurfaces(root, "demo", h); err != nil {
+		if err := writeAgentSurfaces(root, "demo", h, false); err != nil {
 			t.Fatal(err)
 		}
 		got, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
@@ -78,7 +78,7 @@ func TestAgentsMDIsTheSingleRenderedGuide(t *testing.T) {
 
 func TestClaudeMDImportsAgentsMD(t *testing.T) {
 	root := t.TempDir()
-	if err := writeAgentSurfaces(root, "demo", HarnessClaude); err != nil {
+	if err := writeAgentSurfaces(root, "demo", HarnessClaude, false); err != nil {
 		t.Fatal(err)
 	}
 	body, _ := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
@@ -103,7 +103,7 @@ func TestPointerFilesCarryNoSkillBodies(t *testing.T) {
 
 	for _, h := range []Harness{HarnessClaude, HarnessCursor, HarnessCopilot} {
 		root := t.TempDir()
-		if err := writeAgentSurfaces(root, "demo", h); err != nil {
+		if err := writeAgentSurfaces(root, "demo", h, false); err != nil {
 			t.Fatal(err)
 		}
 		for _, f := range h.agentFiles() {
@@ -136,7 +136,7 @@ func TestPointerFilesCarryNoSkillBodies(t *testing.T) {
 
 func TestAgentSurfacesNameReliantForge(t *testing.T) {
 	root := t.TempDir()
-	if err := writeAgentSurfaces(root, "demo", HarnessClaude); err != nil {
+	if err := writeAgentSurfaces(root, "demo", HarnessClaude, false); err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range []string{"AGENTS.md", ".claude/skills/forge/SKILL.md"} {
@@ -156,7 +156,7 @@ func TestAgentSurfacesKeepExistingFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), mine, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeAgentSurfaces(root, "demo", HarnessClaude); err != nil {
+	if err := writeAgentSurfaces(root, "demo", HarnessClaude, false); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(filepath.Join(root, "AGENTS.md"))

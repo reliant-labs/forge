@@ -129,6 +129,17 @@ cat "$rec" >> ` + logPath + `
 rm -f "$rec"
 case " $* " in
   *' apply '*)
+    # FAKE_SS_DENY=N refuses the first N requests that carry a SecretStore, as
+    # a ValidatingAdmissionPolicy still holding the previous list does (the SC7
+    # rehearsal); a dry-run runs the same admission, so it is refused too.
+    if [ -n "$FAKE_SS_DENY" ] && grep -q '^kind: SecretStore' "$in"; then
+      n=$(cat ` + logPath + `.deny 2>/dev/null || echo 0)
+      if [ "$n" -lt "$FAKE_SS_DENY" ]; then
+        echo $((n+1)) > ` + logPath + `.deny
+        echo "Error from server (Forbidden): secretstores.external-secrets.io \"openbao-bootstrap\" is forbidden: ValidatingAdmissionPolicy 'eso-store-pin' with binding 'eso-store-pin' denied request: a SecretStore here may only dial a declared server" >&2
+        rm -f "$in"; exit 1
+      fi
+    fi
     awk '/^kind:/{k=tolower($2)} /^  name:/{if(k!=""&&n==""){n=$2}} /^---$/{if(k!=""&&n!="")print k"/"n" serverside-applied"; k=""; n=""} END{if(k!=""&&n!="")print k"/"n" serverside-applied"}' "$in"
     rm -f "$in"; exit 0 ;;
   *' wait '*)

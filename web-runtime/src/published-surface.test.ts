@@ -78,6 +78,7 @@ describe("the published surface", () => {
       ".",
       "./interceptors",
       "./mock-transport",
+      "./node",
       "./package.json",
       "./service-hooks",
       "./telemetry",
@@ -102,12 +103,16 @@ describe("the published surface", () => {
     //     imports for interceptors and errors alone; anchoring React Query
     //     there would make a non-React consumer resolve a package it never
     //     declared.
+    //   - node is the Node / Electron-main telemetry entry. It imports
+    //     node:async_hooks, node:crypto and node:os, which a browser bundle
+    //     cannot resolve.
     //   - vite is a dev-server plugin. It imports node:fs and node:http,
     //     which a browser bundle cannot resolve; it is loaded by
     //     vite.config.ts, in Node, and nowhere else.
     const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
     for (const forbidden of [
       "./mock-transport",
+      "./node",
       "./telemetry",
       "./service-hooks",
       "./vite",

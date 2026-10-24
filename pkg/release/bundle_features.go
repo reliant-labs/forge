@@ -62,13 +62,17 @@ const (
 	// env's promotions are judged by (forge.ReleaseHealth). A control plane
 	// that predates it judges with the defaults.
 	BundleFeatureReleaseHealth = "shape-release-health"
+	// BundleFeatureUptimeChecks is Shape.UptimeChecks: the outside-in checks
+	// the control plane's prober runs. A control plane that predates it
+	// probes nothing for the env.
+	BundleFeatureUptimeChecks = "shape-uptime-checks"
 )
 
 // BundleDocFeatures is every optional bundle-document feature this version's
 // [DecodeBundleDoc] accepts. A control plane advertises exactly this list, so
 // what it claims to decode and what its decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -119,6 +123,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	}
 	if !r.Supports(BundleFeatureDataAccess) {
 		s.DataAccess = nil
+	}
+	if !r.Supports(BundleFeatureUptimeChecks) {
+		s.UptimeChecks = nil
 	}
 	if r.Supports(BundleFeatureFrontendTelemetry) {
 		return s

@@ -59,6 +59,18 @@ resolve = lambda name: str, bundle: any, from_host: str = "localhost" -> str {
         ("http://" + from_host + ":" + str(_frontends[0].port) + _frontend_base(_frontends[0]) if _frontends else "")))
 }
 
+# The public URL of a route, or "" when nothing names a host for it: a listener
+# with no hostname anywhere (route, listener, gateway) is reached as localhost,
+# and "localhost" is not a public address. The uptime prober's route targets
+# resolve through this.
+route_public_url = lambda r: any, bundle: any -> str {
+    _gws = [g for g in bundle.gateways if g.name == r.gateway]
+    _ls = [l for g in _gws for l in g.listeners if l.name == r.listener]
+    _l = _ls[0] if _ls else None
+    _host = (r.host if r.host else (_l.hostname if _l.hostname else _gws[0].host)) if _l else ""
+    _route_url(r, bundle) if _host else ""
+}
+
 _frontend_base = lambda f: any -> str {
     f.base_path if f.base_path else ""
 }

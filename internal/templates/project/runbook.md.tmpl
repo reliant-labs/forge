@@ -110,6 +110,26 @@ team knows.
   commands to run next). `forge obs traces <env> --service <svc> --errors`
   lists the failing requests; `forge obs check <env>` judges the last release.
 
+### UptimeCheckFailing, UptimeCheckDown
+
+- **Meaning:** the platform's prober requested the check's address several times
+  in a row and got no acceptable answer: no response, a status the check does
+  not accept, or a body without the expected text. Three failures in a row is a
+  warning, ten a critical `UptimeCheckDown`. The alert's `check` label names it.
+- **Diagnose:** the `why` payload names the last status (or how the probe
+  failed: `timeout`, `dns`, `connect`, `tls`, `status`, `body`), the latency and
+  when the failures began. `forge obs metrics query <env> uptime.check.up
+  --group-by check --since 3h` shows the run. A failure that started at a
+  promotion points at that release (`forge obs check <env>`).
+
+### CertificateExpiring, CertificateExpiringSoon
+
+- **Meaning:** the certificate an https uptime check last saw expires within
+  14 days (warning) or 3 days (critical). A platform-managed hostname renews
+  itself; a custom domain or a certificate you supply is the one to check.
+- **Diagnose:** `forge obs metrics query <env> tls.cert.expiry_seconds
+  --group-by check` shows the days left per check.
+
 ## Tuning
 
 Every built-in alert is tuned or disabled per env by its id, in one map:

@@ -51,6 +51,12 @@ type AlertInput struct {
 	// what each otel_gen.ts bakes as SERVICE_NAME), empty when the project has
 	// no web frontend. The frontend defaults fire per service.name.
 	FrontendServices []string `json:"frontend_services,omitempty"`
+	// UptimeChecks are the names of the env's uptime checks (the release
+	// shape's uptime_checks). They are a fact about one env, not the project,
+	// so the generated file never records them: the resolver sets them per
+	// env. The uptime defaults apply only to an env that has checks, and read
+	// only those checks' series, so a check an env opts out of cannot alert.
+	UptimeChecks []string `json:"-"`
 }
 
 // AlertInputOf derives the defaults' input from the same Input the dashboards
@@ -130,6 +136,21 @@ type alertDef struct {
 	sql func(env string, in AlertInput, p map[string]float64) string
 	// platform lists the rules a platform default stands for.
 	platform []platformRule
+	// needs is a per-env gate on top of applies: applies decides whether the
+	// project has anything the default could watch (and so whether the
+	// generated catalog lists it), needs whether this env does. Nil = always.
+	needs func(AlertInput) bool
+	// levels, when set, make one default several rules, one per severity:
+	// the sql runs once per level with the param pCritical set to 1 for a
+	// critical level and 0 otherwise, and decides its band from that. The
+	// levels share the default's params, so a threshold is tuned once.
+	levels []alertLevel
+}
+
+// alertLevel is one severity of a default with levels.
+type alertLevel struct {
+	alert, severity string
+	critical        bool
 }
 
 type platformRule struct{ key, alert, severity string }
@@ -138,6 +159,14 @@ const (
 	pWindow      = "window_minutes"
 	pMinRequests = "min_requests"
 	pMinSamples  = "min_samples"
+	// pCritical is the synthetic param a default with levels is given: 1 for
+	// the rule of its critical level, 0 for the others. It is not tunable.
+	pCritical = "critical_level"
+
+	pFailures         = "failures"
+	pCriticalFailures = "critical_failures"
+	pWarnDays         = "warn_days"
+	pCriticalDays     = "critical_days"
 )
 
 // Platform default ids: alerts the control plane raises from events it owns (a
@@ -172,6 +201,8 @@ func hasIssues(in AlertInput) bool { return len(in.Services) > 0 || hasFrontends
 func hasFrontends(in AlertInput) bool { return len(in.FrontendServices) > 0 }
 
 func hasServices(in AlertInput) bool { return len(in.Services) > 0 }
+
+func hasUptimeChecks(in AlertInput) bool { return len(in.UptimeChecks) > 0 }
 
 // The defaults. Where the signal is rpc traffic they read the RPC server
 // METRICS (rpc.server.calls / .errors / .duration, pkg/observe), never spans:
@@ -302,6 +333,40 @@ var alertDefs = []alertDef{
 		annotations: map[string]string{"summary": "{{ $labels.service }} {{ $labels.signal }} is off its usual for this hour of the week ({{ $labels.env }}). Why: forge obs alerts --json, or forge obs check {{ $labels.env }}"},
 		applies:     hasServices,
 		platform:    []platformRule{{PlatformServiceAnomaly, "ServiceAnomaly", SeverityWarning}},
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: "uptime-check-failing", Alert: "UptimeCheckFailing", AlertNames: []string{"UptimeCheckDown"},
+			Title:    "An uptime check failed several probes in a row (warning), then many (critical)",
+			Severity: SeverityWarning, For: "0s", Interval: "1m", Signal: "metrics", Requires: "metrics",
+			Params: []AlertParam{
+				{pFailures, 3, "consecutive failed probes that raise UptimeCheckFailing (warning)"},
+				{pCriticalFailures, 10, "consecutive failed probes that raise UptimeCheckDown (critical) instead"},
+				{pWindow, 30, "minutes of probes considered; keep it above failures times the check's interval"},
+			},
+		},
+		annotations: map[string]string{"summary": "{{ $labels.check }} has failed {{ $value }} probes in a row"},
+		applies:     func(AlertInput) bool { return true },
+		needs:       hasUptimeChecks,
+		levels:      []alertLevel{{"UptimeCheckFailing", SeverityWarning, false}, {"UptimeCheckDown", SeverityCritical, true}},
+		sql:         uptimeFailingSQL,
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: "certificate-expiring", Alert: "CertificateExpiring", AlertNames: []string{"CertificateExpiringSoon"},
+			Title:    "A probed certificate expires within 14 days (warning) or 3 days (critical)",
+			Severity: SeverityWarning, For: "10m", Interval: "5m", Signal: "metrics", Requires: "metrics",
+			Params: []AlertParam{
+				{pWarnDays, 14, "days to expiry at or below which CertificateExpiring (warning) fires"},
+				{pCriticalDays, 3, "days to expiry at or below which CertificateExpiringSoon (critical) fires instead, an expired certificate included"},
+				{pWindow, 30, "minutes of probes considered"},
+			},
+		},
+		annotations: map[string]string{"summary": "The certificate {{ $labels.check }} serves expires in {{ $value }} days"},
+		applies:     func(AlertInput) bool { return true },
+		needs:       hasUptimeChecks,
+		levels:      []alertLevel{{"CertificateExpiring", SeverityWarning, false}, {"CertificateExpiringSoon", SeverityCritical, true}},
+		sql:         certificateExpiringSQL,
 	},
 	{
 		AlertDefaultInfo: AlertDefaultInfo{
@@ -548,7 +613,7 @@ func ResolveAlertDefaultsFor(in AlertInput, env string, tuning map[string]AlertT
 		skipped []AlertSkip
 	)
 	for _, d := range alertDefs {
-		if !d.applies(in) {
+		if !d.applies(in) || (d.needs != nil && !d.needs(in)) {
 			continue
 		}
 		t, tuned := tuning[d.ID]
@@ -587,22 +652,35 @@ func ResolveAlertDefaultsFor(in AlertInput, env string, tuning map[string]AlertT
 			}
 			continue
 		}
-		r := AlertRule{
-			ID: d.ID, Alert: d.Alert, Expr: d.sql(env, in, params),
-			For: d.For, Interval: d.Interval,
-			Labels:      map[string]string{"severity": d.Severity},
-			Annotations: map[string]string{},
+		levels := d.levels
+		if levels == nil {
+			levels = []alertLevel{{d.Alert, d.Severity, false}}
 		}
-		for k, v := range d.annotations {
-			r.Annotations[k] = v
+		for _, lv := range levels {
+			lp := map[string]float64{}
+			for k, v := range params {
+				lp[k] = v
+			}
+			if lv.critical {
+				lp[pCritical] = 1
+			}
+			r := AlertRule{
+				ID: d.ID, Alert: lv.alert, Expr: d.sql(env, in, lp),
+				For: d.For, Interval: d.Interval,
+				Labels:      map[string]string{"severity": lv.severity},
+				Annotations: map[string]string{},
+			}
+			for k, v := range d.annotations {
+				r.Annotations[k] = v
+			}
+			if t.For != "" {
+				r.For = t.For
+			}
+			for k, v := range t.Labels {
+				r.Labels[k] = v
+			}
+			out = append(out, r)
 		}
-		if t.For != "" {
-			r.For = t.For
-		}
-		for k, v := range t.Labels {
-			r.Labels[k] = v
-		}
-		out = append(out, r)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Alert < out[j].Alert })
 	return out, skipped, nil

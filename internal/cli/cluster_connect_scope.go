@@ -152,7 +152,6 @@ var (
 	refPods         = resourceRef{"", "pods"}
 	refReplicaSets  = resourceRef{"apps", "replicasets"}
 	refRoles        = resourceRef{"rbac.authorization.k8s.io", "roles"}
-	refRoleBindings = resourceRef{"rbac.authorization.k8s.io", "rolebindings"}
 	refClusterRoles = resourceRef{"rbac.authorization.k8s.io", "clusterroles"}
 )
 

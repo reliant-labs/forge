@@ -501,12 +501,6 @@ func (f *fakeConnectCaller) Call(_ context.Context, procedure string, req, out a
 	return nil
 }
 
-func recordConnect(t *testing.T, kctx string) map[string]map[string]any {
-	t.Helper()
-	var discard strings.Builder
-	return recordConnectTo(t, &discard, kctx)
-}
-
 // recordConnectTo drives the real runClusterConnect against a fake control
 // plane and a fake cluster, and returns what it sent.
 func recordConnectTo(t *testing.T, out *strings.Builder, kctx string) map[string]map[string]any {

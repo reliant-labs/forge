@@ -27,7 +27,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/database"
-	"github.com/reliant-labs/forge/internal/migrationver"
+	"github.com/reliant-labs/forge/internal/migrationgit"
 	"github.com/reliant-labs/forge/internal/naming"
 	entityscaffold "github.com/reliant-labs/forge/internal/scaffold"
 	"github.com/reliant-labs/forge/internal/shadowdb"
@@ -1025,7 +1025,7 @@ func writeBirthMigration(migDir, table, upSQL string) (string, error) {
 	if err := os.MkdirAll(migDir, 0o755); err != nil {
 		return "", err
 	}
-	version, err := migrationver.Next(migDir)
+	version, err := migrationgit.Next(migDir)
 	if err != nil {
 		return "", err
 	}

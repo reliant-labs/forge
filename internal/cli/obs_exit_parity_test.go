@@ -36,6 +36,8 @@ var obsParityVerbs = []struct {
 	{"issue", []string{"issue", "ISS-1", "prod"}},
 	{"metrics list", []string{"metrics", "list", "prod"}},
 	{"metrics query", []string{"metrics", "query", "prod", "rpc.server.duration"}},
+	{"metrics describe", []string{"metrics", "describe", "prod", "rpc.server.duration"}},
+	{"metrics exemplars", []string{"metrics", "exemplars", "prod", "rpc.server.duration"}},
 }
 
 // TestObsJSONDocumentExitCodeIsTheProcessExitCode is the contract agents branch

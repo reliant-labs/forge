@@ -2,6 +2,7 @@ package obsbackend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/dashspec"
+	"github.com/reliant-labs/forge/pkg/observe/metrics"
 	"github.com/reliant-labs/forge/pkg/obsquery"
 )
 
@@ -22,6 +24,10 @@ type Local struct {
 	// Nil when the caller has none; a read that needs it then fails with a
 	// remedy rather than a panic.
 	Ledger func() (LedgerReader, error)
+	// Declared reads the metrics schemas this project declares
+	// (bin/observability/metrics-schema.json), for `forge obs metrics list`
+	// and `describe`. Nil when the caller has none.
+	Declared func() []metrics.Schema
 }
 
 // Info implements Backend.
@@ -379,14 +385,60 @@ func (l Local) Endpoints(ctx context.Context, req EndpointsRequest) (EndpointsRe
 
 // ── metrics ─────────────────────────────────────────────────────────────
 
-// MetricsList implements Backend.
+// metricLimits bound a metrics statement: the evaluator's own row cap, as a
+// partial result rather than a failure (it reports the cut as truncated).
+func metricLimits() Limits {
+	return Limits{Timeout: 30 * time.Second, MaxRows: obsquery.MaxMetricRows, Break: true}
+}
+
+// evalRunner is the obsquery.Runner over this backend's ClickHouse runner.
+func (l Local) evalRunner() obsquery.Runner {
+	return func(ctx context.Context, st obsquery.Stmt) (obsquery.Rows, error) {
+		r, err := l.Runner.Run(ctx, st, metricLimits())
+		if err != nil {
+			return nil, err
+		}
+		return RowsOf(r), nil
+	}
+}
+
+// declared reads the metrics schemas the project declares (none when the
+// caller has none).
+func (l Local) declared() []metrics.Schema {
+	if l.Declared == nil {
+		return nil
+	}
+	return l.Declared()
+}
+
+// evalErr maps an evaluator failure to a backend error: a refused request is
+// exit 1, a missing metric names the command that lists them, and a failure of
+// the runner keeps its own status.
+func (l Local) evalErr(err error) error {
+	var be *Error
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &be):
+		return err
+	case errors.Is(err, obsquery.ErrMetricNotFound):
+		name := strings.TrimPrefix(err.Error(), obsquery.ErrMetricNotFound.Error()+": ")
+		return Wrong("no metric %q in the local ClickStack for the range", name).With(Cmd("forge", "obs", "metrics", "list", l.Env, "--contains", name))
+	case errors.Is(err, obsquery.ErrInvalid):
+		return Wrong("%s", strings.ReplaceAll(err.Error(), obsquery.ErrInvalid.Error()+": ", ""))
+	}
+	return Wrong("%s", err.Error())
+}
+
+// MetricsList implements Backend: the catalog over every metric kind, joined
+// with the declared schemas this machine has.
 func (l Local) MetricsList(ctx context.Context, req MetricsListRequest) (MetricsListResult, error) {
-	q := obsquery.MetricList{Scope: LocalScope(req.Narrow, l.Env), NameContains: req.NameContains, Limit: req.Limit}
+	q := obsquery.MetricCatalog{Scope: LocalScope(req.Narrow, l.Env), NameContains: req.NameContains, Limit: req.Limit}
 	st, err := q.Compile()
 	if err != nil {
 		return MetricsListResult{}, compileErr(err)
 	}
-	res := MetricsListResult{Statements: []Statement{stmt("metrics", st)}}
+	res := MetricsListResult{Statements: []Statement{stmt("metric catalog", st)}}
 	if req.Explain {
 		return res, nil
 	}
@@ -394,221 +446,218 @@ func (l Local) MetricsList(ctx context.Context, req MetricsListRequest) (Metrics
 	if err != nil {
 		return res, err
 	}
-	for _, row := range r.Rows {
-		if len(row) < 4 {
-			return res, Undetermined("the local ClickStack returned %d columns for metrics, want 4", len(row))
-		}
-		if len(res.Metrics) == req.Limit {
-			res.Truncated = true
-			break
-		}
-		res.Metrics = append(res.Metrics, MetricInfo{
-			Name: AsString(row[0]), Unit: AsString(row[1]), Description: AsString(row[2]),
-			Type: MetricTypeName(obsquery.MetricType(AsInt(row[3]))),
-		})
+	entries, truncated, err := obsquery.ParseCatalog(RowsOf(r), req.Limit)
+	if err != nil {
+		return res, Undetermined("the local ClickStack returned a catalog forge cannot read").Cause(err)
+	}
+	res.Truncated = truncated
+	res.Metrics = catalogInfos(l.mergeDeclared(entries, req.NameContains))
+	if req.Limit > 0 && len(res.Metrics) > req.Limit {
+		res.Metrics, res.Truncated = res.Metrics[:req.Limit], true
 	}
 	return res, nil
 }
 
-// MetricTypeName is "gauge", "sum" or "histogram".
-func MetricTypeName(t obsquery.MetricType) string {
-	switch t {
-	case obsquery.MetricGauge:
-		return "gauge"
-	case obsquery.MetricSum:
-		return "sum"
-	case obsquery.MetricHistogram:
-		return "histogram"
+// mergeDeclared joins the observed catalog with the declared schemas, keeping
+// only names that contain the filter (a declared metric never seen is added by
+// the merge whatever the filter said).
+func (l Local) mergeDeclared(observed []obsquery.CatalogEntry, contains string) []obsquery.CatalogEntry {
+	merged := obsquery.MergeDeclared(observed, l.declared())
+	if contains == "" {
+		return merged
 	}
-	return ""
-}
-
-var aggNames = map[string]obsquery.Agg{
-	"": obsquery.AggDefault, "avg": obsquery.AggAvg, "sum": obsquery.AggSum, "min": obsquery.AggMin, "max": obsquery.AggMax,
-	"count": obsquery.AggCount, "increase": obsquery.AggIncrease, "rate": obsquery.AggRate,
-	"p50": obsquery.AggP50, "p95": obsquery.AggP95, "p99": obsquery.AggP99,
-}
-
-// AggNames lists the --agg values, for help text.
-const AggNames = "avg, sum, min, max, count, increase, rate, p50, p95, p99"
-
-func aggName(a obsquery.Agg) string {
-	for n, v := range aggNames {
-		if v == a && n != "" {
-			return n
+	out := merged[:0:0]
+	for _, e := range merged {
+		if strings.Contains(strings.ToLower(e.Name), strings.ToLower(contains)) {
+			out = append(out, e)
 		}
 	}
-	return ""
-}
-
-// MetricsQuery implements Backend.
-func (l Local) MetricsQuery(ctx context.Context, req MetricsQueryRequest) (MetricsQueryResult, error) {
-	agg, ok := aggNames[req.Agg]
-	if !ok {
-		return MetricsQueryResult{}, Wrong("--agg %q: use one of %s", req.Agg, AggNames)
-	}
-	scope := LocalScope(req.Narrow, l.Env)
-	res := MetricsQueryResult{Name: req.Name}
-	look := obsquery.MetricLookup{Scope: scope, Name: req.Name}
-	lst, err := look.Compile()
-	if err != nil {
-		return res, compileErr(err)
-	}
-	res.Statements = append(res.Statements, stmt("metric type lookup", lst))
-
-	// MX-F4 replaces this section with obsquery.EvalMetricPanel; until then the
-	// lookup's columns (see MetricLookup) are read by hand.
-	info := obsquery.MetricInfo{Type: obsquery.MetricSum, Monotonic: true}
-	kind := obsquery.MetricUnknown
-	if !req.Explain {
-		lr, err := l.run(ctx, lst, DefaultLimits())
-		if err != nil {
-			return res, err
-		}
-		for _, row := range lr.Rows {
-			if len(row) < 10 {
-				return res, Undetermined("the local ClickStack returned %d columns for a metric lookup, want 10", len(row))
-			}
-			info.StoredKinds++
-			if kind != obsquery.MetricUnknown {
-				continue
-			}
-			kind = obsquery.MetricType(AsInt(row[0]))
-			info = obsquery.MetricInfo{
-				Type: kind, Unit: AsString(row[1]), Monotonic: AsInt(row[2]) == 1, Temporality: obsquery.Temporality(AsInt(row[3])),
-				MixedTemporality: AsInt(row[4]) == 1, Series: AsInt(row[5]), IntervalSeconds: AsInt(row[9]), StoredKinds: info.StoredKinds,
-			}
-			res.Unit = info.Unit
-		}
-		if kind == obsquery.MetricUnknown {
-			return res, Wrong("no metric %q in the local ClickStack for %s", req.Name, rangeText(req.Range)).
-				With(Cmd("forge", "obs", "metrics", "list", l.Env, "--contains", req.Name))
-		}
-		if info.StoredKinds > 1 {
-			// The same name stored as several kinds: the first (gauge < sum <
-			// histogram) is read, and the others are named so it is not silent.
-			res.Statements = append(res.Statements, Statement{Purpose: fmt.Sprintf("note: %s is stored as %d metric kinds; reading %s", req.Name, info.StoredKinds, MetricTypeName(kind))})
-		}
-	} else {
-		kind = obsquery.MetricSum
-	}
-
-	keys := append([]string{}, req.GroupBy...)
-	for _, f := range scope.Filters {
-		keys = append(keys, f.Key)
-	}
-	if obsquery.NeedsDeclared(keys...) {
-		dq := obsquery.DeclaredKeys{Scope: scope, Name: req.Name, Type: kind}
-		dst, err := dq.Compile()
-		if err != nil {
-			return res, compileErr(err)
-		}
-		res.Statements = append(res.Statements, stmt("metric attribute keys", dst))
-		if !req.Explain {
-			dr, err := l.run(ctx, dst, DefaultLimits())
-			if err != nil {
-				return res, err
-			}
-			scope.Declared = map[string]bool{}
-			for _, row := range dr.Rows {
-				if len(row) > 0 {
-					scope.Declared[AsString(row[0])] = true
-				}
-			}
-		}
-	}
-
-	step := req.StepSeconds
-	if rng := req.Range.To.Sub(req.Range.From); rng > 0 {
-		step, _ = obsquery.StepForMetric(rng, int32(min(req.StepSeconds, math.MaxInt32)), info.IntervalSeconds)
-	}
-	resolved, err := obsquery.ResolveAgg(info, agg)
-	if err != nil {
-		return res, compileErr(err)
-	}
-	mq := obsquery.MetricQuery{Scope: scope, Name: req.Name, Info: info, Agg: resolved, GroupBy: req.GroupBy, StepSeconds: step, MaxSeries: req.MaxSeries}
-	st, err := mq.Compile()
-	if err != nil {
-		return res, compileErr(err)
-	}
-	res.Type, res.Agg, res.StepSeconds = MetricTypeName(kind), aggName(resolved), step
-	res.Statements = append(res.Statements, stmt("metric series", st))
-	if req.Explain {
-		return res, nil
-	}
-	r, err := l.run(ctx, st, DefaultLimits())
-	if err != nil {
-		return res, err
-	}
-	fold := foldSeries(r, resolved, req.GroupBy)
-	res.Truncated = len(r.Rows) >= obsquery.MaxMetricRows
-	res.Series, res.SeriesOmitted = capSeries(fold, req.MaxSeries)
-	return res, nil
-}
-
-// foldSeries groups the rows by label set into time-ordered series.
-func foldSeries(r Result, agg obsquery.Agg, groupBy []string) []Series {
-	quant := map[obsquery.Agg]float64{obsquery.AggP50: 0.5, obsquery.AggP95: 0.95, obsquery.AggP99: 0.99}
-	level, isQ := quant[agg]
-	byKey := map[string]*Series{}
-	var order []string
-	for _, row := range r.Rows {
-		if len(row) < 3 {
-			continue
-		}
-		labels := AsStrings(row[1])
-		var v float64
-		if isQ {
-			if len(row) < 4 {
-				continue
-			}
-			q, ok := obsquery.HistogramQuantile(AsFloats(row[2]), AsFloats(row[3]), level)
-			if !ok {
-				continue
-			}
-			v = q
-		} else {
-			v = AsFloat(row[2])
-		}
-		key := strings.Join(labels, "\x00")
-		s, ok := byKey[key]
-		if !ok {
-			s = &Series{Labels: map[string]string{}}
-			for i, g := range groupBy {
-				if i < len(labels) {
-					s.Labels[g] = labels[i]
-				}
-			}
-			byKey[key] = s
-			order = append(order, key)
-		}
-		s.Points = append(s.Points, Point{Time: AsTime(row[0]), Value: finite(v)})
-	}
-	out := make([]Series, 0, len(order))
-	for _, k := range order {
-		s := byKey[k]
-		sort.SliceStable(s.Points, func(i, j int) bool { return s.Points[i].Time.Before(s.Points[j].Time) })
-		out = append(out, *s)
-	}
-	total := func(s Series) float64 {
-		var t float64
-		for _, p := range s.Points {
-			t += math.Abs(p.Value)
-		}
-		return t
-	}
-	sort.SliceStable(out, func(i, j int) bool { return total(out[i]) > total(out[j]) })
 	return out
 }
 
-func capSeries(s []Series, max int) ([]Series, int) {
-	if max <= 0 {
-		max = obsquery.MaxMetricSeries
+// MetricsQuery implements Backend: the panel through obsquery.EvalMetricPanel,
+// the evaluator the control plane runs, over this backend's runner.
+func (l Local) MetricsQuery(ctx context.Context, req MetricsQueryRequest) (MetricsQueryResult, error) {
+	return metricsWithCompare(req, func(r MetricsQueryRequest) (MetricsQueryResult, error) { return l.evalPanel(ctx, r) })
+}
+
+func (l Local) evalPanel(ctx context.Context, req MetricsQueryRequest) (MetricsQueryResult, error) {
+	p := req.Panel
+	p.Signal = "metrics"
+	scope := LocalScope(req.Narrow, l.Env)
+	o := obsquery.EvalOptions{StepSeconds: int32(min(req.StepSeconds, math.MaxInt32)), Explain: req.Explain, Now: req.Now, MaxSeries: req.MaxSeries}
+	pr, err := obsquery.EvalMetricPanel(ctx, l.evalRunner(), scope, p, o)
+	out := metricsResult(pr)
+	if err != nil {
+		return out, l.evalErr(err)
 	}
-	if len(s) <= max {
-		return s, 0
+	return out, nil
+}
+
+// MetricsDescribe implements Backend: the catalog entry, the export interval,
+// every attribute key with its distinct-value estimate, and the declared spec.
+func (l Local) MetricsDescribe(ctx context.Context, req MetricsDescribeRequest) (MetricsDescribeResult, error) {
+	scope := LocalScope(req.Narrow, l.Env)
+	cat := obsquery.MetricCatalog{Scope: scope, NameContains: req.Name, Limit: obsquery.ListMetricsMax}
+	cst, err := cat.Compile()
+	if err != nil {
+		return MetricsDescribeResult{}, compileErr(err)
 	}
-	return s[:max], len(s) - max
+	res := MetricsDescribeResult{Statements: []Statement{stmt("metric catalog", cst)}}
+	kind := obsquery.CatalogHistogram
+	if req.Explain {
+		res.Statements[0].Purpose += " (--explain does not look the metric up; assuming a histogram for the statements below)"
+	} else {
+		r, err := l.run(ctx, cst, DefaultLimits())
+		if err != nil {
+			return res, err
+		}
+		entries, _, err := obsquery.ParseCatalog(RowsOf(r), obsquery.ListMetricsMax)
+		if err != nil {
+			return res, Undetermined("the local ClickStack returned a catalog forge cannot read").Cause(err)
+		}
+		var mine []obsquery.CatalogEntry
+		for _, e := range l.mergeDeclared(entries, req.Name) {
+			if e.Name == req.Name {
+				mine = append(mine, e)
+			}
+		}
+		if len(mine) == 0 {
+			return res, Wrong("no metric %q in the local ClickStack for %s", req.Name, rangeText(req.Range)).
+				With(Cmd("forge", "obs", "metrics", "list", l.Env, "--contains", req.Name))
+		}
+		res.Info = catalogInfo(mine[0])
+		kind = mine[0].Kind
+		if !mine[0].Seen {
+			return res, nil
+		}
+	}
+	res.Info.Name = req.Name
+
+	look, err := obsquery.MetricLookup{Scope: scope, Name: req.Name}.Compile()
+	if err != nil {
+		return res, compileErr(err)
+	}
+	attrs, err := obsquery.MetricAttributes{Scope: scope, Name: req.Name, Kind: kind}.Compile()
+	if err != nil {
+		return res, compileErr(err)
+	}
+	res.Statements = append(res.Statements, stmt("metric lookup", look), stmt("metric attributes", attrs))
+	if req.Explain {
+		return res, nil
+	}
+	if kind.Queryable() {
+		lr, err := l.run(ctx, look, DefaultLimits())
+		if err != nil {
+			return res, err
+		}
+		info, err := obsquery.ParseLookup(RowsOf(lr), obsquery.MetricType(kind))
+		if err != nil && !errors.Is(err, obsquery.ErrMetricNotFound) {
+			return res, Undetermined("the local ClickStack returned a lookup forge cannot read").Cause(err)
+		}
+		res.IntervalSeconds, res.MixedTemporality = info.IntervalSeconds, info.MixedTemporality
+	}
+	ar, err := l.run(ctx, attrs, DefaultLimits())
+	if err != nil {
+		return res, err
+	}
+	var spec *metrics.Spec
+	for _, sch := range l.declared() {
+		for i := range sch.Metrics {
+			if sch.Metrics[i].Name == req.Name && spec == nil {
+				spec = &sch.Metrics[i]
+			}
+		}
+	}
+	stats, err := obsquery.ParseAttributes(RowsOf(ar), spec, 0)
+	if err != nil {
+		return res, Undetermined("the local ClickStack returned attributes forge cannot read").Cause(err)
+	}
+	for _, s := range stats {
+		res.Attributes = append(res.Attributes, MetricAttribute{Key: s.Key, Resource: s.Resource, DistinctEstimate: s.DistinctEstimate, Enumerated: s.Enumerated, HighCardinality: s.HighCardinality})
+	}
+	res.SuggestedBreakdowns = obsquery.SuggestedBreakdowns(stats)
+	return res, nil
+}
+
+// MetricsExemplars implements Backend: the sampled observations of a metric,
+// the ones whose trace is stored first.
+func (l Local) MetricsExemplars(ctx context.Context, req MetricsExemplarsRequest) (MetricsExemplarsResult, error) {
+	scope := LocalScope(req.Narrow, l.Env)
+	res := MetricsExemplarsResult{}
+	kind := obsquery.CatalogHistogram
+	if !req.Explain {
+		cat := obsquery.MetricCatalog{Scope: scope, NameContains: req.Name, Limit: obsquery.ListMetricsMax}
+		cst, err := cat.Compile()
+		if err != nil {
+			return res, compileErr(err)
+		}
+		r, err := l.run(ctx, cst, DefaultLimits())
+		if err != nil {
+			return res, err
+		}
+		entries, _, err := obsquery.ParseCatalog(RowsOf(r), obsquery.ListMetricsMax)
+		if err != nil {
+			return res, Undetermined("the local ClickStack returned a catalog forge cannot read").Cause(err)
+		}
+		found := false
+		for _, e := range entries {
+			if e.Name == req.Name {
+				kind, found = e.Kind, true
+				break
+			}
+		}
+		if !found {
+			return res, Wrong("no metric %q in the local ClickStack for %s", req.Name, rangeText(req.Range)).
+				With(Cmd("forge", "obs", "metrics", "list", l.Env, "--contains", req.Name))
+		}
+	}
+	q := obsquery.MetricExemplars{Scope: scope, Name: req.Name, Kind: kind, Where: req.Where, Group: req.Group, From: req.From, To: req.To, MinValue: req.MinValue, Limit: req.Limit}
+	st, err := q.Compile()
+	if err != nil {
+		return res, compileErr(err)
+	}
+	res.Statements = []Statement{stmt("metric exemplars", st)}
+	if req.Explain {
+		res.Statements[0].Purpose += " (--explain does not look the metric up; assuming a histogram)"
+		return res, nil
+	}
+	r, err := l.run(ctx, st, DefaultLimits())
+	if err != nil {
+		return res, err
+	}
+	ex, err := obsquery.ParseExemplars(RowsOf(r))
+	if err != nil {
+		return res, Undetermined("the local ClickStack returned exemplars forge cannot read").Cause(err)
+	}
+	if len(ex) > 0 {
+		ids := make([]string, 0, len(ex))
+		seen := map[string]bool{}
+		for _, e := range ex {
+			if !seen[e.TraceID] {
+				seen[e.TraceID] = true
+				ids = append(ids, e.TraceID)
+			}
+		}
+		probe, err := obsquery.ExemplarsStored{Scope: scope, TraceIDs: ids, From: req.From, To: req.To}.Compile()
+		if err != nil {
+			return res, compileErr(err)
+		}
+		res.Statements = append(res.Statements, stmt("which exemplar traces are stored", probe))
+		pr, err := l.run(ctx, probe, DefaultLimits())
+		if err != nil {
+			return res, err
+		}
+		stored, err := obsquery.ParseStoredTraceIDs(RowsOf(pr))
+		if err != nil {
+			return res, Undetermined("the local ClickStack returned trace ids forge cannot read").Cause(err)
+		}
+		ex = obsquery.MarkStored(ex, stored)
+	}
+	for _, e := range ex {
+		res.Exemplars = append(res.Exemplars, MetricExemplar{Time: e.Time.UTC(), Value: finite(e.Value), TraceID: e.TraceID, SpanID: e.SpanID, Attributes: e.Attributes, TraceStored: e.Stored})
+	}
+	return res, nil
 }
 
 func finite(f float64) float64 {
@@ -705,7 +754,16 @@ func (l Local) queryPanel(ctx context.Context, req QueryRequest, step int64) (Qu
 	case obsquery.IsBrowserKind(p.Kind):
 		return QueryResult{}, Wrong("a %s panel reads tables the hosted platform derives (error_events, rum_*); they do not exist in the local ClickStack", p.Kind)
 	case p.Signal == "metrics":
-		return QueryResult{}, Wrong("a metrics panel is run per metric: use `forge obs metrics query %s <name>` (the panel's series are metric names)", l.Env)
+		mr, err := l.MetricsQuery(ctx, MetricsQueryRequest{Narrow: req.Narrow, Panel: p, StepSeconds: req.StepSeconds})
+		res := QueryResult{Statements: mr.Statements, Truncated: mr.Truncated}
+		if err != nil || req.Explain {
+			return res, err
+		}
+		res.Columns, res.Rows = flattenMetrics(mr)
+		if req.Limit > 0 && len(res.Rows) > req.Limit {
+			res.Rows, res.Truncated = res.Rows[:req.Limit], true
+		}
+		return res, nil
 	}
 	q := obsquery.PanelQuery{Scope: LocalScope(req.Narrow, l.Env), Panel: p}
 	switch p.Kind {

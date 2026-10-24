@@ -21,14 +21,16 @@ import (
 // "MockBackend.<Method>Func not set" error.
 type MockBackend struct {
 	contractkit.Recorder
-	InfoFunc         func() Info
-	LogsFunc         func(context.Context, LogsRequest) (LogsResult, error)
-	TracesFunc       func(context.Context, TracesRequest) (TracesResult, error)
-	TraceFunc        func(context.Context, TraceRequest) (TraceResult, error)
-	EndpointsFunc    func(context.Context, EndpointsRequest) (EndpointsResult, error)
-	MetricsListFunc  func(context.Context, MetricsListRequest) (MetricsListResult, error)
-	MetricsQueryFunc func(context.Context, MetricsQueryRequest) (MetricsQueryResult, error)
-	QueryFunc        func(context.Context, QueryRequest) (QueryResult, error)
+	InfoFunc             func() Info
+	LogsFunc             func(context.Context, LogsRequest) (LogsResult, error)
+	TracesFunc           func(context.Context, TracesRequest) (TracesResult, error)
+	TraceFunc            func(context.Context, TraceRequest) (TraceResult, error)
+	EndpointsFunc        func(context.Context, EndpointsRequest) (EndpointsResult, error)
+	MetricsListFunc      func(context.Context, MetricsListRequest) (MetricsListResult, error)
+	MetricsQueryFunc     func(context.Context, MetricsQueryRequest) (MetricsQueryResult, error)
+	MetricsDescribeFunc  func(context.Context, MetricsDescribeRequest) (MetricsDescribeResult, error)
+	MetricsExemplarsFunc func(context.Context, MetricsExemplarsRequest) (MetricsExemplarsResult, error)
+	QueryFunc            func(context.Context, QueryRequest) (QueryResult, error)
 }
 
 // Info records the call and delegates to InfoFunc when set.
@@ -92,6 +94,24 @@ func (m *MockBackend) MetricsQuery(ctx context.Context, req MetricsQueryRequest)
 		return m.MetricsQueryFunc(ctx, req)
 	}
 	return MetricsQueryResult{}, contractkit.MockNotSet("MockBackend", "MetricsQuery")
+}
+
+// MetricsDescribe records the call and delegates to MetricsDescribeFunc when set.
+func (m *MockBackend) MetricsDescribe(ctx context.Context, req MetricsDescribeRequest) (MetricsDescribeResult, error) {
+	m.Recorder.Record("MetricsDescribe", ctx, req)
+	if m.MetricsDescribeFunc != nil {
+		return m.MetricsDescribeFunc(ctx, req)
+	}
+	return MetricsDescribeResult{}, contractkit.MockNotSet("MockBackend", "MetricsDescribe")
+}
+
+// MetricsExemplars records the call and delegates to MetricsExemplarsFunc when set.
+func (m *MockBackend) MetricsExemplars(ctx context.Context, req MetricsExemplarsRequest) (MetricsExemplarsResult, error) {
+	m.Recorder.Record("MetricsExemplars", ctx, req)
+	if m.MetricsExemplarsFunc != nil {
+		return m.MetricsExemplarsFunc(ctx, req)
+	}
+	return MetricsExemplarsResult{}, contractkit.MockNotSet("MockBackend", "MetricsExemplars")
 }
 
 // Query records the call and delegates to QueryFunc when set.

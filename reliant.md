@@ -101,6 +101,26 @@ So the PR title is the changelog entry — write a good one, in conventional-com
 
 A doc comment that says "record it in CHANGELOG.md" means: say it in the PR title.
 
+## New lint rules warn before they gate
+
+A lint rule or lane that joins forge, or a severity raised from warning to
+error, must not turn a consumer's gate red the day they pin the release that
+ships it. Every rule `lint.rules` can grade has a row in
+`internal/cli/lint/lint_rollout_table.go`: `IntroducedIn` is the release it
+ships in (the one after `VERSION`), `GatesFrom` is the release after that. A
+project whose `forge_version` is below `GatesFrom` sees the rule's findings as
+warnings carrying a "new in vX; gates from vY" note, in every output mode; at
+`GatesFrom` they gate. `lint.rules` still wins (`{rule: error}` opts in early,
+`{rule: warn}` extends the grace period).
+
+`TestEveryGradableRuleDeclaresItsRollout` fails a rule with no row, so a new
+lane cannot land without choosing its date. Tightening an existing rule is the
+same act: move its ID from `shippedRules` to `newRules` with the tightening
+release. A rule that must gate on arrival is the owner's call, not yours: it
+breaks every pinned consumer, so ask first. Mechanism and rules:
+`internal/cli/lint/lint_rollout.go`; the consumer-facing description is in the
+`ci` skill.
+
 ## Testing tiers
 
 Run the cheapest tier that answers your question. Wall-clock budgets are

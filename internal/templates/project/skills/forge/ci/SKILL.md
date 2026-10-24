@@ -265,6 +265,8 @@ what the gate reported, run `forge lint --fix` and commit the result.
 `--json` is always detect-only, and so are the targeted lanes (`--contract`,
 `--db`, …).
 
+New or tightened lint rules warn for one release first: `ci/lint-rollout`.
+
 ## Linting the workflows themselves
 
 Forge has no dedicated CI-workflow analyzer. What covers the workflows today:

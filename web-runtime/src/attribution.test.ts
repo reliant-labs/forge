@@ -94,6 +94,25 @@ describe("captureAttribution", () => {
     expect(third.a.getAttribution()).toEqual({ utm_source: "ads" });
   });
 
+  it("keeps the first stored record for good with touch: first", async () => {
+    const first = await load();
+    first.a.captureAttribution({ search: "?utm_source=news", touch: "first" });
+
+    const second = await load();
+    second.a.captureAttribution({ search: "?utm_source=ads", touch: "first" });
+    expect(second.a.getAttribution()).toEqual({ utm_source: "news" });
+  });
+
+  it("stores the first campaign a visitor brings with touch: first", async () => {
+    const first = await load();
+    first.a.captureAttribution({ search: "", touch: "first" });
+    expect(storage.data.has(first.a.ATTRIBUTION_STORAGE_KEY)).toBe(false);
+
+    const second = await load();
+    second.a.captureAttribution({ search: "?utm_source=ads", touch: "first" });
+    expect(second.a.getAttribution()).toEqual({ utm_source: "ads" });
+  });
+
   it("mints a stable anonymous visitor id when there is no rid", async () => {
     const first = await load();
     const id = first.a.captureAttribution({ search: "" });

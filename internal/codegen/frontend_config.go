@@ -87,7 +87,8 @@ type SensitiveFrontendField struct {
 }
 
 // ValidateFrontendConfigs refuses a `sensitive` field that reaches a
-// frontend config.
+// frontend config, and a misused (forge.v1.config).required_when
+// (requiredWhenProblems).
 //
 // This is the highest-value rule in the frontend config system, and it is
 // an ERROR rather than a warning on purpose. Everything a browser reads is
@@ -151,10 +152,18 @@ func ValidateFrontendConfigs(messages []ConfigMessage) error {
 			}
 		}
 	}
-	if len(bad) == 0 {
+	var parts []string
+	if len(bad) > 0 {
+		parts = append(parts, formatSensitiveFrontendRefusal(bad))
+	}
+	if problems := requiredWhenProblems(messages); len(problems) > 0 {
+		parts = append(parts, "(forge.v1.config).required_when is misused:\n  • "+strings.Join(problems, "\n  • ")+
+			"\n\nFix the annotation in the proto, then re-run `forge generate`.")
+	}
+	if len(parts) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%s", formatSensitiveFrontendRefusal(bad))
+	return fmt.Errorf("%s", strings.Join(parts, "\n\n"))
 }
 
 // formatSensitiveFrontendRefusal renders the runbook. Kept separate so the

@@ -401,6 +401,11 @@ func ToConnect(err error) *connect.Error {
 	if reason, ok := reasonOf(err); ok {
 		ce.Meta().Set(ReasonHeader, reason)
 	}
+	// Metadata annotated via WithMetadata rides the same way. The nearest
+	// annotation of a key wins, as the nearest WithReason does.
+	for key, value := range metadataOf(err) {
+		ce.Meta().Set(key, value)
+	}
 	return ce
 }
 
@@ -988,6 +993,72 @@ func WithReason(err error, code string) error {
 		return err
 	}
 	return &reasonError{code: code, err: err}
+}
+
+// metadataError annotates an error with one extra Connect error-metadata
+// entry. Like reasonError it Unwraps to the wrapped error and is materialized
+// only at the ToConnect boundary.
+type metadataError struct {
+	key, value string
+	err        error
+}
+
+func (m *metadataError) Error() string { return m.err.Error() }
+func (m *metadataError) Unwrap() error { return m.err }
+
+// WithMetadata annotates err with one Connect error-metadata entry, which
+// ToConnect (and so Wrap) sets on the wire error beside [ReasonHeader].
+//
+// It exists for the STRUCTURED FACTS a reason implies: a reason says which
+// refusal happened, and some refusals have a datum the client needs to act
+// on — the scopes a credential lacks, say. Putting that datum in the message
+// would put the client back to parsing prose, which is what the reason
+// header exists to end.
+//
+//	return svcerr.WithMetadata(
+//	    svcerr.WithReason(svcerr.PermissionDenied(msg), "scope_missing"),
+//	    "x-forge-error-scopes", "deploy:write,secret:read",
+//	)
+//
+// Behavior:
+//   - WithMetadata(nil, _, _) returns nil.
+//   - An empty key or an empty value returns err unchanged.
+//   - Otherwise the returned error wraps err, preserves errors.Is/As and the
+//     mapped Connect code and message, and composes with WithReason,
+//     WithMessage, WithCause and WithDetail in any order. The nearest
+//     annotation of a key wins. Metadata behind a WithCause cause is not
+//     err's and is not sent.
+//
+// Keys are the caller's. Prefer an "x-<product>-error-<name>" spelling, and
+// remember that a browser client reads it only if the server's CORS policy
+// exposes it.
+func WithMetadata(err error, key, value string) error {
+	if err == nil {
+		return nil
+	}
+	if key == "" || value == "" {
+		return err
+	}
+	return &metadataError{key: key, value: value, err: err}
+}
+
+// metadataOf collects every WithMetadata annotation on err's client-visible
+// chain, nearest first, keeping the nearest value of each key.
+func metadataOf(err error) map[string]string {
+	var out map[string]string
+	// walkVisible follows Unwrap only, so a WithCause cause is never reached.
+	walkVisible(err, func(e error) bool {
+		if m, ok := e.(*metadataError); ok {
+			if out == nil {
+				out = map[string]string{}
+			}
+			if _, seen := out[m.key]; !seen {
+				out[m.key] = m.value
+			}
+		}
+		return false
+	})
+	return out
 }
 
 // reasonOf returns the nearest reason code annotated on err's chain, if

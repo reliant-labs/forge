@@ -174,3 +174,26 @@ func TestGolangciLaneRunsOncePerTreeWithoutTaggedFiles(t *testing.T) {
 		t.Errorf("want one golangci-lint run, got %d:\n%s", n, raw)
 	}
 }
+
+// forge e2e on main, 2026-10-23: every scaffold noun failed lint on
+// tools/tools.go. Its `//go:build tools` tag exists to pin tool deps with
+// blank imports of `package main` programs ("is a program, not an importable
+// package"); a pass under it can only fail, so it never gets one.
+func TestDiscoverBuildTagsSkipsToolPinsAndNonProjectTags(t *testing.T) {
+	dir := writeTagTree(t, map[string]string{
+		"go.mod":            "module example.com/m\n\ngo 1.22\n",
+		"tools/tools.go":    "//go:build tools\n// +build tools\n\n// Package tools pins tools.\npackage tools\n\nimport (\n\t_ \"connectrpc.com/connect/cmd/protoc-gen-connect-go\"\n)\n",
+		"pin/pin.go":        "//go:build buildtools\n\npackage pin\n\nimport _ \"example.com/x/cmd/prog\"\n",
+		"neg/neg.go":        "//go:build !integration\n\npackage neg\n",
+		"os/os.go":          "//go:build windows\n\npackage os\n",
+		"ver/ver.go":        "//go:build go1.21\n\npackage ver\n",
+		"ign/ign.go":        "//go:build ignore\n\npackage main\n",
+		"mix/mix.go":        "//go:build linux && !cgo\n\npackage mix\n",
+		"real/real_test.go": "//go:build integration\n\npackage real\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) {}\n",
+	})
+	got := discoverBuildTags(dir)
+	want := []buildTagPackages{{tag: "integration", dirs: []string{"./real"}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("discoverBuildTags:\n got: %+v\nwant: %+v", got, want)
+	}
+}

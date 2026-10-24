@@ -105,6 +105,39 @@ func TestCRDsBundle(t *testing.T) {
 
 // Every CRD in the embedded bundle must be byte-for-byte what the pinned chart
 // renders for it; regenerate with the command in the error.
+// TestGeneratorsGroupHoldsOnlyGeneratorState pins D6's resolution. The
+// GeneratorState CRD ships because the controller's reconciler for it is
+// registered unconditionally (see CRDNames); that must stay the ONLY CRD of the
+// generators group, or a generator kind (Password, ACRAccessToken, ...) would
+// become creatable on a cluster that disabled generators.
+func TestGeneratorsGroupHoldsOnlyGeneratorState(t *testing.T) {
+	got, err := CRDs(ChartVersion, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec := yaml.NewDecoder(strings.NewReader(got))
+	var generators []string
+	for {
+		var d struct {
+			Metadata struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
+			Spec struct {
+				Group string `yaml:"group"`
+			} `yaml:"spec"`
+		}
+		if err := dec.Decode(&d); err != nil {
+			break
+		}
+		if d.Spec.Group == "generators.external-secrets.io" {
+			generators = append(generators, d.Metadata.Name)
+		}
+	}
+	if want := "generatorstates.generators.external-secrets.io"; len(generators) != 1 || generators[0] != want {
+		t.Fatalf("generators group CRDs = %v, want only %s", generators, want)
+	}
+}
+
 func TestBundleCarriesNoDriftMarkers(t *testing.T) {
 	for _, v := range Versions() {
 		if v != ChartVersion {

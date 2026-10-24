@@ -236,10 +236,10 @@ func cutTestRelease(t *testing.T, dir, version string, prov release.Provenance, 
 }
 
 // chooseFor is the choice a no-version deploy of env prod makes for prov.
-func chooseFor(t *testing.T, dir string, prov release.Provenance, renderOptions ...string) deployReleaseChoice {
+func chooseFor(t *testing.T, dir string, prov release.Provenance) deployReleaseChoice {
 	t.Helper()
 	return chooseDeployRelease(context.Background(), deployReuseQuery{
-		ProjectDir: dir, Env: "prod", Provenance: prov, RenderOptions: renderOptions,
+		ProjectDir: dir, Env: "prod", Provenance: prov,
 		Releases: testLedger(t, dir).Releases, Now: chooseAt,
 	})
 }
@@ -291,14 +291,13 @@ func TestChooseDeployRelease_CutsANewReleaseAndSaysWhy(t *testing.T) {
 	bareImage := strings.ReplaceAll(deployTestEnvRender, deployTestImage, "api")
 
 	cases := []struct {
-		name          string
-		checkout      release.Provenance
-		recorded      release.Provenance // the existing release's provenance
-		images        map[string]string  // the existing release's images
-		render        string
-		renderOptions []string
-		resolves      func(string) (bool, error)
-		want          []string // in the reason
+		name     string
+		checkout release.Provenance
+		recorded release.Provenance // the existing release's provenance
+		images   map[string]string  // the existing release's images
+		render   string
+		resolves func(string) (bool, error)
+		want     []string // in the reason
 	}{
 		{
 			name: "the tree was edited after the cut (dirty)", checkout: dirtyEdit,
@@ -336,10 +335,6 @@ func TestChooseDeployRelease_CutsANewReleaseAndSaysWhy(t *testing.T) {
 			want: []string{"cut from a checkout with uncommitted changes"},
 		},
 		{
-			name: "render options were passed", renderOptions: []string{"region=eu"},
-			want: []string{"render options (-D)"},
-		},
-		{
 			name: "the tree could not be hashed", checkout: unhashed,
 			want: []string{"could not be hashed"},
 		},
@@ -365,7 +360,7 @@ func TestChooseDeployRelease_CutsANewReleaseAndSaysWhy(t *testing.T) {
 			}
 			cutTestRelease(t, dir, "20261009.205925-d29da50b", tc.recorded, tc.images)
 
-			got := chooseFor(t, dir, tc.checkout, tc.renderOptions...)
+			got := chooseFor(t, dir, tc.checkout)
 			if got.Reuse != nil {
 				t.Fatalf("reused %s; want a new cut", got.Reuse.Version)
 			}

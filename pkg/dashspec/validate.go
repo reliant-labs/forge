@@ -645,7 +645,7 @@ func (v *validator) series(path string, s map[string]any, sig Signal, labels map
 		}
 		labels[l] = true
 	}
-	agg := v.oneOf(path, s, "agg", true, string(AggCount), string(AggCountDistinct), string(AggSum), string(AggAvg), string(AggMax), string(AggQuantile), string(AggLast))
+	agg := v.oneOf(path, s, "agg", true, string(AggCount), string(AggCountDistinct), string(AggSum), string(AggAvg), string(AggMax), string(AggQuantile), string(AggLast), string(AggRate), string(AggIncrease), string(AggMin))
 	field := v.str(path, s, "field", false)
 	metricType := v.oneOf(path, s, "metricType", false, "sum", "gauge", "histogram")
 	q, hasQ := v.number(path, s, "quantile")
@@ -670,12 +670,21 @@ func (v *validator) series(path string, s map[string]any, sig Signal, labels map
 		if agg == string(AggQuantile) && metricType != "histogram" {
 			v.add(childPath(path, "agg"), "a quantile over a metric needs metricType \"histogram\"")
 		}
-		if agg == string(AggCount) || agg == string(AggCountDistinct) {
-			v.add(childPath(path, "agg"), "%s is not defined over a metric; use sum, avg, max, last or quantile", agg)
+		if agg == string(AggCountDistinct) {
+			v.add(childPath(path, "agg"), "%s is not defined over a metric; use rate, increase, sum, avg, min, max, last, quantile or (histograms) count", agg)
+		}
+		if agg == string(AggCount) && metricType != "histogram" {
+			v.add(childPath(path, "agg"), "count over a metric needs metricType \"histogram\" (its observations); a sum's growth is rate or increase (agg sum on a monotonic sum is its increase)")
+		}
+		if (agg == string(AggRate) || agg == string(AggIncrease)) && metricType == "gauge" {
+			v.add(childPath(path, "agg"), "%s needs metricType \"sum\" (a monotonic counter) or \"histogram\", not a gauge", agg)
 		}
 	case Traces, Logs:
 		if metricType != "" {
 			v.add(childPath(path, "metricType"), "only a metrics series takes metricType")
+		}
+		if agg == string(AggRate) || agg == string(AggIncrease) || agg == string(AggMin) {
+			v.add(childPath(path, "agg"), "%s is defined for metrics; use count, sum, avg, max or quantile over a %s field", agg, sig)
 		}
 		if agg != "" && agg != string(AggCount) && field == "" {
 			v.add(path, "aggregate %q needs a \"field\"", agg)

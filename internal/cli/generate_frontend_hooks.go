@@ -24,8 +24,13 @@ import (
 // mutationMarkerRE matches the `forge:mutation` comment convention. The
 // marker is a plain proto comment (deliberately NOT a proto option) placed in
 // an RPC's leading doc-comment — or trailing on its `rpc` line — to force the
-// hook generator to emit a useMutation wrapper instead of the name-heuristic
-// useQuery.
+// hook generator to emit a useMutation wrapper instead of the useQuery the
+// classifier (codegen.isQueryRPC) chose.
+//
+// The other direction — a read the name does not reveal (Health, Version) —
+// is not a forge marker: the rpc declares protobuf's standard
+// `option idempotency_level = NO_SIDE_EFFECTS;`, which the classifier reads
+// first. This marker still wins over it.
 //
 // It exists because the RPC-name heuristic (codegen.isQueryMethod) can't be
 // right for every imperative RPC: verbs that happen to start with a query

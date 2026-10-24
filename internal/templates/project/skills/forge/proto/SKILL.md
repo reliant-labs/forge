@@ -253,6 +253,14 @@ invalidates only its entity's). So name rpcs for the domain operation; renaming
 an rpc whose remainder IS another entity's name — `UpdateJobNote` where
 `JobNote` is an entity is that entity's Update.
 
+**Reads get `useQuery`.** An rpc is a read when it declares protobuf's
+`option idempotency_level = NO_SIDE_EFFECTS;`, else when its name opens with a
+read verb (Get, List, Search, Find, Check, Has, Is, Count, Exists). Declare it
+on every read named as a noun (`Health`, `Version`) instead of hand-building
+its query key; `IDEMPOTENT` does not make a read. `// forge:mutation` forces a
+mutation. Mutation hooks infer `onMutate`'s return as `onError`'s `context`,
+so an optimistic rollback needs no cast.
+
 The generated conversions map the **intersection** of wire fields and
 columns by name: a wire-only field never reaches the DB, a column-only
 field never leaks onto the wire. Add wire-only fields freely.

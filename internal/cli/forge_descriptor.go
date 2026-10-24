@@ -273,6 +273,13 @@ func methodActivity(md protoreflect.MethodDescriptor) *codegen.MethodActivity {
 	return a
 }
 
+// methodHasNoSideEffects reports `option idempotency_level = NO_SIDE_EFFECTS;`
+// on md — protobuf's standard declaration that an rpc only reads.
+func methodHasNoSideEffects(md protoreflect.MethodDescriptor) bool {
+	opts, ok := md.Options().(*descriptorpb.MethodOptions)
+	return ok && opts.GetIdempotencyLevel() == descriptorpb.MethodOptions_NO_SIDE_EFFECTS
+}
+
 // serviceAudience reads `(forge.v1.service).audience`, defaulting to "user"
 // — the same default serverkit.ServiceAudience applies at boot.
 func serviceAudience(svc *protogen.Service) string {
@@ -339,6 +346,7 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 			InputProtoFile:  m.Input.Desc.ParentFile().Path(),
 			OutputProtoFile: m.Output.Desc.ParentFile().Path(),
 			Custom:          codegen.CommentMarksCustom(rpcMarkerComments(m)),
+			NoSideEffects:   methodHasNoSideEffects(m.Desc),
 		}
 
 		// Read method-level options
@@ -930,6 +938,10 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 		for _, a := range cf.GetEnvVarAliases() {
 			aliases = append(aliases, codegen.EnvVarAlias{Name: a.GetName(), Deprecated: a.GetDeprecated(), Values: a.GetValues()})
 		}
+		var requiredWhen []codegen.ConfigCondition
+		for _, c := range cf.GetRequiredWhen() {
+			requiredWhen = append(requiredWhen, codegen.ConfigCondition{Field: c.GetField(), Equals: c.GetEquals()})
+		}
 		configFields = append(configFields, codegen.ConfigField{
 			Name:          string(f.Desc.Name()),
 			GoName:        f.GoName,
@@ -950,6 +962,7 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 			Category:      cf.GetCategory(),
 			Role:          configFieldRoleString(cf.GetRole()),
 			ProtoFile:     declaredIn,
+			RequiredWhen:  requiredWhen,
 		})
 	}
 

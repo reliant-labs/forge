@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -367,41 +368,37 @@ func TestGoCacheCutoffNeverBelowFloor(t *testing.T) {
 		sort.Slice(s.entries, func(i, j int) bool { return s.entries[i].mtime.Before(s.entries[j].mtime) })
 		return s
 	}
-	const minAge = defaultGoCacheMinAge
-	// Way over budget, but every sampled entry is 1m old (inside the minimum
-	// age): the cutoff must still be no newer than now-minAge.
-	c, _ := goCacheCutoff(mk(time.Minute, time.Minute, time.Minute), 1, now, 48*time.Hour, 1, minAge)
-	if c.After(now.Add(-minAge)) {
-		t.Fatalf("cutoff %v is inside the minimum age %s", now.Sub(c), minAge)
+	// Way over budget, but every sampled entry is 1m old (inside the floor):
+	// the cutoff must still be no newer than now-floor.
+	c, _ := goCacheCutoff(mk(time.Minute, time.Minute, time.Minute), 1, now, 48*time.Hour, 1)
+	if c.After(now.Add(-goCacheFloor)) {
+		t.Fatalf("cutoff %v is inside the floor %s", now.Sub(c), goCacheFloor)
 	}
 	// A tiny unused window is clamped to the floor: the AGE rule never
-	// reaches into it, whatever the minimum age.
-	c, _ = goCacheCutoff(mk(5*time.Hour), 1, now, time.Minute, 1<<40, minAge)
+	// reaches into it.
+	c, _ = goCacheCutoff(mk(5*time.Hour), 1, now, time.Minute, 1<<40)
 	if c.After(now.Add(-goCacheFloor)) {
 		t.Fatalf("age cutoff %v is inside the floor", now.Sub(c))
 	}
-	// A minimum age past the floor is clamped to it.
-	c, _ = goCacheCutoff(mk(time.Minute), 1, now, 48*time.Hour, 1, 10*time.Hour)
-	if c.After(now.Add(-goCacheFloor)) {
-		t.Fatalf("cutoff %v is inside the floor with a 10h minimum age", now.Sub(c))
-	}
 	// Under budget: only the age rule applies.
-	c, est := goCacheCutoff(mk(3*time.Hour, 60*time.Hour), 1, now, 48*time.Hour, 1<<40, minAge)
+	c, est := goCacheCutoff(mk(3*time.Hour, 60*time.Hour), 1, now, 48*time.Hour, 1<<40)
 	if est != 200 || now.Sub(c) < 47*time.Hour {
 		t.Fatalf("under budget must use the age rule: est=%d cutoff age=%v", est, now.Sub(c))
 	}
 	// Over budget: the cutoff reaches into entries younger than the age rule,
 	// down to the low-water mark (80 of 100 B budget: 220 B must go, i.e. all
 	// three entries here).
-	c, _ = goCacheCutoff(mk(3*time.Hour, 5*time.Hour, 10*time.Hour), 1, now, 48*time.Hour, 100, minAge)
-	if now.Sub(c) > 3*time.Hour || now.Sub(c) < minAge {
+	c, _ = goCacheCutoff(mk(3*time.Hour, 5*time.Hour, 10*time.Hour), 1, now, 48*time.Hour, 100)
+	if now.Sub(c) > 3*time.Hour || now.Sub(c) < goCacheFloor {
 		t.Fatalf("budget cutoff age %v out of range", now.Sub(c))
 	}
-	// ... and inside the 2h floor when that is what the budget takes (the
-	// 2026-10-22 machine: every entry under 4h old).
-	c, _ = goCacheCutoff(mk(30*time.Minute, 45*time.Minute, 90*time.Minute, 150*time.Minute), 1, now, 48*time.Hour, 200, minAge)
-	if now.Sub(c) >= goCacheFloor || now.Sub(c) < minAge {
-		t.Fatalf("over budget with only young entries: cutoff age %v, want inside (%s, %s)", now.Sub(c), minAge, goCacheFloor)
+	// ... but never inside the 2h floor, however far over budget (the
+	// 2026-10-22 machine: every entry under 4h old). Reaching in broke
+	// running builds on 2026-10-23 (`could not load export data … -d: no
+	// such file`): only the 150m entry is past the floor.
+	c, _ = goCacheCutoff(mk(30*time.Minute, 45*time.Minute, 90*time.Minute, 150*time.Minute), 1, now, 48*time.Hour, 200)
+	if now.Sub(c) < goCacheFloor {
+		t.Fatalf("over budget with only young entries: cutoff age %v is inside the %s floor", now.Sub(c), goCacheFloor)
 	}
 }
 
@@ -593,7 +590,7 @@ func TestGoCacheGCGivesTheGoCachesTheWholeBudget(t *testing.T) {
 // budget, the part inside the floor, what went, and that the walk finished.
 func TestGoCacheTrimReportsWhatItMeasured(t *testing.T) {
 	// 16 shards x (30 young + 10 old) x 100B against a 40,000B budget: the
-	// young part alone is over it, so the cutoff is the minimum age.
+	// young part alone is over it, so the cutoff is the floor.
 	r, root, out := overBudgetCache(t, 30, 10)
 	var trims []GoCacheTrim
 	r.OnGoCacheTrim = func(tr GoCacheTrim) { trims = append(trims, tr) }
@@ -609,8 +606,8 @@ func TestGoCacheTrimReportsWhatItMeasured(t *testing.T) {
 		tr.EstimatedBytes != 16*40*100 || tr.YoungBytes != 16*30*100 || tr.BudgetBytes != 40_000 {
 		t.Fatalf("report = %+v\n%s", tr, out)
 	}
-	if !tr.Cutoff.Before(time.Now().Add(-defaultGoCacheMinAge + time.Minute)) {
-		t.Fatalf("cutoff %s is inside the minimum age", tr.Cutoff)
+	if !tr.Cutoff.Before(time.Now().Add(-goCacheFloor + time.Minute)) {
+		t.Fatalf("cutoff %s is inside the floor", tr.Cutoff)
 	}
 }
 
@@ -741,12 +738,10 @@ func overBudgetCache(t *testing.T, young, old int) (Runner, string, *strings.Bui
 
 // TestGoCacheBudgetUnreachableInsideTheFloor is the 2026-10-21 machine: a
 // 20 GiB budget, a 152 GiB cache, and ~140 GiB of it written in the last two
-// hours. Since the size rule may reach into the floor this needs the fill to
-// be inside the MINIMUM AGE (20m) to be out of reach: no pass can delete
-// entries that young — a build may be writing them — so the budget cannot be
-// met, and every pass used to report itself finished. The pass must still
-// remove everything older, never anything younger, and say plainly that the
-// budget is out of reach and why.
+// hours. No pass may delete entries that young — a running build may have
+// resolved them — so the budget cannot be met, and every pass used to report
+// itself finished. The pass must still remove everything older, never anything
+// younger, and say plainly that the budget is out of reach and why.
 func TestGoCacheBudgetUnreachableInsideTheFloor(t *testing.T) {
 	// 48 000 B young against a 40 000 B budget, plus 16 000 B old.
 	r, root, out := overBudgetCache(t, 30, 10)
@@ -756,8 +751,8 @@ func TestGoCacheBudgetUnreachableInsideTheFloor(t *testing.T) {
 	if !errors.As(err, &ub) {
 		t.Fatalf("want a BudgetUnreachableError, got %v\n%s", err, out)
 	}
-	if ub.Young != 48_000 || ub.Budget != 40_000 || ub.Floor != defaultGoCacheMinAge {
-		t.Fatalf("young=%d budget=%d floor=%s, want 48000, 40000, %s", ub.Young, ub.Budget, ub.Floor, defaultGoCacheMinAge)
+	if ub.Young != 48_000 || ub.Budget != 40_000 || ub.Floor != goCacheFloor {
+		t.Fatalf("young=%d budget=%d floor=%s, want 48000, 40000, %s", ub.Young, ub.Budget, ub.Floor, goCacheFloor)
 	}
 	if got := countEntries(root); got != 16*30 {
 		t.Fatalf("%d entries left, want the %d young ones: everything past the floor goes, nothing inside it\n%s", got, 16*30, out)
@@ -766,8 +761,8 @@ func TestGoCacheBudgetUnreachableInsideTheFloor(t *testing.T) {
 		if err != nil || d.IsDir() || filepath.Base(p) == "README" {
 			return nil
 		}
-		if info, _ := d.Info(); time.Since(info.ModTime()) > defaultGoCacheMinAge {
-			t.Errorf("%s is past the minimum age and survived an over-budget pass", filepath.Base(p))
+		if info, _ := d.Info(); time.Since(info.ModTime()) > goCacheFloor {
+			t.Errorf("%s is past the floor and survived an over-budget pass", filepath.Base(p))
 		}
 		return nil
 	})
@@ -819,7 +814,7 @@ func TestGoCachesRecordsCutOffAndUnreachableTogether(t *testing.T) {
 		t.Fatalf("result = %+v (err %v)\n%s", res, err, out)
 	}
 	both := NewGCResult(time.Now(), layerErr("go caches: shared build cache",
-		errors.Join(&CutOffError{Err: errDeleteCap}, &BudgetUnreachableError{Cache: "c", Floor: defaultGoCacheMinAge})))
+		errors.Join(&CutOffError{Err: errDeleteCap}, &BudgetUnreachableError{Cache: "c", Floor: goCacheFloor})))
 	if !both.OK || len(both.OverBudget) != 1 || strings.Join(both.CutOffLayers, ",") != "go caches: shared build cache" {
 		t.Fatalf("one layer ending both ways must record both: %+v", both)
 	}
@@ -828,117 +823,83 @@ func TestGoCachesRecordsCutOffAndUnreachableTogether(t *testing.T) {
 func TestGoCacheStatusReportsTheYoungShare(t *testing.T) {
 	r, _, out := overBudgetCache(t, 30, 10)
 	r.goCacheStatus(context.Background())
-	for _, want := range []string{"~0.0 GiB used in the last 20m0s", "WARNING"} {
+	for _, want := range []string{"~0.0 GiB used in the last 2h0m0s", "WARNING"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("status does not say %q:\n%s", want, out)
 		}
 	}
 }
 
-// TestGoCacheOverBudgetReachesIntoTheFloor is the 2026-10-22 machine: a 20 GiB
-// budget, a 74 GB cache, every entry used in the last 4h. The age rule cannot
-// touch anything in the 2h floor, and the old size rule stopped there too, so
-// the budget never held. Over budget, the size rule now evicts least recently
-// used first down to the low-water mark, as deep into the window as it must
-// and no deeper than the minimum age.
-func TestGoCacheOverBudgetReachesIntoTheFloor(t *testing.T) {
+// TestGoCacheOverBudgetNeverReachesIntoTheFloor is the 2026-10-23 regression.
+// #1191 let the size rule reach inside the 2h floor (down to a 20m minimum
+// age) when the cache was over budget, and running builds across the machine
+// failed with `could not import … could not load export data: open
+// …/go-build/…-d: no such file or directory`. cmd/go restamps a used entry
+// only once its mtime is an hour stale (markUsed, mtimeInterval), so a 50
+// minute old entry may belong to a build running now. Under any budget
+// pressure it must survive; a 3h old one may go; and the pass must say the
+// budget is out of reach rather than delete live entries.
+func TestGoCacheOverBudgetNeverReachesIntoTheFloor(t *testing.T) {
 	root := t.TempDir()
-	// 16 shards x 60 entries x 100 B = 96 000 B; entry i is (5+i)m old, so
-	// 0..95m: everything is inside the 2h floor.
-	fillShards(t, root, 16, 60, func(_, i int) time.Duration { return time.Duration(5+i) * time.Minute })
+	// 16 shards x (30 entries 50m old + 10 entries 3h old) x 100 B.
+	fillShards(t, root, 16, 40, func(_, i int) time.Duration {
+		if i < 30 {
+			return 50 * time.Minute
+		}
+		return 3 * time.Hour
+	})
 	prev := goCacheDiskSpace
-	goCacheDiskSpace = func(path string) (Disk, error) { return Disk{Path: path, Capacity: 8_000_000}, nil }
+	goCacheDiskSpace = func(path string) (Disk, error) { return Disk{Path: path, Capacity: 100_000}, nil }
 	t.Cleanup(func() { goCacheDiskSpace = prev })
 	var out strings.Builder
 	r := goRunner(t, &out)
 	r.GoCacheRoot = root
-	r.Policy.GoCacheVolumePercent = 1 // 80 000 B budget; low-water 64 000 B
+	r.Policy.GoCacheVolumePercent = 1 // 1 000 B budget against 64 000 B: as far over as it gets
 	r.Policy.DeleteRatePerSec = 1_000_000_000
+	r.Policy.MaxDeletesPerPass = 1_000_000
 
-	if err := r.SharedGoCache(false); err != nil || countEntries(root) != 960 {
-		t.Fatalf("dry-run: err=%v entries=%d, want 960 untouched\n%s", err, countEntries(root), out.String())
+	if err := RealFailure(r.SharedGoCache(false)); err != nil || countEntries(root) != 16*40 {
+		t.Fatalf("dry-run: err=%v entries=%d, want %d untouched\n%s", err, countEntries(root), 16*40, out.String())
 	}
-	if !strings.Contains(out.String(), "would remove") {
-		t.Fatalf("dry-run must say what it would remove:\n%s", out.String())
+	err := r.SharedGoCache(true)
+	var ub *BudgetUnreachableError
+	if !errors.As(err, &ub) || ub.Floor != goCacheFloor {
+		t.Fatalf("want a BudgetUnreachableError at the %s floor, got %v\n%s", goCacheFloor, err, out.String())
 	}
-	if err := r.SharedGoCache(true); err != nil {
-		t.Fatalf("over-budget pass inside the floor: %v\n%s", err, out.String())
+	if RealFailure(err) != nil {
+		t.Fatalf("an unreachable budget must not fail the pass: %v", RealFailure(err))
 	}
-	got := countEntries(root)
-	if got < 560 || got > 720 { // 640 target, sample error allowed
-		t.Fatalf("%d entries left, want ~640 (80%% of the budget)\n%s", got, out.String())
-	}
-	// LRU: what survives is the newest; nothing newer than the minimum age
-	// was needed, and the survivors are younger than anything removed.
-	var oldestKept time.Duration
-	var youngest = time.Hour
 	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || filepath.Base(p) == "README" {
 			return nil
 		}
 		info, _ := d.Info()
-		age := time.Since(info.ModTime())
-		oldestKept = max(oldestKept, age)
-		youngest = min(youngest, age)
+		if age := time.Since(info.ModTime()); age > goCacheFloor {
+			t.Errorf("%s (%s old) survived: everything past the floor goes when over budget", filepath.Base(p), age.Round(time.Minute))
+		}
 		return nil
 	})
-	if oldestKept > 80*time.Minute {
-		t.Fatalf("an entry %s old survived while the pass was over budget", oldestKept.Round(time.Minute))
+	if got := countEntries(root); got != 16*30 {
+		t.Fatalf("%d entries left, want exactly the %d that are 50m old: an entry inside the floor was deleted\n%s", got, 16*30, out.String())
 	}
-	if youngest > 6*time.Minute {
-		t.Fatalf("the newest entries were evicted (youngest left %s)", youngest.Round(time.Minute))
+	if !strings.Contains(out.String(), "WARNING") || !strings.Contains(out.String(), "no trim can reach it") {
+		t.Fatalf("an over-budget cache the floor protects must be reported loudly:\n%s", out.String())
 	}
 }
 
-// The minimum age is a hard stop: entries newer than it are never evicted,
-// and go_cache_min_age is the knob. At 2h the old behaviour is back.
-func TestGoCacheMinAgeIsAHardStop(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		minAge  string
-		wantMin int // entries that must survive: the ones newer than minAge
-	}{
-		{"default 20m", "", 16 * 15},
-		{"explicit 90m", "90m", 16 * 85},
-		{"2h restores the floor", "2h", 16 * 115},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			// entry i is (5+i)m old, 120 per shard: 5m..124m.
-			fillShards(t, root, 16, 120, func(_, i int) time.Duration { return time.Duration(5+i) * time.Minute })
-			prev := goCacheDiskSpace
-			goCacheDiskSpace = func(path string) (Disk, error) { return Disk{Path: path, Capacity: 100_000}, nil }
-			t.Cleanup(func() { goCacheDiskSpace = prev })
-			var out strings.Builder
-			r := goRunner(t, &out)
-			r.GoCacheRoot = root
-			r.Policy.GoCacheVolumePercent = 1 // 1 000 B: nothing short of the stop satisfies it
-			r.Policy.GoCacheMinAge = tc.minAge
-			r.Policy.DeleteRatePerSec = 1_000_000_000
-			r.Policy.MaxDeletesPerPass = 1_000_000
-			err := r.SharedGoCache(true)
-			var ub *BudgetUnreachableError
-			if !errors.As(err, &ub) {
-				t.Fatalf("want BudgetUnreachableError, got %v\n%s", err, out.String())
-			}
-			if got := countEntries(root); got < tc.wantMin {
-				t.Fatalf("%d entries left, want at least the %d younger than the minimum age\n%s", got, tc.wantMin, out.String())
-			}
-			_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-				if err != nil || d.IsDir() || filepath.Base(p) == "README" {
-					return nil
-				}
-				info, _ := d.Info()
-				limit := defaultGoCacheMinAge
-				if tc.minAge != "" {
-					limit, _ = time.ParseDuration(tc.minAge)
-				}
-				if age := time.Since(info.ModTime()); age > limit+10*time.Minute {
-					t.Errorf("%s (%s old) survived: nothing older than the minimum age should", filepath.Base(p), age.Round(time.Minute))
-				}
-				return nil
-			})
-		})
+// A storage.json written by a forge that had go_cache_min_age still loads,
+// and the key buys nothing: the floor binds the size rule regardless.
+func TestGoCacheMinAgeKeyIsIgnored(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "storage.json")
+	if err := os.WriteFile(path, []byte(`{"go_cache_min_age": "5m"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := PolicyWarnings
+	PolicyWarnings = io.Discard
+	t.Cleanup(func() { PolicyWarnings = prev })
+	if _, err := Load(path); err != nil {
+		t.Fatalf("a policy holding the retired go_cache_min_age must load: %v", err)
 	}
 }
 
@@ -988,12 +949,63 @@ func TestGoCacheExecutableEntriesAreMeasuredAndEvicted(t *testing.T) {
 	}
 }
 
-func TestGoCacheMinAgeValidation(t *testing.T) {
-	for v, ok := range map[string]bool{"": true, "5m": true, "20m": true, "2h": true, "4m": false, "3h": false, "soon": false} {
-		p := DefaultPolicy()
-		p.GoCacheMinAge = v
-		if err := p.Validate(); (err == nil) != ok {
-			t.Errorf("go_cache_min_age %q: err = %v, want ok=%v", v, err, ok)
+// An entry listed as old but reused while the pass works through its shard must
+// survive: cmd/go restamps an entry when a build uses it, and a paced pass
+// reaches an entry minutes after the shard was listed. The floor cannot cover
+// this — the entry was old when listed.
+func TestGoCacheEntryTouchedAfterListingSurvives(t *testing.T) {
+	root := t.TempDir()
+	makeBuildCache(t, root)
+	first := putEntry(t, root, "ab", hexName(1, "-a"), 10, 100*time.Hour)
+	second := putEntry(t, root, "ab", hexName(2, "-a"), 10, 90*time.Hour)
+	third := putEntry(t, root, "ab", hexName(3, "-d"), 10, 80*time.Hour)
+	var out strings.Builder
+	r := goRunner(t, &out)
+	r.GoCacheRoot = root
+	r.Policy.DeleteRatePerSec = 1_000_000_000
+	r.removeFn = func(p string) error {
+		if p == first { // a build uses the other two entries while this unlink is in flight
+			now := time.Now()
+			for _, q := range []string{second, third} {
+				_ = os.Chtimes(q, now, now)
+			}
+		}
+		return os.Remove(p)
+	}
+	var trims []GoCacheTrim
+	r.OnGoCacheTrim = func(tr GoCacheTrim) { trims = append(trims, tr) }
+	if err := r.SharedGoCache(true); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if exists(first) || !exists(second) || !exists(third) {
+		t.Fatalf("first=%v second=%v third=%v: want only the entry nobody used removed\n%s", exists(first), exists(second), exists(third), out.String())
+	}
+	if len(trims) != 1 || trims[0].Removed != 1 {
+		t.Fatalf("an entry spared because it was reused must not be counted as removed: %+v", trims)
+	}
+}
+
+// Least recently used first within a shard: a pass the delete cap stops
+// partway must have taken the oldest entries, not the ones that sort first by
+// name.
+func TestGoCacheRemovesLeastRecentlyUsedFirst(t *testing.T) {
+	root := t.TempDir()
+	makeBuildCache(t, root)
+	ages := map[int]time.Duration{1: 60 * time.Hour, 2: 100 * time.Hour, 3: 70 * time.Hour, 4: 120 * time.Hour, 5: 80 * time.Hour}
+	paths := map[int]string{}
+	for n, age := range ages {
+		paths[n] = putEntry(t, root, "ab", hexName(n, "-a"), 10, age)
+	}
+	var out strings.Builder
+	r := goRunner(t, &out)
+	r.GoCacheRoot = root
+	r.Policy.MaxDeletesPerPass = 2
+	r.Policy.DeleteRatePerSec = 1_000_000_000
+	_ = r.SharedGoCache(true) // the cap stops it: a cut-off, not a failure
+	for n, p := range paths {
+		oldest := n == 4 || n == 2
+		if exists(p) == oldest {
+			t.Errorf("entry %d (%s old): exists=%v; the cap of 2 must take the two oldest (120h, 100h)\n%s", n, ages[n], exists(p), out.String())
 		}
 	}
 }

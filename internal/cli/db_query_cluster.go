@@ -63,7 +63,10 @@ func resolveDBQueryCluster(ctx context.Context, o dbQueryOptions, e *KCLEntities
 	switch e.Lifecycle {
 	case lifecycleLocal, lifecycleEphemeral:
 	default:
-		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("workload %q in %s runs on a cluster %s does not declare scratch (lifecycle local or ephemeral): its database is not reachable from forge yet", w.Name, o.env, o.env)}
+		// With --addr the route is the user's, so a real env is reachable.
+		if o.addr == "" {
+			return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("workload %q in %s runs on a cluster %s does not declare scratch (lifecycle local or ephemeral): its database is not reachable from forge yet; bring your own route (VPN, kubectl port-forward) and pass --addr <host:port>", w.Name, o.env, o.env)}
+		}
 	}
 	db, err := selectQueryDatabase(e, o.database)
 	if err != nil {
@@ -74,7 +77,15 @@ func resolveDBQueryCluster(ctx context.Context, o dbQueryOptions, e *KCLEntities
 		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("database %q in %s: %v", db.Name, o.env, err)}
 	}
 	kdb := kubedial.Database{Namespace: db.Namespace, Name: db.Name, Instances: db.Spec.WithDefaults().Instances}
-	cfg, err := client.ConnConfig(ctx, kdb)
+	creds, err := client.Credentials(ctx, kdb)
+	var cfg *pgx.ConnConfig
+	if err == nil {
+		if o.addr != "" {
+			cfg, err = kubedial.ConnConfigForAddr(kdb, creds, o.addr, o.sslmode)
+		} else {
+			cfg, err = client.ConnConfigFor(kdb, creds)
+		}
+	}
 	if err != nil {
 		hint := ""
 		if errors.Is(err, kubedial.ErrNoReadOnlyCredentials) {
@@ -85,9 +96,13 @@ func resolveDBQueryCluster(ctx context.Context, o dbQueryOptions, e *KCLEntities
 	if dbClusterConnTweak != nil {
 		dbClusterConnTweak(cfg)
 	}
+	transport := "port-forward"
+	if o.addr != "" {
+		transport = dbQueryTransportAddr
+	}
 	return dbQueryTarget{
 		connConfig: cfg,
-		scope:      dbQueryScope{Env: o.env, Transport: "port-forward", Workload: w.Name, Database: db.Name, Policy: dbQueryPolicy(e)},
+		scope:      dbQueryScope{Env: o.env, Transport: transport, Workload: w.Name, Database: db.Name, Policy: dbQueryPolicy(e)},
 	}, nil
 }
 

@@ -309,7 +309,7 @@ const signInRoute = createRoute({
               </p>
             ) : null}
 
-            <Button type="submit" disabled={submitting} className="mt-6 w-full">
+            <Button type="submit" size="xl" fullWidth loading={submitting} className="mt-6">
               {submitting
                 ? signingUp
                   ? "Creating your account…"

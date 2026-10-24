@@ -1,8 +1,10 @@
 {
-  "version": "forge.alert-defaults/v2",
+  "version": "forge.alert-defaults/v3",
   "input": {
     "project": "shop",
-    "frontend_service": "shop-frontend"
+    "frontend_services": [
+      "shop-web"
+    ]
   },
   "defaults": [
     {

@@ -112,3 +112,28 @@ func TestSidebarNavContract(t *testing.T) {
 		t.Error("sidebar_layout.tsx section labels must be plain sentence-case text")
 	}
 }
+
+// TestSidebarLayoutBecomesADrawerOnPhones pins the narrow-screen contract: a
+// fixed sidebar column on a 390px screen left the page about 150px. Below
+// `md` the nav is an off-canvas drawer behind a menu button, and its rows are
+// touch-sized on a coarse pointer.
+func TestSidebarLayoutBecomesADrawerOnPhones(t *testing.T) {
+	src, err := NewLibrary().Get("sidebar_layout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`aria-label="Open navigation"`,       // the way in, in the top bar
+		`aria-controls="sidebar-layout-nav"`, // which names the drawer
+		"max-md:fixed",                       // the nav leaves the layout
+		"max-md:-translate-x-full",           // and is off-canvas until opened
+		`role="presentation"`,                // the scrim is a mouse convenience, not a control
+		`event.key !== "Escape"`,             // Escape closes it
+		"[@media(pointer:coarse)]:min-h-[44px]",
+		"env(safe-area-inset-top)",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("sidebar_layout.tsx no longer contains %q", want)
+		}
+	}
+}

@@ -66,7 +66,9 @@ func frontendRuntimeConfigKeyProblem(projectDir string, fe FrontendEntity) strin
 	for k := range fe.RuntimeConfigSpec {
 		keys[k] = true
 	}
-	if len(keys) == 0 || strings.TrimSpace(fe.Path) == "" {
+	// No early return on an empty runtime_config: a schema that REQUIRES a
+	// key is violated by a frontend that sets none.
+	if strings.TrimSpace(fe.Path) == "" {
 		return ""
 	}
 	dir := fe.Path
@@ -106,8 +108,12 @@ func frontendRuntimeConfigKeyProblem(projectDir string, fe FrontendEntity) strin
 			unknown = append(unknown, k)
 		}
 	}
-	if len(unknown) == 0 {
+	missing := frontendRuntimeConfigMissing(projectDir, fe, schema)
+	if len(unknown) == 0 && len(missing) == 0 {
 		return ""
+	}
+	if len(unknown) == 0 {
+		return formatMissingRuntimeConfig(projectDir, fe, schemaPath, schema, missing)
 	}
 	sort.Strings(unknown)
 
@@ -124,6 +130,68 @@ func frontendRuntimeConfigKeyProblem(projectDir string, fe FrontendEntity) strin
 	fmt.Fprintf(&b, "\n  keys it reads: %s", strings.Join(vocabulary, ", "))
 	b.WriteString("\n  Fix the key in this environment's KCL, or — if the frontend should read it — add the field to " +
 		"its (forge.v1.frontend_config) message and run `forge generate` in the frontend's project.")
+	if len(missing) > 0 {
+		b.WriteString("\n\n")
+		b.WriteString(formatMissingRuntimeConfig(projectDir, fe, schemaPath, schema, missing))
+	}
+	return b.String()
+}
+
+// frontendRuntimeConfigMissing is every key fe's schema requires that its
+// runtime_config does not carry (codegen.FrontendConfigSchema.MissingRequired),
+// for a FOREIGN frontend only: one whose code — and so its config message —
+// is outside this project (a source pin, or a path out of the project root).
+// That document is runtime_config alone, so a missing key is missing. An
+// in-tree frontend's document also carries its typed config.k values, which
+// its generated KCL schema already checks.
+func frontendRuntimeConfigMissing(projectDir string, fe FrontendEntity, schema codegen.FrontendConfigSchema) []codegen.MissingKey {
+	if !frontendIsForeign(projectDir, fe) {
+		return nil
+	}
+	present := func(key string) bool {
+		if v, ok := fe.RuntimeConfigSpec[key]; ok {
+			return v.Value == nil || strings.TrimSpace(*v.Value) != ""
+		}
+		v, ok := fe.RuntimeConfig[key]
+		return ok && strings.TrimSpace(v) != ""
+	}
+	literal := func(key string) (string, bool) {
+		if v, ok := fe.RuntimeConfigSpec[key]; ok {
+			if v.Value == nil {
+				return "", false // another workload's URL: known at deploy time only
+			}
+			return strings.TrimSpace(*v.Value), true
+		}
+		v, ok := fe.RuntimeConfig[key]
+		return strings.TrimSpace(v), ok
+	}
+	return schema.MissingRequired(present, literal)
+}
+
+// frontendIsForeign reports whether fe's code is outside this project: a
+// source pin, or a path that leaves the project root.
+func frontendIsForeign(projectDir string, fe FrontendEntity) bool {
+	if fe.Source != nil && fe.Source.Repo != "" {
+		return true
+	}
+	dir := fe.Path
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(projectDir, dir)
+	}
+	rel, err := filepath.Rel(projectDir, dir)
+	return err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// formatMissingRuntimeConfig is the refusal for keys the schema requires.
+func formatMissingRuntimeConfig(projectDir string, fe FrontendEntity, schemaPath string, schema codegen.FrontendConfigSchema, missing []codegen.MissingKey) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Frontend '%s'.runtime_config is missing %s, which its config schema (%s, generated from the %s message) requires: "+
+		"the bundle would refuse to boot, or boot in a mode this environment does not mean.",
+		fe.Name, fmt.Sprintf("%d %s", len(missing), plural(len(missing), "key", "keys")), displayPath(projectDir, schemaPath), schemaMessageName(schema))
+	for _, m := range missing {
+		fmt.Fprintf(&b, "\n  %s", m.Reason())
+	}
+	b.WriteString("\n  Set each in this environment's runtime_config; a mode-dependent key needs a value other than the field's default.")
 	return b.String()
 }
 

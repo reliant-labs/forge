@@ -74,6 +74,9 @@ func GenerateFrontendConfigTS(fc FrontendConfig, projectName, platform string) (
 	b.WriteString("// never appear in this file.\n\n")
 
 	b.WriteString(`import { z } from "zod";` + "\n\n")
+	if frontendConfigHasBool(fc) {
+		b.WriteString(configBoolHelper)
+	}
 
 	// ── The schema ──────────────────────────────────────────────────────
 	fmt.Fprintf(&b, "/** Typed, validated config for frontend %q (project %s). */\n", fc.Frontend, projectName)
@@ -113,6 +116,9 @@ func GenerateFrontendConfigTS(fc FrontendConfig, projectName, platform string) (
 	b.WriteString("  }\n")
 	b.WriteString(serverSideRawConfig(fc, platform))
 	b.WriteString("}\n\n")
+
+	// ── Mode-dependent required keys ────────────────────────────────────
+	b.WriteString(requiredWhenTS(fc))
 
 	// ── Validation ──────────────────────────────────────────────────────
 	b.WriteString(configLoaderBody(fc, projectName))
@@ -166,11 +172,24 @@ func configLoaderBody(fc FrontendConfig, projectName string) string {
 	b.WriteString(" */\n")
 	fmt.Fprintf(&b, "export function loadConfig(): %s {\n", typeName)
 	b.WriteString("  if (cached) return cached;\n\n")
-	b.WriteString("  const parsed = configSchema.safeParse(rawConfig());\n")
-	b.WriteString("  if (!parsed.success) {\n")
-	b.WriteString("    const problems = parsed.error.issues\n")
-	b.WriteString("      .map((i) => `  • ${i.path.join(\".\") || \"(root)\"}: ${i.message}`)\n")
-	b.WriteString("      .join(\"\\n\");\n")
+	if frontendConfigHasRequiredWhen(fc) {
+		// The mode-dependent keys are judged on the RAW document: a default
+		// does not satisfy them (see missingRequiredConfig).
+		b.WriteString("  const raw = rawConfig();\n")
+		b.WriteString("  const parsed = configSchema.safeParse(raw);\n")
+		b.WriteString("  const missing = missingRequiredConfig(raw);\n")
+		b.WriteString("  if (!parsed.success || missing.length > 0) {\n")
+		b.WriteString("    const problems = [\n")
+		b.WriteString("      ...(parsed.success ? [] : parsed.error.issues.map((i) => `  • ${i.path.join(\".\") || \"(root)\"}: ${i.message}`)),\n")
+		b.WriteString("      ...missing.map((m) => `  • ${m.key}: required when ${m.when.key} is \"${m.when.equals}\"`),\n")
+		b.WriteString("    ].join(\"\\n\");\n")
+	} else {
+		b.WriteString("  const parsed = configSchema.safeParse(rawConfig());\n")
+		b.WriteString("  if (!parsed.success) {\n")
+		b.WriteString("    const problems = parsed.error.issues\n")
+		b.WriteString("      .map((i) => `  • ${i.path.join(\".\") || \"(root)\"}: ${i.message}`)\n")
+		b.WriteString("      .join(\"\\n\");\n")
+	}
 	b.WriteString("    throw new Error(\n")
 	fmt.Fprintf(&b, "      `frontend %q: invalid runtime configuration\\n\\n${problems}\\n\\n` +\n", fc.Frontend)
 	fmt.Fprintf(&b, "        `These values are rendered by KCL into config.js. Fix them in\\n` +\n")
@@ -223,6 +242,19 @@ func tsConfigTypeName(fc FrontendConfig) string {
 // zodExprForConfigField maps a config field to its zod validator, carrying
 // the proto's type, default and required-ness into runtime validation.
 func zodExprForConfigField(f ConfigField) string {
+	if kclTypeForProtoConfig(f) == "bool" {
+		// The default sits INSIDE the preprocess: configBool maps "" to
+		// undefined, and an outer .default() only sees the raw input, so
+		// a present-but-empty value would fail instead of defaulting.
+		inner := "z.boolean()"
+		switch {
+		case f.DefaultValue != "":
+			inner += ".default(" + zodDefaultLiteral(f) + ")"
+		case !f.Required:
+			inner += ".default(false)"
+		}
+		return "z.preprocess(configBool, " + inner + ")"
+	}
 	base := zodBaseForConfigField(f)
 
 	if f.DefaultValue != "" {
@@ -249,10 +281,44 @@ func zodBaseForConfigField(f ConfigField) string {
 		// string. coerce accepts both without the call sites caring.
 		return "z.coerce.number()"
 	case "bool":
-		return "z.coerce.boolean()"
+		// NOT z.coerce.boolean(): that is Boolean(v), so the STRING
+		// "false" — the only spelling a runtime_config value, a KCL str or
+		// a server-side process.env read can carry — validates as true.
+		// configBool reads the spellings both layers write and leaves any
+		// other string for z.boolean() to refuse. zodExprForConfigField
+		// places the default inside it.
+		return "z.preprocess(configBool, z.boolean())"
 	default:
 		return "z.string()"
 	}
+}
+
+// configBoolHelper is emitted once, ahead of the schema, when a field is a
+// bool. It maps the text forms of a boolean onto one, and "" onto undefined
+// so a present-but-empty value takes the field's default like an absent one.
+// Any other string passes through unchanged, so a typo ("yes", "ture") fails
+// validation at boot, naming the field, instead of reading as off.
+const configBoolHelper = `/** A boolean from config.js (JSON) or its text forms ("true"/"false", "1"/"0"). */
+function configBool(v: unknown): unknown {
+  if (typeof v !== "string") return v;
+  const s = v.trim().toLowerCase();
+  if (s === "") return undefined;
+  if (s === "true" || s === "1") return true;
+  if (s === "false" || s === "0") return false;
+  return v;
+}
+
+`
+
+// frontendConfigHasBool reports whether any leaf field of fc is a bool, i.e.
+// whether the generated module needs configBoolHelper.
+func frontendConfigHasBool(fc FrontendConfig) bool {
+	for _, f := range fc.Fields {
+		if f.MessageType == "" && kclTypeForProtoConfig(f) == "bool" {
+			return true
+		}
+	}
+	return false
 }
 
 func zodDefaultLiteral(f ConfigField) string {

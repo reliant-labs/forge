@@ -1,15 +1,15 @@
 ---
 name: frontend
-description: Write Next.js frontends — generated hooks, the component library, Tailwind v4, the output/base_path build shapes, visual verification, and Connect RPC clients.
+description: Frontends with or without a backend — Next.js static exports, Vite SPAs, Expo: the component library, Tailwind v4, build shapes, runtime config, visual verification, and generated Connect RPC hooks when there is an API.
 ---
 
 # Frontend Development in Forge
 
 ## Project structure
 
-Each frontend lives in `frontends/<name>/` as a Next.js App Router app (`forge scaffold frontend <name>`): `src/app/`, `src/components/`, `src/hooks/`, `src/lib/`. Generated TypeScript lives in this frontend's own `src/gen/` — import it as `@/gen/...`, never from the project-root `gen/` (that tree is Go).
+No backend needed: with no services it is a static site (`deploy/static-site`) and all but the hooks applies. Each frontend lives in `frontends/<name>/` — by default a Next.js App Router app (`forge scaffold frontend <name>`): `src/app/`, `src/components/`, `src/hooks/`, `src/lib/`. Generated TypeScript lives in this frontend's own `src/gen/` — import it as `@/gen/...`, never from the project-root `gen/` (that tree is Go).
 
-`--kind` also takes `mobile` (Expo React Native: `app/` screens, the same hooks/lib/stores adapted — the event bus gains `app:background`/`app:foreground`, the UI store `drawerOpen`/`bottomSheetOpen`) and `vite-spa` (`--output`/`--base-path` are web-only).
+`--kind` also takes `vite-spa` and `mobile` (Expo React Native: `app/` screens; events gain `app:background`/`app:foreground`). `--output`/`--base-path` are web-only.
 
 ## Build & serving shapes
 
@@ -23,7 +23,7 @@ prefix; hand-built URLs then go through `joinBasePath`. Both are in
 
 ## Generated TypeScript hooks
 
-`forge generate` produces per-service React Query hooks in `src/hooks/` — read RPCs get `useQuery`, mutating RPCs `useMutation`. Import from the barrel: `import { useGetTask, useListTasks } from "@/hooks"`. Base wrappers `useApiQuery` / `useApiMutation` cover composite operations.
+`forge generate` produces per-service React Query hooks in `src/hooks/` — read RPCs get `useQuery`, mutating RPCs `useMutation`. Import from the barrel: `import { useGetTask, useListTasks } from "@/hooks"`. Base wrappers `useApiQuery` / `useApiMutation` cover composite operations. Which is which, and typed rollback: `proto`.
 
 ## The component library
 
@@ -39,7 +39,7 @@ forge component install card_grid
 
 **Every component already uses this project's theme tokens** (`ink`, `surface`, `border`, `accent`, `danger`, `success`, `warning` and their `-surface`/`-border`/`-ink` variants), so installing one never means re-theming it. A raw palette class like `bg-blue-600` in a component is a forge bug to report — not a reason to hand-write your own.
 
-Reach for these before writing markup yourself. **✓ already ships in `src/components/ui/`** — import it, do not rebuild it; the rest are one `forge component install` away:
+**✓ already ships in `src/components/ui/`** — import it, do not rebuild it; the rest are one `forge component install` away:
 
 | About to build | Use |
 |---|---|
@@ -62,9 +62,9 @@ Every frontend ships low-level primitives under `src/components/ui/`. Compose th
 
 | Primitive | What it is |
 |-----------|-----------|
-| `button` | `primary`/`secondary`/`outline`/`ghost`/`danger` variants, sizes, loading state |
+| `button` | `primary`/`secondary`/`outline`/`ghost`/`danger`, `xs`–`xl`, `leftIcon`/`rightIcon`, icon-only, `loading`, `href` |
 | `input`, `label`, `form` | Text input, field label, and `Form`/`FormField`/`FormError`/`FormActions`. `<FormField>` mints an id via `useId()`, so child `<Label>`/`<Input>`/`<Select>` auto-bind without `htmlFor`/`id` |
-| `textarea`, `toggle_switch` | Not auto-installed: `forge component install textarea toggle_switch`. Textarea is Input's multi-line sibling; ToggleSwitch is `role="switch"` with `label` (visible) or `ariaLabel`. Both auto-bind inside `<FormField>`; `component install` writes their `./form_field_context` import too |
+| `textarea`, `toggle_switch` | On demand: `forge component install textarea toggle_switch`. ToggleSwitch is `role="switch"` with `label` or `ariaLabel`; both auto-bind inside `<FormField>` |
 | `card` | Generic surface primitive |
 | `status`, `tag`, `mono` | State (dot + word), kind label, copyable sha |
 | `avatar`, `tabs`, `chip` | Avatar, tab nav (underline/pills/boxed), filter chip. `Tabs`/`FilterBar`: pass `activeTab`/`values` to control them from the URL |
@@ -195,11 +195,11 @@ const req = create(CreateTaskRequestSchema, { name: "My Task" }); // NOT new Cre
 @theme { --color-brand: #3b82f6; --font-sans: "Inter", sans-serif; }
 ```
 
-Use `@theme`/scoped CSS variables for reusable tokens rather than one-off colors, and keep global CSS small. `npm run lint:styles` catches `!important` and invalid v4 at-rules. Full rules in `frontend/patterns`.
+Prefer `@theme` tokens over one-off colors; keep global CSS small. `npm run lint:styles` catches `!important` and invalid v4 at-rules. Full rules in `frontend/patterns`.
 
 ## Visual verification
 
-**Use BOTH `take_snapshot` AND `take_screenshot` (Chrome DevTools) before declaring frontend work complete.** The a11y-tree snapshot cannot detect layout shifts, wrong colors, z-index or overflow; only screenshots catch those. Screenshot at multiple breakpoints. `frontend/design` carries the overflow probe.
+**Use BOTH `take_snapshot` AND `take_screenshot` (Chrome DevTools) before declaring frontend work complete.** The a11y snapshot misses layout shifts, wrong colors, z-index and overflow; screenshots catch them. Screenshot at multiple breakpoints. `frontend/design` carries the overflow probe.
 
 ## Component patterns
 
@@ -223,18 +223,18 @@ Created by `forge scaffold frontend`, yours to modify:
 
 - **Auth** (`src/lib/auth/`) — native sign-in: the browser POSTs credentials to this app's own API and gets an HttpOnly session cookie; the server runs the OIDC flow. `useAuth()` gives `{ identity, isAuthenticated, isLoading, refresh, logout }` — an identity for rendering, and deliberately no token. See `auth/frontend`.
 - **Event bus** (`src/lib/events.ts`; hooks in `src/lib/use-event.ts`) — typed pub/sub for imperative cross-cutting actions (`toast:show`, `auth:expired`, `navigate`). Extend `EventMap`; use `useEvent(name, handler)`. Not a source of truth.
-- **UI store** (`src/stores/ui-store.ts`) — Zustand baseline for client state (`sidebarCollapsed`, `commandPaletteOpen`). Add domain stores in `src/stores/`. **Subscribe to slices, not the whole store.** Server data stays in the React Query hooks, never copied into Zustand.
+- **UI store** (`src/stores/ui-store.ts`) — Zustand baseline for client state (`sidebarCollapsed`, `commandPaletteOpen`). Add domain stores in `src/stores/` (rules below).
 - **`src/lib/format-utils.ts`** — see **Formatting**.
 - Also scaffolded: `src/lib/admin-url.ts` (`adminUrl`/`absoluteAdminUrl` over `basepath_gen.ts` — use these or `joinBasePath` for any string handed to an external system that round-trips back).
 
 ## Dev workflow
 
 ```bash
-forge env up dev   # Full stack: infra + Go (hot reload) + Next.js; reads deploy/kcl/<env>/
+forge env up dev   # infra + services (hot reload) + frontends; reads deploy/kcl/<env>/
 forge generate     # After any .proto change
 ```
 
-`forge env up` dev-serves each declared frontend via `npm run dev` (`npm run build` is for `forge build` / `forge env deploy`). Each serves on its own KCL-declared port (`forge.Frontend.port`), **force-injected as `PORT`** into the child, so the browser URL matches the declaration even if a stale `PORT` bled in from the shell. There is no dev reverse proxy. To route a service under the prod Gateway, declare an `HTTPRoute` with a `host:` in `deploy/kcl/<env>/main.k`.
+`forge env up` dev-serves each declared frontend via `npm run dev` (`npm run build` is for `forge build` / `forge env deploy`). Each serves on its own KCL-declared port (`forge.Frontend.port`), **force-injected as `PORT`** into the child (a stale shell `PORT` never wins). There is no dev reverse proxy. To route a service under the prod Gateway, declare an `HTTPRoute` with a `host:` in `deploy/kcl/<env>/main.k`.
 
 ## File naming inside `frontends/<name>/src/`
 
@@ -249,7 +249,6 @@ Load **adopt** (generating into an app forge did not scaffold; the package.json 
 
 - Never hand-edit generated files; run `forge generate` after every `.proto` change.
 - Always `create(Schema, {...})` for protobuf messages, never `new Message()`.
-- `"use client"` only when needed; verify visually with BOTH `take_snapshot` and `take_screenshot`.
 - `forge component search <noun>` before hand-writing any UI. Recharts for dashboard charts.
 - Money, dates, enum labels, status colors: `@/lib/format-utils`; money/rate inputs: `parseMinorUnits` / `parseBasisPoints`.
 - React Query hooks for server data, Zustand for client state only (subscribe to slices), event bus for imperative actions — never as a source of truth.

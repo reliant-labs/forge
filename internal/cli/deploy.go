@@ -57,7 +57,7 @@ records this checkout's clean tree and this forge version, covers every
 artifact the env declares, and every image it pins still resolves in its
 registry, nothing is built or cut: forge prints "reusing release <v>" and
 deploys it. Otherwise it prints "cutting new release <v> because …" before
-building. A dirty checkout, another forge version, a -D option, an artifact the
+building. A dirty checkout, another forge version, an artifact the
 release lacks, or an image the registry no longer holds each cut a new one. A nested git checkout inside the
 project (a parked worktree, a cloned repo) is another repository, not a change
 to this one, and does not make the checkout dirty; the decision line names the
@@ -342,7 +342,7 @@ func newDeployCmd() *cobra.Command {
 // how they are applied — and a 229-line constructor made that invisible.
 func registerDeployApplyFlags(cmd *cobra.Command, f *deployCmdFlags) {
 	flags := cmd.Flags()
-	flags.StringArrayVarP(&f.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with 'forge env options <env>'.")
+	flags.StringArrayVarP(&f.renderOptions, "option", "D", nil, "REFUSED on deploy: a deploy renders from the repo alone, and a release records no render options. Use it on 'forge env up' or 'forge env build', or declare the value in the env's KCL.")
 	flags.StringVar(&f.tag, "tag", "", "Override the image tag (priority: --tag > .forge/state/build-<env>.json > git describe --tags --always --dirty)")
 	flags.BoolVar(&f.dryRun, "dry-run", false, "Print manifests without applying (env-cluster guard still runs)")
 	flags.StringVar(&f.namespace, "namespace", "", "Override namespace from environment config")
@@ -512,8 +512,9 @@ type deployCmdFlags struct {
 	// offlineTo names the cached release --offline-ledger deploys: a release
 	// version, a cached promotion id, or "previous".
 	offlineTo string
-	// renderOptions are raw `-D name=value` values pushed into the env's KCL
-	// before any render this command does.
+	// renderOptions are the raw `-D name=value` values the caller passed. They
+	// are only ever refused (refuseDeployRenderOptions); the field exists so
+	// the refusal can name what was given.
 	renderOptions []string
 
 	rolloutMode     string
@@ -538,7 +539,7 @@ type deployCmdFlags struct {
 // what a UI calls to preview a deploy, and a flag that only worked on the real
 // thing would make the preview the one case a consumer could not use.
 func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) error {
-	if err := bindBuildRenderOptions(buildOptions{env: envName, renderOptions: f.renderOptions}); err != nil {
+	if err := refuseDeployRenderOptions(envName, f.renderOptions); err != nil {
 		return err
 	}
 	if f.offlineTo != "" && !f.offlineLedger {
@@ -595,18 +596,23 @@ func dispatchSpecChangeDeploy(ctx context.Context, envName string, f deployCmdFl
 	if f.dryRun && !f.promote.requestedRelease() {
 		previewDeployDecision(ctx, envName, f, report)
 	}
+	// The hosted capacity preflight is the first thing that authenticates to
+	// the control plane, so a missing credential or a missing scope surfaces
+	// here — and a --json caller needs the document for exactly that failure,
+	// with its error_reason, rather than an empty stdout and a sentence on
+	// stderr (refuseDeployReported).
 	if _, err := hostedCapacityPreflightForEnv(ctx, projectDirForKCL(), envName, false, progressWriter(f.jsonOut)); err != nil {
-		return err
+		return refuseDeployReported(report, err)
 	}
 	// --frontends-only is the inverse of --skip-frontend: ship ONLY the env's
 	// shippable frontend(s) and nothing else. The two are mutually exclusive —
 	// one says "everything but the frontend", the other "the frontend and
 	// nothing else"; combining them would deploy nothing.
 	if f.frontendsOnly && f.skipFrontend {
-		return errors.New("--frontends-only and --skip-frontend are mutually exclusive")
+		return refuseDeployReported(report, errors.New("--frontends-only and --skip-frontend are mutually exclusive"))
 	}
 	if f.frontendsOnly && len(f.targets) > 0 {
-		return errors.New("--frontends-only and --target are mutually exclusive (--frontends-only already scopes to every frontend)")
+		return refuseDeployReported(report, errors.New("--frontends-only and --target are mutually exclusive (--frontends-only already scopes to every frontend)"))
 	}
 	return runDeployReported(ctx, envName, report, deployOptions{
 		imageTag:      f.tag,
@@ -1128,6 +1134,23 @@ type deployOptions struct {
 	// each apply site — which is what keeps the notice and the eventual
 	// refusal from ever disagreeing about the same env.
 	directApplyAllowed bool
+}
+
+// refuseDeployReported ends a deploy that failed before its body ran. In
+// --json mode it still emits the document — ok false, the exit code, the
+// error and its structure (error_reason, error_scopes) — because "every
+// --json run prints one document" is what lets a consumer tell a refusal it
+// can explain from a forge that could not run. The error is returned
+// untouched either way.
+func refuseDeployReported(report *deployReport, err error) error {
+	if !report.Enabled() {
+		return err
+	}
+	report.finish(err, 0)
+	if emitErr := report.emit(); emitErr != nil {
+		return errors.Join(err, emitErr)
+	}
+	return err
 }
 
 // runDeployReported runs the deploy and, in --json mode, emits the report.

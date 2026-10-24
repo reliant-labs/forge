@@ -271,7 +271,7 @@ func TestMetricsListAndQuery(t *testing.T) {
 	}
 
 	fr = &fakeRunner{answers: []fakeAnswer{
-		{"HAVING count() > 0", Result{Rows: [][]any{{num64("2"), "{call}", num64("1")}}}},
+		{"HAVING count() > 0", Result{Rows: [][]any{{num64("2"), "{call}", num64("1"), num64("2"), num64("0"), num64("2"), num64("10"), "2026-10-22 10:00:00", "2026-10-22 10:10:00", num64("60")}}}},
 		{"AS g0", Result{Rows: [][]any{
 			{"2026-10-22 10:01:00", []any{"/a"}, num64("5")},
 			{"2026-10-22 10:00:00", []any{"/a"}, num64("3")},
@@ -303,7 +303,7 @@ func TestMetricsQueryUnknownMetricAndBadAgg(t *testing.T) {
 	if _, err := l.MetricsQuery(context.Background(), MetricsQueryRequest{Narrow: rng(), Name: "m", Agg: "median"}); err == nil || !strings.Contains(err.Error(), "p99") {
 		t.Errorf("an unknown --agg lists the real ones: %v", err)
 	}
-	fr := &fakeRunner{answers: []fakeAnswer{{"HAVING count() > 0", Result{Rows: [][]any{{num64("1"), "By", num64("0")}}}}}}
+	fr := &fakeRunner{answers: []fakeAnswer{{"HAVING count() > 0", Result{Rows: [][]any{{num64("1"), "By", num64("0"), num64("0"), num64("0"), num64("1"), num64("10"), "2026-10-22 10:00:00", "2026-10-22 10:10:00", num64("60")}}}}}}
 	_, err = (Local{Env: "dev", Runner: fr}).MetricsQuery(context.Background(), MetricsQueryRequest{Narrow: rng(), Name: "heap", Agg: "p95"})
 	if err == nil || err.(*Error).ExitCode() != ExitWrong {
 		t.Errorf("a percentile of a gauge is the caller's mistake: %v", err)

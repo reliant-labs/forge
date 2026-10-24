@@ -21,11 +21,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/obsbackend"
 	"github.com/reliant-labs/forge/pkg/dashspec"
 	"github.com/reliant-labs/forge/pkg/obsquery"
@@ -249,7 +249,7 @@ func writePanel(dest string, stdout io.Writer, p obsquery.Panel) error {
 		_, err = stdout.Write(raw)
 		return err
 	}
-	if err := os.WriteFile(dest, raw, 0o644); err != nil {
+	if err := atomicfile.WriteFile(dest, raw, 0o644); err != nil {
 		return obsbackend.Wrong("write --panel-out: %v", err)
 	}
 	return nil

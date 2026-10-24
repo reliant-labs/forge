@@ -56,10 +56,10 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// envtestBindingUser is the principal forge's grant is bound to: the GCP
-// service account the fake control plane reports for the binding. It belongs to
-// no group, so nothing but forge's own grant can authorize it.
-const envtestBindingUser = "fc-prod-ab12@acme.iam.gserviceaccount.com"
+// envtestBindingUser is the principal forge's grant is bound to: the binding's
+// own ServiceAccount, as the API server names it. It belongs to no extra group,
+// so nothing but forge's own grant can authorize it.
+const envtestBindingUser = "system:serviceaccount:forge-system:forge-connect-prod-us-prod"
 
 type envtestCluster struct {
 	cfg     *rest.Config
@@ -122,8 +122,7 @@ func getPath(cs *kubernetes.Clientset, path string) ([]byte, error) {
 }
 
 // connectToEnvtest runs the real `forge cluster connect --issuer upload`
-// against a real kube-apiserver, as a GKE-named context (so the binding is the
-// control plane's GCP identity) read through a real kubeconfig.
+// against a real kube-apiserver, as a GKE-named context read through a real kubeconfig.
 func connectToEnvtest(t *testing.T) *envtestCluster {
 	t.Helper()
 	cfg, admin, env := startIssuerEnvtest(t)
@@ -175,7 +174,7 @@ func connectToEnvtest(t *testing.T) *envtestCluster {
 
 	var out strings.Builder
 	if err := runClusterConnect(ctx, clusterConnectOptions{
-		Name: "prod-us", KubeContext: ec.kctx, Auth: "gcp", Env: "prod", Issuer: issuerUpload, Out: &out,
+		Name: "prod-us", KubeContext: ec.kctx, Env: "prod", Issuer: issuerUpload, Out: &out,
 	}); err != nil {
 		t.Fatalf("connect against a real API server: %v\n%s", err, out.String())
 	}
@@ -305,7 +304,7 @@ func TestEnvtestConnect_GrantAndUploadAgainstARealAPIServer(t *testing.T) {
 	//    are unchanged (what makes a refresh a no-op, and a rotation a diff).
 	var out strings.Builder
 	if err := runClusterConnect(context.Background(), clusterConnectOptions{
-		Name: "prod-us", KubeContext: ec.kctx, Auth: "gcp", Env: "prod", Issuer: issuerUpload, Out: &out,
+		Name: "prod-us", KubeContext: ec.kctx, Env: "prod", Issuer: issuerUpload, Out: &out,
 	}); err != nil {
 		t.Fatalf("re-run: %v\n%s", err, out.String())
 	}

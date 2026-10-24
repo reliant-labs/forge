@@ -1,14 +1,14 @@
 [dry-run] would connect "prod-us" for env "prod"
-  auth         gcp (GKE workload identity — no secret crosses the boundary)
+  auth         scoped ServiceAccount token, minted in your cluster
   address      https://34.1.2.3
-  cloudCluster projects/acme/locations/us-central1/clusters/prod
-  caPem        9 bytes, read from context gke_acme_us-central1_prod
+  caPem        9 bytes
+  token        minted on apply, sent write-only, never printed
   issuer       none sent: not read: --live-from reviews offline
   selector     app.kubernetes.io/managed-by=forge,forge.dev/connected-cluster=prod-us,forge.dev/binding-env=prod
 
 Grant diff  forge-connect-prod-us-prod  on context gke_acme_us-central1_prod
-scope      cluster  (a ClusterRole of 9 rule(s) over 6 rendered object(s), plus bind and escalate on roles)
-subject    User fc-prod-ab12@acme.iam.gserviceaccount.com (this binding's own GCP service account)
+scope      cluster  (a ClusterRole of 9 rule(s) over 6 rendered object(s))
+subject    ServiceAccount forge-system/forge-connect-prod-us-prod (this binding's own token identity)
 live       capture <live>
 
 + ClusterRole forge-connect-prod-us-prod  new
@@ -18,17 +18,16 @@ live       capture <live>
       + rule     core/namespaces: create,delete,get,list,patch,update,watch
       + rule     core/pods: get,list,watch
       + rule     core/services: create,delete,get,list,patch,update,watch
-      + rule     rbac.authorization.k8s.io/clusterroles: bind,create,delete,escalate,get,list,patch,update,watch
+      + rule     rbac.authorization.k8s.io/clusterroles: bind,escalate  only acme-reader
+      + rule     rbac.authorization.k8s.io/clusterroles: create,delete,get,list,patch,update,watch
       + rule     rbac.authorization.k8s.io/rolebindings: create,delete,get,list,patch,update,watch
-      + rule     rbac.authorization.k8s.io/roles: bind,escalate
       + rule     url /openid/v1/jwks: get
 + ClusterRoleBinding forge-connect-prod-us-prod  new
       + roleRef  ClusterRole/forge-connect-prod-us-prod
-      + subject  User fc-prod-ab12@acme.iam.gserviceaccount.com
+      + subject  ServiceAccount forge-system/forge-connect-prod-us-prod
 
-newly granted permissions (53):
-  cluster: bind rbac.authorization.k8s.io/clusterroles
-  cluster: bind rbac.authorization.k8s.io/roles
+newly granted permissions (51):
+  cluster: bind rbac.authorization.k8s.io/clusterroles [acme-reader]
   cluster: create apps/deployments
   cluster: create core/configmaps
   cluster: create core/namespaces
@@ -41,8 +40,7 @@ newly granted permissions (53):
   cluster: delete core/services
   cluster: delete rbac.authorization.k8s.io/clusterroles
   cluster: delete rbac.authorization.k8s.io/rolebindings
-  cluster: escalate rbac.authorization.k8s.io/clusterroles
-  cluster: escalate rbac.authorization.k8s.io/roles
+  cluster: escalate rbac.authorization.k8s.io/clusterroles [acme-reader]
   cluster: get apps/deployments
   cluster: get apps/replicasets
   cluster: get core/configmaps
@@ -82,12 +80,48 @@ newly granted permissions (53):
   cluster: watch rbac.authorization.k8s.io/rolebindings
 summary    +2 new  ~0 changed  -0 removed  =0 unchanged
 
-WARNING: --apply-scope cluster is equivalent to cluster-admin. The identity can create ClusterRoles and
-bindings (bind and escalate), so it can grant itself anything. It is derived from the env's render so an
-unexpected kind is Forbidden, but that is a tripwire, not a boundary. Prefer --apply-scope namespace:<ns> where the env fits.
+WARNING: --apply-scope cluster grants write on every kind the env renders, in every namespace. Where the render
+carries RBAC, escalate and bind are held only on the exact Role/ClusterRole names it declares, so the identity cannot mint a
+role the render does not name, but it can still rewrite those named roles and bind them. Prefer --apply-scope namespace:<ns>
+where the env fits.
 
 [dry-run] would apply to gke_acme_us-central1_prod:
 
+    apiVersion: v1
+    kind: Namespace
+    metadata:
+      labels:
+        app.kubernetes.io/managed-by: forge
+        forge.dev/binding-env: prod
+        forge.dev/connect-grant: identity
+        forge.dev/connected-cluster: prod-us
+      name: forge-system
+    ---
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      labels:
+        app.kubernetes.io/managed-by: forge
+        forge.dev/binding-env: prod
+        forge.dev/connect-grant: identity
+        forge.dev/connected-cluster: prod-us
+      name: forge-connect-prod-us-prod
+      namespace: forge-system
+    ---
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      annotations:
+        kubernetes.io/service-account.name: forge-connect-prod-us-prod
+      labels:
+        app.kubernetes.io/managed-by: forge
+        forge.dev/binding-env: prod
+        forge.dev/connect-grant: identity
+        forge.dev/connected-cluster: prod-us
+      name: forge-connect-prod-us-prod-token
+      namespace: forge-system
+    type: kubernetes.io/service-account-token
+    ---
     apiVersion: rbac.authorization.k8s.io/v1
     kind: ClusterRole
     metadata:
@@ -167,15 +201,22 @@ unexpected kind is Forbidden, but that is a tripwire, not a boundary. Prefer --a
       resources:
       - clusterroles
       verbs:
-      - bind
       - create
       - delete
-      - escalate
       - get
       - list
       - patch
       - update
       - watch
+    - apiGroups:
+      - rbac.authorization.k8s.io
+      resourceNames:
+      - acme-reader
+      resources:
+      - clusterroles
+      verbs:
+      - bind
+      - escalate
     - apiGroups:
       - rbac.authorization.k8s.io
       resources:
@@ -188,13 +229,6 @@ unexpected kind is Forbidden, but that is a tripwire, not a boundary. Prefer --a
       - patch
       - update
       - watch
-    - apiGroups:
-      - rbac.authorization.k8s.io
-      resources:
-      - roles
-      verbs:
-      - bind
-      - escalate
     - nonResourceURLs:
       - /openid/v1/jwks
       verbs:
@@ -214,6 +248,6 @@ unexpected kind is Forbidden, but that is a tripwire, not a boundary. Prefer --a
       kind: ClusterRole
       name: forge-connect-prod-us-prod
     subjects:
-    - apiGroup: rbac.authorization.k8s.io
-      kind: User
-      name: fc-prod-ab12@acme.iam.gserviceaccount.com
+    - kind: ServiceAccount
+      name: forge-connect-prod-us-prod
+      namespace: forge-system

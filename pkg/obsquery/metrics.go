@@ -39,6 +39,9 @@ const (
 	MetricGauge
 	MetricSum
 	MetricHistogram
+	// MetricExpHistogram and MetricSummary equal their CatalogKind.
+	MetricExpHistogram
+	MetricSummary
 )
 
 func (t MetricType) table() string {
@@ -49,6 +52,10 @@ func (t MetricType) table() string {
 		return "otel_metrics_sum"
 	case MetricHistogram:
 		return "otel_metrics_histogram"
+	case MetricExpHistogram:
+		return "otel_metrics_exponential_histogram"
+	case MetricSummary:
+		return "otel_metrics_summary"
 	}
 	return ""
 }
@@ -118,6 +125,10 @@ func (a Agg) isQuantile() bool {
 //	up-down sum     default sum (of last values); rate, increase, count and quantile refused
 //	gauge           default avg; rate, increase and quantile refused
 //	histogram       default p95; every aggregation but last
+//	exp histogram   as a histogram
+//	summary         default avg; avg, sum, count, increase and rate over its Count and
+//	                Sum; quantile only for a level every series stores (checked against
+//	                the data); min, max and last refused
 //
 // A monotonic sum resolves AggSum to AggIncrease, so one word never means two
 // things.
@@ -132,13 +143,13 @@ func ResolveAgg(info MetricInfo, a Agg) (Agg, error) {
 			return AggRate, nil
 		case t == MetricSum:
 			return AggSum, nil
-		case t == MetricHistogram:
+		case t == MetricHistogram || t == MetricExpHistogram:
 			return AggP95, nil
 		}
 		return AggAvg, nil
 	}
-	if a.isQuantile() && t != MetricHistogram {
-		return 0, invalid("percentile aggregations apply to histogram metrics only")
+	if a.isQuantile() && t != MetricHistogram && t != MetricExpHistogram && t != MetricSummary {
+		return 0, invalid("percentile aggregations apply to histogram and summary metrics only")
 	}
 	switch t {
 	case MetricGauge:
@@ -155,9 +166,13 @@ func ResolveAgg(info MetricInfo, a Agg) (Agg, error) {
 		if a == AggSum && info.Monotonic {
 			return AggIncrease, nil
 		}
-	case MetricHistogram:
+	case MetricHistogram, MetricExpHistogram:
 		if a == AggLast {
 			return 0, invalid("last is not defined over a histogram: use a quantile, avg, min, max, sum, count or rate")
+		}
+	case MetricSummary:
+		if a == AggMin || a == AggMax || a == AggLast {
+			return 0, invalid("a summary keeps no minimum, maximum or last value: use avg, sum, count, increase, rate or a quantile it stores")
 		}
 	}
 	return a, nil
@@ -232,7 +247,7 @@ func (q MetricLookup) Compile() (Stmt, error) {
 	}
 	b := newBuilder(q.Scope)
 	parts := make([]string, 0, 3)
-	for _, t := range []MetricType{MetricGauge, MetricSum, MetricHistogram} {
+	for _, t := range []MetricType{MetricGauge, MetricSum, MetricHistogram, MetricExpHistogram, MetricSummary} {
 		// Which table holds a metric does not depend on the filters.
 		conds := append([]string{b.rangeCondSec("TimeUnix", q.Scope), "MetricName = " + b.str(q.Name)}, b.scopeBase(q.Scope)...)
 		mono, tmp, mixed := "toUInt8(0)", "toInt32(0)", "toUInt8(0)"
@@ -244,6 +259,8 @@ func (q MetricLookup) Compile() (Stmt, error) {
 		case MetricHistogram:
 			tmp, mixed = "toInt32(any(AggregationTemporality))", "toUInt8(uniq(AggregationTemporality) > 1)"
 			sid = "cityHash64(ResourceAttributes, Attributes, ExplicitBounds)"
+		case MetricExpHistogram:
+			tmp, mixed = "toInt32(any(AggregationTemporality))", "toUInt8(uniq(AggregationTemporality) > 1)"
 		}
 		from := b.table(q.Scope, t.table()) + " " + where(conds)
 		interval := "(SELECT toUInt64(ifNotFinite(round(medianExact(gap)), 0)) FROM (SELECT (max(TimeUnix) - min(TimeUnix)) / (count() - 1) AS gap FROM " +
@@ -251,7 +268,7 @@ func (q MetricLookup) Compile() (Stmt, error) {
 		parts = append(parts, "SELECT "+strconv.Itoa(int(t))+" AS kind, any(MetricUnit) AS unit, "+mono+" AS mono, "+tmp+" AS temporality, "+mixed+" AS mixed, "+
 			"uniq("+sid+") AS series, count() AS points, min(TimeUnix) AS first, max(TimeUnix) AS last, "+interval+" AS interval FROM "+from+" HAVING count() > 0")
 	}
-	return b.stmt("SELECT * FROM (\n" + strings.Join(parts, "\nUNION ALL\n") + "\n) ORDER BY kind LIMIT 3"), nil
+	return b.stmt("SELECT * FROM (\n" + strings.Join(parts, "\nUNION ALL\n") + "\n) ORDER BY kind LIMIT 5"), nil
 }
 
 // ParseLookup reads MetricLookup's rows into the info of the requested kind, or
@@ -332,6 +349,7 @@ const (
 	famHistAvg
 	famHistMinMax
 	famHistQuantile
+	famSummaryQuantile
 )
 
 func (q MetricQuery) family(agg Agg) metricFamily {
@@ -340,8 +358,10 @@ func (q MetricQuery) family(agg Agg) metricFamily {
 		if agg == AggRate || agg == AggIncrease {
 			return famCounter
 		}
-	case MetricHistogram:
+	case MetricHistogram, MetricExpHistogram, MetricSummary:
 		switch {
+		case agg.isQuantile() && q.Info.Type == MetricSummary:
+			return famSummaryQuantile
 		case agg.isQuantile():
 			return famHistQuantile
 		case agg == AggAvg:
@@ -489,7 +509,7 @@ func (q MetricQuery) Compile() (Stmt, error) {
 			tuple = "(" + strings.Join(gExprs, ", ") + ")"
 		}
 		rank := "sum(abs(Value))"
-		if q.Info.Type == MetricHistogram {
+		if q.Info.Type.hasCounts() {
 			rank = "sum(Count)"
 		}
 		total = "(SELECT uniqExact(" + tuple + ") FROM " + from + " " + where(conds) + ")"
@@ -542,7 +562,7 @@ func (q MetricQuery) Compile() (Stmt, error) {
 
 	case famCounter:
 		vCol, cCol := "Value", "Value"
-		if q.Info.Type == MetricHistogram {
+		if q.Info.Type.hasCounts() {
 			vCol, cCol = "Count", "Count"
 			if agg == AggSum {
 				vCol = "Sum"
@@ -564,7 +584,7 @@ func (q MetricQuery) Compile() (Stmt, error) {
 			"    SELECT TimeUnix, tmp, is_first, " + strings.TrimPrefix(gNameList, ", ") + commaIf(gNameList) + "\n" +
 			"           if(tmp = 1 OR is_reset, S, S - pS) AS incS, if(tmp = 1 OR is_reset, c, c - pc) AS incC FROM (\n" +
 			"      SELECT TimeUnix, tmp, S, c, pS, pc, isNaN(pc) AS is_first, (NOT isNaN(pc)) AND (StartTimeUnix != pStart OR c < pc) AS is_reset" + gNameList + " FROM (\n" +
-			"        SELECT TimeUnix, StartTimeUnix, AggregationTemporality AS tmp, toFloat64(Sum) AS S, toFloat64(Count) AS c" + gSelList + ",\n" +
+			"        SELECT TimeUnix, StartTimeUnix, " + q.tmpExpr() + " AS tmp, toFloat64(Sum) AS S, toFloat64(Count) AS c" + gSelList + ",\n" +
 			"               lagInFrame(toFloat64(Sum), 1, nan) OVER w AS pS, lagInFrame(toFloat64(Count), 1, nan) OVER w AS pc, lagInFrame(StartTimeUnix, 1, toDateTime(0)) OVER w AS pStart\n" +
 			"        FROM " + from + "\n        " + where(conds) + "\n        " + window + "\n      )\n    )\n" +
 			"    WHERE (tmp = 1 OR NOT is_first) AND " + startCond + "\n  )\n" +
@@ -576,7 +596,14 @@ func (q MetricQuery) Compile() (Stmt, error) {
 			"  SELECT " + bucket + " AS bucket" + gSelList + ", Min, Max FROM " + from + "\n  " + where(conds) + "\n" +
 			")" + tail
 
+	case famSummaryQuantile:
+		sql = q.summaryQuantileSQL(sqlParts{b: b, bucket: bucket, labels: labels, total: total, gSelList: gSelList, gNameList: gNameList, from: from, sid: sid, conds: conds}, q.QuantileLevel())
+
 	case famHistQuantile:
+		if q.Info.Type == MetricExpHistogram {
+			sql = q.expQuantileSQL(sqlParts{b: b, bucket: bucket, labels: labels, total: total, gSelList: gSelList, gNameList: gNameList, from: from, sid: sid, startCond: startCond, conds: conds})
+			break
+		}
 		sql = "SELECT bucket, " + labels + " AS labels, bounds, sumForEach(incs) AS counts, " + total + " AS series_total FROM (\n" +
 			"  SELECT " + bucket + " AS bucket" + gNameList + ", bounds, incs FROM (\n" +
 			"    SELECT TimeUnix, bounds, is_first, tmp, arrayMap((x, p) -> if(tmp = 1 OR is_reset, x, greatest(x - p, 0)), cur, prev) AS incs" + gNameList + " FROM (\n" +
@@ -611,7 +638,7 @@ func (q MetricQuery) incrementsSQL(v, c, gSelList, sid, from string, conds []str
 		"           if(tmp = 1 OR is_reset, v, v - pv) AS inc,\n" +
 		"           if(tmp = 1 OR (is_reset AND StartTimeUnix > pt), dateDiff('second', StartTimeUnix, TimeUnix), dateDiff('second', pt, TimeUnix)) AS dt FROM (\n" +
 		"      SELECT TimeUnix, StartTimeUnix, tmp, v, pv, pt, sid" + gNames + ", isNaN(pc) AS is_first, (NOT isNaN(pc)) AND (StartTimeUnix != ps OR c < pc) AS is_reset FROM (\n" +
-		"        SELECT TimeUnix, StartTimeUnix, AggregationTemporality AS tmp, toFloat64(" + v + ") AS v, toFloat64(" + c + ") AS c, " + sid + " AS sid" + gSelList + ",\n" +
+		"        SELECT TimeUnix, StartTimeUnix, " + q.tmpExpr() + " AS tmp, toFloat64(" + v + ") AS v, toFloat64(" + c + ") AS c, " + sid + " AS sid" + gSelList + ",\n" +
 		"               lagInFrame(toFloat64(" + v + "), 1, nan) OVER w AS pv, lagInFrame(toFloat64(" + c + "), 1, nan) OVER w AS pc,\n" +
 		"               lagInFrame(TimeUnix, 1, toDateTime(0)) OVER w AS pt, lagInFrame(StartTimeUnix, 1, toDateTime(0)) OVER w AS ps\n" +
 		"        FROM " + from + "\n        " + where(conds) + "\n        " + window + "\n      )\n    )"

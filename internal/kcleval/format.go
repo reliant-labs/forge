@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-
-	"sigs.k8s.io/yaml"
 )
 
 // Format is how a Result is printed.
@@ -45,11 +43,10 @@ func Formats() []string { return []string{string(FormatJSON), string(FormatYAML)
 //
 //	BUILDER_REPO="$(forge kcl eval "${KCL}" -S sbd.builder_repo --format raw)"
 //
-// A number prints as KCL's own integer where it is integral, not Go's float64
-// rendering: `-S sbd.disk_size_gb` must produce `200` for a caller passing it
-// to `gcloud --boot-disk-size`, and `200` is what the KCL says. JSON has one
-// number type, so an integral float64 is the only thing an integer can decode
-// to and printing it as `200` is a restoration, not a guess.
+// A number prints as KCL's own text: `-S sbd.disk_size_gb` must produce `200`
+// for a caller passing it to `gcloud --boot-disk-size`, and `200` is what the
+// KCL says. The document keeps numbers as json.Number rather than float64, so
+// nothing is reformatted on the way through.
 //
 // It refuses a composite rather than falling back to JSON. A caller asking
 // for raw wants a value it can interpolate into a command line; handing it
@@ -65,17 +62,17 @@ func Render(r Result, f Format) ([]byte, error) {
 		}
 		return []byte(rawScalar(r.Value)), nil
 	case FormatYAML:
-		out, err := yaml.Marshal(r.Value)
+		out, err := encodeYAML(r.Value)
 		if err != nil {
 			return nil, fmt.Errorf("encode as YAML: %w", err)
 		}
 		return out, nil
 	case FormatJSON, "":
-		out, err := json.MarshalIndent(r.Value, "", "  ")
+		out, err := encodeJSON(r.Value)
 		if err != nil {
 			return nil, fmt.Errorf("encode as JSON: %w", err)
 		}
-		return append(out, '\n'), nil
+		return out, nil
 	}
 	return nil, fmt.Errorf("unknown format %q (want one of: %v)", f, Formats())
 }
@@ -94,11 +91,8 @@ func rawScalar(v any) string {
 		return s
 	case bool:
 		return strconv.FormatBool(s)
-	case float64:
-		if s == float64(int64(s)) {
-			return strconv.FormatInt(int64(s), 10)
-		}
-		return strconv.FormatFloat(s, 'f', -1, 64)
+	case json.Number:
+		return s.String()
 	}
 	return fmt.Sprint(v)
 }

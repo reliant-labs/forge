@@ -1,12 +1,17 @@
 package obsquery
 
 import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 
 	"github.com/reliant-labs/forge/pkg/observe"
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // rec builds an ERROR record logged at fn.
@@ -163,5 +168,87 @@ func TestServerFingerprintSQLShape(t *testing.T) {
 	}
 	if MessageNormSQL("Body") != sqlBodyNorm {
 		t.Error("MessageNormSQL drifted from the expression sfp1 uses")
+	}
+}
+
+// A server fault's issue is keyed by where it began, not by the function that
+// logged it. Two internal errors with the same message, type and log site but
+// different origins must be two issues; one origin is one issue however many
+// requests hit it; and a client error is never given a stack.
+//
+//go:noinline
+func faultAtListJobs() error { return svcerr.Internal("query failed") }
+
+//go:noinline
+func faultAtGetJob() error { return svcerr.Internal("query failed") }
+
+// logAsInterceptor writes the record the way LoggingInterceptor does: every
+// failure of every rpc is logged from this one function.
+//
+//go:noinline
+func logAsInterceptor(l *slog.Logger, err error) { l.Error("rpc failed", "error", err) }
+
+func sfp1Of(t *testing.T, err error) (string, map[string]string) {
+	t.Helper()
+	var buf bytes.Buffer
+	logger := slog.New(observe.NewLogHandler(slog.NewJSONHandler(&buf, nil), observe.Config{}))
+	logAsInterceptor(logger, err)
+	var line map[string]any
+	if jerr := json.Unmarshal(buf.Bytes(), &line); jerr != nil {
+		t.Fatalf("log line: %v: %s", jerr, buf.String())
+	}
+	attrs := map[string]string{}
+	for k, v := range line {
+		if s, ok := v.(string); ok {
+			attrs[k] = s
+		}
+		if f, ok := v.(float64); ok {
+			attrs[k] = strconv.Itoa(int(f))
+		}
+	}
+	return ServerFingerprint(ServerErrorRecord{ServiceName: "api", ScopeName: "github.com/acme/app", Body: "rpc failed", Attributes: attrs}), attrs
+}
+
+func TestServerFingerprintUsesTheTopApplicationFrameOfTheStack(t *testing.T) {
+	fpList, listAttrs := sfp1Of(t, svcerr.Wrap(faultAtListJobs()))
+	fpGet, getAttrs := sfp1Of(t, svcerr.Wrap(faultAtGetJob()))
+
+	if fpList == fpGet {
+		t.Fatalf("two internal errors from different sites share fingerprint %s", fpList)
+	}
+	if !strings.HasSuffix(listAttrs[LogKeyCodeFunction], ".faultAtListJobs") || !strings.HasSuffix(getAttrs[LogKeyCodeFunction], ".faultAtGetJob") {
+		t.Errorf("code.function.name is not the stack's top application frame: %q, %q",
+			listAttrs[LogKeyCodeFunction], getAttrs[LogKeyCodeFunction])
+	}
+	if !strings.Contains(listAttrs["exception.stacktrace"], "faultAtListJobs") {
+		t.Errorf("record has no stack: %v", listAttrs)
+	}
+
+	// Same origin, a new request: still one issue.
+	again, _ := sfp1Of(t, svcerr.Wrap(faultAtListJobs()))
+	if again != fpList {
+		t.Errorf("one origin split into two issues: %s vs %s", again, fpList)
+	}
+
+	// The control: with no stack on either record they share the log site and
+	// collapse into one issue, which is the defect this fixes.
+	for _, attrs := range []map[string]string{listAttrs, getAttrs} {
+		delete(attrs, "exception.stacktrace")
+		attrs[LogKeyCodeFunction] = "github.com/reliant-labs/forge/pkg/obsquery.logAsInterceptor"
+	}
+	a := ServerFingerprint(ServerErrorRecord{ServiceName: "api", Body: "rpc failed", Attributes: listAttrs})
+	b := ServerFingerprint(ServerErrorRecord{ServiceName: "api", Body: "rpc failed", Attributes: getAttrs})
+	if a != b {
+		t.Errorf("control: with the log site as the frame these should merge, got %s and %s", a, b)
+	}
+}
+
+func TestServerFingerprintOfAClientErrorHasNoStack(t *testing.T) {
+	_, attrs := sfp1Of(t, svcerr.Wrap(svcerr.InvalidArgument("bad field")))
+	if _, ok := attrs["exception.stacktrace"]; ok {
+		t.Errorf("a client error carries a stack: %v", attrs)
+	}
+	if !strings.HasSuffix(attrs[LogKeyCodeFunction], ".logAsInterceptor") {
+		t.Errorf("a client error's site is the log call site, got %q", attrs[LogKeyCodeFunction])
 	}
 }

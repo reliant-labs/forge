@@ -63,10 +63,7 @@ func TraceCall[T any](ctx context.Context, tracer trace.Tracer, operationName st
 	ctx, span := tracer.Start(ctx, operationName)
 	defer span.End()
 	out, err := fn(ctx)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
+	RecordSpanError(span, err)
 	return out, err
 }
 
@@ -79,10 +76,7 @@ func TraceVoidCall(ctx context.Context, tracer trace.Tracer, operationName strin
 	ctx, span := tracer.Start(ctx, operationName)
 	defer span.End()
 	err := fn(ctx)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
+	RecordSpanError(span, err)
 	return err
 }
 
@@ -96,12 +90,20 @@ func TraceVoidCall(ctx context.Context, tracer trace.Tracer, operationName strin
 //	out, err := o.inner.Get(ctx, id)
 //	observe.RecordSpanError(span, err)
 //
+// A server fault that svcerr captured a stack for (see svcerr.StackOf) carries
+// it on the span's exception event as exception.stacktrace; a client-class
+// error never does.
+//
 // nil-safe on both span and err (a nil err is the no-op success path).
 func RecordSpanError(span trace.Span, err error) {
 	if span == nil || err == nil {
 		return
 	}
-	span.RecordError(err)
+	if st, ok := svcerr.StackOf(err); ok {
+		span.RecordError(err, trace.WithAttributes(attribute.String(LogKeyExceptionStacktrace, st.Trace)))
+	} else {
+		span.RecordError(err)
+	}
 	span.SetStatus(codes.Error, err.Error())
 }
 

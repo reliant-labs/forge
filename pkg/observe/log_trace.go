@@ -8,6 +8,8 @@ import (
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // Log attribute keys carrying the active span, matching what the audit
@@ -110,6 +112,9 @@ func addLogEvent(span trace.Span, r slog.Record) {
 	r.Attrs(func(a slog.Attr) bool {
 		if err, ok := a.Value.Any().(error); ok && err != nil {
 			attrs = append(attrs, attribute.String("exception.message", truncate(err.Error(), maxLogEventMessage)))
+			if st, ok := svcerr.StackOf(err); ok {
+				attrs = append(attrs, attribute.String(LogKeyExceptionStacktrace, st.Trace))
+			}
 			return false
 		}
 		return true

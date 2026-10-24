@@ -11,7 +11,6 @@ import (
 
 	"connectrpc.com/connect"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
@@ -219,10 +218,7 @@ func (i *tracingInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc
 		var resp connect.AnyResponse
 		var err error
 		withSpanProfileLabels(ctx, func(ctx context.Context) { resp, err = next(ctx, req) })
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-		}
+		RecordSpanError(span, err)
 		return resp, err
 	})
 }
@@ -237,10 +233,7 @@ func (i *tracingInterceptor) WrapStreamingHandler(next connect.StreamingHandlerF
 		defer span.End()
 		var err error
 		withSpanProfileLabels(ctx, func(ctx context.Context) { err = next(ctx, conn) })
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-		}
+		RecordSpanError(span, err)
 		return err
 	})
 }

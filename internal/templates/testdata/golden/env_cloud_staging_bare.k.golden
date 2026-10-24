@@ -8,8 +8,8 @@ each workload is (build, subcommand, ports, credentials). This file says
 where each one runs here, and states the values only this env knows.
 
 As scaffolded, everything runs on the forge control plane (Reliant cloud),
-which owns the namespace, the registry, the database, the secrets and the
-CDN:
+which owns the namespace, the registry, the database and the secrets (static
+sites get its CDN once their hostname is moved to its edge):
 
   workloads  `forge.OnHosted`: each a Workload the platform admits under its
              Restricted profile (kinds service, worker, job) and renders with
@@ -169,7 +169,7 @@ _workloads = [
 # service, at one origin.
 _api_config = {API_URL = forge.WorkloadURL {workload = _api.name}} if any w in _workloads {w.name == _api.name} else {}
 
-# HOSTED: the platform's static hosting and CDN. Like a workload, its image
+# HOSTED: the platform's static hosting. Like a workload, its image
 # names no registry host. The release carries no config.js: the control
 # plane writes one after every sync, resolving API_URL to the hosted API's
 # URL, so one release promotes between envs unchanged.

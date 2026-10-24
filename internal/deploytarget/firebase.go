@@ -224,11 +224,24 @@ func (s FirebaseHostingSpec) mountRel() string {
 // assetRel is the build's hashed asset directory relative to the site root
 // ("assets", "admin/assets"), or "" when the build declares none.
 func (s FirebaseHostingSpec) assetRel() string {
-	dir := strings.Trim(path.Clean("/"+strings.TrimSpace(s.AssetDir)), "/")
-	if s.AssetDir == "" || dir == "" {
+	return siteAssetRel(s.BasePath, s.AssetDir)
+}
+
+// siteAssetRel is a build's hashed asset directory relative to the site
+// root: assetDir under the frontend's base_path mount ("assets",
+// "admin/assets"), or "" when the build declares none. Shared by every
+// static runtime that sets cache headers, so the directory forge marks
+// immutable is the same one on Firebase and on a bucket.
+func siteAssetRel(basePath, assetDir string) string {
+	dir := strings.Trim(path.Clean("/"+strings.TrimSpace(assetDir)), "/")
+	if assetDir == "" || dir == "" {
 		return ""
 	}
-	return path.Join(s.mountRel(), dir)
+	mount := ""
+	if m := cleanDestRel(basePath); m != "." {
+		mount = filepath.ToSlash(m)
+	}
+	return path.Join(mount, dir)
 }
 
 // Deploy ships every frontend in the group to its Firebase Hosting

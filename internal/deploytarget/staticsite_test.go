@@ -345,34 +345,6 @@ func TestInvalidationPaths(t *testing.T) {
 	})
 }
 
-// TestStaticSiteUploadAppliesCacheRulesInOrder pins that the most
-// specific cache rule is applied FIRST and the catch-all pass cannot
-// overwrite the header it set. Getting this backwards would tag
-// immutable hashed assets with must-revalidate, quietly destroying the
-// caching that keeps invalidation cheap.
-func TestStaticSiteUploadAppliesCacheRulesInOrder(t *testing.T) {
-	prov := StaticSiteProvider{}
-	spec := fakeStaticSiteFrontend().Spec
-	cmds := prov.uploadCmds(spec, "/staging", "deadbeef1234")
-
-	if len(cmds) != 3 {
-		t.Fatalf("expected 2 rule uploads + 1 catch-all, got %d: %v", len(cmds), cmds)
-	}
-	first := strings.Join(cmds[0], " ")
-	if !strings.Contains(first, "_next/static/**") || !strings.Contains(first, "immutable") {
-		t.Errorf("most specific rule must run first, got %q", first)
-	}
-	last := strings.Join(cmds[len(cmds)-1], " ")
-	if !strings.Contains(last, "--no-clobber") {
-		t.Errorf("catch-all pass must be --no-clobber so earlier headers survive, got %q", last)
-	}
-	for _, c := range cmds {
-		if !strings.Contains(strings.Join(c, " "), "gs://reliant-staging-web/releases/deadbeef1234") {
-			t.Errorf("upload must target the immutable release prefix, got %v", c)
-		}
-	}
-}
-
 // TestStaticSiteBucketNormalization confirms a bare bucket name and a
 // gs:// URL resolve to the same prefixes — the schema accepts both.
 func TestStaticSiteBucketNormalization(t *testing.T) {

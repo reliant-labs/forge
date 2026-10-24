@@ -55,11 +55,11 @@
  * and C fixed and moving only H gives a family that reads as one palette
  * rather than a pile of unrelated hues. Concretely:
  *
- *   - NEUTRALS carry chroma 0.002–0.02 at the accent's hue (265deg), not
+ *   - NEUTRALS carry chroma 0.002–0.012 at a cool blue-gray hue (262deg), not
  *     chroma 0. A literally-grey grey next to a saturated accent looks
  *     dirty; a neutral tinted toward the accent looks intentional. This is
  *     also why there is no `#fff` and no `#000` anywhere below.
- *   - STATUS hues (accent 265, danger 25, success 155, warning 75-85) sit
+ *   - STATUS hues (accent 258, danger 25-27, success 155, warning 72-85) sit
  *     at matched lightness within each role, so a danger badge and a
  *     success badge have the same visual weight.
  *   - Every `-ink` on its matching `-surface`, and every `on-*` on its
@@ -88,118 +88,118 @@
 @theme {
   --font-sans:
     var(--font-inter), ui-sans-serif, system-ui, sans-serif; /* Inter (loaded + exposed as --font-inter in layout.tsx) drives `font-sans` */
-  --radius-md: 0.5rem; /* controls: buttons, inputs, chips */
-  --radius-lg: 0.75rem; /* containers: cards, panels, tiles */
-  --radius-xl: 1rem; /* the largest surfaces: modals, auth card */
-  --shadow-sm: 0 1px 2px 0 oklch(22% 0.02 265deg / 6%); /* resting elevation */
+  --radius-md: 0.375rem; /* controls: buttons, inputs, chips */
+  --radius-lg: 0.625rem; /* containers: cards, panels, tiles */
+  --radius-xl: 0.875rem; /* the largest surfaces: modals, auth card */
+  --shadow-sm: 0 1px 2px 0 oklch(21% 0.012 262deg / 6%); /* resting elevation */
   --shadow-md:
-    0 4px 12px -2px oklch(22% 0.02 265deg / 8%), 0 2px 4px -2px oklch(22% 0.02 265deg / 5%); /* hover / raised */
+    0 4px 12px -2px oklch(21% 0.012 262deg / 8%), 0 2px 4px -2px oklch(21% 0.012 262deg / 5%); /* hover / raised */
   --shadow-lg:
-    0 12px 28px -6px oklch(22% 0.02 265deg / 12%), 0 4px 8px -4px oklch(22% 0.02 265deg / 6%); /* popovers, dropdowns */
-  --color-surface: oklch(99% 0.002 265deg); /* page / card background */
+    0 12px 28px -6px oklch(21% 0.012 262deg / 12%), 0 4px 8px -4px oklch(21% 0.012 262deg / 6%); /* popovers, dropdowns */
+  --color-surface: oklch(99.5% 0.002 262deg); /* page / card background */
 
   /* an inset INSIDE a surface — below it in light AND dark; see ui/card.tsx */
-  --color-surface-sunken: oklch(96% 0.006 265deg);
-  --color-surface-muted: oklch(97% 0.005 265deg); /* subtle fills: table head, hovers */
-  --color-border: oklch(92% 0.008 265deg);
-  --color-border-strong: oklch(86% 0.012 265deg);
-  --color-ink: oklch(22% 0.02 265deg); /* primary text */
-  --color-ink-muted: oklch(48% 0.016 265deg); /* secondary text */
-  --color-ink-subtle: oklch(60% 0.014 265deg); /* tertiary / placeholder / icons */
-  --color-accent: oklch(52% 0.19 265deg); /* primary action */
-  --color-accent-hover: oklch(45% 0.19 265deg);
-  --color-on-accent: oklch(99% 0.005 265deg); /* text/icon on an accent fill */
+  --color-surface-sunken: oklch(96.6% 0.004 262deg);
+  --color-surface-muted: oklch(97.7% 0.003 262deg); /* subtle fills: table head, hovers */
+  --color-border: oklch(92.2% 0.005 262deg);
+  --color-border-strong: oklch(86.5% 0.008 262deg);
+  --color-ink: oklch(21% 0.012 262deg); /* primary text */
+  --color-ink-muted: oklch(47.5% 0.012 262deg); /* secondary text */
+  --color-ink-subtle: oklch(60% 0.01 262deg); /* tertiary / placeholder / icons */
+  --color-accent: oklch(53% 0.17 258deg); /* primary action */
+  --color-accent-hover: oklch(47% 0.16 258deg);
+  --color-on-accent: oklch(99.2% 0.004 258deg); /* text/icon on an accent fill */
   --color-accent-surface: oklch(
-    96% 0.019 265deg
+    96% 0.016 258deg
   ); /* accent-tinted fill: info badge, active chip / tab */
-  --color-accent-border: oklch(88% 0.058 265deg);
-  --color-accent-ink: oklch(42% 0.17 265deg); /* accent text on an accent-surface fill */
-  --color-danger: oklch(55% 0.2 25deg); /* destructive action / error */
-  --color-danger-hover: oklch(48% 0.194 25deg);
-  --color-on-danger: oklch(99% 0.005 25deg); /* text/icon on a danger fill */
-  --color-danger-surface: oklch(96% 0.02 25deg); /* danger banner background */
-  --color-danger-border: oklch(88% 0.063 25deg);
-  --color-danger-ink: oklch(44% 0.17 25deg); /* danger text on a light surface */
-  --color-success: oklch(58% 0.14 155deg); /* positive status: badge dot / solid */
-  --color-success-surface: oklch(96% 0.03 155deg); /* success badge background */
-  --color-success-border: oklch(88% 0.07 155deg);
-  --color-success-ink: oklch(45% 0.11 155deg); /* success text on a light surface */
-  --color-warning: oklch(75% 0.158 75deg); /* caution status: badge dot / solid */
-  --color-warning-hover: oklch(69% 0.135 72deg);
-  --color-on-warning: oklch(28% 0.059 75deg); /* text/icon on a warning fill */
-  --color-warning-surface: oklch(97% 0.032 85deg); /* warning badge background */
-  --color-warning-border: oklch(88% 0.09 85deg);
-  --color-warning-ink: oklch(47% 0.099 75deg); /* warning text on a light surface */
+  --color-accent-border: oklch(87.5% 0.052 258deg);
+  --color-accent-ink: oklch(44.5% 0.15 258deg); /* accent text on an accent-surface fill */
+  --color-danger: oklch(54% 0.195 27deg); /* destructive action / error */
+  --color-danger-hover: oklch(48% 0.18 27deg);
+  --color-on-danger: oklch(99.2% 0.004 27deg); /* text/icon on a danger fill */
+  --color-danger-surface: oklch(96.4% 0.017 25deg); /* danger banner background */
+  --color-danger-border: oklch(87.5% 0.062 25deg);
+  --color-danger-ink: oklch(45.5% 0.165 27deg); /* danger text on a light surface */
+  --color-success: oklch(57% 0.135 155deg); /* positive status: badge dot / solid */
+  --color-success-surface: oklch(96.4% 0.03 155deg); /* success badge background */
+  --color-success-border: oklch(87.5% 0.07 155deg);
+  --color-success-ink: oklch(44% 0.105 155deg); /* success text on a light surface */
+  --color-warning: oklch(76% 0.155 75deg); /* caution status: badge dot / solid */
+  --color-warning-hover: oklch(70% 0.14 72deg);
+  --color-on-warning: oklch(27% 0.058 72deg); /* text/icon on a warning fill */
+  --color-warning-surface: oklch(97% 0.03 85deg); /* warning badge background */
+  --color-warning-border: oklch(87.5% 0.09 85deg);
+  --color-warning-ink: oklch(46.5% 0.096 75deg); /* warning text on a light surface */
 }
 
 /* Dark palette — OS preference, unless data-theme forces light. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --color-surface: oklch(17% 0.012 265deg);
-    --color-surface-sunken: oklch(13% 0.01 265deg);
-    --color-surface-muted: oklch(22% 0.015 265deg);
-    --color-border: oklch(29% 0.018 265deg);
-    --color-border-strong: oklch(38% 0.02 265deg);
-    --color-ink: oklch(96% 0.006 265deg);
-    --color-ink-muted: oklch(72% 0.014 265deg);
-    --color-ink-subtle: oklch(58% 0.016 265deg);
-    --color-accent: oklch(72% 0.145 265deg);
-    --color-accent-hover: oklch(80% 0.1 265deg);
-    --color-on-accent: oklch(17% 0.012 265deg);
-    --color-accent-surface: oklch(30% 0.06 265deg);
-    --color-accent-border: oklch(40% 0.09 265deg);
-    --color-accent-ink: oklch(82% 0.089 265deg);
-    --color-danger: oklch(70% 0.17 25deg);
-    --color-danger-hover: oklch(78% 0.128 25deg);
-    --color-on-danger: oklch(17% 0.012 25deg);
-    --color-danger-surface: oklch(30% 0.07 25deg);
-    --color-danger-border: oklch(42% 0.11 25deg);
-    --color-danger-ink: oklch(82% 0.101 25deg);
-    --color-success: oklch(72% 0.15 155deg);
-    --color-success-surface: oklch(30% 0.06 155deg);
-    --color-success-border: oklch(42% 0.09 155deg);
-    --color-success-ink: oklch(84% 0.13 155deg);
-    --color-warning: oklch(80% 0.15 80deg);
-    --color-warning-hover: oklch(86% 0.12 85deg);
-    --color-on-warning: oklch(25% 0.05 80deg);
-    --color-warning-surface: oklch(32% 0.06 80deg);
-    --color-warning-border: oklch(44% 0.09 80deg);
-    --color-warning-ink: oklch(86% 0.13 85deg);
+    --color-surface: oklch(16% 0.008 262deg);
+    --color-surface-sunken: oklch(12.5% 0.006 262deg);
+    --color-surface-muted: oklch(20% 0.009 262deg);
+    --color-border: oklch(25.5% 0.01 262deg);
+    --color-border-strong: oklch(34% 0.012 262deg);
+    --color-ink: oklch(96.5% 0.004 262deg);
+    --color-ink-muted: oklch(72.5% 0.011 262deg);
+    --color-ink-subtle: oklch(59% 0.012 262deg);
+    --color-accent: oklch(71% 0.14 256deg);
+    --color-accent-hover: oklch(78% 0.11 256deg);
+    --color-on-accent: oklch(16% 0.02 258deg);
+    --color-accent-surface: oklch(27.5% 0.06 258deg);
+    --color-accent-border: oklch(39% 0.09 258deg);
+    --color-accent-ink: oklch(83% 0.085 256deg);
+    --color-danger: oklch(69.5% 0.165 25deg);
+    --color-danger-hover: oklch(77% 0.125 25deg);
+    --color-on-danger: oklch(16% 0.02 25deg);
+    --color-danger-surface: oklch(27.5% 0.07 25deg);
+    --color-danger-border: oklch(40% 0.11 25deg);
+    --color-danger-ink: oklch(82% 0.1 25deg);
+    --color-success: oklch(71.5% 0.145 155deg);
+    --color-success-surface: oklch(27.5% 0.055 155deg);
+    --color-success-border: oklch(40% 0.085 155deg);
+    --color-success-ink: oklch(84% 0.125 155deg);
+    --color-warning: oklch(80% 0.145 80deg);
+    --color-warning-hover: oklch(86% 0.115 85deg);
+    --color-on-warning: oklch(24% 0.05 80deg);
+    --color-warning-surface: oklch(29.5% 0.058 80deg);
+    --color-warning-border: oklch(42% 0.085 80deg);
+    --color-warning-ink: oklch(86% 0.125 85deg);
   }
 }
 
 /* Explicit opt-in dark (theme toggle), regardless of OS preference. */
 :root[data-theme="dark"] {
-  --color-surface: oklch(17% 0.012 265deg);
-  --color-surface-sunken: oklch(13% 0.01 265deg);
-  --color-surface-muted: oklch(22% 0.015 265deg);
-  --color-border: oklch(29% 0.018 265deg);
-  --color-border-strong: oklch(38% 0.02 265deg);
-  --color-ink: oklch(96% 0.006 265deg);
-  --color-ink-muted: oklch(72% 0.014 265deg);
-  --color-ink-subtle: oklch(58% 0.016 265deg);
-  --color-accent: oklch(72% 0.145 265deg);
-  --color-accent-hover: oklch(80% 0.1 265deg);
-  --color-on-accent: oklch(17% 0.012 265deg);
-  --color-accent-surface: oklch(30% 0.06 265deg);
-  --color-accent-border: oklch(40% 0.09 265deg);
-  --color-accent-ink: oklch(82% 0.089 265deg);
-  --color-danger: oklch(70% 0.17 25deg);
-  --color-danger-hover: oklch(78% 0.128 25deg);
-  --color-on-danger: oklch(17% 0.012 25deg);
-  --color-danger-surface: oklch(30% 0.07 25deg);
-  --color-danger-border: oklch(42% 0.11 25deg);
-  --color-danger-ink: oklch(82% 0.101 25deg);
-  --color-success: oklch(72% 0.15 155deg);
-  --color-success-surface: oklch(30% 0.06 155deg);
-  --color-success-border: oklch(42% 0.09 155deg);
-  --color-success-ink: oklch(84% 0.13 155deg);
-  --color-warning: oklch(80% 0.15 80deg);
-  --color-warning-hover: oklch(86% 0.12 85deg);
-  --color-on-warning: oklch(25% 0.05 80deg);
-  --color-warning-surface: oklch(32% 0.06 80deg);
-  --color-warning-border: oklch(44% 0.09 80deg);
-  --color-warning-ink: oklch(86% 0.13 85deg);
+  --color-surface: oklch(16% 0.008 262deg);
+  --color-surface-sunken: oklch(12.5% 0.006 262deg);
+  --color-surface-muted: oklch(20% 0.009 262deg);
+  --color-border: oklch(25.5% 0.01 262deg);
+  --color-border-strong: oklch(34% 0.012 262deg);
+  --color-ink: oklch(96.5% 0.004 262deg);
+  --color-ink-muted: oklch(72.5% 0.011 262deg);
+  --color-ink-subtle: oklch(59% 0.012 262deg);
+  --color-accent: oklch(71% 0.14 256deg);
+  --color-accent-hover: oklch(78% 0.11 256deg);
+  --color-on-accent: oklch(16% 0.02 258deg);
+  --color-accent-surface: oklch(27.5% 0.06 258deg);
+  --color-accent-border: oklch(39% 0.09 258deg);
+  --color-accent-ink: oklch(83% 0.085 256deg);
+  --color-danger: oklch(69.5% 0.165 25deg);
+  --color-danger-hover: oklch(77% 0.125 25deg);
+  --color-on-danger: oklch(16% 0.02 25deg);
+  --color-danger-surface: oklch(27.5% 0.07 25deg);
+  --color-danger-border: oklch(40% 0.11 25deg);
+  --color-danger-ink: oklch(82% 0.1 25deg);
+  --color-success: oklch(71.5% 0.145 155deg);
+  --color-success-surface: oklch(27.5% 0.055 155deg);
+  --color-success-border: oklch(40% 0.085 155deg);
+  --color-success-ink: oklch(84% 0.125 155deg);
+  --color-warning: oklch(80% 0.145 80deg);
+  --color-warning-hover: oklch(86% 0.115 85deg);
+  --color-on-warning: oklch(24% 0.05 80deg);
+  --color-warning-surface: oklch(29.5% 0.058 80deg);
+  --color-warning-border: oklch(42% 0.085 80deg);
+  --color-warning-ink: oklch(86% 0.125 85deg);
 }
 
 /*

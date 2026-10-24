@@ -96,16 +96,22 @@ func familyCheckConds(fields []ConfigField) []string {
 		if f.EnvPrefix == "" {
 			continue
 		}
-		conds = append(conds, fmt.Sprintf(
-			"        all _k in %s { regex.match(_k, r\"%s\") }, \"%s: ${[_k for _k in %s if not regex.match(_k, r'%s')]} cannot be a KEY of %s — a KEY is letters, digits and underscores\"\n",
-			f.Name, familyKeyPattern, f.Name, f.Name, familyKeyPattern, familyPatternOf(f)))
+		conds = append(conds, "        all _k in "+f.Name+` { regex.match(_k, r"`+familyKeyPattern+`") }, "`+f.Name+
+			`: ${[_k for _k in `+f.Name+` if not regex.match(_k, r'`+familyKeyPattern+`')]} cannot be a KEY of `+familyPatternOf(f)+
+			` — a KEY is letters, digits and underscores"`+"\n")
 		if !f.Sensitive && (f.MapValueType == "string" || f.MapValueType == "bytes") {
 			conds = append(conds, fmt.Sprintf(
-				"        all _k, _v in %s { _v != \"\" }, \"%s: ${[_k for _k, _v in %s if _v == '']} set to \\\"\\\" cannot reach the process: an empty variable counts as unset — remove the entry instead\"\n",
-				f.Name, f.Name, f.Name))
+				"        all _k, _v in %s { _v != \"\" }, %s\n",
+				f.Name, emptyFamilyValueMessage(f.Name)))
 		}
 	}
 	return conds
+}
+
+// emptyFamilyValueMessage is the KCL string literal (interpolating the
+// offending keys) a string family's empty-value check fails with.
+func emptyFamilyValueMessage(field string) string {
+	return `"` + field + `: ${[_k for _k, _v in ` + field + ` if _v == '']} set to \"\" cannot reach the process: an empty variable counts as unset — remove the entry instead"`
 }
 
 // familyKeyPattern is a family KEY: what may stand between prefix and suffix

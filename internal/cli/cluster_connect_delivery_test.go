@@ -11,14 +11,13 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-func deliveryRBAC(auth string, subject *deliverySubject, secrets ...string) connectRBAC {
+func deliveryRBAC(subject *deliverySubject, secrets ...string) connectRBAC {
 	parsed, err := parseDeliverySecrets(secrets)
 	if err != nil {
 		panic(err)
 	}
 	return connectRBAC{
-		ClusterName: "prod-us", Env: "prod", Auth: auth,
-		BindingGSA:      "binding@acme.iam.gserviceaccount.com",
+		ClusterName: "prod-us", Env: "prod",
 		TokenNamespace:  connectTokenNamespace,
 		DeliverySecrets: parsed, DeliverySubject: subject,
 	}
@@ -84,7 +83,7 @@ func TestValidateDelivery_SubjectWithoutSecretsIsRefused(t *testing.T) {
 // Not asking for delivery must change nothing: the existing bootstrap is
 // byte-identical and there is exactly one stage.
 func TestDelivery_OffByDefaultWidensNothing(t *testing.T) {
-	r := deliveryRBAC(authToken, nil)
+	r := deliveryRBAC(nil)
 	if got := r.bootstrapStages(); len(got) != 1 {
 		t.Fatalf("got %d stages without --delivery-secret, want 1", len(got))
 	}
@@ -96,7 +95,7 @@ func TestDelivery_OffByDefaultWidensNothing(t *testing.T) {
 
 // The policy must precede the Roles, in separate applies.
 func TestDelivery_StagesPutThePolicyBeforeTheRoles(t *testing.T) {
-	stages := deliveryRBAC(authGCP, nil, "ns/a").bootstrapStages()
+	stages := deliveryRBAC(nil, "ns/a").bootstrapStages()
 	if len(stages) != 3 {
 		t.Fatalf("got %d stages, want base, policy, roles", len(stages))
 	}
@@ -109,7 +108,7 @@ func TestDelivery_StagesPutThePolicyBeforeTheRoles(t *testing.T) {
 }
 
 func TestDelivery_RolesAreNamespacedAndNamePinned(t *testing.T) {
-	r := deliveryRBAC(authToken, nil, "control-plane-prod/reliant-otel-auth", "control-plane-prod/other", "obs/agent-token")
+	r := deliveryRBAC(nil, "control-plane-prod/reliant-otel-auth", "control-plane-prod/other", "obs/agent-token")
 	docs := splitDocs(strings.Join(r.deliveryGrantManifests(), "\n---\n"))
 	if len(docs) != 4 {
 		t.Fatalf("got %d objects, want a Role and RoleBinding for each of 2 namespaces", len(docs))
@@ -169,19 +168,16 @@ func TestDelivery_RolesAreNamespacedAndNamePinned(t *testing.T) {
 	}
 }
 
-func TestDelivery_SubjectsByAuthAndOptionalSecondSubject(t *testing.T) {
+func TestDelivery_SubjectsAreTheBindingsServiceAccountAndAnOptionalSecondSubject(t *testing.T) {
 	second := &deliverySubject{Kind: subjectKindUser, Name: "delivery@acme.iam.gserviceaccount.com"}
+	sa := rbacv1.Subject{Kind: "ServiceAccount", Name: "forge-connect-prod-us-prod", Namespace: "forge-system"}
 	for _, tc := range []struct {
 		name string
 		r    connectRBAC
 		want []rbacv1.Subject
 	}{
-		{"token", deliveryRBAC(authToken, nil, "ns/a"), []rbacv1.Subject{
-			{Kind: "ServiceAccount", Name: "forge-connect-prod-us-prod", Namespace: "forge-system"}}},
-		{"gcp", deliveryRBAC(authGCP, nil, "ns/a"), []rbacv1.Subject{
-			{Kind: "User", Name: "binding@acme.iam.gserviceaccount.com", APIGroup: "rbac.authorization.k8s.io"}}},
-		{"gcp plus a dedicated identity", deliveryRBAC(authGCP, second, "ns/a"), []rbacv1.Subject{
-			{Kind: "User", Name: "binding@acme.iam.gserviceaccount.com", APIGroup: "rbac.authorization.k8s.io"},
+		{"binding only", deliveryRBAC(nil, "ns/a"), []rbacv1.Subject{sa}},
+		{"plus a dedicated identity", deliveryRBAC(second, "ns/a"), []rbacv1.Subject{sa,
 			{Kind: "User", Name: "delivery@acme.iam.gserviceaccount.com", APIGroup: "rbac.authorization.k8s.io"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -198,7 +194,7 @@ func TestDelivery_SubjectsByAuthAndOptionalSecondSubject(t *testing.T) {
 }
 
 func TestDelivery_EverythingIsLabelledForDisconnect(t *testing.T) {
-	r := deliveryRBAC(authToken, nil, "ns/a", "other/b")
+	r := deliveryRBAC(nil, "ns/a", "other/b")
 	for _, doc := range append(r.deliveryGuardManifests(), r.deliveryGrantManifests()...) {
 		var obj struct {
 			Metadata struct{ Labels map[string]string }
@@ -217,8 +213,8 @@ func TestDelivery_EverythingIsLabelledForDisconnect(t *testing.T) {
 // Re-running connect with the same inputs renders the same bytes (the
 // idempotent half; server-side apply does the rest), whatever the flag order.
 func TestDelivery_RenderIsDeterministicAndOrderInsensitive(t *testing.T) {
-	a := deliveryRBAC(authToken, nil, "b/z", "a/y", "a/x").bootstrapManifests()
-	b := deliveryRBAC(authToken, nil, "a/x", "a/y", "b/z").bootstrapManifests()
+	a := deliveryRBAC(nil, "b/z", "a/y", "a/x").bootstrapManifests()
+	b := deliveryRBAC(nil, "a/x", "a/y", "b/z").bootstrapManifests()
 	if a != b {
 		t.Errorf("flag order changed the rendered grant:\n%s\n---\n%s", a, b)
 	}
@@ -241,7 +237,7 @@ func loadDeliveryPolicy(t *testing.T, r connectRBAC) (*admissionv1.ValidatingAdm
 }
 
 func TestDelivery_PolicyShape(t *testing.T) {
-	p, b := loadDeliveryPolicy(t, deliveryRBAC(authToken, nil, "ns/a"))
+	p, b := loadDeliveryPolicy(t, deliveryRBAC(nil, "ns/a"))
 	if p.Spec.FailurePolicy == nil || *p.Spec.FailurePolicy != admissionv1.Fail {
 		t.Error("the policy is not fail-closed")
 	}
@@ -317,7 +313,7 @@ func evalPolicy(t *testing.T, p *admissionv1.ValidatingAdmissionPolicy, req admi
 
 func TestDelivery_PolicyAdmitsOnlyDeclaredSecretsAsOpaque(t *testing.T) {
 	second := &deliverySubject{Kind: subjectKindUser, Name: "delivery@acme.iam.gserviceaccount.com"}
-	r := deliveryRBAC(authToken, second, "control-plane-prod/reliant-otel-auth", "obs/agent-token")
+	r := deliveryRBAC(second, "control-plane-prod/reliant-otel-auth", "obs/agent-token")
 	p, _ := loadDeliveryPolicy(t, r)
 	connect := "system:serviceaccount:forge-system:forge-connect-prod-us-prod"
 	const delivery = "delivery@acme.iam.gserviceaccount.com"
@@ -354,14 +350,15 @@ func TestDelivery_PolicyAdmitsOnlyDeclaredSecretsAsOpaque(t *testing.T) {
 }
 
 // Declared names appear nowhere except as quoted data in the rendered CEL, and
-// a GSA subject cannot smuggle an expression in through the connect identity.
+// the connect identity (derived from the cluster name the owner typed) cannot
+// smuggle an expression in.
 func TestDelivery_ConnectIdentityIsValidatedBeforeItReachesCEL(t *testing.T) {
-	r := deliveryRBAC(authGCP, nil, "ns/a")
-	r.BindingGSA = "x' || true || '"
+	r := deliveryRBAC(nil, "ns/a")
+	r.ClusterName = "x' || true || '"
 	if err := r.validateConnectIdentity(); err == nil {
 		t.Error("a connect identity containing a quote was accepted")
 	}
-	r.BindingGSA = "binding@acme.iam.gserviceaccount.com"
+	r.ClusterName = "prod-us"
 	if err := r.validateConnectIdentity(); err != nil {
 		t.Error(err)
 	}

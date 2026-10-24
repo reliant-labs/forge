@@ -10,6 +10,19 @@ package cli
 // adds a kind is Forbidden by the cluster's own access check until the owner
 // re-runs connect — a tripwire that needs no code of ours in the path.
 //
+// ONLY WHAT THE HUB APPLIES. The identity is the hub's, so its rules come from
+// the delivery units the hub converges (unit_convergence.go), never from units
+// `forge env deploy` applies itself. An env where forge applies everything
+// (applier = "forge") derives an EMPTY apply grant: connect still registers, and
+// the binding holds only what it was separately asked for (the JWKS read, a
+// delivery grant).
+//
+// NO UNPINNED escalate OR bind, in either scope. Holding either without
+// resourceNames lets an identity grant itself anything, so both are pinned to
+// the exact Role/ClusterRole names the render declares (escalate) or binds to
+// (bind). Flux applies server-side, a PATCH that names the object in its URL,
+// which is the request those pins are checked against.
+//
 // The default is namespace scope over the namespaces the render targets, and
 // it refuses an env whose render contains cluster-scoped kinds rather than
 // quietly widening: `cluster` is an explicit owner choice, and the output says
@@ -25,6 +38,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/reliant-labs/forge/internal/bundle"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // applyScope is the owner's `--apply-scope`.
@@ -102,7 +116,7 @@ func (r resourceRef) String() string {
 	return g + "/" + r.Resource
 }
 
-// grantNeeds is what an env's render applies on ONE cluster.
+// grantNeeds is what the hub applies from an env's render on ONE cluster.
 type grantNeeds struct {
 	// Namespaced: namespace -> the resources applied in it.
 	Namespaced map[string]map[resourceRef]bool
@@ -112,10 +126,25 @@ type grantNeeds struct {
 	// NamespaceObjects are the names of the Namespace objects the render
 	// declares.
 	NamespaceObjects map[string]bool
-	// ClusterRoleRefs are the ClusterRoles a namespaced RoleBinding in the
-	// render points at: binding one needs `bind` on that exact ClusterRole.
-	ClusterRoleRefs map[string]bool
-	Objects         int
+	// RoleNames are the Roles the render declares, per namespace: `escalate`
+	// on roles is pinned to exactly these.
+	RoleNames map[string]map[string]bool
+	// ClusterRoleNames are the ClusterRoles the render declares: `escalate`
+	// on clusterroles is pinned to exactly these.
+	ClusterRoleNames map[string]bool
+	// BindRoles are the Roles a RoleBinding points at, per namespace.
+	BindRoles map[string]map[string]bool
+	// BindClusterRoles are the ClusterRoles a RoleBinding points at, per
+	// namespace: binding one needs `bind` on that exact ClusterRole.
+	BindClusterRoles map[string]map[string]bool
+	// ClusterBoundRoles are the ClusterRoles a ClusterRoleBinding points at.
+	ClusterBoundRoles map[string]bool
+	// Objects counts the hub-converged objects on this cluster.
+	Objects int
+	// OnCluster counts every non-Secret object the render puts on this
+	// cluster, whoever applies it. Zero means the context is not bound by the
+	// env at all, which is a different mistake from "the hub applies nothing".
+	OnCluster int
 }
 
 var (
@@ -123,7 +152,6 @@ var (
 	refPods         = resourceRef{"", "pods"}
 	refReplicaSets  = resourceRef{"apps", "replicasets"}
 	refRoles        = resourceRef{"rbac.authorization.k8s.io", "roles"}
-	refRoleBindings = resourceRef{"rbac.authorization.k8s.io", "rolebindings"}
 	refClusterRoles = resourceRef{"rbac.authorization.k8s.io", "clusterroles"}
 )
 
@@ -161,14 +189,18 @@ func apiGroupOf(apiVersion string) (group, version string) {
 	return "", apiVersion
 }
 
-// deriveGrantNeeds reads an annotated render stream and returns what it
-// applies on the cluster named by kubeContext. Secrets never ride a bundle
-// (the delivery path syncs them) and hosted-tier records are the control
-// plane's, so neither is a need.
-func deriveGrantNeeds(stream, kubeContext string) (grantNeeds, error) {
+// deriveGrantNeeds reads an annotated render stream and returns what the HUB
+// applies on the cluster named by kubeContext: only objects in a unit listed in
+// hubUnits contribute. Secrets never ride a bundle (the delivery path syncs
+// them) and hosted-tier records are the control plane's, so neither is a need.
+func deriveGrantNeeds(stream, kubeContext string, hubUnits []string) (grantNeeds, error) {
 	objs, err := bundle.ParseRenderedStream(stream)
 	if err != nil {
 		return grantNeeds{}, err
+	}
+	hub := map[string]bool{}
+	for _, u := range hubUnits {
+		hub[u] = true
 	}
 	type crd struct {
 		plural        string
@@ -191,13 +223,28 @@ func deriveGrantNeeds(stream, kubeContext string) (grantNeeds, error) {
 	}
 
 	needs := grantNeeds{
-		Namespaced:       map[string]map[resourceRef]bool{},
-		Cluster:          map[resourceRef]string{},
-		NamespaceObjects: map[string]bool{},
-		ClusterRoleRefs:  map[string]bool{},
+		Namespaced:        map[string]map[resourceRef]bool{},
+		Cluster:           map[resourceRef]string{},
+		NamespaceObjects:  map[string]bool{},
+		RoleNames:         map[string]map[string]bool{},
+		ClusterRoleNames:  map[string]bool{},
+		BindRoles:         map[string]map[string]bool{},
+		BindClusterRoles:  map[string]map[string]bool{},
+		ClusterBoundRoles: map[string]bool{},
+	}
+	addNS := func(m map[string]map[string]bool, ns, name string) {
+		if m[ns] == nil {
+			m[ns] = map[string]bool{}
+		}
+		m[ns][name] = true
 	}
 	for _, o := range objs {
 		if o.Kind == "Secret" || !hasString(o.Clusters, kubeContext) {
+			continue
+		}
+		needs.OnCluster++
+		unit := objectUnit(o.Body)
+		if !hub[unit] {
 			continue
 		}
 		group, version := apiGroupOf(o.APIVersion)
@@ -216,6 +263,39 @@ func deriveGrantNeeds(stream, kubeContext string) (grantNeeds, error) {
 		}
 		ref := resourceRef{Group: group, Resource: plural}
 		needs.Objects++
+		ns := o.Namespace
+		if ns == "" {
+			ns = "default" // a namespaced object with no namespace is applied to `default`
+		}
+		if group == "rbac.authorization.k8s.io" {
+			if md, _ := o.Body["metadata"].(map[string]any); md != nil {
+				if gn, _ := md["generateName"].(string); gn != "" {
+					return grantNeeds{}, fmt.Errorf("%s %q uses generateName, so its name is unknown until the cluster assigns it.\n"+
+						"escalate and bind are granted by exact name (resourceNames); an unpinned grant would let the identity "+
+						"grant itself anything.\nfix: give the %s a fixed metadata.name", o.Kind, gn, o.Kind)
+				}
+			}
+			roleRef, _ := o.Body["roleRef"].(map[string]any)
+			refKind, _ := roleRef["kind"].(string)
+			refName, _ := roleRef["name"].(string)
+			switch o.Kind {
+			case "Role":
+				addNS(needs.RoleNames, ns, o.Name)
+			case "ClusterRole":
+				needs.ClusterRoleNames[o.Name] = true
+			case "RoleBinding":
+				switch {
+				case refKind == "Role" && refName != "":
+					addNS(needs.BindRoles, ns, refName)
+				case refKind == "ClusterRole" && refName != "":
+					addNS(needs.BindClusterRoles, ns, refName)
+				}
+			case "ClusterRoleBinding":
+				if refKind == "ClusterRole" && refName != "" {
+					needs.ClusterBoundRoles[refName] = true
+				}
+			}
+		}
 		switch {
 		case o.Kind == "Namespace":
 			needs.NamespaceObjects[o.Name] = true
@@ -224,18 +304,6 @@ func deriveGrantNeeds(stream, kubeContext string) (grantNeeds, error) {
 				needs.Cluster[ref] = o.Kind + "/" + o.Name
 			}
 		default:
-			ns := o.Namespace
-			if ns == "" {
-				ns = "default" // a namespaced object with no namespace is applied to `default`
-			}
-			if o.Kind == "RoleBinding" && group == "rbac.authorization.k8s.io" {
-				ref, _ := o.Body["roleRef"].(map[string]any)
-				if k, _ := ref["kind"].(string); k == "ClusterRole" {
-					if n, _ := ref["name"].(string); n != "" {
-						needs.ClusterRoleRefs[n] = true
-					}
-				}
-			}
 			if needs.Namespaced[ns] == nil {
 				needs.Namespaced[ns] = map[resourceRef]bool{}
 			}
@@ -243,6 +311,17 @@ func deriveGrantNeeds(stream, kubeContext string) (grantNeeds, error) {
 		}
 	}
 	return needs, nil
+}
+
+// objectUnit is the delivery unit an object belongs to: its
+// forge.dev/delivery-unit label, or the default unit.
+func objectUnit(body map[string]any) string {
+	md, _ := body["metadata"].(map[string]any)
+	labels, _ := md["labels"].(map[string]any)
+	if u, _ := labels[release.LabelDeliveryUnit].(string); u != "" {
+		return u
+	}
+	return release.DefaultDeliveryUnit
 }
 
 func hasString(list []string, s string) bool {
@@ -326,6 +405,9 @@ func addHealthReads(s ruleSet, have map[resourceRef]bool) {
 // grantPlan is the resolved grant: which rules where.
 type grantPlan struct {
 	Cluster bool
+	// Empty is true when the hub applies nothing on this cluster for the env:
+	// there are no apply rules at all.
+	Empty bool
 	// ClusterRules are the cluster scope's ClusterRole rules.
 	ClusterRules []ruleSpec
 	// Namespaces, sorted, and the Role rules in each (namespace scope).
@@ -335,30 +417,60 @@ type grantPlan struct {
 	// scope: a cluster-scoped kind, so a ClusterRole pinned by resourceNames
 	// (get, update, patch: RBAC cannot pin create, so the namespace must exist).
 	PinnedNamespaces []string
-	// BindClusterRoles are the ClusterRoles an in-scope RoleBinding references,
-	// each pinned by name for `bind`.
-	BindClusterRoles []string
 	Objects          int
 }
 
-var rbacKinds = map[resourceRef]bool{refRoles: true, refRoleBindings: true, refClusterRoles: true, {"rbac.authorization.k8s.io", "clusterrolebindings"}: true}
+// addRBACPins adds the escalate and bind rules, each pinned by resourceNames.
+// A kind absent from the render adds nothing, and nothing here is ever unpinned.
+func addRBACPins(rs ruleSet, roles, bindRoles, clusterRoles, bindClusterRoles map[string]bool) {
+	pin := func(ref resourceRef, names map[string]bool, verb string) {
+		if len(names) == 0 {
+			return
+		}
+		list := make([]string, 0, len(names))
+		for n := range names {
+			list = append(list, n)
+		}
+		sort.Strings(list)
+		rs.add(ref, list, verb)
+	}
+	pin(refRoles, roles, "escalate")
+	pin(refRoles, bindRoles, "bind")
+	pin(refClusterRoles, clusterRoles, "escalate")
+	pin(refClusterRoles, bindClusterRoles, "bind")
+}
 
-func anyRBAC(refs map[resourceRef]bool) bool {
-	for r := range refs {
-		if rbacKinds[r] {
-			return true
+func unionNames(sets ...map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for _, s := range sets {
+		for n := range s {
+			out[n] = true
 		}
 	}
-	return false
+	return out
+}
+
+func unionByNamespace(m map[string]map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for _, s := range m {
+		for n := range s {
+			out[n] = true
+		}
+	}
+	return out
 }
 
 // planGrant resolves the owner's scope against what the render needs.
 func planGrant(needs grantNeeds, scope applyScope) (grantPlan, error) {
 	plan := grantPlan{Objects: needs.Objects}
 	if needs.Objects == 0 {
-		return grantPlan{}, fmt.Errorf("the env's render applies nothing to this cluster, so there is nothing to derive a grant from\n" +
-			"fix: bind the cluster in the env's KCL first (ClusterTarget.cluster = <this context>, " +
-			"connected_cluster = <name>), then re-run connect")
+		if needs.OnCluster == 0 {
+			return grantPlan{}, fmt.Errorf("the env's render applies nothing to this cluster, so there is nothing to derive a grant from\n" +
+				"fix: bind the cluster in the env's KCL first (ClusterTarget.cluster = <this context>, " +
+				"connected_cluster = <name>), then re-run connect")
+		}
+		plan.Empty = true
+		return plan, nil
 	}
 	union := map[resourceRef]bool{}
 	for _, refs := range needs.Namespaced {
@@ -379,14 +491,11 @@ func planGrant(needs grantNeeds, scope applyScope) (grantPlan, error) {
 			rs.add(refNamespaces, nil, applyVerbs...)
 		}
 		addHealthReads(rs, union)
-		// bind and escalate are what lets the identity create the Roles and
-		// bindings a release carries; with them it can grant itself anything,
-		// which is why cluster scope is cluster-admin equivalent. Only a
-		// render that carries RBAC kinds needs them.
-		if anyRBAC(union) {
-			rs.add(refRoles, nil, "bind", "escalate")
-			rs.add(refClusterRoles, nil, "bind", "escalate")
-		}
+		// escalate and bind let the identity create the Roles and bindings a
+		// release carries. They are pinned to the names the render declares
+		// or binds to, so it cannot mint a role the render does not name.
+		addRBACPins(rs, unionByNamespace(needs.RoleNames), unionByNamespace(needs.BindRoles),
+			needs.ClusterRoleNames, unionNames(unionByNamespace(needs.BindClusterRoles), needs.ClusterBoundRoles))
 		plan.Cluster = true
 		plan.ClusterRules = rs.rules()
 		return plan, nil
@@ -455,12 +564,11 @@ func planGrant(needs grantNeeds, scope applyScope) (grantPlan, error) {
 			rs.add(r, nil, applyVerbs...)
 		}
 		addHealthReads(rs, have)
-		if have[refRoles] || have[refRoleBindings] {
-			// A Role or RoleBinding in the release can only be created by an
-			// identity that holds what it grants, or may escalate/bind. These
-			// are namespaced: they reach Roles in this namespace only.
-			rs.add(refRoles, nil, "bind", "escalate")
-		}
+		// A Role or RoleBinding in the release can only be created by an
+		// identity that holds what it grants, or may escalate/bind. Both are
+		// pinned by name; `bind` on a ClusterRole is checked in the
+		// RoleBinding's own namespace, so the pin lives in this Role.
+		addRBACPins(rs, needs.RoleNames[ns], needs.BindRoles[ns], nil, needs.BindClusterRoles[ns])
 		if len(rs) > 0 {
 			plan.NamespaceRules[ns] = rs.rules()
 		}
@@ -468,32 +576,31 @@ func planGrant(needs grantNeeds, scope applyScope) (grantPlan, error) {
 			plan.PinnedNamespaces = append(plan.PinnedNamespaces, ns)
 		}
 	}
-	for n := range needs.ClusterRoleRefs {
-		plan.BindClusterRoles = append(plan.BindClusterRoles, n)
-	}
-	sort.Strings(plan.BindClusterRoles)
 	sort.Strings(plan.PinnedNamespaces)
 	return plan, nil
 }
 
 // describe is the one-line summary printed beside the scope.
 func (p grantPlan) describe() string {
+	if p.Empty {
+		return "no apply rules: the hub applies nothing on this cluster"
+	}
 	if p.Cluster {
-		return fmt.Sprintf("a ClusterRole of %d rule(s) over %d rendered object(s), plus bind and escalate on roles", len(p.ClusterRules), p.Objects)
+		return fmt.Sprintf("a ClusterRole of %d rule(s) over %d rendered object(s)", len(p.ClusterRules), p.Objects)
 	}
 	rules := 0
 	for _, r := range p.NamespaceRules {
 		rules += len(r)
 	}
 	extra := ""
-	if len(p.PinnedNamespaces) > 0 || len(p.BindClusterRoles) > 0 {
-		extra = fmt.Sprintf(", plus a name-pinned ClusterRole (%d Namespace object(s), %d ClusterRole bind(s))", len(p.PinnedNamespaces), len(p.BindClusterRoles))
+	if len(p.PinnedNamespaces) > 0 {
+		extra = fmt.Sprintf(", plus a name-pinned ClusterRole (%d Namespace object(s))", len(p.PinnedNamespaces))
 	}
 	return fmt.Sprintf("%d namespace Role(s) of %d rule(s) over %d rendered object(s)%s", len(p.Namespaces), rules, p.Objects, extra)
 }
 
-// clusterAdminWarning is printed whenever the grant is cluster scope, because
-// that is what it is.
-const clusterAdminWarning = "WARNING: --apply-scope cluster is equivalent to cluster-admin. The identity can create ClusterRoles and\n" +
-	"bindings (bind and escalate), so it can grant itself anything. It is derived from the env's render so an\n" +
-	"unexpected kind is Forbidden, but that is a tripwire, not a boundary. Prefer --apply-scope namespace:<ns> where the env fits."
+// clusterAdminWarning is printed whenever the grant is cluster scope.
+const clusterAdminWarning = "WARNING: --apply-scope cluster grants write on every kind the env renders, in every namespace. Where the render\n" +
+	"carries RBAC, escalate and bind are held only on the exact Role/ClusterRole names it declares, so the identity cannot mint a\n" +
+	"role the render does not name, but it can still rewrite those named roles and bind them. Prefer --apply-scope namespace:<ns>\n" +
+	"where the env fits."

@@ -195,7 +195,7 @@ type ExemplarsStored struct {
 	// The probe reads one hour either side.
 	From, To time.Time
 	// UseLookupTable reads the otel_traces_trace_id_ts lookup table (a hosted
-	// tenant has it) instead of otel_traces itself (the local ClickStack).
+	// org's database has it) instead of otel_traces itself (the local ClickStack).
 	UseLookupTable bool
 }
 

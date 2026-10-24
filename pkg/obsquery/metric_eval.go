@@ -42,7 +42,7 @@ type Rows interface {
 }
 
 // Runner executes a compiled statement on the caller's connection. obsquery
-// opens nothing: the backend's connection, settings and tenant gate apply.
+// opens nothing: the backend's connection, settings and org gate apply.
 type Runner func(ctx context.Context, st Stmt) (Rows, error)
 
 // MetricPoint is one bucket of a series. Null is a gap (a formula whose operand

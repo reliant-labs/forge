@@ -1,6 +1,6 @@
--- The browser tables of a hosted tenant database, for pkg/obsquery's integration tests.
+-- The browser tables of a hosted org database, for pkg/obsquery's integration tests.
 -- GENERATED from control-plane internal/obstenant/schema/010_tenant_create.sql (tables and
--- materialized views, TTLs dropped, {{DB}} = the tenant database) and forge internal/obsbackend/obstest
+-- materialized views, TTLs dropped, {{DB}} = the org database) and forge internal/obsbackend/obstest
 -- exporter_schema.sql (otel_logs, otel_traces). mv_in_rum_replay is the landing view of
 -- 010 without its org filter and DEFINER. Statements are separated by a blank line.
 CREATE DATABASE {{DB}};

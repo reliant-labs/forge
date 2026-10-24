@@ -77,6 +77,45 @@ func DefaultBranchVersions(repoRoot, migrationsDir string) (map[uint64]string, b
 	return versionsAt(repoRoot, migrationsDir, defaultBranchRev)
 }
 
+// NextN allocates n migration versions for dir that sort above everything the
+// directory holds AND everything the default branch's tip holds.
+//
+// migrationver.NextN sees only the directory on disk. A branch cut before
+// main's newest migration landed does not contain that file, so a clock that
+// is behind it (a skewed machine, a future-dated main head) or a directory
+// max that is lower allocates BELOW it, and golang-migrate then never applies
+// the new file on any database that has run the newer one. The default
+// branch's tip and the merge-base mark are seeded into the allocator so the
+// version is above the head the lint will compare it against.
+//
+// Without git (no repository, no default branch) the default-branch sets are
+// unknown and the directory alone decides, as migrationver.NextN does.
+func NextN(dir string, n int) ([]string, error) {
+	taken, err := migrationver.Scan(dir)
+	if err != nil {
+		return nil, err
+	}
+	repoRoot := RepoRoot(dir)
+	if max, ok := MergeBaseMax(repoRoot, dir); ok {
+		taken[max] = true
+	}
+	if tip, ok := DefaultBranchVersions(repoRoot, dir); ok {
+		for v := range tip {
+			taken[v] = true
+		}
+	}
+	return migrationver.AllocateAfter(taken, n), nil
+}
+
+// Next is NextN for one version.
+func Next(dir string) (string, error) {
+	vs, err := NextN(dir, 1)
+	if err != nil {
+		return "", err
+	}
+	return vs[0], nil
+}
+
 // IsTracked reports whether path is tracked by git, which decides whether a
 // rename goes through `git mv` or a plain filesystem rename.
 func IsTracked(repoRoot, path string) bool {

@@ -54,13 +54,27 @@ func TestPortableGrep(t *testing.T) {
 		`grep -q 'nope' missing.yaml`:                            false,
 		// File selection, as migration detections spell it: only Go
 		// sources, never gen/ or vendor/.
-		`grep -rqs --include='*.go' 'activity\.Interceptor\(' .`:                    true,
-		`grep -rqs --include='*.ts' 'activity\.Interceptor\(' .`:                    false,
-		`grep -rqs --include='*.go' --exclude-dir=app 'activity\.Interceptor\(' .`:  false,
-		`grep -rqs --include='*.go' --exclude-dir=gen 'activity\.Interceptor\(' .`:  true,
+		`grep -rqsE --include='*.go' 'activity\.Interceptor\(' .`:                   true,
+		`grep -rqsE --include='*.ts' 'activity\.Interceptor\(' .`:                   false,
+		`grep -rqsE --include='*.go' --exclude-dir=app 'activity\.Interceptor\(' .`: false,
+		`grep -rqsE --include='*.go' --exclude-dir=gen 'activity\.Interceptor\(' .`: true,
 		`grep -rqs --include='*.go' --exclude='serve.go' 'activity\.Interceptor' .`: false,
 		`grep -rqs --include='*.go' 'only_in_gen' .`:                                true,
 		`grep -rqs --include='*.go' --exclude-dir=gen 'only_in_gen' .`:              false,
+		// Without -E a pattern is a BRE, as GNU grep reads it: ( ) ? + { } |
+		// are literal. RE2 rejected the unbalanced paren, so a detection
+		// spelled for grep (`connect\.NewError(`) silently never matched.
+		`grep -rqs --include='*.go' 'activity\.Interceptor(deps)' .`: true,
+		`grep -qs 'Interceptor(deps' app/serve.go`:                   true,
+		`grep -qs 'err\|nope' app/serve.go`:                          true, // \| is BRE alternation
+		`grep -qs 'ic?' app/serve.go`:                                false,
+		`grep -qsE 'ic?, err' app/serve.go`:                          true,
+		`rg -q 'Interceptor\(deps\)' app`:                            true, // rg is extended syntax
+		// A missing operand is an error, but -q still exits 0 on a match
+		// in another one, as GNU grep does.
+		`grep -rqs 'only_in_gen' missing app`:  true,
+		`grep -rqs 'nowhere' missing app`:      false,
+		`grep -qs '^dev_target:' x forge.yaml`: true,
 	}
 	for script, want := range cases {
 		got := Run(context.Background(), script, Options{Dir: dir, Commands: PortableCommands()}) == nil

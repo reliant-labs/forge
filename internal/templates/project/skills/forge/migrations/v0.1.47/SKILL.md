@@ -1,8 +1,8 @@
 ---
 name: v0.1.47
-description: Upgrade a project to forge v0.1.47. One section per change — (1) the interceptor chain's Deadline slot, ahead of Auth: every unary RPC is now bounded by a 30s server deadline by default and watched for slow calls, and `(forge.v1.method).timeout` is enforced through `middleware.ProcedureDeadlines`, which an owned chain builder passes as `Deadline: serverkit.Deadline{Procedures: middleware.ProcedureDeadlines}`. Use when cmd/<bin>/cmd/serve.go or internal/app/providers.go calls serverkit.NewChain or observe.Chain and names no Deadline, or when a project hand-wraps a timeout or watchdog interceptor around its authenticator. (2) The composition graph upgrade path: `forge fix composition-graph` converts the legacy Infra / OpenInfra / NewComponents / lifecycle.go / ServeSpec composition and the per-service, per-worker and per-operator subcommands to providers, compose.go constructor methods and roots, and lists — writing nothing — every shape it cannot convert without deciding for you; ServeSpec knobs become reachability (control-plane's OperatorListener, NoKubernetesAPI and WorkerLeases are the worked example); deploy binds workloads to roots. Use when internal/app declares `type Infra struct` or `func NewComponents`, or a graph project moves to binary_config. (3) Configurable probe paths: `serverkit.Config.Probes` (liveness_paths / readiness_paths config fields, default /healthz and /readyz), honoured by the boot probes, serverkit.Run and `serverkit.Probes.Paths`, with `Probes.Handle` for extra routes such as /flow-health, and read by the KCL lowering for the default probe. Use when cmd/<bin>/cmd/serve.go builds `&serverkit.Probes{` with no `Paths:`. (4) Behavior change: every pod forge renders sets `enableServiceLinks: false` (Deployment, Job, CronJob, the node agent's DaemonSet), so Kubernetes no longer injects `<SERVICE>_PORT=tcp://ip:port` / `<SERVICE>_SERVICE_HOST` / `<SERVICE>_SERVICE_PORT` env vars for every Service in the namespace; `enableServiceLinks = True` on a `fw.Workload` opts one back in. Use when a deploy/kcl workload reads `*_SERVICE_HOST`, `*_SERVICE_PORT` or a `tcp://` `*_PORT` variable it never declares, or when a typed config field named like a Service (`TEMPORAL_PORT`, `ZITADEL_PORT`) was shadowed by hand. (5) Explicit transaction isolation: pkg/orm has no default level — RunTx, RunTransaction and BeginDetached take an orm.TxOptions (orm.Serializable, orm.ReadCommitted, orm.RepeatableRead), RunTxWithOptions, RunTransactionWithOptions and Client.BeginTx are gone, and `forge fix tx-isolation` spells every old call out exactly as it ran; then review forgeconv-tx-lock-under-serializable. Use when Go code calls RunTx(ctx, fn), RunTxWithOptions, RunTransaction(ctx, fn), RunTransactionWithOptions or an orm Client's BeginTx. (6) Hand-built Connect errors: a *connect.Error is never redacted, so connect.NewError(code, err) publishes err.Error(); `forge fix connect-errors` rewrites the fixed-message sites to svcerr with the same code and message and lists the rest for svcerr.WrapOr, forgeconv-handler-connect-error warns on every connect.NewError in a handler package, and tdd.AssertConnectError reads svcerr.Code. Use when internal/handlers calls connect.NewError. (7) local alert delivery (the `alertmanager` and `alerts` workloads). Use when deploy/kcl/dev/main.k declares `_observability` but no `alertmanager_port`. (8) Dev images off Docker Hub: docker-compose.yml pulls from public.ecr.aws, ghcr and mirror.gcr.io, pinned by digest. Use when a docker-compose.yml image names no registry host. (9) Project-unique config protos: `forge fix config-proto-package`. Use when proto/config/v1 declares package config.v1. (10) One double per interface: the test harness installs a Deps field's forge Mock<Role> (mock_gen.go) instead of a Stub<Field>; `forge fix harness-mocks`. Use when a handler test names a Stub<Field> whose interface has a mock_gen.go. (11) activity.Deps.Principal is required; NewChain refuses an Audit/Activity it cannot attribute. Use when Go code calls activity.Interceptor.
+description: Upgrade a project to forge v0.1.47. One section per change — (1) the interceptor chain's Deadline slot, ahead of Auth: every unary RPC is now bounded by a 30s server deadline by default and watched for slow calls, and `(forge.v1.method).timeout` is enforced through `middleware.ProcedureDeadlines`, which an owned chain builder passes as `Deadline: serverkit.Deadline{Procedures: middleware.ProcedureDeadlines}`. Use when cmd/<bin>/cmd/serve.go or internal/app/providers.go calls serverkit.NewChain or observe.Chain and names no Deadline, or when a project hand-wraps a timeout or watchdog interceptor around its authenticator. (2) The composition graph upgrade path: `forge fix composition-graph` converts the legacy Infra / OpenInfra / NewComponents / lifecycle.go / ServeSpec composition and the per-service, per-worker and per-operator subcommands to providers, compose.go constructor methods and roots, and lists — writing nothing — every shape it cannot convert without deciding for you; ServeSpec knobs become reachability (control-plane's OperatorListener, NoKubernetesAPI and WorkerLeases are the worked example); deploy binds workloads to roots. Use when internal/app declares `type Infra struct` or `func NewComponents`, or a graph project moves to binary_config. (3) Configurable probe paths: `serverkit.Config.Probes` (liveness_paths / readiness_paths config fields, default /healthz and /readyz), honoured by the boot probes, serverkit.Run and `serverkit.Probes.Paths`, with `Probes.Handle` for extra routes such as /flow-health, and read by the KCL lowering for the default probe. Use when cmd/<bin>/cmd/serve.go builds `&serverkit.Probes{` with no `Paths:`. (4) Behavior change: every pod forge renders sets `enableServiceLinks: false` (Deployment, Job, CronJob, the node agent's DaemonSet), so Kubernetes no longer injects `<SERVICE>_PORT=tcp://ip:port` / `<SERVICE>_SERVICE_HOST` / `<SERVICE>_SERVICE_PORT` env vars for every Service in the namespace; `enableServiceLinks = True` on a `fw.Workload` opts one back in. Use when a deploy/kcl workload reads `*_SERVICE_HOST`, `*_SERVICE_PORT` or a `tcp://` `*_PORT` variable it never declares, or when a typed config field named like a Service (`TEMPORAL_PORT`, `ZITADEL_PORT`) was shadowed by hand. (5) Explicit transaction isolation: pkg/orm has no default level — RunTx, RunTransaction and BeginDetached take an orm.TxOptions (orm.Serializable, orm.ReadCommitted, orm.RepeatableRead), RunTxWithOptions, RunTransactionWithOptions and Client.BeginTx are gone, and `forge fix tx-isolation` spells every old call out exactly as it ran; then review forgeconv-tx-lock-under-serializable. Use when Go code calls RunTx(ctx, fn), RunTxWithOptions, RunTransaction(ctx, fn), RunTransactionWithOptions or an orm Client's BeginTx. (6) Hand-built Connect errors: a *connect.Error is never redacted, so connect.NewError(code, err) publishes err.Error(); `forge fix connect-errors` rewrites the fixed-message sites to svcerr with the same code and message and lists the rest for svcerr.WrapOr, forgeconv-handler-connect-error warns on every connect.NewError in a handler package, and tdd.AssertConnectError reads svcerr.Code. Use when internal/handlers calls connect.NewError. (7) local alert delivery (the `alertmanager` and `alerts` workloads). Use when deploy/kcl/dev/main.k declares `_observability` but no `alertmanager_port`. (8) Dev images off Docker Hub: docker-compose.yml pulls from public.ecr.aws, ghcr and mirror.gcr.io, pinned by digest. Use when a docker-compose.yml image names no registry host. (9) Project-unique config protos: `forge fix config-proto-package`. Use when proto/config/v1 declares package config.v1. (10) One double per interface: the test harness installs a Deps field's forge Mock<Role> (mock_gen.go) instead of a Stub<Field>; `forge fix harness-mocks`. Use when a handler test names a Stub<Field> whose interface has a mock_gen.go. (11) activity.Deps.Principal is required; NewChain refuses an Audit/Activity it cannot attribute. Use when Go code calls activity.Interceptor. (12) The library Button: `loading` replaces `isLoading` (spinner, no width change, aria-busy), sizes are xs-xl on a denser 24-40px scale, leftIcon/rightIcon/icon slots, href renders through the link primitive; reinstall with `forge component install button`. Use when an installed button.tsx declares `isLoading?: boolean`.
 version: v0.1.47
-detection: grep -qsE '^type Infra struct|^func NewComponents\(' internal/app/*.go && exit 0; for f in cmd/*/cmd/serve.go internal/app/providers.go; do test -f "$f" && grep -qsE 'serverkit\.NewChain|observe\.Chain\(' "$f" && ! grep -qsE 'Deadline:|ProcedureDeadlines' "$f" && exit 0; done; for f in cmd/*/cmd/serve.go; do test -f "$f" && grep -qs '&serverkit.Probes{' "$f" && ! grep -qs 'Paths:' "$f" && exit 0; done; grep -qsE 'fw\.Workload|forge\.workloads' deploy/kcl/*.k deploy/kcl/*/*.k deploy/kcl/lib/*.k && exit 0; grep -rqsE --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules '\.(RunTxWithOptions|RunTransactionWithOptions)\(|orm\.IsolationDefault|\.(RunTx|RunTransaction)\(ctx, func' . && exit 0; test -d internal/handlers && grep -rqs --include='*.go' --exclude='*_gen.go' --exclude='*_test.go' 'connect\.NewError(' internal/handlers && exit 0; (grep -qs '^_observability = ' deploy/kcl/dev/main.k && ! grep -qs 'alertmanager_port' deploy/kcl/dev/main.k) && exit 0; grep -qsE '^[[:space:]]+image:[[:space:]]+"?([a-z0-9_-]+/)?[a-z0-9._-]+(:[A-Za-z0-9._-]+)?(@sha256:[0-9a-f]+)?"?[[:space:]]*$' docker-compose.yml && exit 0; grep -qs '^package config\.v1;' proto/config/v1/*.proto && exit 0; test -d internal/handlers && grep -rqsE --include='*_test.go' --exclude='helpers_gen_test.go' '[^A-Za-z0-9_]Stub[A-Z][A-Za-z0-9_]*[{)]' internal/handlers && exit 0; grep -rqsE --include='*.go' --exclude-dir=gen 'activity\.(Interceptor|DefaultActor)\(' . && exit 0; exit 1
+detection: grep -qsE '^type Infra struct|^func NewComponents\(' internal/app/*.go && exit 0; for f in cmd/*/cmd/serve.go internal/app/providers.go; do test -f "$f" && grep -qsE 'serverkit\.NewChain|observe\.Chain\(' "$f" && ! grep -qsE 'Deadline:|ProcedureDeadlines' "$f" && exit 0; done; for f in cmd/*/cmd/serve.go; do test -f "$f" && grep -qs '&serverkit.Probes{' "$f" && ! grep -qs 'Paths:' "$f" && exit 0; done; grep -qsE 'fw\.Workload|forge\.workloads' deploy/kcl/*.k deploy/kcl/*/*.k deploy/kcl/lib/*.k && exit 0; grep -rqsE --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules '\.(RunTxWithOptions|RunTransactionWithOptions)\(|orm\.IsolationDefault|\.(RunTx|RunTransaction)\(ctx, func' . && exit 0; test -d internal/handlers && grep -rqs --include='*.go' --exclude='*_gen.go' --exclude='*_test.go' 'connect\.NewError(' internal/handlers && exit 0; (grep -qs '^_observability = ' deploy/kcl/dev/main.k && ! grep -qs 'alertmanager_port' deploy/kcl/dev/main.k) && exit 0; grep -qsE '^[[:space:]]+image:[[:space:]]+"?([a-z0-9_-]+/)?[a-z0-9._-]+(:[A-Za-z0-9._-]+)?(@sha256:[0-9a-f]+)?"?[[:space:]]*$' docker-compose.yml && exit 0; grep -qs '^package config\.v1;' proto/config/v1/*.proto && exit 0; test -d internal/handlers && grep -rqsE --include='*_test.go' --exclude='helpers_gen_test.go' '[^A-Za-z0-9_]Stub[A-Z][A-Za-z0-9_]*[{)]' internal/handlers && exit 0; grep -rqsE --include='*.go' --exclude-dir=gen 'activity\.(Interceptor|DefaultActor)\(' . && exit 0; grep -rqs --include=button.tsx --exclude-dir=node_modules 'isLoading?: boolean' frontends packages && exit 0; exit 1
 ---
 
 # Upgrading to v0.1.47
@@ -257,58 +257,10 @@ and the config fields.
 ## 4. Pods no longer get service-link env vars (`enableServiceLinks: false`)
 
 Use when a workload reads `<SERVICE>_SERVICE_HOST`, `<SERVICE>_SERVICE_PORT` or
-a `<SERVICE>_PORT` / `<SERVICE>_PORT_<n>_TCP*` variable that no `env` entry
-declares, or when you shadowed a service-link name by hand (`TEMPORAL_PORT = "7233"`
-to stop it parsing `tcp://10.0.0.1:7233`).
-
-### What changed
-
-Kubernetes injects, into every pod, an env var set per Service in the
-namespace unless the pod says `enableServiceLinks: false`: a Service
-`temporal` becomes `TEMPORAL_PORT=tcp://10.20.15.230:7233`,
-`TEMPORAL_SERVICE_HOST` and `TEMPORAL_SERVICE_PORT`. Those names are not
-scoped to anything, so they collide with typed config. A config loader that
-parses `TEMPORAL_PORT` as an integer failed at boot
-(`invalid value "tcp://10.20.15.230:7233" for config field port (from env
-TEMPORAL_PORT)`) and CrashLooped a prod gateway; `ZITADEL_PORT` did the same
-before it. A collision is always latent: it needs only a Service whose name
-matches a config key.
-
-forge now renders `enableServiceLinks: false` on **every** pod template it
-writes: Deployment (service, worker, operator), Job (including one that gates
-others, whose init container runs in the gated pods), CronJob, and the node
-agent's DaemonSet. `kcl/lib/jwks.k`'s Deployment too. Behavior change: the next
-deploy rolls every forge-rendered pod once (the pod template changed), and a
-standalone Job gets a new spec-hash name.
-
-### Steps
-
-1. Search your own code and `deploy/kcl` for the variables a pod used to
-   receive: `rg '_SERVICE_HOST|_SERVICE_PORT|_PORT_[0-9]+_TCP' --glob '!node_modules'`.
-   forge's own code reads none.
-2. Replace each with a DNS name or an explicit env entry:
-
-   ```python
-   env = {"TEMPORAL_HOSTPORT": "temporal.${namespace}.svc:7233"}
-   ```
-
-3. A workload that really does read the injected variables (an image you do
-   not control) opts back in, per workload. Full profile only; refused on
-   hosted:
-
-   ```python
-   legacy = fw.Workload {name = "legacy", enableServiceLinks = True}
-   ```
-
-4. Delete workarounds that shadowed a service-link name only to stop the
-   collision (`TEMPORAL_PORT` set to a bare port number).
-
-### Verify
-
-`forge env render <env>` shows `enableServiceLinks: false` under every pod's
-`spec.template.spec` (and `jobTemplate` for a CronJob), and `true` only on the
-workloads you opted in. A pod's `kubectl exec <pod> -- env | grep -E '_SERVICE_HOST|_PORT='`
-lists nothing from sibling Services.
+a `tcp://` `<SERVICE>_PORT` it never declares, or a config key was shadowed by
+hand to dodge one (`TEMPORAL_PORT = "7233"`). Every forge-rendered pod now sets
+`enableServiceLinks: false`; `enableServiceLinks = True` on a `fw.Workload`
+opts one back in. Load `forge skill load migrations/v0.1.47/service-links`.
 
 ## 5. Explicit transaction isolation: no default level
 
@@ -366,3 +318,13 @@ whose interface forge mocks in a `mock_gen.go`, the harness installs that
 
 Use when Go calls `activity.Interceptor` or `NewChain` cannot read the caller:
 load `migrations/v0.1.47/activity-caller`.
+
+## 12. The library Button: `loading`, a denser size scale, icon slots
+
+Use when an installed `button.tsx` (under `frontends/` or `packages/`)
+declares `isLoading?: boolean`. The component is `overwrite: once`, so an
+existing project keeps the old one until `forge component install button`
+replaces it; then `isLoading` becomes `loading` and the size names move to a
+24–40px scale (`md` is 32px, not 40px). Load
+`forge skill load migrations/v0.1.47/button` for the table, the rename and
+the size mapping.

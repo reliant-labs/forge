@@ -59,8 +59,10 @@ Local and cloud compile through ONE query compiler (`forge/pkg/obsquery`), so a 
 | `forge obs traces [env]` | Find traces (`--slow`, `--min-duration`, `--errors`, `--route`, `--page-token`) |
 | `forge obs trace <trace-id> [env]` | One trace as a capped tree; error spans and the critical path are always expanded (`--full` lifts the caps; `--logs N` linked log lines); carries the release live when it started |
 | `forge obs endpoints [env]` | Busiest, slowest or most failing endpoints (`--sort requests\|p95\|errors\|rate`, `--top`, default 10) |
-| `forge obs metrics list [env]` | Metric names (`--contains`) |
-| `forge obs metrics query [env] <metric>` | One metric over time (`--agg avg\|sum\|min\|max\|count\|increase\|rate\|p50\|p95\|p99`, `--group-by` repeatable, `--step`) |
+| `forge obs metrics list [env]` | The metric catalog (`--contains`): kind, monotonic, temporality, services, last seen, series estimate; locally, merged with the declared schema (`declared`, `seen`) |
+| `forge obs metrics describe [env] <metric>` | One metric: interval, attribute keys with value counts, suggested breakdowns, the declared spec |
+| `forge obs metrics query [env] <metric>` | A metrics panel, as the console explorer runs it: `--agg`/`--quantile`, `--query NAME=metric[:agg[:q]]`, `--where NAME:key=value`, `--filter`, `--group-by` (repeatable), `--formula`, `--kind line\|number\|table\|bar`, `--top`, `--compare 24h\|prev-release`, `--step`, `--panel-out FILE` |
+| `forge obs metrics exemplars [env] <metric>` | Sampled observations with their traces (`--at T`, `--from/--to`, `--min-value`, `--where`); `trace_stored` says whether `forge obs trace` will find the trace |
 | `forge obs metrics declared` | The metrics the project's code declares |
 | `forge obs query [env] --sql "…"` | Anything else: raw SQL behind the read-only guard (`--sql-file`, `--panel FILE`, `--param name=value`, `--step`) |
 | `forge obs profile`, `forge obs alerts check`, `forge obs dashboards check` | Flamegraphs, alerts-as-code and dashboards (`observability/profiles`, `observability/alerts`, `observability/dashboards`) |
@@ -114,7 +116,7 @@ forge env releases at prod 2h                # …two hours ago (or `now`)
 
 ## The JSON contract
 
-- **One document on stdout.** It has `ok`, `exit_code` and `error`, computed from the same error the process exits with, plus `schema`: `forge.obs.<verb>/v1` (`status`, `check`, `changes`, `issues`, `issue`, `logs`, `traces`, `trace`, `endpoints`, `metrics_list`, `metrics_query`, `query`). A failure is `{schema, ok: false, exit_code, error, suggested[]}`. Progress and warnings go to stderr. `logs --follow --json` is NDJSON and ends with an envelope line.
+- **One document on stdout.** It has `ok`, `exit_code` and `error`, computed from the same error the process exits with, plus `schema`: `forge.obs.<verb>/v1` (`status`, `check`, `changes`, `issues`, `issue`, `logs`, `traces`, `trace`, `endpoints`, `metrics_list`, `metrics_query` (v2), `metric` (describe), `metric_exemplars`, `query`). A failure is `{schema, ok: false, exit_code, error, suggested[]}`. Progress and warnings go to stderr. `logs --follow --json` is NDJSON and ends with an envelope line.
 - **`query_mode`** is `structured` or `raw` on every document: which path answered.
 - **`scope`** echoes env, backend, env id, time range and services.
 - **Bounded by default.** Lists carry `truncated`, `next_page_token`, and `omitted` where a cap cut items.

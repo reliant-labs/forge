@@ -38,7 +38,7 @@ func emitFreshness(t *testing.T, root, feRel string) (manifest, guard string) {
 		t.Fatalf("LoadChecksums: %v", err)
 	}
 	fpFiles, fpConfig := codegen.SeedFingerprint(root, seedplan.DefaultConfig())
-	if err := EmitFixtureFreshnessSurface(root, feRel, fpFiles, fpConfig, cs); err != nil {
+	if err := EmitFixtureFreshnessSurface(root, feRel, 1, fpFiles, fpConfig, cs); err != nil {
 		t.Fatalf("EmitFixtureFreshnessSurface: %v", err)
 	}
 	read := func(name string) string {
@@ -102,6 +102,83 @@ func TestFreshnessSurfaceWithoutMigrations(t *testing.T) {
 	if strings.Contains(guard, "node:crypto") {
 		t.Error("the no-schema guard imports the hashing machinery it does not use")
 	}
+}
+
+// The guard is the fixtures' validity tag, so a frontend with NO fixtures gets
+// neither file — and a copy an earlier generate left behind is retired.
+//
+// This is the adopted-frontend shape: services of custom rpcs, no CRUD entity,
+// so no src/mocks/<entity>_gen.ts. The guard used to be emitted there anyway,
+// over a fingerprint that described nothing, and every migration that merged
+// without a regenerate turned the frontend's `npm test` red (reliant's web
+// frontend, repeatedly).
+func TestFreshnessSurfaceIsOnlyEmittedBesideFixtures(t *testing.T) {
+	root := freshnessProject(t, map[string]string{
+		"00001_create_orders.up.sql": "CREATE TABLE orders (id UUID PRIMARY KEY);",
+	})
+	feRel := filepath.Join("frontends", "web")
+	mocksDir := filepath.Join(root, feRel, "src", "mocks")
+	emit := func(fixtures int) {
+		t.Helper()
+		cs, err := LoadChecksums(root)
+		if err != nil {
+			t.Fatalf("LoadChecksums: %v", err)
+		}
+		fpFiles, fpConfig := codegen.SeedFingerprint(root, seedplan.DefaultConfig())
+		if err := EmitFixtureFreshnessSurface(root, feRel, fixtures, fpFiles, fpConfig, cs); err != nil {
+			t.Fatalf("EmitFixtureFreshnessSurface(fixtures=%d): %v", fixtures, err)
+		}
+	}
+	exists := func(name string) bool {
+		_, err := os.Stat(filepath.Join(mocksDir, name))
+		return err == nil
+	}
+
+	t.Run("no fixtures, nothing emitted", func(t *testing.T) {
+		emit(0)
+		for _, name := range fixtureFreshnessFiles {
+			if exists(name) {
+				t.Errorf("%s was emitted for a frontend with no fixtures; it guards nothing and "+
+					"goes stale on every migration", name)
+			}
+		}
+	})
+
+	t.Run("fixtures removed, pristine copies retired", func(t *testing.T) {
+		emit(1)
+		for _, name := range fixtureFreshnessFiles {
+			if !exists(name) {
+				t.Fatalf("%s was not emitted beside a fixture", name)
+			}
+		}
+		emit(0)
+		for _, name := range fixtureFreshnessFiles {
+			if exists(name) {
+				t.Errorf("%s survived a generate that wrote no fixtures; a forge-certified copy "+
+					"must be retired", name)
+			}
+		}
+	})
+
+	t.Run("a hand-edited copy is the user's and stays", func(t *testing.T) {
+		emit(1)
+		manifest := filepath.Join(mocksDir, fixtureFreshnessFiles[0])
+		body, err := os.ReadFile(manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(manifest, append(body, []byte("// mine\n")...), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		emit(0)
+		if !exists(fixtureFreshnessFiles[0]) {
+			t.Error("a hand-edited fixture-manifest_gen.ts was deleted; retirement must leave a " +
+				"modified file in place")
+		}
+		if exists(fixtureFreshnessFiles[1]) {
+			t.Error("the pristine guard beside the hand-edited manifest was not retired")
+		}
+	})
 }
 
 // The relative path back to the project root is the guard's single most

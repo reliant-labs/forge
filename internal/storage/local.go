@@ -79,6 +79,10 @@ type Runner struct {
 	// record. It may be called from the layer's goroutine; it is never called
 	// concurrently.
 	OnGoCacheTrim func(GoCacheTrim)
+	// LiveToolchainAges lists how long each running Go toolchain process has
+	// lived (gocache_livebuild.go). Nil reads the process table in
+	// production and means "no builds" under test.
+	LiveToolchainAges func(context.Context) ([]time.Duration, error)
 
 	// Per-pass state, set by beginPass (passctx.go).
 	passTotal  time.Duration

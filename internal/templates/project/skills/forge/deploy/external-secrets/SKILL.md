@@ -60,6 +60,15 @@ matches for kind GeneratorState". That CRD is therefore in the bundle (and the
 controller keeps its read of the generators API); no generator kind is
 creatable, because their CRDs are absent.
 
+Re-checked against v2.13.0 (the SC7 rehearsal asked whether generators being
+off made it droppable): it is still required. `cmd/controller/root.go`
+registers the GeneratorState reconciler unconditionally, and
+`--enable-generator-state=false` only reaches the ExternalSecret reconciler, so
+the flag cannot remove the dependency. `TestGeneratorsGroupHoldsOnlyGeneratorState`
+pins that the bundle carries no generator kind beside it. On a pin bump, read
+`root.go` again: drop the CRD only when the reconciler is gated on a flag the
+install can set.
+
 ## P2 — the cosign identity
 
 The controller image is signed keyless by GitHub Actions. For the pinned digest:

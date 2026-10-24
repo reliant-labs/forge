@@ -41,6 +41,8 @@ func (r *resultRows) Scan(dest ...any) error {
 			*p = AsString(row[i])
 		case *uint8:
 			*p = uint8(AsUint(row[i]))
+		case *uint16:
+			*p = uint16(AsUint(row[i]))
 		case *int32:
 			*p = int32(AsInt(row[i]))
 		case *int64:

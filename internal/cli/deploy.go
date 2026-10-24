@@ -405,6 +405,12 @@ type promoteCmdFlags struct {
 	// liveDiff prints the release bundle's client-side diff against each
 	// live cluster with the plan (printPlanLiveDiff).
 	liveDiff bool
+	// The migration-order guard's waivers (release_migrations.go):
+	// allowPassedMigrations admits a release carrying a migration the env's
+	// schema has already passed; allowUnmergedMigrations, a release this
+	// deploy cuts that carries a migration not on the default branch.
+	allowPassedMigrations   bool
+	allowUnmergedMigrations bool
 
 	// --from / --from-promotion, held FLAT rather than as a nested
 	// promoteFromOptions so each is a plain flag target like every field
@@ -466,6 +472,10 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 	cmd.MarkFlagsMutuallyExclusive("expect-current", "expect-unbound")
 	flags.BoolVar(&f.supersede, "supersede", false,
 		"Deploy even though the current promotion is still rolling out (recorded on the new entry); without it that is exit 4")
+	flags.BoolVar(&f.allowPassedMigrations, allowPassedMigrationsFlag, false,
+		"Deploy a release carrying a migration the env's schema has already passed (exit 4 without it). Only for SQL already applied to the env's database by hand and recorded in schema_migrations_applied — otherwise the env's migrator refuses it at boot")
+	flags.BoolVar(&f.allowUnmergedMigrations, allowUnmergedMigrationsFlag, false,
+		"When this deploy cuts the release (no version) for an env on a control plane: cut it even though it carries a migration not on the default branch (exit 4 without it)")
 
 	// The health gate, opt-OUT.
 	flags.BoolVar(&f.noWait, "no-wait", false,
@@ -718,19 +728,20 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 		printPlanLiveDiff(ctx, progressWriter(f.jsonOut), projectDir, envName, p.version, ledger)
 	}
 	return runPromote(ctx, p.version, envName, promoteOptions{
-		Targets:       scope.Targets,
-		Ledger:        ledger,
-		Capacity:      capacity,
-		DryRun:        p.plan,
-		JSON:          f.jsonOut,
-		ProjectDir:    projectDir,
-		Note:          p.note,
-		Actor:         p.actor,
-		ExpectCurrent: p.expectCurrent,
-		Supersede:     p.supersede,
-		Gates:         p.gates,
-		From:          p.fromSource(),
-		Run:           p.run,
+		Targets:               scope.Targets,
+		Ledger:                ledger,
+		Capacity:              capacity,
+		DryRun:                p.plan,
+		JSON:                  f.jsonOut,
+		ProjectDir:            projectDir,
+		Note:                  p.note,
+		Actor:                 p.actor,
+		ExpectCurrent:         p.expectCurrent,
+		Supersede:             p.supersede,
+		AllowPassedMigrations: p.allowPassedMigrations,
+		Gates:                 p.gates,
+		From:                  p.fromSource(),
+		Run:                   p.run,
 		// The O-13 gate. Always stated by the command, so the verb always
 		// shows the plan and asks before writing a promotion.
 		Confirm: newDeployConfirm(p, ""),

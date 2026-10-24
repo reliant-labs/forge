@@ -1,6 +1,9 @@
 package ledgerfile
 
 import (
+	"errors"
+	"fmt"
+
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -68,6 +71,51 @@ func (s *Store) Release(version string) (*release.Release, error) {
 		}
 	}
 	return nil, nil
+}
+
+// ErrReleaseNotFound is RecordReleaseMigrations naming a version never cut.
+var ErrReleaseNotFound = errors.New("release not found")
+
+// RecordReleaseMigrations records m as the migration manifest of a release
+// cut without one — the backfill for releases cut before the cut recorded
+// it. recorded is false when the release already holds an equal manifest; a
+// DIFFERENT one is release.ErrReleaseConflict, because a manifest, once
+// recorded, is what every later deploy judged.
+//
+// It APPENDS the release again with the manifest set: the log is
+// append-only, and the newest line for a version is the one releasesLocked
+// keeps. The manifest is evidence, not identity (Release.SameContent ignores
+// it), so this does not make the release a different one.
+func (s *Store) RecordReleaseMigrations(version string, m release.MigrationManifest) (recorded bool, err error) {
+	if err := m.Validate(); err != nil {
+		return false, err
+	}
+	m.Normalize()
+	err = s.withLock(func() error {
+		all, err := s.releasesLocked()
+		if err != nil {
+			return err
+		}
+		for _, existing := range all {
+			if existing.Version != version {
+				continue
+			}
+			if existing.Migrations != nil {
+				if existing.Migrations.Equal(m) {
+					return nil
+				}
+				return fmt.Errorf("release %q: %w: it already records a different migration manifest", version, release.ErrReleaseConflict)
+			}
+			existing.Migrations = &m
+			recorded = true
+			return appendRecord(s.path(releasesFile), existing)
+		}
+		return fmt.Errorf("release %q: %w", version, ErrReleaseNotFound)
+	})
+	if err != nil {
+		return false, err
+	}
+	return recorded, nil
 }
 
 // CutRelease records r. created is false when an identical release already

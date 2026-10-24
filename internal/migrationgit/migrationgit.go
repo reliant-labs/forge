@@ -116,6 +116,64 @@ func Next(dir string) (string, error) {
 	return vs[0], nil
 }
 
+// RepoRelative is migrationsDir relative to repoRoot in slash form — the path
+// git names it by — or false when it is not inside the repository.
+func RepoRelative(repoRoot, migrationsDir string) (string, bool) {
+	rel, err := repoRelative(repoRoot, migrationsDir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
+}
+
+// FilesAt lists the file names in migrationsDir at revision rev (a commit, a
+// ref). A directory absent at rev is an empty list, which is a real answer;
+// false means the revision itself could not be read — not in this clone, or
+// no git.
+func FilesAt(repoRoot, migrationsDir, rev string) ([]string, bool) {
+	if _, ok := runGit(repoRoot, "rev-parse", "--verify", "--quiet", rev+"^{commit}"); !ok {
+		return nil, false
+	}
+	rel, err := repoRelative(repoRoot, migrationsDir)
+	if err != nil {
+		return nil, false
+	}
+	out, ok := runGit(repoRoot, "ls-tree", "--name-only", rev+":"+filepath.ToSlash(rel))
+	if !ok {
+		return []string{}, true
+	}
+	var names []string
+	for _, name := range strings.Split(out, "\n") {
+		if name = strings.TrimSpace(name); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names, true
+}
+
+// DefaultBranchFiles lists the file names in migrationsDir on the default
+// branch's tip, and names the ref it read. False when there is no default
+// branch to read (a tarball, a repository with no remote and no main).
+//
+// Names, not versions: whether a migration "is on main" is a question about
+// one file — two branches can claim one version (see the package doc of
+// internal/database's rebase).
+func DefaultBranchFiles(repoRoot, migrationsDir string) (files map[string]bool, ref string, ok bool) {
+	ref, ok = defaultBranchRef(repoRoot)
+	if !ok {
+		return nil, "", false
+	}
+	names, ok := FilesAt(repoRoot, migrationsDir, ref)
+	if !ok {
+		return nil, "", false
+	}
+	files = make(map[string]bool, len(names))
+	for _, n := range names {
+		files[n] = true
+	}
+	return files, ref, true
+}
+
 // IsTracked reports whether path is tracked by git, which decides whether a
 // rename goes through `git mv` or a plain filesystem rename.
 func IsTracked(repoRoot, path string) bool {

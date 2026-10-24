@@ -344,6 +344,13 @@ type Release struct {
 	// Provenance it is evidence about the release and not part of its
 	// identity — [Release.SameContent] ignores it.
 	Commits *CommitRange `json:"commits,omitempty"`
+	// Migrations is every migrations directory the release's artifacts
+	// embed, as the files each held at the cut ([MigrationManifest]) — what
+	// lets a cut and a deploy refuse a release an environment's schema has
+	// already passed ([PassedMigrations]). Nil when none was recorded: a
+	// release cut before it existed (until backfilled), or a project with no
+	// migrations. Evidence like Commits: [Release.SameContent] ignores it.
+	Migrations *MigrationManifest `json:"migrations,omitempty"`
 	// CreatedAt is when the release was cut.
 	CreatedAt time.Time `json:"created_at"`
 	// CreatedBy is who cut it, when the backend knows (a hosted ledger
@@ -389,6 +396,11 @@ func (r Release) Validate() error {
 		}
 		if r.Commits.BaseRelease == r.Version {
 			return fmt.Errorf("%w: release %q names itself as the base of its commit range", ErrInvalid, r.Version)
+		}
+	}
+	if r.Migrations != nil {
+		if err := r.Migrations.Validate(); err != nil {
+			return fmt.Errorf("release %q: %w", r.Version, err)
 		}
 	}
 	if err := r.Run.Validate(); err != nil {

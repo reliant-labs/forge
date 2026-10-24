@@ -132,16 +132,17 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 		return err
 	}
 	return runPromote(ctx, cut.Version, envName, promoteOptions{
-		Ledger:        ledger,
-		Capacity:      capacity,
-		JSON:          f.jsonOut,
-		ProjectDir:    projectDir,
-		Note:          p.note,
-		Actor:         p.actor,
-		ExpectCurrent: p.expectCurrent,
-		Supersede:     p.supersede,
-		Gates:         p.gates,
-		Run:           p.run,
+		Ledger:                ledger,
+		Capacity:              capacity,
+		JSON:                  f.jsonOut,
+		ProjectDir:            projectDir,
+		Note:                  p.note,
+		Actor:                 p.actor,
+		ExpectCurrent:         p.expectCurrent,
+		Supersede:             p.supersede,
+		AllowPassedMigrations: p.allowPassedMigrations,
+		Gates:                 p.gates,
+		Run:                   p.run,
 		// AutoVersion is stated so the gate's refusal and its --plan-only
 		// line can say "release X was cut and pushed; approving it needs no
 		// rebuild" — without it a CI author reads "pass --yes" and re-runs
@@ -239,9 +240,13 @@ func buildAndCutForDeploy(ctx context.Context, projectDir, envName string, f dep
 		// The deploy ran the capacity pre-flight before it got here.
 		capacityChecked: true,
 		release:         choice.Version,
-		targetArch:      f.targetArch,
-		targets:         f.targets,
-		run:             f.promote.run,
+		// The cut this deploy makes is held to the migration-order guard
+		// like any release cut, with the deploy's waivers.
+		allowPassedMigrations:   f.promote.allowPassedMigrations,
+		allowUnmergedMigrations: f.promote.allowUnmergedMigrations,
+		targetArch:              f.targetArch,
+		targets:                 f.targets,
+		run:                     f.promote.run,
 	}
 	if err := runDeployBuild(ctx, opts); err != nil {
 		return deployCutResult{}, fmt.Errorf("build env %s for deploy: %w", envName, err)

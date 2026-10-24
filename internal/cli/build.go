@@ -127,6 +127,11 @@ type buildOptions struct {
 	// capacityChecked records that the caller (`forge env deploy`) already ran
 	// the hosted capacity pre-flight, so the build does not repeat it.
 	capacityChecked bool
+	// allowPassedMigrations and allowUnmergedMigrations are the
+	// migration-order guard's waivers on a release cut
+	// (release_migrations.go).
+	allowPassedMigrations   bool
+	allowUnmergedMigrations bool
 	// bundleEnvs is --bundle-envs: write a bundle for each env named,
 	// comma-separated, from this one build and this one cut. Empty means
 	// the env being built.
@@ -894,7 +899,12 @@ func preflightRealBuild(ctx context.Context, entities *KCLEntities, opts buildOp
 	if opts.composition != nil {
 		return nil
 	} // actual exported inputs are receipt-attested, not inferred from cwd HEAD
-	return preflightReleaseSources(ctx, projectDirForKCL(), entities, opts)
+	if err := preflightReleaseSources(ctx, projectDirForKCL(), entities, opts); err != nil {
+		return err
+	}
+	// A release the target env's schema has already passed is refused here,
+	// before 20 minutes of build, and not only at the cut.
+	return preflightReleaseMigrations(ctx, projectDirForKCL(), entities, opts)
 }
 
 // printBuildHeader prints the block runBuild opens with: what is being built,
@@ -1798,6 +1808,15 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	if err != nil {
 		return releaseCutOutcome{}, err
 	}
+	// The migrations the release carries, recorded and judged against env's
+	// applied history over the checkouts the build state RECORDS — the same
+	// sources checkRecordedReleaseSources held to the pins (release_migrations.go).
+	recordedUses, _ := recordedShellSources(projectDir, env, entities)
+	migrations, err := releaseMigrationGuard(ctx, os.Stdout, projectDir, env, version, prov, recordedUses, ledger, opts)
+	if err != nil {
+		return releaseCutOutcome{}, err
+	}
+	rel.Migrations = migrations
 	if err := pinStorageRelease(rel); err != nil {
 		return releaseCutOutcome{}, err
 	}

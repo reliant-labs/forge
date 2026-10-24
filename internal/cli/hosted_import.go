@@ -273,6 +273,9 @@ func importReleaseRows(in []importRelease) []map[string]any {
 		if r.Release.Commits != nil {
 			row["commits"] = commitRangeToWire(*r.Release.Commits)
 		}
+		if r.Release.Migrations != nil {
+			row["migrations"] = r.Release.Migrations
+		}
 		if r.ImportedFrom != "" {
 			row["importedFrom"] = r.ImportedFrom
 		}

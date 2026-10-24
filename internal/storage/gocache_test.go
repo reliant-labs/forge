@@ -948,3 +948,64 @@ func TestGoCacheExecutableEntriesAreMeasuredAndEvicted(t *testing.T) {
 		t.Fatalf("oldExec=%v small=%v newExec=%v\n%s", exists(oldExec), exists(small), exists(newExec), out.String())
 	}
 }
+
+// An entry listed as old but reused while the pass works through its shard must
+// survive: cmd/go restamps an entry when a build uses it, and a paced pass
+// reaches an entry minutes after the shard was listed. The floor cannot cover
+// this — the entry was old when listed.
+func TestGoCacheEntryTouchedAfterListingSurvives(t *testing.T) {
+	root := t.TempDir()
+	makeBuildCache(t, root)
+	first := putEntry(t, root, "ab", hexName(1, "-a"), 10, 100*time.Hour)
+	second := putEntry(t, root, "ab", hexName(2, "-a"), 10, 90*time.Hour)
+	third := putEntry(t, root, "ab", hexName(3, "-d"), 10, 80*time.Hour)
+	var out strings.Builder
+	r := goRunner(t, &out)
+	r.GoCacheRoot = root
+	r.Policy.DeleteRatePerSec = 1_000_000_000
+	r.removeFn = func(p string) error {
+		if p == first { // a build uses the other two entries while this unlink is in flight
+			now := time.Now()
+			for _, q := range []string{second, third} {
+				_ = os.Chtimes(q, now, now)
+			}
+		}
+		return os.Remove(p)
+	}
+	var trims []GoCacheTrim
+	r.OnGoCacheTrim = func(tr GoCacheTrim) { trims = append(trims, tr) }
+	if err := r.SharedGoCache(true); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if exists(first) || !exists(second) || !exists(third) {
+		t.Fatalf("first=%v second=%v third=%v: want only the entry nobody used removed\n%s", exists(first), exists(second), exists(third), out.String())
+	}
+	if len(trims) != 1 || trims[0].Removed != 1 {
+		t.Fatalf("an entry spared because it was reused must not be counted as removed: %+v", trims)
+	}
+}
+
+// Least recently used first within a shard: a pass the delete cap stops
+// partway must have taken the oldest entries, not the ones that sort first by
+// name.
+func TestGoCacheRemovesLeastRecentlyUsedFirst(t *testing.T) {
+	root := t.TempDir()
+	makeBuildCache(t, root)
+	ages := map[int]time.Duration{1: 60 * time.Hour, 2: 100 * time.Hour, 3: 70 * time.Hour, 4: 120 * time.Hour, 5: 80 * time.Hour}
+	paths := map[int]string{}
+	for n, age := range ages {
+		paths[n] = putEntry(t, root, "ab", hexName(n, "-a"), 10, age)
+	}
+	var out strings.Builder
+	r := goRunner(t, &out)
+	r.GoCacheRoot = root
+	r.Policy.MaxDeletesPerPass = 2
+	r.Policy.DeleteRatePerSec = 1_000_000_000
+	_ = r.SharedGoCache(true) // the cap stops it: a cut-off, not a failure
+	for n, p := range paths {
+		oldest := n == 4 || n == 2
+		if exists(p) == oldest {
+			t.Errorf("entry %d (%s old): exists=%v; the cap of 2 must take the two oldest (120h, 100h)\n%s", n, ages[n], exists(p), out.String())
+		}
+	}
+}

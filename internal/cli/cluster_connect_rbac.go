@@ -1,7 +1,7 @@
 package cli
 
 // The objects forge converges IN THE TARGET CLUSTER so one env's binding can
-// apply, and the one-time cloud IAM grant only the owner can run.
+// apply.
 //
 // ── ONE IDENTITY PER BINDING, AND NOTHING ELSE ──────────────────────────────
 //
@@ -9,21 +9,15 @@ package cli
 // authenticates to this cluster as that binding's OWN identity — never a
 // shared one:
 //
-//   - gcp:   a Google service account the control plane allocates for the
-//     binding (ConnectCluster returns it). GKE RBAC accepts it as a
-//     `User` subject by email. A KSA mapped to a workforce principal is not
-//     an option on GKE RBAC, and Google's federation limitations name
-//     service-account impersonation for a Pod calling a different GKE
-//     cluster, so one GSA per binding is the mechanism.
-//   - token: a ServiceAccount forge mints in this cluster, one per binding,
-//     whose token is that binding's only credential.
+//   - a ServiceAccount forge mints in this cluster, one per binding, whose
+//     token is that binding's only credential. There is no cloud identity.
 //
 // The apply runs AS that identity. There is no impersonation step and no
-// bootstrap write: the identity's rules are derived from what the env's render
-// applies (cluster_connect_scope.go), and a kind the render did not contain is
+// bootstrap write: the identity's rules are derived from what the hub applies
+// from the env's render (cluster_connect_scope.go), and a kind the render did not contain is
 // Forbidden by the cluster's own access check. The ONLY objects connect writes
-// are the grant itself (a Role or ClusterRole, its binding, and for the token
-// auth the identity's ServiceAccount) — and the delivery grant, if asked.
+// are the grant itself (a Role or ClusterRole, its binding, and the identity's
+// ServiceAccount and token Secret) — and the delivery grant, if asked.
 //
 // Every object carries the labels below, which is how disconnect and a re-run
 // find exactly what this binding owns without being told.
@@ -75,12 +69,7 @@ type connectRBAC struct {
 	Env string
 	// KubeContext is the operator's context the grant is applied THROUGH.
 	KubeContext string
-	// Auth selects whether the subject is BindingGSA or the minted SA.
-	Auth string
-	// BindingGSA is the binding's own Google service account, reported by the
-	// control plane at registration (empty until then). Bound as a User.
-	BindingGSA string
-	// TokenNamespace names the namespace the token auth's SA lives in.
+	// TokenNamespace names the namespace the binding's SA lives in.
 	TokenNamespace string
 	// Scope and Plan: where the identity may write and with what rules.
 	Scope applyScope
@@ -99,7 +88,7 @@ type connectRBAC struct {
 
 func (r connectRBAC) bindingName() string { return connectBindingName(r.ClusterName, r.Env) }
 
-// tokenServiceAccount is the binding's own ServiceAccount on the token auth.
+// tokenServiceAccount is the binding's own ServiceAccount.
 func (r connectRBAC) tokenServiceAccount() string { return r.bindingName() }
 
 // tokenSecretName is the SA token Secret's name, derived so connect and
@@ -198,11 +187,12 @@ func (r connectRBAC) binding(kind, namespace, roleKind string) rbacObject {
 
 // grantObjects are the apply grant's RBAC objects, sorted by kind and name.
 //
-//	cluster scope:   ClusterRole + ClusterRoleBinding, rules derived from the
-//	                 render, plus bind/escalate when the render carries RBAC.
+//	cluster scope:   ClusterRole + ClusterRoleBinding, rules derived from what
+//	                 the hub applies, with escalate/bind pinned by name.
 //	namespace scope: a Role + RoleBinding per namespace, and — only when the
-//	                 render declares a Namespace object or binds a ClusterRole —
-//	                 a ClusterRole whose rules are pinned by resourceNames.
+//	                 render declares a Namespace object or the JWKS read is
+//	                 asked for — a ClusterRole whose rules are pinned by
+//	                 resourceNames or non-resource URLs.
 func (r connectRBAC) grantObjects() []rbacObject {
 	name := r.bindingName()
 	var out []rbacObject
@@ -221,12 +211,7 @@ func (r connectRBAC) grantObjects() []rbacObject {
 		return sortObjects(out)
 	}
 	for _, ns := range r.Plan.Namespaces {
-		rules := append([]ruleSpec(nil), r.Plan.NamespaceRules[ns]...)
-		if len(r.Plan.BindClusterRoles) > 0 {
-			// `bind` on a ClusterRole is checked in the RoleBinding's own
-			// namespace, so the pin lives in this Role, not a ClusterRole.
-			rules = append(rules, ruleSpec{Ref: refClusterRoles, Names: r.Plan.BindClusterRoles, Verbs: []string{"bind"}})
-		}
+		rules := r.Plan.NamespaceRules[ns]
 		if len(rules) == 0 {
 			continue
 		}
@@ -266,9 +251,8 @@ func sortObjects(objs []rbacObject) []rbacObject {
 	return objs
 }
 
-// identityManifests are what the token auth needs BEFORE it has a token: the
-// namespace, the binding's own ServiceAccount and its token Secret. Empty on
-// gcp, where the identity is a Google service account and nothing is minted.
+// identityManifests are what the binding needs BEFORE it has a token: the
+// namespace, its own ServiceAccount and its token Secret.
 //
 // A `kubernetes.io/service-account-token` SECRET, NOT A TokenRequest: nothing
 // rotates a bounded token on a schedule, so a cluster nobody re-connects for 90
@@ -277,9 +261,6 @@ func sortObjects(objs []rbacObject) []rbacObject {
 // revocable by deleting it (disconnect does), and its blast radius is the
 // grant above — the control that matters.
 func (r connectRBAC) identityManifests() []string {
-	if r.Auth != authToken {
-		return nil
-	}
 	labels := r.labels("identity")
 	obj := func(body map[string]any) string {
 		b, _ := yaml.Marshal(body)
@@ -326,55 +307,25 @@ func (r connectRBAC) baseManifests() string {
 	return strings.Join(docs, "\n---\n") + "\n"
 }
 
-// writeGrantInstructions prints the one-time grant the OWNER runs, and it is
-// the whole point of the response carrying the binding's identity.
-//
-// forge cannot perform this itself: the gcp half is an IAM write in the
-// owner's project, against credentials forge does not have and should not ask
-// for. So the command's real output is this text — it is the answer, not a
-// footnote under a status line.
-func writeGrantInstructions(out io.Writer, r connectRBAC, gke gkeContext) {
-	if r.Auth != authGCP {
-		// The token path needs no cloud grant: forge already applied the
-		// RBAC and sent the token. Say so, rather than printing nothing and
-		// leaving the reader wondering what they owe.
-		fmt.Fprintf(out, "\nNo cloud IAM grant is needed: this binding authenticates with its own scoped\n"+
-			"ServiceAccount token (%s/%s), and forge applied its RBAC through\n"+
-			"context %q. The token was sent write-only and is never printed or stored locally.\n",
-			r.TokenNamespace, r.tokenServiceAccount(), r.KubeContext)
-		return
-	}
-	if strings.TrimSpace(r.BindingGSA) == "" {
-		// EMPTY IS THE NORMAL STATE IN DEV, where the control plane has no
-		// cloud identity. Saying so is correct; printing a gcloud command
-		// with a blank principal in it is how someone runs a grant that
-		// silently binds nothing.
-		fmt.Fprintf(out, "\n⚠ This control plane returned no per-binding GCP identity, so there is no principal to grant\n"+
-			"  and forge bound nothing. The cluster is registered, but the control plane cannot authenticate\n"+
-			"  to it for env %q until it allocates a service account for the binding. A dev control plane\n"+
-			"  normally has none — use --auth token against a dev cluster.\n", r.Env)
-		return
-	}
-	fmt.Fprintf(out, `
-Run this ONCE, as an owner of project %s. forge cannot: it is an IAM write in
-your project, with credentials forge does not hold.
-
-  gcloud projects add-iam-policy-binding %s \
-    --member=serviceAccount:%s \
-    --role=roles/container.clusterViewer
-
-That is the whole cloud half. forge already applied the in-cluster half through
-context %s, bound to this binding's own identity and to nothing shared:
-%s
-`, gke.Project, gke.Project, r.BindingGSA, r.KubeContext, r.grantSummary())
+// writeGrantSummary says what was applied in the cluster and that nothing is
+// owed afterwards.
+func writeGrantSummary(out io.Writer, r connectRBAC) {
+	fmt.Fprintf(out, "\nNo cloud IAM grant is needed: this binding authenticates with its own scoped\n"+
+		"ServiceAccount token (%s/%s), and forge applied its RBAC through\n"+
+		"context %q. The token was sent write-only and is never printed or stored locally.\n"+
+		"Revoke it with `forge cluster disconnect`; rotate it by re-running connect.\n%s\n",
+		r.TokenNamespace, r.tokenServiceAccount(), r.KubeContext, r.grantSummary())
 }
 
 // grantSummary says, in one paragraph, what the in-cluster grant is.
 func (r connectRBAC) grantSummary() string {
 	subject := r.connectSubject()
 	who := subject.Kind + " " + subject.username()
-	if r.Plan.Cluster {
-		return fmt.Sprintf("  ClusterRole and ClusterRoleBinding %s: %s, scope cluster (cluster-admin equivalent).\n%s",
+	switch {
+	case r.Plan.Empty:
+		return fmt.Sprintf("  %s: %s, no apply rules (the hub applies nothing on this cluster).", r.bindingName(), who)
+	case r.Plan.Cluster:
+		return fmt.Sprintf("  ClusterRole and ClusterRoleBinding %s: %s, scope cluster.\n%s",
 			r.bindingName(), who, clusterAdminWarning)
 	}
 	return fmt.Sprintf("  %s: %s, scope namespace:%s.", r.bindingName(), who, strings.Join(r.Plan.Namespaces, ","))

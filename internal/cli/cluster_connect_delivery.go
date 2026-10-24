@@ -147,12 +147,10 @@ func parseDeliverySubject(spec string) (*deliverySubject, error) {
 // no --delivery-secret widens nothing.
 func (r connectRBAC) deliveryEnabled() bool { return len(r.DeliverySecrets) > 0 }
 
-// connectSubject is the connect identity as a subject.
+// connectSubject is the connect identity as a subject: the binding's own
+// ServiceAccount.
 func (r connectRBAC) connectSubject() deliverySubject {
-	if r.Auth == authToken {
-		return deliverySubject{Kind: subjectKindServiceAccount, Namespace: r.TokenNamespace, Name: r.tokenServiceAccount()}
-	}
-	return deliverySubject{Kind: subjectKindUser, Name: r.BindingGSA}
+	return deliverySubject{Kind: subjectKindServiceAccount, Namespace: r.TokenNamespace, Name: r.tokenServiceAccount()}
 }
 
 // deliverySubjects are who the grant binds: the connect identity, plus the
@@ -173,9 +171,8 @@ func (r connectRBAC) validateDelivery() error {
 	return nil
 }
 
-// validateConnectIdentity runs once the connect identity is known (a gcp
-// GSA comes from the control plane's response and ends up inside a CEL
-// expression).
+// validateConnectIdentity checks the connect identity forge will place inside
+// a CEL expression.
 func (r connectRBAC) validateConnectIdentity() error {
 	if !r.deliveryEnabled() {
 		return nil

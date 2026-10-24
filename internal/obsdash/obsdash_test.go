@@ -233,8 +233,8 @@ func TestCustomMetricsDashboardFollowsTheTypes(t *testing.T) {
 	}
 	series := func(id string) []Series { return panels[id].Series }
 
-	if s := series("orders-created"); len(s) != 1 || s[0].Agg != AggSum || s[0].MetricType != "sum" {
-		t.Errorf("counter series = %+v, want one sum (rate)", s)
+	if s := series("orders-created"); len(s) != 1 || s[0].Agg != AggRate || s[0].MetricType != "sum" || s[0].Label != "per second" {
+		t.Errorf("counter series = %+v, want one per-second rate", s)
 	}
 	if s := series("queue-depth"); len(s) != 1 || s[0].Agg != AggLast || s[0].MetricType != "gauge" {
 		t.Errorf("gauge series = %+v, want last value of a gauge", s)

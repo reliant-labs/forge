@@ -39,9 +39,9 @@ const BufModule = "github.com/bufbuild/buf"
 type Source string
 
 const (
-	// FromGoMod: the project's go.mod requires BufModule.
+	// FromGoMod is the project's go.mod requiring BufModule.
 	FromGoMod Source = "go.mod"
-	// FromForge: the project declares none, so forge's own pin.
+	// FromForge is forge's own pin, for a project that declares none.
 	FromForge Source = "forge"
 )
 

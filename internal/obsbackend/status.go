@@ -6,7 +6,10 @@ package obsbackend
 // The interfaces are in contract.go; the local overview is in
 // local_status.go, the cloud readers in cloud_status.go.
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // OverviewRequest asks for the per-service request figures of the narrowed
 // scope: server spans for rate, errors and duration, logs for the error-level
@@ -48,10 +51,14 @@ type Alert struct {
 	Fingerprint string            `json:"fingerprint,omitempty"`
 	Labels      map[string]string `json:"labels,omitempty"`
 	// Summary is the rule's summary annotation, when it has one.
-	Summary  string    `json:"summary,omitempty"`
-	ActiveAt time.Time `json:"active_at,omitzero"`
-	FiringAt time.Time `json:"firing_at,omitzero"`
-	Value    float64   `json:"value"`
+	Summary string `json:"summary,omitempty"`
+	// Why is the alert's why-fired payload (alerting.Why), as the control
+	// plane carries it in the `why` annotation. Nil for an alert whose rule
+	// attaches none.
+	Why      json.RawMessage `json:"why,omitempty"`
+	ActiveAt time.Time       `json:"active_at,omitzero"`
+	FiringAt time.Time       `json:"firing_at,omitzero"`
+	Value    float64         `json:"value"`
 }
 
 // Telemetry-token delivery states that leave a working token in place (or

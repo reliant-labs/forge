@@ -8,6 +8,9 @@
 // path, and OCI/registry — exactly like the `kcl` CLI, so projects
 // declare the forge module (and any extra packages) in kcl.mod in
 // whatever style they like; forge neither parses nor special-cases deps.
+// The two packages forge supplies itself — `forge` (internal/kclvendor) and
+// any other forge project the kcl.mod imports under [forge_projects]
+// (internal/kclprojects) — are external packages kpm never sees.
 package kclrender
 
 import (
@@ -25,6 +28,7 @@ import (
 	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/internal/kclplugin"
+	"github.com/reliant-labs/forge/internal/kclprojects"
 	"github.com/reliant-labs/forge/internal/kclvendor"
 	"github.com/reliant-labs/forge/internal/kubeconfig"
 )
@@ -276,6 +280,14 @@ func run(workDir, source string, dArgs []string, enterWorkDir bool) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
+	// Other forge projects this KCL imports ([forge_projects] in kcl.mod),
+	// at the version go.mod pins each one to. Supplied the way `forge` is:
+	// as external packages, which kpm never sees. See internal/kclprojects.
+	imports, err := kclprojects.Resolve(kclprojects.FindKCLRoot(source))
+	if err != nil {
+		return nil, err
+	}
+	externalPkgs := append([]string{forgeArg}, kclprojects.ExternalPkgArgs(imports)...)
 
 	c, err := client.NewKpmClient()
 	if err != nil {
@@ -305,7 +317,7 @@ func run(workDir, source string, dArgs []string, enterWorkDir bool) ([]byte, err
 			client.WithRunSourceUrl(kpmSourceURL(source)),
 			client.WithWorkDir(workDir),
 			client.WithArguments(withKubeconfigDArg(withDevStackDArgs(dArgs))),
-			client.WithExternalPkgs([]string{forgeArg}),
+			client.WithExternalPkgs(externalPkgs),
 			client.WithLogger(os.Stderr),
 		)
 	})

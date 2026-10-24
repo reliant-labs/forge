@@ -21,6 +21,11 @@
 //	exception.stacktrace         LogPanic only.
 //	error.group                  ErrorGroup, opt-in.
 //
+// One attribute is written at any level, by the caller: issue.source
+// (IssueSource), which makes a record an issue event of a named source
+// whatever its level — a report that must be grouped and triaged like an
+// error without counting as one.
+//
 // otelslog.WithSource is deliberately not what produces these: it is
 // bridge-only (the stdout line, the default shipping path, would carry
 // nothing), all-or-nothing per bridge (every INFO record would pay a frame
@@ -48,6 +53,7 @@ const (
 	LogKeyExceptionMessage    = "exception.message"
 	LogKeyExceptionStacktrace = "exception.stacktrace"
 	LogKeyErrorGroup          = "error.group"
+	LogKeyIssueSource         = "issue.source"
 )
 
 const (
@@ -69,6 +75,21 @@ const (
 //		observe.ErrorGroup(ctx, "billing-reconcile-drift"))
 func ErrorGroup(_ context.Context, name string) slog.Attr {
 	return slog.String(LogKeyErrorGroup, name)
+}
+
+// IssueSource returns the attribute that makes a record an issue event of the
+// named source, at whatever level it is logged: the issues pipeline groups it
+// (by its fingerprint, which ErrorGroup can pin) into issues of that source,
+// listed apart from errors (`forge obs issues --source <name>`). Errors carry
+// no source. Use it for a report that must be triaged like an error without
+// counting as one — an error rate, an error alert or a release-health gate
+// never sees it unless it is also logged at ERROR.
+//
+//	logger.WarnContext(ctx, "[reliant] message truncated",
+//		observe.IssueSource(ctx, "llm_bug_report"),
+//		observe.ErrorGroup(ctx, "llm_bug_report/reliant/message truncated"))
+func IssueSource(_ context.Context, name string) slog.Attr {
+	return slog.String(LogKeyIssueSource, name)
 }
 
 // LogPanic logs a recovered panic at ERROR on logger. Call it from the

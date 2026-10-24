@@ -90,7 +90,7 @@ env is created with --bind <name>=<binder>. A frontend binds the same way
                           Restricted profile)
   --bind api=cluster      run api on the env's cluster
   --bind web=hosted       serve the web frontend from the control plane's
-                          static hosting (it owns the bucket and the CDN)
+                          static hosting (it owns the bucket)
   --bind web=bucket       publish the web frontend to your own bucket
 
 Examples:

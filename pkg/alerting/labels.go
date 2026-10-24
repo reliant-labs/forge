@@ -3,8 +3,10 @@
 package alerting
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -23,6 +25,20 @@ const ReservedPrefix = "reliant_"
 
 // ValueColumn is the column whose number is an instance's sample.
 const ValueColumn = "value"
+
+// WhyColumn is the column whose JSON object is an instance's why-fired payload
+// (see Why). Like ValueColumn it is not a label, so a payload that changes
+// between evaluations (the observed count, the baseline) never changes the
+// alert's identity and never re-notifies.
+const WhyColumn = "why"
+
+// WhyAnnotation is the annotation the Alertmanager notifier posts the payload
+// under, so every receiver (in-app, Autopilot webhook, Slack templates) gets it.
+const WhyAnnotation = "why"
+
+// MaxWhyBytes bounds one payload. An oversized payload is a bad result, not a
+// truncation: cut JSON is not JSON.
+const MaxWhyBytes = 16 << 10
 
 const (
 	maxLabelValueBytes = 1024
@@ -44,6 +60,7 @@ type series struct {
 	labels      map[string]string
 	annotations map[string]string
 	value       float64
+	why         json.RawMessage
 }
 
 // isReserved reports whether a label name is in the identity namespace.
@@ -102,7 +119,16 @@ func buildSeries(rule Rule, rows []Row) ([]series, error) {
 	for i, row := range rows {
 		labels := map[string]string{}
 		value := 1.0
+		var why json.RawMessage
 		for _, col := range sortedRowKeys(row) {
+			if col == WhyColumn {
+				w, err := toWhy(row[col])
+				if err != nil {
+					return nil, fmt.Errorf("%w: row %d: column %q: %v", ErrBadResult, i, WhyColumn, err)
+				}
+				why = w
+				continue
+			}
 			if col == ValueColumn {
 				v, err := toFloat(row[col])
 				if err != nil {
@@ -142,9 +168,48 @@ func buildSeries(rule Rule, rows []Row) ([]series, error) {
 			labels:      labels,
 			annotations: expandAnnotations(rule.Annotations, labels, value),
 			value:       value,
+			why:         why,
 		})
 	}
 	return out, nil
+}
+
+// toWhy turns a row's why column into a compact JSON object. A string or byte
+// slice must already be JSON; anything else (a map, a struct) is marshalled. A
+// NULL or empty value is no payload.
+func toWhy(v any) (json.RawMessage, error) {
+	var raw []byte
+	switch x := v.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		raw = []byte(x)
+	case []byte:
+		raw = x
+	case json.RawMessage:
+		raw = x
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return nil, fmt.Errorf("is not JSON: %v", err)
+		}
+		raw = b
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, nil
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil || probe == nil {
+		return nil, errors.New("must be a JSON object")
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return nil, fmt.Errorf("is not JSON: %v", err)
+	}
+	if buf.Len() > MaxWhyBytes {
+		return nil, fmt.Errorf("is %d bytes, the limit is %d", buf.Len(), MaxWhyBytes)
+	}
+	return json.RawMessage(buf.Bytes()), nil
 }
 
 // fingerprint identifies a label set within a rule.

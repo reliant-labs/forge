@@ -27,11 +27,12 @@ func serverRootStub(t *testing.T, secrets ...string) string {
 	if len(secrets) > 0 {
 		required = secrets[:1]
 	}
-	type view struct{ Name, Args, Env, Secrets, Required string }
+	type view struct{ Name, Args, Env, Secrets, Required, Families string }
 	out, err := templates.ProjectTemplates().Render("config-roots.k.tmpl", struct {
 		Roots              []view
 		ConfigType, EnvMap string
 		Argv               bool
+		Families           bool
 	}{Roots: []view{{
 		Name: `"server"`, Args: `["server"]`, Env: `["PORT"]`, Secrets: q(secrets), Required: q(required),
 	}}, ConfigType: "AppConfig", EnvMap: "appConfigEnvMap"})

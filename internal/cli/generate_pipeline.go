@@ -2581,11 +2581,7 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 		}
 		in.Services = append(in.Services, svc)
 	}
-	for _, fe := range ctx.Cfg.Frontends {
-		if fe.Type != "react-native" {
-			in.Frontends = append(in.Frontends, fe.Name)
-		}
-	}
+	in.Frontends = observedFrontends(ctx.Cfg)
 	announceDerivedObservability(os.Stdout, ctx)
 	return ctx.warnOrFail("observability dashboards", func() error {
 		funnels, err := declaredFunnels(ctx.renderedFrontends())
@@ -2600,6 +2596,20 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 		fmt.Printf("  ✅ Generated %d observability file(s) under deploy/observability/\n", len(written))
 		return nil
 	}())
+}
+
+// observedFrontends are the frontends the generated observability covers: the
+// web ones, which run the browser SDK through src/lib/otel_gen.ts (React
+// Native gets no otel_gen.ts). obsdash derives each one's service.name with
+// naming.FrontendServiceName, as otel_gen.ts's SERVICE_NAME does.
+func observedFrontends(cfg *config.ProjectConfig) []string {
+	var out []string
+	for _, fe := range cfg.Frontends {
+		if fe.Type != "react-native" {
+			out = append(out, fe.Name)
+		}
+	}
+	return out
 }
 
 // announceDerivedObservability says so, once, when a DERIVED observability

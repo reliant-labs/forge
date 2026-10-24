@@ -1,6 +1,9 @@
 // Package obstest boots a throwaway ClickHouse holding the OpenTelemetry
 // exporter's tables and seeds it with a known set of traces, logs and metrics,
 // for the tests of the obs verbs (obsbackend's own, and the CLI's end to end).
+// FakeMetrics is the same for tests that need no container.
+//
+//forge:exclude-contract: test support: a throwaway ClickHouse and a canned runner for tests, one implementation each
 package obstest
 
 import (
@@ -17,7 +20,7 @@ import (
 )
 
 // exporterSchema is the ClickHouse exporter's tables (v0.162.0), trimmed to the
-// five the obs verbs read; indexes and TTLs are omitted.
+// seven the obs verbs read; indexes and TTLs are omitted.
 //
 //go:embed exporter_schema.sql
 var exporterSchema string

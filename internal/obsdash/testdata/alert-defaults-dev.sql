@@ -5,7 +5,7 @@ SELECT 1 AS value WHERE 0 /* reliant:platform deploy-failed env:{reliant_env_id:
 SELECT ServiceName AS service,
        countIf(Timestamp >= now() - INTERVAL 10 MINUTE) AS value
 FROM otel_traces
-WHERE ServiceName = 'shop-frontend'
+WHERE ServiceName IN ('shop-web')
   AND Timestamp >= now() - INTERVAL 10 MINUTE - INTERVAL 60 MINUTE
   AND ResourceAttributes['deployment.environment.name'] = 'dev'
   AND ResourceAttributes['rum.sessionId'] != ''
@@ -22,7 +22,7 @@ SELECT ServiceName AS service,
        quantile(0.75)(toFloat64OrZero(SpanAttributes['lcp'])) AS value,
        count() AS samples
 FROM otel_traces
-WHERE ServiceName = 'shop-frontend'
+WHERE ServiceName IN ('shop-web')
   AND Timestamp >= now() - INTERVAL 30 MINUTE
   AND ResourceAttributes['deployment.environment.name'] = 'dev'
   AND ResourceAttributes['rum.sessionId'] != ''
@@ -46,6 +46,9 @@ SELECT 1 AS value WHERE 0 /* reliant:platform observability-quota:over_100 env:{
 
 -- ObservabilityQuotaOver150 (observability-quota) severity=critical for=0s interval=1m
 SELECT 1 AS value WHERE 0 /* reliant:platform observability-quota:over_150 env:{reliant_env_id:String} */
+
+-- ReleaseRegressed (release-regressed) severity=warning for=0s interval=1m
+SELECT 1 AS value WHERE 0 /* reliant:platform release-regressed env:{reliant_env_id:String} */
 
 -- ServiceErrorRateHigh (error-rate) severity=critical for=5m interval=1m
 WITH series AS (

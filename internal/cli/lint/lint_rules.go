@@ -137,6 +137,8 @@ func gradableRules() []string {
 		"forge-config-unreachable",
 		// slow tests
 		slowtest.RuleUnmarked, slowtest.RuleInputs,
+		// golangci-lint's build-tag passes (rolled out as one unit)
+		rolloutGolangciBuildTags,
 	}
 	rules = append(rules, staticexport.RuleIDs()...)
 	return rules

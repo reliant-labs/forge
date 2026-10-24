@@ -14,7 +14,7 @@ import (
 // AlertDefaultsVersion identifies the serialized shape of AlertDefaultsFile.
 // v2 dropped input.services: each service's entry is its ServicePart's Alert
 // (see ServicePart for why), and ReadAlertInput puts them back.
-const AlertDefaultsVersion = "forge.alert-defaults/v2"
+const AlertDefaultsVersion = "forge.alert-defaults/v3"
 
 // AlertDefaultsFile is the project-relative file `forge generate` writes: the
 // project metadata the default alert rules are derived from, plus the catalog
@@ -46,9 +46,11 @@ type AlertInput struct {
 	// Services are the project's services that have at least one rpc. The
 	// generated file leaves them out (each is in its ServicePart).
 	Services []AlertService `json:"services,omitempty"`
-	// FrontendService is the browser SDK's service.name ("<project>-frontend"),
-	// empty when the project has no web frontend.
-	FrontendService string `json:"frontend_service,omitempty"`
+	// FrontendServices are the service.names the project's web frontends'
+	// browser SDK reports (naming.FrontendServiceName: "<project>-<frontend>",
+	// what each otel_gen.ts bakes as SERVICE_NAME), empty when the project has
+	// no web frontend. The frontend defaults fire per service.name.
+	FrontendServices []string `json:"frontend_services,omitempty"`
 }
 
 // AlertInputOf derives the defaults' input from the same Input the dashboards
@@ -62,9 +64,7 @@ func AlertInputOf(in Input) AlertInput {
 		out.Services = append(out.Services, AlertService{Name: s.Name, RPCService: s.Package + "." + s.ProtoService})
 	}
 	sort.Slice(out.Services, func(i, j int) bool { return out.Services[i].Name < out.Services[j].Name })
-	if len(in.Frontends) > 0 {
-		out.FrontendService = FrontendServiceName(in.Project)
-	}
+	out.FrontendServices = frontendServices(in.Project, in.Frontends)
 	return out
 }
 
@@ -152,10 +152,17 @@ const (
 	PlatformNewIssue       = "new-issue"
 	PlatformIssueRegressed = "issue-regressed"
 	PlatformIssueSpike     = "issue-spike"
+	// PlatformReleaseRegressed fires when a promotion's after-window closes
+	// and the release-health verdict is FAIL: the env's release_health.fail_on
+	// findings, evaluated by the control plane with the same rule as
+	// `forge obs check`. It stays silent on PASS and on INCONCLUSIVE.
+	PlatformReleaseRegressed = "release-regressed"
 )
 
 // hasIssues reports whether the env has anything that can raise an issue.
-func hasIssues(in AlertInput) bool { return len(in.Services) > 0 || in.FrontendService != "" }
+func hasIssues(in AlertInput) bool { return len(in.Services) > 0 || hasFrontends(in) }
+
+func hasFrontends(in AlertInput) bool { return len(in.FrontendServices) > 0 }
 
 func hasServices(in AlertInput) bool { return len(in.Services) > 0 }
 
@@ -222,7 +229,7 @@ var alertDefs = []alertDef{
 			},
 		},
 		annotations: map[string]string{"summary": "{{ $labels.service }} reported {{ $value }} JS errors in the current window, over the spike factor times its baseline"},
-		applies:     func(in AlertInput) bool { return in.FrontendService != "" },
+		applies:     hasFrontends,
 		sql:         frontendErrorsSQL,
 	},
 	{
@@ -236,7 +243,7 @@ var alertDefs = []alertDef{
 			},
 		},
 		annotations: map[string]string{"summary": "{{ $labels.service }} p75 LCP is {{ $value }} ms, over the poor threshold"},
-		applies:     func(in AlertInput) bool { return in.FrontendService != "" },
+		applies:     hasFrontends,
 		sql:         frontendLCPSQL,
 	},
 	{
@@ -268,6 +275,16 @@ var alertDefs = []alertDef{
 		annotations: map[string]string{"summary": "Issue spiking in {{ $labels.service }} ({{ $labels.env }}): {{ $labels.title }}, {{ $value }} events/hour, over 5 times its rate the day before. Details: {{ $labels.console_url }}"},
 		applies:     hasIssues,
 		platform:    []platformRule{{PlatformIssueSpike, "IssueSpike", SeverityWarning}},
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: PlatformReleaseRegressed, Alert: "ReleaseRegressed", Title: "A promoted release made the env worse once its health window closed",
+			Severity: SeverityWarning, For: "0s", Interval: "1m", Signal: "platform",
+			Params: []AlertParam{},
+		},
+		annotations: map[string]string{"summary": "Release {{ $labels.release }} regressed {{ $labels.env }}: {{ $value }} failing release-health findings after its window closed. Check it: forge obs check {{ $labels.env }} --release {{ $labels.release }}"},
+		applies:     func(in AlertInput) bool { return len(in.Services) > 0 },
+		platform:    []platformRule{{PlatformReleaseRegressed, "ReleaseRegressed", SeverityWarning}},
 	},
 	{
 		AlertDefaultInfo: AlertDefaultInfo{
@@ -620,6 +637,14 @@ func sqlQuote(s string) string {
 	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s) + "'"
 }
 
+func frontendServiceList(in AlertInput) string {
+	q := make([]string, len(in.FrontendServices))
+	for i, s := range in.FrontendServices {
+		q[i] = sqlQuote(s)
+	}
+	return strings.Join(q, ", ")
+}
+
 func rpcServiceList(in AlertInput) string {
 	q := make([]string, len(in.Services))
 	for i, s := range in.Services {
@@ -729,7 +754,7 @@ func frontendErrorsSQL(env string, in AlertInput, p map[string]float64) string {
 	return fmt.Sprintf(`SELECT ServiceName AS service,
        countIf(Timestamp >= now() - INTERVAL %[1]s MINUTE) AS value
 FROM otel_traces
-WHERE ServiceName = %[2]s
+WHERE ServiceName IN (%[2]s)
   AND Timestamp >= now() - INTERVAL %[1]s MINUTE - INTERVAL %[3]s MINUTE
   AND ResourceAttributes['deployment.environment.name'] = %[4]s
   AND ResourceAttributes['rum.sessionId'] != ''
@@ -739,7 +764,7 @@ WHERE ServiceName = %[2]s
 GROUP BY ServiceName
 HAVING value >= %[5]s
    AND value > %[6]s * countIf(Timestamp < now() - INTERVAL %[1]s MINUTE) * %[1]s / %[3]s
-ORDER BY service`, num(p[pWindow]), sqlQuote(in.FrontendService), num(p["baseline_minutes"]), sqlQuote(env), num(p["min_errors"]), num(p["spike_factor"]))
+ORDER BY service`, num(p[pWindow]), frontendServiceList(in), num(p["baseline_minutes"]), sqlQuote(env), num(p["min_errors"]), num(p["spike_factor"]))
 }
 
 // frontendLCPSQL fires per frontend when the p75 of its LCP web-vitals spans
@@ -752,7 +777,7 @@ func frontendLCPSQL(env string, in AlertInput, p map[string]float64) string {
        quantile(0.75)(toFloat64OrZero(SpanAttributes['lcp'])) AS value,
        count() AS samples
 FROM otel_traces
-WHERE ServiceName = %[1]s
+WHERE ServiceName IN (%[1]s)
   AND Timestamp >= now() - INTERVAL %[2]s MINUTE
   AND ResourceAttributes['deployment.environment.name'] = %[3]s
   AND ResourceAttributes['rum.sessionId'] != ''
@@ -760,7 +785,7 @@ WHERE ServiceName = %[1]s
   AND SpanAttributes['lcp'] != ''
 GROUP BY ServiceName
 HAVING samples >= %[4]s AND value > %[5]s
-ORDER BY service`, sqlQuote(in.FrontendService), num(p[pWindow]), sqlQuote(env), num(p[pMinSamples]), num(p["threshold_ms"]))
+ORDER BY service`, frontendServiceList(in), num(p[pWindow]), sqlQuote(env), num(p[pMinSamples]), num(p["threshold_ms"]))
 }
 
 // ── customer metadata ────────────────────────────────────────────────────────

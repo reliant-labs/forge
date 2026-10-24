@@ -122,6 +122,7 @@ export default function UsersPage() {
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Users</h1>
         <Button
+          loading={createUser.isPending}
           onClick={async () => {
             // Mutation hooks take the plain request INIT object, not a
             // create()d message. Errors already surface through the

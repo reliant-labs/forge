@@ -60,6 +60,15 @@ matches for kind GeneratorState". That CRD is therefore in the bundle (and the
 controller keeps its read of the generators API); no generator kind is
 creatable, because their CRDs are absent.
 
+Re-checked against v2.13.0 (the SC7 rehearsal asked whether generators being
+off made it droppable): it is still required. `cmd/controller/root.go`
+registers the GeneratorState reconciler unconditionally, and
+`--enable-generator-state=false` only reaches the ExternalSecret reconciler, so
+the flag cannot remove the dependency. `TestGeneratorsGroupHoldsOnlyGeneratorState`
+pins that the bundle carries no generator kind beside it. On a pin bump, read
+`root.go` again: drop the CRD only when the reconciler is gated on a flag the
+install can set.
+
 ## P2 — the cosign identity
 
 The controller image is signed keyless by GitHub Actions. For the pinned digest:
@@ -101,7 +110,7 @@ never wedges a deletion.
 
 | Policy | Refuses |
 |---|---|
-| `eso-writers` | a create, update or delete of an ExternalSecret or SecretStore by anyone but `admission.writers`, `admission.writer_groups` (default `system:masters`), the operator, and the cluster's garbage collector and namespace controller. Name your apply identity: a GKE binding's Google service account email, or the `forge-connect-<cluster>-<env>` ServiceAccount `forge cluster connect` mints. |
+| `eso-writers` | a create, update or delete of an ExternalSecret or SecretStore by anyone but `admission.writers`, `admission.writer_groups` (default `system:masters`), the operator, and the cluster's garbage collector and namespace controller. Name your apply identity: the `system:serviceaccount:forge-system:forge-connect-<cluster>-<env>` ServiceAccount `forge cluster connect` mints. |
 | `eso-store-pin` | any SecretStore except a `vault` provider that dials a server in `admission.servers` with JWT auth on a mount in `jwt_mounts`, with a projected token for `admission.store_service_account` (default `reliant-secrets`, in the store's own namespace) and exactly one audience from `admission.audiences`; or a `gcpsm` provider over Workload Identity for a project in `gcp_projects`. A `webhook` provider is refused: it is an exfiltration channel. |
 | `eso-es-policy` | `dataFrom`; a `ClusterSecretStore` reference; a `creationPolicy` other than Orphan or Merge (including the default, Owner); a `deletionPolicy` other than Retain; a `target.name` other than the ExternalSecret's own; a generic target; a per-entry `sourceRef`; a refresh under 5m. |
 

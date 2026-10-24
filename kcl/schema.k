@@ -2747,12 +2747,16 @@ schema CacheRule:
     """One Cache-Control header applied to the objects a glob matches.
 
     Rules are evaluated IN ORDER and the FIRST match wins, so the
-    specific patterns go first and a catch-all last. An object matching
-    no rule is uploaded without an explicit Cache-Control and inherits
-    whatever the bucket/CDN default is.
+    specific patterns go first and a catch-all last. Declared rules
+    replace forge's default entirely (see OnBucket / OnFirebase), so an
+    object matching none of them is uploaded without an explicit
+    Cache-Control and inherits whatever the bucket/CDN default is (GCS:
+    `public, max-age=3600`). End with a `**` rule to cover everything.
 
       * `pattern`       — glob against the object's site-relative path
-                          ("_next/static/**", "*.html", "**").
+                          ("_next/static/**", "*.html", "**"). `*`, `?`
+                          and `[...]` match within one path segment; a
+                          `**` segment matches any number of them.
       * `cache_control` — the header value, verbatim.
 
     The 80/20 this exists for: a modern JS build emits content-HASHED
@@ -2851,6 +2855,17 @@ schema OnBucket:
     bucket. It re-points at an EXISTING digest and never rebuilds, so it
     cannot produce different bytes than the release that was tested.
 
+    CACHE HEADERS. With no `cache_control` declared on the frontend,
+    forge uploads the build's `asset_dir` as
+    `public, max-age=31536000, immutable` (a new build emits new names)
+    and everything else — the entry documents, config.js, version.json —
+    as `no-cache`: the same policy OnFirebase and hosted static hosting
+    serve. Without an explicit header GCS serves a public object as
+    `max-age=3600`, which would keep a deploy, or a promotion that changed
+    only config.js, invisible in browsers for an hour after the CDN purge.
+    A frontend's `cache_control` rules replace that default, first match
+    wins (see CacheRule).
+
     Fields:
       * `bucket`        — REQUIRED. `gs://name` or a bare `name`.
       * `cdn`           — the CDN in front of the bucket, and the
@@ -2867,7 +2882,9 @@ schema OnBucket:
     schema.
 
     The platform-hosted counterpart is `forge.OnHosted {}`, which has no
-    bucket field at all: the control plane owns the bucket and the CDN.
+    bucket field at all: the control plane owns the bucket and the
+    headers, and serves through its CDN the hostnames it has moved to its
+    edge.
     """
     type: "bucket" = "bucket"
     bucket: str
@@ -3367,7 +3384,8 @@ schema Frontend:
     # convention — "assets" for vite (build.assetsDir), "_next/static" for
     # nextjs, none for rn. Set it when the build moves its assets.
     # OnFirebase marks it immutable and keeps previous releases' copies
-    # serveable (OnFirebase.keep_asset_releases). OnHosted publishes it as
+    # serveable (OnFirebase.keep_asset_releases). OnBucket uploads it
+    # immutable and everything else no-cache. OnHosted publishes it as
     # the StaticSite's `assetDir`, and the platform does the same: those
     # files are served immutable, everything else no-cache, and previous
     # releases' copies stay serveable for tabs opened before a deploy.
@@ -3396,9 +3414,9 @@ schema Frontend:
     # base_path. Ignored on OnHost (the dev server assembles nothing).
     bundle: [BundleDir] = []
     # Ordered Cache-Control rules (see CacheRule). OnBucket sets them as
-    # object headers; OnFirebase renders them as firebase.json `headers`
-    # (replacing its immutable-assets/no-cache default). Refused where
-    # forge sets no headers.
+    # object headers; OnFirebase renders them as firebase.json `headers`.
+    # On both they replace the immutable-assets/no-cache default. Refused
+    # where forge sets no headers.
     cache_control: [CacheRule] = []
 
     # The browser's runtime configuration document — what the bundle reads
@@ -5556,7 +5574,7 @@ schema AlertReceiver:
     secret?: str
     channel?: str
     severities: [str] = ["critical", "error"]
-    always_alertnames: [str] = ["NewIssue", "IssueRegressed", "IssueSpike"]
+    always_alertnames: [str] = ["NewIssue", "IssueRegressed", "IssueSpike", "ReleaseRegressed"]
 
     check:
         regex.match(name, r"^[a-z][a-z0-9_-]{0,62}$"), \

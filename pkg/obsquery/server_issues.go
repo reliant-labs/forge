@@ -14,7 +14,8 @@ import (
 // the queried range.
 //
 // The grouping key is ServerFingerprintSQL and the event filter is
-// ServerErrorFilterSQL, so a local issue and a hosted one carry the same
+// ServerErrorFilterSQL (for errors) or the record's issue source (for the
+// issues of a source), so a local issue and a hosted one carry the same
 // fingerprint for the same record.
 
 // Issue list sort orders.
@@ -40,15 +41,25 @@ var fingerprintRe = regexp.MustCompile(`^[0-9a-f]{16}$`)
 func ValidFingerprint(s string) bool { return fingerprintRe.MatchString(s) }
 
 // issueConds is the WHERE of every server-issue statement: the range, the
-// scope, server error events, an optional service and an optional fingerprint.
-func (b *builder) issueConds(s Scope, service, fingerprint string) ([]string, error) {
+// scope, the issue events, an optional service and an optional fingerprint.
+// The events are those of one issue when a fingerprint is given (whatever its
+// source), else those of source: server errors without one for "", the
+// records carrying it otherwise.
+func (b *builder) issueConds(s Scope, service, fingerprint, source string) ([]string, error) {
 	conds := []string{b.rangeCond("Timestamp", s)}
 	sc, err := b.scopeConds(SigLogs, s)
 	if err != nil {
 		return nil, err
 	}
 	conds = append(conds, sc...)
-	conds = append(conds, ServerErrorFilterSQL)
+	switch {
+	case fingerprint != "":
+		conds = append(conds, IssueEventFilterSQL)
+	case source == "":
+		conds = append(conds, ServerErrorFilterSQL, IssueSourceSQL+" = ''")
+	default:
+		conds = append(conds, "ResourceAttributes['rum.sessionId'] = ''", IssueSourceSQL+" = "+b.str(source))
+	}
 	if service != "" {
 		conds = append(conds, "ServiceName = "+b.str(service))
 	}
@@ -75,14 +86,18 @@ type ServerIssues struct {
 	Service string
 	// Fingerprint narrows to one issue; empty lists them all.
 	Fingerprint string
-	Limit       int // issues to return; the statement fetches one more
-	Sort        string
+	// Source lists the issues of this issue source (LogKeyIssueSource);
+	// empty lists errors. Ignored with a Fingerprint, which names its issue
+	// whatever its source.
+	Source string
+	Limit  int // issues to return; the statement fetches one more
+	Sort   string
 }
 
 // ServerIssuesColumns names the select list, in order, for the code that scans it.
 var ServerIssuesColumns = []string{
 	"fingerprint", "service", "title", "culprit", "exception_type", "events", "affected",
-	"first_seen", "last_seen", "latest_trace_id", "last_version", "first_version",
+	"first_seen", "last_seen", "latest_trace_id", "last_version", "first_version", "source",
 }
 
 // Compile builds the grouping statement. Columns: ServerIssuesColumns.
@@ -96,6 +111,9 @@ func (q ServerIssues) Compile() (Stmt, error) {
 	if err := checkFingerprint(q.Fingerprint, false); err != nil {
 		return Stmt{}, err
 	}
+	if q.Source != "" && !ValidIssueSource(q.Source) {
+		return Stmt{}, invalid("issue source %q is not a source name (lowercase letters, digits, '_', '.', '-')", q.Source)
+	}
 	var order string
 	switch q.Sort {
 	case "", IssueSortLast:
@@ -108,7 +126,7 @@ func (q ServerIssues) Compile() (Stmt, error) {
 		return Stmt{}, invalid("unknown sort %q (use %s, %s or %s)", q.Sort, IssueSortLast, IssueSortFirst, IssueSortEvents)
 	}
 	b := newBuilder(q.Scope)
-	conds, err := b.issueConds(q.Scope, q.Service, q.Fingerprint)
+	conds, err := b.issueConds(q.Scope, q.Service, q.Fingerprint, q.Source)
 	if err != nil {
 		return Stmt{}, err
 	}
@@ -120,7 +138,8 @@ func (q ServerIssues) Compile() (Stmt, error) {
 		"       min(Timestamp) AS first_seen, max(Timestamp) AS last_seen,\n" +
 		"       argMax(TraceId, Timestamp) AS latest_trace_id,\n" +
 		"       argMax(ResourceAttributes['service.version'], Timestamp) AS last_version,\n" +
-		"       argMin(ResourceAttributes['service.version'], Timestamp) AS first_version\n" +
+		"       argMin(ResourceAttributes['service.version'], Timestamp) AS first_version,\n" +
+		"       argMax(" + IssueSourceSQL + ", Timestamp) AS source\n" +
 		"FROM " + b.table(q.Scope, "otel_logs") + "\n" + where(conds) + "\n" +
 		"GROUP BY fingerprint, service\n" +
 		"ORDER BY " + order + ", fingerprint\n" +
@@ -151,7 +170,7 @@ func (q ServerIssueEvents) Compile() (Stmt, error) {
 		return Stmt{}, err
 	}
 	b := newBuilder(q.Scope)
-	conds, err := b.issueConds(q.Scope, "", q.Fingerprint)
+	conds, err := b.issueConds(q.Scope, "", q.Fingerprint, "")
 	if err != nil {
 		return Stmt{}, err
 	}
@@ -176,7 +195,7 @@ func (q ServerIssueVersions) Compile() (Stmt, error) {
 		return Stmt{}, err
 	}
 	b := newBuilder(q.Scope)
-	conds, err := b.issueConds(q.Scope, "", q.Fingerprint)
+	conds, err := b.issueConds(q.Scope, "", q.Fingerprint, "")
 	if err != nil {
 		return Stmt{}, err
 	}
@@ -203,11 +222,11 @@ func (q ServerIssueCoOccurring) Compile() (Stmt, error) {
 		return Stmt{}, err
 	}
 	b := newBuilder(q.Scope)
-	outer, err := b.issueConds(q.Scope, "", "")
+	outer, err := b.issueConds(q.Scope, "", "", "")
 	if err != nil {
 		return Stmt{}, err
 	}
-	inner, err := b.issueConds(q.Scope, "", q.Fingerprint)
+	inner, err := b.issueConds(q.Scope, "", q.Fingerprint, "")
 	if err != nil {
 		return Stmt{}, err
 	}

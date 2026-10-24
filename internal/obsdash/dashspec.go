@@ -69,6 +69,9 @@ const (
 	AggMax              = dashspec.AggMax
 	AggQuantile         = dashspec.AggQuantile
 	AggLast             = dashspec.AggLast
+	AggRate             = dashspec.AggRate
+	AggIncrease         = dashspec.AggIncrease
+	AggMin              = dashspec.AggMin
 	UnitNone            = dashspec.UnitNone
 	UnitCount           = dashspec.UnitCount
 	UnitMillis          = dashspec.UnitMillis

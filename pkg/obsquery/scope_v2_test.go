@@ -45,12 +45,12 @@ func TestKeysOutsideTheAllowlistAreInvalid(t *testing.T) {
 		for name, compile := range map[string]func() (Stmt, error){
 			"filter/traces":  TraceQuery{Scope: sc, Limit: 5}.Compile,
 			"filter/logs":    LogQuery{Scope: sc, Limit: 5}.Compile,
-			"filter/metrics": MetricList{Scope: sc, Limit: 5}.Compile,
+			"filter/metrics": MetricCatalog{Scope: sc, Limit: 5}.Compile,
 			"filter/work":    Workloads{Scope: sc}.Usage,
 			"group/overview": func() (Stmt, error) { return Overview{Scope: scopeWith(nil), GroupBy: []string{key}}.RED() },
 			"group/traces":   TraceQuery{Scope: scopeWith(nil), GroupBy: []string{key}}.CompileREDGroups,
 			"group/metric": func() (Stmt, error) {
-				return MetricQuery{Scope: scopeWith(nil), Name: "m", Type: MetricGauge, Agg: AggAvg, GroupBy: []string{key}, StepSeconds: 60}.Compile()
+				return MetricQuery{Scope: scopeWith(nil), Name: "m", Info: MetricInfo{Type: MetricGauge}, Agg: AggAvg, GroupBy: []string{key}, StepSeconds: 60}.Compile()
 			},
 			"values": AttrValues{Scope: scopeWith(nil), Key: key, Limit: 10}.Compile,
 		} {
@@ -65,7 +65,7 @@ func TestKeysOutsideTheAllowlistAreInvalid(t *testing.T) {
 // only for metrics.
 func TestDeclaredMetricKeys(t *testing.T) {
 	declared := scopeWith(func(s *Scope) { s.Declared = map[string]bool{"status": true, "pod": true} })
-	q := MetricQuery{Scope: declared, Name: "orders_created", Type: MetricSum, Agg: AggRate, GroupBy: []string{"pod"}, StepSeconds: 60}
+	q := MetricQuery{Scope: declared, Name: "orders_created", Info: MetricInfo{Type: MetricSum, Monotonic: true}, Agg: AggRate, GroupBy: []string{"pod"}, StepSeconds: 60}
 	st, err := q.Compile()
 	if err != nil {
 		t.Fatal(err)
@@ -376,7 +376,7 @@ func TestWorkloadStatements(t *testing.T) {
 		"usage": q.Usage, "restarts": q.Restarts, "terminations": q.Terminations, "warnings": q.LatestWarnings,
 		"events": q.Events, "images": q.ImageChanges, "versions": func() (Stmt, error) { return q.Versions([]string{h, "b"}) },
 		"series": func() (Stmt, error) { return q.Series(60) }, "restart series": func() (Stmt, error) { return q.RestartSeries(60) },
-		"replicas": q.Replicas, "pods": q.Pods, "pod restarts": q.PodRestarts, "jobs": q.Jobs,
+		"replicas": q.Replicas, "readiness": func() (Stmt, error) { return q.Readiness(60) }, "pods": q.Pods, "pod restarts": q.PodRestarts, "jobs": q.Jobs,
 	} {
 		st, err := f()
 		if err != nil {
@@ -431,6 +431,12 @@ func TestWorkloadStatements(t *testing.T) {
 	}
 	if _, err := (Workloads{Scope: sc, Workload: "w"}).Series(1); !isInvalid(err) {
 		t.Errorf("a series with too many points accepted")
+	}
+	if _, err := (Workloads{Scope: sc}).Readiness(30); !isInvalid(err) {
+		t.Errorf("a readiness step below the delivery interval accepted")
+	}
+	if _, err := (Workloads{Scope: scopeWith(func(s *Scope) { s.End = s.Start.Add(7 * 24 * time.Hour) })}).Readiness(60); !isInvalid(err) {
+		t.Errorf("a readiness range with more buckets than the cap accepted")
 	}
 	if _, err := (Workloads{Scope: sc}).Versions(nil); !isInvalid(err) {
 		t.Errorf("versions of nothing accepted")

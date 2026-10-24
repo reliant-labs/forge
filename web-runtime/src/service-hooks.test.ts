@@ -341,6 +341,51 @@ describe("createMutationHook", () => {
     expect(captured.invalidated).toEqual([["orderService"]]);
   });
 
+  it("types onMutate's context through to onError, so a rollback needs no cast", () => {
+    // The bug this guards: the hook's options pinned React Query's TContext
+    // to `unknown`, so an optimistic update had to narrow `context` by hand
+    // before it could roll back. TContext is now the HOOK's type parameter,
+    // inferred from onMutate. `npm run typecheck` compiles this file, so the
+    // assignments and the @ts-expect-error below are the type-level half;
+    // the calls are the runtime half (both callbacks pass through intact).
+    const rolledBack: string[] = [];
+    const useApprove = createMutationHook(
+      keys.entity("order"),
+      async () => ({}),
+    );
+
+    const result = useApprove({
+      onMutate: (req) => ({ rollback: () => rolledBack.push(String(req)) }),
+      onError: (_err, _req, context) => {
+        // No cast: context is { rollback } | undefined.
+        context?.rollback();
+        // Type-level only, never called: a field onMutate never returned is
+        // not on it — which also proves context is not `any`.
+        // @ts-expect-error — nonexistent is not on { rollback }.
+        void (() => context?.nonexistent());
+      },
+    });
+    expect(result).toEqual({ __kind: "mutation" });
+
+    const onMutate = captured.mutation?.onMutate as (r: unknown) => unknown;
+    const onError = captured.mutation?.onError as (...a: unknown[]) => void;
+    onError(new Error("boom"), "req-1", onMutate("req-1"));
+    expect(rolledBack).toEqual(["req-1"]);
+  });
+
+  it("defaults the context to unknown when no onMutate is passed", () => {
+    const useCreateOrder = createMutationHook(
+      keys.entity("order"),
+      async () => ({}),
+    );
+    useCreateOrder({
+      onError: (_err, _req, context) => {
+        // @ts-expect-error — without onMutate there is no context shape to read.
+        context.rollback();
+      },
+    });
+  });
+
   it("calls the RPC through mutationFn", async () => {
     const call = vi.fn(async () => ({ id: "new" }));
     const useCreateOrder = createMutationHook(keys.entity("order"), call);

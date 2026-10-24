@@ -51,13 +51,13 @@ SELECT map('deployment.environment.name','dev','service.instance.id','f1'), 'fas
 
 -- frontend: ~2 errors per 10 min for an hour, then 40 in the last 10 minutes. fetch failures and page loads are not JS errors.
 INSERT INTO otel_traces (Timestamp, TraceId, SpanId, SpanName, SpanKind, ServiceName, ResourceAttributes, SpanAttributes, Duration, StatusCode)
-SELECT now() - INTERVAL (n*5) MINUTE - INTERVAL 20 SECOND, 't', concat('b', toString(n)), 'onerror', 'Internal', 'shop-frontend', map('deployment.environment.name','dev','rum.sessionId','s'), map(), 1, 'Error' FROM (SELECT number n FROM numbers(2, 12));
+SELECT now() - INTERVAL (n*5) MINUTE - INTERVAL 20 SECOND, 't', concat('b', toString(n)), 'onerror', 'Internal', 'shop-web', map('deployment.environment.name','dev','rum.sessionId','s'), map(), 1, 'Error' FROM (SELECT number n FROM numbers(2, 12));
 INSERT INTO otel_traces (Timestamp, TraceId, SpanId, SpanName, SpanKind, ServiceName, ResourceAttributes, SpanAttributes, Duration, StatusCode)
-SELECT now() - INTERVAL 1 MINUTE - INTERVAL n SECOND, 't', concat('c', toString(n)), 'onerror', 'Internal', 'shop-frontend', map('deployment.environment.name','dev','rum.sessionId','s'), map(), 1, 'Error' FROM (SELECT number n FROM numbers(40));
+SELECT now() - INTERVAL 1 MINUTE - INTERVAL n SECOND, 't', concat('c', toString(n)), 'onerror', 'Internal', 'shop-web', map('deployment.environment.name','dev','rum.sessionId','s'), map(), 1, 'Error' FROM (SELECT number n FROM numbers(40));
 INSERT INTO otel_traces (Timestamp, TraceId, SpanId, SpanName, SpanKind, ServiceName, ResourceAttributes, SpanAttributes, Duration, StatusCode)
-SELECT now() - INTERVAL 1 MINUTE - INTERVAL n SECOND, 't', concat('d', toString(n)), 'HTTP GET', 'Client', 'shop-frontend', map('deployment.environment.name','dev','rum.sessionId','s'), map('component','fetch'), 1, 'Error' FROM (SELECT number n FROM numbers(100));
+SELECT now() - INTERVAL 1 MINUTE - INTERVAL n SECOND, 't', concat('d', toString(n)), 'HTTP GET', 'Client', 'shop-web', map('deployment.environment.name','dev','rum.sessionId','s'), map('component','fetch'), 1, 'Error' FROM (SELECT number n FROM numbers(100));
 INSERT INTO otel_traces (Timestamp, TraceId, SpanId, SpanName, SpanKind, ServiceName, ResourceAttributes, SpanAttributes, Duration, StatusCode)
-SELECT now() - INTERVAL 1 MINUTE - INTERVAL n SECOND, 't', concat('e', toString(n)), 'documentLoad', 'Internal', 'shop-frontend', map('deployment.environment.name','dev','rum.sessionId','s'), map(), 1, 'Unset' FROM (SELECT number n FROM numbers(500));
+SELECT now() - INTERVAL 1 MINUTE - INTERVAL n SECOND, 't', concat('e', toString(n)), 'documentLoad', 'Internal', 'shop-web', map('deployment.environment.name','dev','rum.sessionId','s'), map(), 1, 'Unset' FROM (SELECT number n FROM numbers(500));
 
 -- string-only console.error: the SDK records console.error("text") as an error span with NO exception event.
 -- 40 of them in the current window must not count towards the JS error spike (shop-strings has no real errors).

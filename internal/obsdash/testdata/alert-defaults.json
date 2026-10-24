@@ -1,8 +1,10 @@
 {
-  "version": "forge.alert-defaults/v2",
+  "version": "forge.alert-defaults/v3",
   "input": {
     "project": "shop",
-    "frontend_service": "shop-frontend"
+    "frontend_services": [
+      "shop-web"
+    ]
   },
   "defaults": [
     {
@@ -162,6 +164,16 @@
       "severity": "warning",
       "for": "0s",
       "interval": "5m",
+      "signal": "platform",
+      "params": []
+    },
+    {
+      "id": "release-regressed",
+      "alert": "ReleaseRegressed",
+      "title": "A promoted release made the env worse once its health window closed",
+      "severity": "warning",
+      "for": "0s",
+      "interval": "1m",
       "signal": "platform",
       "params": []
     },

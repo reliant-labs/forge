@@ -124,6 +124,14 @@ type Method struct {
 	// rpc whatever its name — CRUDShape answers "" for it, and nothing CRUD
 	// is projected from it. Absent on descriptors written before the marker.
 	Custom bool `json:",omitempty"`
+	// NoSideEffects reports protobuf's own read-only declaration on the rpc,
+	// `option idempotency_level = NO_SIDE_EFFECTS;` — the signal Connect
+	// clients already read (connect-es retries such a call and may send it
+	// as GET). The frontend hook generator takes it as authoritative: the rpc
+	// is a read whatever its name (Health, Version), so it gets a useQuery.
+	// IDEMPOTENT is deliberately not a read — an idempotent write (SetFlag)
+	// still writes — so it, like the unset default, leaves the name to decide.
+	NoSideEffects bool `json:",omitempty"`
 	// InputTypeFQ / OutputTypeFQ are the fully-qualified names of the
 	// request/response messages (e.g. "shop.v1.CreateOrderRequest",
 	// "google.protobuf.Empty"). They key into ServiceDef.Schemas for

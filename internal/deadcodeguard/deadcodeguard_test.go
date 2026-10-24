@@ -261,9 +261,11 @@ func TestRulesFireOnPlantedDefects(t *testing.T) {
 		"noop-func|deadcodeguardfixture/internal/noop.BranchingNoop",
 		"noop-func|deadcodeguardfixture/internal/noop.LoadConfigKV",
 		"noop-func|deadcodeguardfixture/internal/perplatform.probe",
+		"phantom-field|deadcodeguardfixture/internal/phantom.Badge.label",
 		"phantom-field|deadcodeguardfixture/internal/phantom.Component.Ports",
 		"phantom-field|deadcodeguardfixture/internal/phantom.Component.Schedule",
 		"phantom-field|deadcodeguardfixture/internal/phantom.Outer.Inner",
+		"phantom-field|deadcodeguardfixture/internal/phantom.label.text",
 	}
 	var gotKeys []string
 	for _, f := range got {
@@ -332,6 +334,11 @@ func TestExemptionsAreLoadBearing(t *testing.T) {
 		{"deadcodeguardfixture/internal/perplatform.Snapshot.Created", "same Windows-only writer"},
 		{"deadcodeguardfixture/internal/perplatform.lock", "a per-OS seam: a stub on Windows, real work on Unix under the same name"},
 		{"deadcodeguardfixture/internal/noop.New", "returns a real value"},
+		{"deadcodeguardfixture/internal/phantom.queryOpts.panelFlags", "embedded, and written through its promoted field (`&o.agg`)"},
+		{"deadcodeguardfixture/internal/phantom.queryOpts.common", "embedded, and written by a promoted pointer-receiver method"},
+		{"deadcodeguardfixture/internal/fakes.Row.Value", "test support: only test files import package fakes"},
+		{"deadcodeguardfixture/internal/fakes.Runner.Rows", "same test-support package"},
+		{"deadcodeguardfixture/internal/fakes.Echo", "a test-support package's no-op is test code"},
 	}
 	for _, m := range mustNotFire {
 		if fired[m.key] {

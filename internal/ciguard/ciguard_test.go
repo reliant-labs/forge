@@ -70,8 +70,8 @@ func TestShortTierShardsCoverEveryIndex(t *testing.T) {
 	var indices []int
 	for _, e := range entries {
 		args := strings.Fields(e["args"])
-		if len(args) == 0 && e["guards"] != "" {
-			continue // an entry that runs only guards (TestEveryGuardRunsOnPullRequests)
+		if len(args) == 0 && e["flake"] == "true" {
+			continue // changed-test repetitions run independently of both shards
 		}
 		if len(args) != 2 {
 			t.Errorf("test-short entry %q: args %q are not `I N`", e["shard"], e["args"])
@@ -185,12 +185,9 @@ func TestRequiredGateReportsOnEveryPullRequestAndQueueEntry(t *testing.T) {
 // The guard packages, as scripts/ci-test-packages.sh declares them.
 var guardScript = filepath.Join("..", "..", "scripts", "ci-test-packages.sh")
 
-// TestEveryGuardRunsOnPullRequests proves each guard runs in full mode in
-// exactly one test-short entry. The guards skip their whole-repo work under
-// -short, so a guard left out of every entry checks nothing on a pull
-// request, and its finding first turns main red: the defect this lane
-// closes. One that two entries run costs a runner for nothing.
-func TestEveryGuardRunsOnPullRequests(t *testing.T) {
+// Whole-program loads and native KCL renders belong to the full tier. PRs
+// still compile and run each guard package's cheap -short assertions.
+func TestWholeRepoGuardsRunOnlyInFullTier(t *testing.T) {
 	raw, err := os.ReadFile(guardScript)
 	if err != nil {
 		t.Fatalf("read %s: %v", guardScript, err)
@@ -211,19 +208,20 @@ func TestEveryGuardRunsOnPullRequests(t *testing.T) {
 	if len(declared) == 0 {
 		t.Fatalf("%s declares no guards=( ... ) list — this guard would inspect nothing", guardScript)
 	}
-	runs := map[string]int{}
-	for _, e := range readWorkflow(t).Jobs["test-short"].Strategy.Matrix.Include {
-		for _, g := range strings.Fields(e["guards"]) {
-			runs[g]++
+	wf := readWorkflow(t)
+	for _, e := range wf.Jobs["test-short"].Strategy.Matrix.Include {
+		if e["guards"] != "" {
+			t.Errorf("PR entry still runs full guards %q; keep whole-repo work in full mode", e["guards"])
 		}
 	}
-	for _, g := range declared {
-		if runs[g] != 1 {
-			t.Errorf("guard %s runs in %d test-short entries, want exactly 1", g, runs[g])
-		}
-		delete(runs, g)
+	if wf.Jobs["test-short-warm"].If != mainTier {
+		t.Fatal("full guards must run on main and manual full dispatch")
 	}
-	for g := range runs {
-		t.Errorf("test-short runs %q, which is not a guard in %s", g, guardScript)
+	body, err := os.ReadFile(ciWorkflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "run: go test -p 1 -count=1 -timeout 30m $(scripts/ci-test-packages.sh guards)") {
+		t.Fatalf("all %d declared full guards must still run through their authoritative package set", len(declared))
 	}
 }

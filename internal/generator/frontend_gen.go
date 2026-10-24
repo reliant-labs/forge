@@ -8,10 +8,8 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/pkg/components"
-	"github.com/reliant-labs/forge/pkg/seedplan"
 
 	"github.com/reliant-labs/forge/internal/checksums"
-	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
 
@@ -361,16 +359,10 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		if _, err := EmitFrontendMockSurface(root, feRel, nil, nil, nil, cs); err != nil {
 			return fmt.Errorf("emit frontend mock surface: %w", err)
 		}
-		// The freshness guard ships with the frontend from birth, so its
-		// file set does not change shape the first time a migration
-		// lands. At scaffold time the project's schema is whatever is
-		// already on disk — usually nothing, which renders the
-		// no-migrations branch — and the next `forge generate` records
-		// the real fingerprint.
-		fpFiles, fpConfig := codegen.SeedFingerprint(root, seedplan.DefaultConfig())
-		if err := EmitFixtureFreshnessSurface(root, feRel, fpFiles, fpConfig, cs); err != nil {
-			return fmt.Errorf("emit fixture freshness surface: %w", err)
-		}
+		// No fixture-freshness guard here: the scaffold writes no entity
+		// fixtures, and the guard is their validity tag. The `forge
+		// generate` that writes the first fixtures writes it too — see
+		// EmitFixtureFreshnessSurface.
 		if err := SaveChecksums(root, cs); err != nil {
 			return fmt.Errorf("save ownership state: %w", err)
 		}
@@ -401,11 +393,13 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 var coreComponents = []string{
 	// Primitives — base building blocks for every generated frontend.
 	// "link" first: every navigating component (page_header,
-	// row_actions_menu) imports "./link". The library copy is a plain
+	// row_actions_menu, and button for its `href` form) imports "./link". The library copy is a plain
 	// anchor; installCoreComponents/EnsureCoreComponents overwrite it
 	// with a framework-aware version (see linkComponentForDir).
 	"link",
 	"button",
+	// The classes button imports ("./button_classes").
+	"button_classes",
 	// The context input, label, select and form import ("./form_field_context").
 	"form_field_context",
 	"input",

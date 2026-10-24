@@ -233,9 +233,10 @@ func (t headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.base.RoundTrip(req)
 }
 
-// httpClientFor builds the http.Client an OTLP/HTTP exporter is handed so it
-// carries src's headers. Passing a client makes the exporter ignore its own
-// transport settings, so the ones the OTLP environment contract defines are
+// httpClientFor builds the http.Client every OTLP/HTTP exporter is handed: it
+// runs on the shared transport (see otlpIdleConnTimeout) and, when src is not
+// nil, carries src's headers. Passing a client makes the exporter ignore its
+// own transport settings, so the ones the OTLP environment contract defines are
 // rebuilt here: timeout, proxy from the environment, and the certificate
 // variables.
 func httpClientFor(s signal, src *headerSource) (*http.Client, error) {
@@ -251,8 +252,22 @@ func httpClientFor(s signal, src *headerSource) (*http.Client, error) {
 	if n, err := strconv.Atoi(ms); err == nil && n > 0 {
 		timeout = time.Duration(n) * time.Millisecond
 	}
+	if src == nil {
+		return &http.Client{Transport: base, Timeout: timeout}, nil
+	}
 	return &http.Client{Transport: headerTransport{base: base, src: src}, Timeout: timeout}, nil
 }
+
+// otlpIdleConnTimeout is how long an OTLP/HTTP exporter keeps an idle
+// keep-alive connection. It must stay BELOW the collector's: an OTLP/HTTP
+// receiver closes a connection idle for 60s by default, and the SDK's own
+// transport (like http.DefaultTransport) keeps one for 90s. The periodic
+// metric reader exports every 60s, so each export reused a connection just as
+// the collector closed it, and the POST failed with `EOF` or `connection reset
+// by peer`, losing that interval's metrics: the SDK does not retry them. The
+// client must be the side that closes, so the next export dials a fresh
+// connection instead.
+var otlpIdleConnTimeout = 30 * time.Second
 
 var (
 	baseTransportsMu sync.Mutex
@@ -275,13 +290,14 @@ func sharedBaseTransport(s signal) (*http.Transport, error) {
 	}
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.TLSClientConfig = tlsCfg
+	t.IdleConnTimeout = otlpIdleConnTimeout
 	baseTransports[key] = t
 	return t, nil
 }
 
-// closeIdleHeaderTransports drops the keep-alive connections the shared
+// closeIdleOTLPTransports drops the keep-alive connections the shared
 // transports hold, so a shut-down Setup leaves no socket or goroutine behind.
-func closeIdleHeaderTransports(context.Context) error {
+func closeIdleOTLPTransports(context.Context) error {
 	baseTransportsMu.Lock()
 	defer baseTransportsMu.Unlock()
 	for _, t := range baseTransports {

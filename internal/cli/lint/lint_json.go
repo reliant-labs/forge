@@ -122,6 +122,13 @@ type lintJSONFinding struct {
 	Rule     string `json:"rule"`
 	Message  string `json:"message"`
 	FixHint  string `json:"fix_hint,omitempty"`
+	// Grace is set on a finding that would have failed the gate but is a
+	// warning because the project's pinned forge has not been through a
+	// release with its rule yet (lint_rollout.go).
+	Grace *ruleGrace `json:"grace,omitempty"`
+	// rollout is the pseudo-rule key of a pass whose findings carry another
+	// tool's rule IDs (the golangci-lint build-tag passes). Internal.
+	rollout string
 }
 
 // lintJSONSummary counts findings by severity. Total is the slice
@@ -1000,7 +1007,7 @@ func collectGolangciLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
 		}
 		tags := strings.Join(append(append([]string{}, configTags...), set.tag), ",")
 		more, g := golangciPass(rc, golangciRunArgs([]string{"--build-tags=" + tags}, set.dirs))
-		fs, gated = mergeFindings(fs, more), gated || g
+		fs, gated = mergeRolledOutFindings(fs, more, rolloutGolangciBuildTags), gated || g
 	}
 	return fs, gated
 }

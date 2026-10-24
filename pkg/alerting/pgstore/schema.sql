@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS {{schema}}alert_instances (
     resolve_sent BOOLEAN     NOT NULL DEFAULT FALSE,
     last_eval_at TIMESTAMPTZ NOT NULL,
     last_value   DOUBLE PRECISION NOT NULL,
+    why          JSONB,
     PRIMARY KEY (owner, env, rule, fingerprint),
     CONSTRAINT ck_alert_instances_state CHECK (state IN ('pending', 'firing', 'resolved'))
 );
@@ -36,8 +37,15 @@ CREATE TABLE IF NOT EXISTS {{schema}}alert_events (
     transition  TEXT        NOT NULL,
     value       DOUBLE PRECISION NOT NULL,
     at          TIMESTAMPTZ NOT NULL,
+    why         JSONB,
     CONSTRAINT ck_alert_events_transition CHECK (transition IN ('pending', 'firing', 'resolved', 'inactive', 'removed'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_alert_events_owner_at ON {{schema}}alert_events (owner, at DESC);
 CREATE INDEX IF NOT EXISTS idx_alert_events_rule_at ON {{schema}}alert_events (owner, env, rule, at DESC);
+
+-- why is the structured why-fired payload (alerting.Why), not part of an
+-- alert's identity. Added after the first release of this schema, so a database
+-- created before it gains the column here.
+ALTER TABLE {{schema}}alert_instances ADD COLUMN IF NOT EXISTS why JSONB;
+ALTER TABLE {{schema}}alert_events ADD COLUMN IF NOT EXISTS why JSONB;

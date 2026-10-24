@@ -46,6 +46,13 @@
 // downstream generated code that this scan cannot see, so the same rule there
 // would be unsound in exactly the direction that produces false positives.
 //
+// TEST CODE is every _test.go file, a test binary's generated main, and every
+// test-support package: a judged package that only test code imports (a fake
+// runner two packages' tests share cannot live in a _test.go file). Its reads
+// run under a test, so a field it reads and only tests write is a fixture's
+// input, not a shape production cannot produce. One production import of it,
+// from any OS's load, makes it production again.
+//
 // The analysis is a package library rather than a bare test so its rules can
 // be unit-tested against planted defects in testdata/. Nothing in forge's
 // production path imports it, and nothing should: a guard that production can

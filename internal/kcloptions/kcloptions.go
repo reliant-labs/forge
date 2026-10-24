@@ -50,6 +50,7 @@ import (
 	kclpkg "kcl-lang.io/kpm/pkg/package"
 
 	"github.com/reliant-labs/forge/internal/kclplugin"
+	"github.com/reliant-labs/forge/internal/kclprojects"
 	"github.com/reliant-labs/forge/internal/kclvendor"
 )
 
@@ -130,6 +131,16 @@ func Discover(projectDir, envName string) ([]Option, bool, error) {
 		return nil, false, err
 	}
 	extPkgs = append(extPkgs, &gpyrpc.ExternalPkg{PkgName: kclvendor.ModuleName, PkgPath: forgeDir})
+	// Forge-project imports, exactly as the render supplies them
+	// (internal/kclrender): a walk that could not see them would report the
+	// options of an env that imports one as undiscoverable.
+	imports, err := kclprojects.Resolve(kclprojects.FindKCLRoot(kclDir))
+	if err != nil {
+		return nil, false, err
+	}
+	for _, imp := range imports {
+		extPkgs = append(extPkgs, &gpyrpc.ExternalPkg{PkgName: imp.Name, PkgPath: imp.Dir})
+	}
 
 	// Serialized with every other native KCL call: see kclplugin.Serialized.
 	res, err := kclplugin.Serialized(func() (*kcl.ListOptionsResult, error) {

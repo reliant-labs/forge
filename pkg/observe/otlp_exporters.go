@@ -22,6 +22,10 @@ import (
 // exception is OTEL_EXPORTER_OTLP_HEADERS_FILE (headers_file.go): its headers
 // can change while the process runs, so they are attached per request by a
 // RoundTripper (HTTP) or per-RPC credentials (gRPC).
+//
+// Every OTLP/HTTP exporter gets forge's http.Client (httpClientFor), never the
+// SDK's default one: that keeps idle connections longer than a collector does,
+// which fails exports at random (otlpIdleConnTimeout).
 
 func newTraceExporter(ctx context.Context, cfg Config) (sdktrace.SpanExporter, error) {
 	proto, err := protocolFor(signalTraces)
@@ -46,13 +50,11 @@ func newTraceExporter(ctx context.Context, cfg Config) (sdktrace.SpanExporter, e
 	if typed {
 		opts = append(opts, otlptracehttp.WithEndpointURL(url))
 	}
-	if src := headerSourceFor(signalTraces); src != nil {
-		hc, err := httpClientFor(signalTraces, src)
-		if err != nil {
-			return nil, err
-		}
-		opts = append(opts, otlptracehttp.WithHTTPClient(hc))
+	hc, err := httpClientFor(signalTraces, headerSourceFor(signalTraces))
+	if err != nil {
+		return nil, err
 	}
+	opts = append(opts, otlptracehttp.WithHTTPClient(hc))
 	return otlptracehttp.New(ctx, opts...)
 }
 
@@ -79,13 +81,11 @@ func newMetricExporter(ctx context.Context, cfg Config) (sdkmetric.Exporter, err
 	if typed {
 		opts = append(opts, otlpmetrichttp.WithEndpointURL(url))
 	}
-	if src := headerSourceFor(signalMetrics); src != nil {
-		hc, err := httpClientFor(signalMetrics, src)
-		if err != nil {
-			return nil, err
-		}
-		opts = append(opts, otlpmetrichttp.WithHTTPClient(hc))
+	hc, err := httpClientFor(signalMetrics, headerSourceFor(signalMetrics))
+	if err != nil {
+		return nil, err
 	}
+	opts = append(opts, otlpmetrichttp.WithHTTPClient(hc))
 	return otlpmetrichttp.New(ctx, opts...)
 }
 
@@ -112,13 +112,11 @@ func newLogExporter(ctx context.Context, cfg Config) (sdklog.Exporter, error) {
 	if typed {
 		opts = append(opts, otlploghttp.WithEndpointURL(url))
 	}
-	if src := headerSourceFor(signalLogs); src != nil {
-		hc, err := httpClientFor(signalLogs, src)
-		if err != nil {
-			return nil, err
-		}
-		opts = append(opts, otlploghttp.WithHTTPClient(hc))
+	hc, err := httpClientFor(signalLogs, headerSourceFor(signalLogs))
+	if err != nil {
+		return nil, err
 	}
+	opts = append(opts, otlploghttp.WithHTTPClient(hc))
 	return otlploghttp.New(ctx, opts...)
 }
 

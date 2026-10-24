@@ -69,16 +69,11 @@ func FlattenFieldsWithBlocks(fields []ConfigField, messages []ConfigMessage) []C
 // projection. A reference to an unknown message is dropped too (nothing to
 // project), exactly as before.
 //
-// An env family (env_prefix) is dropped as well: these lists feed the KCL
-// schema and env projection, which have no shape for an open-ended set of
-// variables, so a family's variables are set on a workload's env directly
-// (ConfigFieldOptions.env_prefix in forge.proto).
+// An env family (env_prefix) is kept: it projects as a KCL map keyed by KEY
+// and expands to one variable per entry (config_env_family_kcl.go).
 func flattenWithBlocks(fields []ConfigField, byName map[string]*ConfigMessage) []ConfigField {
 	var out []ConfigField
 	for _, f := range fields {
-		if f.EnvPrefix != "" {
-			continue
-		}
 		if f.MessageType == "" {
 			out = append(out, f)
 			continue
@@ -88,8 +83,8 @@ func flattenWithBlocks(fields []ConfigField, byName map[string]*ConfigMessage) [
 			continue
 		}
 		for _, bf := range bm.Fields {
-			if bf.MessageType != "" || bf.EnvPrefix != "" {
-				continue // one nesting level, as elsewhere; families are not projected
+			if bf.MessageType != "" {
+				continue // one nesting level, as elsewhere
 			}
 			bf.KCLBlock = f.Name
 			bf.KCLBlockType = f.MessageType

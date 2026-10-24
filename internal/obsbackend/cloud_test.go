@@ -129,24 +129,6 @@ func TestCloudSQLKeepsItsColumnOrder(t *testing.T) {
 	}
 }
 
-func TestCloudMetrics(t *testing.T) {
-	f := &fakeCaller{replies: map[string]string{
-		procListMetrics: `{"metrics":[{"name":"http.server.duration","type":"METRIC_TYPE_HISTOGRAM"}],"truncated":true}`,
-		procQueryMetric: `{"series":[{"labels":{"svc":"api"},"points":[{"time":"2026-10-22T11:00:00Z","value":2}]}],"stepSeconds":60,"metricType":"METRIC_TYPE_HISTOGRAM","aggregation":"METRIC_AGGREGATION_P95"}`,
-	}}
-	l, err := cloudWith(f).MetricsList(context.Background(), MetricsListRequest{Narrow: narrowC(), Limit: 1})
-	if err != nil || l.Metrics[0].Type != "histogram" || !l.Truncated {
-		t.Errorf("%+v %v", l, err)
-	}
-	q, err := cloudWith(f).MetricsQuery(context.Background(), MetricsQueryRequest{Narrow: narrowC(), Name: "http.server.duration", Agg: "p95"})
-	if err != nil || q.Agg != "p95" || q.Type != "histogram" || len(q.Series) != 1 {
-		t.Errorf("%+v %v", q, err)
-	}
-	if f.reqs[procQueryMetric]["aggregation"] != "METRIC_AGGREGATION_P95" {
-		t.Errorf("agg %v", f.reqs[procQueryMetric]["aggregation"])
-	}
-}
-
 // --explain on a cloud env compiles with the shared compiler and calls nothing.
 func TestCloudExplainCompilesLocally(t *testing.T) {
 	f := &fakeCaller{}

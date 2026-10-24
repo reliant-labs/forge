@@ -65,9 +65,9 @@ func decisionCheckoutWith(t *testing.T, adjust func(*release.Release)) (dir stri
 	return dir, ledger
 }
 
-func decide(t *testing.T, dir string, ledger envLedger, renderOptions ...string) deployReleaseChoice {
+func decide(t *testing.T, dir string, ledger envLedger) deployReleaseChoice {
 	t.Helper()
-	return decideDeployRelease(context.Background(), dir, "prod", renderOptions, ledger)
+	return decideDeployRelease(context.Background(), dir, "prod", ledger)
 }
 
 func TestDecideDeployRelease_CleanCheckoutReusesItsRelease(t *testing.T) {

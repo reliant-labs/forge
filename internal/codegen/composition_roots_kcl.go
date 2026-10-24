@@ -17,12 +17,19 @@
 //
 // A root's optional credentials stay opt-in for the reason appConfigEnvMap
 // gives: an env without that Secret key must not stall the pod.
+//
+// An env family a root reaches is a RootFamily on it: its expanded variables
+// (<prefix><KEY><suffix>) pass the reach filter, and a sensitive one is
+// opted into by its pattern in `config_secrets` — handed unasked only when
+// the field is required — exactly as a scalar credential is.
 
 package codegen
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -61,8 +68,17 @@ func RootsKCLFor(roots []GraphRoot, env RootsEnv) string {
 	data := rootsKCLData{ConfigType: env.ConfigType, EnvMap: env.EnvMap, Argv: env.Argv}
 	for _, r := range sorted {
 		v := rootKCLView{Name: strconv.Quote(r.Name), Args: kclStringList(r.Args)}
-		var env, secrets, required []string
+		var env, secrets, required, families []string
 		for _, l := range r.Leaves() {
+			if l.EnvPrefix != "" {
+				// An env family: its expanded variables pass the reach
+				// filter by pattern, and a sensitive one is opted into
+				// (or, required, handed) by that pattern.
+				families = append(families, fmt.Sprintf("RootFamily {prefix = %s, suffix = %s%s}",
+					strconv.Quote(l.EnvPrefix), strconv.Quote(l.EnvSuffix), rootFamilyFlags(l)))
+				data.Families = true
+				continue
+			}
 			if l.EnvVar == "" {
 				continue
 			}
@@ -77,6 +93,9 @@ func RootsKCLFor(roots []GraphRoot, env RootsEnv) string {
 			}
 		}
 		v.Env, v.Secrets, v.Required = kclStringList(env), kclStringList(secrets), kclStringList(required)
+		if len(families) > 0 {
+			v.Families = "[" + strings.Join(families, ", ") + "]"
+		}
 		data.Roots = append(data.Roots, v)
 	}
 	out, err := templates.ProjectTemplates().Render("config-roots.k.tmpl", data)
@@ -86,14 +105,30 @@ func RootsKCLFor(roots []GraphRoot, env RootsEnv) string {
 	return string(out)
 }
 
+// rootFamilyFlags is the RootFamily members past prefix/suffix that differ
+// from their defaults.
+func rootFamilyFlags(l ConfigLeaf) string {
+	var out string
+	if l.Sensitive {
+		out += ", sensitive = True"
+	}
+	if l.Sensitive && l.Required {
+		out += ", required = True"
+	}
+	return out
+}
+
 // rootsKCLData is config-roots.k.tmpl's input: each root's KCL literals.
+// Families is set when any root reaches an env family; only then does the
+// module carry RootFamily, so a project without one renders as before.
 type rootsKCLData struct {
 	Roots              []rootKCLView
 	ConfigType, EnvMap string
 	Argv               bool
+	Families           bool
 }
 
-type rootKCLView struct{ Name, Args, Env, Secrets, Required string }
+type rootKCLView struct{ Name, Args, Env, Secrets, Required, Families string }
 
 // DefaultServerRoot is the root a graph-mode project's config module projects
 // when this run did not read the graph (a narrowed run, a project whose graph

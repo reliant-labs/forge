@@ -112,4 +112,9 @@
 //     panics group by where they happened, not by where they were recovered.
 //   - error.group, from ErrorGroup(ctx, name) only: an explicit issue name
 //     for the failure whose derived grouping is wrong.
+//
+// A record at any level becomes an issue event of a named source when it
+// carries issue.source (IssueSource(ctx, name)). Such issues are listed apart
+// from errors (`forge obs issues --source <name>`), and never count as errors
+// unless the record is also at ERROR.
 package observe

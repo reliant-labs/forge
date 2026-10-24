@@ -14,6 +14,8 @@ import (
 	"golang.org/x/mod/module"
 	"golang.org/x/mod/sumdb/dirhash"
 	modzip "golang.org/x/mod/zip"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // TestE2EKCLImportsForgeProjectAtGoModPin is F6 end to end: a
@@ -94,12 +96,12 @@ func TestE2EKCLImportsForgeProjectAtGoModPin(t *testing.T) {
 		t.Fatal(err)
 	}
 	addModuleLines(t, goMod, "require example.com/producer v0.1.0")
-	env := []string{
+	env := goexec.WithTrimpath([]string{
 		"GOMODCACHE=" + modCache,
 		"GOPROXY=file://" + filepath.ToSlash(proxy),
 		"GOSUMDB=off",
 		"GOFLAGS=-modcacherw", // so t.TempDir can remove the cache
-	}
+	})
 
 	out, err := runForgeEnvE2E(consumer, env, forgeBin, "kcl", "eval", "deploy/kcl/f6_probe.k", "-S", "marker", "--format", "raw")
 	if err == nil || !strings.Contains(out, "go.sum has no hash") {

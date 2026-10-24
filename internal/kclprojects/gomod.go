@@ -14,6 +14,8 @@ import (
 
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // goModules is the importing project's Go module configuration: everything
@@ -237,6 +239,7 @@ func modCache() (string, error) {
 	// toolchain, even `go env` would switch (and maybe download) toolchains.
 	cmd := exec.Command("go", "env", "GOMODCACHE")
 	cmd.Dir = os.TempDir()
+	cmd.Env = goexec.Env()
 	if out, err := cmd.Output(); err == nil {
 		dir = strings.TrimSpace(string(out))
 	}
@@ -279,7 +282,7 @@ func download(modPath, version string) (string, error) {
 	defer func() { _ = os.RemoveAll(scratch) }()
 	cmd := exec.Command("go", "mod", "download", "-json", modPath+"@"+version)
 	cmd.Dir = scratch
-	cmd.Env = downloadEnv(os.Environ())
+	cmd.Env = downloadEnv(goexec.Env())
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, runErr := cmd.Output()
@@ -301,8 +304,9 @@ func download(modPath, version string) (string, error) {
 	return res.Dir, nil
 }
 
-// downloadEnv is env with GOWORK=off and every -mod flag dropped from
-// GOFLAGS: outside a module, the go command rejects -mod.
+// downloadEnv is env (goexec.Env: -mod=mod already scrubbed) with GOWORK=off
+// and every remaining -mod flag dropped from GOFLAGS: outside a module, the go
+// command rejects -mod. Nothing is built, so -trimpath is irrelevant here.
 func downloadEnv(env []string) []string {
 	out := make([]string, 0, len(env)+1)
 	for _, kv := range env {

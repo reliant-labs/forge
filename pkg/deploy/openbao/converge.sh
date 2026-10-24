@@ -7,7 +7,11 @@
 #   widen     pre-rollout. Apply the UNION of the access document the last
 #             converge applied and the new one, so a name a release adds is
 #             already granted when its workloads first sync. A first install has
-#             nothing applied yet and nothing to widen: it exits 0 at once.
+#             nothing applied yet and nothing to widen: it exits 0 at once. So
+#             does a store that still answers in plaintext (the previous
+#             incarnation, before an adoption or after a rollback): it has no
+#             TLS listener to widen over, and the rollout that would give it
+#             one waits on this Job. Converge applies the whole document later.
 #   converge  post-rollout. Initialise the store if it has never been, then
 #             apply the new document, narrow (delete what it no longer
 #             contains), and record it as applied.
@@ -111,6 +115,20 @@ health() {
     "$1/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200&drsecondarycode=200&performancestandbycode=200" \
     2>"$TMP/curl.err") || return 1
   [ "$code" = 200 ] && jq -e . "$TMP/health" >/dev/null 2>&1
+}
+
+# serves_plaintext ADDR: 0 when the https:// ADDR answers an unauthenticated
+# health check in PLAINTEXT on the same host and port, i.e. the listener there
+# is not TLS. It sends no token, so it is safe against a store that is. A TLS
+# listener answers a plaintext request with an error, so it is never mistaken
+# for one.
+serves_plaintext() {
+  case $1 in https://*) ;; *) return 1 ;; esac
+  local code
+  code=$(curl -sS -o "$TMP/plain-health" -w '%{http_code}' --connect-timeout 5 --max-time 10 \
+    "http://${1#https://}/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200&drsecondarycode=200&performancestandbycode=200" \
+    2>/dev/null) || return 1
+  [ "$code" = 200 ] && jq -e 'has("initialized")' "$TMP/plain-health" >/dev/null 2>&1
 }
 
 # wait_for ADDR PREDICATE: poll the node's health until the jq predicate holds.
@@ -418,6 +436,19 @@ widen)
   OLD=$(applied_doc)
   if [ -z "$OLD" ]; then
     log "no access document has been applied yet (first install): nothing to widen"
+    exit 0
+  fi
+  # The store running NOW may not be this component yet: a first adoption, or a
+  # roll-forward after a rollback, leaves the previous plaintext store serving
+  # until the rollout this Job precedes replaces it. That store has no TLS
+  # listener to dial, and the rollout that would give it one waits on this Job,
+  # so failing here is a deadlock, not a verdict. Nothing of the component's is
+  # in force to widen (the first-install case), so skip: the converge phase
+  # applies the whole document once the store has rolled. Only a store that
+  # positively answers in plaintext is skipped; an unreachable store or a CA
+  # that does not verify still fails below.
+  if ! health "$ADDR" && serves_plaintext "$ADDR"; then
+    log "the store at $ADDR answers in plaintext, not on this component's TLS listener: it is the previous incarnation, still serving until the rollout. Nothing of this component is in force to widen (as on a first install); the converge phase applies the whole document after the rollout. Skipping. No credential was sent"
     exit 0
   fi
   wait_for "$ADDR" '.initialized == true and .sealed == false'

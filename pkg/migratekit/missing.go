@@ -33,14 +33,29 @@ import (
 // databases from the same commit, and nothing reports which one you got. A
 // DROP COLUMN landing after the migration that reads the column is a
 // different schema from the reverse. For the least reversible thing that
-// ships, the loud refusal beats the quiet guess — a human re-versions the
-// file, which is a rename, because the branch has not deployed yet.
+// ships, the loud refusal beats the quiet guess.
 //
 // The measurement behind that choice: across 108 migrations of control-plane
 // history there were ten same-version collisions (which timestamps remove
 // outright) and ZERO out-of-order arrivals. This check guards a case that is
 // rare by construction, so refusing costs almost nothing and assuming costs
 // a schema nobody reviewed.
+//
+// TWO FIXES, AND THE BINARY CANNOT TELL WHICH ONE APPLIES. When the late file
+// is still on its branch it has run nowhere, and the fix is a rename. But the
+// refusal is usually first seen AFTER the file merged: reliant's
+// 20261024024221 merged to main below a 20261024035148 that main and prod
+// already held, and the first thing to notice was the release's crash-looping
+// migrator. By then every database created from main since the merge has run
+// the file at its old version, so renaming it alone breaks those databases
+// (the copy re-runs SQL they already hold), and `forge db migration rebase`
+// refuses it. The fix for a merged file is to REPLACE it: delete it and add
+// the same SQL, written to be re-runnable, as a new migration. A database
+// that ran the old version runs the copy as a no-op; one that skipped it runs
+// it for the first time. The orphaned record the old version leaves behind
+// is harmless — verifyApplied judges only the versions this binary embeds.
+// The message states both, keyed on the one fact the reader can check:
+// whether the file is on their default branch.
 
 // RebaseCommand is the forge command that re-versions a migration, named by
 // this package's refusal message.
@@ -53,6 +68,12 @@ import (
 // reason for this comment: this string was advice for a subcommand that did
 // not exist, and a user following it hit "unknown command".
 const RebaseCommand = "forge db migration rebase"
+
+// NewMigrationCommand is the forge command that creates a migration, named
+// by the refusal's fix for a file that has already merged. Spelled out here
+// for the same reason as RebaseCommand, and held to a real command by the
+// same internal/cli test.
+const NewMigrationCommand = "forge db migration new"
 
 // MissingMigration is one version this binary embeds that the database
 // skipped: at or below the schema's version, with no applied row.
@@ -84,11 +105,15 @@ func (e *MissingMigrationError) Error() string {
 		fmt.Fprintf(&b, " version %d (%s);", m.Version, m.Name)
 	}
 	fmt.Fprintf(&b, " the schema is at version %d, and migrations at or below it are never re-read. "+
-		"NOTHING WAS APPLIED. Fix it by giving each file a version NEWER than %d — `%s <file>` "+
-		"renames it to a fresh timestamp, or rename it by hand to <new-utc-timestamp>_<same-name>.up.sql. "+
-		"The migration has not run anywhere, so renaming it is safe. If instead the SQL was already applied by hand, "+
-		"record that fact with `INSERT INTO %s (version, name) VALUES (<version>, '<descriptor>')`",
-		e.Version, e.Version, RebaseCommand, appliedTable)
+		"NOTHING WAS APPLIED. Each file needs a version NEWER than %d, and how depends on whether it has merged to "+
+		"your default branch. NOT YET MERGED: it has run nowhere, so rename it — `%s <file>` gives it a fresh timestamp. "+
+		"ALREADY MERGED: databases created since the merge have run it at its old version, so a rename would re-run "+
+		"SQL they already hold (and rebase refuses it). Replace it instead: delete the file and add the same SQL as a "+
+		"new migration (`%s <name>`), written to be re-runnable (CREATE ... IF NOT EXISTS, ADD COLUMN IF NOT EXISTS) — "+
+		"a database that ran the old version runs the copy as a no-op, and this one runs it for the first time. "+
+		"If instead the SQL was already applied to this database by hand, record that fact with "+
+		"`INSERT INTO %s (version, name) VALUES (<version>, '<descriptor>')`",
+		e.Version, e.Version, RebaseCommand, NewMigrationCommand, appliedTable)
 	return b.String()
 }
 

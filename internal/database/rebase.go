@@ -90,8 +90,11 @@ func (e *AlreadyMergedError) Error() string {
 	return fmt.Sprintf("refusing to re-version %s: version %d is already on the default branch "+
 		"(at or below the merge-base high-water mark %d), so a database somewhere has already recorded it as applied — "+
 		"renaming it would leave that database with a recorded version whose file no longer exists. "+
-		"A migration that has already merged must keep its version; write a NEW forward migration instead",
-		e.File, e.Version, e.MergeBaseMax)
+		"A migration that has already merged must keep its version; write a NEW forward migration instead. "+
+		"If it is merged AND a database has already passed its version (the migrator refuses it as never-applicable), "+
+		"replace it: delete %s and add the same SQL, written to be re-runnable (CREATE ... IF NOT EXISTS), "+
+		"as a new migration with `forge db migration new <name>` — databases that ran the old version run the copy as a no-op",
+		e.File, e.Version, e.MergeBaseMax, e.File)
 }
 
 // RebaseMigrations re-versions each file in paths to a fresh UTC timestamp

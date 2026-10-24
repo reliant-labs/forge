@@ -242,6 +242,35 @@ Flux credential error two layers from the missing field.
 A k3d cluster needs none of this: forge applies to it directly and the control
 plane never dials it.
 
+## Verifying a connect: `list` and `show`
+
+`connect` prints what it sent. To see what the control plane **now holds**, read
+it back — the same client and `--env` as `connect`, read-only:
+
+```bash
+forge cluster list --env prod              # every connected cluster of the org
+forge cluster show prod-us --env prod      # one, by exact name (GetCluster)
+forge cluster show prod-us --env prod --json
+```
+
+Per cluster: name, id, **state** (`CONNECTED` — the control plane holds usable
+connection material; `WAITING` — it holds nothing to try with; `STALE` — the
+token's expiry has passed), auth (`token`, the only mode), the registered
+**address** and **CA fingerprint**, the **issuer** registration (`discover` or
+`upload` with its key count, and the store id), the **environments bound** to it
+(by name, or by id when the caller may not read environments), and created/updated
+times. A member the control plane does not report prints as `-` (null in JSON).
+
+After a connect, check: `state` is `CONNECTED`, `address` is the one you meant, the
+issuer is registered if the cluster reads store-backed Secrets, and the env you
+bound appears under `envs`.
+
+`--json` is one document with a `schema` field — `forge.cluster.list/v1` or
+`forge.cluster.show/v1` — whose members are stable under that name and
+present-and-null when absent, so a script can index them. **No token or
+certificate is ever printed**: the control plane returns neither, and forge has no
+output field that could carry one.
+
 ## Disconnect
 
 ```bash

@@ -209,7 +209,7 @@ func TestScopeGuardrails(t *testing.T) {
 	if _, err := (TraceQuery{Scope: long, Limit: 10}).Compile(); !isInvalid(err) {
 		t.Errorf("20d traces accepted")
 	}
-	if _, err := (MetricList{Scope: long, Limit: 10}).Compile(); err != nil {
+	if _, err := (MetricCatalog{Scope: long, Limit: 10}).Compile(); err != nil {
 		t.Errorf("20d metrics rejected: %v", err)
 	}
 	for _, id := range []string{"", "xyz", strings.Repeat("a", 65), "abc'--"} {
@@ -459,7 +459,7 @@ func TestMetricQueryCompile(t *testing.T) {
 			t.Errorf("%s: err = %v, want InvalidArgument", name, err)
 		}
 	}
-	if _, err := (MetricList{Scope: scope(), Limit: ListMetricsMax + 1}).Compile(); !isInvalid(err) {
+	if _, err := (MetricCatalog{Scope: scope(), Limit: ListMetricsMax + 1}).Compile(); !isInvalid(err) {
 		t.Errorf("metric list over max accepted")
 	}
 	st, err := MetricLookup{Scope: scope(), Name: h}.Compile()

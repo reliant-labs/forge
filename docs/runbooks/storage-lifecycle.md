@@ -93,6 +93,20 @@ storage.json that still holds it loads, with an unknown-key warning).
 `trim.txt` and `README` are top-level files, which the trim never touches, and
 cmd/go's own five-day trim is independent.
 
+The 2h floor covers a build younger than about an hour: it can only have looked
+up entries whose mtime is at least its start minus 1h. A build that has run
+longer can hold an entry that is by then past the floor (`go test -race` across
+a repo takes 40-70 minutes on this machine, longer behind a heavy-slot queue),
+so the cutoff is also held back to the start of the oldest running Go toolchain
+process (`go`, `compile`, `link`, `vet`, `golangci-lint`, `staticcheck`,
+`govulncheck`) minus 1h5m. That is a lease read from the process table, not a
+bigger number: a build of any length is covered while it runs and nothing is
+retained after. A process older than 3h is a server (`go run` of a dev server),
+not a build, and does not count, or it would pin the cache for as long as it
+lives. A process table that cannot be read counts as a build 3h old. The pass
+says when this held the cutoff back, and the record carries the build's age
+(`oldest_live_build_ns` in `go_caches`).
+
 A cache that still takes in more than its budget inside the floor cannot be
 trimmed to it. The pass then removes everything older, prints
 `WARNING … no trim can reach it` with the size used inside that window and the

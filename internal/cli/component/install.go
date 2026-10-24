@@ -64,7 +64,7 @@ Button.tsx) is refused: on macOS and Windows that is one file.`,
 			}
 
 			// Navigating components (page_header, row_actions_menu,
-			// sidebar_layout) import the "./link" primitive. Make sure it
+			// sidebar_layout, button) import the "./link" primitive. Make sure it
 			// exists so a manual
 			// install into a bare directory still compiles; never
 			// overwrite — scaffolds place a framework-aware version there.

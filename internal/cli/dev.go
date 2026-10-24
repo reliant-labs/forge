@@ -57,7 +57,9 @@ Examples:
   forge cluster instances      # list every forge dev namespace on the host
 
   forge cluster connect prod-us --context gke_acme_us-central1_prod --env prod
-  forge cluster disconnect prod-us --env prod   # a cluster YOU operate, as a deploy target`,
+  forge cluster disconnect prod-us --env prod   # a cluster YOU operate, as a deploy target
+  forge cluster list --env prod                 # what the control plane holds for them
+  forge cluster show prod-us --env prod --json`,
 	}
 
 	// k3d lifecycle children, promoted flat from the old `dev cluster`

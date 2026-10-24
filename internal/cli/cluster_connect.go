@@ -40,6 +40,7 @@ import (
 const (
 	procConnectCluster = "controlplane.v1.ClusterService/ConnectCluster"
 	procListClusters   = "controlplane.v1.ClusterService/ListClusters"
+	procGetCluster     = "controlplane.v1.ClusterService/GetCluster"
 	procRemoveCluster  = "controlplane.v1.ClusterService/RemoveCluster"
 )
 
@@ -64,6 +65,12 @@ type wireConnectedCluster struct {
 	EnvironmentIDs []string `json:"environmentIds,omitempty"`
 	// Issuer is the secret-store issuer registered for the cluster, if any.
 	Issuer *wireClusterIssuer `json:"issuer,omitempty"`
+	// CreatedAt / UpdatedAt are proto3-JSON timestamps (RFC 3339). UpdatedAt and
+	// CAFingerprint are read when the control plane sends them; the CA itself and
+	// the token are never on the wire (see Cluster in cluster.proto).
+	CreatedAt     string `json:"createdAt,omitempty"`
+	UpdatedAt     string `json:"updatedAt,omitempty"`
+	CAFingerprint string `json:"caFingerprint,omitempty"`
 }
 
 type wireConnectClusterResponse struct {
@@ -793,11 +800,11 @@ func lookupConnectedCluster(ctx context.Context, c cloudCaller, name string) (st
 	return "", fmt.Errorf("no cluster named %q (this organization has: %s)", name, strings.Join(known, ", "))
 }
 
-// clusterConnectCommands are the two commands this file adds to `forge
-// cluster`. Named so dev.go's newClusterCmd registers them without this file
-// needing to know the parent's shape.
+// clusterConnectCommands are the commands this file and cluster_list.go add to
+// `forge cluster`. Named so dev.go's newClusterCmd registers them without this
+// file needing to know the parent's shape.
 func clusterConnectCommands() []*cobra.Command {
-	return []*cobra.Command{newClusterConnectCmd(), newClusterDisconnectCmd()}
+	return []*cobra.Command{newClusterConnectCmd(), newClusterDisconnectCmd(), newClusterListCmd(), newClusterShowCmd()}
 }
 
 // writeIssuerDryRun says what the run would send about the issuer.

@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cluster"
-	"github.com/reliant-labs/forge/internal/flux"
+	"github.com/reliant-labs/forge/pkg/flux"
 )
 
 func platformTestEnv() (*KCLEntities, []ClusterEntity) {

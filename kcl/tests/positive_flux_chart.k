@@ -8,7 +8,7 @@ WHAT THIS PINS, AND WHY EACH ONE IS HERE RATHER THAN IN A DOCSTRING:
   * THE CHART REFERENCE AND VERSION. `FLUX_CHART_OCI` is the shared-Flux
     detector — `forge cluster up` compares a consumer's declared chart
     against it to decide whether a cluster already has a Flux — and
-    internal/flux holds the same two strings Go-side. Three spellings of one
+    pkg/flux holds the same two strings Go-side. Three spellings of one
     reference that only agree by inspection is exactly the drift this
     fixture exists to catch: if the chart ref here and the one in Go
     diverge, forge installs a SECOND Flux into a cluster that already has

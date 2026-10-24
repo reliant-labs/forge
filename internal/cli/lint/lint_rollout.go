@@ -25,7 +25,7 @@
 //
 // The project's pinned forge_version decides. A finding that would fail the
 // gate, from a rule whose GatesFrom is later than the pin, is a WARNING that
-// carries a note — "new in forge v0.1.47; gates from v0.1.48" — and so does
+// carries a note — "is new in v0.1.47 and gates from v0.1.48" — and so does
 // not fail the lane, the verdict, the exit code or the --gate-json document.
 // At or past GatesFrom the same finding gates, with no other change.
 //
@@ -109,7 +109,7 @@ type ruleGrace struct {
 // note is the line the text report prints under the finding.
 func (g ruleGrace) note(rule string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "warn: [%s] is new in forge %s and gates from %s", rule, g.IntroducedIn, g.GatesFrom)
+	fmt.Fprintf(&b, "warn: [%s] is new in %s and gates from %s", rule, g.IntroducedIn, g.GatesFrom)
 	if g.Fix != "" {
 		fmt.Fprintf(&b, "; fix with `%s`", g.Fix)
 	}

@@ -23,7 +23,7 @@ The warning says what to do:
 ```
 ⚠️  closed-sets lint — 2 warnings
    ⚠ db/migrations/0001_x.up.sql:4 [forge-closed-set] CHECK lists a value Go does not grant
-      → warn: [forge-closed-set] is new in forge v0.1.47 and gates from v0.1.48; gate now with lint.rules: {forge-closed-set: error}
+      → warn: [forge-closed-set] is new in v0.1.47 and gates from v0.1.48; gate now with lint.rules: {forge-closed-set: error}
 ✅ All 3 gating linters passed; 2 new-rule findings warn until they gate (forge-closed-set ×2, gates from v0.1.48)
 ```
 

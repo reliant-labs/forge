@@ -128,7 +128,7 @@ grade — a typo, another tool's rule, a lane's could-not-run — is a lint erro
 
 NEW RULES WARN FIRST: a rule that joined forge lint (or was tightened) in a
 release your forge.yaml forge_version has not been through yet reports its
-findings as WARNINGS — "warn: [rule] is new in forge v0.1.47 and gates from
+findings as WARNINGS — "warn: [rule] is new in v0.1.47 and gates from
 v0.1.48" — and they do not fail the lane, the exit code or --gate-json. Bump
 the pin to the gates-from release and they gate. lint.rules wins: {rule: error}
 gates a new rule today, {rule: warn} keeps it a warning past its gates-from

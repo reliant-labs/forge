@@ -367,7 +367,7 @@ func TestRolloutVerdictThroughTheEngine(t *testing.T) {
 		}
 		if !quiet {
 			for _, want := range []string{
-				"warn: [" + rolloutRule + "] is new in forge " + ro.IntroducedIn + " and gates from " + ro.GatesFrom,
+				"warn: [" + rolloutRule + "] is new in " + ro.IntroducedIn + " and gates from " + ro.GatesFrom,
 				"lint.rules: {" + rolloutRule + ": error}",
 			} {
 				if !strings.Contains(out, want) {

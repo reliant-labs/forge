@@ -117,6 +117,11 @@ func populateCompositionBindings(ctx context.Context, candidate *release.Snapsho
 	for _, k := range run.Selected {
 		selected[k] = true
 	}
+	type pendingBinding struct {
+		key  release.ConsumerKey
+		slot string
+	}
+	var pending []pendingBinding
 	for _, c := range candidate.Consumers {
 		action := "carry"
 		if selected[c.Key] {
@@ -130,9 +135,20 @@ func populateCompositionBindings(ctx context.Context, candidate *release.Snapsho
 				}
 				continue
 			}
+			if !compositionPrimarySlot(entities, c.Key, slot) {
+				pending = append(pending, pendingBinding{key: c.Key, slot: slot})
+				continue
+			}
 			if err := addSelectedCompositionBinding(ctx, candidate, run, entities, opts, results, c.Key, slot); err != nil {
 				return err
 			}
+		}
+	}
+	// Every producer's verified invocation output (or exact carried binding)
+	// exists before auxiliary references can bind it, independent of ordering.
+	for _, binding := range pending {
+		if err := addSelectedCompositionBinding(ctx, candidate, run, entities, opts, results, binding.key, binding.slot); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -205,7 +221,13 @@ func addSelectedCompositionBinding(ctx context.Context, candidate *release.Snaps
 	if ref == "" {
 		return fmt.Errorf("selected slot %v/%s has no build output", c.Key, slot)
 	}
-	artifact, err := resolveCompositionArtifact(ctx, ref, opts.release, receipt, source)
+	artifact, bound, err := compositionInputArtifact(candidate, entities, c.Key, slot, ref)
+	if err != nil {
+		return err
+	}
+	if !bound {
+		artifact, err = resolveCompositionArtifact(ctx, ref, opts.release, receipt, source)
+	}
 	if err != nil {
 		return err
 	}

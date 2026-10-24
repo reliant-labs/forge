@@ -50,7 +50,7 @@ forge component install card_grid
 | A filter/search bar for a list page | ✓ `filter_bar` |
 | A board, timeline, tile grid | `kanban_board`, `timeline`, `card_grid` |
 | A conversion / stage funnel | `funnel_chart` |
-| A dropdown, breadcrumb, toggle | `dropdown_menu`, `breadcrumb`, `toggle_switch` |
+| A dropdown, breadcrumb, toggle, anchored panel | `dropdown_menu`, `breadcrumb`, `toggle_switch`, `popover` |
 
 A search that returns nothing is a real answer: there is no drawer/sheet or quantity-stepper, so those you write yourself. (The `component_library` MCP tool is the same catalog.)
 
@@ -64,6 +64,7 @@ Every frontend ships low-level primitives under `src/components/ui/`. Compose th
 |-----------|-----------|
 | `button` | `primary`/`secondary`/`outline`/`ghost`/`danger`, `xs`–`xl`, `leftIcon`/`rightIcon`, icon-only, `loading`, `href` |
 | `input`, `label`, `form` | Text input, field label, and `Form`/`FormField`/`FormError`/`FormActions`. `<FormField>` mints an id via `useId()`, so child `<Label>`/`<Input>`/`<Select>` auto-bind without `htmlFor`/`id` |
+| `textarea`, `toggle_switch` | On demand: `forge component install textarea toggle_switch`. ToggleSwitch is `role="switch"` with `label` or `ariaLabel`; both auto-bind inside `<FormField>` |
 | `card` | Generic surface primitive |
 | `status`, `tag`, `mono` | State (dot + word), kind label, copyable sha |
 | `avatar`, `tabs`, `chip` | Avatar, tab nav (underline/pills/boxed), filter chip. `Tabs`/`FilterBar`: pass `activeTab`/`values` to control them from the URL |
@@ -194,11 +195,11 @@ const req = create(CreateTaskRequestSchema, { name: "My Task" }); // NOT new Cre
 @theme { --color-brand: #3b82f6; --font-sans: "Inter", sans-serif; }
 ```
 
-Use `@theme`/scoped CSS variables for reusable tokens rather than one-off colors, and keep global CSS small. `npm run lint:styles` catches `!important` and invalid v4 at-rules. Full rules in `frontend/patterns`.
+Prefer `@theme` tokens over one-off colors; keep global CSS small. `npm run lint:styles` catches `!important` and invalid v4 at-rules. Full rules in `frontend/patterns`.
 
 ## Visual verification
 
-**Use BOTH `take_snapshot` AND `take_screenshot` (Chrome DevTools) before declaring frontend work complete.** The a11y-tree snapshot cannot detect layout shifts, wrong colors, z-index or overflow; only screenshots catch those. Screenshot at multiple breakpoints. `frontend/design` carries the overflow probe.
+**Use BOTH `take_snapshot` AND `take_screenshot` (Chrome DevTools) before declaring frontend work complete.** The a11y snapshot misses layout shifts, wrong colors, z-index and overflow; screenshots catch them. Screenshot at multiple breakpoints. `frontend/design` carries the overflow probe.
 
 ## Component patterns
 
@@ -222,7 +223,7 @@ Created by `forge scaffold frontend`, yours to modify:
 
 - **Auth** (`src/lib/auth/`) — native sign-in: the browser POSTs credentials to this app's own API and gets an HttpOnly session cookie; the server runs the OIDC flow. `useAuth()` gives `{ identity, isAuthenticated, isLoading, refresh, logout }` — an identity for rendering, and deliberately no token. See `auth/frontend`.
 - **Event bus** (`src/lib/events.ts`; hooks in `src/lib/use-event.ts`) — typed pub/sub for imperative cross-cutting actions (`toast:show`, `auth:expired`, `navigate`). Extend `EventMap`; use `useEvent(name, handler)`. Not a source of truth.
-- **UI store** (`src/stores/ui-store.ts`) — Zustand baseline for client state (`sidebarCollapsed`, `commandPaletteOpen`). Add domain stores in `src/stores/`. **Subscribe to slices, not the whole store.** Server data stays in the React Query hooks, never copied into Zustand.
+- **UI store** (`src/stores/ui-store.ts`) — Zustand baseline for client state (`sidebarCollapsed`, `commandPaletteOpen`). Add domain stores in `src/stores/` (rules below).
 - **`src/lib/format-utils.ts`** — see **Formatting**.
 - Also scaffolded: `src/lib/admin-url.ts` (`adminUrl`/`absoluteAdminUrl` over `basepath_gen.ts` — use these or `joinBasePath` for any string handed to an external system that round-trips back).
 
@@ -233,7 +234,7 @@ forge env up dev   # infra + services (hot reload) + frontends; reads deploy/kcl
 forge generate     # After any .proto change
 ```
 
-`forge env up` dev-serves each declared frontend via `npm run dev` (`npm run build` is for `forge build` / `forge env deploy`). Each serves on its own KCL-declared port (`forge.Frontend.port`), **force-injected as `PORT`** into the child, so the browser URL matches the declaration even if a stale `PORT` bled in from the shell. There is no dev reverse proxy. To route a service under the prod Gateway, declare an `HTTPRoute` with a `host:` in `deploy/kcl/<env>/main.k`.
+`forge env up` dev-serves each declared frontend via `npm run dev` (`npm run build` is for `forge build` / `forge env deploy`). Each serves on its own KCL-declared port (`forge.Frontend.port`), **force-injected as `PORT`** into the child (a stale shell `PORT` never wins). There is no dev reverse proxy. To route a service under the prod Gateway, declare an `HTTPRoute` with a `host:` in `deploy/kcl/<env>/main.k`.
 
 ## File naming inside `frontends/<name>/src/`
 

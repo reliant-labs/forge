@@ -44,6 +44,7 @@ Button.tsx) is refused: on macOS and Windows that is one file.`,
 				return fmt.Errorf("create directory %s: %w", dir, err)
 			}
 
+			requested := map[string]bool{}
 			for _, name := range args {
 				content, err := lib.Get(name)
 				if err != nil {
@@ -60,22 +61,37 @@ Button.tsx) is refused: on macOS and Windows that is one file.`,
 				if err := atomicfile.WriteFile(dest, []byte(content), 0o644); err != nil {
 					return fmt.Errorf("write component %s: %w", name, err)
 				}
+				requested[name] = true
 				fmt.Printf("  Installed %s -> %s\n", name, dest)
 			}
 
-			// Navigating components (page_header, row_actions_menu,
-			// sidebar_layout, button) import the "./link" primitive. Make sure it
-			// exists so a manual
-			// install into a bare directory still compiles; never
-			// overwrite — scaffolds place a framework-aware version there.
-			linkDest := filepath.Join(dir, "link.tsx")
-			if _, statErr := os.Stat(linkDest); os.IsNotExist(statErr) && generator.CaseCollision(dir, "link.tsx") == "" {
-				linkContent, err := lib.Get("link")
-				if err == nil {
-					if err := atomicfile.WriteFile(linkDest, []byte(linkContent), 0o644); err != nil {
-						return fmt.Errorf("write link primitive: %w", err)
+			// A component's `./x` imports are siblings in this directory
+			// (input → form_field_context, page_header → link). Write each
+			// missing one so an install into a bare directory compiles. Never
+			// overwrite: a sibling already there may be the project's own
+			// (scaffolds place a framework-aware link.tsx).
+			for _, name := range args {
+				deps, err := lib.Dependencies(name)
+				if err != nil {
+					return err
+				}
+				for _, dep := range deps {
+					if requested[dep] {
+						continue
 					}
-					fmt.Printf("  Installed link -> %s (navigation primitive dependency)\n", linkDest)
+					requested[dep] = true
+					depDest := filepath.Join(dir, dep+".tsx")
+					if _, statErr := os.Stat(depDest); !os.IsNotExist(statErr) || generator.CaseCollision(dir, dep+".tsx") != "" {
+						continue
+					}
+					depContent, err := lib.Get(dep)
+					if err != nil {
+						return err
+					}
+					if err := atomicfile.WriteFile(depDest, []byte(depContent), 0o644); err != nil {
+						return fmt.Errorf("write component %s: %w", dep, err)
+					}
+					fmt.Printf("  Installed %s -> %s (imported by %s)\n", dep, depDest, name)
 				}
 			}
 			return nil

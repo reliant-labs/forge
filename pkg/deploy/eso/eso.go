@@ -71,6 +71,22 @@ const ComponentName = "external-secrets-operator"
 var CRDGroups = []string{"external-secrets.io", "generators.external-secrets.io"}
 
 // CRDNames are the CustomResourceDefinitions forge supplies, in apply order.
+//
+// WHY GeneratorState SHIPS THOUGH GENERATORS ARE OFF. No generator kind has a
+// CRD here, so nothing can create a generator, and still the controller needs
+// this one. Re-checked against chart/app v2.13.0 (SC7 rehearsal, D6): in
+// cmd/controller/root.go the GeneratorState reconciler is registered
+// UNCONDITIONALLY (`generatorstate.Reconciler{...}.SetupWithManager`, outside
+// every `if enable...` block), and it watches the GeneratorState kind. Without
+// the CRD that watch cannot sync and the manager exits at start-up with "no
+// matches for kind GeneratorState". `--enable-generator-state=false` does NOT
+// help: that flag only reaches the ExternalSecret reconciler
+// (EnableGeneratorState). The CRD is an empty-by-construction table (nothing
+// writes a GeneratorState without a generator), so shipping it widens nothing.
+// The CRD documents are byte-for-byte the chart's, so the reason lives here
+// and in the external-secrets skill, not in the YAML. Re-verify on every bump;
+// drop the CRD only when a pinned release gates that reconciler on a flag the
+// install can turn off.
 var CRDNames = []string{
 	"externalsecrets.external-secrets.io",
 	"secretstores.external-secrets.io",

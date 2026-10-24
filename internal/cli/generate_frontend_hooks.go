@@ -530,11 +530,22 @@ func isHooksBarrelRelPath(p string) bool {
 // or — when a hand-written file already holds the path — leaves it exactly
 // as it is and names it in the run's closing summary. A barrel the project
 // disowned is the user's by declaration and is skipped silently.
+//
+// The barrel is regenerated every run, but writeHooksIndex writes it directly
+// rather than through a Tier-1 writer, so it is recorded as a Tier-1 target
+// here: when forge writes it, and when a disown is all that stops forge from
+// writing it. Without that, obsolete-disown retirement saw a disowned barrel
+// as a path forge no longer emits and dropped the disown, and the next run
+// printed the left-alone notice that told the user to disown it again.
 func writeHooksBarrel(projectDir, relPath string, hookFiles []hookFileEntry, cs *checksums.FileChecksums) error {
 	if cs != nil && cs.IsDisowned(filepath.ToSlash(relPath)) {
+		checksums.MarkTier1Target(relPath)
 		return nil
 	}
 	err := writeHooksIndex(filepath.Join(projectDir, relPath), hookFiles)
+	if err == nil {
+		checksums.MarkTier1Target(relPath)
+	}
 	if !errors.Is(err, errHandWrittenBarrel) {
 		return err
 	}

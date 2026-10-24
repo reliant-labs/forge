@@ -33,7 +33,7 @@ func (l Local) ListIssues(ctx context.Context, req ListIssuesRequest) (ListIssue
 	if req.SincePromotion != "" {
 		return ListIssuesResult{}, errLocalOnly("--since-deploy")
 	}
-	q := obsquery.ServerIssues{Scope: LocalScope(req.Narrow, l.Env), Limit: req.Limit, Sort: req.Sort}
+	q := obsquery.ServerIssues{Scope: LocalScope(req.Narrow, l.Env), Source: req.Source, Limit: req.Limit, Sort: req.Sort}
 	st, err := q.Compile()
 	if err != nil {
 		return ListIssuesResult{}, compileErr(err)
@@ -72,6 +72,7 @@ func localIssue(row []any) Issue {
 		Events: AsInt(row[5]), Affected: AsInt(row[6]),
 		FirstSeen: AsTime(row[7]), LastSeen: AsTime(row[8]),
 		LatestTraceID: AsString(row[9]), LastVersion: AsString(row[10]), FirstVersion: AsString(row[11]),
+		Source: AsString(row[12]),
 	}
 }
 

@@ -22,7 +22,7 @@ var obsIssuesSchema = obsout.Schema{
 	Fields: []string{
 		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services",
 		"query_mode", "sort",
-		"issues", "issues.id", "issues.platform", "issues.service", "issues.title", "issues.culprit", "issues.exception_type",
+		"issues", "issues.id", "issues.platform", "issues.source", "issues.service", "issues.title", "issues.culprit", "issues.exception_type",
 		"issues.status", "issues.first_seen", "issues.last_seen", "issues.first_version", "issues.last_version",
 		"issues.events", "issues.affected", "issues.latest_trace_id", "issues.resolved_at", "issues.resolved_version",
 		"issues.regressed_at", "issues.ignored_until",
@@ -35,6 +35,7 @@ var obsIssuesSchema = obsout.Schema{
 type obsIssueRowDoc struct {
 	ID              string    `json:"id"`
 	Platform        string    `json:"platform"`
+	Source          string    `json:"source,omitempty"`
 	Service         string    `json:"service"`
 	Title           string    `json:"title"`
 	Culprit         string    `json:"culprit,omitempty"`
@@ -55,7 +56,7 @@ type obsIssueRowDoc struct {
 
 func issueRowDoc(i obsbackend.Issue) obsIssueRowDoc {
 	return obsIssueRowDoc{
-		ID: i.ID, Platform: i.Platform, Service: i.Service, Title: i.Title, Culprit: i.Culprit, ExceptionType: i.ExceptionType,
+		ID: i.ID, Platform: i.Platform, Source: i.Source, Service: i.Service, Title: i.Title, Culprit: i.Culprit, ExceptionType: i.ExceptionType,
 		Status: i.Status, FirstSeen: i.FirstSeen, LastSeen: i.LastSeen, FirstVersion: i.FirstVersion, LastVersion: i.LastVersion,
 		Events: i.Events, Affected: i.Affected, LatestTraceID: i.LatestTraceID,
 		ResolvedAt: zeroUnixEpoch(i.ResolvedAt), ResolvedVersion: i.ResolvedVersion,
@@ -87,6 +88,7 @@ type obsIssuesOpts struct {
 	obsCommon
 	statuses     []string
 	platform     string
+	source       string
 	sinceRelease string
 	sinceDeploy  string
 	sort         string
@@ -101,6 +103,11 @@ func newObsIssuesCmd() *cobra.Command {
 		Long: `List the env's error issues: ERROR logs grouped by fingerprint (sfp1), with how
 often each fired, how many traces it touched and when. [env] defaults to dev.
 
+--source <name> lists the issues of an issue source instead: records of any
+level that carry issue.source=<name> (observe.IssueSource), such as the reports
+agents file (--source llm_bug_report). They are grouped the same way, never
+count as errors, and are listed only when asked for.
+
 On a hosted env the control plane keeps the issues, so they have a status
 (new, unresolved, resolved, regressed, ignored) that survives log retention, and
 --since-release / --since-deploy ask "what did this release open". On a local
@@ -111,6 +118,7 @@ issue is unresolved, and the counts are those of the range.
   ` + Name() + ` obs issues prod --status regressed
   ` + Name() + ` obs issues prod --since-release v1.4.0   # first seen in that release
   ` + Name() + ` obs issues dev --service api --sort events
+  ` + Name() + ` obs issues prod --source llm_bug_report  # agent-filed bug reports
 
 ` + obsIssuesSchema.Help(),
 		Args: cobra.RangeArgs(0, 1),
@@ -122,6 +130,7 @@ issue is unresolved, and the counts are those of the range.
 	f := cmd.Flags()
 	f.StringArrayVar(&o.statuses, "status", nil, "only issues in this state: "+strings.Join(obsbackend.IssueStatuses, ", ")+" (repeatable; default the open ones)")
 	f.StringVar(&o.platform, "platform", "", "server | browser")
+	f.StringVar(&o.source, "source", "", "list the issues of this issue source (issue.source) instead of errors, e.g. llm_bug_report")
 	f.StringVar(&o.sinceRelease, "since-release", "", "only issues first seen in this release version (hosted env)")
 	f.StringVar(&o.sinceDeploy, "since-deploy", "", "only issues first seen at or after this promotion id (hosted env)")
 	f.StringVar(&o.sort, "sort", obsquery.IssueSortLast, "last | first | events")
@@ -139,6 +148,12 @@ func (o obsIssuesOpts) validate() error {
 	case "", obsbackend.PlatformServer, obsbackend.PlatformBrowser:
 	default:
 		return obsbackend.Wrong("--platform %q is not a platform; use server or browser", o.platform)
+	}
+	if o.source != "" && !obsquery.ValidIssueSource(o.source) {
+		return obsbackend.Wrong("--source %q is not an issue source name (lowercase letters, digits, '_', '.', '-')", o.source)
+	}
+	if o.source != "" && o.platform == obsbackend.PlatformBrowser {
+		return obsbackend.Wrong("--source lists server issue events; it does not combine with --platform browser")
 	}
 	if !slices.Contains([]string{obsquery.IssueSortLast, obsquery.IssueSortFirst, obsquery.IssueSortEvents}, o.sort) {
 		return obsbackend.Wrong("--sort %q is not a sort order; use last, first or events", o.sort)
@@ -183,7 +198,7 @@ func runObsIssues(ctx context.Context, d obsDeps, env string, o obsIssuesOpts) e
 		return fail(err)
 	}
 	res, err := r.ListIssues(ctx, obsbackend.ListIssuesRequest{
-		Narrow: n, Statuses: o.statuses, Platform: o.platform, SinceRelease: o.sinceRelease, SincePromotion: o.sinceDeploy,
+		Narrow: n, Statuses: o.statuses, Platform: o.platform, Source: o.source, SinceRelease: o.sinceRelease, SincePromotion: o.sinceDeploy,
 		Sort: o.sort, Limit: o.out.Limit, PageToken: o.pageToken,
 	})
 	if err != nil {

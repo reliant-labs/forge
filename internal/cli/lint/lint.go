@@ -126,6 +126,15 @@ be adopted gradually; "*" sets every forge rule. Another tool's linters keep
 their own config (.golangci.yml, buf.yaml, eslint), and a key forge does not
 grade — a typo, another tool's rule, a lane's could-not-run — is a lint error.
 
+NEW RULES WARN FIRST: a rule that joined forge lint (or was tightened) in a
+release your forge.yaml forge_version has not been through yet reports its
+findings as WARNINGS — "warn: [rule] is new in v0.1.47 and gates from
+v0.1.48" — and they do not fail the lane, the exit code or --gate-json. Bump
+the pin to the gates-from release and they gate. lint.rules wins: {rule: error}
+gates a new rule today, {rule: warn} keeps it a warning past its gates-from
+release, {rule: off} drops it. --json carries the note as a "grace" object on
+the finding. A project with no pin (or forge's own tree) gates everything.
+
 Examples:
   forge lint                     # Report only: print the diffs, write nothing
   forge lint --fix               # Apply the mechanical fixes, then gate
@@ -795,6 +804,9 @@ type lintVerdict struct {
 	scope string
 	// hiddenWarnings counts findings --quiet did not print.
 	hiddenWarnings int
+	// graced are the findings that warn only because the project's pin has
+	// not been through a release with their rule (lint_rollout.go).
+	graced []gracedRule
 }
 
 // render prints the success line, or returns the failure — which main
@@ -860,6 +872,9 @@ func (v lintVerdict) render(w io.Writer) error {
 	}
 	if len(v.skipped) > 0 {
 		extras = append(extras, fmt.Sprintf("%d skipped (%s)", len(v.skipped), strings.Join(v.skipped, ", ")))
+	}
+	if len(v.graced) > 0 {
+		extras = append(extras, describeGraced(v.graced))
 	}
 
 	// An advisory lane that could not run demotes the headline: it is a

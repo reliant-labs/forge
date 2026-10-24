@@ -389,7 +389,7 @@ func collectLintOutcomesFrom(rc *lintRunCtx, pipeline []linterStep) []lintStepOu
 		}
 		// lint.rules grades every lane here, once, before the scope narrows
 		// it (lint_rules.go).
-		fs, gated = gradeLane(effectiveRules(rc.cfg), fs, gated)
+		fs, gated = gradeProjectLane(rc.cfg, fs, gated)
 		o.ran = true
 		o.findings, o.gated = scopeOutcome(rc.scope, fs, gated)
 		applyGapPolicy(&o, laneGates(step, rc), rc)
@@ -501,7 +501,7 @@ func collectLaneOutcome(
 		// running the whole suite under one lane's name.
 		return o, fmt.Errorf("--%s has no structured collector; run it without --quiet/--scope/--json", lane)
 	}
-	fs, gated := gradeLane(effectiveRules(cfg), report.Findings, !report.OK)
+	fs, gated := gradeProjectLane(cfg, report.Findings, !report.OK)
 	o.ran = true
 	o.findings, o.gated = scopeOutcome(scope, fs, gated)
 	return o, nil
@@ -615,7 +615,7 @@ func structuredFixPrePass(ctx context.Context, cwd string, cfg *config.ProjectCo
 // lane with an error or warning is shown. Info findings (skip notes) are
 // never printed here — a skipped lane is named in the verdict instead.
 func renderLintOutcomes(w io.Writer, outcomes []lintStepOutcome, quiet bool, scope *lintScope) error {
-	v := lintVerdict{scope: scope.String()}
+	v := lintVerdict{scope: scope.String(), graced: gracedFindings(outcomes)}
 	for _, o := range outcomes {
 		switch {
 		case o.unscoped:
@@ -760,6 +760,13 @@ func writeStructuredFindings(w io.Writer, fs []lintJSONFinding) {
 			fmt.Fprintf(w, "   %s [%s] %s\n", marker, f.Rule, f.Message)
 		default:
 			fmt.Fprintf(w, "   %s %s [%s] %s\n", marker, findingLocation(f), f.Rule, f.Message)
+		}
+		if f.Grace != nil {
+			key := f.Rule
+			if f.rollout != "" {
+				key = f.rollout
+			}
+			fmt.Fprintf(w, "      → %s\n", f.Grace.note(key))
 		}
 		if f.FixHint != "" {
 			fmt.Fprintf(w, "      → %s\n", f.FixHint)

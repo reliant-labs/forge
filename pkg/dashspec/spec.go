@@ -131,6 +131,12 @@ const (
 	AggMax           Agg = "max"
 	AggQuantile      Agg = "quantile"
 	AggLast          Agg = "last"
+	// AggRate, AggIncrease and AggMin are metrics-only. A rate is per second,
+	// an increase is per bucket, and both are time-weighted per series; on a
+	// monotonic sum, AggSum still means the increase.
+	AggRate     Agg = "rate"
+	AggIncrease Agg = "increase"
+	AggMin      Agg = "min"
 )
 
 // Unit is how a panel's values are formatted.
@@ -196,7 +202,7 @@ type Series struct {
 	// (span.duration, span.attr.lcp), the metric NAME for metrics. Empty for
 	// AggCount.
 	Field string `json:"field,omitempty"`
-	// MetricType is "sum" or "gauge" (metrics only).
+	// MetricType is "sum", "gauge" or "histogram" (metrics only).
 	MetricType string `json:"metricType,omitempty"`
 	// Where narrows this series alone (e.g. only the failed requests).
 	Where []Predicate `json:"where,omitempty"`

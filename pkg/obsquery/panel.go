@@ -176,6 +176,10 @@ func (p Panel) Validate() error {
 		}
 		switch s.Agg {
 		case "count", "count_distinct", "sum", "avg", "max", "quantile", "last":
+		case "rate", "increase", "min":
+			if p.Signal != "metrics" {
+				return invalid("aggregation %q is defined for metrics only", s.Agg)
+			}
 		default:
 			return invalid("unknown aggregation %q", s.Agg)
 		}

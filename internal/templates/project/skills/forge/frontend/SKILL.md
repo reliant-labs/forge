@@ -62,7 +62,7 @@ Every frontend ships low-level primitives under `src/components/ui/`. Compose th
 
 | Primitive | What it is |
 |-----------|-----------|
-| `button` | `primary`/`secondary`/`outline`/`ghost`/`danger` variants, sizes, loading state |
+| `button` | `primary`/`secondary`/`outline`/`ghost`/`danger`, `xs`–`xl`, `leftIcon`/`rightIcon`, icon-only, `loading`, `href` |
 | `input`, `label`, `form` | Text input, field label, and `Form`/`FormField`/`FormError`/`FormActions`. `<FormField>` mints an id via `useId()`, so child `<Label>`/`<Input>`/`<Select>` auto-bind without `htmlFor`/`id` |
 | `card` | Generic surface primitive |
 | `status`, `tag`, `mono` | State (dot + word), kind label, copyable sha |

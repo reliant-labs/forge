@@ -6,13 +6,15 @@
 // per-org database (t_<org>, provisioned by its obstenant schema), and forge
 // runs it against a project's local ClickStack (LocalDatabase). The backend
 // chooses the database through Scope.Database and runs the Stmt itself: this
-// package never opens a connection, so it has no Runner. Tables a backend does
+// package never opens a connection. Tables a backend does
 // not have (the control plane's browser tables, locally) fail at execution, not
 // here.
 //
-// It is pure: it builds statements and parses results' shape. The caller runs a
-// Stmt on its own connection, so the database, not this package, is the org
-// boundary. What this package adds is that nothing a caller sends can become
+// It builds statements and parses results' shape. The caller runs a Stmt on its
+// own connection, so the database, not this package, is the org boundary. Where
+// a request takes several statements (EvalMetricPanel), the Runner is the
+// caller's: obsquery opens no connection and holds no credential or setting.
+// What this package adds is that nothing a caller sends can become
 // SQL text:
 //
 //   - every caller-supplied VALUE is a server-side parameter ({pN:Type}),

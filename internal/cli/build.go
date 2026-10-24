@@ -483,6 +483,8 @@ type buildResult struct {
 	tag      string
 	receipt  *release.BuildReceipt
 	workload string // runtime consumer that requested this result; never inferred from repository
+	// goTargets are the exact recipes compiled into this invocation's project image.
+	goTargets []goBuildTarget
 }
 
 // prepareBuild runs the three setup steps every build needs before it can
@@ -1917,6 +1919,7 @@ func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
 			go func() {
 				defer wg.Done()
 				r := dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, guard)
+				r.goTargets = goTargets
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -1979,6 +1982,7 @@ func buildSequential(ctx context.Context, plan buildPlan) []buildResult {
 			projectImageArch := resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
 			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), envLabel: opts.env}
 			r := dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, guard)
+			r.goTargets = goTargets
 			results = append(results, r)
 			if r.err != nil {
 				return results
@@ -2493,13 +2497,15 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 	}
 
 	return buildResult{
-		name:      cfg.Name + " (docker)",
-		kind:      "docker",
-		duration:  time.Since(start),
-		err:       nil,
-		tag:       tags.tag,
-		digest:    digest,
-		platforms: platforms,
+		name:       cfg.Name + " (docker)",
+		kind:       "docker",
+		duration:   time.Since(start),
+		err:        nil,
+		image:      cfg.Name,
+		repository: tags.repository,
+		tag:        tags.tag,
+		digest:     digest,
+		platforms:  platforms,
 	}
 }
 
@@ -2507,8 +2513,10 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 // `docker build` applies (local), and the subset `docker push` sends to the
 // registry (push).
 type dockerImageTags struct {
-	local []string
-	push  []string
+	// repository is the declared push destination, not a display name or tag.
+	repository string
+	local      []string
+	push       []string
 	// tag is the version tag the set carries (the non-`latest` one): the tag
 	// the image's build state records.
 	tag string
@@ -2536,7 +2544,7 @@ type dockerImageTags struct {
 // fails after its first push leaves every shared tag exactly where it was.
 // See releaseImageTag for the incident this closes.
 func imageTagSet(repository, resolvedTag string, push, releaseScoped bool) dockerImageTags {
-	out := dockerImageTags{tag: resolvedTag}
+	out := dockerImageTags{repository: repository, tag: resolvedTag}
 	seen := map[string]bool{}
 	add := func(repo string, pushed bool) {
 		refs := make([]string, 0, 2)
@@ -2687,14 +2695,15 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path stri
 	}
 
 	return buildResult{
-		name:      name + " (docker)",
-		kind:      "docker",
-		duration:  time.Since(start),
-		err:       nil,
-		image:     name,
-		tag:       tags.tag,
-		digest:    digest,
-		platforms: platforms,
+		name:       name + " (docker)",
+		kind:       "docker",
+		duration:   time.Since(start),
+		err:        nil,
+		image:      name,
+		repository: tags.repository,
+		tag:        tags.tag,
+		digest:     digest,
+		platforms:  platforms,
 	}
 }
 

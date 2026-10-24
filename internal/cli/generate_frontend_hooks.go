@@ -116,6 +116,8 @@ func applyMutationMarkers(data *codegen.FrontendHookTemplateData, marked map[str
 	for i := range data.Methods {
 		if marked[data.Methods[i].Name] && data.Methods[i].IsQuery {
 			data.Methods[i].IsQuery = false
+			// A mutation is never paged: useInfiniteQuery would replay it.
+			data.Methods[i].Paged = false
 			changed = true
 		}
 	}
@@ -124,11 +126,15 @@ func applyMutationMarkers(data *codegen.FrontendHookTemplateData, marked map[str
 	}
 	data.HasQueries = false
 	data.HasMutations = false
+	data.HasPaged = false
 	for _, m := range data.Methods {
 		if m.IsQuery {
 			data.HasQueries = true
 		} else {
 			data.HasMutations = true
+		}
+		if m.Paged {
+			data.HasPaged = true
 		}
 	}
 }
@@ -367,7 +373,8 @@ type hookFileEntry struct {
 }
 
 // hookFileExportedSymbols returns the names of identifiers a rendered
-// hooks.ts.tmpl file exposes (one `useXxx` per unary RPC). Keeping this in
+// hooks.ts.tmpl file exposes (one `useXxx` per unary RPC, plus
+// `useXxxInfinite` per paged read). Keeping this in
 // sync with the template is intentional: the template is the only thing
 // that decides what gets exported, so we read its output shape here
 // rather than re-parsing the rendered .ts.
@@ -375,6 +382,9 @@ func hookFileExportedSymbols(data codegen.FrontendHookTemplateData) []string {
 	out := make([]string, 0, len(data.Methods))
 	for _, m := range data.Methods {
 		out = append(out, "use"+m.Name)
+		if m.Paged {
+			out = append(out, "use"+m.Name+"Infinite")
+		}
 	}
 	return out
 }
@@ -618,6 +628,9 @@ type hookStarterMethod struct {
 	Name     string // "GetUser"
 	HookName string // "useGetUser"
 	IsQuery  bool
+	// Infinite marks the row for a paged read's useXxxInfinite hook, whose
+	// data is { pages, pageParams } rather than one response.
+	Infinite bool
 }
 
 // hookStarterData is the template data for hooks.test.tsx.tmpl.
@@ -744,6 +757,18 @@ func writeHookStarterTest(hooksDir, fileName string, svc codegen.ServiceDef, dat
 			HookName: "use" + m.Name,
 			IsQuery:  m.IsQuery,
 		})
+		if m.Paged {
+			starterData.HookImports = append(starterData.HookImports, hookStarterImport{
+				Symbol: "use" + m.Name + "Infinite",
+				Module: base,
+			})
+			starterData.Methods = append(starterData.Methods, hookStarterMethod{
+				Name:     m.Name,
+				HookName: "use" + m.Name + "Infinite",
+				IsQuery:  true,
+				Infinite: true,
+			})
+		}
 	}
 
 	var buf bytes.Buffer

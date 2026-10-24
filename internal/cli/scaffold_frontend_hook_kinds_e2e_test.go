@@ -24,13 +24,25 @@ import (
 //   - a mutation hook's TContext is inferred from onMutate, so an optimistic
 //     update reads its rollback off onError's context with no cast. The
 //     hook used to pin TContext to `unknown`.
+//   - a query hook's `select` sets its `data` type (TData), as in useQuery
+//     itself. It used to be typed as returning the response, so a caller
+//     mapping proto to a view model wrote a useMemo over `data` instead.
+//   - a read in the list-pagination shape (the scaffolded ListItems) also
+//     gets useListItemsInfinite, whose request has no pageToken (the hook
+//     owns it) and whose `select` reshapes `{ pages }`.
+//
+// And one RUNTIME property, under the project's own vitest: the scaffolded
+// mockTransport create()s both directions, like a real transport — a
+// handler sees the full request and a partial fixture comes back as the full
+// response — and the starter test drives the infinite hook against it.
 //
 // Positive AND negative, like the error-contract gate beside it: a positive
 // half alone passes just as green when the hook is `any`. The negative half
 // proves the kind (a query result has no `mutate`) and the context type (a
 // field onMutate never returned is rejected) are load-bearing.
 //
-// COST: one scaffold + one `npm install` + two tsc runs (~2-4 min).
+// COST: one scaffold + one `npm install` + two tsc runs + one vitest run
+// (~3-5 min).
 func TestE2EGeneratedHooksReadNoSideEffectsAndTypeMutationContext(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	requireTool(t, "node", "npm")
@@ -90,6 +102,8 @@ message Item {
 		"export const useVersion = createQueryHook<",
 		`version: keys.query("version", VersionRequestSchema)`,
 		"export const useCreateItem = createMutationHook<",
+		"export const useListItemsInfinite = createInfiniteQueryHook<",
+		`listItemsInfinite: keys.infinite("listItems", ListItemsRequestSchema, "item")`,
 	} {
 		if !strings.Contains(hooks, want) {
 			t.Errorf("generated hooks are missing %q:\n%s", want, hooks)
@@ -100,6 +114,11 @@ message Item {
 	writeFileE2E(t, filepath.Join(webDir, "src", "app", "hookkinds", "page.tsx"),
 		fmt.Sprintf(hookKindsPositiveFixture, hooksModule))
 	runCmdTimeout(t, webDir, 3*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
+
+	// ── RUNTIME: full messages both ways, and the starter's infinite row ─
+	writeFileE2E(t, filepath.Join(webDir, "src", "app", "hookkinds", "transport.test.tsx"), hookKindsTransportFixture)
+	runCmdTimeout(t, webDir, 5*time.Minute, "npx", "--no-install", "vitest", "run",
+		"src/app/hookkinds", "src/hooks/"+strings.TrimSuffix(strings.TrimSuffix(hooksFile, ".ts"), "_gen")+".test.tsx")
 
 	// ── NEGATIVE: neither property may be `any` ─────────────────────────
 	writeFileE2E(t, filepath.Join(webDir, "src", "app", "hookkinds", "negative.ts"),
@@ -115,6 +134,12 @@ message Item {
 	if !strings.Contains(out, "nonexistentRollback") {
 		t.Errorf("tsc did not reject a field onMutate never returned — TContext is not inferred:\n%s", out)
 	}
+	if !strings.Contains(out, "'number | undefined' is not assignable to type 'string | undefined'") {
+		t.Errorf("tsc did not reject select's number read as a string — data is not typed by select:\n%s", out)
+	}
+	if !strings.Contains(out, "pageToken") {
+		t.Errorf("tsc accepted a pageToken on the infinite hook's request — the hook does not own the token:\n%s", out)
+	}
 }
 
 // hookKindsPositiveFixture uses useVersion as a read (request in, data out)
@@ -122,31 +147,74 @@ message Item {
 // %s is the generated hooks module specifier.
 const hookKindsPositiveFixture = `"use client";
 
-import { useCreateItem, useVersion } from "%s";
+import { useCreateItem, useListItems, useListItemsInfinite, useVersion } from "%[1]s";
 
 export default function HookKindsPage() {
   const version = useVersion({});
   const label: string = version.data?.version ?? "";
+  const names = useListItems({}, { select: (r) => r.items.map((i) => i.name) });
+  const first: string = names.data?.[0] ?? "";
+  const paged = useListItemsInfinite({ pageSize: 20 }, { select: (d) => d.pages.flatMap((p) => p.items) });
+  const count: number = paged.data?.length ?? 0;
   const create = useCreateItem({
     onMutate: (req) => ({ rollback: () => String(req.name) }),
     onError: (_err, _req, context) => {
       context?.rollback();
     },
   });
-  return <button onClick={() => create.mutate({ name: "x" })}>{label}</button>;
+  return (
+    <button onClick={() => (paged.hasNextPage ? paged.fetchNextPage() : create.mutate({ name: "x" }))}>
+      {label} {first} {count}
+    </button>
+  );
 }
 `
 
 // hookKindsNegativeFixture MUST NOT compile, once per property. %s is the
 // generated hooks module specifier.
-const hookKindsNegativeFixture = `import { useCreateItem, useVersion } from "%s";
+const hookKindsNegativeFixture = `import { useCreateItem, useListItems, useListItemsInfinite, useVersion } from "%[1]s";
 
 export function bogus() {
   const version = useVersion({});
   version.mutate({});
+  const count = useListItems({}, { select: (r) => r.items.length });
+  const wrong: string | undefined = count.data;
+  useListItemsInfinite({ pageToken: "x" });
   useCreateItem({
     onMutate: () => ({ rollback: () => undefined }),
     onError: (_err, _req, context) => context?.nonexistentRollback(),
   });
+  return wrong;
 }
+`
+
+// hookKindsTransportFixture runs under the project's vitest: the scaffolded
+// mockTransport must create() the request a handler sees and the response a
+// caller gets, as a real transport serializes and parses them. Before, both
+// were the caller's partial init shapes, so a handler reading
+// req.<repeated>.length threw and a caller reading res.items.length did too.
+const hookKindsTransportFixture = `import { createClient } from "@connectrpc/connect";
+import { describe, expect, it } from "vitest";
+
+import { ItemService } from "@/gen/services/item/v1/item_pb";
+import { mockTransport } from "@/lib/test-utils";
+
+describe("mockTransport", () => {
+  it("hands the handler the full request and the caller the full response", async () => {
+    let seenToken: string | undefined;
+    const client = createClient(
+      ItemService,
+      mockTransport({
+        "ItemService.ListItems": (req) => {
+          seenToken = (req as { pageToken: string }).pageToken;
+          return {};
+        },
+      }),
+    );
+    const res = await client.listItems({});
+    expect(seenToken).toBe("");
+    expect(res.items).toEqual([]);
+    expect(res.nextPageToken).toBe("");
+  });
+});
 `

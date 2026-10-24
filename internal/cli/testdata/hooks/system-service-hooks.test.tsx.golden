@@ -24,6 +24,12 @@ import { useGetInfo } from "./system-service-hooks_gen";
 import { useVersion } from "./system-service-hooks_gen";
 import { useDrain } from "./system-service-hooks_gen";
 import { useRestart } from "./system-service-hooks_gen";
+import { useListEvents } from "./system-service-hooks_gen";
+import { useListEventsInfinite } from "./system-service-hooks_gen";
+import { useSearchLogs } from "./system-service-hooks_gen";
+import { useSearchLogsInfinite } from "./system-service-hooks_gen";
+import { useListNodes } from "./system-service-hooks_gen";
+import { useFindPeers } from "./system-service-hooks_gen";
 
 import type { ReactNode } from "react";
 
@@ -143,6 +149,86 @@ describe("SystemService hooks", () => {
     );
 
     const { result } = renderHook(() => useRestart(), { wrapper });
+    await result.current.mutateAsync({} as never).catch(() => {
+      // Mutations may reject if the empty request fails validation upstream.
+      // The point of the starter is that the wiring resolves; tighten the
+      // assertions as you flesh out the page.
+    });
+    await waitForSettled(result);
+  });
+
+  it("useListEvents resolves a happy-path response", async () => {
+    setTransport(
+      mockTransport({
+        "SystemService.ListEvents": { response: {} },
+      }),
+    );
+
+    const { result } = renderHook(() => useListEvents({} as never), { wrapper });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toBeDefined();
+  });
+
+  it("useListEventsInfinite resolves a happy-path response", async () => {
+    setTransport(
+      mockTransport({
+        "SystemService.ListEvents": { response: {} },
+      }),
+    );
+
+    const { result } = renderHook(() => useListEventsInfinite({} as never), { wrapper });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    // An empty next_page_token ends the listing after the first page.
+    expect(result.current.data?.pages).toHaveLength(1);
+    expect(result.current.hasNextPage).toBe(false);
+  });
+
+  it("useSearchLogs resolves a happy-path response", async () => {
+    setTransport(
+      mockTransport({
+        "SystemService.SearchLogs": { response: {} },
+      }),
+    );
+
+    const { result } = renderHook(() => useSearchLogs({} as never), { wrapper });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toBeDefined();
+  });
+
+  it("useSearchLogsInfinite resolves a happy-path response", async () => {
+    setTransport(
+      mockTransport({
+        "SystemService.SearchLogs": { response: {} },
+      }),
+    );
+
+    const { result } = renderHook(() => useSearchLogsInfinite({} as never), { wrapper });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    // An empty next_page_token ends the listing after the first page.
+    expect(result.current.data?.pages).toHaveLength(1);
+    expect(result.current.hasNextPage).toBe(false);
+  });
+
+  it("useListNodes resolves a happy-path response", async () => {
+    setTransport(
+      mockTransport({
+        "SystemService.ListNodes": { response: {} },
+      }),
+    );
+
+    const { result } = renderHook(() => useListNodes({} as never), { wrapper });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toBeDefined();
+  });
+
+  it("useFindPeers resolves a happy-path response", async () => {
+    setTransport(
+      mockTransport({
+        "SystemService.FindPeers": { response: {} },
+      }),
+    );
+
+    const { result } = renderHook(() => useFindPeers(), { wrapper });
     await result.current.mutateAsync({} as never).catch(() => {
       // Mutations may reject if the empty request fails validation upstream.
       // The point of the starter is that the wiring resolves; tighten the

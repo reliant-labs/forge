@@ -81,7 +81,13 @@ describe("{{.ServiceName}} hooks", () => {
         "{{$.ServiceName}}.{{$m.Name}}": { response: {} },
       }),
     );
-{{if $m.IsQuery}}
+{{if $m.Infinite}}
+    const { result } = renderHook(() => {{$m.HookName}}({} as never), { wrapper });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    // An empty next_page_token ends the listing after the first page.
+    expect(result.current.data?.pages).toHaveLength(1);
+    expect(result.current.hasNextPage).toBe(false);
+{{- else if $m.IsQuery}}
     const { result } = renderHook(() => {{$m.HookName}}({} as never), { wrapper });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data).toBeDefined();

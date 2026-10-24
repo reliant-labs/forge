@@ -43,9 +43,13 @@ import {
   type MessageInitShape,
 } from "@bufbuild/protobuf";
 import {
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
+  type InfiniteData,
+  type UseInfiniteQueryOptions,
+  type UseInfiniteQueryResult,
   type UseMutationOptions,
   type UseMutationResult,
   type UseQueryOptions,
@@ -96,6 +100,68 @@ export interface ServiceKeyBuilders {
     schema: Schema,
     entityScope?: string,
   ): (req: MessageInitShape<Schema>) => ServiceQueryKey;
+  /**
+   * One paged read: [service, entity?, method, protojson(req), "infinite"],
+   * where req is the request WITHOUT its page token — the hook owns the
+   * token, so every page of one listing shares one cache entry.
+   *
+   * It nests under the same scopes as `query`, so an entity or service-wide
+   * invalidation refetches it. The "infinite" suffix keeps it OFF the plain
+   * query's entry for the same request: an infinite query caches
+   * `{ pages, pageParams }`, not one response, and a plain hook reading that
+   * entry would get the wrong shape.
+   */
+  infinite<Schema extends DescMessage>(
+    method: string,
+    schema: Schema,
+    entityScope?: string,
+  ): (req: PageRequest<Schema>) => ServiceQueryKey;
+}
+
+/**
+ * Omit distributed over a union. MessageInitShape is `Message | init
+ * object`, and a plain Omit over a union keeps only the keys both members
+ * share — which would silently drop every field from the init side.
+ */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
+  ? Omit<T, K>
+  : never;
+
+/**
+ * The request a generated infinite hook takes: the rpc's request without
+ * `pageToken`, which the hook supplies page by page.
+ */
+export type PageRequest<Schema extends DescMessage> = DistributiveOmit<
+  MessageInitShape<Schema>,
+  "pageToken"
+>;
+
+/**
+ * The response shape forge's list-pagination convention (AIP-158) gives a
+ * paged read: `string next_page_token`, empty on the last page. Optional so
+ * an `optional string next_page_token` response satisfies it too.
+ */
+export interface PagedResponse {
+  nextPageToken?: string;
+}
+
+/**
+ * pageRequestKey is requestKey with the page token dropped, so every page of
+ * one listing hashes to one key even when a caller (JS, or a cast) passes a
+ * token anyway. It is dropped from the protojson rather than from the init
+ * object: a spread Message keeps its $typeName, and create() would hand that
+ * token-less copy back as if it were a complete message.
+ */
+function pageRequestKey<Schema extends DescMessage>(
+  schema: Schema,
+  req: PageRequest<Schema>,
+): unknown {
+  const json = requestKey(schema, req as unknown as MessageInitShape<Schema>);
+  if (json === null || typeof json !== "object" || Array.isArray(json)) {
+    return json;
+  }
+  const { pageToken: _pageToken, ...rest } = json as Record<string, unknown>;
+  return rest;
 }
 
 /**
@@ -122,14 +188,96 @@ export function serviceKeys(service: string): ServiceKeyBuilders {
         entityScope === undefined
           ? ([service, method, requestKey(schema, req)] as const)
           : ([service, entityScope, method, requestKey(schema, req)] as const),
+    infinite:
+      <Schema extends DescMessage>(
+        method: string,
+        schema: Schema,
+        entityScope?: string,
+      ) =>
+      (req: PageRequest<Schema>): ServiceQueryKey =>
+        entityScope === undefined
+          ? ([
+              service,
+              method,
+              pageRequestKey(schema, req),
+              "infinite",
+            ] as const)
+          : ([
+              service,
+              entityScope,
+              method,
+              pageRequestKey(schema, req),
+              "infinite",
+            ] as const),
   };
 }
 
-/** A generated query hook: `useGetOrder(req, options?)`. */
-export type ServiceQueryHook<Schema extends DescMessage, Response> = (
+/**
+ * How a generated file calls one rpc. `signal` is React Query's: a query
+ * that is unmounted or superseded (a new key while typing) aborts its
+ * request instead of letting it land on a cache entry nobody reads.
+ */
+export type ServiceCall<Schema extends DescMessage, Response> = (
   req: MessageInitShape<Schema>,
-  options?: Partial<UseQueryOptions<Response, ConnectClientError>>,
-) => UseQueryResult<Response, ConnectClientError>;
+  signal?: AbortSignal,
+) => Promise<Response>;
+
+/**
+ * A generated query hook: `useGetOrder(req, options?)`.
+ *
+ * TData is what the hook's `data` is, exactly as in React Query's own
+ * useQuery: the response by default, or whatever `select` returns. A call
+ * site mapping the proto response to a view model passes
+ * `select: (r) => toView(r)` and gets `data: View` — no useMemo over `data`,
+ * and React Query re-runs the mapping only when the response changes (or
+ * when `select` itself does, so hoist it or wrap it in useCallback when it
+ * is expensive). TData is inferred from `select` and is a parameter of the
+ * HOOK, not of the factory, so every call site picks its own.
+ */
+export type ServiceQueryHook<Schema extends DescMessage, Response> = <
+  TData = Response,
+>(
+  req: MessageInitShape<Schema>,
+  options?: Partial<UseQueryOptions<Response, ConnectClientError, TData>>,
+) => UseQueryResult<TData, ConnectClientError>;
+
+/**
+ * The options a generated infinite hook takes: React Query's own, minus the
+ * four the hook owns — the key, the fetch, and the page-token plumbing.
+ * `getNextPageParam` defaults to the response's `nextPageToken` (empty means
+ * last page) and may be overridden; everything else (`select`,
+ * `placeholderData`, `staleTime`, `enabled`, `maxPages`, …) passes through.
+ */
+export type ServiceInfiniteQueryOptions<Response, TData> = Partial<
+  Omit<
+    UseInfiniteQueryOptions<
+      Response,
+      ConnectClientError,
+      TData,
+      ServiceQueryKey,
+      string
+    >,
+    "queryKey" | "queryFn" | "initialPageParam"
+  >
+>;
+
+/**
+ * A generated infinite-query hook: `useListOrdersInfinite(req, options?)`,
+ * for a read that follows forge's list-pagination shape (`string page_token`
+ * on the request, `string next_page_token` on the response).
+ *
+ * `req` is the first page's request without its token. `data` is React
+ * Query's `{ pages, pageParams }` by default; `select` reshapes it, so
+ * flattening the pages into one list is
+ * `select: (d) => d.pages.flatMap((p) => p.orders)`.
+ */
+export type ServiceInfiniteQueryHook<
+  Schema extends DescMessage,
+  Response extends PagedResponse,
+> = <TData = InfiniteData<Response, string>>(
+  req: PageRequest<Schema>,
+  options?: ServiceInfiniteQueryOptions<Response, TData>,
+) => UseInfiniteQueryResult<TData, ConnectClientError>;
 
 /**
  * A generated mutation hook: `useCreateOrder(options?)`.
@@ -175,13 +323,66 @@ export type ServiceMutationHook<Schema extends DescMessage, Response> = <
  */
 export function createQueryHook<Schema extends DescMessage, Response>(
   keyFor: (req: MessageInitShape<Schema>) => ServiceQueryKey,
-  call: (req: MessageInitShape<Schema>) => Promise<Response>,
+  call: ServiceCall<Schema, Response>,
 ): ServiceQueryHook<Schema, Response> {
-  return (req, options) =>
-    useQuery({
+  return <TData = Response>(
+    req: MessageInitShape<Schema>,
+    options?: Partial<UseQueryOptions<Response, ConnectClientError, TData>>,
+  ) =>
+    useQuery<Response, ConnectClientError, TData>({
       queryKey: keyFor(req),
-      queryFn: () => call(req),
+      queryFn: ({ signal }) => call(req, signal),
       ...options,
+    });
+}
+
+/**
+ * createInfiniteQueryHook builds one useInfiniteQuery wrapper over a paged
+ * read.
+ *
+ * The page token is the hook's: the first page is fetched with the caller's
+ * request as given (no token, so an `optional string page_token` stays
+ * unset), each later one with the previous response's `nextPageToken`, and
+ * an empty token ends the listing. The key is `keys.infinite(...)`, which
+ * strips the token and sits under the service and entity scopes, so the
+ * mutations that invalidate a plain list refetch this one too.
+ *
+ * The caller's options are spread BETWEEN the default getNextPageParam and
+ * the four fields the hook owns: a caller may replace the default, never the
+ * key or the fetch.
+ */
+export function createInfiniteQueryHook<
+  Schema extends DescMessage,
+  Response extends PagedResponse,
+>(
+  keyFor: (req: PageRequest<Schema>) => ServiceQueryKey,
+  call: ServiceCall<Schema, Response>,
+): ServiceInfiniteQueryHook<Schema, Response> {
+  return <TData = InfiniteData<Response, string>>(
+    req: PageRequest<Schema>,
+    options?: ServiceInfiniteQueryOptions<Response, TData>,
+  ) =>
+    useInfiniteQuery<
+      Response,
+      ConnectClientError,
+      TData,
+      ServiceQueryKey,
+      string
+    >({
+      getNextPageParam: (last) => last.nextPageToken || undefined,
+      ...options,
+      queryKey: keyFor(req),
+      queryFn: ({ pageParam, signal }) =>
+        call(
+          (pageParam === ""
+            ? req
+            : {
+                ...req,
+                pageToken: pageParam,
+              }) as unknown as MessageInitShape<Schema>,
+          signal,
+        ),
+      initialPageParam: "",
     });
 }
 

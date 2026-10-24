@@ -71,8 +71,95 @@ point, so the defaults are the hardened ones. Everything is overridable.
 | `CancelHealthCheckOnNewRevision` | a fix-forward revision cancels a stuck health check | `feature_gates = {...}` |
 | `concurrency = 16`, `concurrency_ssa = 8`, `source_concurrency = 8`, `--requeue-dependency=10s` | one 13-minute rollout holds 1 of 4 default workers; this keeps a slow rollout from blocking everyone | the three arguments; or `values` |
 | requests/limits, `priority_class_name = "forge-delivery"` | sized starting points; the PriorityClass is declared with the chart | `values`; `priority_class_create = False` to name a class that exists |
-| NetworkPolicies | `allow-egress` only: **ingress to every `flux-system` pod only from `flux-system` pods** (an invariant, tested); no `allow-webhooks`; `allow-scraping` only for `scrape_namespaces` | `scrape_namespaces = ["observability"]`; `network_policies = "chart"` |
+| NetworkPolicies | `allow-egress` only: **ingress to every `flux-system` pod only from `flux-system` pods** (an invariant, tested); egress open (`[{}]`) unless you declare `egress`; no `allow-webhooks`; `allow-scraping` only for `scrape_namespaces` | `egress = {...}` (below); `scrape_namespaces = ["observability"]`; `network_policies = "chart"` |
 | `pod_security = "restricted"` | Pod Security enforce/warn/audit on `flux-system` | `pod_security = "baseline"` or `""` |
+
+### Declare the hub's egress
+
+The default leaves every controller's egress open, exactly as the chart ships
+it. A hub that reconciles other people's bundles should not run that way:
+kustomize-controller dials whatever address a Kustomization's kubeconfig names,
+so open egress lets that address be anywhere. `egress` declares it:
+
+```kcl
+_dns = {"to" = [{namespaceSelector.matchLabels = {"kubernetes.io/metadata.name" = "kube-system"}, podSelector.matchLabels = {"k8s-app" = "kube-dns"}}],
+        ports = [{port = 53, protocol = "UDP"}, {port = 53, protocol = "TCP"}]}
+forge.flux_chart(egress = {
+    kustomize = [_dns, {"to" = [{podSelector.matchLabels = {app = "source-controller"}}], ports = [{port = 9090, protocol = "TCP"}]},
+                 {"to" = [{ipBlock.cidr = "172.16.0.0/28"}], ports = [{port = 443, protocol = "TCP"}]}]   # the hub's API
+    source = [_dns, ...]
+    flux_check = [_dns, ...]        # the chart's pre-install `flux check` Job
+})
+```
+
+- Keys: `kustomize`, `source`, `flux_check`, and `kustomize_connected` (only
+  with `connected_shard`). A key **replaces** that controller's rules.
+- Once `egress` is set, **every** controller must be named. An unnamed one would
+  silently lose all egress, so the render refuses; `[{}]` opts one back into
+  open egress on purpose.
+- Why it replaces rather than adds: **NetworkPolicy allows are additive.** A
+  policy added beside `allow-egress` with `egress: [{}]` is cancelled by it. With
+  `egress` set, `allow-egress` keeps only its ingress rule (the invariant above)
+  and selects every pod for Egress with no rule, i.e. default deny; each
+  controller gets `<controller>-egress`, selected by its pod label. The
+  per-controller policies render before `allow-egress`, so re-applying over a
+  live open policy never has a window with neither.
+- Leave the metadata server out of `kustomize` once its Workload Identity is
+  gone; put `169.254.169.254/32` on `source` if it pulls from Artifact Registry.
+
+### The connected-cluster shard (`connected_shard = True`)
+
+Applying to a cluster someone else owns (`spec.kubeConfig`) is a different
+authority from applying in your own, and it needs the internet, which your own
+controller must not have. So there are two kustomize-controllers, selected by
+Flux's sharding label:
+
+| | `kustomize-controller` (main) | `kustomize-controller-connected` (shard) |
+|---|---|---|
+| watches | `sharding.fluxcd.io/key notin (connected)` | `sharding.fluxcd.io/key=connected` |
+| `--default-service-account` | **kept** (hosted in-cluster applies) | **none** |
+| hub RBAC | tenant impersonation, pinned by `resourceNames`: separate and unchanged | **none beyond running**: Flux CRs, events, leader election, and a per-namespace Secret read |
+| internet egress | **none** (declare it that way) | the one controller that has it (guard destinations with `pkg/netguard`) |
+| credential to the target | the impersonated tenant ServiceAccount | the uploaded kubeconfig Secret, nothing else |
+
+```kcl
+forge.flux_chart(
+    connected_shard = True,
+    egress = {kustomize = [...], kustomize_connected = [...], source = [...], flux_check = [...]},
+)
+# per namespace that holds Flux objects:
+forge.flux_namespace_bindings("flux-acme", connected_shard = True)
+```
+
+Applying with a ServiceAccount on the shard is **banned, not merely unused**:
+
+- no `--default-service-account` flag, no workload-identity annotation, and a
+  ServiceAccount whose roles hold no `impersonate`, no `serviceaccounts` or
+  `serviceaccounts/token`, no wildcard and no cluster-wide Secret read (pinned
+  over every generated object by `kcl/tests/positive_flux_chart_connected_shard.k`);
+  it is never bound `flux-tenant-reconciler`, the role that carries `impersonate`;
+- a `ValidatingAdmissionPolicy` (`failurePolicy: Fail`, `Deny`) refuses, on
+  CREATE and UPDATE, a Kustomization on the shard that sets
+  `spec.serviceAccountName` or `spec.decryption.serviceAccountName`, or lacks
+  `spec.kubeConfig.secretRef` (a `configMapRef` resolves a cloud provider
+  through the controller's own identity); and, the other way, a Kustomization
+  with `spec.kubeConfig` that is not labelled `sharding.fluxcd.io/key: connected`,
+  because the main controller's `--default-service-account` would then apply on
+  the remote cluster. The policy is run against a real apiserver by
+  `TestFluxConnectedShardAdmission`.
+
+The writer of a connected Kustomization sets that label and no
+`serviceAccountName` (`flux.ShardLabel` / `flux.ConnectedShard` in Go). The
+policy checks writes only: audit existing objects for the label. It needs
+`rbac = "namespaced"`, `network_policies = "hardened"` and explicit egress for
+`kustomize` and `kustomize_connected` (with open egress on both the split
+protects nothing, so the render refuses). The main controller keeps its
+hub-side tenant impersonation; that is a separate grant and this does not touch
+it.
+
+The shard's Deployment is rendered by forge beside the chart's, with the same
+image tag the chart pins (`values.kustomizeController.image` / `.tag` move both).
+It shares placement, priority class and `imagePullSecrets` with the main one.
 
 Opt-in placement, for a dedicated delivery node pool (forge has no node-pool
 primitive, so provision it yourself, tainted `reliant.dev/pool=delivery-v1:NoSchedule`):

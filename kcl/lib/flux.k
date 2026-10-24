@@ -129,6 +129,29 @@ FLUX_DEPLOY_SERVICE_ACCOUNT = "reliant-deploy-tenant"
 FLUX_RECONCILER_ROLE = "flux-tenant-reconciler"
 FLUX_SOURCE_ROLE = "flux-tenant-source"
 
+# The connected-cluster shard (`connected_shard = True`): a SECOND
+# kustomize-controller selected by Flux's sharding label. A Kustomization whose
+# `spec.kubeConfig` points at a customer's cluster carries
+# `sharding.fluxcd.io/key: connected` and is reconciled ONLY by it; everything
+# else stays on the main controller. Shared with Go (internal/flux) and pinned
+# by a test.
+FLUX_SHARD_LABEL = "sharding.fluxcd.io/key"
+FLUX_CONNECTED_SHARD = "connected"
+FLUX_CONNECTED_CONTROLLER = "kustomize-controller-connected"
+# The per-namespace Secret read the shard needs (its kubeconfig Secret) and the
+# cluster-wide Flux-CR access it needs to run at all. Neither impersonates.
+FLUX_CONNECTED_RECONCILER_ROLE = "flux-connected-reconciler"
+FLUX_CONNECTED_CONTROLLER_ROLE = "flux-connected-controller"
+# The ValidatingAdmissionPolicy (and its binding) that keeps the shard
+# service-account-free.
+FLUX_CONNECTED_POLICY = "flux-connected-shard-no-serviceaccount"
+
+# The kustomize-controller image the chart (2.19.1) ships. The shard's second
+# Deployment is rendered by forge rather than the chart, so it must name the
+# same image; `values.kustomizeController.image` / `.tag` override both.
+FLUX_KUSTOMIZE_CONTROLLER_IMAGE = "ghcr.io/fluxcd/kustomize-controller"
+FLUX_KUSTOMIZE_CONTROLLER_TAG = "v1.9.5"
+
 # The default PriorityClass forge declares for the controllers.
 FLUX_PRIORITY_CLASS = "forge-delivery"
 
@@ -143,6 +166,26 @@ _FLUX_CONTROLLERS = [
     {kind = "ServiceAccount", name = "kustomize-controller", namespace = FLUX_NAMESPACE}
     {kind = "ServiceAccount", name = "source-controller", namespace = FLUX_NAMESPACE}
 ]
+_FLUX_CONNECTED_SA = {kind = "ServiceAccount", name = FLUX_CONNECTED_CONTROLLER, namespace = FLUX_NAMESPACE}
+
+# The controllers `egress` can name, and what selects each one's pods. The
+# pre-install `flux check` Job is a pod in flux-system too: once egress is
+# denied by default it needs its own allow or the next deploy fails on it.
+_EGRESS_KEYS = ["kustomize", "source", "kustomize_connected", "flux_check"]
+_EGRESS_POLICY_NAMES = {
+    kustomize = "kustomize-controller-egress"
+    source = "source-controller-egress"
+    kustomize_connected = "kustomize-controller-connected-egress"
+    flux_check = "flux-check-egress"
+}
+_EGRESS_SELECTORS = {
+    kustomize = {app = "kustomize-controller"}
+    source = {app = "source-controller"}
+    kustomize_connected = {app = FLUX_CONNECTED_CONTROLLER}
+    flux_check = {"job-name" = "${FLUX_CHART_NAME}-flux-check"}
+}
+# Egress left unspecified for a controller: open, as the chart ships it.
+_EGRESS_OPEN = [{}]
 _FLUX_CRS = [
     {apiGroups = ["source.toolkit.fluxcd.io"], resources = ["*"], verbs = ["*"]}
     {apiGroups = ["source.extensions.fluxcd.io"], resources = ["*"], verbs = ["*"]}
@@ -181,7 +224,48 @@ _FLUX_CONFIG_READ = {apiGroups = [""], resources = ["secrets", "configmaps"], ve
 #                              a class the cluster already has.
 #   placement                  node_selector / tolerations / runtime_class_name,
 #                              typically `flux_placement_delivery_v1()`.
+#   egress                     per-controller NetworkPolicy egress rules, keyed
+#                              "kustomize" | "source" | "kustomize_connected" |
+#                              "flux_check". Default (empty): every controller
+#                              keeps the chart's open egress (`[{}]`), unchanged.
+#                              A key REPLACES that controller's rules; a key you
+#                              do not name stays open. NetworkPolicy allows are
+#                              additive, so once ANY controller is restricted
+#                              `allow-egress` stops carrying `{}` (it keeps only
+#                              the ingress invariant and denies egress), and each
+#                              controller gets its own `<controller>-egress`
+#                              policy selected by pod label. A hub that reconciles
+#                              other people's bundles should declare its own: the
+#                              open default lets any controller reach anything.
+#   connected_shard            True renders a SECOND kustomize-controller for
+#                              connected clusters (below). Needs rbac =
+#                              "namespaced" and explicit egress for "kustomize"
+#                              and "kustomize_connected".
 #
+# THE CONNECTED SHARD. A Kustomization with `spec.kubeConfig` (apply to a
+# customer's cluster) must never be applied by a controller that can also act
+# as a hub identity, and the controller that dials customer clusters is the one
+# that needs the internet. So they are two controllers:
+#
+#   kustomize-controller (main)      keeps --default-service-account and the
+#                                    tenant impersonation on the hub (unchanged);
+#                                    watches `sharding.fluxcd.io/key notin
+#                                    (connected)`; give it NO internet egress.
+#   kustomize-controller-connected   watches `sharding.fluxcd.io/key=connected`;
+#                                    NO --default-service-account, no workload
+#                                    identity, no impersonate and no
+#                                    serviceaccounts access on the hub; its only
+#                                    credential to a connected cluster is the
+#                                    kubeconfig Secret the Kustomization names.
+#                                    It is the one controller given internet
+#                                    egress.
+#
+# "Applies with a service account" is BANNED on the shard, not merely unused: a
+# ValidatingAdmissionPolicy (failurePolicy Fail) refuses a connected-shard
+# Kustomization that sets spec.serviceAccountName (or
+# spec.decryption.serviceAccountName) or lacks spec.kubeConfig.secretRef, and
+# refuses a Kustomization with spec.kubeConfig that is not on the shard.
+
 # Returns a DICT rather than a typed HelmChart because this file is a
 # sub-package of the module that declares the schema, and KCL resolves
 # package identity such that a sibling lib cannot name a parent-package
@@ -202,7 +286,9 @@ flux_chart = lambda values: {str: any} = {}, \
         feature_gates: {str: bool} = {}, \
         priority_class_name: str = FLUX_PRIORITY_CLASS, \
         priority_class_create: bool = True, \
-        placement: {str: any} = {} -> any {
+        placement: {str: any} = {}, \
+        egress: {str: [{str: any}]} = {}, \
+        connected_shard: bool = False -> any {
     assert regex.match(impersonate_service_account, _LABEL_RE), "flux_chart: impersonate_service_account '${impersonate_service_account}' is not an RFC-1123 label"
     assert all ns in scrape_namespaces { regex.match(ns, _LABEL_RE) and len(ns) <= 63 }, "flux_chart: scrape_namespaces entries must be namespace names (RFC-1123 labels); a wildcard is not one, and admitting every namespace is what the chart's own allow-scraping does"
     assert pod_security in ["", "privileged", "baseline", "restricted"], "flux_chart: pod_security must be \"\", \"privileged\", \"baseline\" or \"restricted\", got '${pod_security}'"
@@ -211,6 +297,12 @@ flux_chart = lambda values: {str: any} = {}, \
     assert not (priority_class_name == "" and priority_class_create), "flux_chart: priority_class_create needs a priority_class_name; pass priority_class_create = False to run without a PriorityClass"
     assert priority_class_name == "" or regex.match(priority_class_name, _SUBDOMAIN_RE), "flux_chart: priority_class_name '${priority_class_name}' is not a valid name"
     assert not ("runtime_class_name" in placement and placement.runtime_class_name != "" and not regex.match(placement.runtime_class_name, _SUBDOMAIN_RE)), "flux_chart: placement.runtime_class_name is not a valid RuntimeClass name"
+
+    assert all k in egress { k in _EGRESS_KEYS }, "flux_chart: egress keys must be ${_EGRESS_KEYS}, got ${[k for k in egress]}"
+    assert connected_shard or "kustomize_connected" not in egress, "flux_chart: egress['kustomize_connected'] names a controller that only exists with connected_shard = True"
+    assert not connected_shard or rbac == "namespaced", "flux_chart: connected_shard needs rbac = \"namespaced\": the shard holds no cluster-wide Secret read, so it only works where Secret reads come from per-namespace RoleBindings (flux_namespace_bindings(ns, connected_shard = True))"
+    assert not connected_shard or network_policies == "hardened", "flux_chart: connected_shard needs network_policies = \"hardened\": the chart's own policies leave every controller's egress open, which is the thing the shard exists to split"
+    assert not connected_shard or ("kustomize" in egress and "kustomize_connected" in egress), "flux_chart: connected_shard needs explicit egress for \"kustomize\" and \"kustomize_connected\": with the default (open) egress on both, the controller that holds hub impersonation can still reach the internet and the split protects nothing. Pass egress = {kustomize = [...], kustomize_connected = [...]} (an explicit [{}] opts back in)"
 
     _namespaced = rbac == "namespaced"
     _hardened_rbac = rbac != "chart"
@@ -232,9 +324,18 @@ flux_chart = lambda values: {str: any} = {}, \
         tolerations = _tolerations
     } if (_node_selector or _tolerations) else {}
 
-    _generated = (_rbac_objects(rbac, impersonate_service_account) if _hardened_rbac else []) \
-        + (_network_policy_objects(scrape_namespaces) if network_policies == "hardened" else []) \
-        + (_priority_class_objects(priority_class_name) if priority_class_create else [])
+    _kc_values = values?.kustomizeController or {}
+    _generated = (_rbac_objects(rbac, impersonate_service_account, connected_shard) if _hardened_rbac else []) \
+        + (_network_policy_objects(scrape_namespaces, egress, connected_shard) if network_policies == "hardened" else []) \
+        + (_priority_class_objects(priority_class_name) if priority_class_create else []) \
+        + (_connected_shard_objects({
+            image = _kc_values?.image or FLUX_KUSTOMIZE_CONTROLLER_IMAGE
+            tag = _kc_values?.tag or FLUX_KUSTOMIZE_CONTROLLER_TAG
+            args = _connected_args(concurrency, concurrency_ssa, _gate_flag)
+            placed = _placed
+            priority_class_name = priority_class_name
+            image_pull_secrets = values?.imagePullSecrets or []
+        }) if connected_shard else [])
 
     _posture = {
         # Sized from the head-of-line analysis: the pool is per controller, and
@@ -247,7 +348,7 @@ flux_chart = lambda values: {str: any} = {}, \
                 "--concurrent-ssa=${concurrency_ssa}"
                 "--requeue-dependency=10s"
                 _gate_flag
-            ]
+            ] + (["--watch-label-selector=${FLUX_SHARD_LABEL} notin (${FLUX_CONNECTED_SHARD})"] if connected_shard else [])
             resources = {
                 requests = {cpu = "500m", memory = "512Mi"}
                 limits = {cpu = "2", memory = "2Gi"}
@@ -288,7 +389,7 @@ flux_chart = lambda values: {str: any} = {}, \
     # absent one to a closed schema.
     _base | ({cluster = cluster} if cluster != Undefined else {}) \
           | ({namespace_labels = _psa_labels(pod_security)} if pod_security else {}) \
-          | ({patches = _runtime_class_patches(_runtime_class)} if _runtime_class else {})
+          | ({patches = _runtime_class_patches(_runtime_class, connected_shard)} if _runtime_class else {})
 }
 
 _psa_labels = lambda level: str -> {str: str} {
@@ -301,11 +402,11 @@ _psa_labels = lambda level: str -> {str: str} {
 }
 
 # The chart has no runtimeClassName value, so it is a patch on the two pods.
-_runtime_class_patches = lambda runtime_class: str -> {str: any} {
+_runtime_class_patches = lambda runtime_class: str, connected: bool = False -> {str: any} {
     {
         "Deployment/kustomize-controller" = {spec.template.spec.runtimeClassName = runtime_class}
         "Deployment/source-controller" = {spec.template.spec.runtimeClassName = runtime_class}
-    }
+    } | ({"Deployment/${FLUX_CONNECTED_CONTROLLER}" = {spec.template.spec.runtimeClassName = runtime_class}} if connected else {})
 }
 
 # flux_placement_delivery_v1() — the `placement` for a dedicated delivery pool.
@@ -343,7 +444,12 @@ flux_placement_delivery_v1 = lambda runtime_class_name: str = "", \
 # (the control plane does, from Go; a static namespace declares them in KCL).
 # The destination namespace needs no controller grant: the apply, the health
 # check and the prune all run as the impersonated identity.
-flux_namespace_bindings = lambda namespace: str -> [any] {
+#
+# `connected_shard = True` adds the third: the connected shard's ServiceAccount
+# → flux-connected-reconciler, which reads Secrets in the namespace (the
+# kubeconfig Secret) and nothing else. It is a SEPARATE binding because the
+# shard must never receive flux-tenant-reconciler, which carries impersonate.
+flux_namespace_bindings = lambda namespace: str, connected_shard: bool = False -> [any] {
     assert regex.match(namespace, _LABEL_RE) and len(namespace) <= 63, "flux_namespace_bindings: '${namespace}' is not a namespace name"
     [
         {
@@ -356,10 +462,16 @@ flux_namespace_bindings = lambda namespace: str -> [any] {
             "${FLUX_RECONCILER_ROLE}" = _FLUX_CONTROLLERS[0]
             "${FLUX_SOURCE_ROLE}" = _FLUX_CONTROLLERS[1]
         }
-    ]
+    ] + ([{
+        apiVersion = "rbac.authorization.k8s.io/v1"
+        kind = "RoleBinding"
+        metadata = {name = FLUX_CONNECTED_RECONCILER_ROLE, namespace = namespace, labels = _FLUX_LABELS}
+        subjects = [_FLUX_CONNECTED_SA]
+        roleRef = {apiGroup = "rbac.authorization.k8s.io", kind = "ClusterRole", name = FLUX_CONNECTED_RECONCILER_ROLE}
+    }] if connected_shard else [])
 }
 
-_leader_election_objects = lambda -> [any] {
+_leader_election_objects = lambda connected: bool = False -> [any] {
     [
         {
             apiVersion = "rbac.authorization.k8s.io/v1"
@@ -376,14 +488,14 @@ _leader_election_objects = lambda -> [any] {
             kind = "RoleBinding"
             metadata = {name = "flux-leader-election", namespace = FLUX_NAMESPACE, labels = _FLUX_LABELS}
             roleRef = {apiGroup = "rbac.authorization.k8s.io", kind = "Role", name = "flux-leader-election"}
-            subjects = _FLUX_CONTROLLERS
+            subjects = _FLUX_CONTROLLERS + ([_FLUX_CONNECTED_SA] if connected else [])
         }
     ]
 }
 
 # The chart's cluster-wide grants, replaced. `crd-controller` keeps the chart's
 # NAME so the live object is narrowed in place rather than left beside a copy.
-_rbac_objects = lambda mode: str, target_sa: str -> [any] {
+_rbac_objects = lambda mode: str, target_sa: str, connected: bool = False -> [any] {
     [
         {
             apiVersion = "rbac.authorization.k8s.io/v1"
@@ -403,7 +515,7 @@ _rbac_objects = lambda mode: str, target_sa: str -> [any] {
             roleRef = {apiGroup = "rbac.authorization.k8s.io", kind = "ClusterRole", name = "crd-controller"}
             subjects = _FLUX_CONTROLLERS
         }
-    ] + _leader_election_objects() + ([
+    ] + _leader_election_objects(connected) + (_connected_rbac_objects() if connected else []) + ([
         {
             apiVersion = "rbac.authorization.k8s.io/v1"
             kind = "ClusterRole"
@@ -448,8 +560,32 @@ _rbac_objects = lambda mode: str, target_sa: str -> [any] {
 #   * allow-webhooks — dropped. It admits every namespace to
 #     notification-controller, which this posture does not install, so it was
 #     inert; it is the policy GHSA-mwcp-qpcg-fr7c is about.
-_network_policy_objects = lambda scrape_namespaces: [str] -> [any] {
-    [
+_network_policy_objects = lambda scrape_namespaces: [str], egress: {str: [{str: any}]} = {}, connected: bool = False -> [any] {
+    # No `egress` declared: the chart's own open egress, byte-for-byte what
+    # forge has always rendered. Declared: every flux-system pod is selected for
+    # Egress with NO rule (default deny) and each controller's policy below adds
+    # back exactly what it was given. Fail-closed rather than "unnamed stays
+    # open", so a controller or Job added later cannot silently have the
+    # internet.
+    _restricted = len(egress) > 0
+    _ctrls = ["kustomize", "source"] + (["kustomize_connected"] if connected else []) + ["flux_check"]
+    assert not _restricted or all c in _ctrls { c in egress }, "flux_chart: egress is declared for ${[k for k in egress]} but not for ${[c for c in _ctrls if c not in egress]}; once egress is declared every flux-system pod is default-deny, so name each controller (an explicit [{}] opts one back into open egress)"
+    _per_controller = [
+        {
+            apiVersion = "networking.k8s.io/v1"
+            kind = "NetworkPolicy"
+            metadata = {name = _EGRESS_POLICY_NAMES[c], namespace = FLUX_NAMESPACE, labels = _FLUX_LABELS}
+            spec = {
+                podSelector.matchLabels = _EGRESS_SELECTORS[c]
+                policyTypes = ["Egress"]
+                egress = egress[c]
+            }
+        } for c in _ctrls
+    ] if _restricted else []
+    # Per-controller allow-lists are listed BEFORE allow-egress so that, when
+    # this is applied over a live open policy, the allows exist before the
+    # deny takes effect.
+    _per_controller + [
         {
             apiVersion = "networking.k8s.io/v1"
             kind = "NetworkPolicy"
@@ -458,8 +594,7 @@ _network_policy_objects = lambda scrape_namespaces: [str] -> [any] {
                 podSelector = {}
                 policyTypes = ["Ingress", "Egress"]
                 ingress = [{"from" = [{podSelector = {}}]}]
-                egress = [{}]
-            }
+            } | ({} if _restricted else {egress = _EGRESS_OPEN})
         }
     ] + ([
         {
@@ -476,6 +611,202 @@ _network_policy_objects = lambda scrape_namespaces: [str] -> [any] {
             }
         }
     ] if scrape_namespaces else [])
+}
+
+# ── The connected-cluster shard ────────────────────────────────────
+
+# The shard's own flags. Deliberately NOT here: --default-service-account. With
+# it, Flux impersonates a ServiceAccount even on the remote cluster named by
+# spec.kubeConfig, which would turn the uploaded token into "a token that can
+# impersonate a name in someone else's cluster". Without it, a Kustomization
+# applies as the kubeconfig's own identity or not at all.
+_connected_args = lambda concurrency: int, concurrency_ssa: int, gate_flag: str -> [str] {
+    [
+        "--watch-all-namespaces=true"
+        "--log-level=info"
+        "--log-encoding=json"
+        "--enable-leader-election"
+        "--no-remote-bases=true"
+        "--no-cross-namespace-refs=true"
+        "--concurrent=${concurrency}"
+        "--concurrent-ssa=${concurrency_ssa}"
+        "--requeue-dependency=10s"
+        gate_flag
+        "--watch-label-selector=${FLUX_SHARD_LABEL}=${FLUX_CONNECTED_SHARD}"
+    ]
+}
+
+# What the shard may do on the HUB. Every rule is something the controller needs
+# to run at all; nothing lets it act as anyone:
+#   * no `impersonate`, no `serviceaccounts` (get/list/watch or /token), no
+#     wildcard verb or resource, no cluster-wide Secret or ConfigMap read;
+#   * its Secret read is per-namespace (flux_namespace_bindings(ns,
+#     connected_shard = True)), so a namespace with no binding is unreachable;
+#   * its only credential to a connected cluster is the kubeconfig Secret a
+#     Kustomization names.
+# `test` cases in kcl/tests pin this over every generated object, so a rule
+# added here later that reintroduces authority fails the build.
+_connected_rbac_objects = lambda -> [any] {
+    [
+        {
+            apiVersion = "rbac.authorization.k8s.io/v1"
+            kind = "ClusterRole"
+            metadata = {name = FLUX_CONNECTED_CONTROLLER_ROLE, labels = _FLUX_LABELS}
+            rules = [
+                {apiGroups = ["kustomize.toolkit.fluxcd.io"], resources = ["kustomizations"], verbs = ["get", "list", "watch", "create", "update", "patch", "delete"]}
+                {apiGroups = ["kustomize.toolkit.fluxcd.io"], resources = ["kustomizations/status"], verbs = ["get", "update", "patch"]}
+                {apiGroups = ["kustomize.toolkit.fluxcd.io"], resources = ["kustomizations/finalizers"], verbs = ["get", "create", "update", "patch", "delete"]}
+                {apiGroups = ["source.toolkit.fluxcd.io"], resources = ["buckets", "gitrepositories", "ocirepositories"], verbs = ["get", "list", "watch"]}
+                {apiGroups = ["source.toolkit.fluxcd.io"], resources = ["buckets/status", "gitrepositories/status", "ocirepositories/status"], verbs = ["get"]}
+                {apiGroups = ["source.extensions.fluxcd.io"], resources = ["externalartifacts"], verbs = ["get", "list", "watch"]}
+                _FLUX_EVENTS
+            ]
+        }
+        {
+            apiVersion = "rbac.authorization.k8s.io/v1"
+            kind = "ClusterRoleBinding"
+            metadata = {name = FLUX_CONNECTED_CONTROLLER_ROLE, labels = _FLUX_LABELS}
+            roleRef = {apiGroup = "rbac.authorization.k8s.io", kind = "ClusterRole", name = FLUX_CONNECTED_CONTROLLER_ROLE}
+            subjects = [_FLUX_CONNECTED_SA]
+        }
+        {
+            apiVersion = "rbac.authorization.k8s.io/v1"
+            kind = "ClusterRole"
+            metadata = {name = FLUX_CONNECTED_RECONCILER_ROLE, labels = _FLUX_LABELS}
+            rules = [{apiGroups = [""], resources = ["secrets"], verbs = ["get", "list", "watch"]}]
+        }
+    ]
+}
+
+# The shard's ServiceAccount, Deployment and admission policy. The Deployment
+# mirrors the chart's kustomize-controller (same image, hardening and
+# resources) apart from the three things that make it the shard.
+_connected_shard_objects = lambda o: {str: any} -> [any] {
+    _labels = _FLUX_LABELS | {"app.kubernetes.io/component" = FLUX_CONNECTED_CONTROLLER}
+    [
+        {
+            apiVersion = "v1"
+            kind = "ServiceAccount"
+            metadata = {name = FLUX_CONNECTED_CONTROLLER, namespace = FLUX_NAMESPACE, labels = _labels}
+        }
+        {
+            apiVersion = "apps/v1"
+            kind = "Deployment"
+            metadata = {name = FLUX_CONNECTED_CONTROLLER, namespace = FLUX_NAMESPACE, labels = _labels | {"control-plane" = "controller"}}
+            spec = {
+                replicas = 1
+                selector.matchLabels = {app = FLUX_CONNECTED_CONTROLLER}
+                template = {
+                    metadata = {
+                        annotations = {"prometheus.io/port" = "8080", "prometheus.io/scrape" = "true"}
+                        labels = {app = FLUX_CONNECTED_CONTROLLER}
+                    }
+                    spec = {
+                        serviceAccountName = FLUX_CONNECTED_CONTROLLER
+                        automountServiceAccountToken = True
+                        terminationGracePeriodSeconds = 60
+                        securityContext.fsGroup = 1337
+                        containers = [{
+                            name = "manager"
+                            image = "${o.image}:${o.tag}"
+                            imagePullPolicy = "IfNotPresent"
+                            args = o.args
+                            env = [{name = "RUNTIME_NAMESPACE", valueFrom.fieldRef.fieldPath = "metadata.namespace"}]
+                            ports = [
+                                {containerPort = 8080, name = "http-prom"}
+                                {containerPort = 9440, name = "healthz", protocol = "TCP"}
+                            ]
+                            livenessProbe.httpGet = {path = "/healthz", port = "healthz"}
+                            readinessProbe.httpGet = {path = "/readyz", port = "healthz"}
+                            resources = {
+                                requests = {cpu = "500m", memory = "512Mi"}
+                                limits = {cpu = "2", memory = "2Gi"}
+                            }
+                            securityContext = {
+                                allowPrivilegeEscalation = False
+                                capabilities.drop = ["ALL"]
+                                readOnlyRootFilesystem = True
+                                runAsUser = 65534
+                                runAsNonRoot = True
+                                seccompProfile.type = "RuntimeDefault"
+                            }
+                            volumeMounts = [{mountPath = "/tmp", name = "temp"}]
+                        }]
+                        volumes = [{name = "temp", emptyDir = {}}]
+                    } | o.placed | ({priorityClassName = o.priority_class_name} if o.priority_class_name else {}) \
+                      | ({imagePullSecrets = o.image_pull_secrets} if o.image_pull_secrets else {})
+                }
+            }
+        }
+    ] + _connected_admission_objects()
+}
+
+# THE BAN. "Apply with a service account" is refused on the shard by admission,
+# not left to convention, so a Kustomization routed to it cannot be made to
+# impersonate (through spec.serviceAccountName, or through
+# spec.decryption.serviceAccountName, which mints a token for KMS) and cannot
+# lean on cloud identity (spec.kubeConfig.configMapRef resolves a provider
+# through the controller's own identity). Both directions are checked, so the
+# shard label cannot be dropped to put a kubeConfig Kustomization on the main
+# controller, whose --default-service-account would then apply on the remote
+# cluster.
+#
+# failurePolicy Fail: if the policy cannot be evaluated the write is refused.
+# Pre-existing objects are not re-checked (UPDATE only fires on a write), so
+# the label is the gate to look for in an audit, not this policy alone.
+_connected_admission_objects = lambda -> [any] {
+    _shard = "has(object.metadata.labels) && '${FLUX_SHARD_LABEL}' in object.metadata.labels && object.metadata.labels['${FLUX_SHARD_LABEL}'] == '${FLUX_CONNECTED_SHARD}'"
+    [
+        {
+            apiVersion = "admissionregistration.k8s.io/v1"
+            kind = "ValidatingAdmissionPolicy"
+            metadata = {name = FLUX_CONNECTED_POLICY, labels = _FLUX_LABELS}
+            spec = {
+                failurePolicy = "Fail"
+                matchConstraints.resourceRules = [{
+                    apiGroups = ["kustomize.toolkit.fluxcd.io"]
+                    apiVersions = ["*"]
+                    operations = ["CREATE", "UPDATE"]
+                    resources = ["kustomizations"]
+                }]
+                variables = [
+                    {name = "onShard", expression = _shard}
+                    {name = "hasKubeConfig", expression = "has(object.spec.kubeConfig)"}
+                ]
+                validations = [
+                    {
+                        expression = "!variables.onShard || !has(object.spec.serviceAccountName) || object.spec.serviceAccountName == ''"
+                        message = "a Kustomization on the connected shard must not set spec.serviceAccountName: the connected-cluster controller never applies as a service account"
+                        reason = "Invalid"
+                    }
+                    {
+                        expression = "!variables.onShard || !has(object.spec.decryption) || !has(object.spec.decryption.serviceAccountName) || object.spec.decryption.serviceAccountName == ''"
+                        message = "a Kustomization on the connected shard must not set spec.decryption.serviceAccountName"
+                        reason = "Invalid"
+                    }
+                    {
+                        expression = "!variables.onShard || (variables.hasKubeConfig && has(object.spec.kubeConfig.secretRef))"
+                        message = "a Kustomization on the connected shard must set spec.kubeConfig.secretRef: the uploaded kubeconfig Secret is its only credential"
+                        reason = "Invalid"
+                    }
+                    {
+                        expression = "!variables.hasKubeConfig || variables.onShard"
+                        message = "a Kustomization with spec.kubeConfig must carry the label ${FLUX_SHARD_LABEL}=${FLUX_CONNECTED_SHARD}: only the connected-cluster controller may dial a connected cluster"
+                        reason = "Invalid"
+                    }
+                ]
+            }
+        }
+        {
+            apiVersion = "admissionregistration.k8s.io/v1"
+            kind = "ValidatingAdmissionPolicyBinding"
+            metadata = {name = FLUX_CONNECTED_POLICY, labels = _FLUX_LABELS}
+            spec = {
+                policyName = FLUX_CONNECTED_POLICY
+                validationActions = ["Deny"]
+            }
+        }
+    ]
 }
 
 # A PriorityClass below the system classes: a rollout's surge pod elsewhere must

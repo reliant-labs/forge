@@ -1,6 +1,6 @@
 ---
 name: deploy/static-site
-description: Ship a landing page, marketing site, docs site or SPA as a static site — when forge is the right call for one, the static export, binding it to hosted static hosting (the platform owns bucket + CDN) or your own bucket, and the build-once → promote release flow.
+description: Ship a landing page, marketing site, docs site or SPA as a static site — when forge is the right call for one, the static export, binding it to hosted static hosting (the platform owns the bucket) or your own bucket, and the build-once → promote release flow.
 ---
 
 # Static sites
@@ -13,8 +13,9 @@ files on a host is the part that is hard to retrofit later:
 - **Environments from day 0**: a `staging` that promotes the exact bytes to
   `prod`, not a rebuild that happens to look the same.
 - **Hosted static hosting.** `forge.OnHosted {}` publishes to the control
-  plane, which owns the bucket, the CDN and a platform hostname. Custom
-  domains are `forge domain`.
+  plane, which owns the bucket and a platform hostname. Its CDN serves the
+  hostnames the platform has moved to its edge; making the CDN the default
+  for every hosted site is in progress. Custom domains are `forge domain`.
 - **Config without a rebuild.** A hosted site's `config.js` is written per env
   by the platform, so one bundle serves every env.
 - **A path to an app.** When the site grows a waitlist, checkout or login,
@@ -75,8 +76,8 @@ A frontend states where it runs in each env's `deploy/kcl/<env>/main.k`:
 
 | `runtime =` | Where the bytes go |
 |---|---|
-| `forge.OnHosted {}` | the control plane's static hosting: the platform owns the bucket, the CDN and the hostname |
-| `forge.OnBucket {bucket = ...}` | your own bucket: `releases/<digest>/` + `live/`, then CDN invalidation |
+| `forge.OnHosted {}` | the control plane's static hosting: the platform owns the bucket and the hostname, with its CDN for hostnames it has moved to its edge |
+| `forge.OnBucket {bucket = ...}` | your own bucket: `releases/<digest>/` + `live/`, the asset dir uploaded immutable and everything else `no-cache` (unless `cache_control` says otherwise), then CDN invalidation |
 | `forge.OnFirebase {project, site}` | `firebase deploy` |
 
 Hosted static hosting accepts only a static export, and **a static site alone

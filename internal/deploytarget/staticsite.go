@@ -136,11 +136,23 @@ type StaticSiteFrontend struct {
 // CLI-side StaticSiteDeploy entity). Kept in this package so the
 // provider has no import on internal/cli.
 type StaticSiteSpec struct {
-	Bucket       string
-	PublicDir    string
-	BasePath     string
-	Bundle       []BundleDirSpec
+	Bucket    string
+	PublicDir string
+	BasePath  string
+	Bundle    []BundleDirSpec
+
+	// AssetDir is the build's content-hashed asset directory relative to
+	// the frontend's mount ("assets", "_next/static"); empty when the
+	// build declares none. It is what the default cache policy marks
+	// immutable (see cacheRules).
+	AssetDir string
+
+	// CacheControl is the frontend's declared Cache-Control rules (first
+	// match wins). Empty means forge's default, the same one OnFirebase
+	// and hosted static hosting serve: AssetDir immutable, everything
+	// else no-cache.
 	CacheControl []CacheRuleSpec
+
 	CDN          *StaticSiteCDNSpec
 	KeepReleases int
 }
@@ -267,8 +279,8 @@ func (p StaticSiteProvider) Deploy(ctx context.Context, group ServiceGroup) erro
 // frontend's static-site deploy: the shared build-and-assemble StagePlan
 // plus the publish half. The digest — and therefore the release URI — is
 // NOT known at plan time, because it is a hash over the tree the build
-// has not produced yet. That is why the publish commands are built by
-// uploadCmds(digest) after the stage runs, rather than being fields here.
+// has not produced yet. That is why the upload is planned by
+// uploadRelease(digest) after the stage runs, rather than being fields here.
 type staticSitePlan struct {
 	Stage StagePlan
 	Spec  StaticSiteSpec
@@ -357,10 +369,8 @@ func (p StaticSiteProvider) deployOne(ctx context.Context, fe StaticSiteFrontend
 	// or a deploy interrupted between the two steps serves 404s instead of
 	// the previous (still perfectly good) content.
 	fmt.Printf("  [static-site] %s: publishing release %s to %s...\n", fe.Name, digest, fe.Spec.normalizedBucket())
-	for _, argv := range p.uploadCmds(fe.Spec, plan.Stage.StagingDir, digest) {
-		if err := runInDir(ctx, runner, plan.Stage.StagingDir, nil, argv); err != nil {
-			return fmt.Errorf("static-site %s: upload: %w", fe.Name, err)
-		}
+	if err := uploadRelease(ctx, runner, fe.Spec, plan.Stage.StagingDir, digest); err != nil {
+		return fmt.Errorf("static-site %s: upload: %w", fe.Name, err)
 	}
 	if err := p.syncToLive(ctx, fe.Spec, fe.Spec.releaseURI(digest)); err != nil {
 		return fmt.Errorf("static-site %s: %w", fe.Name, err)
@@ -397,38 +407,6 @@ func (p StaticSiteProvider) projectDir() string {
 		return p.ProjectDir
 	}
 	return "."
-}
-
-// uploadCmds returns the argv list that uploads the assembled tree into
-// its immutable release prefix, with Cache-Control applied.
-//
-// One `gcloud storage cp` per cache rule, most-specific FIRST, each with
-// its own Cache-Control header — then a final unheadered pass that
-// catches anything no rule matched. `cp -n` (no-clobber) on the trailing
-// pass is what makes "first rule wins" true: an object already uploaded
-// by an earlier, more specific rule keeps the header that rule gave it
-// rather than being overwritten by the catch-all.
-//
-// A spec with no cache rules is one plain recursive copy.
-func (p StaticSiteProvider) uploadCmds(spec StaticSiteSpec, stagingDir, digest string) [][]string {
-	dst := spec.releaseURI(digest)
-	if len(spec.CacheControl) == 0 {
-		return [][]string{{"gcloud", "storage", "cp", "--recursive", ".", dst}}
-	}
-	cmds := make([][]string, 0, len(spec.CacheControl)+1)
-	for _, rule := range spec.CacheControl {
-		cmds = append(cmds, []string{
-			"gcloud", "storage", "cp", "--recursive",
-			"--cache-control=" + rule.CacheControl,
-			rule.Pattern, dst,
-		})
-	}
-	// Catch-all for objects no rule matched. --no-clobber preserves the
-	// headers the rules above already set.
-	cmds = append(cmds, []string{
-		"gcloud", "storage", "cp", "--recursive", "--no-clobber", ".", dst,
-	})
-	return cmds
 }
 
 // syncToLive re-points the live prefix at a release prefix. `rsync
@@ -650,9 +628,7 @@ func printStaticSitePlan(w io.Writer, plan staticSitePlan) {
 	const placeholder = "<digest>"
 	_, _ = fmt.Fprintf(w, "    release:      %s   (sha256 over the assembled tree)\n", plan.Spec.releaseURI(placeholder))
 	_, _ = fmt.Fprintf(w, "    live:         %s\n", plan.Spec.liveURI())
-	for _, argv := range (StaticSiteProvider{}).uploadCmds(plan.Spec, plan.Stage.StagingDir, placeholder) {
-		_, _ = fmt.Fprintf(w, "    [DRY-RUN] would exec (cwd %s): %s\n", plan.Stage.StagingDir, strings.Join(argv, " "))
-	}
+	printCachePlan(w, plan.Spec, placeholder)
 	_, _ = fmt.Fprintf(w, "    [DRY-RUN] would exec: gcloud storage rsync --recursive --delete-unmatched-destination-objects %s %s\n",
 		plan.Spec.releaseURI(placeholder), plan.Spec.liveURI())
 

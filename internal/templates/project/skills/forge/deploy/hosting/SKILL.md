@@ -14,7 +14,7 @@ plane (Reliant cloud). `dev` stays local (`forge.OnHost` + `forge.HostInfra`).
 | `_db = forge.ManagedDatabase {runtime = forge.OnHosted {}}` | a dedicated Postgres, `deletionPolicy` RETAIN |
 | `_hosted(_api)` | THE API: the binary's `server` — every service and worker — as one workload |
 | `_hosted(wl.<name>)` | a workload `server` does not run (a job such as `migrate`; one you split out) |
-| `_hosted_frontend(_web_frontend)` | the static export on platform static hosting + CDN |
+| `_hosted_frontend(_web_frontend)` | the static export on platform static hosting (CDN for hostnames the platform has moved to its edge; CDN for every hosted site is in progress) |
 | `secret_provider = forge.HostedSecrets {}` | write-only store: `forge secret set --env <env> <KEY>` |
 
 `_hosted` also:
@@ -65,7 +65,7 @@ older control plane (no holds) still refuses with the billing reason.
 | `ports` (the `expose = True` one is routed) | `operator`, `namespacedRBAC`, `clusterRBAC`, `crds`, ServiceAccount fields: no Kubernetes API on shared nodes |
 | env from a literal, `forge.ManagedSecret`, `forge.DatabaseRef`, `forge.WorkloadURL`; a config-projected `forge.SecretRef` lowers to a ManagedSecret | `sidecars`, `volumes`, `securityContext`, `terminationGracePeriodSeconds`, `podAnnotations`: the platform composes the pod |
 | a managed Postgres (`forge.ManagedDatabase`) | `nodeSelector`, `tolerations`, `priorityClassName`: the platform decides placement |
-| static frontends on hosted hosting + CDN (static export only) | `ports.domains` (use `forge domain`); raw `secretRef`/`configMapRef`/`fieldRef` env; a hostless or unpinned image |
+| static frontends on hosted static hosting (static export only) | `ports.domains` (use `forge domain`); raw `secretRef`/`configMapRef`/`fieldRef` env; a hostless or unpinned image |
 
 ## The API is one workload
 

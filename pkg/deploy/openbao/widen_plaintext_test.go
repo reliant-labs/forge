@@ -68,12 +68,22 @@ func runWiden(t *testing.T, addr, caFile string, extraEnv ...string) widenRun {
 	if runtime.GOOS == "windows" {
 		t.Skip("converge.sh runs in the kubectl image's bash")
 	}
+	// The child gets a built environment, not the test process's: the library
+	// reads no ambient variables (see internal/pkgguard), and a script run
+	// against fixed inputs should not depend on the developer's shell either.
+	// PATH is the shim dir, the directories the tools were found in, and the
+	// system dirs for coreutils.
+	pathDirs := []string{""}
 	for _, tool := range []string{"bash", "curl", "jq"} {
-		if _, err := exec.LookPath(tool); err != nil {
+		p, err := exec.LookPath(tool)
+		if err != nil {
 			t.Skipf("%s is not available", tool)
 		}
+		pathDirs = append(pathDirs, filepath.Dir(p))
 	}
+	pathDirs = append(pathDirs, "/usr/local/bin", "/usr/bin", "/bin")
 	dir := t.TempDir()
+	pathDirs[0] = dir
 	script := filepath.Join(dir, "converge.sh")
 	write := func(name, body string, mode os.FileMode) string {
 		p := filepath.Join(dir, name)
@@ -101,22 +111,23 @@ exit 0
 	}
 
 	cmd := exec.Command("bash", script)
-	cmd.Env = append(os.Environ(),
-		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"FAKE_APPLIED="+applied,
+	cmd.Env = append([]string{
+		"PATH=" + strings.Join(pathDirs, string(os.PathListSeparator)),
+		"HOME=" + dir,
+		"TMPDIR=" + dir,
+		"FAKE_APPLIED=" + applied,
 		"OPENBAO_PHASE=widen",
-		"OPENBAO_ADDR="+addr,
-		"OPENBAO_CA_FILE="+caFile,
+		"OPENBAO_ADDR=" + addr,
+		"OPENBAO_CA_FILE=" + caFile,
 		"OPENBAO_NAMESPACE=ns",
 		"OPENBAO_RECOVERY_SECRET=recovery",
 		"OPENBAO_APPLIED_CONFIGMAP=applied",
 		"OPENBAO_SELF_MOUNT=jwt-self",
 		"OPENBAO_CONVERGE_ROLE=openbao-converge",
 		"OPENBAO_KV_MOUNT=secret",
-		"OPENBAO_DOC_FILE="+doc,
-		"OPENBAO_TOKEN_FILE="+token,
-	)
-	cmd.Env = append(cmd.Env, extraEnv...)
+		"OPENBAO_DOC_FILE=" + doc,
+		"OPENBAO_TOKEN_FILE=" + token,
+	}, extraEnv...)
 	out, err := cmd.CombinedOutput()
 	code := 0
 	var ee *exec.ExitError

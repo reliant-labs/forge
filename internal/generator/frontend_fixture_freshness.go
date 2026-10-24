@@ -7,6 +7,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/templates"
 	"github.com/reliant-labs/forge/pkg/seedplan"
 )
@@ -40,6 +41,9 @@ type fixtureFreshnessData struct {
 	HasSchema bool
 }
 
+// fixtureFreshnessFiles are the manifest and the guard, under <fe>/src/mocks/.
+var fixtureFreshnessFiles = [2]string{"fixture-manifest_gen.ts", "fixture-freshness_gen.test.ts"}
+
 // EmitFixtureFreshnessSurface writes the two files that make a stale fixture a
 // LOUD failure instead of a silent one, into <feRel>/src/mocks/:
 //
@@ -65,13 +69,24 @@ type fixtureFreshnessData struct {
 // CI) with the fix command, instead of silently serving rows for a schema the
 // project no longer has.
 //
-// # Why it is emitted even when there is nothing to check
+// # Why it is emitted only beside fixtures
 //
-// A project with no migrations gets the placeholder branch, which asserts the
-// manifest records no fingerprint. Emitting the pair unconditionally keeps the
-// scaffold's shape stable from birth — the frontend's file set does not change
-// shape the first time someone writes a migration — and means the claim "no
-// schema here" is CHECKED rather than assumed.
+// fixtures is how many per-entity fixture modules EmitFrontendMockSurface just
+// wrote for this frontend. With none, the pair is not emitted, and a copy left
+// by an earlier run is retired through the ownership test (codegen.
+// RetireGenerated): a certified copy goes, a disowned or hand-edited one stays.
+//
+// The guard is a cache's validity tag, and a frontend with no fixtures has no
+// cache. That is the common shape of an ADOPTED frontend: its services are
+// custom rpcs with no CRUD entity, so its mock transport dispatches nothing
+// from src/mocks/<entity>_gen.ts. Emitting the pair anyway did not check
+// anything; it made every migration a change to a generated frontend file, and
+// a branch that merged main's migrations without a regenerate turned the
+// frontend's `npm test` red over a fingerprint that described nothing. With
+// parallel lanes landing migrations, that was every few merges.
+//
+// The file set therefore changes shape when the first entity fixture lands —
+// the same generate that writes the fixtures writes their tag.
 //
 // files is the digest of the seed INPUT FILES alone, and cfg the same digest
 // with the seed config folded in (codegen.SeedFingerprints returns the pair).
@@ -87,8 +102,15 @@ type fixtureFreshnessData struct {
 // every clean tree. That is not hypothetical: this shipped that way once, and
 // `npm test` on a freshly generated project reported STALE MOCK FIXTURES
 // against fixtures that had just been written.
-func EmitFixtureFreshnessSurface(root, feRel string, files, cfg seedplan.Fingerprint, cs *FileChecksums) error {
+func EmitFixtureFreshnessSurface(root, feRel string, fixtures int, files, cfg seedplan.Fingerprint, cs *FileChecksums) error {
 	mocksRel := filepath.Join(feRel, "src", "mocks")
+
+	if fixtures == 0 {
+		for _, out := range fixtureFreshnessFiles {
+			codegen.RetireGenerated(root, filepath.Join(mocksRel, out), cs)
+		}
+		return nil
+	}
 
 	data := fixtureFreshnessData{
 		SeedFingerprint:       files.Hex,
@@ -99,8 +121,8 @@ func EmitFixtureFreshnessSurface(root, feRel string, files, cfg seedplan.Fingerp
 	}
 
 	for _, f := range []struct{ tmpl, out string }{
-		{"fixture-manifest.ts.tmpl", "fixture-manifest_gen.ts"},
-		{"fixture-freshness.test.ts.tmpl", "fixture-freshness_gen.test.ts"},
+		{"fixture-manifest.ts.tmpl", fixtureFreshnessFiles[0]},
+		{"fixture-freshness.test.ts.tmpl", fixtureFreshnessFiles[1]},
 	} {
 		content, err := templates.FrontendTemplates().Get(filepath.Join("mocks", f.tmpl))
 		if err != nil {

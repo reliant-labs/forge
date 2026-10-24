@@ -56,10 +56,11 @@ func (k CatalogKind) table() string {
 	return ""
 }
 
-// Queryable reports whether the evaluator can run the kind. Exponential
-// histograms and summaries are cataloged but not drawn until MX-F3.
+// Queryable reports whether the evaluator can run the kind: all five. A
+// summary supports a narrower set of aggregations (see ResolveAgg); asking for
+// another is refused with the reason.
 func (k CatalogKind) Queryable() bool {
-	return k == CatalogGauge || k == CatalogSum || k == CatalogHistogram
+	return k.table() != ""
 }
 
 // hasTemporality: the kinds whose table stores AggregationTemporality.
@@ -166,7 +167,7 @@ type CatalogEntry struct {
 	// declared metric never seen.
 	LastSeen       time.Time
 	SeriesEstimate int64
-	// Queryable is false for a kind the evaluator cannot run yet.
+	// Queryable is false for a kind the evaluator cannot run.
 	Queryable bool
 	Builtin   bool
 	// Declared: the release's metrics schema lists it. Seen: it has data in

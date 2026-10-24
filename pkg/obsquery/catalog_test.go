@@ -208,7 +208,7 @@ func TestParseCatalog(t *testing.T) {
 	if c.Builtin || !got[1].Builtin {
 		t.Errorf("builtin: a.counter=%v go.memory.used=%v", c.Builtin, got[1].Builtin)
 	}
-	for i, wantQ := range []bool{true, true, false, true, false} {
+	for i, wantQ := range []bool{true, true, true, true, true} {
 		if got[i].Queryable != wantQ {
 			t.Errorf("%s (%s) queryable = %v, want %v", got[i].Name, got[i].Kind, got[i].Queryable, wantQ)
 		}

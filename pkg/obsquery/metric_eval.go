@@ -160,6 +160,10 @@ func metricTypeOf(s string) MetricType {
 		return MetricSum
 	case "histogram":
 		return MetricHistogram
+	case "exp_histogram":
+		return MetricExpHistogram
+	case "summary":
+		return MetricSummary
 	}
 	return MetricUnknown
 }
@@ -172,6 +176,10 @@ func (t MetricType) String() string {
 		return "sum"
 	case MetricHistogram:
 		return "histogram"
+	case MetricExpHistogram:
+		return "exp_histogram"
+	case MetricSummary:
+		return "summary"
 	}
 	return "unknown"
 }
@@ -186,9 +194,9 @@ func ValueUnit(info MetricInfo, agg Agg) string {
 		return u + "/s"
 	}
 	switch {
-	case info.Type == MetricHistogram && agg == AggRate:
+	case info.Type.hasCounts() && agg == AggRate:
 		return "{count}/s"
-	case info.Type == MetricHistogram && (agg == AggCount || agg == AggIncrease):
+	case info.Type.hasCounts() && (agg == AggCount || agg == AggIncrease):
 		return "{count}"
 	case agg == AggRate:
 		return per(info.Unit)
@@ -450,6 +458,7 @@ type histAcc struct {
 	t      int64
 	bounds [][]float64
 	counts [][]float64
+	exp    []expRow
 }
 
 // fold reads a statement's rows into groups keyed by label tuple.
@@ -459,7 +468,8 @@ func (ev *evaluator) fold(ctx context.Context, st Stmt, q MetricQuery) (map[stri
 		return nil, 0, err
 	}
 	defer func() { _ = rows.Close() }()
-	isQ := q.family(q.Agg) == famHistQuantile
+	fam := q.family(q.Agg)
+	isQ, isExp, isSummaryQ := fam == famHistQuantile, fam == famHistQuantile && q.Info.Type == MetricExpHistogram, fam == famSummaryQuantile
 	groups := map[string]*groupData{}
 	hist := map[string]*histAcc{}
 	var histOrder []string
@@ -472,10 +482,19 @@ func (ev *evaluator) fold(ctx context.Context, st Stmt, q MetricQuery) (map[stri
 			value          float64
 			bounds, counts []float64
 			total          uint64
+			exp            expRow
+			nseries, nmiss uint64
 		)
-		if isQ {
+		switch {
+		case isExp:
+			err = rows.Scan(&bucket, &labels, &exp.scale, &exp.zero, &exp.pk, &exp.pv, &exp.nk, &exp.nv, &total)
+		case isQ:
 			err = rows.Scan(&bucket, &labels, &bounds, &counts, &total)
-		} else {
+		case isSummaryQ:
+			if err = rows.Scan(&bucket, &labels, &value, &total, &nseries, &nmiss); err == nil {
+				err = summaryQuantileError(q.Name, q.QuantileLevel(), nseries, nmiss)
+			}
+		default:
 			err = rows.Scan(&bucket, &labels, &value, &total)
 		}
 		if err != nil {
@@ -503,7 +522,11 @@ func (ev *evaluator) fold(ctx context.Context, st Stmt, q MetricQuery) (map[stri
 				hist[hk] = a
 				histOrder = append(histOrder, hk)
 			}
-			a.bounds, a.counts = append(a.bounds, bounds), append(a.counts, counts)
+			if isExp {
+				a.exp = append(a.exp, exp)
+			} else {
+				a.bounds, a.counts = append(a.bounds, bounds), append(a.counts, counts)
+			}
 			continue
 		}
 		gd.pts[t] = value
@@ -516,6 +539,13 @@ func (ev *evaluator) fold(ctx context.Context, st Stmt, q MetricQuery) (map[stri
 	}
 	for _, hk := range histOrder {
 		a := hist[hk]
+		if isExp {
+			bounds, counts := mergeExpRows(a.exp).bounds()
+			if v, ok := HistogramQuantile(bounds, counts, q.QuantileLevel()); ok {
+				a.gd.pts[a.t] = v
+			}
+			continue
+		}
 		bounds, counts, mixed := MergeHistograms(a.bounds, a.counts)
 		if mixed {
 			ev.warn(WarnMixedBounds, q.Name+" has series with different explicit bounds; merged onto the union of bounds")

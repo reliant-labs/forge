@@ -45,6 +45,9 @@ type Narrow struct {
 	// Explain compiles the final statements without running them; the result
 	// carries them in Statements.
 	Explain bool
+	// Now is the clock a metrics read marks partial buckets against; zero is
+	// time.Now(). The CLI sets it so a golden is deterministic.
+	Now time.Time
 }
 
 // Statement is one compiled statement a request ran (or, under Explain, would
@@ -226,13 +229,43 @@ type MetricsListRequest struct {
 	Limit        int
 }
 
-// MetricInfo names one metric.
+// MetricAttributeSpec is one attribute a release declares for a metric, with
+// the closed value set when the declaration enumerates one.
+type MetricAttributeSpec struct {
+	Key    string
+	Values []string
+}
+
+// MetricInfo is one catalog entry: a metric as one stored kind (a name stored
+// as several kinds is listed once per kind).
 type MetricInfo struct {
 	Name        string
 	Unit        string
 	Description string
-	// Type is "gauge", "sum" or "histogram".
+	// Type is "gauge", "sum", "histogram", "exp_histogram" or "summary".
 	Type string
+	// Monotonic is a sum that is a counter, not an up-down counter.
+	Monotonic bool
+	// Temporality is "delta", "cumulative", or "" (a gauge, or not known).
+	Temporality string
+	// Services are up to 10 service.name values that emit it; ServiceCount is
+	// how many do.
+	Services     []string
+	ServiceCount int
+	// LastSeen is the newest data point in the catalog range; zero for a
+	// declared metric never seen.
+	LastSeen       time.Time
+	SeriesEstimate int64
+	// Queryable is false for a kind the evaluator cannot run yet.
+	Queryable bool
+	Builtin   bool
+	// Declared: the release's metrics schema lists it. Seen: it has data in
+	// the range.
+	Declared, Seen bool
+	// Stability is "stable", "experimental" or "deprecated"; empty when not
+	// declared.
+	Stability          string
+	DeclaredAttributes []MetricAttributeSpec
 }
 
 // MetricsListResult is the metrics in range.
@@ -242,44 +275,142 @@ type MetricsListResult struct {
 	Statements []Statement
 }
 
-// MetricsQueryRequest reads one metric as time series.
+// MetricsQueryRequest runs one metrics panel: the explorer's query. The panel
+// is the dashspec vocabulary (series A, B, ... each naming a metric, an
+// aggregation and its own where; a formula; panel-level where and group-by).
 type MetricsQueryRequest struct {
 	Narrow
-	Name string
-	// Agg is "", avg, sum, min, max, count, increase, rate, p50, p95 or p99;
-	// "" resolves per metric type.
-	Agg         string
-	GroupBy     []string
+	Panel       obsquery.Panel
 	StepSeconds int64
-	// MaxSeries bounds the series returned (the largest by total).
+	// MaxSeries lowers the series cap (the most groups per series label).
 	MaxSeries int
+	// Compare, when positive, runs the panel a second time over the range
+	// shifted back by this much; Result.Compare carries it.
+	Compare time.Duration
 }
 
-// Point is one sample of a series.
-type Point struct {
-	Time  time.Time
-	Value float64
+// MetricPoint is one bucket of a series. Null is a gap (no value; Value is 0);
+// Partial says the bucket was still filling when it was read.
+type MetricPoint struct {
+	Time          time.Time
+	Value         float64
+	Null, Partial bool
 }
 
-// Series is one labelled time series.
-type Series struct {
-	Labels map[string]string
-	Points []Point
+// MetricSeries is one group of one panel series (Label), or of the panel's
+// "formula" or "ratio". A number, table or bar panel fills Reduced (nil: the
+// reduction is null).
+type MetricSeries struct {
+	Label   string
+	Labels  map[string]string
+	Points  []MetricPoint
+	Reduced *float64
 }
 
-// MetricsQueryResult is the series of one metric.
-type MetricsQueryResult struct {
-	Name        string
+// MetricMeta says what one series label measures, after the metric was looked
+// up and the aggregation resolved: everything a reader needs to format and
+// label it.
+type MetricMeta struct {
+	Label  string
+	Metric string
+	// Type is "gauge", "sum" or "histogram".
 	Type        string
-	Unit        string
-	Agg         string
+	Monotonic   bool
+	Temporality string
+	// Agg is the dashspec aggregation after defaulting: rate, increase, sum,
+	// avg, min, max, last, count or quantile.
+	Agg       string
+	Quantile  float64
+	ValueUnit string
+}
+
+// MetricsCompare is the panel read over the range shifted back by Offset. Its
+// points are moved forward by Offset so they overlay the current range; From
+// and To are the window actually read.
+type MetricsCompare struct {
+	Offset      time.Duration
+	From, To    time.Time
+	Series      []MetricSeries
+	SeriesTotal int
+}
+
+// MetricsQueryResult is what a metrics panel evaluates to.
+type MetricsQueryResult struct {
+	Meta   []MetricMeta
+	Series []MetricSeries
+	// SeriesTotal is how many groups matched before the series cap.
+	SeriesTotal int
+	Truncated   bool
 	StepSeconds int64
-	Series      []Series
-	// SeriesOmitted counts series the MaxSeries cap cut; Truncated says the
-	// compiler's own row cap was hit.
-	SeriesOmitted int
-	Truncated     bool
-	Statements    []Statement
+	// Warnings are stable codes: mixed_bounds, mixed_temporality,
+	// step_raised, metric_stored_as_n_kinds.
+	Warnings   []string
+	Compare    *MetricsCompare
+	Statements []Statement
+}
+
+// MetricsDescribeRequest reads one metric's detail.
+type MetricsDescribeRequest struct {
+	Narrow
+	Name string
+}
+
+// MetricAttribute is one attribute key of a metric.
+type MetricAttribute struct {
+	Key      string
+	Resource bool
+	// DistinctEstimate is the estimated number of values over the range.
+	DistinctEstimate int64
+	// Enumerated is the declared closed value set; empty when open.
+	Enumerated []string
+	// HighCardinality: grouping by the key could exceed the series cap.
+	HighCardinality bool
+}
+
+// MetricsDescribeResult is the metric detail the explorer's side pane shows.
+type MetricsDescribeResult struct {
+	Info MetricInfo
+	// IntervalSeconds estimates the export interval: the floor of a useful
+	// step. 0 when it cannot be estimated.
+	IntervalSeconds  int64
+	MixedTemporality bool
+	Attributes       []MetricAttribute
+	// SuggestedBreakdowns are the attribute keys worth grouping by, best first.
+	SuggestedBreakdowns []string
+	Statements          []Statement
+}
+
+// MetricsExemplarsRequest reads the exemplars of one metric. Narrow.Range is
+// the scope; From and To (both zero: the scope) are the window the exemplars'
+// own timestamps must fall in.
+type MetricsExemplarsRequest struct {
+	Narrow
+	Name     string
+	From, To time.Time
+	// Where narrows to series matching the predicates (panel vocabulary).
+	Where []obsquery.PanelPredicate
+	// Group narrows to one series group: group-by key to value.
+	Group    map[string]string
+	MinValue *float64
+	Limit    int
+}
+
+// MetricExemplar is one sampled observation of a metric.
+type MetricExemplar struct {
+	Time       time.Time
+	Value      float64
+	TraceID    string
+	SpanID     string
+	Attributes map[string]string
+	// TraceStored: the trace is in the trace store. false means it was sampled
+	// out and the trace view would be empty.
+	TraceStored bool
+}
+
+// MetricsExemplarsResult is the exemplars, stored traces first.
+type MetricsExemplarsResult struct {
+	Exemplars  []MetricExemplar
+	Statements []Statement
 }
 
 // ── query ───────────────────────────────────────────────────────────────

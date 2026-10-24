@@ -92,8 +92,8 @@ func TestValidationRejectsWhatTheEnginesWouldRefuse(t *testing.T) {
 		{"gte non number", panel(`"kind":"number","signal":"traces","where":[{"field":"span.duration","op":"gte","value":"slow"}],"series":[{"label":"a","agg":"count"}]`), "number"},
 		{"in without values", panel(`"kind":"number","signal":"traces","where":[{"field":"span.name","op":"in"}],"series":[{"label":"a","agg":"count"}]`), "non-empty"},
 		{"metric quantile non histogram", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"quantile","quantile":0.9,"field":"m","metricType":"gauge"}]`), "histogram"},
-		{"metric count on a sum", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"count","field":"m","metricType":"sum"}]`), "needs metricType \"histogram\""},
-		{"metric count on a gauge", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"count","field":"m","metricType":"gauge"}]`), "needs metricType \"histogram\""},
+		{"metric count on a sum", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"count","field":"m","metricType":"sum"}]`), "histogram, exp_histogram or summary metricType"},
+		{"metric count on a gauge", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"count","field":"m","metricType":"gauge"}]`), "histogram, exp_histogram or summary metricType"},
 		{"metric count_distinct", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"count_distinct","field":"m","metricType":"histogram"}]`), "not defined over a metric"},
 		{"metric rate on a gauge", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"rate","field":"m","metricType":"gauge"}]`), "not a gauge"},
 		{"metric increase on a gauge", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"increase","field":"m","metricType":"gauge"}]`), "not a gauge"},
@@ -205,6 +205,46 @@ func TestEveryPanelKindTheSpecDeclaresIsKnownToTheValidator(t *testing.T) {
 		doc := `{"id":"x","title":"X","panels":[{"id":"p","title":"P",` + src + `}]}`
 		if _, err := ParseDashboard("f.json", []byte(doc)); err != nil {
 			t.Errorf("kind %q: %v", k, err)
+		}
+	}
+}
+
+func TestMetricSeriesAcceptsEveryStoredKind(t *testing.T) {
+	panel := func(series string) string {
+		return `{"id":"x","title":"X","panels":[{"id":"p","title":"P","kind":"line","signal":"metrics","series":[` + series + `]}]}`
+	}
+	for _, kind := range []string{"gauge", "sum", "histogram", "exp_histogram", "summary"} {
+		agg := `"avg"`
+		if kind == "sum" {
+			agg = `"rate"`
+		}
+		src := panel(`{"label":"a","agg":` + agg + `,"field":"m","metricType":"` + kind + `"}`)
+		if _, err := ParseDashboard("f.json", []byte(src)); err != nil {
+			t.Errorf("metricType %q refused: %v", kind, err)
+		}
+	}
+	// What the explorer saves for a distribution kind validates: any quantile,
+	// a count of observations and their rate.
+	for _, kind := range []string{"histogram", "exp_histogram", "summary"} {
+		for _, series := range []string{
+			`{"label":"a","agg":"quantile","quantile":0.9,"field":"m","metricType":"` + kind + `"}`,
+			`{"label":"a","agg":"count","field":"m","metricType":"` + kind + `"}`,
+			`{"label":"a","agg":"rate","field":"m","metricType":"` + kind + `"}`,
+		} {
+			if _, err := ParseDashboard("f.json", []byte(panel(series))); err != nil {
+				t.Errorf("%s: %v", series, err)
+			}
+		}
+	}
+	for name, c := range map[string]struct{ series, want string }{
+		"an unknown kind":            {`{"label":"a","agg":"avg","field":"m","metricType":"exponential"}`, "is not one of"},
+		"a quantile of an exp gauge": {`{"label":"a","agg":"quantile","quantile":0.5,"field":"m","metricType":"gauge"}`, "exp_histogram"},
+		"a count of a sum":           {`{"label":"a","agg":"count","field":"m","metricType":"sum"}`, "histogram, exp_histogram or summary"},
+		"a rate of a gauge":          {`{"label":"a","agg":"rate","field":"m","metricType":"gauge"}`, "not a gauge"},
+	} {
+		_, err := ParseDashboard("f.json", []byte(panel(c.series)))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want %q", name, err, c.want)
 		}
 	}
 }

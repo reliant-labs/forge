@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/obsbackend"
 	"github.com/reliant-labs/forge/internal/obsout"
+	"github.com/reliant-labs/forge/pkg/observe/metrics"
 )
 
 // obsDeps are the seams a verb reaches the world through. The zero value is
@@ -47,7 +49,7 @@ func defaultObsDeps(cmd *cobra.Command) obsDeps {
 	d := obsDeps{
 		Facts: obsFactsFromKCL,
 		Local: func(env string) obsbackend.Backend {
-			return obsbackend.Local{Env: env, Runner: obsbackend.DockerRunner{Exec: localClickstackExec(env), Env: env}, Ledger: openObsLedger}
+			return obsbackend.Local{Env: env, Runner: obsbackend.DockerRunner{Exec: localClickstackExec(env), Env: env}, Ledger: openObsLedger, Declared: declaredMetricSchemas}
 		},
 		Cloud:   openObsCloud,
 		Release: liveReleaseAt,
@@ -285,4 +287,20 @@ func paramNames(m map[string]string) []string { return slices.Sorted(maps.Keys(m
 // openObsLedger opens this machine's release ledger for the change feed.
 func openObsLedger() (obsbackend.LedgerReader, error) {
 	return openMachineLedger(projectDirForKCL())
+}
+
+// declaredMetricSchemas reads the metrics schema `forge build` wrote
+// (bin/observability/metrics-schema.json) for the catalog's declared join. A
+// project that has not built, or whose build could not run its binary, has none:
+// the catalog is then what was observed, which is the honest answer.
+func declaredMetricSchemas() []metrics.Schema {
+	raw, err := os.ReadFile(filepath.Join(projectDirForKCL(), "bin", filepath.FromSlash(MetricsSchemaArtifact)))
+	if err != nil {
+		return nil
+	}
+	s, err := metrics.ParseSchema(raw)
+	if err != nil {
+		return nil
+	}
+	return []metrics.Schema{s}
 }

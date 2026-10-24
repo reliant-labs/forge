@@ -1623,6 +1623,12 @@ func stepFrontendWorkspaces(ctx *pipelineContext) error {
 		generator.WriteFrontendWorkspaceFiles(ctx.ProjectDir, ctx.Cfg.Name, true)); err != nil {
 		return err
 	}
+	// packages/hooks' web-runtime range is reconciled by the writer above; the
+	// workspace lockfile has to follow it.
+	if err := ctx.warnOrFail("frontend workspace lockfile",
+		generator.SyncFrontendLock(ctx.ProjectDir, filepath.Join("packages", "hooks"))); err != nil {
+		return err
+	}
 	// The native primitives package only matters when there's an RN
 	// frontend to consume it — gating on HasReactNativeFrontend keeps
 	// projects with only a Next.js or Vite SPA frontend from getting

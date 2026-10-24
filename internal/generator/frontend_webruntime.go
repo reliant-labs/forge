@@ -34,6 +34,7 @@
 package generator
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -43,6 +44,7 @@ import (
 
 	"golang.org/x/mod/semver"
 
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/webruntimepeers"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
@@ -238,8 +240,10 @@ func resolvePath(p string) string {
 // Every failure is a warning. A frontend whose package.json forge cannot parse
 // is the user's file to fix, and no dependency bookkeeping justifies failing
 // their build.
-func EnsureWebRuntimeDependency(projectDir, feRelDir, feName string) {
-	ensureWebRuntimeDependency(projectDir, feRelDir, "frontend "+feName)
+//
+// It reports whether it rewrote the manifest.
+func EnsureWebRuntimeDependency(projectDir, feRelDir, feName string) bool {
+	return ensureWebRuntimeDependency(projectDir, feRelDir, "frontend "+feName)
 }
 
 // EnsureWorkspaceHooksWebRuntimeDependency reconciles the same entry in
@@ -251,17 +255,17 @@ func EnsureWebRuntimeDependency(projectDir, feRelDir, feName string) {
 //
 // No-op when the manifest does not exist, so a non-workspace project calls it
 // harmlessly.
-func EnsureWorkspaceHooksWebRuntimeDependency(projectDir string) {
-	ensureWebRuntimeDependency(projectDir, filepath.Join("packages", "hooks"), "packages/hooks")
+func EnsureWorkspaceHooksWebRuntimeDependency(projectDir string) bool {
+	return ensureWebRuntimeDependency(projectDir, filepath.Join("packages", "hooks"), "packages/hooks")
 }
 
 // ensureWebRuntimeDependency is the shared body. `label` names the manifest's
 // package in the one line this prints when it writes a dev bridge.
-func ensureWebRuntimeDependency(projectDir, relDir, label string) {
+func ensureWebRuntimeDependency(projectDir, relDir, label string) bool {
 	pkgPath := filepath.Join(projectDir, relDir, "package.json")
 	info, err := os.Stat(pkgPath)
 	if err != nil {
-		return // no manifest here — nothing to reconcile
+		return false // no manifest here — nothing to reconcile
 	}
 
 	decision := decideWebRuntimeDependency(filepath.Join(projectDir, relDir))
@@ -269,23 +273,23 @@ func ensureWebRuntimeDependency(projectDir, relDir, label string) {
 	original, err := os.ReadFile(pkgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not read %s: %v\n", pkgPath, err)
-		return
+		return false
 	}
 	text := string(original)
 
 	current, found := currentWebRuntimeSpec(text)
 	switch {
 	case found && current == decision.spec:
-		return // already correct — idempotent and silent
+		return false // already correct — idempotent and silent
 	case found && !decision.authoritative:
-		return // declared, and forge has no better answer than what is there
+		return false // declared, and forge has no better answer than what is there
 	case found:
 		// forge's constant is a FLOOR. A project holding a higher specifier
 		// (a security bump published between forge releases) keeps it; only
 		// one below the floor is raised. See reconcileSpec.
 		want := reconcileSpec(current, decision)
 		if want == current {
-			return // the project is at or above the floor — leave it alone
+			return false // the project is at or above the floor — leave it alone
 		}
 		// Splice over the quoted value only; a literal splice keeps `$` in a
 		// path from being read as a regexp expansion.
@@ -295,7 +299,7 @@ func ensureWebRuntimeDependency(projectDir, relDir, label string) {
 		text, err = insertDependency(text, WebRuntimePackage, decision.spec)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not declare %s in %s: %v\n", WebRuntimePackage, pkgPath, err)
-			return
+			return false
 		}
 	}
 
@@ -303,16 +307,17 @@ func ensureWebRuntimeDependency(projectDir, relDir, label string) {
 	if !json.Valid([]byte(text)) {
 		fmt.Fprintf(os.Stderr, "warning: declaring %s in %s would have produced invalid JSON; left unchanged\n",
 			WebRuntimePackage, pkgPath)
-		return
+		return false
 	}
 	if err := atomicfile.WriteFile(pkgPath, []byte(text), info.Mode().Perm()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", pkgPath, err)
-		return
+		return false
 	}
 	if strings.HasPrefix(decision.spec, "file:") {
 		fmt.Printf("🔗 Dev forge build: %s depends on %s at %s (npm links it; live edits, nothing published)\n",
 			label, WebRuntimePackage, strings.TrimPrefix(decision.spec, "file:"))
 	}
+	return true
 }
 
 // currentWebRuntimeSpec returns the specifier the manifest declares today.
@@ -453,4 +458,49 @@ func FrontendDependencyNotices(projectDir, feRelDir string) []string {
 			browserSDKPackage, browserSDKPackage, spec))
 	}
 	return out
+}
+
+// SyncFrontendLock brings the lockfile that governs feRelDir's package.json
+// back in step with the dependency ranges forge manages there
+// (WebRuntimePackage, browserSDKPackage).
+//
+// The Ensure* functions above rewrite those ranges in package.json and nothing
+// else, so a project with a lockfile is left with one that records the OLD
+// range: `npm ci` then fails ("package.json and package-lock.json are not in
+// sync") until someone runs an install by hand. This runs the package
+// manager's lockfile-only refresh (no node_modules, no lifecycle scripts) when,
+// and only when, the lockfile disagrees about one of those packages. A project
+// with no lockfile has nothing to refresh, and a lockfile that already agrees
+// is never rewritten.
+//
+// It returns an error when the refresh could not run (no package manager on
+// PATH, registry unreachable), naming the frontend and the exact command, so
+// the inconsistency is never silent. FORGE_SKIP_NPM_INSTALL opts out of
+// running a package manager; the command is printed instead.
+func SyncFrontendLock(projectDir, feRelDir string) error {
+	manifestDir := filepath.Join(projectDir, feRelDir)
+	lock, ok := frontenddeps.FindLock(manifestDir, projectDir)
+	if !ok {
+		return nil
+	}
+	managed := []string{WebRuntimePackage, browserSDKPackage}
+	drift, err := frontenddeps.LockDrift(lock, manifestDir, managed...)
+	if err != nil {
+		return fmt.Errorf("%s: compare package.json with %s: %w", feRelDir, lock.File, err)
+	}
+	if drift == nil {
+		return nil
+	}
+	cmd := frontenddeps.LockRefreshCommand(lock, manifestDir)
+	if os.Getenv("FORGE_SKIP_NPM_INSTALL") != "" {
+		fmt.Fprintf(os.Stderr, "warning: %s/package.json and %s are out of sync (%s); FORGE_SKIP_NPM_INSTALL is set, so forge did not refresh it — run %s\n",
+			feRelDir, lock.File, strings.Join(drift.Details, "; "), cmd)
+		return nil
+	}
+	fmt.Printf("  ↻ %s: refreshing %s for the dependency ranges forge changed in package.json\n", feRelDir, lock.File)
+	if err := frontenddeps.RefreshLock(context.Background(), lock, manifestDir); err != nil {
+		return fmt.Errorf("%s/package.json changed but %s could not be refreshed, so `%s ci`-style frozen installs will fail until it is — run %s: %w",
+			feRelDir, lock.File, lock.Runner, cmd, err)
+	}
+	return nil
 }

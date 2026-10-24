@@ -47,10 +47,11 @@ func AggOf(a obsquery.Agg, quantile float64) (string, float64) {
 	return "", 0
 }
 
-// MetricTypeName is "gauge", "sum" or "histogram"; "" for anything else.
+// MetricTypeName is "gauge", "sum", "histogram", "exp_histogram" or "summary";
+// "" for an unknown kind.
 func MetricTypeName(t obsquery.MetricType) string {
 	switch t {
-	case obsquery.MetricGauge, obsquery.MetricSum, obsquery.MetricHistogram:
+	case obsquery.MetricGauge, obsquery.MetricSum, obsquery.MetricHistogram, obsquery.MetricExpHistogram, obsquery.MetricSummary:
 		return t.String()
 	}
 	return ""

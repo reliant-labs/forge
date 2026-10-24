@@ -202,7 +202,8 @@ type Series struct {
 	// (span.duration, span.attr.lcp), the metric NAME for metrics. Empty for
 	// AggCount.
 	Field string `json:"field,omitempty"`
-	// MetricType is "sum", "gauge" or "histogram" (metrics only).
+	// MetricType is "sum", "gauge", "histogram", "exp_histogram" or "summary"
+	// (metrics only).
 	MetricType string `json:"metricType,omitempty"`
 	// Where narrows this series alone (e.g. only the failed requests).
 	Where []Predicate `json:"where,omitempty"`

@@ -424,7 +424,7 @@ func resolveSeriesKinds(ctx context.Context, b obsbackend.Backend, n obsbackend.
 // defaultAgg is a kind's aggregation when none is named (DESIGN §3.2).
 func defaultAgg(m obsbackend.MetricInfo) (string, float64) {
 	switch {
-	case m.Type == "histogram":
+	case m.Type == "histogram" || m.Type == "exp_histogram":
 		return "quantile", 0.95
 	case m.Type == "sum" && m.Monotonic:
 		return "rate", 0

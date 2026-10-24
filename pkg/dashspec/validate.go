@@ -637,6 +637,12 @@ func (v *validator) searchPanel(path string, o map[string]any, sig Signal) {
 	v.stringList(path, o, "columns", sig)
 }
 
+// hasObservations reports whether a metric kind records observations (a count
+// and a distribution) rather than a single value.
+func hasObservations(metricType string) bool {
+	return metricType == "histogram" || metricType == "exp_histogram" || metricType == "summary"
+}
+
 func (v *validator) series(path string, s map[string]any, sig Signal, labels map[string]bool) {
 	v.known(path, s, "label", "agg", "quantile", "field", "metricType", "where", "thresholds")
 	if l := v.str(path, s, "label", true); l != "" {
@@ -647,7 +653,7 @@ func (v *validator) series(path string, s map[string]any, sig Signal, labels map
 	}
 	agg := v.oneOf(path, s, "agg", true, string(AggCount), string(AggCountDistinct), string(AggSum), string(AggAvg), string(AggMax), string(AggQuantile), string(AggLast), string(AggRate), string(AggIncrease), string(AggMin))
 	field := v.str(path, s, "field", false)
-	metricType := v.oneOf(path, s, "metricType", false, "sum", "gauge", "histogram")
+	metricType := v.oneOf(path, s, "metricType", false, "sum", "gauge", "histogram", "exp_histogram", "summary")
 	q, hasQ := v.number(path, s, "quantile")
 	if agg == string(AggQuantile) {
 		if !hasQ || q <= 0 || q > 1 {
@@ -665,19 +671,19 @@ func (v *validator) series(path string, s map[string]any, sig Signal, labels map
 			v.add(path, "a metrics series names its metric in \"field\"")
 		}
 		if metricType == "" {
-			v.add(path, "a metrics series needs \"metricType\" (sum, gauge or histogram)")
+			v.add(path, "a metrics series needs \"metricType\" (sum, gauge, histogram, exp_histogram or summary)")
 		}
-		if agg == string(AggQuantile) && metricType != "histogram" {
-			v.add(childPath(path, "agg"), "a quantile over a metric needs metricType \"histogram\"")
+		if agg == string(AggQuantile) && !hasObservations(metricType) {
+			v.add(childPath(path, "agg"), "a quantile over a metric needs metricType \"histogram\", \"exp_histogram\" or \"summary\"")
 		}
 		if agg == string(AggCountDistinct) {
 			v.add(childPath(path, "agg"), "%s is not defined over a metric; use rate, increase, sum, avg, min, max, last, quantile or (histograms) count", agg)
 		}
-		if agg == string(AggCount) && metricType != "histogram" {
-			v.add(childPath(path, "agg"), "count over a metric needs metricType \"histogram\" (its observations); a sum's growth is rate or increase (agg sum on a monotonic sum is its increase)")
+		if agg == string(AggCount) && !hasObservations(metricType) {
+			v.add(childPath(path, "agg"), "count over a metric needs a histogram, exp_histogram or summary metricType (its observations); a sum's growth is rate or increase (agg sum on a monotonic sum is its increase)")
 		}
 		if (agg == string(AggRate) || agg == string(AggIncrease)) && metricType == "gauge" {
-			v.add(childPath(path, "agg"), "%s needs metricType \"sum\" (a monotonic counter) or \"histogram\", not a gauge", agg)
+			v.add(childPath(path, "agg"), "%s needs metricType \"sum\" (a monotonic counter) or a histogram or summary, not a gauge", agg)
 		}
 	case Traces, Logs:
 		if metricType != "" {

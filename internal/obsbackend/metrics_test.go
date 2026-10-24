@@ -523,3 +523,22 @@ func TestMetricsParityLocalAndCloudReturnTheSameSeries(t *testing.T) {
 		})
 	}
 }
+
+func TestMetricTypeNameCoversAllFiveKinds(t *testing.T) {
+	for kind, want := range map[obsquery.MetricType]string{
+		obsquery.MetricGauge: "gauge", obsquery.MetricSum: "sum", obsquery.MetricHistogram: "histogram",
+		obsquery.MetricExpHistogram: "exp_histogram", obsquery.MetricSummary: "summary", obsquery.MetricUnknown: "",
+	} {
+		if got := obsbackend.MetricTypeName(kind); got != want {
+			t.Errorf("MetricTypeName(%v) = %q, want %q", kind, got, want)
+		}
+	}
+	for kind, want := range map[obsquery.CatalogKind]string{
+		obsquery.CatalogGauge: "gauge", obsquery.CatalogSum: "sum", obsquery.CatalogHistogram: "histogram",
+		obsquery.CatalogExpHistogram: "exp_histogram", obsquery.CatalogSummary: "summary",
+	} {
+		if got := obsbackend.MetricTypeName(obsquery.MetricType(kind)); got != want || kind.String() != want {
+			t.Errorf("catalog kind %v: MetricTypeName = %q, String = %q, want %q", int(kind), got, kind.String(), want)
+		}
+	}
+}

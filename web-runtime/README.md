@@ -157,6 +157,68 @@ object, embed` are blocked, images are not inlined and fonts are not collected.
 fetch/XHR spans have their `http.url` / `url.full` stripped of query string and
 fragment; request and response bodies and headers are not captured.
 
+## Node and Electron-main telemetry (`/node`)
+
+`initNodeTelemetry` is the browser entry's twin for a Node process — an
+Electron app's main process, a CLI. It ships logs, errors and spans as
+OTLP/JSON to the same ingest, normally the keyed one
+(`https://<ingest host>/k/<key>`), using Node built-ins only: no
+OpenTelemetry SDK packages to install beside `@opentelemetry/api`.
+
+```js
+import { app } from "electron";
+import {
+  flushOnQuit,
+  frontendServiceName,
+  initNodeTelemetry,
+} from "@reliantlabs/forge-web-runtime/node";
+
+const telemetry = initNodeTelemetry({
+  serviceName: frontendServiceName("shop", "desktop"), // "<project>-<frontend>", as forge derives it
+  serviceVersion: app.getVersion(),
+  environment: "prod",
+  appClient: "electron",
+  endpoint: "https://ingest.example.dev/k/pk_live_…", // unset, "" or "off": telemetry is off
+  origin: "app://bundle", // the keyed ingest admits only an allowlisted Origin
+  appRoot: app.getAppPath(), // stack paths are reported relative to it
+});
+flushOnQuit(app); // hold before-quit until the queue is out (2s at most)
+
+telemetry?.logger.warn("renderer gone", { reason: "oom" });
+telemetry?.reportError(err, { "settings.section": "privacy" });
+telemetry?.tracer.startActiveSpan("backend.start", (span) => { /* … */ span.end(); });
+```
+
+- **Uncaught exceptions and unhandled rejections** become ERROR records with
+  `exception.type`, `exception.message`, `exception.stacktrace` and
+  `code.function.name` — the keys forge/pkg/observe writes for a server error —
+  and no `rum.sessionId`, so `forge obs issues` groups them with sfp1.
+  `code.function.name` is the innermost application frame (not Node, Electron or
+  `node_modules`), written `fn (src/file.js)`.
+- **The process's fate is unchanged.** Exceptions are watched with
+  `uncaughtExceptionMonitor`. When the runtime's `unhandledRejection` listener is
+  the only one, it flushes, then raises the rejection as Node would have
+  (`--unhandled-rejections` is honoured). In plain Node with no
+  `uncaughtException` handler, it flushes and then exits as Node does; under
+  Electron nothing is installed there. `captureProcessErrors: false` turns all
+  of this off.
+- **Batching:** records wait up to `batchDelayMs` (5s) or `maxBatchSize` (256);
+  at most `maxQueueSize` (2048) per signal are held. Timers are unref'd. A fatal
+  record is sent at once, and an idle process flushes on `beforeExit`.
+  `flush(ms)` / `shutdown(ms)` resolve by their timeout whatever the network
+  does. An app that already defers `before-quit` for its own shutdown awaits
+  `telemetry.flush()` as the last step of it instead of calling `flushOnQuit`.
+- **Privacy:** an exception keeps its message's first line, with credential
+  shapes redacted (the patterns `track()` uses) and at most 1024 chars; the
+  stack is rebuilt from that line and its frames, with the home directory, the
+  install path and `app.asar` removed from every path. String attributes and
+  bodies are redacted and bounded, and object-valued attributes are dropped.
+  `setUser(id)` stamps the opaque `userId` the browser entry stamps. Nothing
+  else about the machine is sent: no host name, IP, argv or environment.
+- The global `@opentelemetry/api` tracer, AsyncLocalStorage context manager and
+  W3C `traceparent` propagator are this runtime's unless `registerGlobal: false`.
+  `reportException` from the barrel reports through it once it is running.
+
 ## The DOM-free interceptors entry point
 
 ```ts

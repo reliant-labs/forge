@@ -101,7 +101,7 @@ never wedges a deletion.
 
 | Policy | Refuses |
 |---|---|
-| `eso-writers` | a create, update or delete of an ExternalSecret or SecretStore by anyone but `admission.writers`, `admission.writer_groups` (default `system:masters`), the operator, and the cluster's garbage collector and namespace controller. Name your apply identity: a GKE binding's Google service account email, or the `forge-connect-<cluster>-<env>` ServiceAccount `forge cluster connect` mints. |
+| `eso-writers` | a create, update or delete of an ExternalSecret or SecretStore by anyone but `admission.writers`, `admission.writer_groups` (default `system:masters`), the operator, and the cluster's garbage collector and namespace controller. Name your apply identity: the `system:serviceaccount:forge-system:forge-connect-<cluster>-<env>` ServiceAccount `forge cluster connect` mints. |
 | `eso-store-pin` | any SecretStore except a `vault` provider that dials a server in `admission.servers` with JWT auth on a mount in `jwt_mounts`, with a projected token for `admission.store_service_account` (default `reliant-secrets`, in the store's own namespace) and exactly one audience from `admission.audiences`; or a `gcpsm` provider over Workload Identity for a project in `gcp_projects`. A `webhook` provider is refused: it is an exfiltration channel. |
 | `eso-es-policy` | `dataFrom`; a `ClusterSecretStore` reference; a `creationPolicy` other than Orphan or Merge (including the default, Owner); a `deletionPolicy` other than Retain; a `target.name` other than the ExternalSecret's own; a generic target; a per-entry `sourceRef`; a refresh under 5m. |
 

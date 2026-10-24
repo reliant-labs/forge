@@ -327,6 +327,12 @@ schema ahead of it. Numbered below (the `00001_baseline` default), adoption
 works but that rollback does not. `forge db migrate status` previews any
 database; never `migrate force` a baseline.
 
+## A release the environment's schema has already passed
+
+`forge env build --release` and `forge env deploy` refuse it before anything
+ships, from the migration manifest every release records. See
+**`db/release-guard`**.
+
 ## Where AUTO_MIGRATE still fits
 
 `AUTO_MIGRATE=true` migrates **in-process at startup**. It is not a duplicate

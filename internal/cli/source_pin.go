@@ -280,6 +280,16 @@ func goModPin(ctx context.Context, projectDir string, src *buildtarget.Source) (
 	if err != nil {
 		return sourcePin{}, false
 	}
+	return goModPinFrom(ctx, data, src)
+}
+
+// goModPinFrom is goModPin over a go.mod's bytes — the working tree's, or a
+// historical commit's (the migration backfill reads the pin a release was
+// cut under).
+func goModPinFrom(ctx context.Context, data []byte, src *buildtarget.Source) (sourcePin, bool) {
+	if src.Module == "" {
+		return sourcePin{}, false
+	}
 	f, err := modfile.Parse("go.mod", data, nil)
 	if err != nil {
 		return sourcePin{}, false

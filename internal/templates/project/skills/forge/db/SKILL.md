@@ -209,6 +209,8 @@ task dev-psql                      # interactive shell (no --dsn)
 ```
 
 Versions are **UTC timestamps**; never hand-type one. See **`db/versioning`**.
+A release whose migration a target env's schema has already passed is refused
+at the cut and the deploy — **`db/release-guard`**.
 
 ### Recovering a wedged dev database
 

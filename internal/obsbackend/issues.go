@@ -44,6 +44,9 @@ type Issue struct {
 	// the control plane's id in the cloud.
 	ID       string
 	Platform string
+	// Source is the issue source (obsquery.LogKeyIssueSource) its events
+	// carry; "" for an error.
+	Source string
 	// EnvID is the control plane's id for the issue's environment (cloud only).
 	EnvID         string
 	Service       string
@@ -116,6 +119,8 @@ type ListIssuesRequest struct {
 	Statuses []string
 	// Platform is "", PlatformServer or PlatformBrowser.
 	Platform string
+	// Source lists the issues of this issue source; "" lists errors.
+	Source string
 	// SinceRelease keeps issues first seen in this release version.
 	SinceRelease string
 	// SincePromotion keeps issues first seen at or after this promotion.

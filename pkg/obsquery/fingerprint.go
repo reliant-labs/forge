@@ -51,11 +51,34 @@ const (
 	LogKeyExceptionType    = "exception.type"
 	LogKeyExceptionMessage = "exception.message"
 	LogKeyErrorGroup       = "error.group"
+	LogKeyIssueSource      = "issue.source"
 )
 
 // ServerErrorFilterSQL selects server error events from otel_logs: ERROR or
 // above (SeverityNumber 17+), and not from a browser session.
 const ServerErrorFilterSQL = `SeverityNumber >= 17 AND ResourceAttributes['rum.sessionId'] = ''`
+
+// Issue sources. A record carrying issue.source (observe.IssueSource) is an
+// issue event of that source at ANY level: an agent's bug report, say, which
+// must be grouped and triaged like an error without counting as one. Errors
+// carry no source (""). Every issue has exactly one source, and sfp1
+// fingerprints both kinds the same way (error.group is how a source pins its
+// grouping).
+const (
+	// IssueEventFilterSQL selects every record an issue is built from: server
+	// errors, and server records of any level that carry a source. The
+	// control plane's ingest view filters on it.
+	IssueEventFilterSQL = `ResourceAttributes['rum.sessionId'] = '' AND (SeverityNumber >= 17 OR LogAttributes['issue.source'] != '')`
+	// IssueSourceSQL is a record's issue source, "" for an error.
+	IssueSourceSQL = `LogAttributes['issue.source']`
+)
+
+// validSource is the shape of an issue source name.
+var validSource = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
+
+// ValidIssueSource reports whether s can name an issue source: 1-64 of
+// lowercase letters, digits, '_', '.' and '-', starting with a letter or digit.
+func ValidIssueSource(s string) bool { return validSource.MatchString(s) }
 
 // The MessageNorm mask chain, split around the expression it normalizes. The
 // masks, in order: URLs, UUIDs, quoted strings, hex runs of 8+, integers; first

@@ -31,7 +31,7 @@ const (
 func issuesAnswer() scriptedAnswer {
 	row := func(fp, svc, title string, events int) []any {
 		return []any{fp, svc, title, "internal/store/db.go in store.(*DB).Exec", "*pgconn.PgError", jn(strconv.Itoa(events)), jn("3"),
-			"2026-10-22 10:00:00.000000000", "2026-10-22 11:30:00.000000000", issueTrace, "v1.4.0", "v1.3.0"}
+			"2026-10-22 10:00:00.000000000", "2026-10-22 11:30:00.000000000", issueTrace, "v1.4.0", "v1.3.0", ""}
 	}
 	return scriptedAnswer{"GROUP BY fingerprint, service", obsbackend.Result{Rows: [][]any{
 		row(issueFP, "api", "*pgconn.PgError: duplicate key <str>", 7),

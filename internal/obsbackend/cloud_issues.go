@@ -58,6 +58,7 @@ type wireTrendPoint struct {
 type wireIssue struct {
 	ID              string           `json:"id"`
 	Platform        string           `json:"platform"`
+	Source          string           `json:"source"`
 	EnvID           string           `json:"envId"`
 	Service         string           `json:"service"`
 	Fingerprint     string           `json:"fingerprint"`
@@ -102,7 +103,7 @@ func upper(s string) string {
 
 func (w wireIssue) issue() Issue {
 	return Issue{
-		ID: w.ID, Platform: wirePlatform[w.Platform], Service: w.Service, Fingerprint: w.Fingerprint,
+		ID: w.ID, Platform: wirePlatform[w.Platform], Source: w.Source, Service: w.Service, Fingerprint: w.Fingerprint,
 		Title: w.Title, Culprit: w.Culprit, ExceptionType: w.ExceptionType, Status: wireStatus[w.Status],
 		FirstSeen: w.FirstSeenAt.UTC(), LastSeen: w.LastSeenAt.UTC(), FirstVersion: w.FirstVersion, LastVersion: w.LastVersion,
 		Events: int64(w.Events), Affected: int64(w.Affected),
@@ -153,12 +154,13 @@ func (c Cloud) ListIssues(ctx context.Context, req ListIssuesRequest) (ListIssue
 		Scope            wireIssueScope `json:"scope"`
 		Statuses         []string       `json:"statuses,omitempty"`
 		Platform         string         `json:"platform,omitempty"`
+		Source           string         `json:"source,omitempty"`
 		FirstSeenRelease string         `json:"firstSeenRelease,omitempty"`
 		SincePromotionID string         `json:"sincePromotionId,omitempty"`
 		Sort             string         `json:"sort"`
 		PageSize         int            `json:"pageSize,omitempty"`
 		PageToken        string         `json:"pageToken,omitempty"`
-	}{Scope: scope, FirstSeenRelease: req.SinceRelease, SincePromotionID: req.SincePromotion, Sort: sort, PageSize: req.Limit, PageToken: req.PageToken}
+	}{Scope: scope, Source: req.Source, FirstSeenRelease: req.SinceRelease, SincePromotionID: req.SincePromotion, Sort: sort, PageSize: req.Limit, PageToken: req.PageToken}
 	for _, s := range req.Statuses {
 		in.Statuses = append(in.Statuses, statusEnum(s))
 	}
@@ -174,6 +176,11 @@ func (c Cloud) ListIssues(ctx context.Context, req ListIssuesRequest) (ListIssue
 	}
 	res := ListIssuesResult{NextPageToken: out.NextPageToken}
 	for _, w := range out.Issues {
+		// A control plane that predates issue sources ignores the filter
+		// and answers errors: say so rather than list them as the source's.
+		if w.Source != req.Source {
+			return ListIssuesResult{}, Undetermined("the control plane answered issues of source %q for --source %q: it does not filter by issue source yet", w.Source, req.Source)
+		}
 		res.Issues = append(res.Issues, w.issue())
 	}
 	return res, nil

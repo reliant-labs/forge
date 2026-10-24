@@ -416,9 +416,13 @@ func collectLaneOutcome(
 			o.unscoped = true
 			return o, nil
 		case targetedPackageLanes[lane]:
-			// contract and exported-vars load the untagged build only.
-			var run bool
-			if paths, run = defaultPassPackages(cwd, scope.goPackages(), nil); !run {
+			// contract and exported-vars load the untagged build only. An
+			// empty pattern list is not handed on: it would mean ./....
+			run := false
+			if pkgs := scope.goPackages(); len(pkgs) > 0 {
+				paths, run = defaultPassPackages(cwd, pkgs, nil)
+			}
+			if !run {
 				o.skipMsg = "no Go package under --scope — skipping " + lane
 				return o, nil
 			}

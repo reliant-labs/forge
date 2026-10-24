@@ -1,6 +1,7 @@
 package lint
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -148,6 +149,27 @@ func TestScopeWithNoCompiledGoSkipsPackageLanes(t *testing.T) {
 	}
 	if len(ran) != 0 {
 		t.Errorf("package lanes ran on a scope with no compiled Go: %v", ran)
+	}
+}
+
+// The targeted `--contract` / `--exported-vars` lanes skip the same way. An
+// empty pattern list must never reach the analysis: it would load ./....
+func TestTargetedPackageLanesSkipScopeWithNoCompiledGo(t *testing.T) {
+	root := noCompiledGoFixture(t)
+	for _, scopePaths := range [][]string{{"scripts"}, {"scripts/gen.go"}, {"itest"}, {"itest/x_test.go"}} {
+		scope, err := parseLintScope(root, scopePaths)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for lane := range targetedPackageLanes {
+			o, err := collectLaneOutcome(context.Background(), lintFlags{}, lane, []string{"./..."}, root, nil, nil, scope)
+			if err != nil {
+				t.Fatalf("%s --scope %v: %v", lane, scopePaths, err)
+			}
+			if o.ran || o.skipMsg != "no Go package under --scope — skipping "+lane {
+				t.Errorf("%s --scope %v: ran=%v skipMsg=%q; want skipped", lane, scopePaths, o.ran, o.skipMsg)
+			}
+		}
 	}
 }
 

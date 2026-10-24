@@ -211,6 +211,10 @@ func StepForMetric(rng time.Duration, requested int32, intervalSec int64) (step 
 	return StepFor(rng, TargetPoints, floor), false
 }
 
+// ErrMetricNotFound is ParseLookup's refusal when no table holds the metric in
+// the lookup window. It is not ErrInvalid: the request was well-formed.
+var ErrMetricNotFound = errors.New("metric not found")
+
 // MetricLookup finds which tables hold a metric and what is known about it.
 // Columns: kind, unit, mono, temporality, mixed, series, points, first, last,
 // interval. ParseLookup turns the rows into a MetricInfo.

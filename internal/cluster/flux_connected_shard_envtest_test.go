@@ -20,9 +20,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/yaml"
 
-	"github.com/reliant-labs/forge/internal/flux"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclrender"
+	"github.com/reliant-labs/forge/pkg/flux"
 )
 
 // The connected-shard admission policy, run by a REAL kube-apiserver. The owner's

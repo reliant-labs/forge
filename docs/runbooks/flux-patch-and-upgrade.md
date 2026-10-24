@@ -1,7 +1,7 @@
 # Patching and upgrading the Flux that `forge.flux_chart()` installs
 
 forge pins one Flux chart (`FLUX_CHART_VERSION` in `kcl/lib/flux.k`, mirrored
-in `internal/flux`), which a consumer that runs a Flux of its own (a control
+in `pkg/flux`), which a consumer that runs a Flux of its own (a control
 plane reconciling hosted workloads) declares with `forge.flux_chart()`. forge
 never installs Flux into a deploy target by itself; see `forge skill load
 deploy/flux`. There is deliberately no version knob: the chart's hardening and
@@ -55,7 +55,7 @@ forge does not run a feed; whoever owns the pin does.
 
    ```bash
    forge env render <env> --target flux > /tmp/before.yaml     # on the old pin
-   # bump FLUX_CHART_VERSION (kcl/lib/flux.k) and ChartVersion (internal/flux/flux.go)
+   # bump FLUX_CHART_VERSION (kcl/lib/flux.k) and ChartVersion (pkg/flux/flux.go)
    forge env render <env> --target flux > /tmp/after.yaml
    diff /tmp/before.yaml /tmp/after.yaml
    ```

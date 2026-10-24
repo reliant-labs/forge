@@ -96,7 +96,7 @@ import regex
 # The chart's OCI reference. EXPORTED because it is the SHARED-FLUX
 # DETECTOR: `forge cluster up` compares every declared HelmChart's `oci`
 # against this string to decide whether a cluster already has a Flux, and
-# the Go side (internal/flux.ChartOCI) holds the same spelling. A consumer
+# the Go side (pkg/flux.ChartOCI) holds the same spelling. A consumer
 # that wants to be recognised as providing Flux declares this ref.
 FLUX_CHART_OCI = "oci://ghcr.io/fluxcd-community/charts/flux2"
 
@@ -123,7 +123,7 @@ FLUX_DEPLOY_SERVICE_ACCOUNT = "reliant-deploy-tenant"
 
 # The two ClusterRoles of the per-namespace RBAC model. They grant NOTHING until
 # a RoleBinding in a namespace names them (`flux_namespace_bindings`). The names
-# are shared with Go (internal/flux.ReconcilerRole / SourceRole) and
+# are shared with Go (pkg/flux.ReconcilerRole / SourceRole) and
 # pinned by a test: a RoleBinding naming a ClusterRole that is not declared is
 # accepted by the API server and grants nothing, so drift fails late.
 FLUX_RECONCILER_ROLE = "flux-tenant-reconciler"
@@ -133,7 +133,7 @@ FLUX_SOURCE_ROLE = "flux-tenant-source"
 # kustomize-controller selected by Flux's sharding label. A Kustomization whose
 # `spec.kubeConfig` points at a customer's cluster carries
 # `sharding.fluxcd.io/key: connected` and is reconciled ONLY by it; everything
-# else stays on the main controller. Shared with Go (internal/flux) and pinned
+# else stays on the main controller. Shared with Go (pkg/flux) and pinned
 # by a test.
 FLUX_SHARD_LABEL = "sharding.fluxcd.io/key"
 FLUX_CONNECTED_SHARD = "connected"

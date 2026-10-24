@@ -341,6 +341,25 @@ func (d deleter) unlink(ctx context.Context, path string) error {
 	if err := d.grantLocked(ctx); err != nil {
 		return err
 	}
+	return d.unlinkLocked(path)
+}
+
+// unlinkChecked revalidates a candidate after the pacing wait, immediately
+// before unlink. A check before grantLocked would use a stale decision again.
+func (d deleter) unlinkChecked(ctx context.Context, path string, check func() error) error {
+	d.pass.mu.Lock()
+	defer d.pass.mu.Unlock()
+	if err := d.grantLocked(ctx); err != nil {
+		return err
+	}
+	if err := check(); err != nil {
+		return d.observeLocked(path, err)
+	}
+	return d.unlinkLocked(path)
+}
+
+// unlinkLocked requires pass.mu and a granted unlink.
+func (d deleter) unlinkLocked(path string) error {
 	err := d.pass.remove(path)
 	if err != nil && errors.Is(err, fs.ErrPermission) {
 		// A read-only file on Windows, or an entry a module cache wrote 0444.

@@ -27,6 +27,7 @@ package alerting
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -102,6 +103,11 @@ type Alert struct {
 	// EndsAt is when the receiver should consider the alert resolved if it is
 	// not refreshed: now+3×interval while firing, now once resolved.
 	EndsAt time.Time
+	// Why is the instance's why-fired payload (see Why): structured evidence
+	// that rides with the alert but is not part of its identity. The
+	// Alertmanager notifier posts it as the WhyAnnotation annotation. Nil when
+	// the rule's rows carried no WhyColumn.
+	Why json.RawMessage
 }
 
 // Notifier delivers alerts.
@@ -169,6 +175,10 @@ type Instance struct {
 	ResolveSent bool
 	LastEvalAt  time.Time
 	LastValue   float64
+	// Why is the latest why-fired payload the rule's row carried (WhyColumn),
+	// refreshed on every evaluation. It is not a label, so it never changes
+	// the instance's fingerprint.
+	Why json.RawMessage
 }
 
 // InstanceRef addresses one stored instance.
@@ -198,6 +208,8 @@ type Event struct {
 	Transition  Transition
 	Value       float64
 	At          time.Time
+	// Why is the payload the instance carried at this transition.
+	Why json.RawMessage
 }
 
 // Changes is what one evaluation step writes.

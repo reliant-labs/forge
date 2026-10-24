@@ -84,6 +84,18 @@ team knows.
 - **Diagnose:** open `console_url` for the issue's stack trace and events;
   check which release introduced it (`first_build` for a new issue).
 
+### ReleaseRegressed
+
+- **Meaning:** a promotion's health window closed and the release-health verdict
+  is FAIL: the release made the env worse (an error-rate rise, new or regressed
+  issues, an alert that opened after it) by the env's `release_health.fail_on`.
+  It fires once per promotion; a rollback is a new promotion and is judged on
+  its own.
+- **Diagnose:** the alert carries a `why` payload (observed vs baseline, the
+  findings, the release and its commit range, the top issues, and the commands
+  to run next). `forge obs check <env> --release <version>` reproduces the
+  verdict; `forge obs issues <env> --since-release <version>` lists what it opened.
+
 ## Tuning
 
 Every built-in alert is tuned or disabled per env by its id, in one map:

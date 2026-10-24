@@ -152,6 +152,11 @@ const (
 	PlatformNewIssue       = "new-issue"
 	PlatformIssueRegressed = "issue-regressed"
 	PlatformIssueSpike     = "issue-spike"
+	// PlatformReleaseRegressed fires when a promotion's after-window closes
+	// and the release-health verdict is FAIL: the env's release_health.fail_on
+	// findings, evaluated by the control plane with the same rule as
+	// `forge obs check`. It stays silent on PASS and on INCONCLUSIVE.
+	PlatformReleaseRegressed = "release-regressed"
 )
 
 // hasIssues reports whether the env has anything that can raise an issue.
@@ -270,6 +275,16 @@ var alertDefs = []alertDef{
 		annotations: map[string]string{"summary": "Issue spiking in {{ $labels.service }} ({{ $labels.env }}): {{ $labels.title }}, {{ $value }} events/hour, over 5 times its rate the day before. Details: {{ $labels.console_url }}"},
 		applies:     hasIssues,
 		platform:    []platformRule{{PlatformIssueSpike, "IssueSpike", SeverityWarning}},
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: PlatformReleaseRegressed, Alert: "ReleaseRegressed", Title: "A promoted release made the env worse once its health window closed",
+			Severity: SeverityWarning, For: "0s", Interval: "1m", Signal: "platform",
+			Params: []AlertParam{},
+		},
+		annotations: map[string]string{"summary": "Release {{ $labels.release }} regressed {{ $labels.env }}: {{ $value }} failing release-health findings after its window closed. Check it: forge obs check {{ $labels.env }} --release {{ $labels.release }}"},
+		applies:     func(in AlertInput) bool { return len(in.Services) > 0 },
+		platform:    []platformRule{{PlatformReleaseRegressed, "ReleaseRegressed", SeverityWarning}},
 	},
 	{
 		AlertDefaultInfo: AlertDefaultInfo{

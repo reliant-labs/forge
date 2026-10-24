@@ -8,6 +8,7 @@ package obsbackend
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"strings"
 	"time"
@@ -85,6 +86,7 @@ func (c Cloud) Alerts(ctx context.Context) ([]Alert, error) {
 		alerts = append(alerts, Alert{
 			Rule: a.Rule, State: strings.ToLower(a.State), Fingerprint: a.Fingerprint, Labels: a.Labels,
 			Summary:  a.Annotations["summary"],
+			Why:      whyOf(a.Annotations),
 			ActiveAt: unsetEpoch(a.ActiveAt), FiringAt: unsetEpoch(a.FiringAt), Value: a.LastValue,
 		})
 	}
@@ -160,4 +162,18 @@ func unsetEpoch(t time.Time) time.Time {
 		return time.Time{}
 	}
 	return t.UTC()
+}
+
+// whyOf is the why-fired payload an alert's annotations carry, or nil when
+// there is none or it is not a JSON object (a user's own `why` annotation).
+func whyOf(annotations map[string]string) json.RawMessage {
+	raw := annotations["why"]
+	if raw == "" {
+		return nil
+	}
+	var probe map[string]json.RawMessage
+	if json.Unmarshal([]byte(raw), &probe) != nil || probe == nil {
+		return nil
+	}
+	return json.RawMessage(raw)
 }

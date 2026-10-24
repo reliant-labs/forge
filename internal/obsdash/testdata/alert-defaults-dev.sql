@@ -47,6 +47,9 @@ SELECT 1 AS value WHERE 0 /* reliant:platform observability-quota:over_100 env:{
 -- ObservabilityQuotaOver150 (observability-quota) severity=critical for=0s interval=1m
 SELECT 1 AS value WHERE 0 /* reliant:platform observability-quota:over_150 env:{reliant_env_id:String} */
 
+-- ReleaseRegressed (release-regressed) severity=warning for=0s interval=1m
+SELECT 1 AS value WHERE 0 /* reliant:platform release-regressed env:{reliant_env_id:String} */
+
 -- ServiceErrorRateHigh (error-rate) severity=critical for=5m interval=1m
 WITH series AS (
     SELECT ServiceName AS service,

@@ -41,7 +41,7 @@ func advance(rule Rule, prev []Instance, ss []series, now time.Time) ([]Instance
 		if fresh {
 			in = Instance{RuleKey: rule.RuleKey, Fingerprint: s.fp, State: StatePending, ActiveAt: now}
 		}
-		in.Labels, in.Annotations = s.labels, s.annotations
+		in.Labels, in.Annotations, in.Why = s.labels, s.annotations, s.why
 		in.LastEvalAt, in.LastValue = now, s.value
 		in.ClearedAt = time.Time{}
 
@@ -123,14 +123,14 @@ func alertsFor(after []Instance, interval time.Duration, now time.Time) (alerts 
 	for _, in := range after {
 		switch in.State {
 		case StateFiring:
-			alerts = append(alerts, Alert{Labels: in.Labels, Annotations: in.Annotations, StartsAt: in.FiringAt, EndsAt: now.Add(3 * interval)})
+			alerts = append(alerts, Alert{Labels: in.Labels, Annotations: in.Annotations, StartsAt: in.FiringAt, EndsAt: now.Add(3 * interval), Why: in.Why})
 		case StateResolved:
 			if !in.ResolveSent {
 				start := in.FiringAt
 				if start.IsZero() {
 					start = in.ActiveAt
 				}
-				alerts = append(alerts, Alert{Labels: in.Labels, Annotations: in.Annotations, StartsAt: start, EndsAt: now})
+				alerts = append(alerts, Alert{Labels: in.Labels, Annotations: in.Annotations, StartsAt: start, EndsAt: now, Why: in.Why})
 				delivered = append(delivered, in)
 			}
 		}
@@ -139,7 +139,7 @@ func alertsFor(after []Instance, interval time.Duration, now time.Time) (alerts 
 }
 
 func event(in Instance, t Transition, at time.Time) Event {
-	return Event{RuleKey: in.RuleKey, Fingerprint: in.Fingerprint, Labels: in.Labels, Transition: t, Value: in.LastValue, At: at}
+	return Event{RuleKey: in.RuleKey, Fingerprint: in.Fingerprint, Labels: in.Labels, Transition: t, Value: in.LastValue, At: at, Why: in.Why}
 }
 
 func ref(in Instance) InstanceRef {

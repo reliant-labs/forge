@@ -5574,7 +5574,7 @@ schema AlertReceiver:
     secret?: str
     channel?: str
     severities: [str] = ["critical", "error"]
-    always_alertnames: [str] = ["NewIssue", "IssueRegressed", "IssueSpike"]
+    always_alertnames: [str] = ["NewIssue", "IssueRegressed", "IssueSpike", "ReleaseRegressed"]
 
     check:
         regex.match(name, r"^[a-z][a-z0-9_-]{0,62}$"), \

@@ -157,7 +157,7 @@ func runObsIssue(ctx context.Context, d obsDeps, id, env string, o obsIssueOpts)
 	}
 	fields, err := o.out.Parsed(obsIssueSchema)
 	if err != nil {
-		return err
+		return obsFail(d, o.out.JSON, schemaObsIssue, err)
 	}
 	fail := func(err error) error { return obsFail(d, o.out.JSON, schemaObsIssue, err) }
 	if o.events < 0 || o.events > obsquery.MaxIssueEvents {
@@ -401,7 +401,7 @@ func runObsIssueTriage(ctx context.Context, d obsDeps, verb, id, env string, o o
 	}
 	fields, err := o.out.Parsed(obsIssueSchema)
 	if err != nil {
-		return err
+		return obsFail(d, o.out.JSON, schemaObsIssue, err)
 	}
 	fail := func(err error) error { return obsFail(d, o.out.JSON, schemaObsIssue, err) }
 	req := obsbackend.UpdateIssueStatusRequest{ID: id}

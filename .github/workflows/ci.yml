@@ -31,9 +31,9 @@ permissions:
 # A PULL REQUEST gets the fast tier: a five-minute MEDIAN wall time, queue
 # included, from jobs of about three minutes each:
 #
-#   test-short        the -short tier, no -race, sharded (scripts/ci-test-shard.sh),
-#                     the guards in full mode, balanced across its entries, and
-#                     the flake gate: tests the change adds or edits, -count=3
+#   test-short        two -short shards, no -race (scripts/ci-test-shard.sh),
+#                     and an independent changed-test flake gate, -count=3.
+#                     Whole-repo guard scans/renders run only on main/full.
 #   checks            forge generate is a no-op, KCL validates, pre-commit hooks,
 #                     Go and npm dependency licenses
 #
@@ -81,8 +81,8 @@ permissions:
 # and `CI gate` queues again behind the last of them, so every job a pull
 # request runs is another place to wait. It ran 8 (13 before the pre-commit,
 # license-gate and Library Lint workflows were folded in, 9 once the guards
-# joined it); it runs 5, gate included: three test-short entries, because
-# the guards' full mode is ~3.5 minutes of work that no single job fits.
+# joined it); it runs 5, gate included: two short shards and an independent
+# changed-test repetition entry. No full guard runs extend those entries.
 #
 # CACHE-SOUND REPLAY. The -short tier is held cache-sound (reliant.md,
 # "Testing tiers"), so a package whose inputs did not change replays main's
@@ -320,21 +320,13 @@ jobs:
   # run the same steps in the same order, and a tool added to one goes into
   # the other.
   #
-  # THE GUARDS ON PULL REQUESTS. deadcodeguard, removalguard, tierguard and
-  # writeguard skip their whole-repo work under -short, and their full mode
-  # ran on main only, so a phantom field or a removed feature's leftover
-  # reference merged green and turned main red (two of October 2026's main
-  # reds). Each now runs in full mode here, after a shard's -short tests
-  # (sharing its warm build cache) or in an entry of its own, balanced so
-  # every entry fits the ~4-minute budget. Measured on ubuntu-latest, test
-  # time / whole job: all four in one job at -p 3 3:50 / 5:00 and at -p 1
-  # 4:38 / 5:46 (they contend for cores and memory: deadcodeguard 49s alone,
-  # 144s beside the others); tierguard alone 1:36 / 3:10. -p 1 within an
-  # entry, for the same reason. The partition is checked by
-  # internal/ciguard: every guard runs in exactly one entry.
+  # Whole-program guard scans/renders run in test-short-warm on main/full,
+  # not serially after these shards. Their cheap assertions still run under
+  # -short here. This deliberately trades premerge whole-repo diagnosis for
+  # the five-minute test budget; full/main retains every assertion.
   #
-  # THE FLAKE GATE rides in the guards-only entry, the lightest of the three
-  # (it was a job of its own, with a -race build cache to restore).
+  # Changed-test repetition is an independent entry: do not add its compile
+  # and three-run work to either shard's critical path.
   test-short:
     name: Test (${{ matrix.label }})
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
@@ -345,18 +337,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: "-short 1/2, deadcodeguard"
+          - label: "-short 1/2"
             shard: "1/2"
             args: "0 2"
-            guards: "deadcodeguard"
-          - label: "-short 2/2, tierguard"
+          - label: "-short 2/2"
             shard: "2/2"
             args: "1 2"
-            guards: "tierguard"
-          - label: "removalguard, writeguard, flake gate"
-            shard: "guards"
+          - label: "flake gate"
+            shard: "flake"
             args: ""
-            guards: "removalguard writeguard"
             flake: "true"
     steps:
       # Depth 2 for the flake gate: the merge commit and its first parent,
@@ -393,15 +382,6 @@ jobs:
         env:
           CI_TEST_JSON: ${{ runner.temp }}/test-shard.json
         run: scripts/ci-test-shard.sh ${{ matrix.args }}
-      # After the shard, whatever it reported: a red shard must not hide a
-      # guard's finding. Full mode, -count=1, as on main.
-      - name: Guards (full mode)
-        if: ${{ !cancelled() && matrix.guards != '' }}
-        run: |
-          set -euo pipefail
-          pkgs=()
-          for g in ${{ matrix.guards }}; do pkgs+=("github.com/reliant-labs/forge/internal/$g"); done
-          go test -p 1 -count=1 -timeout 30m "${pkgs[@]}"
       # The flake gate: every test the pull request adds or edits, three
       # times (scripts/ci-changed-tests.sh says how it finds them, and why no
       # -race). A test that passes once and fails once is caught here, before
@@ -636,6 +616,9 @@ jobs:
       - name: Check the test-job partition
         if: ${{ !cancelled() }}
         run: scripts/ci-test-packages.sh check
+      - name: Changed tests (race, three runs, full tier)
+        if: ${{ !cancelled() }}
+        run: scripts/ci-changed-tests.sh HEAD^1 full
       - name: Go tests (guards)
         if: ${{ !cancelled() }}
         # -p 1: one guard at a time. Each is a whole-program or whole-project

@@ -130,6 +130,27 @@ on the server, and calls made while the SDK chunk is still loading are held
   switch once running: an app that must send nothing without consent should not
   call `initBrowserTelemetry` before it has it.
 
+- Attribution (`appClient`, `visitorIdStorageKey`, `withAttribution(url)`): init
+  stamps `app.client` (`electron` inside Electron, else `web`; pass `"landing"`
+  from a marketing site) and `visitor.id` on every event, and reads `rid` and
+  `utm_source|medium|campaign|term|content` from the URL into localStorage. The
+  first `setTelemetryUser(id)` per user also emits one `user_identified` event
+  with `visitor_id` and the stored utm values. `withAttribution(url)` appends
+  `rid` and the utm values to an outbound absolute URL, and is the identity
+  before init or after `disableTelemetry()`. A visit carrying new values
+  replaces the stored ones (last touch); `attributionTouch: "first"` keeps the
+  first for good, for a marketing site attributing acquisition.
+
+  A site whose visitor id needs a consent its error telemetry does not (error
+  telemetry for everyone, the visitor id only with analytics consent) starts
+  with `attribution: false`: no visitor id is created, read or stamped and
+  nothing is captured until it calls `enableAttribution({ search })` (from
+  `/telemetry`) on grant. `search` is the landing URL's query string kept from
+  page load, for when a client-side navigation has dropped it since. To erase
+  on withdrawal, remove `ATTRIBUTION_STORAGE_KEY`, `IDENTIFIED_USER_STORAGE_KEY`
+  and the visitor id key; `getAttribution()` is the captured record, for a site
+  that stamps campaign values on its own events.
+
 Privacy is forced, not configurable: when replay records, all text and inputs
 are masked, canvas is never recorded, `img, picture, video, audio, iframe,
 object, embed` are blocked, images are not inlined and fonts are not collected.

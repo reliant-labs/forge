@@ -19,6 +19,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"sync"
 )
 
 // tempPrefix names the sibling temp file. It is dot-prefixed so an interrupted
@@ -31,6 +33,52 @@ var (
 	renameFile = replaceFile
 	syncFile   = func(f *os.File) error { return f.Sync() }
 )
+
+// scratchRoots are directories whose contents are thrown away by the process
+// that made them, so a crash there loses nothing and fsync buys nothing.
+var (
+	scratchMu    sync.RWMutex
+	scratchRoots = map[string]int{}
+)
+
+// MarkScratch declares dir a throwaway tree: WriteFile still writes
+// atomically under it (readers never see a partial file) but skips the fsync,
+// which on a busy disk dominates a render of hundreds of files. The returned
+// function ends the declaration. Never mark a directory whose contents outlive
+// the process.
+func MarkScratch(dir string) (unmark func()) {
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	scratchMu.Lock()
+	scratchRoots[dir]++
+	scratchMu.Unlock()
+	return func() {
+		scratchMu.Lock()
+		defer scratchMu.Unlock()
+		if scratchRoots[dir]--; scratchRoots[dir] <= 0 {
+			delete(scratchRoots, dir)
+		}
+	}
+}
+
+func isScratch(path string) bool {
+	scratchMu.RLock()
+	defer scratchMu.RUnlock()
+	if len(scratchRoots) == 0 {
+		return false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	for root := range scratchRoots {
+		if abs == root || strings.HasPrefix(abs, root+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
 
 // WriteFile writes data to path atomically. It is a drop-in for os.WriteFile:
 // a new file gets perm (subject to the umask); an existing regular file keeps
@@ -76,7 +124,9 @@ func WriteFile(path string, data []byte, perm fs.FileMode) error {
 			return err
 		}
 	}
-	if err := syncFile(tmp); err != nil {
+	if isScratch(target) {
+		// no fsync: see MarkScratch
+	} else if err := syncFile(tmp); err != nil {
 		_ = tmp.Close()
 		return err
 	}

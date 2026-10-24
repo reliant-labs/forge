@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/reliant-labs/forge/pkg/accesstoken"
 )
 
 // ReasonHeader is the Connect error-metadata key under which a control plane
@@ -75,6 +77,10 @@ type Error struct {
 	// reason says which one, and is the server's committed contract.
 	Reason string
 
+	// Scopes are the scopes a "scope_missing" refusal names, from the
+	// response's accesstoken.ScopesHeader. Empty when the server named none.
+	Scopes []string
+
 	// Message is the server's own message, verbatim and untruncated. For
 	// DISPLAY — never for control flow.
 	Message string
@@ -120,6 +126,20 @@ func (e *Error) Error() string {
 	}
 	return fmt.Sprintf("%s failed (HTTP %d%s) against %s%s",
 		e.Procedure, e.HTTPStatus, codeSuffix(e.Code), e.Endpoint, detailSuffix(e.Message))
+}
+
+// MissingScope reports the scope a 403 says the credential lacks (the
+// server's message names it as "<scope> scope"), so a caller can tell a
+// credential that needs a scope from a request the server refused.
+func (e *Error) MissingScope() (string, bool) {
+	if e == nil || e.HTTPStatus != http.StatusForbidden {
+		return "", false
+	}
+	m := missingScopeRe.FindStringSubmatch(e.Message)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
 }
 
 // HasCode reports whether this failure carries the given Connect code. Use
@@ -207,6 +227,7 @@ func (c *Client) connectError(procedure string, resp *http.Response, raw []byte)
 		HTTPStatus: resp.StatusCode,
 		Code:       strings.TrimSpace(envelope.Code),
 		Reason:     strings.TrimSpace(resp.Header.Get(ReasonHeader)),
+		Scopes:     accesstoken.ParseScopesHeader(resp.Header.Get(accesstoken.ScopesHeader)),
 		Message:    strings.TrimSpace(envelope.Message),
 		Details:    envelope.Details,
 		Procedure:  procedure,

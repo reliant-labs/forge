@@ -125,6 +125,7 @@ func writeSkillListFooter(w io.Writer, all, startHere []skillMeta, sections []sk
 	_, _ = fmt.Fprintf(w, ".\n")
 	_, _ = fmt.Fprintf(w, "  %s skill load <path>     read one (sub-skills load by full path, e.g. db/seeding)\n", name)
 	_, _ = fmt.Fprintf(w, "  %s skill search <word>   fastest when you know the keyword — matches bodies too\n", name)
+	_, _ = fmt.Fprintf(w, "  %s skill list <group>    one group's sub-skills by full path (e.g. skill list observability)\n", name)
 	_, _ = fmt.Fprintf(w, "  %s skill list --all      the exhaustive table, every sub-skill and full description\n", name)
 }
 

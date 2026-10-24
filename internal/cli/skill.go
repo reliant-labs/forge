@@ -148,14 +148,17 @@ func newSkillListCmd() *cobra.Command {
 		all               bool
 	)
 	cmd := &cobra.Command{
-		Use:   "list",
+		Use:   "list [group]",
 		Short: "List available skills (forge-shipped, project, and user-global)",
+		Args:  cobra.MaximumNArgs(1),
 		Long: `List available skills (forge-shipped, project, and user-global).
 
 The default view is GROUPED and fits on one screen: the start-here skills
 first, then one row per skill group with its sub-skills collapsed into a
 '+N' count. Every collapsed sub-skill is still loadable by its exact path
-('forge skill load db/seeding'). Pass --all for the exhaustive flat table.
+('forge skill load db/seeding'). Pass --all for the exhaustive flat table, or a
+group name ('forge skill list observability') for that group's parent and every
+sub-skill, each with its full path and description.
 
 'forge skill search <keyword>' is usually faster than reading either view —
 it scores paths, descriptions and BODIES, so it finds skills whose title
@@ -173,6 +176,14 @@ apply to this project's pinned forge_version.`,
 			}
 			if !includeMigrations {
 				skills = filterDefaultRelevance(skills)
+			}
+			if len(args) == 1 {
+				if skills = skillsInGroup(skills, args[0]); len(skills) == 0 {
+					return cliutil.UserErr(fmt.Sprintf("forge skill list %s", args[0]),
+						fmt.Sprintf("no skill or group named %q", args[0]), "",
+						"run 'forge skill list' to see the groups, or 'forge skill search <keyword>' to find a skill")
+				}
+				all = true
 			}
 			// --json is the sub-agent contract: a flat array of every
 			// skill, unchanged by the grouping the human-facing view does.
@@ -209,6 +220,20 @@ apply to this project's pinned forge_version.`,
 	cmd.Flags().BoolVar(&all, "all", false, "Print the exhaustive flat table (every sub-skill, full descriptions) instead of the grouped view")
 	cmd.Flags().BoolVar(&includeMigrations, "include-migrations", false, "Include one-time migration skills (relevance: migration) in the listing")
 	return cmd
+}
+
+// skillsInGroup keeps the skill at group and everything that collapses into it
+// in the grouped listing: path children ("observability/query") and name
+// siblings ("api-rest" under "api").
+func skillsInGroup(skills []skillMeta, group string) []skillMeta {
+	group = strings.TrimSuffix(strings.TrimPrefix(group, "forge/"), "/")
+	var out []skillMeta
+	for _, s := range skills {
+		if s.Path == group || strings.HasPrefix(s.Path, group+"/") || strings.HasPrefix(s.Path, group+"-") {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // filterDefaultRelevance drops skills that are not relevant to a project's

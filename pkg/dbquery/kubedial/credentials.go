@@ -88,11 +88,86 @@ func (c *Client) ConnConfig(ctx context.Context, db Database) (*pgx.ConnConfig, 
 // holds, for a pool that caches them.
 func (c *Client) ConnConfigFor(db Database, creds *Credentials) (*pgx.ConnConfig, error) {
 	t := db.Target()
+	cfg, err := readOnlyConfig(db, creds, t.Host(), PostgresPort)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := caPool(db, creds)
+	if err != nil {
+		return nil, err
+	}
+	cfg.TLSConfig = &tls.Config{RootCAs: pool, ServerName: t.Host(), MinVersion: tls.VersionTLS12}
+	// The host is a cluster-internal name with no DNS here; the dial ignores
+	// it, and pgx must not try to resolve it first.
+	cfg.LookupFunc = func(_ context.Context, host string) ([]string, error) { return []string{host}, nil }
+	cfg.DialFunc = c.DialFunc(t)
+	return cfg, nil
+}
+
+// SSL modes [ConnConfigForAddr] speaks. The empty string means
+// [SSLModeVerifyFull].
+const (
+	SSLModeDisable    = "disable"
+	SSLModeRequire    = "require"
+	SSLModeVerifyFull = "verify-full"
+)
+
+// ServerNameForAddr is the name the server certificate is verified against
+// when the caller reaches db at an address of its own: the CNPG read-write
+// Service, <name>-rw.<namespace>.svc, which every CNPG server certificate
+// carries. A port-forward to localhost therefore still verifies.
+func ServerNameForAddr(db Database) string {
+	return Target{Namespace: db.Namespace, Service: db.Name + "-rw"}.Host()
+}
+
+// ConnConfigForAddr is [Client.ConnConfigFor] for a caller that brings its own
+// network path to the database (a VPN, a kubectl port-forward, a bastion): it
+// dials addr (host:port) directly, with no tunnel of its own. sslmode is
+// [SSLModeVerifyFull] by default, verified against the cluster CA with
+// [ServerNameForAddr] as the server name; [SSLModeRequire] encrypts without
+// verifying, [SSLModeDisable] does not encrypt.
+//
+// It makes no API call: the credentials are the caller's to read
+// ([Client.Credentials]). The config holds the password; do not log it.
+func ConnConfigForAddr(db Database, creds *Credentials, addr, sslmode string) (*pgx.ConnConfig, error) {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, errors.New("kubedial: address: want host:port")
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 || host == "" {
+		return nil, errors.New("kubedial: address: want host:port")
+	}
+	cfg, err := readOnlyConfig(db, creds, host, port)
+	if err != nil {
+		return nil, err
+	}
+	switch sslmode {
+	case "", SSLModeVerifyFull:
+		pool, err := caPool(db, creds)
+		if err != nil {
+			return nil, err
+		}
+		cfg.TLSConfig = &tls.Config{RootCAs: pool, ServerName: ServerNameForAddr(db), MinVersion: tls.VersionTLS12}
+	case SSLModeRequire:
+		//nolint:gosec // sslmode=require is encryption without verification, the caller's explicit choice.
+		cfg.TLSConfig = &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}
+	case SSLModeDisable:
+		cfg.TLSConfig = nil
+	default:
+		return nil, fmt.Errorf("kubedial: sslmode %q: use %s, %s or %s", sslmode, SSLModeVerifyFull, SSLModeRequire, SSLModeDisable)
+	}
+	return cfg, nil
+}
+
+// readOnlyConfig is the connection config of the read-only role at host:port,
+// with TLS left for the caller to set.
+func readOnlyConfig(db Database, creds *Credentials, host string, port int) (*pgx.ConnConfig, error) {
 	database, _ := deploy.DatabaseIdentifiers(db.Name)
 	dsn := (&url.URL{
 		Scheme:   "postgres",
 		User:     url.UserPassword(creds.Username, creds.Password),
-		Host:     net.JoinHostPort(t.Host(), strconv.Itoa(PostgresPort)),
+		Host:     net.JoinHostPort(host, strconv.Itoa(port)),
 		Path:     "/" + database,
 		RawQuery: "sslmode=disable",
 	}).String()
@@ -101,14 +176,13 @@ func (c *Client) ConnConfigFor(db Database, creds *Credentials) (*pgx.ConnConfig
 		// The error can quote the DSN, and the DSN carries the password.
 		return nil, errors.New("kubedial: build connection config: invalid connection parameters")
 	}
+	return cfg, nil
+}
+
+func caPool(db Database, creds *Credentials) (*x509.CertPool, error) {
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(creds.CAPEM) {
 		return nil, fmt.Errorf("kubedial: the cluster CA of %s/%s is not a PEM certificate", db.Namespace, db.Name)
 	}
-	cfg.TLSConfig = &tls.Config{RootCAs: pool, ServerName: t.Host(), MinVersion: tls.VersionTLS12}
-	// The host is a cluster-internal name with no DNS here; the dial ignores
-	// it, and pgx must not try to resolve it first.
-	cfg.LookupFunc = func(_ context.Context, host string) ([]string, error) { return []string{host}, nil }
-	cfg.DialFunc = c.DialFunc(t)
-	return cfg, nil
+	return pool, nil
 }

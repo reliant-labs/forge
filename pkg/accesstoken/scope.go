@@ -119,6 +119,15 @@ const (
 	// able to silence an alert, so triage is held explicitly even by a
 	// holder that reads.
 	ScopeObsTriage Scope = "obs:triage"
+	// ScopeObsWrite authors the org's observability workspace: dashboards
+	// (save, restore, archive, promote) and anything else a person edits in
+	// the telemetry console. Implies obs:read at the point of use.
+	//
+	// ITS OWN SCOPE, NOT TRIAGE. obs:triage changes the state of an issue; this
+	// changes shared, versioned artifacts the whole org reads. Neither implies
+	// the other, so a token that silences alerts cannot rewrite dashboards and
+	// the reverse. Never bound to an environment: what it writes is org-wide.
+	ScopeObsWrite Scope = "obs:write"
 
 	// ScopeDBQuery runs a read-only query against an environment's database.
 	// Not implied by any other scope and implying none: the data in an
@@ -150,6 +159,7 @@ var AllScopes = []Scope{
 	ScopeIdentityManage,
 	ScopeObsRead,
 	ScopeObsTriage,
+	ScopeObsWrite,
 	ScopeDBQuery,
 }
 
@@ -242,7 +252,7 @@ func (s Set) Permits(want Scope) bool {
 	case ScopeIdentityRead:
 		return s.Has(ScopeIdentityManage)
 	case ScopeObsRead:
-		return s.Has(ScopeObsTriage)
+		return s.Has(ScopeObsTriage) || s.Has(ScopeObsWrite)
 	default:
 		return false
 	}
@@ -305,4 +315,40 @@ func JoinScopes(scopes []Scope) string {
 		out = append(out, string(scope))
 	}
 	return strings.Join(out, ", ")
+}
+
+// ReasonScopeMissing is the error reason (svcerr.ReasonHeader) a server gives
+// when the caller authenticated but its credential, or the person it acts
+// for, lacks a scope the call needs. Signing in again does not fix it; a
+// grant does. Carry the missing scopes in [ScopesHeader].
+const ReasonScopeMissing = "scope_missing"
+
+// ScopesHeader is the Connect error-metadata key that names the scopes a
+// [ReasonScopeMissing] refusal is about, comma-separated with no spaces
+// ("deploy:write,secret:read"; [ScopesHeaderValue]). Structured so a client
+// can say which grant to ask for without parsing the message. A server
+// attaches it with svcerr.WithMetadata; forge's CORS defaults expose it.
+const ScopesHeader = "x-forge-error-scopes"
+
+// ScopesHeaderValue renders scopes for [ScopesHeader].
+func ScopesHeaderValue[S ~string](scopes []S) string {
+	out := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		if s := strings.TrimSpace(string(scope)); s != "" {
+			out = append(out, s)
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+// ParseScopesHeader reads a [ScopesHeader] value back into its scopes, in
+// order. Blank entries are dropped; an empty value is nil.
+func ParseScopesHeader(value string) []string {
+	var out []string
+	for _, s := range strings.Split(value, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }

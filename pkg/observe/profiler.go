@@ -376,7 +376,13 @@ func newProfilesSender(t profilesTarget) (func(context.Context, pprofile.Profile
 		return send, conn.Close, nil
 	}
 
-	hc := &http.Client{Timeout: t.Timeout}
+	// The shared OTLP transport: idle connections retire before a collector
+	// closes them (otlpIdleConnTimeout).
+	base, err := sharedBaseTransport(signalProfiles)
+	if err != nil {
+		return nil, nil, err
+	}
+	hc := &http.Client{Transport: base, Timeout: t.Timeout}
 	send := func(ctx context.Context, pd pprofile.Profiles) error {
 		body, err := pprofileotlp.NewExportRequestFromProfiles(pd).MarshalProto()
 		if err != nil {

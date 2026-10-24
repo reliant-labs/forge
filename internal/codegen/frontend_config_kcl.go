@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
@@ -324,7 +325,46 @@ func renderFrontendConfigSchema(fc FrontendConfig, projectName, schemaName strin
 		return b.String(), nil
 	}
 	b.WriteString(body.String())
+	b.WriteString(renderFrontendRequiredWhenChecks(fc))
 	return b.String(), nil
+}
+
+// renderFrontendRequiredWhenChecks emits the schema `check:` block for
+// (forge.v1.config).required_when, or "" when no field carries one: in the
+// mode a condition names, the field must be set, and to something other than
+// its default (the same judgment config_gen.ts makes on the document).
+func renderFrontendRequiredWhenChecks(fc FrontendConfig) string {
+	var lines []string
+	byName := make(map[string]ConfigField, len(fc.Fields))
+	for _, f := range fc.Fields {
+		byName[f.Name] = f
+	}
+	for _, f := range fc.Fields {
+		if f.MessageType != "" {
+			continue
+		}
+		for _, c := range f.RequiredWhen {
+			g, ok := byName[c.Field]
+			if !ok {
+				continue
+			}
+			set := f.Name
+			if f.DefaultValue != "" {
+				if lit, ok := kclConfigDefaultLiteral(f); ok {
+					set = fmt.Sprintf("(%s and %s != %s)", f.Name, f.Name, lit)
+				}
+			}
+			msg := fmt.Sprintf("%s is required when %s is %q", tsConfigKeyRaw(f), tsConfigKeyRaw(g), c.Equals)
+			if f.DefaultValue != "" {
+				msg += fmt.Sprintf(", with a value other than its default %q", f.DefaultValue)
+			}
+			lines = append(lines, fmt.Sprintf("        %s != %s or %s, %s", g.Name, strconv.Quote(c.Equals), set, strconv.Quote(msg)))
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "\n    check:\n" + strings.Join(lines, "\n") + "\n"
 }
 
 // renderFrontendRuntimeProjection emits the lambda turning a schema

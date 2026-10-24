@@ -378,6 +378,7 @@ func TestEnsureDeclaredCluster_PassesPinnedK3sImage(t *testing.T) {
 	want := []string{
 		"cluster", "create", "cp-daemon", "--image", "rancher/k3s:v1.36.3-k3s1", "--servers", "1",
 	}
+	want = append(want, k3sIssuerFlags()...)
 	if len(gotArgs) != len(want) {
 		t.Fatalf("create args = %v; want %v", gotArgs, want)
 	}

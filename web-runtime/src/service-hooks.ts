@@ -131,12 +131,35 @@ export type ServiceQueryHook<Schema extends DescMessage, Response> = (
   options?: Partial<UseQueryOptions<Response, ConnectClientError>>,
 ) => UseQueryResult<Response, ConnectClientError>;
 
-/** A generated mutation hook: `useCreateOrder(options?)`. */
-export type ServiceMutationHook<Schema extends DescMessage, Response> = (
+/**
+ * A generated mutation hook: `useCreateOrder(options?)`.
+ *
+ * TContext is React Query's fourth type parameter — what `onMutate` returns
+ * and `onError` / `onSettled` receive back. It is a parameter of the HOOK,
+ * not of the factory, so each call site gets its own: TypeScript infers it
+ * from the `onMutate` the caller passes, and an optimistic update reads its
+ * rollback off `context` with no cast. Fixing it at the factory (or leaving
+ * it out, which pinned it to `unknown`) forced every such call site to
+ * narrow `unknown` by hand. It defaults to `unknown`, so a call without
+ * `onMutate` types exactly as before.
+ */
+export type ServiceMutationHook<Schema extends DescMessage, Response> = <
+  TContext = unknown,
+>(
   options?: Partial<
-    UseMutationOptions<Response, ConnectClientError, MessageInitShape<Schema>>
+    UseMutationOptions<
+      Response,
+      ConnectClientError,
+      MessageInitShape<Schema>,
+      TContext
+    >
   >,
-) => UseMutationResult<Response, ConnectClientError, MessageInitShape<Schema>>;
+) => UseMutationResult<
+  Response,
+  ConnectClientError,
+  MessageInitShape<Schema>,
+  TContext
+>;
 
 /**
  * createQueryHook builds one useQuery wrapper.
@@ -180,10 +203,24 @@ export function createMutationHook<Schema extends DescMessage, Response>(
   invalidateKey: ServiceQueryKey,
   call: (req: MessageInitShape<Schema>) => Promise<Response>,
 ): ServiceMutationHook<Schema, Response> {
-  return (options) => {
+  return <TContext = unknown>(
+    options?: Partial<
+      UseMutationOptions<
+        Response,
+        ConnectClientError,
+        MessageInitShape<Schema>,
+        TContext
+      >
+    >,
+  ) => {
     const queryClient = useQueryClient();
     const { onSuccess, ...rest } = options ?? {};
-    return useMutation({
+    return useMutation<
+      Response,
+      ConnectClientError,
+      MessageInitShape<Schema>,
+      TContext
+    >({
       mutationFn: (req: MessageInitShape<Schema>) => call(req),
       onSuccess: (...args) => {
         queryClient.invalidateQueries({ queryKey: invalidateKey });

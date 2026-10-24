@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 import Link from "./link";
 
@@ -92,8 +92,34 @@ export interface SidebarLayoutProps {
   navAppendix?: React.ReactNode;
 }
 
+/** Below Tailwind's `md`: the nav leaves the layout and becomes an off-canvas drawer. */
+const NARROW_QUERY = "(max-width: 767px)";
+
+function useNarrow(): boolean {
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== "undefined" && !!window.matchMedia?.(NARROW_QUERY).matches,
+  );
+  useEffect(() => {
+    const query = window.matchMedia?.(NARROW_QUERY);
+    if (!query) return;
+    const onChange = () => setNarrow(query.matches);
+    onChange();
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  return narrow;
+}
+
 function itemKey(item: SidebarNavItem, i: number): string {
   return `${item.href ?? item.label}:${i}`;
+}
+
+/** The hrefs of every current entry, at any depth: what changes when the route does. */
+function activeHrefs(items: SidebarNavItem[]): string[] {
+  return items.flatMap((item) => [
+    ...(item.active ? [item.href ?? item.label] : []),
+    ...activeHrefs(item.children ?? []),
+  ]);
 }
 
 function containsActive(item: SidebarNavItem): boolean {
@@ -183,6 +209,13 @@ function Chevron({ open }: { open: boolean }) {
  * give way to icons (each with its label as a tooltip and accessible name)
  * and dividers; a dot badge — or a danger count, as a dot — stays visible.
  *
+ * Below `md` (a phone) the nav is not a column at all: a fixed 240px sidebar
+ * left a 390px screen ~150px for the page. It becomes an off-canvas drawer
+ * opened from a menu button in the top bar (always shown there), always
+ * expanded (the rail is a desktop space-saver), closed by the scrim, Escape,
+ * or a change of the current entry (the reader navigated). Rows grow to 44px
+ * on a coarse pointer, and the page gutter tightens to 16px.
+ *
  * Hover and selection are an ink wash (`bg-ink/5`, `bg-ink/8`), so they read
  * as "pressed" in light and dark alike whatever the palette maps surfaces to.
  */
@@ -203,7 +236,46 @@ export default function SidebarLayout({
   navAppendix,
 }: SidebarLayoutProps) {
   const [internalCollapsed, setInternalCollapsed] = useState(false);
-  const collapsed = controlledCollapsed ?? internalCollapsed;
+  const narrow = useNarrow();
+  // The drawer is always the full nav: a rail inside a drawer saves nothing.
+  const collapsed = narrow ? false : (controlledCollapsed ?? internalCollapsed);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerShown = narrow && drawerOpen;
+  const navRef = useRef<HTMLElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!narrow) setDrawerOpen(false);
+  }, [narrow]);
+  // Following a link closes the drawer, or it would stay open over the page
+  // the reader just chose. The layout knows no router, but it does know which
+  // entry is current: when that changes, the reader has navigated.
+  const current = activeHrefs(navItems).concat(activeHrefs(footerItems)).join(" ");
+  useEffect(() => {
+    setDrawerOpen(false);
+  }, [current]);
+  // Focus moves into the drawer when it opens and back to the menu button when
+  // it closes, so a keyboard or screen-reader user is never left behind it.
+  const wasShown = useRef(false);
+  useEffect(() => {
+    if (drawerShown) {
+      navRef.current?.querySelector<HTMLElement>("a[href], button:not([disabled])")?.focus();
+    } else if (wasShown.current) {
+      menuButtonRef.current?.focus();
+    }
+    wasShown.current = drawerShown;
+  }, [drawerShown]);
+  useEffect(() => {
+    if (!drawerShown) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      // The open drawer is `aria-modal`, so a page-level Escape binding that
+      // defers to open dialogs (a console's "leave") steps aside for it.
+      event.preventDefault();
+      setDrawerOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [drawerShown]);
   const handleToggle = onToggle ?? (() => setInternalCollapsed((prev) => !prev));
   // A parent with children but no href of its own cannot open by navigating,
   // so it toggles locally instead.
@@ -218,7 +290,7 @@ export default function SidebarLayout({
   }
 
   const rowBase =
-    "relative flex items-center rounded-lg text-sm text-ink transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent";
+    "relative flex items-center rounded-lg text-sm text-ink transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent [@media(pointer:coarse)]:min-h-[44px]";
 
   function renderChild(item: SidebarNavItem, i: number) {
     return (
@@ -319,11 +391,28 @@ export default function SidebarLayout({
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-surface-muted">
-      {/* Sidebar */}
+    <div className="flex h-dvh overflow-hidden bg-surface-muted">
+      {drawerShown && (
+        // The scrim conveys nothing, so it is out of the accessibility tree;
+        // its click is a mouse convenience on top of the real dismissal,
+        // Escape (above), as in modal.tsx.
+        <div
+          role="presentation"
+          className="fixed inset-0 z-40 bg-black/50"
+          onClick={() => setDrawerOpen(false)}
+        />
+      )}
+      {/* Sidebar — a column on desktop, an off-canvas drawer on a phone. */}
       <aside
+        ref={navRef}
+        id="sidebar-layout-nav"
+        role={drawerShown ? "dialog" : undefined}
+        aria-modal={drawerShown ? true : undefined}
+        aria-label={drawerShown ? (navLabel ?? "Navigation") : undefined}
         className={`flex shrink-0 flex-col border-r border-border bg-surface transition-[width] duration-200 motion-reduce:transition-none ${
           collapsed ? "w-14" : "w-60"
+        } max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-50 max-md:w-[min(18rem,85vw)] max-md:pb-[env(safe-area-inset-bottom)] max-md:pt-[env(safe-area-inset-top)] max-md:transition-transform ${
+          drawerShown ? "max-md:translate-x-0" : "max-md:-translate-x-full max-md:invisible"
         } ${sidebarClassName ?? ""}`}
       >
         {/* Brand */}
@@ -388,7 +477,7 @@ export default function SidebarLayout({
           <button
             type="button"
             onClick={handleToggle}
-            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-ink/5 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-ink/5 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent max-md:hidden ${
               user || collapsed ? "" : "ml-auto"
             }`}
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
@@ -412,8 +501,28 @@ export default function SidebarLayout({
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* Top bar — omitted when there is nothing to put in it, so a page
             that owns its own header does not sit under an empty bar. */}
-        {headerContent && (
-          <header className="flex h-13 shrink-0 items-center gap-3 border-b border-border bg-surface-muted px-8">
+        {(headerContent || narrow) && (
+          <header className="flex h-13 shrink-0 items-center gap-3 border-b border-border bg-surface-muted px-8 max-md:gap-1.5 max-md:px-1.5 max-md:pt-[env(safe-area-inset-top)] max-md:box-content">
+            <button
+              ref={menuButtonRef}
+              type="button"
+              onClick={() => setDrawerOpen(true)}
+              aria-label="Open navigation"
+              aria-controls="sidebar-layout-nav"
+              aria-expanded={drawerShown}
+              className="hidden h-[44px] w-[44px] shrink-0 items-center justify-center rounded-md text-ink-muted hover:bg-ink/5 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent max-md:flex"
+            >
+              <svg
+                aria-hidden="true"
+                className="h-5 w-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                strokeWidth={1.75}
+              >
+                <path strokeLinecap="round" d="M4 7h16M4 12h16M4 17h16" />
+              </svg>
+            </button>
             {headerContent}
           </header>
         )}
@@ -429,7 +538,9 @@ export default function SidebarLayout({
         {contentLayout === "fill" ? (
           <main className="relative flex min-h-0 flex-1 flex-col">{children}</main>
         ) : (
-          <main className="relative flex-1 overflow-y-auto px-8 pb-12 pt-6">{children}</main>
+          <main className="relative flex-1 overflow-y-auto px-8 pb-12 pt-6 max-md:px-4 max-md:pb-[calc(3rem+env(safe-area-inset-bottom))] max-md:pt-4">
+            {children}
+          </main>
         )}
       </div>
     </div>

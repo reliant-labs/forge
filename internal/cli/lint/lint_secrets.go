@@ -20,6 +20,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -185,7 +186,7 @@ func secretsFindings(projectDir string, cfg *config.ProjectConfig) (secretsLaneR
 
 	// lint.rules grades these in the outcome engine (lint_rules.go).
 	applied := suppress.ApplyFiles(projectDir, all, os.ReadFile)
-	kept := append(applied.Kept, applied.Violations...)
+	kept := append(slices.Clone(applied.Kept), applied.Violations...)
 	sort.SliceStable(kept, func(i, j int) bool {
 		if kept[i].File != kept[j].File {
 			return kept[i].File < kept[j].File

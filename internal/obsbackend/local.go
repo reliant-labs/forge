@@ -456,31 +456,38 @@ func (l Local) MetricsQuery(ctx context.Context, req MetricsQueryRequest) (Metri
 	}
 	res.Statements = append(res.Statements, stmt("metric type lookup", lst))
 
+	// MX-F4 replaces this section with obsquery.EvalMetricPanel; until then the
+	// lookup's columns (see MetricLookup) are read by hand.
+	info := obsquery.MetricInfo{Type: obsquery.MetricSum, Monotonic: true}
 	kind := obsquery.MetricUnknown
-	var kinds []obsquery.MetricType
 	if !req.Explain {
 		lr, err := l.run(ctx, lst, DefaultLimits())
 		if err != nil {
 			return res, err
 		}
 		for _, row := range lr.Rows {
-			if len(row) < 3 {
-				return res, Undetermined("the local ClickStack returned %d columns for a metric lookup, want 3", len(row))
+			if len(row) < 10 {
+				return res, Undetermined("the local ClickStack returned %d columns for a metric lookup, want 10", len(row))
 			}
-			k := obsquery.MetricType(AsInt(row[0]))
-			kinds = append(kinds, k)
-			if kind == obsquery.MetricUnknown {
-				kind, res.Unit = k, AsString(row[1])
+			info.StoredKinds++
+			if kind != obsquery.MetricUnknown {
+				continue
 			}
+			kind = obsquery.MetricType(AsInt(row[0]))
+			info = obsquery.MetricInfo{
+				Type: kind, Unit: AsString(row[1]), Monotonic: AsInt(row[2]) == 1, Temporality: obsquery.Temporality(AsInt(row[3])),
+				MixedTemporality: AsInt(row[4]) == 1, Series: AsInt(row[5]), IntervalSeconds: AsInt(row[9]), StoredKinds: info.StoredKinds,
+			}
+			res.Unit = info.Unit
 		}
 		if kind == obsquery.MetricUnknown {
 			return res, Wrong("no metric %q in the local ClickStack for %s", req.Name, rangeText(req.Range)).
 				With(Cmd("forge", "obs", "metrics", "list", l.Env, "--contains", req.Name))
 		}
-		if len(kinds) > 1 {
+		if info.StoredKinds > 1 {
 			// The same name stored as several kinds: the first (gauge < sum <
 			// histogram) is read, and the others are named so it is not silent.
-			res.Statements = append(res.Statements, Statement{Purpose: fmt.Sprintf("note: %s is stored as %d metric kinds; reading %s", req.Name, len(kinds), MetricTypeName(kind))})
+			res.Statements = append(res.Statements, Statement{Purpose: fmt.Sprintf("note: %s is stored as %d metric kinds; reading %s", req.Name, info.StoredKinds, MetricTypeName(kind))})
 		}
 	} else {
 		kind = obsquery.MetricSum
@@ -513,13 +520,13 @@ func (l Local) MetricsQuery(ctx context.Context, req MetricsQueryRequest) (Metri
 
 	step := req.StepSeconds
 	if rng := req.Range.To.Sub(req.Range.From); rng > 0 {
-		step = obsquery.StepForMetric(rng, int32(min(req.StepSeconds, math.MaxInt32)))
+		step, _ = obsquery.StepForMetric(rng, int32(min(req.StepSeconds, math.MaxInt32)), info.IntervalSeconds)
 	}
-	resolved, err := obsquery.ResolveAgg(kind, agg)
+	resolved, err := obsquery.ResolveAgg(info, agg)
 	if err != nil {
 		return res, compileErr(err)
 	}
-	mq := obsquery.MetricQuery{Scope: scope, Name: req.Name, Type: kind, Agg: resolved, GroupBy: req.GroupBy, StepSeconds: step}
+	mq := obsquery.MetricQuery{Scope: scope, Name: req.Name, Info: info, Agg: resolved, GroupBy: req.GroupBy, StepSeconds: step, MaxSeries: req.MaxSeries}
 	st, err := mq.Compile()
 	if err != nil {
 		return res, compileErr(err)
@@ -641,7 +648,7 @@ func (l Local) Query(ctx context.Context, req QueryRequest) (QueryResult, error)
 	}
 	step := req.StepSeconds
 	if step <= 0 {
-		step = obsquery.StepForMetric(req.Range.To.Sub(req.Range.From), 0)
+		step, _ = obsquery.StepForMetric(req.Range.To.Sub(req.Range.From), 0, 0)
 	}
 	if req.SQL != "" {
 		return l.querySQL(ctx, req, step)

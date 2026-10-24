@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"flag"
 	"os"
 	"path/filepath"
 	"strings"
@@ -805,5 +806,90 @@ func TestWriteHookStarterTest_RemovesALeftoverStarterBesideALiveTest(t *testing.
 	got, _ := os.ReadFile(filepath.Join(dir, "user-service-hooks.test.tsx"))
 	if string(got) != "// mine" {
 		t.Errorf("the user's live test was touched: %s", got)
+	}
+}
+
+// updateHookGoldens rewrites testdata/hooks/ from the current generator:
+// `go test ./internal/cli/ -run TestGenerateFrontendHooks_Golden -update-hooks`.
+var updateHookGoldens = flag.Bool("update-hooks", false, "rewrite the generated-hooks golden files")
+
+// TestGenerateFrontendHooks_Golden pins the whole rendered hooks file and its
+// starter test for a service whose rpcs exercise every classification path:
+// NO_SIDE_EFFECTS reads named as nouns (Health, Version), an undeclared noun
+// (Ready, still a mutation), a read verb (GetInfo), a NO_SIDE_EFFECTS rpc the
+// author also marked `// forge:mutation` (the marker wins), and an ordinary
+// write (Restart). One classification feeds three artifacts — the hook's
+// factory, its entry (or not) in the key factory, and the starter test's
+// idiom — so the golden shows all three moving together.
+func TestGenerateFrontendHooks_Golden(t *testing.T) {
+	dir := t.TempDir()
+	protoRel := "proto/system/v1/system.proto"
+	protoAbs := filepath.Join(dir, protoRel)
+	if err := os.MkdirAll(filepath.Dir(protoAbs), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(protoAbs, []byte(`syntax = "proto3";
+package system.v1;
+
+service SystemService {
+  rpc Health(HealthRequest) returns (HealthResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc Ready(ReadyRequest) returns (ReadyResponse);
+  rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
+  rpc Version(VersionRequest) returns (VersionResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // forge:mutation — reads nothing the cache could hold.
+  rpc Drain(DrainRequest) returns (DrainResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc Restart(RestartRequest) returns (RestartResponse);
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	method := func(name string, noSideEffects bool) codegen.Method {
+		return codegen.Method{Name: name, InputType: name + "Request", OutputType: name + "Response", NoSideEffects: noSideEffects}
+	}
+	services := []codegen.ServiceDef{{
+		Name:      "SystemService",
+		ProtoFile: protoRel,
+		Methods: []codegen.Method{
+			method("Health", true), method("Ready", false), method("GetInfo", false),
+			method("Version", true), method("Drain", true), method("Restart", false),
+		},
+	}}
+	cfg := &config.ProjectConfig{
+		Name:      "myapp",
+		Frontends: []config.FrontendConfig{config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir("frontends/web")},
+	}
+	if err := generateFrontendHooks(cfg, services, dir, nil); err != nil {
+		t.Fatalf("generateFrontendHooks: %v", err)
+	}
+
+	hooksDir := filepath.Join(dir, "frontends", "web", "src", "hooks")
+	for _, name := range []string{"system-service-hooks_gen.ts", "system-service-hooks.test.tsx"} {
+		got, err := os.ReadFile(filepath.Join(hooksDir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		golden := filepath.Join("testdata", "hooks", name+".golden")
+		if *updateHookGoldens {
+			if err := os.MkdirAll(filepath.Dir(golden), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(golden, got, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		want, err := os.ReadFile(golden)
+		if err != nil {
+			t.Fatalf("read golden %s (run with -update-hooks to create it): %v", golden, err)
+		}
+		if string(got) != string(want) {
+			t.Errorf("%s differs from %s (run with -update-hooks to accept):\n--- got ---\n%s", name, golden, got)
+		}
 	}
 }

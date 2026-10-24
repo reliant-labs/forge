@@ -18,13 +18,21 @@ package cli
 //	                     what `forge env exec` would hand the process
 //	OnCluster            a port-forward to the CNPG Cluster, as the read-only
 //	                     forge_ro role, on a scratch env (db_query_cluster.go)
-//	OnHosted             the control plane's AppDatabaseService (not yet: exit 2)
+//	OnHosted             the control plane's AppDatabaseService.QueryDatabase,
+//	                     which runs the same core inside the platform as
+//	                     forge_ro and audits the call (db_query_cloud.go)
+//	--addr host:port     the user's own route (a VPN, a kubectl port-forward, a
+//	                     bastion): forge dials that address and nothing else,
+//	                     for any database it cannot route to itself. Not for a
+//	                     hosted env: the control plane executes those
+//	                     (db_query_addr.go)
 //
-// Policy is the env's declared forge.DataAccess db_query: open (a local or
-// ephemeral env's default), audited (any other env's default: the query needs
+// Policy is the env's forge.DataAccess db_query: open (a local or ephemeral
+// env's default), audited (any other env's default: the query needs
 // --confirm-env <env> and a --reason, so nobody reads a real database by
 // mistyping an env name) or deny. For a hosted env the control plane enforces
-// it server-side from the recorded shape; locally this check is the rule.
+// it from the env's RECORDED shape and forge only passes the confirmation on;
+// for the other transports this checkout's declaration is the rule.
 
 import (
 	"context"
@@ -64,6 +72,8 @@ type dbQueryOptions struct {
 	jsonOut    bool
 	confirmEnv string
 	reason     string
+	addr       string
+	sslmode    string
 }
 
 func newDBQueryCommand() *cobra.Command {
@@ -86,17 +96,34 @@ The connection follows the workload (` + "`--workload`" + `, default "api"):
                       ManagedDatabase (` + "`--database`" + ` when it has several), as
                       the read-only forge_ro role; scratch envs only
                       (lifecycle local or ephemeral)
-Hosted databases, and the databases of real cluster envs, are not reachable
-from forge yet (exit 2).
+  OnHosted            the control plane runs it inside the platform
+                      (AppDatabaseService.QueryDatabase), as forge_ro, and
+                      records it in the audit log and the activity feed
+The databases of real (not scratch) cluster envs are not reachable from forge
+yet (exit 2), unless you bring your own route: --addr.
+
+--addr <host:port> dials that address directly instead of any transport above,
+for a database forge cannot route to itself. The route (a VPN, a kubectl
+port-forward, a bastion) is yours; forge builds none. Credentials and policy are
+the transport's own: a cluster database's read-only forge_ro role is read from
+its Secret through your kube context, an OnHost / OnCompose workload keeps its
+DATABASE_URL with the host and port replaced. TLS is sslmode=verify-full against
+the cluster CA (<database>-ca) with server name <database>-rw.<namespace>.svc, a
+name CloudNativePG's certificate carries, so it verifies through a tunnel to
+localhost; --sslmode require|disable overrides it. A hosted env refuses --addr:
+the control plane executes its queries.
 
 The env's data_access policy (forge.DataAccess) decides who may query:
 open (the default of a local or ephemeral env), audited (the default of any
-other env: pass --confirm-env <env> and a --reason) or deny.
+other env: pass --confirm-env <env> and a --reason) or deny. A hosted env is
+judged by the control plane from the policy its deployed release recorded, and
+an audited one is open to people only (and to a db:query grant).
 
 Output: a table, or --format json|csv. --json is --format json; the document
 carries ok, exit_code and error like every other forge --json verb, plus
 schema "` + dbQuerySchema + `", scope, columns[{name,pg_type}], rows, row_count,
-truncated, truncated_by, cells_truncated, duration_ms and bytes.
+truncated, truncated_by, cells_truncated, duration_ms and bytes; a hosted
+query adds audit{id, sql_sha256, replica}.
 
 Exit codes: 0 rows returned; 1 the statement or the request is wrong (refused
 by the guard or the read-only transaction, a SQL error, a permission error, a
@@ -105,7 +132,9 @@ connection lost).
 
   ` + Name() + ` db query dev "select count(*) from jobs where crew_id is null"
   ` + Name() + ` db query dev -f report.sql --format csv > report.csv
-  ` + Name() + ` db query staging "select * from jobs limit 5" --confirm-env staging --reason "ISS-7f3a"`,
+  ` + Name() + ` db query staging "select * from jobs limit 5" --confirm-env staging --reason "ISS-7f3a"
+  kubectl -n app-prod port-forward svc/ledger-rw 5432:5432 &
+  ` + Name() + ` db query prod "select 1" --addr localhost:5432 --confirm-env prod --reason "ISS-7f3a"`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) < 1 || len(args) > 2 {
 				return fmt.Errorf("use: %s db query <env> \"<sql>\" | -f FILE", Name())
@@ -133,6 +162,8 @@ connection lost).
 	cmd.Flags().BoolVar(&o.jsonOut, "json", false, "Same as --format json")
 	cmd.Flags().StringVar(&o.confirmEnv, "confirm-env", "", "Required on a real env: the env name again")
 	cmd.Flags().StringVar(&o.reason, "reason", "", "Required on a real env: why you are reading it (at most 500 characters)")
+	cmd.Flags().StringVar(&o.addr, "addr", "", "Dial host:port directly (your VPN, kubectl port-forward or bastion) instead of forge's own transport; not for a hosted env")
+	cmd.Flags().StringVar(&o.sslmode, "sslmode", "", "With --addr on a cluster database: verify-full (default, against the cluster CA), require or disable")
 	return cmd
 }
 
@@ -142,7 +173,9 @@ type dbQueryScope struct {
 	Transport string `json:"transport"`
 	Workload  string `json:"workload"`
 	Database  string `json:"database,omitempty"`
-	Policy    string `json:"policy"`
+	// Policy is the declared db_query policy forge applied. Absent on the
+	// control-plane transport, which applies the env's recorded one.
+	Policy string `json:"policy,omitempty"`
 }
 
 // dbQueryDocument is the --format json document.
@@ -155,6 +188,8 @@ type dbQueryDocument struct {
 	// Release is the release live in the env when the query ran; absent when
 	// nothing was promoted yet or the ledger could not be read.
 	Release *liveRelease `json:"release,omitempty"`
+	// Audit is what the control plane recorded about a hosted query.
+	Audit *dbQueryAudit `json:"audit,omitempty"`
 	*dbquery.Result
 }
 
@@ -167,6 +202,9 @@ type dbQueryTarget struct {
 	scope      dbQueryScope
 	// close releases the transport, or is nil.
 	close func()
+	// remote runs the statement elsewhere (the control plane); set instead
+	// of dsn.
+	remote dbQueryRemote
 }
 
 func (t dbQueryTarget) connect(ctx context.Context) (*pgx.Conn, error) {
@@ -181,6 +219,7 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o d
 		scope   *dbQueryScope
 		ranAt   time.Time
 		release *liveRelease
+		audit   *dbQueryAudit
 	)
 	res, err := func() (*dbquery.Result, error) {
 		if err := validateDBQueryFlags(o); err != nil {
@@ -198,12 +237,26 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o d
 			defer target.close()
 		}
 		scope = &target.scope
+		if target.remote != nil {
+			// The control plane was reached at resolve; the remote is the
+			// call itself.
+			ranAt = time.Now().UTC()
+			res, a, database, err := target.remote(ctx, sql)
+			if database != "" {
+				scope.Database = database
+			}
+			audit = a
+			return res, err
+		}
 		if err := checkDBQueryPolicy(o, target.scope.Policy); err != nil {
 			return nil, err
 		}
 		conn, err := target.connect(ctx)
 		if err != nil {
 			// The DSN can carry a password; never echo it.
+			if o.addr != "" {
+				return nil, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("cannot connect to %s's database at %s (workload %q): %s; is your route to it up (VPN, kubectl port-forward)?", o.env, o.addr, target.scope.Workload, redactDSNError(err, target.dsn))}
+			}
 			return nil, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("cannot connect to %s's database (workload %q): %s; is it running? (%s env up %s)", o.env, target.scope.Workload, redactDSNError(err, target.dsn), Name(), o.env)}
 		}
 		defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
@@ -219,12 +272,9 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o d
 		release = stampRelease(ctx, liveReleaseAt, errOut, o.env, ranAt)
 	}
 	if o.format == "json" {
-		doc := dbQueryDocument{Schema: dbQuerySchema, Scope: scope, Release: release, Result: res}
+		doc := dbQueryDocument{Schema: dbQuerySchema, Scope: scope, Release: release, Audit: audit, Result: res}
 		doc.stamp(err)
-		var de *dbquery.Error
-		if errors.As(err, &de) {
-			doc.Reason = de.Reason
-		}
+		doc.Reason = dbQueryErrorReason(err)
 		if werr := writeJSONDocument(out, doc); werr != nil {
 			return werr
 		}
@@ -236,7 +286,7 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o d
 	if o.format == "csv" {
 		return writeDBQueryCSV(out, res)
 	}
-	return writeDBQueryTable(out, res, release)
+	return writeDBQueryTable(out, res, release, audit)
 }
 
 func validateDBQueryFlags(o dbQueryOptions) error {
@@ -250,6 +300,9 @@ func validateDBQueryFlags(o dbQueryOptions) error {
 	}
 	if o.sql == "" && o.file == "" {
 		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("no statement: %s db query %s \"<sql>\" | -f FILE", Name(), o.env)}
+	}
+	if err := validateDBQueryAddr(o); err != nil {
+		return err
 	}
 	if utf8.RuneCountInString(o.reason) > maxDBQueryReason {
 		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("--reason is longer than %d characters", maxDBQueryReason)}
@@ -293,10 +346,20 @@ func resolveDBQueryTarget(ctx context.Context, o dbQueryOptions) (dbQueryTarget,
 	switch w.Runtime.Type {
 	case RuntimeHost, RuntimeCompose:
 		scope.Transport = "direct"
+		if o.addr != "" {
+			scope.Transport = dbQueryTransportAddr
+			if o.sslmode != "" {
+				return dbQueryTarget{}, exitCodeError{code: exitWrong, msg: fmt.Sprintf("--sslmode applies to a cluster database; workload %q in %s connects with its DATABASE_URL, so put sslmode there", w.Name, o.env)}
+			}
+		}
 	case RuntimeCluster:
 		return resolveDBQueryCluster(ctx, o, e, w)
 	case RuntimeHosted:
-		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("workload %q in %s is hosted: its database is reached through the control plane, which this forge cannot query yet", w.Name, o.env)}
+		if o.addr != "" {
+			return dbQueryTarget{}, errDBQueryAddrHosted(o)
+		}
+		scope.Policy = ""
+		return resolveDBQueryHosted(ctx, o, scope)
 	default:
 		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("workload %q in %s runs %s: its database is not reachable from forge yet", w.Name, o.env, w.Runtime.Type)}
 	}
@@ -310,6 +373,13 @@ func resolveDBQueryTarget(ctx context.Context, o dbQueryOptions) (dbQueryTarget,
 	dsn := report.Workloads[0].Env["DATABASE_URL"]
 	if dsn == "" {
 		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("workload %q in %s declares no DATABASE_URL; pick the workload that owns the database with --workload", w.Name, o.env)}
+	}
+	if o.addr != "" {
+		cfg, err := dsnAtAddr(dsn, o.addr)
+		if err != nil {
+			return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("workload %q in %s: DATABASE_URL: %v", w.Name, o.env, err)}
+		}
+		return dbQueryTarget{dsn: dsn, connConfig: cfg, scope: scope}, nil
 	}
 	return dbQueryTarget{dsn: dsn, scope: scope}, nil
 }
@@ -422,7 +492,7 @@ func writeDBQueryCSV(out io.Writer, res *dbquery.Result) error {
 // carries the whole value.
 const maxTableCell = 80
 
-func writeDBQueryTable(out io.Writer, res *dbquery.Result, rel *liveRelease) error {
+func writeDBQueryTable(out io.Writer, res *dbquery.Result, rel *liveRelease, audit *dbQueryAudit) error {
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	names := make([]string, len(res.Columns))
 	for i, c := range res.Columns {
@@ -450,6 +520,9 @@ func writeDBQueryTable(out io.Writer, res *dbquery.Result, rel *liveRelease) err
 	footer := fmt.Sprintf("(%d %s, %d ms", res.RowCount, noun, res.DurationMS)
 	if rel != nil {
 		footer += fmt.Sprintf("; release %s", rel.Version)
+	}
+	if audit != nil && audit.ID != "" {
+		footer += fmt.Sprintf("; audit %s", audit.ID)
 	}
 	if res.Truncated {
 		footer += fmt.Sprintf("; truncated by the %s cap, raise --max-rows or narrow the query", res.TruncatedBy)

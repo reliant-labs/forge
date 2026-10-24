@@ -1,6 +1,6 @@
 ---
 name: db
-description: Database work — SQL migrations are the single schema source of truth; forge generate projects the applied schema into entity structs, ORM, CRUD wiring, and frontend pages.
+description: Database work — SQL migrations as the single schema source of truth, projected by forge generate into entity structs, ORM, CRUD wiring, and frontend pages.
 emit: both
 ---
 

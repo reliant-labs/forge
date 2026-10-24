@@ -138,11 +138,9 @@ type deployReuseQuery struct {
 	Provenance release.Provenance
 	// Changes are the checkout's uncommitted paths and ignored nested
 	// checkouts. Wording only: Provenance.Dirty decides.
-	Changes release.Changes
-	// RenderOptions are the deploy's `-D name=value` options.
-	RenderOptions []string
-	Releases      releaseLedger
-	Now           time.Time
+	Changes  release.Changes
+	Releases releaseLedger
+	Now      time.Time
 }
 
 // chooseDeployRelease decides whether this checkout already has a release.
@@ -190,15 +188,14 @@ func chooseDeployRelease(ctx context.Context, q deployReuseQuery) deployReleaseC
 // call both the real run (buildAndCutForDeploy) and `--dry-run` make, over the
 // same checkout capture, so a preview cannot predict something the real run
 // does not do.
-func decideDeployRelease(ctx context.Context, projectDir, envName string, renderOptions []string, ledger envLedger) deployReleaseChoice {
+func decideDeployRelease(ctx context.Context, projectDir, envName string, ledger envLedger) deployReleaseChoice {
 	return chooseDeployRelease(ctx, deployReuseQuery{
-		ProjectDir:    projectDir,
-		Env:           envName,
-		Provenance:    captureReleaseProvenance(ctx, projectDir),
-		Changes:       inspectDeployCheckout(ctx, projectDir),
-		RenderOptions: renderOptions,
-		Releases:      ledger.Releases,
-		Now:           time.Now(),
+		ProjectDir: projectDir,
+		Env:        envName,
+		Provenance: captureReleaseProvenance(ctx, projectDir),
+		Changes:    inspectDeployCheckout(ctx, projectDir),
+		Releases:   ledger.Releases,
+		Now:        time.Now(),
 	})
 }
 
@@ -211,8 +208,6 @@ func chooseDeployReleaseFor(ctx context.Context, q deployReuseQuery) deployRelea
 		return cut("this checkout's tree could not be hashed, so no recorded release can be shown to hold the same content")
 	case q.Provenance.Dirty:
 		return cut("the checkout has uncommitted changes" + describePaths(q.Changes.Paths) + ", and only a clean tree — whose hash git can check against its commit — is matched to an existing release")
-	case len(q.RenderOptions) > 0:
-		return cut("render options (-D) were passed, and a release does not record the options its build rendered under")
 	case q.Releases == nil:
 		return cut("env " + q.Env + " has no release ledger to search")
 	}

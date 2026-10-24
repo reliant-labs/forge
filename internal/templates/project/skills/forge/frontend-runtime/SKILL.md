@@ -56,6 +56,27 @@ render checks the env's `runtime_config` against the frontend directory's copy
 typo instead of a field silently left on its default. No schema file (no config
 message) means no check.
 
+The schema also says which keys a document MUST carry, and the render refuses a
+foreign frontend's `runtime_config` that lacks one (for an in-tree frontend the
+typed KCL schema checks it). A field `required: true` with no default is
+required in every mode. A field required only in one MODE says so with
+`required_when`, a condition on a sibling string field:
+
+```protobuf
+string hosting = 6 [(forge.v1.config) = {env_var: "HOSTING", allowed_values: ["cloud"]}];
+string api_url = 1 [(forge.v1.config) = {
+  env_var: "API_URL"
+  required_when: [{field: "hosting", equals: "cloud"}]
+}];
+```
+
+In the mode it names, the document must carry the key with a value other than
+its default (the default is the other mode's value). `config_gen.ts`'s
+`loadConfig()` throws on a miss, and exports `missingRequiredConfig()` for an app
+that renders its own boot error. It is for frontend configs only: `forge
+generate` refuses it on a binary config, alongside `required: true`, or naming a
+field that is not a sibling string field.
+
 Tailwind v4 does not scan `node_modules`, so your stylesheet carries an
 `@source` directive pointing at the package. Keep it — without it every
 utility only the runtime renders vanishes from the built CSS.
@@ -329,7 +350,13 @@ You write none of the wiring. `src/lib/otel_gen.ts` (regenerated every
 `initBrowserTelemetry` from `@reliantlabs/forge-web-runtime/telemetry`, and
 `providers.tsx` (Next.js) / `main.tsx` (Vite) call its `initTelemetry()` once.
 It is idempotent, a no-op without a DOM or while telemetry is off, and never
-throws. The SDK is the page's **only** tracer provider: it replaces the old
+throws.
+
+The frontend reports `service.name` `<project>-<frontend>` (e.g. `shop-web`),
+exported from the same file as `SERVICE_NAME`. The generated frontend dashboard
+and frontend alert defaults filter on exactly that value. Code that starts the
+SDK itself instead of calling `initTelemetry()` must pass `SERVICE_NAME` as
+`serviceName`: any other name is invisible to the generated observability. The SDK is the page's **only** tracer provider: it replaces the old
 OTel web wiring rather than joining it, because two providers cannot both
 register globally.
 

@@ -5360,7 +5360,7 @@ schema ObservabilityRetention:
         traces_days >= 0 and metrics_days >= 0 and logs_days >= 0, "ObservabilityRetention days must be >= 0"
         replay_days >= 1 and replay_days <= 30, "ObservabilityRetention.replay_days must be 1..30 (session replay is retained at most 30 days)"
         errors_days >= 1 and errors_days <= 365, "ObservabilityRetention.errors_days must be 1..365"
-        product_events_days >= 1 and product_events_days <= 365, "ObservabilityRetention.product_events_days must be 1..365"
+        product_events_days >= 1 and product_events_days <= 400, "ObservabilityRetention.product_events_days must be 1..400"
 
 schema ObservabilityAgent:
     """The per-node collector forge renders on cluster runtimes (a

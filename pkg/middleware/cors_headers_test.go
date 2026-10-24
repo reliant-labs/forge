@@ -52,13 +52,13 @@ func TestCORS_ProjectDeclaredHeadersExtendTheDefaults(t *testing.T) {
 }
 
 // With no options, the policy is exactly forge's defaults (Forge-Via joined
-// them with the activity stream).
+// them with the activity stream; x-forge-error-scopes, with scope_missing).
 func TestCORS_DefaultsAreUnchanged(t *testing.T) {
 	got := preflight(t, CORSMiddleware([]string{"https://app.example.com"}, false)(http.NotFoundHandler()))
 	if want := "Content-Type, Connect-Protocol-Version, Connect-Timeout-Ms, Authorization, Traceparent, Tracestate, X-Request-Id, Forge-Via"; got.Get("Access-Control-Allow-Headers") != want {
 		t.Errorf("Allow-Headers = %q, want %q", got.Get("Access-Control-Allow-Headers"), want)
 	}
-	if want := "Connect-Protocol-Version, x-forge-error-reason, Traceresponse"; got.Get("Access-Control-Expose-Headers") != want {
+	if want := "Connect-Protocol-Version, x-forge-error-reason, x-forge-error-scopes, Traceresponse"; got.Get("Access-Control-Expose-Headers") != want {
 		t.Errorf("Expose-Headers = %q, want %q", got.Get("Access-Control-Expose-Headers"), want)
 	}
 }

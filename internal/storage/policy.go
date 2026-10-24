@@ -44,15 +44,6 @@ type Policy struct {
 	// on a 1 TB laptop: the budget is the smaller of go_cache_gib and this
 	// share. Zero means the default (15); 100 leaves go_cache_gib alone.
 	GoCacheVolumePercent int `json:"go_cache_volume_percent,omitempty"`
-	// GoCacheMinAge is the youngest a Go cache entry may be and still be
-	// evicted when the cache is over go_cache_gib. go_cache_unused (and the
-	// 2h floor) govern the age rule; this governs the size rule, which must
-	// reach into the floor on a machine that fills faster than its budget per
-	// floor, or the budget never holds. Between 5m and 2h; empty means the
-	// default (20m). Lower holds the budget harder and risks failing a build
-	// that is mid-link ("cannot open file") more often; 2h restores the old
-	// never-inside-the-floor behaviour.
-	GoCacheMinAge string `json:"go_cache_min_age,omitempty"`
 	// SourceCacheUnused is how long a cross-repo source clone may go
 	// unresolved before it becomes an eviction candidate. Longer than the
 	// image and build-cache windows because the cost of being wrong is a
@@ -124,26 +115,6 @@ type Registry struct {
 	Repositories []string `json:"repositories"`
 	Aliases      []string `json:"aliases"`
 	Contexts     []string `json:"contexts"`
-}
-
-// defaultGoCacheMinAge is GoCacheMinAge's default; minGoCacheMinAge is the
-// shortest it may be set to.
-const (
-	defaultGoCacheMinAge = 20 * time.Minute
-	minGoCacheMinAge     = 5 * time.Minute
-)
-
-// goCacheMinAge parses GoCacheMinAge: the default when empty, an error when
-// outside [5m, goCacheFloor].
-func (p Policy) goCacheMinAge() (time.Duration, error) {
-	if p.GoCacheMinAge == "" {
-		return defaultGoCacheMinAge, nil
-	}
-	d, err := time.ParseDuration(p.GoCacheMinAge)
-	if err != nil || d < minGoCacheMinAge || d > goCacheFloor {
-		return 0, fmt.Errorf("storage: invalid go_cache_min_age %q (between %s and %s)", p.GoCacheMinAge, minGoCacheMinAge, goCacheFloor)
-	}
-	return d, nil
 }
 
 // DefaultPolicy returns conservative local development budgets.
@@ -232,9 +203,6 @@ func (p Policy) Validate() error {
 		return fmt.Errorf("storage: max_deletes_per_pass, delete_rate_per_sec and max_docker_removals_per_pass must be positive (0 means the default), got %d, %d and %d", p.MaxDeletesPerPass, p.DeleteRatePerSec, p.MaxDockerRemovalsPerPass)
 	}
 	if _, err := p.anonymousVolumeUnused(); err != nil {
-		return err
-	}
-	if _, err := p.goCacheMinAge(); err != nil {
 		return err
 	}
 	for _, v := range []string{p.ImageUnused, p.BuildCacheUnused, p.SourceCacheUnused, p.GoCacheUnused} {

@@ -20,25 +20,15 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// The two ways the hub authenticates to a connected cluster, as the
-// controlplane.v1.ClusterAuth value NAMES protojson encodes.
+// The ONE way the hub authenticates to a connected cluster: a scoped
+// ServiceAccount token forge mints in the owner's cluster, uploaded write-only.
+// There is no cloud identity, hub-side or otherwise: a connected cluster is
+// somebody else's, and nothing of ours is trusted there.
 //
-// TWO VALUES, AND THEY ARE THE TWO ENDS OF A TRADE-OFF rather than two
-// clouds. GCP workload identity is the good one where it applies — no secret
-// crosses the boundary, so there is nothing in anyone's database for a read to
-// leak. The ServiceAccount token is the one that works ANYWHERE, and it is
-// strictly worse: a replayable bearer token at rest, scoped down by RBAC.
-//
-// THERE IS NO aws OR azure, deliberately. Flux's configMapRef supports both
-// providers and the control plane reserves the enum tags for them, but neither
-// path is built or tested — and an untested code path that LOOKS supported is
-// worse than an absent one, because it gets chosen, fails inside a cloud
-// client, and reports a problem with the customer's cluster. An EKS or AKS
-// cluster is a target TODAY through authToken, which needs no cloud identity.
-const (
-	authGCP   = "CLUSTER_AUTH_WORKLOAD_IDENTITY_GCP"
-	authToken = "CLUSTER_AUTH_SERVICE_ACCOUNT_TOKEN"
-)
+// wire: remove once control-plane CC-C1 is deployed. The deployed control plane
+// still REQUIRES the `auth` key; CC-C1 deletes the enum, after which the key is
+// ignored (the control plane's JSON codec discards unknown fields).
+const wireAuthServiceAccountToken = "CLUSTER_AUTH_SERVICE_ACCOUNT_TOKEN"
 
 // connectTarget is everything forge learns about a cluster from the
 // operator's kubeconfig plus the chosen auth: the whole ConnectCluster
@@ -49,16 +39,11 @@ type connectTarget struct {
 	// renders under (release.BundleClusterPath), which is what makes a
 	// cluster_bindings entry addressable.
 	Context string
-	// Auth is one of the two constants above.
-	Auth string
-	// Address is the API server URL the HUB will dial. https only.
+	// Address is the API server URL the HUB will dial. https only, port 443
+	// or 6443.
 	Address string
 	// CAPEM is the PEM bundle that signed the API server's certificate.
 	CAPEM string
-	// CloudCluster is the provider's own resource name, set iff Auth is a
-	// workload-identity auth. The control plane REFUSES it on the token
-	// auth, which does not use it.
-	CloudCluster string
 	// AddressNote says why Address is not the context's server, or "".
 	AddressNote string
 }
@@ -69,14 +54,6 @@ type gkeContext struct {
 	Project  string
 	Location string
 	Cluster  string
-}
-
-// CloudCluster is the resource name Flux exchanges the hub's identity
-// against. Its format is validated server-side, because a malformed path
-// produces a Flux reconcile error naming a cloud API two layers from the
-// typo.
-func (g gkeContext) CloudCluster() string {
-	return fmt.Sprintf("projects/%s/locations/%s/clusters/%s", g.Project, g.Location, g.Cluster)
 }
 
 // parseGKEContext recognises a GKE context name.
@@ -98,71 +75,60 @@ func parseGKEContext(kctx string) (gkeContext, bool) {
 	return gkeContext{Project: parts[1], Location: parts[2], Cluster: parts[3]}, true
 }
 
-// resolveAuth turns the --auth flag into one of the two wire values.
-//
-// `auto` picks gcp for a GKE context and token for everything else. That
-// default is the honest one: GKE is the single cloud whose workload identity
-// the hub can present, and a token works on any Kubernetes cluster — so the
-// fallback is never "unsupported", it is the universal path.
-func resolveAuth(flag, kctx string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(flag)) {
-	case "", "auto":
-		if _, ok := parseGKEContext(kctx); ok {
-			return authGCP, nil
-		}
-		return authToken, nil
-	case "gcp":
-		if _, ok := parseGKEContext(kctx); !ok {
-			return "", fmt.Errorf("--auth gcp needs a GKE context, and %q is not one "+
-				"(gcloud writes them as gke_<project>_<location>_<cluster>)\n"+
-				"fix: --auth token, which authenticates with a scoped ServiceAccount token and works on any cluster", kctx)
-		}
-		return authGCP, nil
-	case "token":
-		return authToken, nil
-	default:
-		return "", fmt.Errorf("--auth %q is not a known value: auto, gcp or token\n"+
-			"gcp is GKE workload identity (no secret crosses the boundary); token is a scoped "+
-			"ServiceAccount token, which works on any Kubernetes cluster", flag)
-	}
-}
-
 // readConnectTarget assembles the ConnectCluster request from the operator's
 // kubeconfig entry for kctx, and refuses an address the hub cannot use.
-func readConnectTarget(kctx, authFlag string) (connectTarget, error) {
+//
+// WHERE THE ADDRESS COMES FROM, in order:
+//
+//  1. --address, when given.
+//  2. On a GKE context, the cluster's PUBLIC endpoint from GKE's describe. A
+//     GKE kubeconfig often holds a DNS endpoint (*.gke.goog) instead, which is
+//     IAM-gated: a ServiceAccount token cannot pass it. The private endpoint is
+//     never chosen by default — the hub reaches a private one only if the
+//     operator says so with --address.
+//  3. The kubeconfig's cluster.server.
+//
+// The CA comes from --ca-file, else GKE's describe (masterAuth), else the
+// kubeconfig. The credential beside the kubeconfig entry is never read.
+func readConnectTarget(kctx, addressFlag, caFile string) (connectTarget, error) {
 	kctx = strings.TrimSpace(kctx)
 	if kctx == "" {
 		return connectTarget{}, fmt.Errorf("--context is required: it names the kubectl context forge reads the " +
 			"cluster's address and CA from, and applies the bootstrap RBAC through")
 	}
-	auth, err := resolveAuth(authFlag, kctx)
-	if err != nil {
-		return connectTarget{}, err
-	}
 	address, caPEM, err := kubeconfigClusterOf(kctx)
 	if err != nil {
 		return connectTarget{}, err
 	}
-	target := connectTarget{Context: kctx, Auth: auth}
-	if auth == authGCP {
-		gke, _ := parseGKEContext(kctx)
-		target.CloudCluster = gke.CloudCluster()
+	target := connectTarget{Context: kctx}
+	addressFlag = strings.TrimRight(strings.TrimSpace(addressFlag), "/")
+	if addressFlag != "" {
+		address = addressFlag
+		target.AddressNote = "the address is --address (the context's server is not what the hub dials)"
+	}
+	if gke, ok := parseGKEContext(kctx); ok {
 		// The hub dials from its own pods, so the address and CA it registers
 		// come from GKE's describe, not the operator's kubeconfig (which may
 		// hold a DNS endpoint with a publicly trusted cert and no CA).
 		if d, ok := gkeDescribeOf(gke); ok {
-			switch {
-			case d.PrivateEndpoint != "":
-				address = "https://" + d.PrivateEndpoint
-				target.AddressNote = "the cluster has a private endpoint, which is what the hub can reach (the context's server is not what the hub dials)"
-			case d.Endpoint != "":
+			if addressFlag == "" && d.Endpoint != "" {
 				address = "https://" + d.Endpoint
-				target.AddressNote = "the address is the cluster's endpoint from GKE (the context's server is not what the hub dials)"
+				target.AddressNote = "the address is the cluster's public endpoint from GKE (the context's server is not what the hub dials)"
 			}
 			if d.CAPEM != "" {
 				caPEM = d.CAPEM
 			}
 		}
+	}
+	if caFile != "" {
+		b, err := os.ReadFile(caFile)
+		if err != nil {
+			return connectTarget{}, fmt.Errorf("read --ca-file: %w", err)
+		}
+		if !strings.Contains(string(b), "-----BEGIN CERTIFICATE-----") {
+			return connectTarget{}, fmt.Errorf("--ca-file %q holds no PEM certificate\nfix: pass the PEM bundle that signed the API server's certificate", caFile)
+		}
+		caPEM = strings.TrimSpace(string(b))
 	}
 	if err := refuseUnusableAddress(address); err != nil {
 		return connectTarget{}, err
@@ -171,14 +137,10 @@ func readConnectTarget(kctx, authFlag string) (connectTarget, error) {
 		// Never degrade to skipping verification. A target we cannot verify
 		// is one we decline to deploy to — the alternative is sending a
 		// standing credential to whatever answers that address.
-		if auth == authGCP {
-			return connectTarget{}, fmt.Errorf("GKE's describe of cluster %q returned no masterAuth.clusterCaCertificate, and forge "+
-				"will not connect a cluster whose API server it cannot verify", target.CloudCluster)
-		}
-		return connectTarget{}, fmt.Errorf("context %q carries no certificate authority for its cluster, and forge "+
+		return connectTarget{}, fmt.Errorf("no certificate authority for %s (context %q), and forge "+
 			"will not connect a cluster whose API server it cannot verify\n"+
-			"fix: the kubeconfig entry needs certificate-authority-data or certificate-authority "+
-			"(re-run your provider's get-credentials to refresh it)", kctx)
+			"fix: --ca-file <pem>, or refresh the kubeconfig entry so it carries certificate-authority-data "+
+			"(re-run your provider's get-credentials)", address, kctx)
 	}
 	target.Address, target.CAPEM = address, caPEM
 	return target, nil
@@ -187,9 +149,8 @@ func readConnectTarget(kctx, authFlag string) (connectTarget, error) {
 // gkeDescription is the part of `gcloud container clusters describe` the hub's
 // registration needs.
 type gkeDescription struct {
-	Endpoint        string
-	PrivateEndpoint string
-	CAPEM           string // decoded PEM
+	Endpoint string
+	CAPEM    string // decoded PEM
 }
 
 // gkeDescribeOf reads the cluster's endpoints and CA from GKE. Read-only, with
@@ -204,10 +165,7 @@ var gkeDescribeOf = func(g gkeContext) (gkeDescription, bool) {
 		return gkeDescription{}, false
 	}
 	var raw struct {
-		Endpoint             string `json:"endpoint"`
-		PrivateClusterConfig struct {
-			PrivateEndpoint string `json:"privateEndpoint"`
-		} `json:"privateClusterConfig"`
+		Endpoint   string `json:"endpoint"`
 		MasterAuth struct {
 			ClusterCaCertificate string `json:"clusterCaCertificate"`
 		} `json:"masterAuth"`
@@ -215,15 +173,20 @@ var gkeDescribeOf = func(g gkeContext) (gkeDescription, bool) {
 	if json.Unmarshal(out, &raw) != nil {
 		return gkeDescription{}, false
 	}
-	d := gkeDescription{Endpoint: raw.Endpoint, PrivateEndpoint: raw.PrivateClusterConfig.PrivateEndpoint}
+	d := gkeDescription{Endpoint: raw.Endpoint}
 	if pem, err := base64.StdEncoding.DecodeString(raw.MasterAuth.ClusterCaCertificate); err == nil {
 		d.CAPEM = string(pem)
 	}
 	return d, true
 }
 
-// refuseUnusableAddress rejects the two addresses that fail AGAINST A HEALTHY
-// CLUSTER, which is why they are worth their own refusal.
+// connectPorts are the API-server ports the hub will dial: 443 (the https
+// default) and 6443 (the k3s and kubeadm default). The control plane applies
+// the same rule, so a refusal here is the same refusal without a round trip.
+var connectPorts = map[string]bool{"": true, "443": true, "6443": true}
+
+// refuseUnusableAddress rejects the addresses that cannot work, or must not be
+// trusted with the credential.
 //
 // The hub's kustomize-controller dials this address from a POD, where
 // `127.0.0.1` and `0.0.0.0` mean THAT POD. So a loopback address does not fail
@@ -234,26 +197,42 @@ var gkeDescribeOf = func(g gkeContext) (gkeDescription, bool) {
 func refuseUnusableAddress(address string) error {
 	u, err := url.Parse(address)
 	if err != nil || address == "" {
-		return fmt.Errorf("the context's cluster.server is %q, which is not a URL", address)
+		return fmt.Errorf("the cluster's API server address is %q, which is not a URL", address)
 	}
 	if u.Scheme != "https" {
 		return fmt.Errorf("the cluster's API server address is %q, whose scheme is %q\n"+
 			"forge connects over https only: any other scheme would carry the hub's credential in clear text",
 			address, u.Scheme)
 	}
-	host := u.Hostname()
+	if u.User != nil {
+		return fmt.Errorf("the cluster's API server address %q carries credentials in the URL\n"+
+			"fix: pass the bare https://host[:port] address", address)
+	}
+	host := strings.ToLower(u.Hostname())
 	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsUnspecified()) {
 		return fmt.Errorf("the cluster's API server address is %q, whose host %q is a loopback or bind address.\n"+
 			"The hub dials it from a POD, where %q is that pod — so the deploy would fail as "+
 			"\"connection refused\" against a cluster that is perfectly healthy.\n"+
-			"fix: connect this cluster by an address reachable from outside it (its public or "+
+			"fix: connect this cluster by an address reachable from outside it (--address, its public or "+
 			"peered API endpoint); a local k3d cluster is not a connect target, it is applied "+
 			"to directly", address, host, host)
 	}
 	if host == "localhost" {
 		return fmt.Errorf("the cluster's API server address is %q, whose host is localhost.\n"+
 			"The hub dials it from a POD, where localhost is that pod.\n"+
-			"fix: connect this cluster by an address reachable from outside it", address)
+			"fix: connect this cluster by an address reachable from outside it (--address)", address)
+	}
+	if strings.HasSuffix(host, ".gke.goog") {
+		return fmt.Errorf("the cluster's API server address is %q, a GKE DNS endpoint (*.gke.goog).\n"+
+			"It is IAM-gated: it authenticates a Google identity, and a ServiceAccount token cannot pass it.\n"+
+			"fix: --address https://<the cluster's public endpoint> "+
+			"(gcloud container clusters describe <cluster> --format='value(endpoint)')", address)
+	}
+	if !connectPorts[u.Port()] {
+		return fmt.Errorf("the cluster's API server address is %q, on port %s\n"+
+			"the hub dials the API server on port 443 or 6443 only (6443 is the k3s and kubeadm default)\n"+
+			"fix: expose the API server on 443 or 6443 (a load balancer or port-forward in front of it), "+
+			"then pass it with --address", address, u.Port())
 	}
 	return nil
 }
@@ -264,9 +243,8 @@ func refuseUnusableAddress(address string) error {
 // ONLY THE ADDRESS AND THE CA ARE TAKEN, never the credential beside them. A
 // GKE kubeconfig authenticates through an `exec` plugin — an instruction to
 // run a binary on the operator's machine with the operator's own credentials —
-// which is inert anywhere else. The hub's credential is the workload identity
-// or the minted token, decided by Auth; this function is reading a public
-// address and a public certificate.
+// which is inert anywhere else. The hub's credential is the minted token;
+// this function is reading a public address and a public certificate.
 //
 // A var so tests supply a kubeconfig without one on disk.
 var kubeconfigClusterOf = func(kctx string) (address, caPEM string, err error) {

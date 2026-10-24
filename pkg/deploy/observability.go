@@ -258,7 +258,10 @@ func (s ObservabilityAgentSpec) pipelines(traceRecv, metricRecv, logRecv, profil
 func (s ObservabilityAgentSpec) common(receivers, processors map[string]any) {
 	receivers["otlp"] = map[string]any{"protocols": map[string]any{
 		"grpc": map[string]any{"endpoint": "0.0.0.0:4317"},
-		"http": map[string]any{"endpoint": "0.0.0.0:4318"},
+		// Above the 90s a Go client (the OTel SDK, pkg/observe) keeps an idle
+		// connection: with the 60s default, a 60s metric export reused a
+		// connection the receiver was closing and failed with EOF.
+		"http": map[string]any{"endpoint": "0.0.0.0:4318", "idle_timeout": "5m"},
 	}}
 	processors["batch"] = map[string]any{"send_batch_size": 8192, "timeout": "5s"}
 }

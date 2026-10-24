@@ -43,7 +43,16 @@ printf '%s\n' "${pkgs[@]}"
 echo "::endgroup::"
 
 status=0
+started=$SECONDS
 go test -short -json -timeout "$timeout" "${pkgs[@]}" >"$json" || status=$?
+elapsed=$((SECONDS - started))
+echo "shard $i/$n: ${elapsed}s wall (compile, link and tests; includes any cache replay)"
+# Observe the test-command budget, leaving setup/artifact headroom within 5m.
+# This is deliberately not a shorter per-binary timeout: a timeout hides the
+# slow test's result instead of explaining the critical path.
+if ((elapsed > ${CI_TEST_BUDGET_SECONDS:-240})); then
+  echo "::warning::test shard exceeded its ${CI_TEST_BUDGET_SECONDS:-240}s command budget (${elapsed}s); inspect slow tests and compile/cache time"
+fi
 
 # Build failures (Go 1.24+ reports them as build-output), then package-level
 # lines: ok/FAIL/panics outside any test.
@@ -63,6 +72,8 @@ top='select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .T
 count() { jq -r "$top | select(.Action == \"$1\") | .Test" "$json" | grep -c . || true; }
 {
   echo "### packages $((i + 1))/$n — ${#pkgs[@]} packages"
+  echo
+  echo "Command wall time: ${elapsed}s (compile/link/tests, not just test bodies). Budget: ${CI_TEST_BUDGET_SECONDS:-240}s."
   echo
   echo "| passed | failed | skipped |"
   echo "| --- | --- | --- |"

@@ -787,3 +787,105 @@ func TestQueryThroughTheTunnelAgainstPostgres(t *testing.T) {
 		t.Error("a context deadline must interrupt a query through the tunnel")
 	}
 }
+
+// --- bring-your-own-route (ConnConfigForAddr) ---
+
+func TestServerNameForAddr(t *testing.T) {
+	// The -rw Service whatever the instance count: it is the name every CNPG
+	// server certificate carries and the one that always exists.
+	for _, instances := range []int32{0, 1, 3} {
+		if got := ServerNameForAddr(Database{Namespace: "env-1", Name: "ledger", Instances: instances}); got != "ledger-rw.env-1.svc" {
+			t.Errorf("instances=%d: %q", instances, got)
+		}
+	}
+}
+
+func TestConnConfigForAddr(t *testing.T) {
+	ca := newCA(t)
+	db := Database{Namespace: "env-1", Name: "ledger", Instances: 2}
+	creds := &Credentials{Username: "forge_ro", Password: "s3cret", CAPEM: ca.caPEM}
+
+	cfg, err := ConnConfigForAddr(db, creds, "localhost:6543", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Host != "localhost" || cfg.Port != 6543 || cfg.User != "forge_ro" || cfg.Password != "s3cret" || cfg.Database != "ledger" {
+		t.Errorf("config host=%s port=%d user=%s db=%s", cfg.Host, cfg.Port, cfg.User, cfg.Database)
+	}
+	if cfg.TLSConfig == nil || cfg.TLSConfig.ServerName != "ledger-rw.env-1.svc" || cfg.TLSConfig.InsecureSkipVerify || cfg.TLSConfig.RootCAs == nil {
+		t.Errorf("TLS %+v", cfg.TLSConfig)
+	}
+	if cfg.DialFunc != nil && cfg.LookupFunc != nil {
+		// The default (empty) config has pgx's own dialer and resolver.
+		t.Log("note: pgx defaults are populated by ParseConfig")
+	}
+
+	if cfg, err := ConnConfigForAddr(db, creds, "10.0.0.5:5432", SSLModeRequire); err != nil || cfg.TLSConfig == nil || !cfg.TLSConfig.InsecureSkipVerify {
+		t.Errorf("require: %v %+v", err, cfg)
+	}
+	if cfg, err := ConnConfigForAddr(db, creds, "[::1]:5432", SSLModeDisable); err != nil || cfg.TLSConfig != nil || cfg.Host != "::1" {
+		t.Errorf("disable: %v %+v", err, cfg)
+	}
+
+	for _, bad := range []string{"", "localhost", ":5432", "h:0", "h:99999", "h:x", "postgres://h:5432"} {
+		if _, err := ConnConfigForAddr(db, creds, bad, ""); err == nil {
+			t.Errorf("address %q accepted", bad)
+		}
+	}
+	if _, err := ConnConfigForAddr(db, creds, "h:5432", "prefer"); err == nil {
+		t.Error("unknown sslmode accepted")
+	}
+	if _, err := ConnConfigForAddr(db, &Credentials{Username: "u", Password: "pw", CAPEM: []byte("junk")}, "h:5432", ""); err == nil || strings.Contains(err.Error(), "pw") {
+		t.Errorf("a CA that is not PEM must fail verify-full without echoing the password: %v", err)
+	}
+	// require and disable need no CA.
+	if _, err := ConnConfigForAddr(db, &Credentials{Username: "u", Password: "pw"}, "h:5432", SSLModeRequire); err != nil {
+		t.Errorf("require without a CA: %v", err)
+	}
+}
+
+// verify-full through a route that is not the cluster: a TLS server on
+// localhost whose certificate names <db>-rw.<ns>.svc verifies; a certificate
+// for any other name, or from another CA, does not.
+func TestConnConfigForAddrVerifiesTheServiceName(t *testing.T) {
+	ca := newCA(t)
+	db := Database{Namespace: "env-1", Name: "ledger", Instances: 1}
+	creds := &Credentials{Username: "forge_ro", Password: "pw", CAPEM: ca.caPEM}
+
+	handshake := func(t *testing.T, cert tls.Certificate) error {
+		t.Helper()
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = ln.Close() })
+		go func() {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			tc := tls.Server(c, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
+			_ = tc.Handshake()
+			_ = c.Close()
+		}()
+		cfg, err := ConnConfigForAddr(db, creds, ln.Addr().String(), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer raw.Close()
+		return tls.Client(raw, cfg.TLSConfig).Handshake()
+	}
+	if err := handshake(t, ca.serverCert(t, "ledger-rw.env-1.svc")); err != nil {
+		t.Errorf("a certificate for the -rw service host: %v", err)
+	}
+	if err := handshake(t, ca.serverCert(t, "localhost")); err == nil {
+		t.Error("a certificate for localhost must not satisfy the default server name")
+	}
+	if err := handshake(t, newCA(t).serverCert(t, "ledger-rw.env-1.svc")); err == nil {
+		t.Error("a certificate from another CA must fail verify-full")
+	}
+}

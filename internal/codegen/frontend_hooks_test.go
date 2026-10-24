@@ -60,6 +60,40 @@ func TestIsQueryMethod(t *testing.T) {
 	}
 }
 
+// The proto's NO_SIDE_EFFECTS declaration decides before the name does: a
+// read named as a noun (reliant's SystemService Health/Ready/Info/Version)
+// came out a useMutation while only the verb list was consulted. Nothing
+// else moves: an undeclared rpc — or one declared merely IDEMPOTENT, which
+// is a repeatable WRITE and records nothing here — is classified by its
+// name exactly as before.
+func TestServiceDefToHookData_NoSideEffectsIsARead(t *testing.T) {
+	svc := ServiceDef{
+		Name:      "SystemService",
+		ProtoFile: "proto/system/v1/system.proto",
+		Methods: []Method{
+			{Name: "Health", InputType: "HealthRequest", OutputType: "HealthResponse", NoSideEffects: true},
+			{Name: "Version", InputType: "VersionRequest", OutputType: "VersionResponse", NoSideEffects: true},
+			// Undeclared, noun-named: still a mutation, the safe default.
+			{Name: "Ready", InputType: "ReadyRequest", OutputType: "ReadyResponse"},
+			// A read verb needs no declaration, and keeps its query.
+			{Name: "GetInfo", InputType: "GetInfoRequest", OutputType: "GetInfoResponse"},
+			// An idempotent write: no NoSideEffects, so the name decides.
+			{Name: "SetFlag", InputType: "SetFlagRequest", OutputType: "SetFlagResponse"},
+		},
+	}
+	want := map[string]bool{"Health": true, "Version": true, "Ready": false, "GetInfo": true, "SetFlag": false}
+
+	data := ServiceDefToHookData(svc)
+	for _, m := range data.Methods {
+		if m.IsQuery != want[m.Name] {
+			t.Errorf("%s.IsQuery = %v, want %v", m.Name, m.IsQuery, want[m.Name])
+		}
+	}
+	if !data.HasQueries || !data.HasMutations {
+		t.Errorf("HasQueries = %v, HasMutations = %v, want both true", data.HasQueries, data.HasMutations)
+	}
+}
+
 func TestProtoFileToTSImportPath(t *testing.T) {
 	tests := []struct {
 		input string

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -12,7 +13,8 @@ import (
 
 // TestClusterCreateFlags_NoCIDRsDeclared is the byte-identical guarantee on
 // the Go side: a cluster that declares neither CIDR must produce the exact
-// flag list it produced before the capability existed.
+// flag list it produced before the capability existed (plus the service-account
+// issuer flags every forge-created cluster carries).
 //
 // This is the assertion that would catch a "helpfully" defaulted CIDR — a
 // default here would silently move every existing cluster off k3s's own
@@ -23,12 +25,12 @@ func TestClusterCreateFlags_NoCIDRsDeclared(t *testing.T) {
 		Name: "cp", Image: "rancher/k3s:v1.36.3-k3s1", Servers: 1,
 	})
 	for _, f := range flags {
-		if strings.Contains(f, "cidr") || f == "--k3s-arg" {
+		if strings.Contains(f, "cidr") {
 			t.Fatalf("undeclared CIDRs produced %q in flags %v; an existing cluster must "+
 				"create with the flags it created with before", f, flags)
 		}
 	}
-	want := []string{"--image", "rancher/k3s:v1.36.3-k3s1", "--servers", "1"}
+	want := append([]string{"--image", "rancher/k3s:v1.36.3-k3s1", "--servers", "1"}, k3sIssuerFlags()...)
 	if strings.Join(flags, " ") != strings.Join(want, " ") {
 		t.Fatalf("flags = %v; want %v", flags, want)
 	}
@@ -314,4 +316,113 @@ func containsArg(args []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// A forge-created k3d cluster must sign service-account tokens with an issuer
+// the control plane accepts: stock k3s signs with a `.local` host, which
+// `forge cluster connect` cannot register. k3s keeps the legacy issuer as a
+// second accepted one.
+func TestClusterCreateFlags_PublicServiceAccountIssuer(t *testing.T) {
+	joined := strings.Join(clusterCreateFlags(ClusterEntity{Name: "cp", Image: "img", Servers: 1}), " ")
+	for _, want := range []string{
+		"--k3s-arg --kube-apiserver-arg=service-account-issuer=https://kubernetes.default.svc@server:*",
+		"--k3s-arg --kube-apiserver-arg=service-account-issuer=https://kubernetes.default.svc.cluster.local@server:*",
+		"--k3s-arg --kube-apiserver-arg=api-audiences=https://kubernetes.default.svc,https://kubernetes.default.svc.cluster.local,k3s@server:*",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("flags %q do not carry %q", joined, want)
+		}
+	}
+	if strings.Index(joined, "service-account-issuer=https://kubernetes.default.svc@") >
+		strings.Index(joined, "service-account-issuer=https://kubernetes.default.svc.cluster.local@") {
+		t.Errorf("the public issuer must come first: the API server signs with the first issuer\n%s", joined)
+	}
+}
+
+func TestMergeK3dConfig_PublicIssuerProjected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "k3d.yaml")
+	cfg := "apiVersion: k3d.io/v1alpha5\nkind: Simple\noptions:\n  k3s:\n    extraArgs:\n      - arg: --disable=traefik\n        nodeFilters:\n          - server:*\n"
+	if err := os.WriteFile(path, []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, cleanup, err := mergeK3dConfig(path, k3dConfigOverlay{PublicIssuer: true})
+	if err != nil {
+		t.Fatalf("mergeK3dConfig: %v", err)
+	}
+	defer cleanup()
+	if got.path == path {
+		t.Fatal("PublicIssuer produced the user's own file; the issuer never reaches k3s")
+	}
+	handed, err := os.ReadFile(got.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := extraArgStrings(t, handed)
+	for _, want := range append(k3sIssuerArgs(), "--disable=traefik") {
+		if !containsArg(args, want) {
+			t.Errorf("extraArgs %v missing %q", args, want)
+		}
+	}
+}
+
+func TestMergeK3dConfig_ConfigOwnIssuerWins(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "k3d.yaml")
+	cfg := "apiVersion: k3d.io/v1alpha5\nkind: Simple\noptions:\n  k3s:\n    extraArgs:\n      - arg: --kube-apiserver-arg=service-account-issuer=https://issuer.example.com\n        nodeFilters:\n          - server:*\n"
+	if err := os.WriteFile(path, []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, cleanup, err := mergeK3dConfig(path, k3dConfigOverlay{PublicIssuer: true})
+	if err != nil {
+		t.Fatalf("mergeK3dConfig: %v", err)
+	}
+	defer cleanup()
+	if got.path != path || got.temporary {
+		t.Fatalf("a config that names its own issuer was rewritten: %+v", got)
+	}
+}
+
+// Every forge path that creates a cluster must carry the issuer, including the
+// legacy bootstrap that reads deploy/k3d.yaml directly.
+func TestDevClusterCreateArgs_CarryPublicIssuer(t *testing.T) {
+	orig := addClusterStorageArgsFn
+	t.Cleanup(func() { addClusterStorageArgsFn = orig })
+	addClusterStorageArgsFn = func(args []string) ([]string, error) { return args, nil }
+
+	t.Run("fallback flags", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		args, cleanup, err := devClusterCreateArgs()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cleanup()
+		if !strings.Contains(strings.Join(args, " "), "--k3s-arg --kube-apiserver-arg=service-account-issuer=https://kubernetes.default.svc@server:*") {
+			t.Errorf("fallback argv %v lacks the public issuer", args)
+		}
+	})
+	t.Run("deploy/k3d.yaml", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Chdir(dir)
+		if err := os.MkdirAll("deploy", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join("deploy", "k3d.yaml"), []byte("apiVersion: k3d.io/v1alpha5\nkind: Simple\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		args, cleanup, err := devClusterCreateArgs()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cleanup()
+		cfgIdx := slices.Index(args, "--config")
+		if cfgIdx < 0 {
+			t.Fatalf("argv %v has no --config", args)
+		}
+		b, err := os.ReadFile(args[cfgIdx+1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !containsArg(extraArgStrings(t, b), k3sIssuerArgs()[0]) {
+			t.Errorf("config handed to k3d lacks the public issuer:\n%s", b)
+		}
+	})
 }

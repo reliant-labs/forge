@@ -86,7 +86,7 @@ type goCacheEntry struct {
 func (e goCacheEntry) path(root string) string { return filepath.Join(root, e.sub, e.name) }
 
 // errGoCacheRetained is not a failure: a candidate changed since enumeration.
-var errGoCacheRetained = errors.New("Go cache entry became live or changed")
+var errGoCacheRetained = errors.New("cache entry became live or changed")
 
 // remove revalidates after the governor's pacing wait, not against the shard
 // listing's stale timestamp. The floor alone does not protect an entry cmd/go

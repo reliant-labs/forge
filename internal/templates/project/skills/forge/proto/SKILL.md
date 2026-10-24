@@ -259,7 +259,19 @@ read verb (Get, List, Search, Find, Check, Has, Is, Count, Exists). Declare it
 on every read named as a noun (`Health`, `Version`) instead of hand-building
 its query key; `IDEMPOTENT` does not make a read. `// forge:mutation` forces a
 mutation. Mutation hooks infer `onMutate`'s return as `onError`'s `context`,
-so an optimistic rollback needs no cast.
+so an optimistic rollback needs no cast. A query hook's `select` sets its
+`data` type, as in useQuery: `useGetTask(req, { select: toView })` — no
+`useMemo` over `data`.
+
+**Paged reads also get `use<Rpc>Infinite`.** A read whose request has a
+singular `string page_token` and whose response has `string next_page_token`
+(the List shape below, whatever the rpc is called) gets a useInfiniteQuery
+hook too. The shape is the opt-in; there is no marker. It takes the request
+minus `pageToken` (the hook owns the token; empty ends the listing), keys
+under `<svc>Keys.<rpc>Infinite(req)` within the service and entity scopes so
+mutations invalidate it, and `select` reshapes `{ pages }`:
+`useListTasksInfinite({ pageSize: 50 }, { select: (d) => d.pages.flatMap((p) => p.tasks) })`.
+Never hand-write `useInfiniteQuery` over a generated key.
 
 The generated conversions map the **intersection** of wire fields and
 columns by name: a wire-only field never reaches the DB, a column-only

@@ -12,7 +12,12 @@
 //
 // The hooks are ordinary React Query hooks with the signatures you would
 // write by hand: `useGetOrder(req, options?)` for a read,
-// `useCreateOrder(options?)` for a write. Errors are typed
+// `useCreateOrder(options?)` for a write. A read's `select` may change the
+// data type, as in useQuery itself: `useGetOrder(req, { select: toView })`
+// gives `data: View`. A read in forge's list-pagination shape (`string
+// page_token` in, `string next_page_token` out) also gets
+// `useListOrdersInfinite(req, options?)`, a useInfiniteQuery that owns the
+// page token. Errors are typed
 // ConnectClientError — the shape the transport's error-normalize interceptor
 // actually throws, a ConnectError subclass — so `.reason` (a stable machine
 // code the backend stamps on every error), `.code` / `.codeName`, `.status`
@@ -26,6 +31,9 @@
 // because "{{.ServiceName}} succeeded" leaks RPC names into the UI.
 
 import {
+{{- if .HasPaged}}
+  createInfiniteQueryHook,
+{{- end}}
 {{- if .HasMutations}}
   createMutationHook,
 {{- end}}
@@ -65,6 +73,9 @@ const keys = serviceKeys("{{.ServiceNameCamel}}");
  *   .{{.}}{{""}} — every query for the {{.}} entity (mutations invalidate this)
 {{- end}}
  *   .<method>(req)      — one query: [service, entity?, method, protojson(req)]
+{{- if .HasPaged}}
+ *   .<method>Infinite(req) — one paged read, every page: [..., protojson(req minus page_token), "infinite"]
+{{- end}}
  *
  * Use these everywhere a query key is needed (invalidate, prefetch,
  * setQueryData) — never hand-write the array literals.
@@ -77,6 +88,9 @@ export const {{.ServiceNameCamel}}Keys = {
 {{- range .Methods}}
 {{- if .IsQuery}}
   {{.NameCamel}}: keys.query("{{.NameCamel}}", {{.InputSchemaRef}}{{if .EntityScope}}, "{{.EntityScope}}"{{end}}),
+{{- if .Paged}}
+  {{.NameCamel}}Infinite: keys.infinite("{{.NameCamel}}", {{.InputSchemaRef}}{{if .EntityScope}}, "{{.EntityScope}}"{{end}}),
+{{- end}}
 {{- end}}
 {{- end}}
 };
@@ -84,8 +98,15 @@ export const {{.ServiceNameCamel}}Keys = {
 {{- if .IsQuery}}
 export const use{{.Name}} = createQueryHook<typeof {{.InputSchemaRef}}, {{.OutputTypeRef}}>(
   {{$.ServiceNameCamel}}Keys.{{.NameCamel}},
-  (req) => client.{{.ClientMethod}}(req),
+  (req, signal) => client.{{.ClientMethod}}(req, { signal }),
 );
+{{- if .Paged}}
+
+export const use{{.Name}}Infinite = createInfiniteQueryHook<typeof {{.InputSchemaRef}}, {{.OutputTypeRef}}>(
+  {{$.ServiceNameCamel}}Keys.{{.NameCamel}}Infinite,
+  (req, signal) => client.{{.ClientMethod}}(req, { signal }),
+);
+{{- end}}
 {{- else}}
 export const use{{.Name}} = createMutationHook<typeof {{.InputSchemaRef}}, {{.OutputTypeRef}}>(
   {{$.ServiceNameCamel}}Keys.{{if .EntityScope}}{{.EntityScope}}{{else}}all{{end}},

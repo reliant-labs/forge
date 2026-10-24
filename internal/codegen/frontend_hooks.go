@@ -22,6 +22,9 @@ type FrontendHookTemplateData struct {
 	// query-only services, tripping no-unused-vars in eslint configs.
 	HasQueries   bool
 	HasMutations bool
+	// HasPaged gates the createInfiniteQueryHook import: true when any
+	// method is Paged.
+	HasPaged bool
 	// SchemaImports groups input-message `Schema` value imports by their
 	// declaring proto file's TS import path. The template emits one
 	// `import { ...Schema }` statement per entry. Same-file schemas land
@@ -79,6 +82,10 @@ type FrontendHookMethod struct {
 	InputType    string // "GetUserRequest"
 	OutputType   string // "GetUserResponse"
 	IsQuery      bool   // true for NO_SIDE_EFFECTS rpcs and Get/List/Search…, false for mutations (isQueryRPC)
+	// Paged reports a query that follows forge's list-pagination shape
+	// (isPagedRPC): it also gets `use<Name>Infinite`, a useInfiniteQuery
+	// hook that owns the page token, keyed under the same scopes.
+	Paged bool
 	// EntityScope is the camelCase singular CRUD entity this method
 	// operates on ("task" for ListTasks/GetTask/CreateTask), derived
 	// from the RPC-name CRUD pattern. Empty for non-CRUD methods.
@@ -159,6 +166,54 @@ func isQueryMethod(name string) bool {
 // `// forge:mutation` is applied after this and still wins.
 func isQueryRPC(m Method) bool {
 	return m.NoSideEffects || isQueryMethod(m.Name)
+}
+
+// pageTokenField / nextPageTokenField are forge's list-pagination
+// convention (AIP-158; the proto skill's "List Request Conventions"), the
+// shape every scaffolded List rpc is born with.
+const (
+	pageTokenField     = "page_token"
+	nextPageTokenField = "next_page_token"
+)
+
+// isPagedRPC reports whether a read follows forge's list-pagination shape:
+// a singular `string page_token` on the request and a singular
+// `string next_page_token` on the response. Such an rpc also gets an
+// infinite-query hook.
+//
+// The SHAPE is the opt-in, not the name and not a marker. The two fields
+// are exactly what useInfiniteQuery needs — the request's token is the page
+// param, the response's is getNextPageParam — so any rpc carrying both can
+// be paged correctly, whatever it is called (SearchCatalog pages the same
+// way ListTasks does), and an rpc without them cannot be paged by the hook
+// at all. A marker would only let an author withhold a hook that costs
+// nothing unused; the extra export tree-shakes away.
+//
+// A method already named `<Name>Infinite` would collide with the generated
+// hook's name, so its sibling gets no infinite hook rather than a duplicate
+// export.
+func isPagedRPC(svc ServiceDef, m Method) bool {
+	if !hasStringField(svc.Messages[m.InputType], pageTokenField) ||
+		!hasStringField(svc.Messages[m.OutputType], nextPageTokenField) {
+		return false
+	}
+	for _, other := range svc.Methods {
+		if other.Name == m.Name+"Infinite" {
+			return false
+		}
+	}
+	return true
+}
+
+// hasStringField reports a singular string field named name. Repeated
+// fields are recorded as "[]string" and so never match.
+func hasStringField(fields []MessageFieldDef, name string) bool {
+	for _, f := range fields {
+		if f.Name == name {
+			return f.ProtoType == "string"
+		}
+	}
+	return false
 }
 
 // ToCamelCaseFromPascalExport is the exported wrapper around the
@@ -248,6 +303,10 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 		} else {
 			data.HasMutations = true
 		}
+		paged := isQuery && isPagedRPC(svc, m)
+		if paged {
+			data.HasPaged = true
+		}
 
 		// The Service value still lives in the service's own _pb.ts, so
 		// ImportPath stays as svc.ProtoFile's derived path. But each
@@ -276,6 +335,7 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 			InputType:      m.InputType,
 			OutputType:     m.OutputType,
 			IsQuery:        isQuery,
+			Paged:          paged,
 			EntityScope:    methodEntityScope(svc, m),
 			inputPath:      ProtoFileToTSImportPath(inPath),
 			outputPath:     ProtoFileToTSImportPath(outPath),

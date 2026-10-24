@@ -19,6 +19,17 @@ schema Root:
     env: [str] = []
     secrets: [str] = []
     required_secrets: [str] = []
+{{- if .Families}}
+    families: [RootFamily] = []
+
+schema RootFamily:
+    """An env family a root reaches: every variable <prefix><KEY><suffix>.
+    A sensitive one is opted into by its pattern, prefix + "<KEY>" + suffix."""
+    prefix: str
+    suffix: str = ""
+    sensitive: bool = False
+    required: bool = False
+{{- end}}
 
 ROOTS: {str: Root} = {
 {{- range .Roots}}
@@ -27,6 +38,9 @@ ROOTS: {str: Root} = {
         env = {{.Env}}
         secrets = {{.Secrets}}
         required_secrets = {{.Required}}
+{{- if .Families}}
+        families = {{.Families}}
+{{- end}}
     }
 {{- end}}
 }
@@ -44,10 +58,19 @@ rootEnvMap = lambda c: {{.ConfigType}}, w: any -> {str: str | forge.SecretRef} {
     _r = ROOTS[w.root]
     assert not w.args or w.args == _r.args, "workload '${w.name}': args ${w.args} do not run root \"${w.root}\", which runs as ${_r.args} — bind it with config_gen.root_of(\"${w.root}\")"
     _opted = w.config_secrets or []
+{{- if .Families}}
+    _fam_secrets = [_f.prefix + "<KEY>" + _f.suffix for _f in _r.families if _f.sensitive]
+    _required = _r.required_secrets + [_f.prefix + "<KEY>" + _f.suffix for _f in _r.families if _f.sensitive and _f.required]
+    assert all _n in _opted { _n in _r.secrets or _n in _fam_secrets }, \
+        "workload '${w.name}': config_secrets names ${[_n for _n in _opted if _n not in _r.secrets and _n not in _fam_secrets]}, which root \"${w.root}\" does not reach (it reaches ${_r.secrets + _fam_secrets}): a credential reaches only the workloads whose root reads it"
+    _all = {{.EnvMap}}(c, {{if .Argv}}_r.args, {{end}}_required + [_n for _n in _opted if _n not in _required])
+    {_k: _v for _k, _v in _all if _k in _r.env or _k in _r.secrets or any _f in _r.families { _k.startswith(_f.prefix) and _k.endswith(_f.suffix) and len(_k) > len(_f.prefix) + len(_f.suffix) }}
+{{- else}}
     assert all _n in _opted { _n in _r.secrets }, \
         "workload '${w.name}': config_secrets names ${[_n for _n in _opted if _n not in _r.secrets]}, which root \"${w.root}\" does not reach (it reaches ${_r.secrets}): a credential reaches only the workloads whose root reads it"
     _all = {{.EnvMap}}(c, {{if .Argv}}_r.args, {{end}}_r.required_secrets + [_n for _n in _opted if _n not in _r.required_secrets])
     {_k: _v for _k, _v in _all if _k in _r.env or _k in _r.secrets}
+{{- end}}
 }
 
 # workloadEnvMap is a workload's config env: rootEnvMap for a workload bound

@@ -1317,9 +1317,13 @@ type ConfigFieldOptions struct {
 	// `forge generate` refuses two families (or a family and an env_var) of one
 	// process that could claim the same variable.
 	//
-	// Families are read from the environment and the config file; the KCL
-	// config schema does not project them — set a family's variables in a
-	// workload's `env` (or its secrets, for a sensitive one).
+	// Families are read from the environment and the config file. The KCL
+	// config schema projects one as a map keyed by KEY — `{str: str}`, or
+	// `{str: ConfigSecretRef}` for a sensitive one — and the env projection
+	// expands each entry to its variable: inline for a plain family, one
+	// forge.SecretRef per KEY for a sensitive one, which a workload selects
+	// by naming the family's pattern (APP_OAUTH_<KEY>_CLIENT_SECRET) in
+	// `config_secrets`.
 	EnvPrefix string `protobuf:"bytes,12,opt,name=env_prefix,json=envPrefix,proto3" json:"env_prefix,omitempty"`
 	// EnvSuffix is the fixed tail of an env_prefix family's variable names
 	// ("_CLIENT_ID"); empty when the KEY runs to the end of the name.

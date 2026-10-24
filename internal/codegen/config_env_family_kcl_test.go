@@ -158,7 +158,7 @@ root_default = config_gen.workloadEnvMap(_c, {name = "api", root = "server", arg
 	if err != nil {
 		t.Fatalf("kcl run: %v\n%s", err, out)
 	}
-	var got map[string]map[string]any
+	var got map[string]any
 	if err := json.Unmarshal(out, &got); err != nil {
 		t.Fatalf("unmarshal: %v\n%s", err, out)
 	}

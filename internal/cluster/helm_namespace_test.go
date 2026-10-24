@@ -56,6 +56,9 @@ func (c kubectlCall) Namespace() string {
 }
 
 func (c kubectlCall) IsApply() bool {
+	if strings.Contains(c.Args, "--dry-run") {
+		return false
+	}
 	for _, f := range strings.Fields(c.Args) {
 		if f == "apply" {
 			return true

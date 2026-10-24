@@ -80,6 +80,24 @@
     "secret_provider": {
       "type": "hosted"
     },
+    "uptime_checks": [
+      {
+        "interval_seconds": 60,
+        "method": "GET",
+        "name": "api",
+        "source": "default",
+        "target": "api",
+        "timeout_seconds": 10
+      },
+      {
+        "interval_seconds": 60,
+        "method": "GET",
+        "name": "web",
+        "source": "default",
+        "target": "web",
+        "timeout_seconds": 10
+      }
+    ],
     "workloads": [
       {
         "build": {

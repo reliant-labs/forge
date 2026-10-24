@@ -13,6 +13,11 @@ const (
 	DetectorIssueSpike       = "issue_spike"
 	DetectorReleaseRegressed = "release_regressed"
 	DetectorServiceAnomaly   = "service_anomaly"
+	// DetectorUptimeCheck is a check that failed N probes in a row;
+	// DetectorCertificateExpiring a certificate close to its expiry. Both read
+	// the uptime prober's metrics (uptime.check.up, tls.cert.expiry_seconds).
+	DetectorUptimeCheck         = "uptime_check"
+	DetectorCertificateExpiring = "certificate_expiring"
 )
 
 // Why is the shared "why it fired" payload: what a detector observed, against

@@ -50,6 +50,14 @@ import (
 // The remedy is a slower fill — usually builds that lost -trimpath — or a
 // larger go_cache_gib, never a trim under a live build.
 //
+// The floor is that guarantee for a build younger than about an hour. A gate
+// that runs longer (`go test -race` across a repo: 40-70 minutes; a lint after
+// a queue wait) can hold an entry that is by then past the floor, so the
+// cutoff is additionally held back to the start of the oldest running Go
+// toolchain process minus cmd/go's hour (gocache_livebuild.go): a lease taken
+// from the processes themselves, covering a build of any length for as long
+// as it runs and nothing after.
+//
 // trim.txt and README are top-level files, which the trim never touches;
 // cmd/go's own trim is independent of this one.
 
@@ -526,6 +534,12 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 	}
 	budget := r.goCacheBudget(root)
 	cutoff, estTotal := goCacheCutoff(sample, len(shards), now, unused, budget)
+	heldBack := ""
+	var liveBuild time.Duration
+	if bound, oldest, ok := r.liveBuildBound(ctx, now); ok && bound.Before(cutoff) {
+		cutoff, liveBuild = bound, oldest
+		heldBack = fmt.Sprintf("; held back by a running Go build %s old (anything it resolved has a last-use time after its start minus %s)", oldest.Round(time.Second), liveBuildMargin)
+	}
 	overBudget := ""
 	if estTotal > budget {
 		// Over its size budget: the per-pass cap must not stop the trim short
@@ -542,8 +556,8 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 		r.saveGoCacheCursor(label, (start+pass.shardsCovered)%len(shards))
 	}
 
-	r.print("%s %s: ~%.1f GiB estimated (budget %.1f GiB, trimmed to %.1f GiB when over); deleting entries last used before %s (age rule %s, floor %s under every rule)%s\n",
-		label, root, float64(estTotal)/float64(GiB), float64(budget)/float64(GiB), float64(budget)*goCacheLowWater/float64(GiB), cutoff.Format(time.RFC3339), unused, goCacheFloor, overBudget)
+	r.print("%s %s: ~%.1f GiB estimated (budget %.1f GiB, trimmed to %.1f GiB when over); deleting entries last used before %s (age rule %s, floor %s under every rule, and the start of any running Go build)%s\n",
+		label, root, float64(estTotal)/float64(GiB), float64(budget)/float64(GiB), float64(budget)*goCacheLowWater/float64(GiB), cutoff.Format(time.RFC3339), unused, goCacheFloor, heldBack+overBudget)
 	for _, p := range pass.samples {
 		r.print("  %s %s\n", verb(apply), p)
 	}
@@ -561,12 +575,20 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 	}
 	r.print("%s: %s %d entries, %.1f GiB (%s)\n", label, map[bool]string{true: "removed", false: "would remove"}[apply], pass.removed, float64(pass.freed)/float64(GiB), status)
 	young := goCacheYoungBytes(sample, len(shards))
+	protectedFor := goCacheFloor
+	if liveBuild > 0 {
+		// What a running build can hold is as untouchable as the floor's
+		// share: count the sampled entries between the floor and the bound.
+		young += goCacheProtectedByBuild(sample, len(shards), cutoff)
+		protectedFor = max(protectedFor, now.Sub(cutoff))
+	}
 	if r.OnGoCacheTrim != nil {
 		r.OnGoCacheTrim(GoCacheTrim{
 			Cache: label, Root: root, Applied: apply,
 			EstimatedBytes: estTotal, BudgetBytes: budget, YoungBytes: young,
 			Cutoff: cutoff, Removed: pass.removed, FreedBytes: pass.freed,
 			ShardsCovered: pass.shardsCovered, ShardsTotal: pass.shardsTotal, Finished: pass.finished,
+			OldestLiveBuild: liveBuild,
 		})
 	}
 	// A walk the deadline stopped is a cut-off. streamTrimGoCache records
@@ -578,7 +600,7 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 		}
 	}
 	if young > budget {
-		unreachable := &BudgetUnreachableError{Cache: label, Estimated: estTotal, Budget: budget, Young: young, Floor: goCacheFloor}
+		unreachable := &BudgetUnreachableError{Cache: label, Estimated: estTotal, Budget: budget, Young: young, Floor: protectedFor}
 		r.print("WARNING %v\n", unreachable)
 		return errors.Join(pass.stop, unreachable)
 	}
@@ -629,6 +651,26 @@ type GoCacheTrim struct {
 	ShardsCovered int  `json:"shards_covered"`
 	ShardsTotal   int  `json:"shards_total"`
 	Finished      bool `json:"finished"`
+	// OldestLiveBuild is the age of the oldest running Go build that held the
+	// cutoff back past the floor (gocache_livebuild.go); zero when none did.
+	OldestLiveBuild time.Duration `json:"oldest_live_build_ns,omitempty"`
+}
+
+// goCacheProtectedByBuild estimates the bytes of the whole cache with a
+// last-use time between the floor and cutoff: past the floor, but held by a
+// running build (gocache_livebuild.go). The sample's entries are those past
+// the floor.
+func goCacheProtectedByBuild(sample goCacheSample, nShards int, cutoff time.Time) uint64 {
+	if sample.shards == 0 {
+		return 0
+	}
+	var n uint64
+	for _, e := range sample.entries {
+		if !e.mtime.Before(cutoff) {
+			n += uint64(e.size)
+		}
+	}
+	return uint64(float64(n) * float64(nShards) / float64(sample.shards))
 }
 
 // BudgetUnreachableError marks a cache no trim can bring under its size budget,
@@ -646,7 +688,8 @@ type BudgetUnreachableError struct {
 	// Cache names the cache ("shared go build cache").
 	Cache string
 	// Estimated is the cache's estimated size, Budget its size budget, and
-	// Young the estimated bytes last used inside Floor, all in bytes.
+	// Young the estimated bytes last used inside Floor (the safety floor, or the
+	// age of the oldest running build plus its margin when that is longer), in bytes.
 	Estimated, Budget, Young uint64
 	Floor                    time.Duration
 }

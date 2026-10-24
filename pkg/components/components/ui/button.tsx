@@ -1,6 +1,11 @@
 import React from "react";
 
-import { buttonIconSize, composeClasses, type ButtonSize, type ButtonVariant } from "./button_classes";
+import {
+  buttonIconSize,
+  composeClasses,
+  type ButtonSize,
+  type ButtonVariant,
+} from "./button_classes";
 import Link from "./link";
 
 /**

@@ -228,13 +228,13 @@ func TestExpandStatefulSetResizeJobs_PullSecretsRideTheServiceAccount(t *testing
 }
 
 func TestDecodeStatefulSetResize(t *testing.T) {
-	if d, img, err := decodeStatefulSetResize(nil); d || img != "" || err != nil {
+	if d, img, _, err := decodeStatefulSetResize(nil); d || img != "" || err != nil {
 		t.Fatalf("absent: %v %q %v", d, img, err)
 	}
-	if d, img, err := decodeStatefulSetResize(map[string]any{"image": "i", "disabled": true}); !d || img != "i" || err != nil {
+	if d, img, _, err := decodeStatefulSetResize(map[string]any{"image": "i", "disabled": true}); !d || img != "i" || err != nil {
 		t.Fatalf("declared: %v %q %v", d, img, err)
 	}
-	if _, _, err := decodeStatefulSetResize(map[string]any{"imag": "i"}); err == nil {
+	if _, _, _, err := decodeStatefulSetResize(map[string]any{"imag": "i"}); err == nil {
 		t.Fatal("a misspelt key must be refused, not ignored")
 	}
 }

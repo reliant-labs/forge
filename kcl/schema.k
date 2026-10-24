@@ -5900,12 +5900,16 @@ schema StatefulSetResize:
     # digest-pinned alpine/k8s. Set it to a mirror when the cluster cannot pull
     # from Docker Hub, or to pin a kubectl matching the cluster.
     image?: str
+    # Explicit manifest consumer owning generated resize-hook resources. Its
+    # release_inputs must declare container:resize on each generated cluster.
+    release_owner?: str
     # Render no resize Job: a raised volume size then fails the apply, as it
     # did before, and the volume is resized by hand.
     disabled?: bool = False
 
     check:
         not image or regex.match(image, r"^[^\s]+$"), "StatefulSetResize.image '${image}' must be an image reference with no whitespace"
+        release_owner == Undefined or regex.match(release_owner, r"^[a-z][a-z0-9-]*$"), "StatefulSetResize.release_owner must name an explicit manifest consumer"
 
 schema DeliveryUnit:
     """A delivery unit: a named slice of an env that a Flux-applied bundle

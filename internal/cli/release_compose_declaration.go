@@ -34,7 +34,11 @@ func compositionConsumers(e *KCLEntities) ([]release.Consumer, error) {
 			c.Slots = []string{"container:" + w.Name}
 		}
 		for _, sidecar := range w.Spec.Sidecars {
-			c.Slots = append(c.Slots, "container:"+sidecar.Name)
+			prefix := "container:"
+			if sidecar.Native {
+				prefix = "init:"
+			}
+			c.Slots = append(c.Slots, prefix+sidecar.Name)
 		}
 		for name := range w.ReleaseInputs {
 			c.Slots = append(c.Slots, "input:"+name)

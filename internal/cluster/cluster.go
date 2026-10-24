@@ -1425,13 +1425,13 @@ func extractManifestsIn(ctx context.Context, projectDir string, kclOutput []byte
 	// like any object forge renders, and after expansion so it sees the
 	// StatefulSets the Workload records expanded into. See
 	// statefulset_resize_job.go.
-	resizeDisabled, resizeImage, err := decodeStatefulSetResize(out["statefulset_resize"])
+	resizeDisabled, resizeImage, resizeOwner, err := decodeStatefulSetResize(out["statefulset_resize"])
 	if err != nil {
 		return "", nil, err
 	}
 	lifecycle, _ := out["lifecycle"].(string)
 	items, err = expandStatefulSetResizeJobs(items, resizeJobOpts{
-		Lifecycle: lifecycle, Disabled: resizeDisabled, Image: resizeImage,
+		Lifecycle: lifecycle, Disabled: resizeDisabled, Image: resizeImage, ReleaseOwner: resizeOwner, ReleaseConsumers: out["release_manifest_consumers"],
 		Namespace: resizeDefaultNamespace(out), ImagePullSecrets: pullSecrets,
 	})
 	if err != nil {

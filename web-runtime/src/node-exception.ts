@@ -101,7 +101,11 @@ function stripFileUrl(p: string): string {
   }
 }
 
-function under(path: string, root: string | undefined, ci: boolean): string | null {
+function under(
+  path: string,
+  root: string | undefined,
+  ci: boolean,
+): string | null {
   if (!root) {
     return null;
   }
@@ -184,7 +188,11 @@ export function isApplicationFrame(frame: StackFrame): boolean {
   if (f === "" || f === "<anonymous>" || f === "native") {
     return false;
   }
-  if (f.startsWith("node:") || f.startsWith("internal/") || f.startsWith("electron/")) {
+  if (
+    f.startsWith("node:") ||
+    f.startsWith("internal/") ||
+    f.startsWith("electron/")
+  ) {
     return false;
   }
   if (f.includes("node_modules/") || f.includes("node_modules.asar")) {
@@ -217,7 +225,10 @@ export function bound(value: string, max: number): string {
 /** First line, credential shapes redacted, bounded: what a message may say. */
 export function boundMessage(message: string): string {
   const nl = message.indexOf("\n");
-  const first = (nl === -1 ? message : message.slice(0, nl)).replace(/\s+$/, "");
+  const first = (nl === -1 ? message : message.slice(0, nl)).replace(
+    /\s+$/,
+    "",
+  );
   // Cut before redacting so the scan is bounded, with headroom so a secret
   // straddling the final cut is still seen whole.
   return bound(
@@ -232,11 +243,19 @@ export function boundMessage(message: string): string {
  */
 export function exceptionType(value: unknown): string {
   if (value instanceof Error) {
-    const ctor = (value as { constructor?: { name?: unknown } }).constructor?.name;
-    if (typeof ctor === "string" && ctor !== "" && ctor !== "Error" && ctor !== "Object") {
+    const ctor = (value as { constructor?: { name?: unknown } }).constructor
+      ?.name;
+    if (
+      typeof ctor === "string" &&
+      ctor !== "" &&
+      ctor !== "Error" &&
+      ctor !== "Object"
+    ) {
       return ctor;
     }
-    return typeof value.name === "string" && value.name !== "" ? value.name : "Error";
+    return typeof value.name === "string" && value.name !== ""
+      ? value.name
+      : "Error";
   }
   if (value === null) {
     return "null";

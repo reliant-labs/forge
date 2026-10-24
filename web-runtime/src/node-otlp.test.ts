@@ -30,12 +30,19 @@ describe("OTLP/JSON encoding", () => {
       { key: "i", value: { intValue: "42" } },
       { key: "d", value: { doubleValue: 1.5 } },
       { key: "b", value: { boolValue: true } },
-      { key: "a", value: { arrayValue: { values: [{ stringValue: "p" }, { stringValue: "q" }] } } },
+      {
+        key: "a",
+        value: {
+          arrayValue: { values: [{ stringValue: "p" }, { stringValue: "q" }] },
+        },
+      },
     ]);
   });
 
   it("bounds the attribute count", () => {
-    const many = Object.fromEntries(Array.from({ length: 500 }, (_, i) => [`k${i}`, i]));
+    const many = Object.fromEntries(
+      Array.from({ length: 500 }, (_, i) => [`k${i}`, i]),
+    );
     expect(encodeAttributes(many)).toHaveLength(MAX_ATTRIBUTES);
   });
 
@@ -59,9 +66,14 @@ describe("OTLP/JSON encoding", () => {
       status: { code: 0 },
       scope: { name: scope },
     });
-    const body = tracesPayload([], [span("one", "x"), span("two", "y"), span("three", "x")]);
+    const body = tracesPayload(
+      [],
+      [span("one", "x"), span("two", "y"), span("three", "x")],
+    );
     const scopes = body.resourceSpans[0]!.scopeSpans;
-    expect(scopes.map((s) => [s.scope.name, s.spans.map((sp) => sp.name)])).toEqual([
+    expect(
+      scopes.map((s) => [s.scope.name, s.spans.map((sp) => sp.name)]),
+    ).toEqual([
       ["x", ["one", "three"]],
       ["y", ["two"]],
     ]);
@@ -70,10 +82,18 @@ describe("OTLP/JSON encoding", () => {
 });
 
 function response(status: number, retryAfter?: string) {
-  return { status, headers: { get: (n: string) => (n === "retry-after" ? retryAfter ?? null : null) } };
+  return {
+    status,
+    headers: {
+      get: (n: string) => (n === "retry-after" ? (retryAfter ?? null) : null),
+    },
+  };
 }
 
-function options(fetch: FetchLike, extra: Partial<ExporterOptions> = {}): ExporterOptions {
+function options(
+  fetch: FetchLike,
+  extra: Partial<ExporterOptions> = {},
+): ExporterOptions {
   return {
     endpoint: "https://ingest.test/k/pk_x",
     headers: { origin: "app://bundle" },
@@ -88,11 +108,16 @@ function options(fetch: FetchLike, extra: Partial<ExporterOptions> = {}): Export
 describe("exportSignal", () => {
   it("posts JSON to <endpoint>/v1/<signal> with the configured headers", async () => {
     const fetch = vi.fn<FetchLike>(async () => response(200));
-    expect(await exportSignal(options(fetch), "logs", { resourceLogs: [] })).toBe(true);
+    expect(
+      await exportSignal(options(fetch), "logs", { resourceLogs: [] }),
+    ).toBe(true);
     const [url, init] = fetch.mock.calls[0]!;
     expect(url).toBe("https://ingest.test/k/pk_x/v1/logs");
     expect(init.method).toBe("POST");
-    expect(init.headers).toEqual({ origin: "app://bundle", "content-type": "application/json" });
+    expect(init.headers).toEqual({
+      origin: "app://bundle",
+      "content-type": "application/json",
+    });
     expect(JSON.parse(init.body)).toEqual({ resourceLogs: [] });
   });
 
@@ -100,7 +125,11 @@ describe("exportSignal", () => {
     const waits: number[] = [];
     const answers = [response(429, "1"), response(503, "600"), response(200)];
     const fetch = vi.fn<FetchLike>(async () => answers.shift()!);
-    const ok = await exportSignal(options(fetch, { sleep: async (ms) => void waits.push(ms) }), "traces", {});
+    const ok = await exportSignal(
+      options(fetch, { sleep: async (ms) => void waits.push(ms) }),
+      "traces",
+      {},
+    );
     expect(ok).toBe(true);
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(waits).toEqual([1000, MAX_RETRY_DELAY_MS]);
@@ -109,7 +138,9 @@ describe("exportSignal", () => {
   it("drops a batch the ingest refuses, without retrying, and says so", async () => {
     const onError = vi.fn();
     const fetch = vi.fn<FetchLike>(async () => response(403));
-    expect(await exportSignal(options(fetch, { onError }), "logs", {})).toBe(false);
+    expect(await exportSignal(options(fetch, { onError }), "logs", {})).toBe(
+      false,
+    );
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(onError.mock.calls[0]![0].message).toContain("HTTP 403");
   });
@@ -138,7 +169,12 @@ describe("BatchQueue", () => {
     await q.flush();
     expect(sent).toEqual([[0, 1, 2], [3]]);
 
-    const blocked = new BatchQueue<number>({ maxQueue: 2, maxBatch: 10, delayMs: 60_000, send: async () => {} });
+    const blocked = new BatchQueue<number>({
+      maxQueue: 2,
+      maxBatch: 10,
+      delayMs: 60_000,
+      send: async () => {},
+    });
     blocked.push(1);
     blocked.push(2);
     blocked.push(3);
@@ -150,7 +186,12 @@ describe("BatchQueue", () => {
     vi.useFakeTimers();
     try {
       const sent: string[][] = [];
-      const q = new BatchQueue<string>({ maxQueue: 10, maxBatch: 10, delayMs: 1000, send: async (i) => void sent.push(i) });
+      const q = new BatchQueue<string>({
+        maxQueue: 10,
+        maxBatch: 10,
+        delayMs: 1000,
+        send: async (i) => void sent.push(i),
+      });
       q.push("a");
       expect(sent).toEqual([]);
       await vi.advanceTimersByTimeAsync(1000);

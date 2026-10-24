@@ -131,6 +131,13 @@ export const DEFAULT_BATCH_DELAY_MS = 5_000;
 export const DEFAULT_MAX_BATCH = 256;
 export const DEFAULT_MAX_QUEUE = 2_048;
 export const DEFAULT_EXPORT_TIMEOUT_MS = 10_000;
+/**
+ * Most records of ONE fatal error (same type, message and frame) per minute.
+ * A handler that throws while handling — an EPIPE logger writing to the pipe
+ * that just broke — raises the same exception in a tight loop, and each one
+ * would otherwise be a record and a request.
+ */
+export const MAX_REPEATS_PER_MINUTE = 5;
 
 /** A value a caller may attach to a log record; anything else is dropped. */
 export type LogAttributes = Record<string, unknown>;
@@ -224,7 +231,9 @@ export function getNodeTelemetry(): NodeTelemetry | null {
  * The absolute OTLP base for `endpoint`, or null when telemetry is off: unset,
  * empty, `off`, or not an absolute http(s) URL. Trailing slashes are dropped.
  */
-export function resolveNodeIngestUrl(endpoint: string | undefined): string | null {
+export function resolveNodeIngestUrl(
+  endpoint: string | undefined,
+): string | null {
   const value = (endpoint ?? "").trim();
   if (value === "" || value.toLowerCase() === "off") {
     return null;
@@ -253,7 +262,11 @@ function sdkVersion(): string {
 }
 
 const OS_TYPE: Record<string, string> = { win32: "windows", sunos: "solaris" };
-const HOST_ARCH: Record<string, string> = { x64: "amd64", ia32: "x86", ppc64: "ppc64" };
+const HOST_ARCH: Record<string, string> = {
+  x64: "amd64",
+  ia32: "x86",
+  ppc64: "ppc64",
+};
 
 /**
  * The resource every record and span carries. Pure given its inputs;
@@ -262,9 +275,18 @@ const HOST_ARCH: Record<string, string> = { x64: "amd64", ia32: "x86", ppc64: "p
 export function buildNodeResource(
   config: Pick<
     NodeTelemetryConfig,
-    "serviceName" | "serviceVersion" | "serviceNamespace" | "environment" | "frontend" | "resourceAttributes"
+    | "serviceName"
+    | "serviceVersion"
+    | "serviceNamespace"
+    | "environment"
+    | "frontend"
+    | "resourceAttributes"
   >,
-  runtime: { versions: Record<string, string | undefined>; platform: string; arch: string },
+  runtime: {
+    versions: Record<string, string | undefined>;
+    platform: string;
+    arch: string;
+  },
   version = sdkVersion(),
 ): Record<string, string> {
   const electron = runtime.versions.electron;
@@ -272,13 +294,16 @@ export function buildNodeResource(
     "telemetry.sdk.name": "@reliantlabs/forge-web-runtime",
     "telemetry.sdk.language": "nodejs",
     "process.runtime.name": electron ? "electron" : "nodejs",
-    "process.runtime.version": (electron ?? runtime.versions.node ?? "") as string,
+    "process.runtime.version": (electron ??
+      runtime.versions.node ??
+      "") as string,
     "os.type": OS_TYPE[runtime.platform] ?? runtime.platform,
     "host.arch": HOST_ARCH[runtime.arch] ?? runtime.arch,
   };
   if (version) out["telemetry.sdk.version"] = version;
   if (config.serviceVersion) out["service.version"] = config.serviceVersion;
-  if (config.serviceNamespace) out["service.namespace"] = config.serviceNamespace;
+  if (config.serviceNamespace)
+    out["service.namespace"] = config.serviceNamespace;
   if (config.frontend) out["forge.frontend"] = config.frontend;
   if (config.environment) {
     out["deployment.environment.name"] = config.environment;
@@ -313,12 +338,22 @@ function sanitizeAttributes(attrs: LogAttributes | undefined): {
       out[key] = boundMessage(v.message ?? "");
     } else if (typeof v === "string") {
       out[key] = scrubString(v, MAX_ATTRIBUTE_CHARS);
-    } else if ((typeof v === "number" && Number.isFinite(v)) || typeof v === "boolean") {
+    } else if (
+      (typeof v === "number" && Number.isFinite(v)) ||
+      typeof v === "boolean"
+    ) {
       out[key] = v;
     } else if (Array.isArray(v)) {
       const kept = v
-        .filter((x) => typeof x === "string" || typeof x === "boolean" || (typeof x === "number" && Number.isFinite(x)))
-        .map((x) => (typeof x === "string" ? scrubString(x, MAX_ATTRIBUTE_CHARS) : x));
+        .filter(
+          (x) =>
+            typeof x === "string" ||
+            typeof x === "boolean" ||
+            (typeof x === "number" && Number.isFinite(x)),
+        )
+        .map((x) =>
+          typeof x === "string" ? scrubString(x, MAX_ATTRIBUTE_CHARS) : x,
+        );
       out[key] = kept as AttributeValue;
     }
   }
@@ -343,7 +378,10 @@ function withTimeout(p: Promise<unknown>, ms: number): Promise<void> {
 }
 
 /** What `--unhandled-rejections` says Node does with a rejection nobody handles. */
-export function unhandledRejectionMode(execArgv: readonly string[], nodeOptions: string | undefined): string {
+export function unhandledRejectionMode(
+  execArgv: readonly string[],
+  nodeOptions: string | undefined,
+): string {
   const args = [...execArgv, ...(nodeOptions ?? "").split(/\s+/)];
   let mode = "throw";
   for (let i = 0; i < args.length; i++) {
@@ -375,7 +413,9 @@ function rejectionError(reason: unknown): Error {
  * second call returns the running instance and ignores its config. Never
  * throws.
  */
-export function initNodeTelemetry(config: NodeTelemetryConfig): NodeTelemetry | null {
+export function initNodeTelemetry(
+  config: NodeTelemetryConfig,
+): NodeTelemetry | null {
   if (current) {
     return current;
   }
@@ -395,7 +435,10 @@ function start(config: NodeTelemetryConfig): NodeTelemetry | null {
   }
   const endpoint = resolveNodeIngestUrl(config.endpoint);
   const fetchFn: FetchLike | undefined =
-    config.fetch ?? (typeof globalThis.fetch === "function" ? (globalThis.fetch as unknown as FetchLike) : undefined);
+    config.fetch ??
+    (typeof globalThis.fetch === "function"
+      ? (globalThis.fetch as unknown as FetchLike)
+      : undefined);
   if (!endpoint || !fetchFn || !config.serviceName) {
     return null;
   }
@@ -407,7 +450,11 @@ function start(config: NodeTelemetryConfig): NodeTelemetry | null {
     caseInsensitive: process.platform === "win32",
   };
   const resource: KeyValue[] = encodeAttributes(
-    buildNodeResource(config, { versions: process.versions, platform: process.platform, arch: process.arch }),
+    buildNodeResource(config, {
+      versions: process.versions,
+      platform: process.platform,
+      arch: process.arch,
+    }),
   );
   const headers: Record<string, string> = { ...(config.headers ?? {}) };
   const origin = config.origin?.trim().replace(/\/+$/, "");
@@ -427,14 +474,19 @@ function start(config: NodeTelemetryConfig): NodeTelemetry | null {
     maxBatch: config.maxBatchSize ?? DEFAULT_MAX_BATCH,
     delayMs: config.batchDelayMs ?? DEFAULT_BATCH_DELAY_MS,
   };
-  const logScope: Scope = { name: NODE_SCOPE_NAME, version: sdkVersion() || undefined };
+  const logScope: Scope = {
+    name: NODE_SCOPE_NAME,
+    version: sdkVersion() || undefined,
+  };
   const logs = new BatchQueue<LogRecord>({
     ...batch,
-    send: (records) => exportSignal(exporter, "logs", logsPayload(resource, logScope, records)),
+    send: (records) =>
+      exportSignal(exporter, "logs", logsPayload(resource, logScope, records)),
   });
   const spans = new BatchQueue<SpanRecord>({
     ...batch,
-    send: (records) => exportSignal(exporter, "traces", tracesPayload(resource, records)),
+    send: (records) =>
+      exportSignal(exporter, "traces", tracesPayload(resource, records)),
   });
 
   let stopped = false;
@@ -451,9 +503,13 @@ function start(config: NodeTelemetryConfig): NodeTelemetry | null {
   // ours agree.
   const manager = new AsyncLocalContextManager();
   const registerGlobal = config.registerGlobal ?? true;
-  const ownsContext = registerGlobal && contextApi.setGlobalContextManager(manager);
+  const ownsContext =
+    registerGlobal && contextApi.setGlobalContextManager(manager);
   const ctxOps: ContextOps = registerGlobal
-    ? { active: () => contextApi.active(), with: (c, fn) => contextApi.with(c, fn) }
+    ? {
+        active: () => contextApi.active(),
+        with: (c, fn) => contextApi.with(c, fn),
+      }
     : { active: () => manager.active(), with: (c, fn) => manager.with(c, fn) };
   const provider = new NodeTracerProvider(
     (span) => {
@@ -463,12 +519,18 @@ function start(config: NodeTelemetryConfig): NodeTelemetry | null {
     ctxOps,
   );
   const ownsTrace = registerGlobal && trace.setGlobalTracerProvider(provider);
-  const ownsPropagation = registerGlobal && propagation.setGlobalPropagator(new TraceparentPropagator());
+  const ownsPropagation =
+    registerGlobal &&
+    propagation.setGlobalPropagator(new TraceparentPropagator());
   const tracer = provider.getTracer(NODE_SCOPE_NAME, sdkVersion() || undefined);
 
   const minSeverity = SEVERITY[config.minSeverity ?? "INFO"] ?? SEVERITY.INFO;
 
-  function emit(severity: SeverityText, body: string, attributes: Attributes): void {
+  function emit(
+    severity: SeverityText,
+    body: string,
+    attributes: Attributes,
+  ): void {
     if (stopped || SEVERITY[severity] < minSeverity) {
       return;
     }
@@ -490,12 +552,19 @@ function start(config: NodeTelemetryConfig): NodeTelemetry | null {
     logs.push(record);
   }
 
-  function log(severity: SeverityText, body: string, attrs?: LogAttributes): void {
+  function log(
+    severity: SeverityText,
+    body: string,
+    attrs?: LogAttributes,
+  ): void {
     try {
       const { attributes, error } = sanitizeAttributes(attrs);
       // As observe: only an ERROR record gets exception inputs, and an
       // attribute the caller set wins over the derived one.
-      const derived = severity === "ERROR" && error !== undefined ? exceptionAttributes(error, scrub) : {};
+      const derived =
+        severity === "ERROR" && error !== undefined
+          ? exceptionAttributes(error, scrub)
+          : {};
       emit(severity, body, { ...derived, ...attributes });
     } catch {
       // Telemetry must never break the app.
@@ -512,7 +581,10 @@ function start(config: NodeTelemetryConfig): NodeTelemetry | null {
   function reportError(error: unknown, attrs?: LogAttributes): void {
     try {
       const { attributes } = sanitizeAttributes(attrs);
-      emit("ERROR", REPORTED_EXCEPTION_BODY, { ...exceptionAttributes(error, scrub), ...attributes });
+      emit("ERROR", REPORTED_EXCEPTION_BODY, {
+        ...exceptionAttributes(error, scrub),
+        ...attributes,
+      });
     } catch {
       // Telemetry must never break the app.
     }
@@ -520,15 +592,41 @@ function start(config: NodeTelemetryConfig): NodeTelemetry | null {
 
   // ── Process errors ──────────────────────────────────────────────────────
   const recorded = new WeakSet<object>();
+  const repeats = new Map<string, { since: number; count: number }>();
+  let drainScheduled = false;
   function recordFatal(value: unknown, body: string): void {
     if (typeof value === "object" && value !== null) {
       if (recorded.has(value)) return;
       recorded.add(value);
     }
     try {
-      emit("ERROR", body, exceptionAttributes(value, scrub));
-      // A fatal record does not wait for its batch.
-      logs.drain();
+      const attributes = exceptionAttributes(value, scrub);
+      const key = [
+        body,
+        attributes["exception.type"],
+        attributes["code.function.name"],
+        attributes["exception.message"],
+      ].join("\u001f");
+      const now = Date.now();
+      let seen = repeats.get(key);
+      if (!seen || now - seen.since >= 60_000) {
+        if (repeats.size >= 256) repeats.clear();
+        seen = { since: now, count: 0 };
+        repeats.set(key, seen);
+      }
+      if (++seen.count > MAX_REPEATS_PER_MINUTE) {
+        return;
+      }
+      emit("ERROR", body, attributes);
+      // A fatal record does not wait for its batch; a burst in one turn of the
+      // event loop goes out as one request.
+      if (!drainScheduled) {
+        drainScheduled = true;
+        setImmediate(() => {
+          drainScheduled = false;
+          logs.drain();
+        }).unref();
+      }
     } catch {
       // Telemetry must never break the app.
     }
@@ -536,14 +634,22 @@ function start(config: NodeTelemetryConfig): NodeTelemetry | null {
   const fatalFlushMs = config.fatalFlushTimeoutMs ?? DEFAULT_FLUSH_TIMEOUT_MS;
 
   const onMonitor = (err: unknown, origin: string): void => {
-    recordFatal(err, origin === "unhandledRejection" ? UNHANDLED_REJECTION_BODY : UNCAUGHT_EXCEPTION_BODY);
+    recordFatal(
+      err,
+      origin === "unhandledRejection"
+        ? UNHANDLED_REJECTION_BODY
+        : UNCAUGHT_EXCEPTION_BODY,
+    );
   };
   const onRejection = (reason: unknown): void => {
     recordFatal(reason, UNHANDLED_REJECTION_BODY);
     if (process.listenerCount("unhandledRejection") > 1) {
       return; // The app handles rejections; it decides what happens next.
     }
-    const mode = unhandledRejectionMode(process.execArgv, process.env.NODE_OPTIONS);
+    const mode = unhandledRejectionMode(
+      process.execArgv,
+      process.env.NODE_OPTIONS,
+    );
     if (mode === "warn" || mode === "none") {
       return;
     }
@@ -570,7 +676,9 @@ function start(config: NodeTelemetryConfig): NodeTelemetry | null {
     exiting = true;
     void withTimeout(flushAll(), fatalFlushMs).then(() => {
       try {
-        process.stderr.write(`${err instanceof Error && err.stack ? err.stack : inspect(err)}\n`);
+        process.stderr.write(
+          `${err instanceof Error && err.stack ? err.stack : inspect(err)}\n`,
+        );
       } catch {
         // stderr may be gone; the exit code still says what happened.
       }
@@ -603,7 +711,10 @@ function start(config: NodeTelemetryConfig): NodeTelemetry | null {
     tracer,
     reportError,
     setUser(id) {
-      userId = typeof id === "string" && id !== "" ? id.slice(0, MAX_USER_ID_CHARS) : null;
+      userId =
+        typeof id === "string" && id !== ""
+          ? id.slice(0, MAX_USER_ID_CHARS)
+          : null;
     },
     flush(timeoutMs = DEFAULT_FLUSH_TIMEOUT_MS) {
       return withTimeout(flushAll(), timeoutMs);
@@ -639,8 +750,14 @@ function safeHomedir(): string | undefined {
 
 /** The slice of Electron's `app` flushOnQuit needs. */
 export interface QuitApp {
-  on(event: "before-quit", listener: (event: { preventDefault(): void }) => void): unknown;
-  removeListener?(event: "before-quit", listener: (event: { preventDefault(): void }) => void): unknown;
+  on(
+    event: "before-quit",
+    listener: (event: { preventDefault(): void }) => void,
+  ): unknown;
+  removeListener?(
+    event: "before-quit",
+    listener: (event: { preventDefault(): void }) => void,
+  ): unknown;
   quit(): void;
 }
 
@@ -654,7 +771,10 @@ export interface QuitApp {
  * exits) should instead `await telemetry.flush()` as the last step of that
  * sequence: two listeners that each defer and re-quit cut each other short.
  */
-export function flushOnQuit(app: QuitApp, options: { timeoutMs?: number } = {}): () => void {
+export function flushOnQuit(
+  app: QuitApp,
+  options: { timeoutMs?: number } = {},
+): () => void {
   let flushed = false;
   const listener = (event: { preventDefault(): void }): void => {
     const t = current;
@@ -663,7 +783,9 @@ export function flushOnQuit(app: QuitApp, options: { timeoutMs?: number } = {}):
     }
     flushed = true;
     event.preventDefault();
-    void t.flush(options.timeoutMs ?? DEFAULT_FLUSH_TIMEOUT_MS).finally(() => app.quit());
+    void t
+      .flush(options.timeoutMs ?? DEFAULT_FLUSH_TIMEOUT_MS)
+      .finally(() => app.quit());
   };
   app.on("before-quit", listener);
   return () => {

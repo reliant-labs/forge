@@ -186,7 +186,9 @@ flushOnQuit(app); // hold before-quit until the queue is out (2s at most)
 
 telemetry?.logger.warn("renderer gone", { reason: "oom" });
 telemetry?.reportError(err, { "settings.section": "privacy" });
-telemetry?.tracer.startActiveSpan("backend.start", (span) => { /* … */ span.end(); });
+telemetry?.tracer.startActiveSpan("backend.start", (span) => {
+  /* … */ span.end();
+});
 ```
 
 - **Uncaught exceptions and unhandled rejections** become ERROR records with

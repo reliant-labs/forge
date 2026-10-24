@@ -80,7 +80,11 @@ export function timeInputMs(t: TimeInput | undefined): number {
 }
 
 function isTimeInput(v: unknown): v is TimeInput {
-  return typeof v === "number" || v instanceof Date || (Array.isArray(v) && v.length === 2 && typeof v[0] === "number");
+  return (
+    typeof v === "number" ||
+    v instanceof Date ||
+    (Array.isArray(v) && v.length === 2 && typeof v[0] === "number")
+  );
 }
 
 type Sink = (span: SpanRecord) => void;
@@ -114,7 +118,10 @@ class RecordingSpan implements Span {
     if (this.ended || value === undefined || value === null) {
       return this;
     }
-    if (!(key in this.attributes) && Object.keys(this.attributes).length >= MAX_ATTRIBUTES) {
+    if (
+      !(key in this.attributes) &&
+      Object.keys(this.attributes).length >= MAX_ATTRIBUTES
+    ) {
       this.droppedAttributes++;
       return this;
     }
@@ -196,9 +203,15 @@ class RecordingSpan implements Span {
     if (typeof exception === "string") {
       attrs["exception.message"] = exception;
     } else if (exception) {
-      const e = exception as { name?: unknown; message?: unknown; stack?: unknown; code?: unknown };
+      const e = exception as {
+        name?: unknown;
+        message?: unknown;
+        stack?: unknown;
+        code?: unknown;
+      };
       if (typeof e.name === "string") attrs["exception.type"] = e.name;
-      else if (typeof e.code === "string" || typeof e.code === "number") attrs["exception.type"] = String(e.code);
+      else if (typeof e.code === "string" || typeof e.code === "number")
+        attrs["exception.type"] = String(e.code);
       if (typeof e.message === "string") attrs["exception.message"] = e.message;
       if (typeof e.stack === "string") attrs["exception.stacktrace"] = e.stack;
     }
@@ -252,8 +265,11 @@ class NodeTracer implements Tracer {
   ) {}
 
   startSpan(name: string, options: SpanOptions = {}, ctx?: Context): Span {
-    const parentCtx = options.root ? undefined : trace.getSpanContext(ctx ?? this.ctx.active());
-    const parent = parentCtx && trace.isSpanContextValid(parentCtx) ? parentCtx : undefined;
+    const parentCtx = options.root
+      ? undefined
+      : trace.getSpanContext(ctx ?? this.ctx.active());
+    const parent =
+      parentCtx && trace.isSpanContextValid(parentCtx) ? parentCtx : undefined;
     const spanContext: SpanContext = {
       traceId: parent?.traceId ?? hexId(16, ZERO_TRACE),
       spanId: hexId(8, ZERO_SPAN),
@@ -280,8 +296,15 @@ class NodeTracer implements Tracer {
     return span;
   }
 
-  startActiveSpan<F extends (span: Span) => unknown>(name: string, fn: F): ReturnType<F>;
-  startActiveSpan<F extends (span: Span) => unknown>(name: string, options: SpanOptions, fn: F): ReturnType<F>;
+  startActiveSpan<F extends (span: Span) => unknown>(
+    name: string,
+    fn: F,
+  ): ReturnType<F>;
+  startActiveSpan<F extends (span: Span) => unknown>(
+    name: string,
+    options: SpanOptions,
+    fn: F,
+  ): ReturnType<F>;
   startActiveSpan<F extends (span: Span) => unknown>(
     name: string,
     options: SpanOptions,
@@ -355,7 +378,11 @@ export class AsyncLocalContextManager implements ContextManager {
     ...args: A
   ): ReturnType<F> {
     const cb = thisArg == null ? fn : fn.bind(thisArg);
-    return this.store.run(context, cb as (...args: A) => ReturnType<F>, ...args);
+    return this.store.run(
+      context,
+      cb as (...args: A) => ReturnType<F>,
+      ...args,
+    );
   }
 
   bind<T>(context: Context, target: T): T {
@@ -387,8 +414,13 @@ export class TraceparentPropagator implements TextMapPropagator {
     if (!sc || !trace.isSpanContextValid(sc)) {
       return;
     }
-    const flags = (sc.traceFlags & TraceFlags.SAMPLED) === TraceFlags.SAMPLED ? "01" : "00";
-    setter.set(carrier, "traceparent", `00-${sc.traceId}-${sc.spanId}-${flags}`);
+    const flags =
+      (sc.traceFlags & TraceFlags.SAMPLED) === TraceFlags.SAMPLED ? "01" : "00";
+    setter.set(
+      carrier,
+      "traceparent",
+      `00-${sc.traceId}-${sc.spanId}-${flags}`,
+    );
   }
 
   extract(context: Context, carrier: unknown, getter: TextMapGetter): Context {

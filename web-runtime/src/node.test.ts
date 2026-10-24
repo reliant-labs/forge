@@ -27,6 +27,7 @@ import {
   frontendServiceName,
   getNodeTelemetry,
   initNodeTelemetry,
+  MAX_REPEATS_PER_MINUTE,
   type NodeTelemetryConfig,
   REPORTED_EXCEPTION_BODY,
   resolveNodeIngestUrl,
@@ -70,7 +71,8 @@ async function keyedIngest(): Promise<Fixture> {
     if (m[1] !== KEY) return refuse(404, "unknown_key");
     if (req.headers.origin !== ORIGIN) return refuse(403, "bad_origin");
     const ct = (req.headers["content-type"] ?? "").split(";")[0]!.trim();
-    if (!["application/json", "application/x-protobuf"].includes(ct)) return refuse(415, "bad_content_type");
+    if (!["application/json", "application/x-protobuf"].includes(ct))
+      return refuse(415, "bad_content_type");
     const body = JSON.parse(await readBody(req));
     received.push({ signal: m[2]!, origin: req.headers.origin, body });
     res.writeHead(200, { "content-type": "application/json" }).end("{}");
@@ -88,18 +90,32 @@ async function keyedIngest(): Promise<Fixture> {
 function logRecords(f: Fixture) {
   return f.received
     .filter((r) => r.signal === "logs")
-    .flatMap((r) => r.body.resourceLogs.flatMap((rl: any) => rl.scopeLogs.flatMap((sl: any) => sl.logRecords)));
+    .flatMap((r) =>
+      r.body.resourceLogs.flatMap((rl: any) =>
+        rl.scopeLogs.flatMap((sl: any) => sl.logRecords),
+      ),
+    );
 }
 
 function spansOf(f: Fixture) {
   return f.received
     .filter((r) => r.signal === "traces")
-    .flatMap((r) => r.body.resourceSpans.flatMap((rs: any) => rs.scopeSpans.flatMap((ss: any) => ss.spans)));
+    .flatMap((r) =>
+      r.body.resourceSpans.flatMap((rs: any) =>
+        rs.scopeSpans.flatMap((ss: any) => ss.spans),
+      ),
+    );
 }
 
 function attrs(kvs: any[]): Record<string, unknown> {
   return Object.fromEntries(
-    kvs.map((kv) => [kv.key, kv.value.stringValue ?? kv.value.intValue ?? kv.value.boolValue ?? kv.value.doubleValue]),
+    kvs.map((kv) => [
+      kv.key,
+      kv.value.stringValue ??
+        kv.value.intValue ??
+        kv.value.boolValue ??
+        kv.value.doubleValue,
+    ]),
   );
 }
 
@@ -134,7 +150,10 @@ function config(extra: Partial<NodeTelemetryConfig> = {}): NodeTelemetryConfig {
 describe("frontendServiceName", () => {
   it("agrees with forge's naming.FrontendServiceName on the shared cases", () => {
     const cases = JSON.parse(
-      readFileSync(join(pkgDir, "src", "testdata", "frontend-service-names.json"), "utf8"),
+      readFileSync(
+        join(pkgDir, "src", "testdata", "frontend-service-names.json"),
+        "utf8",
+      ),
     ) as Array<{ project: string; frontend: string; service: string }>;
     expect(cases.length).toBeGreaterThan(0);
     for (const c of cases) {
@@ -145,11 +164,23 @@ describe("frontendServiceName", () => {
 
 describe("configuration", () => {
   it("is off without a usable endpoint, and installs nothing", () => {
-    for (const endpoint of [undefined, "", "off", "/_otel", "ftp://x/y", "not a url"]) {
+    for (const endpoint of [
+      undefined,
+      "",
+      "off",
+      "/_otel",
+      "ftp://x/y",
+      "not a url",
+    ]) {
       expect(resolveNodeIngestUrl(endpoint), String(endpoint)).toBeNull();
-      expect(initNodeTelemetry(config({ endpoint })), String(endpoint)).toBeNull();
+      expect(
+        initNodeTelemetry(config({ endpoint })),
+        String(endpoint),
+      ).toBeNull();
     }
-    expect(resolveNodeIngestUrl("https://ingest.reliantlabs.dev/k/pk_x/")).toBe("https://ingest.reliantlabs.dev/k/pk_x");
+    expect(resolveNodeIngestUrl("https://ingest.reliantlabs.dev/k/pk_x/")).toBe(
+      "https://ingest.reliantlabs.dev/k/pk_x",
+    );
   });
 
   it("is idempotent", () => {
@@ -160,8 +191,21 @@ describe("configuration", () => {
 
   it("describes the process without anything that identifies the machine or the user", () => {
     const r = buildNodeResource(
-      { serviceName: "shop-desktop", serviceVersion: "1.2.3", environment: "prod", frontend: "desktop", resourceAttributes: { "service.name": "spoofed", "app.channel": "beta" } },
-      { versions: { node: "22.1.0", electron: "41.0.0" }, platform: "win32", arch: "x64" },
+      {
+        serviceName: "shop-desktop",
+        serviceVersion: "1.2.3",
+        environment: "prod",
+        frontend: "desktop",
+        resourceAttributes: {
+          "service.name": "spoofed",
+          "app.channel": "beta",
+        },
+      },
+      {
+        versions: { node: "22.1.0", electron: "41.0.0" },
+        platform: "win32",
+        arch: "x64",
+      },
       "0.9.3",
     );
     expect(r).toEqual({
@@ -183,9 +227,18 @@ describe("configuration", () => {
 
   it("parses --unhandled-rejections the way Node does", () => {
     expect(unhandledRejectionMode([], undefined)).toBe("throw");
-    expect(unhandledRejectionMode(["--unhandled-rejections=warn"], undefined)).toBe("warn");
-    expect(unhandledRejectionMode([], "--max-old-space-size=4096 --unhandled-rejections=none")).toBe("none");
-    expect(unhandledRejectionMode(["--unhandled-rejections", "strict"], undefined)).toBe("strict");
+    expect(
+      unhandledRejectionMode(["--unhandled-rejections=warn"], undefined),
+    ).toBe("warn");
+    expect(
+      unhandledRejectionMode(
+        [],
+        "--max-old-space-size=4096 --unhandled-rejections=none",
+      ),
+    ).toBe("none");
+    expect(
+      unhandledRejectionMode(["--unhandled-rejections", "strict"], undefined),
+    ).toBe("strict");
   });
 });
 
@@ -193,13 +246,19 @@ describe("export to the keyed ingest", () => {
   it("ships logs the keyed route admits: the key in the path, the allowed Origin, OTLP/JSON", async () => {
     const t = initNodeTelemetry(config())!;
     t.setUser("user_42");
-    t.logger.info("window opened", { "window.kind": "main", count: 2, payload: { prompt: "never sent" } });
+    t.logger.info("window opened", {
+      "window.kind": "main",
+      count: 2,
+      payload: { prompt: "never sent" },
+    });
     t.logger.debug("below the floor");
     await t.flush(5000);
 
     expect(fixture.refused).toEqual([]);
     expect(fixture.received.map((r) => r.origin)).toEqual([ORIGIN]);
-    const resource = attrs(fixture.received[0]!.body.resourceLogs[0].resource.attributes);
+    const resource = attrs(
+      fixture.received[0]!.body.resourceLogs[0].resource.attributes,
+    );
     expect(resource["service.name"]).toBe("shop-desktop");
     expect(resource).not.toHaveProperty("rum.sessionId");
     const [record, ...rest] = logRecords(fixture);
@@ -217,7 +276,9 @@ describe("export to the keyed ingest", () => {
 
   it("is refused without the allowed Origin, which is why `origin` exists", async () => {
     const errors: Error[] = [];
-    const t = initNodeTelemetry(config({ origin: undefined, onExportError: (e) => errors.push(e) }))!;
+    const t = initNodeTelemetry(
+      config({ origin: undefined, onExportError: (e) => errors.push(e) }),
+    )!;
     t.logger.warn("x");
     await t.flush(5000);
     expect(fixture.received).toEqual([]);
@@ -228,7 +289,9 @@ describe("export to the keyed ingest", () => {
   it("records a caught error, and the barrel's reportException, as an sfp1-groupable ERROR", async () => {
     const t = initNodeTelemetry(config())!;
     function syncSettings(): never {
-      throw new RangeError("quota exceeded: token=sk-ant-abcdefgh12345678\nraw file contents");
+      throw new RangeError(
+        "quota exceeded: token=sk-ant-abcdefgh12345678\nraw file contents",
+      );
     }
     try {
       syncSettings();
@@ -236,7 +299,10 @@ describe("export to the keyed ingest", () => {
       t.reportError(err, { "settings.section": "privacy" });
       expect(reportException(err)).toBe(true);
     }
-    t.logger.error("backend exited", { err: new TypeError("spawn ENOENT"), "exit.code": 127 });
+    t.logger.error("backend exited", {
+      err: new TypeError("spawn ENOENT"),
+      "exit.code": 127,
+    });
     await t.flush(5000);
 
     const [reported, viaBarrel, logged] = logRecords(fixture);
@@ -249,7 +315,9 @@ describe("export to the keyed ingest", () => {
     expect(a["exception.message"]).toBe("quota exceeded: token=[redacted]");
     expect(a["code.function.name"]).toBe("syncSettings (src/node.test.ts)");
     expect(a["code.file.path"]).toBe("src/node.test.ts");
-    expect(String(a["exception.stacktrace"])).not.toContain("raw file contents");
+    expect(String(a["exception.stacktrace"])).not.toContain(
+      "raw file contents",
+    );
     expect(String(a["exception.stacktrace"])).not.toContain(pkgDir);
     expect(a["settings.section"]).toBe("privacy");
 
@@ -284,8 +352,12 @@ describe("export to the keyed ingest", () => {
     expect(child.parentSpanId).toBe(ready.spanId);
     expect(ready.kind).toBe(1); // SPAN_KIND_INTERNAL on the wire
     expect(attrs(ready.attributes)["app.client"]).toBe("electron");
-    expect(carrier.traceparent).toBe(`00-${outbound.traceId}-${outbound.spanId}-01`);
-    const inside = logRecords(fixture).find((r: any) => r.body.stringValue === "inside");
+    expect(carrier.traceparent).toBe(
+      `00-${outbound.traceId}-${outbound.spanId}-01`,
+    );
+    const inside = logRecords(fixture).find(
+      (r: any) => r.body.stringValue === "inside",
+    );
     expect(inside.traceId).toBe(ready.traceId);
   });
 
@@ -295,11 +367,16 @@ describe("export to the keyed ingest", () => {
     let listener: ((e: { preventDefault(): void }) => void) | undefined;
     let quits = 0;
     let prevented = 0;
-    flushOnQuit({ on: (_e, l) => void (listener = l), quit: () => void quits++ });
+    flushOnQuit({
+      on: (_e, l) => void (listener = l),
+      quit: () => void quits++,
+    });
     listener!({ preventDefault: () => void prevented++ });
     expect(prevented).toBe(1);
     await expect.poll(() => quits).toBe(1);
-    expect(logRecords(fixture).map((r: any) => r.body.stringValue)).toEqual(["about to quit"]);
+    expect(logRecords(fixture).map((r: any) => r.body.stringValue)).toEqual([
+      "about to quit",
+    ]);
     // The second quit (ours) goes through.
     listener!({ preventDefault: () => void prevented++ });
     expect(prevented).toBe(1);
@@ -312,7 +389,9 @@ describe("export to the keyed ingest", () => {
     await new Promise<void>((r) => hung.listen(0, "127.0.0.1", r));
     try {
       const { port } = hung.address() as AddressInfo;
-      const t = initNodeTelemetry(config({ endpoint: `http://127.0.0.1:${port}/k/${KEY}` }))!;
+      const t = initNodeTelemetry(
+        config({ endpoint: `http://127.0.0.1:${port}/k/${KEY}` }),
+      )!;
       t.logger.info("x");
       const start = Date.now();
       await t.flush(200);
@@ -328,7 +407,9 @@ describe("export to the keyed ingest", () => {
 
 const distEntry = pathToFileURL(join(pkgDir, "dist", "node.js")).href;
 
-async function runChild(source: string): Promise<{ code: number | null; stderr: string; stdout: string }> {
+async function runChild(
+  source: string,
+): Promise<{ code: number | null; stderr: string; stdout: string }> {
   const dir = mkdtempSync(join(tmpdir(), "forge-node-telemetry-"));
   try {
     const script = join(dir, "main.mjs");
@@ -339,7 +420,10 @@ async function runChild(source: string): Promise<{ code: number | null; stderr: 
         `if (!telemetry) { console.error("telemetry did not start"); process.exit(9); }\n` +
         source,
     );
-    const child = spawn(process.execPath, [script], { cwd: dir, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [script], {
+      cwd: dir,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stderr = "";
     let stdout = "";
     child.stderr.on("data", (d) => (stderr += d));
@@ -351,79 +435,121 @@ async function runChild(source: string): Promise<{ code: number | null; stderr: 
   }
 }
 
-describe("process errors (a child node over dist/)", () => {
-  it("records an uncaught exception, then dies as Node would", async () => {
-    const { code, stderr } = await runChild(
-      `function explode() { throw new TypeError("boom: password=hunter2\\nsecond line"); }\n` +
-        `setTimeout(explode, 0);\n`,
-    );
-    expect(code).toBe(1);
-    expect(stderr).toContain("TypeError: boom");
-    const [record, ...rest] = logRecords(fixture);
-    expect(rest).toEqual([]);
-    expect(record.body.stringValue).toBe("uncaught exception");
-    expect(record.severityNumber).toBe(17);
-    const a = attrs(record.attributes);
-    expect(a["exception.type"]).toBe("TypeError");
-    expect(a["exception.message"]).toBe("boom: password=[redacted]");
-    // V8's frame name, minus the `[as _onTimeout]` alias.
-    expect(a["code.function.name"]).toBe("Timeout.explode (main.mjs)");
-  });
-
-  it("records an unhandled rejection, then raises it as Node's default does", async () => {
-    const { code, stderr } = await runChild(
-      `async function load() { throw new RangeError("no such profile"); }\n` + `load();\n`,
-    );
-    expect(code).toBe(1);
-    expect(stderr).toContain("RangeError: no such profile");
-    const records = logRecords(fixture);
-    expect(records.map((r: any) => r.body.stringValue)).toEqual(["unhandled rejection"]);
-    expect(attrs(records[0].attributes)["code.function.name"]).toBe("load (main.mjs)");
-  });
-
-  it("leaves the process to the app's own handlers", async () => {
-    const { code, stdout } = await runChild(
-      `process.on("uncaughtException", () => console.log("app handled exception"));\n` +
-        `process.on("unhandledRejection", () => console.log("app handled rejection"));\n` +
-        `Promise.reject(new Error("rejected"));\n` +
-        `setTimeout(() => { throw new Error("thrown"); }, 0);\n` +
-        `setTimeout(async () => { await telemetry.flush(5000); console.log("still running"); process.exit(0); }, 50);\n`,
-    );
-    expect(code).toBe(0);
-    expect(stdout).toContain("app handled exception");
-    expect(stdout).toContain("app handled rejection");
-    expect(stdout).toContain("still running");
-    expect(logRecords(fixture).map((r: any) => r.body.stringValue).sort()).toEqual([
-      "uncaught exception",
-      "unhandled rejection",
-    ]);
-  });
-
-  it("flushes what is queued when an idle process exits", async () => {
-    const { code } = await runChild(`telemetry.logger.info("bye");\n`);
-    expect(code).toBe(0);
-    expect(logRecords(fixture).map((r: any) => r.body.stringValue)).toEqual(["bye"]);
-  });
-
-  it("loads with require() from CommonJS, as an Electron main.js does", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "forge-node-telemetry-cjs-"));
-    try {
-      const script = join(dir, "main.cjs");
-      writeFileSync(
-        script,
-        `const { initNodeTelemetry } = require(${JSON.stringify(join(pkgDir, "dist", "node.js"))});\n` +
-          `const t = initNodeTelemetry({ serviceName: "shop-desktop", endpoint: ${JSON.stringify(fixture.endpoint)}, origin: ${JSON.stringify(ORIGIN)} });\n` +
-          `t.logger.info("from cjs");\n`,
+// A child node pays process start-up on a loaded machine: well past vitest's 5s
+// default when every core is busy, which is a timeout, not a failure.
+describe(
+  "process errors (a child node over dist/)",
+  { timeout: 60_000 },
+  () => {
+    it("records an uncaught exception, then dies as Node would", async () => {
+      const { code, stderr } = await runChild(
+        `function explode() { throw new TypeError("boom: password=hunter2\\nsecond line"); }\n` +
+          `setTimeout(explode, 0);\n`,
       );
-      const child = spawn(process.execPath, [script], { cwd: dir, stdio: ["ignore", "ignore", "pipe"] });
-      let stderr = "";
-      child.stderr.on("data", (d) => (stderr += d));
-      const code = await new Promise<number | null>((r) => child.on("close", r));
-      expect(stderr).not.toMatch(/Error/);
+      expect(code).toBe(1);
+      expect(stderr).toContain("TypeError: boom");
+      const [record, ...rest] = logRecords(fixture);
+      expect(rest).toEqual([]);
+      expect(record.body.stringValue).toBe("uncaught exception");
+      expect(record.severityNumber).toBe(17);
+      const a = attrs(record.attributes);
+      expect(a["exception.type"]).toBe("TypeError");
+      expect(a["exception.message"]).toBe("boom: password=[redacted]");
+      // V8's frame name, minus the `[as _onTimeout]` alias.
+      expect(a["code.function.name"]).toBe("Timeout.explode (main.mjs)");
+    });
+
+    it("records an unhandled rejection, then raises it as Node's default does", async () => {
+      const { code, stderr } = await runChild(
+        `async function load() { throw new RangeError("no such profile"); }\n` +
+          `load();\n`,
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain("RangeError: no such profile");
+      const records = logRecords(fixture);
+      expect(records.map((r: any) => r.body.stringValue)).toEqual([
+        "unhandled rejection",
+      ]);
+      expect(attrs(records[0].attributes)["code.function.name"]).toBe(
+        "load (main.mjs)",
+      );
+    });
+
+    it("leaves the process to the app's own handlers", async () => {
+      const { code, stdout } = await runChild(
+        `process.on("uncaughtException", () => console.log("app handled exception"));\n` +
+          `process.on("unhandledRejection", () => console.log("app handled rejection"));\n` +
+          `Promise.reject(new Error("rejected"));\n` +
+          `setTimeout(() => { throw new Error("thrown"); }, 0);\n` +
+          `setTimeout(async () => { await telemetry.flush(5000); console.log("still running"); process.exit(0); }, 50);\n`,
+      );
       expect(code).toBe(0);
-      expect(logRecords(fixture).map((r: any) => r.body.stringValue)).toEqual(["from cjs"]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});
+      expect(stdout).toContain("app handled exception");
+      expect(stdout).toContain("app handled rejection");
+      expect(stdout).toContain("still running");
+      expect(
+        logRecords(fixture)
+          .map((r: any) => r.body.stringValue)
+          .sort(),
+      ).toEqual(["uncaught exception", "unhandled rejection"]);
+    });
+
+    it("records a handler's throw loop a bounded number of times, not once per throw", async () => {
+      // reliant's EPIPE loop: a logger writing to a dead pipe throws, the
+      // handler logs it, that throws again.
+      const { code } = await runChild(
+        `process.on("uncaughtException", () => {});\n` +
+          `let n = 0;\n` +
+          `const timer = setInterval(function writeLog() {\n` +
+          `  if (++n > 40) { clearInterval(timer); telemetry.flush(5000).then(() => process.exit(0)); return; }\n` +
+          `  throw new Error("write EPIPE");\n` +
+          `}, 1);\n`,
+      );
+      expect(code).toBe(0);
+      const records = logRecords(fixture);
+      expect(records).toHaveLength(MAX_REPEATS_PER_MINUTE);
+      expect(
+        new Set(
+          records.map((r: any) => attrs(r.attributes)["exception.message"]),
+        ),
+      ).toEqual(new Set(["write EPIPE"]));
+    });
+
+    it("flushes what is queued when an idle process exits", async () => {
+      const { code } = await runChild(`telemetry.logger.info("bye");\n`);
+      expect(code).toBe(0);
+      expect(logRecords(fixture).map((r: any) => r.body.stringValue)).toEqual([
+        "bye",
+      ]);
+    });
+
+    it("loads with require() from CommonJS, as an Electron main.js does", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "forge-node-telemetry-cjs-"));
+      try {
+        const script = join(dir, "main.cjs");
+        writeFileSync(
+          script,
+          `const { initNodeTelemetry } = require(${JSON.stringify(join(pkgDir, "dist", "node.js"))});\n` +
+            `const t = initNodeTelemetry({ serviceName: "shop-desktop", endpoint: ${JSON.stringify(fixture.endpoint)}, origin: ${JSON.stringify(ORIGIN)} });\n` +
+            `t.logger.info("from cjs");\n`,
+        );
+        const child = spawn(process.execPath, [script], {
+          cwd: dir,
+          stdio: ["ignore", "ignore", "pipe"],
+        });
+        let stderr = "";
+        child.stderr.on("data", (d) => (stderr += d));
+        const code = await new Promise<number | null>((r) =>
+          child.on("close", r),
+        );
+        expect(stderr).not.toMatch(/Error/);
+        expect(code).toBe(0);
+        expect(logRecords(fixture).map((r: any) => r.body.stringValue)).toEqual(
+          ["from cjs"],
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  },
+);

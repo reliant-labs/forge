@@ -52,14 +52,19 @@ export interface KeyValue {
 function scalar(v: unknown): AnyValue | null {
   switch (typeof v) {
     case "string":
-      return { stringValue: v.length > MAX_ATTRIBUTE_CHARS ? v.slice(0, MAX_ATTRIBUTE_CHARS) : v };
+      return {
+        stringValue:
+          v.length > MAX_ATTRIBUTE_CHARS ? v.slice(0, MAX_ATTRIBUTE_CHARS) : v,
+      };
     case "boolean":
       return { boolValue: v };
     case "number":
       if (!Number.isFinite(v)) {
         return null;
       }
-      return Number.isSafeInteger(v) ? { intValue: String(v) } : { doubleValue: v };
+      return Number.isSafeInteger(v)
+        ? { intValue: String(v) }
+        : { doubleValue: v };
     default:
       return null;
   }
@@ -149,7 +154,11 @@ export interface Scope {
 }
 
 /** The ExportLogsServiceRequest body for one batch. */
-export function logsPayload(resource: KeyValue[], scope: Scope, records: LogRecord[]) {
+export function logsPayload(
+  resource: KeyValue[],
+  scope: Scope,
+  records: LogRecord[],
+) {
   return {
     resourceLogs: [
       {
@@ -162,7 +171,10 @@ export function logsPayload(resource: KeyValue[], scope: Scope, records: LogReco
 
 /** The ExportTraceServiceRequest body for one batch, spans grouped by scope. */
 export function tracesPayload(resource: KeyValue[], spans: SpanRecord[]) {
-  const byScope = new Map<string, { scope: Scope; spans: Omit<SpanRecord, "scope">[] }>();
+  const byScope = new Map<
+    string,
+    { scope: Scope; spans: Omit<SpanRecord, "scope">[] }
+  >();
   for (const { scope, ...span } of spans) {
     const key = `${scope.name}\u001f${scope.version ?? ""}`;
     let group = byScope.get(key);
@@ -186,7 +198,12 @@ export function tracesPayload(resource: KeyValue[], spans: SpanRecord[]) {
 
 export type FetchLike = (
   url: string,
-  init: { method: string; headers: Record<string, string>; body: string; signal?: AbortSignal },
+  init: {
+    method: string;
+    headers: Record<string, string>;
+    body: string;
+    signal?: AbortSignal;
+  },
 ) => Promise<{ status: number; headers: { get(name: string): string | null } }>;
 
 export interface ExporterOptions {
@@ -219,7 +236,10 @@ function defaultSleep(ms: number): Promise<void> {
 
 function retryDelay(attempt: number, retryAfter: string | null): number {
   const seconds = retryAfter === null ? NaN : Number(retryAfter);
-  const base = Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : 250 * 2 ** attempt;
+  const base =
+    Number.isFinite(seconds) && seconds >= 0
+      ? seconds * 1000
+      : 250 * 2 ** attempt;
   return Math.min(MAX_RETRY_DELAY_MS, base);
 }
 

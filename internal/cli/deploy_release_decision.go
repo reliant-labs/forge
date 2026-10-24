@@ -113,7 +113,7 @@ func previewDeployDecision(ctx context.Context, envName string, f deployCmdFlags
 		fmt.Fprintf(out, "[deploy] release decision unavailable: %v\n", err)
 		return
 	}
-	choice := decideDeployRelease(ctx, projectDir, envName, f.renderOptions, ledger)
+	choice := decideDeployRelease(ctx, projectDir, envName, ledger)
 	choice.announce(out, envName, true)
 	needsConfirm := dirtyCutNeedsConfirmation(ctx, projectDir, envName, choice)
 	if needsConfirm {

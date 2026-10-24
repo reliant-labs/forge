@@ -57,7 +57,7 @@ records this checkout's clean tree and this forge version, covers every
 artifact the env declares, and every image it pins still resolves in its
 registry, nothing is built or cut: forge prints "reusing release <v>" and
 deploys it. Otherwise it prints "cutting new release <v> because …" before
-building. A dirty checkout, another forge version, a -D option, an artifact the
+building. A dirty checkout, another forge version, an artifact the
 release lacks, or an image the registry no longer holds each cut a new one. A nested git checkout inside the
 project (a parked worktree, a cloned repo) is another repository, not a change
 to this one, and does not make the checkout dirty; the decision line names the
@@ -342,7 +342,7 @@ func newDeployCmd() *cobra.Command {
 // how they are applied — and a 229-line constructor made that invisible.
 func registerDeployApplyFlags(cmd *cobra.Command, f *deployCmdFlags) {
 	flags := cmd.Flags()
-	flags.StringArrayVarP(&f.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with 'forge env options <env>'.")
+	flags.StringArrayVarP(&f.renderOptions, "option", "D", nil, "REFUSED on deploy: a deploy renders from the repo alone, and a release records no render options. Use it on 'forge env up' or 'forge env build', or declare the value in the env's KCL.")
 	flags.StringVar(&f.tag, "tag", "", "Override the image tag (priority: --tag > .forge/state/build-<env>.json > git describe --tags --always --dirty)")
 	flags.BoolVar(&f.dryRun, "dry-run", false, "Print manifests without applying (env-cluster guard still runs)")
 	flags.StringVar(&f.namespace, "namespace", "", "Override namespace from environment config")
@@ -512,8 +512,9 @@ type deployCmdFlags struct {
 	// offlineTo names the cached release --offline-ledger deploys: a release
 	// version, a cached promotion id, or "previous".
 	offlineTo string
-	// renderOptions are raw `-D name=value` values pushed into the env's KCL
-	// before any render this command does.
+	// renderOptions are the raw `-D name=value` values the caller passed. They
+	// are only ever refused (refuseDeployRenderOptions); the field exists so
+	// the refusal can name what was given.
 	renderOptions []string
 
 	rolloutMode     string
@@ -538,7 +539,7 @@ type deployCmdFlags struct {
 // what a UI calls to preview a deploy, and a flag that only worked on the real
 // thing would make the preview the one case a consumer could not use.
 func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) error {
-	if err := bindBuildRenderOptions(buildOptions{env: envName, renderOptions: f.renderOptions}); err != nil {
+	if err := refuseDeployRenderOptions(envName, f.renderOptions); err != nil {
 		return err
 	}
 	if f.offlineTo != "" && !f.offlineLedger {

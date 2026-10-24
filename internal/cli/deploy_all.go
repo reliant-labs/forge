@@ -196,7 +196,7 @@ type deployCutResult struct {
 // without producing new ones; a rebuild would (see its comment — 2026-10-09,
 // prod). The choice is printed first, either way.
 func buildAndCutForDeploy(ctx context.Context, projectDir, envName string, f deployCmdFlags, ledger envLedger) (deployCutResult, error) {
-	choice := decideDeployRelease(ctx, projectDir, envName, f.renderOptions, ledger)
+	choice := decideDeployRelease(ctx, projectDir, envName, ledger)
 	choice.announce(os.Stdout, envName, false)
 	if dirtyCutNeedsConfirmation(ctx, projectDir, envName, choice) {
 		if err := gateDirtyCut(envName, choice, *newDeployConfirm(f.promote, choice.Version), progressWriter(f.jsonOut)); err != nil {

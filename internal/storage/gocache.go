@@ -745,6 +745,9 @@ func streamTrimGoCache(ctx context.Context, root string, shards []string, start 
 					return
 				}
 				complete := true
+				// Least recently used first, so a pass the cap or the deadline
+				// stops partway has taken the entries least likely to be wanted.
+				sort.Slice(entries, func(a, b int) bool { return entries[a].mtime.Before(entries[b].mtime) })
 				for _, e := range entries {
 					if !e.mtime.Before(cutoff) {
 						continue
@@ -752,6 +755,13 @@ func streamTrimGoCache(ctx context.Context, root string, shards []string, start 
 					if ctx.Err() != nil || halted.Load() {
 						complete = false
 						break
+					}
+					// The listing is as old as the shard read, and a paced pass
+					// reaches an entry minutes later: a build that used it since
+					// has restamped it (cmd/go markUsed), so the floor never saw
+					// that use. Judge the entry by its mtime now.
+					if info, err := os.Stat(e.path(root)); err != nil || !info.ModTime().Before(cutoff) {
+						continue
 					}
 					if apply {
 						if err := e.remove(ctx, del, root); err != nil {

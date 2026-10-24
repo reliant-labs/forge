@@ -22,6 +22,8 @@ var goflagsExempt = map[string]string{
 	"internal/cli/generate_buf_preflight_test.go:TestPreflightBufTemplate_Flags":           "a GOFLAGS value the preflight parses, never handed to go",
 	"internal/cli/ci_verify_scratch_test.go:TestVerifyScratch_FingerprintsLikeTheCheckout": "a stubbed environ the fingerprint reads, never handed to go",
 	"internal/cli/lint/contract_inprocess_test.go:TestAnalysisEnvKeepsTrimpath":            "inputs to analysisEnv, asserting it merges -trimpath; never handed to go",
+	"internal/kclprojects/gomod.go:downloadEnv":                                            "the env of `go mod download`, which fetches a module and builds nothing",
+	"internal/kclprojects/kclprojects_test.go:TestDownloadEnvLeavesTheModuleOut":           "inputs to downloadEnv, asserting it drops -mod; never handed to go",
 }
 
 // TestGOFLAGSOverridesKeepTrimpath pins that a child environment which SETS

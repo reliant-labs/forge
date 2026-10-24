@@ -351,6 +351,9 @@ an ordinary promote labelled `direction BEHIND`; see `db/deploy-migrations`.
   workload's command, ports or build is a second copy that will drift.
 - Never `kubectl apply` a hand render — everything through `forge env deploy`.
   To read a VALUE KCL declares, `forge kcl eval`; see `deploy/kcl-eval`.
+- Deploying another forge project's workloads? Import its `workloads.k` at the
+  go.mod pin (`[forge_projects]` in kcl.mod) instead of copying it; see
+  `deploy/kcl-imports`.
 - Image tags are immutable — commit SHA by default, digest-pinned on deploy.
 - Secrets never live in KCL — it is checked in. Reference them
   (`config_secrets`, `forge.SecretRef`, `forge.ManagedSecret`).

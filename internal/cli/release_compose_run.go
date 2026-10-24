@@ -242,7 +242,7 @@ func addSelectedCompositionBinding(ctx context.Context, candidate *release.Snaps
 	}
 	id, err := release.ArtifactIdentity(artifact)
 	if err != nil {
-		return err
+		return fmt.Errorf("binding %s/%s artifact location=%q digest=%q: %w", c.Key.Workload, slot, artifact.Location, artifact.Content, err)
 	}
 	recordCompositionBuildEvent(candidate, c.Key, id, artifact.Origin)
 	candidate.Artifacts[id] = artifact

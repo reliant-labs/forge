@@ -151,6 +151,76 @@ func TestGolangciLaneLintsBuildTaggedFiles(t *testing.T) {
 	}
 }
 
+// reliant, 2026-10-24: `forge lint --scope e2e/stories` failed golangci-lint
+// with "no go files to analyze": every file there is `//go:build e2e`, and
+// the default pass was handed ./e2e/stories/... anyway. A pattern holding no
+// file of the default build leaves the default pass; its tag's pass keeps it.
+func TestDefaultPassPackagesDropsTagOnlyPatterns(t *testing.T) {
+	dir := writeTagTree(t, map[string]string{
+		"go.mod":                "module example.com/m\n\ngo 1.22\n",
+		"a/a.go":                "package a\n",
+		"e2e/s_test.go":         "//go:build e2e\n\npackage s\n",
+		"e2e/sub/x_test.go":     "//go:build e2e\n\npackage sub\n",
+		"mixed/m.go":            "package mixed\n",
+		"mixed/m_e2e_test.go":   "//go:build e2e\n\npackage mixed\n",
+		"deep/only/d_test.go":   "package only\n",
+		"other/o_plan9_test.go": "package other\n",
+		"cfg/c_test.go":         "//go:build configured\n\npackage cfg\n",
+		"nested/go.mod":         "module example.com/nested\n",
+		"nested/n.go":           "package nested\n",
+	})
+	for _, tc := range []struct {
+		patterns, config, want []string
+		run                    bool
+	}{
+		{nil, nil, nil, true}, // the whole module, as golangci-lint's own ./...
+		{[]string{"./e2e/..."}, nil, nil, false},
+		{[]string{"./e2e/...", "./a/..."}, nil, []string{"./a/..."}, true},
+		{[]string{"./mixed/..."}, nil, []string{"./mixed/..."}, true},
+		{[]string{"./deep/..."}, nil, []string{"./deep/..."}, true},
+		{[]string{"./deep"}, nil, nil, false},      // not recursive: nothing in ./deep itself
+		{[]string{"./other/..."}, nil, nil, false}, // its only file is in plan9's build
+		{[]string{"./cfg/..."}, nil, nil, false},
+		{[]string{"./cfg/..."}, []string{"configured"}, []string{"./cfg/..."}, true},
+		{[]string{"./nested/..."}, nil, nil, false}, // another module
+	} {
+		got, run := defaultPassPackages(dir, tc.patterns, tc.config)
+		if !reflect.DeepEqual(got, tc.want) || run != tc.run {
+			t.Errorf("defaultPassPackages(%v, tags %v) = %v, %v; want %v, %v", tc.patterns, tc.config, got, run, tc.want, tc.run)
+		}
+	}
+}
+
+// A scope of only tagged files runs the tag's pass alone, and gates on what
+// it finds, instead of failing a default pass golangci-lint cannot load.
+func TestGolangciLaneScopedToTagOnlyFilesSkipsTheDefaultPass(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake golangci-lint through shell subprocesses; runs in task test")
+	}
+	dir := writeTagTree(t, map[string]string{
+		"go.mod":                  "module example.com/m\n\ngo 1.22\n",
+		"a/a.go":                  "package a\n",
+		"a/a_integration_test.go": "//go:build integration\n\npackage a\n",
+		"e2e/s_test.go":           "//go:build integration\n\npackage s\n",
+	})
+	log := filepath.Join(t.TempDir(), "argv.log")
+	t.Setenv("STUB_LOG", log)
+	fakeGolangciLint(t, tagAwareStub)
+
+	rc := testRunCtx(t, false)
+	rc.cwd = dir
+	rc.paths = []string{"./e2e/..."}
+	fs, gated := collectGolangciLintJSON(rc)
+	if !gated {
+		t.Fatalf("the integration pass's finding did not gate: %+v", fs)
+	}
+	raw, _ := os.ReadFile(log)
+	calls := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(calls) != 1 || !strings.Contains(calls[0], "--build-tags=integration") || !strings.HasSuffix(calls[0], " ./e2e") {
+		t.Fatalf("want only the integration pass over ./e2e, got %d runs:\n%s", len(calls), raw)
+	}
+}
+
 // A project with no tagged file pays for no second run.
 func TestGolangciLaneRunsOncePerTreeWithoutTaggedFiles(t *testing.T) {
 	if testing.Short() {

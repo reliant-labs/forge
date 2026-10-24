@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -177,7 +178,11 @@ func addSelectedCompositionBinding(ctx context.Context, candidate *release.Snaps
 			}
 		}
 		for _, sidecar := range w.Spec.Sidecars {
-			if slot == "container:"+sidecar.Name {
+			prefix := "container:"
+			if sidecar.Native {
+				prefix = "init:"
+			}
+			if slot == prefix+sidecar.Name {
 				ref = sidecar.Image
 			}
 		}
@@ -323,6 +328,13 @@ func sealComposition(ctx context.Context, cfg *config.ProjectConfig, entities *K
 	return nil
 }
 func recordCompositionBuildEvent(s *release.Snapshot, c release.ConsumerKey, id release.ArtifactID, origin release.ArtifactOrigin) {
+	// Several slots may use the same verified artifact (for example a Job's
+	// init and main containers). Build events attest consumer+artifact, not slot.
+	for _, event := range s.BuildEvents {
+		if event.Consumer == c && event.Artifact == id && reflect.DeepEqual(event.Origin, origin) {
+			return
+		}
+	}
 	s.BuildEvents = append(s.BuildEvents, release.ArtifactBuildEvent{Consumer: c, Artifact: id, Origin: origin})
 }
 

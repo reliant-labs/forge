@@ -21,7 +21,7 @@ THE OUTPUT (internal/cli/testdata/render_contract/ pins it per runtime):
                               when declared (a list, possibly empty)
     clusters, cluster_target, kubeconfig_secrets, connected_clusters
     network_policy            the env NetworkPolicy bundle's inputs, or null
-    statefulset_resize        {image, disabled} tuning of the StatefulSet
+    statefulset_resize        {image, release_owner, disabled} tuning of the StatefulSet
                               volume-resize Job, present only when declared
     workloads[]               EVERY workload, of every runtime:
         {name, kind, image, build, runtime, spec}
@@ -1261,7 +1261,7 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         leaderElection = w.leaderElection
         serviceAccount = w.serviceAccount
         serviceAccountAnnotations = w.serviceAccountAnnotations
-        sidecars = [s | {image = workload_image_ref_for(w.name, "container:" + s.name, s.image, bundle.image_tag)} for s in w.sidecars] if w.sidecars else Undefined
+        sidecars = [s | {image = workload_image_ref_for(w.name, ("init:" if s.native else "container:") + s.name, s.image, bundle.image_tag)} for s in w.sidecars] if w.sidecars else Undefined
         volumes = ((w.volumes if w.volumes else []) + _cps_volume(w, rt, bundle) + _idn_volumes(w, rt, bundle)) or Undefined
         nodeSelector = w.nodeSelector
         tolerations = w.tolerations
@@ -2122,6 +2122,7 @@ render = lambda bundle: Bundle -> any {
         if bundle.statefulset_resize:
             "statefulset_resize": {
                 "image": bundle.statefulset_resize.image
+                "release_owner": bundle.statefulset_resize.release_owner
                 "disabled": bundle.statefulset_resize.disabled
             }
         "manifests": _manifests(bundle, _entities)

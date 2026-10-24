@@ -990,14 +990,22 @@ func parseDigitsLint(s string) int {
 // (golangci_build_tags.go). A golangci-lint that cannot analyze the module gates as one
 // finding, the runbook.
 func collectGolangciLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
-	fs, gated := golangciPass(rc, golangciGateArgs(rc))
-	if len(fs) > 0 && fs[0].Rule == ruleGolangciUnavailable {
-		return fs, gated
+	configTags := golangciConfigBuildTags(rc.moduleDir())
+	var (
+		fs    []lintJSONFinding
+		gated bool
+	)
+	// The default pass skips patterns holding only tagged files, which
+	// golangci-lint refuses; their tag's pass below lints them.
+	if pkgs, run := defaultPassPackages(rc.moduleDir(), rc.goPackages(), configTags); run {
+		fs, gated = golangciPass(rc, golangciGateArgs(rc, pkgs))
+		if len(fs) > 0 && fs[0].Rule == ruleGolangciUnavailable {
+			return fs, gated
+		}
 	}
 	// One more pass per build tag that gates files in the tree, over the
 	// packages holding them (golangci_build_tags.go).
 	inConfig := map[string]bool{}
-	configTags := golangciConfigBuildTags(rc.moduleDir())
 	for _, t := range configTags {
 		inConfig[t] = true
 	}
@@ -1088,7 +1096,13 @@ func collectTypedAccessGuardJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error
 			FixHint:  typedAccessGuardUnconfiguredHint,
 		}}, false, nil
 	}
-	run, err := rc.execGolangci(golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, rc.goPackages()))
+	// Like the default golangci-lint pass: a scope of only tagged files holds
+	// no package this pass can load, so there is nothing to guard.
+	pkgs, ok := defaultPassPackages(rc.moduleDir(), rc.goPackages(), golangciConfigBuildTags(rc.moduleDir()))
+	if !ok {
+		return nil, false, nil
+	}
+	run, err := rc.execGolangci(golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, pkgs))
 	if err != nil {
 		return []lintJSONFinding{golangciUnresolvedFinding(err, ruleTypedAccessGuardUnavailable)}, false, nil
 	}

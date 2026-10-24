@@ -21,6 +21,9 @@ import (
 // file on disk is the birth-time render.
 func scaffoldAdvisoryProject(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("scaffolds a real frontend and renders envs through native KCL; runs in task test")
+	}
 	dir := t.TempDir()
 	g := generator.NewProjectGenerator("demo", dir, "github.com/example/demo")
 	g.FrontendName = "web"

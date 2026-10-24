@@ -10,8 +10,30 @@ import (
 	"time"
 )
 
+// Temporality is how a sum or histogram's SDK exports its value; the values are
+// the OTel AggregationTemporality enum.
+type Temporality int32
+
+// The temporalities.
+const (
+	TemporalityUnknown    Temporality = 0
+	TemporalityDelta      Temporality = 1
+	TemporalityCumulative Temporality = 2
+)
+
+func (t Temporality) String() string {
+	switch t {
+	case TemporalityDelta:
+		return "delta"
+	case TemporalityCumulative:
+		return "cumulative"
+	}
+	return "unknown"
+}
+
 // Rows is the subset of a ClickHouse result obsquery reads (clickhouse-go's
-// driver.Rows satisfies it; a backend with decoded rows adapts them).
+// driver.Rows satisfies it; a backend with decoded rows adapts them). The
+// caller closes a cursor it passes to a Parse* function.
 type Rows interface {
 	Next() bool
 	Scan(dest ...any) error

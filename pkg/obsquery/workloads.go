@@ -24,6 +24,7 @@ const (
 	MetricMemLimit       = "k8s.container.memory_limit"               // By
 	MetricMemRequest     = "k8s.container.memory_request"             // By
 	MetricRestarts       = "k8s.container.restarts"                   // {restart}
+	MetricContainerReady = "k8s.container.ready"                      // 1 = passed its readiness probe, 0 = not
 	attrLastTerminated   = "k8s.container.last_terminated_reason"
 	attrEventReason      = "k8s.event.reason"
 	attrEventType        = "k8s.event.type"
@@ -402,6 +403,71 @@ func (q Workloads) RestartSeries(stepSec int64) (Stmt, error) {
 		"      SELECT " + wlEnv + " AS env, " + wlContainer + " AS container, " + wlPod + " AS pod, TimeUnix AS t, Value AS r\n" +
 		"      FROM " + b.table(q.Scope, MetricGauge.table()) + "\n      " + where(conds) + "\n" +
 		"    )\n  )\n) GROUP BY env, container, bucket ORDER BY env, container, bucket LIMIT " + strconv.Itoa(MaxWorkloadSeriesRow)), nil
+}
+
+// MinReadinessStepSec is the finest Readiness bucket: the cluster collector
+// delivers k8s.container.ready once a minute, so a finer bucket would be mostly
+// empty.
+const MinReadinessStepSec = 60
+
+// Readiness is the continuous health signal: per workload and time bucket, how
+// many pods reported, how many of them were ready, and how many restarts
+// happened, read from the k8s_cluster receiver's k8s.container.ready and
+// k8s.container.restarts gauges. It is a pure function of stored telemetry, so a
+// verdict derived from it needs no reader to have looked at the time.
+//
+// A pod counts as ready in a bucket when EVERY sample of EVERY one of its
+// containers in the bucket is 1, so a dip inside a coarse bucket is not lost. A bucket in which a workload delivered
+// no readiness sample has no row: a gap is missing data, never a healthy bucket,
+// and the reader must treat it so. Restarts are the growth of the counter
+// between consecutive samples of a container (a decrease is a reset and counts
+// as zero), attributed to the bucket of the later sample.
+//
+// Columns: env, workload, bucket (DateTime), pods (UInt64: distinct pods that
+// reported readiness), ready (UInt64: of those, the ones fully ready), restarts
+// (Float64), exit (String: the last terminated reason reported in the bucket,
+// "" when none). Ordered by env, workload, bucket; at most MaxWorkloadSeriesRow
+// rows. A row with pods = 0 carries restarts only.
+func (q Workloads) Readiness(stepSec int64) (Stmt, error) {
+	if err := q.validate(); err != nil {
+		return Stmt{}, err
+	}
+	if stepSec < MinReadinessStepSec || int64(q.Scope.End.Sub(q.Scope.Start).Seconds())/stepSec > MaxPointsPerSeries {
+		return Stmt{}, invalid("step %ds must be at least %ds and return at most %d buckets per workload", stepSec, MinReadinessStepSec, MaxPointsPerSeries)
+	}
+	b := newBuilder(q.Scope)
+	readyConds, err := q.metricConds(b, []string{MetricContainerReady})
+	if err != nil {
+		return Stmt{}, err
+	}
+	restartConds, err := q.metricConds(b, []string{MetricRestarts})
+	if err != nil {
+		return Stmt{}, err
+	}
+	reason, _, err := b.keyExpr(SigMetrics, attrLastTerminated)
+	if err != nil {
+		return Stmt{}, err
+	}
+	readyStep, restartStep := b.u32(uint32(stepSec)), b.u32(uint32(stepSec))
+	table := b.table(q.Scope, MetricGauge.table())
+	return b.stmt("SELECT env, workload, bucket, sum(pods) AS pods, sum(ready) AS ready, sum(restarts) AS restarts, maxIf(exit, exit != '') AS exit FROM (\n" +
+		"  SELECT env, workload, bucket, toUInt64(count()) AS pods, toUInt64(countIf(pr = 1)) AS ready, toFloat64(0) AS restarts, '' AS exit FROM (\n" +
+		"    SELECT env, workload, pod, bucket, min(cv) AS pr FROM (\n" +
+		"      SELECT " + wlEnv + " AS env, " + wlWorkload + " AS workload, " + wlContainer + " AS container, " + wlPod + " AS pod,\n" +
+		"             toStartOfInterval(TimeUnix, toIntervalSecond(" + readyStep + ")) AS bucket, min(Value) AS cv\n" +
+		"      FROM " + table + "\n      " + where(readyConds) + "\n" +
+		"      GROUP BY env, workload, container, pod, bucket\n" +
+		"    ) GROUP BY env, workload, pod, bucket\n" +
+		"  ) GROUP BY env, workload, bucket\n" +
+		"  UNION ALL\n" +
+		"  SELECT env, workload, bucket, toUInt64(0) AS pods, toUInt64(0) AS ready, sum(inc) AS restarts, argMaxIf(r, t, r != '') AS exit FROM (\n" +
+		"    SELECT env, workload, toStartOfInterval(t, toIntervalSecond(" + restartStep + ")) AS bucket, t, r, toFloat64(if(v >= prev, v - prev, 0)) AS inc FROM (\n" +
+		"      SELECT env, workload, t, v, r, lagInFrame(v, 1, v) OVER (PARTITION BY env, workload, container, pod ORDER BY t ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS prev FROM (\n" +
+		"        SELECT " + wlEnv + " AS env, " + wlWorkload + " AS workload, " + wlContainer + " AS container, " + wlPod + " AS pod,\n" +
+		"               TimeUnix AS t, Value AS v, " + reason + " AS r\n" +
+		"        FROM " + table + "\n        " + where(restartConds) + "\n" +
+		"      )\n    )\n  ) GROUP BY env, workload, bucket\n" +
+		") GROUP BY env, workload, bucket ORDER BY env, workload, bucket LIMIT " + strconv.Itoa(MaxWorkloadSeriesRow)), nil
 }
 
 // Pods summarizes every pod's presence in the range: first and last sample

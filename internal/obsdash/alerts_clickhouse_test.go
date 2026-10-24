@@ -39,7 +39,7 @@ func TestDefaultAlertSQLOnClickHouse(t *testing.T) {
 	run(string(seed))
 
 	in := AlertInput{
-		Project: "shop", FrontendService: "shop-frontend",
+		Project: "shop", FrontendServices: []string{"shop-web"},
 		Services: []AlertService{
 			{"api", "a.v1.S"}, {"quiet", "q.v1.Q"}, {"reset", "r.v1.R"}, {"delta", "d.v1.D"},
 			{"fast", "f.v1.F"}, {"stopped", "s.v1.T"}, {"healthy", "h.v1.H"}, {"sparse", "p.v1.P"}, {"young", "y.v1.Y"},
@@ -49,12 +49,12 @@ func TestDefaultAlertSQLOnClickHouse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// FrontendService is one name per project; the SQL is parameterized on it, so
+	// FrontendServices parameterize the SQL (ServiceName IN ...), so
 	// each frontend-* case below re-resolves with the seeded service it is about.
 	frontendFired := func(service, id string) bool {
 		t.Helper()
 		fin := in
-		fin.FrontendService = service
+		fin.FrontendServices = []string{service}
 		rs, err := ResolveAlertDefaults(fin, "dev", nil)
 		if err != nil {
 			t.Fatal(err)
@@ -86,7 +86,7 @@ func TestDefaultAlertSQLOnClickHouse(t *testing.T) {
 		"p95-latency": {"api"},
 		// stopped served traffic through most of the last day, then stopped. sparse (4 active hours) and young (2h) do not count as steady; healthy is serving.
 		"service-silent":     {"stopped"},
-		"frontend-js-errors": {"shop-frontend"},
+		"frontend-js-errors": {"shop-web"},
 	}
 	for id, w := range want {
 		if strings.Join(fired[id], ",") != strings.Join(w, ",") {

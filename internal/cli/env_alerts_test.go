@@ -47,9 +47,9 @@ func writeAlertDefaults(t *testing.T, in obsdash.AlertInput) string {
 
 func alertProject() obsdash.AlertInput {
 	return obsdash.AlertInput{
-		Project:         "shop",
-		Services:        []obsdash.AlertService{{Name: "orders", RPCService: "orders.v1.OrdersService"}},
-		FrontendService: "shop-frontend",
+		Project:          "shop",
+		Services:         []obsdash.AlertService{{Name: "orders", RPCService: "orders.v1.OrdersService"}},
+		FrontendServices: []string{"shop-web"},
 	}
 }
 

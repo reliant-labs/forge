@@ -31,40 +31,31 @@ import (
 // an hour stale: an entry older than X has been unused for at least X-1h, so
 // with a floor of 2h a live build never loses an entry it is using.
 //
-// The floor bounds what the age rule may delete, and by itself it bounds the
-// size budget too: everything written in the last goCacheFloor stays. On a
-// machine filling faster than its budget per floor (2026-10-22: ~60 GB/h
-// against a 20 GiB budget, the cache at 74 GB with every entry under 4h old)
-// that never converges. So a cache still over budget after the safe pass is
-// trimmed further, least recently used first, down to a low-water mark
-// (goCacheLowWater of the budget) and no further than the policy's
-// go_cache_min_age (default 20m).
+// The floor binds BOTH rules. The age rule (go_cache_unused) and the size rule
+// (go_cache_gib: least recently used first, down to goCacheLowWater of the
+// budget) each stop at it, whatever the budget pressure. That is cmd/go's own
+// contract (cmd/go/internal/cache): markUsed restamps an entry only when its
+// mtime is more than mtimeInterval (1h) stale, and Go's trim deletes only past
+// trimLimit (5 days). So an mtime younger than 1h says nothing about use, and
+// only an entry older than 1h+D is certainly idle for D.
 //
-// Why that is acceptable, from cmd/go/internal/cache:
-//   - A missing entry is a MISS, not an error. Get reads the action file and
-//     GetFile stats the output; either absent (or the wrong size) is
-//     entryNotFoundError and the action is simply run again.
-//   - The one hazard is an entry a RUNNING build has already resolved and
-//     not yet consumed (an archive waiting for the link, an executable
-//     between GetFile and exec): deleting it fails that build with "could not
-//     import … no such file" or "cannot open file", and the build passes on
-//     retry. Go restamps an entry's mtime on use only when it is more than an
-//     hour stale, so an mtime younger than 1h says nothing about use: only an
-//     entry with mtime older than 1h+D is certainly idle for D. The 2h floor
-//     is D=1h and is why the age rule is safe. The size rule trades that
-//     guarantee for the budget, oldest mtime first, so the entries it takes
-//     are the least likely to be in use; the risk it accepts is one retryable
-//     build, against a full disk that refuses every heavy command on the
-//     machine. Measured: 1 of 25 builds failed while a loop deleted 150 random
-//     entries (any age) every 50ms under them; a trim takes the oldest first.
-//   - A write in flight is not at risk: copyFile creates the output in place
-//     and commits its last byte at the end, so its mtime is now, and the
-//     minimum age (>= 5m) leaves it alone.
-//   - trim.txt and README are top-level files, which the trim never touches;
-//     cmd/go's own trim (entries unused 5 days) is independent of this one.
+// A size rule that reached inside the floor (#1191, 2026-10-22: down to a 20m
+// go_cache_min_age) broke running builds all day: an entry a build has already
+// resolved but not yet consumed — export data a vet or lint run will open, an
+// archive waiting for the link — vanished under it, and the build failed with
+// `could not import … could not load export data: open …/go-build/…-d: no such
+// file or directory`, three merge gates on 2026-10-23 alone. Never again: a
+// cache over budget with nothing older than the floor left keeps its young
+// entries and says so (BudgetUnreachableError, recorded in GCResult.OverBudget).
+// The remedy is a slower fill — usually builds that lost -trimpath — or a
+// larger go_cache_gib, never a trim under a live build.
+//
+// trim.txt and README are top-level files, which the trim never touches;
+// cmd/go's own trim is independent of this one.
 
-// goCacheFloor is the youngest entry the trim may ever delete, whatever the
-// policy says. It is what makes the trim safe under live builds.
+// goCacheFloor is the youngest entry the trim may ever delete, under any rule
+// and any budget pressure: cmd/go's mtimeInterval (1h) plus an hour of margin.
+// It is what makes the trim safe under live builds, and it is not a knob.
 const goCacheFloor = 2 * time.Hour
 
 // goCacheWorkers bounds how many shards are read and trimmed at once. The
@@ -355,13 +346,13 @@ func goCacheDirSize(path string) (int64, error) {
 // sampleGoCache reads a bounded, evenly spaced subset of shards (starting at
 // offset so successive passes sample different ones). Entry hashes are uniform,
 // so a shard is a fair 1/256 slice of both size and age distribution.
-func sampleGoCache(ctx context.Context, root string, shards []string, offset int, now time.Time, minAge time.Duration) goCacheSample {
+func sampleGoCache(ctx context.Context, root string, shards []string, offset int, now time.Time) goCacheSample {
 	n := goCacheSampleSize
 	if n > len(shards) {
 		n = len(shards)
 	}
 	var out goCacheSample
-	floor := now.Add(-minAge)
+	floor := now.Add(-goCacheFloor)
 	for i := 0; i < n && ctx.Err() == nil; i++ {
 		shard := shards[(offset+i*len(shards)/n)%len(shards)]
 		entries, err := readGoCacheShard(root, shard)
@@ -388,14 +379,12 @@ const goCacheLowWater = 0.8
 
 // goCacheCutoff picks the mtime below which entries are deleted: the older of
 // "unused longer than the age rule" and "what must go to reach the low-water
-// mark", whichever deletes more. The age rule never reaches into the safety
-// floor; the size rule may, but never past minAge (itself at most the floor).
-// No global sort and no complete scan: the budget cutoff is read off the
-// sample's mtime distribution scaled to the whole cache, so it takes the
-// oldest entries first and reaches into the window only as far as it must.
-func goCacheCutoff(sample goCacheSample, nShards int, now time.Time, unused time.Duration, budget uint64, minAge time.Duration) (cutoff time.Time, estTotal uint64) {
+// mark", whichever deletes more, and NEVER newer than the safety floor, under
+// either rule. No global sort and no complete scan: the budget cutoff is read
+// off the sample's mtime distribution scaled to the whole cache, so it takes
+// the oldest entries first.
+func goCacheCutoff(sample goCacheSample, nShards int, now time.Time, unused time.Duration, budget uint64) (cutoff time.Time, estTotal uint64) {
 	floorCut := now.Add(-goCacheFloor)
-	minCut := now.Add(-min(minAge, goCacheFloor))
 	cutoff = now.Add(-unused)
 	if cutoff.After(floorCut) {
 		cutoff = floorCut
@@ -410,7 +399,7 @@ func goCacheCutoff(sample goCacheSample, nShards int, now time.Time, unused time
 	}
 	need := float64(estTotal-uint64(float64(budget)*goCacheLowWater)) / scale // bytes to drop from the sample
 	var acc float64
-	budgetCut := minCut // the sample cannot cover the excess: take everything past the minimum age
+	budgetCut := floorCut // the sample cannot cover the excess: take everything past the floor
 	for _, e := range sample.entries {
 		acc += float64(e.size)
 		if acc >= need {
@@ -418,8 +407,8 @@ func goCacheCutoff(sample goCacheSample, nShards int, now time.Time, unused time
 			break
 		}
 	}
-	if budgetCut.After(minCut) {
-		budgetCut = minCut
+	if budgetCut.After(floorCut) {
+		budgetCut = floorCut
 	}
 	if budgetCut.After(cutoff) {
 		cutoff = budgetCut
@@ -429,7 +418,7 @@ func goCacheCutoff(sample goCacheSample, nShards int, now time.Time, unused time
 
 // goCacheNeed estimates how many entries are last used before cutoff across
 // the whole cache: the sample's count scaled to every shard. The sample's
-// entries are those past the minimum age, which every cutoff is.
+// entries are those past the floor, which every cutoff is.
 func goCacheNeed(sample goCacheSample, nShards int, cutoff time.Time) int {
 	if sample.shards == 0 {
 		return 0
@@ -518,10 +507,6 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 	if err != nil {
 		return fmt.Errorf("go_cache_unused: %w", err)
 	}
-	minAge, err := r.Policy.goCacheMinAge()
-	if err != nil {
-		return err
-	}
 	shards, err := goCacheShardList(root)
 	if err != nil {
 		return err
@@ -533,14 +518,14 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 	del := r.deletes()
 	now := time.Now()
 	start := r.loadGoCacheCursor(label) % len(shards)
-	sample := sampleGoCache(ctx, root, shards, start, now, minAge)
+	sample := sampleGoCache(ctx, root, shards, start, now)
 	if sample.err != nil {
 		err := del.observe(root, sample.err)
 		r.print("%s %s: %v\n", label, root, err)
 		return err
 	}
 	budget := r.goCacheBudget(root)
-	cutoff, estTotal := goCacheCutoff(sample, len(shards), now, unused, budget, minAge)
+	cutoff, estTotal := goCacheCutoff(sample, len(shards), now, unused, budget)
 	overBudget := ""
 	if estTotal > budget {
 		// Over its size budget: the per-pass cap must not stop the trim short
@@ -557,8 +542,8 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 		r.saveGoCacheCursor(label, (start+pass.shardsCovered)%len(shards))
 	}
 
-	r.print("%s %s: ~%.1f GiB estimated (budget %.1f GiB, trimmed to %.1f GiB when over); deleting entries last used before %s (age rule %s, floor %s, never newer than %s when over budget)%s\n",
-		label, root, float64(estTotal)/float64(GiB), float64(budget)/float64(GiB), float64(budget)*goCacheLowWater/float64(GiB), cutoff.Format(time.RFC3339), unused, goCacheFloor, minAge, overBudget)
+	r.print("%s %s: ~%.1f GiB estimated (budget %.1f GiB, trimmed to %.1f GiB when over); deleting entries last used before %s (age rule %s, floor %s under every rule)%s\n",
+		label, root, float64(estTotal)/float64(GiB), float64(budget)/float64(GiB), float64(budget)*goCacheLowWater/float64(GiB), cutoff.Format(time.RFC3339), unused, goCacheFloor, overBudget)
 	for _, p := range pass.samples {
 		r.print("  %s %s\n", verb(apply), p)
 	}
@@ -593,7 +578,7 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 		}
 	}
 	if young > budget {
-		unreachable := &BudgetUnreachableError{Cache: label, Estimated: estTotal, Budget: budget, Young: young, Floor: minAge}
+		unreachable := &BudgetUnreachableError{Cache: label, Estimated: estTotal, Budget: budget, Young: young, Floor: goCacheFloor}
 		r.print("WARNING %v\n", unreachable)
 		return errors.Join(pass.stop, unreachable)
 	}
@@ -601,8 +586,8 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 }
 
 // goCacheYoungBytes estimates the bytes of the whole cache last used inside the
-// minimum age — the part no pass may delete. The sample's entries are those
-// past the minimum age, so the rest of its bytes are the young ones.
+// safety floor — the part no pass may delete. The sample's entries are those
+// past the floor, so the rest of its bytes are the young ones.
 func goCacheYoungBytes(sample goCacheSample, nShards int) uint64 {
 	if sample.shards == 0 {
 		return 0
@@ -647,11 +632,12 @@ type GoCacheTrim struct {
 }
 
 // BudgetUnreachableError marks a cache no trim can bring under its size budget,
-// because more than the budget was used inside the minimum age (Floor: the
-// policy's go_cache_min_age, 20m by default). Entries that young are
-// indistinguishable from a build's work in progress, so they are never
-// deleted: the pass removed everything older and the cache still sits at
-// roughly Young. Only a slower fill, or a larger budget, fixes it.
+// because more than the budget was used inside the safety floor (Floor,
+// goCacheFloor). Entries that young may belong to a running build — cmd/go
+// restamps a used entry only once it is an hour stale — so they are never
+// deleted, whatever the pressure: the pass removed everything older and the
+// cache still sits at roughly Young. Only a slower fill, or a larger budget,
+// fixes it.
 //
 // It is not a failure — NewGCResult records it apart, in OverBudget — but it is
 // never silent either. Before it existed a 20 GiB budget held a 152 GiB cache
@@ -879,11 +865,7 @@ func (r Runner) goCacheStatus(ctx context.Context) {
 	if err != nil || len(shards) == 0 {
 		return
 	}
-	minAge, err := r.Policy.goCacheMinAge()
-	if err != nil {
-		return
-	}
-	sample := sampleGoCache(ctx, root, shards, 0, time.Now(), minAge)
+	sample := sampleGoCache(ctx, root, shards, 0, time.Now())
 	if sample.shards == 0 {
 		return
 	}
@@ -891,9 +873,9 @@ func (r Runner) goCacheStatus(ctx context.Context) {
 	budget := r.goCacheBudget(root)
 	young := goCacheYoungBytes(sample, len(shards))
 	r.print("go build cache %s: ~%.1f GiB estimated from %d/%d shards (budget %.1f GiB, unused %s; ~%.1f GiB used in the last %s, which no trim deletes)\n", root,
-		est/float64(GiB), sample.shards, len(shards), float64(budget)/float64(GiB), r.Policy.GoCacheUnused, float64(young)/float64(GiB), minAge)
+		est/float64(GiB), sample.shards, len(shards), float64(budget)/float64(GiB), r.Policy.GoCacheUnused, float64(young)/float64(GiB), goCacheFloor)
 	if young > budget {
-		r.print("WARNING %v\n", &BudgetUnreachableError{Cache: "go build cache", Estimated: uint64(est), Budget: budget, Young: young, Floor: minAge})
+		r.print("WARNING %v\n", &BudgetUnreachableError{Cache: "go build cache", Estimated: uint64(est), Budget: budget, Young: young, Floor: goCacheFloor})
 	}
 }
 

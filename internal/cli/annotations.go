@@ -311,7 +311,7 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      codegen.ProtoMarkerMutation,
 			AppliesTo: "method",
-			Effect:    "Forces the generated React Query hook for this rpc to be a useMutation. Classification is otherwise by leading verb — Get/List/Search/Find/Check/Has/Is/Count/Exists (whole-word) are reads, EVERYTHING else is a mutation — so this is needed only for an imperative rpc that happens to open with a read word (FindAndHoldSeat, IssueRefund). A write generated as useQuery re-fires on every component remount. Unlike the entity/field markers this one is read on every `forge generate`, not just at birth.",
+			Effect:    "Forces the generated React Query hook for this rpc to be a useMutation. Classification is otherwise: an rpc declaring protobuf's `option idempotency_level = NO_SIDE_EFFECTS;` is a read whatever its name (Health, Version — declare it on every read whose name is not a read verb); without it, by leading verb — Get/List/Search/Find/Check/Has/Is/Count/Exists (whole-word) are reads, EVERYTHING else is a mutation (IDEMPOTENT does not make a read). So this marker is needed only for an imperative rpc that happens to open with a read word (FindAndHoldSeat, IssueRefund), and it wins over NO_SIDE_EFFECTS. A write generated as useQuery re-fires on every component remount. Unlike the entity/field markers this one is read on every `forge generate`, not just at birth.",
 			Placement: "leading full-line comment above the `rpc` line, or a trailing comment on it",
 			Example:   "// forge:mutation — holds inventory, so it must never be a cached read.\nrpc FindAndHoldSeat(FindAndHoldSeatRequest) returns (FindAndHoldSeatResponse);",
 		},

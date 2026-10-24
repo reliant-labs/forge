@@ -53,6 +53,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
@@ -398,6 +399,7 @@ func stagedProjectScaffold(root string, cfg *config.ProjectConfig) (string, erro
 	// The scaffold announces itself on stdout; a rescaffold reports only
 	// what it re-created.
 	var sink bytes.Buffer
+	defer atomicfile.MarkScratch(staging)()
 	err = withStdout(&sink, func() error {
 		return generator.ScaffoldProjectInto(root, staging, cfg)
 	})

@@ -53,16 +53,6 @@ func (t MetricType) table() string {
 	return ""
 }
 
-// Temporality is an OTel aggregation temporality (the enum's own values).
-type Temporality int32
-
-// The temporalities a Sum or Histogram point carries.
-const (
-	TemporalityUnknown    Temporality = 0
-	TemporalityDelta      Temporality = 1
-	TemporalityCumulative Temporality = 2
-)
-
 // MetricInfo is what one lookup statement learns about a metric: which table
 // holds it and the facts the semantics depend on (see MetricLookup).
 type MetricInfo struct {
@@ -220,73 +210,6 @@ func StepForMetric(rng time.Duration, requested int32, intervalSec int64) (step 
 	}
 	return StepFor(rng, TargetPoints, floor), false
 }
-
-// MetricList is a ListMetrics request.
-type MetricList struct {
-	Scope        Scope
-	NameContains string
-	Limit        int
-}
-
-// Compile builds the metric-name statement. Columns: MetricName, MetricUnit,
-// MetricDescription, kind (1 gauge, 2 sum, 3 histogram).
-func (q MetricList) Compile() (Stmt, error) {
-	if err := q.Scope.validate(MaxRangeMetrics); err != nil {
-		return Stmt{}, err
-	}
-	if q.Limit <= 0 || q.Limit > ListMetricsMax {
-		return Stmt{}, invalid("limit must be 1-%d", ListMetricsMax)
-	}
-	b := newBuilder(q.Scope)
-	parts := make([]string, 0, 3)
-	for _, t := range []MetricType{MetricGauge, MetricSum, MetricHistogram} {
-		// Only RESOURCE-level filters narrow the picker: any other key is
-		// valid for one specific metric only, and is checked when that metric
-		// is queried.
-		sc, err := b.resourceConds(SigMetrics, q.Scope)
-		if err != nil {
-			return Stmt{}, err
-		}
-		conds := append([]string{b.rangeCondSec("TimeUnix", q.Scope)}, sc...)
-		if q.NameContains != "" {
-			conds = append(conds, "positionCaseInsensitive(MetricName, "+b.str(q.NameContains)+") > 0")
-		}
-		parts = append(parts, "SELECT MetricName, any(MetricUnit) AS MetricUnit, any(MetricDescription) AS MetricDescription, "+
-			strconv.Itoa(int(t))+" AS kind\nFROM "+b.table(q.Scope, t.table())+"\n"+where(conds)+"\nGROUP BY MetricName")
-	}
-	return b.stmt("SELECT * FROM (\n" + strings.Join(parts, "\nUNION ALL\n") + "\n) ORDER BY MetricName, kind LIMIT " + strconv.Itoa(q.Limit+1)), nil
-}
-
-// DeclaredKeys lists the attribute keys a metric's own data points carry,
-// the extension to the key allowlist for metric filters and group-bys. It is
-// scoped by environment and service only (the filters are what it enables).
-// Column: key.
-type DeclaredKeys struct {
-	Scope Scope
-	Name  string
-	Type  MetricType
-}
-
-// MaxDeclaredKeys bounds the keys one metric may declare.
-const MaxDeclaredKeys = 200
-
-// Compile builds the declared-keys statement.
-func (q DeclaredKeys) Compile() (Stmt, error) {
-	if err := q.Scope.validate(MaxRangeMetrics); err != nil {
-		return Stmt{}, err
-	}
-	if q.Type.table() == "" {
-		return Stmt{}, invalid("unknown metric type")
-	}
-	b := newBuilder(q.Scope)
-	conds := append([]string{b.rangeCondSec("TimeUnix", q.Scope), "MetricName = " + b.str(q.Name)}, b.scopeBase(q.Scope)...)
-	return b.stmt("SELECT arrayJoin(mapKeys(Attributes)) AS k FROM " + b.table(q.Scope, q.Type.table()) + " " + where(conds) +
-		" GROUP BY k ORDER BY k LIMIT " + strconv.Itoa(MaxDeclaredKeys)), nil
-}
-
-// ErrMetricNotFound is ParseLookup's refusal when no table holds the metric in
-// the lookup window. It is not ErrInvalid: the request was well-formed.
-var ErrMetricNotFound = errors.New("metric not found")
 
 // MetricLookup finds which tables hold a metric and what is known about it.
 // Columns: kind, unit, mono, temporality, mixed, series, points, first, last,

@@ -757,6 +757,13 @@ func (d FrontendTemplateData) withDefaults() interface{} {
 	return d
 }
 
+// TelemetryServiceName is the service.name this frontend's browser telemetry
+// reports (otel_gen.ts's SERVICE_NAME): naming.FrontendServiceName, the same
+// derivation the generated dashboards and alert defaults filter on.
+func (d FrontendTemplateData) TelemetryServiceName() string {
+	return naming.FrontendServiceName(d.ProjectName, d.FrontendName)
+}
+
 // WebhookTemplateData holds data for webhook template rendering.
 type WebhookTemplateData struct {
 	Name           string // webhook name (e.g. "stripe", "github")

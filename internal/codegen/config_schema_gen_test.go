@@ -62,7 +62,7 @@ func representativeConfigFields() []ConfigField {
 // representativeEmptyEnvChecks is the schema check block
 // representativeConfigFields renders: one condition per non-sensitive str
 // field with a non-empty default (log_level, and shutdown_timeout, a duration
-// carried as a str). See renderEmptyEnvChecks.
+// carried as a str). See renderSchemaChecks.
 const representativeEmptyEnvChecks = "\n" +
 	"    check:\n" +
 	"        log_level != \"\", \"log_level = \\\"\\\" cannot reach the process: an empty LOG_LEVEL counts as unset, so it would load the default \\\"info\\\" — set a value, or change its default in the proto\"\n" +

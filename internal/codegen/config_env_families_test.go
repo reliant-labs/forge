@@ -82,14 +82,15 @@ func TestValidateConfigEnvFamilies_Refusals(t *testing.T) {
 
 // A family is not projected into KCL: an open-ended set of variables has no
 // schema shape, so it is set on a workload's env directly.
-func TestEnvFamiliesAreNotProjectedIntoKCL(t *testing.T) {
+// Families reach the KCL field list, in proto order, so config_gen.k can
+// project them (config_env_family_kcl.go).
+func TestEnvFamiliesReachTheKCLFieldList(t *testing.T) {
 	fields := FlattenFieldsWithBlocks(familyMessages()[1].Fields, familyMessages())
+	var names []string
 	for _, f := range fields {
-		if f.EnvPrefix != "" {
-			t.Errorf("family %s reached the KCL field list", f.Name)
-		}
+		names = append(names, f.Name)
 	}
-	if len(fields) != 1 || fields[0].Name != "oauth_issuer" {
-		t.Errorf("KCL fields = %v, want only the plain field", fields)
+	if got, want := strings.Join(names, ","), "oauth_client_ids,oauth_client_secrets,features,oauth_issuer"; got != want {
+		t.Errorf("KCL fields = %s, want %s", got, want)
 	}
 }

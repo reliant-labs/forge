@@ -16,6 +16,8 @@ type Backend interface {
 	Endpoints(ctx context.Context, req EndpointsRequest) (EndpointsResult, error)
 	MetricsList(ctx context.Context, req MetricsListRequest) (MetricsListResult, error)
 	MetricsQuery(ctx context.Context, req MetricsQueryRequest) (MetricsQueryResult, error)
+	MetricsDescribe(ctx context.Context, req MetricsDescribeRequest) (MetricsDescribeResult, error)
+	MetricsExemplars(ctx context.Context, req MetricsExemplarsRequest) (MetricsExemplarsResult, error)
 	Query(ctx context.Context, req QueryRequest) (QueryResult, error)
 }
 

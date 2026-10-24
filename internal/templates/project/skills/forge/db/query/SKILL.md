@@ -1,6 +1,6 @@
 ---
 name: query
-description: Read an environment's app data with forge db query <env> — one read-only statement, the transports (direct, port-forward), the env's data_access policy (open, audited, deny), the forge_ro role that cannot read forge:secret columns, the JSON document and exit codes.
+description: Read an environment's app data with forge db query <env> — one read-only statement, the transports (direct, port-forward, control plane, bring-your-own `--addr`), the env's data_access policy (open, audited, deny), the forge_ro role that cannot read forge:secret columns, the JSON document and exit codes.
 ---
 
 # Reading an env's data: `forge db query`
@@ -39,9 +39,28 @@ The workload decides (`--workload`, default `api`):
 | OnHost / OnCompose | **direct**: the workload's resolved `DATABASE_URL`, the same value `forge env exec` gives the process | whatever that URL names |
 | OnCluster, in an env declared `lifecycle = "local"` or `"ephemeral"` | **port-forward**: a pods/portforward stream through your kube context's API server (needs `pods/portforward` create, `endpointslices` list and `secrets` get on the two database Secrets in the env's namespace) to the env's ManagedDatabase (`<name>-ro` when it runs standbys, else `<name>-rw`) | `forge_ro` |
 | OnHosted | **control plane**: `AppDatabaseService.QueryDatabase` runs the same read-only core inside the platform (`<name>-ro` when there are replicas) and writes an audit row and an activity event, with your credential (under Reliant, the helper) | `forge_ro` |
-| OnCluster in a real env | not reachable from forge yet: exit 2 | — |
+| OnCluster in a real env | not reachable from forge yet: exit 2, unless you pass `--addr` (below) | — |
 
 `--database <name>` picks the ManagedDatabase when a cluster env declares several.
+
+## Bring your own route: `--addr host:port`
+
+For a database forge cannot route to itself (a real, non-scratch cluster env, or one behind a VPN or bastion) **you supply the address and the network path**; forge builds no fallback transport. `--addr` makes forge dial exactly that address instead of its own transport (compose/host direct, the kube port-forward, or the control plane):
+
+```bash
+kubectl -n app-prod port-forward svc/ledger-rw 5432:5432 &
+forge db query prod "select status, count(*) from jobs group by 1" \
+  --addr localhost:5432 --confirm-env prod --reason "ISS-7f3a"
+```
+
+Everything else is unchanged: the same read-only guard, row/byte caps, timeout, formats and `data_access` policy (a real env is `audited`, so `--confirm-env` and `--reason` still apply). The JSON `scope.transport` is `"addr"`.
+
+- **Credentials** come from the same place the other transports use them. A cluster database's `forge_ro` password and CA are read from `<name>-forge-ro` and `<name>-ca` through your kube context; an OnHost / OnCompose workload keeps its `DATABASE_URL` (user, password, database, `sslmode`) and only its host and port are replaced. There is no `--password` flag: a password never goes on the command line.
+- **TLS** on a cluster database is `verify-full` against the cluster CA, with server name `<name>-rw.<namespace>.svc` (a name CloudNativePG's certificate carries). That is why it verifies through a tunnel to `localhost`. `--sslmode require` (encrypt, no verification) or `disable` overrides it. A DATABASE_URL workload takes `sslmode` from its URL, and `--sslmode` is refused there.
+- **A hosted env refuses `--addr`** (exit 1): the control plane executes those queries as the env's read-only role and audits them, and you hold no credentials for it.
+- A connection that fails (the route is down) is exit 2, naming the address.
+
+There is no per-env config key: the address belongs to your machine and your route, not to the env's declaration, so it is a flag only.
 
 ## The read-only role
 

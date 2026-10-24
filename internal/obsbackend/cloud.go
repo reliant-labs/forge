@@ -15,6 +15,8 @@ package obsbackend
 import (
 	"context"
 	"errors"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
@@ -33,8 +35,10 @@ const (
 	procListTraces  = "controlplane.v1.ObservabilityService/ListTraces"
 	procGetTrace    = "controlplane.v1.ObservabilityService/GetTrace"
 	procListMetrics = "controlplane.v1.ObservabilityService/ListMetrics"
-	procQueryMetric = "controlplane.v1.ObservabilityService/QueryMetric"
 	procQueryPanel  = "controlplane.v1.ObservabilityService/QueryPanel"
+
+	procGetMetric           = "controlplane.v1.ObservabilityService/GetMetric"
+	procListMetricExemplars = "controlplane.v1.ObservabilityService/ListMetricExemplars"
 )
 
 // Cloud reads one env's telemetry from the control plane.
@@ -56,7 +60,13 @@ func (c Cloud) call(ctx context.Context, procedure string, req, out any) error {
 	if c.Caller == nil {
 		return Undetermined("no control-plane client for env %s", c.Env)
 	}
-	return MapCloudError(c.Caller.Call(ctx, procedure, req, out))
+	err := c.Caller.Call(ctx, procedure, req, out)
+	var ce *cloud.Error
+	if errors.As(err, &ce) && (ce.Code == cloud.CodeUnimplemented || ce.HTTPStatus == http.StatusNotImplemented) {
+		// An older control plane: a gate must never read this as a pass.
+		return Undetermined("this control plane does not serve %s yet", procedure[strings.LastIndex(procedure, "/")+1:]).Cause(err)
+	}
+	return MapCloudError(err)
 }
 
 // MapCloudError classifies a control-plane failure (DESIGN §10): exit 1 when

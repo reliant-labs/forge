@@ -55,6 +55,7 @@ authority: none implies another product's, and `forge cloud token create
 |---|---|---|
 | `obs:read` | every telemetry read: traces, logs, metrics, issues, release health | the one an org automation token carries to gate CI on a release's health; needs no acting user |
 | `obs:triage` | changing an issue's triage state (resolve, ignore, unresolve) | implies `obs:read` at the point of use; a read-only token cannot silence an issue |
+| `obs:write` | authoring the org's observability workspace (dashboards: save, restore, archive, promote) | implies `obs:read` at the point of use; implies nothing else (not `obs:triage`); cannot be bound to one environment |
 | `db:query` | one read-only query against an env's database | implies nothing and is implied by nothing: app data is not telemetry. A real env may restrict it further to people |
 
 `accesstoken.AllScopes` is the closed set; a store's `access_tokens` CHECK must

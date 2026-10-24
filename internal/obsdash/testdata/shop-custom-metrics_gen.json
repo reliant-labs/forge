@@ -12,14 +12,14 @@
       "w": 12,
       "h": 7,
       "config": {
-        "name": "orders_created",
+        "name": "orders_created (per bucket: HyperDX has no per-second rate)",
         "source": "Metrics",
         "displayType": "line",
         "select": [
           {
-            "aggFn": "sum",
+            "aggFn": "increase",
             "valueExpression": "",
-            "alias": "rate",
+            "alias": "per second",
             "metricName": "orders_created",
             "metricType": "sum"
           }
@@ -41,14 +41,14 @@
       "w": 12,
       "h": 7,
       "config": {
-        "name": "orders_created by status",
+        "name": "orders_created by status (per bucket: HyperDX has no per-second rate)",
         "source": "Metrics",
         "displayType": "line",
         "select": [
           {
-            "aggFn": "sum",
+            "aggFn": "increase",
             "valueExpression": "",
-            "alias": "rate",
+            "alias": "per second",
             "metricName": "orders_created",
             "metricType": "sum"
           }

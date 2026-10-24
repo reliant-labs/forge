@@ -401,7 +401,7 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 var coreComponents = []string{
 	// Primitives — base building blocks for every generated frontend.
 	// "link" first: every navigating component (page_header,
-	// row_actions_menu) imports "./link". The library copy is a plain
+	// row_actions_menu, and button for its `href` form) imports "./link". The library copy is a plain
 	// anchor; installCoreComponents/EnsureCoreComponents overwrite it
 	// with a framework-aware version (see linkComponentForDir).
 	"link",

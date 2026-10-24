@@ -71,7 +71,7 @@ func TestTelemetryConfigIsSameOriginAndSecretFree(t *testing.T) {
 			if !strings.Contains(s, `"@reliantlabs/forge-web-runtime/telemetry"`) {
 				t.Errorf("must import the SDK wiring from the /telemetry subpath:\n%s", s)
 			}
-			for _, want := range []string{"initTelemetry", "'shop-frontend'"} {
+			for _, want := range []string{"initTelemetry", "export const SERVICE_NAME = 'shop-web';", "serviceName: SERVICE_NAME,"} {
 				if !strings.Contains(s, want) {
 					t.Errorf("missing %q:\n%s", want, s)
 				}

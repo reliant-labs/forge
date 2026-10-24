@@ -155,3 +155,29 @@ func TestFrontendDepsStale(t *testing.T) {
 		t.Fatal("lockfile newer than node_modules should be stale")
 	}
 }
+
+func TestLockfilePackageManager(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		locks    []string
+		declared string
+		want     string
+	}{
+		{"no lockfile: the declaration", nil, "yarn", "yarn"},
+		{"no lockfile, no declaration: npm", nil, "", "npm"},
+		{"only pnpm's lock overrides an npm declaration", []string{"pnpm-lock.yaml"}, "npm", "pnpm"},
+		{"the declared runner's lock wins beside a stale other", []string{"pnpm-lock.yaml", "package-lock.json"}, "npm", "npm"},
+		{"pnpm declared beside a package-lock", []string{"pnpm-lock.yaml", "package-lock.json"}, "pnpm", "pnpm"},
+		{"two foreign locks: the first by precedence", []string{"pnpm-lock.yaml", "yarn.lock"}, "npm", "pnpm"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, l := range tc.locks {
+				writeFileAt(t, dir, l, "x")
+			}
+			if got := lockfilePackageManager(dir, tc.declared); got != tc.want {
+				t.Fatalf("lockfilePackageManager(%v, %q) = %q, want %q", tc.locks, tc.declared, got, tc.want)
+			}
+		})
+	}
+}

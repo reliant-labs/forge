@@ -18,7 +18,7 @@ func jnum(s string) json.Number { return json.Number(s) }
 
 func issueRow(fp string) []any {
 	return []any{fp, "api", "*pgconn.PgError: duplicate key <str>", "internal/store/db.go in store.(*DB).Exec", "*pgconn.PgError",
-		jnum("7"), jnum("3"), "2026-10-22 10:00:00.000000000", "2026-10-22 11:30:00.000000000", "0af7651916cd43dd8448eb211c80319c", "v1.4.0", "v1.3.0"}
+		jnum("7"), jnum("3"), "2026-10-22 10:00:00.000000000", "2026-10-22 11:30:00.000000000", "0af7651916cd43dd8448eb211c80319c", "v1.4.0", "v1.3.0", ""}
 }
 
 func eventRow(ts, trace string) []any {
@@ -50,6 +50,48 @@ func TestLocalListIssuesIsStatelessAndKeyedBySfp1(t *testing.T) {
 	sql := fr.ran[0].SQL
 	if !strings.Contains(sql, obsquery.ServerFingerprintSQL) || !strings.Contains(sql, "LIMIT 2") {
 		t.Errorf("statement:\n%s", sql)
+	}
+}
+
+func TestLocalListIssuesOfASource(t *testing.T) {
+	row := issueRow(testFP)
+	row[12] = "llm_bug_report"
+	l, fr := localIssues(fakeAnswer{"GROUP BY fingerprint", Result{Rows: [][]any{row}}})
+	res, err := l.ListIssues(context.Background(), ListIssuesRequest{Narrow: narrowC(), Limit: 5, Source: "llm_bug_report"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Issues) != 1 || res.Issues[0].Source != "llm_bug_report" {
+		t.Fatalf("issues = %+v", res.Issues)
+	}
+	if sql := fr.ran[0].SQL; strings.Contains(sql, obsquery.ServerErrorFilterSQL) || !strings.Contains(sql, obsquery.IssueSourceSQL+" = ") {
+		t.Errorf("a source's issues are its records at any level, not errors:\n%s", sql)
+	}
+}
+
+func TestCloudListIssuesSendsTheSourceAndRefusesAControlPlaneThatIgnoresIt(t *testing.T) {
+	sourced := strings.Replace(wireIssueJSON, `"platform"`, `"source":"llm_bug_report","platform"`, 1)
+	f := &fakeCaller{replies: map[string]string{procListIssues: `{"issues":[` + sourced + `]}`}}
+	res, err := cloudWith(f).ListIssues(context.Background(), ListIssuesRequest{
+		Narrow: Narrow{Range: Range{From: t0c, To: t0c.Add(time.Hour)}}, Source: "llm_bug_report", Limit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.reqs[procListIssues]["source"]; got != "llm_bug_report" {
+		t.Errorf("source = %v", got)
+	}
+	if len(res.Issues) != 1 || res.Issues[0].Source != "llm_bug_report" {
+		t.Fatalf("issues = %+v", res.Issues)
+	}
+
+	// An older control plane drops the unknown filter and answers errors.
+	f = &fakeCaller{replies: map[string]string{procListIssues: `{"issues":[` + wireIssueJSON + `]}`}}
+	_, err = cloudWith(f).ListIssues(context.Background(), ListIssuesRequest{
+		Narrow: Narrow{Range: Range{From: t0c, To: t0c.Add(time.Hour)}}, Source: "llm_bug_report", Limit: 10,
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not filter by issue source") {
+		t.Errorf("err = %v, want a refusal to pass errors off as the source's issues", err)
 	}
 }
 

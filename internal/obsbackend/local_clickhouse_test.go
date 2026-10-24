@@ -167,20 +167,22 @@ func TestLocalBackendAgainstClickHouse(t *testing.T) {
 		}
 	})
 
-	t.Run("metrics: list, query a sum by attribute, a gauge, percentile refusal", func(t *testing.T) {
+	t.Run("metrics: catalog, a counter by attribute over the evaluator, a gauge, a refused percentile", func(t *testing.T) {
 		list, err := l.MetricsList(ctx, obsbackend.MetricsListRequest{Narrow: n, Limit: 10})
 		if err != nil || len(list.Metrics) != 2 {
 			t.Fatalf("%+v %v", list, err)
 		}
 		filtered, _ := l.MetricsList(ctx, obsbackend.MetricsListRequest{Narrow: n, NameContains: "RPC", Limit: 10})
-		if len(filtered.Metrics) != 1 || filtered.Metrics[0].Type != "sum" || filtered.Metrics[0].Unit != "{call}" {
+		if len(filtered.Metrics) != 1 || filtered.Metrics[0].Type != "sum" || filtered.Metrics[0].Unit != "{call}" || !filtered.Metrics[0].Monotonic || !filtered.Metrics[0].Seen {
 			t.Errorf("--contains is case-insensitive: %+v", filtered.Metrics)
 		}
-		q, err := l.MetricsQuery(ctx, obsbackend.MetricsQueryRequest{Narrow: n, Name: "rpc.server.calls", Agg: "increase", GroupBy: []string{"rpc.method"}, StepSeconds: 60})
+		calls := obsquery.Panel{ID: "p", Kind: "line", Signal: "metrics", GroupBy: []string{"rpc.method"},
+			Series: []obsquery.PanelSeries{{Label: "A", Field: "rpc.server.calls", Agg: "increase", MetricType: "sum"}}}
+		q, err := l.MetricsQuery(ctx, obsbackend.MetricsQueryRequest{Narrow: n, Panel: calls, StepSeconds: 60})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if q.Type != "sum" || q.Agg != "increase" || len(q.Series) != 2 {
+		if len(q.Meta) != 1 || q.Meta[0].Type != "sum" || q.Meta[0].Agg != "increase" || len(q.Series) != 2 {
 			t.Fatalf("res = %+v", q)
 		}
 		for _, s := range q.Series {
@@ -188,12 +190,19 @@ func TestLocalBackendAgainstClickHouse(t *testing.T) {
 				t.Errorf("series = %+v", s)
 			}
 		}
-		g, err := l.MetricsQuery(ctx, obsbackend.MetricsQueryRequest{Narrow: n, Name: "heap"})
-		if err != nil || g.Type != "gauge" || g.Agg != "avg" || len(g.Series) != 1 {
+		heap := obsquery.Panel{ID: "p", Kind: "line", Signal: "metrics", Series: []obsquery.PanelSeries{{Label: "A", Field: "heap", Agg: "avg", MetricType: "gauge"}}}
+		g, err := l.MetricsQuery(ctx, obsbackend.MetricsQueryRequest{Narrow: n, Panel: heap})
+		if err != nil || g.Meta[0].Type != "gauge" || g.Meta[0].Agg != "avg" || len(g.Series) != 1 {
 			t.Errorf("%+v %v", g, err)
 		}
-		if _, err := l.MetricsQuery(ctx, obsbackend.MetricsQueryRequest{Narrow: n, Name: "heap", Agg: "p95"}); err == nil {
+		heap.Series[0].Agg = "quantile"
+		heap.Series[0].Quantile = 0.95
+		if _, err := l.MetricsQuery(ctx, obsbackend.MetricsQueryRequest{Narrow: n, Panel: heap}); err == nil {
 			t.Error("a percentile of a gauge")
+		}
+		d, err := l.MetricsDescribe(ctx, obsbackend.MetricsDescribeRequest{Narrow: n, Name: "rpc.server.calls"})
+		if err != nil || d.Info.Type != "sum" || len(d.Attributes) == 0 {
+			t.Errorf("describe: %+v %v", d, err)
 		}
 	})
 

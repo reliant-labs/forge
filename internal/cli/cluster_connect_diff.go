@@ -414,10 +414,7 @@ func writeRBACDiff(out io.Writer, r connectRBAC, liveSource string, entries []rb
 
 func subjectLine(r connectRBAC) string {
 	s := r.connectSubject()
-	if s.Kind == subjectKindServiceAccount {
-		return "ServiceAccount " + s.Namespace + "/" + s.Name + " (this binding's own token identity)"
-	}
-	return "User " + s.Name + " (this binding's own GCP service account)"
+	return "ServiceAccount " + s.Namespace + "/" + s.Name + " (this binding's own token identity)"
 }
 
 // readLiveFile reads a `--live-from` capture.

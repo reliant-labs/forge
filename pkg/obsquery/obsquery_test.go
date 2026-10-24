@@ -209,7 +209,7 @@ func TestScopeGuardrails(t *testing.T) {
 	if _, err := (TraceQuery{Scope: long, Limit: 10}).Compile(); !isInvalid(err) {
 		t.Errorf("20d traces accepted")
 	}
-	if _, err := (MetricList{Scope: long, Limit: 10}).Compile(); err != nil {
+	if _, err := (MetricCatalog{Scope: long, Limit: 10}).Compile(); err != nil {
 		t.Errorf("20d metrics rejected: %v", err)
 	}
 	for _, id := range []string{"", "xyz", strings.Repeat("a", 65), "abc'--"} {
@@ -329,75 +329,129 @@ func TestOverviewAndDashboardStatements(t *testing.T) {
 	}
 }
 
-func TestMetricResolveAggAndStep(t *testing.T) {
+func TestMetricResolveAgg(t *testing.T) {
+	gauge := MetricInfo{Type: MetricGauge}
+	counter := MetricInfo{Type: MetricSum, Monotonic: true, Temporality: TemporalityCumulative}
+	updown := MetricInfo{Type: MetricSum}
+	hist := MetricInfo{Type: MetricHistogram}
 	for _, tc := range []struct {
-		ty      MetricType
+		name    string
+		info    MetricInfo
 		in, out Agg
 		bad     bool
 	}{
-		{MetricGauge, AggDefault, AggAvg, false},
-		{MetricSum, AggDefault, AggRate, false},
-		{MetricHistogram, AggDefault, AggAvg, false},
-		{MetricGauge, AggP95, 0, true},
-		{MetricSum, AggP95, 0, true},
-		{MetricGauge, AggRate, 0, true},
-		{MetricGauge, AggIncrease, 0, true},
-		{MetricHistogram, AggP99, AggP99, false},
-		{MetricSum, AggIncrease, AggIncrease, false},
+		{"gauge default", gauge, AggDefault, AggAvg, false},
+		{"counter default", counter, AggDefault, AggRate, false},
+		{"up-down default is the sum of last values", updown, AggDefault, AggSum, false},
+		{"histogram default is p95, not avg", hist, AggDefault, AggP95, false},
+		{"sum on a monotonic sum is its increase", counter, AggSum, AggIncrease, false},
+		{"sum on an up-down stays a level", updown, AggSum, AggSum, false},
+		{"up-down rate refused", updown, AggRate, 0, true},
+		{"up-down increase refused", updown, AggIncrease, 0, true},
+		{"sum count refused", counter, AggCount, 0, true},
+		{"gauge rate refused", gauge, AggRate, 0, true},
+		{"gauge increase refused", gauge, AggIncrease, 0, true},
+		{"gauge count is data points", gauge, AggCount, AggCount, false},
+		{"gauge percentile refused", gauge, AggP95, 0, true},
+		{"sum percentile refused", counter, AggQuantile, 0, true},
+		{"gauge last", gauge, AggLast, AggLast, false},
+		{"counter last allowed", counter, AggLast, AggLast, false},
+		{"histogram any quantile", hist, AggQuantile, AggQuantile, false},
+		{"histogram p99 alias", hist, AggP99, AggP99, false},
+		{"histogram rate", hist, AggRate, AggRate, false},
+		{"histogram count", hist, AggCount, AggCount, false},
+		{"histogram sum", hist, AggSum, AggSum, false},
+		{"histogram min", hist, AggMin, AggMin, false},
+		{"histogram last refused", hist, AggLast, 0, true},
+		{"unknown kind", MetricInfo{}, AggDefault, 0, true},
 	} {
-		got, err := ResolveAgg(tc.ty, tc.in)
+		got, err := ResolveAgg(tc.info, tc.in)
 		if tc.bad != (err != nil) || (!tc.bad && got != tc.out) {
-			t.Errorf("ResolveAgg(%v,%v) = %v, %v", tc.ty, tc.in, got, err)
+			t.Errorf("%s: ResolveAgg = %v, %v", tc.name, got, err)
 		}
 		if tc.bad && !isInvalid(err) {
-			t.Errorf("ResolveAgg error is not InvalidArgument: %v", err)
+			t.Errorf("%s: error is not InvalidArgument: %v", tc.name, err)
 		}
 	}
-	// a 30d range at a 1s step would be 2.59M points: the step is raised
-	if got := StepForMetric(30*24*time.Hour, 1); got < 1728 {
-		t.Errorf("30d at 1s step -> %d, want >= 1728", got)
-	}
-	if got := StepForMetric(time.Hour, 0); got < 30 || got > 60 {
-		t.Errorf("auto step for 1h = %d", got)
-	}
-	if got := StepForMetric(time.Hour, 300); got != 300 {
-		t.Errorf("requested step not honoured: %d", got)
+}
+
+func TestStepForMetric(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		rng       time.Duration
+		requested int32
+		interval  int64
+		step      int64
+		raised    bool
+	}{
+		{"1h at a 60s export is never 30s by default", time.Hour, 0, 60, 60, false},
+		{"15m at a 60s export is not the 10s the spike read 6x high at", 15 * time.Minute, 0, 60, 60, false},
+		{"an explicit step below the interval is raised and said so", time.Hour, 10, 60, 60, true},
+		{"a step above the interval is honoured", time.Hour, 300, 60, 300, false},
+		{"no interval known: the 1500-point floor only", time.Hour, 0, 0, 30, false},
+		{"a 30s infra metric allows 30s", time.Hour, 0, 30, 30, false},
+		{"a 30d range at 1s is raised by the point cap", 30 * 24 * time.Hour, 1, 60, 1800, true},
+		{"the raised step is a nice one", time.Hour, 20, 45, 60, true},
+	} {
+		step, raised := StepForMetric(tc.rng, tc.requested, tc.interval)
+		if step != tc.step || raised != tc.raised {
+			t.Errorf("%s: StepForMetric(%v, %d, %d) = %d, %v; want %d, %v", tc.name, tc.rng, tc.requested, tc.interval, step, raised, tc.step, tc.raised)
+		}
 	}
 }
 
 func TestMetricQueryCompile(t *testing.T) {
 	h := "x') OR 1=1 --"
+	infos := map[MetricType]MetricInfo{
+		MetricGauge:     {Type: MetricGauge, IntervalSeconds: 60},
+		MetricSum:       {Type: MetricSum, Monotonic: true, Temporality: TemporalityCumulative, IntervalSeconds: 60},
+		MetricHistogram: {Type: MetricHistogram, Temporality: TemporalityCumulative, IntervalSeconds: 60},
+	}
 	for _, ty := range []MetricType{MetricGauge, MetricSum, MetricHistogram} {
-		for _, agg := range []Agg{AggAvg, AggSum, AggMin, AggMax, AggCount, AggIncrease, AggRate, AggP50, AggP95} {
-			if _, err := ResolveAgg(ty, agg); err != nil {
-				continue
-			}
-			q := MetricQuery{
-				Scope: Scope{Database: "t_org_a", EnvRestricted: true, EnvIDs: []string{h}, Services: []string{h}, Start: t0, End: t0.Add(time.Hour),
-					Declared: map[string]bool{"pod": true},
-					Filters:  []AttrFilter{{Key: "pod", Op: "eq", Value: h}, {Key: "k8s.container.name", Op: "in", Values: []string{h}}}},
-				Name: h, Type: ty, Agg: agg, GroupBy: []string{"pod", "service.name"},
-				StepSeconds: 60,
-			}
-			st, err := q.Compile()
-			if err != nil {
-				t.Fatalf("type %v agg %v: %v", ty, agg, err)
-			}
-			assertParameterized(t, st, h)
-			if !strings.Contains(st.SQL, "FROM t_org_a."+ty.table()) {
-				t.Errorf("type %v: wrong table:\n%s", ty, st.SQL)
+		for _, agg := range []Agg{AggDefault, AggAvg, AggSum, AggMin, AggMax, AggLast, AggCount, AggIncrease, AggRate, AggP50, AggP95, AggQuantile} {
+			for _, reduce := range []bool{false, true} {
+				for _, series := range []int64{3, 500} {
+					info := infos[ty]
+					info.Series = series
+					if _, err := ResolveAgg(info, agg); err != nil {
+						continue
+					}
+					q := MetricQuery{
+						Scope: Scope{Database: "t_org_a", EnvRestricted: true, EnvIDs: []string{h}, Services: []string{h}, Start: t0, End: t0.Add(time.Hour),
+							Declared: map[string]bool{"pod": true},
+							Filters:  []AttrFilter{{Key: "pod", Op: "eq", Value: h}, {Key: "k8s.container.name", Op: "in", Values: []string{h}}}},
+						Name: h, Info: info, Agg: agg, Quantile: 0.9, GroupBy: []string{"pod", "service.name"},
+						Where:       []PanelPredicate{{Field: "metric.attr.k", Op: "eq", Value: h}},
+						StepSeconds: 60, Reduce: reduce,
+					}
+					st, err := q.Compile()
+					if err != nil {
+						t.Fatalf("type %v agg %v reduce %v: %v", ty, agg, reduce, err)
+					}
+					assertParameterized(t, st, h)
+					if !strings.Contains(st.SQL, "FROM t_org_a."+ty.table()) {
+						t.Errorf("type %v: wrong table:\n%s", ty, st.SQL)
+					}
+					if capped := series > MaxMetricSeries; capped != strings.Contains(st.SQL, "LIMIT 50)") {
+						t.Errorf("type %v agg %v: series %d: cap in SQL = %v:\n%s", ty, agg, series, !capped, st.SQL)
+					}
+				}
 			}
 		}
 	}
-	base := MetricQuery{Scope: scope(), Name: "m", Type: MetricGauge, Agg: AggAvg, StepSeconds: 60}
+	base := MetricQuery{Scope: scope(), Name: "m", Info: MetricInfo{Type: MetricGauge}, Agg: AggAvg, StepSeconds: 60}
 	for name, mut := range map[string]func(*MetricQuery){
-		"no name":           func(q *MetricQuery) { q.Name = "" },
-		"4 group keys":      func(q *MetricQuery) { q.GroupBy = []string{"a", "b", "c", "d"} },
-		"no step":           func(q *MetricQuery) { q.StepSeconds = 0 },
-		"too many pts":      func(q *MetricQuery) { q.StepSeconds = 1; q.Scope.End = q.Scope.Start.Add(3 * time.Hour) },
-		"no type":           func(q *MetricQuery) { q.Type = MetricUnknown },
-		"empty group":       func(q *MetricQuery) { q.GroupBy = []string{""} },
-		"hist pct on gauge": func(q *MetricQuery) { q.Agg = AggP95 },
+		"no name":                func(q *MetricQuery) { q.Name = "" },
+		"4 group keys":           func(q *MetricQuery) { q.GroupBy = []string{"a", "b", "c", "d"} },
+		"no step":                func(q *MetricQuery) { q.StepSeconds = 0 },
+		"too many pts":           func(q *MetricQuery) { q.StepSeconds = 1; q.Scope.End = q.Scope.Start.Add(3 * time.Hour) },
+		"no type":                func(q *MetricQuery) { q.Info.Type = MetricUnknown },
+		"empty group":            func(q *MetricQuery) { q.GroupBy = []string{""} },
+		"hist pct on gauge":      func(q *MetricQuery) { q.Agg = AggP95 },
+		"quantile out of range":  func(q *MetricQuery) { q.Info.Type, q.Agg, q.Quantile = MetricHistogram, AggQuantile, 1.5 },
+		"quantile level missing": func(q *MetricQuery) { q.Info.Type, q.Agg = MetricHistogram, AggQuantile },
+		"negative cap":           func(q *MetricQuery) { q.MaxSeries = -1 },
+		"up-down rate":           func(q *MetricQuery) { q.Info.Type, q.Agg = MetricSum, AggRate },
 	} {
 		q := base
 		mut(&q)
@@ -405,7 +459,7 @@ func TestMetricQueryCompile(t *testing.T) {
 			t.Errorf("%s: err = %v, want InvalidArgument", name, err)
 		}
 	}
-	if _, err := (MetricList{Scope: scope(), Limit: ListMetricsMax + 1}).Compile(); !isInvalid(err) {
+	if _, err := (MetricCatalog{Scope: scope(), Limit: ListMetricsMax + 1}).Compile(); !isInvalid(err) {
 		t.Errorf("metric list over max accepted")
 	}
 	st, err := MetricLookup{Scope: scope(), Name: h}.Compile()

@@ -72,7 +72,7 @@ func TestLibraryCategories(t *testing.T) {
 		CategoryCharts:   3,
 		CategoryDiagrams: 6,
 		CategoryDeck:     7,
-		CategoryUI:       46,
+		CategoryUI:       48,
 	}
 
 	for cat, want := range expected {
@@ -97,6 +97,48 @@ func TestLibraryGet(t *testing.T) {
 	_, err = lib.Get("nonexistent")
 	if err == nil {
 		t.Error("get nonexistent should return error")
+	}
+}
+
+// TestLibraryDependencies pins the import closure `component install` writes
+// beside a component: every `./x` import that is a library component, followed
+// transitively, and nothing that is not.
+func TestLibraryDependencies(t *testing.T) {
+	lib := NewLibrary()
+	for name, want := range map[string][]string{
+		"input":         {"form_field_context"},
+		"textarea":      {"form_field_context"},
+		"toggle_switch": {"form_field_context"},
+		"page_header":   {"link"},
+		"dropdown_menu": {"link", "popover"},
+		"badge":         nil,
+	} {
+		got, err := lib.Dependencies(name)
+		if err != nil {
+			t.Fatalf("Dependencies(%q): %v", name, err)
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("Dependencies(%q) = %v, want %v", name, got, want)
+		}
+	}
+
+	// Every dependency of every component resolves: an import of a sibling
+	// the library does not ship would compile nowhere but the project that
+	// happens to have it.
+	for _, entry := range lib.Registry() {
+		src, err := lib.Get(entry.Name)
+		if err != nil {
+			t.Fatalf("get %s: %v", entry.Name, err)
+		}
+		for _, m := range siblingImport.FindAllStringSubmatch(src, -1) {
+			if _, ok := lib.GetEntry(m[1]); !ok {
+				t.Errorf("%s imports ./%s, which is not a library component", entry.Name, m[1])
+			}
+		}
+	}
+
+	if _, err := lib.Dependencies("nonexistent"); err == nil {
+		t.Error("Dependencies(nonexistent) should return an error")
 	}
 }
 
@@ -268,8 +310,8 @@ func TestLibraryList(t *testing.T) {
 
 	// List all
 	all := lib.List("", "")
-	if len(all) != 77 {
-		t.Errorf("list all should return 77 components, got %d", len(all))
+	if len(all) != 79 {
+		t.Errorf("list all should return 79 components, got %d", len(all))
 	}
 
 	// List filtered by category

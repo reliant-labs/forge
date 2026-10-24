@@ -2287,7 +2287,7 @@
     {
       "id": "frontend",
       "title": "shop: frontend",
-      "description": "Browser errors, page loads, web vitals and API calls from the HyperDX browser SDK (service.name shop-frontend). Panels follow HyperDX's Browser RUM template: a browser span carries the rum.sessionId resource attribute.",
+      "description": "Browser errors, page loads, web vitals and API calls from the HyperDX browser SDK (service.name shop-web). Panels follow HyperDX's Browser RUM template: a browser span carries the rum.sessionId resource attribute.",
       "filters": [
         {
           "id": "service",
@@ -2319,6 +2319,13 @@
             }
           ],
           "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-web"
+              ]
+            },
             {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"
@@ -2355,6 +2362,13 @@
           ],
           "where": [
             {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-web"
+              ]
+            },
+            {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"
             }
@@ -2375,6 +2389,13 @@
             }
           ],
           "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-web"
+              ]
+            },
             {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"
@@ -2405,6 +2426,13 @@
             }
           ],
           "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-web"
+              ]
+            },
             {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"
@@ -2440,6 +2468,13 @@
           ],
           "where": [
             {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-web"
+              ]
+            },
+            {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"
             },
@@ -2469,6 +2504,13 @@
           "signal": "traces",
           "where": [
             {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-web"
+              ]
+            },
+            {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"
             }
@@ -2483,6 +2525,13 @@
           "kind": "sessions",
           "signal": "traces",
           "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-web"
+              ]
+            },
             {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"
@@ -2506,6 +2555,13 @@
             }
           ],
           "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-web"
+              ]
+            },
             {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"
@@ -2539,6 +2595,13 @@
           ],
           "where": [
             {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-web"
+              ]
+            },
+            {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"
             },
@@ -2571,6 +2634,13 @@
           ],
           "where": [
             {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-web"
+              ]
+            },
+            {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"
             },
@@ -2601,6 +2671,13 @@
             }
           ],
           "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-web"
+              ]
+            },
             {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"
@@ -2633,6 +2710,13 @@
             }
           ],
           "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-web"
+              ]
+            },
             {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"
@@ -2719,6 +2803,13 @@
           ],
           "where": [
             {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-web"
+              ]
+            },
+            {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"
             },
@@ -2747,6 +2838,13 @@
             }
           ],
           "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-web"
+              ]
+            },
             {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"
@@ -2799,6 +2897,13 @@
           ],
           "where": [
             {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-web"
+              ]
+            },
+            {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"
             },
@@ -2839,6 +2944,13 @@
             }
           ],
           "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-web"
+              ]
+            },
             {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"
@@ -2886,6 +2998,13 @@
           ],
           "where": [
             {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-web"
+              ]
+            },
+            {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"
             },
@@ -2911,6 +3030,13 @@
           "kind": "search",
           "signal": "traces",
           "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-web"
+              ]
+            },
             {
               "field": "resource.attr.rum.sessionId",
               "op": "exists"

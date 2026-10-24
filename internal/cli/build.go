@@ -689,6 +689,11 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	if err := preflightRealBuild(ctx, entities, opts); err != nil {
 		return err
 	}
+	// A release that can only come out empty is refused now, not after the
+	// build (a frontend build alone is minutes).
+	if why, empty := releaseCapturesNothing(projectDirForKCL(), entities, targets, opts); empty {
+		return errEmptyRelease(why, opts)
+	}
 	// Refuse conflicting writers, and built_images edges that cannot be
 	// scheduled, before ANY build or push, not after earlier lanes have
 	// published images. The dispatcher and --plan use this too.

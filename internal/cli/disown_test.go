@@ -345,6 +345,15 @@ func TestRunDisown_AcceptsHandWrittenHooksBarrel(t *testing.T) {
 	if why, ok := leftAloneFor(rel); ok {
 		t.Fatalf("a disowned barrel is still named in the summary: %q", why)
 	}
+
+	// The disown is load-bearing: without it the next run prints the
+	// left-alone notice that told the user to disown. Retirement must keep it.
+	if retired := checksums.RetireObsoleteDisowns(cs, nil); len(retired) != 0 {
+		t.Fatalf("a disowned hooks barrel was retired as obsolete: %v", retired)
+	}
+	if !cs.IsDisowned(rel) {
+		t.Fatalf("expected %s to stay disowned; disowned set = %v", rel, cs.Disowned)
+	}
 }
 
 // The barrel allowance is the barrel paths only: an index.ts elsewhere is an

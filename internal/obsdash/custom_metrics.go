@@ -19,7 +19,7 @@ func IsBuiltinMetric(name string) bool { return metrics.IsBuiltin(name) }
 // BuildCustomMetrics turns a metrics schema into the "Custom metrics"
 // dashboard: one section per project-declared metric, drawn by its type.
 //
-//	counter        a rate: the increase per time bucket
+//	counter        a rate, per second
 //	updowncounter  the current value (last)
 //	gauge          the current value (last)
 //	histogram      p50, p95 and p99
@@ -86,9 +86,9 @@ func metricPanels(m metrics.Spec) []Panel {
 	var series []Series
 	switch m.Type {
 	case metrics.Counter:
-		// HyperDX turns a Sum metric into its per-bucket increase, so summing a
-		// counter IS its rate.
-		series = []Series{{Label: "rate", Agg: AggSum, Field: m.Name, MetricType: "sum"}}
+		// A rate is per second whatever the bucket width, so the number does
+		// not change when the reader zooms (an increase per bucket would).
+		series = []Series{{Label: "per second", Agg: AggRate, Field: m.Name, MetricType: "sum"}}
 	case metrics.UpDownCounter:
 		series = []Series{{Label: "value", Agg: AggLast, Field: m.Name, MetricType: "sum"}}
 	case metrics.Gauge:

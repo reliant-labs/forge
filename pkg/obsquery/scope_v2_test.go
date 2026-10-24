@@ -50,7 +50,7 @@ func TestKeysOutsideTheAllowlistAreInvalid(t *testing.T) {
 			"group/overview": func() (Stmt, error) { return Overview{Scope: scopeWith(nil), GroupBy: []string{key}}.RED() },
 			"group/traces":   TraceQuery{Scope: scopeWith(nil), GroupBy: []string{key}}.CompileREDGroups,
 			"group/metric": func() (Stmt, error) {
-				return MetricQuery{Scope: scopeWith(nil), Name: "m", Type: MetricGauge, Agg: AggAvg, GroupBy: []string{key}, StepSeconds: 60}.Compile()
+				return MetricQuery{Scope: scopeWith(nil), Name: "m", Info: MetricInfo{Type: MetricGauge}, Agg: AggAvg, GroupBy: []string{key}, StepSeconds: 60}.Compile()
 			},
 			"values": AttrValues{Scope: scopeWith(nil), Key: key, Limit: 10}.Compile,
 		} {
@@ -65,7 +65,7 @@ func TestKeysOutsideTheAllowlistAreInvalid(t *testing.T) {
 // only for metrics.
 func TestDeclaredMetricKeys(t *testing.T) {
 	declared := scopeWith(func(s *Scope) { s.Declared = map[string]bool{"status": true, "pod": true} })
-	q := MetricQuery{Scope: declared, Name: "orders_created", Type: MetricSum, Agg: AggRate, GroupBy: []string{"pod"}, StepSeconds: 60}
+	q := MetricQuery{Scope: declared, Name: "orders_created", Info: MetricInfo{Type: MetricSum, Monotonic: true}, Agg: AggRate, GroupBy: []string{"pod"}, StepSeconds: 60}
 	st, err := q.Compile()
 	if err != nil {
 		t.Fatal(err)

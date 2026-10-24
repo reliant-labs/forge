@@ -80,6 +80,7 @@ CANNOT evaluate it. That is by design: the binary is the module version. These
 subcommands are how anything outside forge reads a value out of project KCL.`,
 	}
 	cmd.AddCommand(newKCLEvalCmd())
+	cmd.AddCommand(newKCLImportsCmd())
 	// Without this, cobra accepts `forge kcl <typo>` and exits 0 — a script
 	// whose command name rotted would silently succeed and read an empty value.
 	return cmdutil.StrictGroup(cmd)

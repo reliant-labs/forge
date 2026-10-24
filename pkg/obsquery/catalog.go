@@ -9,39 +9,6 @@ import (
 	"github.com/reliant-labs/forge/pkg/observe/metrics"
 )
 
-// Temporality is how a sum or histogram's SDK exports its value; the values
-// are the OTel AggregationTemporality enum.
-//
-// moves to metric_eval.go with MX-F1: whichever lands second deletes the duplicate.
-type Temporality int32
-
-// The temporalities.
-const (
-	TemporalityUnknown    Temporality = 0
-	TemporalityDelta      Temporality = 1
-	TemporalityCumulative Temporality = 2
-)
-
-func (t Temporality) String() string {
-	switch t {
-	case TemporalityDelta:
-		return "delta"
-	case TemporalityCumulative:
-		return "cumulative"
-	}
-	return "unknown"
-}
-
-// Rows is the result cursor a Parse* function reads. The caller closes it.
-//
-// moves to metric_eval.go with MX-F1: whichever lands second deletes the duplicate.
-type Rows interface {
-	Next() bool
-	Scan(dest ...any) error
-	Err() error
-	Close() error
-}
-
 // CatalogKind is the table a metric is stored in. 1-3 equal MetricType's, and
 // all five equal the control plane's MetricType wire enum.
 type CatalogKind int

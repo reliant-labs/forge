@@ -13,6 +13,32 @@ func onePanel(fields string) string {
 
 const twoCounts = `"series":[{"label":"errors","agg":"count"},{"label":"all","agg":"count"}]`
 
+func TestValidationAcceptsTheMetricAggregations(t *testing.T) {
+	for _, tc := range []struct{ name, series string }{
+		{"rate of a counter", `{"label":"r","agg":"rate","field":"m","metricType":"sum"}`},
+		{"increase of a counter", `{"label":"r","agg":"increase","field":"m","metricType":"sum"}`},
+		{"sum of a counter (its increase)", `{"label":"r","agg":"sum","field":"m","metricType":"sum"}`},
+		{"min of a gauge", `{"label":"r","agg":"min","field":"m","metricType":"gauge"}`},
+		{"max of a gauge", `{"label":"r","agg":"max","field":"m","metricType":"gauge"}`},
+		{"last of a gauge", `{"label":"r","agg":"last","field":"m","metricType":"gauge"}`},
+		{"rate of a histogram", `{"label":"r","agg":"rate","field":"m","metricType":"histogram"}`},
+		{"count of a histogram", `{"label":"r","agg":"count","field":"m","metricType":"histogram"}`},
+		{"p90 of a histogram", `{"label":"r","agg":"quantile","quantile":0.9,"field":"m","metricType":"histogram"}`},
+		{"p100 of a histogram", `{"label":"r","agg":"quantile","quantile":1,"field":"m","metricType":"histogram"}`},
+	} {
+		for _, kind := range []string{"line", "number", "table", "bar"} {
+			group := ""
+			if kind == "bar" {
+				group = `"groupBy":["metric.attr.route"],`
+			}
+			src := onePanel(`"kind":"` + kind + `","signal":"metrics",` + group + `"series":[` + tc.series + `]`)
+			if _, err := ParseDashboard("f.json", []byte(src)); err != nil {
+				t.Errorf("%s as a %s: %v", tc.name, kind, err)
+			}
+		}
+	}
+}
+
 func TestValidationAcceptsBarHeatmapSQLFormulaAndLimit(t *testing.T) {
 	ok := []struct{ name, src string }{
 		{"formula on a line", onePanel(`"kind":"line","signal":"traces","formula":"A / B * 100",` + twoCounts)},

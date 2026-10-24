@@ -89,24 +89,31 @@ func TestLintScopePackagesCountOnlyCompiledGo(t *testing.T) {
 			if got := sorted(s.goPackages()); !reflect.DeepEqual(got, sorted(tc.wantAny)) {
 				t.Errorf("goPackages = %v, want %v", got, tc.wantAny)
 			}
-			if got := sorted(s.defaultPassPackages()); !reflect.DeepEqual(got, sorted(tc.wantDefault)) {
+			got, _ := defaultPassPackages(root, s.goPackages(), nil)
+			if got := sorted(got); !reflect.DeepEqual(got, sorted(tc.wantDefault)) {
 				t.Errorf("defaultPassPackages = %v, want %v", got, tc.wantDefault)
 			}
 		})
 	}
 }
 
-// golangci-lint applies its config's run.build-tags to the default pass, so a
-// tag listed there makes its files part of the default build.
-func TestLintScopeDefaultPassHonoursGolangciBuildTags(t *testing.T) {
+// A tag golangci-lint's own run.build-tags lists is part of the default pass,
+// so its files count, and a config tag combines with a project tag the way
+// the per-tag pass runs them.
+func TestLintScopeGoPackagesHonoursGolangciBuildTags(t *testing.T) {
 	root := noCompiledGoFixture(t)
-	writeTree(t, root, map[string]string{".golangci.yml": "version: \"2\"\nrun:\n  build-tags:\n    - integration\n"})
-	s, err := parseLintScope(root, []string{"itest"})
+	writeTree(t, root, map[string]string{
+		".golangci.yml":  "version: \"2\"\nrun:\n  build-tags:\n    - linting\n",
+		"both/b_test.go": "//go:build linting && integration\n\npackage both\n",
+		"cfgonly/c.go":   "//go:build linting\n\npackage cfgonly\n",
+		"cfgnever/n.go":  "//go:build !linting\n\npackage cfgnever\n",
+	})
+	s, err := parseLintScope(root, []string{"both", "cfgonly", "cfgnever"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := s.defaultPassPackages(), []string{"./itest/..."}; !reflect.DeepEqual(got, want) {
-		t.Errorf("defaultPassPackages = %v, want %v", got, want)
+	if got, want := sorted(s.goPackages()), []string{"./both/...", "./cfgonly/..."}; !reflect.DeepEqual(got, want) {
+		t.Errorf("goPackages = %v, want %v", got, want)
 	}
 }
 

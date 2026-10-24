@@ -5,10 +5,10 @@ package lint
 // golangci-lint (and go/packages under the contract linter) refuses a set of
 // patterns that resolves to no package in the module: "no go files to
 // analyze". That is not "nothing to report" — it fails the lane. So a scope
-// path contributes a pattern only when a lint pass would actually compile Go
-// under it. A `.go` file is not enough evidence: reliant's scripts/ held one
-// shell script and one `//go:build ignore` program, the old check counted the
-// .go file, and every scripts-only pull request failed golangci-lint.
+// path contributes a pattern only when some lint pass would actually compile
+// Go under it. A `.go` file is not enough evidence: reliant's scripts/ held
+// shell scripts and one `//go:build ignore` program, the old check counted
+// the .go file, and every scripts-only pull request failed golangci-lint.
 //
 // What no pass compiles, and so contributes no pattern:
 //   - a file excluded by its build constraint on every pass (`ignore`, a
@@ -18,15 +18,12 @@ package lint
 //   - the trees `go list ./...` itself skips (testdata, vendor, node_modules,
 //     `.`- and `_`-prefixed directories).
 //
-// Two answers, because forge runs more than one golangci-lint pass
-// (golangci_build_tags.go). goPackages is every pattern SOME pass compiles —
-// the default pass or a per-tag pass — so a directory of integration-tagged
-// tests stays in scope for the integration pass. defaultPassPackages is the
-// subset the default (untagged) build compiles: what the default pass, the
-// typed-config guardrail and the contract linter may be handed. A scope that
-// reaches only tagged code skips the default pass and still runs the tagged
-// one; a scope that reaches no compiled Go at all leaves the lane vacuous,
-// and the engine skips it with a one-line note.
+// "Some pass" includes forge's per-tag golangci-lint passes
+// (golangci_build_tags.go), so a directory of integration-tagged tests stays
+// in scope for the integration pass; defaultPassPackages then keeps it out
+// of the passes that compile only the default build. A scope reaching no
+// compiled Go at all is vacuous for every package lane, and the engine skips
+// each with a one-line note.
 
 import (
 	"go/build"
@@ -37,31 +34,12 @@ import (
 	"strings"
 )
 
-// goReach is which lint passes compile Go a scope path reaches.
-type goReach struct {
-	// inDefault: the default pass (host tags plus golangci's run.build-tags).
-	inDefault bool
-	// inAny: the default pass or one of the per-tag passes.
-	inAny bool
-}
-
 // goPackages translates the scope into Go package patterns for the lanes
 // that take them: `./<dir>/...` for a directory, the containing package for
 // a .go file. A path no lint pass compiles Go under (proto/, db/migrations/,
 // scripts/ holding only shell and `//go:build ignore` programs) contributes
 // nothing, and an empty result means no Go package is in scope.
 func (s *lintScope) goPackages() []string {
-	return s.packagesWhere(func(r goReach) bool { return r.inAny })
-}
-
-// defaultPassPackages is goPackages narrowed to the patterns that reach Go the
-// default build compiles on this host (with golangci's run.build-tags) — what
-// a lane that does not add per-tag build tags may be handed.
-func (s *lintScope) defaultPassPackages() []string {
-	return s.packagesWhere(func(r goReach) bool { return r.inDefault })
-}
-
-func (s *lintScope) packagesWhere(keep func(goReach) bool) []string {
 	if s == nil {
 		return nil
 	}
@@ -74,26 +52,27 @@ func (s *lintScope) packagesWhere(keep func(goReach) bool) []string {
 		if err != nil {
 			continue
 		}
-		var (
-			pattern string
-			reach   goReach
-		)
+		var pattern string
 		switch {
 		case fi.IsDir():
+			if !s.compilesGo(abs, true, tags) {
+				continue
+			}
 			pattern = "./" + p + "/..."
-			reach = s.scanGo(abs, true, tags)
 		case strings.HasSuffix(p, ".go"):
 			// A file names its package: golangci-lint lints the package, and
 			// the scope filters its findings back to the file.
+			if !s.compilesGo(filepath.Dir(abs), false, tags) {
+				continue
+			}
 			pattern = "./" + path.Dir(p)
 			if path.Dir(p) == "." {
 				pattern = "."
 			}
-			reach = s.scanGo(filepath.Dir(abs), false, tags)
 		default:
 			continue
 		}
-		if keep(reach) && !seen[pattern] {
+		if !seen[pattern] {
 			seen[pattern] = true
 			out = append(out, pattern)
 		}
@@ -101,14 +80,14 @@ func (s *lintScope) packagesWhere(keep func(goReach) bool) []string {
 	return out
 }
 
-// scanGo reports which passes compile a Go file in dir — under it too when
-// recursive — walking as `go list ./dir/...` walks: no nested module, no
-// testdata, vendor, node_modules, or `.`/`_`-prefixed directory.
-func (s *lintScope) scanGo(dir string, recursive bool, tags []string) goReach {
-	var r goReach
+// compilesGo reports whether some lint pass compiles a Go file in dir — under
+// it too when recursive — walking as `go list ./dir/...` walks: no nested
+// module, no testdata, vendor, node_modules, or `.`/`_`-prefixed directory.
+func (s *lintScope) compilesGo(dir string, recursive bool, tags []string) bool {
 	if dir != s.root && hasGoMod(dir) {
-		return r // another module: none of this module's packages
+		return false // another module: none of this module's packages
 	}
+	found := false
 	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // an unreadable subtree is simply not counted
@@ -124,34 +103,30 @@ func (s *lintScope) scanGo(dir string, recursive bool, tags []string) goReach {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(d.Name(), ".go") {
-			return nil
-		}
-		inDefault, inAny := goFilePasses(filepath.Dir(p), d.Name(), tags)
-		r.inDefault = r.inDefault || inDefault
-		r.inAny = r.inAny || inAny
-		if r.inDefault {
-			return fs.SkipAll // the default pass implies every answer
+		if strings.HasSuffix(d.Name(), ".go") && someLintPassCompiles(filepath.Dir(p), d.Name(), tags) {
+			found = true
+			return fs.SkipAll
 		}
 		return nil
 	})
-	return r
+	return found
 }
 
-// goFilePasses reports whether the default pass compiles the Go file
-// dir/name (go/build's own matcher: file-name GOOS/GOARCH suffixes and the
-// //go:build line, with tags), and whether any pass does — the default, or
-// the pass forge adds for one project-defined tag the file's constraint
-// names, which it runs with tags plus that tag (collectGolangciLintJSON).
-func goFilePasses(dir, name string, tags []string) (inDefault, inAny bool) {
+// someLintPassCompiles reports whether a golangci-lint pass compiles the Go
+// file dir/name: the default pass (go/build's own matcher — file-name
+// GOOS/GOARCH suffixes and the //go:build line — with tags, golangci's
+// run.build-tags), or the pass forge adds for one project-defined tag the
+// file's constraint names, which runs with tags plus that tag
+// (collectGolangciLintJSON).
+func someLintPassCompiles(dir, name string, tags []string) bool {
 	ctx := build.Default
 	ctx.BuildTags = tags
 	if ok, _ := ctx.MatchFile(dir, name); ok {
-		return true, true
+		return true
 	}
 	expr := goBuildExpr(filepath.Join(dir, name))
 	if expr == nil {
-		return false, false
+		return false
 	}
 	for _, tag := range exprTags(expr) {
 		if isToolchainTag(tag) {
@@ -159,10 +134,10 @@ func goFilePasses(dir, name string, tags []string) (inDefault, inAny bool) {
 		}
 		ctx.BuildTags = append(append([]string{}, tags...), tag)
 		if ok, _ := ctx.MatchFile(dir, name); ok {
-			return false, true
+			return true
 		}
 	}
-	return false, false
+	return false
 }
 
 func hasGoMod(dir string) bool {

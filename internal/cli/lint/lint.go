@@ -953,8 +953,8 @@ func golangciRunArgs(extra []string, paths []string) []string {
 // SA9004's gave reliant's untyped const block a protoreflect.FullName type and
 // the package stopped compiling. What gofmt/goimports would fix, forge's own
 // format pre-pass already fixes; everything else stays a finding for the
-// author. rc is taken so the mode is visibly not consulted; pkgs is the
-// default pass's package set (rc.defaultPassPackages).
+// author. rc is taken so the mode is visibly not consulted; pkgs are the
+// default pass's patterns (defaultPassPackages).
 func golangciGateArgs(_ *lintRunCtx, pkgs []string) []string {
 	return golangciRunArgs(nil, pkgs)
 }

@@ -627,8 +627,12 @@ files are moved with ` + "`git mv`" + `. A batch keeps its relative order.
 WHAT IT REFUSES. A migration already on the default branch keeps its version,
 always. Some database has recorded it as applied under its current filename,
 and renaming it would leave that database with a recorded version whose file
-no longer exists — worse than the problem, and unrecoverable without editing
-schema_migrations by hand. Write a new forward migration instead.
+no longer exists, and the renamed copy re-runs SQL that database already holds.
+Write a new forward migration instead. When the merged file is the one a
+database has already passed (the migrator refuses it as never-applicable),
+replace it: delete it and add the same SQL, written re-runnably (IF NOT
+EXISTS), with ` + "`forge db migration new`" + ` — a database that ran it runs the
+copy as a no-op.
 
 Examples:
   forge db migration rebase db/migrations/20260101120000_add_users.up.sql

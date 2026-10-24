@@ -97,6 +97,50 @@ func TestUpProceedsOnceTheMissingMigrationIsReVersioned(t *testing.T) {
 	}
 }
 
+// TestUpProceedsOnceAMergedMissingMigrationIsReplaced follows the refusal's
+// OTHER instruction, for the file that has already merged — the shape of
+// reliant's 20261024024221, which merged below a version main and prod already
+// held. Two databases exist by then:
+//
+//   - passed: deployed B before A merged, so A's version is behind it and A is
+//     missing — the database the refusal fires on;
+//   - fresh: created from main after A merged, so it applied A at its old
+//     version, in order, and holds A's table already.
+//
+// A rename alone would re-run A's SQL on fresh. The fix the message names is
+// a replacement: delete A, add its SQL re-runnably at a new version. Both
+// databases must then migrate cleanly, and fresh's record of the deleted
+// version must not be held against it.
+func TestUpProceedsOnceAMergedMissingMigrationIsReplaced(t *testing.T) {
+	passed := requirePG(t)
+	fresh := requirePG(t)
+	mustUp(t, release(merged(olderFiles, branchBLate)), passed)
+	mustUp(t, release(merged(merged(olderFiles, branchBLate), branchAEarly)), fresh)
+
+	replaced := merged(merged(olderFiles, branchBLate), map[string]string{
+		"20260101130000_add_teams.up.sql": "CREATE TABLE IF NOT EXISTS teams (id INT PRIMARY KEY);",
+	})
+	for name, dsn := range map[string]string{"passed": passed, "fresh": fresh} {
+		res := mustUp(t, release(replaced), dsn)
+		if res.After.Version != 20260101130000 {
+			t.Errorf("%s: up after replacing = %+v; want the schema at 20260101130000", name, res)
+		}
+		db := openRecordDB(t, dsn)
+		var exists bool
+		if err := db.QueryRow("SELECT to_regclass('teams') IS NOT NULL").Scan(&exists); err != nil {
+			t.Fatal(err)
+		}
+		if !exists {
+			t.Errorf("%s: teams does not exist after the replacement applied", name)
+		}
+		// And the next release boots on it: nothing is missing, nothing
+		// mismatched, nothing re-applied.
+		if again := mustUp(t, release(replaced), dsn); again.Changed {
+			t.Errorf("%s: second up = %+v; want no change", name, again)
+		}
+	}
+}
+
 // TestUpAcceptsATimestampMigrationOnASequentialDatabase is the adoption
 // path every existing forge project takes: a database migrated entirely with
 // 5-digit sequential versions meets a release whose new migration is a

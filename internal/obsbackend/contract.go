@@ -34,6 +34,17 @@ type IssueReader interface {
 	UpdateIssueStatus(ctx context.Context, req UpdateIssueStatusRequest) (UpdateIssueStatusResult, error)
 }
 
+// SessionReader reads browser sessions: the list, and one session's summary
+// with its timeline (`forge obs sessions|session`). Both backends implement
+// it. A local ClickStack has no browser tables, so its reads answer "could not
+// look"; the cloud one is the control plane's RumService.
+//
+//forge:contract
+type SessionReader interface {
+	ListSessions(ctx context.Context, req ListSessionsRequest) (ListSessionsResult, error)
+	GetSession(ctx context.Context, req GetSessionRequest) (GetSessionResult, error)
+}
+
 // HealthReader judges a release: the windows before and after a promotion,
 // per service, and what the release opened (`forge obs check`). The local
 // backend judges from the ClickStack with pkg/releasehealth; the cloud

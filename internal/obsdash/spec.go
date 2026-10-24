@@ -28,6 +28,9 @@ package obsdash
 import (
 	"fmt"
 	"sort"
+	"strings"
+
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // PartsVersion identifies the shape of the files the Spec is written to
@@ -115,9 +118,16 @@ type FrontendFunnel struct {
 // HyperDX caps a dashboard at 500 tiles).
 const maxPerRPCRows = 25
 
-// FrontendServiceName is the service.name the scaffolded frontends report
-// (src/lib/otel_gen.ts: '<project>-frontend').
-func FrontendServiceName(project string) string { return project + "-frontend" }
+// frontendServices are the service.names the project's web frontends report,
+// in declaration order: naming.FrontendServiceName per frontend, the same
+// derivation that bakes SERVICE_NAME into each frontend's otel_gen.ts.
+func frontendServices(project string, frontends []string) []string {
+	var out []string
+	for _, fe := range frontends {
+		out = append(out, naming.FrontendServiceName(project, fe))
+	}
+	return out
+}
 
 // Build derives the project's Spec.
 func Build(in Input) Spec {
@@ -359,19 +369,26 @@ func runtimePanels() []Panel {
 }
 
 var (
-	browserSpans = []Predicate{{Field: "resource.attr.rum.sessionId", Op: OpExists}}
-	pageLoads    = Predicate{Field: "span.name", Op: OpIn, Values: []string{"documentLoad", "routeChange"}}
-	ajax         = Predicate{Field: "span.attr.component", Op: OpIn, Values: []string{"fetch", "xml-http-request"}}
-	notAjax      = Predicate{Field: "span.attr.component", Op: OpNotIn, Values: []string{"fetch", "xml-http-request"}}
-	ajaxFailed   = Predicate{Field: "span.attr.http.status_code", Op: OpGTE, Value: "400"}
+	pageLoads  = Predicate{Field: "span.name", Op: OpIn, Values: []string{"documentLoad", "routeChange"}}
+	ajax       = Predicate{Field: "span.attr.component", Op: OpIn, Values: []string{"fetch", "xml-http-request"}}
+	notAjax    = Predicate{Field: "span.attr.component", Op: OpNotIn, Values: []string{"fetch", "xml-http-request"}}
+	ajaxFailed = Predicate{Field: "span.attr.http.status_code", Op: OpGTE, Value: "400"}
 )
 
 func buildFrontend(in Input) Dashboard {
+	services := frontendServices(in.Project, in.Frontends)
 	d := Dashboard{
 		ID:          "frontend",
 		Title:       in.Project + ": frontend",
-		Description: fmt.Sprintf("Browser errors, page loads, web vitals and API calls from the HyperDX browser SDK (service.name %s). Panels follow HyperDX's Browser RUM template: a browser span carries the rum.sessionId resource attribute.", FrontendServiceName(in.Project)),
+		Description: fmt.Sprintf("Browser errors, page loads, web vitals and API calls from the HyperDX browser SDK (service.name %s). Panels follow HyperDX's Browser RUM template: a browser span carries the rum.sessionId resource attribute.", strings.Join(services, ", ")),
 		Filters:     commonFilters(),
+	}
+	// A browser span is one of THIS project's frontends' (service.name, the
+	// value otel_gen.ts reports) that carries a RUM session. The service scope
+	// keeps another project's browser spans in the same store off the panels.
+	browserSpans := []Predicate{
+		{Field: FieldService, Op: OpIn, Values: services},
+		{Field: "resource.attr.rum.sessionId", Op: OpExists},
 	}
 	js := scoped(browserSpans, errorSpans, notAjax)
 	loads := scoped(browserSpans, Predicate{Field: "span.name", Op: OpEq, Value: "documentLoad"})

@@ -153,8 +153,8 @@ VALUES (map('reliant.env.id','env-1'), 'legacy', 'legacy.latency', 's', map(), `
 		"jobs_done":            {obsquery.CatalogSum, true, obsquery.TemporalityDelta, "{job}", true},
 		"heap":                 {obsquery.CatalogGauge, false, obsquery.TemporalityUnknown, "By", true},
 		"rpc.server.duration":  {obsquery.CatalogHistogram, false, obsquery.TemporalityDelta, "s", true},
-		"http.server.duration": {obsquery.CatalogExpHistogram, false, obsquery.TemporalityCumulative, "ms", false},
-		"legacy.latency":       {obsquery.CatalogSummary, false, obsquery.TemporalityUnknown, "s", false},
+		"http.server.duration": {obsquery.CatalogExpHistogram, false, obsquery.TemporalityCumulative, "ms", true},
+		"legacy.latency":       {obsquery.CatalogSummary, false, obsquery.TemporalityUnknown, "s", true},
 		"other_env_gauge":      {obsquery.CatalogGauge, false, obsquery.TemporalityUnknown, "By", true},
 	} {
 		e, ok := by[name]

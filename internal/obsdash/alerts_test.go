@@ -418,7 +418,7 @@ func TestPlatformDefaultsAreExactlyWhatTheControlPlaneInjects(t *testing.T) {
 			"Issue spiking in {{ $labels.service }} ({{ $labels.env }}): {{ $labels.title }}, {{ $value }} events/hour, over 5 times its rate the day before. Details: {{ $labels.console_url }}"},
 		"ServiceAnomaly": {"warning", "0s", "5m",
 			"SELECT 1 AS value WHERE 0 /* reliant:platform service-anomaly env:{reliant_env_id:String} */",
-			"{{ $labels.service }} {{ $labels.signal }} is off its usual for this hour of the week ({{ $labels.env }}). Why: forge obs alerts --json, or forge obs check {{ $labels.env }}"},
+			"{{ $labels.service }} left what is usual for this hour of the week ({{ $labels.env }}). What moved, against what, and the evidence are in the alert's why payload: forge obs alerts --json"},
 		"ReleaseRegressed": {"warning", "0s", "1m",
 			"SELECT 1 AS value WHERE 0 /* reliant:platform release-regressed env:{reliant_env_id:String} */",
 			"Release {{ $labels.release }} regressed {{ $labels.env }}: {{ $value }} failing release-health findings after its window closed. Check it: forge obs check {{ $labels.env }} --release {{ $labels.release }}"},

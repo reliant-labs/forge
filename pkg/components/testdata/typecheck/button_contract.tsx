@@ -4,7 +4,8 @@
 // itself becomes the error ("Unused '@ts-expect-error' directive").
 import React from "react";
 
-import Button, { buttonClasses, type ButtonSize, type ButtonVariant } from "./button";
+import Button, { type ButtonSize, type ButtonVariant } from "./button";
+import { buttonClasses } from "./button_classes";
 
 const Icon = () => <svg aria-hidden="true" />;
 

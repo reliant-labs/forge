@@ -24,7 +24,7 @@ reinstalls. The new one:
 | icon-only | `className` overrides + `aria-label` by convention | `icon={...}` with a **type-required** `aria-label` |
 | focus | `ring-2` (box-shadow; gone in forced-colors mode) | 2px `outline` 2px off the edge, `:focus-visible` only |
 | pressed | none | one step past hover plus a 1px settle; `aria-expanded` / `aria-pressed` hold it |
-| as a link | wrap in `<a>` or copy the classes | `href` renders through `./link`; `buttonClasses()` for any other element |
+| as a link | wrap in `<a>` or copy the classes | `href` renders through `./link`; `buttonClasses()` (from `./button_classes`) for any other element |
 | `ref` | not forwarded | forwarded (`React.forwardRef`) |
 
 Variant names are unchanged: `primary`, `secondary`, `outline`, `ghost`,

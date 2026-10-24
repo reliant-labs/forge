@@ -155,10 +155,19 @@ func basicToRE2(bre string) string {
 	return b.String()
 }
 
-func portableGrep(_ context.Context, dir string, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	var quiet, fold, fixed, extended, recursive bool
-	var patterns []string
-	var filter treeFilter
+// grepOpts is a parsed grep command line.
+type grepOpts struct {
+	quiet, fold, fixed, extended, recursive bool
+	patterns                                []string
+	filter                                  treeFilter
+	// files are the operands after the flags and the pattern.
+	files []string
+}
+
+// parseGrepArgs reads grep's flags and pattern. A usage error is reported on
+// stderr, and ok is false: grep exits 2.
+func parseGrepArgs(args []string, stderr io.Writer) (grepOpts, bool) {
+	var o grepOpts
 	i := 0
 	for ; i < len(args) && strings.HasPrefix(args[i], "-") && args[i] != "-"; i++ {
 		// GNU grep's file-selection flags, which detection scripts use to
@@ -169,13 +178,13 @@ func portableGrep(_ context.Context, dir string, args []string, stdin io.Reader,
 			value = strings.Trim(value, `'"`)
 			switch name {
 			case "--include":
-				filter.include = append(filter.include, value)
+				o.filter.include = append(o.filter.include, value)
 				continue
 			case "--exclude":
-				filter.exclude = append(filter.exclude, value)
+				o.filter.exclude = append(o.filter.exclude, value)
 				continue
 			case "--exclude-dir":
-				filter.excludeDir = append(filter.excludeDir, value)
+				o.filter.excludeDir = append(o.filter.excludeDir, value)
 				continue
 			}
 		}
@@ -186,60 +195,75 @@ func portableGrep(_ context.Context, dir string, args []string, stdin io.Reader,
 		case "-e":
 			if i+1 >= len(args) {
 				fmt.Fprintln(stderr, "grep: -e needs a pattern")
-				return 2
+				return o, false
 			}
 			i++
-			patterns = append(patterns, args[i])
+			o.patterns = append(o.patterns, args[i])
 		default:
 			for _, c := range a[1:] {
 				switch c {
 				case 'q':
-					quiet = true
+					o.quiet = true
 				case 'i':
-					fold = true
+					o.fold = true
 				case 'F':
-					fixed = true
+					o.fixed = true
 				case 'E':
-					extended = true
+					o.extended = true
 				case 'n', 's':
 				case 'r', 'R':
-					recursive = true
+					o.recursive = true
 				default:
 					fmt.Fprintf(stderr, "grep: unsupported flag -%c\n", c)
-					return 2
+					return o, false
 				}
 			}
 		}
 	}
 done:
-	if len(patterns) == 0 {
+	if len(o.patterns) == 0 {
 		if i >= len(args) {
 			fmt.Fprintln(stderr, "grep: missing pattern")
-			return 2
+			return o, false
 		}
-		patterns = append(patterns, args[i])
+		o.patterns = append(o.patterns, args[i])
 		i++
 	}
-	exprs := make([]string, len(patterns))
-	for n, p := range patterns {
+	o.files = args[i:]
+	return o, true
+}
+
+// compile is the patterns as one RE2 expression: -F quotes them, a basic
+// expression (no -E) is translated, -i folds case.
+func (o grepOpts) compile() (*regexp.Regexp, error) {
+	exprs := make([]string, len(o.patterns))
+	for n, p := range o.patterns {
 		switch {
-		case fixed:
+		case o.fixed:
 			p = regexp.QuoteMeta(p)
-		case !extended:
+		case !o.extended:
 			p = basicToRE2(p)
 		}
 		exprs[n] = p
 	}
 	expr := strings.Join(exprs, "|")
-	if fold {
+	if o.fold {
 		expr = "(?i)" + expr
 	}
-	re, err := regexp.Compile("(?m)" + expr)
+	return regexp.Compile("(?m)" + expr)
+}
+
+func portableGrep(_ context.Context, dir string, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	o, ok := parseGrepArgs(args, stderr)
+	if !ok {
+		return 2
+	}
+	re, err := o.compile()
 	if err != nil {
 		fmt.Fprintf(stderr, "grep: bad pattern: %v\n", err)
 		return 2
 	}
-	files := args[i:]
+	quiet, recursive, filter, files := o.quiet, o.recursive, o.filter, o.files
 	matched, failed := false, false
 	scan := func(r io.Reader, name string) {
 		data, _ := io.ReadAll(r)

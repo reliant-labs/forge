@@ -55,7 +55,7 @@ func parseButtonVariants(t *testing.T, src string) map[string][2]variantPaint {
 	t.Helper()
 	block := buttonVariantBlock.FindStringSubmatch(src)
 	if block == nil {
-		t.Fatal("button.tsx: no `const variantStyles` block — the test reads the variant table from it")
+		t.Fatal("button_classes.tsx: no `const variantStyles` block — the test reads the variant table from it")
 	}
 	out := map[string][2]variantPaint{}
 	for _, m := range buttonVariantEntry.FindAllStringSubmatch(block[1], -1) {
@@ -122,7 +122,7 @@ func over(fg srgb, a float64, bg srgb) srgb {
 func TestButtonVariantsMeetContrastOnEverySurface(t *testing.T) {
 	t.Parallel()
 
-	src, err := components.NewLibrary().Get("button")
+	src, err := components.NewLibrary().Get("button_classes")
 	if err != nil {
 		t.Fatal(err)
 	}

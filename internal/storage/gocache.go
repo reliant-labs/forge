@@ -26,10 +26,11 @@ import (
 // main-module package by its absolute directory, so each worktree gets its own
 // full copy of the cache. Go's built-in trim (entries unused for 5 days) cannot
 // keep up. Wiping the cache under running builds produces
-// `link: cannot open file …/go-build/…-d`. Trimming by mtime is safe while
-// builds run because Go bumps an entry's mtime on use whenever it is more than
-// an hour stale: an entry older than X has been unused for at least X-1h, so
-// with a floor of 2h a live build never loses an entry it is using.
+// `link: cannot open file …/go-build/…-d`. Go bumps an entry's mtime on use
+// whenever it is more than an hour stale. The 2h floor protects recently
+// resolved artifacts; rechecking after pacing also retains entries refreshed
+// since shard enumeration. This is not a build lease: cmd/go does not take our
+// lock, and a build holding an unopened path for hours can outlive the floor.
 //
 // The floor binds BOTH rules. The age rule (go_cache_unused) and the size rule
 // (go_cache_gib: least recently used first, down to goCacheLowWater of the
@@ -55,7 +56,7 @@ import (
 
 // goCacheFloor is the youngest entry the trim may ever delete, under any rule
 // and any budget pressure: cmd/go's mtimeInterval (1h) plus an hour of margin.
-// It is what makes the trim safe under live builds, and it is not a knob.
+// It protects recent use, not arbitrarily long build lifetimes; it is not a knob.
 const goCacheFloor = 2 * time.Hour
 
 // goCacheWorkers bounds how many shards are read and trimmed at once. The
@@ -84,12 +85,43 @@ type goCacheEntry struct {
 
 func (e goCacheEntry) path(root string) string { return filepath.Join(root, e.sub, e.name) }
 
-// remove deletes the entry through the pass governor.
-func (e goCacheEntry) remove(ctx context.Context, del deleter, root string) error {
-	if e.dir {
-		return del.removeTree(ctx, e.path(root))
+// errGoCacheRetained is not a failure: a candidate changed since enumeration.
+var errGoCacheRetained = errors.New("Go cache entry became live or changed")
+
+// remove revalidates after the governor's pacing wait, not against the shard
+// listing's stale timestamp. The floor alone does not protect an entry cmd/go
+// marks used between enumeration and unlink. cmd/go does not participate in our
+// lock, so this narrows that race; it is not an active-build lease.
+func (e goCacheEntry) remove(ctx context.Context, del deleter, root string, cutoff time.Time) error {
+	path := e.path(root)
+	check := func() error {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if !info.ModTime().Equal(e.mtime) || !info.ModTime().Before(cutoff) || info.IsDir() != e.dir || (!e.dir && !info.Mode().IsRegular()) {
+			return errGoCacheRetained
+		}
+		return nil
 	}
-	return del.unlink(ctx, e.path(root))
+	if e.dir {
+		// cmd/go executable entries contain exactly one binary. Do not use a
+		// recursive deletion: a pacing wait must not detach the safety check
+		// from the first destructive unlink inside the entry.
+		children, err := os.ReadDir(path)
+		if err != nil {
+			return del.observe(path, err)
+		}
+		if len(children) != 1 || !children[0].Type().IsRegular() {
+			return errGoCacheRetained
+		}
+		if err := del.unlinkChecked(ctx, filepath.Join(path, children[0].Name()), check); err != nil {
+			return err
+		}
+		// Only the now-empty directory remains; never remove a new child.
+		return del.unlink(ctx, path)
+	}
+	return del.unlinkChecked(ctx, path, check)
 }
 
 // GoCaches trims every Go-toolchain cache. Dry-run unless apply is set.
@@ -711,7 +743,7 @@ func streamTrimGoCache(ctx context.Context, root string, shards []string, start 
 						break
 					}
 					if apply {
-						if err := e.remove(ctx, del, root); err != nil {
+						if err := e.remove(ctx, del, root, cutoff); err != nil {
 							if stopsPass(err) {
 								if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 									halt(err)

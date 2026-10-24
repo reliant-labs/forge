@@ -360,7 +360,7 @@ func readKCLMod(modPath string) (kclMod, error) {
 			if fp || mod {
 				return kclMod{}, fmt.Errorf("%s declares %q under [dependencies] as a forge project.\n"+
 					"  [dependencies] belongs to kpm, which cannot resolve it. Move it to its own table:\n\n"+
-					"    [%s]\n    %s = { module = \"<go module path>\" }\n",
+					"    [%s]\n    %s = { module = \"<go module path>\" }",
 					modPath, name, TableName, name)
 			}
 		}

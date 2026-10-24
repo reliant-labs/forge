@@ -18,12 +18,16 @@ func TestKCLNamesAgree(t *testing.T) {
 	}
 	text := string(src)
 	for kcl, goVal := range map[string]string{
-		"FLUX_CHART_OCI":              ChartOCI,
-		"FLUX_CHART_VERSION":          ChartVersion,
-		"FLUX_NAMESPACE":              Namespace,
-		"FLUX_RECONCILER_ROLE":        ReconcilerRole,
-		"FLUX_SOURCE_ROLE":            SourceRole,
-		"FLUX_DEPLOY_SERVICE_ACCOUNT": DeployServiceAccount,
+		"FLUX_CHART_OCI":                 ChartOCI,
+		"FLUX_CHART_VERSION":             ChartVersion,
+		"FLUX_NAMESPACE":                 Namespace,
+		"FLUX_RECONCILER_ROLE":           ReconcilerRole,
+		"FLUX_SOURCE_ROLE":               SourceRole,
+		"FLUX_DEPLOY_SERVICE_ACCOUNT":    DeployServiceAccount,
+		"FLUX_SHARD_LABEL":               ShardLabel,
+		"FLUX_CONNECTED_SHARD":           ConnectedShard,
+		"FLUX_CONNECTED_CONTROLLER":      ConnectedController,
+		"FLUX_CONNECTED_RECONCILER_ROLE": ConnectedReconcilerRole,
 	} {
 		want := kcl + ` = "` + goVal + `"`
 		if !strings.Contains(text, want) {

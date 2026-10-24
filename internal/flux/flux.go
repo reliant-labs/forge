@@ -54,6 +54,18 @@ const (
 	// DeployServiceAccount is the ServiceAccount the controller impersonates
 	// by default and is pinned to.
 	DeployServiceAccount = "reliant-deploy-tenant"
+	// ShardLabel / ConnectedShard are Flux's sharding label and the value that
+	// routes a Kustomization to the connected-cluster controller
+	// (`flux_chart(connected_shard = True)`). A writer of a Kustomization with
+	// spec.kubeConfig MUST set it: the admission policy refuses the object
+	// otherwise. Same spellings as KCL's FLUX_SHARD_LABEL / FLUX_CONNECTED_SHARD.
+	ShardLabel     = "sharding.fluxcd.io/key"
+	ConnectedShard = "connected"
+	// ConnectedController is the shard's Deployment and ServiceAccount;
+	// ConnectedReconcilerRole is the ClusterRole a namespace RoleBinding gives
+	// it (Secret reads only, never impersonate).
+	ConnectedController     = "kustomize-controller-connected"
+	ConnectedReconcilerRole = "flux-connected-reconciler"
 )
 
 // ChartProvidedBy reports whether any of the chart references given already

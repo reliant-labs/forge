@@ -352,3 +352,79 @@ func fluxContains(ss []string, want string) bool {
 	}
 	return false
 }
+
+const fluxShardChartArgs = `connected_shard = True, egress = {
+    kustomize = [{"to" = [{podSelector.matchLabels = {app = "source-controller"}}], ports = [{port = 9090, protocol = "TCP"}]}]
+    source = []
+    kustomize_connected = [{"to" = [{ipBlock = {cidr = "0.0.0.0/0", except = ["10.0.0.0/8"]}}], ports = [{port = 443, protocol = "TCP"}]}]
+    flux_check = []
+}, placement = forge.flux_placement_delivery_v1(runtime_class_name = "gvisor")`
+
+// The connected shard through the real chart: the main controller keeps its
+// default service account and is told to leave the shard alone, the shard is a
+// second Deployment with no default service account, and the egress policies
+// carry exactly what was declared.
+func TestFluxChart_ConnectedShardReachesTheRenderedObjects(t *testing.T) {
+	r := renderFluxThroughHelm(t, fluxShardChartArgs)
+
+	main := fluxArgs(t, r, "kustomize-controller")
+	for _, want := range []string{
+		"--default-service-account=reliant-deploy-tenant",
+		"--watch-label-selector=sharding.fluxcd.io/key notin (connected)",
+	} {
+		if !fluxContains(main, want) {
+			t.Errorf("main kustomize-controller args missing %q: %v", want, main)
+		}
+	}
+
+	shard := fluxArgs(t, r, "kustomize-controller-connected")
+	if !fluxContains(shard, "--watch-label-selector=sharding.fluxcd.io/key=connected") {
+		t.Errorf("shard must select its label: %v", shard)
+	}
+	for _, a := range shard {
+		if strings.Contains(a, "default-service-account") {
+			t.Errorf("the shard must never carry a default service account: %v", shard)
+		}
+	}
+	ps := fluxPodSpec(r, "kustomize-controller-connected")
+	if ps["serviceAccountName"] != "kustomize-controller-connected" {
+		t.Errorf("shard serviceAccountName = %v", ps["serviceAccountName"])
+	}
+	if ps["runtimeClassName"] != "gvisor" {
+		t.Errorf("placement must reach the shard too: runtimeClassName = %v", ps["runtimeClassName"])
+	}
+	sa := r.named("ServiceAccount", "kustomize-controller-connected")
+	if sa == nil {
+		t.Fatal("the shard's ServiceAccount must render")
+	}
+	if md := sa["metadata"].(map[string]any); md["annotations"] != nil {
+		t.Errorf("the shard's ServiceAccount must carry no workload identity: %v", md["annotations"])
+	}
+
+	// The chart's own SA for the main controller is untouched by the shard.
+	if !r.has("ServiceAccount", "kustomize-controller") {
+		t.Error("the main controller's ServiceAccount must still render")
+	}
+	for _, kind := range []string{"ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"} {
+		if !r.has(kind, "flux-connected-shard-no-serviceaccount") {
+			t.Errorf("%s must render", kind)
+		}
+	}
+
+	ae := r.named("NetworkPolicy", "allow-egress")["spec"].(map[string]any)
+	if _, open := ae["egress"]; open {
+		t.Errorf("allow-egress must carry no egress rule once egress is declared (a {} rule cancels every other policy): %v", ae["egress"])
+	}
+	ce := r.named("NetworkPolicy", "kustomize-controller-connected-egress")
+	if ce == nil {
+		t.Fatal("the shard's egress policy must render")
+	}
+	b, _ := json.Marshal(ce["spec"])
+	if !strings.Contains(string(b), `"0.0.0.0/0"`) || !strings.Contains(string(b), "10.0.0.0/8") {
+		t.Errorf("shard egress lost its declared rules: %s", b)
+	}
+	mb, _ := json.Marshal(r.named("NetworkPolicy", "kustomize-controller-egress")["spec"])
+	if strings.Contains(string(mb), "ipBlock") {
+		t.Errorf("the in-cluster controller must have no internet egress: %s", mb)
+	}
+}

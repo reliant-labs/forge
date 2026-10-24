@@ -169,6 +169,9 @@ type KCLEntities struct {
 	// ReleaseHealth is Bundle.release_health, resolved. Nil when the env
 	// declares none (the defaults).
 	ReleaseHealth *release.ShapeReleaseHealth `json:"release_health,omitempty"`
+	// UptimeChecks are Bundle.uptime resolved: the declared checks plus the
+	// ones forge derives for a hosted env. Empty when the env has none.
+	UptimeChecks []release.ShapeUptimeCheck `json:"uptime_checks,omitempty"`
 	// Identity is Bundle.identity, resolved by the render: the applications
 	// and consumers derived, the deliveries and reserved managed-secret names
 	// listed. Nil when the env declares none. See release.ShapeIdentity: the
@@ -1411,6 +1414,7 @@ type kclRenderRaw struct {
 	DeliveryPolicy           *release.ShapeDeliveryPolicy              `json:"delivery_policy,omitempty"`
 	DataAccess               *release.ShapeDataAccess                  `json:"data_access,omitempty"`
 	ReleaseHealth            *release.ShapeReleaseHealth               `json:"release_health,omitempty"`
+	UptimeChecks             []release.ShapeUptimeCheck                `json:"uptime_checks,omitempty"`
 	Identity                 *release.ShapeIdentity                    `json:"identity,omitempty"`
 	Infra                    []HostInfraEntity                         `json:"infra,omitempty"`
 	Frontends                []FrontendEntity                          `json:"frontends,omitempty"`
@@ -1762,6 +1766,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		DeliveryPolicy:           raw.DeliveryPolicy,
 		DataAccess:               raw.DataAccess,
 		ReleaseHealth:            raw.ReleaseHealth,
+		UptimeChecks:             raw.UptimeChecks,
 		Identity:                 raw.Identity,
 		RenderedSecrets:          raw.RenderedSecrets,
 		ControlPlane:             raw.ControlPlane,

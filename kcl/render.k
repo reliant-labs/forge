@@ -2174,7 +2174,7 @@ _frontend_violations = lambda f: Frontend -> [str] {
         + (["delve_port: a frontend's dev server is not a Go process"] if _host and _rt.delve_port != 2345 else []) \
         + (["build_variants: a frontend has one build"] if _t == "build-only" and _rt.build_variants else []) \
         + (["bundle: the dev server assembles nothing; bundle dirs are assembled into a PUBLISHED site"] if _host and f.bundle else []) \
-        + (["cache_control: forge sets Cache-Control only where it publishes the build itself (forge.OnBucket object headers, forge.OnFirebase firebase.json headers); ${'the platform owns the CDN and its headers' if _t == 'hosted' else 'nothing here serves the build'}"] \
+        + (["cache_control: forge sets Cache-Control only where it publishes the build itself (forge.OnBucket object headers, forge.OnFirebase firebase.json headers); ${'the platform sets the headers' if _t == 'hosted' else 'nothing here serves the build'}"] \
             if f.cache_control and _t not in ["bucket", "firebase"] else []) \
         + (["image: nothing here pushes a registry artifact — ${'your bucket serves the build' if _t == 'bucket' else ('your Firebase site serves it' if _t == 'firebase' else ('the dev server serves it' if _host else 'the build is not published'))}"] \
             if f.image and _t != "hosted" else []) \

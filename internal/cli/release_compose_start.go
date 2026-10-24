@@ -17,13 +17,17 @@ func prepareComposition(ctx context.Context, opts *buildOptions, base string, bo
 	if !bootstrap && base == "" {
 		return fmt.Errorf("snapshot composition requires --base-promotion or --snapshot-bootstrap")
 	}
-	lookup, cancel := boundCompositionLookup(ctx)
-	defer cancel()
-	e, err := RenderKCL(lookup, projectDirForKCL(), opts.env)
+	// Local declaration evaluation can outlast the remote lookup budget on a
+	// busy machine. It inherits caller cancellation, not the network deadline.
+	e, err := RenderKCL(ctx, projectDirForKCL(), opts.env)
 	if err != nil {
 		return err
 	}
-	ledger, err := ledgerFor(lookup, projectDirForKCL(), opts.env)
+	lookup, cancel := boundCompositionLookup(ctx)
+	defer cancel()
+	// Reuse that declaration: re-rendering inside ledger selection would spend
+	// the fresh network budget on the same local work again.
+	ledger, err := ledgerForRendered(lookup, projectDirForKCL(), opts.env, e)
 	if err != nil {
 		return err
 	}

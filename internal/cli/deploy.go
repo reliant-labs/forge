@@ -2737,6 +2737,7 @@ func frontendToStaticSite(f FrontendEntity) deploytarget.StaticSiteFrontend {
 		PublicDir:    f.PublicDir,
 		BasePath:     f.BasePath,
 		Bundle:       frontendBundleSpecs(f),
+		AssetDir:     f.AssetDir,
 		CacheControl: frontendCacheRules(f),
 	}
 	if b := f.Runtime.Bucket; b != nil {

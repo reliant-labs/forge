@@ -139,7 +139,7 @@ func TestFrontendRuntime_DecodeEveryRuntime(t *testing.T) {
 // runtime's placement, intact.
 func TestFrontendRuntime_ProviderMappings(t *testing.T) {
 	bucket := FrontendEntity{
-		Name: "admin-web", Path: "admin-web", Type: "nextjs", PublicDir: "out", BasePath: "/admin",
+		Name: "admin-web", Path: "admin-web", Type: "nextjs", PublicDir: "out", AssetDir: "_next/static", BasePath: "/admin",
 		Bundle:       []BundleDir{{Src: "../reliant-web/dist"}},
 		CacheControl: []CacheRule{{Pattern: "**", CacheControl: "no-cache"}},
 		EnvVars:      []KCLEnvVar{{Name: "NEXT_PUBLIC_API_URL", Value: "https://api"}},
@@ -149,7 +149,7 @@ func TestFrontendRuntime_ProviderMappings(t *testing.T) {
 	}
 	ss := frontendToStaticSite(bucket)
 	want := deploytarget.StaticSiteSpec{
-		Bucket: "gs://b", PublicDir: "out", BasePath: "/admin", KeepReleases: 5,
+		Bucket: "gs://b", PublicDir: "out", AssetDir: "_next/static", BasePath: "/admin", KeepReleases: 5,
 		Bundle:       []deploytarget.BundleDirSpec{{Src: "../reliant-web/dist"}},
 		CacheControl: []deploytarget.CacheRuleSpec{{Pattern: "**", CacheControl: "no-cache"}},
 		CDN:          &deploytarget.StaticSiteCDNSpec{URLMap: "lb"},

@@ -4,7 +4,7 @@ Positive test — a frontend bound to forge.OnHosted: platform static hosting.
 The declaration is exactly control-plane's hosted e2e fixture: the static
 build facts on the frontend (`public_dir`), and `runtime = forge.OnHosted {}`
 — the same schema a workload binds. There is no bucket to state and nothing
-to infer: the control plane owns the bucket and the CDN.
+to infer: the control plane owns the bucket and the headers.
 
 References in runtime_config are KEPT for the platform to resolve, and the
 resolved document is empty (the platform writes config.js).

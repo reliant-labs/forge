@@ -151,9 +151,6 @@ const mxCPCatalog = `{"metrics":[
 // "copy as CLI" (reliant explorerState.cliCommand) emits builds the panel it
 // was made from.
 func TestMetricsFlagGrammarIsWhatReliantEmits(t *testing.T) {
-	type want struct {
-		panel obsquery.Panel
-	}
 	a := func(field, agg string, q float64, where ...obsquery.PanelPredicate) obsquery.PanelSeries {
 		return obsquery.PanelSeries{Label: "A", Field: field, Agg: agg, Quantile: q, Where: where}
 	}

@@ -533,7 +533,7 @@ func runObsMetricsQuery(ctx context.Context, d obsDeps, env, metric string, o ob
 		doc.Warnings = []string{}
 	}
 	if n.Explain {
-		doc.Statements = append(notes, res.Statements...)
+		doc.Statements = append(append([]obsbackend.Statement{}, notes...), res.Statements...)
 	}
 	for _, m := range res.Meta {
 		doc.Meta = append(doc.Meta, obsMetaDoc{Label: m.Label, Metric: m.Metric, Type: m.Type, Monotonic: m.Monotonic, Temporality: m.Temporality, Agg: m.Agg, Quantile: m.Quantile, ValueUnit: m.ValueUnit})

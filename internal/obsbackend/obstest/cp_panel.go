@@ -31,32 +31,7 @@ func CPPanelResponse(kind string, res obsquery.MetricPanelResult) string {
 	if len(res.Warnings) > 0 {
 		out["warnings"] = res.Warnings
 	}
-	var meta []map[string]any
-	for _, m := range res.Meta {
-		e := map[string]any{"label": m.Label, "metricType": wireMetricType[m.Info.Type]}
-		if m.Metric != "" {
-			e["metric"] = m.Metric
-		}
-		if m.Info.Monotonic {
-			e["monotonic"] = true
-		}
-		switch m.Info.Temporality {
-		case obsquery.TemporalityDelta:
-			e["temporality"] = "METRIC_TEMPORALITY_DELTA"
-		case obsquery.TemporalityCumulative:
-			e["temporality"] = "METRIC_TEMPORALITY_CUMULATIVE"
-		}
-		agg, q := aggWire(m.Agg, m.Quantile)
-		e["aggregation"] = agg
-		if q != 0 {
-			e["quantile"] = q
-		}
-		if m.ValueUnit != "" {
-			e["valueUnit"] = m.ValueUnit
-		}
-		meta = append(meta, e)
-	}
-	if len(meta) > 0 {
+	if meta := wireSeriesMetas(res.Meta); len(meta) > 0 {
 		out["seriesMeta"] = meta
 	}
 	points := func(in []obsquery.MetricPoint) []map[string]any {
@@ -169,4 +144,33 @@ func aggWire(a obsquery.Agg, q float64) (string, float64) {
 		return "quantile", 0.99
 	}
 	return "quantile", q
+}
+
+func wireSeriesMetas(in []obsquery.SeriesMeta) []map[string]any {
+	var meta []map[string]any
+	for _, m := range in {
+		e := map[string]any{"label": m.Label, "metricType": wireMetricType[m.Info.Type]}
+		if m.Metric != "" {
+			e["metric"] = m.Metric
+		}
+		if m.Info.Monotonic {
+			e["monotonic"] = true
+		}
+		switch m.Info.Temporality {
+		case obsquery.TemporalityDelta:
+			e["temporality"] = "METRIC_TEMPORALITY_DELTA"
+		case obsquery.TemporalityCumulative:
+			e["temporality"] = "METRIC_TEMPORALITY_CUMULATIVE"
+		}
+		agg, q := aggWire(m.Agg, m.Quantile)
+		e["aggregation"] = agg
+		if q != 0 {
+			e["quantile"] = q
+		}
+		if m.ValueUnit != "" {
+			e["valueUnit"] = m.ValueUnit
+		}
+		meta = append(meta, e)
+	}
+	return meta
 }

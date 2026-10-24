@@ -146,6 +146,7 @@ func runBackfillMigrations(ctx context.Context, out io.Writer, projectDir, env, 
 			fmt.Fprintf(out, "[backfill]   %s @ %s: %d file(s), head %s\n", s.Source, shortSHA(s.Commit), len(s.Files), head)
 		}
 		if dryRun {
+			done++
 			continue
 		}
 		recorded, err := recorder.RecordMigrations(ctx, r.Version, *m)

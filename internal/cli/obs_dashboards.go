@@ -38,7 +38,7 @@ Errors carry the file, line and column of the offending value.`,
 		},
 	}
 	check.Flags().StringVarP(&outputDir, "output", "o", "bin", "build output directory holding observability/metrics-schema.json")
-	cmd.AddCommand(check)
+	cmd.AddCommand(check, newObsDashboardsAddPanelCmd())
 	return cmdutil.StrictGroup(cmd)
 }
 

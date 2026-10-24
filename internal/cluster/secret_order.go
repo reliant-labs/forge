@@ -32,8 +32,15 @@ import (
 //
 // WHAT RUNS WHEN, in the order applyRenderedNoWait sends it:
 //
-//  1. ESO's CRDs and controller, from the chart path (applyRenderedCharts:
-//     Established, then Available), before this stream is touched;
+//  1. ESO's CRDs, controller and admission policies, from the chart path
+//     (applyRenderedCharts: Established, then Available), before this stream
+//     is touched;
+//  1b. the admission barrier (awaitAdmission): the SecretStores and
+//     ExternalSecrets about to be sent are dry-run against the API server
+//     until it admits them, because a policy update is enforced
+//     asynchronously and the policy's lists are derived from THIS release's
+//     stores (the SC7 rehearsal: the first store was refused by the previous,
+//     empty list on both adoptions);
 //  2. the store component's bootstrap stage: its support objects and its own
 //     SecretStore and ExternalSecrets, then a wait for those to sync (they
 //     deliver the seal key the store cannot start without);
@@ -174,6 +181,9 @@ func applySecretStages(ctx context.Context, opts ApplyOpts, policy RolloutPolicy
 		}
 	}
 
+	if err := awaitAdmission(ctx, opts, st); err != nil {
+		return err
+	}
 	if strings.TrimSpace(st.bootstrap) != "" {
 		say("Applying the secret store's bootstrap objects...")
 		if err := apply("secret store bootstrap", st.bootstrap); err != nil {
@@ -214,6 +224,117 @@ func applySecretStages(ctx context.Context, opts ApplyOpts, policy RolloutPolicy
 		}
 	}
 	return nil
+}
+
+// ErrAdmissionNotEffective is the cause wrapped by a failed admission barrier.
+var ErrAdmissionNotEffective = errors.New("admission policy did not admit the secret stores")
+
+// The admission barrier's pacing. Vars so a test shrinks them.
+var (
+	// admissionProbePoll is the wait between two probes.
+	admissionProbePoll = time.Second
+	// admissionProbeTimeout is how long a policy may keep refusing before the
+	// refusal is taken as the answer rather than as lag.
+	admissionProbeTimeout = 90 * time.Second
+	// admissionProbeAgree is how many probes in a row must be admitted. The
+	// API server is several replicas behind one address and each enforces a
+	// policy from its own informer, so one admit proves one replica.
+	admissionProbeAgree = 3
+)
+
+// admissionRefusal reports whether kubectl's stderr is a ValidatingAdmissionPolicy
+// denial, the one refusal that is lag rather than a verdict.
+func admissionRefusal(stderr string) bool {
+	return strings.Contains(stderr, "ValidatingAdmissionPolicy '") && strings.Contains(stderr, "denied request")
+}
+
+// admissionProbeDocs is the SecretStores and ExternalSecrets of the bootstrap
+// and secrets stages: exactly what the three ESO policies judge.
+func admissionProbeDocs(st secretStages) string {
+	var docs []string
+	for _, part := range []string{st.bootstrap, st.secrets} {
+		for _, doc := range splitDocs(part) {
+			if m, ok := parseDoc(doc); ok && release.IsESOKind(m.APIVersion, m.Kind) {
+				docs = append(docs, doc)
+			}
+		}
+	}
+	return strings.Join(docs, docDelimiter)
+}
+
+// awaitAdmission holds the secret stages until the API server admits the
+// SecretStores and ExternalSecrets they carry.
+//
+// WHY A BARRIER. The ESO chart's ValidatingAdmissionPolicies are applied before
+// this stream, but a policy is enforced asynchronously: the API server
+// compiles an update and each replica picks it up from its own informer. The
+// policy's lists (servers, mounts, audiences, projects) are derived from the
+// stores of THIS release, so on the release that introduces the first store
+// the previous list is empty and the previous policy refuses it. Applying the
+// store in that window fails the deploy, and on a rollback and roll-forward it
+// happens again, because the rollback empties the lists. Nothing in the
+// cluster reports "the new policy is in force", so the only honest proof is
+// the behaviour itself: a server-side dry-run of the very objects about to be
+// applied, which runs the full admission chain and writes nothing.
+//
+// Only a policy refusal is retried. Any other probe failure (a namespace not
+// there yet, a kubectl that cannot dry-run) proves nothing about admission, so
+// the real apply that follows is left to report it. A refusal that outlasts
+// the budget is a verdict, not lag: the policy genuinely does not list the
+// store, and the error carries its message.
+func awaitAdmission(ctx context.Context, opts ApplyOpts, st secretStages) error {
+	probe := admissionProbeDocs(st)
+	if strings.TrimSpace(probe) == "" {
+		return nil
+	}
+	say := func(format string, a ...any) {
+		if !opts.Quiet {
+			fmt.Printf(format+"\n", a...)
+		}
+	}
+	args := []string{"apply", "--server-side", "--force-conflicts", "--dry-run=server", "-f", "-"}
+	deadline := time.Now().Add(admissionProbeTimeout)
+	agreed, announced := 0, false
+	var last string
+	for {
+		cmd := kubectlCmd(ctx, opts.Context, args...)
+		cmd.Stdin = strings.NewReader(probe)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		switch {
+		case err == nil:
+			agreed++
+		case admissionRefusal(stderr.String()):
+			agreed, last = 0, strings.TrimSpace(stderr.String())
+			if !announced {
+				say("Waiting for the ESO admission policies to take effect before applying SecretStores...")
+				announced = true
+			}
+		case ctx.Err() != nil:
+			return ctx.Err()
+		default:
+			say("Warning: the admission probe could not run (%v: %s); applying without it", err, strings.TrimSpace(stderr.String()))
+			return nil
+		}
+		if agreed >= admissionProbeAgree {
+			return nil
+		}
+		// The budget bounds a standing refusal. Once the API server has begun
+		// admitting, a slow probe is load, not a verdict, and the remaining
+		// agreeing probes are owed.
+		if agreed == 0 && !time.Now().Add(admissionProbePoll).Before(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(admissionProbePoll):
+		}
+	}
+	return fmt.Errorf("%w: still refused after %s, so no SecretStore, ExternalSecret or workload was applied; the previous release is still serving.\n%s\n"+
+		"If the policy genuinely lacks this store, set ExternalSecretsOperator.admission (servers / jwt_mounts / audiences / gcp_projects / writers) to include it",
+		ErrAdmissionNotEffective, admissionProbeTimeout, last)
 }
 
 func toJobRefs(refs []stageRef) []jobRef {

@@ -144,3 +144,23 @@ func quoteJoin(items []string) string {
 	}
 	return strings.Join(quoted, ", ")
 }
+
+// refuseDeployRenderOptions refuses `forge env deploy -D`.
+//
+// A deploy renders from the repo alone: the release's bundle, the plan, the
+// hub's apply and the manifests this process applies are all one render, and a
+// release records no render options. A `-D` that reached only some of those
+// renders (the build and entity render saw it, the manifest render did not)
+// would ship a release that disagrees with its own manifests, and the flag
+// used to be accepted and silently ignored by the manifest render (SC7
+// rehearsal, D4). Honouring it everywhere would make an apply unreproducible
+// from the repo, so it is refused, with the places it does work.
+func refuseDeployRenderOptions(env string, values []string) error {
+	if len(values) == 0 {
+		return nil
+	}
+	return fmt.Errorf("forge env deploy does not take -D (%s): a deploy renders from the repo alone, and a release records no render options, so the bundle and the applied manifests could not agree on it.\n"+
+		"  To change what the env renders, declare the value in deploy/kcl/%s/ and commit it.\n"+
+		"  -D is for 'forge env up %s -D ...' and 'forge env build %s -D ...' (see 'forge env options %s')",
+		strings.Join(values, " "), env, env, env, env)
+}

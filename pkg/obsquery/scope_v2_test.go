@@ -45,7 +45,7 @@ func TestKeysOutsideTheAllowlistAreInvalid(t *testing.T) {
 		for name, compile := range map[string]func() (Stmt, error){
 			"filter/traces":  TraceQuery{Scope: sc, Limit: 5}.Compile,
 			"filter/logs":    LogQuery{Scope: sc, Limit: 5}.Compile,
-			"filter/metrics": MetricList{Scope: sc, Limit: 5}.Compile,
+			"filter/metrics": MetricCatalog{Scope: sc, Limit: 5}.Compile,
 			"filter/work":    Workloads{Scope: sc}.Usage,
 			"group/overview": func() (Stmt, error) { return Overview{Scope: scopeWith(nil), GroupBy: []string{key}}.RED() },
 			"group/traces":   TraceQuery{Scope: scopeWith(nil), GroupBy: []string{key}}.CompileREDGroups,

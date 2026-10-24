@@ -438,42 +438,6 @@ func SuggestedBreakdowns(stats []AttributeStat) []string {
 	return out
 }
 
-// MetricList is a ListMetrics request.
-type MetricList struct {
-	Scope        Scope
-	NameContains string
-	Limit        int
-}
-
-// Compile builds the metric-name statement. Columns: MetricName, MetricUnit,
-// MetricDescription, kind (1 gauge, 2 sum, 3 histogram).
-func (q MetricList) Compile() (Stmt, error) {
-	if err := q.Scope.validate(MaxRangeMetrics); err != nil {
-		return Stmt{}, err
-	}
-	if q.Limit <= 0 || q.Limit > ListMetricsMax {
-		return Stmt{}, invalid("limit must be 1-%d", ListMetricsMax)
-	}
-	b := newBuilder(q.Scope)
-	parts := make([]string, 0, 3)
-	for _, t := range []MetricType{MetricGauge, MetricSum, MetricHistogram} {
-		// Only RESOURCE-level filters narrow the picker: any other key is
-		// valid for one specific metric only, and is checked when that metric
-		// is queried.
-		sc, err := b.resourceConds(SigMetrics, q.Scope)
-		if err != nil {
-			return Stmt{}, err
-		}
-		conds := append([]string{b.rangeCondSec("TimeUnix", q.Scope)}, sc...)
-		if q.NameContains != "" {
-			conds = append(conds, "positionCaseInsensitive(MetricName, "+b.str(q.NameContains)+") > 0")
-		}
-		parts = append(parts, "SELECT MetricName, any(MetricUnit) AS MetricUnit, any(MetricDescription) AS MetricDescription, "+
-			strconv.Itoa(int(t))+" AS kind\nFROM "+b.table(q.Scope, t.table())+"\n"+where(conds)+"\nGROUP BY MetricName")
-	}
-	return b.stmt("SELECT * FROM (\n" + strings.Join(parts, "\nUNION ALL\n") + "\n) ORDER BY MetricName, kind LIMIT " + strconv.Itoa(q.Limit+1)), nil
-}
-
 // DeclaredKeys lists the attribute keys a metric's own data points carry,
 // the extension to the key allowlist for metric filters and group-bys. It is
 // scoped by environment and service only (the filters are what it enables).

@@ -20,7 +20,9 @@ import {
   create,
   createFileRegistry,
   type DescMessage,
+  type Message,
 } from "@bufbuild/protobuf";
+import type { GenMessage } from "@bufbuild/protobuf/codegenv2";
 import {
   FileDescriptorProtoSchema,
   type DescriptorProto,
@@ -28,6 +30,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  createInfiniteQueryHook,
   createMutationHook,
   createQueryHook,
   requestKey,
@@ -46,6 +49,7 @@ import {
 // scaffolded `<svc>-service-hooks.test.tsx` in every generated project.
 const captured: {
   query?: Record<string, unknown>;
+  infinite?: Record<string, unknown>;
   mutation?: Record<string, unknown>;
   invalidated: unknown[];
 } = { invalidated: [] };
@@ -54,6 +58,10 @@ vi.mock("@tanstack/react-query", () => ({
   useQuery: (options: Record<string, unknown>) => {
     captured.query = options;
     return { __kind: "query" };
+  },
+  useInfiniteQuery: (options: Record<string, unknown>) => {
+    captured.infinite = options;
+    return { __kind: "infinite" };
   },
   useMutation: (options: Record<string, unknown>) => {
     captured.mutation = options;
@@ -123,12 +131,28 @@ const schemas = compileSchemas([
         label: OPTIONAL,
         jsonName: "pageSize",
       },
+      {
+        name: "page_token",
+        number: 2,
+        type: STRING,
+        label: OPTIONAL,
+        jsonName: "pageToken",
+      },
     ],
   },
 ] as DescriptorProto[]);
 
 const GetOrderRequestSchema = schema("GetOrderRequest");
 const ListOrdersRequestSchema = schema("ListOrdersRequest");
+
+// The same schema typed the way protoc-gen-es types it, so the type-level
+// assertions below see the concrete request fields a generated file does.
+type ListOrdersRequest = Message<"demo.v1.ListOrdersRequest"> & {
+  pageSize: bigint;
+  pageToken: string;
+};
+const TypedListOrdersRequestSchema =
+  ListOrdersRequestSchema as GenMessage<ListOrdersRequest>;
 
 describe("requestKey", () => {
   it("survives an int64 field, which JSON.stringify cannot", () => {
@@ -252,8 +276,43 @@ describe("createQueryHook", () => {
       "getOrder",
       { id: "abc" },
     ]);
-    await (captured.query?.queryFn as () => Promise<unknown>)();
-    expect(call).toHaveBeenCalledWith({ id: "abc" });
+    const signal = new AbortController().signal;
+    await (
+      captured.query?.queryFn as (ctx: {
+        signal: AbortSignal;
+      }) => Promise<unknown>
+    )({ signal });
+    // The signal is React Query's: an unmounted or superseded query aborts
+    // its request rather than landing it on an entry nobody reads.
+    expect(call).toHaveBeenCalledWith({ id: "abc" }, signal);
+  });
+
+  it("types data as what select returns, defaulting to the response", () => {
+    // The bug this guards: options were typed as the response's own
+    // UseQueryOptions, so `select` could not change the type and a call
+    // site mapping proto to a view model had to useMemo over `data`
+    // instead. TData is now the HOOK's parameter, inferred from select.
+    // `npm run typecheck` compiles this file, so the assignments below are
+    // the type-level half; the captured select is the runtime half.
+    const useGetOrder = createQueryHook(
+      keys.query("getOrder", GetOrderRequestSchema, "order"),
+      async () => ({ id: "abc", total: 3 }),
+    );
+
+    const mapped = useGetOrder({ id: "abc" }, { select: (r) => r.total * 2 });
+    const doubled: number | undefined = mapped.data;
+    // @ts-expect-error — data is select's number, no longer the response.
+    void (() => mapped.data?.id);
+    void doubled;
+    expect(
+      (captured.query?.select as (r: { total: number }) => number)({
+        total: 3,
+      }),
+    ).toBe(6);
+
+    const plain = useGetOrder({ id: "abc" });
+    const id: string | undefined = plain.data?.id;
+    void id;
   });
 
   it("lets caller options through — nothing is composed on a read", () => {
@@ -264,6 +323,162 @@ describe("createQueryHook", () => {
     useGetOrder({ id: "abc" }, { enabled: false, staleTime: 5_000 });
     expect(captured.query?.enabled).toBe(false);
     expect(captured.query?.staleTime).toBe(5_000);
+  });
+});
+
+describe("serviceKeys.infinite", () => {
+  const keys = serviceKeys("orderService");
+  const listOrders = keys.infinite(
+    "listOrders",
+    ListOrdersRequestSchema,
+    "order",
+  );
+
+  it('builds [service, entity, method, protojson(req), "infinite"]', () => {
+    expect(listOrders({ pageSize: 20n })).toEqual([
+      "orderService",
+      "order",
+      "listOrders",
+      { pageSize: "20" },
+      "infinite",
+    ]);
+  });
+
+  it("nests under the service and entity scopes, so invalidation reaches it", () => {
+    // The hand-written paged reads this replaces keyed themselves outside the
+    // generated factory, so a mutation's entity invalidation never refetched
+    // them. Prefix matching is the whole mechanism.
+    const key = listOrders({ pageSize: 20n });
+    expect(key.slice(0, 1)).toEqual([...keys.all]);
+    expect(key.slice(0, 2)).toEqual([...keys.entity("order")]);
+  });
+
+  it("never shares an entry with the plain query of the same request", () => {
+    // An infinite query caches { pages, pageParams }; a plain hook reading
+    // that entry would get the wrong shape.
+    const plain = keys.query("listOrders", ListOrdersRequestSchema, "order");
+    expect(listOrders({ pageSize: 20n })).not.toEqual(plain({ pageSize: 20n }));
+  });
+
+  it("ignores a page token, so every page of a listing is one entry", () => {
+    expect(listOrders({ pageSize: 20n, pageToken: "p2" } as never)).toEqual(
+      listOrders({ pageSize: 20n }),
+    );
+  });
+
+  it("omits the entity segment for a non-CRUD rpc", () => {
+    expect(keys.infinite("searchOrders", ListOrdersRequestSchema)({})).toEqual([
+      "orderService",
+      "searchOrders",
+      {},
+      "infinite",
+    ]);
+  });
+});
+
+describe("createInfiniteQueryHook", () => {
+  const keys = serviceKeys("orderService");
+  type Page = { orders: string[]; nextPageToken: string };
+
+  it("fetches the first page without a token and each next one with the last token", async () => {
+    const call = vi.fn(
+      async (): Promise<Page> => ({
+        orders: [],
+        nextPageToken: "",
+      }),
+    );
+    const useListOrdersInfinite = createInfiniteQueryHook<
+      typeof TypedListOrdersRequestSchema,
+      Page
+    >(keys.infinite("listOrders", TypedListOrdersRequestSchema, "order"), call);
+
+    useListOrdersInfinite({ pageSize: 20n });
+
+    expect(captured.infinite?.queryKey).toEqual([
+      "orderService",
+      "order",
+      "listOrders",
+      { pageSize: "20" },
+      "infinite",
+    ]);
+    expect(captured.infinite?.initialPageParam).toBe("");
+    const queryFn = captured.infinite?.queryFn as (ctx: {
+      pageParam: string;
+      signal: AbortSignal;
+    }) => Promise<unknown>;
+    const signal = new AbortController().signal;
+    await queryFn({ pageParam: "", signal });
+    // No token on the first page: an `optional string page_token` stays unset.
+    expect(call).toHaveBeenLastCalledWith({ pageSize: 20n }, signal);
+    await queryFn({ pageParam: "p2", signal });
+    expect(call).toHaveBeenLastCalledWith(
+      { pageSize: 20n, pageToken: "p2" },
+      signal,
+    );
+  });
+
+  it("ends the listing on an empty next_page_token", () => {
+    const useListOrdersInfinite = createInfiniteQueryHook<
+      typeof TypedListOrdersRequestSchema,
+      Page
+    >(
+      keys.infinite("listOrders", TypedListOrdersRequestSchema, "order"),
+      async (): Promise<Page> => ({ orders: [], nextPageToken: "" }),
+    );
+    useListOrdersInfinite({});
+    const next = captured.infinite?.getNextPageParam as (last: Page) => unknown;
+    expect(next({ orders: [], nextPageToken: "p2" })).toBe("p2");
+    expect(next({ orders: [], nextPageToken: "" })).toBeUndefined();
+  });
+
+  it("passes caller options through but never lets them replace the key or the fetch", () => {
+    const useListOrdersInfinite = createInfiniteQueryHook<
+      typeof TypedListOrdersRequestSchema,
+      Page
+    >(
+      keys.infinite("listOrders", TypedListOrdersRequestSchema, "order"),
+      async (): Promise<Page> => ({ orders: [], nextPageToken: "" }),
+    );
+    const getNextPageParam = () => undefined;
+    useListOrdersInfinite(
+      {},
+      { staleTime: 30_000, enabled: false, getNextPageParam },
+    );
+    expect(captured.infinite?.staleTime).toBe(30_000);
+    expect(captured.infinite?.enabled).toBe(false);
+    expect(captured.infinite?.getNextPageParam).toBe(getNextPageParam);
+
+    useListOrdersInfinite({}, { queryKey: ["hijacked"] } as never);
+    expect(captured.infinite?.queryKey).toEqual([
+      "orderService",
+      "order",
+      "listOrders",
+      {},
+      "infinite",
+    ]);
+  });
+
+  it("types data as what select returns, defaulting to InfiniteData", () => {
+    // Type-level half under `npm run typecheck`; flattening the pages is the
+    // select every paged list writes.
+    const useListOrdersInfinite = createInfiniteQueryHook<
+      typeof TypedListOrdersRequestSchema,
+      Page
+    >(
+      keys.infinite("listOrders", TypedListOrdersRequestSchema, "order"),
+      async (): Promise<Page> => ({ orders: [], nextPageToken: "" }),
+    );
+    const flat = useListOrdersInfinite(
+      {},
+      { select: (d) => d.pages.flatMap((p) => p.orders) },
+    );
+    const orders: string[] | undefined = flat.data;
+    void orders;
+    const paged = useListOrdersInfinite({});
+    const pages: Page[] | undefined = paged.data?.pages;
+    void pages;
+    // @ts-expect-error — the request has no pageToken: the hook owns it.
+    void (() => useListOrdersInfinite({ pageToken: "x" }));
   });
 });
 

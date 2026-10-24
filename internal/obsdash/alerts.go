@@ -191,7 +191,10 @@ const (
 	// previous 4 weeks (obsquery.EvalAnomalies, over the rpc.server.* metrics,
 	// never spans). The control plane evaluates it; its limits (4 MADs, 50
 	// requests, a 1 point error-rate rise or a 1.5x p95 rise, 7 days of
-	// history) are obsquery.DefaultAnomalyParams, not tunable params.
+	// history) are obsquery.DefaultAnomalyParams, not tunable params. The
+	// alert is one per service and release (labels: service, env, release,
+	// dedupe_key), with every signal that moved a finding in its why payload,
+	// so a summary can quote no signal label.
 	PlatformServiceAnomaly = "service-anomaly"
 )
 
@@ -330,7 +333,7 @@ var alertDefs = []alertDef{
 			Severity: SeverityWarning, For: "0s", Interval: "5m", Signal: "platform",
 			Params: []AlertParam{},
 		},
-		annotations: map[string]string{"summary": "{{ $labels.service }} {{ $labels.signal }} is off its usual for this hour of the week ({{ $labels.env }}). Why: forge obs alerts --json, or forge obs check {{ $labels.env }}"},
+		annotations: map[string]string{"summary": "{{ $labels.service }} left what is usual for this hour of the week ({{ $labels.env }}). What moved, against what, and the evidence are in the alert's why payload: forge obs alerts --json"},
 		applies:     hasServices,
 		platform:    []platformRule{{PlatformServiceAnomaly, "ServiceAnomaly", SeverityWarning}},
 	},

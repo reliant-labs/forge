@@ -238,6 +238,17 @@ func (rc *lintRunCtx) goPackages() []string {
 	return goexec.ExcludeNodeModules(rc.runContext(), rc.moduleDir(), nil, rc.paths)
 }
 
+// defaultPassPackages is goPackages for a pass that compiles only the default
+// build. Under --scope it drops the patterns that reach nothing but tagged Go
+// (lint_scope_packages.go): handed only those, golangci-lint fails "no go
+// files to analyze". Empty means the pass has nothing to compile.
+func (rc *lintRunCtx) defaultPassPackages() []string {
+	if rc.scope == nil {
+		return rc.goPackages()
+	}
+	return goexec.ExcludeNodeModules(rc.runContext(), rc.moduleDir(), nil, rc.scope.defaultPassPackages())
+}
+
 func (rc *lintRunCtx) runContext() context.Context {
 	if rc.ctx == nil {
 		return context.Background()

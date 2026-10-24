@@ -59,9 +59,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -196,47 +194,6 @@ func (s *lintScope) filter(fs []lintJSONFinding) []lintJSONFinding {
 	return out
 }
 
-// goPackages translates the scope into Go package patterns for the lanes
-// that take them: `./<dir>/...` for a directory, the containing package for
-// a .go file. Non-Go paths (proto/, db/migrations/) contribute nothing, and
-// an empty result means no Go package is in scope.
-func (s *lintScope) goPackages() []string {
-	if s == nil {
-		return nil
-	}
-	var out []string
-	seen := map[string]bool{}
-	for _, p := range s.paths {
-		fi, err := os.Stat(filepath.Join(s.root, filepath.FromSlash(p)))
-		if err != nil {
-			continue
-		}
-		var pattern string
-		switch {
-		case fi.IsDir():
-			// A directory with no Go source under it (proto/, db/) is not a
-			// package pattern: golangci-lint refuses it with "no go files to
-			// analyze" rather than reporting nothing.
-			if !dirHasGoFiles(filepath.Join(s.root, filepath.FromSlash(p))) {
-				continue
-			}
-			pattern = "./" + p + "/..."
-		case strings.HasSuffix(p, ".go"):
-			pattern = "./" + path.Dir(p)
-			if path.Dir(p) == "." {
-				pattern = "."
-			}
-		default:
-			continue
-		}
-		if !seen[pattern] {
-			seen[pattern] = true
-			out = append(out, pattern)
-		}
-	}
-	return out
-}
-
 // namesGoFile reports whether any scope path is a single .go file rather
 // than a directory.
 func (s *lintScope) namesGoFile() bool {
@@ -249,31 +206,6 @@ func (s *lintScope) namesGoFile() bool {
 		}
 	}
 	return false
-}
-
-// dirHasGoFiles reports whether any .go file lies under dir, skipping the
-// trees `go list ./...` itself ignores.
-func dirHasGoFiles(dir string) bool {
-	found := false
-	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // an unreadable subtree is simply not counted
-		}
-		if d.IsDir() {
-			name := d.Name()
-			if p != dir && (name == "node_modules" || name == "vendor" || name == "testdata" ||
-				strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasSuffix(d.Name(), ".go") {
-			found = true
-			return fs.SkipAll
-		}
-		return nil
-	})
-	return found
 }
 
 // lintStepOutcome is what one lane proved, in the shape every structured
@@ -484,7 +416,8 @@ func collectLaneOutcome(
 			o.unscoped = true
 			return o, nil
 		case targetedPackageLanes[lane]:
-			paths = scope.goPackages()
+			// contract and exported-vars load the untagged build only.
+			paths = scope.defaultPassPackages()
 			if len(paths) == 0 {
 				o.skipMsg = "no Go package under --scope — skipping " + lane
 				return o, nil

@@ -988,11 +988,19 @@ func parseDigitsLint(s string) int {
 // on, applying the staticcheck/gocritic rewrites #1041 took out of the text
 // driver. Files behind a project-defined build tag get a pass of their own
 // (golangci_build_tags.go). A golangci-lint that cannot analyze the module gates as one
-// finding, the runbook.
+// finding, the runbook. A --scope that reaches only tagged Go has nothing for
+// the default pass to compile, so it runs the tagged passes alone
+// (lint_scope_packages.go).
 func collectGolangciLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
-	fs, gated := golangciPass(rc, golangciGateArgs(rc))
-	if len(fs) > 0 && fs[0].Rule == ruleGolangciUnavailable {
-		return fs, gated
+	var (
+		fs    []lintJSONFinding
+		gated bool
+	)
+	if pkgs := rc.defaultPassPackages(); len(pkgs) > 0 {
+		fs, gated = golangciPass(rc, golangciGateArgs(rc, pkgs))
+		if len(fs) > 0 && fs[0].Rule == ruleGolangciUnavailable {
+			return fs, gated
+		}
 	}
 	// One more pass per build tag that gates files in the tree, over the
 	// packages holding them (golangci_build_tags.go).
@@ -1088,7 +1096,13 @@ func collectTypedAccessGuardJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error
 			FixHint:  typedAccessGuardUnconfiguredHint,
 		}}, false, nil
 	}
-	run, err := rc.execGolangci(golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, rc.goPackages()))
+	// One untagged pass: a --scope reaching only tagged Go leaves it nothing
+	// to compile, and an empty pattern list would mean ./....
+	pkgs := rc.defaultPassPackages()
+	if len(pkgs) == 0 {
+		return nil, false, nil
+	}
+	run, err := rc.execGolangci(golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, pkgs))
 	if err != nil {
 		return []lintJSONFinding{golangciUnresolvedFinding(err, ruleTypedAccessGuardUnavailable)}, false, nil
 	}

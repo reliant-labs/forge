@@ -213,7 +213,15 @@ func lintPipeline() []linterStep {
 				return true, ""
 			},
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				return collectContractLintJSON(rc.ctx, rc.paths, contractExcludesFromConfig(rc.cfg), contractGateOptions(rc.cfg, rc.strict))
+				paths := rc.paths
+				if rc.scope != nil {
+					// The analysis loads the untagged build only: a scope
+					// reaching nothing but tagged Go has nothing for it.
+					if paths = rc.scope.defaultPassPackages(); len(paths) == 0 {
+						return nil, false, nil
+					}
+				}
+				return collectContractLintJSON(rc.ctx, paths, contractExcludesFromConfig(rc.cfg), contractGateOptions(rc.cfg, rc.strict))
 			},
 		},
 

@@ -3,8 +3,8 @@
 package obsquery_test
 
 // The session list, summary, timeline and replay pages against a real
-// ClickHouse holding the hosted tenant's browser tables (testdata/rum/
-// tenant_schema.sql, generated from control-plane's 010_tenant_create.sql) and
+// ClickHouse holding the hosted observability database's browser tables (testdata/rum/
+// hosted_schema.sql, generated from control-plane's 010_tenant_create.sql) and
 // payloads captured from a real Chrome running @hyperdx/browser 0.26 (traces.jsonl,
 // logs.jsonl: control-plane's obstenant fixtures). The multi-chunk full snapshot
 // is generated from the recorder's measured chunk size.
@@ -40,10 +40,10 @@ func rumRunner(c clickhouse.Conn) obsquery.Runner {
 	}
 }
 
-// rumTenant creates a tenant database holding the hosted browser tables.
-func rumTenant(t *testing.T, c clickhouse.Conn, db string) {
+// rumHostedDB creates a hosted database holding the hosted browser tables.
+func rumHostedDB(t *testing.T, c clickhouse.Conn, db string) {
 	t.Helper()
-	raw, err := os.ReadFile("testdata/rum/tenant_schema.sql")
+	raw, err := os.ReadFile("testdata/rum/hosted_schema.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func loadCapture(t *testing.T, c clickhouse.Conn, db string) {
 func TestRumSessionSummaryAndTimelineFromCapturedPayloads(t *testing.T) {
 	c := startClickHouse(t)
 	ctx := context.Background()
-	rumTenant(t, c, "rt")
+	rumHostedDB(t, c, "rt")
 	loadCapture(t, c, "rt")
 	run := rumRunner(c)
 	sc := rumScopeOf("rt", "env-prod")
@@ -312,7 +312,7 @@ func cloneSession(t *testing.T, id, service, env, user, path, hour string, keepE
 func TestRumSessionListFiltersAndCursor(t *testing.T) {
 	c := startClickHouse(t)
 	ctx := context.Background()
-	rumTenant(t, c, "rt")
+	rumHostedDB(t, c, "rt")
 	loadCapture(t, c, "rt")
 	// five more sessions, one per hour after the capture: three in env-prod,
 	// two of them user-77 on /docs/..., one other-web in env-stg
@@ -402,11 +402,11 @@ func TestRumSessionListFiltersAndCursor(t *testing.T) {
 	}
 }
 
-func TestRumTenantIsolation(t *testing.T) {
+func TestRumDatabaseIsolation(t *testing.T) {
 	c := startClickHouse(t)
 	ctx := context.Background()
-	rumTenant(t, c, "rt_a")
-	rumTenant(t, c, "rt_b")
+	rumHostedDB(t, c, "rt_a")
+	rumHostedDB(t, c, "rt_b")
 	loadCapture(t, c, "rt_a")
 	run := rumRunner(c)
 
@@ -434,7 +434,7 @@ func TestRumTenantIsolation(t *testing.T) {
 		t.Errorf("owner: %d sessions, found %v, %d timeline entries, %d replay events", n, ok, e, ev)
 	}
 	for name, sc := range map[string]obsquery.Scope{
-		"another tenant database": rumScopeOf("rt_b", "env-prod"),
+		"another hosted database": rumScopeOf("rt_b", "env-prod"),
 		"another environment":     rumScopeOf("rt_a", "env-stg"),
 		"no environment":          func() obsquery.Scope { s := rumScopeOf("rt_a"); s.EnvRestricted = true; return s }(),
 		"another service": func() obsquery.Scope {
@@ -493,7 +493,7 @@ func snapshotText(ts int64) string {
 func TestRumReplayChunksPagesAndWithheldEvents(t *testing.T) {
 	c := startClickHouse(t)
 	ctx := context.Background()
-	rumTenant(t, c, "rt")
+	rumHostedDB(t, c, "rt")
 	run := rumRunner(c)
 	const sess = "d1000000000000000000000000000001"
 	base := time.Date(2026, 10, 19, 10, 0, 0, 0, time.UTC)
@@ -668,7 +668,7 @@ func TestRumReplayChunksPagesAndWithheldEvents(t *testing.T) {
 func TestRumReplayCapturedSessionIsPlayableInOrder(t *testing.T) {
 	c := startClickHouse(t)
 	ctx := context.Background()
-	rumTenant(t, c, "rt")
+	rumHostedDB(t, c, "rt")
 	loadCapture(t, c, "rt")
 	run := rumRunner(c)
 	sc := rumScopeOf("rt", "env-prod")

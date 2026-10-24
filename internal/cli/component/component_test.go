@@ -1,6 +1,7 @@
 package component
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +12,37 @@ import (
 // literally, so `--dir web` from a repo root dropped loose .tsx files beside
 // package.json. These pin the resolution so the flag and the auto-detect path
 // agree on where a frontend's components live.
+// An install writes the component's sibling imports too (input imports
+// ./form_field_context), and never overwrites one already there: a scaffold's
+// link.tsx is framework-aware, the library's is a plain anchor.
+func TestInstallWritesMissingSiblingImports(t *testing.T) {
+	dir := t.TempDir()
+	own := []byte("// the project's own link\n")
+	if err := os.WriteFile(filepath.Join(dir, "link.tsx"), own, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newInstallCmd(nil)
+	cmd.SetArgs([]string{"--dir", dir, "input", "page_header"})
+	cmd.SetOut(io.Discard)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	for _, name := range []string{"input", "form_field_context", "page_header"} {
+		if _, err := os.Stat(filepath.Join(dir, name+".tsx")); err != nil {
+			t.Errorf("%s.tsx not installed: %v", name, err)
+		}
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "link.tsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(own) {
+		t.Errorf("install overwrote the project's link.tsx:\n%s", got)
+	}
+}
+
 func TestResolveInstallDir(t *testing.T) {
 	frontend := t.TempDir()
 	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {

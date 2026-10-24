@@ -29,8 +29,8 @@ import (
 // different tree; the dev loop passes false and tolerates drift.
 //
 // The package manager is taken from the lockfile on disk, falling back to
-// runner: a frontend whose dev_runner says npm but which commits
-// pnpm-lock.yaml is a pnpm project. FORGE_SKIP_NPM_INSTALL short-circuits it.
+// runner: a frontend whose dev_runner says npm but which commits only
+// pnpm-lock.yaml is a pnpm project. With several lockfiles, runner's own wins. FORGE_SKIP_NPM_INSTALL short-circuits it.
 func Ensure(ctx context.Context, logPrefix, name, dir, runner string, frozen bool) error {
 	if dir == "" || os.Getenv("FORGE_SKIP_NPM_INSTALL") != "" {
 		return nil
@@ -62,12 +62,28 @@ func Ensure(ctx context.Context, logPrefix, name, dir, runner string, frozen boo
 
 // lockfilePackageManager names the package manager that wrote dir's lockfile,
 // or fallback (default npm) when there is none.
+//
+// When the declared runner's own lockfile is present it wins, even beside
+// another manager's: two lockfiles mean one is stale, and the declaration is
+// what says which. Without this a leftover pnpm-lock.yaml beside the
+// package-lock.json an npm frontend actually maintains made forge run
+// `pnpm install` (or fail for want of pnpm) against a stale lock. A lockfile
+// still overrides a declaration whose own lockfile is absent: that frontend
+// is the other manager's project whatever its dev_runner says.
 func lockfilePackageManager(dir, fallback string) string {
-	for _, lock := range []struct{ file, runner string }{
+	locks := []struct{ file, runner string }{
 		{"pnpm-lock.yaml", "pnpm"},
 		{"yarn.lock", "yarn"},
 		{"package-lock.json", "npm"},
-	} {
+	}
+	for _, lock := range locks {
+		if lock.runner == fallback {
+			if _, err := os.Stat(filepath.Join(dir, lock.file)); err == nil {
+				return fallback
+			}
+		}
+	}
+	for _, lock := range locks {
 		if _, err := os.Stat(filepath.Join(dir, lock.file)); err == nil {
 			return lock.runner
 		}

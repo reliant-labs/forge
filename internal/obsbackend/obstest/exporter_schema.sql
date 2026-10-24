@@ -1,5 +1,5 @@
 -- The ClickHouse exporter's tables (v0.162.0) as the local ClickStack creates them, trimmed to
--- the five the obs verbs read; indexes and TTLs are omitted.
+-- the seven the obs verbs read; indexes and TTLs are omitted.
 
 CREATE TABLE default.otel_logs
 (
@@ -152,6 +152,72 @@ CREATE TABLE default.otel_metrics_histogram
     `Min` Float64 CODEC(ZSTD(1)),
     `Max` Float64 CODEC(ZSTD(1)),
     `AggregationTemporality` Int32 CODEC(ZSTD(1))
+)
+ENGINE = MergeTree
+PARTITION BY toDate(TimeUnix)
+ORDER BY (ServiceName, MetricName, toStartOfHour(TimeUnix), cityHash64(Attributes), TimeUnix)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE default.otel_metrics_exponential_histogram
+(
+    `ResourceAttributes` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    `ResourceSchemaUrl` String CODEC(ZSTD(1)),
+    `ScopeName` String CODEC(ZSTD(1)),
+    `ScopeVersion` String CODEC(ZSTD(1)),
+    `ScopeAttributes` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    `ScopeDroppedAttrCount` UInt32 CODEC(ZSTD(1)),
+    `ScopeSchemaUrl` String CODEC(ZSTD(1)),
+    `ServiceName` LowCardinality(String) CODEC(ZSTD(1)),
+    `MetricName` LowCardinality(String) CODEC(ZSTD(1)),
+    `MetricDescription` String CODEC(ZSTD(1)),
+    `MetricUnit` String CODEC(ZSTD(1)),
+    `Attributes` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    `StartTimeUnix` DateTime CODEC(Delta(4), ZSTD(1)),
+    `TimeUnix` DateTime CODEC(Delta(4), ZSTD(1)),
+    `Count` UInt64 CODEC(Delta(8), ZSTD(1)),
+    `Sum` Float64 CODEC(ZSTD(1)),
+    `Scale` Int32 CODEC(ZSTD(1)),
+    `ZeroCount` UInt64 CODEC(ZSTD(1)),
+    `PositiveOffset` Int32 CODEC(ZSTD(1)),
+    `PositiveBucketCounts` Array(UInt64) CODEC(ZSTD(1)),
+    `NegativeOffset` Int32 CODEC(ZSTD(1)),
+    `NegativeBucketCounts` Array(UInt64) CODEC(ZSTD(1)),
+    `Exemplars.FilteredAttributes` Array(Map(LowCardinality(String), String)) CODEC(ZSTD(1)),
+    `Exemplars.TimeUnix` Array(DateTime) CODEC(ZSTD(1)),
+    `Exemplars.Value` Array(Float64) CODEC(ZSTD(1)),
+    `Exemplars.SpanId` Array(String) CODEC(ZSTD(1)),
+    `Exemplars.TraceId` Array(String) CODEC(ZSTD(1)),
+    `Flags` UInt32 CODEC(ZSTD(1)),
+    `Min` Float64 CODEC(ZSTD(1)),
+    `Max` Float64 CODEC(ZSTD(1)),
+    `AggregationTemporality` Int32 CODEC(ZSTD(1))
+)
+ENGINE = MergeTree
+PARTITION BY toDate(TimeUnix)
+ORDER BY (ServiceName, MetricName, toStartOfHour(TimeUnix), cityHash64(Attributes), TimeUnix)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE default.otel_metrics_summary
+(
+    `ResourceAttributes` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    `ResourceSchemaUrl` String CODEC(ZSTD(1)),
+    `ScopeName` String CODEC(ZSTD(1)),
+    `ScopeVersion` String CODEC(ZSTD(1)),
+    `ScopeAttributes` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    `ScopeDroppedAttrCount` UInt32 CODEC(ZSTD(1)),
+    `ScopeSchemaUrl` String CODEC(ZSTD(1)),
+    `ServiceName` LowCardinality(String) CODEC(ZSTD(1)),
+    `MetricName` LowCardinality(String) CODEC(ZSTD(1)),
+    `MetricDescription` String CODEC(ZSTD(1)),
+    `MetricUnit` String CODEC(ZSTD(1)),
+    `Attributes` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    `StartTimeUnix` DateTime CODEC(Delta(4), ZSTD(1)),
+    `TimeUnix` DateTime CODEC(Delta(4), ZSTD(1)),
+    `Count` UInt64 CODEC(Delta(8), ZSTD(1)),
+    `Sum` Float64 CODEC(ZSTD(1)),
+    `ValueAtQuantiles.Quantile` Array(Float64) CODEC(ZSTD(1)),
+    `ValueAtQuantiles.Value` Array(Float64) CODEC(ZSTD(1)),
+    `Flags` UInt32 CODEC(ZSTD(1))
 )
 ENGINE = MergeTree
 PARTITION BY toDate(TimeUnix)

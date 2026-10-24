@@ -18,7 +18,10 @@ import (
 //
 //	group_key = error.group, when the record names one (observe.ErrorGroup)
 //	          | join(US,
-//	              code.function.name, or ScopeName when absent,
+//	              code.function.name, or ScopeName when absent (the SDK sets
+//	              it to the innermost application frame of
+//	              exception.stacktrace when the record carries a stack, else
+//	              to the log call site),
 //	              procedure            (rpc-scoped records; '' otherwise),
 //	              norm(Body)           (the message template),
 //	              exception.type,

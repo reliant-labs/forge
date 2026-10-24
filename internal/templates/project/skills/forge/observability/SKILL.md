@@ -141,6 +141,8 @@ application error that crossed a serialization boundary — is taught with
 `observe.WithErrorClassifier(func(error) svcerr.Class)` (return
 `svcerr.ClassNone` for "no opinion").
 
+Server faults carry a bounded stack: `observability/error-stacks`.
+
 ## Querying Traces
 
 In HyperDX → Search → Traces, filter by:

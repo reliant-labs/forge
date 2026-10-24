@@ -18,7 +18,14 @@
 //	exception.type,              the innermost error of the record's first
 //	exception.message            error-valued attribute; %T and the message
 //	                             bounded to MaxExceptionMessage bytes.
-//	exception.stacktrace         LogPanic only.
+//	exception.stacktrace         LogPanic: the panic's stack. Otherwise the
+//	                             bounded stack svcerr captured where a server
+//	                             fault (Internal, Unknown, DataLoss,
+//	                             Unavailable) was first built or wrapped; never
+//	                             for a client-class error. Its innermost
+//	                             application frame replaces the call site above,
+//	                             so an issue groups by where the failure began
+//	                             rather than by the interceptor that logged it.
 //	error.group                  ErrorGroup, opt-in.
 //
 // One attribute is written at any level, by the caller: issue.source
@@ -184,12 +191,14 @@ func innermostError(err error) error {
 // attribute the caller already set (LogPanic, or a call site naming its own
 // exception.type) is left alone.
 func addErrorInputs(r slog.Record) slog.Record {
-	var haveType, haveFunc bool
+	var haveType, haveFunc, haveStack bool
 	var err error
 	r.Attrs(func(a slog.Attr) bool {
 		switch a.Key {
 		case LogKeyExceptionType:
 			haveType = true
+		case LogKeyExceptionStacktrace:
+			haveStack = true
 		case string(semconv.CodeFunctionNameKey):
 			haveFunc = true
 		}
@@ -200,21 +209,35 @@ func addErrorInputs(r slog.Record) slog.Record {
 		}
 		return true
 	})
-	wantSource := r.PC != 0 && !haveFunc
+	// A server fault carries the stack svcerr captured for it. Reading it is
+	// the only cost beyond the walk: a client-class error has none.
+	var stack svcerr.Stack
+	var haveSvcStack bool
+	if err != nil && !haveStack {
+		stack, haveSvcStack = svcerr.StackOf(err)
+	}
+	wantSource := !haveFunc && (r.PC != 0 || haveSvcStack)
 	wantException := err != nil && !haveType
-	if !wantSource && !wantException {
+	if !wantSource && !wantException && !haveSvcStack {
 		return r
 	}
 	// Clone before mutating: the record's attribute storage may be shared
 	// with the caller's copy.
 	r = r.Clone()
 	if wantSource {
-		f, _ := runtime.CallersFrames([]uintptr{r.PC}).Next()
+		function, file, line := stack.Origin.Function, stack.Origin.File, stack.Origin.Line
+		if !haveSvcStack {
+			f, _ := runtime.CallersFrames([]uintptr{r.PC}).Next()
+			function, file, line = f.Function, f.File, f.Line
+		}
 		r.AddAttrs(
-			slog.String(string(semconv.CodeFunctionNameKey), f.Function),
-			slog.String(string(semconv.CodeFilePathKey), f.File),
-			slog.Int(string(semconv.CodeLineNumberKey), f.Line),
+			slog.String(string(semconv.CodeFunctionNameKey), function),
+			slog.String(string(semconv.CodeFilePathKey), file),
+			slog.Int(string(semconv.CodeLineNumberKey), line),
 		)
+	}
+	if haveSvcStack {
+		r.AddAttrs(slog.String(LogKeyExceptionStacktrace, stack.Trace))
 	}
 	if wantException {
 		err = innermostError(err)

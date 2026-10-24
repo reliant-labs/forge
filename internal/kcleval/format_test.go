@@ -5,6 +5,7 @@ package kcleval_test
 // input is a decoded value, so these are cheap and run in -short mode.
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -30,8 +31,8 @@ func TestRenderRawIsTheBareScalar(t *testing.T) {
 		// KCL's `disk_size_gb = 200` decodes to float64(200); printing Go's
 		// default "200" vs "2e+02" is the difference between a working
 		// `gcloud --boot-disk-size` and a broken one.
-		{"integral number keeps integer form", float64(200), "200"},
-		{"non-integral number", float64(1.5), "1.5"},
+		{"integral number keeps integer form", json.Number("200"), "200"},
+		{"non-integral number", json.Number("1.5"), "1.5"},
 		{"bool", true, "true"},
 		// None is an EMPTY capture, not the literal text "null", which would
 		// look present to every caller that tested for emptiness.
@@ -62,7 +63,7 @@ func TestRenderRawIsTheBareScalar(t *testing.T) {
 // JSON blob — so the refusal happens at the boundary, naming the fix.
 func TestRenderRawRefusesAComposite(t *testing.T) {
 	for _, val := range []any{
-		map[string]any{"a": float64(1)},
+		kcleval.Object{{Key: "a", Value: json.Number("1")}},
 		[]any{"small", "large"},
 	} {
 		_, err := kcleval.Render(kcleval.Result{Value: val}, kcleval.FormatRaw)
@@ -78,7 +79,7 @@ func TestRenderRawRefusesAComposite(t *testing.T) {
 // TestRenderJSONAndYAML: the composite formats round-trip a document, and JSON
 // ends in exactly one newline so a terminal prompt lands on its own line.
 func TestRenderJSONAndYAML(t *testing.T) {
-	val := map[string]any{"name": "cloudnative-pg", "replicas": float64(3)}
+	val := kcleval.Object{{Key: "name", Value: "cloudnative-pg"}, {Key: "replicas", Value: json.Number("3")}}
 
 	out, err := kcleval.Render(kcleval.Result{Value: val}, kcleval.FormatJSON)
 	if err != nil {

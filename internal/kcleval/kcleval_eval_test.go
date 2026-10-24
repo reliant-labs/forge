@@ -64,12 +64,12 @@ func TestEvalResolvesTheForgeModuleFromTheBinary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Eval of a file importing forge must resolve the module from the binary; got: %v", err)
 	}
-	doc, ok := res.Value.(map[string]any)
+	doc, ok := res.Value.(kcleval.Object)
 	if !ok {
 		t.Fatalf("whole-document Eval = %T, want an object", res.Value)
 	}
-	if doc["has_bundle"] != true {
-		t.Errorf("has_bundle = %v, want true (the forge module did not resolve)", doc["has_bundle"])
+	if v, _ := doc.Get("has_bundle"); v != true {
+		t.Errorf("has_bundle = %v, want true (the forge module did not resolve)", v)
 	}
 	if res.Scalar {
 		t.Error("a whole document is not a scalar")
@@ -107,7 +107,7 @@ _forge_is_present = forge.Bundle is not None
 		want any
 	}{
 		{"nested string", "sbd.image_family", "workspace-sbd"},
-		{"nested int", "sbd.disk_size_gb", float64(200)},
+		{"nested int", "sbd.disk_size_gb", json.Number("200")},
 		{"nested bool", "sbd.enabled", true},
 		{"second object", "pool_defaults.node_label_key", "reliant.dev/pool"},
 		{"list index", "tiers.1", "large"},
@@ -173,11 +173,13 @@ _p = forge.Bundle is not None
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, ok := res.Value.(map[string]any)
+	got, ok := res.Value.(kcleval.Object)
 	if !ok {
 		t.Fatalf("repeated -S = %T, want an object", res.Value)
 	}
-	if got["cloudnative_pg.name"] != "cloudnative-pg" || got["cloudnative_pg.namespace"] != "cnpg-system" {
+	name, _ := got.Get("cloudnative_pg.name")
+	ns, _ := got.Get("cloudnative_pg.namespace")
+	if name != "cloudnative-pg" || ns != "cnpg-system" || got[0].Key != "cloudnative_pg.name" {
 		t.Errorf("repeated -S = %#v", got)
 	}
 	if res.Scalar {
@@ -324,8 +326,8 @@ func TestEvalIsReadOnly(t *testing.T) {
 // TestSelectDecodedDocument pins the traversal without paying for a render —
 // the cheap unit half, for the cases a real KCL file cannot easily produce.
 func TestSelectDecodedDocument(t *testing.T) {
-	var doc any
-	if err := json.Unmarshal([]byte(`{"a":{"b":[{"c":"deep"}]},"n":null,"num":7}`), &doc); err != nil {
+	doc, err := kcleval.Decode([]byte(`{"a":{"b":[{"c":"deep"}]},"n":null,"num":7}`))
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got, err := kcleval.Select(doc, "a.b.0.c"); err != nil || got != "deep" {

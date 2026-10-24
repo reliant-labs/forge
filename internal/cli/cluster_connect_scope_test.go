@@ -42,7 +42,7 @@ const (
 
 func mustNeeds(t *testing.T, stream string) grantNeeds {
 	t.Helper()
-	n, err := deriveGrantNeeds(stream, testCtx)
+	n, err := deriveGrantNeeds(stream, testCtx, []string{"base"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,8 +123,14 @@ func TestPlanGrant_NamespaceDefaultCoversTheRenderedNamespaces(t *testing.T) {
 	if !reflect.DeepEqual(plan.PinnedNamespaces, []string{"acme-prod"}) {
 		t.Errorf("the rendered Namespace object is not pinned: %+v", plan.PinnedNamespaces)
 	}
-	if !reflect.DeepEqual(plan.BindClusterRoles, []string{"acme-reader"}) {
-		t.Errorf("a RoleBinding to a ClusterRole needs bind on exactly that ClusterRole: %+v", plan.BindClusterRoles)
+	var pinned bool
+	for _, r := range plan.NamespaceRules["acme-prod"] {
+		if r.Ref == refClusterRoles && reflect.DeepEqual(r.Names, []string{"acme-reader"}) && reflect.DeepEqual(r.Verbs, []string{"bind"}) {
+			pinned = true
+		}
+	}
+	if !pinned {
+		t.Errorf("a RoleBinding to a ClusterRole needs bind on exactly that ClusterRole: %+v", plan.NamespaceRules["acme-prod"])
 	}
 }
 
@@ -149,18 +155,15 @@ func TestPlanGrant_NamespaceScopeRefusals(t *testing.T) {
 
 // ── the grant shapes ────────────────────────────────────────────────────────
 
-func testRBAC(t *testing.T, auth string, scope applyScope, extra ...string) connectRBAC {
+func testRBAC(t *testing.T, scope applyScope, extra ...string) connectRBAC {
 	t.Helper()
 	plan, err := planGrant(mustNeeds(t, scopeStream(extra...)), scope)
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := connectRBAC{
-		ClusterName: "prod-us", Env: "prod", KubeContext: testCtx, Auth: auth,
+		ClusterName: "prod-us", Env: "prod", KubeContext: testCtx,
 		TokenNamespace: connectTokenNamespace, Scope: scope, Plan: plan,
-	}
-	if auth == authGCP {
-		r.BindingGSA = "fc-prod-ab12@acme.iam.gserviceaccount.com"
 	}
 	return r
 }
@@ -213,7 +216,7 @@ func ruleStrings(rules []rbacv1.PolicyRule) []string {
 
 func TestGrant_NamespaceScopeIsARolePerNamespaceFromTheRender(t *testing.T) {
 	cron := onCtx("apiVersion: batch/v1\nkind: CronJob\nmetadata:\n  name: sweep\n  namespace: acme-prod\n")
-	r := testRBAC(t, authGCP, applyScope{Namespaces: []string{"acme-prod"}}, cron)
+	r := testRBAC(t, applyScope{Namespaces: []string{"acme-prod"}}, cron)
 	roles, cr, bindings, crb := decodeGrant(t, r)
 
 	role, ok := roles["acme-prod"]
@@ -243,9 +246,9 @@ func TestGrant_NamespaceScopeIsARolePerNamespaceFromTheRender(t *testing.T) {
 	if len(bindings) != 1 || bindings[0].RoleRef.Kind != "Role" || bindings[0].Namespace != "acme-prod" {
 		t.Errorf("bindings = %+v, want one RoleBinding to the Role", bindings)
 	}
-	wantSubject := []rbacv1.Subject{{Kind: "User", Name: "fc-prod-ab12@acme.iam.gserviceaccount.com", APIGroup: "rbac.authorization.k8s.io"}}
+	wantSubject := []rbacv1.Subject{{Kind: "ServiceAccount", Name: "forge-connect-prod-us-prod", Namespace: "forge-system"}}
 	if !reflect.DeepEqual(bindings[0].Subjects, wantSubject) {
-		t.Errorf("subjects = %+v, want the binding's own GSA %+v", bindings[0].Subjects, wantSubject)
+		t.Errorf("subjects = %+v, want the binding's own ServiceAccount %+v", bindings[0].Subjects, wantSubject)
 	}
 
 	// The render declares the Namespace object: pinned by name, no create,
@@ -262,22 +265,27 @@ func TestGrant_NamespaceScopeIsARolePerNamespaceFromTheRender(t *testing.T) {
 }
 
 func TestGrant_NamespaceScopeBindsClusterRolesByName(t *testing.T) {
-	r := testRBAC(t, authToken, applyScope{}, onCtx(docRoleBinding))
+	r := testRBAC(t, applyScope{}, onCtx(docRoleBinding))
 	roles, _, _, _ := decodeGrant(t, r)
 	got := ruleStrings(roles["acme-prod"].Rules)
 	for _, want := range []string{
 		"rbac.authorization.k8s.io|rolebindings|create,delete,get,list,patch,update,watch",
 		"rbac.authorization.k8s.io|clusterroles|bind|acme-reader",
-		"rbac.authorization.k8s.io|roles|bind,escalate",
 	} {
 		if !hasString(got, want) {
 			t.Errorf("Role omits %q:\n%s", want, strings.Join(got, "\n"))
 		}
 	}
+	// No RoleBinding to a Role, and no Role in the render: nothing to escalate.
+	for _, r := range got {
+		if strings.Contains(r, "escalate") || strings.Contains(r, "|roles|") {
+			t.Errorf("Role grants %q although the render declares no Role", r)
+		}
+	}
 }
 
-func TestGrant_ClusterScopeIsARenderDerivedClusterRoleWithBindEscalate(t *testing.T) {
-	r := testRBAC(t, authToken, applyScope{Cluster: true}, onCtx(docClusterRole), onCtx(docRoleBinding))
+func TestGrant_ClusterScopeIsARenderDerivedClusterRoleWithBindEscalatePinnedByName(t *testing.T) {
+	r := testRBAC(t, applyScope{Cluster: true}, onCtx(docClusterRole), onCtx(docRoleBinding))
 	roles, cr, bindings, crb := decodeGrant(t, r)
 	if len(roles) != 0 || len(bindings) != 0 {
 		t.Fatalf("cluster scope renders namespaced objects: %v %v", roles, bindings)
@@ -288,9 +296,11 @@ func TestGrant_ClusterScopeIsARenderDerivedClusterRoleWithBindEscalate(t *testin
 	got := ruleStrings(cr.Rules)
 	for _, want := range []string{
 		"apps|deployments|create,delete,get,list,patch,update,watch",
-		// the render's own ClusterRole kind, merged with bind and escalate
-		"rbac.authorization.k8s.io|clusterroles|bind,create,delete,escalate,get,list,patch,update,watch",
-		"rbac.authorization.k8s.io|roles|bind,escalate",
+		// the render's own ClusterRole kind, WITHOUT bind or escalate ...
+		"rbac.authorization.k8s.io|clusterroles|create,delete,get,list,patch,update,watch",
+		// ... which are pinned to the ClusterRole the render declares and the
+		// one its RoleBinding points at (here the same name, so one rule).
+		"rbac.authorization.k8s.io|clusterroles|bind,escalate|acme-reader",
 		"|namespaces|create,delete,get,list,patch,update,watch",
 	} {
 		if !hasString(got, want) {
@@ -311,7 +321,7 @@ func TestGrant_ClusterScopeIsARenderDerivedClusterRoleWithBindEscalate(t *testin
 // Without an RBAC kind in the render, even cluster scope holds no bind or
 // escalate: a render that creates no roles needs neither.
 func TestGrant_ClusterScopeWithoutRBACKindsHoldsNoBindOrEscalate(t *testing.T) {
-	r := testRBAC(t, authToken, applyScope{Cluster: true})
+	r := testRBAC(t, applyScope{Cluster: true})
 	_, cr, _, _ := decodeGrant(t, r)
 	for _, rule := range ruleStrings(cr.Rules) {
 		if strings.Contains(rule, "bind") || strings.Contains(rule, "escalate") {
@@ -321,37 +331,31 @@ func TestGrant_ClusterScopeWithoutRBACKindsHoldsNoBindOrEscalate(t *testing.T) {
 }
 
 func TestGrant_NeverImpersonatesAndNeverWritesBootstrapObjects(t *testing.T) {
-	for _, auth := range []string{authGCP, authToken} {
-		for _, scope := range []applyScope{{Cluster: true}, {}} {
-			r := testRBAC(t, auth, scope, onCtx(docRoleBinding))
-			all := r.bootstrapManifests()
-			for _, banned := range []string{"impersonate", "flux-source@", "system:serviceaccount:flux-", "escalate\n- ", "- serviceaccounts"} {
-				if strings.Contains(all, banned) && banned != "escalate\n- " {
-					t.Errorf("auth=%s scope=%s: the grant contains %q:\n%s", auth, scope, banned, all)
-				}
+	for _, scope := range []applyScope{{Cluster: true}, {}} {
+		r := testRBAC(t, scope, onCtx(docRoleBinding))
+		all := r.bootstrapManifests()
+		for _, banned := range []string{"impersonate", "flux-source@", "system:serviceaccount:flux-", "- serviceaccounts", "kind: User"} {
+			if strings.Contains(all, banned) {
+				t.Errorf("scope=%s: the grant contains %q:\n%s", scope, banned, all)
 			}
-			// The ONLY kinds connect writes: the grant, and (token) the identity.
-			for _, doc := range splitDocs(all) {
-				var meta struct{ Kind string }
-				if err := yaml.Unmarshal([]byte(doc), &meta); err != nil {
-					t.Fatal(err)
-				}
-				switch meta.Kind {
-				case "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding":
-				case "Namespace", "ServiceAccount", "Secret":
-					if auth != authToken {
-						t.Errorf("auth=%s writes a %s, which only the token identity needs", auth, meta.Kind)
-					}
-				default:
-					t.Errorf("auth=%s writes unexpected kind %s", auth, meta.Kind)
-				}
+		}
+		// The ONLY kinds connect writes: the grant, and the identity.
+		for _, doc := range splitDocs(all) {
+			var meta struct{ Kind string }
+			if err := yaml.Unmarshal([]byte(doc), &meta); err != nil {
+				t.Fatal(err)
+			}
+			switch meta.Kind {
+			case "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding", "Namespace", "ServiceAccount", "Secret":
+			default:
+				t.Errorf("scope=%s writes unexpected kind %s", scope, meta.Kind)
 			}
 		}
 	}
 }
 
 func TestGrant_EachBindingOwnsItsOwnObjectsAndIdentity(t *testing.T) {
-	prod := testRBAC(t, authToken, applyScope{})
+	prod := testRBAC(t, applyScope{})
 	staging := prod
 	staging.Env = "staging"
 	if prod.bindingName() == staging.bindingName() {
@@ -371,7 +375,7 @@ func TestGrant_EachBindingOwnsItsOwnObjectsAndIdentity(t *testing.T) {
 }
 
 func TestGrant_EveryObjectCarriesTheBindingLabels(t *testing.T) {
-	r := testRBAC(t, authToken, applyScope{})
+	r := testRBAC(t, applyScope{})
 	for _, doc := range splitDocs(r.baseManifests()) {
 		var obj struct {
 			Kind     string
@@ -388,7 +392,7 @@ func TestGrant_EveryObjectCarriesTheBindingLabels(t *testing.T) {
 }
 
 func TestGrant_TokenIdentityIsMintedPerBinding(t *testing.T) {
-	r := testRBAC(t, authToken, applyScope{})
+	r := testRBAC(t, applyScope{})
 	docs := splitDocs(r.baseManifests())
 	joined := strings.Join(docs, "\n")
 	for _, want := range []string{
@@ -401,15 +405,12 @@ func TestGrant_TokenIdentityIsMintedPerBinding(t *testing.T) {
 			t.Errorf("token identity omits %q", want)
 		}
 	}
-	if g := testRBAC(t, authGCP, applyScope{}).identityManifests(); len(g) != 0 {
-		t.Errorf("gcp mints %d identity objects; its identity is the GSA", len(g))
-	}
 }
 
 func TestGrant_RenderIsDeterministic(t *testing.T) {
-	a := testRBAC(t, authGCP, applyScope{Cluster: true}, onCtx(docCRD), onCtx(docWidget)).bootstrapManifests()
+	a := testRBAC(t, applyScope{Cluster: true}, onCtx(docCRD), onCtx(docWidget)).bootstrapManifests()
 	for i := 0; i < 20; i++ {
-		if b := testRBAC(t, authGCP, applyScope{Cluster: true}, onCtx(docCRD), onCtx(docWidget)).bootstrapManifests(); a != b {
+		if b := testRBAC(t, applyScope{Cluster: true}, onCtx(docCRD), onCtx(docWidget)).bootstrapManifests(); a != b {
 			t.Fatalf("render %d differs:\n%s\n---\n%s", i, a, b)
 		}
 	}
@@ -423,7 +424,7 @@ func TestGrant_CRDsAreClusterScopedAndCustomResourcesAreGrantedByTheirCRDPlural(
 		!strings.Contains(err.Error(), "customresourcedefinitions") {
 		t.Fatalf("namespace scope accepted a render with a CRD: %v", err)
 	}
-	r := testRBAC(t, authToken, applyScope{Cluster: true}, onCtx(docCRD), onCtx(docWidget))
+	r := testRBAC(t, applyScope{Cluster: true}, onCtx(docCRD), onCtx(docWidget))
 	_, cr, _, _ := decodeGrant(t, r)
 	got := ruleStrings(cr.Rules)
 	for _, want := range []string{

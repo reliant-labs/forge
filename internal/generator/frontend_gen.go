@@ -398,6 +398,8 @@ var coreComponents = []string{
 	// with a framework-aware version (see linkComponentForDir).
 	"link",
 	"button",
+	// The classes button imports ("./button_classes").
+	"button_classes",
 	// The context input, label, select and form import ("./form_field_context").
 	"form_field_context",
 	"input",

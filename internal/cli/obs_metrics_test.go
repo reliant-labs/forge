@@ -656,6 +656,43 @@ func TestMetricsExemplarsGoldens(t *testing.T) {
 	}
 }
 
+// TestMetricsExemplarsGroup: --group narrows to one series of a grouped panel,
+// the group the console sends when a grouped series' point is clicked, through
+// both backends.
+func TestMetricsExemplarsGroup(t *testing.T) {
+	f := mxFixture()
+	args := []string{"metrics", "exemplars", "dev", "rpc.server.duration", "--group", "rpc.method=List", "--group", "service.name=api", "--json"}
+	if _, _, err := mxRun(t, mxLocal(f), args...); err != nil {
+		t.Fatal(err)
+	}
+	var st obsquery.Stmt
+	for _, s := range f.Ran() {
+		if strings.Contains(s.SQL, "`Exemplars.TimeUnix`") {
+			st = s
+		}
+	}
+	vals := fmt.Sprint(st.Params)
+	if !strings.Contains(vals, "List") || !strings.Contains(vals, "api") {
+		t.Errorf("the exemplars statement does not narrow to the group: %s %v", st.SQL, st.Params)
+	}
+
+	mc := &mxCaller{replies: map[string]string{cpExemplars: `{"exemplars":[]}`}}
+	args[2] = "prod"
+	if _, _, err := mxRun(t, mxCloud(mc), args...); err != nil {
+		t.Fatal(err)
+	}
+	if body := mc.calls[0].body; !strings.Contains(body, `"group":{"rpc.method":"List","service.name":"api"}`) {
+		t.Errorf("request %s", body)
+	}
+
+	for _, bad := range [][]string{{"--group", "rpc.method"}, {"--group", "=List"}, {"--group", "a=1", "--group", "a=2"}} {
+		_, _, err := mxRun(t, mxLocal(f), append([]string{"metrics", "exemplars", "dev", "rpc.server.duration"}, bad...)...)
+		if exitCodeForError(err) != 1 {
+			t.Errorf("%v: want exit 1, got %v", bad, err)
+		}
+	}
+}
+
 func TestMetricsNewVerbsExitTwoOnAnOlderControlPlane(t *testing.T) {
 	for _, c := range []struct {
 		proc string

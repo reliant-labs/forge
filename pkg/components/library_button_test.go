@@ -16,13 +16,38 @@ import (
 // internal/templates/frontend_button_contrast_test.go, which can read the
 // themes.
 
+// buttonSource is the Button's two files: the component and the classes it
+// composes (button_classes.tsx, its own module for React Fast Refresh).
 func buttonSource(t *testing.T) string {
 	t.Helper()
+	var src strings.Builder
+	for _, name := range []string{"button", "button_classes"} {
+		s, err := NewLibrary().Get(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src.WriteString(s)
+		src.WriteString("\n")
+	}
+	return src.String()
+}
+
+// TestButtonExportsOnlyAComponent: a file that exports a component and a
+// function defeats React Fast Refresh, and a scaffolded vite-spa's eslint
+// (react-refresh/only-export-components) warns on it in every new project.
+// buttonClasses lives in button_classes.tsx; button.tsx re-exports types only.
+func TestButtonExportsOnlyAComponent(t *testing.T) {
+	t.Parallel()
 	src, err := NewLibrary().Get("button")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return src
+	for _, m := range regexp.MustCompile(`(?m)^export (?:function|const|let|class) (\w+)`).FindAllStringSubmatch(src, -1) {
+		t.Errorf("button.tsx exports %s, which is not a component; move it to button_classes.tsx", m[1])
+	}
+	if !strings.Contains(src, `from "./button_classes"`) {
+		t.Error(`button.tsx must import its classes from "./button_classes"`)
+	}
 }
 
 // TestButtonSizesShareOneScale: every size declares a height, a square for
@@ -136,7 +161,7 @@ func TestButtonTypeContract(t *testing.T) {
 		}
 	}
 	lib := NewLibrary()
-	for _, name := range []string{"button", "link"} {
+	for _, name := range []string{"button", "button_classes", "link"} {
 		body, err := lib.Get(name)
 		if err != nil {
 			t.Fatal(err)

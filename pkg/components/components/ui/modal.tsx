@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useRef } from "react";
+import React, { useEffect, useId, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 
 /**
@@ -112,11 +112,16 @@ export default function Modal({
   const descriptionId = useId();
   // Read through refs so a new onClose identity on every parent render does
   // not tear the effect down — which would unlock and relock the page (a
-  // visible flash) and re-run initial focus.
+  // visible flash) and re-run initial focus. The refs follow the props in a
+  // layout effect, not during render (a render may be thrown away, and React
+  // forbids touching refs there); layout effects run before the effect
+  // below and before any event the committed dialog can receive.
   const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
   const fallbackFocusRef = useRef(fallbackFocus);
-  fallbackFocusRef.current = fallbackFocus;
+  useLayoutEffect(() => {
+    onCloseRef.current = onClose;
+    fallbackFocusRef.current = fallbackFocus;
+  });
 
   useEffect(() => {
     if (!open) return;

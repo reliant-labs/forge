@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -60,6 +61,7 @@ type obsMetricsExemplarsOpts struct {
 	atWindow time.Duration
 	minValue float64
 	where    []string
+	group    []string
 }
 
 func newObsMetricsExemplarsCmd() *cobra.Command {
@@ -79,6 +81,11 @@ default, either side) or --from and --to. Without them it is the whole range.
   ` + Name() + ` obs metrics exemplars dev rpc.server.duration --since 1h --where metric.attr.status=error
 
 --where is key=value or key!=value over the metric's attributes (repeatable).
+--group KEY=VALUE narrows to one series of a grouped panel: KEY is a --group-by
+key of ` + "`" + Name() + ` obs metrics query` + "`" + ` and VALUE that series' label (repeatable, one per key).
+
+  ` + Name() + ` obs metrics exemplars dev rpc.server.duration --group rpc.method=List --group service.name=api
+
 A stored trace's next command is in "suggested":
   ` + Name() + ` obs trace <trace-id> <env>
 
@@ -98,6 +105,7 @@ A stored trace's next command is in "suggested":
 	f.DurationVar(&o.atWindow, "around", 2*time.Minute, "with --at: how far either side of it")
 	f.Float64Var(&o.minValue, "min-value", 0, "only exemplars at or above this value")
 	f.StringArrayVar(&o.where, "where", nil, "narrow to series matching key=value or key!=value (repeatable)")
+	f.StringArrayVar(&o.group, "group", nil, "narrow to one series group: a --group-by KEY=VALUE (repeatable, one per key)")
 	return cmd
 }
 
@@ -126,6 +134,9 @@ func runObsMetricsExemplars(ctx context.Context, d obsDeps, env, metric string, 
 			return fail(fmt.Errorf("--where %q: %w", w, err))
 		}
 		req.Where = append(req.Where, p)
+	}
+	if req.Group, err = parseExemplarGroup(o.group); err != nil {
+		return fail(err)
 	}
 	win := obsWindowDoc{From: n.Range.From, To: n.Range.To}
 	if o.at != "" {
@@ -197,6 +208,27 @@ func runObsMetricsExemplars(ctx context.Context, d obsDeps, env, metric string, 
 	}
 	obsout.Table(d.Stdout, []string{"TIME", "VALUE", "TRACE", "TRACE STORED"}, rows, 40)
 	return nil
+}
+
+// parseExemplarGroup reads --group KEY=VALUE flags into the group a series of
+// a grouped panel is: group-by key to label. VALUE may be empty (a series
+// whose key is unset) and may hold '='; KEY may not repeat.
+func parseExemplarGroup(flags []string) (map[string]string, error) {
+	if len(flags) == 0 {
+		return nil, nil
+	}
+	group := make(map[string]string, len(flags))
+	for _, g := range flags {
+		k, v, ok := strings.Cut(g, "=")
+		if k = strings.TrimSpace(k); !ok || k == "" {
+			return nil, obsbackend.Wrong("--group %q is not KEY=VALUE", g)
+		}
+		if _, dup := group[k]; dup {
+			return nil, obsbackend.Wrong("--group names %s twice; a series has one value per key", k)
+		}
+		group[k] = v
+	}
+	return group, nil
 }
 
 // exemplarScope is the scope range of an exemplar read: the window, plus the

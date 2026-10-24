@@ -1,6 +1,18 @@
 package phantom
 
-import "testing"
+import (
+	"testing"
+
+	"deadcodeguardfixture/internal/fakes"
+)
+
+// TestWithFake configures a test-support fake, the only writer its fields have.
+func TestWithFake(t *testing.T) {
+	r := &fakes.Runner{Rows: []fakes.Row{{Value: "x"}}}
+	if r.First() != "x" || fakes.Echo("x") != nil {
+		t.Fatal("fake")
+	}
+}
 
 // TestPrimaryPort is the FALSE GREEN this guard exists to expose: it hand-builds
 // the one data shape production never produces, so it proves a lookup works on

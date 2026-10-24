@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -97,8 +98,8 @@ var scanGOOS = []string{"linux", "darwin", "windows"}
 // until every load has been visited, and uses are deduplicated by
 // file+offset across loads. See scan.record.
 func scanWith(root, judgePrefix string, extraEnv []string) ([]Finding, error) {
-	s := &scan{root: root, judge: judgePrefix, fields: map[fieldKey]*fieldFacts{}, counted: map[string]bool{}, generated: map[string]bool{}}
-	var stubs []Finding
+	s := newScan(root, judgePrefix)
+	var stubs []stub
 	implemented := map[string]bool{}
 	for _, goos := range scanTargets() {
 		pkgs, err := loadForScan(root, scanEnv(extraEnv, goos))
@@ -106,6 +107,7 @@ func scanWith(root, judgePrefix string, extraEnv []string) ([]Finding, error) {
 			return nil, err
 		}
 		s.collectGenerated(pkgs)
+		s.collectImports(pkgs)
 		s.collectFieldDecls(pkgs)
 		s.collectFieldUses(pkgs)
 		found, impl := s.noopFuncs(pkgs)
@@ -116,13 +118,15 @@ func scanWith(root, judgePrefix string, extraEnv []string) ([]Finding, error) {
 	}
 
 	out := s.phantomFields()
+	support := s.testSupport()
 	seen := map[string]bool{}
-	for _, f := range stubs {
-		if implemented[f.Key] || seen[f.Key] {
+	for _, st := range stubs {
+		// A test-support package is test code, which noop-func never judges.
+		if implemented[st.Key] || seen[st.Key] || support[st.pkg] {
 			continue
 		}
-		seen[f.Key] = true
-		out = append(out, f)
+		seen[st.Key] = true
+		out = append(out, st.Finding)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Rule != out[j].Rule {
@@ -207,10 +211,64 @@ type fieldFacts struct {
 	// recorded whether or not it is set: scanWith visits one OS at a time, so
 	// the declaration that makes a field judgeable may arrive in a later load
 	// than some of its uses. Only judged fields are reported.
-	judged                           bool
-	decl                             token.Position
+	judged bool
+	decl   token.Position
+	// uses tallies every recorded use by the package whose file holds it.
+	// Whether a use is test code is not known until every load is visited:
+	// a non-test file is test code when its package is test support (see
+	// scan.testSupport), and the import that proves a package production may
+	// be in a file only one OS compiles.
+	uses map[useClass]*useTally
+}
+
+// useClass is the kind of one use: where it is, and whether it writes.
+type useClass struct {
+	pkg   string // import path of the package whose file holds the use
+	test  bool   // the file is a _test.go file
+	write bool
+}
+
+type useTally struct {
+	n     int
+	sites []string
+}
+
+// tally is f's uses split by production and test code, with test support
+// counted as test code.
+type tally struct {
 	prodRead, prodWrite, testWrite   int
 	readSites, writeSites, testSites []string
+}
+
+func (f *fieldFacts) tally(support map[string]bool) tally {
+	var t tally
+	for c, u := range f.uses {
+		switch test := c.test || support[c.pkg]; {
+		case test && c.write:
+			t.testWrite += u.n
+			t.testSites = append(t.testSites, u.sites...)
+		case test:
+			// A test-only read proves nothing either way.
+		case c.write:
+			t.prodWrite += u.n
+			t.writeSites = append(t.writeSites, u.sites...)
+		default:
+			t.prodRead += u.n
+			t.readSites = append(t.readSites, u.sites...)
+		}
+	}
+	for _, s := range []*[]string{&t.readSites, &t.writeSites, &t.testSites} {
+		sort.Strings(*s)
+		*s = (*s)[:min(len(*s), maxSites)]
+	}
+	return t
+}
+
+// importEdge is one import of a judged package, and whether a _test.go file
+// (or a test binary's generated main) makes it.
+type importEdge struct {
+	from, to string
+	test     bool
 }
 
 type scan struct {
@@ -222,6 +280,62 @@ type scan struct {
 	// is type-checked more than once (p, p [p.test]); without this, every
 	// use in a non-test file of a tested package is counted twice.
 	counted map[string]bool
+	// imports is every import of a judged package, merged across loads.
+	imports map[importEdge]bool
+}
+
+func newScan(root, judgePrefix string) *scan {
+	return &scan{
+		root: root, judge: judgePrefix,
+		fields: map[fieldKey]*fieldFacts{}, counted: map[string]bool{},
+		generated: map[string]bool{}, imports: map[importEdge]bool{},
+	}
+}
+
+// collectImports records every import of a judged package, for testSupport.
+// A test binary's generated main imports the package under test; it is test
+// code, so its imports are test imports.
+func (s *scan) collectImports(pkgs []*packages.Package) {
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		testMain := p.Name == "main" && strings.HasSuffix(p.PkgPath, ".test")
+		for _, f := range p.Syntax {
+			test := testMain || strings.HasSuffix(p.Fset.Position(f.Pos()).Filename, "_test.go")
+			for _, imp := range f.Imports {
+				to, err := strconv.Unquote(imp.Path.Value)
+				if err != nil || !strings.HasPrefix(to, s.judge) {
+					continue
+				}
+				s.imports[importEdge{from: p.PkgPath, to: to, test: test}] = true
+			}
+		}
+	})
+}
+
+// testSupport is the set of judged packages that only test code imports:
+// every importer is a _test.go file or another test-support package. Such a
+// package (a fake, a fixture builder, a container harness) is test code in a
+// non-test file, because tests in two packages share it — so its reads are
+// test reads, and a field only its callers' tests write is the fixture's
+// input, not a shape production cannot produce.
+//
+// It is the greatest fixed point, so it errs toward production: a package
+// nothing imports is not test support, and one production import anywhere —
+// on any OS — makes a package, and everything only it imports, production.
+func (s *scan) testSupport() map[string]bool {
+	support := map[string]bool{}
+	for e := range s.imports {
+		support[e.to] = true
+	}
+	for changed := true; changed; {
+		changed = false
+		for e := range s.imports {
+			if !e.test && !support[e.from] && support[e.to] {
+				delete(support, e.to)
+				changed = true
+			}
+		}
+	}
+	return support
 }
 
 func (s *scan) collectGenerated(pkgs []*packages.Package) {
@@ -304,41 +418,69 @@ func (s *scan) collectFieldUses(pkgs []*packages.Package) {
 			ast.Inspect(f, func(n ast.Node) bool {
 				switch e := n.(type) {
 				case *ast.SelectorExpr:
-					sel, ok := p.TypesInfo.Selections[e]
-					if !ok || sel.Kind() != types.FieldVal {
-						return true
-					}
-					fv, _ := sel.Obj().(*types.Var)
-					if fv == nil {
-						return true
-					}
-					if k, ok := ownerKey(sel.Recv(), fv); ok {
-						s.record(k, p.Fset.Position(e.Pos()), isTest, writes[ast.Expr(e)])
-					}
+					s.recordSelector(p, e, isTest, writes[ast.Expr(e)])
 				case *ast.CompositeLit:
-					st, name, pkgPath := structOf(p.TypesInfo.TypeOf(e))
-					if st == nil {
-						return true
-					}
-					for i, el := range e.Elts {
-						if kv, ok := el.(*ast.KeyValueExpr); ok {
-							if id, ok := kv.Key.(*ast.Ident); ok {
-								s.record(fieldKey{pkgPath, name, id.Name},
-									p.Fset.Position(id.Pos()), isTest, true)
-							}
-							continue
-						}
-						// Positional literal T{a, b} writes every field.
-						if i < st.NumFields() {
-							s.record(fieldKey{pkgPath, name, st.Field(i).Name()},
-								p.Fset.Position(el.Pos()), isTest, true)
-						}
-					}
+					s.recordLiteral(p, e, isTest)
 				}
 				return true
 			})
 		}
 	})
+}
+
+// recordSelector records the field a selector reads or writes, and every
+// embedded field it passes through on the way.
+func (s *scan) recordSelector(p *packages.Package, e *ast.SelectorExpr, isTest, write bool) {
+	sel, ok := p.TypesInfo.Selections[e]
+	if !ok {
+		return
+	}
+	pos := p.Fset.Position(e.Pos())
+	switch sel.Kind() {
+	case types.FieldVal:
+		for _, k := range embeddedPath(sel) {
+			s.record(k, pos, p.PkgPath, isTest, write)
+		}
+		if fv, _ := sel.Obj().(*types.Var); fv != nil {
+			if k, ok := ownerKey(sel.Recv(), fv); ok {
+				s.record(k, pos, p.PkgPath, isTest, write)
+			}
+		}
+	case types.MethodVal:
+		// A promoted method runs on the embedded value: a pointer receiver
+		// mutates it, a value receiver reads it.
+		write = false
+		if fn, _ := sel.Obj().(*types.Func); fn != nil {
+			if sig, _ := fn.Type().(*types.Signature); sig != nil && sig.Recv() != nil {
+				_, write = sig.Recv().Type().(*types.Pointer)
+			}
+		}
+		for _, k := range embeddedPath(sel) {
+			s.record(k, pos, p.PkgPath, isTest, write)
+		}
+	}
+}
+
+// recordLiteral records the fields a composite literal writes.
+func (s *scan) recordLiteral(p *packages.Package, e *ast.CompositeLit, isTest bool) {
+	st, name, pkgPath := structOf(p.TypesInfo.TypeOf(e))
+	if st == nil {
+		return
+	}
+	for i, el := range e.Elts {
+		if kv, ok := el.(*ast.KeyValueExpr); ok {
+			if id, ok := kv.Key.(*ast.Ident); ok {
+				s.record(fieldKey{pkgPath, name, id.Name},
+					p.Fset.Position(id.Pos()), p.PkgPath, isTest, true)
+			}
+			continue
+		}
+		// Positional literal T{a, b} writes every field.
+		if i < st.NumFields() {
+			s.record(fieldKey{pkgPath, name, st.Field(i).Name()},
+				p.Fset.Position(el.Pos()), p.PkgPath, isTest, true)
+		}
+	}
 }
 
 // facts returns k's facts, creating them on first sight.
@@ -355,8 +497,8 @@ func (s *scan) facts(k fieldKey) *fieldFacts {
 // dropped — collectFieldDecls can never judge them — but a judged-prefix field
 // is recorded even before (or without) a judgeable declaration, because the
 // declaration may come from a load not yet visited. phantomFields filters on
-// fieldFacts.judged.
-func (s *scan) record(k fieldKey, pos token.Position, isTest, write bool) {
+// fieldFacts.judged. usePkg is the package whose file holds the use.
+func (s *scan) record(k fieldKey, pos token.Position, usePkg string, isTest, write bool) {
 	if !strings.HasPrefix(k.pkg, s.judge) {
 		return
 	}
@@ -372,35 +514,70 @@ func (s *scan) record(k fieldKey, pos token.Position, isTest, write bool) {
 	}
 	s.counted[id] = true
 	f := s.facts(k)
-	where := s.rel(pos)
-	switch {
-	case isTest && write:
-		f.testWrite++
-		f.testSites = appendCapped(f.testSites, where)
-	case isTest:
-		// A test-only read proves nothing either way.
-	case write:
-		f.prodWrite++
-		f.writeSites = appendCapped(f.writeSites, where)
-	default:
-		f.prodRead++
-		f.readSites = appendCapped(f.readSites, where)
+	if f.uses == nil {
+		f.uses = map[useClass]*useTally{}
 	}
+	c := useClass{pkg: usePkg, test: isTest, write: write}
+	u := f.uses[c]
+	if u == nil {
+		u = &useTally{}
+		f.uses[c] = u
+	}
+	u.n++
+	u.sites = appendCapped(u.sites, s.rel(pos))
+}
+
+// embeddedPath is the embedded fields a promoted selection passes through
+// implicitly: `o.agg`, with agg declared in an embedded panelFlags, reads or
+// writes o.panelFlags as surely as `o.panelFlags.agg` does. Without these, a
+// struct embedded for its promoted fields and written only through them
+// (`&o.agg` handed to a flag set) looked never written.
+func embeddedPath(sel *types.Selection) []fieldKey {
+	idx := sel.Index()
+	var out []fieldKey
+	t := sel.Recv()
+	for _, i := range idx[:len(idx)-1] {
+		if ptr, ok := t.(*types.Pointer); ok {
+			t = ptr.Elem()
+		}
+		st, name, pkgPath := structOf(t)
+		if st == nil {
+			// An unnamed struct has no key to judge; keep walking its type.
+			st, _ = t.Underlying().(*types.Struct)
+			if st == nil || i >= st.NumFields() {
+				return out
+			}
+			t = st.Field(i).Type()
+			continue
+		}
+		if i >= st.NumFields() {
+			return out
+		}
+		fv := st.Field(i)
+		out = append(out, fieldKey{pkgPath, name, fv.Name()})
+		t = fv.Type()
+	}
+	return out
 }
 
 func (s *scan) phantomFields() []Finding {
 	var out []Finding
+	support := s.testSupport()
 	for k, f := range s.fields {
-		if !f.judged || f.prodWrite > 0 || f.prodRead == 0 {
+		if !f.judged {
+			continue
+		}
+		t := f.tally(support)
+		if t.prodWrite > 0 || t.prodRead == 0 {
 			continue
 		}
 		detail := fmt.Sprintf("read by production code %d× and written by production code 0× — "+
-			"every read observes the zero value", f.prodRead)
-		ev := []string{"production reads: " + strings.Join(f.readSites, ", ")}
-		if f.testWrite > 0 {
+			"every read observes the zero value", t.prodRead)
+		ev := []string{"production reads: " + strings.Join(t.readSites, ", ")}
+		if t.testWrite > 0 {
 			detail += fmt.Sprintf("; the only writers are %d test site(s), so those tests exercise "+
-				"a data shape production cannot produce", f.testWrite)
-			ev = append(ev, "test-only writes: "+strings.Join(f.testSites, ", "))
+				"a data shape production cannot produce", t.testWrite)
+			ev = append(ev, "test-only writes: "+strings.Join(t.testSites, ", "))
 		}
 		out = append(out, Finding{
 			Rule:     RulePhantomField,
@@ -417,6 +594,13 @@ func (s *scan) phantomFields() []Finding {
 // noop-func
 // ─────────────────────────────────────────────────────────────────────────────
 
+// stub is a noop-func finding and the package declaring it, which scanWith
+// needs to drop a test-support package's stubs once every load is in.
+type stub struct {
+	Finding
+	pkg string
+}
+
 // noopFuncs reports plain functions whose whole body is returns of zero values
 // yet which declare parameters.
 //
@@ -432,7 +616,7 @@ func (s *scan) phantomFields() []Finding {
 // another (`lockFD` is flock(2) on Unix): the stub is that platform's honest
 // answer, not dead code. scanWith reports a key only if no load anywhere gave
 // it a real body.
-func (s *scan) noopFuncs(pkgs []*packages.Package) (out []Finding, implemented map[string]bool) {
+func (s *scan) noopFuncs(pkgs []*packages.Package) (out []stub, implemented map[string]bool) {
 	implemented = map[string]bool{}
 	seen := map[string]bool{}
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
@@ -462,7 +646,7 @@ func (s *scan) noopFuncs(pkgs []*packages.Package) (out []Finding, implemented m
 					continue
 				}
 				seen[key] = true
-				out = append(out, Finding{
+				out = append(out, stub{pkg: p.PkgPath, Finding: Finding{
 					Rule:   RuleNoopFunc,
 					Key:    key,
 					Decl:   s.rel(pos),
@@ -470,7 +654,7 @@ func (s *scan) noopFuncs(pkgs []*packages.Package) (out []Finding, implemented m
 					Evidence: []string{
 						"callers compute arguments this function discards; if that is intended, delete the function and the argument computation with it",
 					},
-				})
+				}})
 			}
 		}
 	})
@@ -732,8 +916,11 @@ func (s *scan) rel(pos token.Position) string {
 
 func short(p string) string { return strings.TrimPrefix(p, "github.com/reliant-labs/forge/") }
 
+// maxSites is how many sites of each kind a finding cites.
+const maxSites = 5
+
 func appendCapped(s []string, v string) []string {
-	if len(s) >= 5 {
+	if len(s) >= maxSites {
 		return s
 	}
 	return append(s, v)

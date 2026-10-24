@@ -157,6 +157,13 @@ const (
 	// findings, evaluated by the control plane with the same rule as
 	// `forge obs check`. It stays silent on PASS and on INCONCLUSIVE.
 	PlatformReleaseRegressed = "release-regressed"
+	// PlatformServiceAnomaly fires when a service's request rate, error rate
+	// or p95 leaves its seasonal baseline: the same hour of the week over the
+	// previous 4 weeks (obsquery.EvalAnomalies, over the rpc.server.* metrics,
+	// never spans). The control plane evaluates it; its limits (4 MADs, 50
+	// requests, a 1 point error-rate rise or a 1.5x p95 rise, 7 days of
+	// history) are obsquery.DefaultAnomalyParams, not tunable params.
+	PlatformServiceAnomaly = "service-anomaly"
 )
 
 // hasIssues reports whether the env has anything that can raise an issue.
@@ -285,6 +292,16 @@ var alertDefs = []alertDef{
 		annotations: map[string]string{"summary": "Release {{ $labels.release }} regressed {{ $labels.env }}: {{ $value }} failing release-health findings after its window closed. Check it: forge obs check {{ $labels.env }} --release {{ $labels.release }}"},
 		applies:     func(in AlertInput) bool { return len(in.Services) > 0 },
 		platform:    []platformRule{{PlatformReleaseRegressed, "ReleaseRegressed", SeverityWarning}},
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: PlatformServiceAnomaly, Alert: "ServiceAnomaly", Title: "A service's traffic, errors or latency left what is usual for this hour of the week",
+			Severity: SeverityWarning, For: "0s", Interval: "5m", Signal: "platform",
+			Params: []AlertParam{},
+		},
+		annotations: map[string]string{"summary": "{{ $labels.service }} {{ $labels.signal }} is off its usual for this hour of the week ({{ $labels.env }}). Why: forge obs alerts --json, or forge obs check {{ $labels.env }}"},
+		applies:     hasServices,
+		platform:    []platformRule{{PlatformServiceAnomaly, "ServiceAnomaly", SeverityWarning}},
 	},
 	{
 		AlertDefaultInfo: AlertDefaultInfo{

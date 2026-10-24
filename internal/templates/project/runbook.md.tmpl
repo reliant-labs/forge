@@ -96,6 +96,20 @@ team knows.
   to run next). `forge obs check <env> --release <version>` reproduces the
   verdict; `forge obs issues <env> --since-release <version>` lists what it opened.
 
+### ServiceAnomaly
+
+- **Meaning:** a service's request rate, error rate or p95 latency left what is
+  usual for this hour of the week: it is compared with the same 15 minute slot
+  of the hours over the previous 4 weeks (median and MAD of the `rpc.server.*`
+  metrics), so a normal Monday peak does not fire. It fires only above
+  absolute floors (50 requests, a 1 point error-rate rise and 5 errors, or a
+  1.5x and 50 ms p95 rise), only for a service with 7 days of history, and it
+  is a warning that shows in-app and never pages.
+- **Diagnose:** the alert carries a `why` payload (observed, baseline and
+  spread, the window, the releases and activity in it, the top issues, and the
+  commands to run next). `forge obs traces <env> --service <svc> --errors`
+  lists the failing requests; `forge obs check <env>` judges the last release.
+
 ## Tuning
 
 Every built-in alert is tuned or disabled per env by its id, in one map:

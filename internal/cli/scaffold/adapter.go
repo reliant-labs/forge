@@ -25,6 +25,7 @@ package scaffold
 import (
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
 )
 
@@ -53,14 +54,22 @@ with a mocked downstream.
 This scaffolds internal/<name>/ with:
   contract.go        // forge:outbound-io Service interface
   adapter.go         Deps + service struct + New(Deps) (Service, error)
-  adapter_test.go    httptest-stub round-trip tests
+  adapter_test.go    tests (httptest-stub round trips with --base-url)
   cache.go           empty stub — fill in TTL + per-host rate budget,
                      or delete the file if the adapter is fully local
 
-It ends with a 'forge generate' run, which compiles the adapter's config
-block (config.<Name>Config) and wires the adapter into
-internal/app/compose.go, so the next 'forge lint' is green. --no-generate
-skips it.
+No configuration is assumed: an adapter's downstream may be a queue, a
+vendor SDK or a storage gateway rather than one HTTP API, so the scaffold
+takes a logger and the traced HTTP client, and its HealthCheck fails until you
+write a probe. --base-url scaffolds the HTTP-API shape instead: a config
+block config.<Name>Config with one base_url leaf, bound to <NAME>_BASE_URL (or
+to the env var given, --base-url=STRIPE_API_URL), and a HealthCheck against
+<base_url>/health with httptest-stub tests.
+
+It ends with a 'forge generate' run, which compiles the config block (when
+there is one) and wires the adapter into internal/app/compose.go, so the next
+'forge lint' is green. --no-generate skips it; --dry-run prints the files and
+config edits it would make and writes nothing.
 
 This is equivalent to 'forge scaffold package --type adapter <name>'; that
 form stays wired for existing scripts. Use whichever is shorter for you.
@@ -68,8 +77,10 @@ form stays wired for existing scripts. Use whichever is shorter for you.
 Skill: forge skill load adapter
 
 Example:
-  forge scaffold adapter stripe
-  forge scaffold adapter pricing_feed`,
+  forge scaffold adapter stripe --base-url
+  forge scaffold adapter stripe --base-url=STRIPE_API_URL
+  forge scaffold adapter pubsubpull
+  forge scaffold adapter pricing_feed --dry-run`,
 		Args: cobra.ExactArgs(1),
 		RunE: packageNewThenGenerate(f),
 	}
@@ -88,6 +99,7 @@ Example:
 	_ = cmd.Flags().MarkHidden("type")
 	_ = cmd.Flags().MarkHidden("kind")
 	cmd.Flags().Bool("no-generate", false, noGenerateFlagUsage)
+	cmdutil.AddPackageScaffoldFlags(cmd)
 
 	return cmd
 }

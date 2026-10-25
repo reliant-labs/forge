@@ -1081,14 +1081,20 @@ The --type flag picks the scaffold shape:
               third-party system. Marker: '// forge:outbound-io'.
               Skill: forge skill load adapter
 
+An adapter has no configuration until you ask for it: --base-url composes a
+config block with one base_url leaf (bound to <NAME>_BASE_URL, or to the env
+var given as --base-url=STRIPE_API_URL) for an HTTP API with one base URL.
+
 It ends with a 'forge generate' run, which writes the package's mock and
 middleware_gen.go and wires it into internal/app/compose.go, so the next
-'forge lint' is green. --no-generate skips it.
+'forge lint' is green. --no-generate skips it; --dry-run prints the plan and
+writes nothing.
 
 Example:
   forge scaffold package cache
   forge scaffold package events --kind eventbus
-  forge scaffold package stripe-adapter --type adapter`,
+  forge scaffold package stripe-adapter --type adapter --base-url
+  forge scaffold package pubsub --type adapter --dry-run`,
 		Args: cobra.ExactArgs(1),
 		RunE: packageNewThenGenerate(f),
 	}
@@ -1096,6 +1102,7 @@ Example:
 	cmd.Flags().String("kind", "", "package kind template (e.g. eventbus, client)")
 	cmd.Flags().String("type", "service", "package shape: service|adapter (see --help)")
 	cmd.Flags().Bool("no-generate", false, noGenerateFlagUsage)
+	cmdutil.AddPackageScaffoldFlags(cmd)
 
 	return cmd
 }
@@ -1110,6 +1117,9 @@ func packageNewThenGenerate(f *factory.Factory) func(*cobra.Command, []string) e
 	return func(cmd *cobra.Command, args []string) error {
 		if err := f.Gen.RunPackageNew(cmd, args); err != nil {
 			return err
+		}
+		if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
+			return nil // RunPackageNew printed the plan; nothing was written to derive from
 		}
 		root, err := projectRoot()
 		if err != nil {

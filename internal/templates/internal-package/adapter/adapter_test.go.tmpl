@@ -2,6 +2,7 @@
 // Adapter tests; canonical pattern in `forge skill load testing/patterns`.
 package {{.Name}}
 
+{{if .ConfigBlock -}}
 import (
 	"context"
 	"log/slog"
@@ -66,3 +67,41 @@ func TestHealthCheck_Down(t *testing.T) {
 		t.Fatal("HealthCheck should error when downstream is unhealthy")
 	}
 }
+{{- else -}}
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"testing"
+)
+
+// TestNew_DefaultsTheTracedHTTPClient pins the minimal wiring: a logger is
+// enough, and the adapter gets the traced client production wiring passes.
+func TestNew_DefaultsTheTracedHTTPClient(t *testing.T) {
+	t.Parallel()
+
+	svc, err := New(Deps{Logger: slog.Default()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if svc.(*service).deps.HTTPClient == nil {
+		t.Fatal("New left HTTPClient nil; every downstream call would panic")
+	}
+}
+
+// TestHealthCheck_FailsUntilImplemented pins the scaffold's honest default:
+// HealthCheck probes nothing yet, so it must not report healthy. Replace this
+// test with one against a stub server (or the SDK's fake) when you write
+// the probe.
+func TestHealthCheck_FailsUntilImplemented(t *testing.T) {
+	t.Parallel()
+
+	svc, err := New(Deps{Logger: slog.Default()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := svc.HealthCheck(context.Background()); !errors.Is(err, errNoHealthProbe) {
+		t.Fatalf("HealthCheck = %v, want errNoHealthProbe until a probe is written", err)
+	}
+}
+{{- end}}

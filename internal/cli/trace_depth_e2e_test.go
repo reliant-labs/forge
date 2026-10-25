@@ -81,7 +81,7 @@ message QuoteWidgetResponse {
 `
 	writeFileE2E(t, protoPath, proto)
 	runCmd(t, projectDir, forgeBin, "scaffold")
-	runCmd(t, projectDir, forgeBin, "scaffold", "adapter", "rates")
+	runCmd(t, projectDir, forgeBin, "scaffold", "adapter", "rates", "--base-url")
 	runCmd(t, projectDir, forgeBin, "scaffold", "package", "pricing")
 
 	writeTraceDepthCode(t, projectDir)

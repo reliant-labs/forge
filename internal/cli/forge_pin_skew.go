@@ -57,7 +57,7 @@ var pinGatedCommands = map[string][]string{
 	// `lint` is deliberately absent: its auto-fix pass runs gofmt, golangci,
 	// prettier and eslint, whose output does not depend on forge's templates.
 	"generate":           {"dry-run", "check"},
-	"package new":        nil,
+	"package new":        {"dry-run"},
 	"component install":  nil,
 	"env new":            {"check"},
 	"project rescaffold": nil,

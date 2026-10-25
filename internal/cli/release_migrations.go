@@ -231,13 +231,22 @@ func appliedMigrationHistory(ctx context.Context, projectDir, env string, ledger
 	return applied, unrecorded, true, nil
 }
 
+// releaseRef names one release of one project against one env: what the
+// migration guards judge together.
+type releaseRef struct {
+	projectDir string
+	env        string
+	version    string
+}
+
 // checkPassedMigrations refuses target (the release `version` carries) when
 // env's schema has already passed one of its migrations, unless allow.
 // prefix is the caller's log prefix ("[build]", "[deploy]").
-func checkPassedMigrations(ctx context.Context, out io.Writer, prefix, projectDir, env, version string, target *release.MigrationManifest, ledger envLedger, allow bool) error {
+func checkPassedMigrations(ctx context.Context, out io.Writer, prefix string, rel releaseRef, target *release.MigrationManifest, ledger envLedger, allow bool) error {
 	if target == nil {
 		return nil
 	}
+	projectDir, env, version := rel.projectDir, rel.env, rel.version
 	applied, unrecorded, ok, err := appliedMigrationHistory(ctx, projectDir, env, ledger)
 	if err != nil {
 		// Could not look, which is not a finding: the cut and the deploy
@@ -345,7 +354,8 @@ func checkUnmergedMigrations(out io.Writer, prefix, projectDir, version string, 
 // new migration and all, is the dev loop, and no one else's main has to
 // respect its schema. An env on a control plane is shared — prod, staging —
 // and its schema is what every later merge to main must stay above.
-func releaseMigrationGuard(ctx context.Context, out io.Writer, projectDir, env, version string, prov release.Provenance, uses []sourceUse, ledger envLedger, opts buildOptions) (*release.MigrationManifest, error) {
+func releaseMigrationGuard(ctx context.Context, out io.Writer, rel releaseRef, prov release.Provenance, uses []sourceUse, ledger envLedger, opts buildOptions) (*release.MigrationManifest, error) {
+	projectDir, version := rel.projectDir, rel.version
 	m, notes, err := captureReleaseMigrations(projectDir, prov, uses)
 	if err != nil {
 		return nil, fmt.Errorf("--release %s: record its migrations: %w", version, err)
@@ -358,7 +368,7 @@ func releaseMigrationGuard(ctx context.Context, out io.Writer, projectDir, env, 
 			return nil, err
 		}
 	}
-	if err := checkPassedMigrations(ctx, out, "[build]  ", projectDir, env, version, m, ledger, opts.allowPassedMigrations); err != nil {
+	if err := checkPassedMigrations(ctx, out, "[build]  ", rel, m, ledger, opts.allowPassedMigrations); err != nil {
 		return nil, err
 	}
 	return m, nil
@@ -382,7 +392,7 @@ func preflightReleaseMigrations(ctx context.Context, projectDir string, entities
 			return fmt.Errorf("--release %s: %w", opts.release, err)
 		}
 	}
-	_, err = releaseMigrationGuard(ctx, os.Stdout, projectDir, opts.env, opts.release, captureReleaseProvenance(ctx, projectDir), uses, ledger, opts)
+	_, err = releaseMigrationGuard(ctx, os.Stdout, releaseRef{projectDir, opts.env, opts.release}, captureReleaseProvenance(ctx, projectDir), uses, ledger, opts)
 	return err
 }
 
@@ -401,7 +411,7 @@ func checkDeployMigrations(ctx context.Context, out io.Writer, projectDir, env, 
 		fmt.Fprintf(out, "[deploy] note: release %s records no migrations (cut before forge recorded them), so its migrations were not checked against what %s has applied\n", version, env)
 		return nil
 	}
-	return checkPassedMigrations(ctx, out, "[deploy]", projectDir, env, version, rel.Migrations, ledger, allow)
+	return checkPassedMigrations(ctx, out, "[deploy]", releaseRef{projectDir, env, version}, rel.Migrations, ledger, allow)
 }
 
 func ledgerLocation(l envLedger) string {

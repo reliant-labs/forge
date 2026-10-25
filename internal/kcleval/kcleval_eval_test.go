@@ -68,7 +68,7 @@ func TestEvalResolvesTheForgeModuleFromTheBinary(t *testing.T) {
 	if !ok {
 		t.Fatalf("whole-document Eval = %T, want an object", res.Value)
 	}
-	if v, _ := doc.Get("has_bundle"); v != true {
+	if v, _ := member(doc, "has_bundle"); v != true {
 		t.Errorf("has_bundle = %v, want true (the forge module did not resolve)", v)
 	}
 	if res.Scalar {
@@ -177,8 +177,8 @@ _p = forge.Bundle is not None
 	if !ok {
 		t.Fatalf("repeated -S = %T, want an object", res.Value)
 	}
-	name, _ := got.Get("cloudnative_pg.name")
-	ns, _ := got.Get("cloudnative_pg.namespace")
+	name, _ := member(got, "cloudnative_pg.name")
+	ns, _ := member(got, "cloudnative_pg.namespace")
 	if name != "cloudnative-pg" || ns != "cnpg-system" || got[0].Key != "cloudnative_pg.name" {
 		t.Errorf("repeated -S = %#v", got)
 	}
@@ -343,4 +343,16 @@ func TestSelectDecodedDocument(t *testing.T) {
 			t.Errorf("Select(%q) succeeded; want a refusal", bad)
 		}
 	}
+}
+
+// member returns the value of key in o. A key may itself contain dots (a
+// repeated -S keeps each selector as its key), so this is a flat lookup, not
+// a Select.
+func member(o kcleval.Object, key string) (any, bool) {
+	for _, m := range o {
+		if m.Key == key {
+			return m.Value, true
+		}
+	}
+	return nil, false
 }

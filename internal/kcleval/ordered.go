@@ -31,8 +31,8 @@ type Member struct {
 // as KCL wrote them rather than as a float64 would.
 type Object []Member
 
-// Get returns the value of key.
-func (o Object) Get(key string) (any, bool) {
+// get returns the value of key.
+func (o Object) get(key string) (any, bool) {
 	for _, m := range o {
 		if m.Key == key {
 			return m.Value, true

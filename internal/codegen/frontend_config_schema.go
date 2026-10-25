@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 )
 
 // FrontendConfigSchemaFile is the generated key schema's path inside a
@@ -93,14 +95,32 @@ type MissingKey struct {
 	// When is the condition that made it required; nil for a key required in
 	// every mode.
 	When *RequiredWhenKey
+	// Selects is set for a mode selector the document leaves unstated
+	// (UnstatedSelectors): the keys whose required-ness its value decides.
+	// Modes is the values those conditions compare it against.
+	Selects []string
+	Modes   []string
 }
 
 // Reason is the sentence a refusal prints for the key.
 func (m MissingKey) Reason() string {
+	if len(m.Selects) > 0 {
+		return fmt.Sprintf("%s (unstated: it selects the mode that decides whether %s are required — "+
+			"state the mode this environment serves, e.g. %s)",
+			m.Key, strings.Join(m.Selects, ", "), quoteJoin(m.Modes))
+	}
 	if m.When == nil {
 		return m.Key + " (required)"
 	}
 	return fmt.Sprintf("%s (required when %s is %q)", m.Key, m.When.Key, m.When.Equals)
+}
+
+func quoteJoin(vs []string) string {
+	q := make([]string, len(vs))
+	for i, v := range vs {
+		q[i] = strconv.Quote(v)
+	}
+	return strings.Join(q, " or ")
 }
 
 // MissingRequired is every key the schema requires that doc does not carry.
@@ -133,6 +153,45 @@ func (s FrontendConfigSchema) MissingRequired(present func(key string) bool, lit
 			break
 		}
 	}
+	return out
+}
+
+// UnstatedSelectors is every mode selector — a key some required_when
+// condition compares — that the document does not carry with a value.
+//
+// MissingRequired alone cannot refuse the document that forgot everything:
+// with the selector absent no condition holds, so a managed deployment's
+// document that lost every key reads as a valid default-mode (self-hosted)
+// one, and the bundle boots in the wrong mode with nothing failing. That is
+// what prod-web served on 2026-10-24 (AUTH_MODE and the fifteen keys it
+// gates, all absent). The bundle itself cannot tell the two apart, so the
+// judgment belongs to the project DECLARING the environment, which knows the
+// mode it means: every document it writes names the mode. A frontend whose
+// default mode has no spelling of its own gives it one in the selector's
+// allowed_values.
+func (s FrontendConfigSchema) UnstatedSelectors(present func(key string) bool) []MissingKey {
+	selects := map[string][]string{}
+	modes := map[string][]string{}
+	for _, k := range s.Keys {
+		for _, c := range k.RequiredWhen {
+			if !containsString(selects[c.Key], k.Name) {
+				selects[c.Key] = append(selects[c.Key], k.Name)
+			}
+			if !containsString(modes[c.Key], c.Equals) {
+				modes[c.Key] = append(modes[c.Key], c.Equals)
+			}
+		}
+	}
+	var out []MissingKey
+	for sel, keys := range selects {
+		if present(sel) {
+			continue
+		}
+		sort.Strings(keys)
+		sort.Strings(modes[sel])
+		out = append(out, MissingKey{Key: sel, Selects: keys, Modes: modes[sel]})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out
 }
 

@@ -63,7 +63,7 @@ required in every mode. A field required only in one MODE says so with
 `required_when`, a condition on a sibling string field:
 
 ```protobuf
-string hosting = 6 [(forge.v1.config) = {env_var: "HOSTING", allowed_values: ["cloud"]}];
+string hosting = 6 [(forge.v1.config) = {env_var: "HOSTING", allowed_values: ["cloud", "self-hosted"]}];
 string api_url = 1 [(forge.v1.config) = {
   env_var: "API_URL"
   required_when: [{field: "hosting", equals: "cloud"}]
@@ -76,6 +76,13 @@ its default (the default is the other mode's value). `config_gen.ts`'s
 that renders its own boot error. It is for frontend configs only: `forge
 generate` refuses it on a binary config, alongside `required: true`, or naming a
 field that is not a sibling string field.
+
+A field a condition names (`hosting` above) is the document's MODE SELECTOR, and
+a foreign frontend's `runtime_config` must state it, with a value, even for the
+default mode. Without that rule the document that lost every key reads as a
+valid default-mode one, since no condition holds, and the bundle boots in the
+wrong mode with nothing failing. So give the default mode its own spelling in
+`allowed_values` (`"self-hosted"` above) and have each env set it.
 
 Tailwind v4 does not scan `node_modules`, so your stylesheet carries an
 `@source` directive pointing at the package. Keep it — without it every

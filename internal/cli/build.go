@@ -899,6 +899,11 @@ func preflightRealBuild(ctx context.Context, entities *KCLEntities, opts buildOp
 	if opts.composition != nil {
 		return nil
 	} // actual exported inputs are receipt-attested, not inferred from cwd HEAD
+	// A version another source already cut is refused before anything is
+	// built under its tag (checkReleaseVersionFree).
+	if err := preflightReleaseVersion(ctx, projectDirForKCL(), entities, opts); err != nil {
+		return err
+	}
 	if err := preflightReleaseSources(ctx, projectDirForKCL(), entities, opts); err != nil {
 		return err
 	}

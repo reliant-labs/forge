@@ -58,7 +58,7 @@ baseline and the plan after it is clean.
 | finding | class | meaning |
 |---|---|---|
 | `object_added` | info | in the candidate, not in the last applied bundle |
-| `object_removed` | warn | applied last time, gone from the render now. A reconciler (Flux, the control plane) prunes it; forge's direct apply does NOT (only `--prune`, and only Deployments; a `forge.HelmChart`'s own objects are the exception and are pruned after the chart's apply), so the detail says so — if it still exists, delete it by hand; the next plan no longer lists it. A hash-named one-shot **Job** is the exception to the exception: every release that changes its spec reports the previous Job as removed, and the direct apply deletes finished superseded Jobs itself (the newest 3 of each name stay), so its detail says that instead |
+| `object_removed` | warn | applied last time, gone from the render now. A reconciler (Flux, the control plane) prunes it; forge's direct apply prunes only what it can prove is its own (see **Owned-object prune** below): an inert object it stamped `forge.dev/owner`, listed as `[prune]` in the plan and deleted once the rollout is healthy. Everything else it does NOT delete (Deployments need `--prune`; a `forge.HelmChart`'s own objects are pruned after the chart's apply), so the detail says so — if it still exists, delete it by hand; the next plan no longer lists it. A hash-named one-shot **Job** is the exception to the exception: every release that changes its spec reports the previous Job as removed, and the direct apply deletes finished superseded Jobs itself (the newest 3 of each name stay), so its detail says that instead |
 | `stateful_deletion` / `lb_identity_change` | **stop** | a removal that loses data or an external address; needs `--acknowledge-destructive <code>` even with `--yes` |
 | `config_changed` | info | the object's non-image fields changed; detail names them: `fields: spec.replicas, spec.template.spec.containers[api].env[LOG_LEVEL].value` |
 | `object_changed` | info | changed, where the image/config split cannot be made |
@@ -117,3 +117,47 @@ per-section digests for each object (`objects`). `release.CompareCommits`,
 `CompareArtifacts` and `CompareObjects` say what changed between two
 releases with no repository or manifests at hand; a control plane serves
 the same answer as `DeployService.CompareReleases`.
+
+## Owned-object prune (direct apply)
+
+`kubectl apply` adds and updates; nothing reconciles the set. A release that
+REPLACES an object (the SC7 OpenBao adoption swapped a bespoke store for
+`forge.OpenBao`) used to leave the old one behind: the previous PodDisruptionBudget
+(two budgets over one set of pods block every node drain), NetworkPolicy, RBAC and
+auth-delegator ClusterRoleBinding all had to be deleted by hand.
+
+Every object a direct apply sends is stamped `forge.dev/owner=<project>.<env>`
+(a label only: no selector, no pod template, so nothing rolls; Secrets and CRDs
+are not stamped, CRDs have `forge.dev/crd-owner`). After a **full** apply whose
+rollout came up healthy, forge deletes the objects that
+
+1. carry that label (the listing is selected server-side, so an object forge did
+   not stamp, or another env did, is never even a candidate),
+2. are absent from the render for that cluster (read **before** the hub's delivery
+   units are taken out, so a hub-converged object is never mistaken for a removed
+   one),
+3. are an **inert kind**: ServiceAccount, Role, RoleBinding, ClusterRole,
+   ClusterRoleBinding, NetworkPolicy, PodDisruptionBudget, ConfigMap, Service
+   (not a LoadBalancer), Ingress, HorizontalPodAutoscaler,
+4. do not carry `kustomize.toolkit.fluxcd.io/prune: disabled`, have no
+   `ownerReferences`, and are not already terminating.
+
+The delete is made against the UID and resourceVersion just read. Never touched:
+Deployments (`--prune`), StatefulSets, PVCs, Secrets, ExternalSecrets, Namespaces,
+CRDs, Jobs (their own housekeeping), LoadBalancer Services. More than 50 removals
+in one deploy is refused wholesale (a wrong render, not a smaller env), as is an
+empty render. A `--target` deploy, a rollout mode other than `wait`, and a failed
+rollout prune nothing. A failed prune is a warning, never a failed deploy.
+
+`forge env deploy <env> --plan-only` (and `--dry-run`) lists exactly this set as
+`object_removed` findings marked `[prune]`, digested, so approving the plan
+approves those deletions and no others. A cluster the plan could not read is an
+`unknown` warn naming it. It is on by default. To keep one object, annotate it
+`kustomize.toolkit.fluxcd.io/prune: disabled` (the same guard Flux honors): the
+plan then lists it as kept, with that reason, instead of deleted.
+
+**Objects applied before the stamp existed carry no label**, so the first deploy
+after upgrading forge cannot prune them. To hand one over, label it once:
+`kubectl label <kind> <name> -n <ns> forge.dev/owner=<project>.<env>`; the next
+deploy deletes it if the render does not carry it.
+

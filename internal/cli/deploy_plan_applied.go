@@ -175,7 +175,7 @@ func ledgerOnlyDeployPlan(ctx context.Context, projectDir, env string, ledger en
 // directApplyRemovalNote is what a removal means when forge applies the env
 // itself: `kubectl apply` adds and updates, and nothing reconciles the set, so
 // an object the render stopped producing stays in the cluster.
-const directApplyRemovalNote = "this deploy does NOT delete it (forge applies directly; only --prune removes Deployments, and a forge.HelmChart's own objects are pruned after the chart applies) — if it still exists, delete it by hand; the next plan will not list it again"
+const directApplyRemovalNote = "this deploy does NOT delete it (forge applies directly: only --prune removes Deployments, a forge.HelmChart's own objects are pruned after the chart applies, and an inert object forge stamped as the env's own — RBAC, NetworkPolicy, PodDisruptionBudget, ConfigMap, Service — is pruned once the rollout is healthy and is listed above as [prune] when it is one). Anything else, or an object applied before the owner stamp existed, is still there: delete it by hand; the next plan will not list it again"
 
 // directApplyJobRemovalNote is the same finding for a hash-named one-shot Job.
 // A new spec is a new Job name, so every release that changes one reports the

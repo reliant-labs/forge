@@ -20,6 +20,10 @@ func fixture() Input {
 			{Name: "orders", Package: "orders.v1", ProtoService: "OrdersService", Methods: []Method{{Name: "CreateOrder"}, {Name: "GetOrder"}, {Name: "ListOrders"}}},
 			{Name: "billing", Package: "billing.v1", ProtoService: "BillingService", Methods: []Method{{Name: "Charge"}}},
 		},
+		Processes: []Process{
+			{Name: "shop-api", Binary: "shop", Args: []string{"api"}, Root: "api", ServiceNames: []string{"shop-api"}, Workloads: []string{"shop-api"}, RPCServices: []string{"billing.v1.BillingService", "orders.v1.OrdersService"}, HasDatabase: true},
+			{Name: "shop-worker", Binary: "shop", Args: []string{"worker"}, Root: "worker", ServiceNames: []string{"shop-worker"}, Workloads: []string{"shop-worker"}},
+		},
 		Frontends:   []string{"web"},
 		HasDatabase: true,
 	}
@@ -62,12 +66,15 @@ func TestDashboardSetFollowsTheProject(t *testing.T) {
 	for _, d := range sp.Dashboards {
 		ids = append(ids, d.ID)
 	}
-	if got, want := strings.Join(ids, ","), "overview,service-billing,service-orders,workloads,releases,frontend"; got != want {
+	if got, want := strings.Join(ids, ","), "overview,process-shop-api,process-shop-worker,workloads,releases,frontend"; got != want {
 		t.Fatalf("dashboards = %s, want %s", got, want)
 	}
 
 	in := fixture()
 	in.Frontends, in.HasDatabase = nil, false
+	for i := range in.Processes {
+		in.Processes[i].HasDatabase = false
+	}
 	sp = Build(in)
 	for _, d := range sp.Dashboards {
 		if d.ID == "frontend" {
@@ -81,38 +88,38 @@ func TestDashboardSetFollowsTheProject(t *testing.T) {
 	}
 }
 
-func TestPerRPCPanelsUseTheProcedureTheInterceptorNamesSpans(t *testing.T) {
-	sp := Build(fixture())
-	var orders Dashboard
+func TestProcessPanelsStayBoundedAndScoped(t *testing.T) {
+	in := fixture()
+	for i := 0; i < 100; i++ {
+		in.Services[0].Methods = append(in.Services[0].Methods, Method{Name: "Extra"})
+	}
+	sp := Build(in)
 	for _, d := range sp.Dashboards {
-		if d.ID == "service-orders" {
-			orders = d
+		if !strings.HasPrefix(d.ID, "process-") {
+			continue
 		}
-	}
-	files, _ := RenderHyperDX(sp)
-	var raw string
-	for _, f := range files {
-		if f.File == "shop-service-orders_gen.json" {
-			raw = string(f.Content)
+		if len(d.Panels) > 20 {
+			t.Fatalf("RPC inventory expanded %s to %d tiles", d.ID, len(d.Panels))
 		}
-	}
-	for _, m := range []string{"CreateOrder", "GetOrder", "ListOrders"} {
-		// otelconnect names the server span "<package>.<Service>/<Method>"
-		// (no leading slash).
-		if !strings.Contains(raw, `SpanName = 'orders.v1.OrdersService/`+m+`'`) {
-			t.Errorf("no tile selects the span %q", "orders.v1.OrdersService/"+m)
-		}
-		for _, suffix := range []string{"-rate", "-errors", "-latency"} {
-			if _, ok := findPanel(orders, "rpc-"+m+suffix); !ok {
-				t.Errorf("missing panel rpc-%s%s", m, suffix)
+		runtime := 0
+		for _, p := range d.Panels {
+			if p.ID == "go-memory" {
+				runtime++
+			}
+			if strings.HasPrefix(p.ID, "rpc-") {
+				t.Fatalf("per-RPC tile survived: %s", p.ID)
+			}
+			if len(p.Where) == 0 || (p.Where[0].Field != FieldService && p.Where[0].Field != fieldWorkload) {
+				t.Fatalf("unscoped %s/%s", d.ID, p.ID)
 			}
 		}
-	}
-	if strings.Contains(raw, "SpanName = '/") || strings.Contains(raw, "startsWith(SpanName, '/") {
-		t.Error("span names carry no leading slash (otelconnect trims connect.Spec.Procedure); log `procedure` values do")
-	}
-	if !strings.Contains(raw, "LogAttributes['procedure'], '/orders.v1.OrdersService/'") {
-		t.Error("the log scope must match the logging interceptor's procedure, which keeps the leading slash")
+		if runtime != 1 {
+			t.Fatalf("%s has %d runtime memory panels", d.ID, runtime)
+		}
+		_, rpc := findPanel(d, "red-by-rpc")
+		if rpc != (d.ID == "process-shop-api") {
+			t.Fatalf("incorrect RPC ownership for %s", d.ID)
+		}
 	}
 }
 

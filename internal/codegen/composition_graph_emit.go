@@ -71,6 +71,8 @@ type graphRootView struct {
 	Plan string
 	// Reach is every node the root's closure holds, in start order.
 	Reach []string
+	// RPCServices is the canonical inventory of route sets in this closure.
+	RPCServices []string
 	// ServesProbes is true when a node in the closure serves g.Probes (the
 	// API listener puts them in front of its edge). A root with none gets a
 	// probe listener of its own on the server address, so every process
@@ -411,6 +413,25 @@ func graphRootViews(roots []graphRoot, nodes []*graphNode, u *graphUniverse, edg
 			}
 		}
 		v := rootViewLazy(r, edges, lazy)
+		// Only route-set membership proves a handler is mounted. A worker
+		// may reach the same handler as an in-process dependency.
+		seenRPC := map[string]bool{}
+		for _, name := range v.Reach {
+			for _, n := range nodes {
+				if n.Name != name || n.Kind != nodeRoutes {
+					continue
+				}
+				for _, svc := range n.Services {
+					if svc != nil && svc.RPCService != "" {
+						seenRPC[svc.RPCService] = true
+					}
+				}
+			}
+		}
+		for rpc := range seenRPC {
+			v.RPCServices = append(v.RPCServices, rpc)
+		}
+		sort.Strings(v.RPCServices)
 		v.Command = r.Command
 		v.MigratePolicy = r.Migrate
 		rootViews = append(rootViews, v)
@@ -547,6 +568,12 @@ func addGraphRouteNodes(in GraphGenInput, compNode map[string]*graphNode, add fu
 		cn := compNode[row.FieldName]
 		if cn == nil {
 			continue // a not-a-component handler: nothing to mount
+		}
+		for _, svc := range in.Services {
+			if svc.Name == row.ProtoServiceName {
+				cn.RPCService = svc.Package + "." + svc.Name
+				break
+			}
 		}
 		sv := routesServiceView{InventoryServiceData: row, Type: cn.Type}
 		routesView.Services = append(routesView.Services, sv)

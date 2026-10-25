@@ -213,6 +213,9 @@ type Series struct {
 
 // Panel is one tile.
 type Panel struct {
+	// Section is an optional declared dashboard section, for temporary viewer
+	// toggles. Empty retains the unsectioned layout.
+	Section     string    `json:"section,omitempty"`
 	ID          string    `json:"id"`
 	Title       string    `json:"title"`
 	Description string    `json:"description,omitempty"`
@@ -256,9 +259,12 @@ type Panel struct {
 
 // Filter is a dashboard-level dropdown that narrows every panel.
 type Filter struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
-	Field string `json:"field"`
+	// PanelIDs restricts this filter to declared panels. Empty preserves the
+	// dashboard-wide default. RPC filters must not blank runtime/billing panels.
+	PanelIDs []string `json:"panelIds,omitempty"`
+	ID       string   `json:"id"`
+	Label    string   `json:"label"`
+	Field    string   `json:"field"`
 	// Signal is the telemetry the dropdown reads its values from. Empty is
 	// Traces, which every dashboard but the metrics ones draws.
 	Signal Signal `json:"signal,omitempty"`
@@ -282,8 +288,16 @@ type Annotation struct {
 	Label  string           `json:"label,omitempty"`
 }
 
+// Section is a named, ordered group of panels. It changes presentation only;
+// filtering remains explicit through Filter.PanelIDs.
+type Section struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
 // Dashboard is an ordered list of panels under a shared set of filters.
 type Dashboard struct {
+	Sections    []Section    `json:"sections,omitempty"`
 	ID          string       `json:"id"`
 	Title       string       `json:"title"`
 	Description string       `json:"description,omitempty"`

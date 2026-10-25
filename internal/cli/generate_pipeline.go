@@ -2561,7 +2561,7 @@ func gateObservabilityDashboardsEnabled(ctx *pipelineContext) bool {
 // gateObservabilityDashboards adds the other half: there is nothing to draw
 // without a Connect service.
 func gateObservabilityDashboards(ctx *pipelineContext) bool {
-	return gateObservabilityDashboardsEnabled(ctx) && len(ctx.Services) > 0
+	return gateObservabilityDashboardsEnabled(ctx)
 }
 
 // stepObservabilityDashboards writes deploy/observability/dashboards/*_gen.json
@@ -2589,6 +2589,10 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 			return err
 		}
 		in.Funnels = funnels
+		in.Processes, err = dashboardProcesses(ctx)
+		if err != nil {
+			return err
+		}
 		written, err := obsdash.Write(ctx.AbsPath, in, ctx.Checksums)
 		if err != nil {
 			return err

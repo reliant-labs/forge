@@ -140,7 +140,7 @@ func TestBuildAddsTheWorkloadsAndReleasesDashboards(t *testing.T) {
 	for _, d := range Build(fixture()).Dashboards {
 		ids = append(ids, d.ID)
 	}
-	if got, want := strings.Join(ids, ","), "overview,service-billing,service-orders,workloads,releases,frontend"; got != want {
+	if got, want := strings.Join(ids, ","), "overview,process-shop-api,process-shop-worker,workloads,releases,frontend"; got != want {
 		t.Fatalf("dashboards = %s, want %s", got, want)
 	}
 }
@@ -213,8 +213,8 @@ func TestBundleSetCarriesEveryGeneratedDashboard(t *testing.T) {
 	got := strings.Join(paths(set), "\n")
 	for _, want := range []string{
 		"observability/dashboards/shop-overview_gen.json",
-		"observability/dashboards/shop-service-orders_gen.json",
-		"observability/dashboards/shop-service-billing_gen.json",
+		"observability/dashboards/shop-process-shop-api_gen.json",
+		"observability/dashboards/shop-process-shop-worker_gen.json",
 		"observability/dashboards/shop-workloads_gen.json",
 		"observability/dashboards/shop-releases_gen.json",
 		"observability/dashboards/shop-frontend_gen.json",
@@ -379,7 +379,7 @@ func TestHostedOnlyDashboardsAreNotWrittenLocally(t *testing.T) {
 			t.Errorf("%s was written to the project: it has nothing to draw under forge env up and is constant library text", name)
 		}
 	}
-	for _, name := range []string{"shop-overview_gen.json", "shop-service-orders_gen.json"} {
+	for _, name := range []string{"shop-overview_gen.json", "shop-process-shop-api_gen.json"} {
 		if _, err := os.Stat(filepath.Join(dir, DashboardsDir, name)); err != nil {
 			t.Errorf("%s is missing: %v", name, err)
 		}

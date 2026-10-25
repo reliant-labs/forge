@@ -572,13 +572,9 @@ func ReadAlertInput(projectDir string) (in AlertInput, ok bool, err error) {
 	if in, err = ParseAlertDefaults(b); err != nil {
 		return AlertInput{}, false, err
 	}
-	_, parts, _, err := readParts(projectDir)
+	in.Services, err = readAlertServices(projectDir)
 	if err != nil {
 		return AlertInput{}, false, err
-	}
-	in.Services = []AlertService{}
-	for _, p := range parts {
-		in.Services = append(in.Services, p.Alert)
 	}
 	sort.Slice(in.Services, func(i, j int) bool { return in.Services[i].Name < in.Services[j].Name })
 	return in, true, nil

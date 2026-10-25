@@ -272,6 +272,9 @@ func TestChooseDeployRelease_ReusesAReleaseOfThisCheckoutWhateverItIsNamed(t *te
 // holds a release cut by `forge env build --release` for deployTestTree; each
 // case changes one thing about the checkout, the env or the world.
 func TestChooseDeployRelease_CutsANewReleaseAndSaysWhy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	cleanDifferentTree := deployTestProvenance()
 	cleanDifferentTree.Tree = strings.Repeat("d", 40)
 	dirtyEdit := cleanDifferentTree

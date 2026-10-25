@@ -23,7 +23,9 @@ writes only what generated code needs into it:
 The dependency edits only raise `@reliantlabs/forge-web-runtime` to the floor
 the regenerated code needs (never lower a newer range) and declare what
 generated code imports. `forge project disown <frontend>/package.json` stops
-them; generate then prints each change instead.
+them; generate then prints each change instead. A later generate that finds
+the tree unchanged says `nothing to do` and does not print them again (it
+would write nothing); `forge generate --no-cache` repeats the report.
 
 Rules that hold for every frontend, adopted or not:
 
@@ -37,6 +39,29 @@ Rules that hold for every frontend, adopted or not:
   their `*-service-hooks_gen` modules, or `forge project disown` the path.
 - **No component is written beside one whose name differs only in case**
   (`button.tsx` next to `Button.tsx`): that is one file on macOS.
+- **`tsc` must type-check the tests**, including the generated
+  `*-service-hooks_gen.test.tsx`. A scaffold keeps one project whose `include`
+  covers them. Vite's own template does not: its `tsconfig.app.json` excludes
+  every test and nothing else includes them, and vitest strips types without
+  checking them, so a test importing a removed export passes both. An adopted
+  app with that split adds `tsconfig.test.json`, extending the app project with
+  the tests and test-only types, and references it from the root `tsconfig.json`:
+
+  ```json
+  {
+    "extends": "./tsconfig.app.json",
+    "compilerOptions": {
+      "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+      "types": ["vitest/globals", "@testing-library/jest-dom"]
+    },
+    "include": ["src"],
+    "exclude": ["src/gen/**/*"]
+  }
+  ```
+
+  Its `exclude` replaces the inherited one, so the tests are back in. `types`
+  names whatever globals the test setup declares; omit it when tests import
+  `vitest` explicitly.
 
 Per-frontend codegen knobs live in the frontend's own `package.json` — no
 deploy env needed:

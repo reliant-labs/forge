@@ -649,6 +649,9 @@ func TestPromotePlan_LongRangeIsTruncatedButCountedExactly(t *testing.T) {
 // safe to do against real state — control-plane's ledger is a committed file
 // in a live repository.
 func TestRunPromotePlan_WritesNothing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes the on-disk release ledger for real; runs in task test")
+	}
 	dir := t.TempDir()
 	t.Chdir(dir)
 

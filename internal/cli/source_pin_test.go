@@ -38,6 +38,9 @@ func taggedCheckout(t *testing.T, module, moduleDir string, tags ...string) (*bu
 }
 
 func TestGoModPin(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	ctx := context.Background()
 	src, head := taggedCheckout(t, "example.com/sib", ".", "v1.2.3")
 
@@ -168,6 +171,9 @@ func TestGitSourcePins(t *testing.T) {
 // --release). A deploy that reuses an existing release builds nothing, so it
 // has no build to guard. A plain build is not a release and is never refused.
 func TestPreflightReleaseSources_EveryReleaseBoundBuild(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	root := t.TempDir()
 	sib := filepath.Join(root, "sib")
 	initGitRepo(t, sib, map[string]string{"go.mod": "module example.com/sib\n"})

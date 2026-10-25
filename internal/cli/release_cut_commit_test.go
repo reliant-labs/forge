@@ -68,6 +68,9 @@ func TestHarvestedBuildCommits(t *testing.T) {
 // The wiring, not just the predicate: a --no-build cut from a checkout whose
 // HEAD is not the commit the build state recorded must not record a release.
 func TestCutReleaseFromBuildState_RefusesACheckoutThatIsNotTheBuiltCommit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	dir := useTestLedger(t, t.TempDir())
 	gitInit(t, dir)
 	t.Chdir(dir)

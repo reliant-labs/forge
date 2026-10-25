@@ -102,6 +102,9 @@ func section(t *testing.T, changelog, ver string) string {
 }
 
 func TestChangelogRelease_GroupsByTypeAndFlagsBreaking(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script under bash against a git fixture; runs in task test")
+	}
 	repo := newForgeFixtureRepo(t) // tagged v0.1.0
 	writeRepoFile(t, repo, "CHANGELOG.md", unreleasedChangelog)
 	gitIn(t, repo, "add", "CHANGELOG.md")
@@ -158,6 +161,9 @@ func TestChangelogRelease_GroupsByTypeAndFlagsBreaking(t *testing.T) {
 }
 
 func TestChangelogRelease_FoldsUnreleasedOnceAndLeavesItEmpty(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script under bash against a git fixture; runs in task test")
+	}
 	repo := newForgeFixtureRepo(t)
 	writeRepoFile(t, repo, "CHANGELOG.md", unreleasedChangelog)
 	gitIn(t, repo, "add", "CHANGELOG.md")
@@ -198,6 +204,9 @@ func TestChangelogRelease_FoldsUnreleasedOnceAndLeavesItEmpty(t *testing.T) {
 }
 
 func TestChangelogRelease_EmptyReleaseSaysSo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script under bash against a git fixture; runs in task test")
+	}
 	repo := newForgeFixtureRepo(t)
 	writeRepoFile(t, repo, "CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-01-01\n")
 	runChangelogScript(t, repo, "--changelog", "CHANGELOG.md", "--version", "v0.2.0", "--date", "2026-02-03", "--prev-tag", "v0.1.0")

@@ -200,6 +200,9 @@ func TestEnvBuildBundle_IsIdempotentOnItsOwnBytes(t *testing.T) {
 // and labelled the result twice, and the second env's deploy would apply the
 // first env's manifests.
 func TestEnvBuildBundle_BundleEnvsWritesOnePerEnv(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes the on-disk release ledger for real; runs in task test")
+	}
 	dir := newLedgerTestProject(t, "bundle-multi-project")
 	stubEnvShape(t, "bundle-multi-project")
 

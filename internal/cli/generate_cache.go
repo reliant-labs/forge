@@ -58,6 +58,21 @@ package cli
 // also makes generate's output depend on machine state, which
 // verify-generated in a fresh CI clone (no record) would catch.
 //
+// WHAT A SKIP DOES NOT REPEAT: the notes a full run prints about work it
+// declined to do. The frontend step's report on a disowned package.json
+// (".. is disowned; bump it when you review") is the case that came up: on a
+// tree a run already verified, a second plain `forge generate` skips before
+// the frontend step, so the report is not printed again. That is correct, not
+// a missed input. The step's inputs — the manifest and lockfile (tracked),
+// .forge/disowned.json (tracked in a scaffold, and a top-level .forge/ state
+// file either way) and the installed node_modules — are all in the
+// fingerprint, so a disown, an undisown or a manifest edit forces the next run
+// (TestGenerateCacheEveryInputClassInvalidates pins each). What the skip
+// claims is only that generate would WRITE nothing, and it would not: the note
+// is advice, and the run that verified the tree printed it. To see a
+// verified tree's notes again, run with --no-cache — which is also what a test
+// that asserts on a second run's output must do.
+//
 // Anything outside that list that changes generate's output is a false skip,
 // the failure this design ranks above every other. So: the cache refuses
 // outright during a merge/rebase, records only full-strength runs (no
@@ -1276,7 +1291,7 @@ func (c *generateCacheRun) skip(w io.Writer) bool {
 }
 
 func (c *generateCacheRun) printSkip(w io.Writer) {
-	fmt.Fprintf(w, "⏭️  forge generate: nothing to do — the tree is byte-identical to one a full run verified as its own output %s (%d files; forge binary, tools and environment unchanged). --no-cache runs every step.\n",
+	fmt.Fprintf(w, "⏭️  forge generate: nothing to do — the tree is byte-identical to one a full run verified as its own output %s (%d files; forge binary, tools and environment unchanged). --no-cache runs every step and repeats its notes (a disowned file's pending changes among them).\n",
 		agoString(c.sys.now().Sub(c.prev.VerifiedAt)), len(c.pre.files))
 }
 

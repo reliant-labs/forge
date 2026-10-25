@@ -131,6 +131,9 @@ const declaredPackageJSON = `{
 `
 
 func TestToolsInstall_DeclaredTSPluginNeverRunsNPM(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs forge tools install over stand-in toolchain scripts; runs in task test")
+	}
 	for _, tc := range []struct {
 		name      string
 		installed bool

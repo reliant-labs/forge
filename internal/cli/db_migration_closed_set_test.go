@@ -12,6 +12,9 @@ import (
 // fresh migration with its compatibility line; a CHECK already in step has
 // nothing to write.
 func TestNewClosedSetMigration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("resolves the closed set by loading Go packages (go list); runs in task test")
+	}
 	dir := t.TempDir()
 	t.Chdir(dir)
 	mig := filepath.Join(dir, "db", "migrations")

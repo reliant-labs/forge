@@ -856,6 +856,9 @@ func TestPromotionKindFromWire_Closed(t *testing.T) {
 // apply rather than about where the promotion was recorded. The mixed shape is
 // covered by TestDeployRelease_MixedEnvAppliesItsClusterHalfAndWaits.
 func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	fake := newFakeDeployService(map[string]string{"prod": "env-prod-uuid"})
 	srv := httptest.NewServer(fake)
 	t.Cleanup(srv.Close)

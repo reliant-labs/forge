@@ -59,6 +59,9 @@ func emptyReleaseProject(t *testing.T) string {
 // and the frontend builds first (FRONTEND_WAS_BUILT appears) and the error is
 // the cut's late "no image digest was captured".
 func TestBuild_ReleaseOfAnEnvThatPinsNothingIsRefusedBeforeAnyBuild(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	dir := emptyReleaseProject(t)
 
 	err := runBuild(context.Background(), buildOptions{

@@ -218,6 +218,19 @@ func TestGenerateCacheEveryInputClassInvalidates(t *testing.T) {
 			f.write(t, "frontends/web/node_modules/.package-lock.json", "{\"lockfileVersion\":3}\n")
 		}, "node_modules/.package-lock.json"},
 		{".forge port ledger written", func(t *testing.T, f *cacheFixture) { f.write(t, ".forge/ports-dev.json", "{\"api\":8080}\n") }, "1 .forge/ state file(s)"},
+		// The frontend step's own inputs: a disown (or undisown) of a
+		// frontend's package.json turns its reconciliation off (or on), and
+		// the manifest and lockfile are what it reconciles. Ignored here
+		// (.forge/*), tracked in a scaffolded project; both are read.
+		{"a disown recorded", func(t *testing.T, f *cacheFixture) {
+			f.write(t, ".forge/disowned.json", "{\"frontends/web/package.json\":{\"reason\":\"pins its own runtime\"}}\n")
+		}, "1 .forge/ state file(s)"},
+		{"frontend package.json edited", func(t *testing.T, f *cacheFixture) {
+			f.write(t, "frontends/web/package.json", "{\"dependencies\":{\"@reliantlabs/forge-web-runtime\":\"^0.1.0\"}}\n")
+		}, "frontends/web/package.json"},
+		{"frontend lockfile added", func(t *testing.T, f *cacheFixture) {
+			f.write(t, "frontends/web/package-lock.json", "{\"lockfileVersion\":3}\n")
+		}, "frontends/web/package-lock.json"},
 		{"unnamed gitignored file edited", func(t *testing.T, f *cacheFixture) { f.write(t, "deploy/settings.local", "changed\n") }, "deploy/settings.local"},
 		{"dotenv edited", func(t *testing.T, f *cacheFixture) { f.write(t, ".env.dev", "DATABASE_URL=postgres://x\n") }, ".env.dev"},
 		{"replace target edited", func(t *testing.T, f *cacheFixture) {

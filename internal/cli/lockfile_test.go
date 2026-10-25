@@ -377,6 +377,9 @@ func TestScaffoldProjectLockIsTheGenerateLock(t *testing.T) {
 // empty, so once it gets the lock the pipeline stops at its first step; only
 // the timing and the error text matter here.
 func TestGenerateCmd_WaitsForConcurrentRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives the real forge generate behind a held lock and waits it out; runs in task test")
+	}
 	dir := t.TempDir()
 	t.Chdir(dir)
 	release, err := acquireGenerateLock(dir)

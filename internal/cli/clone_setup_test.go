@@ -85,6 +85,9 @@ func TestReadOnlyCommandsLeaveTheCloneGitSetupAlone(t *testing.T) {
 // for. `project disown` writes .forge/disowned.json; the path need not exist
 // for the root pre-run to have configured the clone first.
 func TestWritingCommandsStillSetUpTheClone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	repo := cloneSetupRepo(t)
 	clearProjectDir(t)
 	_, _ = runForge(t, "-C", repo, "project", "disown", "no-such-file_gen.go", "--reason", "test")

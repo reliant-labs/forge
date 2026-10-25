@@ -17,6 +17,9 @@ import (
 // per cluster, reporting every object that would change. It writes nothing to
 // any cluster.
 func TestReleaseBundle_PullsTheRecordedBundleAndDiffsItLive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes the on-disk release ledger for real; runs in task test")
+	}
 	dir := newLedgerTestProject(t, "bundle-pull")
 	stubEnvShape(t, "bundle-pull")
 	ctx := context.Background()

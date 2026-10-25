@@ -4036,6 +4036,9 @@ func devClusterCreateArgs() (args []string, cleanup func(), err error) {
 		args = append(args, k3sIssuerFlags()...)
 	}
 	args, err = addClusterStorageArgsFn(args)
+	if err == nil {
+		args, err = addK3dKmsgArgsFn(args)
+	}
 	if err != nil {
 		cleanup()
 		return nil, func() {}, err

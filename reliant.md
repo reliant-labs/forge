@@ -101,6 +101,17 @@ So the PR title is the changelog entry — write a good one, in conventional-com
 
 A doc comment that says "record it in CHANGELOG.md" means: say it in the PR title.
 
+## Format with `task fmt:web`, never a bare `npx prettier`
+
+`npx prettier` resolves whatever prettier release your machine has, not the one
+the pre-commit hook pins, and a different release reformats lines you never
+touched — the Checks job then fails on them. `task fmt:web` formats the files
+you changed since `origin/main` (`task fmt:web -- <file>...` for named ones,
+`-- --check` to report) with `scripts/prettier.sh`, which takes the version AND
+the file selection from the prettier hook in `.pre-commit-config.yaml`, the one
+place both are set (held equal to `templates.PrettierVersion` by
+`TestPrettierVersionIsPinnedEverywhere`).
+
 ## New lint rules warn before they gate
 
 A lint rule or lane that joins forge, or a severity raised from warning to

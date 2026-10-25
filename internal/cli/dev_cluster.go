@@ -542,6 +542,9 @@ func createK3dCluster(ctx context.Context, name string, args []string) error {
 	if storageErr != nil {
 		return storageErr
 	}
+	if args, storageErr = addK3dKmsgArgsFn(args); storageErr != nil {
+		return storageErr
+	}
 	// The context is merged below, under the kubeconfig lock; see
 	// kubeconfig_lock.go for the lost-update this prevents.
 	args = withoutKubeconfigWrites(args)

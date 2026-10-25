@@ -149,6 +149,9 @@ func TestLedgerExport_RoundTripsThePromotionLinesByteForByte(t *testing.T) {
 // the export is a faithful copy of the ledger rather than a re-encoding of
 // release.Promotion that silently drops it.
 func TestLedgerExport_PreservesTheImportProvenance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	fx := newImportFixture(t, func(dir string) {
 		plantRetiredLedger(t, dir,
 			[]release.Promotion{importablePromotion("id-a", "prod", "v1.0.0", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))},

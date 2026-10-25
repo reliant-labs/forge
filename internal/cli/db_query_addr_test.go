@@ -98,6 +98,9 @@ func TestDBQueryAddrRefusesAHostedEnv(t *testing.T) {
 
 // A real env's cluster database is refused without --addr and reachable with it.
 func TestDBQueryAddrOpensARealClusterEnv(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	const fixture = `{"output":{"data_access":{"db_query":"open"},
 		"workloads":[{"name":"api","kind":"service","runtime":{"type":"cluster"},"spec":{"kind":"service"}}],
 		"databases":[{"name":"ledger","runtime":"cluster","cluster":"k3d-demo","namespace":"demo","spec":{"instances":1}}]}}`
@@ -128,6 +131,9 @@ func TestDBQueryAddrOpensARealClusterEnv(t *testing.T) {
 }
 
 func TestDBQueryAddrHonoursThePolicyOnARealEnv(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	const fixture = `{"output":{"workloads":[{"name":"api","kind":"service","runtime":{"type":"cluster"},"spec":{"kind":"service"}}],
 		"databases":[{"name":"ledger","runtime":"cluster","cluster":"k3d-demo","namespace":"demo","spec":{"instances":1}}]}}`
 	withKCLFixture(t, fixture)
@@ -162,6 +168,9 @@ func addrSecrets(db, user, password string, ca []byte) []runtime.Object {
 }
 
 func TestDBQueryAddrServerNameDefaultsToTheEnvServiceHost(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	const fixture = `{"output":{"lifecycle":"local","data_access":{"db_query":"open"},
 		"workloads":[{"name":"api","kind":"service","runtime":{"type":"cluster"},"spec":{"kind":"service"}}],
 		"databases":[{"name":"ledger","runtime":"cluster","cluster":"k3d-demo","namespace":"demo","spec":{"instances":3}}]}}`
@@ -214,6 +223,9 @@ func TestDBQueryAddrServerNameDefaultsToTheEnvServiceHost(t *testing.T) {
 // --addr wins over every transport forge has: the compose/host DATABASE_URL
 // keeps its credentials and database, and only the dial target moves.
 func TestDBQueryAddrOverridesTheDirectTransport(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	withKCLFixture(t, dbQueryFixture(RuntimeHost, "postgres://app:s3cret@db.internal:5432/shop?sslmode=verify-full"))
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 

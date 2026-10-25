@@ -14,7 +14,8 @@ import type { UseQueryOptions } from "@tanstack/react-query";
 // error-normalize interceptor throws, same paged/filtered response shape.
 // The error type is part of the signature being stood in for: typed as a bare
 // `Error` this stand-in stops satisfying EntityListHook, and the test would be
-// exercising a shape `forge generate` never emits.
+// exercising a shape `forge generate` never emits. So is the TData generic: a
+// generated query hook types `data` by `select`.
 interface Patient {
   id: string;
   fullName: string;
@@ -33,11 +34,13 @@ const roster: Patient[] = [
   { id: "p_2", fullName: "Grace Hopper" },
 ];
 
-function useListPatients(
+function useListPatients<TData = ListPatientsResponse>(
   req: ListPatientsRequest,
-  options?: Partial<UseQueryOptions<ListPatientsResponse, ConnectClientError>>,
+  options?: Partial<
+    UseQueryOptions<ListPatientsResponse, ConnectClientError, TData>
+  >,
 ) {
-  return useQuery<ListPatientsResponse, ConnectClientError>({
+  return useQuery<ListPatientsResponse, ConnectClientError, TData>({
     queryKey: ["patients", req.search ?? ""],
     // The SERVER does the filtering — mirrored here so the assertions prove
     // the search text reached the request, not a client-side array filter.

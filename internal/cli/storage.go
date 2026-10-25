@@ -18,6 +18,7 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/gitsource"
+	"github.com/reliant-labs/forge/internal/k3dkmsg"
 	"github.com/reliant-labs/forge/internal/storage"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -300,6 +301,12 @@ func checkBuildStorage(project string, warn io.Writer) error {
 // through, so a test can assert the kubelet mount is present without a policy
 // file on disk — and so a new creation path cannot quietly skip it.
 var addClusterStorageArgsFn = addClusterStorageArgs
+
+// addK3dKmsgArgsFn is the seam every k3d creation path routes its argv through
+// after the storage mount: on a host without /dev/kmsg (a kata or gVisor
+// sandbox) k3s's kubelet exits at boot, so the cluster needs a device file
+// mounted there. A no-op everywhere else. See internal/k3dkmsg.
+var addK3dKmsgArgsFn = k3dkmsg.AddArgs
 
 // Only actual k3d creation gains this mount. Existing nodes are never restarted
 // as a side effect of a build; storage status exposes their config for migration.

@@ -82,6 +82,9 @@ func writeHashesLedger(t *testing.T, dir string, files map[string]string) {
 // byte-for-byte what that next run renders, so it re-records them and
 // succeeds, and the run after it sees no drift at all.
 func TestGenerate_KilledRunLedgerIsRescued(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the full generate pipeline; runs in task test")
+	}
 	dir := t.TempDir()
 	v1 := map[string]string{
 		"observability/dashboards/api_gen.json":     `{"title":"api","v":1}` + "\n",

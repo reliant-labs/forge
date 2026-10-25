@@ -87,6 +87,18 @@ and `npm run typecheck` compiles the package against **both** majors
 are peers, resolved from the consuming app. `next` deliberately is **not** — a
 Vite SPA consumes this package identically.
 
+Only `@opentelemetry/api` is a **required** peer: the barrel's trace
+propagation and the `/node` entry both build on it. Every other peer is
+**optional** (`peerDependenciesMeta`), because some entry point never imports
+it and npm would otherwise install it into every consumer. `react`,
+`@connectrpc/connect` and `@bufbuild/protobuf` are what the barrel and the
+browser subpaths import, so a browser app declares them as its own
+dependencies — every forge frontend scaffold (Next.js, Vite, Expo) already
+does. A consumer of `/node` alone (an Electron main process, a Node CLI)
+installs `@opentelemetry/api` and nothing else. `src/published-surface.test.ts`
+holds the rule: a peer the `/node` import closure does not reach must be
+optional.
+
 Next.js consumers keep `transpilePackages: ["@reliantlabs/forge-web-runtime"]`
 (forge's generated `next.config.ts` sets it). The reason changed with the
 build — it is no longer "these are `.tsx` files" but "these modules carry

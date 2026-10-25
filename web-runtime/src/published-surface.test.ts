@@ -165,6 +165,57 @@ describe("the published surface", () => {
     }
   });
 
+  it("makes every peer the ./node entry never imports OPTIONAL, so a Node-only consumer installs none of them", () => {
+    // npm installs a non-optional peer into EVERY consumer, whether or not an
+    // entry it imports reaches it. An Electron main process that imports only
+    // ./node used to get React, Connect and protobuf in its lockfile for
+    // nothing. So a peer the ./node import closure does not reach must be
+    // optional; the browser entries' consumers declare those packages
+    // themselves (every forge frontend scaffold lists them as direct deps).
+    const bare = new Set<string>();
+    const seen = new Set<string>();
+    const walk = (file: string): void => {
+      if (seen.has(file)) return;
+      seen.add(file);
+      const body = readFileSync(join(pkgDir, "dist", file), "utf8");
+      const specs = body.matchAll(
+        /(?:^|\n)\s*(?:import|export)\b[^"']*?from\s*["']([^"']+)["']|(?:^|\n)\s*import\s*["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)|require\(\s*["']([^"']+)["']\s*\)/g,
+      );
+      for (const m of specs) {
+        const spec = m[1] ?? m[2] ?? m[3] ?? m[4];
+        if (spec === undefined) continue;
+        if (spec.startsWith(".")) {
+          walk(join(dirname(file), spec));
+        } else if (!spec.startsWith("node:")) {
+          // The package name: "@scope/name" or "name", without a subpath.
+          bare.add(
+            spec
+              .split("/")
+              .slice(0, spec.startsWith("@") ? 2 : 1)
+              .join("/"),
+          );
+        }
+      }
+    };
+    walk("node.js");
+    expect(
+      seen.size,
+      "the ./node closure walk found no modules",
+    ).toBeGreaterThan(1);
+
+    // What ./node reaches is exactly the one required peer.
+    expect([...bare].sort()).toEqual(["@opentelemetry/api"]);
+    for (const name of Object.keys(pkg.peerDependencies)) {
+      const optional = pkg.peerDependenciesMeta?.[name]?.optional === true;
+      expect(
+        optional,
+        bare.has(name)
+          ? `${name} is imported by ./node and must stay a REQUIRED peer`
+          : `${name} is never imported by ./node and must be an OPTIONAL peer (peerDependenciesMeta)`,
+      ).toBe(!bare.has(name));
+    }
+  });
+
   it("declares @tanstack/react-query an optional peer, reachable only via ./service-hooks", () => {
     // Same rule as the OTel SDKs: the ONLY module that imports React Query is
     // the ./service-hooks subpath. A consumer that imports the barrel for

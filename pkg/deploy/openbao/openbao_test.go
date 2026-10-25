@@ -446,6 +446,81 @@ func TestRender_TransitionalListenerIsPlaintextAndNamed(t *testing.T) {
 	}
 }
 
+func spreadOf(t *testing.T, objs []*unstructuredT, key string) map[string]any {
+	t.Helper()
+	sts := findObj(t, objs, "StatefulSet", "openbao")
+	cs, _, _ := unstructured.NestedSlice(sts.Object, "spec", "template", "spec", "topologySpreadConstraints")
+	for _, c := range cs {
+		m := c.(map[string]any)
+		if m["topologyKey"] == key {
+			return m
+		}
+	}
+	return nil
+}
+
+// An HA store (replicas >= 2) must not co-locate its replicas: the SC7 prod
+// adoption put both on one node under a preference. Node spread is a hard
+// constraint by default; zone spread stays best effort.
+//
+// Mutation that fails it: drop the DoNotSchedule branch in render.go.
+func TestRender_HAStoreRequiresNodeSpreadByDefault(t *testing.T) {
+	for name, s := range map[string]Spec{"raft": raftSpec(), "postgres": postgresSpec()} {
+		objs, err := Render(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		kind := "StatefulSet"
+		if name == "postgres" {
+			kind = "Deployment"
+		}
+		obj := findObj(t, objs, kind, "openbao")
+		cs, _, _ := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "topologySpreadConstraints")
+		by := map[string]map[string]any{}
+		for _, c := range cs {
+			m := c.(map[string]any)
+			by[m["topologyKey"].(string)] = m
+		}
+		node, zone := by["kubernetes.io/hostname"], by["topology.kubernetes.io/zone"]
+		if node == nil || node["whenUnsatisfiable"] != "DoNotSchedule" {
+			t.Errorf("%s: node spread must be DoNotSchedule by default, got %v", name, node)
+		}
+		if node != nil && node["maxSkew"] != int64(1) {
+			t.Errorf("%s: node spread maxSkew = %v, want 1", name, node["maxSkew"])
+		}
+		if zone == nil || zone["whenUnsatisfiable"] != "ScheduleAnyway" {
+			t.Errorf("%s: zone spread must stay best effort, got %v", name, zone)
+		}
+	}
+}
+
+func TestRender_PreferredNodeSpreadIsAnExplicitOverrideWithAReason(t *testing.T) {
+	s := raftSpec()
+	s.HA.NodeSpread = NodeSpreadPreferred
+	if err := s.Validate(); err == nil || !strings.Contains(err.Error(), "nodeSpreadReason") {
+		t.Fatalf("preferred without a reason must be refused, got %v", err)
+	}
+	s.HA.NodeSpreadReason = "two-node staging pool"
+	objs, err := Render(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := spreadOf(t, objs, "kubernetes.io/hostname"); got == nil || got["whenUnsatisfiable"] != "ScheduleAnyway" {
+		t.Errorf("an overridden node spread is best effort, got %v", got)
+	}
+
+	r := raftSpec()
+	r.HA.NodeSpreadReason = "no override to excuse"
+	if err := r.Validate(); err == nil || !strings.Contains(err.Error(), "excuses a preferred spread") {
+		t.Errorf("a reason on a required spread must be refused, got %v", err)
+	}
+	r = raftSpec()
+	r.HA.NodeSpread = "sometimes"
+	if err := r.Validate(); err == nil || !strings.Contains(err.Error(), "must be required or preferred") {
+		t.Errorf("an unknown nodeSpread must be refused, got %v", err)
+	}
+}
+
 func TestRender_BYOTLSRendersNoCertManagerObjects(t *testing.T) {
 	s := raftSpec()
 	s.TLS = TLS{Secret: "my-tls", CAConfigMap: "my-ca"}

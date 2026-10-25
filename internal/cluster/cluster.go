@@ -948,7 +948,10 @@ func selectAndScope(opts ApplyOpts, manifests string) (selectedCharts []HelmChar
 	// Stamp every CRD with this env's ownership label, so a later apply that
 	// stops rendering it can prove the CRD was its own (crd_prune.go).
 	crdOwner = CRDOwner(opts.Project, opts.Env)
-	return selectedCharts, StampCRDOwnership(manifests, crdOwner), crdOwner
+	manifests = StampCRDOwnership(manifests, crdOwner)
+	// And every other object with the env's owner label, so a later apply
+	// that stops rendering one can prove it was this env's (owned_prune.go).
+	return selectedCharts, StampOwnership(manifests, ObjectOwner(opts.Project, opts.Env)), crdOwner
 }
 
 // applyRendered is Apply after the KCL render: select, scope, apply and wait.
@@ -1198,7 +1201,23 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 			jobs = append(jobs, name)
 		}
 	}
-	return &PendingRollout{opts: opts, policy: policy, jobs: jobs, skipDeployments: DeploymentsInUnits(desired, opts.SkipUnits)}, nil
+	pending := &PendingRollout{opts: opts, policy: policy, jobs: jobs, skipDeployments: DeploymentsInUnits(desired, opts.SkipUnits)}
+	pending.prune = ownedPruneFor(opts, desired)
+	return pending, nil
+}
+
+// ownedPruneFor is the owned-object prune this apply owes once its rollout is
+// healthy, or nil when it owes none: a --target subset proves nothing about
+// what the env stopped rendering, and an unnamed owner proves nothing about whose
+// an object is. The Deployment prune's opt-in (--prune) does not govern this one
+// (inert kinds only; see owned_prune.go): an object opts out by carrying
+// kustomize.toolkit.fluxcd.io/prune: disabled.
+func ownedPruneFor(opts ApplyOpts, desired string) *ownedPruneJob {
+	owner := ObjectOwner(opts.Project, opts.Env)
+	if owner == "" || len(opts.Targets) > 0 || strings.TrimSpace(opts.Context) == "" {
+		return nil
+	}
+	return &ownedPruneJob{kctx: opts.Context, rendered: desired, owner: owner}
 }
 
 // oneShotWaitSet is the set of Jobs Apply blocks on after applying:

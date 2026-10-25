@@ -23,12 +23,8 @@ import (
 // The ONE way the hub authenticates to a connected cluster: a scoped
 // ServiceAccount token forge mints in the owner's cluster, uploaded write-only.
 // There is no cloud identity, hub-side or otherwise: a connected cluster is
-// somebody else's, and nothing of ours is trusted there.
-//
-// wire: remove once control-plane CC-C1 is deployed. The deployed control plane
-// still REQUIRES the `auth` key; CC-C1 deletes the enum, after which the key is
-// ignored (the control plane's JSON codec discards unknown fields).
-const wireAuthServiceAccountToken = "CLUSTER_AUTH_SERVICE_ACCOUNT_TOKEN"
+// somebody else's, and nothing of ours is trusted there. So the request names
+// no auth mode: the control plane deleted the enum and reserved the field.
 
 // connectTarget is everything forge learns about a cluster from the
 // operator's kubeconfig plus the chosen auth: the whole ConnectCluster

@@ -21,8 +21,7 @@ ServiceAccount and nothing else.
 
 **There is one auth, on any Kubernetes cluster** — GKE, EKS, AKS, Vultr VKE, k3s, bare
 metal. No cloud identity of ours is trusted in your project, there is no IAM grant for
-you to run, and no `--auth` flag. (The wire still carries `auth =
-CLUSTER_AUTH_SERVICE_ACCOUNT_TOKEN` until the control plane stops requiring it.)
+you to run, and no `--auth` flag.
 
 **Declarative and idempotent by name.** Re-running `connect` with the same name
 UPDATES the cluster rather than colliding, so fixing a rotated endpoint is the

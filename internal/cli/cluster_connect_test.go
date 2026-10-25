@@ -213,7 +213,6 @@ func TestConnectRequestWire_IsAlwaysTheServiceAccountTokenAuth(t *testing.T) {
 		got := calls[procConnectCluster]
 		for key, want := range map[string]any{
 			"name":    "prod-us",
-			"auth":    "CLUSTER_AUTH_SERVICE_ACCOUNT_TOKEN",
 			"address": "https://34.1.2.3",
 			"caPem":   "ca-bundle",
 			"token":   fakeMintedToken,
@@ -225,6 +224,12 @@ func TestConnectRequestWire_IsAlwaysTheServiceAccountTokenAuth(t *testing.T) {
 		// No cloud identity ever crosses the wire.
 		if _, ok := got["cloudCluster"]; ok {
 			t.Errorf("%s: the request carries cloudCluster", kctx)
+		}
+		// Nor an auth selector: the control plane deleted the enum and
+		// reserved the field (CC-C1), so a token is the only credential and
+		// there is nothing to choose between.
+		if v, ok := got["auth"]; ok {
+			t.Errorf("%s: the request carries auth = %v; the control plane reserved that field", kctx, v)
 		}
 		raw, _ := json.Marshal(got)
 		for _, banned := range []string{"cloudCluster", "WORKLOAD_IDENTITY", "gcpServiceAccount", "bindingIdentity"} {

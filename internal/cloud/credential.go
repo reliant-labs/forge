@@ -73,9 +73,35 @@ type Credential struct {
 	// the credentials file path, or the helper's description of the
 	// session it used. Safe to print; never the token itself.
 	From string
-	// ExpiresAt is when the token stops being accepted, when known. Only a
-	// helper's tokens carry one today; nil means unknown.
+	// ExpiresAt is when the token stops being accepted, when known: a
+	// helper's tokens and a stored login carry one; nil means unknown.
 	ExpiresAt *time.Time
+	// Scopes the issuer reported granting, when known (a stored login records
+	// them). Informational — the server decides.
+	Scopes []string
+}
+
+// Identity names the credential WITHOUT its secret: the issuer's display
+// prefix for an `rlat_` access token ("rlat_A3f9Kd2p…" — what the console's
+// token list shows, so a human can match it), else only its length.
+//
+// Every human-facing line that says WHICH credential was used prints this,
+// never Token. An agent or a person who cannot tell which credential failed
+// opens the credentials file to find out, and the file holds the secret —
+// which is how a forge credential came to be pasted into a session log.
+func (c Credential) Identity() string {
+	return TokenIdentity(c.Token)
+}
+
+// TokenIdentity is Credential.Identity for a bare token string.
+func TokenIdentity(token string) string {
+	if p := displayPrefix(token); strings.HasPrefix(p, "rlat_") {
+		return p + "…"
+	}
+	if token == "" {
+		return "(none)"
+	}
+	return fmt.Sprintf("(a %d-character token; not an rlat_ access token)", len(token))
 }
 
 // ErrNoCredential is returned when no credential could be resolved. Use
@@ -153,7 +179,8 @@ func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
 	stored, lookupErr := credentials.Lookup(path, ep.URL, ClientID)
 	switch {
 	case lookupErr == nil && !stored.Expired(time.Now()):
-		return Credential{Token: stored.Token, Source: SourceLogin, From: path}, nil
+		return Credential{Token: stored.Token, Source: SourceLogin, From: path,
+			ExpiresAt: stored.ExpiresAt, Scopes: stored.Scopes}, nil
 	case lookupErr == nil:
 		expiredLogin = fmt.Sprintf("the forge login for %s stored in %s expired at %s",
 			ep.URL, path, stored.ExpiresAt.Format(time.RFC3339))

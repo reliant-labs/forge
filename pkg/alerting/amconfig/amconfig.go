@@ -504,7 +504,7 @@ func receiverNode(r Receiver, set Settings) (map[string]any, []SecretFile, error
 			return nil, nil, err
 		}
 		c := map[string]any{"api_url_file": f, "send_resolved": true,
-			"title": `{{ .CommonLabels.alertname }}`, "text": slackText}
+			"title": slackTitle, "fallback": slackTitle, "text": slackText, "link_names": false}
 		if ch := r.Settings["channel"]; ch != "" {
 			c["channel"] = ch
 		}
@@ -596,9 +596,22 @@ func ClusterInternal(host string) bool {
 		strings.HasSuffix(h, ".svc") || strings.HasSuffix(h, ".svc.cluster.local") || strings.HasSuffix(h, ".internal")
 }
 
-const slackText = `{{ range .Alerts }}*{{ .Labels.alertname }}* {{ if .Labels.service }}({{ .Labels.service }}){{ end }}
-{{ .Annotations.summary }}
+// slackEscape renders a template expression for Slack mrkdwn. Slack treats &, <
+// and > in message text as control characters: <!channel>, <@U123> and
+// <https://evil|text> are a broadcast ping, a mention and a disguised link. A
+// label or annotation can carry attacker-chosen text (an issue title is
+// whatever a browser sent), so every one is escaped to &amp; &lt; &gt;, which
+// Slack displays as the literal character.
+func slackEscape(expr string) string {
+	return `{{ ` + expr + ` | reReplaceAll "&" "&amp;" | reReplaceAll "<" "&lt;" | reReplaceAll ">" "&gt;" }}`
+}
+
+var (
+	slackTitle = slackEscape(`.CommonLabels.alertname`)
+	slackText  = `{{ range .Alerts }}*` + slackEscape(`.Labels.alertname`) + `* {{ if .Labels.service }}(` + slackEscape(`.Labels.service`) + `){{ end }}
+` + slackEscape(`.Annotations.summary`) + `
 {{ end }}`
+)
 
 // matcher is one Alertmanager equality matcher, quoted so a value with a quote,
 // backslash or newline cannot end the matcher early.

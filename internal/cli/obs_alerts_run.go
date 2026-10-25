@@ -28,6 +28,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/clickstack"
+	"github.com/reliant-labs/forge/internal/obsout"
 	"github.com/reliant-labs/forge/pkg/alerting"
 	"github.com/reliant-labs/forge/pkg/alerting/amconfig"
 )
@@ -64,7 +65,7 @@ the rules without a restart.
   ` + Name() + ` obs alerts run --env dev --alertmanager http://127.0.0.1:9093 --listen 0.0.0.0:9095`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runObsAlertsRun(cmd.Context(), cmd.OutOrStdout(), o)
+			return runObsAlertsRun(cmd.Context(), obsout.NewSanitizingWriter(cmd.OutOrStdout()), o)
 		},
 	}
 	f := cmd.Flags()

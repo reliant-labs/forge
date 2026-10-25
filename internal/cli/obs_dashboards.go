@@ -14,6 +14,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/obsbackend"
 	"github.com/reliant-labs/forge/internal/obsdash"
+	"github.com/reliant-labs/forge/internal/obsout"
 	"github.com/reliant-labs/forge/pkg/dashspec"
 	"github.com/reliant-labs/forge/pkg/obsquery"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -64,7 +65,7 @@ a counter that only exists once something fails; --strict fails on it too.
   ` + Name() + ` obs dashboards check --against dev --since 6h --strict`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runObsDashboardsCheck(cmd.Context(), defaultObsDeps(cmd), cmd.OutOrStdout(), o)
+			return runObsDashboardsCheck(cmd.Context(), defaultObsDeps(cmd), obsout.NewSanitizingWriter(cmd.OutOrStdout()), o)
 		},
 	}
 	f := check.Flags()

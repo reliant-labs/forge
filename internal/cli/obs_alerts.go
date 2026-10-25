@@ -23,6 +23,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/clickstack"
 	"github.com/reliant-labs/forge/internal/obsdash"
+	"github.com/reliant-labs/forge/internal/obsout"
 	"github.com/reliant-labs/forge/pkg/alerting"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -69,7 +70,7 @@ a rule that errors is reported and does not stop the others.
 Needs the local ClickStack running (` + "`forge env up`" + `).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runObsAlertsCheck(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), o, defaultAlertShapeLoader, alertQueryRunnerFor(o.env))
+			return runObsAlertsCheck(cmd.Context(), obsout.NewSanitizingWriter(cmd.OutOrStdout()), obsout.NewSanitizingWriter(cmd.ErrOrStderr()), o, defaultAlertShapeLoader, alertQueryRunnerFor(o.env))
 		},
 	}
 	f := cmd.Flags()

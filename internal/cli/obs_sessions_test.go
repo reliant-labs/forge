@@ -496,3 +496,30 @@ func TestObsSessionsLocalWithoutBrowserTablesSaysSoAndExits2(t *testing.T) {
 		}
 	}
 }
+
+// Session text is written by whoever holds the public ingest key. Whatever a
+// forged session carries, the terminal form must contain no escape sequence.
+func TestObsSessionTextStripsTerminalEscapesFromForgedFields(t *testing.T) {
+	evilLink := "\x1b]8;;https://evil.example\x07trusted\x1b]8;;\x07"
+	entries := []sessEntry{
+		{at: 0, kind: "navigation", name: "documentLoad", path: "/" + evilLink},
+		{at: time.Second, kind: "click", name: "click", path: "/x", selector: "\x1b[2J\x1b[1;1H//*[@id=\"a\"]", element: "button\x1b]0;pwned\x07"},
+		{at: 2 * time.Second, kind: "error", name: "onerror", path: "/x", errType: "TypeError", msg: "boom \x1b[31mred\u009b31m \u202egpj"},
+		{at: 3 * time.Second, kind: "event", name: "e", path: "/x", props: map[string]string{"k": "v\x1b]8;;https://evil.example\x1b\\"}},
+	}
+	sr := &scriptedRunner{answers: localSessionAnswers(entries)}
+	text, _, err := obsRun(t, sessFacts("prod"), sr, "session", sessID, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"\x1b", "\x07", "\u009b", "\u202e", "evil.example"} {
+		if strings.Contains(text, bad) {
+			t.Errorf("terminal output carries %q:\n%q", bad, text)
+		}
+	}
+	for _, want := range []string{"trusted", "TypeError: boom", "button"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("sanitizing must keep the readable text; lacks %q:\n%s", want, text)
+		}
+	}
+}

@@ -80,6 +80,10 @@ func defaultObsDeps(cmd *cobra.Command) obsDeps {
 			d.Stderr = o.Stderr
 		}
 	}
+	// Every verb's output carries telemetry written by whoever holds the public
+	// ingest key; this is the one place it is made safe for a terminal.
+	d.Stdout = obsout.NewSanitizingWriter(d.Stdout)
+	d.Stderr = obsout.NewSanitizingWriter(d.Stderr)
 	return d
 }
 

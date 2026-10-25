@@ -125,6 +125,8 @@ func (r Runner) GoCaches(apply bool) error {
 	}{
 		{"shared build cache", 0.6, 0.75, Runner.SharedGoCache},
 		{"golangci-lint cache", 0.5, 0.5, Runner.GolangciLintCache},
+		{"go module cache", 0.5, 0.5, Runner.GoModCache},
+		{"go module cache", 0.5, 0.5, Runner.GoModCache},
 		{"orphaned private caches", 0.5, 0.5, Runner.OrphanedGoCaches},
 		{"goimports index", 1, 1, Runner.GoimportsIndex},
 	}
@@ -449,8 +451,11 @@ var goCacheDiskSpace = DiskSpace
 // goCacheBudget is the size the cache at root is trimmed to: go_cache_gib,
 // capped at go_cache_volume_percent of the volume it lives on. A volume that
 // cannot be read leaves go_cache_gib alone.
-func (r Runner) goCacheBudget(root string) uint64 {
-	budget := r.Policy.GoCacheGiB * GiB
+func (r Runner) goCacheBudget(root string) uint64 { return r.budgetFor(r.Policy.GoCacheGiB, root) }
+
+// budgetFor is gibs GiB, capped at go_cache_volume_percent of root's volume.
+func (r Runner) budgetFor(gibs uint64, root string) uint64 {
+	budget := gibs * GiB
 	pct := r.Policy.GoCacheVolumePercent
 	if pct == 0 {
 		pct = defaultGoCacheVolumePercent
@@ -692,10 +697,16 @@ type BudgetUnreachableError struct {
 	// age of the oldest running build plus its margin when that is longer), in bytes.
 	Estimated, Budget, Young uint64
 	Floor                    time.Duration
+	// Reason, when set, replaces the build-cache advice: what pins the rest.
+	Reason string
 }
 
 func (e *BudgetUnreachableError) Error() string {
 	gib := func(b uint64) float64 { return float64(b) / float64(GiB) }
+	if e.Reason != "" {
+		return fmt.Sprintf("%s is over its budget and no trim can reach it: ~%.1f GiB against %.1f GiB, of which ~%.1f GiB is pinned: %s",
+			e.Cache, gib(e.Estimated), gib(e.Budget), gib(e.Young), e.Reason)
+	}
 	return fmt.Sprintf("%s is over its budget and no trim can reach it: ~%.1f GiB against %.1f GiB, of which ~%.1f GiB "+
 		"was used in the last %s (~%.0f GiB/h). Entries that young may belong to a running build, so they are never "+
 		"trimmed; raise go_cache_gib, or slow the fill. A common cause is builds without -trimpath, which compile every "+

@@ -23,6 +23,7 @@
     "last_version": "v1.4.0",
     "events": 42,
     "affected": 9,
+    "affected_unit": "traces",
     "latest_trace_id": "0af7651916cd43dd8448eb211c80319c",
     "regressed_at": "2026-10-22T09:00:00Z"
   },
@@ -51,7 +52,8 @@
     {
       "version": "v1.4.0",
       "events": 30,
-      "affected": 6
+      "affected": 6,
+      "affected_unit": "traces"
     }
   ],
   "co_occurring_issue_ids": [

@@ -42,7 +42,7 @@ var obsStatusSchema = obsout.Schema{
 		"services.p50_ms", "services.p95_ms", "services.p99_ms", "services.error_logs",
 		"issues", "issues.id", "issues.platform", "issues.service", "issues.title", "issues.culprit", "issues.exception_type",
 		"issues.status", "issues.first_seen", "issues.last_seen", "issues.first_version", "issues.last_version",
-		"issues.events", "issues.affected", "issues.latest_trace_id", "issues.resolved_at", "issues.resolved_version",
+		"issues.events", "issues.affected", "issues.affected_unit", "issues.latest_trace_id", "issues.resolved_at", "issues.resolved_version",
 		"issues.regressed_at", "issues.ignored_until", "issues_truncated",
 		"alerts", "alerts.rule", "alerts.state", "alerts.fingerprint", "alerts.labels.*", "alerts.summary",
 		"alerts.active_at", "alerts.firing_at", "alerts.value",

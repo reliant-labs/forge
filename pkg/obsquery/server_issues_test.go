@@ -131,3 +131,42 @@ func TestLocalIssueID(t *testing.T) {
 		}
 	}
 }
+
+// Affected is counted over the widest unit at least half of an issue's events
+// name, and the unit travels with the count.
+func TestServerIssuesCountAffectedOverTheFirstUnitEveryEventNames(t *testing.T) {
+	st, err := ServerIssues{Scope: issueScope(), Limit: 5}.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"countIf(LogAttributes['user.id'] != '') * 2 >= count(), uniqIf(LogAttributes['user.id'], LogAttributes['user.id'] != '')",
+		"countIf(LogAttributes['reliant.chat.id'] != '') * 2 >= count(), uniqIf(LogAttributes['reliant.chat.id'], LogAttributes['reliant.chat.id'] != '')",
+		"countIf(LogAttributes['thread.id'] != '') * 2 >= count(), uniqIf(LogAttributes['thread.id'], LogAttributes['thread.id'] != '')",
+		"countIf(LogAttributes['workflow.id'] != '') * 2 >= count(), uniqIf(LogAttributes['workflow.id'], LogAttributes['workflow.id'] != '')",
+		"uniqIf(TraceId, TraceId != '')) AS affected",
+		"'users', countIf(LogAttributes['reliant.chat.id'] != '') * 2 >= count(), 'chats'",
+		"'traces') AS affected_unit",
+	} {
+		if !strings.Contains(st.SQL, want) {
+			t.Errorf("statement lacks %q:\n%s", want, st.SQL)
+		}
+	}
+	// users are preferred to chats, chats to threads, threads to workflows, workflows to traces
+	order := []string{"'user.id'", "'reliant.chat.id'", "'thread.id'", "'workflow.id'"}
+	last := -1
+	for _, k := range order {
+		i := strings.Index(AffectedSQL(), "LogAttributes["+k+"]")
+		if i <= last {
+			t.Errorf("%s is out of preference order in %s", k, AffectedSQL())
+		}
+		last = i
+	}
+	if cols := ServerIssuesColumns; cols[len(cols)-1] != "affected_unit" || cols[6] != "affected" {
+		t.Errorf("columns = %v: affected_unit must be last, affected 7th", cols)
+	}
+	versions, err := ServerIssueVersions{Scope: issueScope(), Fingerprint: "0123456789abcdef"}.Compile()
+	if err != nil || !strings.Contains(versions.SQL, AffectedUnitSQL()+" AS affected_unit") {
+		t.Errorf("per-version statement lacks the unit: %v\n%s", err, versions.SQL)
+	}
+}

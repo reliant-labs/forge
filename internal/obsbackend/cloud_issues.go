@@ -72,6 +72,7 @@ type wireIssue struct {
 	LastVersion     string           `json:"lastVersion"`
 	Events          jsonInt          `json:"events"`
 	Affected        jsonInt          `json:"affected"`
+	AffectedUnit    string           `json:"affectedUnit"`
 	Trend           []wireTrendPoint `json:"trend"`
 	ResolvedAt      time.Time        `json:"resolvedAt"`
 	ResolvedVersion string           `json:"resolvedVersion"`
@@ -101,12 +102,31 @@ func upper(s string) string {
 	return string(b)
 }
 
+// affectedUnit is the unit the control plane counted Affected over. A control
+// plane that predates the field leaves it empty, and says only what its proto
+// documents: traces for a server issue, sessions for a browser one.
+func (w wireIssue) affectedUnit() string {
+	return unitOrDefault(w.AffectedUnit, wirePlatform[w.Platform])
+}
+
+func unitOrDefault(unit, platform string) string {
+	switch {
+	case unit != "":
+		return unit
+	case platform == PlatformBrowser:
+		return "sessions"
+	case platform == PlatformServer:
+		return "traces"
+	}
+	return ""
+}
+
 func (w wireIssue) issue() Issue {
 	return Issue{
 		ID: w.ID, Platform: wirePlatform[w.Platform], Source: w.Source, Service: w.Service, Fingerprint: w.Fingerprint,
 		Title: w.Title, Culprit: w.Culprit, ExceptionType: w.ExceptionType, Status: wireStatus[w.Status],
 		FirstSeen: w.FirstSeenAt.UTC(), LastSeen: w.LastSeenAt.UTC(), FirstVersion: w.FirstVersion, LastVersion: w.LastVersion,
-		Events: int64(w.Events), Affected: int64(w.Affected),
+		Events: int64(w.Events), Affected: int64(w.Affected), AffectedUnit: w.affectedUnit(),
 		ResolvedAt: w.ResolvedAt.UTC(), ResolvedVersion: w.ResolvedVersion, RegressedAt: w.RegressedAt.UTC(),
 		IgnoredUntil: w.IgnoredUntil.UTC(), Version: w.Version,
 	}
@@ -204,11 +224,12 @@ func (c Cloud) getIssue(ctx context.Context, id string, n Narrow) (GetIssueResul
 			InApp    bool   `json:"inApp"`
 		} `json:"frames"`
 		ByVersion []struct {
-			Version     string    `json:"version"`
-			Events      jsonInt   `json:"events"`
-			Affected    jsonInt   `json:"affected"`
-			FirstSeenAt time.Time `json:"firstSeenAt"`
-			LastSeenAt  time.Time `json:"lastSeenAt"`
+			Version      string    `json:"version"`
+			Events       jsonInt   `json:"events"`
+			Affected     jsonInt   `json:"affected"`
+			AffectedUnit string    `json:"affectedUnit"`
+			FirstSeenAt  time.Time `json:"firstSeenAt"`
+			LastSeenAt   time.Time `json:"lastSeenAt"`
 		} `json:"byVersion"`
 		CoOccurring  []string `json:"coOccurringIssueIds"`
 		FirstRelease *struct {
@@ -233,7 +254,7 @@ func (c Cloud) getIssue(ctx context.Context, id string, n Narrow) (GetIssueResul
 	}
 	for _, v := range out.ByVersion {
 		res.ByVersion = append(res.ByVersion, IssueVersion{
-			Version: v.Version, Events: int64(v.Events), Affected: int64(v.Affected),
+			Version: v.Version, Events: int64(v.Events), Affected: int64(v.Affected), AffectedUnit: unitOrDefault(v.AffectedUnit, res.Issue.Platform),
 			FirstSeen: v.FirstSeenAt.UTC(), LastSeen: v.LastSeenAt.UTC(),
 		})
 	}

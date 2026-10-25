@@ -31,7 +31,7 @@ const (
 func issuesAnswer() scriptedAnswer {
 	row := func(fp, svc, title string, events int) []any {
 		return []any{fp, svc, title, "internal/store/db.go in store.(*DB).Exec", "*pgconn.PgError", jn(strconv.Itoa(events)), jn("3"),
-			"2026-10-22 10:00:00.000000000", "2026-10-22 11:30:00.000000000", issueTrace, "v1.4.0", "v1.3.0", ""}
+			"2026-10-22 10:00:00.000000000", "2026-10-22 11:30:00.000000000", issueTrace, "v1.4.0", "v1.3.0", "", "users"}
 	}
 	return scriptedAnswer{"GROUP BY fingerprint, service", obsbackend.Result{Rows: [][]any{
 		row(issueFP, "api", "*pgconn.PgError: duplicate key <str>", 7),
@@ -113,7 +113,7 @@ func localIssueAnswers() []scriptedAnswer {
 	return []scriptedAnswer{
 		issuesAnswer(),
 		{"ORDER BY Timestamp DESC", obsbackend.Result{Rows: [][]any{ev}}},
-		{"GROUP BY version", obsbackend.Result{Rows: [][]any{{"v1.4.0", jn("5"), jn("2"), "2026-10-22 10:30:00", "2026-10-22 11:30:00"}}}},
+		{"GROUP BY version", obsbackend.Result{Rows: [][]any{{"v1.4.0", jn("5"), jn("2"), "2026-10-22 10:30:00", "2026-10-22 11:30:00", "users"}}}},
 		{"uniqExact(TraceId) AS shared", obsbackend.Result{Rows: [][]any{{"bbbbbbbbbbbbbbbb", jn("2")}}}},
 	}
 }
@@ -457,5 +457,62 @@ func TestObsIssueStampsTheReleaseLiveWhenLastSeen(t *testing.T) {
 	}
 	if _, ok := decode(t, out)["release"]; ok || !strings.Contains(errOut, "release live in prod is unknown") {
 		t.Errorf("stdout %s stderr %s", out, errOut)
+	}
+}
+
+// Affected users cannot be answered when the events name none: most worker and
+// reconciler records carry no user.id. The table says what was counted instead of
+// reporting zero users, and the JSON carries the unit beside the count.
+func TestObsIssuesCountsChatsWhenNoEventNamesAUser(t *testing.T) {
+	row := []any{issueFP, "worker", "timeout <n>", "internal/x.go in x.Run", "*errors.errorString", jn("40"), jn("1"),
+		"2026-10-22 10:00:00.000000000", "2026-10-22 11:30:00.000000000", issueTrace, "v1.4.0", "v1.3.0", "", "chats"}
+	sr := &scriptedRunner{answers: []scriptedAnswer{{"GROUP BY fingerprint, service", obsbackend.Result{Rows: [][]any{row}}}}}
+
+	out, _, err := obsRun(t, devFacts(), sr, "issues", "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "1 chat") || strings.Contains(out, "1 chats") {
+		t.Errorf("table does not name the counted unit in the singular:\n%s", out)
+	}
+
+	sr = &scriptedRunner{answers: []scriptedAnswer{{"GROUP BY fingerprint, service", obsbackend.Result{Rows: [][]any{row}}}}}
+	js, _, err := obsRun(t, devFacts(), sr, "issues", "dev", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := decode(t, js)["issues"].([]any)[0].(map[string]any)
+	if first["affected"] != float64(1) || first["affected_unit"] != "chats" {
+		t.Errorf("affected = %v %v, want 1 chats", first["affected"], first["affected_unit"])
+	}
+
+	if got := affectedText(3, "chats"); got != "3 chats" {
+		t.Errorf("affectedText(3, chats) = %q", got)
+	}
+	if got := affectedText(3, ""); got != "3" {
+		t.Errorf("an unknown unit is the number alone, got %q", got)
+	}
+}
+
+// A control plane that predates affectedUnit says what its proto documents.
+func TestObsIssuesCloudDefaultsTheUnitFromThePlatform(t *testing.T) {
+	fc := &fakeCloudCaller{replies: map[string]string{cloudList: `{"issues":[` + cloudIssueJSON + `]}`}}
+	out, _, err := obsRunCloud(t, fc, "issues", "prod", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := decode(t, out)["issues"].([]any)[0].(map[string]any)
+	if first["affected_unit"] != "traces" {
+		t.Errorf("affected_unit = %v, want traces (a server issue from a control plane that names none)", first["affected_unit"])
+	}
+
+	withUnit := strings.Replace(cloudIssueJSON, `"affected":"9"`, `"affected":"9","affectedUnit":"chats"`, 1)
+	fc = &fakeCloudCaller{replies: map[string]string{cloudList: `{"issues":[` + withUnit + `]}`}}
+	out, _, err = obsRunCloud(t, fc, "issues", "prod", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := decode(t, out)["issues"].([]any)[0].(map[string]any)["affected_unit"]; got != "chats" {
+		t.Errorf("affected_unit = %v, want the control plane's chats", got)
 	}
 }

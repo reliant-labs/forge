@@ -69,7 +69,7 @@ func localIssue(row []any) Issue {
 	return Issue{
 		ID: obsquery.LocalIssueID(fp), Platform: PlatformServer, Fingerprint: fp, Status: IssueUnresolved,
 		Service: AsString(row[1]), Title: AsString(row[2]), Culprit: AsString(row[3]), ExceptionType: AsString(row[4]),
-		Events: AsInt(row[5]), Affected: AsInt(row[6]),
+		Events: AsInt(row[5]), Affected: AsInt(row[6]), AffectedUnit: AsString(row[13]),
 		FirstSeen: AsTime(row[7]), LastSeen: AsTime(row[8]),
 		LatestTraceID: AsString(row[9]), LastVersion: AsString(row[10]), FirstVersion: AsString(row[11]),
 		Source: AsString(row[12]),
@@ -146,12 +146,12 @@ func (l Local) GetIssue(ctx context.Context, req GetIssueRequest) (GetIssueResul
 		return res, err
 	}
 	for _, row := range r.Rows {
-		if len(row) < 5 {
+		if len(row) < 6 {
 			continue
 		}
 		res.ByVersion = append(res.ByVersion, IssueVersion{
 			Version: AsString(row[0]), Events: AsInt(row[1]), Affected: AsInt(row[2]),
-			FirstSeen: AsTime(row[3]), LastSeen: AsTime(row[4]),
+			FirstSeen: AsTime(row[3]), LastSeen: AsTime(row[4]), AffectedUnit: AsString(row[5]),
 		})
 	}
 	if r, err = l.run(ctx, co, lim); err != nil {

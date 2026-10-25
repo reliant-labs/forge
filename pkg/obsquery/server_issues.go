@@ -94,10 +94,58 @@ type ServerIssues struct {
 	Sort   string
 }
 
+// Who an issue touched is counted over the first of these that at least half of
+// the issue's events name, widest-first: the people (user.id), else the chats,
+// threads and workflows (a worker or reconciler logs on behalf of a run, not a
+// request), else the traces. A unit most events do not name is not used: "1
+// user" over an issue of hundreds of failures that mostly name nobody would read
+// as a handful of people. The unit that was counted travels with the count, so
+// "3 affected" is never a bare number.
+const (
+	AffectedUsers     = "users"
+	AffectedChats     = "chats"
+	AffectedThreads   = "threads"
+	AffectedWorkflows = "workflows"
+	AffectedTraces    = "traces"
+	AffectedSessions  = "sessions"
+)
+
+// AffectedKeys are the units an event can name, in preference order, and the
+// log attribute each is read from.
+var AffectedKeys = []struct{ Unit, Attribute string }{
+	{AffectedUsers, "user.id"},
+	{AffectedChats, "reliant.chat.id"},
+	{AffectedThreads, "thread.id"},
+	{AffectedWorkflows, "workflow.id"},
+}
+
+// AffectedSQL selects the affected count of a group of error records of
+// otel_logs, and AffectedUnitSQL the unit it counted.
+func AffectedSQL() string {
+	return affectedChain(func(k struct{ Unit, Attribute string }) string {
+		return "uniqIf(LogAttributes['" + k.Attribute + "'], LogAttributes['" + k.Attribute + "'] != '')"
+	}, "uniqIf(TraceId, TraceId != '')")
+}
+
+// AffectedUnitSQL is AffectedSQL's unit column.
+func AffectedUnitSQL() string {
+	return affectedChain(func(k struct{ Unit, Attribute string }) string { return "'" + k.Unit + "'" }, "'"+AffectedTraces+"'")
+}
+
+func affectedChain(pick func(struct{ Unit, Attribute string }) string, fallback string) string {
+	var b strings.Builder
+	b.WriteString("multiIf(")
+	for _, k := range AffectedKeys {
+		b.WriteString("countIf(LogAttributes['" + k.Attribute + "'] != '') * 2 >= count(), " + pick(k) + ", ")
+	}
+	b.WriteString(fallback + ")")
+	return b.String()
+}
+
 // ServerIssuesColumns names the select list, in order, for the code that scans it.
 var ServerIssuesColumns = []string{
 	"fingerprint", "service", "title", "culprit", "exception_type", "events", "affected",
-	"first_seen", "last_seen", "latest_trace_id", "last_version", "first_version", "source",
+	"first_seen", "last_seen", "latest_trace_id", "last_version", "first_version", "source", "affected_unit",
 }
 
 // Compile builds the grouping statement. Columns: ServerIssuesColumns.
@@ -134,12 +182,13 @@ func (q ServerIssues) Compile() (Stmt, error) {
 		"       argMax(" + ServerTitleSQL + ", Timestamp) AS title,\n" +
 		"       argMax(" + ServerCulpritSQL + ", Timestamp) AS culprit,\n" +
 		"       argMax(LogAttributes['exception.type'], Timestamp) AS exception_type,\n" +
-		"       count() AS events, uniqIf(TraceId, TraceId != '') AS affected,\n" +
+		"       count() AS events, " + AffectedSQL() + " AS affected,\n" +
 		"       min(Timestamp) AS first_seen, max(Timestamp) AS last_seen,\n" +
 		"       argMax(TraceId, Timestamp) AS latest_trace_id,\n" +
 		"       argMax(ResourceAttributes['service.version'], Timestamp) AS last_version,\n" +
 		"       argMin(ResourceAttributes['service.version'], Timestamp) AS first_version,\n" +
-		"       argMax(" + IssueSourceSQL + ", Timestamp) AS source\n" +
+		"       argMax(" + IssueSourceSQL + ", Timestamp) AS source,\n" +
+		"       " + AffectedUnitSQL() + " AS affected_unit\n" +
 		"FROM " + b.table(q.Scope, "otel_logs") + "\n" + where(conds) + "\n" +
 		"GROUP BY fingerprint, service\n" +
 		"ORDER BY " + order + ", fingerprint\n" +
@@ -186,7 +235,7 @@ type ServerIssueVersions struct {
 }
 
 // Compile builds the per-version statement, newest version first. Columns:
-// version, events, affected, first_seen, last_seen.
+// version, events, affected, first_seen, last_seen, affected_unit.
 func (q ServerIssueVersions) Compile() (Stmt, error) {
 	if err := q.Scope.validate(MaxRangeLogs); err != nil {
 		return Stmt{}, err
@@ -199,8 +248,8 @@ func (q ServerIssueVersions) Compile() (Stmt, error) {
 	if err != nil {
 		return Stmt{}, err
 	}
-	return b.stmt("SELECT ResourceAttributes['service.version'] AS version, count() AS events, uniqIf(TraceId, TraceId != '') AS affected,\n" +
-		"       min(Timestamp) AS first_seen, max(Timestamp) AS last_seen\n" +
+	return b.stmt("SELECT ResourceAttributes['service.version'] AS version, count() AS events, " + AffectedSQL() + " AS affected,\n" +
+		"       min(Timestamp) AS first_seen, max(Timestamp) AS last_seen, " + AffectedUnitSQL() + " AS affected_unit\n" +
 		"FROM " + b.table(q.Scope, "otel_logs") + "\n" + where(conds) + "\n" +
 		"GROUP BY version\nORDER BY last_seen DESC\nLIMIT " + strconv.Itoa(maxIssueVersions)), nil
 }

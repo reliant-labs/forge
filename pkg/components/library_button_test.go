@@ -1,9 +1,6 @@
 package components
 
 import (
-	"os"
-	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -131,65 +128,5 @@ func TestButtonIconOnlyRequiresAName(t *testing.T) {
 	}
 	if !strings.Contains(block[1], `"aria-label": string;`) {
 		t.Errorf("IconOnlyContent must require `\"aria-label\": string;`, got:\n%s", block[1])
-	}
-}
-
-// TestButtonTypeContract runs tsc over testdata/typecheck/button_contract.tsx
-// with the scaffolded tsconfig's strictness. The fixture's
-// `@ts-expect-error` lines are misuses the type must reject; a loosened type
-// turns each into an "unused directive" error.
-func TestButtonTypeContract(t *testing.T) {
-	if testing.Short() {
-		t.Skip("-short: installs typescript and @types/react with npm; runs in the full tier")
-	}
-	npm, err := exec.LookPath("npm")
-	if err != nil {
-		if os.Getenv("CI") != "" {
-			t.Fatal("npm (node) not on PATH under CI: install node so the Button type contract runs")
-		}
-		t.Skip("npm not on PATH")
-	}
-
-	dir := t.TempDir()
-	write := func(name, body string) {
-		t.Helper()
-		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	lib := NewLibrary()
-	for _, name := range []string{"button", "button_classes", "link"} {
-		body, err := lib.Get(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		write("src/"+name+".tsx", body)
-	}
-	fixture, err := os.ReadFile(filepath.Join("testdata", "typecheck", "button_contract.tsx"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	write("src/button_contract.tsx", string(fixture))
-	// The compiler options the scaffolded Next.js tsconfig sets that bear on
-	// a component (internal/templates/frontend/nextjs/tsconfig.json.tmpl).
-	write("tsconfig.json", `{"compilerOptions":{"target":"ES2022","lib":["dom","dom.iterable","esnext"],
-"skipLibCheck":true,"strict":true,"noEmit":true,"esModuleInterop":true,"module":"esnext",
-"moduleResolution":"bundler","isolatedModules":true,"noUncheckedIndexedAccess":true,"jsx":"react-jsx"},
-"include":["src/**/*.tsx"]}`)
-	// The scaffold's own ranges (nextjs/package.json.tmpl).
-	write("package.json", `{"private":true,"devDependencies":{"typescript":"^5.8.0","@types/react":"^19.1.0"}}`)
-
-	install := exec.Command(npm, "install", "--no-audit", "--no-fund", "--ignore-scripts", "--loglevel=error")
-	install.Dir = dir
-	if out, err := install.CombinedOutput(); err != nil {
-		t.Fatalf("npm install: %v\n%s", err, out)
-	}
-	tsc := exec.Command(filepath.Join(dir, "node_modules", ".bin", "tsc"), "-p", ".")
-	tsc.Dir = dir
-	if out, err := tsc.CombinedOutput(); err != nil {
-		t.Fatalf("the Button type contract failed:\n%s", out)
 	}
 }

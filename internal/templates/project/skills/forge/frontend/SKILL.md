@@ -35,7 +35,7 @@ forge component list             # the whole catalog, grouped by category
 forge component install card_grid
 ```
 
-**What is already in `src/components/ui/` is not the catalog** — it is the 31 the scaffold auto-installs. Reading the directory and concluding the library is exhausted is the failure mode; search instead.
+**What is already in `src/components/ui/` is not the catalog** — it is the 31 the scaffold auto-installs. Search the catalog; never conclude from the directory.
 
 **Every component already uses this project's theme tokens** (`ink`, `surface`, `border`, `accent`, `danger`, `success`, `warning` and their `-surface`/`-border`/`-ink` variants), so installing one never means re-theming it. A raw palette class like `bg-blue-600` in a component is a forge bug to report — not a reason to hand-write your own.
 
@@ -50,7 +50,7 @@ forge component install card_grid
 | A filter/search bar for a list page | ✓ `filter_bar` |
 | A board, timeline, tile grid | `kanban_board`, `timeline`, `card_grid` |
 | A conversion / stage funnel | `funnel_chart` |
-| A dropdown, breadcrumb, toggle, anchored panel | `dropdown_menu`, `breadcrumb`, `toggle_switch`, `popover` |
+| A dropdown, breadcrumb, toggle, anchored panel, tooltip | `dropdown_menu`, `breadcrumb`, `toggle_switch`, `popover`, `tooltip` |
 
 A search that returns nothing is a real answer: there is no drawer/sheet or quantity-stepper, so those you write yourself. (The `component_library` MCP tool is the same catalog.)
 

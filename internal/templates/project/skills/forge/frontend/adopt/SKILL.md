@@ -23,7 +23,9 @@ writes only what generated code needs into it:
 The dependency edits only raise `@reliantlabs/forge-web-runtime` to the floor
 the regenerated code needs (never lower a newer range) and declare what
 generated code imports. `forge project disown <frontend>/package.json` stops
-them; generate then prints each change instead.
+them; generate then prints each change instead. A later generate that finds
+the tree unchanged says `nothing to do` and does not print them again (it
+would write nothing); `forge generate --no-cache` repeats the report.
 
 Rules that hold for every frontend, adopted or not:
 

@@ -123,9 +123,12 @@ func TestE2EGenerateIntoAdoptedFrontend(t *testing.T) {
 	// disown retirement must still see it as a path forge edits).
 	writeFileE2E(t, manifestPath, staleManifest)
 	runCmd(t, projectDir, forgeBin, "project", "disown", "frontends/legacy/package.json", "--reason", "the app pins its own runtime")
-	// The second run is --no-cache: an unchanged tree otherwise short-
-	// circuits before the frontend step, and it is the run after a retire
-	// that would edit the file.
+	// The second run is --no-cache. Without it, the first run having changed
+	// nothing, the identical tree is a verified fixed point and the second
+	// skips before the frontend step — correctly (the disown and the manifest
+	// are both in the cache's fingerprint; generate_cache.go, "WHAT A SKIP DOES
+	// NOT REPEAT"), but without re-printing the pending-bump note this loop
+	// asserts. And it is the run after a retire that would edit the file.
 	for i, args := range [][]string{{"generate"}, {"generate", "--no-cache"}} {
 		out := runCmdOutput(t, projectDir, forgeBin, args...)
 		if got := readFileE2E(t, manifestPath); got != staleManifest {

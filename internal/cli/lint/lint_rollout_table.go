@@ -194,6 +194,8 @@ var newRules = []rolloutGroup{
 	// behind a project build tag, which `forge lint` used to not see at all.
 	// The pass has no rule ID of its own; see lint_rollout.go.
 	{IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48", Rules: []string{rolloutGolangciBuildTags}},
+	// The frontend lockfile lane: package.json ranges the lockfile does not record.
+	{IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48", Rules: []string{"forge-frontend-lock-drift"}},
 }
 
 // lintRollouts is the declaration of every rule, by ID.

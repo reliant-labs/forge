@@ -307,6 +307,24 @@ func lintPipeline() []linterStep {
 			collect: collectFrontendTypecheckJSON,
 		},
 
+		// 5c. Frontend lockfile drift. A package.json whose dependency
+		// ranges the lockfile does not record fails every frozen install
+		// (`npm ci`), and forge's own web-runtime floor bump used to cause
+		// it. Offline and cheap: it reads two files per frontend. See
+		// lint_frontend_lock.go.
+		{
+			name:  "frontend lockfile",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if rc.skipFrontends {
+					return false, "--skip-frontends — skipping frontend lockfile check"
+				}
+				return rc.cwd != "" && len(frontendTypecheckTargets(rc.cfg)) > 0, ""
+			},
+			collect: collectFrontendLockJSON,
+		},
+
 		// 7. SQL migration safety lint.
 		{
 			name:  "migration safety lint",

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -87,7 +88,31 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 	// tracked manifest has been settled at its published range.
 	generator.EnsureDevWebRuntimeLink(projectDir)
 
-	return nil
+	return syncFrontendLocks(cfg, projectDir)
+}
+
+// syncFrontendLocks refreshes the lockfile of every frontend whose package.json
+// forge manages. The reconcile above edits dependency ranges in package.json
+// only, which leaves a lockfile recording the old range and fails `npm ci`;
+// this runs after every frontend is settled so one failure does not skip the
+// rest, and reports every lockfile it could not fix with the command to run.
+// An adopted frontend's manifest is the app's own and is never touched, so its
+// lockfile is not either.
+func syncFrontendLocks(cfg *config.ProjectConfig, projectDir string) error {
+	var errs []error
+	for _, fe := range cfg.Frontends {
+		if fe.Adopted {
+			continue
+		}
+		feDir, ok := fe.Dir(projectDir)
+		if !ok {
+			continue
+		}
+		if err := generator.SyncFrontendLock(projectDir, feDir); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // generateNextjsFrontend emits one Next.js frontend's Tier-1 *_gen.ts files,

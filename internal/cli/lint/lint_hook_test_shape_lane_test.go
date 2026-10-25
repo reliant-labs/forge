@@ -5,7 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
+	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
 // TestHookTestShapeRunsInTheConventionsLane pins WHERE the gating
@@ -36,6 +38,12 @@ func TestHookTestShapeRunsInTheConventionsLane(t *testing.T) {
 });
 `)
 	t.Chdir(root)
+	// No forge.yaml. Installed here, not inherited: run alone (the flake
+	// gate's -run), no other test has registered a loader, and the
+	// conventions lane reads project config through it.
+	factory.SetProjectStoreLoader(func() (*projectstore.Store, error) {
+		return nil, ErrProjectConfigNotFound
+	})
 
 	conv, gated, err := collectConventionsJSON(forgeconv.LintOptions{})
 	if err != nil {

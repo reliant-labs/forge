@@ -283,6 +283,14 @@ mutations invalidate it, and `select` reshapes `{ pages }`:
 `useListTasksInfinite({ pageSize: 50 }, { select: (d) => d.pages.flatMap((p) => p.tasks) })`.
 Never hand-write `useInfiniteQuery` over a generated key.
 
+**Outside React, use `<svc>Queries`.** Each read's TanStack options:
+`<svc>Queries.<rpc>(req, options?)` is `queryOptions`, `.<rpc>Infinite(req)`
+`infiniteQueryOptions`; the hooks are built over them, so they share one cache
+entry and fetch. `await queryClient.fetchQuery(taskServiceQueries.getTask({ id }))`
+(also `ensureQueryData`, `prefetchQuery`, `fetchInfiniteQuery`,
+`useQueries({ queries })`), typed with no annotation. Never hand-write
+`{ queryKey, queryFn }` for a generated rpc.
+
 The generated conversions map the **intersection** of wire fields and
 columns by name: a wire-only field never reaches the DB, a column-only
 field never leaks onto the wire. Add wire-only fields freely.

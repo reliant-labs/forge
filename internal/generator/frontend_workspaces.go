@@ -328,7 +328,7 @@ func writeHooksPackage(projectDir string, layout FrontendWorkspaceLayout) error 
     "@bufbuild/protobuf": "^2.5.0",
     "@connectrpc/connect": "^2.0.0",
     "%s": "%s",
-    "@tanstack/react-query": "^5.59.0"
+    "@tanstack/react-query": "^5.62.0"
   },
   "peerDependencies": {
     "react": "*"

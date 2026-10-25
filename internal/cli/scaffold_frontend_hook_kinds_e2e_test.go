@@ -41,6 +41,12 @@ import (
 // A DECLARED ENTITY SCOPE: ItemStats carries `// forge:query-scope Item`, so
 // its key sits under item and a CreateItem refetches it (vitest, below).
 //
+// QUERY OPTIONS OUTSIDE REACT: every read's `itemServiceQueries.<rpc>(req)`
+// (and `.listItemsInfinite(req)`) typechecks in fetchQuery, ensureQueryData,
+// prefetchQuery, fetchInfiniteQuery and useQueries with the response type
+// inferred, and — under vitest — a fetchQuery fills the very cache entry the
+// generated hook then reads, with one transport call.
+//
 // And one RUNTIME property, under the project's own vitest: the scaffolded
 // mockTransport create()s both directions, like a real transport — a
 // handler sees the full request and a partial fixture comes back as the full
@@ -168,6 +174,10 @@ message Item {
 		`listItemsInfinite: keys.infinite("listItems", ListItemsRequestSchema, "item")`,
 		// forge:query-scope Item: the custom read is keyed under item.
 		`itemStats: keys.query("itemStats", ItemStatsRequestSchema, "item")`,
+		// The hooks are built over the query options, never beside them.
+		"export const itemServiceQueries = {",
+		"  itemServiceQueries.version,\n",
+		"  itemServiceQueries.listItemsInfinite,\n",
 	} {
 		if !strings.Contains(hooks, want) {
 			t.Errorf("generated hooks are missing %q:\n%s", want, hooks)
@@ -183,6 +193,8 @@ message Item {
 	writeFileE2E(t, filepath.Join(webDir, "src", "app", "hookkinds", "transport.test.tsx"), hookKindsTransportFixture)
 	writeFileE2E(t, filepath.Join(webDir, "src", "app", "hookkinds", "scope.test.tsx"),
 		fmt.Sprintf(hookKindsScopeFixture, hooksModule))
+	writeFileE2E(t, filepath.Join(webDir, "src", "app", "hookkinds", "options.test.tsx"),
+		fmt.Sprintf(hookKindsOptionsFixture, hooksModule))
 	runCmdTimeout(t, webDir, 5*time.Minute, "npx", "--no-install", "vitest", "run",
 		"src/app/hookkinds", "src/hooks/"+strings.TrimSuffix(strings.TrimSuffix(hooksFile, ".ts"), "_gen")+".test.tsx")
 
@@ -206,6 +218,9 @@ message Item {
 	if !strings.Contains(out, "pageToken") {
 		t.Errorf("tsc accepted a pageToken on the infinite hook's request — the hook does not own the token:\n%s", out)
 	}
+	if !strings.Contains(out, "Type 'number' is not assignable to type 'string'") {
+		t.Errorf("tsc accepted fetchQuery's number read as a string — the query options do not type the response:\n%s", out)
+	}
 }
 
 // hookKindsPositiveFixture uses useVersion as a read (request in, data out)
@@ -213,9 +228,32 @@ message Item {
 // %s is the generated hooks module specifier.
 const hookKindsPositiveFixture = `"use client";
 
-import { useCreateItem, useListItems, useListItemsInfinite, useVersion } from "%[1]s";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
+
+import { itemServiceQueries, useCreateItem, useListItems, useListItemsInfinite, useVersion } from "%[1]s";
+
+// Outside React: the query options go straight into the QueryClient.
+async function warm(qc: ReturnType<typeof useQueryClient>): Promise<number> {
+  const v = await qc.fetchQuery(itemServiceQueries.version({}));
+  const label: string = v.version;
+  const stats = await qc.ensureQueryData(itemServiceQueries.itemStats({}));
+  await qc.prefetchQuery(itemServiceQueries.listItems({}));
+  const pages = await qc.fetchInfiniteQuery(itemServiceQueries.listItemsInfinite({ pageSize: 20 }));
+  await qc.prefetchInfiniteQuery(itemServiceQueries.listItemsInfinite({}));
+  const cached = qc.getQueryData(itemServiceQueries.itemStats({}).queryKey);
+  return stats.count + pages.pages.flatMap((p) => p.items).length + label.length + (cached?.count ?? 0);
+}
 
 export default function HookKindsPage() {
+  const both = useQueries({
+    queries: [itemServiceQueries.itemStats({}), itemServiceQueries.version({}, { select: (r) => r.version })],
+  });
+  const statCount: number = both[0].data?.count ?? 0;
+  const versionLabel: string = both[1].data ?? "";
+  void statCount;
+  void versionLabel;
+  const qc = useQueryClient();
+  void (() => warm(qc));
   const version = useVersion({});
   const label: string = version.data?.version ?? "";
   const names = useListItems({}, { select: (r) => r.items.map((i) => i.name) });
@@ -238,7 +276,14 @@ export default function HookKindsPage() {
 
 // hookKindsNegativeFixture MUST NOT compile, once per property. %s is the
 // generated hooks module specifier.
-const hookKindsNegativeFixture = `import { useCreateItem, useListItems, useListItemsInfinite, useVersion } from "%[1]s";
+const hookKindsNegativeFixture = `import { QueryClient } from "@tanstack/react-query";
+
+import { itemServiceQueries, useCreateItem, useListItems, useListItemsInfinite, useVersion } from "%[1]s";
+
+export async function bogusFetch(qc: QueryClient) {
+  const notAString: string = (await qc.fetchQuery(itemServiceQueries.itemStats({}))).count;
+  return notAString;
+}
 
 export function bogus() {
   const version = useVersion({});
@@ -293,6 +338,63 @@ describe("forge:query-scope", () => {
     const create = renderHook(() => useCreateItem(), { wrapper });
     await create.result.current.mutateAsync({ name: "x" } as never);
     await waitFor(() => expect(stats.result.current.data?.count).toBe(2));
+    client.clear();
+  });
+});
+`
+
+// hookKindsOptionsFixture runs under the project's vitest: a fetchQuery /
+// fetchInfiniteQuery of the generated query options OUTSIDE React fills the
+// exact cache entry the generated hook reads — the hook renders the fetched
+// data at once and the transport is called once. That is the property a
+// hand-copied `{ queryKey, queryFn }` loses when it drifts. %s is the
+// generated hooks module specifier.
+const hookKindsOptionsFixture = `import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { cleanup, renderHook } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { setTransport } from "@/lib/connect";
+import { mockTransport } from "@/lib/test-utils";
+
+import { itemServiceQueries, useItemStats, useListItemsInfinite } from "%[1]s";
+
+import type { ReactNode } from "react";
+
+afterEach(() => cleanup());
+
+describe("generated query options", () => {
+  it("a fetchQuery outside React fills the entry the hook reads", async () => {
+    let reads = 0;
+    let lists = 0;
+    setTransport(
+      mockTransport({
+        "ItemService.ItemStats": () => {
+          reads += 1;
+          return { count: 7 };
+        },
+        "ItemService.ListItems": () => {
+          lists += 1;
+          return { items: [{ id: "i1", name: "one" }] };
+        },
+      }),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 60_000 } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+
+    const fetched = await client.fetchQuery(itemServiceQueries.itemStats({}));
+    expect(fetched.count).toBe(7);
+    const stats = renderHook(() => useItemStats({}), { wrapper });
+    expect(stats.result.current.data?.count).toBe(7);
+
+    const paged = await client.fetchInfiniteQuery(itemServiceQueries.listItemsInfinite({ pageSize: 5 }));
+    expect(paged.pages[0]?.items[0]?.name).toBe("one");
+    const list = renderHook(() => useListItemsInfinite({ pageSize: 5 }), { wrapper });
+    expect(list.result.current.data?.pages[0]?.items[0]?.name).toBe("one");
+
+    expect(reads).toBe(1);
+    expect(lists).toBe(1);
     client.clear();
   });
 });

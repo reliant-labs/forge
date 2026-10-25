@@ -27,12 +27,15 @@ import {
   FileDescriptorProtoSchema,
   type DescriptorProto,
 } from "@bufbuild/protobuf/wkt";
+import { QueryClient, useQueries } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 
 import {
   createInfiniteQueryHook,
+  createInfiniteQueryOptions,
   createMutationHook,
   createQueryHook,
+  createQueryOptions,
   requestKey,
   serviceKeys,
 } from "./service-hooks.js";
@@ -54,7 +57,15 @@ const captured: {
   invalidated: unknown[];
 } = { invalidated: [] };
 
-vi.mock("@tanstack/react-query", () => ({
+//
+// Only the React HOOKS are stubbed. The rest of React Query is real —
+// queryOptions / infiniteQueryOptions, and the QueryClient the query-options
+// builders are exercised against — so "a fetchQuery outside React lands on
+// the entry the hook reads" is asserted on a real cache, not a stub.
+vi.mock("@tanstack/react-query", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-query")>()),
+  useQueries: (options: { queries: unknown[] }) =>
+    options.queries.map(() => ({ __kind: "query" })),
   useQuery: (options: Record<string, unknown>) => {
     captured.query = options;
     return { __kind: "query" };
@@ -258,32 +269,138 @@ describe("serviceKeys", () => {
   });
 });
 
-describe("createQueryHook", () => {
+describe("createQueryOptions", () => {
   const keys = serviceKeys("orderService");
+  type Order = { id: string; total: number };
 
-  it("registers the query under the factory's key and calls the RPC", async () => {
+  it("keys the read with the factory's key and fetches through the RPC", async () => {
     const call = vi.fn(async () => ({ id: "abc" }));
-    const useGetOrder = createQueryHook(
+    const getOrder = createQueryOptions(
       keys.query("getOrder", GetOrderRequestSchema, "order"),
       call,
     );
 
-    useGetOrder({ id: "abc" });
+    const opts = getOrder({ id: "abc" });
 
-    expect(captured.query?.queryKey).toEqual([
+    expect(opts.queryKey).toEqual([
       "orderService",
       "order",
       "getOrder",
       { id: "abc" },
     ]);
     const signal = new AbortController().signal;
-    await (
-      captured.query?.queryFn as (ctx: {
-        signal: AbortSignal;
-      }) => Promise<unknown>
-    )({ signal });
+    await (opts.queryFn as (ctx: { signal: AbortSignal }) => Promise<unknown>)({
+      signal,
+    });
     // The signal is React Query's: an unmounted or superseded query aborts
     // its request rather than landing it on an entry nobody reads.
+    expect(call).toHaveBeenCalledWith({ id: "abc" }, signal);
+  });
+
+  it("passes caller options through but never lets them replace the key or the fetch", async () => {
+    const call = vi.fn(async () => ({ id: "abc" }));
+    const getOrder = createQueryOptions(
+      keys.query("getOrder", GetOrderRequestSchema, "order"),
+      call,
+    );
+    const opts = getOrder(
+      { id: "abc" },
+      { enabled: false, staleTime: 5_000, meta: { silenceErrorToast: true } },
+    );
+    expect(opts.enabled).toBe(false);
+    expect(opts.staleTime).toBe(5_000);
+    expect(opts.meta).toEqual({ silenceErrorToast: true });
+
+    const hijacked = getOrder({ id: "abc" }, {
+      queryKey: ["hijacked"],
+      queryFn: async () => ({}),
+    } as never);
+    expect(hijacked.queryKey).toEqual(getOrder({ id: "abc" }).queryKey);
+    await (hijacked.queryFn as (ctx: object) => Promise<unknown>)({});
+    expect(call).toHaveBeenCalledTimes(1);
+    // @ts-expect-error — the key is the read's own, not an option.
+    void (() => getOrder({ id: "abc" }, { queryKey: ["x"] }));
+  });
+
+  it("fetchQuery, ensureQueryData and prefetchQuery outside React share the hook's cache entry", async () => {
+    // The defect this replaces: code outside React (an imperative action, a
+    // stream handler) hand-wrote queryClient.fetchQuery({ queryKey, queryFn })
+    // by copying the generated hook's key and client call, and the copies
+    // drifted. Now there is one definition, and the hook is useQuery over it.
+    const call = vi.fn(async (): Promise<Order> => ({ id: "abc", total: 3 }));
+    const getOrder = createQueryOptions(
+      keys.query("getOrder", GetOrderRequestSchema, "order"),
+      call,
+    );
+    const useGetOrder = createQueryHook(getOrder);
+    const client = new QueryClient();
+
+    const fetched = await client.fetchQuery(getOrder({ id: "abc" }));
+    // Typed as the response, with no annotation at the call site.
+    const total: number = fetched.total;
+    expect(total).toBe(3);
+
+    useGetOrder({ id: "abc" });
+    const hookKey = captured.query?.queryKey as readonly unknown[];
+    expect(hookKey).toEqual(getOrder({ id: "abc" }).queryKey);
+    expect(client.getQueryData(hookKey)).toEqual({ id: "abc", total: 3 });
+
+    // A fresh entry is reused: neither refetches.
+    await client.ensureQueryData(getOrder({ id: "abc" }));
+    await client.prefetchQuery({
+      ...getOrder({ id: "abc" }),
+      staleTime: 60_000,
+    });
+    expect(call).toHaveBeenCalledTimes(1);
+
+    // The key is data-tagged: getQueryData / setQueryData are typed.
+    const cached = client.getQueryData(getOrder({ id: "abc" }).queryKey);
+    const cachedId: string | undefined = cached?.id;
+    expect(cachedId).toBe("abc");
+    // @ts-expect-error — the tag is the response, so a wrong field is rejected.
+    void (() => cached?.nonexistent);
+    client.clear();
+  });
+
+  it("feeds useQueries, typed per entry by its select", () => {
+    const getOrder = createQueryOptions(
+      keys.query("getOrder", GetOrderRequestSchema, "order"),
+      async (): Promise<Order> => ({ id: "abc", total: 3 }),
+    );
+    const results = useQueries({
+      queries: ["a", "b"].map((id) =>
+        getOrder({ id }, { select: (r) => r.total }),
+      ),
+    });
+    const first: number | undefined = results[0]?.data;
+    void first;
+    expect(results).toHaveLength(2);
+  });
+});
+
+describe("createQueryHook", () => {
+  const keys = serviceKeys("orderService");
+
+  it("is useQuery over the read's query options, adding nothing", async () => {
+    const call = vi.fn(async () => ({ id: "abc" }));
+    const getOrder = createQueryOptions(
+      keys.query("getOrder", GetOrderRequestSchema, "order"),
+      call,
+    );
+    const useGetOrder = createQueryHook(getOrder);
+
+    useGetOrder({ id: "abc" }, { staleTime: 1_000 });
+
+    const { queryFn, ...hookRest } = captured.query ?? {};
+    const { queryFn: _fn, ...optsRest } = getOrder(
+      { id: "abc" },
+      { staleTime: 1_000 },
+    );
+    expect(hookRest).toEqual(optsRest);
+    const signal = new AbortController().signal;
+    await (queryFn as (ctx: { signal: AbortSignal }) => Promise<unknown>)({
+      signal,
+    });
     expect(call).toHaveBeenCalledWith({ id: "abc" }, signal);
   });
 
@@ -295,8 +412,10 @@ describe("createQueryHook", () => {
     // `npm run typecheck` compiles this file, so the assignments below are
     // the type-level half; the captured select is the runtime half.
     const useGetOrder = createQueryHook(
-      keys.query("getOrder", GetOrderRequestSchema, "order"),
-      async () => ({ id: "abc", total: 3 }),
+      createQueryOptions(
+        keys.query("getOrder", GetOrderRequestSchema, "order"),
+        async () => ({ id: "abc", total: 3 }),
+      ),
     );
 
     const mapped = useGetOrder({ id: "abc" }, { select: (r) => r.total * 2 });
@@ -317,8 +436,10 @@ describe("createQueryHook", () => {
 
   it("lets caller options through — nothing is composed on a read", () => {
     const useGetOrder = createQueryHook(
-      keys.query("getOrder", GetOrderRequestSchema, "order"),
-      async () => ({}),
+      createQueryOptions(
+        keys.query("getOrder", GetOrderRequestSchema, "order"),
+        async () => ({}),
+      ),
     );
     useGetOrder({ id: "abc" }, { enabled: false, staleTime: 5_000 });
     expect(captured.query?.enabled).toBe(false);
@@ -376,9 +497,64 @@ describe("serviceKeys.infinite", () => {
   });
 });
 
-describe("createInfiniteQueryHook", () => {
+describe("createInfiniteQueryOptions + createInfiniteQueryHook", () => {
   const keys = serviceKeys("orderService");
   type Page = { orders: string[]; nextPageToken: string };
+  // The generated file's shape: the hook is useInfiniteQuery over the read's
+  // infinite query options, so what the hook hands useInfiniteQuery
+  // (captured.infinite) IS the options object.
+  const pagedHook = (
+    keyFor: Parameters<
+      typeof createInfiniteQueryOptions<
+        typeof TypedListOrdersRequestSchema,
+        Page
+      >
+    >[0],
+    call: () => Promise<Page>,
+  ) =>
+    createInfiniteQueryHook(
+      createInfiniteQueryOptions<typeof TypedListOrdersRequestSchema, Page>(
+        keyFor,
+        call,
+      ),
+    );
+
+  it("fetchInfiniteQuery outside React shares the hook's cache entry, typed as InfiniteData", async () => {
+    const call = vi.fn(
+      async (): Promise<Page> => ({ orders: ["o1"], nextPageToken: "" }),
+    );
+    const listOrdersInfinite = createInfiniteQueryOptions<
+      typeof TypedListOrdersRequestSchema,
+      Page
+    >(keys.infinite("listOrders", TypedListOrdersRequestSchema, "order"), call);
+    const useListOrdersInfinite = createInfiniteQueryHook(listOrdersInfinite);
+    const client = new QueryClient();
+
+    const data = await client.fetchInfiniteQuery(
+      listOrdersInfinite({ pageSize: 20n }),
+    );
+    const firstOrders: string[] | undefined = data.pages[0]?.orders;
+    expect(firstOrders).toEqual(["o1"]);
+
+    useListOrdersInfinite({ pageSize: 20n });
+    const hookKey = captured.infinite?.queryKey as readonly unknown[];
+    expect(hookKey).toEqual(listOrdersInfinite({ pageSize: 20n }).queryKey);
+    expect(client.getQueryData(hookKey)).toEqual(data);
+
+    await client.ensureInfiniteQueryData(listOrdersInfinite({ pageSize: 20n }));
+    await client.prefetchInfiniteQuery({
+      ...listOrdersInfinite({ pageSize: 20n }),
+      staleTime: 60_000,
+    });
+    expect(call).toHaveBeenCalledTimes(1);
+
+    const cached = client.getQueryData(
+      listOrdersInfinite({ pageSize: 20n }).queryKey,
+    );
+    const pages: Page[] | undefined = cached?.pages;
+    expect(pages).toHaveLength(1);
+    client.clear();
+  });
 
   it("fetches the first page without a token and each next one with the last token", async () => {
     const call = vi.fn(
@@ -387,10 +563,10 @@ describe("createInfiniteQueryHook", () => {
         nextPageToken: "",
       }),
     );
-    const useListOrdersInfinite = createInfiniteQueryHook<
-      typeof TypedListOrdersRequestSchema,
-      Page
-    >(keys.infinite("listOrders", TypedListOrdersRequestSchema, "order"), call);
+    const useListOrdersInfinite = pagedHook(
+      keys.infinite("listOrders", TypedListOrdersRequestSchema, "order"),
+      call,
+    );
 
     useListOrdersInfinite({ pageSize: 20n });
 
@@ -418,10 +594,7 @@ describe("createInfiniteQueryHook", () => {
   });
 
   it("ends the listing on an empty next_page_token", () => {
-    const useListOrdersInfinite = createInfiniteQueryHook<
-      typeof TypedListOrdersRequestSchema,
-      Page
-    >(
+    const useListOrdersInfinite = pagedHook(
       keys.infinite("listOrders", TypedListOrdersRequestSchema, "order"),
       async (): Promise<Page> => ({ orders: [], nextPageToken: "" }),
     );
@@ -432,10 +605,7 @@ describe("createInfiniteQueryHook", () => {
   });
 
   it("passes caller options through but never lets them replace the key or the fetch", () => {
-    const useListOrdersInfinite = createInfiniteQueryHook<
-      typeof TypedListOrdersRequestSchema,
-      Page
-    >(
+    const useListOrdersInfinite = pagedHook(
       keys.infinite("listOrders", TypedListOrdersRequestSchema, "order"),
       async (): Promise<Page> => ({ orders: [], nextPageToken: "" }),
     );
@@ -461,10 +631,7 @@ describe("createInfiniteQueryHook", () => {
   it("types data as what select returns, defaulting to InfiniteData", () => {
     // Type-level half under `npm run typecheck`; flattening the pages is the
     // select every paged list writes.
-    const useListOrdersInfinite = createInfiniteQueryHook<
-      typeof TypedListOrdersRequestSchema,
-      Page
-    >(
+    const useListOrdersInfinite = pagedHook(
       keys.infinite("listOrders", TypedListOrdersRequestSchema, "order"),
       async (): Promise<Page> => ({ orders: [], nextPageToken: "" }),
     );

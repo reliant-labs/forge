@@ -75,9 +75,10 @@ func newObsSessionsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sessions [env]",
 		Short: "Real-user browser sessions: who hit errors, and which have a replay",
-		Long: `List the env's browser sessions that started in the range, newest first: user,
-entry path, length, page views, interactions, browser errors and whether a
-replay was recorded. [env] defaults to dev; --since defaults to 24h (at most 30d).
+		Long: `List the env's browser sessions that started in the range, newest first: the
+frontend (APP) and start time, user, entry path, length, page views,
+interactions, browser errors, whether a replay was recorded, and the session id
+(last column). [env] defaults to dev; --since defaults to 24h (at most 30d).
 
 Read one with ` + "`" + Name() + ` obs session <id>` + "`" + `: a text timeline of what the user did.
 
@@ -186,16 +187,18 @@ func renderSessions(w io.Writer, doc obsSessionsDoc) {
 		fmt.Fprintln(w, "no sessions in the range")
 		return
 	}
+	// A row reads the way a person names a session — which app, when — so the
+	// opaque id trails as the last column, still whole for `obs session <id>`.
 	rows := make([][]string, len(doc.Sessions))
 	for i, s := range doc.Sessions {
 		replay := "-"
 		if s.HasReplay {
 			replay = "replay"
 		}
-		rows[i] = []string{s.ID, s.Started.UTC().Format("01-02 15:04:05"), sessionLength(s.DurationMs), orDash(s.UserID), orDash(s.EntryPath),
-			strconv.FormatInt(s.PageViews, 10), strconv.FormatInt(s.Interactions, 10), strconv.FormatInt(s.Errors, 10), replay}
+		rows[i] = []string{orDash(s.Service), s.Started.UTC().Format("01-02 15:04:05"), sessionLength(s.DurationMs), orDash(s.UserID), orDash(s.EntryPath),
+			strconv.FormatInt(s.PageViews, 10), strconv.FormatInt(s.Interactions, 10), strconv.FormatInt(s.Errors, 10), replay, s.ID}
 	}
-	obsout.Table(w, []string{"SESSION", "STARTED", "LENGTH", "USER", "ENTRY", "PAGES", "CLICKS", "ERRORS", "REPLAY"}, rows, 40)
+	obsout.Table(w, []string{"APP", "STARTED (UTC)", "LENGTH", "USER", "ENTRY", "PAGES", "CLICKS", "ERRORS", "REPLAY", "SESSION"}, rows, 40)
 	if doc.NextPageToken != "" {
 		fmt.Fprintf(w, "\n(more: --page-token %s)\n", doc.NextPageToken)
 	}

@@ -128,14 +128,10 @@ message Ping%[2]sResponse {
 	// Adding an RPC changes the process that mounts it. Its part is rebuilt
 	// from both branches, while independent alert inputs merge unchanged.
 	runCmd(t, projectDir, forgeBin, "generate")
-	if st := strings.TrimSpace(mustGit("status", "--porcelain", "--", "deploy/observability")); st != "M deploy/observability/spec/process-mergeapp-server_gen.json" {
-		t.Errorf("generate must reconcile exactly the shared process inventory, got:\n%s", st)
-	}
-	process := readFileE2E(t, filepath.Join(projectDir, "deploy/observability/spec/process-mergeapp-server_gen.json"))
-	for _, service := range []string{"AlphaService", "BetaService"} {
-		if !strings.Contains(process, service) {
-			t.Errorf("process inventory missing %s", service)
-		}
+	// Reusable fragments merge/reconcile without claiming process ownership.
+	// The selected environment's rendered workload supplies that at bundle time.
+	if matches, _ := filepath.Glob(filepath.Join(projectDir, "deploy/observability/spec/process-*_gen.json")); len(matches) != 0 {
+		t.Fatalf("ordinary generate emitted environment process parts: %v", matches)
 	}
 	compose := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "compose.go"))
 	for _, want := range []string{"alpha.New(", "beta.New("} {

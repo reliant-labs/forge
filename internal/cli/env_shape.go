@@ -94,6 +94,9 @@ type envShapeDoc struct {
 	// precisely the "what was applied is not what was recorded" failure
 	// the bundle exists to close. One render, both halves.
 	manifests string
+	// entities is the same selected-env declaration used for this shape.
+	// Dashboard assembly consumes it without a second render or disk writes.
+	entities *KCLEntities
 	// syncedSecrets names the Secrets forge supplies from the env's secret
 	// store rather than the render; names only, and they ride the bundle
 	// document so a deploy knows what to sync.
@@ -406,6 +409,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		Shape:             shape,
 		Provenance:        captureBuildProvenance(ctx, projectDir).ForHosted(),
 		manifests:         stream,
+		entities:          entities,
 		syncedSecrets:     syncedSecrets,
 		units:             entities.DeliveryUnits,
 		images:            digests,

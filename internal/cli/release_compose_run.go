@@ -274,7 +274,7 @@ func sealComposition(ctx context.Context, cfg *config.ProjectConfig, entities *K
 	} else if prior != nil {
 		now = prior.CreatedAt
 	}
-	assets, err := bundleObservabilityFiles(projectDirForKCL(), bundleBuildInputs{Release: opts.release, OutputDir: opts.outputDir, StrictObservability: true})
+	assets, err := bundleObservabilityFiles(projectDirForKCL(), bundleBuildInputs{Release: opts.release, OutputDir: opts.outputDir, StrictObservability: true}, doc.entities)
 	if err != nil {
 		return err
 	}

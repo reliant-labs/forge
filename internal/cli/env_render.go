@@ -337,7 +337,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		reportDeclinedWrites(errOut, kclplugin.SuppressedWrites())
 	}()
 
-	entities, kerr := declarationFor(ctx, projectDir, envName, probed)
+	entities, kerr := dashboardDeclarationFor(ctx, projectDir, envName, probed)
 	if kerr != nil {
 		return kerr
 	}

@@ -128,6 +128,9 @@ func Build(in Input) Spec {
 // whole: the overview, which leads, and the dashboards that follow the
 // services' (Workloads, Releases, the frontend's). See ProcessPart.
 type ProjectPart struct {
+	// Input retains reusable generation fragments; selected-env assembly fills
+	// Processes from rendered KCL, never from stale disk process parts.
+	Input      *Input      `json:"input,omitempty"`
 	Version    string      `json:"version"`
 	Project    string      `json:"project"`
 	Overview   Dashboard   `json:"overview"`
@@ -161,7 +164,10 @@ type Process struct {
 // BuildParts derives the project's Spec as process parts, sorted by process
 // identity. RPC-free workers and gateways retain their runtime/workload panels.
 func BuildParts(in Input) (ProjectPart, []ProcessPart) {
+	fragments := in
+	fragments.Processes = nil
 	project := ProjectPart{
+		Input:    &fragments,
 		Version:  PartsVersion,
 		Project:  in.Project,
 		Overview: withReleaseMarkers(buildOverview(in)),

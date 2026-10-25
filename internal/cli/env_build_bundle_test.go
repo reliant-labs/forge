@@ -26,6 +26,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/internal/cloud"
+	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -59,6 +60,7 @@ func stubEnvShape(t *testing.T, project string) {
 			Project: project, Env: env, Kind: string(shape.Kind), Shape: shape,
 			Provenance: release.Provenance{Commit: rep40('c'), Tree: rep40('a')},
 			manifests:  bundleTestStream,
+			entities:   &KCLEntities{Workloads: []WorkloadEntity{{Name: "api", Build: BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/app"}}, Spec: deployv1alpha1.WorkloadSpec{Args: []string{"api"}}}}},
 		}, nil
 	}
 	t.Cleanup(func() { projectEnvShapeFn = prev })

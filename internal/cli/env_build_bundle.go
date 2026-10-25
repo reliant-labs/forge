@@ -211,7 +211,7 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		return bundleWriteOutcome{Env: env, Skipped: true}, nil
 	}
 
-	observability, err := bundleObservabilityFiles(projectDir, in)
+	observability, err := bundleObservabilityFiles(projectDir, in, doc.entities)
 	if err != nil {
 		return bundleWriteOutcome{}, err
 	}

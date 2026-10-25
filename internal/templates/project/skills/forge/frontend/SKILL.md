@@ -50,7 +50,7 @@ forge component install card_grid
 | A filter/search bar for a list page | ✓ `filter_bar` |
 | A board, timeline, tile grid | `kanban_board`, `timeline`, `card_grid` |
 | A conversion / stage funnel | `funnel_chart` |
-| A dropdown, breadcrumb, toggle, anchored panel | `dropdown_menu`, `breadcrumb`, `toggle_switch`, `popover` |
+| A dropdown, right-click menu, breadcrumb, toggle, anchored panel | `dropdown_menu`, `context_menu`, `breadcrumb`, `toggle_switch`, `popover` |
 
 A search that returns nothing is a real answer: there is no drawer/sheet or quantity-stepper, so those you write yourself. (The `component_library` MCP tool is the same catalog.)
 

@@ -54,7 +54,7 @@ var surfaceShadow = regexp.MustCompile(`(^|[\s"` + "`" + `:])shadow-(sm|md|lg|xl
 // shadow. Everything else is a surface, told apart by border and fill.
 var overlays = map[string]bool{
 	"modal": true, "confirmation_dialog": true, "dropdown_menu": true, "command_bar": true,
-	"toast_notification": true, "row_actions_menu": true, "popover": true,
+	"toast_notification": true, "row_actions_menu": true, "popover": true, "context_menu": true,
 	// The knob of a switch is a physical affordance, not a panel.
 	"toggle_switch": true,
 	// Marketing pages, not app chrome.

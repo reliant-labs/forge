@@ -168,7 +168,17 @@ func Render(s Spec) ([]*unstructured.Unstructured, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, &unstructured.Unstructured{Object: m})
+		u := &unstructured.Unstructured{Object: m}
+		if s.ReleaseOwner != "" {
+			owners, _ := json.Marshal([]string{s.ReleaseOwner})
+			annotations := u.GetAnnotations()
+			if annotations == nil {
+				annotations = map[string]string{}
+			}
+			annotations["forge.dev/release-owners"] = string(owners)
+			u.SetAnnotations(annotations)
+		}
+		out = append(out, u)
 	}
 	return out, nil
 }

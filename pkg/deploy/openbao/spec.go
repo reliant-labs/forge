@@ -85,6 +85,8 @@ type Spec struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
 	Image     string `json:"image"`
+	// ReleaseOwner is the native provider's explicit compiled snapshot consumer.
+	ReleaseOwner string `json:"releaseOwner,omitempty"`
 	// KubectlImage runs the converge Jobs: kubectl, curl and jq. Empty =
 	// [DefaultKubectlImage].
 	KubectlImage string `json:"kubectlImage,omitempty"`

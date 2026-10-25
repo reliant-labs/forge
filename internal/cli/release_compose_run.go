@@ -223,6 +223,9 @@ func addSelectedCompositionBinding(ctx context.Context, candidate *release.Snaps
 			ref = m.ReleaseInputs[slot]
 		}
 	}
+	if provider := run.Entities.OpenBao; provider != nil && provider.ReleaseOwner == c.Key.Workload && provider.Cluster == c.Key.Cluster {
+		ref = provider.ReleaseInputs[slot]
+	}
 	if ref == "" {
 		return fmt.Errorf("selected slot %v/%s has no build output", c.Key, slot)
 	}

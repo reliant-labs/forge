@@ -61,6 +61,29 @@ func compositionConsumers(e *KCLEntities) ([]release.Consumer, error) {
 		}
 		out = append(out, c)
 	}
+	if e.OpenBao != nil {
+		provider := e.OpenBao
+		if provider.ReleaseOwner == "" || provider.Cluster == "" || len(provider.ReleaseInputs) == 0 {
+			return nil, fmt.Errorf("native OpenBao provider lacks compiled snapshot image contract")
+		}
+		key := release.ConsumerKey{Cluster: provider.Cluster, Workload: provider.ReleaseOwner}
+		for _, consumer := range out {
+			if consumer.Key == key {
+				return nil, fmt.Errorf("native OpenBao consumer %q collides with an authored consumer", key.Workload)
+			}
+		}
+		if provider.ReleaseInputs["container:openbao"] == "" || provider.ReleaseInputs["container:converge"] == "" {
+			return nil, fmt.Errorf("native OpenBao provider lacks required server or convergence image input")
+		}
+		consumer := release.Consumer{Key: key, DependenciesDeclared: true}
+		for slot := range provider.ReleaseInputs {
+			if slot != "container:openbao" && slot != "container:converge" && slot != "init:cloud-sql-proxy" {
+				return nil, fmt.Errorf("native OpenBao provider declares unknown runtime slot %q", slot)
+			}
+			consumer.Slots = append(consumer.Slots, slot)
+		}
+		out = append(out, consumer)
+	}
 	for i := range out {
 		for _, fe := range e.Frontends {
 			if fe.Name != out[i].Key.Workload {

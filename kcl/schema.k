@@ -4587,6 +4587,10 @@ schema OpenBao:
     # Where it runs. Unset = the env's primary cluster target.
     runtime?: OnCluster
     image: str = OPENBAO_IMAGE
+    # Native provider helper images are explicit snapshot inputs, not discovered
+    # from generated resources. They are resolved and frozen at release cut.
+    kubectl_image: str = "docker.io/alpine/k8s:1.34.12@sha256:d50424976a0a888d2531f13035dce45c004ec2b6f877f233005ba35c0d61be5d"
+    cloud_sql_proxy_image: str = "gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1"
     storage: OpenBaoRaft | OpenBaoPostgres = OpenBaoRaft {}
     replicas: int = 3 if storage.type == "raft" else 2
     listeners: [OpenBaoListener] = [OpenBaoListener {}]
@@ -4604,6 +4608,8 @@ schema OpenBao:
         regex.match(name, _DNS_LABEL_RE) and len(name) <= 40, \
             "OpenBao.name '${name}' must be an RFC-1123 label of at most 40 characters: it names the Deployment, Services and the CA ConfigMap"
         regex.match(namespace, _DNS_LABEL_RE), "OpenBao.namespace '${namespace}' must be an RFC-1123 label"
+        regex.match(kubectl_image, r"^[^\s]+$"), "OpenBao.kubectl_image must be an image reference with no whitespace"
+        regex.match(cloud_sql_proxy_image, r"^[^\s]+$"), "OpenBao.cloud_sql_proxy_image must be an image reference with no whitespace"
         image, "OpenBao.image is required"
         replicas >= 1 and replicas <= 9, "OpenBao.replicas must be 1..9"
         storage.type != "raft" or replicas % 2 == 1, \

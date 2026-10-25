@@ -17,6 +17,18 @@ Bootstrap values (seal key, database password, `operator init` output) are
 `deploy/openbao-public`. This skill is the part that decides whether a rollout
 hurts.
 
+## Native complete-snapshot identity
+
+The provider compiles one atomic consumer named `openbao-<namespace>-<name>` on
+its exact cluster. That reserved name must not collide with an authored workload
+or manifest consumer. Its runtime slots are `container:openbao`,
+`container:converge` (both widen and converge Jobs), and, for Cloud SQL storage,
+`init:cloud-sql-proxy`. Every generated resource carries the explicit provider
+owner; a complete release resolves and freezes all image slots before rendering.
+The helper images can be declared with `kubectl_image` and
+`cloud_sql_proxy_image`; defaults match the native renderer. This never adopts
+unrelated images or changes the bootstrap source or authentication boundary.
+
 ## Clients authenticate with JWT, and only JWT
 
 The component converges one JWT auth mount per cluster (`jwt-<cluster id>`) and a

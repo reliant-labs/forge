@@ -1942,7 +1942,14 @@ _store_cluster_id = lambda b: Bundle, t: ClusterTarget -> str {
 _openbao = lambda b: Bundle -> any {
     _rt = b.openbao.runtime if b.openbao else Undefined
     _target = _rt.target if _rt else _primary_target(b)
-    openbao_lib.render(b.openbao, {
+    _owner = "openbao-" + b.openbao.namespace + "-" + b.openbao.name if b.openbao else ""
+    _image = workload_image_ref_for(_owner, "container:openbao", b.openbao.image, b.image_tag) if b.openbao else ""
+    _kubectl = workload_image_ref_for(_owner, "container:converge", b.openbao.kubectl_image, b.image_tag) if b.openbao else ""
+    _proxy_needed = b.openbao and b.openbao.storage.type == "postgres" and b.openbao.storage.cloudsql_instance
+    _proxy = workload_image_ref_for(_owner, "init:cloud-sql-proxy", b.openbao.cloud_sql_proxy_image, b.image_tag) if _proxy_needed else ""
+    openbao_lib.render(b.openbao | {image = _image, kubectl_image = _kubectl, cloud_sql_proxy_image = _proxy or b.openbao.cloud_sql_proxy_image}, {
+        release_owner = _owner
+        release_inputs = {"container:openbao" = _image, "container:converge" = _kubectl} | ({"init:cloud-sql-proxy" = _proxy} if _proxy_needed else {})
         project = b.project
         env = labels_lib.env_value(b.env)
         target = _target

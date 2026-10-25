@@ -343,7 +343,8 @@ type MetricsQueryResult struct {
 	Truncated   bool
 	StepSeconds int64
 	// Warnings are stable codes: mixed_bounds, mixed_temporality,
-	// step_raised, metric_stored_as_n_kinds.
+	// step_raised, metric_stored_as_n_kinds, metric_absent,
+	// metric_kind_mismatch.
 	Warnings   []string
 	Compare    *MetricsCompare
 	Statements []Statement

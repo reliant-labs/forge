@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -166,12 +167,89 @@ func TestEvalMetricPanelUpDownRateIsInvalid(t *testing.T) {
 	}
 }
 
-func TestEvalMetricPanelUnknownMetric(t *testing.T) {
+// A metric with no data in the scope and range is an empty series with a
+// warning, never an error: the console draws "no data in this window".
+func TestEvalMetricPanelAbsentMetricIsEmptyNotAnError(t *testing.T) {
 	db := &fakeDB{lookups: map[string][][]any{}}
-	_, err := EvalMetricPanel(context.Background(), db.run, scope(), linePanel(mser("A", "nope", "avg", "gauge")), evalOpts())
-	if !errors.Is(err, ErrMetricNotFound) {
-		t.Fatalf("err = %v, want ErrMetricNotFound", err)
+	for _, kind := range []string{"line", "number", "table"} {
+		p := linePanel(mser("A", "nope", "avg", "gauge"))
+		p.Kind = kind
+		res, err := EvalMetricPanel(context.Background(), db.run, scope(), p, evalOpts())
+		if err != nil {
+			t.Fatalf("%s: err = %v, want an empty result", kind, err)
+		}
+		if len(res.Series) != 0 || !hasWarning(res, WarnMetricAbsent) || len(res.Absent) != 1 || res.Absent[0] != "nope" {
+			t.Errorf("%s: series = %+v, warnings = %v, absent = %v", kind, res.Series, res.Warnings, res.Absent)
+		}
+		if len(res.Meta) != 1 || res.Meta[0].Info.Type != MetricGauge || res.Meta[0].Agg != AggAvg {
+			t.Errorf("%s: meta = %+v (the declared kind and aggregation)", kind, res.Meta)
+		}
 	}
+}
+
+func TestEvalMetricPanelAbsentSeriesLeavesTheOthersDrawn(t *testing.T) {
+	db := &fakeDB{
+		lookups: map[string][][]any{"heap": {lookupRow(MetricGauge, "By", false, 0, 1, 60)}},
+		series:  map[string][][]any{"heap": {{at(1), []string{}, 1.0, uint64(0)}}},
+	}
+	res, err := EvalMetricPanel(context.Background(), db.run, scope(), linePanel(mser("A", "heap", "max", "gauge"), mser("B", "gone", "max", "gauge")), evalOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Series) != 1 || res.Series[0].Label != "A" || !hasWarning(res, WarnMetricAbsent) {
+		t.Errorf("series = %+v, warnings = %v", res.Series, res.Warnings)
+	}
+	for _, st := range db.calls {
+		if !strings.Contains(st.SQL, "AS kind") && slices.Contains(paramValues(st), "gone") {
+			t.Errorf("an absent metric's series was compiled and run: %s", st.SQL)
+		}
+	}
+}
+
+func TestEvalMetricPanelAbsentMetricStillValidatesItsDeclaredAggregation(t *testing.T) {
+	db := &fakeDB{lookups: map[string][][]any{}}
+	_, err := EvalMetricPanel(context.Background(), db.run, scope(), linePanel(mser("A", "nope", "rate", "gauge")), evalOpts())
+	if !isInvalid(err) {
+		t.Fatalf("err = %v, want InvalidArgument: a rate of a gauge is malformed whether or not it has data", err)
+	}
+}
+
+func TestEvalMetricPanelAbsentCounterIsZeroInARatio(t *testing.T) {
+	db := &fakeDB{
+		lookups: map[string][][]any{"reqs": {lookupRow(MetricSum, "{req}", true, 2, 1, 60)}},
+		series:  map[string][][]any{"reqs": {{at(1), []string{}, 4.0, uint64(0)}, {at(2), []string{}, 5.0, uint64(0)}}},
+	}
+	p := linePanel(mser("A", "errs", "rate", "sum"), mser("B", "reqs", "rate", "sum"))
+	p.Ratio = true
+	res, err := EvalMetricPanel(context.Background(), db.run, scope(), p, evalOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Series) != 1 || len(res.Series[0].Points) != 2 || res.Series[0].Points[0].Null || res.Series[0].Points[0].Value != 0 {
+		t.Errorf("an error counter that never fired is an error rate of 0: %+v", res.Series)
+	}
+}
+
+func TestEvalMetricPanelWarnsWhenTheDeclaredKindIsNotStored(t *testing.T) {
+	db := &fakeDB{
+		lookups: map[string][][]any{"msgs": {lookupRow(MetricGauge, "1", false, 0, 1, 60)}},
+		series:  map[string][][]any{"msgs": {{at(1), []string{}, 1.0, uint64(0)}}},
+	}
+	res, err := EvalMetricPanel(context.Background(), db.run, scope(), linePanel(mser("A", "msgs", "max", "sum")), evalOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasWarning(res, WarnKindMismatch) || res.Meta[0].Info.Type != MetricGauge {
+		t.Errorf("warnings = %v, meta = %+v", res.Warnings, res.Meta[0])
+	}
+}
+
+func paramValues(st Stmt) []string {
+	out := make([]string, 0, len(st.Params))
+	for _, v := range st.Params {
+		out = append(out, v)
+	}
+	return out
 }
 
 func TestEvalMetricPanelFormulaMissingPointsGaugeVsCounter(t *testing.T) {

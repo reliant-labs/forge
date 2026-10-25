@@ -161,6 +161,14 @@ func TestEnvRender_StdoutIsOnlyManifests(t *testing.T) {
 	if !strings.Contains(stdout, renderReleaseDigest) {
 		t.Errorf("the rendered image must be the RELEASE digest %s", renderReleaseDigest)
 	}
+	// The promoted release is the version the pods report, exactly as the
+	// deploy renders it (runDeploy binds it): a render without it makes
+	// `forge env render | kubectl diff -f -` report a change on every pod
+	// that no deploy would make. Mutation that fails it: drop the
+	// kclrender.WithRelease in renderEnvTo.
+	if !strings.Contains(stdout, "service.version=v1.0.0") {
+		t.Errorf("OTEL_RESOURCE_ATTRIBUTES must carry the promoted release, service.version=v1.0.0; stdout:\n%s", firstLines(stdout, 60))
+	}
 }
 
 // manifestHead is the part of each document the stream check reads.

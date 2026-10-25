@@ -261,7 +261,17 @@ its query key; `IDEMPOTENT` does not make a read. `// forge:mutation` forces a
 mutation. Mutation hooks infer `onMutate`'s return as `onError`'s `context`,
 so an optimistic rollback needs no cast. A query hook's `select` sets its
 `data` type, as in useQuery: `useGetTask(req, { select: toView })` — no
-`useMemo` over `data`.
+`useMemo` over `data`. A flip leaves the owned starter test's row stale:
+`forge generate` prints its line and the new body, and
+`forge lint --conventions` fails until it is fixed.
+
+**Scope a custom read with `// forge:query-scope <Entity>`.** A CRUD read is
+keyed under its entity, so that entity's CRUD mutations refresh it; a custom
+read sits at service scope, which only `<svc>Keys.all` reaches. Above a read
+of runs, `// forge:query-scope Run` keys it under `<svc>Keys.run`. Name the
+message exactly (a CRUD entity or a message the service declares); it is
+declared, not inferred from a `run_id` field, because a filter field is not
+what the read reads. Reads only: generate refuses it on a mutation.
 
 **Paged reads also get `use<Rpc>Infinite`.** A read whose request has a
 singular `string page_token` and whose response has `string next_page_token`

@@ -428,6 +428,9 @@ render = lambda ob: any, ctx: any -> any {
         "ha": {
             "pdb": ob.ha.pdb
             "zoneSpread": ob.ha.zone_spread
+            "nodeSpread": ob.ha.node_spread
+            if ob.ha.node_spread_reason:
+                "nodeSpreadReason": ob.ha.node_spread_reason
             if ob.ha.priority_class:
                 "priorityClass": ob.ha.priority_class
         }
@@ -460,6 +463,7 @@ render = lambda ob: any, ctx: any -> any {
     ] + [
         "OpenBao consumer '${c.name}' reads ${g.path} by glob: ${g.wildcard_read_reason}" for c in ob.consumers for g in c.grants if g.wildcard_read_reason
     ] \
+      + (["OpenBao '${ob.name}' spreads its replicas over nodes only as a preference (ha.node_spread = preferred): ${ob.ha.node_spread_reason}. Two replicas can land on one node and a single node loss then takes both"] if ob.replicas > 1 and ob.ha.node_spread == "preferred" else []) \
       + _escrow_warnings(ob, ctx) \
       + (["OpenBao.writer is an OIDC writer (role '${ob.writer.role}'): its login role is not rendered by this forge yet, so no one can write values through it. Use the default forge.OpenBaoSAWriter {} until it lands"] if ob.writer.type == "oidc" else [])
 

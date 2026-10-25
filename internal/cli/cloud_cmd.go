@@ -374,7 +374,8 @@ func loginOne(ctx context.Context, p declaredControlPlane, token string, noVerif
 	if stored.ExpiresAt != nil {
 		fmt.Fprintf(out, "  Expires:     %s\n", stored.ExpiresAt.Format(time.RFC3339))
 	}
-	fmt.Fprintf(out, "  Credential:  %s\n", path)
+	fmt.Fprintf(out, "  Credential:  %s, stored in %s (inspect with `forge cloud status <env>`, never by opening the file)\n",
+		cloud.TokenIdentity(stored.Token), path)
 	fmt.Fprintf(out, "In CI, set %s instead — it takes precedence over this file.\n", ep.TokenEnv)
 	return nil
 }
@@ -492,12 +493,19 @@ func newCloudStatusCmd() *cobra.Command {
 				fmt.Fprintf(out, "  credential: NONE\n")
 				return err
 			}
-			// The SOURCE, never the token. Printing a bearer credential
-			// to a terminal puts it in scrollback and in CI logs.
-			fmt.Fprintf(out, "  credential: present, from %s (%s)\n", cred.From, cred.Source)
+			// The IDENTITY and the source, never the token. Printing a
+			// bearer credential to a terminal puts it in scrollback, CI
+			// logs and agent transcripts. This command exists so nobody
+			// has to open the credentials file to learn which credential
+			// is in use — the file holds the secret.
+			fmt.Fprintf(out, "  credential: %s, from %s (%s)\n", cred.Identity(), cred.From, cred.Source)
+			if len(cred.Scopes) > 0 {
+				fmt.Fprintf(out, "  scopes:     %s\n", strings.Join(cred.Scopes, " "))
+			}
 			if cred.ExpiresAt != nil {
 				fmt.Fprintf(out, "  expires:    %s\n", cred.ExpiresAt.Format(time.RFC3339))
 			}
+			fmt.Fprintf(out, "  (the secret is never printed; match the prefix in `forge cloud token list --env %s` or the console)\n", ep.Env)
 			return nil
 		},
 	}

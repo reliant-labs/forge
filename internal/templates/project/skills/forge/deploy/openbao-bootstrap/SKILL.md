@@ -5,6 +5,9 @@ description: How forge.OpenBao gets the values it needs before it can serve a re
 
 # OpenBao bootstrap and escrow
 
+This is the bootstrap half. For the component, its client auth and the order to
+adopt a live store in, load `deploy/openbao`.
+
 A secret store cannot hold the values it needs to start. Three things must
 exist before OpenBao can serve a read, and none can live inside it:
 

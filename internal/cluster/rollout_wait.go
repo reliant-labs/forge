@@ -41,6 +41,9 @@ type PendingRollout struct {
 	// caller's own name for the apply. Empty leaves the error unprefixed,
 	// which is what Apply returns.
 	label string
+	// prune is the owned-object prune that follows this apply's rollout, run
+	// only once every Deployment and Job it waited on came up healthy.
+	prune *ownedPruneJob
 }
 
 // WithLabel names the pending rollout in WaitRollouts' error, e.g.
@@ -154,6 +157,13 @@ func WaitRollouts(ctx context.Context, pending ...*PendingRollout) error {
 	if len(waits) == 0 {
 		return nil
 	}
+	verdict := awaitRollouts(ctx, waits)
+	runOwnedPrunes(ctx, waits, verdict)
+	return verdict
+}
+
+// awaitRollouts is the wait itself, graded as one result.
+func awaitRollouts(ctx context.Context, waits []*rolloutWait) error {
 	multi := len(waits) > 1
 	// subject names a resource in a progress line. With one cluster the
 	// bare name is unambiguous and is what Apply has always printed.
@@ -241,6 +251,27 @@ func WaitRollouts(ctx context.Context, pending ...*PendingRollout) error {
 		}
 	}
 	return aggregateRolloutVerdicts(waits)
+}
+
+// runOwnedPrunes runs each rollout's owned-object prune when the whole wait came
+// up healthy. The objects a prune deletes may be what the OLD pods still run
+// under (their RBAC, their budget), so it waits for the new ones to serve; and
+// a wait that failed, or never happened (rollout mode skip, warn), prunes
+// nothing and says so.
+func runOwnedPrunes(ctx context.Context, waits []*rolloutWait, verdict error) {
+	for _, w := range waits {
+		if w.p.prune == nil {
+			continue
+		}
+		switch {
+		case verdict != nil:
+			fmt.Printf("Owned-object prune skipped for %s: the rollout did not come up healthy.\n", w.p.where())
+		case w.p.policy.Mode != RolloutWait:
+			fmt.Printf("Owned-object prune skipped for %s: rollout mode %q does not prove the rollout is healthy.\n", w.p.where(), w.p.policy.Mode)
+		default:
+			w.p.prune.run(ctx)
+		}
+	}
 }
 
 // orderWaitQueue sorts the Deployment waits of every cluster into ONE

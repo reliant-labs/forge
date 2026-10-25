@@ -96,25 +96,17 @@ func localClickstackExec(env string) obsbackend.ExecFunc {
 	}
 }
 
-// obsFactsFromKCL renders env's declaration and reads the facts the resolver
-// needs. An env that does not exist is an error that lists the ones that do.
+// obsFactsFromKCL reads what env's declaration says about where its telemetry
+// goes. It renders the declaration only when the stamped copy of the last read
+// no longer matches (obs_target.go). An env that does not exist is an error that
+// lists the ones that do.
 func obsFactsFromKCL(ctx context.Context, errOut io.Writer, env string) (obsbackend.Facts, error) {
-	e, err := RenderKCL(ctx, projectDirForKCL(), env)
+	t, err := resolveObsTarget(ctx, env)
 	if err != nil {
 		return obsbackend.Facts{}, obsbackend.Undetermined("cannot read env %q's declaration: %v", env, err).
 			With(obsbackend.Cmd("forge", "env", "list"))
 	}
-	f := obsbackend.Facts{Env: env, HasHosted: e.HasHosted(), HasLocal: e.HasLocal(), ReleaseHealth: e.ReleaseHealth}
-	if o := e.Observability; o != nil {
-		f.Declared, f.Enabled = true, o.Enabled
-		if d := o.Destination; d != nil {
-			f.Destination = &obsbackend.Destination{Endpoint: d.Endpoint, TokenFromControlPlane: d.TokenFromControlPlane}
-		}
-	}
-	if e.ControlPlane != nil {
-		f.ControlPlane = e.ControlPlane.Endpoint
-	}
-	return f, nil
+	return t.Facts, nil
 }
 
 // obsCommon are the flags and state every telemetry verb shares.

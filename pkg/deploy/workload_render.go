@@ -100,6 +100,7 @@ func RenderWorkloads(ws []v1alpha1.Workload, p v1alpha1.Profile, ctx Context) ([
 		return nil, err
 	}
 	stampEnv(out, ctx.Env)
+	stampVersion(out, ctx.Version)
 	if p == v1alpha1.ProfileRestricted {
 		// Defense in depth behind Validate. The profile refuses every field
 		// that would produce these, so this can only fire on a renderer bug.

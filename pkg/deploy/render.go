@@ -32,6 +32,12 @@ type Context struct {
 	// never to a selector. Empty emits no label, matching labels.k's
 	// "no -D env= binding" case.
 	Env string
+	// Version is the release being deployed, stamped as
+	// app.kubernetes.io/version on pod templates (never a selector) so log
+	// lines file-scraped from the node carry the version the pod runs. It is
+	// set from the release, so the label — and the rollout it causes — moves
+	// only when the release does. Empty emits no label.
+	Version string
 	// Network, when set, adds the ENV-WIDE NetworkPolicy bundle
 	// (kcl/lib/netpol.k): default-deny plus the DNS, same-namespace,
 	// external-egress, telemetry and ingress-controller allows.
@@ -176,6 +182,9 @@ const (
 	LabelName      = "app.kubernetes.io/name"
 	LabelManagedBy = "app.kubernetes.io/managed-by"
 	LabelPartOf    = "app.kubernetes.io/part-of"
+	// LabelVersion is the release a pod runs. Pod templates only: it is not
+	// in any selector.
+	LabelVersion = "app.kubernetes.io/version"
 	// LabelEnv is the env-ownership stamp (kcl/lib/labels.k:84).
 	LabelEnv = "forge.dev/env"
 	// LabelJobName is a Job's STABLE handle, since its metadata.name carries
@@ -711,6 +720,82 @@ func stampEnv(objs []*unstructured.Unstructured, env string) {
 			}
 		}
 	}
+}
+
+// stampVersion writes app.kubernetes.io/version (the release) on the pod
+// template of every workload kind that rolls with the release: Deployment,
+// StatefulSet, DaemonSet, ReplicaSet and CronJob. Never a selector, and never
+// a Job: a Job's spec.template is immutable and its name is a hash of the pod
+// spec, so a per-release label would delete and re-run an unchanged one-shot
+// on every release. A label the author already set is left as written.
+func stampVersion(objs []*unstructured.Unstructured, version string) {
+	version = labelValue(version)
+	if version == "" {
+		return
+	}
+	add := func(parent map[string]any) {
+		tmpl, ok := parent["template"].(map[string]any)
+		if !ok {
+			return
+		}
+		md, _ := tmpl["metadata"].(map[string]any)
+		if md == nil {
+			md = map[string]any{}
+			tmpl["metadata"] = md
+		}
+		labels, _ := md["labels"].(map[string]any)
+		if labels == nil {
+			labels = map[string]any{}
+			md["labels"] = labels
+		}
+		if _, ok := labels[LabelVersion]; !ok {
+			labels[LabelVersion] = version
+		}
+	}
+	for _, o := range objs {
+		spec, _ := o.Object["spec"].(map[string]any)
+		if spec == nil {
+			continue
+		}
+		switch o.GetKind() {
+		case "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet":
+			add(spec)
+		case "CronJob":
+			if jt, ok := spec["jobTemplate"].(map[string]any); ok {
+				if js, ok := jt["spec"].(map[string]any); ok {
+					add(js)
+				}
+			}
+		}
+	}
+}
+
+// labelValue makes a release version a valid Kubernetes label value (at most
+// 63 characters of [A-Za-z0-9._-], starting and ending alphanumeric). A
+// semver "+build" suffix, for one, is not legal; it becomes "-". Returns ""
+// when nothing usable is left, which omits the label.
+func labelValue(v string) string {
+	b := []byte(v)
+	for i, c := range b {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '.', c == '_', c == '-':
+		default:
+			b[i] = '-'
+		}
+	}
+	if len(b) > 63 {
+		b = b[:63]
+	}
+	isAlnum := func(c byte) bool {
+		return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+	}
+	for len(b) > 0 && !isAlnum(b[0]) {
+		b = b[1:]
+	}
+	for len(b) > 0 && !isAlnum(b[len(b)-1]) {
+		b = b[:len(b)-1]
+	}
+	return string(b)
 }
 
 func copyLabels(in map[string]string) map[string]string {

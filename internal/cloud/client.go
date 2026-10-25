@@ -86,7 +86,7 @@ func (c *Client) Call(ctx context.Context, procedure string, req, out any) error
 	}
 	token, elevErr := c.elevatedToken(ctx, scope)
 	if elevErr != nil {
-		return annotateElevation(err, scope, elevErr)
+		return c.loginLacksScope(annotateElevation(err, scope, elevErr), scope)
 	}
 	err = c.call(ctx, procedure, req, out, token)
 	if rejectedAsUnauthenticated(err) {

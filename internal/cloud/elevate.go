@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/cloudcred"
 )
 
 // procExchangeToken is the control plane's on-demand elevation: a credential
@@ -123,5 +126,30 @@ func annotateElevation(original error, scope string, elevErr error) error {
 	}
 	apiErr.message = strings.TrimRight(apiErr.Error(), "\n") +
 		fmt.Sprintf("\n  elevation: forge asked the control plane for %s on demand and was refused: %s", scope, reason)
+	return apiErr
+}
+
+// loginLacksScope names the way out when a stored `forge login` credential
+// lacks scope, could not be elevated, and a credential helper is configured.
+//
+// The file credential outranks the helper by design (ResolveCredential: a
+// login the user chose is never displaced by an ambient session), so forge
+// does not switch identity on its own. But a login made before a scope
+// existed is then a permanent 403 even though the helper — the Reliant
+// session on this machine — could authorize the call. That was every agent's
+// `forge obs` against prod on 2026-10-25: the error said "re-run forge login",
+// which an agent cannot do, and never mentioned the helper. Say both options.
+func (c *Client) loginLacksScope(err error, scope string) error {
+	cred := c.credential()
+	if cred.Source != SourceLogin || strings.TrimSpace(os.Getenv(cloudcred.HelperEnv)) == "" {
+		return err
+	}
+	var apiErr *Error
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	apiErr.message = strings.TrimRight(apiErr.Error(), "\n") + fmt.Sprintf(
+		"\n  remedy: your `forge login` credential (%s, for %s) lacks %s; run `forge logout --endpoint %s` to use the Reliant credential helper ($%s), or `forge login` again",
+		cred.From, c.Endpoint.URL, scope, c.Endpoint.URL, cloudcred.HelperEnv)
 	return apiErr
 }

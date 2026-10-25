@@ -104,7 +104,7 @@ func obsFactsFromKCL(ctx context.Context, errOut io.Writer, env string) (obsback
 		return obsbackend.Facts{}, obsbackend.Undetermined("cannot read env %q's declaration: %v", env, err).
 			With(obsbackend.Cmd("forge", "env", "list"))
 	}
-	f := obsbackend.Facts{Env: env, HasHosted: e.HasHosted(), ReleaseHealth: e.ReleaseHealth}
+	f := obsbackend.Facts{Env: env, HasHosted: e.HasHosted(), HasLocal: e.HasLocal(), ReleaseHealth: e.ReleaseHealth}
 	if o := e.Observability; o != nil {
 		f.Declared, f.Enabled = true, o.Enabled
 		if d := o.Destination; d != nil {

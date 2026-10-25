@@ -213,7 +213,7 @@ func Supervise(ctx context.Context, policy Policy, nodes ...Node) error {
 	drainer.Complete()
 	if policy.Flush != nil {
 		if err := policy.Flush(shutdownCtx); err != nil {
-			logger.ErrorContext(ctx, "telemetry flush error", "error", err)
+			serverkit.LogTelemetryFlushError(ctx, logger, "telemetry flush error", err)
 		}
 	}
 	return s.failure()

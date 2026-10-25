@@ -51,8 +51,17 @@ func NewTraceHandler(next slog.Handler) slog.Handler { return &traceHandler{next
 // enables the OTLP exporter must not also be collected from its stdout/log files
 // (the local collector's file reader, a cluster node agent), or every line
 // arrives twice. Exactly one shipping path per environment.
+//
+// Every line next writes (a JSON handler; a *slog.TextHandler is left alone)
+// also carries the process resource under LogKeyResource: service.name,
+// service.version, service.namespace, deployment.environment.name and
+// service.instance.id, from the resource Setup builds for the traces and
+// metrics — Setup's own once it has run, the same inputs (cfg and the OTEL_*
+// environment) before. Pass the Config you pass Setup. The collector reading
+// stdout lifts them into the record's resource; the OTLP bridge needs no
+// stamp, because its provider carries the resource itself.
 func NewLogHandler(next slog.Handler, cfg Config) slog.Handler {
-	h := NewTraceHandler(next)
+	h := NewTraceHandler(newResourceHandler(next, cfg))
 	if !exportEnabled(signalLogs, cfg) {
 		return errorInputsHandler{next: h}
 	}

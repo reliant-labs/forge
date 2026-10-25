@@ -92,6 +92,14 @@
 // default and is MUTUALLY EXCLUSIVE with that collection: it does not replace
 // stdout, so enabling both ships every line twice.
 //
+// A line read from stdout has no SDK resource, so each JSON line carries the
+// process resource under LogKeyResource ("resource"): the LogResourceKeys
+// (service.name, service.version, service.namespace,
+// deployment.environment.name, service.instance.id) of the resource Setup
+// builds for traces and metrics, encoded once per logger. Collectors lift
+// them into the record's resource (forge's node agent and local forwarder do;
+// see pkg/deploy). A panic or any line without the field carries no version.
+//
 // # Error records
 //
 // A log record at ERROR or above is a server error event, and NewLogHandler

@@ -338,6 +338,12 @@ func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.
 		}
 	}
 
+	// The accessor binding each owned worker/operator subcommand runs — the
+	// one derived fact of those commands (cmd_component_accessor_gen.go).
+	if err := GenerateComponentAccessors(targetDir, in.Bin, cs); err != nil {
+		return err
+	}
+
 	// cmd/<bin>/main.go — the COMPOSITION ROOT, SCAFFOLD-ONCE owned code. It names
 	// every group constructor explicitly and passes them to cmd.Execute (no
 	// init() self-registration, no dynamic registry). Forge emits it ONCE with

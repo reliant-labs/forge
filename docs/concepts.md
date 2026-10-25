@@ -166,6 +166,7 @@ set):
 | `forge:read-only`   | On the entity; a client Create/Update never writes it |
 | `forge:secret`      | Writable, but never packed into read responses        |
 | `forge:mutation`    | Forces the generated React hook to be a `useMutation` |
+| `forge:query-scope` | Keys a custom read under its entity's query scope     |
 
 ---
 

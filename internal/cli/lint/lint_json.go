@@ -527,9 +527,9 @@ func collectScaffoldsJSON(cwd string) ([]lintJSONFinding, bool, error) {
 	return findingsToJSON(res.Findings), res.HasErrors(), nil
 }
 
-// collectTestsJSON mirrors runTestsLint on the JSON path. The second
-// return reports whether anything gates — only the shape rule can, so the
-// two paths agree on which findings are fatal.
+// collectTestsJSON is the `--tests` lane: test-PRESENCE conventions, both
+// warnings. The hook-test SHAPE rule, which gates, runs in `--conventions`
+// (collectConventionFindings) — the lane projects actually gate on.
 func collectTestsJSON(cwd string) ([]lintJSONFinding, bool, error) {
 	handlerRes, err := forgeconv.LintHandlerTests(cwd)
 	if err != nil {
@@ -539,14 +539,9 @@ func collectTestsJSON(cwd string) ([]lintJSONFinding, bool, error) {
 	if err != nil {
 		return nil, false, fmt.Errorf("frontend-hook-test lint failed: %w", err)
 	}
-	shapeRes, err := forgeconv.LintFrontendHookTestShape(cwd)
-	if err != nil {
-		return nil, false, fmt.Errorf("frontend-hook-test-shape lint failed: %w", err)
-	}
 	out := findingsToJSON(handlerRes.Findings)
 	out = append(out, findingsToJSON(frontendRes.Findings)...)
-	out = append(out, findingsToJSON(shapeRes.Findings)...)
-	return out, shapeRes.HasErrors(), nil
+	return out, false, nil
 }
 
 func collectBannersJSON(cwd string) ([]lintJSONFinding, error) {

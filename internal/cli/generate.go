@@ -953,6 +953,9 @@ func printLeftAlone(w io.Writer, left []checksums.LeftAlone) {
 	fmt.Fprintf(w, "⚠️  %d path(s) left as they are — forge did not write them:\n", len(left))
 	for _, l := range left {
 		fmt.Fprintf(w, "   - %s: %s\n", l.Path, l.Why)
+		for _, d := range l.Detail {
+			fmt.Fprintf(w, "       %s\n", d)
+		}
 	}
 }
 

@@ -8,8 +8,8 @@ each workload is (build, subcommand, ports, credentials). This file says
 where each one runs here, and states the values only this env knows.
 
 As scaffolded, everything runs on the forge control plane (Reliant cloud),
-which owns the namespace, the registry, the database and the secrets (static
-sites get its CDN once their hostname is moved to its edge):
+which owns the namespace, the registry, the database and the secrets (and,
+for static sites, the bucket, the CDN and the hostname):
 
   workloads  `forge.OnHosted`: each a Workload the platform admits under its
              Restricted profile (kinds service, worker, job) and renders with

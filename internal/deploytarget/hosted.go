@@ -203,12 +203,15 @@ type wireEnvironment struct {
 }
 
 type wireObserved struct {
-	State       string     `json:"state,omitempty"`
-	Replicas    int        `json:"replicas,omitempty"`
-	ImageDigest string     `json:"imageDigest,omitempty"`
-	LastError   string     `json:"lastError,omitempty"`
-	URL         string     `json:"url,omitempty"`
-	StableSince *time.Time `json:"stableSince,omitempty"`
+	State       string `json:"state,omitempty"`
+	Replicas    int    `json:"replicas,omitempty"`
+	ImageDigest string `json:"imageDigest,omitempty"`
+	LastError   string `json:"lastError,omitempty"`
+	URL         string `json:"url,omitempty"`
+	// URLServingPath is the DeployServingPath value NAME for URL's host:
+	// which platform path its DNS reaches, as the control plane resolves it.
+	URLServingPath string     `json:"urlServingPath,omitempty"`
+	StableSince    *time.Time `json:"stableSince,omitempty"`
 	// Domains is the per-domain convergence state for every custom
 	// hostname this deployment declares. Absent from a control plane that
 	// does not serve custom domains — which is also the one that does not
@@ -1517,11 +1520,12 @@ func (p HostedProvider) reportHeld(plan []hostedPlanItem, held *HeldError) error
 	return held
 }
 
-// hostedPublished is where one workload answers: its platform URL and its
-// custom domains, as of one status read.
+// hostedPublished is where one workload answers: its platform URL, the path
+// that URL's DNS reaches, and its custom domains, as of one status read.
 type hostedPublished struct {
-	URL     string
-	Domains []HostedCustomDomain
+	URL         string
+	ServingPath string
+	Domains     []HostedCustomDomain
 }
 
 // pollOnce reads status once and returns the names still not ready, with a
@@ -1548,7 +1552,7 @@ func (p HostedProvider) pollOnce(ctx context.Context, c HostedCaller, envID stri
 		}
 		pub := hostedPublished{Domains: customDomainsOf(st.Deployment.Observed)}
 		if obs := st.Deployment.Observed; obs != nil {
-			pub.URL = obs.URL
+			pub.URL, pub.ServingPath = obs.URL, ServingPathName(obs.URLServingPath)
 		}
 		published[item.Name] = pub
 		if envConverged || hostedDeploymentReady(st, item.DesiredDigest) {
@@ -1567,7 +1571,8 @@ func (p HostedProvider) pollOnce(ctx context.Context, c HostedCaller, envID stri
 func printHostedURLs(plan []hostedPlanItem, published map[string]hostedPublished) {
 	ws := make([]HostedWorkloadStatus, 0, len(plan))
 	for _, item := range plan {
-		ws = append(ws, HostedWorkloadStatus{Name: item.Name, URL: published[item.Name].URL})
+		pub := published[item.Name]
+		ws = append(ws, HostedWorkloadStatus{Name: item.Name, URL: pub.URL, ServingPath: pub.ServingPath})
 	}
 	fmt.Print(FormatHostedURLs("  ", ws))
 }
@@ -1582,7 +1587,11 @@ func FormatHostedURLs(indent string, workloads []HostedWorkloadStatus) string {
 		if w.URL == "" {
 			continue
 		}
-		fmt.Fprintf(&b, "%surl %s: %s\n", indent, w.Name, w.URL)
+		fmt.Fprintf(&b, "%surl %s: %s", indent, w.Name, w.URL)
+		if path := DescribeServingPath(w.ServingPath); path != "" {
+			fmt.Fprintf(&b, " (%s)", path)
+		}
+		b.WriteString("\n")
 	}
 	return b.String()
 }
@@ -1679,6 +1688,10 @@ type HostedWorkloadStatus struct {
 	URL string `json:"url,omitempty"`
 	// Hostname is URL's host, for a badge that has no room for a scheme.
 	Hostname string `json:"hostname,omitempty"`
+	// ServingPath is where Hostname's DNS sends its traffic, as the control
+	// plane resolves it: edge | ingress | elsewhere, or empty when it did
+	// not say (ServingPathName).
+	ServingPath string `json:"serving_path,omitempty"`
 	// Verdict is the control plane's lower-case deploystate verdict:
 	// unknown | converging | converged | diverged | degraded.
 	Verdict       string `json:"verdict"`
@@ -1737,6 +1750,7 @@ func ReadHostedStatus(ctx context.Context, c HostedCaller, project, envName stri
 			ws.ObservedDigest = obs.ImageDigest
 			ws.LastError = obs.LastError
 			ws.URL = obs.URL
+			ws.ServingPath = ServingPathName(obs.URLServingPath)
 			if u, perr := url.Parse(obs.URL); perr == nil {
 				ws.Hostname = u.Hostname()
 			}

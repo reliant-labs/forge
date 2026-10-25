@@ -7,11 +7,13 @@
 // per-user UI prefs). Mixing the two creates two sources of truth that
 // inevitably diverge.
 //
-// Scope: `frontends/*/src/stores/*.ts` and the historic single-frontend
+// Scope: `frontends/*/src/stores/*.ts` and `frontends/*/src/store/*.ts`
+// (both spellings: the scaffold writes `stores/`, and an adopted app keeps
+// whichever directory it already had), plus the historic single-frontend
 // `web/src/store/*.ts` shape. Pre-workspaces projects (forge.yaml
 // frontend.workspaces == false) ship a single `web/` frontend; the
-// workspaces layout ships `frontends/<name>/`. The analyzer scans both
-// so a mid-migration project gets findings against whichever shape
+// workspaces layout ships `frontends/<name>/`. The analyzer scans all of
+// them so a mid-migration project gets findings against whichever shape
 // happens to be on disk.
 //
 // Detection heuristic (string-level, no TS parser):
@@ -19,14 +21,17 @@
 //  1. file matches reZustandCreate     `create\s*<` (Zustand's generic
 //     factory; matches `create<State>(...)`, `create<State, [...]>`, etc.)
 //
-//  2. file matches reGenImportFrom     `from\s+["'][^"']*\/gen\/[^"']*["']`
-//     AND the same import string contains one of the suffix tells
-//     `-grpc`, `_pb`, `_connect` (canonical Connect-TS / buf-gen output
-//     paths).
+//  2. the file reaches a generated Connect client, either way:
+//     a. reGenImport: an import whose path goes through `/gen/` and
+//        contains one of the suffix tells `-grpc`, `_pb`, `_connect`
+//        (canonical Connect-TS / buf-gen output paths), or imports a
+//        generated hooks module (`-service-hooks_gen`); or
+//     b. reClientCall: it builds a client itself — `connectClient(`
+//        (forge's own seam), `createClient(` or `createPromiseClient(`.
 //
-// Both must be true — a Zustand store with no gen imports is fine, and
-// a file that just re-exports generated types without spinning up a
-// store is also fine.
+// Both must be true — a Zustand store with no client is fine, and a file
+// that just re-exports generated types without spinning up a store is
+// also fine.
 //
 // The rule is a warning. Forcing a hard error would block legitimate
 // edge cases (e.g. a Zustand store that caches a one-shot lookup before
@@ -62,12 +67,19 @@ var (
 	// import-statement to avoid false-firing on URL strings sitting
 	// elsewhere in the file.
 	reGenImport = regexp.MustCompile(
-		`from\s+["'][^"']*\/gen\/[^"']*(?:-grpc|_pb|_connect)[^"']*["']`)
+		`from\s+["'](?:[^"']*\/gen\/[^"']*(?:-grpc|_pb|_connect)|[^"']*-service-hooks_gen)[^"']*["']`)
+
+	// reClientCall matches a store constructing a Connect client in
+	// place: forge's `connectClient(Service)` seam, or Connect-ES's own
+	// `createClient` / `createPromiseClient`. A store that does this is
+	// fetching server data whether or not it imports a generated path
+	// (the descriptor may arrive through a re-export).
+	reClientCall = regexp.MustCompile(`\b(?:connectClient|createClient|createPromiseClient)\s*\(`)
 )
 
-// LintFrontendStores scans frontends/<name>/src/stores/*.ts and
-// web/src/store/*.ts for files that both spin up a Zustand store AND
-// pull in a generated Connect client. Warnings only. A project with no
+// LintFrontendStores scans frontends/<name>/src/stores/*.ts,
+// frontends/<name>/src/store/*.ts and web/src/store/*.ts for files that
+// both spin up a Zustand store AND pull in a generated Connect client. Warnings only. A project with no
 // frontends at all gets an empty result.
 //
 // Findings are sorted by (file, line, rule) for stable output. Line is
@@ -87,12 +99,13 @@ func LintFrontendStores(rootDir string) (Result, error) {
 			if !e.IsDir() {
 				continue
 			}
-			storesDir := filepath.Join(frontendsDir, e.Name(), "src", "stores")
-			ts, err := collectTSFiles(storesDir)
-			if err != nil {
-				return Result{}, err
+			for _, dir := range []string{"stores", "store"} {
+				ts, err := collectTSFiles(filepath.Join(frontendsDir, e.Name(), "src", dir))
+				if err != nil {
+					return Result{}, err
+				}
+				targets = append(targets, ts...)
 			}
-			targets = append(targets, ts...)
 		}
 	}
 
@@ -180,7 +193,7 @@ func lintFrontendStoreFile(path, relRoot string) ([]Finding, error) {
 	}
 	body := string(src)
 
-	if !reGenImport.MatchString(body) {
+	if !reGenImport.MatchString(body) && !reClientCall.MatchString(body) {
 		return nil, nil
 	}
 	loc := reZustandCreate.FindStringIndex(body)

@@ -8,8 +8,10 @@ import (
 
 // TestLintFrontendStores_TableDriven exercises the analyzer across the
 // three canonical states (both signals → warning, Zustand only → no
-// warning, gen only → no warning), plus the historic web/src/store/
-// layout to make sure pre-workspaces projects are still covered.
+// warning, gen only → no warning), each way a store can reach a client
+// (a generated import, a generated hooks module, a client built in place),
+// and every store directory: frontends/<name>/src/stores/ and src/store/,
+// plus the historic web/src/store/ layout.
 func TestLintFrontendStores_TableDriven(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -33,6 +35,24 @@ func TestLintFrontendStores_TableDriven(t *testing.T) {
 			name:      "gen import only — no warning",
 			fixture:   "gen_only",
 			wantCount: 0,
+		},
+		{
+			name:      "workspaces layout with src/store/ (singular) — warning",
+			fixture:   "workspaces_store_dir",
+			wantCount: 1,
+			wantFile:  "frontends/web/src/store/worktreeStore.ts",
+		},
+		{
+			name:      "store builds a client through connectClient — warning",
+			fixture:   "client_call",
+			wantCount: 1,
+			wantFile:  "frontends/web/src/stores/orders.ts",
+		},
+		{
+			name:      "store imports a generated hooks module — warning",
+			fixture:   "hooks_import",
+			wantCount: 1,
+			wantFile:  "frontends/web/src/store/cart.ts",
 		},
 		{
 			name:      "historic web/src/store/ layout — warning",

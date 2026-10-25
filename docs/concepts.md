@@ -321,8 +321,10 @@ enclosing guards, alias-then-check, and a guard inside a same-package helper
 the rpc calls first (`if err := s.gate(ctx); err != nil { return nil, err }`,
 where `gate` nil-checks the deps), so it flags the genuinely unguarded case.
 
-**`--frontend-stores`** flags Zustand stores that import generated Connect
-clients. Server state belongs in the generated React Query hooks; Zustand is
+**`--frontend-stores`** flags Zustand stores that reach a generated Connect
+client — a generated import, a generated hooks module, or a client built in
+place with `connectClient(...)` — in `src/stores/` or `src/store/` of every
+frontend. Server state belongs in the generated React Query hooks; Zustand is
 for client-only state. Mixing them creates two sources of truth for the same
 data, and the stale one wins about half the time.
 

@@ -39,8 +39,10 @@ func (r Runner) sourceCacheRoot() (string, error) {
 }
 
 // sourceCacheUnlinkAllowance is the unlinks the source cache may make beyond the
-// pass's cap: a few installed dependency trees (~60k entries each).
-const sourceCacheUnlinkAllowance = 250_000
+// pass's cap: every idle clone's installed dependency tree (~40k entries each,
+// dozens of clones on a busy machine). Pacing at delete_rate_per_sec, the
+// back-off and the layer's time slice are the real bounds.
+const sourceCacheUnlinkAllowance = 1_000_000
 
 // Sources reclaims cross-repo source clones that no project has resolved
 // recently. One full clone exists per repo+ref pin and nothing else ever

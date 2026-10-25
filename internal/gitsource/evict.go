@@ -253,11 +253,6 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 		return result, fmt.Errorf("read source cache %s: %w", root, err)
 	}
 
-	type candidate struct {
-		name    string
-		slug    string
-		lastUse time.Time
-	}
 	var usable []candidate
 	var leftovers []string
 
@@ -290,10 +285,6 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 	}
 
 	maxAge, keep := policy.maxAge(), policy.keepPerSlug()
-	type ranked struct {
-		candidate
-		rank int
-	}
 	var all []ranked
 	for _, group := range bySlug {
 		sort.Slice(group, func(i, j int) bool { return group[i].lastUse.After(group[j].lastUse) })
@@ -331,79 +322,18 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 	// Slimming comes before the size budget: it frees the bytes that cost
 	// least to get back, so it can make eviction unnecessary. An entry's
 	// installed dependencies are found now and removed after the in-use check.
-	type slim struct {
-		name  string
-		dirs  []string
-		bytes int64
-	}
-	var slims []slim
-	slimmed := map[string]int64{}
-	if policy.SlimAfter > 0 {
-		for _, c := range all {
-			if c.rank < keep || isDoomed[c.name] || now.Sub(c.lastUse) <= policy.SlimAfter {
-				continue
-			}
-			if err := policy.ctx().Err(); err != nil {
-				return result, fmt.Errorf("source cache eviction stopped while looking for installed dependencies: %w", err)
-			}
-			dirs := slimDirsIn(filepath.Join(root, c.name))
-			if len(dirs) == 0 {
-				continue
-			}
-			var bytes int64
-			for _, d := range dirs {
-				bytes += treeSize(d)
-			}
-			slims = append(slims, slim{name: c.name, dirs: dirs, bytes: bytes})
-			slimmed[c.name] = bytes
-		}
+	slims, slimmed, err := planSlims(root, now, policy, all, keep, isDoomed)
+	if err != nil {
+		return result, err
 	}
 
 	// The size budget, judged on what the cache will weigh once the entries
 	// above are slimmed and evicted. A pass that cannot measure everything
 	// (its deadline ran out) decides nothing on size: it retains.
 	if policy.BudgetBytes > 0 {
-		var total int64
-		measured := true
-		for _, c := range all {
-			if policy.ctx().Err() != nil {
-				measured = false
-				break
-			}
-			total += sizeOf(c.name)
-		}
-		result.TotalBytes = total
-		if measured {
-			after := total
-			for _, c := range all {
-				switch {
-				case isDoomed[c.name]:
-					after -= sizeOf(c.name)
-				default:
-					after -= slimmed[c.name]
-				}
-			}
-			if after > policy.BudgetBytes {
-				target := int64(float64(policy.BudgetBytes) * budgetLowWater)
-				lru := make([]ranked, 0, len(all))
-				for _, c := range all {
-					if c.rank >= keep && !isDoomed[c.name] {
-						lru = append(lru, c)
-					}
-				}
-				sort.Slice(lru, func(i, j int) bool { return lru[i].lastUse.Before(lru[j].lastUse) })
-				for _, c := range lru {
-					if after <= target {
-						break
-					}
-					after -= sizeOf(c.name) - slimmed[c.name]
-					doomed = append(doomed, c.candidate)
-					isDoomed[c.name] = true
-					result.Kept-- // the age rule had spared it and counted it kept
-				}
-			}
-			result.OverBudget = after > policy.BudgetBytes
-		}
+		var budgeted []candidate
+		budgeted, result = evictForBudget(policy, all, keep, isDoomed, slimmed, result, sizeOf)
+		doomed = append(doomed, budgeted...)
 	}
 	sort.Slice(doomed, func(i, j int) bool { return doomed[i].name < doomed[j].name })
 
@@ -427,12 +357,85 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 		inUse = snap.Holds
 	}
 
-	for _, sl := range slims {
-		if isDoomed[sl.name] {
-			continue // evicted whole below
+	ep := evictPass{root: root, now: now, policy: policy, apply: apply, out: out, inUse: inUse, result: &result}
+	if err := ep.slim(slims, isDoomed); err != nil {
+		return result, err
+	}
+	err = ep.evict(doomed, sizeOf)
+	return result, err
+}
+
+// evictPass is what removing entries shares: where, when, whether to really
+// delete, how to tell an entry is held, and the result being filled in.
+type evictPass struct {
+	root   string
+	now    time.Time
+	policy EvictPolicy
+	apply  bool
+	out    io.Writer
+	inUse  func(string) bool
+	result *Eviction
+}
+
+// ranked is a cache entry with its place in its repository's recency order.
+type ranked struct {
+	candidate
+	rank int
+}
+
+type candidate struct {
+	name    string
+	slug    string
+	lastUse time.Time
+}
+
+// slim is an entry whose installed dependencies are to be removed.
+type slim struct {
+	name  string
+	dirs  []string
+	bytes int64
+}
+
+// planSlims finds the entries beyond the keep floor, idle past SlimAfter, that
+// hold installed dependencies, and what each would free.
+func planSlims(root string, now time.Time, policy EvictPolicy, all []ranked, keep int, isDoomed map[string]bool) ([]slim, map[string]int64, error) {
+	var slims []slim
+	slimmed := map[string]int64{}
+	if policy.SlimAfter <= 0 {
+		return nil, slimmed, nil
+	}
+	for _, c := range all {
+		if c.rank < keep || isDoomed[c.name] || now.Sub(c.lastUse) <= policy.SlimAfter {
+			continue
 		}
 		if err := policy.ctx().Err(); err != nil {
-			return result, fmt.Errorf("source cache slimming stopped after %d of %d entries: %w", len(result.Slimmed), len(slims), err)
+			return nil, nil, fmt.Errorf("source cache eviction stopped while looking for installed dependencies: %w", err)
+		}
+		dirs := slimDirsIn(filepath.Join(root, c.name))
+		if len(dirs) == 0 {
+			continue
+		}
+		var bytes int64
+		for _, d := range dirs {
+			bytes += treeSize(d)
+		}
+		slims = append(slims, slim{name: c.name, dirs: dirs, bytes: bytes})
+		slimmed[c.name] = bytes
+	}
+	return slims, slimmed, nil
+}
+
+// slim removes the installed dependencies of the planned entries that no
+// process holds. Each tree is renamed out of the entry before it is deleted, so
+// a stopped removal leaves a name every later pass finishes.
+func (ep evictPass) slim(slims []slim, isDoomed map[string]bool) error {
+	root, now, policy, apply, out, inUse, result := ep.root, ep.now, ep.policy, ep.apply, ep.out, ep.inUse, ep.result
+	for _, sl := range slims {
+		if isDoomed[sl.name] {
+			continue // evicted whole
+		}
+		if err := policy.ctx().Err(); err != nil {
+			return fmt.Errorf("source cache slimming stopped after %d of %d entries: %w", len(result.Slimmed), len(slims), err)
 		}
 		entry := filepath.Join(root, sl.name)
 		if inUse(entry) {
@@ -446,23 +449,28 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 				trash := filepath.Join(root, fmt.Sprintf("%s%s-dep%d-%d", evictingPrefix, sl.name, i, now.UnixNano()))
 				_ = os.Chmod(dir, 0o755) // a dependency tree can be read-only; moving a directory needs write on it
 				if err := os.Rename(dir, trash); err != nil {
-					return result, fmt.Errorf("slim source cache %s: %w", entry, err)
+					return fmt.Errorf("slim source cache %s: %w", entry, err)
 				}
 				if err := policy.removeTree(trash); err != nil {
 					result.Slimmed = append(result.Slimmed, sl.name)
 					result.SlimBytes += sl.bytes
-					return result, fmt.Errorf("slim source cache %s: %w", entry, err)
+					return fmt.Errorf("slim source cache %s: %w", entry, err)
 				}
 			}
 		}
 		result.Slimmed = append(result.Slimmed, sl.name)
 		result.SlimBytes += sl.bytes
 	}
+	return nil
+}
 
+// evict removes the doomed entries that no process holds.
+func (ep evictPass) evict(doomed []candidate, sizeOf func(string) int64) error {
+	root, now, policy, apply, out, inUse, result := ep.root, ep.now, ep.policy, ep.apply, ep.out, ep.inUse, ep.result
 	for i, c := range doomed {
 		if err := policy.ctx().Err(); err != nil {
 			result.Kept += len(doomed) - i
-			return result, fmt.Errorf("source cache eviction stopped after %d of %d entries: %w", len(result.Removed), len(doomed), err)
+			return fmt.Errorf("source cache eviction stopped after %d of %d entries: %w", len(result.Removed), len(doomed), err)
 		}
 		entry := filepath.Join(root, c.name)
 		if inUse(entry) {
@@ -476,17 +484,61 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 		if apply {
 			trash := filepath.Join(root, fmt.Sprintf("%s%s-%d", evictingPrefix, c.name, now.UnixNano()))
 			if err := os.Rename(entry, trash); err != nil {
-				return result, fmt.Errorf("evict source cache %s: %w", entry, err)
+				return fmt.Errorf("evict source cache %s: %w", entry, err)
 			}
 			if err := policy.removeTree(trash); err != nil {
 				result.Removed = append(result.Removed, c.name) // out of the cache; the leftover is finished next pass
-				return result, fmt.Errorf("evict source cache %s: %w", entry, err)
+				return fmt.Errorf("evict source cache %s: %w", entry, err)
 			}
 		}
 		result.Removed = append(result.Removed, c.name)
 		result.Bytes += size
 	}
-	return result, nil
+	return nil
+}
+
+// evictForBudget picks the entries to evict, least recently used first and never
+// within the keep floor, to bring a cache over policy.BudgetBytes down to
+// budgetLowWater of it. isDoomed is updated; the entries chosen are returned.
+func evictForBudget(policy EvictPolicy, all []ranked, keep int, isDoomed map[string]bool, slimmed map[string]int64, result Eviction, sizeOf func(string) int64) ([]candidate, Eviction) {
+	var total int64
+	for _, c := range all {
+		if policy.ctx().Err() != nil {
+			return nil, result // not everything was measured: decide nothing on size
+		}
+		total += sizeOf(c.name)
+	}
+	result.TotalBytes = total
+	after := total
+	for _, c := range all {
+		if isDoomed[c.name] {
+			after -= sizeOf(c.name)
+		} else {
+			after -= slimmed[c.name]
+		}
+	}
+	var chosen []candidate
+	if after > policy.BudgetBytes {
+		target := int64(float64(policy.BudgetBytes) * budgetLowWater)
+		var lru []ranked
+		for _, c := range all {
+			if c.rank >= keep && !isDoomed[c.name] {
+				lru = append(lru, c)
+			}
+		}
+		sort.Slice(lru, func(i, j int) bool { return lru[i].lastUse.Before(lru[j].lastUse) })
+		for _, c := range lru {
+			if after <= target {
+				break
+			}
+			after -= sizeOf(c.name) - slimmed[c.name]
+			chosen = append(chosen, c.candidate)
+			isDoomed[c.name] = true
+			result.Kept-- // the age rule had spared it and counted it kept
+		}
+	}
+	result.OverBudget = after > policy.BudgetBytes
+	return chosen, result
 }
 
 // slimDirsIn lists the SlimDirs inside an entry, to slimDepth levels, without

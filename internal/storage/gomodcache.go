@@ -229,7 +229,7 @@ func (r Runner) GoModCache(apply bool) error {
 	}
 	if cacheBytes <= budget {
 		r.print("go module cache %s: %d versions, %.1f GiB, within its %.1f GiB budget\n", root, len(units), gib(cacheBytes), gib(budget))
-		r.recordModTrim(root, apply, cacheBytes, budget, 0, time.Time{}, 0, 0, 0, 0, true, 0)
+		r.recordModTrim(GoCacheTrim{Root: root, Applied: apply, EstimatedBytes: uint64(cacheBytes), BudgetBytes: uint64(budget), Finished: true})
 		return nil
 	}
 
@@ -289,7 +289,8 @@ func (r Runner) GoModCache(apply bool) error {
 		status = fmt.Sprintf("stopped after %d/%d steps: %v", done, len(actions), stop)
 	}
 	r.print("go module cache: %s %d versions (%d steps), %.1f GiB (%s)\n", map[bool]string{true: "removed", false: "would remove"}[apply], len(versions), done, gib(freed), status)
-	r.recordModTrim(root, apply, total, budget, pinned, cutoff, done, len(actions), freed, liveBuild, stop == nil, 0)
+	r.recordModTrim(GoCacheTrim{Root: root, Applied: apply, EstimatedBytes: uint64(total), BudgetBytes: uint64(budget), YoungBytes: uint64(pinned),
+		Cutoff: cutoff, Removed: done, FreedBytes: uint64(max(freed, 0)), ShardsCovered: done, ShardsTotal: len(actions), Finished: stop == nil, OldestLiveBuild: liveBuild})
 
 	var failures []error
 	if stop != nil && !(errors.Is(stop, context.DeadlineExceeded) || errors.Is(stop, context.Canceled)) {
@@ -329,16 +330,12 @@ func (r Runner) modCacheBudget(root string) uint64 {
 	return r.budgetFor(r.Policy.GoModCacheGiB, root)
 }
 
-func (r Runner) recordModTrim(root string, apply bool, est, budget, pinned int64, cutoff time.Time, done, planned int, freed int64, liveBuild time.Duration, finished bool, _ int) {
+func (r Runner) recordModTrim(t GoCacheTrim) {
 	if r.OnGoCacheTrim == nil {
 		return
 	}
-	r.OnGoCacheTrim(GoCacheTrim{
-		Cache: "go module cache", Root: root, Applied: apply,
-		EstimatedBytes: uint64(est), BudgetBytes: uint64(budget), YoungBytes: uint64(pinned),
-		Cutoff: cutoff, Removed: done, FreedBytes: uint64(max(freed, 0)),
-		ShardsCovered: done, ShardsTotal: planned, Finished: finished, OldestLiveBuild: liveBuild,
-	})
+	t.Cache = "go module cache"
+	r.OnGoCacheTrim(t)
 }
 
 // modScanStopped turns a stopped scan into the layer's result: a deadline is a

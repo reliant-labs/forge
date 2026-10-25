@@ -482,8 +482,8 @@ func TestEvictBudgetEvictsLeastRecentlyUsedBeyondKeepAndReportsWhatItCannotReach
 			t.Errorf("%s is inside the keep floor and was evicted", kept)
 		}
 	}
-	if !got.OverBudget {
-		// two kept entries are ~2.1 KB < 3 KB: this fixture is reachable.
+	if got.OverBudget {
+		t.Error("the two kept entries weigh ~2.1 KB, under the 3 KB budget: reachable")
 	}
 
 	// A budget below what the keep floor alone weighs cannot be reached, and says so.

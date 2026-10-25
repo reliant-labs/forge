@@ -191,7 +191,7 @@ func buildAnnotationsSpec(kind string) (AnnotationsSpec, error) {
 		}, nil
 	case "method":
 		// Method options plus the comment markers that attach to an rpc
-		// (forge:mutation, forge:custom).
+		// (forge:mutation, forge:query-scope, forge:custom).
 		return AnnotationsSpec{
 			Markers:       filterMarkers(all.Markers, "method"),
 			MethodOptions: all.MethodOptions,
@@ -314,6 +314,13 @@ func markerSpecs() []MarkerSpec {
 			Effect:    "Forces the generated React Query hook for this rpc to be a useMutation. Classification is otherwise: an rpc declaring protobuf's `option idempotency_level = NO_SIDE_EFFECTS;` is a read whatever its name (Health, Version — declare it on every read whose name is not a read verb); without it, by leading verb — Get/List/Search/Find/Check/Has/Is/Count/Exists (whole-word) are reads, EVERYTHING else is a mutation (IDEMPOTENT does not make a read). So this marker is needed only for an imperative rpc that happens to open with a read word (FindAndHoldSeat, IssueRefund), and it wins over NO_SIDE_EFFECTS. A write generated as useQuery re-fires on every component remount. Unlike the entity/field markers this one is read on every `forge generate`, not just at birth.",
 			Placement: "leading full-line comment above the `rpc` line, or a trailing comment on it",
 			Example:   "// forge:mutation — holds inventory, so it must never be a cached read.\nrpc FindAndHoldSeat(FindAndHoldSeatRequest) returns (FindAndHoldSeatResponse);",
+		},
+		{
+			Name:      codegen.ProtoMarkerQueryScope,
+			AppliesTo: "method",
+			Effect:    "Keys a custom READ's generated query under an entity scope: the key becomes [service, <entity>, method, req] and `<svc>Keys.<entity>` is declared, so every CRUD mutation of that entity on the service (which invalidates exactly that scope) refreshes the read. Without it only a CRUD read is entity-scoped (by its name); a custom read sits at service scope and only `<svc>Keys.all` reaches it, so a CreateRun leaves LastRunPerWorkflow stale. The entity is DECLARED, never inferred from a `<entity>_id` request field — that field names what the read is filtered by, not what it reads. Name the entity's proto message exactly (`Run`, not `run`): a CRUD entity of the service or a message it declares. Generate refuses the marker with no entity, on an rpc that generates a useMutation (a custom mutation already invalidates the whole service), on a CRUD rpc keyed under a different entity, and on a name that is no entity of the service. Read on every `forge generate`.",
+			Placement: "leading full-line comment above the `rpc` line, or a trailing comment on it — same as forge:mutation",
+			Example:   "// forge:query-scope Run — reads runs; a run write must refresh it.\nrpc LastRunPerWorkflow(LastRunPerWorkflowRequest) returns (LastRunPerWorkflowResponse) {\n  option idempotency_level = NO_SIDE_EFFECTS;\n}",
 		},
 		{
 			Name:      codegen.ProtoMarkerCustom,

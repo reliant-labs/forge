@@ -31,6 +31,16 @@ import (
 //     gets useListItemsInfinite, whose request has no pageToken (the hook
 //     owns it) and whose `select` reshapes `{ pages }`.
 //
+// A HOOK-KIND FLIP under an owned starter test (reliant #1508): Version is
+// born a mutation, so its starter row fires mutateAsync; declaring
+// NO_SIDE_EFFECTS later makes it a useQuery. `forge generate` must print that
+// row's line and new body, `forge lint --conventions` must fail on it, and
+// the remediation both name (delete + `forge project rescaffold`) must clear
+// it.
+//
+// A DECLARED ENTITY SCOPE: ItemStats carries `// forge:query-scope Item`, so
+// its key sits under item and a CreateItem refetches it (vitest, below).
+//
 // And one RUNTIME property, under the project's own vitest: the scaffolded
 // mockTransport create()s both directions, like a real transport — a
 // handler sees the full request and a partial fixture comes back as the full
@@ -59,21 +69,31 @@ func TestE2EGeneratedHooksReadNoSideEffectsAndTypeMutationContext(t *testing.T) 
 	addCorpusForgePkgReplace(t, projectDir)
 	runCmd(t, projectDir, forgeBin, "scaffold", "service", "item")
 
-	// A CRUD entity for the mutation (CreateItem), and a custom read named
-	// as a noun that declares itself side-effect free.
+	// A CRUD entity for the mutation (CreateItem); a custom read named as a
+	// noun (Version), born WITHOUT NO_SIDE_EFFECTS so it starts as a
+	// mutation and its starter row is written for one; and a custom read of
+	// items (ItemStats) that declares its entity scope.
 	protoPath := filepath.Join(projectDir, "proto", "services", "item", "v1", "item.proto")
 	proto := readFileE2E(t, protoPath)
 	const rpcTODO = "  // TODO: Add your RPC methods here.\n"
 	if !strings.Contains(proto, rpcTODO) {
 		t.Fatalf("scaffolded item.proto no longer carries the RPC TODO anchor:\n%s", proto)
 	}
-	proto = strings.Replace(proto, rpcTODO,
-		"  rpc Version(VersionRequest) returns (VersionResponse) {\n    option idempotency_level = NO_SIDE_EFFECTS;\n  }\n", 1)
+	const versionRPC = "  rpc Version(VersionRequest) returns (VersionResponse);\n"
+	proto = strings.Replace(proto, rpcTODO, versionRPC+
+		"  // forge:query-scope Item — reads items, so an item write must refresh it.\n"+
+		"  rpc ItemStats(ItemStatsRequest) returns (ItemStatsResponse) {\n    option idempotency_level = NO_SIDE_EFFECTS;\n  }\n", 1)
 	proto += `
 message VersionRequest {}
 
 message VersionResponse {
   string version = 1;
+}
+
+message ItemStatsRequest {}
+
+message ItemStatsResponse {
+  int32 count = 1;
 }
 
 // forge:entity
@@ -89,11 +109,53 @@ message Item {
 	if got := readFileE2E(t, protoPath); !strings.Contains(got, "rpc CreateItem(") {
 		t.Fatalf("scaffold did not inject CreateItem — with no mutation the context half is vacuous:\n%s", got)
 	}
-	runCmd(t, projectDir, forgeBin, "generate")
 
 	webDir := filepath.Join(projectDir, "frontends", "web")
 	hooksFile := naming.ServiceHookFile("ItemService")
 	hooksModule := "@/hooks/" + strings.TrimSuffix(hooksFile, ".ts")
+	testRel := filepath.ToSlash(filepath.Join("frontends", "web", "src", "hooks",
+		strings.TrimSuffix(strings.TrimSuffix(hooksFile, ".ts"), "_gen")+".test.tsx"))
+
+	// ── THE FLIP: Version declares NO_SIDE_EFFECTS under an owned starter ─
+	// The starter row was written for a mutation. Regenerating flips the
+	// hook and leaves the row calling mutateAsync on a useQuery (reliant
+	// #1508): generate must name the row, and the conventions lane must
+	// fail on it until it is fixed.
+	starter := readFileE2E(t, filepath.Join(projectDir, testRel))
+	versionRow := strings.Index(starter, `it("useVersion resolves`)
+	if versionRow < 0 || !strings.Contains(starter[versionRow:], "renderHook(() => useVersion(), { wrapper })") {
+		t.Fatalf("precondition: the starter's Version row is a mutation row:\n%s", starter)
+	}
+	rowLine := strings.Count(starter[:versionRow], "\n") + 1
+	proto = readFileE2E(t, protoPath)
+	proto = strings.Replace(proto, versionRPC,
+		"  rpc Version(VersionRequest) returns (VersionResponse) {\n    option idempotency_level = NO_SIDE_EFFECTS;\n  }\n", 1)
+	writeFileE2E(t, protoPath, proto)
+	genOut := runCmdKeep(t, projectDir, forgeBin, "generate")
+	for _, want := range []string{
+		"useVersion is now a useQuery (was a useMutation)",
+		testRel + ": a scaffold-once starter test",
+		fmt.Sprintf("line %d: useVersion is now a useQuery", rowLine),
+		"renderHook(() => useVersion({} as never), { wrapper });",
+	} {
+		if !strings.Contains(genOut, want) {
+			t.Errorf("generate did not report %q for the flipped hook:\n%s", want, genOut)
+		}
+	}
+	lintOut, err := runCmdCombined(projectDir, 5*time.Minute, forgeBin, "lint", "--conventions", "--no-fix")
+	if err == nil || !strings.Contains(lintOut, "forgeconv-frontend-hook-test-shape") ||
+		!strings.Contains(lintOut, fmt.Sprintf("%s:%d", testRel, rowLine)) {
+		t.Fatalf("`forge lint --conventions` must fail on the stale row at %s:%d (err %v):\n%s", testRel, rowLine, err, lintOut)
+	}
+	// The remediation both name: delete the file and rescaffold it.
+	if err := os.Remove(filepath.Join(projectDir, testRel)); err != nil {
+		t.Fatal(err)
+	}
+	runCmd(t, projectDir, forgeBin, "project", "rescaffold", testRel)
+	if fresh := readFileE2E(t, filepath.Join(projectDir, testRel)); !strings.Contains(fresh, "renderHook(() => useVersion({} as never), { wrapper })") {
+		t.Fatalf("rescaffold did not write a query row for useVersion:\n%s", fresh)
+	}
+	runCmd(t, projectDir, forgeBin, "lint", "--conventions", "--no-fix")
 
 	// The classification, read off the artifact: Version is built by the
 	// query factory and has a key-factory entry of its own.
@@ -104,6 +166,8 @@ message Item {
 		"export const useCreateItem = createMutationHook<",
 		"export const useListItemsInfinite = createInfiniteQueryHook<",
 		`listItemsInfinite: keys.infinite("listItems", ListItemsRequestSchema, "item")`,
+		// forge:query-scope Item: the custom read is keyed under item.
+		`itemStats: keys.query("itemStats", ItemStatsRequestSchema, "item")`,
 	} {
 		if !strings.Contains(hooks, want) {
 			t.Errorf("generated hooks are missing %q:\n%s", want, hooks)
@@ -117,6 +181,8 @@ message Item {
 
 	// ── RUNTIME: full messages both ways, and the starter's infinite row ─
 	writeFileE2E(t, filepath.Join(webDir, "src", "app", "hookkinds", "transport.test.tsx"), hookKindsTransportFixture)
+	writeFileE2E(t, filepath.Join(webDir, "src", "app", "hookkinds", "scope.test.tsx"),
+		fmt.Sprintf(hookKindsScopeFixture, hooksModule))
 	runCmdTimeout(t, webDir, 5*time.Minute, "npx", "--no-install", "vitest", "run",
 		"src/app/hookkinds", "src/hooks/"+strings.TrimSuffix(strings.TrimSuffix(hooksFile, ".ts"), "_gen")+".test.tsx")
 
@@ -186,6 +252,50 @@ export function bogus() {
   });
   return wrong;
 }
+`
+
+// hookKindsScopeFixture runs under the project's vitest: a CRUD write of
+// Item (CreateItem, which invalidates [service, "item"]) refetches the
+// custom read ItemStats because `// forge:query-scope Item` keyed it there.
+// Unscoped, only `.all` reached it and it stayed stale. %s is the generated
+// hooks module specifier.
+const hookKindsScopeFixture = `import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { cleanup, renderHook, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { setTransport } from "@/lib/connect";
+import { mockTransport } from "@/lib/test-utils";
+
+import { useCreateItem, useItemStats } from "%[1]s";
+
+import type { ReactNode } from "react";
+
+afterEach(() => cleanup());
+
+describe("forge:query-scope", () => {
+  it("refetches a scoped custom read after a CRUD write of its entity", async () => {
+    let reads = 0;
+    setTransport(
+      mockTransport({
+        "ItemService.ItemStats": () => {
+          reads += 1;
+          return { count: reads };
+        },
+        "ItemService.CreateItem": { response: {} },
+      }),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const stats = renderHook(() => useItemStats({}), { wrapper });
+    await waitFor(() => expect(stats.result.current.data?.count).toBe(1));
+    const create = renderHook(() => useCreateItem(), { wrapper });
+    await create.result.current.mutateAsync({ name: "x" } as never);
+    await waitFor(() => expect(stats.result.current.data?.count).toBe(2));
+    client.clear();
+  });
+});
 `
 
 // hookKindsTransportFixture runs under the project's vitest: the scaffolded

@@ -23,21 +23,31 @@ type LeftAlone struct {
 	Path string
 	// Why says what forge found and what to do about it, in one sentence.
 	Why string
+	// Detail is the exact edits, one printed line each, when one sentence
+	// cannot carry them — the rows of a starter test a hook-kind flip left
+	// stale, with the body that replaces each.
+	Detail []string
 }
 
 var (
 	leftAloneMu sync.Mutex
-	leftAlone   = map[string]string{}
+	leftAlone   = map[string]LeftAlone{}
 )
 
 // NoteLeftAlone records that forge did not write relPath this run, and why.
 // The first reason recorded for a path wins.
 func NoteLeftAlone(relPath, why string) {
+	NoteLeftAloneDetail(relPath, why, nil)
+}
+
+// NoteLeftAloneDetail is NoteLeftAlone with the exact edits the user must
+// make, printed under the reason.
+func NoteLeftAloneDetail(relPath, why string, detail []string) {
 	relPath = slashKey(relPath)
 	leftAloneMu.Lock()
 	defer leftAloneMu.Unlock()
 	if _, ok := leftAlone[relPath]; !ok {
-		leftAlone[relPath] = why
+		leftAlone[relPath] = LeftAlone{Path: relPath, Why: why, Detail: detail}
 	}
 }
 
@@ -46,8 +56,8 @@ func LeftAloneThisRun() []LeftAlone {
 	leftAloneMu.Lock()
 	defer leftAloneMu.Unlock()
 	out := make([]LeftAlone, 0, len(leftAlone))
-	for p, why := range leftAlone {
-		out = append(out, LeftAlone{Path: p, Why: why})
+	for _, l := range leftAlone {
+		out = append(out, l)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
@@ -56,5 +66,5 @@ func LeftAloneThisRun() []LeftAlone {
 func resetLeftAlone() {
 	leftAloneMu.Lock()
 	defer leftAloneMu.Unlock()
-	leftAlone = map[string]string{}
+	leftAlone = map[string]LeftAlone{}
 }

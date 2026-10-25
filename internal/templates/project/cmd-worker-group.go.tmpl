@@ -7,8 +7,9 @@
 // REAL per-worker subcommand, in the workers/ command group. `<bin> {{.Name}}`
 // runs a supervisor process for ONLY the {{.Name}} worker: no Connect services
 // are mounted (cmd.MountNone), no other workers/operators run. The command
-// composes ITSELF — its Workers closure names the TYPED app.Worker{{.FieldName}}()
-// accessor DIRECTLY; there is no name filter and no re-selection. Sibling
+// composes ITSELF — its Workers closure runs the TYPED (*app.Components).Worker{{.FieldName}}
+// accessor (worker{{.FieldName}}, re-derived next door in {{.Name}}_accessor_gen.go);
+// there is no name filter and no re-selection. Sibling
 // components are still CONSTRUCTED by the DI graph (cross-component reads stay
 // nil-safe); only this worker is supervised.
 //
@@ -37,7 +38,7 @@ func New{{.FieldName}}Cmd(deps cmd.Deps) *cobra.Command {
 			deps.Cmd = c
 			return cmd.Serve(c.Context(), deps, cmd.ServeSpec{
 				Mount:   cmd.MountNone,
-				Workers: func(c *app.Components) []serverkit.Worker { return []serverkit.Worker{c.Worker{{.FieldName}}()} },
+				Workers: func(c *app.Components) []serverkit.Worker { return []serverkit.Worker{worker{{.FieldName}}(c)} },
 			})
 		},
 	}

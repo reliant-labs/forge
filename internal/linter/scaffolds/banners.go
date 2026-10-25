@@ -330,6 +330,10 @@ func isKnownTier1(rel, noTmpl string) bool {
 		// cmd-svc-mount-gen.go, because a collision rename can change its
 		// spelling after the service is born.
 		"cmd-svc-mount-gen.go",
+		// cmd-component-accessor-gen.go is the same split for a per-worker /
+		// per-operator subcommand: the accessor binding it runs, re-derived
+		// from whether internal/app declares the accessor yet.
+		"cmd-component-accessor-gen.go",
 		"cmd-svc-register.go",
 		"cmd-worker-register.go", "cmd-operator-register.go",
 		// internal/app/mounts_services.go — the HTTP-mount surface, a pure

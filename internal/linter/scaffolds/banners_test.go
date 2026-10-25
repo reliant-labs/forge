@@ -60,6 +60,7 @@ func TestClassifyTemplate(t *testing.T) {
 		// the collision-aware Mount<Svc> method expression can change spelling
 		// when an unrelated package is added, so it cannot be frozen at birth.
 		{"internal/templates/project/cmd-svc-mount-gen.go.tmpl", tier1Generated},
+		{"internal/templates/project/cmd-component-accessor-gen.go.tmpl", tier1Generated},
 		// root.go and <svc>.go themselves are the USER's: the command tree's
 		// shape and flags, and each service subcommand's RunE and help text.
 		{"internal/templates/project/cmd-tree-root.go.tmpl", tier2Scaffold},

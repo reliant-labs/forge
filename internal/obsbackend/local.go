@@ -412,8 +412,7 @@ func (l Local) declared() []metrics.Schema {
 }
 
 // evalErr maps an evaluator failure to a backend error: a refused request is
-// exit 1, a missing metric names the command that lists them, and a failure of
-// the runner keeps its own status.
+// exit 1, and a failure of the runner keeps its own status.
 func (l Local) evalErr(err error) error {
 	var be *Error
 	switch {
@@ -421,9 +420,6 @@ func (l Local) evalErr(err error) error {
 		return nil
 	case errors.As(err, &be):
 		return err
-	case errors.Is(err, obsquery.ErrMetricNotFound):
-		name := strings.TrimPrefix(err.Error(), obsquery.ErrMetricNotFound.Error()+": ")
-		return Wrong("no metric %q in the local ClickStack for the range", name).With(Cmd("forge", "obs", "metrics", "list", l.Env, "--contains", name))
 	case errors.Is(err, obsquery.ErrInvalid):
 		return Wrong("%s", strings.ReplaceAll(err.Error(), obsquery.ErrInvalid.Error()+": ", ""))
 	}
@@ -490,6 +486,13 @@ func (l Local) evalPanel(ctx context.Context, req MetricsQueryRequest) (MetricsQ
 	out := metricsResult(pr)
 	if err != nil {
 		return out, l.evalErr(err)
+	}
+	// The evaluator draws an absent metric as an empty series (a dashboard's
+	// "no data in this window"). A command that asked for nothing but absent
+	// metrics is more likely a misspelt name, so it says so and exits 1.
+	if len(p.Series) > 0 && len(pr.Absent) == len(p.Series) {
+		name := pr.Absent[0]
+		return out, Wrong("no metric %q in the local ClickStack for the range", name).With(Cmd("forge", "obs", "metrics", "list", l.Env, "--contains", name))
 	}
 	return out, nil
 }

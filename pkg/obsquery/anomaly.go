@@ -2,7 +2,6 @@ package obsquery
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -450,11 +449,11 @@ func EvalAnomalies(ctx context.Context, run Runner, q AnomalyQuery) (AnomalyResu
 	// is an absent series, not a failure.
 	read := func(sc Scope, kind string, ps PanelSeries, o EvalOptions) (MetricPanelResult, error) {
 		r, err := EvalMetricPanel(ctx, run, sc, anomalyPanel(kind, ps), o)
-		if errors.Is(err, ErrMetricNotFound) {
-			return MetricPanelResult{}, nil
-		}
 		if err != nil {
 			return r, fmt.Errorf("service anomaly: %s over %s: %w", ps.Label, sc.Start.Format(time.RFC3339), err)
+		}
+		if len(r.Absent) > 0 {
+			return MetricPanelResult{}, nil
 		}
 		note(r.Warnings)
 		res.Truncated = res.Truncated || r.Truncated

@@ -2,8 +2,10 @@ package obsquery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -88,7 +90,10 @@ type MetricPanelResult struct {
 	Truncated   bool
 	StepSeconds int64
 	// Warnings are "<code>" or "<code>: <detail>"; see WarningCode.
-	Warnings   []string
+	Warnings []string
+	// Absent are the metrics of panel series that have no data in the scope
+	// and range (each with a metric_absent warning). Their series are empty.
+	Absent     []string
 	Statements []NamedStmt
 }
 
@@ -98,7 +103,14 @@ const (
 	WarnMixedTemporality = "mixed_temporality"
 	WarnStepRaised       = "step_raised"
 	WarnStoredAsNKinds   = "metric_stored_as_n_kinds"
-	warnDetailSeparator  = ": "
+	// WarnMetricAbsent: a series' metric has no data in the scope and range,
+	// so the series is empty. Absence is a fact about the window, not a
+	// malformed panel: the panel's other series are still drawn.
+	WarnMetricAbsent = "metric_absent"
+	// WarnKindMismatch: the series declares a metric kind the metric is not
+	// stored as; the stored kind is read.
+	WarnKindMismatch    = "metric_kind_mismatch"
+	warnDetailSeparator = ": "
 )
 
 // WarningCode is the machine-readable part of a warning.
@@ -211,6 +223,8 @@ type seriesPlan struct {
 	q        MetricQuery
 	agg      Agg
 	zeroFill bool
+	// absent: the metric has no data in scope; nothing is compiled or run.
+	absent bool
 }
 
 type groupData struct {
@@ -254,6 +268,13 @@ func (ev *evaluator) stmt(purpose string, st Stmt) {
 // forge's local backend both call it. The panel's kind decides the shape: a
 // line is a time series; a number is the range reduction plus a sparkline; a
 // table or bar is the top groups by their range reduction.
+//
+// A series whose metric has no data in the scope and range is empty, with a
+// metric_absent warning and its name in Absent, never an error: a counter that
+// only exists once something fails, or a metric outside the selected
+// environments, is "no data in this window", and the panel's other series
+// still draw. Its declared aggregation is still validated against its declared
+// kind.
 func EvalMetricPanel(ctx context.Context, run Runner, scope Scope, p Panel, o EvalOptions) (MetricPanelResult, error) {
 	if err := p.Validate(); err != nil {
 		return MetricPanelResult{}, err
@@ -333,10 +354,16 @@ func (ev *evaluator) plan(ctx context.Context) error {
 				return err
 			}
 			if info, err = ParseLookup(rows, want); err != nil {
-				if err == ErrMetricNotFound {
-					return fmt.Errorf("%w: %s", err, ps.Field)
+				if errors.Is(err, ErrMetricNotFound) {
+					if err := ev.planAbsent(ps, agg, ql, want); err != nil {
+						return err
+					}
+					continue
 				}
 				return err
+			}
+			if want != MetricUnknown && info.Type != want {
+				ev.warn(WarnKindMismatch, fmt.Sprintf("%s is declared %s but stored as %s; reading %s", ps.Field, want, info.Type, info.Type))
 			}
 			if info.StoredKinds > 1 {
 				ev.warn(WarnStoredAsNKinds, fmt.Sprintf("%s is stored as %d metric kinds; reading %s", ps.Field, info.StoredKinds, info.Type))
@@ -388,6 +415,37 @@ func (ev *evaluator) plan(ctx context.Context) error {
 	return nil
 }
 
+// planAbsent records a series whose metric has no data in scope: an empty
+// series with a warning. A declared kind still validates the aggregation, so a
+// malformed panel is refused whether or not its metric has data.
+func (ev *evaluator) planAbsent(ps PanelSeries, agg Agg, ql float64, want MetricType) error {
+	info := MetricInfo{Type: want, Monotonic: want == MetricSum}
+	resolved := agg
+	if want != MetricUnknown {
+		r, err := ResolveAgg(info, agg)
+		if err != nil {
+			return fmt.Errorf("series %q: %w", ps.Label, err)
+		}
+		resolved = r
+	}
+	where := "in this time range"
+	if ev.scope.EnvRestricted {
+		where = "in the selected environments in this time range"
+	}
+	ev.warn(WarnMetricAbsent, fmt.Sprintf("%s has no data %s", ps.Field, where))
+	if !slices.Contains(ev.res.Absent, ps.Field) {
+		ev.res.Absent = append(ev.res.Absent, ps.Field)
+	}
+	// An absent counter in a formula or ratio is zero (a failure counter that
+	// was never incremented), as a missing bucket of a present one is.
+	zeroFill := want != MetricUnknown && MetricQuery{Info: info}.family(resolved) == famCounter
+	ev.plans = append(ev.plans, seriesPlan{ps: ps, agg: resolved, zeroFill: zeroFill, absent: true})
+	ev.res.Meta = append(ev.res.Meta, SeriesMeta{
+		Label: ps.Label, Metric: ps.Field, Info: info, Agg: resolved, Quantile: ql, ValueUnit: ValueUnit(info, resolved),
+	})
+	return nil
+}
+
 func (ev *evaluator) readDeclared(ctx context.Context, st Stmt, into map[string]bool) error {
 	rows, err := ev.run(ctx, st)
 	if err != nil {
@@ -421,6 +479,10 @@ func (ev *evaluator) pass(ctx context.Context, reduce bool, step int64) ([]map[s
 	out := make([]map[string]*groupData, len(ev.plans))
 	ev.totals = make([]int, len(ev.plans))
 	for i, pl := range ev.plans {
+		if pl.absent {
+			out[i] = map[string]*groupData{}
+			continue
+		}
 		q := pl.q
 		q.Reduce, q.StepSeconds = reduce, step
 		st, err := q.Compile()

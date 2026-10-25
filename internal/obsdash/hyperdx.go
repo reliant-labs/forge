@@ -179,6 +179,11 @@ func sourceFor(s Signal) string {
 func renderDashboard(d Dashboard) (HyperDXDashboard, error) {
 	hd := HyperDXDashboard{Name: DashboardName(d), Tags: []string{"forge", "generated"}, Tiles: []HyperDXTile{}}
 	for _, f := range d.Filters {
+		// HyperDX dropdowns are always global. Applying a targeted RPC filter
+		// globally would silently blank process runtime or billing panels.
+		if len(f.PanelIDs) > 0 {
+			continue
+		}
 		sig := f.Signal
 		if sig == "" {
 			sig = Traces

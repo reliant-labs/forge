@@ -27,11 +27,14 @@ func writeAlertDefaults(t *testing.T, in obsdash.AlertInput) string {
 	}
 	files[obsdash.ProjectSpecFile] = project
 	for _, s := range in.Services {
-		part, err := json.Marshal(obsdash.ServicePart{Version: obsdash.PartsVersion, Service: s.Name, Alert: s})
+		part, err := json.Marshal(struct {
+			Version string               `json:"version"`
+			Alert   obsdash.AlertService `json:"alert"`
+		}{obsdash.PartsVersion, s})
 		if err != nil {
 			t.Fatal(err)
 		}
-		files[obsdash.ServiceSpecFile(s.Name)] = part
+		files[obsdash.SpecDir+"/alert-service-"+s.Name+"_gen.json"] = part
 	}
 	for rel, body := range files {
 		path := filepath.Join(dir, filepath.FromSlash(rel))

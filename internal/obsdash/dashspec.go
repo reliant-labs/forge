@@ -39,6 +39,8 @@ type (
 	Annotation = dashspec.Annotation
 	// Dashboard is dashspec.Dashboard.
 	Dashboard = dashspec.Dashboard
+	// Section is dashspec.Section.
+	Section = dashspec.Section
 	// Problem is dashspec.Problem.
 	Problem = dashspec.Problem
 )

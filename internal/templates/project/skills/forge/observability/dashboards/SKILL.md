@@ -1,28 +1,47 @@
 ---
 name: observability/dashboards
-description: The dashboards forge generates from your services (overview, per-service RED per rpc, frontend), the HyperDX files and the renderer-neutral spec they come from, how to override one, why alerts are not provisioned, and how a deliverer binds source names.
+description: Process/role dashboards derived from deployed executable and composition commands, metric-backed overview, renderer-neutral sections and targeted filters, safe retirement and overrides, and HyperDX delivery.
 ---
 
 # Observability: generated dashboards
 
-`forge generate` (step "observability dashboards") derives dashboards from the
-project's own metadata: the proto services and rpcs, the frontends and whether a
-database exists. It runs for service projects with observability on and at least
-one service.
+`forge generate` (step "observability dashboards") derives dashboards from deployed
+workloads: executable plus command/composition root, matching the workload's
+`OTEL_SERVICE_NAME` (or workload name) in the evaluated `workloads.k` `ALL`
+structural inventory. It does not require environment runtime bindings to render:
+a newly scaffolded operator may have prod's cluster still unbound. Environment-only
+name or telemetry-identity overrides must retain these declared identities or use
+an owned dashboard override; generation reports that boundary explicitly.
+API, worker and gateway roles of one executable stay separate. A worker with no RPCs still gets runtime and workload
+panels. Graph route sets and typed mount inventory establish RPC ownership;
+proto package names never decide which process serves them. Observability and
+codegen must be enabled. An invalid structural inventory fails before dashboard
+writes or retirement; invalid environment bindings are a separate deploy gate.
 
 | File                                                          | What                                                                                                                                                                                             |
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `deploy/observability/dashboards/<project>-overview_gen.json` | requests, server errors, p95/p99, request rate and error rate per service, RED table, top errors, DB latency, recent error logs                                                                  |
-| `.../<project>-service-<svc>_gen.json`                        | per service: a requests / error-rate / latency row for EVERY rpc, a RED-by-rpc table, DB calls, Go runtime (memory, GC goal, goroutines, allocation), error logs and logs scoped to that service |
+| `deploy/observability/dashboards/<project>-overview_gen.json` | Compact unsampled request/error counters and duration histogram health; process comparison, saturation, errors and releases |
+| `.../<project>-process-<binary>-<role>_gen.json` | Bounded RPC health/drilldown, database (when reached), Go runtime once, process logs and workload saturation |
 | `.../<project>-frontend_gen.json`                             | with a web frontend: JS errors, sessions, page views, failed API calls, LCP/INP/CLS p75, page-load percentiles, browser API latency and calls by URL — scoped to the web frontends' `service.name`s (`<project>-<frontend>`, otel_gen.ts's `SERVICE_NAME`) |
-| `.../<project>-service-<svc>_gen.ndjson`                      | per service: its error-log saved search                                                                                                                                                          |
-| `deploy/observability/spec/*_gen.json`                        | the renderer-neutral model all of the above come from: `project_gen.json` and one `service-<svc>_gen.json` per service                                                                           |
+| `.../<project>-process-<binary>-<role>_gen.ndjson` | Process error-log saved search |
+| `deploy/observability/spec/*_gen.json` | `project_gen.json`, one `process-<binary>-<role>_gen.json` per process and independent `alert-service-<svc>_gen.json` inputs |
 
-Every per-service output is its own file, so two branches that each add a
-service merge without a conflict, and the merge is already what `forge generate`
-writes.
+A process's aliases across environments share a dashboard. Obsolete generated
+service dashboards, spec parts and saved searches retire only when their bytes
+still match the recorded checksum. Hand-owned overrides and modified generated
+files stay on disk; workspace copies are not generator outputs.
 
 Every dashboard has `service.name` and `deployment.environment.name` filters.
+Process RPC procedure filters target metric RPC panels only; RPC service/method
+filters target trace drilldowns. Runtime and workload panels are unaffected.
+Metrics carry the canonical full `procedure`, not invented RPC attributes.
+
+Optional generic viewer metadata: `sections: [{id, title}]` on a dashboard,
+`section` on panels, and `panelIds` on filters. Empty/absent targets retain the
+original global behavior; every non-empty target and section must be declared.
+Sections are presentation groups, not authorization or implicit filter scope.
+HyperDX cannot target a filter to a subset of tiles, so it omits those dropdowns
+rather than silently applying them globally.
 
 ## What the panels match
 
@@ -37,9 +56,11 @@ Panels are keyed on what the runtime really emits, not on a convention:
 - Log lines carry `procedure` WITH a leading slash, which is how a service's
   logs are scoped (`LogAttributes['procedure']`).
 - DB: the ORM's bun hook opens client spans with `db.system` and `db.operation`.
+- Health: `rpc.server.calls`, `rpc.server.errors` (server error class only),
+  `rpc.server.duration` (histogram seconds). These are unsampled; trace tables
+  are drilldowns, not authoritative request totals.
 - Runtime: `go.memory.used`, `go.memory.gc.goal`, `go.memory.allocated`,
-  `go.goroutine.count`. These are per PROCESS, and one process serves every
-  service, so on a service dashboard narrow with the `service.name` filter.
+  `go.goroutine.count`, scoped to the deployed process exactly once.
 - Browser: spans from the HyperDX SDK carry the `rum.sessionId` resource
   attribute; `documentLoad`, `webvitals` and fetch/XHR spans (`component`).
   An uncaught error, an unhandled rejection and `console.error(err)` are
@@ -235,7 +256,7 @@ exists forge stops writing (and removes a pristine) `x_gen.json`. Any other
 
 They ride in the manifests layer, outside every `manifests/<cluster>/` tree, so nothing is applied from them.
 
-A file you own is one dashboard object in the spec vocabulary (an `id`, a `title`, `filters`, `annotations` and a `panels` array; the shape of a `dashboard` in `spec/service-<svc>_gen.json`). Name it like a generated dashboard to replace that one: `shop-overview.json` replaces `shop-overview_gen.json`. A file with `tiles` is HyperDX's format; it is for the local stack, ships nowhere and replaces nothing. Ad-hoc console edits are saved as code by writing the dashboard JSON here and committing it.
+A file you own is one dashboard object in the spec vocabulary (an `id`, a `title`, `filters`, `annotations` and a `panels` array; the shape of a `dashboard` in `spec/process-<binary>-<role>_gen.json`). Name it like a generated dashboard to replace that one: `shop-overview.json` replaces `shop-overview_gen.json`. A file with `tiles` is HyperDX's format; it is for the local stack, ships nowhere and replaces nothing. Ad-hoc console edits are saved as code by writing the dashboard JSON here and committing it.
 
 Every file is validated at the cut, and `forge obs dashboards check` runs the same checks and lists what would ship. Errors read `deploy/observability/dashboards/x.json:12:7: panels[2].kind: "cube" is not one of: number, line, table, search, bar, heatmap, sql, issues, sessions, funnel`.
 
@@ -247,7 +268,7 @@ The _Workloads_ dashboard (CPU/memory against requests and limits, restarts and 
 
 ## Alerts
 
-Dashboards embed no alerts (HyperDX 2.40 validates an alert declared in a provisioned file and never evaluates it, hyperdx PR #3233). Alerting is declared in KCL instead: `forge.AlertRule`, with generated defaults (telemetry, customer-metadata and platform) in `alert-defaults_gen.json`, and each service's entry in its `spec/service-<svc>_gen.json`. Depth: `observability/alerts`.
+Dashboards embed no alerts (HyperDX 2.40 validates an alert declared in a provisioned file and never evaluates it, hyperdx PR #3233). Alerting is declared in KCL instead: `forge.AlertRule`, with generated defaults (telemetry, customer-metadata and platform) in `alert-defaults_gen.json`, and each service's independent `spec/alert-service-<svc>_gen.json`. Depth: `observability/alerts`.
 
 ## The seam: spec, then renderer
 

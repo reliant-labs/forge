@@ -18,8 +18,8 @@ const (
 	// DASHBOARD_PROVISIONER_DIR.
 	DashboardsDir = "deploy/observability/dashboards"
 	// SpecDir holds the serialized Spec, the renderer-neutral model, as its
-	// parts: ProjectSpecFile and one ServiceSpecFile per service (see
-	// ServicePart for why it is not one file). It sits beside the dashboards
+	// parts: ProjectSpecFile and one ProcessSpecFile per service (see
+	// ProcessPart for why it is not one file). It sits beside the dashboards
 	// directory, not in it, because the provisioner reads every *.json it
 	// finds there. ReadSpec assembles it.
 	SpecDir = "deploy/observability/spec"
@@ -32,9 +32,9 @@ const (
 	LegacySpecFile = "deploy/observability/dashboard-spec_gen.json"
 )
 
-// ServiceSpecFile is the project-relative file of service's ServicePart.
-func ServiceSpecFile(service string) string {
-	return SpecDir + "/service-" + service + genSuffix
+// ProcessSpecFile is the project-relative file of service's ProcessPart.
+func ProcessSpecFile(service string) string {
+	return SpecDir + "/process-" + service + genSuffix
 }
 
 // SavedSearchesFile is the project-relative file holding service's HyperDX
@@ -43,9 +43,9 @@ func ServiceSpecFile(service string) string {
 // mounts) under an extension the dashboard provisioner ignores; the compose
 // entrypoint upserts every *_gen.ndjson there, because the file provisioner
 // has no saved-search path. One file per service, for the reason in
-// ServicePart.
+// ProcessPart.
 func SavedSearchesFile(project, service string) string {
-	return DashboardsDir + "/" + project + "-service-" + service + ndjsonGenSuffix
+	return DashboardsDir + "/" + project + "-process-" + service + ndjsonGenSuffix
 }
 
 // genSuffix marks the files forge owns and rewrites; ndjsonGenSuffix the
@@ -117,7 +117,7 @@ func Write(projectDir string, in Input, cs *checksums.FileChecksums) ([]string, 
 		return nil, err
 	}
 	for _, part := range parts {
-		if err := emitJSON(emit, ServiceSpecFile(part.Service), part); err != nil {
+		if err := emitJSON(emit, ProcessSpecFile(part.Process.Name), part); err != nil {
 			return nil, err
 		}
 		searches, err := RenderHyperDXSavedSearches(Spec{Project: sp.Project, SavedSearches: part.SavedSearches})
@@ -133,11 +133,19 @@ func Write(projectDir string, in Input, cs *checksums.FileChecksums) ([]string, 
 			nd.Write(b)
 			nd.WriteByte('\n')
 		}
-		if err := emit(SavedSearchesFile(sp.Project, part.Service), nd.Bytes()); err != nil {
+		if err := emit(SavedSearchesFile(sp.Project, part.Process.Name), nd.Bytes()); err != nil {
 			return nil, err
 		}
 	}
 
+	// Alert service inventory remains disjoint per RPC service, independently
+	// of dashboard ownership. Adding an RPC must not conflict in project.json.
+	for _, s := range AlertInputOf(in).Services {
+		part := alertServicePart{Version: PartsVersion, Alert: s}
+		if err := emitJSON(emit, alertServiceSpecFile(s.Name), part); err != nil {
+			return nil, err
+		}
+	}
 	alertDefaults, err := MarshalAlertDefaults(AlertInputOf(in))
 	if err != nil {
 		return nil, err
@@ -220,8 +228,8 @@ func ReadSpec(projectDir string) (sp Spec, ok bool, err error) {
 	return Assemble(project, parts), true, nil
 }
 
-// readParts reads ProjectSpecFile and every ServiceSpecFile.
-func readParts(projectDir string) (ProjectPart, []ServicePart, bool, error) {
+// readParts reads ProjectSpecFile and every ProcessSpecFile.
+func readParts(projectDir string) (ProjectPart, []ProcessPart, bool, error) {
 	var project ProjectPart
 	raw, err := os.ReadFile(filepath.Join(projectDir, filepath.FromSlash(ProjectSpecFile)))
 	if errors.Is(err, os.ErrNotExist) {
@@ -233,19 +241,19 @@ func readParts(projectDir string) (ProjectPart, []ServicePart, bool, error) {
 	if err := decodePart(ProjectSpecFile, raw, &project, &project.Version); err != nil {
 		return ProjectPart{}, nil, false, err
 	}
-	matches, err := filepath.Glob(filepath.Join(projectDir, filepath.FromSlash(SpecDir), "service-*"+genSuffix))
+	matches, err := filepath.Glob(filepath.Join(projectDir, filepath.FromSlash(SpecDir), "process-*"+genSuffix))
 	if err != nil {
 		return ProjectPart{}, nil, false, err
 	}
 	sort.Strings(matches)
-	parts := make([]ServicePart, 0, len(matches))
+	parts := make([]ProcessPart, 0, len(matches))
 	for _, m := range matches {
 		rel := SpecDir + "/" + filepath.Base(m)
 		raw, err := os.ReadFile(m)
 		if err != nil {
 			return ProjectPart{}, nil, false, err
 		}
-		var part ServicePart
+		var part ProcessPart
 		if err := decodePart(rel, raw, &part, &part.Version); err != nil {
 			return ProjectPart{}, nil, false, err
 		}

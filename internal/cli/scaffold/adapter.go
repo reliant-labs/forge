@@ -63,7 +63,7 @@ vendor SDK or a storage gateway rather than one HTTP API, so the scaffold
 takes a logger and the traced HTTP client, and its HealthCheck fails until you
 write a probe. --base-url scaffolds the HTTP-API shape instead: a config
 block config.<Name>Config with one base_url leaf, bound to <NAME>_BASE_URL (or
-to the env var given, --base-url=STRIPE_API_URL), and a HealthCheck against
+to the env var --base-url-env=STRIPE_API_URL names), and a HealthCheck against
 <base_url>/health with httptest-stub tests.
 
 It ends with a 'forge generate' run, which compiles the config block (when
@@ -78,7 +78,7 @@ Skill: forge skill load adapter
 
 Example:
   forge scaffold adapter stripe --base-url
-  forge scaffold adapter stripe --base-url=STRIPE_API_URL
+  forge scaffold adapter stripe --base-url-env STRIPE_API_URL
   forge scaffold adapter pubsubpull
   forge scaffold adapter pricing_feed --dry-run`,
 		Args: cobra.ExactArgs(1),

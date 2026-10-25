@@ -1083,7 +1083,7 @@ The --type flag picks the scaffold shape:
 
 An adapter has no configuration until you ask for it: --base-url composes a
 config block with one base_url leaf (bound to <NAME>_BASE_URL, or to the env
-var given as --base-url=STRIPE_API_URL) for an HTTP API with one base URL.
+var --base-url-env names) for an HTTP API with one base URL.
 
 It ends with a 'forge generate' run, which writes the package's mock and
 middleware_gen.go and wires it into internal/app/compose.go, so the next

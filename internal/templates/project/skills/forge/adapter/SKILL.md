@@ -73,7 +73,7 @@ type charger interface { CreateCharge(ctx context.Context, in CreateChargeInput)
 
 ## Configuration
 
-An adapter's settings — base URL, account IDs, API keys, timeouts — are configuration, not dependencies. Not every adapter has a base URL (a queue, a vendor SDK, a storage gateway), so none is assumed: `forge scaffold adapter <name>` alone writes no config, and its `HealthCheck` fails until you write a probe. For an HTTP API with one base URL, `forge scaffold adapter <name> --base-url` declares a `<Name>Config` message with a `base_url` leaf (env `<NAME>_BASE_URL`, or the name given: `--base-url=STRIPE_API_URL`) in `proto/<project>/config/v1/config.proto`, composes it on `AppConfig`, and the adapter takes the whole block as ONE Deps field:
+An adapter's settings — base URL, account IDs, API keys, timeouts — are configuration, not dependencies. Not every adapter has a base URL (a queue, a vendor SDK, a storage gateway), so none is assumed: `forge scaffold adapter <name>` alone writes no config, and its `HealthCheck` fails until you write a probe. For an HTTP API with one base URL, `forge scaffold adapter <name> --base-url` declares a `<Name>Config` message with a `base_url` leaf (env `<NAME>_BASE_URL`, or the one `--base-url-env STRIPE_API_URL` names) in `proto/<project>/config/v1/config.proto`, composes it on `AppConfig`, and the adapter takes the whole block as ONE Deps field:
 
 ```go
 type Deps struct {

@@ -152,8 +152,9 @@ func TestAdapterWithoutBaseURLTouchesNoConfig(t *testing.T) {
 	}
 }
 
-// --base-url=ENV binds the leaf to the env var given; bare --base-url binds
-// <NAME>_BASE_URL; a malformed name is refused before anything is written.
+// --base-url binds <NAME>_BASE_URL; --base-url-env=ENV binds the env var
+// given (with or without --base-url); a malformed name is refused before
+// anything is written.
 func TestAdapterBaseURLNamesItsEnvVar(t *testing.T) {
 	for _, tc := range []struct {
 		args    []string
@@ -161,8 +162,9 @@ func TestAdapterBaseURLNamesItsEnvVar(t *testing.T) {
 		wantErr string
 	}{
 		{args: []string{"--base-url"}, wantEnv: "STRIPE_BASE_URL"},
-		{args: []string{"--base-url=STRIPE_API_URL"}, wantEnv: "STRIPE_API_URL"},
-		{args: []string{"--base-url=stripe-url"}, wantErr: "env var name"},
+		{args: []string{"--base-url-env=STRIPE_API_URL"}, wantEnv: "STRIPE_API_URL"},
+		{args: []string{"--base-url", "--base-url-env=STRIPE_API_URL"}, wantEnv: "STRIPE_API_URL"},
+		{args: []string{"--base-url-env=stripe-url"}, wantErr: "env var name"},
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
 			root := t.TempDir()

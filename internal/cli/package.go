@@ -186,16 +186,18 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	}
 
 	// --base-url is an adapter's config leaf; no other shape reads one.
-	baseURLEnv, _ := cmd.Flags().GetString("base-url")
+	// --base-url-env names its env var, and asks for the leaf by doing so.
+	wantBaseURL, _ := cmd.Flags().GetBool("base-url")
+	baseURLEnv, _ := cmd.Flags().GetString("base-url-env")
 	baseURLEnv = strings.TrimSpace(baseURLEnv)
-	if baseURLEnv != "" && pkgType != "adapter" {
+	if (wantBaseURL || baseURLEnv != "") && pkgType != "adapter" {
 		return fmt.Errorf("--base-url applies only to --type=adapter (a %s package takes its settings as a config block you declare)", pkgType)
 	}
-	if baseURLEnv == cmdutil.AdapterBaseURLDefault {
+	if wantBaseURL && baseURLEnv == "" {
 		baseURLEnv = strings.ToUpper(name) + "_BASE_URL"
 	}
 	if baseURLEnv != "" && !validEnvVarName.MatchString(baseURLEnv) {
-		return fmt.Errorf("--base-url=%s: an env var name is upper-case letters, digits and underscores, starting with a letter", baseURLEnv)
+		return fmt.Errorf("--base-url-env=%s: an env var name is upper-case letters, digits and underscores, starting with a letter", baseURLEnv)
 	}
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 

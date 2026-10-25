@@ -135,7 +135,7 @@ func TestCheckFrontendRuntimeConfigKeys_SkipsWhatItCannotCheck(t *testing.T) {
 // schema requires in the mode the document selects, and the document lacks
 // (or leaves at the self-hosted default), is refused at render, naming each.
 var cloudSchemaFields = []codegen.ConfigField{
-	{Name: "hosting", EnvVar: "HOSTING", ProtoType: "string", AllowedValues: []string{"cloud"}},
+	{Name: "hosting", EnvVar: "HOSTING", ProtoType: "string", AllowedValues: []string{"cloud", "self-hosted"}},
 	{Name: "api_url", EnvVar: "API_URL", ProtoType: "string",
 		RequiredWhen: []codegen.ConfigCondition{{Field: "hosting", Equals: "cloud"}}},
 	{Name: "supabase_url", EnvVar: "SUPABASE_URL", ProtoType: "string", DefaultValue: "http://127.0.0.1:54321",
@@ -167,14 +167,44 @@ func TestCheckFrontendRuntimeConfigKeys_RefusesAMissingRequiredKey(t *testing.T)
 	}
 }
 
+// The prod-web incident of 2026-10-24: a hotfix branch's KCL still handed
+// reliant-web its values as build-time env, so the cross-repo document was
+// {OTEL_ENDPOINT} alone. With the mode selector absent no required_when
+// condition holds, and the document read as a valid self-hosted one; the
+// bundle booted self-hosted for every user. An unstated selector is refused.
+func TestCheckFrontendRuntimeConfigKeys_RefusesADocumentThatStatesNoMode(t *testing.T) {
+	t.Parallel()
+	projectDir, rel := writeFrontendSchema(t, cloudSchemaFields...)
+	for name, doc := range map[string]map[string]string{
+		"the prod-web document": {"OTEL_ENDPOINT": "/_otel", "REGION": "eu"},
+		"selector set to blank": {"HOSTING": " ", "REGION": "eu"},
+	} {
+		err := checkFrontendRuntimeConfigKeys(projectDir, []FrontendEntity{{
+			Name: "reliant-web", Path: rel, RuntimeConfig: doc,
+		}})
+		if err == nil {
+			t.Fatalf("%s: a document that states no HOSTING mode was accepted", name)
+		}
+		for _, want := range []string{
+			"Frontend 'reliant-web'.runtime_config is missing 1 key",
+			"HOSTING (unstated: it selects the mode that decides whether API_URL, SUPABASE_URL are required",
+			`e.g. "cloud"`,
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: refusal lacks %q:\n%s", name, want, err)
+			}
+		}
+	}
+}
+
 func TestCheckFrontendRuntimeConfigKeys_AcceptsTheModesItsDocumentMeets(t *testing.T) {
 	t.Parallel()
 	projectDir, rel := writeFrontendSchema(t, cloudSchemaFields...)
 	ref := deployv1alpha1.RuntimeConfigValue{WorkloadURL: &deployv1alpha1.WorkloadURLRef{Name: "api"}}
 	cloud := "cloud"
 	for name, fe := range map[string]FrontendEntity{
-		"self-hosted (no HOSTING)": {RuntimeConfig: map[string]string{"REGION": "eu"}},
-		"cloud, every key set":     {RuntimeConfig: map[string]string{"REGION": "eu", "HOSTING": "cloud", "API_URL": "https://api", "SUPABASE_URL": "https://sb"}},
+		"self-hosted, stated":  {RuntimeConfig: map[string]string{"REGION": "eu", "HOSTING": "self-hosted"}},
+		"cloud, every key set": {RuntimeConfig: map[string]string{"REGION": "eu", "HOSTING": "cloud", "API_URL": "https://api", "SUPABASE_URL": "https://sb"}},
 		"cloud, API_URL another workload's URL": {
 			RuntimeConfig: map[string]string{"REGION": "eu", "SUPABASE_URL": "https://sb"},
 			RuntimeConfigSpec: map[string]deployv1alpha1.RuntimeConfigValue{

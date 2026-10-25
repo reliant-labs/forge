@@ -212,23 +212,23 @@ func bootStoreSeamRoundTrip(t *testing.T, projectDir string) {
 	created := post("CreateWidget", `{"name":"store-seam-proof"}`)
 	var createResp struct {
 		Widget struct {
-			Id   string `json:"id"`
+			ID   string `json:"id"`
 			Name string `json:"name"`
 		} `json:"widget"`
 	}
 	if err := json.Unmarshal(created, &createResp); err != nil {
 		t.Fatalf("parse CreateWidget response %q: %v", created, err)
 	}
-	if createResp.Widget.Id == "" || createResp.Widget.Name != "store-seam-proof" {
+	if createResp.Widget.ID == "" || createResp.Widget.Name != "store-seam-proof" {
 		t.Fatalf("CreateWidget did not return the created row: %s", created)
 	}
 
 	// Read it back. This is what a 200 alone cannot tell you.
 	listed := post("ListWidgets", `{"pageSize":10}`)
-	if !strings.Contains(string(listed), createResp.Widget.Id) {
+	if !strings.Contains(string(listed), createResp.Widget.ID) {
 		t.Errorf("the row created above did not come back from ListWidgets — it was answered but not persisted.\n"+
 			"created id: %s\nlist response: %s\nserver output:\n%s",
-			createResp.Widget.Id, listed, serverOut.String())
+			createResp.Widget.ID, listed, serverOut.String())
 	}
 	if !strings.Contains(string(listed), "store-seam-proof") {
 		t.Errorf("ListWidgets did not return the created row's data: %s", listed)

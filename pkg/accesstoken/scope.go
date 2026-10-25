@@ -24,6 +24,11 @@ const (
 	// promote). Implies deploy:read at the point of use.
 	ScopeDeployWrite Scope = "deploy:write"
 
+	// ScopeBillingRead reads the org's billing-backed cost and usage. It grants
+	// no billing management rights and is not implied by deploy or telemetry
+	// authority. Consumers must check the tenant and current grants at use.
+	ScopeBillingRead Scope = "billing:read"
+
 	// ScopeClusterManage registers, rotates and removes the org's BYO
 	// clusters — the credentials the platform uses to reach infrastructure
 	// the org owns. Its own product, not a deploy action: deploy:write moves
@@ -142,6 +147,7 @@ const (
 var AllScopes = []Scope{
 	ScopeDeployRead,
 	ScopeDeployWrite,
+	ScopeBillingRead,
 	ScopeClusterManage,
 	ScopeTokenRead,
 	ScopeTokenWrite,

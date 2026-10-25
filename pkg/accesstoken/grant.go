@@ -102,6 +102,7 @@ var scopeResourceRules = map[Scope]struct {
 var daemonBindableScopes = []Scope{
 	ScopeReliantAPI,
 	ScopeDeployRead, ScopeDeployWrite,
+	ScopeBillingRead,
 	ScopeSecretRead, ScopeSecretWrite,
 	ScopeDomainRead, ScopeDomainWrite,
 	ScopeIdentityRead, ScopeIdentityManage,

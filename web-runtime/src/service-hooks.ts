@@ -325,15 +325,53 @@ export function createQueryHook<Schema extends DescMessage, Response>(
   keyFor: (req: MessageInitShape<Schema>) => ServiceQueryKey,
   call: ServiceCall<Schema, Response>,
 ): ServiceQueryHook<Schema, Response> {
+  const optionsFor = createQueryOptions(keyFor, call);
   return <TData = Response>(
     req: MessageInitShape<Schema>,
     options?: Partial<UseQueryOptions<Response, ConnectClientError, TData>>,
   ) =>
     useQuery<Response, ConnectClientError, TData>({
-      queryKey: keyFor(req),
-      queryFn: ({ signal }) => call(req, signal),
+      ...optionsFor(req),
       ...options,
     });
+}
+
+/**
+ * The key and the fetch of one read, for code that is not a component:
+ * `queryClient.fetchQuery(getOrderQueryOptions(req))`, `prefetchQuery`,
+ * `ensureQueryData`, a route loader. They are the very entry the generated
+ * hook reads, so an imperative read and a mounted one share the cache, and a
+ * mutation's invalidation reaches both.
+ *
+ * Without it every imperative read was hand-written as
+ * `{ queryKey: keys.getOrder(req), queryFn: () => client.getOrder(req) }`:
+ * the key and the fetch stated twice, free to drift apart (a key for one
+ * request over a fetch of another caches the wrong answer under the right
+ * name), and the abort signal dropped.
+ */
+export interface ServiceQueryOptions<Response> {
+  queryKey: ServiceQueryKey;
+  queryFn: (context: { signal: AbortSignal }) => Promise<Response>;
+}
+
+/** A generated `<rpc>QueryOptions(req)`. */
+export type ServiceQueryOptionsFor<Schema extends DescMessage, Response> = (
+  req: MessageInitShape<Schema>,
+) => ServiceQueryOptions<Response>;
+
+/**
+ * createQueryOptions builds a read's `<rpc>QueryOptions(req)`: the key the
+ * generated hook uses and its fetch, with React Query's abort signal.
+ * createQueryHook is built on it, so the two cannot disagree.
+ */
+export function createQueryOptions<Schema extends DescMessage, Response>(
+  keyFor: (req: MessageInitShape<Schema>) => ServiceQueryKey,
+  call: ServiceCall<Schema, Response>,
+): ServiceQueryOptionsFor<Schema, Response> {
+  return (req) => ({
+    queryKey: keyFor(req),
+    queryFn: ({ signal }) => call(req, signal),
+  });
 }
 
 /**

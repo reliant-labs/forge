@@ -103,6 +103,8 @@ message Item {
 		`version: keys.query("version", VersionRequestSchema)`,
 		"export const useCreateItem = createMutationHook<",
 		"export const useListItemsInfinite = createInfiniteQueryHook<",
+		"export const listItemsQueryOptions = createQueryOptions<",
+		"export const versionQueryOptions = createQueryOptions<",
 		`listItemsInfinite: keys.infinite("listItems", ListItemsRequestSchema, "item")`,
 	} {
 		if !strings.Contains(hooks, want) {
@@ -147,9 +149,16 @@ message Item {
 // %s is the generated hooks module specifier.
 const hookKindsPositiveFixture = `"use client";
 
-import { useCreateItem, useListItems, useListItemsInfinite, useVersion } from "%[1]s";
+import { useQueryClient } from "@tanstack/react-query";
+
+import { listItemsQueryOptions, useCreateItem, useListItems, useListItemsInfinite, useVersion } from "%[1]s";
 
 export default function HookKindsPage() {
+  const queryClient = useQueryClient();
+  // An imperative read on the hook's own entry, typed as its response.
+  const fetchNames = async (): Promise<string[]> =>
+    (await queryClient.fetchQuery(listItemsQueryOptions({}))).items.map((i) => i.name);
+  void fetchNames;
   const version = useVersion({});
   const label: string = version.data?.version ?? "";
   const names = useListItems({}, { select: (r) => r.items.map((i) => i.name) });

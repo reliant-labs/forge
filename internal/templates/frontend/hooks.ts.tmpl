@@ -17,7 +17,10 @@
 // gives `data: View`. A read in forge's list-pagination shape (`string
 // page_token` in, `string next_page_token` out) also gets
 // `useListOrdersInfinite(req, options?)`, a useInfiniteQuery that owns the
-// page token. Errors are typed
+// page token. Code outside a component reads through the same cache entry
+// with `queryClient.fetchQuery(getOrderQueryOptions(req))` (or
+// prefetchQuery / ensureQueryData): the hook's own key and fetch, never a
+// hand-written pair that can drift from them. Errors are typed
 // ConnectClientError — the shape the transport's error-normalize interceptor
 // actually throws, a ConnectError subclass — so `.reason` (a stable machine
 // code the backend stamps on every error), `.code` / `.codeName`, `.status`
@@ -39,6 +42,7 @@ import {
 {{- end}}
 {{- if .HasQueries}}
   createQueryHook,
+  createQueryOptions,
 {{- end}}
   serviceKeys,
 } from "@reliantlabs/forge-web-runtime/service-hooks";
@@ -97,6 +101,11 @@ export const {{.ServiceNameCamel}}Keys = {
 {{range .Methods}}
 {{- if .IsQuery}}
 export const use{{.Name}} = createQueryHook<typeof {{.InputSchemaRef}}, {{.OutputTypeRef}}>(
+  {{$.ServiceNameCamel}}Keys.{{.NameCamel}},
+  (req, signal) => client.{{.ClientMethod}}(req, { signal }),
+);
+
+export const {{.NameCamel}}QueryOptions = createQueryOptions<typeof {{.InputSchemaRef}}, {{.OutputTypeRef}}>(
   {{$.ServiceNameCamel}}Keys.{{.NameCamel}},
   (req, signal) => client.{{.ClientMethod}}(req, { signal }),
 );

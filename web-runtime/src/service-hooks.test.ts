@@ -33,6 +33,7 @@ import {
   createInfiniteQueryHook,
   createMutationHook,
   createQueryHook,
+  createQueryOptions,
   requestKey,
   serviceKeys,
 } from "./service-hooks.js";
@@ -323,6 +324,37 @@ describe("createQueryHook", () => {
     useGetOrder({ id: "abc" }, { enabled: false, staleTime: 5_000 });
     expect(captured.query?.enabled).toBe(false);
     expect(captured.query?.staleTime).toBe(5_000);
+  });
+});
+
+describe("createQueryOptions", () => {
+  const keys = serviceKeys("orderService");
+
+  it("is the hook's own key and fetch, for an imperative read", async () => {
+    const call = vi.fn(async () => ({ id: "abc" }));
+    const keyFor = keys.query("getOrder", GetOrderRequestSchema, "order");
+    const getOrderQueryOptions = createQueryOptions(keyFor, call);
+    const useGetOrder = createQueryHook(keyFor, call);
+
+    const options = getOrderQueryOptions({ id: "abc" });
+    useGetOrder({ id: "abc" });
+
+    // queryClient.fetchQuery(options) and the mounted hook land on ONE entry.
+    expect(options.queryKey).toEqual(captured.query?.queryKey);
+    const signal = new AbortController().signal;
+    const response: { id: string } = await options.queryFn({ signal });
+    expect(response).toEqual({ id: "abc" });
+    expect(call).toHaveBeenCalledWith({ id: "abc" }, signal);
+  });
+
+  it("keys each request apart, as the hook does", () => {
+    const getOrderQueryOptions = createQueryOptions(
+      keys.query("getOrder", GetOrderRequestSchema, "order"),
+      async () => ({}),
+    );
+    expect(getOrderQueryOptions({ id: "a" }).queryKey).not.toEqual(
+      getOrderQueryOptions({ id: "b" }).queryKey,
+    );
   });
 });
 

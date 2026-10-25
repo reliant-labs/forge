@@ -263,6 +263,14 @@ so an optimistic rollback needs no cast. A query hook's `select` sets its
 `data` type, as in useQuery: `useGetTask(req, { select: toView })` — no
 `useMemo` over `data`.
 
+**Imperative reads use `<rpc>QueryOptions`.** Each read also gets
+`getTaskQueryOptions(req)`: the hook's own key and fetch, for code outside a
+component — `queryClient.fetchQuery(getTaskQueryOptions(req))`,
+`prefetchQuery`, `ensureQueryData`, a route loader. It reads and fills the
+entry the mounted hook reads, so invalidation reaches both. Never hand-write
+`{ queryKey: <svc>Keys.getTask(req), queryFn: () => client.getTask(req) }`:
+the key and the fetch can drift apart, and the abort signal is lost.
+
 **Paged reads also get `use<Rpc>Infinite`.** A read whose request has a
 singular `string page_token` and whose response has `string next_page_token`
 (the List shape below, whatever the rpc is called) gets a useInfiniteQuery

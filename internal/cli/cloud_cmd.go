@@ -70,6 +70,12 @@ func resolveCloudTarget(ctx context.Context, envName, flagToken string) (cloud.E
 	if err != nil {
 		return cloud.Endpoint{}, cloud.Credential{}, err
 	}
+	return resolveCloudTargetFor(envName, decl, flagToken)
+}
+
+// resolveCloudTargetFor is resolveCloudTarget with the declaration already in
+// hand, for a caller that read it without a render (obs_target.go).
+func resolveCloudTargetFor(envName string, decl *cloud.Declaration, flagToken string) (cloud.Endpoint, cloud.Credential, error) {
 	ep, err := cloud.ResolveEndpoint(envName, decl)
 	if err != nil {
 		return cloud.Endpoint{}, cloud.Credential{}, err

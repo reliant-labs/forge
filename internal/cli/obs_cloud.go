@@ -15,10 +15,19 @@ import (
 // are bound to. A read the credential lacks a scope for (obs:read, obs:triage)
 // is elevated by the client itself, once, for the person behind it.
 //
+// The endpoint and credential env var come from the env's stamped target
+// (obs_target.go), so nothing here renders KCL when the declaration is
+// unchanged and the first request goes out as soon as the credential resolves.
+//
 // Every failure here is "could not look" (exit 2): no credential, an
 // unreachable control plane, an env the control plane has never seen.
 func openObsCloud(ctx context.Context, env string) (obsbackend.Cloud, error) {
-	ep, cred, err := resolveCloudTarget(ctx, env, "")
+	t, err := resolveObsTarget(ctx, env)
+	if err != nil {
+		return obsbackend.Cloud{}, obsbackend.Undetermined("env %s: cannot read its declaration", env).Cause(err).
+			With(obsbackend.Cmd("forge", "env", "list"))
+	}
+	ep, cred, err := resolveCloudTargetFor(env, t.Declaration(), "")
 	if err != nil {
 		return obsbackend.Cloud{}, obsbackend.Undetermined("env %s: cannot reach its control plane", env).Cause(err)
 	}

@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Lock is the lockfile that records a manifest's dependency ranges: where it
@@ -164,7 +166,7 @@ func keepHiddenLockfile(runner, lockDir string) func() error {
 		}
 	}
 	return func() error {
-		if err := os.WriteFile(path, data, info.Mode().Perm()); err != nil {
+		if err := atomicfile.WriteFile(path, data, info.Mode().Perm()); err != nil {
 			return fmt.Errorf("restoring %s after the lockfile refresh: %w", path, err)
 		}
 		if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {

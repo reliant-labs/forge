@@ -497,6 +497,118 @@ describe("serviceKeys.infinite", () => {
   });
 });
 
+describe("serviceKeys.query(...).all — the rpc scope", () => {
+  const keys = serviceKeys("orderService");
+
+  it("is [service, entity?, method]", () => {
+    expect(keys.query("getOrder", GetOrderRequestSchema, "order").all).toEqual([
+      "orderService",
+      "order",
+      "getOrder",
+    ]);
+    expect(keys.query("pingOrders", GetOrderRequestSchema).all).toEqual([
+      "orderService",
+      "pingOrders",
+    ]);
+  });
+
+  // The property `.all` exists for, on a real cache: invalidating it reaches
+  // every entry the rpc caches under and nothing else. Each case seeds the
+  // rpc's own entries — two requests, the plain query and the infinite read
+  // of the same request — next to the entries most likely to be caught by
+  // mistake: a sibling rpc on the same entity, a method whose name the rpc's
+  // name is a string prefix of, the same method name unscoped, and the same
+  // method on another service.
+  function seededCache(entityScope: string | undefined) {
+    const client = new QueryClient();
+    const own = keys.query("listOrders", ListOrdersRequestSchema, entityScope);
+    const ownInfinite = keys.infinite(
+      "listOrders",
+      ListOrdersRequestSchema,
+      entityScope,
+    );
+    const ownKeys = [
+      own({ pageSize: 10n }),
+      own({ pageSize: 20n }),
+      ownInfinite({ pageSize: 10n }),
+    ];
+    const otherKeys = [
+      keys.query("getOrder", GetOrderRequestSchema, entityScope)({ id: "a" }),
+      keys.query(
+        "listOrdersArchived",
+        ListOrdersRequestSchema,
+        entityScope,
+      )({}),
+      keys.infinite(
+        "listOrdersArchived",
+        ListOrdersRequestSchema,
+        entityScope,
+      )({}),
+      entityScope === undefined
+        ? keys.query("listOrders", ListOrdersRequestSchema, "order")({})
+        : keys.query("listOrders", ListOrdersRequestSchema)({}),
+      serviceKeys("archiveService").query(
+        "listOrders",
+        ListOrdersRequestSchema,
+        entityScope,
+      )({}),
+    ];
+    for (const key of [...ownKeys, ...otherKeys]) {
+      client.setQueryData(key, { seeded: true });
+    }
+    return { client, all: own.all, ownKeys, otherKeys };
+  }
+
+  for (const [label, entityScope] of [
+    ["with a query-scope (entity at index 1)", "order"],
+    ["without one", undefined],
+  ] as const) {
+    it(`invalidateQueries reaches every request of the rpc and nothing else, ${label}`, async () => {
+      const { client, all, ownKeys, otherKeys } = seededCache(entityScope);
+      await client.invalidateQueries({ queryKey: all });
+      for (const key of ownKeys) {
+        expect(
+          client.getQueryState(key)?.isInvalidated,
+          JSON.stringify(key),
+        ).toBe(true);
+      }
+      for (const key of otherKeys) {
+        expect(
+          client.getQueryState(key)?.isInvalidated,
+          JSON.stringify(key),
+        ).toBe(false);
+      }
+      expect(client.getQueryCache().findAll({ queryKey: all })).toHaveLength(
+        ownKeys.length,
+      );
+      client.clear();
+    });
+  }
+
+  it("setQueriesData patches exactly the rpc's entries", () => {
+    const { client, all, ownKeys, otherKeys } = seededCache("order");
+    client.setQueriesData({ queryKey: all }, () => ({ patched: true }));
+    for (const key of ownKeys) {
+      expect(client.getQueryData(key)).toEqual({ patched: true });
+    }
+    for (const key of otherKeys) {
+      expect(client.getQueryData(key)).toEqual({ seeded: true });
+    }
+    client.clear();
+  });
+
+  it("is what the generated query options key under", () => {
+    // createQueryOptions keeps the factory's function, `.all` included, so
+    // a generated `<svc>Keys.<rpc>` handed to it stays the scope of what
+    // the hook caches.
+    const getOrderKey = keys.query("getOrder", GetOrderRequestSchema, "order");
+    const getOrder = createQueryOptions(getOrderKey, async () => ({}));
+    expect(getOrder({ id: "abc" }).queryKey.slice(0, 3)).toEqual([
+      ...getOrderKey.all,
+    ]);
+  });
+});
+
 describe("createInfiniteQueryOptions + createInfiniteQueryHook", () => {
   const keys = serviceKeys("orderService");
   type Page = { orders: string[]; nextPageToken: string };
@@ -521,7 +633,10 @@ describe("createInfiniteQueryOptions + createInfiniteQueryHook", () => {
 
   it("fetchInfiniteQuery outside React shares the hook's cache entry, typed as InfiniteData", async () => {
     const call = vi.fn(
-      async (): Promise<Page> => ({ orders: ["o1"], nextPageToken: "" }),
+      async (): Promise<Page> => ({
+        orders: ["o1"],
+        nextPageToken: "",
+      }),
     );
     const listOrdersInfinite = createInfiniteQueryOptions<
       typeof TypedListOrdersRequestSchema,

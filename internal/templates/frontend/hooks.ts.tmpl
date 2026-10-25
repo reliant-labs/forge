@@ -77,13 +77,16 @@ const keys = serviceKeys("{{.ServiceNameCamel}}");
 {{- range .EntityScopes}}
  *   .{{.}}{{""}} — every query for the {{.}} entity (mutations invalidate this)
 {{- end}}
+ *   .<method>.all       — every cached request of one rpc{{if .HasPaged}}, its Infinite read included{{end}}: [service, entity?, method]
  *   .<method>(req)      — one query: [service, entity?, method, protojson(req)]
 {{- if .HasPaged}}
  *   .<method>Infinite(req) — one paged read, every page: [..., protojson(req minus page_token), "infinite"]
 {{- end}}
  *
  * Use these everywhere a query key is needed (invalidateQueries,
- * setQueryData) — never hand-write the array literals.{{if .HasQueries}} To fetch or
+ * setQueryData, setQueriesData) — never hand-write the array literals, and
+ * never match a key by position (`queryKey[1] === "<method>"`): a
+ * `// forge:query-scope` marker moves the method to index 2.{{if .HasQueries}} To fetch or
  * prefetch, use {{.ServiceNameCamel}}Queries below, which carries the fetch too.{{end}}
  */
 export const {{.ServiceNameCamel}}Keys = {

@@ -1212,6 +1212,9 @@ func PreflightReport(ctx context.Context, opts PreflightOpts) (PreflightResult, 
 	for _, w := range result.Store.Warnings {
 		fmt.Printf("preflight: %s\n", w)
 	}
+	for _, w := range result.Store.Adoptions {
+		fmt.Printf("preflight: WARNING: %s\n", w)
+	}
 	if result.OK() {
 		return result, nil
 	}

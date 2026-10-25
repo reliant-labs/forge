@@ -223,10 +223,12 @@ type run struct {
 	projectID string
 	roles     map[string]Role
 	// users maps a machine username or a lowercased human email to its user id.
-	users   map[string]string
-	apps0   []appObj // applications present when the pass began
-	machine map[string]MachineOutput
-	apps    map[string]AppOutput
+	users map[string]string
+	// createdHumans is the lowercased emails of the humans THIS pass created.
+	createdHumans map[string]bool
+	apps0         []appObj // applications present when the pass began
+	machine       map[string]MachineOutput
+	apps          map[string]AppOutput
 }
 
 func (p *run) dry() bool { return p.o.DryRun }
@@ -277,7 +279,7 @@ func (r *Reconciler) reconcile(ctx context.Context, spec Spec, force []RotateTar
 	rep := &Report{DryRun: r.opts.DryRun}
 	p := &run{
 		r: r, c: r.c, o: r.opts, rep: rep, spec: spec, force: force,
-		roles: map[string]Role{}, users: map[string]string{},
+		roles: map[string]Role{}, users: map[string]string{}, createdHumans: map[string]bool{},
 		machine: map[string]MachineOutput{}, apps: map[string]AppOutput{},
 	}
 	for _, t := range force {

@@ -272,6 +272,7 @@ func (p *run) ensureHuman(ctx context.Context, email string) (string, error) {
 			return "", fmt.Errorf("create user: %w", err)
 		}
 		uid = out.UserID
+		p.createdHumans[email] = true
 		p.logf("created user", "user_id", uid)
 	}
 	p.users[email] = uid
@@ -305,16 +306,25 @@ func profileFromEmail(email string) map[string]any {
 // skipped, so a working credential is never invalidated. Any method counts,
 // not only a password. A member the caller still holds a live code for
 // (Options.HeldSignInCode) keeps it.
+//
+// An account THIS pass created is not asked: it was created with no
+// credential, so the answer is known, and Zitadel's v2 user reads are served
+// from projections that trail the write. Asking right after the create
+// answered 404 "User could not be found" under load and failed the pass (a
+// real-Zitadel smoke in control-plane's ci:full, 2026-10-25). The code itself
+// is a command, which the write model serves at once.
 func (p *run) ensureSignInPath(ctx context.Context, email, uid string) error {
-	var methods struct {
-		AuthMethodTypes []string `json:"authMethodTypes"`
-	}
-	if err := p.c.call(ctx, http.MethodGet, "/v2/users/"+url.PathEscape(uid)+"/authentication_methods", nil, &methods, idem); err != nil {
-		return fmt.Errorf("read authentication methods: %w", err)
-	}
-	if len(methods.AuthMethodTypes) > 0 {
-		p.rep.Credentialed = append(p.rep.Credentialed, email)
-		return nil
+	if !p.createdHumans[email] {
+		var methods struct {
+			AuthMethodTypes []string `json:"authMethodTypes"`
+		}
+		if err := p.c.call(ctx, http.MethodGet, "/v2/users/"+url.PathEscape(uid)+"/authentication_methods", nil, &methods, idem); err != nil {
+			return fmt.Errorf("read authentication methods: %w", err)
+		}
+		if len(methods.AuthMethodTypes) > 0 {
+			p.rep.Credentialed = append(p.rep.Credentialed, email)
+			return nil
+		}
 	}
 	if p.o.HeldSignInCode != nil && p.o.HeldSignInCode(email) {
 		return nil

@@ -417,6 +417,29 @@ func TestSignInCodeOnlyForCredentialLessMembers(t *testing.T) {
 	}
 }
 
+// A member this pass created gets its code without a read of its credentials:
+// Zitadel's v2 user reads trail the create, and asking right after it answered
+// 404 and failed the pass. One the pass found is still asked.
+func TestSignInCodeForAJustCreatedMemberSurvivesProjectionLag(t *testing.T) {
+	f := newFake(t)
+	f.mu.Lock()
+	f.projectionLag = true
+	f.users["500"] = &fUser{ID: "500", UserName: "has@example.com", Email: "has@example.com", AuthMethods: []string{"AUTHENTICATION_METHOD_TYPE_PASSWORD"}}
+	f.mu.Unlock()
+	r, _ := newRec(t, f, func(o *Options) { o.SignInCodes = true })
+	spec := Spec{Project: ProjectSpec{Name: "p"}, Roles: []Role{{Key: "admin", Declared: true, Members: []string{"new@example.com", "has@example.com"}}}}
+	rep, err := r.Reconcile(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("a just-created member's lagging read failed the pass: %v", err)
+	}
+	if len(rep.SignInCodes) != 1 || rep.SignInCodes[0].Email != "new@example.com" {
+		t.Fatalf("sign-in codes = %+v, want one for new@example.com only", rep.SignInCodes)
+	}
+	if len(rep.Credentialed) != 1 || rep.Credentialed[0] != "has@example.com" {
+		t.Errorf("credentialed = %v, want [has@example.com]: a found member is still asked", rep.Credentialed)
+	}
+}
+
 // A converge loop must not mint over a code the caller still holds: minting
 // invalidates it, and a pass that mints is never quiet.
 func TestHeldSignInCodeIsNotReplaced(t *testing.T) {

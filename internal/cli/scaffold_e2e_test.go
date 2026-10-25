@@ -430,6 +430,9 @@ func buildforgeBinary(t *testing.T) string {
 	if err := os.Setenv(linkForgeEnv, "1"); err != nil {
 		t.Fatalf("opt the e2e corpus into --link-forge: %v", err)
 	}
+	// And every npm install resolves @reliantlabs/forge-web-runtime to this
+	// checkout's, not the last release's (npm_overlay_e2e_test.go).
+	startNpmOverlayE2E(t)
 	return forgeBinaryPath
 }
 

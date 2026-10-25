@@ -113,11 +113,11 @@ func TestHostedPlanPrintReportsDeclaredDomains(t *testing.T) {
 // ─── Status decoding ─────────────────────────────────────────────────────────
 
 const domainStatusBody = `{"deployments":[{"deployment":{"id":"dep-web","name":"web","tier":"DEPLOY_TIER_STATIC",
- "observed":{"state":"DEPLOY_OBSERVED_STATE_READY","url":"https://web.example","domains":[
-   {"domain":"hounders.club","state":"DEPLOY_CUSTOM_DOMAIN_STATE_PENDING_DNS","requiredRecords":[
+ "observed":{"state":"DEPLOY_OBSERVED_STATE_READY","url":"https://web.example","urlServingPath":"DEPLOY_SERVING_PATH_EDGE","domains":[
+   {"domain":"hounders.club","state":"DEPLOY_CUSTOM_DOMAIN_STATE_PENDING_DNS","servingPath":"DEPLOY_SERVING_PATH_ELSEWHERE","requiredRecords":[
       {"type":"A","name":"hounders.club","value":"34.63.203.181"},
       {"type":"TXT","name":"_forge-challenge.hounders.club","value":"tok-123"}]},
-   {"domain":"www.hounders.club","state":"DEPLOY_CUSTOM_DOMAIN_STATE_LIVE","liveSince":"2026-02-01T10:00:00Z"},
+   {"domain":"www.hounders.club","state":"DEPLOY_CUSTOM_DOMAIN_STATE_LIVE","liveSince":"2026-02-01T10:00:00Z","servingPath":"DEPLOY_SERVING_PATH_INGRESS"},
    {"domain":"shop.hounders.club","state":"DEPLOY_CUSTOM_DOMAIN_STATE_FAILED","lastError":"CAA record forbids this issuer"},
    {"domain":"blog.hounders.club","state":"DEPLOY_CUSTOM_DOMAIN_STATE_SOMETHING_NEW"}]}},
  "verdict":"DEPLOY_VERDICT_CONVERGED"}]}`
@@ -178,7 +178,8 @@ func TestFormatCustomDomains(t *testing.T) {
 		"hounders.club: pending_dns",
 		"DNS record to set: A hounders.club → 34.63.203.181",
 		"DNS record to set: TXT _forge-challenge.hounders.club → tok-123",
-		"www.hounders.club: live since 2026-02-01T10:00:00Z",
+		"www.hounders.club: live since 2026-02-01T10:00:00Z (served through the regional ingress, no CDN)",
+		"hounders.club: pending_dns (DNS does not point at the platform)",
 		"shop.hounders.club: failed",
 		"error: CAA record forbids this issuer",
 		"blog.hounders.club: unknown",
@@ -231,10 +232,50 @@ func TestFormatHostedURLs(t *testing.T) {
 		t.Fatalf("ReadHostedStatus: %v", err)
 	}
 	ws := append(st.Workloads, HostedWorkloadStatus{Name: "worker"})
-	if got, want := FormatHostedURLs("  ", ws), "  url web: https://web.example\n"; got != want {
+	if got, want := FormatHostedURLs("  ", ws), "  url web: https://web.example (served through the CDN edge)\n"; got != want {
 		t.Errorf("FormatHostedURLs = %q, want %q", got, want)
 	}
 	if FormatHostedURLs("  ", []HostedWorkloadStatus{{Name: "worker"}}) != "" {
 		t.Error("workloads with no URL must format to nothing, so callers can print unconditionally")
+	}
+}
+
+// The serving path is the control plane's answer, decoded into forge's
+// vocabulary. A value this forge does not know, or none at all, is not
+// rendered: a path forge cannot name is one it must not claim.
+func TestServingPathDecoding(t *testing.T) {
+	cp := &fakeCP{
+		envs:   `{"environments":[{"id":"env-1","name":"prod"}]}`,
+		status: func(int) string { return domainStatusBody },
+	}
+	st, err := ReadHostedStatus(context.Background(), cp, "", "prod")
+	if err != nil {
+		t.Fatalf("ReadHostedStatus: %v", err)
+	}
+	w := st.Workloads[0]
+	if w.ServingPath != ServingPathEdge {
+		t.Errorf("workload serving path = %q, want edge", w.ServingPath)
+	}
+	var got []string
+	for _, d := range w.Domains {
+		got = append(got, d.ServingPath)
+	}
+	if want := []string{ServingPathElsewhere, ServingPathIngress, "", ""}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("domain serving paths = %q, want %q", got, want)
+	}
+	for wire, want := range map[string]string{
+		"DEPLOY_SERVING_PATH_EDGE":        ServingPathEdge,
+		"DEPLOY_SERVING_PATH_INGRESS":     ServingPathIngress,
+		"DEPLOY_SERVING_PATH_ELSEWHERE":   ServingPathElsewhere,
+		"DEPLOY_SERVING_PATH_UNSPECIFIED": "",
+		"DEPLOY_SERVING_PATH_SOMETHING":   "",
+		"":                                "",
+	} {
+		if got := ServingPathName(wire); got != want {
+			t.Errorf("ServingPathName(%q) = %q, want %q", wire, got, want)
+		}
+	}
+	if FormatHostedURLs("  ", []HostedWorkloadStatus{{Name: "web", URL: "https://web.example"}}) != "  url web: https://web.example\n" {
+		t.Error("a URL with no serving path must print as before, with no claim about the CDN")
 	}
 }

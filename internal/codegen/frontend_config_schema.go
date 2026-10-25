@@ -163,7 +163,7 @@ func (s FrontendConfigSchema) MissingRequired(present func(key string) bool, lit
 // with the selector absent no condition holds, so a managed deployment's
 // document that lost every key reads as a valid default-mode (self-hosted)
 // one, and the bundle boots in the wrong mode with nothing failing. That is
-// what prod-web served on 2026-10-24 (AUTH_MODE and the fifteen keys it
+// what prod-web served on 2026-10-24 (its auth-mode selector and the fifteen keys it
 // gates, all absent). The bundle itself cannot tell the two apart, so the
 // judgment belongs to the project DECLARING the environment, which knows the
 // mode it means: every document it writes names the mode. A frontend whose

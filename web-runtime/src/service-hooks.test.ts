@@ -289,9 +289,9 @@ describe("createQueryOptions", () => {
       { id: "abc" },
     ]);
     const signal = new AbortController().signal;
-    await (
-      opts.queryFn as (ctx: { signal: AbortSignal }) => Promise<unknown>
-    )({ signal });
+    await (opts.queryFn as (ctx: { signal: AbortSignal }) => Promise<unknown>)({
+      signal,
+    });
     // The signal is React Query's: an unmounted or superseded query aborts
     // its request rather than landing it on an entry nobody reads.
     expect(call).toHaveBeenCalledWith({ id: "abc" }, signal);
@@ -347,7 +347,10 @@ describe("createQueryOptions", () => {
 
     // A fresh entry is reused: neither refetches.
     await client.ensureQueryData(getOrder({ id: "abc" }));
-    await client.prefetchQuery({ ...getOrder({ id: "abc" }), staleTime: 60_000 });
+    await client.prefetchQuery({
+      ...getOrder({ id: "abc" }),
+      staleTime: 60_000,
+    });
     expect(call).toHaveBeenCalledTimes(1);
 
     // The key is data-tagged: getQueryData / setQueryData are typed.
@@ -560,7 +563,10 @@ describe("createInfiniteQueryOptions + createInfiniteQueryHook", () => {
         nextPageToken: "",
       }),
     );
-    const useListOrdersInfinite = pagedHook(keys.infinite("listOrders", TypedListOrdersRequestSchema, "order"), call);
+    const useListOrdersInfinite = pagedHook(
+      keys.infinite("listOrders", TypedListOrdersRequestSchema, "order"),
+      call,
+    );
 
     useListOrdersInfinite({ pageSize: 20n });
 

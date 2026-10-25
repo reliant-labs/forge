@@ -1504,26 +1504,6 @@ func assertNoForkNoise(t *testing.T, label, out string) {
 	}
 }
 
-// assertFieldWired pins the deps-matcher fix at the grep level: the
-// name-matched Deps field must wire `Field: app.Field` and must NOT be
-// a silent typed-zero (`Field: nil`) or carry an unresolved TODO.
-// gofmt column-aligns struct-literal values, so match `Field:` followed
-// by any run of spaces.
-func assertFieldWired(t *testing.T, file, content, field string) {
-	t.Helper()
-	wired := regexp.MustCompile(regexp.QuoteMeta(field) + `: +app\.` + regexp.QuoteMeta(field))
-	if !wired.MatchString(content) {
-		t.Errorf("%s: missing `%s: app.%s` — name-matched dep was not wired", file, field, field)
-	}
-	nilWire := regexp.MustCompile(regexp.QuoteMeta(field) + `: +nil`)
-	if nilWire.MatchString(content) {
-		t.Errorf("%s: contains silent `%s: nil` — the deps-matcher downgrade bug class", file, field)
-	}
-	if strings.Contains(content, "TODO: wire "+field) {
-		t.Errorf("%s: contains `TODO: wire %s` — field should have resolved", file, field)
-	}
-}
-
 // corpusSkipDir reports whether a directory is excluded from the
 // idempotency tree hash / content snapshot. `.git` is repo machinery;
 // `node_modules` and `.next` are npm/Next-owned trees `forge generate`
@@ -2826,14 +2806,14 @@ func bootCRUDAuthEnforced(t *testing.T, projectDir string) {
 	}
 	var created struct {
 		Item struct {
-			Id   string `json:"id"`
+			ID   string `json:"id"`
 			Name string `json:"name"`
 		} `json:"item"`
 	}
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatalf("parse CreateItem response %q: %v", string(body), err)
 	}
-	if created.Item.Id == "" || created.Item.Name != "auth-proof" {
+	if created.Item.ID == "" || created.Item.Name != "auth-proof" {
 		t.Errorf("authed CreateItem response missing the created row: %s", body)
 	}
 }
@@ -2912,21 +2892,6 @@ func bootCustomReadRPC(t *testing.T, projectDir string) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("wired custom-read ListItems = HTTP %d, want 200 — the scaffolded custom body did not run its real query out of the box\nresponse: %s\nserver output:\n%s",
 			resp.StatusCode, body.String(), serverOut.String())
-	}
-}
-
-// appendToCorpusFile appends content to an existing file — used to add
-// explicit override sections (e.g. database.driver) to the minimal
-// scaffolded forge.yaml, whose derived-default sections aren't written
-// to disk and so can't be string-replaced.
-func appendToCorpusFile(t *testing.T, path, content string) {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	if err := os.WriteFile(path, append(data, []byte(content)...), 0o644); err != nil {
-		t.Fatalf("write %s: %v", path, err)
 	}
 }
 
@@ -3225,12 +3190,6 @@ func mustReplaceInFile(t *testing.T, path, old, new string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
-}
-
-// mustReplaceFirstInFile is mustReplaceInFile for anchors that appear
-// multiple times — only the FIRST occurrence is replaced.
-func mustReplaceFirstInFile(t *testing.T, path, old, new string) {
-	mustReplaceInFile(t, path, old, new)
 }
 
 // runCorpusCmd runs a command and returns its combined output and error

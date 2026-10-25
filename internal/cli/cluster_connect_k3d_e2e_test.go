@@ -254,7 +254,6 @@ func TestE2EClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 
 	// ── disconnect: revoke, then delete by label ──
 	caller.clusters = []wireConnectedCluster{{ID: "cl_new", Name: "e2e"}}
-	out = ""
 	var dout strings.Builder
 	if err := runClusterDisconnect(ctx, "e2e", kctx, "prod", "", &dout); err != nil {
 		t.Fatalf("disconnect: %v\n%s", err, dout.String())

@@ -327,13 +327,13 @@ func bootTraceDepth(t *testing.T, projectDir string) {
 	created, createTrace := post("CreateWidget", `{"name":"gizmo"}`)
 	var createResp struct {
 		Widget struct {
-			Id string `json:"id"`
+			ID string `json:"id"`
 		} `json:"widget"`
 	}
-	if err := json.Unmarshal(created, &createResp); err != nil || createResp.Widget.Id == "" {
+	if err := json.Unmarshal(created, &createResp); err != nil || createResp.Widget.ID == "" {
 		t.Fatalf("CreateWidget did not return a row (%v): %s", err, created)
 	}
-	quoted, quoteTrace := post("QuoteWidget", fmt.Sprintf(`{"id":%q}`, createResp.Widget.Id))
+	quoted, quoteTrace := post("QuoteWidget", fmt.Sprintf(`{"id":%q}`, createResp.Widget.ID))
 	if !strings.Contains(string(quoted), `"cents":"500"`) { // int64 is a JSON string
 		t.Fatalf("QuoteWidget = %s, want 500 cents (5 letters x 100)", quoted)
 	}

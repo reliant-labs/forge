@@ -558,28 +558,3 @@ message CreateItemResponse {
   Item item = 1;
 }
 `
-
-// snapshotDirE2E returns a stable string digest of a directory's files
-// (sorted name + content) for idempotency comparison.
-func snapshotDirE2E(t *testing.T, dir string) string {
-	t.Helper()
-	var b strings.Builder
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read runtime dir %s: %v", dir, err)
-	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		content, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			t.Fatalf("read %s: %v", e.Name(), err)
-		}
-		b.WriteString(e.Name())
-		b.WriteByte('\n')
-		b.Write(content)
-		b.WriteByte('\n')
-	}
-	return b.String()
-}

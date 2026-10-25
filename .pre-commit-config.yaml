@@ -77,6 +77,12 @@ repos:
   # archived at v3.1.0, against library files formatted with 3.5.3 — is
   # what kept this hook red on main. TestPrettierVersionIsPinnedEverywhere
   # holds the pin below equal to the constant.
+  #
+  # This hook is also the ONE place the repo's prettier is configured for
+  # hand runs: scripts/prettier.sh (`task fmt:web`) reads the pin and the
+  # files/exclude patterns below rather than restating them, and
+  # release-forge.sh reads the pin through it. Never run a bare `npx
+  # prettier`: it resolves another release, which reformats untouched lines.
   - repo: local
     hooks:
       - id: prettier

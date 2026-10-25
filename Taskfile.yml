@@ -275,6 +275,15 @@ tasks:
           goimports -w .
       - go mod tidy
 
+  fmt:web:
+    # The pre-commit hook's prettier, at its pin, over the files the hook
+    # formats — never a bare `npx prettier`, which resolves a different
+    # release and reformats lines nobody touched. No args: the files you
+    # changed since the merge-base with origin/main. `-- --check` reports.
+    desc: "Format changed frontend/docs files with the pinned prettier: task fmt:web [-- FILE...]"
+    cmds:
+      - scripts/prettier.sh {{.CLI_ARGS}}
+
   vet:
     desc: Run go vet across the module
     cmds:

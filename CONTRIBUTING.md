@@ -35,6 +35,14 @@ Afterwards the hooks run on every `git commit`. CI runs the same hooks
 (`.github/workflows/ci.yml`'s checks job), so skipping the local install
 only means you'll find out about issues a bit later.
 
+To format frontend and docs files by hand, run `task fmt:web` (the files you
+changed since `origin/main`) or `task fmt:web -- <file>...`. Never run a bare
+`npx prettier`: it resolves whatever prettier release your machine has, not the
+one the hook pins, and a different release reformats lines you never touched —
+which the Checks job then fails. `task fmt:web` runs `scripts/prettier.sh`,
+which reads the version and the file selection from the prettier hook in
+`.pre-commit-config.yaml`, the single place both are set.
+
 ## Dev loop
 
 ```bash

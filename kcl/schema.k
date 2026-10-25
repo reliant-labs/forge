@@ -4376,11 +4376,31 @@ schema OpenBaoKV:
             "OpenBaoKV.max_versions must be 2..1000: a rotation keeps the previous version readable so a pin can be rolled back"
 
 schema OpenBaoHA:
-    """High availability: a PodDisruptionBudget and zone spread, rendered when
-    there is more than one replica."""
+    """High availability, rendered when there is more than one replica: a
+    PodDisruptionBudget, a node spread and a zone spread.
+
+    `node_spread` defaults to "required": two replicas never share a node (a
+    hard topology spread constraint, `DoNotSchedule`), because one node loss
+    would otherwise take a Raft quorum, or the active node and its standby,
+    with it. A cluster with a single node still schedules. "preferred" is the
+    scheduler's best effort and must say why in `node_spread_reason`; it warns
+    on every render. `zone_spread` is always best effort (`ScheduleAnyway`).
+
+        ha = forge.OpenBaoHA {
+            node_spread = "preferred"
+            node_spread_reason = "two-node staging pool; replicas share a node during upgrades"
+        }"""
     pdb: bool = True
     zone_spread: bool = True
+    node_spread: "required" | "preferred" = "required"
+    node_spread_reason: str = ""
     priority_class: str = ""
+
+    check:
+        node_spread == "preferred" or not node_spread_reason, \
+            "OpenBaoHA sets node_spread_reason but node_spread is required: the reason excuses a preferred spread. Drop the reason, or set node_spread = \"preferred\""
+        node_spread == "required" or node_spread_reason, \
+            "OpenBaoHA.node_spread is \"preferred\" and states no node_spread_reason. Two replicas on one node lose quorum or every standby together when it fails: keep the default (required), or set node_spread_reason to say why this store may share a node"
 
 schema OpenBaoAudit:
     """Audit devices. Audit is on by default: `stdout` is collected by the

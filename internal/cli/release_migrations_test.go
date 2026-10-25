@@ -112,7 +112,7 @@ func TestCheckPassedMigrationsRefusesTheIncident(t *testing.T) {
 		"20261024052601_daemon_attachment_build.up.sql")
 
 	var out bytes.Buffer
-	err := checkPassedMigrations(context.Background(), &out, "[build]", t.TempDir(), "prod", "v1.7.55", target, l.ledger(), false)
+	err := checkPassedMigrations(context.Background(), &out, "[build]", releaseRef{t.TempDir(), "prod", "v1.7.55"}, target, l.ledger(), false)
 	var coded exitCodeError
 	if !errors.As(err, &coded) || coded.code != exitRefused {
 		t.Fatalf("err = %v; want an exitRefused refusal", err)
@@ -143,7 +143,7 @@ func TestCheckPassedMigrationsWaiverWarns(t *testing.T) {
 	l := incidentLedger()
 	target := migrationManifestOf("20261024024221_chats_worktree_binding_index.up.sql")
 	var out bytes.Buffer
-	if err := checkPassedMigrations(context.Background(), &out, "[deploy]", t.TempDir(), "prod", "v1.7.55", target, l.ledger(), true); err != nil {
+	if err := checkPassedMigrations(context.Background(), &out, "[deploy]", releaseRef{t.TempDir(), "prod", "v1.7.55"}, target, l.ledger(), true); err != nil {
 		t.Fatalf("waived check returned %v", err)
 	}
 	if !strings.Contains(out.String(), "WARNING (--"+allowPassedMigrationsFlag+")") || !strings.Contains(out.String(), "024221") {
@@ -157,7 +157,7 @@ func TestCheckPassedMigrationsAdmitsTheReplacement(t *testing.T) {
 	target := migrationManifestOf(
 		"20261024035148_hosted_http_action_tickets.up.sql",
 		"20261024061500_chats_worktree_binding_index.up.sql")
-	if err := checkPassedMigrations(context.Background(), &bytes.Buffer{}, "[build]", t.TempDir(), "prod", "v1.7.55", target, l.ledger(), false); err != nil {
+	if err := checkPassedMigrations(context.Background(), &bytes.Buffer{}, "[build]", releaseRef{t.TempDir(), "prod", "v1.7.55"}, target, l.ledger(), false); err != nil {
 		t.Fatalf("a release whose migrations all sort above the head was refused: %v", err)
 	}
 }
@@ -184,7 +184,7 @@ func TestCheckPassedMigrationsWithoutHistoryNotes(t *testing.T) {
 	ledger := envLedger{Bindings: noHistoryBindings{l}, Releases: l}
 	var out bytes.Buffer
 	target := migrationManifestOf("20261024024221_chats_worktree_binding_index.up.sql")
-	if err := checkPassedMigrations(context.Background(), &out, "[build]", t.TempDir(), "prod", "v9", target, ledger, false); err != nil {
+	if err := checkPassedMigrations(context.Background(), &out, "[build]", releaseRef{t.TempDir(), "prod", "v9"}, target, ledger, false); err != nil {
 		t.Fatalf("err = %v; want a note, not a refusal", err)
 	}
 	if !strings.Contains(out.String(), "cannot list") {

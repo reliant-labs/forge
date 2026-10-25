@@ -237,7 +237,7 @@ func step(cur any, seg, path string, walked []string) (any, error) {
 	}
 	switch c := cur.(type) {
 	case Object:
-		if v, ok := c.Get(seg); ok {
+		if v, ok := c.get(seg); ok {
 			return v, nil
 		}
 		return nil, fmt.Errorf("%w: %s has no field %q; it has %s",

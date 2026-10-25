@@ -1562,6 +1562,23 @@ var removals = []removal{
 				Paths: []string{"internal/cli/generate_frontend_config.go"},
 			},
 			{
+				Name: "OTLP/JSON's AnyValue field name",
+				Reason: "The web-runtime Node entry ships logs and spans to the keyed ingest as OTLP/JSON, " +
+					"whose AnyValue carries a string as `{\"stringValue\": ...}` — the field name is fixed by " +
+					"the OpenTelemetry protocol and cannot be renamed here without the collector rejecting " +
+					"every record.\n" +
+					"It is a wire identifier, unrelated to the seeder heuristic the pattern bans, which draws " +
+					"column values from column names. Scoped to the OTLP encoder and the tests that decode " +
+					"its output, so a `stringValue` helper landing in pkg/seedplan or anywhere else still fails.",
+				Token: regexp.MustCompile(`\bstringValue\b`),
+				Paths: []string{
+					"web-runtime/src/node.ts",
+					"web-runtime/src/node.test.ts",
+					"web-runtime/src/node-otlp.ts",
+					"web-runtime/src/node-otlp.test.ts",
+				},
+			},
+			{
 				Name: "seedplan's DECLARED-type date check",
 				Reason: "pkg/seedplan/synth.go has an `isDateColumn(col)` that reads col.DeclType and " +
 					"reports whether the column was DECLARED `DATE` — the one time type with no " +

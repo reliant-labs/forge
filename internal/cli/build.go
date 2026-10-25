@@ -1812,7 +1812,7 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	// applied history over the checkouts the build state RECORDS — the same
 	// sources checkRecordedReleaseSources held to the pins (release_migrations.go).
 	recordedUses, _ := recordedShellSources(projectDir, env, entities)
-	migrations, err := releaseMigrationGuard(ctx, os.Stdout, projectDir, env, version, prov, recordedUses, ledger, opts)
+	migrations, err := releaseMigrationGuard(ctx, os.Stdout, releaseRef{projectDir, env, version}, prov, recordedUses, ledger, opts)
 	if err != nil {
 		return releaseCutOutcome{}, err
 	}

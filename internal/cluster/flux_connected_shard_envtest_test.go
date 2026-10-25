@@ -180,7 +180,7 @@ func TestFluxConnectedShardAdmission(t *testing.T) {
 		// What the shard exists for.
 		{"shard + kubeConfig secret, no service account", shard, base + kubeCfgSecret, false, ""},
 		// THE BAN.
-		{"shard + serviceAccountName", shard, base + "serviceAccountName: reliant-deploy-tenant\n" + kubeCfgSecret, true, "must not set spec.serviceAccountName"},
+		{"shard + serviceAccountName", shard, base + "serviceAccountName: " + flux.DeployServiceAccount + "\n" + kubeCfgSecret, true, "must not set spec.serviceAccountName"},
 		{"shard + decryption.serviceAccountName", shard, base + "decryption: {provider: sops, serviceAccountName: kms}\n" + kubeCfgSecret, true, "spec.decryption.serviceAccountName"},
 		{"shard, no kubeConfig at all", shard, base, true, "must set spec.kubeConfig.secretRef"},
 		{"shard + kubeConfig configMapRef (cloud-identity provider)", shard, base + "kubeConfig: {configMapRef: {name: kc}}\n", true, "must set spec.kubeConfig.secretRef"},
@@ -190,7 +190,7 @@ func TestFluxConnectedShardAdmission(t *testing.T) {
 		{"kubeConfig, no shard label", nil, base + kubeCfgSecret, true, "must carry the label"},
 		{"kubeConfig, wrong shard label", map[string]string{flux.ShardLabel: "shard0"}, base + kubeCfgSecret, true, "must carry the label"},
 		// The main controller's in-cluster Kustomizations are untouched.
-		{"in-cluster, service account, no shard label", map[string]string{flux.ShardLabel: "shard0"}, base + "serviceAccountName: reliant-deploy-tenant\n", false, ""},
+		{"in-cluster, service account, no shard label", map[string]string{flux.ShardLabel: "shard0"}, base + "serviceAccountName: " + flux.DeployServiceAccount + "\n", false, ""},
 		{"in-cluster, no labels at all", nil, base, false, ""},
 		{"shard + empty serviceAccountName", shard, base + "serviceAccountName: \"\"\n" + kubeCfgSecret, false, ""},
 	} {
@@ -215,7 +215,7 @@ func TestFluxConnectedShardAdmission(t *testing.T) {
 	if err := admin.Create(ctx, ok); err != nil {
 		t.Fatal(err)
 	}
-	if err := unstructured.SetNestedField(ok.Object, "reliant-deploy-tenant", "spec", "serviceAccountName"); err != nil {
+	if err := unstructured.SetNestedField(ok.Object, flux.DeployServiceAccount, "spec", "serviceAccountName"); err != nil {
 		t.Fatal(err)
 	}
 	if err := admin.Update(ctx, ok); err == nil || !strings.Contains(err.Error(), "must not set spec.serviceAccountName") {

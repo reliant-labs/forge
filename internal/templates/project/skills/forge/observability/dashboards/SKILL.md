@@ -239,6 +239,8 @@ A file you own is one dashboard object in the spec vocabulary (an `id`, a `title
 
 Every file is validated at the cut, and `forge obs dashboards check` runs the same checks and lists what would ship. Errors read `deploy/observability/dashboards/x.json:12:7: panels[2].kind: "cube" is not one of: number, line, table, search, bar, heatmap, sql, issues, sessions, funnel`.
 
+The file checks cannot know what your telemetry holds. `forge obs dashboards check --against <env>` also looks up every metrics panel series in that env over `--since` (24h): a `metricType` that is not the kind the metric is stored as fails the check, and a metric with no data is listed (a misspelt name, one the collector drops or renames, such as the filter processor's `otelcol_processor_filter_logs.filtered`, or a counter that only exists once something fails). `--strict` fails on those too. In the console a series with no data draws an empty panel with a `metric_absent` note, never an error.
+
 `annotations: [{"source": "releases"}]` on a dashboard asks the console to draw a marker for every promotion on its time-series panels. Generated dashboards declare it.
 
 The _Workloads_ dashboard (CPU/memory against requests and limits, restarts and exit reason, image versions, Kubernetes events) and the _Releases_ dashboard (request, error and latency by `service.version`) are generated for every project. They read node-derived and release data that a local `forge env up` does not have, so they ship in the spec and the bundle and are not written to `deploy/observability/dashboards/`.

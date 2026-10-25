@@ -465,7 +465,6 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 
 	req := map[string]any{
 		"name":        name,
-		"auth":        wireAuthServiceAccountToken, // wire: remove once control-plane CC-C1 is deployed
 		"address":     target.Address,
 		"caPem":       target.CAPEM,
 		"environment": opts.Env,

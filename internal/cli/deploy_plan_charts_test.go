@@ -89,3 +89,43 @@ func TestServerPlanDigest_CarriesTheBaseDigestForAChartPlan(t *testing.T) {
 		t.Error("the approvable digest must differ from the server's")
 	}
 }
+
+// --plan-only lists what the owned-object prune would delete, as removals that
+// are digested: approving the plan approves those deletions and no others. A
+// prune that could not be read is a warn finding, never silence.
+func TestDeployPlan_OwnedPruneIsListedAndDigested(t *testing.T) {
+	baseline := planThroughPlanForDeploy(t, release.ChartPlan{})
+	pruned := planThroughPlanForDeploy(t, release.ChartPlan{Pruned: []release.OwnedRemoval{
+		{Key: release.ObjectKey{Cluster: "gke_prod", Kind: "PodDisruptionBudget", Namespace: "acme-prod", Name: "openbao-pdb"}, Fingerprint: "sha256:aaa"},
+		{Key: release.ObjectKey{Cluster: "gke_prod", Kind: "ClusterRoleBinding", Name: "openbao-auth-delegator"}, Fingerprint: "sha256:bbb"},
+	}})
+	var removed []release.PlanFinding
+	for _, f := range pruned.Findings {
+		if f.Code == release.FindingObjectRemoved && strings.Contains(f.Detail, "[prune]") {
+			removed = append(removed, f)
+		}
+	}
+	if len(removed) != 2 {
+		t.Fatalf("want both pruned objects listed, got %+v", pruned.Findings)
+	}
+	if removed[0].Class != release.ClassWarn || !strings.Contains(removed[0].Detail, "DELETES it after the rollout is healthy") {
+		t.Errorf("finding = %+v", removed[0])
+	}
+	if pruned.Digest == baseline.Digest {
+		t.Error("the prune set is not in the plan digest: approving the plan would not approve the deletions")
+	}
+	if pruned.ConfigIdentical {
+		t.Error("a deploy that deletes objects is not config-identical")
+	}
+
+	unread := planThroughPlanForDeploy(t, release.ChartPlan{PruneUnplanned: "gke_prod: forbidden"})
+	var unknown bool
+	for _, f := range unread.Findings {
+		if f.Code == release.FindingUnknown && strings.Contains(f.Detail, "could not be listed") && strings.Contains(f.Detail, "forbidden") {
+			unknown = true
+		}
+	}
+	if !unknown {
+		t.Errorf("an unreadable prune set must be a finding: %+v", unread.Findings)
+	}
+}

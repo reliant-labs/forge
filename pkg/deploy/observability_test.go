@@ -410,6 +410,49 @@ func TestAgentStripsClientIdentityBeforeEnrichment(t *testing.T) {
 	}
 }
 
+// File-scraped logs carry no SDK resource, so service.version has to come from
+// the pod's app.kubernetes.io/version label, on the node-derived and the pushed
+// pipelines alike. k8sattributes only fills attributes that are unset, which is
+// what keeps an SDK's own service.version authoritative.
+func TestAgentConfigExtractsServiceVersionFromThePodLabel(t *testing.T) {
+	s := agentSpec()
+	cfg, err := s.AgentConfig("forge-observability")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Processors map[string]struct {
+			Extract struct {
+				Labels []struct {
+					TagName string `json:"tag_name"`
+					Key     string `json:"key"`
+					From    string `json:"from"`
+				} `json:"labels"`
+			} `json:"extract"`
+		} `json:"processors"`
+		Service struct {
+			Pipelines map[string]struct {
+				Processors []string `json:"processors"`
+			} `json:"pipelines"`
+		} `json:"service"`
+	}
+	if err := yaml.Unmarshal([]byte(cfg), &doc); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, l := range doc.Processors["k8sattributes"].Extract.Labels {
+		if l.TagName == "service.version" && l.Key == LabelVersion && l.From == "pod" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("k8sattributes does not map pod label %s to service.version", LabelVersion)
+	}
+	if !contains(doc.Service.Pipelines["logs"].Processors, "k8sattributes") {
+		t.Errorf("the logs pipeline does not enrich with k8sattributes: %v", doc.Service.Pipelines["logs"].Processors)
+	}
+}
+
 func indexOf(l []string, s string) int {
 	for i, x := range l {
 		if x == s {

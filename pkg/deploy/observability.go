@@ -351,6 +351,11 @@ func (s ObservabilityAgentSpec) AgentConfig(namespace string) (string, error) {
 				map[string]any{"tag_name": "service.name", "key": "app.kubernetes.io/name", "from": "pod"},
 				map[string]any{"tag_name": "service.namespace", "key": "app.kubernetes.io/part-of", "from": "pod"},
 				map[string]any{"tag_name": "deployment.environment.name", "key": "forge.dev/env", "from": "pod"},
+				// File-scraped logs carry no SDK resource, so the version the
+				// pod runs comes from its label. k8sattributes never
+				// overwrites an attribute already set, so an SDK's own
+				// service.version on pushed telemetry wins.
+				map[string]any{"tag_name": "service.version", "key": "app.kubernetes.io/version", "from": "pod"},
 			},
 		},
 		// Enrichment only. OTLP from a pod is associated by the resource's

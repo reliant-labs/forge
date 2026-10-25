@@ -1476,7 +1476,12 @@ _mask_violations = lambda w: any, rt: any -> [str] {
 # One forge.dev/v1alpha1 Workload record: what pkg/deploy.RenderWorkloads
 # expands (grouped by forge.dev/cluster + namespace), and the same spec the
 # hosted path publishes. The spec is THE SAME VALUE as the entity's.
-_workload_record = lambda entity: any, part_of: str -> any {
+#
+# `release` (Bundle.release, i.e. the release being built or deployed) rides on
+# the record as `app.kubernetes.io/version`; the Go expander reads it back and
+# stamps it on the pod templates (pkg/deploy stampVersion), so a node agent
+# that file-scrapes logs can report service.version. Empty emits no label.
+_workload_record = lambda entity: any, part_of: str, release: str = "" -> any {
     {
         apiVersion = "forge.dev/v1alpha1"
         kind = "Workload"
@@ -1484,7 +1489,8 @@ _workload_record = lambda entity: any, part_of: str -> any {
             name = entity.name
             namespace = entity.runtime.namespace
             labels = labels_lib.managed_labels(entity.name, part_of) | {"forge.dev/cluster" = entity.runtime.cluster} \
-                | ({"forge.dev/delivery-unit" = entity.delivery_unit} if entity.delivery_unit else {})
+                | ({"forge.dev/delivery-unit" = entity.delivery_unit} if entity.delivery_unit else {}) \
+                | ({"app.kubernetes.io/version" = release} if release else {})
         }
         spec = entity.spec
     }
@@ -1964,7 +1970,7 @@ _manifests = lambda b: Bundle, entities: [any] -> [any] {
         [_render_runtime_class_manifest(rc, _ns, _project) for rc in b.runtime_classes] \
         + _namespaces(b, entities) \
         + [_place_on_primary(_render_config_map_manifest(cm, _ns, _project), _pt) for cm in b.config_maps] \
-        + [_workload_record(e, _project) for e in entities if e.runtime.type == "cluster" and e.kind != "tool"] \
+        + [_workload_record(e, _project, b.release) for e in entities if e.runtime.type == "cluster" and e.kind != "tool"] \
         + _obs_agent_records(b, _project) \
         + [_render_managed_database_record(db, _project) for db in _dbs if db.runtime == "cluster"] \
         + ([_openbao(b).record] if b.openbao else []) \

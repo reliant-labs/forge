@@ -156,6 +156,11 @@ func TestObsSessionsLocalJSONAndTextGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	obsGolden(t, "sessions.txt", text)
+	// A row leads with the app and the time, not the opaque id — which stays, whole, as a column.
+	lines := strings.Split(text, "\n")
+	if len(lines) < 2 || !strings.HasPrefix(lines[0], "APP ") || !strings.HasPrefix(lines[1], "reliant-web ") || !strings.HasSuffix(strings.TrimSpace(lines[1]), sessID) {
+		t.Errorf("table should lead with app + time and end with the full id:\n%s", text)
+	}
 }
 
 func TestObsSessionsLocalFlagsCompileToTheCompilersFilters(t *testing.T) {

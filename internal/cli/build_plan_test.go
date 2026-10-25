@@ -95,6 +95,9 @@ const imagelessInfraFixture = `{
 // case, end to end through runBuild — the SAME entry point the cut uses — and
 // the proof that --plan writes nothing: no bin/, no build state, no ledger.
 func TestBuildPlan_PassesTheReleaseSetWithoutBuildingAnything(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	dir := planProject(t, imagelessInfraFixture)
 
 	err := runBuild(context.Background(), buildOptions{
@@ -117,6 +120,9 @@ func TestBuildPlan_PassesTheReleaseSetWithoutBuildingAnything(t *testing.T) {
 // service here declares its missing package EXPLICITLY, so this pins the
 // plan's own check independently of how forge synthesizes defaults.
 func TestBuildPlan_FailsWhereTheCutWouldFail(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	planProject(t, `{
   "output": {
     "workloads": [
@@ -195,6 +201,9 @@ func TestPlanGoTarget_RejectsNonMainPackage(t *testing.T) {
 // cwd (a sibling checkout) is absent fails the plan with buildtarget's own
 // error — the SAME rule Runner.Build applies, not a restatement of it.
 func TestBuildPlan_ExternalBuildMissingCwdFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	planProject(t, `{
   "output": {
     "workloads": [
@@ -252,6 +261,9 @@ func TestBuildPlan_ExternalBuildMissingCwdFails(t *testing.T) {
 // the build produces must fail the plan with the release's own completeness
 // error — the check the cut runs only after building everything else.
 func TestBuildPlan_ReleaseCoverageGate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	planProject(t, `{
   "output": {
     "workloads": [
@@ -355,6 +367,9 @@ func writeWebFrontend(t *testing.T, dir string) {
 // count it toward --release coverage — otherwise every project with a hosted
 // site fails its own release plan with "Missing from the ledger: web".
 func TestBuildPlan_HostedStaticSiteIsAStep(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	dir := planProject(t, hostedStaticPlanFixture)
 	writeWebFrontend(t, dir)
 
@@ -433,6 +448,9 @@ func TestImageTagSet_ReleaseWritesOnlyTheVersion(t *testing.T) {
 // pushed `:stable`. The plan prints exactly the refs the build would push, so
 // it is the observation point.
 func TestRunBuild_ReleaseTagIsTheVersionNotTheEnvTag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	dir := planProject(t, `{
   "output": {
     "image_tag": "stable",

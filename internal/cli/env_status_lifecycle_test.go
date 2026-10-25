@@ -20,6 +20,9 @@ func (l lifecycleResolver) Lifecycle(_ context.Context, _, env string) string {
 }
 
 func TestEnvStatusJSON_ReportsLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	dir := t.TempDir()
 	declareEnvDir(t, dir, "dev")
 	declareEnvDir(t, dir, "prod")

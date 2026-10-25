@@ -150,6 +150,9 @@ func assertRecorded(t *testing.T, dir, service, image, tag string) {
 
 // TestBuildTag_ExplicitTagWinsForShellBuild is the e2e's exact command.
 func TestBuildTag_ExplicitTagWinsForShellBuild(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	dir := planProject(t, tagPrecedenceFixture)
 	inspected := fakeRegistry(t)
 
@@ -177,6 +180,9 @@ func TestBuildTag_ExplicitTagWinsForShellBuild(t *testing.T) {
 // TestBuildTag_ExplicitTagWinsForDockerBuild: the same agreement through the
 // DockerBuild lane — the tag docker builds and pushes, and the one recorded.
 func TestBuildTag_ExplicitTagWinsForDockerBuild(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	dir := planProject(t, tagPrecedenceFixture)
 	fakeRegistry(t)
 	dockerLog := fakeDocker(t)
@@ -228,6 +234,9 @@ func TestBuildTag_ExplicitTagOnPinnedWorkloadIsRefused(t *testing.T) {
 // TestBuildTag_NoFlagUsesPinThenEnvTag: without --tag, a pinned workload
 // builds its pin and an unpinned one the env's image_tag.
 func TestBuildTag_NoFlagUsesPinThenEnvTag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	dir := planProject(t, tagPrecedenceFixture)
 	fakeRegistry(t)
 	fakeDocker(t)

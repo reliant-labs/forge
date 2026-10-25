@@ -242,6 +242,9 @@ func TestLedgerImport_PreservesPromotionIDsAndClearsTheRefusal(t *testing.T) {
 // called "v1_0_0" that no promotion references, leaving prod's first
 // promotion pointing at a release the ledger does not contain.
 func TestLedgerImport_KeysReleasesByContentsNotFilename(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	at := time.Date(2026, 6, 25, 14, 57, 15, 0, time.UTC)
 	fx := newImportFixture(t, func(dir string) {
 		plantRetiredLedger(t,
@@ -270,6 +273,9 @@ func TestLedgerImport_KeysReleasesByContentsNotFilename(t *testing.T) {
 // still land in promoted_at order, or `forge env status prod` names a release
 // prod stopped running months ago.
 func TestLedgerImport_RecordsPromotionsInPromotedAtOrder(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	// Written to the file NEWEST FIRST, so an importer that preserved
 	// file order would get the current binding wrong.
@@ -366,6 +372,9 @@ func TestLedgerImport_AppliedTwiceCreatesOnce(t *testing.T) {
 // an operator checks against what they know the repository holds, and it
 // must change nothing.
 func TestLedgerImport_DryRunCountsAndWritesNothing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	fx := newImportFixture(t, func(dir string) {
 		plantRetiredLedger(t, dir, []release.Promotion{
@@ -403,6 +412,9 @@ func TestLedgerImport_DryRunCountsAndWritesNothing(t *testing.T) {
 // line, so the result would be whichever release sorted last. The remedy is
 // to import first, and the refusal says so.
 func TestLedgerImport_RefusesAnEnvThatAlreadyHoldsItsOwnPromotions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	fx := newImportFixture(t, func(dir string) {
 		plantRetiredLedger(t,
@@ -448,6 +460,9 @@ func TestLedgerImport_RefusesAnEnvThatAlreadyHoldsItsOwnPromotions(t *testing.T)
 // the exact blob — so the history stays auditable after §11.1 step 9 deletes
 // the files from the repository.
 func TestLedgerImport_RecordsTheGitBlobAsProvenance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	fx := newImportFixture(t, func(dir string) {
 		plantRetiredLedger(t,
@@ -482,6 +497,9 @@ func TestLedgerImport_RecordsTheGitBlobAsProvenance(t *testing.T) {
 // a reader that fell back to disk would find nothing — and this asserts the
 // opposite of nothing.
 func TestLedgerImport_ReadsTheRevNotTheWorkingTree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	fx := newImportFixture(t, func(dir string) {
 		plantRetiredLedger(t,
@@ -509,6 +527,9 @@ func TestLedgerImport_ReadsTheRevNotTheWorkingTree(t *testing.T) {
 // exists; the import is what makes the history authoritative, so a line it
 // skipped would be lost for good once the files are deleted.
 func TestLedgerImport_RefusesAMalformedPromotionLine(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	fx := newImportFixture(t, func(dir string) {
 		path := filepath.Join(dir, retiredPromotionsDirRel, "prod.jsonl")
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -532,6 +553,9 @@ func TestLedgerImport_RefusesAMalformedPromotionLine(t *testing.T) {
 // recognises what it already recorded, so minting one would make the import
 // duplicate on every run and would never clear F3's refusal.
 func TestLedgerImport_RefusesAPromotionWithNoID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	fx := newImportFixture(t, func(dir string) {
 		plantRetiredLedger(t,
 			dir,
@@ -552,6 +576,9 @@ func TestLedgerImport_RefusesAPromotionWithNoID(t *testing.T) {
 // ─── Source selection ───────────────────────────────────────────────────────
 
 func TestLedgerImport_RefusesNoSourceAndBothSources(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	fx := newImportFixture(t, func(dir string) {
 		plantRetiredLedger(t, dir,
 			[]release.Promotion{importablePromotion("id-1", "prod", "v1.0.0", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))},
@@ -609,6 +636,9 @@ func TestLedgerImport_FromFileLedger(t *testing.T) {
 // Pointing --from-file-ledger at a CHECKOUT is the likely mistake, and the
 // right flag exists, so the error names it rather than reporting "no ledger".
 func TestLedgerImport_FromFileLedgerPointedAtACheckoutNamesTheOtherFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	fx := newImportFixture(t, func(dir string) {
 		plantRetiredLedger(t, dir,
 			[]release.Promotion{importablePromotion("id-1", "prod", "v1.0.0", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))},
@@ -632,6 +662,9 @@ func TestLedgerImport_FromFileLedgerPointedAtACheckoutNamesTheOtherFlag(t *testi
 // An unresolvable rev fails naming the rev the user typed, with the fetch
 // remedy — not later as an opaque "path does not exist in tree".
 func TestLedgerImport_UnknownRevNamesTheRev(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	fx := newImportFixture(t, func(dir string) {
 		plantRetiredLedger(t, dir,
 			[]release.Promotion{importablePromotion("id-1", "prod", "v1.0.0", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))},
@@ -654,6 +687,9 @@ func TestLedgerImport_UnknownRevNamesTheRev(t *testing.T) {
 // retired staging and preprod, O-9). They get an env record so a reader sees
 // them without rendering anything.
 func TestLedgerImport_RecordsAnEnvRecordForARetiredEnv(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	at := time.Date(2026, 7, 1, 0, 25, 15, 0, time.UTC)
 	fx := newImportFixture(t, func(dir string) {
 		plantRetiredLedger(t, dir,
@@ -680,6 +716,9 @@ func TestLedgerImport_RecordsAnEnvRecordForARetiredEnv(t *testing.T) {
 // A declaration recorded by `forge env build` knows the kind AND the shape.
 // An import must not overwrite it with less.
 func TestLedgerImport_LeavesAnExistingEnvRecordAlone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	fx := newImportFixture(t, func(dir string) {
 		plantRetiredLedger(t, dir,

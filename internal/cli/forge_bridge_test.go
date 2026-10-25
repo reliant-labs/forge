@@ -83,6 +83,9 @@ func TestBridgeCheckResult(t *testing.T) {
 // and real git: a project whose go.work bridges a checkout this test binary
 // was not built from warns in one line; the same project unbridged is silent.
 func TestWarnBridgeSkew_RealProject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a real git repository; runs in task test")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}

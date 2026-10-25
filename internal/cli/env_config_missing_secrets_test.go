@@ -39,6 +39,9 @@ func runEnvConfigSplit(t *testing.T, args ...string) (stdout, stderr string, err
 // exits 0, prints what resolves, and names what is missing — on stderr, and
 // as a field in --json, so stdout stays exactly the document.
 func TestEnvConfigReportsMissingSecretsAndExitsZero(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	withMissingSecretFixture(t)
 
 	stdout, stderr, err := runEnvConfigSplit(t, "dev", "--json")

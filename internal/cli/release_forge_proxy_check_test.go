@@ -164,6 +164,9 @@ func TestReleaseForgeScript_UnpublishedVersionPassesGate(t *testing.T) {
 // empty body; conflating them would let the guard pass at exactly the moment
 // it cannot know the answer, which is worse than having no guard at all.
 func TestReleaseForgeScript_ProxyUnreachableIsFatal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	repo := newForgeFixtureRepo(t)
 	// A port nothing listens on: curl fails to connect rather than 404ing.
 	out, err := runForgeScriptWithProxy(t, repo, "http://127.0.0.1:1", "--dry-run", "v0.2.0")
@@ -189,6 +192,9 @@ func TestReleaseForgeScript_ProxyUnreachableIsFatal(t *testing.T) {
 // answers but not usefully (a 5xx, a captive portal). Like an unreachable
 // proxy, it leaves the question unanswered, so it must stop the release.
 func TestReleaseForgeScript_UnexpectedProxyStatusIsFatal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	repo := newForgeFixtureRepo(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

@@ -79,6 +79,9 @@ func gitMerge(t *testing.T, repo string) (string, error) {
 }
 
 func TestMergeDriver_GoneBinaryKeepsOurGeneratedFileAndSaysWhatToRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	repo, exe := missingBinaryRepo(t)
 	conflictingBranches(t, repo, "api_gen.go")
 	if err := os.Remove(exe); err != nil {
@@ -105,6 +108,9 @@ func TestMergeDriver_GoneBinaryKeepsOurGeneratedFileAndSaysWhatToRun(t *testing.
 // not discard the other side's entries, so overlapping edits stay a normal
 // conflict with markers.
 func TestMergeDriver_GoneBinaryStillConflictsOnStateFiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	repo, exe := missingBinaryRepo(t)
 	conflictingBranches(t, repo, ".forge/hashes.json")
 	if err := os.Remove(exe); err != nil {
@@ -121,6 +127,9 @@ func TestMergeDriver_GoneBinaryStillConflictsOnStateFiles(t *testing.T) {
 }
 
 func TestMergeDriver_PresentBinaryStillRunsFirst(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	repo, _ := missingBinaryRepo(t)
 	conflictingBranches(t, repo, "api_gen.go")
 

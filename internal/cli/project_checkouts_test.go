@@ -265,6 +265,9 @@ func TestProjectCheckouts_CountsAheadAndBehindAgainstRemoteMain(t *testing.T) {
 // "In step with main" and "I could not tell" are different answers, so a
 // repository with no origin OMITS the counts rather than reporting zero.
 func TestProjectCheckouts_OmitsAheadBehindWhenMainIsUnknown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a real git repository; runs in task test")
+	}
 	dir := t.TempDir()
 	mustGit(t, dir, "init", "-b", "main", dir)
 	mustGit(t, dir, "config", "user.email", "test@example.com")

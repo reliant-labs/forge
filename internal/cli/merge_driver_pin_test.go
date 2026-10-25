@@ -52,6 +52,9 @@ func gitConfig(t *testing.T, dir, key string) string {
 // The pinned forge repairs a driver another forge left, and records itself
 // so a driver from another pin can hand it the merge.
 func TestEnsureGeneratedMergeDriver_PinnedForgeRepairsAStaleDriver(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	repo := pinTestRepo(t)
 	stale := filepath.Join(t.TempDir(), "old-forge")
 	writeTreeFileT(t, stale, "#!/bin/sh\n")
@@ -180,6 +183,9 @@ func fakeGoRunForge(t *testing.T, id string) (exe, cache string) {
 // hook) and from a `go run` build, by naming a durable copy of itself rather
 // than the temp path that is gone when go run exits.
 func TestEnsureGeneratedMergeDriver_GoRunPinRepairsTheDriver(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	for _, env := range []string{"", "FORGE_NO_HOOKS", "FORGE_NO_GIT_HOOKS"} {
 		t.Run("env="+env, func(t *testing.T) {
 			repo := pinTestRepo(t)
@@ -223,6 +229,9 @@ func TestEnsureGeneratedMergeDriver_GoRunPinRepairsTheDriver(t *testing.T) {
 // A second `go run` of the same pin reuses the copy; a forge that is not the
 // pin never copies itself.
 func TestEnsureGeneratedMergeDriver_GoRunCopyIsOncePerPinnedIdentity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	repo := pinTestRepo(t)
 	_, cache := fakeGoRunForge(t, "7410e351b23b")
 	setPinCheck(t, false)
@@ -297,6 +306,9 @@ func TestGoRunExecutable(t *testing.T) {
 // between them rewrote it on every run. The copy already registered keeps it
 // while it exists; when it is gone, the next copy repairs the driver.
 func TestEnsureGeneratedMergeDriver_CopiesOfThePinDoNotFightOverTheDriver(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	repo := pinTestRepo(t)
 	setPinCheck(t, false)
 	prevExe, prevID := mergeDriverExecutable, mergeDriverIdentity

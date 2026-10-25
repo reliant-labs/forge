@@ -518,6 +518,9 @@ func TestRunPromote_AppendsThroughTheDeclaredStore(t *testing.T) {
 // function. Recovery is roll forward; moving backwards is possible and is
 // labelled BEHIND by the plan, never recorded as a rollback.
 func TestRunPromote_BackwardsIsAPlainPromote(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes the on-disk release ledger for real; runs in task test")
+	}
 	dir := t.TempDir()
 	t.Chdir(dir)
 	for _, v := range []string{"v1", "v2", "v3"} {

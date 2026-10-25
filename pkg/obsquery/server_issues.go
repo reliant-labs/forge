@@ -286,6 +286,38 @@ func (q ServerIssueCoOccurring) Compile() (Stmt, error) {
 		"GROUP BY fingerprint\nORDER BY shared DESC, fingerprint\nLIMIT " + strconv.Itoa(maxCoOccurring)), nil
 }
 
+// ServerIssueIncidents reads, for every server error issue in the range, the
+// cause of its newest event and when it first fired in the range: the inputs of
+// GroupIncidents. Source issues are not errors and never form an incident.
+type ServerIssueIncidents struct {
+	Scope Scope
+	// Service narrows to one service, as the list it marks does.
+	Service string
+}
+
+// ServerIssueIncidentColumns names the select list of ServerIssueIncidents, in order.
+var ServerIssueIncidentColumns = []string{"fingerprint", "service", "cause", "first_seen"}
+
+// Compile builds the incident-candidates statement, newest first, capped at
+// MaxIncidentCandidates issues (a range with more failing issues than that
+// groups the newest of them). Columns: ServerIssueIncidentColumns. An issue with
+// no cause is left out.
+func (q ServerIssueIncidents) Compile() (Stmt, error) {
+	if err := q.Scope.validate(MaxRangeLogs); err != nil {
+		return Stmt{}, err
+	}
+	b := newBuilder(q.Scope)
+	conds, err := b.issueConds(q.Scope, q.Service, "", "")
+	if err != nil {
+		return Stmt{}, err
+	}
+	return b.stmt("SELECT " + ServerFingerprintSQL + " AS fingerprint, ServiceName AS service,\n" +
+		"       argMax(" + ServerCauseSQL + ", Timestamp) AS cause, min(Timestamp) AS first_seen\n" +
+		"FROM " + b.table(q.Scope, "otel_logs") + "\n" + where(conds) + "\n" +
+		"GROUP BY service, fingerprint\nHAVING cause != ''\n" +
+		"ORDER BY first_seen DESC, fingerprint\nLIMIT " + strconv.Itoa(MaxIncidentCandidates)), nil
+}
+
 // LocalIssuePrefix starts the id of a query-time issue: "sfp1-<fingerprint>".
 const LocalIssuePrefix = "sfp1-"
 

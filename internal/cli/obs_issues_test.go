@@ -60,8 +60,9 @@ func TestObsIssuesLocalJSONGolden(t *testing.T) {
 	if !strings.Contains(sug, "forge obs issue sfp1-"+issueFP+" dev") {
 		t.Errorf("suggested = %s", sug)
 	}
-	if len(sr.ran) != 1 || !strings.Contains(sr.ran[0], obsquery.ServerFingerprintSQL) {
-		t.Errorf("the local statement must group by the shared sfp1 expression: %v", sr.ran)
+	// The list, then the incident search over the same fingerprint expression.
+	if len(sr.ran) != 2 || !strings.Contains(sr.ran[0], obsquery.ServerFingerprintSQL) || !strings.Contains(sr.ran[1], obsquery.ServerCauseSQL) {
+		t.Errorf("the local statements must group by the shared fingerprint expression and then read the incident causes: %v", sr.ran)
 	}
 }
 
@@ -514,5 +515,112 @@ func TestObsIssuesCloudDefaultsTheUnitFromThePlatform(t *testing.T) {
 	}
 	if got := decode(t, out)["issues"].([]any)[0].(map[string]any)["affected_unit"]; got != "chats" {
 		t.Errorf("affected_unit = %v, want the control plane's chats", got)
+	}
+}
+
+// T6: a dead dependency fails every caller. The list collapses the issues of one
+// incident under the first, says how many it hid, and --expand-incidents lists
+// them all. Nothing is merged: the hidden issues keep their own rows.
+func incidentAnswers() []scriptedAnswer {
+	row := func(fp, svc, title string, events int) []any {
+		return []any{fp, svc, title, "internal/store/db.go in store.(*DB).Exec", "", jn(strconv.Itoa(events)), jn("3"),
+			"2026-10-22 10:00:00.000000000", "2026-10-22 11:30:00.000000000", issueTrace, "v1.4.0", "v1.3.0", "", "traces"}
+	}
+	return []scriptedAnswer{
+		{"GROUP BY fingerprint, service", obsbackend.Result{Rows: [][]any{
+			row(issueFP, "api", "Transaction failed", 40),
+			row("aaaaaaaaaaaaaaaa", "worker", "Persistent fetch failed", 12),
+			row("bbbbbbbbbbbbbbbb", "reconciler", "sweep failed", 5),
+			row("cccccccccccccccc", "api", "unrelated", 1),
+		}}},
+		{"AS cause", obsbackend.Result{Rows: [][]any{
+			{issueFP, "api", "SQLSTATE 57P01", "2026-10-22 10:00:00.000000000"},
+			{"aaaaaaaaaaaaaaaa", "worker", "SQLSTATE 57P01", "2026-10-22 10:02:00.000000000"},
+			{"bbbbbbbbbbbbbbbb", "reconciler", "SQLSTATE 57P01", "2026-10-22 10:05:00.000000000"},
+			{"cccccccccccccccc", "api", "context deadline exceeded", "2026-10-22 10:01:00.000000000"},
+		}}},
+	}
+}
+
+func TestObsIssuesCollapsesAnIncidentByDefault(t *testing.T) {
+	out, _, err := obsRun(t, devFacts(), &scriptedRunner{answers: incidentAnswers()}, "issues", "dev", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := decode(t, out)
+	issues := doc["issues"].([]any)
+	if len(issues) != 2 {
+		t.Fatalf("issues = %d, want the incident's first issue and the unrelated one", len(issues))
+	}
+	first := issues[0].(map[string]any)
+	if first["id"] != "sfp1-"+issueFP || first["related_count"] != float64(2) || !strings.HasPrefix(first["incident_key"].(string), "inc1-") {
+		t.Errorf("first = %v", first)
+	}
+	if issues[1].(map[string]any)["incident_key"] != nil {
+		t.Errorf("an issue alone with its cause is no incident: %v", issues[1])
+	}
+	if doc["collapsed"] != float64(2) {
+		t.Errorf("collapsed = %v, want 2", doc["collapsed"])
+	}
+	if sug := strings.Join(toStrings(doc["suggested"]), "|"); strings.Contains(sug, "aaaaaaaaaaaaaaaa") {
+		t.Errorf("a hidden issue is suggested: %s", sug)
+	}
+
+	out, _, err = obsRun(t, devFacts(), &scriptedRunner{answers: incidentAnswers()}, "issues", "dev", "--json", "--expand-incidents")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc = decode(t, out)
+	if n := len(doc["issues"].([]any)); n != 4 || doc["collapsed"] != nil {
+		t.Errorf("--expand-incidents: %d issues, collapsed %v; want all 4", n, doc["collapsed"])
+	}
+	keys := map[any]int{}
+	for _, i := range doc["issues"].([]any) {
+		keys[i.(map[string]any)["incident_key"]]++
+	}
+	if keys[nil] != 1 || len(keys) != 2 {
+		t.Errorf("incident keys = %v: three issues must share one key", keys)
+	}
+}
+
+func TestObsIssuesTextShowsTheCollapsedIncident(t *testing.T) {
+	out, _, err := obsRun(t, devFacts(), &scriptedRunner{answers: incidentAnswers()}, "issues", "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"+2 related, incident inc1-", "2 more issues of the same incidents are collapsed", "--expand-incidents"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output misses %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Persistent fetch failed") {
+		t.Errorf("a collapsed issue is listed:\n%s", out)
+	}
+}
+
+func TestObsIssuesIncidentWindowIsValidated(t *testing.T) {
+	for _, w := range []string{"0s", "-1m", "2h"} {
+		if _, _, err := obsRun(t, devFacts(), &scriptedRunner{}, "issues", "dev", "--incident-window", w); exitCodeForError(err) != 1 {
+			t.Errorf("--incident-window %s: exit %d, want 1 (%v)", w, exitCodeForError(err), err)
+		}
+	}
+}
+
+func TestObsIssueListsTheRestOfItsIncident(t *testing.T) {
+	withSuspects(t, func(context.Context, string, []string) ([]suspect.Commit, error) { return nil, nil })
+	answers := append(localIssueAnswers(), scriptedAnswer{"AS cause", obsbackend.Result{Rows: [][]any{
+		{issueFP, "api", "SQLSTATE 57P01", "2026-10-22 10:00:00.000000000"},
+		{"aaaaaaaaaaaaaaaa", "worker", "SQLSTATE 57P01", "2026-10-22 10:03:00.000000000"},
+	}}})
+	out, _, err := obsRun(t, devFacts(), &scriptedRunner{answers: answers}, "issue", "sfp1-"+issueFP, "dev", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := decode(t, out)
+	if ids := toStrings(doc["incident_issue_ids"]); len(ids) != 1 || ids[0] != "sfp1-aaaaaaaaaaaaaaaa" {
+		t.Errorf("incident_issue_ids = %v", ids)
+	}
+	if doc["issue"].(map[string]any)["related_count"] != float64(1) {
+		t.Errorf("issue = %v", doc["issue"])
 	}
 }

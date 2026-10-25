@@ -157,7 +157,7 @@ func Load(path string) (Policy, error) {
 // does not know (written by a newer or older forge, or misspelled). Per-machine
 // state is shared across forge versions, so an unknown key must never fail an
 // unrelated command; strictness belongs to forge.yaml. Unknown keys fall back to
-// defaults here and are dropped on the next Save. Warned once per path.
+// defaults here but are preserved on Save for other versions. Warned once per path.
 var PolicyWarnings io.Writer = os.Stderr
 
 var warnedPolicyPaths sync.Map
@@ -263,7 +263,47 @@ func guardMachinePolicy(path string) error {
 	return nil
 }
 
-// Save atomically replaces a validated policy file.
+// marshalPolicyPreservingUnknown keeps settings owned by other Forge versions.
+// Read at save time (not only Load): registration can construct a fresh Policy,
+// and must not silently reset retention understood by an older running daemon.
+// Callers serialize read-modify-write through WithLock; atomic rename alone is
+// not a transaction with writers that do not participate in that lock.
+func marshalPolicyPreservingUnknown(path string, p Policy) ([]byte, error) {
+	known, err := json.Marshal(p)
+	if err != nil {
+		return nil, err
+	}
+	var next map[string]json.RawMessage
+	if err := json.Unmarshal(known, &next); err != nil {
+		return nil, err
+	}
+	existing, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read existing storage policy: %w", err)
+	}
+	if err == nil {
+		var previous map[string]json.RawMessage
+		if err := json.Unmarshal(existing, &previous); err != nil || previous == nil {
+			return nil, fmt.Errorf("storage: cannot preserve settings from invalid policy %s", path)
+		}
+		// Include omitempty fields in the known set: their deliberate removal
+		// must not resurrect them from the previous document.
+		typ := reflect.TypeOf(p)
+		knownKeys := make(map[string]bool, typ.NumField())
+		for i := 0; i < typ.NumField(); i++ {
+			knownKeys[strings.Split(typ.Field(i).Tag.Get("json"), ",")[0]] = true
+		}
+		for key, value := range previous {
+			if !knownKeys[key] {
+				next[key] = value
+			}
+		}
+	}
+	return json.MarshalIndent(next, "", "  ")
+}
+
+// Save atomically replaces a validated policy, preserving unknown settings.
+// Read-modify-write callers must hold WithLock across their Load and Save.
 func Save(path string, p Policy) error {
 	if err := guardMachinePolicy(path); err != nil {
 		return err
@@ -274,7 +314,7 @@ func Save(path string, p Policy) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(p, "", "  ")
+	b, err := marshalPolicyPreservingUnknown(path, p)
 	if err != nil {
 		return err
 	}

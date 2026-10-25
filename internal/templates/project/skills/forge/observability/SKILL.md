@@ -186,7 +186,8 @@ On a cluster, the node agent does the same for the **destination** with `destina
 
 ### Logs: exactly one shipping path
 
-The server writes JSON lines to stdout; a record logged with a context holding a span (`logger.InfoContext(ctx, ...)`) carries `trace_id` and `span_id`. Locally a collector reads the `.forge/logs/<env>/*.log` files; on a cluster a node agent reads container logs. The OTLP logs exporter (`OTEL_LOGS_EXPORTER=otlp`) does not replace stdout and is **mutually exclusive with file/stdout collection** — turn it on only where no agent collects the same stream, or every line ships twice.
+The server writes JSON lines to stdout: each carries the process `resource` (version included; `observability/destination`), and one logged with a span's context (`InfoContext`) `trace_id` and `span_id`. Locally a collector reads the `.forge/logs/<env>/*.log` files; on a cluster a node agent reads container logs. The OTLP logs exporter (`OTEL_LOGS_EXPORTER=otlp`) does not replace stdout and is **mutually exclusive with file/stdout collection** — turn it on only where no agent collects the same stream, or every line ships twice.
+
 
 ## Continuous profiles
 

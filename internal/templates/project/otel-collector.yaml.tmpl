@@ -88,6 +88,33 @@ receivers:
         if: 'attributes.msg != nil'
         from: attributes.msg
         to: body
+      # The workload's resource (forge/pkg/observe LogKeyResource) moves into
+      # the record's RESOURCE. service.name and deployment.environment.name
+      # were already named by the file's path above, and that wins. A line
+      # with no "resource" object (a panic, a non-forge process) is unchanged.
+      - type: move
+        if: 'type(attributes.resource) == "map" && attributes.resource["service.name"] != nil && resource["service.name"] == nil'
+        from: attributes.resource["service.name"]
+        to: resource["service.name"]
+      - type: move
+        if: 'type(attributes.resource) == "map" && attributes.resource["service.version"] != nil && resource["service.version"] == nil'
+        from: attributes.resource["service.version"]
+        to: resource["service.version"]
+      - type: move
+        if: 'type(attributes.resource) == "map" && attributes.resource["service.namespace"] != nil && resource["service.namespace"] == nil'
+        from: attributes.resource["service.namespace"]
+        to: resource["service.namespace"]
+      - type: move
+        if: 'type(attributes.resource) == "map" && attributes.resource["deployment.environment.name"] != nil && resource["deployment.environment.name"] == nil'
+        from: attributes.resource["deployment.environment.name"]
+        to: resource["deployment.environment.name"]
+      - type: move
+        if: 'type(attributes.resource) == "map" && attributes.resource["service.instance.id"] != nil && resource["service.instance.id"] == nil'
+        from: attributes.resource["service.instance.id"]
+        to: resource["service.instance.id"]
+      - type: remove
+        if: 'type(attributes.resource) == "map"'
+        field: attributes.resource
 
 service:
   pipelines:

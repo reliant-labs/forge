@@ -78,6 +78,8 @@ func installHostToolTripwire() (func() error, error) {
 	// A k3d create watches its server containers through docker; unit tests
 	// see no restarts unless they stub one (the e2e lanes keep the real one).
 	k3dServerBootCrashFn = func(context.Context, string) string { return "" }
+	// Creating the /dev/kmsg device file runs sudo mknod; unit tests must never.
+	addK3dKmsgArgsFn = func(args []string) ([]string, error) { return args, nil }
 	if runtime.GOOS == "windows" {
 		return func() error { return nil }, nil
 	}

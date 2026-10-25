@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/k3dkmsg"
 )
 
 func k3dPDBStream(replicas int) string {
@@ -55,7 +57,11 @@ func TestPrunePDBs_K3d(t *testing.T) {
 	}
 	name := fmt.Sprintf("forge-pdbtest-%d", time.Now().UnixNano()%1e8)
 	ctx := context.Background()
-	if out, err := exec.CommandContext(ctx, "k3d", "cluster", "create", name, "--no-lb", "--wait", "--timeout", "180s").CombinedOutput(); err != nil {
+	createArgs, err := k3dkmsg.AddArgs([]string{"cluster", "create", name, "--no-lb", "--wait", "--timeout", "180s"})
+	if err != nil {
+		t.Fatalf("k3d create: %v", err)
+	}
+	if out, err := exec.CommandContext(ctx, "k3d", createArgs...).CombinedOutput(); err != nil {
 		t.Fatalf("k3d create: %v\n%s", err, out)
 	}
 	t.Cleanup(func() { _ = exec.Command("k3d", "cluster", "delete", name).Run() })

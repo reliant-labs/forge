@@ -97,6 +97,39 @@ jobs:
           mkdir -p "$E2E_DIR"
           echo "✅ workspace ready at $E2E_DIR"
 
+      # The scaffold depends on @reliantlabs/forge-web-runtime by its PUBLISHED
+      # range, and a pull request that ships a new runtime raises that range
+      # to a version npm does not have until the tag is pushed after the
+      # merge. So npm fetches the @reliantlabs scope from an overlay registry
+      # serving this checkout's `npm pack` beside every published version
+      # (internal/npmoverlay): the smoke installs the runtime it ships, with
+      # the scaffold's manifest untouched. It runs until the job ends; the
+      # step fails if the pack does.
+      - name: Serve this checkout's web-runtime to npm
+        run: |
+          go build -o "$RUNNER_TEMP/npm-overlay" ./internal/npmoverlay/cmd/npm-overlay
+          env_file="$RUNNER_TEMP/npm-overlay.env"
+          nohup "$RUNNER_TEMP/npm-overlay" -pack web-runtime -env-file "$env_file" \
+            > "$RUNNER_TEMP/npm-overlay.log" 2>&1 &
+          pid=$!
+          for _ in $(seq 1 600); do
+            [ -s "$env_file" ] && break
+            if ! kill -0 "$pid" 2>/dev/null; then
+              cat "$RUNNER_TEMP/npm-overlay.log"
+              echo "❌ npm overlay exited before it was ready"
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ ! -s "$env_file" ]; then
+            cat "$RUNNER_TEMP/npm-overlay.log"
+            echo "❌ npm overlay not ready after 10m"
+            exit 1
+          fi
+          cat "$env_file" >> "$GITHUB_ENV"
+          cat "$RUNNER_TEMP/npm-overlay.log"
+          echo "✅ npm overlay serving web-runtime"
+
       - name: forge project new e2e-test
         working-directory: ${{ env.E2E_DIR }}
         run: |

@@ -36,7 +36,9 @@ const roster: Patient[] = [
 
 function useListPatients<TData = ListPatientsResponse>(
   req: ListPatientsRequest,
-  options?: Partial<UseQueryOptions<ListPatientsResponse, ConnectClientError, TData>>,
+  options?: Partial<
+    UseQueryOptions<ListPatientsResponse, ConnectClientError, TData>
+  >,
 ) {
   return useQuery<ListPatientsResponse, ConnectClientError, TData>({
     queryKey: ["patients", req.search ?? ""],

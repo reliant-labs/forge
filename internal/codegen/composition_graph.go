@@ -150,6 +150,8 @@ type graphNode struct {
 	Audience string
 	// Services are a route set's services, in Deps order.
 	Services []*graphNode
+	// RPCService is the canonical proto identity from the typed mount inventory.
+	RPCService string
 	// Pos orders providers by their declaration in internal/app.
 	Pos int
 	// File and Line locate a provider's func; Standby, AuthAudience and

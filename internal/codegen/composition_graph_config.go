@@ -124,6 +124,11 @@ type GraphRoot struct {
 	Name string
 	// Args is the command path that runs it (`<bin> <args>`).
 	Args []string
+	// RPCServices are the canonical proto service names mounted by route sets
+	// in this root's closure, not every handler it happens to call internally.
+	RPCServices []string
+	// HasDatabase reports database reach in this root's closure.
+	HasDatabase bool
 	// Config is every root-config (config.Config) field the root reaches;
 	// nil when the project has no root config message to read reach
 	// against.
@@ -635,7 +640,7 @@ func duplicateRootEnv(v graphRootView) []string {
 func graphRoots(views []graphRootView) []GraphRoot {
 	out := make([]GraphRoot, 0, len(views))
 	for _, v := range views {
-		r := GraphRoot{Name: v.Name, Args: append([]string(nil), v.Command...)}
+		r := GraphRoot{Name: v.Name, Args: append([]string(nil), v.Command...), RPCServices: append([]string(nil), v.RPCServices...), HasDatabase: v.ReachesDB}
 		if v.HasConfig {
 			r.Config = append([]ConfigLeaf{}, v.Config...)
 			r.Loads = append([]RootConfigLoad(nil), v.Loads...)

@@ -243,7 +243,7 @@ func (v *validator) oneOf(path string, obj map[string]any, key string, required 
 }
 
 func (v *validator) dashboard(d map[string]any) {
-	v.known("", d, "version", "id", "title", "description", "filters", "annotations", "panels")
+	v.known("", d, "version", "id", "title", "description", "filters", "annotations", "panels", "sections")
 	if ver := v.str("", d, "version", false); ver != "" && ver != SpecVersion {
 		v.add("version", "%q is not the spec version this forge reads (%s)", ver, SpecVersion)
 	}
@@ -296,6 +296,7 @@ func (v *validator) dashboard(d map[string]any) {
 			v.panel(p, o, ids)
 		}
 	}
+	v.sectionTargets(d, ps, ids)
 }
 
 func (v *validator) filters(fs []any) {
@@ -306,7 +307,7 @@ func (v *validator) filters(fs []any) {
 		if !ok {
 			continue
 		}
-		v.known(p, f, "id", "label", "field", "signal")
+		v.known(p, f, "id", "label", "field", "signal", "panelIds")
 		if id := v.str(p, f, "id", true); id != "" {
 			if ids[id] {
 				v.add(childPath(p, "id"), "duplicate filter id %q", id)
@@ -355,7 +356,7 @@ func (v *validator) stringList(path string, obj map[string]any, key string, sig 
 }
 
 func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
-	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql")
+	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql", "section")
 	if id := v.str(path, o, "id", true); id != "" {
 		if !idPattern.MatchString(id) {
 			v.add(childPath(path, "id"), "%q is not a valid id (letters, digits, '-', '_' and '.', starting with a letter or digit)", id)

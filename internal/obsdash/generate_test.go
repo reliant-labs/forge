@@ -29,7 +29,7 @@ func TestWriteIsIdempotentHonoursOverridesAndRetiresStaleFiles(t *testing.T) {
 	if want == "" {
 		t.Fatal("overview not written")
 	}
-	for _, rel := range []string{ProjectSpecFile, ServiceSpecFile("orders"), SavedSearchesFile("shop", "orders")} {
+	for _, rel := range []string{ProjectSpecFile, ProcessSpecFile("shop-api"), SavedSearchesFile("shop", "shop-api")} {
 		if read(rel) == "" {
 			t.Errorf("%s not written", rel)
 		}
@@ -62,12 +62,12 @@ func TestWriteIsIdempotentHonoursOverridesAndRetiresStaleFiles(t *testing.T) {
 	}
 
 	// A service that disappears takes its dashboard with it.
-	ordersFile := DashboardsDir + "/shop-service-orders_gen.json"
+	ordersFile := DashboardsDir + "/shop-process-shop-api_gen.json"
 	if read(ordersFile) == "" {
 		t.Fatal("orders dashboard missing")
 	}
 	in := fixture()
-	in.Services = in.Services[1:]
+	in.Processes = in.Processes[1:]
 	if _, err := Write(dir, in, cs); err != nil {
 		t.Fatal(err)
 	}

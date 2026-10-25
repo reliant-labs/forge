@@ -267,3 +267,40 @@ func TestStorePresenceTreatsAnUnknownHostedEnvAsHoldingNothing(t *testing.T) {
 		t.Fatalf("got %v, %v: want an empty presence map and no error", got, err)
 	}
 }
+
+// An env that declares forge.OpenBao is probed before any Secret reads from it:
+// that is the deploy that may be adopting a live store, and the adoption warning
+// rides this probe. The probe is the kubectl one, so it can answer the
+// adoption read; an env with neither stays unprobed.
+func TestLiveStoreProbe_AnOpenBaoOnlyEnvIsProbedForAnAdoption(t *testing.T) {
+	probe := liveStoreProbe("prod", &KCLEntities{OpenBao: &OpenBaoEntity{}})
+	if probe == nil {
+		t.Fatal("an env that runs OpenBao must be probed, or an adoption is never warned about")
+	}
+	if _, ok := probe.(cluster.AdoptionProbe); !ok {
+		t.Errorf("the live probe %T cannot answer the adoption read", probe)
+	}
+	if liveStoreProbe("prod", &KCLEntities{}) != nil || liveStoreProbe("prod", nil) != nil {
+		t.Error("an env with no store and no OpenBao must stay unprobed")
+	}
+}
+
+// The adoption advisory is reported, and never blocks.
+func TestDeployFindings_AdoptionIsAdvisory(t *testing.T) {
+	res := cluster.PreflightResult{Store: cluster.StoreFindings{Adoptions: []string{"this deploy ADOPTS the OpenBao"}}}
+	if !res.OK() {
+		t.Fatal("an adoption advisory must not block the deploy")
+	}
+	var found bool
+	for _, f := range deployFindingsFromPreflight(res) {
+		if f.Check == "store_adoption" {
+			found = true
+			if f.Blocking {
+				t.Error("store_adoption must be advisory")
+			}
+		}
+	}
+	if !found {
+		t.Error("the adoption advisory is missing from the deploy findings")
+	}
+}

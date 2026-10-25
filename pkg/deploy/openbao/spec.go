@@ -240,10 +240,22 @@ type KV struct {
 
 // HA is availability.
 type HA struct {
-	PDB           bool   `json:"pdb"`
-	ZoneSpread    bool   `json:"zoneSpread"`
-	PriorityClass string `json:"priorityClass,omitempty"`
+	PDB        bool `json:"pdb"`
+	ZoneSpread bool `json:"zoneSpread"`
+	// NodeSpread is "required" (the default; empty means required) or
+	// "preferred". Required refuses to co-locate two replicas of an HA store
+	// on one node (a node loss would take quorum or every standby with it);
+	// preferred is the scheduler's best effort and states NodeSpreadReason.
+	NodeSpread       string `json:"nodeSpread,omitempty"`
+	NodeSpreadReason string `json:"nodeSpreadReason,omitempty"`
+	PriorityClass    string `json:"priorityClass,omitempty"`
 }
+
+// Node spread values.
+const (
+	NodeSpreadRequired  = "required"
+	NodeSpreadPreferred = "preferred"
+)
 
 // Audit is the audit devices.
 type Audit struct {
@@ -405,6 +417,18 @@ func (s Spec) Validate() error {
 	}
 	if s.KV.Mount == "" || s.KV.MaxVersions < 2 {
 		bad("kv needs a mount and maxVersions >= 2")
+	}
+	switch s.HA.NodeSpread {
+	case "", NodeSpreadRequired:
+		if s.HA.NodeSpreadReason != "" {
+			bad("ha.nodeSpreadReason is set but nodeSpread is required: the reason excuses a preferred spread. Drop the reason, or set nodeSpread to preferred")
+		}
+	case NodeSpreadPreferred:
+		if s.HA.NodeSpreadReason == "" {
+			bad("ha.nodeSpread is preferred and states no nodeSpreadReason. Two replicas on one node lose quorum or every standby together when it fails: keep the default (required), or say why this store may share a node")
+		}
+	default:
+		bad("ha.nodeSpread %q must be required or preferred", s.HA.NodeSpread)
 	}
 	if !s.Audit.Stdout && !s.Audit.File {
 		bad("audit has no device: a secret store with no audit trail is refused. Keep stdout or file")

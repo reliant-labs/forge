@@ -297,7 +297,7 @@ func TestDBQueryHostedForbiddenKeepsTheRemedy(t *testing.T) {
 	if jerr := json.Unmarshal([]byte(out), &doc); jerr != nil {
 		t.Fatal(jerr)
 	}
-	for _, want := range []string{"lacks the db:query scope", "fix:", "credential: from --token", "does not carry the db:query scope"} {
+	for _, want := range []string{"lacks the db:query scope", "fix:", "from --token", "does not carry the db:query scope"} {
 		if !strings.Contains(doc.Error, want) {
 			t.Errorf("error lacks %q:\n%s", want, doc.Error)
 		}

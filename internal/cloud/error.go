@@ -262,9 +262,10 @@ func (c *Client) connectError(procedure string, resp *http.Response, raw []byte)
 		out.message = fmt.Sprintf(
 			"%s rejected the credential (HTTP %d%s)\n"+
 				"  endpoint:   %s   (declared by env %q)\n"+
-				"  credential: from %s\n%s%s",
+				"  credential: %s from %s%s\n%s%s",
 			procedure, resp.StatusCode, codeSuffix(out.Code), c.Endpoint.URL, c.Endpoint.Env,
-			cred.From, credentialProblem(out.Reason)+authFix(detail, c.Endpoint.TokenEnv, cred), detailSuffix(detail))
+			cred.Identity(), cred.From, statusHint(c.Endpoint.Env),
+			credentialProblem(out.Reason)+authFix(detail, c.Endpoint.TokenEnv, cred), detailSuffix(detail))
 	case http.StatusNotImplemented:
 		out.message = fmt.Sprintf("%s is not implemented by %s%s", procedure, c.Endpoint.URL, detailSuffix(detail))
 	default:
@@ -275,6 +276,16 @@ func (c *Client) connectError(procedure string, resp *http.Response, raw []byte)
 		out.message += "\n  reason: " + out.Reason
 	}
 	return out
+}
+
+// statusHint points at the command that describes a credential, so nobody
+// opens the credentials file (which holds the secret) to find out which one
+// was refused.
+func statusHint(env string) string {
+	if env == "" {
+		return ""
+	}
+	return "   (inspect it with `forge cloud status " + env + "`; never print the token)"
 }
 
 func codeSuffix(code string) string {

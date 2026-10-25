@@ -9,7 +9,7 @@
 //     column, no HyperDX field and no chart library. Build derives it from the
 //     project's services, rpcs, frontends and database. It is also serialized
 //     (deploy/observability/spec/, one file for the project and one per
-//     service — see ServicePart) so a second renderer — the Reliant console,
+//     service — see ProcessPart) so a second renderer — the Reliant console,
 //     drawing with uPlot — can consume exactly the same model, through the
 //     release bundle, without parsing HyperDX JSON. The panel vocabulary and
 //     its validator are published as pkg/dashspec (aliased in dashspec.go), so
@@ -34,7 +34,7 @@ import (
 )
 
 // PartsVersion identifies the shape of the files the Spec is written to
-// disk as (ProjectPart, ServicePart).
+// disk as (ProjectPart, ProcessPart).
 const PartsVersion = "forge.dashboard-parts/v2"
 
 // withReleaseMarkers declares the releases annotation on d when it has a
@@ -87,12 +87,6 @@ type Service struct {
 	Methods      []Method
 }
 
-// procedure returns the full procedure name of m: the span name the
-// otelconnect server interceptor uses.
-func procedure(s Service, m Method) string {
-	return s.Package + "." + s.ProtoService + "/" + m.Name
-}
-
 // Input is what Build reads from the project.
 type Input struct {
 	Project   string
@@ -132,7 +126,7 @@ func Build(in Input) Spec {
 
 // ProjectPart is the part of the Spec that belongs to the project as a
 // whole: the overview, which leads, and the dashboards that follow the
-// services' (Workloads, Releases, the frontend's). See ServicePart.
+// services' (Workloads, Releases, the frontend's). See ProcessPart.
 type ProjectPart struct {
 	Version    string      `json:"version"`
 	Project    string      `json:"project"`
@@ -140,19 +134,9 @@ type ProjectPart struct {
 	Dashboards []Dashboard `json:"dashboards"`
 }
 
-// ProcessPart is everything forge derives for one deployed process's observability:
-// its dashboard, its saved searches, and what the default alerts know of it.
-//
-// The Spec is written to disk as one ProjectPart and one ServicePart per
-// service (SpecDir) rather than as one file, because a file that lists every
-// service is one that two branches each adding a service both change — at
-// the same sorted position whenever the two services are neighbours, and in
-// JSON so repetitive that git aligns even distant insertions onto each
-// other. The merge then kept one side, and every rebase of a lane that
-// adopted a service was followed by a generate that rewrote ~1,500 lines and
-// an amend (reliant, P3b). One file per service is disjoint from every other
-// branch's, so git merges it — with or without forge's merge driver — into
-// exactly what a generate over both branches writes.
+// ProcessPart holds one deployed executable/role's dashboard and saved searches.
+// Separate files keep unrelated process changes disjoint; RPC alert inputs are
+// independent alert-service parts, never duplicated for each mounting process.
 type ProcessPart struct {
 	Version       string        `json:"version"`
 	Process       Process       `json:"process"`
@@ -174,8 +158,8 @@ type Process struct {
 	HasDatabase  bool     `json:"hasDatabase,omitempty"`
 }
 
-// BuildParts derives the project's Spec as the parts it is written in. A
-// service with no rpc has no part. Parts are sorted by service name.
+// BuildParts derives the project's Spec as process parts, sorted by process
+// identity. RPC-free workers and gateways retain their runtime/workload panels.
 func BuildParts(in Input) (ProjectPart, []ProcessPart) {
 	project := ProjectPart{
 		Version:  PartsVersion,
@@ -254,10 +238,6 @@ func commonFilters() []Filter {
 	}
 }
 
-func serviceLogScope(s Service) []Predicate {
-	return []Predicate{{Field: "log.attr.procedure", Op: OpPrefix, Value: "/" + s.Package + "." + s.ProtoService + "/"}}
-}
-
 func latencySeries() []Series {
 	return []Series{
 		{Label: "p50", Agg: AggQuantile, Quantile: 0.5, Field: "span.duration"},
@@ -272,13 +252,6 @@ func redTableSeries() []Series {
 		{Label: "errors", Agg: AggCount, Where: []Predicate{errorSpans}},
 	}
 	return append(s, latencySeries()...)
-}
-
-func errorRatioSeries() []Series {
-	return []Series{
-		{Label: "errors", Agg: AggCount, Where: []Predicate{errorSpans}},
-		{Label: "requests", Agg: AggCount},
-	}
 }
 
 func buildOverview(in Input) Dashboard {

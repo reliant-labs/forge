@@ -12,14 +12,14 @@ import (
 )
 
 // AlertDefaultsVersion identifies the serialized shape of AlertDefaultsFile.
-// v2 dropped input.services: each service's entry is its ServicePart's Alert
-// (see ServicePart for why), and ReadAlertInput puts them back.
+// v2 dropped input.services: each service's entry is its alertServicePart's Alert
+// (see alertServicePart for why), and ReadAlertInput puts them back.
 const AlertDefaultsVersion = "forge.alert-defaults/v3"
 
 // AlertDefaultsFile is the project-relative file `forge generate` writes: the
 // project metadata the default alert rules are derived from, plus the catalog
 // of defaults with their tunable parameters. The per-service metadata is in
-// each ServicePart. `forge env shape` reads both back (ReadAlertInput) to
+// each alertServicePart. `forge env shape` reads both back (ReadAlertInput) to
 // resolve the defaults for one env (the SQL names the env, so a default is
 // rendered per env, not once per project). It sits beside the dashboard spec,
 // not in the dashboards directory the HyperDX provisioner scans.
@@ -44,7 +44,7 @@ type AlertService struct {
 type AlertInput struct {
 	Project string `json:"project"`
 	// Services are the project's services that have at least one rpc. The
-	// generated file leaves them out (each is in its ServicePart).
+	// generated file leaves them out (each is in its alertServicePart).
 	Services []AlertService `json:"services,omitempty"`
 	// FrontendServices are the service.names the project's web frontends'
 	// browser SDK reports (naming.FrontendServiceName: "<project>-<frontend>",
@@ -532,7 +532,7 @@ func AlertDefaults(in AlertInput) AlertDefaultsDoc {
 }
 
 // MarshalAlertDefaults is the file's bytes: the catalog for in, with the
-// services left to their ServiceParts.
+// services left to their alertServiceParts.
 func MarshalAlertDefaults(in AlertInput) ([]byte, error) {
 	doc := AlertDefaults(in)
 	doc.Input.Services = nil
@@ -557,7 +557,7 @@ func ParseAlertDefaults(b []byte) (AlertInput, error) {
 }
 
 // ReadAlertInput reads the alert defaults' input forge generate last wrote
-// under projectDir: AlertDefaultsFile, with each ServicePart's Alert as its
+// under projectDir: AlertDefaultsFile, with each alertServicePart's Alert as its
 // services. ok is false when there is no AlertDefaultsFile — a project that
 // has not run `forge generate` since alerting landed has no defaults, which
 // is not an error.

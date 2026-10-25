@@ -463,10 +463,6 @@ func generateSteps() []GenStep {
 		// it, or a project whose deploy/ was scaffolded before the first
 		// component existed). Drift is reported by `forge lint`, not repaired.
 		{Name: "workloads.k (scaffold once)", Gate: and(gateDeployEnabled, hasGoModule), GateReason: "features.deploy=false, or " + noGoModuleReason + ": there is no workload to declare", Run: stepWorkloadsKCL, Tag: "deploy"},
-		// Dashboards are a projection of the services the descriptor and the
-		// parsed protos describe, so they follow "parse services + module
-		// path". Owned overrides live beside the _gen files; see obsdash.
-		{Name: "observability dashboards", Gate: gateObservabilityDashboards, GateReason: "features.observability=false, not a service project, or no services", Run: stepObservabilityDashboards, Tag: "deploy"},
 		// Gated on envs EXISTING, not on features.deploy. A service scaffold
 		// always gets deploy/kcl/<env>/main.k (generator.project: "so the user
 		// has a complete starting point"), and every main.k opens with
@@ -476,6 +472,9 @@ func generateSteps() []GenStep {
 		// `forge doctor` deploy checks on a project shape that is entirely
 		// valid. The step is a function of what is on disk: no envs, no work.
 		{Name: "per-env deploy config", Gate: and(hasForgeYAML, hasConfig, hasDeployEnvs), GateReason: "no proto/<project>/config/v1/ directory or no deploy/kcl/<env>/main.k", Run: stepPerEnvDeployConfig, Tag: "deploy"},
+		// Process dashboards render workload identity, so config_gen.k's
+		// ROOTS and per-env config must already exist on the first generate.
+		{Name: "observability dashboards", Gate: gateObservabilityDashboards, GateReason: "features.observability=false or features.codegen=false", Run: stepObservabilityDashboards, Tag: "deploy"},
 		// AFTER per-env deploy config, deliberately. The frontend's runtime
 		// document is rendered from the dev environment's own KCL, which
 		// means both halves of that render — the generated

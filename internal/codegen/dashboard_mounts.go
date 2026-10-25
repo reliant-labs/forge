@@ -51,12 +51,31 @@ func CommandRPCServices(projectDir, module, binary string, args []string, servic
 			}
 		}
 	}
-	type decl struct {
-		fn      *ast.FuncDecl
-		imports map[string]string
-		pkg     string
+	index, roots, err := readMountDecls(projectDir, module, binary, args[0])
+	if err != nil {
+		return nil, err
 	}
-	index := map[string]decl{}
+	if len(roots) != 1 {
+		return nil, nil
+	}
+	found := map[string]bool{}
+	walkMountDecls(roots[0], module, index, leaves, map[string]bool{}, found)
+	var out []string
+	for s := range found {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+type mountDecl struct {
+	fn      *ast.FuncDecl
+	imports map[string]string
+	pkg     string
+}
+
+func readMountDecls(projectDir, module, binary, command string) (map[string][]mountDecl, []string, error) {
+	index := map[string][]mountDecl{}
 	var roots []string
 	for _, rel := range []string{filepath.Join("cmd", binary, "cmd"), filepath.Join("internal", "app")} {
 		entries, err := os.ReadDir(filepath.Join(projectDir, rel))
@@ -64,7 +83,7 @@ func CommandRPCServices(projectDir, module, binary string, args []string, servic
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		pkg := module + "/" + filepath.ToSlash(rel)
 		for _, e := range entries {
@@ -73,7 +92,7 @@ func CommandRPCServices(projectDir, module, binary string, args []string, servic
 			}
 			f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(projectDir, rel, e.Name()), nil, 0)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			imports := map[string]string{}
 			for _, imp := range f.Imports {
@@ -109,28 +128,27 @@ func CommandRPCServices(projectDir, module, binary string, args []string, servic
 						}
 						use, _ := strconv.Unquote(s.Value)
 						words := strings.Fields(use)
-						if len(words) > 0 && words[0] == args[len(args)-1] {
+						if len(words) > 0 && words[0] == command {
 							roots = append(roots, key)
 						}
 						return true
 					})
 				}
-				index[key] = decl{fn: fn, imports: imports, pkg: pkg}
+				index[key] = append(index[key], mountDecl{fn: fn, imports: imports, pkg: pkg})
 			}
 		}
 	}
-	seen := map[string]bool{}
-	found := map[string]bool{}
-	var walk func(string)
-	walk = func(key string) {
-		if seen[key] {
-			return
-		}
-		seen[key] = true
-		d, ok := index[key]
-		if !ok {
-			return
-		}
+	return index, roots, nil
+}
+
+func walkMountDecls(key, module string, index map[string][]mountDecl, leaves map[string]string, seen, found map[string]bool) {
+	walk := func(key string) { walkMountDecls(key, module, index, leaves, seen, found) }
+	if seen[key] {
+		return
+	}
+	seen[key] = true
+	decls := index[key]
+	for _, d := range decls {
 		if strings.HasPrefix(key, module+"/internal/app.") {
 			if rpc := leaves[d.fn.Name.Name]; rpc != "" {
 				found[rpc] = true
@@ -165,16 +183,4 @@ func CommandRPCServices(projectDir, module, binary string, args []string, servic
 			return true
 		})
 	}
-	// Ambiguous constructors (same terminal name under distinct parents) are
-	// not a proven command path. Avoid claiming either one's RPCs.
-	if len(roots) != 1 {
-		return nil, nil
-	}
-	walk(roots[0])
-	var out []string
-	for s := range found {
-		out = append(out, s)
-	}
-	sort.Strings(out)
-	return out, nil
 }

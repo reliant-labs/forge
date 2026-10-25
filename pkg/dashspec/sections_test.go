@@ -6,11 +6,11 @@ import (
 )
 
 func TestOptionalSectionsAndFilterTargets(t *testing.T) {
-	base := `{"id":"ops","title":"Operations","panels":[{"id":"requests","title":"Requests","kind":"number","signal":"traces","series":[{"agg":"count"}]}]}`
+	base := `{"id":"ops","title":"Operations","panels":[{"id":"requests","title":"Requests","kind":"number","signal":"traces","series":[{"label":"requests","agg":"count"}]}]}`
 	if _, err := ParseDashboard("legacy", []byte(base)); err != nil {
 		t.Fatal(err)
 	}
-	valid := `{"id":"ops","title":"Operations","sections":[{"id":"rpc","title":"RPC"}],"filters":[{"id":"method","label":"Method","field":"span.attr.rpc.method","panelIds":["requests"]}],"panels":[{"id":"requests","section":"rpc","title":"Requests","kind":"number","signal":"traces","series":[{"agg":"count"}]}]}`
+	valid := `{"id":"ops","title":"Operations","sections":[{"id":"rpc","title":"RPC"}],"filters":[{"id":"method","label":"Method","field":"span.attr.rpc.method","panelIds":["requests"]}],"panels":[{"id":"requests","section":"rpc","title":"Requests","kind":"number","signal":"traces","series":[{"label":"requests","agg":"count"}]}]}`
 	got, err := ParseDashboard("sections", []byte(valid))
 	if err != nil {
 		t.Fatal(err)

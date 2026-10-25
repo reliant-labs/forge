@@ -11,13 +11,21 @@ func TestCommandRPCServicesFollowsTypedMountInventory(t *testing.T) {
 	writeComponentDeps(t, dir, "internal/handlers", "billing", "billing", "\tLogger *slog.Logger")
 	writeComponentDeps(t, dir, "internal/handlers", "user", "user", "\tLogger *slog.Logger")
 	services := []ServiceDef{{Name: "BillingService", Package: "shared.v1", ModulePath: "example.com/proj"}, {Name: "UserService", Package: "shared.v1", ModulePath: "example.com/proj"}}
-	err := GenerateInventory(InventoryGenInput{GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"}, Services: services})
+	names, err := DiscoverInternalPackageNames(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packages, err := PackageDataFromNames(names, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = GenerateInventory(InventoryGenInput{GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"}, Services: services, Packages: packages})
 	if err != nil {
 		t.Fatal(err)
 	}
 	writeFileT(t, filepath.Join(dir, "internal/app/deployments.go"), `package app
-func MountPublic(c *Components) { c.MountUser(nil,nil,nil) }
-func MountAdmin(c *Components) { c.MountBilling(nil,nil,nil) }
+func MountPublic(c *Components) { c.MountSvcUser(nil,nil,nil) }
+func MountAdmin(c *Components) { c.MountSvcBilling(nil,nil,nil) }
 `)
 	writeFileT(t, filepath.Join(dir, "cmd/proj/cmd/commands.go"), `package cmd
 import (

@@ -413,7 +413,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// so it exports everything the steps above produced.
 	if otelShutdown != nil {
 		if shutErr := otelShutdown(shutdownCtx); shutErr != nil {
-			logger.ErrorContext(ctx, "otel shutdown error", "error", shutErr)
+			LogTelemetryFlushError(ctx, logger, "otel shutdown error", shutErr)
 		}
 	}
 

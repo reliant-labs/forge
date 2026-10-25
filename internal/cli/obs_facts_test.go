@@ -14,6 +14,8 @@ import (
 // the render fixture seam and checks the facts, and then the decision.
 func TestObsFactsFromRenderedDeclaration(t *testing.T) {
 	cp := `"control_plane": {"type": "reliant", "endpoint": "https://cp.example.com"}`
+	host := `"workloads": [{"name": "api", "kind": "service", "runtime": {"type": "host"}, "spec": {"kind": "service"}}]`
+	cluster := `"workloads": [{"name": "api", "kind": "service", "runtime": {"type": "cluster"}, "spec": {"kind": "service"}}]`
 	cases := []struct {
 		name    string
 		output  string
@@ -35,15 +37,23 @@ func TestObsFactsFromRenderedDeclaration(t *testing.T) {
 		},
 		{
 			name:    "local stack",
-			output:  `{"observability": {"enabled": true}}`,
-			want:    obsbackend.Facts{Env: "e", Declared: true, Enabled: true},
+			output:  `{"observability": {"enabled": true}, ` + host + `}`,
+			want:    obsbackend.Facts{Env: "e", Declared: true, Enabled: true, HasLocal: true},
 			backend: "local",
 		},
 		{
 			name:    "a control plane alone does not move telemetry off the machine",
-			output:  `{"observability": {"enabled": true}, ` + cp + `}`,
-			want:    obsbackend.Facts{Env: "e", Declared: true, Enabled: true, ControlPlane: "https://cp.example.com"},
+			output:  `{"observability": {"enabled": true}, ` + cp + `, ` + host + `}`,
+			want:    obsbackend.Facts{Env: "e", Declared: true, Enabled: true, ControlPlane: "https://cp.example.com", HasLocal: true},
 			backend: "local",
+		},
+		{
+			// control-plane prod: every workload on a cluster, no destination.
+			// The local ClickStack never saw its telemetry.
+			name:   "a cluster-only env is not answered from the local ClickStack",
+			output: `{"observability": {"enabled": true}, ` + cp + `, ` + cluster + `}`,
+			want:   obsbackend.Facts{Env: "e", Declared: true, Enabled: true, ControlPlane: "https://cp.example.com"},
+			errHas: "runs no workload on this machine",
 		},
 		{
 			name:    "destination fed by the control plane",
@@ -65,7 +75,7 @@ func TestObsFactsFromRenderedDeclaration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Env != c.want.Env || got.Declared != c.want.Declared || got.Enabled != c.want.Enabled || got.ControlPlane != c.want.ControlPlane ||
+			if got.Env != c.want.Env || got.Declared != c.want.Declared || got.Enabled != c.want.Enabled || got.ControlPlane != c.want.ControlPlane || got.HasLocal != c.want.HasLocal ||
 				(got.Destination == nil) != (c.want.Destination == nil) || (got.Destination != nil && *got.Destination != *c.want.Destination) {
 				t.Errorf("facts = %+v (destination %+v), want %+v (destination %+v)", got, got.Destination, c.want, c.want.Destination)
 			}

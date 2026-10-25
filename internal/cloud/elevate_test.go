@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/cloudcred"
 )
 
 // elevatingServer plays a control plane whose stored credential is narrow:
@@ -151,6 +153,40 @@ func TestCall_RefusedElevationExplainsItself(t *testing.T) {
 	}
 	if len(srv.calls) != 2 {
 		t.Fatalf("calls %v: want the refused call and one exchange, no retry", srv.calls)
+	}
+}
+
+// A `forge login` credential that lacks the scope and cannot be elevated,
+// on a machine with a credential helper, names both ways out — log out to
+// fall through to the helper, or log in again — instead of only "re-run forge
+// login". forge never switches identity itself: the call is not retried.
+func TestCall_LoginLackingScopeWithAHelperNamesLogout(t *testing.T) {
+	t.Setenv(cloudcred.HelperEnv, `["/bin/helper"]`)
+	srv := newElevatingServer(t, http.StatusForbidden, "this credential does not carry obs:read, and an exchange cannot widen a credential")
+	err := srv.client(t, SourceLogin).Call(context.Background(), "controlplane.v1.DomainService/ListDomains", map[string]any{}, nil)
+	if err == nil {
+		t.Fatal("expected the refusal")
+	}
+	want := "your `forge login` credential (test, for " + srv.URL + ") lacks domain:read; run `forge logout --endpoint " + srv.URL + "` to use the Reliant credential helper"
+	if !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "or `forge login` again") {
+		t.Errorf("error lacks the remedy %q:\n%v", want, err)
+	}
+	if len(srv.calls) != 2 {
+		t.Fatalf("calls %v: want the refused call and one exchange; forge must not switch to the helper itself", srv.calls)
+	}
+}
+
+// Without a helper there is nothing to log out TO, and a helper's own token
+// is not a `forge login`: neither gets the remedy.
+func TestCall_LogoutRemedyNeedsALoginAndAHelper(t *testing.T) {
+	srv := newElevatingServer(t, http.StatusForbidden, "refused")
+	t.Setenv(cloudcred.HelperEnv, "")
+	if err := srv.client(t, SourceLogin).Call(context.Background(), "controlplane.v1.DomainService/ListDomains", map[string]any{}, nil); err == nil || strings.Contains(err.Error(), "forge logout") {
+		t.Errorf("no helper: err = %v, want no logout remedy", err)
+	}
+	t.Setenv(cloudcred.HelperEnv, `["/bin/helper"]`)
+	if err := srv.client(t, SourceHelper).Call(context.Background(), "controlplane.v1.DomainService/ListDomains", map[string]any{}, nil); err == nil || strings.Contains(err.Error(), "forge logout") {
+		t.Errorf("helper credential: err = %v, want no logout remedy", err)
 	}
 }
 

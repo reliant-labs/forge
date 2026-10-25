@@ -2220,6 +2220,27 @@ func (e *KCLEntities) HasHosted() bool {
 	return false
 }
 
+// HasLocal reports whether anything of the env runs on this machine — a host
+// process, a docker compose service, or a frontend dev server — and so can
+// feed the local ClickStack `forge env up` starts. An env whose workloads all
+// deploy to a cluster (or to hosting) has nothing local to query.
+func (e *KCLEntities) HasLocal() bool {
+	if e == nil {
+		return false
+	}
+	for _, w := range e.Workloads {
+		if w.OnRuntime(RuntimeHost) || w.OnRuntime(RuntimeCompose) {
+			return true
+		}
+	}
+	for _, f := range e.Frontends {
+		if f.Runtime.Type == FrontendRuntimeHost {
+			return true
+		}
+	}
+	return false
+}
+
 // frontendIsHosted reports whether the frontend is bound to forge.OnHosted:
 // published to the control plane as a StaticSite.
 func frontendIsHosted(f FrontendEntity) bool {

@@ -112,7 +112,7 @@ func cloudTimelineJSON(entries []sessEntry, next string) string {
 }
 
 func sessFacts(env string) obsbackend.Facts {
-	return obsbackend.Facts{Env: env, Declared: true, Enabled: true}
+	return obsbackend.Facts{Env: env, Declared: true, Enabled: true, HasLocal: true}
 }
 
 // ── sessions (the list) ─────────────────────────────────────────────────

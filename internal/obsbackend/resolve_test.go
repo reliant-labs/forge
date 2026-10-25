@@ -20,8 +20,14 @@ func TestResolveTable(t *testing.T) {
 	}{
 		{"observability undeclared", Facts{Env: "dev"}, "", "", 2, "telemetry is off for dev: its observability is not declared"},
 		{"observability disabled", Facts{Env: "dev", Declared: true}, "", "", 2, "its observability is disabled"},
-		{"no destination: local", Facts{Env: "dev", Declared: true, Enabled: true}, "", BackendLocal, 0, ""},
-		{"no destination, control_plane set, nothing hosted: still local", Facts{Env: "dev", Declared: true, Enabled: true, ControlPlane: cp}, "", BackendLocal, 0, ""},
+		{"no destination: local", Facts{Env: "dev", Declared: true, Enabled: true, HasLocal: true}, "", BackendLocal, 0, ""},
+		{"no destination, control_plane set, nothing hosted: still local", Facts{Env: "dev", Declared: true, Enabled: true, ControlPlane: cp, HasLocal: true}, "", BackendLocal, 0, ""},
+		// A cluster-only env never fed the local ClickStack: falling back to
+		// it reported "not running — start it with `forge env up prod`"
+		// against a production env (control-plane prod, 2026-10-25).
+		{"cluster-only env, control_plane set: not local, points at --backend cloud", Facts{Env: "prod", Declared: true, Enabled: true, ControlPlane: cp}, "", "", 2,
+			"env prod runs no workload on this machine"},
+		{"cluster-only env, no control_plane: not local", Facts{Env: "prod", Declared: true, Enabled: true}, "", "", 2, "declares no destination forge can query"},
 		{"token_from_control_plane: cloud", Facts{Env: "prod", Declared: true, Enabled: true, ControlPlane: cp, Destination: &Destination{TokenFromControlPlane: true}}, "", BackendCloud, 0, ""},
 		{"hosted workload: cloud", Facts{Env: "prod", Declared: true, Enabled: true, ControlPlane: cp, HasHosted: true}, "", BackendCloud, 0, ""},
 		{"hosted but no control_plane", Facts{Env: "prod", Declared: true, Enabled: true, HasHosted: true}, "", "", 2, "declares no control_plane"},
@@ -54,6 +60,17 @@ func TestResolveTable(t *testing.T) {
 				t.Errorf("exit code %d, want %d", code, c.code)
 			}
 		})
+	}
+}
+
+func TestResolveClusterOnlyEnvSuggestsCloud(t *testing.T) {
+	_, err := Resolve(Facts{Env: "prod", Declared: true, Enabled: true, ControlPlane: "https://cp.example.com"}, "")
+	if err == nil {
+		t.Fatal("want an error for a cluster-only env")
+	}
+	got := strings.Join(SuggestedOf(err), "\n")
+	if !strings.Contains(got, "--backend cloud") || strings.Contains(got, "env up") {
+		t.Errorf("suggested %q: want --backend cloud and never `forge env up`", got)
 	}
 }
 

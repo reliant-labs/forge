@@ -47,7 +47,7 @@ func obsRun(t *testing.T, facts obsbackend.Facts, runner obsbackend.Runner, args
 }
 
 func devFacts() obsbackend.Facts {
-	return obsbackend.Facts{Env: "dev", Declared: true, Enabled: true}
+	return obsbackend.Facts{Env: "dev", Declared: true, Enabled: true, HasLocal: true}
 }
 
 func obsGolden(t *testing.T, name, got string) {

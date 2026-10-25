@@ -412,6 +412,9 @@ render = lambda ob: any, ctx: any -> any {
         "name": ob.name
         "namespace": ob.namespace
         "image": ob.image
+        "kubectlImage": ob.kubectl_image
+        "cloudSQLProxyImage": ob.cloud_sql_proxy_image
+        "releaseOwner": ctx.release_owner
         "replicas": ob.replicas
         "owner": "${ctx.project}.${_env}"
         "storage": _storage(ob.storage)
@@ -482,6 +485,8 @@ render = lambda ob: any, ctx: any -> any {
             "name": ob.name
             "namespace": ob.namespace
             "image": ob.image
+            "release_owner": ctx.release_owner
+            "release_inputs": ctx.release_inputs
             "cluster": _target.cluster
             "connected_cluster": _target.connected_cluster or None
             # How a client reaches the store and logs in (SecretStore inputs).

@@ -107,6 +107,14 @@ func pinnedSecrets(items []any) map[secretKey][]string {
 }
 
 // consumedPins is the sorted, de-duplicated pins of every Secret doc reads.
+//
+// An `optional: true` reference counts exactly like a required one. Optional
+// says the Secret may be ABSENT, and an absent Secret contributes nothing here
+// by construction: no ExternalSecret in the stream writes it, so it has no
+// pin. A Secret a pinned ExternalSecret DOES write is present, and the pod
+// reads its value whether or not the reference tolerates absence, so a moved
+// pin must roll the pod. Leaving optional references out meant a rotation of
+// an optional credential never reached the pods that read it.
 func consumedPins(doc map[string]any, pins map[secretKey][]string) []string {
 	b, err := yaml.Marshal(doc)
 	if err != nil {
@@ -114,13 +122,16 @@ func consumedPins(doc map[string]any, pins map[secretKey][]string) []string {
 	}
 	md, _ := doc["metadata"].(map[string]any)
 	ns, _ := md["namespace"].(string)
+	refs := CollectManifestRefs(string(b), RefPlacement{Namespace: ns})
 	seen := map[string]bool{}
 	var out []string
-	for ref := range CollectManifestRefs(string(b), RefPlacement{Namespace: ns}).Secrets {
-		for _, pin := range pins[secretKey{ref.Namespace, ref.Name}] {
-			if !seen[pin] {
-				seen[pin] = true
-				out = append(out, pin)
+	for _, read := range []map[ResourceRef]map[string]struct{}{refs.Secrets, refs.OptionalSecrets} {
+		for ref := range read {
+			for _, pin := range pins[secretKey{ref.Namespace, ref.Name}] {
+				if !seen[pin] {
+					seen[pin] = true
+					out = append(out, pin)
+				}
 			}
 		}
 	}

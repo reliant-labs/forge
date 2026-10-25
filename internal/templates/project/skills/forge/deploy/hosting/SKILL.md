@@ -14,7 +14,7 @@ plane (Reliant cloud). `dev` stays local (`forge.OnHost` + `forge.HostInfra`).
 | `_db = forge.ManagedDatabase {runtime = forge.OnHosted {}}` | a dedicated Postgres, `deletionPolicy` RETAIN |
 | `_hosted(_api)` | THE API: the binary's `server` — every service and worker — as one workload |
 | `_hosted(wl.<name>)` | a workload `server` does not run (a job such as `migrate`; one you split out) |
-| `_hosted_frontend(_web_frontend)` | the static export on platform static hosting (CDN for hostnames the platform has moved to its edge; CDN for every hosted site is in progress) |
+| `_hosted_frontend(_web_frontend)` | the static export on platform static hosting: the platform owns the bucket, the CDN and the hostname |
 | `secret_provider = forge.HostedSecrets {}` | write-only store: `forge secret set --env <env> <KEY>` |
 
 `_hosted` also:

@@ -2882,9 +2882,8 @@ schema OnBucket:
     schema.
 
     The platform-hosted counterpart is `forge.OnHosted {}`, which has no
-    bucket field at all: the control plane owns the bucket and the
-    headers, and serves through its CDN the hostnames it has moved to its
-    edge.
+    bucket field at all: the control plane owns the bucket, the
+    headers, the CDN and the hostname.
     """
     type: "bucket" = "bucket"
     bucket: str

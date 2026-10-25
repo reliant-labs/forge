@@ -128,7 +128,7 @@ func TestRunDomainAdd_JSON(t *testing.T) {
 // the binding is where the env appears at all.
 func TestRunDomainList_NamesWhatEachDomainServes(t *testing.T) {
 	f := newFakeDomainCP(t, map[string]string{"ListDomains": `{"domains":[
-      {"id":"d1","hostname":"hounders.club","state":"DEPLOY_CUSTOM_DOMAIN_STATE_LIVE",
+      {"id":"d1","hostname":"hounders.club","state":"DEPLOY_CUSTOM_DOMAIN_STATE_LIVE","servingPath":"DEPLOY_SERVING_PATH_EDGE",
        "binding":{"id":"b1","domainId":"d1","environmentId":"env-1","target":"web"}},
       {"id":"d2","hostname":"www.hounders.club","state":"DEPLOY_CUSTOM_DOMAIN_STATE_LIVE",
        "binding":{"id":"b2","domainId":"d2","environmentId":"env-1","redirectTo":"hounders.club"}},
@@ -139,8 +139,8 @@ func TestRunDomainList_NamesWhatEachDomainServes(t *testing.T) {
 	}
 	rendered := out.String()
 	for _, want := range []string{
-		"HOSTNAME", "STATE", "SERVING",
-		"hounders.club", "live", "web in env-1",
+		"HOSTNAME", "STATE", "SERVING", "PATH",
+		"hounders.club", "live", "web in env-1", "edge",
 		"www.hounders.club", "→ hounders.club (redirect)",
 		"shop.hounders.club", "pending_dns", "(unbound)",
 	} {
@@ -520,5 +520,34 @@ func TestWriteDNSTable_UncheckedRecordIsNotRenderedAsAFailure(t *testing.T) {
 	}
 	if strings.Contains(rendered, "NOT YET") {
 		t.Errorf("an unchecked record was rendered as a failure:\n%s", rendered)
+	}
+}
+
+// show says where the domain's DNS sends its traffic — whether the CDN is in
+// front of it — and says nothing when the control plane did not.
+func TestRunDomainShow_ServingPath(t *testing.T) {
+	for _, tc := range []struct {
+		wire, want string
+	}{
+		{"DEPLOY_SERVING_PATH_EDGE", "path:    served through the CDN edge"},
+		{"DEPLOY_SERVING_PATH_INGRESS", "path:    served through the regional ingress, no CDN"},
+		{"", ""},
+	} {
+		f := newFakeDomainCP(t, map[string]string{
+			"GetDomain": `{"domain":{"id":"d1","hostname":"hounders.club","state":"DEPLOY_CUSTOM_DOMAIN_STATE_LIVE","servingPath":"` + tc.wire + `"}}`,
+		})
+		var out bytes.Buffer
+		if err := runDomainShow(context.Background(), domainTestClient(t, f), "hounders.club", false, &out); err != nil {
+			t.Fatalf("runDomainShow: %v", err)
+		}
+		if tc.want == "" {
+			if strings.Contains(out.String(), "path:") {
+				t.Errorf("no serving path was reported, but show printed one:\n%s", out.String())
+			}
+			continue
+		}
+		if !strings.Contains(out.String(), tc.want) {
+			t.Errorf("show output is missing %q:\n%s", tc.want, out.String())
+		}
 	}
 }

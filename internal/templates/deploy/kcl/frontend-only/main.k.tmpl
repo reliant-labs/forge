@@ -1,9 +1,7 @@
 """
 {{.ProjectName}} / {{.EnvName}}: a frontend with no backend infrastructure.
 YOURS: forge scaffolds this file once. Each frontend binds its own runtime.
-{{if eq .EnvName "dev"}}`forge env up dev` starts the dev server; no database or cluster is needed.{{else}}Static hosting is managed by Reliant: the bucket, the hostname, and a CDN for
-hostnames the platform has moved to its edge (a CDN for every hosted site is in
-progress). Hosting limits and billing are enforced by the platform; see `forge skill load deploy/static-site`.
+{{if eq .EnvName "dev"}}`forge env up dev` starts the dev server; no database or cluster is needed.{{else}}Static hosting is managed by Reliant: the bucket, the CDN and the hostname. Hosting limits and billing are enforced by the platform; see `forge skill load deploy/static-site`.
 `forge env deploy {{.EnvName}}` publishes the static export.{{end}}
 """
 import forge

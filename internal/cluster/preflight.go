@@ -280,6 +280,14 @@ func (s refSink) pullSecret(name string) {
 // same name, in its namespace, on a cluster it is applied to. Matching on the
 // bare name let a Secret in one namespace hide a reference from another that
 // nothing provides.
+//
+// A cert-manager Certificate and an external-secrets.io ExternalSecret
+// PROVIDE their Secret the same way (operatorProvidedSecret): their operator
+// writes it when it reconciles the object this apply creates. The no-cluster
+// gate (CheckSecretSupply) already counted them; this live path did not, so a
+// release that added a Certificate and the pod mounting its Secret was refused
+// with "the Secret does not exist" and could ship only with --skip-preflight,
+// which disables every other check too.
 func dropSelfProvided(manifests string, place RefPlacement, refs *ManifestRefs) {
 	for _, doc := range splitDocs(manifests) {
 		var node any
@@ -290,6 +298,8 @@ func dropSelfProvided(manifests string, place RefPlacement, refs *ManifestRefs) 
 		if !ok {
 			continue
 		}
+		md, _ := mapAt(root, "metadata")
+		name := stringAt(md, "name")
 		var into []map[ResourceRef]map[string]struct{}
 		switch stringAt(root, "kind") {
 		case "Secret":
@@ -297,10 +307,13 @@ func dropSelfProvided(manifests string, place RefPlacement, refs *ManifestRefs) 
 		case "ConfigMap":
 			into = []map[ResourceRef]map[string]struct{}{refs.ConfigMaps, refs.OptionalConfigMaps}
 		default:
-			continue
+			provided, ok := operatorProvidedSecret(root)
+			if !ok {
+				continue
+			}
+			name = provided
+			into = []map[ResourceRef]map[string]struct{}{refs.Secrets, refs.OptionalSecrets}
 		}
-		md, _ := mapAt(root, "metadata")
-		name := stringAt(md, "name")
 		if name == "" {
 			continue
 		}
@@ -311,6 +324,30 @@ func dropSelfProvided(manifests string, place RefPlacement, refs *ManifestRefs) 
 			}
 		}
 	}
+}
+
+// operatorProvidedSecret is the Secret an operator writes for doc, the
+// document's root: a cert-manager.io Certificate's spec.secretName, or an
+// external-secrets.io ExternalSecret's spec.target.name, else its own name
+// (ESO names the Secret after the ExternalSecret when no target name is
+// given). The Secret lands in the document's own namespace. The same rules
+// as CollectCertManagerSecretNames and CollectExternalSecretsNames, which the
+// no-cluster gate reads.
+func operatorProvidedSecret(root map[string]any) (string, bool) {
+	group, _, _ := strings.Cut(strings.TrimSpace(stringAt(root, "apiVersion")), "/")
+	spec, _ := mapAt(root, "spec")
+	switch kind := stringAt(root, "kind"); {
+	case kind == "Certificate" && strings.EqualFold(group, "cert-manager.io"):
+		return stringAt(spec, "secretName"), true
+	case kind == "ExternalSecret" && strings.EqualFold(group, "external-secrets.io"):
+		target, _ := mapAt(spec, "target")
+		if name := stringAt(target, "name"); name != "" {
+			return name, true
+		}
+		md, _ := mapAt(root, "metadata")
+		return stringAt(md, "name"), true
+	}
+	return "", false
 }
 
 // CollectManifestGVKs walks a `---`-separated multi-doc YAML manifest stream

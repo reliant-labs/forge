@@ -86,3 +86,23 @@ func TestTooltipSurvivesForcedColors(t *testing.T) {
 		t.Error("tooltip.tsx's bubble must carry `border border-transparent` beside its fill, for forced-colors mode")
 	}
 }
+
+// TestTooltipAttachesOnce: a tooltip wraps a large share of an app's controls
+// (reliant: 226 sites), so its per-render cost is paid hundreds of times on
+// every list re-render. The description is written to the DOM only when its
+// target moves, and the target lookup tries the wrapper's first child before
+// walking the subtree. Measured in jsdom over 600 tooltips × 5 re-renders,
+// re-attaching every render made re-rendering 3.5× the cost of the old
+// hand-rolled tooltip.
+func TestTooltipAttachesOnce(t *testing.T) {
+	t.Parallel()
+	src := tooltipSource(t)
+	for _, want := range []string{
+		`if (cur && (cur.el !== target || cur.attr !== attr)) detach();`,
+		`first.matches(FOCUSABLE)`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("tooltip.tsx no longer contains %q", want)
+		}
+	}
+}

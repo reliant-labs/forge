@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 const runtimePkg = "@reliantlabs/forge-web-runtime"
@@ -204,4 +205,49 @@ func TestRefreshLockRunsPackageManagerAndReportsFailure(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "E404") {
 		t.Fatalf("a failed refresh must surface the package manager's output, got %v", err)
 	}
+}
+
+// npm's --package-lock-only rewrites node_modules/.package-lock.json to the
+// new lockfile's tree without installing it. RefreshLock puts the file back,
+// content and mtime, so node_modules never claims a version it does not hold.
+func TestRefreshLockKeepsNPMHiddenLockfileTruthful(t *testing.T) {
+	root := t.TempDir()
+	writeFileAt(t, root, "package.json", manifest("^0.12.0"))
+	lock := Lock{Dir: root, File: "package-lock.json", Runner: "npm"}
+	hidden := filepath.Join(root, "node_modules", ".package-lock.json")
+	// What npm 10 does: the hidden lockfile now names the refreshed tree.
+	fakeNPM(t, `mkdir -p node_modules && echo '{"claims":"0.12.0"}' > node_modules/.package-lock.json`)
+
+	t.Run("an installed tree's record is restored", func(t *testing.T) {
+		writeFileAt(t, root, "node_modules/.package-lock.json", `{"claims":"0.10.1"}`)
+		old := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+		if err := os.Chtimes(hidden, old, old); err != nil {
+			t.Fatal(err)
+		}
+		if err := RefreshLock(context.Background(), lock, root); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(hidden)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != `{"claims":"0.10.1"}` {
+			t.Errorf("hidden lockfile = %s, want the installed tree's record back", got)
+		}
+		if info, _ := os.Stat(hidden); !info.ModTime().Equal(old) {
+			t.Errorf("hidden lockfile mtime = %v, want %v: a newer stamp vouches for a tree nobody installed", info.ModTime(), old)
+		}
+	})
+
+	t.Run("no installed tree, no record", func(t *testing.T) {
+		if err := os.Remove(hidden); err != nil {
+			t.Fatal(err)
+		}
+		if err := RefreshLock(context.Background(), lock, root); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(hidden); !os.IsNotExist(err) {
+			t.Errorf("the refresh left a hidden lockfile behind where none existed: %v", err)
+		}
+	})
 }

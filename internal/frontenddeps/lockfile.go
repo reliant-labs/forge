@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Lock is the lockfile that records a manifest's dependency ranges: where it
@@ -114,11 +116,64 @@ func LockRefreshCommand(lock Lock, manifestDir string) string {
 // package manager or an unreachable registry must not be a silent success.
 func RefreshLock(ctx context.Context, lock Lock, manifestDir string) error {
 	runner, args, dir := lockRefreshArgs(lock, manifestDir)
+	restore := keepHiddenLockfile(runner, lock.Dir)
 	err := runQuiet(ctx, runner, dir, args)
 	if err != nil && transientFailure(err.Error()) {
 		err = runQuiet(ctx, runner, dir, args)
 	}
+	if rerr := restore(); rerr != nil && err == nil {
+		err = rerr
+	}
 	return err
+}
+
+// keepHiddenLockfile snapshots npm's hidden lockfile,
+// node_modules/.package-lock.json, and returns the func that puts it back.
+//
+// npm records the tree it INSTALLED in that file, and trusts it: a later
+// `npm install` reads it instead of walking node_modules, and a gate that
+// skips `npm ci` while it is newer than package-lock.json does the same. But
+// `npm install --package-lock-only` rewrites it to the new lockfile's tree
+// while installing nothing (npm 10, verified), so after a refresh that raised
+// a range node_modules claims a version it does not hold, and nothing
+// reinstalls it: typecheck then fails against the old package. Putting the
+// file back as it was (content and mtime), or removing it when there was
+// none, leaves node_modules describing itself truthfully — stale, so the next
+// install runs.
+func keepHiddenLockfile(runner, lockDir string) func() error {
+	if runner != "npm" {
+		return func() error { return nil }
+	}
+	path := filepath.Join(lockDir, "node_modules", ".package-lock.json")
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return func() error {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("removing %s, which the lockfile refresh wrote without installing: %w", path, err)
+			}
+			return nil
+		}
+	}
+	data, rerr := os.ReadFile(path)
+	if err != nil || rerr != nil {
+		// Unreadable: it cannot be put back, so do not let it vouch for a
+		// tree either.
+		return func() error {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("removing %s after the lockfile refresh: %w", path, err)
+			}
+			return nil
+		}
+	}
+	return func() error {
+		if err := atomicfile.WriteFile(path, data, info.Mode().Perm()); err != nil {
+			return fmt.Errorf("restoring %s after the lockfile refresh: %w", path, err)
+		}
+		if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+			return fmt.Errorf("restoring %s's mtime after the lockfile refresh: %w", path, err)
+		}
+		return nil
+	}
 }
 
 // runQuiet runs a package manager, keeping its output for the error: a

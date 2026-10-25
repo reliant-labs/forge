@@ -147,9 +147,10 @@ linters:
         linters:
           - forbidigo
 
-      # The Button type-contract test reads CI for the same reason: a missing
-      # npm is a skip on a laptop and a failure in CI. Same test-only switch.
-      - path: ^components/library_button_test\.go$
+      # The component type-contract test reads CI for the same reason: a
+      # missing npm is a skip on a laptop and a failure in CI. Same test-only
+      # switch.
+      - path: ^components/library_type_contract_test\.go$
         linters:
           - forbidigo
 

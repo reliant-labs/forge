@@ -73,8 +73,11 @@ schema SecretRef(tiers.SecretKeyRef):
 
         env = {DATABASE_URL = forge.SecretRef {name = "db", key = "url"}}
 
-    `optional = True` lets the pod start when the key is absent (and exempts
-    it from forge's secret pre-flight). Full profile only: a hosted workload
+    `optional = True` lets the pod start when the Secret or the key is
+    absent, and exempts it from forge's secret pre-flights while absent. A
+    PRESENT Secret is still read: the deploy pre-flight warns when it lacks
+    the key, and a version-pinned ExternalSecret writing it rolls the pod
+    when its pin moves, as for a required reference. Full profile only: a hosted workload
     reads credentials through `forge.ManagedSecret`.
 
     `store_key` is set by config codegen, never by hand. It names the value

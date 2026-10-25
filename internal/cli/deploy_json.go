@@ -1423,6 +1423,8 @@ func deployFindingsFromPreflight(res cluster.PreflightResult) []deployJSONFindin
 		"the live volumes of a StatefulSet could not be read, so its declared sizes were not checked")
 	listed("arch_warning", res.ArchWarnings, false,
 		"the image's architecture could not be read, so no mismatch could be asserted")
+	listed("optional_key_warning", res.OptionalKeyWarnings, false,
+		"a Secret or ConfigMap an `optional: true` reference reads exists but lacks the key; the pod starts with the variable unset")
 
 	for _, mount := range res.UndeclaredSecretMounts {
 		detail := "a workload mounts this Secret and nothing in the rendered bundle provides it"

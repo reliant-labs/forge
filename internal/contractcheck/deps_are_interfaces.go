@@ -1092,6 +1092,12 @@ func (l *depsLinter) dirForQualifier(qualifier string, imports map[string]string
 // cannot escape by being named `Settings`, by declaring few methods, or by
 // living in a package called `config`.
 func (l *depsLinter) concreteTypeIsData(expr ast.Expr, imports map[string]string) bool {
+	// A collection of data is data: `[]settings.Rule` is a roster of values
+	// the package reads, exactly like the `[]string` isPrimitiveConfigShape
+	// passes, and there is no interface to extract from it. The element is
+	// judged by the same test as a bare field of that type, so a slice of
+	// collaborators still fires.
+	expr, _ = collectionElem(expr)
 	if star, ok := expr.(*ast.StarExpr); ok {
 		expr = star.X
 	}

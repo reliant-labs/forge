@@ -58,7 +58,7 @@ const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 // not bridged to a local checkout. Keep the major.minor pointed at
 // web-runtime/package.json's version — TestWebRuntimePublishedRangeTracksPackage
 // fails the build when the two drift apart.
-const webRuntimePublishedRange = "^0.10.0"
+const webRuntimePublishedRange = "^0.11.0"
 
 // webRuntimeDepRe matches the package's entry wherever it already appears in a
 // package.json, capturing everything up to (but not including) the value so a

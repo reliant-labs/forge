@@ -17,7 +17,10 @@
 // gives `data: View`. A read in forge's list-pagination shape (`string
 // page_token` in, `string next_page_token` out) also gets
 // `useListOrdersInfinite(req, options?)`, a useInfiniteQuery that owns the
-// page token. Errors are typed
+// page token. Every read's TanStack query options are exported too, as
+// `<service>Queries.<method>(req, options?)` — the one definition the hook
+// itself uses — for fetchQuery / ensureQueryData / prefetchQuery /
+// useQueries outside a component. Errors are typed
 // ConnectClientError — the shape the transport's error-normalize interceptor
 // actually throws, a ConnectError subclass — so `.reason` (a stable machine
 // code the backend stamps on every error), `.code` / `.codeName`, `.status`
@@ -33,12 +36,14 @@
 import {
 {{- if .HasPaged}}
   createInfiniteQueryHook,
+  createInfiniteQueryOptions,
 {{- end}}
 {{- if .HasMutations}}
   createMutationHook,
 {{- end}}
 {{- if .HasQueries}}
   createQueryHook,
+  createQueryOptions,
 {{- end}}
   serviceKeys,
 } from "@reliantlabs/forge-web-runtime/service-hooks";
@@ -77,8 +82,9 @@ const keys = serviceKeys("{{.ServiceNameCamel}}");
  *   .<method>Infinite(req) — one paged read, every page: [..., protojson(req minus page_token), "infinite"]
 {{- end}}
  *
- * Use these everywhere a query key is needed (invalidate, prefetch,
- * setQueryData) — never hand-write the array literals.
+ * Use these everywhere a query key is needed (invalidateQueries,
+ * setQueryData) — never hand-write the array literals.{{if .HasQueries}} To fetch or
+ * prefetch, use {{.ServiceNameCamel}}Queries below, which carries the fetch too.{{end}}
  */
 export const {{.ServiceNameCamel}}Keys = {
   all: keys.all,
@@ -94,17 +100,46 @@ export const {{.ServiceNameCamel}}Keys = {
 {{- end}}
 {{- end}}
 };
+{{- if .HasQueries}}
+
+/**
+ * {{.ServiceNameCamel}}Queries — each read's TanStack query options:
+ * `.<method>(req, options?)` returns `queryOptions(...)`{{if .HasPaged}}, and
+ * `.<method>Infinite(req, options?)` returns `infiniteQueryOptions(...)`{{end}}.
+ * The hooks below are useQuery{{if .HasPaged}} / useInfiniteQuery{{end}} over exactly these, so
+ * code outside React shares a hook's cache entry and fetch by construction:
+ *
+ *   await queryClient.fetchQuery({{.ServiceNameCamel}}Queries.<method>(req));
+ *   queryClient.ensureQueryData(...) / prefetchQuery(...) / useQueries({ queries: [...] })
+ *
+ * Never hand-write `{ queryKey, queryFn }` for one of these rpcs.
+ */
+export const {{.ServiceNameCamel}}Queries = {
+{{- range .Methods}}
+{{- if .IsQuery}}
+  {{.NameCamel}}: createQueryOptions<typeof {{.InputSchemaRef}}, {{.OutputTypeRef}}>(
+    {{$.ServiceNameCamel}}Keys.{{.NameCamel}},
+    (req, signal) => client.{{.ClientMethod}}(req, { signal }),
+  ),
+{{- if .Paged}}
+  {{.NameCamel}}Infinite: createInfiniteQueryOptions<typeof {{.InputSchemaRef}}, {{.OutputTypeRef}}>(
+    {{$.ServiceNameCamel}}Keys.{{.NameCamel}}Infinite,
+    (req, signal) => client.{{.ClientMethod}}(req, { signal }),
+  ),
+{{- end}}
+{{- end}}
+{{- end}}
+};
+{{- end}}
 {{range .Methods}}
 {{- if .IsQuery}}
 export const use{{.Name}} = createQueryHook<typeof {{.InputSchemaRef}}, {{.OutputTypeRef}}>(
-  {{$.ServiceNameCamel}}Keys.{{.NameCamel}},
-  (req, signal) => client.{{.ClientMethod}}(req, { signal }),
+  {{$.ServiceNameCamel}}Queries.{{.NameCamel}},
 );
 {{- if .Paged}}
 
 export const use{{.Name}}Infinite = createInfiniteQueryHook<typeof {{.InputSchemaRef}}, {{.OutputTypeRef}}>(
-  {{$.ServiceNameCamel}}Keys.{{.NameCamel}}Infinite,
-  (req, signal) => client.{{.ClientMethod}}(req, { signal }),
+  {{$.ServiceNameCamel}}Queries.{{.NameCamel}}Infinite,
 );
 {{- end}}
 {{- else}}

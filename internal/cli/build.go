@@ -2443,7 +2443,9 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 		}
 	}
 
-	dockerArgs := []string{"build"}
+	// The project image's context is the whole repository, so its epoch is
+	// the last commit to it.
+	dockerArgs := appendSourceDateEpoch([]string{"build"}, resolveSourceDateEpoch(ctx, "."))
 	// Pass the resolved build version into the image build as build-args.
 	// The Dockerfile bakes these into -ldflags (FORGE_VERSION/COMMIT/DATE),
 	// replacing the old in-container `git describe` that always failed
@@ -2653,7 +2655,7 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path stri
 		}
 	}
 
-	dockerArgs := []string{"build"}
+	dockerArgs := appendSourceDateEpoch([]string{"build"}, resolveSourceDateEpoch(ctx, ".", path))
 	if crossArch != "" {
 		dockerArgs = append(dockerArgs, "--platform=linux/"+crossArch)
 		fmt.Printf("[build] cross-compiling for linux/%s (host: %s/%s)\n",
@@ -3295,6 +3297,9 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 	}
 
 	dockerArgs, pushTags := serviceDockerBuildArgs(cfg, repository, dockerfile, d, opts, cfgArchForDocker, resolvedTag)
+	// The image's timestamps follow the last change to ITS inputs (context +
+	// Dockerfile), so an unrelated commit does not move its digest.
+	dockerArgs = appendSourceDateEpoch(dockerArgs, resolveSourceDateEpoch(ctx, ".", serviceDockerContext(d), dockerfile))
 	fmt.Printf("[build] %s: docker build -f %s %s (%d tags)\n", svcName, dockerfile, serviceDockerContext(d), countTags(dockerArgs))
 
 	if err := prepareDockerBuildStorage(ctx, projectDirForKCL()); err != nil {

@@ -24,7 +24,9 @@ func TestCommandRPCServicesFollowsTypedMountInventory(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFileT(t, filepath.Join(dir, "internal/app/deployments.go"), `package app
-func MountPublic(c *Components) { c.MountSvcUser(nil,nil,nil) }
+// CP's groups return typed method expressions through a named helper.
+func publicMounts() []MountFunc { return []MountFunc{(*Components).MountSvcUser} }
+func MountPublic(c *Components) { mountGroup(publicMounts(), c) }
 func MountAdmin(c *Components) { c.MountSvcBilling(nil,nil,nil) }
 `)
 	writeFileT(t, filepath.Join(dir, "cmd/proj/cmd/commands.go"), `package cmd

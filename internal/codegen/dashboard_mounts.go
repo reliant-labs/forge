@@ -171,6 +171,11 @@ func walkMountDecls(key, module string, index map[string][]mountDecl, leaves map
 				} else {
 					// (*app.Components).MountX: inspect the receiver's imported type.
 					ast.Inspect(x.X, func(n ast.Node) bool {
+						// Within app, grouped mounts use (*Components).MountX
+						// without an imported selector (CP deployment groups).
+						if id, ok := n.(*ast.Ident); ok && id.Name == "Components" && d.pkg == module+"/internal/app" {
+							walk(d.pkg + "." + x.Sel.Name)
+						}
 						if typ, ok := n.(*ast.SelectorExpr); ok {
 							if id, ok := typ.X.(*ast.Ident); ok && d.imports[id.Name] == module+"/internal/app" {
 								walk(module + "/internal/app." + x.Sel.Name)

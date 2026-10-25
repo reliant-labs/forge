@@ -1,16 +1,19 @@
 package cli
 
 import (
-	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/kcleval"
 	"github.com/reliant-labs/forge/internal/obsdash"
+	deployv1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
 // dashboardProcesses reads deployed process identities, never proto package
@@ -25,19 +28,9 @@ func dashboardProcesses(ctx *pipelineContext) ([]obsdash.Process, error) {
 			return nil, err
 		}
 	}
-	var workloads []WorkloadEntity
-	for _, env := range deployEnvNames(ctx.AbsPath) {
-		entities, restored, err := renderKCLPure(context.Background(), ctx.AbsPath, env)
-		// Refuse to replace the last known inventory with a partial render. In
-		// particular a transient render failure must not retire process parts.
-		if err != nil {
-			return nil, fmt.Errorf("dashboard process inventory (%s): %w", env, err)
-		}
-		if entities == nil {
-			return nil, fmt.Errorf("dashboard process inventory (%s): empty render", env)
-		}
-		reportImpureRender(env, restored)
-		workloads = append(workloads, entities.Workloads...)
+	workloads, err := dashboardDeclaredWorkloads(ctx.AbsPath)
+	if err != nil {
+		return nil, err
 	}
 	processes, err := processesForWorkloads(bootstrapBinaryName(ctx.AbsPath), roots, workloads)
 	if err != nil {
@@ -55,6 +48,66 @@ func dashboardProcesses(ctx *pipelineContext) ([]obsdash.Process, error) {
 		// Legacy composition has no database reach model; do not claim a DB.
 	}
 	return processes, nil
+}
+
+// dashboardDeclaredWorkloads evaluates the source library, not environment
+// binding. A scaffold can have a valid operator/root with prod not yet bound to
+// a cluster. That must not prevent codegen, nor retire a partial inventory.
+// Environment-specific names/OTEL overrides are not inferred here: diagnostics
+// explicitly name this boundary so a binding cannot silently claim coverage.
+func dashboardDeclaredWorkloads(projectDir string) ([]WorkloadEntity, error) {
+	const file = "deploy/kcl/workloads.k"
+	if _, err := os.Stat(filepath.Join(projectDir, file)); os.IsNotExist(err) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	armReadOnlyKCLContext(projectDir)
+	before := dirtyTrackedFiles(projectDir)
+	defer func() { reportImpureRender("structural workloads", restoreImpureKCLWrites(projectDir, before)) }()
+	fmt.Println("  ℹ️  process dashboards use workloads.k ALL identities; environment-only name/OTEL_SERVICE_NAME overrides must retain those identities or use an owned dashboard override.")
+	result, err := kcleval.Eval(kcleval.Request{ProjectDir: projectDir, File: file, Selectors: []string{"ALL"}})
+	if err != nil {
+		return nil, fmt.Errorf("dashboard structural process inventory (%s): %w", file, err)
+	}
+	raw, err := kcleval.Render(result, kcleval.FormatJSON)
+	if err != nil {
+		return nil, err
+	}
+	return decodeDashboardWorkloads(raw)
+}
+
+func decodeDashboardWorkloads(raw []byte) ([]WorkloadEntity, error) {
+	var declared []struct {
+		Name    string                     `json:"name"`
+		Kind    string                     `json:"kind"`
+		Build   json.RawMessage            `json:"build"`
+		Command []string                   `json:"command"`
+		Args    []string                   `json:"args"`
+		Env     map[string]json.RawMessage `json:"env"`
+	}
+	if err := json.Unmarshal(raw, &declared); err != nil {
+		return nil, err
+	}
+	out := make([]WorkloadEntity, 0, len(declared))
+	for _, d := range declared {
+		build, err := dispatchBuild(d.Name, d.Build)
+		if err != nil {
+			return nil, err
+		}
+		w := WorkloadEntity{Name: d.Name, Kind: d.Kind, Build: build, Spec: deployv1.WorkloadSpec{Command: d.Command, Args: d.Args}}
+		// Identity may only be a declared literal. A secret/reference/expression
+		// unresolved by KCL is not guessed from another field.
+		if value, ok := d.Env["OTEL_SERVICE_NAME"]; ok {
+			var service string
+			if err := json.Unmarshal(value, &service); err != nil {
+				return nil, fmt.Errorf("workload %q: OTEL_SERVICE_NAME must be a literal for process dashboard ownership", d.Name)
+			}
+			w.Spec.Env = []deployv1.EnvVar{{Name: "OTEL_SERVICE_NAME", Value: service}}
+		}
+		out = append(out, w)
+	}
+	return out, nil
 }
 
 func processesForWorkloads(primary string, roots []codegen.GraphRoot, workloads []WorkloadEntity) ([]obsdash.Process, error) {

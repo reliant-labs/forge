@@ -1,12 +1,48 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	deployv1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
+
+func TestDashboardProcessesStructuralLibraryNeedsNoBoundEnvironment(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL library; full package suite exercises it")
+	}
+	dir := t.TempDir()
+	files := map[string]string{
+		"forge.yaml":         "name: sample\nmodule_path: example.com/sample\n",
+		"deploy/kcl/kcl.mod": "[package]\nname = \"test\"\nversion = \"0.0.1\"\n",
+		"deploy/kcl/workloads.k": `import forge
+import forge.workloads as fw
+_name = "sample" + "-worker"
+ALL = [fw.Workload {name = _name, kind = "worker", build = forge.GoBuild {cmd = "./cmd/sample"}, args = ["server", "worker"], env = {OTEL_SERVICE_NAME = "sample-jobs"}}]
+`,
+		"deploy/kcl/prod/main.k": "assert False, \"operator needs a cluster binding\"\n",
+	}
+	for rel, body := range files {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := dashboardDeclaredWorkloads(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := processesForWorkloads("sample", []codegen.GraphRoot{{Name: "worker", Args: []string{"server", "worker"}}}, got)
+	if err != nil || len(p) != 1 || p[0].Name != "sample-worker" || !reflect.DeepEqual(p[0].ServiceNames, []string{"sample-jobs"}) {
+		t.Fatalf("structural inventory=%+v err=%v", p, err)
+	}
+}
 
 func TestDashboardProcessesUseExecutableAndCompositionCommand(t *testing.T) {
 	roots := []codegen.GraphRoot{

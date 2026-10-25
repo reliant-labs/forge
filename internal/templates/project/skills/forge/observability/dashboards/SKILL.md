@@ -7,12 +7,16 @@ description: Process/role dashboards derived from deployed executable and compos
 
 `forge generate` (step "observability dashboards") derives dashboards from deployed
 workloads: executable plus command/composition root, matching the workload's
-`OTEL_SERVICE_NAME` (or workload name). API, worker and gateway roles of one
-executable stay separate. A worker with no RPCs still gets runtime and workload
+`OTEL_SERVICE_NAME` (or workload name) in the evaluated `workloads.k` `ALL`
+structural inventory. It does not require environment runtime bindings to render:
+a newly scaffolded operator may have prod's cluster still unbound. Environment-only
+name or telemetry-identity overrides must retain these declared identities or use
+an owned dashboard override; generation reports that boundary explicitly.
+API, worker and gateway roles of one executable stay separate. A worker with no RPCs still gets runtime and workload
 panels. Graph route sets and typed mount inventory establish RPC ownership;
 proto package names never decide which process serves them. Observability and
-codegen must be enabled. A failed environment render preserves the last known
-outputs rather than retiring a partial inventory.
+codegen must be enabled. An invalid structural inventory fails before dashboard
+writes or retirement; invalid environment bindings are a separate deploy gate.
 
 | File                                                          | What                                                                                                                                                                                             |
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

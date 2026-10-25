@@ -232,9 +232,12 @@ func storeOwner(project, env string) string {
 
 // liveStoreProbe is the probe a real deploy uses: kubectl for the cluster, and
 // the store clients `forge secret` uses for the names. nil when the env has no
-// store-backed Secret, so every other deploy is byte-identical.
+// store-backed Secret and runs no OpenBao, so every other deploy is
+// byte-identical. An env that declares forge.OpenBao is probed even before any
+// Secret reads from it: that is the deploy that may be ADOPTING a live store,
+// and the adoption warning is raised by this probe.
 func liveStoreProbe(envName string, e *KCLEntities) cluster.StoreProbe {
-	if !hasStoreSources(e) {
+	if !hasStoreSources(e) && (e == nil || e.OpenBao == nil) {
 		return nil
 	}
 	return cluster.KubectlStoreProbe{PresenceFn: storePresence(envName, e)}

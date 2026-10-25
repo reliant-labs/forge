@@ -53,6 +53,10 @@ type resizeJobOpts struct {
 	Disabled bool
 	// Image is Bundle.statefulset_resize.image; "" is stsresize.DefaultImage.
 	Image string
+	// ReleaseOwner explicitly owns generated hooks; it is never inferred.
+	ReleaseOwner string
+	// ReleaseConsumers is the explicit rendered manifests contract, never inferred.
+	ReleaseConsumers any
 	// Namespace is the deploy namespace, for a StatefulSet that names none.
 	Namespace string
 	// ImagePullSecrets are the pull Secrets declared per (cluster, namespace)
@@ -136,6 +140,9 @@ func expandStatefulSetResizeJobs(items []any, opts resizeJobOpts) ([]any, error)
 
 	emitted := map[int][]any{}
 	for _, key := range order {
+		if err := validateResizeReleaseOwner(opts.ReleaseOwner, key.cluster, opts.Image, opts.ReleaseConsumers); err != nil {
+			return nil, err
+		}
 		g := groups[key]
 		labels := map[string]string{}
 		for k, v := range g.labels {
@@ -165,6 +172,16 @@ func expandStatefulSetResizeJobs(items []any, opts resizeJobOpts) ([]any, error)
 			return nil, err
 		}
 		for _, d := range docs {
+			if opts.ReleaseOwner != "" {
+				owner, _ := json.Marshal([]string{opts.ReleaseOwner})
+				metadata, _ := d["metadata"].(map[string]any)
+				annotations, _ := metadata["annotations"].(map[string]any)
+				if annotations == nil {
+					annotations = map[string]any{}
+				}
+				annotations["forge.dev/release-owners"] = string(owner)
+				metadata["annotations"] = annotations
+			}
 			emitted[g.first] = append(emitted[g.first], d)
 		}
 	}
@@ -206,24 +223,25 @@ func nestedName(m map[string]any) any {
 
 // decodeStatefulSetResize reads `output.statefulset_resize`: nil when the env
 // declares none.
-func decodeStatefulSetResize(raw any) (disabled bool, image string, err error) {
+func decodeStatefulSetResize(raw any) (disabled bool, image, releaseOwner string, err error) {
 	if raw == nil {
-		return false, "", nil
+		return false, "", "", nil
 	}
 	b, err := json.Marshal(raw)
 	if err != nil {
-		return false, "", err
+		return false, "", "", err
 	}
 	var v struct {
-		Disabled bool   `json:"disabled"`
-		Image    string `json:"image"`
+		Disabled     bool   `json:"disabled"`
+		Image        string `json:"image"`
+		ReleaseOwner string `json:"release_owner"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&v); err != nil {
-		return false, "", fmt.Errorf("decode output.statefulset_resize: %w", err)
+		return false, "", "", fmt.Errorf("decode output.statefulset_resize: %w", err)
 	}
-	return v.Disabled, v.Image, nil
+	return v.Disabled, v.Image, v.ReleaseOwner, nil
 }
 
 // resizeDefaultNamespace is the env's declared target namespace

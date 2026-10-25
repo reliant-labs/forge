@@ -108,6 +108,7 @@ var removals = []removal{
 					"kcl/tests/positive_flux_chart_*.k",
 					"kcl/tests/negative_flux_chart_*.k",
 					"internal/flux/",
+					"pkg/flux/",
 					"internal/cluster/flux_chart_hardening_test.go",
 					"internal/cli/flux_reconcile_e2e_test.go",
 					"internal/templates/project/skills/forge/deploy/flux/SKILL.md",
@@ -1559,6 +1560,23 @@ var removals = []removal{
 					"landing here (isCurrencyColumn, detectPersonish, samplesNames …) still fails.",
 				Token: regexp.MustCompile(`\bstringValue\b`),
 				Paths: []string{"internal/cli/generate_frontend_config.go"},
+			},
+			{
+				Name: "OTLP/JSON's AnyValue field name",
+				Reason: "The web-runtime Node entry ships logs and spans to the keyed ingest as OTLP/JSON, " +
+					"whose AnyValue carries a string as `{\"stringValue\": ...}` — the field name is fixed by " +
+					"the OpenTelemetry protocol and cannot be renamed here without the collector rejecting " +
+					"every record.\n" +
+					"It is a wire identifier, unrelated to the seeder heuristic the pattern bans, which draws " +
+					"column values from column names. Scoped to the OTLP encoder and the tests that decode " +
+					"its output, so a `stringValue` helper landing in pkg/seedplan or anywhere else still fails.",
+				Token: regexp.MustCompile(`\bstringValue\b`),
+				Paths: []string{
+					"web-runtime/src/node.ts",
+					"web-runtime/src/node.test.ts",
+					"web-runtime/src/node-otlp.ts",
+					"web-runtime/src/node-otlp.test.ts",
+				},
 			},
 			{
 				Name: "seedplan's DECLARED-type date check",

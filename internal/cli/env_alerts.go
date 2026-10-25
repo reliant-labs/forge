@@ -90,6 +90,9 @@ func resolveShapeAlerts(projectDir, envName string, e *KCLEntities) ([]release.S
 	}
 	var defaults []obsdash.AlertRule
 	if have {
+		for _, c := range e.UptimeChecks {
+			in.UptimeChecks = append(in.UptimeChecks, c.Name)
+		}
 		var disabled []string
 		if e.Observability.Policy != nil {
 			disabled = e.Observability.Policy.Disabled

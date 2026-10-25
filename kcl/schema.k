@@ -5229,6 +5229,124 @@ schema ReleaseHealth:
         isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"
 
 # ---------------------------------------------------------------------------
+# Uptime checks: outside-in HTTP probes the control plane runs on a schedule.
+# ---------------------------------------------------------------------------
+
+_UPTIME_NAME_RE = r"^[a-z][a-z0-9_-]{0,62}$"
+_UPTIME_STATUS_RE = r"^[1-5]([0-9]{2}|xx)$"
+
+# A check's interval or timeout ("30s", "2m") in seconds; 0 when malformed.
+_uptime_seconds = lambda d: str -> int {
+    int(d[:-1]) * {"s": 1, "m": 60}[d[-1]] if regex.match(d, r"^[1-9][0-9]*[sm]$") else 0
+}
+
+schema UptimeCheck:
+    """One outside-in HTTP check of this env. The control plane's prober
+    requests it from the platform cluster on a schedule and writes
+    `uptime.check.up`, `uptime.check.duration` and `tls.cert.expiry_seconds`
+    into the env's telemetry; the `UptimeCheckFailing` and `CertificateExpiring`
+    alert defaults read them.
+
+        uptime = forge.Uptime {
+            checks = [forge.UptimeCheck {
+                name = "checkout"
+                url = "https://shop.example.com/healthz"
+                expect_body = "ok"
+            }]
+        }
+
+    Exactly one target:
+
+      * `url`    — an absolute http(s) address on the public internet. A
+        private, loopback or cluster-internal host is refused: the prober
+        dials public endpoints only.
+      * `route`  — the name of an HTTPRoute in this Bundle; its public URL
+        (the gateway's hostname plus the route's path) is the target.
+      * `target` — the name of a hosted frontend or workload; the platform
+        allocates its hostname, so the control plane resolves it. `path` is
+        requested on that hostname (default "/").
+
+    A check that shares a name with a derived one (see Uptime) replaces it.
+
+      * `expect_status` — statuses that mean up: "200", or a class ("2xx").
+        Default: any 2xx or 3xx.
+      * `expect_body`   — a substring the response body must contain (GET only).
+      * `interval` / `timeout` — "30s" to "10m", and "1s" to "1m" below the
+        interval. Defaults 60s and 10s.
+
+    Regions are not declared: v1 probes from the platform's own cluster.
+    """
+    name: str
+    url?: str
+    route?: str
+    target?: str
+    path?: str
+    method: "GET" | "HEAD" = "GET"
+    interval: str = "60s"
+    timeout: str = "10s"
+    expect_status: [str] = []
+    expect_body: str = ""
+
+    check:
+        regex.match(name, _UPTIME_NAME_RE), \
+            "UptimeCheck.name '${name}' must be lowercase letters, digits, '-' and '_', starting with a letter (it tags every metric the check writes)"
+        len([t for t in [url, route, target] if t]) == 1, \
+            "UptimeCheck '${name}' needs exactly one target: `url` (a public address), `route` (an HTTPRoute of this Bundle) or `target` (a hosted frontend or workload)"
+        not url or regex.match(url, r"^https?://[^/@\s]+(/\S*)?$"), \
+            "UptimeCheck '${name}': url '${url}' must be an absolute http(s) address with a host and no credential"
+        not path or target, \
+            "UptimeCheck '${name}': `path` is for a `target` check; a url or a route carries its own path"
+        not path or path.startswith("/"), \
+            "UptimeCheck '${name}': path '${path}' must start with '/'"
+        30 <= _uptime_seconds(interval) <= 600, \
+            "UptimeCheck '${name}': interval '${interval}' must be 30s to 10m (a number and s or m)"
+        1 <= _uptime_seconds(timeout) <= 60 and _uptime_seconds(timeout) < _uptime_seconds(interval), \
+            "UptimeCheck '${name}': timeout '${timeout}' must be 1s to 1m (a number and s or m) and shorter than the interval"
+        all s in expect_status {regex.match(s, _UPTIME_STATUS_RE)}, \
+            "UptimeCheck '${name}': expect_status ${expect_status} must be statuses like \"200\" or classes like \"2xx\""
+        len(expect_body) <= 256, "UptimeCheck '${name}': expect_body is longer than 256 bytes"
+        not expect_body or method == "GET", \
+            "UptimeCheck '${name}': expect_body needs method GET: a HEAD response has no body"
+
+schema Uptime:
+    """The env's uptime checks, on `Bundle.uptime`.
+
+    A hosted env (one with a control plane, and not a `lifecycle` local or
+    ephemeral one) is probed with NO declaration: forge derives one check per
+    public frontend and per public HTTP route, so "is it down" is answered
+    before anyone writes a rule:
+
+      * every `forge.OnHosted` frontend            -> check `<frontend>`, GET /
+      * every `forge.OnHosted` workload exposing a port
+                                                   -> check `<workload>`, GET /
+      * every HTTPRoute whose gateway has a hostname
+                                                   -> check `route-<route>`, GET
+        its public URL; any answer below 500 is up (the route's own path may
+        legitimately 404 or ask for a login)
+
+    Derived checks that cannot be probed (a private hostname, say) are left
+    out rather than failing the build; a check you declare is held to the
+    rules.
+
+        uptime = forge.Uptime {defaults = False}                       # no derived checks
+        uptime = forge.Uptime {skip = ["route-admin"]}                 # all but one
+        uptime = forge.Uptime {checks = [forge.UptimeCheck {...}]}     # derived + yours
+
+    `checks` are yours; one named like a derived check replaces it. `skip`
+    names derived checks to leave out; a name that matches none is refused.
+    """
+    checks: [UptimeCheck] = []
+    defaults: bool = True
+    skip: [str] = []
+
+    check:
+        len({c.name: 1 for c in checks}) == len(checks), \
+            "Uptime.checks names a check twice: a check name is unique within an env"
+        isunique(skip), "Uptime.skip names a check twice"
+        all n in skip {regex.match(n, _UPTIME_NAME_RE)}, \
+            "Uptime.skip ${skip} must be check names (lowercase letters, digits, '-' and '_')"
+
+# ---------------------------------------------------------------------------
 # Bundle — the project-level container forge.render() consumes.
 # ---------------------------------------------------------------------------
 
@@ -5574,7 +5692,7 @@ schema AlertReceiver:
     secret?: str
     channel?: str
     severities: [str] = ["critical", "error"]
-    always_alertnames: [str] = ["NewIssue", "IssueRegressed", "IssueSpike", "ReleaseRegressed"]
+    always_alertnames: [str] = ["NewIssue", "IssueRegressed", "IssueSpike", "ReleaseRegressed", "ServiceAnomaly"]
 
     check:
         regex.match(name, r"^[a-z][a-z0-9_-]{0,62}$"), \
@@ -5782,12 +5900,16 @@ schema StatefulSetResize:
     # digest-pinned alpine/k8s. Set it to a mirror when the cluster cannot pull
     # from Docker Hub, or to pin a kubectl matching the cluster.
     image?: str
+    # Explicit manifest consumer owning generated resize-hook resources. Its
+    # release_inputs must declare container:resize on each generated cluster.
+    release_owner?: str
     # Render no resize Job: a raised volume size then fails the apply, as it
     # did before, and the volume is resized by hand.
     disabled?: bool = False
 
     check:
         not image or regex.match(image, r"^[^\s]+$"), "StatefulSetResize.image '${image}' must be an image reference with no whitespace"
+        release_owner == Undefined or regex.match(release_owner, r"^[a-z][a-z0-9-]*$"), "StatefulSetResize.release_owner must name an explicit manifest consumer"
 
 schema DeliveryUnit:
     """A delivery unit: a named slice of an env that a Flux-applied bundle
@@ -6522,6 +6644,10 @@ schema Bundle:
     # health: the window, the thresholds, and which findings fail. UNSET =
     # the defaults. See ReleaseHealth.
     release_health?: ReleaseHealth
+    # The outside-in HTTP checks the control plane probes this env with. A
+    # hosted env gets one per public frontend and route with no declaration;
+    # declare `uptime` to add checks or opt out. See Uptime.
+    uptime?: Uptime
     # The env's users (forge.ManagedIdentity): roles, the applications that
     # sign users in, the workloads that read tokens, and where the instance
     # runs. UNSET = no managed identity (bring your own issuer in config.k).

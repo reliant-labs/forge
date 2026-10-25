@@ -1,6 +1,6 @@
 {
   "name": "@reliantlabs/forge-web-runtime",
-  "version": "0.9.2",
+  "version": "0.10.2",
   "description": "The forge frontend runtime: Connect interceptor stack, session, error boundary, toast queue, <Resource> container, W3C trace propagation and the HyperDX browser SDK wiring (errors, console, network, traces; replay off by default). The web twin of forge/pkg.",
   "license": "Apache-2.0",
   "//repository note": "REQUIRED for `npm publish --provenance`, not decoration. npm cross-checks this against the repository in the signed provenance statement and rejects the publish with a 422 if they disagree — an absent field reads as \"\" and fails that comparison. `directory` names the subdirectory this package lives in, so the provenance points at the real source. Omitting this is what made the first 0.3.1 publish fail AFTER the tarball had been signed and written to the sigstore transparency log.",
@@ -42,6 +42,10 @@
       "types": "./dist/interceptors.d.ts",
       "default": "./dist/interceptors.js"
     },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    },
     "./mock-transport": {
       "types": "./dist/mock-transport.d.ts",
       "default": "./dist/mock-transport.js"
@@ -68,7 +72,7 @@
     "pretest": "node scripts/build.mjs",
     "test": "vitest run"
   },
-  "// peerDependencies note": "@opentelemetry/api is REQUIRED (trace.ts propagates traceparent on every RPC — always on, no collector). @hyperdx/browser is OPTIONAL and exact-pinned: it is imported only (and lazily) by the './telemetry' subpath, which the Next.js and Vite scaffolds reach. It carries the whole OpenTelemetry web SDK and the rrweb recorder as its own dependencies, so a frontend that never imports './telemetry' (React Native) installs none of it and is not told it is missing a package it will never resolve.",
+  "// peerDependencies note": "@opentelemetry/api is the one REQUIRED peer: trace.ts propagates traceparent on every RPC from the barrel, and the './node' entry builds its spans on it. Every other peer is OPTIONAL because some entry point never imports it, and npm installs a non-optional peer for every consumer whether or not it is reached: react, @connectrpc/connect and @bufbuild/protobuf are imported by the barrel and the browser subpaths, which every forge frontend scaffold (Next.js, Vite, Expo) declares as its own direct dependencies, while a './node'-only consumer (an Electron main process, a Node CLI) imports none of them. @hyperdx/browser is exact-pinned and imported only (and lazily) by the './telemetry' subpath; it carries the whole OpenTelemetry web SDK and the rrweb recorder, so a frontend that never imports './telemetry' (React Native) installs none of it. @tanstack/react-query is imported only by './service-hooks'. src/published-surface.test.ts holds the rule: a peer the './node' import closure does not reach must be optional.",
   "peerDependencies": {
     "@bufbuild/protobuf": "^2.5.0",
     "@connectrpc/connect": "^2.0.0",
@@ -78,10 +82,19 @@
     "react": "^18.3.0 || ^19.0.0"
   },
   "peerDependenciesMeta": {
-    "@tanstack/react-query": {
+    "@bufbuild/protobuf": {
+      "optional": true
+    },
+    "@connectrpc/connect": {
       "optional": true
     },
     "@hyperdx/browser": {
+      "optional": true
+    },
+    "@tanstack/react-query": {
+      "optional": true
+    },
+    "react": {
       "optional": true
     }
   },

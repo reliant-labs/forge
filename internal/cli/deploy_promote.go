@@ -50,6 +50,9 @@ type promoteOptions struct {
 	ExpectCurrent string
 	// Supersede admits a promote while the current rollout is in flight.
 	Supersede bool
+	// AllowPassedMigrations admits a release carrying a migration the env's
+	// schema has already passed (release_migrations.go).
+	AllowPassedMigrations bool
 
 	// Follow is the apply-and-gate stage that runs after the ledger write
 	// (deploy_promote_follow.go). NIL MEANS LEDGER-WRITE ONLY: nothing is
@@ -197,6 +200,12 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 			"(the caller must pass promoteOptions.Ledger — see resolveReleaseLedger)", env)
 	}
 
+	// The migration-order guard, ahead of BOTH promotion paths and of any
+	// plan shown as approvable: a release env's schema has already passed
+	// would be refused by env's own migrator at boot, after the write.
+	if err := checkDeployMigrations(ctx, progressWriter(opts.JSON), projectDir, env, version, ledger, opts.AllowPassedMigrations); err != nil {
+		return err
+	}
 	if handled, err := dispatchSnapshotPromotion(ctx, env, version, ledger, opts); handled || err != nil {
 		return err
 	}

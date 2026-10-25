@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -117,6 +118,11 @@ func populateCompositionBindings(ctx context.Context, candidate *release.Snapsho
 	for _, k := range run.Selected {
 		selected[k] = true
 	}
+	type pendingBinding struct {
+		key  release.ConsumerKey
+		slot string
+	}
+	var pending []pendingBinding
 	for _, c := range candidate.Consumers {
 		action := "carry"
 		if selected[c.Key] {
@@ -130,9 +136,20 @@ func populateCompositionBindings(ctx context.Context, candidate *release.Snapsho
 				}
 				continue
 			}
+			if !compositionPrimarySlot(entities, c.Key, slot) {
+				pending = append(pending, pendingBinding{key: c.Key, slot: slot})
+				continue
+			}
 			if err := addSelectedCompositionBinding(ctx, candidate, run, entities, opts, results, c.Key, slot); err != nil {
 				return err
 			}
+		}
+	}
+	// Every producer's verified invocation output (or exact carried binding)
+	// exists before auxiliary references can bind it, independent of ordering.
+	for _, binding := range pending {
+		if err := addSelectedCompositionBinding(ctx, candidate, run, entities, opts, results, binding.key, binding.slot); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -161,7 +178,11 @@ func addSelectedCompositionBinding(ctx context.Context, candidate *release.Snaps
 			}
 		}
 		for _, sidecar := range w.Spec.Sidecars {
-			if slot == "container:"+sidecar.Name {
+			prefix := "container:"
+			if sidecar.Native {
+				prefix = "init:"
+			}
+			if slot == prefix+sidecar.Name {
 				ref = sidecar.Image
 			}
 		}
@@ -205,7 +226,13 @@ func addSelectedCompositionBinding(ctx context.Context, candidate *release.Snaps
 	if ref == "" {
 		return fmt.Errorf("selected slot %v/%s has no build output", c.Key, slot)
 	}
-	artifact, err := resolveCompositionArtifact(ctx, ref, opts.release, receipt, source)
+	artifact, bound, err := compositionInputArtifact(candidate, entities, c.Key, slot, ref)
+	if err != nil {
+		return err
+	}
+	if !bound {
+		artifact, err = resolveCompositionArtifact(ctx, ref, opts.release, receipt, source)
+	}
 	if err != nil {
 		return err
 	}
@@ -220,7 +247,7 @@ func addSelectedCompositionBinding(ctx context.Context, candidate *release.Snaps
 	}
 	id, err := release.ArtifactIdentity(artifact)
 	if err != nil {
-		return err
+		return fmt.Errorf("binding %s/%s artifact location=%q digest=%q: %w", c.Key.Workload, slot, artifact.Location, artifact.Content, err)
 	}
 	recordCompositionBuildEvent(candidate, c.Key, id, artifact.Origin)
 	candidate.Artifacts[id] = artifact
@@ -301,6 +328,13 @@ func sealComposition(ctx context.Context, cfg *config.ProjectConfig, entities *K
 	return nil
 }
 func recordCompositionBuildEvent(s *release.Snapshot, c release.ConsumerKey, id release.ArtifactID, origin release.ArtifactOrigin) {
+	// Several slots may use the same verified artifact (for example a Job's
+	// init and main containers). Build events attest consumer+artifact, not slot.
+	for _, event := range s.BuildEvents {
+		if event.Consumer == c && event.Artifact == id && reflect.DeepEqual(event.Origin, origin) {
+			return
+		}
+	}
 	s.BuildEvents = append(s.BuildEvents, release.ArtifactBuildEvent{Consumer: c, Artifact: id, Origin: origin})
 }
 

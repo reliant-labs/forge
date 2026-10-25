@@ -59,16 +59,22 @@ forge db migration rebase db/migrations/<file>.up.sql
 
 golang-migrate applies only migrations **above** the recorded version, so one numbered below it can never run. With timestamps that happens exactly one way: branches A and B are cut, A allocates the earlier timestamp, and **B merges and deploys first**. Main now holds A's migration at a version the database has already passed.
 
-The migrator refuses with `*migratekit.MissingMigrationError` and applies nothing. **The fix is to re-version the file** — it has not run anywhere, so renaming it to a fresh timestamp is safe, and the error text says so.
+The migrator refuses with `*migratekit.MissingMigrationError` and applies nothing. The fix gives the file a version newer than the schema's, and **how depends on whether the file has merged to your default branch** — the one fact the binary cannot see, so the error states both.
+
+**Not yet merged** — it has run nowhere, so re-version it:
 
 ```bash
 forge db migration rebase db/migrations/20260101120000_add_users.up.sql
 forge db migration rebase --all-pending   # every migration added on this branch
 ```
 
+**Already merged** — the usual case, because the refusal is usually first seen by the release that carries the merged file (reliant's `20261024024221` merged below a version main and prod already held; the first symptom was the release's crash-looping migrator). Every database created from main since the merge has run it at its old version, so a rename would re-run SQL they already hold, and rebase refuses it. **Replace it**: delete the file and add the same SQL as a new migration (`forge db migration new <name>`), written to be re-runnable — `CREATE … IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`, `CREATE INDEX CONCURRENTLY IF NOT EXISTS`. A database that ran the old version runs the copy as a no-op; the database that passed it runs it for the first time. The record the deleted version leaves behind is harmless: the migrator checks only versions the binary embeds. (`TestUpProceedsOnceAMergedMissingMigrationIsReplaced` pins both databases.)
+
+Do not keep a neutralized copy of the old file at its old version: it is still embedded, still below the schema's version, and still refused.
+
 Rebase keeps the name stem, allocates a version above both the directory's max and the default branch's (so a squashed-away migration still on main is accounted for), `git mv`s tracked files, and prints `old → new`.
 
-It **refuses** a migration that is already on the default branch **under the same filename**, with no override. That one has been recorded as applied under its current filename by every database that ran it, so renaming it would leave those databases with a recorded version whose file does not exist — worse than the problem, and unrecoverable without hand-editing `schema_migrations`. A migration that has merged keeps its version; repair it with a new forward migration.
+It **refuses** a migration that is already on the default branch **under the same filename**, with no override. That one has been recorded as applied under its current filename by every database that ran it, so renaming it would leave those databases with a recorded version whose file does not exist — worse than the problem. A migration that has merged keeps its version; repair it with a new forward migration — or, when a database has already passed its version, replace it as above.
 
 The match is on the **filename**, not the number, because what a database recorded is one specific migration under the name it ran. Those come apart in the most common collision there is: two branches allocate in the same second and one merges, so the other holds a *different* migration under a version that is also on main. That file has never been applied anywhere — it is exactly what `duplicate-migration-version` tells you to rebase, and rebase will do it.
 

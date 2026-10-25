@@ -200,6 +200,11 @@ func planBuild(ctx context.Context, in planInputs) buildPlanReport {
 		if err := preflightReleaseSources(ctx, in.projectDir, in.entities, opts); err != nil {
 			report.releaseErr = errors.Join(report.releaseErr, err)
 		}
+		// And the migration-order guard, so a plan refuses a release the
+		// env's schema has already passed exactly as the build would.
+		if err := preflightReleaseMigrations(ctx, in.projectDir, in.entities, opts); err != nil {
+			report.releaseErr = errors.Join(report.releaseErr, err)
+		}
 	}
 	return report
 }

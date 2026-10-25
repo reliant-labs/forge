@@ -127,6 +127,11 @@ type buildOptions struct {
 	// capacityChecked records that the caller (`forge env deploy`) already ran
 	// the hosted capacity pre-flight, so the build does not repeat it.
 	capacityChecked bool
+	// allowPassedMigrations and allowUnmergedMigrations are the
+	// migration-order guard's waivers on a release cut
+	// (release_migrations.go).
+	allowPassedMigrations   bool
+	allowUnmergedMigrations bool
 	// bundleEnvs is --bundle-envs: write a bundle for each env named,
 	// comma-separated, from this one build and this one cut. Empty means
 	// the env being built.
@@ -483,6 +488,8 @@ type buildResult struct {
 	tag      string
 	receipt  *release.BuildReceipt
 	workload string // runtime consumer that requested this result; never inferred from repository
+	// goTargets are the exact recipes compiled into this invocation's project image.
+	goTargets []goBuildTarget
 }
 
 // prepareBuild runs the three setup steps every build needs before it can
@@ -892,7 +899,12 @@ func preflightRealBuild(ctx context.Context, entities *KCLEntities, opts buildOp
 	if opts.composition != nil {
 		return nil
 	} // actual exported inputs are receipt-attested, not inferred from cwd HEAD
-	return preflightReleaseSources(ctx, projectDirForKCL(), entities, opts)
+	if err := preflightReleaseSources(ctx, projectDirForKCL(), entities, opts); err != nil {
+		return err
+	}
+	// A release the target env's schema has already passed is refused here,
+	// before 20 minutes of build, and not only at the cut.
+	return preflightReleaseMigrations(ctx, projectDirForKCL(), entities, opts)
 }
 
 // printBuildHeader prints the block runBuild opens with: what is being built,
@@ -1796,6 +1808,15 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	if err != nil {
 		return releaseCutOutcome{}, err
 	}
+	// The migrations the release carries, recorded and judged against env's
+	// applied history over the checkouts the build state RECORDS — the same
+	// sources checkRecordedReleaseSources held to the pins (release_migrations.go).
+	recordedUses, _ := recordedShellSources(projectDir, env, entities)
+	migrations, err := releaseMigrationGuard(ctx, os.Stdout, releaseRef{projectDir, env, version}, prov, recordedUses, ledger, opts)
+	if err != nil {
+		return releaseCutOutcome{}, err
+	}
+	rel.Migrations = migrations
 	if err := pinStorageRelease(rel); err != nil {
 		return releaseCutOutcome{}, err
 	}
@@ -1917,6 +1938,7 @@ func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
 			go func() {
 				defer wg.Done()
 				r := dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, guard)
+				r.goTargets = goTargets
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -1979,6 +2001,7 @@ func buildSequential(ctx context.Context, plan buildPlan) []buildResult {
 			projectImageArch := resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
 			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), envLabel: opts.env}
 			r := dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, guard)
+			r.goTargets = goTargets
 			results = append(results, r)
 			if r.err != nil {
 				return results
@@ -2493,13 +2516,15 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 	}
 
 	return buildResult{
-		name:      cfg.Name + " (docker)",
-		kind:      "docker",
-		duration:  time.Since(start),
-		err:       nil,
-		tag:       tags.tag,
-		digest:    digest,
-		platforms: platforms,
+		name:       cfg.Name + " (docker)",
+		kind:       "docker",
+		duration:   time.Since(start),
+		err:        nil,
+		image:      cfg.Name,
+		repository: tags.repository,
+		tag:        tags.tag,
+		digest:     digest,
+		platforms:  platforms,
 	}
 }
 
@@ -2507,8 +2532,10 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 // `docker build` applies (local), and the subset `docker push` sends to the
 // registry (push).
 type dockerImageTags struct {
-	local []string
-	push  []string
+	// repository is the declared push destination, not a display name or tag.
+	repository string
+	local      []string
+	push       []string
 	// tag is the version tag the set carries (the non-`latest` one): the tag
 	// the image's build state records.
 	tag string
@@ -2536,7 +2563,7 @@ type dockerImageTags struct {
 // fails after its first push leaves every shared tag exactly where it was.
 // See releaseImageTag for the incident this closes.
 func imageTagSet(repository, resolvedTag string, push, releaseScoped bool) dockerImageTags {
-	out := dockerImageTags{tag: resolvedTag}
+	out := dockerImageTags{repository: repository, tag: resolvedTag}
 	seen := map[string]bool{}
 	add := func(repo string, pushed bool) {
 		refs := make([]string, 0, 2)
@@ -2687,14 +2714,15 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path stri
 	}
 
 	return buildResult{
-		name:      name + " (docker)",
-		kind:      "docker",
-		duration:  time.Since(start),
-		err:       nil,
-		image:     name,
-		tag:       tags.tag,
-		digest:    digest,
-		platforms: platforms,
+		name:       name + " (docker)",
+		kind:       "docker",
+		duration:   time.Since(start),
+		err:        nil,
+		image:      name,
+		repository: tags.repository,
+		tag:        tags.tag,
+		digest:     digest,
+		platforms:  platforms,
 	}
 }
 

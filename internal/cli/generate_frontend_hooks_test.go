@@ -821,6 +821,12 @@ var updateHookGoldens = flag.Bool("update-hooks", false, "rewrite the generated-
 // write (Restart). One classification feeds three artifacts — the hook's
 // factory, its entry (or not) in the key factory, and the starter test's
 // idiom — so the golden shows all three moving together.
+//
+// The paged reads ride the same golden: ListEvents and SearchLogs carry
+// forge's list-pagination shape (page_token in, next_page_token out) and
+// gain a use<Name>Infinite hook, key entry and starter row; ListNodes reads
+// a list with no tokens and gains none; FindPeers has the shape but is marked
+// `// forge:mutation`, and a mutation is never paged.
 func TestGenerateFrontendHooks_Golden(t *testing.T) {
 	dir := t.TempDir()
 	protoRel := "proto/system/v1/system.proto"
@@ -845,6 +851,11 @@ service SystemService {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
   rpc Restart(RestartRequest) returns (RestartResponse);
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse);
+  rpc SearchLogs(SearchLogsRequest) returns (SearchLogsResponse);
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+  // forge:mutation — claims the peers it finds.
+  rpc FindPeers(FindPeersRequest) returns (FindPeersResponse);
 }
 `), 0o644); err != nil {
 		t.Fatal(err)
@@ -858,6 +869,18 @@ service SystemService {
 		Methods: []codegen.Method{
 			method("Health", true), method("Ready", false), method("GetInfo", false),
 			method("Version", true), method("Drain", true), method("Restart", false),
+			method("ListEvents", false), method("SearchLogs", false), method("ListNodes", false),
+			method("FindPeers", false),
+		},
+		Messages: map[string][]codegen.MessageFieldDef{
+			"ListEventsRequest":  {{Name: "page_size", ProtoType: "int32"}, {Name: "page_token", ProtoType: "string"}},
+			"ListEventsResponse": {{Name: "events", ProtoType: "[]message"}, {Name: "next_page_token", ProtoType: "string"}},
+			"SearchLogsRequest":  {{Name: "query", ProtoType: "string"}, {Name: "page_token", ProtoType: "string", IsOptional: true}},
+			"SearchLogsResponse": {{Name: "lines", ProtoType: "[]string"}, {Name: "next_page_token", ProtoType: "string"}},
+			"ListNodesRequest":   {{Name: "region", ProtoType: "string"}},
+			"ListNodesResponse":  {{Name: "nodes", ProtoType: "[]message"}},
+			"FindPeersRequest":   {{Name: "page_token", ProtoType: "string"}},
+			"FindPeersResponse":  {{Name: "next_page_token", ProtoType: "string"}},
 		},
 	}}
 	cfg := &config.ProjectConfig{

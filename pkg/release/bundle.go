@@ -498,6 +498,14 @@ type Shape struct {
 	// findings that fail a release. Nil when every value is the default; a
 	// reader treats absence as [DefaultReleaseHealth].
 	ReleaseHealth *ShapeReleaseHealth `json:"release_health,omitempty"`
+	// UptimeChecks are the env's outside-in HTTP checks (forge.UptimeCheck and
+	// the ones forge derives for every public frontend and route), sorted by
+	// name. The control plane's prober reads them from here. Omitted when the
+	// env has none, so every shape recorded before the field encodes and
+	// hashes exactly as it did; a control plane that predates it refuses the
+	// whole shape, so it is a bundle-document feature
+	// ([BundleFeatureUptimeChecks]).
+	UptimeChecks []ShapeUptimeCheck `json:"uptime_checks,omitempty"`
 	// Identity is the env's managed identity as declared
 	// (forge.ManagedIdentity): the instance the control plane's identity
 	// reconciler converges, and which workloads consume it. Names and
@@ -1084,6 +1092,9 @@ func (s Shape) Validate() error {
 			return err
 		}
 	}
+	if err := validateUptimeChecks(s.UptimeChecks); err != nil {
+		return err
+	}
 	delivered := map[string]bool{}
 	for _, c := range s.ControlPlaneSecrets {
 		if strings.TrimSpace(c.Name) == "" || strings.TrimSpace(c.Namespace) == "" || strings.TrimSpace(c.Cluster) == "" {
@@ -1265,6 +1276,7 @@ func (s Shape) Canonical() Shape {
 			out.ReleaseHealth = nil
 		}
 	}
+	out.UptimeChecks = canonicalUptimeChecks(s.UptimeChecks)
 	if s.Identity != nil {
 		id := s.Identity.canonical()
 		out.Identity = &id

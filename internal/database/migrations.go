@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/reliant-labs/forge/internal/migrationver"
+	"github.com/reliant-labs/forge/internal/migrationgit"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
@@ -42,7 +42,7 @@ func CreateMigration(ctx context.Context, name, dir string, opts *MigrationOptio
 		return err
 	}
 
-	version, err := migrationver.Next(dir)
+	version, err := migrationgit.Next(dir)
 	if err != nil {
 		return err
 	}

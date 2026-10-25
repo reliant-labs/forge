@@ -34,7 +34,11 @@ func compositionConsumers(e *KCLEntities) ([]release.Consumer, error) {
 			c.Slots = []string{"container:" + w.Name}
 		}
 		for _, sidecar := range w.Spec.Sidecars {
-			c.Slots = append(c.Slots, "container:"+sidecar.Name)
+			prefix := "container:"
+			if sidecar.Native {
+				prefix = "init:"
+			}
+			c.Slots = append(c.Slots, prefix+sidecar.Name)
 		}
 		for name := range w.ReleaseInputs {
 			c.Slots = append(c.Slots, "input:"+name)
@@ -107,15 +111,12 @@ func resolveCompositionArtifact(ctx context.Context, ref, version string, receip
 	if !release.ValidDigest(digest) || len(platforms) == 0 {
 		return release.SnapshotArtifact{}, fmt.Errorf("snapshot artifact %s lacks immutable digest/platforms", ref)
 	}
-	repo := ref
-	if i := strings.Index(repo, "@"); i >= 0 {
-		if repo[i+1:] != digest {
-			return release.SnapshotArtifact{}, fmt.Errorf("registry descriptor differs from pinned digest")
-		}
-		repo = repo[:i]
-	} else if i := strings.LastIndex(repo, ":"); i > strings.LastIndex(repo, "/") {
-		repo = repo[:i]
+	if i := strings.Index(ref, "@"); i >= 0 && ref[i+1:] != digest {
+		return release.SnapshotArtifact{}, fmt.Errorf("registry descriptor differs from pinned digest")
 	}
+	// A valid OCI reference may carry BOTH a tag and a digest. Normalize its
+	// identity with the same canonical helper the build/deploy paths use.
+	repo := imageRepository(ref)
 	a := release.SnapshotArtifact{Kind: release.KindOCI, Location: repo, Content: digest, Platforms: platforms, Origin: release.ArtifactOrigin{Release: version, Source: source, Receipt: receipt}}
 	if receipt == nil && source == nil {
 		a.Origin.External = &release.ExternalArtifact{Verifier: "forge.registry-descriptor/v1", DescriptorDigest: digest}

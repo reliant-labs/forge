@@ -107,9 +107,17 @@
 //     then Unwrap to the end, the first branch of a multi-error). Type is
 //     %T; the message is bounded to MaxExceptionMessage (1 KiB). Attributes
 //     the call site already set are kept.
-//   - exception.stacktrace, from LogPanic only. LogPanic is what every
-//     recover path in forge calls; its record's PC is the panicking frame, so
-//     panics group by where they happened, not by where they were recovered.
+//   - exception.stacktrace, from LogPanic and from svcerr. LogPanic is what
+//     every recover path in forge calls; its record's PC is the panicking
+//     frame, so panics group by where they happened, not by where they were
+//     recovered. svcerr captures a bounded stack (32 frames, 8 KiB,
+//     module-relative paths) where a server fault — Internal, Unknown,
+//     DataLoss or Unavailable — is first built or wrapped, and the record
+//     carries it, with its innermost application frame as the call site above
+//     (so an "rpc failed" issue groups by the handler's failing code, not by
+//     the interceptor that logged it). Client-class errors capture none, and a
+//     stack never crosses the wire to the client. The same stack rides the
+//     span's exception event and the log.error event.
 //   - error.group, from ErrorGroup(ctx, name) only: an explicit issue name
 //     for the failure whose derived grouping is wrong.
 //

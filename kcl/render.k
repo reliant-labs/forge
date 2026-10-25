@@ -21,7 +21,7 @@ THE OUTPUT (internal/cli/testdata/render_contract/ pins it per runtime):
                               when declared (a list, possibly empty)
     clusters, cluster_target, kubeconfig_secrets, connected_clusters
     network_policy            the env NetworkPolicy bundle's inputs, or null
-    statefulset_resize        {image, disabled} tuning of the StatefulSet
+    statefulset_resize        {image, release_owner, disabled} tuning of the StatefulSet
                               volume-resize Job, present only when declared
     workloads[]               EVERY workload, of every runtime:
         {name, kind, image, build, runtime, spec}
@@ -1261,7 +1261,7 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         leaderElection = w.leaderElection
         serviceAccount = w.serviceAccount
         serviceAccountAnnotations = w.serviceAccountAnnotations
-        sidecars = [s | {image = workload_image_ref_for(w.name, "container:" + s.name, s.image, bundle.image_tag)} for s in w.sidecars] if w.sidecars else Undefined
+        sidecars = [s | {image = workload_image_ref_for(w.name, ("init:" if s.native else "container:") + s.name, s.image, bundle.image_tag)} for s in w.sidecars] if w.sidecars else Undefined
         volumes = ((w.volumes if w.volumes else []) + _cps_volume(w, rt, bundle) + _idn_volumes(w, rt, bundle)) or Undefined
         nodeSelector = w.nodeSelector
         tolerations = w.tolerations
@@ -1670,6 +1670,94 @@ _render_release_health = lambda h: ReleaseHealth -> any {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Uptime checks (schema.k Uptime): the declared checks plus the ones forge
+# derives for a hosted env, resolved to the release shape's `uptime_checks`.
+# ---------------------------------------------------------------------------
+
+# A hosted env: one the control plane runs and can probe from outside. A
+# local or ephemeral env, and one with no control plane, derives nothing.
+_uptime_derives = lambda b: Bundle -> bool {
+    bool(b.control_plane) and b.lifecycle not in ["local", "ephemeral"] and (not b.uptime or b.uptime.defaults)
+}
+
+# The route-<name> check name a route's derived check takes.
+_uptime_route_name = lambda r: any -> str {
+    "route-" + r.name
+}
+
+# A derived check's common fields. Written out in full, like a declared check,
+# so the shape is the whole truth.
+_uptime_default = lambda name: str -> any {
+    {
+        "name": name
+        "method": "GET"
+        "interval_seconds": 60
+        "timeout_seconds": 10
+        "source": "default"
+    }
+}
+
+# A hosted workload that exposes a port: the only workload with a public
+# hostname.
+_uptime_exposes = lambda w: any -> bool {
+    bool(w.runtime and w.runtime.type == "hosted" and [p for p in (w.ports or []) if p.expose])
+}
+
+# Every check forge derives, as {name: check}. A hosted frontend or a hosted
+# workload with an exposed port is checked at its platform hostname; a route
+# is checked at its public URL when some hostname names it.
+_uptime_derived = lambda b: Bundle -> {str: any} {
+    _targets = [f.name for f in b.frontends if f.runtime and f.runtime.type == "hosted"] \
+        + [w.name for w in b.workloads if _uptime_exposes(w)]
+    _routes = [r for r in b.http_routes if wurl_lib.route_public_url(r, b)]
+    ({n: _uptime_default(n) | {"target": n} for n in _targets} \
+        | {_uptime_route_name(r): _uptime_default(_uptime_route_name(r)) | {
+            "url": wurl_lib.route_public_url(r, b)
+            "expect_status": ["2xx", "3xx", "4xx"]
+        } for r in _routes}) if _uptime_derives(b) else {}
+}
+
+# A declared check, resolved: a route becomes its public URL, and every
+# default is written out so the shape is the whole truth.
+_uptime_declared = lambda c: any, b: Bundle -> any {
+    _routes = [r for r in b.http_routes + b.grpc_routes if r.name == c.route]
+    assert not c.route or len(_routes) == 1, \
+        "UptimeCheck '${c.name}': route '${c.route}' names no HTTPRoute of this Bundle (have: ${[r.name for r in b.http_routes]})"
+    _url = wurl_lib.route_public_url(_routes[0], b) if c.route else c.url
+    assert not c.route or _url, \
+        "UptimeCheck '${c.name}': route '${c.route}' has no public hostname (no route, listener or gateway host): set one, or use `url`"
+    assert not c.target or c.target in _env_names(b.workloads, b.infra, b.frontends), \
+        "UptimeCheck '${c.name}': target '${c.target}' is not a workload or frontend of this Bundle"
+    assert not c.target or c.target in _hosted_names(b.workloads, [], b.frontends), \
+        "UptimeCheck '${c.name}': target '${c.target}' does not run on the hosted runtime, so the platform has no hostname for it: use `url` for an endpoint you operate"
+    {
+        "name": c.name
+        "url": _url if _url else None
+        "target": c.target if c.target else None
+        "path": c.path if c.path and c.path != "/" else None
+        "method": c.method
+        "interval_seconds": _uptime_seconds(c.interval)
+        "timeout_seconds": _uptime_seconds(c.timeout)
+        "expect_status": sorted(c.expect_status) if c.expect_status else None
+        "expect_body": c.expect_body if c.expect_body else None
+        "source": "user"
+    }
+}
+
+# The env's checks, sorted by name: derived, minus `skip`, replaced by a
+# declared check of the same name, plus the declared ones.
+_render_uptime_checks = lambda b: Bundle -> [any] {
+    _derived = _uptime_derived(b)
+    _u = b.uptime
+    _skip = _u.skip if _u else []
+    assert all n in _skip {n in _derived}, \
+        "Uptime.skip names ${[n for n in _skip if n not in _derived]}, which forge does not derive a check for here (derived: ${sorted([n for n in _derived])})"
+    _declared = {c.name = _uptime_declared(c, b) for c in (_u.checks if _u else [])}
+    _all = {k = v for k, v in _derived if k not in _skip and k not in _declared} | _declared
+    [{k = v for k, v in _all[n] if v != None} for n in sorted([n for n in _all])]
+}
+
 # The declaration, as the Go side (forge env up, the local forwarder) reads it.
 _render_observability = lambda b: Bundle -> any {
     _o = b.observability
@@ -1946,6 +2034,10 @@ render = lambda bundle: Bundle -> any {
         # means audited, never open, so a real env's render is unchanged.
         if _data_access_db_query(bundle.data_access, bundle.lifecycle or "") != "audited":
             "data_access": {"db_query": _data_access_db_query(bundle.data_access, bundle.lifecycle or "")}
+        # The env's uptime checks, resolved: declared ones plus the ones forge
+        # derives for a hosted env. Go records them in the release shape.
+        if _render_uptime_checks(bundle):
+            "uptime_checks": _render_uptime_checks(bundle)
         # The release-health policy, resolved, only when the env declares one.
         # Go records it in the release shape unless it is all defaults.
         if bundle.release_health:
@@ -2030,6 +2122,7 @@ render = lambda bundle: Bundle -> any {
         if bundle.statefulset_resize:
             "statefulset_resize": {
                 "image": bundle.statefulset_resize.image
+                "release_owner": bundle.statefulset_resize.release_owner
                 "disabled": bundle.statefulset_resize.disabled
             }
         "manifests": _manifests(bundle, _entities)

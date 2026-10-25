@@ -112,7 +112,7 @@ describe("ui-store", () => {
 - Runner: **Vitest** (matches Next.js / Tailwind v4 / forge's TS toolchain)
 - DOM: `jsdom` or `happy-dom`
 - React: `@testing-library/react` + `@testing-library/user-event`
-- Network: forge ships a `mockTransport()` helper in `src/lib/test-utils.tsx` (see the file)
+- Network: forge ships a `mockTransport()` helper in `src/lib/test-utils.tsx` (see the file). Like a real transport it `create()`s both directions: a handler receives the full request (an unset repeated field is `[]`), and a fixture may be a partial init shape, returned as the full response.
 - Coverage target: utilities + stores + page integrations. **NOT** 100% coverage; aim for behavioral coverage of the four states (loading / error / empty / success) per page.
 
 ## File layout

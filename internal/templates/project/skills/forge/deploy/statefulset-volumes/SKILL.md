@@ -55,6 +55,7 @@ in the pod's log (`kubectl -n <ns> logs job/<name>`).
 ```python
 statefulset_resize = forge.StatefulSetResize {
     image = "mirror.example/k8s:1.34"   # anything with kubectl and jq; default: digest-pinned docker.io/alpine/k8s
+    release_owner = "resize-hooks"    # optional explicit Manifests consumer for complete snapshots
     # disabled = True                    # render no Job: a raised size then fails the apply, and you resize by hand
 }
 ```
@@ -62,6 +63,14 @@ statefulset_resize = forge.StatefulSetResize {
 It is **not rendered** for `lifecycle = "local"` / `"ephemeral"` envs (scratch
 clusters, which the direct-apply recovery converges), nor for a StatefulSet with no
 `volumeClaimTemplates`.
+
+For a complete snapshot, `release_owner` names exactly one explicit `forge.Manifests`
+consumer on every cluster where a hook is generated. Declare its
+`release_inputs = {"container:resize" = <the same hook image>}` (an empty objects
+list is valid). The generated Job and its ServiceAccount, Role, RoleBinding and
+NetworkPolicy carry that owner's `forge.dev/release-owners` JSON annotation.
+Unknown owners, wrong clusters, missing slots and different image identities are
+refused. This never infers ownership from StatefulSet names or adopts free images.
 
 ## Things to know
 

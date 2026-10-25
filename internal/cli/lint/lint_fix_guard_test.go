@@ -119,7 +119,7 @@ func TestGoFixGuard_RollsBackOnlyWhatTheFixBroke(t *testing.T) {
 // staticcheck/gocritic rewrites (SA9004) that broke reliant's build.
 func TestGolangciGateArgs_NeverFix(t *testing.T) {
 	for _, fix := range []bool{false, true} {
-		for _, a := range golangciGateArgs(&lintRunCtx{fix: fix, paths: []string{"./internal/..."}}) {
+		for _, a := range golangciGateArgs(&lintRunCtx{fix: fix}, []string{"./internal/..."}) {
 			if a == "--fix" || strings.HasPrefix(a, "--fix=") {
 				t.Fatalf("golangci-lint gate args carry %s with rc.fix=%v", a, fix)
 			}

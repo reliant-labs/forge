@@ -213,7 +213,15 @@ func lintPipeline() []linterStep {
 				return true, ""
 			},
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				return collectContractLintJSON(rc.ctx, rc.paths, contractExcludesFromConfig(rc.cfg), contractGateOptions(rc.cfg, rc.strict))
+				// The analysis loads the untagged build only: a scope reaching
+				// nothing but tagged Go has nothing for it, and go/packages
+				// fails such a package ("build constraints exclude all Go
+				// files") rather than reporting nothing.
+				paths, run := defaultPassPackages(rc.moduleDir(), rc.paths, nil)
+				if !run {
+					return nil, false, nil
+				}
+				return collectContractLintJSON(rc.ctx, paths, contractExcludesFromConfig(rc.cfg), contractGateOptions(rc.cfg, rc.strict))
 			},
 		},
 

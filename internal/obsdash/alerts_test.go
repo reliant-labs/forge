@@ -31,8 +31,8 @@ func TestGoldenDefaultAlertSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rules) != 17 {
-		t.Fatalf("got %d default rules, want the 5 telemetry rules (error rate, latency, silent, JS errors, LCP), the 5 customer-metadata rules, the three issue markers (new, regressed, spike), ReleaseRegressed, DeployFailed and the two quota levels", len(rules))
+	if len(rules) != 18 {
+		t.Fatalf("got %d default rules, want the 5 telemetry rules (error rate, latency, silent, JS errors, LCP), the 5 customer-metadata rules, the three issue markers (new, regressed, spike), ReleaseRegressed, ServiceAnomaly, DeployFailed and the two quota levels", len(rules))
 	}
 	var b strings.Builder
 	for _, r := range rules {
@@ -161,6 +161,10 @@ func TestDefaultsFollowTheProject(t *testing.T) {
 	if !strings.Contains(ids(rules), "release-regressed") {
 		t.Errorf("a project with services lacks release-regressed: %q", ids(rules))
 	}
+	// The anomaly detector reads the rpc.server.* metrics, so it follows services only.
+	if !strings.Contains(ids(rules), "service-anomaly") {
+		t.Errorf("a project with services lacks service-anomaly: %q", ids(rules))
+	}
 	feOnly := AlertInput{Project: "x", FrontendServices: []string{"x-web"}}
 	rules, _ = ResolveAlertDefaults(feOnly, "dev", nil)
 	if got := ids(rules); got != "deploy-failed,frontend-js-errors,frontend-lcp-poor,issue-regressed,issue-spike,new-issue,observability-quota" {
@@ -277,7 +281,7 @@ func TestOptingOutOfMetadataSkipsTheMetadataDefaults(t *testing.T) {
 	}
 	// A different category changes nothing here.
 	rules, skipped, _ = ResolveAlertDefaultsFor(in, "dev", nil, []string{"logs", "profiles"})
-	if len(skipped) != 0 || len(rules) != 17 {
+	if len(skipped) != 0 || len(rules) != 18 {
 		t.Errorf("opting out of logs skipped %v and left %d rules", skipped, len(rules))
 	}
 }
@@ -412,6 +416,9 @@ func TestPlatformDefaultsAreExactlyWhatTheControlPlaneInjects(t *testing.T) {
 		"IssueSpike": {"warning", "0s", "5m",
 			"SELECT 1 AS value WHERE 0 /* reliant:platform issue-spike env:{reliant_env_id:String} */",
 			"Issue spiking in {{ $labels.service }} ({{ $labels.env }}): {{ $labels.title }}, {{ $value }} events/hour, over 5 times its rate the day before. Details: {{ $labels.console_url }}"},
+		"ServiceAnomaly": {"warning", "0s", "5m",
+			"SELECT 1 AS value WHERE 0 /* reliant:platform service-anomaly env:{reliant_env_id:String} */",
+			"{{ $labels.service }} left what is usual for this hour of the week ({{ $labels.env }}). What moved, against what, and the evidence are in the alert's why payload: forge obs alerts --json"},
 		"ReleaseRegressed": {"warning", "0s", "1m",
 			"SELECT 1 AS value WHERE 0 /* reliant:platform release-regressed env:{reliant_env_id:String} */",
 			"Release {{ $labels.release }} regressed {{ $labels.env }}: {{ $value }} failing release-health findings after its window closed. Check it: forge obs check {{ $labels.env }} --release {{ $labels.release }}"},
@@ -441,6 +448,10 @@ func TestIssueAlertsArePlatformMarkers(t *testing.T) {
 		// Not an issue alert, but the same marker mechanism: the control plane
 		// judges the release with forge's pkg/releasehealth when its window closes.
 		"ReleaseRegressed": "release-regressed",
+		// Evaluated by the control plane with obsquery.EvalAnomalies over the
+		// rpc.server.* metrics; the baseline is not expressible as the SQL a
+		// rule records.
+		"ServiceAnomaly": "service-anomaly",
 	} {
 		r, ok := by[name]
 		if !ok {
@@ -548,7 +559,7 @@ func TestFrontendDefaultsTakeNoneOfTheNamesAUserRuleMayUse(t *testing.T) {
 	for _, n := range AlertDefaultAlertNames() {
 		names[n] = true
 	}
-	for _, n := range []string{"NewIssue", "IssueRegressed", "IssueSpike", "ReleaseRegressed", "FrontendLCPPoor", "FrontendJSErrorSpike"} {
+	for _, n := range []string{"NewIssue", "IssueRegressed", "IssueSpike", "ReleaseRegressed", "ServiceAnomaly", "FrontendLCPPoor", "FrontendJSErrorSpike"} {
 		if !names[n] {
 			t.Errorf("%s is not reserved", n)
 		}

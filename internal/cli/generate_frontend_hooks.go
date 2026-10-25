@@ -116,6 +116,8 @@ func applyMutationMarkers(data *codegen.FrontendHookTemplateData, marked map[str
 	for i := range data.Methods {
 		if marked[data.Methods[i].Name] && data.Methods[i].IsQuery {
 			data.Methods[i].IsQuery = false
+			// A mutation is never paged: useInfiniteQuery would replay it.
+			data.Methods[i].Paged = false
 			changed = true
 		}
 	}
@@ -124,11 +126,15 @@ func applyMutationMarkers(data *codegen.FrontendHookTemplateData, marked map[str
 	}
 	data.HasQueries = false
 	data.HasMutations = false
+	data.HasPaged = false
 	for _, m := range data.Methods {
 		if m.IsQuery {
 			data.HasQueries = true
 		} else {
 			data.HasMutations = true
+		}
+		if m.Paged {
+			data.HasPaged = true
 		}
 	}
 }
@@ -367,7 +373,8 @@ type hookFileEntry struct {
 }
 
 // hookFileExportedSymbols returns the names of identifiers a rendered
-// hooks.ts.tmpl file exposes (one `useXxx` per unary RPC). Keeping this in
+// hooks.ts.tmpl file exposes (one `useXxx` per unary RPC, plus
+// `useXxxInfinite` per paged read). Keeping this in
 // sync with the template is intentional: the template is the only thing
 // that decides what gets exported, so we read its output shape here
 // rather than re-parsing the rendered .ts.
@@ -375,6 +382,9 @@ func hookFileExportedSymbols(data codegen.FrontendHookTemplateData) []string {
 	out := make([]string, 0, len(data.Methods))
 	for _, m := range data.Methods {
 		out = append(out, "use"+m.Name)
+		if m.Paged {
+			out = append(out, "use"+m.Name+"Infinite")
+		}
 	}
 	return out
 }
@@ -530,11 +540,22 @@ func isHooksBarrelRelPath(p string) bool {
 // or — when a hand-written file already holds the path — leaves it exactly
 // as it is and names it in the run's closing summary. A barrel the project
 // disowned is the user's by declaration and is skipped silently.
+//
+// The barrel is regenerated every run, but writeHooksIndex writes it directly
+// rather than through a Tier-1 writer, so it is recorded as a Tier-1 target
+// here: when forge writes it, and when a disown is all that stops forge from
+// writing it. Without that, obsolete-disown retirement saw a disowned barrel
+// as a path forge no longer emits and dropped the disown, and the next run
+// printed the left-alone notice that told the user to disown it again.
 func writeHooksBarrel(projectDir, relPath string, hookFiles []hookFileEntry, cs *checksums.FileChecksums) error {
 	if cs != nil && cs.IsDisowned(filepath.ToSlash(relPath)) {
+		checksums.MarkTier1Target(relPath)
 		return nil
 	}
 	err := writeHooksIndex(filepath.Join(projectDir, relPath), hookFiles)
+	if err == nil {
+		checksums.MarkTier1Target(relPath)
+	}
 	if !errors.Is(err, errHandWrittenBarrel) {
 		return err
 	}
@@ -607,6 +628,9 @@ type hookStarterMethod struct {
 	Name     string // "GetUser"
 	HookName string // "useGetUser"
 	IsQuery  bool
+	// Infinite marks the row for a paged read's useXxxInfinite hook, whose
+	// data is { pages, pageParams } rather than one response.
+	Infinite bool
 }
 
 // hookStarterData is the template data for hooks.test.tsx.tmpl.
@@ -733,6 +757,18 @@ func writeHookStarterTest(hooksDir, fileName string, svc codegen.ServiceDef, dat
 			HookName: "use" + m.Name,
 			IsQuery:  m.IsQuery,
 		})
+		if m.Paged {
+			starterData.HookImports = append(starterData.HookImports, hookStarterImport{
+				Symbol: "use" + m.Name + "Infinite",
+				Module: base,
+			})
+			starterData.Methods = append(starterData.Methods, hookStarterMethod{
+				Name:     m.Name,
+				HookName: "use" + m.Name + "Infinite",
+				IsQuery:  true,
+				Infinite: true,
+			})
+		}
 	}
 
 	var buf bytes.Buffer

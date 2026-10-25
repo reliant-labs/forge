@@ -55,6 +55,8 @@ Local and cloud compile through ONE query compiler (`forge/pkg/obsquery`), so a 
 | `forge obs issues [env]` | Grouped errors (`--status`, `--since-release`, `--since-deploy`, `--platform server\|browser`, `--sort last\|first\|events`, `--page-token`) |
 | `forge obs issue <id> [env]` | Everything needed to fix one issue: culprit, frames, latest event and its trace, events per version, co-occurring issues, the release live when it was last seen, suspect commits from local git (`--events N`) |
 | `forge obs issue resolve\|ignore\|unresolve <id> [env]` | Triage (cloud; needs `obs:triage`): `resolve --in next\|<version>`, `ignore --until 72h` |
+| `forge obs sessions [env]` | Real-user browser sessions that started in the range, newest first (`--has-error`, `--has-replay`, `--user`, `--path`, `--since` up to 30d, `--limit`, `--page-token`). Hosted envs only |
+| `forge obs session <id> [env]` | One session as a text timeline: pages, clicks on masked selectors, failed requests, errors with their issue, custom events, trace ids (`--limit`, `--page-token`). No replay bytes. Exit 1 not found, 2 could not look |
 | `forge obs logs [env] [query]` | Search and tail (`--trace`, `--severity`, `--oldest`, `--page-token`; `--follow` polls, every `--interval`, default 2s) |
 | `forge obs traces [env]` | Find traces (`--slow`, `--min-duration`, `--errors`, `--route`, `--page-token`) |
 | `forge obs trace <trace-id> [env]` | One trace as a capped tree; error spans and the critical path are always expanded (`--full` lifts the caps; `--logs N` linked log lines); carries the release live when it started |
@@ -99,6 +101,29 @@ release_health = forge.ReleaseHealth {
 
 `--gate-json FILE` writes the evidence `forge gate record --from` attaches to the promotion.
 
+## Investigate a user session
+
+"A user hit a bug" is a reproduction, not a stack trace. The session timeline is what they did, in order.
+
+```bash
+forge obs sessions prod --has-error --since 24h          # which sessions raised errors (add --user, --path /checkout)
+forge obs session 91b955b313a1a86644ea53730a92deab prod # the timeline
+```
+
+```
++00:12.4  click     button //*[@id="save"] on /jobs/new
++00:12.5  request   POST /api.v1.JobService/CreateJob → 500 (230ms)  trace 0af7651916cd43dd8448eb211c80319c
++00:12.6  error     TypeError: Cannot read properties of undefined on /jobs/new → issue ISS-ab12  trace 0af7…
+```
+
+Read it top to bottom; the steps before the failure are the repro steps for the fix PR. Then follow the ids, which `suggested:` names:
+
+1. `forge obs issue ISS-ab12 prod`: the error entry's `→ issue <id>`: culprit, frames, suspect commits. An error with a fingerprint and no issue id has not been folded into an issue yet.
+2. `forge obs trace <trace-id> prod`: the server side of a failed request: which span failed and why.
+3. `forge obs logs prod --trace <trace-id>`: the log lines of that request.
+
+What the timeline never holds: element text, query strings, fragments and input values (paths are cut, clicks are a tag and an xpath, the recorder masks text). A session with `has_replay` has a recording; watch it in the console. Sessions come from the control plane's browser tables, so a local env exits 2 and says so. Exit 1: a malformed id, or a session the env does not have (or older than 30 days). `--json` is `forge.obs.sessions/v1` and `forge.obs.session/v1`; each timeline entry has `offset_ms` since the session started, `kind` (`navigation`, `click`, `request_failed`, `error`, `event`), `trace_id`, `issue_id`.
+
 ## What was live when: `forge env releases`
 
 ```bash
@@ -116,7 +141,7 @@ forge env releases at prod 2h                # …two hours ago (or `now`)
 
 ## The JSON contract
 
-- **One document on stdout.** It has `ok`, `exit_code` and `error`, computed from the same error the process exits with, plus `schema`: `forge.obs.<verb>/v1` (`status`, `check`, `changes`, `issues`, `issue`, `logs`, `traces`, `trace`, `endpoints`, `metrics_list`, `metrics_query` (v2), `metric` (describe), `metric_exemplars`, `query`). A failure is `{schema, ok: false, exit_code, error, suggested[]}`. Progress and warnings go to stderr. `logs --follow --json` is NDJSON and ends with an envelope line.
+- **One document on stdout.** It has `ok`, `exit_code` and `error`, computed from the same error the process exits with, plus `schema`: `forge.obs.<verb>/v1` (`status`, `check`, `changes`, `issues`, `issue`, `sessions`, `session`, `logs`, `traces`, `trace`, `endpoints`, `metrics_list`, `metrics_query` (v2), `metric` (describe), `metric_exemplars`, `query`). A failure is `{schema, ok: false, exit_code, error, suggested[]}`. Progress and warnings go to stderr. `logs --follow --json` is NDJSON and ends with an envelope line.
 - **`query_mode`** is `structured` or `raw` on every document: which path answered.
 - **`scope`** echoes env, backend, env id, time range and services.
 - **Bounded by default.** Lists carry `truncated`, `next_page_token`, and `omitted` where a cap cut items.

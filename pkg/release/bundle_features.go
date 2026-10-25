@@ -1,6 +1,10 @@
 package release
 
-import "slices"
+import (
+	"bytes"
+	"encoding/json"
+	"slices"
+)
 
 // Optional parts of the bundle document ([BundleDoc]) that a reader may not
 // decode yet.
@@ -62,13 +66,17 @@ const (
 	// env's promotions are judged by (forge.ReleaseHealth). A control plane
 	// that predates it judges with the defaults.
 	BundleFeatureReleaseHealth = "shape-release-health"
+	// BundleFeatureUptimeChecks is Shape.UptimeChecks: the outside-in checks
+	// the control plane's prober runs. A control plane that predates it
+	// probes nothing for the env.
+	BundleFeatureUptimeChecks = "shape-uptime-checks"
 )
 
 // BundleDocFeatures is every optional bundle-document feature this version's
 // [DecodeBundleDoc] accepts. A control plane advertises exactly this list, so
 // what it claims to decode and what its decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -99,6 +107,29 @@ func (r *BundleReader) Limit(d BundleDoc) BundleDoc {
 	return d
 }
 
+// HasOptionalParts reports whether s carries any part a reader that decodes
+// NO optional feature would withhold — so whether sending s to a control
+// plane needs its feature list first.
+//
+// It is DERIVED from LimitShape rather than listing fields, and that is the
+// point: the environment declaration once asked only when the shape had
+// frontend telemetry, so when forge #1285 added uptime checks to the shape a
+// control plane predating them strict-decoded the declaration, refused it
+// whole ("spec.shape is not a release.Shape"), and every release cut against
+// it failed before building. A feature added to LimitShape is covered here
+// with no second edit.
+func (s Shape) HasOptionalParts() bool {
+	limited, err := json.Marshal((&BundleReader{Features: []string{}}).LimitShape(s).Canonical())
+	if err != nil {
+		return true
+	}
+	full, err := json.Marshal(s.Canonical())
+	if err != nil {
+		return true
+	}
+	return !bytes.Equal(limited, full)
+}
+
 // LimitShape returns s without every optional part the reader does not decode.
 // Limit applies it to a bundle document's shape; the environment declaration,
 // which a control plane strict-decodes into the same Shape, applies it to the
@@ -119,6 +150,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	}
 	if !r.Supports(BundleFeatureDataAccess) {
 		s.DataAccess = nil
+	}
+	if !r.Supports(BundleFeatureUptimeChecks) {
+		s.UptimeChecks = nil
 	}
 	if r.Supports(BundleFeatureFrontendTelemetry) {
 		return s

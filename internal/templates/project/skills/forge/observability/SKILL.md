@@ -66,7 +66,7 @@ Run it after `forge env up dev` to verify the pipeline before investigating.
 
 HyperDX dashboard JSON dropped into `deploy/observability/dashboards/` is loaded automatically, within about 15 seconds and without a restart (HyperDX's file provisioner, `DASHBOARD_PROVISIONER_DIR`). A provisioned dashboard is read-only in the UI and replaced by name on the next load: edit the file, not the browser copy. A dashboard you build by hand in the UI is separate and never overwritten. `forge generate` writes an overview, a dashboard per service and a frontend dashboard into it as `*_gen.json`; every other file there is yours. Depth, and how to override a generated one: `observability/dashboards`.
 
-**Alerts** are declared in KCL, not in HyperDX: `forge.AlertRule` (a native ClickHouse SQL `expr`; every returned row is a firing instance), `forge.AlertRoute` (labels to a receiver name) and `forge.AlertDefault` (tune or disable the generated defaults: telemetry, customer-metadata and platform), under `forge.Observability.alerts`. Render refuses a malformed rule; the resolved rules land in the release shape for the control plane to evaluate. Depth: `observability/alerts`.
+**Alerts** are declared in KCL, not in HyperDX: `forge.AlertRule` (a native ClickHouse SQL `expr`; every returned row is a firing instance), `forge.AlertRoute` (labels to a receiver name) and `forge.AlertDefault` (tune or disable the generated defaults: telemetry, customer-metadata and platform), under `forge.Observability.alerts`. Render refuses a malformed rule; the resolved rules land in the release shape for the control plane to evaluate. Depth: `observability/alerts`. Uptime checks of a hosted env: `observability/uptime`.
 
 ## Querying Logs
 
@@ -140,6 +140,8 @@ our bug. A library error svcerr cannot see into — a workflow engine's
 application error that crossed a serialization boundary — is taught with
 `observe.WithErrorClassifier(func(error) svcerr.Class)` (return
 `svcerr.ClassNone` for "no opinion").
+
+Server faults carry a bounded stack: `observability/error-stacks`.
 
 ## Querying Traces
 

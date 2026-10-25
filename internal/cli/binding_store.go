@@ -679,6 +679,12 @@ func (l machineReleaseLedger) Get(_ context.Context, version string) (*release.R
 	return l.store.Release(version)
 }
 
+// RecordMigrations fills a release's migration manifest when it has none
+// (releaseMigrationRecorder).
+func (l machineReleaseLedger) RecordMigrations(_ context.Context, version string, m release.MigrationManifest) (bool, error) {
+	return l.store.RecordReleaseMigrations(version, m)
+}
+
 // List returns releases NEWEST FIRST. The store returns them in the order
 // they were cut and the ordering is applied HERE, through the one comparator
 // both backends share, so "latest" cannot mean two things.

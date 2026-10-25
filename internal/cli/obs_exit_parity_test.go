@@ -34,6 +34,8 @@ var obsParityVerbs = []struct {
 	{"query", []string{"query", "prod", "--sql", "select 1"}},
 	{"issues", []string{"issues", "prod"}},
 	{"issue", []string{"issue", "ISS-1", "prod"}},
+	{"sessions", []string{"sessions", "prod"}},
+	{"session", []string{"session", "91b955b313a1a86644ea53730a92deab", "prod"}},
 	{"metrics list", []string{"metrics", "list", "prod"}},
 	{"metrics query", []string{"metrics", "query", "prod", "rpc.server.duration"}},
 	{"metrics describe", []string{"metrics", "describe", "prod", "rpc.server.duration"}},

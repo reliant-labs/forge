@@ -1,18 +1,23 @@
 package cluster
 
 import (
+	"debug/buildinfo"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // A stateful FAKE CLUSTER behind a `kubectl` on PATH.
@@ -54,7 +59,83 @@ func TestMain(m *testing.M) {
 	if state := os.Getenv(fakeClusterEnv); state != "" && filepath.Base(os.Args[0]) == "kubectl" {
 		os.Exit(runFakeKubectl(state, os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	if fakeKubectlBin.dir != "" {
+		_ = os.RemoveAll(fakeKubectlBin.dir)
+	}
+	os.Exit(code)
+}
+
+// fakeKubectlBin is the binary newFakeCluster installs as `kubectl`, resolved
+// once per test process.
+//
+// Normally that is the test binary itself. Under -race it is NOT: a
+// race-instrumented binary pays ~1.2s of ThreadSanitizer start-up per exec on
+// a loaded machine (a no-op `main` built with -race measured 1.2-1.5s against
+// 0.1s without, at load ~80), and a chart-prune test execs the fake 30-40
+// times. That made each test 40-100s and TestChartPrune_* as a group outrun
+// the package's 15m `task test` budget, which read as a hang. The fake's own
+// code has nothing to race-check — each exec is a single-threaded process —
+// so a non-race link of this same package, built once, is the same fake at a
+// tenth of the start-up cost. The race detector still instruments the test
+// process, which is where the code under test runs.
+var fakeKubectlBin struct {
+	once sync.Once
+	path string // the executable to install as `kubectl`
+	dir  string // a temp dir this process owns, removed by TestMain
+	note string // why path is the race binary after all, if it is
+}
+
+// resolveFakeKubectl returns the executable to install as the fake kubectl.
+func resolveFakeKubectl() (string, string) {
+	fakeKubectlBin.once.Do(func() {
+		self, err := os.Executable()
+		if err != nil {
+			fakeKubectlBin.note = fmt.Sprintf("locate test binary: %v", err)
+			return
+		}
+		fakeKubectlBin.path = self
+		settings := buildSettings(self)
+		// Under -short the many-exec tests skip, and the few that remain
+		// exec the fake a handful of times: not worth a `go test -c`, which
+		// would also read the package's source behind the test cache's back.
+		if settings["-race"] != "true" || testing.Short() {
+			return
+		}
+		dir, err := os.MkdirTemp("", "forge-fake-kubectl-")
+		if err != nil {
+			fakeKubectlBin.note = fmt.Sprintf("fake kubectl stays race-instrumented (slow): %v", err)
+			return
+		}
+		fakeKubectlBin.dir = dir
+		bin := filepath.Join(dir, "fake-kubectl.test")
+		args := []string{"test", "-c", "-race=false", "-o", bin}
+		if tags := settings["-tags"]; tags != "" {
+			args = append(args, "-tags", tags)
+		}
+		// The test's working directory is this package's directory.
+		cmd := exec.Command("go", append(args, ".")...)
+		cmd.Env = goexec.WithTrimpath(os.Environ())
+		if out, err := cmd.CombinedOutput(); err != nil {
+			fakeKubectlBin.note = fmt.Sprintf("fake kubectl stays race-instrumented (slow): build a non-race copy: %v: %s", err, out)
+			return
+		}
+		fakeKubectlBin.path = bin
+	})
+	return fakeKubectlBin.path, fakeKubectlBin.note
+}
+
+// buildSettings returns the -race / -tags / … settings bin was built with.
+func buildSettings(bin string) map[string]string {
+	out := map[string]string{}
+	info, err := buildinfo.ReadFile(bin)
+	if err != nil {
+		return out
+	}
+	for _, s := range info.Settings {
+		out[s.Key] = s.Value
+	}
+	return out
 }
 
 // fakeClusterState is the on-disk cluster.
@@ -510,16 +591,20 @@ type fakeCluster struct {
 }
 
 // newFakeCluster installs the fake `kubectl` on PATH and returns a handle. The
-// fake kubectl is this very test binary, symlinked under the right name.
+// fake kubectl is this very test package, symlinked under the right name (a
+// non-race build of it under -race; see fakeKubectlBin).
 func newFakeCluster(t *testing.T) *fakeCluster {
 	t.Helper()
 	requirePOSIXFake(t, "kubectl")
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatalf("locate test binary: %v", err)
+	bin, note := resolveFakeKubectl()
+	if bin == "" {
+		t.Fatal(note)
+	}
+	if note != "" {
+		t.Log(note)
 	}
 	dir := t.TempDir()
-	if err := os.Symlink(self, filepath.Join(dir, "kubectl")); err != nil {
+	if err := os.Symlink(bin, filepath.Join(dir, "kubectl")); err != nil {
 		t.Fatalf("symlink fake kubectl: %v", err)
 	}
 	path := filepath.Join(dir, "cluster.json")
@@ -527,6 +612,23 @@ func newFakeCluster(t *testing.T) *fakeCluster {
 	t.Setenv(fakeClusterEnv, path)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return &fakeCluster{t: t, path: path}
+}
+
+// The fake kubectl a test execs is never race-instrumented, whatever the test
+// binary is. Under -race it was the race binary itself, and its per-exec
+// start-up cost pushed TestChartPrune_* past the package's 15m budget.
+func TestFakeKubectlIsNotRaceInstrumented(t *testing.T) {
+	if testing.Short() {
+		t.Skip("under -race, builds a non-race copy of this test package; runs in task test")
+	}
+	newFakeCluster(t)
+	kubectl, err := exec.LookPath("kubectl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := buildSettings(kubectl)["-race"]; got == "true" {
+		t.Fatalf("the fake kubectl %s is race-instrumented; each exec pays the race runtime's start-up", kubectl)
+	}
 }
 
 func (c *fakeCluster) state() fakeClusterState { return loadFakeState(c.path) }

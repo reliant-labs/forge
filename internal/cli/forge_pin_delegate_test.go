@@ -78,6 +78,26 @@ func runCheck(t *testing.T, args ...string) (string, error) {
 	return out.String(), err
 }
 
+// reliant, 2026-10-24: `forge lint` under a skewed forge printed "running
+// <pin> instead (--allow-version-skew, or FORGE_ALLOW_VERSION_SKEW=1, to run
+// this one)", and `forge lint --allow-version-skew` then failed "unknown flag".
+// Every command the hand-off can take accepts the flag its notice names.
+func TestDelegatedCommandsAcceptTheSkewFlag(t *testing.T) {
+	root := newTestRootCmd(t)
+	for _, args := range [][]string{{"lint"}, {"ci", "gate"}, {"doctor"}, {"generate"}} {
+		cmd, _, err := root.Find(args)
+		if err != nil {
+			t.Fatalf("find %v: %v", args, err)
+		}
+		if err := cmd.ParseFlags([]string{"--" + allowVersionSkewFlag}); err != nil {
+			t.Errorf("forge %s --%s: %v", strings.Join(args, " "), allowVersionSkewFlag, err)
+		}
+	}
+	if cmd, _, err := root.Find([]string{"version"}); err == nil && cmd.Flags().Lookup(allowVersionSkewFlag) != nil {
+		t.Errorf("forge version registers --%s, which means nothing there", allowVersionSkewFlag)
+	}
+}
+
 // The wall becomes a door: a stale forge running a rewriting command hands it
 // to the pinned forge, with the same arguments, and says so on one line.
 func TestDelegation_RewritingCommandRunsUnderThePinnedForge(t *testing.T) {

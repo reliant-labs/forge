@@ -41,6 +41,11 @@ import (
 // A DECLARED ENTITY SCOPE: ItemStats carries `// forge:query-scope Item`, so
 // its key sits under item and a CreateItem refetches it (vitest, below).
 //
+// THE RPC SCOPE: `itemServiceKeys.<rpc>.all` typechecks as an
+// invalidateQueries / setQueriesData filter (and is not callable), and under
+// vitest invalidating it refetches every request of that rpc — the scoped
+// ItemStats, and ListItems' plain AND infinite reads — and no other rpc.
+//
 // QUERY OPTIONS OUTSIDE REACT: every read's `itemServiceQueries.<rpc>(req)`
 // (and `.listItemsInfinite(req)`) typechecks in fetchQuery, ensureQueryData,
 // prefetchQuery, fetchInfiniteQuery and useQueries with the response type
@@ -221,6 +226,9 @@ message Item {
 	if !strings.Contains(out, "Type 'number' is not assignable to type 'string'") {
 		t.Errorf("tsc accepted fetchQuery's number read as a string — the query options do not type the response:\n%s", out)
 	}
+	if !strings.Contains(out, "This expression is not callable") {
+		t.Errorf("tsc accepted a call of itemServiceKeys.itemStats.all — the rpc scope is untyped:\n%s", out)
+	}
 }
 
 // hookKindsPositiveFixture uses useVersion as a read (request in, data out)
@@ -230,10 +238,17 @@ const hookKindsPositiveFixture = `"use client";
 
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 
-import { itemServiceQueries, useCreateItem, useListItems, useListItemsInfinite, useVersion } from "%[1]s";
+import { itemServiceKeys, itemServiceQueries, useCreateItem, useListItems, useListItemsInfinite, useVersion } from "%[1]s";
+
+// The rpc scope as a filter: every request of one rpc, with no predicate.
+async function refreshStats(qc: ReturnType<typeof useQueryClient>): Promise<void> {
+  await qc.invalidateQueries({ queryKey: itemServiceKeys.itemStats.all });
+  qc.setQueriesData({ queryKey: itemServiceKeys.listItems.all }, (old: unknown) => old);
+}
 
 // Outside React: the query options go straight into the QueryClient.
 async function warm(qc: ReturnType<typeof useQueryClient>): Promise<number> {
+  await refreshStats(qc);
   const v = await qc.fetchQuery(itemServiceQueries.version({}));
   const label: string = v.version;
   const stats = await qc.ensureQueryData(itemServiceQueries.itemStats({}));
@@ -278,12 +293,14 @@ export default function HookKindsPage() {
 // generated hooks module specifier.
 const hookKindsNegativeFixture = `import { QueryClient } from "@tanstack/react-query";
 
-import { itemServiceQueries, useCreateItem, useListItems, useListItemsInfinite, useVersion } from "%[1]s";
+import { itemServiceKeys, itemServiceQueries, useCreateItem, useListItems, useListItemsInfinite, useVersion } from "%[1]s";
 
 export async function bogusFetch(qc: QueryClient) {
   const notAString: string = (await qc.fetchQuery(itemServiceQueries.itemStats({}))).count;
   return notAString;
 }
+
+export const bogusScope = itemServiceKeys.itemStats.all({});
 
 export function bogus() {
   const version = useVersion({});
@@ -311,11 +328,52 @@ import { afterEach, describe, expect, it } from "vitest";
 import { setTransport } from "@/lib/connect";
 import { mockTransport } from "@/lib/test-utils";
 
-import { useCreateItem, useItemStats } from "%[1]s";
+import { itemServiceKeys, useCreateItem, useItemStats, useListItems, useListItemsInfinite } from "%[1]s";
 
 import type { ReactNode } from "react";
 
 afterEach(() => cleanup());
+
+describe("<svc>Keys.<rpc>.all", () => {
+  it("invalidating it refetches every request of that rpc, plain and infinite, and no other rpc", async () => {
+    const calls = { stats: 0, lists: 0 };
+    setTransport(
+      mockTransport({
+        "ItemService.ItemStats": () => {
+          calls.stats += 1;
+          return { count: calls.stats };
+        },
+        "ItemService.ListItems": () => {
+          calls.lists += 1;
+          return { items: [] };
+        },
+      }),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const stats = renderHook(() => useItemStats({}), { wrapper });
+    const listA = renderHook(() => useListItems({ pageSize: 1 }), { wrapper });
+    const listB = renderHook(() => useListItems({ pageSize: 2 }), { wrapper });
+    const paged = renderHook(() => useListItemsInfinite({ pageSize: 3 }), { wrapper });
+    await waitFor(() => {
+      expect(stats.result.current.isSuccess).toBe(true);
+      expect(listA.result.current.isSuccess).toBe(true);
+      expect(listB.result.current.isSuccess).toBe(true);
+      expect(paged.result.current.isSuccess).toBe(true);
+    });
+    expect(calls).toEqual({ stats: 1, lists: 3 });
+
+    // ItemStats is query-scoped, so its method sits at index 2, not 1.
+    await client.invalidateQueries({ queryKey: itemServiceKeys.itemStats.all });
+    expect(calls).toEqual({ stats: 2, lists: 3 });
+
+    await client.invalidateQueries({ queryKey: itemServiceKeys.listItems.all });
+    expect(calls).toEqual({ stats: 2, lists: 6 });
+    client.clear();
+  });
+});
 
 describe("forge:query-scope", () => {
   it("refetches a scoped custom read after a CRUD write of its entity", async () => {

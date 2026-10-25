@@ -87,6 +87,34 @@ export function requestKey<Schema extends DescMessage>(
   return toJson(schema, create(schema, req));
 }
 
+/**
+ * One read's key entry in a generated factory: `orderServiceKeys.getOrder`.
+ *
+ * Called, it is that request's key, [service, entity?, method,
+ * protojson(req)]. Its `.all` is the rpc's scope, [service, entity?,
+ * method]: a prefix of every key the rpc caches under — every request, the
+ * plain query and the `<method>Infinite` read alike — and of no other rpc's.
+ *
+ *   queryClient.invalidateQueries({ queryKey: orderServiceKeys.listOrders.all })
+ *   queryClient.setQueriesData({ queryKey: orderServiceKeys.getOrder.all }, patch)
+ *
+ * It exists so code never names a key's tuple positions. A predicate like
+ * `query.queryKey[1] === "listOrders"` breaks silently when a
+ * `// forge:query-scope` marker inserts the entity at index 1; `.all` is
+ * built by the same function that builds the keys, so it moves with them.
+ *
+ * `.all` is not data-tagged. It names a SET of entries, and for a paged
+ * read that set holds two shapes (the response, and the infinite read's
+ * `{ pages, pageParams }`), so a `setQueriesData` updater over it must
+ * handle both.
+ */
+export type ServiceMethodKey<Schema extends DescMessage> = ((
+  req: MessageInitShape<Schema>,
+) => ServiceQueryKey) & {
+  /** Every cached request of this rpc: [service, entity?, method]. */
+  readonly all: ServiceQueryKey;
+};
+
 /** The three key-scope builders a generated key factory is assembled from. */
 export interface ServiceKeyBuilders {
   /** Every query on this service: [service]. */
@@ -96,13 +124,14 @@ export interface ServiceKeyBuilders {
   /**
    * One query: [service, entity?, method, protojson(req)]. Returns the
    * per-request key FUNCTION, which is what both the query hook and any
-   * call-site prefetch/setQueryData use.
+   * call-site prefetch/setQueryData use, with the rpc's scope
+   * [service, entity?, method] on it as `.all` (ServiceMethodKey).
    */
   query<Schema extends DescMessage>(
     method: string,
     schema: Schema,
     entityScope?: string,
-  ): (req: MessageInitShape<Schema>) => ServiceQueryKey;
+  ): ServiceMethodKey<Schema>;
   /**
    * One paged read: [service, entity?, method, protojson(req), "infinite"],
    * where req is the request WITHOUT its page token — the hook owns the
@@ -178,40 +207,41 @@ function pageRequestKey<Schema extends DescMessage>(
  * what forge previously inlined into every generated hook file.
  */
 export function serviceKeys(service: string): ServiceKeyBuilders {
+  // The rpc scope every key below starts with. Both builders derive their
+  // keys from it, so `.all` is a prefix of them by construction, not by a
+  // second copy of the tuple layout.
+  const rpcScope = (method: string, entityScope?: string): ServiceQueryKey =>
+    entityScope === undefined
+      ? ([service, method] as const)
+      : ([service, entityScope, method] as const);
   return {
     all: [service] as const,
     entity: (name: string) => [service, name] as const,
-    query:
-      <Schema extends DescMessage>(
-        method: string,
-        schema: Schema,
-        entityScope?: string,
-      ) =>
-      (req: MessageInitShape<Schema>): ServiceQueryKey =>
-        entityScope === undefined
-          ? ([service, method, requestKey(schema, req)] as const)
-          : ([service, entityScope, method, requestKey(schema, req)] as const),
+    query: <Schema extends DescMessage>(
+      method: string,
+      schema: Schema,
+      entityScope?: string,
+    ): ServiceMethodKey<Schema> => {
+      const all = rpcScope(method, entityScope);
+      return Object.assign(
+        (req: MessageInitShape<Schema>): ServiceQueryKey => [
+          ...all,
+          requestKey(schema, req),
+        ],
+        { all },
+      );
+    },
     infinite:
       <Schema extends DescMessage>(
         method: string,
         schema: Schema,
         entityScope?: string,
       ) =>
-      (req: PageRequest<Schema>): ServiceQueryKey =>
-        entityScope === undefined
-          ? ([
-              service,
-              method,
-              pageRequestKey(schema, req),
-              "infinite",
-            ] as const)
-          : ([
-              service,
-              entityScope,
-              method,
-              pageRequestKey(schema, req),
-              "infinite",
-            ] as const),
+      (req: PageRequest<Schema>): ServiceQueryKey => [
+        ...rpcScope(method, entityScope),
+        pageRequestKey(schema, req),
+        "infinite",
+      ],
   };
 }
 

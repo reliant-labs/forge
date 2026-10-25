@@ -126,6 +126,24 @@ authoritative for each cache, because it flips two rules:
   **correctness requirement, not a tuning choice**: a background refetch
   would overwrite the stream's merged state with a raw server snapshot.
 
+**Every request of one generated read** — each filter a list was opened
+with, plus its `<rpc>Infinite` read — is one prefix:
+`<svc>Keys.<rpc>.all`, i.e. `[service, entity?, method]`. Patch or
+invalidate through it, never through a predicate over key positions:
+
+```typescript
+queryClient.setQueriesData(
+  { queryKey: taskServiceKeys.listTasks.all },
+  (prev: unknown) => patchListOrPages(prev, evt.task), // a response OR { pages }
+);
+```
+
+`query.queryKey[1] === "listTasks"` breaks silently the day a
+`// forge:query-scope` marker inserts the entity at index 1. For a paged
+read the prefix covers both cache shapes (the response and the infinite
+read's `{ pages, pageParams }`), so its `setQueriesData` updater must handle
+both.
+
 If the `queryFn` returns an envelope (`{ items, total, ... }`), the cache
 stores the envelope: patch *inside* it and remember `select` runs on
 read, not write — patching the bare array into an envelope key is a

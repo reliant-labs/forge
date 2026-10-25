@@ -35,7 +35,8 @@ import type { PopoverOpenVia } from "./popover";
  *         onOpenChange={(open) => !open && setTarget(null)} />
  *
  * A second right-click while it is open moves it; a press anywhere else
- * closes it. The browser's own menu is suppressed only where this one opens.
+ * closes it. The browser's own menu is suppressed only where this one opens,
+ * and in nested regions the innermost one opens.
  */
 
 export interface ContextMenuProps {
@@ -108,6 +109,9 @@ export default function ContextMenu({
   useEffect(() => {
     if (!region || disabled) return;
     function onContextMenu(e: MouseEvent) {
+      // A region nested inside this one (a folder inside a folder) claimed
+      // the click first: the innermost menu wins.
+      if (e.defaultPrevented) return;
       e.preventDefault();
       setOpened(openingFor(e));
       onOpenChange?.(true);

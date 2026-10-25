@@ -65,6 +65,9 @@ const queryDatabaseReply = `{
  "rowCount":"2","durationMs":"12","replica":"ro","auditId":"aud-1","sqlSha256":"abc","database":"main"}`
 
 func TestDBQueryHostedRunsThroughTheControlPlane(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	withKCLFixture(t, hostedDBQueryFixture("audited"))
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	fake := &fakeQueryDatabase{reply: queryDatabaseReply}
@@ -148,6 +151,9 @@ func TestDBQueryHostedLeavesThePolicyToTheControlPlane(t *testing.T) {
 }
 
 func TestDBQueryHostedErrorsMapToTheExitTable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	withKCLFixture(t, hostedDBQueryFixture("open"))
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	for _, tc := range []struct {
@@ -202,6 +208,9 @@ func truncatedReply(n int) string {
 // rows kept reach --max-rows, so fewer rows than that means the response-size
 // cap cut it, and raising --max-rows would not help.
 func TestDBQueryHostedTruncatedByFollowsTheRowCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	withKCLFixture(t, hostedDBQueryFixture("open"))
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	for _, tc := range []struct {

@@ -166,6 +166,9 @@ func scratchesBeside(t *testing.T, parent string) []string {
 // mid-run left the tree dirty. It must still catch drift — modified,
 // created and deleted generated files — and report it as before.
 func TestVerifyGenerated_LeavesTheCheckoutByteIdentical(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	for _, tc := range []struct {
 		name      string
 		dirty     bool // an uncommitted edit before the run
@@ -252,6 +255,9 @@ func runVerifyGeneratedIn(t *testing.T, repo string, stderr io.Writer) error {
 // plus the ignored inputs generate reads, and each installed node_modules
 // linked rather than copied. Its index is the checkout's.
 func TestVerifyScratch_CopiesTheWorkingTreeAndTheInputsGenerateReads(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinked node_modules")
 	}
@@ -315,6 +321,9 @@ func TestVerifyScratch_CopiesTheWorkingTreeAndTheInputsGenerateReads(t *testing.
 // both). Each must be copied once; copying one twice, in parallel and with
 // O_EXCL, failed every verify with "file exists".
 func TestVerifyScratch_CopiesAFileListedTwiceOnce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	_, repo := verifyRepo(t)
 	writeTestFile(t, filepath.Join(repo, "tmp", "out", "config.js"), "window.cfg = {}\n")
 	body, err := json.Marshal(generateCacheManifest{
@@ -347,6 +356,9 @@ func TestVerifyScratch_CopiesAFileListedTwiceOnce(t *testing.T) {
 // A scratch copy whose process was SIGKILLed — so it never removed its own —
 // is removed by the next check; a live process's copy is left alone.
 func TestVerifyScratch_PrunesCopiesOfDeadProcesses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	parent, repo := verifyRepo(t)
 	stem := ".app" + verifyScratchMarker
 	dead := filepath.Join(parent, stem+"999999999-abc")
@@ -378,6 +390,9 @@ func TestVerifyScratch_PrunesCopiesOfDeadProcesses(t *testing.T) {
 // the next in-place `forge generate` skip. Never over a record that moved
 // meanwhile.
 func TestVerifyScratch_CopiesARecordedFixedPointBack(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	_, repo := verifyRepo(t)
 	cache := filepath.Join(repo, ".forge", "generate-cache.json")
 	build := filepath.Join(repo, ".forge", "generating-build")
@@ -438,6 +453,9 @@ func TestVerifyScratch_CopiesARecordedFixedPointBack(t *testing.T) {
 // record of one is a record of the other. The node_modules link and a
 // go.work inside the project used to key differently.
 func TestVerifyScratch_FingerprintsLikeTheCheckout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinked node_modules")
 	}
@@ -485,6 +503,9 @@ func TestVerifyScratch_FingerprintsLikeTheCheckout(t *testing.T) {
 // stamp in the regenerate's validate build among them — fails with exit 128
 // reading the missing parent.
 func TestVerifyScratch_WorksInAShallowClone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	_, repo := verifyRepo(t)
 	writeTestFile(t, filepath.Join(repo, "internal", "app", "providers.go"), "package app // second\n")
 	gitOut(t, repo, "commit", "-q", "-am", "second")

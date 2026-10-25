@@ -618,6 +618,9 @@ func TestTopologyImageState_RejectsUnknown(t *testing.T) {
 // TestTopology_LedgerReadFailureIsPerRow: one env's failed ledger read must not
 // blank the whole screen.
 func TestTopology_LedgerReadFailureIsPerRow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	opts := realisticTopologyOpts(t)
 	opts = topologyBindings(t, opts, &memBindingStore{err: context.DeadlineExceeded})
 
@@ -635,6 +638,9 @@ func TestTopology_LedgerReadFailureIsPerRow(t *testing.T) {
 // that panics on a nil lag or an unbound env would take down the default
 // invocation, which is the one most people run.
 func TestTopology_TextModeRunsClean(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	opts := realisticTopologyOpts(t)
 	var err error
 	out := captureStdout(t, func() {

@@ -30,6 +30,9 @@ import (
 // binding a workload to the cluster — must flip it back, or the predicate
 // would pass by never asking for a cluster at all.
 func TestScaffoldedDevEnvNeedsNoCluster(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders a scaffolded project's KCL twice; runs in task test")
+	}
 	kclplugin.Register()
 	dir := scaffoldWorkloadModelProject(t)
 

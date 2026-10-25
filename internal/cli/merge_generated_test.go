@@ -272,6 +272,9 @@ func TestMergeGeneratedPath_PristineConflictKeepsOurs(t *testing.T) {
 // place with no forge .gitattributes, or a project in a repository
 // subdirectory. The command names the binary by absolute path.
 func TestEnsureGeneratedMergeDriver_WiresAnyForgeClone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
@@ -324,6 +327,9 @@ func TestEnsureGeneratedMergeDriver_WiresAnyForgeClone(t *testing.T) {
 // previous pin's driver. An ephemeral binary is never written, because it is
 // gone by the next merge.
 func TestEnsureGeneratedMergeDriver_OptOutsAndEphemeralBinaries(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
@@ -402,6 +408,9 @@ func TestEnsureGeneratedMergeDriver_OptOutsAndEphemeralBinaries(t *testing.T) {
 // written, where, to how many worktrees, and how to undo it; and say nothing
 // when nothing changed.
 func TestEnsureGeneratedMergeDriver_NoticeNamesWhatChangedAndWhoSharesIt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
@@ -482,6 +491,9 @@ func TestEnsureGeneratedMergeDriver_NoticeNamesWhatChangedAndWhoSharesIt(t *test
 // for every worktree and one agent's command changed another agent's merges.
 // It goes to this worktree's own config instead.
 func TestEnsureGeneratedMergeDriver_DriverCommandIsPerWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
@@ -550,6 +562,9 @@ func TestEnsureGeneratedMergeDriver_DriverCommandIsPerWorktree(t *testing.T) {
 // (every scaffolded project) needs no second copy in the shared
 // info/attributes.
 func TestEnsureGeneratedMergeDriver_CommittedRoutesNeedNoSharedCopy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}

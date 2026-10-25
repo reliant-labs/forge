@@ -304,6 +304,9 @@ func TestReleaseForgeScript_ReleasesFromABranchThatIsNotMain(t *testing.T) {
 }
 
 func TestReleaseForgeScript_RejectsBadVersions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script under bash against a git fixture; runs in task test")
+	}
 	repo := newForgeFixtureRepo(t)
 	for _, bad := range []string{"0.2.0", "pkg/v0.2.0", "v1.2", "latest", "v1.2.3+meta"} {
 		out, err := runForgeScript(t, repo, "--dry-run", bad)
@@ -318,6 +321,9 @@ func TestReleaseForgeScript_RejectsBadVersions(t *testing.T) {
 }
 
 func TestReleaseForgeScript_RejectsDirtyTree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script under bash against a git fixture; runs in task test")
+	}
 	repo := newForgeFixtureRepo(t)
 	// Any dirty file blocks a release: the script commits root-module files,
 	// so unrelated work would otherwise be swept into the release commit.
@@ -339,6 +345,9 @@ func TestReleaseForgeScript_RejectsDirtyTree(t *testing.T) {
 // TestReleaseForgeScript_RejectsExistingTag: versions are immutable, so a
 // tag that already exists locally is a hard stop.
 func TestReleaseForgeScript_RejectsExistingTag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script under bash against a git fixture; runs in task test")
+	}
 	repo := newForgeFixtureRepo(t)
 	gitIn(t, repo, "tag", "v0.2.0")
 	out, err := runForgeScript(t, repo, "--dry-run", "v0.2.0")

@@ -24,6 +24,9 @@ import (
 // WITH the rest of the caller's GOFLAGS (-tags here), which is a legitimate
 // statement about how to build.
 func TestGoSubprocesses_DoNotInheritCallerModMod(t *testing.T) {
+	if testing.Short() {
+		t.Skip("execs stand-in go/goimports scripts from every go subprocess call site; runs in task test")
+	}
 	if runtime.GOOS == "windows" {
 		t.Skip("stand-in toolchain is a POSIX shell script")
 	}

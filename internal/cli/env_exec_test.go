@@ -171,6 +171,9 @@ func TestEnvExecRuntimeRefusalBeforeSecrets(t *testing.T) {
 }
 
 func TestEnvExecExitCode(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	withKCLFixture(t, envConfigFixture)
 	t.Setenv("FORGE_EXEC_HELPER", "1")
 	for _, code := range []int{0, 7, 42, 123} {

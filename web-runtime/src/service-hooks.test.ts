@@ -632,10 +632,12 @@ describe("createInfiniteQueryOptions + createInfiniteQueryHook", () => {
     );
 
   it("fetchInfiniteQuery outside React shares the hook's cache entry, typed as InfiniteData", async () => {
-    const call = vi.fn(async (): Promise<Page> => ({
-      orders: ["o1"],
-      nextPageToken: "",
-    }));
+    const call = vi.fn(
+      async (): Promise<Page> => ({
+        orders: ["o1"],
+        nextPageToken: "",
+      }),
+    );
     const listOrdersInfinite = createInfiniteQueryOptions<
       typeof TypedListOrdersRequestSchema,
       Page
@@ -670,10 +672,12 @@ describe("createInfiniteQueryOptions + createInfiniteQueryHook", () => {
   });
 
   it("fetches the first page without a token and each next one with the last token", async () => {
-    const call = vi.fn(async (): Promise<Page> => ({
-      orders: [],
-      nextPageToken: "",
-    }));
+    const call = vi.fn(
+      async (): Promise<Page> => ({
+        orders: [],
+        nextPageToken: "",
+      }),
+    );
     const useListOrdersInfinite = pagedHook(
       keys.infinite("listOrders", TypedListOrdersRequestSchema, "order"),
       call,

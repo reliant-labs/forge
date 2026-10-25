@@ -58,6 +58,11 @@ type fakeZitadel struct {
 	flaky    map[string]int // path substring -> remaining 503s
 	failPath map[string]int // path substring -> HTTP status to return always
 	smallPg  bool
+	// projectionLag makes the v2 user reads of a human created through the
+	// fake answer 404 "User could not be found", as real Zitadel does while
+	// its projections trail the write.
+	projectionLag bool
+	unprojected   map[string]bool // user id -> created, not yet readable
 
 	tokenExchanges atomic.Int32
 }
@@ -1043,10 +1048,21 @@ func (f *fakeZitadel) v2Users(w http.ResponseWriter, r *http.Request) {
 			u.AuthMethods = []string{"AUTHENTICATION_METHOD_TYPE_PASSWORD"}
 		}
 		f.users[u.ID] = u
+		if f.projectionLag {
+			if f.unprojected == nil {
+				f.unprojected = map[string]bool{}
+			}
+			f.unprojected[u.ID] = true
+		}
 		f.mutate("create human " + email)
 		reply(w, 200, map[string]any{"userId": u.ID, "details": details()})
 	case strings.HasSuffix(path, "/authentication_methods"):
-		u := f.users[strings.Trim(strings.TrimSuffix(path, "/authentication_methods"), "/")]
+		id := strings.Trim(strings.TrimSuffix(path, "/authentication_methods"), "/")
+		u := f.users[id]
+		if u == nil || f.unprojected[id] {
+			zerr(w, 404, 5, "QUERY-Dfbg2", "User could not be found")
+			return
+		}
 		reply(w, 200, map[string]any{"authMethodTypes": u.AuthMethods})
 	case strings.HasSuffix(path, "/password_reset"):
 		f.mutate("password reset")

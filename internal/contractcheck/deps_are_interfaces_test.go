@@ -528,8 +528,11 @@ type Service interface{ Do() error }
 import "example.com/app/internal/settings"
 
 type Deps struct {
-	Limits  *settings.Limits  // zero-method data — silent
-	Wrapped *settings.Wrapper // promotes *sql.DB's methods — fires
+	Limits    *settings.Limits           // zero-method data — silent
+	Rosters   []settings.Limits          // a collection of data is data — silent
+	ByTier    map[string]*settings.Limits // likewise — silent
+	Wrapped   *settings.Wrapper          // promotes *sql.DB's methods — fires
+	Wrappers  []*settings.Wrapper        // a collection of collaborators — fires
 }
 
 type service struct{ deps Deps }
@@ -544,15 +547,20 @@ func New(d Deps) Service { return &service{deps: d} }
 		t.Fatalf("Inspect: %v", err)
 	}
 	got := findingsForRule(fs, string(RuleDepsAreInterfaces))
-	if len(got) != 1 {
-		t.Fatalf("expected exactly 1 finding (Wrapped), got %d:\n%s",
+	if len(got) != 2 {
+		t.Fatalf("expected exactly 2 findings (Wrapped, Wrappers), got %d:\n%s",
 			len(got), AsResult(fs).FormatText())
 	}
-	if !strings.Contains(got[0].Message, "Wrapped") {
-		t.Errorf("the embedding wrapper must be the finding; got: %s", got[0].Message)
+	text := got[0].Message + "\n" + got[1].Message
+	for _, want := range []string{`"Wrapped"`, `"Wrappers"`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the embedding wrapper %s must be a finding; got:\n%s", want, text)
+		}
 	}
-	if strings.Contains(got[0].Message, "Limits") {
-		t.Errorf("a zero-method data struct must not fire — there is no interface to extract; got: %s", got[0].Message)
+	for _, silent := range []string{`"Limits"`, `"Rosters"`, `"ByTier"`} {
+		if strings.Contains(text, silent) {
+			t.Errorf("data (or a collection of it) must not fire — there is no interface to extract; %s fired:\n%s", silent, text)
+		}
 	}
 }
 

@@ -373,6 +373,7 @@ var contrastPairs = []contrastPair{
 	{"ink", "surface", 7.0, "primary body text on a card"},
 	{"ink", "surface-muted", 7.0, "primary body text on the page background"},
 	{"ink", "surface-sunken", 7.0, "primary body text in an inset"},
+	{"surface", "ink", 7.0, "tooltip text on its inverted bubble (pkg/components tooltip.tsx)"},
 	{"ink-muted", "surface", 4.5, "secondary text on a card"},
 	{"ink-muted", "surface-muted", 4.5, "secondary text on the page background"},
 	{"ink-muted", "surface-sunken", 4.5, "secondary text in an inset"},

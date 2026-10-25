@@ -16,9 +16,9 @@ import (
 //   - two declared roots (server: the API listener, worker: tick) and a third
 //     worker, reaper, that no root holds and whose Deps nothing fills. Generate
 //     succeeds, leaves reaper out of graph_gen.go, and the project builds;
-//   - `forge lint --graph` fails on it by default (forge-graph-unreachable),
-//     and passes with a warning once forge.yaml's lint.rules sets the rule to
-//     warn;
+//   - `forge lint --graph` fails on it once forge-graph-unreachable gates
+//     (forge.yaml's lint.rules sets it to error), and passes with a warning
+//     once lint.rules sets the rule to warn;
 //   - a Deps field nothing fills on a node a root DOES reach (the api
 //     service, under the server root's listener) still fails generate,
 //     naming that field and not reaper's.
@@ -79,7 +79,18 @@ type Worker struct {
 	}
 	runCmd(t, projectDir, "go", "build", "./...")
 
-	// Lint: an error by default …
+	// Lint: an error once the rule gates … forge-graph-unreachable is
+	// warn-first (#1272: it gates from the release lint_rollout_table.go
+	// names), so a fresh scaffold pinned below that release only warns. The
+	// rollout has its own test (TestE2ENewRuleWarnsUntilPinReachesGatesFrom);
+	// this one pins what the rule finds, so it gates the rule explicitly
+	// rather than depending on which release the tree is.
+	forgeYAML := filepath.Join(projectDir, "forge.yaml")
+	cfg := readFileE2E(t, forgeYAML)
+	if strings.Contains(cfg, "\nlint:") {
+		t.Fatalf("the scaffolded forge.yaml has a lint block already; extend the fixture:\n%s", cfg)
+	}
+	appendFileE2E(t, forgeYAML, "\nlint:\n  rules:\n    forge-graph-unreachable: error\n")
 	out, err = runCmdAllowFail(t, projectDir, forgeBin, "lint", "--graph")
 	if err == nil {
 		t.Fatalf("forge lint --graph passed with a component no root reaches:\n%s", out)
@@ -89,12 +100,7 @@ type Worker struct {
 	}
 
 	// … and a warning under lint.rules.
-	forgeYAML := filepath.Join(projectDir, "forge.yaml")
-	cfg := readFileE2E(t, forgeYAML)
-	if strings.Contains(cfg, "\nlint:") {
-		t.Fatalf("the scaffolded forge.yaml has a lint block already; extend the fixture:\n%s", cfg)
-	}
-	appendFileE2E(t, forgeYAML, "\nlint:\n  rules:\n    forge-graph-unreachable: warn\n")
+	mustReplaceInFile(t, forgeYAML, "    forge-graph-unreachable: error\n", "    forge-graph-unreachable: warn\n")
 	out, err = runCmdAllowFail(t, projectDir, forgeBin, "lint", "--graph")
 	if err != nil {
 		t.Fatalf("forge lint --graph failed with forge-graph-unreachable set to warn: %v\n%s", err, out)

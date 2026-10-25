@@ -25,6 +25,7 @@
       "last_version": "v1.4.0",
       "events": 7,
       "affected": 3,
+      "affected_unit": "users",
       "latest_trace_id": "0af7651916cd43dd8448eb211c80319c"
     },
     {
@@ -41,6 +42,7 @@
       "last_version": "v1.4.0",
       "events": 2,
       "affected": 3,
+      "affected_unit": "users",
       "latest_trace_id": "0af7651916cd43dd8448eb211c80319c"
     }
   ],

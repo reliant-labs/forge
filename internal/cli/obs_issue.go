@@ -25,13 +25,13 @@ var obsIssueSchema = obsout.Schema{
 		"query_mode",
 		"issue", "issue.id", "issue.platform", "issue.service", "issue.title", "issue.culprit", "issue.exception_type",
 		"issue.status", "issue.first_seen", "issue.last_seen", "issue.first_version", "issue.last_version",
-		"issue.events", "issue.affected", "issue.latest_trace_id", "issue.resolved_at", "issue.resolved_version",
+		"issue.events", "issue.affected", "issue.affected_unit", "issue.latest_trace_id", "issue.resolved_at", "issue.resolved_version",
 		"issue.regressed_at", "issue.ignored_until",
 		"latest_event", "latest_event.time", "latest_event.trace_id", "latest_event.span_id", "latest_event.version",
 		"latest_event.message", "latest_event.attributes.*", "latest_event.session_id", "latest_event.url_path",
 		"events", "events.time", "events.trace_id", "events.span_id", "events.version", "events.message", "events.attributes.*",
 		"frames", "frames.function", "frames.file", "frames.line", "frames.in_app",
-		"by_version", "by_version.version", "by_version.events", "by_version.affected", "by_version.first_seen", "by_version.last_seen",
+		"by_version", "by_version.version", "by_version.events", "by_version.affected", "by_version.affected_unit", "by_version.first_seen", "by_version.last_seen",
 		"co_occurring_issue_ids",
 		"release", "release.version", "release.promotion_id", "release.promoted_at", "release.unsettled",
 		"first_release", "first_release.version", "first_release.git_commit", "first_release.commit_range", "first_release.promoted_at",
@@ -66,11 +66,12 @@ type obsIssueFrameDoc struct {
 }
 
 type obsIssueVersionDoc struct {
-	Version   string    `json:"version"`
-	Events    int64     `json:"events"`
-	Affected  int64     `json:"affected"`
-	FirstSeen time.Time `json:"first_seen,omitzero"`
-	LastSeen  time.Time `json:"last_seen,omitzero"`
+	Version      string    `json:"version"`
+	Events       int64     `json:"events"`
+	Affected     int64     `json:"affected"`
+	AffectedUnit string    `json:"affected_unit,omitempty"`
+	FirstSeen    time.Time `json:"first_seen,omitzero"`
+	LastSeen     time.Time `json:"last_seen,omitzero"`
 }
 
 type obsIssueReleaseDoc struct {
@@ -198,7 +199,7 @@ func runObsIssue(ctx context.Context, d obsDeps, id, env string, o obsIssueOpts)
 		doc.Frames = append(doc.Frames, obsIssueFrameDoc{Function: f.Function, File: f.File, Line: f.Line, InApp: f.InApp})
 	}
 	for _, v := range res.ByVersion {
-		doc.ByVersion = append(doc.ByVersion, obsIssueVersionDoc{Version: v.Version, Events: v.Events, Affected: v.Affected, FirstSeen: v.FirstSeen, LastSeen: v.LastSeen})
+		doc.ByVersion = append(doc.ByVersion, obsIssueVersionDoc{Version: v.Version, Events: v.Events, Affected: v.Affected, AffectedUnit: v.AffectedUnit, FirstSeen: v.FirstSeen, LastSeen: v.LastSeen})
 	}
 	doc.CoOccurring = res.CoOccurring
 	if fr := res.FirstRelease; fr != nil {
@@ -282,7 +283,7 @@ func renderIssue(w io.Writer, doc obsIssueDoc) {
 	if i.Culprit != "" {
 		fmt.Fprintf(w, "  at %s\n", i.Culprit)
 	}
-	fmt.Fprintf(w, "  %d events, %d affected; first %s (%s), last %s (%s)\n", i.Events, i.Affected,
+	fmt.Fprintf(w, "  %d events, %s affected; first %s (%s), last %s (%s)\n", i.Events, affectedText(i.Affected, i.AffectedUnit),
 		i.FirstSeen.UTC().Format(time.RFC3339), orDash(i.FirstVersion), i.LastSeen.UTC().Format(time.RFC3339), orDash(i.LastVersion))
 	if r := doc.Release; r != nil {
 		fmt.Fprintf(w, "  live when last seen: %s (promoted %s)", r.Version, r.PromotedAt.UTC().Format(time.RFC3339))
@@ -311,7 +312,7 @@ func renderIssue(w io.Writer, doc obsIssueDoc) {
 		fmt.Fprintln(w, "\nby version:")
 		rows := make([][]string, len(doc.ByVersion))
 		for k, v := range doc.ByVersion {
-			rows[k] = []string{orDash(v.Version), fmt.Sprint(v.Events), fmt.Sprint(v.Affected)}
+			rows[k] = []string{orDash(v.Version), fmt.Sprint(v.Events), affectedText(v.Affected, v.AffectedUnit)}
 		}
 		obsout.Table(w, []string{"VERSION", "EVENTS", "AFFECTED"}, rows, 40)
 	}

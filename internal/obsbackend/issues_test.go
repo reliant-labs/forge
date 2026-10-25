@@ -18,7 +18,7 @@ func jnum(s string) json.Number { return json.Number(s) }
 
 func issueRow(fp string) []any {
 	return []any{fp, "api", "*pgconn.PgError: duplicate key <str>", "internal/store/db.go in store.(*DB).Exec", "*pgconn.PgError",
-		jnum("7"), jnum("3"), "2026-10-22 10:00:00.000000000", "2026-10-22 11:30:00.000000000", "0af7651916cd43dd8448eb211c80319c", "v1.4.0", "v1.3.0", ""}
+		jnum("7"), jnum("3"), "2026-10-22 10:00:00.000000000", "2026-10-22 11:30:00.000000000", "0af7651916cd43dd8448eb211c80319c", "v1.4.0", "v1.3.0", "", "users"}
 }
 
 func eventRow(ts, trace string) []any {
@@ -95,6 +95,21 @@ func TestCloudListIssuesSendsTheSourceAndRefusesAControlPlaneThatIgnoresIt(t *te
 	}
 }
 
+// The unit the statement counted travels with the count, so an issue whose events
+// name no user is reported as "N chats" and not as a bare number.
+func TestLocalListIssuesCarriesTheUnitAffectedWasCountedOver(t *testing.T) {
+	row := issueRow(testFP)
+	row[13] = "chats"
+	l, _ := localIssues(fakeAnswer{"GROUP BY fingerprint", Result{Rows: [][]any{row}}})
+	res, err := l.ListIssues(context.Background(), ListIssuesRequest{Narrow: narrowC(), Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Issues[0]; got.Affected != 3 || got.AffectedUnit != "chats" {
+		t.Errorf("affected = %d %q, want 3 chats", got.Affected, got.AffectedUnit)
+	}
+}
+
 func TestLocalListIssuesAnswersFiltersThatCannotMatchWithoutQuerying(t *testing.T) {
 	l, fr := localIssues()
 	for _, req := range []ListIssuesRequest{
@@ -123,7 +138,7 @@ func TestLocalGetIssueAssemblesTheDocument(t *testing.T) {
 	l, _ := localIssues(
 		fakeAnswer{"GROUP BY fingerprint, service", Result{Rows: [][]any{issueRow(testFP)}}},
 		fakeAnswer{"ORDER BY Timestamp DESC", Result{Rows: [][]any{eventRow("2026-10-22 11:30:00.000000000", "0af7651916cd43dd8448eb211c80319c")}}},
-		fakeAnswer{"GROUP BY version", Result{Rows: [][]any{{"v1.4.0", jnum("5"), jnum("2"), "2026-10-22 10:30:00", "2026-10-22 11:30:00"}, {"v1.3.0", jnum("2"), jnum("1"), "2026-10-22 10:00:00", "2026-10-22 10:10:00"}}}},
+		fakeAnswer{"GROUP BY version", Result{Rows: [][]any{{"v1.4.0", jnum("5"), jnum("2"), "2026-10-22 10:30:00", "2026-10-22 11:30:00", "users"}, {"v1.3.0", jnum("2"), jnum("1"), "2026-10-22 10:00:00", "2026-10-22 10:10:00", "chats"}}}},
 		fakeAnswer{"uniqExact(TraceId) AS shared", Result{Rows: [][]any{{"bbbbbbbbbbbbbbbb", jnum("2")}}}},
 	)
 	res, err := l.GetIssue(context.Background(), GetIssueRequest{Narrow: narrowC(), ID: "sfp1-" + testFP})

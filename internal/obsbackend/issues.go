@@ -59,10 +59,13 @@ type Issue struct {
 	LastSeen      time.Time
 	FirstVersion  string
 	LastVersion   string
-	// Events and Affected are over the queried range; Affected counts traces
-	// (server) or sessions (browser).
-	Events   int64
-	Affected int64
+	// Events and Affected are over the queried range. Affected counts
+	// AffectedUnit: users when the issue's events name them, else the chats,
+	// threads or workflows they ran for, else traces (server) or sessions
+	// (browser). Never a bare number: an unknown unit is "".
+	Events       int64
+	Affected     int64
+	AffectedUnit string
 
 	ResolvedAt      time.Time
 	ResolvedVersion string
@@ -97,11 +100,12 @@ type IssueFrame struct {
 
 // IssueVersion is the events of an issue in one service version.
 type IssueVersion struct {
-	Version   string
-	Events    int64
-	Affected  int64
-	FirstSeen time.Time
-	LastSeen  time.Time
+	Version      string
+	Events       int64
+	Affected     int64
+	AffectedUnit string
+	FirstSeen    time.Time
+	LastSeen     time.Time
 }
 
 // IssueRelease is the release an issue first appeared in.

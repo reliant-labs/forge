@@ -24,7 +24,7 @@ var obsIssuesSchema = obsout.Schema{
 		"query_mode", "sort",
 		"issues", "issues.id", "issues.platform", "issues.source", "issues.service", "issues.title", "issues.culprit", "issues.exception_type",
 		"issues.status", "issues.first_seen", "issues.last_seen", "issues.first_version", "issues.last_version",
-		"issues.events", "issues.affected", "issues.latest_trace_id", "issues.resolved_at", "issues.resolved_version",
+		"issues.events", "issues.affected", "issues.affected_unit", "issues.latest_trace_id", "issues.resolved_at", "issues.resolved_version",
 		"issues.regressed_at", "issues.ignored_until",
 		"statements", "statements.purpose", "statements.sql", "statements.params.*",
 		"suggested",
@@ -47,6 +47,7 @@ type obsIssueRowDoc struct {
 	LastVersion     string    `json:"last_version,omitempty"`
 	Events          int64     `json:"events"`
 	Affected        int64     `json:"affected"`
+	AffectedUnit    string    `json:"affected_unit,omitempty"`
 	LatestTraceID   string    `json:"latest_trace_id,omitempty"`
 	ResolvedAt      time.Time `json:"resolved_at,omitzero"`
 	ResolvedVersion string    `json:"resolved_version,omitempty"`
@@ -58,10 +59,22 @@ func issueRowDoc(i obsbackend.Issue) obsIssueRowDoc {
 	return obsIssueRowDoc{
 		ID: i.ID, Platform: i.Platform, Source: i.Source, Service: i.Service, Title: i.Title, Culprit: i.Culprit, ExceptionType: i.ExceptionType,
 		Status: i.Status, FirstSeen: i.FirstSeen, LastSeen: i.LastSeen, FirstVersion: i.FirstVersion, LastVersion: i.LastVersion,
-		Events: i.Events, Affected: i.Affected, LatestTraceID: i.LatestTraceID,
+		Events: i.Events, Affected: i.Affected, AffectedUnit: i.AffectedUnit, LatestTraceID: i.LatestTraceID,
 		ResolvedAt: zeroUnixEpoch(i.ResolvedAt), ResolvedVersion: i.ResolvedVersion,
 		RegressedAt: zeroUnixEpoch(i.RegressedAt), IgnoredUntil: zeroUnixEpoch(i.IgnoredUntil),
 	}
+}
+
+// affectedText is a count with the unit it counted: "3 chats", never a bare 3.
+// An unknown unit (a control plane that does not say) is the number alone.
+func affectedText(n int64, unit string) string {
+	if unit == "" {
+		return strconv.FormatInt(n, 10)
+	}
+	if n == 1 {
+		unit = strings.TrimSuffix(unit, "s")
+	}
+	return fmt.Sprintf("%d %s", n, unit)
 }
 
 // zeroUnixEpoch turns the epoch an unset protobuf Timestamp decodes to into
@@ -227,7 +240,7 @@ func runObsIssues(ctx context.Context, d obsDeps, env string, o obsIssuesOpts) e
 	}
 	rows := make([][]string, len(res.Issues))
 	for i, is := range res.Issues {
-		rows[i] = []string{is.ID, is.Status, strconv.FormatInt(is.Events, 10), strconv.FormatInt(is.Affected, 10),
+		rows[i] = []string{is.ID, is.Status, strconv.FormatInt(is.Events, 10), affectedText(is.Affected, is.AffectedUnit),
 			is.LastSeen.UTC().Format("01-02 15:04:05"), is.Service, is.Title}
 	}
 	obsout.Table(d.Stdout, []string{"ISSUE", "STATUS", "EVENTS", "AFFECTED", "LAST SEEN", "SERVICE", "TITLE"}, rows, 70)

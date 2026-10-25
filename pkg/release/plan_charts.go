@@ -44,6 +44,23 @@ type ChartChange struct {
 	LoadBalancer bool
 }
 
+// OwnedRemoval is an object a deploy deletes because the env stopped rendering
+// it: forge stamped it (forge.dev/owner), the render no longer carries it, and
+// it is an inert kind. Key.Cluster is the kubectl context it lives in.
+type OwnedRemoval struct {
+	Key ObjectKey
+	// Fingerprint is the hash of the object's identity and UID, so an approval
+	// names this exact object and not a replacement of the same name.
+	Fingerprint string
+}
+
+// OwnedKept is an owned object the prune found absent from the render and will
+// NOT delete, with the reason. Informational: it is never digested.
+type OwnedKept struct {
+	Key ObjectKey
+	Why string
+}
+
 // ChartUnplanned is a chart whose changes could not be computed. It is a
 // finding, never silence: omitting a chart the plan could not read would read
 // as "the chart does not change".
@@ -56,7 +73,21 @@ type ChartUnplanned struct {
 type ChartPlan struct {
 	Changes   []ChartChange
 	Unplanned []ChartUnplanned
+	// Pruned are the env's own objects the deploy deletes after its rollout
+	// (the owned-object prune), and Kept the ones it leaves and why. They ride
+	// the chart plan because they, too, are effects of the apply that no bundle
+	// diff can see: the bundle says an object left the render, not that the
+	// deploy deletes it.
+	Pruned []OwnedRemoval
+	Kept   []OwnedKept
+	// PruneUnplanned says why the prune set could not be read, when it could not.
+	PruneUnplanned string
 }
+
+// PruneMarker is the prefix an owned-object prune finding's detail carries.
+const PruneMarker = "[prune]"
+
+const prunedDetail = "forge stamped this object as the env's own and the render no longer carries it, so this deploy DELETES it after the rollout is healthy"
 
 // ChartMarker is the prefix every chart finding's detail carries, so a reviewer
 // can tell chart-owned objects from the release bundle's.
@@ -67,7 +98,7 @@ func ChartMarker(chart string) string { return "[chart " + chart + "]" }
 // keeps the digest the plan had before, which is the one its computer can
 // recompute and so the one a write must carry.
 func (p Plan) WithCharts(c ChartPlan) (Plan, error) {
-	if len(c.Changes) == 0 && len(c.Unplanned) == 0 {
+	if len(c.Changes) == 0 && len(c.Unplanned) == 0 && len(c.Pruned) == 0 && c.PruneUnplanned == "" {
 		return p, nil
 	}
 	out := p
@@ -94,6 +125,28 @@ func (c ChartPlan) fold(p *Plan) {
 	for _, u := range c.Unplanned {
 		add(FindingUnknown, ClassWarn, SectionObjects, "chart "+u.Chart,
 			ChartMarker(u.Chart)+" its changes could not be computed: "+u.Reason, "")
+	}
+	if c.PruneUnplanned != "" {
+		add(FindingUnknown, ClassWarn, SectionObjects, "prune",
+			"[prune] the objects this deploy would delete could not be listed: "+c.PruneUnplanned, "")
+	}
+	for _, r := range c.Pruned {
+		p.ConfigIdentical = false
+		subject := r.Key.String()
+		// The bundle diff already reports an object the release dropped as
+		// object_removed. One object, one finding: the prune upgrades that
+		// finding (it now says the deploy deletes it, and pins which object) and
+		// adds one only for an object the bundle never held.
+		merged := false
+		for i := range p.Findings {
+			if f := &p.Findings[i]; f.Code == FindingObjectRemoved && f.Subject == subject {
+				f.Detail, f.Fingerprint, merged = PruneMarker+" "+prunedDetail, r.Fingerprint, true
+				break
+			}
+		}
+		if !merged {
+			add(FindingObjectRemoved, ClassWarn, SectionObjects, subject, PruneMarker+" "+prunedDetail, r.Fingerprint)
+		}
 	}
 	for _, ch := range c.Changes {
 		p.ConfigIdentical = false

@@ -123,11 +123,27 @@ type StoreFindings struct {
 	MissingStoreNames []string
 	// Warnings are advisory: a store that could not be asked. They do not block.
 	Warnings []string
+	// Adoptions are advisory: this deploy replaces a live OpenBao that forge did
+	// not install, and the clients of that store lose access until they log in
+	// the way the component's access document allows. They do not block.
+	Adoptions []string
 }
 
 // Empty reports whether nothing BLOCKS.
 func (f StoreFindings) Empty() bool {
 	return len(f.MissingCRDs)+len(f.IncompatibleCRDs)+len(f.OwnerConflicts)+len(f.StoreNotReady)+len(f.MissingStoreNames) == 0
+}
+
+// AdoptionProbe is the one extra read the adoption warning makes. It is a
+// separate, consumer-declared interface so a probe that cannot answer it (a
+// fake, a host-only env) simply does not implement it and the warning is not
+// raised: an advisory never fails a deploy.
+type AdoptionProbe interface {
+	// ForeignStore reports the workload named name in namespace on kctx that
+	// forge did not install: a Deployment or StatefulSet that carries no
+	// forge.dev/component-owner label. found=false when there is none, or it is
+	// a forge component's.
+	ForeignStore(ctx context.Context, kctx, namespace, name string) (kind string, found bool, err error)
 }
 
 // StoreProbe is the reads a store preflight makes. A fake in tests; the live
@@ -204,6 +220,32 @@ func (p KubectlStoreProbe) Presence(ctx context.Context, kctx string, read Store
 	return p.PresenceFn(ctx, kctx, read)
 }
 
+// ForeignStore implements AdoptionProbe.
+func (KubectlStoreProbe) ForeignStore(ctx context.Context, kctx, namespace, name string) (string, bool, error) {
+	for _, kind := range []string{"Deployment", "StatefulSet"} {
+		o, err := getChartObject(ctx, kctx, inventoryEntry{Group: "apps", Kind: kind, Namespace: namespace, Name: name})
+		if err != nil {
+			return "", false, err
+		}
+		if o != nil && o.Metadata.Labels[componentOwnerLabel] == "" {
+			return kind, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// adoptionWarning is what a reviewer must read before a deploy replaces a live
+// store: the clients' logins, and why the flips ride this release and not a
+// later one. See the deploy/openbao skill.
+func adoptionWarning(kind, kctx, namespace, name string) string {
+	return fmt.Sprintf("this deploy ADOPTS the OpenBao already running as %s %s/%s on %q: forge did not install it. "+
+		"forge.OpenBao serves JWT auth only, so every client still on Kubernetes or AppRole auth loses access at the cutover (a cached token works until its TTL, ~15 min; "+
+		"a client with none is locked out at once), and every release restarts every workload (service.version), so a flip shipped in a LATER release costs one outage window per client. "+
+		"Ship each consumer's JWT flip (role, audience, CA, projected token) in THIS release: the store and its JWT mount are converged before any workload is applied. "+
+		"A client you cannot flip now stays down until you do. Load the deploy/openbao skill (`forge skill load deploy/openbao`)",
+		kind, namespace, name, kctx)
+}
+
 // convergeOutcome reads a `kubectl get jobs -o json` list and answers for the
 // newest Job: a newer Job that failed is not rescued by an older one that
 // succeeded, because the newer one is the spec the Bundle now declares.
@@ -275,7 +317,7 @@ func CheckStore(ctx context.Context, probe StoreProbe, expect []StoreExpectation
 	if firstErr != nil {
 		return StoreFindings{}, firstErr
 	}
-	for _, s := range []*[]string{&out.MissingCRDs, &out.IncompatibleCRDs, &out.OwnerConflicts, &out.StoreNotReady, &out.MissingStoreNames, &out.Warnings} {
+	for _, s := range []*[]string{&out.MissingCRDs, &out.IncompatibleCRDs, &out.OwnerConflicts, &out.StoreNotReady, &out.MissingStoreNames, &out.Warnings, &out.Adoptions} {
 		sort.Strings(*s)
 	}
 	return out, nil
@@ -325,6 +367,16 @@ func checkStoreCluster(ctx context.Context, probe StoreProbe, e StoreExpectation
 				add(&out.IncompatibleCRDs, fmt.Sprintf(
 					"cluster %q's %s CRD serves external-secrets.io/%s, and this Bundle renders external-secrets.io/%s. Upgrade that operator (forge pins chart %s), or have this Bundle install its own",
 					e.Context, c.kind, strings.Join(c.st.Versions, ","), esoRenderedVersion, "2.x"))
+			}
+		}
+	}
+
+	if ob := e.OpenBao; ob != nil && ob.Installs {
+		if ap, ok := probe.(AdoptionProbe); ok {
+			// Advisory: a read that fails says nothing, and must not stop a deploy
+			// that would otherwise go.
+			if kind, found, err := ap.ForeignStore(ctx, e.Context, ob.Namespace, ob.Name); err == nil && found {
+				add(&out.Adoptions, adoptionWarning(kind, e.Context, ob.Namespace, ob.Name))
 			}
 		}
 	}

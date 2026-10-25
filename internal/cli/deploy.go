@@ -4115,7 +4115,7 @@ func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targ
 	// target equals the host arch, no --platform flag is emitted.
 	crossArch := resolveDeployArch(cfg.Deploy.TargetArch, targetArchFlag)
 
-	buildArgs := []string{"build"}
+	buildArgs := appendSourceDateEpoch([]string{"build"}, resolveSourceDateEpoch(ctx, "."))
 	if crossArch != "" {
 		buildArgs = append(buildArgs, "--platform=linux/"+crossArch)
 		fmt.Printf("  [build] cross-compiling for linux/%s (host: %s/%s)\n",

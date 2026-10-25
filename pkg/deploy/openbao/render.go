@@ -476,9 +476,23 @@ func (s Spec) podTemplate(cfg string) corev1.PodTemplateSpec {
 				MaxSkew: 1, TopologyKey: "topology.kubernetes.io/zone", WhenUnsatisfiable: corev1.ScheduleAnyway, LabelSelector: sel,
 			})
 		}
-		pod.TopologySpreadConstraints = append(pod.TopologySpreadConstraints, corev1.TopologySpreadConstraint{
+		// An HA store must not put two replicas on one node: a node loss would
+		// take a Raft quorum, or the active node and its standby, with it. The
+		// default is therefore a hard constraint (the SC7 prod adoption landed
+		// both replicas on one node under a preference). With maxSkew 1 it still
+		// lets 3 replicas share 2 nodes, and a cluster with a single node still
+		// schedules (one domain, no skew). NodeTaintsPolicy Honor keeps a
+		// cordoned node from counting as an empty domain, which would otherwise
+		// leave the replacement of a drained pod Pending for good.
+		node := corev1.TopologySpreadConstraint{
 			MaxSkew: 1, TopologyKey: "kubernetes.io/hostname", WhenUnsatisfiable: corev1.ScheduleAnyway, LabelSelector: sel,
-		})
+		}
+		if s.HA.NodeSpread != NodeSpreadPreferred {
+			honor := corev1.NodeInclusionPolicyHonor
+			node.WhenUnsatisfiable = corev1.DoNotSchedule
+			node.NodeTaintsPolicy = &honor
+		}
+		pod.TopologySpreadConstraints = append(pod.TopologySpreadConstraints, node)
 	}
 	if p := s.Storage.Postgres; p != nil && p.CloudSQLInstance != "" {
 		always := corev1.ContainerRestartPolicyAlways

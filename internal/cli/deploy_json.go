@@ -1415,6 +1415,8 @@ func deployFindingsFromPreflight(res cluster.PreflightResult) []deployJSONFindin
 		"the store holds no value for a name an ExternalSecret reads, so its Secret would never fill")
 	listed("store_unverified", res.Store.Warnings, false,
 		"a store could not be asked whether it holds the names read, so they were not verified")
+	listed("store_adoption", res.Store.Adoptions, false,
+		"this deploy replaces a live OpenBao forge did not install; clients still on Kubernetes or AppRole auth lose access until they flip to JWT, so ship the flips in this release")
 	// Advisory, and NOT blocking: a transport failure says nothing about the
 	// image. Reported so a consumer knows the gate could not vouch for it.
 	listed("image_warning", res.ImageWarnings, false,

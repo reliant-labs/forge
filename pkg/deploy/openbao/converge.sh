@@ -66,6 +66,11 @@ ESCROW_HOOK="${OPENBAO_ESCROW_HOOK:-/escrow/escrow.sh}"
 GENERATE_HOOK="${OPENBAO_GENERATE_HOOK:-/generate/generate.sh}"
 BREAK_GLASS_TOKEN="${OPENBAO_BREAK_GLASS_TOKEN:-}"
 EXIT_REFUSED="${OPENBAO_EXIT_REFUSED:-64}"
+# Connection-level failures (no HTTP answer at all) are retried this many times
+# with doubling delays (RETRY_BASE_SECONDS, capped at 15s): a pod restarting
+# behind the Service, a node drain or a Cloud SQL proxy hiccup is not a verdict.
+API_RETRIES="${OPENBAO_API_RETRIES:-6}"
+RETRY_BASE_SECONDS="${OPENBAO_RETRY_BASE_SECONDS:-1}"
 if [ "$PHASE" = widen ]; then
   WAIT_SECONDS="${OPENBAO_WAIT_SECONDS:-180}"
 else
@@ -83,8 +88,24 @@ refuse() { log "REFUSED: $*"; exit "$EXIT_REFUSED"; }
 
 # ---- the API ---------------------------------------------------------------
 
-# api METHOD PATH [BODY]: sets API_CODE, leaves the body in $TMP/resp. The token
-# travels in a header FILE, never on a command line.
+# api METHOD PATH [BODY]: sets API_CODE and API_CURL_EXIT, leaves the body in
+# $TMP/resp. The token travels in a header FILE, never on a command line.
+#
+# API_CODE is the HTTP status, or 000 when the store gave no HTTP answer at all.
+# A 000 is a connection-level failure (curl exit 6, 7, 28, 35, 52, 55, 56) and
+# is retried with bounded backoff; any HTTP status, 4xx and 5xx included, is the
+# store's answer and returns at once. $TMP/resp is emptied before every attempt
+# so a failure can never quote the previous call's response. A failure curl
+# cannot recover from (60: the CA does not verify; 77: no CA file) is not
+# retried either.
+#
+# A request that may have reached the store (curl exit 28, 52, 55, 56) is
+# repeated only when repeating it is harmless. Every call here is an idempotent
+# overwrite or a read except three, which are NOT replayed after an ambiguous
+# failure: sys/init (its output cannot be recovered), and enabling a mount
+# (sys/mounts, sys/auth: a repeat answers 400, hiding whether the first took).
+# Those exit 1 instead, and the Job's own retry starts over from a listing. A
+# failure before any byte was sent (6, 7, 35) is always safe to repeat.
 api() {
   local method=$1 path=$2 body=${3-}
   local args=(-sS -o "$TMP/resp" -w '%{http_code}' --cacert "$CA_FILE" -X "$method")
@@ -96,7 +117,35 @@ api() {
     printf '%s' "$body" >"$TMP/body"
     args+=(-H 'Content-Type: application/json' --data-binary "@$TMP/body")
   fi
-  API_CODE=$(curl "${args[@]}" "${API_BASE:-$ADDR}/v1/$path" 2>"$TMP/curl.err") || API_CODE=000
+  local attempt=0 delay=$RETRY_BASE_SECONDS
+  while :; do
+    : >"$TMP/resp"
+    API_CURL_EXIT=0
+    API_CODE=$(curl "${args[@]}" "${API_BASE:-$ADDR}/v1/$path" 2>"$TMP/curl.err") || API_CURL_EXIT=$?
+    [ "$API_CURL_EXIT" -eq 0 ] || API_CODE=000
+    [ "$API_CODE" = 000 ] || return 0
+    case "$API_CURL_EXIT" in
+      6|7|35) ;;
+      28|52|55|56) case "$method $path" in "POST sys/init"|"POST sys/mounts/"*|"POST sys/auth/"*) return 0 ;; esac ;;
+      *) return 0 ;;
+    esac
+    attempt=$((attempt + 1))
+    if [ "$attempt" -gt "$API_RETRIES" ]; then return 0; fi
+    log "$method $path: no answer from the store (curl exit $API_CURL_EXIT: $(head -c 200 "$TMP/curl.err" | tr '\n' ' ')); retry $attempt/$API_RETRIES in ${delay}s"
+    sleep "$delay"
+    delay=$((delay * 2))
+    [ "$delay" -le 15 ] || delay=15
+  done
+}
+
+# api_failure: what to say about the call that just failed. A 000 has no
+# response to quote, only curl's own account of why.
+api_failure() {
+  if [ "$API_CODE" = 000 ]; then
+    echo "no answer from the store (curl exit $API_CURL_EXIT: $(head -c 300 "$TMP/curl.err" 2>/dev/null | tr '\n' ' '))"
+  else
+    echo "answered $API_CODE: $(head -c 400 "$TMP/resp" 2>/dev/null | tr '\n' ' ')"
+  fi
 }
 
 # must METHOD PATH [BODY]: an api call that has to succeed.
@@ -104,13 +153,14 @@ must() {
   api "$@"
   case "$API_CODE" in
     2??) ;;
-    *) die "$1 $2 answered $API_CODE: $(head -c 400 "$TMP/resp" 2>/dev/null | tr '\n' ' ') $(head -c 200 "$TMP/curl.err" 2>/dev/null)" ;;
+    *) die "$1 $2 $(api_failure)" ;;
   esac
 }
 
 # health ADDR: the node's status document, whatever its state.
 health() {
   local code
+  : >"$TMP/health"
   code=$(curl -sS -o "$TMP/health" -w '%{http_code}' --cacert "$CA_FILE" \
     "$1/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200&drsecondarycode=200&performancestandbycode=200" \
     2>"$TMP/curl.err") || return 1
@@ -168,12 +218,21 @@ applied_doc() {
 
 # ---- credentials -----------------------------------------------------------
 
+# unreachable WHAT: dies (exit 1, which the Job retries) when the last call got
+# no answer. An unreachable store says nothing about the credential, so it must
+# never fall through to "no usable credential", a verdict (exit 64) that fails
+# the Job at once.
+unreachable() {
+  [ "$API_CODE" != 000 ] || die "$1: $(api_failure)"
+}
+
 jwt_login() {
   [ -r "$TOKEN_FILE" ] || return 1
   local body
   body=$(jq -n --rawfile jwt "$TOKEN_FILE" --arg role "$CONVERGE_ROLE" '{jwt: ($jwt | rtrimstr("\n")), role: $role}')
   TOKEN=""
   api POST "auth/$SELF_MOUNT/login" "$body"
+  unreachable "logging in on $SELF_MOUNT"
   [ "$API_CODE" = 200 ] || return 1
   TOKEN=$(jq -r '.auth.client_token // empty' "$TMP/resp")
   [ -n "$TOKEN" ]
@@ -182,6 +241,7 @@ jwt_login() {
 token_valid() {
   [ -n "$TOKEN" ] || return 1
   api GET auth/token/lookup-self
+  unreachable "checking the token"
   [ "$API_CODE" = 200 ]
 }
 
@@ -212,7 +272,7 @@ revoke_if_root() {
 initialise() {
   log "store is not initialised: initialising"
   API_BASE=$INIT_ADDR TOKEN="" api POST sys/init '{"recovery_shares":5,"recovery_threshold":3}'
-  [ "$API_CODE" = 200 ] || die "operator init answered $API_CODE: $(head -c 300 "$TMP/resp" | tr '\n' ' ')"
+  [ "$API_CODE" = 200 ] || die "operator init $(api_failure)"
   cp "$TMP/resp" "$TMP/init.json"
   jq -r '.root_token' "$TMP/init.json" | tr -d '\n' >"$TMP/root-token"
   [ -s "$TMP/root-token" ] || die "operator init returned no root token"
@@ -333,7 +393,7 @@ JQ_REMOVED='
 
 ensure_kv() {
   api GET sys/mounts
-  [ "$API_CODE" = 200 ] || die "cannot list mounts (HTTP $API_CODE)"
+  [ "$API_CODE" = 200 ] || die "cannot list mounts: $(api_failure)"
   if jq -e --arg k "$KV_MOUNT/" '(.data // .)[$k]' "$TMP/resp" >/dev/null; then
     log "kv-v2 already mounted at $KV_MOUNT/"
   else
@@ -355,7 +415,7 @@ apply_doc() {
   log "applied $(jq '.policies | length' <<<"$doc") policies"
 
   api GET sys/auth
-  [ "$API_CODE" = 200 ] || die "cannot list auth mounts (HTTP $API_CODE)"
+  [ "$API_CODE" = 200 ] || die "cannot list auth mounts: $(api_failure)"
   existing=$(jq -c '(.data // .) | keys' "$TMP/resp")
   while IFS= read -r m; do
     [ -n "$m" ] || continue

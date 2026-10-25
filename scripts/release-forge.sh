@@ -358,12 +358,13 @@ format_changelog() {
     $FORGE_RELEASE_PRETTIER "$CHANGELOG_FILE"
     return
   fi
+  # The pin, not scripts/prettier.sh itself: that script drops CHANGELOG.md,
+  # as the hook does, and this is the one place the file is formatted.
   local pin
-  pin="$(sed -n 's/.*additional_dependencies: \["prettier@\([0-9][0-9.]*\)".*/\1/p' .pre-commit-config.yaml 2>/dev/null | head -n 1)" || pin=""
-  if [ -z "$pin" ]; then
+  pin="$("$(dirname "$0")/prettier.sh" --version-pin)" || {
     echo "error: no prettier pin found in .pre-commit-config.yaml; cannot format CHANGELOG.md" >&2
     return 1
-  fi
+  }
   npx --yes "prettier@$pin" --write --ignore-unknown "$CHANGELOG_FILE" >/dev/null
 }
 echo "→ formatting CHANGELOG.md with prettier"

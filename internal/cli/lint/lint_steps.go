@@ -320,7 +320,7 @@ func lintPipeline() []linterStep {
 				if rc.skipFrontends {
 					return false, "--skip-frontends — skipping frontend lockfile check"
 				}
-				return rc.cwd != "" && len(frontendDirsForLint()) > 0, ""
+				return rc.cwd != "" && len(frontendTypecheckTargets(rc.cfg)) > 0, ""
 			},
 			collect: collectFrontendLockJSON,
 		},

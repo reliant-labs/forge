@@ -19,7 +19,10 @@ const ruleFrontendLockDrift = "forge-frontend-lock-drift"
 // whoever caused it. A frontend with no lockfile has nothing to disagree with.
 func collectFrontendLockJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 	root := rc.cwd
-	dirs := frontendDirsForLint()
+	var dirs []string
+	for _, t := range frontendTypecheckTargets(rc.cfg) {
+		dirs = append(dirs, t.dir)
+	}
 	if hooks := filepath.Join("packages", "hooks"); dirExists(hooks) {
 		dirs = append(dirs, hooks)
 	}

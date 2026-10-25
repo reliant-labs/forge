@@ -85,6 +85,17 @@ type ConfigBlockResult struct {
 //
 // It returns ErrNoConfigRoot when there is no root message to compose on.
 func EnsureConfigBlock(configDir string, spec ConfigBlockSpec) (ConfigBlockResult, error) {
+	return ensureConfigBlock(configDir, spec, true)
+}
+
+// PlanConfigBlock is EnsureConfigBlock without the write: the same checks and
+// refusals, and a result reporting what EnsureConfigBlock WOULD add (and the
+// field number it would take). A scaffold's --dry-run reports it.
+func PlanConfigBlock(configDir string, spec ConfigBlockSpec) (ConfigBlockResult, error) {
+	return ensureConfigBlock(configDir, spec, false)
+}
+
+func ensureConfigBlock(configDir string, spec ConfigBlockSpec, write bool) (ConfigBlockResult, error) {
 	scan, err := codegen.ScanRawProtoDir(configDir) // a missing dir scans empty
 	if err != nil {
 		return ConfigBlockResult{}, err
@@ -178,6 +189,9 @@ func EnsureConfigBlock(configDir string, spec ConfigBlockSpec) (ConfigBlockResul
 	}
 	if res.AddedMessage {
 		content = ensureConfigAnnotationImport(content)
+	}
+	if !write {
+		return res, nil
 	}
 	if err := atomicfile.WriteFile(root.File, []byte(content), 0o644); err != nil { //nolint:gosec // a proto source file in the user's tree, as readable as the rest of it
 		return res, err

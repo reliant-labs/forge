@@ -18,7 +18,12 @@ writes only what generated code needs into it:
 | owned seams the hooks import (`src/lib/connect.ts` + `api-base.ts`, `src/lib/test-utils.tsx`) | came with the scaffold | scaffolded once if missing; the app's own module is used when present |
 | starter components in `src/components/ui/` | yes | no — `forge component install <name>` |
 | CRUD pages, nav, dashboard, home page | yes | no, unless `routes` asks for them |
-| `package.json` dependency edits | reconciled | reported, never written |
+| `package.json` dependency edits (runtime floor, telemetry SDK) + lockfile refresh | yes | yes |
+
+The dependency edits only raise `@reliantlabs/forge-web-runtime` to the floor
+the regenerated code needs (never lower a newer range) and declare what
+generated code imports. `forge project disown <frontend>/package.json` stops
+them; generate then prints each change instead.
 
 Rules that hold for every frontend, adopted or not:
 

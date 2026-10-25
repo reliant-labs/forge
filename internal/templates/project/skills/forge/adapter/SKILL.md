@@ -73,7 +73,7 @@ type charger interface { CreateCharge(ctx context.Context, in CreateChargeInput)
 
 ## Configuration
 
-An adapter's settings — base URL, account IDs, API keys, timeouts — are configuration, not dependencies. `forge scaffold adapter <name>` declares a `<Name>Config` message with a `base_url` leaf (env `<NAME>_BASE_URL`) in `proto/<project>/config/v1/config.proto`, composes it on `AppConfig`, and the adapter takes the whole block as ONE Deps field:
+An adapter's settings — base URL, account IDs, API keys, timeouts — are configuration, not dependencies. Not every adapter has a base URL (a queue, a vendor SDK, a storage gateway), so none is assumed: `forge scaffold adapter <name>` alone writes no config, and its `HealthCheck` fails until you write a probe. For an HTTP API with one base URL, `forge scaffold adapter <name> --base-url` declares a `<Name>Config` message with a `base_url` leaf (env `<NAME>_BASE_URL`, or the one `--base-url-env STRIPE_API_URL` names) in `proto/<project>/config/v1/config.proto`, composes it on `AppConfig`, and the adapter takes the whole block as ONE Deps field:
 
 ```go
 type Deps struct {
@@ -83,7 +83,7 @@ type Deps struct {
 }
 ```
 
-Add a setting as another leaf on that message (`sensitive: true` for a secret), run `forge generate`, and read it through its getter (`s.deps.Cfg.GetApiKey()`). Each leaf then comes from its env var, a `--config` file or `deploy/kcl/<env>/config.k`. Never add a scalar Deps field instead: `forge lint` reports it (forge-config-deps), and compose.go has no type to wire it by.
+Add a setting as another leaf on that message (`sensitive: true` for a secret), run `forge generate`, and read it through its getter (`s.deps.Cfg.GetApiKey()`). An adapter scaffolded without `--base-url` gets the same shape by hand: declare the message, compose it on `AppConfig`, add the `Cfg` field. Each leaf then comes from its env var, a `--config` file or `deploy/kcl/<env>/config.k`. Never add a scalar Deps field instead: `forge lint` reports it (forge-config-deps), and compose.go has no type to wire it by.
 
 ## How to test
 
@@ -142,7 +142,9 @@ There is no `PostBootstrap` / `post_bootstrap.go` seam — late registration is 
 Scaffold an adapter with:
 
 ```
-forge scaffold adapter stripe-adapter
+forge scaffold adapter stripe-adapter --base-url   # an HTTP API: config block + base_url leaf
+forge scaffold adapter pubsub                      # anything else: no config assumed
+forge scaffold adapter pubsub --dry-run            # print the plan, write nothing
 ```
 
 This emits the canonical package layout:
@@ -152,7 +154,8 @@ internal/stripe-adapter/
   contract.go        # // forge:outbound-io — Service interface, narrow surface
   adapter.go         # Service struct + downstream calls; New(Deps) Service,
                      # marked // forge:constructor (adapters do I/O — keep it)
-  adapter_test.go    # httptest stub of the downstream
+  adapter_test.go    # httptest stub of the downstream (--base-url); else the
+                     # traced-client default and the failing HealthCheck
   observe_chain.go   # YOURS (scaffold-once) — newObserveChain() assembles the
                      # in-process middleware chain (span, metrics, structured
                      # log, panic-recovery) the generated decorator routes every

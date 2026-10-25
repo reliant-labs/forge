@@ -23,7 +23,7 @@ prefix; hand-built URLs then go through `joinBasePath`. Both are in
 
 ## Generated TypeScript hooks
 
-`forge generate` writes per-service React Query hooks to `src/hooks/`: reads get `useQuery`, paged reads also `use<Rpc>Infinite`, writes `useMutation`. Import from the barrel: `import { useGetTask } from "@/hooks"`. `useApiQuery` / `useApiMutation` cover composite operations. Which is which, `select`, paging, rollback: `proto`.
+`forge generate` writes per-service React Query hooks to `src/hooks/`: reads get `useQuery`, paged reads also `use<Rpc>Infinite`, writes `useMutation`; outside React, `fetchQuery(<svc>Queries.<rpc>(req))`. Import from `@/hooks`. `useApiQuery` / `useApiMutation` cover composite operations. Kinds, `select`, paging, rollback: `proto`.
 
 ## The component library
 
@@ -35,9 +35,9 @@ forge component list             # the whole catalog, grouped by category
 forge component install card_grid
 ```
 
-**What is already in `src/components/ui/` is not the catalog** — it is the 31 the scaffold auto-installs. Reading the directory and concluding the library is exhausted is the failure mode; search instead.
+**What is already in `src/components/ui/` is not the catalog** — it is the 31 the scaffold auto-installs. Search the catalog; never conclude from the directory.
 
-**Every component already uses this project's theme tokens** (`ink`, `surface`, `border`, `accent`, `danger`, `success`, `warning` and their `-surface`/`-border`/`-ink` variants), so installing one never means re-theming it. A raw palette class like `bg-blue-600` in a component is a forge bug to report — not a reason to hand-write your own.
+**Every component already uses this project's theme tokens** (`ink`, `surface`, `border`, `accent`, `danger`, `success`, `warning` and their `-surface`/`-border`/`-ink` variants), so installing one never means re-theming it. A raw palette class (`bg-blue-600`) in one is a forge bug to report, not a reason to hand-write your own.
 
 **✓ already ships in `src/components/ui/`** — import it, do not rebuild it; the rest are one `forge component install` away:
 
@@ -50,11 +50,11 @@ forge component install card_grid
 | A filter/search bar for a list page | ✓ `filter_bar` |
 | A board, timeline, tile grid | `kanban_board`, `timeline`, `card_grid` |
 | A conversion / stage funnel | `funnel_chart` |
-| A dropdown, breadcrumb, toggle, anchored panel | `dropdown_menu`, `breadcrumb`, `toggle_switch`, `popover` |
+| A menu, context menu, picker, breadcrumb, toggle, anchored panel, tooltip | `dropdown_menu`, `context_menu`, `combobox`, `breadcrumb`, `toggle_switch`, `popover`, `tooltip` |
 
 A search that returns nothing is a real answer: there is no drawer/sheet or quantity-stepper, so those you write yourself. (The `component_library` MCP tool is the same catalog.)
 
-**Data viz: use Recharts, not the library.** For commodity charts (bar/line/area/donut/pie/scatter/sparkline) `npm i recharts`. The library ships only **narrative** charts (`quadrant_chart`, `concentric_circles`, `funnel_chart`) and `slide_*` deck charts. Dashboard → Recharts; slide / marketing page → check the library first.
+**Data viz: use Recharts, not the library.** For commodity charts (bar, line, pie, sparkline…) `npm i recharts`. The library ships only **narrative** charts (`quadrant_chart`, `concentric_circles`, `funnel_chart`) and `slide_*` deck charts. Dashboard → Recharts; slide / marketing page → check the library first.
 
 ### Base UI primitives (always available)
 

@@ -138,7 +138,9 @@ func frontendRuntimeConfigKeyProblem(projectDir string, fe FrontendEntity) strin
 }
 
 // frontendRuntimeConfigMissing is every key fe's schema requires that its
-// runtime_config does not carry (codegen.FrontendConfigSchema.MissingRequired),
+// runtime_config does not carry — each mode selector it leaves unstated
+// (codegen.FrontendConfigSchema.UnstatedSelectors), then each key required in
+// the mode it states (MissingRequired) —
 // for a FOREIGN frontend only: one whose code — and so its config message —
 // is outside this project (a source pin, or a path out of the project root).
 // That document is runtime_config alone, so a missing key is missing. An
@@ -165,7 +167,9 @@ func frontendRuntimeConfigMissing(projectDir string, fe FrontendEntity, schema c
 		v, ok := fe.RuntimeConfig[key]
 		return strings.TrimSpace(v), ok
 	}
-	return schema.MissingRequired(present, literal)
+	// The document must name its mode before the mode's keys can be judged:
+	// an unstated selector satisfies every condition vacuously.
+	return append(schema.UnstatedSelectors(present), schema.MissingRequired(present, literal)...)
 }
 
 // frontendIsForeign reports whether fe's code is outside this project: a
@@ -191,7 +195,8 @@ func formatMissingRuntimeConfig(projectDir string, fe FrontendEntity, schemaPath
 	for _, m := range missing {
 		fmt.Fprintf(&b, "\n  %s", m.Reason())
 	}
-	b.WriteString("\n  Set each in this environment's runtime_config; a mode-dependent key needs a value other than the field's default.")
+	b.WriteString("\n  Set each in this environment's runtime_config; a mode-dependent key needs a value other than the field's default, " +
+		"and a mode selector needs a value even for the default mode (a frontend whose default mode has no spelling gives it one in the field's allowed_values).")
 	return b.String()
 }
 

@@ -261,7 +261,20 @@ its query key; `IDEMPOTENT` does not make a read. `// forge:mutation` forces a
 mutation. Mutation hooks infer `onMutate`'s return as `onError`'s `context`,
 so an optimistic rollback needs no cast. A query hook's `select` sets its
 `data` type, as in useQuery: `useGetTask(req, { select: toView })` — no
-`useMemo` over `data`.
+`useMemo` over `data`. A flip leaves the owned starter test's row stale:
+`forge generate` prints its line and the new body, and
+`forge lint --conventions` fails until it is fixed.
+
+**Scope a custom read with `// forge:query-scope <Entity>`.** A CRUD read is
+keyed under its entity, so that entity's CRUD mutations refresh it; a custom
+read sits at service scope, which only `<svc>Keys.all` reaches. Above a read
+of runs, `// forge:query-scope Run` keys it under `<svc>Keys.run`. Name the
+message exactly (a CRUD entity or a message the service declares); it is
+declared, not inferred from a `run_id` field, because a filter field is not
+what the read reads. Reads only: generate refuses it on a mutation.
+`<svc>Keys.<rpc>.all` matches every request of one read, infinite included:
+`invalidateQueries({ queryKey: taskServiceKeys.listTasks.all })`. Never test
+`queryKey[1]`; a scope moves the method to index 2.
 
 **Paged reads also get `use<Rpc>Infinite`.** A read whose request has a
 singular `string page_token` and whose response has `string next_page_token`
@@ -272,6 +285,14 @@ under `<svc>Keys.<rpc>Infinite(req)` within the service and entity scopes so
 mutations invalidate it, and `select` reshapes `{ pages }`:
 `useListTasksInfinite({ pageSize: 50 }, { select: (d) => d.pages.flatMap((p) => p.tasks) })`.
 Never hand-write `useInfiniteQuery` over a generated key.
+
+**Outside React, use `<svc>Queries`.** Each read's TanStack options:
+`<svc>Queries.<rpc>(req, options?)` is `queryOptions`, `.<rpc>Infinite(req)`
+`infiniteQueryOptions`; the hooks are built over them, so they share one cache
+entry and fetch. `await queryClient.fetchQuery(taskServiceQueries.getTask({ id }))`
+(also `ensureQueryData`, `prefetchQuery`, `fetchInfiniteQuery`,
+`useQueries({ queries })`), typed with no annotation. Never hand-write
+`{ queryKey, queryFn }` for a generated rpc.
 
 The generated conversions map the **intersection** of wire fields and
 columns by name: a wire-only field never reaches the DB, a column-only

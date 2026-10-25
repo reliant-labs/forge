@@ -58,7 +58,7 @@ const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 // not bridged to a local checkout. Keep the major.minor pointed at
 // web-runtime/package.json's version — TestWebRuntimePublishedRangeTracksPackage
 // fails the build when the two drift apart.
-const webRuntimePublishedRange = "^0.10.0"
+const webRuntimePublishedRange = "^0.12.0"
 
 // webRuntimeDepRe matches the package's entry wherever it already appears in a
 // package.json, capturing everything up to (but not including) the value so a
@@ -419,16 +419,18 @@ func EnsureBrowserTelemetryDependencies(projectDir, feRelDir, feName string) {
 }
 
 // FrontendDependencyNotices is the read-only counterpart of
-// EnsureWebRuntimeDependency + EnsureBrowserTelemetryDependencies, for an
-// ADOPTED frontend (config.FrontendConfig.Adopted): it reports what those
-// would change in package.json instead of changing it, one line each.
+// EnsureWebRuntimeDependency + EnsureBrowserTelemetryDependencies, for a
+// frontend whose package.json the project DISOWNED (`forge project disown
+// <frontend>/package.json`): it reports what those would change instead of
+// changing it, one line each.
 //
-// An adopted app's manifest is its own, reviewed like any other change to
-// it. reliant's web app declared the runtime at ^0.5.0 and the first
-// generate rewrote it to ^0.6.0 — a bump that may well be wanted, but one
-// its owner should make on purpose, in a PR that says so, not one buried
-// among a few hundred generated files. A dev forge build's `file:` bridge is
-// never reported: it is machine-local by definition.
+// It used to be what every ADOPTED frontend got. That left an adopted app
+// below the runtime floor after each forge bump that raised it — reliant's
+// web app regenerated hooks calling runtime APIs its declared range did not
+// have, and had to bump the range by hand every time. Adopted frontends are
+// reconciled like scaffolded ones now; disowning the manifest is the opt-out.
+// A dev forge build's `file:` bridge is never reported: it is machine-local
+// by definition.
 func FrontendDependencyNotices(projectDir, feRelDir string) []string {
 	feDir := filepath.Join(projectDir, feRelDir)
 	original, err := os.ReadFile(filepath.Join(feDir, "package.json"))

@@ -1,5 +1,5 @@
 // The Button's public type contract, checked by `tsc` in
-// TestButtonTypeContract (library_button_test.go). Every `@ts-expect-error`
+// TestComponentTypeContracts (library_type_contract_test.go). Every `@ts-expect-error`
 // below is a misuse the type must REJECT: if the type loosens, the directive
 // itself becomes the error ("Unused '@ts-expect-error' directive").
 import React from "react";

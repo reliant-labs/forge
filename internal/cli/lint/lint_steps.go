@@ -403,14 +403,14 @@ func lintPipeline() []linterStep {
 			},
 		},
 
-		// 11. Test-convention lint. The handler and hook-test-presence
-		// rules are warnings, but the hook-test SHAPE rule gates: a
-		// scaffolded test asserting the opposite shape from its hook can
-		// never pass, so letting it through would be reporting green over
-		// a permanently red suite.
+		// 11. Test-convention lint: the handler and hook-test PRESENCE
+		// rules, both warnings. The hook-test SHAPE rule, which gates (a
+		// starter row asserting the opposite kind from its hook can never
+		// pass), runs in the forge convention lint (step 8) — the lane
+		// projects gate on.
 		{
 			name:  "test convention lint",
-			gates: true,
+			gates: false,
 			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if dirExists("internal/handlers") || dirExists("frontends") {

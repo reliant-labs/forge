@@ -27,7 +27,7 @@ spec:
   data:
     - secretKey: vault_key
       remoteRef:
-        key: tenants/acme/prod/VAULT_KEY
+        key: orgs/acme/prod/VAULT_KEY
         property: value
         version: "4"
 ---

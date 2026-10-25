@@ -540,6 +540,13 @@ func wireComponentIntoTree(cfg *config.ProjectConfig, root, name string, w compo
 	} else {
 		fmt.Printf("  • cmd/%s/cmd/%s/%s.go already exists (left untouched)\n", bin, w.group, name)
 	}
+	// The subcommand runs its accessor through the binding next door, written
+	// NOW rather than at the next generate: the tree must compile straight
+	// after the scaffold, --no-generate included, and on a project that owns
+	// its composition the accessor does not exist yet.
+	if err := codegen.GenerateComponentAccessors(root, bin, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write the %s subcommand's accessor binding: %v\n", w.group, err)
+	}
 
 	ctor := "New" + field + "Cmd"
 	outcome, werr := codegen.WireComponentIntoMain(root, bin, module, w.group, ctor)
@@ -561,9 +568,60 @@ func wireComponentIntoTree(cfg *config.ProjectConfig, root, name string, w compo
 `, bin, w.group, module, field)
 	}
 
-	fmt.Printf("  • internal/app/{compose,lifecycle}.go are handled by `forge generate`: it discovers\n" +
-		"    the component from its package directory and reconciles the field, the\n" +
-		"    construction, and the typed accessor into those owned files for you.\n")
+	reportComponentWiring(root, bin, name, w)
+}
+
+// reportComponentWiring says who wires the component into internal/app.
+//
+// Normally `forge generate` does: it discovers the component from its package
+// directory and reconciles the Components field, its construction and the
+// typed accessor into compose.go and lifecycle.go. A project that DISOWNED
+// those files owns its composition, so forge leaves them alone and the
+// subcommand's binding is a placeholder until the three are added by hand —
+// say exactly what, here, instead of letting the first `<bin> <name>` find out.
+func reportComponentWiring(root, bin, name string, w componentCmdWiring) {
+	kind := strings.TrimSuffix(w.group, "s")
+	pending := codegen.PendingComponentAccessor(root, bin, w.group, name)
+	disowned := disownedCompositionFiles(root)
+	if pending == "" || len(disowned) == 0 {
+		fmt.Printf("  • internal/app/{compose,lifecycle}.go are handled by `forge generate`: it discovers\n" +
+			"    the component from its package directory and reconciles the field, the\n" +
+			"    construction, and the typed accessor into those owned files for you.\n")
+		return
+	}
+	aggregate := "AllWorkers"
+	if kind == "operator" {
+		aggregate = "AllOperators"
+	}
+	fmt.Printf(`
+⚠️  This project owns its composition (%[1]s disowned), so forge does not
+   wire the %[2]s %[3]q into internal/app. Until you do, `+"`%[4]s %[3]s`"+` refuses to start with
+   this instruction; the tree compiles, and every other command is unaffected. Add:
+
+     internal/app/compose.go    a %[5]s field on Components holding internal/%[6]s/%[3]s,
+                                constructed in NewComponents
+     internal/app/lifecycle.go  %[7]s
+                                and c.%[8]s() in %[9]s()
+
+   then re-run `+"`forge generate`"+`: cmd/%[4]s/cmd/%[6]s/%[3]s_accessor_gen.go then names the accessor.
+`, strings.Join(disowned, " and "), kind, name, bin, naming.ToPascalCase(name), w.group,
+		codegen.ComponentAccessorSnippet(kind, name), pending, aggregate)
+}
+
+// disownedCompositionFiles lists which of internal/app's composition pair the
+// project has disowned (.forge/disowned.json), in a stable order.
+func disownedCompositionFiles(root string) []string {
+	cs, err := generator.LoadChecksums(root)
+	if err != nil || cs == nil {
+		return nil
+	}
+	var out []string
+	for _, rel := range []string{"internal/app/compose.go", "internal/app/lifecycle.go"} {
+		if cs.IsDisowned(rel) {
+			out = append(out, rel)
+		}
+	}
+	return out
 }
 
 // --- scaffold service ---
@@ -1081,14 +1139,20 @@ The --type flag picks the scaffold shape:
               third-party system. Marker: '// forge:outbound-io'.
               Skill: forge skill load adapter
 
+An adapter has no configuration until you ask for it: --base-url composes a
+config block with one base_url leaf (bound to <NAME>_BASE_URL, or to the env
+var --base-url-env names) for an HTTP API with one base URL.
+
 It ends with a 'forge generate' run, which writes the package's mock and
 middleware_gen.go and wires it into internal/app/compose.go, so the next
-'forge lint' is green. --no-generate skips it.
+'forge lint' is green. --no-generate skips it; --dry-run prints the plan and
+writes nothing.
 
 Example:
   forge scaffold package cache
   forge scaffold package events --kind eventbus
-  forge scaffold package stripe-adapter --type adapter`,
+  forge scaffold package stripe-adapter --type adapter --base-url
+  forge scaffold package pubsub --type adapter --dry-run`,
 		Args: cobra.ExactArgs(1),
 		RunE: packageNewThenGenerate(f),
 	}
@@ -1096,6 +1160,7 @@ Example:
 	cmd.Flags().String("kind", "", "package kind template (e.g. eventbus, client)")
 	cmd.Flags().String("type", "service", "package shape: service|adapter (see --help)")
 	cmd.Flags().Bool("no-generate", false, noGenerateFlagUsage)
+	cmdutil.AddPackageScaffoldFlags(cmd)
 
 	return cmd
 }
@@ -1110,6 +1175,9 @@ func packageNewThenGenerate(f *factory.Factory) func(*cobra.Command, []string) e
 	return func(cmd *cobra.Command, args []string) error {
 		if err := f.Gen.RunPackageNew(cmd, args); err != nil {
 			return err
+		}
+		if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
+			return nil // RunPackageNew printed the plan; nothing was written to derive from
 		}
 		root, err := projectRoot()
 		if err != nil {

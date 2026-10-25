@@ -93,8 +93,10 @@ func gradableRules() []string {
 		"forgeconv-tx-lock-under-serializable", "forgeconv-unwrapped-domain-error",
 		string(contractcheck.RuleInternalPackageContractNames), string(contractcheck.RuleDepsAreInterfaces),
 		string(contractcheck.RuleOutboundIONoRPC), string(contractcheck.RuleInternalPackageMissingContract),
+		// hook-test rows against their hooks (forge conventions lane)
+		"forgeconv-frontend-hook-test-shape",
 		// test conventions
-		"forgeconv-handler-tests-use-tdd", "forgeconv-frontend-hook-tests", "forgeconv-frontend-hook-test-shape",
+		"forgeconv-handler-tests-use-tdd", "forgeconv-frontend-hook-tests",
 		// frontend stores
 		"forgeconv-frontend-stores-no-server-data",
 		// scaffold ownership

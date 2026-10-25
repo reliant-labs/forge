@@ -43,10 +43,13 @@ import {
   type MessageInitShape,
 } from "@bufbuild/protobuf";
 import {
+  infiniteQueryOptions,
+  queryOptions,
   useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
+  type DataTag,
   type InfiniteData,
   type UseInfiniteQueryOptions,
   type UseInfiniteQueryResult,
@@ -84,6 +87,34 @@ export function requestKey<Schema extends DescMessage>(
   return toJson(schema, create(schema, req));
 }
 
+/**
+ * One read's key entry in a generated factory: `orderServiceKeys.getOrder`.
+ *
+ * Called, it is that request's key, [service, entity?, method,
+ * protojson(req)]. Its `.all` is the rpc's scope, [service, entity?,
+ * method]: a prefix of every key the rpc caches under — every request, the
+ * plain query and the `<method>Infinite` read alike — and of no other rpc's.
+ *
+ *   queryClient.invalidateQueries({ queryKey: orderServiceKeys.listOrders.all })
+ *   queryClient.setQueriesData({ queryKey: orderServiceKeys.getOrder.all }, patch)
+ *
+ * It exists so code never names a key's tuple positions. A predicate like
+ * `query.queryKey[1] === "listOrders"` breaks silently when a
+ * `// forge:query-scope` marker inserts the entity at index 1; `.all` is
+ * built by the same function that builds the keys, so it moves with them.
+ *
+ * `.all` is not data-tagged. It names a SET of entries, and for a paged
+ * read that set holds two shapes (the response, and the infinite read's
+ * `{ pages, pageParams }`), so a `setQueriesData` updater over it must
+ * handle both.
+ */
+export type ServiceMethodKey<Schema extends DescMessage> = ((
+  req: MessageInitShape<Schema>,
+) => ServiceQueryKey) & {
+  /** Every cached request of this rpc: [service, entity?, method]. */
+  readonly all: ServiceQueryKey;
+};
+
 /** The three key-scope builders a generated key factory is assembled from. */
 export interface ServiceKeyBuilders {
   /** Every query on this service: [service]. */
@@ -93,13 +124,14 @@ export interface ServiceKeyBuilders {
   /**
    * One query: [service, entity?, method, protojson(req)]. Returns the
    * per-request key FUNCTION, which is what both the query hook and any
-   * call-site prefetch/setQueryData use.
+   * call-site prefetch/setQueryData use, with the rpc's scope
+   * [service, entity?, method] on it as `.all` (ServiceMethodKey).
    */
   query<Schema extends DescMessage>(
     method: string,
     schema: Schema,
     entityScope?: string,
-  ): (req: MessageInitShape<Schema>) => ServiceQueryKey;
+  ): ServiceMethodKey<Schema>;
   /**
    * One paged read: [service, entity?, method, protojson(req), "infinite"],
    * where req is the request WITHOUT its page token — the hook owns the
@@ -175,40 +207,41 @@ function pageRequestKey<Schema extends DescMessage>(
  * what forge previously inlined into every generated hook file.
  */
 export function serviceKeys(service: string): ServiceKeyBuilders {
+  // The rpc scope every key below starts with. Both builders derive their
+  // keys from it, so `.all` is a prefix of them by construction, not by a
+  // second copy of the tuple layout.
+  const rpcScope = (method: string, entityScope?: string): ServiceQueryKey =>
+    entityScope === undefined
+      ? ([service, method] as const)
+      : ([service, entityScope, method] as const);
   return {
     all: [service] as const,
     entity: (name: string) => [service, name] as const,
-    query:
-      <Schema extends DescMessage>(
-        method: string,
-        schema: Schema,
-        entityScope?: string,
-      ) =>
-      (req: MessageInitShape<Schema>): ServiceQueryKey =>
-        entityScope === undefined
-          ? ([service, method, requestKey(schema, req)] as const)
-          : ([service, entityScope, method, requestKey(schema, req)] as const),
+    query: <Schema extends DescMessage>(
+      method: string,
+      schema: Schema,
+      entityScope?: string,
+    ): ServiceMethodKey<Schema> => {
+      const all = rpcScope(method, entityScope);
+      return Object.assign(
+        (req: MessageInitShape<Schema>): ServiceQueryKey => [
+          ...all,
+          requestKey(schema, req),
+        ],
+        { all },
+      );
+    },
     infinite:
       <Schema extends DescMessage>(
         method: string,
         schema: Schema,
         entityScope?: string,
       ) =>
-      (req: PageRequest<Schema>): ServiceQueryKey =>
-        entityScope === undefined
-          ? ([
-              service,
-              method,
-              pageRequestKey(schema, req),
-              "infinite",
-            ] as const)
-          : ([
-              service,
-              entityScope,
-              method,
-              pageRequestKey(schema, req),
-              "infinite",
-            ] as const),
+      (req: PageRequest<Schema>): ServiceQueryKey => [
+        ...rpcScope(method, entityScope),
+        pageRequestKey(schema, req),
+        "infinite",
+      ],
   };
 }
 
@@ -223,32 +256,83 @@ export type ServiceCall<Schema extends DescMessage, Response> = (
 ) => Promise<Response>;
 
 /**
- * A generated query hook: `useGetOrder(req, options?)`.
+ * The options a generated read takes — its hook (`useGetOrder(req,
+ * options?)`) and its query-options builder
+ * (`orderServiceQueries.getOrder(req, options?)`) alike: React Query's own,
+ * minus the two the read owns, the key and the fetch. Everything else
+ * (`select`, `enabled`, `staleTime`, `placeholderData`, …) passes through.
  *
- * TData is what the hook's `data` is, exactly as in React Query's own
- * useQuery: the response by default, or whatever `select` returns. A call
- * site mapping the proto response to a view model passes
- * `select: (r) => toView(r)` and gets `data: View` — no useMemo over `data`,
- * and React Query re-runs the mapping only when the response changes (or
- * when `select` itself does, so hoist it or wrap it in useCallback when it
- * is expensive). TData is inferred from `select` and is a parameter of the
- * HOOK, not of the factory, so every call site picks its own.
+ * TData is what `data` is, exactly as in React Query's own useQuery: the
+ * response by default, or whatever `select` returns. A call site mapping the
+ * proto response to a view model passes `select: (r) => toView(r)` and gets
+ * `data: View` — no useMemo over `data`, and React Query re-runs the mapping
+ * only when the response changes (or when `select` itself does, so hoist it
+ * or wrap it in useCallback when it is expensive).
+ */
+export type ServiceQueryInput<Response, TData = Response> = Partial<
+  Omit<
+    UseQueryOptions<Response, ConnectClientError, TData, ServiceQueryKey>,
+    "queryKey" | "queryFn"
+  >
+>;
+
+/**
+ * What a query-options builder returns: TanStack's `queryOptions(...)`
+ * result, so it goes anywhere React Query takes one —
+ * `queryClient.fetchQuery`, `ensureQueryData`, `prefetchQuery`,
+ * `useQueries({ queries })`, `useQuery`, `useSuspenseQuery`. Its `queryKey`
+ * is data-tagged, so `queryClient.getQueryData(opts.queryKey)` and
+ * `setQueryData` are typed as the response with no annotation.
+ *
+ * fetchQuery / ensureQueryData resolve to the RESPONSE, not to `select`'s
+ * TData: they return what the cache holds, and `select` is an observer
+ * option that only a hook or useQueries applies.
+ */
+export type ServiceQueryOptions<Response, TData = Response> = UseQueryOptions<
+  Response,
+  ConnectClientError,
+  TData,
+  ServiceQueryKey
+> & {
+  queryKey: DataTag<ServiceQueryKey, Response, ConnectClientError>;
+};
+
+/**
+ * A generated query-options builder: `orderServiceQueries.getOrder(req,
+ * options?)`. It is the read's single definition — the generated hook
+ * `useGetOrder` is `useQuery` over exactly this — so code outside React (an
+ * imperative action, a stream handler, a router loader, a prefetch) shares
+ * the hook's cache entry and fetch by construction rather than by copying
+ * its key and its client call.
+ */
+export type ServiceQueryOptionsBuilder<Schema extends DescMessage, Response> = <
+  TData = Response,
+>(
+  req: MessageInitShape<Schema>,
+  options?: ServiceQueryInput<Response, TData>,
+) => ServiceQueryOptions<Response, TData>;
+
+/**
+ * A generated query hook: `useGetOrder(req, options?)` — `useQuery` over the
+ * service's query-options builder for the same rpc. TData is inferred from
+ * `select` and is a parameter of the HOOK, not of the factory, so every call
+ * site picks its own.
  */
 export type ServiceQueryHook<Schema extends DescMessage, Response> = <
   TData = Response,
 >(
   req: MessageInitShape<Schema>,
-  options?: Partial<UseQueryOptions<Response, ConnectClientError, TData>>,
+  options?: ServiceQueryInput<Response, TData>,
 ) => UseQueryResult<TData, ConnectClientError>;
 
 /**
- * The options a generated infinite hook takes: React Query's own, minus the
- * four the hook owns — the key, the fetch, and the page-token plumbing.
+ * The options a generated infinite read takes: React Query's own, minus the
+ * three the read owns — the key, the fetch, and the first page param.
  * `getNextPageParam` defaults to the response's `nextPageToken` (empty means
  * last page) and may be overridden; everything else (`select`,
  * `placeholderData`, `staleTime`, `enabled`, `maxPages`, …) passes through.
  */
-export type ServiceInfiniteQueryOptions<Response, TData> = Partial<
+export type ServiceInfiniteQueryInput<Response, TData> = Partial<
   Omit<
     UseInfiniteQueryOptions<
       Response,
@@ -260,6 +344,44 @@ export type ServiceInfiniteQueryOptions<Response, TData> = Partial<
     "queryKey" | "queryFn" | "initialPageParam"
   >
 >;
+
+/**
+ * What an infinite query-options builder returns: TanStack's
+ * `infiniteQueryOptions(...)` result, for `queryClient.fetchInfiniteQuery`,
+ * `prefetchInfiniteQuery`, `ensureInfiniteQueryData` and
+ * `useInfiniteQuery`. Its key is data-tagged as `InfiniteData<Response,
+ * string>`, the `{ pages, pageParams }` the cache holds.
+ */
+export type ServiceInfiniteQueryOptions<
+  Response,
+  TData = InfiniteData<Response, string>,
+> = UseInfiniteQueryOptions<
+  Response,
+  ConnectClientError,
+  TData,
+  ServiceQueryKey,
+  string
+> & {
+  queryKey: DataTag<
+    ServiceQueryKey,
+    InfiniteData<Response, string>,
+    ConnectClientError
+  >;
+};
+
+/**
+ * A generated infinite query-options builder:
+ * `orderServiceQueries.listOrdersInfinite(req, options?)`, for a read that
+ * follows forge's list-pagination shape. `useListOrdersInfinite` is
+ * `useInfiniteQuery` over exactly this.
+ */
+export type ServiceInfiniteQueryOptionsBuilder<
+  Schema extends DescMessage,
+  Response extends PagedResponse,
+> = <TData = InfiniteData<Response, string>>(
+  req: PageRequest<Schema>,
+  options?: ServiceInfiniteQueryInput<Response, TData>,
+) => ServiceInfiniteQueryOptions<Response, TData>;
 
 /**
  * A generated infinite-query hook: `useListOrdersInfinite(req, options?)`,
@@ -276,7 +398,7 @@ export type ServiceInfiniteQueryHook<
   Response extends PagedResponse,
 > = <TData = InfiniteData<Response, string>>(
   req: PageRequest<Schema>,
-  options?: ServiceInfiniteQueryOptions<Response, TData>,
+  options?: ServiceInfiniteQueryInput<Response, TData>,
 ) => UseInfiniteQueryResult<TData, ConnectClientError>;
 
 /**
@@ -310,59 +432,78 @@ export type ServiceMutationHook<Schema extends DescMessage, Response> = <
 >;
 
 /**
- * createQueryHook builds one useQuery wrapper.
+ * createQueryOptions builds one read's query-options builder — the single
+ * definition of its cache key and its fetch that the generated hook, and
+ * every caller outside React, share.
  *
- * The signature it returns is the one call sites already use — `(req,
- * options?)`, with the error typed as ConnectClientError rather than React
- * Query's default `Error`. That type is declared on the OPTIONS parameter
- * because React Query takes the result's error type from the same TError it
- * reads there, so `query.error` is a ConnectClientError at every call site
- * with nothing to pass. Typing it as `Error` hid `.reason`, `.codeName`, `.status`
- * and `.retryable`, and left `err.message.includes(...)` as the only
- * expression that compiled — the one thing the error contract forbids.
+ * The error is typed as ConnectClientError rather than React Query's default
+ * `Error`, on the options themselves, because React Query takes a result's
+ * error type from the TError it reads there: `query.error` is a
+ * ConnectClientError at every call site with nothing to pass. Typing it as
+ * `Error` hid `.reason`, `.codeName`, `.status` and `.retryable`, and left
+ * `err.message.includes(...)` as the only expression that compiled — the one
+ * thing the error contract forbids.
+ *
+ * The caller's options are spread BEFORE the key and the fetch: a caller may
+ * set anything else, never the two that make this read this read.
  */
-export function createQueryHook<Schema extends DescMessage, Response>(
+export function createQueryOptions<Schema extends DescMessage, Response>(
   keyFor: (req: MessageInitShape<Schema>) => ServiceQueryKey,
   call: ServiceCall<Schema, Response>,
-): ServiceQueryHook<Schema, Response> {
+): ServiceQueryOptionsBuilder<Schema, Response> {
   return <TData = Response>(
     req: MessageInitShape<Schema>,
-    options?: Partial<UseQueryOptions<Response, ConnectClientError, TData>>,
-  ) =>
-    useQuery<Response, ConnectClientError, TData>({
+    options?: ServiceQueryInput<Response, TData>,
+  ): ServiceQueryOptions<Response, TData> =>
+    queryOptions<Response, ConnectClientError, TData, ServiceQueryKey>({
+      ...options,
       queryKey: keyFor(req),
       queryFn: ({ signal }) => call(req, signal),
-      ...options,
-    });
+    }) as ServiceQueryOptions<Response, TData>;
 }
 
 /**
- * createInfiniteQueryHook builds one useInfiniteQuery wrapper over a paged
- * read.
+ * createQueryHook builds one useQuery wrapper over a read's query-options
+ * builder. It adds nothing to the options: a hook and a `fetchQuery` of the
+ * same request therefore read and write one cache entry with one fetch.
+ */
+export function createQueryHook<Schema extends DescMessage, Response>(
+  optionsFor: ServiceQueryOptionsBuilder<Schema, Response>,
+): ServiceQueryHook<Schema, Response> {
+  return <TData = Response>(
+    req: MessageInitShape<Schema>,
+    options?: ServiceQueryInput<Response, TData>,
+  ) => useQuery(optionsFor(req, options));
+}
+
+/**
+ * createInfiniteQueryOptions builds one paged read's infinite query-options
+ * builder.
  *
- * The page token is the hook's: the first page is fetched with the caller's
- * request as given (no token, so an `optional string page_token` stays
- * unset), each later one with the previous response's `nextPageToken`, and
- * an empty token ends the listing. The key is `keys.infinite(...)`, which
- * strips the token and sits under the service and entity scopes, so the
- * mutations that invalidate a plain list refetch this one too.
+ * The page token is the builder's: the first page is fetched with the
+ * caller's request as given (no token, so an `optional string page_token`
+ * stays unset), each later one with the previous response's
+ * `nextPageToken`, and an empty token ends the listing. The key is
+ * `keys.infinite(...)`, which strips the token and sits under the service and
+ * entity scopes, so the mutations that invalidate a plain list refetch this
+ * one too.
  *
  * The caller's options are spread BETWEEN the default getNextPageParam and
- * the four fields the hook owns: a caller may replace the default, never the
- * key or the fetch.
+ * the three fields the read owns: a caller may replace the default, never the
+ * key, the fetch or the first page.
  */
-export function createInfiniteQueryHook<
+export function createInfiniteQueryOptions<
   Schema extends DescMessage,
   Response extends PagedResponse,
 >(
   keyFor: (req: PageRequest<Schema>) => ServiceQueryKey,
   call: ServiceCall<Schema, Response>,
-): ServiceInfiniteQueryHook<Schema, Response> {
+): ServiceInfiniteQueryOptionsBuilder<Schema, Response> {
   return <TData = InfiniteData<Response, string>>(
     req: PageRequest<Schema>,
-    options?: ServiceInfiniteQueryOptions<Response, TData>,
-  ) =>
-    useInfiniteQuery<
+    options?: ServiceInfiniteQueryInput<Response, TData>,
+  ): ServiceInfiniteQueryOptions<Response, TData> =>
+    infiniteQueryOptions<
       Response,
       ConnectClientError,
       TData,
@@ -383,7 +524,24 @@ export function createInfiniteQueryHook<
           signal,
         ),
       initialPageParam: "",
-    });
+    }) as ServiceInfiniteQueryOptions<Response, TData>;
+}
+
+/**
+ * createInfiniteQueryHook builds one useInfiniteQuery wrapper over a paged
+ * read's infinite query-options builder, adding nothing to it — so a hook
+ * and a `fetchInfiniteQuery` of the same request share one cache entry.
+ */
+export function createInfiniteQueryHook<
+  Schema extends DescMessage,
+  Response extends PagedResponse,
+>(
+  optionsFor: ServiceInfiniteQueryOptionsBuilder<Schema, Response>,
+): ServiceInfiniteQueryHook<Schema, Response> {
+  return <TData = InfiniteData<Response, string>>(
+    req: PageRequest<Schema>,
+    options?: ServiceInfiniteQueryInput<Response, TData>,
+  ) => useInfiniteQuery(optionsFor(req, options));
 }
 
 /**

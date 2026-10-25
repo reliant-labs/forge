@@ -6,9 +6,10 @@
 //
 // REAL per-operator subcommand, in the operators/ command group. `<bin> {{.Name}}`
 // runs a supervisor process for ONLY the {{.Name}} operator: no workers and no
-// other operators run. The command composes ITSELF — its Operators closure names
-// the TYPED app.Operator{{.FieldName}}() accessor DIRECTLY; there is no name
-// filter and no re-selection. Sibling components are still CONSTRUCTED by the DI
+// other operators run. The command composes ITSELF — its Operators closure runs
+// the TYPED (*app.Components).Operator{{.FieldName}} accessor (operator{{.FieldName}},
+// re-derived next door in {{.Name}}_accessor_gen.go); there is no name filter and
+// no re-selection. Sibling components are still CONSTRUCTED by the DI
 // graph (cross-component reads stay nil-safe); only this operator is supervised.
 //
 // Mount is cmd.MountNone by default: the operator↔service linkage is not modeled
@@ -42,7 +43,7 @@ func New{{.FieldName}}Cmd(deps cmd.Deps) *cobra.Command {
 				// MountNone by default — replace with the colocated service's typed
 				// Mount if this operator serves an API (see the file header).
 				Mount:     cmd.MountNone,
-				Operators: func(c *app.Components) []app.OperatorEntry { return []app.OperatorEntry{c.Operator{{.FieldName}}()} },
+				Operators: func(c *app.Components) []app.OperatorEntry { return []app.OperatorEntry{operator{{.FieldName}}(c)} },
 			})
 		},
 	}

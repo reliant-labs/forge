@@ -40,6 +40,31 @@ func TestLintFrontendStores_TableDriven(t *testing.T) {
 			wantCount: 1,
 			wantFile:  "web/src/store/orders.ts",
 		},
+		{
+			// An adopted frontend keeps its stores in src/store/; the scan
+			// read only src/stores/ under frontends/, so this passed unread.
+			name:      "frontends/<fe>/src/store/ (singular) — warning",
+			fixture:   "singular_store",
+			wantCount: 1,
+			wantFile:  "frontends/web/src/store/projectStore.ts",
+		},
+		{
+			name:      "type-only gen import — no warning",
+			fixture:   "type_only",
+			wantCount: 0,
+		},
+		{
+			// An enum (or message) from a _pb file is not a client.
+			name:      "enum value from _pb — no warning",
+			fixture:   "enum_only",
+			wantCount: 0,
+		},
+		{
+			name:      "store builds its own client — warning",
+			fixture:   "client_factory",
+			wantCount: 1,
+			wantFile:  "frontends/web/src/stores/orders.ts",
+		},
 	}
 
 	for _, tc := range cases {

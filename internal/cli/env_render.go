@@ -67,6 +67,7 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/kclplugin"
+	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
 
@@ -403,6 +404,12 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		fmt.Fprintf(errOut, "warning: image digests unresolved (%v) — rendering on tag %q instead\n", derr, imageTag)
 		digests = nil
 	}
+	// The release this env is promoted to is the version its pods report:
+	// runDeploy binds it before its render, so this render must too, or every
+	// workload's OTEL_RESOURCE_ATTRIBUTES lacks service.version and
+	// `forge env render <env> | kubectl diff -f -` reports a change to every
+	// pod that no deploy would make.
+	ctx = kclrender.WithRelease(ctx, boundRelease)
 
 	manifests, appliedOverrides, rerr := cluster.RenderManifestsWithOverrides(ctx, mainK, imageTag, namespace, envName, loadDeployEnvConfigKV(projectDir, envName), digests)
 	if rerr != nil {

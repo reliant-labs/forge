@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"unicode"
@@ -88,7 +89,8 @@ type FrontendHookMethod struct {
 	Paged bool
 	// EntityScope is the camelCase singular CRUD entity this method
 	// operates on ("task" for ListTasks/GetTask/CreateTask), derived
-	// from the RPC-name CRUD pattern. Empty for non-CRUD methods.
+	// from the RPC-name CRUD pattern, or declared on a custom read with
+	// `// forge:query-scope <Entity>` (ApplyQueryScopes). Empty otherwise.
 	// Queries embed it in their query key ([service, entity, method,
 	// req]); mutations invalidate the [service, entity] scope when set,
 	// falling back to the whole-service scope when empty (a bespoke
@@ -377,6 +379,86 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 	sort.Strings(data.EntityScopes)
 
 	return data
+}
+
+// ApplyQueryScopes keys each custom read named in scopes (rpc name →
+// entity message name, from `// forge:query-scope <Entity>`; see
+// ProtoMarkerQueryScope) under that entity's scope, and recomputes the
+// service's EntityScopes so the key factory declares it. Call it after the
+// `// forge:mutation` overrides: the marker applies to whatever is a read
+// once they have been applied.
+//
+// It refuses — rather than ignores — a marker it cannot honour, because a
+// scope that silently does nothing is the stale read the author wrote it to
+// prevent: one naming no entity, one on a mutation, one contradicting a CRUD
+// rpc's own scope, and one naming an entity the service neither serves CRUD
+// for nor declares a message of (a typo, with the nearest name suggested).
+func ApplyQueryScopes(data *FrontendHookTemplateData, svc ServiceDef, scopes map[string]string) error {
+	if len(scopes) == 0 {
+		return nil
+	}
+	known := queryScopeCandidates(svc)
+	for i := range data.Methods {
+		m := &data.Methods[i]
+		entity, ok := scopes[m.Name]
+		if !ok {
+			continue
+		}
+		where := fmt.Sprintf("%s.%s: `// %s %s`", svc.Name, m.Name, ProtoMarkerQueryScope, entity)
+		if entity == "" {
+			return fmt.Errorf("%s.%s: `// %s` names no entity — write the entity's message name after it, e.g. `// %s Task`",
+				svc.Name, m.Name, ProtoMarkerQueryScope, ProtoMarkerQueryScope)
+		}
+		if !m.IsQuery {
+			return fmt.Errorf("%s: the marker scopes a READ's query key, and %s generates a useMutation hook — "+
+				"a custom mutation already invalidates every query on %s, so a scope could only narrow that. "+
+				"Declare `option idempotency_level = NO_SIDE_EFFECTS;` if the rpc only reads, or delete the marker",
+				where, m.Name, svc.Name)
+		}
+		if !unicode.IsUpper([]rune(entity)[0]) || !declaresEntityMessage(svc, entity) && !known[entity] {
+			hint := ""
+			names := make([]string, 0, len(known))
+			for n := range known {
+				names = append(names, n)
+			}
+			sort.Strings(names)
+			if near := ClosestFrom(entity, names); near != "" {
+				hint = fmt.Sprintf(" — did you mean %s?", near)
+			}
+			return fmt.Errorf("%s: %s is not an entity of %s — name the entity's proto MESSAGE, exactly as declared "+
+				"(a CRUD entity of the service, or a message it declares)%s", where, entity, svc.Name, hint)
+		}
+		scope := toCamelCaseFromPascal(entity)
+		if m.EntityScope != "" && m.EntityScope != scope {
+			return fmt.Errorf("%s: %s is CRUD for %s and already keyed under %q; a second scope would split it from "+
+				"its own entity's invalidation. Delete the marker", where, m.Name, m.EntityScope, m.EntityScope)
+		}
+		m.EntityScope = scope
+	}
+	set := map[string]struct{}{}
+	for _, m := range data.Methods {
+		if m.EntityScope != "" {
+			set[m.EntityScope] = struct{}{}
+		}
+	}
+	data.EntityScopes = data.EntityScopes[:0]
+	for s := range set {
+		data.EntityScopes = append(data.EntityScopes, s)
+	}
+	sort.Strings(data.EntityScopes)
+	return nil
+}
+
+// queryScopeCandidates is the set of entity message names a query scope
+// may name without further evidence: the CRUD entities of the service.
+func queryScopeCandidates(svc ServiceDef) map[string]bool {
+	out := map[string]bool{}
+	for _, m := range svc.Methods {
+		if _, entity := crudEntity(svc, m); entity != "" {
+			out[entity] = true
+		}
+	}
+	return out
 }
 
 // methodEntityScope derives the camelCase singular entity name from a CRUD

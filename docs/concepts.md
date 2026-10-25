@@ -166,6 +166,7 @@ set):
 | `forge:read-only`   | On the entity; a client Create/Update never writes it |
 | `forge:secret`      | Writable, but never packed into read responses        |
 | `forge:mutation`    | Forces the generated React hook to be a `useMutation` |
+| `forge:query-scope` | Keys a custom read under its entity's query scope     |
 
 ---
 
@@ -321,10 +322,12 @@ enclosing guards, alias-then-check, and a guard inside a same-package helper
 the rpc calls first (`if err := s.gate(ctx); err != nil { return nil, err }`,
 where `gate` nil-checks the deps), so it flags the genuinely unguarded case.
 
-**`--frontend-stores`** flags Zustand stores that import generated Connect
-clients. Server state belongs in the generated React Query hooks; Zustand is
-for client-only state. Mixing them creates two sources of truth for the same
-data, and the stale one wins about half the time.
+**`--frontend-stores`** flags Zustand stores that import or build a generated
+Connect client. Server state belongs in the generated React Query hooks;
+Zustand is for client-only state. Mixing them creates two sources of truth for
+the same data, and the stale one wins about half the time. It reads every
+frontend's `src/stores/` and `src/store/`. A store that only names generated
+types or enums is client state and is not flagged.
 
 A handful of further flags stay hidden behind `forge lint --help-dev`. Those
 are either meaningless outside the forge repo itself, or one-shots you run

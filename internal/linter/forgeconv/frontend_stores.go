@@ -7,22 +7,29 @@
 // per-user UI prefs). Mixing the two creates two sources of truth that
 // inevitably diverge.
 //
-// Scope: `frontends/*/src/stores/*.ts` and the historic single-frontend
-// `web/src/store/*.ts` shape. Pre-workspaces projects (forge.yaml
-// frontend.workspaces == false) ship a single `web/` frontend; the
-// workspaces layout ships `frontends/<name>/`. The analyzer scans both
-// so a mid-migration project gets findings against whichever shape
-// happens to be on disk.
+// Scope: the store directory of every frontend — `src/stores/` (what the
+// scaffold writes) and `src/store/` (what many existing apps use, and what
+// pre-workspaces projects shipped) — under both `frontends/<name>/` and the
+// historic single-frontend `web/`. A store directory the scan never reads is
+// a gate that passes by construction: an adopted frontend at
+// `frontends/web/src/store/` was invisible to this rule, so every run over it
+// reported clean however much server state its stores held.
 //
 // Detection heuristic (string-level, no TS parser):
 //
 //  1. file matches reZustandCreate     `create\s*<` (Zustand's generic
 //     factory; matches `create<State>(...)`, `create<State, [...]>`, etc.)
 //
-//  2. file matches reGenImportFrom     `from\s+["'][^"']*\/gen\/[^"']*["']`
-//     AND the same import string contains one of the suffix tells
-//     `-grpc`, `_pb`, `_connect` (canonical Connect-TS / buf-gen output
-//     paths).
+//  2. file reaches a server: it imports a generated CLIENT from a `/gen/`
+//     path with one of the suffix tells `-grpc`, `_pb`, `_connect`
+//     (canonical Connect-TS / buf-gen output paths), or it builds one
+//     (`createClient(` / `connectClient(`). From a `-grpc` / `_connect`
+//     file any value import is a client. From a `_pb` file only a service
+//     descriptor is (`FooService`, protobuf-es v2's client input) — or a
+//     namespace import, which can reach one. Messages, enums and anything
+//     under `import type` describe a store's shape but cannot reach a
+//     server, so they are not the smell: a store holding a selected
+//     `ChatState` is client state.
 //
 // Both must be true — a Zustand store with no gen imports is fine, and
 // a file that just re-exports generated types without spinning up a
@@ -56,27 +63,40 @@ var (
 	// `<...>` form appears, the file is almost always a Zustand store.
 	reZustandCreate = regexp.MustCompile(`\bcreate\s*<`)
 
-	// reGenImport matches an import whose path goes through a `/gen/`
-	// segment AND ends in one of the canonical Connect-TS / buf-gen
-	// shape suffixes (-grpc, _pb, _connect). Anchored to a `from`
-	// import-statement to avoid false-firing on URL strings sitting
-	// elsewhere in the file.
+	// reGenImport matches an import statement whose path goes through a
+	// `/gen/` segment AND ends in one of the canonical Connect-TS / buf-gen
+	// shape suffixes (-grpc, _pb, _connect). Anchored to the `import ...
+	// from` statement to avoid false-firing on URL strings sitting
+	// elsewhere in the file. Groups: 1 a leading `type` (the whole import
+	// is type-only), 2 the import clause, 3 the suffix tell.
 	reGenImport = regexp.MustCompile(
-		`from\s+["'][^"']*\/gen\/[^"']*(?:-grpc|_pb|_connect)[^"']*["']`)
+		`\bimport\s+(type\s+)?([^;'"]*?)\s*\bfrom\s+["'][^"']*\/gen\/[^"']*(-grpc|_pb|_connect)[^"']*["']`)
+
+	// reServiceName matches an imported binding that is a service
+	// descriptor, with an optional inline `type` modifier (group 1).
+	reServiceName = regexp.MustCompile(`(?:^|[{,\s])(type\s+)?\w*Service\b`)
+
+	// reClientFactory matches a store building a Connect client itself.
+	reClientFactory = regexp.MustCompile(`\b(?:createClient|connectClient)\s*\(`)
 )
 
-// LintFrontendStores scans frontends/<name>/src/stores/*.ts and
-// web/src/store/*.ts for files that both spin up a Zustand store AND
-// pull in a generated Connect client. Warnings only. A project with no
+// frontendStoreDirs are the directory names, under a frontend's src/, that
+// hold its stores: `stores` is what forge scaffolds, `store` is the other
+// common spelling (and the pre-workspaces web/ shape).
+var frontendStoreDirs = []string{"stores", "store"}
+
+// LintFrontendStores scans every frontend's src/stores/ and src/store/
+// (frontends/<name>/ and web/) for files that both spin up a Zustand store
+// AND pull in a generated Connect client. Warnings only. A project with no
 // frontends at all gets an empty result.
 //
 // Findings are sorted by (file, line, rule) for stable output. Line is
 // the line where reZustandCreate hits (the user's eye goes to the
 // store-factory call, not the import line).
 func LintFrontendStores(rootDir string) (Result, error) {
-	var targets []string
-
-	// Workspaces / per-frontend layout: frontends/<name>/src/stores/*.ts
+	// Every frontend root: frontends/<name>/ (the workspaces layout) and
+	// the pre-workspaces single web/.
+	var frontendRoots []string
 	frontendsDir := filepath.Join(rootDir, "frontends")
 	if _, err := os.Stat(frontendsDir); err == nil {
 		entries, readErr := os.ReadDir(frontendsDir)
@@ -84,28 +104,22 @@ func LintFrontendStores(rootDir string) (Result, error) {
 			return Result{}, fmt.Errorf("read %s: %w", frontendsDir, readErr)
 		}
 		for _, e := range entries {
-			if !e.IsDir() {
-				continue
+			if e.IsDir() {
+				frontendRoots = append(frontendRoots, filepath.Join(frontendsDir, e.Name()))
 			}
-			storesDir := filepath.Join(frontendsDir, e.Name(), "src", "stores")
-			ts, err := collectTSFiles(storesDir)
+		}
+	}
+	frontendRoots = append(frontendRoots, filepath.Join(rootDir, "web"))
+
+	var targets []string
+	for _, fe := range frontendRoots {
+		for _, dir := range frontendStoreDirs {
+			ts, err := collectTSFiles(filepath.Join(fe, "src", dir))
 			if err != nil {
 				return Result{}, err
 			}
 			targets = append(targets, ts...)
 		}
-	}
-
-	// Pre-workspaces single-frontend layout: web/src/store/*.ts
-	// Note: singular `store` — that's the shape projects scaffolded
-	// before the workspaces flag landed.
-	webStoreDir := filepath.Join(rootDir, "web", "src", "store")
-	if _, err := os.Stat(webStoreDir); err == nil {
-		ts, err := collectTSFiles(webStoreDir)
-		if err != nil {
-			return Result{}, err
-		}
-		targets = append(targets, ts...)
 	}
 
 	sort.Strings(targets)
@@ -180,7 +194,7 @@ func lintFrontendStoreFile(path, relRoot string) ([]Finding, error) {
 	}
 	body := string(src)
 
-	if !reGenImport.MatchString(body) {
+	if !reachesServer(body) {
 		return nil, nil
 	}
 	loc := reZustandCreate.FindStringIndex(body)
@@ -208,4 +222,30 @@ func lintFrontendStoreFile(path, relRoot string) ([]Finding, error) {
 			"(`packages/hooks/src/generated/<svc>-hooks.ts` or `frontends/<name>/src/hooks/<svc>-hooks.ts`); " +
 			"reserve Zustand for client-only UI state (modals, theme, transient form state)",
 	}}, nil
+}
+
+// reachesServer reports whether a store file imports or builds a Connect
+// client (see the package doc, gate 2).
+func reachesServer(body string) bool {
+	if reClientFactory.MatchString(body) {
+		return true
+	}
+	for _, m := range reGenImport.FindAllStringSubmatch(body, -1) {
+		typeOnly, clause, tell := m[1] != "", m[2], m[3]
+		if typeOnly {
+			continue
+		}
+		if tell != "_pb" {
+			return true
+		}
+		if strings.Contains(clause, "*") {
+			return true // `import * as pb`: it can reach any service
+		}
+		for _, name := range reServiceName.FindAllStringSubmatch(clause, -1) {
+			if name[1] == "" {
+				return true
+			}
+		}
+	}
+	return false
 }

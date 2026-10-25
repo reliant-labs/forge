@@ -127,3 +127,29 @@ func mustWrite(t *testing.T, path, content string) {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
+
+// TestLintFrontendHookTests_SeesTheGenSpelling: every hooks module forge
+// writes today is `<svc>-hooks_gen.ts`, and its test drops the `_gen`. The
+// rule used to match only the pre-rename `-hooks.ts`, so it checked no
+// current project at all.
+func TestLintFrontendHookTests_SeesTheGenSpelling(t *testing.T) {
+	dir := t.TempDir()
+	hooksDir := filepath.Join(dir, "frontends", "web", "src", "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(hooksDir, "user-service-hooks_gen.ts"), "export const x = 1;")
+	mustWrite(t, filepath.Join(hooksDir, "run-service-hooks_gen.ts"), "export const x = 1;")
+	mustWrite(t, filepath.Join(hooksDir, "run-service-hooks.test.tsx"), "// mine")
+
+	res, err := LintFrontendHookTests(dir)
+	if err != nil {
+		t.Fatalf("LintFrontendHookTests: %v", err)
+	}
+	if len(res.Findings) != 1 || !strings.Contains(res.Findings[0].File, "user-service-hooks_gen.ts") {
+		t.Fatalf("want one finding, for the _gen module with no test; got %+v", res.Findings)
+	}
+	if !strings.Contains(res.Findings[0].Remediation, "user-service-hooks.test.tsx") {
+		t.Errorf("remediation must name the test path without _gen: %q", res.Findings[0].Remediation)
+	}
+}

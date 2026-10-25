@@ -96,7 +96,8 @@ Example:
   forge package new cache
   forge package new notifications
   forge package new events --kind eventbus
-  forge package new stripe-adapter --type adapter`,
+  forge package new stripe-adapter --type adapter --base-url
+  forge package new pubsub --type adapter --dry-run`,
 		Args: cobra.ExactArgs(1),
 		RunE: runPackageNewThenGenerate,
 	}
@@ -104,6 +105,7 @@ Example:
 	packageNewCmd.Flags().String("kind", "", "package kind template (e.g. eventbus, client)")
 	packageNewCmd.Flags().String("type", "service", "package shape: service|adapter (see --help for details)")
 	packageNewCmd.Flags().Bool("no-generate", false, "skip the post-scaffold 'forge generate' run (scaffold-only mode for parallel-agent rounds); run 'forge generate' before 'forge lint'")
+	cmdutil.AddPackageScaffoldFlags(packageNewCmd)
 
 	cmd.AddCommand(cmdutil.ConfiguresClone(packageNewCmd))
 
@@ -125,6 +127,9 @@ func runPackageNewThenGenerate(cmd *cobra.Command, args []string) error {
 	return withGenerateLock(root, func() error {
 		if err := runPackageNew(cmd, args); err != nil {
 			return err
+		}
+		if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
+			return nil
 		}
 		if noGenerate, _ := cmd.Flags().GetBool("no-generate"); noGenerate {
 			fmt.Printf("\n⏩ --no-generate: skipping the post-scaffold `forge generate` run.\n")
@@ -180,6 +185,22 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid package kind %q: valid kinds are %s", kind, strings.Join(valid, ", "))
 	}
 
+	// --base-url is an adapter's config leaf; no other shape reads one.
+	// --base-url-env names its env var, and asks for the leaf by doing so.
+	wantBaseURL, _ := cmd.Flags().GetBool("base-url")
+	baseURLEnv, _ := cmd.Flags().GetString("base-url-env")
+	baseURLEnv = strings.TrimSpace(baseURLEnv)
+	if (wantBaseURL || baseURLEnv != "") && pkgType != "adapter" {
+		return fmt.Errorf("--base-url applies only to --type=adapter (a %s package takes its settings as a config block you declare)", pkgType)
+	}
+	if wantBaseURL && baseURLEnv == "" {
+		baseURLEnv = strings.ToUpper(name) + "_BASE_URL"
+	}
+	if baseURLEnv != "" && !validEnvVarName.MatchString(baseURLEnv) {
+		return fmt.Errorf("--base-url-env=%s: an env var name is upper-case letters, digits and underscores, starting with a letter", baseURLEnv)
+	}
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+
 	// Validate name is a valid Go package name
 	if !validGoPackageName.MatchString(name) {
 		return fmt.Errorf("invalid package name %q: must be lowercase, start with a letter, and contain only letters, digits, and underscores", name)
@@ -211,7 +232,9 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("read project config: %w", err)
 	}
 
-	fmt.Printf("Creating internal package '%s'...\n", name)
+	if !dryRun {
+		fmt.Printf("Creating internal package '%s'...\n", name)
+	}
 
 	// Template data. ImportPath mirrors Name for now because `forge package
 	// new` only accepts flat names (validGoPackageName rejects "/"). When
@@ -255,17 +278,23 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		LogLevel: cfg.Observability.SlogLevelExpr(),
 	}
 
-	// An adapter's settings are configuration, so its base URL is a leaf of
-	// its own config block in proto/<project>/config/v1/config.proto rather than a
-	// scalar Deps field (which forge-config-deps rejects, and which compose.go
-	// could only ever wire to ""). The proto edit runs first because its
-	// outcome decides which Deps shape the templates render.
-	if pkgType == "adapter" {
-		block, envVar, err := ensureAdapterConfigBlock(root, name)
+	// An adapter's base URL, when it has one, is configuration, so it is a
+	// leaf of its own config block in proto/<project>/config/v1/config.proto
+	// rather than a scalar Deps field (which forge-config-deps rejects, and
+	// which compose.go could only ever wire to ""). It is opt-in (--base-url):
+	// an adapter over a queue or a vendor SDK has no base URL, and a leaf
+	// named for one would be configuration nothing reads. The proto edit runs
+	// first because its outcome decides which Deps shape the templates render.
+	if baseURLEnv != "" {
+		block, err := ensureAdapterConfigBlock(root, name, baseURLEnv, dryRun)
 		if err != nil {
 			return err
 		}
-		data.ConfigBlock, data.ConfigEnvVar = block, envVar
+		data.ConfigBlock, data.ConfigEnvVar = block, baseURLEnv
+	}
+
+	if dryRun {
+		return printPackagePlan(name, pkgType, kind, data.ConfigBlock != "")
 	}
 
 	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
@@ -365,9 +394,8 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 // A project with no AppConfig must declare its config composition explicitly
 // before scaffolding an adapter. Refuse before creating its package rather
 // than emitting the scalar Deps field forge-config-deps rejects.
-func ensureAdapterConfigBlock(root, name string) (block, envVar string, err error) {
+func ensureAdapterConfigBlock(root, name, envVar string, dryRun bool) (block string, err error) {
 	block = naming.ToPascalCase(name) + "Config"
-	envVar = strings.ToUpper(name) + "_BASE_URL"
 	spec := scaffold.ConfigBlockSpec{
 		Message: block,
 		Field:   name,
@@ -387,30 +415,86 @@ func ensureAdapterConfigBlock(root, name string) (block, envVar string, err erro
 		}},
 	}
 	layout := configproto.ForProject(root)
-	res, err := scaffold.EnsureConfigBlock(filepath.Join(root, filepath.FromSlash(layout.Dir())), spec)
+	ensure := scaffold.EnsureConfigBlock
+	if dryRun {
+		ensure = scaffold.PlanConfigBlock
+	}
+	res, err := ensure(filepath.Join(root, filepath.FromSlash(layout.Dir())), spec)
 	switch {
 	case errors.Is(err, scaffold.ErrNoConfigRoot):
-		return "", "", fmt.Errorf("scaffold adapter %s requires %s with an AppConfig message; declare the config root before scaffolding the adapter (no adapter files were written)", name, layout.RootPath())
+		return "", fmt.Errorf("scaffold adapter %s --base-url requires %s with an AppConfig message; declare the config root before scaffolding the adapter, or drop --base-url (no adapter files were written)", name, layout.RootPath())
 	case err != nil:
-		return "", "", fmt.Errorf("compose the %s config block: %w", block, err)
+		return "", fmt.Errorf("compose the %s config block: %w", block, err)
 	}
 	rel, relErr := filepath.Rel(root, res.File)
 	if relErr != nil {
 		rel = res.File
 	}
+	// --dry-run reports the same edit in the conditional.
+	declare, composed, composeExisting := "✅ Declared", "composed", "✅ Composed"
+	if dryRun {
+		declare, composed, composeExisting = "Would declare", "compose", "Would compose"
+	}
 	switch {
 	case res.AddedMessage && res.AddedField:
-		fmt.Printf("✅ Declared message %s in %s and composed it on %s as %s = %d (base_url from %s)\n",
-			block, rel, scaffold.ConfigRootMessage, name, res.FieldNumber, envVar)
+		fmt.Printf("%s message %s in %s and %s it on %s as %s = %d (base_url from %s)\n",
+			declare, block, rel, composed, scaffold.ConfigRootMessage, name, res.FieldNumber, envVar)
 	case res.AddedField:
-		fmt.Printf("✅ Composed the existing message %s on %s in %s as %s = %d\n",
-			block, scaffold.ConfigRootMessage, rel, name, res.FieldNumber)
+		fmt.Printf("%s the existing message %s on %s in %s as %s = %d\n",
+			composeExisting, block, scaffold.ConfigRootMessage, rel, name, res.FieldNumber)
 	case res.AddedMessage:
-		fmt.Printf("✅ Declared message %s in %s (already composed on %s)\n", block, rel, scaffold.ConfigRootMessage)
+		fmt.Printf("%s message %s in %s (already composed on %s)\n", declare, block, rel, scaffold.ConfigRootMessage)
 	default:
 		fmt.Printf("   %s is already declared and composed on %s in %s\n", block, scaffold.ConfigRootMessage, rel)
 	}
-	return block, envVar, nil
+	return block, nil
+}
+
+// validEnvVarName is what --base-url accepts as the leaf's env var.
+var validEnvVarName = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+
+// printPackagePlan is --dry-run's report: every file the scaffold would write
+// under internal/<name>/, from the same template sets the real run renders,
+// and the generate run that would follow. Nothing is written.
+func printPackagePlan(name, pkgType, kind string, hasConfigBlock bool) error {
+	var files []string
+	switch {
+	case pkgType == "adapter" || kind != "":
+		set := pkgType
+		if kind != "" {
+			set = kind
+		}
+		tmplFiles, err := templates.InternalPkgKindTemplates(set).ListFlat("")
+		if err != nil {
+			return fmt.Errorf("list %s templates: %w", set, err)
+		}
+		for _, f := range tmplFiles {
+			files = append(files, strings.TrimSuffix(f, ".tmpl"))
+		}
+	default:
+		files = []string{"contract.go", "service.go", "contract_test.go"}
+	}
+	files = append(files, "mock_gen.go", "observe_chain.go")
+	sort.Strings(files)
+
+	noun := "internal package"
+	if pkgType == "adapter" {
+		noun = "adapter"
+	}
+	fmt.Printf("Would create %s '%s':\n", noun, name)
+	for _, file := range files {
+		if role := packageFileRoles[file]; role != "" {
+			fmt.Printf("   internal/%s/%-18s %s\n", name, file, role)
+		} else {
+			fmt.Printf("   internal/%s/%s\n", name, file)
+		}
+	}
+	if pkgType == "adapter" && !hasConfigBlock {
+		fmt.Printf("   (no config block: pass --base-url for an HTTP API with one base URL)\n")
+	}
+	fmt.Printf("Then `forge generate` (unless --no-generate) writes middleware_gen.go and wires internal/%s into internal/app/compose.go.\n", name)
+	fmt.Println("--dry-run: nothing was written.")
+	return nil
 }
 
 // packageFileRoles describes what each scaffolded file is for, so the

@@ -88,7 +88,7 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 	// tracked manifest has been settled at its published range.
 	generator.EnsureDevWebRuntimeLink(projectDir)
 
-	return syncFrontendLocks(cfg, projectDir)
+	return syncFrontendLocks(cfg, projectDir, cs)
 }
 
 // syncFrontendLocks refreshes the lockfile of every frontend whose package.json
@@ -96,16 +96,16 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 // only, which leaves a lockfile recording the old range and fails `npm ci`;
 // this runs after every frontend is settled so one failure does not skip the
 // rest, and reports every lockfile it could not fix with the command to run.
-// An adopted frontend's manifest is the app's own and is never touched, so its
+// A disowned manifest is never touched (frontendManifestDisowned), so its
 // lockfile is not either.
-func syncFrontendLocks(cfg *config.ProjectConfig, projectDir string) error {
+func syncFrontendLocks(cfg *config.ProjectConfig, projectDir string, cs *checksums.FileChecksums) error {
 	var errs []error
 	for _, fe := range cfg.Frontends {
-		if fe.Adopted {
-			continue
-		}
 		feDir, ok := fe.Dir(projectDir)
 		if !ok {
+			continue
+		}
+		if frontendManifestDisowned(feDir, cs) {
 			continue
 		}
 		if err := generator.SyncFrontendLock(projectDir, feDir); err != nil {
@@ -181,7 +181,7 @@ func generateNextjsFrontend(cfg *config.ProjectConfig, projectDir string, fe con
 	// Re-resolved every run so a project that moved on disk, or one
 	// picked up by a differently-built forge, gets a specifier that
 	// still points somewhere real.
-	reconcileFrontendDependencies(projectDir, feDir, fe)
+	reconcileFrontendDependencies(projectDir, feDir, fe, cs)
 
 	// An adopted app has its own layout, home page and navigation;
 	// forge's nav, dashboard and home page are starter code for a
@@ -342,7 +342,7 @@ func generateViteFrontend(cfg *config.ProjectConfig, projectDir string, fe confi
 		}
 	}
 	// ── package.json: the @reliantlabs/forge-web-runtime specifier ──
-	reconcileFrontendDependencies(projectDir, feDir, fe)
+	reconcileFrontendDependencies(projectDir, feDir, fe, cs)
 	return nil
 }
 
@@ -364,8 +364,8 @@ func generateReactNativeFrontend(cfg *config.ProjectConfig, projectDir string, f
 		return fmt.Errorf("emit apiurl_gen.ts for %s: %w", fe.Name, err)
 	}
 	// ── package.json: the @reliantlabs/forge-web-runtime specifier ──
-	if fe.Adopted {
-		printDependencyNotices(fe.Name, generator.FrontendDependencyNotices(projectDir, feDir))
+	if frontendManifestDisowned(feDir, cs) {
+		printDependencyNotices(fe.Name, feDir, generator.FrontendDependencyNotices(projectDir, feDir))
 	} else {
 		generator.EnsureWebRuntimeDependency(projectDir, feDir, fe.Name)
 	}
@@ -373,21 +373,70 @@ func generateReactNativeFrontend(cfg *config.ProjectConfig, projectDir string, f
 }
 
 // reconcileFrontendDependencies keeps a web frontend's package.json declaring
-// what forge's generated code imports. A frontend forge scaffolded has its
-// manifest reconciled in place; an ADOPTED one's manifest is the app's own,
-// so forge reports what it would change and changes nothing.
-func reconcileFrontendDependencies(projectDir, feDir string, fe config.FrontendConfig) {
-	if fe.Adopted {
-		printDependencyNotices(fe.Name, generator.FrontendDependencyNotices(projectDir, feDir))
+// what forge's generated code imports: the web-runtime range raised to the
+// floor this forge generates against, and the browser-telemetry SDK
+// otel_gen.ts imports.
+//
+// ADOPTED frontends are reconciled too. They used to get a notice instead,
+// on the reasoning that an adopted app's manifest is its own. But the floor
+// is not a preference: the hooks forge just regenerated into that app call
+// runtime APIs the old range does not have, so leaving it below the floor
+// hands the owner a tree that does not typecheck plus a line to act on by
+// hand, every run. The edit is the same surgical one a scaffolded frontend
+// gets — one value raised, never lowered (a project ahead of forge keeps its
+// range) — and the lockfile is refreshed with it (syncFrontendLocks).
+//
+// The opt-out is the general one: `forge project disown
+// <frontend>/package.json` makes the manifest the project's alone, and forge
+// then reports what it would change and changes nothing.
+func reconcileFrontendDependencies(projectDir, feDir string, fe config.FrontendConfig, cs *checksums.FileChecksums) {
+	if frontendManifestDisowned(feDir, cs) {
+		printDependencyNotices(fe.Name, feDir, generator.FrontendDependencyNotices(projectDir, feDir))
 		return
 	}
 	generator.EnsureWebRuntimeDependency(projectDir, feDir, fe.Name)
 	generator.EnsureBrowserTelemetryDependencies(projectDir, feDir, fe.Name)
 }
 
-func printDependencyNotices(feName string, notices []string) {
+// frontendManifestDisowned reports whether the project disowned the
+// frontend's package.json (`forge project disown`), which is the one thing
+// that stops forge reconciling its dependency ranges.
+//
+// It also records the manifest as a path forge edits every run. The
+// manifest carries no forge:hash marker and goes through no Tier-1 writer,
+// so without the record obsolete-disown retirement would read a disowned
+// manifest as one forge no longer touches, drop the disown, and edit the
+// file on the following run.
+func frontendManifestDisowned(feDir string, cs *checksums.FileChecksums) bool {
+	rel := filepath.Join(feDir, "package.json")
+	checksums.MarkTier1Target(rel)
+	return cs.IsDisowned(rel)
+}
+
+// isFrontendManifestRelPath reports whether a project-relative path is a
+// frontend's package.json: unmarked, but edited by `forge generate`
+// (reconcileFrontendDependencies), so `forge project disown` accepts it.
+func isFrontendManifestRelPath(root, rel string) bool {
+	rel = filepath.ToSlash(filepath.Clean(rel))
+	if filepath.Base(rel) != "package.json" {
+		return false
+	}
+	cfg, err := loadProjectConfigFrom(filepath.Join(root, "forge.yaml"))
+	if err != nil {
+		return false
+	}
+	for _, fe := range cfg.Frontends {
+		if feDir, ok := fe.Dir(root); ok && filepath.ToSlash(filepath.Join(feDir, "package.json")) == rel {
+			return true
+		}
+	}
+	return false
+}
+
+func printDependencyNotices(feName, feDir string, notices []string) {
 	for _, n := range notices {
-		fmt.Printf("  ℹ️  frontend %s (not scaffolded by forge, so its package.json is left as is): %s\n", feName, n)
+		fmt.Printf("  ℹ️  frontend %s (%s is disowned, so forge leaves it as is): %s\n",
+			feName, filepath.ToSlash(filepath.Join(feDir, "package.json")), n)
 	}
 }
 

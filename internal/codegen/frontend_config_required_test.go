@@ -89,6 +89,41 @@ func TestFrontendConfigSchema_MissingRequired(t *testing.T) {
 	}
 }
 
+func TestFrontendConfigSchema_UnstatedSelectors(t *testing.T) {
+	body, _ := GenerateFrontendConfigSchema(cloudFrontendConfig())
+	schema, _, _ := ParseFrontendConfigSchema([]byte(body))
+	judge := func(doc map[string]string) []string {
+		var out []string
+		for _, m := range schema.UnstatedSelectors(func(k string) bool { return strings.TrimSpace(doc[k]) != "" }) {
+			out = append(out, m.Reason())
+		}
+		return out
+	}
+	unstated := []string{`HOSTING (unstated: it selects the mode that decides whether API_URL, SUPABASE_URL are required — ` +
+		`state the mode this environment serves, e.g. "cloud")`}
+	for name, tc := range map[string]struct {
+		doc  map[string]string
+		want []string
+	}{
+		"no mode stated": {map[string]string{"REGION": "eu"}, unstated},
+		"mode blank":     {map[string]string{"REGION": "eu", "HOSTING": ""}, unstated},
+		"cloud":          {map[string]string{"HOSTING": "cloud"}, nil},
+		// Any stated value names a mode; whether it is an allowed one is the
+		// bundle's zod enum's to say.
+		"another mode": {map[string]string{"HOSTING": "self-hosted"}, nil},
+	} {
+		if got := judge(tc.doc); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: unstated = %q, want %q", name, got, tc.want)
+		}
+	}
+
+	plain, _ := GenerateFrontendConfigSchema(FrontendConfig{Frontend: "web", Fields: []ConfigField{{Name: "a", EnvVar: "A", ProtoType: "string"}}})
+	ps, _, _ := ParseFrontendConfigSchema([]byte(plain))
+	if got := ps.UnstatedSelectors(func(string) bool { return false }); len(got) != 0 {
+		t.Errorf("a schema without required_when has no selectors, got %+v", got)
+	}
+}
+
 func TestGenerateFrontendConfigTS_EnforcesRequiredWhenOnTheRawDocument(t *testing.T) {
 	out, err := GenerateFrontendConfigTS(cloudFrontendConfig(), "demo", "")
 	if err != nil {

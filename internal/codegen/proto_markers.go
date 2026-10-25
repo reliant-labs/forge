@@ -156,6 +156,27 @@ const (
 	// birth scanner alone.
 	ProtoMarkerMutation = "forge:mutation"
 
+	// ProtoMarkerQueryScope keys a custom READ's generated query under an
+	// entity scope: `// forge:query-scope Run` above LastRunPerWorkflow
+	// makes its key [service, "run", method, req] instead of
+	// [service, method, req], so `<svc>Keys.run` — which every CRUD
+	// mutation of Run invalidates — reaches it. Read by the frontend hook
+	// generator on every generate, like ProtoMarkerMutation.
+	//
+	// Only a CRUD rpc's scope is derived (from its name). A custom read
+	// keyed at service scope is refreshed by `.all` alone, so a CreateRun
+	// left LastRunPerWorkflow stale. The scope is DECLARED rather than
+	// inferred from a `<entity>_id` request field because that field names
+	// what the read is filtered BY, not what it reads: a GetRunStats
+	// filtered by workflow_id reads runs, and ListMessages filtered by
+	// chat_id reads messages. A wrong inference narrows nothing but
+	// silently misses the invalidation the scope was for.
+	//
+	// Applies to reads only. A custom mutation already invalidates the
+	// whole service, which reaches every scope; a scope there would only
+	// narrow that, and narrowing is how a read goes stale.
+	ProtoMarkerQueryScope = "forge:query-scope"
+
 	// ProtoMarkerCustom declares that ONE rpc is a custom rpc, whatever its
 	// name. An rpc is otherwise CRUD when it is unary, named exactly
 	// Create<E>/Get<E>/Update<E>/Delete<E>/List<Es>, and <E> has both a table
@@ -233,6 +254,7 @@ var KnownProtoMarkers = []string{
 	ProtoMarkerSecret,
 	ProtoMarkerGuards,
 	ProtoMarkerMutation,
+	ProtoMarkerQueryScope,
 	ProtoMarkerCustom,
 	ProtoMarkerUnmanaged,
 }

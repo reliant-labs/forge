@@ -332,3 +332,107 @@ func TestKubectlStoreProbeReadsTheClusterItIsAskedAbout(t *testing.T) {
 		t.Fatalf("the newer Job has not succeeded: done=%v found=%v err=%v", done, found, err)
 	}
 }
+
+// adoptingProbe is a fakeStoreProbe that also answers the adoption read.
+type adoptingProbe struct {
+	fakeStoreProbe
+	kind    string
+	found   bool
+	err     error
+	asked   int
+	askedNS string
+}
+
+func (a *adoptingProbe) ForeignStore(_ context.Context, _, ns, _ string) (string, bool, error) {
+	a.asked++
+	a.askedNS = ns
+	return a.kind, a.found, a.err
+}
+
+// The SC7 prod adoption: forge.OpenBao replaced a live store forge did not
+// install, every consumer still on Kubernetes or AppRole auth lost access, and
+// each flip then shipped as its own release (each a full restart of every
+// workload): 14 and 27 minutes of failed reads. The deploy now says so BEFORE it
+// applies anything, as an advisory that never blocks.
+//
+// Mutation that fails it: drop the ForeignStore branch from checkStoreCluster.
+func TestCheckStore_AdoptingALiveStoreWarnsToShipTheJWTFlipsInTheSameRelease(t *testing.T) {
+	expect := StoreExpectation{Context: "gke_prod", Owner: "fx.prod",
+		OpenBao: &OpenBaoExpectation{Name: "openbao", Namespace: "control-plane-prod", Installs: true}}
+
+	probe := &adoptingProbe{fakeStoreProbe: fakeStoreProbe{crds: servedESO("fx.prod")}, kind: "Deployment", found: true}
+	got, err := CheckStore(context.Background(), probe, []StoreExpectation{expect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Empty() {
+		t.Errorf("an adoption is advisory and must not block: %+v", got)
+	}
+	if len(got.Adoptions) != 1 {
+		t.Fatalf("want one adoption warning, got %v", got.Adoptions)
+	}
+	for _, want := range []string{"ADOPTS", "Deployment control-plane-prod/openbao", "Kubernetes or AppRole", "THIS release", "deploy/openbao"} {
+		if !strings.Contains(got.Adoptions[0], want) {
+			t.Errorf("the warning must say %q:\n%s", want, got.Adoptions[0])
+		}
+	}
+	if probe.askedNS != "control-plane-prod" {
+		t.Errorf("asked about namespace %q", probe.askedNS)
+	}
+
+	// A store forge already owns is not an adoption.
+	owned := &adoptingProbe{fakeStoreProbe: fakeStoreProbe{crds: servedESO("fx.prod")}}
+	got, _ = CheckStore(context.Background(), owned, []StoreExpectation{expect})
+	if len(got.Adoptions) != 0 {
+		t.Errorf("a forge-installed store was reported as an adoption: %v", got.Adoptions)
+	}
+
+	// A deploy that does not install the component (a --target subset) is not
+	// the adoption.
+	elsewhere := expect
+	elsewhere.OpenBao = &OpenBaoExpectation{Name: "openbao", Namespace: "control-plane-prod"}
+	probe2 := &adoptingProbe{fakeStoreProbe: fakeStoreProbe{crds: servedESO("fx.prod"), converge: map[string][2]bool{"control-plane-prod/openbao": {true, true}}}, kind: "Deployment", found: true}
+	got, _ = CheckStore(context.Background(), probe2, []StoreExpectation{elsewhere})
+	if len(got.Adoptions) != 0 || probe2.asked != 0 {
+		t.Errorf("a deploy that does not install the store is not an adoption: %v (asked %d)", got.Adoptions, probe2.asked)
+	}
+
+	// A failed read is silence, not a failed deploy.
+	broken := &adoptingProbe{fakeStoreProbe: fakeStoreProbe{crds: servedESO("fx.prod")}, err: errors.New("forbidden")}
+	got, err = CheckStore(context.Background(), broken, []StoreExpectation{expect})
+	if err != nil || len(got.Adoptions) != 0 || !got.Empty() {
+		t.Errorf("an unreadable adoption probe must not fail or warn: %v %v %+v", err, got.Adoptions, got)
+	}
+
+	// A probe that cannot answer the question simply does not raise it.
+	plain := &fakeStoreProbe{crds: servedESO("fx.prod")}
+	got, err = CheckStore(context.Background(), plain, []StoreExpectation{expect})
+	if err != nil || len(got.Adoptions) != 0 {
+		t.Errorf("a probe without the adoption read raised it: %v %v", err, got.Adoptions)
+	}
+}
+
+// KubectlStoreProbe.ForeignStore against the stateful fake cluster: a bespoke
+// Deployment (no component-owner label) is foreign, the component's own is not,
+// and the absence of either is nothing.
+func TestKubectlStoreProbe_ForeignStore(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl (this test binary) through subprocesses; runs in task test")
+	}
+	cl := newFakeCluster(t)
+	probe := KubectlStoreProbe{}
+	ctx := context.Background()
+
+	if _, found, err := probe.ForeignStore(ctx, "k3d-test", "bao", "openbao"); err != nil || found {
+		t.Fatalf("nothing is installed: found=%v err=%v", found, err)
+	}
+	cl.seed(map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": map[string]any{"name": "openbao", "namespace": "bao", "uid": "u1", "resourceVersion": "1", "labels": map[string]any{"app.kubernetes.io/managed-by": "forge"}}})
+	kind, found, err := probe.ForeignStore(ctx, "k3d-test", "bao", "openbao")
+	if err != nil || !found || kind != "Deployment" {
+		t.Fatalf("a bespoke store is foreign: %q %v %v", kind, found, err)
+	}
+	cl.setForeignLabel("Deployment", "bao", "openbao", componentOwnerLabel, "fx.prod")
+	if _, found, _ := probe.ForeignStore(ctx, "k3d-test", "bao", "openbao"); found {
+		t.Error("a store carrying the component-owner label is forge's own")
+	}
+}

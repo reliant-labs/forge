@@ -661,6 +661,13 @@ func TestGenerateCacheSkipLineAndMissReason(t *testing.T) {
 	if got := strings.Count(buf.String(), "\n"); got != 1 || !strings.Contains(buf.String(), "5m ago") || !strings.Contains(buf.String(), "--no-cache") {
 		t.Errorf("the skip must be one line saying when it was verified and how to force a run, got:\n%s", buf.String())
 	}
+	// A clean generate prints no ownership machinery; the fixture corpus
+	// (assertNoForkNoise) fails on these words in a second, cached run.
+	for _, needle := range []string{"disowned", "forked file(s)", "fork-coherence"} {
+		if strings.Contains(buf.String(), needle) {
+			t.Errorf("the skip line must not mention ownership machinery (%q), got:\n%s", needle, buf.String())
+		}
+	}
 
 	f.write(t, "proto/a.proto", "changed\n")
 	buf.Reset()

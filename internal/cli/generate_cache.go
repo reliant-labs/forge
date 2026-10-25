@@ -1290,8 +1290,11 @@ func (c *generateCacheRun) skip(w io.Writer) bool {
 	return false
 }
 
+// printSkip names no particular note the skip withholds. A disowned file is a
+// legitimate end state, not a nag target, so a clean generate never mentions
+// ownership — not even in passing (the fixture corpus's assertNoForkNoise).
 func (c *generateCacheRun) printSkip(w io.Writer) {
-	fmt.Fprintf(w, "⏭️  forge generate: nothing to do — the tree is byte-identical to one a full run verified as its own output %s (%d files; forge binary, tools and environment unchanged). --no-cache runs every step and repeats its notes (a disowned file's pending changes among them).\n",
+	fmt.Fprintf(w, "⏭️  forge generate: nothing to do — the tree is byte-identical to one a full run verified as its own output %s (%d files; forge binary, tools and environment unchanged). --no-cache runs every step and repeats its notes.\n",
 		agoString(c.sys.now().Sub(c.prev.VerifiedAt)), len(c.pre.files))
 }
 

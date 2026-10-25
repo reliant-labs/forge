@@ -25,7 +25,8 @@ var obsIssuesSchema = obsout.Schema{
 		"issues", "issues.id", "issues.platform", "issues.source", "issues.service", "issues.title", "issues.culprit", "issues.exception_type",
 		"issues.status", "issues.first_seen", "issues.last_seen", "issues.first_version", "issues.last_version",
 		"issues.events", "issues.affected", "issues.affected_unit", "issues.latest_trace_id", "issues.resolved_at", "issues.resolved_version",
-		"issues.regressed_at", "issues.ignored_until",
+		"issues.regressed_at", "issues.ignored_until", "issues.incident_key", "issues.related_count",
+		"collapsed",
 		"statements", "statements.purpose", "statements.sql", "statements.params.*",
 		"suggested",
 	},
@@ -53,6 +54,11 @@ type obsIssueRowDoc struct {
 	ResolvedVersion string    `json:"resolved_version,omitempty"`
 	RegressedAt     time.Time `json:"regressed_at,omitzero"`
 	IgnoredUntil    time.Time `json:"ignored_until,omitzero"`
+	// IncidentKey is shared by the issues of one incident (the same cause,
+	// first seen close in time, across services); RelatedCount is how many
+	// others carry it. Issues are never merged: each keeps its own counts.
+	IncidentKey  string `json:"incident_key,omitempty"`
+	RelatedCount int    `json:"related_count,omitempty"`
 }
 
 func issueRowDoc(i obsbackend.Issue) obsIssueRowDoc {
@@ -62,6 +68,7 @@ func issueRowDoc(i obsbackend.Issue) obsIssueRowDoc {
 		Events: i.Events, Affected: i.Affected, AffectedUnit: i.AffectedUnit, LatestTraceID: i.LatestTraceID,
 		ResolvedAt: zeroUnixEpoch(i.ResolvedAt), ResolvedVersion: i.ResolvedVersion,
 		RegressedAt: zeroUnixEpoch(i.RegressedAt), IgnoredUntil: zeroUnixEpoch(i.IgnoredUntil),
+		IncidentKey: i.IncidentKey, RelatedCount: i.RelatedCount,
 	}
 }
 
@@ -88,10 +95,13 @@ func zeroUnixEpoch(t time.Time) time.Time {
 
 type obsIssuesDoc struct {
 	obsout.Head
-	Scope      obsout.Scope           `json:"scope"`
-	QueryMode  string                 `json:"query_mode"`
-	Sort       string                 `json:"sort"`
-	Issues     []obsIssueRowDoc       `json:"issues"`
+	Scope     obsout.Scope     `json:"scope"`
+	QueryMode string           `json:"query_mode"`
+	Sort      string           `json:"sort"`
+	Issues    []obsIssueRowDoc `json:"issues"`
+	// Collapsed is how many issues of this page are hidden under another issue
+	// of their incident; --expand-incidents lists them.
+	Collapsed  int                    `json:"collapsed,omitempty"`
 	Statements []obsbackend.Statement `json:"statements,omitempty"`
 	obsout.Page
 	Suggested []string `json:"suggested,omitempty"`
@@ -106,6 +116,10 @@ type obsIssuesOpts struct {
 	sinceDeploy  string
 	sort         string
 	pageToken    string
+	// expandIncidents lists every issue of an incident; by default the issues
+	// of one incident collapse under the first of them.
+	expandIncidents bool
+	incidentWindow  time.Duration
 }
 
 func newObsIssuesCmd() *cobra.Command {
@@ -132,6 +146,16 @@ issue is unresolved, and the counts are those of the range.
   ` + Name() + ` obs issues prod --since-release v1.4.0   # first seen in that release
   ` + Name() + ` obs issues dev --service api --sort events
   ` + Name() + ` obs issues prod --source llm_bug_report  # agent-filed bug reports
+  ` + Name() + ` obs issues prod --expand-incidents       # every issue of an incident, not the first
+
+An INCIDENT is one cause breaking many callers: a dead database fails every
+service that touches it, and each logs from its own call site, so one outage is
+dozens of issues. Issues that share a cause (the SQLSTATE or refused connection
+target their error carries, else its normalized error class) and first fired
+within --incident-window of one another, in any service, share an incident_key.
+The list collapses them under the first, which shows "+N related"; nothing is
+merged and each keeps its own counts and triage state. forge obs issue <id>
+lists the rest of its incident.
 
 ` + obsIssuesSchema.Help(),
 		Args: cobra.RangeArgs(0, 1),
@@ -148,6 +172,8 @@ issue is unresolved, and the counts are those of the range.
 	f.StringVar(&o.sinceDeploy, "since-deploy", "", "only issues first seen at or after this promotion id (hosted env)")
 	f.StringVar(&o.sort, "sort", obsquery.IssueSortLast, "last | first | events")
 	f.StringVar(&o.pageToken, "page-token", "", "resume from a next_page_token")
+	f.BoolVar(&o.expandIncidents, "expand-incidents", false, "list every issue of an incident instead of collapsing each incident under its first issue")
+	f.DurationVar(&o.incidentWindow, "incident-window", obsquery.DefaultIncidentWindow, "issues of one cause first seen within this long of each other are one incident (max "+obsquery.MaxIncidentWindow.String()+")")
 	return cmd
 }
 
@@ -170,6 +196,9 @@ func (o obsIssuesOpts) validate() error {
 	}
 	if !slices.Contains([]string{obsquery.IssueSortLast, obsquery.IssueSortFirst, obsquery.IssueSortEvents}, o.sort) {
 		return obsbackend.Wrong("--sort %q is not a sort order; use last, first or events", o.sort)
+	}
+	if o.incidentWindow <= 0 || o.incidentWindow > obsquery.MaxIncidentWindow {
+		return obsbackend.Wrong("--incident-window must be greater than 0 and at most %s", obsquery.MaxIncidentWindow)
 	}
 	if o.out.Limit < 1 || o.out.Limit > obsquery.MaxIssueLimit {
 		return obsbackend.Wrong("--limit must be 1-%d", obsquery.MaxIssueLimit)
@@ -212,7 +241,7 @@ func runObsIssues(ctx context.Context, d obsDeps, env string, o obsIssuesOpts) e
 	}
 	res, err := r.ListIssues(ctx, obsbackend.ListIssuesRequest{
 		Narrow: n, Statuses: o.statuses, Platform: o.platform, Source: o.source, SinceRelease: o.sinceRelease, SincePromotion: o.sinceDeploy,
-		Sort: o.sort, Limit: o.out.Limit, PageToken: o.pageToken,
+		Sort: o.sort, Limit: o.out.Limit, PageToken: o.pageToken, IncidentWindow: o.incidentWindow,
 	})
 	if err != nil {
 		return fail(err)
@@ -221,11 +250,15 @@ func runObsIssues(ctx context.Context, d obsDeps, env string, o obsIssuesOpts) e
 	if n.Explain {
 		doc.Statements = res.Statements
 	}
-	for _, i := range res.Issues {
+	shown := res.Issues
+	if !o.expandIncidents {
+		shown, doc.Collapsed = collapseIncidents(res.Issues)
+	}
+	for _, i := range shown {
 		doc.Issues = append(doc.Issues, issueRowDoc(i))
 	}
 	doc.Page = obsout.Page{Truncated: res.Truncated || res.NextPageToken != "", NextPageToken: res.NextPageToken}
-	doc.Suggested = issuesSuggestions(env, res.Issues)
+	doc.Suggested = issuesSuggestions(env, shown)
 	doc.Stamp(schemaObsIssues, nil)
 	if done, err := o.out.Emit(d.Stdout, obsIssuesSchema, doc, fields); done || err != nil {
 		return err
@@ -238,12 +271,21 @@ func runObsIssues(ctx context.Context, d obsDeps, env string, o obsIssuesOpts) e
 		fmt.Fprintln(d.Stdout, "no issues")
 		return nil
 	}
-	rows := make([][]string, len(res.Issues))
-	for i, is := range res.Issues {
+	rows := make([][]string, len(shown))
+	for i, is := range shown {
+		title := is.Title
+		if is.RelatedCount > 0 && !o.expandIncidents {
+			title += fmt.Sprintf("  (+%d related, incident %s)", is.RelatedCount, is.IncidentKey)
+		} else if is.IncidentKey != "" {
+			title += fmt.Sprintf("  (incident %s)", is.IncidentKey)
+		}
 		rows[i] = []string{is.ID, is.Status, strconv.FormatInt(is.Events, 10), affectedText(is.Affected, is.AffectedUnit),
-			is.LastSeen.UTC().Format("01-02 15:04:05"), is.Service, is.Title}
+			is.LastSeen.UTC().Format("01-02 15:04:05"), is.Service, title}
 	}
 	obsout.Table(d.Stdout, []string{"ISSUE", "STATUS", "EVENTS", "AFFECTED", "LAST SEEN", "SERVICE", "TITLE"}, rows, 70)
+	if doc.Collapsed > 0 {
+		fmt.Fprintf(d.Stdout, "\n(%d more issues of the same incidents are collapsed; --expand-incidents lists them)\n", doc.Collapsed)
+	}
 	if res.Truncated && res.NextPageToken == "" {
 		fmt.Fprintf(d.Stdout, "\n(more issues than --limit %d; raise it or narrow with --service)\n", o.out.Limit)
 	}
@@ -262,4 +304,23 @@ func issuesSuggestions(env string, issues []obsbackend.Issue) []string {
 		cmds = append(cmds, obsout.Command("forge", "obs", "issue", is.ID, env))
 	}
 	return obsout.Suggest(cmds...)
+}
+
+// collapseIncidents keeps the first issue of each incident in list order and
+// drops the rest of that incident's issues from the page, counting them.
+// Nothing is merged: the hidden issues exist, with their own counts, and
+// --expand-incidents lists them.
+func collapseIncidents(issues []obsbackend.Issue) ([]obsbackend.Issue, int) {
+	seen := map[string]bool{}
+	out := make([]obsbackend.Issue, 0, len(issues))
+	for _, is := range issues {
+		if is.IncidentKey != "" {
+			if seen[is.IncidentKey] {
+				continue
+			}
+			seen[is.IncidentKey] = true
+		}
+		out = append(out, is)
+	}
+	return out, len(issues) - len(out)
 }

@@ -76,6 +76,12 @@ type Issue struct {
 	// LatestTraceID is the trace of the newest event, when the list knows it
 	// (the local grouping does; the control plane answers it in GetIssue).
 	LatestTraceID string
+	// IncidentKey is shared by the issues of one incident: issues with the
+	// same cause (obsquery.ServerCause) that first fired within a window of
+	// one another. Empty for an issue that is not part of one. RelatedCount
+	// is how many OTHER issues carry the same key. Issues are never merged.
+	IncidentKey  string
+	RelatedCount int
 }
 
 // IssueEvent is one occurrence of an issue.
@@ -132,6 +138,9 @@ type ListIssuesRequest struct {
 	Sort           string
 	Limit          int
 	PageToken      string
+	// IncidentWindow is how close in first-seen time issues of one cause must
+	// be to share an incident; zero is obsquery.DefaultIncidentWindow.
+	IncidentWindow time.Duration
 }
 
 // ListIssuesResult is a page of issues.
@@ -157,7 +166,10 @@ type GetIssueResult struct {
 	Frames      []IssueFrame
 	ByVersion   []IssueVersion
 	// CoOccurring are the ids of issues that fired in the same traces.
-	CoOccurring  []string
+	CoOccurring []string
+	// Incident are the ids of the other issues of this issue's incident (the
+	// same cause, first fired close in time), when it is part of one.
+	Incident     []string
 	FirstRelease *IssueRelease
 	Statements   []Statement
 }

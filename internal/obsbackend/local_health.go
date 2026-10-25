@@ -24,7 +24,7 @@ import (
 // windows and keeps the groups first seen at or after P. It is the
 // query-time form of the control plane's `issues` table; the expressions are
 // pkg/obsquery's, the values are bound parameters.
-const localNewIssuesSQL = `SELECT ` + obsquery.ServerFingerprintSQL + ` AS fp,
+var localNewIssuesSQL = `SELECT ` + obsquery.ServerFingerprintSQL + ` AS fp,
        any(` + obsquery.ServerTitleSQL + `) AS title,
        any(` + obsquery.ServerCulpritSQL + `) AS culprit,
        any(ServiceName) AS service,

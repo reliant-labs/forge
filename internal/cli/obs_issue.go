@@ -26,13 +26,13 @@ var obsIssueSchema = obsout.Schema{
 		"issue", "issue.id", "issue.platform", "issue.service", "issue.title", "issue.culprit", "issue.exception_type",
 		"issue.status", "issue.first_seen", "issue.last_seen", "issue.first_version", "issue.last_version",
 		"issue.events", "issue.affected", "issue.affected_unit", "issue.latest_trace_id", "issue.resolved_at", "issue.resolved_version",
-		"issue.regressed_at", "issue.ignored_until",
+		"issue.regressed_at", "issue.ignored_until", "issue.incident_key", "issue.related_count",
 		"latest_event", "latest_event.time", "latest_event.trace_id", "latest_event.span_id", "latest_event.version",
 		"latest_event.message", "latest_event.attributes.*", "latest_event.session_id", "latest_event.url_path",
 		"events", "events.time", "events.trace_id", "events.span_id", "events.version", "events.message", "events.attributes.*",
 		"frames", "frames.function", "frames.file", "frames.line", "frames.in_app",
 		"by_version", "by_version.version", "by_version.events", "by_version.affected", "by_version.affected_unit", "by_version.first_seen", "by_version.last_seen",
-		"co_occurring_issue_ids",
+		"co_occurring_issue_ids", "incident_issue_ids",
 		"release", "release.version", "release.promotion_id", "release.promoted_at", "release.unsettled",
 		"first_release", "first_release.version", "first_release.git_commit", "first_release.commit_range", "first_release.promoted_at",
 		"suspect_commits", "suspect_commits.sha", "suspect_commits.subject", "suspect_commits.author", "suspect_commits.time",
@@ -100,6 +100,9 @@ type obsIssueDoc struct {
 	Frames      []obsIssueFrameDoc   `json:"frames,omitempty"`
 	ByVersion   []obsIssueVersionDoc `json:"by_version,omitempty"`
 	CoOccurring []string             `json:"co_occurring_issue_ids,omitempty"`
+	// Incident are the other issues of this issue's incident: the same cause,
+	// first seen close in time, in any service.
+	Incident []string `json:"incident_issue_ids,omitempty"`
 	// Release is the release live in the env when the issue was last seen.
 	Release      *liveRelease           `json:"release,omitempty"`
 	FirstRelease *obsIssueReleaseDoc    `json:"first_release,omitempty"`
@@ -202,6 +205,7 @@ func runObsIssue(ctx context.Context, d obsDeps, id, env string, o obsIssueOpts)
 		doc.ByVersion = append(doc.ByVersion, obsIssueVersionDoc{Version: v.Version, Events: v.Events, Affected: v.Affected, AffectedUnit: v.AffectedUnit, FirstSeen: v.FirstSeen, LastSeen: v.LastSeen})
 	}
 	doc.CoOccurring = res.CoOccurring
+	doc.Incident = res.Incident
 	if fr := res.FirstRelease; fr != nil {
 		doc.FirstRelease = &obsIssueReleaseDoc{Version: fr.Version, GitCommit: fr.GitCommit, CommitRange: fr.CommitRange, PromotedAt: fr.PromotedAt}
 	}
@@ -315,6 +319,9 @@ func renderIssue(w io.Writer, doc obsIssueDoc) {
 			rows[k] = []string{orDash(v.Version), fmt.Sprint(v.Events), affectedText(v.Affected, v.AffectedUnit)}
 		}
 		obsout.Table(w, []string{"VERSION", "EVENTS", "AFFECTED"}, rows, 40)
+	}
+	if len(doc.Incident) > 0 {
+		fmt.Fprintf(w, "\nincident %s: %d other issues share this cause: %s\n", doc.Issue.IncidentKey, len(doc.Incident), strings.Join(doc.Incident, ", "))
 	}
 	if len(doc.CoOccurring) > 0 {
 		fmt.Fprintf(w, "\nalso fires with: %s\n", strings.Join(doc.CoOccurring, ", "))

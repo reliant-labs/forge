@@ -79,6 +79,8 @@ type wireIssue struct {
 	RegressedAt     time.Time        `json:"regressedAt"`
 	IgnoredUntil    time.Time        `json:"ignoredUntil"`
 	Version         int32            `json:"version"`
+	IncidentKey     string           `json:"incidentKey"`
+	RelatedCount    jsonInt          `json:"relatedCount"`
 }
 
 // wireStatus and wirePlatform name the control plane's enum values.
@@ -129,6 +131,7 @@ func (w wireIssue) issue() Issue {
 		Events: int64(w.Events), Affected: int64(w.Affected), AffectedUnit: w.affectedUnit(),
 		ResolvedAt: w.ResolvedAt.UTC(), ResolvedVersion: w.ResolvedVersion, RegressedAt: w.RegressedAt.UTC(),
 		IgnoredUntil: w.IgnoredUntil.UTC(), Version: w.Version,
+		IncidentKey: w.IncidentKey, RelatedCount: int(w.RelatedCount),
 	}
 }
 
@@ -232,6 +235,7 @@ func (c Cloud) getIssue(ctx context.Context, id string, n Narrow) (GetIssueResul
 			LastSeenAt   time.Time `json:"lastSeenAt"`
 		} `json:"byVersion"`
 		CoOccurring  []string `json:"coOccurringIssueIds"`
+		Incident     []string `json:"incidentIssueIds"`
 		FirstRelease *struct {
 			Version     string    `json:"version"`
 			GitCommit   string    `json:"gitCommit"`
@@ -242,7 +246,7 @@ func (c Cloud) getIssue(ctx context.Context, id string, n Narrow) (GetIssueResul
 	if err := c.callIssues(ctx, procGetIssue, in, &out); err != nil {
 		return GetIssueResult{}, err
 	}
-	res := GetIssueResult{Issue: out.Issue.issue(), CoOccurring: out.CoOccurring}
+	res := GetIssueResult{Issue: out.Issue.issue(), CoOccurring: out.CoOccurring, Incident: out.Incident}
 	res.Issue.EnvID = out.Issue.EnvID
 	if out.LatestEvent != nil {
 		ev := out.LatestEvent.event()

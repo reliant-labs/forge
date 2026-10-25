@@ -126,7 +126,8 @@ export default function UsersPage() {
           onClick={async () => {
             // Mutation hooks take the plain request INIT object, not a
             // create()d message. Errors already surface through the
-            // app-wide MutationCache toast — only success is yours.
+            // scaffold's app-wide MutationCache toast (src/lib/query-client.ts)
+            // — only success is yours.
             await createUser.mutateAsync({
               email: "new@example.com",
               name:  "New User",

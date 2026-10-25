@@ -30,12 +30,14 @@
 // an engine with its own dependency footprint gets its own entry point, and
 // React Query is an OPTIONAL peer.
 //
-// WHAT IT DELIBERATELY DOES NOT DO. It does not emit error toasts — the
-// app-wide MutationCache in src/lib/query-client.ts is the single error-toast
-// chokepoint, and pages that render errors inline pass
-// `meta: { silenceErrorToast: true }`. It never defaults success-side UX
-// either: "CreateOrder succeeded" leaks RPC names into the UI, so the toast /
-// redirect / inline confirmation stays the call site's via options.onSuccess.
+// WHAT IT DELIBERATELY DOES NOT DO. It does not emit error toasts — they
+// belong to one app-wide chokepoint, a MutationCache onError on the app's
+// QueryClient (a forge scaffold installs it in src/lib/query-client.ts, and
+// pages that render errors inline pass `meta: { silenceErrorToast: true }`);
+// an app without one handles errors at the call site. It never defaults
+// success-side UX either: "CreateOrder succeeded" leaks RPC names into the
+// UI, so the toast / redirect / inline confirmation stays the call site's via
+// options.onSuccess.
 import {
   create,
   toJson,

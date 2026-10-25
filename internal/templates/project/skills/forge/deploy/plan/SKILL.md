@@ -160,4 +160,3 @@ plan then lists it as kept, with that reason, instead of deleted.
 after upgrading forge cannot prune them. To hand one over, label it once:
 `kubectl label <kind> <name> -n <ns> forge.dev/owner=<project>.<env>`; the next
 deploy deletes it if the render does not carry it.
-

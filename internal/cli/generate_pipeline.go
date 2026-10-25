@@ -2588,10 +2588,6 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 			return err
 		}
 		in.Funnels = funnels
-		in.Processes, err = dashboardProcesses(ctx)
-		if err != nil {
-			return err
-		}
 		written, err := obsdash.Write(ctx.AbsPath, in, ctx.Checksums)
 		if err != nil {
 			return err

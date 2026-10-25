@@ -6,26 +6,20 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/obsdash"
 	deployv1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
-func TestDashboardProcessesStructuralLibraryNeedsNoBoundEnvironment(t *testing.T) {
-	if testing.Short() {
-		t.Skip("evaluates KCL library; full package suite exercises it")
-	}
+func TestDashboardProcessesSelectedRenderNeedsNoOtherEnvironment(t *testing.T) {
 	dir := t.TempDir()
-	files := map[string]string{
-		"forge.yaml":         "name: sample\nmodule_path: example.com/sample\n",
-		"deploy/kcl/kcl.mod": "[package]\nname = \"test\"\nversion = \"0.0.1\"\n",
-		"deploy/kcl/workloads.k": `import forge
-import forge.workloads as fw
-_name = "sample" + "-worker"
-ALL = [fw.Workload {name = _name, kind = "worker", build = forge.GoBuild {cmd = "./cmd/sample"}, args = ["server", "worker"], env = {OTEL_SERVICE_NAME = "sample-jobs"}}]
-`,
+	for rel, body := range map[string]string{
+		"forge.yaml":             "name: sample\nmodule_path: example.com/sample\n",
+		"go.mod":                 "module example.com/sample\n\ngo 1.25\n",
 		"deploy/kcl/prod/main.k": "assert False, \"operator needs a cluster binding\"\n",
-	}
-	for rel, body := range files {
+		"deploy/kcl/workloads.k": "ALL = []\n",
+	} {
 		p := filepath.Join(dir, rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
 			t.Fatal(err)
@@ -34,13 +28,32 @@ ALL = [fw.Workload {name = _name, kind = "worker", build = forge.GoBuild {cmd = 
 			t.Fatal(err)
 		}
 	}
-	got, err := dashboardDeclaredWorkloads(dir)
+	if _, err := obsdash.Write(dir, obsdash.Input{Project: "sample"}, &checksums.FileChecksums{}); err != nil {
+		t.Fatal(err)
+	}
+	// The selected render has an env-only _api absent from source ALL, with an
+	// env-specific telemetry alias. Neither ALL nor prod is evaluated.
+	entities := &KCLEntities{Workloads: []WorkloadEntity{{Name: "dev-api", Build: BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/sample"}}, Spec: deployv1.WorkloadSpec{Args: []string{"server"}, Env: []deployv1.EnvVar{{Name: "OTEL_SERVICE_NAME", Value: "dev-telemetry"}}}}}}
+	sp, err := dashboardSpecForEntities(dir, entities)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := processesForWorkloads("sample", []codegen.GraphRoot{{Name: "worker", Args: []string{"server", "worker"}}}, got)
-	if err != nil || len(p) != 1 || p[0].Name != "sample-worker" || !reflect.DeepEqual(p[0].ServiceNames, []string{"sample-jobs"}) {
-		t.Fatalf("structural inventory=%+v err=%v", p, err)
+	found := false
+	for _, d := range sp.Dashboards {
+		if d.ID == "process-sample-server" {
+			found = true
+			for _, p := range d.Panels {
+				if p.ID == "go-memory" && !reflect.DeepEqual(p.Where[0].Values, []string{"dev-telemetry"}) {
+					t.Fatalf("lost rendered alias: %+v", p.Where)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("environment-only process missing")
+	}
+	if _, err := dashboardSpecForEntities(dir, nil); err == nil {
+		t.Fatal("missing selected render accepted")
 	}
 }
 

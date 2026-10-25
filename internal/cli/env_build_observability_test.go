@@ -17,6 +17,9 @@ import (
 
 func seedGeneratedDashboards(t *testing.T, dir, project string) {
 	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/app\n\ngo 1.25\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	in := obsdash.Input{
 		Project:   project,
 		Services:  []obsdash.Service{{Name: "orders", Package: "orders.v1", ProtoService: "OrdersService", Methods: []obsdash.Method{{Name: "GetOrder"}}}},

@@ -97,6 +97,10 @@ type BundleSetInput struct {
 	ProjectDir string
 	// MetricsSchema is the raw metrics schema the build produced, or nil.
 	MetricsSchema []byte
+	// Resolved is the selected environment's pure assembly. Non-nil replaces
+	// disk generated dashboards, including stale process parts; owned overrides
+	// still apply through the same stable filename/ID path.
+	Resolved *Spec
 }
 
 // CollectBundleSet assembles and validates the observability files of a bundle.
@@ -156,9 +160,16 @@ func generatedDashboards(in BundleSetInput) ([]BundleDashboard, error) {
 	var dashboards []Dashboard
 	project := ""
 
-	sp, ok, err := ReadSpec(in.ProjectDir)
-	if err != nil {
-		return nil, err
+	var sp Spec
+	ok := in.Resolved != nil
+	if ok {
+		sp = *in.Resolved
+	} else {
+		var err error
+		sp, ok, err = ReadSpec(in.ProjectDir)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if ok {
 		if sp.Project != "" {

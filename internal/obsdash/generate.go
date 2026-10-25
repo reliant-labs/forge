@@ -217,6 +217,28 @@ func retireStale(projectDir string, written []string, cs *checksums.FileChecksum
 	return retireGenerated(projectDir, LegacySpecFile, cs)
 }
 
+// ReadFragments reads reusable generation input without loading old process
+// parts. This is the only disk input selected-env assembly consumes.
+func ReadFragments(projectDir string) (Input, bool, error) {
+	raw, err := os.ReadFile(filepath.Join(projectDir, ProjectSpecFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return Input{}, false, nil
+	}
+	if err != nil {
+		return Input{}, false, err
+	}
+	var p ProjectPart
+	if err := decodePart(ProjectSpecFile, raw, &p, &p.Version); err != nil {
+		return Input{}, false, err
+	}
+	if p.Input == nil {
+		return Input{}, false, fmt.Errorf("%s has no generation fragments: run forge generate", ProjectSpecFile)
+	}
+	in := *p.Input
+	in.Processes = nil
+	return in, true, nil
+}
+
 // ReadSpec assembles the Spec forge generate last wrote under projectDir.
 // ok is false when there is none (a project that has not generated
 // dashboards). A part of another version is an error that names the fix.

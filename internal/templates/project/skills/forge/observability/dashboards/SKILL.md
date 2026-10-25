@@ -5,18 +5,23 @@ description: Process/role dashboards derived from deployed executable and compos
 
 # Observability: generated dashboards
 
-`forge generate` (step "observability dashboards") derives dashboards from deployed
-workloads: executable plus command/composition root, matching the workload's
-`OTEL_SERVICE_NAME` (or workload name) in the evaluated `workloads.k` `ALL`
-structural inventory. It does not require environment runtime bindings to render:
-a newly scaffolded operator may have prod's cluster still unbound. Environment-only
-name or telemetry-identity overrides must retain these declared identities or use
-an owned dashboard override; generation reports that boundary explicitly.
-API, worker and gateway roles of one executable stay separate. A worker with no RPCs still gets runtime and workload
-panels. Graph route sets and typed mount inventory establish RPC ownership;
-proto package names never decide which process serves them. Observability and
-codegen must be enabled. An invalid structural inventory fails before dashboard
-writes or retirement; invalid environment bindings are a separate deploy gate.
+`forge generate` writes reusable RPC, frontend and metric dashboard fragments
+and alert inputs without rendering any environment or claiming process ownership.
+A newly scaffolded operator can therefore generate while prod's cluster is unbound.
+
+`forge env render <env>` validates, and `forge env build <env>` assembles the
+process dashboards from the selected environment's already-rendered
+`KCLEntities.Workloads`. The exact executable, command/args and resolved
+`OTEL_SERVICE_NAME` include environment-only workloads and aliases. No source
+`ALL` inventory, AST workload guesses, second render or other-environment validity
+is involved. API, worker and gateway roles of one executable remain separate;
+workers with no RPCs get runtime/workload panels. Composition route sets and typed
+mounts establish RPC ownership, not proto package names.
+
+Per-process assembly is pure and environment-specific. It writes no global process
+parts and retires nothing on a failed render. Each release bundle contains exactly
+its selected environment's dashboard set, with owned process overrides applied by
+stable ID/filename. Old disk-generated process parts never contaminate that set.
 
 | File                                                          | What                                                                                                                                                                                             |
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

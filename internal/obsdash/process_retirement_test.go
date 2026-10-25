@@ -59,6 +59,41 @@ func TestProcessGenerationRetiresOnlyPristineServiceArtifacts(t *testing.T) {
 	}
 }
 
+func TestResolvedBundleSetExcludesStalePartsAndKeepsOwnedOverride(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Write(dir, fixture(), &checksums.FileChecksums{}); err != nil {
+		t.Fatal(err)
+	}
+	selected := fixture()
+	selected.Processes = selected.Processes[:1]
+	selected.Processes[0].ServiceNames = []string{"selected-alias"}
+	sp := Build(selected)
+	owned := Dashboard{ID: "process-shop-api", Title: "Owned selected API", Panels: runtimePanels()}
+	raw, _ := json.Marshal(owned)
+	if err := os.WriteFile(filepath.Join(dir, OverridePath("shop", owned)), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	set, err := CollectBundleSet(BundleSetInput{ProjectDir: dir, Resolved: &sp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, d := range set.Dashboards {
+		if d.Dashboard.ID == "process-shop-worker" {
+			t.Fatal("stale other-environment disk process leaked into selected bundle")
+		}
+		if d.Dashboard.ID == owned.ID {
+			found = true
+			if d.Dashboard.Title != owned.Title {
+				t.Fatal("owned process override lost")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("selected owned process missing")
+	}
+}
+
 func TestOverviewHealthIsMetricBackedAndBounded(t *testing.T) {
 	d := Build(fixture()).Dashboards[0]
 	if len(d.Panels) > 15 {

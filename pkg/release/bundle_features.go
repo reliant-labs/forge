@@ -1,6 +1,10 @@
 package release
 
-import "slices"
+import (
+	"bytes"
+	"encoding/json"
+	"slices"
+)
 
 // Optional parts of the bundle document ([BundleDoc]) that a reader may not
 // decode yet.
@@ -101,6 +105,29 @@ func (r *BundleReader) Limit(d BundleDoc) BundleDoc {
 	}
 	d.Shape = r.LimitShape(d.Shape)
 	return d
+}
+
+// HasOptionalParts reports whether s carries any part a reader that decodes
+// NO optional feature would withhold — so whether sending s to a control
+// plane needs its feature list first.
+//
+// It is DERIVED from LimitShape rather than listing fields, and that is the
+// point: the environment declaration once asked only when the shape had
+// frontend telemetry, so when forge #1285 added uptime checks to the shape a
+// control plane predating them strict-decoded the declaration, refused it
+// whole ("spec.shape is not a release.Shape"), and every release cut against
+// it failed before building. A feature added to LimitShape is covered here
+// with no second edit.
+func (s Shape) HasOptionalParts() bool {
+	limited, err := json.Marshal((&BundleReader{Features: []string{}}).LimitShape(s).Canonical())
+	if err != nil {
+		return true
+	}
+	full, err := json.Marshal(s.Canonical())
+	if err != nil {
+		return true
+	}
+	return !bytes.Equal(limited, full)
 }
 
 // LimitShape returns s without every optional part the reader does not decode.

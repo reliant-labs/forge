@@ -88,6 +88,39 @@ func TestEnsureHostedEnvironment_WithholdsFrontendTelemetryFromAnOldControlPlane
 	}
 }
 
+// The incident: forge #1285 added uptime checks to the shape, the
+// declaration asked for features only when the shape had frontend telemetry,
+// and control-plane prod (which predated the field) refused the whole
+// declaration, so every release cut failed before building. Any optional
+// part triggers the question, and a reader without the feature gets the
+// shape without it.
+func TestEnsureHostedEnvironment_WithholdsEveryOptionalPartAnOldControlPlaneLacks(t *testing.T) {
+	shape := &release.Shape{
+		Kind:         release.EnvSelfManaged,
+		UptimeChecks: []release.ShapeUptimeCheck{{Name: "site", URL: "https://example.com/"}},
+	}
+	if !shape.HasOptionalParts() {
+		t.Fatal("a shape with uptime checks reports no optional parts")
+	}
+	old := &capsCaller{features: []string{release.BundleFeatureFrontendTelemetry}}
+	if _, _, err := EnsureHostedEnvironment(context.Background(), old, HostedEnvRef{Name: "prod", Kind: HostedEnvSelfManaged, Shape: shape}); err != nil {
+		t.Fatal(err)
+	}
+	if old.capsAsks != 1 {
+		t.Errorf("asked GetCapabilities %d time(s); want 1 for a shape carrying uptime checks", old.capsAsks)
+	}
+	if got := sentShape(t, old); strings.Contains(got, "uptime_checks") {
+		t.Errorf("sent uptime checks to a control plane that does not decode them: %s", got)
+	}
+	current := &capsCaller{features: release.BundleDocFeatures()}
+	if _, _, err := EnsureHostedEnvironment(context.Background(), current, HostedEnvRef{Name: "prod", Kind: HostedEnvSelfManaged, Shape: shape}); err != nil {
+		t.Fatal(err)
+	}
+	if got := sentShape(t, current); !strings.Contains(got, "uptime_checks") {
+		t.Errorf("withheld uptime checks from a control plane that decodes them: %s", got)
+	}
+}
+
 // Asking costs a call, so a declaration with nothing to withhold makes none.
 func TestEnsureHostedEnvironment_AsksNothingWhenThereIsNothingToWithhold(t *testing.T) {
 	c := &capsCaller{}

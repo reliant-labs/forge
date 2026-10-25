@@ -458,7 +458,7 @@ func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvR
 		// same bytes `forge env shape` printed, rather than whatever
 		// Go's marshaller happened to emit for the struct.
 		declared := *ref.Shape
-		if declared.HasFrontendTelemetry() {
+		if declared.HasOptionalParts() {
 			// The control plane strict-decodes this shape, so a part it
 			// predates would be refused whole. Asked only when there is
 			// something to withhold: every other declaration costs no call.

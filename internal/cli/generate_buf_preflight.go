@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -15,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 )
 
 // Pre-flight for the `local:` plugins of a buf template, run immediately
@@ -48,6 +50,12 @@ import (
 //   - `go tool <name>`: go.mod (or a module of the go.work in effect) must
 //     declare a tool directive for <name>.
 //   - `node <script>`: the script must exist, relative to the project root.
+//
+// A plugin missing from a package's not-yet-installed node_modules is not
+// refused: the package's dependencies are installed through frontenddeps.Ensure,
+// the install `forge env up`, `forge build` and `forge lint` use, so
+// FORGE_SKIP_NPM_INSTALL disables it identically. Only when that install is
+// skipped or fails is the template refused, with the command to run.
 //
 // Any other form — `go run pkg@v`, npx, an interpreter flag before the script
 // — is resolved by that program at run time. Only its argv[0] is checked; the
@@ -132,10 +140,34 @@ func preflightBufTemplate(projectDir, label string, body []byte, env []string) e
 		env = os.Environ()
 	}
 	var problems []bufPluginProblem
+	installed := map[string]error{}
 	for _, p := range bufTemplateLocalPlugins(body) {
-		if prob := checkBufLocalPlugin(projectDir, p, env); prob != nil {
-			problems = append(problems, *prob)
+		prob := checkBufLocalPlugin(projectDir, p, env)
+		if prob == nil {
+			continue
 		}
+		// A plugin inside a package's not-yet-installed node_modules is
+		// installed the way every other forge step installs a missing
+		// frontend (frontenddeps.Ensure), not refused.
+		if rel := missingPluginInstallDir(projectDir, p); rel != "" {
+			err, done := installed[rel]
+			if !done {
+				err = frontenddeps.Ensure(context.Background(), "[generate]", rel,
+					filepath.Join(projectDir, filepath.FromSlash(rel)), "", true)
+				installed[rel] = err
+			}
+			if err == nil {
+				if prob = checkBufLocalPlugin(projectDir, p, env); prob == nil {
+					continue
+				}
+			} else {
+				prob.what += fmt.Sprintf("; forge tried to install %s and failed: %v", rel, err)
+			}
+			if os.Getenv("FORGE_SKIP_NPM_INSTALL") != "" {
+				prob.what += "; FORGE_SKIP_NPM_INSTALL is set, so forge did not install it"
+			}
+		}
+		problems = append(problems, *prob)
 	}
 	if len(problems) == 0 {
 		return nil
@@ -151,6 +183,31 @@ func preflightBufTemplate(projectDir, label string, body []byte, env []string) e
 	}
 	fix.WriteString("\n  then re-run generate")
 	return cliutil.UserErr(Name()+" generate (buf plugin pre-flight)", what.String(), "", fix.String())
+}
+
+// missingPluginInstallDir returns the project-relative package directory whose
+// dependency install would provide plugin p: the package owning the
+// node_modules the plugin's missing file sits in, when it has a package.json.
+// "" when p is not in that situation.
+func missingPluginInstallDir(projectDir string, p bufLocalPlugin) string {
+	target := p.argv[0]
+	if base := strings.TrimSuffix(filepath.Base(target), ".exe"); base == "node" && len(p.argv) >= 2 && !strings.HasPrefix(p.argv[1], "-") {
+		target = p.argv[1]
+	}
+	if !strings.ContainsRune(target, '/') || filepath.IsAbs(target) {
+		return ""
+	}
+	if _, err := os.Stat(projectPath(projectDir, target)); err == nil {
+		return ""
+	}
+	pkg, ok := nodeModulesDir(target)
+	if !ok {
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, filepath.FromSlash(pkg), "package.json")); err != nil {
+		return ""
+	}
+	return pkg
 }
 
 // checkBufLocalPlugin resolves one plugin the way buf will, returning nil when

@@ -44,24 +44,54 @@ Rules that hold for every frontend, adopted or not:
   covers them. Vite's own template does not: its `tsconfig.app.json` excludes
   every test and nothing else includes them, and vitest strips types without
   checking them, so a test importing a removed export passes both. An adopted
-  app with that split adds `tsconfig.test.json`, extending the app project with
-  the tests and test-only types, and references it from the root `tsconfig.json`:
+  app with that split adds a `tsconfig.test.json` that holds **only the tests**
+  and references the app project, and lists it in the root `tsconfig.json`'s
+  `references`:
 
   ```json
   {
     "extends": "./tsconfig.app.json",
     "compilerOptions": {
       "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+      "composite": false,
+      "declaration": false,
+      "emitDeclarationOnly": false,
+      "noEmit": true,
       "types": ["vitest/globals", "@testing-library/jest-dom"]
     },
-    "include": ["src"],
+    "references": [{ "path": "./tsconfig.app.json" }],
+    "include": ["src/**/__tests__/**/*", "src/**/*.test.*", "src/**/*.spec.*", "src/test/**/*", "src/**/*.d.ts"],
     "exclude": ["src/gen/**/*"]
   }
   ```
 
-  Its `exclude` replaces the inherited one, so the tests are back in. `types`
-  names whatever globals the test setup declares; omit it when tests import
-  `vitest` explicitly.
+  The app project, in place of its `"noEmit": true`, becomes `composite` and
+  emits declarations only, out of the tree:
+
+  ```json
+  {
+    "compilerOptions": {
+      "composite": true,
+      "emitDeclarationOnly": true,
+      "outDir": "./node_modules/.tmp/tsc"
+    }
+  }
+  ```
+
+  Do not give the test project `"include": ["src"]`: every app file is then
+  type-checked twice, once per project, which on reliant's web app made
+  `tsc -b` the slowest step of its merge gate. With the reference, `tsc -b`
+  checks the app once and the tests read its emitted `.d.ts`; an app edit that
+  leaves the declarations alone does not re-check the tests. `src/**/*.d.ts`
+  keeps the app's global declarations (`vite/client`, `Window` augmentations)
+  in scope, because a referenced project's own `.d.ts` files are not emitted.
+  A project the app itself references (a separate one for `src/gen`) emits
+  into the same `outDir`, so the relative imports between them in emitted
+  `.d.ts` still resolve: under `skipLibCheck` one that does not types as `any`
+  in the tests, silently. Declaration emit can also fail an export whose
+  inferred type names a type its module does not export (TS4023, TS2742):
+  export that type, or annotate the export. `types` names whatever globals the
+  test setup declares; omit it when tests import `vitest` explicitly.
 
 Per-frontend codegen knobs live in the frontend's own `package.json` — no
 deploy env needed:

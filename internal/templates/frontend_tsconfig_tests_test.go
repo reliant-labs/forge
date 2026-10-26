@@ -56,6 +56,92 @@ func TestWebScaffoldTypeChecksItsTests(t *testing.T) {
 	}
 }
 
+// TestAdoptSkillTestProjectChecksOnlyTests holds the tsconfig.test.json the
+// frontend/adopt skill gives an app with Vite's split to the shape that
+// type-checks each file ONCE. Its first version extended the app project with
+// `"include": ["src"]`, so `tsc -b` type-checked every app file in both
+// projects; on reliant's web app that made the typecheck the slowest step of
+// its merge gate. The test project must cover the tests, leave app code to the
+// app project, reach it by reference, and the app project must be composite
+// (tsc -b refuses a reference to one that is not).
+func TestAdoptSkillTestProjectChecksOnlyTests(t *testing.T) {
+	t.Parallel()
+	const skill = "skills/forge/frontend/adopt/SKILL.md"
+	b, err := ProjectTemplates().Get(skill)
+	if err != nil {
+		t.Fatalf("read %s: %v", skill, err)
+	}
+	type project struct {
+		CompilerOptions map[string]any `json:"compilerOptions"`
+		Extends         string         `json:"extends"`
+		References      []struct {
+			Path string `json:"path"`
+		} `json:"references"`
+		Include []string `json:"include"`
+		Exclude []string `json:"exclude"`
+	}
+	var testProject, appOptions *project
+	for _, block := range jsonFences(string(b)) {
+		var p project
+		if err := json.Unmarshal([]byte(block), &p); err != nil {
+			continue // the package.json "forge" fragment
+		}
+		switch {
+		case p.Extends == "./tsconfig.app.json":
+			testProject = &p
+		case p.CompilerOptions["composite"] == true:
+			appOptions = &p
+		}
+	}
+	if testProject == nil {
+		t.Fatalf("%s: no tsconfig.test.json snippet (a JSON block extending ./tsconfig.app.json)", skill)
+	}
+	for _, f := range []string{"src/lib/__tests__/connect.test.ts", "src/App.test.tsx", "src/test/setup.ts", "src/hooks/orders-service-hooks_gen.test.tsx"} {
+		if !tsconfigMatches(testProject.Include, f) || tsconfigMatches(testProject.Exclude, f) {
+			t.Errorf("tsconfig.test.json include %v / exclude %v does not cover %s", testProject.Include, testProject.Exclude, f)
+		}
+	}
+	for _, f := range []string{"src/App.tsx", "src/lib/connect.ts", "src/hooks/orders-service-hooks_gen.ts"} {
+		if tsconfigMatches(testProject.Include, f) && !tsconfigMatches(testProject.Exclude, f) {
+			t.Errorf("tsconfig.test.json include %v covers app file %s, which the app project already type-checks", testProject.Include, f)
+		}
+	}
+	refs := false
+	for _, r := range testProject.References {
+		refs = refs || r.Path == "./tsconfig.app.json"
+	}
+	if !refs {
+		t.Errorf("tsconfig.test.json must reference ./tsconfig.app.json, so the tests read the app's declarations; references %v", testProject.References)
+	}
+	if testProject.CompilerOptions["incremental"] != true {
+		t.Errorf("tsconfig.test.json must set incremental (composite: false turns it off), or tsc -b re-checks every test on any change")
+	}
+	if appOptions == nil || appOptions.CompilerOptions["emitDeclarationOnly"] != true {
+		t.Errorf("%s: no app-project snippet making tsconfig.app.json composite with emitDeclarationOnly", skill)
+	}
+}
+
+// jsonFences returns the bodies of the ```json fenced blocks in markdown,
+// indented or not.
+func jsonFences(md string) []string {
+	var out []string
+	var cur []string
+	in := false
+	for _, line := range strings.Split(md, "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case !in && trimmed == "```json":
+			in, cur = true, nil
+		case in && trimmed == "```":
+			in = false
+			out = append(out, strings.Join(cur, "\n"))
+		case in:
+			cur = append(cur, line)
+		}
+	}
+	return out
+}
+
 // tsconfigMatches reports whether a tsconfig include/exclude list matches a
 // project-relative file: an entry with no wildcard names a file or a directory
 // (and everything under it); `**/` matches any number of directories.

@@ -3,11 +3,17 @@
 package alerting
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 type fakeRules struct {
@@ -250,4 +256,124 @@ func allEvents(t *testing.T, s StateStore) []Event {
 		out = append(out, ev...)
 	}
 	return out
+}
+
+// The cap must never be silent: a log naming the dropped rules, a gauge, and an
+// AlertRulesOverCap alert carrying the env's own identity.
+func TestOverCapEnvIsLoud(t *testing.T) {
+	h := newHarness(t, Limits{MinInterval: time.Millisecond, MaxRulesPerEnv: 2})
+	h.q.rows["org-a"] = nil
+	reader := sdkmetric.NewManualReader()
+	var logs bytes.Buffer
+	rules := &fakeRules{}
+	for _, n := range []string{"r1", "r2", "r3", "r4"} {
+		rules.set("org-a", append(rules.rules["org-a"], ruleFor("org-a", n))...)
+	}
+	for i := range rules.rules["org-a"] {
+		rules.rules["org-a"][i].Env = "prod"
+		rules.rules["org-a"][i].Identity["reliant_env_id"] = "prod"
+	}
+	s, err := NewScheduler(SchedulerDeps{
+		Rules: rules, Store: h.store, Eval: h.ev, Shards: 1, Tick: 10 * time.Millisecond,
+		Notifier: h.n, Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+		Meter: sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("t"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := map[string]*ownerState{}
+	s.tick(context.Background(), 0, cache)
+
+	if out := logs.String(); !strings.Contains(out, "NOT evaluated") || !strings.Contains(out, "r3") || !strings.Contains(out, "r4") || strings.Contains(out, "r1") {
+		t.Fatalf("the log must name exactly the dropped rule ids (r3, r4):\n%s", out)
+	}
+	var over []Alert
+	for _, a := range h.n.all() {
+		if a.Labels["alertname"] == OverCapAlertName {
+			over = append(over, a)
+		}
+	}
+	if len(over) != 1 || over[0].Labels["reliant_env_id"] != "prod" || over[0].Labels["reliant_org_id"] != "org-a" || over[0].Labels["severity"] != "critical" {
+		t.Fatalf("AlertRulesOverCap = %+v", over)
+	}
+	if sum := over[0].Annotations["summary"]; !strings.Contains(sum, "r3") || !strings.Contains(sum, "r4") || !strings.Contains(sum, "4 alert rules") {
+		t.Fatalf("summary = %q", sum)
+	}
+	if got := droppedGauge(t, reader, "prod"); got != 2 {
+		t.Fatalf("alerting.rules.dropped{env=prod} = %d, want 2", got)
+	}
+
+	// Back under the cap: the gauge goes to zero and the alert stops being re-posted.
+	rules.set("org-a", rules.rules["org-a"][:2]...)
+	before := len(h.n.all())
+	time.Sleep(5 * time.Millisecond)
+	s.tick(context.Background(), 0, cache)
+	if got := droppedGauge(t, reader, "prod"); got != 0 {
+		t.Fatalf("gauge after recovery = %d, want 0", got)
+	}
+	for _, a := range h.n.all()[before:] {
+		if a.Labels["alertname"] == OverCapAlertName {
+			t.Fatal("AlertRulesOverCap must stop once the env is back under its cap")
+		}
+	}
+}
+
+// A dropped rule's condition is unknown, not clear: the cap must not resolve
+// what it had firing, which would tell the owner an incident ended.
+func TestDroppedRuleIsNotRetired(t *testing.T) {
+	h := newHarness(t, Limits{MinInterval: time.Millisecond, MaxRulesPerEnv: 1})
+	h.q.rows["org-a"] = []Row{{"s": "a"}}
+	rules := &fakeRules{}
+	keep, drop := ruleFor("org-a", "a-keep"), ruleFor("org-a", "b-drop")
+	keep.Env, drop.Env = "prod", "prod"
+	rules.set("org-a", drop)
+	s := newSched(t, h, rules, 1, nil)
+	cache := map[string]*ownerState{}
+	for i := 0; i < 2; i++ {
+		s.tick(context.Background(), 0, cache)
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(h.n.all()) == 0 {
+		t.Fatal("setup: the rule should be firing")
+	}
+	n := len(h.n.all())
+	rules.set("org-a", keep, drop) // b-drop now falls to the cap
+	s.tick(context.Background(), 0, cache)
+	for _, a := range h.n.all()[n:] {
+		if a.Labels["alertname"] == "b-drop" && !a.EndsAt.After(time.Now()) {
+			t.Fatalf("a rule dropped by the cap was reported resolved: %+v", a)
+		}
+	}
+	stored, _ := h.store.LoadOwner(context.Background(), "org-a")
+	var firing bool
+	for _, in := range stored {
+		if in.Name == "b-drop" && in.State == StateFiring {
+			firing = true
+		}
+	}
+	if !firing {
+		t.Fatalf("the dropped rule's firing instance must be left as it was: %+v", stored)
+	}
+}
+
+func droppedGauge(t *testing.T, r *sdkmetric.ManualReader, env string) int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := r.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "alerting.rules.dropped" {
+				continue
+			}
+			for _, dp := range m.Data.(metricdata.Gauge[int64]).DataPoints {
+				if v, _ := dp.Attributes.Value("env"); v.AsString() == env {
+					return dp.Value
+				}
+			}
+		}
+	}
+	t.Fatalf("no alerting.rules.dropped for env %q", env)
+	return 0
 }

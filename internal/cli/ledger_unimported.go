@@ -102,6 +102,12 @@ func checkLedgerImported(ctx context.Context, projectDir, env string, l envLedge
 	if err != nil || !held.any() {
 		return err
 	}
+	return checkCheckoutLedgerImported(ctx, held, projectDir, env, l)
+}
+
+// checkCheckoutLedgerImported is the remote containment half. Callers with a
+// network deadline can read the checkout first without spending that budget.
+func checkCheckoutLedgerImported(ctx context.Context, held checkoutLedger, projectDir, env string, l envLedger) error {
 	missing, err := unimportedIn(ctx, held, projectDir, env, l)
 	if err != nil || !missing.any() {
 		return err

@@ -45,6 +45,48 @@ func TestCompositionRenderHonorsCallerCancellation(t *testing.T) {
 	})
 }
 
+func TestCompositionCheckoutDoesNotSpendRemoteLookupBudget(t *testing.T) {
+	previousRender, previousCheckout := renderKCLRawHook, compositionCheckoutLedger
+	t.Cleanup(func() { renderKCLRawHook, compositionCheckoutLedger = previousRender, previousCheckout })
+	dir := newLedgerTestProject(t, "composition-local-deadline")
+	t.Chdir(dir)
+	renderKCLRawHook = func(context.Context, string, string, ...string) ([]byte, error) { return []byte(`{"items": []}`), nil }
+	synctest.Test(t, func(t *testing.T) {
+		finishedCheckout := errors.New("checkout completed after remote lookup budget")
+		compositionCheckoutLedger = func(ctx context.Context, _, _ string) (checkoutLedger, error) {
+			time.Sleep(31 * time.Second)
+			if err := ctx.Err(); err != nil {
+				return checkoutLedger{}, err
+			}
+			return checkoutLedger{}, finishedCheckout
+		}
+		err := prepareComposition(context.Background(), &buildOptions{release: "v1.0.0", env: "prod"}, "", true, []string{"all"})
+		if !errors.Is(err, finishedCheckout) {
+			t.Fatalf("local checkout consumed remote lookup budget: %v", err)
+		}
+	})
+}
+
+func TestCompositionCheckoutHonorsCallerCancellation(t *testing.T) {
+	previousRender, previousCheckout := renderKCLRawHook, compositionCheckoutLedger
+	t.Cleanup(func() { renderKCLRawHook, compositionCheckoutLedger = previousRender, previousCheckout })
+	dir := newLedgerTestProject(t, "composition-local-cancel")
+	t.Chdir(dir)
+	renderKCLRawHook = func(context.Context, string, string, ...string) ([]byte, error) { return []byte(`{"items": []}`), nil }
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		compositionCheckoutLedger = func(ctx context.Context, _, _ string) (checkoutLedger, error) {
+			<-ctx.Done()
+			return checkoutLedger{}, ctx.Err()
+		}
+		err := prepareComposition(ctx, &buildOptions{release: "v1.0.0", env: "prod"}, "", true, []string{"all"})
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("caller must cancel checkout: %v", err)
+		}
+	})
+}
+
 func TestCompositionRemoteLookupRemainsBounded(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		// Local work has already used more than the remote phase's budget.

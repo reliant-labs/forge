@@ -489,6 +489,46 @@ week three:
 
 ## Install
 
+Pick one. All of them give you a single `forge` binary; none needs a C toolchain, and the
+first four need no Go toolchain either.
+
+```bash
+# macOS / Linux (amd64, arm64): one command, no sudo, no prompts.
+# Installs to ~/.local/bin (set FORGE_INSTALL_DIR to change it) and checks the
+# release's sha256 before installing. Pin a release with FORGE_VERSION=v0.1.46.
+curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh
+```
+
+```powershell
+# Windows (amd64, arm64)
+irm https://raw.githubusercontent.com/reliant-labs/forge/main/install.ps1 | iex
+```
+
+```bash
+# Homebrew (macOS and Linux)
+brew install reliant-labs/reliant/forge
+
+# npm / npx: downloads the same verified binary on first run
+npx @reliantlabs/forge version
+npm install -g @reliantlabs/forge
+
+# Go toolchain
+go install github.com/reliant-labs/forge/cmd/forge@latest
+```
+
+For a non-interactive sandbox or CI image, the `curl | sh` line is the whole
+setup. Pin the version so the image is reproducible:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | FORGE_VERSION=v0.1.46 sh
+export PATH="$HOME/.local/bin:$PATH"   # the installer prints this if it is needed
+```
+
+Releases attach `forge_<os>_<arch>.tar.gz` for linux, darwin and windows on amd64
+and arm64, plus `checksums.txt`, if you would rather download one yourself.
+
+### From a clone
+
 ```bash
 # Build the binary into ./bin/forge
 task build
@@ -500,9 +540,6 @@ forge version
 # Run straight from source without installing
 go run ./cmd/forge version
 ```
-
-Forge is a single cgo-free binary, so `go install github.com/reliant-labs/forge/cmd/forge@<version>`
-works on macOS, Linux and Windows (amd64 and arm64) with no C toolchain.
 
 On first render forge extracts KCL's native library (`libkcl.so`/`.dylib`, or
 `kcl.dll` on Windows) into your user cache dir — `%TEMP%\kcl` on Windows — and

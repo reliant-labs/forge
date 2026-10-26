@@ -1,6 +1,8 @@
 # forge:hash=7c0c5c0bb2a4c734f08eb6ba5e567f4e7f9fc7f15460790359a830ae710a1f81
 # ── Go build outputs ──
 bin/
+# npm/bin/forge.js is the @reliantlabs/forge entry point, not build output.
+!npm/bin/
 dist/
 *.exe
 *.dll

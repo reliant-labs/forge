@@ -76,12 +76,21 @@ type Issue struct {
 	// LatestTraceID is the trace of the newest event, when the list knows it
 	// (the local grouping does; the control plane answers it in GetIssue).
 	LatestTraceID string
+	// Assignee is who the issue is assigned to; nil when unassigned (always
+	// nil locally).
+	Assignee *IssueUser
 	// IncidentKey is shared by the issues of one incident: issues with the
 	// same cause (obsquery.ServerCause) that first fired within a window of
 	// one another. Empty for an issue that is not part of one. RelatedCount
 	// is how many OTHER issues carry the same key. Issues are never merged.
 	IncidentKey  string
 	RelatedCount int
+}
+
+// IssueUser is a person as an issue shows them: an assignee, an author.
+type IssueUser struct {
+	ID   string
+	Name string
 }
 
 // IssueEvent is one occurrence of an issue.
@@ -131,6 +140,9 @@ type ListIssuesRequest struct {
 	Platform string
 	// Source lists the issues of this issue source; "" lists errors.
 	Source string
+	// Assignee keeps the issues assigned to this user id; "" keeps every
+	// issue. The control plane has no filter for "unassigned".
+	Assignee string
 	// SinceRelease keeps issues first seen in this release version.
 	SinceRelease string
 	// SincePromotion keeps issues first seen at or after this promotion.
@@ -204,5 +216,111 @@ type UpdateIssueStatusRequest struct {
 
 // UpdateIssueStatusResult is the issue after the write.
 type UpdateIssueStatusResult struct {
+	Issue Issue
+}
+
+// Timeline entry kinds, and the kinds of actor that made one.
+const (
+	TimelineStatus     = "status"
+	TimelineComment    = "comment"
+	TimelineAssignment = "assignment"
+	TimelineChat       = "chat"
+
+	ActorUser    = "user"
+	ActorMachine = "machine"
+	ActorSystem  = "system"
+)
+
+// IssueActor is who did something: a person, a machine credential or the
+// system.
+type IssueActor struct {
+	Kind string
+	ID   string
+	Name string
+}
+
+// StatusChange is a status entry. From is "" for the issue's opening.
+type StatusChange struct {
+	From, To     string
+	Version      string
+	IgnoredUntil time.Time
+}
+
+// IssueComment is one comment on an issue. Body is plain text or markdown,
+// verbatim.
+type IssueComment struct {
+	ID        string
+	IssueID   string
+	Author    *IssueUser
+	Body      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// AssignmentChange is an assignment entry; a nil side is "unassigned".
+type AssignmentChange struct {
+	From, To *IssueUser
+}
+
+// ChatLink is a chat started from the issue.
+type ChatLink struct {
+	ChatID    string
+	ChatTitle string
+	LinkedBy  *IssueUser
+	LinkedAt  time.Time
+}
+
+// TimelineEntry is one thing that happened to an issue. Kind says which of
+// Status, Comment, Assignment and Chat is set.
+type TimelineEntry struct {
+	ID    string
+	Time  time.Time
+	Kind  string
+	Actor IssueActor
+	// IssueID is the issue it happened on: the requested one, or one merged
+	// into it.
+	IssueID    string
+	Status     *StatusChange
+	Comment    *IssueComment
+	Assignment *AssignmentChange
+	Chat       *ChatLink
+}
+
+// ListIssueTimelineRequest reads the newest Limit entries of an issue's
+// timeline.
+type ListIssueTimelineRequest struct {
+	ID    string
+	Limit int
+}
+
+// ListIssueTimelineResult is the newest entries, oldest first.
+type ListIssueTimelineResult struct {
+	Entries []TimelineEntry
+	// IssueID is the issue the timeline is of: the requested one, or the one
+	// it was merged into.
+	IssueID string
+	// Omitted counts older entries the Limit cut.
+	Omitted int
+}
+
+// AddIssueCommentRequest comments on an issue.
+type AddIssueCommentRequest struct {
+	ID   string
+	Body string
+}
+
+// AddIssueCommentResult is the comment as stored.
+type AddIssueCommentResult struct {
+	Comment IssueComment
+}
+
+// AssignIssueRequest assigns an issue. Assignee is a user id; "" clears it.
+type AssignIssueRequest struct {
+	ID       string
+	Assignee string
+}
+
+// AssignIssueResult is the issue after the write.
+type AssignIssueResult struct {
 	Issue Issue
 }

@@ -41,8 +41,14 @@ re-running the failed job is enough.
 - **a codemod**: a non-test Go file in `internal/codemod/` that registers a
   `forge fix <name>` (`register(Codemod{Name: "<name>", ...})`). Mark it
   `Upgrade: true` when it is a pure rename or move, so `forge project upgrade`
-  runs it for you. See `internal/codemod/codemod.go` for what a codemod is and
-  the existing ones (`txisolation.go`, `connecterrors.go`) for the shape.
+  runs it for you. A codemod that is not a pure rename (it replaces files, or
+  lists what it cannot decide) is named in that release's playbook frontmatter,
+  `automation: fix:<name>`, and `forge project upgrade` runs it when the
+  playbook's detection matches, over a clean tree. One of the two is required:
+  `TestEveryRegisteredCodemodIsReachableFromUpgrade` fails otherwise, so a
+  registered codemod is never one a consumer's `forge project upgrade` skips.
+  See `internal/codemod/codemod.go` for what a codemod is and the existing ones
+  (`txisolation.go`, `connecterrors.go`) for the shape.
 - **a migration playbook entry**: a file under
   `internal/templates/project/skills/forge/migrations/<vX.Y.Z>/`, for a break no
   tool can rewrite (a decision a person has to make). Add a section to that

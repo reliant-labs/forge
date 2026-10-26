@@ -93,20 +93,109 @@ forge project upgrade --to v0.5.0      # bumps to a specific version
 forge project upgrade --force
 ```
 
-`forge project upgrade` runs in three phases:
+`forge project upgrade` is one verb that applies every mechanical fix forge
+knows for the range the pin crosses, in this order:
 
-1. **Surface applicable migrations.** Every release the project has not
-   crossed yet, whose detection script matches the project's current
-   shape, printed oldest release first with a `forge skill load <path>`
-   command.
-2. **Apply template drift.** Frozen Tier-2 files (Taskfile, Dockerfile,
-   middleware scaffolds) are diffed against the latest templates; the
-   user sees a unified diff for any file they've modified, and unmodified
-   files are auto-updated.
-3. **Bump `forge_version`** in `forge.yaml` to the target version. (For a
-   project that requires forge in go.mod, `forge generate` converges it to
-   go.mod's require on its own — upgrade's bump matters for the hops generate
-   leaves to it, and for CLI/library projects without the require.)
+1. **modules** — `go get` / `go mod tidy` the forge requirement of every
+   module that has one.
+2. **codemods** — the `forge fix <name>` codemods keyed to the releases the
+   range crosses (the ones marked to run on every crossing). A pin to a
+   pre-release of a release (a Go pseudo-version of main) crosses that
+   release's codemods too.
+3. **templates** — frozen Tier-2 files diffed against the latest templates;
+   unmodified files are auto-updated, modified ones are reported and kept
+   (`--force` adopts them).
+4. **pin** — `forge_version` in `forge.yaml` moves to the target.
+5. **playbooks** — each crossed playbook's `automation:` steps (a playbook
+   declares `fix:<codemod>` for the steps that are mechanical). A playbook
+   whose detection still matches afterwards is left for a person.
+6. **vendored-contracts** — see below.
+7. **generate** — `forge generate`.
+8. **locks** — a lockfile that disagrees with its `package.json` (generate
+   edits dependency ranges) is refreshed by the package manager.
+9. **lint** — `forge lint --json`. Errors are what is left for a person;
+   findings of a rule still in its warn-first grace are listed as upcoming,
+   with the release they gate from.
+
+A codemod that replaces files you own (it cannot be reviewed except as a
+`git diff`) only runs over a clean tree: upgrade leaves it and reports it under
+"Still needs a person" rather than rewrite uncommitted work. `--allow-dirty`
+runs it anyway. The pin files a bump itself edits (`go.mod`, `go.sum`,
+`go.work`, `forge.yaml`) do not make a tree dirty.
+
+`--check` (alias `--dry-run`) writes nothing and runs neither generate nor
+lint; it still names each codemod rewrite and lockfile it would touch.
+`--skip <phase>` (repeatable) omits `playbooks`, `vendored-contracts`,
+`generate`, `locks` or `lint`.
+
+### Exit codes and `--json` — the contract a pin bot calls
+
+| Exit | Meaning | The caller |
+| --- | --- | --- |
+| `0` | Converged: every fix applied, nothing left for a person. | Merge candidate. |
+| `1` | Failed: an error stopped the run (generate failed, a codemod errored, a bad flag, a staged-upgrade refusal). | Read `error`; do not retry blindly. |
+| `2` | Could not determine: a package manager or registry could not be reached, or lint printed no readable verdict. | Retry. |
+| `9` | Needs a person: everything mechanical is applied and `needs_human` is not empty. Re-running changes nothing. | Open the PR as a draft with `needs_human` in the body. |
+
+`forge project upgrade --json` prints **one** document on stdout (human
+progress goes to stderr), for a failing run too, so the caller can read what
+was applied before the failure. Schema `forge-project-upgrade/v1`:
+
+```json
+{
+  "ok": true, "exit_code": 0, "error": "",
+  "schema": "forge-project-upgrade/v1",
+  "mode": "apply",
+  "from": "v0.1.45", "to": "v0.1.47",
+  "converged": true,
+  "phases": [{"name": "codemods", "status": "done", "detail": ""}],
+  "codemods": [{"name": "operatorkit", "version": "v0.1.46", "source": "upgrade",
+                "rewrites": ["internal/legacyops/ops.go: …"], "next": [], "blocked": []}],
+  "locks": [{"path": "frontends/web/package-lock.json", "runner": "npm",
+             "details": ["…"], "pending": false, "refreshed": true}],
+  "playbooks": [{"id": "v0.1.47", "automation": ["fix:composition-graph"], "resolved": true}],
+  "vendored_contracts": [{"name": "controlplane", "status": "lag", "revendored": true}],
+  "needs_human": [{"kind": "lint-error", "rule": "forgeconv-…", "file": "internal/x.go",
+                   "line": 7, "message": "…", "fix": "…"}],
+  "upcoming": [{"rule": "forge-frontend-lock-drift", "count": 1, "introduced_in": "v0.1.47",
+                "gates_from": "v0.1.48", "fix": "…", "examples": ["…"]}],
+  "template_drift": ["Dockerfile"]
+}
+```
+
+- `ok` and `exit_code` are the process's own: `ok` is true exactly when the exit
+  is 0. Every list is an array, never `null`.
+- `converged` is `ok` with an empty `needs_human`.
+- `phases[].status` is `done`, `skipped`, `planned` (`--check`) or `failed`.
+- `needs_human[].kind` is `lint-error`, `playbook`, `codemod-blocked`,
+  `codemod-skipped`, `lock-drift` or `vendored-contract`. Each carries `fix`:
+  the command or skill that clears it.
+- `upcoming` is informational and never changes the exit code.
+
+### Re-vendoring a contract the project copies from another repository
+
+forge does not know what a project vendors. The project declares it, and
+upgrade runs the declared hook when the project's own check says the copy lags:
+
+```yaml
+# forge.yaml
+upgrade:
+  vendored_contracts:
+    - name: controlplane
+      report: tmp/ci/reliant-vendored-proto.json   # written by the project's own check
+      schema: reliant-vendored-proto/v1            # a report claiming another is never acted on
+      env_path: revendor.env                       # optional: an object in the report, exported to the commands
+      commands:
+        - [node, .github/scripts/sync-controlplane-proto.mjs]
+        - [npm, run, "proto:generate:controlplane"]
+```
+
+The report is JSON with a top-level `schema` and a `status` of `in-sync` or
+`lag`. `lag` runs `commands` in order from the project root, before generate;
+`in-sync`, or no report yet, runs nothing; any other status or schema is
+reported under `needs_human` as `vendored-contract`. The report format of
+control-plane's `reliant-vendored-proto/v1` (`status`, `files[]`, `revendor.env`)
+is one such producer.
 
 ## Reading per-version migration skills
 
@@ -131,9 +220,10 @@ Every skill follows the same six-section shape:
    shape-specific checks.
 6. **Rollback.** How to back out if something breaks.
 
-forge intentionally doesn't try to automate the manual steps, because
-they touch hand-written code that an LLM is better placed to reason about
-than a regex-based rewrite.
+forge does not automate the manual steps, because they touch hand-written
+code that an LLM is better placed to reason about than a regex-based rewrite.
+The steps that ARE mechanical are declared in the playbook's `automation:` and
+run by `forge project upgrade` itself.
 
 Once you've finished a migration's steps:
 
@@ -178,6 +268,23 @@ list` prints, what `forge project upgrade apply <id>` takes, and what
 lands in `.forge/migrations.json`. One skill covers everything that
 release broke — do not create a directory per individual change.
 
+### A breaking change registers its codemod, and upgrade runs it
+
+A PR that breaks a consumer (the API-diff gate names it with `API-BREAK:
+codemod=<name>`) ships the `forge fix <name>` codemod in `internal/codemod`.
+`forge project upgrade` then runs it when the range crosses the release, by
+one of two declarations — the registration is incomplete without one, and
+`TestEveryRegisteredCodemodIsReachableFromUpgrade` fails otherwise:
+
+- `Upgrade: true` on the codemod, for a rewrite that keeps the program's
+  meaning exactly (a rename, a moved symbol). It runs on every crossing of its
+  `Version`, and decides from the tree, so it rewrites nothing where the old
+  shape is absent.
+- `automation: fix:<name>` in the release's playbook, for a codemod that
+  replaces files wholesale or lists what it cannot decide. It runs only when
+  the playbook's `detection` matches, only over a clean tree (or
+  `--allow-dirty`), and a `Blocked` result lands in `needs_human`.
+
 ### Frontmatter contract
 
 ```yaml
@@ -196,6 +303,7 @@ detection: grep -q '^dev_target:' forge.yaml
 | `description` | yes | One line; this is what the worklist prints. |
 | `relevance` | no | `migration` — defaulted from the directory, declare it anyway. |
 | `version` | yes | The release that introduced the break. **Must equal the directory name** (a test pins this). |
+| `automation` | no | Comma-separated mechanical steps `forge project upgrade` runs when the playbook applies. Each is `fix:<codemod>` (a registered `forge fix` name). A playbook that still matches its detection afterwards is reported as needing a person. |
 | `detection` | yes | POSIX shell snippet, run in the project root by forge's in-process interpreter (identical on every OS, no `sh` needed). Exit 0 means the project still has the old shape. |
 
 A migration applies when **both** hold: the project's pinned

@@ -210,6 +210,10 @@ type ProjectConfig struct {
 	// [GenerateConfig] / [GenerateHook]; read by the "generate hooks
 	// (forge.yaml)" pipeline step.
 	Generate GenerateConfig `yaml:"generate,omitempty"`
+	// Upgrade declares what `forge project upgrade` does beyond forge's own
+	// codemods and playbooks: today, how to re-vendor a contract copied from
+	// another repository. See [UpgradeConfig]; read by upgrade_converge.go.
+	Upgrade UpgradeConfig `yaml:"upgrade,omitempty"`
 }
 
 // DevStackConfig bounds the parallel-dev-stack port allocator

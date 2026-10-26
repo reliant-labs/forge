@@ -38,7 +38,7 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 				"api", "binary", "ci", "config", "contracts", "database",
 				"deploy", "dev_stack", "docker", "features",
 				"forge_version", "generate", "harness", "k8s",
-				"lint", "module_path", "name", "observability",
+				"lint", "module_path", "name", "observability", "upgrade",
 			},
 		},
 		{
@@ -160,6 +160,18 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			name: "GenerateConfig",
 			typ:  reflect.TypeFor[GenerateConfig](),
 			want: []string{"hooks"},
+		},
+		{
+			// vendored_contracts: read by `forge project upgrade`
+			// (internal/cli/upgrade_converge.go).
+			name: "UpgradeConfig",
+			typ:  reflect.TypeFor[UpgradeConfig](),
+			want: []string{"vendored_contracts"},
+		},
+		{
+			name: "VendoredContract",
+			typ:  reflect.TypeFor[VendoredContract](),
+			want: []string{"commands", "env_path", "name", "report", "schema"},
 		},
 		{
 			name: "GenerateHook",

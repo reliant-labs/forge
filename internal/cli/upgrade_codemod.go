@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/mod/semver"
+
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/codemod"
 )
@@ -45,12 +47,33 @@ func upgradeCodemods(from, to string) []codemod.Codemod {
 		if !baselineIsUnknown(from) && !baselinePrecedes(from, c.Version) {
 			continue
 		}
-		if !baselineIsUnknown(to) && baselinePrecedes(to, c.Version) {
+		if !targetReaches(to, c.Version) {
 			continue
 		}
 		out = append(out, c)
 	}
 	return out
+}
+
+// targetReaches reports whether an upgrade to target has reached a release. A
+// pre-release of a release — the Go pseudo-version of a commit on main, which
+// is what a pin bot pins — carries every codemod keyed to that release, since
+// the codemods land on main before the tag does; so it is the pre-release's
+// core version that is compared, not its SemVer precedence (which orders a
+// pre-release below the release it leads to). An unknown target reaches all.
+func targetReaches(target, version string) bool {
+	if baselineIsUnknown(target) {
+		return true
+	}
+	key := semverKey(target)
+	if i := strings.IndexByte(key, '-'); i >= 0 {
+		key = key[:i]
+	}
+	v := semverKey(version)
+	if key == "" || v == "" {
+		return true
+	}
+	return semver.Compare(key, v) >= 0
 }
 
 // runCodemodChain runs the codemods a from → to upgrade crosses, in release
@@ -68,6 +91,21 @@ func runCodemodChain(projectDir, from, to string, write bool) (CodemodReport, er
 		merged.Verify = appendNew(merged.Verify, rep.Verify...)
 	}
 	return merged, nil
+}
+
+// runCodemodSteps is runCodemodChain keeping each codemod's own report, for the
+// upgrade report to name which codemod rewrote what.
+func runCodemodSteps(projectDir, from, to string, write bool) ([]upgradeCodemodRun, error) {
+	out := []upgradeCodemodRun{}
+	for _, c := range upgradeCodemods(from, to) {
+		rep, err := c.Run(projectDir, codemod.Options{Write: write})
+		if err != nil {
+			return out, fmt.Errorf("codemod %s (%s): %w", c.Name, c.Version, err)
+		}
+		out = append(out, upgradeCodemodRun{Name: c.Name, Version: c.Version, Source: "upgrade",
+			Rewrites: nonNil(rep.Rewrites), Next: nonNil(rep.Next), Blocked: nonNil(rep.Blocked)})
+	}
+	return out, nil
 }
 
 func appendNew(have []string, add ...string) []string {

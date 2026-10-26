@@ -130,6 +130,11 @@ type migrationMeta struct {
 	// whether the project still exhibits the old shape. Required: a
 	// migration with no detection cannot show it applies to anything.
 	Detection string `json:"detection,omitempty"`
+	// Automation lists the playbook's mechanical steps `forge project
+	// upgrade` runs itself, from frontmatter `automation:` (comma-separated).
+	// Each is `fix:<codemod>`: run `forge fix <codemod>` when the playbook
+	// applies. Everything else in the playbook stays prose for a person.
+	Automation []string `json:"automation,omitempty"`
 }
 
 // migrationsState is the JSON shape written to .forge/migrations.json.
@@ -385,6 +390,12 @@ func parseMigrationFrontmatter(content []byte) migrationMeta {
 			m.Version = v
 		case "detection":
 			m.Detection = v
+		case "automation":
+			for _, step := range strings.Split(v, ",") {
+				if step = strings.TrimSpace(step); step != "" {
+					m.Automation = append(m.Automation, step)
+				}
+			}
 		}
 	}
 	return m

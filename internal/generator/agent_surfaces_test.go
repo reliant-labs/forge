@@ -56,7 +56,7 @@ func TestAgentSurfacesPerHarness(t *testing.T) {
 // AGENTS.md is the one rendered copy of the guide, byte-identical to what
 // reliant renders in memory, so the two cannot drift.
 func TestAgentsMDIsTheSingleRenderedGuide(t *testing.T) {
-	data := struct{ Name, CLI string }{"demo", cliName()}
+	data := ProjectMemoryData{Name: "demo", CLI: cliName()}
 	guide, err := templates.ProjectTemplates().Render("reliant.md.tmpl", data)
 	if err != nil {
 		t.Fatal(err)

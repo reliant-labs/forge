@@ -214,6 +214,15 @@ schema OnCompose:
     containers out from under every other stack, then leaves them mounting
     files inside that worktree. Pair it with `fp.write_file(...,
     shared=True)` for any config the shared stack mounts.
+
+    `optional` declares the service a convenience the app does not need in
+    order to run (local observability, a mail catcher). `forge env up`
+    brings it up when the Docker daemon answers; when it does not, it skips
+    the service with one warning naming what was skipped, why, and how to get
+    it, then brings up everything else. A service that is not optional (the
+    default) still fails the run, with an error that names Docker. Only
+    `forge env up` consults it: `forge env deploy` of a compose service
+    needs Docker whatever this says.
     """
     type: "compose" = "compose"
     # The compose service name. Default: the workload's name.
@@ -224,6 +233,7 @@ schema OnCompose:
     wait_timeout: int = 0
     env: {str: str} = {}
     shared: bool = False
+    optional: bool = False
 
     check:
         wait_timeout >= 0, "OnCompose.wait_timeout must be >= 0 (0 = no explicit ceiling)"
@@ -412,6 +422,12 @@ schema Workload:
     # scaffold` does not declare a second workload for one. Nothing renders
     # from it: it never changes what deploys.
     serves?: [str]
+    # The workloads this one is only useful beside (a local alert evaluator
+    # needs the Alertmanager and ClickStack it reads). When `forge env up`
+    # skips an optional OnCompose workload named here, this one is skipped
+    # with it instead of starting against nothing. Authoring-only: it never
+    # changes what is rendered or deployed, and the names must be declared.
+    requires?: [str]
     # The composition-graph ROOT this forge-built workload's process runs: a
     # //forge:root struct in internal/app, or the default `server`. Bind it
     # with `| config_gen.root_of("<root>")`, which sets this and the `args`

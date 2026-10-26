@@ -973,6 +973,13 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	if err := validateDeployTargets(entities, opts.targets); err != nil {
 		return err
 	}
+	// No Docker daemon: drop what the env declares optional (local
+	// observability) and say so once, or fail naming Docker if something
+	// required needs it. Before the plan, the pre-flights and every phase
+	// below, so they all see the env that will actually run.
+	if err := degradeWithoutDocker(ctx, entities, opts.env, opts.targets, os.Stdout); err != nil {
+		return err
+	}
 	planEntities := entities
 	if len(opts.targets) > 0 {
 		planEntities = filterEntitiesByTarget(entities, opts.targets)
@@ -1625,6 +1632,7 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 				skipFrontend: true, skipClusterApply: !required.cluster,
 				targets: opts.targets, purpose: renderToLaunch,
 				infraConverged: converged,
+				omitWorkloads:  entities.NoDockerSkipped,
 			}); err != nil {
 				return fmt.Errorf("deploy: %w", err)
 			}

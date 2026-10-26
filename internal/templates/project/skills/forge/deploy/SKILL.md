@@ -41,7 +41,7 @@ of bindings.
 | `forge.OnHost {runner}` | a local process | `forge env up` runs `go run ./cmd/<p> <args>` (or air / a built binary / delve) |
 | `forge.OnCluster {target}` | a Kubernetes cluster you operate | renders a `forge.dev/v1alpha1 Workload` record and expands it through `pkg/deploy.RenderWorkloads` (Full profile) |
 | `forge.OnHosted {}` | the forge control plane | publishes the spec as a Workload CR; the platform renders it (Restricted profile) |
-| `forge.OnCompose {service}` | a docker-compose service | `docker compose up` of that service (`shared = True`: from the primary checkout) |
+| `forge.OnCompose {service}` | a docker-compose service | `docker compose up` of that service (`shared = True`: from the primary checkout; `optional = True`: `forge env up` skips it with one warning when no Docker daemon answers, instead of failing — a workload that only makes sense beside it says `requires = ["<name>"]`) |
 | `forge.BuildOnly {}` | nowhere | builds and ships it (a CLI, an image others pull) |
 
 A binding is the same `|` an env uses for any refinement. Env NAMES mean

@@ -284,6 +284,35 @@ tasks:
     cmds:
       - scripts/prettier.sh {{.CLI_ARGS}}
 
+  canary:
+    # The consumer build check (dev-docs/consumer-canary.md): reliant and
+    # control-plane at their main, built against THIS checkout. The consumers
+    # are exported into a scratch directory and never modified; a diff that
+    # cannot reach a consumer skips in seconds.
+    #
+    #   task canary                      reliant + control-plane, vs origin/main
+    #   task canary -- -plan             what would run, nothing built
+    #   task canary -- -consumer reliant=/path/to/reliant   a local checkout
+    #   task canary -- -force            run even when the diff cannot reach one
+    #
+    # control-plane is private: fetching it needs your git credentials (ssh
+    # key or credential helper). Without them, name only reliant:
+    #   task canary -- -consumer reliant=https://github.com/reliant-labs/reliant.git
+    desc: "Build reliant and control-plane against this forge: task canary [-- -plan|-force|-consumer name=src[@ref]]"
+    cmds:
+      - go run ./internal/consumercanary {{.CLI_ARGS}}
+
+  apigate:
+    # The API-compatibility gate for pkg/ (dev-docs/api-breaks.md): an
+    # incompatible change to an exported API fails unless the PR declares it
+    # (`api-break` label or an `API-BREAK:` line) and ships a codemod or a
+    # migration playbook. Locally, pass the declaration with flags:
+    #   task apigate -- -body-file /tmp/pr-body.md
+    #   task apigate -- -label api-break
+    desc: "Fail on an undeclared incompatible change to forge/pkg: task apigate [-- -base REV -body-file FILE -label L]"
+    cmds:
+      - go run ./internal/apigate -base "$(git merge-base HEAD origin/main)" {{.CLI_ARGS}}
+
   vet:
     desc: Run go vet across the module
     cmds:

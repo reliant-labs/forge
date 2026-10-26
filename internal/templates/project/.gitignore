@@ -206,9 +206,10 @@ tmp/
 # development and are INTENTIONALLY committed:
 #
 #   .reliant/                           — forge-managed conventions, project metadata, skills
-#   reliant.md / CLAUDE.md / AGENTS.md  — user-owned project memory file (depends on --memory flag)
-#   .cursorrules                        — project memory file (cursor format)
-#   .github/copilot-instructions.md     — project memory file (copilot format)
+#   AGENTS.md                           — user-owned project guide (every harness)
+#   CLAUDE.md / .claude/skills/forge/   — claude pointers (--harness claude)
+#   .cursorrules / .cursor/rules/       — cursor pointers (--harness cursor)
+#   .github/copilot-instructions.md     — copilot pointer (--harness copilot)
 #   .mcp.json                           — project-level MCP server config
 #   .mcp.json.example                   — documentation of opt-in MCP servers
 #

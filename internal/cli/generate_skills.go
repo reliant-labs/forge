@@ -7,8 +7,10 @@
 // removes those forge-owned copies on the next generate. It never deletes a
 // user-authored or user-modified file (see gcRetiredAgentSkills).
 //
-// Harnesses without reliant's binary-backed catalog can add their own skill
-// that tells the agent to run `forge skill search <query>`.
+// Harnesses without reliant's binary-backed catalog get a thin pointer skill
+// (.claude/skills/forge/SKILL.md) written once by `forge project new`. It
+// carries no banner or hash marker, which is what keeps this sweep from
+// treating it as a retired render.
 //
 // This sweep can be deleted once no project is likely to still carry
 // delivered copies from a pre-retirement forge.

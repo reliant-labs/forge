@@ -328,8 +328,9 @@ set — check there before hand-rolling.
 ## Skills come from the binary
 
 `forge skill load <name>` always matches the forge you are running. Forge never
-writes skill files into a project. Non-reliant harnesses: add your own skill
-that tells the agent to run `forge skill search <query>` / `forge skill load <name>`.
+writes skill bodies into a project. Non-reliant harnesses get a thin pointer
+(`.claude/skills/forge/SKILL.md`, `.cursor/rules/forge.mdc`) that only tells the
+agent to run `forge skill search <query>` / `forge skill load <name>`.
 
 ```bash
 forge skill list              # the catalog: every skill, scope, one-line description

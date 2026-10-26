@@ -7,6 +7,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 func newRetireCtx(t *testing.T, harness string) *pipelineContext {
@@ -93,5 +94,28 @@ func TestStepRetireAgentSkillsPrunesEmptyTree(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(ctx.AbsPath, ".claude")); !os.IsNotExist(err) {
 		t.Errorf(".claude/ survived (err=%v)", err)
+	}
+}
+
+// The pointer skill `forge project new --harness claude` writes is user-owned:
+// the sweep of retired renders must never take it.
+func TestStepRetireAgentSkillsKeepsThePointerSkill(t *testing.T) {
+	ctx := newRetireCtx(t, "claude")
+	body, err := templates.ProjectTemplates().Render("agent-skill.md.tmpl", struct{ Name, CLI string }{"demo", "forge"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(ctx.AbsPath, ".claude", "skills", "forge", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := stepRetireAgentSkills(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(p); err != nil {
+		t.Fatalf("pointer skill was swept: %v", err)
 	}
 }

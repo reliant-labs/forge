@@ -51,3 +51,67 @@ func TestHarnessMemoryFilePath(t *testing.T) {
 		})
 	}
 }
+
+func envOf(m map[string]string) func(string) string {
+	return func(k string) string { return m[k] }
+}
+
+func TestDetectHarness(t *testing.T) {
+	tests := []struct {
+		name       string
+		env        map[string]string
+		want       Harness
+		wantMarker string
+	}{
+		{"nothing set", nil, "", ""},
+		{"reliant", map[string]string{"RELIANT_AGENT_SHELL": "1"}, HarnessReliant, "RELIANT_AGENT_SHELL"},
+		{"claude code", map[string]string{"CLAUDECODE": "1"}, HarnessClaude, "CLAUDECODE"},
+		{"codex thread", map[string]string{"CODEX_THREAD_ID": "abc"}, HarnessCodex, "CODEX_THREAD_ID"},
+		{"codex session", map[string]string{"CODEX_SESSION_ID": "abc"}, HarnessCodex, "CODEX_SESSION_ID"},
+		{"cursor", map[string]string{"CURSOR_AGENT": "1"}, HarnessCursor, "CURSOR_AGENT"},
+		{"explicit zero is not a marker", map[string]string{"CLAUDECODE": "0"}, "", ""},
+		// Codex's own user config also exports CODEX_HOME; only the
+		// per-command markers identify a running agent.
+		{"codex home alone is not a marker", map[string]string{"CODEX_HOME": "/x"}, "", ""},
+		// A reliant daemon started from a Claude Code terminal inherits
+		// CLAUDECODE; the innermost agent (reliant) is the one running us.
+		{"reliant wins over inherited claude", map[string]string{"RELIANT_AGENT_SHELL": "1", "CLAUDECODE": "1"}, HarnessReliant, "RELIANT_AGENT_SHELL"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, marker := DetectHarness(envOf(tt.env))
+			if got != tt.want || marker != tt.wantMarker {
+				t.Fatalf("DetectHarness = (%q, %q), want (%q, %q)", got, marker, tt.want, tt.wantMarker)
+			}
+		})
+	}
+}
+
+func TestResolveHarnessPrecedence(t *testing.T) {
+	claudeEnv := envOf(map[string]string{"CLAUDECODE": "1"})
+	tests := []struct {
+		name         string
+		flag         string
+		env          func(string) string
+		want         Harness
+		wantDetected string
+		wantErr      bool
+	}{
+		{"flag beats detection", "cursor", claudeEnv, HarnessCursor, "", false},
+		{"explicit reliant beats detection", "reliant", claudeEnv, HarnessReliant, "", false},
+		{"detection beats default", "", claudeEnv, HarnessClaude, "CLAUDECODE", false},
+		{"default when neither", "", envOf(nil), HarnessReliant, "", false},
+		{"bad flag is an error even when detected", "nope", claudeEnv, "", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, detected, err := ResolveHarness(tt.flag, tt.env)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ResolveHarness error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want || detected != tt.wantDetected {
+				t.Fatalf("ResolveHarness = (%q, %q), want (%q, %q)", got, detected, tt.want, tt.wantDetected)
+			}
+		})
+	}
+}

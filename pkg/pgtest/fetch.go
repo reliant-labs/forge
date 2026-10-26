@@ -244,32 +244,49 @@ func (r *fetchRelay) getWithRetry(ctx context.Context, target string) (*http.Res
 //
 // cfg must not set BinaryRepositoryURL: the relay takes that slot and
 // forwards to Maven Central, the library's default.
-func StartEmbedded(cfg embeddedpostgres.Config) (*embeddedpostgres.EmbeddedPostgres, error) {
+//
+// The returned Embedded owns the temp log file the library created for this
+// Start (see embeddedlog.go): Stop removes it after the library's final
+// flush, and a caller whose server outlives the handle calls Detach. A failed
+// Start removes its own file here. No other process's log file is ever
+// touched.
+func StartEmbedded(cfg embeddedpostgres.Config) (*Embedded, error) {
 	relay, err := startFetchRelay(fetchPolicy.upstreamURL)
 	if err != nil {
 		return nil, err
 	}
 	defer relay.close()
 
-	// The library leaks one temp log file per Start, with no option to prevent
-	// it. Snapshot what exists, then remove whatever this Start adds — and
-	// sweep anything stale a killed process left behind. See embeddedlog.go.
+	// Serialized so that "the log files this process newly holds open after
+	// Start" is exactly this Start's. See embeddedlog.go.
+	startMu.Lock()
+	defer startMu.Unlock()
+
 	tempRoot := os.TempDir()
-	logsBefore := embeddedLogSnapshot(tempRoot)
-	defer func() {
-		removeNewEmbeddedLogs(tempRoot, logsBefore)
-		sweepStaleEmbeddedLogs(tempRoot, time.Now(), staleEmbeddedLogAge)
-	}()
+	before, beforeErr := ownEmbeddedLogs(tempRoot, ownOpenPaths)
 
 	ep := embeddedpostgres.NewDatabase(cfg.BinaryRepositoryURL(relay.baseURL()))
-	if err := ep.Start(); err != nil {
+	startErr := ep.Start()
+
+	// Whatever the outcome, the library has created its file by now.
+	var mine []string
+	if beforeErr == nil {
+		if after, err := ownEmbeddedLogs(tempRoot, ownOpenPaths); err == nil {
+			mine = claimStartedLogs(before, after)
+		}
+	}
+	// Reclaim leftovers nobody holds; best-effort and never blocking a start.
+	defer sweepStaleEmbeddedLogs(tempRoot, time.Now(), staleEmbeddedLogAge, machineOpenFiles)
+
+	if startErr != nil {
+		removeFiles(mine)
 		if fe := relay.lastFailure(); fe != nil {
 			// The library's own wording ("no version found matching …") is
 			// wrong for everything except a 404, so it is dropped rather
 			// than wrapped: the FetchError says what actually happened.
 			return nil, fe
 		}
-		return nil, err
+		return nil, startErr
 	}
-	return ep, nil
+	return &Embedded{ep: ep, logs: mine}, nil
 }

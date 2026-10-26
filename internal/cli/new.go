@@ -868,7 +868,10 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	// and non-service kinds.
 	if !in.skipTools && in.bufPlugins == "local" && in.kind == config.ProjectKindService {
 		fmt.Println("\n🔧 Ensuring proto codegen plugins are installed (use --skip-tools to skip)...")
-		if err := runToolsInstall(ctx, "latest", false); err != nil {
+		stopBeat := cliutil.Heartbeat(os.Stderr, "project new: installing proto codegen plugins")
+		err := runToolsInstall(ctx, "latest", false)
+		stopBeat()
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "⚠️  Plugin install incomplete: %v\n", err)
 			fmt.Fprintf(os.Stderr, "    Run '%s tools install' manually before '%s generate'.\n", Name(), Name())
 		}
@@ -879,7 +882,10 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	// pointing at frontends/<name>/node_modules/.bin/protoc-gen-es.
 	if len(in.frontendNames) > 0 {
 		fmt.Println("🔧 Installing frontend dependencies (this generates package-lock.json)...")
-		if err := runNpmInstall(ctx, in.targetPath, in.frontendNames); err != nil {
+		stopBeat := cliutil.Heartbeat(os.Stderr, "project new: npm install")
+		err := runNpmInstall(ctx, in.targetPath, in.frontendNames)
+		stopBeat()
+		if err != nil {
 			fmt.Printf("Warning: npm install failed: %v\n", err)
 			fmt.Println("    @bufbuild/protoc-gen-es will be missing — run 'npm install' in each frontends/<name>/ before 'forge generate'.")
 			fmt.Println("    CI also requires package-lock.json to exist.")
@@ -908,7 +914,9 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	// leave is the one the re-run completes. It is reported, not swallowed.
 	if in.kind == config.ProjectKindService {
 		fmt.Println("\n🔧 Bootstrapping generated proto code...")
+		stopBeat := cliutil.Heartbeat(os.Stderr, "project new: bootstrap generate")
 		genErr = bootstrapGenerate(in.targetPath, in.verify)
+		stopBeat()
 	}
 
 	// Re-record frozen-file checksums after bootstrap (goimports -w reformats
@@ -931,7 +939,10 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	}
 
 	fmt.Println("🔧 Running go mod tidy...")
-	if err := runGoModTidy(ctx, in.targetPath); err != nil {
+	stopTidyBeat := cliutil.Heartbeat(os.Stderr, "project new: go mod tidy")
+	tidyErr := runGoModTidy(ctx, in.targetPath)
+	stopTidyBeat()
+	if err := tidyErr; err != nil {
 		fmt.Printf("Warning: go mod tidy failed: %v\n", err)
 		fmt.Println("You can run 'go mod tidy' manually later")
 	}
@@ -1268,7 +1279,7 @@ func checkScaffoldCanResolveForge(kind string, link bool, adopted *adoptedForge)
 	if link {
 		bridgeRoot = root
 	}
-	return scaffoldForgeResolution(kind, buildinfo.InstallableVersion(), bridgeRoot, root)
+	return scaffoldForgeResolution(kind, buildinfo.InstallableVersion(), bridgeRoot, root, forgeInvocationArgs())
 }
 
 // scaffoldForgeResolution is the pure decision behind
@@ -1290,8 +1301,9 @@ func checkScaffoldCanResolveForge(kind string, link bool, adopted *adoptedForge)
 // package, so they are unaffected.
 //
 // linkableRoot is the checkout --link-forge WOULD bridge to ("" when this
-// binary cannot locate one); it decides which fix the refusal offers.
-func scaffoldForgeResolution(kind, pinnedVersion, bridgeRoot, linkableRoot string) error {
+// binary cannot locate one); it decides which fix the refusal offers. args is
+// the command the user ran, so the fix can be that same command, runnable.
+func scaffoldForgeResolution(kind, pinnedVersion, bridgeRoot, linkableRoot string, args []string) error {
 	if kind != config.ProjectKindService || pinnedVersion != "" || bridgeRoot != "" {
 		return nil
 	}
@@ -1302,9 +1314,10 @@ func scaffoldForgeResolution(kind, pinnedVersion, bridgeRoot, linkableRoot strin
 			fmt.Sprintf("this forge (%s) is an unreleased build no module proxy can serve, so go.mod cannot "+
 				"require it, and the project was not bridged to its source. %s", buildinfo.Version(), retired),
 			"",
-			fmt.Sprintf("re-run with --link-forge to bridge the project to the checkout this forge was built from "+
-				"(%s; a gitignored go.work — generate, lint and doctor then warn when the two drift apart), "+
-				"or install a published forge (`go install github.com/reliant-labs/forge/cmd/forge@<version>`)", linkableRoot))
+			fmt.Sprintf("bridge the project to the checkout this forge was built from (%s; a gitignored go.work — "+
+				"generate, lint and doctor then warn when the two drift apart):\n    %s\n"+
+				"  or install a published forge (`go install github.com/reliant-labs/forge/cmd/forge@<version>`)",
+				linkableRoot, linkForgeRerun(args, linkableRoot)))
 	}
 	return cliutil.UserErr(Name()+" project new (forge version)",
 		fmt.Sprintf("this forge (%s) cannot tell a new project where to get forge: it is not a version a "+
@@ -1312,8 +1325,8 @@ func scaffoldForgeResolution(kind, pinnedVersion, bridgeRoot, linkableRoot strin
 			"was built from, so go.work cannot bridge to it. %s", buildinfo.Version(), retired),
 		"",
 		"use a forge that can resolve itself: install a published one "+
-			"(`go install github.com/reliant-labs/forge/cmd/forge@<version>`), or, from a forge checkout, "+
-			"`task install:dev` / `make dev` (which records the checkout) and scaffold with --link-forge")
+			"(`go install github.com/reliant-labs/forge/cmd/forge@<version>`), or name your forge checkout:\n    "+
+			linkForgeRerun(args, ""))
 }
 
 // initGitRepository initializes a git repository and makes initial commit

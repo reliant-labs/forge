@@ -304,7 +304,11 @@ func collectLintOutcomesFrom(rc *lintRunCtx, pipeline []linterStep) []lintStepOu
 				stepRC = &scoped
 			}
 		}
+		// A lane that outlives the 15s heartbeat interval says which one it is (stderr,
+		// so --quiet's one-line stdout stays one line).
+		stopBeat := cliutil.Heartbeat(os.Stderr, "lint: "+step.name)
 		fs, gated, err := step.collect(stepRC)
+		stopBeat()
 		if err != nil {
 			// A hard collection failure degrades to a finding rather than
 			// aborting the sweep — severity/gating governed by step.gates.
@@ -388,7 +392,9 @@ func collectTargetedOutcomes(
 		if progress != nil {
 			fmt.Fprintf(progress, "▸ --%s\n", lane)
 		}
+		stopBeat := cliutil.Heartbeat(os.Stderr, "lint: --"+lane)
 		o, err := collectLaneOutcome(ctx, onlyLane(flags, lane), lane, paths, cwd, store, cfg, scope)
+		stopBeat()
 		if err != nil {
 			return nil, true, err
 		}

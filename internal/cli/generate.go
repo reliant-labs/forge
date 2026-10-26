@@ -638,7 +638,11 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 			checksums.CaptureExternalWrites(ctx.AbsPath, step.Writes(ctx)...)
 		}
 		stepStart := time.Now()
+		// A step that outlives the 15s heartbeat interval says which one it is, on
+		// stderr, so a caller with a no-output cut-off sees the run is alive.
+		stopBeat := cliutil.Heartbeat(os.Stderr, "generate: "+step.Name)
 		err := step.Run(ctx)
+		stopBeat()
 		if timer != nil {
 			timer.record(step.Name, time.Since(stepStart))
 		}

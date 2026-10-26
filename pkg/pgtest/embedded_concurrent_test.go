@@ -58,7 +58,7 @@ func logsIn(t *testing.T, dir string) []string {
 // instanceConfig is a self-contained embedded-postgres config: its own port,
 // its own runtime dir under root, and a NON-NIL logger — the logger is what
 // makes the library reopen its log file by name on every flush.
-func instanceConfig(t *testing.T, root, name string, logger *bytes.Buffer) embeddedpostgres.Config {
+func instanceConfig(t testing.TB, root, name string, logger *bytes.Buffer) embeddedpostgres.Config {
 	t.Helper()
 	port, err := pgtest.ReserveLoopbackPort()
 	if err != nil {
@@ -84,6 +84,22 @@ func instanceConfig(t *testing.T, root, name string, logger *bytes.Buffer) embed
 	return cfg
 }
 
+// startRetryingPort starts an instance, building a fresh config (and so a
+// fresh port) again if another process on this busy machine claimed the
+// reserved port between its reservation and postgres binding it. That is the
+// only error retried: anything else is the behaviour under test.
+func startRetryingPort(mk func() embeddedpostgres.Config) (*pgtest.Embedded, error) {
+	var err error
+	for range 5 {
+		var ep *pgtest.Embedded
+		ep, err = pgtest.StartEmbedded(mk())
+		if err == nil || !strings.Contains(err.Error(), "process already listening on port") {
+			return ep, err
+		}
+	}
+	return nil, err
+}
+
 // waitForLog blocks until at least one log file exists in dir.
 func waitForLog(t *testing.T, dir string, within time.Duration) {
 	t.Helper()
@@ -107,8 +123,8 @@ func TestStartEmbedded_ConcurrentInstancesInOneProcess(t *testing.T) {
 	root := filepath.Join(tmp, "rt")
 
 	var logA, logB bytes.Buffer
-	cfgA := instanceConfig(t, root, "a", &logA)
-	cfgB := instanceConfig(t, root, "b", &logB)
+	mkA := func() embeddedpostgres.Config { return instanceConfig(t, root, "a", &logA) }
+	mkB := func() embeddedpostgres.Config { return instanceConfig(t, root, "b", &logB) }
 
 	type result struct {
 		ep  interface{ Stop() error }
@@ -116,7 +132,7 @@ func TestStartEmbedded_ConcurrentInstancesInOneProcess(t *testing.T) {
 	}
 	aDone := make(chan result, 1)
 	go func() {
-		ep, err := pgtest.StartEmbedded(cfgA)
+		ep, err := startRetryingPort(mkA)
 		if err != nil {
 			aDone <- result{err: err}
 			return
@@ -126,14 +142,14 @@ func TestStartEmbedded_ConcurrentInstancesInOneProcess(t *testing.T) {
 
 	// A has created its log and is somewhere in initdb; B starts now.
 	waitForLog(t, tmp, 30*time.Second)
-	epB, errB := pgtest.StartEmbedded(cfgB)
+	epB, errB := startRetryingPort(mkB)
 	resA := <-aDone
 	if resA.err != nil {
 		t.Fatalf("instance A: Start: %v", resA.err)
 	}
 	if errB != nil {
 		_ = resA.ep.Stop()
-		t.Fatalf("instance B: Start: %v (a concurrent Start deleted B's log file)", errB)
+		t.Fatalf("instance B: Start: %v", errB)
 	}
 
 	// Stop A while B keeps running, then B.
@@ -161,7 +177,7 @@ func TestStartEmbedded_ConcurrentInstancesAcrossProcesses(t *testing.T) {
 	root := filepath.Join(tmp, "rt")
 
 	var parentLog bytes.Buffer
-	cfg := instanceConfig(t, root, "parent", &parentLog)
+	mk := func() embeddedpostgres.Config { return instanceConfig(t, root, "parent", &parentLog) }
 
 	type result struct {
 		ep  interface{ Stop() error }
@@ -169,7 +185,7 @@ func TestStartEmbedded_ConcurrentInstancesAcrossProcesses(t *testing.T) {
 	}
 	parentDone := make(chan result, 1)
 	go func() {
-		ep, err := pgtest.StartEmbedded(cfg)
+		ep, err := startRetryingPort(mk)
 		if err != nil {
 			parentDone <- result{err: err}
 			return
@@ -257,8 +273,9 @@ func TestEmbeddedChildProcess(t *testing.T) {
 		t.Skip("helper process; launched by TestStartEmbedded_ConcurrentInstancesAcrossProcesses")
 	}
 	var log bytes.Buffer
-	cfg := instanceConfig(t, os.Getenv(helperTmp), "child", &log)
-	ep, err := pgtest.StartEmbedded(cfg)
+	ep, err := startRetryingPort(func() embeddedpostgres.Config {
+		return instanceConfig(t, os.Getenv(helperTmp), "child", &log)
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "child Start: %v\n", err)
 		os.Exit(1)

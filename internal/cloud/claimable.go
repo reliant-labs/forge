@@ -34,6 +34,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/pkg/credentials"
 )
 
@@ -375,7 +376,7 @@ func ClaimableDeviceID() (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", fmt.Errorf("create %s: %w", filepath.Dir(path), err)
 	}
-	if err := os.WriteFile(path, []byte(id+"\n"), 0o600); err != nil {
+	if err := atomicfile.WriteFile(path, []byte(id+"\n"), 0o600); err != nil {
 		return "", fmt.Errorf("write %s: %w", path, err)
 	}
 	return id, nil

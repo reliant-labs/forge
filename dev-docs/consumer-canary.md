@@ -30,12 +30,12 @@ forges, is kept under `<cache>/logs/`.
 
 ## When it runs
 
-| trigger                         | runs                                                                                                  |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `task canary`                   | locally, on demand                                                                                    |
-| push to `main`                  | `consumer-canary.yml`, always                                                                         |
+| trigger                         | runs                                                                                                                                                                         |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `task canary`                   | locally, on demand                                                                                                                                                           |
+| push to `main`                  | `consumer-canary.yml`, always                                                                                                                                                |
 | nightly                         | `nightly.yml` → `consumer-canary.yml` with `-force` (consumers moved under an unchanged forge; no baseline, every failure counts); a red opens the "Nightly CI is red" issue |
-| pull request, label `ci:canary` | `consumer-canary.yml`                                                                                 |
+| pull request, label `ci:canary` | `consumer-canary.yml`                                                                                                                                                        |
 
 **Why not on every pull request:** a cold `go build ./...` + `go vet ./...` of
 reliant alone measured 215s + 120s on a loaded 32-core box (the build cache was

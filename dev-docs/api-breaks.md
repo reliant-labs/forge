@@ -5,9 +5,9 @@ or reshape an exported API. What it may not do is leave the cost to the next
 person who pins forge: **the breaking PR ships its migration.** Two checks hold
 that line.
 
-|                 | what it checks                                                            | where                                                             | when                                                          |
-| --------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------- |
-| **API gate**    | an incompatible change to `pkg/**` is declared and ships a codemod        | `ci.yml` `checks` job, step "pkg/ API compatibility"; `task apigate` | every pull request, ~seconds when `pkg/` is not touched       |
+|                     | what it checks                                                         | where                                                                           | when                                                             |
+| ------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| **API gate**        | an incompatible change to `pkg/**` is declared and ships a codemod     | `ci.yml` `checks` job, step "pkg/ API compatibility"; `task apigate`            | every pull request, ~seconds when `pkg/` is not touched          |
 | **Consumer canary** | reliant and control-plane still build, vet and pass the affected tests | `consumer-canary.yml`; `task canary` ([consumer-canary.md](consumer-canary.md)) | pushes to main, nightly, and a pull request labelled `ci:canary` |
 
 ## The API gate

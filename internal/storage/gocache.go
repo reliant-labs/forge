@@ -221,7 +221,7 @@ func (r Runner) SharedGoCache(apply bool) error {
 			return fmt.Errorf("locate the shared Go build cache: %w", err)
 		}
 	}
-	return r.trimGoBuildCache("shared go build cache", root, apply)
+	return r.trimGoBuildCache("shared go build cache", root, r.Policy.GoCacheGiB, apply)
 }
 
 // GolangciLintCache trims golangci-lint's fork of the Go cache format.
@@ -240,7 +240,10 @@ func (r Runner) GolangciLintCache(apply bool) error {
 			return nil
 		}
 	}
-	return r.trimGoBuildCache("golangci-lint cache", root, apply)
+	// Its own budget, not go_cache_gib: shared with the build cache, a lint
+	// cache can never reach the build cache's tens of GiB, so it was trimmed
+	// by age alone, and a machine that lints all day keeps every entry young.
+	return r.trimGoBuildCache("golangci-lint cache", root, r.Policy.GolangciCacheGiB, apply)
 }
 
 // hasCacheSentinel reports whether root's README is a Go-style cache marker.
@@ -322,7 +325,7 @@ func readGoCacheShard(root, shard string) ([]goCacheEntry, error) {
 		}
 		switch {
 		case info.Mode().IsRegular():
-			out = append(out, goCacheEntry{sub: shard, name: f.Name(), size: info.Size(), mtime: info.ModTime()})
+			out = append(out, goCacheEntry{sub: shard, name: f.Name(), size: entryDiskBytes(info), mtime: info.ModTime()})
 		case info.IsDir() && strings.HasSuffix(f.Name(), "-d"):
 			size, err := goCacheDirSize(filepath.Join(dir, f.Name()))
 			if err != nil {
@@ -347,11 +350,19 @@ func goCacheDirSize(path string) (int64, error) {
 	var n int64
 	for _, f := range files {
 		if info, err := f.Info(); err == nil && info.Mode().IsRegular() {
-			n += info.Size()
+			n += entryDiskBytes(info)
 		}
 	}
 	return n, nil
 }
+
+// entryDiskBytes is what a cache entry costs the disk, which is what a budget
+// bounds: its allocated blocks, not its length. The two part ways on exactly
+// the caches this layer trims: a golangci-lint cache entry is a few hundred
+// bytes in a 4 KiB block, so one measured 0.9 GB by length held 10.8 GiB of
+// disk, and its 40 GiB budget never applied (2026-10-26). A var only so the
+// package's arithmetic tests can size entries by length (TestMain).
+var entryDiskBytes = allocatedBytes
 
 // sampleGoCache reads a bounded, evenly spaced subset of shards (starting at
 // offset so successive passes sample different ones). Entry hashes are uniform,
@@ -448,9 +459,9 @@ const defaultGoCacheVolumePercent = 15
 // goCacheDiskSpace is DiskSpace; tests replace it.
 var goCacheDiskSpace = DiskSpace
 
-// goCacheBudget is the size the cache at root is trimmed to: go_cache_gib,
-// capped at go_cache_volume_percent of the volume it lives on. A volume that
-// cannot be read leaves go_cache_gib alone.
+// goCacheBudget is the size the shared build cache at root is trimmed to:
+// go_cache_gib, capped at go_cache_volume_percent of the volume it lives on. A
+// volume that cannot be read leaves go_cache_gib alone.
 func (r Runner) goCacheBudget(root string) uint64 { return r.budgetFor(r.Policy.GoCacheGiB, root) }
 
 // budgetFor is gibs GiB, capped at go_cache_volume_percent of root's volume.
@@ -508,7 +519,9 @@ func (r Runner) saveGoCacheCursor(label string, next int) {
 	}
 }
 
-func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
+// trimGoBuildCache trims one Go-format cache at root to budgetGiB (capped at
+// go_cache_volume_percent of its volume) and the go_cache_unused age rule.
+func (r Runner) trimGoBuildCache(label, root string, budgetGiB uint64, apply bool) error {
 	if _, err := os.Stat(root); err != nil {
 		return nil // absent: nothing to trim
 	}
@@ -537,7 +550,7 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 		r.print("%s %s: %v\n", label, root, err)
 		return err
 	}
-	budget := r.goCacheBudget(root)
+	budget := r.budgetFor(budgetGiB, root)
 	cutoff, estTotal := goCacheCutoff(sample, len(shards), now, unused, budget)
 	heldBack := ""
 	var liveBuild time.Duration

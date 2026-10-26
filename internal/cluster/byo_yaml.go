@@ -156,7 +156,9 @@ func renderBundledChart(ctx context.Context, c byoChart) ([]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("helm chart %q (delivery = \"bundle\"): %w", c.Name, err)
 	}
-	docs, err := decodeObjectStream(dropPostHelmHooks(rendered))
+	// This chart rides the env's stream and nothing applies it with `-n`
+	// later, so its namespaced objects name the chart's namespace here.
+	docs, err := decodeObjectStream(stampChartNamespace(dropPostHelmHooks(rendered), c.Namespace))
 	if err != nil {
 		return nil, fmt.Errorf("helm chart %q (delivery = \"bundle\"): %w", c.Name, err)
 	}

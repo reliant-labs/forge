@@ -692,9 +692,14 @@ func renderSelectedCharts(ctx context.Context, specs []HelmChartSpec) ([]rendere
 		if cerr != nil {
 			return nil, cerr
 		}
+		// Self-describing objects: write the chart's namespace onto every
+		// provably-namespaced object, so the stream `forge env render` prints
+		// is the stream the deploy applies and means the same wherever it is
+		// applied. See chart_namespace.go.
+		crds := joinNonEmpty(spec.CRDs, ownCRDs)
 		out = append(out, renderedChart{
-			spec: spec, manifests: rendered,
-			crds: joinNonEmpty(spec.CRDs, ownCRDs), extra: extra,
+			spec: spec, manifests: stampChartNamespace(rendered, spec.Namespace, crds),
+			crds: crds, extra: stampChartNamespace(extra, spec.Namespace, crds),
 		})
 	}
 	return out, nil
@@ -1958,19 +1963,16 @@ func KubectlApply(ctx context.Context, kctx, manifests string) error {
 // which is what every non-chart caller wants: forge's own KCL render stamps
 // `metadata.namespace` on everything it emits.
 //
-// WHY `-n` AND NOT STAMPING `metadata.namespace` DURING RENDER. Stamping
-// produces a self-describing manifest, which is genuinely nicer, but it
-// requires knowing each object's SCOPE — stamping a namespace onto a
-// cluster-scoped object is an error, not a no-op. That scope is not in the
-// manifest and cannot be derived from a static kind list, because a chart's
-// own CRDs DEFINE new cluster-scoped kinds: on this cluster GatewayClass,
-// XMesh and ETCDSnapshotFile are all cluster-scoped, and forge cannot know
-// that for a CRD it is applying in the same batch. Only the apiserver knows,
-// and `-n` is precisely how kubectl asks it: measured, the flag is applied to
-// namespaced objects and IGNORED for cluster-scoped ones (a bare ClusterRole
-// applied with `-n` comes back with `metadata.namespace` empty). So `-n`
-// delegates the scope decision to the one component that can make it
-// correctly, and no forge-side kind table can drift out of date.
+// WHY `-n` REMAINS THE BACKSTOP. Render-time stamping (stampChartNamespace)
+// makes the stream self-describing, but it can only stamp objects whose scope
+// forge can prove offline: a built-in namespaced kind, or a kind whose CRD is
+// in hand. Stamping a namespace onto a cluster-scoped object is an error, and
+// a chart's own CRDs DEFINE new kinds, so for a kind forge cannot resolve only
+// the apiserver knows. `-n` is how kubectl asks it: measured, the flag is
+// applied to namespaced objects and IGNORED for cluster-scoped ones (a bare
+// ClusterRole applied with `-n` comes back with `metadata.namespace` empty).
+// So the stamp covers what it can prove, `-n` covers the rest, and neither
+// needs a forge-side kind table that can drift out of date.
 //
 // A doc that DECLARES its own namespace keeps it: kubectl refuses to relocate
 // it — `the namespace from the provided object "kube-system" does not match

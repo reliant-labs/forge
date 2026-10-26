@@ -1301,6 +1301,9 @@ _render_runtime = lambda w: any, rt: any -> any {
         "wait": rt.wait
         "wait_timeout": rt.wait_timeout
         "shared": rt.shared
+        # Emitted only when set, so an env that never says `optional` renders
+        # byte-identically to what it did before the field.
+        } | ({"optional": True} if rt.optional else {}) | {
         # The compose PROCESS env: the workload's literal env under the
         # runtime's own (the runtime block is the more specific statement).
         "env": {k: v for k, v in w.env if typeof(v) == "str"} | rt.env
@@ -1339,7 +1342,8 @@ _lower = lambda w: any, bundle: Bundle -> any {
         "runtime": _render_runtime(w, _rt)
         "spec": _spec_json(w, _rt, bundle)
     } | ({"flow_checks": [{"path": c.path, "description": c.description or None, "name": c.name or None} for c in w.flow_checks]} if w.flow_checks else {}) \
-      | ({"delivery_unit": w.delivery_unit} if w.delivery_unit else {})
+      | ({"delivery_unit": w.delivery_unit} if w.delivery_unit else {}) \
+      | ({"requires": w.requires} if w.requires else {})
 }
 
 # `before` names a workload the env declares, on the same runtime set that
@@ -1349,6 +1353,17 @@ _check_before = lambda workloads: [any] -> bool {
     _dangling = ["${w.name} -> ${b}" for w in workloads for b in (w.before or []) if b != BEFORE_ALL and b not in _names]
     assert len(_dangling) == 0, \
         "Workload.before names a workload this environment does not declare: " + ", ".join(_dangling) \
+        + ". Declared workloads: " + ", ".join(_names) + "."
+    True
+}
+
+# `requires` names a workload the env declares: a typo would leave a workload
+# that is meant to be skipped with its optional dependency running anyway.
+_check_requires = lambda workloads: [any] -> bool {
+    _names = [w.name for w in workloads]
+    _dangling = ["${w.name} -> ${r}" for w in workloads for r in (w.requires or []) if r not in _names]
+    assert len(_dangling) == 0, \
+        "Workload.requires names a workload this environment does not declare: " + ", ".join(_dangling) \
         + ". Declared workloads: " + ", ".join(_names) + "."
     True
 }
@@ -1994,6 +2009,7 @@ _manifests = lambda b: Bundle, entities: [any] -> [any] {
 
 render = lambda bundle: Bundle -> any {
     _ok = _check_before(bundle.workloads)
+    _requires_ok = _check_requires(bundle.workloads)
     _built_images_ok = _check_built_images(bundle.workloads)
     _entities = [_lower(w, bundle) for w in bundle.workloads]
     _pt = _primary_target(bundle)

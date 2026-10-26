@@ -1060,6 +1060,12 @@ type deployOptions struct {
 	// sets it.
 	infraConverged bool
 
+	// omitWorkloads names workloads this deploy leaves out of the rendered
+	// env. `forge env up` sets it to what it skipped for want of a Docker
+	// daemon (KCLEntities.NoDockerSkipped): the deploy phase renders the env
+	// again and must not bring them back.
+	omitWorkloads []string
+
 	// purpose is why this deploy renders the env. `forge env deploy` leaves
 	// the zero value (renderDeclaration): its render claims a local port
 	// block only when the env runs on this machine. `forge env up`'s deploy
@@ -1305,6 +1311,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	if err != nil {
 		return err
 	}
+	entities, fullEntities = withoutWorkloads(entities, opts.omitWorkloads), withoutWorkloads(fullEntities, opts.omitWorkloads)
 
 	// A targeted deploy is still a deploy INTO the whole env's topology: a
 	// target may be a group of raw manifests that no entity owns (so the

@@ -69,6 +69,10 @@ type releaseManifestConsumer struct {
 }
 
 type KCLEntities struct {
+	// NoDockerSkipped names the optional compose workloads (and the workloads
+	// requiring them) `forge env up` dropped from this run because the Docker
+	// daemon is unreachable. Run state, never part of the render.
+	NoDockerSkipped          []string `json:"-"`
 	ReleaseManifestConsumers []releaseManifestConsumer
 	// Project and Env are the bundle's project name and the env it was
 	// rendered for. ImageTag is the env's RESOLVED image tag — the tag the
@@ -793,6 +797,10 @@ type WorkloadEntity struct {
 	DeliveryUnit        string
 	ReleaseDependencies map[string]string
 	ReleaseInputs       map[string]string
+	// Requires names the workloads this one is only useful beside; it is
+	// skipped when `forge env up` skips an optional one of them
+	// (Workload.requires in kcl/workload.k).
+	Requires []string
 }
 
 // Runtime discriminators (RuntimeEntity.Type).
@@ -895,6 +903,10 @@ type ComposeRuntime struct {
 	// the repo uses; forge drives it from the primary checkout. See
 	// OnCompose.shared in kcl/workload.k.
 	Shared bool `json:"shared,omitempty"`
+	// Optional marks a service the app does not need in order to run (local
+	// observability): `forge env up` skips it, with a warning, when no Docker
+	// daemon answers. See OnCompose.optional in kcl/workload.k.
+	Optional bool `json:"optional,omitempty"`
 }
 
 // ClusterRuntime is forge.Cluster: a Kubernetes cluster the author operates.
@@ -1471,6 +1483,7 @@ type kclWorkloadRaw struct {
 	DeliveryUnit        string            `json:"delivery_unit,omitempty"`
 	ReleaseDependencies map[string]string `json:"release_dependencies,omitempty"`
 	ReleaseInputs       map[string]string `json:"release_inputs,omitempty"`
+	Requires            []string          `json:"requires,omitempty"`
 }
 
 // rawManifest is a minimal view of one rendered k8s object — just enough
@@ -1832,7 +1845,7 @@ func decodeWorkload(w kclWorkloadRaw) (WorkloadEntity, error) {
 	if w.Kind != "" && w.Kind != kind {
 		return WorkloadEntity{}, fmt.Errorf("workload %q: kind %q disagrees with spec.kind %q", w.Name, w.Kind, kind)
 	}
-	return WorkloadEntity{Name: w.Name, Kind: kind, Image: w.Image, BuildImage: w.BuildImage, Build: build, Runtime: rt, FlowChecks: w.FlowChecks, Spec: spec, DeliveryUnit: w.DeliveryUnit, ReleaseDependencies: w.ReleaseDependencies, ReleaseInputs: w.ReleaseInputs}, nil
+	return WorkloadEntity{Name: w.Name, Kind: kind, Image: w.Image, BuildImage: w.BuildImage, Build: build, Runtime: rt, FlowChecks: w.FlowChecks, Spec: spec, DeliveryUnit: w.DeliveryUnit, ReleaseDependencies: w.ReleaseDependencies, ReleaseInputs: w.ReleaseInputs, Requires: w.Requires}, nil
 }
 
 // manifestNamespace returns the namespace that dominates the rendered

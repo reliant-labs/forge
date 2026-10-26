@@ -137,6 +137,11 @@ _secret_store = forge.FileSecrets {path = "secrets/{{.EnvName}}.yaml"}
 #     then `forge secret set --env {{.EnvName}} OTLP_HEADERS` with
 #     {"authorization": "<key>"} on stdin.
 #
+# NO DOCKER (a cloud sandbox, a CI container)? These services are declared
+# `optional = True`, so `forge env up` skips them with one warning and brings up
+# everything else (Postgres and the IdP run as host processes). Drop `optional`
+# from a service to make it required: the run then fails, naming Docker.
+#
 # TO TURN IT OFF set `_observability = False`: no container starts and no
 # endpoint is exported, so processes run exactly as they did before
 # observability. The runtime still propagates trace context; it just has
@@ -315,6 +320,7 @@ _telemetry_workloads = ([fw.Workload {
     name = "otel-forwarder"
     runtime = forge.OnCompose {
         service = "otel-forwarder"
+        optional = True
         env = {
             "OTEL_FORWARDER_HTTP_PORT" = str(_otlp_http_port)
             "OTEL_FORWARDER_GRPC_PORT" = str(_otlp_grpc_port)
@@ -324,6 +330,7 @@ _telemetry_workloads = ([fw.Workload {
     name = "clickstack"
     runtime = forge.OnCompose {
         service = "clickstack"
+        optional = True
         env = {
             "CLICKSTACK_UI_PORT" = str(_hyperdx_port)
             "CLICKSTACK_OTLP_HTTP_PORT" = str(_otlp_http_port)
@@ -336,6 +343,7 @@ _telemetry_workloads = ([fw.Workload {
     name = "otel-profiles"
     runtime = forge.OnCompose {
         service = "otel-profiles"
+        optional = True
         env = {"CLICKSTACK_PROFILES_OTLP_PORT" = str(_profiles_otlp_port)}
     }
 }, fw.Workload {
@@ -343,6 +351,7 @@ _telemetry_workloads = ([fw.Workload {
     name = "alertmanager"
     runtime = forge.OnCompose {
         service = "alertmanager"
+        optional = True
         env = {"ALERTMANAGER_PORT" = str(_alertmanager_port)}
     }
 }, fw.Workload {
@@ -353,6 +362,7 @@ _telemetry_workloads = ([fw.Workload {
     # alerting (`forge obs alerts check` still evaluates once).
     name = "alerts"
     kind = "worker"
+    requires = ["clickstack", "alertmanager"]
     command = ["forge", "obs", "alerts", "run", "--env", "{{.EnvName}}",
         "--alertmanager", "http://127.0.0.1:${_alertmanager_port}", "--listen", "0.0.0.0:${_alerts_port}"]
     runtime = forge.OnHost {listen_ports = [_alerts_port]}

@@ -315,6 +315,10 @@ the `AppConfig` line, and the Go replacement:
       with `Cfg *config.EmailConfig`
 ```
 
+A package marked `//forge:not-a-component: <why>` is skipped: the server
+composition never builds it, so there is no loaded config to fill a block
+from, and whatever does build it (the CLI, a daemon) passes its values in.
+
 **`--optional-deps-guard`** finds dereferences of a `forge:optional-dep`
 field that no nil-check protects — a latent panic on the code path where the
 dependency was legitimately not wired. It recognizes early-return guards,

@@ -60,6 +60,8 @@ import (
 // do is let a stop finding through silently, which gateDeployOnPlan handles by
 // refusing --approve rather than by admitting the write.
 func planForDeploy(ctx context.Context, projectDir, env, version string, targets []string, ledger envLedger, errOut io.Writer) *release.Plan {
+	noteDeployPhase(ctx, "plan")
+	noteDeployRelease(ctx, version)
 	digest, err := bundleDigestForRelease(ctx, projectDir, env, version, ledger)
 	if err != nil || digest == "" {
 		if err != nil {

@@ -548,7 +548,11 @@ type deployCmdFlags struct {
 // because --json has to work for --explain and --dry-run too: those are exactly
 // what a UI calls to preview a deploy, and a flag that only worked on the real
 // thing would make the preview the one case a consumer could not use.
-func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) error {
+func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) (err error) {
+	// The deploy attempt (deploy_attempt.go): every writing invocation is
+	// recorded on its env's control plane, best-effort, from here to exit.
+	ctx, attempt := beginDeployAttempt(ctx, envName, f)
+	defer func() { attempt.finish(ctx, err) }()
 	if err := refuseDeployRenderOptions(envName, f.renderOptions); err != nil {
 		return err
 	}

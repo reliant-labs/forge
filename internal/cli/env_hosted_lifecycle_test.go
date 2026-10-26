@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
-	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 
 type lifecycleCall struct {
@@ -195,14 +194,30 @@ func TestEnvDelete_NonInteractiveWithoutYesFailsFastBeforeAnyNetwork(t *testing.
 }
 
 func TestRequireHostedEnv_RefusesLocalAndPointsAtDown(t *testing.T) {
-	for _, kind := range []deploytarget.HostedEnvKind{deploytarget.HostedEnvLocal, deploytarget.HostedEnvSelfManaged, ""} {
-		err := requireHostedEnv("dev", "delete", kind)
+	for _, parts := range []placementSummary{{}, {Cluster: true}} {
+		err := requireHostedEnv("dev", "delete", parts)
 		if err == nil || !strings.Contains(err.Error(), "forge env down dev") {
-			t.Errorf("kind %q: err = %v", kind, err)
+			t.Errorf("parts %+v: err = %v", parts, err)
 		}
 	}
-	if err := requireHostedEnv("prod", "stop", deploytarget.HostedEnvPersistent); err != nil {
+	if err := requireHostedEnv("prod", "stop", placementSummary{Hosted: true}); err != nil {
 		t.Errorf("hosted env refused: %v", err)
+	}
+}
+
+// A MIXED env (hosted parts beside cluster parts) is a hosted env for
+// stop/start, which act on the hosted parts only, and is refused for delete,
+// which would drop the ledger of the cluster parts it never tears down.
+func TestRequireHostedEnv_MixedEnv(t *testing.T) {
+	mixed := placementSummary{Hosted: true, Cluster: true}
+	for _, verb := range []string{"stop", "start"} {
+		if err := requireHostedEnv("prod", verb, mixed); err != nil {
+			t.Errorf("%s on a mixed env refused: %v", verb, err)
+		}
+	}
+	err := requireHostedEnv("prod", "delete", mixed)
+	if err == nil || !strings.Contains(err.Error(), "clusters you operate") {
+		t.Fatalf("delete on a mixed env: err = %v, want the cluster-parts refusal", err)
 	}
 }
 

@@ -32,7 +32,13 @@ import (
 //     plane could not be read — never fabricated.
 //   - verdict         hosted only: the environment-level deploystate verdict
 //     (unknown | converging | converged | diverged | degraded).
-//   - workloads[]     hosted only: one deploytarget.HostedWorkloadStatus per
+//   - placements[]    every declared env: one entry per workload, frontend
+//     and database — its placement (hosted | cluster | bucket | firebase |
+//     compose | host | build-only), the cluster it lands on, and who applies
+//     it (platform | hub | forge | machine | none). Placement is per part,
+//     never an env mode (docs/design/per-workload-placement.md).
+//   - workloads[]     any env with a hosted part (destination "hosted", or
+//     "mixed" with a hosted vote): one deploytarget.HostedWorkloadStatus per
 //     deployment — name, tier, url, hostname, verdict, verdict_reason,
 //     observed_state, observed_digest, desired_digest, drifted, last_error.
 
@@ -56,6 +62,8 @@ type envDestination struct {
 	EnvironmentID    string
 	Verdict          string
 	Workloads        []deploytarget.HostedWorkloadStatus
+	// Placements is every part of the env and where it runs (placementsOf).
+	Placements []partPlacement
 	// Note explains a hosted read that failed; the other fields stay
 	// honest (empty) rather than guessed.
 	Note string
@@ -146,7 +154,7 @@ func readHostedStatusFromDeclaration(ctx context.Context, envName string, e *KCL
 // resolveEnvDestination fills the contract for one rendered env. read may be
 // nil, in which case a hosted env reports destination and endpoint only.
 func resolveEnvDestination(ctx context.Context, envName string, e *KCLEntities, read hostedStatusReader) envDestination {
-	out := envDestination{Destination: destinationOf(e), ControlPlaneKind: hostedControlPlaneKindName(hostedEnvKindOf(e))}
+	out := envDestination{Destination: destinationOf(e), ControlPlaneKind: hostedControlPlaneKindName(hostedEnvKindOf(e)), Placements: placementsOf(e)}
 	if out.ControlPlaneKind != "" {
 		if decl := declarationFromEntities(e); decl != nil {
 			if ep, err := cloud.ResolveEndpoint(envName, decl); err == nil {
@@ -154,10 +162,9 @@ func resolveEnvDestination(ctx context.Context, envName string, e *KCLEntities, 
 			}
 		}
 	}
-	if out.Destination != destinationHosted {
-		return out
-	}
-	if read == nil {
+	// ANY hosted part is read, a mixed env's included: its hosted parts
+	// have verdicts exactly like a hosted-only env's.
+	if !e.HasHosted() || read == nil {
 		return out
 	}
 	st, err := read(ctx, envName, e)
@@ -194,7 +201,7 @@ func resolveEnvDestination(ctx context.Context, envName string, e *KCLEntities, 
 // belongs to the AUTHOR, not to forge and not to the platform: until they
 // set the record at their registrar, nothing converges.
 func writeHostedStatus(ctx context.Context, w io.Writer, envName string, e *KCLEntities, read hostedStatusReader) {
-	if e == nil || read == nil || destinationOf(e) != destinationHosted {
+	if e == nil || read == nil || !e.HasHosted() {
 		return
 	}
 	st, err := read(ctx, envName, e)

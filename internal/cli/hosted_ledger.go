@@ -1030,6 +1030,7 @@ func (s *hostedStore) Append(ctx context.Context, p release.Promotion, guard app
 	written, err := s.promotionFromWire(p.Env, resp.Promotion)
 	if err == nil {
 		s.remember(ctx, p.Env, written, true)
+		noteDeployPromotion(ctx, written.ID)
 	}
 	if err == nil && len(resp.Holds) > 0 {
 		s.mu.Lock()

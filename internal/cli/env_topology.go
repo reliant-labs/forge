@@ -289,6 +289,9 @@ type topologyEnv struct {
 	EnvironmentID    string                              `json:"environment_id,omitempty"`
 	Verdict          string                              `json:"verdict,omitempty"`
 	Workloads        []deploytarget.HostedWorkloadStatus `json:"workloads,omitempty"`
+	// Placements is every part of the env and where it runs; see
+	// env_destination.go.
+	Placements []partPlacement `json:"placements,omitempty"`
 
 	// §3.5's additive fields (F7), so `topology --json` is the one-shot
 	// whole-screen read a dashboard polls.
@@ -602,7 +605,7 @@ func buildTopologyEnvRow(
 		dest := opts.Destinations(ctx, projectDir, envName)
 		row.Destination, row.Endpoint, row.EnvironmentID = dest.Destination, dest.Endpoint, dest.EnvironmentID
 		row.ControlPlaneKind = dest.ControlPlaneKind
-		row.Verdict, row.Workloads = dest.Verdict, dest.Workloads
+		row.Verdict, row.Workloads, row.Placements = dest.Verdict, dest.Workloads, dest.Placements
 		if dest.Note != "" {
 			row.Note = dest.Note
 		}

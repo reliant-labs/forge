@@ -967,10 +967,14 @@ func (o ShapeObject) Key() ObjectKey {
 	return ObjectKey{Cluster: o.Cluster, Kind: o.Kind, Namespace: o.Namespace, Name: o.Name}
 }
 
-// Validate checks a shape: a known kind, well-formed object identities, no
+// Validate checks a shape: a known kind (or none), well-formed object identities, no
 // duplicate objects, canonical hashes, and nothing that could carry a value.
 func (s Shape) Validate() error {
-	if !s.Kind.Valid() {
+	// An ABSENT kind is valid: the kind is being retired (placement is per
+	// workload, docs/design/per-workload-placement.md), and a shape from a
+	// forge that no longer projects it must still validate. A PRESENT one
+	// must still be a known value — sealed bundles carry it.
+	if s.Kind != "" && !s.Kind.Valid() {
 		return fmt.Errorf("%w: shape kind %q (expected one of %s)", ErrInvalid, s.Kind, strings.Join(envKindNames(), ", "))
 	}
 	seen := map[ObjectKey]bool{}

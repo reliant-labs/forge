@@ -86,13 +86,41 @@ var lifecycleStdin io.Reader = os.Stdin
 
 // requireHostedEnv refuses an env the control plane does not run. Pure, so the
 // refusal is testable without a render.
-func requireHostedEnv(env, verb string, kind deploytarget.HostedEnvKind) error {
-	if kind == deploytarget.HostedEnvPersistent {
-		return nil
+//
+// PER PART, NOT PER ENV KIND. The verbs act on the env's HOSTED parts — the
+// ones the control plane places — and an env may hold cluster parts beside
+// them (docs/design/per-workload-placement.md). stop/start act on the hosted
+// parts and leave the cluster parts alone; the caller prints which. delete is
+// refused for a mixed env: deleting its control-plane environment would drop
+// the ledger of the cluster parts it does not tear down.
+func requireHostedEnv(env, verb string, parts placementSummary) error {
+	if !parts.Hosted {
+		return fmt.Errorf("env %q is not a hosted environment (it runs nothing on a control plane), so `forge env %s` does not apply\n"+
+			"fix: `forge env down %s` stops a local `forge env up` stack; a hosted env is one with at least one forge.OnHosted workload, database or frontend",
+			env, verb, env)
 	}
-	return fmt.Errorf("env %q is not a hosted environment (it runs nothing on a control plane), so `forge env %s` does not apply\n"+
-		"fix: `forge env down %s` stops a local `forge env up` stack; a hosted env is one with at least one forge.OnHosted workload, database or frontend",
-		env, verb, env)
+	if verb == "delete" && parts.Cluster {
+		return fmt.Errorf("env %q also runs parts on clusters you operate, which `forge env delete` would not tear down, "+
+			"and deleting its control-plane environment drops their release history.\n"+
+			"fix: move or remove the cluster parts from deploy/kcl/%s/ and deploy that first; `forge env stop %s` suspends only the hosted parts",
+			env, env, env)
+	}
+	return nil
+}
+
+// noteUnownedParts prints the parts a lifecycle verb leaves alone: everything
+// the control plane does not place.
+func noteUnownedParts(w io.Writer, verb string, e *KCLEntities) {
+	for _, p := range placementsOf(e) {
+		if p.Placement == placementHosted || p.Actuator == actuatorNone || p.Actuator == actuatorMachine {
+			continue
+		}
+		where := p.Placement
+		if p.Cluster != "" {
+			where += " " + p.Cluster
+		}
+		fmt.Fprintf(w, "  note: `forge env %s` leaves %s %s alone: it runs on %s (applied by %s)\n", verb, p.Kind, p.Name, where, p.Actuator)
+	}
 }
 
 func resolveDeclaredLifecycleTarget(ctx context.Context, env, verb, flagToken string) (lifecycleTarget, error) {
@@ -100,9 +128,10 @@ func resolveDeclaredLifecycleTarget(ctx context.Context, env, verb, flagToken st
 	if err != nil {
 		return lifecycleTarget{}, fmt.Errorf("render KCL for env %q: %w", env, err)
 	}
-	if err := requireHostedEnv(env, verb, hostedEnvKindOf(entities)); err != nil {
+	if err := requireHostedEnv(env, verb, summarizePlacements(entities)); err != nil {
 		return lifecycleTarget{}, err
 	}
+	noteUnownedParts(os.Stderr, verb, entities)
 	ep, err := cloud.ResolveEndpoint(env, declarationFromEntities(entities))
 	if err != nil {
 		return lifecycleTarget{}, err

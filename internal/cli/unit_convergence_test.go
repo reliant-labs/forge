@@ -145,8 +145,8 @@ func TestUnitSplit_RefusesWhatTheHubCannotConverge(t *testing.T) {
 		e.Databases = []DatabaseEntity{{Name: "d", Runtime: RuntimeHosted}}
 		e.HubConverges = []string{"reliant"}
 		_, err := unitSplitOf(e)
-		if err == nil || !strings.Contains(err.Error(), "hosted") {
-			t.Fatalf("a hosted tier cannot share an env with a hub-converged unit, got %v", err)
+		if err == nil || !strings.Contains(err.Error(), "hosted parts") || !strings.Contains(err.Error(), `applier = "forge"`) {
+			t.Fatalf("hub units beside a hosted part must be refused until the control plane converges both, got %v", err)
 		}
 	})
 }

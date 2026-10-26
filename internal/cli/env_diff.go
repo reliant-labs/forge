@@ -658,12 +658,6 @@ func writeOneEnvDiff(w io.Writer, entry envDiffEntry) {
 	if d == nil {
 		return
 	}
-	if d.KindChanged != nil {
-		// An ERROR, not a change: a kind is immutable, so this cannot
-		// be deployed at all.
-		fmt.Fprintf(w, "  ERROR kind is immutable: this environment is %s and cannot become %s\n",
-			d.KindChanged.Live, d.KindChanged.Candidate)
-	}
 	if entry.ConfigIdentical {
 		fmt.Fprintf(w, "  config identical: this render normalizes to the deployed bundle's config digest\n")
 	}

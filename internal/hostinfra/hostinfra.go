@@ -320,10 +320,15 @@ func startPostgres(ctx context.Context, projectDir string, spec Spec) error {
 	// pgtest.StartEmbedded fetches a cold cache's binary with retry and
 	// reports a failed download as one, rather than as the library's
 	// "no version found matching X" (pkg/pgtest/fetch.go).
-	if _, err := pgtest.StartEmbedded(postgresConfig(spec, dataDir).Logger(logFile)); err != nil {
+	ep, err := pgtest.StartEmbedded(postgresConfig(spec, dataDir).Logger(logFile))
+	if err != nil {
 		return fmt.Errorf("host-infra %s: start postgres on :%d: %w (initdb/pg_ctl output: %s)",
 			spec.Name, spec.Port, err, shortPath(projectDir, logPath))
 	}
+	// The server outlives this process and is stopped later by pg_ctl, never
+	// through this handle, so nothing will flush the library's temp log again:
+	// release the file this Start created (and only that one).
+	ep.Detach()
 
 	// The server now OUTLIVES this process by design (see the package doc):
 	// `forge env up` returns while the stack keeps serving. embedded-postgres

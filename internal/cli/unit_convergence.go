@@ -191,10 +191,19 @@ func hubUnitsConvergeable(e *KCLEntities, hub []string) error {
 			"the hub converges a unit only onto a connected cluster (set connected_cluster on the env's forge.ClusterTarget, "+
 			"or Bundle.connected_clusters), and `forge cluster connect` registers it", strings.Join(hub, ", "))
 	}
+	// A HOSTED PART BESIDE A HUB UNIT IS A VALID ENV — placement is per
+	// workload (docs/design/per-workload-placement.md), and the hosted parts
+	// and the hub units are two actuators for two placements of one env and
+	// one release. What is missing is the control plane's half: its
+	// converger cannot yet build a hosted applier and a connected-cluster
+	// applier from one bundle, and would converge the hosted tree alone. So
+	// this is refused as the capability gap it is, before the deploy, with
+	// the declaration that does work today. Hosted parts beside cluster parts
+	// FORGE applies (applier = "forge") are supported.
 	if e.HasHosted() {
-		return fmt.Errorf("bundle.hub_converges = [%s] but the env also binds hosted tiers (%s) to its control plane: "+
-			"a hosted tier is published, not converged from a bundle, and one env cannot be both. "+
-			"Move the hosted tiers to their own env, or leave hub_converges unset",
+		return fmt.Errorf("bundle.hub_converges = [%s] beside hosted parts (%s): the control plane does not yet converge "+
+			"hub units and hosted parts from one bundle. Declare applier = \"forge\" instead — forge applies the cluster "+
+			"parts and the platform the hosted ones, in one deploy",
 			strings.Join(hub, ", "), joinTiers(hostedTiersOf(e)))
 	}
 	return nil

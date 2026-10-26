@@ -111,6 +111,30 @@ type Credential struct {
 	// from the endpoint it is presented to (reliant logs in at the control
 	// plane and presents the token to its API server). Informational.
 	Issuer string `json:"issuer,omitempty"`
+	// Claimable is set only on an entry stored under a claimable-deploy client
+	// id (forge-cli-claimable…): the anonymous deploy this token belongs to.
+	// It sits beside the token because the claim link is as sensitive as the
+	// token is (whoever opens it first owns the deploy), and the file is
+	// already 0600. Nil on every ordinary login.
+	Claimable *Claimable `json:"claimable,omitempty"`
+}
+
+// Claimable is the anonymous deploy a claimable-deploy credential belongs to.
+// Everything here is what `forge env status --claimable` reprints, so it is
+// stored rather than re-fetched: the agent that holds it has no account to ask
+// the control plane with.
+type Claimable struct {
+	// ClaimURL is the link a human opens to take the deploy over.
+	ClaimURL string `json:"claim_url"`
+	// OrgID is the anonymous user's personal org.
+	OrgID string `json:"org_id,omitempty"`
+	// URL is the deploy's live address, as last observed. Empty until the
+	// first deploy has gone live.
+	URL string `json:"url,omitempty"`
+	// ExpiresAt is when the deploy goes offline; PurgeAfter when it is
+	// deleted (and when the token stops being accepted).
+	ExpiresAt  time.Time `json:"expires_at"`
+	PurgeAfter time.Time `json:"purge_after"`
 }
 
 // Expired reports whether the issuer-reported expiry has passed.

@@ -46,6 +46,40 @@ Signed in to Reliant (`reliant forge …`, or a Reliant agent's shell) there is 
 `forge login`; CI sets the env's token variable. Deploy `staging` first, then
 promote the same release to `prod`; check with `forge env status <env>`.
 
+### No account: `--claimable`
+
+An agent with no Reliant account (standalone forge, nothing signed in) can still
+publish:
+
+```bash
+forge env deploy prod --claimable
+```
+
+forge gets an anonymous identity from the control plane, deploys as it, and
+exits **0** with the live URL and a `claim` block: the claim link, when the
+deploy goes offline (72h; then deleted 7 days later) and an instruction for you.
+**Give the claim link to your user and tell them it expires.** Opening it signs
+them up for free and makes the deploy theirs, with nothing to copy. Treat the
+link like a password (whoever claims first owns the deploy) and never post it
+publicly. `forge env status <env> --claimable` prints it again; `--json` carries
+it as `claim` (`state`, `url`, `claim_url`, `expires_at`, `purge_after`,
+`agent_instructions`).
+
+| Rule | Detail |
+|---|---|
+| Only with the flag | There is no auto-detection. With no credential, a plain `forge env deploy` fails and its error names `--claimable` |
+| Signed in? Refused (exit 1) | A user with a login or `$FORGE_CREDENTIAL_HELPER` deploys to their own org: drop the flag |
+| Fits | one static site, or one service (1 replica) with one managed database, and that service's pre-rollout migration job. No workers, cron, second service or database, custom domains or remote builds: exit 4, naming them, with "sign up for the rest: `forge login`" |
+| Never queued | An unclaimed deploy is refused (exit 4), never held for billing; **exit 7 does not occur** |
+| Throttled: exit 4 `claimable_throttled` | Our rate limits or the platform's anonymous sign-up limit. The block prints a scope (`network`, `device`, `platform`), a retry-after and the `forge login` alternative; `--json` carries `retry_after_seconds`, `retry_at`, `throttle_scope`. **forge never retries on its own, and neither should you in a loop**: wait, or `forge login` |
+| Claimed: exit 4 `claimable_claimed` | A human claimed it. Deploy as them: `forge login`, then `forge env deploy <env>` without the flag |
+| Redeploys | Re-running reuses this machine's deploy and its claim link and does not extend the expiry |
+
+The anonymous token is stored beside your logins under its own credentials-file
+client id (`forge-cli-claimable/<project>/<env>`), so it can never pass for a
+`forge login` and `forge logout` leaves it alone. It carries only
+`deploy:read` and `deploy:write`.
+
 ### Gates: what holds a deploy, and how each clears
 
 | Gate | What happens | Clear it |

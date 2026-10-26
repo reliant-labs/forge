@@ -95,6 +95,10 @@ type Error struct {
 	// payload as JSON (see DetailJSON) without a generated type.
 	Details []ErrorDetail
 
+	// Header is the response's headers, for the few facts a control plane
+	// sends there beside the reason (a throttle's retry-after).
+	Header http.Header
+
 	// Procedure and Endpoint are where this happened, for the message.
 	Procedure string
 	Endpoint  string
@@ -230,6 +234,7 @@ func (c *Client) connectError(procedure string, resp *http.Response, raw []byte)
 		Scopes:     accesstoken.ParseScopesHeader(resp.Header.Get(accesstoken.ScopesHeader)),
 		Message:    strings.TrimSpace(envelope.Message),
 		Details:    envelope.Details,
+		Header:     resp.Header.Clone(),
 		Procedure:  procedure,
 		Endpoint:   c.Endpoint.URL,
 	}

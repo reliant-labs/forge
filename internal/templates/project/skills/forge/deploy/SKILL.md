@@ -10,6 +10,11 @@ everything to it, and `forge env deploy prod` is the whole procedure. What it
 provides, what it refuses, and the gates (billing, unset secrets):
 `deploy/hosting`. A cluster you operate is the secondary path, below.
 
+**No Reliant account yet?** `forge env deploy <env> --claimable` publishes
+anyway and prints a live URL plus a claim link for your user (see
+`deploy/hosting`, "No account: `--claimable`"). It is the only deploy that
+needs no `forge login`.
+
 ## The model: declare once, bind per env
 
 Everything that runs is a `fw.Workload`, declared ONCE in

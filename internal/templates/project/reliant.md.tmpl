@@ -17,6 +17,8 @@ Skip this depth for trivial/mechanical work — there, just do it.
 
 Publishing defaults to Reliant hosting (staging/prod are already bound to it; everything hosted, static sites included, needs billing): load `deploy`, then `{{.CLI}} env deploy <env>`. Never ask for `forge login` when running under Reliant.
 
+**No Reliant account** (standalone forge, nothing signed in)? `{{.CLI}} env deploy <env> --claimable` publishes with no signup and prints a live URL plus a **claim link**: hand the link to your user (it expires in 72h; opening it signs them up free and makes the deploy theirs, so treat it like a password). It fits one static site, or one service with one database, and is refused when you are signed in. Exit 4 `claimable_throttled` is a rate limit: wait the printed retry-after (never loop), or `forge login`. Depth: `deploy/hosting`.
+
 ## Use forge skills to guide your work
 
 Forge ships an extensive skill catalog (architecture, proto, db, api, services, testing, frontend, deploy, debug, packs, observability, and more). **Prefer loading a forge skill before guessing** — they encode the exact conventions this project relies on, and the rules they describe are enforced by `{{.CLI}} lint`.

@@ -157,6 +157,9 @@ const helperReuseMargin = time.Minute
 // its session does not belong to — the endpoint comes from a project's KCL,
 // and a repository is not a trusted party.
 func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
+	if c, ok := claimableCredentialFor(ep); ok {
+		return c, nil
+	}
 	if t := strings.TrimSpace(flagToken); t != "" {
 		return Credential{Token: t, Source: SourceFlag, From: "--token"}, nil
 	}
@@ -211,7 +214,8 @@ func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
 			"fix, in the order forge checks them:\n"+
 			"    --token <token>        explicit, wins over everything (one-off / debugging)\n"+
 			"    export %s=<token>      for CI — a pipeline has no browser\n"+
-			"    %s        for a human — opens a browser and stores the credential",
+			"    %s        for a human — opens a browser and stores the credential\n"+
+			"no account? `forge env deploy <env> --claimable` publishes a deploy anyone can claim within 72h",
 		ErrNoCredential, ep.URL, tokenEnv, loginHint(ep))
 }
 

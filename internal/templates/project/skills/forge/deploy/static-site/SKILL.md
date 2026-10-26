@@ -160,6 +160,11 @@ Promotion re-points another env at the same digest:
 byte-identical sites. Recovery rolls forward to a new release; there is no
 rollback.
 
+**No account at all?** `forge env deploy prod --claimable` ships the same site
+with no signup and prints its URL plus a claim link to hand your user; unless
+they open it within 72h the site goes offline (`deploy/hosting`, "No account:
+`--claimable`").
+
 Signed in to Reliant means signed in to the control plane: there is no second
 `forge login`. `reliant forge …` and Reliant agents' shells set
 `$FORGE_CREDENTIAL_HELPER`, which mints forge a short-lived token from your

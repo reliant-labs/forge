@@ -38,6 +38,12 @@ func (r Runner) sourceCacheRoot() (string, error) {
 	return gitsource.DefaultCacheRoot()
 }
 
+// sourceCacheUnlinkAllowance is the unlinks the source cache may make beyond the
+// pass's cap: every idle clone's installed dependency tree (~40k entries each,
+// dozens of clones on a busy machine). Pacing at delete_rate_per_sec, the
+// back-off and the layer's time slice are the real bounds.
+const sourceCacheUnlinkAllowance = 1_000_000
+
 // Sources reclaims cross-repo source clones that no project has resolved
 // recently. One full clone exists per repo+ref pin and nothing else ever
 // removes one, so a project that bumps its pin weekly accumulates a
@@ -67,10 +73,17 @@ func (r Runner) Sources(apply bool) error {
 	if parseErr != nil {
 		maxAge = 0
 	}
+	slimAfter, _ := time.ParseDuration(r.Policy.SourceCacheSlimAfter) // validated; a bad value slims nothing
 	ctx := r.hostCtx()
-	del := r.deletes()
+	// One installed node_modules is tens of thousands of unlinks, more than a
+	// layer's share of the per-pass cap, so under the cap alone a slim never
+	// finishes and the clone is retried forever. Like a Go cache over its size
+	// budget, this layer may exceed the cap; pacing, back-off and the time
+	// slice still bound every unlink.
+	del := r.deletes().allowOver(sourceCacheUnlinkAllowance)
 	policy := gitsource.EvictPolicy{
 		MaxAge: maxAge, KeepPerSlug: r.Policy.SourceCacheKeep, Ctx: ctx,
+		SlimAfter: slimAfter, BudgetBytes: int64(r.Policy.SourceCacheGiB * GiB),
 		// A clone is a whole tree — an installed node_modules can be 100k
 		// files — so it is unlinked through the pass's governor like every
 		// other cache, not by an unpaced RemoveAll.
@@ -89,9 +102,17 @@ func (r Runner) Sources(apply bool) error {
 		}
 		return err
 	}
+	if len(got.Slimmed) > 0 {
+		r.print("source cache: slimmed %d clones, %.1f GiB of installed dependencies (a build reinstalls them)\n",
+			len(got.Slimmed), float64(got.SlimBytes)/float64(GiB))
+	}
 	if len(got.Removed) > 0 {
 		r.print("source cache: %d entries, %.1f GiB (%d retained)\n",
 			len(got.Removed), float64(got.Bytes)/float64(GiB), got.Kept)
+	}
+	if got.OverBudget {
+		r.print("WARNING source cache %s is over its %d GiB budget and nothing more is evictable: the newest %d clones of each repository and any clone a running process holds are never removed; raise source_cache_gib\n",
+			root, r.Policy.SourceCacheGiB, r.Policy.SourceCacheKeep)
 	}
 	return nil
 }

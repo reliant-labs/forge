@@ -374,3 +374,139 @@ func TestEntrySlugGroupsOnlyRealCacheKeys(t *testing.T) {
 		}
 	}
 }
+
+// seedWithDeps is seedEntry plus an installed dependency tree of depBytes under
+// web/node_modules, the bulk of a real clone.
+func seedWithDeps(t *testing.T, root, name string, lastUse time.Time, depBytes int) string {
+	t.Helper()
+	entry := seedEntry(t, root, name, lastUse)
+	nm := filepath.Join(entry, "web", "node_modules", "pkg")
+	if err := os.MkdirAll(nm, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nm, "index.js"), make([]byte, depBytes), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(nm, 0o555); err != nil { // npm writes some trees read-only
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = filepath.WalkDir(root, func(p string, d os.DirEntry, _ error) error { _ = os.Chmod(p, 0o755); return nil })
+	})
+	return entry
+}
+
+func TestEvictSlimsIdleClonesBeyondTheKeepFloorAndLeavesThemACacheHit(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	seedWithDeps(t, root, "app-aaaaaaaaaaaa", now, 1000)
+	seedWithDeps(t, root, "app-bbbbbbbbbbbb", now.Add(-48*time.Hour), 1000)
+	seedWithDeps(t, root, "app-cccccccccccc", now.Add(-72*time.Hour), 1000) // third: beyond keep=2
+	seedWithDeps(t, root, "app-dddddddddddd", now.Add(-time.Hour), 1000)    // newest after a: protected too
+	policy := EvictPolicy{KeepPerSlug: 2, MaxAge: 30 * 24 * time.Hour, SlimAfter: 24 * time.Hour, InUse: neverInUse}
+
+	got, err := Evict(root, now, policy, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Removed) != 0 {
+		t.Fatalf("slimming must not evict: %v", got.Removed)
+	}
+	if want := []string{"app-bbbbbbbbbbbb", "app-cccccccccccc"}; strings.Join(sortedNames(got.Slimmed), ",") != strings.Join(want, ",") {
+		t.Fatalf("slimmed = %v, want %v", got.Slimmed, want)
+	}
+	for _, name := range []string{"app-bbbbbbbbbbbb", "app-cccccccccccc"} {
+		if _, err := os.Stat(filepath.Join(root, name, "web", "node_modules")); err == nil {
+			t.Errorf("%s kept its node_modules", name)
+		}
+		if _, ok := readMetadata(filepath.Join(root, name)); !ok {
+			t.Errorf("%s stopped being a cache hit", name)
+		}
+		if _, err := os.Stat(filepath.Join(root, name, "web", "bundle.js")); err != nil {
+			t.Errorf("%s lost source it should keep: %v", name, err)
+		}
+	}
+	for _, name := range []string{"app-aaaaaaaaaaaa", "app-dddddddddddd"} {
+		if _, err := os.Stat(filepath.Join(root, name, "web", "node_modules")); err != nil {
+			t.Errorf("%s is inside the keep floor and lost node_modules", name)
+		}
+	}
+	if got.SlimBytes < 2000 {
+		t.Errorf("SlimBytes = %d", got.SlimBytes)
+	}
+	// And a second pass has nothing left to slim.
+	again, err := Evict(root, now, policy, true, nil)
+	if err != nil || len(again.Slimmed) != 0 {
+		t.Fatalf("second pass: %v %v", again.Slimmed, err)
+	}
+}
+
+func TestEvictSlimmingIsPreviewedAndSkipsEntriesAProcessHolds(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	seedWithDeps(t, root, "app-aaaaaaaaaaaa", now, 100)
+	seedWithDeps(t, root, "app-bbbbbbbbbbbb", now.Add(-time.Hour), 100)
+	held := seedWithDeps(t, root, "app-cccccccccccc", now.Add(-72*time.Hour), 100)
+	seedWithDeps(t, root, "app-dddddddddddd", now.Add(-96*time.Hour), 100)
+	policy := EvictPolicy{KeepPerSlug: 2, MaxAge: 30 * 24 * time.Hour, SlimAfter: 24 * time.Hour, InUse: func(e string) bool { return e == held }}
+
+	got, err := Evict(root, now, policy, false, nil)
+	if err != nil || len(got.Slimmed) != 1 || got.Slimmed[0] != "app-dddddddddddd" {
+		t.Fatalf("preview: slimmed %v err %v", got.Slimmed, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "app-dddddddddddd", "web", "node_modules")); err != nil {
+		t.Fatal("a preview slimmed")
+	}
+	if len(got.Held) != 1 {
+		t.Errorf("held = %v", got.Held)
+	}
+}
+
+func TestEvictBudgetEvictsLeastRecentlyUsedBeyondKeepAndReportsWhatItCannotReach(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	for i, name := range []string{"app-aaaaaaaaaaaa", "app-bbbbbbbbbbbb", "app-cccccccccccc", "app-dddddddddddd", "app-eeeeeeeeeeee"} {
+		seedWithDeps(t, root, name, now.Add(-time.Duration(i)*time.Hour), 1000) // all young: age evicts nothing
+	}
+	// Five ~1 KB entries, 5 KB total; budget 3 KB, low water 2.4 KB.
+	policy := EvictPolicy{KeepPerSlug: 2, MaxAge: 30 * 24 * time.Hour, BudgetBytes: 3000, InUse: neverInUse}
+	got, err := Evict(root, now, policy, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "app-cccccccccccc,app-dddddddddddd,app-eeeeeeeeeeee"; strings.Join(sortedNames(got.Removed), ",") != want {
+		t.Fatalf("removed %v, want %s", got.Removed, want)
+	}
+	for _, kept := range []string{"app-aaaaaaaaaaaa", "app-bbbbbbbbbbbb"} {
+		if _, err := os.Stat(filepath.Join(root, kept)); err != nil {
+			t.Errorf("%s is inside the keep floor and was evicted", kept)
+		}
+	}
+	if got.OverBudget {
+		t.Error("the two kept entries weigh ~2.1 KB, under the 3 KB budget: reachable")
+	}
+
+	// A budget below what the keep floor alone weighs cannot be reached, and says so.
+	tight := EvictPolicy{KeepPerSlug: 2, MaxAge: 30 * 24 * time.Hour, BudgetBytes: 100, InUse: neverInUse}
+	got, err = Evict(root, now, tight, true, nil)
+	if err != nil || !got.OverBudget || len(got.Removed) != 0 {
+		t.Fatalf("unreachable budget: removed %v over %v err %v", got.Removed, got.OverBudget, err)
+	}
+}
+
+func TestEvictBudgetPrefersSlimmingToEvicting(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	for i, name := range []string{"app-aaaaaaaaaaaa", "app-bbbbbbbbbbbb", "app-cccccccccccc", "app-dddddddddddd"} {
+		seedWithDeps(t, root, name, now.Add(-time.Duration(30+i)*time.Hour), 5000)
+	}
+	// 4 x ~5 KB = 20 KB; slimming the two beyond keep frees 10 KB, leaving ~10 KB.
+	policy := EvictPolicy{KeepPerSlug: 2, MaxAge: 30 * 24 * time.Hour, SlimAfter: 24 * time.Hour, BudgetBytes: 12000, InUse: neverInUse}
+	got, err := Evict(root, now, policy, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Removed) != 0 || len(got.Slimmed) != 2 {
+		t.Fatalf("slimming reaches the budget; eviction must not run: removed %v slimmed %v", got.Removed, got.Slimmed)
+	}
+}

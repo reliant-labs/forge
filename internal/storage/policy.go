@@ -44,6 +44,12 @@ type Policy struct {
 	// on a 1 TB laptop: the budget is the smaller of go_cache_gib and this
 	// share. Zero means the default (15); 100 leaves go_cache_gib alone.
 	GoCacheVolumePercent int `json:"go_cache_volume_percent,omitempty"`
+	// GoModCacheGiB is the size the shared Go module cache (GOMODCACHE) is
+	// trimmed down to when it grows past it: extracted module versions and
+	// their zips that no checkout on the machine references, oldest first
+	// (gomodcache.go). Like go_cache_gib it is capped at
+	// go_cache_volume_percent of the volume the cache lives on.
+	GoModCacheGiB uint64 `json:"go_mod_cache_gib"`
 	// SourceCacheUnused is how long a cross-repo source clone may go
 	// unresolved before it becomes an eviction candidate. Longer than the
 	// image and build-cache windows because the cost of being wrong is a
@@ -54,14 +60,26 @@ type Policy struct {
 	// keeps an idle project's current pin warm, so it is validated at 1 or
 	// more: a policy that can empty a repository's only pin is not a policy
 	// anyone wants by accident.
-	SourceCacheKeep int        `json:"source_cache_keep"`
-	RegistryDays    int        `json:"registry_days"`
-	RegistryKeep    int        `json:"registry_keep"`
-	DockerContext   string     `json:"docker_context,omitempty"`
-	Builders        []string   `json:"builders"`
-	Registries      []Registry `json:"registries,omitempty"`
-	Clusters        []string   `json:"clusters,omitempty"`
-	Pins            []string   `json:"pins,omitempty"`
+	SourceCacheKeep int `json:"source_cache_keep"`
+	// SourceCacheGiB is the size the source cache is evicted down to, least
+	// recently used clone first, never touching the newest source_cache_keep
+	// clones of a repository. The age rule alone does not bound it: a project
+	// that bumps its pin every few hours produces more clones in
+	// source_cache_unused than any age can hold.
+	SourceCacheGiB uint64 `json:"source_cache_gib"`
+	// SourceCacheSlimAfter is how long a clone beyond the newest
+	// source_cache_keep of its repository may sit unused before its installed
+	// dependencies (node_modules) are removed. Those are 80% of a clone's
+	// bytes and a build reinstalls them (frontenddeps.Ensure); the pristine
+	// checkout stays.
+	SourceCacheSlimAfter string     `json:"source_cache_slim_after"`
+	RegistryDays         int        `json:"registry_days"`
+	RegistryKeep         int        `json:"registry_keep"`
+	DockerContext        string     `json:"docker_context,omitempty"`
+	Builders             []string   `json:"builders"`
+	Registries           []Registry `json:"registries,omitempty"`
+	Clusters             []string   `json:"clusters,omitempty"`
+	Pins                 []string   `json:"pins,omitempty"`
 
 	// Repos are git repositories whose linked worktrees the worktree layer
 	// reclaims, beyond the repository of each registered project: sibling
@@ -119,7 +137,7 @@ type Registry struct {
 
 // DefaultPolicy returns conservative local development budgets.
 func DefaultPolicy() Policy {
-	return Policy{LogBudgetGiB: 1, HostReserveGiB: 20, BuildCacheGiB: 20, BuildCacheUnused: "168h", GoCacheUnused: "48h", GoCacheGiB: 60, ImageUnused: "168h", SourceCacheUnused: "336h", SourceCacheKeep: 2, RegistryDays: 14, RegistryKeep: 5, Builders: []string{"default"},
+	return Policy{LogBudgetGiB: 1, HostReserveGiB: 20, BuildCacheGiB: 20, BuildCacheUnused: "168h", GoCacheUnused: "48h", GoCacheGiB: 60, GoModCacheGiB: 20, ImageUnused: "168h", SourceCacheUnused: "168h", SourceCacheKeep: 2, SourceCacheGiB: 6, SourceCacheSlimAfter: "24h", RegistryDays: 14, RegistryKeep: 5, Builders: []string{"default"},
 		MaxDeletesPerPass: defaultMaxDeletesPerPass, DeleteRatePerSec: defaultDeleteRatePerSec,
 		AnonymousVolumeUnused: "336h", MaxDockerRemovalsPerPass: defaultMaxDockerRemovalsPerPass}
 }
@@ -190,7 +208,7 @@ func warnUnknownPolicyKeys(path string, doc []byte) {
 
 // Validate rejects unbounded budgets and unscoped registry targets.
 func (p Policy) Validate() error {
-	if p.LogBudgetGiB == 0 || p.HostReserveGiB == 0 || p.BuildCacheGiB == 0 || p.GoCacheGiB == 0 || p.RegistryDays < 1 || p.RegistryKeep < 2 {
+	if p.LogBudgetGiB == 0 || p.HostReserveGiB == 0 || p.BuildCacheGiB == 0 || p.GoCacheGiB == 0 || p.GoModCacheGiB == 0 || p.SourceCacheGiB == 0 || p.RegistryDays < 1 || p.RegistryKeep < 2 {
 		return fmt.Errorf("storage: positive budgets and retention, and at least two registry versions are required")
 	}
 	if p.SourceCacheKeep < 1 {
@@ -205,7 +223,7 @@ func (p Policy) Validate() error {
 	if _, err := p.anonymousVolumeUnused(); err != nil {
 		return err
 	}
-	for _, v := range []string{p.ImageUnused, p.BuildCacheUnused, p.SourceCacheUnused, p.GoCacheUnused} {
+	for _, v := range []string{p.ImageUnused, p.BuildCacheUnused, p.SourceCacheUnused, p.SourceCacheSlimAfter, p.GoCacheUnused} {
 		d, err := time.ParseDuration(v)
 		if err != nil || d < time.Hour {
 			return fmt.Errorf("storage: invalid unused duration %q (minimum 1h)", v)

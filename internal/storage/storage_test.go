@@ -72,8 +72,8 @@ func TestPolicyFileWithoutSourceCacheKeysGetsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a policy predating the source-cache keys no longer loads: %v", err)
 	}
-	if p.SourceCacheUnused != "336h" || p.SourceCacheKeep != 2 {
-		t.Fatalf("source cache budgets = %q/%d, want the defaults 336h/2", p.SourceCacheUnused, p.SourceCacheKeep)
+	if p.SourceCacheUnused != "168h" || p.SourceCacheKeep != 2 {
+		t.Fatalf("source cache budgets = %q/%d, want the defaults 168h/2", p.SourceCacheUnused, p.SourceCacheKeep)
 	}
 	if p.RegistryKeep != 3 {
 		t.Fatalf("the document's own value was lost: registry_keep = %d", p.RegistryKeep)
@@ -322,5 +322,29 @@ func TestWithLockWaitGivesUpAfterItsBound(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPolicyFileWithoutModCacheAndSourceBudgetKeysGetsDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(path, []byte(`{"registry_keep":3}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path)
+	if err != nil {
+		t.Fatalf("a policy predating the budgets no longer loads: %v", err)
+	}
+	if p.GoModCacheGiB != 20 || p.SourceCacheGiB != 6 || p.SourceCacheSlimAfter != "24h" {
+		t.Fatalf("defaults = %d GiB mod, %d GiB sources, slim %q", p.GoModCacheGiB, p.SourceCacheGiB, p.SourceCacheSlimAfter)
+	}
+	bad := DefaultPolicy()
+	bad.SourceCacheSlimAfter = "30m"
+	if bad.Validate() == nil {
+		t.Fatal("a slim window under an hour must be rejected")
+	}
+	bad = DefaultPolicy()
+	bad.GoModCacheGiB = 0
+	if bad.Validate() == nil {
+		t.Fatal("an unbounded module cache must be rejected")
 	}
 }

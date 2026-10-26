@@ -497,7 +497,7 @@ func TestGoCachePartialPassIsNotAFailure(t *testing.T) {
 		t.Fatalf("a cut-off pass must not be a failure: %v", err)
 	}
 	res := NewGCResult(time.Now(), err)
-	if !res.OK || !slices.Contains(res.CutOffLayers, "go caches: shared build cache") || len(res.CutOffLayers) != 4 {
+	if !res.OK || !slices.Contains(res.CutOffLayers, "go caches: shared build cache") || len(res.CutOffLayers) != 5 {
 		t.Fatalf("every step the deadline stopped must be recorded as cut off: %+v", res)
 	}
 	// And a live pass over a real cache that finishes reports no error and says so.

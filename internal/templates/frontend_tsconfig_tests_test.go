@@ -113,6 +113,9 @@ func TestAdoptSkillTestProjectChecksOnlyTests(t *testing.T) {
 	if !refs {
 		t.Errorf("tsconfig.test.json must reference ./tsconfig.app.json, so the tests read the app's declarations; references %v", testProject.References)
 	}
+	if testProject.CompilerOptions["incremental"] != true {
+		t.Errorf("tsconfig.test.json must set incremental (composite: false turns it off), or tsc -b re-checks every test on any change")
+	}
 	if appOptions == nil || appOptions.CompilerOptions["emitDeclarationOnly"] != true {
 		t.Errorf("%s: no app-project snippet making tsconfig.app.json composite with emitDeclarationOnly", skill)
 	}

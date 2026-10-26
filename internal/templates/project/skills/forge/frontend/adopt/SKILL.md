@@ -54,6 +54,7 @@ Rules that hold for every frontend, adopted or not:
     "compilerOptions": {
       "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
       "composite": false,
+      "incremental": true,
       "declaration": false,
       "emitDeclarationOnly": false,
       "noEmit": true,
@@ -85,6 +86,9 @@ Rules that hold for every frontend, adopted or not:
   leaves the declarations alone does not re-check the tests. `src/**/*.d.ts`
   keeps the app's global declarations (`vite/client`, `Window` augmentations)
   in scope, because a referenced project's own `.d.ts` files are not emitted.
+  `incremental` keeps per-file results in the build info; `composite: false`
+  turns it off, and without it `tsc -b` re-checks every test whenever one
+  changed.
   A project the app itself references (a separate one for `src/gen`) emits
   into the same `outDir`, so the relative imports between them in emitted
   `.d.ts` still resolve: under `skipLibCheck` one that does not types as `any`

@@ -57,11 +57,23 @@ vars:
   # Overrides, for forge developers and pins no proxy serves:
   #   FORGE_BIN=/path/to/forge task lint   (environment), or
   #   task lint FORGE=forge                (command line).
+  # A bridged project (go.work, below) runs the bridged checkout instead.
   # A pin that names no published forge (a +dirty build, `dev`) falls back to
   # the forge on PATH, which then hands the command to the pin when it can.
   FORGE_YAML:
     sh: cat forge.yaml
-  FORGE: '{{`{{$pin := index (fromYaml .FORGE_YAML) "forge_version" | default "" | toString}}{{if .FORGE_BIN}}{{.FORGE_BIN}}{{else if or (eq $pin "") (eq $pin "dev") (contains "+" $pin)}}forge{{else}}go run github.com/reliant-labs/forge/cmd/forge@{{$pin}}{{end}}`}}'
+  # A project bridged to a local forge checkout (a gitignored go.work `use`,
+  # written by `forge project new --link-forge`) compiles against that
+  # checkout, and so do its templates: this very file can call a verb newer
+  # than the release forge_version names (that is the floor a build from a
+  # checkout may pin, not the forge that wrote this project). Run the forge the
+  # workspace resolves instead: `go list -m -json` says `"Main": true` for a
+  # module that is a workspace's main module and omits the key for a version it
+  # downloaded. The test is Task's own `contains`, not grep: this file runs on
+  # Windows too.
+  FORGE_BRIDGED:
+    sh: 'go list -m -json github.com/reliant-labs/forge 2>/dev/null || true'
+  FORGE: '{{`{{$pin := index (fromYaml .FORGE_YAML) "forge_version" | default "" | toString}}{{if .FORGE_BIN}}{{.FORGE_BIN}}{{else if contains "Main\": true" .FORGE_BRIDGED}}go run github.com/reliant-labs/forge/cmd/forge{{else if or (eq $pin "") (eq $pin "dev") (contains "+" $pin)}}forge{{else}}go run github.com/reliant-labs/forge/cmd/forge@{{$pin}}{{end}}`}}'
   # GOTESTRACE is a TOP-LEVEL var on purpose: only global vars can be
   # overridden from the command line (`task test GOTESTRACE=`), which is how
   # the generated CI workflow passes through forge.yaml's `ci.test.race`.

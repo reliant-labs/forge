@@ -30,9 +30,9 @@ func TestScaffoldForgeResolution(t *testing.T) {
 		wantErr    bool
 		wantFix    string
 	}{
-		{"service, neither pin nor bridge, no checkout", config.ProjectKindService, "", "", "", true, "task install:dev"},
+		{"service, neither pin nor bridge, no checkout", config.ProjectKindService, "", "", "", true, "--link-forge --forge-root <path-to-forge-checkout>"},
 		// A checkout exists but the user did not opt in: refuse, and say how.
-		{"service, linkable but not linked", config.ProjectKindService, "", "", "/src/forge", true, "--link-forge"},
+		{"service, linkable but not linked", config.ProjectKindService, "", "", "/src/forge", true, "--link-forge --forge-root /src/forge"},
 		{"service, published pin", config.ProjectKindService, "v0.1.17", "", "/src/forge", false, ""},
 		{"service, linked", config.ProjectKindService, "", "/src/forge", "/src/forge", false, ""},
 		{"service, both", config.ProjectKindService, "v0.1.17", "/src/forge", "/src/forge", false, ""},
@@ -42,7 +42,7 @@ func TestScaffoldForgeResolution(t *testing.T) {
 		{"library, neither", config.ProjectKindLibrary, "", "", "", false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := scaffoldForgeResolution(tc.kind, tc.pinned, tc.bridgeRoot, tc.linkable)
+			err := scaffoldForgeResolution(tc.kind, tc.pinned, tc.bridgeRoot, tc.linkable, nil)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("scaffoldForgeResolution(%q, %q, %q, %q) error = %v, wantErr %v",
 					tc.kind, tc.pinned, tc.bridgeRoot, tc.linkable, err, tc.wantErr)

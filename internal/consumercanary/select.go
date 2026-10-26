@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/forgereach"
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // SelectTests lists the packages of the consumer in dir whose build or tests
@@ -85,9 +86,10 @@ func SelectTests(ctx context.Context, dir string, env []string, reach forgereach
 func goListEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "go", append([]string{"list"}, args...)...)
 	cmd.Dir = dir
-	if env != nil {
-		cmd.Env = env
+	if env == nil {
+		env = goexec.CheckEnv("GOWORK=off")
 	}
+	cmd.Env = env
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {

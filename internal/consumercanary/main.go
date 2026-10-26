@@ -59,7 +59,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/forgereach"
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/pkg/hostslot"
 )
 
@@ -391,16 +393,9 @@ func canary(ctx context.Context, o options, c Consumer, reach forgereach.Reach, 
 		return res
 	}
 
-	// -trimpath: the scratch directory is new every run, and without it the
-	// directory is part of every package's build-cache key, so nothing would
-	// ever be reused.
-	flags := os.Getenv("GOFLAGS")
-	if !strings.Contains(" "+flags+" ", " -trimpath ") {
-		flags = joinFlags(flags, "-trimpath")
-	}
-	pr := goEnv(append(os.Environ(), "GOFLAGS="+joinFlags(flags, "-modfile="+mod, "-mod=mod")))
+	pr := consumerEnv(mod)
 
-	base, err := baselineEnv(ctx, o, tree, scratch, flags, reach.Module)
+	base, err := baselineEnv(ctx, o, tree, scratch, reach.Module)
 	if err != nil {
 		return fail("ERROR", "%v", err)
 	}
@@ -415,7 +410,7 @@ func canary(ctx context.Context, o options, c Consumer, reach forgereach.Reach, 
 		return res
 	}
 	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err == nil {
-		_ = os.WriteFile(marker, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
+		_ = atomicfile.WriteFile(marker, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
 	}
 	res.Status = "PASS"
 	return res
@@ -464,7 +459,7 @@ func (r *runner) keep(step, which, out string) string {
 	dir := filepath.Join(r.o.cache, "logs")
 	_ = os.MkdirAll(dir, 0o755)
 	p := filepath.Join(dir, r.name+"-"+step+"-"+which+".log")
-	_ = os.WriteFile(p, []byte(out), 0o644)
+	_ = atomicfile.WriteFile(p, []byte(out), 0o644)
 	return p
 }
 
@@ -513,7 +508,7 @@ func (r *runner) step(name string, args ...string) (detail string, ok bool) {
 // request red. A forced run has no diff to blame (the nightly asks "do the
 // consumers build against forge main?"), so it has no baseline (nil) and every
 // failure counts.
-func baselineEnv(ctx context.Context, o options, tree, scratch, flags, forgeModule string) ([]string, error) {
+func baselineEnv(ctx context.Context, o options, tree, scratch, forgeModule string) ([]string, error) {
 	if o.force {
 		return nil, nil
 	}
@@ -528,7 +523,7 @@ func baselineEnv(ctx context.Context, o options, tree, scratch, flags, forgeModu
 	if err != nil {
 		return nil, err
 	}
-	return goEnv(append(os.Environ(), "GOFLAGS="+joinFlags(flags, "-modfile="+baseMod, "-mod=mod"))), nil
+	return consumerEnv(baseMod), nil
 }
 
 // pointAtForge writes a copy of the consumer's go.mod and go.sum into scratch
@@ -546,7 +541,7 @@ func pointAtForge(ctx context.Context, tree, scratch, name, forge, forgeModule s
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return "", false, err
 		}
-		if err := os.WriteFile(f[1], b, 0o644); err != nil {
+		if err := atomicfile.WriteFile(f[1], b, 0o644); err != nil {
 			return "", false, err
 		}
 	}
@@ -561,10 +556,23 @@ func mustRead(p string) []byte {
 	return b
 }
 
-// goEnv turns the go.work file off: a workspace beside the consumer would
-// override the replace this tool is testing.
-func goEnv(env []string) []string {
-	return append(env, "GOWORK=off")
+// consumerEnv is the environment a consumer's go commands run in: forge's own
+// scrubbed go environment (goexec.CheckEnv: no inherited -mod=mod, -trimpath
+// added, because the scratch directory is new every run and without -trimpath
+// it would be part of every package's build-cache key), the go.work file off (a
+// workspace beside the consumer would override the replace under test), and
+// modfile as the module file. -mod=mod lets the go command complete the
+// throwaway copy's go.sum for the forge under test; the consumer's own go.sum
+// is never written.
+func consumerEnv(modfile string) []string {
+	base := goexec.CheckEnv("GOWORK=off")
+	flags := ""
+	for _, kv := range base {
+		if v, ok := strings.CutPrefix(kv, "GOFLAGS="); ok {
+			flags = v
+		}
+	}
+	return goexec.WithTrimpath(append(base, "GOFLAGS="+joinFlags(flags, "-modfile="+modfile, "-mod=mod")))
 }
 
 func joinFlags(existing string, add ...string) string {

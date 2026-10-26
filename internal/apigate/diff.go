@@ -3,12 +3,13 @@ package main
 import (
 	"fmt"
 	"go/types"
-	"os"
 	"sort"
 	"strings"
 
 	"golang.org/x/exp/apidiff"
 	"golang.org/x/tools/go/packages"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // apiRoot is the directory, relative to the module root, whose packages are
@@ -32,7 +33,7 @@ func loadAPI(root string) (map[string]*types.Package, error) {
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedTypes | packages.NeedImports | packages.NeedDeps | packages.NeedModule,
 		Dir:  root,
-		Env:  os.Environ(),
+		Env:  goexec.CheckEnv("GOWORK=off"),
 	}
 	pkgs, err := packages.Load(cfg, "./"+apiRoot+"/...")
 	if err != nil {

@@ -26,6 +26,8 @@ import (
 	"strings"
 
 	"golang.org/x/mod/modfile"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // Git runs git in dir and returns stdout.
@@ -44,7 +46,7 @@ func Git(dir string, args ...string) ([]byte, error) {
 func GoList(dir string, args ...string) ([]byte, error) {
 	cmd := exec.Command("go", append([]string{"list"}, args...)...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = goexec.Env("GOWORK=off")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

@@ -69,6 +69,9 @@ incident — not because a style guide recommended them:
 ## The first sixty seconds
 
 ```bash
+# Install (macOS / Linux; Windows, Homebrew, npm and go install are under Install)
+curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh
+
 forge project new my-app && cd my-app
 forge scaffold service billing
 forge generate
@@ -94,6 +97,52 @@ The table includes the HyperDX UI too (ClickStack runs by default; set
 receiving the app's traces, metrics and logs.
 
 No signup, no external accounts, no cloud project, no cluster.
+
+When you want it online, `forge env deploy staging` builds a release once and
+deploys it. A new project's staging and prod are bound to Reliant hosting; the
+same environments deploy to a Kubernetes cluster you run, or as host processes,
+by changing where each workload is bound.
+
+## Works in any agent: it's just a CLI
+
+Forge has no plugin, editor extension, SDK or server to run. It is one binary on
+your `PATH`, so anything that can run a shell command can drive it: Claude Code,
+Codex, Cursor, Copilot, Gemini CLI, Aider, a harness you wrote yourself, or a CI
+job. A person at a terminal uses exactly the same commands, so there is nothing
+an agent can do that you can't check by hand.
+
+What makes a plain CLI work well for a model:
+
+- **It explains itself.** `forge start` prints the path from an empty directory
+  to authored protos. `forge project capabilities --json` lists every verb, lint
+  analyzer and marker, enumerated from the binary, so it can't go stale.
+- **Skills live in the binary.** `forge skill search <topic>` and
+  `forge skill load <name>` print the playbook for an area, matched to the
+  version installed. Nothing to paste into a prompt, nothing to drift.
+- **Failures are instructions.** A finding names the file, the line, the rule
+  and the fix. `forge lint --quiet` prints only what failed and ends with the
+  verdict, so the agent reads one line to know whether it is done.
+- **Production is one command away.** `forge obs status`, `forge obs issues` and
+  `forge obs trace` read a running app's logs, traces, errors and alerts, so a
+  fix starts from what happened rather than a guess
+  ([section 3](#3-feedback-loops-so-an-agent-can-see-what-it-built) has the rest).
+- **The project tells the agent all of this.** `forge project new` writes
+  `AGENTS.md` and a pointer for the agent it detects
+  ([Conventions & skills](#conventions--skills)).
+
+To use it from any agent, put this in the prompt or the agent's instructions
+file:
+
+```text
+Use Forge (github.com/reliant-labs/forge) for this project.
+Run `forge start` first and follow it. Load depth with
+`forge skill search <topic>` and `forge skill load <name>`.
+A change is done when `forge lint`, `go build ./...` and `task test` pass.
+```
+
+[Reliant](https://reliantlabs.io) is the agent harness we build around Forge:
+it reads the skills automatically, runs `reliant forge` already signed in, and
+hosts what you deploy. It is never required.
 
 ---
 

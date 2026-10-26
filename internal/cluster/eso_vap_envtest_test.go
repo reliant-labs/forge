@@ -445,6 +445,8 @@ provider: {gcpsm: {projectID: acme-prod, auth: {secretRef: {secretAccessKeySecre
 			{"default creationPolicy (Owner)", admin, esObj(gvkES, "app", "e-owner", esSpec(`target: {name: e-owner}`, "")), true, "creationPolicy must be Orphan or Merge"},
 			{"no target at all (defaults to Owner)", admin, esObj(gvkES, "app", "e-notarget", esSpec("", "")), true, "creationPolicy must be Orphan or Merge"},
 			{"creationPolicy None", admin, esObj(gvkES, "app", "e-none", esSpec(`target: {creationPolicy: None, deletionPolicy: Retain}`, "")), true, "creationPolicy must be Orphan or Merge"},
+			{"deletionPolicy Merge with no store value (a template-only Secret)", admin, esObj(gvkES, "app", "e-tplonly", esSpec(`target: {creationPolicy: Orphan, deletionPolicy: Merge}`, "")), false, ""},
+			{"deletionPolicy Merge while reading a store value", admin, esObj(gvkES, "app", "e-mergedata", esSpec(`target: {creationPolicy: Orphan, deletionPolicy: Merge}`, "data: [{secretKey: k, remoteRef: {key: some/path}}]")), true, "deletionPolicy must be Retain"},
 			{"deletionPolicy Delete", admin, esObj(gvkES, "app", "e-delete", esSpec(`target: {creationPolicy: Orphan, deletionPolicy: Delete}`, "")), true, "deletionPolicy must be Retain"},
 			{"another Secret's name", admin, esObj(gvkES, "app", "e-other", esSpec(`target: {name: victim, creationPolicy: Orphan, deletionPolicy: Retain}`, "")), true, "named like itself"},
 			{"refresh under five minutes", admin, esObj(gvkES, "app", "e-fast", esSpec(goodTarget, "refreshInterval: 1m")), true, "at least 5m"},

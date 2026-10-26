@@ -195,8 +195,8 @@ _es_policy_vap = lambda owner: str -> [any] {
             message = "an ExternalSecret's target.creationPolicy must be Orphan or Merge: Owner deletes the Secret with the ExternalSecret, and None/CreateOrMerge are not part of the design"
         }
         {
-            expression = "${_spec_unchanged} || (has(${_t}.deletionPolicy) && ${_t}.deletionPolicy == 'Retain')"
-            message = "an ExternalSecret's target.deletionPolicy must be Retain: a store outage or a removed value must never delete a live Secret"
+            expression = "${_spec_unchanged} || (has(${_t}.deletionPolicy) && (${_t}.deletionPolicy == 'Retain' || (${_t}.deletionPolicy == 'Merge' && (!has(object.spec.data) || size(object.spec.data) == 0))))"
+            message = "an ExternalSecret's target.deletionPolicy must be Retain (Merge only when it reads no store value, so a Secret made of templates is created at all): a store outage or a removed value must never delete a live Secret"
         }
         {
             expression = "${_spec_unchanged} || !has(${_t}.name) || ${_t}.name == object.metadata.name"

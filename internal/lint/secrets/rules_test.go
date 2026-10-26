@@ -146,6 +146,17 @@ func TestESPolicy(t *testing.T) {
 			wantOne(t, fs, RuleESPolicy, finding.SeverityError, tc.want)
 		})
 	}
+	t.Run("deletion policy Merge on a Secret that reads store values", func(t *testing.T) {
+		spec := goodSpec()
+		spec["target"].(map[string]any)["deletionPolicy"] = "Merge"
+		wantOne(t, Check(env(adopted, es("app", "ns", spec)), nil), RuleESPolicy, finding.SeverityError, "must be Retain")
+	})
+	t.Run("deletion policy Merge on a template-only Secret: clean (ESO never creates it under Retain)", func(t *testing.T) {
+		spec := goodSpec()
+		delete(spec, "data")
+		spec["target"].(map[string]any)["deletionPolicy"] = "Merge"
+		wantNone(t, Check(env(adopted, es("app", "ns", spec)), nil), RuleESPolicy)
+	})
 	t.Run("Merge with Retain, explicit keys, a slow refresh: clean", func(t *testing.T) {
 		spec := goodSpec()
 		spec["target"].(map[string]any)["creationPolicy"] = "Merge"

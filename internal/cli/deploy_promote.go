@@ -170,6 +170,8 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	noteDeployPhase(ctx, "promote")
+	noteDeployRelease(ctx, version)
 	if err := preparePromoteFollow(opts.Follow, opts.JSON); err != nil {
 		return err
 	}

@@ -368,7 +368,13 @@ func selectLedgerRendered(ctx context.Context, projectDir, env string, entities 
 	if offlineLedgerRequested(ctx) {
 		return offlineLedgerForEntities(env, entities, projectDir)
 	}
-	return ledgerForEntities(env, entities, projectDir)
+	l, err := ledgerForEntities(env, entities, projectDir)
+	if err == nil {
+		// The first moment a deploy knows which control plane keeps its
+		// env's ledger, so the moment its attempt opens (deploy_attempt.go).
+		attachDeployAttempt(ctx, env, l)
+	}
+	return l, err
 }
 
 // offlineLedgerForEntities is --offline-ledger's selection: the env's cached

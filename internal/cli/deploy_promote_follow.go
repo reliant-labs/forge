@@ -181,6 +181,7 @@ func validatePromoteFollow(o promoteFollowOptions) error {
 // on, and spending the hosted wait's budget after it has already failed buys
 // nothing.
 func followPromote(ctx context.Context, env string, plan promotePlan, ledger envLedger, o promoteFollowOptions) error {
+	noteDeployPhase(ctx, "rollout")
 	// QUEUED ON A PERSON? The control plane says so on the write itself
 	// (the Promote response's holds) — so this is known with no extra call,
 	// before anything waits. See deploy_queued.go.

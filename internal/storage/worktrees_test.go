@@ -202,7 +202,14 @@ func TestWorktreesRefuseWhenUseCannotBeDetermined(t *testing.T) {
 
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"}, args...)...)
+	// No automatic maintenance. After a commit git may start `maintenance run
+	// --auto` DETACHED, which creates and deletes .git/objects/maintenance.lock
+	// behind the test's back: ageDir walked the tree, the lock vanished before
+	// its chtimes, and TestWorktreeOtherNestedRepositoriesStillHold failed 2
+	// of main's last 40 runs with "chtimes .../maintenance.lock: no such file
+	// or directory".
+	cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false",
+		"-c", "maintenance.auto=false", "-c", "gc.auto=0"}, args...)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)

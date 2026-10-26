@@ -23,12 +23,19 @@ func prepareComposition(ctx context.Context, opts *buildOptions, base string, bo
 	if err != nil {
 		return err
 	}
+	// Selection/authentication and archived checkout reads are local work too.
+	// Preserve caller cancellation without charging them to the RPC budget.
+	ledger, err := selectLedgerRendered(ctx, projectDirForKCL(), opts.env, e)
+	if err != nil {
+		return err
+	}
+	held, provenance, err := prepareCompositionCheckout(ctx, projectDirForKCL(), opts.env)
+	if err != nil {
+		return err
+	}
 	lookup, cancel := boundCompositionLookup(ctx)
 	defer cancel()
-	// Reuse that declaration: re-rendering inside ledger selection would spend
-	// the fresh network budget on the same local work again.
-	ledger, err := ledgerForRendered(lookup, projectDirForKCL(), opts.env, e)
-	if err != nil {
+	if err := checkCompositionCheckoutImported(lookup, held, projectDirForKCL(), opts.env, ledger); err != nil {
 		return err
 	}
 	// The file ledger lacks transactional immutable seals and frozen snapshot
@@ -80,13 +87,6 @@ func prepareComposition(ctx context.Context, opts *buildOptions, base string, bo
 			return err
 		}
 		run.BaseSnapshot = fetched.Doc.Snapshot
-	}
-	provenance, err := release.CaptureProvenance(lookup, projectDirForKCL(), release.CaptureOptions{})
-	if err != nil {
-		return err
-	}
-	if provenance.Dirty || provenance.Repo == "" || !release.ValidObjectID(provenance.Commit) {
-		return fmt.Errorf("snapshot composition requires a clean resolved source checkout")
 	}
 	// Conservative policy identity is a versioned fixed policy, not a claimed
 	// compatibility proof. All partial dependency validation remains hard-fail.

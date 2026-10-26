@@ -303,3 +303,69 @@ func TestPublish_NeverReplacesAPublishedBinary(t *testing.T) {
 		t.Fatalf("publish to an empty slot = %q, %v", got, err)
 	}
 }
+
+// Adopt files the running executable under its version, and the file outlives
+// the original (the go build cache entry it came from).
+func TestAdopt_CopyOutlivesTheOriginalAndIsReusedByPinned(t *testing.T) {
+	r, calls, _ := newResolver(t)
+	src := filepath.Join(t.TempDir(), "go-build1", "exe", "forge")
+	if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("#!/bin/sh\necho adopted\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.Adopt(pin, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Dir(src)); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(got)
+	if err != nil || !strings.Contains(string(b), "adopted") {
+		t.Fatalf("adopted copy unreadable after the original was deleted: %v %q", err, b)
+	}
+	if st, _ := os.Stat(got); st.Mode()&0o111 == 0 {
+		t.Errorf("adopted copy is not executable: %v", st.Mode())
+	}
+	// The pin hand-off finds the very same file instead of building.
+	res, err := r.Pinned(context.Background(), t.TempDir(), pin)
+	if err != nil || res.Path != got || len(*calls) != 0 {
+		t.Fatalf("Pinned = %+v, %v (installs %v); want the adopted copy %s", res, err, *calls, got)
+	}
+	entries, _ := os.ReadDir(filepath.Dir(got))
+	if len(entries) != 1 {
+		t.Errorf("staging leftovers beside the copy: %v", entries)
+	}
+}
+
+// A copy already filed is never replaced: another process may be running it.
+func TestAdopt_KeepsAnExistingCopy(t *testing.T) {
+	r, _, _ := newResolver(t)
+	dir := t.TempDir()
+	first, second := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+	for p, body := range map[string]string{first: "first", second: "second"} {
+		if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got1, err := r.Adopt(pin, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got2, err := r.Adopt(pin, second)
+	if err != nil || got1 != got2 {
+		t.Fatalf("second Adopt = %q, %v; want %q", got2, err, got1)
+	}
+	if b, _ := os.ReadFile(got1); string(b) != "first" {
+		t.Errorf("an existing copy was replaced: %q", b)
+	}
+}
+
+func TestAdopt_RefusesAnEmptyVersion(t *testing.T) {
+	r, _, _ := newResolver(t)
+	if _, err := r.Adopt(" ", "/bin/sh"); err == nil {
+		t.Fatal("Adopt filed a copy under no version")
+	}
+}

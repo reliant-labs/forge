@@ -211,7 +211,7 @@ func TestChangeThatReachesNoConsumerIsSkipped(t *testing.T) {
 	}
 }
 
-func TestFailureThatPredatesThePRIsNotBlamedOnIt(t *testing.T) {
+func TestFailureThatPredatesTheChangeIsNotBlamedOnIt(t *testing.T) {
 	slow(t)
 	f := newFixture(t)
 	// The consumer's main is already red: a test that fails whatever forge is.
@@ -223,10 +223,10 @@ func TestFailureThatPredatesThePRIsNotBlamedOnIt(t *testing.T) {
 	f.edit(t, "pkg/widget/widget.go", "package widget\n\nfunc Open(name string) int { return len(name) }\n\nfunc Peek() int { return 0 }\n")
 	out, err := f.canary(t)
 	if err != nil {
-		t.Fatalf("a failure the consumer has without this forge must not fail the PR: %v\n%s", err, out)
+		t.Fatalf("a failure the base forge has too must not fail the PR: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "pre-existing") {
-		t.Errorf("the pre-existing failure must be reported:\n%s", out)
+	if !strings.Contains(out, "predate") {
+		t.Errorf("a failure that predates the change must still be reported:\n%s", out)
 	}
 }
 
@@ -254,5 +254,44 @@ func TestPassingPackagesAreNeverFailures(t *testing.T) {
 	}
 	if got := failureSummary("only noise\n"); got != "only noise\n" {
 		t.Errorf("a failure no pattern knows must still be shown, got %q", got)
+	}
+}
+
+func TestForcedRunBlamesEveryFailure(t *testing.T) {
+	slow(t)
+	f := newFixture(t)
+	if err := os.WriteFile(filepath.Join(f.consumer, "app", "app_test.go"),
+		[]byte("package app\n\nimport \"testing\"\n\nfunc TestN(t *testing.T) { t.Fatal(\"red on main\") }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, f.consumer, "commit", "-q", "-am", "red")
+	out, err := f.canary(t, "-force")
+	if err == nil {
+		t.Fatalf("a forced run has no diff to blame: a red consumer must fail it:\n%s", out)
+	}
+}
+
+func TestBreakAlreadyOnTheBaseIsNotBlamedOnAnUnrelatedChange(t *testing.T) {
+	slow(t)
+	f := newFixture(t)
+	// forge's base already breaks the consumer (it removed Open's string arg)...
+	f.edit(t, "pkg/widget/widget.go", "package widget\n\nfunc Open(name string, mode int) int { return len(name) + mode }\n")
+	git(t, f.forge, "commit", "-q", "-am", "main broke the consumer")
+	// ...and the PR only adds an unrelated function.
+	f.edit(t, "pkg/widget/extra.go", "package widget\n\nfunc Extra() int { return 1 }\n")
+	out, err := f.canary(t)
+	if err != nil {
+		t.Fatalf("the PR did not cause this break; it must not fail: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "predate") {
+		t.Errorf("a break the base already had must still be reported:\n%s", out)
+	}
+}
+
+func TestFailedPackagesAreReadFromTheVerdictLines(t *testing.T) {
+	out := "ok  \texample.com/a\t1s\n--- FAIL: TestX (0.1s)\nFAIL\nFAIL\texample.com/b\t0.5s\nFAIL\texample.com/b\t0.5s\nFAIL\texample.com/c [build failed]\n"
+	got := failedPackages(out)
+	if len(got) != 2 || got[0] != "example.com/b" || got[1] != "example.com/c" {
+		t.Fatalf("got %v, want [example.com/b example.com/c]", got)
 	}
 }

@@ -19,10 +19,14 @@ For each consumer, at its `main`:
    `go list -test -json`, so a package that imports forge only from a test file
    counts).
 
-A step that fails is re-run against the consumer's **own pinned forge**. A
-failure that occurs there too is the consumer's, not yours: the run reports it
-("PASS (pre-existing failures only)") and does not fail. Only what your forge
-adds fails the run.
+A step that fails is re-run against forge **at the revision the diff is judged
+against** (the PR's base). A failure that occurs there too predates your change
+(the consumer is red on its own, or forge's main already broke it): the run
+reports it ("PASS (failures predate this change)") and does not fail. Only what
+your change adds fails the run. A `-force` run (nightly) has no diff and no
+baseline, so every failure counts: that is how a consumer that is already red
+against forge main is noticed. Full output of every failed step, for both
+forges, is kept under `<cache>/logs/`.
 
 ## When it runs
 
@@ -30,7 +34,7 @@ adds fails the run.
 | ------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | `task canary`                   | locally, on demand                                                                                    |
 | push to `main`                  | `consumer-canary.yml`, always                                                                         |
-| nightly                         | `nightly.yml` → `consumer-canary.yml` with `-force` (consumers moved under an unchanged forge); a red opens the "Nightly CI is red" issue |
+| nightly                         | `nightly.yml` → `consumer-canary.yml` with `-force` (consumers moved under an unchanged forge; no baseline, every failure counts); a red opens the "Nightly CI is red" issue |
 | pull request, label `ci:canary` | `consumer-canary.yml`                                                                                 |
 
 **Why not on every pull request:** a cold `go build ./...` + `go vet ./...` of
@@ -44,8 +48,10 @@ the [API gate](api-breaks.md) — does run on every pull request.
 
 The run is skipped (in seconds) when the diff cannot reach a consumer's build:
 no non-test Go file under `pkg/` or in a package `pkg/` imports, and no
-`go.mod`/`go.sum` change. A pass is cached by a hash of forge's non-test Go
-sources and the consumer's commit, so re-running an unchanged forge is free.
+`go.mod`/`go.sum` change. A `go.mod` edit that leaves every require, replace
+and `go` line as it was (promoting a module from indirect to direct) reaches
+nothing. A pass is cached by a hash of forge's non-test Go sources and the
+consumer's commit, so re-running an unchanged forge is free.
 
 ## Running it locally
 

@@ -145,3 +145,18 @@ func NewFailures(out, base string) []string {
 	}
 	return fresh
 }
+
+var failedPkgRE = regexp.MustCompile(`(?m)^FAIL\s+(\S+)`)
+
+// failedPackages are the packages a `go test` run reported FAIL for, in order.
+func failedPackages(out string) []string {
+	var pkgs []string
+	seen := map[string]bool{}
+	for _, m := range failedPkgRE.FindAllStringSubmatch(out, -1) {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			pkgs = append(pkgs, m[1])
+		}
+	}
+	return pkgs
+}

@@ -24,10 +24,11 @@
 // A CLI-only or docs-only diff exits in seconds. A pass is cached by the hash
 // of the forge sources that matter and the consumer's commit.
 //
-// PRE-EXISTING FAILURES. A step that fails is re-run once against the
-// consumer's own pinned forge. Failures present there too are the consumer's
-// own, reported but not blamed on the PR; only failures that appear with the
-// PR's forge fail the run.
+// BLAME. A step that fails is re-run once against forge at -base (the
+// revision the diff is judged against). Failures present there too predate
+// the change (the consumer is red on its own, or forge's main already broke
+// it): reported, not blamed on the PR. Only failures the change adds fail the
+// run. With -force there is no diff and no baseline: every failure counts.
 //
 // SOURCES. A consumer source is a git URL or a local path (any repository
 // with the commit; its working tree is never read), and the ref defaults to
@@ -221,11 +222,15 @@ func execute(ctx context.Context, o options, stdout, stderr io.Writer) error {
 	return report(stdout, results)
 }
 
+// testFlags are the flags of the consumer test step: the short tier, as a pull
+// request runs it.
+var testFlags = []string{"-short", "-timeout", "20m"}
+
 // Result is the outcome for one consumer.
 type Result struct {
 	Consumer string
 	Commit   string
-	Status   string // PASS, PASS (cached), PASS (pre-existing failures only), FAIL, ERROR
+	Status   string // PASS, PASS (cached), PASS (failures predate this change), FAIL, ERROR
 	Detail   string
 	Took     time.Duration
 }
@@ -376,7 +381,7 @@ func canary(ctx context.Context, o options, c Consumer, reach forgereach.Reach, 
 		return res
 	}
 
-	mod, ok, err := pointAtForge(ctx, tree, scratch, o.forge, reach.Module)
+	mod, ok, err := pointAtForge(ctx, tree, scratch, "head", o.forge, reach.Module)
 	switch {
 	case err != nil:
 		return fail("ERROR", "%v", err)
@@ -394,7 +399,28 @@ func canary(ctx context.Context, o options, c Consumer, reach forgereach.Reach, 
 		flags = joinFlags(flags, "-trimpath")
 	}
 	pr := goEnv(append(os.Environ(), "GOFLAGS="+joinFlags(flags, "-modfile="+mod, "-mod=mod")))
-	base := goEnv(append(os.Environ(), "GOFLAGS="+flags))
+
+	// The baseline is forge at the revision the diff is judged against, so a
+	// failure is blamed on the change only when the base forge did not have it:
+	// a consumer that is already red on its own, or already broken by forge's
+	// main, does not turn an unrelated pull request red. A forced run has no
+	// diff to blame (the nightly asks "do the consumers build against forge
+	// main?"), so it has no baseline and every failure counts.
+	var base []string
+	if !o.force {
+		baseForge := filepath.Join(scratch, "forge-base")
+		if err := os.Mkdir(baseForge, 0o755); err != nil {
+			return fail("ERROR", "%v", err)
+		}
+		if err := forgereach.ExportRev(o.forge, o.base, baseForge); err != nil {
+			return fail("ERROR", "export forge at %s: %v", o.base, err)
+		}
+		baseMod, _, err := pointAtForge(ctx, tree, scratch, "base", baseForge, reach.Module)
+		if err != nil {
+			return fail("ERROR", "%v", err)
+		}
+		base = goEnv(append(os.Environ(), "GOFLAGS="+joinFlags(flags, "-modfile="+baseMod, "-mod=mod")))
+	}
 
 	fmt.Fprintf(stdout, "== %s @ %.9s\n", c.Name, commit)
 	var preexisting []string
@@ -405,6 +431,9 @@ func canary(ctx context.Context, o options, c Consumer, reach forgereach.Reach, 
 		_ = os.WriteFile(p, []byte(out), 0o644)
 		return p
 	}
+	// step runs `go <args...>`; for a test step, flags are the test flags and
+	// pkgs the selection, so a baseline re-run can be narrowed to the packages
+	// that failed instead of repeating the whole selection.
 	step := func(name string, args ...string) (string, bool) {
 		t := time.Now()
 		fmt.Fprintf(stdout, "-- %s: go %s\n", name, strings.Join(args, " "))
@@ -415,16 +444,26 @@ func canary(ctx context.Context, o options, c Consumer, reach forgereach.Reach, 
 			return "", true
 		}
 		prLog := keep(name, "forge-under-test", out)
-		fmt.Fprintf(stdout, "   FAILED (%s), full output %s; comparing with %s's own pinned forge\n", took, prLog, c.Name)
-		baseOut, berr := runCmd(ctx, tree, base, "go", args...)
-		baseLog := keep(name, "pinned", baseOut)
+		if base == nil {
+			fmt.Fprintf(stdout, "   FAILED (%s), full output %s\n", took, prLog)
+			return tail(failureSummary(out), 80), false
+		}
+		fmt.Fprintf(stdout, "   FAILED (%s), full output %s; comparing with forge at %s\n", took, prLog, o.base)
+		baseArgs := args
+		if name == "test" {
+			if failed := failedPackages(out); len(failed) > 0 {
+				baseArgs = append(append([]string{"test"}, testFlags...), failed...)
+			}
+		}
+		baseOut, berr := runCmd(ctx, tree, base, "go", baseArgs...)
+		baseLog := keep(name, "base", baseOut)
 		if berr == nil {
 			return tail(failureSummary(out), 80), false
 		}
 		fresh := NewFailures(out, baseOut)
 		if len(fresh) == 0 && ctx.Err() == nil {
 			preexisting = append(preexisting, name)
-			fmt.Fprintf(stdout, "   the same failures occur without this forge (%s): pre-existing, not blamed on the PR\n", baseLog)
+			fmt.Fprintf(stdout, "   the same failures occur with forge at %s (%s): not caused by this change\n", o.base, baseLog)
 			return "", true
 		}
 		return tail(strings.Join(fresh, "\n"), 80), false
@@ -445,15 +484,15 @@ func canary(ctx context.Context, o options, c Consumer, reach forgereach.Reach, 
 			fmt.Fprintf(stdout, "-- test: no %s package imports a changed forge package\n", c.Name)
 		} else {
 			fmt.Fprintf(stdout, "-- test: %d package(s) import a changed forge package\n", len(pkgs))
-			if detail, ok := step("test", append([]string{"test", "-short", "-timeout", "20m"}, pkgs...)...); !ok {
+			if detail, ok := step("test", append(append([]string{"test"}, testFlags...), pkgs...)...); !ok {
 				return fail("FAIL", "go test -short broke against this forge:\n%s", detail)
 			}
 		}
 	}
 
 	if len(preexisting) > 0 {
-		res.Status = "PASS (pre-existing failures only)"
-		res.Detail = fmt.Sprintf("%s: %s fail without this forge too; fix them in %s.", c.Name, strings.Join(preexisting, ", "), c.Name)
+		res.Status = "PASS (failures predate this change)"
+		res.Detail = fmt.Sprintf("%s: %s fail with forge at %s too, so this change did not cause them.", c.Name, strings.Join(preexisting, ", "), o.base)
 		return res
 	}
 	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err == nil {
@@ -467,12 +506,12 @@ func canary(ctx context.Context, o options, c Consumer, reach forgereach.Reach, 
 // with a replace of forgeModule by the forge checkout, and returns the copy's
 // path for -modfile. ok is false when the consumer does not require forge at
 // all. The consumer's own files are never written.
-func pointAtForge(ctx context.Context, tree, scratch, forge, forgeModule string) (mod string, ok bool, err error) {
+func pointAtForge(ctx context.Context, tree, scratch, name, forge, forgeModule string) (mod string, ok bool, err error) {
 	if _, err := os.Stat(filepath.Join(tree, "go.mod")); err != nil {
 		return "", false, fmt.Errorf("the consumer has no go.mod at its root")
 	}
-	mod = filepath.Join(scratch, "forge.mod")
-	sum := filepath.Join(scratch, "forge.sum")
+	mod = filepath.Join(scratch, name+".mod")
+	sum := filepath.Join(scratch, name+".sum")
 	for _, f := range [][2]string{{filepath.Join(tree, "go.mod"), mod}, {filepath.Join(tree, "go.sum"), sum}} {
 		b, err := os.ReadFile(f[0])
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {

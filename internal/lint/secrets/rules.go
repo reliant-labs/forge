@@ -167,8 +167,14 @@ func (c *checker) esPolicy() {
 		default:
 			problems = append(problems, fmt.Sprintf("target.creationPolicy is %q: only Orphan or Merge keep the Secret when the ExternalSecret goes", creation))
 		}
-		if dp := d.str("spec", "target", "deletionPolicy"); dp != "" && dp != "Retain" {
-			problems = append(problems, fmt.Sprintf("target.deletionPolicy is %q: a store outage or a deleted store entry would delete the Secret; it must be Retain", dp))
+		// Merge is admitted only for a Secret that reads no store value: ESO returns
+		// early on a sync whose provider returned no data and Retain, so a Secret made
+		// of templates alone would never be created.
+		switch dp := d.str("spec", "target", "deletionPolicy"); {
+		case dp == "" || dp == "Retain":
+		case dp == "Merge" && len(d.list("spec", "data")) == 0:
+		default:
+			problems = append(problems, fmt.Sprintf("target.deletionPolicy is %q: a store outage or a deleted store entry would delete the Secret; it must be Retain (Merge only for a Secret that reads no store value)", dp))
 		}
 		if k := d.str("spec", "secretStoreRef", "kind"); k != "" && k != "SecretStore" {
 			problems = append(problems, fmt.Sprintf("secretStoreRef.kind is %q: only a namespaced SecretStore is allowed", k))

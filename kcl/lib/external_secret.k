@@ -18,6 +18,10 @@ read. For every (cluster, namespace) that holds one, this renders:
     the KV version when pinned), `target.template` for derived keys, the
     refresh interval, and creationPolicy Orphan|Merge with deletionPolicy
     Retain, so a store outage or a Flux prune never removes a synced Secret.
+    A source with no store `data` (only `templates`) gets deletionPolicy Merge
+    instead: ESO returns early on a sync whose provider returned no data and
+    Retain, so the Secret would never be created. Merge builds it from the
+    template, and removes nothing it did not write.
     A `shadow` source syncs to `<name>-eso-shadow` instead.
 
 THE LOGIN CONTRACT. A SecretStore logs in as the OpenBao JWT role that
@@ -422,7 +426,7 @@ _external_secret = lambda b: any, ctx: str, s: any, st: any, deferred: bool -> a
             target = {
                 name = _name
                 creationPolicy = "Orphan" if _src.shadow else _src.creation_policy
-                deletionPolicy = "Retain"
+                deletionPolicy = "Retain" if _src.data else "Merge"
                 if _tpl or _typed or _src.labels:
                     template = {
                         engineVersion = "v2"

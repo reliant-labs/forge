@@ -19,6 +19,7 @@ anonymous ones only under the rules in
 | Forge dev logs (`forge env up` foreground tee)                                                           | Rotate at 50 MiB (`FORGE_LOG_ROTATE_BYTES`; `0` disables); the current stream keeps its path                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | Rotated Forge logs                                                                                       | Keep newest 5 per stream; expire after 7 days or toward 1 GiB per project/environment                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | Cross-repo source cache (`<UserCacheDir>/forge/sources`)                                                 | Per repository the newest 2 clones (`source_cache_keep`) are never touched. Beyond them: a clone idle 24h loses its installed `node_modules` but stays a cache hit, since every build reinstalls it (`source_cache_slim_after`); one idle 7 days is evicted (`source_cache_unused`); and past `source_cache_gib` (default 6) the least recently used are evicted down to 80%, after slimming. A clone a running process holds is never touched. A budget the keep floor alone exceeds is reported, not trimmed into                                                                                                                                |
+| forge tool cache (`$FORGE_TOOLS_CACHE`, default `<UserCacheDir>/forge/tools`)                            | Evict tool builds unused for 14 days beyond the newest 1 per tool (`tool_cache_unused`, `tool_cache_keep`); never one a process runs or is resolving                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Temp scratch (`$TMPDIR`)                                                                                 | Remove allowlisted toolchain/test scratch, and orphaned Go `t.TempDir()` roots (`Test…<digits>/` holding only `001`, `002`… dirs), idle 24h and open by no process; never anything with git metadata                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Host images tagged for a dead local registry                                                             | Untag `localhost:<port>`, `registry.localhost:<port>` and `k3d-*:<port>` images when no running registry backs that alias and no container (running or stopped) uses the image                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Shared Go build cache (`go env GOCACHE`) and golangci-lint cache                                         | Remove entries unused for 48h (`go_cache_unused`; the age rule never touches the last 2h). Over `go_cache_gib` (or 15% of the volume, `go_cache_volume_percent`, whichever is smaller) it also evicts least recently used first down to 80% of the budget, never anything used in the last 2h either; a budget the last 2h alone exceeds is reported as `over_budget`, never trimmed into. Executable (`go run`/`go tool`) entries count and are removed whole; top-level files are never touched                                                                                                                                                  |
@@ -38,6 +39,29 @@ Docker Desktop exposes to Linux. Build checks also cover output paths, the OS
 temporary directory, and explicitly configured `GOTMPDIR`, `GOCACHE` and
 `GOMODCACHE` paths. Add a custom Docker data disk or cache mount configured
 through a tool-specific config file to `host_paths`.
+
+## Tool cache
+
+Every tool forge installs for itself lives in one machine-wide cache
+(`internal/toolcache`): the gate's pinned linters and scanners (`gate/`), the
+golangci-lint `forge lint` builds (`golangci-lint/`), and the go.mod-pinned
+codegen plugins and air (`pinned/`). Each entry is one tool at one version
+(and, for a linter, one Go toolchain), shared by every worktree, and never
+rewritten: a bump installs a new entry beside the old one. Concurrent forge
+processes that need the same missing entry build it once: the rest wait on its
+per-key lock and use the result, and the entry appears by one rename, so
+nothing ever runs a half-written binary. `FORGE_TOOLS_CACHE` moves the whole
+cache.
+
+Resolving an entry touches its `.forge-tool` marker. The tool-cache layer
+evicts entries unused for `tool_cache_unused` (default 336h, minimum 24h)
+beyond each tool's `tool_cache_keep` newest (default 1). It retains anything a
+live process runs from or holds open (the pass's open-file snapshot; fails
+closed), and anything being resolved at that moment (it takes the key's lock
+and re-reads the marker first). Entries from before the marker, and the
+module-path layout older forges used for codegen plugins, are dated by their
+newest file; that old layout has no keep floor, since this forge never
+resolves it.
 
 ## Go caches
 

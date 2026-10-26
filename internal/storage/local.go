@@ -63,6 +63,11 @@ type Runner struct {
 	removeFn func(string) error
 	sleepFn  func(context.Context, time.Duration) error
 
+	// ToolCacheRoot overrides forge's shared tool cache the tool-cache layer
+	// reclaims from (toolcache.go). Empty means the real one in production,
+	// and is REFUSED under `go test`.
+	ToolCacheRoot string
+
 	// Go-cache layer roots (gocache.go). Empty means the real machine
 	// location in production and is REFUSED under `go test`.
 	GoCacheRoot       string // shared GOCACHE
@@ -354,7 +359,8 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 }
 
 // hostLayers runs the layers that reclaim from the host filesystem — rotated
-// logs, the Go caches, the temp sweep, the source cache, worktrees — each
+// logs, the Go caches, the temp sweep, the source cache, the tool cache,
+// worktrees — each
 // independently, returning one error per failed layer. They share the pass's
 // delete budget in this order, the Go caches taking at most their share.
 func (r Runner) hostLayers(apply bool) []error {
@@ -368,6 +374,7 @@ func (r Runner) hostLayers(apply bool) []error {
 	add(r.goCacheLayer(apply))
 	add(r.runLayer("temp sweep", shareTemp, func(s Runner) error { return s.TempSweep(apply) }))
 	add(r.runLayer("source cache", shareSources, func(s Runner) error { return s.Sources(apply) }))
+	add(r.runLayer("tool cache", shareTools, func(s Runner) error { return s.Tools(apply) }))
 	add(r.runLayer("worktrees", shareLast, func(s Runner) error { return s.worktreeLayer(apply) }))
 	return failures
 }

@@ -120,7 +120,10 @@ func TestInstallPinnedTool_ReadersNeverSeeAPartialBinary(t *testing.T) {
 	bin := filepath.Join(dir, tool.Binary+exeSuffix())
 
 	done := make(chan error, 1)
-	go func() { done <- installPinnedTool(context.Background(), tool, "v1.0.0", dir, "not found on PATH") }()
+	go func() {
+		_, err := installPinnedTool(context.Background(), tool, "v1.0.0", dir, "not found on PATH", nil)
+		done <- err
+	}()
 	for running := true; running; {
 		select {
 		case err := <-done:

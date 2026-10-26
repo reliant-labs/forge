@@ -336,25 +336,3 @@ func TestOSExec_ResolvesTheProgramOnTheCommandsPATH(t *testing.T) {
 		t.Error("a missing program must be an error")
 	}
 }
-
-// A leftover binary at the destination (a half-finished earlier install) must
-// not block the new one: Windows cannot rename over an existing file.
-func TestReplaceFile_ReplacesAnExistingDestination(t *testing.T) {
-	dir := t.TempDir()
-	src, dst := filepath.Join(dir, "new"), filepath.Join(dir, "old")
-	if err := os.WriteFile(src, []byte("new"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dst, []byte("stale"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := replaceFile(src, dst); err != nil {
-		t.Fatal(err)
-	}
-	if b, _ := os.ReadFile(dst); string(b) != "new" {
-		t.Errorf("dst = %q, want the new binary", b)
-	}
-	if err := replaceFile(filepath.Join(dir, "missing"), filepath.Join(dir, "fresh")); err == nil {
-		t.Error("a missing source must be an error")
-	}
-}

@@ -35,6 +35,8 @@ func TestProcExecutablesFindsAProcessRunningFromTheCache(t *testing.T) {
 		t.Skipf("cannot run a copied binary here: %v", err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	// Until the child has exec'd, /proc/<pid>/exe is still this test binary.
+	waitForExe(t, cmd.Process.Pid, func(exe string) bool { return exe == bin })
 
 	exes, err := procExecutables(context.Background(), root)
 	if err != nil {
@@ -58,11 +60,16 @@ func TestProcExecutablesFindsAProcessRunningFromTheCache(t *testing.T) {
 	if err := os.Remove(bin); err != nil {
 		t.Fatal(err)
 	}
+	waitForExe(t, cmd.Process.Pid, func(exe string) bool { return exe == bin+" (deleted)" })
 	exes, err = procExecutables(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(exes) == 0 || !strings.HasSuffix(exes[0].Path, " (deleted)") {
+	if len(exes) == 0 {
+		link, lerr := os.Readlink(fmt.Sprintf("/proc/%d/exe", cmd.Process.Pid))
+		t.Fatalf("a process whose binary was unlinked is no longer reported: %v; /proc/%d/exe -> %q (%v)", exes, cmd.Process.Pid, link, lerr)
+	}
+	if !strings.HasSuffix(exes[0].Path, " (deleted)") {
 		t.Errorf("a process whose binary was unlinked is not reported as such: %v", exes)
 	}
 	if key, ok := cacheEntryOfExecutable(root, exes[0].Path); !ok || key != "9f/"+hexName(7, "-d") {
@@ -127,4 +134,19 @@ func TestReadProcExecutablesSkipsProcessesItCannotInspect(t *testing.T) {
 	if _, err := readProcExecutables(context.Background(), "/proc", t.TempDir()); err != nil {
 		t.Fatalf("a process we cannot inspect failed the whole listing: %v", err)
 	}
+}
+
+// waitForExe polls /proc/<pid>/exe until ok accepts it, failing with the last
+// value seen.
+func waitForExe(t *testing.T, pid int, ok func(string) bool) {
+	t.Helper()
+	var last string
+	var lerr error
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		last, lerr = os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+		if lerr == nil && ok(last) {
+			return
+		}
+	}
+	t.Fatalf("/proc/%d/exe never became the expected path; last %q (%v)", pid, last, lerr)
 }

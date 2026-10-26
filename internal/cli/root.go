@@ -214,6 +214,7 @@ from an empty directory to authored protos, in one call.`,
 	// The git merge driver forge configures for its generated files
 	// (merge_generated.go). Hidden: git runs it, people do not.
 	rootCmd.AddCommand(newMergeGeneratedCmd())
+	rootCmd.AddCommand(newMergeDriverCmd())
 	// `forge env up` was REMOVED. It was a thin alias over the same runUp that
 	// `forge env up <env>` calls, and its one distinct feature — forwarding
 	// tokens after `--` to the frontend dev servers — moved onto `env up`

@@ -489,7 +489,11 @@ func TestEnsureGeneratedMergeDriver_NoticeNamesWhatChangedAndWhoSharesIt(t *test
 // worktrees of a repository are on different branches with different pins.
 // Written to the shared .git/config, the last forge to run decided the driver
 // for every worktree and one agent's command changed another agent's merges.
-// It goes to this worktree's own config instead.
+// It goes to this worktree's own config instead. The shared config only gets
+// a DEFAULT, for worktrees no forge has run in, when it names no usable forge:
+// a fresh worktree then merges through a forge (which hands the merge to the
+// project's pin) rather than through none, and a later forge never takes a
+// usable default over.
 func TestEnsureGeneratedMergeDriver_DriverCommandIsPerWorktree(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds real git repositories; runs in task test")
@@ -515,24 +519,46 @@ func TestEnsureGeneratedMergeDriver_DriverCommandIsPerWorktree(t *testing.T) {
 		t.Setenv(e, "")
 	}
 
-	mergeDriverExecutable = func() (string, error) { return "/pins/a/forge", nil }
+	pins := t.TempDir()
+	// The binaries live under the real temp dir; point TMPDIR elsewhere so
+	// the wiring does not refuse them as ephemeral.
+	t.Setenv("TMPDIR", t.TempDir())
+	forgeA, forgeB := filepath.Join(pins, "a", "forge"), filepath.Join(pins, "b", "forge")
+	for _, f := range []string{forgeA, forgeB} {
+		writeTreeFileT(t, f, "#!/bin/sh\n")
+		if err := os.Chmod(f, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mergeDriverExecutable = func() (string, error) { return forgeA, nil }
 	var noticeA strings.Builder
 	ensureGeneratedMergeDriverTo(&noticeA, wtA)
-	mergeDriverExecutable = func() (string, error) { return "/pins/b/forge", nil }
+	mergeDriverExecutable = func() (string, error) { return forgeB, nil }
 	var noticeB strings.Builder
 	ensureGeneratedMergeDriverTo(&noticeB, wtB)
 
-	if got := gitConfig(t, wtA, "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '/pins/a/forge' ]") {
+	if got := gitT(t, wtA, "config", "--worktree", "--get", "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '"+forgeA+"' ]") {
 		t.Errorf("worktree A merges with %q, want its own forge", got)
 	}
-	if got := gitConfig(t, wtB, "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '/pins/b/forge' ]") {
+	if got := gitT(t, wtB, "config", "--worktree", "--get", "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '"+forgeB+"' ]") {
 		t.Errorf("worktree B merges with %q: A's run overwrote it, or B's never landed", got)
 	}
-	if got := gitConfig(t, repo, "merge.forge-generated.driver"); got != "" {
-		t.Errorf("the primary worktree inherited a driver another worktree set: %q", got)
+	shared := gitT(t, repo, "config", "--local", "--get", "merge.forge-generated.driver")
+	if !strings.HasPrefix(shared, "[ -x '"+forgeA+"' ]") {
+		t.Errorf("the shared default = %q: want the first forge that ran, filling an unset default, and no later one taking it over", shared)
 	}
-	if out, err := exec.Command("git", "-C", repo, "config", "--local", "--get", "merge.forge-generated.driver").Output(); err == nil {
-		t.Errorf("the driver command leaked into the shared config: %s", out)
+	if !strings.Contains(noticeA.String(), "(shared: the default for worktrees no forge has run in; was: unset)") {
+		t.Errorf("filling the shared default must be announced as shared:\n%s", noticeA.String())
+	}
+	if strings.Contains(noticeB.String(), "(shared: the default") {
+		t.Errorf("a usable shared default was rewritten:\n%s", noticeB.String())
+	}
+	if err := os.Remove(forgeA); err != nil {
+		t.Fatal(err)
+	}
+	ensureGeneratedMergeDriverTo(io.Discard, wtB)
+	if got := gitT(t, repo, "config", "--local", "--get", "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '"+forgeB+"' ]") {
+		t.Errorf("a shared default naming a gone forge was not refilled: %q", got)
 	}
 	if !strings.Contains(noticeA.String(), "extensions.worktreeConfig = true (shared)") ||
 		!strings.Contains(noticeA.String(), "(this worktree only; was: unset)") {

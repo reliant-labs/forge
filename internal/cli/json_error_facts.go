@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/pkg/cloudcred"
@@ -35,6 +36,11 @@ type jsonErrorFacts struct {
 	ErrorReason string `json:"error_reason,omitempty"`
 	// ErrorScopes are the scopes a "scope_missing" refusal names.
 	ErrorScopes []string `json:"error_scopes,omitempty"`
+	// A throttled claimable deploy (reason claimable_throttled): how long to
+	// wait, when that is, and whose limit it was (network|device|platform).
+	RetryAfterSeconds int64  `json:"retry_after_seconds,omitempty"`
+	RetryAt           string `json:"retry_at,omitempty"`
+	ThrottleScope     string `json:"throttle_scope,omitempty"`
 }
 
 // errorFactsOf reads err's structure. The control plane's own answer wins
@@ -43,6 +49,16 @@ type jsonErrorFacts struct {
 func errorFactsOf(err error) jsonErrorFacts {
 	if err == nil {
 		return jsonErrorFacts{}
+	}
+	var cr *claimableRefusal
+	if errors.As(err, &cr) {
+		facts := jsonErrorFacts{ErrorCode: cr.code, ErrorReason: cr.reason}
+		if t := cr.throttle; t != nil {
+			facts.RetryAfterSeconds = int64(t.retryAfter / time.Second)
+			facts.RetryAt = t.retryAt.UTC().Format(time.RFC3339)
+			facts.ThrottleScope = t.scope
+		}
+		return facts
 	}
 	var ce *cloud.Error
 	if errors.As(err, &ce) && (ce.Code != "" || ce.Reason != "") {

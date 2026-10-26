@@ -194,6 +194,9 @@ func newEnvStatusCmd() *cobra.Command {
 
 		// The all-envs view's cluster reconciliation.
 		verifyClusters bool
+
+		// --claimable: reprint this machine's claimable deploy (claim link).
+		claimable bool
 	)
 
 	cmd := &cobra.Command{
@@ -206,7 +209,7 @@ func newEnvStatusCmd() *cobra.Command {
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return dispatchEnvStatus(cmd, args, envStatusModes{
-				wait: wait, history: history, verifyClusters: verifyClusters,
+				wait: wait, history: history, verifyClusters: verifyClusters, claimable: claimable,
 				jsonOut: jsonOut, signal: signal, verbose: verbose,
 				timeout: timeout, waitOpts: waitOpts, histQ: histQ,
 			})
@@ -228,6 +231,8 @@ func newEnvStatusCmd() *cobra.Command {
 	flags.DurationVar(&timeout, "timeout", 0,
 		fmt.Sprintf("Maximum time to spend reading the cluster (default %s). With --wait this is the whole wait budget instead (default %s); '--wait --timeout 0' reads the phase ONCE and never blocks",
 			defaultEnvStatusReleaseTimeout, envWaitDefaultTimeout))
+	flags.BoolVar(&claimable, "claimable", false,
+		"Print this machine's claimable deploy of the environment again: its live URL, when it goes offline, and the claim link to hand to a human. Reads the stored anonymous deploy; needs no credential")
 	flags.BoolVar(&verifyClusters, "verify", false,
 		"All-environments view only: also read each environment's cluster and reconcile it against the ledger (slow, needs credentials)")
 
@@ -269,6 +274,7 @@ func newEnvStatusCmd() *cobra.Command {
 // call correctly at a glance.
 type envStatusModes struct {
 	wait, history, verifyClusters bool
+	claimable                     bool
 	jsonOut, verbose              bool
 	signal                        string
 	timeout                       time.Duration
@@ -282,6 +288,12 @@ type envStatusModes struct {
 // sequence — arity first, then the per-env modes — instead of being buried
 // under two hundred lines of flag declarations and help text.
 func dispatchEnvStatus(cmd *cobra.Command, args []string, m envStatusModes) error {
+	if m.claimable {
+		if len(args) != 1 || m.wait || m.history {
+			return fmt.Errorf("--claimable reprints ONE environment's claim link: forge env status <env> --claimable")
+		}
+		return runClaimableStatus(cmd.Context(), args[0], m.jsonOut)
+	}
 	perEnv := m.wait || m.history
 	// --wait and --history are two different reads of one env, and asking
 	// both at once has no answer. Refused rather than silently preferring

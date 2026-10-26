@@ -35,6 +35,9 @@ import (
 // and the git history rather than staging a project and a repository to imply
 // them. Production leaves them nil and gets the real ones.
 type promoteOptions struct {
+	// Claim, set only by `deploy --claimable`, resolves the document's `claim`
+	// object once the deploy is live (its URL is not known before).
+	Claim func() *deployClaimJSON
 	// DryRun computes the plan and stops. Nothing is written, exit 0.
 	DryRun bool
 	// JSON switches the RENDERING only. The plan is computed before either
@@ -379,6 +382,9 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	// the error renders, so a pipeline reads action_url instead of text.
 	if q := queuedOf(writeErr); q != nil {
 		plan.Queued = q.document()
+	}
+	if opts.Claim != nil && writeErr == nil {
+		plan.Claim = opts.Claim()
 	}
 	plan.stamp(writeErr)
 	if opts.JSON {

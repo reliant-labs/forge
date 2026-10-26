@@ -592,6 +592,9 @@ type promotePlan struct {
 	// why, and the action URL. The envelope's exit_code is then 7. Nil for
 	// every deploy that is not queued.
 	Queued *deployQueuedJSON `json:"queued,omitempty"`
+	// Claim is set only on a `--claimable` deploy: the live address and the
+	// link a human opens to own the deploy (deploy_claimable.go).
+	Claim *deployClaimJSON `json:"claim,omitempty"`
 
 	// targetSources is the source-built frontend snapshot the binding will be
 	// written with, the non-container half of targetResolved. Carried on the

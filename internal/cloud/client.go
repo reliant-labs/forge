@@ -129,7 +129,9 @@ func (c *Client) call(ctx context.Context, procedure string, req, out any, token
 	// it, does not validate a prefix, and does not decode it — the issuer
 	// owns its format, and a forge-side assumption about it would break
 	// the day that format changed.
-	httpReq.Header.Set("Authorization", "Bearer "+token)
+	if token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+token)
+	}
 	// Forge-Via names the client to the server's activity stream
 	// (forge/pkg/activity): the same command reads "via CLI" from a
 	// terminal and "via CI" from a pipeline.

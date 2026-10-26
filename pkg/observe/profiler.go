@@ -1,22 +1,22 @@
 // File: profiler.go — continuous profiling, pushed as OTLP profiles.
 //
 // Setup starts one background goroutine per process (when an OTLP endpoint is
-// set and OTEL_PROFILES_EXPORTER is not "none"). About once a minute it
-// captures a 10s CPU profile, and every 15 minutes a live-heap snapshot
+// set and OTEL_PROFILES_EXPORTER is not "none"). Every five minutes it
+// captures a 5s CPU profile, and every two hours a live-heap snapshot
 // (inuse_space / inuse_objects); it converts them with profiles_convert.go and
 // POSTs them to the collector's profiles endpoint. Allocation counters,
 // goroutine, mutex and block profiles are opt-in (profiles_config.go): the
 // opt-in ones that are enabled are captured every cycle, except allocation,
 // which rides on the heap snapshot. Measured cost of converting a full
 // heap+goroutine cycle: ~90 ms CPU and 1.5 MB allocated, i.e. ~0.15% of one
-// core, plus the runtime's own ~100 Hz CPU sampling during the 10s window.
+// core, plus the runtime's own ~100 Hz CPU sampling during the CPU window.
 //
 // The loop is built so it can never hurt the application:
 //
 //   - it runs on its own goroutine and nothing in the request path waits on it;
 //   - a panic inside a cycle is recovered and counted as a failed cycle;
 //   - every cycle starts with a cheap TCP reachability probe, so an unreachable
-//     collector costs one dial, not a 10s CPU profile;
+//     collector costs one dial, not a CPU profile;
 //   - consecutive failures back off exponentially (to 15 minutes) and the first
 //     is logged once at WARN, the rest at DEBUG;
 //   - if another CPU profile is already running (an operator on /debug/pprof),
@@ -52,8 +52,6 @@ import (
 )
 
 const (
-	profilerInterval   = 60 * time.Second
-	profilerCPUWindow  = 10 * time.Second
 	profilerMaxBackoff = 15 * time.Minute
 	profilerProbeWait  = 2 * time.Second
 	profilerJitter     = 0.2
@@ -108,8 +106,8 @@ func startProfiler(ctx context.Context, cfg Config, res *resource.Resource) (fun
 	}
 	p := &profiler{
 		res:      res,
-		interval: profilerInterval,
-		window:   profilerCPUWindow,
+		interval: settings.cpuInterval,
+		window:   settings.cpuDuration,
 		settings: settings,
 		probe:    tcpProbe(tgt),
 		send:     send,
@@ -117,7 +115,7 @@ func startProfiler(ctx context.Context, cfg Config, res *resource.Resource) (fun
 		sleep:    sleepCtx,
 		now:      time.Now,
 	}
-	log.DebugContext(ctx, "continuous profiling on", "types", joinProfileTypes(settings.types()), "heap_interval", settings.heapInterval)
+	log.DebugContext(ctx, "continuous profiling on", "types", joinProfileTypes(settings.types()), "heap_interval", settings.heapInterval, "cpu_interval", settings.cpuInterval, "cpu_duration", settings.cpuDuration)
 	restoreRates := enableContentionSampling(settings)
 	loopCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	done := make(chan struct{})

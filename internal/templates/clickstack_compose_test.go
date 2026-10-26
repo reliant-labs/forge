@@ -348,7 +348,7 @@ func TestProfilesCollectorConfigAndSchema(t *testing.T) {
 	}
 	ddl := string(sql)
 	for _, want := range []string{
-		"CREATE TABLE IF NOT EXISTS default.otel_profiles", "TTL toDateTime(Timestamp) + INTERVAL 72 HOUR",
+		"CREATE TABLE IF NOT EXISTS default.otel_profiles", "TTL toDateTime(Timestamp) + INTERVAL 24 HOUR",
 		"CREATE TABLE IF NOT EXISTS default.profile_stacks", "CREATE MATERIALIZED VIEW IF NOT EXISTS default.profile_stacks_mv",
 		"CREATE TABLE IF NOT EXISTS default.profile_samples_1m", "CREATE MATERIALIZED VIEW IF NOT EXISTS default.profile_samples_1m_mv",
 		"INTERVAL 30 DAY", "SampleType != 'samples'",

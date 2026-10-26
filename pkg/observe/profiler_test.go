@@ -225,7 +225,7 @@ func clearProfilesEnv(t *testing.T) {
 	clearOTelEnv(t)
 	for _, k := range []string{EnvProfilesExporter, EnvOTLPProfilesEndpoint, "OTEL_EXPORTER_OTLP_PROFILES_PROTOCOL",
 		"OTEL_EXPORTER_OTLP_PROFILES_HEADERS", "OTEL_EXPORTER_OTLP_COMPRESSION", "OTEL_EXPORTER_OTLP_PROFILES_COMPRESSION",
-		"OTEL_EXPORTER_OTLP_TIMEOUT", "OTEL_EXPORTER_OTLP_PROFILES_TIMEOUT", EnvProfiles, EnvProfilesHeapInterval} {
+		"OTEL_EXPORTER_OTLP_TIMEOUT", "OTEL_EXPORTER_OTLP_PROFILES_TIMEOUT", EnvProfiles, EnvProfilesHeapInterval, EnvProfilesCPUInterval, EnvProfilesCPUDuration} {
 		t.Setenv(k, "")
 	}
 }

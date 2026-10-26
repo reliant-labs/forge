@@ -2,14 +2,91 @@
 
 ## Defaults
 
-| Profile          | Sample types                   | Default | Cadence                                 |
-| ---------------- | ------------------------------ | ------- | --------------------------------------- |
-| CPU              | `cpu`                          | on      | 10s window every cycle (~60s, jittered) |
-| Heap in-use      | `inuse_space`, `inuse_objects` | on      | every 15 min (`DefaultHeapInterval`)    |
-| Heap allocations | `alloc_space`, `alloc_objects` | off     | with the heap snapshot, cumulative      |
-| Goroutine        | `goroutine`                    | off     | every cycle                             |
-| Mutex            | `contentions`, `delay`         | off     | every cycle; mutex fraction 10 while on |
-| Block            | `contentions`, `delay`         | off     | every cycle; block rate 10µs while on   |
+| Profile          | Sample types                   | Default | Cadence                                              |
+| ---------------- | ------------------------------ | ------- | ---------------------------------------------------- |
+| CPU              | `cpu`                          | on      | 5s window every cycle (5 min, jittered)              |
+| Heap in-use      | `inuse_space`, `inuse_objects` | on      | every 2 h (`DefaultHeapInterval`)                    |
+| Heap allocations | `alloc_space`, `alloc_objects` | off     | with the heap snapshot, cumulative                   |
+| Goroutine        | `goroutine`                    | off     | every cycle                                          |
+| Mutex            | `contentions`, `delay`         | off     | every cycle; mutex fraction 10 while on              |
+| Block            | `contentions`, `delay`         | off     | every cycle; block rate 10µs while on                |
+
+Before this release the defaults were a 10s CPU window every minute and a heap
+snapshot every 15 minutes. A consumer gets the new defaults by pinning the
+release that ships them; `FORGE_PROFILES_CPU_INTERVAL=1m`,
+`FORGE_PROFILES_CPU_DURATION=10s` and `FORGE_PROFILES_HEAP_INTERVAL=15m` bring
+the old cadence back for one workload.
+
+## Why these numbers (measured, 2026-10-26)
+
+Every stored profile **sample** is one ClickHouse row that repeats its whole
+stack: function names, file names, addresses, line numbers and the resource
+attributes. In tenant zero's `otel_profiles` a row is about 4.5 KB uncompressed
+whichever sample type it belongs to, and the bill counts uncompressed bytes of
+new parts. So storage is `profiles x stacks per profile`, and a profile's stack
+count depends on how many distinct stacks the window caught, not on the clock.
+
+Production, last 24h, 12 services, 40 pod series (`otel_profiles`):
+
+| Sample type            | Rows/profile | Share of bytes (excluding one allocation-heavy staging service) |
+| ---------------------- | -----------: | ---------------------------------------------------------------: |
+| `cpu`                  |         ~22  |                                                              55% |
+| `inuse_space`/`_objects` |       ~73  |                                                              45% |
+
+CPU was 14.7k profiles a day (one per pod per ~70s) and heap 1.8k. Heap
+snapshots carry about 3.4x the rows of a CPU profile, so a heap every 15 min
+costs about as much as a CPU profile every 70s. Both have to come down.
+
+The earlier fix (alloc/goroutine off) was already in the 2.5 GiB/day measured
+here; the 150 GiB billed in October is the era before it: allocation counters
+were 90-97% of aggregate rows from 15 to 21 October (`profile_samples_1m`), and
+one `reliant-temporal-worker` pod was 57% of them.
+
+CPU window: the sampler runs at 100 Hz, so a 10s window is ~1000 ticks. Each
+stack that appeared `c` times in the window survives a window of fraction `f`
+with probability `1-(1-f)^c`. Re-deriving every stored CPU profile at `f=0.5`
+keeps **52%** of its rows in every service (50-52% from 79 down to 1.5 stacks per
+profile), because most stacks are seen once or twice. Halving the window halves
+the stored rows and keeps the hot paths (a stack worth reading appears many
+times).
+
+| Cadence                               | Fleet bytes/day (model) |   vs now |
+| ------------------------------------- | ----------------------: | -------: |
+| Now: cpu 10s/70s, heap 15m            |                2.52 GiB |       1x |
+| cpu 10s/5m, heap 15m                  |                1.45 GiB |     1.7x |
+| cpu 10s/5m, heap 10m                  |                2.02 GiB |     1.25x |
+| cpu 5s/5m, heap 1h                    |                0.47 GiB |     5.3x |
+| **cpu 5s/5m, heap 2h (default)**      |            **0.33 GiB** | **7.6x** |
+| cpu 5s/10m, heap 2h                   |                0.25 GiB |    10.1x |
+
+Per-series model: each pod's observed bytes are scaled by the ratio of expected
+profile counts (`1 + span/period`, the 1 being the first-cycle snapshot), and for
+the 5s window by the measured 0.52 thinning. Run on the current cadence it
+reproduces the observed CPU total within 8%. Heap is what remains: about 65% of
+the new default's bytes, so the heap interval, not the CPU cadence, decides
+whether the cut reaches 5x.
+
+Why the chosen point (5s every 5 min, heap every 2 h, raw retention 24h):
+
+- A 5 min cycle is 12 CPU profiles an hour per pod: any flamegraph over an hour
+  or more still has ~60 s of samples, and the per-minute aggregate behind range
+  flamegraphs is read over days. A question about one moment ("where did the CPU
+  go at 14:05") is answered by the raw tier within 24h.
+- Heap changes slowly. A snapshot every two hours is 12 points a day per pod,
+  enough to see growth and leaks; the first snapshot of a new process is
+  immediate, so a deploy is always visible.
+- Raw retention sets the bytes held, not the bytes billed. Raw only serves
+  `--trace` lookups and short-range reads; ranges read the 30-day aggregates.
+
+How the comparable tools default: Datadog's Go profiler uploads every **60s**
+with a CPU window of **60s** (`DefaultPeriod`, `DefaultDuration`) and heap on
+by default; mutex and block are off ("we do not recommend enabling" block).
+Grafana Alloy's `pyroscope.scrape` scrapes every **15s** with a 14s delta
+window, but its backend stores *deduplicated, delta-compressed* profiles
+(Pyroscope's `retention_period` default is 31d), so the cost per profile is far
+lower than a row-per-sample store. Forge stores a fully expanded row per
+sample, so the same cadence costs 10-20x more per profile; matching the
+clock-rate of those tools was never the right comparison.
 
 `ProfilesConfig` sets a binary's own selection; `FORGE_PROFILES` and
 `FORGE_PROFILES_HEAP_INTERVAL` win over it. A forge workload's `profiling`

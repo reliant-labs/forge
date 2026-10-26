@@ -24,6 +24,8 @@ import (
 	"path"
 	"sort"
 	"strings"
+
+	"golang.org/x/mod/modfile"
 )
 
 // Git runs git in dir and returns stdout.
@@ -109,8 +111,8 @@ func ExportRev(dir, rev, dst string) error {
 type Reach struct {
 	// Module is the forge module path.
 	Module string
-	// All is true when go.mod or go.sum changed: any consumer package that
-	// imports forge may be affected.
+	// All is true when the module's dependency set changed (see depsChanged):
+	// any consumer package that imports forge may be affected.
 	All bool
 	// Packages are the import paths of the changed Go packages a consumer can
 	// import, directly (pkg/...) or through a package of pkg/, sorted.
@@ -130,7 +132,7 @@ func (r Reach) Any() bool { return r.API() || len(r.Generated) > 0 }
 func (r Reach) Summary() string {
 	var parts []string
 	if r.All {
-		parts = append(parts, "go.mod/go.sum changed")
+		parts = append(parts, "the module's dependencies changed")
 	}
 	if len(r.Packages) > 0 {
 		parts = append(parts, fmt.Sprintf("%d package(s) a consumer imports", len(r.Packages)))
@@ -171,22 +173,80 @@ func isGenerated(f string) bool {
 	return false
 }
 
-// Compute maps the changed files (relative to the forge module at root) onto
-// what a consumer can see.
-func Compute(root string, changed []string) (Reach, error) {
+// depsChanged reports whether go.mod or go.sum changed in a way that can alter
+// which versions of anything a consumer builds with. A go.mod edit that leaves
+// every require and replace as it was (promoting a module from indirect to
+// direct, a comment, a reordering) changes no build, so it is not a reason to
+// build the consumers. A go.sum change with go.mod untouched is one.
+func depsChanged(root, base string, changed []string) bool {
+	var mod, sum bool
+	for _, f := range changed {
+		mod = mod || f == "go.mod"
+		sum = sum || f == "go.sum"
+	}
+	if !mod && !sum {
+		return false
+	}
+	if !mod {
+		return true
+	}
+	oldb, err := Git(root, "show", base+":go.mod")
+	if err != nil {
+		return true
+	}
+	newb, err := os.ReadFile(root + "/go.mod")
+	if err != nil {
+		return true
+	}
+	a, b := requirements(oldb), requirements(newb)
+	if a == nil || b == nil || len(a) != len(b) {
+		return true
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return true
+		}
+	}
+	return false
+}
+
+// requirements is the set of "kind path" -> version a go.mod pins: its
+// requires, replaces, and go/toolchain lines. Nil when it does not parse.
+func requirements(data []byte) map[string]string {
+	f, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return nil
+	}
+	m := map[string]string{}
+	for _, r := range f.Require {
+		m["require "+r.Mod.Path] = r.Mod.Version
+	}
+	for _, r := range f.Replace {
+		m["replace "+r.Old.Path+"@"+r.Old.Version] = r.New.Path + "@" + r.New.Version
+	}
+	if f.Go != nil {
+		m["go"] = f.Go.Version
+	}
+	if f.Toolchain != nil {
+		m["toolchain"] = f.Toolchain.Name
+	}
+	return m
+}
+
+// Compute maps the changed files (relative to the forge module at root, as
+// differing from base) onto what a consumer can see.
+func Compute(root, base string, changed []string) (Reach, error) {
 	modOut, err := GoList(root, "-m")
 	if err != nil {
 		return Reach{}, err
 	}
 	mod := strings.TrimSpace(string(modOut))
-	r := Reach{Module: mod}
+	r := Reach{Module: mod, All: depsChanged(root, base, changed)}
 
 	// Only load the package graph when a changed file could matter.
 	var goFiles []string
 	for _, f := range changed {
 		switch {
-		case f == "go.mod" || f == "go.sum":
-			r.All = true
 		case isGenerated(f):
 			r.Generated = append(r.Generated, f)
 		}

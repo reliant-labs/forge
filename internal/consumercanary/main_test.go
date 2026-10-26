@@ -43,8 +43,8 @@ func TestParseConsumer(t *testing.T) {
 }
 
 func TestNewFailuresIgnoresTimingsAndCacheMarkers(t *testing.T) {
-	base := "# example.com/c/a\na/a.go:3:2: undefined: x\nFAIL\texample.com/c/a\t0.31s\n"
-	head := "# example.com/c/a\na/a.go:3:2: undefined: x\nFAIL\texample.com/c/a\t1.02s\n"
+	base := "ok  \texample.com/c/z\t0.20s\n# example.com/c/a\na/a.go:3:2: undefined: x\nFAIL\texample.com/c/a\t0.31s\n"
+	head := "ok  \texample.com/c/y\t9.99s\n# example.com/c/a\na/a.go:3:2: undefined: x\nFAIL\texample.com/c/a\t1.02s\n"
 	if f := NewFailures(head, base); len(f) != 0 {
 		t.Fatalf("the same failure with different timings is not new: %v", f)
 	}
@@ -238,11 +238,21 @@ func TestReachFindsPackagesTheConsumerImports(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := forgereach.Compute(f.forge, changed)
+	r, err := forgereach.Compute(f.forge, "HEAD", changed)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(r.Packages) != 1 || r.Packages[0] != "example.com/forge/pkg/widget" || !r.API() {
 		t.Fatalf("reach = %+v", r)
+	}
+}
+
+func TestPassingPackagesAreNeverFailures(t *testing.T) {
+	out := "ok  \texample.com/c/a\t1.2s\n?   \texample.com/c/b\t[no test files]\n--- FAIL: TestX (0.01s)\nFAIL\texample.com/c/a\t0.5s\n"
+	if f := NewFailures(out, ""); len(f) != 2 {
+		t.Fatalf("want the --- FAIL and FAIL lines only, got %v", f)
+	}
+	if got := failureSummary("only noise\n"); got != "only noise\n" {
+		t.Errorf("a failure no pattern knows must still be shown, got %q", got)
 	}
 }

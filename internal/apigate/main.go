@@ -75,7 +75,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	reach, err := forgereach.Compute(root, changed)
+	reach, err := forgereach.Compute(root, *base, changed)
 	if err != nil {
 		return err
 	}
@@ -93,7 +93,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tmp)
+	defer func() { _ = os.RemoveAll(tmp) }()
 	if err := forgereach.ExportRev(root, *base, tmp); err != nil {
 		return err
 	}

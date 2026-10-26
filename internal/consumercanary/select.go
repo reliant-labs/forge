@@ -99,32 +99,49 @@ func goListEnv(ctx context.Context, dir string, env []string, args ...string) (s
 var (
 	durationRE = regexp.MustCompile(`\(?\b\d+(\.\d+)?s\b\)?`)
 	cachedRE   = regexp.MustCompile(`\(cached\)`)
+	hexRE      = regexp.MustCompile(`0x[0-9a-f]+`)
+	// A line that reports a failure: a go test verdict, a panic, a compiler or
+	// vet diagnostic (file.go:12:3: ...) or its package header ("# pkg").
+	signalRE = regexp.MustCompile(`^(--- FAIL|FAIL\b|panic:|# \S|\s*\S+\.go:\d+(:\d+)?: )`)
 )
 
 func normalizeLine(l string) string {
 	l = cachedRE.ReplaceAllString(l, "")
 	l = durationRE.ReplaceAllString(l, "")
+	l = hexRE.ReplaceAllString(l, "0x")
 	return strings.Join(strings.Fields(l), " ")
 }
 
-// NewFailures returns the lines of out that base does not have: what going
-// from the consumer's own forge to the PR's forge added. Timings and cache
-// markers are ignored, so a re-run of the same failure matches itself. Empty
-// means every failure in out also happens without the PR.
+// FailureLines are the lines of a go build, vet or test run that report a
+// failure, normalized so a re-run of the same failure matches itself.
+func FailureLines(out string) []string {
+	var res []string
+	for _, l := range strings.Split(out, "\n") {
+		if signalRE.MatchString(l) {
+			if n := normalizeLine(l); n != "" {
+				res = append(res, n)
+			}
+		}
+	}
+	return res
+}
+
+// NewFailures returns the failure lines of out that base does not have: what
+// going from the consumer's own forge to the PR's forge added. Empty means
+// every failure in out also happens without the PR.
 func NewFailures(out, base string) []string {
 	have := map[string]bool{}
-	for _, l := range strings.Split(base, "\n") {
-		if n := normalizeLine(l); n != "" {
-			have[n] = true
-		}
+	for _, n := range FailureLines(base) {
+		have[n] = true
 	}
 	var fresh []string
 	for _, l := range strings.Split(out, "\n") {
-		n := normalizeLine(l)
-		if n == "" || have[n] {
+		if !signalRE.MatchString(l) {
 			continue
 		}
-		fresh = append(fresh, strings.TrimRight(l, " \t"))
+		if n := normalizeLine(l); n != "" && !have[n] {
+			fresh = append(fresh, strings.TrimRight(l, " \t"))
+		}
 	}
 	return fresh
 }

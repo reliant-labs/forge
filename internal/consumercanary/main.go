@@ -74,12 +74,17 @@ func (s *stringList) String() string     { return strings.Join(*s, ",") }
 func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 func main() {
+	os.Exit(realMain())
+}
+
+func realMain() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "consumercanary:", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 // Consumer is one repository forge must keep building.
@@ -165,7 +170,7 @@ func execute(ctx context.Context, o options, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	reach, err := forgereach.Compute(o.forge, changed)
+	reach, err := forgereach.Compute(o.forge, o.base, changed)
 	if err != nil {
 		return err
 	}
@@ -353,7 +358,7 @@ func canary(ctx context.Context, o options, c Consumer, reach forgereach.Reach, 
 	if err != nil {
 		return fail("ERROR", "%v", err)
 	}
-	defer os.RemoveAll(scratch)
+	defer func() { _ = os.RemoveAll(scratch) }()
 	tree := filepath.Join(scratch, "tree")
 	if err := os.Mkdir(tree, 0o755); err != nil {
 		return fail("ERROR", "%v", err)
@@ -371,25 +376,11 @@ func canary(ctx context.Context, o options, c Consumer, reach forgereach.Reach, 
 		return res
 	}
 
-	if _, err := os.Stat(filepath.Join(tree, "go.mod")); err != nil {
-		return fail("ERROR", "%s has no go.mod at its root", c.Name)
-	}
-	mod := filepath.Join(scratch, "forge.mod")
-	sum := filepath.Join(scratch, "forge.sum")
-	for _, f := range [][2]string{{filepath.Join(tree, "go.mod"), mod}, {filepath.Join(tree, "go.sum"), sum}} {
-		b, err := os.ReadFile(f[0])
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fail("ERROR", "%v", err)
-		}
-		if err := os.WriteFile(f[1], b, 0o644); err != nil {
-			return fail("ERROR", "%v", err)
-		}
-	}
-	if out, err := runCmd(ctx, tree, nil, "go", "mod", "edit", "-modfile="+mod,
-		"-replace", reach.Module+"="+o.forge); err != nil {
-		return fail("ERROR", "go mod edit: %v\n%s", err, out)
-	}
-	if !strings.Contains(string(mustRead(mod)), reach.Module+" ") {
+	mod, ok, err := pointAtForge(ctx, tree, scratch, o.forge, reach.Module)
+	switch {
+	case err != nil:
+		return fail("ERROR", "%v", err)
+	case !ok:
 		fmt.Fprintf(stdout, "== %s @ %.9s: does not depend on %s, nothing to check\n", c.Name, commit, reach.Module)
 		res.Status = "PASS (no forge dependency)"
 		return res
@@ -407,6 +398,13 @@ func canary(ctx context.Context, o options, c Consumer, reach forgereach.Reach, 
 
 	fmt.Fprintf(stdout, "== %s @ %.9s\n", c.Name, commit)
 	var preexisting []string
+	logs := filepath.Join(o.cache, "logs")
+	_ = os.MkdirAll(logs, 0o755)
+	keep := func(name, which, out string) string {
+		p := filepath.Join(logs, c.Name+"-"+name+"-"+which+".log")
+		_ = os.WriteFile(p, []byte(out), 0o644)
+		return p
+	}
 	step := func(name string, args ...string) (string, bool) {
 		t := time.Now()
 		fmt.Fprintf(stdout, "-- %s: go %s\n", name, strings.Join(args, " "))
@@ -416,15 +414,17 @@ func canary(ctx context.Context, o options, c Consumer, reach forgereach.Reach, 
 			fmt.Fprintf(stdout, "   ok (%s)\n", took)
 			return "", true
 		}
-		fmt.Fprintf(stdout, "   FAILED (%s); comparing with %s's own pinned forge\n", took, c.Name)
+		prLog := keep(name, "forge-under-test", out)
+		fmt.Fprintf(stdout, "   FAILED (%s), full output %s; comparing with %s's own pinned forge\n", took, prLog, c.Name)
 		baseOut, berr := runCmd(ctx, tree, base, "go", args...)
+		baseLog := keep(name, "pinned", baseOut)
 		if berr == nil {
-			return tail(out, 80), false
+			return tail(failureSummary(out), 80), false
 		}
 		fresh := NewFailures(out, baseOut)
 		if len(fresh) == 0 && ctx.Err() == nil {
 			preexisting = append(preexisting, name)
-			fmt.Fprintf(stdout, "   the same failures occur without this forge: pre-existing, not blamed on the PR\n")
+			fmt.Fprintf(stdout, "   the same failures occur without this forge (%s): pre-existing, not blamed on the PR\n", baseLog)
 			return "", true
 		}
 		return tail(strings.Join(fresh, "\n"), 80), false
@@ -463,6 +463,31 @@ func canary(ctx context.Context, o options, c Consumer, reach forgereach.Reach, 
 	return res
 }
 
+// pointAtForge writes a copy of the consumer's go.mod and go.sum into scratch
+// with a replace of forgeModule by the forge checkout, and returns the copy's
+// path for -modfile. ok is false when the consumer does not require forge at
+// all. The consumer's own files are never written.
+func pointAtForge(ctx context.Context, tree, scratch, forge, forgeModule string) (mod string, ok bool, err error) {
+	if _, err := os.Stat(filepath.Join(tree, "go.mod")); err != nil {
+		return "", false, fmt.Errorf("the consumer has no go.mod at its root")
+	}
+	mod = filepath.Join(scratch, "forge.mod")
+	sum := filepath.Join(scratch, "forge.sum")
+	for _, f := range [][2]string{{filepath.Join(tree, "go.mod"), mod}, {filepath.Join(tree, "go.sum"), sum}} {
+		b, err := os.ReadFile(f[0])
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return "", false, err
+		}
+		if err := os.WriteFile(f[1], b, 0o644); err != nil {
+			return "", false, err
+		}
+	}
+	if out, err := runCmd(ctx, tree, nil, "go", "mod", "edit", "-modfile="+mod, "-replace", forgeModule+"="+forge); err != nil {
+		return "", false, fmt.Errorf("go mod edit: %w\n%s", err, out)
+	}
+	return mod, strings.Contains(string(mustRead(mod)), forgeModule+" "), nil
+}
+
 func mustRead(p string) []byte {
 	b, _ := os.ReadFile(p)
 	return b
@@ -488,6 +513,21 @@ func runCmd(ctx context.Context, dir string, env []string, name string, args ...
 	cmd.Stdout, cmd.Stderr = &buf, &buf
 	err := cmd.Run()
 	return buf.String(), err
+}
+
+// failureSummary is the lines of out that report a failure, or out's tail when
+// none matches (a failure the patterns do not know must still be shown).
+func failureSummary(out string) string {
+	var res []string
+	for _, l := range strings.Split(out, "\n") {
+		if signalRE.MatchString(l) {
+			res = append(res, strings.TrimRight(l, " \t"))
+		}
+	}
+	if len(res) == 0 {
+		return out
+	}
+	return strings.Join(res, "\n")
 }
 
 func tail(s string, n int) string {

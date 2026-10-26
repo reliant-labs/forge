@@ -39,3 +39,34 @@ func TestReachSummary(t *testing.T) {
 		t.Error("generator-only change still reaches consumers")
 	}
 }
+
+func TestRequirementsIgnoresIndirectPromotionAndComments(t *testing.T) {
+	before := "module m\n\ngo 1.27\n\nrequire (\n\texample.com/a v1.0.0\n\texample.com/x v0.1.0 // indirect\n)\n"
+	promoted := "module m\n\ngo 1.27\n\nrequire (\n\texample.com/a v1.0.0\n\texample.com/x v0.1.0\n)\n// a comment\n"
+	bumped := "module m\n\ngo 1.27\n\nrequire (\n\texample.com/a v1.1.0\n\texample.com/x v0.1.0 // indirect\n)\n"
+	replaced := before + "replace example.com/a => ../a\n"
+	eq := func(a, b string) bool {
+		x, y := requirements([]byte(a)), requirements([]byte(b))
+		if len(x) != len(y) {
+			return false
+		}
+		for k, v := range x {
+			if y[k] != v {
+				return false
+			}
+		}
+		return true
+	}
+	if !eq(before, promoted) {
+		t.Error("promoting a module from indirect to direct changes no build")
+	}
+	if eq(before, bumped) {
+		t.Error("a version bump must differ")
+	}
+	if eq(before, replaced) {
+		t.Error("a new replace must differ")
+	}
+	if requirements([]byte("not a go.mod {{{")) != nil {
+		t.Error("an unparseable go.mod must yield nil so the caller treats it as changed")
+	}
+}

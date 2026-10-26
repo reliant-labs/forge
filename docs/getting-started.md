@@ -17,12 +17,17 @@ time with Forge depends on.
 
 ## Before you start
 
-You need Go, Docker (for the local cluster and for tests that use a real
-Postgres), and the `forge` binary on your `$PATH`:
+You need Docker (for the local cluster and for tests that use a real
+Postgres) and the `forge` binary on your `$PATH`. No Go toolchain is needed to
+install it:
 
 ```bash
-task install && forge version
+curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh
+forge version
 ```
+
+(Homebrew, npm, Windows and `go install` are listed under
+[Install](../README.md#install). From a clone: `task install && forge version`.)
 
 Forge installs the proto plugins it needs on first use. If you want to check
 your toolchain up front, `forge doctor` will tell you what is missing and how

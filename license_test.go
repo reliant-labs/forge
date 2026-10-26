@@ -18,18 +18,23 @@ import (
 // would publish terms the project no longer grants.
 //
 // Cache-sound under -short: the test process opens every file it compares.
+//
+// npm/ (the @reliantlabs/forge binary shim) is published the same way and carries
+// the same two copies.
 func TestWebRuntimeShipsTheRepoLicense(t *testing.T) {
-	for _, name := range []string{"LICENSE", "NOTICE"} {
-		root, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		pkg, err := os.ReadFile(filepath.Join("web-runtime", name))
-		if err != nil {
-			t.Fatalf("read web-runtime/%s: %v — the published package would ship without it", name, err)
-		}
-		if !bytes.Equal(root, pkg) {
-			t.Errorf("web-runtime/%s differs from the repo-root %s; copy it: cp %s web-runtime/%s", name, name, name, name)
+	for _, dir := range []string{"web-runtime", "npm"} {
+		for _, name := range []string{"LICENSE", "NOTICE"} {
+			root, err := os.ReadFile(name)
+			if err != nil {
+				t.Fatalf("read %s: %v", name, err)
+			}
+			pkg, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				t.Fatalf("read %s/%s: %v — the published package would ship without it", dir, name, err)
+			}
+			if !bytes.Equal(root, pkg) {
+				t.Errorf("%s/%s differs from the repo-root %s; copy it: cp %s %s/%s", dir, name, name, name, dir, name)
+			}
 		}
 	}
 }

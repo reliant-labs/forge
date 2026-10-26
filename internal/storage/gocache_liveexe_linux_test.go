@@ -107,3 +107,22 @@ func TestReadProcExecutablesKeepsOnlyCacheExecutables(t *testing.T) {
 		}
 	}
 }
+
+// A process whose exe the kernel will not show (another user's, or any
+// non-dumpable one) must not fail the listing, or one such process on the
+// machine would disable executable trimming for good. Skipped when running as
+// root, which can read everything.
+func TestReadProcExecutablesSkipsProcessesItCannotInspect(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root can read every exe")
+	}
+	// /proc/<pid>/exe is a symlink; an unreadable one is simulated by a
+	// directory in its place, which readlink answers with EINVAL (not a
+	// permission error), so use a real kernel-refused read instead: PID 1.
+	if _, err := os.Readlink("/proc/1/exe"); err == nil {
+		t.Skip("this machine lets us read PID 1's exe")
+	}
+	if _, err := readProcExecutables(context.Background(), "/proc", t.TempDir()); err != nil {
+		t.Fatalf("a process we cannot inspect failed the whole listing: %v", err)
+	}
+}

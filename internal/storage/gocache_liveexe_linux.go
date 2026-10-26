@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -21,11 +20,15 @@ import (
 // callers see the process still holds a binary that is gone.
 //
 // A process that exits mid-scan (ENOENT) or has no executable (a kernel
-// thread) is skipped. A process this user cannot inspect (EACCES, another
-// user's) is skipped too: it is not ours to have started from this user's
-// cache. A process of OUR user that cannot be inspected is not skippable: it
-// might be running a cache entry, so the whole listing fails and the trim
-// keeps every executable entry.
+// thread) is skipped. So is a process whose exe the kernel will not show us
+// (EACCES): readlink needs ptrace-read access, which the kernel refuses for
+// another user's process and for ANY non-dumpable one, our own included (a
+// runner agent, a setuid helper). A `go run` child is an ordinary dumpable
+// process of this user, so an unreadable one is not it; failing the listing
+// over it would instead disable executable trimming on every machine that
+// runs one. What does fail the listing is /proc itself being unreadable, or
+// any other error reading a process: the trim then keeps every executable
+// entry.
 func procExecutables(ctx context.Context, root string) ([]LiveExecutable, error) {
 	return readProcExecutables(ctx, "/proc", root)
 }
@@ -54,7 +57,7 @@ func readProcExecutables(ctx context.Context, proc, root string) ([]LiveExecutab
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
-			if errors.Is(err, fs.ErrPermission) && !ownedByUs(filepath.Join(proc, d.Name())) {
+			if errors.Is(err, fs.ErrPermission) {
 				continue
 			}
 			return nil, fmt.Errorf("read the executable of process %d: %w", pid, err)
@@ -73,15 +76,6 @@ func readProcExecutables(ctx context.Context, proc, root string) ([]LiveExecutab
 		out = append(out, LiveExecutable{Path: exe, Age: age})
 	}
 	return out, nil
-}
-
-func ownedByUs(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil {
-		return true // cannot tell: treat as ours, which fails closed
-	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	return !ok || int(st.Uid) == os.Getuid()
 }
 
 // procUptime is the machine's uptime from /proc/uptime.

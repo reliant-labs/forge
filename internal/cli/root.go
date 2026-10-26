@@ -258,6 +258,9 @@ from an empty directory to authored protos, in one call.`,
 	// `component` migrated to the internal/cli/component group (registered
 	// via the factory registry below).
 	rootCmd.AddCommand(newSkillCmd())
+	// `mcp` serves the introspection, skill, lint and generate verbs to an
+	// agent harness over stdio (mcp.go).
+	rootCmd.AddCommand(newMCPCmd())
 	rootCmd.AddCommand(newCICmd())
 	rootCmd.AddCommand(newToolsCmd())
 	rootCmd.AddCommand(newClusterCmd())

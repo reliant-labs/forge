@@ -172,17 +172,23 @@ job before adding a job.
 **Pull request** and **merge-queue entry** (`ci.yml`, 5 jobs, on every pull request — no path filter):
 
 - **Test** — three entries: the `-short` tier, no `-race`, as 2 package shards
-  (`scripts/ci-test-shard.sh` over `scripts/ci-test-packages.sh short I N`), and the guards
-  in full mode spread across the entries (`internal/ciguard` holds each to exactly one). The
-  guards-only entry also runs the **flake gate**: each test the change adds or edits runs
-  three times (`scripts/ci-changed-tests.sh`; no `-race` — that runs on main). A test that
-  fails one run in three never merges. `internal/ciguard` fails if the matrix misses an index. No
-  `-count=1`: an unchanged package replays main's result, which works because
-  `test-short-warm` runs the same command in the same environment, and
-  `scripts/ci-normalize-mtimes.sh` stamps every tracked file with a content-derived mtime
-  (Go's test cache keys files on mtime, not content).
+  (`scripts/ci-test-shard.sh` over `scripts/ci-test-packages.sh short I N`), and the
+  **flake gate**: each test the change adds or edits runs three times
+  (`scripts/ci-changed-tests.sh`, `-short -count=3`; `-race` joins it on main). A test that
+  fails one run in three never merges. The guards' whole-repo work skips under `-short` and
+  runs on main. `internal/ciguard` fails if the matrix misses an index. No `-count=1`: an
+  unchanged package replays main's result, which works because `test-short-warm` runs the
+  same command in the same environment, and `scripts/ci-normalize-mtimes.sh` stamps every
+  tracked file with a content-derived mtime (Go's test cache keys files on mtime, not
+  content).
 - **Checks** — `forge ci verify-generated`, `forge ci validate-kcl`, the pre-commit hooks
   (go-vet-mod skipped), and the Go and npm dependency-license allowlists.
+- **The same tier, locally: `task ci`.** What the merge steward gates a forge pull request
+  with, in about five minutes (`scripts/ci-premerge.sh`): the whole `-short` tier, the flake
+  gate and the checks above, concurrently, one table, non-zero on any FAIL or unwaived SKIP.
+  `PR=<n> task ci` also reads the pull request's labels for the pkg/ API gate. It is the
+  steward's command, not a contributor's: verify your change with
+  `task test:short -- <your packages>`. `internal/ciguard` holds it to `ci.yml`.
 - `CI gate` is the main ruleset's required check, and `main` merges through a merge queue:
   each queued pull request runs this tier again (`merge_group`) over main plus the entries
   ahead of it, and lands only if `CI gate` is green there. So `ci.yml` has no path filter
@@ -209,7 +215,8 @@ job before adding a job.
   (`.github/actions/restore-go-caches`; Checks saves `go-build-tools` on main, which
   Build and the e2e workflows restore);
   then the guards (tierguard, removalguard,
-  deadcodeguard, writeguard; `-p 1`, full mode, no `-race`), which pull requests also run.
+  deadcodeguard, writeguard; `-p 1`, full mode, no `-race`), whose whole-repo work pull
+  requests skip.
 - **Build (-trimpath) + go-licenses + govulncheck** — the release build flags, the second
   license opinion (Checks covers dependency licenses on every pull request), and
   `forge ci vuln-scan --go`.

@@ -892,6 +892,12 @@ jobs:
     name: Checks (generated code, KCL, pre-commit, licenses)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # pull-requests: read for the apigate step, which reads the pull request's
+    # labels and body live (a label added after the run started is seen on a
+    # re-run). Declaring any permission resets the others, so contents says it.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       # Depth 2 for the CHANGELOG.md guard below: the merge commit and its
       # first parent, the base branch's tip.
@@ -930,6 +936,20 @@ jobs:
         # release, so no change to a template or an emitter could ever go
         # green until after it shipped. Build from the working tree instead.
         run: go install ./cmd/forge
+      # forge may break pkg/ freely; a breaking pull request must declare the
+      # break (the `api-break` label, or an `API-BREAK:` line in its body) and
+      # ship the codemod or migration playbook in the same diff. A step of this
+      # job, not a job of its own: it reuses the forge build above and adds no
+      # runner to queue for. A diff that cannot change pkg/'s API exits in
+      # about a second. dev-docs/api-breaks.md. Pull requests only: a
+      # merge-queue entry was judged when its pull request opened, and a push
+      # to main is already merged.
+      - name: pkg/ API compatibility (undeclared breaks fail)
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: go run ./internal/apigate -base HEAD^1 -pr "$PR"
       # verify-generated runs `forge generate`, whose "buf generate (Go
       # stubs)" step regenerates pkg/forgepb from proto/forge/v1/forge.proto
       # (buf.gen.yaml). Without buf on PATH the job dies with

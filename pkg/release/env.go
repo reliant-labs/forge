@@ -86,9 +86,13 @@ type EnvRecord struct {
 	DeclaredAt    *time.Time  `json:"declared_at,omitempty"`
 }
 
-// Validate checks the record and, when present, that its declared shape
-// agrees with its kind: a declaration is a projection of one render, and a
-// render cannot disagree with itself about how the env runs.
+// Validate checks the record and, when present, its declared shape.
+//
+// The record's kind and the shape's are NOT required to agree any more.
+// Placement is per workload (docs/design/per-workload-placement.md): an env
+// recorded self-managed that gains a hosted frontend declares a shape a
+// placement-derived kind calls persistent, and it is the same env. Both kinds
+// are retired with the control plane's kind column.
 func (r EnvRecord) Validate() error {
 	if strings.TrimSpace(r.Name) == "" {
 		return fmt.Errorf("%w: environment name is required", ErrInvalid)
@@ -102,9 +106,6 @@ func (r EnvRecord) Validate() error {
 	if r.DeclaredShape != nil {
 		if err := r.DeclaredShape.Validate(); err != nil {
 			return fmt.Errorf("environment %q: %w", r.Name, err)
-		}
-		if r.DeclaredShape.Kind != r.Kind {
-			return fmt.Errorf("%w: environment %q is %s, but its declared shape says %s", ErrInvalid, r.Name, r.Kind, r.DeclaredShape.Kind)
 		}
 	}
 	if r.DeclaredBy != nil {

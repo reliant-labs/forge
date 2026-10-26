@@ -191,12 +191,10 @@ func hubUnitsConvergeable(e *KCLEntities, hub []string) error {
 			"the hub converges a unit only onto a connected cluster (set connected_cluster on the env's forge.ClusterTarget, "+
 			"or Bundle.connected_clusters), and `forge cluster connect` registers it", strings.Join(hub, ", "))
 	}
-	if e.HasHosted() {
-		return fmt.Errorf("bundle.hub_converges = [%s] but the env also binds hosted tiers (%s) to its control plane: "+
-			"a hosted tier is published, not converged from a bundle, and one env cannot be both. "+
-			"Move the hosted tiers to their own env, or leave hub_converges unset",
-			strings.Join(hub, ", "), joinTiers(hostedTiersOf(e)))
-	}
+	// A HOSTED PART BESIDE A HUB UNIT IS FINE. Placement is per workload
+	// (docs/design/per-workload-placement.md): the hosted parts are published
+	// to the platform and the hub converges its units onto connected
+	// clusters, two actuators for two placements of one env and one release.
 	return nil
 }
 

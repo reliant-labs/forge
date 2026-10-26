@@ -19,7 +19,7 @@ re-rendering anything.
 
 | Field | What it holds |
 |---|---|
-| `kind` | `persistent` \| `self_managed` \| `local` — DERIVED from what the env binds, never selected (see below) |
+| `kind` | `persistent` \| `self_managed` \| `local` — a legacy summary DERIVED from what the env binds; being retired (see below) |
 | `workloads` | every workload of every runtime, with its cluster and the release artifact its image comes from |
 | `secrets` | each declared secret by NAME, its provider, and the workloads that read it |
 | `domains` | every hostname the env binds — a Gateway's host, its listeners' overrides, each route's override |
@@ -62,26 +62,41 @@ with no network and no `helm` on PATH, and a chart's objects belong to the
 platform dependency rather than to this project's declaration. Use
 `forge env render` for those.
 
-## The kind is a predicate, not a setting
+## Placement is per workload; the kind is a legacy summary
 
-| What the env binds | Kind | Who applies it | Its secrets |
-|---|---|---|---|
-| no `control_plane` | `local` | forge (file ledger) | provider-defined |
-| something `OnHosted` | `persistent` | the platform's converger | write-only |
-| nothing hosted, something `OnCluster` | `self_managed` | forge | write-only |
-| every workload `OnHost` / `OnCompose` | `local` | `forge env up` | readable |
+Every workload, frontend and database declares where it runs by its runtime
+binding, and that binding is the only placement fact. One env holds any mix —
+an `OnCluster` API beside an `OnHosted` static site is one env, one release and
+one deploy. `forge env status --json` lists every part under `placements[]`
+with its placement (`hosted`, `cluster`, `bucket`, `firebase`, `compose`,
+`host`, `build-only`) and who applies it (`platform`, `hub`, `forge`,
+`machine`, `none`).
+
+One `forge env deploy` runs the parts forge applies, the hosted parts and the
+frontends forge ships in the order their declared `release_dependencies`
+give: `{peer: contract}` on a part means `peer` goes first. A frontend that
+declares no `release_dependencies` waits for every server workload; `{}`
+means independent. A cycle between placements is refused before anything
+ships.
+
+`kind` is still recorded, as a summary the control plane is retiring:
+
+| What the env binds | Kind | Its secrets |
+|---|---|---|
+| no `control_plane` | `local` | provider-defined |
+| something `OnHosted` | `persistent` | write-only |
+| nothing hosted, something `OnCluster` | `self_managed` | write-only |
+| every workload `OnHost` / `OnCompose` | `local` | readable |
 
 The `self_managed` / `local` split is what keeps "runs on my laptop" and
-"runs on my own cluster" apart. A cluster env classified local would have its
-production secrets readable back through the local-secret pull.
-
-The kind is IMMUTABLE once recorded: an env whose kind changed is a different
-env, and an ensure that disagrees with the stored row is refused rather than
-silently changing it.
+"runs on my own cluster" apart: a cluster env's secrets are never readable
+back. An env that gains a hosted part beside its cluster parts is the SAME
+env — the diff lists the new part, never a kind error. The design is
+`docs/design/per-workload-placement.md` in the forge repository.
 
 ## `lifecycle` is DECLARED, and it is a different question
 
-`kind` above is derived from what the env HOSTS. `lifecycle` is declared by
+`kind` above is derived from what the env binds. `lifecycle` is declared by
 the env itself, and it says WHO APPLIES it:
 
 | `Bundle.lifecycle` | Means |

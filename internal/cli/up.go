@@ -504,6 +504,7 @@ func buildUpServicesReport(ctx context.Context, in buildUpServicesInput) (upServ
 	rep.Destination, rep.Endpoint, rep.EnvironmentID = dest.Destination, dest.Endpoint, dest.EnvironmentID
 	rep.ControlPlaneKind = dest.ControlPlaneKind
 	rep.Verdict, rep.HostedWorkloads, rep.HostedNote = dest.Verdict, dest.Workloads, dest.Note
+	rep.Placements = dest.Placements
 	return rep, nil
 }
 
@@ -1839,6 +1840,9 @@ type upServicesReport struct {
 	Verdict          string                              `json:"verdict,omitempty"`
 	HostedWorkloads  []deploytarget.HostedWorkloadStatus `json:"hosted_workloads,omitempty"`
 	HostedNote       string                              `json:"hosted_note,omitempty"`
+	// Placements is every part of the env and where it runs; see
+	// env_destination.go.
+	Placements []partPlacement `json:"placements,omitempty"`
 }
 
 // collectUpServices builds the ordered host-then-frontend rows for env,

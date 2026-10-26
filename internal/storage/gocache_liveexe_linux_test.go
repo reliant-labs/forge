@@ -4,6 +4,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,7 +47,8 @@ func TestProcExecutablesFindsAProcessRunningFromTheCache(t *testing.T) {
 		}
 	}
 	if found == nil {
-		t.Fatalf("the running process was not found in %v", exes)
+		link, lerr := os.Readlink(fmt.Sprintf("/proc/%d/exe", cmd.Process.Pid))
+		t.Fatalf("the running process was not found in %v; /proc/%d/exe -> %q (%v); root %s; uid %d", exes, cmd.Process.Pid, link, lerr, root, os.Getuid())
 	}
 	if found.Age < 0 || found.Age > time.Minute {
 		t.Errorf("age = %v for a process started a moment ago", found.Age)

@@ -33,7 +33,6 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/audittype"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 
 // auditPrerequisites renders the dev env and reports the declared external
@@ -111,9 +110,10 @@ func auditPrerequisites(cfg *config.ProjectConfig, projectDir string) audittype.
 //   - Nothing placed in a cluster (no cluster-bound workload, no env-wide
 //     cluster_target, no self-managed database): nothing is applied, so
 //     there is no demand to check.
-//   - Hosted workloads: the control plane owns the cluster and materializes
-//     the Secrets it reads (forge-managed-secrets, the CNPG credential), and
-//     forge applies nothing — the deploy publishes Workload specs instead.
+//   - Hosted parts: the control plane owns the cluster and materializes
+//     the Secrets they read (forge-managed-secrets, the CNPG credential), and
+//     forge applies nothing for them — the deploy publishes Workload specs
+//     instead. A cluster part beside them is still counted.
 //
 // Anything else (a Cluster runtime, a self-managed database, an env-wide
 // cluster_target for support objects, a LOCAL control-plane env) keeps the
@@ -127,12 +127,11 @@ func envAppliesManifestsToCluster(e *KCLEntities) bool {
 	if e == nil {
 		return false
 	}
-	// Only a PERSISTENT env's manifests are applied by the platform. A LOCAL
-	// or SELF_MANAGED control-plane env is applied from this machine, so its
-	// mounts are demand forge must meet.
-	if hostedEnvKindOf(e) == deploytarget.HostedEnvPersistent {
-		return false
-	}
+	// PER WORKLOAD, never per env. Hosted parts are applied by the platform
+	// and never count; every cluster part forge applies does, whatever else
+	// the env holds. An env with a hosted frontend beside cluster workloads
+	// (docs/design/per-workload-placement.md) still applies those workloads'
+	// mounts from this machine, so they are demand forge must meet.
 	return kclEntitiesHaveK8sCluster(e)
 }
 

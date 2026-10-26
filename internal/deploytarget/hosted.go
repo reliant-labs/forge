@@ -148,6 +148,11 @@ type HostedTarget struct {
 	// untouched server-side.
 	Shape      *release.Shape
 	DeclaredBy *release.Provenance
+	// Kind is the env's control-plane kind as the CLI derived it from the
+	// whole render (hostedEnvKindOf). "" means "not derived", which the
+	// provider reads as PERSISTENT. It is the legacy wire field the control
+	// plane is retiring; placement itself is per workload.
+	Kind HostedEnvKind
 }
 
 // ClusterBinding is one rendered cluster and the connected cluster it maps to.
@@ -1154,9 +1159,19 @@ func (p HostedProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	if err != nil {
 		return err
 	}
+	// The env's kind is the CLI's derivation over the WHOLE env, carried on
+	// the group. Never assumed from the fact that this group is hosted: a
+	// hosted group is one placement of an env that may also hold cluster
+	// parts (docs/design/per-workload-placement.md), and a hard-coded
+	// PERSISTENT here told the control plane a self-managed env had become a
+	// different env. PERSISTENT remains the answer only for a caller that
+	// rendered nothing to derive from.
 	ref := HostedEnvRef{Project: groupProject(group), Name: group.Env, Kind: HostedEnvPersistent}
 	if group.Hosted != nil {
 		ref.Shape, ref.DeclaredBy = group.Hosted.Shape, group.Hosted.DeclaredBy
+		if group.Hosted.Kind != "" {
+			ref.Kind = group.Hosted.Kind
+		}
 	}
 	env, created, err := ensureHostedEnvironment(ctx, c, ref)
 	if err != nil {

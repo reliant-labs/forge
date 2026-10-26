@@ -1541,99 +1541,119 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		return opts.preflightFrontend(ctx, entities, projectDir)
 	}
 
+	// THE ORDER THE PLACEMENTS SHIP IN, derived from declared
+	// release_dependencies (deploy_order.go). Decided before anything ships,
+	// so a cycle is refused while nothing has changed.
+	stageOrder, err := deployStageOrder(entities)
+	if err != nil {
+		return err
+	}
+
 	// Everything from here on changes a live target. Each stage is recorded
 	// as it completes (or fails part-way), so a deploy that stops halfway
 	// says what already shipped. See deploy_ship_log.go.
 	ship := opts.shipLog()
-	applyErr := ship.run(applyStageLabels(groups, hasK8sServices && !opts.skipClusterApply, deployContext, namespace), func() error {
-		// k8s Secret projection: for a dotenv secret_provider, render the
-		// declared cluster secret refs into plaintext Secret manifests and
-		// apply them BEFORE the Deployments roll out (so each Deployment's
-		// secretKeyRef resolves on first schedule).
-		if !opts.skipClusterApply {
-			if err := applyK8sSecretsFromProvider(ctx, entities, groups, namespace, deployContext, envName, dryRun); err != nil {
-				return err
-			}
-		}
+	runStage := map[deployStage]func() error{
+		stageLocal: func() error {
+			return ship.run(applyStageLabels(groups, hasK8sServices && !opts.skipClusterApply, deployContext, namespace), func() error {
+				// k8s Secret projection: for a dotenv secret_provider, render the
+				// declared cluster secret refs into plaintext Secret manifests and
+				// apply them BEFORE the Deployments roll out (so each Deployment's
+				// secretKeyRef resolves on first schedule).
+				if !opts.skipClusterApply {
+					if err := applyK8sSecretsFromProvider(ctx, entities, groups, namespace, deployContext, envName, dryRun); err != nil {
+						return err
+					}
+				}
 
-		// The bootstrap values the secret store needs before it can serve a
-		// read (its seal key, its database password) are minted into the
-		// bootstrap source once, before ESO is asked to deliver them.
-		// Create-if-absent; never an overwrite. See bootstrap_secret.go.
-		if !opts.skipClusterApply {
-			if err := ensureBootstrapSecrets(ctx, fullEntities, dryRun, os.Stdout); err != nil {
-				return err
-			}
-		}
+				// The bootstrap values the secret store needs before it can serve a
+				// read (its seal key, its database password) are minted into the
+				// bootstrap source once, before ESO is asked to deliver them.
+				// Create-if-absent; never an overwrite. See bootstrap_secret.go.
+				if !opts.skipClusterApply {
+					if err := ensureBootstrapSecrets(ctx, fullEntities, dryRun, os.Stdout); err != nil {
+						return err
+					}
+				}
 
-		// Minted kubeconfig Secrets, BEFORE the workloads that mount them
-		// roll out. `env up` mints at the cluster→deploy boundary, which
-		// covers dev and e2e; a cloud env is deployed with `env deploy`
-		// against clusters that already exist and never runs that phase, so
-		// the mint has to happen here too or a cloud consumer's Secret is
-		// simply never created.
-		//
-		// Only the MINTING declarations run here: a k3d in-network mint
-		// resolves a docker container address, which is meaningless on the
-		// deploy path and stays owned by `env up`.
-		if !opts.skipClusterApply {
-			if err := mintDeployKubeconfigSecrets(ctx, entities, namespace, dryRun); err != nil {
-				return fmt.Errorf("kubeconfig secrets: %w", err)
-			}
-		}
+				// Minted kubeconfig Secrets, BEFORE the workloads that mount them
+				// roll out. `env up` mints at the cluster→deploy boundary, which
+				// covers dev and e2e; a cloud env is deployed with `env deploy`
+				// against clusters that already exist and never runs that phase, so
+				// the mint has to happen here too or a cloud consumer's Secret is
+				// simply never created.
+				//
+				// Only the MINTING declarations run here: a k3d in-network mint
+				// resolves a docker container address, which is meaningless on the
+				// deploy path and stays owned by `env up`.
+				if !opts.skipClusterApply {
+					if err := mintDeployKubeconfigSecrets(ctx, entities, namespace, dryRun); err != nil {
+						return fmt.Errorf("kubeconfig secrets: %w", err)
+					}
+				}
 
-		// When no K8sCluster groups are present, the rendered set carries
-		// only external / compose / host / build-only — nothing to apply
-		// via the cluster pipeline. Skip the check above (no namespace)
-		// and let dispatchDeployGroups handle the per-provider paths or
-		// no-op trivially.
-		// A frontend-only env (e.g. just a Firebase Hosting frontend, no
-		// services / operators / cronjobs) has nothing for the cluster
-		// pipeline to apply. Skip the empty-groups cluster.Apply below so
-		// such projects don't need kubectl configured at all — the frontend
-		// dispatch further down does the real work.
-		return applyDeployGroups(ctx, deployApplyInput{
-			groups: groups, topology: topology, topologyEntities: fullEntities,
-			entities: entities, hasK8sServices: hasK8sServices,
-			mainK: mainK, imageTag: imageTag, imageDigests: imageDigests,
-			namespace: namespace, envName: envName, deployContext: deployContext,
-			envCfgKV: envCfgKV, dryRun: dryRun, prune: prune, cfg: cfg,
-			targets: targets, helmSpecs: helmSpecs,
-			rollout: opts.rollout, report: report, skipUnits: skipUnits,
-			directApplyAllowed: opts.directApplyAllowed,
-		})
-	})
-	if applyErr != nil {
-		return applyErr
+				// When no K8sCluster groups are present, the rendered set carries
+				// only external / compose / host / build-only — nothing to apply
+				// via the cluster pipeline. Skip the check above (no namespace)
+				// and let dispatchDeployGroups handle the per-provider paths or
+				// no-op trivially.
+				// A frontend-only env (e.g. just a Firebase Hosting frontend, no
+				// services / operators / cronjobs) has nothing for the cluster
+				// pipeline to apply. Skip the empty-groups cluster.Apply below so
+				// such projects don't need kubectl configured at all — the frontend
+				// dispatch further down does the real work.
+				return applyDeployGroups(ctx, deployApplyInput{
+					groups: groups, topology: topology, topologyEntities: fullEntities,
+					entities: entities, hasK8sServices: hasK8sServices,
+					mainK: mainK, imageTag: imageTag, imageDigests: imageDigests,
+					namespace: namespace, envName: envName, deployContext: deployContext,
+					envCfgKV: envCfgKV, dryRun: dryRun, prune: prune, cfg: cfg,
+					targets: targets, helmSpecs: helmSpecs,
+					rollout: opts.rollout, report: report, skipUnits: skipUnits,
+					directApplyAllowed: opts.directApplyAllowed,
+				})
+			})
+		},
+		// The hosted part: PUBLISHED, not applied. It rides the control
+		// plane, in the order the declared dependencies give.
+		stageHosted: func() error {
+			if len(hostedGroups) == 0 {
+				return nil
+			}
+			return ship.run(hostedStageLabels(hostedGroups), func() error {
+				return runHostedDeploy(ctx, envName, entities, hostedGroups, opts)
+			})
+		},
+		// Frontends declaring a first-class deploy target are built +
+		// shipped, under --dry-run too so the plan surfaces before any side
+		// effect. The warning and the skip both live in the helper so a
+		// caller cannot get one without the other; warnUndeployedFrontends
+		// is what stops a declared-but-undeployed frontend failing silently.
+		stageFrontends: func() error {
+			return dispatchFrontendsOrSkip(ctx, deployFrontendInput{
+				cfg: cfg, entities: entities, projectDir: projectDir, envName: envName,
+				envCfgKV: envCfgKV, targets: targets, dryRun: dryRun,
+				skipFrontend: opts.skipFrontend, shipped: ship,
+			})
+		},
 	}
-	// The hosted part, AFTER the local apply: a hosted workload may
-	// reference a cluster workload's URL, never the reverse.
-	if len(hostedGroups) > 0 {
-		if err := ship.run(hostedStageLabels(hostedGroups), func() error {
-			return runHostedDeploy(ctx, envName, entities, hostedGroups, opts)
-		}); err != nil {
+	workloadStagesLeft := 2
+	for _, stage := range stageOrder {
+		if err := runStage[stage](); err != nil {
 			return err
 		}
-	}
-
-	// Under rollout mode skip forge applied the manifests and waited for
-	// nothing, so no observation arrived for any resource. Their readiness is
-	// genuinely unknown rather than fine, and the document says so explicitly
-	// — a consumer must never read silence as health.
-	report.markWorkloadsNotWaited()
-
-	// Frontend deploy dispatch — frontends declaring a first-class deploy
-	// target are built + shipped after the service groups, under --dry-run
-	// too so the plan surfaces before any side effect. The warning and the
-	// skip both live in the helper so a caller cannot get one without the
-	// other; warnUndeployedFrontends is what stops a declared-but-undeployed
-	// frontend failing silently, which was the reported bug.
-	if err := dispatchFrontendsOrSkip(ctx, deployFrontendInput{
-		cfg: cfg, entities: entities, projectDir: projectDir, envName: envName,
-		envCfgKV: envCfgKV, targets: targets, dryRun: dryRun,
-		skipFrontend: opts.skipFrontend, shipped: ship,
-	}); err != nil {
-		return err
+		if stage == stageLocal || stage == stageHosted {
+			workloadStagesLeft--
+		}
+		if workloadStagesLeft == 0 {
+			// Under rollout mode skip forge applied the manifests and waited
+			// for nothing, so no observation arrived for any resource. Their
+			// readiness is genuinely unknown rather than fine, and the
+			// document says so explicitly — a consumer must never read
+			// silence as health.
+			report.markWorkloadsNotWaited()
+			workloadStagesLeft = -1
+		}
 	}
 
 	if dryRun {

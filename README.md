@@ -659,6 +659,16 @@ Claude Code, `.cursorrules` plus `.cursor/rules/forge.mdc` for Cursor,
 to run `forge skill load forge`, `forge skill search <query>` and
 `forge project capabilities`.
 
+Any MCP-capable harness can skip the instruction file entirely: `forge mcp`
+serves the introspection verbs, the skills, lint and generate as tools, with
+instructions that say what forge is and to load the `forge` skill first.
+
+```bash
+claude mcp add forge -- forge mcp      # Codex: codex mcp add forge -- forge mcp
+```
+
+Config for Claude Code, Codex and Cursor: [docs/mcp.md](docs/mcp.md).
+
 `reliant.md` at the repo root captures the critical rules and testing tiers in
 brief.
 

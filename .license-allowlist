@@ -47,6 +47,17 @@ github.com/hashicorp/aws-sdk-go-base/v2  # MPL-2.0, unmodified — transitive of
 # would need the file-level-copyleft reasoning above instead.
 github.com/cyphar/filepath-securejoin  # BSD-3-Clause AND MPL-2.0; we link only the BSD-3-Clause packages
 
+# --- Composite LICENSE file ---
+#
+# The MCP Go SDK (forge mcp) is mid-relicense from MIT to Apache-2.0, and its
+# LICENSE file says so: new code and relicensed contributions are Apache-2.0,
+# the rest stays MIT, and only DOCUMENTATION contributions (excluding the
+# specification) are CC-BY-4.0. The classifier trips on the "Creative Commons"
+# string. Every license that governs Go code in the module is permissive, and
+# the CC-BY-4.0 text covers markdown under docs/, which is not in the import
+# graph. Revisit if the SDK ever ships code under CC-BY-SA or a copyleft.
+github.com/modelcontextprotocol/go-sdk  # Apache-2.0 + MIT code; CC-BY-4.0 covers docs only, never linked
+
 # --- Custom / unrecognized license text ---
 #
 # xi2/xz is a Go port of XZ Embedded. Its LICENSE is a hand-written preamble

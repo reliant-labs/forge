@@ -42,9 +42,12 @@ import (
 // upgradeSchema names the --json document. Bump it on a breaking change.
 const upgradeSchema = "forge-project-upgrade/v1"
 
-// The phases a caller may skip with --skip. The first four always run: they
-// are the upgrade.
-var skippablePhases = []string{"playbooks", "vendored-contracts", "generate", "locks", "lint"}
+// The phases a caller may skip with --skip. modules, templates and pin always
+// run: they are the upgrade. codemods and playbooks are skippable so a big
+// rewrite can be split into its own PR: codemods omits the registry codemods the
+// range crosses; playbooks omits the codemods a playbook automates (connect-errors,
+// composition-graph) along with the playbook reporting.
+var skippablePhases = []string{"codemods", "playbooks", "vendored-contracts", "generate", "locks", "lint"}
 
 // upgradeOptions is one converge run's input.
 type upgradeOptions struct {
@@ -316,7 +319,7 @@ func (r *upgradeRun) banner() {
 // not run; a failed one stops the run with its error.
 func (r *upgradeRun) step(name string, run func() error) error {
 	if r.opts.skip[name] {
-		r.rep.Phases = append(r.rep.Phases, upgradePhase{Name: name, Status: "skipped", Detail: "--skip " + name})
+		r.rep.Phases = append(r.rep.Phases, upgradePhase{Name: name, Status: "skipped", Detail: r.skipDetail(name)})
 		return nil
 	}
 	err := run()
@@ -350,6 +353,36 @@ func (r *upgradeRun) setPhase(name, status, detail string) {
 		}
 	}
 	r.rep.Phases = append(r.rep.Phases, upgradePhase{Name: name, Status: status, Detail: detail})
+}
+
+// skipDetail says why a phase did not run. For the two phases that run codemods
+// it also names each one left undone and how to run it: the pin moves in this
+// run, so a codemod skipped here is not picked up by the next one, and this
+// report is the only record that it was not applied.
+func (r *upgradeRun) skipDetail(name string) string {
+	detail := "--skip " + name
+	var left []string
+	switch name {
+	case "codemods":
+		for _, c := range upgradeCodemods(r.from, r.target) {
+			left = appendNew(left, c.Name)
+		}
+	case "playbooks":
+		for _, row := range r.applicable {
+			for _, step := range row.Meta.Automation {
+				if kind, codemodName, ok := strings.Cut(step, ":"); ok && kind == "fix" {
+					left = appendNew(left, codemodName)
+				}
+			}
+		}
+	}
+	if len(left) == 0 {
+		return detail
+	}
+	for i, n := range left {
+		left[i] = fmt.Sprintf("`%s fix %s`", Name(), n)
+	}
+	return detail + "; not run, run each yourself: " + strings.Join(left, ", ")
 }
 
 // notRun records a phase that has nothing to do under the current mode.

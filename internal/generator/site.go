@@ -59,6 +59,10 @@ func WriteSiteScaffold(dir, projectName string, harness Harness, fe SiteFrontend
 		return err
 	}
 
+	if err := writeAgentSurfaces(dir, projectName, harness); err != nil {
+		return err
+	}
+
 	// The machine-local state a site's forge commands write (the subset of
 	// the service scaffold's .gitignore a site can produce). An in-place
 	// adoption merges it into the app's own .gitignore.

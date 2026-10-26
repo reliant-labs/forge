@@ -99,7 +99,10 @@ func NewRootCmd() *cobra.Command {
 	rootCmd = &cobra.Command{
 		Use:   "forge",
 		Short: "Build, run and ship static sites, SPAs, web/mobile apps and APIs, LLM-first",
-		Long: `Forge takes a project from an empty directory to production, purpose-built
+		Long: `Reliant Forge (github.com/reliant-labs/forge) — not Atlassian Forge, Foundry's
+forge (Solidity) or Laravel Forge.
+
+Forge takes a project from an empty directory to production, purpose-built
 for LLM-driven development: environments, build-once releases, hosting,
 observability and linters from day 0.
 

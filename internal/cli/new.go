@@ -151,6 +151,14 @@ checkout stop being the same source; drop the bridge with
 			if frontendOutput != "" && frontendOutput != "static" && frontendOutput != "standalone" && frontendOutput != "server" {
 				return fmt.Errorf("invalid --output %q: use static, standalone, or server", frontendOutput)
 			}
+			resolvedHarness, detectedVia, err := generator.ResolveHarness(harness, os.Getenv)
+			if err != nil {
+				return err
+			}
+			if detectedVia != "" {
+				fmt.Printf("Harness: %s (detected from $%s; pass --harness to override)\n", resolvedHarness, detectedVia)
+			}
+			harness = string(resolvedHarness)
 			explicitForgeRoot = forgeRoot
 			defer func() { explicitForgeRoot = "" }()
 			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces, linkForgeRequested(linkForge), verbose, verify, newFrontendOptions{output: frontendOutput, routes: frontendRoutes})
@@ -169,7 +177,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().StringVar(&nameFlag, "name", "", "Project name. Same as the positional arg, and the way to name an --in-place project whose directory (a worktree, a branch checkout) is not the product name; defaults to the directory name")
 	cmd.Flags().BoolVar(&force, "force", false, "With --in-place: scaffold over an existing forge.yaml, and REPLACE every pre-existing file the scaffold writes (README.md, go.mod, Taskfile.yml, …) with forge's version. Without it, existing files are kept and listed. .gitignore is always merged, never replaced")
 	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to leave out of the scaffold (comma-separated): "+strings.Join(disableableFeatures, ", ")+". Each is pinned off in forge.yaml's features: block (orm, which has no key, only steers this scaffold).")
-	cmd.Flags().StringVar(&harness, "harness", "reliant", "AI harness conventions to scaffold for. Each writes a memory file; Forge never writes skill files for any harness. reliant (default): reliant.md — skills are read from the forge binary ('forge skill search|load') and discovered via forge.yaml. claude: CLAUDE.md. For non-reliant harnesses, add your own skill telling the agent to run 'forge skill search <query>'. cursor: .cursorrules. copilot: .github/copilot-instructions.md. codex: AGENTS.md. Recorded as 'harness:' in forge.yaml and honored by every later generate")
+	cmd.Flags().StringVar(&harness, "harness", "", "AI harness to scaffold for: reliant, claude, cursor, copilot or codex. Default: detected from the agent running this command (RELIANT_AGENT_SHELL, CLAUDECODE, CODEX_THREAD_ID, CURSOR_AGENT), else reliant. Every harness gets AGENTS.md, the project guide; claude adds CLAUDE.md (imports AGENTS.md) and a .claude/skills/forge pointer skill, cursor adds .cursorrules and .cursor/rules/forge.mdc, copilot adds .github/copilot-instructions.md, reliant renders the guide in memory from forge.yaml. The pointers hold no skill bodies: skills are read from the forge binary ('forge skill search|load'). Recorded as 'harness:' in forge.yaml and honored by every later generate")
 	cmd.Flags().BoolVar(&skipTools, "skip-tools", false, "Skip auto-installing protoc-gen-go / protoc-gen-connect-go (run 'forge tools install' later)")
 	cmd.Flags().StringVar(&bufPlugins, "buf-plugins", "local", "Default proto plugin source: 'local' (resolved from PATH; no BSR auth needed) or 'remote' (BSR-hosted, requires login under load)")
 	cmd.Flags().StringVar(&binaryMode, "binary", "per-service", "Binary packaging: 'per-service' (default — canonical cmd/server.go cobra root, one Application per service) or 'shared' (one Go binary, cobra subcommand per service, KCL MultiServiceApplication for deploy)")

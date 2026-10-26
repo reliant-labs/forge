@@ -111,8 +111,9 @@ type ProjectConfig struct {
 	// Harness records which AI harness this project was scaffolded for
 	// (`forge project new --harness`). It is the ONLY durable record of that
 	// choice: the flag is read once at scaffold time, and without it on disk
-	// every later `forge generate` has to guess. It selects the memory file
-	// (reliant.md, CLAUDE.md, ...). Forge never writes skill files for any
+	// every later `forge generate` has to guess. It selects the harness
+	// pointer files (CLAUDE.md, .cursorrules, ...) written beside AGENTS.md,
+	// which every harness gets. Forge never writes skill bodies for any
 	// harness. Empty means reliant.
 	Harness string `yaml:"harness,omitempty"`
 	// NOTE: there is intentionally NO project-level `hot_reload:` field.

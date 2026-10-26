@@ -563,10 +563,15 @@ forge skill search <term>   # find one by keyword
 ```
 
 Skills are embedded **in the binary**, so `forge skill load` always matches the
-Forge you are running. Forge never writes skill files into your project.
-Reliant reads them from the binary automatically; for any other harness
-(claude, cursor, copilot, codex), write your own skill or instruction telling
-the agent to run `forge skill search <query>` and `forge skill load <name>`.
+Forge you are running. Forge never writes skill bodies into your project.
+Reliant reads them from the binary automatically. Every project gets
+`AGENTS.md` (the cross-tool project guide); `forge project new` also detects
+the agent running it (`--harness` overrides) and adds a thin pointer for it:
+`CLAUDE.md` importing `AGENTS.md` plus `.claude/skills/forge/SKILL.md` for
+Claude Code, `.cursorrules` plus `.cursor/rules/forge.mdc` for Cursor,
+`.github/copilot-instructions.md` for Copilot. Each pointer only tells the agent
+to run `forge skill load forge`, `forge skill search <query>` and
+`forge project capabilities`.
 
 `reliant.md` at the repo root captures the critical rules and testing tiers in
 brief.

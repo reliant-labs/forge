@@ -6,14 +6,14 @@ Each skill has a path-based name derived from its directory (`db`, `frontend/sta
 
 ## Where the bytes live, and which copy is authoritative
 
-Two places. Forge never writes skills into a project; a leftover `.claude/skills/` render from an older forge is removed on the next `forge generate`:
+Two places. Forge never writes skill bodies into a project; a leftover `.claude/skills/` render from an older forge is removed on the next `forge generate`:
 
 | | Path | Who writes it |
 |---|---|---|
 | **Source** | `internal/templates/project/skills/{forge,general}/**/SKILL.md` (this tree) | you, in the forge repo — `//go:embed`ed into the binary |
 | **Project / user skills** | `<project>/.forge/skills/**`, `~/.forge/skills/**` | you. Precedence on a path collision: forge-shipped < project < user-global |
 
-`forge skill load <name>` prints from the binary — that is the authoritative copy, and it carries no banner or preamble. Non-reliant harnesses: add your own skill telling the agent to run `forge skill search <query>` / `forge skill load <name>`.
+`forge skill load <name>` prints from the binary — that is the authoritative copy, and it carries no banner or preamble. Non-reliant harnesses get a thin pointer (`.claude/skills/forge/SKILL.md`, `.cursor/rules/forge.mdc`, or a line in `AGENTS.md`) that only says to run `forge skill search <query>` / `forge skill load <name>`; it never carries a skill body.
 
 ## Structure
 

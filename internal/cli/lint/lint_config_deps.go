@@ -31,6 +31,14 @@
 // still configuration). Everything else — interfaces, structs, funcs,
 // slices, maps — is a collaborator shape and is never flagged.
 //
+// A package marked `//forge:not-a-component: <why>` is skipped whole.
+// The server composition never constructs it and never fills its Deps,
+// so there is no loaded config for a block to be filled from: whatever
+// builds it (the CLI, a daemon, another package) hands it its values
+// directly, and a scalar there is a constructor argument, not
+// configuration compose failed to project. The marker's own gate
+// (forge-not-a-component-reason / -scope) keeps it honest.
+//
 // Findings are severity "warning" and never gate the build: a scalar
 // Deps field compiles and may even be hand-wired today. The lint is
 // the nudge toward the config-block declaration; the wire_gen TODO
@@ -54,6 +62,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -141,7 +150,11 @@ func collectConfigDepsFindings(projectDir string) ([]configDepsFinding, error) {
 			if !e.IsDir() || e.Name() == "testdata" {
 				continue
 			}
-			pkgFindings, scanErr := scanPackageForScalarDeps(projectDir, filepath.Join(rootDir, e.Name()), role, e.Name())
+			pkgDir := filepath.Join(rootDir, e.Name())
+			if len(codegen.FindNotAComponentMarkers(pkgDir)) > 0 {
+				continue
+			}
+			pkgFindings, scanErr := scanPackageForScalarDeps(projectDir, pkgDir, role, e.Name())
 			if scanErr != nil {
 				return nil, scanErr
 			}

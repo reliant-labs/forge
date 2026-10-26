@@ -87,6 +87,14 @@ gained, how far behind you are in lines, and how many lines in your copy no
 template accounts for. Adopt one by naming it:
 'forge project upgrade --force <path>'. Bare --force does not reach them.
 
+A scaffold-once file the project deleted stays deleted. The birth ledger
+(.forge/scaffolded.json) records every scaffold-once file forge has written, so a
+managed file the template ships that is absent AND recorded there — or declined
+('forge project disown <path> --absent'), or disowned — is the project's decision,
+not drift: upgrade never re-creates it (nor does 'forge generate'), and says so
+under "deleted by you". A file forge has never written is still born, and recorded.
+To have forge write a deleted one again: 'forge project rescaffold <path>'.
+
 Upgrade synchronizes every project module that requires Forge using
 GOWORK=off go get and go mod tidy, preserving module replacements and go.work.
 If either command fails, its module-file changes are rolled back and upgrade
@@ -354,6 +362,9 @@ type upgradeCounts struct {
 	// "2 skipped" with no way to learn WHICH two is a count the reader
 	// can do nothing with.
 	skippedPaths []string
+	// leftDeletedPaths are scaffold-once files the project deleted,
+	// declined or disowned: upgrade left them absent.
+	leftDeletedPaths []string
 	// upToDatePaths are the files that match their template. The
 	// summary carries them as a count — they need no action and listing
 	// them is what a report does when it has nothing to say — but
@@ -397,6 +408,10 @@ func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check, showA
 			c.userModifiedPaths = append(c.userModifiedPaths, r.Path)
 			modifiedRows = append(modifiedRows, row)
 		case generator.UpgradeSkipped:
+			if r.LeftDeleted {
+				c.leftDeletedPaths = append(c.leftDeletedPaths, r.Path)
+				continue
+			}
 			c.skipped++
 			c.skippedPaths = append(c.skippedPaths, r.Path)
 		}
@@ -408,6 +423,7 @@ func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check, showA
 		countPart(c.userModified, "with local edits (skipped)"),
 		countPart(c.upToDate, "up to date"),
 		countPart(c.skipped, "not upgrade-managed here"),
+		countPart(len(c.leftDeletedPaths), "deleted by you (left deleted)"),
 	)
 
 	if len(updatedRows) > 0 {
@@ -541,6 +557,7 @@ func printSkippedPaths(c upgradeCounts, showAll bool) {
 	}
 	printNamedPathList("Up to date with the current template:", c.upToDatePaths)
 	printNamedPathList("Not upgrade-managed in this project (disowned, or a legacy layout):", c.skippedPaths)
+	printNamedPathList("Scaffold-once files you deleted, declined or disowned (left absent; `"+Name()+" project rescaffold <path>` brings one back):", c.leftDeletedPaths)
 }
 
 // printNamedPathList prints a titled, indented list of paths, or nothing.

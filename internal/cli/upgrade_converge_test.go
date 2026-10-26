@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codemod"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
 )
@@ -547,4 +548,41 @@ func TestUpgradeExitCodesAreDistinct(t *testing.T) {
 			t.Errorf("exitNeedsHuman collides with a deploy code %d", reserved)
 		}
 	}
+}
+
+// ── scaffold-once files the project deleted ─────────────────────────────────
+
+// reliant's cmd/reliant/cmd/metrics.go and commands.go were recorded deleted in
+// .forge/scaffolded.json, and the pin bot's first upgrade wrote them back
+// (they did not compile: `undefined: version`). A scaffold-once file the
+// ledger records as deleted must stay deleted through the whole verb.
+func TestUpgradeConverge_LeavesLedgerDeletedScaffoldOnceFilesDeleted(t *testing.T) {
+	dir := newConvergeFixture(t)
+	fakeUpgradeNPM(t)
+	checksums.ResetScaffoldLedgerCache()
+	t.Cleanup(checksums.ResetScaffoldLedgerCache)
+
+	deleted := []string{
+		"cmd/test-project/cmd/metrics.go",
+		"cmd/test-project/cmd/commands.go",
+		"internal/metrics/metrics.go",
+	}
+	for _, rel := range deleted {
+		checksums.RecordScaffold(dir, rel)
+	}
+
+	rec := &recordedSteps{}
+	rep, err := runConverge(t, dir, upgradeOptions{to: "v0.1.47", goRun: noGo, steps: rec.steps()})
+	if err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	for _, rel := range deleted {
+		if _, statErr := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); !os.IsNotExist(statErr) {
+			t.Errorf("upgrade re-created %s, which the ledger records as deleted (stat err %v)", rel, statErr)
+		}
+	}
+	if !rep.Converged {
+		t.Errorf("a deleted scaffold is not work for a person: %+v", rep.NeedsHuman)
+	}
+
 }

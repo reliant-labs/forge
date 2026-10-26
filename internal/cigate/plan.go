@@ -250,6 +250,8 @@ func (p planner) frontendDeps(lane Lane) []Check {
 	var out []Check
 	for _, fe := range p.CI.Frontends {
 		fe := fe
+		inst := frontenddeps.InstallArgv(p.path(fe.Path), "", true)
+		depsArgv := frontenddeps.ExecArgv(p.path(fe.Path), inst[0], inst[1:]...)
 		out = append(out, Check{
 			Name:  depsName(fe),
 			Lane:  lane,
@@ -257,7 +259,7 @@ func (p planner) frontendDeps(lane Lane) []Check {
 			// Whether node_modules is there is not a fact about the tree, so
 			// a cached verdict could not stand in for this row.
 			NoCache: true,
-			// `npm ci` deletes node_modules, so the gate installs only what is
+			// A frozen install replaces node_modules, so the gate installs only what is
 			// absent. CI installs first, in the shared setup, so this row is
 			// instant there.
 			Done: func() string {
@@ -266,11 +268,13 @@ func (p planner) frontendDeps(lane Lane) []Check {
 				}
 				return ""
 			},
-			Requires: []string{"npm"},
-			// `ci`, unless a workspace root (forge's dev web-runtime bridge)
-			// adopts the frontend without a lockfile of its own: `npm ci`
-			// cannot run there at all.
-			Argv: []string{"npm", frontenddeps.NpmInstallVerb(p.path(fe.Path))},
+			Requires: []string{depsArgv[0]},
+			// The frontend's own package manager, frozen to its lockfile:
+			// `npm ci` (or `npm install` when a workspace root — forge's dev
+			// web-runtime bridge — adopts the frontend without a lockfile of
+			// its own, where `npm ci` cannot run at all), or pnpm/yarn with
+			// --frozen-lockfile.
+			Argv: depsArgv,
 			Dir:  fe.Path,
 		})
 	}
@@ -280,19 +284,28 @@ func (p planner) frontendDeps(lane Lane) []Check {
 func depsName(fe templates.FrontendCIConfig) string { return "deps-" + fe.Name }
 
 // depsCurrent reports whether dir's node_modules is installed from its
-// current lockfile: npm writes node_modules/.package-lock.json on every
-// install, so one older than package-lock.json means the lockfile moved on
-// (a rebase, a dependency bump) and the install is stale.
+// current lockfile: the package manager rewrites its own stamp on every
+// install (npm node_modules/.package-lock.json, pnpm node_modules/.modules.yaml),
+// so one older than the lockfile means the lockfile moved on (a rebase, a
+// dependency bump) and the install is stale.
 func depsCurrent(dir string) bool {
 	if !dirExists(filepath.Join(dir, "node_modules")) {
 		return false
 	}
-	lock, err := os.Stat(filepath.Join(dir, "package-lock.json"))
+	runner := frontenddeps.PackageManager(dir, "")
+	lock, err := os.Stat(filepath.Join(dir, frontenddeps.LockfileName(runner)))
 	if err != nil {
 		return true // no lockfile to be stale against
 	}
-	stamp, err := os.Stat(filepath.Join(dir, "node_modules", ".package-lock.json"))
+	stamp, err := os.Stat(frontenddeps.InstallStamp(dir, runner))
 	return err == nil && !stamp.ModTime().Before(lock.ModTime())
+}
+
+// feRun runs a package.json script in the frontend with its own package
+// manager.
+func (p planner) feRun(fe templates.FrontendCIConfig, args ...string) []string {
+	dir := p.path(fe.Path)
+	return frontenddeps.ExecArgv(dir, frontenddeps.PackageManager(dir, ""), append([]string{"run"}, args...)...)
 }
 
 // allDeps names every frontend's deps row: what verify-generated (whose
@@ -385,13 +398,13 @@ func (p planner) checksLane() []Check {
 			fe := fe
 			needDeps, after := p.needsDeps(fe), []string{depsName(fe)}
 			out = append(out,
-				Check{Name: "lint-" + fe.Name, Lane: LaneChecks, Group: GroupStatic, Heavy: true, After: after, Prereq: needDeps, Argv: []string{"npm", "run", "lint"}, Dir: fe.Path},
+				Check{Name: "lint-" + fe.Name, Lane: LaneChecks, Group: GroupStatic, Heavy: true, After: after, Prereq: needDeps, Argv: p.feRun(fe, "lint"), Dir: fe.Path},
 				// tsc --noEmit is not covered by eslint; without a dedicated
 				// row, type errors only surface at `next build` in a deploy.
-				Check{Name: "typecheck-" + fe.Name, Lane: LaneChecks, Group: GroupStatic, Heavy: true, After: after, Prereq: needDeps, Argv: []string{"npm", "run", "typecheck"}, Dir: fe.Path},
+				Check{Name: "typecheck-" + fe.Name, Lane: LaneChecks, Group: GroupStatic, Heavy: true, After: after, Prereq: needDeps, Argv: p.feRun(fe, "typecheck"), Dir: fe.Path},
 			)
 			if ci.LintFrontendStyles {
-				out = append(out, Check{Name: "css-health-" + fe.Name, Lane: LaneChecks, Group: GroupStatic, After: after, Prereq: needDeps, Argv: []string{"npm", "run", "lint:styles", "--if-present"}, Dir: fe.Path})
+				out = append(out, Check{Name: "css-health-" + fe.Name, Lane: LaneChecks, Group: GroupStatic, After: after, Prereq: needDeps, Argv: p.feRun(fe, "--if-present", "lint:styles"), Dir: fe.Path})
 			}
 		}
 	}
@@ -427,7 +440,7 @@ func (p planner) checksLane() []Check {
 				Heavy:  true,
 				After:  []string{depsName(fe)},
 				Prereq: p.needsDeps(fe),
-				Argv:   []string{"npm", "run", "build"},
+				Argv:   p.feRun(fe, "build"),
 				Dir:    fe.Path,
 				Env:    []string{"NODE_ENV=production"},
 			})
@@ -530,7 +543,7 @@ func (p planner) needsDeps(fe templates.FrontendCIConfig) func() string {
 		if dirExists(p.path(fe.Path, "node_modules")) {
 			return ""
 		}
-		return fmt.Sprintf("%s/node_modules is missing — run `npm ci` in %s (the deps-%s row does)", fe.Path, fe.Path, fe.Name)
+		return fmt.Sprintf("%s/node_modules is missing — run `%s` in %s (the deps-%s row does)", fe.Path, frontenddeps.InstallCommand(p.path(fe.Path), "", true), fe.Path, fe.Name)
 	}
 }
 

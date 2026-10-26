@@ -154,7 +154,8 @@ func TestPlan_FrontendRowsNeedTheirDeps(t *testing.T) {
 	all, _ := Plan(in)
 	lint := find(t, all, "lint-web")
 	reason := lint.Prereq()
-	if !strings.Contains(reason, "npm ci") || !strings.Contains(reason, "frontends/web") {
+	// No lockfile in the fixture, so the fix is a plain install.
+	if !strings.Contains(reason, "`npm install`") || !strings.Contains(reason, "frontends/web") {
 		t.Errorf("reason %q should name the fix", reason)
 	}
 	write(t, in.Root, "frontends/web/node_modules/.keep", "")
@@ -427,5 +428,27 @@ func TestPlan_GoBuildWritesNoBinaryIntoTheTree(t *testing.T) {
 	all, _ = Plan(in)
 	if got := strings.Join(find(t, all, "go-build").Argv, " "); strings.Contains(got, "-o") {
 		t.Errorf("two binaries: argv %q must not name an output file", got)
+	}
+}
+
+// A pnpm frontend's rows run pnpm, its deps row installs frozen, and its
+// staleness reads pnpm's own stamp.
+func TestPlan_PNPMFrontendRowsUsePNPM(t *testing.T) {
+	in := serviceInput(t)
+	write(t, in.Root, "frontends/web/pnpm-lock.yaml", "lockfileVersion: '9.0'\n")
+	all, _ := Plan(in)
+	deps := find(t, all, "deps-web")
+	if got := strings.Join(deps.Argv, " "); !strings.HasSuffix(got, "pnpm install --frozen-lockfile") {
+		t.Errorf("deps-web argv = %q", got)
+	}
+	if got := strings.Join(find(t, all, "lint-web").Argv, " "); !strings.HasSuffix(got, "pnpm run lint") {
+		t.Errorf("lint-web argv = %q", got)
+	}
+	if reason := find(t, all, "lint-web").Prereq(); !strings.Contains(reason, "pnpm install --frozen-lockfile") {
+		t.Errorf("lint-web prereq = %q", reason)
+	}
+	write(t, in.Root, "frontends/web/node_modules/.modules.yaml", "")
+	if note := deps.Done(); note != "already installed" {
+		t.Errorf("a pnpm install newer than its lockfile is current: Done = %q", note)
 	}
 }

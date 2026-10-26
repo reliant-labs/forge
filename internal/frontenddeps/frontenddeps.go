@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -28,9 +27,11 @@ import (
 // for builds, where a drifted lockfile must fail loudly rather than ship a
 // different tree; the dev loop passes false and tolerates drift.
 //
-// The package manager is taken from the lockfile on disk, falling back to
-// runner: a frontend whose dev_runner says npm but which commits only
-// pnpm-lock.yaml is a pnpm project. With several lockfiles, runner's own wins. FORGE_SKIP_NPM_INSTALL short-circuits it.
+// The package manager is PackageManager's: the lockfile on disk, else
+// package.json's packageManager field, falling back to runner — a frontend
+// whose dev_runner says npm but which commits only pnpm-lock.yaml is a pnpm
+// project. With several lockfiles, runner's own wins. FORGE_SKIP_NPM_INSTALL
+// short-circuits it.
 func Ensure(ctx context.Context, logPrefix, name, dir, runner string, frozen bool) error {
 	if dir == "" || os.Getenv("FORGE_SKIP_NPM_INSTALL") != "" {
 		return nil
@@ -41,7 +42,7 @@ func Ensure(ctx context.Context, logPrefix, name, dir, runner string, frozen boo
 	if !Stale(dir) {
 		return nil
 	}
-	runner = lockfilePackageManager(dir, runner)
+	runner = PackageManager(dir, runner)
 	args := installArgs(runner, dir, frozen)
 	fmt.Printf("%s %s: node_modules missing/stale — running `%s %s`\n", logPrefix, name, runner, strings.Join(args, " "))
 	err := runInstall(ctx, runner, dir, args)
@@ -165,12 +166,14 @@ func runInstall(ctx context.Context, runner, dir string, args []string) error {
 		fmt.Printf("[up] proxy detected — capping %s network concurrency at %d (an inspection proxy stalls at the default)\n",
 			runner, proxiedInstallSockets)
 	}
-	cmd := exec.CommandContext(ctx, runner, args...)
-	cmd.Dir = dir
+	cmd := command(ctx, dir, runner, args...)
 	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
 	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(buf.String()))
+	}
+	if warning := copiedFromStoreWarning(buf.String()); warning != "" {
+		fmt.Fprintln(os.Stderr, warning)
 	}
 	return nil
 }

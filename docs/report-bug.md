@@ -1,6 +1,7 @@
 # Reporting a forge bug
 
-**forge sends nothing unless someone runs `forge report-bug`.** There is no automatic crash
+**forge sends nothing unless someone runs `forge report-bug`** (or an agent calls the
+`report_bug` tool of `forge mcp`, which runs the same command). There is no automatic crash
 reporting, no usage telemetry and no background sending. Nothing on this page happens
 on its own.
 

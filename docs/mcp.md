@@ -27,9 +27,11 @@ the directory the server was started in (or `-C`).
 | `skill_load` (`name`)                                 | `forge skill load`                      | no                         |
 | `lint` (`scope`)                                      | `forge lint --quiet [--scope PATH]...`  | caches only; never `--fix` |
 | `generate` (`dry_run`, `check`)                       | `forge generate [--dry-run \| --check]` | yes: generated files       |
+| `report_bug` (`severity`, `title`, `summary`, ...)    | `forge report-bug`                      | sends one report ([docs/report-bug.md](report-bug.md)) |
 
-The read-only tools are annotated `readOnlyHint`; `lint` and `generate` are not,
-so a harness can ask before running them. `lint` and `audit` report findings in
+The read-only tools are annotated `readOnlyHint`; `lint`, `generate` and
+`report_bug` are not, so a harness can ask before running them. `report_bug` is
+also `openWorldHint`: it is the only tool that sends anything off the machine. `lint` and `audit` report findings in
 the result rather than as a tool failure. Output past about 220 KB is cut in the
 middle, keeping the end (lint's verdict is its last line).
 

@@ -206,6 +206,9 @@ func TestRenderHomebrewFormula(t *testing.T) {
 
 // The shim's unit tests are plain node:test, so npm/ needs no dev dependencies.
 func TestNpmShim(t *testing.T) {
+	if testing.Short() {
+		t.Skip("execs node over files the test cache cannot see; runs in task test")
+	}
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node not on PATH")

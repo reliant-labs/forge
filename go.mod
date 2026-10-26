@@ -10,7 +10,7 @@ require (
 	cel.dev/cel-go v0.32.0
 	cloud.google.com/go/auth v0.23.2
 	connectrpc.com/connect v1.21.1
-	connectrpc.com/connect/v2 v2.0.0
+	connectrpc.com/connect/v2 v2.0.1
 	connectrpc.com/otelconnect v0.12.0
 	connectrpc.com/vanguard v0.5.0
 	github.com/BurntSushi/toml v1.6.0
@@ -40,11 +40,11 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/prometheus/alertmanager v0.28.1
 	github.com/prometheus/client_golang v1.25.0
-	github.com/prometheus/common v0.72.0
+	github.com/prometheus/common v0.72.1
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
-	github.com/tdewolff/parse/v2 v2.8.18
+	github.com/tdewolff/parse/v2 v2.8.19
 	github.com/uptrace/bun v1.3.0
 	github.com/uptrace/bun/dialect/pgdialect v1.3.0
 	github.com/uptrace/bun/extra/bunotel v1.3.0
@@ -91,7 +91,7 @@ require (
 	k8s.io/streaming v0.37.1
 	kcl-lang.io/kcl-go v0.13.1
 	kcl-lang.io/kpm v0.13.1
-	kcl-lang.io/lib v0.13.1
+	kcl-lang.io/lib v0.13.2
 	mvdan.cc/sh/v3 v3.14.1
 	oras.land/oras-go/v2 v2.6.4
 	sigs.k8s.io/controller-runtime v0.25.2

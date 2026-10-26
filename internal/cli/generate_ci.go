@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -81,7 +82,8 @@ func ciFrontends(root string, cfg *config.ProjectConfig) []templates.FrontendCIC
 	var out []templates.FrontendCIConfig
 	for _, fe := range discoverCIFrontends(root, cfg) {
 		if p, ok := fe.Dir("."); ok {
-			out = append(out, templates.FrontendCIConfig{Name: fe.Name, Path: p})
+			out = append(out, templates.FrontendCIConfig{Name: fe.Name, Path: p,
+				PackageManager: frontenddeps.PackageManagerOrScaffold(filepath.Join(root, p))})
 		}
 	}
 	return out

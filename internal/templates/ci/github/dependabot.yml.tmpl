@@ -113,7 +113,7 @@ updates:
       # declares an EXACT peer dependency on @bufbuild/protobuf, so the two
       # only ever move together. Bump both by hand in one PR and commit
       # `forge generate`'s output with the lockfile:
-      #   npm install -D @bufbuild/protoc-gen-es@X && npm install @bufbuild/protobuf@X
+      #   pnpm add -D @bufbuild/protoc-gen-es@X && pnpm add @bufbuild/protobuf@X
       #   forge generate
       - dependency-name: "@bufbuild/protoc-gen-es"
       - dependency-name: "@bufbuild/protobuf"

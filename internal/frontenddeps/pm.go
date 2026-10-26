@@ -35,6 +35,21 @@ func PackageManager(dir, declared string) string {
 	return lockfilePackageManager(dir, declared)
 }
 
+// ScaffoldDefault is the package manager a frontend forge scaffolds pins in
+// its package.json `packageManager` field.
+const ScaffoldDefault = "pnpm"
+
+// PackageManagerOrScaffold is PackageManager for a frontend that may not be
+// on disk yet: a directory with no package.json is one forge is about to
+// scaffold, so it gets ScaffoldDefault rather than npm. For the files forge
+// renders at scaffold time (CI workflows) before the frontend itself.
+func PackageManagerOrScaffold(dir string) string {
+	if !fileExists(filepath.Join(dir, "package.json")) {
+		return ScaffoldDefault
+	}
+	return PackageManager(dir, "")
+}
+
 // manifestPackageManager reads package.json's "packageManager" field
 // ("pnpm@12.15.0", optionally "+sha512.…") into a name and a version.
 func manifestPackageManager(dir string) (name, version string) {

@@ -407,6 +407,15 @@ jobs:
           path: test-results/
 {{- end}}
 {{- end}}{{- define "node-setup"}}
+{{- $pnpm := ""}}{{range .Frontends}}{{if and (eq .PM "pnpm") (not $pnpm)}}{{$pnpm = .Path}}{{end}}{{end}}
+{{- if $pnpm}}
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          # The release this frontend's package.json `packageManager` pins,
+          # so CI, the Dockerfile and local installs run one pnpm.
+          package_json_file: "{{$pnpm}}/package.json"
+{{- end}}
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -414,19 +423,19 @@ jobs:
           # `engines.node` field. Keeps CI, the Dockerfile, and local
           # dev aligned without a duplicated Node version in the workflow.
           node-version-file: "{{(index .Frontends 0).Path}}/package.json"
-          cache: "npm"
+          cache: "{{(index .Frontends 0).PM}}"
           cache-dependency-path: |
 {{- range .Frontends}}
-            {{.Path}}/package-lock.json
+            {{.Path}}/{{.Lockfile}}
 {{- end}}
 {{- range .Frontends}}
-      # `npm ci` (lockfile-exact install) is the workflow's job, not the
+      # The lockfile-exact install is the workflow's job, not the
       # Taskfile's: the workflow owns how the environment is PREPARED,
       # Taskfile.yml owns what the lane IS. The gate's deps row sees
       # node_modules and does nothing.
       - name: Install {{.Name}} dependencies
         working-directory: {{.Path}}
-        run: npm ci
+        run: {{.FrozenInstall}}
 {{- end}}
 {{- end}}
 {{- define "install-forge"}}

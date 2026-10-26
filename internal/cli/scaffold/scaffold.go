@@ -47,6 +47,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/configproto"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/nodeengine"
@@ -2062,19 +2063,14 @@ func runFrontendNpmInstall(ctx context.Context, frontendDir string) error {
 	if os.Getenv("FORGE_SKIP_NPM_INSTALL") != "" {
 		return nil
 	}
+	pm := frontenddeps.PackageManager(frontendDir, "")
 	if err := nodeengine.Check(frontendDir); err != nil {
-		return fmt.Errorf("npm install not run: %w", err)
+		return fmt.Errorf("%s install not run: %w", pm, err)
 	}
-	cmd := exec.CommandContext(ctx, "npm", "install")
-	cmd.Dir = frontendDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	fmt.Printf("\nRunning `npm install` in %s ...\n", frontendDir)
-	if err := cmd.Run(); err != nil {
-		if errors.Is(err, exec.ErrNotFound) {
-			return fmt.Errorf("npm not found on PATH; run `npm install` in %s manually", frontendDir)
-		}
-		return fmt.Errorf("npm install failed in %s: %v (run it manually to see full output)", frontendDir, err)
+	install := frontenddeps.InstallCommand(frontendDir, "", false)
+	fmt.Printf("\nRunning `%s` in %s ...\n", install, frontendDir)
+	if err := frontenddeps.Install(ctx, frontendDir, "", false); err != nil {
+		return fmt.Errorf("%s failed in %s: %v (run it there to see full output)", install, frontendDir, err)
 	}
 	return nil
 }

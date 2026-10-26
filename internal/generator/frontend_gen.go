@@ -263,6 +263,14 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		if opts.Public && isSignInScreen(file.Rel) {
 			continue
 		}
+		// In the workspaces layout the frontend is a MEMBER of the root
+		// pnpm workspace, and pnpm takes its settings from the root's
+		// pnpm-workspace.yaml (writePnpmWorkspaceYaml carries them there). A
+		// member's own file would make it a second workspace root, splitting
+		// it from packages/* and its `workspace:*` dependencies.
+		if opts.Workspaces && file.Rel == "pnpm-workspace.yaml.tmpl" {
+			continue
+		}
 		// nav.tsx and dashboard.tsx ARE emitted here, empty of routes, even
 		// though the entity set that seeds them does not exist yet.
 		//

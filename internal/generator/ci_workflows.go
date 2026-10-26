@@ -163,7 +163,9 @@ func CIWorkflowsFor(root string, cfg *config.ProjectConfig, in CIInputs) []CIWor
 	hasE2E := isService && (cfg.CI.E2E.Enabled || isDir(filepath.Join(root, "e2e")))
 
 	var firstFrontendPath, firstFrontendName string
+	var firstFrontend templates.FrontendCIConfig
 	if hasFrontends {
+		firstFrontend = frontends[0]
 		firstFrontendPath, firstFrontendName = frontends[0].Path, frontends[0].Name
 	}
 
@@ -235,6 +237,7 @@ func CIWorkflowsFor(root string, cfg *config.ProjectConfig, in CIInputs) []CIWor
 					Environments:     clusterEnvs,
 					HasFrontends:     hasFrontends,
 					FrontendPath:     firstFrontendPath,
+					Frontend:         firstFrontend,
 					FrontendDeploy:   cfg.Deploy.FrontendDeploy,
 					MigrationTest:    cfg.Deploy.MigrationTest,
 					Concurrency:      cfg.Deploy.IsConcurrencyEnabled(),
@@ -259,6 +262,7 @@ func CIWorkflowsFor(root string, cfg *config.ProjectConfig, in CIInputs) []CIWor
 				Runtime:      e2eRuntime,
 				HasFrontends: hasFrontends,
 				FrontendPath: firstFrontendPath,
+				Frontend:     firstFrontend,
 			}})
 		}
 	}

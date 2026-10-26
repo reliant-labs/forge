@@ -160,6 +160,14 @@ func concurrencyFlags(runner string, env []string) []string {
 // runInstall runs one install attempt, teeing output to the terminal
 // while retaining it so the caller can classify the failure.
 func runInstall(ctx context.Context, runner, dir string, args []string) error {
+	if root, bridged := installDir(runner, dir); bridged {
+		// A forge dev bridge adopts this frontend: install at its root, which
+		// is what links the local web-runtime. Its lockfile is the bridge's
+		// own, gitignored and machine-local, so there is nothing to freeze
+		// against — the frontend's tracked lockfile is not read there.
+		fmt.Printf("  (dev web-runtime bridge: installing at %s)\n", root)
+		dir, args = root, []string{"install"}
+	}
 	var buf bytes.Buffer
 	if flags := concurrencyFlags(runner, os.Environ()); len(flags) > 0 {
 		args = append(args, flags...)

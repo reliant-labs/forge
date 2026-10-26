@@ -20,6 +20,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/scaffold"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -881,14 +882,14 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	// runs, because the scaffolded buf.gen.yaml uses a `local:` plugin path
 	// pointing at frontends/<name>/node_modules/.bin/protoc-gen-es.
 	if len(in.frontendNames) > 0 {
-		fmt.Println("🔧 Installing frontend dependencies (this generates package-lock.json)...")
-		stopBeat := cliutil.Heartbeat(os.Stderr, "project new: npm install")
-		err := runNpmInstall(ctx, in.targetPath, in.frontendNames)
+		fmt.Println("🔧 Installing frontend dependencies (this writes each frontend's lockfile)...")
+		stopBeat := cliutil.Heartbeat(os.Stderr, "project new: frontend install")
+		err := runFrontendInstalls(ctx, in.targetPath, in.frontendNames)
 		stopBeat()
 		if err != nil {
-			fmt.Printf("Warning: npm install failed: %v\n", err)
-			fmt.Println("    @bufbuild/protoc-gen-es will be missing — run 'npm install' in each frontends/<name>/ before 'forge generate'.")
-			fmt.Println("    CI also requires package-lock.json to exist.")
+			fmt.Printf("Warning: frontend install failed: %v\n", err)
+			fmt.Println("    @bufbuild/protoc-gen-es will be missing — run 'pnpm install' in each frontends/<name>/ before 'forge generate'.")
+			fmt.Println("    CI also requires each frontend's pnpm-lock.yaml to exist.")
 		}
 		// The install just decided the node_modules layout AND made each
 		// pinned package's manifest readable, so this is the one moment the
@@ -1425,7 +1426,7 @@ func reportGitInitError(w io.Writer, err error, verbose bool) {
 	}
 }
 
-// npmInstallAttempts is how many times a frontend's `npm install` is tried
+// frontendInstallAttempts is how many times a frontend's install is tried
 // before giving up. The registry is a network dependency on the critical path
 // of the very first command a new user runs, and a single transient 429 or
 // reset connection there does not leave a clean failure: the scaffold
@@ -1433,47 +1434,43 @@ func reportGitInitError(w io.Writer, err error, verbose bool) {
 // much later as some other tool reporting a package it cannot find — for tsc,
 // an npx fallback that names a 2016 package nobody asked for. One retry turns
 // most of that class into a slower success.
-const npmInstallAttempts = 2
+const frontendInstallAttempts = 2
 
-// runNpmInstall runs `npm install` in each frontend directory so that a
-// package-lock.json exists before first commit. CI relies on `npm ci` which
-// requires the lockfile.
-func runNpmInstall(ctx context.Context, root string, frontends []string) error {
-	if _, err := exec.LookPath("npm"); err != nil {
-		return fmt.Errorf("npm not found on PATH: %w", err)
-	}
+// runFrontendInstalls installs each frontend's dependencies with the package
+// manager its package.json pins (pnpm for a scaffold; frontenddeps decides),
+// so a lockfile exists before the first commit: CI's frozen install requires
+// it.
+func runFrontendInstalls(ctx context.Context, root string, frontends []string) error {
 	for _, name := range frontends {
 		feDir := filepath.Join(root, "frontends", name)
 		if _, err := os.Stat(filepath.Join(feDir, "package.json")); err != nil {
 			continue
 		}
+		pm := frontenddeps.PackageManager(feDir, "")
 		// A Node below the frontend's floor is not flaky: no retry passes,
-		// and npm's own failure ("reading 'edgesOut'") never names Node.
+		// and the package manager's own failure (npm: "reading 'edgesOut'")
+		// never names Node.
 		if err := nodeengine.Check(feDir); err != nil {
-			return fmt.Errorf("npm install (%s) not run: %w", name, err)
+			return fmt.Errorf("%s install (%s) not run: %w", pm, name, err)
 		}
 		var lastErr error
-		for attempt := 1; attempt <= npmInstallAttempts; attempt++ {
-			cmd := exec.CommandContext(ctx, "npm", "install", "--no-audit", "--no-fund")
-			cmd.Dir = feDir
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			lastErr = cmd.Run()
+		for attempt := 1; attempt <= frontendInstallAttempts; attempt++ {
+			lastErr = frontenddeps.Install(ctx, feDir, "", false)
 			if lastErr == nil {
 				break
 			}
 			// A cancelled context is the user or a timeout, not a flaky
 			// registry — retrying only makes them wait for the same answer.
 			if ctx.Err() != nil {
-				return fmt.Errorf("npm install (%s) failed: %w", name, lastErr)
+				return fmt.Errorf("%s install (%s) failed: %w", pm, name, lastErr)
 			}
-			if attempt < npmInstallAttempts {
-				fmt.Printf("  ⚠️  npm install in frontends/%s/ failed (attempt %d/%d): %v — retrying\n",
-					name, attempt, npmInstallAttempts, lastErr)
+			if attempt < frontendInstallAttempts {
+				fmt.Printf("  ⚠️  %s install in frontends/%s/ failed (attempt %d/%d): %v — retrying\n",
+					pm, name, attempt, frontendInstallAttempts, lastErr)
 			}
 		}
 		if lastErr != nil {
-			return fmt.Errorf("npm install (%s) failed after %d attempts: %w", name, npmInstallAttempts, lastErr)
+			return fmt.Errorf("%s install (%s) failed after %d attempts: %w", pm, name, frontendInstallAttempts, lastErr)
 		}
 	}
 	return nil

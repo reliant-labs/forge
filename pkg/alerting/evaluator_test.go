@@ -202,17 +202,62 @@ func TestIntervalFloor(t *testing.T) {
 	}
 }
 
-func TestPerOwnerRuleCap(t *testing.T) {
-	h := newHarness(t, Limits{MaxRulesPerOwner: 2})
+func capRule(env, name, severity string) Rule {
+	r := evalRule()
+	r.Env, r.Name = env, name
+	r.Labels = map[string]string{"severity": severity}
+	r.Identity = map[string]string{"reliant_org_id": "org-a", "reliant_env_id": env}
+	return r
+}
+
+func TestRuleCapIsPerEnvNotPerOwner(t *testing.T) {
+	h := newHarness(t, Limits{MaxRulesPerEnv: 3})
 	var rules []Rule
-	for _, n := range []string{"c", "a", "b"} {
-		r := evalRule()
-		r.Name = n
-		rules = append(rules, r)
+	for _, env := range []string{"e1", "e2", "e3"} {
+		for _, n := range []string{"a", "b", "c"} {
+			rules = append(rules, capRule(env, n, "warning"))
+		}
 	}
-	kept, dropped := h.ev.Select(rules)
-	if dropped != 1 || len(kept) != 2 || kept[0].Name != "a" || kept[1].Name != "b" {
-		t.Fatalf("kept=%v dropped=%d", kept, dropped)
+	kept, over := h.ev.Select(rules)
+	if len(kept) != 9 || len(over) != 0 {
+		t.Fatalf("9 rules over 3 envs, each exactly at the cap, must all run: kept=%d over=%v", len(kept), over)
+	}
+}
+
+func TestRuleCapDropsOnlyTheOverflowingEnvAndNamesWhatItDropped(t *testing.T) {
+	h := newHarness(t, Limits{MaxRulesPerEnv: 2})
+	rules := []Rule{
+		capRule("big", "z-info", "info"),
+		capRule("big", "a-warn", "warning"),
+		capRule("big", "m-crit", "critical"),
+		capRule("big", "b-warn", "warning"),
+		capRule("small", "only", "warning"),
+	}
+	kept, over := h.ev.Select(rules)
+	if len(over) != 1 || over[0].Env != "big" || over[0].Configured != 4 || over[0].Cap != 2 {
+		t.Fatalf("over = %+v", over)
+	}
+	var dropped []string
+	for _, r := range over[0].Dropped {
+		dropped = append(dropped, r.Name)
+	}
+	// critical first, then warnings by name: the rules that fall are b-warn and the info one.
+	if len(dropped) != 2 || dropped[0] != "b-warn" || dropped[1] != "z-info" {
+		t.Fatalf("dropped = %v, want [b-warn z-info]", dropped)
+	}
+	var got []string
+	for _, r := range kept {
+		got = append(got, r.Env+"/"+r.Name)
+	}
+	want := []string{"big/a-warn", "big/m-crit", "small/only"}
+	if len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("kept = %v, want %v", got, want)
+	}
+}
+
+func TestRuleCapDefaultIsNotTheOldPerOwnerHundred(t *testing.T) {
+	if DefaultLimits().MaxRulesPerEnv != DefaultMaxRulesPerEnv || DefaultMaxRulesPerEnv <= 100 {
+		t.Fatalf("default = %d", DefaultLimits().MaxRulesPerEnv)
 	}
 }
 

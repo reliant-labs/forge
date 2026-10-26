@@ -100,6 +100,31 @@ A single module cannot require itself, so there is no unpushed version to
 resolve, no second tag to order, and no hand-maintained pin to drift.
 `scripts/release-pkg.sh` and `task release:pkg` are deleted.
 
+### Installers (what the release script ships beyond the tag)
+
+`release-forge.sh` also publishes what lets someone with no Go toolchain install
+forge. All of it hangs off one naming contract, owned by
+`scripts/build-release-assets.sh`: `forge_<os>_<arch>.tar.gz` for
+linux/darwin/windows × amd64/arm64 (the binary, `LICENSE`, `NOTICE`) plus
+`checksums.txt`, attached to the GitHub release. Change a name there and you must
+change `install.sh`, `install.ps1`, `npm/lib/install.js` and
+`scripts/render-homebrew-formula.sh` in the same pull request;
+`internal/installers` fails if they drift.
+
+| Channel                                                   | What the release does                                                                                                                                                                     | Needs a human                                                                                                                                                        |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `curl \| sh` (`install.sh`), `irm \| iex` (`install.ps1`) | Nothing: they read `main` and download the release's assets.                                                                                                                              | No                                                                                                                                                                   |
+| GitHub release assets                                     | `build-release-assets.sh` runs before the release commit; `gh release create` attaches the archives and `checksums.txt`.                                                                  | No                                                                                                                                                                   |
+| Homebrew `reliant-labs/reliant/forge`                     | Dispatches `forge-release-published` to `reliant-labs/homebrew-reliant`; its `update-forge-formula.yml` renders `Formula/forge.rb` (`scripts/render-homebrew-formula.sh`) and opens a PR. | Yes: the tap's ruleset requires an approving review, same as the cask. The workflow lives in the tap; see `docs/installers/update-forge-formula.yml` for the source. |
+| npm `@reliantlabs/forge`                                  | `npm/package.json` is synced to the release version in the release commit. Publishing happens only with `--publish-npm` (then `verify-npm-published.sh` waits for the registry).          | Yes: `npm publish` needs an npm login with rights to the `@reliantlabs` scope (and its OTP), or a trusted-publisher registration like web-runtime's.                 |
+
+Publish npm by hand after any release with `(cd npm && npm publish --access public)`.
+A prerelease tag gets assets but is never sent to Homebrew or npm.
+
+If the GitHub release step fails after the tag is pushed, the script prints the
+retry command; build the archives again with
+`scripts/build-release-assets.sh vX.Y.Z dist/` and attach `dist/*` to it.
+
 ## 2. Bump the consumers
 
 Pre-launch, reliant and control-plane pin forge by **commit**, not by tag

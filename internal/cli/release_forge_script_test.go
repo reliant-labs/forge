@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -99,6 +100,11 @@ func newForgeFixtureRepo(t *testing.T) string {
 	write("VERSION", "v0.1.0\n")
 	write("CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-01-01\n\n### Added\n\n- first\n\n[Unreleased]: https://github.com/reliant-labs/forge/compare/v0.1.0...HEAD\n")
 	write("internal/buildinfo/VERSION", "v0.1.0\n")
+	// The release builds archives (LICENSE and NOTICE ride in each) and syncs
+	// the npm shim's version.
+	write("LICENSE", "license\n")
+	write("NOTICE", "notice\n")
+	write("npm/package.json", "{\n  \"name\": \"@reliantlabs/forge\",\n  \"version\": \"0.1.0\",\n  \"engines\": {\n    \"node\": \">=18\"\n  }\n}\n")
 
 	gitIn(t, root, "init", "-q", "-b", "main")
 	gitIn(t, root, "config", "user.email", "test@example.com")
@@ -142,6 +148,9 @@ func runForgeScriptEnv(t *testing.T, repo string, extraEnv []string, args ...str
 		"GOPROXY_WAIT_FIRST_DELAY=1",
 		"GOPROXY_WAIT_MAX_DELAY=1",
 		"FORGE_RELEASE_PRETTIER=true",
+		// One archive, for the host: the fixture module is tiny but a
+		// six-target cross-build is still six links per release test.
+		"FORGE_RELEASE_TARGETS="+runtime.GOOS+"/"+runtime.GOARCH,
 	)
 	cmd.Env = append(cmd.Env, extraEnv...)
 	out, err := cmd.CombinedOutput()

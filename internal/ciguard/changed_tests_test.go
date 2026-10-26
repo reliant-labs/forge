@@ -42,9 +42,14 @@ else
   echo '+func TestTwo(t *testing.T) {'
 fi
 `)
+	// The physical directory, as the real `go list -f {{.Dir}}` prints it and
+	// as the script's own `pwd -P` spells it. $PWD is not that on Windows,
+	// where the temp dir's 8.3 short name (RUNNER~1) survives in it: every
+	// package read as "not a package of this module" and the Windows job
+	// failed these tests on every push.
 	write("bin/go", `#!/usr/bin/env bash
 if [[ "$1" == list ]]; then
-  printf '%s/one\n%s/two\n' "$PWD" "$PWD"
+  printf '%s/one\n%s/two\n' "$(pwd -P)" "$(pwd -P)"
 else
   printf 'TEST %s\n' "$*"
   [[ "$FIXTURE_FAIL" != 1 ]]

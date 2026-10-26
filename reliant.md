@@ -206,7 +206,8 @@ job before adding a job.
   `forge lint` locally to see a finding first.
 - **Test (-short whole tier, then guards)** — the pull-request tier in one job, which saves
   the `go-build-short` and `go-mod` caches the pull-request jobs restore
-  (`.github/actions/restore-go-caches`; Checks saves its own `go-build-tools` on main);
+  (`.github/actions/restore-go-caches`; Checks saves `go-build-tools` on main, which
+  Build and the e2e workflows restore);
   then the guards (tierguard, removalguard,
   deadcodeguard, writeguard; `-p 1`, full mode, no `-race`), which pull requests also run.
 - **Build (-trimpath) + go-licenses + govulncheck** — the release build flags, the second
@@ -243,4 +244,10 @@ another. Add a job, or a cache scope, only when sharing one is worse.
 
 Build caches: a PR job restores main's cache and never saves one; only pushes to main
 save (`ci.yml`'s "Build-cache note"). A PR's cache is visible to that PR alone, and PR
-saves were evicting main's entries from the repository's 10 GB budget.
+saves were evicting main's entries from the repository's 10 GB budget. Main saves four
+build scopes, each from one job: `short` and `tools` (what a pull request restores) on
+every push, `test` and `windows` (plus e2e-prepare and the canary) once per UTC day
+(`restore-go-caches`' `refresh: daily`). Every other job restores one of those. When every
+job saved its own scope on every push (~9.5 GB a push), main's saves evicted the pull
+request's caches and Checks ran cold (400-620s against ~185s), so a new scope needs a
+reason.

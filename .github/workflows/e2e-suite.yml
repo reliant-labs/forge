@@ -196,19 +196,15 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
       # This job's own build cache, restored on every run and saved only from
-      # main (ci.yml's "Build-cache note"): it is the one job that compiles
-      # forge for the suite, so it is the one worth keeping warm.
-      - name: Restore Go build cache
-        id: restore-gocache
-        uses: actions/cache/restore@v6
+      # main, once a UTC day (ci.yml's "Build-cache note"): it is the one job
+      # that compiles forge for the suite, so it is the one worth keeping warm.
+      - uses: ./.github/actions/restore-go-caches
+        id: go-caches
         with:
-          path: ~/.cache/go-build
-          key: go-build-e2e-prepare-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
-          restore-keys: |
-            go-build-e2e-prepare-${{ runner.os }}-${{ hashFiles('go.sum') }}-
-            go-build-e2e-prepare-${{ runner.os }}-
+          scope: e2e-prepare
+          refresh: daily
       # The binary under test must come from THIS commit, so all three are
       # built from the checkout. forge is built exactly as the tests' own
       # buildforgeBinary builds it (`go build -o <bin> ./cmd/forge` with
@@ -260,12 +256,14 @@ jobs:
           # Binaries: level 1 keeps most of the size win at a fraction of
           # level 6's time.
           compression-level: 1
-      - name: Save Go build cache
+      - name: Save the Go caches (main only, once a day)
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        uses: actions/cache/save@v6
+        uses: ./.github/actions/save-go-caches
         with:
-          path: ~/.cache/go-build
-          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
+          build-key: ${{ steps.go-caches.outputs.build-key }}
+          build-hit: ${{ steps.go-caches.outputs.build-hit }}
+          mod-key: ${{ steps.go-caches.outputs.mod-key }}
+          mod-hit: ${{ steps.go-caches.outputs.mod-hit }}
 
   suite:
     name: e2e shard ${{ matrix.shard }}
@@ -304,7 +302,13 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      # Restore only. The scaffolded projects build through forge's goexec,
+      # which adds -trimpath: the artifacts `checks` keeps warm in the tools
+      # scope (ci.yml's "Build-cache note").
+      - uses: ./.github/actions/restore-go-caches
+        with:
+          scope: tools
 
       # ── Toolchain. Every tool the suite reaches for, because with
       # FORGE_E2E_REQUIRE_TOOLS=1 a missing one is now a red job, not a

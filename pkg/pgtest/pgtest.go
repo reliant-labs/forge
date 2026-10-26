@@ -238,7 +238,7 @@ func startParameters(goos string) map[string]string {
 	return params
 }
 
-func bootEmbedded() (baseURL string, port uint32, ep *embeddedpostgres.EmbeddedPostgres, err error) {
+func bootEmbedded() (baseURL string, port uint32, ep *Embedded, err error) {
 	// Reap instances orphaned by SIGKILLed processes before booting a fresh
 	// one — otherwise they accumulate across runs and exhaust the kernel's
 	// shared-memory/semaphore tables (see reapStaleInstances).
@@ -304,9 +304,15 @@ func bootEmbedded() (baseURL string, port uint32, ep *embeddedpostgres.EmbeddedP
 	db, err := openBase(base)
 	if err != nil {
 		_ = ep.Stop()
+		ep.Detach()
 		return "", 0, nil, fmt.Errorf("pgtest: connect to embedded postgres: %w", err)
 	}
 	_ = db.Close()
+	// Teardown is by data dir (stopSharedByPort), possibly by another
+	// process, so nothing will flush this instance's log through the handle
+	// again: release the file now. The running postmaster keeps its own
+	// descriptor.
+	ep.Detach()
 	return base, port, ep, nil
 }
 

@@ -146,7 +146,7 @@ func NewFailures(out, base string) []string {
 	return fresh
 }
 
-var failedPkgRE = regexp.MustCompile(`(?m)^FAIL\s+(\S+)`)
+var failedPkgRE = regexp.MustCompile(`(?m)^FAIL[ \t]+(\S+)`)
 
 // failedPackages are the packages a `go test` run reported FAIL for, in order.
 func failedPackages(out string) []string {

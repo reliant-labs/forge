@@ -400,99 +400,18 @@ func canary(ctx context.Context, o options, c Consumer, reach forgereach.Reach, 
 	}
 	pr := goEnv(append(os.Environ(), "GOFLAGS="+joinFlags(flags, "-modfile="+mod, "-mod=mod")))
 
-	// The baseline is forge at the revision the diff is judged against, so a
-	// failure is blamed on the change only when the base forge did not have it:
-	// a consumer that is already red on its own, or already broken by forge's
-	// main, does not turn an unrelated pull request red. A forced run has no
-	// diff to blame (the nightly asks "do the consumers build against forge
-	// main?"), so it has no baseline and every failure counts.
-	var base []string
-	if !o.force {
-		baseForge := filepath.Join(scratch, "forge-base")
-		if err := os.Mkdir(baseForge, 0o755); err != nil {
-			return fail("ERROR", "%v", err)
-		}
-		if err := forgereach.ExportRev(o.forge, o.base, baseForge); err != nil {
-			return fail("ERROR", "export forge at %s: %v", o.base, err)
-		}
-		baseMod, _, err := pointAtForge(ctx, tree, scratch, "base", baseForge, reach.Module)
-		if err != nil {
-			return fail("ERROR", "%v", err)
-		}
-		base = goEnv(append(os.Environ(), "GOFLAGS="+joinFlags(flags, "-modfile="+baseMod, "-mod=mod")))
+	base, err := baselineEnv(ctx, o, tree, scratch, flags, reach.Module)
+	if err != nil {
+		return fail("ERROR", "%v", err)
 	}
 
-	fmt.Fprintf(stdout, "== %s @ %.9s\n", c.Name, commit)
-	var preexisting []string
-	logs := filepath.Join(o.cache, "logs")
-	_ = os.MkdirAll(logs, 0o755)
-	keep := func(name, which, out string) string {
-		p := filepath.Join(logs, c.Name+"-"+name+"-"+which+".log")
-		_ = os.WriteFile(p, []byte(out), 0o644)
-		return p
+	r := &runner{ctx: ctx, o: o, name: c.Name, tree: tree, pr: pr, base: base, stdout: stdout}
+	if st, detail := r.steps(reach); st != "" {
+		return fail(st, "%s", detail)
 	}
-	// step runs `go <args...>`; for a test step, flags are the test flags and
-	// pkgs the selection, so a baseline re-run can be narrowed to the packages
-	// that failed instead of repeating the whole selection.
-	step := func(name string, args ...string) (string, bool) {
-		t := time.Now()
-		fmt.Fprintf(stdout, "-- %s: go %s\n", name, strings.Join(args, " "))
-		out, err := runCmd(ctx, tree, pr, "go", args...)
-		took := time.Since(t).Round(time.Second)
-		if err == nil {
-			fmt.Fprintf(stdout, "   ok (%s)\n", took)
-			return "", true
-		}
-		prLog := keep(name, "forge-under-test", out)
-		if base == nil {
-			fmt.Fprintf(stdout, "   FAILED (%s), full output %s\n", took, prLog)
-			return tail(failureSummary(out), 80), false
-		}
-		fmt.Fprintf(stdout, "   FAILED (%s), full output %s; comparing with forge at %s\n", took, prLog, o.base)
-		baseArgs := args
-		if name == "test" {
-			if failed := failedPackages(out); len(failed) > 0 {
-				baseArgs = append(append([]string{"test"}, testFlags...), failed...)
-			}
-		}
-		baseOut, berr := runCmd(ctx, tree, base, "go", baseArgs...)
-		baseLog := keep(name, "base", baseOut)
-		if berr == nil {
-			return tail(failureSummary(out), 80), false
-		}
-		fresh := NewFailures(out, baseOut)
-		if len(fresh) == 0 && ctx.Err() == nil {
-			preexisting = append(preexisting, name)
-			fmt.Fprintf(stdout, "   the same failures occur with forge at %s (%s): not caused by this change\n", o.base, baseLog)
-			return "", true
-		}
-		return tail(strings.Join(fresh, "\n"), 80), false
-	}
-
-	if detail, ok := step("build", "build", "./..."); !ok {
-		return fail("FAIL", "go build ./... broke against this forge:\n%s", detail)
-	}
-	if detail, ok := step("vet", "vet", "./..."); !ok {
-		return fail("FAIL", "go vet ./... broke against this forge:\n%s", detail)
-	}
-	if !o.noTest {
-		pkgs, err := SelectTests(ctx, tree, pr, reach)
-		if err != nil {
-			return fail("ERROR", "select tests: %v", err)
-		}
-		if len(pkgs) == 0 {
-			fmt.Fprintf(stdout, "-- test: no %s package imports a changed forge package\n", c.Name)
-		} else {
-			fmt.Fprintf(stdout, "-- test: %d package(s) import a changed forge package\n", len(pkgs))
-			if detail, ok := step("test", append(append([]string{"test"}, testFlags...), pkgs...)...); !ok {
-				return fail("FAIL", "go test -short broke against this forge:\n%s", detail)
-			}
-		}
-	}
-
-	if len(preexisting) > 0 {
+	if len(r.predating) > 0 {
 		res.Status = "PASS (failures predate this change)"
-		res.Detail = fmt.Sprintf("%s: %s fail with forge at %s too, so this change did not cause them.", c.Name, strings.Join(preexisting, ", "), o.base)
+		res.Detail = fmt.Sprintf("%s: %s fail with forge at %s too, so this change did not cause them.", c.Name, strings.Join(r.predating, ", "), o.base)
 		return res
 	}
 	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err == nil {
@@ -500,6 +419,116 @@ func canary(ctx context.Context, o options, c Consumer, reach forgereach.Reach, 
 	}
 	res.Status = "PASS"
 	return res
+}
+
+// runner runs one consumer's build, vet and test steps against the forge under
+// test (pr) and, for a failure, against the baseline (base; nil on a forced run).
+type runner struct {
+	ctx       context.Context
+	o         options
+	name      string
+	tree      string
+	pr, base  []string
+	stdout    io.Writer
+	predating []string // steps whose failures the baseline has too
+}
+
+// steps runs build, vet and the affected tests. It returns a non-empty status
+// ("FAIL" or "ERROR") and the explanation when one step breaks.
+func (r *runner) steps(reach forgereach.Reach) (status, detail string) {
+	if d, ok := r.step("build", "build", "./..."); !ok {
+		return "FAIL", "go build ./... broke against this forge:\n" + d
+	}
+	if d, ok := r.step("vet", "vet", "./..."); !ok {
+		return "FAIL", "go vet ./... broke against this forge:\n" + d
+	}
+	if r.o.noTest {
+		return "", ""
+	}
+	pkgs, err := SelectTests(r.ctx, r.tree, r.pr, reach)
+	if err != nil {
+		return "ERROR", fmt.Sprintf("select tests: %v", err)
+	}
+	if len(pkgs) == 0 {
+		fmt.Fprintf(r.stdout, "-- test: no %s package imports a changed forge package\n", r.name)
+		return "", ""
+	}
+	fmt.Fprintf(r.stdout, "-- test: %d package(s) import a changed forge package\n", len(pkgs))
+	if d, ok := r.step("test", append(append([]string{"test"}, testFlags...), pkgs...)...); !ok {
+		return "FAIL", "go test -short broke against this forge:\n" + d
+	}
+	return "", ""
+}
+
+func (r *runner) keep(step, which, out string) string {
+	dir := filepath.Join(r.o.cache, "logs")
+	_ = os.MkdirAll(dir, 0o755)
+	p := filepath.Join(dir, r.name+"-"+step+"-"+which+".log")
+	_ = os.WriteFile(p, []byte(out), 0o644)
+	return p
+}
+
+// step runs `go <args...>` against the forge under test. On failure it re-runs
+// against the baseline (a test step only the packages that failed); it blames
+// the change only for failure lines the baseline does not have.
+func (r *runner) step(name string, args ...string) (detail string, ok bool) {
+	t := time.Now()
+	fmt.Fprintf(r.stdout, "-- %s: go %s\n", name, strings.Join(args, " "))
+	out, err := runCmd(r.ctx, r.tree, r.pr, "go", args...)
+	took := time.Since(t).Round(time.Second)
+	if err == nil {
+		fmt.Fprintf(r.stdout, "   ok (%s)\n", took)
+		return "", true
+	}
+	prLog := r.keep(name, "forge-under-test", out)
+	if r.base == nil {
+		fmt.Fprintf(r.stdout, "   FAILED (%s), full output %s\n", took, prLog)
+		return tail(failureSummary(out), 80), false
+	}
+	fmt.Fprintf(r.stdout, "   FAILED (%s), full output %s; comparing with forge at %s\n", took, prLog, r.o.base)
+	baseArgs := args
+	if name == "test" {
+		if failed := failedPackages(out); len(failed) > 0 {
+			baseArgs = append(append([]string{"test"}, testFlags...), failed...)
+		}
+	}
+	baseOut, berr := runCmd(r.ctx, r.tree, r.base, "go", baseArgs...)
+	baseLog := r.keep(name, "base", baseOut)
+	if berr == nil {
+		return tail(failureSummary(out), 80), false
+	}
+	fresh := NewFailures(out, baseOut)
+	if len(fresh) == 0 && r.ctx.Err() == nil {
+		r.predating = append(r.predating, name)
+		fmt.Fprintf(r.stdout, "   the same failures occur with forge at %s (%s): not caused by this change\n", r.o.base, baseLog)
+		return "", true
+	}
+	return tail(strings.Join(fresh, "\n"), 80), false
+}
+
+// baselineEnv is the go environment that builds the consumer against forge at
+// the revision the diff is judged against, so a failure is blamed on the change
+// only when the base forge did not have it: a consumer that is already red on
+// its own, or already broken by forge's main, does not turn an unrelated pull
+// request red. A forced run has no diff to blame (the nightly asks "do the
+// consumers build against forge main?"), so it has no baseline (nil) and every
+// failure counts.
+func baselineEnv(ctx context.Context, o options, tree, scratch, flags, forgeModule string) ([]string, error) {
+	if o.force {
+		return nil, nil
+	}
+	baseForge := filepath.Join(scratch, "forge-base")
+	if err := os.Mkdir(baseForge, 0o755); err != nil {
+		return nil, err
+	}
+	if err := forgereach.ExportRev(o.forge, o.base, baseForge); err != nil {
+		return nil, fmt.Errorf("export forge at %s: %w", o.base, err)
+	}
+	baseMod, _, err := pointAtForge(ctx, tree, scratch, "base", baseForge, forgeModule)
+	if err != nil {
+		return nil, err
+	}
+	return goEnv(append(os.Environ(), "GOFLAGS="+joinFlags(flags, "-modfile="+baseMod, "-mod=mod"))), nil
 }
 
 // pointAtForge writes a copy of the consumer's go.mod and go.sum into scratch

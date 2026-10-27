@@ -46,6 +46,13 @@ step on the way, so the gate is green without hand edits. In order:
   locks               refresh lockfiles that disagree with their package.json
   lint                forge lint --json; what remains is reported, not fixed
 
+--skip <phase> (repeatable) leaves a phase out so a big change can go in its own PR:
+codemods (the registry codemods the range crosses), playbooks (the codemods a
+playbook automates, connect-errors and composition-graph among them),
+vendored-contracts, generate, locks, lint. modules, templates and pin always run.
+The pin moves in the same run, so a skipped codemod is not picked up by the next
+upgrade: the phase's detail names each one to run yourself ('forge fix <name>').
+
 Whatever is left is printed as "Still needs a person" (--json: needs_human): a
 lint error, a playbook whose old shape remains, a codemod that listed what it
 could not decide. Rules still in their warn-first grace are listed under

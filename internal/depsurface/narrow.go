@@ -87,7 +87,7 @@ func Narrow(projectDir, dir string) (*NarrowResult, error) {
 	res.File = filepath.ToSlash(res.File)
 
 	cfg := readLintConfig(projectDir)
-	prefix := cfg.importPrefix(checksums.GoImportsLocalPrefix(projectDir))
+	std := checksums.RewriteGoFormat(projectDir)
 	w := newIfaceWriter(p)
 	w.lint = cfg
 	for path, name := range p.importNames(res.File) {
@@ -138,7 +138,7 @@ func Narrow(projectDir, dir string) (*NarrowResult, error) {
 	// When Deps lives in the target itself (a contract package's
 	// contract.go), the declarations are appended to the retyped file.
 	depsFile := filepath.Join(projectDir, filepath.FromSlash(p.DepsFile))
-	retyped, err := retypeFields(depsFile, retype, p.importNames(p.DepsFile), prefix)
+	retyped, err := retypeFields(depsFile, retype, p.importNames(p.DepsFile), std)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +146,7 @@ func Narrow(projectDir, dir string) (*NarrowResult, error) {
 	if depsFile == target {
 		base = retyped
 	}
-	decls, err := w.render(target, base, prefix)
+	decls, err := w.render(target, base, std)
 	if err != nil {
 		return nil, err
 	}
@@ -322,7 +322,7 @@ func splitRoles(f Field) (embeds []Role, direct []string) {
 // render returns target (or base, its pending content) with the
 // declarations appended — deps.go, fresh, when absent — and the imports they
 // need.
-func (w *ifaceWriter) render(target string, base []byte, prefix string) ([]byte, error) {
+func (w *ifaceWriter) render(target string, base []byte, std checksums.GoFormatStandard) ([]byte, error) {
 	src, err := base, error(nil)
 	if src == nil {
 		src, err = os.ReadFile(target)
@@ -342,7 +342,7 @@ func (w *ifaceWriter) render(target string, base []byte, prefix string) ([]byte,
 		added[p] = w.imports[p]
 	}
 	addImports(fset, file, added)
-	return formatFile(fset, file, target, prefix)
+	return formatFile(fset, file, target, std)
 }
 
 // addImports adds each path under its name, omitting the name when it is
@@ -357,15 +357,15 @@ func addImports(fset *token.FileSet, file *ast.File, imports map[string]string) 
 	}
 }
 
-// formatFile prints file as goimports -local prefix would leave it: stdlib,
-// third-party, then the local group, so the project's goimports lint accepts
+// formatFile prints file formatted to the project's standard (its goimports
+// local-prefixes, else its module), so the project's formatter lint accepts
 // what narrow-deps wrote.
-func formatFile(fset *token.FileSet, file *ast.File, name, prefix string) ([]byte, error) {
+func formatFile(fset *token.FileSet, file *ast.File, name string, std checksums.GoFormatStandard) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := format.Node(&buf, fset, file); err != nil {
 		return nil, fmt.Errorf("format %s: %w", name, err)
 	}
-	out, err := checksums.CanonicalGoSource(prefix, name, buf.Bytes())
+	out, err := std.Format(name, buf.Bytes())
 	if err != nil {
 		return nil, fmt.Errorf("format %s: %w", name, err)
 	}
@@ -393,7 +393,7 @@ func (p *Package) importNames(rel string) map[string]string {
 // retypeFields returns file with the type of each named Deps field
 // rewritten, minus every import (names: path → name in file) nothing uses any
 // more.
-func retypeFields(file string, retype map[string]string, names map[string]string, prefix string) ([]byte, error) {
+func retypeFields(file string, retype map[string]string, names map[string]string, std checksums.GoFormatStandard) ([]byte, error) {
 	src, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
@@ -453,7 +453,7 @@ func retypeFields(file string, retype map[string]string, names map[string]string
 	for _, d := range drop {
 		astutil.DeleteNamedImport(fset, f, d.name, d.path)
 	}
-	return formatFile(fset, f, file, prefix)
+	return formatFile(fset, f, file, std)
 }
 
 // usesPackageName reports whether any selector in f is name.X.

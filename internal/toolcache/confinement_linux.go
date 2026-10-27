@@ -1,8 +1,9 @@
 package toolcache
 
 import (
-	"golang.org/x/sys/unix"
 	"os"
+
+	"golang.org/x/sys/unix"
 )
 
 func openLockNoFollow(parent *os.File, name string) (*os.File, error) {

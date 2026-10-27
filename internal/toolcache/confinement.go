@@ -3,10 +3,11 @@ package toolcache
 import (
 	"context"
 	"fmt"
-	"github.com/reliant-labs/forge/internal/openfiles"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/openfiles"
 )
 
 // cacheDir pins a directory inode. Children are opened without following

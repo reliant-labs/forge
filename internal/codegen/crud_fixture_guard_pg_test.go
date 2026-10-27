@@ -43,6 +43,11 @@ CREATE TABLE orders (
 // introspection path over them, returning the model plus the live shadow.
 func applyGuardSchema(t *testing.T, ddl string) ([]schemadef.Table, *schemadef.Shadow) {
 	t.Helper()
+	// Every guard below needs a real Postgres and may download its binary.
+	// Keep that work in the full tier, before any shadow DB side effects.
+	if testing.Short() {
+		t.Skip("needs a live Postgres; runs in task test")
+	}
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "00001_init.up.sql"), []byte(ddl), 0o644); err != nil {
 		t.Fatalf("write migration: %v", err)
@@ -83,9 +88,6 @@ func tableNamed(t *testing.T, tables []schemadef.Table, name string) schemadef.T
 // moves with it, and a guard that disagreed with the INSERT it exists to
 // predict would fail here.
 func TestFixtureGuard_AcceptsWhatPostgresAccepts_RejectsWhatItRejects(t *testing.T) {
-	if testing.Short() {
-		t.Skip("needs a live Postgres; runs in task test")
-	}
 	tables, shadow := applyGuardSchema(t, guardSchema)
 	orders := tableNamed(t, tables, "orders")
 	ctx := context.Background()

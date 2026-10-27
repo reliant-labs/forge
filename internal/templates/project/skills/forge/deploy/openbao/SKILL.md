@@ -101,6 +101,53 @@ replace a Deployment or StatefulSet of the same name that forge did not install
 already owns, and a `--target` deploy that does not install the store, do not
 raise it.
 
+### Retiring the previous store's auth mounts
+
+The component converges only the `jwt-*` mounts it writes (its policy grants
+`sys/auth/jwt-*`, and narrowing diffs only what an earlier converge wrote). A
+`kubernetes` or `approle` mount the hand-run install left behind therefore stays
+enabled after adoption, with every role in it still able to log in. Remove it
+declaratively with `retired_auth_mounts`, once the audit log shows nothing has
+used it:
+
+```python
+openbao = forge.OpenBao {
+    retired_auth_mounts = [
+        forge.OpenBaoRetiredAuthMount {
+            name = "kubernetes"
+            reason = "no login since 2026-10-25 11:41Z (audit log)"
+        }
+        forge.OpenBaoRetiredAuthMount {
+            name = "approle"
+            reason = "no login since 2026-10-25 12:27Z (audit log)"
+        }
+    ]
+}
+```
+
+What the `converge` Job does with each entry, after it has applied and narrowed
+the access document (the `widen` Job never retires anything):
+
+- **Absent mount: skipped.** Idempotent, so the entry can stay in the file.
+- **Present, no roles: disabled**, with the `reason` in the Job's log.
+- **Present, roles remain: refused.** Exit 64, a verdict the Job does not retry,
+  naming the roles. Disabling a mount revokes every token it issued and deletes
+  its roles. Delete the roles first, or set `force = True` on the entry once they
+  are known to be dead (it warns on every render and logs `FORCED`).
+- **A mount type the Job cannot check** (anything but `kubernetes`, `approle`,
+  `jwt`, `oidc`, whose logins are not roles) is refused the same way; `force`
+  is the only way past it.
+- **All entries are verified before any is disabled**, so a refusal never leaves
+  the store half-retired.
+
+The converge policy gains `delete` + `sudo` on exactly `sys/auth/<name>` and
+`list` on `auth/<name>/role` for each name listed: never a wildcard, and never
+on `access-admin`, which delegated principals hold. `reason` is required.
+Refused at render: a name that is not a plain mount name (`jwt-*`, `a/b`), the
+built-in `token` mount, a duplicate, and the `jwt-<cluster>` mount the component
+manages (it would be enabled and disabled on every run; drop a cluster's mount by
+no longer registering the cluster).
+
 ### Other leftovers
 
 The previous store's PodDisruptionBudget, ingress NetworkPolicy, RBAC and

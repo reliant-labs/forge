@@ -27,6 +27,9 @@ type AccessDoc struct {
 	Mounts   []Mount  `json:"mounts"`
 	Policies []Policy `json:"policies"`
 	Roles    []Role   `json:"roles"`
+	// Retired are auth mounts the store must not carry; converge disables
+	// each that is present (retired.go). Widen never applies them.
+	Retired []RetiredAuthMount `json:"retired,omitempty"`
 }
 
 // Mount is one cluster's JWT auth method.
@@ -124,7 +127,7 @@ func BuildAccess(s Spec) (AccessDoc, error) {
 		return AccessDoc{}, err
 	}
 
-	doc := AccessDoc{Self: a.SelfCluster, KV: s.KV}
+	doc := AccessDoc{Self: a.SelfCluster, KV: s.KV, Retired: sortedRetired(s.RetiredAuthMounts)}
 	selfMount := secretaccess.MountName(a.SelfCluster)
 	for _, m := range derived.Mounts {
 		md := Mount{Name: m.Name(), Cluster: m.Cluster, Trust: "config", Config: m.ConfigPayload()}
@@ -132,6 +135,9 @@ func BuildAccess(s Spec) (AccessDoc, error) {
 			md.Trust = "self"
 		}
 		doc.Mounts = append(doc.Mounts, md)
+	}
+	if err := checkRetiredNotManaged(doc.Retired, doc.Mounts, selfMount); err != nil {
+		return AccessDoc{}, err
 	}
 	for _, p := range derived.Policies {
 		pd := Policy{Name: p.Name}
@@ -151,7 +157,7 @@ func BuildAccess(s Spec) (AccessDoc, error) {
 
 	doc.Policies = append(doc.Policies,
 		Policy{Name: PolicyAccessAdmin, Rules: accessAdminRules()},
-		Policy{Name: PolicyConverge, Rules: convergeRules(kv)},
+		Policy{Name: PolicyConverge, Rules: convergeRules(kv, doc.Retired)},
 	)
 	selfAud := self.Audience
 	doc.Roles = append(doc.Roles, Role{Mount: selfMount, Name: RoleConverge, Payload: map[string]any{
@@ -231,11 +237,13 @@ func accessAdminRules() []Rule {
 	}
 }
 
-// convergeRules: access-admin, the KV mount itself, and policies of any name.
+// convergeRules: access-admin, the KV mount itself, and policies of any name,
+// plus the exact retire grants for each retired auth mount (never a glob).
 // No capability on the KV mount's data: the Job cannot read a value.
-func convergeRules(kv string) []Rule {
+func convergeRules(kv string, retired []RetiredAuthMount) []Rule {
 	r := accessAdminRules()
 	r = slices.DeleteFunc(r, func(x Rule) bool { return x.Path == "sys/policies/acl/env-*" })
+	r = append(r, retiredRules(retired)...)
 	return append(r,
 		Rule{Path: "sys/mounts", Capabilities: []string{"read"}},
 		Rule{Path: "sys/mounts/" + kv, Capabilities: []string{"create", "update", "read"}},

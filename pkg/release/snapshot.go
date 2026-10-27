@@ -1,5 +1,9 @@
 package release
 
+import "regexp"
+
+var imageTagRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
+
 // SnapshotSchema versions the complete desired-environment contract. Historical
 // bundles without a snapshot remain readable, but are not composition bases.
 const SnapshotSchema = "forge.dev/snapshot/v1"
@@ -63,7 +67,26 @@ type ConsumerBinding struct {
 	Consumer ConsumerKey `json:"consumer"`
 	Slot     string      `json:"slot"`
 	Artifact ArtifactID  `json:"artifact"`
+	// Tag is the OCI tag the consumer DECLARED for an external image
+	// (`repo:tag@sha256:X` keeps `tag`), and empty for a built image. It is
+	// part of the rendered reference, never of the artifact's identity: the
+	// bytes are Location@Content either way. Keeping it makes sealing a
+	// declared, already-pinned reference byte-identical to what the workload
+	// ran before, so sealing alone changes no pod template and rolls nothing.
+	Tag string `json:"tag,omitempty"`
 }
+
+// BindingReference is the exact image reference a binding renders and every
+// bound container must carry: `Location[:Tag]@Content`.
+func BindingReference(a SnapshotArtifact, b ConsumerBinding) string {
+	if b.Tag == "" {
+		return a.Location + "@" + a.Content
+	}
+	return a.Location + ":" + b.Tag + "@" + a.Content
+}
+
+// ValidImageTag is the OCI distribution-spec tag grammar.
+func ValidImageTag(tag string) bool { return imageTagRe.MatchString(tag) }
 
 // ResourceKey identifies an object in one destination, independent of API version.
 type ResourceKey struct {

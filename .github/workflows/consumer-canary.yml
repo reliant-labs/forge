@@ -114,6 +114,12 @@ jobs:
       # the consumers' own go.sum files, not forge's: they are what these hold.
       - name: Note when the Go build cache was restored
         run: echo "GOCACHE_RESTORED_AT=$(date +%s)" >> "$GITHUB_ENV"
+      # Saved once per UTC day, not per push: at ~1.5 GB a push it was one of
+      # the saves that evicted the pull-request tier's caches (ci.yml's
+      # "Build-cache note").
+      - name: The caches' day
+        id: day
+        run: echo "rev=day-$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
       - name: Restore the Go caches
         id: caches
         uses: actions/cache/restore@v6
@@ -121,7 +127,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: canary-${{ runner.os }}-${{ hashFiles('_consumers/*/go.sum') }}-${{ github.sha }}
+          key: canary-${{ runner.os }}-${{ hashFiles('_consumers/*/go.sum') }}-${{ steps.day.outputs.rev }}
           restore-keys: |
             canary-${{ runner.os }}-${{ hashFiles('_consumers/*/go.sum') }}-
             canary-${{ runner.os }}-
@@ -134,16 +140,16 @@ jobs:
         run: scripts/ci-consumer-canary.sh HEAD^1 -- $FORCE
 
       - name: Drop the module archives
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.caches.outputs.cache-hit != 'true' }}
         run: |
           dir="$(go env GOMODCACHE)/cache/download"
           if [ -d "$dir" ]; then find "$dir" -name '*.zip' -type f -delete; fi
       - uses: ./.github/actions/trim-go-build-cache
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.caches.outputs.cache-hit != 'true' }}
       # Main only (ci.yml's "Build-cache note"): an entry a pull request saves
       # is visible to that pull request alone and costs everyone else budget.
       - name: Save the Go caches (main only)
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.caches.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6
         with:
           path: |

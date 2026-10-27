@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -30,6 +29,8 @@ var (
 // server down cleanly instead of leaking its data dir and SysV IPC.
 func Execute() error {
 	defer pgtest.Shutdown()
+	// Before anything can queue for a heavy slot: see selfExecutable.
+	_, _ = selfExecutable()
 	return NewRootCmd().Execute()
 }
 
@@ -69,7 +70,7 @@ func Name() string {
 // standalone binary self-invoke `<exe> forge …`, hit cobra's "unknown
 // command", and break descriptor generation.
 func forgeExecCommand() ([]string, error) {
-	exePath, err := os.Executable()
+	exePath, err := selfExecutable()
 	if err != nil {
 		return nil, fmt.Errorf("resolve executable path: %w", err)
 	}
@@ -253,6 +254,9 @@ from an empty directory to authored protos, in one call.`,
 	rootCmd.AddCommand(newCloudCmd())
 	rootCmd.AddCommand(newDomainCmd())
 	rootCmd.AddCommand(newDoctorCmd())
+	// `report-bug` files a defect in forge itself with the Reliant team. It
+	// is the only way forge ever sends a report (internal/bugreport).
+	rootCmd.AddCommand(newReportBugCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newProtocGenForgeCmd())
 	// `component` migrated to the internal/cli/component group (registered

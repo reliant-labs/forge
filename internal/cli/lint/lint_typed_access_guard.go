@@ -32,19 +32,15 @@
 package lint
 
 import (
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 
 	"gopkg.in/yaml.v3"
-)
 
-// golangciConfigNames are the files golangci-lint reads its config from, in
-// the order it tries them within one directory.
-var golangciConfigNames = []string{".golangci.yml", ".golangci.yaml", ".golangci.toml", ".golangci.json"}
+	"github.com/reliant-labs/forge/internal/checksums"
+)
 
 // typedAccessGuardEnvRead is the identifier a forbid pattern must match for
 // forbidigo to be acting as the typed-config guardrail. os.Getenv is the read
@@ -96,32 +92,9 @@ func typedAccessGuardUnconfigured(dir string) string {
 }
 
 // findGolangciConfig returns the config file golangci-lint loads for a run
-// started in dir: the first of golangciConfigNames in dir, else in the
+// started in dir: the first of checksums.GolangciConfigNames in dir, else in the
 // nearest ancestor that has one. "" when there is none.
-func findGolangciConfig(dir string) string {
-	if dir == "" {
-		dir = "."
-	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return ""
-	}
-	for {
-		for _, name := range golangciConfigNames {
-			p := filepath.Join(abs, name)
-			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
-				return p
-			} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return ""
-			}
-		}
-		parent := filepath.Dir(abs)
-		if parent == abs {
-			return ""
-		}
-		abs = parent
-	}
-}
+func findGolangciConfig(dir string) string { return checksums.FindGolangciConfig(dir) }
 
 // forbidigoPatterns returns the forbid patterns a golangci-lint config gives
 // forbidigo, from either config version: v2 nests them under

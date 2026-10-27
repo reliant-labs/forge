@@ -254,8 +254,33 @@ func addSelectedCompositionBinding(ctx context.Context, candidate *release.Snaps
 	}
 	recordCompositionBuildEvent(candidate, c.Key, id, artifact.Origin)
 	candidate.Artifacts[id] = artifact
-	candidate.Bindings = append(candidate.Bindings, release.ConsumerBinding{Consumer: c.Key, Slot: slot, Artifact: id})
+	b := release.ConsumerBinding{Consumer: c.Key, Slot: slot, Artifact: id}
+	// An external image keeps the tag its consumer declared, so sealing a
+	// reference that is already pinned renders it byte-for-byte as before and
+	// rolls nothing. A built image (receipt or source provenance) has no
+	// declared tag to keep: it renders as the bare `repo@sha256:X`.
+	if artifact.Origin.Receipt == nil && artifact.Origin.Source == nil {
+		b.Tag = declaredImageTag(ref)
+	}
+	candidate.Bindings = append(candidate.Bindings, b)
 	return nil
+}
+
+// declaredImageTag is the tag of an image reference (`repo:tag` or
+// `repo:tag@sha256:…`), or "" when it has none or the tag is not a valid OCI
+// tag. A registry port (`host:5000/repo`) is never a tag.
+func declaredImageTag(ref string) string {
+	if at := strings.Index(ref, "@"); at >= 0 {
+		ref = ref[:at]
+	}
+	colon := strings.LastIndex(ref, ":")
+	if colon <= strings.LastIndex(ref, "/") {
+		return ""
+	}
+	if tag := ref[colon+1:]; release.ValidImageTag(tag) {
+		return tag
+	}
+	return ""
 }
 
 func sealComposition(ctx context.Context, cfg *config.ProjectConfig, entities *KCLEntities, opts buildOptions, candidate release.Snapshot) error {

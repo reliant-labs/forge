@@ -347,4 +347,12 @@ func TestPolicyFileWithoutModCacheAndSourceBudgetKeysGetsDefaults(t *testing.T) 
 	if bad.Validate() == nil {
 		t.Fatal("an unbounded module cache must be rejected")
 	}
+	if p.GolangciCacheGiB != 4 {
+		t.Fatalf("golangci_cache_gib default = %d, want 4", p.GolangciCacheGiB)
+	}
+	bad = DefaultPolicy()
+	bad.GolangciCacheGiB = 0
+	if bad.Validate() == nil {
+		t.Fatal("an unbounded golangci-lint cache must be rejected")
+	}
 }

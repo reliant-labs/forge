@@ -263,7 +263,7 @@ var generateCacheSystem = osGenerateCacheSys
 
 func osGenerateCacheSys() generateCacheSys {
 	return generateCacheSys{
-		executable: os.Executable,
+		executable: selfExecutable,
 		lookPath:   exec.LookPath,
 		environ:    os.Environ,
 		now:        time.Now,

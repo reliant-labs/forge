@@ -391,6 +391,7 @@ func TestClaimableIneligibility(t *testing.T) {
 	svc := func(name, kind string) WorkloadEntity {
 		w := WorkloadEntity{Name: name, Runtime: RuntimeEntity{Type: RuntimeHosted}}
 		w.Spec.Kind = v1alpha1.WorkloadKind(kind)
+		w.Spec.Resources = v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 256 << 20}
 		return w
 	}
 	cases := []struct {
@@ -418,6 +419,53 @@ func TestClaimableIneligibility(t *testing.T) {
 	}
 	err := claimableIneligibleError("prod", []string{"worker \"w\" (only one service may run)"})
 	if exitCodeForError(err) != exitRefused || !strings.Contains(err.Error(), "sign up for the rest: forge login") {
+		t.Errorf("ineligible error: code=%d %s", exitCodeForError(err), err)
+	}
+}
+
+// The claimable caps are 250m / 256 MiB / one replica, per workload with no
+// burst, in control-plane's words (planlimits/claimable.go, computegate).
+func TestClaimableIneligibilityChecksTheClaimableCaps(t *testing.T) {
+	t.Parallel()
+	svc := func(res v1alpha1.Resources, replicas int32) *KCLEntities {
+		w := WorkloadEntity{Name: "api", Runtime: RuntimeEntity{Type: RuntimeHosted}}
+		w.Spec.Kind = v1alpha1.KindService
+		w.Spec.Resources = res
+		w.Spec.Replicas = replicas
+		return &KCLEntities{Workloads: []WorkloadEntity{w}}
+	}
+	const mib = 1 << 20
+	cases := []struct {
+		name string
+		e    *KCLEntities
+		want []string
+	}{
+		{"250m / 256Mi passes", svc(v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 256 * mib}, 1), nil},
+		{"unset replicas pass", svc(v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 256 * mib}, 0), nil},
+		{"500m / 256Mi is refused", svc(v1alpha1.Resources{CPURequestMillicores: 500, MemoryRequestBytes: 256 * mib}, 1),
+			[]string{`workload "api" asks for 500m of CPU (at most 250m, no burst)`}},
+		{"250m / 512Mi is refused", svc(v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 512 * mib}, 1),
+			[]string{`workload "api" asks for 512 MiB of memory (at most 256 MiB, no burst)`}},
+		{"a limit above the cap is a burst", svc(v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 256 * mib, MemoryLimitBytes: 1024 * mib}, 1),
+			[]string{"1024 MiB of memory"}},
+		{"the entry shape (250m / 1Gi) is over the memory cap", svc(v1alpha1.Resources{}, 1),
+			[]string{"1024 MiB of memory (at most 256 MiB, no burst)"}},
+		{"two replicas", svc(v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 256 * mib}, 2),
+			[]string{`workload "api" asks for 2 replicas (1 is allowed)`}},
+	}
+	for _, c := range cases {
+		got := strings.Join(claimableIneligibility(c.e), "|")
+		if len(c.want) == 0 && got != "" {
+			t.Errorf("%s: unexpected reasons %q", c.name, got)
+		}
+		for _, w := range c.want {
+			if !strings.Contains(got, w) {
+				t.Errorf("%s: reasons %q lack %q", c.name, got, w)
+			}
+		}
+	}
+	err := claimableIneligibleError("prod", claimableIneligibility(svc(v1alpha1.Resources{CPURequestMillicores: 500, MemoryRequestBytes: 256 * mib}, 1)))
+	if exitCodeForError(err) != exitRefused || !strings.Contains(err.Error(), "does not fit an anonymous deploy") {
 		t.Errorf("ineligible error: code=%d %s", exitCodeForError(err), err)
 	}
 }

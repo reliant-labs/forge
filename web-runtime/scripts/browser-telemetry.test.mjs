@@ -8,13 +8,29 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { gunzipSync } from "node:zlib";
 import { chromium } from "playwright";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
-const apiDir = dirname(require.resolve("@opentelemetry/api/package.json"));
-const protoDir = dirname(require.resolve("@bufbuild/protobuf/package.json"));
+const apiDir = resolve(dirname(require.resolve("@opentelemetry/api")), "../..");
+const protoDir = resolve(dirname(require.resolve("@bufbuild/protobuf")), "../..");
 const sdk = require.resolve("@hyperdx/browser");
+const recorderRequire = createRequire(require.resolve("@hyperdx/otel-web-session-recorder"));
+// Decode the OTLP log envelope, not a mocked replay sink. protobufjs is the
+// recorder's own dependency. Only fields used by this proof are declared.
+const LogsData = recorderRequire("protobufjs").parse(`
+  syntax = "proto3";
+  message AnyValue { oneof value { string stringValue = 1; bool boolValue = 2; int64 intValue = 3; double doubleValue = 4; ArrayValue arrayValue = 5; KeyValueList kvlistValue = 6; } }
+  message ArrayValue { repeated AnyValue values = 1; }
+  message KeyValue { string key = 1; AnyValue value = 2; }
+  message KeyValueList { repeated KeyValue values = 1; }
+  message Scope { string name = 1; }
+  message LogRecord { AnyValue body = 5; }
+  message ScopeLogs { Scope scope = 1; repeated LogRecord logRecords = 2; }
+  message ResourceLogs { repeated ScopeLogs scopeLogs = 2; }
+  message LogsData { repeated ResourceLogs resourceLogs = 1; }
+`).root.lookupType("LogsData");
 const listen = async (server) => {
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   return `http://127.0.0.1:${server.address().port}`;
@@ -30,6 +46,7 @@ async function moduleFile(url) {
     "/runtime/": join(root, "dist"),
     "/otel/": join(apiDir, "build/esm"),
     "/proto/": join(protoDir, "dist/esm"),
+    "/connect/": resolve(dirname(require.resolve("@connectrpc/connect")), "../esm"),
   };
   for (const [prefix, base] of Object.entries(routes)) {
     if (!url.startsWith(prefix)) continue;
@@ -57,7 +74,9 @@ test("raw interactions stay in masked replay; explicit action and RPC share real
       if (url.startsWith("/_otel/")) {
         const chunks = [];
         for await (const chunk of req) chunks.push(chunk);
-        const payload = JSON.parse(Buffer.concat(chunks).toString());
+        const raw = Buffer.concat(chunks);
+        const decoded = req.headers["content-encoding"] === "gzip" ? gunzipSync(raw) : raw;
+        const payload = url.endsWith("logs") ? LogsData.decode(decoded) : JSON.parse(decoded.toString());
         (url.endsWith("traces") ? traces : logs).push(payload);
         res.setHeader("content-type", "application/json");
         res.end("{}");
@@ -71,19 +90,21 @@ test("raw interactions stay in masked replay; explicit action and RPC share real
         res.setHeader("content-type", "text/html");
         res.end(`<!doctype html><p>PRIVATE_TEXT_SENTINEL</p><input value="PRIVATE_INPUT_SENTINEL"><button id="idle">Idle</button><button id="action">Run</button>
 <script src="/sdk.js"></script>
-<script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js","@bufbuild/protobuf/wkt":"/proto/wkt/index.js"}}</script>
+<script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js","@bufbuild/protobuf/wkt":"/proto/wkt/index.js","@bufbuild/protobuf":"/proto/index.js","@bufbuild/protobuf/wire":"/proto/wire/index.js","@bufbuild/protobuf/reflect":"/proto/reflect/index.js","@bufbuild/protobuf/codegenv2":"/proto/codegenv2/index.js","@connectrpc/connect":"/connect/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, context, trace } from '/runtime/telemetry.js';
-import { traceInterceptor } from '/runtime/interceptors.js';
+import { buildRuntimeInterceptors } from '/runtime/interceptors.js';
 window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', replay: true, apiOrigins: [${JSON.stringify(backendOrigin)}], consoleCapture: false });
 window.tracing = trace;
 for (const type of ['mousedown','mouseup','click']) document.querySelector('#idle').addEventListener(type, () => {});
 document.querySelector('#action').addEventListener('click', () => {
   const action = trace.getTracer('meaningful-action').startSpan('save-record');
   context.with(trace.setSpan(context.active(), action), () => {
-    window.finished = traceInterceptor()(async req => {
+    const interceptors = buildRuntimeInterceptors({ getToken: async () => null });
+    const call = interceptors.reduceRight((next, interceptor) => interceptor(next), async req => {
       await fetch(${JSON.stringify(`${backendOrigin}/svc/Save`)}, { method: 'POST', headers: req.header });
-    })({ header: new Headers(), stream: false }).finally(() => action.end());
+    });
+    window.finished = call({ header: new Headers(), stream: false }).finally(() => action.end());
   });
 });
 </script>`);
@@ -104,19 +125,30 @@ document.querySelector('#action').addEventListener('click', () => {
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(origin);
-    await page.waitForFunction(() => window.ready === true);
+    await page.waitForFunction(() => window.ready === true, undefined, { timeout: 5000 }).catch((error) => {
+      throw new Error(`${error.message}; browser errors: ${errors.join("; ")}`);
+    });
     await page.locator("#idle").click();
     await page.locator("input").fill("PRIVATE_EDIT_SENTINEL");
     await page.locator("#action").click();
     await page.evaluate(() => window.finished);
+    await page.waitForFunction(() => {
+      // Fetch spans end after resource-timing collection, not at response.
+      // Observe the real SDK batch queue rather than a fixed sleep.
+      const provider = window.tracing.getTracerProvider().getDelegate();
+      return provider._activeSpanProcessor._spanProcessors.some(processor =>
+        processor._finishedSpans?.some(span => span.name === 'HTTP POST'));
+    }, undefined, { timeout: 5000 });
     await page.evaluate(async () => {
       // Both are the REAL SDK's providers, not a test substitute.
       await window.tracing.getTracerProvider().getDelegate().forceFlush();
       HyperDX.stopSessionRecorder();
     });
-    await page.waitForFunction(() => true);
-    // The recorder flushes on visibility/page exit, just like a real tab.
-    await page.goto("about:blank");
+    // Let the real recorder deliver its batch, independently of trace export.
+    const replayResponse = page.waitForResponse(response => response.url().endsWith('/_otel/v1/logs') && response.ok(), { timeout: 10000 });
+    // Wait on actual replay export (the SDK batches every 5s), not a sleep
+    // or an unload handler modern browsers are allowed to suppress.
+    await replayResponse;
     const spans = traces.flatMap((batch) => batch.resourceSpans ?? [])
       .flatMap((resource) => resource.scopeSpans ?? [])
       .flatMap((scope) => scope.spans ?? []);
@@ -125,7 +157,7 @@ document.querySelector('#action').addEventListener('click', () => {
     const action = spans.find((span) => span.name === "save-record");
     const fetch = spans.find((span) => span.name === "HTTP POST");
     assert.ok(action, "explicitly instrumented meaningful action is exported");
-    assert.ok(fetch, "network span is still exported");
+    assert.ok(fetch, `network span is still exported: ${JSON.stringify(spans.map(s => s.name))}`);
     assert.equal(fetch.traceId, action.traceId);
     assert.equal(fetch.parentSpanId, action.spanId, "fetch is a child, not just the same trace");
     assert.deepEqual(requests, [`00-${fetch.traceId}-${fetch.spanId}-01`], "wire parent is the exported fetch span, not the interceptor's synthetic fallback");
@@ -135,6 +167,8 @@ document.querySelector('#action').addEventListener('click', () => {
       .filter((scope) => scope.scope?.name === "rum.rr-web")
       .flatMap((scope) => scope.logRecords ?? []);
     assert.ok(replay.length > 0, "session replay still exports records");
+    const events = replay.map(record => JSON.parse(record.body.stringValue));
+    assert.ok(events.some(event => event.type === 3 && event.data.source === 2), "raw mouse interactions remain replay events");
     const exported = JSON.stringify([...traces, ...logs]);
     for (const secret of ["PRIVATE_TEXT_SENTINEL", "PRIVATE_INPUT_SENTINEL", "PRIVATE_EDIT_SENTINEL"]) {
       assert.equal(exported.includes(secret), false, "private text never leaves the browser");

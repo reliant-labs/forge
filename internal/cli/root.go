@@ -254,6 +254,9 @@ from an empty directory to authored protos, in one call.`,
 	rootCmd.AddCommand(newCloudCmd())
 	rootCmd.AddCommand(newDomainCmd())
 	rootCmd.AddCommand(newDoctorCmd())
+	// `report-bug` files a defect in forge itself with the Reliant team. It
+	// is the only way forge ever sends a report (internal/bugreport).
+	rootCmd.AddCommand(newReportBugCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newProtocGenForgeCmd())
 	// `component` migrated to the internal/cli/component group (registered

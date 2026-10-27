@@ -219,6 +219,19 @@ default; if a behavior needs a knob, add the flag; if the design is wrong,
 redesign it. Make forge the best version of itself rather than the most
 compatible one.
 
+When you cannot fix it here — forge is not this checkout, or the fix is out of
+scope — **report it**, then carry on:
+
+    {{.CLI}} report-bug --severity high --title "<one line naming the defect>" \
+      --actual "<the exact error text>" --evidence "<commands, output, file paths>"
+
+Use it for defects in forge itself — a forge command that fails, hangs or generates something wrong,
+or a lint, skill or doc that is wrong — not for bugs in this project's code,
+its failing tests, or your own mistakes. Never put credentials or file contents
+in a report. A repeat of the same title within 30 minutes returns the first
+report's id and sends nothing. forge sends nothing unless someone runs this;
+`--dry-run` prints exactly what would go.
+
 ## Project Notes
 
 <!-- Add project-specific context, conventions, and open questions here. -->

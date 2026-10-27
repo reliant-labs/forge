@@ -135,14 +135,26 @@ func TestUpPassthroughArgs(t *testing.T) {
 // server as `npm run dev -- --host 0.0.0.0` (the `--` is required so npm
 // forwards them to vite/next rather than consuming them itself).
 func TestBuildFrontendCmd_ForwardsPassthroughArgs(t *testing.T) {
-	fe := FrontendEntity{Name: "dashboard", Path: "frontends/dashboard", Port: 3000, EnvFile: "/does/not/exist"}
-	cmd := buildFrontendCmd(context.Background(), fe, "dev", nil, []string{"--host", "0.0.0.0"}, "")
-
-	want := []string{"run", "dev", "--", "--host", "0.0.0.0"}
-	// cmd.Args[0] is the runner (npm); the rest are the run args.
-	got := cmd.Args[1:]
-	if strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Errorf("frontend cmd args: got %v, want [npm %v]", cmd.Args, want)
+	for _, tc := range []struct {
+		runner string
+		flags  []string
+		want   string
+	}{
+		{"", []string{"--host", "0.0.0.0"}, "npm run dev -- --host 0.0.0.0"},
+		{"npm", []string{"--host", "0.0.0.0"}, "npm run dev -- --host 0.0.0.0"},
+		{"pnpm", []string{"--host", "0.0.0.0"}, "pnpm run dev --host 0.0.0.0"},
+		{"pnpm", []string{"--hostname", "0.0.0.0"}, "pnpm run dev --hostname 0.0.0.0"},
+		{"yarn", []string{"--host", "0.0.0.0"}, "yarn run dev --host 0.0.0.0"},
+		{"pnpm", nil, "pnpm run dev"},
+		{"yarn", nil, "yarn run dev"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			fe := FrontendEntity{Name: "dashboard", Path: "frontends/dashboard", Port: 3000, EnvFile: "/does/not/exist", DevRunner: tc.runner}
+			cmd := buildFrontendCmd(context.Background(), fe, "dev", nil, tc.flags, "")
+			if got := strings.Join(cmd.Args, " "); got != tc.want {
+				t.Errorf("frontend argv = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

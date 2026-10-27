@@ -3296,10 +3296,11 @@ func ensureFrontendDeps(ctx context.Context, fe FrontendEntity, noInstall bool) 
 // dev server binds the port forge reported in the summary; Port stays 0 only
 // when that allocation failed, in which case the dev server picks its own.
 //
-// frontendArgs are passthrough tokens forwarded to the dev server after a
-// `--` separator (`npm run dev -- <frontendArgs>`), so
-// `forge env up dev -- --host 0.0.0.0` reaches Vite/Next. Empty (no `--` on
-// the invocation) leaves the command untouched.
+// frontendArgs are passthrough tokens forwarded to the dev server. npm needs
+// a separator (`npm run dev -- <frontendArgs>`); pnpm/yarn forward arguments
+// after the script name directly (a separator there reaches Vite/Next as a
+// literal `--` and stops their flag parsing). Empty passthrough leaves the
+// command untouched.
 func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parentEnv, frontendArgs []string, apiBaseURL string) *exec.Cmd {
 	runner := fe.DevRunner
 	if runner == "" {
@@ -3307,10 +3308,11 @@ func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parent
 	}
 	runArgs := []string{"run", "dev"}
 	if len(frontendArgs) > 0 {
-		// `npm run dev -- <args>` forwards <args> to the underlying dev
-		// server (vite / next dev) rather than to npm itself. The `--`
-		// terminator is required for npm/pnpm/yarn to stop consuming flags.
-		runArgs = append(runArgs, "--")
+		// Only npm consumes the separator; pnpm and yarn would pass it
+		// literally to the script, hiding all following server flags.
+		if runner == "npm" {
+			runArgs = append(runArgs, "--")
+		}
 		runArgs = append(runArgs, frontendArgs...)
 	}
 	cmd := exec.CommandContext(ctx, runner, runArgs...)

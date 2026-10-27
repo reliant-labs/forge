@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -582,6 +583,20 @@ func devRunnerFromLockfile(projectDir, feDir string) string {
 			return DevRunnerYarn
 		case fileExists(filepath.Join(dir, "package-lock.json")):
 			return DevRunnerNPM
+		}
+	}
+	// Before the first install a new scaffold has no lockfile. Its pinned
+	// package manager must still drive dev (rather than defaulting to npm).
+	if body, err := os.ReadFile(filepath.Join(feDir, "package.json")); err == nil {
+		var pkg struct {
+			PackageManager string `json:"packageManager"`
+		}
+		if json.Unmarshal(body, &pkg) == nil {
+			name, _, _ := strings.Cut(pkg.PackageManager, "@")
+			switch name {
+			case DevRunnerPNPM, DevRunnerNPM, DevRunnerYarn:
+				return name
+			}
 		}
 	}
 	return ""

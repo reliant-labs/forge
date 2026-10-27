@@ -110,12 +110,17 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: pnpm/action-setup@v4
+        if: steps.select.outputs.run == 'true'
+        with:
+          package_json_file: "frontends/web/package.json"
+
       - uses: actions/setup-node@v4
         if: steps.select.outputs.run == 'true'
         with:
           node-version-file: "frontends/web/package.json"
-          cache: "npm"
-          cache-dependency-path: "frontends/web/package-lock.json"
+          cache: "pnpm"
+          cache-dependency-path: "frontends/web/pnpm-lock.yaml"
 
       - name: Install forge
         if: steps.select.outputs.run == 'true'
@@ -150,7 +155,7 @@ jobs:
       - name: Install frontend dependencies
         if: steps.select.outputs.run == 'true'
         working-directory: frontends/web
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Log in to the declared registry
         if: steps.select.outputs.run == 'true'

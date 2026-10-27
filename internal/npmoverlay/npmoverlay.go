@@ -43,6 +43,17 @@
 // unchanged. Upstream tarball URLs stay absolute, so they download from the
 // real registry.
 //
+// pnpm reads none of that: it ignores npm_config_globalconfig and every
+// per-scope npm_config_* variable (measured, pnpm 12), and takes registry
+// routes only from .npmrc files and its own config. So Env also names a pnpm
+// USER config (pnpm_config_userconfig, which npm does not read): the user's
+// own .npmrc, auth and all, with the scope routes appended — the same
+// "add, take nothing away" rule as the npm file. And because pnpm by default
+// prefers a version published at least a day ago (minimumReleaseAge), and the
+// overlay dates its local version now, Env exempts the overlaid packages from
+// that rule; otherwise a range admitting both would quietly install the last
+// release, the very thing this package exists to prevent.
+//
 // It is test plumbing, no part of the forge binary: the e2e suite starts one
 // per test process (internal/cli, startNpmOverlayE2E), and CI's shell smoke
 // runs `go run ./internal/npmoverlay/cmd/npm-overlay`.
@@ -70,6 +81,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -115,6 +127,7 @@ type Overlay struct {
 	upstream   string
 	dir        string
 	npmrc      string
+	pnpmrc     string
 	log        io.Writer
 	client     *http.Client
 	srv        *http.Server
@@ -203,7 +216,17 @@ func Start(opts Options) (*Overlay, error) {
 // Env is the environment that routes npm to the overlay: KEY=VALUE pairs for
 // exec.Cmd.Env, os.Setenv or a CI env file.
 func (o *Overlay) Env() []string {
-	return []string{"npm_config_globalconfig=" + o.npmrc}
+	names := make([]string, 0, len(o.packages))
+	for name := range o.packages {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	exclude, _ := json.Marshal(names)
+	return []string{
+		"npm_config_globalconfig=" + o.npmrc,
+		"pnpm_config_userconfig=" + o.pnpmrc,
+		"pnpm_config_minimum_release_age_exclude=" + string(exclude),
+	}
 }
 
 // Close stops the server and removes its temporary directory.
@@ -229,12 +252,22 @@ func (o *Overlay) removeDir() {
 	_ = os.RemoveAll(o.dir)
 }
 
-// writeNpmrc writes the global config: the scope routes, after whatever the
-// global config npm would otherwise read already says, so pointing npm at
-// this file takes nothing else away.
+// writeNpmrc writes the two config files Env names: npm's global config and
+// pnpm's user config. Each is the file its tool would otherwise read with the
+// scope routes appended, so pointing the tool at it takes nothing else away.
 func (o *Overlay) writeNpmrc() error {
+	o.npmrc = filepath.Join(o.dir, "npmrc")
+	if err := o.writeRouted(o.npmrc, existingGlobalConfig()); err != nil {
+		return err
+	}
+	o.pnpmrc = filepath.Join(o.dir, "pnpmrc")
+	return o.writeRouted(o.pnpmrc, existingUserConfig())
+}
+
+// writeRouted writes path as prev's contents (if any) plus the scope routes.
+func (o *Overlay) writeRouted(path, prev string) error {
 	var b strings.Builder
-	if prev := existingGlobalConfig(); prev != "" {
+	if prev != "" {
 		if data, err := os.ReadFile(prev); err == nil {
 			b.Write(data)
 			if len(data) > 0 && data[len(data)-1] != '\n' {
@@ -245,8 +278,25 @@ func (o *Overlay) writeNpmrc() error {
 	for _, scope := range o.scopes {
 		fmt.Fprintf(&b, "%s:registry=%s\n", scope, o.URL)
 	}
-	o.npmrc = filepath.Join(o.dir, "npmrc")
-	return atomicfile.WriteFile(o.npmrc, []byte(b.String()), 0o644)
+	// The user's config can contain registry credentials. Keep its copy
+	// private even though the parent temp directory is already mode 0700.
+	return atomicfile.WriteFile(path, []byte(b.String()), 0o600)
+}
+
+// existingUserConfig is the user .npmrc pnpm would read without the
+// overlay: an explicit pnpm_config_userconfig / npm_config_userconfig, else
+// ~/.npmrc. "" when there is no home directory to find it in.
+func existingUserConfig() string {
+	for _, k := range []string{"pnpm_config_userconfig", "PNPM_CONFIG_USERCONFIG", "npm_config_userconfig", "NPM_CONFIG_USERCONFIG"} {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".npmrc")
 }
 
 // existingGlobalConfig is the global npmrc npm would read without the

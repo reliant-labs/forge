@@ -19,7 +19,7 @@ import (
 // globbing `frontends/*`, which missed every frontend declared elsewhere — an
 // in-place adopter's `web/` was never installed, built or tested.
 func newProjectFrontendsCmd() *cobra.Command {
-	var asJSON bool
+	var asJSON, withManager bool
 	cmd := &cobra.Command{
 		Use:   "frontends",
 		Short: "Print the directories of this project's in-repo frontends, one per line (what task and the CI gate loop over)",
@@ -36,7 +36,9 @@ Scripts loop over it rather than globbing frontends/*:
 
   for dir in $(forge project frontends); do (cd "$dir" && npm test); done
 
---json prints [{"name","path"}] instead.`,
+--json prints [{"name","path"}] instead.
+--with-package-manager prints manager:path rows using forge's install/CI
+resolver, including the declared manager's own lockfile when several exist.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			root, err := projectRoot()
@@ -70,7 +72,11 @@ Scripts loop over it rather than globbing frontends/*:
 				return enc.Encode(rows)
 			}
 			for _, fe := range fes {
-				if _, err := fmt.Fprintln(out, fe.Path); err != nil {
+				line := fe.Path
+				if withManager {
+					line = fe.PM() + ":" + fe.Path
+				}
+				if _, err := fmt.Fprintln(out, line); err != nil {
 					return err
 				}
 			}
@@ -78,5 +84,7 @@ Scripts loop over it rather than globbing frontends/*:
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Print [{name, path}] as JSON")
+	cmd.Flags().BoolVar(&withManager, "with-package-manager", false, "Print manager:path rows using the same resolver as installs and CI")
+	cmd.MarkFlagsMutuallyExclusive("json", "with-package-manager")
 	return cmd
 }

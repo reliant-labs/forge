@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 )
 
 // TestE2EAddFrontendKindsProduceABuildableTree is the `forge scaffold
@@ -85,7 +87,8 @@ func TestE2EAddFrontendKindsProduceABuildableTree(t *testing.T) {
 	// once up front so the three parallel installs do not race its prepare.
 	prebuildWebRuntimeE2E(t)
 	for _, dir := range []string{webDir, spaDir, mobileDir} {
-		runCmdTimeout(t, dir, 5*time.Minute, "npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
+		argv := frontenddeps.InstallArgv(dir, "", false)
+		runCmdTimeout(t, dir, 5*time.Minute, argv[0], argv[1:]...)
 	}
 
 	// ── the trees compile, straight out of the add verb ──────────────

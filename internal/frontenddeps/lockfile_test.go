@@ -151,7 +151,7 @@ func TestLockRefreshCommand(t *testing.T) {
 		{"npm at a workspace root runs at the root", Lock{Dir: root, File: "package-lock.json", Runner: "npm"},
 			[]string{"(cd " + root, "--package-lock-only"}, []string{"--prefix"}},
 		{"pnpm", Lock{Dir: root, File: "pnpm-lock.yaml", Runner: "pnpm"},
-			[]string{"pnpm install --lockfile-only --ignore-scripts"}, nil},
+			[]string{"pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile"}, nil},
 	}
 	for _, c := range cases {
 		got := LockRefreshCommand(c.lock, fe)

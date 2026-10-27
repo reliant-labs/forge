@@ -841,9 +841,15 @@ const nextConfig: NextConfig = {
   // GITIGNORED — present for a dev forge, absent for a release one. Letting
   // it decide would make the output path depend on which forge built the
   // project, which is the same class of bug one level up.
+  //
+  // A pnpm workspace ABOVE this frontend counts the same way: there the
+  // dependencies are symlinks into the root's node_modules/.pnpm, which the
+  // trace follows. This frontend's OWN pnpm-workspace.yaml does not — it
+  // keeps the store in its own node_modules.
   outputFileTracingRoot: (() => {
     let dir = __dirname;
     for (;;) {
+      if (dir !== __dirname && fs.existsSync(path.join(dir, "pnpm-workspace.yaml"))) return dir;
       const manifest = path.join(dir, "package.json");
       if (fs.existsSync(manifest)) {
         try {

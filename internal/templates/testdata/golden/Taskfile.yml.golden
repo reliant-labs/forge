@@ -117,7 +117,7 @@ tasks:
     desc: Install every frontend's dependencies
     cmds:
       - task: frontends
-        vars: {SCRIPT: 'npm install'}
+        vars: {SCRIPT: '$PM install'}
 
   build:
     desc: Build Go binaries and every frontend's bundle
@@ -134,7 +134,7 @@ tasks:
     desc: Build every frontend's bundle
     cmds:
       - task: frontends
-        vars: {SCRIPT: 'npm run build'}
+        vars: {SCRIPT: '$PM run build'}
 
   test:
     # Everything after `--` REPLACES the default `./...`, so it takes both
@@ -206,7 +206,7 @@ tasks:
         if: '[ -n "{{.CLI_ARGS}}" ]'
       - task: frontends
         if: '[ -z "{{.CLI_ARGS}}" ]'
-        vars: {SCRIPT: '{{.SLOT}} npm test -- --passWithNoTests'}
+        vars: {SCRIPT: '{{.SLOT}} $PM test $([ "$PM" != npm ] || printf %s --) --passWithNoTests'}
 
   frontends:
     # Runs SCRIPT in every frontend of this project in turn, stopping at the
@@ -221,18 +221,27 @@ tasks:
     # `forge scaffold frontend` would go untested while the suite stayed
     # green) and never globbed from frontends/* (which skipped every frontend
     # declared anywhere else). A backend-only project runs nothing.
+    #
+    # SCRIPT names the package manager as $PM, which is the one that owns
+    # each frontend. `project frontends --with-package-manager` uses forge's
+    # shared resolver, including the declared manager's own-lock tie-break
+    # during migrations. There is no second lockfile algorithm in this shell.
+    # An npm frontend beside a scaffolded one keeps its own manager.
     internal: true
     silent: true
     vars:
       FRONTENDS:
-        sh: '{{.FORGE}} project frontends'
+        sh: '{{.FORGE}} project frontends --with-package-manager'
     env:
       FRONTENDS: '{{.FRONTENDS}}'
     cmds:
       - cmd: |
           ran=0
-          for dir in $FRONTENDS; do
-            echo "==> {{.SCRIPT}} ($dir)"
+          for frontend in $FRONTENDS; do
+            PM="${frontend%%:*}"
+            dir="${frontend#*:}"
+            export PM
+            echo "==> {{.SCRIPT}} ($dir, $PM)"
             (cd "$dir" && {{.SCRIPT}}) || exit 1
             ran=$((ran + 1))
           done
@@ -331,7 +340,7 @@ tasks:
       # `task lint` above goes through `forge lint`, which already
       # includes this step.
       - task: frontends
-        vars: {SCRIPT: 'npm run lint && npm run typecheck'}
+        vars: {SCRIPT: '$PM run lint && $PM run typecheck'}
 
   dev:
     desc: Run the app with hot-reload (Air + Next dev)

@@ -214,7 +214,7 @@ func pinProbeTsconfig() string {
 //     type dedupe, the only reason the pins exist, still compiles.
 func TestE2ENextBuildPrerendersWithInstalledPeerPins(t *testing.T) {
 	t.Parallel()
-	requireTool(t, "node", "npm")
+	requireTool(t, "node", "npm", "pnpm")
 
 	root := t.TempDir()
 	feDir := filepath.Join(root, "frontends", "web")
@@ -225,7 +225,7 @@ func TestE2ENextBuildPrerendersWithInstalledPeerPins(t *testing.T) {
 	tsconfig := filepath.Join(feDir, "tsconfig.json")
 	writeFileE2E(t, tsconfig, pinProbeTsconfig())
 
-	if out, err := outputTimeout(feDir, 5*time.Minute, "npm", "install", "--no-audit", "--no-fund", "--prefer-offline"); err != nil {
+	if out, err := outputTimeout(feDir, 5*time.Minute, "pnpm", "install", "--no-frozen-lockfile", "--prefer-offline"); err != nil {
 		t.Fatalf("npm install: %v\n%s", err, lastLines(out, 40))
 	}
 	for _, pkg := range []string{"@tanstack/react-query", "@reliantlabs/forge-web-runtime"} {
@@ -236,7 +236,7 @@ func TestE2ENextBuildPrerendersWithInstalledPeerPins(t *testing.T) {
 	}
 
 	// ── Before: the pins as the template renders them. ──
-	out, err := outputTimeout(feDir, 5*time.Minute, "npm", "run", "build")
+	out, err := outputTimeout(feDir, 5*time.Minute, "pnpm", "run", "build")
 	if err == nil {
 		t.Fatalf("next build SUCCEEDED with directory pins; the probe no longer reproduces the bundle "+
 			"split, so the after-half proves nothing. Output tail:\n%s", lastLines(out, 40))
@@ -260,7 +260,7 @@ func TestE2ENextBuildPrerendersWithInstalledPeerPins(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(feDir, ".next")); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := outputTimeout(feDir, 5*time.Minute, "npm", "run", "build"); err != nil {
+	if out, err := outputTimeout(feDir, 5*time.Minute, "pnpm", "run", "build"); err != nil {
 		t.Fatalf("next build failed with declaration-file pins: %v\n%s", err, lastLines(out, 60))
 	}
 	html := readFileE2E(t, filepath.Join(feDir, ".next", "server", "app", "pin-probe.html"))
@@ -289,7 +289,7 @@ func TestE2ENextBuildPrerendersWithInstalledPeerPins(t *testing.T) {
 // unit tests in internal/templates/nextjs_dockerfile_test.go.
 func TestE2ENextjsDockerfileStaticImageBuilds(t *testing.T) {
 	t.Parallel()
-	requireTool(t, "docker", "npm")
+	requireTool(t, "docker", "npm", "pnpm")
 
 	feDir := t.TempDir()
 	render := func(name string) string {
@@ -303,10 +303,11 @@ func TestE2ENextjsDockerfileStaticImageBuilds(t *testing.T) {
 	}
 	writeFileE2E(t, filepath.Join(feDir, "Dockerfile"), render("nextjs/Dockerfile.tmpl"))
 	writeFileE2E(t, filepath.Join(feDir, ".dockerignore"), render("nextjs/.dockerignore"))
-	writeFileE2E(t, filepath.Join(feDir, "package.json"), `{"name":"web","private":true,
+	writeFileE2E(t, filepath.Join(feDir, "package.json"), `{"name":"web","private":true,"packageManager":"pnpm@`+templates.PnpmVersion+`",
   "scripts":{"build":"NODE_ENV=production next build --webpack"},
   "dependencies":{"next":"^16.3.5","react":"^19.1.0","react-dom":"^19.1.0"}}
 `)
+	writeFileE2E(t, filepath.Join(feDir, "pnpm-workspace.yaml"), "allowBuilds: {}\n")
 	// The same production gate the scaffold's static next.config.ts uses.
 	writeFileE2E(t, filepath.Join(feDir, "next.config.mjs"),
 		"export default process.env.NODE_ENV === \"production\" ? { output: \"export\" } : {};\n")
@@ -320,8 +321,8 @@ func TestE2ENextjsDockerfileStaticImageBuilds(t *testing.T) {
 	// A host node_modules the .dockerignore must keep out of the context.
 	writeFileE2E(t, filepath.Join(feDir, "node_modules", ".poison"), "a host install must not reach the image\n")
 
-	if out, err := outputTimeout(feDir, 4*time.Minute, "npm", "install", "--package-lock-only", "--no-audit", "--no-fund"); err != nil {
-		t.Fatalf("npm install --package-lock-only: %v\n%s", err, lastLines(out, 40))
+	if out, err := outputTimeout(feDir, 4*time.Minute, "pnpm", "install", "--lockfile-only", "--no-frozen-lockfile"); err != nil {
+		t.Fatalf("pnpm install --lockfile-only: %v\n%s", err, lastLines(out, 40))
 	}
 
 	id := strings.ToLower(strings.ReplaceAll(filepath.Base(filepath.Dir(feDir))+"-"+filepath.Base(feDir), "_", "-"))

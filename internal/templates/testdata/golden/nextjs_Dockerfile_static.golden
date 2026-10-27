@@ -6,27 +6,37 @@ FROM node:22-alpine AS builder
 # The frontend builds at the SAME project-relative path it has in the
 # repository (frontends/web), not at /app. Every relative path the committed
 # config carries then means in the image what it means on a developer machine
-# and in CI's `npm run build`. Built from /app, tsconfig's
+# and in CI's `pnpm run build`. Built from /app, tsconfig's
 # "../../node_modules/…" peer pins pointed at /node_modules, which webpack
 # re-rooted onto /app/node_modules — a pin that resolves where it resolves
 # nowhere else, and the environment-specific failure mode that hid a bundle
 # split behind "it only breaks in Docker".
 WORKDIR /src/frontends/web
 
-# `npm ci`, not `npm install`: the image installs exactly what the lockfile
-# says, and fails rather than silently re-resolving a range. The build
-# context is this directory, so ./.dockerignore (not the project root's)
-# keeps a host node_modules — native binaries built for the developer's OS —
-# out of the image.
-COPY package.json package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
+# pnpm at exactly the release package.json's `packageManager` pins: corepack,
+# which ships with Node through v24, downloads that version on first use.
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable pnpm
+
+# --frozen-lockfile: the image installs exactly what pnpm-lock.yaml says, and
+# fails rather than silently re-resolving a range. pnpm-workspace.yaml holds
+# the overrides and the install scripts pnpm may run, so it is an input to the
+# install too. The store is a build cache mount, so a rebuild downloads only
+# what changed. The build context is this directory, so ./.dockerignore (not
+# the project root's) keeps a host node_modules — native binaries built for
+# the developer's OS — out of the image.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
+  pnpm fetch --frozen-lockfile
+RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
+  pnpm install --offline --frozen-lockfile
 
 COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 
-RUN npm run build
+RUN pnpm run build
 
 # --- Serve the static export ---
 # `output: static` builds `output: "export"`: the whole site is plain files in

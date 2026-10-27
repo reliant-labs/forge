@@ -9,6 +9,49 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 )
 
+func TestOwnedOverviewMigratesEditsWithoutDroppingIndependentOverride(t *testing.T) {
+	for _, bothEdited := range []bool{false, true} {
+		t.Run(map[bool]string{false: "migrate", true: "preserve-both"}[bothEdited], func(t *testing.T) {
+			dir := t.TempDir()
+			legacy := DashboardsDir + "/shop-overview_gen.json"
+			owned := OverridePath("shop", Dashboard{ID: "overview"})
+			if err := os.MkdirAll(filepath.Join(dir, DashboardsDir), 0755); err != nil {
+				t.Fatal(err)
+			}
+			old := []byte(`{"name":"edited legacy","tiles":[]}`)
+			if err := os.WriteFile(filepath.Join(dir, legacy), old, 0644); err != nil {
+				t.Fatal(err)
+			}
+			if bothEdited {
+				if err := os.WriteFile(filepath.Join(dir, owned), []byte(`{"name":"independent override"}`), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cs := &checksums.FileChecksums{}
+			if _, err := Write(dir, fixture(), cs); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(filepath.Join(dir, owned))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bothEdited && string(got) != string(old) {
+				t.Fatalf("legacy edit lost: %s", got)
+			}
+			_, err = os.Stat(filepath.Join(dir, legacy))
+			if bothEdited && err != nil {
+				t.Fatal("independent legacy edit was removed")
+			}
+			if !bothEdited && !os.IsNotExist(err) {
+				t.Fatal("migrated legacy twin remains")
+			}
+			if _, generated := cs.Unstampable[owned]; generated {
+				t.Fatal("owned output retained generated ownership")
+			}
+		})
+	}
+}
+
 func TestWriteIsIdempotentHonoursOverridesAndRetiresStaleFiles(t *testing.T) {
 	dir := t.TempDir()
 	cs := &checksums.FileChecksums{}
@@ -19,7 +62,7 @@ func TestWriteIsIdempotentHonoursOverridesAndRetiresStaleFiles(t *testing.T) {
 		}
 		return string(b)
 	}
-	overview := DashboardsDir + "/shop-overview_gen.json"
+	overview := OverridePath("shop", Dashboard{ID: "overview"})
 
 	first, err := Write(dir, fixture(), cs)
 	if err != nil {
@@ -48,8 +91,8 @@ func TestWriteIsIdempotentHonoursOverridesAndRetiresStaleFiles(t *testing.T) {
 	if _, err := Write(dir, fixture(), cs); err != nil {
 		t.Fatal(err)
 	}
-	if read(overview) != "" {
-		t.Error("the generated overview should be retired while an override exists")
+	if read(DashboardsDir+"/shop-overview_gen.json") != "" {
+		t.Error("the owned overview must have no generated twin")
 	}
 	if b, _ := os.ReadFile(override); string(b) != `{"name":"mine","tags":[],"tiles":[]}` {
 		t.Error("the override was modified")
@@ -57,8 +100,8 @@ func TestWriteIsIdempotentHonoursOverridesAndRetiresStaleFiles(t *testing.T) {
 	if err := os.Remove(override); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Write(dir, fixture(), cs); err != nil || read(overview) != want {
-		t.Fatalf("removing the override should bring the generated file back (err=%v)", err)
+	if _, err := Write(dir, fixture(), cs); err != nil || read(overview) != "" {
+		t.Fatalf("deleting an owned overview must not resurrect it (err=%v)", err)
 	}
 
 	// A service that disappears takes its dashboard with it.

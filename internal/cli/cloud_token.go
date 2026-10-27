@@ -113,7 +113,7 @@ func (c organizationAdminCaller) Call(ctx context.Context, procedure string, req
 		return err
 	}
 	var body map[string]any
-	if err = json.Unmarshal(raw, &body); err != nil {
+	if err := json.Unmarshal(raw, &body); err != nil {
 		return err
 	}
 	body["orgId"] = c.org

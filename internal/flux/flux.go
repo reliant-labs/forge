@@ -5,6 +5,7 @@ package flux
 
 import pkgflux "github.com/reliant-labs/forge/pkg/flux"
 
+// Flux chart and controller constants mirror their public pkg/flux definitions.
 const (
 	ChartOCI                = pkgflux.ChartOCI
 	ChartVersion            = pkgflux.ChartVersion

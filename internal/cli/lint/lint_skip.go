@@ -304,5 +304,5 @@ func npmInstallFix(feDir string) string {
 			root = rel
 		}
 	}
-	return fmt.Sprintf("run `%s` in %s, then re-run `forge lint`", frontenddeps.InstallCommand(feDir, "", true), filepath.ToSlash(root))
+	return fmt.Sprintf("run %#q in %s, then re-run `forge lint`", frontenddeps.InstallCommand(feDir, "", true), filepath.ToSlash(root))
 }

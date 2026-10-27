@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/gofrs/flock"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/pkg/credentials"
 )
@@ -39,7 +41,7 @@ func projectEndpoint(env string, decl *cloud.Declaration) (cloud.Endpoint, error
 		return ep, err
 	}
 	var ids map[string]string
-	if err = json.Unmarshal(raw, &ids); err != nil {
+	if err := json.Unmarshal(raw, &ids); err != nil {
 		return ep, fmt.Errorf("read hosted project binding: %w", err)
 	}
 	key, err := credentials.Normalize(ep.URL)
@@ -56,14 +58,14 @@ func bindHostedProject(ctx context.Context, env string, decl *cloud.Declaration,
 		return cloud.Endpoint{}, err
 	}
 	path := filepath.Join(filepath.Dir(file), hostedProjectBindingFile)
-	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return cloud.Endpoint{}, err
 	}
 	lock := flock.New(path+".lock", flock.SetPermissions(0600))
 	if err := lock.Lock(); err != nil {
 		return cloud.Endpoint{}, err
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	return bindHostedProjectLocked(ctx, env, decl, org)
 }
 
@@ -94,7 +96,7 @@ func bindHostedProjectLocked(ctx context.Context, env string, decl *cloud.Declar
 	if org != "" {
 		request["orgId"] = org
 	}
-	if err = cloud.NewClient(ep, cred).Call(ctx, "controlplane.v1.DeployService/ResolveHostedProject", request, &reply); err != nil {
+	if err := cloud.NewClient(ep, cred).Call(ctx, "controlplane.v1.DeployService/ResolveHostedProject", request, &reply); err != nil {
 		return ep, err
 	}
 	if reply.ProjectID == "" || reply.OrgID == "" || reply.Name != ep.ProjectName {
@@ -107,7 +109,7 @@ func bindHostedProjectLocked(ctx context.Context, env string, decl *cloud.Declar
 	path := filepath.Join(filepath.Dir(file), hostedProjectBindingFile)
 	ids := map[string]string{}
 	if raw, e := os.ReadFile(path); e == nil {
-		if err = json.Unmarshal(raw, &ids); err != nil {
+		if err := json.Unmarshal(raw, &ids); err != nil {
 			return ep, err
 		}
 	} else if !errors.Is(e, os.ErrNotExist) {
@@ -125,7 +127,7 @@ func bindHostedProjectLocked(ctx context.Context, env string, decl *cloud.Declar
 	if err != nil {
 		return ep, err
 	}
-	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return ep, err
 	}
 	ignore := filepath.Join(filepath.Dir(path), ".gitignore")
@@ -134,7 +136,7 @@ func bindHostedProjectLocked(ctx context.Context, env string, decl *cloud.Declar
 		return ep, readErr
 	}
 	if !strings.Contains("\n"+string(ignored), "\n/hosted-projects.json\n") {
-		if err := os.WriteFile(ignore, append(ignored, []byte("\n/hosted-projects.json\n/hosted-projects.json.lock\n/.hosted-projects-*\n")...), 0600); err != nil {
+		if err := atomicfile.WriteFile(ignore, append(ignored, []byte("\n/hosted-projects.json\n/hosted-projects.json.lock\n/.hosted-projects-*\n")...), 0600); err != nil {
 			return ep, err
 		}
 	}
@@ -142,15 +144,15 @@ func bindHostedProjectLocked(ctx context.Context, env string, decl *cloud.Declar
 	if err != nil {
 		return ep, err
 	}
-	defer os.Remove(tmp.Name())
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	if _, err = tmp.Write(append(raw, '\n')); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return ep, err
 	}
-	if err = tmp.Close(); err != nil {
+	if err := tmp.Close(); err != nil {
 		return ep, err
 	}
-	if err = os.Rename(tmp.Name(), path); err != nil {
+	if err := os.Rename(tmp.Name(), path); err != nil {
 		return ep, err
 	}
 	ep.ProjectID = reply.ProjectID

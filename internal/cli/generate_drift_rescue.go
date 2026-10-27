@@ -67,6 +67,9 @@ func stepAdjudicateTier1Drift(ctx *pipelineContext) error {
 	var rescued []string
 	var unresolved []checksums.Tier1DriftEntry
 	for _, d := range pending {
+		if checksums.PreservedOwnershipTransfer(ctx.AbsPath, d.Path, d.OnDiskHash) {
+			continue // Exact quarantined bytes survived a verified ownership migration.
+		}
 		if checksums.RescueFreshRender(ctx.AbsPath, d.Path, ctx.Checksums) {
 			rescued = append(rescued, d.Path)
 			continue

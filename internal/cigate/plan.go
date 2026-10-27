@@ -560,7 +560,7 @@ func (p planner) needsDeps(fe templates.FrontendCIConfig) func() string {
 		if dirExists(p.path(fe.Path, "node_modules")) {
 			return ""
 		}
-		return fmt.Sprintf("%s/node_modules is missing — run `%s` in %s (the deps-%s row does)", fe.Path, frontenddeps.InstallCommand(p.path(fe.Path), "", true), fe.Path, fe.Name)
+		return fmt.Sprintf("%s/node_modules is missing — run %#q in %s (the deps-%s row does)", fe.Path, frontenddeps.InstallCommand(p.path(fe.Path), "", true), fe.Path, fe.Name)
 	}
 }
 

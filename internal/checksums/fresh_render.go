@@ -8,6 +8,36 @@ import (
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
+type ownershipTransfer struct {
+	destination string
+	body        string
+}
+
+var ownershipTransfers = map[string]ownershipTransfer{}
+
+// RecordPreservedOwnershipTransfer records a completed emitter-owned migration.
+// Adjudication later verifies the captured bytes still exist at the destination
+// or the retained legacy path; a disown flag alone is never sufficient proof.
+func RecordPreservedOwnershipTransfer(root, legacy, destination string, preserved []byte) {
+	ownershipTransfers[filepath.Join(root, slashKey(legacy))] = ownershipTransfer{destination: slashKey(destination), body: BodyHash(preserved)}
+}
+
+// PreservedOwnershipTransfer proves that the exact quarantined edit survived an
+// explicit transfer this run, independently of obsolete-disown retirement.
+func PreservedOwnershipTransfer(root, legacy, originalBody string) bool {
+	transfer, ok := ownershipTransfers[filepath.Join(root, slashKey(legacy))]
+	if !ok || transfer.body != originalBody {
+		return false
+	}
+	for _, rel := range []string{transfer.destination, legacy} {
+		content, err := os.ReadFile(filepath.Join(root, rel))
+		if err == nil && BodyHash(content) == originalBody {
+			return true
+		}
+	}
+	return false
+}
+
 // RescueFreshRender settles a Tier-1 drift report against what this run
 // would write. The stomp guard reports a file as hand-edited when its bytes
 // disagree with forge's record of them — the embedded forge:hash marker, or

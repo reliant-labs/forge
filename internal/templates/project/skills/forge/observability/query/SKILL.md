@@ -52,11 +52,11 @@ Local and cloud compile through ONE query compiler (`forge/pkg/obsquery`), so a 
 | `forge obs status [env]` | What is wrong right now: per-service rate, errors and p95; new and regressed issues; alerts firing or pending (cloud); when the newest log and span arrived, and whether the telemetry token reached the cluster (cloud); the release in force and the last 5 changes |
 | `forge obs check [env]` | Did the deploy work? Before/after the promotion: error rate, p95, new and regressed issues, alerts, restarts |
 | `forge obs changes [env]` | What changed: promotions, rollbacks, failed deploys and activity, newest first (locally: this machine's ledger and `forge env up` starts) |
-| `forge obs issues [env]` | Grouped errors (`--status`, `--since-release`, `--since-deploy`, `--platform server\|browser`, `--assignee <user-id>`, `--sort last\|first\|events`, `--page-token`). Issues that share a cause and first fired together are one INCIDENT and collapse under the first (`+N related`); `--expand-incidents` lists them all, `--incident-window` sets how close "together" is (default 10m). Nothing is merged | Cloud rows carry `assignee`, `incident_key`, `related_count`.
+| `forge obs issues [env]` | Grouped errors (`--status`, `--since-release`, `--since-deploy`, `--platform server\|browser`, `--assignee <user-id\|me\|none>`, `--sort last\|first\|events`, `--page-token`). Issues that share a cause and first fired together are one INCIDENT and collapse under the first (`+N related`); `--expand-incidents` lists them all, `--incident-window` sets how close "together" is (default 10m). Nothing is merged | Cloud rows carry `assignee`, `incident_key`, `related_count`.
 | `forge obs issue <id> [env]` | Everything needed to fix one issue: culprit, frames, latest event and its trace, events per version, co-occurring issues, the other issues of its incident, the release live when it was last seen, suspect commits from local git (`--events N`); on a cloud env also its assignee and the newest `--timeline-limit N` (default 10) timeline entries, oldest first: status changes, comments, assignment, linked chats |
 | `forge obs issue resolve\|ignore\|unresolve <id> [env]` | Triage (cloud; needs `obs:triage`): `resolve --in next\|<version>`, `ignore --until 72h` |
 | `forge obs issue comment <id> <text> [env]` | Add a comment (cloud; needs `obs:triage`) |
-| `forge obs issue assign <id> <user-id\|none> [env]` | Set or clear the assignee (cloud; needs `obs:triage`); sends the version it read, exits 1 `changed since you read it` if the issue moved, never retries |
+| `forge obs issue assign <id> <user-id\|me\|none> [env]` | Set or clear the assignee (cloud; needs `obs:triage`); sends the version it read, exits 1 `changed since you read it` if the issue moved, never retries |
 | `forge obs sessions [env]` | Real-user browser sessions that started in the range, newest first (`--has-error`, `--has-replay`, `--user`, `--path`, `--since` up to 30d, `--limit`, `--page-token`). Hosted envs only |
 | `forge obs session <id> [env]` | One session as a text timeline: pages, clicks on masked selectors, failed requests, errors with their issue, custom events, trace ids (`--limit`, `--page-token`). No replay bytes. Exit 1 not found, 2 could not look |
 | `forge obs logs [env] [query]` | Search and tail (`--trace`, `--severity`, `--oldest`, `--page-token`; `--follow` polls, every `--interval`, default 2s) |
@@ -72,6 +72,29 @@ Local and cloud compile through ONE query compiler (`forge/pkg/obsquery`), so a 
 | `forge obs profile`, `forge obs alerts check`, `forge obs dashboards check` | Flamegraphs, alerts-as-code and dashboards (`observability/profiles`, `observability/alerts`, `observability/dashboards`) |
 
 Common flags of the telemetry verbs: `--since 2h` (or `--from/--to`), `--service` (repeatable), `--filter k=v` / `k!=v` (repeatable), `--backend local|cloud`, `--limit` (list verbs), `--json`, `--fields a,b.c`, and `--explain` (alias `--print-sql`), which adds the compiled `statements[]{purpose,sql,params}` to the document instead of running them. Copy a statement into `forge obs query --sql` when the structured verbs can't express what you need. `FORGE_OBS_DEBUG=1` logs each raw query's literal-free shape to stderr. `status` and `changes` take the time, backend and output flags but not `--filter` or `--explain`; `check` has its own (below).
+
+## Issue assignment filters
+
+```bash
+forge obs issues prod --assignee me       # the credential's acting person
+forge obs issues prod --assignee none     # only unassigned issues
+forge obs issue assign ISS-ab12 me prod   # assign to that person
+forge obs issue assign ISS-ab12 none prod # clear the assignee
+```
+
+The server resolves `me` from the **verified credential**, including user-owned CLI
+login and helper tokens; the CLI never infers a user from a stored login, decodes a
+token, or calls the human-only `GetCurrentUser` RPC. Organization automation tokens
+act for nobody: `me` is refused **FailedPrecondition**, exit 2, without a fallback
+or retry. Name a user ID instead. `none` on a list sends the API's `unassigned=true`
+(not `assignee="none"`); an omitted filter sends neither field, including no false
+`unassigned`. Locally every issue is unassigned: `none` includes all rows while a
+named assignee or `me` matches none; assignment writes still need a hosted env.
+
+Backend dependency: listing uses the CP #1402 fields. `assign ... me` additionally
+requires the owner-approved server-side `AssignIssue.assignee_user_id="me"`
+resolution; #1402 alone only supports literal user IDs on that mutation. Until
+that backend change lands, use an explicit user ID for assignment.
 
 ## What is wrong now: `forge obs status`
 

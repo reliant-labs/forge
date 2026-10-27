@@ -233,6 +233,7 @@ func AddSideRenderOnly(relPath string) { sideRenderOnly[slashKey(relPath)] = tru
 // each pipeline run so a long-lived process doesn't leak state across
 // invocations.
 func ResetPerRunState() {
+	ownershipTransfers = map[string]ownershipTransfer{}
 	sideRenderOnly = map[string]bool{}
 	healNoticed = map[string]bool{}
 	pendingHeals = map[string]pendingHeal{}

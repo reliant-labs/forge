@@ -17,7 +17,7 @@ func RevokeIdentity(ctx context.Context, ep Endpoint, token string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 && resp.StatusCode != 401 {
 		return fmt.Errorf("could not revoke CLI identity (HTTP %d); local credential retained", resp.StatusCode)
 	}

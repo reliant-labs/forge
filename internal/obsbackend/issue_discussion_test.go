@@ -56,7 +56,7 @@ func TestCloudListIssuesAssigneeFilter(t *testing.T) {
 	for _, tc := range []struct {
 		assignee string
 		want     bool
-	}{{"", false}, {"u-1", true}} {
+	}{{"", false}, {"u-1", true}, {"me", true}} {
 		f := &fakeCaller{replies: map[string]string{procListIssues: `{}`}}
 		n := narrowC()
 		n.Filters = nil
@@ -70,11 +70,40 @@ func TestCloudListIssuesAssigneeFilter(t *testing.T) {
 	}
 }
 
+func TestCloudListIssuesUnassignedWire(t *testing.T) {
+	for _, unassigned := range []bool{false, true} {
+		f := &fakeCaller{replies: map[string]string{procListIssues: `{}`}}
+		n := narrowC()
+		n.Filters = nil
+		if _, err := cloudWith(f).ListIssues(context.Background(), ListIssuesRequest{Narrow: n, Unassigned: unassigned}); err != nil {
+			t.Fatal(err)
+		}
+		req := f.reqs[procListIssues]
+		got, has := req["unassigned"]
+		if has != unassigned || (has && got != true) || req["assignee"] != nil {
+			t.Fatalf("only send unassigned=true or omit it, never false: %v", req)
+		}
+	}
+	f := &fakeCaller{}
+	_, err := cloudWith(f).ListIssues(context.Background(), ListIssuesRequest{Assignee: "me", Unassigned: true})
+	if exitOf(err) != ExitWrong || len(f.reqs) != 0 {
+		t.Fatalf("exclusive filters must not reach server: %v %v", err, f.reqs)
+	}
+}
+
 func TestLocalListIssuesWithAnAssigneeMatchesNothing(t *testing.T) {
 	l, fr := localIssues()
 	res, err := l.ListIssues(context.Background(), ListIssuesRequest{Narrow: narrowC(), Limit: 5, Assignee: "u-1"})
 	if err != nil || len(res.Issues) != 0 || len(fr.ran) != 0 {
 		t.Errorf("issues=%v err=%v ran=%d: every local issue is unassigned", res.Issues, err, len(fr.ran))
+	}
+}
+
+func TestLocalUnassignedFilterIncludesAllIssues(t *testing.T) {
+	l, _ := localIssues(fakeAnswer{"GROUP BY fingerprint", Result{Rows: [][]any{issueRow(testFP)}}})
+	res, err := l.ListIssues(context.Background(), ListIssuesRequest{Narrow: narrowC(), Limit: 5, Unassigned: true})
+	if err != nil || len(res.Issues) != 1 || res.Issues[0].Assignee != nil {
+		t.Fatalf("local issues are all unassigned: %+v %v", res, err)
 	}
 }
 

@@ -415,7 +415,8 @@ func ApplyQueryScopes(data *FrontendHookTemplateData, svc ServiceDef, scopes map
 				"Declare `option idempotency_level = NO_SIDE_EFFECTS;` if the rpc only reads, or delete the marker",
 				where, m.Name, svc.Name)
 		}
-		if !unicode.IsUpper([]rune(entity)[0]) || !declaresEntityMessage(svc, entity) && !known[entity] {
+		first, _ := utf8.DecodeRuneInString(entity)
+		if !unicode.IsUpper(first) || !declaresEntityMessage(svc, entity) && !known[entity] {
 			hint := ""
 			names := make([]string, 0, len(known))
 			for n := range known {

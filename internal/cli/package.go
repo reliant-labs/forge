@@ -144,29 +144,34 @@ func runPackageNewThenGenerate(cmd *cobra.Command, args []string) error {
 	})
 }
 
+// packageTypeForCommand applies the service default even for callers without
+// a registered --type flag, and gives invalid types a stable diagnostic.
+func packageTypeForCommand(cmd *cobra.Command) (string, error) {
+	pkgType, _ := cmd.Flags().GetString("type")
+	pkgType = strings.TrimSpace(pkgType)
+	if pkgType == "" {
+		pkgType = "service"
+	}
+	if validPackageTypes[pkgType] {
+		return pkgType, nil
+	}
+	valid := make([]string, 0, len(validPackageTypes))
+	for k := range validPackageTypes {
+		valid = append(valid, k)
+	}
+	sort.Strings(valid)
+	return "", fmt.Errorf("invalid package type %q: valid types are %s", pkgType, strings.Join(valid, ", "))
+}
+
 func runPackageNew(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
 	kind, _ := cmd.Flags().GetString("kind")
 	kind = strings.TrimSpace(kind)
 
-	// --type defaults to "service" when the flag isn't registered (e.g.
-	// older callers or test commands that don't wire it). Treat empty
-	// the same as the default so the call site always gets a valid value.
-	pkgType, _ := cmd.Flags().GetString("type")
-	pkgType = strings.TrimSpace(pkgType)
-	if pkgType == "" {
-		pkgType = "service"
-	}
-	if !validPackageTypes[pkgType] {
-		// Sort the names so the error message is stable across runs (map
-		// iteration order is unspecified).
-		valid := make([]string, 0, len(validPackageTypes))
-		for k := range validPackageTypes {
-			valid = append(valid, k)
-		}
-		sort.Strings(valid)
-		return fmt.Errorf("invalid package type %q: valid types are %s", pkgType, strings.Join(valid, ", "))
+	pkgType, err := packageTypeForCommand(cmd)
+	if err != nil {
+		return err
 	}
 
 	// --kind and --type compose only on the default "service" type.

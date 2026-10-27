@@ -50,10 +50,9 @@ const (
 	// sendTimeout bounds the one request a report makes.
 	sendTimeout = 15 * time.Second
 
-	// Conservative UTF-8 byte bounds applied after redaction, including
-	// the truncation marker. Byte bounds also satisfy the ingest's Unicode
-	// length limits; JSON escaping is covered by its separate body cap.
-	MaxTitleBytes       = 200
+	// MaxTitleBytes bounds redacted UTF-8 title bytes including the marker.
+	MaxTitleBytes = 200
+	// MaxTextBytes bounds redacted UTF-8 text bytes including the marker.
 	MaxTextBytes        = 4000
 	maxCommandLineBytes = 2000
 	maxVersionBytes     = 128

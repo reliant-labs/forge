@@ -12,7 +12,57 @@ import (
 
 	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/templates"
+	"gopkg.in/yaml.v3"
 )
+
+// Full CLI tests execute rendered Taskfiles, including the full-tier changed
+// tests in test-short-warm. Keep its PR cache-replay counterpart provisioned
+// identically, and require the tool before any of those test entrypoints.
+func TestTaskfileFrontendTestsHaveTaskInCI(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Uses string            `yaml:"uses"`
+				If   string            `yaml:"if"`
+				With map[string]string `yaml:"with"`
+				Run  string            `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(body, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"test-cli", "test-short-warm", "test-short"} {
+		t.Run(name, func(t *testing.T) {
+			job, ok := workflow.Jobs[name]
+			if !ok {
+				t.Fatalf("CI job %s is missing", name)
+			}
+			installed, tested := false, false
+			for _, step := range job.Steps {
+				if step.Uses == "arduino/setup-task@v2" {
+					if step.With["version"] != "3.52.0" || step.If != "" {
+						t.Fatal("Task must be installed unconditionally at the tested pin 3.52.0")
+					}
+					installed = true
+				}
+				if strings.Contains(step.Run, "ci-test-shard.sh") || strings.Contains(step.Run, "ci-changed-tests.sh") || strings.Contains(step.Run, "ci-test-packages.sh cli") {
+					tested = true
+					if !installed {
+						t.Errorf("Task is not installed before %s", step.Run)
+					}
+				}
+			}
+			if !tested {
+				t.Fatal("CI job has no recognized CLI test entrypoint")
+			}
+		})
+	}
+}
 
 func TestTaskfileFrontendTestArguments(t *testing.T) {
 	if testing.Short() {

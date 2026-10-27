@@ -389,6 +389,10 @@ func TestEnsureGeneratedMergeDriver_OptOutsAndEphemeralBinaries(t *testing.T) {
 	dir := clone()
 	kept := filepath.Join(t.TempDir(), "forge")
 	writeTreeFileT(t, kept, "#!/bin/sh\n")
+	// A live driver must be executable, not merely present on disk.
+	if err := os.Chmod(kept, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	want := "'" + kept + "' merge-generated %O %A %B %L %P"
 	if out, err := exec.Command("git", "-C", dir, "config", "merge.forge-generated.driver", want).CombinedOutput(); err != nil {
 		t.Fatalf("seed config: %v\n%s", err, out)

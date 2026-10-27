@@ -71,6 +71,8 @@ func TestProjectMemoryForASiteIsFrontendOnly(t *testing.T) {
 		"Adding an API later",                    // the path to a backend
 		"When forge itself is wrong",             // shared sections survive
 		"## Engineering disposition",
+		"report-bug --severity high",             // main's reporting guidance survives
+		"Never put credentials or file contents", // including its privacy boundary
 	} {
 		if !strings.Contains(memory, want) {
 			t.Errorf("site memory lacks %q", want)

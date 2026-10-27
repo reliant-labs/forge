@@ -963,7 +963,7 @@ jobs:
       # whole workflow.
       - name: Install KCL
         env:
-          KCL_VERSION: v0.13.1
+          KCL_VERSION: v0.13.2
         run: |
           curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
           command -v kcl

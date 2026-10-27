@@ -92,7 +92,7 @@ func TestMCP_ListsTheTools(t *testing.T) {
 		got[tool.Name] = tool
 	}
 	readOnly := []string{"capabilities", "annotations", "libraries", "audit", "shapes", "skill_list", "skill_search", "skill_load"}
-	mutating := []string{"lint", "generate"}
+	mutating := []string{"lint", "generate", "report_bug"}
 	if len(got) != len(readOnly)+len(mutating) {
 		t.Errorf("got %d tools, want %d: %v", len(got), len(readOnly)+len(mutating), got)
 	}
@@ -115,6 +115,11 @@ func TestMCP_ListsTheTools(t *testing.T) {
 		if tool.Annotations == nil || tool.Annotations.ReadOnlyHint {
 			t.Errorf("%s must not be annotated read-only", name)
 		}
+	}
+	// report_bug is the one tool that sends anything off the machine, and
+	// says so.
+	if rb := got["report_bug"]; rb != nil && (rb.Annotations == nil || rb.Annotations.OpenWorldHint == nil || !*rb.Annotations.OpenWorldHint) {
+		t.Errorf("report_bug must be annotated open-world")
 	}
 	for name, tool := range got {
 		schema, _ := json.Marshal(tool.InputSchema)

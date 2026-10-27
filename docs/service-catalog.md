@@ -8,19 +8,19 @@ RPC execution endpoint, endpoint registry or new database is involved.
 
 ## What it says
 
-* Processes are **module + composition root**, with the root's command path.
+- Processes are **module + composition root**, with the root's command path.
   One executable's `server api` and `server worker` remain separate. Reach comes
   from the existing typed graph and reconciled `compose.go`, not filename guesses.
-* `serves` lists reachable generated mountkit route sets and their fully qualified
+- `serves` lists reachable generated mountkit route sets and their fully qualified
   proto services/audiences. This is a declared route-set capability, **not proof
   a live listener mounted it**. Custom/dynamic mounting is not inferred.
-* Service methods retain fully qualified input/output names, both streaming
+- Service methods retain fully qualified input/output names, both streaming
   flags, auth declaration and protobuf idempotency (`IDEMPOTENCY_UNKNOWN`,
   `IDEMPOTENT`, `NO_SIDE_EFFECTS`; older descriptor fallback is `UNKNOWN`).
   Each service's `descriptor` is the existing `forge_descriptor.json` ServiceDef:
   `Schemas`, `SchemaFiles`, `Enums`, `validate` and `validate_options` are reused
   verbatim. There is no second validation/form dialect or invocation handle.
-* Components expose typed method signatures and module-relative source locations.
+- Components expose typed method signatures and module-relative source locations.
   Consumed interfaces expose their method sets. Assignable producers and local
   concrete `implementation_candidates` are **candidates**, not proof a constructor
   selected that concrete type. `bindings.providers` lists graph accessors in that
@@ -28,7 +28,7 @@ RPC execution endpoint, endpoint registry or new database is involved.
   not runtime selection. A conditional/factory can select differently at runtime.
   Expressions with no identifiable accessor remain `unresolved`, even if exactly
   one candidate happens to exist. Missing types carry diagnostics, not guesses.
-* Client reach means **can-call a service**, never “called every method”. Observed
+- Client reach means **can-call a service**, never “called every method”. Observed
   calls still come from telemetry. No static per-method call edges are fabricated.
 
 Generation is deterministic for the same source/build inputs. External-module

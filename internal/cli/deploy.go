@@ -697,6 +697,9 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 	// and resolving it up front is what keeps those two answers from being
 	// read at different moments from different places.
 	projectDir := projectDirForKCL()
+	if err := prepareHostedProjectForWrite(ctx, projectDir, envName, f); err != nil {
+		return err
+	}
 	// First of all: a release whose hosted part does not fit the plan is
 	// refused before the ledger is even opened, with nothing written.
 	capacity, err := hostedCapacityPreflightForEnv(ctx, projectDir, envName, false, progressWriter(f.jsonOut))
@@ -778,6 +781,7 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 			FailFast:     p.failFast,
 			skipHubCheck: p.skipHubCheck,
 			clientDeploy: deployOptions{
+				organization:  f.organization,
 				imageTag:      f.tag,
 				dryRun:        f.dryRun,
 				namespace:     f.namespace,

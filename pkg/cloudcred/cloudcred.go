@@ -386,22 +386,18 @@ const legacyHostClientID = "host-app"
 // when it next signs in or starts. Entries any other client wrote — including
 // a human's `forge login` — are untouched. A missing file removes nothing.
 func RemoveLegacyHostDeposits(path string) (int, error) {
-	f, err := credentials.Load(path)
-	if err != nil {
-		return 0, err
-	}
 	removed := 0
-	for _, endpoint := range f.Endpoints() {
-		existed, err := f.Delete(endpoint, legacyHostClientID)
-		if err != nil {
-			return 0, err
+	err := credentials.Update(path, func(f *credentials.File) error {
+		for _, endpoint := range f.Endpoints() {
+			existed, err := f.Delete(endpoint, legacyHostClientID)
+			if err != nil {
+				return err
+			}
+			if existed {
+				removed++
+			}
 		}
-		if existed {
-			removed++
-		}
-	}
-	if removed == 0 {
-		return 0, nil
-	}
-	return removed, credentials.Save(path, f)
+		return nil
+	})
+	return removed, err
 }

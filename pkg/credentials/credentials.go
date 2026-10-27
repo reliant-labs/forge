@@ -82,6 +82,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/gofrs/flock"
 )
 
 // FileName is the credentials file's base name.
@@ -361,25 +363,85 @@ func Lookup(path, endpoint, client string) (Credential, error) {
 	return f.Get(endpoint, client)
 }
 
-// Store is the one-call write: put c for (endpoint, client) into the file at
-// path and save it, preserving every other entry.
-func Store(path, endpoint, client string, c Credential) error {
+// Update serializes a credential-file read/modify/write transaction across all
+// participating processes. The callback must not perform network operations.
+func Update(path string, mutate func(*File) error) error {
+	unlock, err := lockMutation(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	f, err := Load(path)
 	if err != nil {
 		return err
 	}
-	if err := f.Put(endpoint, client, c); err != nil {
+	before, err := json.Marshal(f)
+	if err != nil {
 		return err
 	}
+	if err := mutate(f); err != nil {
+		return err
+	}
+	after, err := json.Marshal(f)
+	if err != nil {
+		return err
+	}
+	if string(before) == string(after) {
+		return nil
+	}
 	return Save(path, f)
+}
+
+// Store is the one-call write: put c for (endpoint, client) into the file at
+// path and save it, preserving every other entry.
+func Store(path, endpoint, client string, c Credential) error {
+	return Update(path, func(f *File) error { return f.Put(endpoint, client, c) })
 }
 
 // Remove is the one-call delete: drop (endpoint, client) from the file at
 // path. Reports whether an entry existed. Every other entry is untouched.
 func Remove(path, endpoint, client string) (bool, error) {
+	return removeMatching(path, endpoint, client, "", false)
+}
+
+// RemoveRevoked removes only the exact session the caller revoked. A newer
+// login or a different namespace is never erased by an older logout.
+func RemoveRevoked(path, endpoint, client, revokedToken string) (bool, error) {
+	return removeMatching(path, endpoint, client, revokedToken, true)
+}
+
+func lockMutation(path string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, err
+	}
+	lock := flock.New(path + ".lock")
+	if err := lock.Lock(); err != nil {
+		return nil, err
+	}
+	return func() { _ = lock.Unlock() }, nil
+}
+
+func removeMatching(path, endpoint, client, token string, conditional bool) (bool, error) {
+	unlock, err := lockMutation(path)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	f, err := Load(path)
 	if err != nil {
 		return false, err
+	}
+	if conditional {
+		current, err := f.Get(endpoint, client)
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if current.Token != token {
+			return false, errors.New("credential changed during logout; newer login retained")
+		}
 	}
 	existed, err := f.Delete(endpoint, client)
 	if err != nil || !existed {

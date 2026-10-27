@@ -71,7 +71,7 @@
     "prepare": "node scripts/build.mjs",
     "pretest": "node scripts/build.mjs",
     "test": "vitest run",
-    "test:browser": "node --test scripts/browser-telemetry.test.mjs"
+    "test:browser": "node --test scripts/browser-telemetry-smoke.mjs"
   },
   "// peerDependencies note": "@opentelemetry/api is the one REQUIRED peer: trace.ts propagates traceparent on every RPC from the barrel, and the './node' entry builds its spans on it. Every other peer is OPTIONAL because some entry point never imports it, and npm installs a non-optional peer for every consumer whether or not it is reached: react, @connectrpc/connect and @bufbuild/protobuf are imported by the barrel and the browser subpaths, which every forge frontend scaffold (Next.js, Vite, Expo) declares as its own direct dependencies, while a './node'-only consumer (an Electron main process, a Node CLI) imports none of them. @hyperdx/browser is exact-pinned and imported only (and lazily) by the './telemetry' subpath; it carries the whole OpenTelemetry web SDK and the rrweb recorder, so a frontend that never imports './telemetry' (React Native) installs none of it. @tanstack/react-query is imported only by './service-hooks'. src/published-surface.test.ts holds the rule: a peer the './node' import closure does not reach must be optional.",
   "peerDependencies": {

@@ -58,6 +58,16 @@ type generateInput struct {
 	Check  bool `json:"check,omitempty" jsonschema:"generate into a temp dir and report drift against the tree; writes nothing"`
 }
 
+type reportBugInput struct {
+	dirInput
+	Severity string `json:"severity" jsonschema:"critical: data loss, or nothing can proceed. high: it blocks this task. medium: there is a workaround. low: cosmetic."`
+	Title    string `json:"title" jsonschema:"one line naming the defect, e.g. 'forge generate drops optional list filters'; ids and numbers go in evidence"`
+	Summary  string `json:"summary,omitempty" jsonschema:"what happened, in a few sentences"`
+	Expected string `json:"expected,omitempty" jsonschema:"what should have happened"`
+	Actual   string `json:"actual,omitempty" jsonschema:"what happened instead, with the exact error text"`
+	Evidence string `json:"evidence,omitempty" jsonschema:"how to reproduce it: commands run, their output, file paths"`
+}
+
 // addForgeTools registers every tool. Read-only ones come first; lint and
 // generate are the two that touch the project (lint: its caches and slot;
 // generate: the generated files), and are annotated so.
@@ -153,6 +163,25 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 		Annotations: readOnly,
 	}, func(in skillLoadInput) cmdSpec {
 		return cmdSpec{dir: in.Dir, args: []string{"skill", "load", in.Name}}
+	})
+
+	// report_bug is the one tool that reaches outside the machine: it files
+	// a defect in forge with the Reliant team (`forge report-bug`, which is
+	// the only way forge ever sends anything).
+	addCmdTool(srv, r, &mcp.Tool{
+		Name:        "report_bug",
+		Description: reportBugUsage,
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: ptr(false), IdempotentHint: true, OpenWorldHint: ptr(true)},
+	}, func(in reportBugInput) cmdSpec {
+		args := []string{"report-bug", "--severity", in.Severity, "--title", in.Title}
+		for _, f := range []struct{ flag, value string }{
+			{"--summary", in.Summary}, {"--expected", in.Expected}, {"--actual", in.Actual}, {"--evidence", in.Evidence},
+		} {
+			if f.value != "" {
+				args = append(args, f.flag, f.value)
+			}
+		}
+		return cmdSpec{dir: in.Dir, args: args}
 	})
 
 	addCmdTool(srv, r, &mcp.Tool{

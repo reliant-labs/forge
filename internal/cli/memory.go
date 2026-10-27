@@ -7,12 +7,16 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // RenderProjectMemory reads forge.yaml at projectRoot, renders the
-// project memory template with the project name + invoking CLI name,
-// and returns the bytes. Used by out-of-process consumers (the reliant
+// project memory template with the project name + invoking CLI name —
+// as a static site's memory for a site (no go.mod, the app at the root) —
+// and returns
+// the bytes. Used by out-of-process consumers (the reliant
 // CLI) to inject framework context in-memory rather than reading a
 // possibly-stale on-disk reliant.md.
 //
@@ -42,9 +46,11 @@ func RenderProjectMemory(projectRoot string) ([]byte, error) {
 	if head.Name == "" {
 		return nil, fmt.Errorf("%s: missing required field `name`", cfgPath)
 	}
-	tmplData := struct {
-		Name string
-		CLI  string
-	}{Name: head.Name, CLI: Name()}
+	// A static site — no Go module, a Vite or Next.js app at the root —
+	// gets the frontend-only memory. The same shape test the frontend
+	// inventory (config.DiscoverRootFrontend) and the scaffolds use, read
+	// straight off the tree.
+	_, site := config.DiscoverRootFrontend(projectRoot)
+	tmplData := generator.ProjectMemoryData{Name: head.Name, CLI: Name(), Site: site}
 	return templates.ProjectTemplates().Render("reliant.md.tmpl", tmplData)
 }

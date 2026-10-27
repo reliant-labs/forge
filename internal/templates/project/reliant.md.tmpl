@@ -2,6 +2,7 @@
 # {{.Name}}
 
 This is a **Forge** project managed by the `{{.CLI}}` CLI. Forge here is **Reliant Forge** (github.com/reliant-labs/forge) — not Atlassian Forge, Foundry's `forge` (Solidity) or Laravel Forge; do not use their commands.
+{{- if .Site}} It is a **static site**: a frontend with no backend, shipped by forge with environments, build-once releases and hosted static hosting.{{end}}
 
 This file is auto-loaded into LLM context every session. Treat it as the authoritative quick-reference. For depth, load the named skills.
 
@@ -13,9 +14,12 @@ This is a long-lived product. For consequential decisions — architecture, publ
 
 Skip this depth for trivial/mechanical work — there, just do it.
 
+{{if .Site -}}
+{{template "site" .}}
+{{- else -}}
 ## Shipping
 
-Publishing defaults to Reliant hosting (staging/prod are already bound to it; everything hosted, static sites included, needs billing): load `deploy`, then `{{.CLI}} env deploy <env>`. Never ask for `forge login` when running under Reliant.
+Publishing defaults to Reliant hosting (staging/prod are already bound to it): load `deploy`, then `{{.CLI}} env deploy <env>`. One hosted static site per org is free (1 GiB storage cap), counted across environments: each env's deployed site is one. Anything beyond it — a second env's site, any hosted workload or managed database — needs billing, and until billing is set up the deploy is queued, not refused: `env deploy` exits 7 and prints the billing link. Give the user that link; don't retry. Never ask for `forge login` when running under Reliant.
 
 **No Reliant account** (standalone forge, nothing signed in)? `{{.CLI}} env deploy <env> --claimable` publishes with no signup and prints a live URL plus a **claim link**: hand the link to your user (it expires in 72h; opening it signs them up free and makes the deploy theirs, so treat it like a password). It fits one static site, or one service with one database, and is refused when you are signed in. Exit 4 `claimable_throttled` is a rate limit: wait the printed retry-after (never loop), or `forge login`. Depth: `deploy/hosting`.
 
@@ -196,6 +200,7 @@ Forge deliberately does not guess your product's visual identity. A scaffold tha
    **While iterating, run the fast tier scoped to what you touched:** `task test:short -- ./internal/<pkg>/...` (`-short`, cached, no race). Do not add `-count=1` or `-race` to inner-loop runs — they defeat Go's test cache, which is correct for hermetic tests. Never set a private `GOCACHE`. A run expected to take more than ~2 minutes goes in the background (`run_in_background` + `shell_wait`), never a long foreground call.
    **A slow test says so; an unmarked test is fast.** A test over ~2s under `-short`, or one that execs `go`/`forge`/`kcl`/`node`/`npm`/`git`/`docker`, starts a container or dials an external host, calls `testkit.Slow(t, "<what makes it slow>")` first (`forge/pkg/testkit`; add `testkit.Inputs("deploy/**", …)` to name the files it depends on). It then skips under `-short` and in the integration lane, and runs in `task test`. A plain `if testing.Short() { t.Skip(...) }` also counts. Gate, don't gut — never weaken an assertion. `{{.CLI}} lint --slow-tests` flags unmarked slow work in source; `go test -short -json ./... | {{.CLI}} ci test-budget` flags an unmarked test that ran over budget. Load `testing` for the details.
 
+{{end -}}
 ## When forge itself is wrong — FIX IT
 
 **One of our biggest priorities is dogfooding forge and making sure it is
@@ -225,7 +230,8 @@ scope — **report it**, then carry on:
     {{.CLI}} report-bug --severity high --title "<one line naming the defect>" \
       --actual "<the exact error text>" --evidence "<commands, output, file paths>"
 
-Use it for defects in forge itself — a forge command that fails, hangs or generates something wrong,
+(`forge mcp` exposes the same as its `report_bug` tool.) Use it for defects in
+forge itself — a forge command that fails, hangs or generates something wrong,
 or a lint, skill or doc that is wrong — not for bugs in this project's code,
 its failing tests, or your own mistakes. Never put credentials or file contents
 in a report. A repeat of the same title within 30 minutes returns the first
@@ -235,3 +241,84 @@ report's id and sends nothing. forge sends nothing unless someone runs this;
 ## Project Notes
 
 <!-- Add project-specific context, conventions, and open questions here. -->
+
+{{- define "site" -}}
+## What this project is
+
+A static site — a landing page, a marketing or docs site, a SPA — is a complete forge project on its own. There is **no backend here**: no Go module, no server, no database, no proto. So the Go/proto/handler/migration rules forge projects with an API live by do not apply, `{{.CLI}} generate` has nothing to project (it skips every Go step by itself), and there is no `go build` to run. Do not add a `go.mod`, a `proto/` or a `cmd/` by hand to "make forge work": it already does.
+
+```
+package.json, src/, public/   ← the site: a plain Next.js or Vite app — yours, forge never rewrites it
+forge.yaml                    ← name, forge pin, harness (no module_path: there is no Go module)
+deploy/kcl/kcl.mod
+deploy/kcl/dev/main.k         ← the frontend (path = ".") bound to its dev server
+deploy/kcl/staging/main.k     ← … bound to hosted static hosting (forge.OnHosted {})
+deploy/kcl/prod/main.k        ← … same
+```
+
+The frontend's `type` (`nextjs` or `vite`) and `public_dir` (where `npm run build` lands: `out/` or `dist/`) are declared in each env's `main.k`. The envs are the declaration: change a binding there, then check it with `{{.CLI}} env render <env>`.
+
+**Start with `{{.CLI}} skill load deploy/static-site`** — the whole flow: envs, the static export, releases, hosting, runtime config, domains. Other skills a site uses: `frontend/design` (designing the page), `deploy/domains` (your own hostname), `deploy/hosting` (what hosted hosting is and costs), `debug`. `{{.CLI}} skill list` is the catalog. Skills come from the binary and are never written to disk.
+
+## Run it
+
+```bash
+{{.CLI}} env up dev        # the dev server — no database, no cluster; prints the URL
+```
+
+`npm run dev` works too, but `env up` is what mirrors the browser into a log file (below) and applies the env's `env_vars`.
+
+## Frontend logs are on disk
+
+A site forge started (`{{.CLI}} project new --kind site`) mirrors every `console.*` call — plus every uncaught error and unhandled promise rejection — into `.forge/logs/<env>/frontend_<name>.log`, prefixed `[browser:<level>]`, while `env up` runs it. So "I can't see what the browser did" is almost always false:
+
+```bash
+grep '\[browser:error\]' .forge/logs/dev/*.log
+```
+
+An uncaught `TypeError` produces no `console` call anywhere in your source, so grepping the code finds nothing while the stack trace sits in that file. An adopted app has the same sink once it calls `installDevLogging()` from `@reliantlabs/forge-web-runtime` and serves the dev-server receiver; `{{.CLI}} skill load debug` covers both halves.
+
+## Build it as a static export
+
+Hosted static hosting serves files: `npm run build` must produce a directory of plain HTML/JS/CSS (`out/` for Next.js with `output: "export"`, `dist/` for Vite). For Next.js that rules out what needs a server at request time — a dynamic `[slug]` segment without `generateStaticParams()`, server actions, middleware, `cookies()`/`headers()`, a GET route handler that answers dynamically, and next/image without `unoptimized`. `{{.CLI}} lint --static-export` names each with its file:line; `npm run build` is the authority.
+
+## Ship it
+
+```bash
+{{.CLI}} lint --static-export && {{.CLI}} env render prod
+{{.CLI}} env build prod --release v0.1.0   # build ONCE, push, record the release
+{{.CLI}} env deploy staging v0.1.0         # promote the same bytes … (a 2nd hosted env needs billing — below)
+{{.CLI}} env deploy prod v0.1.0            # … to prod, by digest — no rebuild
+{{.CLI}} env status prod                   # verify
+```
+
+Staging and prod are already bound to Reliant hosted static hosting: the platform owns the bucket, the CDN and a hostname. A hosted deploy ships only a recorded release, never a local build; recovery rolls forward to a new release. Another env is `{{.CLI}} env new preview --from prod`. Your own bucket or Firebase instead: change the frontend's `runtime` in that env's `main.k` (`deploy/static-site`).
+
+**Billing.** One hosted static site per org is free — no billing, 1 GiB storage cap — and it is counted across environments: each env's deployed site is one site. Staging and prod are both bound to hosting, so without billing ONE of them deploys free (deploy prod first if the user wants it live) and the second queues with `STATIC_FREE_TIER_EXCEEDED`. Anything beyond the free site — a second env or site, any hosted workload or managed database — needs billing; until it is set up the deploy is queued, not refused: `env deploy` exits 7 and prints the billing link. Give the user that link; don't retry. Never ask for `forge login` when running under Reliant: you are already signed in.
+
+**Custom domains:** `{{.CLI}} domain add <host> --env prod` (`deploy/domains`).
+
+## Config
+
+- **Build-time** (`NEXT_PUBLIC_*`, `VITE_*`): `env_vars` on the frontend in each env's `main.k`. Baked into the release that env builds.
+- **Per env, without a rebuild**: `runtime_config` on the frontend. The platform serves it as `config.js` beside the bundle (`window.__FORGE_CONFIG__`); load it with a plain blocking `<script src="/config.js">` in `<head>` before your bundle.
+- Everything in a static site is public. A secret belongs on a backend, never in either of these.
+
+## Design
+
+The starter page is a placeholder that proves the site builds and deploys — not a design, and not something to hand a user. Ready to show means a brief (what the site is for, who it is for, how it should feel — only the user can give you that), real copy, and a layout built for it. Load `frontend/design` first; it asks for the brief and will not invent an aesthetic without one. `{{.CLI}} component search <thing>` searches forge's component library before you hand-write a control.
+
+A PWA is a static site too: forge builds, hosts and ships it like any other. The service worker and web manifest are yours to add — forge scaffolds neither.
+
+## Adding an API later
+
+When the site needs a backend — a waitlist, checkout, login — that is a Go API, and this project has no Go module, so `{{.CLI}} scaffold service` (and every other Go scaffold) refuses here and says why. Give the API its own forge project beside the site (`{{.CLI}} project new <name>-api --service <entity>`), deploy it, and point the site at its URL through `env_vars` or `runtime_config`. `deploy/static-site` (Growing a backend) has the details.
+
+## Critical rules
+
+1. **The site's files are yours.** forge generates no code into a site and never rewrites `package.json`, `src/` or the build config. What forge owns is `forge.yaml` and `deploy/kcl/` — declarations you edit, not generated output.
+2. **Gate with `{{.CLI}} lint`.** Never pipe it through `head` — the verdict is the LAST line; `{{.CLI}} lint --quiet` prints only failures plus that verdict. `--static-export` is the lane that matters most here.
+3. **`npm run build` before you call it done.** It is the only proof the export builds; `{{.CLI}} env render prod` is the proof the envs still declare a shippable site.
+4. **Ship releases, not builds.** Build once (`env build <env> --release <v>`), then deploy that release to each env in turn.
+
+{{end}}

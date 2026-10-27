@@ -28,6 +28,13 @@ func TestPnpmInstallRootOnlyUsesAnOwnedBridge(t *testing.T) {
 			if got := PnpmInstallRoot(fe); got != want {
 				t.Errorf("root=%q, want %q", got, want)
 			}
+			if tc.bridged {
+				writeFileAt(t, fe, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n")
+				_, args, dir := lockRefreshArgs(Lock{Dir: fe, Runner: "pnpm"}, fe)
+				if dir != fe || args[len(args)-1] != "--ignore-workspace" {
+					t.Fatalf("tracked lock refresh escaped to bridge: dir=%s args=%v", dir, args)
+				}
+			}
 		})
 	}
 }

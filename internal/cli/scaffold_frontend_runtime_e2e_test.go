@@ -46,7 +46,11 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 
 	forgeBin := buildforgeBinary(t)
-	dir := t.TempDir()
+	dir, err := os.MkdirTemp("", "forge-runtime-fixture-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerSharedTempDir(dir) // preserve a failed bundle for diagnostics
 
 	runCmd(t, dir, forgeBin,
 		"project", "new", "rtapp",
@@ -209,23 +213,26 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	runtimeSrc := filepath.Join(findRepoRoot(t), "web-runtime")
 	shadowed := materializeShadowedRuntimeE2E(t, dir, runtimeSrc)
 	// Keep the declared settings root (ignore-workspace also ignores its
-	// allowBuilds). Replace only the dev link with the isolated shadow.
-	link := filepath.Join(projectDir, ".forge-link", "web-runtime")
-	if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(shadowed, link); err != nil {
-		t.Fatal(err)
-	}
+	// allowBuilds). Point the bridge's override directly at the isolated
+	// shadow: pnpm caches link resolutions, so moving only the symlink's
+	// target need not update the consumer on a subsequent install.
 	if buildinfo.IsCI() {
-		// No dev bridge in CI: a declared link tests the same resolution shape.
 		setWebRuntimeSpecE2E(t, filepath.Join(webDir, "package.json"), "link:"+shadowed)
+	} else {
+		ws := filepath.Join(projectDir, "pnpm-workspace.yaml")
+		body := readFileE2E(t, ws)
+		if !strings.Contains(body, "link:./.forge-link/web-runtime") {
+			t.Fatal("fixture has no pnpm dev bridge override")
+		}
+		writeFileE2E(t, ws, strings.ReplaceAll(body, "link:./.forge-link/web-runtime", "link:"+filepath.ToSlash(shadowed)))
 	}
 	argv := frontenddeps.InstallArgv(webDir, "", false)
 	runCmdTimeout(t, webDir, 5*time.Minute, argv[0], argv[1:]...)
+	resolved, err := filepath.EvalSymlinks(filepath.Join(webDir, "node_modules", "@reliantlabs", "forge-web-runtime"))
+	wantResolved, _ := filepath.EvalSymlinks(shadowed)
+	if err != nil || resolved != wantResolved {
+		t.Fatalf("runtime resolves to %s (%v), want shadow %s", resolved, err, wantResolved)
+	}
 
 	runCmdTimeout(t, webDir, 5*time.Minute, "pnpm", "run", "build")
 	runCmdTimeout(t, webDir, 2*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
@@ -322,6 +329,11 @@ func assertRuntimePeersDedupedE2E(t *testing.T, distDir, runtimeDir string) {
 		}
 	}
 	if !compiled {
+		for _, event := range strings.Split(trace, "\n") {
+			if strings.Contains(event, "forge-web-runtime") || strings.Contains(event, "web-runtime-shadowed") {
+				t.Log(event)
+			}
+		}
 		t.Fatalf("build trace never names %s/dist — the runtime was not compiled into this "+
 			"build, so the single-copy assertion is vacuous", runtimeDir)
 	}

@@ -226,6 +226,11 @@ func EnsureDevWebRuntimeLink(projectDir string) {
 	npmMembers, pnpmMembers := splitBridgeMembers(projectDir, bridgeMembers(projectDir))
 	rootPath := filepath.Join(projectDir, "package.json")
 	pnpmRootPath := filepath.Join(projectDir, devPnpmWorkspaceName)
+	if fileExists(pnpmRootPath) && !isForgeOwnedPnpmWorkspace(pnpmRootPath) {
+		// A tracked workspace belongs to the project, not this overlay. Do
+		// not even add ignore entries that could hide the user's root file.
+		pnpmMembers = nil
+	}
 	if len(npmMembers) == 0 && len(pnpmMembers) == 0 &&
 		!isForgeOwnedWorkspaceRoot(rootPath) && !isForgeOwnedPnpmWorkspace(pnpmRootPath) {
 		return // nothing to bridge (no frontends, or only native apps)

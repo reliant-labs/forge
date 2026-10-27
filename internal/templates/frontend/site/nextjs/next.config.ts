@@ -10,7 +10,9 @@ const devOrigins = (): string[] => {
   const preview = process.env.RELIANT_PREVIEW_URL_TEMPLATE;
   if (preview) {
     try {
-      out.add(new URL(preview.replace("{port}", process.env.PORT || "3000")).hostname);
+      out.add(
+        new URL(preview.replace("{port}", process.env.PORT || "3000")).hostname,
+      );
     } catch {
       // A malformed template allows nothing extra.
     }
@@ -46,7 +48,9 @@ const nextConfig: NextConfig = {
   // next/image's default loader is an optimizing server route, which an
   // export does not have. Size images for the web before they go in public/.
   images: { unoptimized: true },
-  ...(process.env.NODE_ENV === "development" ? { allowedDevOrigins: devOrigins() } : {}),
+  ...(process.env.NODE_ENV === "development"
+    ? { allowedDevOrigins: devOrigins() }
+    : {}),
 };
 
 export default nextConfig;

@@ -2,9 +2,10 @@ package templates
 
 import (
 	"encoding/json"
-	"gopkg.in/yaml.v3"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Keep this deliberate: Vitest 3 brings vulnerable tinypool; Vitest 4's

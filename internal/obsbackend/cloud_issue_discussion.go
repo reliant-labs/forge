@@ -128,8 +128,8 @@ func (c Cloud) ListIssueTimeline(ctx context.Context, req ListIssueTimelineReque
 		}{req.ID, timelinePageSize, token}
 		var out struct {
 			Entries       []wireIssueTimelineEntry `json:"entries"`
-			NextPageToken string              `json:"nextPageToken"`
-			IssueID       string              `json:"issueId"`
+			NextPageToken string                   `json:"nextPageToken"`
+			IssueID       string                   `json:"issueId"`
 		}
 		if err := c.callIssues(ctx, procListIssueTimeline, in, &out); err != nil {
 			return ListIssueTimelineResult{}, err

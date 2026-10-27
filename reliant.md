@@ -188,18 +188,28 @@ job before adding a job.
   ahead of it, and lands only if `CI gate` is green there. So `ci.yml` has no path filter
   (a skipped workflow never reports the required check), and a job picks its tier with one
   of the two `if:` spellings in its header; `internal/ciguard` holds both.
-- **Merging: push, label `merge:queue`, stop.** Agents never merge: open the PR, add the
-  label **`merge:queue`** (**`merge:priority`** to go first), and report the PR URL as done.
-  The merge steward (control-plane `tools/merge-steward/README.md`, the one place it is
-  documented) is the only merger: for forge it turns on auto-merge (`gh pr merge --squash
---auto`), which puts the PR into GitHub's merge queue once its checks pass, and it marks
-  **`merge:failed`**, with the reason, a PR the queue rejects, that conflicts, or whose
-  `CI gate` fails. Fix it, push, add `merge:queue` again. The PR lands when `CI gate` is
-  green on the queue's run. No account bypasses the ruleset, so `--admin` is refused. When
-  a PR's only reds are reds main already has, label it `ci:main-red` and re-run its `CI gate`
-  job alone: `scripts/ci-main-red.sh` passes the gate only if every failed test (or, for a
-  job with no test names, the failed job and step) also fails on main's latest run, and
-  never for a Dependabot PR. Fix main rather than reach for the label when you can.
+- **Merging: push, label `merge:queue`, stop.** Authors open the PR, add
+  **`merge:queue`** (**`merge:priority`** to go first), and report the PR URL as done.
+  This label means only **author ready**, not approved or queued. The designated merge
+  steward must require **`review:passed` AND SUCCESS `merge-review` on the exact current
+  head SHA**, backed by an authenticated independent review bound to that same SHA,
+  before enabling auto-merge. **`review:changes` blocks acceptance**; fix the blockers,
+  push, and obtain a fresh exact-head pass. A stale-head pass, queue label, or request to
+  drain the backlog is not approval. The currently unsafe steward is held; this
+  paragraph describes the required policy, not a claim that its implementation is live
+  or that this documentation fixes it. Steward details live in control-plane
+  `tools/merge-steward/README.md`.
+  Only the designated steward may submit reviewed PRs with
+  `gh pr merge --squash --auto`. Native queue `CI gate` SUCCESS is an additional,
+  separate requirement; never bypass it. Auto-merge enabled is not queue acceptance,
+  and queue acceptance is not a landed merge. Mark a rejected or conflicting PR
+  **`merge:failed`** with evidence; compare exact failure names with main before blaming
+  the PR. Do not rerun Actions to see green, waive a red check, or bypass the ruleset.
+  **Temporary owner-approved backlog recovery (2026-10-27 01:30 UTC):** only the
+  designated coordinator for each repo may submit independently reviewed exact-head
+  PRs through existing native gates without the unavailable `merge-review` status.
+  This narrow exception does not authorize other agents, unreviewed or known-broken
+  merges, status waivers, or releases; all normal requirements resume outside it.
 
 **Push to main** (and `workflow_dispatch` on any branch) adds:
 

@@ -46,6 +46,13 @@ step on the way, so the gate is green without hand edits. In order:
   locks               refresh lockfiles that disagree with their package.json
   lint                forge lint --json; what remains is reported, not fixed
 
+--skip <phase> (repeatable) leaves a phase out so a big change can go in its own PR:
+codemods (the registry codemods the range crosses), playbooks (the codemods a
+playbook automates, connect-errors and composition-graph among them),
+vendored-contracts, generate, locks, lint. modules, templates and pin always run.
+The pin moves in the same run, so a skipped codemod is not picked up by the next
+upgrade: the phase's detail names each one to run yourself ('forge fix <name>').
+
 Whatever is left is printed as "Still needs a person" (--json: needs_human): a
 lint error, a playbook whose old shape remains, a codemod that listed what it
 could not decide. Rules still in their warn-first grace are listed under
@@ -86,6 +93,14 @@ implicitly. They are yours from birth; upgrade only reports what their templates
 gained, how far behind you are in lines, and how many lines in your copy no
 template accounts for. Adopt one by naming it:
 'forge project upgrade --force <path>'. Bare --force does not reach them.
+
+A scaffold-once file the project deleted stays deleted. The birth ledger
+(.forge/scaffolded.json) records every scaffold-once file forge has written, so a
+managed file the template ships that is absent AND recorded there — or declined
+('forge project disown <path> --absent'), or disowned — is the project's decision,
+not drift: upgrade never re-creates it (nor does 'forge generate'), and says so
+under "deleted by you". A file forge has never written is still born, and recorded.
+To have forge write a deleted one again: 'forge project rescaffold <path>'.
 
 Upgrade synchronizes every project module that requires Forge using
 GOWORK=off go get and go mod tidy, preserving module replacements and go.work.
@@ -354,6 +369,9 @@ type upgradeCounts struct {
 	// "2 skipped" with no way to learn WHICH two is a count the reader
 	// can do nothing with.
 	skippedPaths []string
+	// leftDeletedPaths are scaffold-once files the project deleted,
+	// declined or disowned: upgrade left them absent.
+	leftDeletedPaths []string
 	// upToDatePaths are the files that match their template. The
 	// summary carries them as a count — they need no action and listing
 	// them is what a report does when it has nothing to say — but
@@ -397,6 +415,10 @@ func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check, showA
 			c.userModifiedPaths = append(c.userModifiedPaths, r.Path)
 			modifiedRows = append(modifiedRows, row)
 		case generator.UpgradeSkipped:
+			if r.LeftDeleted {
+				c.leftDeletedPaths = append(c.leftDeletedPaths, r.Path)
+				continue
+			}
 			c.skipped++
 			c.skippedPaths = append(c.skippedPaths, r.Path)
 		}
@@ -408,6 +430,7 @@ func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check, showA
 		countPart(c.userModified, "with local edits (skipped)"),
 		countPart(c.upToDate, "up to date"),
 		countPart(c.skipped, "not upgrade-managed here"),
+		countPart(len(c.leftDeletedPaths), "deleted by you (left deleted)"),
 	)
 
 	if len(updatedRows) > 0 {
@@ -541,6 +564,7 @@ func printSkippedPaths(c upgradeCounts, showAll bool) {
 	}
 	printNamedPathList("Up to date with the current template:", c.upToDatePaths)
 	printNamedPathList("Not upgrade-managed in this project (disowned, or a legacy layout):", c.skippedPaths)
+	printNamedPathList("Scaffold-once files you deleted, declined or disowned (left absent; `"+Name()+" project rescaffold <path>` brings one back):", c.leftDeletedPaths)
 }
 
 // printNamedPathList prints a titled, indented list of paths, or nothing.

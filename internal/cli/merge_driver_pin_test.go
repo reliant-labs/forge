@@ -169,9 +169,9 @@ func TestMergeGenerated_InstallsThePinnedForgeWhenNoneHasRun(t *testing.T) {
 	}
 }
 
-// With no pinned forge known or installable, a mismatched driver merges as
-// git does without one: a normal conflict where the sides overlap, a clean merge where not —
-// never its own rules (which would settle the fingerprint line below).
+// With no pinned forge known or installable, preserve git's text merge but
+// leave it unresolved even when the text merges cleanly: the pinned forge
+// never ran. Never apply this driver's own fingerprint rules.
 func TestMergeGenerated_WithoutThePinnedForgeMergesAsGitDoes(t *testing.T) {
 	repo := pinTestRepo(t)
 	setPinCheck(t, true)
@@ -185,8 +185,8 @@ func TestMergeGenerated_WithoutThePinnedForgeMergesAsGitDoes(t *testing.T) {
 	}
 
 	merged, err = runMergeDriver(t, repo, "svc/x_gen.go", "a\nb\nc\nd\ne\n", "A\nb\nc\nd\ne\n", "a\nb\nc\nd\nE\n")
-	if err != nil || merged != "A\nb\nc\nd\nE\n" {
-		t.Errorf("a non-overlapping change must merge cleanly: %q, %v", merged, err)
+	if err == nil || merged != "A\nb\nc\nd\nE\n" {
+		t.Errorf("failed pin install must preserve both text edits but report unresolved: %q, %v", merged, err)
 	}
 }
 

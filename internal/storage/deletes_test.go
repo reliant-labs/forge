@@ -250,7 +250,7 @@ func TestGoCacheReadDistressBacksOff(t *testing.T) {
 	if err := d.observe(filepath.Join(root, "00"), emfile(filepath.Join(root, "00"))); err == nil {
 		t.Fatal("observe must return the back-off")
 	}
-	pass := streamTrimGoCache(context.Background(), root, shards, 0, time.Now().Add(-goCacheFloor), true, d)
+	pass := streamTrimGoCache(context.Background(), root, shards, 0, time.Now().Add(-goCacheFloor), true, d, nil)
 	var backoff *BackedOffError
 	if !errors.As(pass.stop, &backoff) || pass.removed != 0 || countEntries(root) != 20 {
 		t.Fatalf("a backed-off pass unlinked anyway: %+v", pass)

@@ -8,11 +8,12 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
 
-// Limits bound what one rule and one owner may cost.
+// Limits bound what one rule and one env may cost.
 type Limits struct {
 	// MinInterval is the floor on a rule's interval.
 	MinInterval time.Duration
@@ -22,13 +23,29 @@ type Limits struct {
 	// MaxInstancesPerRule: a result with more rows than this is an error, and the
 	// rule's existing instances are left untouched for that evaluation.
 	MaxInstancesPerRule int
-	// MaxRulesPerOwner: rules past this count (in name order) are not evaluated.
-	MaxRulesPerOwner int
+	// MaxRulesPerEnv: rules past this count in ONE env are not evaluated (see
+	// Select for which). The unit is the env, not the owner: an owner's envs
+	// are independent deployments, and a cap over their sum let one env's
+	// rules push another env's alerts out of evaluation.
+	MaxRulesPerEnv int
 }
+
+// DefaultMaxRulesPerEnv is sized from measured evaluation cost. An owner's rules
+// run one after another in a single lane per scheduler tick. Measured in prod
+// (ClickHouse system.query_log, 6h, tenant zero's 100 evaluated rules; the
+// Postgres-answered rules are not in it): 16.4s of ClickHouse time per minute,
+// 164ms a rule averaged over all 100, of which two heavy queries are 12.9s and
+// a typical one is 68ms (p95 116ms). At the 164ms average a lane saturates near
+// 360 rules at a 1m interval; at the typical 68ms, past 800. The largest env
+// there declares 79 rules, so 200 leaves every env 2.5x room, and one env at the
+// cap costs about 33s of a 60s lane at the average rule. The cap bounds ONE env;
+// the lane is shared by an owner's envs, which is why reaching the cap is never
+// silent: see Overflow and OverCapAlertName.
+const DefaultMaxRulesPerEnv = 200
 
 // DefaultLimits are conservative.
 func DefaultLimits() Limits {
-	return Limits{MinInterval: time.Minute, MaxExecutionTime: 20 * time.Second, MaxInstancesPerRule: 200, MaxRulesPerOwner: 100}
+	return Limits{MinInterval: time.Minute, MaxExecutionTime: 20 * time.Second, MaxInstancesPerRule: 200, MaxRulesPerEnv: DefaultMaxRulesPerEnv}
 }
 
 func (l Limits) withDefaults() Limits {
@@ -42,8 +59,8 @@ func (l Limits) withDefaults() Limits {
 	if l.MaxInstancesPerRule <= 0 {
 		l.MaxInstancesPerRule = d.MaxInstancesPerRule
 	}
-	if l.MaxRulesPerOwner <= 0 {
-		l.MaxRulesPerOwner = d.MaxRulesPerOwner
+	if l.MaxRulesPerEnv <= 0 {
+		l.MaxRulesPerEnv = d.MaxRulesPerEnv
 	}
 	return l
 }
@@ -98,14 +115,62 @@ func (e *Evaluator) EffectiveInterval(r Rule) time.Duration {
 	return r.Interval
 }
 
-// Select applies the per-owner rule cap and orders rules by key, so which rules
-// the cap drops is deterministic.
-func (e *Evaluator) Select(rules []Rule) (kept []Rule, dropped int) {
-	sort.Slice(rules, func(i, j int) bool { return rules[i].String() < rules[j].String() })
-	if len(rules) > e.limits.MaxRulesPerOwner {
-		return rules[:e.limits.MaxRulesPerOwner], len(rules) - e.limits.MaxRulesPerOwner
+// Overflow is one env whose declared rules exceed Limits.MaxRulesPerEnv: the
+// rules in Dropped are NOT evaluated, so no alert can fire for them.
+type Overflow struct {
+	Env string
+	// Configured is how many rules the env declares; Cap the limit it is over.
+	Configured, Cap int
+	// Dropped are the rules not evaluated, in the order they were dropped.
+	Dropped []Rule
+}
+
+// Select applies the per-env rule cap to rules (which should all belong to one
+// owner). Within an overflowing env the rules that stay are the most severe
+// first (critical, error, warning, anything else), then by name, so the drop
+// is deterministic and never takes a critical rule while a warning stays.
+// Other envs are untouched. kept is ordered by rule key; every dropped rule is
+// reported in over, and the caller must make that loud.
+func (e *Evaluator) Select(rules []Rule) (kept []Rule, over []Overflow) {
+	byEnv := map[string][]Rule{}
+	for _, r := range rules {
+		byEnv[r.Env] = append(byEnv[r.Env], r)
 	}
-	return rules, 0
+	envs := make([]string, 0, len(byEnv))
+	for env := range byEnv {
+		envs = append(envs, env)
+	}
+	sort.Strings(envs)
+	for _, env := range envs {
+		rs := byEnv[env]
+		if len(rs) <= e.limits.MaxRulesPerEnv {
+			kept = append(kept, rs...)
+			continue
+		}
+		sort.SliceStable(rs, func(i, j int) bool {
+			if ri, rj := severityRank(rs[i]), severityRank(rs[j]); ri != rj {
+				return ri < rj
+			}
+			return rs[i].Name < rs[j].Name
+		})
+		kept = append(kept, rs[:e.limits.MaxRulesPerEnv]...)
+		over = append(over, Overflow{Env: env, Configured: len(rs), Cap: e.limits.MaxRulesPerEnv, Dropped: rs[e.limits.MaxRulesPerEnv:]})
+	}
+	sort.Slice(kept, func(i, j int) bool { return kept[i].String() < kept[j].String() })
+	return kept, over
+}
+
+// severityRank orders a rule for survival of the cap: lower stays.
+func severityRank(r Rule) int {
+	switch strings.ToLower(r.Labels["severity"]) {
+	case "critical", "page":
+		return 0
+	case "error":
+		return 1
+	case "warning":
+		return 2
+	}
+	return 3
 }
 
 // EvaluateRule runs one rule once. prev is the stored instances of this rule.
@@ -216,4 +281,6 @@ type ownerState struct {
 	// due is when each rule next runs; per owner, so owners evaluate in
 	// parallel without sharing a map.
 	due map[RuleKey]time.Time
+	// overCap is, per env, what was last logged and posted about its overflow.
+	overCap map[string]*overCapState
 }

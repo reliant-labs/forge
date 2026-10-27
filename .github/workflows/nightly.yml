@@ -72,7 +72,13 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      # The module cache alone: no scope holds windows/arm64 artifacts, and
+      # one run a day does not earn a scope of its own (ci.yml's "Build-cache
+      # note").
+      - uses: ./.github/actions/restore-go-caches
+        with:
+          scope: ""
       - name: go vet ./... (windows/arm64)
         env:
           CGO_ENABLED: "0"

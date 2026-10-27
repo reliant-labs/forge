@@ -52,9 +52,10 @@ func (l Local) ListIssues(ctx context.Context, req ListIssuesRequest) (ListIssue
 	if req.Explain {
 		return res, nil
 	}
-	// Every local issue is unresolved and server-side: a filter for another
-	// status or for browser issues matches nothing, truthfully.
-	if req.Platform == PlatformBrowser || (len(req.Statuses) > 0 && !slices.Contains(req.Statuses, IssueUnresolved) && !slices.Contains(req.Statuses, IssueNew)) {
+	// Every local issue is unresolved, server-side and unassigned: a filter for
+	// another status, for browser issues or for an assignee matches nothing,
+	// truthfully.
+	if req.Platform == PlatformBrowser || req.Assignee != "" || (len(req.Statuses) > 0 && !slices.Contains(req.Statuses, IssueUnresolved) && !slices.Contains(req.Statuses, IssueNew)) {
 		return res, nil
 	}
 	r, err := l.run(ctx, st, DefaultLimits())
@@ -279,4 +280,19 @@ func (l Local) ListIssueEvents(ctx context.Context, req ListIssueEventsRequest) 
 // UpdateIssueStatus implements IssueReader: local issues carry no state.
 func (l Local) UpdateIssueStatus(context.Context, UpdateIssueStatusRequest) (UpdateIssueStatusResult, error) {
 	return UpdateIssueStatusResult{}, errNoLocalTriage()
+}
+
+// ListIssueTimeline implements IssueReader: a local issue has no discussion.
+func (l Local) ListIssueTimeline(_ context.Context, req ListIssueTimelineRequest) (ListIssueTimelineResult, error) {
+	return ListIssueTimelineResult{IssueID: req.ID}, nil
+}
+
+// AddIssueComment implements IssueReader: local issues carry no state.
+func (l Local) AddIssueComment(context.Context, AddIssueCommentRequest) (AddIssueCommentResult, error) {
+	return AddIssueCommentResult{}, errNoLocalTriage()
+}
+
+// AssignIssue implements IssueReader: local issues carry no state.
+func (l Local) AssignIssue(context.Context, AssignIssueRequest) (AssignIssueResult, error) {
+	return AssignIssueResult{}, errNoLocalTriage()
 }

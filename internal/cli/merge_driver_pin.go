@@ -160,7 +160,7 @@ func pinnedMerge(ctx context.Context, stderr io.Writer, args []string, relPath s
 		}
 		fmt.Fprintf(stderr, "forge merge-generated %s: could not install the pinned forge %s: %v\n", relPath, pin, ierr)
 	}
-	merged, clean, err := plainMerge(ctx, base, ours, theirs, marker)
+	merged, _, err := plainMerge(ctx, base, ours, theirs, marker)
 	if err != nil {
 		return true, false, err
 	}
@@ -168,9 +168,9 @@ func pinnedMerge(ctx context.Context, stderr io.Writer, args []string, relPath s
 		return true, false, err
 	}
 	fmt.Fprintf(stderr, "forge merge-generated %s: this driver is forge %s, but forge.yaml pins %s, and that forge has not run in "+
-		"this clone; merged as git does without a driver instead. Run any command with the pinned forge (`%s generate`) "+
+		"this clone; preserved git's text merge but left it unresolved because the pinned forge did not run. Run any command with the pinned forge (`%s generate`) "+
 		"to point the driver at it.\n", relPath, binary, pin, Name())
-	return true, clean, nil
+	return true, false, nil
 }
 
 // runDelegatedDriver runs another driver command the way git runs one —

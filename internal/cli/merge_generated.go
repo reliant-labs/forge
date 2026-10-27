@@ -783,8 +783,7 @@ func driverCommandUsable(command string) bool {
 	} else if i := strings.IndexByte(bin, ' '); i >= 0 {
 		bin = bin[:i]
 	}
-	info, err := os.Stat(bin)
-	return err == nil && !info.IsDir()
+	return isExecutableFile(bin)
 }
 
 // driverGuardPrefix opens every driver command forge writes: `[ -x '<bin>' ]`

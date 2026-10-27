@@ -380,3 +380,31 @@ func TestCIRunNPMAudit_NPMErrorReportFails(t *testing.T) {
 		t.Errorf("an audit npm could not run must fail and say why; got %v", err)
 	}
 }
+
+// pnpm audit prints npm's v6 shape; its advisories are keyed by the same GHSA
+// IDs npm's are, so one exemption list serves either manager.
+func TestParsePNPMAuditJSON(t *testing.T) {
+	report := `{"advisories":{
+	  "1": {"title":"t1","module_name":"vite","vulnerable_versions":">=7.0.0 <=7.3.6","severity":"moderate","github_advisory_id":"GHSA-698V-4r3x-3vcv","url":"https://github.com/advisories/GHSA-698v-4r3x-3vcv"},
+	  "2": {"title":"t2","module_name":"vite","vulnerable_versions":"<7","severity":"high","github_advisory_id":"GHSA-698v-4r3x-3vcv","url":"https://github.com/advisories/GHSA-698v-4r3x-3vcv"}},
+	  "metadata":{"vulnerabilities":{"moderate":1,"high":1}}}`
+	got, err := parsePNPMAuditJSON(strings.NewReader(report))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "GHSA-698v-4r3x-3vcv" || got[0].Severity != "high" || got[0].Module != "vite" {
+		t.Fatalf("findings = %+v", got)
+	}
+	if got, err := parsePNPMAuditJSON(strings.NewReader(`{"advisories":{},"metadata":{"vulnerabilities":{"high":0}}}`)); err != nil || len(got) != 0 {
+		t.Fatalf("clean report: %+v %v", got, err)
+	}
+	for name, bad := range map[string]string{
+		"no metadata":             `{"advisories":{}}`,
+		"counted but not listed":  `{"advisories":{},"metadata":{"vulnerabilities":{"high":2}}}`,
+		"advisory without fields": `{"advisories":{"1":{"title":"x"}},"metadata":{"vulnerabilities":{"high":1}}}`,
+	} {
+		if _, err := parsePNPMAuditJSON(strings.NewReader(bad)); err == nil {
+			t.Errorf("%s: accepted as a pass", name)
+		}
+	}
+}

@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -59,6 +60,23 @@ func TestMergeDriverInstall_WiresAnOptedOutCheckoutAndCheckFailsWhenTheForgeIsGo
 		t.Fatalf("check after install: %v\n%s", err, out)
 	}
 
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(exe, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := runMergeDriverCmd(t, svc, "check"); err == nil {
+			t.Fatalf("check must reject a driver without execute permission:\n%s", out)
+		}
+		if out, err := runMergeDriverCmd(t, svc, "install"); err == nil {
+			t.Fatalf("install must not retain a non-executable driver as ready:\n%s", out)
+		}
+		if err := os.Chmod(exe, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := runMergeDriverCmd(t, svc, "install"); err != nil {
+			t.Fatalf("install after restoring executable: %v\n%s", err, out)
+		}
+	}
 	if err := os.Remove(exe); err != nil {
 		t.Fatal(err)
 	}

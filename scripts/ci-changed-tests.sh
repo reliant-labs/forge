@@ -13,9 +13,15 @@
 # WHY. "Passed on re-run" is never an acceptable verdict here, and the cheapest
 # moment to catch a flaky test is before it lands: once merged, an
 # intermittent failure surfaces weeks later in somebody else's pull request,
-# looking like their bug. A test run once proves it CAN pass; three runs under
-# the race detector are a cheap probe that it passes reliably — order
-# dependence, leaked global state, a data race, a timing assumption.
+# looking like their bug. A test run once proves it CAN pass; three runs are a
+# cheap probe that it passes reliably — order dependence, leaked global state,
+# a timing assumption. The race detector joins them on main (`full`).
+#
+# WHY -count=3 IS NOT A CACHE LOSS. The pre-merge tier never runs -count=1
+# (the owner's rule: reuse Go's test cache). -count defeats the cache too, but
+# only the tests selected here run under it — tests the change adds or edits,
+# whose package's test binary changed, so no cached result existed for them.
+# Every other test in the package is excluded by -run, not re-run.
 #
 # WHICH TESTS. Top-level Test/Fuzz functions in *_test.go files the change
 # adds or modifies, found two ways in the diff:
@@ -98,7 +104,7 @@ echo "::group::changed tests ($mode) — ${#packages[@]} packages, scheduled by 
 echo "$names"
 echo "::endgroup::"
 status=0
-go test "${flags[@]}" -run "$run" "${packages[@]}" || status=$?
+scripts/ci-go-test.sh "${flags[@]}" -run "$run" "${packages[@]}" || status=$?
 elapsed=$((SECONDS - started))
 if [[ $status -eq 0 ]]; then
   echo "flake gate: selected tests passed 3/3 in ${elapsed}s (${#packages[@]} packages)" | tee -a "$summary"

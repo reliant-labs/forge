@@ -26,7 +26,10 @@ whichever sample type it belongs to, and the bill counts uncompressed bytes of
 new parts. So storage is `profiles x stacks per profile`, and a profile's stack
 count depends on how many distinct stacks the window caught, not on the clock.
 
-Production, last 24h, 12 services, 40 pod series (`otel_profiles`):
+Production, fixed UTC window 2026-10-25 20:00 → 2026-10-26 20:00,
+12 services and 45 instance IDs including rollout replacements (40 IDs excluding
+trader's older-pin staging service; `otel_profiles`). Full reproducible breakdown:
+control-plane `research/profile-volume-2026-10-26.md` and its TSVs.
 
 | Sample type            | Rows/profile | Share of bytes (excluding one allocation-heavy staging service) |
 | ---------------------- | -----------: | ---------------------------------------------------------------: |
@@ -40,15 +43,16 @@ costs about as much as a CPU profile every 70s. Both have to come down.
 The earlier fix (alloc/goroutine off) was already in the 2.5 GiB/day measured
 here; the 150 GiB billed in October is the era before it: allocation counters
 were 90-97% of aggregate rows from 15 to 21 October (`profile_samples_1m`), and
-one `reliant-temporal-worker` pod was 57% of them.
+the `reliant-temporal-worker` service was 57% of Oct 15–21 aggregate rows (all
+types; aggregates discard replica identity).
 
-CPU window: the sampler runs at 100 Hz, so a 10s window is ~1000 ticks. Each
-stack that appeared `c` times in the window survives a window of fraction `f`
-with probability `1-(1-f)^c`. Re-deriving every stored CPU profile at `f=0.5`
-keeps **52%** of its rows in every service (50-52% from 79 down to 1.5 stacks per
-profile), because most stacks are seen once or twice. Halving the window halves
-the stored rows and keeps the hot paths (a stack worth reading appears many
-times).
+CPU window: the sampler runs at 100 Hz of **on-CPU time**, not wall time.
+A 10s wall window does not imply 1,000 samples: the worker averaged 86.65 CPU
+ticks/profile, the API server 30.69, and most other services 2–11. A Bernoulli
+thinning model keeps stack `c` with probability `1-(1-f)^c` for window fraction
+`f`; at `f=0.5` it predicts **50–52%** of stored rows survive. This is a model,
+not a measured 5s capture, and bursty workloads can differ. Fewer samples lose
+rare stacks and trace links; they do not preserve every hot path by guarantee.
 
 | Cadence                               | Fleet bytes/day (model) |   vs now |
 | ------------------------------------- | ----------------------: | -------: |
@@ -59,34 +63,43 @@ times).
 | **cpu 5s/5m, heap 2h (default)**      |            **0.33 GiB** | **7.6x** |
 | cpu 5s/10m, heap 2h                   |                0.25 GiB |    10.1x |
 
-Per-series model: each pod's observed bytes are scaled by the ratio of expected
-profile counts (`1 + span/period`, the 1 being the first-cycle snapshot), and for
-the 5s window by the measured 0.52 thinning. Run on the current cadence it
-reproduces the observed CPU total within 8%. Heap is what remains: about 65% of
-the new default's bytes, so the heap interval, not the CPU cadence, decides
-whether the cut reaches 5x.
+Per-series model: each instance's expanded logical row bytes are scaled by the
+ratio of expected profile counts (`1 + span/period`, including the first capture)
+and CPU by a conservative 0.52 thinning factor. These are **not billed bytes or
+compressed disk bytes**: LowCardinality storage, part merges and compression
+change those totals. Repeating with `byteSize(*)` over the fixed window gives
+2.56 → 0.336 GiB (7.6x), roughly half CPU and half heap. Snapshot cost and restart
+frequency matter; physical savings must be checked after rollout. Heap exports
+two sample-type profiles per capture (one per inuse type), not twice as many
+captures. The old cumulative-allocation era is excluded from this forecast.
 
 Why the chosen point (5s every 5 min, heap every 2 h, raw retention 24h):
 
 - A 5 min cycle is 12 CPU profiles an hour per pod: any flamegraph over an hour
   or more still has ~60 s of samples, and the per-minute aggregate behind range
-  flamegraphs is read over days. A question about one moment ("where did the CPU
-  go at 14:05") is answered by the raw tier within 24h.
+  flamegraphs is read over days. This is sparse coverage, not a continuous
+  recording: a brief incident or a specific trace may have no samples at all.
+  Raw trace-linked samples that were captured remain available for 24h.
 - Heap changes slowly. A snapshot every two hours is 12 points a day per pod,
-  enough to see growth and leaks; the first snapshot of a new process is
-  immediate, so a deploy is always visible.
+  enough to see sustained growth and leaks, but it can miss short-lived spikes.
+  A new process includes heap on its first jittered cycle (roughly 1–5 minutes
+  after startup), rather than waiting two hours.
 - Raw retention sets the bytes held, not the bytes billed. Raw only serves
   `--trace` lookups and short-range reads; ranges read the 30-day aggregates.
 
 How the comparable tools default: Datadog's Go profiler uploads every **60s**
 with a CPU window of **60s** (`DefaultPeriod`, `DefaultDuration`) and heap on
 by default; mutex and block are off ("we do not recommend enabling" block).
-Grafana Alloy's `pyroscope.scrape` scrapes every **15s** with a 14s delta
-window, but its backend stores *deduplicated, delta-compressed* profiles
-(Pyroscope's `retention_period` default is 31d), so the cost per profile is far
-lower than a row-per-sample store. Forge stores a fully expanded row per
-sample, so the same cadence costs 10-20x more per profile; matching the
-clock-rate of those tools was never the right comparison.
+[Pyroscope Go](https://github.com/grafana/pyroscope-go/blob/main/session.go)
+defaults to 15s uploads, CPU at 100 Hz and delta heap/block/mutex collectors.
+[Grafana Alloy's `pyroscope.scrape`](https://grafana.com/docs/alloy/latest/reference/components/pyroscope/pyroscope.scrape/)
+scrapes every **15s** with a 14s delta window; Alloy is Grafana's collector for
+Pyroscope, not a third independent profiler. The OSS Pyroscope server's
+`retention_period` defaults to 31d. These differ in representation and storage;
+we have not measured a cross-vendor bytes/profile multiplier. Datadog's defaults
+are in [dd-trace-go options.go](https://github.com/DataDog/dd-trace-go/blob/main/profiler/options.go).
+For a temporary incident investigation, override the cadence or capture an
+on-demand pprof instead of expecting sparse defaults to catch a short spike.
 
 `ProfilesConfig` sets a binary's own selection; `FORGE_PROFILES` and
 `FORGE_PROFILES_HEAP_INTERVAL` win over it. A forge workload's `profiling`

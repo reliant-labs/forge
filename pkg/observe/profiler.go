@@ -192,14 +192,17 @@ func (p *profiler) run(ctx context.Context) {
 }
 
 // nextWait is the pause before the next cycle: the interval, doubled per
-// consecutive failure up to profilerMaxBackoff, jittered by ±profilerJitter.
+// consecutive failure up to the greater of the interval and profilerMaxBackoff,
+// jittered by ±profilerJitter. A deliberately slow cadence never speeds up.
 func (p *profiler) nextWait() time.Duration {
+	cap := max(p.interval, profilerMaxBackoff)
 	d := p.interval
-	for i := 0; i < p.failures && d < profilerMaxBackoff; i++ {
-		d *= 2
-	}
-	if d > profilerMaxBackoff {
-		d = profilerMaxBackoff
+	for i := 0; i < p.failures && d < cap; i++ {
+		if d > cap/2 {
+			d = cap
+		} else {
+			d *= 2
+		}
 	}
 	j := 1 + profilerJitter*(2*rand.Float64()-1)
 	return time.Duration(float64(d) * j)

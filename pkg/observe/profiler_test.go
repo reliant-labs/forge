@@ -606,6 +606,20 @@ func TestBackoffGrowsAndIsCapped(t *testing.T) {
 	}
 }
 
+func TestSlowConfiguredCadenceNeverSpeedsUp(t *testing.T) {
+	p := testProfiler(nil, nil)
+	p.interval = time.Hour
+	for _, failures := range []int{0, 1, 30} {
+		p.failures = failures
+		for range 50 {
+			got := p.nextWait()
+			if got < 48*time.Minute || got > 72*time.Minute {
+				t.Fatalf("after %d failures wait=%s, want 1h ±20%%", failures, got)
+			}
+		}
+	}
+}
+
 func TestRunStopsOnCancelAndRecoversAfterFailures(t *testing.T) {
 	var probes atomic.Int32
 	var sent atomic.Int32

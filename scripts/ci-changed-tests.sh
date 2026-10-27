@@ -104,7 +104,7 @@ echo "::group::changed tests ($mode) — ${#packages[@]} packages, scheduled by 
 echo "$names"
 echo "::endgroup::"
 status=0
-go test "${flags[@]}" -run "$run" "${packages[@]}" || status=$?
+scripts/ci-go-test.sh "${flags[@]}" -run "$run" "${packages[@]}" || status=$?
 elapsed=$((SECONDS - started))
 if [[ $status -eq 0 ]]; then
   echo "flake gate: selected tests passed 3/3 in ${elapsed}s (${#packages[@]} packages)" | tee -a "$summary"

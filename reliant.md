@@ -249,6 +249,14 @@ budget is 10 GB; every scope saved on main is trimmed first to the entries that 
 (`.github/actions/trim-go-build-cache`), or the scopes outgrow the budget and evict one
 another. Add a job, or a cache scope, only when sharing one is worse.
 
+**Test-cache inputs:** `scripts/ci-go-test.sh` removes only `FORGE_SLOT_HELD` before
+starting Go. A heavy-slot lease changes on every gate invocation; unsetting it in
+`TestMain` is too late because Go hashes the parent's original environment. The
+shards and changed-test gate share this wrapper. Repository-wide guard scans use
+`internal/repowalk`: it tracks the root's entry-set changes and scanned subtrees,
+not the metadata of skipped `.git`/`.forge` state. Its full-mode regression test
+runs cmd/go repeatedly and proves both replay and invalidation on real input edits.
+
 Build caches: a PR job restores main's cache and never saves one; only pushes to main
 save (`ci.yml`'s "Build-cache note"). A PR's cache is visible to that PR alone, and PR
 saves were evicting main's entries from the repository's 10 GB budget. Main saves four

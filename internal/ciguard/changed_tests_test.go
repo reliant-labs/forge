@@ -13,7 +13,7 @@ import (
 func changedTestsFixture(t *testing.T, mode string, fail bool) (string, error) {
 	t.Helper()
 	root := t.TempDir()
-	for _, dir := range []string{"bin", "one", "two"} {
+	for _, dir := range []string{"bin", "one", "two", "scripts"} {
 		if err := os.Mkdir(filepath.Join(root, dir), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -29,6 +29,11 @@ func changedTestsFixture(t *testing.T, mode string, fail bool) (string, error) {
 		t.Fatal(err)
 	}
 	write("changed.sh", string(body))
+	helper, err := os.ReadFile(filepath.Join("..", "..", "scripts", "ci-go-test.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	write("scripts/ci-go-test.sh", string(helper))
 	write("one/one_test.go", "package one\nfunc TestOne(t *testing.T) {}\n")
 	write("two/two_test.go", "package two\nfunc TestTwo(t *testing.T) {}\n")
 	// These are fixture executables, not invocations of git/go against the

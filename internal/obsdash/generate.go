@@ -220,8 +220,10 @@ func writeOwnedOverview(root, owned, legacy string, content []byte, cs *checksum
 			return err
 		}
 		if !bytes.Equal(destination, old) && !pristine {
+			checksums.RecordPreservedOwnershipTransfer(root, legacy, owned, old)
 			return nil // Two independent edits: preserve both, never discard one.
 		}
+		checksums.RecordPreservedOwnershipTransfer(root, legacy, owned, old)
 		if err := checksums.RemoveJournaled(filepath.Join(root, legacy)); err != nil {
 			return err
 		}

@@ -206,7 +206,7 @@ tasks:
         if: '[ -n "{{.CLI_ARGS}}" ]'
       - task: frontends
         if: '[ -z "{{.CLI_ARGS}}" ]'
-        vars: {SCRIPT: '{{.SLOT}} $PM test -- --passWithNoTests'}
+        vars: {SCRIPT: '{{.SLOT}} $PM test $([ "$PM" != npm ] || printf %s --) --passWithNoTests'}
 
   frontends:
     # Runs SCRIPT in every frontend of this project in turn, stopping at the

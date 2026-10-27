@@ -14,6 +14,76 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
+func TestTaskfileFrontendTestArguments(t *testing.T) {
+	if testing.Short() {
+		t.Skip("execs task over a rendered template; runs in full scoped test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX argv-capture fixture")
+	}
+	task, err := exec.LookPath("task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pm := range []string{"npm", "pnpm", "yarn"} {
+		for _, suite := range []string{"present", "empty"} {
+			t.Run(pm+"/"+suite, func(t *testing.T) {
+				root := t.TempDir()
+				if err := os.WriteFile(filepath.Join(root, "forge.yaml"), []byte("name: demo\nmodule_path: example.com/demo\nforge_version: v0.1.46\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				bin := filepath.Join(root, "bin")
+				if err := os.MkdirAll(filepath.Join(root, "frontends/web"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(bin, 0700); err != nil {
+					t.Fatal(err)
+				}
+				marks := filepath.Join(root, "argv")
+				// npm consumes its separator; pnpm/yarn forward it to Vitest.
+				// The fixture refuses any argv that would hide the option from
+				// Vitest, including empty-suite's --passWithNoTests requirement.
+				manager := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + marks + "'\n[ \"$1\" = test ] || exit 11\nshift\n"
+				if pm == "npm" {
+					manager += "[ \"$1\" = -- ] || exit 12\nshift\n"
+				}
+				manager += "[ \"$1\" = --passWithNoTests ] && [ \"$#\" = 1 ] || exit 13\n"
+				if err := os.WriteFile(filepath.Join(bin, pm), []byte(manager), 0700); err != nil {
+					t.Fatal(err)
+				}
+				forge := filepath.Join(bin, "forge-list")
+				if err := os.WriteFile(forge, []byte("#!/bin/sh\nprintf '%s\\n' '"+pm+":frontends/web'\n"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				data, err := templates.ProjectTemplates().Render("Taskfile.yml.tmpl", map[string]any{"ProjectName": "demo", "Name": "demo", "FrontendName": "web", "CLI": "forge"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(root, "Taskfile.yml"), data, 0600); err != nil {
+					t.Fatal(err)
+				}
+				run := exec.Command(task, "test:frontend", "FORGE="+forge, "SLOT=", "CLI_ARGS=")
+				run.Dir = root
+				run.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+				if output, err := run.CombinedOutput(); err != nil {
+					t.Fatalf("test entrypoint: %v\n%s", err, output)
+				}
+				got, err := os.ReadFile(marks)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := "test\n--passWithNoTests\n"
+				if pm == "npm" {
+					want = "test\n--\n--passWithNoTests\n"
+				}
+				if string(got) != want {
+					t.Errorf("manager argv %q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
 // The rendered Taskfile must consume exactly the CI resolver's decision,
 // including migrations that temporarily leave multiple managers' locks.
 func TestProjectFrontendsManagerTaskfileParity(t *testing.T) {

@@ -239,6 +239,14 @@ func TestLogResourceLeavesTextLinesAlone(t *testing.T) {
 // The resource is encoded once per handler, not once per line: a stamped
 // handler allocates no more per record than the bare JSON handler does.
 func TestLogResourceCostsNoPerLineAllocation(t *testing.T) {
+	// Both handlers write through slog's pooled buffers, and the race
+	// detector drops sync.Pool entries at random: under -race this failed 16
+	// of main's last 40 runs ("1.0 per line, the bare JSON handler 0.0")
+	// with no change to either handler, and never without it. The -short
+	// tiers (pull request, main's test-short-warm, Windows) run it unraced.
+	if raceEnabled {
+		t.Skip("allocation counts are not deterministic under the race detector")
+	}
 	clearOTelEnv(t)
 	snapshotGlobals(t)
 	setResourceEnv(t)

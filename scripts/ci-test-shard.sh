@@ -44,7 +44,7 @@ echo "::endgroup::"
 
 status=0
 started=$SECONDS
-go test -short -json -timeout "$timeout" "${pkgs[@]}" >"$json" || status=$?
+scripts/ci-go-test.sh -short -json -timeout "$timeout" "${pkgs[@]}" >"$json" || status=$?
 elapsed=$((SECONDS - started))
 echo "shard $i/$n: ${elapsed}s wall (compile, link and tests; includes any cache replay)"
 # Observe the test-command budget, leaving setup/artifact headroom within 5m.

@@ -187,6 +187,7 @@ func register(c Codemod) {
 			panic(fmt.Sprintf("codemod %q registered twice", c.Name))
 		}
 	}
+	c.Run = formatAfter(c.Run)
 	registry = append(registry, c)
 }
 

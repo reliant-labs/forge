@@ -377,3 +377,41 @@ func droppedGauge(t *testing.T, r *sdkmetric.ManualReader, env string) int64 {
 	t.Fatalf("no alerting.rules.dropped for env %q", env)
 	return 0
 }
+
+func TestNextDueIsFixedRateAndSkipsMissedSlots(t *testing.T) {
+	base := time.Date(2026, 10, 26, 12, 0, 7, 0, time.UTC)
+	tests := []struct {
+		name     string
+		now      time.Duration // after base
+		interval time.Duration
+		want     time.Duration // after base
+	}{
+		{"evaluated on time", 0, time.Minute, time.Minute},
+		{"tick was late and the query slow: the period does not grow", 13 * time.Second, time.Minute, time.Minute},
+		{"finished just before the next slot", 59 * time.Second, time.Minute, time.Minute},
+		{"finished exactly on the next slot: that slot is missed", time.Minute, time.Minute, 2 * time.Minute},
+		{"one slot overrun", 61 * time.Second, time.Minute, 2 * time.Minute},
+		{"a pass that stalled for ten intervals does not replay them", 10*time.Minute + time.Second, time.Minute, 11 * time.Minute},
+		{"5m interval keeps its phase", 20 * time.Second, 5 * time.Minute, 5 * time.Minute},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nextDue(base, tc.interval, base.Add(tc.now)); !got.Equal(base.Add(tc.want)) {
+				t.Fatalf("nextDue = +%v, want +%v", got.Sub(base), tc.want)
+			}
+		})
+	}
+}
+
+func TestARuleKeepsItsPeriodWhileEvaluationsTakeTime(t *testing.T) {
+	// A hundred evaluations, each finishing 1s after its slot, must not drift:
+	// the n-th slot is exactly n intervals after the first.
+	slot := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	first := slot
+	for i := 1; i <= 100; i++ {
+		slot = nextDue(slot, time.Minute, slot.Add(time.Second))
+		if want := first.Add(time.Duration(i) * time.Minute); !slot.Equal(want) {
+			t.Fatalf("slot %d = %v, want %v", i, slot, want)
+		}
+	}
+}

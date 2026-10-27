@@ -32,6 +32,9 @@ type IssueReader interface {
 	GetIssue(ctx context.Context, req GetIssueRequest) (GetIssueResult, error)
 	ListIssueEvents(ctx context.Context, req ListIssueEventsRequest) (ListIssueEventsResult, error)
 	UpdateIssueStatus(ctx context.Context, req UpdateIssueStatusRequest) (UpdateIssueStatusResult, error)
+	ListIssueTimeline(ctx context.Context, req ListIssueTimelineRequest) (ListIssueTimelineResult, error)
+	AddIssueComment(ctx context.Context, req AddIssueCommentRequest) (AddIssueCommentResult, error)
+	AssignIssue(ctx context.Context, req AssignIssueRequest) (AssignIssueResult, error)
 }
 
 // SessionReader reads browser sessions: the list, and one session's summary

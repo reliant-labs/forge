@@ -247,6 +247,7 @@ func buildAndCutForDeploy(ctx context.Context, projectDir, envName string, f dep
 		allowPassedMigrations:   f.promote.allowPassedMigrations,
 		allowUnmergedMigrations: f.promote.allowUnmergedMigrations,
 		targetArch:              f.targetArch,
+		imageBuilder:            f.imageBuilder,
 		targets:                 f.targets,
 		run:                     f.promote.run,
 	}

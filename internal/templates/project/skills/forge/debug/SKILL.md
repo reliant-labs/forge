@@ -1,6 +1,6 @@
 ---
 name: debug
-description: Debug methodology — triage, parallel investigation, and synthesis.
+description: Debug methodology — triage running-system evidence, guarded data reads, parallel investigation, and synthesis.
 emit: both
 ---
 
@@ -70,7 +70,135 @@ task test              # run tests with race detector
 forge generate                 # regenerate code (use when stale gen is suspected)
 ```
 
-**Ask the running system before reading code.** `forge obs status <env>` says what is wrong now (erroring services, new and regressed issues, alerts, stale telemetry, the release in force); `forge obs issue <id> <env>` gives the culprit, the latest event's trace and the suspect commits; `forge obs trace <trace-id> <env>` and `forge obs logs <env> --trace <trace-id>` give the request itself; `forge db query <env> "<select>"` gives the rows (`db/query`). Each prints one JSON document with `--json` whose `suggested[]` names the next command. Locally they read the ClickStack `forge env up` started, so they work in dev too. Depth: `observability/query`.
+### Ask the running system before reading code
+
+Start with `forge obs status <env> --json`, then follow the failing request,
+not a broad production scan. Load `forge skill load observability/query` for
+the full verb/JSON reference and `forge skill load db/query` for application
+rows. Each step should narrow the hypothesis:
+
+| Evidence needed | Read-only command |
+|---|---|
+| Scope, telemetry freshness, failing services and release | `forge obs status prod --since 15m --json` |
+| Error lines in that window | `forge obs logs prod 'body:timeout' --service api --since 15m --limit 5 --json` |
+| Failed requests, then the call tree | `forge obs traces prod --errors --service api --since 15m --limit 5 --json`, then `forge obs trace <trace-id> prod` |
+| Grouped cause, call site and latest event | `forge obs issues prod --since 15m --limit 5 --json`, then `forge obs issue <id> prod` |
+| Logs for that request | `forge obs logs prod --trace <trace-id> --since 15m --limit 5 --json` |
+| Available metrics, then values | `forge obs metrics list prod --contains rpc --since 15m`, then `forge obs metrics query prod rpc.server.call.duration --agg quantile --quantile 0.95 --since 15m` |
+| A question beyond the structured verbs | `forge obs endpoints dev --explain --json`, then adapt its SQL with `forge obs query dev --sql-file investigation.sql` |
+| A dashboard panel's data | `forge obs query dev --panel panel.json --since 15m` |
+| Continuous CPU/heap evidence | `forge obs profile --env dev --service api --since 15m -o /tmp/api.pb.gz` (local ClickStack; see below) |
+
+`api` is an example **telemetry service.name**, not necessarily a workload or
+binary name. Use the name status actually returned. Prefer complete `suggested`
+commands from the result, but verify their env/backend before running them.
+Use `forge env releases at <env> <time-or-trace-id>` to relate evidence to the
+release live then. `forge obs check <env>` judges a deploy, not an arbitrary
+application-flow invariant. Reading issues is not triage: do not resolve,
+ignore, assign or comment during a read-only investigation.
+
+#### Bind the project, environment and authority first
+
+Run the project's pinned Forge; check `forge version` and heed version-skew
+warnings. An embedded `reliant forge` can differ from the project's standalone
+binary. Run in the project root (or select it with `-C <project-root>`), and
+name the env explicitly: most obs verbs default to dev, **db query never does**.
+Servers need not share your filesystem; `--sql-file` and `--panel` read files
+on the CLI machine, not a remote API server.
+
+The env declaration should resolve the telemetry location: local ClickStack
+or the control plane. Normal use is env-first, without a backend flag. Check
+the returned `scope` (env, backend, cloud env_id, services and time window).
+On an older binary that routes the env incorrectly, `--backend cloud` or
+`--backend local` is a troubleshooting override, not required configuration;
+report the routing/version mismatch instead of normalizing it. Start with a
+short window, then fix `--from`/`--to` for comparable evidence.
+`--explain` prints SQL/parameters instead of executing the telemetry query;
+it is not a connectivity or authorization test.
+
+Cloud reads require the credential's role-bound `obs:read`; release reads may
+also need `deploy:read`, and hosted database reads need `db:query`. Under
+Reliant use the credential helper, not an interactive `forge login`. Elsewhere
+use the project's documented login. HTTP 403/missing scope on a valid token
+is an authorization blocker, not evidence of an app outage. Report it to the
+owner/admin; do not mint broader tokens, read secret values or bypass policy.
+A backend that is itself broken (for example ClickHouse code 33) may also break
+its own observability: use an already-authorized, read-only out-of-band source
+such as the owning cluster's pod logs. Coordinate with the incident
+investigator rather than duplicating scans or escalating privileges.
+
+#### Unknown is not healthy
+
+With `--json`, inspect `ok`, `exit_code`, `error`, `scope`, and, where present,
+`unread`, `warnings`, `not_evaluated`, `truncated`, `omitted`, `next_page_token`.
+**Status exits 0 when any section was read**, even if every telemetry section
+is unread and only the release ledger was available. An empty array means
+read-and-empty; an absent/unread section means unknown. A capped result is
+incomplete: narrow or page it, never infer absence from it.
+
+For obs reads, exit 1 means a bad/refused request; exit 2 means Forge could not
+look (auth, quota, unreachable/off telemetry or an unsupported backend call).
+Database reads similarly distinguish refused SQL/policy (1) from unavailable,
+rate-limited or timed-out reads (2). Preserve the exact error/reason: missing
+scope, quota and a SQL error need different actions. Do not retry blindly or
+turn a failed query into “no matching errors”.
+
+#### Query telemetry and application data separately
+
+`forge obs query` is **ClickHouse telemetry SQL**, not the app's Postgres.
+Start with `--explain` from a structured verb. For example, count logs in the
+bound window without interpolating values into the statement:
+
+```bash
+forge obs query dev --since 15m --service api --sql \
+  'SELECT count() AS n FROM otel_logs
+   WHERE Timestamp >= {from:DateTime64(9)} AND Timestamp < {to:DateTime64(9)}
+   AND (empty({services:Array(String)}) OR has({services:Array(String)}, ServiceName))'
+```
+
+The parameters bind time/services; keep the predicates when adapting SQL.
+The cloud backend enforces the credential's environment scope. The guard
+allows one read-only SELECT, not DDL, writes, system tables or table functions.
+`--panel` takes **one panels[] element**, not a whole dashboard document;
+load `observability/dashboards` for authoring and `observability/query` for
+`--param`, `--step` and the JSON contract.
+
+`forge db query` reads the workload's **application database** instead:
+
+```bash
+forge db query dev 'select 1 as reachable' --max-rows 1 --timeout 5s --json
+# For an existing, authorized route to a non-hosted cluster DB:
+forge db query prod 'select 1 as reachable' --addr localhost:15432 \
+  --confirm-env prod --reason 'incident connectivity check' --max-rows 1 --json
+```
+
+Use `--workload` (default `api`) and, for several managed DBs, `--database` to
+select the database that owns the records. `--addr host:port` supplies only
+**your existing VPN/tunnel/bastion route**; it creates no route and bypasses
+neither policy nor guards. Hosted envs refuse `--addr`: the control plane
+executes/audits the query. Cluster routes use `forge_ro`, its kube Secret and
+CA without printing credentials; host/compose keeps the workload's URL user
+with host/port replaced, not necessarily `forge_ro`. Keep default cluster TLS
+verification; do not disable it to get past a failed connection.
+
+Every query is one statement in a timed READ ONLY transaction under row/byte
+caps. Real envs normally require `--confirm-env` and `--reason`; `deny` stays
+denied. Hosted audited access is person/role-bound, not a machine-token escape
+hatch. The managed read-only role excludes secret columns; select explicit
+safe columns or aggregates, not `SELECT *`. Never reset, seed, migrate or write
+production data to investigate it. `select 1` proves connectivity only, not
+that app records or schema are correct. Full transport/policy rules: `db/query`.
+
+#### Tool API versus CLI
+
+Forge's stdio MCP server is `forge mcp` (embedded: `reliant forge mcp`).
+Register the entrypoint your installed binary actually exposes; load `debug`
+with `skill_load` using `name: "debug"` and `dir: "<project-root>"` to select
+the project. Its current catalog exposes project/skill/lint/generate tools,
+**not obs or db query tools**. Use the harness's shell for those CLI reads;
+do not invent MCP tool names. See `docs/mcp.md` in the Forge repository for
+registration and the tool list. Older embedded binaries may not expose `mcp`;
+check `--help` before registering.
 
 **Pick the tool for the job — and know where each stops short:**
 
@@ -191,7 +319,7 @@ The three investigation tracks above each have a dedicated forge sub-skill with 
 - **Traces:** HyperDX → Search → Traces. Find slow requests, trace cross-service calls.
 - **Metrics:** HyperDX → Search → Metrics. Query `rpc.server.call.duration` (the otelconnect RPC edge histogram; attributes `rpc.method`, `rpc.response.status_code`) etc.
 - **Logs:** HyperDX → Search → Logs. The collector tails `.forge/logs/<env>/*.log`, so a host process's logs are here and in the file; a log with a `TraceId` links to its trace.
-- **Profiles:** not collected locally yet. Use pprof below.
+- **Profiles:** continuous profiles are collected locally when enabled; export them with `forge obs profile` (local ClickStack only, `--env <env>` rather than a positional env). Load `forge skill load observability/profiles` for sample types, retention and collection settings. Use `--list` to discover services; no samples is not proof the process used no CPU. For a live process, pprof below remains available.
 
 Host processes are pointed at it by `forge env up`, which sets `OTEL_EXPORTER_OTLP_ENDPOINT` to the loopback OTLP/HTTP port the compose service publishes (`_otlp_http_port` in `dev/main.k`) and `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, unless you set them yourself.
 

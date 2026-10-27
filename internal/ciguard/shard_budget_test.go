@@ -13,12 +13,17 @@ func TestShardReportsCommandWallBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	helper, err := os.ReadFile(filepath.Join("..", "..", "scripts", "ci-go-test.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "scripts"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for name, content := range map[string]string{
 		"shard.sh":                    string(body),
+		"scripts/ci-go-test.sh":       string(helper),
 		"scripts/ci-test-packages.sh": "#!/usr/bin/env bash\necho fixture/package\n",
 		"go": `#!/usr/bin/env bash
 printf '%s\n' '{"Action":"pass","Package":"fixture/package","Test":"TestCheap","Elapsed":0.01}' '{"Action":"pass","Package":"fixture/package","Elapsed":0.01}'

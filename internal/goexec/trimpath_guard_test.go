@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/repowalk"
 )
 
 // goflagsExempt names the functions that write a GOFLAGS value into an
@@ -56,7 +58,7 @@ func TestGOFLAGSOverridesKeepTrimpath(t *testing.T) {
 	var offenders []string
 	seenExempt := map[string]bool{}
 	sites := 0
-	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	walkErr := repowalk.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}

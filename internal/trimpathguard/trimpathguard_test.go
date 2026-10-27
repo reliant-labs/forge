@@ -22,6 +22,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/repowalk"
 )
 
 // callerFileBound matches a runtime.Caller call whose FILE result is kept:
@@ -48,7 +50,7 @@ func TestNoSourcePathsFromRuntimeCaller(t *testing.T) {
 	}
 	skipDirs := map[string]bool{".git": true, "node_modules": true, "testdata": true, "vendor": true, "tmp": true, ".forge": true}
 
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err = repowalk.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}

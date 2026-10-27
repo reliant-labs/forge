@@ -81,6 +81,20 @@ type wireIssue struct {
 	Version         int32            `json:"version"`
 	IncidentKey     string           `json:"incidentKey"`
 	RelatedCount    jsonInt          `json:"relatedCount"`
+	Assignee        *wireUser        `json:"assignee"`
+}
+
+// wireUser is IssueUser.
+type wireUser struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+func (u *wireUser) user() *IssueUser {
+	if u == nil || (u.ID == "" && u.Name == "") {
+		return nil
+	}
+	return &IssueUser{ID: u.ID, Name: u.Name}
 }
 
 // wireStatus and wirePlatform name the control plane's enum values.
@@ -131,7 +145,7 @@ func (w wireIssue) issue() Issue {
 		Events: int64(w.Events), Affected: int64(w.Affected), AffectedUnit: w.affectedUnit(),
 		ResolvedAt: w.ResolvedAt.UTC(), ResolvedVersion: w.ResolvedVersion, RegressedAt: w.RegressedAt.UTC(),
 		IgnoredUntil: w.IgnoredUntil.UTC(), Version: w.Version,
-		IncidentKey: w.IncidentKey, RelatedCount: int(w.RelatedCount),
+		Assignee: w.Assignee.user(), IncidentKey: w.IncidentKey, RelatedCount: int(w.RelatedCount),
 	}
 }
 
@@ -183,7 +197,9 @@ func (c Cloud) ListIssues(ctx context.Context, req ListIssuesRequest) (ListIssue
 		Sort             string         `json:"sort"`
 		PageSize         int            `json:"pageSize,omitempty"`
 		PageToken        string         `json:"pageToken,omitempty"`
-	}{Scope: scope, Source: req.Source, FirstSeenRelease: req.SinceRelease, SincePromotionID: req.SincePromotion, Sort: sort, PageSize: req.Limit, PageToken: req.PageToken}
+		Assignee         string         `json:"assignee,omitempty"`
+	}{Scope: scope, Source: req.Source, FirstSeenRelease: req.SinceRelease, SincePromotionID: req.SincePromotion, Sort: sort, PageSize: req.Limit, PageToken: req.PageToken,
+		Assignee: req.Assignee}
 	for _, s := range req.Statuses {
 		in.Statuses = append(in.Statuses, statusEnum(s))
 	}

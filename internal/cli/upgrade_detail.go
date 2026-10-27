@@ -110,6 +110,10 @@ func printManagedDetail(r generator.UpgradeResult) {
 		fmt.Println("  Adopting it adds a file and destroys nothing:")
 		fmt.Printf("    %s project upgrade   # writes every managed file this project lacks\n", Name())
 		return
+	case r.LeftDeleted:
+		fmt.Println("  A scaffold-once file you deleted, declined or disowned: upgrade leaves it absent.")
+		fmt.Printf("  Bring it back fresh: %s project rescaffold %s\n", Name(), r.Path)
+		return
 	case r.Status == generator.UpgradeSkipped:
 		fmt.Println("  Not upgrade-managed in this project (disowned, or a legacy layout).")
 		fmt.Println("  Nothing here is compared against a template.")

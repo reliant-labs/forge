@@ -27,6 +27,7 @@ var obsIssuesSchema = obsout.Schema{
 		"issues.events", "issues.affected", "issues.affected_unit", "issues.latest_trace_id", "issues.resolved_at", "issues.resolved_version",
 		"issues.regressed_at", "issues.ignored_until", "issues.incident_key", "issues.related_count",
 		"collapsed",
+		"issues.assignee", "issues.assignee.id", "issues.assignee.name",
 		"statements", "statements.purpose", "statements.sql", "statements.params.*",
 		"suggested",
 	},
@@ -54,6 +55,8 @@ type obsIssueRowDoc struct {
 	ResolvedVersion string    `json:"resolved_version,omitempty"`
 	RegressedAt     time.Time `json:"regressed_at,omitzero"`
 	IgnoredUntil    time.Time `json:"ignored_until,omitzero"`
+	// Assignee is absent when the issue is unassigned.
+	Assignee *obsUserDoc `json:"assignee,omitempty"`
 	// IncidentKey is shared by the issues of one incident (the same cause,
 	// first seen close in time, across services); RelatedCount is how many
 	// others carry it. Issues are never merged: each keeps its own counts.
@@ -68,7 +71,7 @@ func issueRowDoc(i obsbackend.Issue) obsIssueRowDoc {
 		Events: i.Events, Affected: i.Affected, AffectedUnit: i.AffectedUnit, LatestTraceID: i.LatestTraceID,
 		ResolvedAt: zeroUnixEpoch(i.ResolvedAt), ResolvedVersion: i.ResolvedVersion,
 		RegressedAt: zeroUnixEpoch(i.RegressedAt), IgnoredUntil: zeroUnixEpoch(i.IgnoredUntil),
-		IncidentKey: i.IncidentKey, RelatedCount: i.RelatedCount,
+		Assignee: userDoc(i.Assignee), IncidentKey: i.IncidentKey, RelatedCount: i.RelatedCount,
 	}
 }
 
@@ -114,6 +117,7 @@ type obsIssuesOpts struct {
 	source       string
 	sinceRelease string
 	sinceDeploy  string
+	assignee     string
 	sort         string
 	pageToken    string
 	// expandIncidents lists every issue of an incident; by default the issues
@@ -156,6 +160,7 @@ within --incident-window of one another, in any service, share an incident_key.
 The list collapses them under the first, which shows "+N related"; nothing is
 merged and each keeps its own counts and triage state. forge obs issue <id>
 lists the rest of its incident.
+  ` + Name() + ` obs issues prod --assignee 7c1e2a90-0b1d-4a61-9e7d-5a1d3c9f2b10
 
 ` + obsIssuesSchema.Help(),
 		Args: cobra.RangeArgs(0, 1),
@@ -170,6 +175,7 @@ lists the rest of its incident.
 	f.StringVar(&o.source, "source", "", "list the issues of this issue source (issue.source) instead of errors, e.g. llm_bug_report")
 	f.StringVar(&o.sinceRelease, "since-release", "", "only issues first seen in this release version (hosted env)")
 	f.StringVar(&o.sinceDeploy, "since-deploy", "", "only issues first seen at or after this promotion id (hosted env)")
+	f.StringVar(&o.assignee, "assignee", "", "only issues assigned to this user id (hosted env); the control plane has no filter for unassigned issues, and \"me\" cannot be resolved for a machine credential")
 	f.StringVar(&o.sort, "sort", obsquery.IssueSortLast, "last | first | events")
 	f.StringVar(&o.pageToken, "page-token", "", "resume from a next_page_token")
 	f.BoolVar(&o.expandIncidents, "expand-incidents", false, "list every issue of an incident instead of collapsing each incident under its first issue")
@@ -193,6 +199,11 @@ func (o obsIssuesOpts) validate() error {
 	}
 	if o.source != "" && o.platform == obsbackend.PlatformBrowser {
 		return obsbackend.Wrong("--source lists server issue events; it does not combine with --platform browser")
+	}
+	if o.assignee != "" {
+		if _, err := assigneeFilter(o.assignee); err != nil {
+			return err
+		}
 	}
 	if !slices.Contains([]string{obsquery.IssueSortLast, obsquery.IssueSortFirst, obsquery.IssueSortEvents}, o.sort) {
 		return obsbackend.Wrong("--sort %q is not a sort order; use last, first or events", o.sort)
@@ -241,7 +252,7 @@ func runObsIssues(ctx context.Context, d obsDeps, env string, o obsIssuesOpts) e
 	}
 	res, err := r.ListIssues(ctx, obsbackend.ListIssuesRequest{
 		Narrow: n, Statuses: o.statuses, Platform: o.platform, Source: o.source, SinceRelease: o.sinceRelease, SincePromotion: o.sinceDeploy,
-		Sort: o.sort, Limit: o.out.Limit, PageToken: o.pageToken, IncidentWindow: o.incidentWindow,
+		Sort: o.sort, Limit: o.out.Limit, PageToken: o.pageToken, IncidentWindow: o.incidentWindow, Assignee: o.assignee,
 	})
 	if err != nil {
 		return fail(err)
@@ -271,6 +282,7 @@ func runObsIssues(ctx context.Context, d obsDeps, env string, o obsIssuesOpts) e
 		fmt.Fprintln(d.Stdout, "no issues")
 		return nil
 	}
+	header := []string{"ISSUE", "STATUS", "EVENTS", "AFFECTED", "LAST SEEN", "SERVICE", "TITLE"}
 	rows := make([][]string, len(shown))
 	for i, is := range shown {
 		title := is.Title
@@ -282,7 +294,19 @@ func runObsIssues(ctx context.Context, d obsDeps, env string, o obsIssuesOpts) e
 		rows[i] = []string{is.ID, is.Status, strconv.FormatInt(is.Events, 10), affectedText(is.Affected, is.AffectedUnit),
 			is.LastSeen.UTC().Format("01-02 15:04:05"), is.Service, title}
 	}
-	obsout.Table(d.Stdout, []string{"ISSUE", "STATUS", "EVENTS", "AFFECTED", "LAST SEEN", "SERVICE", "TITLE"}, rows, 70)
+	// The assignee column appears only when some issue has one, so a list with
+	// none reads exactly as before.
+	if slices.ContainsFunc(shown, func(i obsbackend.Issue) bool { return i.Assignee != nil }) {
+		header = slices.Insert(header, 6, "ASSIGNEE")
+		for i, is := range shown {
+			a := "-"
+			if is.Assignee != nil {
+				a = is.Assignee.ID
+			}
+			rows[i] = slices.Insert(rows[i], 6, a)
+		}
+	}
+	obsout.Table(d.Stdout, header, rows, 70)
 	if doc.Collapsed > 0 {
 		fmt.Fprintf(d.Stdout, "\n(%d more issues of the same incidents are collapsed; --expand-incidents lists them)\n", doc.Collapsed)
 	}
@@ -323,4 +347,20 @@ func collapseIncidents(issues []obsbackend.Issue) ([]obsbackend.Issue, int) {
 		out = append(out, is)
 	}
 	return out, len(issues) - len(out)
+}
+
+// assigneeFilter validates --assignee: a user id. The control plane's filter is
+// a user id or nothing; "unassigned" is not expressible, and "me" would need the
+// user a machine credential acts for, which no call returns.
+func assigneeFilter(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "none":
+		return "", obsbackend.Wrong(`--assignee none is not supported: the control plane has no filter for unassigned issues; list them and drop those with an assignee`)
+	case "me":
+		return "", obsbackend.Wrong(`--assignee me cannot be resolved: the control plane cannot tell a machine credential which user it acts for; pass a user id`)
+	}
+	if len(s) > 128 {
+		return "", obsbackend.Wrong("--assignee is longer than 128 characters")
+	}
+	return strings.TrimSpace(s), nil
 }

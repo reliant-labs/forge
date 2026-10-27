@@ -149,7 +149,8 @@ func (r Reach) Summary() string {
 }
 
 // generatedPrefixes are the trees whose edits change what `forge generate`
-// writes into a consumer. The same paths e2e-suite.yml's `changes` job uses.
+// writes into a consumer: the scaffold, the templates, the generators and
+// generate, which the e2e suite (e2e-suite.yml) exercises.
 var generatedPrefixes = []string{
 	"internal/templates/", "internal/codegen/", "internal/generator/",
 	"internal/cli/scaffold", "internal/cli/generate",

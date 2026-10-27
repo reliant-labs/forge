@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -433,19 +434,15 @@ func ensureTSPluginInstalled(feName, projectDir, feDir string) error {
 	if err := nodeengine.Check(absFeDir); err != nil {
 		return fmt.Errorf("%s: @bufbuild/protoc-gen-es is not installed, and npm was not run: %w", feName, err)
 	}
-	verb := frontenddeps.NpmInstallVerb(absFeDir)
-	fmt.Printf("📦 %s: node_modules missing — running `npm %s` in %s so protoc-gen-es exists\n",
-		feName, verb, feDir)
+	install := frontenddeps.InstallCommand(absFeDir, "", true)
+	fmt.Printf("📦 %s: node_modules missing — running `%s` in %s so protoc-gen-es exists\n",
+		feName, install, feDir)
 
-	cmd := exec.Command("npm", verb, "--no-audit", "--no-fund")
-	cmd.Dir = absFeDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s: @bufbuild/protoc-gen-es is not installed and `npm %s` in %s failed: %w "+
+	if err := frontenddeps.Install(context.Background(), absFeDir, "", true); err != nil {
+		return fmt.Errorf("%s: @bufbuild/protoc-gen-es is not installed and `%s` in %s failed: %w "+
 			"— run it manually to see the full output, then re-run generate "+
 			"(continuing would emit hooks and mocks importing _pb modules that do not exist)",
-			feName, verb, feDir, err)
+			feName, install, feDir, err)
 	}
 	return nil
 }

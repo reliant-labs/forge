@@ -42,6 +42,19 @@ const (
 	reasonClaimableIneligible = "claimable_ineligible"
 )
 
+// The claimable plan's caps (control-plane internal/planlimits/claimable.go,
+// design §2). The control plane enforces them at admission; they are checked
+// here too, in the same words, so a refusal costs no build. Per workload, and
+// with no burst: the limit is held to the cap as well as the request.
+const (
+	claimableMaxServices     = 1
+	claimableMaxReplicas     = 1
+	claimableMaxCPUMillicore = 250
+	claimableMaxMemoryMiB    = 256
+	claimableMaxDatabases    = 1
+	claimableMaxStaticSites  = 1
+)
+
 // claimableAPI builds the unauthenticated ClaimableService client. A var so the
 // CLI tests state the control plane's answers.
 var claimableAPI = func(ep cloud.Endpoint) cloud.ClaimableAPI { return cloud.NewClaimableClient(ep) }
@@ -236,8 +249,21 @@ func claimableIneligibility(e *KCLEntities) []string {
 		default:
 			out = append(out, fmt.Sprintf("%s %q (only one service may run)", w.Spec.EffectiveKind(), w.Name))
 		}
-		if w.Spec.Replicas > 1 {
-			out = append(out, fmt.Sprintf("workload %q asks for %d replicas (one is allowed)", w.Name, w.Spec.Replicas))
+		if replicas := w.Spec.Replicas; replicas > claimableMaxReplicas && w.Spec.EffectiveKind() == v1alpha1.KindService {
+			out = append(out, fmt.Sprintf("workload %q asks for %d replicas (%d is allowed)", w.Name, replicas, claimableMaxReplicas))
+		}
+		if w.Spec.EffectiveKind() == v1alpha1.KindService || w.Spec.EffectiveKind() == v1alpha1.KindJob {
+			// The hosted shape band does not apply to this plan; these caps do.
+			r := w.Spec.Resources.WithDefaults()
+			if cpu := max(r.CPURequestMillicores, r.CPULimitMillicores); cpu > claimableMaxCPUMillicore {
+				out = append(out, fmt.Sprintf("workload %q asks for %dm of CPU (at most %dm, no burst)", w.Name, cpu, claimableMaxCPUMillicore))
+			}
+			if mem := max(r.MemoryRequestBytes, r.MemoryLimitBytes); mem > claimableMaxMemoryMiB<<20 {
+				out = append(out, fmt.Sprintf("workload %q asks for %d MiB of memory (at most %d MiB, no burst)", w.Name, mem>>20, claimableMaxMemoryMiB))
+			}
+		}
+		if w.Spec.StorageGiB > 0 {
+			out = append(out, fmt.Sprintf("workload %q asks for a %d GiB persistent volume (use the database)", w.Name, w.Spec.StorageGiB))
 		}
 		if w.Build.Type == "remote" {
 			out = append(out, fmt.Sprintf("workload %q uses a remote build (build and push the image from this machine)", w.Name))
@@ -249,8 +275,8 @@ func claimableIneligibility(e *KCLEntities) []string {
 			}
 		}
 	}
-	if services > 1 {
-		out = append(out, fmt.Sprintf("%d services (one is allowed)", services))
+	if services > claimableMaxServices {
+		out = append(out, fmt.Sprintf("%d services (%d is allowed)", services, claimableMaxServices))
 	}
 	if jobs > 1 || (jobs == 1 && services == 0) {
 		out = append(out, "a job that gates no service (only a service's own migration job is allowed)")
@@ -266,11 +292,11 @@ func claimableIneligibility(e *KCLEntities) []string {
 			sites++
 		}
 	}
-	if dbs > 1 {
-		out = append(out, fmt.Sprintf("%d databases (one is allowed)", dbs))
+	if dbs > claimableMaxDatabases {
+		out = append(out, fmt.Sprintf("%d databases (%d is allowed)", dbs, claimableMaxDatabases))
 	}
-	if sites > 1 {
-		out = append(out, fmt.Sprintf("%d static sites (one is allowed)", sites))
+	if sites > claimableMaxStaticSites {
+		out = append(out, fmt.Sprintf("%d static sites (%d is allowed)", sites, claimableMaxStaticSites))
 	}
 	sort.Strings(out)
 	return out

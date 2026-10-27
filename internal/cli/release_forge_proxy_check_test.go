@@ -43,7 +43,9 @@ func runForgeScriptWithProxy(t *testing.T, repo, proxyBase string, args ...strin
 	cmd.Env = append(os.Environ(), "FORGE_RELEASE_PROXY_BASE="+proxyBase,
 		// The fixture has no prettier pin and these tests are about the
 		// proxy gate; formatting the changelog is release_forge_changelog_test.go's.
-		"FORGE_RELEASE_PRETTIER=true")
+		"FORGE_RELEASE_PRETTIER=true",
+		// The release lock is machine-wide by default; a test's is its own.
+		"RELEASE_LOCK_DIR="+t.TempDir())
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

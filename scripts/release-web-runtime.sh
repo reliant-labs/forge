@@ -86,6 +86,17 @@ if [ ! -f "$PKG_DIR/package.json" ]; then
   exit 1
 fi
 
+# One release at a time: the same lock as release-forge.sh, so a second
+# release of forge or web-runtime on this machine fails here, naming who holds
+# it. A dry run only reports a release in progress.
+# shellcheck source=scripts/lib/release-lock.sh
+. "$REPO_ROOT/scripts/lib/release-lock.sh"
+if [ "$DRY_RUN" = "1" ]; then
+  release_lock_status forge || echo "note: a real release would refuse now (above); the dry run continues." >&2
+else
+  release_lock forge "release-web-runtime.sh $VERSION" || exit $?
+fi
+
 # ── 2. Clean tree ───────────────────────────────────────────────────
 # Scoped to web-runtime/: unrelated work elsewhere in the repo must not block
 # a release, but an uncommitted change to the package itself means the tag

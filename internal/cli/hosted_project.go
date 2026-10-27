@@ -1,0 +1,158 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/gofrs/flock"
+	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/pkg/credentials"
+)
+
+// Bindings identify a server project, not an org or a selected credential.
+// The server verifies the immutable owner and live caller membership every use.
+const hostedProjectBindingFile = ".forge/hosted-projects.json"
+
+func projectEndpoint(env string, decl *cloud.Declaration) (cloud.Endpoint, error) {
+	ep, err := cloud.ResolveEndpoint(env, decl)
+	if err != nil {
+		return ep, err
+	}
+	ep.ProjectName = hostedProjectName()
+	file, err := findProjectConfigFile()
+	if errors.Is(err, ErrProjectConfigNotFound) {
+		return ep, nil
+	}
+	if err != nil {
+		return ep, err
+	}
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), hostedProjectBindingFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return ep, nil
+	}
+	if err != nil {
+		return ep, err
+	}
+	var ids map[string]string
+	if err = json.Unmarshal(raw, &ids); err != nil {
+		return ep, fmt.Errorf("read hosted project binding: %w", err)
+	}
+	key, err := credentials.Normalize(ep.URL)
+	if err != nil {
+		return ep, err
+	}
+	ep.ProjectID = ids[key]
+	return ep, nil
+}
+
+func bindHostedProject(ctx context.Context, env string, decl *cloud.Declaration, org string) (cloud.Endpoint, error) {
+	file, err := findProjectConfigFile()
+	if err != nil {
+		return cloud.Endpoint{}, err
+	}
+	path := filepath.Join(filepath.Dir(file), hostedProjectBindingFile)
+	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return cloud.Endpoint{}, err
+	}
+	lock := flock.New(path+".lock", flock.SetPermissions(0600))
+	if err := lock.Lock(); err != nil {
+		return cloud.Endpoint{}, err
+	}
+	defer lock.Unlock()
+	return bindHostedProjectLocked(ctx, env, decl, org)
+}
+
+func bindHostedProjectLocked(ctx context.Context, env string, decl *cloud.Declaration, org string) (cloud.Endpoint, error) {
+	ep, err := projectEndpoint(env, decl)
+	if err != nil {
+		return ep, err
+	}
+	cred, err := cloud.ResolveCredential("", ep)
+	if err != nil {
+		return ep, err
+	}
+	if cred.Kind != "human" && org != "" {
+		return ep, fmt.Errorf("--org cannot retarget a delegated capability")
+	}
+	if ep.ProjectID != "" {
+		if org != "" {
+			return ep, fmt.Errorf("--org is only for unbound creation; this project already has server identity %s", ep.ProjectID)
+		}
+		return ep, nil
+	}
+	var reply struct {
+		ProjectID string `json:"projectId"`
+		OrgID     string `json:"orgId"`
+		Name      string `json:"name"`
+	}
+	request := map[string]any{"projectId": ep.ProjectID, "name": ep.ProjectName, "create": true}
+	if org != "" {
+		request["orgId"] = org
+	}
+	if err = cloud.NewClient(ep, cred).Call(ctx, "controlplane.v1.DeployService/ResolveHostedProject", request, &reply); err != nil {
+		return ep, err
+	}
+	if reply.ProjectID == "" || reply.OrgID == "" || reply.Name != ep.ProjectName {
+		return ep, fmt.Errorf("control plane returned incomplete project identity")
+	}
+	file, err := findProjectConfigFile()
+	if err != nil {
+		return ep, err
+	}
+	path := filepath.Join(filepath.Dir(file), hostedProjectBindingFile)
+	ids := map[string]string{}
+	if raw, e := os.ReadFile(path); e == nil {
+		if err = json.Unmarshal(raw, &ids); err != nil {
+			return ep, err
+		}
+	} else if !errors.Is(e, os.ErrNotExist) {
+		return ep, e
+	}
+	key, err := credentials.Normalize(ep.URL)
+	if err != nil {
+		return ep, err
+	}
+	if prior := ids[key]; prior != "" && prior != reply.ProjectID {
+		return ep, fmt.Errorf("refusing to replace bound hosted project")
+	}
+	ids[key] = reply.ProjectID
+	raw, err := json.MarshalIndent(ids, "", "  ")
+	if err != nil {
+		return ep, err
+	}
+	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return ep, err
+	}
+	ignore := filepath.Join(filepath.Dir(path), ".gitignore")
+	ignored, readErr := os.ReadFile(ignore)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return ep, readErr
+	}
+	if !strings.Contains("\n"+string(ignored), "\n/hosted-projects.json\n") {
+		if err := os.WriteFile(ignore, append(ignored, []byte("\n/hosted-projects.json\n/hosted-projects.json.lock\n/.hosted-projects-*\n")...), 0600); err != nil {
+			return ep, err
+		}
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".hosted-projects-*")
+	if err != nil {
+		return ep, err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err = tmp.Write(append(raw, '\n')); err != nil {
+		tmp.Close()
+		return ep, err
+	}
+	if err = tmp.Close(); err != nil {
+		return ep, err
+	}
+	if err = os.Rename(tmp.Name(), path); err != nil {
+		return ep, err
+	}
+	ep.ProjectID = reply.ProjectID
+	return ep, nil
+}

@@ -458,7 +458,7 @@ func liveViewClient(ctx context.Context, projectDir string, envs []string, errOu
 		if decl == nil {
 			continue
 		}
-		ep, err := cloud.ResolveEndpoint(env, decl)
+		ep, err := projectEndpoint(env, decl)
 		if err != nil {
 			continue
 		}

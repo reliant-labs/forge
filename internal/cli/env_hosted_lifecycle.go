@@ -132,7 +132,7 @@ func resolveDeclaredLifecycleTarget(ctx context.Context, env, verb, flagToken st
 		return lifecycleTarget{}, err
 	}
 	noteUnownedParts(os.Stderr, verb, entities)
-	ep, err := cloud.ResolveEndpoint(env, declarationFromEntities(entities))
+	ep, err := projectEndpoint(env, declarationFromEntities(entities))
 	if err != nil {
 		return lifecycleTarget{}, err
 	}

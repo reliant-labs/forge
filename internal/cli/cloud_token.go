@@ -19,6 +19,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -74,10 +75,12 @@ Typical setup for the scaffolded release workflow:
 // (by an env that declares it) and with which credential.
 type cloudTokenFlags struct {
 	env, token string
+	org        string
 	jsonOut    bool
 }
 
 func (f *cloudTokenFlags) register(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&f.org, "org", "", "Explicit organization for token administration (not a login or project preference)")
 	cmd.Flags().StringVar(&f.env, "env", "", "Env whose declared control plane to use (required)")
 	cmd.Flags().StringVar(&f.token, "token", "", "Credential to use, ahead of the env var and the credentials file")
 	cmd.Flags().BoolVar(&f.jsonOut, "json", false, "Emit machine-readable JSON")
@@ -89,7 +92,32 @@ func (f *cloudTokenFlags) client(ctx context.Context) (cloudCaller, error) {
 	if err != nil {
 		return nil, err
 	}
+	if f.org != "" {
+		if cred.Kind != "human" {
+			return nil, fmt.Errorf("organization administration requires human login")
+		}
+		ep.ProjectID, ep.ProjectName = "", ""
+		return organizationAdminCaller{cloud.NewClient(ep, cred), f.org}, nil
+	}
 	return cloud.NewClient(ep, cred), nil
+}
+
+type organizationAdminCaller struct {
+	client *cloud.Client
+	org    string
+}
+
+func (c organizationAdminCaller) Call(ctx context.Context, procedure string, req, out any) error {
+	raw, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err = json.Unmarshal(raw, &body); err != nil {
+		return err
+	}
+	body["orgId"] = c.org
+	return c.client.Call(ctx, procedure, body, out)
 }
 
 func newCloudTokenCreateCmd() *cobra.Command {

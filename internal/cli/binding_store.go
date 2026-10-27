@@ -391,7 +391,7 @@ func offlineLedgerForEntities(env string, entities *KCLEntities, projectDir stri
 	} else if sel == ledgerSelectMachine {
 		return envLedger{}, fmt.Errorf("--offline-ledger and %s=%s contradict each other: one deploys from the cached hosted ledger, the other from this machine's own", ledgerSelectionEnv, ledgerSelectMachine)
 	}
-	ep, err := cloud.ResolveEndpoint(env, decl)
+	ep, err := projectEndpoint(env, decl)
 	if err != nil {
 		return envLedger{}, err
 	}
@@ -440,7 +440,7 @@ func ledgerForEntities(env string, entities *KCLEntities, projectDir string) (en
 		noteLedgerOverride(env, l.OverriddenEndpoint, l.Bindings.Location())
 		return l, nil
 	}
-	ep, err := cloud.ResolveEndpoint(env, decl)
+	ep, err := projectEndpoint(env, decl)
 	if err != nil {
 		return envLedger{}, err
 	}

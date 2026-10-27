@@ -67,6 +67,7 @@ const (
 
 // Credential is a resolved bearer token plus where it came from.
 type Credential struct {
+	Kind   string
 	Token  string
 	Source CredentialSource
 	// From is the human-readable origin: the flag name, the env var name,
@@ -179,10 +180,10 @@ func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
 		return Credential{}, err
 	}
 	expiredLogin := ""
-	stored, lookupErr := credentials.Lookup(path, ep.URL, ClientID)
+	stored, lookupErr := lookupCredential(path, ep.URL)
 	switch {
 	case lookupErr == nil && !stored.Expired(time.Now()):
-		return Credential{Token: stored.Token, Source: SourceLogin, From: path,
+		return Credential{Kind: stored.Kind, Token: stored.Token, Source: SourceLogin, From: path,
 			ExpiresAt: stored.ExpiresAt, Scopes: stored.Scopes}, nil
 	case lookupErr == nil:
 		expiredLogin = fmt.Sprintf("the forge login for %s stored in %s expired at %s",

@@ -259,11 +259,11 @@ func sameControlPlane(sourceEnv, targetEnv string, source, target *cloud.Declara
 		return promoteFromGuardError(sourceEnv, targetEnv,
 			fmt.Sprintf("%s records promotions in this project's files, not on a control plane", sourceEnv))
 	}
-	sourceEP, err := cloud.ResolveEndpoint(sourceEnv, source)
+	sourceEP, err := projectEndpoint(sourceEnv, source)
 	if err != nil {
 		return err
 	}
-	targetEP, err := cloud.ResolveEndpoint(targetEnv, target)
+	targetEP, err := projectEndpoint(targetEnv, target)
 	if err != nil {
 		return err
 	}

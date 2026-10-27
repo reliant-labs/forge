@@ -140,7 +140,7 @@ type hostedStatusReader func(ctx context.Context, envName string, e *KCLEntities
 // readHostedStatusFromDeclaration builds a client from the env's own
 // declaration and credential precedence, then reads its status.
 func readHostedStatusFromDeclaration(ctx context.Context, envName string, e *KCLEntities) (deploytarget.HostedEnvStatus, error) {
-	ep, err := cloud.ResolveEndpoint(envName, declarationFromEntities(e))
+	ep, err := projectCloudEndpoint(envName, declarationFromEntities(e))
 	if err != nil {
 		return deploytarget.HostedEnvStatus{}, err
 	}
@@ -157,7 +157,7 @@ func resolveEnvDestination(ctx context.Context, envName string, e *KCLEntities, 
 	out := envDestination{Destination: destinationOf(e), ControlPlaneKind: hostedControlPlaneKindName(hostedEnvKindOf(e)), Placements: placementsOf(e)}
 	if out.ControlPlaneKind != "" {
 		if decl := declarationFromEntities(e); decl != nil {
-			if ep, err := cloud.ResolveEndpoint(envName, decl); err == nil {
+			if ep, err := projectCloudEndpoint(envName, decl); err == nil {
 				out.Endpoint = ep.URL
 			}
 		}

@@ -30,6 +30,8 @@ const DefaultEndpoint = "https://admin.reliantapi.com"
 // different endpoints in the same process — and what removes the class
 // of bug where a command silently targets whatever was selected last.
 type Endpoint struct {
+	// OrgID is an explicit project-local organization choice, never a global current org.
+	OrgID string
 	// Env is the environment this endpoint was declared by. Carried so
 	// error messages can name the KCL file to edit.
 	Env string

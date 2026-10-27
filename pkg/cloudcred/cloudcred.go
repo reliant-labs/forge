@@ -74,7 +74,9 @@ const ProtocolVersion = 1
 
 // Request is what forge writes to the helper's stdin.
 type Request struct {
-	Version int `json:"version"`
+	// OrgID requests a token bound to this org; empty asks for the host's default.
+	OrgID   string `json:"org_id,omitempty"`
+	Version int    `json:"version"`
 	// Endpoint is the control-plane origin the token will be PRESENTED to,
 	// normalized (credentials.Normalize). A helper must refuse to answer for
 	// an endpoint its session does not belong to: the endpoint comes from a
@@ -120,6 +122,7 @@ type ResponseError struct {
 // Response is what the helper writes to stdout. Exactly one of Token and
 // Error is set.
 type Response struct {
+	OrgID   string `json:"org_id,omitempty"`
 	Version int    `json:"version"`
 	Token   string `json:"token,omitempty"`
 	// ExpiresAt is when Token stops being accepted; nil means the helper does
@@ -136,6 +139,7 @@ type Response struct {
 
 // Token is a successful helper answer.
 type Token struct {
+	OrgID     string
 	Token     string
 	ExpiresAt *time.Time
 	Scopes    []string
@@ -255,7 +259,11 @@ func Exec(ctx context.Context, argv []string, req Request) (Token, error) {
 		// input it choked on, and that input may be a token.
 		return Token{}, fmt.Errorf("credential helper %s did not write a protocol response to stdout%s", argv[0], stderrSuffix(stderr.String()))
 	}
-	return resp.token(argv[0])
+	tok, err := resp.token(argv[0])
+	if err == nil && req.OrgID != "" && tok.OrgID != req.OrgID {
+		return Token{}, errors.New("credential helper returned a different or missing organization")
+	}
+	return tok, err
 }
 
 // token validates a decoded Response.
@@ -280,7 +288,7 @@ func (r Response) token(helper string) (Token, error) {
 	if strings.TrimSpace(r.Token) == "" {
 		return Token{}, fmt.Errorf("credential helper %s answered with neither a token nor an error", helper)
 	}
-	return Token{Token: r.Token, ExpiresAt: r.ExpiresAt, Scopes: r.Scopes, Source: r.Source}, nil
+	return Token{OrgID: r.OrgID, Token: r.Token, ExpiresAt: r.ExpiresAt, Scopes: r.Scopes, Source: r.Source}, nil
 }
 
 // Serve is the host's half: read one Request from r, call mint, write one
@@ -326,7 +334,12 @@ func Serve(ctx context.Context, r io.Reader, w io.Writer, mint func(context.Cont
 			Message: "the credential helper produced an empty token",
 		}})
 	}
+	if req.OrgID != "" && tok.OrgID != req.OrgID {
+		return writeResponse(w, Response{Error: &ResponseError{Code: CodeDenied,
+			Message: "the credential helper produced a different or missing organization"}})
+	}
 	return writeResponse(w, Response{
+		OrgID:     tok.OrgID,
 		Token:     tok.Token,
 		ExpiresAt: tok.ExpiresAt,
 		Scopes:    tok.Scopes,
@@ -391,8 +404,9 @@ func RemoveLegacyHostDeposits(path string) (int, error) {
 		return 0, err
 	}
 	removed := 0
+	// Remove re-reads under a file lock, preserving concurrent org logins.
 	for _, endpoint := range f.Endpoints() {
-		existed, err := f.Delete(endpoint, legacyHostClientID)
+		existed, err := credentials.Remove(path, endpoint, legacyHostClientID)
 		if err != nil {
 			return 0, err
 		}
@@ -400,8 +414,5 @@ func RemoveLegacyHostDeposits(path string) (int, error) {
 			removed++
 		}
 	}
-	if removed == 0 {
-		return 0, nil
-	}
-	return removed, credentials.Save(path, f)
+	return removed, nil
 }

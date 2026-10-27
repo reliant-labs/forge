@@ -76,7 +76,7 @@ func resolveCloudTarget(ctx context.Context, envName, flagToken string) (cloud.E
 // resolveCloudTargetFor is resolveCloudTarget with the declaration already in
 // hand, for a caller that read it without a render (obs_target.go).
 func resolveCloudTargetFor(envName string, decl *cloud.Declaration, flagToken string) (cloud.Endpoint, cloud.Credential, error) {
-	ep, err := cloud.ResolveEndpoint(envName, decl)
+	ep, err := projectCloudEndpoint(envName, decl)
 	if err != nil {
 		return cloud.Endpoint{}, cloud.Credential{}, err
 	}
@@ -154,7 +154,7 @@ func distinctControlPlanes(decls []envDeclaration) []declaredControlPlane {
 		if d.Decl == nil {
 			continue
 		}
-		ep, err := cloud.ResolveEndpoint(d.Env, d.Decl)
+		ep, err := projectCloudEndpoint(d.Env, d.Decl)
 		if err != nil {
 			continue
 		}
@@ -197,7 +197,7 @@ func loginTargets(ctx context.Context, endpoint string, errOut io.Writer) ([]dec
 		if _, err := credentials.Normalize(endpoint); err != nil {
 			return nil, err
 		}
-		ep, err := cloud.ResolveEndpoint("", &cloud.Declaration{Endpoint: endpoint})
+		ep, err := projectCloudEndpoint("", &cloud.Declaration{Endpoint: endpoint})
 		if err != nil {
 			return nil, err
 		}
@@ -218,7 +218,7 @@ func loginTargets(ctx context.Context, endpoint string, errOut io.Writer) ([]dec
 			"fix: repair the env's KCL (forge env render <env>), or name the control plane directly: forge login --endpoint https://…",
 			len(skipped))
 	}
-	ep, err := cloud.ResolveEndpoint("", &cloud.Declaration{Endpoint: cloud.DefaultEndpoint})
+	ep, err := projectCloudEndpoint("", &cloud.Declaration{Endpoint: cloud.DefaultEndpoint})
 	if err != nil {
 		return nil, err
 	}
@@ -237,6 +237,7 @@ func loginTargets(ctx context.Context, endpoint string, errOut io.Writer) ([]dec
 func newLoginCmd() *cobra.Command {
 	var (
 		endpoint string
+		org      string
 		token    string
 		noVerify bool
 	)
@@ -245,7 +246,12 @@ func newLoginCmd() *cobra.Command {
 		Use:   "login [--endpoint URL]",
 		Short: "Authenticate to the control plane(s) this project declares",
 		Long: `Obtain a credential for a hosted control plane and store it in the shared
-credentials file (` + credentialsPathForHelp() + `, 0600), keyed by the endpoint.
+credentials file (` + credentialsPathForHelp() + `, 0600), keyed by endpoint, org and client.
+
+--org <org_id> requests one organization; omitted, the server chooses your default.
+Each organization's login is independent. Login never retargets a project:
+select it separately with forge org use <org_id> (gitignored project-local state).
+Unpinned projects never guess between stored organization credentials.
 
 Login is about WHO you are, not WHERE you deploy, so it takes no environment.
 With no flag it logs into EVERY distinct control plane this project's envs
@@ -295,6 +301,9 @@ CREDENTIAL PRECEDENCE, when any forge command talks to the control plane:
 			if err != nil {
 				return err
 			}
+			if strings.TrimSpace(org) != "" && len(planes) > 1 {
+				return errors.New("--org identifies an organization on one endpoint; select it with --endpoint")
+			}
 			if strings.TrimSpace(token) != "" && len(planes) > 1 {
 				// A token is minted by ONE control plane; storing it under
 				// several would present it to servers that never issued it.
@@ -320,6 +329,8 @@ CREDENTIAL PRECEDENCE, when any forge command talks to the control plane:
 				if i > 0 {
 					fmt.Fprintln(out)
 				}
+				// Login chooses what to mint, not the project's existing binding.
+				p.Endpoint.OrgID = strings.TrimSpace(org)
 				if err := loginOne(ctx, p, token, noVerify, path, out); err != nil {
 					return err
 				}
@@ -329,6 +340,7 @@ CREDENTIAL PRECEDENCE, when any forge command talks to the control plane:
 	}
 
 	cmd.Flags().StringVar(&endpoint, "endpoint", "", "Log into this control plane URL only, instead of every one the project declares (default when none is declared: Reliant cloud)")
+	cmd.Flags().StringVar(&org, "org", "", "Organization id to request (omitted: server default); does not change the project's org selection")
 	cmd.Flags().StringVar(&token, "token", "", "Store this token instead of running the browser flow")
 	cmd.Flags().BoolVar(&noVerify, "no-verify", false, "With --token: store it without checking it against the endpoint")
 	return cmd
@@ -354,7 +366,17 @@ func loginOne(ctx context.Context, p declaredControlPlane, token string, noVerif
 					"(pass --no-verify to store it anyway)", ep.URL, err)
 			}
 		}
-		stored = credentials.Credential{Token: t, CreatedAt: time.Now().UTC()}
+		stored = credentials.Credential{Token: t, OrgID: ep.OrgID, CreatedAt: time.Now().UTC()}
+		if !noVerify {
+			actual, err := cloud.ResolveOrganization(ctx, cloud.NewClient(ep, cloud.Credential{Token: t}))
+			if err != nil {
+				return err
+			}
+			if ep.OrgID != "" && actual != ep.OrgID {
+				return fmt.Errorf("token organization %q does not match requested %q", actual, ep.OrgID)
+			}
+			stored.OrgID = actual
+		}
 	} else {
 		stored, err = cloud.BrowserLogin{
 			Endpoint: ep,
@@ -371,6 +393,9 @@ func loginOne(ctx context.Context, p declaredControlPlane, token string, noVerif
 	}
 	key, _ := credentials.Normalize(ep.URL)
 	fmt.Fprintf(out, "Logged in to %s\n", key)
+	if stored.OrgID != "" {
+		fmt.Fprintf(out, "  Organization: %s\n  Select for this project: forge org use %s\n", stored.OrgID, stored.OrgID)
+	}
 	if len(p.Envs) > 0 {
 		fmt.Fprintf(out, "  Declared by: %s\n", strings.Join(p.Envs, ", "))
 	}
@@ -393,7 +418,7 @@ func loginOne(ctx context.Context, p declaredControlPlane, token string, noVerif
 // expires or is revoked in the web UI; logout forgets it locally, which is
 // all a CLI can honestly promise.
 func newLogoutCmd() *cobra.Command {
-	var endpoint string
+	var endpoint, org string
 	cmd := &cobra.Command{
 		Use:   "logout [--endpoint URL]",
 		Short: "Forget the stored credential for this project's control plane(s)",
@@ -408,7 +433,7 @@ func newLogoutCmd() *cobra.Command {
 				return err
 			}
 			for _, p := range planes {
-				existed, err := credentials.Remove(path, p.Endpoint.URL, cloud.ClientID)
+				existed, err := credentials.Remove(path, p.Endpoint.URL, cloud.ClientID, logoutOrganization(org, p.Endpoint))
 				if err != nil {
 					return err
 				}
@@ -422,6 +447,7 @@ func newLogoutCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&org, "org", "", "Forget only this organization's login (default: the project's selected org)")
 	cmd.Flags().StringVar(&endpoint, "endpoint", "", "Forget this control plane URL only, instead of every one the project declares")
 	return cmd
 }
@@ -486,13 +512,16 @@ func newCloudStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ep, err := cloud.ResolveEndpoint(envName, decl)
+			ep, err := projectCloudEndpoint(envName, decl)
 			if err != nil {
 				return err
 			}
 			fmt.Fprintf(out, "env %q\n", ep.Env)
 			fmt.Fprintf(out, "  endpoint:  %s   (declared in deploy/kcl/%s/main.k)\n", ep.URL, ep.Env)
 			fmt.Fprintf(out, "  token env: %s\n", ep.TokenEnv)
+			if ep.OrgID != "" {
+				fmt.Fprintf(out, "  organization: %s (project-local selection)\n", ep.OrgID)
+			}
 
 			cred, err := cloud.ResolveCredential(token, ep)
 			if err != nil {

@@ -251,6 +251,7 @@ from an empty directory to authored protos, in one call.`,
 	// `debug` migrated to the internal/cli/debug group (factory registry).
 	rootCmd.AddCommand(newSecretCmd())
 	rootCmd.AddCommand(newLoginCmd())
+	rootCmd.AddCommand(newOrgCmd())
 	rootCmd.AddCommand(newLogoutCmd())
 	rootCmd.AddCommand(newCloudCmd())
 	rootCmd.AddCommand(newDomainCmd())

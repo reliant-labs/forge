@@ -46,7 +46,7 @@ var pullLocalSecretsFor = pullLocalSecrets
 // Every other failure is returned: starting services without their secrets
 // is the outcome this exists to prevent.
 func pullLocalSecrets(ctx context.Context, envName string, entities *KCLEntities) (map[string]string, error) {
-	ep, err := cloud.ResolveEndpoint(envName, declarationFromEntities(entities))
+	ep, err := projectCloudEndpoint(envName, declarationFromEntities(entities))
 	if err != nil {
 		return nil, err
 	}

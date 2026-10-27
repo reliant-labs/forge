@@ -106,7 +106,7 @@ func bundleRegistryAuthOf(env string, e *KCLEntities) (bundleRegistryAuth, error
 	if host == "" || decl == nil {
 		return bundleRegistryAuth{}, fmt.Errorf("env %q declares no control plane, so there is no identity to push its bundle to a platform registry with", env)
 	}
-	ep, err := cloud.ResolveEndpoint(env, decl)
+	ep, err := projectCloudEndpoint(env, decl)
 	if err != nil {
 		return bundleRegistryAuth{}, err
 	}
@@ -122,10 +122,15 @@ func bundleRegistryAuthOf(env string, e *KCLEntities) (bundleRegistryAuth, error
 		Identity: fmt.Sprintf("the control-plane credential for %s (%s: %s)", ep.URL, cred.Source, cred.From),
 		Fix: fmt.Sprintf("%s — or, in CI, refresh $%s. Check the credential's scopes with `forge cloud token list` (a push needs deploy:write)",
 			cloud.SignInHint(), ep.TokenEnv),
-		credential: func(context.Context) (string, error) {
+		credential: func(ctx context.Context) (string, error) {
 			fresh, err := cloud.ResolveCredential("", ep)
 			if err != nil {
 				return "", err
+			}
+			if ep.OrgID != "" {
+				if _, err := cloud.ResolveOrganization(ctx, cloud.NewClient(ep, fresh)); err != nil {
+					return "", err
+				}
 			}
 			return fresh.Token, nil
 		},

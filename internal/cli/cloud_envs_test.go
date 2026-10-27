@@ -333,10 +333,10 @@ func TestForgeLogin_LogsIntoEveryDeclaredControlPlane(t *testing.T) {
 	if n := strings.Count(out, "Logged in to "); n != 2 {
 		t.Fatalf("want one login per DISTINCT control plane (2), got %d:\n%s", n, out)
 	}
-	if a, err := lookupStored(t, cpA.URL); err != nil || a.Token != "rlat_AAAAAAAAAAAAAAAA" {
+	if a, err := lookupStored(t, cpA.URL, "test-org"); err != nil || a.Token != "rlat_AAAAAAAAAAAAAAAA" {
 		t.Fatalf("entry A: %+v %v", a, err)
 	}
-	if b, err := lookupStored(t, cpB.URL); err != nil || b.Token != "rlat_BBBBBBBBBBBBBBBB" {
+	if b, err := lookupStored(t, cpB.URL, "test-org"); err != nil || b.Token != "rlat_BBBBBBBBBBBBBBBB" {
 		t.Fatalf("entry B: %+v %v", b, err)
 	}
 	if !strings.Contains(out, "Declared by: dev, prod") {
@@ -349,7 +349,7 @@ func TestForgeLogin_LogsIntoEveryDeclaredControlPlane(t *testing.T) {
 	}
 
 	// logout with no flag forgets every declared control plane.
-	if out, err := runLoginCmd(t, "logout"); err != nil || strings.Count(out, "Logged out of") != 2 {
+	if out, err := runLoginCmd(t, "logout", "--org", "test-org"); err != nil || strings.Count(out, "Logged out of") != 2 {
 		t.Fatalf("logout: %v\n%s", err, out)
 	}
 }

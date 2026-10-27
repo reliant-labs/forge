@@ -47,13 +47,19 @@ type Client struct {
 
 	// credMu guards Credential, which a refresh from the credential helper
 	// replaces.
-	credMu sync.Mutex
+	credMu        sync.Mutex
+	scopeMu       sync.Mutex
+	verifiedToken string
+	verifiedOrg   string
 }
 
 // NewClient builds a Client with a bounded default timeout. A deploy CLI
 // that hangs forever on an unreachable endpoint is worse than one that
 // fails: CI would sit until its own job timeout with no diagnosis.
 func NewClient(ep Endpoint, cred Credential) *Client {
+	if ep.OrgID == "" {
+		ep.OrgID = cred.OrgID
+	}
 	return &Client{
 		Endpoint:   ep,
 		Credential: cred,
@@ -118,6 +124,48 @@ func (c *Client) call(ctx context.Context, procedure string, req, out any, token
 	if err != nil {
 		return fmt.Errorf("encode %s request: %w", procedure, err)
 	}
+	if token != "" {
+		org := c.Endpoint.OrgID
+		credentialOrg := c.credential().OrgID
+		if org != "" && credentialOrg != "" && credentialOrg != org {
+			return errors.New("credential organization does not match selected organization")
+		}
+		if org == "" {
+			org = credentialOrg
+		}
+		var fields map[string]json.RawMessage
+		_ = json.Unmarshal(body, &fields)
+		for _, key := range []string{"orgId", "org_id"} {
+			if raw, ok := fields[key]; ok && string(raw) != "null" {
+				var requested string
+				if json.Unmarshal(raw, &requested) != nil {
+					return errors.New("request organization must be a string")
+				}
+				if requested != "" && org != "" && requested != org {
+					return errors.New("request organization does not match credential organization")
+				}
+				if org == "" {
+					org = requested
+				}
+			}
+		}
+		if org != "" && procedure != ProcGetOrganization {
+			if err := c.verifyOrganization(ctx, token, org); err != nil {
+				return err
+			}
+		}
+		if org != "" && orgScopedProcedure(procedure) {
+			if fields == nil {
+				fields = map[string]json.RawMessage{}
+			}
+			delete(fields, "org_id")
+			fields["orgId"], _ = json.Marshal(org)
+			body, err = json.Marshal(fields)
+			if err != nil {
+				return err
+			}
+		}
+	}
 
 	url := c.Endpoint.URL + "/" + strings.TrimPrefix(procedure, "/")
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -154,12 +202,58 @@ func (c *Client) call(ctx context.Context, procedure string, req, out any, token
 	if resp.StatusCode != http.StatusOK {
 		return c.connectError(procedure, resp, raw)
 	}
+	if token != "" && procedure == ProcGetOrganization && c.Endpoint.OrgID != "" {
+		if org, err := organizationFromReply(raw); err != nil || org != c.Endpoint.OrgID {
+			return errors.New("control plane returned an organization different from the selected organization")
+		}
+	}
 	if out == nil {
 		return nil
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return fmt.Errorf("decode %s response: %w", procedure, err)
 	}
+	return nil
+}
+
+// orgScopedProcedure follows control-plane's M1a request-field contract. Keep
+// machine-only exchange, unimplemented streams and local-session reporting out.
+func orgScopedProcedure(procedure string) bool {
+	procedure = strings.TrimPrefix(procedure, "/")
+	switch procedure {
+	case "controlplane.v1.AccessTokenService/ExchangeToken",
+		"controlplane.v1.DeployService/StreamLogs",
+		"controlplane.v1.DeployService/ReportLocalSession":
+		return false
+	}
+	for _, service := range []string{"DeployService", "DomainService", "ClusterService", "BrowserIngestService", "AccessTokenService"} {
+		if strings.HasPrefix(procedure, "controlplane.v1."+service+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// verifyOrganization checks opaque bearers against the authority before any
+// scoped effect. Each rotated/elevated token must pass independently.
+func (c *Client) verifyOrganization(ctx context.Context, token, org string) error {
+	c.scopeMu.Lock()
+	defer c.scopeMu.Unlock()
+	if c.verifiedToken == token && c.verifiedOrg == org {
+		return nil
+	}
+	var raw json.RawMessage
+	if err := c.call(ctx, ProcGetOrganization, map[string]any{}, &raw, token); err != nil {
+		return err
+	}
+	actual, err := organizationFromReply(raw)
+	if err != nil {
+		return err
+	}
+	if actual != org {
+		return fmt.Errorf("credential organization %q does not match selected organization %q", actual, org)
+	}
+	c.verifiedToken, c.verifiedOrg = token, org
 	return nil
 }
 

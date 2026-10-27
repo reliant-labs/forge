@@ -160,7 +160,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 			return fmt.Errorf("env %q applies part of itself from this machine (a cluster, compose or host part), "+
 				"which an anonymous deploy cannot do. --claimable publishes only hosted workloads", envName)
 		}
-		ep, err := cloud.ResolveEndpoint(envName, declarationFromEntities(entities))
+		ep, err := projectCloudEndpoint(envName, declarationFromEntities(entities))
 		if err != nil {
 			return err
 		}
@@ -596,7 +596,7 @@ func runClaimableStatus(ctx context.Context, env string, jsonOut bool) error {
 	if entities == nil || entities.ControlPlane == nil {
 		return fmt.Errorf("env %q declares no hosted control plane, so it has no claimable deploy", env)
 	}
-	ep, err := cloud.ResolveEndpoint(env, declarationFromEntities(entities))
+	ep, err := projectCloudEndpoint(env, declarationFromEntities(entities))
 	if err != nil {
 		return err
 	}

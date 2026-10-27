@@ -3,7 +3,17 @@
 // login` and `reliant auth login` both write it, and every command of both
 // reads it.
 //
-// ── ONE FILE, KEYED BY ENDPOINT, NO "CURRENT" ─────────────────────────
+// ── ONE FILE, KEYED BY ENDPOINT + ORG + CLIENT, NO "CURRENT" ────────────
+//
+// Version 2 adds Organizations (endpoint → org → client → credential). A
+// version 1 file is read without loss: its entries remain in Credentials,
+// including separate claimable-deploy client namespaces. No org is inferred
+// from an opaque legacy token. Explicit org lookups never fall back to legacy
+// or another org; unscoped lookups with org-keyed entries require selection.
+// Org selection is project-local state owned by the CLI, not this file.
+// Older binaries refuse version 2 rather than rewriting away its org entries.
+//
+// The following version 1 shape remains supported:
 //
 // The file maps a NORMALIZED endpoint URL, then a client id, to the credential
 // that client holds for that endpoint:
@@ -82,6 +92,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/gofrs/flock"
 )
 
 // FileName is the credentials file's base name.
@@ -90,10 +102,12 @@ const FileName = "credentials.json"
 // formatVersion is the on-disk format version. A file with a higher version
 // was written by a newer binary; refusing it beats silently dropping fields
 // that binary relies on.
-const formatVersion = 1
+const formatVersion = 2
 
 // Credential is what one endpoint's login produced.
 type Credential struct {
+	// OrgID is the organization the issuer bound this credential to.
+	OrgID string `json:"org_id,omitempty"`
 	// Token is the bearer credential. Opaque; never logged.
 	Token string `json:"token"`
 	// TokenPrefix is the issuer's display prefix (e.g. "rlat_A3f9Kd2p") —
@@ -147,11 +161,17 @@ type File struct {
 	Version int `json:"version"`
 	// Credentials is endpoint → client id → credential.
 	Credentials map[string]map[string]Credential `json:"credentials"`
+	// Organizations holds endpoint → org → client → credential. Legacy and
+	// claimable entries remain in Credentials, never relabelled as an org.
+	Organizations map[string]map[string]map[string]Credential `json:"organizations,omitempty"`
 }
 
 // ErrNotFound reports that the file holds no credential for an endpoint and
 // client.
 var ErrNotFound = errors.New("credentials: no stored credential for this endpoint")
+
+// ErrOrgRequired prevents an unscoped lookup from choosing a stored org.
+var ErrOrgRequired = errors.New("credentials: select an organization with forge org use <org_id>")
 
 // Dirs are the inputs to the file's location: the values of $FORGE_HOME and
 // $XDG_CONFIG_HOME, and the user's home directory. A caller fills them from
@@ -289,10 +309,25 @@ func Save(path string, f *File) error {
 }
 
 // Get returns the credential client holds for endpoint, or ErrNotFound.
-func (f *File) Get(endpoint, client string) (Credential, error) {
+func (f *File) Get(endpoint, client string, org ...string) (Credential, error) {
 	key, err := Normalize(endpoint)
 	if err != nil {
 		return Credential{}, err
+	}
+	if len(org) > 0 && org[0] != "" {
+		c, ok := f.Organizations[key][org[0]][client]
+		if !ok || strings.TrimSpace(c.Token) == "" {
+			return Credential{}, ErrNotFound
+		}
+		if c.OrgID != org[0] {
+			return Credential{}, errors.New("credentials: stored organization does not match requested organization")
+		}
+		return c, nil
+	}
+	for _, clients := range f.Organizations[key] {
+		if _, ok := clients[client]; ok {
+			return Credential{}, ErrOrgRequired
+		}
 	}
 	c, ok := f.Credentials[key][client]
 	if !ok || strings.TrimSpace(c.Token) == "" {
@@ -314,6 +349,19 @@ func (f *File) Put(endpoint, client string, c Credential) error {
 	if strings.TrimSpace(c.Token) == "" {
 		return errors.New("credentials: refusing to store an empty token")
 	}
+	if c.OrgID != "" && c.Claimable == nil {
+		if f.Organizations == nil {
+			f.Organizations = map[string]map[string]map[string]Credential{}
+		}
+		if f.Organizations[key] == nil {
+			f.Organizations[key] = map[string]map[string]Credential{}
+		}
+		if f.Organizations[key][c.OrgID] == nil {
+			f.Organizations[key][c.OrgID] = map[string]Credential{}
+		}
+		f.Organizations[key][c.OrgID][client] = c
+		return nil
+	}
 	if f.Credentials == nil {
 		f.Credentials = map[string]map[string]Credential{}
 	}
@@ -326,9 +374,23 @@ func (f *File) Put(endpoint, client string, c Credential) error {
 
 // Delete removes client's credential for endpoint and reports whether there
 // was one. An endpoint left with no clients is dropped.
-func (f *File) Delete(endpoint, client string) (bool, error) {
+func (f *File) Delete(endpoint, client string, org ...string) (bool, error) {
 	key, err := Normalize(endpoint)
 	if err != nil {
+		return false, err
+	}
+	if len(org) > 0 && org[0] != "" {
+		_, ok := f.Organizations[key][org[0]][client]
+		delete(f.Organizations[key][org[0]], client)
+		if len(f.Organizations[key][org[0]]) == 0 {
+			delete(f.Organizations[key], org[0])
+		}
+		if len(f.Organizations[key]) == 0 {
+			delete(f.Organizations, key)
+		}
+		return ok, nil
+	}
+	if _, err := f.Get(endpoint, client); errors.Is(err, ErrOrgRequired) {
 		return false, err
 	}
 	_, ok := f.Credentials[key][client]
@@ -341,27 +403,51 @@ func (f *File) Delete(endpoint, client string) (bool, error) {
 
 // Endpoints lists the stored endpoints, sorted.
 func (f *File) Endpoints() []string {
-	out := make([]string, 0, len(f.Credentials))
+	seen := map[string]bool{}
+	out := make([]string, 0, len(f.Credentials)+len(f.Organizations))
 	for k := range f.Credentials {
+		seen[k] = true
 		out = append(out, k)
+	}
+	for k := range f.Organizations {
+		if !seen[k] {
+			out = append(out, k)
+		}
 	}
 	sort.Strings(out)
 	return out
 }
 
+// lockStore serializes read-modify-write operations across CLI processes.
+func lockStore(path string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	lock := flock.New(path+".lock", flock.SetPermissions(0o600))
+	if err := lock.Lock(); err != nil {
+		return nil, err
+	}
+	return func() { _ = lock.Unlock() }, nil
+}
+
 // Lookup is the one-call read: client's credential for endpoint in the file
 // at path, or ErrNotFound.
-func Lookup(path, endpoint, client string) (Credential, error) {
+func Lookup(path, endpoint, client string, org ...string) (Credential, error) {
 	f, err := Load(path)
 	if err != nil {
 		return Credential{}, err
 	}
-	return f.Get(endpoint, client)
+	return f.Get(endpoint, client, org...)
 }
 
 // Store is the one-call write: put c for (endpoint, client) into the file at
 // path and save it, preserving every other entry.
 func Store(path, endpoint, client string, c Credential) error {
+	unlock, err := lockStore(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	f, err := Load(path)
 	if err != nil {
 		return err
@@ -374,12 +460,17 @@ func Store(path, endpoint, client string, c Credential) error {
 
 // Remove is the one-call delete: drop (endpoint, client) from the file at
 // path. Reports whether an entry existed. Every other entry is untouched.
-func Remove(path, endpoint, client string) (bool, error) {
+func Remove(path, endpoint, client string, org ...string) (bool, error) {
+	unlock, err := lockStore(path)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	f, err := Load(path)
 	if err != nil {
 		return false, err
 	}
-	existed, err := f.Delete(endpoint, client)
+	existed, err := f.Delete(endpoint, client, org...)
 	if err != nil || !existed {
 		return existed, err
 	}

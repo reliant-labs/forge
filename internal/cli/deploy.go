@@ -19,7 +19,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
-	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
@@ -881,7 +880,7 @@ func runDeployExplain(ctx context.Context, envName string, report *deployReport)
 	// A hosted env's "declared context" is its control plane's endpoint:
 	// there is no kubectl context to guard.
 	if decl, derr := controlPlaneDeclaration(ctx, envName); derr == nil && decl != nil {
-		ep, eerr := cloud.ResolveEndpoint(envName, decl)
+		ep, eerr := projectCloudEndpoint(envName, decl)
 		if eerr != nil {
 			return eerr
 		}

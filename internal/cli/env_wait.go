@@ -287,7 +287,7 @@ func resolveDeclaredWaitTarget(ctx context.Context, env string) (waitTarget, err
 			"env %q declares no hosted control plane, so there is no server-computed rollout to wait on.\n"+
 				"  Prove it arrived instead with: forge env status %s", env, env)
 	}
-	ep, err := cloud.ResolveEndpoint(env, decl)
+	ep, err := projectCloudEndpoint(env, decl)
 	if err != nil {
 		return waitTarget{}, undeterminedf("%v", err)
 	}

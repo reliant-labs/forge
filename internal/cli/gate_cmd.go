@@ -434,7 +434,7 @@ func gateStoreForEnv(ctx context.Context, projectDir, env string) (*gateStore, e
 	if decl == nil {
 		return nil, errGateNeedsHostedLedger(env, "deploy/kcl/"+env)
 	}
-	ep, err := cloud.ResolveEndpoint(env, decl)
+	ep, err := projectCloudEndpoint(env, decl)
 	if err != nil {
 		return nil, err
 	}

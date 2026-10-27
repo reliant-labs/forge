@@ -137,18 +137,18 @@ var orgResolver = resolveDeclarationOrg
 // resolveDeclarationOrg is the call behind it, shared with the commands that
 // hold a bare declaration rather than an entity (promote --from).
 func resolveDeclarationOrg(ctx context.Context, env string, decl *cloud.Declaration) (string, error) {
-	ep, err := cloud.ResolveEndpoint(env, decl)
+	ep, err := projectCloudEndpoint(env, decl)
 	if err != nil {
 		return "", err
-	}
-	key := ep.URL + "\x00" + ep.TokenEnv
-	if v, ok := orgCache.Load(key); ok {
-		return v.(string), nil
 	}
 	cred, err := cloud.ResolveCredential("", ep)
 	if err != nil {
 		return "", fmt.Errorf("env %q needs its organization, which forge reads from the control plane at %s with your credential: %w",
 			env, ep.URL, err)
+	}
+	key := ep.URL + "\x00" + ep.TokenEnv + "\x00" + ep.OrgID + "\x00" + cred.Token
+	if v, ok := orgCache.Load(key); ok {
+		return v.(string), nil
 	}
 	// Bounded well under the client's own timeout: this runs before work the
 	// author is waiting on, and a control plane that does not answer is not
@@ -158,6 +158,9 @@ func resolveDeclarationOrg(ctx context.Context, env string, decl *cloud.Declarat
 	org, err := cloud.ResolveOrganization(ctx, hostedDeployClient(ep, cred))
 	if err != nil {
 		return "", fmt.Errorf("env %q (%s): %w", env, ep.URL, err)
+	}
+	if ep.OrgID != "" && org != ep.OrgID {
+		return "", fmt.Errorf("credential organization %q does not match selected organization %q", org, ep.OrgID)
 	}
 	orgCache.Store(key, org)
 	return org, nil

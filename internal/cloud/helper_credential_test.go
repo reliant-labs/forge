@@ -2,6 +2,7 @@ package cloud
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -58,6 +59,18 @@ func TestCloudFakeHelperProcess(t *testing.T) {
 
 func runCloudFakeHelper(mode string, args []string) int {
 	switch mode {
+	case "org": // org <token-suffix> [wrong-org]
+		_ = cloudcred.Serve(context.Background(), os.Stdin, os.Stdout, func(_ context.Context, req cloudcred.Request) (cloudcred.Token, error) {
+			org := req.OrgID
+			if len(args) > 1 {
+				org = args[1]
+			}
+			return cloudcred.Token{Token: req.OrgID + args[0], OrgID: org}, nil
+		})
+		return 0
+	case "raw-org":
+		_ = json.NewEncoder(os.Stdout).Encode(cloudcred.Response{Version: cloudcred.ProtocolVersion, Token: "secret", OrgID: args[0]})
+		return 0
 	case "mint": // mint <token> <ttl-seconds, 0 = none> [count-file]
 		if len(args) >= 3 {
 			f, err := os.OpenFile(args[2], os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)

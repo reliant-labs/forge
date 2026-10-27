@@ -2,6 +2,7 @@ package cloud
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -28,13 +29,21 @@ type Caller interface {
 // The id is a lowercase UUID, because that is the path segment the platform
 // registry's grammar uses (`<org>/<project>/<image>`).
 func ResolveOrganization(ctx context.Context, c Caller) (string, error) {
+	var raw json.RawMessage
+	if err := c.Call(ctx, ProcGetOrganization, map[string]any{}, &raw); err != nil {
+		return "", fmt.Errorf("resolve the credential's organization: %w", err)
+	}
+	return organizationFromReply(raw)
+}
+
+func organizationFromReply(raw []byte) (string, error) {
 	var resp struct {
 		Org struct {
 			OrgID string `json:"orgId"`
 		} `json:"tenant"`
 	}
-	if err := c.Call(ctx, ProcGetOrganization, map[string]any{}, &resp); err != nil {
-		return "", fmt.Errorf("resolve the credential's organization: %w", err)
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return "", fmt.Errorf("decode the credential's organization: %w", err)
 	}
 	org := strings.TrimSpace(resp.Org.OrgID)
 	if org == "" {

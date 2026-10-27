@@ -62,12 +62,16 @@ func (b BrowserLogin) Run(ctx context.Context) (credentials.Credential, error) {
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
 	}
+	extra := url.Values{"device": {DeviceLabel()}}
+	if b.Endpoint.OrgID != "" {
+		extra.Set("org", b.Endpoint.OrgID)
+	}
 	tok, err := oauth2.LoopbackLogin{
 		AuthorizeEndpoint: b.Endpoint.URL + "/oauth/authorize",
 		TokenEndpoint:     b.Endpoint.URL + "/oauth/token",
 		ClientID:          ClientID,
 		Scopes:            LoginScopes(),
-		Extra:             url.Values{"device": {DeviceLabel()}},
+		Extra:             extra,
 		OpenURL:           open,
 		Out:               b.Out,
 		Timeout:           timeout,
@@ -80,12 +84,21 @@ func (b BrowserLogin) Run(ctx context.Context) (credentials.Credential, error) {
 		}
 		return credentials.Credential{}, fmt.Errorf("login to %s failed: %w", b.Endpoint.URL, err)
 	}
-	return CredentialFromToken(tok, time.Now()), nil
+	c := CredentialFromToken(tok, time.Now())
+	if strings.TrimSpace(c.OrgID) == "" {
+		return credentials.Credential{}, fmt.Errorf("login response omitted org_id; credential not stored — update the control plane")
+	}
+	if b.Endpoint.OrgID != "" && c.OrgID != b.Endpoint.OrgID {
+		return credentials.Credential{}, fmt.Errorf("login returned organization %q, requested %q; credential not stored", c.OrgID, b.Endpoint.OrgID)
+	}
+	return c, nil
 }
 
 // CredentialFromToken turns a token response into the stored entry.
 func CredentialFromToken(tok *oauth2.Token, now time.Time) credentials.Credential {
+	org, _ := tok.Raw["org_id"].(string)
 	c := credentials.Credential{
+		OrgID:       org,
 		Token:       tok.AccessToken,
 		TokenPrefix: displayPrefix(tok.AccessToken),
 		Scopes:      strings.Fields(tok.Scope),

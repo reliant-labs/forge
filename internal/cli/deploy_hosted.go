@@ -151,7 +151,7 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 		return fmt.Errorf("--target is not supported for the hosted workloads of env %q: a hosted deploy publishes them all at the bound release", envName)
 	}
 	decl := declarationFromEntities(entities)
-	ep, err := cloud.ResolveEndpoint(envName, decl)
+	ep, err := projectCloudEndpoint(envName, decl)
 	if err != nil {
 		return err
 	}

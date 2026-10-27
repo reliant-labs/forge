@@ -17,9 +17,13 @@ import (
 
 // loginTestCP is an httptest control plane serving the two OAuth endpoints
 // the way control-plane's internal/cliauth does (approval is immediate).
-func loginTestCP(t *testing.T, token string) *httptest.Server {
+func loginTestCP(t *testing.T, token string, orgs ...string) *httptest.Server {
 	t.Helper()
 	var challenge string
+	org := "test-org"
+	if len(orgs) > 0 {
+		org = orgs[0]
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/oauth/authorize":
@@ -37,7 +41,7 @@ func loginTestCP(t *testing.T, token string) *httptest.Server {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"access_token": token, "token_type": "Bearer", "expires_in": 7776000, "scope": "deploy:write",
+				"access_token": token, "token_type": "Bearer", "expires_in": 7776000, "scope": "deploy:write", "org_id": org,
 			})
 		}
 	}))
@@ -45,13 +49,13 @@ func loginTestCP(t *testing.T, token string) *httptest.Server {
 	return srv
 }
 
-func lookupStored(t *testing.T, endpoint string) (credentials.Credential, error) {
+func lookupStored(t *testing.T, endpoint string, org ...string) (credentials.Credential, error) {
 	t.Helper()
 	path, err := cloud.CredentialsPath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return credentials.Lookup(path, endpoint, cloud.ClientID)
+	return credentials.Lookup(path, endpoint, cloud.ClientID, org...)
 }
 
 func withFakeBrowser(t *testing.T) {
@@ -103,21 +107,21 @@ func TestForgeLogin_WritesAKeyedEntry_TwoEndpointsCoexist_LogoutRemovesOne(t *te
 		t.Fatalf("login B: %v", err)
 	}
 
-	a, err := lookupStored(t, cpA.URL)
+	a, err := lookupStored(t, cpA.URL, "test-org")
 	if err != nil || a.Token != "rlat_AAAAAAAAAAAAAAAA" || a.ExpiresAt == nil {
 		t.Fatalf("entry A: %+v %v", a, err)
 	}
-	if b, err := lookupStored(t, cpB.URL); err != nil || b.Token != "rlat_BBBBBBBBBBBBBBBB" {
+	if b, err := lookupStored(t, cpB.URL, "test-org"); err != nil || b.Token != "rlat_BBBBBBBBBBBBBBBB" {
 		t.Fatalf("entry B: %+v %v", b, err)
 	}
 
-	if out, err := runLoginCmd(t, "logout", "--endpoint", cpA.URL); err != nil || !strings.Contains(out, "Logged out") {
+	if out, err := runLoginCmd(t, "logout", "--org", "test-org", "--endpoint", cpA.URL); err != nil || !strings.Contains(out, "Logged out") {
 		t.Fatalf("logout A: %v %s", err, out)
 	}
-	if _, err := lookupStored(t, cpA.URL); err == nil {
+	if _, err := lookupStored(t, cpA.URL, "test-org"); err == nil {
 		t.Fatal("A must be gone after logout")
 	}
-	if b, _ := lookupStored(t, cpB.URL); b.Token != "rlat_BBBBBBBBBBBBBBBB" {
+	if b, _ := lookupStored(t, cpB.URL, "test-org"); b.Token != "rlat_BBBBBBBBBBBBBBBB" {
 		t.Fatal("logout of A must leave B")
 	}
 }

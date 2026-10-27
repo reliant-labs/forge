@@ -109,10 +109,7 @@ func loginToPlatformRegistry(ctx context.Context, env, host, flagToken string, d
 	if host == "" || isLocalRegistryHost(host) {
 		return nil
 	}
-	if _, done := platformLogins.Load(host); done {
-		return nil
-	}
-	ep, err := cloud.ResolveEndpoint(env, decl)
+	ep, err := projectCloudEndpoint(env, decl)
 	if err != nil {
 		return err
 	}
@@ -120,12 +117,23 @@ func loginToPlatformRegistry(ctx context.Context, env, host, flagToken string, d
 	if err != nil {
 		return fmt.Errorf("log in to %s, the registry env %q declares: %w", host, env, err)
 	}
+	key := host + "\x00" + ep.URL + "\x00" + ep.OrgID + "\x00" + cred.Token
+	if previous, done := platformLogins.Load(host); done && previous == key {
+		return nil
+	}
+	if ep.OrgID != "" {
+		if _, err := cloud.ResolveOrganization(ctx, cloud.NewClient(ep, cred)); err != nil {
+			return err
+		}
+	}
 	fmt.Printf("[registry] logging in to %s with env %s's control-plane credential (%s: %s)\n",
 		host, env, cred.Source, cred.From)
 	if err := runDockerLogin(ctx, host, platformRegistryUsername, cred.Token); err != nil {
 		return err
 	}
-	platformLogins.Store(host, struct{}{})
+	// Docker stores only one login per host. Remember the last identity, not
+	// all identities ever used, so A → B → A actually logs back in as A.
+	platformLogins.Store(host, key)
 	return nil
 }
 

@@ -67,6 +67,7 @@ const (
 
 // Credential is a resolved bearer token plus where it came from.
 type Credential struct {
+	OrgID  string
 	Token  string
 	Source CredentialSource
 	// From is the human-readable origin: the flag name, the env var name,
@@ -158,6 +159,9 @@ const helperReuseMargin = time.Minute
 // and a repository is not a trusted party.
 func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
 	if c, ok := claimableCredentialFor(ep); ok {
+		if ep.OrgID != "" {
+			return Credential{}, errors.New("claimable credentials cannot act in a project's selected organization; clear the project choice first")
+		}
 		return c, nil
 	}
 	if t := strings.TrimSpace(flagToken); t != "" {
@@ -179,10 +183,10 @@ func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
 		return Credential{}, err
 	}
 	expiredLogin := ""
-	stored, lookupErr := credentials.Lookup(path, ep.URL, ClientID)
+	stored, lookupErr := credentials.Lookup(path, ep.URL, ClientID, ep.OrgID)
 	switch {
 	case lookupErr == nil && !stored.Expired(time.Now()):
-		return Credential{Token: stored.Token, Source: SourceLogin, From: path,
+		return Credential{OrgID: stored.OrgID, Token: stored.Token, Source: SourceLogin, From: path,
 			ExpiresAt: stored.ExpiresAt, Scopes: stored.Scopes}, nil
 	case lookupErr == nil:
 		expiredLogin = fmt.Sprintf("the forge login for %s stored in %s expired at %s",
@@ -190,6 +194,12 @@ func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
 		if !hasHelper {
 			return Credential{}, fmt.Errorf("%w\n%s\nfix: %s", ErrNoCredential, expiredLogin, loginHint(ep))
 		}
+	case errors.Is(lookupErr, credentials.ErrOrgRequired):
+		if !hasHelper {
+			return Credential{}, lookupErr
+		}
+		// An unpinned host session may resolve its authoritative default;
+		// never choose one of the file's org-bound tokens locally.
 	case !errors.Is(lookupErr, credentials.ErrNotFound):
 		// A file that exists but cannot be read is an ERROR, not "not
 		// logged in": the user did log in, and telling them otherwise
@@ -269,7 +279,7 @@ func helperCredential(argv []string, ep Endpoint) (Credential, error) {
 	if err != nil {
 		return Credential{}, err
 	}
-	memoKey := endpointKey + "\x00" + cloudcred.FormatCommand(argv)
+	memoKey := endpointKey + "\x00" + ep.OrgID + "\x00" + cloudcred.FormatCommand(argv)
 
 	helperMemo.Lock()
 	defer helperMemo.Unlock()
@@ -285,6 +295,7 @@ func helperCredential(argv []string, ep Endpoint) (Credential, error) {
 	defer cancel()
 	tok, err := cloudcred.Exec(ctx, argv, cloudcred.Request{
 		Endpoint: endpointKey,
+		OrgID:    ep.OrgID,
 		Scopes:   LoginScopes(),
 	})
 	if err != nil {
@@ -294,7 +305,7 @@ func helperCredential(argv []string, ep Endpoint) (Credential, error) {
 	if from == "" {
 		from = "$" + cloudcred.HelperEnv + " (" + argv[0] + ")"
 	}
-	cred := Credential{Token: tok.Token, Source: SourceHelper, From: from, ExpiresAt: tok.ExpiresAt}
+	cred := Credential{OrgID: tok.OrgID, Token: tok.Token, Source: SourceHelper, From: from, ExpiresAt: tok.ExpiresAt}
 	helperMemo.entries[memoKey] = cred
 	return cred, nil
 }
@@ -343,7 +354,7 @@ func forgetHelperCredential(argv []string, ep Endpoint) {
 	}
 	helperMemo.Lock()
 	defer helperMemo.Unlock()
-	delete(helperMemo.entries, endpointKey+"\x00"+cloudcred.FormatCommand(argv))
+	delete(helperMemo.entries, endpointKey+"\x00"+ep.OrgID+"\x00"+cloudcred.FormatCommand(argv))
 }
 
 // CredentialOrder is the resolution order in one line, for help text and
@@ -367,10 +378,14 @@ func SignInHint() string {
 // control plane the project declares — login never takes an env. Anything
 // else is named with --endpoint.
 func loginHint(ep Endpoint) string {
-	if ep.Env != "" {
-		return "forge login"
+	hint := "forge login"
+	if ep.Env == "" {
+		hint += " --endpoint " + ep.URL
 	}
-	return "forge login --endpoint " + ep.URL
+	if ep.OrgID != "" {
+		hint += " --org " + ep.OrgID
+	}
+	return hint
 }
 
 // CredentialsPath is where the shared credentials file lives, from

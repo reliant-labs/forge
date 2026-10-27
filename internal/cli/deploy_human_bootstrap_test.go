@@ -138,7 +138,7 @@ func TestDeployPreviewDoesNotCreateProjectBinding(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(root)
 	for _, f := range []deployCmdFlags{{dryRun: true}, {explain: true}, {promote: promoteCmdFlags{plan: true}}, {promote: promoteCmdFlags{planOnly: true}}} {
-		if err := prepareHostedProjectForWrite(context.Background(), root, "prod", f); err != nil {
+		if err := prepareHostedProjectForWrite(context.Background(), root, "prod", &f); err != nil {
 			t.Fatal(err)
 		}
 	}

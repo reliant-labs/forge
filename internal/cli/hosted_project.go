@@ -22,7 +22,7 @@ const hostedProjectBindingFile = ".forge/hosted-projects.json"
 
 // prepareHostedProjectForWrite is the common write-path bootstrap, before
 // capacity/ledger/build operations can resolve an unbound project implicitly.
-func prepareHostedProjectForWrite(ctx context.Context, projectDir, env string, f deployCmdFlags) error {
+func prepareHostedProjectForWrite(ctx context.Context, projectDir, env string, f *deployCmdFlags) error {
 	if f.dryRun || f.explain || f.promote.plan || f.promote.planOnly || f.claimable || f.offlineLedger {
 		return nil
 	}
@@ -51,6 +51,11 @@ func prepareHostedProjectForWrite(ctx context.Context, projectDir, env string, f
 	if entities.ControlPlane != nil {
 		entities.ControlPlane.org = &orgState{}
 	}
+	// --org authorizes only this invocation's first unbound creation. The
+	// binding is now persisted; late publish must resolve it without trying
+	// to create it again. A pre-existing binding with --org was already
+	// refused by bindHostedProject above, before this selector is consumed.
+	f.organization = ""
 	return nil
 }
 

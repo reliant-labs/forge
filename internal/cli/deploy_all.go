@@ -59,7 +59,7 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 		return err
 	}
 
-	if err := prepareHostedProjectForWrite(ctx, projectDir, envName, f); err != nil {
+	if err := prepareHostedProjectForWrite(ctx, projectDir, envName, &f); err != nil {
 		return err
 	}
 

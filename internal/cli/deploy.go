@@ -697,7 +697,7 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 	// and resolving it up front is what keeps those two answers from being
 	// read at different moments from different places.
 	projectDir := projectDirForKCL()
-	if err := prepareHostedProjectForWrite(ctx, projectDir, envName, f); err != nil {
+	if err := prepareHostedProjectForWrite(ctx, projectDir, envName, &f); err != nil {
 		return err
 	}
 	// First of all: a release whose hosted part does not fit the plan is

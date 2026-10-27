@@ -52,14 +52,16 @@ var goToolchainProcs = map[string]bool{
 // toolchain processes now running, and the age of the oldest one that
 // counted. ok is false when no process counts: the floor alone is then the
 // guard. A process table that cannot be read counts as a build goCacheLongLived
-// old.
-func (r Runner) liveBuildBound(ctx context.Context, now time.Time) (bound time.Time, oldest time.Duration, ok bool) {
+// old. running are the ages of processes whose executable lives in the cache
+// (gocache_liveexe.go), counted like toolchain processes.
+func (r Runner) liveBuildBound(ctx context.Context, now time.Time, running ...time.Duration) (bound time.Time, oldest time.Duration, ok bool) {
 	list := r.LiveToolchainAges
 	if list == nil {
 		if testing.Testing() {
-			return time.Time{}, 0, false
+			list = func(context.Context) ([]time.Duration, error) { return nil, nil }
+		} else {
+			list = psToolchainAges
 		}
-		list = psToolchainAges
 	}
 	ages, err := list(ctx)
 	if err != nil {
@@ -68,6 +70,10 @@ func (r Runner) liveBuildBound(ctx context.Context, now time.Time) (bound time.T
 		r.print("go build cache: cannot list running builds (%v); assuming one %s old\n", err, goCacheLongLived)
 		ages = []time.Duration{goCacheLongLived}
 	}
+	// A process running an executable out of the cache is a build in the
+	// sense of the lease even though its comm is not a toolchain command:
+	// `go run`'s child is `forge`, not `go`.
+	ages = append(ages[:len(ages):len(ages)], running...)
 	for _, age := range ages {
 		if age > goCacheLongLived {
 			continue

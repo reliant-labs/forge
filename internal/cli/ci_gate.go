@@ -416,7 +416,7 @@ func gitHead(root string) (string, bool) {
 // commit (one with an uncommitted fix) never share verdicts.
 func gateJudgeIdentity() string {
 	id := buildinfo.Identity()
-	if exe, err := os.Executable(); err == nil {
+	if exe, err := selfExecutable(); err == nil {
 		if fi, err := os.Stat(exe); err == nil {
 			id += fmt.Sprintf(" exe=%d@%d", fi.Size(), fi.ModTime().UnixNano())
 		}

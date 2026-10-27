@@ -27,6 +27,20 @@ var obsIssueSchema = obsout.Schema{
 		"issue.status", "issue.first_seen", "issue.last_seen", "issue.first_version", "issue.last_version",
 		"issue.events", "issue.affected", "issue.affected_unit", "issue.latest_trace_id", "issue.resolved_at", "issue.resolved_version",
 		"issue.regressed_at", "issue.ignored_until", "issue.incident_key", "issue.related_count",
+		"issue.assignee", "issue.assignee.id", "issue.assignee.name",
+		"incident_issue_ids",
+		"timeline", "timeline.id", "timeline.time", "timeline.issue_id", "timeline.kind",
+		"timeline.actor", "timeline.actor.kind", "timeline.actor.id", "timeline.actor.name",
+		"timeline.status", "timeline.status.from", "timeline.status.to", "timeline.status.version", "timeline.status.ignored_until",
+		"timeline.comment", "timeline.comment.id", "timeline.comment.issue_id", "timeline.comment.author", "timeline.comment.author.id",
+		"timeline.comment.author.name", "timeline.comment.body", "timeline.comment.created_at", "timeline.comment.updated_at",
+		"timeline.assignment", "timeline.assignment.from", "timeline.assignment.from.id", "timeline.assignment.from.name",
+		"timeline.assignment.to", "timeline.assignment.to.id", "timeline.assignment.to.name",
+		"timeline.chat", "timeline.chat.chat_id", "timeline.chat.title", "timeline.chat.linked_by", "timeline.chat.linked_by.id",
+		"timeline.chat.linked_by.name", "timeline.chat.linked_at",
+		"timeline_omitted", "timeline_issue_id", "timeline_note",
+		"comment", "comment.id", "comment.issue_id", "comment.author", "comment.author.id", "comment.author.name",
+		"comment.body", "comment.created_at", "comment.updated_at",
 		"latest_event", "latest_event.time", "latest_event.trace_id", "latest_event.span_id", "latest_event.version",
 		"latest_event.message", "latest_event.attributes.*", "latest_event.session_id", "latest_event.url_path",
 		"events", "events.time", "events.trace_id", "events.span_id", "events.version", "events.message", "events.attributes.*",
@@ -103,6 +117,7 @@ type obsIssueDoc struct {
 	// Incident are the other issues of this issue's incident: the same cause,
 	// first seen close in time, in any service.
 	Incident []string `json:"incident_issue_ids,omitempty"`
+	obsIssueTimeline
 	// Release is the release live in the env when the issue was last seen.
 	Release      *liveRelease           `json:"release,omitempty"`
 	FirstRelease *obsIssueReleaseDoc    `json:"first_release,omitempty"`
@@ -120,7 +135,8 @@ var obsIssueSuspects = func(ctx context.Context, commitRange string, files []str
 
 type obsIssueOpts struct {
 	obsCommon
-	events int
+	events        int
+	timelineLimit int
 }
 
 func newObsIssueCmd() *cobra.Command {
@@ -132,13 +148,18 @@ func newObsIssueCmd() *cobra.Command {
 version, the issues that fire in the same traces, the release it first appeared
 in, and the suspect commits: the commits of that release's range (or, with no
 range known, the last 20) that touched the files the error was raised from,
-read from this checkout with git. [env] defaults to dev.
+read from this checkout with git. A hosted env also shows who it is assigned to,
+the incident it belongs to (the other issues with the same cause, first seen
+close together: related_count and incident_key), and the newest
+--timeline-limit timeline entries, oldest first. [env] defaults to dev.
 
   ` + Name() + ` obs issue ISS-7f3a prod
   ` + Name() + ` obs issue sfp1-0123456789abcdef dev --events 10
   ` + Name() + ` obs issue resolve ISS-7f3a prod --in next
   ` + Name() + ` obs issue ignore ISS-7f3a prod --until 72h
   ` + Name() + ` obs issue unresolve ISS-7f3a prod
+  ` + Name() + ` obs issue comment ISS-7f3a "checked the pool; it is the new retry loop" prod
+  ` + Name() + ` obs issue assign ISS-7f3a <user-id|none> prod
 
 Triage needs a hosted env: a local issue is a query over logs and has no state.
 
@@ -150,8 +171,10 @@ Triage needs a hosted env: a local issue is a query over logs and has no state.
 	}
 	o.register(cmd, 72*time.Hour, 0)
 	cmd.Flags().IntVar(&o.events, "events", 5, "newest events to include (0 = none)")
+	cmd.Flags().IntVar(&o.timelineLimit, "timeline-limit", defaultTimelineLimit, fmt.Sprintf("newest timeline entries (comments, status changes, assignment, linked chats) to include, oldest first (0 = none; at most %d)", maxTimelineLimit))
 	_ = cmd.Flags().MarkHidden("limit")
-	cmd.AddCommand(newObsIssueTriageCmd("resolve"), newObsIssueTriageCmd("ignore"), newObsIssueTriageCmd("unresolve"))
+	cmd.AddCommand(newObsIssueTriageCmd("resolve"), newObsIssueTriageCmd("ignore"), newObsIssueTriageCmd("unresolve"),
+		newObsIssueCommentCmd(), newObsIssueAssignCmd())
 	return cmd
 }
 
@@ -166,6 +189,9 @@ func runObsIssue(ctx context.Context, d obsDeps, id, env string, o obsIssueOpts)
 	fail := func(err error) error { return obsFail(d, o.out.JSON, schemaObsIssue, err) }
 	if o.events < 0 || o.events > obsquery.MaxIssueEvents {
 		return fail(obsbackend.Wrong("--events must be 0-%d", obsquery.MaxIssueEvents))
+	}
+	if o.timelineLimit < 0 || o.timelineLimit > maxTimelineLimit {
+		return fail(obsbackend.Wrong("--timeline-limit must be 0-%d", maxTimelineLimit))
 	}
 	n, err := o.narrow(d.Now())
 	if err != nil {
@@ -206,6 +232,7 @@ func runObsIssue(ctx context.Context, d obsDeps, id, env string, o obsIssueOpts)
 	}
 	doc.CoOccurring = res.CoOccurring
 	doc.Incident = res.Incident
+	doc.obsIssueTimeline = readTimeline(ctx, d.Stderr, r, id, o.timelineLimit)
 	if fr := res.FirstRelease; fr != nil {
 		doc.FirstRelease = &obsIssueReleaseDoc{Version: fr.Version, GitCommit: fr.GitCommit, CommitRange: fr.CommitRange, PromotedAt: fr.PromotedAt}
 	}
@@ -284,6 +311,9 @@ func issueSuggestions(env string, res obsbackend.GetIssueResult) []string {
 func renderIssue(w io.Writer, doc obsIssueDoc) {
 	i := doc.Issue
 	fmt.Fprintf(w, "%s  %s  %s\n", i.ID, i.Status, i.Title)
+	if i.Assignee != nil || doc.Scope.Backend != "local" {
+		fmt.Fprintf(w, "  assignee %s\n", issueUserLabel(i.Assignee))
+	}
 	if i.Culprit != "" {
 		fmt.Fprintf(w, "  at %s\n", i.Culprit)
 	}
@@ -344,6 +374,7 @@ func renderIssue(w io.Writer, doc obsIssueDoc) {
 	} else if doc.SuspectNote != "" {
 		fmt.Fprintf(w, "\n%s\n", doc.SuspectNote)
 	}
+	renderTimeline(w, i.ID, doc)
 }
 
 // ── triage ──────────────────────────────────────────────────────────────

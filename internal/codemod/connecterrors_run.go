@@ -89,6 +89,7 @@ func runConnectErrors(dir string, opts Options) (Report, error) {
 		sort.Strings(paths)
 		ce.lines = map[string]func(int) int{}
 		for _, path := range paths {
+			ce.out[path] = formatForProject(absDir, path, ce.out[path])
 			if err := writeFile(path, ce.out[path]); err != nil {
 				return Report{}, err
 			}

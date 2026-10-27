@@ -2,14 +2,14 @@
 
 ## Defaults
 
-| Profile          | Sample types                   | Default | Cadence                                              |
-| ---------------- | ------------------------------ | ------- | ---------------------------------------------------- |
-| CPU              | `cpu`                          | on      | 5s window every cycle (5 min, jittered)              |
-| Heap in-use      | `inuse_space`, `inuse_objects` | on      | every 2 h (`DefaultHeapInterval`)                    |
-| Heap allocations | `alloc_space`, `alloc_objects` | off     | with the heap snapshot, cumulative                   |
-| Goroutine        | `goroutine`                    | off     | every cycle                                          |
-| Mutex            | `contentions`, `delay`         | off     | every cycle; mutex fraction 10 while on              |
-| Block            | `contentions`, `delay`         | off     | every cycle; block rate 10µs while on                |
+| Profile          | Sample types                   | Default | Cadence                                 |
+| ---------------- | ------------------------------ | ------- | --------------------------------------- |
+| CPU              | `cpu`                          | on      | 5s window every cycle (5 min, jittered) |
+| Heap in-use      | `inuse_space`, `inuse_objects` | on      | every 2 h (`DefaultHeapInterval`)       |
+| Heap allocations | `alloc_space`, `alloc_objects` | off     | with the heap snapshot, cumulative      |
+| Goroutine        | `goroutine`                    | off     | every cycle                             |
+| Mutex            | `contentions`, `delay`         | off     | every cycle; mutex fraction 10 while on |
+| Block            | `contentions`, `delay`         | off     | every cycle; block rate 10µs while on   |
 
 Before this release the defaults were a 10s CPU window every minute and a heap
 snapshot every 15 minutes. A consumer gets the new defaults by pinning the
@@ -31,10 +31,10 @@ Production, fixed UTC window 2026-10-25 20:00 → 2026-10-26 20:00,
 trader's older-pin staging service; `otel_profiles`). Full reproducible breakdown:
 control-plane `research/profile-volume-2026-10-26.md` and its TSVs.
 
-| Sample type            | Rows/profile | Share of bytes (excluding one allocation-heavy staging service) |
-| ---------------------- | -----------: | ---------------------------------------------------------------: |
-| `cpu`                  |         ~22  |                                                              55% |
-| `inuse_space`/`_objects` |       ~73  |                                                              45% |
+| Sample type              | Rows/profile | Share of bytes (excluding one allocation-heavy staging service) |
+| ------------------------ | -----------: | --------------------------------------------------------------: |
+| `cpu`                    |          ~22 |                                                             55% |
+| `inuse_space`/`_objects` |          ~73 |                                                             45% |
 
 CPU was 14.7k profiles a day (one per pod per ~70s) and heap 1.8k. Heap
 snapshots carry about 3.4x the rows of a CPU profile, so a heap every 15 min
@@ -54,14 +54,14 @@ thinning model keeps stack `c` with probability `1-(1-f)^c` for window fraction
 not a measured 5s capture, and bursty workloads can differ. Fewer samples lose
 rare stacks and trace links; they do not preserve every hot path by guarantee.
 
-| Cadence                               | Fleet bytes/day (model) |   vs now |
-| ------------------------------------- | ----------------------: | -------: |
-| Now: cpu 10s/70s, heap 15m            |                2.52 GiB |       1x |
-| cpu 10s/5m, heap 15m                  |                1.45 GiB |     1.7x |
-| cpu 10s/5m, heap 10m                  |                2.02 GiB |     1.25x |
-| cpu 5s/5m, heap 1h                    |                0.47 GiB |     5.3x |
-| **cpu 5s/5m, heap 2h (default)**      |            **0.33 GiB** | **7.6x** |
-| cpu 5s/10m, heap 2h                   |                0.25 GiB |    10.1x |
+| Cadence                          | Fleet bytes/day (model) |   vs now |
+| -------------------------------- | ----------------------: | -------: |
+| Now: cpu 10s/70s, heap 15m       |                2.52 GiB |       1x |
+| cpu 10s/5m, heap 15m             |                1.45 GiB |     1.7x |
+| cpu 10s/5m, heap 10m             |                2.02 GiB |    1.25x |
+| cpu 5s/5m, heap 1h               |                0.47 GiB |     5.3x |
+| **cpu 5s/5m, heap 2h (default)** |            **0.33 GiB** | **7.6x** |
+| cpu 5s/10m, heap 2h              |                0.25 GiB |    10.1x |
 
 Per-series model: each instance's expanded logical row bytes are scaled by the
 ratio of expected profile counts (`1 + span/period`, including the first capture)

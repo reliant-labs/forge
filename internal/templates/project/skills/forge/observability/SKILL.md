@@ -46,15 +46,10 @@ They read ClickHouse itself (`docker compose exec` into `clickstack`, with its
 own credentials), so a pass means rows are in the store, not that a UI answers.
 With ClickStack off they SKIP and say so.
 
-**These live on `forge env status`, not `forge doctor`.** They all need an
-ADDRESS, and only `forge env status <env>` resolves one — it renders the same
-KCL `forge env up` does and overlays the ports the live stack actually bound.
-`forge doctor` only answers "is this PROJECT well-formed" and takes no `--env`.
-
-A check that cannot obtain the facts it needs reports **UNDETERMINED** (`?`),
-never a pass and never a skip. Three outcomes, not two.
-
-Run it after `forge env up dev` to verify the pipeline before investigating.
+**Runtime checks use `forge env status`, not `forge doctor`.** Status renders
+the environment's KCL and overlays bound ports; doctor checks project structure
+and takes no `--env`. Missing runtime evidence is **UNDETERMINED** (`?`), not
+PASS or SKIP. Run status after `forge env up dev` before investigating.
 
 **The runtime checks verify the telemetry pipeline, NOT app-flow correctness.** They (like `forge env smoke`) are green when containers, endpoints, and signal ingestion are healthy — they can be green while the actual app flow is broken (e.g. a cross-cluster dial failing). To prove an app-flow invariant holds, use a declarative, exit-coded app-health assertion (model: a project `doctor:<flow>` task) plus a full `task test:e2e`. They tell you observability works; they do not certify the app does.
 

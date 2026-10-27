@@ -172,17 +172,23 @@ job before adding a job.
 **Pull request** and **merge-queue entry** (`ci.yml`, 5 jobs, on every pull request — no path filter):
 
 - **Test** — three entries: the `-short` tier, no `-race`, as 2 package shards
-  (`scripts/ci-test-shard.sh` over `scripts/ci-test-packages.sh short I N`), and the guards
-  in full mode spread across the entries (`internal/ciguard` holds each to exactly one). The
-  guards-only entry also runs the **flake gate**: each test the change adds or edits runs
-  three times (`scripts/ci-changed-tests.sh`; no `-race` — that runs on main). A test that
-  fails one run in three never merges. `internal/ciguard` fails if the matrix misses an index. No
-  `-count=1`: an unchanged package replays main's result, which works because
-  `test-short-warm` runs the same command in the same environment, and
-  `scripts/ci-normalize-mtimes.sh` stamps every tracked file with a content-derived mtime
-  (Go's test cache keys files on mtime, not content).
+  (`scripts/ci-test-shard.sh` over `scripts/ci-test-packages.sh short I N`), and the
+  **flake gate**: each test the change adds or edits runs three times
+  (`scripts/ci-changed-tests.sh`, `-short -count=3`; `-race` joins it on main). A test that
+  fails one run in three never merges. The guards' whole-repo work skips under `-short` and
+  runs on main. `internal/ciguard` fails if the matrix misses an index. No `-count=1`: an
+  unchanged package replays main's result, which works because `test-short-warm` runs the
+  same command in the same environment, and `scripts/ci-normalize-mtimes.sh` stamps every
+  tracked file with a content-derived mtime (Go's test cache keys files on mtime, not
+  content).
 - **Checks** — `forge ci verify-generated`, `forge ci validate-kcl`, the pre-commit hooks
   (go-vet-mod skipped), and the Go and npm dependency-license allowlists.
+- **The same tier, locally: `task ci`.** What the merge steward gates a forge pull request
+  with, in about five minutes (`scripts/ci-premerge.sh`): the whole `-short` tier, the flake
+  gate and the checks above, concurrently, one table, non-zero on any FAIL or unwaived SKIP.
+  `PR=<n> task ci` also reads the pull request's labels for the pkg/ API gate. It is the
+  steward's command, not a contributor's: verify your change with
+  `task test:short -- <your packages>`. `internal/ciguard` holds it to `ci.yml`.
 - `CI gate` is the main ruleset's required check, and `main` merges through a merge queue:
   each queued pull request runs this tier again (`merge_group`) over main plus the entries
   ahead of it, and lands only if `CI gate` is green there. So `ci.yml` has no path filter
@@ -222,9 +228,11 @@ job before adding a job.
   `forge lint` locally to see a finding first.
 - **Test (-short whole tier, then guards)** — the pull-request tier in one job, which saves
   the `go-build-short` and `go-mod` caches the pull-request jobs restore
-  (`.github/actions/restore-go-caches`; Checks saves its own `go-build-tools` on main);
+  (`.github/actions/restore-go-caches`; Checks saves `go-build-tools` on main, which
+  Build and the e2e workflows restore);
   then the guards (tierguard, removalguard,
-  deadcodeguard, writeguard; `-p 1`, full mode, no `-race`), which pull requests also run.
+  deadcodeguard, writeguard; `-p 1`, full mode, no `-race`), whose whole-repo work pull
+  requests skip.
 - **Build (-trimpath) + go-licenses + govulncheck** — the release build flags, the second
   license opinion (Checks covers dependency licenses on every pull request), and
   `forge ci vuln-scan --go`.
@@ -257,6 +265,20 @@ budget is 10 GB; every scope saved on main is trimmed first to the entries that 
 (`.github/actions/trim-go-build-cache`), or the scopes outgrow the budget and evict one
 another. Add a job, or a cache scope, only when sharing one is worse.
 
+**Test-cache inputs:** `scripts/ci-go-test.sh` removes only `FORGE_SLOT_HELD` before
+starting Go. A heavy-slot lease changes on every gate invocation; unsetting it in
+`TestMain` is too late because Go hashes the parent's original environment. The
+shards and changed-test gate share this wrapper. Repository-wide guard scans use
+`internal/repowalk`: it tracks the root's entry-set changes and scanned subtrees,
+not the metadata of skipped `.git`/`.forge` state. Its full-mode regression test
+runs cmd/go repeatedly and proves both replay and invalidation on real input edits.
+
 Build caches: a PR job restores main's cache and never saves one; only pushes to main
 save (`ci.yml`'s "Build-cache note"). A PR's cache is visible to that PR alone, and PR
-saves were evicting main's entries from the repository's 10 GB budget.
+saves were evicting main's entries from the repository's 10 GB budget. Main saves four
+build scopes, each from one job: `short` and `tools` (what a pull request restores) on
+every push, `test` and `windows` (plus e2e-prepare and the canary) once per UTC day
+(`restore-go-caches`' `refresh: daily`). Every other job restores one of those. When every
+job saved its own scope on every push (~9.5 GB a push), main's saves evicted the pull
+request's caches and Checks ran cold (400-620s against ~185s), so a new scope needs a
+reason.

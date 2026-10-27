@@ -9,6 +9,7 @@ package kcleval_test
 // alone and needed a second `kcl run -E forge=<module>` pass.
 
 import (
+	"os"
 	"os/exec"
 	"testing"
 
@@ -130,7 +131,13 @@ func TestEvalJSONMatchesKclRun(t *testing.T) {
 		"deploy/kcl/kcl.mod": kclMod,
 		"deploy/kcl/lib/o.k": orderSource,
 	})
-	want, err := exec.Command(kcl, "run", dir+"/deploy/kcl/lib/o.k", "--format", "json").Output()
+	// A package home of its own. kcl prints "waiting for package-cache
+	// lock..." on STDOUT while another kcl holds the shared one (~/.kcl), and
+	// on a machine running other kcl processes that line led `want` and
+	// failed the comparison.
+	run := exec.Command(kcl, "run", dir+"/deploy/kcl/lib/o.k", "--format", "json")
+	run.Env = append(os.Environ(), "KCL_PKG_PATH="+t.TempDir())
+	want, err := run.Output()
 	if err != nil {
 		t.Skipf("kcl run failed (%v); orderGolden pins its output", err)
 	}

@@ -4,6 +4,7 @@
 // W3C traceparent, WITHOUT any OTLP collector configured, so the backend
 // (otelconnect + otelhttp) joins the same distributed trace. If this test
 // fails, full-stack tracing is broken.
+import { context, createContextKey, ROOT_CONTEXT } from "@opentelemetry/api";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildRuntimeInterceptors, traceInterceptor } from "./interceptors.js";
@@ -57,6 +58,57 @@ describe("traceparent propagation", () => {
 
     expect(propagated).not.toBeNull();
     expect(propagated).toMatch(TRACEPARENT_RE);
+  });
+
+  it("preserves each concurrent caller's context across auth and telemetry awaits", async () => {
+    // Match the real SDK's stack-only context manager: native await restores
+    // root context. Context restoration belongs to our async boundaries.
+    let active = ROOT_CONTEXT;
+    context.setGlobalContextManager({
+      active: () => active,
+      with: (parent, fn, thisArg, ...args) => {
+        const previous = active;
+        active = parent;
+        try {
+          return fn.apply(thisArg, args);
+        } finally {
+          active = previous;
+        }
+      },
+      bind: (_parent, target) => target,
+      enable() {
+        return this;
+      },
+      disable() {
+        return this;
+      },
+    });
+    try {
+      const key = createContextKey("caller");
+      const seen: unknown[] = [];
+      const interceptors = buildRuntimeInterceptors({
+        getToken: async () => null,
+      });
+      const next: Parameters<(typeof interceptors)[number]>[0] = async () => {
+        seen.push(context.active().getValue(key));
+        return {} as never;
+      };
+      const run = interceptors.reduceRight(
+        (call, interceptor) => interceptor(call),
+        next,
+      );
+      await Promise.all(
+        ["one", "two"].map((name) =>
+          context.with(ROOT_CONTEXT.setValue(key, name), () =>
+            run({ header: new Headers(), stream: false } as never),
+          ),
+        ),
+      );
+      expect(seen).toEqual(["one", "two"]);
+      expect(context.active()).toBe(ROOT_CONTEXT);
+    } finally {
+      context.disable();
+    }
   });
 
   it("buildRuntimeInterceptors composes the full stack", () => {

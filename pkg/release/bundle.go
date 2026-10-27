@@ -80,6 +80,8 @@ const (
 	BundleMetricsSchemaPath   = BundleObservabilityPrefix + "/metrics-schema.json"
 	// BundleFrontendDeclarationsPath is bounded non-applied frozen frontend metadata.
 	BundleFrontendDeclarationsPath = "forge/frontend-declarations.json"
+	// BundleServiceCatalogPath carries browse-only typed code/RPC metadata.
+	BundleServiceCatalogPath = "forge/service-catalog.json"
 )
 
 // BundleClusterPath is the path, within the extracted manifests layer, that

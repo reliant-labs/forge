@@ -20,6 +20,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/internal/obsdash"
+	"github.com/reliant-labs/forge/pkg/servicecatalog"
 )
 
 // collectObservabilityFiles assembles the bundle's observability set from the
@@ -87,6 +88,15 @@ func bundleObservabilityFiles(projectDir string, in bundleBuildInputs, entities 
 	out := make([]bundle.ObservabilityFile, 0, len(files))
 	for _, f := range files {
 		out = append(out, bundle.ObservabilityFile{Path: f.Path, Data: f.Data})
+	}
+	raw, readErr := os.ReadFile(filepath.Join(projectDir, filepath.FromSlash(servicecatalog.GeneratedPath)))
+	if readErr == nil {
+		if _, err := servicecatalog.Decode(raw); err != nil {
+			return nil, err
+		}
+		out = append(out, bundle.ObservabilityFile{Path: servicecatalog.BundlePath, Data: raw})
+	} else if !os.IsNotExist(readErr) {
+		return nil, readErr
 	}
 	return out, nil
 }

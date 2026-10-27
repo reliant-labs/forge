@@ -12,7 +12,7 @@ const (
 	Schema        = "forge.dev/service-catalog/v1"
 	GeneratedPath = "gen/forge_service_catalog.json"
 	BundlePath    = "forge/service-catalog.json"
-	MaxBytes      = 8 << 20
+	MaxBytes      = 1 << 20
 )
 
 // Catalog is generated from the same typed composition model and wire descriptor
@@ -75,6 +75,15 @@ type Component struct {
 	ID      string       `json:"id"`
 	Name    string       `json:"name"`
 	Kind    string       `json:"kind"`
+	Type    string       `json:"type"`
+	Source  Source       `json:"source"`
+	Methods []CodeMethod `json:"methods"`
+	// ImplementationCandidates are assignable concrete types in the component's
+	// package. They are not proof of which implementation a constructor returns.
+	ImplementationCandidates []Implementation `json:"implementation_candidates"`
+}
+
+type Implementation struct {
 	Type    string       `json:"type"`
 	Source  Source       `json:"source"`
 	Methods []CodeMethod `json:"methods"`

@@ -347,6 +347,7 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 			OutputProtoFile: m.Output.Desc.ParentFile().Path(),
 			Custom:          codegen.CommentMarksCustom(rpcMarkerComments(m)),
 			NoSideEffects:   methodHasNoSideEffects(m.Desc),
+			Idempotency:     m.Desc.Options().(*descriptorpb.MethodOptions).GetIdempotencyLevel().String(),
 		}
 
 		// Read method-level options
@@ -973,6 +974,7 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 	protoFile, line := configMessageLocation(msg)
 	binary, command, subtrees := configMessageBinary(msg)
 	return codegen.ConfigMessage{
+		FullName:  string(msg.Desc.FullName()),
 		Name:      string(msg.Desc.Name()),
 		Fields:    configFields,
 		Binary:    binary,

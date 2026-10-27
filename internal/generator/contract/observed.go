@@ -27,6 +27,7 @@ import (
 	"text/template"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/pkg/servicecatalog"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
@@ -214,6 +215,21 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 		data.ChainSource = "observe.DefaultComponentChain builds (an owned\n// observe_chain.go seam replaces it)"
 	}
 
+	// Attach a generated constant map without changing any Run/Around call or
+	// the owned chain seam. Scope+interface+method matches the typed catalog.
+	root, module := findModule(dir)
+	scope := importPathOf(root, module, dir)
+	if scope != "" {
+		var ids strings.Builder
+		ids.WriteString(".WithMethodIDs(map[string]string{")
+		for _, method := range target.Methods {
+			if !method.SkipObserve {
+				fmt.Fprintf(&ids, "%q:%q,", opNamespace+"."+method.Name, servicecatalog.MethodID(scope, ifaceName, method.Name))
+			}
+		}
+		ids.WriteString("})")
+		data.ChainExpr += ids.String()
+	}
 	var buf bytes.Buffer
 	if err := observedTmpl.Execute(&buf, data); err != nil {
 		return false, fmt.Errorf("execute observed template: %w", err)

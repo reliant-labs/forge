@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -130,11 +132,23 @@ func TestUpPassthroughArgs(t *testing.T) {
 	}
 }
 
-// TestBuildFrontendCmd_ForwardsPassthroughArgs pins the load-bearing piece
-// of `forge env up dev -- --host 0.0.0.0`: the tokens reach the frontend dev
-// server as `npm run dev -- --host 0.0.0.0` (the `--` is required so npm
-// forwards them to vite/next rather than consuming them itself).
+// Pin the unwrapped argv independently of the machine's installed managers.
+func frontendRunnerPath(t *testing.T, names ...string) string {
+	t.Helper()
+	bin := t.TempDir()
+	for _, name := range names {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+	return bin
+}
+
+// TestBuildFrontendCmd_ForwardsPassthroughArgs pins manager-specific argument
+// forwarding: only npm needs a separator before Vite/Next's flags.
 func TestBuildFrontendCmd_ForwardsPassthroughArgs(t *testing.T) {
+	frontendRunnerPath(t, "npm", "pnpm", "yarn")
 	for _, tc := range []struct {
 		runner string
 		flags  []string
@@ -155,6 +169,29 @@ func TestBuildFrontendCmd_ForwardsPassthroughArgs(t *testing.T) {
 				t.Errorf("frontend argv = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildFrontendCmd_MissingManagerUsesInstallFallback(t *testing.T) {
+	for _, manager := range []string{"pnpm", "yarn"} {
+		for _, fallback := range []string{"corepack", "npm"} {
+			t.Run(manager+"/"+fallback, func(t *testing.T) {
+				frontendRunnerPath(t, fallback)
+				dir := t.TempDir()
+				if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"packageManager":"`+manager+`@12.15.0"}`), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				fe := FrontendEntity{Path: dir, DevRunner: manager, EnvFile: "/does/not/exist"}
+				cmd := buildFrontendCmd(context.Background(), fe, "dev", nil, []string{"--host", "0.0.0.0"}, "")
+				want := "corepack " + manager + "@12.15.0 run dev --host 0.0.0.0"
+				if fallback == "npm" {
+					want = "npm exec --yes --package=" + manager + "@12.15.0 -- " + manager + " run dev --host 0.0.0.0"
+				}
+				if got := strings.Join(cmd.Args, " "); got != want {
+					t.Errorf("dev argv = %q, want %q", got, want)
+				}
+			})
+		}
 	}
 }
 

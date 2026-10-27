@@ -3315,7 +3315,8 @@ func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parent
 		}
 		runArgs = append(runArgs, frontendArgs...)
 	}
-	cmd := exec.CommandContext(ctx, runner, runArgs...)
+	argv := frontenddeps.ExecArgv(fe.Path, runner, runArgs...)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = fe.Path
 
 	envFile := fe.EnvFile

@@ -431,9 +431,62 @@ func TestPlan_GoBuildWritesNoBinaryIntoTheTree(t *testing.T) {
 	}
 }
 
+func TestPlan_YarnOptionalStyles(t *testing.T) {
+	for _, berry := range []bool{false, true} {
+		for _, present := range []bool{false, true} {
+			name := "classic"
+			if berry {
+				name = "berry"
+			}
+			if present {
+				name += "/present"
+			} else {
+				name += "/absent"
+			}
+			t.Run(name, func(t *testing.T) {
+				bin := t.TempDir()
+				if err := os.WriteFile(filepath.Join(bin, "yarn"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", bin)
+				in := serviceInput(t)
+				write(t, in.Root, "frontends/web/yarn.lock", "# yarn lockfile")
+				if berry {
+					write(t, in.Root, "frontends/web/.yarnrc.yml", "nodeLinker: node-modules\n")
+				}
+				manifest := `{"scripts":{}}`
+				if present {
+					manifest = `{"scripts":{"lint:styles":"stylelint src/**/*.css"}}`
+				}
+				write(t, in.Root, "frontends/web/package.json", manifest)
+				all, err := Plan(in)
+				if err != nil {
+					t.Fatal(err)
+				}
+				row := find(t, all, "css-health-web")
+				if got := strings.Join(row.Argv, " "); got != "yarn run lint:styles" {
+					t.Errorf("argv = %q", got)
+				}
+				if present && row.NotApplicable != "" {
+					t.Errorf("declared script was skipped: %s", row.NotApplicable)
+				}
+				if !present && row.NotApplicable == "" {
+					t.Error("absent optional script must be explicitly inapplicable")
+				}
+			})
+		}
+	}
+}
+
 // A pnpm frontend's rows run pnpm, its deps row installs frozen, and its
 // staleness reads pnpm's own stamp.
 func TestPlan_PNPMFrontendRowsUsePNPM(t *testing.T) {
+	// Keep executable-prefix assertions independent of pnpm on the host.
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "pnpm"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
 	in := serviceInput(t)
 	write(t, in.Root, "frontends/web/pnpm-lock.yaml", "lockfileVersion: '9.0'\n")
 	all, _ := Plan(in)

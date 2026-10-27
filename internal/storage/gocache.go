@@ -552,9 +552,10 @@ func (r Runner) trimGoBuildCache(label, root string, budgetGiB uint64, apply boo
 	}
 	budget := r.budgetFor(budgetGiB, root)
 	cutoff, estTotal := goCacheCutoff(sample, len(shards), now, unused, budget)
+	guard := r.newLiveExecutableGuard(ctx, root)
 	heldBack := ""
 	var liveBuild time.Duration
-	if bound, oldest, ok := r.liveBuildBound(ctx, now); ok && bound.Before(cutoff) {
+	if bound, oldest, ok := r.liveBuildBound(ctx, now, guard.ages...); ok && bound.Before(cutoff) {
 		cutoff, liveBuild = bound, oldest
 		heldBack = fmt.Sprintf("; held back by a running Go build %s old (anything it resolved has a last-use time after its start minus %s)", oldest.Round(time.Second), liveBuildMargin)
 	}
@@ -569,7 +570,8 @@ func (r Runner) trimGoBuildCache(label, root string, budgetGiB uint64, apply boo
 		overBudget = fmt.Sprintf("; over budget, per-pass cap lifted for ~%d entries", need)
 	}
 
-	pass := streamTrimGoCache(ctx, root, shards, start, cutoff, apply, del)
+	heldBack += guard.describe()
+	pass := streamTrimGoCache(ctx, root, shards, start, cutoff, apply, del, guard)
 	if apply {
 		r.saveGoCacheCursor(label, (start+pass.shardsCovered)%len(shards))
 	}
@@ -600,6 +602,7 @@ func (r Runner) trimGoBuildCache(label, root string, budgetGiB uint64, apply boo
 		young += goCacheProtectedByBuild(sample, len(shards), cutoff)
 		protectedFor = max(protectedFor, now.Sub(cutoff))
 	}
+	young += guard.protectedBytes(sample, len(shards), cutoff)
 	if r.OnGoCacheTrim != nil {
 		r.OnGoCacheTrim(GoCacheTrim{
 			Cache: label, Root: root, Applied: apply,
@@ -734,10 +737,13 @@ func (e *BudgetUnreachableError) Error() string {
 // worked in parallel; shardsCovered counts the contiguous prefix completed, the
 // only part the next pass may skip.
 //
+// An executable entry that live says a running process is executing is never
+// removed, whatever its age (gocache_liveexe.go).
+//
 // Every unlink goes through del, which paces them, caps the pass and backs it
 // off at the first sign of filesystem distress. Any of those stops every
 // worker: a capped or backed-off pass does not read on to the next shard.
-func streamTrimGoCache(ctx context.Context, root string, shards []string, start int, cutoff time.Time, apply bool, del deleter) goCachePass {
+func streamTrimGoCache(ctx context.Context, root string, shards []string, start int, cutoff time.Time, apply bool, del deleter, live *liveExecutableGuard) goCachePass {
 	n := len(shards)
 	pass := goCachePass{shardsTotal: n}
 	done := make([]bool, n)
@@ -773,7 +779,7 @@ func streamTrimGoCache(ctx context.Context, root string, shards []string, start 
 				// stops partway has taken the entries least likely to be wanted.
 				sort.Slice(entries, func(a, b int) bool { return entries[a].mtime.Before(entries[b].mtime) })
 				for _, e := range entries {
-					if !e.mtime.Before(cutoff) {
+					if !e.mtime.Before(cutoff) || live.holds(e) {
 						continue
 					}
 					if ctx.Err() != nil || halted.Load() {

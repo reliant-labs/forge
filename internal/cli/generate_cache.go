@@ -254,6 +254,10 @@ type generateCacheSys struct {
 	now        func() time.Time
 	identity   func() string
 	shadowHost func(root string) string
+	// runningForge, when set, is the running forge's identity, already
+	// taken: the post-run fingerprint uses it instead of re-reading
+	// executable (see generateCacheRun.record).
+	runningForge string
 }
 
 // generateCacheSystem is the environment the pipeline fingerprints. Tests
@@ -377,15 +381,17 @@ func fingerprintGenerate(root string, snap *workTreeSnapshot, outputs, outputDir
 	}
 
 	execs := &execIdentities{prev: execCache, next: fp.execs, now: sys.now()}
-	exe, err := sys.executable()
-	if err != nil {
-		return nil, fmt.Errorf("locate the forge executable: %w", err)
-	}
 	// The forge binary is identified by CONTENT, never by its build info:
 	// templates are embedded, and a dev build reports one version across
 	// every rebuild (or any version an -ldflags stamp claims).
-	if fp.env["forge"], err = execs.identify(exe, false); err != nil {
-		return nil, fmt.Errorf("fingerprint the forge executable: %w", err)
+	if fp.env["forge"] = sys.runningForge; fp.env["forge"] == "" {
+		exe, err := sys.executable()
+		if err != nil {
+			return nil, fmt.Errorf("locate the forge executable: %w", err)
+		}
+		if fp.env["forge"], err = execs.identify(exe, false); err != nil {
+			return nil, fmt.Errorf("fingerprint the forge executable: %w", err)
+		}
 	}
 	for _, tool := range generateCacheTools(root, snap) {
 		p, lookErr := sys.lookPath(tool)
@@ -1360,10 +1366,25 @@ func (c *generateCacheRun) record(w io.Writer, pctx *pipelineContext, ran []GenS
 		return false
 	}
 	outputs, dirs := generateRunOutputs(pctx, ran)
-	post, err := fingerprintGenerate(c.root, snapshotWorkTree(c.root), outputs, dirs, c.pre.execs, c.sys)
+	// The forge that produced this run's outputs is the one RUNNING, which
+	// cannot change under a process: it is what the pre-run fingerprint
+	// hashed. Re-reading os.Executable afterwards hashes whatever is at that
+	// path now — a delegated forge's cache entry another process published
+	// over, or pruned — and called the run impure for something that never
+	// touched it. The next run reads the path afresh, and runs in full if the
+	// binary there is not this one.
+	postSys := c.sys
+	postSys.runningForge = c.pre.env["forge"]
+	post, err := fingerprintGenerate(c.root, snapshotWorkTree(c.root), outputs, dirs, c.pre.execs, postSys)
 	if err != nil {
 		fmt.Fprintf(w, "ℹ️  not recorded as a verified fixed point (%v); the next run runs every step.\n", err)
 		return false
+	}
+	// Keep the running forge's stat stamp, so the next run need not re-hash it.
+	for k, v := range c.pre.execs {
+		if _, ok := post.execs[k]; !ok {
+			post.execs[k] = v
+		}
 	}
 	if moved := movedDuringRun(c.root, c.pre, post); moved != "" {
 		// Something the journal does not count moved while the run ran —

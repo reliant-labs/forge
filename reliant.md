@@ -192,7 +192,7 @@ job before adding a job.
   label **`merge:queue`** (**`merge:priority`** to go first), and report the PR URL as done.
   The merge steward (control-plane `tools/merge-steward/README.md`, the one place it is
   documented) is the only merger: for forge it turns on auto-merge (`gh pr merge --squash
-  --auto`), which puts the PR into GitHub's merge queue once its checks pass, and it marks
+--auto`), which puts the PR into GitHub's merge queue once its checks pass, and it marks
   **`merge:failed`**, with the reason, a PR the queue rejects, that conflicts, or whose
   `CI gate` fails. Fix it, push, add `merge:queue` again. The PR lands when `CI gate` is
   green on the queue's run. No account bypasses the ruleset, so `--admin` is refused. When

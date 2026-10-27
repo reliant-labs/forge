@@ -50,7 +50,7 @@ const BufVersion = "1.50.0"
 // covers them. Scaffolded projects install no KCL at all: forge renders
 // through the embedded runtime. TestKCLVersionIsPinnedEverywhere
 // (internal/generator/kcl_pin_test.go) fails when any of those sites differs.
-const KCLVersion = "v0.13.1"
+const KCLVersion = "v0.13.2"
 
 // GovulncheckVersion is the govulncheck release `forge ci gate` installs
 // (into forge's tools cache) when the one on PATH is not it.

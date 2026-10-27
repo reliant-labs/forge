@@ -4536,6 +4536,41 @@ schema OpenBaoConsumer:
         len(grants) > 0 or delegated, \
             "OpenBaoConsumer '${name}' has no grants and is not delegated: it could authenticate and do nothing. Add grants, or drop it"
 
+_AUTH_MOUNT_NAME_RE: str = r"^[a-z0-9]([a-z0-9_-]{0,62}[a-z0-9])?$"
+
+schema OpenBaoRetiredAuthMount:
+    """An auth mount a previous install left on the store, to be removed.
+
+    The component converges only the `jwt-*` mounts it writes, so a legacy
+    `kubernetes` or `approle` mount from a hand-run install is never touched.
+    List it here and the converge Job disables it, idempotently (a mount that
+    is already gone is skipped). `reason` is required: disabling a mount
+    revokes every token it issued, so say what proves it unused.
+
+        forge.OpenBaoRetiredAuthMount {
+            name = "approle"
+            reason = "audit logs show no AppRole login since 2026-10-25"
+        }
+
+    The Job refuses to disable a mount that still has roles (a role is a login
+    someone may still use) unless `force = True`, and refuses a mount of a type
+    whose use it cannot check (not kubernetes, approle, jwt or oidc) the same
+    way. Refusing is a verdict, not a retry: the Job fails with exit 64 and says
+    which roles. The converge policy gains `delete` on exactly `sys/auth/<name>`
+    (never a glob) for each name listed.
+
+    The JWT mount this component manages for its cluster cannot be retired."""
+    name: str
+    reason: str
+    force: bool = False
+
+    check:
+        regex.match(name, _AUTH_MOUNT_NAME_RE), \
+            "OpenBaoRetiredAuthMount.name '${name}' must be an auth mount name: lowercase letters, digits, '-' and '_', no slash or glob (it is rendered into an ACL path)"
+        name != "token", "OpenBaoRetiredAuthMount.name 'token' is OpenBao's built-in token auth and cannot be disabled. Drop it"
+        reason.strip() != "", \
+            "OpenBaoRetiredAuthMount '${name}' states no reason. Disabling a mount revokes every token it issued: set reason to the evidence that it is unused"
+
 schema OpenBaoSAWriter:
     """How a person writes values to a SELF-RUN store, the default: `forge
     secret set` mints a 10-minute service-account token for `service_account`
@@ -4603,6 +4638,10 @@ schema OpenBao:
     consumers: [OpenBaoConsumer] = []
     writer: OpenBaoSAWriter | OpenBaoOIDCWriter = OpenBaoSAWriter {}
     public?: OpenBaoPublic
+    # Auth mounts a previous install left behind; the converge Job disables them
+    # (OpenBaoRetiredAuthMount). The component converges only its own `jwt-*`
+    # mounts, so nothing else removes these.
+    retired_auth_mounts: [OpenBaoRetiredAuthMount] = []
 
     check:
         regex.match(name, _DNS_LABEL_RE) and len(name) <= 40, \
@@ -4622,6 +4661,8 @@ schema OpenBao:
         len(_duplicates([c.name for c in consumers])) == 0, "OpenBao.consumers: a name is declared twice: ${_duplicates([c.name for c in consumers])}"
         len(_duplicates([(c.namespace or namespace) + "/" + c.workload for c in consumers])) == 0, \
             "OpenBao.consumers: a workload is declared twice: ${_duplicates([(c.namespace or namespace) + '/' + c.workload for c in consumers])}. One principal has one role; merge the grants"
+        len(_duplicates([m.name for m in retired_auth_mounts])) == 0, \
+            "OpenBao.retired_auth_mounts: a mount is listed twice: ${_duplicates([m.name for m in retired_auth_mounts])}"
         writer.type != "service_account" or writer.service_account not in [c.workload for c in consumers if (c.namespace or namespace) == namespace], \
             "OpenBao.writer.service_account '${writer.service_account if writer.type == 'service_account' else ''}' is also a consumer's workload. The writer is write-only on this env's paths; give the consumer its own service account"
 

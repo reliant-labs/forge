@@ -5,12 +5,14 @@ package storage
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -38,44 +40,7 @@ func TestProcExecutablesFindsAProcessRunningFromTheCache(t *testing.T) {
 	}
 	// The copied helper announces readiness, then waits for EOF from this
 	// parent, not a wall-clock deadline. A slow /proc scan must not outlive it.
-	cmd := exec.Command(bin, "-test.run=^TestProcExecutableOwnedChild$", "--", "forge-proc-executable-child")
-	cmd.Stderr = os.Stderr
-	release, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = release.Close() })
-	ready, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ready.Close() })
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	waited := false
-	t.Cleanup(func() {
-		if !waited {
-			_ = cmd.Process.Kill() // Only the child this test started.
-			_ = cmd.Wait()
-		}
-	})
-	readiness := make(chan error, 1)
-	go func() {
-		line, err := bufio.NewReader(ready).ReadString('\n')
-		if err == nil && line != "ready\n" {
-			err = fmt.Errorf("unexpected child readiness: %q", line)
-		}
-		readiness <- err
-	}()
-	select {
-	case err := <-readiness:
-		if err != nil {
-			t.Fatalf("child did not become ready: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("child did not announce readiness")
-	}
+	cmd, stop := startProcExecutableChild(t, bin, false)
 	waitForExe(t, cmd.Process.Pid, func(exe string) bool { return exe == bin })
 
 	exes, err := procExecutables(context.Background(), root)
@@ -118,12 +83,7 @@ func TestProcExecutablesFindsAProcessRunningFromTheCache(t *testing.T) {
 		t.Errorf("the deleted binary does not map to its entry: %q, %v", key, ok)
 	}
 
-	if err := release.Close(); err != nil {
-		t.Fatal(err)
-	}
-	err = cmd.Wait()
-	waited = true
-	if err != nil {
+	if err := stop(5 * time.Second); err != nil {
 		t.Fatalf("owned child did not exit cleanly: %v", err)
 	}
 	if _, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", cmd.Process.Pid)); !os.IsNotExist(err) {
@@ -138,9 +98,121 @@ func TestProcExecutablesFindsAProcessRunningFromTheCache(t *testing.T) {
 	}
 }
 
-// TestProcExecutableOwnedChild runs only when explicitly invoked by the parent
-// above. The parent owns its lifetime through stdin; no external binary or timer
-// can cause it to disappear while the cache inspector is scanning /proc.
+// startProcExecutableChild gives the child exactly one waiter. stop and cleanup
+// share its result; neither can double-Wait or abandon the child on an EOF hang.
+func startProcExecutableChild(t *testing.T, bin string, ignoreEOF bool) (*exec.Cmd, func(time.Duration) error) {
+	t.Helper()
+	mode := "release-on-eof"
+	if ignoreEOF {
+		mode = "ignore-eof"
+	}
+	cmd := exec.Command(bin, "-test.run=^TestProcExecutableOwnedChild$", "--", mode, "forge-proc-executable-child")
+	cmd.Stderr = os.Stderr
+	release, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = release.Close() })
+	ready, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ready.Close() })
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var waitErr error
+	go func() {
+		waitErr = cmd.Wait()
+		close(done)
+	}()
+	stopped := false // stop and cleanup run serially in the parent test.
+	stop := func(grace time.Duration) error {
+		if stopped {
+			return errors.New("owned child already stopped")
+		}
+		stopped = true
+		_ = release.Close()
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		select {
+		case <-done:
+			return waitErr
+		case <-timer.C:
+		}
+		// A timeout is always an error, even when killing and reaping succeeds.
+		// Kill the exact child handle, never a process name or process group.
+		killErr := cmd.Process.Kill()
+		reap := time.NewTimer(5 * time.Second)
+		defer reap.Stop()
+		select {
+		case <-done:
+			return fmt.Errorf("owned child ignored EOF: %w (kill: %v; wait: %v)", context.DeadlineExceeded, killErr, waitErr)
+		case <-reap.C:
+			return fmt.Errorf("owned child was not reaped after kill: %w (kill: %v)", context.DeadlineExceeded, killErr)
+		}
+	}
+	t.Cleanup(func() {
+		if !stopped {
+			if err := stop(5 * time.Second); err != nil {
+				t.Errorf("owned child cleanup: %v", err)
+			}
+		}
+	})
+	readiness := make(chan error, 1)
+	go func() {
+		line, err := bufio.NewReader(ready).ReadString('\n')
+		if err == nil && line != "ready\n" {
+			err = fmt.Errorf("unexpected child readiness: %q", line)
+		}
+		readiness <- err
+	}()
+	select {
+	case err := <-readiness:
+		if err != nil {
+			t.Fatalf("child did not become ready: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("child did not announce readiness")
+	}
+	return cmd, stop
+}
+
+func TestProcExecutableChildShutdownIsBoundedAndIsolated(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sibling, stopSibling := startProcExecutableChild(t, self, false)
+	stuck, stopStuck := startProcExecutableChild(t, self, true)
+	started := time.Now()
+	if err := stopStuck(20 * time.Millisecond); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("an EOF-ignoring child must report a shutdown timeout, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Errorf("killing and reaping the stuck child took %v", elapsed)
+	}
+	if stuck.ProcessState == nil {
+		t.Fatal("shutdown did not reap the stuck child")
+	}
+	status, ok := stuck.ProcessState.Sys().(syscall.WaitStatus)
+	if !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL {
+		t.Fatalf("stuck child was not killed: %v", stuck.ProcessState)
+	}
+	if _, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", stuck.Process.Pid)); !os.IsNotExist(err) {
+		t.Fatalf("stuck child's exe still exists after shutdown: %v", err)
+	}
+	if _, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", sibling.Process.Pid)); err != nil {
+		t.Fatalf("stopping the stuck child affected its sibling: %v", err)
+	}
+	if err := stopSibling(5 * time.Second); err != nil {
+		t.Fatalf("sibling did not exit cleanly on its own EOF: %v", err)
+	}
+}
+
+// TestProcExecutableOwnedChild runs only when explicitly invoked by a parent.
+// EOF releases the normal helper; ignore-eof exercises bounded shutdown.
 func TestProcExecutableOwnedChild(t *testing.T) {
 	if os.Args[len(os.Args)-1] != "forge-proc-executable-child" {
 		return
@@ -150,6 +222,11 @@ func TestProcExecutableOwnedChild(t *testing.T) {
 	}
 	if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
 		t.Fatal(err)
+	}
+	if os.Args[len(os.Args)-2] == "ignore-eof" {
+		for {
+			time.Sleep(time.Hour)
+		}
 	}
 }
 

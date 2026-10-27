@@ -177,7 +177,9 @@ func runInstall(ctx context.Context, runner, dir string, args []string) error {
 		if !fileExists(filepath.Join(dir, "pnpm-lock.yaml")) {
 			cmd := command(ctx, dir, runner, "install", "--lockfile-only", "--ignore-scripts", "--ignore-workspace", "--no-frozen-lockfile")
 			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-			if err := cmd.Run(); err != nil { return fmt.Errorf("create frontend registry lockfile: %w", err) }
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("create frontend registry lockfile: %w", err)
+			}
 		}
 		// A forge dev bridge adopts this frontend: install at its root, which
 		// is what links the local web-runtime. Its lockfile is the bridge's

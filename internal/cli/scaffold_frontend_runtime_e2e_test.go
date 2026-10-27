@@ -208,9 +208,24 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	// range, take it from the checkout directly.
 	runtimeSrc := filepath.Join(findRepoRoot(t), "web-runtime")
 	shadowed := materializeShadowedRuntimeE2E(t, dir, runtimeSrc)
-	setWebRuntimeSpecE2E(t, filepath.Join(webDir, "package.json"), "link:"+shadowed)
-	runCmdTimeout(t, webDir, 5*time.Minute,
-		"pnpm", "install", "--ignore-workspace", "--no-frozen-lockfile", "--prefer-offline")
+	// Keep the declared settings root (ignore-workspace also ignores its
+	// allowBuilds). Replace only the dev link with the isolated shadow.
+	link := filepath.Join(projectDir, ".forge-link", "web-runtime")
+	if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(shadowed, link); err != nil {
+		t.Fatal(err)
+	}
+	if buildinfo.IsCI() {
+		// No dev bridge in CI: a declared link tests the same resolution shape.
+		setWebRuntimeSpecE2E(t, filepath.Join(webDir, "package.json"), "link:"+shadowed)
+	}
+	argv := frontenddeps.InstallArgv(webDir, "", false)
+	runCmdTimeout(t, webDir, 5*time.Minute, argv[0], argv[1:]...)
 
 	runCmdTimeout(t, webDir, 5*time.Minute, "pnpm", "run", "build")
 	runCmdTimeout(t, webDir, 2*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
@@ -490,8 +505,10 @@ func assertNoHomePathE2E(t *testing.T, path string) {
 	if strings.Contains(body, home) {
 		t.Errorf("%s embeds the home directory %q:\n%s", path, home, body)
 	}
-	if user := filepath.Base(home); strings.Contains(body, user) {
-		t.Errorf("%s embeds the username %q:\n%s", path, user, body)
+	// A username can be an ordinary word (this machine's is "workspace").
+	// Check it as a path segment, not prose such as "workspace dependencies".
+	if user := filepath.Base(home); strings.Contains(body, "/"+user+"/") || strings.Contains(body, `\\`+user+`\\`) {
+		t.Errorf("%s embeds the username %q in a path:\n%s", path, user, body)
 	}
 }
 

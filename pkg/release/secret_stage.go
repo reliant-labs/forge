@@ -30,13 +30,14 @@ package release
 // WHY THIS IS NOT A FOURTH [Phase]. A bundle's trees are named by phase
 // (manifests/<cluster>/<unit>/<phase>) and a Flux Kustomization is built from
 // each, so a new phase changes the layout the control plane reads and the
-// digest of every bundle that carries such an object. The control plane also
-// cannot yet judge a tree on an ExternalSecret (its health table has no
-// apiVersion for the kind). So the trees keep their three phases, with the ESO
-// kinds already ahead of the rollout tree as ordinary support, and only the
-// direct applier (internal/cluster) sequences by stage. The classifier lives
-// here, beside [ClassifyPhase], so the tree planner adopts the same answer
-// rather than growing a second one.
+// digest of every bundle that carries such an object. The trees keep their
+// three phases: awaited ExternalSecrets hold their pre tree's health until
+// ESO has synced the current generation, so downstream rollout trees wait.
+// Only the direct applier (internal/cluster) sequences WITHIN a phase by stage.
+// Flux applies a whole tree before checking health: a Job or store bootstrap
+// that must wait before it is applied needs an upstream delivery unit, not a
+// same-tree health check. The classifier remains here beside [ClassifyPhase];
+// it is not a second rollout framework.
 
 import "strings"
 

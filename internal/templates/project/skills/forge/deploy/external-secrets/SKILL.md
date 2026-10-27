@@ -150,6 +150,31 @@ A hub-reconciled env (`ControlPlane`) is not refused for a Secret the operator
 delivers; for one nothing delivers, the refusal names `source = forge.StoreSource`
 first, then `forge env secrets sync`. `--skip-preflight` bypasses all of it.
 
+## Flux ordering and pin rotations
+
+A v2 bundle includes each awaited `external-secrets.io` ExternalSecret in its
+existing tree's health list. The hub's Kustomization uses `healthCheckExprs`:
+`Ready=True` **and** `status.syncedResourceVersion` starting with the current
+`metadata.generation` plus `-`. A previous sync's Ready condition cannot release
+a pin bump's consumer rollout. The existing `dependsOn` chain holds downstream
+trees; Flux also requires same-source dependencies to have applied the current
+artifact revision. Timeouts, retries and observer budgets remain tree-owned.
+
+`forge.dev/secret-sync: shadow` and `deferred` copies are applied but not awaited,
+just as with direct apply. Other trees retain their existing health checks.
+
+Flux applies **all objects in a tree before checking health**. It cannot sequence
+an ExternalSecret ahead of a pre-rollout Job in that same tree. Put secrets in an
+upstream delivery unit when a Job needs them before it starts. Likewise, a cold
+store bootstrap must use units ordered along ESO → bootstrap secrets → store →
+application secrets → consumers; do not put a store workload downstream of a
+same-unit secret that needs that store to start. This gate adds no new phases or
+within-tree rollout engine.
+
+The hub must support ExternalSecret custom health before consuming these bundle
+health entries. Older bundles without them must be rebuilt; updating the hub
+alone cannot infer health entries an artifact did not publish.
+
 ## Residual risk
 
 **What remains.** The controller's ClusterRole grants `secrets

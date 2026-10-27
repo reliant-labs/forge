@@ -87,10 +87,10 @@ type BundleTree struct {
 	// settings ([TreeTimeoutSeconds], [TreeRetryIntervalSeconds]).
 	TimeoutSeconds       int `json:"timeout_seconds"`
 	RetryIntervalSeconds int `json:"retry_interval_seconds"`
-	// Health is what the tree is ready on: the Jobs of a pre or post tree, the
-	// Deployments and StatefulSets of a rollout tree. A DaemonSet is not
-	// listed: a node-level rollout (an image prepull) is not a gate, which
-	// is also what direct apply waits on. Sorted.
+	// Health is what the tree is ready on: the Jobs and awaited ExternalSecrets
+	// of a pre or post tree, the Deployments and StatefulSets of a rollout tree.
+	// A DaemonSet is not listed: a node-level rollout (an image prepull) is not
+	// a gate, which is also what direct apply waits on. Sorted.
 	Health []BundleHealthCheck `json:"health,omitempty"`
 	// BudgetSeconds is how long the control plane lets this tree stay
 	// "progressing" before it calls it failed. Flux's own wait is one short
@@ -125,6 +125,10 @@ type TreeObject struct {
 	Kind      string
 	Namespace string
 	Name      string
+	// APIVersion and Annotations identify ESO objects and their existing
+	// shadow/deferred sync opt-outs, exactly as the direct applier does.
+	APIVersion  string
+	Annotations map[string]string
 	// DeadlineSeconds is the object's own time allowance, when it states one: a
 	// Deployment's progressDeadlineSeconds, a Job's activeDeadlineSeconds.
 	// Zero means it states none and the default for its kind applies.
@@ -158,7 +162,7 @@ const (
 func TreeBudget(phase Phase, objects []TreeObject) int {
 	longest := 0
 	for _, o := range objects {
-		if !healthKind(phase, o.Kind) {
+		if !healthObject(phase, o) {
 			continue
 		}
 		d := o.DeadlineSeconds
@@ -179,13 +183,18 @@ func TreeBudget(phase Phase, objects []TreeObject) int {
 	return longest + BudgetMarginSeconds
 }
 
-// healthKinds are the kinds a tree's readiness is judged on, by phase.
-func healthKind(phase Phase, kind string) bool {
+// healthObject selects the same awaited ExternalSecrets as direct apply. Their
+// current-generation sync holds the pre tree, and thus its rollout dependents.
+// Shadow copies and values written after deployment must never hold that gate.
+func healthObject(phase Phase, o TreeObject) bool {
+	if o.Kind == "ExternalSecret" && IsESOKind(o.APIVersion, o.Kind) {
+		return SecretSyncAwaited(o.Annotations)
+	}
 	switch phase {
 	case PhaseRollout:
-		return kind == "Deployment" || kind == "StatefulSet"
+		return o.Kind == "Deployment" || o.Kind == "StatefulSet"
 	default:
-		return kind == "Job"
+		return o.Kind == "Job"
 	}
 }
 
@@ -248,7 +257,7 @@ func PlanTrees(objects []TreeObject, units []DeliveryUnit) ([]BundleTree, error)
 		}
 		t.Documents++
 		members[k] = append(members[k], o)
-		if healthKind(o.Phase, o.Kind) {
+		if healthObject(o.Phase, o) {
 			t.Health = append(t.Health, BundleHealthCheck{Kind: o.Kind, Namespace: o.Namespace, Name: o.Name})
 		}
 	}

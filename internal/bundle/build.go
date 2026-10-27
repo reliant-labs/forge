@@ -528,6 +528,7 @@ func packManifests(docs []parsedDoc, units []release.DeliveryUnit, extra ...tarE
 				object: release.TreeObject{
 					Cluster: cluster, Unit: docUnit(doc), Phase: doc.phase,
 					Kind: doc.meta.kind, Namespace: doc.meta.namespace, Name: doc.meta.name,
+					APIVersion: doc.meta.apiVersion, Annotations: doc.meta.annotations,
 					DeadlineSeconds: docDeadlineSeconds(doc),
 				},
 			})

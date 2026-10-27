@@ -57,7 +57,7 @@ func loadGraphUniverse(projectDir string, comps []BuildComponent) *graphUniverse
 	}
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedTypes |
-			packages.NeedDeps | packages.NeedImports,
+			packages.NeedDeps | packages.NeedImports | packages.NeedSyntax | packages.NeedTypesInfo,
 		Dir: absProject,
 		Env: goexec.Env(),
 	}

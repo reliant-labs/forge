@@ -186,7 +186,7 @@ func observabilityEntries(files []ObservabilityFile) ([]tarEntry, error) {
 		switch {
 		case clean != f.Path || strings.HasPrefix(clean, "/") || strings.Contains(clean, ".."):
 			return nil, fmt.Errorf("%w: observability path %q is not a clean relative path", release.ErrInvalid, f.Path)
-		case clean != release.BundleFrontendDeclarationsPath && !strings.HasPrefix(clean, release.BundleObservabilityPrefix+"/"):
+		case clean != release.BundleFrontendDeclarationsPath && clean != release.BundleServiceCatalogPath && !strings.HasPrefix(clean, release.BundleObservabilityPrefix+"/"):
 			return nil, fmt.Errorf("%w: observability path %q is not under %s/", release.ErrInvalid, f.Path, release.BundleObservabilityPrefix)
 		case seen[clean]:
 			return nil, fmt.Errorf("%w: observability path %q appears twice", release.ErrInvalid, f.Path)

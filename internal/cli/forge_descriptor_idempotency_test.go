@@ -51,7 +51,11 @@ func TestExtractService_RecordsNoSideEffects(t *testing.T) {
 	f := p.FilesByPath[file.GetName()]
 
 	want := map[string]bool{"Version": true, "SetFlag": false, "Explicit": false, "Ready": false}
+	levels := map[string]string{"Version": "NO_SIDE_EFFECTS", "SetFlag": "IDEMPOTENT", "Explicit": "IDEMPOTENCY_UNKNOWN", "Ready": "IDEMPOTENCY_UNKNOWN"}
 	for _, m := range extractService(f, f.Services[0]).Methods {
+		if m.Idempotency != levels[m.Name] {
+			t.Errorf("%s.Idempotency = %q, want %q", m.Name, m.Idempotency, levels[m.Name])
+		}
 		if m.NoSideEffects != want[m.Name] {
 			t.Errorf("%s.NoSideEffects = %v, want %v", m.Name, m.NoSideEffects, want[m.Name])
 		}

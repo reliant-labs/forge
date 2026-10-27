@@ -197,6 +197,9 @@ func GenerateGraph(in GraphGenInput) error {
 	if in.Roots != nil {
 		*in.Roots = graphRoots(m.rootViews)
 	}
+	if err := emitGraphCatalog(in, m); err != nil {
+		return fmt.Errorf("write service catalog: %w", err)
+	}
 	// cmd/<bin>/cmd/roots_gen.go: one command per root.
 	return emitRootCommands(in.ProjectDir, in.ModulePath, m.rootViews, m.groups, m.configs.inputViews(), m.configs.rootMessage(), in.Checksums, in.warnings())
 }

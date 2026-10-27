@@ -44,6 +44,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/pkg/servicecatalog"
 )
 
 // Bounds on a manifests layer. They sit far above a real bundle (control-plane
@@ -487,7 +489,7 @@ func (v *layerValidator) classifyFile(name string, segs []string) (place, bool) 
 	base := segs[len(segs)-1]
 	switch segs[0] {
 	case "forge":
-		if name != BundleFrontendDeclarationsPath {
+		if name != BundleFrontendDeclarationsPath && name != BundleServiceCatalogPath {
 			v.fail(name, "only the dedicated frozen frontend declaration asset is permitted under forge/")
 			return place{}, false
 		}
@@ -539,6 +541,12 @@ func (v *layerValidator) classifyFile(name string, segs []string) (place, bool) 
 }
 
 func (v *layerValidator) artifact(name string, data []byte) {
+	if name == BundleServiceCatalogPath {
+		if _, err := servicecatalog.Decode(data); err != nil {
+			v.fail(name, "%s", err)
+			return
+		}
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	tok, err := dec.Token()
 	if err != nil {

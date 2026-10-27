@@ -38,7 +38,7 @@ import (
 )
 
 const (
-	obsTargetVersion = 2
+	obsTargetVersion = 3
 	// obsTargetMaxAge bounds how long a stamp is trusted even when every input
 	// it names is unchanged: a main.k may read a file outside deploy/kcl, which
 	// the stamp cannot see.
@@ -65,7 +65,13 @@ func (t obsTarget) Declaration() *cloud.Declaration {
 
 // obsTargetFromEntities reads the target out of a render.
 func obsTargetFromEntities(env string, e *KCLEntities) obsTarget {
-	f := obsbackend.Facts{Env: env, HasHosted: e.HasHosted(), HasLocal: e.HasLocal(), ReleaseHealth: e.ReleaseHealth}
+	f := obsbackend.Facts{Env: env, HasHosted: e.HasHosted(), HasLocal: e.HasLocal(), ReleaseHealth: e.ReleaseHealth,
+		LocalLifecycle: e.Lifecycle == lifecycleLocal || e.Lifecycle == lifecycleEphemeral}
+	for _, w := range e.Workloads {
+		if w.OnRuntime(RuntimeCluster) {
+			f.HasCluster = true
+		}
+	}
 	if o := e.Observability; o != nil {
 		f.Declared, f.Enabled = true, o.Enabled
 		if d := o.Destination; d != nil {
@@ -83,18 +89,20 @@ func obsTargetFromEntities(env string, e *KCLEntities) obsTarget {
 // obsTargetFile is the on-disk record. Its own type, so the cache format does
 // not move when obsbackend.Facts grows a field.
 type obsTargetFile struct {
-	Version      int                         `json:"version"`
-	At           time.Time                   `json:"at"`
-	Fingerprint  string                      `json:"fingerprint"`
-	Env          string                      `json:"env"`
-	Declared     bool                        `json:"declared,omitempty"`
-	Enabled      bool                        `json:"enabled,omitempty"`
-	Destination  *obsbackend.Destination     `json:"destination,omitempty"`
-	HasHosted    bool                        `json:"has_hosted,omitempty"`
-	HasLocal     bool                        `json:"has_local,omitempty"`
-	ControlPlane string                      `json:"control_plane,omitempty"`
-	TokenEnv     string                      `json:"token_env,omitempty"`
-	Health       *release.ShapeReleaseHealth `json:"release_health,omitempty"`
+	Version        int                         `json:"version"`
+	At             time.Time                   `json:"at"`
+	Fingerprint    string                      `json:"fingerprint"`
+	Env            string                      `json:"env"`
+	Declared       bool                        `json:"declared,omitempty"`
+	Enabled        bool                        `json:"enabled,omitempty"`
+	Destination    *obsbackend.Destination     `json:"destination,omitempty"`
+	HasHosted      bool                        `json:"has_hosted,omitempty"`
+	HasLocal       bool                        `json:"has_local,omitempty"`
+	HasCluster     bool                        `json:"has_cluster,omitempty"`
+	LocalLifecycle bool                        `json:"local_lifecycle,omitempty"`
+	ControlPlane   string                      `json:"control_plane,omitempty"`
+	TokenEnv       string                      `json:"token_env,omitempty"`
+	Health         *release.ShapeReleaseHealth `json:"release_health,omitempty"`
 }
 
 func obsTargetPath(projectDir, env string) string {
@@ -191,7 +199,7 @@ func readObsTarget(projectDir, env, fingerprint string) (obsTarget, bool) {
 		TokenEnv: f.TokenEnv,
 		Facts: obsbackend.Facts{
 			Env: env, Declared: f.Declared, Enabled: f.Enabled, Destination: f.Destination,
-			HasHosted: f.HasHosted, HasLocal: f.HasLocal, ControlPlane: f.ControlPlane, ReleaseHealth: f.Health,
+			HasHosted: f.HasHosted, HasLocal: f.HasLocal, HasCluster: f.HasCluster, LocalLifecycle: f.LocalLifecycle, ControlPlane: f.ControlPlane, ReleaseHealth: f.Health,
 		},
 	}, true
 }
@@ -205,7 +213,7 @@ func writeObsTarget(projectDir, env, fingerprint string, t obsTarget) {
 	data, err := json.Marshal(obsTargetFile{
 		Version: obsTargetVersion, At: time.Now().UTC(), Fingerprint: fingerprint, Env: env,
 		Declared: t.Facts.Declared, Enabled: t.Facts.Enabled, Destination: t.Facts.Destination,
-		HasHosted: t.Facts.HasHosted, HasLocal: t.Facts.HasLocal, ControlPlane: t.Facts.ControlPlane, TokenEnv: t.TokenEnv,
+		HasHosted: t.Facts.HasHosted, HasLocal: t.Facts.HasLocal, HasCluster: t.Facts.HasCluster, LocalLifecycle: t.Facts.LocalLifecycle, ControlPlane: t.Facts.ControlPlane, TokenEnv: t.TokenEnv,
 		Health: t.Facts.ReleaseHealth,
 	})
 	if err != nil {

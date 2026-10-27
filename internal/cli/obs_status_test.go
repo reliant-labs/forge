@@ -132,7 +132,7 @@ func TestObsStatusText(t *testing.T) {
 }
 
 // A section the control plane cannot answer is named and explained; the rest
-// is still shown and the exit status is 0.
+// is still shown, but the partial read exits 2 instead of reporting success.
 func TestObsStatusDegradesSectionBySection(t *testing.T) {
 	caller := statusCaller()
 	caller.errs = map[string]error{
@@ -141,10 +141,13 @@ func TestObsStatusDegradesSectionBySection(t *testing.T) {
 		procTraces:     &cloud.Error{Code: cloud.CodeUnavailable},
 	}
 	out, errOut, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "status", "prod", "--json")
-	if err != nil {
-		t.Fatalf("a partial read is not a failure: %v", err)
+	if exitCodeForError(err) != 2 {
+		t.Fatalf("a partial read must exit 2: %v", err)
 	}
 	doc := decode(t, out)
+	if doc["ok"] != false || doc["exit_code"] != float64(2) || !strings.Contains(fmt.Sprint(doc["error"]), "partial") {
+		t.Errorf("partial status must not look healthy: %v", doc)
+	}
 	if got := fmt.Sprint(doc["unread"]); got != "[alerts telemetry.deliveries]" {
 		t.Errorf("unread = %s", got)
 	}
@@ -166,6 +169,23 @@ func TestObsStatusDegradesSectionBySection(t *testing.T) {
 	}
 	if errOut != "" {
 		t.Errorf("--json writes no warnings to stderr: %q", errOut)
+	}
+}
+
+func TestObsStatusNestedUnreadEvidenceIsPartial(t *testing.T) {
+	for _, proc := range []string{procTraces, procActivity} {
+		t.Run(proc, func(t *testing.T) {
+			caller := statusCaller()
+			caller.errs = map[string]error{proc: &cloud.Error{Code: cloud.CodeUnavailable}}
+			out, _, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "status", "prod", "--json")
+			if exitCodeForError(err) != 2 {
+				t.Fatalf("nested partial read must exit 2: %v\n%s", err, out)
+			}
+			doc := decode(t, out)
+			if doc["ok"] != false || doc["exit_code"] != float64(2) || doc["warnings"] == nil || doc["current_release"] == nil || doc["services"] == nil {
+				t.Errorf("partial status must preserve the readable evidence: %v", doc)
+			}
+		})
 	}
 }
 

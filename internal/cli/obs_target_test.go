@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/internal/obsbackend"
 )
 
 // obsTargetProject writes a project whose prod env declares a control plane at
@@ -210,6 +211,21 @@ func TestObsTargetUnstampableProjectHasNoFingerprint(t *testing.T) {
 
 // TestObsTargetIsNotTrustedPastItsAgeOrWithAPathDependency: a stamp is only as
 // good as the inputs it can see.
+func TestObsTargetCachePreservesClusterLocation(t *testing.T) {
+	dir := obsTargetProject(t, "https://cp.example.com")
+	fp := obsTargetFingerprint(dir, "prod")
+	facts := obsbackend.Facts{Env: "prod", Declared: true, Enabled: true, HasCluster: true, ControlPlane: "https://cp.example.com"}
+	writeObsTarget(dir, "prod", fp, obsTarget{Facts: facts})
+	got, ok := readObsTarget(dir, "prod", fp)
+	if !ok || got.Facts != facts {
+		t.Fatalf("cached facts = %+v, hit %v; want %+v", got.Facts, ok, facts)
+	}
+	dec, err := obsbackend.Resolve(got.Facts, "")
+	if err != nil || dec.Backend != obsbackend.BackendCloud {
+		t.Fatalf("cached remote env needs no backend flag: %+v, %v", dec, err)
+	}
+}
+
 func TestObsTargetIsNotTrustedPastItsAgeOrWithAPathDependency(t *testing.T) {
 	srv, _ := obsCloudForbidden(t)
 	dir := obsTargetProject(t, srv.URL)

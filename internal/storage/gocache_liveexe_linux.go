@@ -85,11 +85,17 @@ func procUptime(proc string) (time.Duration, error) {
 	if len(f) == 0 {
 		return 0, errors.New("empty /proc/uptime")
 	}
-	secs, err := strconv.ParseFloat(f[0], 64)
+	// Kernel decimal seconds and start ticks share exact centisecond
+	// boundaries. Float conversion can round 128.01s down by one nanosecond,
+	// falsely making a newborn process's start time appear in the future.
+	uptime, err := time.ParseDuration(f[0] + "s")
 	if err != nil {
 		return 0, err
 	}
-	return time.Duration(secs * float64(time.Second)), nil
+	if uptime < 0 {
+		return 0, errors.New("negative /proc/uptime")
+	}
+	return uptime, nil
 }
 
 // clockTicksPerSecond is USER_HZ, which /proc/<pid>/stat reports start times

@@ -1,9 +1,11 @@
 // File: profiles_config.go — which profiles the continuous profiler captures,
 // and how often.
 //
-// The defaults are sized by what a profile is worth per stored row. A CPU
-// profile is small and answers "where does the time go" every minute. The live
-// heap changes slowly, so a snapshot every 15 minutes keeps its shape. Go's
+// The defaults are sized by what a profile is worth per stored row. Every
+// sample is stored as a row that repeats its whole stack (~4.5 KB), so the bill
+// is profiles x stacks, not wall-clock coverage. A 5s CPU window every 5
+// minutes answers "where does the time go" over any range of an hour or more.
+// The live heap changes slowly, so a snapshot every two hours keeps its shape. Go's
 // allocation counters (alloc_space / alloc_objects) are cumulative since process
 // start: every snapshot repeats every allocation site the process has ever had,
 // so its size grows with uptime. In production they were 97.7% of stored profile
@@ -13,9 +15,11 @@
 // Two ways to change them, and the environment wins:
 //
 //   - Config.Profiles, for a binary that always wants something else;
-//   - FORGE_PROFILES / FORGE_PROFILES_HEAP_INTERVAL, the deploy-time override a
-//     workload's `profiling` block renders (forge KCL), so one service can turn
-//     a type on for a while without a code change.
+//   - FORGE_PROFILES, FORGE_PROFILES_HEAP_INTERVAL, FORGE_PROFILES_CPU_INTERVAL
+//     and FORGE_PROFILES_CPU_DURATION, the deploy-time override (a workload's
+//     `profiling` block renders the first two, its `env` any of them), so one
+//     service can turn a type on, or sample faster, for a while without a code
+//     change.
 
 package observe
 
@@ -30,8 +34,8 @@ import (
 type ProfileType string
 
 const (
-	// ProfileCPU is a CPU profile of a 10s window, captured every cycle (about
-	// once a minute). On by default.
+	// ProfileCPU is a CPU profile of a DefaultCPUDuration window, captured
+	// every cycle (DefaultCPUInterval). On by default.
 	ProfileCPU ProfileType = "cpu"
 	// ProfileHeap is the live heap (inuse_space, inuse_objects), captured every
 	// HeapInterval. On by default.
@@ -66,9 +70,26 @@ const (
 	// EnvProfilesHeapInterval is how often the heap (and, when on, alloc)
 	// snapshot is taken, as a Go duration ("15m", "1m").
 	EnvProfilesHeapInterval = "FORGE_PROFILES_HEAP_INTERVAL"
+	// EnvProfilesCPUInterval is the time between capture cycles (the CPU
+	// profile, and the opt-in goroutine / mutex / block profiles), as a Go
+	// duration ("5m", "1m"), at least MinCPUInterval.
+	EnvProfilesCPUInterval = "FORGE_PROFILES_CPU_INTERVAL"
+	// EnvProfilesCPUDuration is how long each CPU profile samples, as a Go
+	// duration ("5s", "10s"), at least MinCPUDuration and at most half the
+	// cycle.
+	EnvProfilesCPUDuration = "FORGE_PROFILES_CPU_DURATION"
 
+	// DefaultCPUInterval is the time between capture cycles by default.
+	DefaultCPUInterval = 5 * time.Minute
+	// DefaultCPUDuration is how long each CPU profile samples by default.
+	DefaultCPUDuration = 5 * time.Second
 	// DefaultHeapInterval is how often the heap snapshot is taken by default.
-	DefaultHeapInterval = 15 * time.Minute
+	DefaultHeapInterval = 2 * time.Hour
+
+	// MinCPUInterval is the shortest capture cycle.
+	MinCPUInterval = 30 * time.Second
+	// MinCPUDuration is the shortest CPU profile window.
+	MinCPUDuration = time.Second
 
 	// profilerMutexFraction is the runtime's mutex sampling rate while the mutex
 	// profile is on: one contention event in this many is recorded.
@@ -84,18 +105,26 @@ const (
 func DefaultProfileTypes() []ProfileType { return []ProfileType{ProfileCPU, ProfileHeap} }
 
 // ProfilesConfig chooses which profiles the continuous profiler captures. The
-// zero value is the default: CPU every cycle and the live heap every 15 minutes.
-// FORGE_PROFILES and FORGE_PROFILES_HEAP_INTERVAL, when set and valid, win over
-// it: they are the deploy-time override.
+// zero value is the default: a 5s CPU profile every 5 minutes and the live heap
+// every two hours. The FORGE_PROFILES* variables, when set and valid, win over it:
+// they are the deploy-time override.
 type ProfilesConfig struct {
 	// Types is the set to capture. Nil means DefaultProfileTypes; an empty,
 	// non-nil slice captures nothing, so no profiler starts.
 	Types []ProfileType
 
 	// HeapInterval is how often the heap (and alloc) snapshot is taken. Zero
-	// means DefaultHeapInterval. A value shorter than the profiler's cycle
-	// (one minute) is raised to it.
+	// means DefaultHeapInterval. A value shorter than the capture cycle
+	// (CPUInterval) is raised to it.
 	HeapInterval time.Duration
+
+	// CPUInterval is the time between capture cycles. Zero means
+	// DefaultCPUInterval; the shortest is MinCPUInterval.
+	CPUInterval time.Duration
+
+	// CPUDuration is how long each CPU profile samples. Zero means
+	// DefaultCPUDuration; it is between MinCPUDuration and half the cycle.
+	CPUDuration time.Duration
 }
 
 // profileSettings is a ProfilesConfig resolved against the environment and the
@@ -103,6 +132,7 @@ type ProfilesConfig struct {
 type profileSettings struct {
 	cpu, heap, alloc, goroutine, mutex, block bool
 	heapInterval                              time.Duration
+	cpuInterval, cpuDuration                  time.Duration
 }
 
 // enabled reports whether any profile is captured at all.
@@ -162,24 +192,18 @@ func resolveProfileSettings(cfg ProfilesConfig) (profileSettings, []error) {
 		}
 	}
 
-	interval := DefaultHeapInterval
-	if cfg.HeapInterval < 0 {
-		warns = append(warns, fmt.Errorf("observe.Config.Profiles.HeapInterval %s is negative; using %s", cfg.HeapInterval, interval))
-	} else if cfg.HeapInterval > 0 {
-		interval = cfg.HeapInterval
-	}
-	if v := envValue(EnvProfilesHeapInterval); v != "" {
-		if d, err := time.ParseDuration(v); err != nil || d <= 0 {
-			warns = append(warns, fmt.Errorf("%s=%q: want a positive Go duration such as 15m; ignoring it", EnvProfilesHeapInterval, v))
-		} else {
-			interval = d
-		}
-	}
-	if interval < profilerInterval {
-		interval = profilerInterval
+	cycle := durationSetting(&warns, "CPUInterval", EnvProfilesCPUInterval, cfg.CPUInterval, DefaultCPUInterval,
+		func(d time.Duration) bool { return d >= MinCPUInterval }, "at least "+MinCPUInterval.String())
+	window := durationSetting(&warns, "CPUDuration", EnvProfilesCPUDuration, cfg.CPUDuration, DefaultCPUDuration,
+		func(d time.Duration) bool { return d >= MinCPUDuration && d <= cycle/2 },
+		"between "+MinCPUDuration.String()+" and half the cycle ("+(cycle/2).String()+")")
+	interval := durationSetting(&warns, "HeapInterval", EnvProfilesHeapInterval, cfg.HeapInterval, DefaultHeapInterval,
+		func(d time.Duration) bool { return d > 0 }, "positive")
+	if interval < cycle {
+		interval = cycle
 	}
 
-	s := profileSettings{heapInterval: interval}
+	s := profileSettings{heapInterval: interval, cpuInterval: cycle, cpuDuration: window}
 	for _, t := range types {
 		switch t {
 		case ProfileCPU:
@@ -197,6 +221,29 @@ func resolveProfileSettings(cfg ProfilesConfig) (profileSettings, []error) {
 		}
 	}
 	return s, warns
+}
+
+// durationSetting resolves one duration: the environment, then cfg, then def. A
+// value that is malformed or fails ok is ignored with a warning, so a typo in a
+// deploy override never stops the service. cfg 0 means unset.
+func durationSetting(warns *[]error, field, env string, cfg, def time.Duration, ok func(time.Duration) bool, want string) time.Duration {
+	d := def
+	switch {
+	case cfg < 0:
+		*warns = append(*warns, fmt.Errorf("observe.Config.Profiles.%s %s is negative; using %s", field, cfg, d))
+	case cfg > 0 && !ok(cfg):
+		*warns = append(*warns, fmt.Errorf("observe.Config.Profiles.%s %s is not %s; using %s", field, cfg, want, d))
+	case cfg > 0:
+		d = cfg
+	}
+	if v := envValue(env); v != "" {
+		if parsed, err := time.ParseDuration(v); err != nil || !ok(parsed) {
+			*warns = append(*warns, fmt.Errorf("%s=%q: want a Go duration that is %s; ignoring it", env, v, want))
+		} else {
+			d = parsed
+		}
+	}
+	return d
 }
 
 // parseProfileTypes parses FORGE_PROFILES: a comma-separated list of

@@ -11,6 +11,40 @@ import (
 	"go.opentelemetry.io/collector/pdata/pprofile"
 )
 
+func TestProfileCadenceDurationBoundaries(t *testing.T) {
+	const maxDuration = time.Duration(1<<63 - 1)
+	for _, interval := range []time.Duration{-1, 0, 1, 1000000 * time.Hour, maxDuration - 1, maxDuration} {
+		t.Run(interval.String(), func(t *testing.T) {
+			clearProfilesEnv(t)
+			settings, _ := resolveProfileSettings(ProfilesConfig{CPUInterval: interval})
+			if settings.cpuInterval <= 0 {
+				t.Fatal("config produced a nonpositive CPU interval")
+			}
+			t.Setenv(EnvProfilesCPUInterval, interval.String())
+			settings, _ = resolveProfileSettings(ProfilesConfig{})
+			if settings.cpuInterval <= 0 {
+				t.Fatal("environment produced a nonpositive CPU interval")
+			}
+			for range 100 {
+				got := initialProfileWait(interval)
+				effective := interval
+				if effective <= 0 {
+					effective = DefaultCPUInterval
+				}
+				if got < effective/4 || got >= effective {
+					t.Fatalf("initial wait %s outside [%s, %s)", got, effective/4, effective)
+				}
+				for _, failures := range []int{0, 1, 20} {
+					p := profiler{interval: interval, failures: failures}
+					if wait := p.nextWait(); wait <= 0 {
+						t.Fatalf("next wait overflowed: %s with %d failures", wait, failures)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestProfileSettingsDefaults(t *testing.T) {
 	clearProfilesEnv(t)
 	s, warns := resolveProfileSettings(ProfilesConfig{})
@@ -23,8 +57,11 @@ func TestProfileSettingsDefaults(t *testing.T) {
 	if !slices.Equal(DefaultProfileTypes(), []ProfileType{ProfileCPU, ProfileHeap}) {
 		t.Errorf("the approved default is CPU and the live heap; got %v", DefaultProfileTypes())
 	}
-	if s.heapInterval != 15*time.Minute || DefaultHeapInterval != 15*time.Minute {
-		t.Errorf("heap interval = %s, want 15m", s.heapInterval)
+	if s.heapInterval != 2*time.Hour || DefaultHeapInterval != 2*time.Hour {
+		t.Errorf("heap interval = %s, want 2h", s.heapInterval)
+	}
+	if s.cpuInterval != 5*time.Minute || s.cpuDuration != 5*time.Second {
+		t.Errorf("CPU cycle = %s / window = %s, want 5m / 5s", s.cpuInterval, s.cpuDuration)
 	}
 	if got := s.heapDrops(); !slices.Equal(got, []string{"alloc_objects", "alloc_space"}) {
 		t.Errorf("default heap drops = %v, want the cumulative alloc types", got)
@@ -45,8 +82,8 @@ func TestProfileSettingsPrecedence(t *testing.T) {
 		},
 		"env wins over config": {
 			cfg:       ProfilesConfig{Types: []ProfileType{ProfileHeap}, HeapInterval: 5 * time.Minute},
-			env:       map[string]string{EnvProfiles: "cpu, HEAP ,alloc,cpu", EnvProfilesHeapInterval: "2m"},
-			wantTypes: []ProfileType{ProfileCPU, ProfileHeap, ProfileAlloc}, wantInterval: 2 * time.Minute,
+			env:       map[string]string{EnvProfiles: "cpu, HEAP ,alloc,cpu", EnvProfilesHeapInterval: "10m"},
+			wantTypes: []ProfileType{ProfileCPU, ProfileHeap, ProfileAlloc}, wantInterval: 10 * time.Minute,
 		},
 		"none selects nothing": {
 			env:       map[string]string{EnvProfiles: " None "},
@@ -75,7 +112,7 @@ func TestProfileSettingsPrecedence(t *testing.T) {
 		"a bad interval is ignored with a warning": {
 			env:       map[string]string{EnvProfilesHeapInterval: "15"},
 			wantTypes: DefaultProfileTypes(), wantInterval: DefaultHeapInterval,
-			wantWarn: "positive Go duration",
+			wantWarn: "Go duration",
 		},
 		"a negative config interval is ignored with a warning": {
 			cfg:       ProfilesConfig{HeapInterval: -time.Minute},
@@ -84,7 +121,7 @@ func TestProfileSettingsPrecedence(t *testing.T) {
 		},
 		"an interval below one cycle is raised to it": {
 			env:       map[string]string{EnvProfilesHeapInterval: "10s"},
-			wantTypes: DefaultProfileTypes(), wantInterval: profilerInterval,
+			wantTypes: DefaultProfileTypes(), wantInterval: DefaultCPUInterval,
 		},
 	}
 	for name, c := range cases {
@@ -124,7 +161,7 @@ func TestHeapSnapshotFollowsTheHeapInterval(t *testing.T) {
 		}
 		return rec.send(ctx, pd)
 	})
-	p.settings, _ = resolveProfileSettings(ProfilesConfig{})
+	p.settings, _ = resolveProfileSettings(ProfilesConfig{HeapInterval: 15 * time.Minute})
 	clock := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
 	p.now = func() time.Time { return clock }
 
@@ -179,5 +216,69 @@ func TestContentionSamplingIsSetOnlyWhileSelected(t *testing.T) {
 	restore()
 	if got := runtime.SetMutexProfileFraction(-1); got != 0 {
 		t.Errorf("mutex fraction = %d after stop, want the previous 0", got)
+	}
+}
+
+func TestProfileCadenceSettings(t *testing.T) {
+	cases := map[string]struct {
+		cfg          ProfilesConfig
+		env          map[string]string
+		wantCycle    time.Duration
+		wantWindow   time.Duration
+		wantHeap     time.Duration
+		wantWarnPart string
+	}{
+		"defaults": {wantCycle: 5 * time.Minute, wantWindow: 5 * time.Second, wantHeap: 2 * time.Hour},
+		"config sets the cadence": {
+			cfg:       ProfilesConfig{CPUInterval: time.Minute, CPUDuration: 10 * time.Second, HeapInterval: 15 * time.Minute},
+			wantCycle: time.Minute, wantWindow: 10 * time.Second, wantHeap: 15 * time.Minute,
+		},
+		"env wins over config": {
+			cfg:       ProfilesConfig{CPUInterval: time.Minute, CPUDuration: 10 * time.Second},
+			env:       map[string]string{EnvProfilesCPUInterval: "2m", EnvProfilesCPUDuration: "3s"},
+			wantCycle: 2 * time.Minute, wantWindow: 3 * time.Second, wantHeap: 2 * time.Hour,
+		},
+		"the heap is never faster than the cycle": {
+			env:       map[string]string{EnvProfilesCPUInterval: "10m", EnvProfilesHeapInterval: "1m"},
+			wantCycle: 10 * time.Minute, wantWindow: 5 * time.Second, wantHeap: 10 * time.Minute,
+		},
+		"a window over half the cycle is ignored": {
+			env:       map[string]string{EnvProfilesCPUInterval: "1m", EnvProfilesCPUDuration: "40s"},
+			wantCycle: time.Minute, wantWindow: 5 * time.Second, wantHeap: 2 * time.Hour,
+			wantWarnPart: EnvProfilesCPUDuration,
+		},
+		"a cycle under the minimum is ignored": {
+			env:       map[string]string{EnvProfilesCPUInterval: "5s"},
+			wantCycle: 5 * time.Minute, wantWindow: 5 * time.Second, wantHeap: 2 * time.Hour,
+			wantWarnPart: EnvProfilesCPUInterval,
+		},
+		"a malformed duration is ignored": {
+			env:       map[string]string{EnvProfilesCPUDuration: "five"},
+			wantCycle: 5 * time.Minute, wantWindow: 5 * time.Second, wantHeap: 2 * time.Hour,
+			wantWarnPart: EnvProfilesCPUDuration,
+		},
+		"a negative config value is ignored": {
+			cfg:       ProfilesConfig{CPUInterval: -time.Minute},
+			wantCycle: 5 * time.Minute, wantWindow: 5 * time.Second, wantHeap: 2 * time.Hour,
+			wantWarnPart: "CPUInterval",
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			clearProfilesEnv(t)
+			for k, v := range c.env {
+				t.Setenv(k, v)
+			}
+			s, warns := resolveProfileSettings(c.cfg)
+			if s.cpuInterval != c.wantCycle || s.cpuDuration != c.wantWindow || s.heapInterval != c.wantHeap {
+				t.Errorf("cycle/window/heap = %s/%s/%s, want %s/%s/%s", s.cpuInterval, s.cpuDuration, s.heapInterval, c.wantCycle, c.wantWindow, c.wantHeap)
+			}
+			if c.wantWarnPart == "" && len(warns) > 0 {
+				t.Errorf("unexpected warnings: %v", warns)
+			}
+			if c.wantWarnPart != "" && (len(warns) != 1 || !strings.Contains(warns[0].Error(), c.wantWarnPart)) {
+				t.Errorf("warnings = %v, want one naming %q", warns, c.wantWarnPart)
+			}
+		})
 	}
 }

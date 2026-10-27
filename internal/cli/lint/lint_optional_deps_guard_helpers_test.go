@@ -619,6 +619,60 @@ func (s *Service) Call() error {
 	}
 }
 
+// New is non-nil even for an invalid code and empty detail. Wrapping it
+// preserves that guarantee; wrapping nil or an unchecked error does not.
+func TestOptionalDepsGuard_SvcerrNew(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		expr     string
+		findings int
+	}{
+		{name: "runtime-code", expr: `svcerr.New(code, "not configured")`},
+		{name: "invalid-code-empty-detail", expr: `svcerr.New(connect.Code(0), "")`},
+		{name: "wrapped-new", expr: `svcerr.Wrap(svcerr.New(code, ""))`},
+		{name: "wrapped-nil", expr: `svcerr.Wrap(nil)`, findings: 1},
+		{name: "wrapped-unchecked-error", expr: `svcerr.Wrap(cause)`, findings: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			projectDir := t.TempDir()
+			writeOptionalGuardPkg(t, projectDir, "fixture", strings.ReplaceAll(`import (
+	"connectrpc.com/connect"
+	"github.com/reliant-labs/forge/pkg/svcerr"
+)
+
+func (s *Service) gate(code connect.Code, cause error) error {
+	if s.deps.Svc == nil {
+		return ERROR_EXPR
+	}
+	return nil
+}
+
+func (s *Service) Call(code connect.Code, cause error) error {
+	if err := s.gate(code, cause); err != nil {
+		return err
+	}
+	return s.deps.Svc.Do()
+}
+`, "ERROR_EXPR", tc.expr))
+			got, err := collectOptionalDepsGuardFindings(projectDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != tc.findings {
+				t.Fatalf("findings = %d, want %d: %+v", len(got), tc.findings, got)
+			}
+			for _, finding := range got {
+				if finding.Field != "Svc" || finding.Method != "Call" {
+					t.Errorf("finding = %s in %s, want Svc in Call", finding.Field, finding.Method)
+				}
+			}
+		})
+	}
+}
+
 // TestSvcerrClassificationCoversPackage pins svcerrConstructors and
 // svcerrWrappers against pkg/svcerr: every exported func returning a lone
 // error must be classified, or listed here as deliberately neither, so a

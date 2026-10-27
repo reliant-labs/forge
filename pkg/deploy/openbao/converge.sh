@@ -14,7 +14,8 @@
 #             one waits on this Job. Converge applies the whole document later.
 #   converge  post-rollout. Initialise the store if it has never been, then
 #             apply the new document, narrow (delete what it no longer
-#             contains), and record it as applied.
+#             contains), retire the auth mounts the document lists as retired,
+#             and record it as applied.
 #
 # The document (/converge/access.json) is the whole contract: the KV mount, the
 # JWT auth mounts, the ACL policies and the login roles. Every step is an
@@ -460,6 +461,66 @@ narrow() {
   done <<<"$(jq -c '.mounts[]' <<<"$gone")"
 }
 
+# retire: disable each auth mount the document lists under `retired` (a mount a
+# previous install left behind, which the component never wrote). Idempotent: a
+# mount that is already gone is logged and skipped. Disabling a mount revokes
+# every token it issued and deletes its roles, so a mount that still HAS roles is
+# refused (exit 64, a verdict a retry cannot change) unless its entry says
+# `force`. A mount whose type is not known to keep logins as roles (anything but
+# kubernetes, approle, jwt, oidc) cannot be checked, and is refused the same way.
+# The mount this component logs in on, and any mount the document itself manages,
+# are never retired, whatever the document says.
+#
+# Two passes, so a refusal never leaves the store half-retired: every listed
+# mount is verified first, and only then is any of them disabled.
+retire() {
+  local doc=$1 m name reason force type existing roles todo=()
+  [ "$(jq '(.retired // []) | length' <<<"$doc")" -gt 0 ] || return 0
+  api GET sys/auth
+  [ "$API_CODE" = 200 ] || die "cannot list auth mounts: $(api_failure)"
+  existing=$(jq -c '(.data // .)' "$TMP/resp")
+  while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    name=$(jq -r .name <<<"$m")
+    reason=$(jq -r '.reason // ""' <<<"$m")
+    force=$(jq -r '.force // false' <<<"$m")
+    if [ "$name" = "$SELF_MOUNT" ] || jq -e --arg n "$name" '.mounts | map(.name) | index($n)' <<<"$doc" >/dev/null; then
+      refuse "auth mount $name is listed under retired, but it is a mount this component manages. Remove it from retiredAuthMounts"
+    fi
+    type=$(jq -r --arg k "$name/" '.[$k].type // empty' <<<"$existing")
+    if [ -z "$type" ]; then
+      log "retired auth mount $name is already gone"
+      continue
+    fi
+    case "$type" in
+      kubernetes|approle|jwt|oidc)
+        api GET "auth/$name/role?list=true"
+        case "$API_CODE" in
+          404) roles="" ;;
+          200) roles=$(jq -r '.data.keys // [] | join(", ")' "$TMP/resp") ;;
+          *) die "cannot list the roles of auth mount $name: $(api_failure)" ;;
+        esac
+        if [ -n "$roles" ] && [ "$force" != true ]; then
+          refuse "auth mount $name is listed as retired but still has roles ($roles). Disabling it revokes every token it issued. Reason given: $reason. Delete the roles, or set force on this retiredAuthMounts entry once they are known to be dead"
+        fi
+        [ -z "$roles" ] || log "FORCED: auth mount $name still has roles ($roles)"
+        ;;
+      *)
+        [ "$force" = true ] || refuse "auth mount $name is a $type mount: its logins are not roles, so this Job cannot tell whether it is in use. Set force on this retiredAuthMounts entry to disable it anyway. Reason given: $reason"
+        log "FORCED: auth mount $name is a $type mount; not checked for use"
+        ;;
+    esac
+    todo+=("$name")
+  done <<<"$(jq -c '(.retired // [])[]' <<<"$doc")"
+
+  for name in ${todo[@]+"${todo[@]}"}; do
+    type=$(jq -r --arg k "$name/" '.[$k].type' <<<"$existing")
+    reason=$(jq -r --arg n "$name" '(.retired[] | select(.name == $n) | .reason) // ""' <<<"$doc")
+    log "disabling retired auth mount $name ($type): $reason"
+    must DELETE "sys/auth/$name"
+  done
+}
+
 record_applied() {
   jq -n --arg name "$APPLIED_CM" --arg ns "$NS" --rawfile doc "$DOC_FILE" '{
       apiVersion: "v1", kind: "ConfigMap",
@@ -544,6 +605,7 @@ converge)
   OLD=$(applied_doc)
   apply_doc "$NEW"
   if [ -n "$OLD" ]; then narrow "$(jq -c . <<<"$OLD")" "$NEW"; fi
+  retire "$NEW"
   run_hook "$GENERATE_HOOK" generate
   record_applied
   revoke_if_root

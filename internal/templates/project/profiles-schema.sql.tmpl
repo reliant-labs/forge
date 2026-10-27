@@ -5,7 +5,7 @@
 -- Three tiers, all in the `default` database next to ClickStack's own tables:
 --
 --   otel_profiles       RAW. One row per sample, written by the collector's
---                       clickhouse exporter. 72h TTL. Whole-profile and
+--                       clickhouse exporter. 24h TTL. Whole-profile and
 --                       by-trace lookups (TraceId / SpanId / ProfileId).
 --   profile_stacks      A dictionary of distinct stacks per service, keyed by the
 --                       exporter's StackHash. 30d TTL.
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS default.otel_profiles
 ENGINE = MergeTree
 PARTITION BY toDate(Timestamp)
 ORDER BY (ServiceName, SampleType, toDateTime(Timestamp))
-TTL toDateTime(Timestamp) + INTERVAL 72 HOUR
+TTL toDateTime(Timestamp) + INTERVAL 24 HOUR
 SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 
 CREATE TABLE IF NOT EXISTS default.profile_stacks

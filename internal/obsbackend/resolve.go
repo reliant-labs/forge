@@ -25,6 +25,13 @@ type Facts struct {
 	// process or docker compose): only then can the local ClickStack hold its
 	// telemetry. An env whose workloads all deploy to a cluster has none.
 	HasLocal bool
+	// HasCluster is true when a workload deploys to a declared cluster.
+	// Without local workloads, its services are reached through ControlPlane,
+	// not through this machine's ClickStack. It does not imply hosted runtime.
+	HasCluster bool
+	// LocalLifecycle is the env's explicit local/ephemeral lifecycle. Local
+	// host processes may share that scratch env with a developer's cluster.
+	LocalLifecycle bool
 	// ControlPlane is the env's control_plane endpoint; "" when it declares none.
 	ControlPlane string
 	// ReleaseHealth is the env's recorded release-health policy; nil means
@@ -85,16 +92,22 @@ func Resolve(f Facts, override string) (Decision, error) {
 		}
 		return Decision{Backend: BackendCloud, Reason: why + ": telemetry is stored by the control plane"}, nil
 	}
-	if !f.HasLocal {
-		// Every workload deploys to a cluster, so nothing feeds the local
-		// ClickStack: answering from it would report "not running" and send
-		// the user to `forge env up <env>` against, say, prod. Wherever the
-		// cluster's collector writes is not declared, so say that instead.
-		e := Undetermined("env %s runs no workload on this machine (they deploy to a cluster), so the local ClickStack holds none of its telemetry, and it declares no destination forge can query", f.Env)
-		if f.ControlPlane != "" {
-			return Decision{}, e.With(Cmd("forge", "obs", "status", f.Env, "--backend", BackendCloud))
+	if f.HasLocal && f.LocalLifecycle {
+		return Decision{Backend: BackendLocal, Reason: "local lifecycle: host processes feed the env's ClickStack"}, nil
+	}
+	if f.HasCluster {
+		if f.HasLocal {
+			return Decision{}, Undetermined("env %s mixes local and cluster workloads but declares no telemetry destination; declare observability.destination so forge can query the whole env", f.Env).
+				With("forge skill load observability/destination")
 		}
-		return Decision{}, e.With("forge skill load observability/destination")
+		if f.ControlPlane == "" {
+			return Decision{}, Undetermined("env %s runs on a cluster but declares no control_plane or telemetry destination forge can query", f.Env).
+				With("forge skill load observability/destination")
+		}
+		return Decision{Backend: BackendCloud, Reason: "cluster workloads: query the env's declared control plane"}, nil
+	}
+	if !f.HasLocal {
+		return Decision{}, Undetermined("env %s declares no runtime or telemetry destination forge can query; refusing to guess the local ClickStack", f.Env)
 	}
 	return Decision{Backend: BackendLocal, Reason: "no destination: host processes feed the local ClickStack"}, nil
 }

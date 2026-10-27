@@ -7,14 +7,13 @@ package cli
 // hosted, whether the control plane's telemetry token reached the cluster),
 // and the release in force with the last few changes. The reads run
 // concurrently and each degrades on its own: a section that cannot be read is
-// left out, named in `unread`, and explained in `warnings`, never a failure of
-// the whole. A section the backend does not have (alerts locally) is named in
-// `not_evaluated`.
+// left out, named in `unread`, and explained in `warnings`. Readable evidence
+// survives a partial read. A section the backend does not have (alerts locally)
+// is named in `not_evaluated`.
 //
-// EXIT CODES: 0 when at least one section was read, whatever it says (status
-// reports, it does not judge: `forge obs check` is the gate); 1 for a wrong
-// request (a bad flag); 2 when nothing could be read, or the env's telemetry
-// cannot be reached at all.
+// EXIT CODES: 0 for a complete read, whatever it says (status reports, it does
+// not judge: `forge obs check` is the gate); 1 for a wrong request (a bad flag);
+// 2 for a partial read or when the env's telemetry cannot be reached at all.
 
 import (
 	"context"
@@ -147,7 +146,8 @@ func newObsStatusCmd() *cobra.Command {
 
 Each section is read on its own: one the backend cannot answer is listed in
 ` + "`unread`" + ` with the reason in ` + "`warnings`" + `, and the rest are still shown. The exit
-status is 0 whenever anything was read; status reports, it does not judge (use
+status is 2 when any section is unread, with the readable evidence preserved.
+A complete read exits 0; this is not a health verdict (use
 ` + "`" + Name() + ` obs check` + "`" + ` to gate a release).
 
   ` + Name() + ` obs status prod
@@ -230,15 +230,22 @@ func runObsStatus(ctx context.Context, d obsDeps, env string, o obsStatusOpts) e
 		return fail(obsbackend.Undetermined("nothing about %s could be read", env).Cause(first).With(obsbackend.SuggestedOf(first)...))
 	}
 	doc.Suggested = statusSuggestions(env, doc)
-	doc.Stamp(schemaObsStatus, nil)
+	var partial error
+	if len(doc.Unread) > 0 || len(doc.Warnings) > 0 {
+		partial = obsbackend.Undetermined("status for %s is partial: some evidence could not be read (see unread and warnings)", env)
+	}
+	doc.Stamp(schemaObsStatus, partial)
 	if done, err := o.out.Emit(d.Stdout, obsStatusSchema, doc, fields); done || err != nil {
-		return err
+		if err != nil {
+			return err
+		}
+		return partial
 	}
 	writeStatusText(d.Stdout, d.Now(), doc)
 	for _, w := range doc.Warnings {
 		fmt.Fprintf(d.Stderr, "warning: %s\n", w)
 	}
-	return nil
+	return partial
 }
 
 // statusSections are the reads b can answer, and the sections it cannot.

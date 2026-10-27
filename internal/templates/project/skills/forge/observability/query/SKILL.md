@@ -37,11 +37,11 @@ No deploy to judge, just "something is wrong"? Start with `forge obs status prod
 | Env declares | Backend |
 |---|---|
 | no destination (host processes, the local ClickStack) | **local**: queries the ClickStack `forge env up` started. Down: exit 2 with `forge env up <env>` |
-| hosted workloads, or `destination.token_from_control_plane` | **cloud**: the control plane's ObservabilityService / IssuesService, with your credential (under Reliant, the helper; never `forge login`) |
+| hosted workloads, `destination.token_from_control_plane`, or cluster-only workloads with a declared `control_plane` | **cloud**: the env's control plane's ObservabilityService / IssuesService, with your credential (under Reliant, the helper; never `forge login`). A cluster runtime remains self-managed, not hosted |
 | a third-party destination | exit 2: forge queries only the local ClickStack or the control plane |
 | observability off | exit 2 |
 
-`--backend local|cloud` overrides the choice. Every document names `scope.env`, `scope.backend` and, for cloud, `scope.env_id`.
+Choose the env, not a backend: env names are arbitrary (`prod` does not imply hosting). A missing runtime/remote endpoint, or mixed local and cluster workloads without a destination or explicit local/ephemeral lifecycle, exits 2 rather than guessing local. A local lifecycle with host processes and local k3d workloads keeps using the local ClickStack. `--backend local|cloud` remains a diagnostic override. Every document names `scope.env`, `scope.backend` and, for cloud, `scope.env_id`.
 
 Local and cloud compile through ONE query compiler (`forge/pkg/obsquery`), so a query that works locally means the same against prod. Local issues are grouped at query time with the same fingerprint (sfp2) the control plane computes at ingest. They carry no state: resolve and ignore exist only on cloud, and `--since-release` / `--since-deploy` need a hosted env.
 
@@ -98,7 +98,7 @@ that backend change lands, use an explicit user ID for assignment.
 
 ## What is wrong now: `forge obs status`
 
-Each section is read on its own and concurrently. A section the backend cannot answer is **absent**, named in `unread`, with the reason in `warnings`; a section the backend does not have (alerts, locally) is named in `not_evaluated`. A section that was read and is empty is `[]`: "none", not "unknown". The exit status is **0** whenever anything was read: status reports, it does not judge. It is **2** only when nothing could be read. Gate a release with `check`, not `status`.
+Each section is read on its own and concurrently. A section the backend cannot answer is **absent**, named in `unread`, with the reason in `warnings`; a section the backend does not have (alerts, locally) is named in `not_evaluated`. A section that was read and is empty is `[]`: "none", not "unknown". The exit status is **2** (`ok: false`) when any evidence could not be read, including partial sections reported in `warnings`; readable sections and the release are preserved. A complete read exits **0**: status reports, it does not judge health. Gate a release with `check`, not `status`.
 
 ## Release health: `forge obs check`
 

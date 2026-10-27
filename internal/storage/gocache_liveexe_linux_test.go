@@ -17,6 +17,18 @@ import (
 	"time"
 )
 
+func TestProcAgeFromStat(t *testing.T) {
+	// comm contains spaces and a parenthesis; start time (field 22) is 12345 ticks.
+	stat := "4242 (my (odd) cmd) S 1 4242 4242 0 -1 4194560 100 0 0 0 1 1 0 0 20 0 1 0 12345 1000000 100 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0"
+	age, ok := procAgeFromStat(stat, time.Hour)
+	if want := time.Hour - 123*time.Second - 450*time.Millisecond; !ok || age != want {
+		t.Fatalf("age = %v, %v; want %v", age, ok, want)
+	}
+	if _, ok := procAgeFromStat("garbage", time.Hour); ok {
+		t.Error("parsed garbage")
+	}
+}
+
 // The real /proc: a child process running a binary copied into an executable
 // cache entry is found, and is gone from the list once it exits.
 func TestProcExecutablesFindsAProcessRunningFromTheCache(t *testing.T) {
@@ -276,6 +288,22 @@ func TestReadProcExecutablesSamplesUptimeAfterProcessStat(t *testing.T) {
 	}
 }
 
+func TestProcAgeKeepsExactDecimalTickBoundary(t *testing.T) {
+	proc := t.TempDir()
+	if err := os.Mkdir(filepath.Join(proc, "100"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proc, "100", "stat"), []byte(procAgeTestStat("12801")), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proc, "uptime"), []byte("128.01 0.00\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := procAge(proc, "100"); !ok || got != 0 {
+		t.Fatalf("exact 128.01s uptime/start must age zero, got %v ok=%v", got, ok)
+	}
+}
+
 func procAgeTestStat(ticks string) string {
 	// State is field 3, followed by 18 unused fields, then starttime (22).
 	return "100 (fresh child) S " + strings.Repeat("0 ", 18) + ticks + "\n"
@@ -290,6 +318,9 @@ func TestProcExecutableAgeInvalidMetadataFailsClosed(t *testing.T) {
 		{"malformed ticks", "100.00 0.00\n", procAgeTestStat("bad")},
 		{"future start", "100.00 0.00\n", procAgeTestStat("10001")},
 		{"malformed uptime", "garbage", procAgeTestStat("9000")},
+		{"negative uptime", "-1.00 0.00", procAgeTestStat("9000")},
+		{"nonfinite uptime", "NaN 0.00", procAgeTestStat("9000")},
+		{"overflow uptime", "999999999999999999999.00 0.00", procAgeTestStat("9000")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			proc, root := t.TempDir(), t.TempDir()

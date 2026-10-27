@@ -178,8 +178,12 @@ func (s Snapshot) Validate() error {
 			return snapshotBad("duplicate binding %v/%s", b.Consumer, b.Slot)
 		}
 		bound[b.Consumer][b.Slot] = true
-		if _, ok := s.Artifacts[b.Artifact]; !ok {
+		a, ok := s.Artifacts[b.Artifact]
+		if !ok {
 			return snapshotBad("missing artifact %s", b.Artifact)
+		}
+		if b.Tag != "" && (a.Kind != KindOCI || !ValidImageTag(b.Tag)) {
+			return snapshotBad("binding %v/%s: a tag binds only an OCI artifact, and must be a valid tag", b.Consumer, b.Slot)
 		}
 	}
 	for key, ss := range slots {

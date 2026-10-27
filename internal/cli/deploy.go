@@ -348,6 +348,7 @@ func registerDeployApplyFlags(cmd *cobra.Command, f *deployCmdFlags) {
 	flags.StringVar(&f.namespace, "namespace", "", "Override namespace from environment config")
 	flags.BoolVar(&f.explain, "explain", false, "Print the declared-cluster guard decision (declared/current/verdict) and exit")
 	flags.StringVar(&f.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64)")
+	flags.StringVar(&f.imageBuilder, imageBuilderFlag, "", imageBuilderUsage)
 	flags.BoolVar(&f.prune, "prune", false, "Delete forge-managed Deployments in the namespace that the current KCL render no longer produces (opt-in)")
 	flags.StringArrayVar(&f.targets, "target", nil, "Deploy ONLY the named application(s) (service/operator/frontend name; repeatable). Scopes K8sCluster apply to the app's workload + shared resources, and External/Compose dispatch to the named apps. Empty = deploy the whole env bundle (default).")
 	flags.BoolVar(&f.skipFrontend, "skip-frontend", false, "Run the k8s apply but skip the Frontend (e.g. Firebase) build+deploy dispatch. The k8s-only path for the whole backend bundle without enumerating every --target.")
@@ -510,6 +511,7 @@ type deployCmdFlags struct {
 	namespace     string
 	explain       bool
 	targetArch    string
+	imageBuilder  string
 	prune         bool
 	targets       []string
 	skipFrontend  bool

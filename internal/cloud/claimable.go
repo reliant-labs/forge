@@ -422,6 +422,16 @@ func UseClaimableCredential(ep Endpoint, token string, expiresAt *time.Time) (re
 	}
 }
 
+// ClaimableActive reports whether this process is deploying as the anonymous
+// claimable user (UseClaimableCredential is installed). The claimable plan is
+// platform-funded and never billed, so rules that exist only to keep a bill
+// equal to a request (the hosted shape band) do not apply under it.
+func ClaimableActive() bool {
+	claimableOverride.Lock()
+	defer claimableOverride.Unlock()
+	return claimableOverride.set
+}
+
 func claimableCredentialFor(ep Endpoint) (Credential, bool) {
 	claimableOverride.Lock()
 	defer claimableOverride.Unlock()

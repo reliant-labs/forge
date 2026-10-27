@@ -13,7 +13,7 @@ import (
 func changedTestsFixture(t *testing.T, mode string, fail bool) (string, error) {
 	t.Helper()
 	root := t.TempDir()
-	for _, dir := range []string{"bin", "one", "two"} {
+	for _, dir := range []string{"bin", "one", "two", "scripts"} {
 		if err := os.Mkdir(filepath.Join(root, dir), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -29,6 +29,11 @@ func changedTestsFixture(t *testing.T, mode string, fail bool) (string, error) {
 		t.Fatal(err)
 	}
 	write("changed.sh", string(body))
+	helper, err := os.ReadFile(filepath.Join("..", "..", "scripts", "ci-go-test.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	write("scripts/ci-go-test.sh", string(helper))
 	write("one/one_test.go", "package one\nfunc TestOne(t *testing.T) {}\n")
 	write("two/two_test.go", "package two\nfunc TestTwo(t *testing.T) {}\n")
 	// These are fixture executables, not invocations of git/go against the
@@ -42,9 +47,14 @@ else
   echo '+func TestTwo(t *testing.T) {'
 fi
 `)
+	// The physical directory, as the real `go list -f {{.Dir}}` prints it and
+	// as the script's own `pwd -P` spells it. $PWD is not that on Windows,
+	// where the temp dir's 8.3 short name (RUNNER~1) survives in it: every
+	// package read as "not a package of this module" and the Windows job
+	// failed these tests on every push.
 	write("bin/go", `#!/usr/bin/env bash
 if [[ "$1" == list ]]; then
-  printf '%s/one\n%s/two\n' "$PWD" "$PWD"
+  printf '%s/one\n%s/two\n' "$(pwd -P)" "$(pwd -P)"
 else
   printf 'TEST %s\n' "$*"
   [[ "$FIXTURE_FAIL" != 1 ]]

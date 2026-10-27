@@ -312,7 +312,8 @@ func TestObsIssueCloudJSONGolden(t *testing.T) {
  "byVersion":[{"version":"v1.4.0","events":"30","affected":"6"}],
  "coOccurringIssueIds":["ISS-1"],
  "firstRelease":{"version":"v1.3.0","gitCommit":"abc1234","commitRange":"aaa1111..abc1234","promotedAt":"2026-10-20T09:00:00Z"}}`,
-		cloudEvents: `{"events":[{"timestamp":"2026-10-22T11:00:00Z","traceId":"` + issueTrace + `","message":"insert failed"}]}`,
+		cloudEvents:   `{"events":[{"timestamp":"2026-10-22T11:00:00Z","traceId":"` + issueTrace + `","message":"insert failed"}]}`,
+		cloudTimeline: `{}`,
 	}}
 	out, _, err := obsRunCloud(t, fc, "issue", "ISS-7f3a", "prod", "--json", "--events", "1")
 	if err != nil {

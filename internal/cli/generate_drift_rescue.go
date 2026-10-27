@@ -67,6 +67,9 @@ func stepAdjudicateTier1Drift(ctx *pipelineContext) error {
 	var rescued []string
 	var unresolved []checksums.Tier1DriftEntry
 	for _, d := range pending {
+		if ctx.Checksums.IsDisowned(d.Path) {
+			continue // An emitter explicitly transferred ownership without discarding edits.
+		}
 		if checksums.RescueFreshRender(ctx.AbsPath, d.Path, ctx.Checksums) {
 			rescued = append(rescued, d.Path)
 			continue

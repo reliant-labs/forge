@@ -286,19 +286,20 @@ func TestObsDashboardsAddPanel_SlugRule(t *testing.T) {
 func TestObsDashboardsAddPanel_WarnsWhenTheSlugReplacesAGeneratedDashboard(t *testing.T) {
 	dir := t.TempDir()
 	in := obsdash.Input{
-		Project:  "shop",
-		Services: []obsdash.Service{{Name: "orders", Package: "orders.v1", ProtoService: "OrdersService", Methods: []obsdash.Method{{Name: "GetOrder"}}}},
+		Project:   "shop",
+		Services:  []obsdash.Service{{Name: "orders", Package: "orders.v1", ProtoService: "OrdersService", Methods: []obsdash.Method{{Name: "GetOrder"}}}},
+		Processes: []obsdash.Process{{Name: "shop-api", ServiceNames: []string{"shop-api"}, RPCServices: []string{"orders.v1.OrdersService"}}},
 	}
 	if _, err := obsdash.Write(dir, in, &checksums.FileChecksums{}); err != nil {
 		t.Fatal(err)
 	}
 	p := writePanelFile(t, addPanelJSON)
 
-	r := addPanel(t, dir, obsDashboardsAddOpts{slug: "shop-overview", panel: p}, "")
+	r := addPanel(t, dir, obsDashboardsAddOpts{slug: "shop-process-shop-api", panel: p}, "")
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	if !strings.Contains(r.errOut, "replace") || !strings.Contains(r.errOut, "shop-overview") {
+	if !strings.Contains(r.errOut, "replace") || !strings.Contains(r.errOut, "shop-process-shop-api") {
 		t.Errorf("no replace warning on stderr:\n%s", r.errOut)
 	}
 

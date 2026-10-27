@@ -206,11 +206,19 @@ func writeOwnedOverview(root, owned, legacy string, content []byte, cs *checksum
 		return err
 	}
 	if old != nil {
+		pristine := cs != nil && cs.Unstampable[legacy] == checksums.BodyHash(old)
+		// The pre-emitter guard may already have quarantined this legacy
+		// path. Record the explicit one-way ownership transfer so final
+		// adjudication does not demand a render for a now user-owned file.
+		if cs != nil {
+			if err := cs.DisownPaths(root, []string{legacy}, "constant overview migrated to owned scaffold"); err != nil {
+				return err
+			}
+		}
 		destination, err := os.ReadFile(filepath.Join(root, owned))
 		if err != nil {
 			return err
 		}
-		pristine := cs != nil && cs.Unstampable[legacy] == checksums.BodyHash(old)
 		if !bytes.Equal(destination, old) && !pristine {
 			return nil // Two independent edits: preserve both, never discard one.
 		}

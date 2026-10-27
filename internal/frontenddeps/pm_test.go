@@ -18,6 +18,9 @@ func TestPackageManagerPrecedence(t *testing.T) {
 		want     string
 	}{
 		{"nothing", nil, "", "npm"},
+		{"npm migration with competing locks", map[string]string{"package.json": `{"packageManager":"npm@11.0.0"}`, "package-lock.json": "{}", "pnpm-lock.yaml": "", "yarn.lock": ""}, "", "npm"},
+		{"yarn migration with competing locks", map[string]string{"package.json": `{"packageManager":"yarn@1.22.0"}`, "package-lock.json": "{}", "pnpm-lock.yaml": "", "yarn.lock": ""}, "", "yarn"},
+		{"pnpm migration with competing locks", map[string]string{"package.json": `{"packageManager":"pnpm@12.15.0"}`, "package-lock.json": "{}", "pnpm-lock.yaml": "", "yarn.lock": ""}, "npm", "pnpm"},
 		{"declared only", nil, "pnpm", "pnpm"},
 		{"packageManager beats the declaration", map[string]string{"package.json": `{"packageManager":"pnpm@12.15.0+sha512.abc"}`}, "npm", "pnpm"},
 		{"a lockfile beats packageManager", map[string]string{"package.json": `{"packageManager":"pnpm@12.15.0"}`, "package-lock.json": "{}"}, "", "npm"},

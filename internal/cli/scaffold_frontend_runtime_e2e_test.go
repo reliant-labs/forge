@@ -15,6 +15,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 )
 
 // TestE2EScaffoldFrontendRuntime is the gate on how a generated frontend
@@ -45,7 +46,11 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 
 	forgeBin := buildforgeBinary(t)
-	dir := t.TempDir()
+	dir, err := os.MkdirTemp("", "forge-runtime-fixture-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerSharedTempDir(dir) // preserve a failed bundle for diagnostics
 
 	runCmd(t, dir, forgeBin,
 		"project", "new", "rtapp",
@@ -135,7 +140,7 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	}
 
 	// ── The build gate: the real toolchain must be green. ──
-	if !toolAvailable("node") || !toolAvailable("npm") {
+	if !toolAvailable("node") || !toolAvailable("npm") || !toolAvailable("pnpm") {
 		t.Log("node/npm not available — skipping npm build gate (content assertions still ran)")
 		return
 	}
@@ -160,8 +165,8 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	// race that bootstrap.
 	prebuildWebRuntimeE2E(t)
 	for i := 1; i <= 2; i++ {
-		runCmdTimeout(t, webDir, 5*time.Minute,
-			"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
+		argv := frontenddeps.InstallArgv(webDir, "", false)
+		runCmdTimeout(t, webDir, 5*time.Minute, argv[0], argv[1:]...)
 		if buildinfo.IsCI() {
 			continue // no dev bridge under CI, by design — see above
 		}
@@ -207,11 +212,29 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	// range, take it from the checkout directly.
 	runtimeSrc := filepath.Join(findRepoRoot(t), "web-runtime")
 	shadowed := materializeShadowedRuntimeE2E(t, dir, runtimeSrc)
-	setWebRuntimeSpecE2E(t, filepath.Join(webDir, "package.json"), "file:"+shadowed)
-	runCmdTimeout(t, webDir, 5*time.Minute,
-		"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
+	// Keep the declared settings root (ignore-workspace also ignores its
+	// allowBuilds). Point the bridge's override directly at the isolated
+	// shadow: pnpm caches link resolutions, so moving only the symlink's
+	// target need not update the consumer on a subsequent install.
+	if buildinfo.IsCI() {
+		setWebRuntimeSpecE2E(t, filepath.Join(webDir, "package.json"), "link:"+shadowed)
+	} else {
+		ws := filepath.Join(projectDir, "pnpm-workspace.yaml")
+		body := readFileE2E(t, ws)
+		if !strings.Contains(body, "link:./.forge-link/web-runtime") {
+			t.Fatal("fixture has no pnpm dev bridge override")
+		}
+		writeFileE2E(t, ws, strings.ReplaceAll(body, "link:./.forge-link/web-runtime", "link:"+filepath.ToSlash(shadowed)))
+	}
+	argv := frontenddeps.InstallArgv(webDir, "", false)
+	runCmdTimeout(t, webDir, 5*time.Minute, argv[0], argv[1:]...)
+	resolved, err := filepath.EvalSymlinks(filepath.Join(webDir, "node_modules", "@reliantlabs", "forge-web-runtime"))
+	wantResolved, _ := filepath.EvalSymlinks(shadowed)
+	if err != nil || resolved != wantResolved {
+		t.Fatalf("runtime resolves to %s (%v), want shadow %s", resolved, err, wantResolved)
+	}
 
-	runCmdTimeout(t, webDir, 5*time.Minute, "npm", "run", "build")
+	runCmdTimeout(t, webDir, 5*time.Minute, "pnpm", "run", "build")
 	runCmdTimeout(t, webDir, 2*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
 
 	assertRuntimePeersDedupedE2E(t, nextProdDistDirE2E(t, projectDir, "web"), shadowed)
@@ -306,6 +329,11 @@ func assertRuntimePeersDedupedE2E(t *testing.T, distDir, runtimeDir string) {
 		}
 	}
 	if !compiled {
+		for _, event := range strings.Split(trace, "\n") {
+			if strings.Contains(event, "forge-web-runtime") || strings.Contains(event, "web-runtime-shadowed") {
+				t.Log(event)
+			}
+		}
 		t.Fatalf("build trace never names %s/dist — the runtime was not compiled into this "+
 			"build, so the single-copy assertion is vacuous", runtimeDir)
 	}
@@ -489,8 +517,10 @@ func assertNoHomePathE2E(t *testing.T, path string) {
 	if strings.Contains(body, home) {
 		t.Errorf("%s embeds the home directory %q:\n%s", path, home, body)
 	}
-	if user := filepath.Base(home); strings.Contains(body, user) {
-		t.Errorf("%s embeds the username %q:\n%s", path, user, body)
+	// A username can be an ordinary word (this machine's is "workspace").
+	// Check it as a path segment, not prose such as "workspace dependencies".
+	if user := filepath.Base(home); strings.Contains(body, "/"+user+"/") || strings.Contains(body, `\\`+user+`\\`) {
+		t.Errorf("%s embeds the username %q in a path:\n%s", path, user, body)
 	}
 }
 

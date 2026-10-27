@@ -217,16 +217,53 @@ func TestOverlayKeepsTheGlobalConfigItReplaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = o.Close() })
-	if len(o.Env()) != 1 || !strings.HasPrefix(o.Env()[0], "npm_config_globalconfig=") {
-		t.Fatalf("Env() = %v, want one npm_config_globalconfig", o.Env())
-	}
-	got, err := os.ReadFile(strings.TrimPrefix(o.Env()[0], "npm_config_globalconfig="))
+	got, err := os.ReadFile(envValue(t, o, "npm_config_globalconfig"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := "fund=false\n@acme:registry=" + o.URL + "\n"; string(got) != want {
 		t.Errorf("overlay npmrc = %q, want %q", got, want)
 	}
+}
+
+// TestOverlayKeepsTheUserConfigPnpmReads: pnpm takes its routes from the
+// user .npmrc, so the overlay's pnpm file must carry the user's own (auth
+// included) and add only the scope routes; and the overlaid packages must be
+// exempt from pnpm's release-age gate, which would otherwise pass over a
+// version the overlay dates now.
+func TestOverlayKeepsTheUserConfigPnpmReads(t *testing.T) {
+	prev := filepath.Join(t.TempDir(), "npmrc")
+	if err := os.WriteFile(prev, []byte("//registry.example/:_authToken=${TOKEN}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("pnpm_config_userconfig", prev)
+	o, err := Start(Options{Upstream: "http://127.0.0.1:1", Packages: []Package{{Dir: writePackage(t, "@acme/lib", "1.0.0")}}, Log: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = o.Close() })
+	got, err := os.ReadFile(envValue(t, o, "pnpm_config_userconfig"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "//registry.example/:_authToken=${TOKEN}\n@acme:registry=" + o.URL + "\n"; string(got) != want {
+		t.Errorf("overlay pnpm user config = %q, want %q", got, want)
+	}
+	if got := envValue(t, o, "pnpm_config_minimum_release_age_exclude"); got != `["@acme/lib"]` {
+		t.Errorf("pnpm_config_minimum_release_age_exclude = %s, want [\"@acme/lib\"]", got)
+	}
+}
+
+// envValue returns the value Env gives key, failing when it gives none.
+func envValue(t *testing.T, o *Overlay, key string) string {
+	t.Helper()
+	for _, kv := range o.Env() {
+		if k, v, _ := strings.Cut(kv, "="); k == key {
+			return v
+		}
+	}
+	t.Fatalf("Env() = %v, has no %s", o.Env(), key)
+	return ""
 }
 
 func TestStartRefusesAnUnscopedPackage(t *testing.T) {
@@ -272,5 +309,47 @@ func TestNpmInstallsTheLocalVersionThroughTheOverlay(t *testing.T) {
 	lock, _ := os.ReadFile(filepath.Join(app, "package-lock.json"))
 	if !strings.Contains(string(lock), o.URL+"-/tarballs/") || !strings.Contains(string(lock), `"integrity": "sha512-`) {
 		t.Errorf("lockfile does not record the overlay tarball with its integrity:\n%s", lock)
+	}
+}
+
+// TestPnpmInstallsTheLocalVersionThroughTheOverlay is the same claim for
+// pnpm, which reads none of npm's routing. The range also admits the
+// published 1.0.0, dated years ago, so it proves the release-age exemption
+// too: without it pnpm prefers the mature 1.0.0 over the local 1.2.0 the
+// overlay dates now (and this fake 1.0.0 has no tarball, so that fails).
+func TestPnpmInstallsTheLocalVersionThroughTheOverlay(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs npm pack and pnpm install; runs in task test")
+	}
+	if _, err := exec.LookPath("pnpm"); err != nil {
+		t.Skip("pnpm not on PATH")
+	}
+	up, _ := fakeUpstream(t)
+	dir := writePackage(t, "@acme/lib", "1.2.0")
+	o, err := Start(Options{Upstream: up.URL, Packages: []Package{{Dir: dir}}, Log: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = o.Close() })
+
+	app := t.TempDir()
+	if err := os.WriteFile(filepath.Join(app, "package.json"),
+		[]byte(`{"name":"app","version":"0.0.0","private":true,"dependencies":{"@acme/lib":"^1.0.0"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("pnpm", "install")
+	cmd.Dir = app
+	cmd.Env = append(append(os.Environ(), o.Env()...),
+		"pnpm_config_store_dir="+t.TempDir(), "pnpm_config_cache_dir="+t.TempDir())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("pnpm install: %v\n%s", err, out)
+	}
+	got, err := os.ReadFile(filepath.Join(app, "node_modules", "@acme", "lib", "index.js"))
+	if err != nil || !strings.Contains(string(got), "1.2.0") {
+		t.Fatalf("installed @acme/lib index.js = %q (%v), want the local 1.2.0", got, err)
+	}
+	lock, _ := os.ReadFile(filepath.Join(app, "pnpm-lock.yaml"))
+	if !strings.Contains(string(lock), "1.2.0") || !strings.Contains(string(lock), "integrity: sha512-") {
+		t.Errorf("lockfile does not record the local version with its integrity:\n%s", lock)
 	}
 }

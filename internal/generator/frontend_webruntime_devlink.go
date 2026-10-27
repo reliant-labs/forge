@@ -14,6 +14,10 @@
 //	    machine-specific is committed, and a clone that lacks the sibling
 //	    still installs.
 //
+// This file describes the npm half. pnpm ignores package.json `workspaces`,
+// so pnpm frontends — the scaffold default — get a gitignored root
+// pnpm-workspace.yaml instead: frontend_webruntime_devlink_pnpm.go.
+//
 // # Why the bridge cannot simply be a symlink
 //
 // npm owns node_modules. A bare symlink dropped into
@@ -219,13 +223,24 @@ func EnsureDevWebRuntimeLink(projectDir string) {
 		removeModuleCacheBridge(projectDir)
 		return
 	}
-	members := bridgeMembers(projectDir)
+	npmMembers, pnpmMembers := splitBridgeMembers(projectDir, bridgeMembers(projectDir))
 	rootPath := filepath.Join(projectDir, "package.json")
-	if len(members) == 0 && !isForgeOwnedWorkspaceRoot(rootPath) {
+	pnpmRootPath := filepath.Join(projectDir, devPnpmWorkspaceName)
+	if fileExists(pnpmRootPath) && !isForgeOwnedPnpmWorkspace(pnpmRootPath) {
+		// A tracked workspace belongs to the project, not this overlay. Do
+		// not even add ignore entries that could hide the user's root file.
+		pnpmMembers = nil
+	}
+	if len(npmMembers) == 0 && len(pnpmMembers) == 0 &&
+		!isForgeOwnedWorkspaceRoot(rootPath) && !isForgeOwnedPnpmWorkspace(pnpmRootPath) {
 		return // nothing to bridge (no frontends, or only native apps)
 	}
 
-	if err := ensureGitignoreEntries(filepath.Join(projectDir, ".gitignore"), devBridgeIgnoreEntries); err != nil {
+	ignore := devBridgeIgnoreEntries
+	if len(pnpmMembers) > 0 {
+		ignore = append(append([]string(nil), ignore...), devBridgePnpmIgnoreEntries...)
+	}
+	if err := ensureGitignoreEntries(filepath.Join(projectDir, ".gitignore"), ignore); err != nil {
 		// Refuse to write files we could not first make uncommittable —
 		// that is the failure mode this change exists to eliminate.
 		fmt.Fprintf(os.Stderr, "warning: could not ignore the dev %s bridge in %s (%v); bridge not written\n",
@@ -233,9 +248,48 @@ func EnsureDevWebRuntimeLink(projectDir string) {
 		return
 	}
 
+	if len(npmMembers) == 0 {
+		// Every frontend left npm (or never used it): the npm root has
+		// nothing to adopt, and an empty one would still make npm treat the
+		// project root as a workspace.
+		removeForgeOwnedNpmRoot(projectDir)
+	} else if !reconcileNpmBridge(projectDir, rootPath, npmMembers) {
+		return
+	}
+
+	pnpmChanged, err := reconcilePnpmBridge(projectDir, pnpmMembers)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write the dev %s in %s: %v\n", devPnpmWorkspaceName, projectDir, err)
+		return
+	}
+
+	link := filepath.Join(projectDir, devLinkDir, "web-runtime")
+	changed, err := ensureRelativeSymlink(link, target)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not link %s into %s: %v\n", WebRuntimePackage, link, err)
+		return
+	}
+	if changed || pnpmChanged {
+		install := "npm install"
+		switch {
+		case len(pnpmMembers) > 0 && len(npmMembers) > 0:
+			install = "npm install` and `pnpm install"
+		case len(pnpmMembers) > 0:
+			install = "pnpm install"
+		}
+		fmt.Printf("🔗 Dev forge build: %s is bridged to the local checkout via %s/ "+
+			"(gitignored; your frontends' package.json keeps %s). Run `%s` at the project root.\n",
+			WebRuntimePackage, devLinkDir, webRuntimePublishedRange, install)
+	}
+}
+
+// reconcileNpmBridge writes the npm half of the bridge — the root
+// package.json workspace and its .npmrc — for members. Reports false when the
+// bridge must not go on (the root could not be written).
+func reconcileNpmBridge(projectDir, rootPath string, members []string) bool {
 	if err := reconcileWorkspaceRoot(rootPath, devWorkspaceRootManifest(members)); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write the dev workspace root in %s: %v\n", projectDir, err)
-		return
+		return false
 	}
 
 	userOwned, err := reconcileNpmrc(filepath.Join(projectDir, devNpmrcName))
@@ -248,18 +302,7 @@ func EnsureDevWebRuntimeLink(projectDir string) {
 			"%s because of its vitest ^4 devDependency: add that line to %s yourself, or use a newer npm (11.21 works).\n",
 			projectDir, devNpmrcName, WebRuntimePackage, devNpmrcName)
 	}
-
-	link := filepath.Join(projectDir, devLinkDir, "web-runtime")
-	changed, err := ensureRelativeSymlink(link, target)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not link %s into %s: %v\n", WebRuntimePackage, link, err)
-		return
-	}
-	if changed {
-		fmt.Printf("🔗 Dev forge build: %s is bridged to the local checkout via %s/ "+
-			"(gitignored; your frontends' package.json keeps %s). Run `npm install` at the project root.\n",
-			WebRuntimePackage, devLinkDir, webRuntimePublishedRange)
-	}
+	return true
 }
 
 // removeModuleCacheBridge tears down a bridge an earlier forge wrote into the
@@ -302,8 +345,11 @@ func removeModuleCacheBridge(projectDir string) {
 	if npmrc := filepath.Join(projectDir, devNpmrcName); isForgeOwnedNpmrc(npmrc) {
 		_ = os.Remove(npmrc)
 	}
+	if ws := filepath.Join(projectDir, devPnpmWorkspaceName); isForgeOwnedPnpmWorkspace(ws) {
+		_ = os.Remove(ws)
+	}
 	fmt.Printf("🧹 removed a stale %s bridge into the read-only Go module cache (%s/, root package.json). "+
-		"Run `npm install` in each frontend to use the registry copy.\n", WebRuntimePackage, devLinkDir)
+		"Reinstall in each frontend to use the registry copy.\n", WebRuntimePackage, devLinkDir)
 }
 
 // devWebRuntimeCheckout returns the absolute web-runtime directory projectDir

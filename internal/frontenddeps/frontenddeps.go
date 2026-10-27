@@ -99,7 +99,17 @@ func lockfilePackageManager(dir, fallback string) string {
 // lockfile to honour; npm without one — at the root it actually installs
 // at, see NpmInstallVerb — falls back to `install`.
 func installArgs(runner, dir string, frozen bool) []string {
+	if root, bridged := installDir(runner, dir); bridged {
+		// The overlay has its own gitignored lockfile. Keep resolution pinned
+		// by the frontend's manifest, but install at the bridge root.
+		return []string{"--dir", root, "install", "--no-frozen-lockfile"}
+	}
 	if !frozen {
+		if runner == "pnpm" {
+			// pnpm defaults to frozen in CI. Scaffold and dev installs must
+			// create/update the lockfile even when forge itself runs in CI.
+			return []string{"install", "--no-frozen-lockfile"}
+		}
 		return []string{"install"}
 	}
 	switch runner {
@@ -160,6 +170,24 @@ func concurrencyFlags(runner string, env []string) []string {
 // runInstall runs one install attempt, teeing output to the terminal
 // while retaining it so the caller can classify the failure.
 func runInstall(ctx context.Context, runner, dir string, args []string) error {
+	if root, bridged := installDir(runner, dir); bridged {
+		// A fresh scaffold needs its own tracked registry lockfile as well as
+		// the overlay's machine-local one. Never let the bridge's link spec
+		// enter the frontend lockfile that CI and Docker will install from.
+		if !fileExists(filepath.Join(dir, "pnpm-lock.yaml")) {
+			cmd := command(ctx, dir, runner, "install", "--lockfile-only", "--ignore-scripts", "--ignore-workspace", "--no-frozen-lockfile")
+			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("create frontend registry lockfile: %w", err)
+			}
+		}
+		// A forge dev bridge adopts this frontend: install at its root, which
+		// is what links the local web-runtime. Its lockfile is the bridge's
+		// own, gitignored and machine-local, so there is nothing to freeze
+		// against — the frontend's tracked lockfile is not read there.
+		fmt.Printf("  (dev web-runtime bridge: installing at %s)\n", root)
+		dir, args = root, []string{"install", "--no-frozen-lockfile"}
+	}
 	var buf bytes.Buffer
 	if flags := concurrencyFlags(runner, os.Environ()); len(flags) > 0 {
 		args = append(args, flags...)
@@ -226,7 +254,7 @@ func Stale(dir string) bool {
 		// an existing healthy checkout is not force-reinstalled.
 		ref = nm.ModTime()
 	}
-	for _, manifest := range []string{"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "package.json"} {
+	for _, manifest := range []string{"package-lock.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "yarn.lock", "package.json"} {
 		if info, err := os.Stat(filepath.Join(dir, manifest)); err == nil {
 			if info.ModTime().After(ref) {
 				return true

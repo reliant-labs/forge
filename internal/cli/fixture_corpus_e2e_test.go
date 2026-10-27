@@ -814,7 +814,7 @@ message ListItemsResponse { repeated Item items = 1; string next_page_token = 2;
 	// up front so parallel tests do not race that bootstrap.
 	prebuildWebRuntimeE2E(t)
 	runCmdTimeout(t, feDir, 5*time.Minute,
-		"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
+		"pnpm", "install", "--no-frozen-lockfile", "--prefer-offline")
 
 	// Generate again, AFTER that install. The buf TypeScript pass runs
 	// protoc-gen-es out of the frontend's OWN node_modules and, when it is
@@ -831,7 +831,7 @@ message ListItemsResponse { repeated Item items = 1; string next_page_token = 2;
 	// 3a. Fail-loud guard FIRST (near-instant: the throw happens while
 	// next.config.ts is evaluated, before any compilation).
 	out, err := runCorpusCmdEnv(feDir, 2*time.Minute,
-		[]string{"NEXT_PUBLIC_BASE_PATH="}, "npm", "run", "build")
+		[]string{"NEXT_PUBLIC_BASE_PATH="}, "pnpm", "run", "build")
 	if err == nil {
 		t.Fatalf("npm run build with NEXT_PUBLIC_BASE_PATH=\"\" must FAIL (static-export fail-loud guard); output:\n%s", out)
 	}
@@ -842,7 +842,7 @@ message ListItemsResponse { repeated Item items = 1; string next_page_token = 2;
 	// 3b. The real build, prefix explicit. The package.json build script
 	// sets NODE_ENV=production, so the static branch emits out/.
 	out, err = runCorpusCmdEnv(feDir, 8*time.Minute,
-		[]string{"NEXT_PUBLIC_BASE_PATH=/admin"}, "npm", "run", "build")
+		[]string{"NEXT_PUBLIC_BASE_PATH=/admin"}, "pnpm", "run", "build")
 	if err != nil {
 		t.Fatalf("npm run build (NEXT_PUBLIC_BASE_PATH=/admin) failed: %v\n%s", err, out)
 	}

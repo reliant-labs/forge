@@ -11,6 +11,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cigate"
 	"github.com/reliant-labs/forge/internal/goexec"
+	"github.com/reliant-labs/forge/internal/toolcache"
 	"github.com/reliant-labs/forge/internal/toolpin"
 )
 
@@ -61,13 +62,15 @@ func toolMatches(ctx context.Context, binPath string, t protoTool, want string) 
 	return have, have == want
 }
 
-// toolCacheDir is where a tool pinned at module@version is installed.
+// toolCacheDir is where a tool pinned at version is installed: its entry in
+// the pinned kind of forge's shared tool cache (internal/toolcache), which
+// FORGE_TOOLS_CACHE relocates with every other tool forge installs.
 func toolCacheDir(t protoTool, version string) (string, error) {
-	base, err := os.UserCacheDir()
+	kind, err := toolcache.KindDir(toolcache.KindPinned)
 	if err != nil {
-		return "", fmt.Errorf("locate user cache dir: %w", err)
+		return "", err
 	}
-	return filepath.Join(base, "forge", "tools", t.VersionModule+"@"+version), nil
+	return filepath.Join(kind, t.Binary+"@"+version), nil
 }
 
 // codegenTools is the outcome of pinning: prepend Dirs to PATH for child
@@ -165,10 +168,11 @@ func pinCodegenTools(ctx context.Context, projectDir string) (*codegenTools, err
 			return nil, err
 		}
 		bin := filepath.Join(dir, t.Binary+exeSuffix())
-		if _, ok := toolMatches(ctx, bin, t, want); !ok {
-			if err := installPinnedTool(ctx, t, want, dir, have); err != nil {
-				return nil, err
-			}
+		built, err := installPinnedTool(ctx, t, want, dir, have, nil)
+		if err != nil {
+			return nil, err
+		}
+		if built {
 			if got, ok := toolMatches(ctx, bin, t, want); !ok {
 				return nil, pinError(t, want, have, fmt.Errorf("installed binary reports %s", got))
 			}
@@ -207,35 +211,35 @@ func pinBuf(ctx context.Context, projectDir string, res *codegenTools) error {
 	return nil
 }
 
-// installPinnedTool installs t@version into dir, atomically: `go install`
-// writes into a private temp dir beside it, and the finished binary is
-// renamed into place. Parallel forge processes pin the same tool into the
-// same cache dir (every fresh project's first generate does), and `go
-// install` straight into dir let one process read a binary another was still
-// writing: `go version -m` failed on the half-written file, the pin reported
-// "installed binary reports unknown", and the project's bootstrap generate
-// failed (TestE2EFixtureCorpusKalshiShaped, TestE2EOneCommandPerRoot in CI).
-func installPinnedTool(ctx context.Context, t protoTool, version, dir, have string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return pinError(t, version, have, err)
+// installPinnedTool resolves t@version at dir, an entry of forge's shared
+// tool cache, building it there when the binary is missing or reports another
+// version, and says whether it built. Through internal/toolcache the build
+// runs ONCE however many forge processes want the same pin at that moment —
+// every fresh project's first generate pins the same protoc-gen-go — and lands
+// by renaming a complete staging directory, so no reader ever sees a
+// half-written binary (`go version -m` on one failed the pin with "installed
+// binary reports unknown": TestE2EFixtureCorpusKalshiShaped). announce, when
+// set, runs only when this process builds.
+func installPinnedTool(ctx context.Context, t protoTool, version, dir, have string, announce func()) (built bool, err error) {
+	ready := func(dir string) bool {
+		_, ok := toolMatches(ctx, filepath.Join(dir, t.Binary+exeSuffix()), t, version)
+		return ok
 	}
-	tmp, err := os.MkdirTemp(dir, ".install-")
-	if err != nil {
-		return pinError(t, version, have, err)
-	}
-	defer func() { _ = os.RemoveAll(tmp) }()
-	spec := t.Module + "@" + version
-	if err := goInstallPinned(ctx, spec, tmp); err != nil {
-		return pinError(t, version, have, fmt.Errorf("go install %s: %w", spec, err))
-	}
-	name := t.Binary + exeSuffix()
-	if err := os.Rename(filepath.Join(tmp, name), filepath.Join(dir, name)); err != nil {
-		// Another process published the same version first: same bytes.
-		if st, serr := os.Stat(filepath.Join(dir, name)); serr != nil || st.IsDir() {
-			return pinError(t, version, have, err)
+	_, err = toolcache.Ensure(ctx, filepath.Dir(dir), filepath.Base(dir), ready, func(ctx context.Context, stage string) error {
+		built = true
+		if announce != nil {
+			announce()
 		}
+		spec := t.Module + "@" + version
+		if err := goInstallPinned(ctx, spec, stage); err != nil {
+			return fmt.Errorf("go install %s: %w", spec, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return built, pinError(t, version, have, err)
 	}
-	return nil
+	return built, nil
 }
 
 // goInstallPinned runs `go install spec` with GOBIN=gobin. A seam for tests.

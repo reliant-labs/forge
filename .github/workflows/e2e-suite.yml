@@ -288,6 +288,13 @@ jobs:
       # quiet skip. The set is enumerated from requireTool call sites plus
       # every exec.LookPath under internal/cli/*_e2e_test.go.
 
+      # A scaffolded frontend pins pnpm (package.json packageManager,
+      # templates.PnpmVersion); TestPnpmVersionIsPinnedEverywhere keeps this
+      # version equal to it.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.15.0
+
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
@@ -325,7 +332,7 @@ jobs:
       # is templates.KCLVersion (TestKCLVersionIsPinnedEverywhere).
       - name: Install KCL
         env:
-          KCL_VERSION: v0.13.1
+          KCL_VERSION: v0.13.2
         run: |
           curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
           command -v kcl
@@ -347,13 +354,16 @@ jobs:
             | sh -s -- -b "$(go env GOPATH)/bin" v2.14.0
           golangci-lint --version
 
-      # npm's content-addressable store. setup-node's `cache: npm` keys on a
+      # The package managers' stores: pnpm's (scaffolded frontends) and npm's
+      # (web-runtime's own install). setup-node's `cache:` keys on a
       # checked-in lockfile and every lockfile here is generated at test
       # time, so key on the template that decides the dependency set
       # instead.
       - uses: actions/cache@v6
         with:
-          path: ~/.npm
+          path: |
+            ~/.npm
+            ~/.local/share/pnpm/store
           key: e2e-npm-${{ runner.os }}-${{ hashFiles('internal/templates/frontend/nextjs/package.json.tmpl') }}
           restore-keys: e2e-npm-${{ runner.os }}-
 

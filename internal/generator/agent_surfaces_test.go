@@ -39,7 +39,7 @@ func TestAgentSurfacesPerHarness(t *testing.T) {
 	for h, files := range want {
 		t.Run(string(h), func(t *testing.T) {
 			root := t.TempDir()
-			if err := writeAgentSurfaces(root, "demo", h); err != nil {
+			if err := writeAgentSurfaces(root, "demo", h, false); err != nil {
 				t.Fatal(err)
 			}
 			got := writtenFiles(t, root)
@@ -56,29 +56,31 @@ func TestAgentSurfacesPerHarness(t *testing.T) {
 // AGENTS.md is the one rendered copy of the guide, byte-identical to what
 // reliant renders in memory, so the two cannot drift.
 func TestAgentsMDIsTheSingleRenderedGuide(t *testing.T) {
-	data := struct{ Name, CLI string }{"demo", cliName()}
-	guide, err := templates.ProjectTemplates().Render("reliant.md.tmpl", data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, h := range ValidHarnesses() {
-		root := t.TempDir()
-		if err := writeAgentSurfaces(root, "demo", h); err != nil {
+	for _, site := range []bool{false, true} {
+		data := ProjectMemoryData{Name: "demo", CLI: cliName(), Site: site}
+		guide, err := templates.ProjectTemplates().Render("reliant.md.tmpl", data)
+		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
-		if err != nil {
-			t.Fatalf("harness %s: %v", h, err)
-		}
-		if string(got) != string(guide) {
-			t.Errorf("harness %s: AGENTS.md differs from the rendered guide", h)
+		for _, h := range ValidHarnesses() {
+			root := t.TempDir()
+			if err := writeAgentSurfaces(root, "demo", h, site); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
+			if err != nil {
+				t.Fatalf("harness %s, site %t: %v", h, site, err)
+			}
+			if string(got) != string(guide) {
+				t.Errorf("harness %s, site %t: AGENTS.md differs from the rendered guide", h, site)
+			}
 		}
 	}
 }
 
 func TestClaudeMDImportsAgentsMD(t *testing.T) {
 	root := t.TempDir()
-	if err := writeAgentSurfaces(root, "demo", HarnessClaude); err != nil {
+	if err := writeAgentSurfaces(root, "demo", HarnessClaude, false); err != nil {
 		t.Fatal(err)
 	}
 	body, _ := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
@@ -103,7 +105,7 @@ func TestPointerFilesCarryNoSkillBodies(t *testing.T) {
 
 	for _, h := range []Harness{HarnessClaude, HarnessCursor, HarnessCopilot} {
 		root := t.TempDir()
-		if err := writeAgentSurfaces(root, "demo", h); err != nil {
+		if err := writeAgentSurfaces(root, "demo", h, false); err != nil {
 			t.Fatal(err)
 		}
 		for _, f := range h.agentFiles() {
@@ -136,7 +138,7 @@ func TestPointerFilesCarryNoSkillBodies(t *testing.T) {
 
 func TestAgentSurfacesNameReliantForge(t *testing.T) {
 	root := t.TempDir()
-	if err := writeAgentSurfaces(root, "demo", HarnessClaude); err != nil {
+	if err := writeAgentSurfaces(root, "demo", HarnessClaude, false); err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range []string{"AGENTS.md", ".claude/skills/forge/SKILL.md"} {
@@ -156,7 +158,7 @@ func TestAgentSurfacesKeepExistingFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), mine, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeAgentSurfaces(root, "demo", HarnessClaude); err != nil {
+	if err := writeAgentSurfaces(root, "demo", HarnessClaude, false); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(filepath.Join(root, "AGENTS.md"))

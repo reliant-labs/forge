@@ -83,7 +83,11 @@ func FindLock(manifestDir, stopAt string) (Lock, bool) {
 func lockRefreshArgs(lock Lock, manifestDir string) (runner string, args []string, dir string) {
 	switch lock.Runner {
 	case "pnpm":
-		return "pnpm", []string{"install", "--lockfile-only", "--ignore-scripts"}, lock.Dir
+		args := []string{"install", "--lockfile-only", "--ignore-scripts", "--no-frozen-lockfile"}
+		if PnpmInstallRoot(manifestDir) != manifestDir && sameDir(lock.Dir, manifestDir) {
+			args = append(args, "--ignore-workspace")
+		}
+		return "pnpm", args, lock.Dir
 	case "yarn":
 		// Berry can rewrite the lockfile alone; classic has no such mode, so
 		// it installs (which rewrites it as a side effect).

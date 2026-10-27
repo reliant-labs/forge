@@ -53,6 +53,13 @@ jobs:
         with:
           scope: tools
 
+      # A scaffolded frontend pins pnpm (package.json packageManager,
+      # templates.PnpmVersion); TestPnpmVersionIsPinnedEverywhere keeps this
+      # version equal to it.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.15.0
+
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
@@ -261,21 +268,24 @@ jobs:
       # Frontend gate: install, TYPECHECK, BUILD, then run the scaffolded
       # Vitest suite against the admin frontend.
       #
-      # This step used to run `npm install` then `npm test` and stop there.
+      # This step used to run an install then `npm test` and stop there.
       # `npm test` is `vitest run` — it executes the five scaffolded unit
       # tests and nothing else. It never compiled the generated tree, so a
       # generated page that does not typecheck, or a route that Next cannot
       # build, shipped green: the two failure modes that actually reach users
       # first were the two this lane did not look at.
       #
-      # Order matters. `npm run typecheck` runs first, against the tsconfig
+      # The install is FROZEN: `forge project new` wrote pnpm-lock.yaml, and
+      # a lockfile the scaffold cannot install from is a scaffold bug.
+      #
+      # Order matters. `pnpm run typecheck` runs first, against the tsconfig
       # as scaffolded: `next build` REWRITES tsconfig.json (it appends
       # .next-prod/types/**/*.ts to `include`), so a typecheck after a build
       # is a typecheck of a different project. Both are kept because they see
       # different things — `next build` type-checks the route graph it
       # compiles, `tsc --noEmit` covers everything in tsconfig's include,
       # test files and unreferenced modules included.
-      - name: npm typecheck + build + test (frontend)
+      - name: pnpm typecheck + build + test (frontend)
         working-directory: ${{ env.E2E_DIR }}/e2e-test
         run: |
           # The scaffold above passes --frontend admin. If nothing is here,
@@ -292,31 +302,31 @@ jobs:
           fi
           echo "Frontend at: $FE_DIR"
           cd "$FE_DIR"
-          if npm install --no-audit --no-fund --prefer-offline; then
-            echo "✅ npm install"
+          if pnpm install --frozen-lockfile --prefer-offline; then
+            echo "✅ pnpm install --frozen-lockfile"
           else
-            echo "❌ npm install"
+            echo "❌ pnpm install --frozen-lockfile"
             exit 1
           fi
-          if npm run typecheck; then
-            echo "✅ npm run typecheck (tsc --noEmit)"
+          if pnpm run typecheck; then
+            echo "✅ pnpm run typecheck (tsc --noEmit)"
           else
-            echo "❌ npm run typecheck (tsc --noEmit)"
+            echo "❌ pnpm run typecheck (tsc --noEmit)"
             exit 1
           fi
-          if npm run build; then
-            echo "✅ npm run build (next build)"
+          if pnpm run build; then
+            echo "✅ pnpm run build (next build)"
           else
-            echo "❌ npm run build (next build)"
+            echo "❌ pnpm run build (next build)"
             exit 1
           fi
           # vitest exits 1 on "No test files found" (passWithNoTests is not
           # set in the scaffold's vitest.config.ts), so this cannot pass
           # vacuously if the scaffold ever stops emitting its unit tests.
-          if npm test --silent; then
-            echo "✅ npm test (vitest run)"
+          if pnpm test --silent; then
+            echo "✅ pnpm test (vitest run)"
           else
-            echo "❌ npm test (vitest run)"
+            echo "❌ pnpm test (vitest run)"
             exit 1
           fi
 

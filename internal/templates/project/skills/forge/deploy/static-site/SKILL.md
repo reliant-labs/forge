@@ -1,6 +1,6 @@
 ---
 name: deploy/static-site
-description: Ship a landing page, marketing site, docs site or SPA as a static site — when forge is the right call for one, the static export, binding it to hosted static hosting (the platform owns the bucket) or your own bucket, and the build-once → promote release flow.
+description: Ship a landing page, marketing/docs site, SPA or PWA — no backend needed. When forge is the right call for one, `project new --kind site` (new or adopted), the static export, hosted static hosting (platform owns bucket + CDN; one hosted site per org free, counted across envs) or your own bucket, custom domains, and the build-once → promote release flow.
 ---
 
 # Static sites
@@ -22,32 +22,49 @@ files on a host is the part that is hard to retrofit later:
   which path (edge or ingress) each hostname takes.
 - **Config without a rebuild.** A hosted site's `config.js` is written per env
   by the platform, so one bundle serves every env.
-- **A path to an app.** When the site grows a waitlist, checkout or login,
-  `forge scaffold service <entity>` adds the Go API next to it. The site is
-  already the frontend of a forge project and nothing has to move.
+- **Browser logs on disk.** Under `forge env up dev` every `console.*` call
+  and uncaught error lands in `.forge/logs/dev/frontend_<name>.log`.
+- **A path to an API.** When the site grows a waitlist, checkout or login,
+  the API is its own forge project, and the site reaches it by URL (see
+  "Growing a backend").
 
 If none of that matters — a one-off page that will never have a second env —
 a plain `index.html` is fine, and forge is the wrong shape for it.
 
-## 1. Scaffold a static frontend
+A PWA is a static site too: forge builds, hosts and ships it like any other.
+The service worker and web manifest are yours to add; forge scaffolds neither.
+
+## 1. Start a new site
 
 ```bash
-forge project new site --mod github.com/acme/site --disable orm,migrations \
-  --frontend web --output static --routes none
+forge project new site --kind site                          # Next.js static export (the default)
+forge project new site --kind site --frontend-kind vite-spa # or a Vite single-page app
 cd site
 ```
 
-- `npm run build` is a static export into `out/`. That is the scaffold default
-  (`output: "export"` in `next.config.ts`). A static runtime publishes a directory,
-  and `out/` is that directory.
-- `--routes none` generates no CRUD pages, because a site with no backend has
-  no entities. A site that has entities keeps its generated pages, which are
-  static routes (`/<entity>/view?id=…`), so the export still builds.
-- `--kind vite-spa` is the other static-capable shape (its build lands in
-  `dist/`).
+That is a frontend-only project: a starter app at the root (`package.json`,
+`src/`) plus `forge.yaml` and `deploy/kcl/{dev,staging,prod}/main.k`. No
+`go.mod`, `cmd/`, `proto/`, Dockerfile or server. `npm install` runs as part
+of it (`FORGE_SKIP_NPM_INSTALL=1` skips it), and a fresh directory outside any
+repository gets `git init` and an initial commit. `--in-place` in an empty
+directory does the same there.
 
-The scaffolded UI is starter code. Before designing the page, load
+- **`--frontend-kind nextjs`** (default): `npm run build` is a static export
+  into `out/` (`output: "export"` in `next.config.ts`), one HTML file per
+  route — what a landing page or marketing site wants for search engines and
+  link previews.
+- **`--frontend-kind vite-spa`**: a single-page app; its build lands in
+  `dist/`. (`vite-spa` is a value of `--frontend-kind`, not of `--kind`; the
+  app frontend `forge scaffold frontend --kind vite-spa` writes is wired to a
+  Go backend and is not a site.)
+- `--frontend <name>` names the frontend in the envs (default `web`).
+
+The starter page is a placeholder. Before designing the page, load
 `frontend/design`; it asks for the brief first.
+
+A new site and an adopted one (below) are the same project shape: the app at
+the root, declared `path = "."` in every env. Everything after this section
+applies to both.
 
 ### Already have the site? Adopt it where it stands
 
@@ -84,10 +101,15 @@ A frontend states where it runs in each env's `deploy/kcl/<env>/main.k`:
 | `forge.OnBucket {bucket = ...}` | your own bucket: `releases/<digest>/` + `live/`, the asset dir uploaded immutable and everything else `no-cache` (unless `cache_control` says otherwise), then CDN invalidation |
 | `forge.OnFirebase {project, site}` | `firebase deploy` |
 
-Hosted static hosting accepts only a static export, and **a static site alone
-is free** (one site per org, no billing). Past that — a second site, or any hosted
-workload or managed database beside it — the deploy needs billing and is
-queued, not refused, until it is set up (exit 7; `deploy/hosting`).
+Hosted static hosting accepts only a static export. **One hosted static site
+per org is free** (no billing, 1 GiB storage cap), and it is counted across
+environments: each env's deployed site is a site. A new site binds both
+`staging` and `prod` to hosting, so without billing one of them deploys free
+(deploy `prod` first if that is the one that must be live) and the other is
+queued with `STATIC_FREE_TIER_EXCEEDED`. Past the free site — a second env or
+site, or any hosted workload or managed database beside it — the deploy needs
+billing and is queued, not refused, until it is set up (exit 7, with the
+billing link; `deploy/hosting`).
 
 A site with no backend needs nothing else in the env. This is a complete
 hosted `prod`:
@@ -100,7 +122,7 @@ output = forge.render(forge.Bundle {
     control_plane = forge.ControlPlane {}    # Reliant cloud; needed by OnHosted
     frontends = [forge.Frontend {
         name = "web"
-        path = "frontends/web"
+        path = "."                            # the app at the project root
         public_dir = "out"                    # where the static export lands
         image = "web"                        # platform resolves its registry/org/project
         runtime = forge.OnHosted {}
@@ -115,12 +137,14 @@ that full pullable address; live deployment refuses an unresolved address.
 Offline render/admission uses explicitly fake `preflight.forge.invalid`
 release facts when no credential or release exists; those records cannot ship.
 
-With ORM and migrations disabled and no backend components, the scaffold
-contains no migration job, database, identity provider or cluster. Frontends
-added later with `forge scaffold frontend docs --routes none` get the same
-named declaration plus one binder line, so `forge env new preview --from prod
---bind docs=hosted` works for either entry point. Invalid bindings leave the
-new environment unwritten (and `--force` leaves existing files unchanged).
+A site contains no migration job, database, identity provider or cluster.
+`forge env new preview --from prod --bind web=hosted` adds another env. Invalid
+bindings leave the new environment unwritten (and `--force` leaves existing
+files unchanged).
+
+A Go project with an API can also carry a static frontend
+(`forge project new app --frontend web` declares it under `frontends/web`);
+the binding and release flow below are the same.
 
 ## Run it locally
 
@@ -128,8 +152,11 @@ new environment unwritten (and `--force` leaves existing files unchanged).
 forge env up dev    # the frontend's dev server; prints its URL
 ```
 
-No database or cluster is needed: the dev env declares only frontend dev
-servers, and `env up` starts each in its actual frontend directory.
+No database or cluster is needed: the dev env declares only the frontend's dev
+server, and `env up` starts it in the frontend's directory with `PORT` set. A
+site forge started mirrors the browser console to
+`.forge/logs/dev/frontend_<name>.log`; an adopted app does once it calls
+`installDevLogging()` from `@reliantlabs/forge-web-runtime` (load `debug`).
 
 ## 3. Ship it
 
@@ -157,8 +184,8 @@ A hosted deploy ships only what a release froze, never a local build. Without a
 release it refuses, and the error prints the cut-then-deploy command.
 Promotion re-points another env at the same digest:
 `forge env deploy staging v0.1.0` and then `forge env deploy prod v0.1.0` ship
-byte-identical sites. Recovery rolls forward to a new release; there is no
-rollback.
+byte-identical sites (two hosted envs are two sites: the second needs billing,
+above). Recovery rolls forward to a new release; there is no rollback.
 
 **No account at all?** `forge env deploy prod --claimable` ships the same site
 with no signup and prints its URL plus a claim link to hand your user; unless
@@ -192,13 +219,25 @@ A value that must stay secret belongs on a service (`forge secret set`).
 
 ## Growing a backend
 
-`forge scaffold service <entity>` adds the Go API to the same project, and a
-`fw.Workload` bound `forge.OnHosted {}` runs it beside the site. The frontend
-reaches it through `runtime_config` (`workloadURL`). The CRUD pages generated
-for the new entities are static routes, so the site still exports. Write your
-own pages the same way: put the id in the query string and never use a `[id]`
-segment (`frontend/pages`). A frontend scaffolded by forge ≤ v0.1.43 has
-`[id]` pages; `forge skill load migrations/v0.1.44` converts them.
+A site has no Go module, so `forge scaffold service` (and every other scaffold
+that writes Go or proto) refuses in it, before writing anything, and says what
+to do instead. Give the API its own forge project beside the site:
+
+```bash
+forge project new site-api --service waitlist   # a Go API, its own envs and releases
+```
+
+Deploy it, then point the site at its URL: a build-time `env_vars` entry
+(`NEXT_PUBLIC_API_URL` / `VITE_API_URL`) or a `runtime_config` value on the
+site's frontend in each env. The site keeps shipping as a static export.
+
+A project that started as an app (`--service`, with `frontends/<name>`) grows
+the other way: `forge scaffold service <entity>` adds to its API, and its
+frontend reaches it through `runtime_config` (`forge.WorkloadURL`). The CRUD
+pages generated for its entities are static routes, so it still exports. Write
+your own pages the same way: put the id in the query string and never use a
+`[id]` segment (`frontend/pages`). A frontend scaffolded by forge ≤ v0.1.43
+has `[id]` pages; `forge skill load migrations/v0.1.44` converts them.
 
 Two cases leave static hosting behind: server rendering, and request-time
 server APIs such as server actions, middleware, and `cookies()`. For those,

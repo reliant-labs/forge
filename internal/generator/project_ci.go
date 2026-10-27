@@ -7,6 +7,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -46,7 +47,8 @@ func (g *ProjectGenerator) generateCIFiles() error {
 	var frontends []templates.FrontendCIConfig
 	for _, fe := range cfg.Frontends {
 		if p, ok := fe.Dir(g.Path); ok {
-			frontends = append(frontends, templates.FrontendCIConfig{Name: fe.Name, Path: p})
+			frontends = append(frontends, templates.FrontendCIConfig{Name: fe.Name, Path: p,
+				PackageManager: frontenddeps.PackageManagerOrScaffold(filepath.Join(g.Path, p))})
 		}
 	}
 

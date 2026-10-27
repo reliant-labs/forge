@@ -31,7 +31,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -47,6 +46,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/configproto"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/nodeengine"
@@ -132,6 +132,20 @@ func addNounCmds(cmd *cobra.Command, f *factory.Factory) {
 // only makes sense for server-shaped projects — CLI and library kinds have
 // no Connect-RPC server to attach handlers to.
 func requireServiceKind(root, action string) error {
+	// A static site (`forge project new --kind site`) has no Go module: its
+	// frontend is the app at its root and nothing else is there — the shape
+	// config.DiscoverRootFrontend admits. Every scaffold behind this check
+	// writes Go and proto into a module the site does not have, and used to
+	// fail half-way through its generate, leaving proto/ behind. Refuse
+	// first, and say what to do instead.
+	if _, site := config.DiscoverRootFrontend(root); site {
+		return cliutil.UserErr(fmt.Sprintf("forge scaffold %s", action),
+			fmt.Sprintf("'forge scaffold %s' needs a Go module, and this project is a static site (no go.mod): its frontend is the app at the project root, with no backend", action),
+			"",
+			"give the API its own forge project beside the site — 'forge project new <name>-api --service <entity>' — deploy it, "+
+				"and point the site at its URL with a build-time env_vars entry (NEXT_PUBLIC_* / VITE_*) or runtime_config "+
+				"on the frontend in deploy/kcl/<env>/main.k; 'forge skill load deploy/static-site' (Growing a backend)")
+	}
 	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
@@ -2062,19 +2076,14 @@ func runFrontendNpmInstall(ctx context.Context, frontendDir string) error {
 	if os.Getenv("FORGE_SKIP_NPM_INSTALL") != "" {
 		return nil
 	}
+	pm := frontenddeps.PackageManager(frontendDir, "")
 	if err := nodeengine.Check(frontendDir); err != nil {
-		return fmt.Errorf("npm install not run: %w", err)
+		return fmt.Errorf("%s install not run: %w", pm, err)
 	}
-	cmd := exec.CommandContext(ctx, "npm", "install")
-	cmd.Dir = frontendDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	fmt.Printf("\nRunning `npm install` in %s ...\n", frontendDir)
-	if err := cmd.Run(); err != nil {
-		if errors.Is(err, exec.ErrNotFound) {
-			return fmt.Errorf("npm not found on PATH; run `npm install` in %s manually", frontendDir)
-		}
-		return fmt.Errorf("npm install failed in %s: %v (run it manually to see full output)", frontendDir, err)
+	install := frontenddeps.InstallCommand(frontendDir, "", false)
+	fmt.Printf("\nRunning `%s` in %s ...\n", install, frontendDir)
+	if err := frontenddeps.Install(ctx, frontendDir, "", false); err != nil {
+		return fmt.Errorf("%s failed in %s: %v (run it there to see full output)", install, frontendDir, err)
 	}
 	return nil
 }

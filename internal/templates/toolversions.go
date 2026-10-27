@@ -33,6 +33,22 @@ const GolangciLintVersion = "v2.14.0"
 // on its own, one `npm install` at a time.
 const PrettierVersion = "3.5.3"
 
+// PnpmVersion is the pnpm release a scaffolded frontend pins in package.json
+// `packageManager`, and so the one every install of it runs: corepack and
+// pnpm itself switch to the pinned version, the frontend Dockerfile installs
+// it, and the scaffolded workflows' pnpm/action-setup reads it from the same
+// field. TestPnpmVersionIsPinnedEverywhere
+// (internal/generator/pnpm_pin_test.go) fails when a template or one of
+// forge's own workflows names another.
+//
+// pnpm, not npm, because its content-addressed store hard-links one copy of a
+// package into every checkout that uses it: on a machine with many worktrees
+// a frontend's node_modules costs a few MiB of its own instead of ~900 MB
+// each. Exact, never a range: pnpm majors change settings' homes and
+// defaults (11 stopped reading `overrides` from package.json; 12 fails an
+// install on an unapproved build script).
+const PnpmVersion = "12.15.0"
+
 // BufVersion is the one buf release forge pins wherever buf's output must be
 // reproducible: the scaffolded ci.yml installs it (bufbuild/buf-setup-action),
 // and `forge ci gate` holds the buf on PATH to it before verify-generated and
@@ -50,7 +66,7 @@ const BufVersion = "1.50.0"
 // covers them. Scaffolded projects install no KCL at all: forge renders
 // through the embedded runtime. TestKCLVersionIsPinnedEverywhere
 // (internal/generator/kcl_pin_test.go) fails when any of those sites differs.
-const KCLVersion = "v0.13.1"
+const KCLVersion = "v0.13.2"
 
 // GovulncheckVersion is the govulncheck release `forge ci gate` installs
 // (into forge's tools cache) when the one on PATH is not it.

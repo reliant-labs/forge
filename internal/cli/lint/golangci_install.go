@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"go/version"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 
 	"golang.org/x/mod/semver"
@@ -91,5 +93,25 @@ func InstallGolangciLint(ctx context.Context, dir, gobin string) (string, error)
 	// filesystem; a golangci-lint already there is replaced only by a
 	// complete binary.
 	tc := golangciToolchain{install: installGolangciLint, pin: templates.GolangciLintVersion}
-	return toolchain, installAtomically(ctx, tc, gobin, gobin, toolchain)
+	return toolchain, installIntoGOBIN(ctx, tc, gobin, toolchain)
+}
+
+// installIntoGOBIN builds into a staging directory under gobin and renames
+// the finished binary over gobin's golangci-lint, so a process starting it at
+// that moment runs the old binary or the new one, never a half-written file.
+// gobin is the user's bin directory, not forge's tool cache, so it is a
+// rename of one file rather than a toolcache entry.
+func installIntoGOBIN(ctx context.Context, tc golangciToolchain, gobin, toolchain string) error {
+	if err := os.MkdirAll(gobin, 0o755); err != nil {
+		return err
+	}
+	stage, err := os.MkdirTemp(gobin, ".build-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(stage) }()
+	if err := tc.install(ctx, stage, toolchain, tc.pin); err != nil {
+		return err
+	}
+	return os.Rename(filepath.Join(stage, golangciExeName()), filepath.Join(gobin, golangciExeName()))
 }

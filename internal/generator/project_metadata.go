@@ -44,14 +44,11 @@ func (g *ProjectGenerator) writeProjectMetadata() error {
 		return fmt.Errorf("failed to write .reliant/README.md: %w", err)
 	}
 
-	if err := writeAgentSurfaces(g.Path, g.Name, g.Harness); err != nil {
+	if err := writeAgentSurfaces(g.Path, g.Name, g.Harness, false); err != nil {
 		return err
 	}
 
-	templateData := struct {
-		Name string
-		CLI  string
-	}{Name: g.Name, CLI: cliName()}
+	templateData := ProjectMemoryData{Name: g.Name, CLI: cliName()}
 
 	// User-owned MCP config — write only if absent.
 	if err := writeIfAbsent(filepath.Join(g.Path, ".mcp.json"), "mcp.json.tmpl", templateData); err != nil {
@@ -65,6 +62,24 @@ func (g *ProjectGenerator) writeProjectMetadata() error {
 	}
 
 	return nil
+}
+
+// ProjectMemoryData is what the framework memory template
+// (project/reliant.md.tmpl) renders from — on disk for a harness that reads a
+// file, and live for reliant (cli.RenderProjectMemory).
+type ProjectMemoryData struct {
+	// Name is the project's name (forge.yaml `name:`).
+	Name string
+	// CLI is how the user invokes forge: "forge", or "reliant forge" when
+	// embedded.
+	CLI string
+	// Site reports a static site: a project with no Go module, made of the
+	// app at its root and its deploy envs (`forge project new --kind site`).
+	// Its memory is the frontend-only quick reference; every other project's
+	// is the Go one. Derived from the tree (config.DiscoverRootFrontend),
+	// like every other fact about a project's shape, so no flag can disagree
+	// with what is on disk.
+	Site bool
 }
 
 // writeProjectJSON writes the immutable project metadata JSON under .reliant/.
@@ -137,12 +152,11 @@ func (h Harness) agentFiles() []agentFile {
 // writeAgentSurfaces writes the harness's agent files under root, each only if
 // absent: they are user-owned from birth. Reliant needs no file of its own
 // (it renders the guide in memory from forge.yaml) but still gets AGENTS.md
-// for every other tool that opens the project.
-func writeAgentSurfaces(root, name string, h Harness) error {
-	data := struct {
-		Name string
-		CLI  string
-	}{Name: name, CLI: cliName()}
+// for every other tool that opens the project. site renders AGENTS.md as a
+// static site's memory (the frontend-only quick reference) rather than the Go
+// one; the harness pointers import it, so they follow.
+func writeAgentSurfaces(root, name string, h Harness, site bool) error {
+	data := ProjectMemoryData{Name: name, CLI: cliName(), Site: site}
 	for _, f := range h.agentFiles() {
 		dest := filepath.Join(root, f.path)
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {

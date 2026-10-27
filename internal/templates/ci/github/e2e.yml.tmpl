@@ -39,12 +39,19 @@ jobs:
           go-version-file: go.mod
 {{- if .HasFrontends}}
 
+{{- if and .FrontendPath (eq .Frontend.PM "pnpm")}}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: "{{.FrontendPath}}/package.json"
+{{- end}}
+
       - uses: actions/setup-node@v4
         with:
 {{- if .FrontendPath}}
           node-version-file: "{{.FrontendPath}}/package.json"
-          cache: "npm"
-          cache-dependency-path: "{{.FrontendPath}}/package-lock.json"
+          cache: "{{.Frontend.PM}}"
+          cache-dependency-path: "{{.FrontendPath}}/{{.Frontend.Lockfile}}"
 {{- else}}
           node-version: "20"
 {{- end}}

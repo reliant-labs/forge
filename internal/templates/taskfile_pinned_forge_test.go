@@ -101,7 +101,7 @@ func TestServiceTaskfileRunsUnderTask(t *testing.T) {
 		}
 	}
 	// The pinned forge reports two frontends, one at a KCL-declared path.
-	fake("pinned-forge", `[ "$1 $2" = "project frontends" ] && printf 'frontends/admin\nweb\n'`)
+	fake("pinned-forge", `[ "$1 $2" = "project frontends" ] && printf 'npm:frontends/admin\nnpm:web\n'`)
 	fake("npm", `echo "$(basename "$PWD") $*" >> `+marks+"\n")
 	for _, fe := range []string{"frontends/admin", "web"} {
 		if err := os.MkdirAll(filepath.Join(dir, fe), 0o755); err != nil {

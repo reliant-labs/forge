@@ -136,8 +136,16 @@ func TestCloudIdentityWire(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(calls) != 3 || calls[2] != "/"+tc.proc {
-				t.Fatalf("calls = %v", calls)
+			// The opaque bearer is revalidated against the requested organization
+			// before the identity operation; retain that fail-closed boundary.
+			wantCalls := []string{
+				"/" + cloud.ProcGetOrganization,
+				"/controlplane.v1.DeployService/ListEnvironments",
+				"/" + cloud.ProcGetOrganization,
+				"/" + tc.proc,
+			}
+			if !reflect.DeepEqual(calls, wantCalls) {
+				t.Fatalf("calls = %v, want %v", calls, wantCalls)
 			}
 			for _, want := range tc.want {
 				if !strings.Contains(out, want) {
@@ -148,6 +156,44 @@ func TestCloudIdentityWire(t *testing.T) {
 				t.Error("output leaked credential or unrecognized secret fields")
 			}
 		})
+	}
+}
+
+func TestCloudIdentityRejectsOrganizationChangeBeforeEffect(t *testing.T) {
+	var calls []string
+	orgLookups, effects := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.URL.Path)
+		if r.Header.Get("Authorization") != "Bearer opaque-human-session" {
+			t.Error("organization verification lost the original opaque bearer")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/" + cloud.ProcGetOrganization:
+			orgLookups++
+			org := "original-org"
+			if orgLookups > 1 {
+				org = "different-org"
+			}
+			_ = json.NewEncoder(w).Encode(cloud.OrganizationReply(org))
+		case "/controlplane.v1.DeployService/ListEnvironments":
+			_, _ = w.Write([]byte(`{"environments":[{"id":"exact-env","name":"prod","project":"shop"}]}`))
+		default:
+			effects++
+			t.Errorf("organization mismatch reached an identity operation: %s", r.URL.Path)
+			_, _ = w.Write([]byte(`{"userId":"unexpected","created":true}`))
+		}
+	}))
+	defer srv.Close()
+	identityTestTarget(t, srv.URL)
+	t.Setenv("IDENTITY_TEST_TOKEN", "opaque-human-session")
+	out, err := executeIdentity("invite", "prod", "--email", "recipient@example.com", "--role", "member")
+	if err == nil || !strings.Contains(err.Error(), "does not match selected organization") || out != "" {
+		t.Fatalf("out=%q err=%v: organization change must fail before success output", out, err)
+	}
+	want := []string{"/" + cloud.ProcGetOrganization, "/controlplane.v1.DeployService/ListEnvironments", "/" + cloud.ProcGetOrganization}
+	if !reflect.DeepEqual(calls, want) || effects != 0 {
+		t.Fatalf("mismatch must stop before effect: calls=%v effects=%d", calls, effects)
 	}
 }
 

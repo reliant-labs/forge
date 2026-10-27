@@ -9,6 +9,8 @@ Self-sufficient for greenfield work: empty directory to a running app without
 loading another skill. Depth is named at the point you would need it — load it
 then, not before.
 
+pnpm: `migrations/v0.1.47/pnpm`.
+
 ## Two paths, both first-class
 
 **A frontend with no backend of its own** — a landing page, marketing site,
@@ -348,7 +350,7 @@ forge skill search migration  # find one by keyword
 - Parallel agents in one checkout may each run `forge generate` and `forge scaffold`. Every run takes the project's lock (`.forge/forge.lock`); a second run prints one `waiting for pid N` line and starts when the first finishes. The OS releases the lock when its holder exits, so never delete the file.
 - Declare schema in migrations, never in proto; the ORM follows the schema.
 - Use `forge scaffold` to scaffold — never copy-paste an existing directory.
-- Hit a defect in forge itself — a command that fails, hangs or generates something wrong, or a wrong lint, skill or doc? Report it: `forge report-bug --severity <low|medium|high|critical> --title "<one line>" --actual "<exact error>" --evidence "<commands, output, paths>"`. Not for bugs in the user's own code, their failing tests, or your own mistakes; never put credentials or file contents in it. It is the only way forge sends anything (`--dry-run` shows exactly what).
+- Hit a defect in forge itself — a command that fails, hangs or generates something wrong, or a wrong lint, skill or doc? Report it: `forge report-bug --severity <low|medium|high|critical> --title "<one line>" --actual "<exact error>" --evidence "<commands, output, paths>"` (or the `report_bug` tool of `forge mcp`). Not for bugs in the user's own code, their failing tests, or your own mistakes; never put credentials or file contents in it. It is the only way forge sends anything (`--dry-run` shows exactly what).
 - Uncertain proto/migration/annotation syntax: draft it, run `forge generate`, read the error, fix. Never reverse-engineer forge's `internal/**` source.
 - One service per proto package; its owned and generated files co-locate in one `internal/handlers/<svc>/`.
 - Use `task test` (what CI runs), not raw `go test`; iterate on `task test:short -- ./internal/<pkg>/...`.

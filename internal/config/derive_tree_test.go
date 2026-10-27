@@ -191,6 +191,10 @@ func TestDeriveFrontendWorkspacesFromTree(t *testing.T) {
 	if !loadTree(t, root).IsFrontendWorkspacesEnabled() {
 		t.Error("pnpm-workspace.yaml at the root must turn the workspaces layout on")
 	}
+	write(t, root, "pnpm-workspace.yaml", "# forge-dev-workspace-root: GITIGNORED, written by a DEV build of forge.\npackages:\n - frontends/web\n")
+	if loadTree(t, root).IsFrontendWorkspacesEnabled() {
+		t.Error("a machine-local pnpm dev bridge must not opt into shared API/hooks generation")
+	}
 }
 
 func TestDeriveFeatures_KindMatrix(t *testing.T) {

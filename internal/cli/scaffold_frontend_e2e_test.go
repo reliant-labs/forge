@@ -119,7 +119,7 @@ func assertStaticLinksResolve(t *testing.T, outDir string, links map[string]stri
 // under test compiles against forge/pkg from the same commit.
 func TestE2EScaffoldFrontendBuilds(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
-	requireTool(t, "node", "npm")
+	requireTool(t, "node", "npm", "pnpm")
 
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
@@ -169,13 +169,13 @@ func TestE2EScaffoldFrontendBuilds(t *testing.T) {
 	// up front so parallel tests do not race that bootstrap.
 	prebuildWebRuntimeE2E(t)
 	runCmdTimeout(t, webDir, 5*time.Minute,
-		"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
+		"pnpm", "install", "--no-frozen-lockfile", "--prefer-offline")
 
 	// npm run build — the real regression target. If this fails, the
 	// output will contain either a Next.js error (template issue) or a
 	// missing import (codegen regression).
 	runCmdTimeout(t, webDir, 5*time.Minute,
-		"npm", "run", "build")
+		"pnpm", "run", "build")
 
 	// The export holds one page per generated route, and every URL the
 	// pages link to resolves to its own page — served the way hosted
@@ -193,7 +193,7 @@ func TestE2EScaffoldFrontendBuilds(t *testing.T) {
 	// npm test — the scaffolded vitest suite must be green on a pristine
 	// project with one entity.
 	runCmdTimeout(t, webDir, 5*time.Minute,
-		"npm", "test")
+		"pnpm", "test")
 
 	// Strict type-check as a belt-and-braces guard — catches the cases
 	// where Next's build produces a bundle despite type errors.

@@ -16,6 +16,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 )
 
 // The npm half of the vulnerability gate.
@@ -174,6 +175,71 @@ func parseNPMAuditJSON(r io.Reader) ([]vulnFinding, error) {
 	return out, nil
 }
 
+// pnpmAuditReport is the subset of `pnpm audit --json` this gate reads: the
+// npm v6 audit shape, an advisories map plus metadata.
+type pnpmAuditReport struct {
+	Advisories map[string]struct {
+		Title              string `json:"title"`
+		ModuleName         string `json:"module_name"`
+		VulnerableVersions string `json:"vulnerable_versions"`
+		Severity           string `json:"severity"`
+		GitHubAdvisoryID   string `json:"github_advisory_id"`
+		URL                string `json:"url"`
+	} `json:"advisories"`
+	Metadata *struct {
+		Vulnerabilities map[string]int `json:"vulnerabilities"`
+	} `json:"metadata"`
+}
+
+// parsePNPMAuditJSON reduces one `pnpm audit --json` report to its
+// advisories, keyed by GHSA ID exactly as parseNPMAuditJSON keys npm's, so
+// exemptions name the same IDs whichever manager a frontend uses.
+func parsePNPMAuditJSON(r io.Reader) ([]vulnFinding, error) {
+	var report pnpmAuditReport
+	if err := json.NewDecoder(r).Decode(&report); err != nil {
+		return nil, fmt.Errorf("parse pnpm audit JSON output: %w", err)
+	}
+	// No metadata is not a clean report: it is a shape this parser does not
+	// understand, and reading it as "no vulnerabilities" would be a pass
+	// nobody verified.
+	if report.Metadata == nil || report.Metadata.Vulnerabilities == nil {
+		return nil, fmt.Errorf("pnpm audit report has no metadata.vulnerabilities — refusing an unverified pass")
+	}
+	total := 0
+	for _, n := range report.Metadata.Vulnerabilities {
+		total += n
+	}
+	byID := map[string]vulnFinding{}
+	for key, adv := range report.Advisories {
+		if adv.Severity == "" || adv.ModuleName == "" {
+			return nil, fmt.Errorf("pnpm audit advisory %s is unreadable", key)
+		}
+		id := canonicalAdvisoryID(adv.GitHubAdvisoryID)
+		if id == "" {
+			id = canonicalAdvisoryID(path.Base(strings.TrimRight(adv.URL, "/")))
+		}
+		if advisoryEcosystem(id) != ecosystemNPM {
+			id = adv.URL // still blocks; see parseNPMAuditJSON
+		}
+		f, seen := byID[id]
+		if !seen {
+			f = vulnFinding{ID: id, Summary: adv.Title, Module: adv.ModuleName, Range: adv.VulnerableVersions, Severity: adv.Severity, URL: adv.URL}
+		} else if npmSeverityRank(adv.Severity) > npmSeverityRank(f.Severity) {
+			f.Severity = adv.Severity
+		}
+		byID[id] = f
+	}
+	if total > 0 && len(byID) == 0 {
+		return nil, fmt.Errorf("pnpm audit counted %d vulnerabilities but listed no advisories — refusing an unverified pass", total)
+	}
+	out := make([]vulnFinding, 0, len(byID))
+	for _, f := range byID {
+		out = append(out, f)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
 // mergeNPMFindings folds one frontend's findings into the project-wide set,
 // recording which frontends carry each advisory. Exemptions apply to the
 // project, so an advisory present in two frontends is one finding, and an
@@ -273,10 +339,21 @@ func ciRunNPMAudit(ctx context.Context, cfg *config.ProjectConfig, exemptions []
 	return what, nil
 }
 
-// runNPMAudit runs `npm audit --json` in dir and parses its report.
+// runNPMAudit runs the frontend's own package manager's audit (`npm audit
+// --json`, or `pnpm audit --json` for a pnpm project — npm audit needs a
+// package-lock.json and fails ENOLOCK without one) in dir and parses its
+// report. Both exit 1 when they found advisories, which is not a failure.
 func runNPMAudit(ctx context.Context, dir string) ([]vulnFinding, error) {
 	var stdout bytes.Buffer
-	cmd := exec.CommandContext(ctx, "npm", "audit", "--json")
+	runner := frontenddeps.PackageManager(dir, "")
+	parse := parseNPMAuditJSON
+	if runner == "pnpm" {
+		parse = parsePNPMAuditJSON
+	} else {
+		runner = "npm"
+	}
+	argv := frontenddeps.ExecArgv(dir, runner, "audit", "--json")
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
 	cmd.Stdout = &stdout
 	cmd.Stderr = os.Stderr
@@ -288,7 +365,7 @@ func runNPMAudit(ctx context.Context, dir string) ([]vulnFinding, error) {
 			return nil, fmt.Errorf("npm audit did not complete: %w", runErr)
 		}
 	}
-	findings, err := parseNPMAuditJSON(&stdout)
+	findings, err := parse(&stdout)
 	if err != nil {
 		return nil, err
 	}

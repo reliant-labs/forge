@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -180,8 +181,7 @@ func keepHiddenLockfile(runner, lockDir string) func() error {
 // successful refresh has nothing to say.
 func runQuiet(ctx context.Context, runner, dir string, args []string) error {
 	var buf bytes.Buffer
-	cmd := exec.CommandContext(ctx, runner, args...)
-	cmd.Dir = dir
+	cmd := command(ctx, dir, runner, args...)
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 	if err := cmd.Run(); err != nil {
@@ -365,12 +365,30 @@ func pnpmLockRanges(lock Lock, manifestDir string) (map[string]string, bool, err
 		DevDependencies      map[string]entry `yaml:"devDependencies"`
 		OptionalDependencies map[string]entry `yaml:"optionalDependencies"`
 	}
-	var doc struct {
+	type document struct {
 		Importers  map[string]importer `yaml:"importers"`
 		Specifiers map[string]string   `yaml:"specifiers"`
 	}
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, false, fmt.Errorf("parse %s: %w", lock.Path(), err)
+	// pnpm 12 writes TWO YAML documents when package.json pins pnpm itself
+	// (packageManager / devEngines): the first records only the pinned pnpm
+	// (packageManagerDependencies), the second is the project's lockfile.
+	// yaml.Unmarshal decodes the first alone, which made every dependency read
+	// as "the lockfile does not list it". The project's document is the last
+	// one that records importers or specifiers.
+	var doc document
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	for {
+		var d document
+		err := dec.Decode(&d)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("parse %s: %w", lock.Path(), err)
+		}
+		if len(d.Importers) > 0 || len(d.Specifiers) > 0 {
+			doc = d
+		}
 	}
 	out := map[string]string{}
 	if len(doc.Importers) > 0 {

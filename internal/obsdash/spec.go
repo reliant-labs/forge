@@ -130,11 +130,22 @@ func Build(in Input) Spec {
 type ProjectPart struct {
 	// Input retains reusable generation fragments; selected-env assembly fills
 	// Processes from rendered KCL, never from stale disk process parts.
-	Input      *Input      `json:"input,omitempty"`
+	Input      *Fragments  `json:"input,omitempty"`
 	Version    string      `json:"version"`
 	Project    string      `json:"project"`
 	Overview   Dashboard   `json:"overview"`
 	Dashboards []Dashboard `json:"dashboards"`
+}
+
+// Fragments holds only project-wide generation inputs. Per-service alert
+// inputs live in separate parts, and dashboard RPC ownership comes from the
+// rendered workloads (Process.RPCServices). Duplicating the service inventory
+// here would make independent service additions change the same shared JSON;
+// the merge driver keeps one side's certified render, losing the other addition.
+type Fragments struct {
+	Frontends   []string
+	HasDatabase bool
+	Funnels     []FrontendFunnel
 }
 
 // ProcessPart holds one deployed executable/role's dashboard and saved searches.
@@ -164,8 +175,7 @@ type Process struct {
 // BuildParts derives the project's Spec as process parts, sorted by process
 // identity. RPC-free workers and gateways retain their runtime/workload panels.
 func BuildParts(in Input) (ProjectPart, []ProcessPart) {
-	fragments := in
-	fragments.Processes = nil
+	fragments := Fragments{Frontends: in.Frontends, HasDatabase: in.HasDatabase, Funnels: in.Funnels}
 	project := ProjectPart{
 		Input:    &fragments,
 		Version:  PartsVersion,

@@ -29,17 +29,23 @@ func putExecEntry(t *testing.T, root, shard string, n int, age time.Duration) (d
 	return dir, bin
 }
 
+type execCacheFixture struct {
+	r                      Runner
+	root, liveDir, idleDir string
+	out                    *strings.Builder
+}
+
 // execCache is a cache where everything is long past the floor, plus two
 // executable entries: one a live process runs, one nothing runs.
-func execCache(t *testing.T, running func(root string) []LiveExecutable, listErr error) (r Runner, root, liveDir, idleDir string, out *strings.Builder) {
+func execCache(t *testing.T, running func(root string) []LiveExecutable, listErr error) execCacheFixture {
 	t.Helper()
-	root = t.TempDir()
+	root := t.TempDir()
 	makeBuildCache(t, root)
 	putEntry(t, root, "aa", hexName(1, "-a"), 100, 100*time.Hour)
 	liveDir, liveBin := putExecEntry(t, root, "bb", 2, 100*time.Hour)
-	idleDir, _ = putExecEntry(t, root, "cc", 3, 100*time.Hour)
-	out = &strings.Builder{}
-	r = goRunner(t, out)
+	idleDir, _ := putExecEntry(t, root, "cc", 3, 100*time.Hour)
+	out := &strings.Builder{}
+	r := goRunner(t, out)
 	r.GoCacheRoot = root
 	r.Policy.DeleteRatePerSec = 1_000_000_000
 	r.Policy.MaxDeletesPerPass = 1_000_000
@@ -49,16 +55,17 @@ func execCache(t *testing.T, running func(root string) []LiveExecutable, listErr
 		}
 		return running(liveBin), nil
 	}
-	return r, root, liveDir, idleDir, out
+	return execCacheFixture{r: r, root: root, liveDir: liveDir, idleDir: idleDir, out: out}
 }
 
 // An old executable entry that a live process runs survives every age and
 // size rule; the idle one beside it, and ordinary entries, go.
 func TestGoCacheTrimNeverRemovesALiveExecutableWhateverItsAge(t *testing.T) {
-	r, root, liveDir, idleDir, out := execCache(t, func(bin string) []LiveExecutable {
+	f := execCache(t, func(bin string) []LiveExecutable {
 		// Older than goCacheLongLived: the age lease alone would ignore it.
 		return []LiveExecutable{{Path: bin, Age: 40 * time.Hour}}
 	}, nil)
+	r, root, liveDir, idleDir, out := f.r, f.root, f.liveDir, f.idleDir, f.out
 	if err := r.SharedGoCache(true); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -101,7 +108,8 @@ func TestCacheEntryOfExecutable(t *testing.T) {
 // Fail closed: when /proc cannot be read, every -d entry is kept, however old,
 // while ordinary entries are still trimmed.
 func TestGoCacheTrimKeepsEveryExecutableEntryWhenProcIsUnreadable(t *testing.T) {
-	r, root, liveDir, idleDir, out := execCache(t, nil, errors.New("open /proc: permission denied"))
+	f := execCache(t, nil, errors.New("open /proc: permission denied"))
+	r, root, liveDir, idleDir, out := f.r, f.root, f.liveDir, f.idleDir, f.out
 	if err := r.SharedGoCache(true); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -121,7 +129,8 @@ func TestGoCacheTrimKeepsEveryExecutableEntryWhenProcIsUnreadable(t *testing.T) 
 // The control: with nothing running, both executable entries go. Proves the
 // guard, not the floor, kept them.
 func TestGoCacheTrimWithNoLiveExecutableRemovesOldExecutableEntries(t *testing.T) {
-	r, root, _, _, out := execCache(t, func(string) []LiveExecutable { return nil }, nil)
+	f := execCache(t, func(string) []LiveExecutable { return nil }, nil)
+	r, root, out := f.r, f.root, f.out
 	if err := r.SharedGoCache(true); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -132,9 +141,10 @@ func TestGoCacheTrimWithNoLiveExecutableRemovesOldExecutableEntries(t *testing.T
 
 // Dry run reports the same decision without removing anything.
 func TestGoCacheDryRunListsNoLiveExecutable(t *testing.T) {
-	r, _, liveDir, idleDir, out := execCache(t, func(bin string) []LiveExecutable {
+	f := execCache(t, func(bin string) []LiveExecutable {
 		return []LiveExecutable{{Path: bin, Age: time.Hour}}
 	}, nil)
+	r, liveDir, idleDir, out := f.r, f.liveDir, f.idleDir, f.out
 	if err := r.SharedGoCache(false); err != nil {
 		t.Fatal(err)
 	}

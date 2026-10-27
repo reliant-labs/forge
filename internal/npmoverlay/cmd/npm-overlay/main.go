@@ -60,7 +60,7 @@ func run(packs []string, envFile, upstream string) error {
 	if err != nil {
 		return err
 	}
-	defer o.Close()
+	defer func() { _ = o.Close() }()
 	if err := o.Pack(); err != nil {
 		return err
 	}

@@ -379,7 +379,7 @@ func TestHostedOnlyDashboardsAreNotWrittenLocally(t *testing.T) {
 			t.Errorf("%s was written to the project: it has nothing to draw under forge env up and is constant library text", name)
 		}
 	}
-	for _, name := range []string{"shop-overview_gen.json", "shop-process-shop-api_gen.json"} {
+	for _, name := range []string{"shop-overview.json", "shop-process-shop-api_gen.json"} {
 		if _, err := os.Stat(filepath.Join(dir, DashboardsDir, name)); err != nil {
 			t.Errorf("%s is missing: %v", name, err)
 		}

@@ -102,6 +102,14 @@ func Write(projectDir string, in Input, cs *checksums.FileChecksums) ([]string, 
 			continue
 		}
 		rel := DashboardsDir + "/" + f.File
+		if d.ID == "overview" {
+			owned := OverridePath(sp.Project, d)
+			if err := writeOwnedOverview(projectDir, owned, rel, f.Content, cs); err != nil {
+				return nil, err
+			}
+			out = append(out, owned)
+			continue
+		}
 		if _, err := os.Stat(filepath.Join(projectDir, OverridePath(sp.Project, d))); err == nil {
 			if err := retireGenerated(projectDir, rel, cs); err != nil {
 				return nil, err
@@ -172,6 +180,58 @@ func emitJSON(emit func(string, []byte) error, rel string, v any) error {
 		return err
 	}
 	return emit(rel, append(b, '\n'))
+}
+
+// writeOwnedOverview gives the constant local overview the same ownership as
+// an explicit dashboard override. Existing generated edits are migrated verbatim
+// before retiring their old name; an existing owned override always wins.
+func writeOwnedOverview(root, owned, legacy string, content []byte, cs *checksums.FileChecksums) error {
+	old, err := os.ReadFile(filepath.Join(root, legacy))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err == nil {
+		content = old
+	}
+	_, err = checksums.WriteScaffoldIfMissing(root, owned, content)
+	if err != nil {
+		return err
+	}
+	// A deliberately deleted scaffold must not resurrect or erase its legacy
+	// source. Only retire after the owned destination is present.
+	if _, err := os.Stat(filepath.Join(root, owned)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if old != nil {
+		pristine := cs != nil && cs.Unstampable[legacy] == checksums.BodyHash(old)
+		// The pre-emitter guard may already have quarantined this legacy
+		// path. Record the explicit one-way ownership transfer so final
+		// adjudication does not demand a render for a now user-owned file.
+		if cs != nil {
+			if err := cs.DisownPaths(root, []string{legacy}, "constant overview migrated to owned scaffold"); err != nil {
+				return err
+			}
+		}
+		destination, err := os.ReadFile(filepath.Join(root, owned))
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(destination, old) && !pristine {
+			checksums.RecordPreservedOwnershipTransfer(root, legacy, owned, old)
+			return nil // Two independent edits: preserve both, never discard one.
+		}
+		checksums.RecordPreservedOwnershipTransfer(root, legacy, owned, old)
+		if err := checksums.RemoveJournaled(filepath.Join(root, legacy)); err != nil {
+			return err
+		}
+		if cs != nil {
+			delete(cs.Unstampable, legacy)
+		}
+	}
+	return nil
 }
 
 // retireGenerated removes rel when it is a pristine forge render.

@@ -64,6 +64,12 @@ const smokeOpenBaoImage = "quay.io/openbao/openbao:2.6.2"
 
 const kubectlShim = `#!/bin/bash
 # A directory-backed stand-in for the four kubectl questions converge.sh asks.
+# This fake API's state is shared with the host test runner, whose UID need not
+# match the container's. Do not inherit the client's credential-protecting 077
+# umask: the host must read the objects and remove them (including nested dirs).
+# Only disposable fixture data lives here; the real Kubernetes API has no such
+# shared-filesystem boundary.
+umask 000
 S=/state
 ns=""; args=()
 while [ $# -gt 0 ]; do

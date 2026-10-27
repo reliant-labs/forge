@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -17,13 +16,12 @@ const golangciInterfaceBloatDefault = 10
 var golangciConfigNames = []string{".golangci.yml", ".golangci.yaml"}
 
 // lintConfig is what narrow-deps reads of the project's golangci-lint
-// configuration: the goimports local prefixes its output must be grouped by
-// and the interfacebloat limit its output is judged against.
+// configuration: the interfacebloat limit its output is judged against. (The
+// formatting its output must meet is checksums.RewriteGoFormat, shared with the
+// codemods.)
 type lintConfig struct {
 	found  bool
 	source string // project-relative config file; empty when none was found
-
-	localPrefixes []string
 
 	interfaceBloatOn  bool
 	interfaceBloatMax int
@@ -49,9 +47,6 @@ func readLintConfig(dir string) lintConfig {
 				Settings  linterSettings `yaml:"settings"`
 			} `yaml:"linters"`
 			LintersSettings linterSettings `yaml:"linters-settings"`
-			Formatters      struct {
-				Settings linterSettings `yaml:"settings"`
-			} `yaml:"formatters"`
 		}
 		if yaml.Unmarshal(data, &raw) != nil {
 			return cfg
@@ -65,9 +60,6 @@ func readLintConfig(dir string) lintConfig {
 				cfg.interfaceBloatMax = s.InterfaceBloat.Max
 			}
 		}
-		for _, s := range []linterSettings{raw.Formatters.Settings, l.Settings, raw.LintersSettings} {
-			cfg.localPrefixes = append(cfg.localPrefixes, s.Goimports.LocalPrefixes...)
-		}
 		return cfg
 	}
 	return cfg
@@ -77,42 +69,6 @@ type linterSettings struct {
 	InterfaceBloat struct {
 		Max int `yaml:"max"`
 	} `yaml:"interfacebloat"`
-	Goimports struct {
-		// golangci v2 writes a list, v1 a comma-separated string.
-		LocalPrefixes prefixList `yaml:"local-prefixes"`
-	} `yaml:"goimports"`
-}
-
-type prefixList []string
-
-func (p *prefixList) UnmarshalYAML(n *yaml.Node) error {
-	var list []string
-	if n.Kind == yaml.SequenceNode {
-		if err := n.Decode(&list); err != nil {
-			return err
-		}
-	} else {
-		var s string
-		if err := n.Decode(&s); err != nil {
-			return err
-		}
-		list = strings.Split(s, ",")
-	}
-	for _, s := range list {
-		if s = strings.TrimSpace(s); s != "" {
-			*p = append(*p, s)
-		}
-	}
-	return nil
-}
-
-// importPrefix is the `goimports -local` argument that groups imports the way
-// the project's lint does: its configured prefixes, else its module.
-func (c lintConfig) importPrefix(module string) string {
-	if len(c.localPrefixes) > 0 {
-		return strings.Join(c.localPrefixes, ",")
-	}
-	return module
 }
 
 // limitSource says where the interfacebloat limit came from.

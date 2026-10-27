@@ -51,7 +51,7 @@ func (r Runner) Tools(apply bool) error {
 	del := r.deletes()
 	policy := toolcache.EvictPolicy{
 		MaxAge: maxAge, Keep: r.Policy.ToolCacheKeep, Ctx: ctx,
-		RemoveTree: func(path string) error { return del.removeTree(ctx, path) },
+		Unlink: func(path string, remove func() error) error { return del.toolCacheUnlink(ctx, path, remove) },
 	}
 	if r.openShared != nil || r.OpenPaths != nil {
 		policy.InUse = r.sharedInUse(ctx)

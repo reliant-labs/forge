@@ -35,6 +35,14 @@ func toolEntry(t *testing.T, root, kind, key string, used time.Time) string {
 	if err := os.WriteFile(filepath.Join(dir, "bin"), []byte("binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Mirror real installs: eviction requires a stable key lock even for an
+	// entry whose marker proves it old enough.
+	if err := os.MkdirAll(filepath.Join(root, kind, ".locks"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, kind, ".locks", key+".lock"), nil, 0644); err != nil {
+		t.Fatal(err)
+	}
 	marker := filepath.Join(dir, toolcache.UsedMarker)
 	if err := os.WriteFile(marker, nil, 0o644); err != nil {
 		t.Fatal(err)

@@ -31,7 +31,8 @@ const DefaultEvictKeep = 1
 const legacyGroup = "legacy/"
 
 // staleStaging is how old an install's staging directory must be before Evict
-// treats it as abandoned. A build that takes a day is not running.
+// considers it for cleanup. Age never proves abandonment: the key lock and
+// process inspection must independently permit removal.
 const staleStaging = 24 * time.Hour
 
 // EvictPolicy bounds what Evict may remove.
@@ -50,9 +51,12 @@ type EvictPolicy struct {
 	// Ctx bounds the eviction; removals stop at its deadline, retaining the
 	// rest. Nil means unbounded.
 	Ctx context.Context
-	// RemoveTree deletes one evicted entry's tree (maintenance passes its
-	// paced deleter). Nil removes it directly.
-	RemoveTree func(path string) error
+	// Unlink authorizes/paces one confined unlink. The callback must call
+	// remove, not traverse path itself; only the pinned parent has authority
+	// to remove it. Nil removes directly.
+	Unlink func(path string, remove func() error) error
+	// inspect is the process-snapshot test seam. Production uses openfiles.Take.
+	inspect func(context.Context) (openfiles.Snapshot, error)
 }
 
 // Eviction reports what Evict did, or would do under apply=false.
@@ -88,10 +92,16 @@ func (e entry) path() string { return filepath.Join(e.parent, e.name) }
 // predates the marker, or in the module-path layout older forges used for
 // codegen plugins (<root>/<module>@<version>/) — is dated by its newest file,
 // its install time, which is never later than its last use. Anything else
-// Evict cannot date is retained. The module-path layout gets no keep floor:
-// this forge never resolves it, so age alone decides.
+// Evict cannot date is retained. Even dated legacy entries are retained when
+// they lack a provable stable version-key lock; age alone is not ownership.
 func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Writer) (Eviction, error) {
 	var result Eviction
+	anchor, err := openCacheDir(root)
+	if err != nil {
+		printf(out, "keep tool cache %s (cannot confine cache root: %v)\n", root, err)
+		return result, nil
+	}
+	defer anchor.close()
 	top, err := os.ReadDir(root)
 	if os.IsNotExist(err) {
 		return result, nil
@@ -128,25 +138,29 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 	}
 	doomed := choose(usable, now, policy, &result)
 
-	if err := finishLeftovers(leftovers, policy, apply, out); err != nil {
-		return result, err
-	}
-
 	inUse := policy.InUse
-	if inUse == nil && len(doomed) > 0 {
-		snap, err := openfiles.Take(policy.ctx())
+	if inUse == nil && len(doomed)+len(leftovers) > 0 {
+		inspect := policy.inspect
+		if inspect == nil {
+			inspect = openfiles.Take
+		}
+		snap, err := inspect(policy.ctx())
 		if ctxErr := policy.ctx().Err(); ctxErr != nil {
-			result.Kept += len(doomed)
+			result.Kept += len(doomed) + len(leftovers)
 			return result, fmt.Errorf("tool cache eviction stopped before removing anything: %w", ctxErr)
 		}
 		if err != nil {
-			result.Kept += len(doomed)
+			result.Kept += len(doomed) + len(leftovers)
 			printf(out, "keep %d tool cache entries: cannot determine which are in use (%v)\n", len(doomed), err)
 			return result, nil
 		}
 		inUse = snap.Holds
 	}
 
+	policy.InUse = inUse
+	if err := finishLeftovers(root, anchor, leftovers, now, policy, apply, out); err != nil {
+		return result, err
+	}
 	for i, e := range doomed {
 		if err := policy.ctx().Err(); err != nil {
 			result.Kept += len(doomed) - i
@@ -158,6 +172,19 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 			printf(out, "keep tool cache %s (in use by a running process)\n", e.path())
 			continue
 		}
+		parent, leaf, confErr := anchor.parent(rel(root, e.path()))
+		if confErr != nil {
+			result.Kept++
+			printf(out, "keep tool cache %s (unsafe ancestor: %v)\n", e.path(), confErr)
+			continue
+		}
+		confErr = parent.validateTree(leaf)
+		parent.close()
+		if confErr != nil {
+			result.Kept++
+			printf(out, "keep tool cache %s (unsafe tree: %v)\n", e.path(), confErr)
+			continue
+		}
 		size := treeSize(e.path())
 		if !apply {
 			printf(out, "evict tool cache %s (%d bytes, unused %s)\n", e.path(), size, now.Sub(e.lastUse).Round(time.Hour))
@@ -165,7 +192,18 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 			result.Bytes += size
 			continue
 		}
-		trash, kept, err := moveAside(e, now, policy)
+		pinned, _, err := anchor.parent(rel(root, e.path()))
+		if err != nil {
+			result.Kept++
+			continue
+		}
+		if err := unchangedRoot(root, anchor); err != nil {
+			pinned.close()
+			result.Kept++
+			continue
+		}
+		trash, kept, err := moveAsidePinned(e, now, policy, pinned)
+		pinned.close()
 		if err != nil {
 			return result, err
 		}
@@ -177,7 +215,7 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 		printf(out, "evict tool cache %s (%d bytes, unused %s)\n", e.path(), size, now.Sub(e.lastUse).Round(time.Hour))
 		result.Removed = append(result.Removed, rel(root, e.path()))
 		result.Bytes += size
-		if err := policy.removeTree(trash); err != nil {
+		if err := policy.removeConfined(root, anchor, trash); err != nil {
 			return result, fmt.Errorf("evict tool cache %s: %w", e.path(), err) // out of the cache; finished next pass
 		}
 	}
@@ -216,37 +254,53 @@ func choose(entries []entry, now time.Time, policy EvictPolicy, result *Eviction
 // moveAside renames a doomed entry out of the cache under its key's
 // exclusive lock, after re-reading its last use: a resolver that touched it
 // since the scan keeps it. It returns the trash path, or why it was kept.
-func moveAside(e entry, now time.Time, policy EvictPolicy) (trash, kept string, err error) {
-	trash = filepath.Join(e.parent, fmt.Sprintf("%s%s-%d", evictingPrefix, e.name, now.UnixNano()))
+func moveAside(e entry, now time.Time, policy EvictPolicy) (string, string, error) {
+	parent, err := openCacheDir(e.parent)
+	if err != nil {
+		return "", "unconfined parent", nil
+	}
+	defer parent.close()
+	return moveAsidePinned(e, now, policy, parent)
+}
+
+func moveAsidePinned(e entry, now time.Time, policy EvictPolicy, parent *cacheDir) (trash, kept string, err error) {
+	trashName := fmt.Sprintf("%s%s-%d", evictingPrefix, e.name, now.UnixNano())
+	trash = filepath.Join(e.parent, trashName)
 	move := func() error {
 		if last := lastUse(e.path()); last.IsZero() || now.Sub(last) <= policy.maxAge() {
 			kept = "used since this pass began"
 			return nil
 		}
-		if err := os.Rename(e.path(), trash); err != nil {
-			return fmt.Errorf("evict tool cache %s: %w", e.path(), err)
+		if policy.InUse != nil && policy.InUse(e.path()) {
+			kept = "in use by a running process"
+			return nil
 		}
-		return nil
+		if err := parent.validateTree(e.name); err != nil {
+			kept = "unsafe or changed tree"
+			return nil
+		}
+		return parent.root.Rename(e.name, trashName)
 	}
 	if !e.locked {
-		// The pre-marker layouts have no lock file, and nothing current
-		// resolves them, so there is no resolver to race.
-		return trash, kept, move()
+		return "", "no provable version-key lock", nil
 	}
-	f, err := os.OpenFile(lockPath(e.parent, e.name), os.O_RDWR, 0)
+	locks, err := parent.child(lockDir, true)
 	if err != nil {
-		return "", "", fmt.Errorf("evict tool cache %s: %w", e.path(), err)
+		return "", "unsafe lock directory", nil
+	}
+	defer locks.close()
+	f, err := locks.openRegular(e.name + ".lock")
+	if err != nil {
+		return "", "unsafe or missing key lock", nil
 	}
 	defer func() { _ = f.Close() }()
 	ok, err := tryLock(f, true)
-	if err != nil {
-		return "", "", fmt.Errorf("evict tool cache %s: %w", e.path(), err)
-	}
-	if !ok {
+	if err != nil || !ok {
 		return "", "being resolved or installed right now", nil
 	}
 	defer unlock(f)
-	return trash, kept, move()
+	err = move()
+	return trash, kept, err
 }
 
 // kindEntries lists the entries of one kind directory, and the leftovers of
@@ -261,17 +315,19 @@ func kindEntries(dir, kind string, now time.Time) (entries []entry, leftovers []
 		path := filepath.Join(dir, name)
 		switch {
 		case !c.IsDir() || name == lockDir:
-		case strings.HasPrefix(name, evictingPrefix):
-			leftovers = append(leftovers, path)
-		case strings.HasPrefix(name, "."):
-			// An install's staging dir (.build-*, and .install-* from older
-			// forges): abandoned once nothing has written it for a day.
-			if info, err := c.Info(); err == nil && now.Sub(info.ModTime()) > staleStaging {
-				leftovers = append(leftovers, path)
+		case strings.HasPrefix(name, evictingPrefix), strings.HasPrefix(name, stagingPrefix):
+			if _, ok := leftoverKey(name); ok {
+				if info, err := c.Info(); err == nil && (strings.HasPrefix(name, evictingPrefix) || now.Sub(info.ModTime()) > staleStaging) {
+					leftovers = append(leftovers, path)
+				}
 			}
+		case strings.HasPrefix(name, "."):
+			// Unknown/legacy dot directories cannot be attributed to an install key.
+
 		default:
-			_, statErr := os.Stat(lockPath(dir, name))
-			entries = append(entries, entry{parent: dir, name: name, group: kind + "/" + toolName(name, kind), lastUse: lastUse(path), locked: statErr == nil})
+			// Never infer that a missing lock means no owner. An unrecognized
+			// or pre-lock entry is retained until ownership can be established.
+			entries = append(entries, entry{parent: dir, name: name, group: kind + "/" + toolName(name, kind), lastUse: lastUse(path), locked: true})
 		}
 	}
 	return entries, leftovers, nil
@@ -295,7 +351,7 @@ func legacyEntries(dir string, depth int) []entry {
 		}
 		if strings.Contains(c.Name(), "@") {
 			path := filepath.Join(dir, c.Name())
-			out = append(out, entry{parent: dir, name: c.Name(), group: legacyGroup + toolName(c.Name(), ""), lastUse: lastUse(path)})
+			out = append(out, entry{parent: dir, name: c.Name(), group: legacyGroup + toolName(c.Name(), ""), lastUse: lastUse(path), locked: true})
 			continue
 		}
 		out = append(out, legacyEntries(filepath.Join(dir, c.Name()), depth+1)...)
@@ -335,20 +391,103 @@ func lastUse(path string) time.Time {
 	return newest
 }
 
-// finishLeftovers removes what interrupted evictions renamed away and what
-// abandoned installs left. Their names are no entry key, so nothing resolves
-// them.
-func finishLeftovers(leftovers []string, policy EvictPolicy, apply bool, out io.Writer) error {
+// leftoverKey recovers the exact version key. Stage suffixes are MkdirTemp
+// decimal random IDs; eviction suffixes are UnixNano timestamps. Ambiguous or
+// legacy names have no ownership proof and are retained.
+func leftoverKey(name string) (string, bool) {
+	var body string
+	switch {
+	case strings.HasPrefix(name, stagingPrefix):
+		body = strings.TrimPrefix(name, stagingPrefix)
+	case strings.HasPrefix(name, evictingPrefix):
+		body = strings.TrimPrefix(name, evictingPrefix)
+	default:
+		return "", false
+	}
+	i := strings.LastIndexByte(body, '-')
+	if i <= 0 || i == len(body)-1 {
+		return "", false
+	}
+	for _, r := range body[i+1:] {
+		if r < '0' || r > '9' {
+			return "", false
+		}
+	}
+	key := body[:i]
+	return key, validKey(key) == nil
+}
+
+// finishLeftovers uses the SAME version lock and process checks as installs.
+// Directory mtime is only an eligibility filter, never proof of abandonment.
+func finishLeftovers(root string, anchor *cacheDir, leftovers []string, now time.Time, policy EvictPolicy, apply bool, out io.Writer) error {
 	sort.Strings(leftovers)
 	for _, path := range leftovers {
 		if err := policy.ctx().Err(); err != nil {
-			return fmt.Errorf("tool cache eviction stopped before clearing leftovers: %w", err)
+			return err
 		}
-		printf(out, "remove tool cache leftover %s\n", path)
-		if apply {
-			if err := policy.removeTree(path); err != nil {
-				return fmt.Errorf("remove tool cache leftover %s: %w", path, err)
+		if err := unchangedRoot(root, anchor); err != nil {
+			printf(out, "keep tool cache leftover %s (%v)\n", path, err)
+			continue
+		}
+		key, ok := leftoverKey(filepath.Base(path))
+		if !ok {
+			continue
+		}
+		parent, leaf, err := anchor.parent(rel(root, path))
+		if err != nil {
+			printf(out, "keep tool cache leftover %s (%v)\n", path, err)
+			continue
+		}
+		if err = parent.validateTree(leaf); err != nil {
+			parent.close()
+			printf(out, "keep tool cache leftover %s (%v)\n", path, err)
+			continue
+		}
+		// Opening a symlinked .locks directory or lock file is never allowed.
+		locks, err := parent.child(lockDir, true)
+		if err != nil {
+			parent.close()
+			printf(out, "keep tool cache leftover %s (no safe key lock)\n", path)
+			continue
+		}
+		f, err := locks.openRegular(key + ".lock")
+		if err != nil {
+			locks.close()
+			parent.close()
+			continue
+		}
+		locked, err := tryLock(f, true)
+		if err != nil || !locked {
+			_ = f.Close()
+			locks.close()
+			parent.close()
+			printf(out, "keep tool cache leftover %s (key locked or uncertain)\n", path)
+			continue
+		}
+		removeErr := func() error {
+			defer unlock(f)
+			if policy.InUse == nil || policy.InUse(path) || policy.InUse(filepath.Join(filepath.Dir(path), key)) {
+				printf(out, "keep tool cache leftover %s (in use or process inspection unavailable)\n", path)
+				return nil
 			}
+			current, err := parent.root.Lstat(leaf)
+			if err != nil || !current.IsDir() {
+				return nil
+			}
+			if strings.HasPrefix(leaf, stagingPrefix) && now.Sub(current.ModTime()) <= staleStaging {
+				return nil
+			}
+			printf(out, "remove tool cache leftover %s\n", path)
+			if apply {
+				return policy.removeConfined(root, anchor, path)
+			}
+			return nil
+		}()
+		_ = f.Close()
+		locks.close()
+		parent.close()
+		if removeErr != nil {
+			return removeErr
 		}
 	}
 	return nil
@@ -375,11 +514,51 @@ func (p EvictPolicy) keep() int {
 	return p.Keep
 }
 
-func (p EvictPolicy) removeTree(path string) error {
-	if p.RemoveTree != nil {
-		return p.RemoveTree(path)
+// removeConfined verifies root identity again and traverses only descriptor-
+// relative no-follow children. Never delegate recursive path traversal.
+func unchangedRoot(root string, anchor *cacheDir) error {
+	check, err := openCacheDir(root)
+	if err != nil {
+		return err
 	}
-	return removeAllWritable(path)
+	defer check.close()
+	before, err := anchor.file.Stat()
+	if err != nil {
+		return err
+	}
+	after, err := check.file.Stat()
+	if err != nil || !os.SameFile(before, after) {
+		return fmt.Errorf("retain cache: root inode changed")
+	}
+	return nil
+}
+
+func (p EvictPolicy) removeConfined(root string, anchor *cacheDir, path string) error {
+	if p.InUse != nil && p.InUse(path) {
+		return fmt.Errorf("retain %s: in use", path)
+	}
+	check, err := openCacheDir(root)
+	if err != nil {
+		return err
+	}
+	defer check.close()
+	before, err := anchor.file.Stat()
+	if err != nil {
+		return err
+	}
+	after, err := check.file.Stat()
+	if err != nil || !os.SameFile(before, after) {
+		return fmt.Errorf("retain %s: cache root inode changed", path)
+	}
+	parent, leaf, err := anchor.parent(rel(root, path))
+	if err != nil {
+		return err
+	}
+	defer parent.close()
+	if err := parent.validateTree(leaf); err != nil {
+		return err
+	}
+	return parent.removeTree(leaf, path, p.Unlink)
 }
 
 func rel(root, path string) string {
@@ -402,26 +581,6 @@ func treeSize(path string) int64 {
 		return nil
 	})
 	return total
-}
-
-// removeAllWritable deletes a tree that may hold read-only files or
-// directories (a go-installed binary is 0555 on some systems).
-func removeAllWritable(path string) error {
-	_ = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // best-effort widening; RemoveAll reports the real failure
-		}
-		mode := fs.FileMode(0o600)
-		if d.IsDir() {
-			mode = 0o700
-		}
-		if info, err := d.Info(); err == nil {
-			mode |= info.Mode().Perm()
-		}
-		_ = os.Chmod(p, mode)
-		return nil
-	})
-	return os.RemoveAll(path)
 }
 
 func printf(out io.Writer, format string, args ...any) {

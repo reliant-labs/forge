@@ -1,6 +1,10 @@
 package toolcache
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"github.com/reliant-labs/forge/internal/openfiles"
 	"os"
 	"path/filepath"
 	"slices"
@@ -167,6 +171,13 @@ func TestEvict_DatesEntriesWithoutAMarkerByTheirFiles(t *testing.T) {
 	root := t.TempDir()
 	gateOld := legacy(t, filepath.Join(root, KindGate, "buf@v1.50.0+go1.27.2"), daysAgo(40))
 	gateNew := legacy(t, filepath.Join(root, KindGate, "buf@v1.57.0+go1.27.3"), daysAgo(2))
+	// Markerless entries still require their stable version-key lock.
+	if err := os.MkdirAll(filepath.Join(root, KindGate, lockDir), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockPath(filepath.Join(root, KindGate), "buf@v1.50.0+go1.27.2"), nil, 0644); err != nil {
+		t.Fatal(err)
+	}
 	// The module-path layout has no keep floor (this forge never resolves
 	// it): age alone decides.
 	modOld := legacy(t, filepath.Join(root, "google.golang.org", "protobuf@v1.36.10"), daysAgo(60))
@@ -176,12 +187,11 @@ func TestEvict_DatesEntriesWithoutAMarkerByTheirFiles(t *testing.T) {
 	if _, err := Evict(root, evictNow, EvictPolicy{InUse: notInUse}, true, nil); err != nil {
 		t.Fatal(err)
 	}
-	for _, gone := range []string{gateOld, modOld, modNewest} {
-		if exists(gone) {
-			t.Errorf("%s survived", gone)
-		}
+	if exists(gateOld) {
+		t.Errorf("%s survived", gateOld)
 	}
-	for _, kept := range []string{gateNew, airRecent} {
+	// Legacy installs without a provable version lock must fail closed too.
+	for _, kept := range []string{gateNew, airRecent, modOld, modNewest} {
 		if !exists(kept) {
 			t.Errorf("%s was removed: it is its tool's newest, or recently installed", kept)
 		}
@@ -211,8 +221,11 @@ func TestEvict_ClearsLeftoversButNotARunningInstall(t *testing.T) {
 	root := t.TempDir()
 	kindDir := filepath.Join(root, KindGate)
 	trash := legacy(t, filepath.Join(kindDir, evictingPrefix+"buf@v1.0.0-1"), evictNow)
-	abandoned := filepath.Join(kindDir, stagingPrefix+"buf@v1.1.0-abc")
-	running := filepath.Join(kindDir, stagingPrefix+"buf@v1.2.0-def")
+	abandoned := filepath.Join(kindDir, stagingPrefix+"buf@v1.1.0-123")
+	running := filepath.Join(kindDir, stagingPrefix+"buf@v1.2.0-456")
+	for _, key := range []string{"buf@v1.0.0", "buf@v1.1.0", "buf@v1.2.0"} {
+		installed(t, root, KindGate, key, evictNow)
+	}
 	for _, d := range []string{abandoned, running} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
@@ -232,6 +245,225 @@ func TestEvict_ClearsLeftoversButNotARunningInstall(t *testing.T) {
 	}
 	if !exists(running) {
 		t.Error("a running install's staging dir was removed")
+	}
+}
+
+// The directory timestamp cannot prove a build has stopped. Even very old
+// stages must take the exact version key lock and pass process inspection.
+func TestEvict_LeftoversRequireLockAndProcessEvidence(t *testing.T) {
+	for _, mode := range []string{"locked", "in-use", "inspection-failed", "unknown", "missing-lock"} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			key := "buf@v1.2.3+go1.27.3"
+			installed(t, root, KindGate, key, evictNow)
+			name := stagingPrefix + key + "-1234"
+			if mode == "unknown" {
+				name = ".unrecognized-old-state"
+			}
+			path := legacy(t, filepath.Join(root, KindGate, name), daysAgo(4))
+			if err := os.Chtimes(path, daysAgo(4), daysAgo(4)); err != nil {
+				t.Fatal(err)
+			}
+			policy := EvictPolicy{InUse: notInUse}
+			switch mode {
+			case "locked":
+				f, err := os.OpenFile(lockPath(filepath.Join(root, KindGate), key), os.O_RDWR, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = f.Close() }()
+				if ok, err := tryLock(f, true); !ok || err != nil {
+					t.Fatalf("lock: %v %v", ok, err)
+				}
+			case "in-use":
+				policy.InUse = func(p string) bool { return p == path }
+			case "inspection-failed":
+				policy.InUse = nil
+				policy.inspect = func(context.Context) (openfiles.Snapshot, error) {
+					return openfiles.Snapshot{}, errors.New("inspection denied")
+				}
+			case "missing-lock":
+				if err := os.Remove(lockPath(filepath.Join(root, KindGate), key)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := Evict(root, evictNow, policy, true, nil); err != nil {
+				t.Fatal(err)
+			}
+			if !exists(path) {
+				t.Fatal("uncertain/live leftover removed")
+			}
+		})
+	}
+}
+
+func TestEvict_InspectionFailureRetainsAllRemovalPaths(t *testing.T) {
+	root := t.TempDir()
+	key := "buf@v1"
+	old := installed(t, root, KindGate, key, daysAgo(40))
+	installed(t, root, KindGate, "buf@v2", evictNow)
+	stage := legacy(t, filepath.Join(root, KindGate, stagingPrefix+key+"-123"), daysAgo(40))
+	trash := legacy(t, filepath.Join(root, KindGate, evictingPrefix+key+"-456"), daysAgo(40))
+	if err := os.Chtimes(stage, daysAgo(40), daysAgo(40)); err != nil {
+		t.Fatal(err)
+	}
+	policy := EvictPolicy{inspect: func(context.Context) (openfiles.Snapshot, error) {
+		return openfiles.Snapshot{}, errors.New("inspection denied")
+	}}
+	if _, err := Evict(root, evictNow, policy, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{old, stage, trash} {
+		if !exists(p) {
+			t.Fatalf("removed %s despite failed inspection", p)
+		}
+	}
+}
+
+func TestReplacementCleanupPreservesOutsideTarget(t *testing.T) {
+	for _, entryLink := range []bool{false, true} {
+		t.Run(fmt.Sprint(entryLink), func(t *testing.T) {
+			root := t.TempDir()
+			outside := filepath.Join(t.TempDir(), "sentinel")
+			if err := os.WriteFile(outside, []byte("outside"), 0400); err != nil {
+				t.Fatal(err)
+			}
+			entry := filepath.Join(root, "fake@v1")
+			if entryLink {
+				if err := os.Symlink(filepath.Dir(outside), entry); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := os.Mkdir(entry, 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, filepath.Join(entry, "stray")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := Ensure(context.Background(), root, "fake@v1", readyWith("fixed"), writeTool("fixed")); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(outside)
+			if err != nil || info.Mode().Perm() != 0400 {
+				t.Fatalf("replacement chmod escaped: %v %v", info, err)
+			}
+			if b, err := os.ReadFile(outside); err != nil || string(b) != "outside" {
+				t.Fatalf("replacement delete escaped: %q %v", b, err)
+			}
+		})
+	}
+}
+
+func TestEvict_InUseEvictionLeftoverSurvives(t *testing.T) {
+	root := t.TempDir()
+	key := "buf@v1"
+	installed(t, root, KindGate, key, evictNow)
+	path := legacy(t, filepath.Join(root, KindGate, evictingPrefix+key+"-123"), daysAgo(40))
+	if _, err := Evict(root, evictNow, EvictPolicy{InUse: func(p string) bool { return p == path }}, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(path) {
+		t.Fatal("mapped executable/open eviction leftover removed")
+	}
+}
+
+func TestCleanupNeverChangesOutsideSymlinkTargets(t *testing.T) {
+	for _, shape := range []string{"child-file", "child-dir", "entry-link", "ancestor-link"} {
+		t.Run(shape, func(t *testing.T) {
+			base := t.TempDir()
+			outside := filepath.Join(base, "outside")
+			if err := os.Mkdir(outside, 0755); err != nil {
+				t.Fatal(err)
+			}
+			sentinel := filepath.Join(outside, "sentinel")
+			if err := os.WriteFile(sentinel, []byte("untouched"), 0400); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(outside, 0500); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(outside, 0700) })
+			parent := filepath.Join(base, "cache")
+			if err := os.Mkdir(parent, 0755); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(parent, "rejected")
+			switch shape {
+			case "entry-link":
+				if err := os.Symlink(outside, path); err != nil {
+					t.Fatal(err)
+				}
+			case "ancestor-link":
+				if err := os.Symlink(outside, filepath.Join(parent, "alias")); err != nil {
+					t.Fatal(err)
+				}
+				path = filepath.Join(parent, "alias", "sentinel")
+			default:
+				if err := os.Mkdir(path, 0755); err != nil {
+					t.Fatal(err)
+				}
+				target := sentinel
+				if shape == "child-dir" {
+					target = outside
+				}
+				if err := os.Symlink(target, filepath.Join(path, "stray")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_ = removeAllWritable(path) // confinement refusal is correct for an ancestor link
+			data, err := os.ReadFile(sentinel)
+			if err != nil || string(data) != "untouched" {
+				t.Fatalf("sentinel bytes changed: %q %v", data, err)
+			}
+			info, err := os.Stat(sentinel)
+			if err != nil || info.Mode().Perm() != 0400 {
+				t.Fatalf("sentinel mode changed: %v %v", info, err)
+			}
+			info, err = os.Stat(outside)
+			if err != nil || info.Mode().Perm() != 0500 {
+				t.Fatalf("outside directory mode changed: %v %v", info, err)
+			}
+		})
+	}
+}
+
+func TestEvict_SymlinkedRootOrChangedRootRetained(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "cache")
+	if err := os.Mkdir(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	installed(t, root, KindGate, "buf@v1", daysAgo(40))
+	installed(t, root, KindGate, "buf@v2", evictNow)
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Evict(alias, evictNow, EvictPolicy{InUse: notInUse}, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(filepath.Join(root, KindGate, "buf@v1")) {
+		t.Fatal("symlinked root traversed")
+	}
+	anchor, err := openCacheDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer anchor.close()
+	moved := root + "-old"
+	if err := os.Rename(root, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	err = (EvictPolicy{}).removeConfined(root, anchor, filepath.Join(root, KindGate, "buf@v1"))
+	if err == nil {
+		t.Fatal("root inode replacement accepted")
+	}
+	if !exists(filepath.Join(moved, KindGate, "buf@v1")) {
+		t.Fatal("original root altered after replacement")
 	}
 }
 

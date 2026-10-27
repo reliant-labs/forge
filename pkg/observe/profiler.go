@@ -164,7 +164,7 @@ func enableContentionSampling(s profileSettings) func() {
 func (p *profiler) run(ctx context.Context) {
 	// First capture lands somewhere in [interval/4, interval): soon enough to
 	// see the process, spread enough that replicas do not align.
-	if !p.sleep(ctx, p.interval/4+rand.N(p.interval*3/4)) {
+	if !p.sleep(ctx, initialProfileWait(p.interval)) {
 		return
 	}
 	for {
@@ -204,8 +204,28 @@ func (p *profiler) nextWait() time.Duration {
 			d *= 2
 		}
 	}
-	j := 1 + profilerJitter*(2*rand.Float64()-1)
-	return time.Duration(float64(d) * j)
+	// Integer jitter avoids float rounding and saturates at Duration's
+	// maximum instead of wrapping near MaxInt64. Invalid internal intervals
+	// fall back to the same positive default as configuration resolution.
+	if d <= 0 {
+		d = DefaultCPUInterval
+	}
+	spread := d / 5 // profilerJitter = 20%
+	offset := rand.N(spread*2+1) - spread
+	const maxDuration = time.Duration(1<<63 - 1)
+	if offset > 0 && d > maxDuration-offset {
+		return maxDuration
+	}
+	return d + offset
+}
+
+func initialProfileWait(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		interval = DefaultCPUInterval
+	}
+	lo := interval / 4
+	// Subtract after division; interval*3 would overflow for valid durations.
+	return lo + rand.N(interval-lo)
 }
 
 // safeCycle runs one cycle and turns a panic into an error.

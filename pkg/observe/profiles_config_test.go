@@ -11,6 +11,40 @@ import (
 	"go.opentelemetry.io/collector/pdata/pprofile"
 )
 
+func TestProfileCadenceDurationBoundaries(t *testing.T) {
+	const maxDuration = time.Duration(1<<63 - 1)
+	for _, interval := range []time.Duration{-1, 0, 1, 1000000 * time.Hour, maxDuration - 1, maxDuration} {
+		t.Run(interval.String(), func(t *testing.T) {
+			clearProfilesEnv(t)
+			settings, _ := resolveProfileSettings(ProfilesConfig{CPUInterval: interval})
+			if settings.cpuInterval <= 0 {
+				t.Fatal("config produced a nonpositive CPU interval")
+			}
+			t.Setenv(EnvProfilesCPUInterval, interval.String())
+			settings, _ = resolveProfileSettings(ProfilesConfig{})
+			if settings.cpuInterval <= 0 {
+				t.Fatal("environment produced a nonpositive CPU interval")
+			}
+			for range 100 {
+				got := initialProfileWait(interval)
+				effective := interval
+				if effective <= 0 {
+					effective = DefaultCPUInterval
+				}
+				if got < effective/4 || got >= effective {
+					t.Fatalf("initial wait %s outside [%s, %s)", got, effective/4, effective)
+				}
+				for _, failures := range []int{0, 1, 20} {
+					p := profiler{interval: interval, failures: failures}
+					if wait := p.nextWait(); wait <= 0 {
+						t.Fatalf("next wait overflowed: %s with %d failures", wait, failures)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestProfileSettingsDefaults(t *testing.T) {
 	clearProfilesEnv(t)
 	s, warns := resolveProfileSettings(ProfilesConfig{})

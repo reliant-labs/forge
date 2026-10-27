@@ -143,7 +143,7 @@ func runSnapshotPromote(ctx context.Context, env string, r release.Release, ledg
 	}
 	for _, b := range s.Bindings {
 		a := s.Artifacts[b.Artifact]
-		fmt.Fprintf(os.Stderr, "[snapshot] %s/%s = %s@%s\n", b.Consumer.Workload, b.Slot, a.Location, a.Content)
+		fmt.Fprintf(os.Stderr, "[snapshot] %s/%s = %s\n", b.Consumer.Workload, b.Slot, release.BindingReference(a, b))
 	}
 	if opts.DryRun {
 		return nil

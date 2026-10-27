@@ -88,6 +88,11 @@ type Runner struct {
 	// lived (gocache_livebuild.go). Nil reads the process table in
 	// production and means "no builds" under test.
 	LiveToolchainAges func(context.Context) ([]time.Duration, error)
+	// LiveExecutables lists the running processes whose executable is under
+	// the given cache root (gocache_liveexe.go). Nil reads /proc in
+	// production and means "none" under test; an error keeps every
+	// executable entry.
+	LiveExecutables func(ctx context.Context, root string) ([]LiveExecutable, error)
 
 	// Per-pass state, set by beginPass (passctx.go).
 	passTotal  time.Duration

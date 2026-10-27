@@ -88,6 +88,7 @@ lint:
 contracts:
   exclude:
     - "internal/naming" # Pure stateless string-case utilities; mocking adds no value.
+    - "internal/repowalk" # Concrete filesystem traversal for repository guards, not a substitutable service.
     - "internal/buildinfo" # Linker-set version metadata; no test seam.
     - "internal/assets" # Embed wrapper; the file IS the data.
     - "internal/linter/contract" # Go analysis framework requires Analyzer as a package var.

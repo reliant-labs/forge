@@ -39,6 +39,10 @@ updates:
       go-patch:
         patterns:
           - "*"
+        # KCL is pinned to one release everywhere (templates.KCLVersion,
+        # enforced by TestKCLVersionIsPinnedEverywhere); it moves by hand.
+        exclude-patterns:
+          - "kcl-lang.io/*"
         update-types:
           - patch
       # k8s.io and sigs.k8s.io (controller-runtime) move together or not at all.

@@ -125,8 +125,13 @@ runs it anyway. The pin files a bump itself edits (`go.mod`, `go.sum`,
 
 `--check` (alias `--dry-run`) writes nothing and runs neither generate nor
 lint; it still names each codemod rewrite and lockfile it would touch.
-`--skip <phase>` (repeatable) omits `playbooks`, `vendored-contracts`,
-`generate`, `locks` or `lint`.
+`--skip <phase>` (repeatable) omits `codemods`, `playbooks`, `vendored-contracts`,
+`generate`, `locks` or `lint`; `modules`, `templates` and `pin` always run. It is how
+a big rewrite goes into its own PR: `--skip playbooks` leaves the codemods a playbook
+automates (`connect-errors`, `composition-graph`) for `forge fix <name>` on a branch
+of their own, and `--skip codemods` does the same for the registry codemods the range
+crosses. The pin moves in the same run, so a skipped codemod is not picked up by the
+next upgrade: the skipped phase's `detail` in `--json` names each to run yourself.
 
 ### Exit codes and `--json` — the contract a pin bot calls
 

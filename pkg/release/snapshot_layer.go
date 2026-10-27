@@ -167,12 +167,17 @@ func ValidateSnapshotLayer(s Snapshot, layer []byte) error {
 // workload/slot identities. Every image-bearing resource needs known owners;
 // no bare repository or container-list-position fallback is permitted.
 func ValidateSnapshotBindings(s Snapshot) error {
-	bindings := map[ConsumerKey]map[string]SnapshotArtifact{}
+	type boundSlot struct {
+		artifact SnapshotArtifact
+		ref      string // BindingReference: the exact image a container carries
+	}
+	bindings := map[ConsumerKey]map[string]boundSlot{}
 	for _, b := range s.Bindings {
 		if bindings[b.Consumer] == nil {
-			bindings[b.Consumer] = map[string]SnapshotArtifact{}
+			bindings[b.Consumer] = map[string]boundSlot{}
 		}
-		bindings[b.Consumer][b.Slot] = s.Artifacts[b.Artifact]
+		a := s.Artifacts[b.Artifact]
+		bindings[b.Consumer][b.Slot] = boundSlot{artifact: a, ref: BindingReference(a, b)}
 	}
 	seen := map[ConsumerKey]map[string]bool{}
 	for _, r := range s.Resources {
@@ -211,7 +216,7 @@ func ValidateSnapshotBindings(s Snapshot) error {
 			}
 			a, exists := bindings[owner][slot]
 			image, _ := spec["image"].(string)
-			if !exists || runtimeSlots != 1 || a.Kind != KindOCI || image != a.Location+"@"+a.Content {
+			if !exists || runtimeSlots != 1 || a.artifact.Kind != KindOCI || image != a.ref {
 				return snapshotBad("managed Workload image/primary binding mismatch for %v", owner)
 			}
 			for _, field := range []string{"sidecars", "initContainers", "containers"} {
@@ -250,7 +255,7 @@ func ValidateSnapshotBindings(s Snapshot) error {
 				for _, owner := range r.Owners {
 					a, exists := bindings[owner][slot]
 					if exists {
-						if a.Kind != KindOCI || image != a.Location+"@"+a.Content {
+						if a.artifact.Kind != KindOCI || image != a.ref {
 							return snapshotBad("image/binding mismatch for %v/%s", owner, slot)
 						}
 						if seen[owner] == nil {

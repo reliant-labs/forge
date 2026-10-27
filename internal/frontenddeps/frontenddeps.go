@@ -171,6 +171,14 @@ func concurrencyFlags(runner string, env []string) []string {
 // while retaining it so the caller can classify the failure.
 func runInstall(ctx context.Context, runner, dir string, args []string) error {
 	if root, bridged := installDir(runner, dir); bridged {
+		// A fresh scaffold needs its own tracked registry lockfile as well as
+		// the overlay's machine-local one. Never let the bridge's link spec
+		// enter the frontend lockfile that CI and Docker will install from.
+		if !fileExists(filepath.Join(dir, "pnpm-lock.yaml")) {
+			cmd := command(ctx, dir, runner, "install", "--lockfile-only", "--ignore-scripts", "--ignore-workspace", "--no-frozen-lockfile")
+			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+			if err := cmd.Run(); err != nil { return fmt.Errorf("create frontend registry lockfile: %w", err) }
+		}
 		// A forge dev bridge adopts this frontend: install at its root, which
 		// is what links the local web-runtime. Its lockfile is the bridge's
 		// own, gitignored and machine-local, so there is nothing to freeze

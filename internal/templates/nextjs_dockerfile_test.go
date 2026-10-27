@@ -128,7 +128,7 @@ func TestNextjsDockerfileBuildsAtTheRepoPath(t *testing.T) {
 		if hasInstruction(lines, "WORKDIR /app") && !hasInstruction(lines, "AS runner") {
 			t.Errorf("output=%s: builder still uses WORKDIR /app", output)
 		}
-		if !hasInstruction(lines, "pnpm install --offline --frozen-lockfile") || !hasInstruction(lines, "pnpm fetch --frozen-lockfile") || hasInstruction(lines, "npm install") {
+		if !hasInstruction(lines, "pnpm install --offline --frozen-lockfile") || !hasInstruction(lines, "pnpm fetch --frozen-lockfile") || hasInstruction(lines, " npm install") {
 			t.Errorf("output=%s: the image must fetch then install offline with pnpm and a frozen lockfile:\n%s",
 				output, strings.Join(lines, "\n"))
 		}

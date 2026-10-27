@@ -199,6 +199,8 @@ overrides:
 # install (ERR_PNPM_IGNORED_BUILDS) rather than being skipped silently.
 allowBuilds:
   esbuild: true
+  unrs-resolver: true
+  protobufjs: false
 `
 	return writeIfMissing(path, body)
 }

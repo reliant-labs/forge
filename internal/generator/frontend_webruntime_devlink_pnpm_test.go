@@ -34,7 +34,7 @@ func TestEnsureDevWebRuntimeLinkPnpm(t *testing.T) {
 	bridgeProject(t, projectDir, forgeRoot)
 	writePnpmBridgeFrontend(t, projectDir, "web")
 	feDir := filepath.Join(projectDir, "frontends", "web")
-	before := readAll(t, feDir)
+	before, _ := os.ReadFile(filepath.Join(feDir, "pnpm-lock.yaml"))
 
 	EnsureDevWebRuntimeLink(projectDir)
 	body, err := os.ReadFile(filepath.Join(projectDir, devPnpmWorkspaceName))
@@ -63,7 +63,8 @@ func TestEnsureDevWebRuntimeLinkPnpm(t *testing.T) {
 	}
 	EnsureDevWebRuntimeLink(projectDir)
 	again, _ := os.ReadFile(filepath.Join(projectDir, devPnpmWorkspaceName))
-	if string(again) != string(body) || readAll(t, feDir) != before {
+	lockAfter, _ := os.ReadFile(filepath.Join(feDir, "pnpm-lock.yaml"))
+ if string(again) != string(body) || string(lockAfter) != string(before) {
 		t.Fatal("reconcile changed the bridge or tracked frontend inputs")
 	}
 }

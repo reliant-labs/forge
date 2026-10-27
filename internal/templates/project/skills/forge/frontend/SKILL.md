@@ -5,15 +5,6 @@ description: Frontends with or without a backend — Next.js static exports, Vit
 
 # Frontend Development in Forge
 
-## Frontend package manager
-
-New frontends pin `pnpm@12.15.0` in package.json. Their own
-`pnpm-workspace.yaml` carries overrides and `allowBuilds` (pnpm 12's build-script
-approval map); it does not opt the project into shared API/hooks workspaces.
-Use `pnpm install --frozen-lockfile` on a clone and `pnpm run <script>`.
-Forge still drives existing npm/yarn frontends with their own manager. For an
-optional npm-to-pnpm adoption, load `migrations/v0.1.47/pnpm`.
-
 ## Project structure
 
 No backend needed: with no services it is a static site (`deploy/static-site`) and all but the hooks applies. Each frontend lives in `frontends/<name>/` — by default a Next.js App Router app (`forge scaffold frontend <name>`): `src/app/`, `src/components/`, `src/hooks/`, `src/lib/`. Generated TypeScript lives in this frontend's own `src/gen/` — import it as `@/gen/...`, never from the project-root `gen/` (that tree is Go).

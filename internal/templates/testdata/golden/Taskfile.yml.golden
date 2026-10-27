@@ -117,7 +117,7 @@ tasks:
     desc: Install every frontend's dependencies
     cmds:
       - task: frontends
-        vars: {SCRIPT: 'npm install'}
+        vars: {SCRIPT: '$PM install'}
 
   build:
     desc: Build Go binaries and every frontend's bundle
@@ -134,7 +134,7 @@ tasks:
     desc: Build every frontend's bundle
     cmds:
       - task: frontends
-        vars: {SCRIPT: 'npm run build'}
+        vars: {SCRIPT: '$PM run build'}
 
   test:
     # Everything after `--` REPLACES the default `./...`, so it takes both
@@ -206,7 +206,7 @@ tasks:
         if: '[ -n "{{.CLI_ARGS}}" ]'
       - task: frontends
         if: '[ -z "{{.CLI_ARGS}}" ]'
-        vars: {SCRIPT: '{{.SLOT}} npm test -- --passWithNoTests'}
+        vars: {SCRIPT: '{{.SLOT}} $PM test -- --passWithNoTests'}
 
   frontends:
     # Runs SCRIPT in every frontend of this project in turn, stopping at the
@@ -221,6 +221,11 @@ tasks:
     # `forge scaffold frontend` would go untested while the suite stayed
     # green) and never globbed from frontends/* (which skipped every frontend
     # declared anywhere else). A backend-only project runs nothing.
+    #
+    # SCRIPT names the package manager as $PM, which is the one that owns
+    # each frontend, decided the way forge decides it: its lockfile, else its
+    # package.json `packageManager` (a scaffold's pins pnpm), else npm. An
+    # npm frontend adopted beside a scaffolded one keeps its own manager.
     internal: true
     silent: true
     vars:
@@ -232,7 +237,13 @@ tasks:
       - cmd: |
           ran=0
           for dir in $FRONTENDS; do
-            echo "==> {{.SCRIPT}} ($dir)"
+            if [ -f "$dir/pnpm-lock.yaml" ]; then PM=pnpm
+            elif [ -f "$dir/yarn.lock" ]; then PM=yarn
+            elif [ -f "$dir/package-lock.json" ]; then PM=npm
+            else PM=$(node -e 'const fs = require("node:fs"); const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); console.log((p.packageManager || "npm").split("@")[0])' "$dir/package.json")
+            fi
+            export PM="${PM:-npm}"
+            echo "==> {{.SCRIPT}} ($dir, $PM)"
             (cd "$dir" && {{.SCRIPT}}) || exit 1
             ran=$((ran + 1))
           done
@@ -331,7 +342,7 @@ tasks:
       # `task lint` above goes through `forge lint`, which already
       # includes this step.
       - task: frontends
-        vars: {SCRIPT: 'npm run lint && npm run typecheck'}
+        vars: {SCRIPT: '$PM run lint && $PM run typecheck'}
 
   dev:
     desc: Run the app with hot-reload (Air + Next dev)

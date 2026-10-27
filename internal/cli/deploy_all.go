@@ -59,6 +59,10 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 		return err
 	}
 
+	if err := prepareHostedProjectForWrite(ctx, projectDir, envName, &f); err != nil {
+		return err
+	}
+
 	// The capacity pre-flight, before the build: a no-plan org must learn it
 	// in seconds, not after the images are built and pushed. Read-only, and first of all.
 	capacity, err := hostedCapacityPreflightForEnv(ctx, projectDir, envName, true, progressWriter(f.jsonOut))
@@ -165,6 +169,7 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 			FailFast:     p.failFast,
 			skipHubCheck: p.skipHubCheck,
 			clientDeploy: deployOptions{
+				organization:  f.organization,
 				imageTag:      f.tag,
 				namespace:     f.namespace,
 				targetArch:    f.targetArch,

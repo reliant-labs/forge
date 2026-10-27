@@ -154,7 +154,7 @@ func distinctControlPlanes(decls []envDeclaration) []declaredControlPlane {
 		if d.Decl == nil {
 			continue
 		}
-		ep, err := projectEndpoint(d.Env, d.Decl)
+		ep, err := cloud.ResolveEndpoint(d.Env, d.Decl)
 		if err != nil {
 			continue
 		}
@@ -197,7 +197,7 @@ func loginTargets(ctx context.Context, endpoint string, errOut io.Writer) ([]dec
 		if _, err := credentials.Normalize(endpoint); err != nil {
 			return nil, err
 		}
-		ep, err := projectEndpoint("", &cloud.Declaration{Endpoint: endpoint})
+		ep, err := cloud.ResolveEndpoint("", &cloud.Declaration{Endpoint: endpoint})
 		if err != nil {
 			return nil, err
 		}
@@ -218,7 +218,7 @@ func loginTargets(ctx context.Context, endpoint string, errOut io.Writer) ([]dec
 			"fix: repair the env's KCL (forge env render <env>), or name the control plane directly: forge login --endpoint https://…",
 			len(skipped))
 	}
-	ep, err := projectEndpoint("", &cloud.Declaration{Endpoint: cloud.DefaultEndpoint})
+	ep, err := cloud.ResolveEndpoint("", &cloud.Declaration{Endpoint: cloud.DefaultEndpoint})
 	if err != nil {
 		return nil, err
 	}
@@ -416,12 +416,19 @@ func newLogoutCmd() *cobra.Command {
 				if lookupErr != nil && !errors.Is(lookupErr, credentials.ErrNotFound) {
 					return lookupErr
 				}
-				if lookupErr == nil && stored.Kind == "human" {
+				if lookupErr == nil && stored.Kind != "human" {
+					return errors.New("human credential entry contains a delegated capability; refusing to remove it without revocation")
+				}
+				if lookupErr == nil {
 					if err := cloud.RevokeIdentity(cmd.Context(), p.Endpoint, stored.Token); err != nil {
 						return err
 					}
 				}
-				existed, err := credentials.Remove(path, p.Endpoint.URL, cloud.HumanClientID)
+				if errors.Is(lookupErr, credentials.ErrNotFound) {
+					fmt.Fprintf(cmd.OutOrStdout(), "Not logged in to %s (nothing in %s)\n", p.Endpoint.URL, path)
+					continue
+				}
+				existed, err := credentials.RemoveRevoked(path, p.Endpoint.URL, cloud.HumanClientID, stored.Token)
 				if err != nil {
 					return err
 				}

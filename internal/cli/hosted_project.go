@@ -20,6 +20,45 @@ import (
 // The server verifies the immutable owner and live caller membership every use.
 const hostedProjectBindingFile = ".forge/hosted-projects.json"
 
+// prepareHostedProjectForWrite is the common write-path bootstrap, before
+// capacity/ledger/build operations can resolve an unbound project implicitly.
+func prepareHostedProjectForWrite(ctx context.Context, projectDir, env string, f *deployCmdFlags) error {
+	if f.dryRun || f.explain || f.promote.plan || f.promote.planOnly || f.claimable || f.offlineLedger {
+		return nil
+	}
+	entities, err := RenderKCL(ctx, projectDir, env)
+	if err != nil {
+		return err
+	}
+	if entities == nil || !entities.HasHosted() {
+		return nil
+	}
+	decl := declarationFromEntities(entities)
+	ep, err := projectEndpoint(env, decl)
+	if err != nil {
+		return err
+	}
+	cred, err := cloud.ResolveCredential("", ep)
+	if err != nil {
+		return err
+	}
+	if cred.Kind != "human" {
+		return nil
+	}
+	if _, err := bindHostedProject(ctx, env, decl, f.organization); err != nil {
+		return err
+	}
+	if entities.ControlPlane != nil {
+		entities.ControlPlane.org = &orgState{}
+	}
+	// --org authorizes only this invocation's first unbound creation. The
+	// binding is now persisted; late publish must resolve it without trying
+	// to create it again. A pre-existing binding with --org was already
+	// refused by bindHostedProject above, before this selector is consumed.
+	f.organization = ""
+	return nil
+}
+
 func projectEndpoint(env string, decl *cloud.Declaration) (cloud.Endpoint, error) {
 	ep, err := cloud.ResolveEndpoint(env, decl)
 	if err != nil {

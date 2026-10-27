@@ -338,19 +338,14 @@ func RecordClaimableURL(ep Endpoint, project, env, url string) error {
 	if err != nil {
 		return err
 	}
-	f, err := credentials.Load(path)
-	if err != nil {
-		return err
-	}
-	c, err := f.Get(ep.URL, ClaimableClientIDFor(project, env))
-	if err != nil || c.Claimable == nil || c.Claimable.URL == url {
-		return nil
-	}
-	c.Claimable.URL = url
-	if err := f.Put(ep.URL, ClaimableClientIDFor(project, env), c); err != nil {
-		return err
-	}
-	return credentials.Save(path, f)
+	return credentials.Update(path, func(f *credentials.File) error {
+		c, err := f.Get(ep.URL, ClaimableClientIDFor(project, env))
+		if err != nil || c.Claimable == nil || c.Claimable.URL == url {
+			return nil
+		}
+		c.Claimable.URL = url
+		return f.Put(ep.URL, ClaimableClientIDFor(project, env), c)
+	})
 }
 
 // ClaimableDeviceID is this machine's stable claimable-deploy identifier,

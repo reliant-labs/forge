@@ -50,11 +50,12 @@ const (
 	// sendTimeout bounds the one request a report makes.
 	sendTimeout = 15 * time.Second
 
-	// Field bounds, in runes, applied after redaction. They are the
-	// ingest's own, so nothing forge sends is cut by the server instead.
-	MaxTitleRunes       = 200
-	MaxTextRunes        = 4000
-	maxCommandLineRunes = 2000
+	// Conservative UTF-8 byte bounds applied after redaction, including
+	// the truncation marker. Byte bounds also satisfy the ingest's Unicode
+	// length limits; JSON escaping is covered by its separate body cap.
+	MaxTitleBytes       = 200
+	MaxTextBytes        = 4000
+	maxCommandLineBytes = 2000
 )
 
 // Severities are the accepted severities, most severe first.
@@ -144,11 +145,11 @@ func BuildPayload(reportID, installID string, r Report, c Context) Payload {
 	return Payload{
 		ReportID: reportID,
 		Severity: strings.ToLower(strings.TrimSpace(r.Severity)),
-		Title:    redact.Bounded(strings.TrimSpace(r.Title), MaxTitleRunes),
-		Summary:  redact.Bounded(r.Summary, MaxTextRunes),
-		Expected: redact.Bounded(r.Expected, MaxTextRunes),
-		Actual:   redact.Bounded(r.Actual, MaxTextRunes),
-		Evidence: redact.Bounded(r.Evidence, MaxTextRunes),
+		Title:    redact.Bounded(strings.TrimSpace(r.Title), MaxTitleBytes),
+		Summary:  redact.Bounded(r.Summary, MaxTextBytes),
+		Expected: redact.Bounded(r.Expected, MaxTextBytes),
+		Actual:   redact.Bounded(r.Actual, MaxTextBytes),
+		Evidence: redact.Bounded(r.Evidence, MaxTextBytes),
 		Client: ClientContext{
 			ForgeVersion:        c.ForgeVersion,
 			OS:                  runtime.GOOS,
@@ -208,7 +209,7 @@ func CommandLine(args []string) string {
 		}
 		out = append(out, a)
 	}
-	return redact.Bounded(strings.Join(out, " "), maxCommandLineRunes)
+	return redact.Bounded(strings.Join(out, " "), maxCommandLineBytes)
 }
 
 func baseName(p string) string {

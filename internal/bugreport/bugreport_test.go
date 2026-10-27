@@ -11,7 +11,58 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
+
+func TestPayloadWireBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		unit string
+	}{
+		{"ascii", "x "},
+		{"unicode", "界😀"},
+		{"json escapes", "<\x00\"\\"},
+		{"invalid UTF-8", "\xff界"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := strings.Repeat(tc.unit, MaxTextBytes)
+			r := Report{Severity: "high", Title: text, Summary: text, Expected: text, Actual: text, Evidence: text}
+			p := BuildPayload("id", "install", r, Context{Args: []string{"forge", text}})
+			encoded, err := json.Marshal(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wire Payload
+			if err := json.Unmarshal(encoded, &wire); err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range []struct {
+				name string
+				text string
+				max  int
+			}{
+				{"title", wire.Title, MaxTitleBytes},
+				{"summary", wire.Summary, MaxTextBytes},
+				{"expected", wire.Expected, MaxTextBytes},
+				{"actual", wire.Actual, MaxTextBytes},
+				{"evidence", wire.Evidence, MaxTextBytes},
+				{"command line", wire.Client.CommandLine, maxCommandLineBytes},
+			} {
+				if !utf8.ValidString(field.text) || len(field.text) > field.max || utf8.RuneCountInString(field.text) > field.max || !strings.HasSuffix(field.text, " [truncated]") {
+					t.Errorf("%s: bytes=%d runes=%d, want valid UTF-8 and marker within %d", field.name, len(field.text), utf8.RuneCountInString(field.text), field.max)
+				}
+				if tc.name == "ascii" && len(field.text) != field.max {
+					t.Errorf("%s: ASCII length=%d, want exact boundary %d", field.name, len(field.text), field.max)
+				}
+			}
+			// JSON escaping can expand bytes; the actual request must still fit
+			// the ingest's separate 512 KiB body cap, not just field limits.
+			if len(encoded) > 512<<10 {
+				t.Errorf("encoded payload %d bytes exceeds ingest body cap", len(encoded))
+			}
+		})
+	}
+}
 
 func validReport() Report {
 	return Report{Severity: "high", Title: "forge generate drops a field", Actual: "the field is missing"}
@@ -62,7 +113,7 @@ func TestCommandLine(t *testing.T) {
 
 func TestBuildPayloadRedactsAndBounds(t *testing.T) {
 	r := validReport()
-	r.Evidence = "ran with ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijkl in /home/bob/x\n" + strings.Repeat("x ", MaxTextRunes)
+	r.Evidence = "ran with ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijkl in /home/bob/x\n" + strings.Repeat("x ", MaxTextBytes)
 	p := BuildPayload("id", "install", r, Context{ForgeVersion: "v1", Harness: "claude", Args: []string{"forge"}})
 	if strings.Contains(p.Evidence, "sk-ant") || strings.Contains(p.Evidence, "/home/bob") {
 		t.Errorf("evidence not redacted: %.120q", p.Evidence)

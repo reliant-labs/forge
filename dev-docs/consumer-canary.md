@@ -89,7 +89,8 @@ The output names the consumer, the step and the compiler error. Then either:
 - It does not run `forge generate` in the consumer, so a template or generator
   change that only breaks _regenerated_ code is not caught. The diff is
   reported ("it changes generated output") and the E2E suite
-  (`e2e-suite.yml`, which already runs on those paths) is the check for it.
+  (`e2e-suite.yml`: every push to main, or a pull request labelled `ci:e2e`) is
+  the check for it.
 - It builds the consumers' Go. Frontends, KCL and their gates are the consumers'
   own (`task ci`).
 - It tests consumer packages with `-short`, the pull-request tier, not the

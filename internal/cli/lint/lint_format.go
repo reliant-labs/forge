@@ -156,7 +156,7 @@ func walkGoFormat(root string, keep func(rel string) bool, visit func(rel, abs s
 			if rerr != nil {
 				return rerr
 			}
-			formatted, ferr := std.format(path, src)
+			formatted, ferr := std.Format(path, src)
 			if ferr != nil {
 				// Unparseable (broken edit) — not this pass's job to fix;
 				// leave it for the compiler / gate to report with a real

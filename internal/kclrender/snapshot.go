@@ -27,7 +27,7 @@ func WithSnapshot(ctx context.Context, s release.Snapshot) (context.Context, err
 		if pins[b.Consumer.Workload] == nil {
 			pins[b.Consumer.Workload] = map[string]string{}
 		}
-		ref := a.Location + "@" + a.Content
+		ref := release.BindingReference(a, b)
 		if old, ok := pins[b.Consumer.Workload][b.Slot]; ok && old != ref {
 			return ctx, fmt.Errorf("%w: conflicting cross-cluster workload slot", release.ErrInvalid)
 		}
@@ -59,7 +59,7 @@ func SnapshotDArgs(s release.Snapshot, cluster string) ([]string, error) {
 		if pins[b.Consumer.Workload] == nil {
 			pins[b.Consumer.Workload] = map[string]string{}
 		}
-		pins[b.Consumer.Workload][b.Slot] = a.Location + "@" + a.Content
+		pins[b.Consumer.Workload][b.Slot] = release.BindingReference(a, b)
 	}
 	if len(pins) == 0 {
 		return nil, fmt.Errorf("%w: no OCI bindings for cluster %q", release.ErrInvalid, cluster)

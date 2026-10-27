@@ -3,6 +3,7 @@ package redact
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSecrets(t *testing.T) {
@@ -42,8 +43,30 @@ func TestHomeDirs(t *testing.T) {
 }
 
 func TestBounded(t *testing.T) {
-	if got := Bounded("héllo wörld", 5); got != "héllo"+TruncatedMarker {
-		t.Errorf("Bounded cut = %q", got)
+	for _, tc := range []struct {
+		name string
+		in   string
+		max  int
+		want string
+	}{
+		{"exact", "héllo", 6, "héllo"},
+		{"exact multibyte", strings.Repeat("😀", 4), 16, strings.Repeat("😀", 4)},
+		{"one over boundary", strings.Repeat("😀", 4) + "!", 16, "😀" + TruncatedMarker},
+		{"redaction expansion", "token=x", 15, "tok" + TruncatedMarker},
+		{"marker included", strings.Repeat("x ", 20), 16, "x x " + TruncatedMarker},
+		{"unicode boundary", strings.Repeat("界", 10), 16, "界" + TruncatedMarker},
+		{"emoji boundary", strings.Repeat("😀", 10), 16, "😀" + TruncatedMarker},
+		{"small bound", "héllo wörld", 5, " [tru"},
+		{"marker only", strings.Repeat("界", 10), len(TruncatedMarker), TruncatedMarker},
+		{"one byte", "界界", 1, " "},
+		{"invalid input", "bad \xff byte", 10, " [truncate"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Bounded(tc.in, tc.max)
+			if got != tc.want || len(got) > tc.max || !utf8.ValidString(got) {
+				t.Errorf("Bounded = %q (%d bytes), want %q within %d valid UTF-8 bytes", got, len(got), tc.want, tc.max)
+			}
+		})
 	}
 	if got := Bounded("short", 10); got != "short" {
 		t.Errorf("Bounded under the bound = %q", got)

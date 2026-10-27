@@ -1,7 +1,6 @@
 # Reporting a forge bug
 
-**forge sends nothing unless someone runs `forge report-bug`** (or an agent calls the
-`report_bug` tool of `forge mcp`, which runs the same command). There is no automatic crash
+**forge sends nothing unless someone runs `forge report-bug`.** There is no automatic crash
 reporting, no usage telemetry and no background sending. Nothing on this page happens
 on its own.
 
@@ -21,14 +20,14 @@ echo '{"severity":"low","title":"typo in forge lint --help","actual":"recieve"}'
   | forge report-bug --json
 ```
 
-| field | required | what goes in it |
-|---|---|---|
-| `severity` | yes | `critical` (data loss, or nothing can proceed), `high` (it blocks your task), `medium` (there is a workaround), `low` (cosmetic) |
-| `title` | yes | one line naming the defect; ids and numbers go in `evidence` |
-| `summary` | one of these four | what happened |
-| `expected` | | what should have happened |
-| `actual` | | what happened instead, with the exact error text |
-| `evidence` | | how to reproduce it: commands, output, file paths |
+| field      | required          | what goes in it                                                                                                                  |
+| ---------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `severity` | yes               | `critical` (data loss, or nothing can proceed), `high` (it blocks your task), `medium` (there is a workaround), `low` (cosmetic) |
+| `title`    | yes               | one line naming the defect; ids and numbers go in `evidence`                                                                     |
+| `summary`  | one of these four | what happened                                                                                                                    |
+| `expected` |                   | what should have happened                                                                                                        |
+| `actual`   |                   | what happened instead, with the exact error text                                                                                 |
+| `evidence` |                   | how to reproduce it: commands, output, file paths                                                                                |
 
 It prints the report's id. Use it for defects in forge itself — a forge command that
 fails, hangs or generates something wrong, or a lint, skill or doc that is wrong — not
@@ -48,16 +47,16 @@ for bugs in your own code, your failing tests, or an agent's own mistakes.
 One HTTPS request, `POST https://admin.reliantapi.com/controlplane.v1.ForgeReportService/FileBugReport`
 (`FORGE_REPORT_ENDPOINT` overrides the origin), with this JSON body:
 
-| field | value |
-|---|---|
-| `reportId` | a random UUID minted for this report |
-| `severity`, `title`, `summary`, `expected`, `actual`, `evidence` | what you wrote, redacted (below); `title` cut to 200 characters, the others to 4000 |
-| `client.forgeVersion` | this forge's version |
-| `client.os`, `client.arch`, `client.goVersion` | the operating system, CPU architecture and Go runtime forge was built with |
-| `client.commandLine` | the command line, redacted (below) |
-| `client.projectForgeVersion` | `forge_version` from the `forge.yaml` of the project you ran it in, if any |
-| `client.harness` | the agent harness forge detected (`reliant`, `claude`, `codex`, `cursor`), empty for a person at a terminal. Detected from whether the harness's marker variable is set; the variable's value is not sent |
-| `client.installId` | a random UUID minted the first time you file a report and kept in `report-bug.json` in forge's config directory; the ingest rate-limits by it. It is not derived from your machine or account; delete the file to get a new one |
+| field                                                            | value                                                                                                                                                                                                                           |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reportId`                                                       | a random UUID minted for this report                                                                                                                                                                                            |
+| `severity`, `title`, `summary`, `expected`, `actual`, `evidence` | what you wrote, redacted (below); `title` limited to 200 UTF-8 bytes, the other text fields to 4000, including any truncation marker; cuts preserve whole characters                                                            |
+| `client.forgeVersion`                                            | this forge's version                                                                                                                                                                                                            |
+| `client.os`, `client.arch`, `client.goVersion`                   | the operating system, CPU architecture and Go runtime forge was built with                                                                                                                                                      |
+| `client.commandLine`                                             | the command line, redacted (below)                                                                                                                                                                                              |
+| `client.projectForgeVersion`                                     | `forge_version` from the `forge.yaml` of the project you ran it in, if any                                                                                                                                                      |
+| `client.harness`                                                 | the agent harness forge detected (`reliant`, `claude`, `codex`, `cursor`), empty for a person at a terminal. Detected from whether the harness's marker variable is set; the variable's value is not sent                       |
+| `client.installId`                                               | a random UUID minted the first time you file a report and kept in `report-bug.json` in forge's config directory; the ingest rate-limits by it. It is not derived from your machine or account; delete the file to get a new one |
 
 When you are logged in (`forge login`) and do not pass `--anonymous`, the request also
 carries your login as a bearer token, and the report records your user and organization

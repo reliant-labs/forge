@@ -3,12 +3,15 @@ package vacuousguard
 import (
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/repowalk"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -188,14 +191,14 @@ func TestScanReachesTheWholeRepo(t *testing.T) {
 func mustScanKeys(t *testing.T, root string) []string {
 	t.Helper()
 	var out []string
-	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+	err := repowalk.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		rel, _ := filepath.Rel(root, p)
 		rel = filepath.ToSlash(rel)
-		if info.IsDir() {
-			if rel != "." && (skipDirs[info.Name()] || rel == "internal/templates") {
+		if d.IsDir() {
+			if rel != "." && (skipDirs[d.Name()] || rel == "internal/templates") {
 				return filepath.SkipDir
 			}
 			return nil

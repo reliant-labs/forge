@@ -15,18 +15,18 @@ binary to shell out to and nothing to keep in sync with the CLI.
 Every tool takes an optional `dir`: the forge project to act on. It defaults to
 the directory the server was started in (or `-C`).
 
-| Tool                                                  | CLI equivalent                          | Writes files               |
-| ----------------------------------------------------- | --------------------------------------- | -------------------------- |
-| `capabilities`                                        | `forge project capabilities`            | no                         |
-| `annotations` (`kind`)                                | `forge project annotations`             | no                         |
-| `libraries` (`packages`)                              | `forge project libraries [pkg...]`      | no                         |
-| `audit`                                               | `forge project audit --json`            | no                         |
-| `shapes` (`grep`, `kind`, `service`, `unimplemented`) | `forge project shapes`                  | no                         |
-| `skill_list` (`group`, `all`, `include_migrations`)   | `forge skill list`                      | no                         |
-| `skill_search` (`query`)                              | `forge skill search`                    | no                         |
-| `skill_load` (`name`)                                 | `forge skill load`                      | no                         |
-| `lint` (`scope`)                                      | `forge lint --quiet [--scope PATH]...`  | caches only; never `--fix` |
-| `generate` (`dry_run`, `check`)                       | `forge generate [--dry-run \| --check]` | yes: generated files       |
+| Tool                                                  | CLI equivalent                          | Writes files                                           |
+| ----------------------------------------------------- | --------------------------------------- | ------------------------------------------------------ |
+| `capabilities`                                        | `forge project capabilities`            | no                                                     |
+| `annotations` (`kind`)                                | `forge project annotations`             | no                                                     |
+| `libraries` (`packages`)                              | `forge project libraries [pkg...]`      | no                                                     |
+| `audit`                                               | `forge project audit --json`            | no                                                     |
+| `shapes` (`grep`, `kind`, `service`, `unimplemented`) | `forge project shapes`                  | no                                                     |
+| `skill_list` (`group`, `all`, `include_migrations`)   | `forge skill list`                      | no                                                     |
+| `skill_search` (`query`)                              | `forge skill search`                    | no                                                     |
+| `skill_load` (`name`)                                 | `forge skill load`                      | no                                                     |
+| `lint` (`scope`)                                      | `forge lint --quiet [--scope PATH]...`  | caches only; never `--fix`                             |
+| `generate` (`dry_run`, `check`)                       | `forge generate [--dry-run \| --check]` | yes: generated files                                   |
 | `report_bug` (`severity`, `title`, `summary`, ...)    | `forge report-bug`                      | sends one report ([docs/report-bug.md](report-bug.md)) |
 
 The read-only tools are annotated `readOnlyHint`; `lint`, `generate` and

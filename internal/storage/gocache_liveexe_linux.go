@@ -42,7 +42,6 @@ func readProcExecutables(ctx context.Context, proc, root string) ([]LiveExecutab
 	if p, err := filepath.EvalSymlinks(root); err == nil {
 		resolved = p
 	}
-	uptime, uptimeErr := procUptime(proc)
 	var out []LiveExecutable
 	for _, d := range dirs {
 		if err := ctx.Err(); err != nil {
@@ -68,10 +67,8 @@ func readProcExecutables(ctx context.Context, proc, root string) ([]LiveExecutab
 			}
 		}
 		age := goCacheLongLived // unknown age counts as a build as old as any that counts
-		if uptimeErr == nil {
-			if a, ok := procAge(proc, d.Name(), uptime); ok {
-				age = a
-			}
+		if a, ok := procAge(proc, d.Name()); ok {
+			age = a
 		}
 		out = append(out, LiveExecutable{Path: exe, Age: age})
 	}
@@ -100,9 +97,15 @@ func procUptime(proc string) (time.Duration, error) {
 const clockTicksPerSecond = 100
 
 // procAge is how long process name has run: uptime minus its start time
-// (field 22 of /proc/<pid>/stat, in clock ticks since boot).
-func procAge(proc, name string, uptime time.Duration) (time.Duration, bool) {
+// (field 22 of /proc/<pid>/stat, in clock ticks since boot). Sample uptime
+// AFTER stat: a scan-wide snapshot can predate a newly started process and
+// turn its negative computed age into the conservative unknown-age lease.
+func procAge(proc, name string) (time.Duration, bool) {
 	b, err := os.ReadFile(filepath.Join(proc, name, "stat"))
+	if err != nil {
+		return 0, false
+	}
+	uptime, err := procUptime(proc)
 	if err != nil {
 		return 0, false
 	}

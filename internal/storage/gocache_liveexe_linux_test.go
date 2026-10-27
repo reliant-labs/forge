@@ -230,6 +230,95 @@ func TestProcExecutableOwnedChild(t *testing.T) {
 	}
 }
 
+// The process can start after a scan's initial uptime snapshot. A FIFO lets
+// the fake process publish stat only after advancing uptime, without sleeps.
+func TestReadProcExecutablesSamplesUptimeAfterProcessStat(t *testing.T) {
+	proc, root := t.TempDir(), t.TempDir()
+	pid := filepath.Join(proc, "100")
+	if err := os.Mkdir(pid, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "ab", hexName(4, "-d"), "forge"), filepath.Join(pid, "exe")); err != nil {
+		t.Fatal(err)
+	}
+	uptime := filepath.Join(proc, "uptime")
+	if err := os.WriteFile(uptime, []byte("100.00 0.00\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stat := filepath.Join(pid, "stat")
+	if err := syscall.Mkfifo(stat, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	published := make(chan error, 1)
+	go func() {
+		f, err := os.OpenFile(stat, os.O_WRONLY, 0)
+		if err != nil {
+			published <- err
+			return
+		}
+		defer f.Close()
+		if err := os.WriteFile(uptime, []byte("100.01 0.00\n"), 0o644); err != nil {
+			published <- err
+			return
+		}
+		_, err = fmt.Fprint(f, procAgeTestStat("10001"))
+		published <- err
+	}()
+	got, err := readProcExecutables(context.Background(), proc, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-published; err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Age != 0 {
+		t.Fatalf("fresh process after stale snapshot: %v; want one process aged zero, not the unknown-age lease", got)
+	}
+}
+
+func procAgeTestStat(ticks string) string {
+	// State is field 3, followed by 18 unused fields, then starttime (22).
+	return "100 (fresh child) S " + strings.Repeat("0 ", 18) + ticks + "\n"
+}
+
+func TestProcExecutableAgeInvalidMetadataFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name, uptime, stat string
+	}{
+		{"missing stat", "100.00 0.00\n", ""},
+		{"malformed stat", "100.00 0.00\n", "garbage"},
+		{"malformed ticks", "100.00 0.00\n", procAgeTestStat("bad")},
+		{"future start", "100.00 0.00\n", procAgeTestStat("10001")},
+		{"malformed uptime", "garbage", procAgeTestStat("9000")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			proc, root := t.TempDir(), t.TempDir()
+			pid := filepath.Join(proc, "100")
+			if err := os.Mkdir(pid, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(root, "ab", hexName(4, "-d"), "forge"), filepath.Join(pid, "exe")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(proc, "uptime"), []byte(tc.uptime), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if tc.stat != "" {
+				if err := os.WriteFile(filepath.Join(pid, "stat"), []byte(tc.stat), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := readProcExecutables(context.Background(), proc, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 || got[0].Age != goCacheLongLived {
+				t.Fatalf("unknown process age must keep the fail-closed lease: %v", got)
+			}
+		})
+	}
+}
+
 // An unreadable /proc is an error, never an empty list.
 func TestReadProcExecutablesFailsClosedWhenProcIsMissing(t *testing.T) {
 	if _, err := readProcExecutables(context.Background(), filepath.Join(t.TempDir(), "no-proc"), t.TempDir()); err == nil {

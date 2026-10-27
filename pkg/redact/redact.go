@@ -77,15 +77,24 @@ func Text(s string) string {
 	return HomeDirs(Secrets(s))
 }
 
-// Bounded is Text, cut to at most maxRunes runes (plus TruncatedMarker when
-// it was cut). Invalid UTF-8 is replaced first, so the result is always
-// valid. maxRunes <= 0 means no bound.
-func Bounded(s string, maxRunes int) string {
+// Bounded is Text, cut to at most maxBytes UTF-8 bytes, including
+// TruncatedMarker. Invalid UTF-8 is replaced before measuring; cuts never
+// split a rune. A bound smaller than the marker retains only its ASCII
+// prefix. maxBytes <= 0 means no bound. JSON escaping may expand the encoded
+// representation; this bounds the decoded text, not the enclosing JSON.
+func Bounded(s string, maxBytes int) string {
 	s = Text(strings.ToValidUTF8(s, "\uFFFD"))
-	if maxRunes > 0 && utf8.RuneCountInString(s) > maxRunes {
-		s = string([]rune(s)[:maxRunes]) + TruncatedMarker
+	if maxBytes <= 0 || len(s) <= maxBytes {
+		return s
 	}
-	return s
+	if maxBytes <= len(TruncatedMarker) {
+		return TruncatedMarker[:maxBytes]
+	}
+	end := maxBytes - len(TruncatedMarker)
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	return s[:end] + TruncatedMarker
 }
 
 func apply(s string, patterns []pattern) string {

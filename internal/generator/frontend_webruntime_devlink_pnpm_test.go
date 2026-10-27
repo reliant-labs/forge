@@ -64,7 +64,7 @@ func TestEnsureDevWebRuntimeLinkPnpm(t *testing.T) {
 	EnsureDevWebRuntimeLink(projectDir)
 	again, _ := os.ReadFile(filepath.Join(projectDir, devPnpmWorkspaceName))
 	lockAfter, _ := os.ReadFile(filepath.Join(feDir, "pnpm-lock.yaml"))
- if string(again) != string(body) || string(lockAfter) != string(before) {
+	if string(again) != string(body) || string(lockAfter) != string(before) {
 		t.Fatal("reconcile changed the bridge or tracked frontend inputs")
 	}
 }

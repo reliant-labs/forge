@@ -210,7 +210,7 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	shadowed := materializeShadowedRuntimeE2E(t, dir, runtimeSrc)
 	setWebRuntimeSpecE2E(t, filepath.Join(webDir, "package.json"), "link:"+shadowed)
 	runCmdTimeout(t, webDir, 5*time.Minute,
-		"pnpm", "install", "--no-frozen-lockfile", "--prefer-offline")
+		"pnpm", "install", "--ignore-workspace", "--no-frozen-lockfile", "--prefer-offline")
 
 	runCmdTimeout(t, webDir, 5*time.Minute, "pnpm", "run", "build")
 	runCmdTimeout(t, webDir, 2*time.Minute, "npx", "--no-install", "tsc", "--noEmit")

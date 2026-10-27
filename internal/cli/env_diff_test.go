@@ -211,8 +211,18 @@ func TestEnvDiff_GainingAHostedPartIsAChangeNotAnError(t *testing.T) {
 		liveSide{Known: true, Source: "bundle", Shape: &liveShape},
 		map[string]stubbedRender{"prod": {shape: candidate}})
 
-	if entry.Diff.KindChanged != nil {
-		t.Fatalf("a placement mix must not read as a kind change: %+v", entry.Diff.KindChanged)
+	// Assert the wire contract without depending on the retired Go field:
+	// placement changes must not emit the legacy env-wide kind category.
+	diffJSON, err := json.Marshal(entry.Diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diffFields map[string]json.RawMessage
+	if err := json.Unmarshal(diffJSON, &diffFields); err != nil {
+		t.Fatal(err)
+	}
+	if kindChange, exists := diffFields["kind_changed"]; exists {
+		t.Fatalf("a placement mix must not read as a kind change: %s", kindChange)
 	}
 	if got := entry.Diff.WorkloadsAdded; len(got) != 1 || got[0] != "web" {
 		t.Errorf("workloads added = %v, want [web]", got)

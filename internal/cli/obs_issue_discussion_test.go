@@ -273,27 +273,27 @@ func TestObsIssuesAssigneeFlag(t *testing.T) {
 			if len(fc.calls) != 0 || !strings.Contains(decode(t, out)["error"].(string), tc.say) {
 				t.Errorf("%q: calls=%d out=%s: a refused flag never reaches the control plane", tc.assignee, len(fc.calls), out)
 			}
-		} else {
-			if len(fc.calls) != 1 || fc.calls[0].procedure != cloudList {
-				t.Fatalf("%q: expected one list call, got %v", tc.assignee, fc.calls)
+			continue
+		}
+		if len(fc.calls) != 1 || fc.calls[0].procedure != cloudList {
+			t.Fatalf("%q: expected one list call, got %v", tc.assignee, fc.calls)
+		}
+		var body map[string]any
+		if err := json.Unmarshal([]byte(fc.calls[0].body), &body); err != nil {
+			t.Fatal(err)
+		}
+		want := strings.TrimSpace(tc.assignee)
+		if strings.EqualFold(want, "none") {
+			if body["unassigned"] != true || body["assignee"] != nil {
+				t.Errorf("none must send only unassigned=true: %v", body)
 			}
-			var body map[string]any
-			if err := json.Unmarshal([]byte(fc.calls[0].body), &body); err != nil {
-				t.Fatal(err)
-			}
-			want := strings.TrimSpace(tc.assignee)
-			if strings.EqualFold(want, "none") {
-				if body["unassigned"] != true || body["assignee"] != nil {
-					t.Errorf("none must send only unassigned=true: %v", body)
-				}
-			} else {
-				if strings.EqualFold(want, "me") {
-					want = "me"
-				}
-				if body["assignee"] != want || body["unassigned"] != nil {
-					t.Errorf("assignee %q: %v", want, body)
-				}
-			}
+			continue
+		}
+		if strings.EqualFold(want, "me") {
+			want = "me"
+		}
+		if body["assignee"] != want || body["unassigned"] != nil {
+			t.Errorf("assignee %q: %v", want, body)
 		}
 	}
 	// A local env has no assignees: the filter matches nothing, without a query.

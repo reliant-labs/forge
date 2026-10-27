@@ -600,6 +600,19 @@ func refreshBuildRuntimeConfigs(cfg *config.ProjectConfig, entities *KCLEntities
 	}
 }
 
+// preflightBuildCapacity refuses an unaffordable hosted build before any work.
+func preflightBuildCapacity(ctx context.Context, opts buildOptions, entities *KCLEntities) error {
+	if opts.env == "" || (!opts.push && opts.release == "") || opts.plan || opts.capacityChecked {
+		return nil
+	}
+	capacity, err := buildCapacityPreflight(ctx, opts.env, entities, hostedBuildCount(entitiesOrEmpty(entities)), os.Stdout)
+	if err != nil {
+		return err
+	}
+	renderCapacitySection(os.Stdout, capacity)
+	return nil
+}
+
 func runBuild(ctx context.Context, opts buildOptions) error {
 	if err := validateImageBuilder(opts.imageBuilder); err != nil {
 		return err
@@ -627,12 +640,8 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 
 	// A hosted env's capacity pre-flight, before any build: a no-plan org must
 	// not burn a build to learn it. --plan writes nothing and stays offline.
-	if opts.env != "" && (opts.push || opts.release != "") && !opts.plan && !opts.capacityChecked {
-		capacity, err := buildCapacityPreflight(ctx, opts.env, entities, hostedBuildCount(entitiesOrEmpty(entities)), os.Stdout)
-		if err != nil {
-			return err
-		}
-		renderCapacitySection(os.Stdout, capacity)
+	if err := preflightBuildCapacity(ctx, opts, entities); err != nil {
+		return err
 	}
 
 	// Resolve the docker image tag once, up front. Both the docker

@@ -143,15 +143,9 @@ checkout stop being the same source; drop the bridge with
 		// repository it creates, and an existing one is left alone.
 		Annotations: map[string]string{skipHookActivationAnnotation: ""},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			projectName := nameFlag
-			if len(args) > 0 {
-				if nameFlag != "" && nameFlag != args[0] {
-					return cliutil.UserErr("forge project new",
-						fmt.Sprintf("project named twice: %q positionally and %q via --name", args[0], nameFlag),
-						"",
-						"pass the name once — as the positional arg, or as --name")
-				}
-				projectName = args[0]
+			projectName, err := newProjectName(nameFlag, args)
+			if err != nil {
+				return err
 			}
 			frontendOutput = strings.ToLower(strings.TrimSpace(frontendOutput))
 			frontendRoutes = scaffold.NormalizeRouteSlugs(frontendRoutes)
@@ -164,14 +158,11 @@ checkout stop being the same source; drop the bridge with
 			if frontendOutput != "" && frontendOutput != "static" && frontendOutput != "standalone" && frontendOutput != "server" {
 				return fmt.Errorf("invalid --output %q: use static, standalone, or server", frontendOutput)
 			}
-			resolvedHarness, detectedVia, err := generator.ResolveHarness(harness, os.Getenv)
+			resolvedHarness, err := resolveNewHarness(harness)
 			if err != nil {
 				return err
 			}
-			if detectedVia != "" {
-				fmt.Printf("Harness: %s (detected from $%s; pass --harness to override)\n", resolvedHarness, detectedVia)
-			}
-			harness = string(resolvedHarness)
+			harness = resolvedHarness
 			explicitForgeRoot = forgeRoot
 			defer func() { explicitForgeRoot = "" }()
 			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces, linkForgeRequested(linkForge), verbose, verify, newFrontendOptions{output: frontendOutput, routes: frontendRoutes, kind: strings.ToLower(strings.TrimSpace(frontendKind))})
@@ -202,6 +193,32 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print the raw output behind a step forge summarizes in one line (e.g. git's explanation when the initial commit is skipped for want of a git identity)")
 
 	return cmd
+}
+
+// newProjectName reconciles the two supported spellings without changing the
+// empty-name default that runNew resolves from the directory.
+func newProjectName(flag string, args []string) (string, error) {
+	if len(args) == 0 {
+		return flag, nil
+	}
+	if flag != "" && flag != args[0] {
+		return "", cliutil.UserErr("forge project new",
+			fmt.Sprintf("project named twice: %q positionally and %q via --name", args[0], flag),
+			"",
+			"pass the name once — as the positional arg, or as --name")
+	}
+	return args[0], nil
+}
+
+func resolveNewHarness(harness string) (string, error) {
+	resolved, detectedVia, err := generator.ResolveHarness(harness, os.Getenv)
+	if err != nil {
+		return "", err
+	}
+	if detectedVia != "" {
+		fmt.Printf("Harness: %s (detected from $%s; pass --harness to override)\n", resolved, detectedVia)
+	}
+	return string(resolved), nil
 }
 
 // checkSiteFrontendFlags refuses the frontend flags that do not fit the

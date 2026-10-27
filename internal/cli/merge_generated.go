@@ -56,8 +56,20 @@ package cli
 //     FORGE_NO_MERGE_DRIVER=1 opts out of the driver; FORGE_NO_GIT_HOOKS=1
 //     (or FORGE_NO_HOOKS) is about hooks only and leaves the driver alone.
 //     FORGE_MERGE_DRIVER_SHARED=1 keeps the command in the shared config.
+//   - the shared config holds a DEFAULT command, for worktrees no forge has
+//     run in (a fresh `git worktree add`): the pinned forge fills it whenever
+//     it names no usable forge, and leaves a usable one alone.
+//   - `forge merge-driver install` wires a checkout on purpose, even under
+//     FORGE_NO_MERGE_DRIVER (a merge queue's pool), and `forge merge-driver
+//     check` fails a checkout whose driver cannot run (merge_driver_install.go).
 // A clone where forge has not run yet gets git's built-in merge, which is the
 // old behaviour — never worse.
+//
+// A driver never reports a merge forge did not do. The binary a command names
+// can vanish (pruned copies, removed tool caches): the command then
+// reinstalls that same forge version and merges with it, and when it cannot,
+// the file is left conflicted, with git's markers, and the driver says which
+// forge is gone and how to repair it (driverCommandLine).
 
 import (
 	"bytes"
@@ -397,6 +409,7 @@ func newMergeGeneratedCmd() *cobra.Command {
 		// output; nothing here should print a usage block.
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			touchDriverCopy()
 			base, err := os.ReadFile(args[0])
 			if err != nil {
 				return err
@@ -488,6 +501,13 @@ func ensureGeneratedMergeDriverTo(w io.Writer, root string) {
 	if os.Getenv(mergeDriverOptOutEnv) != "" {
 		return
 	}
+	wireGeneratedMergeDriver(w, root)
+}
+
+// wireGeneratedMergeDriver is ensureGeneratedMergeDriverTo without the
+// FORGE_NO_MERGE_DRIVER opt-out: `forge merge-driver install`, which a script
+// that otherwise opts out runs on purpose, calls it directly.
+func wireGeneratedMergeDriver(w io.Writer, root string) {
 	// Any git work tree, including one where the project sits in a
 	// subdirectory of the repository.
 	if exec.CommandContext(context.Background(), "git", "-C", root, "rev-parse", "--is-inside-work-tree").Run() != nil {
@@ -557,6 +577,23 @@ func ensureGeneratedMergeDriverTo(w io.Writer, root string) {
 				was = current
 			}
 			changes = append(changes, fmt.Sprintf("%s = %s (%s; was: %s)", key, command, sc.describe(), was))
+		}
+	}
+	// The shared config is the driver every worktree no forge has run in
+	// yet inherits (a fresh `git worktree add`). Where it names no usable
+	// forge, the merges there would run none, so the pinned forge fills it.
+	// A usable shared command is left alone: which forge it names is not
+	// this worktree's decision.
+	if ok && !skewed && scoped && scope == scopeWorktree && driverCommandUsable(command) {
+		shared := gitTrimmed(root, "config", "--local", "--get", key)
+		if shared != command && !driverCommandUsable(shared) && exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local", key, command).Run() == nil {
+			_ = exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local",
+				"merge."+generatedMergeDriver+".name", "forge-generated files: merge, keeping fingerprint lines for forge generate to refresh").Run()
+			was := "unset"
+			if shared != "" {
+				was = shared + " (unusable)"
+			}
+			changes = append(changes, fmt.Sprintf("%s = %s (shared: the default for worktrees no forge has run in; was: %s)", key, command, was))
 		}
 	}
 	if len(changes) > 0 {
@@ -746,8 +783,7 @@ func driverCommandUsable(command string) bool {
 	} else if i := strings.IndexByte(bin, ' '); i >= 0 {
 		bin = bin[:i]
 	}
-	info, err := os.Stat(bin)
-	return err == nil && !info.IsDir()
+	return isExecutableFile(bin)
 }
 
 // driverGuardPrefix opens every driver command forge writes: `[ -x '<bin>' ]`
@@ -755,32 +791,62 @@ func driverCommandUsable(command string) bool {
 const driverGuardPrefix = "[ -x "
 
 // driverCommandLine is the command git runs through `sh -c` for one merge: the
-// forge at bin when it still exists, and otherwise a merge that needs no forge.
+// forge at bin when it still exists; else the same forge, reinstalled; else a
+// merge that FAILS, loudly.
 //
 // The command names ONE binary by absolute path, and that binary can vanish —
 // the durable copies are pruned to the most recently used identities
 // (keptDriverCopies), a worktree on an older pin outlives its copy, and a
-// removed tool cache takes an installed one. A bare command then dies in the
-// shell with "not found" (127), git reports the file conflicted, and nobody is
-// told why. The fallback merges as git does without a driver; where that
-// conflicts it keeps this side of a generated file, which `generate` rewrites
-// from its inputs anyway, and leaves committed state (.forge/*) conflicted
-// with markers, since a wrong guess there would be written to the tree and
-// trusted. Either way it says which forge is gone and what repairs the driver.
+// removed tool cache takes an installed one. On 2026-10-26 thirteen of
+// reliant's worktrees named an evicted copy.
+//
+// So when bin is gone and this forge has a module version, the command
+// reinstalls that version into its durable-copy directory
+// (`go install …/cmd/forge@<version>`, GOBIN=<cache>/<identity>) and merges
+// with it: the same forge, so the same rules. When that is impossible (no
+// version, no go, no network) the merge fails: git's text merge is written
+// into %A, markers and all, the driver exits 1 so git reports the file
+// conflicted, and it says which forge is gone and what repairs it. It never
+// exits 0 without forge having merged: an earlier fallback kept this side of a
+// conflicting generated file and exited 0, so git recorded a stale mock as
+// cleanly merged and nothing downstream knew to regenerate it.
 func driverCommandLine(bin, name string) string {
-	q := "'" + strings.ReplaceAll(bin, "'", `'\''`) + "'"
+	q := shellQuote(bin)
 	words := strings.Fields(name)
 	words[0] = q
-	hint := name + " generate"
 	return driverGuardPrefix + q + " ] && exec " + strings.Join(words, " ") + " merge-generated %O %A %B %L %P; " +
-		`o=$(mktemp) || exit 1; cp %A "$o"; ` +
-		"git merge-file --marker-size=%L -L ours -L base -L theirs %A %O %B; rc=$?; " +
-		`if [ $rc -eq 0 ]; then rm -f "$o"; exit 0; fi; ` +
-		"case %P in .forge/*|*/.forge/*) rm -f \"$o\"; " +
-		"printf 'forge merge-generated %s: the forge this driver names (%s) is gone; this state file conflicts as git would have it. Run `" + hint + "` with the pinned forge to repair the driver.\\n' %P " + q + " >&2; exit 1;; esac; " +
-		`cat "$o" > %A; rm -f "$o"; ` +
-		"printf 'forge merge-generated %s: the forge this driver names (%s) is gone; kept this side of the generated file. Run `" + hint + "` with the pinned forge to render both sides and repair the driver.\\n' %P " + q + " >&2; exit 0"
+		driverReinstallClause() +
+		"git merge-file --marker-size=%L -L ours -L base -L theirs %A %O %B; " +
+		"printf 'forge merge-generated %s: FAILED: the forge this merge driver names (%s) is gone and could not be reinstalled, " +
+		"so forge did not merge this file; it is left conflicted. Run `" + name + " merge-driver install` with the pinned forge, then merge again.\\n' %P " +
+		q + " >&2; exit 1"
 }
+
+// driverReinstallClause is the part of the driver command that brings a
+// vanished forge back: this binary's own module version, installed into its
+// durable-copy directory, then run. "" when this forge has no version to
+// install (a development build) or no durable-copy directory.
+func driverReinstallClause() string {
+	version := mergeDriverVersion()
+	cache, err := mergeDriverCacheDir()
+	if !installableForgeVersion(version) || err != nil {
+		return ""
+	}
+	id := forgeIdentity(version)
+	d := shellQuote(filepath.Join(cache, id))
+	return "d=" + d + "; [ -x \"$d/forge\" ] || { printf 'forge merge-generated %s: the forge this driver names is gone; reinstalling forge " + version + " into %s\\n' %P \"$d\" >&2; " +
+		"(cd / && GOWORK=off GOFLAGS= GOBIN=\"$d\" go install " + forgeModulePath + "/cmd/forge@" + version + " >&2); }; " +
+		"[ -x \"$d/forge\" ] && exec \"$d/forge\" merge-generated %O %A %B %L %P; "
+}
+
+// installableForgeVersion reports whether the module proxy can serve forge
+// at v: a release tag or a pseudo-version, with no build metadata (a `+dirty`
+// or `+unknown` build names no commit the proxy has).
+func installableForgeVersion(v string) bool {
+	return installableVersionRE.MatchString(v) && !strings.Contains(v, ".dev")
+}
+
+var installableVersionRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`)
 
 // ephemeralExecutable reports whether exe will be gone by the next merge: a
 // `go test` binary, a `go run` build, or anything under the temp directory.

@@ -27,7 +27,10 @@ func TestPayloadWireBounds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			text := strings.Repeat(tc.unit, MaxTextBytes)
 			r := Report{Severity: "high", Title: text, Summary: text, Expected: text, Actual: text, Evidence: text}
-			p := BuildPayload("id", "install", r, Context{Args: []string{"forge", text}})
+			p := BuildPayload("id", text, r, Context{
+				Args: []string{"forge", text}, ForgeVersion: text,
+				ProjectForgeVersion: text, Harness: text,
+			})
 			encoded, err := json.Marshal(p)
 			if err != nil {
 				t.Fatal(err)
@@ -47,6 +50,10 @@ func TestPayloadWireBounds(t *testing.T) {
 				{"actual", wire.Actual, MaxTextBytes},
 				{"evidence", wire.Evidence, MaxTextBytes},
 				{"command line", wire.Client.CommandLine, maxCommandLineBytes},
+				{"forge version", wire.Client.ForgeVersion, maxVersionBytes},
+				{"project version", wire.Client.ProjectForgeVersion, maxVersionBytes},
+				{"harness", wire.Client.Harness, maxHarnessBytes},
+				{"install ID", wire.Client.InstallID, maxInstallIDBytes},
 			} {
 				if !utf8.ValidString(field.text) || len(field.text) > field.max || utf8.RuneCountInString(field.text) > field.max || !strings.HasSuffix(field.text, " [truncated]") {
 					t.Errorf("%s: bytes=%d runes=%d, want valid UTF-8 and marker within %d", field.name, len(field.text), utf8.RuneCountInString(field.text), field.max)
@@ -61,6 +68,28 @@ func TestPayloadWireBounds(t *testing.T) {
 				t.Errorf("encoded payload %d bytes exceeds ingest body cap", len(encoded))
 			}
 		})
+	}
+}
+
+func TestBuildPayloadRedactsHostileContext(t *testing.T) {
+	hostile := "password=hunter2 /home/private-person/project " + strings.Repeat("界😀", 100)
+	p := BuildPayload("id", hostile, validReport(), Context{
+		ForgeVersion: hostile, ProjectForgeVersion: hostile, Harness: hostile,
+	})
+	encoded, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "hunter2") || strings.Contains(string(encoded), "private-person") {
+		t.Fatal("repository-controlled context leaked a credential or personal path")
+	}
+	for name, value := range map[string]string{
+		"forge version": p.Client.ForgeVersion, "project version": p.Client.ProjectForgeVersion,
+		"harness": p.Client.Harness, "install ID": p.Client.InstallID,
+	} {
+		if !strings.Contains(value, "[redacted]") || !strings.Contains(value, "~/project") || !utf8.ValidString(value) {
+			t.Errorf("%s was not redacted and UTF-8 bounded: %q", name, value)
+		}
 	}
 }
 

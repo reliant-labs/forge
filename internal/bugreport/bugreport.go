@@ -56,6 +56,10 @@ const (
 	MaxTitleBytes       = 200
 	MaxTextBytes        = 4000
 	maxCommandLineBytes = 2000
+	maxVersionBytes     = 128
+	maxHarnessBytes     = 64
+	maxRuntimeBytes     = 32
+	maxInstallIDBytes   = 64
 )
 
 // Severities are the accepted severities, most severe first.
@@ -151,14 +155,14 @@ func BuildPayload(reportID, installID string, r Report, c Context) Payload {
 		Actual:   redact.Bounded(r.Actual, MaxTextBytes),
 		Evidence: redact.Bounded(r.Evidence, MaxTextBytes),
 		Client: ClientContext{
-			ForgeVersion:        c.ForgeVersion,
-			OS:                  runtime.GOOS,
-			Arch:                runtime.GOARCH,
+			ForgeVersion:        redact.Bounded(c.ForgeVersion, maxVersionBytes),
+			OS:                  redact.Bounded(runtime.GOOS, maxRuntimeBytes),
+			Arch:                redact.Bounded(runtime.GOARCH, maxRuntimeBytes),
 			CommandLine:         CommandLine(c.Args),
-			ProjectForgeVersion: c.ProjectForgeVersion,
-			Harness:             c.Harness,
-			InstallID:           installID,
-			GoVersion:           runtime.Version(),
+			ProjectForgeVersion: redact.Bounded(c.ProjectForgeVersion, maxVersionBytes),
+			Harness:             redact.Bounded(c.Harness, maxHarnessBytes),
+			InstallID:           redact.Bounded(installID, maxInstallIDBytes),
+			GoVersion:           redact.Bounded(runtime.Version(), maxRuntimeBytes),
 		},
 	}
 }

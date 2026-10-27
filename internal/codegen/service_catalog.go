@@ -20,7 +20,13 @@ import (
 func graphCatalog(in GraphGenInput, m *graphModel) servicecatalog.Catalog {
 	c := servicecatalog.Catalog{Schema: servicecatalog.Schema, Module: in.ModulePath,
 		Processes: []servicecatalog.Process{}, Services: []servicecatalog.Service{}, Components: []servicecatalog.Component{}, Bindings: []servicecatalog.Binding{}, Clients: []servicecatalog.Client{}, Diagnostics: []servicecatalog.Diagnostic{}}
-	services, _ := ParseDeclaredServices(in.ProjectDir)
+	services, descriptorErr := ParseDeclaredServices(in.ProjectDir)
+	if descriptorErr != nil {
+		c.Diagnostics = append(c.Diagnostics, servicecatalog.Diagnostic{Code: "descriptor_unavailable"})
+	}
+	// The typed graph proves generated route-set reach, not arbitrary runtime
+	// mux registration, reflection, proxy routes, or unregistered API clients.
+	c.Diagnostics = append(c.Diagnostics, servicecatalog.Diagnostic{Code: "coverage_generated_routes_and_registered_clients_only"})
 	if len(services) == 0 {
 		services = in.Services
 	}
@@ -153,7 +159,7 @@ func graphCatalog(in GraphGenInput, m *graphModel) servicecatalog.Catalog {
 			for _, sv := range m.routesView.Services {
 				for _, sn := range n.Services {
 					if sn.Name == sv.FieldName {
-						p.Serves = append(p.Serves, servicecatalog.Serve{Service: catalogServiceName(sv, services), RouteSet: n.Name, Audience: n.Audience, Resolution: "declared_route_set"})
+						p.Serves = append(p.Serves, servicecatalog.Serve{Component: sn.Name, Service: catalogServiceName(sv, services), RouteSet: n.Name, Audience: n.Audience, Resolution: "declared_route_set"})
 					}
 				}
 			}

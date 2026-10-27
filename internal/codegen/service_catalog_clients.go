@@ -24,6 +24,18 @@ func catalogServiceName(s routesServiceView, services []ServiceDef) string {
 // providers. No scan for New*Client names or endpoint string values is used.
 func graphCatalogClients(in GraphGenInput, m *graphModel, diagnostics *[]servicecatalog.Diagnostic) []servicecatalog.Client {
 	out := []servicecatalog.Client{}
+	// Validate against the existing descriptor's config fields; never create
+	// another endpoint registry or export resolved values/defaults.
+	configFields := map[string]bool{}
+	if desc, err := loadDescriptor(in.ProjectDir); err == nil && desc != nil {
+		for _, cfg := range desc.Configs {
+			for _, field := range cfg.Fields {
+				if cfg.FullName != "" && field.ProtoType == "string" && !field.Sensitive {
+					configFields[cfg.FullName+"."+field.Name] = true
+				}
+			}
+		}
+	}
 	p := m.u.app
 	if p == nil || p.TypesInfo == nil {
 		return out
@@ -88,7 +100,7 @@ func graphCatalogClients(in GraphGenInput, m *graphModel, diagnostics *[]service
 					}
 				}
 				// Only proto identities, never arbitrary URLs or secret-like strings.
-				if !catalogProtoRef(cl.Service) || !catalogProtoRef(cl.ConfigField) || cl.Constructor == "" {
+				if !catalogProtoRef(cl.Service) || !catalogProtoRef(cl.ConfigField) || cl.Constructor == "" || !configFields[cl.ConfigField] || !catalogClientService(p.TypesInfo, call, cl.Service) {
 					cl.Service = ""
 					cl.ConfigField = ""
 					*diagnostics = append(*diagnostics, servicecatalog.Diagnostic{Code: "client_metadata_unresolved", Component: provider, Source: source})
@@ -103,6 +115,25 @@ func graphCatalogClients(in GraphGenInput, m *graphModel, diagnostics *[]service
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// Connect exports <Service>Name next to the constructor; compare that typed
+// constant, not the constructor's spelling or package basename.
+func catalogClientService(info *types.Info, call *ast.CallExpr, service string) bool {
+	if len(call.Args) < 2 {
+		return false
+	}
+	sel, ok := call.Args[1].(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	fn, ok := info.Uses[sel.Sel].(*types.Func)
+	if !ok || fn.Pkg() == nil {
+		return false
+	}
+	short := service[strings.LastIndex(service, ".")+1:]
+	obj, ok := fn.Pkg().Scope().Lookup(short + "Name").(*types.Const)
+	return ok && obj.Val().Kind() == constant.String && constant.StringVal(obj.Val()) == service && fn.Name() == "New"+short+"Client"
 }
 
 func catalogProtoRef(s string) bool {

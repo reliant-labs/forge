@@ -45,6 +45,16 @@ func Decode(raw []byte) (Catalog, error) {
 				return c, fmt.Errorf("invalid method source")
 			}
 		}
+		for _, impl := range v.ImplementationCandidates {
+			if !source(impl.Source) {
+				return c, fmt.Errorf("invalid implementation source")
+			}
+			for _, m := range impl.Methods {
+				if !source(m.Source) {
+					return c, fmt.Errorf("invalid implementation method source")
+				}
+			}
+		}
 	}
 	for _, v := range c.Bindings {
 		for _, m := range v.Methods {

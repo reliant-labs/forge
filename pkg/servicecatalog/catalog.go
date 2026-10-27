@@ -44,7 +44,8 @@ type Process struct {
 }
 
 type Serve struct {
-	Service    string `json:"service"` // fully-qualified protobuf service
+	Component  string `json:"component"` // handler component; method names join to Component.Methods
+	Service    string `json:"service"`   // fully-qualified protobuf service
 	RouteSet   string `json:"route_set"`
 	Audience   string `json:"audience"`
 	Resolution string `json:"resolution"` // declared_route_set; not runtime observation

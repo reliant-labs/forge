@@ -3,8 +3,10 @@
 package storage
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,25 +25,64 @@ func TestProcExecutablesFindsAProcessRunningFromTheCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	bin := filepath.Join(dir, "sleeper")
-	src, err := os.ReadFile("/bin/sleep")
+	self, err := os.Executable()
 	if err != nil {
-		t.Skipf("no /bin/sleep: %v", err)
+		t.Fatal(err)
+	}
+	src, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if err := os.WriteFile(bin, src, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(bin, "30")
-	if err := cmd.Start(); err != nil {
-		t.Skipf("cannot run a copied binary here: %v", err)
+	// The copied helper announces readiness, then waits for EOF from this
+	// parent, not a wall-clock deadline. A slow /proc scan must not outlive it.
+	cmd := exec.Command(bin, "-test.run=^TestProcExecutableOwnedChild$", "--", "forge-proc-executable-child")
+	cmd.Stderr = os.Stderr
+	release, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-	// Until the child has exec'd, /proc/<pid>/exe is still this test binary.
+	t.Cleanup(func() { _ = release.Close() })
+	ready, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ready.Close() })
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := false
+	t.Cleanup(func() {
+		if !waited {
+			_ = cmd.Process.Kill() // Only the child this test started.
+			_ = cmd.Wait()
+		}
+	})
+	readiness := make(chan error, 1)
+	go func() {
+		line, err := bufio.NewReader(ready).ReadString('\n')
+		if err == nil && line != "ready\n" {
+			err = fmt.Errorf("unexpected child readiness: %q", line)
+		}
+		readiness <- err
+	}()
+	select {
+	case err := <-readiness:
+		if err != nil {
+			t.Fatalf("child did not become ready: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("child did not announce readiness")
+	}
 	waitForExe(t, cmd.Process.Pid, func(exe string) bool { return exe == bin })
 
 	exes, err := procExecutables(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
+	waitForExe(t, cmd.Process.Pid, func(exe string) bool { return exe == bin })
 	var found *LiveExecutable
 	for i := range exes {
 		if _, ok := cacheEntryOfExecutable(root, exes[i].Path); ok {
@@ -65,15 +106,50 @@ func TestProcExecutablesFindsAProcessRunningFromTheCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(exes) == 0 {
+	waitForExe(t, cmd.Process.Pid, func(exe string) bool { return exe == bin+" (deleted)" })
+	if len(exes) != 1 || exes[0].Path != bin+" (deleted)" {
 		link, lerr := os.Readlink(fmt.Sprintf("/proc/%d/exe", cmd.Process.Pid))
-		t.Fatalf("a process whose binary was unlinked is no longer reported: %v; /proc/%d/exe -> %q (%v)", exes, cmd.Process.Pid, link, lerr)
+		t.Fatalf("the owned process whose binary was unlinked is not reported exactly once: %v; /proc/%d/exe -> %q (%v)", exes, cmd.Process.Pid, link, lerr)
 	}
 	if !strings.HasSuffix(exes[0].Path, " (deleted)") {
 		t.Errorf("a process whose binary was unlinked is not reported as such: %v", exes)
 	}
 	if key, ok := cacheEntryOfExecutable(root, exes[0].Path); !ok || key != "9f/"+hexName(7, "-d") {
 		t.Errorf("the deleted binary does not map to its entry: %q, %v", key, ok)
+	}
+
+	if err := release.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = cmd.Wait()
+	waited = true
+	if err != nil {
+		t.Fatalf("owned child did not exit cleanly: %v", err)
+	}
+	if _, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", cmd.Process.Pid)); !os.IsNotExist(err) {
+		t.Fatalf("reaped child's exe still exists, or could not be inspected: %v", err)
+	}
+	exes, err = procExecutables(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exes) != 0 {
+		t.Fatalf("exited child still protects its cache entry: %v", exes)
+	}
+}
+
+// TestProcExecutableOwnedChild runs only when explicitly invoked by the parent
+// above. The parent owns its lifetime through stdin; no external binary or timer
+// can cause it to disappear while the cache inspector is scanning /proc.
+func TestProcExecutableOwnedChild(t *testing.T) {
+	if os.Args[len(os.Args)-1] != "forge-proc-executable-child" {
+		return
+	}
+	if _, err := fmt.Fprintln(os.Stdout, "ready"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+		t.Fatal(err)
 	}
 }
 

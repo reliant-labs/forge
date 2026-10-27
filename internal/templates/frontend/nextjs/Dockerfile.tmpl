@@ -42,7 +42,9 @@ RUN corepack enable pnpm
 # the developer's OS — out of the image.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
-  pnpm install --frozen-lockfile
+  pnpm fetch --frozen-lockfile
+RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
+  pnpm install --offline --frozen-lockfile
 
 COPY . .
 

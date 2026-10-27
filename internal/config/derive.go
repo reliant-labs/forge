@@ -178,7 +178,10 @@ func DeriveFrontendWorkspaces(c *ProjectConfig) {
 	if c.projectDir == "" {
 		return
 	}
-	c.workspaces = fileExists(filepath.Join(c.projectDir, "pnpm-workspace.yaml"))
+	body, err := os.ReadFile(filepath.Join(c.projectDir, "pnpm-workspace.yaml"))
+	// A machine-local dev bridge is an install overlay, not the opt-in
+	// shared API/hooks layout. It must not change generation on this machine.
+	c.workspaces = err == nil && !strings.HasPrefix(string(body), "# forge-dev-workspace-root:")
 }
 
 // DeriveFeatureDefaults computes the enabled/disabled state of every feature

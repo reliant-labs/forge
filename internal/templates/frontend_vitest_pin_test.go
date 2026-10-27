@@ -2,6 +2,7 @@ package templates
 
 import (
 	"encoding/json"
+	"gopkg.in/yaml.v3"
 	"strings"
 	"testing"
 )
@@ -34,7 +35,17 @@ func TestFrontendVitestMajor(t *testing.T) {
 			if got := pkg.DevDependencies["vitest"]; got != "^5.0.4" {
 				t.Fatalf("vitest = %q; deliberate tested major/floor is ^5.0.4", got)
 			}
-			if got := pkg.Overrides["@hyperdx/otel-web-session-recorder"]["fflate"]; got != "^0.7.5" {
+			settings, err := templateFS.ReadFile("frontend/shared-web/pnpm-workspace.yaml.tmpl")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ws struct {
+				Overrides map[string]string `yaml:"overrides"`
+			}
+			if err := yaml.Unmarshal(settings, &ws); err != nil {
+				t.Fatal(err)
+			}
+			if got := ws.Overrides["@hyperdx/otel-web-session-recorder>fflate"]; got != "^0.7.5" {
 				t.Fatalf("recorder fflate override = %q; need patched 0.7 line (GHSA-px8p-9vwx-vf98)", got)
 			}
 		})

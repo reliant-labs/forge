@@ -15,6 +15,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 )
 
 // TestE2EScaffoldFrontendRuntime is the gate on how a generated frontend
@@ -135,7 +136,7 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	}
 
 	// ── The build gate: the real toolchain must be green. ──
-	if !toolAvailable("node") || !toolAvailable("npm") {
+	if !toolAvailable("node") || !toolAvailable("npm") || !toolAvailable("pnpm") {
 		t.Log("node/npm not available — skipping npm build gate (content assertions still ran)")
 		return
 	}
@@ -160,8 +161,8 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	// race that bootstrap.
 	prebuildWebRuntimeE2E(t)
 	for i := 1; i <= 2; i++ {
-		runCmdTimeout(t, webDir, 5*time.Minute,
-			"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
+		argv := frontenddeps.InstallArgv(webDir, "", false)
+		runCmdTimeout(t, webDir, 5*time.Minute, argv[0], argv[1:]...)
 		if buildinfo.IsCI() {
 			continue // no dev bridge under CI, by design — see above
 		}
@@ -207,11 +208,11 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	// range, take it from the checkout directly.
 	runtimeSrc := filepath.Join(findRepoRoot(t), "web-runtime")
 	shadowed := materializeShadowedRuntimeE2E(t, dir, runtimeSrc)
-	setWebRuntimeSpecE2E(t, filepath.Join(webDir, "package.json"), "file:"+shadowed)
+	setWebRuntimeSpecE2E(t, filepath.Join(webDir, "package.json"), "link:"+shadowed)
 	runCmdTimeout(t, webDir, 5*time.Minute,
-		"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
+		"pnpm", "install", "--no-frozen-lockfile", "--prefer-offline")
 
-	runCmdTimeout(t, webDir, 5*time.Minute, "npm", "run", "build")
+	runCmdTimeout(t, webDir, 5*time.Minute, "pnpm", "run", "build")
 	runCmdTimeout(t, webDir, 2*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
 
 	assertRuntimePeersDedupedE2E(t, nextProdDistDirE2E(t, projectDir, "web"), shadowed)

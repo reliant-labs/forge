@@ -38,7 +38,8 @@ const PrettierVersion = "3.5.3"
 // pnpm itself switch to the pinned version, the frontend Dockerfile installs
 // it, and the scaffolded workflows' pnpm/action-setup reads it from the same
 // field. TestPnpmVersionIsPinnedEverywhere
-// (internal/templates/pnpm_pin_test.go) fails when a template names another.
+// (internal/generator/pnpm_pin_test.go) fails when a template or one of
+// forge's own workflows names another.
 //
 // pnpm, not npm, because its content-addressed store hard-links one copy of a
 // package into every checkout that uses it: on a machine with many worktrees

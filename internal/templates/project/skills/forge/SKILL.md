@@ -9,6 +9,15 @@ Self-sufficient for greenfield work: empty directory to a running app without
 loading another skill. Depth is named at the point you would need it — load it
 then, not before.
 
+## Frontend package manager
+
+New frontends pin `pnpm@12.15.0` in package.json. Their own
+`pnpm-workspace.yaml` carries overrides and `allowBuilds` (pnpm 12's build-script
+approval map); it does not opt the project into shared API/hooks workspaces.
+Use `pnpm install --frozen-lockfile` on a clone and `pnpm run <script>`.
+Forge still drives existing npm/yarn frontends with their own manager. For an
+optional npm-to-pnpm adoption, load `migrations/v0.1.47/pnpm`.
+
 ## Two paths, both first-class
 
 **A frontend with no backend of its own** — a landing page, marketing site,

@@ -99,7 +99,17 @@ func lockfilePackageManager(dir, fallback string) string {
 // lockfile to honour; npm without one — at the root it actually installs
 // at, see NpmInstallVerb — falls back to `install`.
 func installArgs(runner, dir string, frozen bool) []string {
+	if root, bridged := installDir(runner, dir); bridged {
+		// The overlay has its own gitignored lockfile. Keep resolution pinned
+		// by the frontend's manifest, but install at the bridge root.
+		return []string{"--dir", root, "install", "--no-frozen-lockfile"}
+	}
 	if !frozen {
+		if runner == "pnpm" {
+			// pnpm defaults to frozen in CI. Scaffold and dev installs must
+			// create/update the lockfile even when forge itself runs in CI.
+			return []string{"install", "--no-frozen-lockfile"}
+		}
 		return []string{"install"}
 	}
 	switch runner {
@@ -166,7 +176,7 @@ func runInstall(ctx context.Context, runner, dir string, args []string) error {
 		// own, gitignored and machine-local, so there is nothing to freeze
 		// against — the frontend's tracked lockfile is not read there.
 		fmt.Printf("  (dev web-runtime bridge: installing at %s)\n", root)
-		dir, args = root, []string{"install"}
+		dir, args = root, []string{"install", "--no-frozen-lockfile"}
 	}
 	var buf bytes.Buffer
 	if flags := concurrencyFlags(runner, os.Environ()); len(flags) > 0 {

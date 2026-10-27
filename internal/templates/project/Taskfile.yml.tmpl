@@ -240,7 +240,7 @@ tasks:
             if [ -f "$dir/pnpm-lock.yaml" ]; then PM=pnpm
             elif [ -f "$dir/yarn.lock" ]; then PM=yarn
             elif [ -f "$dir/package-lock.json" ]; then PM=npm
-            else PM=$(sed -n 's/^ *"packageManager": *"\(npm\|pnpm\|yarn\)@.*/\1/p' "$dir/package.json" 2>/dev/null)
+            else PM=$(node -e 'const fs = require("node:fs"); const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); console.log((p.packageManager || "npm").split("@")[0])' "$dir/package.json")
             fi
             export PM="${PM:-npm}"
             echo "==> {{`{{.SCRIPT}}`}} ($dir, $PM)"

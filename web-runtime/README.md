@@ -107,6 +107,18 @@ an opaque external."
 
 ## Browser telemetry (`/telemetry`)
 
+Raw DOM events (including `mousedown`, `mouseup` and `click`) stay in masked
+session replay rather than creating automatic interaction spans. Document loads,
+fetch/XHR requests and explicitly instrumented meaningful actions still create
+spans. The interceptor stack preserves the caller's OTel context across its own
+authentication and telemetry-startup waits; the SDK propagates the actual network
+span's context to configured API origins.
+
+The real Chromium SDK contract test is a separate slow tier:
+`npm run build && npx playwright install chromium && npm run test:browser`.
+It verifies exact action → fetch parent IDs and wire `traceparent`, retains
+mouse events in replay, and checks private text/input sentinels are masked.
+
 `initBrowserTelemetry` starts the HyperDX browser SDK once per page load
 (errors, console, fetch/XHR, page loads, web vitals, optional replay) and ships
 to this origin's `/_otel`. It is a no-op without a DOM or an endpoint and never

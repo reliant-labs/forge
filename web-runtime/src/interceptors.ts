@@ -33,6 +33,7 @@
 // stack two retry layers AND retry non-idempotent mutations — the bug this
 // split fixed.
 import { MethodOptions_IdempotencyLevel } from "@bufbuild/protobuf/wkt";
+import { context } from "@opentelemetry/api";
 
 import { ConnectClientError, normalizeError } from "./errors.js";
 import { telemetryReady } from "./telemetry-gate.js";
@@ -67,11 +68,14 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 /** Attaches the bearer token from the app's auth provider. */
 export function authInterceptor(cfg: RuntimeInterceptorConfig): Interceptor {
   return (next) => async (req) => {
+    const parent = context.active();
     const token = cfg.getToken ? await cfg.getToken() : null;
     if (token) {
       req.header.set("Authorization", `Bearer ${token}`);
     }
-    return next(req);
+    // Browser stack context managers cannot carry context through native
+    // await. Restore the caller's context before entering the next boundary.
+    return context.with(parent, () => next(req));
   };
 }
 
@@ -96,9 +100,12 @@ export function headerInterceptor(cfg: RuntimeInterceptorConfig): Interceptor {
  */
 export function traceInterceptor(): Interceptor {
   return (next) => async (req) => {
+    const parent = context.active();
     await telemetryReady();
-    injectTraceContext(req.header);
-    return next(req);
+    return context.with(parent, () => {
+      injectTraceContext(req.header);
+      return next(req);
+    });
   };
 }
 

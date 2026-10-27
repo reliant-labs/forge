@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codemod"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
 )
@@ -290,6 +291,74 @@ func TestUpgradeConverge_SkipNamesPhasesNotRun(t *testing.T) {
 	}
 }
 
+// --skip codemods leaves the registry codemods the range crosses undone, says
+// which ones, and still runs everything else. The pin moves in the same run, so
+// the report is the only record that they were not applied.
+func TestUpgradeConverge_SkipCodemodsNamesWhatItLeftForYou(t *testing.T) {
+	dir := newConvergeFixture(t)
+	fakeUpgradeNPM(t)
+	rec := &recordedSteps{}
+	rep, err := runConverge(t, dir, upgradeOptions{to: "v0.1.47", goRun: noGo, steps: rec.steps(),
+		skip: map[string]bool{"codemods": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "internal/app/lifecycle.go")); string(got) != convergeLegacyLifecycle {
+		t.Errorf("--skip codemods still rewrote lifecycle.go:\n%s", got)
+	}
+	if len(rep.Codemods) != 0 {
+		t.Errorf("codemods ran: %+v", rep.Codemods)
+	}
+	var detail string
+	for _, p := range rep.Phases {
+		if p.Name == "codemods" {
+			if p.Status != "skipped" {
+				t.Errorf("codemods phase = %s, want skipped", p.Status)
+			}
+			detail = p.Detail
+		}
+	}
+	if !strings.Contains(detail, "forge fix operatorkit") && !strings.Contains(detail, " fix operatorkit") {
+		t.Errorf("the skipped phase does not name the codemod to run yourself: %q", detail)
+	}
+	if y, _ := os.ReadFile(filepath.Join(dir, "forge.yaml")); !strings.Contains(string(y), "forge_version: v0.1.47") {
+		t.Errorf("the pin must still move:\n%s", y)
+	}
+	if got := strings.Join(rec.calls, ","); got != "generate,lint" {
+		t.Errorf("the other phases did not run: %q", got)
+	}
+}
+
+// connect-errors and composition-graph run as a playbook's automation, so
+// --skip playbooks is how a consumer splits them into a PR of their own. The
+// skipped phase names them.
+func TestUpgradeConverge_SkipPlaybooksNamesTheCodemodsItLeftForYou(t *testing.T) {
+	dir := newConvergeFixture(t)
+	fakeUpgradeNPM(t)
+	upgradeWrite(t, filepath.Join(dir, "needs-fix.txt"), "old\n")
+	metas := []migrationMeta{{ID: "v0.1.47", Version: "v0.1.47", Automation: []string{"fix:connect-errors", "fix:composition-graph"},
+		Detection: "grep -qs old needs-fix.txt"}}
+	rec := &recordedSteps{}
+	rep, err := runConverge(t, dir, upgradeOptions{to: "v0.1.47", goRun: noGo, steps: rec.steps(), metas: metas,
+		skip: map[string]bool{"playbooks": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Playbooks) != 0 {
+		t.Errorf("playbooks ran: %+v", rep.Playbooks)
+	}
+	for _, p := range rep.Phases {
+		if p.Name != "playbooks" {
+			continue
+		}
+		for _, want := range []string{"fix connect-errors", "fix composition-graph"} {
+			if !strings.Contains(p.Detail, want) {
+				t.Errorf("skipped playbooks phase does not name %q: %q", want, p.Detail)
+			}
+		}
+	}
+}
+
 // ── playbooks: automate what they declare, hand over what remains ────────────
 
 func TestUpgradeConverge_PlaybookAutomationRunsCodemodsAndReportsWhatRemains(t *testing.T) {
@@ -547,4 +616,41 @@ func TestUpgradeExitCodesAreDistinct(t *testing.T) {
 			t.Errorf("exitNeedsHuman collides with a deploy code %d", reserved)
 		}
 	}
+}
+
+// ── scaffold-once files the project deleted ─────────────────────────────────
+
+// reliant's cmd/reliant/cmd/metrics.go and commands.go were recorded deleted in
+// .forge/scaffolded.json, and the pin bot's first upgrade wrote them back
+// (they did not compile: `undefined: version`). A scaffold-once file the
+// ledger records as deleted must stay deleted through the whole verb.
+func TestUpgradeConverge_LeavesLedgerDeletedScaffoldOnceFilesDeleted(t *testing.T) {
+	dir := newConvergeFixture(t)
+	fakeUpgradeNPM(t)
+	checksums.ResetScaffoldLedgerCache()
+	t.Cleanup(checksums.ResetScaffoldLedgerCache)
+
+	deleted := []string{
+		"cmd/test-project/cmd/metrics.go",
+		"cmd/test-project/cmd/commands.go",
+		"internal/metrics/metrics.go",
+	}
+	for _, rel := range deleted {
+		checksums.RecordScaffold(dir, rel)
+	}
+
+	rec := &recordedSteps{}
+	rep, err := runConverge(t, dir, upgradeOptions{to: "v0.1.47", goRun: noGo, steps: rec.steps()})
+	if err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	for _, rel := range deleted {
+		if _, statErr := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); !os.IsNotExist(statErr) {
+			t.Errorf("upgrade re-created %s, which the ledger records as deleted (stat err %v)", rel, statErr)
+		}
+	}
+	if !rep.Converged {
+		t.Errorf("a deleted scaffold is not work for a person: %+v", rep.NeedsHuman)
+	}
+
 }

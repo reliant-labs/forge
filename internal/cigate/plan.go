@@ -1,6 +1,7 @@
 package cigate
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -404,7 +405,23 @@ func (p planner) checksLane() []Check {
 				Check{Name: "typecheck-" + fe.Name, Lane: LaneChecks, Group: GroupStatic, Heavy: true, After: after, Prereq: needDeps, Argv: p.feRun(fe, "typecheck"), Dir: fe.Path},
 			)
 			if ci.LintFrontendStyles {
-				out = append(out, Check{Name: "css-health-" + fe.Name, Lane: LaneChecks, Group: GroupStatic, After: after, Prereq: needDeps, Argv: p.feRun(fe, "--if-present", "lint:styles"), Dir: fe.Path})
+				css := Check{Name: "css-health-" + fe.Name, Lane: LaneChecks, Group: GroupStatic, After: after, Prereq: needDeps, Argv: p.feRun(fe, "lint:styles"), Dir: fe.Path}
+				// Yarn (classic and Berry) does not accept --if-present.
+				// Determine applicability from the manifest instead of passing
+				// one manager's optional-script flag to every manager.
+				data, err := os.ReadFile(p.path(fe.Path, "package.json"))
+				var manifest struct {
+					Scripts map[string]string `json:"scripts"`
+				}
+				if err == nil {
+					err = json.Unmarshal(data, &manifest)
+				}
+				if err != nil {
+					css.Prereq = func() string { return "cannot determine optional lint:styles script: " + err.Error() }
+				} else if manifest.Scripts["lint:styles"] == "" {
+					css.NotApplicable = "package.json declares no lint:styles script"
+				}
+				out = append(out, css)
 			}
 		}
 	}

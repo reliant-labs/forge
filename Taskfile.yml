@@ -179,6 +179,28 @@ tasks:
     cmds:
       - go test -short -timeout 300s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
 
+  ci:
+    # THE PRE-MERGE GATE, locally: what the merge steward runs to gate a forge
+    # pull request, in about five minutes. ci.yml's pull-request tier on this
+    # machine — the whole -short tier (cached, no -race, no -count), the
+    # flake gate over the tests the branch adds or edits, and the checks job
+    # (generated code, KCL, pre-commit over the changed files, licenses, the
+    # CHANGELOG and pkg/ API guards) — run concurrently, in one table, non-zero
+    # if any step failed or was skipped. scripts/ci-premerge.sh says what each
+    # step runs and what it leaves to main (`task test`, lint, e2e).
+    #
+    #   task ci                     the branch against its merge base with origin/main
+    #   task ci -- <base>           against another base (a stacked branch's parent)
+    #   PR=<n> task ci              also read pull request n's labels and body (apigate)
+    #   CI_SKIP=pre-commit task ci  waive a step that cannot run here (still listed)
+    #
+    # It is a heavy command: run it in a host slot (`reliant forge slot run --
+    # task ci`, or the harness's heavy flag). Contributors verify with
+    # `task test:short -- <their packages>` instead.
+    desc: "The pre-merge gate (ci.yml's pull-request tier, locally, ~5 min): task ci [-- BASE]"
+    cmds:
+      - scripts/ci-premerge.sh {{.CLI_ARGS}}
+
   test:e2e:
     # The whole `-tags e2e` suite, TestE2ENightly* included: what CI runs
     # across e2e-suite.yml's shards and nightly.yml, in one process. The

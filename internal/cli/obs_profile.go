@@ -75,7 +75,7 @@ in ClickHouse; HyperDX cannot draw flamegraphs, so this exports them:
 
 Sample types: cpu (nanoseconds) and inuse_space / inuse_objects (live heap) by
 default; alloc_space / alloc_objects and goroutine only from a workload whose
-profiling block turns them on (see forge skill load observability/profiles). Raw samples (and so --trace) are kept 72h; the
+profiling block turns them on (see forge skill load observability/profiles). Raw samples (and so --trace) are kept 24h; the
 per-minute aggregate behind --since is kept 30 days. --sql prints the query so
 you can run it yourself against the ClickStack ClickHouse.
 
@@ -92,7 +92,7 @@ Needs the local ClickStack running (` + "`forge env up`" + `).`,
 	f.DurationVar(&o.since, "since", time.Hour, "how far back to read (ignored with --from)")
 	f.StringVar(&o.from, "from", "", "range start, RFC 3339")
 	f.StringVar(&o.to, "to", "", "range end, RFC 3339 (default now)")
-	f.StringVar(&o.trace, "trace", "", "export only samples linked to this trace id (raw tier, last 72h)")
+	f.StringVar(&o.trace, "trace", "", "export only samples linked to this trace id (raw tier, last 24h)")
 	f.StringVar(&o.span, "span", "", "narrow --trace to one span id")
 	f.StringVar(&o.format, "format", "pprof", "pprof | speedscope | folded")
 	f.StringVarP(&o.output, "output", "o", "", "write to this file instead of stdout")

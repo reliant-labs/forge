@@ -17,8 +17,9 @@ package deploytarget
 // everything is known to be admissible:
 //
 //  1. pin every workload's image to the digest the env's bound release froze
-//  2. Workload.Validate(ProfileRestricted) + CheckShapeBand EVERY workload,
-//     and render the hosted set as the platform will — a refusal here costs
+//  2. Workload.Validate(ProfileRestricted) + CheckShapeBand EVERY workload
+//     (the band is skipped for an anonymous --claimable deploy, which has its
+//     own caps), and render the hosted set as the platform will — a refusal here costs
 //     zero RPCs
 //  3. EnsureEnvironment (by name)
 //  4. record the bundle (the RecordBundle hook: build, push, record)
@@ -764,9 +765,14 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 				errs = append(errs, fmt.Errorf("%s: %w", svc.Name, err))
 				continue
 			}
-			if err := deploy.CheckShapeBand(spec.Resources); err != nil {
-				errs = append(errs, fmt.Errorf("%s: %w", svc.Name, err))
-				continue
+			// The band is a billing rule, and the claimable plan is never
+			// billed: the control plane exempts it (control-plane#1359), and
+			// its own caps are checked before any build (claimableIneligibility).
+			if !cloud.ClaimableActive() {
+				if err := deploy.CheckShapeBand(spec.Resources); err != nil {
+					errs = append(errs, fmt.Errorf("%s: %w", svc.Name, err))
+					continue
+				}
 			}
 			out = append(out, hostedPlanItem{Name: svc.Name, Tier: w.Tier, Spec: spec, DesiredDigest: digest, Artifact: artifact})
 		case HostedTierStatic:

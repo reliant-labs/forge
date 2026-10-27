@@ -46,7 +46,12 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      # Restore only: the -trimpath artifacts `checks` keeps warm in the
+      # tools scope (ci.yml's "Build-cache note").
+      - uses: ./.github/actions/restore-go-caches
+        with:
+          scope: tools
 
       # A scaffolded frontend pins pnpm (package.json packageManager,
       # templates.PnpmVersion); TestPnpmVersionIsPinnedEverywhere keeps this

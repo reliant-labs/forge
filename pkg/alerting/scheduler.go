@@ -258,8 +258,9 @@ func (s *Scheduler) tickOwner(ctx context.Context, owner string, st *ownerState)
 				continue
 			}
 		}
+		slot := due[r.RuleKey]
 		after, err := s.d.Eval.EvaluateRule(ctx, r, st.instances[r.RuleKey])
-		due[r.RuleKey] = time.Now().Add(interval)
+		due[r.RuleKey] = nextDue(slot, interval, time.Now())
 		var storeErr *StoreError
 		switch {
 		case errors.As(err, &storeErr):
@@ -381,6 +382,21 @@ func setInstances(m map[RuleKey][]Instance, k RuleKey, v []Instance) {
 		return
 	}
 	m[k] = v
+}
+
+// nextDue is when a rule whose slot was `slot` runs next: one interval after the
+// SLOT, not after the evaluation ended. Re-arming from the end of an evaluation
+// adds the tick's lateness and the pass's own duration to every period, so a 1m
+// rule ran about every 78s (a 10s tick, and an owner's rules evaluated one after
+// another). A slot missed because the pass ran long is skipped, not replayed, so
+// a slow pass never turns into a burst of catch-up queries.
+func nextDue(slot time.Time, interval time.Duration, now time.Time) time.Time {
+	next := slot.Add(interval)
+	if next.After(now) {
+		return next
+	}
+	missed := now.Sub(slot) / interval
+	return slot.Add((missed + 1) * interval)
 }
 
 // jitter is a stable offset in [0, interval) for a rule.

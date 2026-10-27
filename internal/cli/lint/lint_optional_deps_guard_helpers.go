@@ -86,6 +86,9 @@ const svcerrImportPath = "github.com/reliant-labs/forge/pkg/svcerr"
 // non-nil error. TestSvcerrClassificationCoversPackage pins this list, and
 // svcerrWrappers, against pkg/svcerr's exported API.
 var svcerrConstructors = map[string]bool{
+	// New takes a wire code, not an error: even invalid codes and empty
+	// detail produce a non-nil error, so it is not a nil-preserving wrapper.
+	"New":          true,
 	"ScaffoldStub": true, "Canceled": true, "Unknown": true, "InvalidArgument": true,
 	"DeadlineExceeded": true, "NotFound": true, "AlreadyExists": true,
 	"PermissionDenied": true, "ResourceExhausted": true, "FailedPrecondition": true,

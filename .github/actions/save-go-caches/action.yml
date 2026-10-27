@@ -19,12 +19,20 @@ inputs:
     description: restore-go-caches' mod-hit output.
     required: false
     default: "false"
+  build-hit:
+    description: >-
+      restore-go-caches' build-hit output. An exact hit means today's (or this
+      commit's) entry already exists, so the build cache is not saved again.
+    required: false
+    default: "false"
 
 runs:
   using: composite
   steps:
     - uses: ./.github/actions/trim-go-build-cache
+      if: ${{ inputs.build-hit != 'true' }}
     - name: Save the Go build cache
+      if: ${{ inputs.build-hit != 'true' }}
       uses: actions/cache/save@v6
       with:
         path: ~/.cache/go-build

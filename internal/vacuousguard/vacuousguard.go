@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/repowalk"
 )
 
 // Rule names. They double as the stable first half of a ledger key.
@@ -52,7 +54,7 @@ var skipDirs = map[string]bool{
 // edit cannot narrow one surface without narrowing the other.
 func walkGo(root string, keep func(rel string) bool) ([]string, error) {
 	var files []string
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	err := repowalk.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}

@@ -337,9 +337,9 @@ func TestGeneratedProjectDeliversTelemetryToClickStack(t *testing.T) {
 	if got := flame(profilequery.Query{Service: svcProf, SampleType: "cpu", Env: "staging", From: rangeQ.From, To: rangeQ.To}); got != "" {
 		t.Errorf("an env filter that matches nothing returned %q", got)
 	}
-	// The retention the design promises: 72h raw, 30d aggregate (ClickHouse prints
+	// The retention the design promises: 24h raw, 30d aggregate (ClickHouse prints
 	// INTERVAL n UNIT as toIntervalUnit(n)).
-	for table, want := range map[string]string{"otel_profiles": "toIntervalHour(72)", "profile_stacks": "toIntervalDay(30)", "profile_samples_1m": "toIntervalDay(30)"} {
+	for table, want := range map[string]string{"otel_profiles": "toIntervalHour(24)", "profile_stacks": "toIntervalDay(30)", "profile_samples_1m": "toIntervalDay(30)"} {
 		if ddl := query("SHOW CREATE TABLE default." + table); !strings.Contains(ddl, want) {
 			t.Errorf("%s has no %q TTL:\n%s", table, want, ddl)
 		}

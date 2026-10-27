@@ -224,7 +224,8 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 		ids.WriteString(".WithMethodIDs(map[string]string{")
 		for _, method := range target.Methods {
 			if !method.SkipObserve {
-				fmt.Fprintf(&ids, "%q:%q,", opNamespace+"."+method.Name, servicecatalog.MethodID(scope, ifaceName, method.Name))
+				id, legacyName := servicecatalog.MethodIdentity(scope, ifaceName, opNamespace, method.Name)
+				fmt.Fprintf(&ids, "%q:%q,", legacyName, id)
 			}
 		}
 		ids.WriteString("})")

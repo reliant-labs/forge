@@ -212,30 +212,31 @@ func catalogMethods(dir string, u *graphUniverse, t types.Type) []servicecatalog
 	if t == nil {
 		return out
 	}
+	// The decorator wraps t's complete method set, including embedded methods.
+	// Its scope/owner/namespace belong to t, while source/signature still locate
+	// the original declaration. A declaring method's receiver is not this owner.
+	rt := types.Unalias(t)
+	if ptr, ok := rt.(*types.Pointer); ok {
+		rt = types.Unalias(ptr.Elem())
+	}
+	scope, owner, namespace := "", "", ""
+	if named, ok := rt.(*types.Named); ok {
+		owner = named.Obj().Name()
+		if pkg := named.Obj().Pkg(); pkg != nil {
+			scope, namespace = pkg.Path(), pkg.Name()
+		}
+	}
 	ms := types.NewMethodSet(t)
 	for i := 0; i < ms.Len(); i++ {
 		fn := ms.At(i).Obj().(*types.Func)
-		scope, owner := "", ""
-		if fn.Pkg() != nil {
-			scope = fn.Pkg().Path()
-		}
 		sig := fn.Type().(*types.Signature)
-		if sig.Recv() != nil {
-			rt := sig.Recv().Type()
-			if ptr, ok := rt.(*types.Pointer); ok {
-				rt = ptr.Elem()
-			}
-			if named, ok := rt.(*types.Named); ok {
-				owner = named.Obj().Name()
-			}
-		}
 		source := servicecatalog.Source{}
 		// Positions come from the shared go/types universe, not a live LSP.
 		if u.app != nil {
 			source = catalogSource(dir, u.app.Fset, fn.Pos())
 		}
-		legacy := filepath.Base(scope) + "." + fn.Name()
-		out = append(out, servicecatalog.CodeMethod{ID: servicecatalog.MethodID(scope, owner, fn.Name()), Name: fn.Name(), Signature: catalogType(sig), Scope: scope, LegacyName: legacy, Source: source})
+		id, legacy := servicecatalog.MethodIdentity(scope, owner, namespace, fn.Name())
+		out = append(out, servicecatalog.CodeMethod{ID: id, Name: fn.Name(), Signature: catalogType(sig), Scope: scope, LegacyName: legacy, Source: source})
 	}
 	return out
 }

@@ -132,6 +132,53 @@ func TestGolangciLintCache(t *testing.T) {
 	}
 }
 
+// TestGolangciLintCacheHasItsOwnBudget: the lint cache is trimmed to
+// golangci_cache_gib, not the build cache's go_cache_gib, which a lint cache
+// never reaches: under it, one that lints all day was never trimmed.
+func TestGolangciLintCacheHasItsOwnBudget(t *testing.T) {
+	build, lint := t.TempDir(), t.TempDir()
+	fillShards(t, build, 2, 2, func(int, int) time.Duration { return 3 * time.Hour })
+	fillShards(t, lint, 2, 2, func(int, int) time.Duration { return 3 * time.Hour })
+	var out strings.Builder
+	r := goRunner(t, &out)
+	r.GoCacheRoot, r.GolangciCacheRoot = build, lint
+	r.Policy.GoCacheGiB, r.Policy.GolangciCacheGiB, r.Policy.GoCacheVolumePercent = 60, 2, 100
+	budgets := map[string]uint64{}
+	r.OnGoCacheTrim = func(tr GoCacheTrim) { budgets[tr.Cache] = tr.BudgetBytes }
+	if err := r.SharedGoCache(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.GolangciLintCache(true); err != nil {
+		t.Fatal(err)
+	}
+	if budgets["shared go build cache"] != 60*GiB || budgets["golangci-lint cache"] != 2*GiB {
+		t.Fatalf("budgets = %v, want the build cache on go_cache_gib (60 GiB) and the lint cache on golangci_cache_gib (2 GiB)\n%s", budgets, out.String())
+	}
+}
+
+// TestGoCacheEntriesAreSizedByAllocatedBlocks: a budget bounds disk, so an
+// entry counts what it occupies. A 100-byte entry occupies a whole block;
+// counted by length, a cache of such entries read as a twelfth of its size.
+func TestGoCacheEntriesAreSizedByAllocatedBlocks(t *testing.T) {
+	prev := entryDiskBytes
+	entryDiskBytes = allocatedBytes
+	t.Cleanup(func() { entryDiskBytes = prev })
+	root := t.TempDir()
+	makeBuildCache(t, root)
+	p := putEntry(t, root, "ab", hexName(1, "-a"), 100, 3*time.Hour)
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := readGoCacheShard(root, "ab")
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries = %+v, %v", entries, err)
+	}
+	if got, want := entries[0].size, allocatedBytes(info); got != want || got < 100 {
+		t.Fatalf("entry sized %d bytes, want its allocation %d (and never under its 100-byte length)", got, want)
+	}
+}
+
 func TestGoimportsIndexKeepsLinkedAndRecent(t *testing.T) {
 	root := t.TempDir()
 	mk := func(name string, age time.Duration) string {

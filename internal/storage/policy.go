@@ -44,6 +44,11 @@ type Policy struct {
 	// on a 1 TB laptop: the budget is the smaller of go_cache_gib and this
 	// share. Zero means the default (15); 100 leaves go_cache_gib alone.
 	GoCacheVolumePercent int `json:"go_cache_volume_percent,omitempty"`
+	// GolangciCacheGiB is the size the golangci-lint cache is trimmed down
+	// to, least recently used first, like go_cache_gib for the build cache
+	// and capped the same way. Its own budget because its entries are tiny
+	// and recomputed in seconds: under go_cache_gib it was never trimmed.
+	GolangciCacheGiB uint64 `json:"golangci_cache_gib"`
 	// GoModCacheGiB is the size the shared Go module cache (GOMODCACHE) is
 	// trimmed down to when it grows past it: extracted module versions and
 	// their zips that no checkout on the machine references, oldest first
@@ -137,7 +142,7 @@ type Registry struct {
 
 // DefaultPolicy returns conservative local development budgets.
 func DefaultPolicy() Policy {
-	return Policy{LogBudgetGiB: 1, HostReserveGiB: 20, BuildCacheGiB: 20, BuildCacheUnused: "168h", GoCacheUnused: "48h", GoCacheGiB: 60, GoModCacheGiB: 20, ImageUnused: "168h", SourceCacheUnused: "168h", SourceCacheKeep: 2, SourceCacheGiB: 6, SourceCacheSlimAfter: "24h", RegistryDays: 14, RegistryKeep: 5, Builders: []string{"default"},
+	return Policy{LogBudgetGiB: 1, HostReserveGiB: 20, BuildCacheGiB: 20, BuildCacheUnused: "168h", GoCacheUnused: "48h", GoCacheGiB: 60, GolangciCacheGiB: 4, GoModCacheGiB: 20, ImageUnused: "168h", SourceCacheUnused: "168h", SourceCacheKeep: 2, SourceCacheGiB: 6, SourceCacheSlimAfter: "24h", RegistryDays: 14, RegistryKeep: 5, Builders: []string{"default"},
 		MaxDeletesPerPass: defaultMaxDeletesPerPass, DeleteRatePerSec: defaultDeleteRatePerSec,
 		AnonymousVolumeUnused: "336h", MaxDockerRemovalsPerPass: defaultMaxDockerRemovalsPerPass}
 }
@@ -208,7 +213,7 @@ func warnUnknownPolicyKeys(path string, doc []byte) {
 
 // Validate rejects unbounded budgets and unscoped registry targets.
 func (p Policy) Validate() error {
-	if p.LogBudgetGiB == 0 || p.HostReserveGiB == 0 || p.BuildCacheGiB == 0 || p.GoCacheGiB == 0 || p.GoModCacheGiB == 0 || p.SourceCacheGiB == 0 || p.RegistryDays < 1 || p.RegistryKeep < 2 {
+	if p.LogBudgetGiB == 0 || p.HostReserveGiB == 0 || p.BuildCacheGiB == 0 || p.GoCacheGiB == 0 || p.GolangciCacheGiB == 0 || p.GoModCacheGiB == 0 || p.SourceCacheGiB == 0 || p.RegistryDays < 1 || p.RegistryKeep < 2 {
 		return fmt.Errorf("storage: positive budgets and retention, and at least two registry versions are required")
 	}
 	if p.SourceCacheKeep < 1 {

@@ -91,7 +91,7 @@ require (
 	k8s.io/streaming v0.37.1
 	kcl-lang.io/kcl-go v0.13.1
 	kcl-lang.io/kpm v0.13.1
-	kcl-lang.io/lib v0.13.1
+	kcl-lang.io/lib v0.13.2
 	mvdan.cc/sh/v3 v3.14.1
 	oras.land/oras-go/v2 v2.6.4
 	sigs.k8s.io/controller-runtime v0.25.2

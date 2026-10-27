@@ -278,7 +278,9 @@ func (o *Overlay) writeRouted(path, prev string) error {
 	for _, scope := range o.scopes {
 		fmt.Fprintf(&b, "%s:registry=%s\n", scope, o.URL)
 	}
-	return atomicfile.WriteFile(path, []byte(b.String()), 0o644)
+	// The user's config can contain registry credentials. Keep its copy
+	// private even though the parent temp directory is already mode 0700.
+	return atomicfile.WriteFile(path, []byte(b.String()), 0o600)
 }
 
 // existingUserConfig is the user .npmrc pnpm would read without the

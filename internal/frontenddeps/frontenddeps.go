@@ -254,7 +254,7 @@ func Stale(dir string) bool {
 		// an existing healthy checkout is not force-reinstalled.
 		ref = nm.ModTime()
 	}
-	for _, manifest := range []string{"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "package.json"} {
+	for _, manifest := range []string{"package-lock.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "yarn.lock", "package.json"} {
 		if info, err := os.Stat(filepath.Join(dir, manifest)); err == nil {
 			if info.ModTime().After(ref) {
 				return true

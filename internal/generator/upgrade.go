@@ -909,6 +909,37 @@ func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly
 	return UpgradeSelection(projectDir, cfg, selection, checkOnly)
 }
 
+// upgradeAbsentManagedFile treats a missing file as a pure addition, except
+// that a Tier-2 scaffold's recorded absence belongs to the project. Check-only
+// reports the same delta without writing the file or recording its birth.
+func upgradeAbsentManagedFile(projectDir string, f managedFile, expected []byte, cs *FileChecksums, checkOnly bool) (UpgradeResult, error) {
+	if f.tier == Tier2 && !checksums.ScaffoldMayBeBorn(projectDir, f.destPath) {
+		return UpgradeResult{
+			Path:        f.destPath,
+			Status:      UpgradeSkipped,
+			LeftDeleted: true,
+		}, nil
+	}
+	// The whole template is missing: a zero-line delta would misleadingly
+	// describe a safe first adoption as having nothing to adopt.
+	result := UpgradeResult{
+		Path:    f.destPath,
+		Status:  UpgradeUpdated,
+		Diff:    simpleDiff(f.destPath, nil, expected),
+		Absent:  true,
+		Missing: len(lineBag(expected)),
+	}
+	if !checkOnly {
+		if err := writeManagedFile(projectDir, f.destPath, expected, cs); err != nil {
+			return UpgradeResult{}, fmt.Errorf("write %s: %w", f.destPath, err)
+		}
+		if f.tier == Tier2 {
+			checksums.RecordScaffold(projectDir, f.destPath)
+		}
+	}
+	return result, nil
+}
+
 // UpgradeSelection is Upgrade with a per-path force selection: only the files
 // the selection covers have user edits overwritten, everything else follows
 // the ordinary rules (pristine renders auto-update, user-modified files are
@@ -969,50 +1000,15 @@ func UpgradeSelection(projectDir string, cfg *config.ProjectConfig, force ForceS
 		diskPath := filepath.Join(projectDir, f.destPath)
 		existing, err := os.ReadFile(diskPath)
 		if err != nil {
-			if os.IsNotExist(err) {
-				// File doesn't exist — treat as needing update.
-				//
-				// Sized as the pure add it is: the whole template is
-				// "missing" here. Leaving these at zero made a new
-				// managed file report a delta of no lines, which reads
-				// as "nothing to see" for the one case where adoption
-				// is unambiguously safe.
-				//
-				// A Tier-2 file is scaffold-once: yours from birth, and
-				// its absence is yours too when the ledger records it
-				// (deleted or declined) or it was disowned. Birth is the
-				// one write upgrade makes, decided by the same predicate
-				// every other scaffold-once writer asks.
-				if f.tier == Tier2 && !checksums.ScaffoldMayBeBorn(projectDir, f.destPath) {
-					results = append(results, UpgradeResult{
-						Path:        f.destPath,
-						Status:      UpgradeSkipped,
-						LeftDeleted: true,
-					})
-					continue
-				}
-				result := UpgradeResult{
-					Path:    f.destPath,
-					Status:  UpgradeSkipped,
-					Diff:    simpleDiff(f.destPath, nil, expected),
-					Absent:  true,
-					Missing: len(lineBag(expected)),
-				}
-				if !checkOnly {
-					if writeErr := writeManagedFile(projectDir, f.destPath, expected, cs); writeErr != nil {
-						return nil, fmt.Errorf("write %s: %w", f.destPath, writeErr)
-					}
-					if f.tier == Tier2 {
-						checksums.RecordScaffold(projectDir, f.destPath)
-					}
-					result.Status = UpgradeUpdated
-				} else {
-					result.Status = UpgradeUpdated // would be updated
-				}
-				results = append(results, result)
-				continue
+			if !os.IsNotExist(err) {
+				return nil, fmt.Errorf("read %s: %w", f.destPath, err)
 			}
-			return nil, fmt.Errorf("read %s: %w", f.destPath, err)
+			result, err := upgradeAbsentManagedFile(projectDir, f, expected, cs, checkOnly)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+			continue
 		}
 
 		// Compare rendered template with what's on disk. The on-disk

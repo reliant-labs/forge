@@ -30,6 +30,7 @@ const HostPath = "/dev/kmsg"
 type State int
 
 const (
+	// StateMissing means the device path does not exist.
 	StateMissing State = iota
 	// StateKmsg is a character device with the kernel's kmsg numbers (1:11).
 	StateKmsg
@@ -74,7 +75,7 @@ func OSHost() (Host, error) {
 		DockerHost: os.Getenv("DOCKER_HOST"),
 		Dir:        filepath.Join(cache, "forge", "k3d"),
 		Stat:       statDevice,
-		Run:        func(name string, args ...string) error { return runCombined(name, args...) },
+		Run:        runCombined,
 		Remove:     os.Remove,
 		Mkdir:      func(p string) error { return os.MkdirAll(p, 0o755) },
 	}, nil

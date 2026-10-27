@@ -62,7 +62,7 @@ Exit status is non-zero when the report could not be filed.`,
     --actual "ListTasksRequest.status is missing from the generated filter" \
     --evidence "forge generate on proto/services/tasks/v1/tasks.proto; forge v0.1.48"
 
-  echo '{"severity":"low","title":"typo in forge lint --help","actual":"\"recieve\""}' | forge report-bug --json`,
+  echo '{"severity":"low","title":"typo in forge lint --help","actual":"\"receive\""}' | forge report-bug --json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if fromJSON {

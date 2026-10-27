@@ -5,8 +5,9 @@ import "connectrpc.com/connect"
 // New constructs a classified error from a wire code and deliberate public
 // detail. Prefer the named constructors when the code is known at the call
 // site; New is for transport adapters whose code is only known at runtime.
-// It has the same code, message, class and sentinel as the named constructor.
-// An empty detail uses the category's default text. An invalid code is Unknown.
+// It uses the named kind's code, class and sentinel, with detail as the exact
+// public text (unlike NotFound, it appends nothing). An empty detail uses the
+// category's default text. An invalid code is Unknown.
 //
 // detail must be application-chosen copy, never an arbitrary diagnostic's
 // Error() text. Attach private diagnostics separately with WithCause.

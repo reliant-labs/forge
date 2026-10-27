@@ -157,10 +157,17 @@ func TestResolveGolangciLint_OlderThanModuleBuildsWithModuleToolchain(t *testing
 	if res2.path != want || len(f.installs) != 1 {
 		t.Fatalf("second resolution rebuilt or diverged: %+v installs=%q", res2, f.installs)
 	}
-	// The staging directory is gone; only the final binary remains.
+	// The staging directory is gone; only the finished build remains (beside
+	// the tool cache's per-key lock files).
 	entries, _ := os.ReadDir(f.cache)
-	if len(entries) != 1 || entries[0].Name() != "v2.14.0-go1.27.0" {
-		t.Errorf("cache should hold only the finished build, got %v", entries)
+	var names []string
+	for _, e := range entries {
+		if e.Name() != ".locks" {
+			names = append(names, e.Name())
+		}
+	}
+	if len(names) != 1 || names[0] != "v2.14.0-go1.27.0" {
+		t.Errorf("cache should hold only the finished build, got %v", names)
 	}
 }
 

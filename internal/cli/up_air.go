@@ -29,12 +29,9 @@ func installPinnedAir(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	bin := filepath.Join(dir, airTool.Binary+exeSuffix())
-	if _, ok := toolMatches(ctx, bin, airTool, airPinnedVersion); ok {
-		return dir, nil
-	}
-	fmt.Printf("[up] air (hot reload) is not on PATH: installing %s into forge's tool cache (first run only)...\n", airPinnedVersion)
-	if err := installPinnedTool(ctx, airTool, airPinnedVersion, dir, "not found on PATH"); err != nil {
+	if _, err := installPinnedTool(ctx, airTool, airPinnedVersion, dir, "not found on PATH", func() {
+		fmt.Printf("[up] air (hot reload) is not on PATH: installing %s into forge's tool cache (first run only)...\n", airPinnedVersion)
+	}); err != nil {
 		return "", err
 	}
 	return dir, nil

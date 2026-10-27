@@ -18,6 +18,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/internal/toolcache"
 )
 
 // A golangci-lint can be unable to analyze a module for two reasons that
@@ -84,11 +85,6 @@ import (
 
 // golangciModulePath is the v2 module forge installs golangci-lint from.
 const golangciModulePath = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint"
-
-// golangciCacheEnv overrides where forge builds its own golangci-lint
-// (default <UserCacheDir>/forge/tools/golangci-lint), for read-only home
-// directories and test isolation.
-const golangciCacheEnv = "FORGE_TOOLS_CACHE"
 
 // # No golangci-lint at all
 //
@@ -330,16 +326,17 @@ func resolveGolangciLint(ctx context.Context, dir string, tc golangciToolchain) 
 	if err != nil {
 		return golangciResolution{err: golangciMismatchError(onPath, builtWith, modLang, toolchain, tc.pin, err)}
 	}
-	if b, berr := tc.readBuild(built); berr == nil && langAtLeast(b.goVersion, modLang) {
-		return golangciResolution{path: built}
+	usable := func() bool {
+		b, berr := tc.readBuild(built)
+		return berr == nil && langAtLeast(b.goVersion, modLang)
 	}
-
-	tc.notify(fmt.Sprintf("🔧 golangci-lint at %s was built with %s, older than this module's go %s — building golangci-lint %s with %s into %s (one time)…",
-		onPath, builtWith, modLang, tc.pin, toolchain, gobin))
-	if err := installAtomically(ctx, tc, root, gobin, toolchain); err != nil {
+	if err := installAtomically(ctx, tc, root, gobin, toolchain, usable, func() {
+		tc.notify(fmt.Sprintf("🔧 golangci-lint at %s was built with %s, older than this module's go %s — building golangci-lint %s with %s into %s (one time)…",
+			onPath, builtWith, modLang, tc.pin, toolchain, gobin))
+	}); err != nil {
 		return golangciResolution{err: golangciMismatchError(onPath, builtWith, modLang, toolchain, tc.pin, err)}
 	}
-	if b, berr := tc.readBuild(built); berr != nil || !langAtLeast(b.goVersion, modLang) {
+	if !usable() {
 		return golangciResolution{err: golangciMismatchError(onPath, builtWith, modLang, toolchain, tc.pin,
 			fmt.Errorf("the build produced no usable binary at %s", built))}
 	}
@@ -365,13 +362,10 @@ func provisionMissingGolangci(ctx context.Context, dir string, tc golangciToolch
 		b, berr := tc.readBuild(built)
 		return berr == nil && (modLang == "" || langAtLeast(b.goVersion, modLang))
 	}
-	if usable() {
-		return golangciResolution{path: built}
-	}
-
-	tc.notify(fmt.Sprintf("🔧 golangci-lint is not on PATH — building forge's pinned golangci-lint %s with %s into %s (one time)…",
-		tc.pin, toolchain, gobin))
-	if err := installAtomically(ctx, tc, root, gobin, toolchain); err != nil {
+	if err := installAtomically(ctx, tc, root, gobin, toolchain, usable, func() {
+		tc.notify(fmt.Sprintf("🔧 golangci-lint is not on PATH — building forge's pinned golangci-lint %s with %s into %s (one time)…",
+			tc.pin, toolchain, gobin))
+	}); err != nil {
 		return golangciResolution{err: golangciMissingError(tc.pin, toolchain, modLang, err)}
 	}
 	if !usable() {
@@ -482,16 +476,22 @@ func retryAfterExportDataSkew(ctx context.Context, dir string, tc golangciToolch
 
 	why := fmt.Sprintf("🔧 golangci-lint at %s cannot read the export data %s writes (%s) — linting with forge's golangci-lint %s built with %s",
 		describeAt(failed, failedBuild), toolchain, skew, tc.pin, toolchain)
-	if _, berr := tc.readBuild(pinned); berr == nil {
-		tc.notify(why + "; upgrade " + failed + " to skip this retry")
-	} else {
+	usable := func() bool {
+		_, berr := tc.readBuild(pinned)
+		return berr == nil
+	}
+	built := false
+	if err := installAtomically(ctx, tc, root, gobin, toolchain, usable, func() {
+		built = true
 		tc.notify(why + ", building it into " + gobin + " (one time)…")
-		if err := installAtomically(ctx, tc, root, gobin, toolchain); err != nil {
-			return fail(toolchain, err)
-		}
-		if _, berr := tc.readBuild(pinned); berr != nil {
-			return fail(toolchain, fmt.Errorf("the build produced no usable binary at %s", pinned))
-		}
+	}); err != nil {
+		return fail(toolchain, err)
+	}
+	if !built {
+		tc.notify(why + "; upgrade " + failed + " to skip this retry")
+	}
+	if !usable() {
+		return fail(toolchain, fmt.Errorf("the build produced no usable binary at %s", pinned))
 	}
 
 	out := tc.run(ctx, pinned, args)
@@ -533,26 +533,18 @@ func exportDataSkewError(failed string, failedBuild golangciBuild, toolchain, mo
 		describeAt(failed, failedBuild), writer, skew, cause, fix)
 }
 
-// installAtomically builds into a private staging directory and renames the
-// binary into gobin, so concurrent `forge lint` runs (parallel CI jobs, two
-// agents) never observe — or exec — a half-written binary. Two racing
-// builders each rename a complete binary; the last one wins.
-func installAtomically(ctx context.Context, tc golangciToolchain, root, gobin, toolchain string) error {
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		return err
-	}
-	stage, err := os.MkdirTemp(root, ".build-")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.RemoveAll(stage) }()
-	if err := tc.install(ctx, stage, toolchain, tc.pin); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(gobin, 0o755); err != nil {
-		return err
-	}
-	return os.Rename(filepath.Join(stage, golangciExeName()), filepath.Join(gobin, golangciExeName()))
+// installAtomically resolves forge's golangci-lint build at gobin through the
+// shared tool cache (internal/toolcache): a usable build is used as is, and a
+// missing or unusable one is built ONCE however many `forge lint` runs (parallel
+// CI jobs, agents in other worktrees) want it at the same moment — the others
+// wait for it. The build lands by renaming a complete staging directory, so
+// nobody execs a half-written binary. announce runs only when this run builds.
+func installAtomically(ctx context.Context, tc golangciToolchain, root, gobin, toolchain string, usable func() bool, announce func()) error {
+	_, err := toolcache.Ensure(ctx, root, filepath.Base(gobin), func(string) bool { return usable() }, func(ctx context.Context, stage string) error {
+		announce()
+		return tc.install(ctx, stage, toolchain, tc.pin)
+	})
+	return err
 }
 
 // golangciMismatchError is the actionable failure: which binary, which two
@@ -707,17 +699,10 @@ func runGolangciBinary(ctx context.Context, bin string, args []string) golangciO
 	return golangciOutput{stdout: stdout.String(), stderr: stderr.String(), err: err}
 }
 
-// golangciCacheDir is where forge keeps the golangci-lint builds it makes.
+// golangciCacheDir is where forge keeps the golangci-lint builds it makes: its
+// kind directory in the shared tool cache (FORGE_TOOLS_CACHE relocates it).
 func golangciCacheDir() (string, error) {
-	if dir := os.Getenv(golangciCacheEnv); dir != "" {
-		return filepath.Join(dir, "golangci-lint"), nil
-	}
-	base, err := os.UserCacheDir()
-	if err != nil {
-		return "", errors.New("locate the user cache directory for forge's golangci-lint build: " + err.Error() +
-			" (set " + golangciCacheEnv + ")")
-	}
-	return filepath.Join(base, "forge", "tools", "golangci-lint"), nil
+	return toolcache.KindDir(toolcache.KindGolangci)
 }
 
 func golangciExeName() string {

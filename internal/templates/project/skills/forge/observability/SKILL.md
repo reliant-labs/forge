@@ -46,15 +46,10 @@ They read ClickHouse itself (`docker compose exec` into `clickstack`, with its
 own credentials), so a pass means rows are in the store, not that a UI answers.
 With ClickStack off they SKIP and say so.
 
-**These live on `forge env status`, not `forge doctor`.** They all need an
-ADDRESS, and only `forge env status <env>` resolves one — it renders the same
-KCL `forge env up` does and overlays the ports the live stack actually bound.
-`forge doctor` only answers "is this PROJECT well-formed" and takes no `--env`.
-
-A check that cannot obtain the facts it needs reports **UNDETERMINED** (`?`),
-never a pass and never a skip. Three outcomes, not two.
-
-Run it after `forge env up dev` to verify the pipeline before investigating.
+**Runtime checks use `forge env status`, not `forge doctor`.** Status renders
+the environment's KCL and overlays bound ports; doctor checks project structure
+and takes no `--env`. Missing runtime evidence is **UNDETERMINED** (`?`), not
+PASS or SKIP. Run status after `forge env up dev` before investigating.
 
 **The runtime checks verify the telemetry pipeline, NOT app-flow correctness.** They (like `forge env smoke`) are green when containers, endpoints, and signal ingestion are healthy — they can be green while the actual app flow is broken (e.g. a cross-cluster dial failing). To prove an app-flow invariant holds, use a declarative, exit-coded app-health assertion (model: a project `doctor:<flow>` task) plus a full `task test:e2e`. They tell you observability works; they do not certify the app does.
 
@@ -168,7 +163,7 @@ Apps never learn the collector's backend. The platform renders the standard Open
 | `OTEL_SDK_DISABLED=true` | every export off |
 | `OTEL_LOGS_EXPORTER=otlp` | the explicit switch for OTLP logs (off by default) |
 | `OTEL_PROFILES_EXPORTER=none` | turns continuous profiling off (the runtime profiles whenever an endpoint is set); the declaration renders it wherever profiles are off (`observability/profiles`); typed equivalent `observe.Config.ProfilesDisabled` |
-| `FORGE_PROFILES` / `FORGE_PROFILES_HEAP_INTERVAL` | which profiles are captured (`cpu,heap` by default; `alloc`, `goroutine`, `mutex`, `block` are opt-in; `none` for nothing) and the heap cadence (`15m` by default). A workload's `profiling` block renders them; typed equivalent `observe.Config.Profiles`, which they win over (`observability/profiles`) |
+| `FORGE_PROFILES` / `FORGE_PROFILES_HEAP_INTERVAL` / `FORGE_PROFILES_CPU_INTERVAL` / `FORGE_PROFILES_CPU_DURATION` | which profiles are captured (`cpu,heap` by default; `alloc`, `goroutine`, `mutex`, `block` are opt-in; `none` for nothing), the heap cadence (`2h` by default), the capture cycle (`5m`, at least `30s`) and the CPU window (`5s`, at most half the cycle). A workload's `profiling` block renders them; typed equivalent `observe.Config.Profiles`, which they win over (`observability/profiles`) |
 | `OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT` | where profiles go: a FULL URL used as given (`http://127.0.0.1:4328/v1development/profiles`). Unset, profiles follow the base endpoint and gain `/v1development/profiles`. Headers, protocol, timeout and compression follow the per-signal `OTEL_EXPORTER_OTLP_PROFILES_*` variables |
 
 `Config.OTLPEndpoint` (the typed `otlp_endpoint` config field) overrides the endpoint variables; protocol and headers always come from the environment. With no endpoint nothing is exported, but `/metrics` still works and the W3C TraceContext+Baggage propagator is **always** installed, so `traceparent` is honoured and forwarded regardless. With export on, Go runtime metrics are recorded too.
@@ -191,7 +186,7 @@ The server writes JSON lines to stdout, each with the process `resource` (`obser
 
 ## Continuous profiles
 
-Every process with an OTLP endpoint profiles itself (`pkg/observe`): a 10s CPU profile about once a minute and a live-heap snapshot every 15 minutes (allocation, goroutine, mutex and block profiles are opt-in per workload), **pushed** over OTLP to the `otel-profiles` collector, which writes them into ClickStack's ClickHouse. On by default with the local ClickStack; elsewhere `signals.profiles` on the env's `forge.Observability` governs it. HyperDX draws no flamegraphs: `forge obs profile --service api -o api.pb.gz`, then `go tool pprof -http=: api.pb.gz`. Depth (defaults, cost, tables, trace links, SQL): `forge skill load observability/profiles`.
+Every process with an OTLP endpoint profiles itself (`pkg/observe`): a 5s CPU profile every 5 minutes and a live-heap snapshot every two hours (allocation, goroutine, mutex and block profiles are opt-in per workload), **pushed** over OTLP to the `otel-profiles` collector, which writes them into ClickStack's ClickHouse. On by default with the local ClickStack; elsewhere `signals.profiles` on the env's `forge.Observability` governs it. HyperDX draws no flamegraphs: `forge obs profile --service api -o api.pb.gz`, then `go tool pprof -http=: api.pb.gz`. Depth (defaults, cost, tables, trace links, SQL): `forge skill load observability/profiles`.
 
 ## Resource identity
 

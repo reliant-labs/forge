@@ -328,7 +328,7 @@ schema Profiling:
     runtime's defaults (forge/pkg/observe, PROFILES.md) for this workload.
 
     Unset, a workload built on forge/pkg/observe captures a CPU profile of
-    10s every minute and a live-heap snapshot every 15 minutes. Allocation
+    5s every 5 minutes and a live-heap snapshot every two hours. Allocation
     counters, goroutine, mutex and block profiles are off: allocation
     counters are cumulative since process start, so each snapshot repeats
     every allocation site the process ever had and grows with uptime (they
@@ -344,13 +344,14 @@ schema Profiling:
     profiles off for the env (OTEL_PROFILES_EXPORTER=none) nothing is
     captured whatever this says.
     """
-    # A 10s CPU profile every cycle (about once a minute).
+    # A 5s CPU profile every cycle (every 5 minutes; FORGE_PROFILES_CPU_INTERVAL
+    # and FORGE_PROFILES_CPU_DURATION in the workload's `env` change both).
     cpu: bool = True
     # The live heap (inuse_space, inuse_objects), every heap_interval.
     heap: bool = True
     # How often the heap snapshot (and `alloc`, when on) is taken: whole
     # minutes or hours, "1m" to "24h".
-    heap_interval: str = "15m"
+    heap_interval: str = "2h"
     # Cumulative allocation counters (alloc_space, alloc_objects), with the
     # heap snapshot. Exported cumulative, never as deltas.
     alloc: bool = False
@@ -456,8 +457,8 @@ schema Workload:
     # mapped binary).
     go_memory_limit_percent?: int
     # Continuous-profiling override for this workload (see Profiling).
-    # Unset: the runtime's defaults, CPU every minute and the live heap every
-    # 15 minutes. Rendered as FORGE_PROFILES / FORGE_PROFILES_HEAP_INTERVAL on
+    # Unset: the runtime's defaults, a 5s CPU profile every 5 minutes and the
+    # live heap every two hours. Rendered as FORGE_PROFILES / FORGE_PROFILES_HEAP_INTERVAL on
     # every runtime that runs a process; the workload's own `env` wins.
     profiling?: Profiling
 

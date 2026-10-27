@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -254,9 +256,11 @@ func TestObsIssuesAssigneeFlag(t *testing.T) {
 		say      string
 	}{
 		{"u-1", 0, ""},
-		{"none", 1, "no filter for unassigned"},
-		{"None", 1, "no filter for unassigned"},
-		{"me", 1, "cannot be resolved"},
+		{"none", 0, ""},
+		{"None", 0, ""},
+		{"me", 0, ""},
+		{" ME ", 0, ""},
+		{" u-1 ", 0, ""},
 		{strings.Repeat("x", 129), 1, "128"},
 	} {
 		fc := &fakeCloudCaller{replies: map[string]string{cloudList: `{}`}}
@@ -269,6 +273,27 @@ func TestObsIssuesAssigneeFlag(t *testing.T) {
 			if len(fc.calls) != 0 || !strings.Contains(decode(t, out)["error"].(string), tc.say) {
 				t.Errorf("%q: calls=%d out=%s: a refused flag never reaches the control plane", tc.assignee, len(fc.calls), out)
 			}
+		} else {
+			if len(fc.calls) != 1 || fc.calls[0].procedure != cloudList {
+				t.Fatalf("%q: expected one list call, got %v", tc.assignee, fc.calls)
+			}
+			var body map[string]any
+			if err := json.Unmarshal([]byte(fc.calls[0].body), &body); err != nil {
+				t.Fatal(err)
+			}
+			want := strings.TrimSpace(tc.assignee)
+			if strings.EqualFold(want, "none") {
+				if body["unassigned"] != true || body["assignee"] != nil {
+					t.Errorf("none must send only unassigned=true: %v", body)
+				}
+			} else {
+				if strings.EqualFold(want, "me") {
+					want = "me"
+				}
+				if body["assignee"] != want || body["unassigned"] != nil {
+					t.Errorf("assignee %q: %v", want, body)
+				}
+			}
 		}
 	}
 	// A local env has no assignees: the filter matches nothing, without a query.
@@ -276,6 +301,35 @@ func TestObsIssuesAssigneeFlag(t *testing.T) {
 	out, _, err := obsRun(t, devFacts(), sr, "issues", "dev", "--assignee", "u-1", "--json")
 	if err != nil || len(sr.ran) != 0 || len(decode(t, out)["issues"].([]any)) != 0 {
 		t.Errorf("local: err=%v ran=%d out=%s", err, len(sr.ran), out)
+	}
+}
+
+// The CLI must not turn automation's missing acting user into an empty filter
+// or an unassignment, nor translate a permission failure to a successful list.
+func TestObsIssueMePreservesServerRefusals(t *testing.T) {
+	for _, command := range []string{"list", "assign"} {
+		for _, code := range []string{cloud.CodeFailedPrecondition, "permission_denied", "unauthenticated"} {
+			t.Run(command+"/"+code, func(t *testing.T) {
+				procedure := cloudList
+				args := []string{"issues", "prod", "--assignee", "me", "--json"}
+				wantCalls := 1
+				if command == "assign" {
+					procedure = cloudAssign
+					args = []string{"issue", "assign", "ISS-7f3a", "me", "prod", "--json"}
+					wantCalls = 2
+				}
+				refusal := &cloud.Error{Code: code, Message: "verified credential refusal"}
+				fc := &fakeCloudCaller{replies: map[string]string{cloudIssue: `{"issue":` + cloudIssueJSON + `}`}, errs: map[string]error{procedure: refusal}}
+				out, _, err := obsRunCloud(t, fc, args...)
+				var ce *cloud.Error
+				if !errors.As(err, &ce) || ce.Code != code || exitCodeForError(err) != 2 {
+					t.Fatalf("refusal lost: %v", err)
+				}
+				if len(fc.calls) != wantCalls || decode(t, out)["ok"] != false {
+					t.Fatalf("must refuse without retries/fallbacks: calls=%v out=%s", fc.calls, out)
+				}
+			})
+		}
 	}
 }
 
@@ -351,6 +405,8 @@ func TestObsIssueAssignSendsTheReadVersion(t *testing.T) {
 		wantText   string
 	}{
 		{"assign", "u-1", "u-1", assignedReply(), "ISS-7f3a is now assigned to Ada (u-1)\n"},
+		{"self", "me", "me", assignedReply(), "ISS-7f3a is now assigned to Ada (u-1)\n"},
+		{"self normalized", " ME ", "me", assignedReply(), "ISS-7f3a is now assigned to Ada (u-1)\n"},
 		{"clear", "none", "", `{"issue":` + cloudIssueJSON + `}`, "ISS-7f3a is now unassigned\n"},
 		{"clear upper", "NONE", "", `{"issue":` + cloudIssueJSON + `}`, "ISS-7f3a is now unassigned\n"},
 	} {
@@ -413,7 +469,7 @@ func TestObsIssueAssignRefusals(t *testing.T) {
 		exit int
 	}{
 		{"a user id", []string{"u-1"}, nil, 0},
-		{"unresolvable me", []string{"me"}, nil, 1},
+		{"automation has no me", []string{"me"}, map[string]error{cloudAssign: &cloud.Error{Code: "failed_precondition"}}, 2},
 		{"blank", []string{" "}, nil, 1},
 		{"not a member", []string{"u-9"}, map[string]error{cloudAssign: &cloud.Error{Code: "invalid_argument"}}, 1},
 		{"merged issue", []string{"u-9"}, map[string]error{cloudAssign: &cloud.Error{Code: "failed_precondition"}}, 2},
@@ -425,7 +481,7 @@ func TestObsIssueAssignRefusals(t *testing.T) {
 		if exitCodeForError(err) != tc.exit {
 			t.Errorf("%s: exit %d, want %d (%v)", tc.name, exitCodeForError(err), tc.exit, err)
 		}
-		if tc.exit == 1 && (tc.name == "unresolvable me" || tc.name == "blank") && len(fc.calls) != 0 {
+		if tc.name == "blank" && len(fc.calls) != 0 {
 			t.Errorf("%s: %d calls: a refused argument never reaches the control plane", tc.name, len(fc.calls))
 		}
 	}

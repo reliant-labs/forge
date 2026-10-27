@@ -234,9 +234,8 @@ func ReadFragments(projectDir string) (Input, bool, error) {
 	if p.Input == nil {
 		return Input{}, false, fmt.Errorf("%s has no generation fragments: run forge generate", ProjectSpecFile)
 	}
-	in := *p.Input
-	in.Processes = nil
-	return in, true, nil
+	f := p.Input
+	return Input{Project: p.Project, Frontends: f.Frontends, HasDatabase: f.HasDatabase, Funnels: f.Funnels}, true, nil
 }
 
 // ReadSpec assembles the Spec forge generate last wrote under projectDir.

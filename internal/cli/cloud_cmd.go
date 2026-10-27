@@ -76,7 +76,7 @@ func resolveCloudTarget(ctx context.Context, envName, flagToken string) (cloud.E
 // resolveCloudTargetFor is resolveCloudTarget with the declaration already in
 // hand, for a caller that read it without a render (obs_target.go).
 func resolveCloudTargetFor(envName string, decl *cloud.Declaration, flagToken string) (cloud.Endpoint, cloud.Credential, error) {
-	ep, err := cloud.ResolveEndpoint(envName, decl)
+	ep, err := projectEndpoint(envName, decl)
 	if err != nil {
 		return cloud.Endpoint{}, cloud.Credential{}, err
 	}
@@ -154,7 +154,7 @@ func distinctControlPlanes(decls []envDeclaration) []declaredControlPlane {
 		if d.Decl == nil {
 			continue
 		}
-		ep, err := cloud.ResolveEndpoint(d.Env, d.Decl)
+		ep, err := projectEndpoint(d.Env, d.Decl)
 		if err != nil {
 			continue
 		}
@@ -197,7 +197,7 @@ func loginTargets(ctx context.Context, endpoint string, errOut io.Writer) ([]dec
 		if _, err := credentials.Normalize(endpoint); err != nil {
 			return nil, err
 		}
-		ep, err := cloud.ResolveEndpoint("", &cloud.Declaration{Endpoint: endpoint})
+		ep, err := projectEndpoint("", &cloud.Declaration{Endpoint: endpoint})
 		if err != nil {
 			return nil, err
 		}
@@ -218,7 +218,7 @@ func loginTargets(ctx context.Context, endpoint string, errOut io.Writer) ([]dec
 			"fix: repair the env's KCL (forge env render <env>), or name the control plane directly: forge login --endpoint https://…",
 			len(skipped))
 	}
-	ep, err := cloud.ResolveEndpoint("", &cloud.Declaration{Endpoint: cloud.DefaultEndpoint})
+	ep, err := projectEndpoint("", &cloud.Declaration{Endpoint: cloud.DefaultEndpoint})
 	if err != nil {
 		return nil, err
 	}
@@ -366,7 +366,11 @@ func loginOne(ctx context.Context, p declaredControlPlane, token string, noVerif
 			return err
 		}
 	}
-	if err := credentials.Store(path, ep.URL, cloud.ClientID, stored); err != nil {
+	clientID := cloud.ClientID
+	if stored.Kind == "human" {
+		clientID = cloud.HumanClientID
+	}
+	if err := credentials.Store(path, ep.URL, clientID, stored); err != nil {
 		return fmt.Errorf("store credential: %w", err)
 	}
 	key, _ := credentials.Normalize(ep.URL)
@@ -389,9 +393,9 @@ func loginOne(ctx context.Context, p declaredControlPlane, token string, noVerif
 // newLogoutCmd is `forge logout`: drop the stored credential of the control
 // plane(s) — the ones this project declares, or one --endpoint — from the
 // shared credentials file. Every other endpoint's entry (including
-// reliant's) is untouched. The token itself stays valid server-side until it
-// expires or is revoked in the web UI; logout forgets it locally, which is
-// all a CLI can honestly promise.
+// reliant's) is untouched. Human logout revokes the device identity across all
+// organizations at the endpoint, then forgets it. Delegated capabilities are
+// deliberately separate and are never revoked or removed by human logout.
 func newLogoutCmd() *cobra.Command {
 	var endpoint string
 	cmd := &cobra.Command{
@@ -408,7 +412,16 @@ func newLogoutCmd() *cobra.Command {
 				return err
 			}
 			for _, p := range planes {
-				existed, err := credentials.Remove(path, p.Endpoint.URL, cloud.ClientID)
+				stored, lookupErr := credentials.Lookup(path, p.Endpoint.URL, cloud.HumanClientID)
+				if lookupErr != nil && !errors.Is(lookupErr, credentials.ErrNotFound) {
+					return lookupErr
+				}
+				if lookupErr == nil && stored.Kind == "human" {
+					if err := cloud.RevokeIdentity(cmd.Context(), p.Endpoint, stored.Token); err != nil {
+						return err
+					}
+				}
+				existed, err := credentials.Remove(path, p.Endpoint.URL, cloud.HumanClientID)
 				if err != nil {
 					return err
 				}
@@ -486,7 +499,7 @@ func newCloudStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ep, err := cloud.ResolveEndpoint(envName, decl)
+			ep, err := projectEndpoint(envName, decl)
 			if err != nil {
 				return err
 			}

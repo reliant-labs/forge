@@ -48,6 +48,9 @@ type elevatedToken struct {
 // forge asks for exactly the scope a command just proved it needs, for an hour,
 // instead of every stored token carrying every permission forever.
 func (c *Client) elevationScope(err error) (string, bool) {
+	if c.credential().Kind == "human" {
+		return "", false
+	}
 	var apiErr *Error
 	if !errors.As(err, &apiErr) || apiErr.HTTPStatus != 403 {
 		return "", false

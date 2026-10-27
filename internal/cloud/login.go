@@ -19,11 +19,9 @@ import (
 // ClientID is forge's OAuth client id at a control plane.
 const ClientID = "forge-cli"
 
-// LoginScopes is what `forge login` asks for: deploy, manage secrets and manage
-// custom domains for the caller's organization. The control plane grants the
-// intersection of this list, the scopes the forge-cli client is allowed, and
-// what the user's role grants, and reports it — so an older control plane or a
-// member without a grant gets a narrower token, never a refusal.
+// LoginScopes names the CLI's requested use cases on the OAuth approval page.
+// Human login authenticates the user, not an org grant snapshot; the server
+// authorizes each target operation against current membership and permissions.
 func LoginScopes() []string {
 	return []string{"deploy:read", "deploy:write", "secret:read", "secret:write", "domain:read", "domain:write"}
 }
@@ -80,12 +78,21 @@ func (b BrowserLogin) Run(ctx context.Context) (credentials.Credential, error) {
 		}
 		return credentials.Credential{}, fmt.Errorf("login to %s failed: %w", b.Endpoint.URL, err)
 	}
+	if tokenCredentialKind(tok) != "human" {
+		return credentials.Credential{}, fmt.Errorf("control plane returned a delegated token for human login; upgrade the control plane")
+	}
 	return CredentialFromToken(tok, time.Now()), nil
+}
+
+func tokenCredentialKind(tok *oauth2.Token) string {
+	kind, _ := tok.Raw["credential_kind"].(string)
+	return kind
 }
 
 // CredentialFromToken turns a token response into the stored entry.
 func CredentialFromToken(tok *oauth2.Token, now time.Time) credentials.Credential {
 	c := credentials.Credential{
+		Kind:        tokenCredentialKind(tok),
 		Token:       tok.AccessToken,
 		TokenPrefix: displayPrefix(tok.AccessToken),
 		Scopes:      strings.Fields(tok.Scope),

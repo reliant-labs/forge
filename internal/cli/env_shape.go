@@ -870,7 +870,7 @@ func recordEnvDeclaration(ctx context.Context, envName string, entities *KCLEnti
 // else exists for it.
 var envDeclarationClient = func(envName string, entities *KCLEntities) (cloudCaller, string, error) {
 	decl := declarationFromEntities(entities)
-	ep, err := cloud.ResolveEndpoint(envName, decl)
+	ep, err := projectEndpoint(envName, decl)
 	if err != nil {
 		return nil, "", err
 	}

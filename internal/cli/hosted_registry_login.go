@@ -112,7 +112,7 @@ func loginToPlatformRegistry(ctx context.Context, env, host, flagToken string, d
 	if _, done := platformLogins.Load(host); done {
 		return nil
 	}
-	ep, err := cloud.ResolveEndpoint(env, decl)
+	ep, err := projectEndpoint(env, decl)
 	if err != nil {
 		return err
 	}

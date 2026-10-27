@@ -942,8 +942,10 @@ jobs:
       # visible here and cannot move under a byte-identical check. 1.50.0 is
       # the version every other buf install in these workflows resolves to
       # (buf-setup-action@v1's default); Taskfile.yml and the Makefile pin
-      # none. Bump them together.
+      # none. Bump them together. pre-commit runs after failures too, so
+      # its formatter prerequisites must not be skipped after an API refusal.
       - name: Install buf
+        if: ${{ !cancelled() }}
         uses: bufbuild/buf-setup-action@v1
         with:
           version: "1.50.0"
@@ -957,6 +959,7 @@ jobs:
       # must not stand in for go.mod's version. Same step as the scaffolded
       # verify-generated job (internal/templates/ci/github/ci.yml.tmpl).
       - name: Install codegen tools
+        if: ${{ !cancelled() }}
         run: forge tools install --force
       - name: Verify generated code
         run: forge ci verify-generated

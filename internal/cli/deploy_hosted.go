@@ -50,6 +50,16 @@ func dispatchHostedDeploy(ctx context.Context, projectDir, envName string, opts 
 		}
 		return false, nil
 	}
+	if !opts.dryRun {
+		if _, err := bindHostedProject(ctx, envName, declarationFromEntities(entities), opts.organization); err != nil {
+			return true, err
+		}
+		// An offline/best-effort render may have cached a miss before the
+		// first bind. That is no longer this declaration's target identity.
+		if entities.ControlPlane != nil {
+			entities.ControlPlane.org = &orgState{}
+		}
+	}
 	if envAppliesLocally(entities) {
 		return false, nil
 	}
@@ -151,7 +161,7 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 		return fmt.Errorf("--target is not supported for the hosted workloads of env %q: a hosted deploy publishes them all at the bound release", envName)
 	}
 	decl := declarationFromEntities(entities)
-	ep, err := cloud.ResolveEndpoint(envName, decl)
+	ep, err := projectEndpoint(envName, decl)
 	if err != nil {
 		return err
 	}

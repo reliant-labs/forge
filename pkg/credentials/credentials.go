@@ -94,6 +94,8 @@ const formatVersion = 1
 
 // Credential is what one endpoint's login produced.
 type Credential struct {
+	// Kind distinguishes human identities from delegated capabilities.
+	Kind string `json:"kind,omitempty"`
 	// Token is the bearer credential. Opaque; never logged.
 	Token string `json:"token"`
 	// TokenPrefix is the issuer's display prefix (e.g. "rlat_A3f9Kd2p") —

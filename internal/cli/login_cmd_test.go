@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -28,6 +29,12 @@ func loginTestCP(t *testing.T, token string) *httptest.Server {
 			back, _ := url.Parse(q.Get("redirect_uri"))
 			back.RawQuery = url.Values{"code": {"c"}, "state": {q.Get("state")}}.Encode()
 			http.Redirect(w, r, back.String(), http.StatusFound)
+		case "/oauth/revoke":
+			if r.Header.Get("Authorization") != "Bearer "+token {
+				t.Error("logout used wrong identity")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"revoked":true}`))
 		case "/oauth/token":
 			_ = r.ParseForm()
 			sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
@@ -37,7 +44,7 @@ func loginTestCP(t *testing.T, token string) *httptest.Server {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"access_token": token, "token_type": "Bearer", "expires_in": 7776000, "scope": "deploy:write",
+				"credential_kind": "human", "access_token": token, "token_type": "Bearer", "expires_in": 7776000, "scope": "deploy:write",
 			})
 		}
 	}))
@@ -51,7 +58,11 @@ func lookupStored(t *testing.T, endpoint string) (credentials.Credential, error)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return credentials.Lookup(path, endpoint, cloud.ClientID)
+	c, err := credentials.Lookup(path, endpoint, cloud.HumanClientID)
+	if errors.Is(err, credentials.ErrNotFound) {
+		return credentials.Lookup(path, endpoint, cloud.ClientID)
+	}
+	return c, err
 }
 
 func withFakeBrowser(t *testing.T) {

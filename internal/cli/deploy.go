@@ -19,7 +19,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
-	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
@@ -342,6 +341,7 @@ func newDeployCmd() *cobra.Command {
 // how they are applied — and a 229-line constructor made that invisible.
 func registerDeployApplyFlags(cmd *cobra.Command, f *deployCmdFlags) {
 	flags := cmd.Flags()
+	flags.StringVar(&f.organization, "org", "", "Owner organization for the first unbound hosted deployment; never changes an existing project's owner")
 	flags.StringArrayVarP(&f.renderOptions, "option", "D", nil, "REFUSED on deploy: a deploy renders from the repo alone, and a release records no render options. Use it on 'forge env up' or 'forge env build', or declare the value in the env's KCL.")
 	flags.StringVar(&f.tag, "tag", "", "Override the image tag (priority: --tag > .forge/state/build-<env>.json > git describe --tags --always --dirty)")
 	flags.BoolVar(&f.dryRun, "dry-run", false, "Print manifests without applying (env-cluster guard still runs)")
@@ -506,6 +506,7 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 // exclusions, the rollout-policy assembly) live in a function that can be read
 // and tested on its own.
 type deployCmdFlags struct {
+	organization  string
 	tag           string
 	dryRun        bool
 	namespace     string
@@ -641,6 +642,7 @@ func dispatchSpecChangeDeploy(ctx context.Context, envName string, f deployCmdFl
 		return refuseDeployReported(report, errors.New("--frontends-only and --target are mutually exclusive (--frontends-only already scopes to every frontend)"))
 	}
 	return runDeployReported(ctx, envName, report, deployOptions{
+		organization:  f.organization,
 		imageTag:      f.tag,
 		dryRun:        f.dryRun,
 		namespace:     f.namespace,
@@ -881,7 +883,7 @@ func runDeployExplain(ctx context.Context, envName string, report *deployReport)
 	// A hosted env's "declared context" is its control plane's endpoint:
 	// there is no kubectl context to guard.
 	if decl, derr := controlPlaneDeclaration(ctx, envName); derr == nil && decl != nil {
-		ep, eerr := cloud.ResolveEndpoint(envName, decl)
+		ep, eerr := projectEndpoint(envName, decl)
 		if eerr != nil {
 			return eerr
 		}
@@ -1022,10 +1024,11 @@ func emptyAs(s, alt string) string {
 // makes the call site self-documenting and keeps the per-flag default
 // (e.g. dryRun=false) co-located with the field declaration.
 type deployOptions struct {
-	imageTag   string
-	dryRun     bool
-	namespace  string
-	targetArch string
+	organization string
+	imageTag     string
+	dryRun       bool
+	namespace    string
+	targetArch   string
 	// prune, when true, deletes forge-managed Deployments in the
 	// namespace that the just-applied KCL render no longer produces.
 	// Opt-in to start: pruning is destructive (deletes resources the

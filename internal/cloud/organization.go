@@ -28,6 +28,22 @@ type Caller interface {
 // The id is a lowercase UUID, because that is the path segment the platform
 // registry's grammar uses (`<org>/<project>/<image>`).
 func ResolveOrganization(ctx context.Context, c Caller) (string, error) {
+	if client, ok := c.(*Client); ok && client.Credential.Kind == "human" && client.Endpoint.ProjectID == "" && client.Endpoint.ProjectName == "" {
+		return "", fmt.Errorf("human identity has no organization; a hosted project target is required")
+	}
+	if client, ok := c.(*Client); ok && (client.Endpoint.ProjectID != "" || (client.Credential.Kind == "human" && client.Endpoint.ProjectName != "")) {
+		var project struct {
+			ProjectID string `json:"projectId"`
+			OrgID     string `json:"orgId"`
+		}
+		if err := c.Call(ctx, "controlplane.v1.DeployService/ResolveHostedProject", map[string]any{"projectId": client.Endpoint.ProjectID, "name": client.Endpoint.ProjectName}, &project); err != nil {
+			return "", err
+		}
+		if project.ProjectID == "" || project.OrgID == "" {
+			return "", fmt.Errorf("control plane returned incomplete project identity")
+		}
+		return project.OrgID, nil
+	}
 	var resp struct {
 		Org struct {
 			OrgID string `json:"orgId"`

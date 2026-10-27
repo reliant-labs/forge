@@ -114,6 +114,22 @@ func (c *Client) credential() Credential {
 
 // call is one HTTP round trip with an explicit bearer.
 func (c *Client) call(ctx context.Context, procedure string, req, out any, token string) error {
+	// Resolve the server target before any human operation, including reads.
+	// The session has no org default that can stand in for project ownership.
+	projectID := c.Endpoint.ProjectID
+	if token != "" && c.credential().Kind == "human" && projectID == "" && c.Endpoint.ProjectName != "" && !strings.HasSuffix(procedure, "/ResolveHostedProject") {
+		var target struct {
+			ProjectID string `json:"projectId"`
+			OrgID     string `json:"orgId"`
+		}
+		if err := c.call(ctx, "controlplane.v1.DeployService/ResolveHostedProject", map[string]any{"name": c.Endpoint.ProjectName}, &target, token); err != nil {
+			return err
+		}
+		if target.ProjectID == "" || target.OrgID == "" {
+			return fmt.Errorf("control plane returned incomplete project identity")
+		}
+		projectID = target.ProjectID
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("encode %s request: %w", procedure, err)
@@ -125,6 +141,9 @@ func (c *Client) call(ctx context.Context, procedure string, req, out any, token
 		return fmt.Errorf("build %s request: %w", procedure, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if token != "" && projectID != "" && !strings.HasSuffix(procedure, "/ResolveHostedProject") {
+		httpReq.Header.Set("Forge-Project-ID", projectID)
+	}
 	// The credential is an OPAQUE bearer string. forge does not inspect
 	// it, does not validate a prefix, and does not decode it — the issuer
 	// owns its format, and a forge-side assumption about it would break

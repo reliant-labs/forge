@@ -106,7 +106,7 @@ func bundleRegistryAuthOf(env string, e *KCLEntities) (bundleRegistryAuth, error
 	if host == "" || decl == nil {
 		return bundleRegistryAuth{}, fmt.Errorf("env %q declares no control plane, so there is no identity to push its bundle to a platform registry with", env)
 	}
-	ep, err := cloud.ResolveEndpoint(env, decl)
+	ep, err := projectEndpoint(env, decl)
 	if err != nil {
 		return bundleRegistryAuth{}, err
 	}

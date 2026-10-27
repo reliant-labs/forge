@@ -225,6 +225,9 @@ func TestMergeDriver_PresentBinaryStillRunsFirst(t *testing.T) {
 func TestDriverCommandUsable_ReadsTheBinaryOutOfBothShapes(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "for ge")
 	writeTreeFileT(t, bin, "#!/bin/sh\n")
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	legacy := "'" + bin + "' merge-generated %O %A %B %L %P"
 	if !driverCommandUsable(legacy) {
 		t.Errorf("a command in the original shape is unusable: %q", legacy)

@@ -111,6 +111,9 @@ type Spec struct {
 	Consumers []Consumer `json:"consumers,omitempty"`
 	Writer    Writer     `json:"writer"`
 	Access    Access     `json:"access"`
+	// RetiredAuthMounts are auth mounts a previous install left behind and the
+	// converge Job disables (retired.go). Empty = none.
+	RetiredAuthMounts []RetiredAuthMount `json:"retiredAuthMounts,omitempty"`
 
 	// Hooks are ConfigMaps of scripts the converge Job runs at two points:
 	// the escrow hook right after init, the generate hook after the document
@@ -439,6 +442,7 @@ func (s Spec) Validate() error {
 		bad("access needs org, env and selfCluster")
 	}
 
+	errs = append(errs, s.validateRetired()...)
 	errs = append(errs, s.validatePublic()...)
 	errs = append(errs, s.validateBootstrap()...)
 

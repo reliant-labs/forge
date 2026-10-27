@@ -225,7 +225,7 @@ func clearProfilesEnv(t *testing.T) {
 	clearOTelEnv(t)
 	for _, k := range []string{EnvProfilesExporter, EnvOTLPProfilesEndpoint, "OTEL_EXPORTER_OTLP_PROFILES_PROTOCOL",
 		"OTEL_EXPORTER_OTLP_PROFILES_HEADERS", "OTEL_EXPORTER_OTLP_COMPRESSION", "OTEL_EXPORTER_OTLP_PROFILES_COMPRESSION",
-		"OTEL_EXPORTER_OTLP_TIMEOUT", "OTEL_EXPORTER_OTLP_PROFILES_TIMEOUT", EnvProfiles, EnvProfilesHeapInterval} {
+		"OTEL_EXPORTER_OTLP_TIMEOUT", "OTEL_EXPORTER_OTLP_PROFILES_TIMEOUT", EnvProfiles, EnvProfilesHeapInterval, EnvProfilesCPUInterval, EnvProfilesCPUDuration} {
 		t.Setenv(k, "")
 	}
 }
@@ -601,6 +601,20 @@ func TestBackoffGrowsAndIsCapped(t *testing.T) {
 		for i := 0; i < 50; i++ {
 			if got := p.nextWait(); !within(got, center) {
 				t.Fatalf("after %d failures wait = %s, want %s ±%d%%", failures, got, center, int(profilerJitter*100))
+			}
+		}
+	}
+}
+
+func TestSlowConfiguredCadenceNeverSpeedsUp(t *testing.T) {
+	p := testProfiler(nil, nil)
+	p.interval = time.Hour
+	for _, failures := range []int{0, 1, 30} {
+		p.failures = failures
+		for range 50 {
+			got := p.nextWait()
+			if got < 48*time.Minute || got > 72*time.Minute {
+				t.Fatalf("after %d failures wait=%s, want 1h ±20%%", failures, got)
 			}
 		}
 	}

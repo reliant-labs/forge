@@ -140,9 +140,11 @@ type ListIssuesRequest struct {
 	Platform string
 	// Source lists the issues of this issue source; "" lists errors.
 	Source string
-	// Assignee keeps the issues assigned to this user id; "" keeps every
-	// issue. The control plane has no filter for "unassigned".
+	// Assignee keeps issues assigned to this user id, or "me" (the verified
+	// credential's acting user). Empty keeps every issue unless Unassigned.
 	Assignee string
+	// Unassigned keeps issues with no assignee; exclusive with Assignee.
+	Unassigned bool
 	// SinceRelease keeps issues first seen in this release version.
 	SinceRelease string
 	// SincePromotion keeps issues first seen at or after this promotion.
@@ -314,7 +316,8 @@ type AddIssueCommentResult struct {
 	Comment IssueComment
 }
 
-// AssignIssueRequest assigns an issue. Assignee is a user id; "" clears it.
+// AssignIssueRequest assigns an issue. Assignee is a user id or "me" (resolved
+// by the server from the credential's acting user); "" clears it.
 type AssignIssueRequest struct {
 	ID       string
 	Assignee string

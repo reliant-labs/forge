@@ -179,6 +179,9 @@ func (c Cloud) ListIssues(ctx context.Context, req ListIssuesRequest) (ListIssue
 	if req.Explain {
 		return ListIssuesResult{}, Undetermined("--explain compiles the local backend's SQL; hosted issues are grouped by the control plane's ingest view and have no statement to show")
 	}
+	if req.Assignee != "" && req.Unassigned {
+		return ListIssuesResult{}, Wrong("assignee and unassigned filters are exclusive")
+	}
 	scope, err := c.issueScope(req.Narrow)
 	if err != nil {
 		return ListIssuesResult{}, err
@@ -198,8 +201,9 @@ func (c Cloud) ListIssues(ctx context.Context, req ListIssuesRequest) (ListIssue
 		PageSize         int            `json:"pageSize,omitempty"`
 		PageToken        string         `json:"pageToken,omitempty"`
 		Assignee         string         `json:"assignee,omitempty"`
+		Unassigned       bool           `json:"unassigned,omitempty"`
 	}{Scope: scope, Source: req.Source, FirstSeenRelease: req.SinceRelease, SincePromotionID: req.SincePromotion, Sort: sort, PageSize: req.Limit, PageToken: req.PageToken,
-		Assignee: req.Assignee}
+		Assignee: req.Assignee, Unassigned: req.Unassigned}
 	for _, s := range req.Statuses {
 		in.Statuses = append(in.Statuses, statusEnum(s))
 	}

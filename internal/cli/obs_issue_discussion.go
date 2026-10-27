@@ -316,7 +316,7 @@ func runObsIssueComment(ctx context.Context, d obsDeps, id, text, env string, o 
 func newObsIssueAssignCmd() *cobra.Command {
 	var o obsIssueWriteOpts
 	cmd := &cobra.Command{
-		Use:   "assign <id> <user-id|none> [env]",
+		Use:   "assign <id> <user-id|me|none> [env]",
 		Short: "Assign an issue to a person, or clear its assignee",
 		Long: `Set the issue's assignee to a user id, or clear it with "none". The user must be
 a member of the issue's organization. A hosted env only: a local issue carries
@@ -325,8 +325,13 @@ no state, so this exits 2.
   ` + Name() + ` obs issue assign ISS-7f3a 7c1e2a90-0b1d-4a61-9e7d-5a1d3c9f2b10 prod
   ` + Name() + ` obs issue assign ISS-7f3a none prod
 
-There is no "me": the control plane cannot tell a machine credential which user
-it acts for. Take a user id from an issue's assignee or timeline.
+Use "me" for the person the verified credential acts for (including a user-owned
+CLI login or helper token). The server resolves it; an organization automation
+credential acts for nobody and is refused FailedPrecondition (exit 2).
+  ` + Name() + ` obs issue assign ISS-7f3a me prod
+
+This requires server-side AssignIssue "me" resolution; on a control plane that
+only accepts literal user ids (including CP #1402 alone), pass a user id instead.
 
 The write sends the row version it read, so a change made since is refused
 ("changed since you read it", exit 1) instead of overwriting it. It is never
@@ -348,9 +353,9 @@ func assigneeArg(s string) (string, error) {
 	case "none":
 		return "", nil
 	case "me":
-		return "", obsbackend.Wrong(`"me" cannot be resolved: the control plane cannot tell a machine credential which user it acts for; pass a user id (see an issue's assignee or timeline), or "none"`)
+		return "me", nil
 	case "":
-		return "", obsbackend.Wrong(`the assignee is a user id, or "none" to clear it`)
+		return "", obsbackend.Wrong(`the assignee is a user id, "me", or "none" to clear it`)
 	}
 	if len(s) > 128 {
 		return "", obsbackend.Wrong("the assignee user id is longer than 128 characters")

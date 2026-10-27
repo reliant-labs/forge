@@ -160,7 +160,12 @@ within --incident-window of one another, in any service, share an incident_key.
 The list collapses them under the first, which shows "+N related"; nothing is
 merged and each keeps its own counts and triage state. forge obs issue <id>
 lists the rest of its incident.
+  ` + Name() + ` obs issues prod --assignee me            # credential's acting person
+  ` + Name() + ` obs issues prod --assignee none          # unassigned
   ` + Name() + ` obs issues prod --assignee 7c1e2a90-0b1d-4a61-9e7d-5a1d3c9f2b10
+
+The server resolves "me" from the verified credential. An organization automation
+token acts for nobody and is refused FailedPrecondition (exit 2); name a user id.
 
 ` + obsIssuesSchema.Help(),
 		Args: cobra.RangeArgs(0, 1),
@@ -175,7 +180,7 @@ lists the rest of its incident.
 	f.StringVar(&o.source, "source", "", "list the issues of this issue source (issue.source) instead of errors, e.g. llm_bug_report")
 	f.StringVar(&o.sinceRelease, "since-release", "", "only issues first seen in this release version (hosted env)")
 	f.StringVar(&o.sinceDeploy, "since-deploy", "", "only issues first seen at or after this promotion id (hosted env)")
-	f.StringVar(&o.assignee, "assignee", "", "only issues assigned to this user id (hosted env); the control plane has no filter for unassigned issues, and \"me\" cannot be resolved for a machine credential")
+	f.StringVar(&o.assignee, "assignee", "", "only issues assigned to this user id, me (credential's acting user), or none (unassigned)")
 	f.StringVar(&o.sort, "sort", obsquery.IssueSortLast, "last | first | events")
 	f.StringVar(&o.pageToken, "page-token", "", "resume from a next_page_token")
 	f.BoolVar(&o.expandIncidents, "expand-incidents", false, "list every issue of an incident instead of collapsing each incident under its first issue")
@@ -250,9 +255,18 @@ func runObsIssues(ctx context.Context, d obsDeps, env string, o obsIssuesOpts) e
 	if err != nil {
 		return fail(err)
 	}
+	assignee, err := assigneeFilter(o.assignee)
+	if err != nil {
+		return fail(err)
+	}
+	unassigned := assignee == "none"
+	if unassigned {
+		assignee = ""
+	}
 	res, err := r.ListIssues(ctx, obsbackend.ListIssuesRequest{
 		Narrow: n, Statuses: o.statuses, Platform: o.platform, Source: o.source, SinceRelease: o.sinceRelease, SincePromotion: o.sinceDeploy,
-		Sort: o.sort, Limit: o.out.Limit, PageToken: o.pageToken, IncidentWindow: o.incidentWindow, Assignee: o.assignee,
+		Sort: o.sort, Limit: o.out.Limit, PageToken: o.pageToken, IncidentWindow: o.incidentWindow,
+		Assignee: assignee, Unassigned: unassigned,
 	})
 	if err != nil {
 		return fail(err)
@@ -349,18 +363,16 @@ func collapseIncidents(issues []obsbackend.Issue) ([]obsbackend.Issue, int) {
 	return out, len(issues) - len(out)
 }
 
-// assigneeFilter validates --assignee: a user id. The control plane's filter is
-// a user id or nothing; "unassigned" is not expressible, and "me" would need the
-// user a machine credential acts for, which no call returns.
+// assigneeFilter normalizes reserved CLI spellings, preserving user IDs.
+// "me" is resolved by the server from the verified credential, never locally.
 func assigneeFilter(s string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "none":
-		return "", obsbackend.Wrong(`--assignee none is not supported: the control plane has no filter for unassigned issues; list them and drop those with an assignee`)
-	case "me":
-		return "", obsbackend.Wrong(`--assignee me cannot be resolved: the control plane cannot tell a machine credential which user it acts for; pass a user id`)
+	s = strings.TrimSpace(s)
+	switch strings.ToLower(s) {
+	case "none", "me":
+		return strings.ToLower(s), nil
 	}
 	if len(s) > 128 {
 		return "", obsbackend.Wrong("--assignee is longer than 128 characters")
 	}
-	return strings.TrimSpace(s), nil
+	return s, nil
 }

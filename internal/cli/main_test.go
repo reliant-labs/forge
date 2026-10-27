@@ -77,6 +77,9 @@ func TestMain(m *testing.M) {
 		return nil, errors.New("unit tests do not query a container registry")
 	}
 	buildxAvailable = func(context.Context) bool { return false }
+	// A unit test builds images through the (fake) docker on PATH, so the
+	// daemon answers; a test of the daemonless path sets its own answer.
+	dockerDaemonReachable = func(context.Context) error { return nil }
 	// Nor does any test ask the host's docker about compose. `forge env
 	// status` / `env up`'s summary run doctor's runtime checks and list
 	// compose publishers; on this box that read the developer's own compose

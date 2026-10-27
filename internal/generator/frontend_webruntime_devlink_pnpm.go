@@ -44,6 +44,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -87,8 +88,12 @@ type pnpmBridgeManifest struct {
 }
 
 // devPnpmWorkspaceManifest renders the bridge's root pnpm-workspace.yaml for
-// members (project-relative), merging each member's own overrides and
-// allowBuilds. The web-runtime link override is applied last, so it wins.
+// members (project-relative). Independent roots can share an install ONLY
+// when their overrides and build approvals are identical. Even an absent
+// approval is a denial by pnpm's default, so a union would widen policy.
+// Comparing entire maps also catches overlapping version/wildcard selectors
+// without attempting to reimplement pnpm's selector precedence. Incompatible
+// roots keep their standalone installs instead; the bridge fails closed.
 func devPnpmWorkspaceManifest(projectDir string, members []string) (string, error) {
 	m := pnpmBridgeManifest{
 		Packages:    append([]string(nil), members...),
@@ -109,10 +114,34 @@ func devPnpmWorkspaceManifest(projectDir string, members []string) (string, erro
 			return "", fmt.Errorf("%s: %w", path, err)
 		}
 		for k, v := range own.Overrides {
-			m.Overrides[k] = v
+			if strings.Contains(k, WebRuntimePackage) {
+				return "", fmt.Errorf("%s: explicit runtime override %q conflicts with the dev bridge's local runtime; keep standalone installs", path, k)
+			}
+			// These values are interpreted relative to the settings root.
+			// Moving them unchanged would point at a different dependency.
+			if strings.HasPrefix(v, "link:") || strings.HasPrefix(v, "file:") {
+				target := v[strings.IndexByte(v, ':')+1:]
+				if !filepath.IsAbs(target) {
+					return "", fmt.Errorf("%s: override %q = %q is relative; cannot move it to the dev bridge root (keep standalone installs)", path, k, v)
+				}
+			}
 		}
-		for k, v := range own.AllowBuilds {
-			m.AllowBuilds[k] = v
+		if len(own.Overrides) == 0 {
+			own.Overrides = map[string]string{}
+		}
+		if len(own.AllowBuilds) == 0 {
+			own.AllowBuilds = map[string]any{}
+		}
+		if member == members[0] {
+			m.Overrides, m.AllowBuilds = own.Overrides, own.AllowBuilds
+		} else {
+			first := filepath.Join(members[0], devPnpmWorkspaceName)
+			if !reflect.DeepEqual(m.AllowBuilds, own.AllowBuilds) {
+				return "", fmt.Errorf("incompatible allowBuilds in %s and %s: %v versus %v; dev bridge requires identical policies (including absent approvals); keep standalone installs", first, path, m.AllowBuilds, own.AllowBuilds)
+			}
+			if !reflect.DeepEqual(m.Overrides, own.Overrides) {
+				return "", fmt.Errorf("incompatible overrides in %s and %s: %v versus %v; dev bridge requires identical overrides; keep standalone installs", first, path, m.Overrides, own.Overrides)
+			}
 		}
 	}
 	m.Overrides[WebRuntimePackage] = "link:./" + devLinkDir + "/web-runtime"
@@ -153,6 +182,13 @@ func reconcilePnpmBridge(projectDir string, members []string) (bool, error) {
 	}
 	want, err := devPnpmWorkspaceManifest(projectDir, members)
 	if err != nil {
+		// Never leave an older, more permissive overlay active after policy
+		// changes. PnpmInstallRoot must fall back to standalone installs.
+		if isForgeOwnedPnpmWorkspace(path) {
+			if removeErr := os.Remove(path); removeErr != nil {
+				return false, errors.Join(err, removeErr)
+			}
+		}
 		return false, err
 	}
 	if string(existing) == want {

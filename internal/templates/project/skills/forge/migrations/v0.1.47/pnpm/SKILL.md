@@ -112,7 +112,12 @@ The dev Go bridge has a pnpm twin: a gitignored root pnpm-workspace.yaml
 links local web-runtime through `.forge-link/`. Run `pnpm install` at that
 root after it is written, or let forge's own install do so. Never commit
 that machine-local root or its lockfile. A user's tracked root workspace is
-not overwritten by forge.
+not overwritten by forge. Independent frontends share the dev overlay only
+when their `allowBuilds` and overrides maps are identical (absent approvals
+count too). Otherwise forge reports both sources and removes any older owned
+overlay, leaving standalone installs; it never unions approvals or picks a
+later security override. Relative `file:`/`link:` overrides are rejected by
+the bridge because moving their settings root would change their meaning.
 
 ## 4. Put the store on the worktrees' mount
 

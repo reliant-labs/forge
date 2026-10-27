@@ -17,13 +17,20 @@ import (
 
 // PackageManager names the package manager that owns dir's install: the
 // lockfile on disk (see lockfilePackageManager for how a declared runner
-// breaks a tie between two), else package.json's "packageManager" field, else
-// declared (a KCL dev_runner), else npm.
+// breaks a tie between two using package.json's packageManager pin, then
+// declared), else package.json's "packageManager" field, else declared (a
+// KCL dev_runner), else npm.
 //
 // The packageManager field sits between the lockfile and the declaration
 // because a fresh scaffold has no lockfile yet: without it, a frontend whose
 // manifest says pnpm would get its first lockfile written by npm.
 func PackageManager(dir, declared string) string {
+	// An explicit manifest pin breaks competing-lockfile ties as well as
+	// choosing the first install's manager. A stale foreign lock must not
+	// override the maintained lock belonging to that pin.
+	if name, _ := manifestPackageManager(dir); name != "" {
+		declared = name
+	}
 	for _, lock := range lockfiles {
 		if fileExists(filepath.Join(dir, lock.file)) {
 			return lockfilePackageManager(dir, declared)

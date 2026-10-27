@@ -223,26 +223,24 @@ tasks:
     # declared anywhere else). A backend-only project runs nothing.
     #
     # SCRIPT names the package manager as $PM, which is the one that owns
-    # each frontend, decided the way forge decides it: its lockfile, else its
-    # package.json `packageManager` (a scaffold's pins pnpm), else npm. An
-    # npm frontend adopted beside a scaffolded one keeps its own manager.
+    # each frontend. `project frontends --with-package-manager` uses forge's
+    # shared resolver, including the declared manager's own-lock tie-break
+    # during migrations. There is no second lockfile algorithm in this shell.
+    # An npm frontend beside a scaffolded one keeps its own manager.
     internal: true
     silent: true
     vars:
       FRONTENDS:
-        sh: '{{`{{.FORGE}}`}} project frontends'
+        sh: '{{`{{.FORGE}}`}} project frontends --with-package-manager'
     env:
       FRONTENDS: '{{`{{.FRONTENDS}}`}}'
     cmds:
       - cmd: |
           ran=0
-          for dir in $FRONTENDS; do
-            if [ -f "$dir/pnpm-lock.yaml" ]; then PM=pnpm
-            elif [ -f "$dir/yarn.lock" ]; then PM=yarn
-            elif [ -f "$dir/package-lock.json" ]; then PM=npm
-            else PM=$(node -e 'const fs = require("node:fs"); const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); console.log((p.packageManager || "npm").split("@")[0])' "$dir/package.json")
-            fi
-            export PM="${PM:-npm}"
+          for frontend in $FRONTENDS; do
+            PM="${frontend%%:*}"
+            dir="${frontend#*:}"
+            export PM
             echo "==> {{`{{.SCRIPT}}`}} ($dir, $PM)"
             (cd "$dir" && {{`{{.SCRIPT}}`}}) || exit 1
             ran=$((ran + 1))

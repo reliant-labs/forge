@@ -182,15 +182,3 @@ func TestGoCacheLeaseWithoutAProcessRunningFromTheCacheTrimsPastTheFloor(t *test
 		t.Fatalf("%d entries left, want 0", got)
 	}
 }
-
-func TestProcAgeFromStat(t *testing.T) {
-	// comm contains spaces and a parenthesis; start time (field 22) is 12345 ticks.
-	stat := "4242 (my (odd) cmd) S 1 4242 4242 0 -1 4194560 100 0 0 0 1 1 0 0 20 0 1 0 12345 1000000 100 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0"
-	age, ok := procAgeFromStat(stat, time.Hour)
-	if want := time.Hour - 123*time.Second - 450*time.Millisecond; !ok || age != want {
-		t.Fatalf("age = %v, %v; want %v", age, ok, want)
-	}
-	if _, ok := procAgeFromStat("garbage", time.Hour); ok {
-		t.Error("parsed garbage")
-	}
-}

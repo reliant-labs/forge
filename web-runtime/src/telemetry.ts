@@ -432,6 +432,11 @@ export function buildSdkOptions(
     // everything it would have set (propagation targets, the capture switch)
     // must be restated here or it is lost.
     instrumentations: {
+      // Raw DOM events belong to replay, not distributed traces. HyperDX's
+      // default traces every mousedown/up listener (including replay's own),
+      // creating empty roots. Meaningful actions can still use manual spans;
+      // fetch/xhr and document-load instrumentation keep their real parents.
+      interactions: false,
       fetch: {
         propagateTraceHeaderCorsUrls: targets,
         advancedNetworkCapture: () => advancedNetworkCapture,

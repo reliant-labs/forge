@@ -80,9 +80,10 @@ func isForgeOwnedPnpmWorkspace(path string) bool {
 // pnpmBridgeManifest is the settings part of the bridge's root file. yaml.v3
 // writes map keys sorted, so the rendered file is deterministic.
 type pnpmBridgeManifest struct {
-	Packages    []string          `yaml:"packages"`
-	Overrides   map[string]string `yaml:"overrides"`
-	AllowBuilds map[string]any    `yaml:"allowBuilds,omitempty"`
+	VerifyDepsBeforeRun bool              `yaml:"verifyDepsBeforeRun"`
+	Packages            []string          `yaml:"packages"`
+	Overrides           map[string]string `yaml:"overrides"`
+	AllowBuilds         map[string]any    `yaml:"allowBuilds,omitempty"`
 }
 
 // devPnpmWorkspaceManifest renders the bridge's root pnpm-workspace.yaml for

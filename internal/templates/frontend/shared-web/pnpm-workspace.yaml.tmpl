@@ -3,6 +3,11 @@
 # else. pnpm reads its settings from this file, never from package.json or
 # .npmrc (which it consults for registries and auth only).
 
+# Installs are explicit (forge ensures deps before build/dev/lint). pnpm 12's
+# automatic pre-script install would replace a dev bridge's linked runtime
+# with the registry copy just before a build run inside this frontend.
+verifyDepsBeforeRun: false
+
 # Transitive-only pins. Each one exists because the PARENT has no patched
 # release yet; drop it once the parent's own range reaches the fixed version.
 #   fflate: GHSA-px8p-9vwx-vf98. @hyperdx/otel-web-session-recorder pins

@@ -187,6 +187,7 @@ packages:
 
 # Settings apply to the whole workspace: pnpm reads them from this root file
 # only, so a frontend in this layout carries no pnpm-workspace.yaml of its own.
+verifyDepsBeforeRun: false
 
 # fflate: GHSA-px8p-9vwx-vf98. @hyperdx/otel-web-session-recorder pins fflate
 # 0.7.4 exactly, and it ships in every web frontend's bundle through

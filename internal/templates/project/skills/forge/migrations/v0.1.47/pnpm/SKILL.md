@@ -42,6 +42,10 @@ For a standalone frontend, its own `pnpm-workspace.yaml` is its settings root
 (it does **not** opt the project into the shared API/hooks layout). Example:
 
 ```yaml
+# Forge installs explicitly before dev/build/lint. Scripts must not reinstall
+# a standalone registry lock over an active dev bridge's linked runtime.
+verifyDepsBeforeRun: false
+
 # GHSA-px8p-9vwx-vf98: recorder still pins fflate 0.7.4.
 # Remove once its own dependency range reaches the patched release.
 overrides:

@@ -41,7 +41,7 @@ func TestEnsureDevWebRuntimeLinkPnpm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{frontenddeps.PnpmBridgeMarker, "frontends/web", "parent>child", "esbuild: true", "protobufjs: false", "link:./.forge-link/web-runtime"} {
+	for _, want := range []string{frontenddeps.PnpmBridgeMarker, "frontends/web", "parent>child", "esbuild: true", "protobufjs: false", "verifyDepsBeforeRun: false", "link:./.forge-link/web-runtime"} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("pnpm bridge lacks %q:\n%s", want, body)
 		}

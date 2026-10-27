@@ -439,6 +439,16 @@ func contractExcludesFromConfig(cfg *config.ProjectConfig) []string {
 	return cfg.Contracts.Exclude
 }
 
+// anchorProtoConventionFindings puts proto-relative paths in the same project
+// frame as Go findings, without changing empty or already absolute paths.
+func anchorProtoConventionFindings(findings []forgeconv.Finding) {
+	for i := range findings {
+		if f := findings[i].File; f != "" && !filepath.IsAbs(f) {
+			findings[i].File = filepath.ToSlash(filepath.Join("proto", f))
+		}
+	}
+}
+
 // collectConventionFindings gathers every forge-convention finding
 // without printing — the shared engine behind runConventionLint (text)
 // and `forge lint --json`. Returns the combined findings, any
@@ -461,11 +471,7 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 		// project-relative. Re-anchor them so the whole report is one frame:
 		// a "services/x/v1/x.proto" path is not openable from the project
 		// root, and `forge lint --scope proto/services/x` could not match it.
-		for i := range res.Findings {
-			if f := res.Findings[i].File; f != "" && !filepath.IsAbs(f) {
-				res.Findings[i].File = filepath.ToSlash(filepath.Join("proto", f))
-			}
-		}
+		anchorProtoConventionFindings(res.Findings)
 		combined.Findings = append(combined.Findings, res.Findings...)
 	} else {
 		notes = append(notes, "No proto/ directory found — skipping proto convention lint")

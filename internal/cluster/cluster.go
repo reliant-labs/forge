@@ -1158,6 +1158,36 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 		}
 	}
 
+	pruneAfterApply(ctx, opts, desired, manifests, crdOwner)
+
+	if policy.Mode == RolloutSkip {
+		if !opts.Quiet {
+			fmt.Println("Skipping rollout wait (rollout mode: skip)")
+		}
+		return nil, nil
+	}
+
+	// Wait set = every `kind: Job` in the stream this apply just sent,
+	// and nothing else. See oneShotWaitSet for why a caller-supplied
+	// list is not unioned in any more. A pre-rollout Job already completed
+	// at the gate — the workloads would not have been applied otherwise —
+	// so only the post-rollout Jobs are left to wait on.
+	var jobs []string
+	stageJobs := stages.awaitedJobs()
+	for _, name := range oneShotWaitSet(manifests) {
+		if !phases.awaited(name) && !stageJobs[name] {
+			jobs = append(jobs, name)
+		}
+	}
+	pending := &PendingRollout{opts: opts, policy: policy, jobs: jobs, skipDeployments: DeploymentsInUnits(desired, opts.SkipUnits)}
+	pending.prune = ownedPruneFor(opts, desired)
+	return pending, nil
+}
+
+// pruneAfterApply runs the best-effort prunes after every apply pass succeeds,
+// before deciding whether to await rollouts. desired is the whole scoped render;
+// manifests is only what this caller applied (excluding hub-converged units).
+func pruneAfterApply(ctx context.Context, opts ApplyOpts, desired, manifests, crdOwner string) {
 	// A workload that dropped to one replica stops rendering its PDB and
 	// apply never deletes it; a stale one can block node drains. Not gated
 	// on --prune: PDBs hold no state.
@@ -1186,29 +1216,6 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 			fmt.Printf("Warning: %v\n", err)
 		}
 	}
-
-	if policy.Mode == RolloutSkip {
-		if !opts.Quiet {
-			fmt.Println("Skipping rollout wait (rollout mode: skip)")
-		}
-		return nil, nil
-	}
-
-	// Wait set = every `kind: Job` in the stream this apply just sent,
-	// and nothing else. See oneShotWaitSet for why a caller-supplied
-	// list is not unioned in any more. A pre-rollout Job already completed
-	// at the gate — the workloads would not have been applied otherwise —
-	// so only the post-rollout Jobs are left to wait on.
-	var jobs []string
-	stageJobs := stages.awaitedJobs()
-	for _, name := range oneShotWaitSet(manifests) {
-		if !phases.awaited(name) && !stageJobs[name] {
-			jobs = append(jobs, name)
-		}
-	}
-	pending := &PendingRollout{opts: opts, policy: policy, jobs: jobs, skipDeployments: DeploymentsInUnits(desired, opts.SkipUnits)}
-	pending.prune = ownedPruneFor(opts, desired)
-	return pending, nil
 }
 
 // ownedPruneFor is the owned-object prune this apply owes once its rollout is

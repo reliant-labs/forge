@@ -109,32 +109,9 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 	if err != nil {
 		return result, fmt.Errorf("read tool cache %s: %w", root, err)
 	}
-	var entries []entry
-	var leftovers []string
-	for _, de := range top {
-		if !de.IsDir() || strings.HasPrefix(de.Name(), ".") {
-			continue
-		}
-		dir := filepath.Join(root, de.Name())
-		if slices.Contains(kinds, de.Name()) {
-			found, left, err := kindEntries(dir, de.Name(), now)
-			if err != nil {
-				return result, err
-			}
-			entries, leftovers = append(entries, found...), append(leftovers, left...)
-			continue
-		}
-		entries = append(entries, legacyEntries(dir, 0)...)
-	}
-
-	var usable []entry
-	for _, e := range entries {
-		if e.lastUse.IsZero() {
-			result.Kept++
-			printf(out, "keep tool cache %s (cannot tell when it was last used)\n", e.path())
-			continue
-		}
-		usable = append(usable, e)
+	usable, leftovers, err := datedCacheEntries(root, top, now, out, &result)
+	if err != nil {
+		return result, err
 	}
 	doomed := choose(usable, now, policy, &result)
 
@@ -220,6 +197,38 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 		}
 	}
 	return result, nil
+}
+
+// datedCacheEntries inventories recognized layouts and retains undatable
+// entries. It only discovers candidates: process, confinement and key-lock
+// checks stay on the removal path in Evict.
+func datedCacheEntries(root string, top []os.DirEntry, now time.Time, out io.Writer, result *Eviction) (usable []entry, leftovers []string, err error) {
+	var entries []entry
+	for _, de := range top {
+		if !de.IsDir() || strings.HasPrefix(de.Name(), ".") {
+			continue
+		}
+		dir := filepath.Join(root, de.Name())
+		if slices.Contains(kinds, de.Name()) {
+			found, left, err := kindEntries(dir, de.Name(), now)
+			if err != nil {
+				return nil, nil, err
+			}
+			entries, leftovers = append(entries, found...), append(leftovers, left...)
+			continue
+		}
+		entries = append(entries, legacyEntries(dir, 0)...)
+	}
+
+	for _, e := range entries {
+		if e.lastUse.IsZero() {
+			result.Kept++
+			printf(out, "keep tool cache %s (cannot tell when it was last used)\n", e.path())
+			continue
+		}
+		usable = append(usable, e)
+	}
+	return usable, leftovers, nil
 }
 
 // choose groups entries by tool and returns those beyond the keep floor that

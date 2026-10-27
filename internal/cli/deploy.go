@@ -1239,6 +1239,28 @@ func resolveEnvMainK(store *projectstore.Store, envName string) (string, error) 
 	return mainK, nil
 }
 
+// guardDeployNamespaceReferences checks cluster DNS only when this deploy has
+// cluster work; other placements must not inherit a cluster-only refusal.
+func guardDeployNamespaceReferences(hasK8sServices bool, entities *KCLEntities, project, namespace string) error {
+	if !hasK8sServices {
+		return nil
+	}
+	return checkNamespaceReferences(entities, project, namespace)
+}
+
+// activateDeployRender arms the shared dev-stack inputs, materializing only an
+// applying deploy. A dry run inspects existing blocks and leaves the tree alone.
+func activateDeployRender(ctx context.Context, projectDir, envName string, opts deployOptions) {
+	claim := claimNewBlocks
+	if opts.dryRun {
+		claim = inspectBlocks
+	}
+	activateDevStack(ctx, projectDir, envName, opts.purpose, claim)
+	if !opts.dryRun {
+		armMaterializer(projectDir)
+	}
+}
+
 func runDeploy(ctx context.Context, envName string, opts deployOptions) error { //nolint:funlen // the `forge env deploy` lifecycle in order: resolve, dispatch hosted, render, guard, apply, verify. The sequence is the contract, as in runUp.
 	dryRun := opts.dryRun
 	namespace := opts.namespace
@@ -1276,16 +1298,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	// A deploy of an env that runs nowhere on this machine claims no port
 	// block (see renderPurpose), and a --dry-run claims none at all: it
 	// previews the stack, it does not bring one up (see blockClaim).
-	claim := claimNewBlocks
-	if dryRun {
-		claim = inspectBlocks
-	}
-	activateDevStack(ctx, projectDir, envName, opts.purpose, claim)
-	// An applying deploy of an env that runs here materializes it; a
-	// --dry-run previews it, and must leave the tree exactly as it found it.
-	if !dryRun {
-		armMaterializer(projectDir)
-	}
+	activateDeployRender(ctx, projectDir, envName, opts)
 
 	if hosted, err := dispatchHostedDeploy(ctx, projectDir, envName, opts); hosted {
 		return err
@@ -1381,10 +1394,8 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	// step in the pipeline names the misconfiguration. See the helper for
 	// the heuristic that distinguishes legitimate cross-namespace refs
 	// from typos.
-	if hasK8sServices {
-		if err := checkNamespaceReferences(entities, store.Meta().Name, namespace); err != nil {
-			return err
-		}
+	if err := guardDeployNamespaceReferences(hasK8sServices, entities, store.Meta().Name, namespace); err != nil {
+		return err
 	}
 
 	// Reconcile-policy gate. Read HERE, from disk, on every deploy — a

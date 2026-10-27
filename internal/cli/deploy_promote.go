@@ -344,16 +344,7 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 			AcknowledgedFindings: opts.Approval.AcknowledgedFindings,
 		})
 		if writeErr == nil && opts.Follow != nil {
-			follow := *opts.Follow
-			follow.projectDir = projectDir
-			follow.planDigest = deployPlanDigest(opts.DeployPlan)
-			// Every stage the follow-through ships is recorded here, so
-			// the report below can say what is live — above all when the
-			// deploy fails after some of it already is.
-			shipped := &shipLog{}
-			follow.clientDeploy.shipped = shipped
-			writeErr = followPromote(ctx, env, plan, ledger, follow)
-			plan.recordFollow(shipped, writeErr)
+			writeErr = followRecordedPromotion(ctx, env, projectDir, &plan, ledger, opts)
 		}
 	}
 	// A refused write still renders: the plan is what the write WOULD have
@@ -395,6 +386,19 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	}
 	renderPromotePlanText(progressWriter(opts.JSON), plan)
 	return writeErr
+}
+
+// followRecordedPromotion records every shipped stage even when follow-through
+// fails, so the final plan can report what is already live.
+func followRecordedPromotion(ctx context.Context, env, projectDir string, plan *promotePlan, ledger envLedger, opts promoteOptions) error {
+	follow := *opts.Follow
+	follow.projectDir = projectDir
+	follow.planDigest = deployPlanDigest(opts.DeployPlan)
+	shipped := &shipLog{}
+	follow.clientDeploy.shipped = shipped
+	err := followPromote(ctx, env, *plan, ledger, follow)
+	plan.recordFollow(shipped, err)
+	return err
 }
 
 // preflightFollow runs every refusal the follow-through would otherwise meet

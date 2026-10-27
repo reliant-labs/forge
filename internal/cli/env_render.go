@@ -342,14 +342,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		return kerr
 	}
 
-	namespace := opts.namespace
-	if namespace == "" {
-		if ns := k8sClusterFieldFromEntities(entities, "namespace"); ns != "" {
-			namespace = ns
-		} else {
-			namespace = store.Meta().Name + "-" + envName
-		}
-	}
+	namespace := renderEnvNamespace(opts.namespace, entities, store.Meta().Name, envName)
 
 	imageTag, tagSource := renderImageTag(ctx, projectDir, envName, opts.imageTag)
 	var (
@@ -491,6 +484,17 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		}
 	}
 	return nil
+}
+
+// renderEnvNamespace honors the flag, then the declaration, then the project default.
+func renderEnvNamespace(flag string, entities *KCLEntities, project, env string) string {
+	if flag != "" {
+		return flag
+	}
+	if ns := k8sClusterFieldFromEntities(entities, "namespace"); ns != "" {
+		return ns
+	}
+	return project + "-" + env
 }
 
 // renderImageTag resolves the tag the manifests are rendered with.

@@ -90,12 +90,7 @@ func compositionConsumers(e *KCLEntities) ([]release.Consumer, error) {
 				continue
 			}
 			for peer, contract := range fe.ReleaseDependencies {
-				var keys []release.ConsumerKey
-				for _, c := range out {
-					if c.Key.Workload == peer {
-						keys = append(keys, c.Key)
-					}
-				}
+				keys := compositionDependencyKeys(out, peer)
 				if len(keys) != 1 || contract == "" {
 					return nil, fmt.Errorf("frontend %q has unknown dependency %q", fe.Name, peer)
 				}
@@ -107,12 +102,7 @@ func compositionConsumers(e *KCLEntities) ([]release.Consumer, error) {
 				continue
 			}
 			for peer, contract := range w.ReleaseDependencies {
-				var keys []release.ConsumerKey
-				for _, c := range out {
-					if c.Key.Workload == peer {
-						keys = append(keys, c.Key)
-					}
-				}
+				keys := compositionDependencyKeys(out, peer)
 				if len(keys) != 1 || contract == "" {
 					return nil, fmt.Errorf("consumer %q has unknown/ambiguous dependency %q", w.Name, peer)
 				}
@@ -121,6 +111,18 @@ func compositionConsumers(e *KCLEntities) ([]release.Consumer, error) {
 		}
 	}
 	return out, nil
+}
+
+// compositionDependencyKeys retains every matching runtime slot: callers must
+// reject ambiguous workload names rather than silently select a placement.
+func compositionDependencyKeys(consumers []release.Consumer, workload string) []release.ConsumerKey {
+	var keys []release.ConsumerKey
+	for _, c := range consumers {
+		if c.Key.Workload == workload {
+			keys = append(keys, c.Key)
+		}
+	}
+	return keys
 }
 
 // resolveCompositionArtifact verifies the descriptor and platforms even for an

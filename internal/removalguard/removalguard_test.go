@@ -61,6 +61,12 @@ var removals = []removal{
 		},
 		Allowances: []allowance{
 			{
+				Name:   "external control-plane identifiers and deployment prose",
+				Reason: "These spans describe the separately owned control-plane schema and platform telemetry, not a forge tenancy API. Exact spellings and paths keep TenantID/auth context regressions visible.",
+				Token:  regexp.MustCompile(`tenant_cluster_id|Tenant cluster|ensureTenant|GetTenant|tenant zero|tenant schema|tenant reads|tenant service|check the tenant`),
+				Paths:  []string{"docs/design/per-workload-placement.md", "internal/cli/deploy_claimable_test.go", "internal/obsdash/process_health.go", "internal/templates/project/skills/forge/deploy/openbao/SKILL.md", "pkg/accesstoken/scope.go", "pkg/alerting/evaluator.go", "pkg/observe/PROFILES.md", "pkg/obsquery/fingerprint.go"},
+			},
+			{
 				Name: "the OAuth issuer's own multi-tenant URL shape",
 				Reason: "An identity provider's issuer URL is frequently per-tenant " +
 					"(`https://your-tenant.auth0.com`), and a provider MAY publish a query " +
@@ -272,6 +278,12 @@ var removals = []removal{
 			regexp.MustCompile(`(?i)\brbac\b`),
 		},
 		Allowances: []allowance{
+			{
+				Name:   "Kubernetes permission manifests in deployment guidance",
+				Reason: "These deployment skills discuss Kubernetes object permissions, not application role authorization.",
+				Token:  regexp.MustCompile(`RBAC`),
+				Paths:  []string{"internal/templates/project/skills/forge/deploy/openbao/SKILL.md", "internal/templates/project/skills/forge/deploy/plan/SKILL.md"},
+			},
 			{
 				Name:   "HTTP Authorization header",
 				Reason: "`Authorization: Bearer …` is AUTHENTICATION, which forge still supports and generates. Never confuse the header with the removed authorization feature.",
@@ -755,6 +767,12 @@ var removals = []removal{
 			regexp.MustCompile("`forge reconcile`|run: forge reconcile\\b"),
 		},
 		Allowances: []allowance{
+			{
+				Name:   "real sibling release scripts in placement design and lock documentation",
+				Reason: "These spans name existing control-plane release scripts, not a generated raw-curl release job.",
+				Token:  regexp.MustCompile(`cut-release`),
+				Paths:  []string{"docs/design/per-workload-placement.md", "scripts/lib/release-lock.sh"},
+			},
 			{
 				Name: "the tests that pin the removal",
 				Reason: "They assert the rendered workflows do NOT contain these spellings, so " +
@@ -1576,6 +1594,7 @@ var removals = []removal{
 					"web-runtime/src/node.test.ts",
 					"web-runtime/src/node-otlp.ts",
 					"web-runtime/src/node-otlp.test.ts",
+					"pkg/deploy/observability_line_resource_test.go",
 				},
 			},
 			{
@@ -1883,6 +1902,12 @@ var removals = []removal{
 			// bridge could dispatch. Streaming mode survives it.
 			regexp.MustCompile(`\bmcp_callable\b|\bMCPCallable\b`),
 		},
+		Allowances: []allowance{{
+			Name:   "owned CLI capability MCP server, not a generated per-API manifest",
+			Reason: "The new stdio host exposes forge's fixed CLI capabilities and explicit report tool. It emits no generated per-service API manifest. Only the reused command/constructor spellings are permitted in its owned implementation, docs and license record; old manifest/bridge/token identifiers remain forbidden.",
+			Token:  regexp.MustCompile(`\bforge mcp\b|\bnewMCPCmd\b`),
+			Paths:  []string{".license-allowlist", "README.md", "docs/mcp.md", "internal/cli/mcp.go", "internal/cli/mcp_test.go", "internal/cli/root.go", "internal/templates/project/reliant.md.tmpl", "internal/templates/project/skills/forge/SKILL.md"},
+		}},
 	},
 	{
 		Name: "passing an image registry to forge instead of declaring it",
@@ -2533,6 +2558,34 @@ func TestTenancyAzureAllowanceStaysNarrow(t *testing.T) {
 					"Entra ID tenant, not forge tenancy, and must pass.", tc.path, tc.line, hits[0].text, hits[0].pattern)
 			}
 		})
+	}
+}
+
+func TestExternalProtocolAndReplacementAllowancesStayNarrow(t *testing.T) {
+	cases := []struct {
+		removal, path, line string
+		wantHit             bool
+	}{
+		{"tenancy", "docs/design/per-workload-placement.md", "tenant_cluster_id", false},
+		{"tenancy", "docs/design/per-workload-placement.md", "TenantID string", true},
+		{"tenancy", "internal/templates/project/skills/forge/db/SKILL.md", "tenant_cluster_id", true},
+		{"authorization", "internal/templates/project/skills/forge/deploy/openbao/SKILL.md", "Kubernetes RBAC", false},
+		{"authorization", "internal/templates/project/skills/forge/deploy/openbao/SKILL.md", "AuthorizeHook", true},
+		{"the raw-curl cut-release CI job and `forge reconcile`", "scripts/lib/release-lock.sh", "cut-release.sh", false},
+		{"the raw-curl cut-release CI job and `forge reconcile`", "scripts/lib/release-lock.sh", "DEPLOY_TOKEN", true},
+		{"the seeder's column-name domain heuristics", "pkg/deploy/observability_line_resource_test.go", "stringValue", false},
+		{"the seeder's column-name domain heuristics", "pkg/deploy/observability_line_resource_test.go", "integerLiteral", true},
+		{"the generated per-API MCP manifest and its bridge", "internal/cli/mcp.go", "newMCPCmd forge mcp", false},
+		{"the generated per-API MCP manifest and its bridge", "internal/cli/mcp.go", "GenerateMCPManifest gen/mcp/manifest.json FORGE_MCP_TOKEN newMCPServeCmd", true},
+		{"the generated per-API MCP manifest and its bridge", "internal/templates/ci/github/ci.yml.tmpl", "forge mcp", true},
+	}
+	for _, tc := range cases {
+		rm := removalNamed(t, tc.removal)
+		allowances := append(append([]allowance{}, commonAllowances...), rm.Allowances...)
+		hits := matchLine(repoRoot(t), tc.line, rm, allowances, tc.path)
+		if (len(hits) > 0) != tc.wantHit {
+			t.Errorf("%s: %s: %q hits=%v wantHit=%v", tc.removal, tc.path, tc.line, hits, tc.wantHit)
+		}
 	}
 }
 

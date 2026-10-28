@@ -1594,6 +1594,7 @@ var removals = []removal{
 					"web-runtime/src/node.test.ts",
 					"web-runtime/src/node-otlp.ts",
 					"web-runtime/src/node-otlp.test.ts",
+					"web-runtime/scripts/browser-telemetry-smoke.mjs",
 					"pkg/deploy/observability_line_resource_test.go",
 				},
 			},
@@ -1906,7 +1907,7 @@ var removals = []removal{
 			Name:   "owned CLI capability MCP server, not a generated per-API manifest",
 			Reason: "The new stdio host exposes forge's fixed CLI capabilities and explicit report tool. It emits no generated per-service API manifest. Only the reused command/constructor spellings are permitted in its owned implementation, docs and license record; old manifest/bridge/token identifiers remain forbidden.",
 			Token:  regexp.MustCompile(`\bforge mcp\b|\bnewMCPCmd\b`),
-			Paths:  []string{".license-allowlist", "README.md", "docs/mcp.md", "internal/cli/mcp.go", "internal/cli/mcp_test.go", "internal/cli/root.go", "internal/templates/project/reliant.md.tmpl", "internal/templates/project/skills/forge/SKILL.md"},
+			Paths:  []string{".license-allowlist", "README.md", "docs/mcp.md", "internal/cli/mcp.go", "internal/cli/mcp_test.go", "internal/cli/root.go", "internal/templates/project/reliant.md.tmpl", "internal/templates/project/skills/forge/SKILL.md", "internal/templates/project/skills/forge/debug/SKILL.md"},
 		}},
 	},
 	{

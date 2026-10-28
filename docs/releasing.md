@@ -13,26 +13,25 @@ Dockerfile** to bump.
 See `docs/versioning.md` for the dev-vs-release dependency model. This file is
 the operational checklist for cutting a version.
 
-## 0. Who releases: the release train
+## 0. Who releases: the release workflow
 
-**Maintainers and agents do not cut forge releases by hand.** The release train
-(`control-plane/scripts/release-train.sh`, run by the Reliant workflow
-`release-train` weekdays at 18:00 UTC, when a PR labelled `release:asap` merges, and
-on demand) cuts forge first, then the consumers:
+**Maintainers and agents do not cut forge releases by hand.** The Reliant workflow
+`release` (control-plane `.reliant/workflows/release.yaml`) does, on the flagship
+Claude model following control-plane's `release` skill: when a merge is the 10th
+first-parent commit on main since the newest `v*` tag, when a PR labelled
+`release:asap` merges, or when started from a chat. It cuts forge first, then the
+consumers:
 
 - **web-runtime**, when `web-runtime/package.json` is ahead of its newest
   `web-runtime/v*` tag: `scripts/release-web-runtime.sh vX.Y.Z`, then the tag push
-  that publishes it. The version bump itself is a reviewed PR; the train never
-  invents one, and reports commits under `web-runtime/` that no bump has released.
-- **forge**, when `main` has commits since the last `v*` tag and main's tip has a
-  green full `ci.yml` run on push (the proof `scripts/check-release-tests.sh` reads):
-  `scripts/release-forge.sh vX.Y.Z`, the next patch version. It waits up to 30
-  minutes (60 for `release:asap`) for a run in progress on the tip; the release
-  commit must land on main's tip, so only the tip will do.
+  that publishes it. The version bump itself is a reviewed PR; the release never
+  invents one.
+- **forge**, when main's tip has a green full `ci.yml` run on push (the proof
+  `scripts/check-release-tests.sh` reads): `scripts/release-forge.sh vX.Y.Z`, the next
+  patch version.
 - **the consumer bumps** (step 2 below), as one pull request per downstream repo
-  labelled `merge:queue` + `merge:priority`, when a consumer does not already pin a
-  forge that contains the release. pin-bot normally has: it pins forge `main` every
-  two hours.
+  labelled `merge:queue`, when a consumer does not already pin a forge that contains
+  the release. pin-bot normally has.
 
 Need a forge change released sooner: label its PR **`release:asap`**. Both release
 scripts take the machine-wide release lock (`scripts/lib/release-lock.sh`, a

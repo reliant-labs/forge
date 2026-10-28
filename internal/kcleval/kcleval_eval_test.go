@@ -297,6 +297,20 @@ func TestEvalRefusesAFileOutsideTheProject(t *testing.T) {
 	}
 }
 
+func TestProcessRootedEvalRefusesDifferentDirectory(t *testing.T) {
+	dir := project(t, map[string]string{
+		"deploy/kcl/kcl.mod": kclMod,
+		"deploy/kcl/main.k":  "value = 1\n",
+	})
+	// The package exists, but the caller did not start in its project root.
+	// Accepting symlink spellings must not weaken this boundary.
+	t.Chdir(t.TempDir())
+	_, err := kcleval.Eval(kcleval.Request{ProjectDir: dir, File: "deploy/kcl", ProcessRooted: true})
+	if err == nil || !strings.Contains(err.Error(), "is not project root") {
+		t.Fatalf("different directory accepted: %v", err)
+	}
+}
+
 func TestEvalDirectoryIncludesEveryKCLFile(t *testing.T) {
 	dir := project(t, map[string]string{
 		"deploy/kcl/kcl.mod": kclMod,

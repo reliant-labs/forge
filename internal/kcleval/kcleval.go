@@ -140,7 +140,15 @@ func Eval(req Request) (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
-		if filepath.Clean(cwd) != filepath.Clean(root) {
+		cwdInfo, err := os.Stat(cwd)
+		if err != nil {
+			return Result{}, fmt.Errorf("stat isolated KCL evaluation cwd %s: %w", cwd, err)
+		}
+		rootInfo, err := os.Stat(root)
+		if err != nil {
+			return Result{}, fmt.Errorf("stat isolated KCL project root %s: %w", root, err)
+		}
+		if !os.SameFile(cwdInfo, rootInfo) {
 			return Result{}, fmt.Errorf("isolated KCL evaluation cwd %s is not project root %s", cwd, root)
 		}
 		run = kclrender.Run

@@ -223,6 +223,43 @@ func TestIsolatedKCLAbsoluteAndRelativeProjectFlag(t *testing.T) {
 	}
 }
 
+func TestIsolatedKCLSymlinkProjectRoots(t *testing.T) {
+	if testing.Short() {
+		t.Skip("executes isolated KCL children with symlink roots; runs in task test")
+	}
+	dir := isolatedKCLProject(t, "symlinkroot")
+	link := filepath.Join(t.TempDir(), "project-link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(cwd, link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{link, rel} {
+		t.Run(root, func(t *testing.T) {
+			cmd := newTestRootCmd(t)
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			// values.k reads payload.txt; main.k consumes that value.
+			cmd.SetArgs([]string{"-C", root, "kcl", "eval", "deploy/kcl/dev", "-S", "output.value", "--format", "raw"})
+			if err := cmd.ExecuteContext(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if out.String() != "symlinkroot" {
+				t.Fatalf("symlink root result: %q", out.String())
+			}
+			if got, err := os.Getwd(); err != nil || got != cwd {
+				t.Fatalf("parent cwd changed: %s, %v", got, err)
+			}
+		})
+	}
+}
+
 func TestIsolatedKCLCommandClearsPriorLaunchCapabilities(t *testing.T) {
 	dir := t.TempDir()
 	rememberKCLContext(dir, "dev", kclRenderContext{Blocks: "claim", Materialize: true})

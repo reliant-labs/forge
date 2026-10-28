@@ -9,6 +9,7 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
@@ -131,6 +132,12 @@ from an empty directory to authored protos, in one call.`,
 		// PersistentPreRun fires once per invocation regardless of
 		// which subcommand the user typed.
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			// A prior embedded command's launch privileges must never leak into
+			// a subsequent diagnostic command in this process.
+			kclContexts.Lock()
+			clear(kclContexts.byTarget)
+			kclContexts.Unlock()
+			cmd.SetContext(cluster.WithKCLRunner(cmd.Context(), evalKCLSubprocess))
 			// Install (or clear) the project resolution root before
 			// anything below can resolve a project. Clearing on the
 			// empty value matters for in-process embedders, which

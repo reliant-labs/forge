@@ -1264,7 +1264,7 @@ func activateDeployRender(ctx context.Context, projectDir, envName string, opts 
 	}
 	activateDevStack(ctx, projectDir, envName, opts.purpose, claim)
 	if !opts.dryRun {
-		armMaterializer(projectDir)
+		armMaterializer(projectDir, envName)
 	}
 }
 

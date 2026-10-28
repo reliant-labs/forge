@@ -903,7 +903,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	_, restorePortStore := activateDevStack(ctx, projectDir, opts.env, renderToLaunch, claimNewBlocks)
 	// Bringing the env up IS materializing it, so the module's generated
 	// files (fp.write_file) are written by these renders.
-	armMaterializer(projectDir)
+	armMaterializer(projectDir, opts.env)
 
 	// Arm the -D render options BEFORE the first render. Validated against
 	// what the env's KCL declares so a typo'd name fails here rather than

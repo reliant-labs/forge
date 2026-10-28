@@ -343,7 +343,7 @@ func TestShellScriptsPassShellcheck(t *testing.T) {
 	if err != nil {
 		t.Skip("shellcheck not installed")
 	}
-	scripts := []string{"install.sh", "scripts/build-release-assets.sh", "scripts/render-homebrew-formula.sh", "scripts/release-forge.sh", "scripts/lib/release-lock.sh"}
+	scripts := []string{"install.sh", "scripts/build-release-assets.sh", "scripts/render-homebrew-formula.sh", "scripts/release-forge.sh"}
 	// Analyze the sourced helper too, relative to the repository rather
 	// than this package's test working directory; do not suppress SC1091.
 	args := []string{"--severity=style", "--external-sources", "--source-path=" + filepath.Dir(repoFile(t, "install.sh"))}

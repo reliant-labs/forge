@@ -151,8 +151,6 @@ func runForgeScriptEnv(t *testing.T, repo string, extraEnv []string, args ...str
 		// One archive, for the host: the fixture module is tiny but a
 		// six-target cross-build is still six links per release test.
 		"FORGE_RELEASE_TARGETS="+runtime.GOOS+"/"+runtime.GOARCH,
-		// The release lock is machine-wide by default; a test's is its own.
-		"RELEASE_LOCK_DIR="+t.TempDir(),
 	)
 	cmd.Env = append(cmd.Env, extraEnv...)
 	out, err := cmd.CombinedOutput()
@@ -367,60 +365,5 @@ func TestReleaseForgeScript_RejectsExistingTag(t *testing.T) {
 	}
 	if !strings.Contains(out, "already exists") {
 		t.Errorf("unexpected error output:\n%s", out)
-	}
-}
-
-// TestReleaseForgeScript_RefusesWhileAnotherReleaseHoldsTheLock: one release of
-// forge per machine. A second cutter fails before it edits, tags or pushes
-// anything, and names who holds the lock; a dry run only reports it.
-func TestReleaseForgeScript_RefusesWhileAnotherReleaseHoldsTheLock(t *testing.T) {
-	if testing.Short() {
-		t.Skip("runs the release script under bash against a git fixture; runs in task test")
-	}
-	if _, err := exec.LookPath("flock"); err != nil {
-		t.Skip("flock not on PATH")
-	}
-	repo := newForgeFixtureRepo(t)
-	locks := t.TempDir()
-	lock := filepath.Join(locks, "forge.lock")
-	holder := exec.CommandContext(context.Background(), "bash", "-c",
-		`exec 7>>"$1"; flock 7; printf 'pid=%s\nowner=another-chat\nwhat=release-forge.sh v0.2.0\n' "$$" > "$1"; echo held; read -r _`, "_", lock)
-	stdin, err := holder.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stdout, err := holder.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := holder.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = stdin.Close(); _ = holder.Wait() }()
-	if _, err := stdout.Read(make([]byte, 4)); err != nil {
-		t.Fatalf("the lock holder did not start: %v", err)
-	}
-	env := []string{"RELEASE_LOCK_DIR=" + locks}
-
-	out, err := runForgeScriptEnv(t, repo, env, "v0.2.0")
-	ee, ok := err.(*exec.ExitError)
-	if !ok || ee.ExitCode() != 75 {
-		t.Fatalf("a second release: err=%v, want exit 75\n%s", err, out)
-	}
-	for _, want := range []string{"another release of forge is in progress", "owner=another-chat"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("the refusal lacks %q:\n%s", want, out)
-		}
-	}
-	if tags := gitOut(t, repo, "tag", "-l", "v0.2.0"); tags != "" {
-		t.Errorf("the refused release tagged %s", tags)
-	}
-
-	out, err = runForgeScriptEnv(t, repo, env, "--dry-run", "v0.2.0")
-	if err != nil {
-		t.Fatalf("a dry run must not be refused by the lock: %v\n%s", err, out)
-	}
-	if !strings.Contains(out, "a real release would refuse now") {
-		t.Errorf("the dry run did not report the release in progress:\n%s", out)
 	}
 }

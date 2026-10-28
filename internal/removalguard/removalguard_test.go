@@ -768,10 +768,10 @@ var removals = []removal{
 		},
 		Allowances: []allowance{
 			{
-				Name:   "real sibling release scripts in placement design and lock documentation",
+				Name:   "real sibling release scripts in placement design",
 				Reason: "These spans name existing control-plane release scripts, not a generated raw-curl release job.",
 				Token:  regexp.MustCompile(`cut-release`),
-				Paths:  []string{"docs/design/per-workload-placement.md", "scripts/lib/release-lock.sh"},
+				Paths:  []string{"docs/design/per-workload-placement.md"},
 			},
 			{
 				Name: "the tests that pin the removal",
@@ -2571,8 +2571,8 @@ func TestExternalProtocolAndReplacementAllowancesStayNarrow(t *testing.T) {
 		{"tenancy", "internal/templates/project/skills/forge/db/SKILL.md", "tenant_cluster_id", true},
 		{"authorization", "internal/templates/project/skills/forge/deploy/openbao/SKILL.md", "Kubernetes RBAC", false},
 		{"authorization", "internal/templates/project/skills/forge/deploy/openbao/SKILL.md", "AuthorizeHook", true},
-		{"the raw-curl cut-release CI job and `forge reconcile`", "scripts/lib/release-lock.sh", "cut-release.sh", false},
-		{"the raw-curl cut-release CI job and `forge reconcile`", "scripts/lib/release-lock.sh", "DEPLOY_TOKEN", true},
+		{"the raw-curl cut-release CI job and `forge reconcile`", "docs/design/per-workload-placement.md", "cut-release.sh", false},
+		{"the raw-curl cut-release CI job and `forge reconcile`", "docs/design/per-workload-placement.md", "DEPLOY_TOKEN", true},
 		{"the seeder's column-name domain heuristics", "pkg/deploy/observability_line_resource_test.go", "stringValue", false},
 		{"the seeder's column-name domain heuristics", "pkg/deploy/observability_line_resource_test.go", "integerLiteral", true},
 		{"the generated per-API MCP manifest and its bridge", "internal/cli/mcp.go", "newMCPCmd forge mcp", false},

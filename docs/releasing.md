@@ -33,10 +33,9 @@ consumers:
   labelled `merge:queue`, when a consumer does not already pin a forge that contains
   the release. pin-bot normally has.
 
-Need a forge change released sooner: label its PR **`release:asap`**. Both release
-scripts take the machine-wide release lock (`scripts/lib/release-lock.sh`, a
-`flock` on `$RELEASE_LOCK_DIR/forge.lock`, default `~/fm-logs/release-locks`), so a
-second release of forge or web-runtime fails at once and names who holds it. The
+Need a forge change released sooner: label its PR **`release:asap`**. There is no
+release lock: the tag push decides a race (a second cutter's push of the same tag is
+refused, and `release-forge.sh` refuses an existing tag before it builds anything). The
 steps below are what the train runs, for whoever fixes it.
 
 ## 1. Tag forge (from a clean `main`) — ONE command

@@ -141,19 +141,6 @@ if [ ! -f CHANGELOG.md ]; then
   exit 1
 fi
 
-# ── 2b. One release at a time ───────────────────────────────────────
-# A second release of forge on this machine (this script or
-# release-web-runtime.sh, which takes the same lock) fails here, naming who
-# holds it, instead of racing the first to the same version. A dry run only
-# reports a release in progress. RELEASE_LOCK_DIR moves the lock (tests).
-# shellcheck source=scripts/lib/release-lock.sh
-. "$RELEASE_SCRIPT_DIR/lib/release-lock.sh"
-if [ "$DRY_RUN" = "1" ]; then
-  release_lock_status forge || echo "note: a real release would refuse now (above); the dry run continues." >&2
-else
-  release_lock forge "release-forge.sh $VERSION" || exit $?
-fi
-
 # ── 3. Clean tree ───────────────────────────────────────────────────
 # The WHOLE tree, not just pkg/: this script commits root-module files, so any
 # unrelated uncommitted change would be swept into the release commit. (The

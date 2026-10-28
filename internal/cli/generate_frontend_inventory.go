@@ -116,7 +116,21 @@ func stepDeriveFrontendInventory(ctx *pipelineContext) (err error) {
 // unrenderable environment, and duplicating that here would put a KCL
 // stack trace in front of every generate on a project mid-edit.
 func renderedFrontends(projectDir string) []renderedEnvFrontend {
-	var out []renderedEnvFrontend
+	return renderEnvironments(projectDir).frontends
+}
+
+// renderedEnvironments is what one pass over every renderable environment's
+// KCL yields for generate: the frontends each declares (above), and every
+// workload any of them declares, which the observability dashboards derive
+// their deployed processes from (the same source a release bundle uses for
+// its one environment; see renderedDashboardProcesses).
+type renderedEnvironments struct {
+	frontends []renderedEnvFrontend
+	workloads []WorkloadEntity
+}
+
+func renderEnvironments(projectDir string) renderedEnvironments {
+	var out renderedEnvironments
 	for _, env := range deployEnvNames(projectDir) {
 		entities, restored, err := renderKCLPure(context.Background(), projectDir, env)
 		if err != nil || entities == nil {
@@ -124,19 +138,25 @@ func renderedFrontends(projectDir string) []renderedEnvFrontend {
 		}
 		reportImpureRender(env, restored)
 		for _, fe := range entities.Frontends {
-			out = append(out, renderedEnvFrontend{Env: env, Frontend: fe})
+			out.frontends = append(out.frontends, renderedEnvFrontend{Env: env, Frontend: fe})
 		}
+		out.workloads = append(out.workloads, entities.Workloads...)
 	}
 	return out
 }
 
-// renderedFrontends is renderedFrontends(ctx.ProjectDir), read once per run.
-func (ctx *pipelineContext) renderedFrontends() []renderedEnvFrontend {
+// renderedEnvs is renderEnvironments(ctx.ProjectDir), read once per run.
+func (ctx *pipelineContext) renderedEnvs() renderedEnvironments {
 	if !ctx.renderedRead {
-		ctx.rendered = renderedFrontends(ctx.ProjectDir)
+		ctx.rendered = renderEnvironments(ctx.ProjectDir)
 		ctx.renderedRead = true
 	}
 	return ctx.rendered
+}
+
+// renderedFrontends is the frontends of renderedEnvs.
+func (ctx *pipelineContext) renderedFrontends() []renderedEnvFrontend {
+	return ctx.renderedEnvs().frontends
 }
 
 // renderedEnvFrontend is a frontend as one environment declares it.

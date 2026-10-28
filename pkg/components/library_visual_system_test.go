@@ -137,3 +137,25 @@ func TestSidebarLayoutBecomesADrawerOnPhones(t *testing.T) {
 		}
 	}
 }
+
+// TestDataTableStacksOnPhones pins `stacked`: below `md` a console list is a
+// list of cards — header kept for screen readers only, each non-title cell
+// labelled by its column header — instead of eight columns squeezed to 390px.
+func TestDataTableStacksOnPhones(t *testing.T) {
+	src, err := NewLibrary().Get("data_table")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"stacked?: boolean",
+		"stackTitle?: boolean",
+		`head: "max-md:sr-only"`,                   // the header stays readable to a screen reader
+		"max-md:before:content-[attr(data-label)]", // each line led by its column's name
+		"data-label={stacked && !isTitle ? col.header : undefined}",
+		"getRowLabel?: (row: T, index: number) => string | undefined",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("data_table.tsx no longer contains %q", want)
+		}
+	}
+}

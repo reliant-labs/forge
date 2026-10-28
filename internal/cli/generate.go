@@ -574,6 +574,18 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	checksums.BeginRollbackJournal(ctx.AbsPath)
 	rolledBack := false
 
+	// An interrupted run is a failed run, and gets the same rewind. Without
+	// this, Ctrl-C or a harness's SIGTERM ended the process wherever it was,
+	// and the tree stayed mid-regen: mocks in their pre-goimports form, an
+	// ORM file beside the hand code that does not match it. The signal is
+	// caught for the run's duration; the step in flight finishes (a child
+	// in the same process group got the signal too, and usually exits at
+	// once), then the run fails and rolls back. A second signal is not
+	// caught: it ends the process, for a user who will not wait.
+	interrupts := make(chan os.Signal, 1)
+	signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(interrupts)
+
 	// Save checksums on exit, even on partial failures: a step that
 	// successfully wrote files should have those tracked so the user's
 	// next `forge project audit` doesn't false-flag user-edited drift. EXCEPTION:
@@ -645,6 +657,12 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		stopBeat()
 		if timer != nil {
 			timer.record(step.Name, time.Since(stepStart))
+		}
+		select {
+		case sig := <-interrupts:
+			signal.Stop(interrupts)
+			err = &generateInterruptedError{signal: sig, stepErr: err}
+		default:
 		}
 		if err != nil {
 			// --explain-drift cleanup still runs on a mid-pipeline
@@ -736,6 +754,23 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	cache.record(os.Stdout, ctx, ran, summary)
 	return softFailureOutcome(os.Stdout, ctx.SoftFailures)
 }
+
+// generateInterruptedError fails a run that received SIGINT/SIGTERM. It
+// wraps the in-flight step's own error, when the signal made it fail too.
+type generateInterruptedError struct {
+	signal  os.Signal
+	stepErr error
+}
+
+func (e *generateInterruptedError) Error() string {
+	msg := fmt.Sprintf("interrupted (%v) — the run stopped after this step", e.signal)
+	if e.stepErr != nil {
+		msg += fmt.Sprintf("; the step itself reported: %v", e.stepErr)
+	}
+	return msg
+}
+
+func (e *generateInterruptedError) Unwrap() error { return e.stepErr }
 
 // softFailureOutcome ends a run that went on past failed steps: it names
 // them as the last thing the run prints, and fails the run with them. The
@@ -1111,6 +1146,11 @@ func rollbackGeneratedTreeVerified(absPath string, stepErr error, onlyReadOnlyRa
 // (non-validate step failures). preservedAt names the directory where
 // the cited sources now live ("" when nothing was preserved).
 func reprintCompilerOutput(stepErr error, preservedAt string) {
+	var he *hookFailureError
+	if errors.As(stepErr, &he) {
+		writeHookFailureTail(os.Stderr, he)
+		return
+	}
 	var ve *validateBuildError
 	if !errors.As(stepErr, &ve) || strings.TrimSpace(ve.Output) == "" {
 		return
@@ -1134,6 +1174,32 @@ func reprintCompilerOutput(stepErr error, preservedAt string) {
 			suffix = fmt.Sprintf("; full output in %s/%s", preservedAt, failedGenerateErrorFile)
 		}
 		fmt.Fprintf(os.Stderr, "   … (%d more line(s)%s)\n", len(lines)-len(shown), suffix)
+	}
+}
+
+// writeHookFailureTail repeats a failed generate hook's name, command and the
+// tail of its output, so the last thing on screen is what the hook said —
+// a compiler error, a panic — rather than `exit status 1` under a list of
+// reverted files.
+func writeHookFailureTail(w io.Writer, he *hookFailureError) {
+	fmt.Fprintf(w, "\n❌ generate hook %q failed: %v\n   command: %s\n", he.Hook, he.err, he.Command)
+	if len(he.Tail) == 0 {
+		fmt.Fprintln(w, "   (it printed nothing)")
+		return
+	}
+	if he.Omitted > 0 {
+		where := ""
+		if he.LogPath != "" {
+			where = "; full output in " + he.LogPath
+		}
+		fmt.Fprintf(w, "   … %d earlier line(s) not shown%s\n", he.Omitted, where)
+	}
+	fmt.Fprintf(w, "   last %d line(s) of its output:\n", len(he.Tail))
+	for _, line := range he.Tail {
+		fmt.Fprintf(w, "   | %s\n", line)
+	}
+	if he.LogPath != "" {
+		fmt.Fprintf(w, "   full output: %s\n", he.LogPath)
 	}
 }
 
@@ -1162,6 +1228,10 @@ func writeFailedGenerateErrorFile(absPath string, stepErr error) {
 		if !strings.HasSuffix(ve.Output, "\n") {
 			b.WriteString("\n")
 		}
+	}
+	var he *hookFailureError
+	if errors.As(stepErr, &he) {
+		writeHookFailureTail(&b, he)
 	}
 	dest := filepath.Join(absPath, failedGenerateDir, failedGenerateErrorFile)
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {

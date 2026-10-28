@@ -84,8 +84,6 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"cmd/commands.go (user extension point)",
 		"per-service test helpers",
 		"db/embed.go (embedded migrations)",
-		"generate hooks (forge.yaml)",
-		"go mod tidy (gen/)",
 		"regenerate infra files",
 		"cmd command groups (services/workers/operators)",
 		"discover components",
@@ -118,6 +116,12 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		// the drift the guard quarantined is settled here. See
 		// generate_drift_rescue.go.
 		"Tier-1 file-stomp guard: compare drift with fresh renders",
+		// After every step that writes forge's output, so a hook that
+		// compiles the tree compiles this run's final output; then both
+		// tidies, so what a hook emits is tidied before validation.
+		"generate hooks (forge.yaml)",
+		"go mod tidy (gen/)",
+		"go mod tidy (after generate hooks)",
 		"post-gen validation",
 		"detect renamed Tier-1 exports",
 		"check disowned-sibling dangling refs",

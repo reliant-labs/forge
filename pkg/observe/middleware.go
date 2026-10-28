@@ -4,11 +4,16 @@ import (
 	"log/slog"
 
 	"connectrpc.com/connect"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/reliant-labs/forge/pkg/svcerr"
 )
+
+// chainMeterScope is the instrumentation scope of the RPC metrics Chain
+// records when Deps.Meter is nil.
+const chainMeterScope = "github.com/reliant-labs/forge/pkg/observe"
 
 // DefaultMiddlewareDeps is the dependency bag for DefaultMiddlewares.
 // Every field is optional — a nil Logger, Tracer, or Meter cleanly
@@ -150,7 +155,12 @@ type Deps struct {
 	// Tracer feeds TracingInterceptor. nil disables tracing.
 	Tracer trace.Tracer
 
-	// Meter feeds MetricsInterceptor. nil disables metrics.
+	// Meter feeds MetricsInterceptor. nil is the global MeterProvider's
+	// meter (otel.Meter), the one observe.Setup installs, so every RPC is
+	// counted (rpc.server.calls / .errors / .duration) without wiring: the
+	// generated dashboards and the RPC alerts read those metrics, and a chain
+	// that silently counted nothing left all of them empty. A process that
+	// never installed a provider records into the no-op global.
 	Meter metric.Meter
 
 	// LogOptions tune how LoggingInterceptor logs successful RPCs
@@ -272,12 +282,16 @@ func Chain(deps Deps) []connect.Interceptor {
 	if deps.Trace != nil {
 		chain = append(chain, deps.Trace, profileLabelsInterceptor(), TraceResponseInterceptor())
 	}
+	meter := deps.Meter
+	if meter == nil {
+		meter = otel.Meter(chainMeterScope)
+	}
 	chain = append(chain,
 		RecoveryInterceptor(deps.Logger),
 		RequestIDInterceptor(),
 		LoggingInterceptor(deps.Logger, deps.LogOptions...),
 		TracingInterceptor(deps.Tracer),
-		MetricsInterceptor(deps.Meter),
+		MetricsInterceptor(meter),
 	)
 	if deadline := deadlineSlot(deps.Deadline, deps.Logger); deadline != nil {
 		chain = append(chain, deadline)

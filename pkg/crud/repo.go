@@ -662,7 +662,17 @@ func (r *Repo[M]) PkColumn(db orm.Context) string {
 
 // startSpan opens a child span named like the pre-generic per-entity ORM
 // ("orm.<Op><Entity>") so existing traces/dashboards keep their span names.
+//
+// Only under a parent, as observe/dbtrace does for the SQL beneath it: a call
+// made with no span in ctx (a background loop with no observe.RunRoot, a
+// write detached with context.Background()) would otherwise be a one-span
+// root trace that says which table was touched and nothing about why — in
+// Reliant's worker, a stream of parentless `orm.CreateStepExecution` traces.
+// The returned span is then ctx's own non-recording one, safe to End.
 func (r *Repo[M]) startSpan(ctx context.Context, op string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	if !trace.SpanContextFromContext(ctx).IsValid() {
+		return ctx, trace.SpanFromContext(ctx)
+	}
 	name := "orm." + op + r.m.entityName
 	all := append([]attribute.KeyValue{attribute.String("table", r.m.table)}, attrs...)
 	return repoTracer.Start(ctx, name, trace.WithAttributes(all...))

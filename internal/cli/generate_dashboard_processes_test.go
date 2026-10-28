@@ -94,3 +94,31 @@ func TestDashboardProcessesUseExecutableAndCompositionCommand(t *testing.T) {
 		t.Fatalf("worker=%+v", got[3])
 	}
 }
+
+// forge generate scopes the overview to every environment's deployed
+// identities: each environment's aliases (OTEL_SERVICE_NAME, or the workload
+// name) count, a build-only workload does not, and the result is the same
+// whatever order the environments rendered in.
+func TestDeployedIdentitiesSpanEveryEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	workload := func(name string, env ...deployv1.EnvVar) WorkloadEntity {
+		return WorkloadEntity{Name: name, Kind: "service", Build: BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/app"}}, Spec: deployv1.WorkloadSpec{Args: []string{"server"}, Env: env}}
+	}
+	dev := workload("app-dev")
+	prod := workload("app", deployv1.EnvVar{Name: "OTEL_SERVICE_NAME", Value: "app-api"})
+	image := workload("app-image")
+	image.Runtime.Type = RuntimeBuildOnly
+	got, err := deployedIdentities(dir, []WorkloadEntity{prod, image, dev, prod})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"app-api", "app-dev"}; !reflect.DeepEqual(got.ServiceNames, want) {
+		t.Errorf("ServiceNames = %v, want %v", got.ServiceNames, want)
+	}
+	if want := []string{"app", "app-dev"}; !reflect.DeepEqual(got.Workloads, want) {
+		t.Errorf("Workloads = %v, want %v", got.Workloads, want)
+	}
+	if got, err := deployedIdentities(dir, nil); err != nil || len(got.ServiceNames)+len(got.Workloads) != 0 {
+		t.Errorf("no workloads = %+v, %v; want no identities", got, err)
+	}
+}

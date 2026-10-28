@@ -99,6 +99,20 @@ type Input struct {
 	// Funnels are the declared product funnels. Each becomes one panel on the
 	// frontend dashboard, so they only matter when Frontends is non-empty.
 	Funnels []FrontendFunnel
+	// Deployed scopes the overview, together with Processes' own identities,
+	// when the per-process inventory is not being built: forge generate knows
+	// every environment's deployed service.names and workloads, but per-process
+	// parts are the selected environment's alone (built at bundle time, see
+	// ProcessPart). Without it a generate-time overview filtered on the
+	// no-deployed-process sentinel and drew nothing.
+	Deployed Identities
+}
+
+// Identities are the telemetry and workload names deployed processes run
+// under: what the overview's panels are scoped to.
+type Identities struct {
+	ServiceNames []string
+	Workloads    []string
 }
 
 // FrontendFunnel is one declared funnel (forge.Funnel in KCL).
@@ -285,7 +299,8 @@ func buildOverview(in Input) Dashboard {
 	}
 	d.Panels = append(d.Panels,
 		Panel{ID: "top-errors", Title: "Top server faults", Kind: KindTable, Signal: Traces, Where: scoped(rpcServer, errorSpans), Series: []Series{{Label: "sampled faults", Agg: AggCount}}, GroupBy: []string{FieldService, "span.name", "span.status_message"}, Limit: 20, Width: 24, Height: 7})
-	var services, workloads []string
+	services := append([]string(nil), in.Deployed.ServiceNames...)
+	workloads := append([]string(nil), in.Deployed.Workloads...)
 	for _, p := range in.Processes {
 		services = append(services, p.ServiceNames...)
 		workloads = append(workloads, p.Workloads...)

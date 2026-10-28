@@ -385,8 +385,8 @@ func importBundleRows(in []importBundle) ([]map[string]any, error) {
 			// A google.protobuf.Struct carries release.Shape's canonical
 			// JSON verbatim — snake_case keys — so it is decoded from the
 			// encoded bytes rather than built field by field. Encode also
-			// enforces the 256 KiB bound, which the server's CHECK is the
-			// second line of.
+			// enforces release.MaxShapeBytes, which the server's CHECK is
+			// the second line of.
 			"shape":     rawJSONObject(shape),
 			"createdAt": b.Bundle.CreatedAt.UTC().Format(time.RFC3339Nano),
 		}

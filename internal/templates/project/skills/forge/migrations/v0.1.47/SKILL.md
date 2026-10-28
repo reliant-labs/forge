@@ -341,3 +341,8 @@ Use when Go code calls `pgtest.StartEmbedded` and keeps the result as a
 Existing npm projects keep working. To adopt pnpm 12.15.0, load
 `migrations/v0.1.47/pnpm`: import the lockfile, move overrides/build approvals,
 fix undeclared dependencies, update owned CI/Docker, and use a mount-local store.
+
+## 15. The shape bound is 512 KiB
+
+Use when a column storing a shape has a size CHECK: load
+`migrations/v0.1.47/shape-bound`.

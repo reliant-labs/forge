@@ -757,7 +757,7 @@ func isStructurallyExemptKind(p *packages.Package) bool {
 		return true
 	}
 	if strings.Contains(path, "/internal/workers/") || strings.HasPrefix(path, "internal/workers/") {
-		return hasMethods(p, workerLifecycleMethods...)
+		return hasWorkerLifecycle(path, p.Syntax, p.Fset, p.TypesInfo)
 	}
 	return hasMethods(p, "SetupWithManager")
 }

@@ -59,6 +59,14 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		Features: g.Features,
 	}
 
+	// A service declares its project image, so forge assembles it from the
+	// binaries it builds (no Dockerfile, no Docker daemon to push). A project
+	// adopted with a Dockerfile of its own keeps building that: its image may
+	// carry files this block does not know to copy.
+	if g.isService() && !g.bringsOwnDockerfile() {
+		cfg.Image = scaffoldImage()
+	}
+
 	// Kind sync: cfg.Kind is set from the requested kind so NormalizeForWrite's
 	// section defaults (which read kind) drop the right values. It is not
 	// serialized — the reader derives kind from the tree this scaffold is
@@ -83,6 +91,8 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		"# frontends/, deploy/kcl, internal/operators, ...), not configured here; a\n" +
 		"# `features:` block pins one on or off only when the derived default is wrong.\n" +
 		"# Authentication is owned code — internal/app/auth.go's SetupAuth.\n" +
+		"# `image:` is the project image forge assembles from the binaries it builds\n" +
+		"# (`forge skill load deploy/project-image`).\n" +
 		"# Add a section (ci, lint, contracts, ...) only to override a default\n" +
 		"# (`forge skill load architecture` documents the schema;\n" +
 		"# `forge skill list` indexes the per-topic skills, e.g. `auth`).\n\n")
@@ -94,6 +104,31 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 	}
 
 	return nil
+}
+
+// scaffoldImageBase is the base a scaffolded project image runs on:
+// distroless/static's nonroot variant (CA certificates, tzdata, uid 65532, no
+// shell), pinned by the digest of its multi-arch index so amd64 and arm64
+// builds resolve their own manifest from one pin. forge's host builds are
+// static (CGO_ENABLED=0), which is all this base can run.
+const scaffoldImageBase = "gcr.io/distroless/static-debian12@sha256:d75cdd72874d4790092fcb1b058493ecf6bb5bf2b2b897045b00ff01d91843f2"
+
+// scaffoldImage is the image block a scaffolded forge.yaml declares. The
+// entrypoint is left to its default (/app/<project binary>) and CMD is the
+// default subcommand, so a workload's `args` select what the binary serves:
+// Kubernetes `args` replace CMD, never the entrypoint.
+func scaffoldImage() config.ImageConfig {
+	return config.ImageConfig{Base: scaffoldImageBase, Cmd: []string{"server"}}
+}
+
+// bringsOwnDockerfile reports whether an adopted project already has a root
+// Dockerfile, which the scaffold leaves in place.
+func (g *ProjectGenerator) bringsOwnDockerfile() bool {
+	if !g.Adopting {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(g.treeDir(), "Dockerfile"))
+	return err == nil
 }
 
 // recordedForgeVersion is the forge_version a scaffolded forge.yaml records:

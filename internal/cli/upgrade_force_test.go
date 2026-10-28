@@ -14,10 +14,13 @@ import (
 // --check run that report IS the product — so these tests assert on it via
 // captureStdout (dev_status_test.go).
 
+// forceTestConfig is a scaffolded service, which declares its image: that is
+// what puts the root Dockerfile under upgrade.
 func forceTestConfig() *config.ProjectConfig {
 	return &config.ProjectConfig{
 		Name:       "test-project",
 		ModulePath: "github.com/example/test-project",
+		Image:      config.ImageConfig{Base: "scratch", Cmd: []string{"server"}},
 	}
 }
 

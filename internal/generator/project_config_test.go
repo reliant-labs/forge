@@ -345,3 +345,50 @@ func TestWriteProjectConfig_PersistsDisabledFeaturesAsPins(t *testing.T) {
 		t.Errorf("the CLI kind's derived defaults must not be written as pins:\n%s", data)
 	}
 }
+
+// TestScaffoldDeclaresTheProjectImage pins the project image a service
+// scaffolds: forge.yaml's `image:` block, which forge assembles from the
+// binaries it builds. The base is pinned by digest (a tag would let two builds
+// of one commit differ), and CMD is only the default subcommand, because a
+// workload's Kubernetes `args` replace CMD and must select what the binary
+// (the default entrypoint, /app/<project>) serves.
+func TestScaffoldDeclaresTheProjectImage(t *testing.T) {
+	tmp := t.TempDir()
+	g := NewProjectGenerator("demo", tmp, "example.com/demo")
+	g.ServiceName = "api"
+	if err := g.writeProjectConfig(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ReadProjectConfig(filepath.Join(tmp, "forge.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	img := cfg.Image
+	if !strings.Contains(img.Base, "@sha256:") {
+		t.Errorf("image.base = %q, want a digest-pinned reference", img.Base)
+	}
+	if len(img.Entrypoint) != 0 || len(img.Cmd) != 1 || img.Cmd[0] != "server" {
+		t.Errorf("entrypoint %v cmd %v, want the default entrypoint and cmd [server]", img.Entrypoint, img.Cmd)
+	}
+}
+
+// An adopted project that brings its own Dockerfile keeps building it.
+func TestAdoptedDockerfileKeepsTheDockerPath(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := NewProjectGenerator("demo", tmp, "example.com/demo")
+	g.ServiceName = "api"
+	g.Adopting = true
+	if err := g.writeProjectConfig(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(tmp, "forge.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "\nimage:") {
+		t.Errorf("an adopted Dockerfile must not be shadowed by an image block:\n%s", data)
+	}
+}

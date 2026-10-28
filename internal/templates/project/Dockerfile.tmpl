@@ -1,5 +1,15 @@
 # syntax=docker/dockerfile:1
 
+# The dev and debug images docker-compose builds (`target: dev` /
+# `target: debug` in docker-compose.yml).
+#
+# The PROJECT image — the one every deployed service, worker and job runs — is
+# NOT built from this file. forge assembles it from forge.yaml's `image:` block:
+# the declared base, the binaries `forge build` cross-compiled on the host, and
+# the declared entrypoint/cmd/user (`forge skill load deploy/project-image`).
+# Delete that block to have forge `docker build` a production stage you add
+# here instead.
+
 # Build stage.
 #
 # We pin to `golang:{{.DockerBuilderGoVersion}}-alpine` as the base because Docker Hub's `golang:*-alpine`
@@ -51,10 +61,8 @@ COPY . .
 #
 # ONE image, EVERY binary. Each `cmd/<bin>/` entrypoint (the primary
 # server plus any `forge scaffold binary` siblings — proxy / ctl / worker-style
-# processes) builds into /app/bin/<bin>. The production stage's ENTRYPOINT
-# is the primary binary, and a workload's `args` (deploy/kcl/workloads.k)
-# pick its subcommand. Building them all into a single image keeps one
-# build + one push + one registry tag for the whole project.
+# processes) builds into /app/bin/<bin>, the same binaries the project image
+# carries at /app/<bin>.
 {{- range .Binaries }}
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
@@ -62,8 +70,8 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 {{- end }}
 
 # ── Debug builder (only used by the `debug` stage) ──
-# Split out so the default production build doesn't pay the debug-build
-# + delve-install cost. Running these unconditionally in the shared
+# Split out so the builder doesn't pay the debug-build + delve-install
+# cost. Running these unconditionally in the shared
 # builder also broke production builds on arm64 hosts, where the dlv
 # install hit "illegal instruction" under the auto-fetched toolchain —
 # even when nothing needed the debug image. (Adopted from the cp-forge
@@ -114,37 +122,9 @@ EXPOSE 8080 2345
 # --accept-multiclient stays connected after continue. To debug from
 # boot (pause until attach), drop --continue locally.
 #
-# The same ENTRYPOINT/CMD split as production: a workload's `args` replace
-# CMD and reach the program after `--`, so one debug image debugs any
+# The same ENTRYPOINT/CMD split as the project image: a workload's `args`
+# replace CMD and reach the program after `--`, so one debug image debugs any
 # subcommand.
 ENTRYPOINT ["dlv", "exec", "--headless", "--listen=:2345", "--api-version=2", "--accept-multiclient", "--continue", "/app/{{.Name}}", "--"]
 CMD ["server"]
 
-# ── Production stage (default) ──
-FROM alpine:3.21 AS production
-
-RUN apk --no-cache add ca-certificates
-
-WORKDIR /app
-
-# Copy EVERY built binary into the image. A secondary binary runs by
-# naming it as the workload's `command` (["/app/<bin>"]).
-{{- range .Binaries }}
-COPY --from=builder /app/bin/{{.Dir}} ./{{.Dir}}
-{{- end }}
-
-USER 65532:65532
-
-EXPOSE 8080
-
-HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -qO- http://localhost:8080/healthz || exit 1
-
-# ENTRYPOINT is the binary; CMD is its DEFAULT subcommand. A workload's
-# `args` in deploy/kcl/workloads.k replace CMD — `["item"]` runs one
-# service, `["db", "migrate", "up"]` the migration job — so the same args
-# select the subcommand here that `go run ./cmd/{{.Name}} <args>` runs on the
-# host. `docker run <image>` with no args runs `server`: every service,
-# worker and operator in one process.
-ENTRYPOINT ["/app/{{.Name}}"]
-CMD ["server"]

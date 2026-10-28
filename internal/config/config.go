@@ -166,12 +166,18 @@ type ProjectConfig struct {
 	// NOTE: there is intentionally NO `build:` field. Build is declared
 	// per-service, per-env in KCL (the polymorphic Build union —
 	// GoBuild | DockerBuild | ShellBuild on each forge.Service); forge.yaml
-	// carries zero build config. A `build:` key in forge.yaml is REJECTED
+	// carries no per-workload build config (`image:` below is the project
+	// image, which is env-invariant). A `build:` key in forge.yaml is REJECTED
 	// as an unknown key by the strict loader (walkUnknownKeys) rather than
 	// silently ignored — version stamping moves to a KCL GoBuild.ldflags
 	// `-X` entry.
-	Deploy    DeployConfig    `yaml:"deploy,omitempty"`
-	Docker    DockerConfig    `yaml:"docker,omitempty"`
+	Deploy DeployConfig `yaml:"deploy,omitempty"`
+	Docker DockerConfig `yaml:"docker,omitempty"`
+	// Image declares the project image forge assembles itself, without a
+	// Dockerfile or a Docker daemon. It is the one piece of build config in
+	// forge.yaml because it cannot vary per env: one image is promoted by
+	// digest across every env. See [ImageConfig].
+	Image     ImageConfig     `yaml:"image,omitempty"`
 	K8s       K8sConfig       `yaml:"k8s,omitempty"`
 	Lint      LintConfig      `yaml:"lint,omitempty"`
 	Contracts ContractsConfig `yaml:"contracts,omitempty"`

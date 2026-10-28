@@ -32,9 +32,25 @@ func writeManagedRender(t *testing.T, dir, rel string, content []byte, stamp boo
 }
 
 func testProjectConfig() *config.ProjectConfig {
+	// A scaffolded service: it declares its image, which is what puts the
+	// root Dockerfile under upgrade (enabledForDeclaredImage).
 	return &config.ProjectConfig{
 		Name:       "test-project",
 		ModulePath: "github.com/example/test-project",
+		Image:      scaffoldImage(),
+	}
+}
+
+// A project that builds its image from the root Dockerfile keeps that file:
+// the template has no production stage, so upgrading it would make docker
+// build the debug stage as the project image.
+func TestUpgradeLeavesADockerfileBuiltImageAlone(t *testing.T) {
+	cfg := testProjectConfig()
+	cfg.Image = config.ImageConfig{}
+	for _, f := range filterManagedFiles(managedFilesForCfg(cfg), cfg) {
+		if f.destPath == "Dockerfile" {
+			t.Fatal("the root Dockerfile is managed for a project without an image block")
+		}
 	}
 }
 

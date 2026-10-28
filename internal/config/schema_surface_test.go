@@ -34,10 +34,12 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			typ:  reflect.TypeFor[ProjectConfig](),
 			// features: read by FeaturesConfig.resolve through every
 			// XxxEnabled accessor, and by followPinnedRequirements.
+			// image: read by the project-image build
+			// (internal/cli/build_image_model.go).
 			want: []string{
 				"api", "binary", "ci", "config", "contracts", "database",
 				"deploy", "dev_stack", "docker", "features",
-				"forge_version", "generate", "harness", "k8s",
+				"forge_version", "generate", "harness", "image", "k8s",
 				"lint", "module_path", "name", "observability", "upgrade",
 			},
 		},

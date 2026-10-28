@@ -180,6 +180,15 @@ func cfgIsService(cfg *config.ProjectConfig) bool {
 // enabledForService gates a file on the project being service-kind.
 func enabledForService(cfg *config.ProjectConfig) bool { return cfgIsService(cfg) }
 
+// enabledForDeclaredImage gates the root Dockerfile on the project declaring
+// its image in forge.yaml. The template carries only compose's dev and debug
+// stages, because forge assembles a declared project image itself; a project
+// without the block still builds its image from this file's production stage,
+// so upgrade must never replace that file with one that has none.
+func enabledForDeclaredImage(cfg *config.ProjectConfig) bool {
+	return cfgIsService(cfg) && cfg != nil && cfg.Image.Declared()
+}
+
 // enabledForObservability gates a file on the project being service-kind
 // AND having observability enabled (e.g. deploy/observability/otel-collector.yaml).
 func enabledForObservability(cfg *config.ProjectConfig) bool {
@@ -375,7 +384,7 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 
 		// Templated config files
 		{templateName: taskfileTmpl, destPath: "Taskfile.yml", templated: true, tier: Tier2},
-		{templateName: "Dockerfile.tmpl", destPath: "Dockerfile", templated: true, tier: Tier2, enabledFor: enabledForService},
+		{templateName: "Dockerfile.tmpl", destPath: "Dockerfile", templated: true, tier: Tier2, enabledFor: enabledForDeclaredImage},
 		{templateName: "docker-compose.yml.tmpl", destPath: "docker-compose.yml", templated: true, tier: Tier2, enabledFor: enabledForService},
 		{templateName: "idp-steps.yaml.tmpl", destPath: "idp-steps.yaml", templated: true, tier: Tier2, enabledFor: enabledForService},
 

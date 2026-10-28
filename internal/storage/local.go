@@ -63,22 +63,12 @@ type Runner struct {
 	removeFn func(string) error
 	sleepFn  func(context.Context, time.Duration) error
 
-	// ToolCacheRoot overrides forge's shared tool cache the tool-cache layer
-	// reclaims from (toolcache.go). Empty means the real one in production,
-	// and is REFUSED under `go test`.
-	ToolCacheRoot string
-
 	// Go-cache layer roots (gocache.go). Empty means the real machine
 	// location in production and is REFUSED under `go test`.
 	GoCacheRoot       string // shared GOCACHE
-	GoModCacheRoot    string // shared GOMODCACHE
 	GolangciCacheRoot string
-	GoimportsRoot     string
-	// ProcessEnv returns the text of every live process's environment; an error
-	// makes the orphan layer skip. OpenPaths is the lsof snapshot. Both are
-	// REFUSED under test when unset.
-	ProcessEnv func(context.Context) (string, error)
-	OpenPaths  func(context.Context) (openfiles.Snapshot, error)
+	// OpenPaths is the lsof snapshot. REFUSED under test when unset.
+	OpenPaths func(context.Context) (openfiles.Snapshot, error)
 	// OnGoCacheTrim, when set, receives what each Go-format cache trim
 	// measured and did (gocache.go). The CLI collects them into the pass's
 	// record. It may be called from the layer's goroutine; it is never called
@@ -88,11 +78,6 @@ type Runner struct {
 	// lived (gocache_livebuild.go). Nil reads the process table in
 	// production and means "no builds" under test.
 	LiveToolchainAges func(context.Context) ([]time.Duration, error)
-	// LiveExecutables lists the running processes whose executable is under
-	// the given cache root (gocache_liveexe.go). Nil reads /proc in
-	// production and means "none" under test; an error keeps every
-	// executable entry.
-	LiveExecutables func(ctx context.Context, root string) ([]LiveExecutable, error)
 
 	// Per-pass state, set by beginPass (passctx.go).
 	passTotal  time.Duration
@@ -364,8 +349,7 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 }
 
 // hostLayers runs the layers that reclaim from the host filesystem — rotated
-// logs, the Go caches, the temp sweep, the source cache, the tool cache,
-// worktrees — each
+// logs, the Go caches, the temp sweep, the source cache, worktrees — each
 // independently, returning one error per failed layer. They share the pass's
 // delete budget in this order, the Go caches taking at most their share.
 func (r Runner) hostLayers(apply bool) []error {
@@ -379,7 +363,6 @@ func (r Runner) hostLayers(apply bool) []error {
 	add(r.goCacheLayer(apply))
 	add(r.runLayer("temp sweep", shareTemp, func(s Runner) error { return s.TempSweep(apply) }))
 	add(r.runLayer("source cache", shareSources, func(s Runner) error { return s.Sources(apply) }))
-	add(r.runLayer("tool cache", shareTools, func(s Runner) error { return s.Tools(apply) }))
 	add(r.runLayer("worktrees", shareLast, func(s Runner) error { return s.worktreeLayer(apply) }))
 	return failures
 }

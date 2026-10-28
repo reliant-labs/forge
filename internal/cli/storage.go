@@ -20,7 +20,6 @@ import (
 	"github.com/reliant-labs/forge/internal/gitsource"
 	"github.com/reliant-labs/forge/internal/k3dkmsg"
 	"github.com/reliant-labs/forge/internal/storage"
-	"github.com/reliant-labs/forge/internal/toolcache"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -47,14 +46,12 @@ func maintenanceRunner(p storage.Policy, policyPath string, out io.Writer) stora
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	var gocache, gomodcache, golangci, goimports, tools string
-	if !testing.Testing() { // a test must never be handed the real Go caches or tool cache
-		gocache, gomodcache, golangci, goimports = storage.ProductionGoCacheRoots(ctx, storage.Exec)
-		tools, _ = toolcache.Root() // unlocatable: the layer skips
+	var gocache, golangci string
+	if !testing.Testing() { // a test must never be handed the real Go caches
+		gocache, golangci = storage.ProductionGoCacheRoots(ctx, storage.Exec)
 	}
 	return storage.Runner{Policy: p, Out: out, TempRoot: os.TempDir(), SourceCacheRoot: sourceRoot, PolicyPath: policyPath,
-		GoCacheRoot: gocache, GoModCacheRoot: gomodcache, GolangciCacheRoot: golangci, GoimportsRoot: goimports,
-		ToolCacheRoot: tools}
+		GoCacheRoot: gocache, GolangciCacheRoot: golangci}
 }
 
 // fullGCFn is the full maintenance pass `storage gc` runs, seamed so the

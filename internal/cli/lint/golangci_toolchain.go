@@ -535,10 +535,9 @@ func exportDataSkewError(failed string, failedBuild golangciBuild, toolchain, mo
 
 // installAtomically resolves forge's golangci-lint build at gobin through the
 // shared tool cache (internal/toolcache): a usable build is used as is, and a
-// missing or unusable one is built ONCE however many `forge lint` runs (parallel
-// CI jobs, agents in other worktrees) want it at the same moment — the others
-// wait for it. The build lands by renaming a complete staging directory, so
-// nobody execs a half-written binary. announce runs only when this run builds.
+// missing or unusable one is built into a staging directory that lands by one
+// rename, so concurrent `forge lint` runs (parallel CI jobs, agents in other
+// worktrees) never exec a half-written binary. announce runs only when this run builds.
 func installAtomically(ctx context.Context, tc golangciToolchain, root, gobin, toolchain string, usable func() bool, announce func()) error {
 	_, err := toolcache.Ensure(ctx, root, filepath.Base(gobin), func(string) bool { return usable() }, func(ctx context.Context, stage string) error {
 		announce()

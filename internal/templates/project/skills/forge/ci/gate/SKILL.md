@@ -47,10 +47,9 @@ Four rules every run obeys:
    versions the workflow installs (`templates.GolangciLintVersion`,
    `BufVersion`, `GovulncheckVersion`, `GoLicensesVersion`), built into forge's
    tool cache (`$FORGE_TOOLS_CACHE` or the user cache dir) and put first on that
-   command's PATH. That cache is shared by every worktree on the machine: one
-   build per tool version, which concurrent gates wait for rather than repeat,
-   and `forge storage gc` evicts versions nothing has used for
-   `tool_cache_unused`. A copy on PATH at another version is not used, and
+   command's PATH. That cache is shared by every worktree on the machine, one
+   entry per tool version, each published by one rename so a concurrent gate
+   never runs a half-written binary. A copy on PATH at another version is not used, and
    neither is a golangci-lint built with a Go older than your `go.mod`. Your
    PATH and GOBIN are never touched. `forge tools pins [tool]` prints these
    versions (`--json` for all), so a hand-written workflow reads them from the

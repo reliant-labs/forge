@@ -285,6 +285,22 @@ func useFakeCredentialHelper(t *testing.T, token string) {
 }
 
 func pluginInvocation(args []string) ([]string, bool) {
+	// Real isolated KCL children reuse this test executable, just as buf's
+	// plugin does. Match only explicit kcl eval (optionally after -C).
+	evalArgs := args
+	if len(evalArgs) > 0 && evalArgs[0] == "forge" {
+		evalArgs = evalArgs[1:]
+	}
+	probe := evalArgs
+	if len(probe) > 0 && probe[0] == "--allow-version-skew" {
+		probe = probe[1:]
+	}
+	if len(probe) >= 2 && probe[0] == "-C" {
+		probe = probe[2:]
+	}
+	if len(probe) >= 2 && probe[0] == "kcl" && probe[1] == "eval" {
+		return evalArgs, true
+	}
 	// protoc-gen-forge is buf's plugin; merge-generated is git's merge
 	// driver (merge_generated_git_test.go configures the test binary as
 	// one, so a real `git merge` runs the production driver).

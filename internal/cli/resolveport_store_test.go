@@ -211,9 +211,10 @@ func TestLaunchPathStillWritesPortStore(t *testing.T) {
 	const role, preferred = "proj-dev-api", 8085
 	writeResolvePortEnv(t, projectDir, "dev", role, preferred)
 
-	// What activateDevStack does on `forge env up`.
-	path := filepath.Join(projectDir, ".forge", "ports-dev.json")
-	kclplugin.UsePortStore(path)
+	// Use the real launch contract; isolated children cannot inherit an
+	// in-process resolver swapped directly by a test.
+	activateDevStack(t.Context(), projectDir, "dev", renderToLaunch, claimNewBlocks)
+	path := filepath.Join(projectDir, ".forge", "host-ports.json")
 
 	got := renderPortThroughCLI(t, projectDir, "dev")
 
@@ -226,8 +227,9 @@ func TestLaunchPathStillWritesPortStore(t *testing.T) {
 	if err := json.Unmarshal(data, &stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored[role] != got {
-		t.Errorf("store has %s=%d but the render resolved %d", role, stored[role], got)
+	key := filepath.Clean(projectDir) + ":dev:" + role
+	if stored[key] != got {
+		t.Errorf("store has %s=%d but the render resolved %d", key, stored[key], got)
 	}
 }
 

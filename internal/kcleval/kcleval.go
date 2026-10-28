@@ -82,6 +82,9 @@ type Request struct {
 	// Options are `key=value` top-level option bindings, as `-D` passes
 	// them to kcl.
 	Options []string
+	// ProcessRooted is for an isolated CLI child already started with its cwd
+	// at ProjectDir. It avoids even a temporary process-global chdir.
+	ProcessRooted bool
 }
 
 // Result is what an evaluation produced.
@@ -127,7 +130,22 @@ func Eval(req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	raw, err := kclrender.RunInWorkDir(req.ProjectDir, abs, req.Options)
+	run := kclrender.RunInWorkDir
+	if req.ProcessRooted {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return Result{}, err
+		}
+		root, err := filepath.Abs(req.ProjectDir)
+		if err != nil {
+			return Result{}, err
+		}
+		if filepath.Clean(cwd) != filepath.Clean(root) {
+			return Result{}, fmt.Errorf("isolated KCL evaluation cwd %s is not project root %s", cwd, root)
+		}
+		run = kclrender.Run
+	}
+	raw, err := run(req.ProjectDir, abs, req.Options)
 	if err != nil {
 		return Result{}, err
 	}
@@ -167,8 +185,7 @@ func resolveFile(projectDir, file string) (string, error) {
 		return "", fmt.Errorf("read %s: %w", file, err)
 	}
 	if info.IsDir() {
-		return "", fmt.Errorf("%s is a directory; name a .k file "+
-			"(to evaluate an environment package, use `env render <env>`)", file)
+		return abs, nil
 	}
 	if filepath.Ext(abs) != ".k" {
 		return "", fmt.Errorf("%s is not a .k file", file)

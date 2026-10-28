@@ -59,6 +59,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -88,25 +89,31 @@ subcommands are how anything outside forge reads a value out of project KCL.`,
 
 func newKCLEvalCmd() *cobra.Command {
 	var (
-		selectors []string
-		format    string
-		options   []string
+		selectors                []string
+		format                   string
+		options                  []string
+		renderEnv, renderContext string
+		materialize              bool
+		processRooted            bool
+		renderActive             bool
 	)
 
 	cmd := &cobra.Command{
-		Use:   "eval <file> [-S <path>]...",
-		Short: "Evaluate one KCL file of this project and print a selected field",
+		Use:   "eval <file-or-directory> [-S <path>]...",
+		Short: "Evaluate a KCL file or package directory and print a selected field",
 		Args:  cobra.ExactArgs(1),
-		Long: `Evaluate a single .k file in this project and print a field out of it.
+		Long: `Evaluate a .k file or every .k file in a package directory and print a field.
+
+Evaluation runs in an isolated child rooted at the requested project. The
+caller's working directory is never changed, including when forge is embedded.
 
 This is THE way a script or a test reads a value from project KCL. A plain
 ` + "`kcl run`" + ` cannot do it: since the forge KCL module is supplied by the forge
 binary, ` + "`import forge`" + ` resolves only inside a forge evaluation. Nothing needs
 ` + "`kcl`" + ` on PATH, and nothing needs to know where forge keeps its module.
 
-The file is evaluated with its OWN kcl.mod package root as the working
-directory, so a relative import (` + "`import lib.foo`" + `) resolves exactly as it does
-for a shell script that cd'd there first. It does not matter which directory
+Relative imports (` + "`import lib.foo`" + `) resolve from the source's own kcl.mod
+package root; relative file.read paths resolve from the project root. It does not matter which directory
 you run this from: the answer is the same from the project root and from a
 subdirectory.
 
@@ -145,7 +152,7 @@ Examples:
   ` + Name() + ` kcl eval deploy/kcl/lib/platform_local.k -S cloudnative_pg.name -S cloudnative_pg.namespace
   ` + Name() + ` kcl eval deploy/kcl/lib/kata_pool.k                       # the whole document`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runKCLEval(cmd, args[0], selectors, format, options)
+			return runKCLEvalContext(cmd, args[0], selectors, format, options, renderEnv, renderContext, materialize, processRooted, renderActive)
 		},
 	}
 
@@ -156,6 +163,16 @@ Examples:
 	cmd.Flags().StringArrayVarP(&options, "option", "D", nil,
 		"Bind a top-level KCL option, key=value (repeatable)")
 
+	// Internal transport for env renders. Never read these capabilities from
+	// a project option or an environment variable.
+	cmd.Flags().StringVar(&renderEnv, "render-env", "", "Environment of an isolated env evaluation")
+	cmd.Flags().StringVar(&renderContext, "render-context", "", "Plugin capabilities: read | inspect | claim")
+	cmd.Flags().BoolVar(&materialize, "materialize", false, "Allow launch-time forge.write_file materialization")
+	cmd.Flags().BoolVar(&processRooted, "process-rooted", false, "Internal child already started in the project root")
+	cmd.Flags().BoolVar(&renderActive, "render-active", false, "Carry operation-armed dev-stack git facts")
+	for _, flag := range []string{"render-env", "render-context", "materialize", "process-rooted", "render-active"} {
+		_ = cmd.Flags().MarkHidden(flag)
+	}
 	return cmd
 }
 
@@ -167,18 +184,52 @@ Examples:
 // becomes part of V. `env render` learned this the hard way when a `Note:` on
 // stdout became the first YAML document of a stream piped to kubectl.
 func runKCLEval(cmd *cobra.Command, file string, selectors []string, format string, options []string) error {
+	return runKCLEvalContext(cmd, file, selectors, format, options, "", "", false, false, false)
+}
+
+func runKCLEvalContext(cmd *cobra.Command, file string, selectors []string, format string, options []string, renderEnv, renderContext string, materialize, processRooted, renderActive bool) error {
 	projectDir, err := evalProjectRoot()
+	if renderEnv != "" {
+		// Raw environment render callers may intentionally evaluate a bare
+		// KCL package (including tests); the explicit child root still wins.
+		projectDir, err = cmdutil.ResolutionRoot()
+	}
 	if err != nil {
 		return err
 	}
+	if !processRooted {
+		if renderEnv != "" || renderContext != "" || materialize || renderActive {
+			return fmt.Errorf("render context requires an isolated --process-rooted child")
+		}
+		source := file
+		if !filepath.IsAbs(source) {
+			source = filepath.Join(projectDir, source)
+		}
+		out, err := evalKCLCommand(cmd.Context(), projectDir, source, "", options, selectors, format)
+		if err != nil {
+			return err
+		}
+		_, err = cmd.OutOrStdout().Write(out)
+		return err
+	}
 
-	armReadOnlyKCLContext(projectDir)
+	if renderEnv != "" {
+		if err := armChildKCLContext(projectDir, renderEnv, renderContext, materialize, renderActive); err != nil {
+			return err
+		}
+	} else {
+		if renderContext != "" || materialize || renderActive {
+			return fmt.Errorf("render context requires --render-env")
+		}
+		armReadOnlyKCLContext(projectDir)
+	}
 
 	res, err := kcleval.Eval(kcleval.Request{
-		ProjectDir: projectDir,
-		File:       file,
-		Selectors:  selectors,
-		Options:    options,
+		ProjectDir:    projectDir,
+		File:          file,
+		Selectors:     selectors,
+		Options:       options,
+		ProcessRooted: processRooted,
 	})
 	if err != nil {
 		// A selector miss is the user's typo, not a forge failure, and

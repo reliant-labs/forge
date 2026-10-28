@@ -13,6 +13,7 @@ package kcleval_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -296,13 +297,15 @@ func TestEvalRefusesAFileOutsideTheProject(t *testing.T) {
 	}
 }
 
-// TestEvalDirectoryPointsAtEnvRender: naming a directory is the mistake of
-// someone who wanted an environment, so the refusal names that command.
-func TestEvalDirectoryPointsAtEnvRender(t *testing.T) {
-	dir := project(t, map[string]string{"deploy/kcl/kcl.mod": kclMod})
-	_, err := kcleval.Eval(kcleval.Request{ProjectDir: dir, File: "deploy/kcl"})
-	if err == nil || !strings.Contains(err.Error(), "env render") {
-		t.Fatalf("Eval of a directory = %v; want a refusal pointing at `env render`", err)
+func TestEvalDirectoryIncludesEveryKCLFile(t *testing.T) {
+	dir := project(t, map[string]string{
+		"deploy/kcl/kcl.mod": kclMod,
+		"deploy/kcl/a.k":     "first = 1\n",
+		"deploy/kcl/b.k":     "second = first + 1\n",
+	})
+	res, err := kcleval.Eval(kcleval.Request{ProjectDir: dir, File: "deploy/kcl", Selectors: []string{"second"}})
+	if err != nil || fmt.Sprint(res.Value) != "2" {
+		t.Fatalf("directory evaluation = %+v, %v", res, err)
 	}
 }
 

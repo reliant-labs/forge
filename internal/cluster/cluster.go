@@ -1376,7 +1376,13 @@ func RenderManifestsWithOverrides(ctx context.Context, mainK, imageTag, namespac
 			workDir = wd
 		}
 	}
-	out, err := kclrender.Run(workDir, mainK, dArgs)
+	var out []byte
+	var err error
+	if run, ok := ctx.Value(kclRunnerKey{}).(KCLRunner); ok {
+		out, err = run(ctx, workDir, mainK, env, dArgs)
+	} else {
+		out, err = kclrender.Run(workDir, mainK, dArgs)
+	}
 	if err != nil {
 		return "", nil, err
 	}

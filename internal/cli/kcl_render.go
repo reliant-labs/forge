@@ -1690,9 +1690,9 @@ func renderKCLRaw(ctx context.Context, projectDir, env string, extra ...string) 
 		return nil, fmt.Errorf("kcl dir %s: %w", kclDir, err)
 	}
 	// Render the JSON contract through the shared embedded kpm + kcl-go
-	// seam (no external `kcl` binary). `-D env=<env>` drives the per-env
-	// conditionals in the deploy module. workDir = projectDir so the
-	// deploy-as-data main.k's `file.read("deploy/kcl/...")` resolves.
+	// seam in an isolated `kcl eval` child (no external `kcl` binary).
+	// `-D env=<env>` drives per-env conditionals; cmd.Dir = projectDir makes
+	// `file.read("deploy/...")` resolve without changing the parent's cwd.
 	// option("worktree")/option("branch") are bound inside kclrender.Run for
 	// EVERY render (withDevStackDArgs), not here — a project keys its
 	// namespace on them, so a render that omits them looks in a different
@@ -1722,7 +1722,7 @@ func renderKCLRaw(ctx context.Context, projectDir, env string, extra ...string) 
 	}
 	dArgs = append(dArgs, kclrender.ReleaseDArgs(ctx)...)
 	dArgs = append(dArgs, extra...)
-	return kclrender.Run(projectDir, kclDir, dArgs)
+	return evalKCLSubprocess(ctx, projectDir, kclDir, env, dArgs)
 }
 
 // parseKCLEntities turns a render's JSON into the typed entity set.

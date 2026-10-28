@@ -183,11 +183,11 @@ job before adding a job.
   content).
 - **Checks** — `forge ci verify-generated`, `forge ci validate-kcl`, the pre-commit hooks
   (go-vet-mod skipped), and the Go and npm dependency-license allowlists.
-- **The same tier, locally: `task ci`.** What the merge steward gates a forge pull request
-  with, in about five minutes (`scripts/ci-premerge.sh`): the whole `-short` tier, the flake
-  gate and the checks above, concurrently, one table, non-zero on any FAIL or unwaived SKIP.
-  `PR=<n> task ci` also reads the pull request's labels for the pkg/ API gate. It is the
-  steward's command, not a contributor's: verify your change with
+- **The same tier, locally: `task ci`.** The pull-request tier in about five minutes
+  (`scripts/ci-premerge.sh`): the whole `-short` tier, the flake gate and the checks
+  above, concurrently, one table, non-zero on any FAIL or unwaived SKIP. `PR=<n> task ci`
+  also reads the pull request's labels for the pkg/ API gate. It is not a pre-merge
+  ritual for contributors (GitHub's merge queue gates every PR): verify your change with
   `task test:short -- <your packages>`. `internal/ciguard` holds it to `ci.yml`.
 - `CI gate` is the main ruleset's required check, and `main` merges through a merge queue:
   each queued pull request runs this tier again (`merge_group`) over main plus the entries
@@ -195,27 +195,16 @@ job before adding a job.
   (a skipped workflow never reports the required check), and a job picks its tier with one
   of the two `if:` spellings in its header; `internal/ciguard` holds both.
 - **Merging: push, label `merge:queue`, stop.** Authors open the PR, add
-  **`merge:queue`** (**`merge:priority`** to go first), and report the PR URL as done.
-  This label means only **author ready**, not approved or queued. The designated merge
-  steward must require **`review:passed` AND SUCCESS `merge-review` on the exact current
-  head SHA**, backed by an authenticated independent review bound to that same SHA,
-  before enabling auto-merge. **`review:changes` blocks acceptance**; fix the blockers,
-  push, and obtain a fresh exact-head pass. A stale-head pass, queue label, or request to
-  drain the backlog is not approval. The currently unsafe steward is held; this
-  paragraph describes the required policy, not a claim that its implementation is live
-  or that this documentation fixes it. Steward details live in control-plane
-  `tools/merge-steward/README.md`.
-  Only the designated steward may submit reviewed PRs with
-  `gh pr merge --squash --auto`. Native queue `CI gate` SUCCESS is an additional,
-  separate requirement; never bypass it. Auto-merge enabled is not queue acceptance,
-  and queue acceptance is not a landed merge. Mark a rejected or conflicting PR
-  **`merge:failed`** with evidence; compare exact failure names with main before blaming
-  the PR. Do not rerun Actions to see green, waive a red check, or bypass the ruleset.
-  **Temporary owner-approved backlog recovery (2026-10-27 01:30 UTC):** only the
-  designated coordinator for each repo may submit independently reviewed exact-head
-  PRs through existing native gates without the unavailable `merge-review` status.
-  This narrow exception does not authorize other agents, unreviewed or known-broken
-  merges, status waivers, or releases; all normal requirements resume outside it.
+  **`merge:queue`** ("done: review and merge it"), and report the PR URL as done. The
+  Reliant workflow `pr-review` (control-plane `.reliant/workflows/`, design in
+  control-plane `docs/pr-pipeline.md`) reviews the exact head and posts a COMMENT review
+  plus **`review:passed`** or **`review:changes`**. On changes it removes `merge:queue`:
+  the author chat fixes, pushes and re-adds it. On a pass it enters GitHub's native
+  merge queue at that exact head (`gh pr merge --auto --match-head-commit`), where
+  `CI gate` must pass on the merge group; a refused enqueue is labelled
+  **`merge:failed`**. A push while `merge:queue` is set is reviewed again. Never
+  `gh pr merge` yourself, never `--admin`, never rerun Actions to see green.
+  **`release:asap`** releases forge when the PR merges; otherwise every 10th merge does.
 
 **Push to main** (and `workflow_dispatch` on any branch) adds:
 

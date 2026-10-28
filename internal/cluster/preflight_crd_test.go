@@ -307,3 +307,44 @@ func TestLooksLikeBareVersion(t *testing.T) {
 		}
 	}
 }
+
+// A kind whose CRD the same bundle renders is not missing: the apply sends the
+// stream's CRDs in an early batch, before the objects that use them. This was
+// control-plane's DaemonRollout: the release that introduced the CRD and its
+// first object was blocked on "CRD not served" by itself (`--skip-preflight`).
+func TestRunPreflightChecks_KindDefinedByABundleCRDIsNotMissing(t *testing.T) {
+	const crdAndInstance = `apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: daemonrollouts.reliant.dev
+spec:
+  group: reliant.dev
+  names:
+    kind: DaemonRollout
+    plural: daemonrollouts
+  scope: Namespaced
+---
+apiVersion: reliant.dev/v1alpha1
+kind: DaemonRollout
+metadata:
+  name: daemon-rollout
+---
+apiVersion: other.dev/v1
+kind: Widget
+metadata:
+  name: still-missing
+`
+	opts := PreflightOpts{
+		Manifests:   crdAndInstance,
+		Context:     "gke_prod",
+		Namespace:   "app-prod",
+		ServedKinds: fakeServedKinds{served: servedSet("apiextensions.k8s.io", "CustomResourceDefinition")},
+	}
+	res, err := runPreflightChecks(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.MissingCRDs) != 1 || !strings.Contains(res.MissingCRDs[0], "Widget") {
+		t.Fatalf("MissingCRDs = %v, want only Widget (DaemonRollout's CRD ships in the bundle)", res.MissingCRDs)
+	}
+}

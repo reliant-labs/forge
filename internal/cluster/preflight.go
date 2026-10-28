@@ -1664,7 +1664,7 @@ func checkServedKinds(ctx context.Context, opts PreflightOpts, wg *sync.WaitGrou
 			sink.recordErr(fmt.Errorf("preflight: discover served resource kinds on %q: %w", opts.Context, derr))
 			return
 		}
-		missing := missingCRDs(gvks, served)
+		missing := missingCRDs(gvks, withBundleCRDs(served, opts.Manifests))
 		if len(missing) == 0 {
 			return
 		}
@@ -1974,6 +1974,48 @@ func checkByteMatchGroups(
 // The first manifest name seen for a missing kind is named in the line so the
 // report points the author at WHAT to install the CRD for. Output order is the
 // caller's responsibility (the result is sorted before formatting).
+// withBundleCRDs returns served plus every (group, kind) a
+// CustomResourceDefinition in manifests defines. The apply sends a stream's
+// CRDs in their own early batch before anything else (partitionEarlyBatch /
+// applyEarlyBatch), so a kind whose CRD ships in the same bundle is served by
+// the time its objects are applied. Without this, a release that introduces
+// a CRD together with its first object (control-plane's DaemonRollout) was
+// blocked on "CRD not served" by the very deploy that installs it. served is
+// not modified.
+func withBundleCRDs(served map[string]struct{}, manifests string) map[string]struct{} {
+	var out map[string]struct{}
+	for _, doc := range splitDocs(manifests) {
+		if !strings.Contains(doc, "CustomResourceDefinition") {
+			continue
+		}
+		var crd struct {
+			APIVersion string `yaml:"apiVersion"`
+			Kind       string `yaml:"kind"`
+			Spec       struct {
+				Group string `yaml:"group"`
+				Names struct {
+					Kind string `yaml:"kind"`
+				} `yaml:"names"`
+			} `yaml:"spec"`
+		}
+		if err := yaml.Unmarshal([]byte(doc), &crd); err != nil || crd.Kind != "CustomResourceDefinition" ||
+			!strings.HasPrefix(crd.APIVersion, "apiextensions.k8s.io/") || crd.Spec.Group == "" || crd.Spec.Names.Kind == "" {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]struct{}, len(served)+1)
+			for k := range served {
+				out[k] = struct{}{}
+			}
+		}
+		out[servedKindKey(crd.Spec.Group, crd.Spec.Names.Kind)] = struct{}{}
+	}
+	if out == nil {
+		return served
+	}
+	return out
+}
+
 func missingCRDs(gvks []ManifestGVK, served map[string]struct{}) []string {
 	// De-dupe by (group, kind): a bundle renders many GRPCRoutes but the CRD is
 	// either installed or not — report it once. Keep the first name seen so the

@@ -109,7 +109,7 @@ func TestRemoveTreeStoppedPartwayKeepsItsMarker(t *testing.T) {
 	if !exists(filepath.Join(root, "README")) {
 		t.Fatal("the marker was removed before the rest of the tree")
 	}
-	if goCacheKind(root) != "build" {
+	if !hasCacheSentinel(root) {
 		t.Fatal("a partly removed cache is no longer recognised")
 	}
 }
@@ -151,12 +151,10 @@ func (f *boundedPassFixture) runner(t *testing.T, p Policy, remove func(string) 
 	return Runner{
 		Policy: p, Out: out, removeFn: remove,
 		TempRoot: filepath.Dir(f.tempEntry), SourceCacheRoot: filepath.Dir(f.source),
-		GoCacheRoot: f.cache, GoModCacheRoot: filepath.Join(t.TempDir(), "mod"),
-		GolangciCacheRoot: t.TempDir(), GoimportsRoot: t.TempDir(),
+		GoCacheRoot: f.cache, GolangciCacheRoot: t.TempDir(),
 		OpenPaths: func(context.Context) (openfiles.Snapshot, error) {
 			return openfiles.FromPaths([]string{"/nonexistent/forge-storage-test/unrelated"}), nil
 		},
-		ProcessEnv: func(context.Context) (string, error) { return "x", nil },
 		Command: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			if name == "docker" {
 				f.dockerCalls.Add(1)
@@ -250,7 +248,7 @@ func TestGoCacheReadDistressBacksOff(t *testing.T) {
 	if err := d.observe(filepath.Join(root, "00"), emfile(filepath.Join(root, "00"))); err == nil {
 		t.Fatal("observe must return the back-off")
 	}
-	pass := streamTrimGoCache(context.Background(), root, shards, 0, time.Now().Add(-goCacheFloor), true, d, nil)
+	pass := streamTrimGoCache(context.Background(), root, shards, 0, time.Now().Add(-goCacheFloor), true, d)
 	var backoff *BackedOffError
 	if !errors.As(pass.stop, &backoff) || pass.removed != 0 || countEntries(root) != 20 {
 		t.Fatalf("a backed-off pass unlinked anyway: %+v", pass)

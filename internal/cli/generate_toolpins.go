@@ -213,13 +213,13 @@ func pinBuf(ctx context.Context, projectDir string, res *codegenTools) error {
 
 // installPinnedTool resolves t@version at dir, an entry of forge's shared
 // tool cache, building it there when the binary is missing or reports another
-// version, and says whether it built. Through internal/toolcache the build
-// runs ONCE however many forge processes want the same pin at that moment —
-// every fresh project's first generate pins the same protoc-gen-go — and lands
-// by renaming a complete staging directory, so no reader ever sees a
-// half-written binary (`go version -m` on one failed the pin with "installed
-// binary reports unknown": TestE2EFixtureCorpusKalshiShaped). announce, when
-// set, runs only when this process builds.
+// version, and says whether it built. Many forge processes want the same pin
+// at once — every fresh project's first generate pins the same protoc-gen-go
+// — so the build lands by renaming a complete staging directory
+// (internal/toolcache), and no reader ever sees a half-written binary (`go
+// version -m` on one failed the pin with "installed binary reports unknown":
+// TestE2EFixtureCorpusKalshiShaped). announce, when set, runs only when this
+// process builds.
 func installPinnedTool(ctx context.Context, t protoTool, version, dir, have string, announce func()) (built bool, err error) {
 	ready := func(dir string) bool {
 		_, ok := toolMatches(ctx, filepath.Join(dir, t.Binary+exeSuffix()), t, version)

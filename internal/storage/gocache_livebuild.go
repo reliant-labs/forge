@@ -32,6 +32,11 @@ import (
 // letting it pin the cache would make the budget unreachable for as long as it
 // lives, so it is not counted. 3h is three times the longest run timeout the
 // gates here declare (60m).
+//
+// The lease also covers a `go run` executable, which lives in the cache as an
+// executable entry: `go run` waits on its child, so the parent `go` counts as a
+// build for as long as the program runs, up to goCacheLongLived. A program
+// that must outlive that runs from an installed binary, not from the cache.
 
 // liveBuildMargin is added to cmd/go's mtimeInterval (1h): a process's clock
 // reading and the filesystem's mtime resolution are not exact.
@@ -52,9 +57,8 @@ var goToolchainProcs = map[string]bool{
 // toolchain processes now running, and the age of the oldest one that
 // counted. ok is false when no process counts: the floor alone is then the
 // guard. A process table that cannot be read counts as a build goCacheLongLived
-// old. running are the ages of processes whose executable lives in the cache
-// (gocache_liveexe.go), counted like toolchain processes.
-func (r Runner) liveBuildBound(ctx context.Context, now time.Time, running ...time.Duration) (bound time.Time, oldest time.Duration, ok bool) {
+// old.
+func (r Runner) liveBuildBound(ctx context.Context, now time.Time) (bound time.Time, oldest time.Duration, ok bool) {
 	list := r.LiveToolchainAges
 	if list == nil {
 		if testing.Testing() {
@@ -70,10 +74,6 @@ func (r Runner) liveBuildBound(ctx context.Context, now time.Time, running ...ti
 		r.print("go build cache: cannot list running builds (%v); assuming one %s old\n", err, goCacheLongLived)
 		ages = []time.Duration{goCacheLongLived}
 	}
-	// A process running an executable out of the cache is a build in the
-	// sense of the lease even though its comm is not a toolchain command:
-	// `go run`'s child is `forge`, not `go`.
-	ages = append(ages[:len(ages):len(ages)], running...)
 	for _, age := range ages {
 		if age > goCacheLongLived {
 			continue

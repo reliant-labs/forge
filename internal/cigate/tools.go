@@ -152,9 +152,8 @@ func (r *Resolver) ensure(ctx context.Context, t Tool) (string, error) {
 		return sameVersion(r.Probe(bin, t), t.Version) && r.goOK(bin, t)
 	}
 	built := false
-	// One build per key across every gate on the machine: a concurrent
-	// gate that misses the same pin waits for this one instead of building
-	// it again (internal/toolcache).
+	// The install lands by one rename, so a concurrent gate that wants the
+	// same pin never runs a half-written binary (internal/toolcache).
 	if _, err := toolcache.Ensure(ctx, r.CacheRoot, name, ready, func(ctx context.Context, stage string) error {
 		built = true
 		r.note("pin: %s must be %s (%s) — installing into %s (one time)…", t.Binary, t.Version, have, dir)

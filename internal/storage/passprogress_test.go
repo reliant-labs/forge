@@ -85,9 +85,6 @@ func TestPassTakesOneOpenFilesSnapshot(t *testing.T) {
 	scan := resolved(t, t.TempDir())
 	shared := filepath.Join(scan, "shared-gocache")
 	makeBuildCache(t, shared)
-	orphan := filepath.Join(scan, ".gocache-old")
-	makeBuildCache(t, orphan)
-	putEntry(t, orphan, "ab", hexName(1, "-a"), 10, 100*time.Hour)
 
 	sources := filepath.Join(t.TempDir(), "sources")
 	for name, age := range map[string]time.Duration{"app-aaaaaaaaaaaa": 0, "app-bbbbbbbbbbbb": 90 * 24 * time.Hour} {
@@ -108,10 +105,8 @@ func TestPassTakesOneOpenFilesSnapshot(t *testing.T) {
 	p.HostPaths = []string{scan}
 	r := Runner{
 		Policy: p, TempRoot: tempRoot, SourceCacheRoot: sources,
-		GoCacheRoot: shared, GoModCacheRoot: filepath.Join(scan, "mod"),
-		GolangciCacheRoot: t.TempDir(), GoimportsRoot: t.TempDir(),
-		OpenPaths:  snapshot,
-		ProcessEnv: func(context.Context) (string, error) { return "x", nil },
+		GoCacheRoot: shared, GolangciCacheRoot: t.TempDir(),
+		OpenPaths: snapshot,
 		Command: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			if strings.Contains(strings.Join(args, " "), "context inspect") {
 				return []byte(`[{"Endpoints":{"docker":{"Host":"unix:///var/run/docker.sock"}}}]`), nil
@@ -124,9 +119,9 @@ func TestPassTakesOneOpenFilesSnapshot(t *testing.T) {
 	if err := r.NonDisruptiveGC(ctx, true); err != nil {
 		t.Fatalf("pass: %v", err)
 	}
-	// Each of the three snapshot users did its job on the one snapshot.
-	if exists(tempEntry) || exists(orphan) {
-		t.Fatalf("layers did not run: temp=%v orphan=%v", exists(tempEntry), exists(orphan))
+	// Each of the snapshot users did its job on the one snapshot.
+	if exists(tempEntry) {
+		t.Fatal("the temp sweep did not run")
 	}
 	if _, err := os.Stat(filepath.Join(sources, "app-bbbbbbbbbbbb")); err == nil {
 		t.Fatal("source eviction did not run")

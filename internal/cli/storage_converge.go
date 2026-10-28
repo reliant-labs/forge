@@ -320,9 +320,9 @@ func newStorageGoCacheCmd(policyPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "gocache",
 		Short: "Trim the Go build caches now (preview unless --apply); the bounded pass to run every few minutes",
-		Long: `Trim the shared Go build cache, the golangci-lint cache, orphaned private
-Go caches and stale goimports indexes — the Go-cache layer of every other pass,
-alone, with the whole budget to itself.
+		Long: `Trim the shared Go build cache and the golangci-lint cache — the Go-cache
+layer of every other pass, alone, with the whole budget to itself. The module
+cache is left to Go.
 
 Entries used in the last 2h are never removed (a running build may be using
 them); past that, the cache is trimmed to go_cache_gib. Under agent load more

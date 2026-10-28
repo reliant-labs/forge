@@ -30,7 +30,6 @@ const (
 	shareDocker   = 0.15
 	shareTemp     = 0.20
 	shareSources  = 0.10
-	shareTools    = 0.05
 	shareLast     = 1.0
 )
 

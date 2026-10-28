@@ -18,7 +18,7 @@ func TestExternalSecretTreeHealth(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			secret := treeObj("hub", "base", PhasePre, "ExternalSecret", "credentials")
 			secret.APIVersion = tc.api
-			secret.Annotations = map[string]string{AnnotationSecretSync: tc.sync}
+			secret.SecretSync = tc.sync
 			trees, err := PlanTrees([]TreeObject{
 				secret, treeObj("hub", "base", PhaseRollout, "Deployment", "api"),
 			}, nil)

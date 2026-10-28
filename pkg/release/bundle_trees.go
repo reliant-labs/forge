@@ -125,10 +125,12 @@ type TreeObject struct {
 	Kind      string
 	Namespace string
 	Name      string
-	// APIVersion and Annotations identify ESO objects and their existing
-	// shadow/deferred sync opt-outs, exactly as the direct applier does.
-	APIVersion  string
-	Annotations map[string]string
+	// APIVersion identifies ESO objects; SecretSync is their
+	// [AnnotationSecretSync] value (the shadow/deferred opt-outs), exactly
+	// as the direct applier reads them. A string, not the annotation map, so
+	// TreeObject stays comparable.
+	APIVersion string
+	SecretSync string
 	// DeadlineSeconds is the object's own time allowance, when it states one: a
 	// Deployment's progressDeadlineSeconds, a Job's activeDeadlineSeconds.
 	// Zero means it states none and the default for its kind applies.
@@ -188,7 +190,7 @@ func TreeBudget(phase Phase, objects []TreeObject) int {
 // Shadow copies and values written after deployment must never hold that gate.
 func healthObject(phase Phase, o TreeObject) bool {
 	if o.Kind == "ExternalSecret" && IsESOKind(o.APIVersion, o.Kind) {
-		return SecretSyncAwaited(o.Annotations)
+		return SecretSyncAwaited(map[string]string{AnnotationSecretSync: o.SecretSync})
 	}
 	switch phase {
 	case PhaseRollout:

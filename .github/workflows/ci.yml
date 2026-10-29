@@ -1041,6 +1041,40 @@ jobs:
           mod-key: ${{ steps.go-caches.outputs.mod-key }}
           mod-hit: ${{ steps.go-caches.outputs.mod-hit }}
 
+  # Review marker: the merge itself checks the review. In the merge queue every
+  # pull request in the group must carry pr-review's pass marker for its
+  # CURRENT head, posted by the pipeline's reviewer (scripts/ci-review-marker.sh;
+  # control-plane docs/pr-pipeline.md). pr-disarm reacts to a push only after
+  # the webhook, so a head pushed after a pass, with its checks already green,
+  # could otherwise ride the armed auto-merge in. On a pull request it only
+  # reports: the review comes after CI, and a red here would keep the PR out of
+  # the queue it is meant to guard.
+  review-marker:
+    name: Review marker
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts
+      - name: pr-review passed every head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          GROUP_REF: ${{ github.event.merge_group.head_ref }}
+          GROUP_SHA: ${{ github.event.merge_group.head_sha }}
+        run: |
+          if [ "$EVENT_NAME" = merge_group ]; then
+            scripts/ci-review-marker.sh group "$GROUP_REF" "$GROUP_SHA"
+          else
+            scripts/ci-review-marker.sh pr "$PR" || echo "::notice::the merge queue will require pr-review's pass marker on this exact head"
+          fi
+
   # CI gate: one check that is red exactly when any job above failed or was
   # cancelled (a skipped job — a main-only lane on a pull request — is not a
   # failure). It is the main ruleset's required check and the one the merge
@@ -1060,6 +1094,7 @@ jobs:
       - test-short-warm
       - windows
       - build
+      - review-marker
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1093,6 +1128,11 @@ jobs:
           fi
           echo "not every job passed:"
           echo "$red"
+          # A missing review is never one of main's reds.
+          if [ "$(jq -r '."review-marker".result' <<<"$RESULTS")" != success ] && [ "$GITHUB_EVENT_NAME" = merge_group ]; then
+            echo "::error::Review marker: pr-review has not passed every head in this merge group"
+            exit 1
+          fi
           if scripts/ci-main-red.sh; then
             echo "::warning::CI gate passed over main's reds (ci:main-red); see the run summary"
             exit 0

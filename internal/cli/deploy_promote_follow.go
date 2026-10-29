@@ -196,6 +196,12 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 		// first: "failed" alone reads as "the previous release still runs",
 		// which is false once a cluster has rolled.
 		evidence := o.clientDeploy.shipped.annotate(err)
+		if applyingOf(err) != nil {
+			// The local apply completed, and the hosted half is published
+			// and still being applied by the platform. Neither is a failed
+			// apply (deploy_applying.go).
+			evidence = nil
+		}
 		finish(evidence)
 		recordApplyOutcome(ctx, env, plan, ledger, started, evidence, o)
 		if err != nil {

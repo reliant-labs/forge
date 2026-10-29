@@ -328,6 +328,29 @@ const procListConvergences = "controlplane.v1.DeployService/ListConvergences"
 
 var errBundleNotApplied = errors.New("the platform has not applied this release yet")
 
+// ApplyPendingError is a hosted deploy whose bundle the platform ACCEPTED but
+// had not reported APPLIED when the apply budget ran out, and for which the
+// reconciler reported no failure. Nothing is known to be wrong: the release
+// is recorded and published, and the platform is still applying it. It is not
+// a timeout of the workloads, which were never judged, and not a failure. The
+// CLI renders it as "still applying" with the command that keeps watching.
+type ApplyPendingError struct {
+	Env string
+	// Bundle is the digest this deploy recorded; Current the one the
+	// platform last reported applied ("" when it has reported none).
+	Bundle, Current string
+	Waited          time.Duration
+}
+
+func (e *ApplyPendingError) Error() string {
+	return fmt.Sprintf("hosted env %q: still applying: the platform accepted bundle %s and had not reported it applied after %s "+
+		"(currently %s); nothing has failed. Keep watching with: forge env status %s --wait",
+		e.Env, shortDigest(e.Bundle), e.Waited, emptyOr(shortDigest(e.Current), "none"), e.Env)
+}
+
+// Unwrap makes errors.Is(err, errBundleNotApplied) hold for a pending apply.
+func (e *ApplyPendingError) Unwrap() error { return errBundleNotApplied }
+
 // bundleApplyState is what the control plane says it has applied.
 type bundleApplyState struct {
 	// known is false when the platform gave no answer at all.

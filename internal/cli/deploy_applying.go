@@ -1,0 +1,81 @@
+package cli
+
+// A hosted deploy that is STILL APPLYING: published, accepted, and not yet
+// reported applied when the wait's apply budget ran out.
+//
+// That is not a failure. The release is recorded, the bundle is published, and
+// the control plane's reconciler is applying it. Nothing reported an error.
+// Rendering it as "TIMED OUT … the deploy FAILED", which forge did until
+// v1.0.4, sent operators to re-run or roll back deploys that went live a
+// minute later. It also filed a FAILED apply gate on the promotion, so the
+// next plan read the live release as NOT APPLIED.
+//
+// So it is its own outcome: one block saying what is known and the command
+// that keeps watching, and exit 8 (exitTimedOut), the code every wait uses
+// for "still in progress when the budget ran out". A pipeline that needs the
+// release live branches on 8 and runs `forge env status <env> --wait`.
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/reliant-labs/forge/internal/deploytarget"
+)
+
+// applyingOf extracts a still-applying outcome from an error chain.
+func applyingOf(err error) *deploytarget.ApplyPendingError {
+	var pending *deploytarget.ApplyPendingError
+	if errors.As(err, &pending) {
+		return pending
+	}
+	return nil
+}
+
+// deployApplyingError carries a still-applying follow-through out of the
+// deploy, with exit 8. The chain is kept whole, so errors.As still finds the
+// provider's *deploytarget.ApplyPendingError.
+type deployApplyingError struct {
+	err     error
+	pending *deploytarget.ApplyPendingError
+}
+
+func (e *deployApplyingError) ExitCode() int { return exitTimedOut }
+func (e *deployApplyingError) Unwrap() error { return e.err }
+
+func (e *deployApplyingError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "deploy to %s is STILL APPLYING, not failed: %s", e.pending.Env, e.pending.Error())
+	b.WriteString("\n  (exit 8: still in progress when the wait ended, not a failure)")
+	return b.String()
+}
+
+// asApplying wraps err as a deployApplyingError when it is a still-applying
+// outcome, and returns it unchanged otherwise.
+func asApplying(err error) error {
+	if p := applyingOf(err); p != nil {
+		var already *deployApplyingError
+		if errors.As(err, &already) {
+			return err
+		}
+		return &deployApplyingError{err: err, pending: p}
+	}
+	return err
+}
+
+// deployApplyingJSON is the `applying` object of the deploy document.
+type deployApplyingJSON struct {
+	Env            string `json:"env"`
+	Bundle         string `json:"bundle"`
+	CurrentApplied string `json:"current_applied,omitempty"`
+	WaitedSeconds  int    `json:"waited_seconds"`
+	Watch          string `json:"watch"`
+}
+
+func applyingDocument(p *deploytarget.ApplyPendingError) *deployApplyingJSON {
+	return &deployApplyingJSON{
+		Env: p.Env, Bundle: p.Bundle, CurrentApplied: p.Current,
+		WaitedSeconds: int(p.Waited.Seconds()),
+		Watch:         "forge env status " + p.Env + " --wait",
+	}
+}

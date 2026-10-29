@@ -43,7 +43,7 @@
     }
   ],
   "truncated": true,
-  "next_page_token": "tok2",
+  "next_page_token": "fp1.eyJmIjoiMjAyNi0xMC0yMVQxMjowMDowMFoiLCJ0IjoiMjAyNi0xMC0yMlQxMjowMDowMFoiLCJrIjoidG9rMiJ9",
   "suggested": [
     "forge obs session 91b955b313a1a86644ea53730a92deab prod",
     "forge obs session 072af6846fd16a702ead77ec49f2408e prod"

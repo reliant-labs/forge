@@ -33,7 +33,7 @@
     }
   ],
   "truncated": true,
-  "next_page_token": "tok2",
+  "next_page_token": "fp1.eyJmIjoiMjAyNi0xMC0yMVQxMjowMDowMFoiLCJ0IjoiMjAyNi0xMC0yMlQxMjowMDowMFoiLCJrIjoidG9rMiJ9",
   "suggested": [
     "forge obs issue ISS-7f3a prod"
   ]

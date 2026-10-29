@@ -114,13 +114,17 @@ func runObsTraces(ctx context.Context, d obsDeps, env string, o obsTracesOpts) e
 	if err != nil {
 		return fail(err)
 	}
+	pageToken, err := resumePage(&n, o.pageToken)
+	if err != nil {
+		return fail(err)
+	}
 	b, _, err := o.open(ctx, d, env, "traces")
 	if err != nil {
 		return fail(err)
 	}
 	res, err := b.Traces(ctx, obsbackend.TracesRequest{
 		Narrow: n, ErrorsOnly: o.errors, MinDurationMs: float64(o.minDuration) / float64(time.Millisecond),
-		Route: o.route, Slow: o.slow, Limit: o.out.Limit, PageToken: o.pageToken,
+		Route: o.route, Slow: o.slow, Limit: o.out.Limit, PageToken: pageToken,
 	})
 	if err != nil {
 		return fail(err)
@@ -138,6 +142,7 @@ func runObsTraces(ctx context.Context, d obsDeps, env string, o obsTracesOpts) e
 			RootDurationMs: t.RootDurationMs, Spans: t.Spans, Errors: t.Errors, Services: t.Services,
 		})
 	}
+	res.NextPageToken = wrapPageToken(n.Range, res.NextPageToken)
 	doc.Page = obsout.Page{Truncated: res.NextPageToken != "", NextPageToken: res.NextPageToken}
 	doc.Suggested = tracesSuggestions(env, res)
 	doc.Stamp(schemaObsTraces, nil)

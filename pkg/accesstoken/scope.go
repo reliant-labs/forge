@@ -76,6 +76,21 @@ const (
 	// is start a machine its owner already pays for.
 	ScopeDaemonResume Scope = "daemon:resume"
 
+	// ScopeDaemonManage lists, starts, stops and resizes the daemons its
+	// acting user owns, as the machine settings page does: a person's CLI
+	// login managing their own machines. Always acting as a user, and never
+	// bound to anything — in particular never to a daemon, so no daemon's
+	// own credential (a daemon wildcard resolves through Grant.Admissible)
+	// and nothing an agent running on a daemon holds can carry it. Starting
+	// and resizing spend the person's money, which is why a machine must not
+	// be able to do it for itself or its siblings.
+	//
+	// It implies nothing and nothing implies it: not daemon:resume (one
+	// bound machine, wake only), not daemon:connect, not reliant:api. The
+	// consumer still resolves ownership, plan and funding from the acting
+	// user exactly as for the person's own session.
+	ScopeDaemonManage Scope = "daemon:manage"
+
 	// ScopeSecretRead lists the org's managed secrets' METADATA (names,
 	// versions) for every environment, and — for LOCAL environments ONLY —
 	// pulls their VALUES (LocalSecretService/PullSecrets), because a LOCAL
@@ -157,6 +172,7 @@ var AllScopes = []Scope{
 	ScopeProxyPort,
 	ScopeMCPConnector,
 	ScopeDaemonResume,
+	ScopeDaemonManage,
 	ScopeSecretRead,
 	ScopeSecretWrite,
 	ScopeDomainRead,

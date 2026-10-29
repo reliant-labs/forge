@@ -45,6 +45,21 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
+	// The isolated `kcl eval` child every project-root render runs re-execs
+	// this binary through forgeExecCommand: [exe, "forge", "-C", root, "kcl",
+	// "eval", …] from a fresh process, or [exe, "-C", root, …] once a render
+	// child recorded its (empty) cobra route. Route both to the real root
+	// command exactly as the forge binary would.
+	if len(os.Args) > 1 && (os.Args[1] == "forge" || os.Args[1] == "-C") {
+		if os.Args[1] == "forge" {
+			os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+		}
+		if err := cli.Execute(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if len(os.Args) > 1 && os.Args[1] == renderChildArgv {
 		runRenderChild()
 		return

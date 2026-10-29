@@ -91,6 +91,12 @@ func TestCloudTraceReadsSpansAndLogs(t *testing.T) {
 	if len(res.Spans) != 1 || res.Spans[0].DurationNs != 1500000 || len(res.Spans[0].Events) != 1 || len(res.Logs) != 1 || !res.LogsTruncated {
 		t.Errorf("%+v", res)
 	}
+	// The control plane's "Error" / "Server" are spelled as the local store's.
+	f.replies[procGetTrace] = `{"spans":[{"spanId":"a","name":"x","kind":"Server","durationNs":"1","statusCode":"Error"}]}`
+	res, err = cloudWith(f).Trace(context.Background(), TraceRequest{Narrow: narrowC(), TraceID: "0af7651916cd43dd8448eb211c80319c"})
+	if err != nil || res.Spans[0].StatusCode != "error" || res.Spans[0].Kind != "server" || len(ErrorSpans(res.Spans)) != 1 {
+		t.Errorf("normalized span = %+v, %v", res.Spans, err)
+	}
 	f.replies[procGetTrace] = `{"spans":[]}`
 	if _, err := cloudWith(f).Trace(context.Background(), TraceRequest{Narrow: narrowC(), TraceID: "0af7651916cd43dd8448eb211c80319c"}); exitOf(err) != ExitWrong {
 		t.Errorf("an empty trace: %v", err)

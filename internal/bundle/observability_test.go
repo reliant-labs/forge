@@ -139,29 +139,38 @@ func TestObservabilityFilesAreBounded(t *testing.T) {
 }
 
 // A service catalog grows with its project (reliant's is 2.1 MB compact): one
-// over the manifest bound builds, and the layer it lands in validates.
-func TestALargeServiceCatalogBuilds(t *testing.T) {
-	c := servicecatalog.Catalog{Schema: servicecatalog.Schema, Module: "example.com/big"}
-	for len(c.Components) < 4000 {
-		c.Components = append(c.Components, servicecatalog.Component{ID: "c", Name: "c", Kind: "service", Type: strings.Repeat("t", 400)})
-	}
-	raw, err := json.Marshal(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(raw) <= release.ManifestsLayerMaxFileBytes {
-		t.Fatalf("fixture is %d bytes; it must exceed the %d-byte manifest bound", len(raw), release.ManifestsLayerMaxFileBytes)
-	}
-	built, err := Build(t.Context(), withObservability(ObservabilityFile{Path: servicecatalog.BundlePath, Data: raw}))
-	if err != nil {
-		t.Fatalf("a %d-byte catalog must build: %v", len(raw), err)
-	}
-	layer, ok := built.Layer(release.BundleManifestsLayer)
-	if !ok {
-		t.Fatal("no manifests layer")
-	}
-	if _, err := release.ValidateManifestsLayer(bytes.NewReader(layer)); err != nil {
-		t.Fatalf("its layer must validate: %v", err)
+// over the manifest bound, and one over the old 16 MiB unpack bound, builds,
+// validates as a layer, and unpacks — every party agrees on one contract.
+func TestALargeServiceCatalogBuildsValidatesAndUnpacks(t *testing.T) {
+	for _, components := range []int{4000, 40000} {
+		if components > 4000 && testing.Short() {
+			t.Skip("an ~19 MB catalog takes seconds to build and scan; runs in task test")
+		}
+		c := servicecatalog.Catalog{Schema: servicecatalog.Schema, Module: "example.com/big"}
+		for len(c.Components) < components {
+			c.Components = append(c.Components, servicecatalog.Component{ID: "c", Name: "c", Kind: "service", Type: strings.Repeat("t", 400)})
+		}
+		raw, err := json.Marshal(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(raw) <= release.ManifestsLayerMaxFileBytes {
+			t.Fatalf("fixture is %d bytes; it must exceed the %d-byte manifest bound", len(raw), release.ManifestsLayerMaxFileBytes)
+		}
+		built, err := Build(t.Context(), withObservability(ObservabilityFile{Path: servicecatalog.BundlePath, Data: raw}))
+		if err != nil {
+			t.Fatalf("a %d-byte catalog must build: %v", len(raw), err)
+		}
+		layer, ok := built.Layer(release.BundleManifestsLayer)
+		if !ok {
+			t.Fatal("no manifests layer")
+		}
+		if _, err := release.ValidateManifestsLayer(bytes.NewReader(layer)); err != nil {
+			t.Fatalf("its layer must validate: %v", err)
+		}
+		if _, err := Unpack(bytes.NewReader(layer), t.TempDir()); err != nil {
+			t.Fatalf("a %d-byte catalog must unpack: %v", len(raw), err)
+		}
 	}
 }
 

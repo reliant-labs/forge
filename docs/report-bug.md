@@ -16,7 +16,7 @@ forge report-bug --severity high \
 or the same fields as one JSON object on stdin:
 
 ```bash
-echo '{"severity":"low","title":"typo in forge lint --help","actual":"recieve"}' \
+echo '{"severity":"low","title":"typo in forge lint --help","actual":"receive"}' \
   | forge report-bug --json
 ```
 

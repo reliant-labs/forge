@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -97,6 +98,46 @@ func TestPlacementPrerequisitesCompositionWithBuildOnly(t *testing.T) {
 	}
 	if !sawBuildOnly {
 		t.Fatal("build-only artifact dropped from the composition snapshot")
+	}
+}
+
+// The native OpenBao provider is a composition consumer, so it is declared
+// as an ordinary cluster placement under its release owner, and a frontend
+// with absent release_dependencies waits for it like any server.
+func TestPlacementPrerequisitesNativeOpenBao(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	e := &KCLEntities{
+		Workloads: []WorkloadEntity{{Name: "api", Runtime: RuntimeEntity{Type: RuntimeCluster, Cluster: &ClusterRuntime{Cluster: "prod"}}}},
+		Frontends: []FrontendEntity{orderFrontend("web", FrontendRuntimeHosted, nil)},
+		OpenBao:   &OpenBaoEntity{Name: "store", Namespace: "secrets", Cluster: "prod", ReleaseOwner: "openbao-secrets-store", ReleaseInputs: map[string]string{"container:openbao": "registry.example/openbao@" + digest, "container:converge": "registry.example/converge@" + digest}},
+	}
+	consumers, err := compositionConsumers(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decl, err := bundlePlacementDeclarations(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]int{}
+	for i, d := range decl {
+		byName[d.Workload] = i
+	}
+	for _, c := range consumers {
+		if _, ok := byName[c.Key.Workload]; !ok {
+			t.Errorf("composition consumer %s has no placement declaration", c.Key.Workload)
+		}
+	}
+	bao := decl[byName["openbao-secrets-store"]]
+	if bao.Runtime != "cluster" || bao.Actuator != "forge" {
+		t.Errorf("OpenBao placement = %+v", bao)
+	}
+	if web := decl[byName["web"]]; !slices.Contains(web.Dependencies, "openbao-secrets-store") || !slices.Contains(web.Dependencies, "api") {
+		t.Errorf("absent frontend dependencies must include every server, OpenBao too: %+v", web)
+	}
+	e.OpenBao.ReleaseOwner = ""
+	if _, err := bundlePlacementDeclarations(e); err == nil {
+		t.Error("an OpenBao with no release owner cannot be placed")
 	}
 }
 

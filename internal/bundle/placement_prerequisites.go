@@ -1,6 +1,7 @@
 package bundle
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"sort"
@@ -58,21 +59,37 @@ func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.S
 		}
 		decl[d.Workload] = d
 	}
+	ownersOf, err := placementOwners(docs, decl)
+	if err != nil {
+		return nil, err
+	}
+	owners := func(o release.ShapeObject) []string {
+		if o.Cluster == release.BundleHostedCluster {
+			return []string{o.Name} // a hosted record is its own component
+		}
+		return ownersOf[o.Key()]
+	}
 	keys := map[string][]release.PlacementKey{}
 	// Only actual controller/Job and hosted record identities are items. Helpers
 	// bind to their logical component, never invented pseudo-status objects.
 	for _, o := range objects {
-		workload := o.Workload
-		if o.Cluster == release.BundleHostedCluster && workload == "" {
-			workload = o.Name
-		}
-		d, ok := decl[workload]
-		if !ok {
-			continue
-		}
 		if !placementPrimary(o.Kind, o.Cluster == release.BundleHostedCluster) {
 			continue
 		}
+		declared := []string{}
+		for _, owner := range owners(o) {
+			if _, ok := decl[owner]; ok {
+				declared = append(declared, owner)
+			}
+		}
+		if len(declared) == 0 {
+			continue
+		}
+		if len(declared) > 1 {
+			return nil, fmt.Errorf("unsupported mixed placement: controller %s/%s has several release owners %v", o.Kind, o.Name, declared)
+		}
+		workload := declared[0]
+		d := decl[workload]
 		runtime, actuator := "cluster", "forge"
 		if o.Cluster == release.BundleHostedCluster {
 			runtime, actuator = "hosted", "platform"
@@ -172,15 +189,14 @@ func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.S
 	// Secret documents have already been removed and are never inspected here.
 	bindingSet := map[release.PlacementBinding]bool{}
 	for _, o := range objects {
-		workload := o.Workload
-		if o.Cluster == release.BundleHostedCluster && workload == "" {
-			workload = o.Name
+		var targets []release.PlacementKey
+		for _, owner := range owners(o) {
+			if len(keys[owner]) == 0 {
+				return nil, fmt.Errorf("sealed object %s/%s has undeclared placement owner %q", o.Kind, o.Name, owner)
+			}
+			targets = append(targets, keys[owner]...)
 		}
-		targets := keys[workload]
-		if workload != "" && len(targets) == 0 {
-			return nil, fmt.Errorf("sealed object %s/%s has undeclared placement workload %q", o.Kind, o.Name, workload)
-		}
-		if workload == "" && o.Cluster != release.BundleHostedCluster && (placementPrimary(o.Kind, false) || o.Kind == "ConfigMap") {
+		if len(owners(o)) == 0 && o.Cluster != release.BundleHostedCluster && (placementPrimary(o.Kind, false) || o.Kind == "ConfigMap") {
 			for _, item := range p.Items {
 				if item.Key.Cluster == o.Cluster && item.Key.Namespace == o.Namespace && item.Key.Runtime == "cluster" {
 					targets = append(targets, item.Key)
@@ -194,12 +210,10 @@ func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.S
 			return nil, fmt.Errorf("unsupported/unbound hosted sealed record %s/%s", o.Kind, o.Name)
 		}
 		if o.Cluster != release.BundleHostedCluster && !placementPrimary(o.Kind, false) && o.Kind != "ConfigMap" {
-			switch o.Kind {
-			case "Namespace", "Service", "ServiceAccount", "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding", "PersistentVolumeClaim", "NetworkPolicy", "Ingress", "PodDisruptionBudget", "HorizontalPodAutoscaler":
-				continue // applied inventory, not an invented readiness status
-			default:
+			if !placementPassiveKinds[o.Kind] {
 				return nil, fmt.Errorf("unsupported mixed prerequisite resource kind %s (%s)", o.Kind, o.Name)
 			}
+			continue // applied inventory, not an invented readiness status
 		}
 		for _, k := range targets {
 			if k.Cluster != o.Cluster || k.Namespace != o.Namespace {
@@ -279,6 +293,55 @@ func snapshotPlacements(s release.Snapshot, declarations []PlacementDeclaration)
 	}
 	return out, nil
 }
+
+// placementPassiveKinds is the closed set of applied-inventory kinds a mixed
+// bundle may carry without a readiness item of their own: their effect on
+// ordinary rollout readiness is observed through the owning component's
+// healthy Pods (an ExternalSecret or Certificate a Pod mounts, a route to
+// it). Any other kind is refused rather than silently treated as ready.
+var placementPassiveKinds = map[string]bool{
+	"Namespace": true, "Service": true, "ServiceAccount": true, "Role": true, "RoleBinding": true,
+	"ClusterRole": true, "ClusterRoleBinding": true, "PersistentVolumeClaim": true, "NetworkPolicy": true,
+	"Ingress": true, "PodDisruptionBudget": true, "HorizontalPodAutoscaler": true,
+	// Gateway API and Envoy Gateway policy attachments.
+	"Gateway": true, "HTTPRoute": true, "ReferenceGrant": true, "BackendTLSPolicy": true,
+	"BackendTrafficPolicy": true, "ClientTrafficPolicy": true,
+	// External Secrets Operator and cert-manager: names and references only;
+	// no Secret value is read or recorded.
+	"ExternalSecret": true, "SecretStore": true, "Issuer": true, "Certificate": true,
+}
+
+// placementOwners is each sealed object's release owners, by the rule the
+// snapshot inventory uses (SnapshotInventory): the forge.dev/release-owners
+// annotation a native provider (OpenBao, a StatefulSet resize Job) stamps on
+// what it renders; else the explicit forge.dev/workload label; else a
+// forge-managed app.kubernetes.io/name that names a declared component. An
+// object with none is env-level (unowned). No other name inference.
+func placementOwners(docs []parsedDoc, declared map[string]PlacementDeclaration) (map[release.ObjectKey][]string, error) {
+	out := map[release.ObjectKey][]string{}
+	for _, doc := range docs {
+		body, _ := doc.body.(map[string]any)
+		labels := mapAt(mapAt(body, "metadata"), "labels")
+		var names []string
+		if raw := doc.meta.annotations[releaseOwnersAnnotation]; raw != "" {
+			if err := json.Unmarshal([]byte(raw), &names); err != nil {
+				return nil, fmt.Errorf("%s %s: %s: %w", doc.meta.kind, doc.meta.name, releaseOwnersAnnotation, err)
+			}
+		} else if explicit := stringAt(labels, forgeWorkloadLabel); explicit != "" {
+			names = []string{explicit}
+		} else if name := stringAt(labels, appNameLabel); name != "" && stringAt(labels, "app.kubernetes.io/managed-by") == "forge" {
+			if _, ok := declared[name]; ok {
+				names = []string{name}
+			}
+		}
+		for _, c := range doc.clusters {
+			out[release.ObjectKey{Cluster: c, Kind: doc.meta.kind, Namespace: doc.meta.namespace, Name: doc.meta.name}] = names
+		}
+	}
+	return out, nil
+}
+
+const releaseOwnersAnnotation = "forge.dev/release-owners"
 
 func placementPrimary(kind string, hosted bool) bool {
 	if hosted {

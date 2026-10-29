@@ -226,3 +226,69 @@ func TestPlacementPrerequisitesUnsupportedAndPure(t *testing.T) {
 		t.Fatalf("pure deployment changed: %+v, %v", decl, err)
 	}
 }
+
+// inventoryEntities declares one of every release consumer compositionConsumers
+// knows: a cluster workload, a hosted workload, a build-only artifact, a
+// hosted frontend, a raw manifest consumer and the native OpenBao provider.
+func inventoryEntities() *KCLEntities {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	return &KCLEntities{
+		Workloads: []WorkloadEntity{
+			{Name: "api", Runtime: RuntimeEntity{Type: RuntimeCluster, Cluster: &ClusterRuntime{Cluster: "prod"}}},
+			{Name: "edge", Runtime: RuntimeEntity{Type: RuntimeHosted}},
+			{Name: "cli", Runtime: RuntimeEntity{Type: RuntimeBuildOnly}},
+		},
+		// Declared, so the inventory is not mixed up with v1's hosted-predecessor refusal.
+		Frontends:                []FrontendEntity{orderFrontend("web", FrontendRuntimeHosted, map[string]string{"api": "v1"})},
+		ReleaseManifestConsumers: []releaseManifestConsumer{{Name: "nats", Cluster: "prod"}},
+		OpenBao:                  &OpenBaoEntity{Name: "store", Namespace: "secrets", Cluster: "prod", ReleaseOwner: "openbao-secrets-store", ReleaseInputs: map[string]string{"container:openbao": "registry.example/openbao@" + digest, "container:converge": "registry.example/converge@" + digest}},
+	}
+}
+
+// The placement inventory is exactly compositionConsumers' runtime set: every
+// consumer a composition seals, except build-only artifacts, which have no
+// placement. A consumer source added to one and not the other fails here,
+// before it can pass a preflight and then fail sealing after a push.
+func TestPlacementInventoryIsCompositionConsumers(t *testing.T) {
+	e := inventoryEntities()
+	consumers, err := compositionConsumers(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for _, c := range consumers {
+		if !slices.Equal(c.Slots, []string{"build-only"}) {
+			want = append(want, c.Key.Workload)
+		}
+	}
+	decl, err := placementDeclarations(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, d := range decl {
+		got = append(got, d.Workload)
+	}
+	slices.Sort(want)
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Fatalf("placement inventory %v != composition runtime consumers %v", got, want)
+	}
+}
+
+// A mixed env with the native OpenBao provider is refused by the preflight
+// itself, so a publishing build stops before building or pushing anything.
+func TestPlacementPrerequisitesNativeProviderRefusedBeforeEffects(t *testing.T) {
+	e := inventoryEntities()
+	e.Workloads = e.Workloads[:1]
+	e.ReleaseManifestConsumers = nil
+	stubPlacementReaders(t, map[string]bool{"prod": true})
+	err := preflightPlacementBuild(t.Context(), e, buildOptions{env: "prod", release: "v1", push: true})
+	if err == nil || !strings.Contains(err.Error(), "openbao-secrets-store") {
+		t.Fatalf("mixed + native provider must be refused at preflight: %v", err)
+	}
+	e.OpenBao = nil
+	if err := preflightPlacementBuild(t.Context(), e, buildOptions{env: "prod", release: "v1", push: true}); err != nil {
+		t.Fatalf("the same env without the provider is supported: %v", err)
+	}
+}

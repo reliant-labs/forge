@@ -51,6 +51,16 @@ func declaredPlacementEdges(e *KCLEntities) ([]stageEdge, error) {
 		}
 		servers = append(servers, m.Name)
 	}
+	providers, err := nativeProviders(e)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range providers {
+		if err := addName(p.Owner, stageLocal); err != nil {
+			return nil, err
+		}
+		servers = append(servers, p.Owner)
+	}
 	var edges []stageEdge
 	add := func(name string, peers []string) error {
 		for _, peer := range peers {
@@ -131,7 +141,30 @@ func declaredPlacementEdges(e *KCLEntities) ([]stageEdge, error) {
 
 // bundlePlacementDeclarations is used at the bundle boundary, before any cut,
 // push or record. Pure deployments retain their historical bytes and behavior.
+//
+// Native providers are listed (placementDeclarations) but not yet placed:
+// what they render is owned through forge.dev/release-owners, which this
+// bundle projection does not read, so sealing would fail after the build.
+// They are refused here, before any effect, instead.
 func bundlePlacementDeclarations(e *KCLEntities) ([]bundle.PlacementDeclaration, error) {
+	out, err := placementDeclarations(e)
+	if err != nil || out == nil {
+		return out, err
+	}
+	providers, err := nativeProviders(e)
+	if err != nil {
+		return nil, err
+	}
+	if len(providers) > 0 {
+		return nil, fmt.Errorf("unsupported mixed placement: native provider %s (Bundle.openbao) cannot yet be a placement prerequisite; nothing was built", providers[0].Owner)
+	}
+	return out, nil
+}
+
+// placementDeclarations is the complete runtime inventory of a mixed env:
+// every release consumer compositionConsumers lists that runs somewhere,
+// native providers included, plus hosted databases.
+func placementDeclarations(e *KCLEntities) ([]bundle.PlacementDeclaration, error) {
 	if e == nil {
 		return nil, nil
 	}
@@ -147,7 +180,11 @@ func bundlePlacementDeclarations(e *KCLEntities) ([]bundle.PlacementDeclaration,
 	for _, f := range e.Frontends {
 		hasHosted = hasHosted || frontendIsHosted(f)
 	}
-	hasCluster = hasCluster || len(e.ReleaseManifestConsumers) > 0
+	providers, err := nativeProviders(e)
+	if err != nil {
+		return nil, err
+	}
+	hasCluster = hasCluster || len(e.ReleaseManifestConsumers) > 0 || len(providers) > 0
 	if !hasCluster || !hasHosted {
 		return nil, nil
 	}
@@ -199,6 +236,13 @@ func bundlePlacementDeclarations(e *KCLEntities) ([]bundle.PlacementDeclaration,
 			actuator = "hub"
 		} // no inferred ownership for raw mixed units
 		out = append(out, bundle.PlacementDeclaration{Workload: m.Name, Runtime: "cluster", Actuator: actuator, Dependencies: deps[m.Name]})
+	}
+	for _, p := range providers {
+		actuator := "forge"
+		if len(split.Hub) > 0 {
+			actuator = "hub" // same as raw manifest consumers: no inferred unit ownership
+		}
+		out = append(out, bundle.PlacementDeclaration{Workload: p.Owner, Runtime: "cluster", Actuator: actuator, Dependencies: deps[p.Owner]})
 	}
 	for _, d := range out {
 		if d.Actuator != "forge" && d.Actuator != "platform" {
@@ -268,6 +312,24 @@ func requirePlacementReader(ctx context.Context, projectDir, env string, e *KCLE
 		return fmt.Errorf("mixed placements require reader feature %s before effects; upgrade the recording control plane", release.BundleFeaturePlacementPrerequisites)
 	}
 	return nil
+}
+
+// nativeProvider is a forge-rendered component that is a release consumer
+// without being a Workload: compositionConsumers keys it by Owner, and every
+// object it renders carries forge.dev/release-owners [Owner]. The one native
+// provider today is Bundle.openbao; a new one is added here and in
+// compositionConsumers (TestPlacementInventoryIsCompositionConsumers).
+type nativeProvider struct{ Owner string }
+
+func nativeProviders(e *KCLEntities) ([]nativeProvider, error) {
+	var out []nativeProvider
+	if p := e.OpenBao; p != nil {
+		if p.ReleaseOwner == "" || p.Cluster == "" {
+			return nil, fmt.Errorf("native OpenBao provider %q lacks its release owner or cluster", p.Name)
+		}
+		out = append(out, nativeProvider{Owner: p.ReleaseOwner})
+	}
+	return out, nil
 }
 
 func workloadUnit(w WorkloadEntity) string {

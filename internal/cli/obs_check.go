@@ -290,6 +290,9 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	// rather than trusted to the control plane's answer, which lists only the
 	// alerts that opened after the promotion and judges them by the env's
 	// policy; a check that cannot read it is INCONCLUSIVE, never a PASS.
+	// The answer's own firing alerts are judged first, so a critical alert it
+	// already proves cannot be softened by a failed second read.
+	res.Report = releasehealth.WithStandingAlerts(res.Report, nil)
 	if ar, ok := b.(obsbackend.AlertReader); ok && res.Report.Verdict != releasehealth.Fail {
 		alerts, aerr := ar.Alerts(ctx)
 		if aerr != nil {

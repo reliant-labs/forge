@@ -721,3 +721,22 @@ func TestObsCheckUnreadAlertStateIsNotAPass(t *testing.T) {
 		t.Errorf("gate = %s, want status error", raw)
 	}
 }
+
+// A critical alert the control plane's own answer proves opened after the
+// promotion fails the check even when the second alert read fails, and
+// --allow-inconclusive does not soften it.
+func TestObsCheckCriticalAlertInTheAnswerFailsWhenListAlertsFails(t *testing.T) {
+	reply := strings.Replace(healthReply("RELEASE_VERDICT_PASS", true, "", ""), `"verdict"`,
+		`"firingAlerts":[{"rule":"Down","firingAt":"2026-10-22T11:45:00Z","labels":{"severity":"critical"}}],"verdict"`, 1)
+	caller := &seqCaller{
+		replies: map[string][]string{procHealth: {reply}},
+		errs:    map[string]error{procListAlertsCheck: errors.New("unavailable")},
+	}
+	out, _, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "check", "prod", "--json", "--allow-inconclusive")
+	if exitCodeForError(err) != exitWrong {
+		t.Fatalf("exit = %d (%v), want 1", exitCodeForError(err), err)
+	}
+	if doc := decode(t, out); doc["verdict"] != "FAIL" {
+		t.Errorf("doc = %v", doc)
+	}
+}

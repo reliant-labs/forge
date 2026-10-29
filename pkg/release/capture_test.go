@@ -116,6 +116,75 @@ func TestCaptureProvenance(t *testing.T) {
 	})
 }
 
+// Only a genuinely unborn HEAD is "no commits yet": a HEAD that resolves to a
+// commit git cannot read, or a broken branch ref, is an error, never an empty
+// provenance that passes for a fresh repository.
+func TestCaptureProvenanceTellsAnUnbornHeadFromAnUnreadableCommit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
+	ctx := context.Background()
+	opts := CaptureOptions{treeBudget: testTreeBudget}
+
+	t.Run("unborn", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		gitRun(t, dir, "init", "-q", "-b", "main")
+		p, err := CaptureProvenance(ctx, dir, opts)
+		if err != nil || p.Commit != "" || p.Tree != "" || p.Worktree.Label != filepath.Base(dir) {
+			t.Fatalf("an unborn HEAD is an empty capture, not an error: %+v %v", p, err)
+		}
+	})
+
+	// headObject is the loose object file of the fixture's HEAD commit.
+	headObject := func(t *testing.T, dir string) string {
+		t.Helper()
+		ref, err := os.ReadFile(filepath.Join(dir, ".git", "refs", "heads", "main"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sha := strings.TrimSpace(string(ref))
+		return filepath.Join(dir, ".git", "objects", sha[:2], sha[2:])
+	}
+	for _, tc := range []struct {
+		name   string
+		damage func(t *testing.T, dir string)
+	}{
+		{"missing commit object", func(t *testing.T, dir string) {
+			if err := os.Remove(headObject(t, dir)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"corrupt commit object", func(t *testing.T, dir string) {
+			obj := headObject(t, dir)
+			if err := os.Remove(obj); err != nil { // loose objects are read-only
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(obj, []byte("not zlib"), 0o444); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"broken branch ref", func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, ".git", "refs", "heads", "main"), []byte("garbage\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, _ := initRepo(t)
+			tc.damage(t, dir)
+			p, err := CaptureProvenance(ctx, dir, opts)
+			if err == nil || errors.Is(err, ErrUnhashed) {
+				t.Fatalf("an unreadable HEAD commit must be an error, got %+v %v", p, err)
+			}
+			if p.Commit != "" || p.Tree != "" {
+				t.Fatalf("no commit may be recorded from an unreadable HEAD: %+v", p)
+			}
+		})
+	}
+}
+
 // A dirty tree the budget stopped from hashing is an ERROR naming
 // ErrUnhashed, never an empty tree reported as success: under load the
 // budget used to expire on a two-file tree and the capture said nothing. The

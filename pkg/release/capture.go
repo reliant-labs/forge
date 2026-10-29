@@ -175,10 +175,12 @@ type headFacts struct {
 }
 
 // readHead reads HEAD's commit, tree, committer date, author and subject in
-// one git process. born is false, with no error, when git cannot resolve HEAD
-// — a repository with no commits yet. Output git should never produce is an
-// error: a commit recorded without its tree would be an unhashed record that
-// no bound explains.
+// one git process. born is false, with no error, only when HEAD is unborn — a
+// repository (or orphan branch) with no commits yet. Every other failed read
+// is an error: a HEAD that resolves to a missing or corrupt commit, or a
+// broken ref, must not pass for an empty repository. So must output git
+// should never produce: a commit recorded without its tree would be an
+// unhashed record that no bound explains.
 //
 // Read as raw bytes split on a unit separator, the subject LAST, so a
 // subject's content can never shift another field. The committer date is a
@@ -186,7 +188,10 @@ type headFacts struct {
 func readHead(ctx context.Context, top string) (f headFacts, born bool, err error) {
 	out, err := gitRaw(ctx, top, nil, "log", "-1", "--format=%H%x1f%T%x1f%ct%x1f%an%x1f%s", "HEAD")
 	if err != nil {
-		return headFacts{}, false, nil
+		if ctx.Err() == nil && unbornHead(ctx, top) {
+			return headFacts{}, false, nil
+		}
+		return headFacts{}, false, fmt.Errorf("read HEAD commit: %w", err)
 	}
 	fields := strings.SplitN(strings.TrimRight(string(out), "\n"), "\x1f", 5)
 	if len(fields) != 5 || !ValidObjectID(fields[0]) || !ValidObjectID(fields[1]) {
@@ -198,6 +203,23 @@ func readHead(ctx context.Context, top string) (f headFacts, born bool, err erro
 		f.time = &t
 	}
 	return f, true, nil
+}
+
+// unbornHead reports whether HEAD names a branch that does not exist yet: it
+// is a symbolic ref, and resolving it finds no ref (`rev-parse --verify -q`
+// exits 1, its "no such object name" status). It runs only after a HEAD read
+// failed, so a capture of a repository with commits never pays for it.
+//
+// Not unborn: a HEAD that resolves to a commit object that is missing or
+// corrupt (rev-parse resolves the name without reading the object), and a
+// broken ref file (symbolic-ref refuses it).
+func unbornHead(ctx context.Context, top string) bool {
+	if _, err := gitOut(ctx, top, "symbolic-ref", "-q", "HEAD"); err != nil {
+		return false
+	}
+	_, err := gitOut(ctx, top, "rev-parse", "--verify", "-q", "HEAD")
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && exit.ExitCode() == 1
 }
 
 // dirtyTree hashes exactly what is in the working tree — tracked changes and

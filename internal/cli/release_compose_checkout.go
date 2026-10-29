@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/reliant-labs/forge/pkg/release"
@@ -14,7 +15,9 @@ func prepareCompositionCheckout(ctx context.Context, projectDir, env string) (ch
 		return checkoutLedger{}, release.Provenance{}, err
 	}
 	provenance, err := release.CaptureProvenance(ctx, projectDir, release.CaptureOptions{})
-	if err != nil {
+	// An unhashed tree is a dirty one, refused just below with the message
+	// that says what to do about it.
+	if err != nil && !errors.Is(err, release.ErrUnhashed) {
 		return checkoutLedger{}, release.Provenance{}, err
 	}
 	if provenance.Dirty || provenance.Repo == "" || !release.ValidObjectID(provenance.Commit) {

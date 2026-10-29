@@ -60,13 +60,17 @@ const (
 	// KindFunnel is a product-event funnel over Panel.Funnel. Served from the
 	// product_events table with ClickHouse windowFunnel.
 	KindFunnel PanelKind = "funnel"
+	// KindPostgres is drawn from a read-only SELECT the panel carries in
+	// Postgres, run live against one of the project's databases (see
+	// PostgresQuery). The console runs it; HyperDX cannot.
+	KindPostgres PanelKind = "postgres"
 )
 
 // IsConsoleKind reports whether k is drawn only by the Reliant console, so the
 // HyperDX renderer has nothing to emit for it.
 func IsConsoleKind(k PanelKind) bool {
 	switch k {
-	case KindIssues, KindSessions, KindFunnel:
+	case KindIssues, KindSessions, KindFunnel, KindPostgres:
 		return true
 	}
 	return false
@@ -256,6 +260,9 @@ type Panel struct {
 	Columns []string `json:"columns,omitempty"`
 	// Funnel is what a KindFunnel panel draws; only that kind takes it.
 	Funnel *Funnel `json:"funnel,omitempty"`
+	// Postgres is the query a KindPostgres panel draws; only that kind takes
+	// it, and it takes no Signal, Series or SQL.
+	Postgres *PostgresQuery `json:"postgres,omitempty"`
 	// HasError narrows a KindSessions panel to sessions that hit an error;
 	// only that kind takes it.
 	HasError bool `json:"hasError,omitempty"`

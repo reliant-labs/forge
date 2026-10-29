@@ -9,12 +9,24 @@
 //  1. [Check], the lexical guard: exactly one statement, and one that starts
 //     SELECT, WITH, TABLE, VALUES, SHOW or EXPLAIN. It exists for good error
 //     messages and is NOT the security boundary.
-//  2. BEGIN TRANSACTION READ ONLY ISOLATION LEVEL REPEATABLE READ, then
+//  2. BEGIN TRANSACTION READ ONLY ISOLATION LEVEL READ COMMITTED, then
 //     statement_timeout, lock_timeout and idle_in_transaction_session_timeout
 //     set for that transaction only.
 //  3. The statement goes over the extended protocol, which refuses a
 //     multi-statement string on its own, and its rows are read up to the cap.
+//     [Options.Args] bind the $n parameters the statement references.
 //  4. ROLLBACK, always.
+//
+// # Why READ COMMITTED, and why there is no option
+//
+// A query is exactly one statement, and one statement sees one snapshot at
+// every isolation level: READ COMMITTED takes its snapshot when the statement
+// starts, REPEATABLE READ when the transaction's first statement does, and
+// here those are the same moment. REPEATABLE READ buys nothing and costs a
+// transaction-long snapshot that holds back vacuum and can raise
+// serialization failures against the writers a live dashboard must never
+// disturb. A caller that wants a multi-statement consistent read is asking
+// for a different feature.
 //
 // The boundary is the read-only transaction, which refuses every write,
 // nextval() and a data-modifying CTE, plus the role's privileges, which the
@@ -70,8 +82,15 @@ const (
 	// MaxResponseBytes caps the encoded size of all cells in a result.
 	MaxResponseBytes = 4 << 20
 
-	lockTimeout = time.Second
-	idleTimeout = 10 * time.Second
+	// DefaultLockTimeout is how long a statement waits for a lock; above
+	// MaxLockTimeout is refused. A query that has to wait for a writer's lock
+	// should give up fast rather than queue behind it.
+	DefaultLockTimeout = time.Second
+	MaxLockTimeout     = 5 * time.Second
+
+	// DefaultIdleTimeout is idle_in_transaction_session_timeout; above
+	// MaxTimeout is refused.
+	DefaultIdleTimeout = 10 * time.Second
 )
 
 // ctxGrace is how long past the server-side timeout the client waits before it
@@ -92,6 +111,22 @@ type Options struct {
 	// Timeout is the statement timeout. 0 means DefaultTimeout; above
 	// MaxTimeout is refused.
 	Timeout time.Duration
+	// LockTimeout is how long the statement waits for a lock. 0 means
+	// DefaultLockTimeout; above MaxLockTimeout is refused.
+	LockTimeout time.Duration
+	// IdleTimeout is idle_in_transaction_session_timeout. 0 means
+	// DefaultIdleTimeout; above MaxTimeout is refused.
+	IdleTimeout time.Duration
+	// MaxBytes caps the encoded size of the cells kept, below the response
+	// cap. 0 means MaxResponseBytes; above it is refused.
+	MaxBytes int
+	// Args are the values of the statement's $1, $2, ... parameters, bound
+	// over the extended protocol so a value is never spliced into the SQL.
+	// Only $1..$n for the highest $n the statement references are bound (see
+	// [ParamRefs]); a reference past len(Args) is refused. Postgres infers a
+	// parameter's type from its use, so cast one that has no context
+	// ($1::timestamptz).
+	Args []any
 	// Auditor, when set, is told how every attempt went.
 	Auditor Auditor
 
@@ -153,6 +188,9 @@ type Event struct {
 	Duration   time.Duration
 	MaxRows    int
 	TimeoutSec float64
+	// Args are the values bound to the statement's parameters, in order; nil
+	// when none were. Values only: they are never part of SQL.
+	Args []any
 }
 
 // Auditor records one query attempt. It runs after the attempt, once, on a
@@ -171,7 +209,7 @@ func (f AuditFunc) Audit(ctx context.Context, e Event) error { return f(ctx, e) 
 // Run executes sql as one bounded read-only query. Every failure is an
 // *[Error].
 func Run(ctx context.Context, db Beginner, sql string, opts Options) (*Result, error) {
-	maxRows, timeout, err := opts.limits()
+	lim, err := opts.limits()
 	if err != nil {
 		return nil, err
 	}
@@ -180,11 +218,11 @@ func Run(ctx context.Context, db Beginner, sql string, opts Options) (*Result, e
 		SQL:        sql,
 		SQLSHA256:  sha(sql),
 		StartedAt:  start,
-		MaxRows:    maxRows,
-		TimeoutSec: timeout.Seconds(),
+		MaxRows:    lim.rows,
+		TimeoutSec: lim.timeout.Seconds(),
 	}
 
-	res, runErr := run(ctx, db, sql, opts, maxRows, timeout, &ev)
+	res, runErr := run(ctx, db, sql, opts, lim, &ev)
 
 	ev.Duration = time.Since(start)
 	ev.Outcome = "ok"
@@ -208,24 +246,51 @@ func Run(ctx context.Context, db Beginner, sql string, opts Options) (*Result, e
 	return res, nil
 }
 
-func (o Options) limits() (int, time.Duration, *Error) {
-	rows, timeout := o.MaxRows, o.Timeout
-	switch {
-	case rows < 0 || rows > MaxRowsLimit:
-		return 0, 0, refused("max_rows", fmt.Sprintf("max rows must be between 1 and %d", MaxRowsLimit))
-	case rows == 0:
-		rows = DefaultMaxRows
-	}
-	switch {
-	case timeout < 0 || timeout > MaxTimeout:
-		return 0, 0, refused("timeout", fmt.Sprintf("timeout must be between 1ms and %s", MaxTimeout))
-	case timeout == 0:
-		timeout = DefaultTimeout
-	}
-	return rows, timeout, nil
+// bounds are an Options' limits with the defaults filled in.
+type bounds struct {
+	rows        int
+	timeout     time.Duration
+	lockTimeout time.Duration
+	idleTimeout time.Duration
+	maxBytes    int
 }
 
-func run(ctx context.Context, db Beginner, sql string, opts Options, maxRows int, timeout time.Duration, ev *Event) (*Result, *Error) {
+func (o Options) limits() (bounds, *Error) {
+	b := bounds{rows: o.MaxRows, timeout: o.Timeout, lockTimeout: o.LockTimeout, idleTimeout: o.IdleTimeout, maxBytes: o.MaxBytes}
+	switch {
+	case b.rows < 0 || b.rows > MaxRowsLimit:
+		return bounds{}, refused("max_rows", fmt.Sprintf("max rows must be between 1 and %d", MaxRowsLimit))
+	case b.rows == 0:
+		b.rows = DefaultMaxRows
+	}
+	switch {
+	case b.timeout < 0 || b.timeout > MaxTimeout:
+		return bounds{}, refused("timeout", fmt.Sprintf("timeout must be between 1ms and %s", MaxTimeout))
+	case b.timeout == 0:
+		b.timeout = DefaultTimeout
+	}
+	switch {
+	case b.lockTimeout < 0 || b.lockTimeout > MaxLockTimeout:
+		return bounds{}, refused("lock_timeout", fmt.Sprintf("lock timeout must be between 1ms and %s", MaxLockTimeout))
+	case b.lockTimeout == 0:
+		b.lockTimeout = DefaultLockTimeout
+	}
+	switch {
+	case b.idleTimeout < 0 || b.idleTimeout > MaxTimeout:
+		return bounds{}, refused("idle_timeout", fmt.Sprintf("idle timeout must be between 1ms and %s", MaxTimeout))
+	case b.idleTimeout == 0:
+		b.idleTimeout = DefaultIdleTimeout
+	}
+	switch {
+	case b.maxBytes < 0 || b.maxBytes > MaxResponseBytes:
+		return bounds{}, refused("max_bytes", fmt.Sprintf("max bytes must be between 1 and %d", MaxResponseBytes))
+	case b.maxBytes == 0:
+		b.maxBytes = MaxResponseBytes
+	}
+	return b, nil
+}
+
+func run(ctx context.Context, db Beginner, sql string, opts Options, lim bounds, ev *Event) (*Result, *Error) {
 	if !opts.skipGuard {
 		leader, err := Check(sql)
 		if err != nil {
@@ -234,10 +299,24 @@ func run(ctx context.Context, db Beginner, sql string, opts Options, maxRows int
 		ev.Leader = leader
 	}
 
+	refs, err := ParamRefs(sql)
+	if err != nil {
+		return nil, classify(err)
+	}
+	if refs > len(opts.Args) {
+		return nil, refused("missing_args", fmt.Sprintf("the statement references $%d but %d arguments were given", refs, len(opts.Args)))
+	}
+	var args []any
+	if refs > 0 {
+		args = opts.Args[:refs:refs]
+		ev.Args = args
+	}
+	timeout := lim.timeout
+
 	ctx, cancel := context.WithTimeout(ctx, timeout+ctxGrace)
 	defer cancel()
 
-	tx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	tx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, classify(err)
 	}
@@ -251,8 +330,8 @@ func run(ctx context.Context, db Beginner, sql string, opts Options, maxRows int
 	if _, err := tx.Exec(ctx,
 		`SELECT set_config('statement_timeout', $1, true), set_config('lock_timeout', $2, true), set_config('idle_in_transaction_session_timeout', $3, true)`,
 		strconv.FormatInt(timeout.Milliseconds(), 10)+"ms",
-		strconv.FormatInt(lockTimeout.Milliseconds(), 10)+"ms",
-		strconv.FormatInt(idleTimeout.Milliseconds(), 10)+"ms",
+		strconv.FormatInt(lim.lockTimeout.Milliseconds(), 10)+"ms",
+		strconv.FormatInt(lim.idleTimeout.Milliseconds(), 10)+"ms",
 	); err != nil {
 		return nil, classify(err)
 	}
@@ -260,7 +339,7 @@ func run(ctx context.Context, db Beginner, sql string, opts Options, maxRows int
 	// QueryExecModeExec: the extended protocol with text results. It rejects
 	// a multi-statement string, and text is how Postgres prints every type,
 	// enums and extension types included.
-	rows, err := tx.Query(ctx, sql, pgx.QueryExecModeExec)
+	rows, err := tx.Query(ctx, sql, append([]any{pgx.QueryExecModeExec}, args...)...)
 	if err != nil {
 		return nil, classify(err)
 	}
@@ -275,7 +354,7 @@ func run(ctx context.Context, db Beginner, sql string, opts Options, maxRows int
 	}
 
 	for rows.Next() {
-		if len(res.Rows) >= maxRows {
+		if len(res.Rows) >= lim.rows {
 			res.Truncated, res.TruncatedBy = true, "rows"
 			break
 		}
@@ -291,7 +370,7 @@ func run(ctx context.Context, db Beginner, sql string, opts Options, maxRows int
 				cut++
 			}
 		}
-		if res.Bytes+size > MaxResponseBytes {
+		if res.Bytes+size > lim.maxBytes {
 			res.Truncated, res.TruncatedBy = true, "bytes"
 			break
 		}

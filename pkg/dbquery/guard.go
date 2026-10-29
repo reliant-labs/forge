@@ -2,6 +2,7 @@ package dbquery
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -109,6 +110,36 @@ func Check(sql string) (leader string, err error) {
 	return leader, nil
 }
 
+// MaxParams is the most $n parameters a statement may reference; Postgres'
+// own limit on bind parameters.
+const MaxParams = 65535
+
+// ParamRefs returns the highest $n parameter the statement references, 0 when
+// it has none. It reads tokens, not text: a $1 inside a string literal, a
+// quoted identifier, a comment or a dollar-quoted body is not a reference.
+// $0 and a number past [MaxParams] are refused, as Postgres refuses them.
+func ParamRefs(sql string) (max int, err error) {
+	stmts, err := lex(sql)
+	if err != nil {
+		return 0, err
+	}
+	for _, stmt := range stmts {
+		for _, t := range stmt {
+			if t.kind != tokParam {
+				continue
+			}
+			n, convErr := strconv.Atoi(t.text)
+			if convErr != nil || n < 1 || n > MaxParams {
+				return 0, refused("bad_param", fmt.Sprintf("$%s is not a valid parameter: parameters are $1 to $%d", t.text, MaxParams))
+			}
+			if n > max {
+				max = n
+			}
+		}
+	}
+	return max, nil
+}
+
 func skipParens(stmt []token, i int) int {
 	for i < len(stmt) && stmt[i].kind == tokPunct && stmt[i].text == "(" {
 		i++
@@ -122,6 +153,7 @@ const (
 	tokWord tokenKind = iota
 	tokPunct
 	tokLiteral // string, quoted identifier, dollar-quoted body
+	tokParam   // $n; text is the digits
 )
 
 type token struct {
@@ -190,7 +222,16 @@ func lex(sql string) ([][]token, error) {
 		case c == '$' && (i == 0 || !isIdentByte(sql[i-1])):
 			tag, ok := dollarTag(sql, i)
 			if !ok {
-				i++
+				j := i + 1
+				for j < n && sql[j] >= '0' && sql[j] <= '9' {
+					j++
+				}
+				if j > i+1 {
+					cur = append(cur, token{kind: tokParam, text: sql[i+1 : j]})
+					i = j
+				} else {
+					i++
+				}
 				continue
 			}
 			end := strings.Index(sql[i+len(tag):], tag)

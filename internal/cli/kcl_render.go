@@ -69,10 +69,11 @@ type releaseManifestConsumer struct {
 }
 
 type KCLEntities struct {
-	// NoDockerSkipped names the optional compose workloads (and the workloads
-	// requiring them) `forge env up` dropped from this run because the Docker
-	// daemon is unreachable. Run state, never part of the render.
-	NoDockerSkipped          []string `json:"-"`
+	// OptionalSkipped names the optional compose workloads (and the workloads
+	// requiring them) `forge env up` dropped from this run: because the Docker
+	// daemon is unreachable, or because no --target selected or requires them
+	// (scopeOptionalInfra). Run state, never part of the render.
+	OptionalSkipped          []string `json:"-"`
 	ReleaseManifestConsumers []releaseManifestConsumer
 	// Project and Env are the bundle's project name and the env it was
 	// rendered for. ImageTag is the env's RESOLVED image tag — the tag the

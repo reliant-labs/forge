@@ -37,7 +37,7 @@ const otelSDKDisabledEnv = "OTEL_SDK_DISABLED"
 //     `requires` one of them (transitively), are dropped from e, and one
 //     warning says what, why, and how to get it back.
 //
-// e.NoDockerSkipped records the names so the deploy phase, which renders the
+// e.OptionalSkipped records the names so the deploy phase, which renders the
 // env again, drops the same ones.
 func degradeWithoutDocker(ctx context.Context, e *KCLEntities, env string, targets []string, w io.Writer) error {
 	if e == nil {
@@ -83,32 +83,37 @@ func degradeWithoutDocker(ctx context.Context, e *KCLEntities, env string, targe
 		}
 	}
 	e.Workloads = kept
-	e.NoDockerSkipped = sortedKeys(skip)
+	e.OptionalSkipped = mergeSorted(e.OptionalSkipped, sortedKeys(skip))
 
 	if collectorSkipped {
-		// The collector the host processes were told to export to is not
-		// coming up; exporting to it would only fail on every flush.
-		if e.Observability != nil {
-			o := *e.Observability
-			o.Enabled = false
-			e.Observability = &o
-		}
-		for _, wl := range e.Workloads {
-			h := wl.Runtime.Host
-			if h == nil {
-				continue
-			}
-			if _, set := wl.HostEnv()[otelSDKDisabledEnv]; set {
-				continue
-			}
-			if h.LaunchEnv == nil {
-				h.LaunchEnv = map[string]string{}
-			}
-			h.LaunchEnv[otelSDKDisabledEnv] = "true"
-		}
+		disableLocalTelemetry(e)
 	}
 	printNoDockerSkip(w, env, optional, dependents, collectorSkipped, dockerErr)
 	return nil
+}
+
+// disableLocalTelemetry turns local telemetry off for this run: the collector
+// the host processes were told to export to is not coming up, and exporting
+// to it would only fail on every flush.
+func disableLocalTelemetry(e *KCLEntities) {
+	if e.Observability != nil {
+		o := *e.Observability
+		o.Enabled = false
+		e.Observability = &o
+	}
+	for _, wl := range e.Workloads {
+		h := wl.Runtime.Host
+		if h == nil {
+			continue
+		}
+		if _, set := wl.HostEnv()[otelSDKDisabledEnv]; set {
+			continue
+		}
+		if h.LaunchEnv == nil {
+			h.LaunchEnv = map[string]string{}
+		}
+		h.LaunchEnv[otelSDKDisabledEnv] = "true"
+	}
 }
 
 // closeOverRequires adds to skip every workload that requires a skipped one,

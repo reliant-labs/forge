@@ -14,6 +14,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/pkg/credentials"
 	"github.com/reliant-labs/forge/pkg/deploy"
 	v1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
@@ -261,6 +262,49 @@ func TestPrintClaimBlock_TextMatchesTheDesign(t *testing.T) {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("claim block lacks %q:\n%s", want, b.String())
 		}
+	}
+}
+
+// An unclaimed BACKEND has no outbound internet; a static site makes no
+// outbound calls, so it is told nothing. The notice is in the text block, in
+// the instructions an agent reads from --json, and as a machine-readable flag.
+func TestClaimDocument_NoOutboundInternetOnlyForCompute(t *testing.T) {
+	now := time.Date(2026, 10, 26, 14, 2, 0, 0, time.UTC)
+	cred := credentials.Credential{Claimable: &credentials.Claimable{
+		URL: "https://amber-quokka.reliantpreview.dev", ClaimURL: "https://app.reliant.dev/claim#rcl_9f3KQe",
+		ExpiresAt: now.Add(72 * time.Hour), PurgeAfter: now.Add(240 * time.Hour),
+	}}
+	backend := claimDocument("prod", cred, now, true)
+	if !backend.NoOutboundInternet {
+		t.Error("a service's claim document does not carry no_outbound_internet")
+	}
+	for _, want := range []string{"no outbound internet", "fails with a connection error", "not a bug in the app", "the moment the deploy is claimed"} {
+		if !strings.Contains(backend.AgentInstructions, want) {
+			t.Errorf("agent_instructions lacks %q:\n%s", want, backend.AgentInstructions)
+		}
+	}
+	var text strings.Builder
+	claimableNow = func() time.Time { return now }
+	defer func() { claimableNow = time.Now }()
+	printClaimBlock(&text, "prod", backend)
+	for _, want := range []string{"NO OUTBOUND INTERNET until claimed", "uses its own", "not a bug in the app"} {
+		if !strings.Contains(text.String(), want) {
+			t.Errorf("claim block lacks %q:\n%s", want, text.String())
+		}
+	}
+
+	static := claimDocument("prod", cred, now, false)
+	if static.NoOutboundInternet || strings.Contains(static.AgentInstructions, "outbound") {
+		t.Errorf("a static site was told it has no outbound internet: %+v", static)
+	}
+	text.Reset()
+	printClaimBlock(&text, "prod", static)
+	if strings.Contains(strings.ToLower(text.String()), "outbound") {
+		t.Errorf("a static site's claim block mentions outbound internet:\n%s", text.String())
+	}
+	b, _ := json.Marshal(static)
+	if strings.Contains(string(b), "no_outbound_internet") {
+		t.Errorf("the flag is serialised for a static site: %s", b)
 	}
 }
 

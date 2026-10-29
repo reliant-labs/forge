@@ -247,23 +247,65 @@ describe("reportException de-duplication", () => {
 });
 
 describe("benign browser errors", () => {
-  // A fake of the SDK's error capture: like the real one it registers its
-  // window listeners and wraps console.error inside init.
-  const sdkSaw = vi.fn();
+  // A fake of the SDK's error capture, shaped like the real one: init
+  // registers its window listeners and wraps console.error, and each captured
+  // failure is a span on the `errors` tracer of the registered provider,
+  // exported only once it is ENDED.
+  type FakeSpan = {
+    name: string;
+    attributes: Record<string, unknown>;
+    setAttribute(k: string, v: unknown): FakeSpan;
+    end(): void;
+  };
+  const exported: Array<{ name: string; message: unknown }> = [];
   const consoleUnderSdk = vi.fn();
   let originalConsoleError: typeof console.error;
 
-  function dispatchEvent(type: string, fields: Record<string, unknown>) {
-    let stopped = false;
-    const event = {
-      ...fields,
-      stopImmediatePropagation: () => {
-        stopped = true;
+  function fakeProvider() {
+    const tracers = new Map<string, { startSpan(name: string): FakeSpan }>();
+    return {
+      getTracer(name: string, version?: string) {
+        const key = `${name}@${version ?? ""}`;
+        if (!tracers.has(key)) {
+          tracers.set(key, {
+            startSpan(spanName: string): FakeSpan {
+              const span: FakeSpan = {
+                name: spanName,
+                attributes: {},
+                setAttribute(k, v) {
+                  span.attributes[k] = v;
+                  return span;
+                },
+                end() {
+                  exported.push({
+                    name: spanName,
+                    message: span.attributes["error.message"],
+                  });
+                },
+              };
+              return span;
+            },
+          });
+        }
+        return tracers.get(key)!;
       },
     };
-    for (const fn of listeners.get(type) ?? []) {
-      if (stopped) break;
-      fn(event);
+  }
+
+  function exportedMessages(name: string) {
+    return exported.filter((e) => e.name === name).map((e) => e.message);
+  }
+
+  function dispatchEvent(type: string, fields: Record<string, unknown>) {
+    for (const fn of listeners.get(type) ?? []) fn({ ...fields });
+  }
+
+  function nameOfValue(v: unknown): string {
+    try {
+      const n = (v as { name?: unknown }).name;
+      return typeof n === "string" ? n : "String";
+    } catch {
+      return "String";
     }
   }
 
@@ -272,17 +314,42 @@ describe("benign browser errors", () => {
     opts: { initThrows?: boolean } = {},
   ) {
     stubDom();
+    const { trace } = await import("@opentelemetry/api");
+    trace.disable();
+    trace.setGlobalTracerProvider(fakeProvider() as never);
     init.mockImplementation(() => {
       if (opts.initThrows) throw new Error("sdk init failed");
+      const provider = trace.getTracerProvider() as unknown as {
+        getDelegate(): ReturnType<typeof fakeProvider>;
+      };
+      // Held once, as the real instrumentation holds its tracer.
+      const tracer = provider.getDelegate().getTracer("errors", "1");
+      const record = (source: string, value: unknown) => {
+        const span = tracer.startSpan(source);
+        if (typeof value === "object" && value !== null) {
+          span.setAttribute("error.object", nameOfValue(value));
+          let message: unknown = "";
+          try {
+            message = (value as { message?: unknown }).message;
+          } catch {
+            message = "";
+          }
+          span.setAttribute("error.message", message);
+        } else {
+          span.setAttribute("error.object", "String");
+          span.setAttribute("error.message", String(value));
+        }
+        span.end();
+      };
       window.addEventListener("unhandledrejection", (e: Event) =>
-        sdkSaw("unhandledrejection", (e as PromiseRejectionEvent).reason),
+        record("unhandledrejection", (e as PromiseRejectionEvent).reason),
       );
       window.addEventListener("error", (e: Event) =>
-        sdkSaw("error", (e as ErrorEvent).error),
+        record("onerror", (e as ErrorEvent).error),
       );
       const below = console.error;
       console.error = (...args: unknown[]) => {
-        sdkSaw("console.error", args[0]);
+        record("console.error", args[0]);
         below(...args);
       };
     });
@@ -296,17 +363,19 @@ describe("benign browser errors", () => {
   }
 
   beforeEach(() => {
-    sdkSaw.mockReset();
+    exported.length = 0;
     consoleUnderSdk.mockReset();
     originalConsoleError = console.error;
     console.error = consoleUnderSdk;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     console.error = originalConsoleError;
+    const { trace } = await import("@opentelemetry/api");
+    trace.disable();
   });
 
-  it("keeps an unhandled AbortError from the SDK, and records any other rejection", async () => {
+  it("keeps an unhandled AbortError out of the record, and records any other rejection", async () => {
     await start();
     dispatchEvent("unhandledrejection", {
       reason: new DOMException(
@@ -314,11 +383,36 @@ describe("benign browser errors", () => {
         "AbortError",
       ),
     });
-    expect(sdkSaw).not.toHaveBeenCalled();
+    expect(exported).toEqual([]);
 
-    const real = new Error("boom");
-    dispatchEvent("unhandledrejection", { reason: real });
-    expect(sdkSaw).toHaveBeenCalledWith("unhandledrejection", real);
+    dispatchEvent("unhandledrejection", { reason: new Error("boom") });
+    expect(exportedMessages("unhandledrejection")).toEqual(["boom"]);
+  });
+
+  it("never touches the app's handlers: before and after telemetry starts, they see every event", async () => {
+    stubDom();
+    const before = vi.fn();
+    window.addEventListener("unhandledrejection", (e: Event) =>
+      before((e as PromiseRejectionEvent).reason),
+    );
+    // start() re-stubs the DOM, so register "before" on the stub it will use.
+    const keep = listeners.get("unhandledrejection") ?? [];
+    await start();
+    listeners.set("unhandledrejection", [
+      ...keep,
+      ...(listeners.get("unhandledrejection") ?? []),
+    ]);
+    const after = vi.fn();
+    window.addEventListener("unhandledrejection", (e: Event) =>
+      after((e as PromiseRejectionEvent).reason),
+    );
+    const abort = new DOMException("x", "AbortError");
+    const offline = new TypeError("Failed to fetch");
+    dispatchEvent("unhandledrejection", { reason: abort });
+    dispatchEvent("unhandledrejection", { reason: offline });
+    expect(before.mock.calls).toEqual([[abort], [offline]]);
+    expect(after.mock.calls).toEqual([[abort], [offline]]);
+    expect(exported).toEqual([]);
   });
 
   it("never filters a ConnectError, even one whose message is a fetch failure", async () => {
@@ -326,33 +420,36 @@ describe("benign browser errors", () => {
     const rpc = new Error("[unavailable] Failed to fetch");
     rpc.name = "ConnectError";
     dispatchEvent("unhandledrejection", { reason: rpc });
-    expect(sdkSaw).toHaveBeenCalledWith("unhandledrejection", rpc);
+    expect(exportedMessages("unhandledrejection")).toEqual([
+      "[unavailable] Failed to fetch",
+    ]);
   });
 
-  it("sends a console.error of the browser's generic fetch failure to the console, not the SDK", async () => {
+  it("logs a console.error of the browser's generic fetch failure as always, and does not record it", async () => {
     await start();
     const offline = new TypeError("Failed to fetch (dash.example.io)");
     console.error("auth refresh:", offline);
-    expect(sdkSaw).not.toHaveBeenCalled();
     expect(consoleUnderSdk).toHaveBeenCalledWith("auth refresh:", offline);
+    expect(exported).toEqual([]);
 
     const bug = new TypeError("Cannot read properties of undefined");
     console.error(bug);
-    expect(sdkSaw).toHaveBeenCalledWith("console.error", bug);
     expect(consoleUnderSdk).toHaveBeenCalledWith(bug);
+    expect(exportedMessages("console.error")).toEqual([
+      "Cannot read properties of undefined",
+    ]);
   });
 
-  it("keeps a console.error on the SDK's path when any Error in it is real", async () => {
+  it("records a console.error when any exception in it is real", async () => {
     await start();
     const offline = new TypeError("Failed to fetch");
     const rpc = new Error("[unavailable] upstream");
     rpc.name = "ConnectError";
     console.error(offline, rpc);
-    expect(sdkSaw).toHaveBeenCalledWith("console.error", offline);
+    expect(exported).toHaveLength(1);
 
-    sdkSaw.mockReset();
     console.error(new DOMException("x", "AbortError"), new Error("real bug"));
-    expect(sdkSaw).toHaveBeenCalledTimes(1);
+    expect(exported).toHaveLength(2);
     dispatchEvent("pagehide", {});
     expect(addAction).not.toHaveBeenCalledWith(
       "forge.errors_filtered",
@@ -364,59 +461,50 @@ describe("benign browser errors", () => {
     await start();
     // Some browsers' DOMException is not instanceof Error.
     const notAnError = (name: string, message: string) => {
-      const ex = Object.create(DOMException.prototype) as object;
+      const ex = {} as object;
       Object.defineProperty(ex, "name", { value: name });
       Object.defineProperty(ex, "message", { value: message });
       Object.setPrototypeOf(ex, { [Symbol.toStringTag]: "DOMException" });
       return ex;
     };
-    const abort = notAnError("AbortError", "aborted");
-    console.error(abort);
-    expect(sdkSaw).not.toHaveBeenCalled();
+    console.error(notAnError("AbortError", "aborted"));
+    expect(exported).toEqual([]);
 
-    const real = notAnError("NotAllowedError", "denied");
-    console.error(new TypeError("Failed to fetch"), real);
-    expect(sdkSaw).toHaveBeenCalledTimes(1);
+    console.error(
+      new TypeError("Failed to fetch"),
+      notAnError("NotAllowedError", "denied"),
+    );
+    expect(exported).toHaveLength(1);
   });
 
-  it("leaves the app's own handlers untouched when the SDK fails to start", async () => {
+  it("leaves everything as it was when the SDK fails to start", async () => {
     vi.spyOn(console, "debug").mockImplementation(() => undefined);
-    const { t } = await start({}, { initThrows: true });
-    void t;
-    const appSaw = vi.fn();
-    window.addEventListener("unhandledrejection", (e: Event) =>
-      appSaw((e as PromiseRejectionEvent).reason),
-    );
-    window.addEventListener("error", (e: Event) =>
-      appSaw((e as ErrorEvent).error),
-    );
-    const abort = new DOMException("x", "AbortError");
-    dispatchEvent("unhandledrejection", { reason: abort });
-    const offline = new TypeError("Failed to fetch");
-    dispatchEvent("error", { error: offline });
-    expect(appSaw.mock.calls).toEqual([[abort], [offline]]);
-    // No tap either: console.error is what it was.
+    await start({}, { initThrows: true });
     expect(console.error).toBe(consoleUnderSdk);
+    const { trace } = await import("@opentelemetry/api");
+    const tracer = (
+      trace.getTracerProvider() as unknown as {
+        getDelegate(): ReturnType<typeof fakeProvider>;
+      }
+    )
+      .getDelegate()
+      .getTracer("errors", "1");
+    tracer.startSpan("unhandledrejection").end();
+    expect(exportedMessages("unhandledrejection")).toHaveLength(1);
   });
 
-  it("removes the filter and the console tap when startup fails after the SDK init", async () => {
+  it("undoes the tracer wrap and the console tap when startup fails after the SDK init", async () => {
     vi.spyOn(console, "debug").mockImplementation(() => undefined);
     setGlobalAttributes.mockImplementationOnce(() => {
       throw new Error("late failure");
     });
-    const { t } = await start();
-    void t;
-    const appSaw = vi.fn();
-    window.addEventListener("unhandledrejection", (e: Event) =>
-      appSaw((e as PromiseRejectionEvent).reason),
-    );
-    const abort = new DOMException("x", "AbortError");
-    dispatchEvent("unhandledrejection", { reason: abort });
-    expect(appSaw).toHaveBeenCalledWith(abort);
-    // The SDK's own wrapper is back on top, not the runtime's tap.
-    const offline = new TypeError("Failed to fetch");
-    console.error(offline);
-    expect(sdkSaw).toHaveBeenCalledWith("console.error", offline);
+    await start();
+    dispatchEvent("unhandledrejection", {
+      reason: new DOMException("x", "AbortError"),
+    });
+    expect(exportedMessages("unhandledrejection")).toEqual(["x"]);
+    console.error(new TypeError("Failed to fetch"));
+    expect(exportedMessages("console.error")).toEqual(["Failed to fetch"]);
   });
 
   it("counts every exception of a benign console.error, of each kind", async () => {
@@ -426,7 +514,7 @@ describe("benign browser errors", () => {
       new DOMException("aborted", "AbortError"),
       new TypeError("Load failed"),
     );
-    expect(sdkSaw).not.toHaveBeenCalled();
+    expect(exported).toEqual([]);
     dispatchEvent("pagehide", {});
     expect(addAction).toHaveBeenCalledWith("forge.errors_filtered", {
       kind: "network",
@@ -440,7 +528,7 @@ describe("benign browser errors", () => {
     });
   });
 
-  it("forwards a console.error whose argument cannot be inspected, without throwing", async () => {
+  it("records and forwards a console.error whose argument cannot be inspected, without throwing", async () => {
     await start();
     const hostile = {
       get [Symbol.toStringTag](): string {
@@ -451,22 +539,14 @@ describe("benign browser errors", () => {
     revoke();
     expect(() => console.error(hostile)).not.toThrow();
     // Compared by identity: a matcher's deep equality would read the getter.
-    expect(sdkSaw.mock.calls.length).toBe(1);
-    expect(sdkSaw.mock.calls[0]?.[1] === hostile).toBe(true);
     expect(consoleUnderSdk.mock.calls.length).toBe(1);
     expect(consoleUnderSdk.mock.calls[0]?.[0] === hostile).toBe(true);
+    expect(exported).toHaveLength(1);
 
-    sdkSaw.mockReset();
     expect(() =>
       console.error(new TypeError("Failed to fetch"), proxy),
     ).not.toThrow();
-    expect(sdkSaw).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not record a benign error handed to reportException, but says the SDK has it", async () => {
-    const { r } = await start();
-    expect(r.reportException(new TypeError("Load failed"))).toBe(true);
-    expect(recordException).not.toHaveBeenCalled();
+    expect(exported).toHaveLength(2);
   });
 
   it("counts what it filtered and emits the counts when the page is hidden", async () => {
@@ -477,7 +557,7 @@ describe("benign browser errors", () => {
     dispatchEvent("unhandledrejection", {
       reason: new DOMException("y", "AbortError"),
     });
-    console.error(new TypeError("Failed to fetch"));
+    dispatchEvent("error", { error: new TypeError("Failed to fetch") });
     expect(addAction).not.toHaveBeenCalledWith(
       "forge.errors_filtered",
       expect.anything(),
@@ -491,16 +571,29 @@ describe("benign browser errors", () => {
     });
     expect(addAction).toHaveBeenCalledWith("forge.errors_filtered", {
       kind: "network",
-      source: "console.error",
+      source: "error",
       count: 1,
     });
   });
 
+  it("never filters a String throw, whatever its text", async () => {
+    await start();
+    dispatchEvent("unhandledrejection", { reason: "Failed to fetch" });
+    expect(exportedMessages("unhandledrejection")).toEqual(["Failed to fetch"]);
+  });
+
+  it("does not record a benign error handed to reportException, but says the SDK has it", async () => {
+    const { r } = await start();
+    expect(r.reportException(new TypeError("Load failed"))).toBe(true);
+    expect(recordException).not.toHaveBeenCalled();
+  });
+
   it("records everything with classifyBenignError: () => null", async () => {
     await start({ classifyBenignError: () => null });
-    const abort = new DOMException("x", "AbortError");
-    dispatchEvent("unhandledrejection", { reason: abort });
-    expect(sdkSaw).toHaveBeenCalledWith("unhandledrejection", abort);
+    dispatchEvent("unhandledrejection", {
+      reason: new DOMException("x", "AbortError"),
+    });
+    expect(exportedMessages("unhandledrejection")).toEqual(["x"]);
   });
 });
 

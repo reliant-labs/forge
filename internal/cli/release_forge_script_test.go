@@ -317,10 +317,10 @@ func TestReleaseForgeScript_TagsOnceAtTheReleaseCommit(t *testing.T) {
 	}
 }
 
-// TestReleaseForgeScript_RejectsAConcurrentRelease: while another cut of the same
-// version holds refs/release-lock/<v> on origin, the script refuses before it commits,
-// tags or pushes anything, and leaves that holder's lock alone. This is what keeps a
-// hand cut and the release workflow from both releasing one version.
+// TestReleaseForgeScript_RejectsAConcurrentRelease: while another release of this
+// repository (any version) holds a live refs/release-lock/release on origin, the script
+// refuses before it commits, tags or pushes anything, and leaves that holder's lock
+// alone. This is what keeps a hand cut and the release workflow from racing.
 func TestReleaseForgeScript_RejectsAConcurrentRelease(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs a git push")
@@ -330,15 +330,15 @@ func TestReleaseForgeScript_RejectsAConcurrentRelease(t *testing.T) {
 	gitIn(t, repo, "clone", "--bare", "--quiet", repo, origin)
 	gitIn(t, repo, "remote", "add", "origin", origin)
 	tree := gitOut(t, repo, "mktree")
-	lock := gitOut(t, repo, "-c", "user.name=F", "-c", "user.email=f@x.invalid", "commit-tree", tree, "-m", "release lock v0.2.0: other@box")
-	gitIn(t, repo, "push", "-q", "origin", lock+":refs/release-lock/v0.2.0")
+	lock := gitOut(t, repo, "-c", "user.name=F", "-c", "user.email=f@x.invalid", "commit-tree", tree, "-m", "release lock: v0.1.9 by other@box pid 1 release-forge.sh")
+	gitIn(t, repo, "push", "-q", "origin", lock+":refs/release-lock/release")
 	before := gitOut(t, repo, "rev-parse", "HEAD")
 
 	out, err := runForgeScript(t, repo, "v0.2.0")
 	if err == nil {
 		t.Fatalf("expected a refusal while another release holds the lock, got success:\n%s", out)
 	}
-	if !strings.Contains(out, "already in progress") {
+	if !strings.Contains(out, "already in progress: release lock: v0.1.9 by other@box") {
 		t.Errorf("refusal does not say a release is in progress:\n%s", out)
 	}
 	if head := gitOut(t, repo, "rev-parse", "HEAD"); head != before {
@@ -347,7 +347,7 @@ func TestReleaseForgeScript_RejectsAConcurrentRelease(t *testing.T) {
 	if tags := gitOut(t, origin, "tag", "-l"); strings.Contains(tags, "v0.2.0") {
 		t.Errorf("the refused release pushed its tag")
 	}
-	if got := gitOut(t, origin, "rev-parse", "refs/release-lock/v0.2.0"); got != lock {
+	if got := gitOut(t, origin, "rev-parse", "refs/release-lock/release"); got != lock {
 		t.Errorf("the refused release touched the holder's lock: %s, want %s", got, lock)
 	}
 }
@@ -443,5 +443,23 @@ func TestReleaseForgeScript_RejectsExistingTag(t *testing.T) {
 	}
 	if !strings.Contains(out, "already exists") {
 		t.Errorf("unexpected error output:\n%s", out)
+	}
+}
+
+// TestReleaseLockScript runs scripts/test-release-lock.sh, the hermetic self-test of the
+// lock every release script sources (the same file in forge, reliant and control-plane):
+// refusal naming the holder, heartbeat, a nested holder, stale replacement, and the
+// holder's re-check of main with a fake gh.
+func TestReleaseLockScript(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs git pushes against throwaway remotes; runs in task test")
+	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", filepath.Join(root, "scripts", "test-release-lock.sh"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("scripts/test-release-lock.sh: %v\n%s", err, out)
 	}
 }

@@ -529,9 +529,10 @@ if [ "$DRY_RUN" = "1" ]; then
   exit 0
 fi
 
-# One release of a version at a time, across machines: a hand cut and the release
-# workflow cannot both push this tag (release-lock.sh). Then re-check origin, since a
-# holder that just finished has released the lock and pushed the tag.
+# One release of this repository at a time, across machines and pipelines: a hand cut
+# and the release workflow cannot race (release-lock.sh; the workflow coalesces into a
+# live lock). Then re-check origin, since a holder that just finished has released the
+# lock and pushed the tag.
 release_lock_acquire "$VERSION" || exit 1
 if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
   echo "error: $RELEASE_TAG is already on origin (another cut released it)" >&2

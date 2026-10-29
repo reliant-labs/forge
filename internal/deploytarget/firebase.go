@@ -474,7 +474,7 @@ func (p FirebaseProvider) buildOnlyPlanFor(fe BuildOnlyFrontend) (buildOnlyPlan,
 	return buildOnlyPlan{
 		Name:        fe.Name,
 		FrontendDir: frontendDir,
-		InstallCmd:  frontendInstallCmd(fe.DevRunner),
+		InstallCmd:  frontendInstallCmd(frontendDir, fe.DevRunner),
 		BuildCmd:    []string{"npm", "run", "build"},
 		BuildEnv:    buildTimeEnv(fe.BuildEnv),
 		EmittedDir:  emitted,

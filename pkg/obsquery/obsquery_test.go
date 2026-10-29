@@ -631,6 +631,9 @@ func TestTraceQueryPrefiltersCandidateTraces(t *testing.T) {
 	}
 	if strings.Contains(st.SQL, "TraceId IN (") {
 		t.Errorf("an unfiltered page has nothing to prefilter by:\n%s", st.SQL)
+	}
+}
+
 // A streaming RPC's server span lasts as long as the stream, so the RED
 // latency quantiles are over unary spans only, while requests count both.
 func TestREDLatencyExcludesStreams(t *testing.T) {

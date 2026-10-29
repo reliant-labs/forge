@@ -200,8 +200,8 @@ func pinSkewFor(projectRoot string) (pin, binary string, skewed, devAgainstTag b
 	}
 	// A project bridged (go.work) to the local forge checkout this very
 	// binary was built from is someone running the forge they are working
-	// on — the e2e lanes, a forge developer. Its pin follows go.mod (often
-	// the published floor) and says nothing about that binary. A bridged
+	// on — the e2e lanes, a forge developer. Its pin follows that checkout
+	// (stepReconcileForgePin), and the skew that matters is the bridge's own. A bridged
 	// project run by a binary that is NOT its checkout's — a stale
 	// ~/go/bin/forge, the 2026-10-07 case — is checked like any other.
 	if rep := forgecompat.InspectBridge(projectRoot); rep.Bridged && rep.CheckoutOK && !rep.Skewed {

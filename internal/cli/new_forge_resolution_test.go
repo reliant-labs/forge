@@ -106,3 +106,87 @@ func TestRunNew_RefusesUnresolvableForgeBeforeWriting(t *testing.T) {
 			filepath.Join(parent, "demo"), statErr)
 	}
 }
+
+// TestAutoLinkForge: an unreleased build whose checkout is known used to be
+// refused with "re-run with --link-forge --forge-root <the root it had just
+// found>". project new now links it in one command, saying so in one line —
+// and only where linking is what makes the scaffold resolvable.
+func TestAutoLinkForge(t *testing.T) {
+	buildinfo.SetDevBuild(true)
+	t.Cleanup(buildinfo.ClearDevBuild)
+	prevRoot := buildinfo.DevForgeRoot
+	buildinfo.DevForgeRoot = ""
+	t.Cleanup(func() { buildinfo.DevForgeRoot = prevRoot })
+	buildinfo.Set("dev", "", "unknown") // not installable: no proxy version to pin
+	t.Cleanup(func() { buildinfo.Set("dev", "", "unknown") })
+	t.Setenv(buildinfo.ForgeRootEnv, "")
+	t.Cleanup(buildinfo.ClearDiscoveredForgeRoot)
+
+	checkout := t.TempDir()
+	writeFileForTest(t, filepath.Join(checkout, "go.mod"), "module github.com/reliant-labs/forge\n\ngo 1.24\n")
+	writeFileForTest(t, filepath.Join(checkout, "pkg", "doc.go"), "package pkg\n")
+
+	for _, tc := range []struct {
+		name     string
+		kind     string
+		root     string
+		link     bool
+		declined bool
+		want     bool
+	}{
+		{"service, unreleased, checkout known: linked", config.ProjectKindService, checkout, false, false, true},
+		{"--link-forge already: stays linked", config.ProjectKindService, checkout, true, false, true},
+		{"--link-forge=false: refused instead", config.ProjectKindService, checkout, false, true, false},
+		{"no checkout found: refused, nothing to link", config.ProjectKindService, "", false, false, false},
+		// A CLI resolves without forge, so nothing is linked behind its back.
+		{"cli needs no forge: not linked", config.ProjectKindCLI, checkout, false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			buildinfo.SetDiscoveredForgeRoot(tc.root)
+			linkForgeDeclined = tc.declined
+			t.Cleanup(func() { linkForgeDeclined = false })
+
+			var got bool
+			out := captureStdout(t, func() { got = autoLinkForge(tc.kind, tc.link, nil) })
+			if got != tc.want {
+				t.Fatalf("autoLinkForge(%q, link=%v) = %v, want %v", tc.kind, tc.link, got, tc.want)
+			}
+			announced := strings.Contains(out, "linking the project to "+checkout)
+			if auto := tc.want && !tc.link; announced != auto {
+				t.Errorf("announcement printed = %v, want %v (only an automatic link is announced):\n%s", announced, auto, out)
+			}
+			if got && checkScaffoldCanResolveForge(tc.kind, got, nil) != nil {
+				t.Errorf("an auto-linked scaffold must then resolve forge")
+			}
+		})
+	}
+}
+
+// A released forge is never bridged to a checkout behind the user's back,
+// even where linking would get past a refusal (an adopted go.mod's stale
+// pin): that refusal has a published answer.
+func TestAutoLinkForge_ReleasedBuildIsNeverAutoLinked(t *testing.T) {
+	buildinfo.Set("v0.1.45", "", "unknown") // a stamped release: installable
+	t.Cleanup(func() { buildinfo.Set("dev", "", "unknown") })
+	t.Setenv(buildinfo.ForgeRootEnv, "")
+	checkout := t.TempDir()
+	writeFileForTest(t, filepath.Join(checkout, "go.mod"), "module github.com/reliant-labs/forge\n\ngo 1.24\n")
+	writeFileForTest(t, filepath.Join(checkout, "pkg", "doc.go"), "package pkg\n")
+	buildinfo.SetDiscoveredForgeRoot(checkout)
+	t.Cleanup(buildinfo.ClearDiscoveredForgeRoot)
+
+	stale := &adoptedForge{known: true, resolved: "v0.1.44"}
+	if autoLinkForge(config.ProjectKindService, false, stale) {
+		t.Fatal("a released forge was linked to a checkout to dodge a stale-pin refusal")
+	}
+}
+
+func writeFileForTest(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

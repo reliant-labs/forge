@@ -529,9 +529,10 @@ func (r Report) unproven() bool { return len(r.StandingCritical) > 0 || r.AlertS
 // WithStandingAlerts applies the critical-alert rule to a judged report from
 // the alerts firing now, read by the caller (`forge obs check` reads them
 // itself, so the rule holds over a control plane whose answer predates it):
-// a critical alert opened at or after the promotion is a failing alert_firing
-// finding, whatever the policy that judged the report; one opened before it
-// joins StandingCritical. The report's own FiringAlerts are applied the same
+// a critical alert opened in the after window [P, after.To) is a failing
+// alert_firing finding, whatever the policy that judged the report; one opened
+// before P joins StandingCritical; one opened after the window, or with no
+// opening time, is not attributed. The report's own FiringAlerts are applied the same
 // way. The verdict is recomputed; alerts that are not critical are ignored.
 func WithStandingAlerts(r Report, firing []Alert) Report {
 	out := r
@@ -543,11 +544,14 @@ func WithStandingAlerts(r Report, firing []Alert) Report {
 		seen[alertKey(a)] = true
 	}
 	for _, a := range append(slices.Clone(r.FiringAlerts), firing...) {
-		if !a.Critical() || seen[alertKey(a)] {
+		// An alert with no opening time cannot be placed against the
+		// promotion, and one that opened after the judged after window (a
+		// later promotion's, or later still) is not this release's.
+		if !a.Critical() || a.FiringAt.IsZero() || !a.FiringAt.Before(r.After.To) || seen[alertKey(a)] {
 			continue
 		}
 		seen[alertKey(a)] = true
-		if !a.FiringAt.IsZero() && a.FiringAt.Before(p) {
+		if a.FiringAt.Before(p) {
 			out.StandingCritical = append(out.StandingCritical, a)
 			continue
 		}

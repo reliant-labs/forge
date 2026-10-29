@@ -335,3 +335,21 @@ func TestWithStandingAlertsFailsAPostPromotionCriticalAlert(t *testing.T) {
 		t.Errorf("unread alert state: verdict %s", u.Verdict)
 	}
 }
+
+// Checking an older promotion must not fail it for a critical alert a later
+// promotion opened after the judged after window ended.
+func TestWithStandingAlertsIsBoundedByTheAfterWindow(t *testing.T) {
+	r := Evaluate(input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100)))
+	crit := map[string]string{"severity": "critical"}
+	w := WithStandingAlerts(r, []Alert{
+		{Rule: "Later", FiringAt: r.After.To.Add(time.Hour), Labels: crit},
+		{Rule: "AtTheEnd", FiringAt: r.After.To, Labels: crit},
+		{Rule: "NoTime", Labels: crit},
+	})
+	if w.Verdict != Pass || len(w.Findings) != 0 || len(w.StandingCritical) != 0 {
+		t.Errorf("verdict %s findings %+v standing %+v", w.Verdict, w.Findings, w.StandingCritical)
+	}
+	if w := WithStandingAlerts(r, []Alert{{Rule: "In", FiringAt: r.After.To.Add(-time.Second), Labels: crit}}); w.Verdict != Fail {
+		t.Errorf("an alert opened inside the after window: verdict %s", w.Verdict)
+	}
+}

@@ -27,8 +27,9 @@ consumers:
   that publishes it. The version bump itself is a reviewed PR; the release never
   invents one.
 - **forge**, when main's tip has a green full `ci.yml` run on push (the proof
-  `scripts/check-release-tests.sh` reads): `scripts/release-forge.sh vX.Y.Z`, the next
-  patch version.
+  `scripts/check-release-tests.sh` reads): `scripts/release-forge.sh` with no
+  version, which cuts the release `NEXT_VERSION` names (see below). The release
+  never computes a version from the last tag.
 - **the consumer bumps** (step 2 below), as one pull request per downstream repo
   labelled `merge:queue`, when a consumer does not already pin a forge that contains
   the release. pin-bot normally has.
@@ -42,9 +43,18 @@ steps below are what the train runs, for whoever fixes it.
 
 ```sh
 cd forge
-task release:forge -- vX.Y.Z --dry-run   # optional: every validation, no side effects
-task release:forge -- vX.Y.Z
+task release:forge -- --dry-run   # optional: every validation, no side effects
+task release:forge                # cuts the version NEXT_VERSION names
 ```
+
+**`NEXT_VERSION` declares the next release.** It is not always the last tag's
+patch+1: v0.1.46 was followed by v1.0.0. Lint rollout rows (`IntroducedIn`),
+codemods (`Version`) and migration playbooks (`migrations/<version>/`) for
+unreleased work are keyed to it, and their tests fail a key that is neither
+shipped (at or before `VERSION`) nor `NEXT_VERSION`. The script refuses a version
+that is not `NEXT_VERSION` or a pre-release of it (`vX.Y.Z-rc.1`); to cut a
+minor or major release, change `NEXT_VERSION` (and those keys) in a pull request
+first. A final release writes `NEXT_VERSION`'s next patch in the release commit.
 
 What it does, in order:
 

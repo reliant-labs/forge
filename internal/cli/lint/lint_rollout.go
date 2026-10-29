@@ -25,7 +25,7 @@
 //
 // The project's pinned forge_version decides. A finding that would fail the
 // gate, from a rule whose GatesFrom is later than the pin, is a WARNING that
-// carries a note — "is new in v0.1.47 and gates from v0.1.48" — and so does
+// carries a note — "is new in v1.0.0 and gates from v1.0.1" — and so does
 // not fail the lane, the verdict, the exit code or the --gate-json document.
 // At or past GatesFrom the same finding gates, with no other change.
 //
@@ -62,8 +62,10 @@
 //
 // A new rule goes in gradableRules (TestEveryEmittedRuleIsGradable) and in
 // lint_rollout_table.go (TestEveryGradableRuleDeclaresItsRollout). Declare
-// IntroducedIn as the release it will ship in (the next one after VERSION) and
-// GatesFrom as the release after that. Both tests fail otherwise.
+// IntroducedIn as the release it will ship in (the one NEXT_VERSION names) and
+// GatesFrom as the release after that. Both tests fail otherwise, and
+// TestRolloutRowsNameTheNextRelease fails a row for a release that is neither
+// shipped nor NEXT_VERSION.
 
 package lint
 

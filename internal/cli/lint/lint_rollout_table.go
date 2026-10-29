@@ -11,10 +11,12 @@
 //
 // Add it to `newRules` below:
 //
-//	{IntroducedIn: "v0.1.48", GatesFrom: "v0.1.49", Rules: []string{"my-new-rule"}},
+//	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{"my-new-rule"}},
 //
-// IntroducedIn is the release the rule will ship in (the one after VERSION),
-// GatesFrom the release after that. Tightening an existing rule — raising a
+// IntroducedIn is the release the rule will ship in — the one NEXT_VERSION
+// names, never a guess at VERSION's patch+1 —, GatesFrom the release after
+// that (NEXT_VERSION's patch+1, which is what the release script writes into
+// NEXT_VERSION when it cuts; TestRolloutRowsNameTheNextRelease). Tightening an existing rule — raising a
 // warning to an error, or making it find what it used to miss — is the same
 // act: move its ID out of `shippedRules` into `newRules` with the release that
 // tightens it, and its findings warn for one release again.
@@ -136,49 +138,49 @@ var shippedRules = []rolloutGroup{
 // they warn in a project pinned below GatesFrom.
 var newRules = []rolloutGroup{
 	// Tightened: a warning until v0.1.46, a gate since.
-	{IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48", Rules: []string{
+	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{
 		"forge-column-markers", // #1042: COMMENT ON TABLE/VIEW markers, and the lane now gates
 	}},
 	// Tightened: no longer silenced by an svcerr import (#1112).
-	{IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48", Rules: []string{
+	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{
 		"forgeconv-no-handler-error-mapping",
 	}},
 
 	// forge lint --closed-sets (#1082).
-	{IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48", Rules: []string{"forge-closed-set"}},
+	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{"forge-closed-set"}},
 	// forge lint --db-grants (#1172).
-	{IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48", Rules: []string{
+	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{
 		"forge-db-grants-undecided", "forge-db-grants-unverified",
 	}},
 	// forge lint --go-markers (#1039).
-	{IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48", Rules: []string{"forge-go-markers"}},
+	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{"forge-go-markers"}},
 	// forge lint --graph (#968, #1017).
-	{IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48", Rules: []string{
+	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{
 		"forge-graph-assemble", "forge-graph-audience", "forge-graph-unreachable",
 	}},
 	// forge lint --slow-tests (#925).
-	{IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48", Rules: []string{
+	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{
 		"forge-slow-test-inputs", "forge-slow-test-unmarked",
 	}},
 	// forge lint --tracing (#993).
-	{IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48", Fix: "forge lint --tracing --fix", Rules: []string{
+	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Fix: "forge lint --tracing --fix", Rules: []string{
 		"forge-tracing-log-without-ctx",
 	}},
-	{IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48", Rules: []string{
+	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{
 		"forge-tracing-contract-uninstrumented", "forge-tracing-raw-http-client", "forge-tracing-raw-sql-open",
 	}},
 	// forge lint --secrets (#1131).
-	{IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48", Rules: []string{
+	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{
 		"openbao-wildcard-read",
 		"secrets-cluster-kind", "secrets-env-not-rendered", "secrets-es-policy", "secrets-escrow-in-cluster",
 		"secrets-immutable-pin", "secrets-key-coverage", "secrets-out-of-band-reason", "secrets-single-owner",
 		"secrets-unreferenced-key",
 	}},
 	// Least-knowledge Deps rules (#968, #996, #1173) and the D3 / tx / error rules.
-	{IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48", Fix: "forge fix narrow-deps <package-dir>", Rules: []string{
+	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Fix: "forge fix narrow-deps <package-dir>", Rules: []string{
 		"forgeconv-deps-surface",
 	}},
-	{IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48", Rules: []string{
+	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{
 		"forgeconv-activity-declared", // D3: every mutating rpc declares its activity (#936)
 		"forgeconv-deps-no-downcast",
 		"forgeconv-deps-root-config",
@@ -186,16 +188,16 @@ var newRules = []rolloutGroup{
 		"forgeconv-no-getenv",
 		"forgeconv-tx-lock-under-serializable", // #1069
 	}},
-	{IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48", Fix: "forge fix connect-errors", Rules: []string{
+	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Fix: "forge fix connect-errors", Rules: []string{
 		"forgeconv-handler-connect-error", // #1112
 	}},
 
 	// The golangci-lint build-tag passes (#1205, #1224): findings in files
 	// behind a project build tag, which `forge lint` used to not see at all.
 	// The pass has no rule ID of its own; see lint_rollout.go.
-	{IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48", Rules: []string{rolloutGolangciBuildTags}},
+	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{rolloutGolangciBuildTags}},
 	// The frontend lockfile lane: package.json ranges the lockfile does not record.
-	{IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48", Rules: []string{"forge-frontend-lock-drift"}},
+	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{"forge-frontend-lock-drift"}},
 }
 
 // lintRollouts is the declaration of every rule, by ID.

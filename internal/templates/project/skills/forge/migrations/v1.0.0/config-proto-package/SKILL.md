@@ -1,10 +1,10 @@
 ---
-name: migration-v0.1.47-config-proto-package
-description: Upgrade v0.1.47 config protos off the shared package config.v1 — run forge fix config-proto-package, forge generate, then update what it lists. Env var names do not change.
+name: migration-v1.0.0-config-proto-package
+description: Upgrade v1.0.0 config protos off the shared package config.v1 — run forge fix config-proto-package, forge generate, then update what it lists. Env var names do not change.
 relevance: migration
 ---
 
-# v0.1.47 — config protos are project-unique
+# v1.0.0 — config protos are project-unique
 
 Use when `proto/config/v1/*.proto` declares `package config.v1`. `forge
 generate` refuses that layout until it moves.

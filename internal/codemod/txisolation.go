@@ -20,7 +20,7 @@ import (
 	"github.com/reliant-labs/forge/internal/goexec"
 )
 
-// txisolation.go — `forge fix tx-isolation`, the v0.1.47 move to explicit
+// txisolation.go — `forge fix tx-isolation`, the v1.0.0 move to explicit
 // transaction isolation. pkg/orm had two opposite defaults: RunTx,
 // RunTxWithOptions and BeginDetached began SERIALIZABLE (RunTx retrying
 // 40001/40P01 up to seven times) when the level was left unset, while
@@ -57,11 +57,11 @@ var txTokens = [][]byte{
 func init() {
 	register(Codemod{
 		Name:    "tx-isolation",
-		Version: "v0.1.47",
-		Short:   "Spell out every pkg/orm transaction's isolation level and attempt budget (no default since v0.1.47)",
+		Version: "v1.0.0",
+		Short:   "Spell out every pkg/orm transaction's isolation level and attempt budget (no default since v1.0.0)",
 		Long: `Make every pkg/orm transaction name its isolation, exactly as it ran before.
 
-forge v0.1.47 removed the default isolation level. RunTx, RunTransaction and
+forge v1.0.0 removed the default isolation level. RunTx, RunTransaction and
 BeginDetached now take a policy that names the level and carries the attempt
 budget (orm.Serializable, orm.ReadCommitted, orm.RepeatableRead, refined with
 WithMaxAttempts / WithReadOnly into an orm.TxOptions); an unset level is
@@ -357,7 +357,7 @@ func (r *txRewriter) edited(n ast.Node) bool {
 	return false
 }
 
-// renamedIsolation maps the pre-v0.1.47 Isolation constants to their names
+// renamedIsolation maps the pre-v1.0.0 Isolation constants to their names
 // now. IsolationDefault meant SERIALIZABLE.
 var renamedIsolation = map[string]string{
 	"IsolationDefault": "Serializable", "IsolationSerializable": "Serializable",
@@ -649,7 +649,7 @@ func (r *txRewriter) isTxOptionsLit(lit *ast.CompositeLit) bool {
 	return ok && pn.Imported().Path() == ormPath
 }
 
-// oldIsolationNames are the pre-v0.1.47 Isolation constants, by value.
+// oldIsolationNames are the pre-v1.0.0 Isolation constants, by value.
 // IsolationDefault (0) meant SERIALIZABLE; the other three kept their
 // values under their new names.
 var oldIsolationNames = map[string]int{

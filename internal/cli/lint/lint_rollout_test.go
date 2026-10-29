@@ -24,7 +24,7 @@ import (
 const rolloutRule = "forge-closed-set"
 
 var testRollouts = map[string]ruleRollout{
-	rolloutRule: {IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48", Fix: "forge fix example"},
+	rolloutRule: {IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Fix: "forge fix example"},
 }
 
 func pinnedCfg(pin string, rules map[string]string) *config.ProjectConfig {
@@ -88,20 +88,49 @@ func TestRolloutRowsAreWellFormed(t *testing.T) {
 	}
 }
 
+// A row is for a release that shipped (at or before VERSION) or for the one
+// NEXT_VERSION names. The next release is not always VERSION's patch+1
+// (v0.1.46 was followed by v1.0.0), so a row written by guessing it would
+// date its rule to a release that never ships, and the rule would gate early
+// or never.
+func TestRolloutRowsNameTheNextRelease(t *testing.T) {
+	read := func(name string) string {
+		b, err := os.ReadFile(filepath.Join("..", "..", "..", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		v := strings.TrimSpace(string(b))
+		if !semver.IsValid(v) {
+			t.Fatalf("%s holds %q, not a vX.Y.Z version", name, v)
+		}
+		return v
+	}
+	last, next := read("VERSION"), read("NEXT_VERSION")
+	if semver.Compare(next, last) <= 0 {
+		t.Fatalf("NEXT_VERSION %s must be later than VERSION %s", next, last)
+	}
+	for rule, ro := range lintRollouts {
+		if semver.Compare(ro.IntroducedIn, last) > 0 && ro.IntroducedIn != next {
+			t.Errorf("%s: introduced_in %s is neither shipped (VERSION is %s) nor the next release "+
+				"(NEXT_VERSION is %s)", rule, ro.IntroducedIn, last, next)
+		}
+	}
+}
+
 // The retro-tagged lanes carry the release that really introduced them.
 func TestRetroTaggedLanesCarryTheirRealVersion(t *testing.T) {
 	for rule, want := range map[string]string{
 		"static-export-dynamic-segment": "v0.1.44", // lint --static-export, #cf5f13047
 		"enum-value-used-before-commit": "v0.1.45",
 		"identity-share-with":           "v0.1.46",
-		"forgeconv-no-getenv":           "v0.1.47",
-		"forge-closed-set":              "v0.1.47",
-		"forge-graph-unreachable":       "v0.1.47",
-		"forge-column-markers":          "v0.1.47", // existed earlier; tightened from warn to gate
-		"forge-db-grants-undecided":     "v0.1.47",
-		"secrets-cluster-kind":          "v0.1.47",
-		"forgeconv-activity-declared":   "v0.1.47",
-		rolloutGolangciBuildTags:        "v0.1.47", // #1205 / #1224
+		"forgeconv-no-getenv":           "v1.0.0",
+		"forge-closed-set":              "v1.0.0",
+		"forge-graph-unreachable":       "v1.0.0",
+		"forge-column-markers":          "v1.0.0", // existed earlier; tightened from warn to gate
+		"forge-db-grants-undecided":     "v1.0.0",
+		"secrets-cluster-kind":          "v1.0.0",
+		"forgeconv-activity-declared":   "v1.0.0",
+		rolloutGolangciBuildTags:        "v1.0.0", // #1205 / #1224
 	} {
 		ro, ok := lintRollouts[rule]
 		if !ok {
@@ -129,25 +158,25 @@ func TestPinDecidesWhetherARuleStillWarns(t *testing.T) {
 			pin: "v0.1.47-0.20261022211527-ce1870c66476", wantSev: lintSevWarning, wantGrace: true,
 		},
 		"the shipping release itself still warns": {
-			pin: "v0.1.47", wantSev: lintSevWarning, wantGrace: true,
+			pin: "v1.0.0", wantSev: lintSevWarning, wantGrace: true,
 		},
 		"a dirty pin compares as its base version": {
-			pin: "v0.1.47+dirty", wantSev: lintSevWarning, wantGrace: true,
+			pin: "v1.0.0+dirty", wantSev: lintSevWarning, wantGrace: true,
 		},
 		"a pin without the leading v compares too": {
 			pin: "0.1.46", wantSev: lintSevWarning, wantGrace: true,
 		},
 		"a pseudo-version leading to gates_from still warns": {
-			pin: "v0.1.48-0.20261030000000-aaaaaaaaaaaa", wantSev: lintSevWarning, wantGrace: true,
+			pin: "v1.0.1-0.20261030000000-aaaaaaaaaaaa", wantSev: lintSevWarning, wantGrace: true,
 		},
 		"the gates_from release gates": {
-			pin: "v0.1.48", wantSev: lintSevError, wantGated: true,
+			pin: "v1.0.1", wantSev: lintSevError, wantGated: true,
 		},
 		"a later release gates": {
-			pin: "v0.2.0", wantSev: lintSevError, wantGated: true,
+			pin: "v1.1.0", wantSev: lintSevError, wantGated: true,
 		},
 		"a pseudo-version past gates_from gates": {
-			pin: "v0.1.49-0.20261101000000-bbbbbbbbbbbb", wantSev: lintSevError, wantGated: true,
+			pin: "v1.0.2-0.20261101000000-bbbbbbbbbbbb", wantSev: lintSevError, wantGated: true,
 		},
 		"no pin gates: nothing says the project is behind": {
 			pin: "", wantSev: lintSevError, wantGated: true,
@@ -171,7 +200,7 @@ func TestPinDecidesWhetherARuleStillWarns(t *testing.T) {
 			if (got[0].Grace != nil) != tc.wantGrace {
 				t.Errorf("grace = %+v, want present=%v", got[0].Grace, tc.wantGrace)
 			}
-			if tc.wantGrace && (got[0].Grace.IntroducedIn != "v0.1.47" || got[0].Grace.GatesFrom != "v0.1.48" ||
+			if tc.wantGrace && (got[0].Grace.IntroducedIn != "v1.0.0" || got[0].Grace.GatesFrom != "v1.0.1" ||
 				got[0].Grace.Fix != "forge fix example") {
 				t.Errorf("grace note = %+v", got[0].Grace)
 			}
@@ -276,7 +305,7 @@ func TestGraceTouchesOnlyWhatWouldHaveGated(t *testing.T) {
 // own — their findings are noctx, errcheck, … — so they declare the rollout
 // from the pass, and lint.rules names it by the pass's key.
 func TestBuildTagPassFindingsRollOutByPass(t *testing.T) {
-	table := map[string]ruleRollout{rolloutGolangciBuildTags: {IntroducedIn: "v0.1.47", GatesFrom: "v0.1.48"}}
+	table := map[string]ruleRollout{rolloutGolangciBuildTags: {IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1"}}
 	tagged := tagRollout([]lintJSONFinding{
 		{File: "a/a_integration_test.go", Line: 7, Severity: lintSevError, Rule: "noctx", Message: "must not be called"},
 		{Severity: lintSevError, Rule: "external", Message: "net/http.Get(url)"}, // golangci's source snippet line
@@ -289,7 +318,7 @@ func TestBuildTagPassFindingsRollOutByPass(t *testing.T) {
 		t.Fatalf("the default pass is not new and must keep gating: %+v gated=%v", got[0], gated)
 	}
 	for _, f := range got[1:] {
-		if f.Severity != lintSevWarning || f.Grace == nil || f.Grace.GatesFrom != "v0.1.48" {
+		if f.Severity != lintSevWarning || f.Grace == nil || f.Grace.GatesFrom != "v1.0.1" {
 			t.Errorf("a tagged-pass finding did not roll out: %+v", f)
 		}
 	}
@@ -298,7 +327,7 @@ func TestBuildTagPassFindingsRollOutByPass(t *testing.T) {
 	if _, gated := gradeProjectLaneWith(table, pinnedCfg("v0.1.46", nil), onlyTagged, true); gated {
 		t.Error("a lane whose only errors came from the new pass gated inside the grace period")
 	}
-	if _, gated := gradeProjectLaneWith(table, pinnedCfg("v0.1.48", nil), onlyTagged, true); !gated {
+	if _, gated := gradeProjectLaneWith(table, pinnedCfg("v1.0.1", nil), onlyTagged, true); !gated {
 		t.Error("the new pass did not gate from its gates_from release")
 	}
 	if _, gated := gradeProjectLaneWith(table, pinnedCfg("v0.1.46", map[string]string{rolloutGolangciBuildTags: "error"}), onlyTagged, true); !gated {
@@ -404,7 +433,7 @@ func TestGraceIsMachineReadableInJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	grace, _ := m["grace"].(map[string]any)
-	if grace["introduced_in"] != "v0.1.47" || grace["gates_from"] != "v0.1.48" || grace["fix"] != "forge fix example" {
+	if grace["introduced_in"] != "v1.0.0" || grace["gates_from"] != "v1.0.1" || grace["fix"] != "forge fix example" {
 		t.Errorf("grace = %v in %s", grace, raw)
 	}
 	if _, leaked := m["rollout"]; leaked {

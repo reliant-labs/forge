@@ -1,10 +1,10 @@
 ---
-name: migration-v0.1.47-harness-mocks
-description: Upgrade v0.1.47 handler tests from the harness's Stub<Field> doubles to the forge Mock<Role> that replaces them — run forge fix harness-mocks, then update any assertion on the old stub error text.
+name: migration-v1.0.0-harness-mocks
+description: Upgrade v1.0.0 handler tests from the harness's Stub<Field> doubles to the forge Mock<Role> that replaces them — run forge fix harness-mocks, then update any assertion on the old stub error text.
 relevance: migration
 ---
 
-# v0.1.47 — one test double per interface: the harness installs forge's mocks
+# v1.0.0 — one test double per interface: the harness installs forge's mocks
 
 Use when a handler test names a `Stub<Field>` (`&chat.StubPause{...}`,
 `StubRepo{...}`) and the field's interface has a forge `mock_gen.go`.

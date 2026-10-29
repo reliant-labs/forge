@@ -1,4 +1,4 @@
-// Package shapes holds every pre-v0.1.47 pkg/orm transaction call shape, so
+// Package shapes holds every pre-v1.0.0 pkg/orm transaction call shape, so
 // `forge fix tx-isolation` can be run over it and the result proven to begin
 // each transaction exactly as before.
 package shapes

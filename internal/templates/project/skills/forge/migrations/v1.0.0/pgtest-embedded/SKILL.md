@@ -1,5 +1,5 @@
 ---
-name: migration-v0.1.47-pgtest-embedded
+name: migration-v1.0.0-pgtest-embedded
 description: pgtest.StartEmbedded returns *pgtest.Embedded, which owns the embedded-postgres temp log file it created. Use when Go code calls pgtest.StartEmbedded and keeps the result as *embeddedpostgres.EmbeddedPostgres.
 relevance: migration
 ---

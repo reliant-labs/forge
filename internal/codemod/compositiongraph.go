@@ -48,13 +48,13 @@ import (
 // reported with its file:line and the edit that clears it, and nothing is
 // written: a conversion that compiles but quietly changes what a process
 // serves (collapsing two deployment groups into one `server`, say) is worse
-// than none. migrations/v0.1.47 is the manual path, with control-plane's
+// than none. migrations/v1.0.0 is the manual path, with control-plane's
 // ServeSpec knobs as the worked example.
 
 func init() {
 	register(Codemod{
 		Name:    "composition-graph",
-		Version: "v0.1.47",
+		Version: "v1.0.0",
 		Short:   "Move a project off Infra / NewComponents / ServeSpec onto the composition graph",
 		Long: `Convert the legacy composition to the composition graph.
 
@@ -77,7 +77,7 @@ which is what ` + "`<bin> server`" + ` ran. Anything the codemod cannot map with
 deciding for you — an Infra field of your own, a ServeSpec knob, a command
 that calls Serve, code that names Infra or Components — is listed with its
 file:line and the edit that clears it, and then NOTHING is written. Clear
-them (the migrations/v0.1.47 skill walks through each) and run it again.
+them (the migrations/v1.0.0 skill walks through each) and run it again.
 
 It replaces files you own, so it runs only on a committed tree
 (--allow-dirty overrides); review with git diff, undo with git checkout.`,
@@ -176,7 +176,7 @@ func runCompositionGraph(dir string, opts Options) (Report, error) {
 	if len(p.blocked) > 0 {
 		sort.Strings(p.blocked)
 		rep.Blocked = p.blocked
-		rep.Next = []string{"clear each item above (`forge skill load migrations/v0.1.47` walks through them), then run `forge fix composition-graph` again — nothing was written"}
+		rep.Next = []string{"clear each item above (`forge skill load migrations/v1.0.0` walks through them), then run `forge fix composition-graph` again — nothing was written"}
 		rep.Verify = nil
 		return rep, nil
 	}
@@ -200,7 +200,7 @@ func runCompositionGraph(dir string, opts Options) (Report, error) {
 	if len(p.retired) > 0 {
 		rep.Next = append(rep.Next, fmt.Sprintf("retired subcommands (one root runs them all now): `%s %s`", p.bin, strings.Join(p.retired, "`, `"+p.bin+" ")))
 	}
-	rep.Next = append(rep.Next, "deploy/kcl is untouched and still runs `server`; to give each workload exactly its root's config, bind it with `config_gen.root_of(\"server\")` and project its env with `config_gen.workloadEnvMap(cfg, w)` (migrations/v0.1.47 — this changes the rendered env)")
+	rep.Next = append(rep.Next, "deploy/kcl is untouched and still runs `server`; to give each workload exactly its root's config, bind it with `config_gen.root_of(\"server\")` and project its env with `config_gen.workloadEnvMap(cfg, w)` (migrations/v1.0.0 — this changes the rendered env)")
 	rep.Next = append(rep.Next, p.notes...)
 	if !write {
 		return rep, nil

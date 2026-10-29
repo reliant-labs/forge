@@ -151,19 +151,19 @@ was applied before the failure. Schema `forge-project-upgrade/v1`:
   "ok": true, "exit_code": 0, "error": "",
   "schema": "forge-project-upgrade/v1",
   "mode": "apply",
-  "from": "v0.1.45", "to": "v0.1.47",
+  "from": "v0.1.45", "to": "v1.0.0",
   "converged": true,
   "phases": [{"name": "codemods", "status": "done", "detail": ""}],
   "codemods": [{"name": "operatorkit", "version": "v0.1.46", "source": "upgrade",
                 "rewrites": ["internal/legacyops/ops.go: …"], "next": [], "blocked": []}],
   "locks": [{"path": "frontends/web/package-lock.json", "runner": "npm",
              "details": ["…"], "pending": false, "refreshed": true}],
-  "playbooks": [{"id": "v0.1.47", "automation": ["fix:composition-graph"], "resolved": true}],
+  "playbooks": [{"id": "v1.0.0", "automation": ["fix:composition-graph"], "resolved": true}],
   "vendored_contracts": [{"name": "controlplane", "status": "lag", "revendored": true}],
   "needs_human": [{"kind": "lint-error", "rule": "forgeconv-…", "file": "internal/x.go",
                    "line": 7, "message": "…", "fix": "…"}],
-  "upcoming": [{"rule": "forge-frontend-lock-drift", "count": 1, "introduced_in": "v0.1.47",
-                "gates_from": "v0.1.48", "fix": "…", "examples": ["…"]}],
+  "upcoming": [{"rule": "forge-frontend-lock-drift", "count": 1, "introduced_in": "v1.0.0",
+                "gates_from": "v1.0.1", "fix": "…", "examples": ["…"]}],
   "template_drift": ["Dockerfile"]
 }
 ```

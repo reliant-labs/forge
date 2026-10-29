@@ -117,7 +117,7 @@ func TestUpgradeConverge_AppliesTheRangeWithNoHandEdits(t *testing.T) {
 	ranIn := fakeUpgradeNPM(t)
 	rec := &recordedSteps{}
 
-	rep, err := runConverge(t, dir, upgradeOptions{to: "v0.1.47", goRun: noGo, steps: rec.steps()})
+	rep, err := runConverge(t, dir, upgradeOptions{to: "v1.0.0", goRun: noGo, steps: rec.steps()})
 	if err != nil {
 		t.Fatalf("a fully mechanical range must converge, got %v", err)
 	}
@@ -145,7 +145,7 @@ func TestUpgradeConverge_AppliesTheRangeWithNoHandEdits(t *testing.T) {
 		t.Errorf("locks = %+v, want frontends/web/package-lock.json", rep.Locks)
 	}
 	// The pin moved, and generate then lint ran after everything that edits the tree.
-	if y, _ := os.ReadFile(filepath.Join(dir, "forge.yaml")); !strings.Contains(string(y), "forge_version: v0.1.47") {
+	if y, _ := os.ReadFile(filepath.Join(dir, "forge.yaml")); !strings.Contains(string(y), "forge_version: v1.0.0") {
 		t.Errorf("forge.yaml pin not bumped:\n%s", y)
 	}
 	if got := strings.Join(rec.calls, ","); got != "generate,lint" {
@@ -161,7 +161,7 @@ func TestUpgradeConverge_AppliesTheRangeWithNoHandEdits(t *testing.T) {
 
 	// A second run finds nothing to do: the verb is idempotent.
 	rec2 := &recordedSteps{}
-	rep2, err := runConverge(t, dir, upgradeOptions{to: "v0.1.47", goRun: noGo, steps: rec2.steps()})
+	rep2, err := runConverge(t, dir, upgradeOptions{to: "v1.0.0", goRun: noGo, steps: rec2.steps()})
 	if err != nil || len(rep2.Codemods) != 0 || len(rep2.Locks) != 0 {
 		t.Errorf("second run: err=%v codemods=%+v locks=%+v", err, rep2.Codemods, rep2.Locks)
 	}
@@ -177,11 +177,26 @@ func TestUpgradeCodemods_PrereleaseTargetReachesItsOwnRelease(t *testing.T) {
 		}
 		return strings.Join(out, ",")
 	}
+	pinLastRelease := func(v string) {
+		prev := upgradeLastRelease
+		upgradeLastRelease = func() string { return v }
+		t.Cleanup(func() { upgradeLastRelease = prev })
+	}
+
+	// A binary built after v0.1.46: main's head is v0.1.47-0.… to Go, but the
+	// release it leads to is v1.0.0 (NEXT_VERSION), and so are its codemods.
+	pinLastRelease("v0.1.46")
 	if got := names("v0.1.45", "v0.1.47-0.20261025215718-a53d26d70f80"); !strings.Contains(got, "config-proto-package") || !strings.Contains(got, "operatorkit") {
-		t.Errorf("a v0.1.47 pre-release target must run the v0.1.47 and v0.1.46 codemods, got %q", got)
+		t.Errorf("a pseudo-version after v0.1.46 must run the v1.0.0 and v0.1.46 codemods, got %q", got)
 	}
 	if got := names("v0.1.45", "v0.1.46-0.20261019044744-357579470b0d"); strings.Contains(got, "config-proto-package") {
-		t.Errorf("a v0.1.46 pre-release target must not run a v0.1.47 codemod, got %q", got)
+		t.Errorf("a v0.1.46 pre-release target must not run a v1.0.0 codemod, got %q", got)
+	}
+
+	// Past the release the core version decides: v1.0.1-0.… reaches v1.0.0.
+	pinLastRelease("v1.0.0")
+	if got := names("v0.1.45", "v1.0.1-0.20261101000000-bbbbbbbbbbbb"); !strings.Contains(got, "config-proto-package") {
+		t.Errorf("a pseudo-version after v1.0.0 must run the v1.0.0 codemods, got %q", got)
 	}
 }
 
@@ -192,11 +207,11 @@ func TestUpgradeConverge_LintFindingsAreWhatIsLeftForAHuman(t *testing.T) {
 	fakeUpgradeNPM(t)
 	rec := &recordedSteps{lint: `{"findings":[
 	  {"severity":"error","rule":"forgeconv-example","file":"internal/x.go","line":7,"message":"bad","fix_hint":"do the thing"},
-	  {"severity":"warning","rule":"forge-frontend-lock-drift","message":"drift","grace":{"introduced_in":"v0.1.47","gates_from":"v0.1.48","fix":"forge fix lock"}},
+	  {"severity":"warning","rule":"forge-frontend-lock-drift","message":"drift","grace":{"introduced_in":"v1.0.0","gates_from":"v1.0.1","fix":"forge fix lock"}},
 	  {"severity":"warning","rule":"plain-warning","message":"ignore me"}
 	],"summary":{"errors":1,"warnings":2,"infos":0,"total":3},"ok":false}`}
 
-	rep, err := runConverge(t, dir, upgradeOptions{to: "v0.1.47", goRun: noGo, steps: rec.steps()})
+	rep, err := runConverge(t, dir, upgradeOptions{to: "v1.0.0", goRun: noGo, steps: rec.steps()})
 	if err == nil {
 		t.Fatal("an unresolved lint error must not read as converged")
 	}
@@ -210,8 +225,8 @@ func TestUpgradeConverge_LintFindingsAreWhatIsLeftForAHuman(t *testing.T) {
 		rep.NeedsHuman[0].File != "internal/x.go" || rep.NeedsHuman[0].Fix != "do the thing" {
 		t.Errorf("needs_human = %+v", rep.NeedsHuman)
 	}
-	// The new rule still in its grace is reported, not gating: it will gate at v0.1.48.
-	if len(rep.Upcoming) != 1 || rep.Upcoming[0].Rule != "forge-frontend-lock-drift" || rep.Upcoming[0].GatesFrom != "v0.1.48" {
+	// The new rule still in its grace is reported, not gating: it will gate at v1.0.1.
+	if len(rep.Upcoming) != 1 || rep.Upcoming[0].Rule != "forge-frontend-lock-drift" || rep.Upcoming[0].GatesFrom != "v1.0.1" {
 		t.Errorf("upcoming = %+v", rep.Upcoming)
 	}
 }
@@ -220,7 +235,7 @@ func TestUpgradeConverge_AFailedGenerateIsAFailureNotAHandoff(t *testing.T) {
 	dir := newConvergeFixture(t)
 	fakeUpgradeNPM(t)
 	rec := &recordedSteps{genErr: errors.New("buf exploded")}
-	rep, err := runConverge(t, dir, upgradeOptions{to: "v0.1.47", goRun: noGo, steps: rec.steps()})
+	rep, err := runConverge(t, dir, upgradeOptions{to: "v1.0.0", goRun: noGo, steps: rec.steps()})
 	if err == nil || exitCodeForError(err) != exitWrong {
 		t.Fatalf("generate failure must exit %d, got %v (%d)", exitWrong, err, exitCodeForError(err))
 	}
@@ -246,7 +261,7 @@ func TestUpgradeConverge_LintThatCannotBeReadIsUndetermined(t *testing.T) {
 	dir := newConvergeFixture(t)
 	fakeUpgradeNPM(t)
 	rec := &recordedSteps{lint: "not json"}
-	_, err := runConverge(t, dir, upgradeOptions{to: "v0.1.47", goRun: noGo, steps: rec.steps()})
+	_, err := runConverge(t, dir, upgradeOptions{to: "v1.0.0", goRun: noGo, steps: rec.steps()})
 	if err == nil || exitCodeForError(err) != exitUndetermined {
 		t.Fatalf("an unreadable lint verdict is 'could not look' (%d), got %v (%d)", exitUndetermined, err, exitCodeForError(err))
 	}
@@ -257,7 +272,7 @@ func TestUpgradeConverge_CheckWritesNothing(t *testing.T) {
 	dir := newConvergeFixture(t)
 	ranIn := fakeUpgradeNPM(t)
 	rec := &recordedSteps{}
-	rep, err := runConverge(t, dir, upgradeOptions{check: true, to: "v0.1.47", goRun: noGo, steps: rec.steps()})
+	rep, err := runConverge(t, dir, upgradeOptions{check: true, to: "v1.0.0", goRun: noGo, steps: rec.steps()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +291,7 @@ func TestUpgradeConverge_SkipNamesPhasesNotRun(t *testing.T) {
 	dir := newConvergeFixture(t)
 	ranIn := fakeUpgradeNPM(t)
 	rec := &recordedSteps{}
-	rep, err := runConverge(t, dir, upgradeOptions{to: "v0.1.47", goRun: noGo, steps: rec.steps(),
+	rep, err := runConverge(t, dir, upgradeOptions{to: "v1.0.0", goRun: noGo, steps: rec.steps(),
 		skip: map[string]bool{"generate": true, "lint": true, "locks": true}})
 	if err != nil {
 		t.Fatal(err)
@@ -298,7 +313,7 @@ func TestUpgradeConverge_SkipCodemodsNamesWhatItLeftForYou(t *testing.T) {
 	dir := newConvergeFixture(t)
 	fakeUpgradeNPM(t)
 	rec := &recordedSteps{}
-	rep, err := runConverge(t, dir, upgradeOptions{to: "v0.1.47", goRun: noGo, steps: rec.steps(),
+	rep, err := runConverge(t, dir, upgradeOptions{to: "v1.0.0", goRun: noGo, steps: rec.steps(),
 		skip: map[string]bool{"codemods": true}})
 	if err != nil {
 		t.Fatal(err)
@@ -321,7 +336,7 @@ func TestUpgradeConverge_SkipCodemodsNamesWhatItLeftForYou(t *testing.T) {
 	if !strings.Contains(detail, "forge fix operatorkit") && !strings.Contains(detail, " fix operatorkit") {
 		t.Errorf("the skipped phase does not name the codemod to run yourself: %q", detail)
 	}
-	if y, _ := os.ReadFile(filepath.Join(dir, "forge.yaml")); !strings.Contains(string(y), "forge_version: v0.1.47") {
+	if y, _ := os.ReadFile(filepath.Join(dir, "forge.yaml")); !strings.Contains(string(y), "forge_version: v1.0.0") {
 		t.Errorf("the pin must still move:\n%s", y)
 	}
 	if got := strings.Join(rec.calls, ","); got != "generate,lint" {
@@ -336,10 +351,10 @@ func TestUpgradeConverge_SkipPlaybooksNamesTheCodemodsItLeftForYou(t *testing.T)
 	dir := newConvergeFixture(t)
 	fakeUpgradeNPM(t)
 	upgradeWrite(t, filepath.Join(dir, "needs-fix.txt"), "old\n")
-	metas := []migrationMeta{{ID: "v0.1.47", Version: "v0.1.47", Automation: []string{"fix:connect-errors", "fix:composition-graph"},
+	metas := []migrationMeta{{ID: "v1.0.0", Version: "v1.0.0", Automation: []string{"fix:connect-errors", "fix:composition-graph"},
 		Detection: "grep -qs old needs-fix.txt"}}
 	rec := &recordedSteps{}
-	rep, err := runConverge(t, dir, upgradeOptions{to: "v0.1.47", goRun: noGo, steps: rec.steps(), metas: metas,
+	rep, err := runConverge(t, dir, upgradeOptions{to: "v1.0.0", goRun: noGo, steps: rec.steps(), metas: metas,
 		skip: map[string]bool{"playbooks": true}})
 	if err != nil {
 		t.Fatal(err)
@@ -368,7 +383,7 @@ func TestUpgradeConverge_PlaybookAutomationRunsCodemodsAndReportsWhatRemains(t *
 	upgradeWrite(t, filepath.Join(dir, "needs-human.txt"), "old\n")
 
 	var ran []string
-	fake := codemod.Codemod{Name: "fake-fix", Version: "v0.1.47", Run: func(d string, o codemod.Options) (codemod.Report, error) {
+	fake := codemod.Codemod{Name: "fake-fix", Version: "v1.0.0", Run: func(d string, o codemod.Options) (codemod.Report, error) {
 		ran = append(ran, "fake-fix")
 		if o.Write {
 			_ = os.WriteFile(filepath.Join(d, "needs-fix.txt"), []byte("new\n"), 0o644)
@@ -376,13 +391,13 @@ func TestUpgradeConverge_PlaybookAutomationRunsCodemodsAndReportsWhatRemains(t *
 		return codemod.Report{Rewrites: []string{"needs-fix.txt: old → new"}}, nil
 	}}
 	metas := []migrationMeta{
-		{ID: "v0.1.47", SkillPath: "migrations/v0.1.47", Version: "v0.1.47", Description: "automatable",
+		{ID: "v1.0.0", SkillPath: "migrations/v1.0.0", Version: "v1.0.0", Description: "automatable",
 			Detection: "grep -q old needs-fix.txt", Automation: []string{"fix:fake-fix"}},
 		{ID: "v0.1.46", SkillPath: "migrations/v0.1.46", Version: "v0.1.46", Description: "prose only",
 			Detection: "grep -q old needs-human.txt"},
 	}
 	rec := &recordedSteps{}
-	rep, err := runConverge(t, dir, upgradeOptions{to: "v0.1.47", goRun: noGo, steps: rec.steps(), metas: metas,
+	rep, err := runConverge(t, dir, upgradeOptions{to: "v1.0.0", goRun: noGo, steps: rec.steps(), metas: metas,
 		lookup: func(n string) (codemod.Codemod, bool) { return fake, n == "fake-fix" }})
 
 	if strings.Join(ran, ",") != "fake-fix" {
@@ -396,7 +411,7 @@ func TestUpgradeConverge_PlaybookAutomationRunsCodemodsAndReportsWhatRemains(t *
 	for _, p := range rep.Playbooks {
 		byID[p.ID] = p
 	}
-	if !byID["v0.1.47"].Resolved || byID["v0.1.46"].Resolved {
+	if !byID["v1.0.0"].Resolved || byID["v0.1.46"].Resolved {
 		t.Errorf("playbooks = %+v", rep.Playbooks)
 	}
 	if err == nil || exitCodeForError(err) != exitNeedsHuman {
@@ -413,11 +428,11 @@ func TestUpgradeConverge_ABlockedAutomationStepIsReportedWithItsReasons(t *testi
 	dir := newConvergeFixture(t)
 	fakeUpgradeNPM(t)
 	upgradeWrite(t, filepath.Join(dir, "marker.txt"), "x\n")
-	fake := codemod.Codemod{Name: "blocker", Version: "v0.1.47", Run: func(string, codemod.Options) (codemod.Report, error) {
+	fake := codemod.Codemod{Name: "blocker", Version: "v1.0.0", Run: func(string, codemod.Options) (codemod.Report, error) {
 		return codemod.Report{Blocked: []string{"internal/a.go:3: a ServeSpec knob"}, Next: []string{"clear it"}}, nil
 	}}
-	metas := []migrationMeta{{ID: "v0.1.47", SkillPath: "migrations/v0.1.47", Version: "v0.1.47", Detection: "grep -q x marker.txt", Automation: []string{"fix:blocker"}}}
-	rep, err := runConverge(t, dir, upgradeOptions{to: "v0.1.47", goRun: noGo, steps: (&recordedSteps{}).steps(), metas: metas,
+	metas := []migrationMeta{{ID: "v1.0.0", SkillPath: "migrations/v1.0.0", Version: "v1.0.0", Detection: "grep -q x marker.txt", Automation: []string{"fix:blocker"}}}
+	rep, err := runConverge(t, dir, upgradeOptions{to: "v1.0.0", goRun: noGo, steps: (&recordedSteps{}).steps(), metas: metas,
 		lookup: func(n string) (codemod.Codemod, bool) { return fake, n == "blocker" }})
 	if err == nil || exitCodeForError(err) != exitNeedsHuman {
 		t.Fatalf("err = %v", err)
@@ -493,7 +508,7 @@ func TestUpgradeConverge_RevendorsADeclaredContractThatLags(t *testing.T) {
 	dir := vendoredFixture(t, vendoredLagReport)
 	fakeUpgradeNPM(t)
 	rec := &recordedSteps{}
-	rep, err := runConverge(t, dir, upgradeOptions{to: "v0.1.47", goRun: noGo, steps: rec.steps()})
+	rep, err := runConverge(t, dir, upgradeOptions{to: "v1.0.0", goRun: noGo, steps: rec.steps()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,7 +543,7 @@ func TestUpgradeConverge_VendoredContractThatIsInSyncOrAbsentRunsNothing(t *test
 			dir := vendoredFixture(t, report)
 			fakeUpgradeNPM(t)
 			rec := &recordedSteps{}
-			rep, err := runConverge(t, dir, upgradeOptions{to: "v0.1.47", goRun: noGo, steps: rec.steps()})
+			rep, err := runConverge(t, dir, upgradeOptions{to: "v1.0.0", goRun: noGo, steps: rec.steps()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -546,7 +561,7 @@ func TestUpgradeConverge_VendoredReportOfAnotherSchemaIsForAHuman(t *testing.T) 
 	dir := vendoredFixture(t, `{"schema":"something-else/v9","status":"lag"}`)
 	fakeUpgradeNPM(t)
 	rec := &recordedSteps{}
-	rep, err := runConverge(t, dir, upgradeOptions{to: "v0.1.47", goRun: noGo, steps: rec.steps()})
+	rep, err := runConverge(t, dir, upgradeOptions{to: "v1.0.0", goRun: noGo, steps: rec.steps()})
 	if err == nil || exitCodeForError(err) != exitNeedsHuman {
 		t.Fatalf("err = %v", err)
 	}
@@ -565,7 +580,7 @@ func TestUpgradeCmd_JSONIsOneDocumentOnStdout(t *testing.T) {
 	fakeUpgradeNPM(t)
 	rec := &recordedSteps{}
 	cmd := newUpgradeCmd()
-	cmd.SetArgs([]string{"--to", "v0.1.47", "--json"})
+	cmd.SetArgs([]string{"--to", "v1.0.0", "--json"})
 	upgradeStepsOverride = rec.steps()
 	upgradeGoRunnerOverride = noGo
 	upgradeMetasOverride = []migrationMeta{}
@@ -640,7 +655,7 @@ func TestUpgradeConverge_LeavesLedgerDeletedScaffoldOnceFilesDeleted(t *testing.
 	}
 
 	rec := &recordedSteps{}
-	rep, err := runConverge(t, dir, upgradeOptions{to: "v0.1.47", goRun: noGo, steps: rec.steps()})
+	rep, err := runConverge(t, dir, upgradeOptions{to: "v1.0.0", goRun: noGo, steps: rec.steps()})
 	if err != nil {
 		t.Fatalf("upgrade: %v", err)
 	}

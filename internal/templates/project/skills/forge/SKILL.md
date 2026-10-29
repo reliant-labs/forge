@@ -9,7 +9,7 @@ Self-sufficient for greenfield work: empty directory to a running app without
 loading another skill. Depth is named at the point you would need it — load it
 then, not before.
 
-pnpm: `migrations/v0.1.47/pnpm`.
+pnpm: `migrations/v1.0.0/pnpm`.
 
 ## Two paths, both first-class
 

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestDeadlineMigration_Detection runs the SHIPPED v0.1.47 detection against
+// TestDeadlineMigration_Detection runs the SHIPPED v1.0.0 detection against
 // the owned chain builders its Deadline section has to tell apart: a
 // serve.go or providers.go building serverkit.NewChain or observe.Chain with
 // no Deadline (offered — every unary RPC now gets the 30s default and its
@@ -19,12 +19,12 @@ func TestDeadlineMigration_Detection(t *testing.T) {
 	}
 	var m migrationMeta
 	for _, candidate := range metas {
-		if candidate.SkillPath == "migrations/v0.1.47" {
+		if candidate.SkillPath == "migrations/v1.0.0" {
 			m = candidate
 		}
 	}
 	if m.ID == "" {
-		t.Fatal("no shipped migration at migrations/v0.1.47")
+		t.Fatal("no shipped migration at migrations/v1.0.0")
 	}
 
 	write := func(t *testing.T, dir, rel, body string) {

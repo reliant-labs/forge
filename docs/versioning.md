@@ -189,4 +189,4 @@ to keep current, and costs one `go list` instead of a `go build`.
 
 ## Releasing
 
-`task release:forge -- vX.Y.Z` — one tag, one commit. See `docs/releasing.md`.
+`task release:forge` — one tag, one commit, for the release `NEXT_VERSION` names. See `docs/releasing.md`.

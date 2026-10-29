@@ -93,7 +93,7 @@ func TestButtonLoadingHoldsItsWidth(t *testing.T) {
 		}
 	}
 	if strings.Contains(src, "isLoading") {
-		t.Error("button.tsx: the loading prop is `loading`; `isLoading` was renamed (see the v0.1.48 upgrade playbook)")
+		t.Error("button.tsx: the loading prop is `loading`; `isLoading` was renamed (see the migrations/v1.0.0 upgrade playbook)")
 	}
 }
 

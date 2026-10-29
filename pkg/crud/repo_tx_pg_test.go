@@ -218,7 +218,7 @@ func TestRunTx_ConcurrentReadCheckWrite_ExactlyOneEffectLands(t *testing.T) {
 // paid_cents and two payments for one balance. This is the race the
 // hand-written SELECT … FOR UPDATE helpers existed to close, why the
 // lock-free state-transition recipe is orm.Serializable, and why the level
-// has no default: it was READ COMMITTED here before v0.1.47, through the
+// has no default: it was READ COMMITTED here before v1.0.0, through the
 // same-looking call that meant SERIALIZABLE on RunTx.
 func TestRunTransaction_Premise_ReadCommittedReadCheckWriteDoublePays(t *testing.T) {
 	db := newTxRepoTestDB(t)

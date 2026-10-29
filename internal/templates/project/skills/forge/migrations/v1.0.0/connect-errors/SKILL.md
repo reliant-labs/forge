@@ -1,10 +1,10 @@
 ---
-name: migration-v0.1.47-connect-errors
+name: migration-v1.0.0-connect-errors
 description: Move hand-built connect.NewError calls onto pkg/svcerr — run forge fix connect-errors (wire-identical), then convert its worklist by hand with svcerr.WrapOr, and flip forgeconv-handler-connect-error to error.
 relevance: migration
 ---
 
-# v0.1.47 — hand-built Connect errors → `svcerr`
+# v1.0.0 — hand-built Connect errors → `svcerr`
 
 Use when a handler package (`internal/handlers/**`) calls `connect.NewError`,
 or `forge lint --conventions` reports `forgeconv-handler-connect-error`.

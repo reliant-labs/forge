@@ -23,8 +23,8 @@ The warning says what to do:
 ```
 ⚠️  closed-sets lint — 2 warnings
    ⚠ db/migrations/0001_x.up.sql:4 [forge-closed-set] CHECK lists a value Go does not grant
-      → warn: [forge-closed-set] is new in v0.1.47 and gates from v0.1.48; gate now with lint.rules: {forge-closed-set: error}
-✅ All 3 gating linters passed; 2 new-rule findings warn until they gate (forge-closed-set ×2, gates from v0.1.48)
+      → warn: [forge-closed-set] is new in v1.0.0 and gates from v1.0.1; gate now with lint.rules: {forge-closed-set: error}
+✅ All 3 gating linters passed; 2 new-rule findings warn until they gate (forge-closed-set ×2, gates from v1.0.1)
 ```
 
 The last line is the verdict, and it counts them, so a green run never hides

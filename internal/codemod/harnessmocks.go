@@ -19,7 +19,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 )
 
-// harnessmocks.go — `forge fix harness-mocks`, the v0.1.47 move of the test
+// harnessmocks.go — `forge fix harness-mocks`, the v1.0.0 move of the test
 // harness onto forge's contract mocks.
 //
 // A handler's helpers_gen_test.go used to synthesize a Stub<Field> for every
@@ -34,11 +34,11 @@ import (
 func init() {
 	register(Codemod{
 		Name:    "harness-mocks",
-		Version: "v0.1.47",
-		Short:   "Rename the harness's Stub<Field> doubles to the forge mocks that replace them (one double per interface since v0.1.47)",
+		Version: "v1.0.0",
+		Short:   "Rename the harness's Stub<Field> doubles to the forge mocks that replace them (one double per interface since v1.0.0)",
 		Long: `Point your handler tests at the forge mock the test harness now installs.
 
-forge v0.1.47 stops synthesizing a Stub<Field> in helpers_gen_test.go for a Deps
+forge v1.0.0 stops synthesizing a Stub<Field> in helpers_gen_test.go for a Deps
 field whose interface forge already mocks in a mock_gen.go — the declaring
 package's (contract.go or a forge:deps deps.go), or the handler's own. The
 harness installs that mock instead:

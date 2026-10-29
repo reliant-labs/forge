@@ -6,7 +6,6 @@ import (
 
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
-	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -19,9 +18,13 @@ import (
 func TestRepoSpanOpensOnlyUnderACallerSpan(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
-	prev := otel.GetTracerProvider()
-	otel.SetTracerProvider(tp)
-	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+	// repoTracer is resolved from the global provider once, and the global
+	// delegates to the FIRST provider ever set, so swapping the global would
+	// leave a repeat run (-count, -cpu) recording into the previous run's
+	// provider. Swap the package tracer itself.
+	prev := repoTracer
+	repoTracer = tp.Tracer("orm")
+	t.Cleanup(func() { repoTracer = prev })
 
 	repo := NewRepo[plainRow]()
 	repo.ensureMeta(dialectOnlyDB{bdb: bun.NewDB(nil, pgdialect.New())})

@@ -87,7 +87,6 @@ func (s signal) env(suffix string) string {
 	return envValue("OTEL_EXPORTER_OTLP_" + string(s) + "_" + suffix)
 }
 
-// sdkDisabled reports OTEL_SDK_DISABLED=true.
 // rootSampleRatio is the fraction of the traces this process starts itself
 // that its tracer provider samples: the root sampler OTEL_TRACES_SAMPLER names,
 // read exactly as the SDK reads it (sdk/trace samplerFromEnv). Unset, and a
@@ -112,6 +111,7 @@ func rootSampleRatio() float64 {
 	}
 }
 
+// sdkDisabled reports OTEL_SDK_DISABLED=true.
 func sdkDisabled() bool { return strings.EqualFold(envValue(EnvSDKDisabled), "true") }
 
 // logsExportRequested reports whether OTEL_LOGS_EXPORTER asks for OTLP.

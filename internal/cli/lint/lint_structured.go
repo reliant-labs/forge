@@ -59,9 +59,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -196,47 +194,6 @@ func (s *lintScope) filter(fs []lintJSONFinding) []lintJSONFinding {
 	return out
 }
 
-// goPackages translates the scope into Go package patterns for the lanes
-// that take them: `./<dir>/...` for a directory, the containing package for
-// a .go file. Non-Go paths (proto/, db/migrations/) contribute nothing, and
-// an empty result means no Go package is in scope.
-func (s *lintScope) goPackages() []string {
-	if s == nil {
-		return nil
-	}
-	var out []string
-	seen := map[string]bool{}
-	for _, p := range s.paths {
-		fi, err := os.Stat(filepath.Join(s.root, filepath.FromSlash(p)))
-		if err != nil {
-			continue
-		}
-		var pattern string
-		switch {
-		case fi.IsDir():
-			// A directory with no Go source under it (proto/, db/) is not a
-			// package pattern: golangci-lint refuses it with "no go files to
-			// analyze" rather than reporting nothing.
-			if !dirHasGoFiles(filepath.Join(s.root, filepath.FromSlash(p))) {
-				continue
-			}
-			pattern = "./" + p + "/..."
-		case strings.HasSuffix(p, ".go"):
-			pattern = "./" + path.Dir(p)
-			if path.Dir(p) == "." {
-				pattern = "."
-			}
-		default:
-			continue
-		}
-		if !seen[pattern] {
-			seen[pattern] = true
-			out = append(out, pattern)
-		}
-	}
-	return out
-}
-
 // namesGoFile reports whether any scope path is a single .go file rather
 // than a directory.
 func (s *lintScope) namesGoFile() bool {
@@ -249,31 +206,6 @@ func (s *lintScope) namesGoFile() bool {
 		}
 	}
 	return false
-}
-
-// dirHasGoFiles reports whether any .go file lies under dir, skipping the
-// trees `go list ./...` itself ignores.
-func dirHasGoFiles(dir string) bool {
-	found := false
-	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // an unreadable subtree is simply not counted
-		}
-		if d.IsDir() {
-			name := d.Name()
-			if p != dir && (name == "node_modules" || name == "vendor" || name == "testdata" ||
-				strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasSuffix(d.Name(), ".go") {
-			found = true
-			return fs.SkipAll
-		}
-		return nil
-	})
-	return found
 }
 
 // lintStepOutcome is what one lane proved, in the shape every structured
@@ -372,7 +304,11 @@ func collectLintOutcomesFrom(rc *lintRunCtx, pipeline []linterStep) []lintStepOu
 				stepRC = &scoped
 			}
 		}
+		// A lane that outlives the 15s heartbeat interval says which one it is (stderr,
+		// so --quiet's one-line stdout stays one line).
+		stopBeat := cliutil.Heartbeat(os.Stderr, "lint: "+step.name)
 		fs, gated, err := step.collect(stepRC)
+		stopBeat()
 		if err != nil {
 			// A hard collection failure degrades to a finding rather than
 			// aborting the sweep — severity/gating governed by step.gates.
@@ -389,7 +325,7 @@ func collectLintOutcomesFrom(rc *lintRunCtx, pipeline []linterStep) []lintStepOu
 		}
 		// lint.rules grades every lane here, once, before the scope narrows
 		// it (lint_rules.go).
-		fs, gated = gradeLane(effectiveRules(rc.cfg), fs, gated)
+		fs, gated = gradeProjectLane(rc.cfg, fs, gated)
 		o.ran = true
 		o.findings, o.gated = scopeOutcome(rc.scope, fs, gated)
 		applyGapPolicy(&o, laneGates(step, rc), rc)
@@ -456,7 +392,9 @@ func collectTargetedOutcomes(
 		if progress != nil {
 			fmt.Fprintf(progress, "▸ --%s\n", lane)
 		}
+		stopBeat := cliutil.Heartbeat(os.Stderr, "lint: --"+lane)
 		o, err := collectLaneOutcome(ctx, onlyLane(flags, lane), lane, paths, cwd, store, cfg, scope)
+		stopBeat()
 		if err != nil {
 			return nil, true, err
 		}
@@ -484,8 +422,13 @@ func collectLaneOutcome(
 			o.unscoped = true
 			return o, nil
 		case targetedPackageLanes[lane]:
-			paths = scope.goPackages()
-			if len(paths) == 0 {
+			// contract and exported-vars load the untagged build only. An
+			// empty pattern list is not handed on: it would mean ./....
+			run := false
+			if pkgs := scope.goPackages(); len(pkgs) > 0 {
+				paths, run = defaultPassPackages(cwd, pkgs, nil)
+			}
+			if !run {
 				o.skipMsg = "no Go package under --scope — skipping " + lane
 				return o, nil
 			}
@@ -501,7 +444,7 @@ func collectLaneOutcome(
 		// running the whole suite under one lane's name.
 		return o, fmt.Errorf("--%s has no structured collector; run it without --quiet/--scope/--json", lane)
 	}
-	fs, gated := gradeLane(effectiveRules(cfg), report.Findings, !report.OK)
+	fs, gated := gradeProjectLane(cfg, report.Findings, !report.OK)
 	o.ran = true
 	o.findings, o.gated = scopeOutcome(scope, fs, gated)
 	return o, nil
@@ -615,7 +558,7 @@ func structuredFixPrePass(ctx context.Context, cwd string, cfg *config.ProjectCo
 // lane with an error or warning is shown. Info findings (skip notes) are
 // never printed here — a skipped lane is named in the verdict instead.
 func renderLintOutcomes(w io.Writer, outcomes []lintStepOutcome, quiet bool, scope *lintScope) error {
-	v := lintVerdict{scope: scope.String()}
+	v := lintVerdict{scope: scope.String(), graced: gracedFindings(outcomes)}
 	for _, o := range outcomes {
 		switch {
 		case o.unscoped:
@@ -760,6 +703,13 @@ func writeStructuredFindings(w io.Writer, fs []lintJSONFinding) {
 			fmt.Fprintf(w, "   %s [%s] %s\n", marker, f.Rule, f.Message)
 		default:
 			fmt.Fprintf(w, "   %s %s [%s] %s\n", marker, findingLocation(f), f.Rule, f.Message)
+		}
+		if f.Grace != nil {
+			key := f.Rule
+			if f.rollout != "" {
+				key = f.rollout
+			}
+			fmt.Fprintf(w, "      → %s\n", f.Grace.note(key))
 		}
 		if f.FixHint != "" {
 			fmt.Fprintf(w, "      → %s\n", f.FixHint)

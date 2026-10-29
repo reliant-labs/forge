@@ -96,6 +96,14 @@ func forgeSourceRoot() string {
 	return DiscoverDevForgeRootFromSource()
 }
 
+// CheckoutVersion is the Go pseudo-version of the forge checkout at root, the
+// version a binary built from it reports, or "" when root is not a git
+// checkout git can read. It carries the same "+dev" / "+dirty" build
+// metadata as a derived Version(): it names a commit, not a published module.
+func CheckoutVersion(root string) string {
+	return deriveGitVersion(root)
+}
+
 // deriveGitVersion builds the pseudo-version. Split from gitVersion so it can
 // be tested against a fixture repo instead of the live checkout.
 //

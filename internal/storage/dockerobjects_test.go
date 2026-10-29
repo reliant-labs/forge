@@ -634,12 +634,10 @@ func quietHostRunner(t *testing.T, f *fakeObjectDaemon, out *strings.Builder) Ru
 	r := objectRunner(t, f, out)
 	r.Policy.Builders = nil
 	r.TempRoot, r.SourceCacheRoot = t.TempDir(), t.TempDir()
-	r.GoCacheRoot, r.GoModCacheRoot = t.TempDir(), filepath.Join(t.TempDir(), "mod")
-	r.GolangciCacheRoot, r.GoimportsRoot = t.TempDir(), t.TempDir()
+	r.GoCacheRoot, r.GolangciCacheRoot = t.TempDir(), t.TempDir()
 	r.OpenPaths = func(context.Context) (openfiles.Snapshot, error) {
 		return openfiles.FromPaths([]string{"/nonexistent/forge-storage-test/unrelated"}), nil
 	}
-	r.ProcessEnv = func(context.Context) (string, error) { return "x", nil }
 	return r
 }
 

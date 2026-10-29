@@ -44,13 +44,13 @@ COMMENT ON CONSTRAINT access_tokens_scopes ON access_tokens IS 'forge:closed-set
 	if f.File != filepath.Join("db", "migrations", "0001_tokens.up.sql") || f.Line != 3 || f.Rule != "forge-closed-set" || f.Severity != lintSevError {
 		t.Errorf("finding = %+v", f)
 	}
-	for _, want := range []string{"'identity:manage'", "'cluster:manage'"} {
+	for _, want := range []string{"'billing:read'", "'identity:manage'", "'cluster:manage'"} {
 		if !strings.Contains(f.Message, want) {
 			t.Errorf("message does not name %s: %s", want, f.Message)
 		}
 	}
 	if !strings.Contains(f.FixHint, "forge db migration new --closed-set access_tokens_scopes") ||
-		!strings.Contains(f.FixHint, "ADD CONSTRAINT access_tokens_scopes CHECK (scopes <@ ARRAY['deploy:read', 'deploy:write', 'cluster:manage'") {
+		!strings.Contains(f.FixHint, "ADD CONSTRAINT access_tokens_scopes CHECK (scopes <@ ARRAY['deploy:read', 'deploy:write', 'billing:read', 'cluster:manage'") {
 		t.Errorf("fix hint: %s", f.FixHint)
 	}
 

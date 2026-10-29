@@ -16,6 +16,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/yaml"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // The observability collector, rendered two ways from ONE declaration:
@@ -195,9 +197,11 @@ func (s ObservabilityAgentSpec) exporter() map[string]any {
 
 // logLines is the filelog operator chain for the JSON lines forge's runtime
 // writes: level and timestamp promoted, trace_id/span_id moved onto the
-// record so a log and its trace join.
-func logLines() []any {
-	return []any{
+// record so a log and its trace join, and the workload's resource
+// (observe.LogKeyResource) lifted into the record's resource — at the key
+// resourceKey names for each, and only where that key is still unset.
+func logLines(resourceKey func(key string) string) []any {
+	return append([]any{
 		map[string]any{
 			"type": "json_parser", "if": `body matches "^\\s*\\{"`, "parse_from": "body", "on_error": "send_quiet",
 			"timestamp": map[string]any{"parse_from": "attributes.time", "layout_type": "gotime", "layout": "2006-01-02T15:04:05.999999999Z07:00"},
@@ -213,7 +217,53 @@ func logLines() []any {
 		map[string]any{"type": "remove", "if": "attributes.time != nil", "field": "attributes.time"},
 		map[string]any{"type": "remove", "if": "attributes.level != nil", "field": "attributes.level"},
 		map[string]any{"type": "move", "if": "attributes.msg != nil", "from": "attributes.msg", "to": "body"},
+	}, lineResource(resourceKey)...)
+}
+
+// lineResource moves each observe.LogResourceKeys entry of the line's
+// observe.LogKeyResource object into the record's RESOURCE (never its
+// attributes), then drops the object. A key the resource already holds — one
+// the log file's path named — is left alone, and so is the line's copy, which
+// the remove then drops. A line without the object (a panic, a runtime fatal
+// error, a non-forge image) passes through unchanged and carries no version;
+// so does one whose "resource" is not an object, which is the app's own field.
+func lineResource(resourceKey func(key string) string) []any {
+	field := "attributes." + observe.LogKeyResource
+	isObject := "type(" + field + `) == "map"`
+	var ops []any
+	for _, k := range observe.LogResourceKeys {
+		from := field + `["` + k + `"]`
+		to := resourceKey(k)
+		ops = append(ops, map[string]any{
+			"type": "move", "if": isObject + " && " + from + " != nil && " + to + " == nil",
+			"from": from, "to": to,
+		})
 	}
+	return append(ops, map[string]any{"type": "remove", "if": isObject, "field": field})
+}
+
+// atResource lifts a line's resource key to the same resource key.
+func atResource(key string) string { return `resource["` + key + `"]` }
+
+// lineResourcePrefix is where the cluster agent parks a line's resource keys
+// until k8sattributes has run: k8sattributes never overwrites a resource
+// attribute that is already set, so a key lifted straight into place would
+// win over the pod label that names it. transform/line_resource then fills
+// only what the pod's labels left unset.
+const lineResourcePrefix = "forge.line."
+
+func atLineResource(key string) string { return `resource["` + lineResourcePrefix + key + `"]` }
+
+// lineResourceStatements fill each resource key from its parked line copy
+// where Kubernetes set none, then drop the parked copies.
+func lineResourceStatements() []any {
+	var out []string
+	for _, k := range observe.LogResourceKeys {
+		parked := lineResourcePrefix + k
+		out = append(out, `set(attributes["`+k+`"], attributes["`+parked+`"]) where attributes["`+k+`"] == nil and attributes["`+parked+`"] != nil`)
+	}
+	out = append(out, `delete_matching_keys(attributes, "^`+strings.ReplaceAll(lineResourcePrefix, ".", "[.]")+`")`)
+	return strs(out...)
 }
 
 func strs(v ...string) []any {
@@ -301,6 +351,11 @@ func (s ObservabilityAgentSpec) AgentConfig(namespace string) (string, error) {
 				map[string]any{"tag_name": "service.name", "key": "app.kubernetes.io/name", "from": "pod"},
 				map[string]any{"tag_name": "service.namespace", "key": "app.kubernetes.io/part-of", "from": "pod"},
 				map[string]any{"tag_name": "deployment.environment.name", "key": "forge.dev/env", "from": "pod"},
+				// File-scraped logs carry no SDK resource, so the version the
+				// pod runs comes from its label. k8sattributes never
+				// overwrites an attribute already set, so an SDK's own
+				// service.version on pushed telemetry wins.
+				map[string]any{"tag_name": "service.version", "key": "app.kubernetes.io/version", "from": "pod"},
 			},
 		},
 		// Enrichment only. OTLP from a pod is associated by the resource's
@@ -317,7 +372,13 @@ func (s ObservabilityAgentSpec) AgentConfig(namespace string) (string, error) {
 		"endpoint":             "https://${env:K8S_NODE_IP}:10250",
 		"insecure_skip_verify": true,
 	}
-	logOps := append([]any{map[string]any{"type": "container", "id": "container-parser"}}, logLines()...)
+	// A line's resource keys go to the resource after k8sattributes (see
+	// lineResourcePrefix); the pod's labels win where both name a key.
+	processors["transform/line_resource"] = map[string]any{
+		"error_mode":     "ignore",
+		"log_statements": []any{map[string]any{"context": "resource", "statements": lineResourceStatements()}},
+	}
+	logOps := append([]any{map[string]any{"type": "container", "id": "container-parser"}}, logLines(atLineResource)...)
 	receivers["filelog"] = map[string]any{
 		"include":           strs("/var/log/pods/*/*/*.log"),
 		"exclude":           strs("/var/log/pods/" + namespace + "_*/*/*.log"),
@@ -365,7 +426,7 @@ func (s ObservabilityAgentSpec) agentPipelines() map[string]any {
 	}
 	if s.Signals.Logs {
 		all["logs"] = map[string]any{
-			"receivers": strs("filelog"), "processors": strs(append(append([]string{}, node...), "batch")...), "exporters": strs(s.exporterName()),
+			"receivers": strs("filelog"), "processors": strs(append(append([]string{}, node...), "transform/line_resource", "batch")...), "exporters": strs(s.exporterName()),
 		}
 	}
 	return all
@@ -390,7 +451,7 @@ func (s ObservabilityAgentSpec) ForwarderConfig() (string, error) {
 		map[string]any{"type": "move", "from": "attributes.service", "to": `resource["service.name"]`},
 		map[string]any{"type": "move", "from": "attributes.env", "to": `resource["deployment.environment.name"]`},
 		map[string]any{"type": "remove", "field": `attributes["log.file.path"]`},
-	}, logLines()...)
+	}, logLines(atResource)...)
 	receivers["filelog"] = map[string]any{
 		"include": strs("/var/log/forge/*/*.log"),
 		"exclude": strs(

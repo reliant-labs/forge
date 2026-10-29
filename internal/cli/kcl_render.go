@@ -69,6 +69,11 @@ type releaseManifestConsumer struct {
 }
 
 type KCLEntities struct {
+	// OptionalSkipped names the optional compose workloads (and the workloads
+	// requiring them) `forge env up` dropped from this run: because the Docker
+	// daemon is unreachable, or because no --target selected or requires them
+	// (scopeOptionalInfra). Run state, never part of the render.
+	OptionalSkipped          []string `json:"-"`
 	ReleaseManifestConsumers []releaseManifestConsumer
 	// Project and Env are the bundle's project name and the env it was
 	// rendered for. ImageTag is the env's RESOLVED image tag — the tag the
@@ -169,6 +174,9 @@ type KCLEntities struct {
 	// ReleaseHealth is Bundle.release_health, resolved. Nil when the env
 	// declares none (the defaults).
 	ReleaseHealth *release.ShapeReleaseHealth `json:"release_health,omitempty"`
+	// UptimeChecks are Bundle.uptime resolved: the declared checks plus the
+	// ones forge derives for a hosted env. Empty when the env has none.
+	UptimeChecks []release.ShapeUptimeCheck `json:"uptime_checks,omitempty"`
 	// Identity is Bundle.identity, resolved by the render: the applications
 	// and consumers derived, the deliveries and reserved managed-secret names
 	// listed. Nil when the env declares none. See release.ShapeIdentity: the
@@ -291,6 +299,11 @@ type ControlPlaneEntity struct {
 	// subtree a BARE hosted image is composed under, which is the one case
 	// the author does not choose because the platform admits exactly one.
 	RegistryHost string `json:"registry_host,omitempty"`
+	// Claimable declares the env an ANONYMOUS deploy (`forge env deploy
+	// <env> --claimable`): it is judged under the claimable plan
+	// (deploy.HostedPlanClaimable) by every preview and check, and a
+	// signed-in deploy of it is refused until the declaration is removed.
+	Claimable bool `json:"claimable,omitempty"`
 }
 
 // RenderedSecretEntity mirrors the kcl/schema.k RenderedSecret — one k8s
@@ -790,6 +803,10 @@ type WorkloadEntity struct {
 	DeliveryUnit        string
 	ReleaseDependencies map[string]string
 	ReleaseInputs       map[string]string
+	// Requires names the workloads this one is only useful beside; it is
+	// skipped when `forge env up` skips an optional one of them
+	// (Workload.requires in kcl/workload.k).
+	Requires []string
 }
 
 // Runtime discriminators (RuntimeEntity.Type).
@@ -892,6 +909,10 @@ type ComposeRuntime struct {
 	// the repo uses; forge drives it from the primary checkout. See
 	// OnCompose.shared in kcl/workload.k.
 	Shared bool `json:"shared,omitempty"`
+	// Optional marks a service the app does not need in order to run (local
+	// observability): `forge env up` skips it, with a warning, when no Docker
+	// daemon answers. See OnCompose.optional in kcl/workload.k.
+	Optional bool `json:"optional,omitempty"`
 }
 
 // ClusterRuntime is forge.Cluster: a Kubernetes cluster the author operates.
@@ -1411,6 +1432,7 @@ type kclRenderRaw struct {
 	DeliveryPolicy           *release.ShapeDeliveryPolicy              `json:"delivery_policy,omitempty"`
 	DataAccess               *release.ShapeDataAccess                  `json:"data_access,omitempty"`
 	ReleaseHealth            *release.ShapeReleaseHealth               `json:"release_health,omitempty"`
+	UptimeChecks             []release.ShapeUptimeCheck                `json:"uptime_checks,omitempty"`
 	Identity                 *release.ShapeIdentity                    `json:"identity,omitempty"`
 	Infra                    []HostInfraEntity                         `json:"infra,omitempty"`
 	Frontends                []FrontendEntity                          `json:"frontends,omitempty"`
@@ -1467,6 +1489,7 @@ type kclWorkloadRaw struct {
 	DeliveryUnit        string            `json:"delivery_unit,omitempty"`
 	ReleaseDependencies map[string]string `json:"release_dependencies,omitempty"`
 	ReleaseInputs       map[string]string `json:"release_inputs,omitempty"`
+	Requires            []string          `json:"requires,omitempty"`
 }
 
 // rawManifest is a minimal view of one rendered k8s object — just enough
@@ -1673,9 +1696,9 @@ func renderKCLRaw(ctx context.Context, projectDir, env string, extra ...string) 
 		return nil, fmt.Errorf("kcl dir %s: %w", kclDir, err)
 	}
 	// Render the JSON contract through the shared embedded kpm + kcl-go
-	// seam (no external `kcl` binary). `-D env=<env>` drives the per-env
-	// conditionals in the deploy module. workDir = projectDir so the
-	// deploy-as-data main.k's `file.read("deploy/kcl/...")` resolves.
+	// seam in an isolated `kcl eval` child (no external `kcl` binary).
+	// `-D env=<env>` drives per-env conditionals; cmd.Dir = projectDir makes
+	// `file.read("deploy/...")` resolve without changing the parent's cwd.
 	// option("worktree")/option("branch") are bound inside kclrender.Run for
 	// EVERY render (withDevStackDArgs), not here — a project keys its
 	// namespace on them, so a render that omits them looks in a different
@@ -1705,7 +1728,7 @@ func renderKCLRaw(ctx context.Context, projectDir, env string, extra ...string) 
 	}
 	dArgs = append(dArgs, kclrender.ReleaseDArgs(ctx)...)
 	dArgs = append(dArgs, extra...)
-	return kclrender.Run(projectDir, kclDir, dArgs)
+	return evalKCLSubprocess(ctx, projectDir, kclDir, env, dArgs)
 }
 
 // parseKCLEntities turns a render's JSON into the typed entity set.
@@ -1762,6 +1785,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		DeliveryPolicy:           raw.DeliveryPolicy,
 		DataAccess:               raw.DataAccess,
 		ReleaseHealth:            raw.ReleaseHealth,
+		UptimeChecks:             raw.UptimeChecks,
 		Identity:                 raw.Identity,
 		RenderedSecrets:          raw.RenderedSecrets,
 		ControlPlane:             raw.ControlPlane,
@@ -1827,7 +1851,7 @@ func decodeWorkload(w kclWorkloadRaw) (WorkloadEntity, error) {
 	if w.Kind != "" && w.Kind != kind {
 		return WorkloadEntity{}, fmt.Errorf("workload %q: kind %q disagrees with spec.kind %q", w.Name, w.Kind, kind)
 	}
-	return WorkloadEntity{Name: w.Name, Kind: kind, Image: w.Image, BuildImage: w.BuildImage, Build: build, Runtime: rt, FlowChecks: w.FlowChecks, Spec: spec, DeliveryUnit: w.DeliveryUnit, ReleaseDependencies: w.ReleaseDependencies, ReleaseInputs: w.ReleaseInputs}, nil
+	return WorkloadEntity{Name: w.Name, Kind: kind, Image: w.Image, BuildImage: w.BuildImage, Build: build, Runtime: rt, FlowChecks: w.FlowChecks, Spec: spec, DeliveryUnit: w.DeliveryUnit, ReleaseDependencies: w.ReleaseDependencies, ReleaseInputs: w.ReleaseInputs, Requires: w.Requires}, nil
 }
 
 // manifestNamespace returns the namespace that dominates the rendered
@@ -2209,6 +2233,27 @@ func (e *KCLEntities) HasHosted() bool {
 	}
 	for _, f := range e.Frontends {
 		if frontendIsHosted(f) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasLocal reports whether anything of the env runs on this machine — a host
+// process, a docker compose service, or a frontend dev server — and so can
+// feed the local ClickStack `forge env up` starts. An env whose workloads all
+// deploy to a cluster (or to hosting) has nothing local to query.
+func (e *KCLEntities) HasLocal() bool {
+	if e == nil {
+		return false
+	}
+	for _, w := range e.Workloads {
+		if w.OnRuntime(RuntimeHost) || w.OnRuntime(RuntimeCompose) {
+			return true
+		}
+	}
+	for _, f := range e.Frontends {
+		if f.Runtime.Type == FrontendRuntimeHost {
 			return true
 		}
 	}

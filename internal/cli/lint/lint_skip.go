@@ -290,15 +290,19 @@ func describeAllowed(gaps []laneGap) string {
 }
 
 // npmInstallFix is the remediation for a frontend whose dependencies are
-// not installed: the exact npm command, at the directory npm installs from
-// (a workspace root adopts its members), with the verb a reproducible
-// install takes there (`npm ci` with a lockfile, `npm install` without).
+// not installed: the exact command of the frontend's own package manager,
+// for npm at the directory npm installs from (a workspace root adopts its
+// members), with the verb a reproducible install takes there (`npm ci` with a
+// lockfile, `npm install` without; pnpm/yarn --frozen-lockfile).
 func npmInstallFix(feDir string) string {
-	root := frontenddeps.NpmInstallRoot(feDir)
+	root := feDir
+	if frontenddeps.PackageManager(feDir, "") == "npm" {
+		root = frontenddeps.NpmInstallRoot(feDir)
+	}
 	if cwd, err := os.Getwd(); err == nil {
 		if rel, err := filepath.Rel(cwd, root); err == nil && !strings.HasPrefix(rel, "..") {
 			root = rel
 		}
 	}
-	return fmt.Sprintf("run `npm %s` in %s, then re-run `forge lint`", frontenddeps.NpmInstallVerb(feDir), filepath.ToSlash(root))
+	return fmt.Sprintf("run %#q in %s, then re-run `forge lint`", frontenddeps.InstallCommand(feDir, "", true), filepath.ToSlash(root))
 }

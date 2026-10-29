@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
+
 	"github.com/reliant-labs/forge/internal/checksums"
 )
 
@@ -18,8 +20,8 @@ const (
 	// DASHBOARD_PROVISIONER_DIR.
 	DashboardsDir = "deploy/observability/dashboards"
 	// SpecDir holds the serialized Spec, the renderer-neutral model, as its
-	// parts: ProjectSpecFile and one ServiceSpecFile per service (see
-	// ServicePart for why it is not one file). It sits beside the dashboards
+	// parts: ProjectSpecFile and one ProcessSpecFile per service (see
+	// ProcessPart for why it is not one file). It sits beside the dashboards
 	// directory, not in it, because the provisioner reads every *.json it
 	// finds there. ReadSpec assembles it.
 	SpecDir = "deploy/observability/spec"
@@ -32,9 +34,9 @@ const (
 	LegacySpecFile = "deploy/observability/dashboard-spec_gen.json"
 )
 
-// ServiceSpecFile is the project-relative file of service's ServicePart.
-func ServiceSpecFile(service string) string {
-	return SpecDir + "/service-" + service + genSuffix
+// ProcessSpecFile is the project-relative file of service's ProcessPart.
+func ProcessSpecFile(service string) string {
+	return SpecDir + "/process-" + service + genSuffix
 }
 
 // SavedSearchesFile is the project-relative file holding service's HyperDX
@@ -43,9 +45,9 @@ func ServiceSpecFile(service string) string {
 // mounts) under an extension the dashboard provisioner ignores; the compose
 // entrypoint upserts every *_gen.ndjson there, because the file provisioner
 // has no saved-search path. One file per service, for the reason in
-// ServicePart.
+// ProcessPart.
 func SavedSearchesFile(project, service string) string {
-	return DashboardsDir + "/" + project + "-service-" + service + ndjsonGenSuffix
+	return DashboardsDir + "/" + project + "-process-" + service + ndjsonGenSuffix
 }
 
 // genSuffix marks the files forge owns and rewrites; ndjsonGenSuffix the
@@ -102,6 +104,18 @@ func Write(projectDir string, in Input, cs *checksums.FileChecksums) ([]string, 
 			continue
 		}
 		rel := DashboardsDir + "/" + f.File
+		if d.ID == "overview" {
+			owned := OverridePath(sp.Project, d)
+			undeployed, err := undeployedOverview(in, f.File)
+			if err != nil {
+				return nil, err
+			}
+			if err := writeOwnedOverview(projectDir, owned, rel, f.Content, undeployed, cs); err != nil {
+				return nil, err
+			}
+			out = append(out, owned)
+			continue
+		}
 		if _, err := os.Stat(filepath.Join(projectDir, OverridePath(sp.Project, d))); err == nil {
 			if err := retireGenerated(projectDir, rel, cs); err != nil {
 				return nil, err
@@ -117,7 +131,7 @@ func Write(projectDir string, in Input, cs *checksums.FileChecksums) ([]string, 
 		return nil, err
 	}
 	for _, part := range parts {
-		if err := emitJSON(emit, ServiceSpecFile(part.Service), part); err != nil {
+		if err := emitJSON(emit, ProcessSpecFile(part.Process.Name), part); err != nil {
 			return nil, err
 		}
 		searches, err := RenderHyperDXSavedSearches(Spec{Project: sp.Project, SavedSearches: part.SavedSearches})
@@ -133,11 +147,19 @@ func Write(projectDir string, in Input, cs *checksums.FileChecksums) ([]string, 
 			nd.Write(b)
 			nd.WriteByte('\n')
 		}
-		if err := emit(SavedSearchesFile(sp.Project, part.Service), nd.Bytes()); err != nil {
+		if err := emit(SavedSearchesFile(sp.Project, part.Process.Name), nd.Bytes()); err != nil {
 			return nil, err
 		}
 	}
 
+	// Alert service inventory remains disjoint per RPC service, independently
+	// of dashboard ownership. Adding an RPC must not conflict in project.json.
+	for _, s := range AlertInputOf(in).Services {
+		part := alertServicePart{Version: PartsVersion, Alert: s}
+		if err := emitJSON(emit, alertServiceSpecFile(s.Name), part); err != nil {
+			return nil, err
+		}
+	}
 	alertDefaults, err := MarshalAlertDefaults(AlertInputOf(in))
 	if err != nil {
 		return nil, err
@@ -164,6 +186,102 @@ func emitJSON(emit func(string, []byte) error, rel string, v any) error {
 		return err
 	}
 	return emit(rel, append(b, '\n'))
+}
+
+// undeployedOverview is the overview's HyperDX file as forge renders it when it
+// knows no deployed process: every identity predicate on the
+// no-deployed-process sentinel. An owned overview still byte-equal to it is an
+// untouched scaffold that froze that answer, not a user's dashboard.
+func undeployedOverview(in Input, file string) ([]byte, error) {
+	in.Deployed = Identities{}
+	in.Processes = nil
+	project, parts := BuildParts(in)
+	files, err := RenderHyperDX(Assemble(project, parts))
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range files {
+		if f.File == file {
+			return f.Content, nil
+		}
+	}
+	return nil, nil
+}
+
+// writeOwnedOverview gives the local overview the same ownership as an
+// explicit dashboard override. Edits to a legacy generated file are migrated
+// verbatim before retiring its old name; an existing owned override wins.
+//
+// Two cases are NOT the user's edits and so are not preserved: a legacy file
+// that is pristine forge output, and an owned file still byte-equal to the
+// undeployed render (undeployed). Both froze the overview's identity scope as
+// the no-deployed-process sentinel, typically because `forge project new`'s
+// first generate ran before any environment's workloads rendered; once owned,
+// no later generate refreshed it, and every panel of the local overview drew
+// nothing forever. They take the current render instead.
+func writeOwnedOverview(root, owned, legacy string, content, undeployed []byte, cs *checksums.FileChecksums) error {
+	old, err := os.ReadFile(filepath.Join(root, legacy))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err != nil {
+		old = nil
+	}
+	pristine := old != nil && cs != nil && cs.Unstampable[legacy] == checksums.BodyHash(old)
+	if old != nil && !pristine {
+		content = old
+	}
+	written, err := checksums.WriteScaffoldIfMissing(root, owned, content)
+	if err != nil {
+		return err
+	}
+	if !written && undeployed != nil && !bytes.Equal(content, undeployed) {
+		onDisk, err := os.ReadFile(filepath.Join(root, owned))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err == nil && bytes.Equal(onDisk, undeployed) {
+			checksums.RecordPreWrite(root, owned)
+			if err := atomicfile.WriteFile(filepath.Join(root, owned), content, 0o644); err != nil {
+				return err
+			}
+			checksums.MarkWrittenThisRun(owned)
+		}
+	}
+	// A deliberately deleted scaffold must not resurrect or erase its legacy
+	// source. Only retire after the owned destination is present.
+	if _, err := os.Stat(filepath.Join(root, owned)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if old != nil {
+		// The pre-emitter guard may already have quarantined this legacy
+		// path. Record the explicit one-way ownership transfer so final
+		// adjudication does not demand a render for a now user-owned file.
+		if cs != nil {
+			if err := cs.DisownPaths(root, []string{legacy}, "constant overview migrated to owned scaffold"); err != nil {
+				return err
+			}
+		}
+		destination, err := os.ReadFile(filepath.Join(root, owned))
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(destination, old) && !pristine {
+			checksums.RecordPreservedOwnershipTransfer(root, legacy, owned, old)
+			return nil // Two independent edits: preserve both, never discard one.
+		}
+		checksums.RecordPreservedOwnershipTransfer(root, legacy, owned, old)
+		if err := checksums.RemoveJournaled(filepath.Join(root, legacy)); err != nil {
+			return err
+		}
+		if cs != nil {
+			delete(cs.Unstampable, legacy)
+		}
+	}
+	return nil
 }
 
 // retireGenerated removes rel when it is a pristine forge render.
@@ -209,6 +327,27 @@ func retireStale(projectDir string, written []string, cs *checksums.FileChecksum
 	return retireGenerated(projectDir, LegacySpecFile, cs)
 }
 
+// ReadFragments reads reusable generation input without loading old process
+// parts. This is the only disk input selected-env assembly consumes.
+func ReadFragments(projectDir string) (Input, bool, error) {
+	raw, err := os.ReadFile(filepath.Join(projectDir, ProjectSpecFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return Input{}, false, nil
+	}
+	if err != nil {
+		return Input{}, false, err
+	}
+	var p ProjectPart
+	if err := decodePart(ProjectSpecFile, raw, &p, &p.Version); err != nil {
+		return Input{}, false, err
+	}
+	if p.Input == nil {
+		return Input{}, false, fmt.Errorf("%s has no generation fragments: run forge generate", ProjectSpecFile)
+	}
+	f := p.Input
+	return Input{Project: p.Project, Frontends: f.Frontends, HasDatabase: f.HasDatabase, Funnels: f.Funnels}, true, nil
+}
+
 // ReadSpec assembles the Spec forge generate last wrote under projectDir.
 // ok is false when there is none (a project that has not generated
 // dashboards). A part of another version is an error that names the fix.
@@ -220,8 +359,8 @@ func ReadSpec(projectDir string) (sp Spec, ok bool, err error) {
 	return Assemble(project, parts), true, nil
 }
 
-// readParts reads ProjectSpecFile and every ServiceSpecFile.
-func readParts(projectDir string) (ProjectPart, []ServicePart, bool, error) {
+// readParts reads ProjectSpecFile and every ProcessSpecFile.
+func readParts(projectDir string) (ProjectPart, []ProcessPart, bool, error) {
 	var project ProjectPart
 	raw, err := os.ReadFile(filepath.Join(projectDir, filepath.FromSlash(ProjectSpecFile)))
 	if errors.Is(err, os.ErrNotExist) {
@@ -233,19 +372,19 @@ func readParts(projectDir string) (ProjectPart, []ServicePart, bool, error) {
 	if err := decodePart(ProjectSpecFile, raw, &project, &project.Version); err != nil {
 		return ProjectPart{}, nil, false, err
 	}
-	matches, err := filepath.Glob(filepath.Join(projectDir, filepath.FromSlash(SpecDir), "service-*"+genSuffix))
+	matches, err := filepath.Glob(filepath.Join(projectDir, filepath.FromSlash(SpecDir), "process-*"+genSuffix))
 	if err != nil {
 		return ProjectPart{}, nil, false, err
 	}
 	sort.Strings(matches)
-	parts := make([]ServicePart, 0, len(matches))
+	parts := make([]ProcessPart, 0, len(matches))
 	for _, m := range matches {
 		rel := SpecDir + "/" + filepath.Base(m)
 		raw, err := os.ReadFile(m)
 		if err != nil {
 			return ProjectPart{}, nil, false, err
 		}
-		var part ServicePart
+		var part ProcessPart
 		if err := decodePart(rel, raw, &part, &part.Version); err != nil {
 			return ProjectPart{}, nil, false, err
 		}

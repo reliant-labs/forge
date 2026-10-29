@@ -7,10 +7,15 @@
 #   widen     pre-rollout. Apply the UNION of the access document the last
 #             converge applied and the new one, so a name a release adds is
 #             already granted when its workloads first sync. A first install has
-#             nothing applied yet and nothing to widen: it exits 0 at once.
+#             nothing applied yet and nothing to widen: it exits 0 at once. So
+#             does a store that still answers in plaintext (the previous
+#             incarnation, before an adoption or after a rollback): it has no
+#             TLS listener to widen over, and the rollout that would give it
+#             one waits on this Job. Converge applies the whole document later.
 #   converge  post-rollout. Initialise the store if it has never been, then
 #             apply the new document, narrow (delete what it no longer
-#             contains), and record it as applied.
+#             contains), retire the auth mounts the document lists as retired,
+#             and record it as applied.
 #
 # The document (/converge/access.json) is the whole contract: the KV mount, the
 # JWT auth mounts, the ACL policies and the login roles. Every step is an
@@ -62,6 +67,11 @@ ESCROW_HOOK="${OPENBAO_ESCROW_HOOK:-/escrow/escrow.sh}"
 GENERATE_HOOK="${OPENBAO_GENERATE_HOOK:-/generate/generate.sh}"
 BREAK_GLASS_TOKEN="${OPENBAO_BREAK_GLASS_TOKEN:-}"
 EXIT_REFUSED="${OPENBAO_EXIT_REFUSED:-64}"
+# Connection-level failures (no HTTP answer at all) are retried this many times
+# with doubling delays (RETRY_BASE_SECONDS, capped at 15s): a pod restarting
+# behind the Service, a node drain or a Cloud SQL proxy hiccup is not a verdict.
+API_RETRIES="${OPENBAO_API_RETRIES:-6}"
+RETRY_BASE_SECONDS="${OPENBAO_RETRY_BASE_SECONDS:-1}"
 if [ "$PHASE" = widen ]; then
   WAIT_SECONDS="${OPENBAO_WAIT_SECONDS:-180}"
 else
@@ -79,8 +89,24 @@ refuse() { log "REFUSED: $*"; exit "$EXIT_REFUSED"; }
 
 # ---- the API ---------------------------------------------------------------
 
-# api METHOD PATH [BODY]: sets API_CODE, leaves the body in $TMP/resp. The token
-# travels in a header FILE, never on a command line.
+# api METHOD PATH [BODY]: sets API_CODE and API_CURL_EXIT, leaves the body in
+# $TMP/resp. The token travels in a header FILE, never on a command line.
+#
+# API_CODE is the HTTP status, or 000 when the store gave no HTTP answer at all.
+# A 000 is a connection-level failure (curl exit 6, 7, 28, 35, 52, 55, 56) and
+# is retried with bounded backoff; any HTTP status, 4xx and 5xx included, is the
+# store's answer and returns at once. $TMP/resp is emptied before every attempt
+# so a failure can never quote the previous call's response. A failure curl
+# cannot recover from (60: the CA does not verify; 77: no CA file) is not
+# retried either.
+#
+# A request that may have reached the store (curl exit 28, 52, 55, 56) is
+# repeated only when repeating it is harmless. Every call here is an idempotent
+# overwrite or a read except three, which are NOT replayed after an ambiguous
+# failure: sys/init (its output cannot be recovered), and enabling a mount
+# (sys/mounts, sys/auth: a repeat answers 400, hiding whether the first took).
+# Those exit 1 instead, and the Job's own retry starts over from a listing. A
+# failure before any byte was sent (6, 7, 35) is always safe to repeat.
 api() {
   local method=$1 path=$2 body=${3-}
   local args=(-sS -o "$TMP/resp" -w '%{http_code}' --cacert "$CA_FILE" -X "$method")
@@ -92,7 +118,35 @@ api() {
     printf '%s' "$body" >"$TMP/body"
     args+=(-H 'Content-Type: application/json' --data-binary "@$TMP/body")
   fi
-  API_CODE=$(curl "${args[@]}" "${API_BASE:-$ADDR}/v1/$path" 2>"$TMP/curl.err") || API_CODE=000
+  local attempt=0 delay=$RETRY_BASE_SECONDS
+  while :; do
+    : >"$TMP/resp"
+    API_CURL_EXIT=0
+    API_CODE=$(curl "${args[@]}" "${API_BASE:-$ADDR}/v1/$path" 2>"$TMP/curl.err") || API_CURL_EXIT=$?
+    [ "$API_CURL_EXIT" -eq 0 ] || API_CODE=000
+    [ "$API_CODE" = 000 ] || return 0
+    case "$API_CURL_EXIT" in
+      6|7|35) ;;
+      28|52|55|56) case "$method $path" in "POST sys/init"|"POST sys/mounts/"*|"POST sys/auth/"*) return 0 ;; esac ;;
+      *) return 0 ;;
+    esac
+    attempt=$((attempt + 1))
+    if [ "$attempt" -gt "$API_RETRIES" ]; then return 0; fi
+    log "$method $path: no answer from the store (curl exit $API_CURL_EXIT: $(head -c 200 "$TMP/curl.err" | tr '\n' ' ')); retry $attempt/$API_RETRIES in ${delay}s"
+    sleep "$delay"
+    delay=$((delay * 2))
+    [ "$delay" -le 15 ] || delay=15
+  done
+}
+
+# api_failure: what to say about the call that just failed. A 000 has no
+# response to quote, only curl's own account of why.
+api_failure() {
+  if [ "$API_CODE" = 000 ]; then
+    echo "no answer from the store (curl exit $API_CURL_EXIT: $(head -c 300 "$TMP/curl.err" 2>/dev/null | tr '\n' ' '))"
+  else
+    echo "answered $API_CODE: $(head -c 400 "$TMP/resp" 2>/dev/null | tr '\n' ' ')"
+  fi
 }
 
 # must METHOD PATH [BODY]: an api call that has to succeed.
@@ -100,17 +154,32 @@ must() {
   api "$@"
   case "$API_CODE" in
     2??) ;;
-    *) die "$1 $2 answered $API_CODE: $(head -c 400 "$TMP/resp" 2>/dev/null | tr '\n' ' ') $(head -c 200 "$TMP/curl.err" 2>/dev/null)" ;;
+    *) die "$1 $2 $(api_failure)" ;;
   esac
 }
 
 # health ADDR: the node's status document, whatever its state.
 health() {
   local code
+  : >"$TMP/health"
   code=$(curl -sS -o "$TMP/health" -w '%{http_code}' --cacert "$CA_FILE" \
     "$1/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200&drsecondarycode=200&performancestandbycode=200" \
     2>"$TMP/curl.err") || return 1
   [ "$code" = 200 ] && jq -e . "$TMP/health" >/dev/null 2>&1
+}
+
+# serves_plaintext ADDR: 0 when the https:// ADDR answers an unauthenticated
+# health check in PLAINTEXT on the same host and port, i.e. the listener there
+# is not TLS. It sends no token, so it is safe against a store that is. A TLS
+# listener answers a plaintext request with an error, so it is never mistaken
+# for one.
+serves_plaintext() {
+  case $1 in https://*) ;; *) return 1 ;; esac
+  local code
+  code=$(curl -sS -o "$TMP/plain-health" -w '%{http_code}' --connect-timeout 5 --max-time 10 \
+    "http://${1#https://}/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200&drsecondarycode=200&performancestandbycode=200" \
+    2>/dev/null) || return 1
+  [ "$code" = 200 ] && jq -e 'has("initialized")' "$TMP/plain-health" >/dev/null 2>&1
 }
 
 # wait_for ADDR PREDICATE: poll the node's health until the jq predicate holds.
@@ -150,12 +219,21 @@ applied_doc() {
 
 # ---- credentials -----------------------------------------------------------
 
+# unreachable WHAT: dies (exit 1, which the Job retries) when the last call got
+# no answer. An unreachable store says nothing about the credential, so it must
+# never fall through to "no usable credential", a verdict (exit 64) that fails
+# the Job at once.
+unreachable() {
+  [ "$API_CODE" != 000 ] || die "$1: $(api_failure)"
+}
+
 jwt_login() {
   [ -r "$TOKEN_FILE" ] || return 1
   local body
   body=$(jq -n --rawfile jwt "$TOKEN_FILE" --arg role "$CONVERGE_ROLE" '{jwt: ($jwt | rtrimstr("\n")), role: $role}')
   TOKEN=""
   api POST "auth/$SELF_MOUNT/login" "$body"
+  unreachable "logging in on $SELF_MOUNT"
   [ "$API_CODE" = 200 ] || return 1
   TOKEN=$(jq -r '.auth.client_token // empty' "$TMP/resp")
   [ -n "$TOKEN" ]
@@ -164,6 +242,7 @@ jwt_login() {
 token_valid() {
   [ -n "$TOKEN" ] || return 1
   api GET auth/token/lookup-self
+  unreachable "checking the token"
   [ "$API_CODE" = 200 ]
 }
 
@@ -194,7 +273,7 @@ revoke_if_root() {
 initialise() {
   log "store is not initialised: initialising"
   API_BASE=$INIT_ADDR TOKEN="" api POST sys/init '{"recovery_shares":5,"recovery_threshold":3}'
-  [ "$API_CODE" = 200 ] || die "operator init answered $API_CODE: $(head -c 300 "$TMP/resp" | tr '\n' ' ')"
+  [ "$API_CODE" = 200 ] || die "operator init $(api_failure)"
   cp "$TMP/resp" "$TMP/init.json"
   jq -r '.root_token' "$TMP/init.json" | tr -d '\n' >"$TMP/root-token"
   [ -s "$TMP/root-token" ] || die "operator init returned no root token"
@@ -315,7 +394,7 @@ JQ_REMOVED='
 
 ensure_kv() {
   api GET sys/mounts
-  [ "$API_CODE" = 200 ] || die "cannot list mounts (HTTP $API_CODE)"
+  [ "$API_CODE" = 200 ] || die "cannot list mounts: $(api_failure)"
   if jq -e --arg k "$KV_MOUNT/" '(.data // .)[$k]' "$TMP/resp" >/dev/null; then
     log "kv-v2 already mounted at $KV_MOUNT/"
   else
@@ -337,7 +416,7 @@ apply_doc() {
   log "applied $(jq '.policies | length' <<<"$doc") policies"
 
   api GET sys/auth
-  [ "$API_CODE" = 200 ] || die "cannot list auth mounts (HTTP $API_CODE)"
+  [ "$API_CODE" = 200 ] || die "cannot list auth mounts: $(api_failure)"
   existing=$(jq -c '(.data // .) | keys' "$TMP/resp")
   while IFS= read -r m; do
     [ -n "$m" ] || continue
@@ -382,6 +461,66 @@ narrow() {
   done <<<"$(jq -c '.mounts[]' <<<"$gone")"
 }
 
+# retire: disable each auth mount the document lists under `retired` (a mount a
+# previous install left behind, which the component never wrote). Idempotent: a
+# mount that is already gone is logged and skipped. Disabling a mount revokes
+# every token it issued and deletes its roles, so a mount that still HAS roles is
+# refused (exit 64, a verdict a retry cannot change) unless its entry says
+# `force`. A mount whose type is not known to keep logins as roles (anything but
+# kubernetes, approle, jwt, oidc) cannot be checked, and is refused the same way.
+# The mount this component logs in on, and any mount the document itself manages,
+# are never retired, whatever the document says.
+#
+# Two passes, so a refusal never leaves the store half-retired: every listed
+# mount is verified first, and only then is any of them disabled.
+retire() {
+  local doc=$1 m name reason force type existing roles todo=()
+  [ "$(jq '(.retired // []) | length' <<<"$doc")" -gt 0 ] || return 0
+  api GET sys/auth
+  [ "$API_CODE" = 200 ] || die "cannot list auth mounts: $(api_failure)"
+  existing=$(jq -c '(.data // .)' "$TMP/resp")
+  while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    name=$(jq -r .name <<<"$m")
+    reason=$(jq -r '.reason // ""' <<<"$m")
+    force=$(jq -r '.force // false' <<<"$m")
+    if [ "$name" = "$SELF_MOUNT" ] || jq -e --arg n "$name" '.mounts | map(.name) | index($n)' <<<"$doc" >/dev/null; then
+      refuse "auth mount $name is listed under retired, but it is a mount this component manages. Remove it from retiredAuthMounts"
+    fi
+    type=$(jq -r --arg k "$name/" '.[$k].type // empty' <<<"$existing")
+    if [ -z "$type" ]; then
+      log "retired auth mount $name is already gone"
+      continue
+    fi
+    case "$type" in
+      kubernetes|approle|jwt|oidc)
+        api GET "auth/$name/role?list=true"
+        case "$API_CODE" in
+          404) roles="" ;;
+          200) roles=$(jq -r '.data.keys // [] | join(", ")' "$TMP/resp") ;;
+          *) die "cannot list the roles of auth mount $name: $(api_failure)" ;;
+        esac
+        if [ -n "$roles" ] && [ "$force" != true ]; then
+          refuse "auth mount $name is listed as retired but still has roles ($roles). Disabling it revokes every token it issued. Reason given: $reason. Delete the roles, or set force on this retiredAuthMounts entry once they are known to be dead"
+        fi
+        [ -z "$roles" ] || log "FORCED: auth mount $name still has roles ($roles)"
+        ;;
+      *)
+        [ "$force" = true ] || refuse "auth mount $name is a $type mount: its logins are not roles, so this Job cannot tell whether it is in use. Set force on this retiredAuthMounts entry to disable it anyway. Reason given: $reason"
+        log "FORCED: auth mount $name is a $type mount; not checked for use"
+        ;;
+    esac
+    todo+=("$name")
+  done <<<"$(jq -c '(.retired // [])[]' <<<"$doc")"
+
+  for name in ${todo[@]+"${todo[@]}"}; do
+    type=$(jq -r --arg k "$name/" '.[$k].type' <<<"$existing")
+    reason=$(jq -r --arg n "$name" '(.retired[] | select(.name == $n) | .reason) // ""' <<<"$doc")
+    log "disabling retired auth mount $name ($type): $reason"
+    must DELETE "sys/auth/$name"
+  done
+}
+
 record_applied() {
   jq -n --arg name "$APPLIED_CM" --arg ns "$NS" --rawfile doc "$DOC_FILE" '{
       apiVersion: "v1", kind: "ConfigMap",
@@ -420,6 +559,19 @@ widen)
     log "no access document has been applied yet (first install): nothing to widen"
     exit 0
   fi
+  # The store running NOW may not be this component yet: a first adoption, or a
+  # roll-forward after a rollback, leaves the previous plaintext store serving
+  # until the rollout this Job precedes replaces it. That store has no TLS
+  # listener to dial, and the rollout that would give it one waits on this Job,
+  # so failing here is a deadlock, not a verdict. Nothing of the component's is
+  # in force to widen (the first-install case), so skip: the converge phase
+  # applies the whole document once the store has rolled. Only a store that
+  # positively answers in plaintext is skipped; an unreachable store or a CA
+  # that does not verify still fails below.
+  if ! health "$ADDR" && serves_plaintext "$ADDR"; then
+    log "the store at $ADDR answers in plaintext, not on this component's TLS listener: it is the previous incarnation, still serving until the rollout. Nothing of this component is in force to widen (as on a first install); the converge phase applies the whole document after the rollout. Skipping. No credential was sent"
+    exit 0
+  fi
   wait_for "$ADDR" '.initialized == true and .sealed == false'
   authenticate
   WIDE=$(jq -n --argjson old "$OLD" --argjson new "$NEW" "$JQ_WIDEN")
@@ -453,6 +605,7 @@ converge)
   OLD=$(applied_doc)
   apply_doc "$NEW"
   if [ -n "$OLD" ]; then narrow "$(jq -c . <<<"$OLD")" "$NEW"; fi
+  retire "$NEW"
   run_hook "$GENERATE_HOOK" generate
   record_applied
   revoke_if_root

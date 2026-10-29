@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -39,7 +40,7 @@ func runBufGenerateGo(projectDir string) error {
 		return err
 	}
 
-	cmd := exec.Command("buf", "generate")
+	cmd := exec.Command("buf", bufGenerateArgs()...)
 	cmd.Dir = projectDir
 	if err := withPinnedTools(cmd, projectDir); err != nil {
 		return err
@@ -244,7 +245,7 @@ plugins:
 		return err
 	}
 
-	args := []string{"generate", "--template", template}
+	args := bufGenerateArgs("--template", template)
 
 	// Include every proto/<sub>/ with .proto files so pack-emitted services
 	// (e.g. proto/audit/ from audit-log) participate in TypeScript codegen,
@@ -256,6 +257,10 @@ plugins:
 	cmd := exec.Command("buf", args...)
 	cmd.Dir = projectDir
 	cmd.Env = env
+	// The same pinned buf the Go step runs (a fresh machine has none on PATH).
+	if err := withPinnedTools(cmd, projectDir); err != nil {
+		return err
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -376,7 +381,7 @@ plugins:
 
 	fmt.Println("🔨 Generating TypeScript stubs into packages/api/src/gen...")
 	relativeTemplate := filepath.Join("packages", "api", "buf.gen.yaml")
-	args := []string{"generate", "--template", relativeTemplate}
+	args := bufGenerateArgs("--template", relativeTemplate)
 	for _, p := range discoverProtoSubdirs(projectDir) {
 		args = append(args, "--path", p)
 	}
@@ -384,6 +389,10 @@ plugins:
 	cmd := exec.Command("buf", args...)
 	cmd.Dir = projectDir
 	cmd.Env = env
+	// The same pinned buf the Go step runs (a fresh machine has none on PATH).
+	if err := withPinnedTools(cmd, projectDir); err != nil {
+		return err
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -433,19 +442,15 @@ func ensureTSPluginInstalled(feName, projectDir, feDir string) error {
 	if err := nodeengine.Check(absFeDir); err != nil {
 		return fmt.Errorf("%s: @bufbuild/protoc-gen-es is not installed, and npm was not run: %w", feName, err)
 	}
-	verb := frontenddeps.NpmInstallVerb(absFeDir)
-	fmt.Printf("📦 %s: node_modules missing — running `npm %s` in %s so protoc-gen-es exists\n",
-		feName, verb, feDir)
+	install := frontenddeps.InstallCommand(absFeDir, "", true)
+	fmt.Printf("📦 %s: node_modules missing — running `%s` in %s so protoc-gen-es exists\n",
+		feName, install, feDir)
 
-	cmd := exec.Command("npm", verb, "--no-audit", "--no-fund")
-	cmd.Dir = absFeDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s: @bufbuild/protoc-gen-es is not installed and `npm %s` in %s failed: %w "+
+	if err := frontenddeps.Install(context.Background(), absFeDir, "", true); err != nil {
+		return fmt.Errorf("%s: @bufbuild/protoc-gen-es is not installed and `%s` in %s failed: %w "+
 			"— run it manually to see the full output, then re-run generate "+
 			"(continuing would emit hooks and mocks importing _pb modules that do not exist)",
-			feName, verb, feDir, err)
+			feName, install, feDir, err)
 	}
 	return nil
 }
@@ -548,4 +553,11 @@ func usesLocalTSPlugin(bufGenPath string) bool {
 		}
 	}
 	return false
+}
+
+// bufGenerateArgs builds a `buf generate` argv. buf kills the run after two
+// minutes by default, but a `go tool protoc-gen-*` plugin compiles itself on
+// first use and can legitimately take longer, so the timeout is disabled.
+func bufGenerateArgs(extra ...string) []string {
+	return append([]string{"generate", "--timeout", "0"}, extra...)
 }

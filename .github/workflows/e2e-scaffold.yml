@@ -29,7 +29,7 @@ permissions:
 # nightly.yml's call shares main's ref; the event keeps it out of a push run's
 # group.
 concurrency:
-  group: e2e-scaffold-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci:e2e' && format('-{0}', github.run_id) || '' }}
+  group: e2e-scaffold-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci:e2e' && format('-{0}', github.run_id) || '' }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -46,7 +46,19 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      # Restore only: the -trimpath artifacts `checks` keeps warm in the
+      # tools scope (ci.yml's "Build-cache note").
+      - uses: ./.github/actions/restore-go-caches
+        with:
+          scope: tools
+
+      # A scaffolded frontend pins pnpm (package.json packageManager,
+      # templates.PnpmVersion); TestPnpmVersionIsPinnedEverywhere keeps this
+      # version equal to it.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.15.0
 
       - uses: actions/setup-node@v7
         with:
@@ -96,6 +108,39 @@ jobs:
           rm -rf "$E2E_DIR"
           mkdir -p "$E2E_DIR"
           echo "✅ workspace ready at $E2E_DIR"
+
+      # The scaffold depends on @reliantlabs/forge-web-runtime by its PUBLISHED
+      # range, and a pull request that ships a new runtime raises that range
+      # to a version npm does not have until the tag is pushed after the
+      # merge. So npm fetches the @reliantlabs scope from an overlay registry
+      # serving this checkout's `npm pack` beside every published version
+      # (internal/npmoverlay): the smoke installs the runtime it ships, with
+      # the scaffold's manifest untouched. It runs until the job ends; the
+      # step fails if the pack does.
+      - name: Serve this checkout's web-runtime to npm
+        run: |
+          go build -o "$RUNNER_TEMP/npm-overlay" ./internal/npmoverlay/cmd/npm-overlay
+          env_file="$RUNNER_TEMP/npm-overlay.env"
+          nohup "$RUNNER_TEMP/npm-overlay" -pack web-runtime -env-file "$env_file" \
+            > "$RUNNER_TEMP/npm-overlay.log" 2>&1 &
+          pid=$!
+          for _ in $(seq 1 600); do
+            [ -s "$env_file" ] && break
+            if ! kill -0 "$pid" 2>/dev/null; then
+              cat "$RUNNER_TEMP/npm-overlay.log"
+              echo "❌ npm overlay exited before it was ready"
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ ! -s "$env_file" ]; then
+            cat "$RUNNER_TEMP/npm-overlay.log"
+            echo "❌ npm overlay not ready after 10m"
+            exit 1
+          fi
+          cat "$env_file" >> "$GITHUB_ENV"
+          cat "$RUNNER_TEMP/npm-overlay.log"
+          echo "✅ npm overlay serving web-runtime"
 
       - name: forge project new e2e-test
         working-directory: ${{ env.E2E_DIR }}
@@ -223,21 +268,24 @@ jobs:
       # Frontend gate: install, TYPECHECK, BUILD, then run the scaffolded
       # Vitest suite against the admin frontend.
       #
-      # This step used to run `npm install` then `npm test` and stop there.
+      # This step used to run an install then `npm test` and stop there.
       # `npm test` is `vitest run` — it executes the five scaffolded unit
       # tests and nothing else. It never compiled the generated tree, so a
       # generated page that does not typecheck, or a route that Next cannot
       # build, shipped green: the two failure modes that actually reach users
       # first were the two this lane did not look at.
       #
-      # Order matters. `npm run typecheck` runs first, against the tsconfig
+      # The install is FROZEN: `forge project new` wrote pnpm-lock.yaml, and
+      # a lockfile the scaffold cannot install from is a scaffold bug.
+      #
+      # Order matters. `pnpm run typecheck` runs first, against the tsconfig
       # as scaffolded: `next build` REWRITES tsconfig.json (it appends
       # .next-prod/types/**/*.ts to `include`), so a typecheck after a build
       # is a typecheck of a different project. Both are kept because they see
       # different things — `next build` type-checks the route graph it
       # compiles, `tsc --noEmit` covers everything in tsconfig's include,
       # test files and unreferenced modules included.
-      - name: npm typecheck + build + test (frontend)
+      - name: pnpm typecheck + build + test (frontend)
         working-directory: ${{ env.E2E_DIR }}/e2e-test
         run: |
           # The scaffold above passes --frontend admin. If nothing is here,
@@ -254,31 +302,31 @@ jobs:
           fi
           echo "Frontend at: $FE_DIR"
           cd "$FE_DIR"
-          if npm install --no-audit --no-fund --prefer-offline; then
-            echo "✅ npm install"
+          if pnpm install --frozen-lockfile --prefer-offline; then
+            echo "✅ pnpm install --frozen-lockfile"
           else
-            echo "❌ npm install"
+            echo "❌ pnpm install --frozen-lockfile"
             exit 1
           fi
-          if npm run typecheck; then
-            echo "✅ npm run typecheck (tsc --noEmit)"
+          if pnpm run typecheck; then
+            echo "✅ pnpm run typecheck (tsc --noEmit)"
           else
-            echo "❌ npm run typecheck (tsc --noEmit)"
+            echo "❌ pnpm run typecheck (tsc --noEmit)"
             exit 1
           fi
-          if npm run build; then
-            echo "✅ npm run build (next build)"
+          if pnpm run build; then
+            echo "✅ pnpm run build (next build)"
           else
-            echo "❌ npm run build (next build)"
+            echo "❌ pnpm run build (next build)"
             exit 1
           fi
           # vitest exits 1 on "No test files found" (passWithNoTests is not
           # set in the scaffold's vitest.config.ts), so this cannot pass
           # vacuously if the scaffold ever stops emitting its unit tests.
-          if npm test --silent; then
-            echo "✅ npm test (vitest run)"
+          if pnpm test --silent; then
+            echo "✅ pnpm test (vitest run)"
           else
-            echo "❌ npm test (vitest run)"
+            echo "❌ pnpm test (vitest run)"
             exit 1
           fi
 
@@ -291,3 +339,9 @@ jobs:
           # Cap retention — this is debug bait, not a release artifact.
           retention-days: 7
           if-no-files-found: warn
+
+      # Main only: keeps any archive this job had to fetch, so the next run
+      # does not (see embedded-postgres-cache's header).
+      - name: Save the embedded postgres archives (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/embedded-postgres-cache-save

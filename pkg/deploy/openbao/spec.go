@@ -85,6 +85,8 @@ type Spec struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
 	Image     string `json:"image"`
+	// ReleaseOwner is the native provider's explicit compiled snapshot consumer.
+	ReleaseOwner string `json:"releaseOwner,omitempty"`
 	// KubectlImage runs the converge Jobs: kubectl, curl and jq. Empty =
 	// [DefaultKubectlImage].
 	KubectlImage string `json:"kubectlImage,omitempty"`
@@ -109,6 +111,9 @@ type Spec struct {
 	Consumers []Consumer `json:"consumers,omitempty"`
 	Writer    Writer     `json:"writer"`
 	Access    Access     `json:"access"`
+	// RetiredAuthMounts are auth mounts a previous install left behind and the
+	// converge Job disables (retired.go). Empty = none.
+	RetiredAuthMounts []RetiredAuthMount `json:"retiredAuthMounts,omitempty"`
 
 	// Hooks are ConfigMaps of scripts the converge Job runs at two points:
 	// the escrow hook right after init, the generate hook after the document
@@ -240,10 +245,22 @@ type KV struct {
 
 // HA is availability.
 type HA struct {
-	PDB           bool   `json:"pdb"`
-	ZoneSpread    bool   `json:"zoneSpread"`
-	PriorityClass string `json:"priorityClass,omitempty"`
+	PDB        bool `json:"pdb"`
+	ZoneSpread bool `json:"zoneSpread"`
+	// NodeSpread is "required" (the default; empty means required) or
+	// "preferred". Required refuses to co-locate two replicas of an HA store
+	// on one node (a node loss would take quorum or every standby with it);
+	// preferred is the scheduler's best effort and states NodeSpreadReason.
+	NodeSpread       string `json:"nodeSpread,omitempty"`
+	NodeSpreadReason string `json:"nodeSpreadReason,omitempty"`
+	PriorityClass    string `json:"priorityClass,omitempty"`
 }
+
+// Node spread values.
+const (
+	NodeSpreadRequired  = "required"
+	NodeSpreadPreferred = "preferred"
+)
 
 // Audit is the audit devices.
 type Audit struct {
@@ -406,6 +423,18 @@ func (s Spec) Validate() error {
 	if s.KV.Mount == "" || s.KV.MaxVersions < 2 {
 		bad("kv needs a mount and maxVersions >= 2")
 	}
+	switch s.HA.NodeSpread {
+	case "", NodeSpreadRequired:
+		if s.HA.NodeSpreadReason != "" {
+			bad("ha.nodeSpreadReason is set but nodeSpread is required: the reason excuses a preferred spread. Drop the reason, or set nodeSpread to preferred")
+		}
+	case NodeSpreadPreferred:
+		if s.HA.NodeSpreadReason == "" {
+			bad("ha.nodeSpread is preferred and states no nodeSpreadReason. Two replicas on one node lose quorum or every standby together when it fails: keep the default (required), or say why this store may share a node")
+		}
+	default:
+		bad("ha.nodeSpread %q must be required or preferred", s.HA.NodeSpread)
+	}
 	if !s.Audit.Stdout && !s.Audit.File {
 		bad("audit has no device: a secret store with no audit trail is refused. Keep stdout or file")
 	}
@@ -413,6 +442,7 @@ func (s Spec) Validate() error {
 		bad("access needs org, env and selfCluster")
 	}
 
+	errs = append(errs, s.validateRetired()...)
 	errs = append(errs, s.validatePublic()...)
 	errs = append(errs, s.validateBootstrap()...)
 

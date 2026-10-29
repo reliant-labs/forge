@@ -413,7 +413,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// so it exports everything the steps above produced.
 	if otelShutdown != nil {
 		if shutErr := otelShutdown(shutdownCtx); shutErr != nil {
-			logger.ErrorContext(ctx, "otel shutdown error", "error", shutErr)
+			LogTelemetryFlushError(ctx, logger, "otel shutdown error", shutErr)
 		}
 	}
 
@@ -481,8 +481,11 @@ func newLogger(cfg Config) *slog.Logger {
 		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})
 	}
 	// The error-class handler is outermost so the trace-id / OTLP log
-	// bridge sees the record at its lowered (user-error) level.
-	return slog.New(observe.NewErrorClassHandler(observe.NewLogHandler(handler, observeConfig(cfg, ""))))
+	// bridge sees the record at its lowered (user-error) level. The observe
+	// config is the one SetupTelemetry passes Setup, instance id included, so
+	// the resource on a line logged before Setup is the one it builds.
+	instanceID, _ := os.Hostname()
+	return slog.New(observe.NewErrorClassHandler(observe.NewLogHandler(handler, observeConfig(cfg, instanceID))))
 }
 
 // observeConfig projects the serverkit Config onto observe.Config.

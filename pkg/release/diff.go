@@ -15,9 +15,13 @@ type ShapeDiff struct {
 	// reader must say "no recorded config" rather than present the diff as
 	// a real comparison — empty and unknown must never render alike.
 	LiveUnknown bool `json:"live_unknown,omitempty"`
-	// KindChanged is set when the two shapes disagree about the env's kind.
-	// A kind is immutable, so this is always an error for a reader to
-	// surface, never a change that can be deployed.
+	// KindChanged is never set.
+	//
+	// Deprecated: an env has no placement kind any more — placement is per
+	// workload (docs/design/per-workload-placement.md), and a part that moves
+	// between placements is reported in RuntimeChanges. Kept only so a reader
+	// built against an older forge still decodes the document; removed with
+	// Shape.Kind.
 	KindChanged *KindChange `json:"kind_changed,omitempty"`
 
 	Added   []ShapeObject  `json:"added,omitempty"`
@@ -49,6 +53,8 @@ type ObjectMove struct {
 }
 
 // KindChange is a disagreement about an env's kind.
+//
+// Deprecated: see ShapeDiff.KindChanged.
 type KindChange struct {
 	Live      EnvKind `json:"live"`
 	Candidate EnvKind `json:"candidate"`
@@ -85,7 +91,7 @@ type RuntimeChange struct {
 
 // Empty reports whether nothing differs. An unknown live side is never empty.
 func (d ShapeDiff) Empty() bool {
-	return !d.LiveUnknown && d.KindChanged == nil &&
+	return !d.LiveUnknown &&
 		len(d.Added) == 0 && len(d.Removed) == 0 && len(d.Changed) == 0 && len(d.Moved) == 0 &&
 		len(d.WorkloadsAdded) == 0 && len(d.WorkloadsRemoved) == 0 && len(d.RuntimeChanges) == 0 &&
 		len(d.SecretsAdded) == 0 && len(d.SecretsRemoved) == 0 &&
@@ -111,9 +117,6 @@ func DiffShapes(live *Shape, candidate Shape) ShapeDiff {
 	}
 	l := live.Canonical()
 	var d ShapeDiff
-	if l.Kind != cand.Kind {
-		d.KindChanged = &KindChange{Live: l.Kind, Candidate: cand.Kind}
-	}
 
 	liveObjs := map[ObjectKey]ShapeObject{}
 	for _, o := range l.Objects {

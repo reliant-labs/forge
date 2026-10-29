@@ -34,7 +34,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/cluster"
-	"github.com/reliant-labs/forge/internal/flux"
+	"github.com/reliant-labs/forge/pkg/flux"
 )
 
 // platformChartInstall is one chart bound to the kubectl context it lands in.

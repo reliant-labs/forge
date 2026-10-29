@@ -168,13 +168,13 @@ type ObservabilityFile struct {
 	Data []byte
 }
 
-const (
-	// maxObservabilityFileBytes and maxObservabilityBytes bound what a project
-	// can put in a bundle. They sit far under the control plane's 8 MiB layer
-	// bound so a bundle forge builds is one the platform records.
-	maxObservabilityFileBytes = 1 << 20
-	maxObservabilityBytes     = 4 << 20
-)
+// maxObservabilityBytes bounds the observability files together, and so any
+// one of them: the shared layer contract, [release.ManifestsLayerMaxBytes],
+// the bound [release.ValidateManifestsLayer] holds every artifact to. A
+// service catalog grows with the project it describes, so a per-file bound
+// below the layer's refuses a large project for nothing. (The control
+// plane's 8 MiB bound is on the COMPRESSED layer, and these files are JSON.)
+const maxObservabilityBytes = release.ManifestsLayerMaxBytes
 
 // observabilityEntries validates the files and turns them into layer entries.
 func observabilityEntries(files []ObservabilityFile) ([]tarEntry, error) {
@@ -186,12 +186,10 @@ func observabilityEntries(files []ObservabilityFile) ([]tarEntry, error) {
 		switch {
 		case clean != f.Path || strings.HasPrefix(clean, "/") || strings.Contains(clean, ".."):
 			return nil, fmt.Errorf("%w: observability path %q is not a clean relative path", release.ErrInvalid, f.Path)
-		case clean != release.BundleFrontendDeclarationsPath && !strings.HasPrefix(clean, release.BundleObservabilityPrefix+"/"):
+		case clean != release.BundleFrontendDeclarationsPath && clean != release.BundleServiceCatalogPath && !strings.HasPrefix(clean, release.BundleObservabilityPrefix+"/"):
 			return nil, fmt.Errorf("%w: observability path %q is not under %s/", release.ErrInvalid, f.Path, release.BundleObservabilityPrefix)
 		case seen[clean]:
 			return nil, fmt.Errorf("%w: observability path %q appears twice", release.ErrInvalid, f.Path)
-		case len(f.Data) > maxObservabilityFileBytes:
-			return nil, fmt.Errorf("%w: %s is %d bytes, over the %d-byte bound for one observability file", release.ErrInvalid, f.Path, len(f.Data), maxObservabilityFileBytes)
 		}
 		seen[clean] = true
 		total += len(f.Data)
@@ -528,6 +526,7 @@ func packManifests(docs []parsedDoc, units []release.DeliveryUnit, extra ...tarE
 				object: release.TreeObject{
 					Cluster: cluster, Unit: docUnit(doc), Phase: doc.phase,
 					Kind: doc.meta.kind, Namespace: doc.meta.namespace, Name: doc.meta.name,
+					APIVersion: doc.meta.apiVersion, SecretSync: doc.meta.annotations[release.AnnotationSecretSync],
 					DeadlineSeconds: docDeadlineSeconds(doc),
 				},
 			})

@@ -18,6 +18,10 @@ read. For every (cluster, namespace) that holds one, this renders:
     the KV version when pinned), `target.template` for derived keys, the
     refresh interval, and creationPolicy Orphan|Merge with deletionPolicy
     Retain, so a store outage or a Flux prune never removes a synced Secret.
+    A source with no store `data` (only `templates`) gets deletionPolicy Merge
+    instead: ESO returns early on a sync whose provider returned no data and
+    Retain, so the Secret would never be created. Merge builds it from the
+    template, and removes nothing it did not write.
     A `shadow` source syncs to `<name>-eso-shadow` instead.
 
 THE LOGIN CONTRACT. A SecretStore logs in as the OpenBao JWT role that
@@ -306,6 +310,13 @@ _check_source = lambda b: any, pt: any, s: any -> bool {
 #   gcp_projects the Google project of each gcpsm store
 #   gcp_service_accounts the extra service accounts a gcpsm store may use: the
 #                component's bootstrap reader
+#   store_peers  the in-cluster OpenBao the operator dials, as a pod peer
+#                ({namespace, name, port}) for its egress NetworkPolicy. An
+#                ipBlock cannot stand in for it: Cilium (GKE Dataplane V2)
+#                never matches a pod's address against an ipBlock, so
+#                0.0.0.0/0 silently drops the dial and the SecretStore times
+#                out ("could not get provider client: context deadline
+#                exceeded")
 #
 # The component's own server/mount/audience are admitted even when no
 # ExternalSecret reads from it yet, so adding the first one needs no policy
@@ -330,6 +341,7 @@ admission_defaults = lambda b: any, pt: any, ctx: str -> any {
         "audiences": sorted({x: 0 for x in [st.audience for st in _vault] + (["${_openbao_audience_base(b.openbao)}/c/${_id}"] if _ob else [])})
         "gcp_projects": sorted({x: 0 for x in [st.project for st in _recs if st.type == "gcpsm"] + _boot})
         "gcp_service_accounts": _boot_sa
+        "store_peers": [{"namespace": b.openbao.namespace, "name": b.openbao.name, "port": [l.port for l in b.openbao.listeners if l.tls][0]}] if _ob else []
     }
 }
 
@@ -422,7 +434,7 @@ _external_secret = lambda b: any, ctx: str, s: any, st: any, deferred: bool -> a
             target = {
                 name = _name
                 creationPolicy = "Orphan" if _src.shadow else _src.creation_policy
-                deletionPolicy = "Retain"
+                deletionPolicy = "Retain" if _src.data else "Merge"
                 if _tpl or _typed or _src.labels:
                     template = {
                         engineVersion = "v2"

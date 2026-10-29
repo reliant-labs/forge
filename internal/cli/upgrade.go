@@ -19,17 +19,61 @@ import (
 
 func newUpgradeCmd() *cobra.Command {
 	var (
-		check     bool
-		force     bool
-		toVersion string
-		dryRun    bool
-		all       bool
+		check      bool
+		force      bool
+		toVersion  string
+		dryRun     bool
+		all        bool
+		jsonOut    bool
+		allowDirty bool
+		skip       []string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "upgrade [--force <path>...]",
-		Short: "Update frozen project files from latest Forge templates",
-		Long: `Detect template drift on frozen files (files written at 'forge project new' time but
+		Short: "Move the project to a newer forge and apply every mechanical fix for the range",
+		Long: `Take the project from the forge it pins to a newer one, and do every mechanical
+step on the way, so the gate is green without hand edits. In order:
+
+  modules             go get / go mod tidy the forge requirement of each module
+  codemods            the codemods keyed to the releases the range crosses
+  templates           frozen-file drift (below)
+  pin                 forge.yaml forge_version
+  playbooks           the "automation:" steps of each crossed migration playbook
+  vendored-contracts  re-vendor a contract forge.yaml upgrade.vendored_contracts
+                      declares, when its lag report says it lags
+  generate            forge generate
+  locks               refresh lockfiles that disagree with their package.json
+  lint                forge lint --json; what remains is reported, not fixed
+
+--skip <phase> (repeatable) leaves a phase out so a big change can go in its own PR:
+codemods (the registry codemods the range crosses), playbooks (the codemods a
+playbook automates, connect-errors and composition-graph among them),
+vendored-contracts, generate, locks, lint. modules, templates and pin always run.
+The pin moves in the same run, so a skipped codemod is not picked up by the next
+upgrade: the phase's detail names each one to run yourself ('forge fix <name>').
+
+Whatever is left is printed as "Still needs a person" (--json: needs_human): a
+lint error, a playbook whose old shape remains, a codemod that listed what it
+could not decide. Rules still in their warn-first grace are listed under
+"Gating soon" (--json: upcoming) with the release they gate from.
+
+EXIT CODES (the contract a pin bot branches on)
+  0  converged: every fix applied, nothing left for a person
+  1  failed: an error stopped the run (generate failed, a codemod errored,
+     bad flags). The run is not retried blindly: read the error
+  2  could not determine: a package manager, registry or lint verdict could
+     not be reached or read. Retryable
+  9  needs a person: everything mechanical is applied; needs_human is not
+     empty. Re-running changes nothing
+
+--json prints exactly one document on stdout (schema forge-project-upgrade/v1:
+ok, exit_code, error, mode, from, to, converged, phases, codemods, locks,
+playbooks, vendored_contracts, needs_human, upcoming, template_drift); progress
+goes to stderr. ok and exit_code are the process's own. It is also printed for
+a failing run, so a bot can read what was applied before the failure.
+
+Template drift: detect on frozen files (files written at 'forge project new' time but
 not updated by 'forge generate') and apply updates from newer Forge templates.
 
 Files that haven't been modified by the user are updated automatically.
@@ -49,6 +93,14 @@ implicitly. They are yours from birth; upgrade only reports what their templates
 gained, how far behind you are in lines, and how many lines in your copy no
 template accounts for. Adopt one by naming it:
 'forge project upgrade --force <path>'. Bare --force does not reach them.
+
+A scaffold-once file the project deleted stays deleted. The birth ledger
+(.forge/scaffolded.json) records every scaffold-once file forge has written, so a
+managed file the template ships that is absent AND recorded there — or declined
+('forge project disown <path> --absent'), or disowned — is the project's decision,
+not drift: upgrade never re-creates it (nor does 'forge generate'), and says so
+under "deleted by you". A file forge has never written is still born, and recorded.
+To have forge write a deleted one again: 'forge project rescaffold <path>'.
 
 Upgrade synchronizes every project module that requires Forge using
 GOWORK=off go get and go mod tidy, preserving module replacements and go.work.
@@ -75,11 +127,16 @@ Examples:
   forge project upgrade --check buf.yaml       # That one file's full diff
   forge project upgrade --check --all          # Every reported file (still no inline diffs)
   forge project upgrade --force                # Apply all updates, even for user-modified files
-  forge project upgrade --force buf.yaml       # Overwrite ONLY buf.yaml; leave other edits alone`,
+  forge project upgrade --force buf.yaml       # Overwrite ONLY buf.yaml; leave other edits alone
+  forge project upgrade --json                 # What a pin bot runs; exit 0 means merge, 9 means hand to a person`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// --dry-run is an alias for --check; either toggles dry-run.
-			return runUpgradeWithView(check || dryRun, force, all, args, toVersion)
+			return runUpgradeCommand(cmd, upgradeOptions{
+				check: check || dryRun, force: force, showAll: all, forcePaths: args, to: toVersion,
+				allowDirty: allowDirty, skip: skipSet(skip),
+				goRun: upgradeGoRunnerOverride, steps: upgradeStepsOverride, metas: upgradeMetasOverride,
+			}, jsonOut)
 		},
 	}
 
@@ -87,6 +144,9 @@ Examples:
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Alias for --check")
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite user-modified files. Name paths after it to overwrite only those")
 	cmd.Flags().BoolVar(&all, "all", false, "List every reported file instead of the first few per group")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print one JSON document (schema forge-project-upgrade/v1) on stdout; progress goes to stderr")
+	cmd.Flags().BoolVar(&allowDirty, "allow-dirty", false, "Run codemods that replace files you own even over uncommitted changes (they are otherwise left for you, and reported)")
+	cmd.Flags().StringSliceVar(&skip, "skip", nil, "Phases not to run: "+strings.Join(skippablePhases, ", "))
 	cmd.Flags().StringVar(&toVersion, "to", "", "Target forge version (defaults to the current binary version)")
 
 	// `forge project upgrade list` and `forge project upgrade apply <id>` cover the
@@ -115,170 +175,30 @@ func runUpgradeWithView(check, force, showAll bool, forcePaths []string, toVersi
 	return runUpgradeWithGo(check, force, showAll, forcePaths, toVersion, runGoOffWorkspace)
 }
 
+// runUpgradeWithGo is the template-and-modules upgrade without the follow-up
+// phases that run other tools (generate, lock refresh, lint) — the part of
+// `forge project upgrade` that needs no network and no child forge. Callers
+// that want the whole verb use runUpgradeConverge.
 func runUpgradeWithGo(check, force, showAll bool, forcePaths []string, toVersion string, run goOffWorkspaceRunner) error {
-	configPath, err := findProjectConfigFile()
-	if err != nil {
-		return err
-	}
-
-	store, err := loadProjectStoreFrom(configPath)
-	if err != nil {
-		return err
-	}
-	cfg := store.Config()
-
-	projectDir := filepath.Dir(configPath)
-
-	// `--check <path>...` is the detail view: one file's full diff. It
-	// short-circuits the whole report, because a reader who named a file
-	// is not looking for the summary they just read.
+	// --check <path> is the detail view: one file's full diff. It
+	// short-circuits the whole report, because a reader who named a file is
+	// not looking for the summary they just read.
 	if check && !force && len(forcePaths) > 0 {
-		return runUpgradeDetail(projectDir, cfg, forcePaths)
-	}
-
-	selection, err := resolveForceSelection(projectDir, cfg, force, forcePaths)
-	if err != nil {
-		return err
-	}
-
-	// Determine target version. Default to the running binary's version,
-	// honour --to when provided. We don't constrain --to to "newer than
-	// current" — downgrade is a legitimate (if rare) operation.
-	target := strings.TrimSpace(toVersion)
-	if target == "" {
-		target = buildinfo.Version()
-	}
-
-	// The baseline is reported and compared EXACTLY as the project pinned
-	// it. A dev build's pseudo-version is real, orderable SemVer (a
-	// pre-release of the next patch), so nothing has to be substituted for
-	// it to take part in version-gated migration selection — and
-	// substituting a different version, as this once did, is what fed
-	// projects the migrations of a release they were never on.
-	from := store.Meta().EffectiveForgeVersion()
-
-	// Supported-window enforcement (the Istio model). forge supports
-	// upgrading from at most supportedUpgradeWindowMinors minor releases
-	// back in a single run; anything older is a STAGED upgrade through an
-	// intermediate release.
-	//
-	// The reason is the same one that bounds the migration registry: each
-	// migration is written against the shapes of the releases inside the
-	// window, so a project further back than that would have its
-	// migrations applied to a tree none of their authors ever saw. Making
-	// the user stop at an intermediate release means every migration runs
-	// against a baseline it was actually written for.
-	//
-	// This check only applies when both from/to parse cleanly as
-	// vMaj.Min(.patch) and span the same major — cross-major upgrades
-	// aren't part of the staged chain at all.
-	if hop := minorHopDistance(from, target); hop > supportedUpgradeWindowMinors {
-		stagedTo := minorPlus(from, supportedUpgradeWindowMinors)
-		return cliutil.UserErr(
-			fmt.Sprintf("forge project upgrade --to %s", target),
-			fmt.Sprintf("%s is %d minor releases behind %s — forge supports upgrading from at most %d minors back in one step",
-				describeVersion(from), hop, target, supportedUpgradeWindowMinors),
-			"",
-			fmt.Sprintf("staged upgrade: run '%s project upgrade --to v%s' first, then re-run '%s project upgrade --to %s'",
-				Name(), stagedTo, Name(), target),
-		)
-	}
-
-	if check {
-		fmt.Printf("%s project upgrade --check (dry run): %s → %s\n", Name(), describeVersion(from), describeVersion(target))
-	} else {
-		fmt.Printf("%s project upgrade: %s → %s\n", Name(), describeVersion(from), describeVersion(target))
-	}
-	if isPreV01Baseline(from) {
-		fmt.Println("  Baseline is pre-v0.1: forge has not declared backwards compatibility yet, so expect template churn.")
-	}
-	fmt.Println()
-
-	// Surface the migrations this project actually needs before doing
-	// destructive work, so the user (or LLM) can decide whether to halt
-	// and load them first.
-	printApplicableMigrations(projectDir, from)
-
-	// Resolve all module pins before changing templates or config. This phase
-	// rolls back its Go-tool writes on failure; --check only reports drift.
-	if err := upgradeForgeModules(projectDir, target, check, run); err != nil {
-		return err
-	}
-	if check && cfg.ForgeVersion != target {
-		fmt.Printf("  forge.yaml: %s → %s\n", describeVersion(cfg.ForgeVersion), describeVersion(target))
-	}
-
-	// Run the release codemods (deterministic AST rewrites) BEFORE the
-	// template-update upgrade pass. Codemods rewrite user-owned files
-	// (internal/app/lifecycle.go, serve.go) which the template upgrade
-	// leaves alone; doing them first keeps the two concerns separate in
-	// the logs and means a codemod failure aborts before template files
-	// get touched. Under --check they only report.
-	codemodReport, err := runUpgradeCodemods(projectDir, from, target, !check)
-	if err != nil {
-		return err
-	}
-
-	// One-time legacy .forge/checksums.json migration (same conversion
-	// `forge generate` performs; see generate_legacy_migrate.go). Unlike
-	// the pipeline, upgrade has no emitters to side-render against, so
-	// unverifiable entries get the unverified-legacy sentinel directly —
-	// the next generate's guard names them with the standard remedies.
-	// Skipped under --check/--dry-run (read-only contract).
-	if !check {
-		if err := migrateLegacyChecksums(projectDir); err != nil {
+		configPath, err := findProjectConfigFile()
+		if err != nil {
 			return err
 		}
-	}
-
-	results, err := generator.UpgradeSelection(projectDir, cfg, selection, check)
-	if err != nil {
-		return err
-	}
-
-	counts := tallyAndPrintUpgradeResults(results, check, showAll)
-	printSkippedPaths(counts, showAll)
-	printUserModifiedRemedies(counts, showAll)
-
-	// The scaffold-once tier. Separate pass, separate section, and
-	// advisory by contract: these files are the user's from birth, so the
-	// run reports what their templates gained and writes nothing unless a
-	// path was named after --force. Runs in both modes — a --check that
-	// stayed silent about them is how a retried-4xx query client shipped.
-	if _, err := runAdvisoryPass(projectDir, cfg, selection, check, showAll); err != nil {
-		return err
-	}
-
-	// Bump the project's forge_version after a successful, non-dry-run
-	// upgrade. We do this last so a partial failure above leaves the
-	// existing pin in place rather than silently advancing it.
-	//
-	// Hard error: silently failing to bump leaves the project pinned to
-	// the old version, so the next `forge generate` runs the wrong
-	// template set against an already-migrated tree.
-	if err := bumpForgeVersion(cfg, configPath, target, check); err != nil {
-		return err
-	}
-
-	// Write the UPGRADE_NOTES.md at the project root so the user (or an
-	// LLM running the upgrade) has a single canonical worklist of
-	// auto-applied changes + items needing manual attention. Skip on
-	// dry-run — the report would be misleading without the actual
-	// rewrites having happened.
-	//
-	// Hard error: this report is the canonical record of what the codemod
-	// rewrote. Silently dropping it strands the user with no account of
-	// what changed under them.
-	if !check && codemodReport.Changed() {
-		if err := writeUpgradeNotes(projectDir, from, target, codemodReport); err != nil {
-			return fmt.Errorf("write UPGRADE_NOTES.md: %w", err)
+		store, err := loadProjectStoreFrom(configPath)
+		if err != nil {
+			return err
 		}
-		fmt.Println()
-		fmt.Println("📝 UPGRADE_NOTES.md written at the project root.")
-		fmt.Println("    Review it for items needing LLM/manual attention, then delete the file once the upgrade lands.")
+		return runUpgradeDetail(filepath.Dir(configPath), store.Config(), forcePaths)
 	}
-
-	return nil
+	_, err := runUpgradeConverge(upgradeOptions{
+		check: check, force: force, showAll: showAll, forcePaths: forcePaths, to: toVersion, goRun: run,
+		skip: map[string]bool{"playbooks": true, "vendored-contracts": true, "generate": true, "locks": true, "lint": true},
+	})
+	return err
 }
 
 // printApplicableMigrations surfaces the migrations this project actually
@@ -406,40 +326,6 @@ func resolveForceSelection(projectDir string, cfg *config.ProjectConfig, force b
 	return generator.ForcePaths(selected...), nil
 }
 
-// runUpgradeCodemods runs the release codemods the upgrade crosses
-// (deterministic AST rewrites of user-owned Go; upgrade_codemod.go) and
-// reports what they rewrote. With write false (--check) it rewrites nothing
-// and lists what it would. A codemod failure is wrapped as an actionable user
-// error. Run BEFORE the template-update pass so a codemod failure aborts
-// before template files get touched.
-func runUpgradeCodemods(projectDir, from, target string, write bool) (CodemodReport, error) {
-	report, err := runCodemodChain(projectDir, from, target, write)
-	if err != nil {
-		return CodemodReport{}, cliutil.WrapUserErr(
-			fmt.Sprintf("forge project upgrade --to %s", target),
-			"codemod chain failed",
-			"",
-			"fix the offending file (the error names it), then re-run upgrade; each codemod is also `forge fix <name> --dry-run`",
-			err)
-	}
-	if !report.Changed() {
-		return report, nil
-	}
-	if write {
-		fmt.Printf("🔧 Applied %d codemod rewrites:\n", len(report.Rewrites))
-	} else {
-		fmt.Printf("🔧 Would apply %d codemod rewrites:\n", len(report.Rewrites))
-	}
-	for _, r := range report.Rewrites {
-		fmt.Printf("    %s\n", r)
-	}
-	if write {
-		fmt.Println("    Detail in UPGRADE_NOTES.md (written at the end).")
-	}
-	fmt.Println()
-	return report, nil
-}
-
 // migrateLegacyChecksums performs the one-time legacy .forge/checksums.json
 // migration (the same conversion `forge generate` performs). Unlike the
 // pipeline, upgrade has no emitters to side-render against, so unverifiable
@@ -483,6 +369,9 @@ type upgradeCounts struct {
 	// "2 skipped" with no way to learn WHICH two is a count the reader
 	// can do nothing with.
 	skippedPaths []string
+	// leftDeletedPaths are scaffold-once files the project deleted,
+	// declined or disowned: upgrade left them absent.
+	leftDeletedPaths []string
 	// upToDatePaths are the files that match their template. The
 	// summary carries them as a count — they need no action and listing
 	// them is what a report does when it has nothing to say — but
@@ -526,6 +415,10 @@ func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check, showA
 			c.userModifiedPaths = append(c.userModifiedPaths, r.Path)
 			modifiedRows = append(modifiedRows, row)
 		case generator.UpgradeSkipped:
+			if r.LeftDeleted {
+				c.leftDeletedPaths = append(c.leftDeletedPaths, r.Path)
+				continue
+			}
 			c.skipped++
 			c.skippedPaths = append(c.skippedPaths, r.Path)
 		}
@@ -537,6 +430,7 @@ func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check, showA
 		countPart(c.userModified, "with local edits (skipped)"),
 		countPart(c.upToDate, "up to date"),
 		countPart(c.skipped, "not upgrade-managed here"),
+		countPart(len(c.leftDeletedPaths), "deleted by you (left deleted)"),
 	)
 
 	if len(updatedRows) > 0 {
@@ -670,6 +564,7 @@ func printSkippedPaths(c upgradeCounts, showAll bool) {
 	}
 	printNamedPathList("Up to date with the current template:", c.upToDatePaths)
 	printNamedPathList("Not upgrade-managed in this project (disowned, or a legacy layout):", c.skippedPaths)
+	printNamedPathList("Scaffold-once files you deleted, declined or disowned (left absent; `"+Name()+" project rescaffold <path>` brings one back):", c.leftDeletedPaths)
 }
 
 // printNamedPathList prints a titled, indented list of paths, or nothing.
@@ -776,4 +671,37 @@ func splitLines(s string) []string {
 		lines = append(lines, s[start:])
 	}
 	return lines
+}
+
+func skipSet(names []string) map[string]bool {
+	out := map[string]bool{}
+	for _, n := range names {
+		if n = strings.TrimSpace(n); n != "" {
+			out[n] = true
+		}
+	}
+	return out
+}
+
+// runUpgradeCommand runs the verb and prints its result: the human report to
+// stdout, or under --json the one document to stdout with the human text on
+// stderr. --check <path> is the detail view and short-circuits both.
+func runUpgradeCommand(cmd *cobra.Command, opts upgradeOptions, jsonOut bool) error {
+	if opts.check && !opts.force && len(opts.forcePaths) > 0 {
+		return runUpgradeWithGo(true, false, opts.showAll, opts.forcePaths, opts.to, opts.goRun)
+	}
+	if !jsonOut {
+		rep, err := runUpgradeConverge(opts)
+		printUpgradeSummary(os.Stdout, rep)
+		return err
+	}
+	realOut := os.Stdout
+	os.Stdout = os.Stderr
+	rep, err := runUpgradeConverge(opts)
+	os.Stdout = realOut
+	printUpgradeSummary(os.Stderr, rep)
+	if werr := emitJSONDocument(rep); werr != nil {
+		return werr
+	}
+	return err
 }

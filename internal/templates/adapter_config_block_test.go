@@ -58,7 +58,8 @@ func TestAdapterTemplates_TakeTheConfigBlock(t *testing.T) {
 	}
 }
 
-// Every adapter scaffold uses config, with no legacy scalar fallback.
+// An adapter scaffolded with --base-url uses its config block, with no legacy
+// scalar fallback.
 func TestAdapterTemplates_NoScalarFallback(t *testing.T) {
 	data := observePkgData{Name: "stripe", ImportPath: "stripe", Module: "example.com/proj", Flavor: "adapter", ConfigBlock: "StripeConfig", ConfigEnvVar: "STRIPE_BASE_URL"}
 	for _, name := range []string{"adapter.go.tmpl", "adapter_test.go.tmpl"} {
@@ -75,5 +76,46 @@ func TestAdapterTemplates_NoScalarFallback(t *testing.T) {
 		if strings.Contains(string(out), "BaseURL string") || strings.Contains(string(out), "BaseURL:") {
 			t.Errorf("%s retains the scalar fallback:\n%s", name, out)
 		}
+	}
+}
+
+// TestAdapterTemplates_WithoutABaseURL pins the default shape: an adapter's
+// downstream is not assumed to be one HTTP API, so with no config block the
+// templates import no pkg/config, declare no Cfg, read no base URL, and
+// HealthCheck fails until a probe is written instead of reporting healthy
+// while probing nothing.
+func TestAdapterTemplates_WithoutABaseURL(t *testing.T) {
+	data := observePkgData{Name: "pubsubpull", ImportPath: "pubsubpull", Module: "example.com/proj", Flavor: "adapter"}
+	for _, name := range []string{"adapter.go.tmpl", "adapter_test.go.tmpl", "contract.go.tmpl"} {
+		out, err := InternalPkgKindTemplates("adapter").Render(name, data)
+		if err != nil {
+			t.Fatalf("render %s: %v", name, err)
+		}
+		formatted, ferr := format.Source(out)
+		if ferr != nil {
+			t.Fatalf("rendered %s is not gofmt-valid: %v\n%s", name, ferr, out)
+		}
+		if string(formatted) != string(out) {
+			t.Errorf("rendered %s is not gofmt-clean:\n%s", name, out)
+		}
+		unwanted := []string{`/pkg/config"`, "BASE_URL", "GetBaseUrl"}
+		if name == "adapter_test.go.tmpl" {
+			unwanted = append(unwanted, "httptest") // a stub needs a base URL to point at
+		}
+		for _, unwanted := range unwanted {
+			if strings.Contains(string(out), unwanted) {
+				t.Errorf("%s without a config block contains %q:\n%s", name, unwanted, out)
+			}
+		}
+		if cfgFieldRE.MatchString(string(out)) {
+			t.Errorf("%s without a config block declares or sets Cfg:\n%s", name, out)
+		}
+	}
+	adapter, err := InternalPkgKindTemplates("adapter").Render("adapter.go.tmpl", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(adapter), "errNoHealthProbe") || !strings.Contains(string(adapter), "HTTPClient *http.Client") {
+		t.Errorf("adapter.go without a config block must keep the traced client and fail HealthCheck until it probes:\n%s", adapter)
 	}
 }

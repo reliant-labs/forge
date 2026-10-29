@@ -44,13 +44,16 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/pkg/servicecatalog"
 )
 
 // Bounds on a manifests layer. They sit far above a real bundle (control-plane
 // prod is 2.3 MiB uncompressed) and far below anything that threatens the
 // controller's memory, so they exist to make hostile input fail loud and early.
 const (
-	// ManifestsLayerMaxFileBytes bounds any single file.
+	// ManifestsLayerMaxFileBytes bounds any single manifest file. Data
+	// artifacts are bounded only by [ManifestsLayerMaxBytes].
 	ManifestsLayerMaxFileBytes = 1 << 20
 	// ManifestsLayerMaxBytes bounds the sum of every file's bytes,
 	// uncompressed.
@@ -453,17 +456,24 @@ func (v *layerValidator) file(hdr *tar.Header, body io.Reader) bool {
 		v.stop = true
 		return true
 	}
-	if hdr.Size > v.limits.fileBytes {
-		v.fail(hdr.Name, "file is %d bytes, over the %d-byte bound", hdr.Size, v.limits.fileBytes)
+	// A manifest is one Kubernetes object, so it has the per-file bound. A
+	// data artifact (dashboards, the service catalog) is never applied and
+	// grows with the project it describes: the layer's total is its bound.
+	fileBytes := v.limits.fileBytes
+	if p.artifact {
+		fileBytes = v.limits.totalBytes
+	}
+	if hdr.Size > fileBytes {
+		v.fail(hdr.Name, "file is %d bytes, over the %d-byte bound", hdr.Size, fileBytes)
 		return true
 	}
 	// Read what is there, not what the header says: Size is attacker-supplied.
-	data, err := io.ReadAll(io.LimitReader(body, v.limits.fileBytes+1))
+	data, err := io.ReadAll(io.LimitReader(body, fileBytes+1))
 	if err != nil {
 		return false
 	}
-	if int64(len(data)) > v.limits.fileBytes {
-		v.fail(hdr.Name, "file is over the %d-byte bound", v.limits.fileBytes)
+	if int64(len(data)) > fileBytes {
+		v.fail(hdr.Name, "file is over the %d-byte bound", fileBytes)
 		return true
 	}
 	v.summary.Bytes += int64(len(data))
@@ -487,7 +497,7 @@ func (v *layerValidator) classifyFile(name string, segs []string) (place, bool) 
 	base := segs[len(segs)-1]
 	switch segs[0] {
 	case "forge":
-		if name != BundleFrontendDeclarationsPath {
+		if name != BundleFrontendDeclarationsPath && name != BundleServiceCatalogPath {
 			v.fail(name, "only the dedicated frozen frontend declaration asset is permitted under forge/")
 			return place{}, false
 		}
@@ -539,6 +549,12 @@ func (v *layerValidator) classifyFile(name string, segs []string) (place, bool) 
 }
 
 func (v *layerValidator) artifact(name string, data []byte) {
+	if name == BundleServiceCatalogPath {
+		if _, err := servicecatalog.Decode(data); err != nil {
+			v.fail(name, "%s", err)
+			return
+		}
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	tok, err := dec.Token()
 	if err != nil {

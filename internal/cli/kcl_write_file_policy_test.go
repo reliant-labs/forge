@@ -74,11 +74,11 @@ func TestGeneratedFilesAreWrittenOnlyByCommandsThatLaunch(t *testing.T) {
 	}
 	up := command{"env up", func(ctx context.Context, dir, env string) {
 		activateDevStack(ctx, dir, env, renderToLaunch, claimNewBlocks)
-		armMaterializer(dir)
+		armMaterializer(dir, env)
 	}, true}
 	deployApply := command{"env deploy", func(ctx context.Context, dir, env string) {
 		activateDevStack(ctx, dir, env, renderDeclaration, claimNewBlocks)
-		armMaterializer(dir)
+		armMaterializer(dir, env)
 	}, true}
 	deployDryRun := command{"env deploy --dry-run", func(ctx context.Context, dir, env string) {
 		activateDevStack(ctx, dir, env, renderDeclaration, inspectBlocks)

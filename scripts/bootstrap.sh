@@ -7,7 +7,7 @@ set -euo pipefail
 
 # The KCL CLI release to install. Kept equal to CI's pin and to the
 # kcl-lang.io modules in go.mod by TestKCLVersionIsPinnedEverywhere.
-KCL_VERSION=v0.13.1
+KCL_VERSION=v0.13.2
 
 log() { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }

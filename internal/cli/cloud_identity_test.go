@@ -23,7 +23,7 @@ func identityTestTarget(t *testing.T, endpoint string) {
 		if env != "prod" {
 			return cloud.Endpoint{}, cloud.Credential{}, fmt.Errorf("unexpected env %q", env)
 		}
-		ep, err := cloud.ResolveEndpoint(env, &cloud.Declaration{Endpoint: endpoint, TokenEnv: "IDENTITY_TEST_TOKEN"})
+		ep, err := projectEndpoint(env, &cloud.Declaration{Endpoint: endpoint, TokenEnv: "IDENTITY_TEST_TOKEN"})
 		if err != nil {
 			return ep, cloud.Credential{}, err
 		}

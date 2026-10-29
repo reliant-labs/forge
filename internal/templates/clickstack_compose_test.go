@@ -5,12 +5,15 @@ package templates
 
 import (
 	"path"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
 	yaml "gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/pkg/deploy"
 )
 
 type clickstackCompose struct {
@@ -345,7 +348,7 @@ func TestProfilesCollectorConfigAndSchema(t *testing.T) {
 	}
 	ddl := string(sql)
 	for _, want := range []string{
-		"CREATE TABLE IF NOT EXISTS default.otel_profiles", "TTL toDateTime(Timestamp) + INTERVAL 72 HOUR",
+		"CREATE TABLE IF NOT EXISTS default.otel_profiles", "TTL toDateTime(Timestamp) + INTERVAL 24 HOUR",
 		"CREATE TABLE IF NOT EXISTS default.profile_stacks", "CREATE MATERIALIZED VIEW IF NOT EXISTS default.profile_stacks_mv",
 		"CREATE TABLE IF NOT EXISTS default.profile_samples_1m", "CREATE MATERIALIZED VIEW IF NOT EXISTS default.profile_samples_1m_mv",
 		"INTERVAL 30 DAY", "SampleType != 'samples'",
@@ -360,5 +363,41 @@ func TestProfilesCollectorConfigAndSchema(t *testing.T) {
 		if strings.HasPrefix(st, "CREATE") && !strings.Contains(strings.SplitN(st, "\n", 2)[0], "IF NOT EXISTS") {
 			t.Errorf("not idempotent: %.80s", st)
 		}
+	}
+}
+
+// The compose collector's filelog chain is the local forwarder's
+// (pkg/deploy ForwarderConfig), written out by hand in a file the user owns.
+// The two must agree operator for operator — in particular on lifting the
+// workload's resource (observe.LogKeyResource) off each JSON line — or a
+// project's local logs lose service.version where the forwarder's keep it.
+func TestClickstackCollectorOperatorsAreTheForwarders(t *testing.T) {
+	out, err := ProjectTemplates().Render("otel-collector.yaml.tmpl", struct{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fwd, err := deploy.ObservabilityAgentSpec{
+		Endpoint: "http://collector:4318", Protocol: "http/protobuf", Image: "collector",
+		Signals: deploy.ObservabilitySignals{Logs: true}, MemoryLimitMiB: 256,
+	}.ForwarderConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := func(doc []byte, receiver string) []any {
+		var cfg struct {
+			Receivers map[string]struct {
+				Operators []any `yaml:"operators"`
+			} `yaml:"receivers"`
+		}
+		if err := yaml.Unmarshal(doc, &cfg); err != nil {
+			t.Fatal(err)
+		}
+		return cfg.Receivers[receiver].Operators
+	}
+	tmpl, want := ops(out, "filelog/forge"), ops([]byte(fwd), "filelog")
+	if !reflect.DeepEqual(tmpl, want) {
+		got, _ := yaml.Marshal(tmpl)
+		exp, _ := yaml.Marshal(want)
+		t.Errorf("otel-collector.yaml.tmpl's filelog operators differ from ForwarderConfig's:\n--- template\n%s\n--- forwarder\n%s", got, exp)
 	}
 }

@@ -136,12 +136,16 @@ and obs:read).
   list <env>             the timeline, newest first
   show <env> <ref>       one release in full: commits and PRs, what changed, gates
   at   <env> <when>      which release was live at a timestamp or trace id
+  backfill-migrations <env>
+                         record, from git, the migrations of releases cut
+                         before forge recorded them
 
-Every verb takes --json for one machine-readable document (--fields projects it).`,
+Every reading verb takes --json for one machine-readable document (--fields projects it).`,
 	}
 	cmd.AddCommand(newEnvReleasesListCmd(deps))
 	cmd.AddCommand(newEnvReleasesShowCmd(deps))
 	cmd.AddCommand(newEnvReleasesAtCmd(deps))
+	cmd.AddCommand(newEnvReleasesBackfillMigrationsCmd())
 	return cmdutil.StrictGroup(cmd)
 }
 

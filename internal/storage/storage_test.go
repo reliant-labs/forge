@@ -72,8 +72,8 @@ func TestPolicyFileWithoutSourceCacheKeysGetsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a policy predating the source-cache keys no longer loads: %v", err)
 	}
-	if p.SourceCacheUnused != "336h" || p.SourceCacheKeep != 2 {
-		t.Fatalf("source cache budgets = %q/%d, want the defaults 336h/2", p.SourceCacheUnused, p.SourceCacheKeep)
+	if p.SourceCacheUnused != "168h" || p.SourceCacheKeep != 2 {
+		t.Fatalf("source cache budgets = %q/%d, want the defaults 168h/2", p.SourceCacheUnused, p.SourceCacheKeep)
 	}
 	if p.RegistryKeep != 3 {
 		t.Fatalf("the document's own value was lost: registry_keep = %d", p.RegistryKeep)
@@ -89,7 +89,7 @@ func TestUnknownPolicyFieldToleratedWithWarning(t *testing.T) {
 	PolicyWarnings = &warned
 	t.Cleanup(func() { PolicyWarnings = prev })
 	path := filepath.Join(t.TempDir(), "storage.json")
-	doc := `{"registry_keep":3,"go_cache_unused":"48h","go_cache_gib":60,"from_the_future":true}`
+	doc := `{"registry_keep":3,"go_cache_unused":"48h","go_cache_gib":60,"from_the_future":true,"go_mod_cache_gib":20,"tool_cache_unused":"336h","tool_cache_keep":1}`
 	if err := os.WriteFile(path, []byte(doc), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -100,8 +100,11 @@ func TestUnknownPolicyFieldToleratedWithWarning(t *testing.T) {
 	if p.RegistryKeep != 3 {
 		t.Fatalf("known key lost: registry_keep = %d", p.RegistryKeep)
 	}
-	if !strings.Contains(warned.String(), "from_the_future") || strings.Contains(warned.String(), "go_cache_unused") {
-		t.Fatalf("warning should name only the unknown key, got %q", warned.String())
+	// Retired keys are what older forges wrote; they load silently.
+	got := warned.String()
+	if !strings.Contains(got, "from_the_future") || strings.Contains(got, "go_cache_unused") ||
+		strings.Contains(got, "go_mod_cache_gib") || strings.Contains(got, "tool_cache") {
+		t.Fatalf("warning should name only the unknown key, got %q", got)
 	}
 }
 
@@ -322,5 +325,32 @@ func TestWithLockWaitGivesUpAfterItsBound(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPolicyFileWithoutSourceBudgetKeysGetsDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(path, []byte(`{"registry_keep":3}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path)
+	if err != nil {
+		t.Fatalf("a policy predating the budgets no longer loads: %v", err)
+	}
+	if p.SourceCacheGiB != 6 || p.SourceCacheSlimAfter != "24h" {
+		t.Fatalf("defaults = %d GiB sources, slim %q", p.SourceCacheGiB, p.SourceCacheSlimAfter)
+	}
+	bad := DefaultPolicy()
+	bad.SourceCacheSlimAfter = "30m"
+	if bad.Validate() == nil {
+		t.Fatal("a slim window under an hour must be rejected")
+	}
+	if p.GolangciCacheGiB != 4 {
+		t.Fatalf("golangci_cache_gib default = %d, want 4", p.GolangciCacheGiB)
+	}
+	bad = DefaultPolicy()
+	bad.GolangciCacheGiB = 0
+	if bad.Validate() == nil {
+		t.Fatal("an unbounded golangci-lint cache must be rejected")
 	}
 }

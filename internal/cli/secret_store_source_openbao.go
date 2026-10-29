@@ -72,9 +72,11 @@ const writerServiceAccount = "forge-secret-writer"
 // OpenBaoEntity is the rendered `openbao` block (kcl/lib/openbao.k): where the
 // store is and how a client logs in to it. Declarations only; no value.
 type OpenBaoEntity struct {
-	Name      string `json:"name"`
-	Namespace string `json:"namespace"`
-	Image     string `json:"image,omitempty"`
+	Name          string            `json:"name"`
+	Namespace     string            `json:"namespace"`
+	Image         string            `json:"image,omitempty"`
+	ReleaseOwner  string            `json:"release_owner,omitempty"`
+	ReleaseInputs map[string]string `json:"release_inputs,omitempty"`
 	// Cluster is the kube context the store runs in; ConnectedCluster is the
 	// name `forge cluster connect` registered.
 	Cluster          string `json:"cluster,omitempty"`

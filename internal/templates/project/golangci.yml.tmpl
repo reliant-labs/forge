@@ -53,16 +53,16 @@ issues:
 linters:
   enable:
     # Correctness — high-signal, low-noise.
-    - govet         # standard correctness vet set
-    - errcheck      # catches unchecked error returns
-    - staticcheck   # the SA / ST / S family — broadly accepted lints
-    - unused        # dead code detection
-    - ineffassign   # unused variable assignments
-    - noctx         # http.Request without a context
-    - misspell      # English spelling
+    - govet # standard correctness vet set
+    - errcheck # catches unchecked error returns
+    - staticcheck # the SA / ST / S family — broadly accepted lints
+    - unused # dead code detection
+    - ineffassign # unused variable assignments
+    - noctx # http.Request without a context
+    - misspell # English spelling
     # Style — cross-project consistency.
-    - gocritic      # diagnostic + performance tags (see settings — the style tag is off)
-    - revive        # broad replacement for golint, configurable per-rule
+    - gocritic # diagnostic + performance tags (see settings — the style tag is off)
+    - revive # broad replacement for golint, configurable per-rule
     # godot is NOT enabled: it requires a trailing period on every top-level
     # doc comment. That is punctuation, not correctness, and it fires on
     # ordinary prose forever — the archetype of a rule that trains you to
@@ -71,9 +71,9 @@ linters:
     # cyclop dropped: cyclomatic complexity duplicates gocognit (cognitive
     # complexity) — the better readability signal and the single complexity
     # gate. nestif/funlen cover the orthogonal nesting/length smells.
-    - funlen        # function length cap
-    - gocognit      # cognitive complexity (subjectively closer to readability)
-    - nestif        # block-nesting depth
+    - funlen # function length cap
+    - gocognit # cognitive complexity (subjectively closer to readability)
+    - nestif # block-nesting depth
     - interfacebloat # cap interface method count
 {{- if eq .TypedAccessGuard "error"}}
     # Typed-config guardrail (config.enforce_typed_access: error) — GATING:

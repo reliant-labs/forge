@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/reliant-labs/forge/internal/migrationver"
+	"github.com/reliant-labs/forge/internal/migrationgit"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
@@ -137,7 +137,7 @@ func runMigrateImport(opts migrateImportOptions) error {
 	}
 	// One version per migration the import writes, allocated only once the
 	// plan knows how many that is: a NO TRANSACTION file can become several.
-	versions, err := migrationver.NextN(destAbs, len(plans))
+	versions, err := migrationgit.NextN(destAbs, len(plans))
 	if err != nil {
 		return err
 	}
@@ -217,7 +217,7 @@ func runMigrateImport(opts migrateImportOptions) error {
 
 type importPlan struct {
 	// Version is the allocated timestamp version prefix. The importer
-	// allocates the whole batch at once (migrationver.NextN), one distinct
+	// allocates the whole batch at once (migrationgit.NextN), one distinct
 	// second each, so an import of forty goose files cannot collide with
 	// itself.
 	Version string

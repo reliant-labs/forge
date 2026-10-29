@@ -3,6 +3,7 @@ package cigate
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -154,7 +155,8 @@ func TestPlan_FrontendRowsNeedTheirDeps(t *testing.T) {
 	all, _ := Plan(in)
 	lint := find(t, all, "lint-web")
 	reason := lint.Prereq()
-	if !strings.Contains(reason, "npm ci") || !strings.Contains(reason, "frontends/web") {
+	// No lockfile in the fixture, so the fix is a plain install.
+	if !strings.Contains(reason, "`npm install`") || !strings.Contains(reason, "frontends/web") {
 		t.Errorf("reason %q should name the fix", reason)
 	}
 	write(t, in.Root, "frontends/web/node_modules/.keep", "")
@@ -427,5 +429,87 @@ func TestPlan_GoBuildWritesNoBinaryIntoTheTree(t *testing.T) {
 	all, _ = Plan(in)
 	if got := strings.Join(find(t, all, "go-build").Argv, " "); strings.Contains(got, "-o") {
 		t.Errorf("two binaries: argv %q must not name an output file", got)
+	}
+}
+
+func TestPlan_YarnOptionalStyles(t *testing.T) {
+	for _, berry := range []bool{false, true} {
+		for _, present := range []bool{false, true} {
+			name := "classic"
+			if berry {
+				name = "berry"
+			}
+			if present {
+				name += "/present"
+			} else {
+				name += "/absent"
+			}
+			t.Run(name, func(t *testing.T) {
+				// A yarn that is only looked up, never run. Windows'
+				// exec.LookPath resolves a name only with a PATHEXT
+				// extension, so there it is a .bat.
+				bin := t.TempDir()
+				fake, body := "yarn", "#!/bin/sh\nexit 0\n"
+				if runtime.GOOS == "windows" {
+					fake, body = "yarn.bat", "@exit /b 0\r\n"
+				}
+				if err := os.WriteFile(filepath.Join(bin, fake), []byte(body), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", bin)
+				in := serviceInput(t)
+				write(t, in.Root, "frontends/web/yarn.lock", "# yarn lockfile")
+				if berry {
+					write(t, in.Root, "frontends/web/.yarnrc.yml", "nodeLinker: node-modules\n")
+				}
+				manifest := `{"scripts":{}}`
+				if present {
+					manifest = `{"scripts":{"lint:styles":"stylelint src/**/*.css"}}`
+				}
+				write(t, in.Root, "frontends/web/package.json", manifest)
+				all, err := Plan(in)
+				if err != nil {
+					t.Fatal(err)
+				}
+				row := find(t, all, "css-health-web")
+				if got := strings.Join(row.Argv, " "); got != "yarn run lint:styles" {
+					t.Errorf("argv = %q", got)
+				}
+				if present && row.NotApplicable != "" {
+					t.Errorf("declared script was skipped: %s", row.NotApplicable)
+				}
+				if !present && row.NotApplicable == "" {
+					t.Error("absent optional script must be explicitly inapplicable")
+				}
+			})
+		}
+	}
+}
+
+// A pnpm frontend's rows run pnpm, its deps row installs frozen, and its
+// staleness reads pnpm's own stamp.
+func TestPlan_PNPMFrontendRowsUsePNPM(t *testing.T) {
+	// Keep executable-prefix assertions independent of pnpm on the host.
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "pnpm"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	in := serviceInput(t)
+	write(t, in.Root, "frontends/web/pnpm-lock.yaml", "lockfileVersion: '9.0'\n")
+	all, _ := Plan(in)
+	deps := find(t, all, "deps-web")
+	if got := strings.Join(deps.Argv, " "); !strings.HasSuffix(got, "pnpm install --frozen-lockfile") {
+		t.Errorf("deps-web argv = %q", got)
+	}
+	if got := strings.Join(find(t, all, "lint-web").Argv, " "); !strings.HasSuffix(got, "pnpm run lint") {
+		t.Errorf("lint-web argv = %q", got)
+	}
+	if reason := find(t, all, "lint-web").Prereq(); !strings.Contains(reason, "pnpm install --frozen-lockfile") {
+		t.Errorf("lint-web prereq = %q", reason)
+	}
+	write(t, in.Root, "frontends/web/node_modules/.modules.yaml", "")
+	if note := deps.Done(); note != "already installed" {
+		t.Errorf("a pnpm install newer than its lockfile is current: Done = %q", note)
 	}
 }

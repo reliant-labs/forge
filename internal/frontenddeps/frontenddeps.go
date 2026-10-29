@@ -7,10 +7,10 @@ package frontenddeps
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -28,9 +28,11 @@ import (
 // for builds, where a drifted lockfile must fail loudly rather than ship a
 // different tree; the dev loop passes false and tolerates drift.
 //
-// The package manager is taken from the lockfile on disk, falling back to
-// runner: a frontend whose dev_runner says npm but which commits
-// pnpm-lock.yaml is a pnpm project. FORGE_SKIP_NPM_INSTALL short-circuits it.
+// The package manager is PackageManager's: the lockfile on disk, else
+// package.json's packageManager field, falling back to runner — a frontend
+// whose dev_runner says npm but which commits only pnpm-lock.yaml is a pnpm
+// project. With several lockfiles, runner's own wins. FORGE_SKIP_NPM_INSTALL
+// short-circuits it.
 func Ensure(ctx context.Context, logPrefix, name, dir, runner string, frozen bool) error {
 	if dir == "" || os.Getenv("FORGE_SKIP_NPM_INSTALL") != "" {
 		return nil
@@ -41,11 +43,14 @@ func Ensure(ctx context.Context, logPrefix, name, dir, runner string, frozen boo
 	if !Stale(dir) {
 		return nil
 	}
-	runner = lockfilePackageManager(dir, runner)
+	runner = PackageManager(dir, runner)
+	if err := VerifyPinnedRunner(ctx, dir, runner); err != nil {
+		return fmt.Errorf("install deps in %s: %w", dir, err)
+	}
 	args := installArgs(runner, dir, frozen)
 	fmt.Printf("%s %s: node_modules missing/stale — running `%s %s`\n", logPrefix, name, runner, strings.Join(args, " "))
 	err := runInstall(ctx, runner, dir, args)
-	if err != nil && transientFailure(err.Error()) {
+	if err != nil && !errors.Is(err, ErrRunnerUnusable) && transientFailure(err.Error()) {
 		// The package manager reported ITS OWN internal failure, not a problem
 		// with the tree — retrying converges where failing the whole run does
 		// not. Without this a known npm bug ends a run that had already spent
@@ -62,12 +67,28 @@ func Ensure(ctx context.Context, logPrefix, name, dir, runner string, frozen boo
 
 // lockfilePackageManager names the package manager that wrote dir's lockfile,
 // or fallback (default npm) when there is none.
+//
+// When the declared runner's own lockfile is present it wins, even beside
+// another manager's: two lockfiles mean one is stale, and the declaration is
+// what says which. Without this a leftover pnpm-lock.yaml beside the
+// package-lock.json an npm frontend actually maintains made forge run
+// `pnpm install` (or fail for want of pnpm) against a stale lock. A lockfile
+// still overrides a declaration whose own lockfile is absent: that frontend
+// is the other manager's project whatever its dev_runner says.
 func lockfilePackageManager(dir, fallback string) string {
-	for _, lock := range []struct{ file, runner string }{
+	locks := []struct{ file, runner string }{
 		{"pnpm-lock.yaml", "pnpm"},
 		{"yarn.lock", "yarn"},
 		{"package-lock.json", "npm"},
-	} {
+	}
+	for _, lock := range locks {
+		if lock.runner == fallback {
+			if _, err := os.Stat(filepath.Join(dir, lock.file)); err == nil {
+				return fallback
+			}
+		}
+	}
+	for _, lock := range locks {
 		if _, err := os.Stat(filepath.Join(dir, lock.file)); err == nil {
 			return lock.runner
 		}
@@ -82,7 +103,17 @@ func lockfilePackageManager(dir, fallback string) string {
 // lockfile to honour; npm without one — at the root it actually installs
 // at, see NpmInstallVerb — falls back to `install`.
 func installArgs(runner, dir string, frozen bool) []string {
+	if root, bridged := installDir(runner, dir); bridged {
+		// The overlay has its own gitignored lockfile. Keep resolution pinned
+		// by the frontend's manifest, but install at the bridge root.
+		return []string{"--dir", root, "install", "--no-frozen-lockfile"}
+	}
 	if !frozen {
+		if runner == "pnpm" {
+			// pnpm defaults to frozen in CI. Scaffold and dev installs must
+			// create/update the lockfile even when forge itself runs in CI.
+			return []string{"install", "--no-frozen-lockfile"}
+		}
 		return []string{"install"}
 	}
 	switch runner {
@@ -143,18 +174,42 @@ func concurrencyFlags(runner string, env []string) []string {
 // runInstall runs one install attempt, teeing output to the terminal
 // while retaining it so the caller can classify the failure.
 func runInstall(ctx context.Context, runner, dir string, args []string) error {
+	if root, bridged := installDir(runner, dir); bridged {
+		// A fresh scaffold needs its own tracked registry lockfile as well as
+		// the overlay's machine-local one. Never let the bridge's link spec
+		// enter the frontend lockfile that CI and Docker will install from.
+		if !fileExists(filepath.Join(dir, "pnpm-lock.yaml")) {
+			cmd := command(ctx, dir, runner, "install", "--lockfile-only", "--ignore-scripts", "--ignore-workspace", "--no-frozen-lockfile")
+			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("create frontend registry lockfile: %w", err)
+			}
+		}
+		// A forge dev bridge adopts this frontend: install at its root, which
+		// is what links the local web-runtime. Its lockfile is the bridge's
+		// own, gitignored and machine-local, so there is nothing to freeze
+		// against — the frontend's tracked lockfile is not read there.
+		fmt.Printf("  (dev web-runtime bridge: installing at %s)\n", root)
+		dir, args = root, []string{"install", "--no-frozen-lockfile"}
+	}
 	var buf bytes.Buffer
 	if flags := concurrencyFlags(runner, os.Environ()); len(flags) > 0 {
 		args = append(args, flags...)
 		fmt.Printf("[up] proxy detected — capping %s network concurrency at %d (an inspection proxy stalls at the default)\n",
 			runner, proxiedInstallSockets)
 	}
-	cmd := exec.CommandContext(ctx, runner, args...)
-	cmd.Dir = dir
+	cmd := command(ctx, dir, runner, args...)
 	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
 	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
 	if err := cmd.Run(); err != nil {
+		if unstartableExecutable(buf.String(), err) != "" {
+			// The executable itself will not start: every retry runs it again.
+			return fmt.Errorf("%w: %w: %s", ErrRunnerUnusable, err, strings.TrimSpace(buf.String()))
+		}
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(buf.String()))
+	}
+	if warning := copiedFromStoreWarning(buf.String()); warning != "" {
+		fmt.Fprintln(os.Stderr, warning)
 	}
 	return nil
 }
@@ -207,7 +262,7 @@ func Stale(dir string) bool {
 		// an existing healthy checkout is not force-reinstalled.
 		ref = nm.ModTime()
 	}
-	for _, manifest := range []string{"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "package.json"} {
+	for _, manifest := range []string{"package-lock.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "yarn.lock", "package.json"} {
 		if info, err := os.Stat(filepath.Join(dir, manifest)); err == nil {
 			if info.ModTime().After(ref) {
 				return true

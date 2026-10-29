@@ -168,8 +168,9 @@ func SetTier1TargetSet(m map[string]bool) {
 	Tier1TargetSet = m
 }
 
-// MarkTier1Target records relPath as a Tier-1 emit target. Exposed for
-// tests that bypass the writer chokepoint.
+// MarkTier1Target records relPath as a Tier-1 emit target. For an emitter
+// that regenerates a path every run without going through a Tier-1 writer
+// (the hooks barrel), and for tests that bypass the writer chokepoint.
 func MarkTier1Target(relPath string) { markTier1Target(relPath) }
 
 // WrittenThisRun is a per-pipeline-run set of relative paths that the
@@ -232,6 +233,7 @@ func AddSideRenderOnly(relPath string) { sideRenderOnly[slashKey(relPath)] = tru
 // each pipeline run so a long-lived process doesn't leak state across
 // invocations.
 func ResetPerRunState() {
+	ownershipTransfers = map[string]ownershipTransfer{}
 	sideRenderOnly = map[string]bool{}
 	healNoticed = map[string]bool{}
 	pendingHeals = map[string]pendingHeal{}

@@ -236,6 +236,15 @@ _consumer = lambda c: any -> any {
     }
 }
 
+_retired = lambda m: any -> any {
+    {
+        "name": m.name
+        "reason": m.reason
+        if m.force:
+            "force": True
+    }
+}
+
 _writer = lambda w: any -> any {
     {"type": w.type, "serviceAccount": w.service_account} if w.type == "service_account" else {"type": w.type, "role": w.role}
 }
@@ -407,11 +416,16 @@ render = lambda ob: any, ctx: any -> any {
     _bindings_ = _bindings(_sources, _id)
     _binding_ns = [b["namespace"] for b in _bindings_]
     _aud = audience(ob, _id)
+    assert not any m in ob.retired_auth_mounts { m.name == mount_name(_id) }, \
+        "OpenBao.retired_auth_mounts lists '${mount_name(_id)}', the JWT mount this component manages for cluster '${_id}': converge would enable it and then disable it on every run. Drop it from retired_auth_mounts. To remove a cluster's mount, stop registering the cluster; retired_auth_mounts is for mounts the component never wrote (kubernetes, approle)"
     _gsm = True if (ctx.bootstrap_source and ctx.bootstrap_source.type == "gcpsm") else False
     _spec = {
         "name": ob.name
         "namespace": ob.namespace
         "image": ob.image
+        "kubectlImage": ob.kubectl_image
+        "cloudSQLProxyImage": ob.cloud_sql_proxy_image
+        "releaseOwner": ctx.release_owner
         "replicas": ob.replicas
         "owner": "${ctx.project}.${_env}"
         "storage": _storage(ob.storage)
@@ -428,6 +442,9 @@ render = lambda ob: any, ctx: any -> any {
         "ha": {
             "pdb": ob.ha.pdb
             "zoneSpread": ob.ha.zone_spread
+            "nodeSpread": ob.ha.node_spread
+            if ob.ha.node_spread_reason:
+                "nodeSpreadReason": ob.ha.node_spread_reason
             if ob.ha.priority_class:
                 "priorityClass": ob.ha.priority_class
         }
@@ -437,6 +454,8 @@ render = lambda ob: any, ctx: any -> any {
         if ob.consumers:
             "consumers": [_consumer(c) for c in ob.consumers]
         "writer": _writer(ob.writer)
+        if ob.retired_auth_mounts:
+            "retiredAuthMounts": [_retired(m) for m in ob.retired_auth_mounts]
         "access": {
             "org": ctx.project
             "env": _env
@@ -460,6 +479,8 @@ render = lambda ob: any, ctx: any -> any {
     ] + [
         "OpenBao consumer '${c.name}' reads ${g.path} by glob: ${g.wildcard_read_reason}" for c in ob.consumers for g in c.grants if g.wildcard_read_reason
     ] \
+      + (["OpenBao '${ob.name}' spreads its replicas over nodes only as a preference (ha.node_spread = preferred): ${ob.ha.node_spread_reason}. Two replicas can land on one node and a single node loss then takes both"] if ob.replicas > 1 and ob.ha.node_spread == "preferred" else []) \
+      + ["OpenBao retired auth mount '${m.name}' is FORCED (${m.reason}): the converge Job disables it even if it still has roles, revoking every token it issued" for m in ob.retired_auth_mounts if m.force] \
       + _escrow_warnings(ob, ctx) \
       + (["OpenBao.writer is an OIDC writer (role '${ob.writer.role}'): its login role is not rendered by this forge yet, so no one can write values through it. Use the default forge.OpenBaoSAWriter {} until it lands"] if ob.writer.type == "oidc" else [])
 
@@ -478,6 +499,8 @@ render = lambda ob: any, ctx: any -> any {
             "name": ob.name
             "namespace": ob.namespace
             "image": ob.image
+            "release_owner": ctx.release_owner
+            "release_inputs": ctx.release_inputs
             "cluster": _target.cluster
             "connected_cluster": _target.connected_cluster or None
             # How a client reaches the store and logs in (SecretStore inputs).

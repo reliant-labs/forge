@@ -58,6 +58,21 @@ package cli
 // also makes generate's output depend on machine state, which
 // verify-generated in a fresh CI clone (no record) would catch.
 //
+// WHAT A SKIP DOES NOT REPEAT: the notes a full run prints about work it
+// declined to do. The frontend step's report on a disowned package.json
+// (".. is disowned; bump it when you review") is the case that came up: on a
+// tree a run already verified, a second plain `forge generate` skips before
+// the frontend step, so the report is not printed again. That is correct, not
+// a missed input. The step's inputs — the manifest and lockfile (tracked),
+// .forge/disowned.json (tracked in a scaffold, and a top-level .forge/ state
+// file either way) and the installed node_modules — are all in the
+// fingerprint, so a disown, an undisown or a manifest edit forces the next run
+// (TestGenerateCacheEveryInputClassInvalidates pins each). What the skip
+// claims is only that generate would WRITE nothing, and it would not: the note
+// is advice, and the run that verified the tree printed it. To see a
+// verified tree's notes again, run with --no-cache — which is also what a test
+// that asserts on a second run's output must do.
+//
 // Anything outside that list that changes generate's output is a false skip,
 // the failure this design ranks above every other. So: the cache refuses
 // outright during a merge/rebase, records only full-strength runs (no
@@ -239,6 +254,10 @@ type generateCacheSys struct {
 	now        func() time.Time
 	identity   func() string
 	shadowHost func(root string) string
+	// runningForge, when set, is the running forge's identity, already
+	// taken: the post-run fingerprint uses it instead of re-reading
+	// executable (see generateCacheRun.record).
+	runningForge string
 }
 
 // generateCacheSystem is the environment the pipeline fingerprints. Tests
@@ -362,15 +381,17 @@ func fingerprintGenerate(root string, snap *workTreeSnapshot, outputs, outputDir
 	}
 
 	execs := &execIdentities{prev: execCache, next: fp.execs, now: sys.now()}
-	exe, err := sys.executable()
-	if err != nil {
-		return nil, fmt.Errorf("locate the forge executable: %w", err)
-	}
 	// The forge binary is identified by CONTENT, never by its build info:
 	// templates are embedded, and a dev build reports one version across
 	// every rebuild (or any version an -ldflags stamp claims).
-	if fp.env["forge"], err = execs.identify(exe, false); err != nil {
-		return nil, fmt.Errorf("fingerprint the forge executable: %w", err)
+	if fp.env["forge"] = sys.runningForge; fp.env["forge"] == "" {
+		exe, err := sys.executable()
+		if err != nil {
+			return nil, fmt.Errorf("locate the forge executable: %w", err)
+		}
+		if fp.env["forge"], err = execs.identify(exe, false); err != nil {
+			return nil, fmt.Errorf("fingerprint the forge executable: %w", err)
+		}
 	}
 	for _, tool := range generateCacheTools(root, snap) {
 		p, lookErr := sys.lookPath(tool)
@@ -1275,8 +1296,11 @@ func (c *generateCacheRun) skip(w io.Writer) bool {
 	return false
 }
 
+// printSkip names no particular note the skip withholds. A disowned file is a
+// legitimate end state, not a nag target, so a clean generate never mentions
+// ownership — not even in passing (the fixture corpus's assertNoForkNoise).
 func (c *generateCacheRun) printSkip(w io.Writer) {
-	fmt.Fprintf(w, "⏭️  forge generate: nothing to do — the tree is byte-identical to one a full run verified as its own output %s (%d files; forge binary, tools and environment unchanged). --no-cache runs every step.\n",
+	fmt.Fprintf(w, "⏭️  forge generate: nothing to do — the tree is byte-identical to one a full run verified as its own output %s (%d files; forge binary, tools and environment unchanged). --no-cache runs every step and repeats its notes.\n",
 		agoString(c.sys.now().Sub(c.prev.VerifiedAt)), len(c.pre.files))
 }
 
@@ -1342,10 +1366,25 @@ func (c *generateCacheRun) record(w io.Writer, pctx *pipelineContext, ran []GenS
 		return false
 	}
 	outputs, dirs := generateRunOutputs(pctx, ran)
-	post, err := fingerprintGenerate(c.root, snapshotWorkTree(c.root), outputs, dirs, c.pre.execs, c.sys)
+	// The forge that produced this run's outputs is the one RUNNING, which
+	// cannot change under a process: it is what the pre-run fingerprint
+	// hashed. Re-reading os.Executable afterwards hashes whatever is at that
+	// path now — a delegated forge's cache entry another process published
+	// over, or pruned — and called the run impure for something that never
+	// touched it. The next run reads the path afresh, and runs in full if the
+	// binary there is not this one.
+	postSys := c.sys
+	postSys.runningForge = c.pre.env["forge"]
+	post, err := fingerprintGenerate(c.root, snapshotWorkTree(c.root), outputs, dirs, c.pre.execs, postSys)
 	if err != nil {
 		fmt.Fprintf(w, "ℹ️  not recorded as a verified fixed point (%v); the next run runs every step.\n", err)
 		return false
+	}
+	// Keep the running forge's stat stamp, so the next run need not re-hash it.
+	for k, v := range c.pre.execs {
+		if _, ok := post.execs[k]; !ok {
+			post.execs[k] = v
+		}
 	}
 	if moved := movedDuringRun(c.root, c.pre, post); moved != "" {
 		// Something the journal does not count moved while the run ran —

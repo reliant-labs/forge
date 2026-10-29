@@ -146,6 +146,17 @@ func TestESPolicy(t *testing.T) {
 			wantOne(t, fs, RuleESPolicy, finding.SeverityError, tc.want)
 		})
 	}
+	t.Run("deletion policy Merge on a Secret that reads store values", func(t *testing.T) {
+		spec := goodSpec()
+		spec["target"].(map[string]any)["deletionPolicy"] = "Merge"
+		wantOne(t, Check(env(adopted, es("app", "ns", spec)), nil), RuleESPolicy, finding.SeverityError, "must be Retain")
+	})
+	t.Run("deletion policy Merge on a template-only Secret: clean (ESO never creates it under Retain)", func(t *testing.T) {
+		spec := goodSpec()
+		delete(spec, "data")
+		spec["target"].(map[string]any)["deletionPolicy"] = "Merge"
+		wantNone(t, Check(env(adopted, es("app", "ns", spec)), nil), RuleESPolicy)
+	})
 	t.Run("Merge with Retain, explicit keys, a slow refresh: clean", func(t *testing.T) {
 		spec := goodSpec()
 		spec["target"].(map[string]any)["creationPolicy"] = "Merge"
@@ -404,6 +415,55 @@ func TestSingleOwner(t *testing.T) {
 		r := adopted
 		r.ControlPlaneSecrets = []ProvidedSecret{{Name: "app", Namespace: "ns"}}
 		wantOne(t, Check(env(r), nil), RuleSingleOwner, finding.SeverityError, "forge.ControlPlaneSecret")
+	})
+	// The adoption of a shared Secret one key at a time (design 7.1): the
+	// store's keys by a Merge declaration, the rest still out of band.
+	merge := func(keys ...string) ExternalSecret {
+		data := map[string]string{}
+		for _, k := range keys {
+			data[k] = strings.ToUpper(k)
+		}
+		s := storeES("shared", "ns", keys, data, nil)
+		s.Source.CreationPolicy = "Merge"
+		return s
+	}
+	outOfBand := func(keys ...string) ExternalSecret {
+		return ExternalSecret{Name: "shared", Namespace: "ns", Keys: keys, OutOfBandReason: "seeded by the bootstrap script"}
+	}
+	t.Run("a Merge declaration beside an out-of-band one, disjoint keys", func(t *testing.T) {
+		r := Render{RequiredSecrets: []ExternalSecret{outOfBand("a", "b"), merge("c")}}
+		wantNone(t, Check(env(r), nil), RuleSingleOwner)
+	})
+	t.Run("two Merge declarations, disjoint keys", func(t *testing.T) {
+		r := Render{RequiredSecrets: []ExternalSecret{outOfBand("a"), merge("b"), merge("c")}}
+		wantNone(t, Check(env(r), nil), RuleSingleOwner)
+	})
+	t.Run("a Merge declaration claiming an out-of-band key", func(t *testing.T) {
+		r := Render{RequiredSecrets: []ExternalSecret{outOfBand("a", "b"), merge("b")}}
+		wantOne(t, Check(env(r), nil), RuleSingleOwner, finding.SeverityError, "ns/shared", "key(s) b are claimed by more than one")
+	})
+	t.Run("an Orphan declaration beside an out-of-band one still fights", func(t *testing.T) {
+		orphan := merge("c")
+		orphan.Source.CreationPolicy = "Orphan"
+		r := Render{RequiredSecrets: []ExternalSecret{outOfBand("a"), orphan}}
+		wantOne(t, Check(env(r), nil), RuleSingleOwner, finding.SeverityError, "2 owners")
+	})
+	t.Run("two out-of-band declarations beside a Merge one still fight", func(t *testing.T) {
+		r := Render{RequiredSecrets: []ExternalSecret{outOfBand("a"), outOfBand("b"), merge("c")}}
+		wantOne(t, Check(env(r), nil), RuleSingleOwner, finding.SeverityError, "3 owners")
+	})
+	t.Run("a Merge declaration beside a rendered Secret still fights", func(t *testing.T) {
+		sec := Doc{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": "shared", "namespace": "ns"}}
+		r := Render{RequiredSecrets: []ExternalSecret{merge("c")}}
+		wantOne(t, Check(env(r, sec), nil), RuleSingleOwner, finding.SeverityError, "a Secret object in the render")
+	})
+	t.Run("a shadowing declaration owns the shadow, not the live Secret", func(t *testing.T) {
+		shadow := storeES("shared", "ns", []string{"a"}, map[string]string{"a": "A"}, nil)
+		shadow.Source.Shadow = true
+		r := Render{RequiredSecrets: []ExternalSecret{outOfBand("a", "b"), shadow}}
+		wantNone(t, Check(env(r), nil), RuleSingleOwner)
+		sec := Doc{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": "shared-eso-shadow", "namespace": "ns"}}
+		wantOne(t, Check(env(r, sec), nil), RuleSingleOwner, finding.SeverityError, "ns/shared-eso-shadow", "shadow")
 	})
 	t.Run("two namespaces, one name, are two Secrets", func(t *testing.T) {
 		r := adopted

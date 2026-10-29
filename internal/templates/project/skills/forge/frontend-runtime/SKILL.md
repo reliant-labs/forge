@@ -63,7 +63,7 @@ required in every mode. A field required only in one MODE says so with
 `required_when`, a condition on a sibling string field:
 
 ```protobuf
-string hosting = 6 [(forge.v1.config) = {env_var: "HOSTING", allowed_values: ["cloud"]}];
+string hosting = 6 [(forge.v1.config) = {env_var: "HOSTING", allowed_values: ["cloud", "self-hosted"]}];
 string api_url = 1 [(forge.v1.config) = {
   env_var: "API_URL"
   required_when: [{field: "hosting", equals: "cloud"}]
@@ -76,6 +76,13 @@ its default (the default is the other mode's value). `config_gen.ts`'s
 that renders its own boot error. It is for frontend configs only: `forge
 generate` refuses it on a binary config, alongside `required: true`, or naming a
 field that is not a sibling string field.
+
+A field a condition names (`hosting` above) is the document's MODE SELECTOR, and
+a foreign frontend's `runtime_config` must state it, with a value, even for the
+default mode. Without that rule the document that lost every key reads as a
+valid default-mode one, since no condition holds, and the bundle boots in the
+wrong mode with nothing failing. So give the default mode its own spelling in
+`allowed_values` (`"self-hosted"` above) and have each env set it.
 
 Tailwind v4 does not scan `node_modules`, so your stylesheet carries an
 `@source` directive pointing at the package. Keep it — without it every
@@ -350,7 +357,13 @@ You write none of the wiring. `src/lib/otel_gen.ts` (regenerated every
 `initBrowserTelemetry` from `@reliantlabs/forge-web-runtime/telemetry`, and
 `providers.tsx` (Next.js) / `main.tsx` (Vite) call its `initTelemetry()` once.
 It is idempotent, a no-op without a DOM or while telemetry is off, and never
-throws. The SDK is the page's **only** tracer provider: it replaces the old
+throws.
+
+The frontend reports `service.name` `<project>-<frontend>` (e.g. `shop-web`),
+exported from the same file as `SERVICE_NAME`. The generated frontend dashboard
+and frontend alert defaults filter on exactly that value. Code that starts the
+SDK itself instead of calling `initTelemetry()` must pass `SERVICE_NAME` as
+`serviceName`: any other name is invisible to the generated observability. The SDK is the page's **only** tracer provider: it replaces the old
 OTel web wiring rather than joining it, because two providers cannot both
 register globally.
 
@@ -405,6 +418,14 @@ of the tree it publishes into `<staging>.sourcemaps/` (same relative paths, plus
 `sourceMappingURL` trailers. The release digest excludes them, and a guard fails
 a deploy whose served tree still holds one. Firebase asset retention never
 carries a `.map` forward.
+
+The sidecar is filed in the platform registry
+(`<org>/<project>/<frontend>-sourcemaps:<build id>`), where the issues worker
+symbolicates errors from. `telemetry = forge.BrowserTelemetry {sourcemaps =
+"public"}` is the escape hatch for an app that wants its maps served: the tree
+keeps its maps and trailers, and the maps are still copied to the sidecar and
+filed, so its errors symbolicate too. `"off"` keeps maps nowhere, and its errors
+stay minified.
 
 ### Replay is shipped, off, and always masked
 

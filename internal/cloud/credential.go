@@ -67,15 +67,42 @@ const (
 
 // Credential is a resolved bearer token plus where it came from.
 type Credential struct {
+	Kind   string
 	Token  string
 	Source CredentialSource
 	// From is the human-readable origin: the flag name, the env var name,
 	// the credentials file path, or the helper's description of the
 	// session it used. Safe to print; never the token itself.
 	From string
-	// ExpiresAt is when the token stops being accepted, when known. Only a
-	// helper's tokens carry one today; nil means unknown.
+	// ExpiresAt is when the token stops being accepted, when known: a
+	// helper's tokens and a stored login carry one; nil means unknown.
 	ExpiresAt *time.Time
+	// Scopes the issuer reported granting, when known (a stored login records
+	// them). Informational — the server decides.
+	Scopes []string
+}
+
+// Identity names the credential WITHOUT its secret: the issuer's display
+// prefix for an `rlat_` access token ("rlat_A3f9Kd2p…" — what the console's
+// token list shows, so a human can match it), else only its length.
+//
+// Every human-facing line that says WHICH credential was used prints this,
+// never Token. An agent or a person who cannot tell which credential failed
+// opens the credentials file to find out, and the file holds the secret —
+// which is how a forge credential came to be pasted into a session log.
+func (c Credential) Identity() string {
+	return TokenIdentity(c.Token)
+}
+
+// TokenIdentity is Credential.Identity for a bare token string.
+func TokenIdentity(token string) string {
+	if p := displayPrefix(token); strings.HasPrefix(p, "rlat_") {
+		return p + "…"
+	}
+	if token == "" {
+		return "(none)"
+	}
+	return fmt.Sprintf("(a %d-character token; not an rlat_ access token)", len(token))
 }
 
 // ErrNoCredential is returned when no credential could be resolved. Use
@@ -131,6 +158,9 @@ const helperReuseMargin = time.Minute
 // its session does not belong to — the endpoint comes from a project's KCL,
 // and a repository is not a trusted party.
 func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
+	if c, ok := claimableCredentialFor(ep); ok {
+		return c, nil
+	}
 	if t := strings.TrimSpace(flagToken); t != "" {
 		return Credential{Token: t, Source: SourceFlag, From: "--token"}, nil
 	}
@@ -150,10 +180,11 @@ func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
 		return Credential{}, err
 	}
 	expiredLogin := ""
-	stored, lookupErr := credentials.Lookup(path, ep.URL, ClientID)
+	stored, lookupErr := lookupCredential(path, ep.URL)
 	switch {
 	case lookupErr == nil && !stored.Expired(time.Now()):
-		return Credential{Token: stored.Token, Source: SourceLogin, From: path}, nil
+		return Credential{Kind: stored.Kind, Token: stored.Token, Source: SourceLogin, From: path,
+			ExpiresAt: stored.ExpiresAt, Scopes: stored.Scopes}, nil
 	case lookupErr == nil:
 		expiredLogin = fmt.Sprintf("the forge login for %s stored in %s expired at %s",
 			ep.URL, path, stored.ExpiresAt.Format(time.RFC3339))
@@ -184,7 +215,8 @@ func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
 			"fix, in the order forge checks them:\n"+
 			"    --token <token>        explicit, wins over everything (one-off / debugging)\n"+
 			"    export %s=<token>      for CI — a pipeline has no browser\n"+
-			"    %s        for a human — opens a browser and stores the credential",
+			"    %s        for a human — opens a browser and stores the credential\n"+
+			"no account? `forge env deploy <env> --claimable` publishes a deploy anyone can claim within 72h",
 		ErrNoCredential, ep.URL, tokenEnv, loginHint(ep))
 }
 
@@ -234,11 +266,27 @@ var helperMemo = struct {
 // helperCredential runs the helper for ep, or returns this process's memo of
 // its last answer while that is not about to expire.
 func helperCredential(argv []string, ep Endpoint) (Credential, error) {
+	return helperCredentialFor(argv, ep, LoginScopes())
+}
+
+// helperMemoKey is the memo slot for one (endpoint, helper, scopes) request.
+// The default request (LoginScopes) keeps the historical key, so
+// forgetHelperCredential drops exactly the base credential.
+func helperMemoKey(endpointKey string, argv, scopes []string) string {
+	key := endpointKey + "\x00" + cloudcred.FormatCommand(argv)
+	if strings.Join(scopes, " ") != strings.Join(LoginScopes(), " ") {
+		key += "\x00" + strings.Join(scopes, " ")
+	}
+	return key
+}
+
+// helperCredentialFor is helperCredential asking the helper for scopes.
+func helperCredentialFor(argv []string, ep Endpoint, scopes []string) (Credential, error) {
 	endpointKey, err := credentials.Normalize(ep.URL)
 	if err != nil {
 		return Credential{}, err
 	}
-	memoKey := endpointKey + "\x00" + cloudcred.FormatCommand(argv)
+	memoKey := helperMemoKey(endpointKey, argv, scopes)
 
 	helperMemo.Lock()
 	defer helperMemo.Unlock()
@@ -254,7 +302,7 @@ func helperCredential(argv []string, ep Endpoint) (Credential, error) {
 	defer cancel()
 	tok, err := cloudcred.Exec(ctx, argv, cloudcred.Request{
 		Endpoint: endpointKey,
-		Scopes:   LoginScopes(),
+		Scopes:   scopes,
 	})
 	if err != nil {
 		return Credential{}, err
@@ -263,7 +311,7 @@ func helperCredential(argv []string, ep Endpoint) (Credential, error) {
 	if from == "" {
 		from = "$" + cloudcred.HelperEnv + " (" + argv[0] + ")"
 	}
-	cred := Credential{Token: tok.Token, Source: SourceHelper, From: from, ExpiresAt: tok.ExpiresAt}
+	cred := Credential{Token: tok.Token, Source: SourceHelper, From: from, ExpiresAt: tok.ExpiresAt, Scopes: tok.Scopes}
 	helperMemo.entries[memoKey] = cred
 	return cred, nil
 }

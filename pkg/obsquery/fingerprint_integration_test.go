@@ -125,6 +125,25 @@ func corpus() []obsquery.ServerErrorRecord {
 		r("api", "app", "rpc failed", with(obsquery.LogKeyExceptionType, "context.deadlineExceededError", obsquery.LogKeyProcedure, "/jobs.v1.JobService/ListJobs")...),
 		r("api", "app", "rpc failed", with(obsquery.LogKeyExceptionType, "*connect.Error", obsquery.LogKeyExceptionMessage, "unavailable")...),
 		r("api", "app", "file but no function", obsquery.LogKeyCodeFile, "x.go"),
+
+		// sfp2: the cause in the `error` attribute refines records with no type.
+		r("api", "app", "Transaction failed", with(obsquery.LogKeyError, `ERROR: invalid byte sequence for encoding "UTF8": 0xe2 0x2e (SQLSTATE 22021)`)...),
+		r("api", "app", "Transaction failed", with(obsquery.LogKeyError, "ERROR: could not serialize access due to concurrent update (SQLSTATE 40001)")...),
+		r("api", "app", "Transaction failed", with(obsquery.LogKeyError, "ERROR: could not serialize access due to read/write dependencies (SQLSTATE 40001)")...),
+		r("api", "app", "Transaction failed", with(obsquery.LogKeyError, `ERROR: prepared statement "stmtcache_8c1f9e" already exists (SQLSTATE 42P05)`)...),
+		r("api", "app", "Transaction failed", with(obsquery.LogKeyError, "failed to begin transaction: timeout: context deadline exceeded after 30000 ms")...),
+		r("api", "app", "Transaction failed", with(obsquery.LogKeyError, "*pgconn.PgError: ERROR: deadlock detected (SQLSTATE 40P01)")...),
+		r("api", "app", "Transaction failed", with(obsquery.LogKeyError, "*net.OpError: read tcp 10.1.2.3:41234->10.0.0.5:5432: i/o timeout")...),
+		r("api", "app", "Transaction failed", with(obsquery.LogKeyError, "*errors.errorString: ledger drift on 12 rows")...),
+		r("api", "app", "Transaction failed", with(obsquery.LogKeyError, "failed to connect to `host=db`: dial tcp 10.0.0.5:5432: connect: connection refused")...),
+		r("api", "app", "Transaction failed", with(obsquery.LogKeyError, "multi\nline error\n(SQLSTATE 57P01) on the second line")...),
+		r("api", "app", "Transaction failed", with(obsquery.LogKeyError, "unicode ✓ 名前 12 failure")...),
+		r("api", "app", "Transaction failed", with(obsquery.LogKeyError, strings.Repeat("e", 300))...),
+		// not refined: typed, pinned, or no error at all
+		r("api", "app", "Transaction failed", with(obsquery.LogKeyExceptionType, "*pgconn.PgError", obsquery.LogKeyError, "ERROR: x (SQLSTATE 40001)")...),
+		r("api", "app", "Transaction failed", with(obsquery.LogKeyErrorGroup, "tx", obsquery.LogKeyError, "ERROR: x (SQLSTATE 40001)")...),
+		r("api", "app", "Transaction failed", with(obsquery.LogKeyExceptionMessage, "ERROR: x (SQLSTATE 40001)")...),
+		r("api", "app", "Transaction failed", with(obsquery.LogKeyError, "")...),
 	}
 	// One site, changing ids: every one of these is one issue. (An integer
 	// glued to a word, "12ms", is not masked: \b sees no boundary. That is
@@ -167,7 +186,7 @@ func TestServerFingerprintCorpusMatchesSQL(t *testing.T) {
 	}
 
 	rows, err := c.Query(ctx, "SELECT Id, "+obsquery.ServerFingerprintSQL+", "+obsquery.ServerTitleSQL+", "+
-		obsquery.ServerCulpritSQL+", "+obsquery.MessageNormSQL("Body")+" FROM logs ORDER BY Id")
+		obsquery.ServerCulpritSQL+", "+obsquery.MessageNormSQL("Body")+", "+obsquery.ServerCauseSQL+" FROM logs ORDER BY Id")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,10 +194,10 @@ func TestServerFingerprintCorpusMatchesSQL(t *testing.T) {
 	n := 0
 	for rows.Next() {
 		var (
-			id                       uint32
-			fp, title, culprit, norm string
+			id                              uint32
+			fp, title, culprit, norm, cause string
 		)
-		if err := rows.Scan(&id, &fp, &title, &culprit, &norm); err != nil {
+		if err := rows.Scan(&id, &fp, &title, &culprit, &norm, &cause); err != nil {
 			t.Fatal(err)
 		}
 		r := recs[id]
@@ -187,6 +206,7 @@ func TestServerFingerprintCorpusMatchesSQL(t *testing.T) {
 			{"title", title, obsquery.ServerTitle(r)},
 			{"culprit", culprit, obsquery.ServerCulprit(r)},
 			{"norm(Body)", norm, obsquery.NormalizeMessage(r.Body)},
+			{"cause", cause, obsquery.ServerCause(r)},
 		} {
 			if cmp.sql != cmp.gold {
 				t.Errorf("record %d (%q): %s: SQL %q, Go %q", id, r.Body, cmp.what, cmp.sql, cmp.gold)
@@ -221,4 +241,109 @@ func TestServerFingerprintCorpusMatchesSQL(t *testing.T) {
 			t.Fatal("one call site with changing ids split into several issues")
 		}
 	}
+}
+
+// T7 on a real ClickHouse: the four "Transaction failed" causes are four issues,
+// one cause with changing ids is one, and ServerIssueIncidents reads the cause and
+// first sighting GroupIncidents clusters (T6).
+func TestServerIssuesSeparateCausesAndFormIncidentsOnClickHouse(t *testing.T) {
+	c := startClickHouse(t)
+	ctx := context.Background()
+	if err := c.Exec(ctx, `CREATE TABLE otel_logs (
+		Timestamp DateTime64(9), TraceId String, SeverityNumber UInt8, ServiceName LowCardinality(String), ScopeName String, Body String,
+		ResourceAttributes Map(LowCardinality(String), String), LogAttributes Map(LowCardinality(String), String)
+	) ENGINE = MergeTree ORDER BY Timestamp`); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 10, 23, 12, 12, 0, 0, time.UTC)
+	res := map[string]string{"deployment.environment.name": "dev"}
+	batch, err := c.PrepareBatch(ctx, "INSERT INTO otel_logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	add := func(min int, svc, fn, errText string) {
+		attrs := map[string]string{obsquery.LogKeyCodeFunction: fn}
+		if errText != "" {
+			attrs[obsquery.LogKeyError] = errText
+		}
+		if err := batch.Append(base.Add(time.Duration(min)*time.Minute), "", uint8(17), svc, "app", "Transaction failed", res, attrs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// One site, four causes, a new id each time.
+	add(0, "worker", "pkg.Tx", `ERROR: invalid byte sequence for encoding "UTF8": 0xe2 (SQLSTATE 22021)`)
+	add(1, "worker", "pkg.Tx", "ERROR: could not serialize access due to concurrent update (SQLSTATE 40001)")
+	add(2, "worker", "pkg.Tx", `ERROR: prepared statement "stmtcache_aa" already exists (SQLSTATE 42P05)`)
+	add(3, "worker", "pkg.Tx", "failed to begin transaction: context deadline exceeded after 30000 ms")
+	add(4, "worker", "pkg.Tx", `ERROR: prepared statement "stmtcache_bb" already exists (SQLSTATE 42P05)`)
+	// A dead database, three callers in three services: one incident.
+	add(0, "temporal", "temporal.Fetch", "ERROR: terminating connection due to administrator command (SQLSTATE 57P01)")
+	add(2, "api", "api.Handler", "ERROR: terminating connection due to administrator command (SQLSTATE 57P01)")
+	add(5, "reconciler", "recon.Sweep", "ERROR: terminating connection due to administrator command (SQLSTATE 57P01)")
+	if err := batch.Send(); err != nil {
+		t.Fatal(err)
+	}
+
+	scope := obsquery.Scope{Database: obsquery.LocalDatabase, Local: true, Start: base.Add(-time.Hour), End: base.Add(time.Hour),
+		Filters: []obsquery.AttrFilter{{Key: "deployment.environment.name", Op: "eq", Value: "dev"}}}
+	ctxScope := func() obsquery.Scope { s := scope; s.Database = "default"; return s }()
+
+	list, err := obsquery.ServerIssues{Scope: ctxScope, Service: "worker", Limit: 25}.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := c.Query(paramCtx(ctx, list), list.SQL)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, list.SQL)
+	}
+	titles := map[string]uint64{}
+	for rows.Next() {
+		var fp, svc, title, culprit, typ, trace, lv, fv, src, unit string
+		var events, affected uint64
+		var first, last time.Time
+		if err := rows.Scan(&fp, &svc, &title, &culprit, &typ, &events, &affected, &first, &last, &trace, &lv, &fv, &src, &unit); err != nil {
+			t.Fatal(err)
+		}
+		titles[title] = events
+	}
+	rows.Close()
+	if len(titles) != 4 {
+		t.Fatalf("one message at one site with four causes must be 4 issues, got %d: %v", len(titles), titles)
+	}
+	if titles["SQLSTATE 42P05: Transaction failed"] != 2 {
+		t.Errorf("the same prepared-statement clash with two statement names must be one issue of 2 events: %v", titles)
+	}
+
+	inc, err := obsquery.ServerIssueIncidents{Scope: ctxScope}.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err = c.Query(paramCtx(ctx, inc), inc.SQL)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, inc.SQL)
+	}
+	var cands []obsquery.IncidentCandidate
+	for rows.Next() {
+		var fp, svc, cause string
+		var first time.Time
+		if err := rows.Scan(&fp, &svc, &cause, &first); err != nil {
+			t.Fatal(err)
+		}
+		cands = append(cands, obsquery.IncidentCandidate{ID: svc + "/" + fp, Cause: cause, FirstSeen: first})
+	}
+	rows.Close()
+	groups := obsquery.GroupIncidents(cands, obsquery.DefaultIncidentWindow)
+	var found bool
+	for _, g := range groups {
+		if g.Cause == "SQLSTATE 57P01" {
+			found = len(g.IDs) == 3
+		}
+	}
+	if !found {
+		t.Errorf("the three callers of the dead database must be one incident, got %+v", groups)
+	}
+}
+
+func paramCtx(ctx context.Context, st obsquery.Stmt) context.Context {
+	return clickhouse.Context(ctx, clickhouse.WithParameters(clickhouse.Parameters(st.Params)))
 }

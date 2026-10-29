@@ -58,7 +58,7 @@ func (n *AlertmanagerNotifier) Notify(ctx context.Context, alerts []Alert) error
 	}
 	wire := make([]amAlert, len(alerts))
 	for i, a := range alerts {
-		wire[i] = amAlert{Labels: a.Labels, Annotations: a.Annotations, StartsAt: a.StartsAt.UTC(), EndsAt: a.EndsAt.UTC(), GeneratorURL: n.GeneratorURL}
+		wire[i] = amAlert{Labels: a.Labels, Annotations: withWhy(a.Annotations, a.Why), StartsAt: a.StartsAt.UTC(), EndsAt: a.EndsAt.UTC(), GeneratorURL: n.GeneratorURL}
 	}
 	body, err := json.Marshal(wire)
 	if err != nil {
@@ -95,4 +95,19 @@ func (n *AlertmanagerNotifier) post(ctx context.Context, url string, body []byte
 		return fmt.Errorf("%s: %s: %s", url, resp.Status, strings.TrimSpace(string(msg)))
 	}
 	return nil
+}
+
+// withWhy adds the why payload to a copy of the annotations. It is an
+// annotation, never a label: Alertmanager groups and de-duplicates on labels,
+// so a payload that moves between evaluations cannot re-notify.
+func withWhy(in map[string]string, why json.RawMessage) map[string]string {
+	if len(why) == 0 {
+		return in
+	}
+	out := make(map[string]string, len(in)+1)
+	for k, v := range in {
+		out[k] = v
+	}
+	out[WhyAnnotation] = string(why)
+	return out
 }

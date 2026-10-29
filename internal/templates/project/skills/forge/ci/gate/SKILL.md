@@ -47,10 +47,13 @@ Four rules every run obeys:
    versions the workflow installs (`templates.GolangciLintVersion`,
    `BufVersion`, `GovulncheckVersion`, `GoLicensesVersion`), built into forge's
    tool cache (`$FORGE_TOOLS_CACHE` or the user cache dir) and put first on that
-   command's PATH. A copy on PATH at another version is not used, and neither is
-   a golangci-lint built with a Go older than your `go.mod`. Your PATH and GOBIN
-   are never touched. `forge tools pins [tool]` prints these versions (`--json`
-   for all), so a hand-written workflow reads them from the forge it runs.
+   command's PATH. That cache is shared by every worktree on the machine, one
+   entry per tool version, each published by one rename so a concurrent gate
+   never runs a half-written binary. A copy on PATH at another version is not used, and
+   neither is a golangci-lint built with a Go older than your `go.mod`. Your
+   PATH and GOBIN are never touched. `forge tools pins [tool]` prints these
+   versions (`--json` for all), so a hand-written workflow reads them from the
+   forge it runs.
    buf is the one a project moves itself, in ONE place: a go.mod tool directive
    (`go get -tool github.com/bufbuild/buf/cmd/buf@v1.57.0`). The gate,
    `forge generate`, `forge tools install buf`, `forge tools pins buf` and the
@@ -235,6 +238,13 @@ ci:
         replaces: golangci-lint      # take over one of forge's rows, in its place
         heavy: true
 ```
+
+If the project pins tools of its own for `path` to find, install each one once
+per machine and link it into `.tools/bin`, rather than copying the whole set
+into every checkout: a set of linters and code generators is 0.5-1 GiB, and an
+agent-heavy machine holds dozens of worktrees. Key the shared install by tool,
+version and platform, publish it with one rename, and lock concurrent installs
+of the same key, as forge's own tool cache does.
 
 An extra runs in the `checks` lane unless `lane` says otherwise. `replaces` puts
 it in the replaced row's position, lane and group; forge's command does not run.

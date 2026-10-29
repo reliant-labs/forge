@@ -18,7 +18,7 @@ func jnum(s string) json.Number { return json.Number(s) }
 
 func issueRow(fp string) []any {
 	return []any{fp, "api", "*pgconn.PgError: duplicate key <str>", "internal/store/db.go in store.(*DB).Exec", "*pgconn.PgError",
-		jnum("7"), jnum("3"), "2026-10-22 10:00:00.000000000", "2026-10-22 11:30:00.000000000", "0af7651916cd43dd8448eb211c80319c", "v1.4.0", "v1.3.0"}
+		jnum("7"), jnum("3"), "2026-10-22 10:00:00.000000000", "2026-10-22 11:30:00.000000000", "0af7651916cd43dd8448eb211c80319c", "v1.4.0", "v1.3.0", "", "users"}
 }
 
 func eventRow(ts, trace string) []any {
@@ -53,6 +53,63 @@ func TestLocalListIssuesIsStatelessAndKeyedBySfp1(t *testing.T) {
 	}
 }
 
+func TestLocalListIssuesOfASource(t *testing.T) {
+	row := issueRow(testFP)
+	row[12] = "llm_bug_report"
+	l, fr := localIssues(fakeAnswer{"GROUP BY fingerprint", Result{Rows: [][]any{row}}})
+	res, err := l.ListIssues(context.Background(), ListIssuesRequest{Narrow: narrowC(), Limit: 5, Source: "llm_bug_report"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Issues) != 1 || res.Issues[0].Source != "llm_bug_report" {
+		t.Fatalf("issues = %+v", res.Issues)
+	}
+	if sql := fr.ran[0].SQL; strings.Contains(sql, obsquery.ServerErrorFilterSQL) || !strings.Contains(sql, obsquery.IssueSourceSQL+" = ") {
+		t.Errorf("a source's issues are its records at any level, not errors:\n%s", sql)
+	}
+}
+
+func TestCloudListIssuesSendsTheSourceAndRefusesAControlPlaneThatIgnoresIt(t *testing.T) {
+	sourced := strings.Replace(wireIssueJSON, `"platform"`, `"source":"llm_bug_report","platform"`, 1)
+	f := &fakeCaller{replies: map[string]string{procListIssues: `{"issues":[` + sourced + `]}`}}
+	res, err := cloudWith(f).ListIssues(context.Background(), ListIssuesRequest{
+		Narrow: Narrow{Range: Range{From: t0c, To: t0c.Add(time.Hour)}}, Source: "llm_bug_report", Limit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.reqs[procListIssues]["source"]; got != "llm_bug_report" {
+		t.Errorf("source = %v", got)
+	}
+	if len(res.Issues) != 1 || res.Issues[0].Source != "llm_bug_report" {
+		t.Fatalf("issues = %+v", res.Issues)
+	}
+
+	// An older control plane drops the unknown filter and answers errors.
+	f = &fakeCaller{replies: map[string]string{procListIssues: `{"issues":[` + wireIssueJSON + `]}`}}
+	_, err = cloudWith(f).ListIssues(context.Background(), ListIssuesRequest{
+		Narrow: Narrow{Range: Range{From: t0c, To: t0c.Add(time.Hour)}}, Source: "llm_bug_report", Limit: 10,
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not filter by issue source") {
+		t.Errorf("err = %v, want a refusal to pass errors off as the source's issues", err)
+	}
+}
+
+// The unit the statement counted travels with the count, so an issue whose events
+// name no user is reported as "N chats" and not as a bare number.
+func TestLocalListIssuesCarriesTheUnitAffectedWasCountedOver(t *testing.T) {
+	row := issueRow(testFP)
+	row[13] = "chats"
+	l, _ := localIssues(fakeAnswer{"GROUP BY fingerprint", Result{Rows: [][]any{row}}})
+	res, err := l.ListIssues(context.Background(), ListIssuesRequest{Narrow: narrowC(), Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Issues[0]; got.Affected != 3 || got.AffectedUnit != "chats" {
+		t.Errorf("affected = %d %q, want 3 chats", got.Affected, got.AffectedUnit)
+	}
+}
+
 func TestLocalListIssuesAnswersFiltersThatCannotMatchWithoutQuerying(t *testing.T) {
 	l, fr := localIssues()
 	for _, req := range []ListIssuesRequest{
@@ -81,7 +138,7 @@ func TestLocalGetIssueAssemblesTheDocument(t *testing.T) {
 	l, _ := localIssues(
 		fakeAnswer{"GROUP BY fingerprint, service", Result{Rows: [][]any{issueRow(testFP)}}},
 		fakeAnswer{"ORDER BY Timestamp DESC", Result{Rows: [][]any{eventRow("2026-10-22 11:30:00.000000000", "0af7651916cd43dd8448eb211c80319c")}}},
-		fakeAnswer{"GROUP BY version", Result{Rows: [][]any{{"v1.4.0", jnum("5"), jnum("2"), "2026-10-22 10:30:00", "2026-10-22 11:30:00"}, {"v1.3.0", jnum("2"), jnum("1"), "2026-10-22 10:00:00", "2026-10-22 10:10:00"}}}},
+		fakeAnswer{"GROUP BY version", Result{Rows: [][]any{{"v1.4.0", jnum("5"), jnum("2"), "2026-10-22 10:30:00", "2026-10-22 11:30:00", "users"}, {"v1.3.0", jnum("2"), jnum("1"), "2026-10-22 10:00:00", "2026-10-22 10:10:00", "chats"}}}},
 		fakeAnswer{"uniqExact(TraceId) AS shared", Result{Rows: [][]any{{"bbbbbbbbbbbbbbbb", jnum("2")}}}},
 	)
 	res, err := l.GetIssue(context.Background(), GetIssueRequest{Narrow: narrowC(), ID: "sfp1-" + testFP})
@@ -342,5 +399,76 @@ func TestCloudListIssueEventsOmitsTheTimeRange(t *testing.T) {
 	}
 	if !res.Truncated || res.NextPageToken != "n" || res.Events[0].TraceID != "t1" {
 		t.Errorf("%+v", res)
+	}
+}
+
+func causeRow(fp, svc, cause, first string) []any { return []any{fp, svc, cause, first} }
+
+// T6: issues that share a cause and first fired together are marked as one
+// incident, across services, without being merged.
+func TestLocalListIssuesMarksIncidents(t *testing.T) {
+	l, fr := localIssues(
+		fakeAnswer{"GROUP BY fingerprint", Result{Rows: [][]any{issueRow(testFP), issueRow("aaaaaaaaaaaaaaaa"), issueRow("cccccccccccccccc")}}},
+		fakeAnswer{"AS cause", Result{Rows: [][]any{
+			causeRow(testFP, "api", "SQLSTATE 57P01", "2026-10-22 10:00:00.000000000"),
+			causeRow("aaaaaaaaaaaaaaaa", "worker", "SQLSTATE 57P01", "2026-10-22 10:03:00.000000000"),
+			causeRow("cccccccccccccccc", "api", "context deadline exceeded", "2026-10-22 10:01:00.000000000"),
+		}}},
+	)
+	res, err := l.ListIssues(context.Background(), ListIssuesRequest{Narrow: narrowC(), Limit: 25})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Issues) != 3 {
+		t.Fatalf("issues = %d: incident marking must not merge or drop issues", len(res.Issues))
+	}
+	a, b, c := res.Issues[0], res.Issues[1], res.Issues[2]
+	if a.IncidentKey == "" || a.IncidentKey != b.IncidentKey || a.RelatedCount != 1 || b.RelatedCount != 1 {
+		t.Errorf("incident = %q/%q related %d/%d", a.IncidentKey, b.IncidentKey, a.RelatedCount, b.RelatedCount)
+	}
+	if c.IncidentKey != "" || c.RelatedCount != 0 {
+		t.Errorf("an issue alone with its cause is not an incident: %+v", c)
+	}
+	// The incident search spans services even though the list is narrowed to one.
+	var sawIncident bool
+	for _, st := range fr.ran {
+		if strings.Contains(st.SQL, "AS cause") {
+			sawIncident = true
+			if strings.Contains(st.SQL, "ServiceName = ") || strings.Contains(st.SQL, "ServiceName IN") {
+				t.Errorf("the incident search must not narrow to the list's --service:\n%s", st.SQL)
+			}
+		}
+	}
+	if !sawIncident {
+		t.Error("no incident statement ran")
+	}
+}
+
+func TestLocalListIssuesOfASourceFormNoIncident(t *testing.T) {
+	l, fr := localIssues(fakeAnswer{"GROUP BY fingerprint", Result{Rows: [][]any{issueRow(testFP)}}})
+	if _, err := l.ListIssues(context.Background(), ListIssuesRequest{Narrow: narrowC(), Limit: 5, Source: "llm_bug_report"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range fr.ran {
+		if strings.Contains(st.SQL, "AS cause") {
+			t.Error("source issues are reports, not errors: they form no incident")
+		}
+	}
+}
+
+func TestLocalGetIssueListsItsIncident(t *testing.T) {
+	l, _ := localIssues(
+		fakeAnswer{"AS cause", Result{Rows: [][]any{
+			causeRow(testFP, "api", "SQLSTATE 57P01", "2026-10-22 10:00:00.000000000"),
+			causeRow("aaaaaaaaaaaaaaaa", "worker", "SQLSTATE 57P01", "2026-10-22 10:03:00.000000000"),
+		}}},
+		fakeAnswer{"GROUP BY fingerprint", Result{Rows: [][]any{issueRow(testFP)}}},
+	)
+	res, err := l.GetIssue(context.Background(), GetIssueRequest{Narrow: narrowC(), ID: "sfp1-" + testFP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Issue.IncidentKey == "" || res.Issue.RelatedCount != 1 || len(res.Incident) != 1 || res.Incident[0] != "sfp1-aaaaaaaaaaaaaaaa" {
+		t.Errorf("incident = key %q related %d members %v", res.Issue.IncidentKey, res.Issue.RelatedCount, res.Incident)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 )
 
 // This file owns the part of "ship a static frontend" that is the SAME
@@ -239,7 +240,7 @@ func buildStagePlan(in StageInput) (StagePlan, error) {
 	return StagePlan{
 		Name:               in.Name,
 		FrontendDir:        frontendDir,
-		InstallCmd:         frontendInstallCmd(in.DevRunner),
+		InstallCmd:         frontendInstallCmd(frontendDir, in.DevRunner),
 		BuildCmd:           []string{"npm", "run", "build"},
 		BuildEnv:           in.BuildEnv,
 		StagingDir:         staging,
@@ -270,15 +271,15 @@ func runStagePlan(ctx context.Context, runner commandRunner, plan StagePlan) (St
 		return StageResult{}, fmt.Errorf("%s: assemble: %w", plan.Name, err)
 	}
 	res := StageResult{BuildID: plan.BuildID}
-	if plan.Sourcemaps != SourcemapsPublic {
-		n, err := extractSourcemaps(plan)
-		if err != nil {
-			return StageResult{}, fmt.Errorf("%s: extract source maps: %w", plan.Name, err)
-		}
-		res.Sourcemaps = n
-		if n > 0 && plan.Sourcemaps == SourcemapsPublish {
-			res.SourcemapsDir = SourcemapsDir(plan.StagingDir)
-		}
+	// Every mode but off files its maps: publish moves them out of the served
+	// tree, public copies them (and serves the originals).
+	n, err := extractSourcemaps(plan)
+	if err != nil {
+		return StageResult{}, fmt.Errorf("%s: extract source maps: %w", plan.Name, err)
+	}
+	res.Sourcemaps = n
+	if n > 0 && plan.Sourcemaps != SourcemapsOff {
+		res.SourcemapsDir = SourcemapsDir(plan.StagingDir)
 	}
 	if err := guardNoSourceMaps(plan.StagingDir, plan.Sourcemaps); err != nil {
 		return StageResult{}, fmt.Errorf("%s: %w", plan.Name, err)
@@ -382,7 +383,7 @@ func printStagePlanBuild(w io.Writer, plan StagePlan) {
 	}
 	switch plan.Sourcemaps {
 	case SourcemapsPublic:
-		_, _ = fmt.Fprintf(w, "    source maps:  served publicly (sourcemaps = %q)\n", SourcemapsPublic)
+		_, _ = fmt.Fprintf(w, "    source maps:  served publicly (sourcemaps = %q), and copied to %s to be filed\n", SourcemapsPublic, SourcemapsDir(plan.StagingDir))
 	case SourcemapsOff:
 		_, _ = fmt.Fprintf(w, "    source maps:  dropped (sourcemaps = %q)\n", SourcemapsOff)
 	default:
@@ -452,20 +453,18 @@ func buildTimeEnv(extraEnv map[string]string) map[string]string {
 	return env
 }
 
-// frontendInstallCmd returns the dependency-install command for a dev
-// runner. npm uses `npm ci` when a lockfile is present at runtime — but
-// to keep the plan deterministic (and not stat the lockfile during
-// planning) we use `npm install`, which works with or without a
-// lockfile. pnpm/yarn use their `install` verb.
-func frontendInstallCmd(devRunner string) []string {
-	switch devRunner {
-	case "pnpm":
-		return []string{"pnpm", "install"}
-	case "yarn":
-		return []string{"yarn", "install"}
-	default:
-		return []string{"npm", "install"}
-	}
+// frontendInstallCmd returns the dependency-install command for the
+// frontend in frontendDir. The package manager is the one that owns the
+// frontend — its lockfile, else package.json's packageManager pin, else the
+// declared dev runner (frontenddeps.PackageManager) — never the dev runner
+// alone: a scaffolded frontend pins pnpm and declares no runner, and an
+// `npm install` over the pnpm node_modules tree `forge project new` wrote
+// crashes npm's arborist ("Cannot read properties of null (reading
+// 'matches')"). A manager missing from PATH runs through corepack or
+// `npm exec` (frontenddeps.ExecArgv), as every other forge install does.
+func frontendInstallCmd(frontendDir, devRunner string) []string {
+	argv := frontenddeps.InstallArgv(frontendDir, devRunner, false)
+	return frontenddeps.ExecArgv(frontendDir, argv[0], argv[1:]...)
 }
 
 // basePathToDestRel maps a frontend base_path ("/admin", "") to the

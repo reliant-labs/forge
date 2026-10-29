@@ -19,11 +19,9 @@ import (
 // ClientID is forge's OAuth client id at a control plane.
 const ClientID = "forge-cli"
 
-// LoginScopes is what `forge login` asks for: deploy, manage secrets and manage
-// custom domains for the caller's organization. The control plane grants the
-// intersection of this list, the scopes the forge-cli client is allowed, and
-// what the user's role grants, and reports it — so an older control plane or a
-// member without a grant gets a narrower token, never a refusal.
+// LoginScopes names the CLI's requested use cases on the OAuth approval page.
+// Human login authenticates the user, not an org grant snapshot; the server
+// authorizes each target operation against current membership and permissions.
 func LoginScopes() []string {
 	return []string{"deploy:read", "deploy:write", "secret:read", "secret:write", "domain:read", "domain:write"}
 }
@@ -80,12 +78,43 @@ func (b BrowserLogin) Run(ctx context.Context) (credentials.Credential, error) {
 		}
 		return credentials.Credential{}, fmt.Errorf("login to %s failed: %w", b.Endpoint.URL, err)
 	}
+	switch tokenCredentialKind(tok) {
+	case KindHuman, KindOrgLogin:
+	default:
+		return credentials.Credential{}, fmt.Errorf("control plane returned an unknown credential kind %q for login; upgrade forge", tokenCredentialKind(tok))
+	}
 	return CredentialFromToken(tok, time.Now()), nil
+}
+
+// Credential kinds a browser login can produce.
+//
+// KindHuman is an identity across the user's memberships: the server resolves
+// every operation's organization from its hosted project target.
+//
+// KindOrgLogin is what a control plane that predates human identities issues
+// for the same flow (its token response carries no credential_kind): an
+// `rlat_` token bound to the user's organization. It is a delegated
+// capability, never reclassified as an identity, so it takes the delegated
+// path (GetTenant, no ResolveHostedProject) that such a control plane serves.
+// Once the control plane issues human identities, the next `forge login`
+// stores one instead.
+const (
+	KindHuman    = "human"
+	KindOrgLogin = "org-login"
+)
+
+func tokenCredentialKind(tok *oauth2.Token) string {
+	kind, _ := tok.Raw["credential_kind"].(string)
+	if kind == "" {
+		return KindOrgLogin
+	}
+	return kind
 }
 
 // CredentialFromToken turns a token response into the stored entry.
 func CredentialFromToken(tok *oauth2.Token, now time.Time) credentials.Credential {
 	c := credentials.Credential{
+		Kind:        tokenCredentialKind(tok),
 		Token:       tok.AccessToken,
 		TokenPrefix: displayPrefix(tok.AccessToken),
 		Scopes:      strings.Fields(tok.Scope),

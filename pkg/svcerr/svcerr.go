@@ -241,7 +241,7 @@ func Canceled(detail string) error { return wrapped(ErrCanceled, detail) }
 
 // Unknown wraps ErrUnknown with the supplied detail. Prefer a more
 // specific category when one applies.
-func Unknown(detail string) error { return wrapped(ErrUnknown, detail) }
+func Unknown(detail string) error { return faulted(ErrUnknown, detail) }
 
 // InvalidArgument wraps ErrInvalidArgument with the supplied detail.
 // Use for domain invariants violated post-validation; pure wire-format
@@ -292,13 +292,13 @@ func Unimplemented(detail string) error { return wrapped(ErrUnimplemented, detai
 // generic errors fall through to ToConnect's CodeInternal default
 // rather than constructing this explicitly — opaque internal errors
 // shouldn't leak detail to clients.
-func Internal(detail string) error { return wrapped(ErrInternal, detail) }
+func Internal(detail string) error { return faulted(ErrInternal, detail) }
 
 // Unavailable wraps ErrUnavailable with the supplied detail.
-func Unavailable(detail string) error { return wrapped(ErrUnavailable, detail) }
+func Unavailable(detail string) error { return faulted(ErrUnavailable, detail) }
 
 // DataLoss wraps ErrDataLoss with the supplied detail.
-func DataLoss(detail string) error { return wrapped(ErrDataLoss, detail) }
+func DataLoss(detail string) error { return faulted(ErrDataLoss, detail) }
 
 // Unauthenticated wraps ErrUnauthenticated with the supplied reason.
 func Unauthenticated(reason string) error { return wrapped(ErrUnauthenticated, reason) }
@@ -390,7 +390,14 @@ func ToConnect(err error) *connect.Error {
 	}
 	ce, ok := visibleAs[*connect.Error](err)
 	if !ok {
-		ce = connect.NewError(codeFor(err), clientSafe(err))
+		code := codeFor(err)
+		if faultCode(code) {
+			// The first place svcerr sees a server fault no constructor
+			// stamped — a driver error, a bare sentinel — is the best origin
+			// there is. Client-class codes skip this: no stack, no cost.
+			err = withStack(err, 2)
+		}
+		ce = connect.NewError(code, clientSafe(err))
 	}
 	// A reason code annotated via WithReason rides through to the client
 	// as Connect error metadata under ReasonHeader, so the frontend routes
@@ -489,9 +496,9 @@ func (e *redactedError) As(target any) bool {
 // withheld is what the client was not shown.
 func (e *redactedError) withheld() error {
 	if e.cause != nil {
-		return e.cause
+		return unstack(e.cause)
 	}
-	return e.err
+	return unstack(e.err)
 }
 
 // WithCause returns an error that shows err's message to the client

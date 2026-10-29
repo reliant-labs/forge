@@ -176,8 +176,11 @@ func TestForgeLogin_NothingDeclaredDefaultsToReliantCloud(t *testing.T) {
 	}
 
 	out, err = runLoginCmd(t, "logout")
-	if err != nil || !strings.Contains(out, "Logged out of "+cloud.DefaultEndpoint) {
-		t.Fatalf("logout with nothing declared must forget the Reliant-cloud entry: %v\n%s", err, out)
+	if err != nil || !strings.Contains(out, "Not logged in") {
+		t.Fatalf("human logout must not delete a delegated capability: %v\n%s", err, out)
+	}
+	if c, err := lookupStored(t, cloud.DefaultEndpoint); err != nil || c.Token != "rlat_DEFAULTCLOUD" {
+		t.Fatalf("identity logout removed automation: %+v %v", c, err)
 	}
 }
 

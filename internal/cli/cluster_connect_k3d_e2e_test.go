@@ -12,10 +12,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/k3dkmsg"
 )
 
-// TestE2EClusterConnect_TokenAgainstARealCluster drives `connect --auth token`
-// and `disconnect` against a REAL throwaway k3d cluster and a fake control
+// TestE2EClusterConnect_TokenAgainstARealCluster drives `connect` and
+// `disconnect` against a REAL throwaway k3d cluster and a fake control
 // plane, for BOTH apply scopes and TWO bindings of one cluster: the binding's
 // ServiceAccount, its token Secret and the render-derived RBAC are created for
 // real, the minted token is read back and sent write-only, and the grant is
@@ -23,10 +25,13 @@ import (
 // it did not contain is Forbidden (the tripwire), and namespace scope stops at
 // its namespaces. Disconnect removes exactly what forge created, by label.
 //
-// RUN IT ON A DEVELOPER MACHINE (k3d, kubectl and a docker daemon; it is NOT
-// run in the kata sandbox, where nested clusters are impossible):
+// RUN IT ON A MACHINE WITH k3d, kubectl and a docker daemon. That includes a
+// kata sandbox: the one thing it lacks is /dev/kmsg, which the create below
+// supplies through internal/k3dkmsg (needs passwordless sudo, or the exact
+// `mknod` command it prints). Set FORGE_E2E_REQUIRE_TOOLS=1 so that a missing
+// tool fails instead of skipping:
 //
-//	go test -tags e2e -count=1 -timeout 15m -run TestE2EClusterConnect_TokenAgainstARealCluster ./internal/cli/
+//	FORGE_E2E_REQUIRE_TOOLS=1 task test:e2e -- -run '^TestE2EClusterConnect_TokenAgainstARealCluster$'
 //
 // WHAT IS STUBBED, AND WHY ONLY THAT. A k3d API server is loopback, which the
 // command refuses on purpose (the hub dials from a pod, where loopback is that
@@ -65,24 +70,31 @@ func TestE2EClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 		// the create, so a create that hangs or half-succeeds is still cleaned up.
 		// Under forge's kubeconfig lock: the delete rewrites the default
 		// kubeconfig (kubeconfig_lock.go).
-		_ = withKubeconfigLock(func() error {
-			if out, err := exec.CommandContext(cleanup, "k3d", "cluster", "delete", name).CombinedOutput(); err != nil {
-				t.Logf("cleanup: k3d cluster delete %s: %v\n%s", name, err, out)
-			}
-			return nil
+		lockErr := withKubeconfigLock(func() error {
+			out, err := exec.CommandContext(cleanup, "k3d", "cluster", "delete", name).CombinedOutput()
+			t.Logf("cleanup: k3d cluster delete %s: err=%v\n%s", name, err, out)
+			return err
 		})
+		if lockErr != nil {
+			t.Errorf("cleanup of k3d cluster %s did not complete (delete it by hand: k3d cluster delete %s): %v", name, name, lockErr)
+		}
 	})
 
-	// A sandbox without nested networking (kata, gVisor) boots the k3d
-	// containers but resets every connection to their API server, which makes
-	// `--wait` hang for its whole timeout. Bound the create and PROBE the API,
-	// so that environment is a named skip here and a hard failure in CI.
+	// A host without /dev/kmsg (a kata or gVisor sandbox) makes k3s's kubelet
+	// exit about 2s after boot: the containers stay "running", `--wait` hangs
+	// for its whole timeout and :6443 refuses connections, which looks like a
+	// networking failure and is not one. k3dkmsg mounts a kmsg device into the
+	// nodes on such a host. Bound the create and PROBE the API, so a cluster
+	// that still does not come up is a named skip here and a hard failure in CI.
 	createCtx, cancelCreate := context.WithTimeout(ctx, 150*time.Second)
 	defer cancelCreate()
-	createErr := exec.CommandContext(createCtx, "k3d", "cluster", "create", name,
+	createArgs, createErr := k3dkmsg.AddArgs([]string{"cluster", "create", name,
 		"--servers", "1", "--agents", "0", "--no-lb",
 		"--wait", "--timeout", "120s",
-		"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false").Run()
+		"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false"})
+	if createErr == nil {
+		createErr = exec.CommandContext(createCtx, "k3d", createArgs...).Run()
+	}
 	if createErr == nil {
 		createErr = exec.CommandContext(createCtx, "k3d", "kubeconfig", "write", name,
 			"--output", kubeconfig, "--overwrite", "--kubeconfig-switch-context=false").Run()
@@ -95,9 +107,10 @@ func TestE2EClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 		if e2eToolsRequired() {
 			t.Fatalf("a k3d cluster did not come up with a reachable API server (%v)", createErr)
 		}
-		t.Skipf("skipped: a k3d cluster did not come up with a reachable API server (%v). This sandbox has no nested "+
-			"cluster networking. It is a HARD FAILURE in CI. Run it on a developer machine with k3d, kubectl and docker:\n"+
-			"    go test -tags e2e -count=1 -timeout 15m -run TestE2EClusterConnect_TokenAgainstARealCluster ./internal/cli/", createErr)
+		t.Skipf("skipped: a k3d cluster did not come up with a reachable API server (%v). Check the node logs "+
+			"(`docker logs k3d-%s-server-0`): on a host without /dev/kmsg, k3s's kubelet exits at boot (forge mounts a kmsg "+
+			"device to prevent that; see internal/k3dkmsg). It is a HARD FAILURE in CI. Run it with k3d, kubectl and docker:\n"+
+			"    FORGE_E2E_REQUIRE_TOOLS=1 task test:e2e -- -run '^TestE2EClusterConnect_TokenAgainstARealCluster$'", createErr, name)
 	}
 
 	// A private kubeconfig for every kubectl forge shells out to.
@@ -124,7 +137,9 @@ func TestE2EClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 		return "# cluster: " + kctx + "\napiVersion: v1\nkind: Namespace\nmetadata:\n  name: " + appNS + "\n---\n" +
 			"# cluster: " + kctx + "\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cfg\n  namespace: " + appNS + "\n" + extra
 	}
-	connectEnvStream = func(context.Context, io.Writer, string) (string, error) { return render(""), nil }
+	connectEnvStream = func(context.Context, io.Writer, string) (connectRender, error) {
+		return connectRender{Stream: render(""), HubUnits: []string{"base"}}, nil
+	}
 
 	deliverySecrets, err := parseDeliverySecrets([]string{deliveryNS + "/reliant-otel-auth"})
 	if err != nil {
@@ -134,7 +149,7 @@ func TestE2EClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 		t.Helper()
 		var out strings.Builder
 		if err := runClusterConnect(ctx, clusterConnectOptions{
-			Name: "e2e", KubeContext: kctx, Auth: "token", Env: env, Scope: scope, Out: &out, DeliverySecrets: secrets,
+			Name: "e2e", KubeContext: kctx, Env: env, Scope: scope, Out: &out, DeliverySecrets: secrets,
 		}); err != nil {
 			t.Fatalf("connect %s: %v\n%s", env, err, out.String())
 		}
@@ -164,8 +179,8 @@ func TestE2EClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 	} {
 		runCluster(ctx, t, nil, "kubectl", append([]string{"--context", kctx}, obj...)...)
 	}
-	if strings.Contains(out, "cluster-admin") {
-		t.Errorf("a namespace-scope connect printed the cluster-admin warning:\n%s", out)
+	if strings.Contains(out, "WARNING: --apply-scope cluster") {
+		t.Errorf("a namespace-scope connect printed the cluster-scope warning:\n%s", out)
 	}
 	for _, tc := range []struct {
 		verb, res, ns string
@@ -208,8 +223,8 @@ func TestE2EClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 
 	// ── re-run is an idempotent upsert, and a widened release is Forbidden until re-connected ──
 	connect("prod", applyScope{Namespaces: []string{appNS}}, deliverySecrets)
-	connectEnvStream = func(context.Context, io.Writer, string) (string, error) {
-		return render("---\n# cluster: " + kctx + "\napiVersion: v1\nkind: Service\nmetadata:\n  name: svc\n  namespace: " + appNS + "\n"), nil
+	connectEnvStream = func(context.Context, io.Writer, string) (connectRender, error) {
+		return connectRender{Stream: render("---\n# cluster: " + kctx + "\napiVersion: v1\nkind: Service\nmetadata:\n  name: svc\n  namespace: " + appNS + "\n"), HubUnits: []string{"base"}}, nil
 	}
 	if canI("prod", "create", "services", appNS) {
 		t.Error("a new kind was allowed before the owner re-ran connect")
@@ -219,12 +234,12 @@ func TestE2EClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 		t.Error("the new kind is still Forbidden after re-running connect")
 	}
 
-	// ── cluster scope: a ClusterRole derived from the render, bind/escalate on RBAC ──
-	connectEnvStream = func(context.Context, io.Writer, string) (string, error) {
-		return render("---\n# cluster: " + kctx + "\napiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: fcc-reader\nrules: []\n"), nil
+	// ── cluster scope: a ClusterRole derived from the render, bind/escalate pinned by name ──
+	connectEnvStream = func(context.Context, io.Writer, string) (connectRender, error) {
+		return connectRender{Stream: render("---\n# cluster: " + kctx + "\napiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: fcc-reader\nrules: []\n"), HubUnits: []string{"base"}}, nil
 	}
 	out = connect("prod", applyScope{Cluster: true}, nil)
-	if !strings.Contains(out, "equivalent to cluster-admin") {
+	if !strings.Contains(out, "WARNING: --apply-scope cluster") {
 		t.Errorf("cluster scope did not say what it is:\n%s", out)
 	}
 	for _, tc := range []struct {
@@ -233,7 +248,11 @@ func TestE2EClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 	}{
 		{"create", "configmaps", otherNS, true},
 		{"create", "clusterroles.rbac.authorization.k8s.io", "", true},
-		{"escalate", "clusterroles.rbac.authorization.k8s.io", "", true},
+		// escalate is pinned to the ClusterRole the render names, never open.
+		{"escalate", "clusterroles.rbac.authorization.k8s.io/fcc-reader", "", true},
+		{"escalate", "clusterroles.rbac.authorization.k8s.io/some-other-role", "", false},
+		{"escalate", "clusterroles.rbac.authorization.k8s.io", "", false},
+		{"bind", "clusterroles.rbac.authorization.k8s.io", "", false},
 		{"create", "deployments.apps", appNS, false}, // still derived from the render
 		{"impersonate", "serviceaccounts", "", false},
 	} {
@@ -248,7 +267,6 @@ func TestE2EClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 
 	// ── disconnect: revoke, then delete by label ──
 	caller.clusters = []wireConnectedCluster{{ID: "cl_new", Name: "e2e"}}
-	out = ""
 	var dout strings.Builder
 	if err := runClusterDisconnect(ctx, "e2e", kctx, "prod", "", &dout); err != nil {
 		t.Fatalf("disconnect: %v\n%s", err, dout.String())

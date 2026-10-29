@@ -372,19 +372,33 @@ type contrastPair struct {
 var contrastPairs = []contrastPair{
 	{"ink", "surface", 7.0, "primary body text on a card"},
 	{"ink", "surface-muted", 7.0, "primary body text on the page background"},
+	{"ink", "surface-sunken", 7.0, "primary body text in an inset"},
+	{"surface", "ink", 7.0, "tooltip text on its inverted bubble (pkg/components tooltip.tsx)"},
 	{"ink-muted", "surface", 4.5, "secondary text on a card"},
 	{"ink-muted", "surface-muted", 4.5, "secondary text on the page background"},
+	{"ink-muted", "surface-sunken", 4.5, "secondary text in an inset"},
 	{"ink-subtle", "surface", 3.0, "placeholder / icon on a card"},
+	{"ink-subtle", "surface-muted", 3.0, "placeholder / icon on the page background"},
 	{"accent", "surface", 4.5, "a link or accent-colored label"},
+	// The focus outline is the accent (WCAG 2.2 focus appearance, 3:1 against
+	// whatever the focused control sits on).
+	{"accent", "surface-muted", 3.0, "the focus outline on the page background"},
+	{"accent", "surface-sunken", 3.0, "the focus outline in an inset"},
 	{"on-accent", "accent", 4.5, "button label on the primary fill"},
+	{"on-accent", "accent-hover", 4.5, "button label on a hovered / pressed primary fill"},
 	{"accent-ink", "accent-surface", 4.5, "active tab / info badge text"},
+	{"accent-ink", "surface", 4.5, "accent text outside a tint"},
 	{"danger", "surface", 4.5, "inline error text"},
 	{"on-danger", "danger", 4.5, "label on a destructive button"},
+	{"on-danger", "danger-hover", 4.5, "label on a hovered / pressed destructive button"},
 	{"danger-ink", "danger-surface", 4.5, "error banner text"},
+	{"danger-ink", "surface", 4.5, "error text outside a tint"},
 	{"success-ink", "success-surface", 4.5, "success badge text"},
+	{"success-ink", "surface", 4.5, "success text outside a tint"},
 	{"on-warning", "warning", 4.5, "the mock-mode banner"},
 	{"on-warning", "warning-hover", 4.5, "label on a hovered warning button"},
 	{"warning-ink", "warning-surface", 4.5, "warning badge text"},
+	{"warning-ink", "surface", 4.5, "warning text outside a tint"},
 }
 
 // TestScaffoldedPaletteMeetsWCAGContrast checks the light and dark palettes
@@ -477,10 +491,9 @@ func TestScaffoldedThemeTokenizesGeometry(t *testing.T) {
 					"can only be changed by editing each of the ~160 call sites.", rel, name)
 				continue
 			}
-			// Whitespace-normalized: each stylesheet is formatted by its own
-			// frontend's prettier (nextjs at printWidth 100, vite-spa at the
-			// default 80), which wraps a long shadow list at different points.
-			// A line break between two shadows is not geometry.
+			// Whitespace-normalized: a line break between two shadows is
+			// not geometry, and prettier wraps a long shadow list wherever
+			// the print width falls.
 			found[name] = strings.Join(strings.Fields(m[1]), " ")
 		}
 		values[kind] = found

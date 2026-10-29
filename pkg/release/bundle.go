@@ -80,6 +80,8 @@ const (
 	BundleMetricsSchemaPath   = BundleObservabilityPrefix + "/metrics-schema.json"
 	// BundleFrontendDeclarationsPath is bounded non-applied frozen frontend metadata.
 	BundleFrontendDeclarationsPath = "forge/frontend-declarations.json"
+	// BundleServiceCatalogPath carries browse-only typed code/RPC metadata.
+	BundleServiceCatalogPath = "forge/service-catalog.json"
 )
 
 // BundleClusterPath is the path, within the extracted manifests layer, that
@@ -140,7 +142,17 @@ func BundlePathSegment(s string) string {
 // MaxShapeBytes bounds a shape's canonical JSON. It is what a hosted ledger
 // indexes per bundle, and what Live reads per env in one round trip, so it is
 // a summary and never the render itself.
-const MaxShapeBytes = 256 << 10
+//
+// The shape grows with the env's object count (Objects carries two digests per
+// object), so the bound is sized for a large env, not a typical one. It was
+// 256 KiB until control-plane's own prod env reached 95% of it (2026-10-28).
+// A storing control plane backs it with a column CHECK on the stored jsonb
+// (control-plane: pg_column_size < 1 MiB), and jsonb is larger than the JSON
+// text it came from: about 7% for a shape (275,779 bytes of JSON measured
+// 295,216 as jsonb on Postgres 16). The CHECK must stay comfortably above
+// this bound plus that overhead; raising this bound past ~900 KiB needs the
+// column widened first.
+const MaxShapeBytes = 512 << 10
 
 // BundleDoc is the config blob of a bundle: what one env's render, from one
 // checkout, pinned to one release, IS — without its manifests. It lives inside
@@ -164,6 +176,8 @@ type BundleDoc struct {
 	Pins         BundlePins `json:"pins"`
 	Provenance   Provenance `json:"provenance"`
 	Shape        Shape      `json:"shape"`
+	// PlacementPrerequisites is sealed dependency evidence; absent is unknown.
+	PlacementPrerequisites *PlacementPrerequisites `json:"placement_prerequisites,omitempty"`
 	// Objects describes Shape.Objects for reading — a summary line and a
 	// digest per section of each ([ObjectSummary]) — so two bundles can say
 	// what changed between them without either's manifests. Beside the shape
@@ -275,6 +289,9 @@ func (d BundleDoc) Validate() error {
 		return fmt.Errorf("bundle: %w", err)
 	}
 	if err := d.Shape.Validate(); err != nil {
+		return fmt.Errorf("bundle: %w", err)
+	}
+	if err := d.PlacementPrerequisites.Validate(); err != nil {
 		return fmt.Errorf("bundle: %w", err)
 	}
 	if err := ValidateObjectSummaries(d.Shape, d.Objects); err != nil {
@@ -498,6 +515,14 @@ type Shape struct {
 	// findings that fail a release. Nil when every value is the default; a
 	// reader treats absence as [DefaultReleaseHealth].
 	ReleaseHealth *ShapeReleaseHealth `json:"release_health,omitempty"`
+	// UptimeChecks are the env's outside-in HTTP checks (forge.UptimeCheck and
+	// the ones forge derives for every public frontend and route), sorted by
+	// name. The control plane's prober reads them from here. Omitted when the
+	// env has none, so every shape recorded before the field encodes and
+	// hashes exactly as it did; a control plane that predates it refuses the
+	// whole shape, so it is a bundle-document feature
+	// ([BundleFeatureUptimeChecks]).
+	UptimeChecks []ShapeUptimeCheck `json:"uptime_checks,omitempty"`
 	// Identity is the env's managed identity as declared
 	// (forge.ManagedIdentity): the instance the control plane's identity
 	// reconciler converges, and which workloads consume it. Names and
@@ -959,10 +984,14 @@ func (o ShapeObject) Key() ObjectKey {
 	return ObjectKey{Cluster: o.Cluster, Kind: o.Kind, Namespace: o.Namespace, Name: o.Name}
 }
 
-// Validate checks a shape: a known kind, well-formed object identities, no
+// Validate checks a shape: a known kind (or none), well-formed object identities, no
 // duplicate objects, canonical hashes, and nothing that could carry a value.
 func (s Shape) Validate() error {
-	if !s.Kind.Valid() {
+	// An ABSENT kind is valid: the kind is being retired (placement is per
+	// workload, docs/design/per-workload-placement.md), and a shape from a
+	// forge that no longer projects it must still validate. A PRESENT one
+	// must still be a known value — sealed bundles carry it.
+	if s.Kind != "" && !s.Kind.Valid() {
 		return fmt.Errorf("%w: shape kind %q (expected one of %s)", ErrInvalid, s.Kind, strings.Join(envKindNames(), ", "))
 	}
 	seen := map[ObjectKey]bool{}
@@ -1083,6 +1112,9 @@ func (s Shape) Validate() error {
 		if err := s.ReleaseHealth.canonical().validate(); err != nil {
 			return err
 		}
+	}
+	if err := validateUptimeChecks(s.UptimeChecks); err != nil {
+		return err
 	}
 	delivered := map[string]bool{}
 	for _, c := range s.ControlPlaneSecrets {
@@ -1265,6 +1297,7 @@ func (s Shape) Canonical() Shape {
 			out.ReleaseHealth = nil
 		}
 	}
+	out.UptimeChecks = canonicalUptimeChecks(s.UptimeChecks)
 	if s.Identity != nil {
 		id := s.Identity.canonical()
 		out.Identity = &id

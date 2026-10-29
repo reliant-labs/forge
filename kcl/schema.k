@@ -1408,6 +1408,14 @@ schema ControlPlane:
     # where the author does not choose the registry, because the platform
     # admits exactly one.
     registry_host: str = RELIANT_REGISTRY_HOST
+    # True declares this env an ANONYMOUS deploy, published with no account
+    # by `forge env deploy <env> --claimable` (an agent gets a live URL and a
+    # claim link for its human). Every check judges the env under the
+    # claimable plan — one service of at most 250m / 256 MiB (request and
+    # limit) with its migration job, one database, one static site — instead
+    # of the billed plan's shape band, and a signed-in deploy is refused until
+    # the line is removed. `forge project new --claimable` scaffolds it.
+    claimable?: bool
 
     check:
         type == "control_plane", "ControlPlane.type must be 'control_plane'"
@@ -2747,12 +2755,16 @@ schema CacheRule:
     """One Cache-Control header applied to the objects a glob matches.
 
     Rules are evaluated IN ORDER and the FIRST match wins, so the
-    specific patterns go first and a catch-all last. An object matching
-    no rule is uploaded without an explicit Cache-Control and inherits
-    whatever the bucket/CDN default is.
+    specific patterns go first and a catch-all last. Declared rules
+    replace forge's default entirely (see OnBucket / OnFirebase), so an
+    object matching none of them is uploaded without an explicit
+    Cache-Control and inherits whatever the bucket/CDN default is (GCS:
+    `public, max-age=3600`). End with a `**` rule to cover everything.
 
       * `pattern`       — glob against the object's site-relative path
-                          ("_next/static/**", "*.html", "**").
+                          ("_next/static/**", "*.html", "**"). `*`, `?`
+                          and `[...]` match within one path segment; a
+                          `**` segment matches any number of them.
       * `cache_control` — the header value, verbatim.
 
     The 80/20 this exists for: a modern JS build emits content-HASHED
@@ -2851,6 +2863,17 @@ schema OnBucket:
     bucket. It re-points at an EXISTING digest and never rebuilds, so it
     cannot produce different bytes than the release that was tested.
 
+    CACHE HEADERS. With no `cache_control` declared on the frontend,
+    forge uploads the build's `asset_dir` as
+    `public, max-age=31536000, immutable` (a new build emits new names)
+    and everything else — the entry documents, config.js, version.json —
+    as `no-cache`: the same policy OnFirebase and hosted static hosting
+    serve. Without an explicit header GCS serves a public object as
+    `max-age=3600`, which would keep a deploy, or a promotion that changed
+    only config.js, invisible in browsers for an hour after the CDN purge.
+    A frontend's `cache_control` rules replace that default, first match
+    wins (see CacheRule).
+
     Fields:
       * `bucket`        — REQUIRED. `gs://name` or a bare `name`.
       * `cdn`           — the CDN in front of the bucket, and the
@@ -2867,7 +2890,8 @@ schema OnBucket:
     schema.
 
     The platform-hosted counterpart is `forge.OnHosted {}`, which has no
-    bucket field at all: the control plane owns the bucket and the CDN.
+    bucket field at all: the control plane owns the bucket, the
+    headers, the CDN and the hostname.
     """
     type: "bucket" = "bucket"
     bucket: str
@@ -3219,7 +3243,8 @@ schema BrowserTelemetry:
     replay_sample_rate: float = 1.0
     # What happens to the build's source maps. "publish" moves them out of the
     # served tree and keeps them for symbolicating errors; "public" serves
-    # them (an open-source app that wants that); "off" drops them.
+    # them too (an open-source app that wants that) and still keeps them for
+    # symbolicating; "off" drops them, and errors stay minified.
     sourcemaps: str = "publish"
     # Errors that are not issues.
     errors: FrontendErrors = FrontendErrors {}
@@ -3367,7 +3392,8 @@ schema Frontend:
     # convention — "assets" for vite (build.assetsDir), "_next/static" for
     # nextjs, none for rn. Set it when the build moves its assets.
     # OnFirebase marks it immutable and keeps previous releases' copies
-    # serveable (OnFirebase.keep_asset_releases). OnHosted publishes it as
+    # serveable (OnFirebase.keep_asset_releases). OnBucket uploads it
+    # immutable and everything else no-cache. OnHosted publishes it as
     # the StaticSite's `assetDir`, and the platform does the same: those
     # files are served immutable, everything else no-cache, and previous
     # releases' copies stay serveable for tabs opened before a deploy.
@@ -3396,9 +3422,9 @@ schema Frontend:
     # base_path. Ignored on OnHost (the dev server assembles nothing).
     bundle: [BundleDir] = []
     # Ordered Cache-Control rules (see CacheRule). OnBucket sets them as
-    # object headers; OnFirebase renders them as firebase.json `headers`
-    # (replacing its immutable-assets/no-cache default). Refused where
-    # forge sets no headers.
+    # object headers; OnFirebase renders them as firebase.json `headers`.
+    # On both they replace the immutable-assets/no-cache default. Refused
+    # where forge sets no headers.
     cache_control: [CacheRule] = []
 
     # The browser's runtime configuration document — what the bundle reads
@@ -4359,11 +4385,31 @@ schema OpenBaoKV:
             "OpenBaoKV.max_versions must be 2..1000: a rotation keeps the previous version readable so a pin can be rolled back"
 
 schema OpenBaoHA:
-    """High availability: a PodDisruptionBudget and zone spread, rendered when
-    there is more than one replica."""
+    """High availability, rendered when there is more than one replica: a
+    PodDisruptionBudget, a node spread and a zone spread.
+
+    `node_spread` defaults to "required": two replicas never share a node (a
+    hard topology spread constraint, `DoNotSchedule`), because one node loss
+    would otherwise take a Raft quorum, or the active node and its standby,
+    with it. A cluster with a single node still schedules. "preferred" is the
+    scheduler's best effort and must say why in `node_spread_reason`; it warns
+    on every render. `zone_spread` is always best effort (`ScheduleAnyway`).
+
+        ha = forge.OpenBaoHA {
+            node_spread = "preferred"
+            node_spread_reason = "two-node staging pool; replicas share a node during upgrades"
+        }"""
     pdb: bool = True
     zone_spread: bool = True
+    node_spread: "required" | "preferred" = "required"
+    node_spread_reason: str = ""
     priority_class: str = ""
+
+    check:
+        node_spread == "preferred" or not node_spread_reason, \
+            "OpenBaoHA sets node_spread_reason but node_spread is required: the reason excuses a preferred spread. Drop the reason, or set node_spread = \"preferred\""
+        node_spread == "required" or node_spread_reason, \
+            "OpenBaoHA.node_spread is \"preferred\" and states no node_spread_reason. Two replicas on one node lose quorum or every standby together when it fails: keep the default (required), or set node_spread_reason to say why this store may share a node"
 
 schema OpenBaoAudit:
     """Audit devices. Audit is on by default: `stdout` is collected by the
@@ -4499,6 +4545,41 @@ schema OpenBaoConsumer:
         len(grants) > 0 or delegated, \
             "OpenBaoConsumer '${name}' has no grants and is not delegated: it could authenticate and do nothing. Add grants, or drop it"
 
+_AUTH_MOUNT_NAME_RE: str = r"^[a-z0-9]([a-z0-9_-]{0,62}[a-z0-9])?$"
+
+schema OpenBaoRetiredAuthMount:
+    """An auth mount a previous install left on the store, to be removed.
+
+    The component converges only the `jwt-*` mounts it writes, so a legacy
+    `kubernetes` or `approle` mount from a hand-run install is never touched.
+    List it here and the converge Job disables it, idempotently (a mount that
+    is already gone is skipped). `reason` is required: disabling a mount
+    revokes every token it issued, so say what proves it unused.
+
+        forge.OpenBaoRetiredAuthMount {
+            name = "approle"
+            reason = "audit logs show no AppRole login since 2026-10-25"
+        }
+
+    The Job refuses to disable a mount that still has roles (a role is a login
+    someone may still use) unless `force = True`, and refuses a mount of a type
+    whose use it cannot check (not kubernetes, approle, jwt or oidc) the same
+    way. Refusing is a verdict, not a retry: the Job fails with exit 64 and says
+    which roles. The converge policy gains `delete` on exactly `sys/auth/<name>`
+    (never a glob) for each name listed.
+
+    The JWT mount this component manages for its cluster cannot be retired."""
+    name: str
+    reason: str
+    force: bool = False
+
+    check:
+        regex.match(name, _AUTH_MOUNT_NAME_RE), \
+            "OpenBaoRetiredAuthMount.name '${name}' must be an auth mount name: lowercase letters, digits, '-' and '_', no slash or glob (it is rendered into an ACL path)"
+        name != "token", "OpenBaoRetiredAuthMount.name 'token' is OpenBao's built-in token auth and cannot be disabled. Drop it"
+        reason.strip() != "", \
+            "OpenBaoRetiredAuthMount '${name}' states no reason. Disabling a mount revokes every token it issued: set reason to the evidence that it is unused"
+
 schema OpenBaoSAWriter:
     """How a person writes values to a SELF-RUN store, the default: `forge
     secret set` mints a 10-minute service-account token for `service_account`
@@ -4550,6 +4631,10 @@ schema OpenBao:
     # Where it runs. Unset = the env's primary cluster target.
     runtime?: OnCluster
     image: str = OPENBAO_IMAGE
+    # Native provider helper images are explicit snapshot inputs, not discovered
+    # from generated resources. They are resolved and frozen at release cut.
+    kubectl_image: str = "docker.io/alpine/k8s:1.34.12@sha256:d50424976a0a888d2531f13035dce45c004ec2b6f877f233005ba35c0d61be5d"
+    cloud_sql_proxy_image: str = "gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1"
     storage: OpenBaoRaft | OpenBaoPostgres = OpenBaoRaft {}
     replicas: int = 3 if storage.type == "raft" else 2
     listeners: [OpenBaoListener] = [OpenBaoListener {}]
@@ -4562,11 +4647,17 @@ schema OpenBao:
     consumers: [OpenBaoConsumer] = []
     writer: OpenBaoSAWriter | OpenBaoOIDCWriter = OpenBaoSAWriter {}
     public?: OpenBaoPublic
+    # Auth mounts a previous install left behind; the converge Job disables them
+    # (OpenBaoRetiredAuthMount). The component converges only its own `jwt-*`
+    # mounts, so nothing else removes these.
+    retired_auth_mounts: [OpenBaoRetiredAuthMount] = []
 
     check:
         regex.match(name, _DNS_LABEL_RE) and len(name) <= 40, \
             "OpenBao.name '${name}' must be an RFC-1123 label of at most 40 characters: it names the Deployment, Services and the CA ConfigMap"
         regex.match(namespace, _DNS_LABEL_RE), "OpenBao.namespace '${namespace}' must be an RFC-1123 label"
+        regex.match(kubectl_image, r"^[^\s]+$"), "OpenBao.kubectl_image must be an image reference with no whitespace"
+        regex.match(cloud_sql_proxy_image, r"^[^\s]+$"), "OpenBao.cloud_sql_proxy_image must be an image reference with no whitespace"
         image, "OpenBao.image is required"
         replicas >= 1 and replicas <= 9, "OpenBao.replicas must be 1..9"
         storage.type != "raft" or replicas % 2 == 1, \
@@ -4579,6 +4670,8 @@ schema OpenBao:
         len(_duplicates([c.name for c in consumers])) == 0, "OpenBao.consumers: a name is declared twice: ${_duplicates([c.name for c in consumers])}"
         len(_duplicates([(c.namespace or namespace) + "/" + c.workload for c in consumers])) == 0, \
             "OpenBao.consumers: a workload is declared twice: ${_duplicates([(c.namespace or namespace) + '/' + c.workload for c in consumers])}. One principal has one role; merge the grants"
+        len(_duplicates([m.name for m in retired_auth_mounts])) == 0, \
+            "OpenBao.retired_auth_mounts: a mount is listed twice: ${_duplicates([m.name for m in retired_auth_mounts])}"
         writer.type != "service_account" or writer.service_account not in [c.workload for c in consumers if (c.namespace or namespace) == namespace], \
             "OpenBao.writer.service_account '${writer.service_account if writer.type == 'service_account' else ''}' is also a consumer's workload. The writer is write-only on this env's paths; give the consumer its own service account"
 
@@ -4667,7 +4760,10 @@ schema ESOAdmission:
     bounds where the operator may dial on 443 and 6443 (the API server and
     the store). Narrow it to your API server and store addresses when they are
     stable. `egress_ports` lists those ports (the API server, and the store:
-    8200 is OpenBao's default listener). `store_service_account` is the one
+    8200 is OpenBao's default listener). An ipBlock never matches a pod
+    address under Cilium (GKE Dataplane V2), so the Bundle's own in-cluster
+    forge.OpenBao is admitted by a separate selector rule (its namespace and
+    pods, its TLS port) whatever these say. `store_service_account` is the one
     service account a SecretStore may ask a token for."""
     writers: [str] = []
     writer_groups: [str] = ["system:masters"]
@@ -5211,6 +5307,124 @@ schema ReleaseHealth:
         isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"
 
 # ---------------------------------------------------------------------------
+# Uptime checks: outside-in HTTP probes the control plane runs on a schedule.
+# ---------------------------------------------------------------------------
+
+_UPTIME_NAME_RE = r"^[a-z][a-z0-9_-]{0,62}$"
+_UPTIME_STATUS_RE = r"^[1-5]([0-9]{2}|xx)$"
+
+# A check's interval or timeout ("30s", "2m") in seconds; 0 when malformed.
+_uptime_seconds = lambda d: str -> int {
+    int(d[:-1]) * {"s": 1, "m": 60}[d[-1]] if regex.match(d, r"^[1-9][0-9]*[sm]$") else 0
+}
+
+schema UptimeCheck:
+    """One outside-in HTTP check of this env. The control plane's prober
+    requests it from the platform cluster on a schedule and writes
+    `uptime.check.up`, `uptime.check.duration` and `tls.cert.expiry_seconds`
+    into the env's telemetry; the `UptimeCheckFailing` and `CertificateExpiring`
+    alert defaults read them.
+
+        uptime = forge.Uptime {
+            checks = [forge.UptimeCheck {
+                name = "checkout"
+                url = "https://shop.example.com/healthz"
+                expect_body = "ok"
+            }]
+        }
+
+    Exactly one target:
+
+      * `url`    — an absolute http(s) address on the public internet. A
+        private, loopback or cluster-internal host is refused: the prober
+        dials public endpoints only.
+      * `route`  — the name of an HTTPRoute in this Bundle; its public URL
+        (the gateway's hostname plus the route's path) is the target.
+      * `target` — the name of a hosted frontend or workload; the platform
+        allocates its hostname, so the control plane resolves it. `path` is
+        requested on that hostname (default "/").
+
+    A check that shares a name with a derived one (see Uptime) replaces it.
+
+      * `expect_status` — statuses that mean up: "200", or a class ("2xx").
+        Default: any 2xx or 3xx.
+      * `expect_body`   — a substring the response body must contain (GET only).
+      * `interval` / `timeout` — "30s" to "10m", and "1s" to "1m" below the
+        interval. Defaults 60s and 10s.
+
+    Regions are not declared: v1 probes from the platform's own cluster.
+    """
+    name: str
+    url?: str
+    route?: str
+    target?: str
+    path?: str
+    method: "GET" | "HEAD" = "GET"
+    interval: str = "60s"
+    timeout: str = "10s"
+    expect_status: [str] = []
+    expect_body: str = ""
+
+    check:
+        regex.match(name, _UPTIME_NAME_RE), \
+            "UptimeCheck.name '${name}' must be lowercase letters, digits, '-' and '_', starting with a letter (it tags every metric the check writes)"
+        len([t for t in [url, route, target] if t]) == 1, \
+            "UptimeCheck '${name}' needs exactly one target: `url` (a public address), `route` (an HTTPRoute of this Bundle) or `target` (a hosted frontend or workload)"
+        not url or regex.match(url, r"^https?://[^/@\s]+(/\S*)?$"), \
+            "UptimeCheck '${name}': url '${url}' must be an absolute http(s) address with a host and no credential"
+        not path or target, \
+            "UptimeCheck '${name}': `path` is for a `target` check; a url or a route carries its own path"
+        not path or path.startswith("/"), \
+            "UptimeCheck '${name}': path '${path}' must start with '/'"
+        30 <= _uptime_seconds(interval) <= 600, \
+            "UptimeCheck '${name}': interval '${interval}' must be 30s to 10m (a number and s or m)"
+        1 <= _uptime_seconds(timeout) <= 60 and _uptime_seconds(timeout) < _uptime_seconds(interval), \
+            "UptimeCheck '${name}': timeout '${timeout}' must be 1s to 1m (a number and s or m) and shorter than the interval"
+        all s in expect_status {regex.match(s, _UPTIME_STATUS_RE)}, \
+            "UptimeCheck '${name}': expect_status ${expect_status} must be statuses like \"200\" or classes like \"2xx\""
+        len(expect_body) <= 256, "UptimeCheck '${name}': expect_body is longer than 256 bytes"
+        not expect_body or method == "GET", \
+            "UptimeCheck '${name}': expect_body needs method GET: a HEAD response has no body"
+
+schema Uptime:
+    """The env's uptime checks, on `Bundle.uptime`.
+
+    A hosted env (one with a control plane, and not a `lifecycle` local or
+    ephemeral one) is probed with NO declaration: forge derives one check per
+    public frontend and per public HTTP route, so "is it down" is answered
+    before anyone writes a rule:
+
+      * every `forge.OnHosted` frontend            -> check `<frontend>`, GET /
+      * every `forge.OnHosted` workload exposing a port
+                                                   -> check `<workload>`, GET /
+      * every HTTPRoute whose gateway has a hostname
+                                                   -> check `route-<route>`, GET
+        its public URL; any answer below 500 is up (the route's own path may
+        legitimately 404 or ask for a login)
+
+    Derived checks that cannot be probed (a private hostname, say) are left
+    out rather than failing the build; a check you declare is held to the
+    rules.
+
+        uptime = forge.Uptime {defaults = False}                       # no derived checks
+        uptime = forge.Uptime {skip = ["route-admin"]}                 # all but one
+        uptime = forge.Uptime {checks = [forge.UptimeCheck {...}]}     # derived + yours
+
+    `checks` are yours; one named like a derived check replaces it. `skip`
+    names derived checks to leave out; a name that matches none is refused.
+    """
+    checks: [UptimeCheck] = []
+    defaults: bool = True
+    skip: [str] = []
+
+    check:
+        len({c.name: 1 for c in checks}) == len(checks), \
+            "Uptime.checks names a check twice: a check name is unique within an env"
+        isunique(skip), "Uptime.skip names a check twice"
+        all n in skip {regex.match(n, _UPTIME_NAME_RE)}, \
+            "Uptime.skip ${skip} must be check names (lowercase letters, digits, '-' and '_')"
+
+# ---------------------------------------------------------------------------
 # Bundle — the project-level container forge.render() consumes.
 # ---------------------------------------------------------------------------
 
@@ -5556,7 +5770,7 @@ schema AlertReceiver:
     secret?: str
     channel?: str
     severities: [str] = ["critical", "error"]
-    always_alertnames: [str] = ["NewIssue", "IssueRegressed", "IssueSpike"]
+    always_alertnames: [str] = ["NewIssue", "IssueRegressed", "IssueSpike", "ReleaseRegressed", "ServiceAnomaly"]
 
     check:
         regex.match(name, r"^[a-z][a-z0-9_-]{0,62}$"), \
@@ -5764,12 +5978,16 @@ schema StatefulSetResize:
     # digest-pinned alpine/k8s. Set it to a mirror when the cluster cannot pull
     # from Docker Hub, or to pin a kubectl matching the cluster.
     image?: str
+    # Explicit manifest consumer owning generated resize-hook resources. Its
+    # release_inputs must declare container:resize on each generated cluster.
+    release_owner?: str
     # Render no resize Job: a raised volume size then fails the apply, as it
     # did before, and the volume is resized by hand.
     disabled?: bool = False
 
     check:
         not image or regex.match(image, r"^[^\s]+$"), "StatefulSetResize.image '${image}' must be an image reference with no whitespace"
+        release_owner == Undefined or regex.match(release_owner, r"^[a-z][a-z0-9-]*$"), "StatefulSetResize.release_owner must name an explicit manifest consumer"
 
 schema DeliveryUnit:
     """A delivery unit: a named slice of an env that a Flux-applied bundle
@@ -6504,6 +6722,10 @@ schema Bundle:
     # health: the window, the thresholds, and which findings fail. UNSET =
     # the defaults. See ReleaseHealth.
     release_health?: ReleaseHealth
+    # The outside-in HTTP checks the control plane probes this env with. A
+    # hosted env gets one per public frontend and route with no declaration;
+    # declare `uptime` to add checks or opt out. See Uptime.
+    uptime?: Uptime
     # The env's users (forge.ManagedIdentity): roles, the applications that
     # sign users in, the workloads that read tokens, and where the instance
     # runs. UNSET = no managed identity (bring your own issuer in config.k).

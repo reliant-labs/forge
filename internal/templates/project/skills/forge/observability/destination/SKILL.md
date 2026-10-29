@@ -81,6 +81,8 @@ The deploy preflight then checks it exists in the cluster. For a local k3d env u
 
 If the node agent (cluster) or the local collector (host) ships logs, leave `OTEL_LOGS_EXPORTER` unset. Setting it to `otlp` while `signals.logs` is on is refused at render, because every line would be stored twice. Turn `signals.logs` off to ship logs from the app instead.
 
+A line read from stdout has no SDK resource of its own, so every JSON line carries the process resource under `"resource"`: `service.name`, `service.version`, `service.namespace`, `deployment.environment.name` and `service.instance.id`. These are the values the traces and metrics carry (Setup's resource), pre-encoded once per logger. The collectors forge renders (node agent, local forwarder, `deploy/observability/otel-collector.yaml`) lift those keys into the log record's **resource**. A key a trusted source already set wins: the pod's labels on a cluster, the file's path locally. A line without the object is unchanged and has **no version**: a panic, a runtime fatal error, plain text, an image forge did not build. Text output (`LOG_FORMAT=text`) is not stamped. Pass `observe.NewLogHandler` the `Config` you pass `Setup`.
+
 ## Recipes
 
 - **Local only (the scaffold default):** `observability = forge.Observability {local_port = _otlp_http_port}`.

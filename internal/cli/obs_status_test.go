@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -108,8 +109,8 @@ func TestObsStatusCloudReadsEverySection(t *testing.T) {
 	if c := callTo(caller.calls, procOverview); c == nil || !strings.Contains(c.body, `"timeRange":{"start":"2026-10-22T11:00:00Z","end":"2026-10-22T12:00:00Z"}`) {
 		t.Errorf("the overview reads --since (1h): %+v", c)
 	}
-	if c := callTo(caller.calls, procSearchLogs); c == nil || !strings.Contains(c.body, `"start":"2026-10-21T12:00:00Z"`) || !strings.Contains(c.body, `"pageSize":1`) {
-		t.Errorf("freshness looks back 24h for one record: %+v", c)
+	if c := callTo(caller.calls, procSearchLogs); c == nil || !strings.Contains(c.body, `"start":"2026-10-22T11:45:00Z"`) || !strings.Contains(c.body, `"pageSize":1`) {
+		t.Errorf("freshness probes the last 15m for one record first: %+v", c)
 	}
 }
 
@@ -132,7 +133,7 @@ func TestObsStatusText(t *testing.T) {
 }
 
 // A section the control plane cannot answer is named and explained; the rest
-// is still shown and the exit status is 0.
+// is still shown, but the partial read exits 2 instead of reporting success.
 func TestObsStatusDegradesSectionBySection(t *testing.T) {
 	caller := statusCaller()
 	caller.errs = map[string]error{
@@ -141,10 +142,13 @@ func TestObsStatusDegradesSectionBySection(t *testing.T) {
 		procTraces:     &cloud.Error{Code: cloud.CodeUnavailable},
 	}
 	out, errOut, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "status", "prod", "--json")
-	if err != nil {
-		t.Fatalf("a partial read is not a failure: %v", err)
+	if exitCodeForError(err) != 2 {
+		t.Fatalf("a partial read must exit 2: %v", err)
 	}
 	doc := decode(t, out)
+	if doc["ok"] != false || doc["exit_code"] != float64(2) || !strings.Contains(fmt.Sprint(doc["error"]), "partial") {
+		t.Errorf("partial status must not look healthy: %v", doc)
+	}
 	if got := fmt.Sprint(doc["unread"]); got != "[alerts telemetry.deliveries]" {
 		t.Errorf("unread = %s", got)
 	}
@@ -166,6 +170,23 @@ func TestObsStatusDegradesSectionBySection(t *testing.T) {
 	}
 	if errOut != "" {
 		t.Errorf("--json writes no warnings to stderr: %q", errOut)
+	}
+}
+
+func TestObsStatusNestedUnreadEvidenceIsPartial(t *testing.T) {
+	for _, proc := range []string{procTraces, procActivity} {
+		t.Run(proc, func(t *testing.T) {
+			caller := statusCaller()
+			caller.errs = map[string]error{proc: &cloud.Error{Code: cloud.CodeUnavailable}}
+			out, _, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "status", "prod", "--json")
+			if exitCodeForError(err) != 2 {
+				t.Fatalf("nested partial read must exit 2: %v\n%s", err, out)
+			}
+			doc := decode(t, out)
+			if doc["ok"] != false || doc["exit_code"] != float64(2) || doc["warnings"] == nil || doc["current_release"] == nil || doc["services"] == nil {
+				t.Errorf("partial status must preserve the readable evidence: %v", doc)
+			}
+		})
 	}
 }
 
@@ -281,5 +302,60 @@ func TestObsStatusFieldsAndFlags(t *testing.T) {
 	}
 	if _, _, err := newObsCheckHarness().run(t, cloudFacts(), statusCaller(), nil, "status", "prod", "--since", "-1h"); exitCodeForError(err) != 1 {
 		t.Errorf("a bad range is a wrong request: %v", err)
+	}
+}
+
+// The newest record is looked for in the cheap 15m probe first, and over the
+// whole 24h lookback only when the probe found nothing or failed: prod's
+// ListTraces timed out sorting a day of spans, so every status was partial.
+func TestStatusFreshnessProbesBeforeTheWholeLookback(t *testing.T) {
+	fn := obsbackend.Narrow{Range: obsbackend.Range{From: obsNow.Add(-24 * time.Hour), To: obsNow}}
+	for name, tc := range map[string]struct {
+		probeHas  bool
+		probeErr  error
+		wantReads int
+	}{
+		"fresh":        {probeHas: true, wantReads: 1},
+		"quiet 15m":    {wantReads: 2},
+		"probe failed": {probeErr: errors.New("504"), wantReads: 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var windows []time.Duration
+			at, err := newestWithin(fn, func(n obsbackend.Narrow) (time.Time, bool, error) {
+				windows = append(windows, n.Range.To.Sub(n.Range.From))
+				if len(windows) == 1 {
+					return obsNow.Add(-time.Minute), tc.probeHas, tc.probeErr
+				}
+				return obsNow.Add(-time.Hour), true, nil
+			})
+			if err != nil || len(windows) != tc.wantReads || windows[0] != statusFreshnessProbe {
+				t.Fatalf("reads %v err %v, want %d reads starting with the %s probe", windows, err, tc.wantReads, statusFreshnessProbe)
+			}
+			if tc.wantReads == 2 && (windows[1] != 24*time.Hour || !at.Equal(obsNow.Add(-time.Hour))) {
+				t.Fatalf("widened read %v at %v, want 24h", windows, at)
+			}
+		})
+	}
+}
+
+// The external delivery reconciler being off is reported only for an env that
+// declared a Secret for it. A hosted env's own token is renewed by the
+// platform's workload operator, so "nothing keeps the token valid" there was
+// false (control-plane prod, 2026-10-29).
+func TestStatusTelemetryDeliveryOffNeedsADeclaredSecret(t *testing.T) {
+	off := false
+	now := time.Date(2026, 10, 29, 16, 0, 0, 0, time.UTC)
+	var hosted strings.Builder
+	writeStatusTelemetry(&hosted, now, &obsStatusTelemetry{DeliveriesEnabled: &off})
+	if strings.Contains(hosted.String(), "telemetry token") {
+		t.Errorf("an env with no declared delivery got a token warning:\n%s", hosted.String())
+	}
+
+	var declared strings.Builder
+	writeStatusTelemetry(&declared, now, &obsStatusTelemetry{DeliveriesEnabled: &off,
+		Deliveries: []obsbackend.TelemetryDelivery{{Cluster: "prod", Namespace: "obs", Name: "reliant-otel-auth", State: "disabled"}}})
+	if got := declared.String(); !strings.Contains(got, "1 declared Secret(s) on connected clusters are not delivered") ||
+		!strings.Contains(got, "reconciler is off") || !strings.Contains(got, "obs/reliant-otel-auth on prod: disabled") {
+		t.Errorf("a declared delivery with the reconciler off must say so:\n%s", got)
 	}
 }

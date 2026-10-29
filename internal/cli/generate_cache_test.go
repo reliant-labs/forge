@@ -218,6 +218,19 @@ func TestGenerateCacheEveryInputClassInvalidates(t *testing.T) {
 			f.write(t, "frontends/web/node_modules/.package-lock.json", "{\"lockfileVersion\":3}\n")
 		}, "node_modules/.package-lock.json"},
 		{".forge port ledger written", func(t *testing.T, f *cacheFixture) { f.write(t, ".forge/ports-dev.json", "{\"api\":8080}\n") }, "1 .forge/ state file(s)"},
+		// The frontend step's own inputs: a disown (or undisown) of a
+		// frontend's package.json turns its reconciliation off (or on), and
+		// the manifest and lockfile are what it reconciles. Ignored here
+		// (.forge/*), tracked in a scaffolded project; both are read.
+		{"a disown recorded", func(t *testing.T, f *cacheFixture) {
+			f.write(t, ".forge/disowned.json", "{\"frontends/web/package.json\":{\"reason\":\"pins its own runtime\"}}\n")
+		}, "1 .forge/ state file(s)"},
+		{"frontend package.json edited", func(t *testing.T, f *cacheFixture) {
+			f.write(t, "frontends/web/package.json", "{\"dependencies\":{\"@reliantlabs/forge-web-runtime\":\"^0.1.0\"}}\n")
+		}, "frontends/web/package.json"},
+		{"frontend lockfile added", func(t *testing.T, f *cacheFixture) {
+			f.write(t, "frontends/web/package-lock.json", "{\"lockfileVersion\":3}\n")
+		}, "frontends/web/package-lock.json"},
 		{"unnamed gitignored file edited", func(t *testing.T, f *cacheFixture) { f.write(t, "deploy/settings.local", "changed\n") }, "deploy/settings.local"},
 		{"dotenv edited", func(t *testing.T, f *cacheFixture) { f.write(t, ".env.dev", "DATABASE_URL=postgres://x\n") }, ".env.dev"},
 		{"replace target edited", func(t *testing.T, f *cacheFixture) {
@@ -648,6 +661,13 @@ func TestGenerateCacheSkipLineAndMissReason(t *testing.T) {
 	if got := strings.Count(buf.String(), "\n"); got != 1 || !strings.Contains(buf.String(), "5m ago") || !strings.Contains(buf.String(), "--no-cache") {
 		t.Errorf("the skip must be one line saying when it was verified and how to force a run, got:\n%s", buf.String())
 	}
+	// A clean generate prints no ownership machinery; the fixture corpus
+	// (assertNoForkNoise) fails on these words in a second, cached run.
+	for _, needle := range []string{"disowned", "forked file(s)", "fork-coherence"} {
+		if strings.Contains(buf.String(), needle) {
+			t.Errorf("the skip line must not mention ownership machinery (%q), got:\n%s", needle, buf.String())
+		}
+	}
 
 	f.write(t, "proto/a.proto", "changed\n")
 	buf.Reset()
@@ -804,5 +824,41 @@ func TestBufLocalPluginNames(t *testing.T) {
 	got := bufLocalPluginNames(p)
 	if strings.Join(got, ",") != "protoc-gen-go,protoc-gen-x" {
 		t.Fatalf("bufLocalPluginNames = %v", got)
+	}
+}
+
+// The forge that ran is the forge that produced the outputs, and it cannot
+// change under its own process. A delegated forge runs from a shared cache
+// entry another process may publish over or prune mid-run (CI:
+// TestE2EFixtureCorpusKalshiShaped / ZeroService, "the forge binary changed
+// while generate ran"); re-reading os.Executable afterwards called the run
+// impure for a file the run never read again. The next run sees the new
+// binary and runs in full — that half is TestGenerateCacheEveryInputClassInvalidates.
+func TestGenerateCacheRecordIgnoresTheExecutablePathMovingMidRun(t *testing.T) {
+	f := newCacheFixture(t)
+	withCacheSystem(t, f)
+	withPipelineSteps(t, []GenStep{{
+		Name: "render KCL",
+		Gate: always,
+		Run: func(*pipelineContext) error {
+			f.writeExec(t, "forge", "#!/bin/sh\necho forge v2, published over the running one\n")
+			return nil
+		},
+	}})
+	var runErr error
+	out := captureStdout(t, func() { runErr = runGeneratePipelineFlags(f.root, pipelineFlags{Cache: true}) })
+	if runErr != nil {
+		t.Fatalf("pipeline: %v\n%s", runErr, out)
+	}
+	if !strings.Contains(out, "Recorded as a verified fixed point") {
+		t.Fatalf("a binary replaced at the running forge's path must not block the record:\n%s", out)
+	}
+	m := loadGenerateCacheManifest(f.root)
+	if m == nil {
+		t.Fatal("no manifest recorded")
+	}
+	// The record names the forge that ran, so the replaced one does not match.
+	if c := openGenerateCache(f.root, pipelineFlags{Cache: true}, snapshotWorkTree(f.root), f.sys()); func() bool { ok, _ := c.verdict(); return ok }() {
+		t.Error("the next run, under the replaced binary, must not skip")
 	}
 }

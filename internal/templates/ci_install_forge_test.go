@@ -334,7 +334,7 @@ func TestCIWorkflow_VerifyGeneratedHasItsToolchain(t *testing.T) {
 			order["tools"] = i
 		case strings.HasPrefix(s.Uses, "actions/setup-node@"):
 			order["node"] = i
-		case s.Run == "npm ci" && s.WorkingDirectory == "frontends/web":
+		case s.Run == "pnpm install --frozen-lockfile" && s.WorkingDirectory == "frontends/web":
 			order["npm"] = i
 		case s.Run == "task ci:checks":
 			order["gate"] = i

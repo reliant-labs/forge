@@ -17,6 +17,7 @@ package lint
 import (
 	"bufio"
 	"go/ast"
+	"go/build"
 	"go/build/constraint"
 	"go/parser"
 	"go/token"
@@ -274,6 +275,75 @@ func scopeBuildTags(sets []buildTagPackages, patterns []string) []buildTagPackag
 		}
 	}
 	return out
+}
+
+// defaultPassPackages is the package patterns of the default golangci-lint
+// pass: patterns, less every pattern under which no Go file builds without a
+// project-defined tag. golangci-lint refuses such a pattern ("no go files to
+// analyze") instead of reporting nothing, so a scope naming only tagged code
+// (reliant's e2e/stories, every file `//go:build e2e`) failed the lane while
+// the tag's own pass would have linted it cleanly. Those files still get
+// their tag's pass: scopeBuildTags reaches them through the full patterns.
+//
+// The whole module (nil patterns, golangci-lint's own ./...; or ./... itself)
+// is kept as is: what it holds is golangci-lint's to judge, and an unscoped
+// run stays the invocation it always was. A non-empty patterns that filters
+// down to nothing returns run false: an empty argument list would lint the
+// whole module instead.
+func defaultPassPackages(root string, patterns, configTags []string) (pkgs []string, run bool) {
+	if len(patterns) == 0 {
+		return patterns, true
+	}
+	ctx := build.Default
+	ctx.BuildTags = configTags
+	for _, pat := range patterns {
+		if whole := path.Clean("./"+filepath.ToSlash(pat)) == "..."; whole || patternHasDefaultFile(&ctx, root, pat) {
+			pkgs = append(pkgs, pat)
+		}
+	}
+	return pkgs, len(pkgs) > 0
+}
+
+// patternHasDefaultFile reports whether a Go file under pattern (`./a/...`,
+// `./a`, `.`) is in the build ctx describes: its //go:build line and its
+// _GOOS/_GOARCH name suffix both hold. Test files count; golangci-lint lints
+// them.
+func patternHasDefaultFile(ctx *build.Context, root, pattern string) bool {
+	pattern = filepath.ToSlash(pattern)
+	recursive := pattern == "..." || strings.HasSuffix(pattern, "/...")
+	base := filepath.Join(root, filepath.FromSlash(strings.TrimSuffix(strings.TrimSuffix(pattern, "..."), "/")))
+	if _, err := os.Stat(filepath.Join(base, "go.mod")); err == nil && filepath.Clean(base) != filepath.Clean(root) {
+		return false // another module: not this run's packages
+	}
+	found := false
+	_ = filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil //nolint:nilerr // an unreadable subtree is simply not counted
+		}
+		if d.IsDir() {
+			if p == base {
+				return nil
+			}
+			name := d.Name()
+			if !recursive || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") ||
+				name == "node_modules" || name == "vendor" || name == "testdata" {
+				return filepath.SkipDir
+			}
+			if _, err := os.Stat(filepath.Join(p, "go.mod")); err == nil {
+				return filepath.SkipDir // another module: not this run's packages
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".go") {
+			return nil
+		}
+		if ok, err := ctx.MatchFile(filepath.Dir(p), d.Name()); err == nil && ok {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 func patternReaches(pattern, dir string) bool {

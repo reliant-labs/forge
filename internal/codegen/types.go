@@ -124,6 +124,16 @@ type Method struct {
 	// rpc whatever its name — CRUDShape answers "" for it, and nothing CRUD
 	// is projected from it. Absent on descriptors written before the marker.
 	Custom bool `json:",omitempty"`
+	// NoSideEffects reports protobuf's own read-only declaration on the rpc,
+	// `option idempotency_level = NO_SIDE_EFFECTS;` — the signal Connect
+	// clients already read (connect-es retries such a call and may send it
+	// as GET). The frontend hook generator takes it as authoritative: the rpc
+	// is a read whatever its name (Health, Version), so it gets a useQuery.
+	// IDEMPOTENT is deliberately not a read — an idempotent write (SetFlag)
+	// still writes — so it, like the unset default, leaves the name to decide.
+	NoSideEffects bool `json:",omitempty"`
+	// Idempotency retains protobuf's complete declaration for browse metadata.
+	Idempotency string `json:",omitempty"`
 	// InputTypeFQ / OutputTypeFQ are the fully-qualified names of the
 	// request/response messages (e.g. "shop.v1.CreateOrderRequest",
 	// "google.protobuf.Empty"). They key into ServiceDef.Schemas for
@@ -628,8 +638,10 @@ func (f ConfigField) KCLPath() string {
 
 // ConfigMessage represents a parsed config proto message.
 type ConfigMessage struct {
-	Name   string        // Message name (e.g., "AppConfig")
-	Fields []ConfigField // Fields with config_field annotations
+	// FullName is the protobuf identity, used for value-free config field references.
+	FullName string        `json:",omitempty"`
+	Name     string        // Message name (e.g., "AppConfig")
+	Fields   []ConfigField // Fields with config_field annotations
 
 	// Binary is the cmd/<name> leaf this config belongs to, from the
 	// message-level (forge.v1.binary_config).binary annotation. Empty means

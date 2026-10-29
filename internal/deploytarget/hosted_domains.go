@@ -125,6 +125,9 @@ type wireCustomDomainStatus struct {
 	RequiredRecords []wireDNSRecord `json:"requiredRecords,omitempty"`
 	LastError       string          `json:"lastError,omitempty"`
 	LiveSince       *time.Time      `json:"liveSince,omitempty"`
+	// ServingPath is the DeployServingPath value NAME: which platform path
+	// the domain's DNS reaches, as the control plane resolves it.
+	ServingPath string `json:"servingPath,omitempty"`
 }
 
 // HostedDNSRecord is one record the author must publish at their registrar
@@ -152,6 +155,54 @@ type HostedCustomDomain struct {
 	// LiveSince is RFC3339 for when the domain started serving, empty
 	// until it does.
 	LiveSince string `json:"live_since,omitempty"`
+	// ServingPath is where the domain's DNS sends its traffic, as the
+	// control plane resolves it: edge | ingress | elsewhere. Empty when the
+	// control plane did not say (the name does not resolve yet, or an older
+	// control plane). See ServingPathName.
+	ServingPath string `json:"serving_path,omitempty"`
+}
+
+// The serving-path vocabulary forge reports: which platform path a hostname's
+// DNS reaches.
+const (
+	// ServingPathEdge is the platform's CDN edge (hosted static sites).
+	ServingPathEdge = "edge"
+	// ServingPathIngress is the regional ingress: served, with no CDN.
+	ServingPathIngress = "ingress"
+	// ServingPathElsewhere is neither: the hostname does not point at the
+	// platform, or is split across several destinations.
+	ServingPathElsewhere = "elsewhere"
+)
+
+// wireServingPathPrefix is the DeployServingPath value-name prefix.
+const wireServingPathPrefix = "DEPLOY_SERVING_PATH_"
+
+// ServingPathName renders a DeployServingPath value name in forge's
+// lower-case vocabulary, or "" for UNSPECIFIED, an absent field, and any
+// value this forge does not know — a path forge cannot name is one it must
+// not claim.
+func ServingPathName(wire string) string {
+	switch v := strings.ToLower(strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(wire)), wireServingPathPrefix)); v {
+	case ServingPathEdge, ServingPathIngress, ServingPathElsewhere:
+		return v
+	default:
+		return ""
+	}
+}
+
+// DescribeServingPath is a serving path in words, for a status line: what an
+// author needs to know is whether the CDN is in front of the hostname.
+func DescribeServingPath(path string) string {
+	switch path {
+	case ServingPathEdge:
+		return "served through the CDN edge"
+	case ServingPathIngress:
+		return "served through the regional ingress, no CDN"
+	case ServingPathElsewhere:
+		return "DNS does not point at the platform"
+	default:
+		return ""
+	}
 }
 
 // The domain-state vocabulary forge reports.
@@ -192,7 +243,10 @@ func customDomainsOf(obs *wireObserved) []HostedCustomDomain {
 	}
 	out := make([]HostedCustomDomain, 0, len(obs.Domains))
 	for _, d := range obs.Domains {
-		hd := HostedCustomDomain{Domain: d.Domain, State: DomainStateName(d.State), LastError: d.LastError}
+		hd := HostedCustomDomain{
+			Domain: d.Domain, State: DomainStateName(d.State), LastError: d.LastError,
+			ServingPath: ServingPathName(d.ServingPath),
+		}
 		if d.LiveSince != nil {
 			hd.LiveSince = d.LiveSince.UTC().Format(time.RFC3339)
 		}
@@ -222,6 +276,9 @@ func FormatCustomDomains(indent string, domains []HostedCustomDomain) string {
 		fmt.Fprintf(&b, "%s%s: %s", indent, d.Domain, d.State)
 		if d.LiveSince != "" {
 			fmt.Fprintf(&b, " since %s", d.LiveSince)
+		}
+		if path := DescribeServingPath(d.ServingPath); path != "" {
+			fmt.Fprintf(&b, " (%s)", path)
 		}
 		b.WriteString("\n")
 		if d.LastError != "" {

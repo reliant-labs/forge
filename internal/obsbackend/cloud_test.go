@@ -91,6 +91,12 @@ func TestCloudTraceReadsSpansAndLogs(t *testing.T) {
 	if len(res.Spans) != 1 || res.Spans[0].DurationNs != 1500000 || len(res.Spans[0].Events) != 1 || len(res.Logs) != 1 || !res.LogsTruncated {
 		t.Errorf("%+v", res)
 	}
+	// The control plane's "Error" / "Server" are spelled as the local store's.
+	f.replies[procGetTrace] = `{"spans":[{"spanId":"a","name":"x","kind":"Server","durationNs":"1","statusCode":"Error"}]}`
+	res, err = cloudWith(f).Trace(context.Background(), TraceRequest{Narrow: narrowC(), TraceID: "0af7651916cd43dd8448eb211c80319c"})
+	if err != nil || res.Spans[0].StatusCode != "error" || res.Spans[0].Kind != "server" || len(ErrorSpans(res.Spans)) != 1 {
+		t.Errorf("normalized span = %+v, %v", res.Spans, err)
+	}
 	f.replies[procGetTrace] = `{"spans":[]}`
 	if _, err := cloudWith(f).Trace(context.Background(), TraceRequest{Narrow: narrowC(), TraceID: "0af7651916cd43dd8448eb211c80319c"}); exitOf(err) != ExitWrong {
 		t.Errorf("an empty trace: %v", err)
@@ -126,24 +132,6 @@ func TestCloudSQLKeepsItsColumnOrder(t *testing.T) {
 	}
 	if _, err := cloudWith(f).Query(context.Background(), QueryRequest{Narrow: narrowC(), SQL: "SELECT 1", Params: map[string]string{"x": "1"}}); exitOf(err) != ExitWrong {
 		t.Errorf("--param on cloud: %v", err)
-	}
-}
-
-func TestCloudMetrics(t *testing.T) {
-	f := &fakeCaller{replies: map[string]string{
-		procListMetrics: `{"metrics":[{"name":"http.server.duration","type":"METRIC_TYPE_HISTOGRAM"}],"truncated":true}`,
-		procQueryMetric: `{"series":[{"labels":{"svc":"api"},"points":[{"time":"2026-10-22T11:00:00Z","value":2}]}],"stepSeconds":60,"metricType":"METRIC_TYPE_HISTOGRAM","aggregation":"METRIC_AGGREGATION_P95"}`,
-	}}
-	l, err := cloudWith(f).MetricsList(context.Background(), MetricsListRequest{Narrow: narrowC(), Limit: 1})
-	if err != nil || l.Metrics[0].Type != "histogram" || !l.Truncated {
-		t.Errorf("%+v %v", l, err)
-	}
-	q, err := cloudWith(f).MetricsQuery(context.Background(), MetricsQueryRequest{Narrow: narrowC(), Name: "http.server.duration", Agg: "p95"})
-	if err != nil || q.Agg != "p95" || q.Type != "histogram" || len(q.Series) != 1 {
-		t.Errorf("%+v %v", q, err)
-	}
-	if f.reqs[procQueryMetric]["aggregation"] != "METRIC_AGGREGATION_P95" {
-		t.Errorf("agg %v", f.reqs[procQueryMetric]["aggregation"])
 	}
 }
 

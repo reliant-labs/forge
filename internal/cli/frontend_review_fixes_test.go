@@ -587,7 +587,7 @@ func TestDashboardGenTemplate_RealCountsAndCreateGating(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render nav: %v", err)
 	}
-	if !strings.Contains(string(navRendered), `slug: "tasks", labelSingular: "Task", hasCreate: true`) {
+	if !strings.Contains(string(navRendered), "slug: \"tasks\",\n    labelSingular: \"Task\",\n    hasCreate: true,") {
 		t.Errorf("nav missing hasCreate/labelSingular route fields:\n%s", navRendered)
 	}
 }

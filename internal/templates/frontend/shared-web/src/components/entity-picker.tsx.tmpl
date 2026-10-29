@@ -62,11 +62,16 @@ import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
  * Leaving it to default to `Error` made a generated hook fail to satisfy this
  * type outright (`Error` is missing code/status/retryable/reason), and it hid
  * those four fields from anything this component wants to do with a failure.
+ *
+ * It is generic in TData, defaulting to the response, because a generated
+ * query hook is (`select` maps the response to TData, the way useQuery's
+ * does). A non-generic seam cannot be matched against a generic hook: the
+ * compiler infers TReq and TRes as `unknown` and rejects the hook outright.
  */
-export type EntityListHook<TReq, TRes> = (
+export type EntityListHook<TReq, TRes> = <TData = TRes>(
   req: TReq,
-  options?: Partial<UseQueryOptions<TRes, ConnectClientError>>,
-) => UseQueryResult<TRes, ConnectClientError>;
+  options?: Partial<UseQueryOptions<TRes, ConnectClientError, TData>>,
+) => UseQueryResult<TData, ConnectClientError>;
 
 export interface EntityPickerProps<TItem, TReq, TRes> {
   /** Currently selected id, or undefined/"" when nothing is picked. */
@@ -287,7 +292,13 @@ export function EntityPicker<TItem, TReq, TRes>({
             onClick={() => onChange(undefined)}
             className="rounded-md border border-border px-2 text-ink-subtle hover:bg-surface-muted hover:text-ink-muted"
           >
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+            <svg
+              className="h-4 w-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth={2}
+              stroke="currentColor"
+            >
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
@@ -353,7 +364,9 @@ export function EntityPicker<TItem, TReq, TRes>({
                     ].join(" ")}
                   >
                     <span className="block truncate">{optionLabel(item)}</span>
-                    {hint ? <span className="block truncate text-xs text-ink-subtle">{hint}</span> : null}
+                    {hint ? (
+                      <span className="block truncate text-xs text-ink-subtle">{hint}</span>
+                    ) : null}
                   </li>
                 );
               })

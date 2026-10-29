@@ -227,6 +227,9 @@ func TestResolveDeployImageTag_UntrackedFileDoesNotMaskStaleness(t *testing.T) {
 // files predating commit-stamping have an empty Commit. Those must not be
 // blocked — the guard only fires when it can prove staleness.
 func TestResolveDeployImageTag_NoCommitSkipsFreshnessCheck(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	dir := newGitRepo(t)
 	gitignoreForgeState(t, dir)
 	gitCommitEmpty(t, dir, "advance head")
@@ -465,6 +468,9 @@ func TestResolveDeployImageTag_DirtyDefaultRecordDoesNotBlockReleaseDeploy(t *te
 // supported flow — so a stale one is exactly the footgun the guard exists
 // for and must still refuse.
 func TestResolveDeployImageTag_CleanDefaultRecordStillRefuses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	dir := newGitRepo(t)
 	gitignoreForgeState(t, dir)
 	builtCommit := gitHeadSHA(t, dir)
@@ -495,6 +501,9 @@ func TestResolveDeployImageTag_CleanDefaultRecordStillRefuses(t *testing.T) {
 // its commit is evidence about this env and the guard still applies. Only
 // the env-agnostic `default` record is ambiguous about which env it describes.
 func TestResolveDeployImageTag_DirtyPerEnvRecordStillRefuses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	dir := newGitRepo(t)
 	gitignoreForgeState(t, dir)
 	builtCommit := gitHeadSHA(t, dir)

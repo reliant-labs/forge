@@ -70,6 +70,7 @@ func activateDevStackRendered(ctx context.Context, projectDir, env string, purpo
 	// Every render starts unable to write files. Only a command that goes
 	// on to MATERIALIZE the env re-arms it (armMaterializer), after this.
 	kclplugin.UseFileWriter("")
+	rememberKCLContext(projectDir, env, kclRenderContext{Active: true})
 
 	opts := devstack.Resolve(projectDir)
 	devstack.SetActive(opts)
@@ -116,6 +117,7 @@ func activateDevStackRendered(ctx context.Context, projectDir, env string, purpo
 		// holds; a key with none renders as a labelled preview. Neither the
 		// block registry nor the resolve_port store is written.
 		kclplugin.UseBlockAllocator(inspectBlockAllocator(projectDir, env, os.Stderr))
+		rememberKCLContext(projectDir, env, kclRenderContext{Blocks: "inspect", Active: true})
 		return opts, func() {}, nil
 	}
 
@@ -149,6 +151,7 @@ func activateDevStackRendered(ctx context.Context, projectDir, env string, purpo
 
 	// Keep resolve_port stable + up==deploy via the per-env store.
 	kclplugin.UseStackPortStore(projectDir, env, false)
+	rememberKCLContext(projectDir, env, kclRenderContext{Blocks: "claim", Active: true})
 	return opts, func() {}, nil
 }
 
@@ -167,7 +170,7 @@ func activateDevStackRendered(ctx context.Context, projectDir, env string, purpo
 // It reads activateDevStack's answer rather than probing again: the probe is
 // itself a render, and it disarms the port allocator activateDevStack just
 // armed. Call it immediately after activateDevStack for the same env.
-func armMaterializer(projectDir string) {
+func armMaterializer(projectDir, env string) {
 	if !lastActivatedRunsHere {
 		return
 	}
@@ -175,6 +178,9 @@ func armMaterializer(projectDir string) {
 	// project — where a `shared = True` compose stack runs from, and so
 	// where the files it mounts must live.
 	kclplugin.UseFileWriter(projectDir, devstack.SharedProjectDir(projectDir))
+	c := rememberedKCLContext(projectDir, env)
+	c.Materialize = true
+	rememberKCLContext(projectDir, env, c)
 }
 
 // lastActivatedRunsHere records activateDevStack's verdict on whether the env

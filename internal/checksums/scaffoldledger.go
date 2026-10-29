@@ -710,7 +710,43 @@ func ScaffoldOnceDecision(root, relPath string) (write bool) {
 		return false
 	}
 	// Absent: birth iff forge has never scaffolded it here.
-	return !ScaffoldRecorded(root, relPath)
+	return ScaffoldMayBeBorn(root, relPath)
+}
+
+// ScaffoldMayBeBorn is the one answer to "may forge create this scaffold-once
+// file, which is not on disk?", shared by every writer that can birth one:
+// `forge generate`'s emitters (through ScaffoldOnceDecision), `forge project
+// upgrade`'s templates phase, and the scaffold commands.
+//
+// It is false when the ledger records the path (the user deleted it, or
+// declined it with `forge project disown --absent`) and when the path was
+// disowned, because either way the project has said the file is not forge's
+// to write. Only `forge project rescaffold`, which drops the record first, or
+// naming the path under `forge project upgrade --force`, brings it back.
+//
+// The caller has already established the file is absent; this does not stat.
+func ScaffoldMayBeBorn(root, relPath string) bool {
+	if ScaffoldRecorded(root, relPath) {
+		return false
+	}
+	return !scaffoldDisowned(root, relPath)
+}
+
+// scaffoldDisowned reports whether relPath has a .forge/disowned.json entry.
+// An unreadable or absent file reads as "not disowned": like the ledger, the
+// disowned set only ever suppresses a write, so a failure to read it must
+// leave forge's historical behavior in place.
+func scaffoldDisowned(root, relPath string) bool {
+	data, err := os.ReadFile(filepath.Join(root, DisownedFile))
+	if err != nil {
+		return false
+	}
+	var d disownedJSON
+	if json.Unmarshal(data, &d) != nil {
+		return false
+	}
+	_, ok := d.Files[slashKey(relPath)]
+	return ok
 }
 
 // RecordScaffoldWithHash records a birth AND the content hash forge wrote,

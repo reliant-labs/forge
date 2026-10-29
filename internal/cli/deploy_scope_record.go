@@ -73,7 +73,7 @@ func resolveDeployScope(ctx context.Context, projectDir, env string, targets []s
 		}
 	}
 	if len(names) == 0 {
-		return deployScope{}, fmt.Errorf("--frontends-only: environment %q declares no shippable frontend to deploy (a forge.FirebaseHosting or forge.StaticSite deploy block)", env)
+		return deployScope{}, fmt.Errorf("--frontends-only: environment %q declares no shippable frontend to deploy (a frontend whose runtime is forge.OnHosted, forge.OnBucket or forge.OnFirebase)", env)
 	}
 	return deployScope{Targets: release.NormalizeTargets(names), AppliesBundle: scopeAppliesBundle(entities, nil, true)}, nil
 }

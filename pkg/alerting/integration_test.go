@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -316,6 +317,134 @@ func TestClickHousePostgresEndToEnd(t *testing.T) {
 	}
 	if evB, _ := store.Events(ctx, alerting.EventQuery{Owner: "org-b", Since: time.Now().Add(-time.Hour)}); len(evB) != 0 {
 		t.Fatalf("org-b history = %v", evB)
+	}
+}
+
+// An owner whose envs together exceed what the old per-owner cap allowed must
+// lose nothing, and the one env that is itself over the per-env cap must be
+// LOUD about it: its critical rule survives, AlertRulesOverCap reaches
+// Alertmanager with that env's identity, and the envs under the cap are untouched.
+func TestPerEnvRuleCapEndToEndIsLoud(t *testing.T) {
+	addr := startClickHouse(t)
+	dsn, dropDB, err := pgtest.NewURL()
+	if err != nil {
+		t.Fatalf("provision a scratch Postgres database: %v", err)
+	}
+	t.Cleanup(dropDB)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	admin, err := openCH(addr, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		"CREATE DATABASE t_cap",
+		"CREATE TABLE t_cap.spans (service String, dur Float64, ts DateTime DEFAULT now()) ENGINE = MergeTree ORDER BY ts",
+		"INSERT INTO t_cap.spans (service, dur) VALUES ('api', 950)",
+	} {
+		if err := admin.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c, err := openCH(addr, "t_cap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owners := perOwner{"org-cap": c}
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	schema := fmt.Sprintf("alerting_cap_%d", time.Now().UnixNano())
+	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = db.Exec("DROP SCHEMA " + schema + " CASCADE") }()
+	if err := pgstore.Migrate(ctx, db, schema); err != nil {
+		t.Fatal(err)
+	}
+	store, err := pgstore.New(db, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &amSink{}
+	srv := httptest.NewServer(sink)
+	defer srv.Close()
+
+	// Always-true queries; severity decides who survives the cap.
+	const hit = "SELECT service, quantile(0.95)(dur) AS value FROM spans GROUP BY service HAVING value > 800"
+	mk := func(env, name, severity string) alerting.Rule {
+		return alerting.Rule{
+			RuleKey: alerting.RuleKey{Owner: "org-cap", Env: env, Name: name}, Expr: hit, Interval: 100 * time.Millisecond,
+			Labels:   map[string]string{"severity": severity},
+			Identity: map[string]string{"reliant_org_id": "org-cap", "reliant_env_id": env},
+		}
+	}
+	var all []alerting.Rule
+	// "crowded" declares 5 rules against a cap of 4: the critical one must stay.
+	all = append(all, mk("crowded", "ZZCritical", "critical"))
+	for _, n := range []string{"w1", "w2", "w3", "w4"} {
+		all = append(all, mk("crowded", n, "warning"))
+	}
+	// "quiet" and "other" are under the cap, and with "crowded" push the OWNER's
+	// total (11) past 4: a per-owner cap of 4 would drop most of them.
+	all = append(all, mk("quiet", "q1", "warning"), mk("quiet", "q2", "warning"),
+		mk("other", "o1", "warning"), mk("other", "o2", "warning"), mk("other", "o3", "warning"), mk("other", "o4", "warning"))
+	rules := staticRules{"org-cap": all}
+
+	n := alerting.NewAlertmanagerNotifier(nil, srv.URL)
+	ev, err := alerting.NewEvaluator(alerting.EvaluatorDeps{
+		Querier: owners, Notifier: n, Store: store,
+		Limits: alerting.Limits{MinInterval: 100 * time.Millisecond, MaxExecutionTime: 10 * time.Second, MaxRulesPerEnv: 4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := alerting.NewScheduler(alerting.SchedulerDeps{Rules: rules, Store: store, Eval: ev, Shards: 1, Tick: 100 * time.Millisecond, Notifier: n})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = s.Run(ctx) }()
+
+	byName := func(name string) []map[string]any {
+		var out []map[string]any
+		for _, a := range sink.snapshot() {
+			if a["labels"].(map[string]any)["alertname"] == name {
+				out = append(out, a)
+			}
+		}
+		return out
+	}
+	waitFor(t, "AlertRulesOverCap", func() bool { return len(byName(alerting.OverCapAlertName)) > 0 })
+	oc := byName(alerting.OverCapAlertName)[0]
+	l := oc["labels"].(map[string]any)
+	if l["reliant_env_id"] != "crowded" || l["reliant_org_id"] != "org-cap" || l["severity"] != "critical" {
+		t.Fatalf("AlertRulesOverCap labels = %v", l)
+	}
+	sum, _ := oc["annotations"].(map[string]any)["summary"].(string)
+	if !strings.Contains(sum, "5 alert rules") || !strings.Contains(sum, "w4") {
+		t.Fatalf("summary must say how many rules there are and name the dropped one: %q", sum)
+	}
+
+	waitFor(t, "the critical rule of the capped env to fire", func() bool { return len(byName("ZZCritical")) > 0 })
+	waitFor(t, "every rule of the envs under the cap to fire", func() bool {
+		for _, nm := range []string{"q1", "q2", "o1", "o2", "o3", "o4", "w1", "w2", "w3"} {
+			if len(byName(nm)) == 0 {
+				return false
+			}
+		}
+		return true
+	})
+	time.Sleep(500 * time.Millisecond)
+	if got := byName("w4"); len(got) != 0 {
+		t.Fatalf("w4 is past the cap and must not be evaluated, but alerted: %v", got)
+	}
+	// one firing instance per kept rule: 4 in crowded + 2 in quiet + 4 in other.
+	if st, _ := store.LoadOwner(ctx, "org-cap"); len(st) != 10 {
+		t.Fatalf("instances = %d, want 10", len(st))
 	}
 }
 

@@ -147,6 +147,13 @@ linters:
         linters:
           - forbidigo
 
+      # The component type-contract test reads CI for the same reason: a
+      # missing npm is a skip on a laptop and a failure in CI. Same test-only
+      # switch.
+      - path: ^components/library_type_contract_test\.go$
+        linters:
+          - forbidigo
+
       # The headers-file smoke boots two collector containers, so it is
       # opt-in: RUN_HEADERS_FILE_SMOKE=1 is the switch, read by an
       # integration-tagged test file that never compiles into a shipped binary

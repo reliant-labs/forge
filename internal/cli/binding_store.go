@@ -368,7 +368,13 @@ func selectLedgerRendered(ctx context.Context, projectDir, env string, entities 
 	if offlineLedgerRequested(ctx) {
 		return offlineLedgerForEntities(env, entities, projectDir)
 	}
-	return ledgerForEntities(env, entities, projectDir)
+	l, err := ledgerForEntities(env, entities, projectDir)
+	if err == nil {
+		// The first moment a deploy knows which control plane keeps its
+		// env's ledger, so the moment its attempt opens (deploy_attempt.go).
+		attachDeployAttempt(ctx, env, l)
+	}
+	return l, err
 }
 
 // offlineLedgerForEntities is --offline-ledger's selection: the env's cached
@@ -385,7 +391,7 @@ func offlineLedgerForEntities(env string, entities *KCLEntities, projectDir stri
 	} else if sel == ledgerSelectMachine {
 		return envLedger{}, fmt.Errorf("--offline-ledger and %s=%s contradict each other: one deploys from the cached hosted ledger, the other from this machine's own", ledgerSelectionEnv, ledgerSelectMachine)
 	}
-	ep, err := cloud.ResolveEndpoint(env, decl)
+	ep, err := projectEndpoint(env, decl)
 	if err != nil {
 		return envLedger{}, err
 	}
@@ -434,7 +440,7 @@ func ledgerForEntities(env string, entities *KCLEntities, projectDir string) (en
 		noteLedgerOverride(env, l.OverriddenEndpoint, l.Bindings.Location())
 		return l, nil
 	}
-	ep, err := cloud.ResolveEndpoint(env, decl)
+	ep, err := projectEndpoint(env, decl)
 	if err != nil {
 		return envLedger{}, err
 	}
@@ -677,6 +683,12 @@ func (l machineReleaseLedger) Cut(_ context.Context, r release.Release) (bool, e
 
 func (l machineReleaseLedger) Get(_ context.Context, version string) (*release.Release, error) {
 	return l.store.Release(version)
+}
+
+// RecordMigrations fills a release's migration manifest when it has none
+// (releaseMigrationRecorder).
+func (l machineReleaseLedger) RecordMigrations(_ context.Context, version string, m release.MigrationManifest) (bool, error) {
+	return l.store.RecordReleaseMigrations(version, m)
 }
 
 // List returns releases NEWEST FIRST. The store returns them in the order

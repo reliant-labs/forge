@@ -256,23 +256,17 @@ func isHandlerPackage(pkgPath string) bool {
 		strings.HasPrefix(pkgPath, "internal/handlers/")
 }
 
-// workerLifecycleMethods is the serverkit.Worker surface. A package under
-// internal/workers/ presenting Name+Start is a supervised worker: those two
-// are the interface's required methods (Stop is part of the shape too, but
-// keying on the required pair keeps the check honest for a worker that
-// legitimately has nothing to drain).
-var workerLifecycleMethods = []string{"Name", "Start"}
-
 // isSupervisedWorkerPackage reports whether the package under analysis is a
 // forge worker: it lives under internal/workers/ AND actually presents the
-// serverkit.Worker lifecycle. Both halves matter — the path anchors the
+// direct serverkit.Worker or wrapped lifecyclekit.WorkerLifecycle surface.
+// Both halves matter — the path anchors the
 // exemption to the directory forge's architecture reserves for workers, and
 // the method check makes it structural, so a helper package someone files
 // under internal/workers/ is an ordinary package and stays subject to the
 // require-contract rule. Only the package's own source counts: a fake worker
 // in a test file does not make the package a worker (testfiles.go).
 func isSupervisedWorkerPackage(pass *analysis.Pass, pkgPath string) bool {
-	return roleHasMethods(pass, pkgPath, "internal/workers/", workerLifecycleMethods)
+	return hasWorkerLifecycle(pkgPath, pass.Files, pass.Fset, pass.TypesInfo)
 }
 
 // operatorLifecycleMethods is the method an operator's controller registers

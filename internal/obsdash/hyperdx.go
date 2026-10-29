@@ -179,6 +179,11 @@ func sourceFor(s Signal) string {
 func renderDashboard(d Dashboard) (HyperDXDashboard, error) {
 	hd := HyperDXDashboard{Name: DashboardName(d), Tags: []string{"forge", "generated"}, Tiles: []HyperDXTile{}}
 	for _, f := range d.Filters {
+		// HyperDX dropdowns are always global. Applying a targeted RPC filter
+		// globally would silently blank process runtime or billing panels.
+		if len(f.PanelIDs) > 0 {
+			continue
+		}
 		sig := f.Signal
 		if sig == "" {
 			sig = Traces
@@ -280,14 +285,21 @@ func renderChart(p Panel) (HyperDXChart, error) {
 		c.SeriesReturn = "ratio"
 	}
 	sel := make([]HyperDXSelect, 0, len(p.Series))
+	var notes []string
 	for _, s := range p.Series {
-		hs, err := renderSeries(p.Signal, s)
+		hs, note, err := renderSeries(p.Signal, s)
 		if err != nil {
 			return c, err
 		}
 		sel = append(sel, hs)
+		if note != "" && !contains(notes, note) {
+			notes = append(notes, note)
+		}
 	}
 	c.Select = sel
+	if len(notes) > 0 {
+		c.Name += " (" + strings.Join(notes, "; ") + ")"
+	}
 	if len(p.GroupBy) > 0 {
 		exprs := make([]string, 0, len(p.GroupBy))
 		for _, g := range p.GroupBy {
@@ -319,38 +331,71 @@ func numberFormat(u Unit) *HyperDXNumFormat {
 	return nil
 }
 
-func renderSeries(sig Signal, s Series) (HyperDXSelect, error) {
+func contains(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// renderSeries maps one series onto a HyperDX select. note is non-empty when
+// HyperDX draws the series differently from the console (its Sum metrics have
+// no per-second rate, only the per-bucket increase): the caller puts it in the
+// tile's name so the number is never silently another one.
+func renderSeries(sig Signal, s Series) (hs HyperDXSelect, note string, err error) {
 	cond, err := predicatesSQL(sig, s.Where)
 	if err != nil {
-		return HyperDXSelect{}, err
+		return HyperDXSelect{}, "", err
 	}
-	hs := HyperDXSelect{Alias: s.Label, AggCondition: cond}
+	hs = HyperDXSelect{Alias: s.Label, AggCondition: cond}
 	if cond != "" {
 		hs.AggCondLang = "sql"
 	}
 	if sig == Metrics {
 		if s.Field == "" {
-			return hs, fmt.Errorf("metric series %q has no metric name", s.Label)
+			return hs, "", fmt.Errorf("metric series %q has no metric name", s.Label)
 		}
 		hs.MetricName, hs.MetricType = s.Field, s.MetricType
 		switch s.Agg {
 		case AggSum:
 			hs.AggFn = "sum"
+		case AggRate:
+			if s.MetricType != "sum" {
+				return hs, "", fmt.Errorf("metric rate %q needs metricType sum in HyperDX, got %q", s.Label, s.MetricType)
+			}
+			hs.AggFn, note = "increase", "per bucket: HyperDX has no per-second rate"
+		case AggIncrease:
+			if s.MetricType != "sum" {
+				return hs, "", fmt.Errorf("metric increase %q needs metricType sum in HyperDX, got %q", s.Label, s.MetricType)
+			}
+			hs.AggFn = "increase"
 		case AggAvg:
 			hs.AggFn = "avg"
+		case AggMin:
+			hs.AggFn = "min"
 		case AggMax:
 			hs.AggFn = "max"
 		case AggLast:
 			hs.AggFn = "last_value"
+		case AggCount:
+			if s.MetricType != "histogram" {
+				return hs, "", fmt.Errorf("metric count %q needs metricType histogram, got %q", s.Label, s.MetricType)
+			}
+			hs.AggFn = "count"
 		case AggQuantile:
 			if s.MetricType != "histogram" {
-				return hs, fmt.Errorf("metric quantile %q needs metricType histogram, got %q", s.Label, s.MetricType)
+				return hs, "", fmt.Errorf("metric quantile %q needs metricType histogram, got %q", s.Label, s.MetricType)
+			}
+			if s.Quantile >= 1 {
+				return hs, "", fmt.Errorf("metric quantile %q: HyperDX draws a level below 1; use agg max for the maximum", s.Label)
 			}
 			hs.AggFn, hs.Level = "quantile", s.Quantile
 		default:
-			return hs, fmt.Errorf("metric aggregate %q is not supported", s.Agg)
+			return hs, "", fmt.Errorf("metric aggregate %q is not supported", s.Agg)
 		}
-		return hs, nil
+		return hs, note, nil
 	}
 	switch s.Agg {
 	case AggCount:
@@ -366,12 +411,12 @@ func renderSeries(sig Signal, s Series) (HyperDXSelect, error) {
 	case AggSum:
 		hs.AggFn = "sum"
 	default:
-		return hs, fmt.Errorf("aggregate %q is not supported", s.Agg)
+		return hs, "", fmt.Errorf("aggregate %q is not supported", s.Agg)
 	}
 	if s.Field != "" {
 		e, err := fieldSQL(sig, s.Field)
 		if err != nil {
-			return hs, err
+			return hs, "", err
 		}
 		if s.Agg == AggQuantile || s.Agg == AggAvg || s.Agg == AggMax || s.Agg == AggSum {
 			if !isNumericField(s.Field) {
@@ -380,7 +425,7 @@ func renderSeries(sig Signal, s Series) (HyperDXSelect, error) {
 		}
 		hs.ValueExpr = e
 	}
-	return hs, nil
+	return hs, "", nil
 }
 
 func isNumericField(f string) bool { return f == "span.duration" }

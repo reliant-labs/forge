@@ -15,6 +15,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 
@@ -24,8 +25,13 @@ import (
 // mutationMarkerRE matches the `forge:mutation` comment convention. The
 // marker is a plain proto comment (deliberately NOT a proto option) placed in
 // an RPC's leading doc-comment — or trailing on its `rpc` line — to force the
-// hook generator to emit a useMutation wrapper instead of the name-heuristic
-// useQuery.
+// hook generator to emit a useMutation wrapper instead of the useQuery the
+// classifier (codegen.isQueryRPC) chose.
+//
+// The other direction — a read the name does not reveal (Health, Version) —
+// is not a forge marker: the rpc declares protobuf's standard
+// `option idempotency_level = NO_SIDE_EFFECTS;`, which the classifier reads
+// first. This marker still wins over it.
 //
 // It exists because the RPC-name heuristic (codegen.isQueryMethod) can't be
 // right for every imperative RPC: verbs that happen to start with a query
@@ -36,7 +42,7 @@ import (
 //
 // The marker NAME comes from codegen.KnownProtoMarkers (proto_markers.go) so
 // this pass and `forge lint --proto-markers` share one vocabulary. The PATTERN
-// stays this package's own: mutationMarkedMethods does its own comment-block
+// stays this package's own: scanRPCHookMarkers does its own comment-block
 // attachment walk and hands this expression an already-isolated comment, so it
 // needs no `//` prefix and no full-line anchor — unlike the entity-birth and
 // descriptor recognizers. Only the spelling is shared, not the scanning.
@@ -46,10 +52,27 @@ var mutationMarkerRE = regexp.MustCompile(regexp.QuoteMeta(codegen.ProtoMarkerMu
 // captures the method name.
 var rpcDeclRE = regexp.MustCompile(`^\s*rpc\s+([A-Za-z_]\w*)\s*\(`)
 
-// mutationMarkedMethods scans a service's proto source for RPCs carrying the
-// `// forge:mutation` marker and returns the set of marked method names.
+// queryScopeMarkerRE matches `forge:query-scope [<Entity>]` (see
+// codegen.ProtoMarkerQueryScope) and captures the entity. A hyphen or word
+// character right after the token is a different, longer token, so it never
+// matches; a bare marker captures "" for ApplyQueryScopes to refuse.
+var queryScopeMarkerRE = regexp.MustCompile(regexp.QuoteMeta(codegen.ProtoMarkerQueryScope) +
+	`(?:[ \t]+([A-Za-z_]\w*))?(?:[^\w-]|$)`)
+
+// rpcHookMarkers is what an rpc's comments tell the hook generator.
+type rpcHookMarkers struct {
+	// Mutation: `// forge:mutation`.
+	Mutation map[string]bool
+	// QueryScope: rpc → the entity `// forge:query-scope <Entity>` names
+	// ("" for a marker naming none).
+	QueryScope map[string]string
+}
+
+// scanRPCHookMarkers scans a service's proto source for the rpc comment
+// markers the hook generator reads: `// forge:mutation` and
+// `// forge:query-scope <Entity>`.
 //
-// The marker attaches like a protoc leading doc-comment: it counts when it
+// A marker attaches like a protoc leading doc-comment: it counts when it
 // appears in the contiguous comment block directly above the `rpc` line, or
 // as a trailing comment on the `rpc` line itself. A blank (non-comment) line
 // between a comment and the rpc breaks the attachment, matching how protoc
@@ -59,21 +82,28 @@ var rpcDeclRE = regexp.MustCompile(`^\s*rpc\s+([A-Za-z_]\w*)\s*\(`)
 // A missing or unreadable proto file is NOT an error: hooks still generate
 // with the heuristic query/mutation classification. (Unit-test ServiceDefs,
 // for one, point at proto paths with no file on disk.)
-func mutationMarkedMethods(protoPath string) map[string]bool {
+func scanRPCHookMarkers(protoPath string) rpcHookMarkers {
+	out := rpcHookMarkers{Mutation: map[string]bool{}, QueryScope: map[string]string{}}
 	content, err := os.ReadFile(protoPath)
 	if err != nil {
-		return nil
+		return out
 	}
-	marked := map[string]bool{}
-	pendingMarker := false
+	pendingMutation := false
+	pendingScope, havePendingScope := "", false
+	reset := func() { pendingMutation, pendingScope, havePendingScope = false, "", false }
 	for _, line := range strings.Split(string(content), "\n") {
 		if m := rpcDeclRE.FindStringSubmatch(line); m != nil {
 			// Marker in the attached comment block above, or trailing on the
-			// rpc line itself, forces mutation semantics for this method.
-			if pendingMarker || mutationMarkerRE.MatchString(line) {
-				marked[m[1]] = true
+			// rpc line itself.
+			if pendingMutation || mutationMarkerRE.MatchString(line) {
+				out.Mutation[m[1]] = true
 			}
-			pendingMarker = false
+			if sm := queryScopeMarkerRE.FindStringSubmatch(line); sm != nil {
+				out.QueryScope[m[1]] = sm[1]
+			} else if havePendingScope {
+				out.QueryScope[m[1]] = pendingScope
+			}
+			reset()
 			continue
 		}
 		trimmed := strings.TrimSpace(line)
@@ -83,17 +113,47 @@ func mutationMarkedMethods(protoPath string) map[string]bool {
 			strings.HasPrefix(trimmed, "*"):
 			// Comment line within (or opening) the block above the rpc.
 			if mutationMarkerRE.MatchString(trimmed) {
-				pendingMarker = true
+				pendingMutation = true
 			}
-		case trimmed == "":
-			// Blank line breaks leading-comment attachment.
-			pendingMarker = false
+			if sm := queryScopeMarkerRE.FindStringSubmatch(trimmed); sm != nil {
+				pendingScope, havePendingScope = sm[1], true
+			}
 		default:
-			// Any other statement resets the pending marker.
-			pendingMarker = false
+			// A blank line breaks leading-comment attachment, and any
+			// other statement resets it too.
+			reset()
 		}
 	}
-	return marked
+	return out
+}
+
+// serviceProtoSourcePath is the .proto file on disk that declares a service.
+// The descriptor records ProtoFile relative to the buf module root —
+// `services/item/v1/item.proto`, the module being proto/ — so joining it to
+// the project root names a file that does not exist. Every marker the hook
+// generator reads was dropped that way in a real project (forge:mutation
+// included), silently, because a missing file is the documented fallback;
+// only fixtures that spelled the path `proto/...` ever saw one. A path that
+// already resolves from the project root is kept as it is.
+func serviceProtoSourcePath(projectDir, protoFile string) string {
+	direct := filepath.Join(projectDir, protoFile)
+	if _, err := os.Stat(direct); err == nil {
+		return direct
+	}
+	return filepath.Join(projectDir, "proto", protoFile)
+}
+
+// serviceHookData is a service's hook template data with every proto
+// comment marker applied: `// forge:mutation` first, so that
+// `// forge:query-scope` is checked against the rpc's final kind.
+func serviceHookData(svc codegen.ServiceDef, projectDir string) (codegen.FrontendHookTemplateData, error) {
+	data := codegen.ServiceDefToHookData(svc)
+	markers := scanRPCHookMarkers(serviceProtoSourcePath(projectDir, svc.ProtoFile))
+	applyMutationMarkers(&data, markers.Mutation)
+	if err := codegen.ApplyQueryScopes(&data, svc, markers.QueryScope); err != nil {
+		return data, fmt.Errorf("%s: %w", svc.ProtoFile, err)
+	}
+	return data, nil
 }
 
 // applyMutationMarkers rewrites hook classification for RPCs the proto marked
@@ -111,6 +171,8 @@ func applyMutationMarkers(data *codegen.FrontendHookTemplateData, marked map[str
 	for i := range data.Methods {
 		if marked[data.Methods[i].Name] && data.Methods[i].IsQuery {
 			data.Methods[i].IsQuery = false
+			// A mutation is never paged: useInfiniteQuery would replay it.
+			data.Methods[i].Paged = false
 			changed = true
 		}
 	}
@@ -119,11 +181,15 @@ func applyMutationMarkers(data *codegen.FrontendHookTemplateData, marked map[str
 	}
 	data.HasQueries = false
 	data.HasMutations = false
+	data.HasPaged = false
 	for _, m := range data.Methods {
 		if m.IsQuery {
 			data.HasQueries = true
 		} else {
 			data.HasMutations = true
+		}
+		if m.Paged {
+			data.HasPaged = true
 		}
 	}
 }
@@ -192,13 +258,16 @@ func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.Service
 			if !fe.WantsHooksFor(svc.Name, qualifiedServiceName(svc)) {
 				continue
 			}
-			data := codegen.ServiceDefToHookData(svc)
+			// The proto comment markers: `// forge:mutation` flips a read to
+			// a mutation hook, `// forge:query-scope` keys a custom read
+			// under an entity.
+			data, err := serviceHookData(svc, projectDir)
+			if err != nil {
+				return err
+			}
 			if len(data.Methods) == 0 {
 				continue
 			}
-			// Honor the `// forge:mutation` proto comment marker: flip marked
-			// RPCs to mutation hooks regardless of the RPC-name heuristic.
-			applyMutationMarkers(&data, mutationMarkedMethods(filepath.Join(projectDir, svc.ProtoFile)))
 
 			var buf bytes.Buffer
 			if err := tmpl.Execute(&buf, data); err != nil {
@@ -227,6 +296,7 @@ func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.Service
 			// delete it. See reportOrphanedHookFiles below for the
 			// legacy files this fix cannot retroactively certify.
 			outRel := filepath.Join(feDir, "src", "hooks", fileName)
+			reportHookKindFlips(projectDir, outRel, data)
 			if _, err := checksums.WriteGeneratedFile(projectDir, outRel, buf.Bytes(), cs, true); err != nil {
 				return fmt.Errorf("write hooks file %s: %w", outRel, err)
 			}
@@ -362,7 +432,8 @@ type hookFileEntry struct {
 }
 
 // hookFileExportedSymbols returns the names of identifiers a rendered
-// hooks.ts.tmpl file exposes (one `useXxx` per unary RPC). Keeping this in
+// hooks.ts.tmpl file exposes (one `useXxx` per unary RPC, plus
+// `useXxxInfinite` per paged read). Keeping this in
 // sync with the template is intentional: the template is the only thing
 // that decides what gets exported, so we read its output shape here
 // rather than re-parsing the rendered .ts.
@@ -370,6 +441,9 @@ func hookFileExportedSymbols(data codegen.FrontendHookTemplateData) []string {
 	out := make([]string, 0, len(data.Methods))
 	for _, m := range data.Methods {
 		out = append(out, "use"+m.Name)
+		if m.Paged {
+			out = append(out, "use"+m.Name+"Infinite")
+		}
 	}
 	return out
 }
@@ -386,15 +460,15 @@ func generateFrontendHooksWorkspace(cfg *config.ProjectConfig, services []codege
 
 	var hookFiles []hookFileEntry
 	for _, svc := range services {
-		data := codegen.ServiceDefToHookData(svc)
+		data, err := serviceHookData(svc, projectDir)
+		if err != nil {
+			return err
+		}
 		if len(data.Methods) == 0 {
 			continue
 		}
 		data.Workspaces = true
 		data.APIPackage = layout.APIPackage
-		// Honor the `// forge:mutation` proto comment marker: flip marked
-		// RPCs to mutation hooks regardless of the RPC-name heuristic.
-		applyMutationMarkers(&data, mutationMarkedMethods(filepath.Join(projectDir, svc.ProtoFile)))
 
 		var buf bytes.Buffer
 		if err := tmpl.Execute(&buf, data); err != nil {
@@ -411,6 +485,7 @@ func generateFrontendHooksWorkspace(cfg *config.ProjectConfig, services []codege
 		// See the per-frontend loop's write for why this goes through
 		// the certification chokepoint rather than os.WriteFile.
 		outRel := filepath.Join("packages", "hooks", "src", "generated", fileName)
+		reportHookKindFlips(projectDir, outRel, data)
 		if _, err := checksums.WriteGeneratedFile(projectDir, outRel, buf.Bytes(), cs, true); err != nil {
 			return fmt.Errorf("write hooks file %s: %w", outRel, err)
 		}
@@ -525,11 +600,22 @@ func isHooksBarrelRelPath(p string) bool {
 // or — when a hand-written file already holds the path — leaves it exactly
 // as it is and names it in the run's closing summary. A barrel the project
 // disowned is the user's by declaration and is skipped silently.
+//
+// The barrel is regenerated every run, but writeHooksIndex writes it directly
+// rather than through a Tier-1 writer, so it is recorded as a Tier-1 target
+// here: when forge writes it, and when a disown is all that stops forge from
+// writing it. Without that, obsolete-disown retirement saw a disowned barrel
+// as a path forge no longer emits and dropped the disown, and the next run
+// printed the left-alone notice that told the user to disown it again.
 func writeHooksBarrel(projectDir, relPath string, hookFiles []hookFileEntry, cs *checksums.FileChecksums) error {
 	if cs != nil && cs.IsDisowned(filepath.ToSlash(relPath)) {
+		checksums.MarkTier1Target(relPath)
 		return nil
 	}
 	err := writeHooksIndex(filepath.Join(projectDir, relPath), hookFiles)
+	if err == nil {
+		checksums.MarkTier1Target(relPath)
+	}
 	if !errors.Is(err, errHandWrittenBarrel) {
 		return err
 	}
@@ -602,6 +688,9 @@ type hookStarterMethod struct {
 	Name     string // "GetUser"
 	HookName string // "useGetUser"
 	IsQuery  bool
+	// Infinite marks the row for a paged read's useXxxInfinite hook, whose
+	// data is { pages, pageParams } rather than one response.
+	Infinite bool
 }
 
 // hookStarterData is the template data for hooks.test.tsx.tmpl.
@@ -621,6 +710,79 @@ func (d hookStarterData) HasMutation() bool {
 		}
 	}
 	return false
+}
+
+// hookKinds maps every hook data exports to its kind: true for a useQuery
+// (an infinite hook included), false for a useMutation.
+func hookKinds(data codegen.FrontendHookTemplateData) map[string]bool {
+	out := make(map[string]bool, len(data.Methods))
+	for _, m := range data.Methods {
+		out["use"+m.Name] = m.IsQuery
+		if m.Paged {
+			out["use"+m.Name+"Infinite"] = true
+		}
+	}
+	return out
+}
+
+// reportHookKindFlips prints one line per hook whose kind this run changes,
+// read off the hooks file forge is about to overwrite: a call site written
+// for the old kind (`useX()` + `mutate`, or `useX(req)` + `data`) must
+// change with it. tsc catches most of them; a test that casts `as never`
+// does not. The rows of the starter test this flips are reported, with
+// their fixes, by reportStaleHookTestRows in the closing summary.
+func reportHookKindFlips(projectDir, outRel string, data codegen.FrontendHookTemplateData) {
+	prev, err := os.ReadFile(filepath.Join(projectDir, outRel))
+	if err != nil {
+		return
+	}
+	was := forgeconv.ParseHookKinds(string(prev))
+	now := hookKinds(data)
+	names := make([]string, 0, len(now))
+	for name := range now {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if old, ok := was[name]; ok && old != now[name] {
+			fmt.Printf("  ↻ %s is now a %s (was a %s) — update every call site written for the old kind\n",
+				name, forgeconv.HookKind(now[name]), forgeconv.HookKind(old))
+		}
+	}
+}
+
+// reportStaleHookTestRows names, in the closing summary, every row of a
+// service's scaffold-once starter test that asserts the opposite kind from
+// the hook this run generated — with its line and the body that replaces
+// it. forge does not rewrite the file (it is the user's), so the report is
+// how a hook-kind flip (a NO_SIDE_EFFECTS read that was a mutation, a
+// `// forge:mutation` write that was a query) reaches its author before
+// vitest does. The comparison is forgeconv.StaleHookTestRows, the one
+// `forge lint --conventions` gates on, so the two cannot disagree.
+func reportStaleHookTestRows(testPath, displayPath string, data codegen.FrontendHookTemplateData) {
+	src, err := os.ReadFile(testPath)
+	if err != nil {
+		return
+	}
+	kinds := hookKinds(data)
+	stale := forgeconv.StaleHookTestRows(string(src), kinds)
+	if len(stale) == 0 {
+		return
+	}
+	var detail []string
+	for _, row := range stale {
+		detail = append(detail, fmt.Sprintf("line %d: %s is now a %s — replace the row's body with:", row.Line, row.Hook, forgeconv.HookKind(kinds[row.Hook])))
+		for _, l := range strings.Split(forgeconv.HookTestRowFix(row.Hook, kinds[row.Hook]), "\n") {
+			detail = append(detail, "    "+l)
+		}
+	}
+	if forgeconv.StaleRowsOrphanSettleHelper(string(src), kinds) {
+		detail = append(detail, "then delete the waitForSettled helper: no mutation row is left to call it")
+	}
+	why := fmt.Sprintf("a scaffold-once starter test, so forge did not rewrite it — but %d row(s) assert a hook kind "+
+		"this run no longer generates and can never pass (or delete it and run `%s project rescaffold %s`)",
+		len(stale), Name(), filepath.ToSlash(displayPath))
+	checksums.NoteLeftAloneDetail(displayPath, why, detail)
 }
 
 // writeHookStarterTest emits `<file>.test.tsx` next to the generated hooks
@@ -681,6 +843,11 @@ func writeHookStarterTest(hooksDir, fileName string, svc codegen.ServiceDef, dat
 				}
 			}
 		}
+		displayPath := testPath
+		if haveLedger {
+			displayPath = scaffoldRel
+		}
+		reportStaleHookTestRows(testPath, displayPath, data)
 		return nil
 	}
 
@@ -728,6 +895,18 @@ func writeHookStarterTest(hooksDir, fileName string, svc codegen.ServiceDef, dat
 			HookName: "use" + m.Name,
 			IsQuery:  m.IsQuery,
 		})
+		if m.Paged {
+			starterData.HookImports = append(starterData.HookImports, hookStarterImport{
+				Symbol: "use" + m.Name + "Infinite",
+				Module: base,
+			})
+			starterData.Methods = append(starterData.Methods, hookStarterMethod{
+				Name:     m.Name,
+				HookName: "use" + m.Name + "Infinite",
+				IsQuery:  true,
+				Infinite: true,
+			})
+		}
 	}
 
 	var buf bytes.Buffer

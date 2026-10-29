@@ -11,15 +11,22 @@
 # every gate forge had.
 #
 # WHEN IT RUNS. Every push to main, nightly (nightly.yml, `select: all`), on
-# demand (workflow_dispatch), and on a pull request when it carries the
-# `ci:e2e` label OR changes the scaffold, the templates, the code generators
-# or generate (the `changes` job; informational, never part of `CI gate`). It used to run on every pull request, and at 7-12 minutes a
-# shard (20 on average, 42 at worst, for the workflow) it was half of a pull
-# request's wall time. A pull request's budget is about five minutes (ci.yml,
-# "TWO TIERS"), so the suite moved to main, where a regression is bisected
-# from the merge that caused it. Label a pull request `ci:e2e` when it changes
-# what the suite exercises — scaffolding, generate, the frontend build — and
-# you want the verdict before merging rather than after.
+# demand (workflow_dispatch), and on a pull request that carries the `ci:e2e`
+# label (informational, never part of `CI gate`). It used to run on every pull
+# request, and at 7-12 minutes a shard (20 on average, 42 at worst, for the
+# workflow) it was half of a pull request's wall time. A pull request's budget
+# is about five minutes (ci.yml, "TWO TIERS"), so the suite moved to main,
+# where a regression is bisected from the merge that caused it. Label a pull
+# request `ci:e2e` when it changes what the suite exercises — scaffolding,
+# generate, the frontend build — and you want the verdict before merging
+# rather than after.
+#
+# It also ran, unlabelled, on every pull request that touched the scaffold,
+# the templates, the generators or generate (a `changes` job). That was 40 of
+# 100 pull-request events on 2026-10-25/26: six jobs and ~21 minutes each,
+# for a verdict no gate read, holding runners from the org's 20 that every
+# pull request's `CI gate` queues for. It is label-only now (the owner's
+# rule: e2e runs on main and nightly, not before the merge).
 #
 # What stayed on every pull request is the compile check: ci.yml's
 # `e2e-compile` job runs `go vet -tags e2e` over the tagged packages, because
@@ -122,16 +129,15 @@ permissions:
 # gets a group of its own (the run id), so it cannot cancel a `ci:e2e` run in
 # progress; all of its jobs then skip.
 concurrency:
-  group: e2e-suite-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci:e2e' && format('-{0}', github.run_id) || '' }}
+  group: e2e-suite-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci:e2e' && format('-{0}', github.run_id) || '' }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Does this pull request change what the suite exercises? The scaffold, the
-  # templates, the code generators and generate itself are what the e2e
-  # tests drive, and their PR tier is unit tests under -short: every one of
-  # October 2026's e2e reds on main came from a change under these paths
-  # that the suite never saw before merging. Such a pull request runs the
-  # suite without the `ci:e2e` label.
+  # Every one of October 2026's e2e reds on main came from a change to the
+  # scaffold, the templates, the generators or generate, which the suite
+  # never saw before merging: label such a pull request `ci:e2e` when its
+  # author wants the verdict first. Otherwise main finds it, and the red is
+  # bisected from the merge that caused it.
   #
   # INFORMATIONAL. This workflow is not part of ci.yml's `CI gate`, and no
   # check of it is required: a red here is a verdict to read before merging,
@@ -139,46 +145,13 @@ jobs:
   # progress (the concurrency group above). A `labeled` event for some other
   # label never auto-runs (its run is in a group of its own and would only
   # duplicate the one already going).
-  changes:
-    name: changes (does the suite apply?)
-    if: ${{ github.event_name == 'pull_request' && github.event.action != 'labeled' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      pull-requests: read
-    outputs:
-      e2e: ${{ steps.paths.outputs.e2e }}
-    steps:
-      - name: Paths the suite exercises
-        id: paths
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename')
-          hits=$(grep -E '^internal/(templates|codegen|generator)/|^internal/cli/(scaffold|generate)' <<<"$files" \
-            | grep -vE '^internal/templates/project/skills/' || true)
-          if [ -n "$hits" ]; then
-            echo "e2e=true" >> "$GITHUB_OUTPUT"
-            { echo "### The E2E Suite runs on this pull request (informational)"; echo; echo "It changes:"; echo; awk '{ printf "- \140%s\140\n", $0 }' <<<"$hits" | head -40; } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "e2e=false" >> "$GITHUB_OUTPUT"
-          fi
-
   prepare:
     name: prepare (build once, plan shards)
-    needs: [changes]
     # Everything else needs this job, so this one condition gates the
-    # workflow: on a pull request, it runs with the `ci:e2e` label or when
-    # the change touches what the suite exercises (the `changes` job), and
-    # skips otherwise. `always()` because `changes` is skipped off pull
-    # requests and on `labeled` events.
+    # workflow: on a pull request, it runs only with the `ci:e2e` label.
     if: >-
-      ${{ always() && (github.event_name != 'pull_request'
-        || contains(github.event.pull_request.labels.*.name, 'ci:e2e')
-        || needs.changes.outputs.e2e == 'true') }}
+      ${{ github.event_name != 'pull_request'
+        || contains(github.event.pull_request.labels.*.name, 'ci:e2e') }}
     runs-on: ubuntu-latest
     env:
       # THE shard count. The suite's matrix and the ledger both read it from
@@ -196,19 +169,15 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
       # This job's own build cache, restored on every run and saved only from
-      # main (ci.yml's "Build-cache note"): it is the one job that compiles
-      # forge for the suite, so it is the one worth keeping warm.
-      - name: Restore Go build cache
-        id: restore-gocache
-        uses: actions/cache/restore@v6
+      # main, once a UTC day (ci.yml's "Build-cache note"): it is the one job
+      # that compiles forge for the suite, so it is the one worth keeping warm.
+      - uses: ./.github/actions/restore-go-caches
+        id: go-caches
         with:
-          path: ~/.cache/go-build
-          key: go-build-e2e-prepare-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
-          restore-keys: |
-            go-build-e2e-prepare-${{ runner.os }}-${{ hashFiles('go.sum') }}-
-            go-build-e2e-prepare-${{ runner.os }}-
+          scope: e2e-prepare
+          refresh: daily
       # The binary under test must come from THIS commit, so all three are
       # built from the checkout. forge is built exactly as the tests' own
       # buildforgeBinary builds it (`go build -o <bin> ./cmd/forge` with
@@ -260,12 +229,14 @@ jobs:
           # Binaries: level 1 keeps most of the size win at a fraction of
           # level 6's time.
           compression-level: 1
-      - name: Save Go build cache
+      - name: Save the Go caches (main only, once a day)
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        uses: actions/cache/save@v6
+        uses: ./.github/actions/save-go-caches
         with:
-          path: ~/.cache/go-build
-          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
+          build-key: ${{ steps.go-caches.outputs.build-key }}
+          build-hit: ${{ steps.go-caches.outputs.build-hit }}
+          mod-key: ${{ steps.go-caches.outputs.mod-key }}
+          mod-hit: ${{ steps.go-caches.outputs.mod-hit }}
 
   suite:
     name: e2e shard ${{ matrix.shard }}
@@ -304,12 +275,25 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      # Restore only. The scaffolded projects build through forge's goexec,
+      # which adds -trimpath: the artifacts `checks` keeps warm in the tools
+      # scope (ci.yml's "Build-cache note").
+      - uses: ./.github/actions/restore-go-caches
+        with:
+          scope: tools
 
       # ── Toolchain. Every tool the suite reaches for, because with
       # FORGE_E2E_REQUIRE_TOOLS=1 a missing one is now a red job, not a
       # quiet skip. The set is enumerated from requireTool call sites plus
       # every exec.LookPath under internal/cli/*_e2e_test.go.
+
+      # A scaffolded frontend pins pnpm (package.json packageManager,
+      # templates.PnpmVersion); TestPnpmVersionIsPinnedEverywhere keeps this
+      # version equal to it.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.15.0
 
       - uses: actions/setup-node@v7
         with:
@@ -348,7 +332,7 @@ jobs:
       # is templates.KCLVersion (TestKCLVersionIsPinnedEverywhere).
       - name: Install KCL
         env:
-          KCL_VERSION: v0.13.1
+          KCL_VERSION: v0.13.2
         run: |
           curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
           command -v kcl
@@ -356,6 +340,14 @@ jobs:
 
       - name: Put $HOME/go/bin on PATH
         run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+      # pre-commit runs a scaffold's own hooks on its first commit
+      # (TestE2EScaffoldFirstCommitPassesItsHooks). Pinned, so the install
+      # cannot change the verdict without a commit.
+      - name: Install pre-commit
+        run: |
+          pipx install pre-commit==4.7.0
+          pre-commit --version
 
       # golangci-lint at templates.GolangciLintVersion — the same pin as
       # ci.yml's lint job, scripts/bootstrap.sh, and the CI workflow and
@@ -370,13 +362,16 @@ jobs:
             | sh -s -- -b "$(go env GOPATH)/bin" v2.14.0
           golangci-lint --version
 
-      # npm's content-addressable store. setup-node's `cache: npm` keys on a
+      # The package managers' stores: pnpm's (scaffolded frontends) and npm's
+      # (web-runtime's own install). setup-node's `cache:` keys on a
       # checked-in lockfile and every lockfile here is generated at test
       # time, so key on the template that decides the dependency set
       # instead.
       - uses: actions/cache@v6
         with:
-          path: ~/.npm
+          path: |
+            ~/.npm
+            ~/.local/share/pnpm/store
           key: e2e-npm-${{ runner.os }}-${{ hashFiles('internal/templates/frontend/nextjs/package.json.tmpl') }}
           restore-keys: e2e-npm-${{ runner.os }}-
 
@@ -423,7 +418,7 @@ jobs:
           # docker: TestE2ENextjsDockerfileStaticImageBuilds builds a real
           # frontend image. ubuntu-latest ships the engine; the `docker info`
           # below proves the daemon answers, which `command -v` cannot.
-          for tool in go node npm npx kcl golangci-lint buf protoc-gen-go protoc-gen-connect-go goimports forge git migrate docker k3d kubectl helm; do
+          for tool in go node npm npx pnpm kcl golangci-lint buf protoc-gen-go protoc-gen-connect-go goimports pre-commit forge git migrate docker k3d kubectl helm; do
             if command -v "$tool" >/dev/null 2>&1; then
               printf '  ok       %-24s %s\n' "$tool" "$(command -v "$tool")"
             else
@@ -568,6 +563,12 @@ jobs:
           path: /tmp/TestE2E*
           retention-days: 7
           if-no-files-found: ignore
+
+      # Main only: keeps any archive this job had to fetch, so the next run
+      # does not (see embedded-postgres-cache's header).
+      - name: Save the embedded postgres archives (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/embedded-postgres-cache-save
 
   ledger:
     name: coverage ledger

@@ -36,7 +36,8 @@ func init() {
 		// below take only the in-process generateMu — in that order, the
 		// same as withGenerateLock. Re-acquiring the project lock here would
 		// deadlock: it is not reentrant.
-		HoldProjectLock: acquireGenerateLock,
+		HoldProjectLock:    acquireGenerateLock,
+		ObserveProjectLock: observeGenerateLock,
 		// Full pipeline + bootstrap-only preset, each serialized under the
 		// package-level generate mutex.
 		RunPipeline: func(projectDir string) error {

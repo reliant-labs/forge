@@ -102,6 +102,48 @@ func TestCollectConfigDepsFindings_FlagsScalarsOnly(t *testing.T) {
 	}
 }
 
+// A not-a-component package is built by something other than the server
+// composition (the CLI, a daemon, another package), which hands it its values
+// directly: there is no loaded config for a block to be filled from, so its
+// scalar Deps are constructor arguments and the rule does not apply. A
+// component beside it with the same Deps shape is still flagged.
+func TestCollectConfigDepsFindings_SkipsNotAComponentPackages(t *testing.T) {
+	dir := t.TempDir()
+	write := func(pkg, src string) {
+		t.Helper()
+		pkgDir := filepath.Join(dir, "internal", pkg)
+		if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(pkgDir, "contract.go"), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("cliadapter", `// Package cliadapter is built by the CLI.
+//
+//forge:not-a-component: CLI-only — built by the login command; the server never builds it
+package cliadapter
+
+type Deps struct {
+	CachePath string
+}
+`)
+	write("serveradapter", `package serveradapter
+
+type Deps struct {
+	BaseURL string
+}
+`)
+
+	findings, err := collectConfigDepsFindings(dir)
+	if err != nil {
+		t.Fatalf("collectConfigDepsFindings: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Package != "serveradapter" || findings[0].Field != "BaseURL" {
+		t.Fatalf("findings = %+v, want exactly serveradapter.Deps.BaseURL", findings)
+	}
+}
+
 func TestConfigDepsFixHint_CarriesSnippet(t *testing.T) {
 	f := configDepsFinding{
 		Role: "internal/workers", Package: "trader",

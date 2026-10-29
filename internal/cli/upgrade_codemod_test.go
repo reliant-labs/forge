@@ -5,6 +5,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/mod/semver"
+
+	"github.com/reliant-labs/forge/internal/codemod"
 )
 
 // The codemods an upgrade runs are keyed by the release that broke the
@@ -23,11 +27,11 @@ func TestUpgradeCodemods_KeyedByRelease(t *testing.T) {
 		from, to string
 		want     bool
 	}{
-		{"v0.1.45", "v0.1.47", true},
-		{"v0.1.46-0.20261019044744-357579470b0d", "v0.1.47", true}, // control-plane's pin: a pre-release of v0.1.46
-		{"", "v0.1.47", true},
+		{"v0.1.45", "v1.0.0", true},
+		{"v0.1.46-0.20261019044744-357579470b0d", "v1.0.0", true}, // control-plane's pin: a pre-release of v0.1.46
+		{"", "v1.0.0", true},
 		{"dev", "v0.1.46", true},
-		{"v0.1.46", "v0.1.47", false},
+		{"v0.1.46", "v1.0.0", false},
 		{"v0.1.45", "v0.1.45", false},
 		{"v0.1.40", "v0.1.45", false},
 	} {
@@ -35,6 +39,37 @@ func TestUpgradeCodemods_KeyedByRelease(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("upgrade %q → %q runs operatorkit = %v, want %v", tc.from, tc.to, got, tc.want)
 		}
+	}
+}
+
+// Codemods and migration playbooks are keyed to a release that shipped (at or
+// before VERSION) or to the one NEXT_VERSION names — never to a guess at
+// VERSION's patch+1, which is not always the next release (v0.1.46 was
+// followed by v1.0.0).
+func TestReleaseKeyedUpgradesNameTheNextRelease(t *testing.T) {
+	read := func(name string) string {
+		b, err := os.ReadFile(filepath.Join("..", "..", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return strings.TrimSpace(string(b))
+	}
+	last, next := read("VERSION"), read("NEXT_VERSION")
+	check := func(what, version string) {
+		if semver.Compare(version, last) > 0 && version != next {
+			t.Errorf("%s is keyed to %s, neither shipped (VERSION is %s) nor the next release (NEXT_VERSION is %s)",
+				what, version, last, next)
+		}
+	}
+	for _, c := range codemod.All() {
+		check("codemod "+c.Name, c.Version)
+	}
+	metas, err := loadMigrationMetas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range metas {
+		check("migration playbook "+m.ID, m.Version)
 	}
 }
 
@@ -51,7 +86,7 @@ func TestRunCodemodChain_CheckThenWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dry, err := runCodemodChain(dir, "v0.1.45", "v0.1.47", false)
+	dry, err := runCodemodChain(dir, "v0.1.45", "v1.0.0", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +97,7 @@ func TestRunCodemodChain_CheckThenWrite(t *testing.T) {
 		t.Fatalf("--check wrote the file:\n%s", got)
 	}
 
-	wrote, err := runCodemodChain(dir, "v0.1.45", "v0.1.47", true)
+	wrote, err := runCodemodChain(dir, "v0.1.45", "v1.0.0", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +107,7 @@ func TestRunCodemodChain_CheckThenWrite(t *testing.T) {
 	if got, _ := os.ReadFile(path); !strings.Contains(string(got), "operatorkit.Options") {
 		t.Fatalf("not rewritten:\n%s", got)
 	}
-	again, err := runCodemodChain(dir, "v0.1.45", "v0.1.47", true)
+	again, err := runCodemodChain(dir, "v0.1.45", "v1.0.0", true)
 	if err != nil {
 		t.Fatal(err)
 	}

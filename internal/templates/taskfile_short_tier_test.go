@@ -142,6 +142,7 @@ func TestMemoryTemplateTeachesShortTier(t *testing.T) {
 	memory, err := ProjectTemplates().Render("reliant.md.tmpl", struct {
 		Name string
 		CLI  string
+		Site bool
 	}{Name: "demo", CLI: "forge"})
 	if err != nil {
 		t.Fatalf("render reliant.md.tmpl: %v", err)

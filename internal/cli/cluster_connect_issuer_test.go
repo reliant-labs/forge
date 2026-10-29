@@ -82,7 +82,7 @@ func stubIssuer(t *testing.T, issuer, jwks string) *apiPaths {
 func connectWith(t *testing.T, s *connectStub, kctx, issuer string, extra func(*clusterConnectOptions)) (string, error) {
 	t.Helper()
 	var out strings.Builder
-	opts := clusterConnectOptions{Name: "vke", KubeContext: kctx, Auth: "auto", Env: "prod", Issuer: issuer, Out: &out}
+	opts := clusterConnectOptions{Name: "vke", KubeContext: kctx, Env: "prod", Issuer: issuer, Out: &out}
 	if extra != nil {
 		extra(&opts)
 	}
@@ -465,7 +465,7 @@ func jwksRules(objs []rbacObject) (roles []string) {
 func TestGrant_JWKSReadIsAClusterRoleRuleInEveryScope(t *testing.T) {
 	for name, scope := range map[string]applyScope{"cluster": {Cluster: true}, "namespace": {Namespaces: []string{"acme-prod"}}} {
 		t.Run(name, func(t *testing.T) {
-			r := testRBAC(t, authGCP, scope)
+			r := testRBAC(t, scope)
 			if got := jwksRules(r.grantObjects()); len(got) != 0 {
 				t.Fatalf("a grant with no issuer carries a JWKS rule: %v", got)
 			}
@@ -483,7 +483,7 @@ func TestGrant_JWKSReadIsAClusterRoleRuleInEveryScope(t *testing.T) {
 					binding = &o
 				}
 			}
-			if binding == nil || !strings.Contains(binding.yaml(), "fc-prod-ab12@acme.iam.gserviceaccount.com") {
+			if binding == nil || !strings.Contains(binding.yaml(), "name: forge-connect-prod-us-prod\n  namespace: forge-system") {
 				t.Fatalf("the ClusterRole is not bound to the binding's identity: %+v", binding)
 			}
 		})

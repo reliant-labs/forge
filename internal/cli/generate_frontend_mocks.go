@@ -62,7 +62,10 @@ func generateFrontendMocks(cfg *config.ProjectConfig, services []codegen.Service
 			return err
 		}
 
-		if err := generator.EmitFixtureFreshnessSurface(projectDir, feDir, seedFPFiles, seedFPConfig, cs); err != nil {
+		// The fixtures' validity tag, written only beside fixtures: a
+		// frontend with none (an adopted one whose services have no CRUD
+		// entity) has no cache to tag.
+		if err := generator.EmitFixtureFreshnessSurface(projectDir, feDir, count, seedFPFiles, seedFPConfig, cs); err != nil {
 			return err
 		}
 

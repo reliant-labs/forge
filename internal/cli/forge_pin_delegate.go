@@ -191,6 +191,13 @@ func pinnedRunLine(projectRoot, pin string, args []string) string {
 // every pin-gated command that writes, and the render readers. A read-only
 // run of a gated command (a plan, a --check) is left to warn, as before.
 func delegationWanted(rel string, readOnly bool) bool {
+	// Never the storage commands: they bound this machine's caches under THIS
+	// forge's rules. A pinned forge older than the 2h floor and the
+	// live-build lease (#1231, #1243, #1245) would trim the Go build cache
+	// down to now-20m, under running builds.
+	if rel == "storage" || strings.HasPrefix(rel, "storage ") {
+		return false
+	}
 	if _, gated := pinGateFor(rel); gated {
 		return !readOnly
 	}

@@ -73,8 +73,11 @@ schema SecretRef(tiers.SecretKeyRef):
 
         env = {DATABASE_URL = forge.SecretRef {name = "db", key = "url"}}
 
-    `optional = True` lets the pod start when the key is absent (and exempts
-    it from forge's secret pre-flight). Full profile only: a hosted workload
+    `optional = True` lets the pod start when the Secret or the key is
+    absent, and exempts it from forge's secret pre-flights while absent. A
+    PRESENT Secret is still read: the deploy pre-flight warns when it lacks
+    the key, and a version-pinned ExternalSecret writing it rolls the pod
+    when its pin moves, as for a required reference. Full profile only: a hosted workload
     reads credentials through `forge.ManagedSecret`.
 
     `store_key` is set by config codegen, never by hand. It names the value
@@ -211,6 +214,15 @@ schema OnCompose:
     containers out from under every other stack, then leaves them mounting
     files inside that worktree. Pair it with `fp.write_file(...,
     shared=True)` for any config the shared stack mounts.
+
+    `optional` declares the service a convenience the app does not need in
+    order to run (local observability, a mail catcher). `forge env up`
+    brings it up when the Docker daemon answers; when it does not, it skips
+    the service with one warning naming what was skipped, why, and how to get
+    it, then brings up everything else. A service that is not optional (the
+    default) still fails the run, with an error that names Docker. Only
+    `forge env up` consults it: `forge env deploy` of a compose service
+    needs Docker whatever this says.
     """
     type: "compose" = "compose"
     # The compose service name. Default: the workload's name.
@@ -221,6 +233,7 @@ schema OnCompose:
     wait_timeout: int = 0
     env: {str: str} = {}
     shared: bool = False
+    optional: bool = False
 
     check:
         wait_timeout >= 0, "OnCompose.wait_timeout must be >= 0 (0 = no explicit ceiling)"
@@ -315,7 +328,7 @@ schema Profiling:
     runtime's defaults (forge/pkg/observe, PROFILES.md) for this workload.
 
     Unset, a workload built on forge/pkg/observe captures a CPU profile of
-    10s every minute and a live-heap snapshot every 15 minutes. Allocation
+    5s every 5 minutes and a live-heap snapshot every two hours. Allocation
     counters, goroutine, mutex and block profiles are off: allocation
     counters are cumulative since process start, so each snapshot repeats
     every allocation site the process ever had and grows with uptime (they
@@ -331,13 +344,14 @@ schema Profiling:
     profiles off for the env (OTEL_PROFILES_EXPORTER=none) nothing is
     captured whatever this says.
     """
-    # A 10s CPU profile every cycle (about once a minute).
+    # A 5s CPU profile every cycle (every 5 minutes; FORGE_PROFILES_CPU_INTERVAL
+    # and FORGE_PROFILES_CPU_DURATION in the workload's `env` change both).
     cpu: bool = True
     # The live heap (inuse_space, inuse_objects), every heap_interval.
     heap: bool = True
     # How often the heap snapshot (and `alloc`, when on) is taken: whole
     # minutes or hours, "1m" to "24h".
-    heap_interval: str = "15m"
+    heap_interval: str = "2h"
     # Cumulative allocation counters (alloc_space, alloc_objects), with the
     # heap snapshot. Exported cumulative, never as deltas.
     alloc: bool = False
@@ -409,6 +423,12 @@ schema Workload:
     # scaffold` does not declare a second workload for one. Nothing renders
     # from it: it never changes what deploys.
     serves?: [str]
+    # The workloads this one is only useful beside (a local alert evaluator
+    # needs the Alertmanager and ClickStack it reads). When `forge env up`
+    # skips an optional OnCompose workload named here, this one is skipped
+    # with it instead of starting against nothing. Authoring-only: it never
+    # changes what is rendered or deployed, and the names must be declared.
+    requires?: [str]
     # The composition-graph ROOT this forge-built workload's process runs: a
     # //forge:root struct in internal/app, or the default `server`. Bind it
     # with `| config_gen.root_of("<root>")`, which sets this and the `args`
@@ -437,8 +457,8 @@ schema Workload:
     # mapped binary).
     go_memory_limit_percent?: int
     # Continuous-profiling override for this workload (see Profiling).
-    # Unset: the runtime's defaults, CPU every minute and the live heap every
-    # 15 minutes. Rendered as FORGE_PROFILES / FORGE_PROFILES_HEAP_INTERVAL on
+    # Unset: the runtime's defaults, a 5s CPU profile every 5 minutes and the
+    # live heap every two hours. Rendered as FORGE_PROFILES / FORGE_PROFILES_HEAP_INTERVAL on
     # every runtime that runs a process; the workload's own `env` wins.
     profiling?: Profiling
 

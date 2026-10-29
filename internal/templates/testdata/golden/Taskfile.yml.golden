@@ -1,4 +1,4 @@
-version: '3'
+version: "3"
 
 # ┌─────────────────────────────────────────────────────────┐
 # │ Tests are Task targets — this file is the ONE place     │
@@ -57,17 +57,29 @@ vars:
   # Overrides, for forge developers and pins no proxy serves:
   #   FORGE_BIN=/path/to/forge task lint   (environment), or
   #   task lint FORGE=forge                (command line).
+  # A bridged project (go.work, below) runs the bridged checkout instead.
   # A pin that names no published forge (a +dirty build, `dev`) falls back to
   # the forge on PATH, which then hands the command to the pin when it can.
   FORGE_YAML:
     sh: cat forge.yaml
-  FORGE: '{{$pin := index (fromYaml .FORGE_YAML) "forge_version" | default "" | toString}}{{if .FORGE_BIN}}{{.FORGE_BIN}}{{else if or (eq $pin "") (eq $pin "dev") (contains "+" $pin)}}forge{{else}}go run github.com/reliant-labs/forge/cmd/forge@{{$pin}}{{end}}'
+  # A project bridged to a local forge checkout (a gitignored go.work `use`,
+  # written by `forge project new --link-forge`) compiles against that
+  # checkout, and so do its templates: this very file can call a verb newer
+  # than the release forge_version names (that is the floor a build from a
+  # checkout may pin, not the forge that wrote this project). Run the forge the
+  # workspace resolves instead: `go list -m -json` says `"Main": true` for a
+  # module that is a workspace's main module and omits the key for a version it
+  # downloaded. The test is Task's own `contains`, not grep: this file runs on
+  # Windows too.
+  FORGE_BRIDGED:
+    sh: "go list -m -json github.com/reliant-labs/forge 2>/dev/null || true"
+  FORGE: '{{$pin := index (fromYaml .FORGE_YAML) "forge_version" | default "" | toString}}{{if .FORGE_BIN}}{{.FORGE_BIN}}{{else if contains "Main\": true" .FORGE_BRIDGED}}go run github.com/reliant-labs/forge/cmd/forge{{else if or (eq $pin "") (eq $pin "dev") (contains "+" $pin)}}forge{{else}}go run github.com/reliant-labs/forge/cmd/forge@{{$pin}}{{end}}'
   # GOTESTRACE is a TOP-LEVEL var on purpose: only global vars can be
   # overridden from the command line (`task test GOTESTRACE=`), which is how
   # the generated CI workflow passes through forge.yaml's `ci.test.race`.
   # Declared on the task itself it would silently win over the override.
   # Clearing it drops the race detector for one run; leave it set otherwise.
-  GOTESTRACE: '-race'
+  GOTESTRACE: "-race"
   # SLOT runs the heavy lanes (`test`, `test:integration`) inside one of this
   # machine's host-wide heavy slots: `forge slot run` waits while N other heavy
   # jobs (builds, test lanes, codegen, lints — from any agent, worktree or
@@ -105,7 +117,7 @@ tasks:
     desc: Install every frontend's dependencies
     cmds:
       - task: frontends
-        vars: {SCRIPT: 'npm install'}
+        vars: { SCRIPT: "$PM install" }
 
   build:
     desc: Build Go binaries and every frontend's bundle
@@ -122,7 +134,7 @@ tasks:
     desc: Build every frontend's bundle
     cmds:
       - task: frontends
-        vars: {SCRIPT: 'npm run build'}
+        vars: { SCRIPT: "$PM run build" }
 
   test:
     # Everything after `--` REPLACES the default `./...`, so it takes both
@@ -149,7 +161,7 @@ tasks:
       # waits. It is not 30s because the born CRUD tests boot an embedded
       # postgres on first use: a cold boot alone can eat most of a 30s budget,
       # so the tighter bound failed the suite for being slow rather than wrong.
-      - '{{.SLOT}} go test {{.GOTESTRACE}} -count=1 -timeout 120s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}'
+      - "{{.SLOT}} go test {{.GOTESTRACE}} -count=1 -timeout 120s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}"
       - task: test:frontend
 
   test:short:
@@ -194,7 +206,8 @@ tasks:
         if: '[ -n "{{.CLI_ARGS}}" ]'
       - task: frontends
         if: '[ -z "{{.CLI_ARGS}}" ]'
-        vars: {SCRIPT: '{{.SLOT}} npm test -- --passWithNoTests'}
+        vars:
+          SCRIPT: '{{.SLOT}} $PM test $([ "$PM" != npm ] || printf %s --) --passWithNoTests'
 
   frontends:
     # Runs SCRIPT in every frontend of this project in turn, stopping at the
@@ -209,18 +222,27 @@ tasks:
     # `forge scaffold frontend` would go untested while the suite stayed
     # green) and never globbed from frontends/* (which skipped every frontend
     # declared anywhere else). A backend-only project runs nothing.
+    #
+    # SCRIPT names the package manager as $PM, which is the one that owns
+    # each frontend. `project frontends --with-package-manager` uses forge's
+    # shared resolver, including the declared manager's own-lock tie-break
+    # during migrations. There is no second lockfile algorithm in this shell.
+    # An npm frontend beside a scaffolded one keeps its own manager.
     internal: true
     silent: true
     vars:
       FRONTENDS:
-        sh: '{{.FORGE}} project frontends'
+        sh: "{{.FORGE}} project frontends --with-package-manager"
     env:
-      FRONTENDS: '{{.FRONTENDS}}'
+      FRONTENDS: "{{.FRONTENDS}}"
     cmds:
       - cmd: |
           ran=0
-          for dir in $FRONTENDS; do
-            echo "==> {{.SCRIPT}} ($dir)"
+          for frontend in $FRONTENDS; do
+            PM="${frontend%%:*}"
+            dir="${frontend#*:}"
+            export PM
+            echo "==> {{.SCRIPT}} ($dir, $PM)"
             (cd "$dir" && {{.SCRIPT}}) || exit 1
             ran=$((ran + 1))
           done
@@ -233,7 +255,7 @@ tasks:
       # therefore excluded from `task test`. They typically need a real
       # database / running infra (see docker-compose.yml). -timeout=10m gives
       # heavy DB-backed scenarios room while still surfacing hangs.
-      - '{{.SLOT}} go test {{.GOTESTRACE}} -tags=integration -count=1 -timeout=10m {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}'
+      - "{{.SLOT}} go test {{.GOTESTRACE}} -tags=integration -count=1 -timeout=10m {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}"
 
   test:e2e:
     # `--` args replace the default `./e2e/...`, same as `task test`, so
@@ -284,7 +306,7 @@ tasks:
     # inside it skip the queue (they would all be "inside a slot").
     desc: "The whole PR gate locally (what CI runs): ci:checks + test + test:integration, one summary"
     cmds:
-      - '{{.FORGE}} ci gate all'
+      - "{{.FORGE}} ci gate all"
 
   ci:checks:
     # The static and build lane — what the `checks` CI job runs after its one
@@ -293,7 +315,7 @@ tasks:
     # See `task ci` for the semantics; `forge ci gate --list` names every check.
     desc: "Static + build lane of the CI gate: verify-generated, lint, build, vuln-scan, KCL (what the CI `checks` job runs)"
     cmds:
-      - '{{.FORGE}} ci gate checks'
+      - "{{.FORGE}} ci gate checks"
 
   lint:
     desc: Run all linters via the pinned forge (Go + proto + every frontend)
@@ -306,7 +328,7 @@ tasks:
       # `golangci-lint run`, which exited 127 when the binary wasn't
       # installed locally — losing the lint signal entirely instead of
       # the warn-and-skip forge does.
-      - '{{.FORGE}} lint'
+      - "{{.FORGE}} lint"
 
   lint:frontend:
     desc: Run every frontend's linter and TypeScript typecheck (sub-task; `task lint` already covers this)
@@ -319,7 +341,7 @@ tasks:
       # `task lint` above goes through `forge lint`, which already
       # includes this step.
       - task: frontends
-        vars: {SCRIPT: 'npm run lint && npm run typecheck'}
+        vars: { SCRIPT: "$PM run lint && $PM run typecheck" }
 
   dev:
     desc: Run the app with hot-reload (Air + Next dev)
@@ -379,7 +401,7 @@ tasks:
     desc: Format every frontend's source with prettier
     cmds:
       - task: frontends
-        vars: {SCRIPT: 'npx --no-install prettier --write .'}
+        vars: { SCRIPT: "npx --no-install prettier --write ." }
 
   generate:
     # The whole codegen, through the pinned forge: buf (at forge's pinned
@@ -389,14 +411,14 @@ tasks:
     # plugins PATH has and skips everything forge projects.
     desc: Regenerate everything forge generates (protos, ORM, frontend clients, mocks), with the pinned forge
     cmds:
-      - '{{.FORGE}} generate'
+      - "{{.FORGE}} generate"
 
   verify-generate:
     # The generated-code drift guard CI runs: regenerate in a scratch copy of
     # the committed tree and fail on any difference, naming the files.
     desc: Verify generated code is committed up to date (forge ci verify-generated)
     cmds:
-      - '{{.FORGE}} ci verify-generated'
+      - "{{.FORGE}} ci verify-generated"
 
   coverage:
     # HTML coverage report at coverage.html. We deliberately omit -race

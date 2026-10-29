@@ -102,6 +102,9 @@ func assertTimestampVersioned(t *testing.T, dir string) {
 }
 
 func TestMigrateImportRoundtrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates migration versions with git; runs in task test")
+	}
 	src := writeGooseSrc(t, []gooseFile{
 		{
 			Name: "20240501_add_users.sql",
@@ -191,6 +194,9 @@ DROP TABLE memberships;
 // sends a single statement as a single query, which postgres runs outside a
 // transaction block, so CONCURRENTLY works there as it did under goose.
 func TestMigrateImportNoTransactionSingleStatement(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates migration versions with git; runs in task test")
+	}
 	src := writeGooseSrc(t, []gooseFile{
 		{
 			Name: "20240501_create_index.sql",
@@ -233,6 +239,9 @@ DROP INDEX CONCURRENTLY idx_users_email;
 // CONCURRENTLY failed with SQLSTATE 25001, leaving the schema dirty. It now
 // becomes one migration per goose statement, split where goose split it.
 func TestMigrateImportSplitsNoTransactionFile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates migration versions with git; runs in task test")
+	}
 	src := writeGooseSrc(t, []gooseFile{
 		{
 			Name: "20240501_add_users.sql",
@@ -389,6 +398,9 @@ func TestGooseStatements(t *testing.T) {
 // A re-import of a file an older forge imported whole meets that file under
 // its unsplit stem: refused without --force, replaced with it.
 func TestMigrateImportSplitReplacesAWholeImportOfTheSameFile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates migration versions with git; runs in task test")
+	}
 	dest := t.TempDir()
 	old := filepath.Join(dest, "20240101000000_index_users.up.sql")
 	if err := os.WriteFile(old, []byte("-- x-no-tx-wrap: true\nCREATE INDEX CONCURRENTLY a ON t (x);\nCREATE INDEX CONCURRENTLY b ON t (y);\n"), 0o644); err != nil {
@@ -417,6 +429,9 @@ func TestMigrateImportSplitReplacesAWholeImportOfTheSameFile(t *testing.T) {
 }
 
 func TestMigrateImportStripsStatementMarkers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates migration versions with git; runs in task test")
+	}
 	src := writeGooseSrc(t, []gooseFile{
 		{
 			Name: "20240501_create_fn.sql",
@@ -466,6 +481,9 @@ DROP FUNCTION foo();
 // migrations must sort AFTER every existing file — that ordering is the
 // entire reason old sequential files never need renaming.
 func TestMigrateImportSortsAfterExistingSequentialFiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates migration versions with git; runs in task test")
+	}
 	dest := t.TempDir()
 	for _, name := range []string{
 		"00001_audit_log.up.sql",
@@ -527,6 +545,9 @@ DROP TABLE orgs;
 }
 
 func TestMigrateImportRefusesOverwriteWithoutForce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates migration versions with git; runs in task test")
+	}
 	src := writeGooseSrc(t, []gooseFile{
 		{
 			Name: "20240501_add_users.sql",
@@ -571,6 +592,9 @@ DROP TABLE users;
 }
 
 func TestMigrateImportForceOverwrites(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates migration versions with git; runs in task test")
+	}
 	dest := t.TempDir()
 
 	src1 := writeGooseSrc(t, []gooseFile{
@@ -636,6 +660,9 @@ DROP TABLE users;
 }
 
 func TestMigrateImportDryRunTouchesNothing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates migration versions with git; runs in task test")
+	}
 	src := writeGooseSrc(t, []gooseFile{
 		{
 			Name: "20240501_add_users.sql",
@@ -676,6 +703,9 @@ DROP TABLE users;
 // A source with no Down section imports cleanly and reports no drop — it is
 // already the shape the policy asks for.
 func TestMigrateImportWithoutDownReportsNoDrop(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates migration versions with git; runs in task test")
+	}
 	src := writeGooseSrc(t, []gooseFile{
 		{
 			Name: "20240501_no_down.sql",
@@ -707,6 +737,9 @@ CREATE TABLE users (id INT);
 }
 
 func TestMigrateImportSkipsAlreadyConverted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates migration versions with git; runs in task test")
+	}
 	src := writeGooseSrc(t, []gooseFile{
 		{
 			Name: "20240501_add_users.sql",

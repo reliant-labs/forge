@@ -194,10 +194,20 @@ func planBuild(ctx context.Context, in planInputs) buildPlanReport {
 
 	if opts.release != "" {
 		report.releaseArtifacts, report.releaseErr = planReleaseCoverage(in, report)
+		// A version another source already cut: the real build refuses it
+		// before building (preflightRealBuild), so the plan does too.
+		if err := preflightReleaseVersion(ctx, in.projectDir, in.entities, opts); err != nil {
+			report.releaseErr = errors.Join(report.releaseErr, err)
+		}
 		// The release build's other preflight: a ShellBuild checkout that is
 		// not at the commit the project pins, or is dirty. The same check,
 		// so a plan refuses exactly what the cut would.
 		if err := preflightReleaseSources(ctx, in.projectDir, in.entities, opts); err != nil {
+			report.releaseErr = errors.Join(report.releaseErr, err)
+		}
+		// And the migration-order guard, so a plan refuses a release the
+		// env's schema has already passed exactly as the build would.
+		if err := preflightReleaseMigrations(ctx, in.projectDir, in.entities, opts); err != nil {
 			report.releaseErr = errors.Join(report.releaseErr, err)
 		}
 	}

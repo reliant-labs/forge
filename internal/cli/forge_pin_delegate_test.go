@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/forgedelegate"
@@ -76,6 +78,26 @@ func runCheck(t *testing.T, args ...string) (string, error) {
 	defer func() { os.Args = prev }()
 	err = checkForgePinSkew(cmd, root, &out, allow)
 	return out.String(), err
+}
+
+// reliant, 2026-10-24: `forge lint` under a skewed forge printed "running
+// <pin> instead (--allow-version-skew, or FORGE_ALLOW_VERSION_SKEW=1, to run
+// this one)", and `forge lint --allow-version-skew` then failed "unknown flag".
+// Every command the hand-off can take accepts the flag its notice names.
+func TestDelegatedCommandsAcceptTheSkewFlag(t *testing.T) {
+	root := newTestRootCmd(t)
+	for _, args := range [][]string{{"lint"}, {"ci", "gate"}, {"doctor"}, {"generate"}} {
+		cmd, _, err := root.Find(args)
+		if err != nil {
+			t.Fatalf("find %v: %v", args, err)
+		}
+		if err := cmd.ParseFlags([]string{"--" + allowVersionSkewFlag}); err != nil {
+			t.Errorf("forge %s --%s: %v", strings.Join(args, " "), allowVersionSkewFlag, err)
+		}
+	}
+	if cmd, _, err := root.Find([]string{"version"}); err == nil && cmd.Flags().Lookup(allowVersionSkewFlag) != nil {
+		t.Errorf("forge version registers --%s, which means nothing there", allowVersionSkewFlag)
+	}
 }
 
 // The wall becomes a door: a stale forge running a rewriting command hands it
@@ -254,5 +276,73 @@ func TestDelegation_AForgeYAMLThisBinaryRejectsIsStillHandedOver(t *testing.T) {
 	}
 	if h.path == "" {
 		t.Fatal("a forge.yaml this binary cannot validate was not handed to the pinned forge")
+	}
+}
+
+// A pinned forge older than #1231 trims the Go build cache down to now-20m and
+// removes the executable of a running `go run`; two of those (ee3bded4,
+// f7e6289e) are still installed on shared machines. The storage commands are
+// the current forge's own: a project that pins an old forge must never get a
+// trim handed to it, whether it is `storage gocache`, `storage gc` or the
+// detached `storage auto-gc`.
+func TestDelegation_StorageCommandsAreNeverHandedToAPinnedForge(t *testing.T) {
+	skewedProject(t)
+	t.Setenv(forgedelegate.MarkerEnv, "")
+	h, installs := armDelegation(t)
+
+	root := newTestRootCmd(t)
+	storageCmd, _, err := root.Find([]string{"storage"})
+	if err != nil || storageCmd == nil {
+		t.Fatalf("find storage: %v", err)
+	}
+	var paths [][]string
+	var walk func(c *cobra.Command, prefix []string)
+	walk = func(c *cobra.Command, prefix []string) {
+		for _, sub := range c.Commands() {
+			p := append(append([]string{}, prefix...), sub.Name())
+			paths = append(paths, p)
+			walk(sub, p)
+		}
+	}
+	walk(storageCmd, []string{"storage"})
+	for _, want := range []string{"storage gocache", "storage gc", "storage auto-gc"} {
+		found := false
+		for _, p := range paths {
+			found = found || strings.Join(p, " ") == want
+		}
+		if !found {
+			t.Fatalf("no %q command under storage: %v", want, paths)
+		}
+	}
+
+	for _, p := range paths {
+		rel := strings.Join(p, " ")
+		if delegationWanted(rel, false) || delegationWanted(rel, true) {
+			t.Errorf("delegationWanted(%q): a storage command would be handed to the pinned forge", rel)
+		}
+		*h = handoff{}
+		*installs = nil
+		if _, err := runCheck(t, p...); err != nil {
+			t.Errorf("%s: %v", rel, err)
+		}
+		if h.path != "" || len(*installs) != 0 {
+			t.Errorf("%s was handed to a pinned forge (%q) or built one (%v)", rel, h.path, *installs)
+		}
+	}
+}
+
+// The exclusion holds even if a later edit lists storage among the pin-gated
+// groups or the delegated commands: it is checked first.
+func TestDelegation_StorageIsExcludedEvenWhenListedAsPinGated(t *testing.T) {
+	prev := pinGatedGroups
+	t.Cleanup(func() { pinGatedGroups = prev })
+	pinGatedGroups = map[string][]string{"storage": nil}
+	for _, rel := range []string{"storage", "storage gc", "storage gocache", "storage auto-gc"} {
+		if delegationWanted(rel, false) {
+			t.Errorf("delegationWanted(%q) = true with storage in pinGatedGroups", rel)
+		}
+	}
+	if !delegationWanted("generate", false) {
+		t.Error("the exclusion swallowed generate")
 	}
 }

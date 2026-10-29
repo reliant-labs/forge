@@ -20,11 +20,14 @@ type connectStub struct {
 	kubectl [][]string
 	live    []liveObject
 	caller  *fakeConnectCaller
+	// hub are the delivery units the hub converges; the default unit, which
+	// an unlabeled render object belongs to, unless a test says otherwise.
+	hub []string
 }
 
 func stubConnect(t *testing.T, kctx, stream string) *connectStub {
 	t.Helper()
-	s := &connectStub{caller: &fakeConnectCaller{}}
+	s := &connectStub{caller: &fakeConnectCaller{}, hub: []string{"base"}}
 	rk, rc, ra, rt, rs, rl, rkc := kubeconfigClusterOf, clusterConnectClient, connectApply, connectReadToken, connectEnvStream, connectReadLive, connectKubectl
 	t.Cleanup(func() {
 		kubeconfigClusterOf, clusterConnectClient, connectApply, connectReadToken, connectEnvStream, connectReadLive, connectKubectl = rk, rc, ra, rt, rs, rl, rkc
@@ -33,7 +36,9 @@ func stubConnect(t *testing.T, kctx, stream string) *connectStub {
 	clusterConnectClient = func(context.Context, string, string) (cloudCaller, string, error) { return s.caller, "acme", nil }
 	connectApply = func(_ context.Context, _ string, m string) error { s.applied = append(s.applied, m); return nil }
 	connectReadToken = func(context.Context, string, connectRBAC) (string, error) { return fakeMintedToken, nil }
-	connectEnvStream = func(context.Context, io.Writer, string) (string, error) { return stream, nil }
+	connectEnvStream = func(context.Context, io.Writer, string) (connectRender, error) {
+		return connectRender{Stream: stream, HubUnits: s.hub}, nil
+	}
 	connectReadLive = func(context.Context, string, connectRBAC) ([]liveObject, error) { return s.live, nil }
 	connectKubectl = func(_ context.Context, _ string, args ...string) (string, error) {
 		s.kubectl = append(s.kubectl, args)
@@ -42,11 +47,11 @@ func stubConnect(t *testing.T, kctx, stream string) *connectStub {
 	return s
 }
 
-func TestConnect_GCPBindsTheBindingsOwnGSAAfterRegistering(t *testing.T) {
+func TestConnect_BindsTheBindingsOwnServiceAccountAndOwesNothingAfter(t *testing.T) {
 	s := stubConnect(t, testCtx, scopeStream())
 	var out strings.Builder
 	if err := runClusterConnect(context.Background(), clusterConnectOptions{
-		Name: "prod-us", KubeContext: testCtx, Auth: "auto", Env: "prod", Out: &out,
+		Name: "prod-us", KubeContext: testCtx, Env: "prod", Out: &out,
 	}); err != nil {
 		t.Fatalf("%v\n%s", err, out.String())
 	}
@@ -54,10 +59,11 @@ func TestConnect_GCPBindsTheBindingsOwnGSAAfterRegistering(t *testing.T) {
 		t.Fatalf("applied %d stages, want 1", len(s.applied))
 	}
 	grant := s.applied[0]
-	if !strings.Contains(grant, "name: fc-prod-ab12@acme.iam.gserviceaccount.com") {
-		t.Errorf("the grant does not bind the binding's own GSA:\n%s", grant)
+	if !strings.Contains(grant, "kind: ServiceAccount\n    name: forge-connect-prod-us-prod") &&
+		!strings.Contains(grant, "name: forge-connect-prod-us-prod") {
+		t.Errorf("the grant does not bind the binding's own ServiceAccount:\n%s", grant)
 	}
-	for _, banned := range []string{"flux-source@", "impersonate", "control-plane@"} {
+	for _, banned := range []string{"flux-source@", "impersonate", "control-plane@", "iam.gserviceaccount.com", "kind: User"} {
 		if strings.Contains(grant, banned) {
 			t.Errorf("the grant contains %q:\n%s", banned, grant)
 		}
@@ -66,32 +72,109 @@ func TestConnect_GCPBindsTheBindingsOwnGSAAfterRegistering(t *testing.T) {
 	if req["environment"] != "prod" {
 		t.Errorf("the connect request does not name the env the binding is for: %v", req)
 	}
-	for _, want := range []string{"--member=serviceAccount:fc-prod-ab12@acme.iam.gserviceaccount.com", "roles/container.clusterViewer", "binding namespace:acme-prod"} {
-		if want != "binding namespace:acme-prod" && !strings.Contains(out.String(), want) {
-			t.Errorf("output omits %q:\n%s", want, out.String())
+	for _, banned := range []string{"gcloud", "add-iam-policy-binding", "clusterViewer", "workload identity"} {
+		if strings.Contains(out.String(), banned) {
+			t.Errorf("output mentions %q; there is no cloud grant:\n%s", banned, out.String())
 		}
 	}
-	if strings.Contains(out.String(), "cluster-admin") {
-		t.Errorf("a namespace-scope connect printed the cluster-admin warning:\n%s", out.String())
+	if !strings.Contains(out.String(), "No cloud IAM grant is needed") {
+		t.Errorf("output does not say nothing is owed:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "WARNING: --apply-scope cluster") {
+		t.Errorf("a namespace-scope connect printed the cluster-scope warning:\n%s", out.String())
 	}
 }
 
-// With no per-binding identity from the control plane, bind NOTHING: falling
-// back to a shared identity is exactly what this design removes.
-func TestConnect_GCPWithNoBindingIdentityBindsNothing(t *testing.T) {
+// An env where FORGE applies everything (an `applier = "forge"` env such as
+// ours): the hub applies nothing on this cluster, so the apply grant is empty,
+// the cluster still registers, and the output says why.
+func TestConnect_ForgeAppliedEnvRegistersWithAnEmptyApplyGrant(t *testing.T) {
 	s := stubConnect(t, testCtx, scopeStream())
-	s.caller.noBindingIdentity = true
+	s.hub = nil
 	var out strings.Builder
 	if err := runClusterConnect(context.Background(), clusterConnectOptions{
-		Name: "prod-us", KubeContext: testCtx, Auth: "gcp", Env: "prod", Out: &out,
+		Name: "prod-us", KubeContext: testCtx, Env: "prod", Out: &out,
 	}); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if _, ok := s.caller.requests[procConnectCluster]; !ok {
+		t.Fatal("an empty apply grant must not stop the cluster registering")
+	}
+	if !strings.Contains(out.String(), "the hub applies nothing on this cluster for env prod: forge applies it") {
+		t.Errorf("output does not say the hub applies nothing:\n%s", out.String())
+	}
+	if len(s.applied) != 1 {
+		t.Fatalf("applied %d stages, want the identity alone", len(s.applied))
+	}
+	rules := decodeGrantRules(t, s.applied[0])
+	for _, r := range rules {
+		if len(r.NonResourceURLs) == 0 {
+			t.Errorf("an empty apply grant holds a resource rule: %v %v", r.Resources, r.Verbs)
+		}
+	}
+	for _, banned := range []string{"kind: Role\n", "kind: RoleBinding"} {
+		if strings.Contains(s.applied[0], banned) {
+			t.Errorf("an empty apply grant applied %q:\n%s", banned, s.applied[0])
+		}
+	}
+	// The JWKS read is still granted (when an issuer is registered), and only that.
+	if !strings.Contains(s.applied[0], "kind: ServiceAccount") {
+		t.Errorf("the identity was not minted:\n%s", s.applied[0])
+	}
+}
+
+func TestDryRun_ForgeAppliedEnvShowsAnEmptyDiff(t *testing.T) {
+	for _, tc := range []struct {
+		name, issuer string
+		wantRules    string
+	}{
+		// With no issuer registered nothing is granted at all.
+		{"no issuer", issuerSkip, "none: this run grants nothing"},
+		// With one, the only rule is the JWKS read: no resource rule exists.
+		{"issuer", issuerUpload, "cluster: get url /openid/v1/jwks"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := stubConnect(t, testCtx, scopeStream())
+			s.hub = nil
+			var out strings.Builder
+			if err := runClusterConnect(context.Background(), clusterConnectOptions{
+				Name: "prod-us", KubeContext: testCtx, Env: "prod", DryRun: true, Out: &out, Issuer: tc.issuer,
+				LiveFrom: writeLive(t, "apiVersion: v1\nkind: List\nitems: []\n"),
+			}); err != nil {
+				t.Fatalf("%v\n%s", err, out.String())
+			}
+			got := out.String()
+			if !strings.Contains(got, "the hub applies nothing on this cluster for env prod") ||
+				!strings.Contains(got, "no apply rules") || !strings.Contains(got, tc.wantRules) {
+				t.Errorf("dry-run does not show an empty apply diff:\n%s", got)
+			}
+			for _, banned := range []string{"apps/deployments", "core/services", "core/configmaps"} {
+				if strings.Contains(got, banned) {
+					t.Errorf("a forge-applied env's grant names %q:\n%s", banned, got)
+				}
+			}
+		})
+	}
+}
+
+// Units forge applies itself contribute nothing, units the hub converges do.
+func TestConnect_OnlyHubConvergedUnitsContributeApplyRules(t *testing.T) {
+	stream := scopeStream(
+		onCtx("apiVersion: batch/v1\nkind: CronJob\nmetadata:\n  name: sweep\n  namespace: acme-prod\n  labels:\n    forge.dev/delivery-unit: infra\n"),
+	)
+	n, err := deriveGrantNeeds(stream, testCtx, []string{"infra"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(s.applied) != 0 {
-		t.Errorf("applied %d stages with no principal to bind", len(s.applied))
+	if got := n.Namespaced["acme-prod"]; len(got) != 1 || !got[resourceRef{"batch", "cronjobs"}] {
+		t.Errorf("hub-converged infra unit: needs = %v, want only batch/cronjobs", got)
 	}
-	if strings.Contains(out.String(), "gcloud") || !strings.Contains(out.String(), "no per-binding GCP identity") {
-		t.Errorf("output:\n%s", out.String())
+	n, err = deriveGrantNeeds(stream, testCtx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.Objects != 0 || len(n.Namespaced) != 0 || n.OnCluster == 0 {
+		t.Errorf("no hub units: Objects=%d Namespaced=%v OnCluster=%d, want zero needs on a bound cluster", n.Objects, n.Namespaced, n.OnCluster)
 	}
 }
 
@@ -99,7 +182,7 @@ func TestConnect_TokenAppliesBeforeRegisteringAndNeverPrintsTheToken(t *testing.
 	s := stubConnect(t, "vke-prod", strings.ReplaceAll(scopeStream(), testCtx, "vke-prod"))
 	var out strings.Builder
 	if err := runClusterConnect(context.Background(), clusterConnectOptions{
-		Name: "vke", KubeContext: "vke-prod", Auth: "auto", Env: "prod", Out: &out,
+		Name: "vke", KubeContext: "vke-prod", Env: "prod", Out: &out,
 	}); err != nil {
 		t.Fatalf("%v\n%s", err, out.String())
 	}
@@ -119,11 +202,11 @@ func TestConnect_ClusterScopePrintsTheClusterAdminWarning(t *testing.T) {
 	s := stubConnect(t, testCtx, stream)
 	var out strings.Builder
 	if err := runClusterConnect(context.Background(), clusterConnectOptions{
-		Name: "prod-us", KubeContext: testCtx, Auth: "gcp", Env: "prod", Scope: applyScope{Cluster: true}, Out: &out,
+		Name: "prod-us", KubeContext: testCtx, Env: "prod", Scope: applyScope{Cluster: true}, Out: &out,
 	}); err != nil {
 		t.Fatalf("%v\n%s", err, out.String())
 	}
-	if n := strings.Count(out.String(), "equivalent to cluster-admin"); n < 1 {
+	if n := strings.Count(out.String(), "WARNING: --apply-scope cluster"); n < 1 {
 		t.Errorf("cluster scope did not say what it is:\n%s", out.String())
 	}
 	if !strings.Contains(s.applied[0], "kind: ClusterRoleBinding") || strings.Contains(s.applied[0], "kind: Role\n") {
@@ -134,7 +217,7 @@ func TestConnect_ClusterScopePrintsTheClusterAdminWarning(t *testing.T) {
 func TestConnect_RefusesBeforeWritingAnythingWhenTheScopeDoesNotFit(t *testing.T) {
 	s := stubConnect(t, testCtx, scopeStream(onCtx(docClusterRole)))
 	err := runClusterConnect(context.Background(), clusterConnectOptions{
-		Name: "prod-us", KubeContext: testCtx, Auth: "gcp", Env: "prod", Out: io.Discard,
+		Name: "prod-us", KubeContext: testCtx, Env: "prod", Out: io.Discard,
 	})
 	if err == nil || !strings.Contains(err.Error(), "namespace scope") || !strings.Contains(err.Error(), "--apply-scope cluster") {
 		t.Fatalf("err = %v, want a namespace-scope refusal naming the cluster scope", err)
@@ -146,7 +229,7 @@ func TestConnect_RefusesBeforeWritingAnythingWhenTheScopeDoesNotFit(t *testing.T
 
 func TestConnect_RequiresAnEnv(t *testing.T) {
 	stubConnect(t, testCtx, scopeStream())
-	err := runClusterConnect(context.Background(), clusterConnectOptions{Name: "c", KubeContext: testCtx, Auth: "gcp", Out: io.Discard})
+	err := runClusterConnect(context.Background(), clusterConnectOptions{Name: "c", KubeContext: testCtx, Out: io.Discard})
 	if err == nil || !strings.Contains(err.Error(), "--env is required") {
 		t.Fatalf("err = %v", err)
 	}
@@ -164,7 +247,7 @@ func TestConnect_NarrowerRerunPrunesStaleGrantObjects(t *testing.T) {
 	}
 	var out strings.Builder
 	if err := runClusterConnect(context.Background(), clusterConnectOptions{
-		Name: "prod-us", KubeContext: testCtx, Auth: "gcp", Env: "prod", Out: &out,
+		Name: "prod-us", KubeContext: testCtx, Env: "prod", Out: &out,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +277,7 @@ func TestConnect_PrunesTheLegacySharedGrant(t *testing.T) {
 	}
 	var out strings.Builder
 	if err := runClusterConnect(context.Background(), clusterConnectOptions{
-		Name: "prod-us", KubeContext: testCtx, Auth: "gcp", Env: "prod", Out: &out,
+		Name: "prod-us", KubeContext: testCtx, Env: "prod", Out: &out,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +289,7 @@ func TestConnect_PrunesTheLegacySharedGrant(t *testing.T) {
 func TestConnect_DryRunOnlyFlagsAreRefusedOnARealRun(t *testing.T) {
 	stubConnect(t, testCtx, scopeStream())
 	err := runClusterConnect(context.Background(), clusterConnectOptions{
-		Name: "c", KubeContext: testCtx, Auth: "gcp", Env: "prod", LiveFrom: "x.yaml", Out: io.Discard,
+		Name: "c", KubeContext: testCtx, Env: "prod", LiveFrom: "x.yaml", Out: io.Discard,
 	})
 	if err == nil || !strings.Contains(err.Error(), "--dry-run only") {
 		t.Fatalf("err = %v", err)
@@ -215,7 +298,7 @@ func TestConnect_DryRunOnlyFlagsAreRefusedOnARealRun(t *testing.T) {
 
 func TestConnectCmd_FlagsAreRegisteredAndValidated(t *testing.T) {
 	cmd := newClusterConnectCmd()
-	for _, f := range []string{"apply-scope", "dry-run", "live-from", "binding-gsa", "delivery-secret", "delivery-subject", "env", "context", "auth"} {
+	for _, f := range []string{"apply-scope", "dry-run", "live-from", "delivery-secret", "delivery-subject", "env", "context", "address", "ca-file"} {
 		if cmd.Flags().Lookup(f) == nil {
 			t.Errorf("--%s is not registered", f)
 		}
@@ -244,7 +327,7 @@ func TestConnect_DeliveryAppliesPolicyBeforeRolesAndStopsOnFailure(t *testing.T)
 	}
 	secrets, _ := parseDeliverySecrets([]string{"ns/a"})
 	err := runClusterConnect(context.Background(), clusterConnectOptions{
-		Name: "vke", KubeContext: "vke-prod", Auth: "token", Env: "prod", DeliverySecrets: secrets, Out: io.Discard,
+		Name: "vke", KubeContext: "vke-prod", Env: "prod", DeliverySecrets: secrets, Out: io.Discard,
 	})
 	if err == nil || !strings.Contains(err.Error(), "ValidatingAdmissionPolicy") {
 		t.Fatalf("err = %v, want the policy failure surfaced", err)
@@ -343,16 +426,13 @@ func TestDisconnect_RefusesAnUnknownClusterAndDeletesNothing(t *testing.T) {
 
 // ── dry-run diff ────────────────────────────────────────────────────────────
 
-func dryRunOutput(t *testing.T, kctx, auth string, scope applyScope, stream, livePath string) string {
+func dryRunOutput(t *testing.T, kctx string, scope applyScope, stream, livePath string) string {
 	t.Helper()
 	s := stubConnect(t, kctx, stream)
 	var out strings.Builder
 	opts := clusterConnectOptions{
-		Name: "prod-us", KubeContext: kctx, Auth: auth, Env: "prod", DryRun: true, Scope: scope, Out: &out,
-		LiveFrom: livePath, BindingGSA: "fc-prod-ab12@acme.iam.gserviceaccount.com",
-	}
-	if auth == "token" {
-		opts.BindingGSA = ""
+		Name: "prod-us", KubeContext: kctx, Env: "prod", DryRun: true, Scope: scope, Out: &out,
+		LiveFrom: livePath,
 	}
 	if err := runClusterConnect(context.Background(), opts); err != nil {
 		t.Fatalf("%v\n%s", err, out.String())
@@ -395,13 +475,13 @@ func writeLive(t *testing.T, body string) string {
 
 func TestDryRun_FreshClusterGolden_NamespaceScope(t *testing.T) {
 	live := writeLive(t, "apiVersion: v1\nkind: List\nitems: []\n")
-	got := dryRunOutput(t, testCtx, "gcp", applyScope{Namespaces: []string{"acme-prod"}}, scopeStream(), live)
+	got := dryRunOutput(t, testCtx, applyScope{Namespaces: []string{"acme-prod"}}, scopeStream(), live)
 	assertConnectGolden(t, "dryrun_fresh_namespace", strings.ReplaceAll(got, live, "<live>"))
 }
 
 func TestDryRun_FreshClusterGolden_ClusterScope(t *testing.T) {
 	live := writeLive(t, "apiVersion: v1\nkind: List\nitems: []\n")
-	got := dryRunOutput(t, testCtx, "gcp", applyScope{Cluster: true}, scopeStream(onCtx(docClusterRole), onCtx(docRoleBinding)), live)
+	got := dryRunOutput(t, testCtx, applyScope{Cluster: true}, scopeStream(onCtx(docClusterRole), onCtx(docRoleBinding)), live)
 	assertConnectGolden(t, "dryrun_fresh_cluster", strings.ReplaceAll(got, live, "<live>"))
 }
 
@@ -410,7 +490,7 @@ func TestDryRun_FreshClusterGolden_ClusterScope(t *testing.T) {
 // scope. The diff names exactly what changes.
 func TestDryRun_WideningGolden(t *testing.T) {
 	// Capture the namespace-scope grant, as the cluster holds it.
-	narrow := testRBAC(t, authGCP, applyScope{Namespaces: []string{"acme-prod"}})
+	narrow := testRBAC(t, applyScope{Namespaces: []string{"acme-prod"}})
 	narrow.IssuerJWKS = true
 	var live strings.Builder
 	live.WriteString("apiVersion: v1\nkind: List\nitems:\n")
@@ -420,7 +500,7 @@ func TestDryRun_WideningGolden(t *testing.T) {
 	path := writeLive(t, live.String())
 
 	// Unchanged scope and render: every object is "=" and nothing is newly granted.
-	same := dryRunOutput(t, testCtx, "gcp", applyScope{Namespaces: []string{"acme-prod"}}, scopeStream(), path)
+	same := dryRunOutput(t, testCtx, applyScope{Namespaces: []string{"acme-prod"}}, scopeStream(), path)
 	if !strings.Contains(same, "none: this run grants nothing the cluster does not already grant") || strings.Contains(same, "\n+ ") || strings.Contains(same, "\n~ ") {
 		t.Errorf("an unchanged re-run reports a change:\n%s", same)
 	}
@@ -428,7 +508,7 @@ func TestDryRun_WideningGolden(t *testing.T) {
 
 	// A release that adds a kind: the namespace Role gains exactly that rule.
 	cron := onCtx("apiVersion: batch/v1\nkind: CronJob\nmetadata:\n  name: sweep\n  namespace: acme-prod\n")
-	grown := dryRunOutput(t, testCtx, "gcp", applyScope{Namespaces: []string{"acme-prod"}}, scopeStream(cron), path)
+	grown := dryRunOutput(t, testCtx, applyScope{Namespaces: []string{"acme-prod"}}, scopeStream(cron), path)
 	if !strings.Contains(grown, "namespace acme-prod: create batch/cronjobs") || strings.Contains(grown, "namespace acme-prod: create apps/deployments") {
 		t.Errorf("the new kind, and only it, should be named as newly granted:\n%s", grown)
 	}
@@ -436,7 +516,7 @@ func TestDryRun_WideningGolden(t *testing.T) {
 
 	// The owner widens to cluster scope: the namespace Role goes, a ClusterRole
 	// arrives, and everything the cluster did not grant before is listed.
-	wide := dryRunOutput(t, testCtx, "gcp", applyScope{Cluster: true}, scopeStream(cron), path)
+	wide := dryRunOutput(t, testCtx, applyScope{Cluster: true}, scopeStream(cron), path)
 	if !strings.Contains(wide, "- Role acme-prod/forge-connect-prod-us-prod  removed (connect prunes it)") ||
 		!strings.Contains(wide, "~ ClusterRole forge-connect-prod-us-prod  changed") ||
 		!strings.Contains(wide, "cluster: create apps/deployments") ||
@@ -449,7 +529,7 @@ func TestDryRun_WideningGolden(t *testing.T) {
 func TestDryRun_ReportsStaleObjectsItWouldPrune(t *testing.T) {
 	live := writeLive(t, "apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRoleBinding\nmetadata:\n  name: old-binding\n"+
 		"roleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: ClusterRole\n  name: old\nsubjects: []\n")
-	got := dryRunOutput(t, testCtx, "gcp", applyScope{Namespaces: []string{"acme-prod"}}, scopeStream(), live)
+	got := dryRunOutput(t, testCtx, applyScope{Namespaces: []string{"acme-prod"}}, scopeStream(), live)
 	if !strings.Contains(got, "- ClusterRoleBinding old-binding  removed (connect prunes it)") {
 		t.Errorf("the stale object is not reported:\n%s", got)
 	}
@@ -460,7 +540,7 @@ func TestDryRun_ReadsTheClusterThroughTheContextWhenNoCaptureIsGiven(t *testing.
 	s.live = nil
 	var out strings.Builder
 	if err := runClusterConnect(context.Background(), clusterConnectOptions{
-		Name: "prod-us", KubeContext: testCtx, Auth: "gcp", Env: "prod", DryRun: true, Out: &out,
+		Name: "prod-us", KubeContext: testCtx, Env: "prod", DryRun: true, Out: &out,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -469,17 +549,6 @@ func TestDryRun_ReadsTheClusterThroughTheContextWhenNoCaptureIsGiven(t *testing.
 	}
 	if !strings.Contains(out.String(), "selector     app.kubernetes.io/managed-by=forge,forge.dev/connected-cluster=prod-us,forge.dev/binding-env=prod") {
 		t.Errorf("the capture selector is not printed:\n%s", out.String())
-	}
-}
-
-func TestDryRun_BindingGSAIsGCPOnly(t *testing.T) {
-	stubConnect(t, "vke-prod", strings.ReplaceAll(scopeStream(), testCtx, "vke-prod"))
-	err := runClusterConnect(context.Background(), clusterConnectOptions{
-		Name: "c", KubeContext: "vke-prod", Auth: "token", Env: "prod", DryRun: true, BindingGSA: "x@y", Out: io.Discard,
-		LiveFrom: writeLive(t, "kind: List\nitems: []\n"),
-	})
-	if err == nil || !strings.Contains(err.Error(), "--binding-gsa is for --auth gcp") {
-		t.Fatalf("err = %v", err)
 	}
 }
 

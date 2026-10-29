@@ -23,6 +23,7 @@
     "last_version": "v1.4.0",
     "events": 7,
     "affected": 3,
+    "affected_unit": "users",
     "latest_trace_id": "0af7651916cd43dd8448eb211c80319c"
   },
   "latest_event": {
@@ -64,6 +65,7 @@
       "version": "v1.4.0",
       "events": 5,
       "affected": 2,
+      "affected_unit": "users",
       "first_seen": "2026-10-22T10:30:00Z",
       "last_seen": "2026-10-22T11:30:00Z"
     }

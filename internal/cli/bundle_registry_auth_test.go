@@ -402,6 +402,9 @@ func stubHostedBundleLedger(t *testing.T, hub bool, base string) {
 // A registry that ANSWERED and said no fails the build in every hosted env: the
 // bundle did not reach the registry for a reason a retry will not change.
 func TestEnvBuildBundle_ARefusedPushFailsTheBuildEvenForALedgerOnlyEnv(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes the on-disk release ledger for real; runs in task test")
+	}
 	reg := newFakeRealmRegistry(t, "not-the-credential")
 	dir := newLedgerTestProject(t, "bundle-denied-project")
 	stubEnvShape(t, "bundle-denied-project")
@@ -426,6 +429,9 @@ func TestEnvBuildBundle_ARefusedPushFailsTheBuildEvenForALedgerOnlyEnv(t *testin
 // pushes it) but not for a hub-converged one, whose control plane deploys only
 // what it has recorded.
 func TestEnvBuildBundle_AnUnreachableRegistryFailsAHubConvergedEnvOnly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes the on-disk release ledger for real; runs in task test")
+	}
 	for _, tc := range []struct {
 		name    string
 		hub     bool

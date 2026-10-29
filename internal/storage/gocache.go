@@ -19,8 +19,10 @@ import (
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
-// Go-toolchain cache layer: the shared build cache, the golangci-lint cache,
-// the goimports module index, and orphaned private caches (gocache_orphans.go).
+// Go-toolchain cache layer: the shared build cache and the golangci-lint cache.
+// The module cache is Go's alone: it is shared by every worktree (keyed by
+// module version, not path), so it grows slowly, and a half-removed module
+// breaks builds in flight.
 //
 // Why age-based trim and not `go clean -cache`: without -trimpath Go keys every
 // main-module package by its absolute directory, so each worktree gets its own
@@ -49,6 +51,14 @@ import (
 // entries and says so (BudgetUnreachableError, recorded in GCResult.OverBudget).
 // The remedy is a slower fill — usually builds that lost -trimpath — or a
 // larger go_cache_gib, never a trim under a live build.
+//
+// The floor is that guarantee for a build younger than about an hour. A gate
+// that runs longer (`go test -race` across a repo: 40-70 minutes; a lint after
+// a queue wait) can hold an entry that is by then past the floor, so the
+// cutoff is additionally held back to the start of the oldest running Go
+// toolchain process minus cmd/go's hour (gocache_livebuild.go): a lease taken
+// from the processes themselves, covering a build of any length for as long
+// as it runs and nothing after.
 //
 // trim.txt and README are top-level files, which the trim never touches;
 // cmd/go's own trim is independent of this one.
@@ -116,9 +126,7 @@ func (r Runner) GoCaches(apply bool) error {
 		run     func(Runner, bool) error
 	}{
 		{"shared build cache", 0.6, 0.75, Runner.SharedGoCache},
-		{"golangci-lint cache", 0.5, 0.5, Runner.GolangciLintCache},
-		{"orphaned private caches", 0.5, 0.5, Runner.OrphanedGoCaches},
-		{"goimports index", 1, 1, Runner.GoimportsIndex},
+		{"golangci-lint cache", 1, 1, Runner.GolangciLintCache},
 	}
 	for _, step := range steps {
 		// A step the slice left no time for is recorded as cut off, never
@@ -166,33 +174,23 @@ func refuseUnderTest(field string) error {
 		"(an unset root would trim the developer's real Go cache)", field)
 }
 
-// goEnv resolves the shared GOCACHE and GOMODCACHE.
-func (r Runner) goEnv(ctx context.Context) (gocache, gomodcache string, err error) {
-	gocache, gomodcache = r.GoCacheRoot, r.GoModCacheRoot
-	if gocache != "" && gomodcache != "" {
-		return gocache, gomodcache, nil
+// goEnv resolves the shared GOCACHE.
+func (r Runner) goEnv(ctx context.Context) (string, error) {
+	if r.GoCacheRoot != "" {
+		return r.GoCacheRoot, nil
 	}
 	if testing.Testing() {
-		if gocache == "" {
-			return "", "", refuseUnderTest("GoCacheRoot")
-		}
-		return gocache, "", nil
+		return "", refuseUnderTest("GoCacheRoot")
 	}
-	out, err := r.command(ctx, "go", "env", "GOCACHE", "GOMODCACHE")
+	out, err := r.command(ctx, "go", "env", "GOCACHE")
 	if err != nil {
-		return "", "", fmt.Errorf("go env: %w", err)
+		return "", fmt.Errorf("go env: %w", err)
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) != 2 || strings.TrimSpace(lines[0]) == "" || strings.TrimSpace(lines[1]) == "" {
-		return "", "", fmt.Errorf("unexpected `go env` output %q", out)
+	gocache := strings.TrimSpace(string(out))
+	if gocache == "" || strings.Contains(gocache, "\n") {
+		return "", fmt.Errorf("unexpected `go env` output %q", out)
 	}
-	if gocache == "" {
-		gocache = strings.TrimSpace(lines[0])
-	}
-	if gomodcache == "" {
-		gomodcache = strings.TrimSpace(lines[1])
-	}
-	return gocache, gomodcache, nil
+	return gocache, nil
 }
 
 // SharedGoCache trims the shared `go env GOCACHE`.
@@ -200,7 +198,7 @@ func (r Runner) SharedGoCache(apply bool) error {
 	root := r.GoCacheRoot
 	if root == "" {
 		var err error
-		if root, _, err = r.goEnv(r.hostCtx()); err != nil {
+		if root, err = r.goEnv(r.hostCtx()); err != nil {
 			r.print("skip shared go build cache (%v)\n", err)
 			// No Go toolchain at all: there is no shared cache to trim. Any
 			// other failure to locate it is a failure, never a clean pass —
@@ -211,7 +209,7 @@ func (r Runner) SharedGoCache(apply bool) error {
 			return fmt.Errorf("locate the shared Go build cache: %w", err)
 		}
 	}
-	return r.trimGoBuildCache("shared go build cache", root, apply)
+	return r.trimGoBuildCache("shared go build cache", root, r.Policy.GoCacheGiB, apply)
 }
 
 // GolangciLintCache trims golangci-lint's fork of the Go cache format.
@@ -230,7 +228,10 @@ func (r Runner) GolangciLintCache(apply bool) error {
 			return nil
 		}
 	}
-	return r.trimGoBuildCache("golangci-lint cache", root, apply)
+	// Its own budget, not go_cache_gib: shared with the build cache, a lint
+	// cache can never reach the build cache's tens of GiB, so it was trimmed
+	// by age alone, and a machine that lints all day keeps every entry young.
+	return r.trimGoBuildCache("golangci-lint cache", root, r.Policy.GolangciCacheGiB, apply)
 }
 
 // hasCacheSentinel reports whether root's README is a Go-style cache marker.
@@ -312,7 +313,7 @@ func readGoCacheShard(root, shard string) ([]goCacheEntry, error) {
 		}
 		switch {
 		case info.Mode().IsRegular():
-			out = append(out, goCacheEntry{sub: shard, name: f.Name(), size: info.Size(), mtime: info.ModTime()})
+			out = append(out, goCacheEntry{sub: shard, name: f.Name(), size: entryDiskBytes(info), mtime: info.ModTime()})
 		case info.IsDir() && strings.HasSuffix(f.Name(), "-d"):
 			size, err := goCacheDirSize(filepath.Join(dir, f.Name()))
 			if err != nil {
@@ -337,11 +338,19 @@ func goCacheDirSize(path string) (int64, error) {
 	var n int64
 	for _, f := range files {
 		if info, err := f.Info(); err == nil && info.Mode().IsRegular() {
-			n += info.Size()
+			n += entryDiskBytes(info)
 		}
 	}
 	return n, nil
 }
+
+// entryDiskBytes is what a cache entry costs the disk, which is what a budget
+// bounds: its allocated blocks, not its length. The two part ways on exactly
+// the caches this layer trims: a golangci-lint cache entry is a few hundred
+// bytes in a 4 KiB block, so one measured 0.9 GB by length held 10.8 GiB of
+// disk, and its 40 GiB budget never applied (2026-10-26). A var only so the
+// package's arithmetic tests can size entries by length (TestMain).
+var entryDiskBytes = allocatedBytes
 
 // sampleGoCache reads a bounded, evenly spaced subset of shards (starting at
 // offset so successive passes sample different ones). Entry hashes are uniform,
@@ -438,11 +447,14 @@ const defaultGoCacheVolumePercent = 15
 // goCacheDiskSpace is DiskSpace; tests replace it.
 var goCacheDiskSpace = DiskSpace
 
-// goCacheBudget is the size the cache at root is trimmed to: go_cache_gib,
-// capped at go_cache_volume_percent of the volume it lives on. A volume that
-// cannot be read leaves go_cache_gib alone.
-func (r Runner) goCacheBudget(root string) uint64 {
-	budget := r.Policy.GoCacheGiB * GiB
+// goCacheBudget is the size the shared build cache at root is trimmed to:
+// go_cache_gib, capped at go_cache_volume_percent of the volume it lives on. A
+// volume that cannot be read leaves go_cache_gib alone.
+func (r Runner) goCacheBudget(root string) uint64 { return r.budgetFor(r.Policy.GoCacheGiB, root) }
+
+// budgetFor is gibs GiB, capped at go_cache_volume_percent of root's volume.
+func (r Runner) budgetFor(gibs uint64, root string) uint64 {
+	budget := gibs * GiB
 	pct := r.Policy.GoCacheVolumePercent
 	if pct == 0 {
 		pct = defaultGoCacheVolumePercent
@@ -495,7 +507,9 @@ func (r Runner) saveGoCacheCursor(label string, next int) {
 	}
 }
 
-func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
+// trimGoBuildCache trims one Go-format cache at root to budgetGiB (capped at
+// go_cache_volume_percent of its volume) and the go_cache_unused age rule.
+func (r Runner) trimGoBuildCache(label, root string, budgetGiB uint64, apply bool) error {
 	if _, err := os.Stat(root); err != nil {
 		return nil // absent: nothing to trim
 	}
@@ -524,8 +538,14 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 		r.print("%s %s: %v\n", label, root, err)
 		return err
 	}
-	budget := r.goCacheBudget(root)
+	budget := r.budgetFor(budgetGiB, root)
 	cutoff, estTotal := goCacheCutoff(sample, len(shards), now, unused, budget)
+	heldBack := ""
+	var liveBuild time.Duration
+	if bound, oldest, ok := r.liveBuildBound(ctx, now); ok && bound.Before(cutoff) {
+		cutoff, liveBuild = bound, oldest
+		heldBack = fmt.Sprintf("; held back by a running Go build %s old (anything it resolved has a last-use time after its start minus %s)", oldest.Round(time.Second), liveBuildMargin)
+	}
 	overBudget := ""
 	if estTotal > budget {
 		// Over its size budget: the per-pass cap must not stop the trim short
@@ -542,8 +562,8 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 		r.saveGoCacheCursor(label, (start+pass.shardsCovered)%len(shards))
 	}
 
-	r.print("%s %s: ~%.1f GiB estimated (budget %.1f GiB, trimmed to %.1f GiB when over); deleting entries last used before %s (age rule %s, floor %s under every rule)%s\n",
-		label, root, float64(estTotal)/float64(GiB), float64(budget)/float64(GiB), float64(budget)*goCacheLowWater/float64(GiB), cutoff.Format(time.RFC3339), unused, goCacheFloor, overBudget)
+	r.print("%s %s: ~%.1f GiB estimated (budget %.1f GiB, trimmed to %.1f GiB when over); deleting entries last used before %s (age rule %s, floor %s under every rule, and the start of any running Go build)%s\n",
+		label, root, float64(estTotal)/float64(GiB), float64(budget)/float64(GiB), float64(budget)*goCacheLowWater/float64(GiB), cutoff.Format(time.RFC3339), unused, goCacheFloor, heldBack+overBudget)
 	for _, p := range pass.samples {
 		r.print("  %s %s\n", verb(apply), p)
 	}
@@ -561,12 +581,20 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 	}
 	r.print("%s: %s %d entries, %.1f GiB (%s)\n", label, map[bool]string{true: "removed", false: "would remove"}[apply], pass.removed, float64(pass.freed)/float64(GiB), status)
 	young := goCacheYoungBytes(sample, len(shards))
+	protectedFor := goCacheFloor
+	if liveBuild > 0 {
+		// What a running build can hold is as untouchable as the floor's
+		// share: count the sampled entries between the floor and the bound.
+		young += goCacheProtectedByBuild(sample, len(shards), cutoff)
+		protectedFor = max(protectedFor, now.Sub(cutoff))
+	}
 	if r.OnGoCacheTrim != nil {
 		r.OnGoCacheTrim(GoCacheTrim{
 			Cache: label, Root: root, Applied: apply,
 			EstimatedBytes: estTotal, BudgetBytes: budget, YoungBytes: young,
 			Cutoff: cutoff, Removed: pass.removed, FreedBytes: pass.freed,
 			ShardsCovered: pass.shardsCovered, ShardsTotal: pass.shardsTotal, Finished: pass.finished,
+			OldestLiveBuild: liveBuild,
 		})
 	}
 	// A walk the deadline stopped is a cut-off. streamTrimGoCache records
@@ -578,7 +606,7 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 		}
 	}
 	if young > budget {
-		unreachable := &BudgetUnreachableError{Cache: label, Estimated: estTotal, Budget: budget, Young: young, Floor: goCacheFloor}
+		unreachable := &BudgetUnreachableError{Cache: label, Estimated: estTotal, Budget: budget, Young: young, Floor: protectedFor}
 		r.print("WARNING %v\n", unreachable)
 		return errors.Join(pass.stop, unreachable)
 	}
@@ -629,6 +657,26 @@ type GoCacheTrim struct {
 	ShardsCovered int  `json:"shards_covered"`
 	ShardsTotal   int  `json:"shards_total"`
 	Finished      bool `json:"finished"`
+	// OldestLiveBuild is the age of the oldest running Go build that held the
+	// cutoff back past the floor (gocache_livebuild.go); zero when none did.
+	OldestLiveBuild time.Duration `json:"oldest_live_build_ns,omitempty"`
+}
+
+// goCacheProtectedByBuild estimates the bytes of the whole cache with a
+// last-use time between the floor and cutoff: past the floor, but held by a
+// running build (gocache_livebuild.go). The sample's entries are those past
+// the floor.
+func goCacheProtectedByBuild(sample goCacheSample, nShards int, cutoff time.Time) uint64 {
+	if sample.shards == 0 {
+		return 0
+	}
+	var n uint64
+	for _, e := range sample.entries {
+		if !e.mtime.Before(cutoff) {
+			n += uint64(e.size)
+		}
+	}
+	return uint64(float64(n) * float64(nShards) / float64(sample.shards))
 }
 
 // BudgetUnreachableError marks a cache no trim can bring under its size budget,
@@ -646,7 +694,8 @@ type BudgetUnreachableError struct {
 	// Cache names the cache ("shared go build cache").
 	Cache string
 	// Estimated is the cache's estimated size, Budget its size budget, and
-	// Young the estimated bytes last used inside Floor, all in bytes.
+	// Young the estimated bytes last used inside Floor (the safety floor, or the
+	// age of the oldest running build plus its margin when that is longer), in bytes.
 	Estimated, Budget, Young uint64
 	Floor                    time.Duration
 }
@@ -702,6 +751,9 @@ func streamTrimGoCache(ctx context.Context, root string, shards []string, start 
 					return
 				}
 				complete := true
+				// Least recently used first, so a pass the cap or the deadline
+				// stops partway has taken the entries least likely to be wanted.
+				sort.Slice(entries, func(a, b int) bool { return entries[a].mtime.Before(entries[b].mtime) })
 				for _, e := range entries {
 					if !e.mtime.Before(cutoff) {
 						continue
@@ -709,6 +761,13 @@ func streamTrimGoCache(ctx context.Context, root string, shards []string, start 
 					if ctx.Err() != nil || halted.Load() {
 						complete = false
 						break
+					}
+					// The listing is as old as the shard read, and a paced pass
+					// reaches an entry minutes later: a build that used it since
+					// has restamped it (cmd/go markUsed), so the floor never saw
+					// that use. Judge the entry by its mtime now.
+					if info, err := os.Stat(e.path(root)); err != nil || !info.ModTime().Before(cutoff) {
+						continue
 					}
 					if apply {
 						if err := e.remove(ctx, del, root); err != nil {
@@ -754,110 +813,10 @@ func verb(apply bool) string {
 	return "would remove"
 }
 
-// ---- goimports module index -------------------------------------------------
-
-var goimportsPayload = regexp.MustCompile(`^index-[0-9]+-[0-9]+$`)
-
-const goimportsKeepRecent = 24 * time.Hour
-
-// GoimportsIndex prunes stale goimports/gopls module-index generations.
-//
-// x/tools/internal/modindex writes each index to a fresh randomly named
-// payload (index-<ver>-<rand>) and then points a predictable link file
-// (index-name-<ver>-<sha256 of GOMODCACHE>) at it by name; Read follows the
-// link and nothing prunes old payloads. So the current generations are exactly
-// the payload names held by link files. Those, and anything touched in the
-// last 24h (a writer between "payload written" and "link updated"), are kept.
-// If no link can be read the current generation is not certain, so the newest
-// two payloads are kept as well.
-func (r Runner) GoimportsIndex(apply bool) error {
-	root := r.GoimportsRoot
-	if root == "" {
-		if testing.Testing() {
-			r.print("skip goimports index (%v)\n", refuseUnderTest("GoimportsRoot"))
-			return nil
-		}
-		dir, err := os.UserCacheDir()
-		if err != nil {
-			return nil
-		}
-		root = filepath.Join(dir, "goimports")
-	}
-	files, err := os.ReadDir(root)
-	if err != nil {
-		return nil
-	}
-	type payload struct {
-		name  string
-		size  int64
-		mtime time.Time
-	}
-	var payloads []payload
-	keep := map[string]bool{}
-	linksOK := true
-	links := 0
-	for _, f := range files {
-		switch {
-		case strings.HasPrefix(f.Name(), "index-name-"):
-			links++
-			b, err := os.ReadFile(filepath.Join(root, f.Name()))
-			if err != nil || len(b) == 0 {
-				linksOK = false
-				continue
-			}
-			keep[strings.TrimSpace(string(b))] = true
-		case goimportsPayload.MatchString(f.Name()):
-			info, err := f.Info()
-			if err != nil || !info.Mode().IsRegular() {
-				continue
-			}
-			payloads = append(payloads, payload{f.Name(), info.Size(), info.ModTime()})
-		}
-	}
-	sort.Slice(payloads, func(i, j int) bool { return payloads[i].mtime.After(payloads[j].mtime) })
-	if !linksOK || links == 0 {
-		for i := 0; i < len(payloads) && i < 2; i++ {
-			keep[payloads[i].name] = true
-		}
-	}
-	now := time.Now()
-	var reclaim int64
-	var victims []payload
-	for i := len(payloads) - 1; i >= 0; i-- { // oldest first
-		p := payloads[i]
-		if keep[p.name] || now.Sub(p.mtime) < goimportsKeepRecent {
-			continue
-		}
-		victims = append(victims, p)
-		reclaim += p.size
-	}
-	r.print("goimports index %s: %d generations, %d stale (%.1f GiB)\n", root, len(payloads), len(victims), float64(reclaim)/float64(GiB))
-	ctx := r.hostCtx()
-	del := r.deletes()
-	removed := 0
-	for _, p := range victims {
-		if ctx.Err() != nil {
-			r.print("goimports index: stopped early at the deadline; %d stale generations retained\n", len(victims)-removed)
-			return nil
-		}
-		r.print("  %s %s (%d bytes)\n", verb(apply), filepath.Join(root, p.name), p.size)
-		if apply {
-			if err := del.unlink(ctx, filepath.Join(root, p.name)); err != nil {
-				if stopsPass(err) {
-					r.print("goimports index: stopped (%v); %d stale generations retained\n", err, len(victims)-removed)
-				}
-				return err
-			}
-		}
-		removed++
-	}
-	return nil
-}
-
 // goCacheStatus reports the shared cache's estimated size from a sample of
 // shards (a full scan of a million-entry cache is minutes under load).
 func (r Runner) goCacheStatus(ctx context.Context) {
-	root, _, err := r.goEnv(ctx)
+	root, err := r.goEnv(ctx)
 	if err != nil {
 		return
 	}
@@ -879,24 +838,18 @@ func (r Runner) goCacheStatus(ctx context.Context) {
 	}
 }
 
-// ProductionGoCacheRoots resolves the machine's Go-toolchain cache locations
-// for a Runner: the shared GOCACHE/GOMODCACHE (from `go env`), the
-// golangci-lint cache and the goimports index. Anything that cannot be located
-// is left empty, which the layers skip rather than guess.
-func ProductionGoCacheRoots(ctx context.Context, command func(context.Context, string, ...string) ([]byte, error)) (gocache, gomodcache, golangci, goimports string) {
-	if out, err := command(ctx, "go", "env", "GOCACHE", "GOMODCACHE"); err == nil {
-		if lines := strings.Split(strings.TrimSpace(string(out)), "\n"); len(lines) == 2 {
-			gocache, gomodcache = strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1])
-		}
+// ProductionGoCacheRoots resolves the machine's Go-format cache locations for
+// a Runner: the shared GOCACHE (from `go env`) and the golangci-lint cache.
+// Anything that cannot be located is left empty, which the layers skip rather
+// than guess.
+func ProductionGoCacheRoots(ctx context.Context, command func(context.Context, string, ...string) ([]byte, error)) (gocache, golangci string) {
+	if out, err := command(ctx, "go", "env", "GOCACHE"); err == nil {
+		gocache = strings.TrimSpace(string(out))
 	}
 	if env := os.Getenv("GOLANGCI_LINT_CACHE"); env != "" {
 		golangci = env
-	}
-	if dir, err := os.UserCacheDir(); err == nil {
-		if golangci == "" {
-			golangci = filepath.Join(dir, "golangci-lint")
-		}
-		goimports = filepath.Join(dir, "goimports")
+	} else if dir, err := os.UserCacheDir(); err == nil {
+		golangci = filepath.Join(dir, "golangci-lint")
 	}
 	return
 }

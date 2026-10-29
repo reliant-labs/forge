@@ -24,6 +24,9 @@ const reliantPluginScript = "tools/protoc-gen-es/node_modules/protoc-gen-es-v2.1
 func preflightProject(t *testing.T, files map[string]string, programs ...string) (dir string, env []string) {
 	t.Helper()
 	requirePOSIXFake(t, "plugin programs")
+	// The pre-flight installs a missing frontend's packages; a test that is
+	// not about that must never reach the host's real npm.
+	t.Setenv("FORGE_SKIP_NPM_INSTALL", "1")
 	dir = t.TempDir()
 	for rel, body := range files {
 		mode := os.FileMode(0o644)
@@ -291,5 +294,107 @@ func TestRunBufGenerateGo_PreflightRefusesBeforeBuf(t *testing.T) {
 	}
 	if _, statErr := os.Stat(marker); statErr == nil {
 		t.Error("buf ran although the pre-flight found a plugin that cannot start")
+	}
+}
+
+// fakeNPM puts an `npm` on PATH that records its arguments and, when
+// materialize is non-empty, creates that executable (relative to its working
+// directory) the way a real install would.
+func fakeNPM(t *testing.T, materialize string) (calls func() string) {
+	t.Helper()
+	requirePOSIXFake(t, "npm")
+	bin := t.TempDir()
+	log := filepath.Join(t.TempDir(), "npm.log")
+	script := "#!/bin/sh\necho \"$PWD: $*\" >> " + log + "\n"
+	if materialize != "" {
+		script += "mkdir -p \"$(dirname " + materialize + ")\" && printf '#!/bin/sh\\n' > " + materialize + " && chmod +x " + materialize + "\n"
+	}
+	if err := os.WriteFile(filepath.Join(bin, "npm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+"/usr/bin"+string(os.PathListSeparator)+"/bin")
+	return func() string {
+		b, _ := os.ReadFile(log)
+		return string(b)
+	}
+}
+
+const feLocalPlugin = "./frontends/web/node_modules/.bin/protoc-gen-es"
+
+// A project-owned buf template naming a frontend's local protoc-gen-es, in a
+// frontend whose node_modules was never installed (a fresh worktree). forge
+// installs a missing frontend's packages itself everywhere else; the
+// pre-flight must too, through the same install path, instead of refusing.
+func TestPreflightBufTemplate_InstallsMissingFrontendPlugin(t *testing.T) {
+	calls := fakeNPM(t, "node_modules/.bin/protoc-gen-es")
+	dir, _ := preflightProject(t, map[string]string{
+		"buf.gen.yaml":                    bufGenV2("  - local: " + feLocalPlugin + "\n    out: frontends/web/src/gen\n"),
+		"frontends/web/package.json":      "{}",
+		"frontends/web/package-lock.json": "{}",
+	})
+
+	t.Setenv("FORGE_SKIP_NPM_INSTALL", "")
+	if err := preflightBufTemplate(dir, "buf.gen.yaml", nil, nil); err != nil {
+		t.Fatalf("a plugin that one frontend install provides was refused: %v", err)
+	}
+	got := calls()
+	if !strings.Contains(got, filepath.Join(dir, "frontends", "web")+": ci") {
+		t.Errorf("npm was not run as `npm ci` in the frontend; calls:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "frontends", "web", "node_modules", ".bin", "protoc-gen-es")); err != nil {
+		t.Errorf("plugin still absent after the pre-flight installed: %v", err)
+	}
+}
+
+// FORGE_SKIP_NPM_INSTALL is honoured exactly as frontenddeps.Ensure honours
+// it: no install, and the refusal names the frontend, the command, and why
+// forge did not run it.
+func TestPreflightBufTemplate_SkipInstallEnvRefusesWithRemedy(t *testing.T) {
+	calls := fakeNPM(t, "node_modules/.bin/protoc-gen-es")
+	t.Setenv("FORGE_SKIP_NPM_INSTALL", "1")
+	dir, _ := preflightProject(t, map[string]string{
+		"buf.gen.yaml":                    bufGenV2("  - local: " + feLocalPlugin + "\n    out: frontends/web/src/gen\n"),
+		"frontends/web/package.json":      "{}",
+		"frontends/web/package-lock.json": "{}",
+	})
+
+	err := preflightBufTemplate(dir, "buf.gen.yaml", nil, nil)
+	if err == nil {
+		t.Fatal("pre-flight passed with the plugin absent and installs disabled")
+	}
+	for _, want := range []string{"frontends/web", "run `npm ci` in frontends/web", "FORGE_SKIP_NPM_INSTALL"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not mention %q:\n%v", want, err)
+		}
+	}
+	if got := calls(); got != "" {
+		t.Errorf("npm ran despite FORGE_SKIP_NPM_INSTALL:\n%s", got)
+	}
+}
+
+// An install that fails must refuse with the install's own failure and the
+// command to reproduce it, never a bare "does not exist".
+func TestPreflightBufTemplate_FailedInstallNamesFrontendAndCommand(t *testing.T) {
+	requirePOSIXFake(t, "npm")
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "npm"), []byte("#!/bin/sh\necho 'ERR! registry unreachable' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	dir, _ := preflightProject(t, map[string]string{
+		"buf.gen.yaml":                    bufGenV2("  - local: " + feLocalPlugin + "\n    out: frontends/web/src/gen\n"),
+		"frontends/web/package.json":      "{}",
+		"frontends/web/package-lock.json": "{}",
+	})
+
+	t.Setenv("FORGE_SKIP_NPM_INSTALL", "")
+	err := preflightBufTemplate(dir, "buf.gen.yaml", nil, nil)
+	if err == nil {
+		t.Fatal("pre-flight passed although the install failed")
+	}
+	for _, want := range []string{"frontends/web", "install", "run `npm ci` in frontends/web", "registry unreachable"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not mention %q:\n%v", want, err)
+		}
 	}
 }

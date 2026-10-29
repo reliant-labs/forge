@@ -214,8 +214,8 @@ func TestAnnotations_KindFilters(t *testing.T) {
 	for _, m := range method.Markers {
 		methodMarkers[m.Name] = true
 	}
-	if len(method.Markers) != 2 || !methodMarkers["forge:mutation"] || !methodMarkers["forge:custom"] {
-		t.Errorf("--kind method must carry the rpc-level markers forge:mutation and forge:custom: %+v", method.Markers)
+	if len(method.Markers) != 3 || !methodMarkers["forge:mutation"] || !methodMarkers["forge:query-scope"] || !methodMarkers["forge:custom"] {
+		t.Errorf("--kind method must carry the rpc-level markers forge:mutation, forge:query-scope and forge:custom: %+v", method.Markers)
 	}
 	if len(method.FieldTypes) != 0 ||
 		len(method.ValidateRules) != 0 || len(method.ServiceOptions) != 0 {
@@ -354,7 +354,7 @@ message LedgerEntity {
 	for _, want := range []string{
 		"forge:entity", "forge:soft-delete", "forge:append-only",
 		"forge:read-only", "forge:generated", "forge:secret", "forge:guards", "forge:mutation",
-		"forge:custom", "forge:unmanaged",
+		"forge:query-scope", "forge:custom", "forge:unmanaged",
 		"forge:optional-dep", "forge:optional-checked", "forge:constructor",
 		"forge:no-observe", "forge:service", "forge:exclude-contract",
 		"forge:external-component", "forge:not-a-component", "forge:outbound-io",
@@ -446,8 +446,8 @@ message LedgerEntity {
 	if !mutationMarkerRE.MatchString("// forge:mutation") {
 		t.Error("forge:mutation regex no longer matches the canonical marker")
 	}
-	if marked := mutationMarkedMethods(filepath.Join(dir, "hooks.proto")); marked["FindAndHoldSeat"] {
-		t.Error("mutationMarkedMethods invented a marker for a file that does not exist")
+	if marked := scanRPCHookMarkers(filepath.Join(dir, "hooks.proto")).Mutation; marked["FindAndHoldSeat"] {
+		t.Error("scanRPCHookMarkers invented a marker for a file that does not exist")
 	}
 	hooksProto := `syntax = "proto3";
 package services.demo.v1;
@@ -460,7 +460,7 @@ service DemoService {
 	if err := os.WriteFile(filepath.Join(dir, "hooks.proto"), []byte(hooksProto), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	marked := mutationMarkedMethods(filepath.Join(dir, "hooks.proto"))
+	marked := scanRPCHookMarkers(filepath.Join(dir, "hooks.proto")).Mutation
 	if !marked["FindAndHoldSeat"] {
 		t.Error("forge:mutation not recognized on the rpc it labels")
 	}

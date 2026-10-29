@@ -439,7 +439,9 @@ func TestBootstrap_EscrowScriptParses(t *testing.T) {
 		t.Skip("bash is not available")
 	}
 	for name, script := range map[string]string{"escrow.sh": EscrowScript, "converge.sh": ConvergeScript} {
-		cmd := exec.Command(bash, "-n", "/dev/stdin")
+		// No file operand: bash reads the script from stdin. /dev/stdin is
+		// not a path every bash has (Git for Windows' does not).
+		cmd := exec.Command(bash, "-n")
 		cmd.Stdin = strings.NewReader(script)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Errorf("%s does not parse: %v\n%s", name, err, out)

@@ -38,7 +38,7 @@ func fakeControlPlane(t *testing.T) (*httptest.Server, *url.Values) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"access_token": "rlat_ABCDEFGHijklmnop", "token_type": "Bearer",
+				"credential_kind": "human", "access_token": "rlat_ABCDEFGHijklmnop", "token_type": "Bearer",
 				"expires_in": 3600, "scope": "deploy:read deploy:write",
 			})
 		default:

@@ -264,9 +264,10 @@ type pipelineContext struct {
 	EntityDefs       []codegen.EntityDef
 	ConfigFields     map[string]bool
 
-	// rendered caches renderedFrontends for the run: the frontends each
-	// environment's KCL declares, read once however many steps ask.
-	rendered     []renderedEnvFrontend
+	// rendered caches renderEnvironments for the run: the frontends and
+	// workloads each environment's KCL declares, read once however many
+	// steps ask.
+	rendered     renderedEnvironments
 	renderedRead bool
 
 	// registry is the memoized parse of the user-owned
@@ -423,12 +424,6 @@ func generateSteps() []GenStep {
 		{Name: "cmd/commands.go (user extension point)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepCmdCommands, Tag: "codegen"},
 		{Name: "per-service test helpers", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrapTesting, Tag: "codegen"},
 		{Name: "db/embed.go (embedded migrations)", Gate: gateMigrateHasDriver, GateReason: "database.driver unset or features.migrations=false", Run: stepBootstrapMigrate, Tag: "codegen"},
-		// The project's own commands (forge.yaml generate.hooks): after
-		// forge's codegen, so a hook can read what forge emitted, and before
-		// both tidies and the validation build, so what a hook emits is
-		// tidied and compiled in this same run.
-		{Name: generateHooksStep, Gate: hasGenerateHooks, GateReason: "no generate.hooks in forge.yaml", Run: stepGenerateHooks, Tag: "tools", Writes: writesGenerateHooks},
-		{Name: "go mod tidy (gen/)", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepGoModTidyGen, Tag: "tools", Writes: writesGenTidy},
 		// NOT gated on features.deploy. The Tier-1 files this sweep writes
 		// each carry their own enabledFor predicate and none is a deploy
 		// artifact (deploy/alloy-config.alloy gates on observability, not
@@ -463,10 +458,6 @@ func generateSteps() []GenStep {
 		// it, or a project whose deploy/ was scaffolded before the first
 		// component existed). Drift is reported by `forge lint`, not repaired.
 		{Name: "workloads.k (scaffold once)", Gate: and(gateDeployEnabled, hasGoModule), GateReason: "features.deploy=false, or " + noGoModuleReason + ": there is no workload to declare", Run: stepWorkloadsKCL, Tag: "deploy"},
-		// Dashboards are a projection of the services the descriptor and the
-		// parsed protos describe, so they follow "parse services + module
-		// path". Owned overrides live beside the _gen files; see obsdash.
-		{Name: "observability dashboards", Gate: gateObservabilityDashboards, GateReason: "features.observability=false, not a service project, or no services", Run: stepObservabilityDashboards, Tag: "deploy"},
 		// Gated on envs EXISTING, not on features.deploy. A service scaffold
 		// always gets deploy/kcl/<env>/main.k (generator.project: "so the user
 		// has a complete starting point"), and every main.k opens with
@@ -476,6 +467,9 @@ func generateSteps() []GenStep {
 		// `forge doctor` deploy checks on a project shape that is entirely
 		// valid. The step is a function of what is on disk: no envs, no work.
 		{Name: "per-env deploy config", Gate: and(hasForgeYAML, hasConfig, hasDeployEnvs), GateReason: "no proto/<project>/config/v1/ directory or no deploy/kcl/<env>/main.k", Run: stepPerEnvDeployConfig, Tag: "deploy"},
+		// Process dashboards render workload identity, so config_gen.k's
+		// ROOTS and per-env config must already exist on the first generate.
+		{Name: "observability dashboards", Gate: gateObservabilityDashboards, GateReason: "features.observability=false or features.codegen=false", Run: stepObservabilityDashboards, Tag: "deploy"},
 		// AFTER per-env deploy config, deliberately. The frontend's runtime
 		// document is rendered from the dev environment's own KCL, which
 		// means both halves of that render — the generated
@@ -522,6 +516,27 @@ func generateSteps() []GenStep {
 		// spends time validating: settle the drift the stomp guard
 		// quarantined. See generate_drift_rescue.go.
 		{Name: adjudicateDriftStep, Gate: always, Run: stepAdjudicateTier1Drift, Tag: "validate"},
+		// The project's own commands (forge.yaml generate.hooks) run AFTER
+		// every step that writes forge's output, in its final form: the
+		// last emitters (infra, cmd groups), the root tidy, goimports, the
+		// stale-codegen sweep, and the drift adjudication that settles a
+		// quarantined file. A hook that compiles the tree (`go generate`,
+		// `go run ./cmd/...`) must compile what this run produced: run
+		// earlier, it compiled a tree forge had not finished writing — a
+		// generated file still in its pre-goimports form, a stale one the
+		// sweep was about to delete, a cmd group not yet emitted — and its
+		// failure was blamed on the user's code. And a hand-edit the
+		// adjudication reports is the root cause, not whatever the hook
+		// tripped over first.
+		{Name: generateHooksStep, Gate: hasGenerateHooks, GateReason: "no generate.hooks in forge.yaml", Run: stepGenerateHooks, Tag: "tools", Writes: writesGenerateHooks},
+		// Before the validation build, so what a hook emits is tidied and
+		// compiled in this same run: into gen/ (a second buf template)…
+		{Name: "go mod tidy (gen/)", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepGoModTidyGen, Tag: "tools", Writes: writesGenTidy},
+		// …or into the root module. The root was tidied before the hooks
+		// ran, so they compile against a tidy module; this pass picks up a
+		// requirement only hook output introduced, and is a fast no-op when
+		// there is none.
+		{Name: generateHooksTidyStep, Gate: and(hasGenerateHooks, hasGoModule), GateReason: "no generate.hooks in forge.yaml, or " + noGoModuleReason, Run: stepGoModTidyRoot, Tag: "tools", Writes: writesRootTidy},
 		{Name: "post-gen validation", Gate: always, Run: stepPostGenValidate, Tag: "validate"},
 		{Name: "detect renamed Tier-1 exports", Gate: always, Run: stepDetectRenamedExports, Tag: "validate"},
 		{Name: "check disowned-sibling dangling refs", Gate: always, Run: stepCheckDisownedDanglingRefs, Tag: "validate"},
@@ -1623,6 +1638,12 @@ func stepFrontendWorkspaces(ctx *pipelineContext) error {
 		generator.WriteFrontendWorkspaceFiles(ctx.ProjectDir, ctx.Cfg.Name, true)); err != nil {
 		return err
 	}
+	// packages/hooks' web-runtime range is reconciled by the writer above; the
+	// workspace lockfile has to follow it.
+	if err := ctx.warnOrFail("frontend workspace lockfile",
+		generator.SyncFrontendLock(ctx.ProjectDir, filepath.Join("packages", "hooks"))); err != nil {
+		return err
+	}
 	// The native primitives package only matters when there's an RN
 	// frontend to consume it — gating on HasReactNativeFrontend keeps
 	// projects with only a Next.js or Vite SPA frontend from getting
@@ -2555,7 +2576,7 @@ func gateObservabilityDashboardsEnabled(ctx *pipelineContext) bool {
 // gateObservabilityDashboards adds the other half: there is nothing to draw
 // without a Connect service.
 func gateObservabilityDashboards(ctx *pipelineContext) bool {
-	return gateObservabilityDashboardsEnabled(ctx) && len(ctx.Services) > 0
+	return gateObservabilityDashboardsEnabled(ctx)
 }
 
 // stepObservabilityDashboards writes deploy/observability/dashboards/*_gen.json
@@ -2575,11 +2596,7 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 		}
 		in.Services = append(in.Services, svc)
 	}
-	for _, fe := range ctx.Cfg.Frontends {
-		if fe.Type != "react-native" {
-			in.Frontends = append(in.Frontends, fe.Name)
-		}
-	}
+	in.Frontends = observedFrontends(ctx.Cfg)
 	announceDerivedObservability(os.Stdout, ctx)
 	return ctx.warnOrFail("observability dashboards", func() error {
 		funnels, err := declaredFunnels(ctx.renderedFrontends())
@@ -2587,6 +2604,10 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 			return err
 		}
 		in.Funnels = funnels
+		in.Deployed, err = deployedIdentities(ctx.AbsPath, ctx.renderedEnvs().workloads)
+		if err != nil {
+			return fmt.Errorf("deriving the deployed processes from deploy/kcl: %w", err)
+		}
 		written, err := obsdash.Write(ctx.AbsPath, in, ctx.Checksums)
 		if err != nil {
 			return err
@@ -2594,6 +2615,20 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 		fmt.Printf("  ✅ Generated %d observability file(s) under deploy/observability/\n", len(written))
 		return nil
 	}())
+}
+
+// observedFrontends are the frontends the generated observability covers: the
+// web ones, which run the browser SDK through src/lib/otel_gen.ts (React
+// Native gets no otel_gen.ts). obsdash derives each one's service.name with
+// naming.FrontendServiceName, as otel_gen.ts's SERVICE_NAME does.
+func observedFrontends(cfg *config.ProjectConfig) []string {
+	var out []string
+	for _, fe := range cfg.Frontends {
+		if fe.Type != "react-native" {
+			out = append(out, fe.Name)
+		}
+	}
+	return out
 }
 
 // announceDerivedObservability says so, once, when a DERIVED observability

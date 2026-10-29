@@ -35,6 +35,9 @@ import (
 // and the git history rather than staging a project and a repository to imply
 // them. Production leaves them nil and gets the real ones.
 type promoteOptions struct {
+	// Claim, set only by `deploy --claimable`, resolves the document's `claim`
+	// object once the deploy is live (its URL is not known before).
+	Claim func() *deployClaimJSON
 	// DryRun computes the plan and stops. Nothing is written, exit 0.
 	DryRun bool
 	// JSON switches the RENDERING only. The plan is computed before either
@@ -50,6 +53,9 @@ type promoteOptions struct {
 	ExpectCurrent string
 	// Supersede admits a promote while the current rollout is in flight.
 	Supersede bool
+	// AllowPassedMigrations admits a release carrying a migration the env's
+	// schema has already passed (release_migrations.go).
+	AllowPassedMigrations bool
 
 	// Follow is the apply-and-gate stage that runs after the ledger write
 	// (deploy_promote_follow.go). NIL MEANS LEDGER-WRITE ONLY: nothing is
@@ -167,6 +173,8 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	noteDeployPhase(ctx, "promote")
+	noteDeployRelease(ctx, version)
 	if err := preparePromoteFollow(opts.Follow, opts.JSON); err != nil {
 		return err
 	}
@@ -197,6 +205,12 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 			"(the caller must pass promoteOptions.Ledger — see resolveReleaseLedger)", env)
 	}
 
+	// The migration-order guard, ahead of BOTH promotion paths and of any
+	// plan shown as approvable: a release env's schema has already passed
+	// would be refused by env's own migrator at boot, after the write.
+	if err := checkDeployMigrations(ctx, progressWriter(opts.JSON), projectDir, env, version, ledger, opts.AllowPassedMigrations); err != nil {
+		return err
+	}
 	if handled, err := dispatchSnapshotPromotion(ctx, env, version, ledger, opts); handled || err != nil {
 		return err
 	}
@@ -330,16 +344,7 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 			AcknowledgedFindings: opts.Approval.AcknowledgedFindings,
 		})
 		if writeErr == nil && opts.Follow != nil {
-			follow := *opts.Follow
-			follow.projectDir = projectDir
-			follow.planDigest = deployPlanDigest(opts.DeployPlan)
-			// Every stage the follow-through ships is recorded here, so
-			// the report below can say what is live — above all when the
-			// deploy fails after some of it already is.
-			shipped := &shipLog{}
-			follow.clientDeploy.shipped = shipped
-			writeErr = followPromote(ctx, env, plan, ledger, follow)
-			plan.recordFollow(shipped, writeErr)
+			writeErr = followRecordedPromotion(ctx, env, projectDir, &plan, ledger, opts)
 		}
 	}
 	// A refused write still renders: the plan is what the write WOULD have
@@ -369,6 +374,18 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	if q := queuedOf(writeErr); q != nil {
 		plan.Queued = q.document()
 	}
+	// A STILL-APPLYING deploy is applied:true with exit_code 8, and
+	// `applying` names the bundle and the command that keeps watching.
+	if p := applyingOf(writeErr); p != nil {
+		recorded := ""
+		if plan.Recorded != nil {
+			recorded = plan.Recorded.ID
+		}
+		plan.Applying = applyingDocument(p, recorded)
+	}
+	if opts.Claim != nil && writeErr == nil {
+		plan.Claim = opts.Claim()
+	}
 	plan.stamp(writeErr)
 	if opts.JSON {
 		if err := emitJSONDocument(plan); err != nil {
@@ -378,6 +395,19 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	}
 	renderPromotePlanText(progressWriter(opts.JSON), plan)
 	return writeErr
+}
+
+// followRecordedPromotion records every shipped stage even when follow-through
+// fails, so the final plan can report what is already live.
+func followRecordedPromotion(ctx context.Context, env, projectDir string, plan *promotePlan, ledger envLedger, opts promoteOptions) error {
+	follow := *opts.Follow
+	follow.projectDir = projectDir
+	follow.planDigest = deployPlanDigest(opts.DeployPlan)
+	shipped := &shipLog{}
+	follow.clientDeploy.shipped = shipped
+	err := asApplying(followPromote(ctx, env, *plan, ledger, follow))
+	plan.recordFollow(shipped, err)
+	return err
 }
 
 // preflightFollow runs every refusal the follow-through would otherwise meet

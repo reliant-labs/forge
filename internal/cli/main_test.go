@@ -77,6 +77,9 @@ func TestMain(m *testing.M) {
 		return nil, errors.New("unit tests do not query a container registry")
 	}
 	buildxAvailable = func(context.Context) bool { return false }
+	// A unit test builds images through the (fake) docker on PATH, so the
+	// daemon answers; a test of the no-daemon error sets its own answer.
+	dockerDaemonReachable = func(context.Context) error { return nil }
 	// Nor does any test ask the host's docker about compose. `forge env
 	// status` / `env up`'s summary run doctor's runtime checks and list
 	// compose publishers; on this box that read the developer's own compose
@@ -282,6 +285,22 @@ func useFakeCredentialHelper(t *testing.T, token string) {
 }
 
 func pluginInvocation(args []string) ([]string, bool) {
+	// Real isolated KCL children reuse this test executable, just as buf's
+	// plugin does. Match only explicit kcl eval (optionally after -C).
+	evalArgs := args
+	if len(evalArgs) > 0 && evalArgs[0] == "forge" {
+		evalArgs = evalArgs[1:]
+	}
+	probe := evalArgs
+	if len(probe) > 0 && probe[0] == "--allow-version-skew" {
+		probe = probe[1:]
+	}
+	if len(probe) >= 2 && probe[0] == "-C" {
+		probe = probe[2:]
+	}
+	if len(probe) >= 2 && probe[0] == "kcl" && probe[1] == "eval" {
+		return evalArgs, true
+	}
 	// protoc-gen-forge is buf's plugin; merge-generated is git's merge
 	// driver (merge_generated_git_test.go configures the test binary as
 	// one, so a real `git merge` runs the production driver).

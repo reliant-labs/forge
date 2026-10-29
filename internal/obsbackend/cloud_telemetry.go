@@ -195,8 +195,12 @@ func (c Cloud) Trace(ctx context.Context, req TraceRequest) (TraceResult, error)
 	res := TraceResult{TraceID: id, SpansTruncated: out.Truncated}
 	for _, s := range out.Spans {
 		sp := Span{
-			SpanID: s.SpanID, ParentID: s.ParentSpanID, Name: s.Name, Kind: s.Kind, Service: s.Service,
-			Start: s.StartTime.UTC(), DurationNs: int64(s.DurationNs), StatusCode: s.StatusCode,
+			// Kind and status are spelled as the local backend spells them
+			// ("server", "error"): the control plane answers "Server",
+			// "Error", and a reader comparing one backend's output with the
+			// other's must not see two vocabularies.
+			SpanID: s.SpanID, ParentID: s.ParentSpanID, Name: s.Name, Kind: spanEnum(s.Kind, "SPAN_KIND_"), Service: s.Service,
+			Start: s.StartTime.UTC(), DurationNs: int64(s.DurationNs), StatusCode: spanEnum(s.StatusCode, "STATUS_CODE_"),
 			StatusMessage: s.StatusMessage, Attributes: s.Attributes,
 		}
 		for _, e := range s.Events {
@@ -269,21 +273,40 @@ func panelWire(p obsquery.Panel) (wirePanel, error) {
 	return w, nil
 }
 
+type wireTimePoint struct {
+	Time    time.Time `json:"time"`
+	Value   float64   `json:"value"`
+	Partial bool      `json:"partial"`
+	Null    bool      `json:"null"`
+}
+
+type wirePanelSeriesResult struct {
+	Label  string            `json:"label"`
+	Group  map[string]string `json:"group"`
+	Points []wireTimePoint   `json:"points"`
+	Value  float64           `json:"value"`
+}
+
+// wireSeriesMeta is PanelSeriesMeta: what one entry of a metrics panel's series
+// measures.
+type wireSeriesMeta struct {
+	Label       string  `json:"label"`
+	Metric      string  `json:"metric"`
+	MetricType  string  `json:"metricType"`
+	Monotonic   bool    `json:"monotonic"`
+	Temporality string  `json:"temporality"`
+	Aggregation string  `json:"aggregation"`
+	Quantile    float64 `json:"quantile"`
+	ValueUnit   string  `json:"valueUnit"`
+}
+
 type wirePanelResponse struct {
 	Columns []string `json:"columns"`
 	Rows    []struct {
 		Group  map[string]string `json:"group"`
 		Values []float64         `json:"values"`
 	} `json:"rows"`
-	Series []struct {
-		Label  string            `json:"label"`
-		Group  map[string]string `json:"group"`
-		Points []struct {
-			Time  time.Time `json:"time"`
-			Value float64   `json:"value"`
-		} `json:"points"`
-		Value float64 `json:"value"`
-	} `json:"series"`
+	Series     []wirePanelSeriesResult `json:"series"`
 	SQLColumns []struct {
 		Name    string `json:"name"`
 		Type    string `json:"type"`
@@ -295,6 +318,10 @@ type wirePanelResponse struct {
 		SQL    string            `json:"sql"`
 		Params map[string]string `json:"params"`
 	} `json:"compiledSql"`
+	StepSeconds int64            `json:"stepSeconds"`
+	SeriesMeta  []wireSeriesMeta `json:"seriesMeta"`
+	SeriesTotal int              `json:"seriesTotal"`
+	Warnings    []string         `json:"warnings"`
 }
 
 func (c Cloud) queryPanel(ctx context.Context, n Narrow, p obsquery.Panel, step int64) (wirePanelResponse, error) {
@@ -387,6 +414,9 @@ func (c Cloud) Query(ctx context.Context, req QueryRequest) (QueryResult, error)
 	if req.Panel != nil {
 		p = *req.Panel
 	}
+	if p.Signal == "metrics" && p.Kind != "sql" {
+		return c.metricsPanelTable(ctx, req, p)
+	}
 	r, err := c.queryPanel(ctx, req.Narrow, p, req.StepSeconds)
 	if err != nil {
 		return QueryResult{}, err
@@ -396,6 +426,22 @@ func (c Cloud) Query(ctx context.Context, req QueryRequest) (QueryResult, error)
 		return res, nil
 	}
 	res.Columns, res.Rows = flattenCloudPanel(r)
+	if req.Limit > 0 && len(res.Rows) > req.Limit {
+		res.Rows, res.Truncated = res.Rows[:req.Limit], true
+	}
+	return res, nil
+}
+
+// metricsPanelTable runs a metrics panel through MetricsQuery and flattens it
+// the way the local backend does, so `forge obs query --panel` reads the same
+// table on both.
+func (c Cloud) metricsPanelTable(ctx context.Context, req QueryRequest, p obsquery.Panel) (QueryResult, error) {
+	mr, err := c.MetricsQuery(ctx, MetricsQueryRequest{Narrow: req.Narrow, Panel: p, StepSeconds: req.StepSeconds})
+	res := QueryResult{Statements: mr.Statements, Truncated: mr.Truncated}
+	if err != nil || req.Explain {
+		return res, err
+	}
+	res.Columns, res.Rows = flattenMetrics(mr)
 	if req.Limit > 0 && len(res.Rows) > req.Limit {
 		res.Rows, res.Truncated = res.Rows[:req.Limit], true
 	}
@@ -497,6 +543,50 @@ func groupKeys(n int, at func(int) map[string]string) []string {
 
 var wireMetricTypes = map[string]string{
 	"METRIC_TYPE_GAUGE": "gauge", "METRIC_TYPE_SUM": "sum", "METRIC_TYPE_HISTOGRAM": "histogram",
+	"METRIC_TYPE_EXPONENTIAL_HISTOGRAM": "exp_histogram", "METRIC_TYPE_SUMMARY": "summary",
+}
+
+var wireTemporalities = map[string]string{
+	"METRIC_TEMPORALITY_DELTA": "delta", "METRIC_TEMPORALITY_CUMULATIVE": "cumulative",
+}
+
+// wireMetricInfo is MetricInfo; int64 fields arrive as strings (protojson).
+type wireMetricInfo struct {
+	Name           string    `json:"name"`
+	Type           string    `json:"type"`
+	Unit           string    `json:"unit"`
+	Description    string    `json:"description"`
+	Monotonic      bool      `json:"monotonic"`
+	Temporality    string    `json:"temporality"`
+	Services       []string  `json:"services"`
+	ServiceCount   int       `json:"serviceCount"`
+	LastSeen       time.Time `json:"lastSeen"`
+	SeriesEstimate jsonInt   `json:"seriesEstimate"`
+	Queryable      bool      `json:"queryable"`
+	Builtin        bool      `json:"builtin"`
+	Declared       bool      `json:"declared"`
+	Seen           bool      `json:"seen"`
+	Stability      string    `json:"stability"`
+	DeclaredAttrs  []struct {
+		Key    string   `json:"key"`
+		Values []string `json:"values"`
+	} `json:"declaredAttributes"`
+}
+
+func (w wireMetricInfo) info() MetricInfo {
+	mi := MetricInfo{
+		Name: w.Name, Unit: w.Unit, Description: w.Description, Type: wireMetricTypes[w.Type], Monotonic: w.Monotonic,
+		Temporality: wireTemporalities[w.Temporality], Services: w.Services, ServiceCount: w.ServiceCount,
+		SeriesEstimate: int64(w.SeriesEstimate), Queryable: w.Queryable, Builtin: w.Builtin, Declared: w.Declared,
+		Seen: w.Seen, Stability: w.Stability,
+	}
+	if !w.LastSeen.IsZero() {
+		mi.LastSeen = w.LastSeen.UTC()
+	}
+	for _, a := range w.DeclaredAttrs {
+		mi.DeclaredAttributes = append(mi.DeclaredAttributes, MetricAttributeSpec{Key: a.Key, Values: a.Values})
+	}
+	return mi
 }
 
 // MetricsList implements Backend over ListMetrics.
@@ -512,74 +602,162 @@ func (c Cloud) MetricsList(ctx context.Context, req MetricsListRequest) (Metrics
 		Limit        int       `json:"limit,omitempty"`
 	}{c.scope(req.Narrow), req.NameContains, req.Limit}
 	var out struct {
-		Metrics []struct {
-			Name        string `json:"name"`
-			Type        string `json:"type"`
-			Unit        string `json:"unit"`
-			Description string `json:"description"`
-		} `json:"metrics"`
-		Truncated bool `json:"truncated"`
+		Metrics   []wireMetricInfo `json:"metrics"`
+		Truncated bool             `json:"truncated"`
 	}
 	if err := c.call(ctx, procListMetrics, in, &out); err != nil {
 		return MetricsListResult{}, err
 	}
 	res := MetricsListResult{Truncated: out.Truncated}
 	for _, m := range out.Metrics {
-		res.Metrics = append(res.Metrics, MetricInfo{Name: m.Name, Unit: m.Unit, Description: m.Description, Type: wireMetricTypes[m.Type]})
+		res.Metrics = append(res.Metrics, m.info())
 	}
 	return res, nil
 }
 
-// MetricsQuery implements Backend over QueryMetric.
+// MetricsQuery implements Backend over QueryPanel: the control plane runs the
+// same obsquery.EvalMetricPanel the local backend does, so the same panel over
+// the same data returns the same series.
 func (c Cloud) MetricsQuery(ctx context.Context, req MetricsQueryRequest) (MetricsQueryResult, error) {
-	if _, ok := aggNames[req.Agg]; !ok {
-		return MetricsQueryResult{}, Wrong("--agg %q: use one of %s", req.Agg, AggNames)
-	}
 	if req.Explain {
 		res, err := c.explainer().MetricsQuery(ctx, req)
 		res.Statements = explained(res.Statements)
 		return res, err
 	}
-	in := struct {
-		Scope       wireScope `json:"scope"`
-		MetricName  string    `json:"metricName"`
-		Aggregation string    `json:"aggregation,omitempty"`
-		GroupBy     []string  `json:"groupBy,omitempty"`
-		StepSeconds int64     `json:"stepSeconds,omitempty"`
-	}{Scope: c.scope(req.Narrow), MetricName: req.Name, GroupBy: req.GroupBy, StepSeconds: req.StepSeconds}
-	if req.Agg != "" {
-		in.Aggregation = "METRIC_AGGREGATION_" + strings.ToUpper(req.Agg)
-	}
-	var out struct {
-		Series []struct {
-			Labels map[string]string `json:"labels"`
-			Points []struct {
-				Time  time.Time `json:"time"`
-				Value float64   `json:"value"`
-			} `json:"points"`
-		} `json:"series"`
-		StepSeconds     int64  `json:"stepSeconds"`
-		MetricType      string `json:"metricType"`
-		Unit            string `json:"unit"`
-		Aggregation     string `json:"aggregation"`
-		SeriesTruncated bool   `json:"seriesTruncated"`
-	}
-	if err := c.call(ctx, procQueryMetric, in, &out); err != nil {
+	return metricsWithCompare(req, func(r MetricsQueryRequest) (MetricsQueryResult, error) { return c.queryMetricPanel(ctx, r) })
+}
+
+func (c Cloud) queryMetricPanel(ctx context.Context, req MetricsQueryRequest) (MetricsQueryResult, error) {
+	p := req.Panel
+	p.Signal = "metrics"
+	r, err := c.queryPanel(ctx, req.Narrow, p, req.StepSeconds)
+	if err != nil {
 		return MetricsQueryResult{}, err
 	}
 	res := MetricsQueryResult{
-		Name: req.Name, Type: wireMetricTypes[out.MetricType], Unit: out.Unit, StepSeconds: out.StepSeconds,
-		Agg: strings.ToLower(strings.TrimPrefix(out.Aggregation, "METRIC_AGGREGATION_")), Truncated: out.SeriesTruncated,
+		SeriesTotal: r.SeriesTotal, Truncated: r.Truncated, StepSeconds: r.StepSeconds, Warnings: r.Warnings,
+		Statements: compiledStatements("metric panel", r),
 	}
-	for _, s := range out.Series {
-		ser := Series{Labels: s.Labels}
-		for _, p := range s.Points {
-			ser.Points = append(ser.Points, Point{Time: p.Time.UTC(), Value: finite(p.Value)})
+	for _, m := range r.SeriesMeta {
+		agg, mi := m.Aggregation, MetricMeta{
+			Label: m.Label, Metric: m.Metric, Type: wireMetricTypes[m.MetricType], Monotonic: m.Monotonic,
+			Temporality: wireTemporalities[m.Temporality], Quantile: m.Quantile, ValueUnit: m.ValueUnit,
 		}
-		res.Series = append(res.Series, ser)
+		mi.Agg = agg
+		res.Meta = append(res.Meta, mi)
 	}
-	if req.MaxSeries > 0 {
-		res.Series, res.SeriesOmitted = capSeries(res.Series, req.MaxSeries)
+	switch p.Kind {
+	case "table", "bar":
+		// One entry per (group, column): a column is a panel series, in order.
+		for ci, col := range r.Columns {
+			for _, row := range r.Rows {
+				if ci >= len(row.Values) {
+					continue
+				}
+				v := finite(row.Values[ci])
+				res.Series = append(res.Series, MetricSeries{Label: col, Labels: row.Group, Reduced: &v})
+			}
+		}
+	case "number":
+		for _, s := range r.Series {
+			v := finite(s.Value)
+			ms := MetricSeries{Label: s.Label, Labels: s.Group, Reduced: &v}
+			for _, pt := range s.Points {
+				ms.Points = append(ms.Points, MetricPoint{Time: pt.Time.UTC(), Value: finite(pt.Value), Null: pt.Null, Partial: pt.Partial})
+			}
+			res.Series = append(res.Series, ms)
+		}
+	default:
+		for _, s := range r.Series {
+			ms := MetricSeries{Label: s.Label, Labels: s.Group}
+			for _, pt := range s.Points {
+				ms.Points = append(ms.Points, MetricPoint{Time: pt.Time.UTC(), Value: finite(pt.Value), Null: pt.Null, Partial: pt.Partial})
+			}
+			res.Series = append(res.Series, ms)
+		}
+	}
+	var cut bool
+	if res.Series, cut = capMetricSeries(res.Series, req.MaxSeries); cut {
+		res.Truncated = true
+	}
+	return res, nil
+}
+
+// MetricsDescribe implements Backend over GetMetric.
+func (c Cloud) MetricsDescribe(ctx context.Context, req MetricsDescribeRequest) (MetricsDescribeResult, error) {
+	if req.Explain {
+		res, err := c.explainer().MetricsDescribe(ctx, req)
+		res.Statements = explained(res.Statements)
+		return res, err
+	}
+	in := struct {
+		Scope      wireScope `json:"scope"`
+		MetricName string    `json:"metricName"`
+	}{c.scope(req.Narrow), req.Name}
+	var out struct {
+		Info             wireMetricInfo `json:"info"`
+		IntervalSeconds  int            `json:"intervalSeconds"`
+		MixedTemporality bool           `json:"mixedTemporality"`
+		Attributes       []struct {
+			Key              string   `json:"key"`
+			Resource         bool     `json:"resource"`
+			DistinctEstimate jsonInt  `json:"distinctEstimate"`
+			Enumerated       []string `json:"enumerated"`
+			HighCardinality  bool     `json:"highCardinality"`
+		} `json:"attributes"`
+		SuggestedBreakdowns []string `json:"suggestedBreakdowns"`
+	}
+	if err := c.call(ctx, procGetMetric, in, &out); err != nil {
+		return MetricsDescribeResult{}, err
+	}
+	res := MetricsDescribeResult{
+		Info: out.Info.info(), IntervalSeconds: int64(out.IntervalSeconds), MixedTemporality: out.MixedTemporality,
+		SuggestedBreakdowns: out.SuggestedBreakdowns,
+	}
+	if res.Info.Name == "" {
+		res.Info.Name = req.Name
+	}
+	for _, a := range out.Attributes {
+		res.Attributes = append(res.Attributes, MetricAttribute{Key: a.Key, Resource: a.Resource, DistinctEstimate: int64(a.DistinctEstimate), Enumerated: a.Enumerated, HighCardinality: a.HighCardinality})
+	}
+	return res, nil
+}
+
+// MetricsExemplars implements Backend over ListMetricExemplars.
+func (c Cloud) MetricsExemplars(ctx context.Context, req MetricsExemplarsRequest) (MetricsExemplarsResult, error) {
+	if req.Explain {
+		res, err := c.explainer().MetricsExemplars(ctx, req)
+		res.Statements = explained(res.Statements)
+		return res, err
+	}
+	in := struct {
+		Scope      wireScope         `json:"scope"`
+		MetricName string            `json:"metricName"`
+		Where      []wirePredicate   `json:"where,omitempty"`
+		Group      map[string]string `json:"group,omitempty"`
+		TimeRange  *wireTimeRange    `json:"timeRange,omitempty"`
+		MinValue   *float64          `json:"minValue,omitempty"`
+		Limit      int               `json:"limit,omitempty"`
+	}{Scope: c.scope(req.Narrow), MetricName: req.Name, Where: wirePreds(req.Where), Group: req.Group, MinValue: req.MinValue, Limit: req.Limit}
+	if !req.From.IsZero() {
+		in.TimeRange = &wireTimeRange{Start: req.From.UTC(), End: req.To.UTC()}
+	}
+	var out struct {
+		Exemplars []struct {
+			Time        time.Time         `json:"time"`
+			Value       float64           `json:"value"`
+			TraceID     string            `json:"traceId"`
+			SpanID      string            `json:"spanId"`
+			Attributes  map[string]string `json:"attributes"`
+			TraceStored bool              `json:"traceStored"`
+		} `json:"exemplars"`
+	}
+	if err := c.call(ctx, procListMetricExemplars, in, &out); err != nil {
+		return MetricsExemplarsResult{}, err
+	}
+	var res MetricsExemplarsResult
+	for _, e := range out.Exemplars {
+		res.Exemplars = append(res.Exemplars, MetricExemplar{Time: e.Time.UTC(), Value: finite(e.Value), TraceID: strings.ToLower(e.TraceID), SpanID: e.SpanID, Attributes: e.Attributes, TraceStored: e.TraceStored})
 	}
 	return res, nil
 }
@@ -603,4 +781,10 @@ func (j *jsonInt) UnmarshalJSON(b []byte) error {
 	}
 	*j = jsonInt(n)
 	return nil
+}
+
+// spanEnum is an OTLP enum value as the local ClickStack's rows spell it:
+// lower case, without its STATUS_CODE_ / SPAN_KIND_ prefix.
+func spanEnum(v, prefix string) string {
+	return strings.ToLower(strings.TrimPrefix(strings.ToUpper(v), prefix))
 }

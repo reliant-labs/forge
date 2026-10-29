@@ -8,10 +8,8 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/pkg/components"
-	"github.com/reliant-labs/forge/pkg/seedplan"
 
 	"github.com/reliant-labs/forge/internal/checksums"
-	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
 
@@ -265,6 +263,14 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		if opts.Public && isSignInScreen(file.Rel) {
 			continue
 		}
+		// In the workspaces layout the frontend is a MEMBER of the root
+		// pnpm workspace, and pnpm takes its settings from the root's
+		// pnpm-workspace.yaml (writePnpmWorkspaceYaml carries them there). A
+		// member's own file would make it a second workspace root, splitting
+		// it from packages/* and its `workspace:*` dependencies.
+		if opts.Workspaces && file.Rel == "pnpm-workspace.yaml.tmpl" {
+			continue
+		}
 		// nav.tsx and dashboard.tsx ARE emitted here, empty of routes, even
 		// though the entity set that seeds them does not exist yet.
 		//
@@ -361,16 +367,10 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		if _, err := EmitFrontendMockSurface(root, feRel, nil, nil, nil, cs); err != nil {
 			return fmt.Errorf("emit frontend mock surface: %w", err)
 		}
-		// The freshness guard ships with the frontend from birth, so its
-		// file set does not change shape the first time a migration
-		// lands. At scaffold time the project's schema is whatever is
-		// already on disk — usually nothing, which renders the
-		// no-migrations branch — and the next `forge generate` records
-		// the real fingerprint.
-		fpFiles, fpConfig := codegen.SeedFingerprint(root, seedplan.DefaultConfig())
-		if err := EmitFixtureFreshnessSurface(root, feRel, fpFiles, fpConfig, cs); err != nil {
-			return fmt.Errorf("emit fixture freshness surface: %w", err)
-		}
+		// No fixture-freshness guard here: the scaffold writes no entity
+		// fixtures, and the guard is their validity tag. The `forge
+		// generate` that writes the first fixtures writes it too — see
+		// EmitFixtureFreshnessSurface.
 		if err := SaveChecksums(root, cs); err != nil {
 			return fmt.Errorf("save ownership state: %w", err)
 		}
@@ -401,11 +401,13 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 var coreComponents = []string{
 	// Primitives — base building blocks for every generated frontend.
 	// "link" first: every navigating component (page_header,
-	// row_actions_menu) imports "./link". The library copy is a plain
+	// row_actions_menu, and button for its `href` form) imports "./link". The library copy is a plain
 	// anchor; installCoreComponents/EnsureCoreComponents overwrite it
 	// with a framework-aware version (see linkComponentForDir).
 	"link",
 	"button",
+	// The classes button imports ("./button_classes").
+	"button_classes",
 	// The context input, label, select and form import ("./form_field_context").
 	"form_field_context",
 	"input",
@@ -517,11 +519,14 @@ func EnsureCoreComponentsIn(frontendDir, componentsRel string) error {
 	var refused []error
 	for _, name := range coreComponents {
 		dest := filepath.Join(componentsDir, name+".tsx")
-		if !componentNeedsBirth(root, dest) {
-			continue
-		}
+		// Before the presence check: on a case-folding filesystem (macOS,
+		// Windows) stat finds the app's Button.tsx under the name button.tsx,
+		// and the app's component would pass for forge's installed one.
 		if existing := CaseCollision(componentsDir, name+".tsx"); existing != "" {
 			refused = append(refused, CaseCollisionError(componentsDir, name+".tsx", existing))
+			continue
+		}
+		if !componentNeedsBirth(root, dest) {
 			continue
 		}
 		content := componentContentForDir(frontendDir, name)
@@ -618,11 +623,7 @@ const EXTERNAL_HREF = /^(?:[a-z][a-z0-9+.-]*:)?\/\//i;
 
 /** True for absolute/external URLs that must bypass client routing. */
 function isExternalHref(href: string): boolean {
-  return (
-    EXTERNAL_HREF.test(href) ||
-    href.startsWith("mailto:") ||
-    href.startsWith("tel:")
-  );
+  return EXTERNAL_HREF.test(href) || href.startsWith("mailto:") || href.startsWith("tel:");
 }
 
 export type LinkProps = React.AnchorHTMLAttributes<HTMLAnchorElement> & {
@@ -666,11 +667,7 @@ const EXTERNAL_HREF = /^(?:[a-z][a-z0-9+.-]*:)?\/\//i;
 
 /** True for absolute/external URLs that must bypass client routing. */
 function isExternalHref(href: string): boolean {
-  return (
-    EXTERNAL_HREF.test(href) ||
-    href.startsWith("mailto:") ||
-    href.startsWith("tel:")
-  );
+  return EXTERNAL_HREF.test(href) || href.startsWith("mailto:") || href.startsWith("tel:");
 }
 
 export type LinkProps = React.AnchorHTMLAttributes<HTMLAnchorElement> & {

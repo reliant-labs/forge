@@ -430,6 +430,9 @@ func buildforgeBinary(t *testing.T) string {
 	if err := os.Setenv(linkForgeEnv, "1"); err != nil {
 		t.Fatalf("opt the e2e corpus into --link-forge: %v", err)
 	}
+	// And every npm install resolves @reliantlabs/forge-web-runtime to this
+	// checkout's, not the last release's (npm_overlay_e2e_test.go).
+	startNpmOverlayE2E(t)
 	return forgeBinaryPath
 }
 
@@ -474,31 +477,6 @@ func freePortE2E(t *testing.T) int {
 	port := l.Addr().(*net.TCPAddr).Port
 	_ = l.Close()
 	return port
-}
-
-// addforgeReplace adds a replace directive for github.com/reliant-labs/forge
-// in the gen/go.mod so that generated code resolves the ORM package from the
-// local repo checkout (the ORM now lives in-repo under pkg/).
-func addforgeReplace(t *testing.T, genDir string) {
-	t.Helper()
-
-	repoRoot := findRepoRoot(t)
-
-	goModPath := filepath.Join(genDir, "go.mod")
-	data, err := os.ReadFile(goModPath)
-	if err != nil {
-		t.Fatalf("read gen/go.mod: %v", err)
-	}
-
-	content := string(data)
-	if strings.Contains(content, "github.com/reliant-labs/forge") &&
-		!strings.Contains(content, "replace github.com/reliant-labs/forge") {
-		// Add replace directive pointing at the repo root
-		content += fmt.Sprintf("\nreplace github.com/reliant-labs/forge => %s\n", repoRoot)
-		if err := os.WriteFile(goModPath, []byte(content), 0o644); err != nil {
-			t.Fatalf("write gen/go.mod: %v", err)
-		}
-	}
 }
 
 // runCmd runs a command and fails the test on error.

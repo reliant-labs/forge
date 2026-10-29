@@ -122,6 +122,13 @@ type lintJSONFinding struct {
 	Rule     string `json:"rule"`
 	Message  string `json:"message"`
 	FixHint  string `json:"fix_hint,omitempty"`
+	// Grace is set on a finding that would have failed the gate but is a
+	// warning because the project's pinned forge has not been through a
+	// release with its rule yet (lint_rollout.go).
+	Grace *ruleGrace `json:"grace,omitempty"`
+	// rollout is the pseudo-rule key of a pass whose findings carry another
+	// tool's rule IDs (the golangci-lint build-tag passes). Internal.
+	rollout string
 }
 
 // lintJSONSummary counts findings by severity. Total is the slice
@@ -520,9 +527,9 @@ func collectScaffoldsJSON(cwd string) ([]lintJSONFinding, bool, error) {
 	return findingsToJSON(res.Findings), res.HasErrors(), nil
 }
 
-// collectTestsJSON mirrors runTestsLint on the JSON path. The second
-// return reports whether anything gates — only the shape rule can, so the
-// two paths agree on which findings are fatal.
+// collectTestsJSON is the `--tests` lane: test-PRESENCE conventions, both
+// warnings. The hook-test SHAPE rule, which gates, runs in `--conventions`
+// (collectConventionFindings) — the lane projects actually gate on.
 func collectTestsJSON(cwd string) ([]lintJSONFinding, bool, error) {
 	handlerRes, err := forgeconv.LintHandlerTests(cwd)
 	if err != nil {
@@ -532,14 +539,9 @@ func collectTestsJSON(cwd string) ([]lintJSONFinding, bool, error) {
 	if err != nil {
 		return nil, false, fmt.Errorf("frontend-hook-test lint failed: %w", err)
 	}
-	shapeRes, err := forgeconv.LintFrontendHookTestShape(cwd)
-	if err != nil {
-		return nil, false, fmt.Errorf("frontend-hook-test-shape lint failed: %w", err)
-	}
 	out := findingsToJSON(handlerRes.Findings)
 	out = append(out, findingsToJSON(frontendRes.Findings)...)
-	out = append(out, findingsToJSON(shapeRes.Findings)...)
-	return out, shapeRes.HasErrors(), nil
+	return out, false, nil
 }
 
 func collectBannersJSON(cwd string) ([]lintJSONFinding, error) {
@@ -983,14 +985,22 @@ func parseDigitsLint(s string) int {
 // (golangci_build_tags.go). A golangci-lint that cannot analyze the module gates as one
 // finding, the runbook.
 func collectGolangciLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
-	fs, gated := golangciPass(rc, golangciGateArgs(rc))
-	if len(fs) > 0 && fs[0].Rule == ruleGolangciUnavailable {
-		return fs, gated
+	configTags := golangciConfigBuildTags(rc.moduleDir())
+	var (
+		fs    []lintJSONFinding
+		gated bool
+	)
+	// The default pass skips patterns holding only tagged files, which
+	// golangci-lint refuses; their tag's pass below lints them.
+	if pkgs, run := defaultPassPackages(rc.moduleDir(), rc.goPackages(), configTags); run {
+		fs, gated = golangciPass(rc, golangciGateArgs(rc, pkgs))
+		if len(fs) > 0 && fs[0].Rule == ruleGolangciUnavailable {
+			return fs, gated
+		}
 	}
 	// One more pass per build tag that gates files in the tree, over the
 	// packages holding them (golangci_build_tags.go).
 	inConfig := map[string]bool{}
-	configTags := golangciConfigBuildTags(rc.moduleDir())
 	for _, t := range configTags {
 		inConfig[t] = true
 	}
@@ -1000,7 +1010,7 @@ func collectGolangciLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
 		}
 		tags := strings.Join(append(append([]string{}, configTags...), set.tag), ",")
 		more, g := golangciPass(rc, golangciRunArgs([]string{"--build-tags=" + tags}, set.dirs))
-		fs, gated = mergeFindings(fs, more), gated || g
+		fs, gated = mergeRolledOutFindings(fs, more, rolloutGolangciBuildTags), gated || g
 	}
 	return fs, gated
 }
@@ -1081,7 +1091,13 @@ func collectTypedAccessGuardJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error
 			FixHint:  typedAccessGuardUnconfiguredHint,
 		}}, false, nil
 	}
-	run, err := rc.execGolangci(golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, rc.goPackages()))
+	// Like the default golangci-lint pass: a scope of only tagged files holds
+	// no package this pass can load, so there is nothing to guard.
+	pkgs, ok := defaultPassPackages(rc.moduleDir(), rc.goPackages(), golangciConfigBuildTags(rc.moduleDir()))
+	if !ok {
+		return nil, false, nil
+	}
+	run, err := rc.execGolangci(golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, pkgs))
 	if err != nil {
 		return []lintJSONFinding{golangciUnresolvedFinding(err, ruleTypedAccessGuardUnavailable)}, false, nil
 	}
@@ -1151,11 +1167,12 @@ func collectBufLintJSON(ctx context.Context) ([]lintJSONFinding, bool) {
 	if _, err := os.Stat("buf.yaml"); os.IsNotExist(err) {
 		return nil, false
 	}
-	if _, err := exec.LookPath("buf"); err != nil {
+	bin, ok := lintBufBinary(ctx)
+	if !ok {
 		return []lintJSONFinding{{Severity: lintSevWarning, Rule: ruleBufLintUnavailable,
 			Message: bufMissingReason, FixHint: bufMissingFix()}}, false
 	}
-	cmd := exec.CommandContext(ctx, "buf", "lint")
+	cmd := exec.CommandContext(ctx, bin, "lint")
 	var buf strings.Builder
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf

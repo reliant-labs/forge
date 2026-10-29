@@ -286,11 +286,26 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Provenance *wireProvenance `json:"provenance"`
 			// Stored and returned the same way (DeployRelease.commits).
 			Commits *wireCommitRange `json:"commits"`
+			// And DeployRelease.migrations: sets[] of source/commit/files.
+			Migrations *struct {
+				Sets []struct {
+					Source string   `json:"source"`
+					Commit string   `json:"commit"`
+					Files  []string `json:"files"`
+				} `json:"sets"`
+			} `json:"migrations"`
 		}
 		_ = json.Unmarshal(raw, &req)
 		want := wireRelease{ID: "rel-" + req.Version, Version: req.Version, GitCommit: req.GitCommit,
 			Artifacts: req.Artifacts, Provenance: req.Provenance, Commits: req.Commits,
 			CreatedAt: time.Date(2026, 9, 23, 0, len(f.releases), 0, 0, time.UTC)}
+		if req.Migrations != nil {
+			m := &release.MigrationManifest{Sets: []release.MigrationSet{}}
+			for _, s := range req.Migrations.Sets {
+				m.Sets = append(m.Sets, release.MigrationSet{Source: s.Source, Commit: s.Commit, Files: s.Files})
+			}
+			want.Migrations = m
+		}
 		wantRel, err := releaseFromWire(want)
 		if err != nil {
 			connectErr(w, http.StatusBadRequest, "invalid_argument", err.Error())
@@ -324,6 +339,33 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		sort.Strings(current)
 		_ = json.NewEncoder(w).Encode(map[string]any{"release": rel, "currentEnvironmentIds": current})
+
+	case "/controlplane.v1.DeployService/RecordReleaseMigrations":
+		// The server's rule: fill a release's manifest when it has none,
+		// accept an equal one as a no-op, refuse a different one.
+		var req struct {
+			Version    string                     `json:"version"`
+			Migrations *release.MigrationManifest `json:"migrations"`
+		}
+		_ = json.Unmarshal(raw, &req)
+		rel, ok := f.releases[req.Version]
+		switch {
+		case !ok:
+			connectErr(w, http.StatusNotFound, "not_found", "release")
+			return
+		case req.Migrations == nil || req.Migrations.Validate() != nil:
+			connectErr(w, http.StatusBadRequest, "invalid_argument", "migrations")
+			return
+		case rel.Migrations != nil && !rel.Migrations.Equal(*req.Migrations):
+			connectErr(w, http.StatusConflict, "already_exists", "the release already records a different migration manifest")
+			return
+		case rel.Migrations != nil:
+			_ = json.NewEncoder(w).Encode(map[string]any{"release": rel, "recorded": false})
+			return
+		}
+		rel.Migrations = req.Migrations
+		f.releases[req.Version] = rel
+		_ = json.NewEncoder(w).Encode(map[string]any{"release": rel, "recorded": true})
 
 	case "/controlplane.v1.DeployService/ListReleases":
 		var out []wireRelease
@@ -814,6 +856,9 @@ func TestPromotionKindFromWire_Closed(t *testing.T) {
 // apply rather than about where the promotion was recorded. The mixed shape is
 // covered by TestDeployRelease_MixedEnvAppliesItsClusterHalfAndWaits.
 func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates a KCL project natively; runs in task test")
+	}
 	fake := newFakeDeployService(map[string]string{"prod": "env-prod-uuid"})
 	srv := httptest.NewServer(fake)
 	t.Cleanup(srv.Close)

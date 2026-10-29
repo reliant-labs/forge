@@ -21,7 +21,7 @@ THE OUTPUT (internal/cli/testdata/render_contract/ pins it per runtime):
                               when declared (a list, possibly empty)
     clusters, cluster_target, kubeconfig_secrets, connected_clusters
     network_policy            the env NetworkPolicy bundle's inputs, or null
-    statefulset_resize        {image, disabled} tuning of the StatefulSet
+    statefulset_resize        {image, release_owner, disabled} tuning of the StatefulSet
                               volume-resize Job, present only when declared
     workloads[]               EVERY workload, of every runtime:
         {name, kind, image, build, runtime, spec}
@@ -1261,7 +1261,7 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         leaderElection = w.leaderElection
         serviceAccount = w.serviceAccount
         serviceAccountAnnotations = w.serviceAccountAnnotations
-        sidecars = [s | {image = workload_image_ref_for(w.name, "container:" + s.name, s.image, bundle.image_tag)} for s in w.sidecars] if w.sidecars else Undefined
+        sidecars = [s | {image = workload_image_ref_for(w.name, ("init:" if s.native else "container:") + s.name, s.image, bundle.image_tag)} for s in w.sidecars] if w.sidecars else Undefined
         volumes = ((w.volumes if w.volumes else []) + _cps_volume(w, rt, bundle) + _idn_volumes(w, rt, bundle)) or Undefined
         nodeSelector = w.nodeSelector
         tolerations = w.tolerations
@@ -1301,6 +1301,9 @@ _render_runtime = lambda w: any, rt: any -> any {
         "wait": rt.wait
         "wait_timeout": rt.wait_timeout
         "shared": rt.shared
+        # Emitted only when set, so an env that never says `optional` renders
+        # byte-identically to what it did before the field.
+        } | ({"optional": True} if rt.optional else {}) | {
         # The compose PROCESS env: the workload's literal env under the
         # runtime's own (the runtime block is the more specific statement).
         "env": {k: v for k, v in w.env if typeof(v) == "str"} | rt.env
@@ -1339,7 +1342,8 @@ _lower = lambda w: any, bundle: Bundle -> any {
         "runtime": _render_runtime(w, _rt)
         "spec": _spec_json(w, _rt, bundle)
     } | ({"flow_checks": [{"path": c.path, "description": c.description or None, "name": c.name or None} for c in w.flow_checks]} if w.flow_checks else {}) \
-      | ({"delivery_unit": w.delivery_unit} if w.delivery_unit else {})
+      | ({"delivery_unit": w.delivery_unit} if w.delivery_unit else {}) \
+      | ({"requires": w.requires} if w.requires else {})
 }
 
 # `before` names a workload the env declares, on the same runtime set that
@@ -1349,6 +1353,17 @@ _check_before = lambda workloads: [any] -> bool {
     _dangling = ["${w.name} -> ${b}" for w in workloads for b in (w.before or []) if b != BEFORE_ALL and b not in _names]
     assert len(_dangling) == 0, \
         "Workload.before names a workload this environment does not declare: " + ", ".join(_dangling) \
+        + ". Declared workloads: " + ", ".join(_names) + "."
+    True
+}
+
+# `requires` names a workload the env declares: a typo would leave a workload
+# that is meant to be skipped with its optional dependency running anyway.
+_check_requires = lambda workloads: [any] -> bool {
+    _names = [w.name for w in workloads]
+    _dangling = ["${w.name} -> ${r}" for w in workloads for r in (w.requires or []) if r not in _names]
+    assert len(_dangling) == 0, \
+        "Workload.requires names a workload this environment does not declare: " + ", ".join(_dangling) \
         + ". Declared workloads: " + ", ".join(_names) + "."
     True
 }
@@ -1476,7 +1491,12 @@ _mask_violations = lambda w: any, rt: any -> [str] {
 # One forge.dev/v1alpha1 Workload record: what pkg/deploy.RenderWorkloads
 # expands (grouped by forge.dev/cluster + namespace), and the same spec the
 # hosted path publishes. The spec is THE SAME VALUE as the entity's.
-_workload_record = lambda entity: any, part_of: str -> any {
+#
+# `release` (Bundle.release, i.e. the release being built or deployed) rides on
+# the record as `app.kubernetes.io/version`; the Go expander reads it back and
+# stamps it on the pod templates (pkg/deploy stampVersion), so a node agent
+# that file-scrapes logs can report service.version. Empty emits no label.
+_workload_record = lambda entity: any, part_of: str, release: str = "" -> any {
     {
         apiVersion = "forge.dev/v1alpha1"
         kind = "Workload"
@@ -1484,7 +1504,8 @@ _workload_record = lambda entity: any, part_of: str -> any {
             name = entity.name
             namespace = entity.runtime.namespace
             labels = labels_lib.managed_labels(entity.name, part_of) | {"forge.dev/cluster" = entity.runtime.cluster} \
-                | ({"forge.dev/delivery-unit" = entity.delivery_unit} if entity.delivery_unit else {})
+                | ({"forge.dev/delivery-unit" = entity.delivery_unit} if entity.delivery_unit else {}) \
+                | ({"app.kubernetes.io/version" = release} if release else {})
         }
         spec = entity.spec
     }
@@ -1670,6 +1691,94 @@ _render_release_health = lambda h: ReleaseHealth -> any {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Uptime checks (schema.k Uptime): the declared checks plus the ones forge
+# derives for a hosted env, resolved to the release shape's `uptime_checks`.
+# ---------------------------------------------------------------------------
+
+# A hosted env: one the control plane runs and can probe from outside. A
+# local or ephemeral env, and one with no control plane, derives nothing.
+_uptime_derives = lambda b: Bundle -> bool {
+    bool(b.control_plane) and b.lifecycle not in ["local", "ephemeral"] and (not b.uptime or b.uptime.defaults)
+}
+
+# The route-<name> check name a route's derived check takes.
+_uptime_route_name = lambda r: any -> str {
+    "route-" + r.name
+}
+
+# A derived check's common fields. Written out in full, like a declared check,
+# so the shape is the whole truth.
+_uptime_default = lambda name: str -> any {
+    {
+        "name": name
+        "method": "GET"
+        "interval_seconds": 60
+        "timeout_seconds": 10
+        "source": "default"
+    }
+}
+
+# A hosted workload that exposes a port: the only workload with a public
+# hostname.
+_uptime_exposes = lambda w: any -> bool {
+    bool(w.runtime and w.runtime.type == "hosted" and [p for p in (w.ports or []) if p.expose])
+}
+
+# Every check forge derives, as {name: check}. A hosted frontend or a hosted
+# workload with an exposed port is checked at its platform hostname; a route
+# is checked at its public URL when some hostname names it.
+_uptime_derived = lambda b: Bundle -> {str: any} {
+    _targets = [f.name for f in b.frontends if f.runtime and f.runtime.type == "hosted"] \
+        + [w.name for w in b.workloads if _uptime_exposes(w)]
+    _routes = [r for r in b.http_routes if wurl_lib.route_public_url(r, b)]
+    ({n: _uptime_default(n) | {"target": n} for n in _targets} \
+        | {_uptime_route_name(r): _uptime_default(_uptime_route_name(r)) | {
+            "url": wurl_lib.route_public_url(r, b)
+            "expect_status": ["2xx", "3xx", "4xx"]
+        } for r in _routes}) if _uptime_derives(b) else {}
+}
+
+# A declared check, resolved: a route becomes its public URL, and every
+# default is written out so the shape is the whole truth.
+_uptime_declared = lambda c: any, b: Bundle -> any {
+    _routes = [r for r in b.http_routes + b.grpc_routes if r.name == c.route]
+    assert not c.route or len(_routes) == 1, \
+        "UptimeCheck '${c.name}': route '${c.route}' names no HTTPRoute of this Bundle (have: ${[r.name for r in b.http_routes]})"
+    _url = wurl_lib.route_public_url(_routes[0], b) if c.route else c.url
+    assert not c.route or _url, \
+        "UptimeCheck '${c.name}': route '${c.route}' has no public hostname (no route, listener or gateway host): set one, or use `url`"
+    assert not c.target or c.target in _env_names(b.workloads, b.infra, b.frontends), \
+        "UptimeCheck '${c.name}': target '${c.target}' is not a workload or frontend of this Bundle"
+    assert not c.target or c.target in _hosted_names(b.workloads, [], b.frontends), \
+        "UptimeCheck '${c.name}': target '${c.target}' does not run on the hosted runtime, so the platform has no hostname for it: use `url` for an endpoint you operate"
+    {
+        "name": c.name
+        "url": _url if _url else None
+        "target": c.target if c.target else None
+        "path": c.path if c.path and c.path != "/" else None
+        "method": c.method
+        "interval_seconds": _uptime_seconds(c.interval)
+        "timeout_seconds": _uptime_seconds(c.timeout)
+        "expect_status": sorted(c.expect_status) if c.expect_status else None
+        "expect_body": c.expect_body if c.expect_body else None
+        "source": "user"
+    }
+}
+
+# The env's checks, sorted by name: derived, minus `skip`, replaced by a
+# declared check of the same name, plus the declared ones.
+_render_uptime_checks = lambda b: Bundle -> [any] {
+    _derived = _uptime_derived(b)
+    _u = b.uptime
+    _skip = _u.skip if _u else []
+    assert all n in _skip {n in _derived}, \
+        "Uptime.skip names ${[n for n in _skip if n not in _derived]}, which forge does not derive a check for here (derived: ${sorted([n for n in _derived])})"
+    _declared = {c.name = _uptime_declared(c, b) for c in (_u.checks if _u else [])}
+    _all = {k = v for k, v in _derived if k not in _skip and k not in _declared} | _declared
+    [{k = v for k, v in _all[n] if v != None} for n in sorted([n for n in _all])]
+}
+
 # The declaration, as the Go side (forge env up, the local forwarder) reads it.
 _render_observability = lambda b: Bundle -> any {
     _o = b.observability
@@ -1848,7 +1957,14 @@ _store_cluster_id = lambda b: Bundle, t: ClusterTarget -> str {
 _openbao = lambda b: Bundle -> any {
     _rt = b.openbao.runtime if b.openbao else Undefined
     _target = _rt.target if _rt else _primary_target(b)
-    openbao_lib.render(b.openbao, {
+    _owner = "openbao-" + b.openbao.namespace + "-" + b.openbao.name if b.openbao else ""
+    _image = workload_image_ref_for(_owner, "container:openbao", b.openbao.image, b.image_tag) if b.openbao else ""
+    _kubectl = workload_image_ref_for(_owner, "container:converge", b.openbao.kubectl_image, b.image_tag) if b.openbao else ""
+    _proxy_needed = b.openbao and b.openbao.storage.type == "postgres" and b.openbao.storage.cloudsql_instance
+    _proxy = workload_image_ref_for(_owner, "init:cloud-sql-proxy", b.openbao.cloud_sql_proxy_image, b.image_tag) if _proxy_needed else ""
+    openbao_lib.render(b.openbao | {image = _image, kubectl_image = _kubectl, cloud_sql_proxy_image = _proxy or b.openbao.cloud_sql_proxy_image}, {
+        release_owner = _owner
+        release_inputs = {"container:openbao" = _image, "container:converge" = _kubectl} | ({"init:cloud-sql-proxy" = _proxy} if _proxy_needed else {})
         project = b.project
         env = labels_lib.env_value(b.env)
         target = _target
@@ -1876,7 +1992,7 @@ _manifests = lambda b: Bundle, entities: [any] -> [any] {
         [_render_runtime_class_manifest(rc, _ns, _project) for rc in b.runtime_classes] \
         + _namespaces(b, entities) \
         + [_place_on_primary(_render_config_map_manifest(cm, _ns, _project), _pt) for cm in b.config_maps] \
-        + [_workload_record(e, _project) for e in entities if e.runtime.type == "cluster" and e.kind != "tool"] \
+        + [_workload_record(e, _project, b.release) for e in entities if e.runtime.type == "cluster" and e.kind != "tool"] \
         + _obs_agent_records(b, _project) \
         + [_render_managed_database_record(db, _project) for db in _dbs if db.runtime == "cluster"] \
         + ([_openbao(b).record] if b.openbao else []) \
@@ -1893,6 +2009,7 @@ _manifests = lambda b: Bundle, entities: [any] -> [any] {
 
 render = lambda bundle: Bundle -> any {
     _ok = _check_before(bundle.workloads)
+    _requires_ok = _check_requires(bundle.workloads)
     _built_images_ok = _check_built_images(bundle.workloads)
     _entities = [_lower(w, bundle) for w in bundle.workloads]
     _pt = _primary_target(bundle)
@@ -1946,6 +2063,10 @@ render = lambda bundle: Bundle -> any {
         # means audited, never open, so a real env's render is unchanged.
         if _data_access_db_query(bundle.data_access, bundle.lifecycle or "") != "audited":
             "data_access": {"db_query": _data_access_db_query(bundle.data_access, bundle.lifecycle or "")}
+        # The env's uptime checks, resolved: declared ones plus the ones forge
+        # derives for a hosted env. Go records them in the release shape.
+        if _render_uptime_checks(bundle):
+            "uptime_checks": _render_uptime_checks(bundle)
         # The release-health policy, resolved, only when the env declares one.
         # Go records it in the release shape unless it is all defaults.
         if bundle.release_health:
@@ -2030,6 +2151,7 @@ render = lambda bundle: Bundle -> any {
         if bundle.statefulset_resize:
             "statefulset_resize": {
                 "image": bundle.statefulset_resize.image
+                "release_owner": bundle.statefulset_resize.release_owner
                 "disabled": bundle.statefulset_resize.disabled
             }
         "manifests": _manifests(bundle, _entities)
@@ -2174,7 +2296,7 @@ _frontend_violations = lambda f: Frontend -> [str] {
         + (["delve_port: a frontend's dev server is not a Go process"] if _host and _rt.delve_port != 2345 else []) \
         + (["build_variants: a frontend has one build"] if _t == "build-only" and _rt.build_variants else []) \
         + (["bundle: the dev server assembles nothing; bundle dirs are assembled into a PUBLISHED site"] if _host and f.bundle else []) \
-        + (["cache_control: forge sets Cache-Control only where it publishes the build itself (forge.OnBucket object headers, forge.OnFirebase firebase.json headers); ${'the platform owns the CDN and its headers' if _t == 'hosted' else 'nothing here serves the build'}"] \
+        + (["cache_control: forge sets Cache-Control only where it publishes the build itself (forge.OnBucket object headers, forge.OnFirebase firebase.json headers); ${'the platform sets the headers' if _t == 'hosted' else 'nothing here serves the build'}"] \
             if f.cache_control and _t not in ["bucket", "firebase"] else []) \
         + (["image: nothing here pushes a registry artifact — ${'your bucket serves the build' if _t == 'bucket' else ('your Firebase site serves it' if _t == 'firebase' else ('the dev server serves it' if _host else 'the build is not published'))}"] \
             if f.image and _t != "hosted" else []) \

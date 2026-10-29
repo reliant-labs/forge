@@ -802,8 +802,11 @@ func TestProjectGeneratorHarnessClaude(t *testing.T) {
 	claudePath := filepath.Join(root, "CLAUDE.md")
 	assertPathExists(t, claudePath)
 	content := readFile(t, claudePath)
-	if !strings.Contains(content, "# claude-app") {
-		t.Fatalf("expected CLAUDE.md to contain project name heading, got:\n%s", content)
+	if !strings.Contains(content, "@AGENTS.md") {
+		t.Fatalf("expected CLAUDE.md to import AGENTS.md, got:\n%s", content)
+	}
+	if !strings.Contains(readFile(t, filepath.Join(root, "AGENTS.md")), "# claude-app") {
+		t.Fatal("expected AGENTS.md to carry the project guide")
 	}
 
 	// reliant.md should NOT exist at the top level.
@@ -823,8 +826,11 @@ func TestProjectGeneratorHarnessCursor(t *testing.T) {
 
 	assertPathExists(t, filepath.Join(root, ".cursorrules"))
 	content := readFile(t, filepath.Join(root, ".cursorrules"))
-	if !strings.Contains(content, "# cursor-app") {
-		t.Fatalf("expected .cursorrules to contain project name heading, got:\n%s", content)
+	if !strings.Contains(content, "AGENTS.md") {
+		t.Fatalf("expected .cursorrules to point at AGENTS.md, got:\n%s", content)
+	}
+	if !strings.Contains(readFile(t, filepath.Join(root, "AGENTS.md")), "# cursor-app") {
+		t.Fatal("expected AGENTS.md to carry the project guide")
 	}
 
 	if _, err := os.Stat(filepath.Join(root, "reliant.md")); err == nil {
@@ -844,8 +850,11 @@ func TestProjectGeneratorHarnessCopilot(t *testing.T) {
 	copilotPath := filepath.Join(root, ".github", "copilot-instructions.md")
 	assertPathExists(t, copilotPath)
 	content := readFile(t, copilotPath)
-	if !strings.Contains(content, "# copilot-app") {
-		t.Fatalf("expected copilot-instructions.md to contain project name heading, got:\n%s", content)
+	if !strings.Contains(content, "AGENTS.md") {
+		t.Fatalf("expected copilot-instructions.md to point at AGENTS.md, got:\n%s", content)
+	}
+	if !strings.Contains(readFile(t, filepath.Join(root, "AGENTS.md")), "# copilot-app") {
+		t.Fatal("expected AGENTS.md to carry the project guide")
 	}
 
 	if _, err := os.Stat(filepath.Join(root, "reliant.md")); err == nil {

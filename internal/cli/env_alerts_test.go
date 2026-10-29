@@ -27,11 +27,14 @@ func writeAlertDefaults(t *testing.T, in obsdash.AlertInput) string {
 	}
 	files[obsdash.ProjectSpecFile] = project
 	for _, s := range in.Services {
-		part, err := json.Marshal(obsdash.ServicePart{Version: obsdash.PartsVersion, Service: s.Name, Alert: s})
+		part, err := json.Marshal(struct {
+			Version string               `json:"version"`
+			Alert   obsdash.AlertService `json:"alert"`
+		}{obsdash.PartsVersion, s})
 		if err != nil {
 			t.Fatal(err)
 		}
-		files[obsdash.ServiceSpecFile(s.Name)] = part
+		files[obsdash.SpecDir+"/alert-service-"+s.Name+"_gen.json"] = part
 	}
 	for rel, body := range files {
 		path := filepath.Join(dir, filepath.FromSlash(rel))
@@ -47,9 +50,9 @@ func writeAlertDefaults(t *testing.T, in obsdash.AlertInput) string {
 
 func alertProject() obsdash.AlertInput {
 	return obsdash.AlertInput{
-		Project:         "shop",
-		Services:        []obsdash.AlertService{{Name: "orders", RPCService: "orders.v1.OrdersService"}},
-		FrontendService: "shop-frontend",
+		Project:          "shop",
+		Services:         []obsdash.AlertService{{Name: "orders", RPCService: "orders.v1.OrdersService"}},
+		FrontendServices: []string{"shop-web"},
 	}
 }
 
@@ -99,8 +102,8 @@ func TestResolveShapeAlerts_UserRulesPlusEnabledDefaults(t *testing.T) {
 	for _, a := range got {
 		by[a.Alert] = a
 	}
-	if len(got) != 16 {
-		t.Fatalf("got %d alerts %v, want OrdersBacklog + error-rate + p95 + frontend errors + LCP + 5 metadata + 3 issue markers + DeployFailed + 2 quota levels (silent disabled, Off dropped)", len(got), by)
+	if len(got) != 18 {
+		t.Fatalf("got %d alerts %v, want OrdersBacklog + error-rate + p95 + frontend errors + LCP + 5 metadata + 3 issue markers + ReleaseRegressed + ServiceAnomaly + DeployFailed + 2 quota levels (silent disabled, Off dropped)", len(got), by)
 	}
 	if by["OrdersBacklog"].Source != release.AlertSourceUser || by["ServiceErrorRateHigh"].Source != release.AlertSourceDefault || by["ServiceErrorRateHigh"].DefaultID != "error-rate" {
 		t.Errorf("sources wrong: %+v", by)
@@ -144,8 +147,8 @@ func TestResolveShapeAlerts_DefaultsAreScopedToTheEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 16 {
-		t.Fatalf("an env that declares nothing still gets the 16 defaults, got %d", len(got))
+	if len(got) != 18 {
+		t.Fatalf("an env that declares nothing still gets the 18 defaults, got %d", len(got))
 	}
 	for _, a := range got {
 		if strings.Contains(a.Expr, "'dev'") {
@@ -204,8 +207,8 @@ func TestResolveShapeAlerts_MetadataOptOutLeavesNoMetadataRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 11 {
-		t.Fatalf("got %d alerts, want the 5 telemetry rules plus the 6 platform rules and none of the 5 metadata rules", len(got))
+	if len(got) != 13 {
+		t.Fatalf("got %d alerts, want the 5 telemetry rules plus the 8 platform rules and none of the 5 metadata rules", len(got))
 	}
 	for _, a := range got {
 		switch a.DefaultID {

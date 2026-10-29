@@ -23,7 +23,7 @@
 // providers.go and compose.go were before the graph. Those projects keep the
 // legacy generators byte-for-byte until they migrate (`forge fix
 // composition-graph`, internal/codemod; the rest of the path is the
-// migrations/v0.1.47 skill).
+// migrations/v1.0.0 skill).
 
 package codegen
 
@@ -150,6 +150,8 @@ type graphNode struct {
 	Audience string
 	// Services are a route set's services, in Deps order.
 	Services []*graphNode
+	// RPCService is the canonical proto identity from the typed mount inventory.
+	RPCService string
 	// Pos orders providers by their declaration in internal/app.
 	Pos int
 	// File and Line locate a provider's func; Standby, AuthAudience and

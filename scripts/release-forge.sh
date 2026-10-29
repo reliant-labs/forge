@@ -26,16 +26,36 @@
 #
 # Usage:
 #   scripts/release-forge.sh [--dry-run] [--repo <dir>] [--branch <name>]
-#                            [--skip-proxy-check] vX.Y.Z
+#                            [--skip-proxy-check] [--publish-npm] [vX.Y.Z]
 #
+#   vX.Y.Z        the release to cut. Defaults to NEXT_VERSION's, and must be
+#                 it or a pre-release of it (step 2b); a final release moves
+#                 NEXT_VERSION to its next patch.
 #   --dry-run     run every validation and every file edit, print the plan,
 #                 then RESTORE the working tree and create no commit or tag.
 #   --repo DIR    operate on DIR instead of the enclosing git repo (tests).
 #   --branch NAME the branch to push (default: main).
+#   --commit SHA  tag SHA, a commit already on origin/<branch> whose full CI
+#                 is green, instead of the branch tip. Main keeps merging: the
+#                 tag goes on SHA itself (so it stays reachable from main) and
+#                 the bookkeeping (VERSION, NEXT_VERSION, CHANGELOG.md) lands
+#                 as a release/vX.Y.Z pull request through the merge queue.
+#   --publish-npm after the GitHub release exists, `npm publish` npm/ (the
+#                 @reliantlabs/forge shim) and wait for the registry to serve
+#                 it. Off by default: it needs a logged-in npm account with
+#                 publish rights (and its OTP), which only a maintainer has.
+#                 Without it the script prints the command to run.
 #   --skip-proxy-check
 #                 skip the immutable-version gate (step 5). Only for an
 #                 offline release where you have verified BY HAND that the
 #                 version has never been published. See that step's comment.
+#
+# BINARIES. The GitHub release carries prebuilt archives for linux, darwin and
+# windows on amd64 and arm64, plus checksums.txt (scripts/build-release-assets.sh).
+# install.sh, install.ps1, the npm shim (npm/) and the Homebrew formula all
+# download those; a release without them leaves every installer failing.
+# npm/package.json is synced to the release version too. Publishing it is NOT
+# done unless --publish-npm is passed (docs/releasing.md, "Installers").
 #
 # CHANGELOG.md is written HERE and nowhere else. This script builds the new
 # `## [vX.Y.Z] - <date>` section from the squash commits (the merged PR titles)
@@ -49,6 +69,9 @@
 #   FORGE_RELEASE_PRETTIER   command to format CHANGELOG.md with, given the
 #                            file as its argument (default: npx prettier@<pin>)
 #   FORGE_RELEASE_GH         the gh binary (default: gh)
+#   FORGE_RELEASE_NPM        the npm binary (default: npm)
+#   FORGE_RELEASE_TARGETS    GOOS/GOARCH list to build release archives for
+#                            (default: the six scripts/build-release-assets.sh ships)
 #
 # See docs/releasing.md.
 set -euo pipefail
@@ -63,8 +86,12 @@ SKIP_PROXY_CHECK=0
 # instead of the public proxy; nothing else should set it.
 PROXY_BASE="${FORGE_RELEASE_PROXY_BASE:-https://proxy.golang.org}"
 
+PUBLISH_NPM=0
+COMMIT=""
+
 usage() {
-  echo "usage: $0 [--dry-run] [--repo <dir>] [--branch <name>] [--skip-proxy-check] vX.Y.Z" >&2
+  echo "usage: $0 [--dry-run] [--repo <dir>] [--branch <name>] [--commit <sha>] [--skip-proxy-check] [--publish-npm] [vX.Y.Z]" >&2
+  echo "       the version defaults to NEXT_VERSION's, and must be it (or a pre-release of it)" >&2
   exit 2
 }
 
@@ -72,8 +99,10 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --skip-proxy-check) SKIP_PROXY_CHECK=1; shift ;;
+    --publish-npm) PUBLISH_NPM=1; shift ;;
     --repo)    [ $# -ge 2 ] || usage; REPO_ROOT="$2"; shift 2 ;;
     --branch)  [ $# -ge 2 ] || usage; BRANCH="$2"; shift 2 ;;
+    --commit)  [ $# -ge 2 ] || usage; COMMIT="$2"; shift 2 ;;
     -h|--help) usage ;;
     -*)        echo "error: unknown flag $1" >&2; usage ;;
     *)
@@ -82,12 +111,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$VERSION" ] || usage
-
 # ── 1. Version shape ────────────────────────────────────────────────
 # Canonical semver with optional prerelease. Reject the tag-prefixed forms
 # early — maintainers habitually paste `pkg/v1.2.3` or `v1.2.3+meta` back in.
-if ! echo "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+# No version at all means NEXT_VERSION's (step 2b).
+if [ -n "$VERSION" ] && ! echo "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
   echo "error: version must look like vX.Y.Z (got: $VERSION)" >&2
   echo "hint: pass the bare version, with the leading v and no build metadata." >&2
   exit 1
@@ -99,6 +127,24 @@ if [ -z "$REPO_ROOT" ]; then
   REPO_ROOT="$(git rev-parse --show-toplevel)"
 fi
 cd "$REPO_ROOT"
+
+# ── 2a. --commit: release a green commit of main, not its tip ──────
+if [ -n "$COMMIT" ]; then
+  git fetch -q origin "$BRANCH"
+  COMMIT="$(git rev-parse --verify "$COMMIT^{commit}")"
+  if ! git merge-base --is-ancestor "$COMMIT" "origin/$BRANCH"; then
+    echo "error: --commit $COMMIT is not on origin/$BRANCH" >&2
+    exit 1
+  fi
+  # A private detached worktree, never `git checkout` here: this script is
+  # being read by bash as it runs, and checking out an older commit would
+  # swap the file under it mid-run.
+  REPO_ROOT="$(mktemp -d)/forge-$COMMIT"
+  git worktree add -q --detach "$REPO_ROOT" "$COMMIT"
+  cd "$REPO_ROOT"
+  echo "→ releasing $COMMIT in $REPO_ROOT (origin/$BRANCH is $(git rev-parse --short "origin/$BRANCH"))"
+fi
+
 
 if [ ! -f go.mod ]; then
   echo "error: $REPO_ROOT/go.mod not found — not a forge repo checkout?" >&2
@@ -122,6 +168,42 @@ if [ ! -f CHANGELOG.md ]; then
   echo "error: expected CHANGELOG.md not found — the release script writes the new version's section into it" >&2
   exit 1
 fi
+
+# ── 2b. The next release is declared, not computed ──────────────────
+# NEXT_VERSION names the release main is building toward. It is not always
+# VERSION's patch+1 (v0.1.46 was followed by v1.0.0), and the lint rollout
+# rows, codemods and migration playbooks on main are keyed to it — their tests
+# fail a key that is neither shipped nor NEXT_VERSION — so cutting any other
+# version would ship them under a release they do not name. Omit the version
+# to cut NEXT_VERSION; a pre-release of it (vX.Y.Z-rc.1) is allowed. To cut a
+# different release, change NEXT_VERSION in a pull request first. A final
+# release moves NEXT_VERSION to its next patch in the release commit.
+NEXT_FILE="NEXT_VERSION"
+if [ ! -f "$NEXT_FILE" ]; then
+  echo "error: expected $NEXT_FILE not found — it names the release to cut" >&2
+  exit 1
+fi
+NEXT="$(tr -d '[:space:]' <"$NEXT_FILE")"
+if ! echo "$NEXT" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+  echo "error: $NEXT_FILE must hold one vX.Y.Z release (got: $NEXT)" >&2
+  exit 1
+fi
+if [ -z "$VERSION" ]; then
+  VERSION="$NEXT"
+  echo "→ releasing $VERSION (from $NEXT_FILE)"
+fi
+if [ "${VERSION%%-*}" != "$NEXT" ]; then
+  echo "error: $VERSION is not the next release: $NEXT_FILE names $NEXT." >&2
+  echo "hint: omit the version to cut $NEXT, or change $NEXT_FILE in a pull request first." >&2
+  exit 1
+fi
+RELEASE_TAG="$VERSION"
+NEXT_AFTER="$NEXT"
+case "$VERSION" in
+  *-*) ;; # a pre-release: the final release is still next
+  *) IFS=. read -r next_major next_minor next_patch <<<"${NEXT#v}"
+     NEXT_AFTER="v$next_major.$next_minor.$((next_patch + 1))" ;;
+esac
 
 # ── 3. Clean tree ───────────────────────────────────────────────────
 # The WHOLE tree, not just pkg/: this script commits root-module files, so any
@@ -277,7 +359,9 @@ fi
 BACKUP_DIR="$(mktemp -d)"
 RESTORE_ON_EXIT=1
 CHANGELOG_FILE="CHANGELOG.md"
-TOUCHED=("${VERSION_FILES[@]}" "$CHANGELOG_FILE")
+NPM_MANIFEST="npm/package.json"
+TOUCHED=("${VERSION_FILES[@]}" "$NEXT_FILE" "$CHANGELOG_FILE")
+[ -f "$NPM_MANIFEST" ] && TOUCHED+=("$NPM_MANIFEST")
 
 restore_tree() {
   if [ "$RESTORE_ON_EXIT" = "1" ]; then
@@ -309,6 +393,23 @@ for f in "${VERSION_FILES[@]}"; do
   # it) — an embed directive cannot reach outside its own package directory.
   printf '%s\n' "$VERSION" > "$f"
 done
+if [ "$NEXT_AFTER" != "$NEXT" ]; then
+  echo "→ $NEXT_FILE: $NEXT → $NEXT_AFTER"
+  printf '%s\n' "$NEXT_AFTER" > "$NEXT_FILE"
+fi
+
+# The npm shim's version IS the forge version it downloads. Only the manifest's
+# own top-level "version" line is rewritten (two-space indent), never a
+# dependency's.
+if [ -f "$NPM_MANIFEST" ]; then
+  echo "→ syncing $NPM_MANIFEST to ${VERSION#v}"
+  sed -e 's/^  "version": ".*"/  "version": "'"${VERSION#v}"'"/' "$NPM_MANIFEST" >"$BACKUP_DIR/npm-package.json.new"
+  if ! grep -q "^  \"version\": \"${VERSION#v}\"" "$BACKUP_DIR/npm-package.json.new"; then
+    echo "error: could not set the version in $NPM_MANIFEST (expected a two-space-indented \"version\" line)" >&2
+    exit 1
+  fi
+  cat "$BACKUP_DIR/npm-package.json.new" >"$NPM_MANIFEST"
+fi
 
 # ── 7b. CHANGELOG.md ────────────────────────────────────────────────
 # Written only here, from the merged PR titles since the previous tag. The
@@ -358,12 +459,13 @@ format_changelog() {
     $FORGE_RELEASE_PRETTIER "$CHANGELOG_FILE"
     return
   fi
+  # The pin, not scripts/prettier.sh itself: that script drops CHANGELOG.md,
+  # as the hook does, and this is the one place the file is formatted.
   local pin
-  pin="$(sed -n 's/.*additional_dependencies: \["prettier@\([0-9][0-9.]*\)".*/\1/p' .pre-commit-config.yaml 2>/dev/null | head -n 1)" || pin=""
-  if [ -z "$pin" ]; then
+  pin="$("$(dirname "$0")/prettier.sh" --version-pin)" || {
     echo "error: no prettier pin found in .pre-commit-config.yaml; cannot format CHANGELOG.md" >&2
     return 1
-  fi
+  }
   npx --yes "prettier@$pin" --write --ignore-unknown "$CHANGELOG_FILE" >/dev/null
 }
 echo "→ formatting CHANGELOG.md with prettier"
@@ -399,6 +501,16 @@ fi
 echo "→ building the module"
 go build ./...
 
+# ── 8b. Release archives ────────────────────────────────────────────
+# Built before the release commit exists, so a build failure leaves no commit or
+# tag behind. The stamped commit is therefore the release commit's PARENT; the
+# release commit changes only VERSION, npm/package.json and CHANGELOG.md, so the
+# compiled source is identical.
+ASSETS_DIR="$BACKUP_DIR/assets"
+echo "→ building release archives"
+FORGE_RELEASE_COMMIT="$(git rev-parse HEAD)" "$RELEASE_SCRIPT_DIR/build-release-assets.sh" "$VERSION" "$ASSETS_DIR"
+ASSET_FILES=("$ASSETS_DIR"/forge_*.tar.gz "$ASSETS_DIR/checksums.txt")
+
 # ── 9. Commit, tag, push (or describe the plan) ─────────────────────
 if [ "$DRY_RUN" = "1" ]; then
   echo ""
@@ -412,8 +524,13 @@ if [ "$DRY_RUN" = "1" ]; then
   else
     echo "DRY RUN: origin is not on github.com; would skip the GitHub release"
   fi
+  echo "DRY RUN: would attach: $(for f in "${ASSET_FILES[@]}"; do basename "$f"; done | tr '\n' ' ')"
   echo "DRY RUN: would tag $RELEASE_TAG at that commit"
-  echo "DRY RUN: would push:   git push --atomic origin <release commit>:refs/heads/$BRANCH refs/tags/$RELEASE_TAG"
+  if [ -n "$COMMIT" ]; then
+    echo "DRY RUN: would push:   git push --atomic origin refs/tags/$RELEASE_TAG (at $COMMIT) <release commit>:refs/heads/release/$VERSION, then open + auto-merge that PR"
+  else
+    echo "DRY RUN: would push:   git push --atomic origin <release commit>:refs/heads/$BRANCH refs/tags/$RELEASE_TAG"
+  fi
   echo ""
   echo "DRY RUN: restoring the working tree; no commit, tag or push was created."
   exit 0
@@ -425,8 +542,8 @@ fi
 git add -- "${TOUCHED[@]}"
 git commit -q -m "chore: release $VERSION
 
-Sync VERSION and internal/buildinfo/VERSION; write the $VERSION section of
-CHANGELOG.md from the PR titles merged since ${PREV_TAG:-the start}.
+Sync VERSION and internal/buildinfo/VERSION; name $NEXT_AFTER in NEXT_VERSION;
+write the $VERSION section of CHANGELOG.md from the PR titles merged since ${PREV_TAG:-the start}.
 
 Tagged $RELEASE_TAG at this commit."
 
@@ -434,6 +551,16 @@ RELEASE_SHA="$(git rev-parse HEAD)"
 # From here the tree is intentionally changed; do not restore it on exit.
 RESTORE_ON_EXIT=0
 
+if [ -n "$COMMIT" ]; then
+  # The tag names the green commit; the release commit becomes a PR.
+  RELEASE_SHA="$COMMIT"
+  git tag -a "$RELEASE_TAG" -m "forge $VERSION" "$COMMIT"
+  git push --atomic origin "refs/tags/$RELEASE_TAG" "HEAD:refs/heads/release/$VERSION"
+  "$GH_BIN" pr create --repo "$GITHUB_REPO" --base "$BRANCH" --head "release/$VERSION" \
+    --title "chore: release $VERSION" --body "Bookkeeping for $RELEASE_TAG, tagged at $COMMIT." &&
+    "$GH_BIN" pr merge --repo "$GITHUB_REPO" --squash --auto "release/$VERSION" ||
+    echo "⚠️  open the release/$VERSION bookkeeping PR by hand; $RELEASE_TAG is pushed" >&2
+else
 git tag -a "$RELEASE_TAG" -m "forge $VERSION"
 
 echo ""
@@ -451,6 +578,7 @@ echo "→ pushing atomically (branch + tag, all-or-nothing)"
 # it as non-fast-forward and the atomic push dropped the tag with it (v0.1.18
 # hit exactly this).
 git push --atomic origin "$RELEASE_SHA:refs/heads/$BRANCH" "refs/tags/$RELEASE_TAG"
+fi
 
 echo ""
 echo "✅ committed and pushed $VERSION at $RELEASE_SHA"
@@ -465,18 +593,64 @@ if [ -z "$GITHUB_REPO" ]; then
 elif ! command -v "$GH_BIN" >/dev/null 2>&1; then
   GH_RELEASE_FAILED=1
   echo "⚠️  gh is not installed; create the GitHub release by hand:" >&2
-  echo "    gh release create $RELEASE_TAG --repo $GITHUB_REPO --title $RELEASE_TAG --notes-file <section of CHANGELOG.md>" >&2
+  echo "    gh release create $RELEASE_TAG --repo $GITHUB_REPO --title $RELEASE_TAG --notes-file <section of CHANGELOG.md> <archives from: scripts/build-release-assets.sh $VERSION dist/>" >&2
 else
   PRERELEASE_FLAG=()
   case "$VERSION" in *-*) PRERELEASE_FLAG=(--prerelease) ;; esac
   echo "→ creating the GitHub release $RELEASE_TAG"
   if ! "$GH_BIN" release create "$RELEASE_TAG" --repo "$GITHUB_REPO" --verify-tag \
-      --title "$RELEASE_TAG" --notes-file "$NOTES_FILE" "${PRERELEASE_FLAG[@]}"; then
+      --title "$RELEASE_TAG" --notes-file "$NOTES_FILE" "${PRERELEASE_FLAG[@]}" "${ASSET_FILES[@]}"; then
     GH_RELEASE_FAILED=1
     echo "⚠️  $RELEASE_TAG is tagged and pushed, but the GitHub release was not created. Retry with:" >&2
-    echo "    gh release create $RELEASE_TAG --repo $GITHUB_REPO --verify-tag --title $RELEASE_TAG --notes-file <section of CHANGELOG.md>" >&2
+    echo "    gh release create $RELEASE_TAG --repo $GITHUB_REPO --verify-tag --title $RELEASE_TAG --notes-file <section of CHANGELOG.md> <archives from: scripts/build-release-assets.sh $VERSION dist/>" >&2
   fi
 fi
+
+# ── 9c. Homebrew ────────────────────────────────────────────────────
+# The tap's update-forge-formula.yml regenerates Formula/forge.rb from this
+# release's checksums.txt and opens a PR. Best effort: the release is already
+# out, and the tap can be dispatched by hand (docs/releasing.md, "Installers").
+case "$VERSION" in
+  *-*) ;; # a prerelease is not offered through brew
+  *)
+    if [ "$GH_RELEASE_FAILED" = "0" ] && [ -n "$GITHUB_REPO" ] && command -v "$GH_BIN" >/dev/null 2>&1; then
+      echo "→ asking the Homebrew tap to update Formula/forge.rb"
+      if ! "$GH_BIN" api repos/reliant-labs/homebrew-reliant/dispatches \
+          -f event_type=forge-release-published -f "client_payload[version]=${VERSION#v}" >/dev/null 2>&1; then
+        echo "  note: could not dispatch the tap; run its 'Update forge formula' workflow with version ${VERSION#v}" >&2
+      fi
+    fi
+    ;;
+esac
+
+# ── 9d. npm shim ────────────────────────────────────────────────────
+# @reliantlabs/forge downloads the binaries attached above, so it can only be
+# published after the GitHub release exists. A prerelease is never published
+# (the `latest` dist-tag would move to it).
+NPM_BIN="${FORGE_RELEASE_NPM:-npm}"
+case "$VERSION" in
+  *-*) echo "→ $VERSION is a prerelease: not publishing the npm shim" ;;
+  *)
+    if [ ! -f "$NPM_MANIFEST" ]; then
+      :
+    elif [ "$GH_RELEASE_FAILED" != "0" ]; then
+      echo "→ skipping the npm shim: its binaries are not on a GitHub release yet" >&2
+    elif [ "$PUBLISH_NPM" = "1" ]; then
+      echo "→ publishing @reliantlabs/forge ${VERSION#v} to npm"
+      if (cd "$(dirname "$NPM_MANIFEST")" && "$NPM_BIN" publish --access public) &&
+        NPM_VIEW_CMD="${NPM_VIEW_CMD:-$NPM_BIN view}" "$RELEASE_SCRIPT_DIR/verify-npm-published.sh" \
+          --name @reliantlabs/forge --version "${VERSION#v}" --publish-reported-success; then
+        :
+      else
+        echo "⚠️  the npm publish did not complete; $VERSION itself is released. Retry: (cd npm && npm publish --access public)" >&2
+        NPM_FAILED=1
+      fi
+    else
+      echo "→ npm shim not published (pass --publish-npm, or run: cd npm && npm publish --access public)"
+    fi
+    ;;
+esac
+NPM_FAILED="${NPM_FAILED:-0}"
 
 # ── 10. Wait for the proxy to ingest the tag ────────────────────────
 # The push above returns as soon as GitHub has the tag. proxy.golang.org has
@@ -519,6 +693,7 @@ if GOPROXY_WAIT_BASE="${GOPROXY_WAIT_BASE:-$PROXY_BASE}" \
   # The tag, the commit and the module are all out; only the GitHub release
   # page is missing, and the retry command was printed above.
   [ "$GH_RELEASE_FAILED" = "0" ] || exit 1
+  [ "$NPM_FAILED" = "0" ] || exit 1
 else
   echo ""
   echo "⚠️  $VERSION is TAGGED AND PUSHED — the release itself succeeded."

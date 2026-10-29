@@ -3,6 +3,7 @@ package dashspec
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // ── validation ──────────────────────────────────────────────────────────────
@@ -92,7 +93,16 @@ func TestValidationRejectsWhatTheEnginesWouldRefuse(t *testing.T) {
 		{"gte non number", panel(`"kind":"number","signal":"traces","where":[{"field":"span.duration","op":"gte","value":"slow"}],"series":[{"label":"a","agg":"count"}]`), "number"},
 		{"in without values", panel(`"kind":"number","signal":"traces","where":[{"field":"span.name","op":"in"}],"series":[{"label":"a","agg":"count"}]`), "non-empty"},
 		{"metric quantile non histogram", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"quantile","quantile":0.9,"field":"m","metricType":"gauge"}]`), "histogram"},
-		{"metric count", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"count","field":"m","metricType":"sum"}]`), "not defined over a metric"},
+		{"metric count on a sum", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"count","field":"m","metricType":"sum"}]`), "histogram, exp_histogram or summary metricType"},
+		{"metric count on a gauge", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"count","field":"m","metricType":"gauge"}]`), "histogram, exp_histogram or summary metricType"},
+		{"metric count_distinct", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"count_distinct","field":"m","metricType":"histogram"}]`), "not defined over a metric"},
+		{"metric rate on a gauge", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"rate","field":"m","metricType":"gauge"}]`), "not a gauge"},
+		{"metric increase on a gauge", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"increase","field":"m","metricType":"gauge"}]`), "not a gauge"},
+		{"rate over traces", panel(`"kind":"line","signal":"traces","series":[{"label":"a","agg":"rate","field":"span.duration"}]`), "defined for metrics"},
+		{"increase over logs", panel(`"kind":"line","signal":"logs","series":[{"label":"a","agg":"increase","field":"log.body"}]`), "defined for metrics"},
+		{"min over traces", panel(`"kind":"line","signal":"traces","series":[{"label":"a","agg":"min","field":"span.duration"}]`), "defined for metrics"},
+		{"quantile of 0", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"quantile","quantile":0,"field":"m","metricType":"histogram"}]`), "level in (0, 1]"},
+		{"quantile over 1", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"quantile","quantile":1.5,"field":"m","metricType":"histogram"}]`), "level in (0, 1]"},
 		{"sum without field", panel(`"kind":"number","signal":"traces","series":[{"label":"a","agg":"sum"}]`), "needs a \"field\""},
 		{"width out of grid", panel(`"kind":"number","signal":"traces","width":30,"series":[{"label":"a","agg":"count"}]`), "grid columns"},
 		{"too many group by", panel(`"kind":"line","signal":"traces","groupBy":["service.name","span.name","span.kind","span.status"],"series":[{"label":"a","agg":"count"}]`), "over the 3 allowed"},
@@ -196,6 +206,103 @@ func TestEveryPanelKindTheSpecDeclaresIsKnownToTheValidator(t *testing.T) {
 		doc := `{"id":"x","title":"X","panels":[{"id":"p","title":"P",` + src + `}]}`
 		if _, err := ParseDashboard("f.json", []byte(doc)); err != nil {
 			t.Errorf("kind %q: %v", k, err)
+		}
+	}
+}
+
+func TestMetricSeriesAcceptsEveryStoredKind(t *testing.T) {
+	panel := func(series string) string {
+		return `{"id":"x","title":"X","panels":[{"id":"p","title":"P","kind":"line","signal":"metrics","series":[` + series + `]}]}`
+	}
+	for _, kind := range []string{"gauge", "sum", "histogram", "exp_histogram", "summary"} {
+		agg := `"avg"`
+		if kind == "sum" {
+			agg = `"rate"`
+		}
+		src := panel(`{"label":"a","agg":` + agg + `,"field":"m","metricType":"` + kind + `"}`)
+		if _, err := ParseDashboard("f.json", []byte(src)); err != nil {
+			t.Errorf("metricType %q refused: %v", kind, err)
+		}
+	}
+	// What the explorer saves for a distribution kind validates: any quantile,
+	// a count of observations and their rate.
+	for _, kind := range []string{"histogram", "exp_histogram", "summary"} {
+		for _, series := range []string{
+			`{"label":"a","agg":"quantile","quantile":0.9,"field":"m","metricType":"` + kind + `"}`,
+			`{"label":"a","agg":"count","field":"m","metricType":"` + kind + `"}`,
+			`{"label":"a","agg":"rate","field":"m","metricType":"` + kind + `"}`,
+		} {
+			if _, err := ParseDashboard("f.json", []byte(panel(series))); err != nil {
+				t.Errorf("%s: %v", series, err)
+			}
+		}
+	}
+	for name, c := range map[string]struct{ series, want string }{
+		"an unknown kind":            {`{"label":"a","agg":"avg","field":"m","metricType":"exponential"}`, "is not one of"},
+		"a quantile of an exp gauge": {`{"label":"a","agg":"quantile","quantile":0.5,"field":"m","metricType":"gauge"}`, "exp_histogram"},
+		"a count of a sum":           {`{"label":"a","agg":"count","field":"m","metricType":"sum"}`, "histogram, exp_histogram or summary"},
+		"a rate of a gauge":          {`{"label":"a","agg":"rate","field":"m","metricType":"gauge"}`, "not a gauge"},
+	} {
+		_, err := ParseDashboard("f.json", []byte(panel(c.series)))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want %q", name, err, c.want)
+		}
+	}
+}
+
+func TestDefaultRangeAndMinStep(t *testing.T) {
+	sqlPanel := `{"id":"p","title":"P","kind":"sql","sql":"SELECT toDate(Timestamp) AS day, count() AS n FROM product_events GROUP BY day"%s}`
+	dash := func(top, panel string) string {
+		return `{"id":"x","title":"X"` + top + `,"panels":[` + panel + `]}`
+	}
+	ok := []struct{ name, src string }{
+		{"defaultRange 7d", dash(`,"defaultRange":"7d"`, strings.Replace(sqlPanel, "%s", "", 1))},
+		{"defaultRange 30d", dash(`,"defaultRange":"30d"`, strings.Replace(sqlPanel, "%s", "", 1))},
+		{"minStep 1d", dash(``, strings.Replace(sqlPanel, "%s", `,"minStep":"1d"`, 1))},
+		{"both", dash(`,"defaultRange":"24h"`, strings.Replace(sqlPanel, "%s", `,"minStep":"1h"`, 1))},
+	}
+	for _, tc := range ok {
+		t.Run("accepts "+tc.name, func(t *testing.T) {
+			d, err := ParseDashboard("f.json", []byte(tc.src))
+			if err != nil {
+				t.Fatalf("rejected: %v", err)
+			}
+			if tc.name == "defaultRange 7d" && d.DefaultRange != "7d" {
+				t.Errorf("DefaultRange = %q", d.DefaultRange)
+			}
+			if tc.name == "minStep 1d" && d.Panels[0].MinStep != "1d" {
+				t.Errorf("MinStep = %q", d.Panels[0].MinStep)
+			}
+		})
+	}
+	bad := []struct{ name, src, want string }{
+		{"defaultRange not a duration", dash(`,"defaultRange":"week"`, strings.Replace(sqlPanel, "%s", "", 1)), "defaultRange: \"week\" is not a duration"},
+		{"defaultRange zero", dash(`,"defaultRange":"0d"`, strings.Replace(sqlPanel, "%s", "", 1)), "is not a duration"},
+		{"defaultRange too long", dash(`,"defaultRange":"31d"`, strings.Replace(sqlPanel, "%s", "", 1)), "is longer than"},
+		{"defaultRange wrong type", dash(`,"defaultRange":7`, strings.Replace(sqlPanel, "%s", "", 1)), "defaultRange"},
+		{"minStep not a duration", dash(``, strings.Replace(sqlPanel, "%s", `,"minStep":"daily"`, 1)), "panels[0].minStep"},
+		{"minStep on a line panel", dash(``, `{"id":"p","title":"P","kind":"line","signal":"traces","minStep":"1d","series":[{"label":"a","agg":"count"}]}`), "only a sql panel takes \"minStep\""},
+		{"minStep on a console panel", dash(``, `{"id":"p","title":"P","kind":"issues","signal":"traces","minStep":"1d"}`), "only a sql panel takes \"minStep\""},
+	}
+	for _, tc := range bad {
+		t.Run("rejects "+tc.name, func(t *testing.T) {
+			_, err := ParseDashboard("f.json", []byte(tc.src))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseSpan(t *testing.T) {
+	for in, want := range map[string]time.Duration{"90s": 90 * time.Second, "15m": 15 * time.Minute, "6h": 6 * time.Hour, "7d": 7 * 24 * time.Hour} {
+		if got, err := ParseSpan(in); err != nil || got != want {
+			t.Errorf("ParseSpan(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"", "7", "d", "-1d", "1.5d", "1w", "0m", "99999d", "31d"} {
+		if _, err := ParseSpan(in); err == nil {
+			t.Errorf("ParseSpan(%q) succeeded", in)
 		}
 	}
 }

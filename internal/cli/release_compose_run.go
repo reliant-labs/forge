@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -117,6 +118,11 @@ func populateCompositionBindings(ctx context.Context, candidate *release.Snapsho
 	for _, k := range run.Selected {
 		selected[k] = true
 	}
+	type pendingBinding struct {
+		key  release.ConsumerKey
+		slot string
+	}
+	var pending []pendingBinding
 	for _, c := range candidate.Consumers {
 		action := "carry"
 		if selected[c.Key] {
@@ -130,9 +136,20 @@ func populateCompositionBindings(ctx context.Context, candidate *release.Snapsho
 				}
 				continue
 			}
+			if !compositionPrimarySlot(entities, c.Key, slot) {
+				pending = append(pending, pendingBinding{key: c.Key, slot: slot})
+				continue
+			}
 			if err := addSelectedCompositionBinding(ctx, candidate, run, entities, opts, results, c.Key, slot); err != nil {
 				return err
 			}
+		}
+	}
+	// Every producer's verified invocation output (or exact carried binding)
+	// exists before auxiliary references can bind it, independent of ordering.
+	for _, binding := range pending {
+		if err := addSelectedCompositionBinding(ctx, candidate, run, entities, opts, results, binding.key, binding.slot); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -161,7 +178,11 @@ func addSelectedCompositionBinding(ctx context.Context, candidate *release.Snaps
 			}
 		}
 		for _, sidecar := range w.Spec.Sidecars {
-			if slot == "container:"+sidecar.Name {
+			prefix := "container:"
+			if sidecar.Native {
+				prefix = "init:"
+			}
+			if slot == prefix+sidecar.Name {
 				ref = sidecar.Image
 			}
 		}
@@ -202,10 +223,19 @@ func addSelectedCompositionBinding(ctx context.Context, candidate *release.Snaps
 			ref = m.ReleaseInputs[slot]
 		}
 	}
+	if provider := run.Entities.OpenBao; provider != nil && provider.ReleaseOwner == c.Key.Workload && provider.Cluster == c.Key.Cluster {
+		ref = provider.ReleaseInputs[slot]
+	}
 	if ref == "" {
 		return fmt.Errorf("selected slot %v/%s has no build output", c.Key, slot)
 	}
-	artifact, err := resolveCompositionArtifact(ctx, ref, opts.release, receipt, source)
+	artifact, bound, err := compositionInputArtifact(candidate, entities, c.Key, slot, ref)
+	if err != nil {
+		return err
+	}
+	if !bound {
+		artifact, err = resolveCompositionArtifact(ctx, ref, opts.release, receipt, source)
+	}
 	if err != nil {
 		return err
 	}
@@ -220,12 +250,37 @@ func addSelectedCompositionBinding(ctx context.Context, candidate *release.Snaps
 	}
 	id, err := release.ArtifactIdentity(artifact)
 	if err != nil {
-		return err
+		return fmt.Errorf("binding %s/%s artifact location=%q digest=%q: %w", c.Key.Workload, slot, artifact.Location, artifact.Content, err)
 	}
 	recordCompositionBuildEvent(candidate, c.Key, id, artifact.Origin)
 	candidate.Artifacts[id] = artifact
-	candidate.Bindings = append(candidate.Bindings, release.ConsumerBinding{Consumer: c.Key, Slot: slot, Artifact: id})
+	b := release.ConsumerBinding{Consumer: c.Key, Slot: slot, Artifact: id}
+	// An external image keeps the tag its consumer declared, so sealing a
+	// reference that is already pinned renders it byte-for-byte as before and
+	// rolls nothing. A built image (receipt or source provenance) has no
+	// declared tag to keep: it renders as the bare `repo@sha256:X`.
+	if artifact.Origin.Receipt == nil && artifact.Origin.Source == nil {
+		b.Tag = declaredImageTag(ref)
+	}
+	candidate.Bindings = append(candidate.Bindings, b)
 	return nil
+}
+
+// declaredImageTag is the tag of an image reference (`repo:tag` or
+// `repo:tag@sha256:…`), or "" when it has none or the tag is not a valid OCI
+// tag. A registry port (`host:5000/repo`) is never a tag.
+func declaredImageTag(ref string) string {
+	if at := strings.Index(ref, "@"); at >= 0 {
+		ref = ref[:at]
+	}
+	colon := strings.LastIndex(ref, ":")
+	if colon <= strings.LastIndex(ref, "/") {
+		return ""
+	}
+	if tag := ref[colon+1:]; release.ValidImageTag(tag) {
+		return tag
+	}
+	return ""
 }
 
 func sealComposition(ctx context.Context, cfg *config.ProjectConfig, entities *KCLEntities, opts buildOptions, candidate release.Snapshot) error {
@@ -244,9 +299,18 @@ func sealComposition(ctx context.Context, cfg *config.ProjectConfig, entities *K
 	} else if prior != nil {
 		now = prior.CreatedAt
 	}
-	assets, err := bundleObservabilityFiles(projectDirForKCL(), bundleBuildInputs{Release: opts.release, OutputDir: opts.outputDir, StrictObservability: true})
+	assets, err := bundleObservabilityFiles(projectDirForKCL(), bundleBuildInputs{Release: opts.release, OutputDir: opts.outputDir, StrictObservability: true}, doc.entities)
 	if err != nil {
 		return err
+	}
+	// A snapshot carries its assets inline, base64, in the bundle's config
+	// blob, which both ends bound at bundle.MaxManifestBytes (1 MiB): a
+	// catalog grows with its project and does not belong there. Until it
+	// travels by layer reference, a composition bundle ships without it.
+	var withheld bool
+	if assets, withheld = dropServiceCatalog(assets); withheld {
+		fmt.Fprintf(os.Stderr, "[bundle] Note: the service catalog was not uploaded: a composition bundle does not carry it yet, "+
+			"so the RPC explorer will lack env %s's declared routes. The deploy is unaffected.\n", opts.env)
 	}
 	if doc.Provenance.Commit != candidate.Source.Commit || doc.Provenance.Dirty {
 		return fmt.Errorf("composition source changed during build")
@@ -301,6 +365,13 @@ func sealComposition(ctx context.Context, cfg *config.ProjectConfig, entities *K
 	return nil
 }
 func recordCompositionBuildEvent(s *release.Snapshot, c release.ConsumerKey, id release.ArtifactID, origin release.ArtifactOrigin) {
+	// Several slots may use the same verified artifact (for example a Job's
+	// init and main containers). Build events attest consumer+artifact, not slot.
+	for _, event := range s.BuildEvents {
+		if event.Consumer == c && event.Artifact == id && reflect.DeepEqual(event.Origin, origin) {
+			return
+		}
+	}
 	s.BuildEvents = append(s.BuildEvents, release.ArtifactBuildEvent{Consumer: c, Artifact: id, Origin: origin})
 }
 

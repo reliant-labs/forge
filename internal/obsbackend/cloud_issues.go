@@ -58,6 +58,7 @@ type wireTrendPoint struct {
 type wireIssue struct {
 	ID              string           `json:"id"`
 	Platform        string           `json:"platform"`
+	Source          string           `json:"source"`
 	EnvID           string           `json:"envId"`
 	Service         string           `json:"service"`
 	Fingerprint     string           `json:"fingerprint"`
@@ -71,12 +72,29 @@ type wireIssue struct {
 	LastVersion     string           `json:"lastVersion"`
 	Events          jsonInt          `json:"events"`
 	Affected        jsonInt          `json:"affected"`
+	AffectedUnit    string           `json:"affectedUnit"`
 	Trend           []wireTrendPoint `json:"trend"`
 	ResolvedAt      time.Time        `json:"resolvedAt"`
 	ResolvedVersion string           `json:"resolvedVersion"`
 	RegressedAt     time.Time        `json:"regressedAt"`
 	IgnoredUntil    time.Time        `json:"ignoredUntil"`
 	Version         int32            `json:"version"`
+	IncidentKey     string           `json:"incidentKey"`
+	RelatedCount    jsonInt          `json:"relatedCount"`
+	Assignee        *wireUser        `json:"assignee"`
+}
+
+// wireUser is IssueUser.
+type wireUser struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+func (u *wireUser) user() *IssueUser {
+	if u == nil || (u.ID == "" && u.Name == "") {
+		return nil
+	}
+	return &IssueUser{ID: u.ID, Name: u.Name}
 }
 
 // wireStatus and wirePlatform name the control plane's enum values.
@@ -100,14 +118,34 @@ func upper(s string) string {
 	return string(b)
 }
 
+// affectedUnit is the unit the control plane counted Affected over. A control
+// plane that predates the field leaves it empty, and says only what its proto
+// documents: traces for a server issue, sessions for a browser one.
+func (w wireIssue) affectedUnit() string {
+	return unitOrDefault(w.AffectedUnit, wirePlatform[w.Platform])
+}
+
+func unitOrDefault(unit, platform string) string {
+	switch {
+	case unit != "":
+		return unit
+	case platform == PlatformBrowser:
+		return "sessions"
+	case platform == PlatformServer:
+		return "traces"
+	}
+	return ""
+}
+
 func (w wireIssue) issue() Issue {
 	return Issue{
-		ID: w.ID, Platform: wirePlatform[w.Platform], Service: w.Service, Fingerprint: w.Fingerprint,
+		ID: w.ID, Platform: wirePlatform[w.Platform], Source: w.Source, Service: w.Service, Fingerprint: w.Fingerprint,
 		Title: w.Title, Culprit: w.Culprit, ExceptionType: w.ExceptionType, Status: wireStatus[w.Status],
 		FirstSeen: w.FirstSeenAt.UTC(), LastSeen: w.LastSeenAt.UTC(), FirstVersion: w.FirstVersion, LastVersion: w.LastVersion,
-		Events: int64(w.Events), Affected: int64(w.Affected),
+		Events: int64(w.Events), Affected: int64(w.Affected), AffectedUnit: w.affectedUnit(),
 		ResolvedAt: w.ResolvedAt.UTC(), ResolvedVersion: w.ResolvedVersion, RegressedAt: w.RegressedAt.UTC(),
 		IgnoredUntil: w.IgnoredUntil.UTC(), Version: w.Version,
+		Assignee: w.Assignee.user(), IncidentKey: w.IncidentKey, RelatedCount: int(w.RelatedCount),
 	}
 }
 
@@ -141,6 +179,9 @@ func (c Cloud) ListIssues(ctx context.Context, req ListIssuesRequest) (ListIssue
 	if req.Explain {
 		return ListIssuesResult{}, Undetermined("--explain compiles the local backend's SQL; hosted issues are grouped by the control plane's ingest view and have no statement to show")
 	}
+	if req.Assignee != "" && req.Unassigned {
+		return ListIssuesResult{}, Wrong("assignee and unassigned filters are exclusive")
+	}
 	scope, err := c.issueScope(req.Narrow)
 	if err != nil {
 		return ListIssuesResult{}, err
@@ -153,12 +194,16 @@ func (c Cloud) ListIssues(ctx context.Context, req ListIssuesRequest) (ListIssue
 		Scope            wireIssueScope `json:"scope"`
 		Statuses         []string       `json:"statuses,omitempty"`
 		Platform         string         `json:"platform,omitempty"`
+		Source           string         `json:"source,omitempty"`
 		FirstSeenRelease string         `json:"firstSeenRelease,omitempty"`
 		SincePromotionID string         `json:"sincePromotionId,omitempty"`
 		Sort             string         `json:"sort"`
 		PageSize         int            `json:"pageSize,omitempty"`
 		PageToken        string         `json:"pageToken,omitempty"`
-	}{Scope: scope, FirstSeenRelease: req.SinceRelease, SincePromotionID: req.SincePromotion, Sort: sort, PageSize: req.Limit, PageToken: req.PageToken}
+		Assignee         string         `json:"assignee,omitempty"`
+		Unassigned       bool           `json:"unassigned,omitempty"`
+	}{Scope: scope, Source: req.Source, FirstSeenRelease: req.SinceRelease, SincePromotionID: req.SincePromotion, Sort: sort, PageSize: req.Limit, PageToken: req.PageToken,
+		Assignee: req.Assignee, Unassigned: req.Unassigned}
 	for _, s := range req.Statuses {
 		in.Statuses = append(in.Statuses, statusEnum(s))
 	}
@@ -174,6 +219,11 @@ func (c Cloud) ListIssues(ctx context.Context, req ListIssuesRequest) (ListIssue
 	}
 	res := ListIssuesResult{NextPageToken: out.NextPageToken}
 	for _, w := range out.Issues {
+		// A control plane that predates issue sources ignores the filter
+		// and answers errors: say so rather than list them as the source's.
+		if w.Source != req.Source {
+			return ListIssuesResult{}, Undetermined("the control plane answered issues of source %q for --source %q: it does not filter by issue source yet", w.Source, req.Source)
+		}
 		res.Issues = append(res.Issues, w.issue())
 	}
 	return res, nil
@@ -197,13 +247,15 @@ func (c Cloud) getIssue(ctx context.Context, id string, n Narrow) (GetIssueResul
 			InApp    bool   `json:"inApp"`
 		} `json:"frames"`
 		ByVersion []struct {
-			Version     string    `json:"version"`
-			Events      jsonInt   `json:"events"`
-			Affected    jsonInt   `json:"affected"`
-			FirstSeenAt time.Time `json:"firstSeenAt"`
-			LastSeenAt  time.Time `json:"lastSeenAt"`
+			Version      string    `json:"version"`
+			Events       jsonInt   `json:"events"`
+			Affected     jsonInt   `json:"affected"`
+			AffectedUnit string    `json:"affectedUnit"`
+			FirstSeenAt  time.Time `json:"firstSeenAt"`
+			LastSeenAt   time.Time `json:"lastSeenAt"`
 		} `json:"byVersion"`
 		CoOccurring  []string `json:"coOccurringIssueIds"`
+		Incident     []string `json:"incidentIssueIds"`
 		FirstRelease *struct {
 			Version     string    `json:"version"`
 			GitCommit   string    `json:"gitCommit"`
@@ -214,7 +266,7 @@ func (c Cloud) getIssue(ctx context.Context, id string, n Narrow) (GetIssueResul
 	if err := c.callIssues(ctx, procGetIssue, in, &out); err != nil {
 		return GetIssueResult{}, err
 	}
-	res := GetIssueResult{Issue: out.Issue.issue(), CoOccurring: out.CoOccurring}
+	res := GetIssueResult{Issue: out.Issue.issue(), CoOccurring: out.CoOccurring, Incident: out.Incident}
 	res.Issue.EnvID = out.Issue.EnvID
 	if out.LatestEvent != nil {
 		ev := out.LatestEvent.event()
@@ -226,7 +278,7 @@ func (c Cloud) getIssue(ctx context.Context, id string, n Narrow) (GetIssueResul
 	}
 	for _, v := range out.ByVersion {
 		res.ByVersion = append(res.ByVersion, IssueVersion{
-			Version: v.Version, Events: int64(v.Events), Affected: int64(v.Affected),
+			Version: v.Version, Events: int64(v.Events), Affected: int64(v.Affected), AffectedUnit: unitOrDefault(v.AffectedUnit, res.Issue.Platform),
 			FirstSeen: v.FirstSeenAt.UTC(), LastSeen: v.LastSeenAt.UTC(),
 		})
 	}

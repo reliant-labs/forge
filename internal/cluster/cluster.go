@@ -692,9 +692,14 @@ func renderSelectedCharts(ctx context.Context, specs []HelmChartSpec) ([]rendere
 		if cerr != nil {
 			return nil, cerr
 		}
+		// Self-describing objects: write the chart's namespace onto every
+		// provably-namespaced object, so the stream `forge env render` prints
+		// is the stream the deploy applies and means the same wherever it is
+		// applied. See chart_namespace.go.
+		crds := joinNonEmpty(spec.CRDs, ownCRDs)
 		out = append(out, renderedChart{
-			spec: spec, manifests: rendered,
-			crds: joinNonEmpty(spec.CRDs, ownCRDs), extra: extra,
+			spec: spec, manifests: stampChartNamespace(rendered, spec.Namespace, crds),
+			crds: crds, extra: stampChartNamespace(extra, spec.Namespace, crds),
 		})
 	}
 	return out, nil
@@ -948,7 +953,10 @@ func selectAndScope(opts ApplyOpts, manifests string) (selectedCharts []HelmChar
 	// Stamp every CRD with this env's ownership label, so a later apply that
 	// stops rendering it can prove the CRD was its own (crd_prune.go).
 	crdOwner = CRDOwner(opts.Project, opts.Env)
-	return selectedCharts, StampCRDOwnership(manifests, crdOwner), crdOwner
+	manifests = StampCRDOwnership(manifests, crdOwner)
+	// And every other object with the env's owner label, so a later apply
+	// that stops rendering one can prove it was this env's (owned_prune.go).
+	return selectedCharts, StampOwnership(manifests, ObjectOwner(opts.Project, opts.Env)), crdOwner
 }
 
 // applyRendered is Apply after the KCL render: select, scope, apply and wait.
@@ -1150,6 +1158,36 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 		}
 	}
 
+	pruneAfterApply(ctx, opts, desired, manifests, crdOwner)
+
+	if policy.Mode == RolloutSkip {
+		if !opts.Quiet {
+			fmt.Println("Skipping rollout wait (rollout mode: skip)")
+		}
+		return nil, nil
+	}
+
+	// Wait set = every `kind: Job` in the stream this apply just sent,
+	// and nothing else. See oneShotWaitSet for why a caller-supplied
+	// list is not unioned in any more. A pre-rollout Job already completed
+	// at the gate — the workloads would not have been applied otherwise —
+	// so only the post-rollout Jobs are left to wait on.
+	var jobs []string
+	stageJobs := stages.awaitedJobs()
+	for _, name := range oneShotWaitSet(manifests) {
+		if !phases.awaited(name) && !stageJobs[name] {
+			jobs = append(jobs, name)
+		}
+	}
+	pending := &PendingRollout{opts: opts, policy: policy, jobs: jobs, skipDeployments: DeploymentsInUnits(desired, opts.SkipUnits)}
+	pending.prune = ownedPruneFor(opts, desired)
+	return pending, nil
+}
+
+// pruneAfterApply runs the best-effort prunes after every apply pass succeeds,
+// before deciding whether to await rollouts. desired is the whole scoped render;
+// manifests is only what this caller applied (excluding hub-converged units).
+func pruneAfterApply(ctx context.Context, opts ApplyOpts, desired, manifests, crdOwner string) {
 	// A workload that dropped to one replica stops rendering its PDB and
 	// apply never deletes it; a stale one can block node drains. Not gated
 	// on --prune: PDBs hold no state.
@@ -1178,27 +1216,20 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 			fmt.Printf("Warning: %v\n", err)
 		}
 	}
+}
 
-	if policy.Mode == RolloutSkip {
-		if !opts.Quiet {
-			fmt.Println("Skipping rollout wait (rollout mode: skip)")
-		}
-		return nil, nil
+// ownedPruneFor is the owned-object prune this apply owes once its rollout is
+// healthy, or nil when it owes none: a --target subset proves nothing about
+// what the env stopped rendering, and an unnamed owner proves nothing about whose
+// an object is. The Deployment prune's opt-in (--prune) does not govern this one
+// (inert kinds only; see owned_prune.go): an object opts out by carrying
+// kustomize.toolkit.fluxcd.io/prune: disabled.
+func ownedPruneFor(opts ApplyOpts, desired string) *ownedPruneJob {
+	owner := ObjectOwner(opts.Project, opts.Env)
+	if owner == "" || len(opts.Targets) > 0 || strings.TrimSpace(opts.Context) == "" {
+		return nil
 	}
-
-	// Wait set = every `kind: Job` in the stream this apply just sent,
-	// and nothing else. See oneShotWaitSet for why a caller-supplied
-	// list is not unioned in any more. A pre-rollout Job already completed
-	// at the gate — the workloads would not have been applied otherwise —
-	// so only the post-rollout Jobs are left to wait on.
-	var jobs []string
-	stageJobs := stages.awaitedJobs()
-	for _, name := range oneShotWaitSet(manifests) {
-		if !phases.awaited(name) && !stageJobs[name] {
-			jobs = append(jobs, name)
-		}
-	}
-	return &PendingRollout{opts: opts, policy: policy, jobs: jobs, skipDeployments: DeploymentsInUnits(desired, opts.SkipUnits)}, nil
+	return &ownedPruneJob{kctx: opts.Context, rendered: desired, owner: owner}
 }
 
 // oneShotWaitSet is the set of Jobs Apply blocks on after applying:
@@ -1345,7 +1376,13 @@ func RenderManifestsWithOverrides(ctx context.Context, mainK, imageTag, namespac
 			workDir = wd
 		}
 	}
-	out, err := kclrender.Run(workDir, mainK, dArgs)
+	var out []byte
+	var err error
+	if run, ok := ctx.Value(kclRunnerKey{}).(KCLRunner); ok {
+		out, err = run(ctx, workDir, mainK, env, dArgs)
+	} else {
+		out, err = kclrender.Run(workDir, mainK, dArgs)
+	}
 	if err != nil {
 		return "", nil, err
 	}
@@ -1425,13 +1462,13 @@ func extractManifestsIn(ctx context.Context, projectDir string, kclOutput []byte
 	// like any object forge renders, and after expansion so it sees the
 	// StatefulSets the Workload records expanded into. See
 	// statefulset_resize_job.go.
-	resizeDisabled, resizeImage, err := decodeStatefulSetResize(out["statefulset_resize"])
+	resizeDisabled, resizeImage, resizeOwner, err := decodeStatefulSetResize(out["statefulset_resize"])
 	if err != nil {
 		return "", nil, err
 	}
 	lifecycle, _ := out["lifecycle"].(string)
 	items, err = expandStatefulSetResizeJobs(items, resizeJobOpts{
-		Lifecycle: lifecycle, Disabled: resizeDisabled, Image: resizeImage,
+		Lifecycle: lifecycle, Disabled: resizeDisabled, Image: resizeImage, ReleaseOwner: resizeOwner, ReleaseConsumers: out["release_manifest_consumers"],
 		Namespace: resizeDefaultNamespace(out), ImagePullSecrets: pullSecrets,
 	})
 	if err != nil {
@@ -1633,7 +1670,7 @@ func expandTierDeclarations(items []any, network *deploy.EnvNetworkPolicy, pullS
 			// every record in it must carry the same ones. Taking the
 			// first record's would silently relabel the rest — part-of is
 			// the handle a CD pipeline selects a release's workloads by.
-			for _, label := range []string{deploy.LabelPartOf, deploy.LabelEnv} {
+			for _, label := range []string{deploy.LabelPartOf, deploy.LabelEnv, deploy.LabelVersion} {
 				if got, want := w.Labels[label], g.labels[label]; got != want {
 					return nil, fmt.Errorf("manifest item %d: workload %q has %s=%q but %q in the same group (cluster %q, namespace %s) has %q: every workload record in a group must agree (set Bundle.project / Bundle.env once, not per record)",
 						i, w.Name, label, got, g.records[0].Name, key.cluster, key.namespace, want)
@@ -1649,6 +1686,7 @@ func expandTierDeclarations(items []any, network *deploy.EnvNetworkPolicy, pullS
 			Namespace:        key.namespace,
 			PartOf:           g.labels[deploy.LabelPartOf],
 			Env:              g.labels[deploy.LabelEnv],
+			Version:          g.labels[deploy.LabelVersion],
 			Network:          network,
 			ImagePullSecrets: pullSecrets[key],
 		})
@@ -1938,19 +1976,16 @@ func KubectlApply(ctx context.Context, kctx, manifests string) error {
 // which is what every non-chart caller wants: forge's own KCL render stamps
 // `metadata.namespace` on everything it emits.
 //
-// WHY `-n` AND NOT STAMPING `metadata.namespace` DURING RENDER. Stamping
-// produces a self-describing manifest, which is genuinely nicer, but it
-// requires knowing each object's SCOPE — stamping a namespace onto a
-// cluster-scoped object is an error, not a no-op. That scope is not in the
-// manifest and cannot be derived from a static kind list, because a chart's
-// own CRDs DEFINE new cluster-scoped kinds: on this cluster GatewayClass,
-// XMesh and ETCDSnapshotFile are all cluster-scoped, and forge cannot know
-// that for a CRD it is applying in the same batch. Only the apiserver knows,
-// and `-n` is precisely how kubectl asks it: measured, the flag is applied to
-// namespaced objects and IGNORED for cluster-scoped ones (a bare ClusterRole
-// applied with `-n` comes back with `metadata.namespace` empty). So `-n`
-// delegates the scope decision to the one component that can make it
-// correctly, and no forge-side kind table can drift out of date.
+// WHY `-n` REMAINS THE BACKSTOP. Render-time stamping (stampChartNamespace)
+// makes the stream self-describing, but it can only stamp objects whose scope
+// forge can prove offline: a built-in namespaced kind, or a kind whose CRD is
+// in hand. Stamping a namespace onto a cluster-scoped object is an error, and
+// a chart's own CRDs DEFINE new kinds, so for a kind forge cannot resolve only
+// the apiserver knows. `-n` is how kubectl asks it: measured, the flag is
+// applied to namespaced objects and IGNORED for cluster-scoped ones (a bare
+// ClusterRole applied with `-n` comes back with `metadata.namespace` empty).
+// So the stamp covers what it can prove, `-n` covers the rest, and neither
+// needs a forge-side kind table that can drift out of date.
 //
 // A doc that DECLARES its own namespace keeps it: kubectl refuses to relocate
 // it — `the namespace from the provided object "kube-system" does not match

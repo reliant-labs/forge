@@ -377,6 +377,9 @@ func TestScaffoldProjectLockIsTheGenerateLock(t *testing.T) {
 // empty, so once it gets the lock the pipeline stops at its first step; only
 // the timing and the error text matter here.
 func TestGenerateCmd_WaitsForConcurrentRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives the real forge generate behind a held lock and waits it out; runs in task test")
+	}
 	dir := t.TempDir()
 	t.Chdir(dir)
 	release, err := acquireGenerateLock(dir)
@@ -404,5 +407,146 @@ func TestGenerateCmd_WaitsForConcurrentRun(t *testing.T) {
 		}
 	case <-time.After(60 * time.Second):
 		t.Fatal("forge generate did not proceed within 60s of the lock being released")
+	}
+}
+
+// observeGenerateLock is the reader's side: a dry run and a purity-checked
+// render wait out a concurrent writer, keep writers out while they read, and
+// write nothing — no .forge/, no lock file, no holder record.
+func TestObserveGenerateLock_WaitsForTheWriterAndWritesNothing(t *testing.T) {
+	t.Run("no lock file: nothing to wait for, nothing created", func(t *testing.T) {
+		dir := t.TempDir()
+		release, err := observeGenerateLock(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		release()
+		if _, err := os.Stat(filepath.Join(dir, ".forge")); err == nil {
+			t.Error("observing the lock created .forge/: a dry run must write nothing")
+		}
+	})
+
+	t.Run("a writer holds it: wait, then record nothing", func(t *testing.T) {
+		dir := t.TempDir()
+		holder := startLockHelper(t, dir, "hold")
+		if !waitForLockCondition(15*time.Second, func() bool { _, err := os.Stat(filepath.Join(dir, "held")); return err == nil }) {
+			t.Fatalf("holder never took the lock; output:\n%s", holder.output.String())
+		}
+		record, _ := os.ReadFile(filepath.Join(dir, generateLockRel))
+		observed := make(chan func(), 1)
+		go func() {
+			release, err := observeGenerateLock(dir)
+			if err != nil {
+				t.Errorf("observe: %v", err)
+				release = func() {}
+			}
+			observed <- release
+		}()
+		select {
+		case release := <-observed:
+			release()
+			t.Fatal("observe returned while a writer held the lock; it must wait")
+		case <-time.After(300 * time.Millisecond):
+		}
+		if err := os.WriteFile(filepath.Join(dir, "release"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var release func()
+		select {
+		case release = <-observed:
+		case <-time.After(10 * time.Second):
+			t.Fatal("observe still blocked 10s after the writer released")
+		}
+
+		// While observed, a writer waits.
+		writer := startLockHelper(t, dir, "increment")
+		time.Sleep(300 * time.Millisecond)
+		if writer.exited() {
+			t.Fatalf("a writer ran while the lock was observed; output:\n%s", writer.output.String())
+		}
+		if after, _ := os.ReadFile(filepath.Join(dir, generateLockRel)); string(after) != string(record) {
+			t.Errorf("observing rewrote the lock file:\n--- before\n%s\n--- after\n%s", record, after)
+		}
+		release()
+		writer.wait(t, 15*time.Second)
+		if writer.err != nil {
+			t.Fatalf("writer failed after the observer released: %v\n%s", writer.err, writer.output.String())
+		}
+	})
+
+	t.Run("this process holds it: no self-deadlock", func(t *testing.T) {
+		dir := t.TempDir()
+		releaseWriter, err := acquireGenerateLock(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer releaseWriter()
+		done := make(chan struct{})
+		go func() {
+			release, err := observeGenerateLock(dir)
+			if err == nil {
+				release()
+			}
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("observing a lock this process holds waited for itself")
+		}
+	})
+}
+
+// `forge env shape` run during a concurrent `forge generate` was refused as a
+// "non-reproducible" KCL render: generate's own writes — a transient
+// .forge-tmp-* file among them — landed between the before and after scans
+// and were reported as files the render wrote. The scan brackets the render
+// with the generate lock as a reader: a generate already running finishes
+// first, and one that starts during the render waits for the verdict.
+func TestRenderWriteScan_WaitsOutAConcurrentGenerate(t *testing.T) {
+	dir := t.TempDir()
+	holder := startLockHelper(t, dir, "hold")
+	if !waitForLockCondition(15*time.Second, func() bool { _, err := os.Stat(filepath.Join(dir, "held")); return err == nil }) {
+		t.Fatalf("holder never took the lock; output:\n%s", holder.output.String())
+	}
+	armed := make(chan *renderWriteScan, 1)
+	go func() { armed <- newRenderWriteScan(dir, false) }()
+	select {
+	case <-armed:
+		t.Fatal("the write scan armed while a generate held the lock; it must wait for it")
+	case <-time.After(300 * time.Millisecond):
+	}
+	// The running generate's writes, then its exit.
+	for _, rel := range []string{".forge-tmp-generate-cache-1", filepath.Join("gen", "x_gen.go")} {
+		writeTestFile(t, filepath.Join(dir, rel), "generated\n")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "release"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var scan *renderWriteScan
+	select {
+	case scan = <-armed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the write scan still blocked 10s after the generate finished")
+	}
+
+	// A generate that starts during the render waits for the verdict.
+	writer := startLockHelper(t, dir, "increment")
+	writeTestFile(t, filepath.Join(dir, "deploy", "nats.conf"), "written by the render\n")
+	time.Sleep(300 * time.Millisecond)
+	if writer.exited() {
+		t.Fatalf("a generate ran inside the render's bracket; output:\n%s", writer.output.String())
+	}
+	changes := scan.changes()
+	var got []string
+	for _, c := range changes {
+		got = append(got, c.path+" "+c.how)
+	}
+	if want := []string{"deploy/nats.conf created"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("changes = %v, want only the render's own write %v", got, want)
+	}
+	writer.wait(t, 15*time.Second)
+	if writer.err != nil {
+		t.Fatalf("the waiting generate failed after the verdict: %v\n%s", writer.err, writer.output.String())
 	}
 }

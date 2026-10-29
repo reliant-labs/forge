@@ -44,6 +44,9 @@ func deployToProd(t *testing.T, dir string, ledger envLedger, version string) (s
 // new release with nothing to say otherwise. The promotion stays (the CAS and
 // roll-forward recovery need it); the apply record carries the truth.
 func TestFailedApply_RecordsAFailedOutcomeAndSaysSo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes the on-disk release ledger for real; runs in task test")
+	}
 	dir, ledger := fileLedgerDeployFixture(t)
 	apply := capturedClientDeploy{err: &exitCodeError{code: exitWrong, msg: `The StorageClass "workspace-ssd" is invalid: parameters: Forbidden`}}
 	apply.install(t)
@@ -80,6 +83,9 @@ func TestFailedApply_RecordsAFailedOutcomeAndSaysSo(t *testing.T) {
 // not be refused because the env is "already on" it, and must end up recorded
 // as succeeded.
 func TestFailedApply_ReApplyOfTheSameReleaseIsNotRefused(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes the on-disk release ledger for real; runs in task test")
+	}
 	dir, ledger := fileLedgerDeployFixture(t)
 	failing := capturedClientDeploy{err: &exitCodeError{code: exitWrong, msg: "boom"}}
 	failing.install(t)

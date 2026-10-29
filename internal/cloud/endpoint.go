@@ -30,6 +30,9 @@ const DefaultEndpoint = "https://admin.reliantapi.com"
 // different endpoints in the same process — and what removes the class
 // of bug where a command silently targets whatever was selected last.
 type Endpoint struct {
+	// ProjectID is a server-owned target identity, never credential/org selection.
+	ProjectID   string
+	ProjectName string
 	// Env is the environment this endpoint was declared by. Carried so
 	// error messages can name the KCL file to edit.
 	Env string

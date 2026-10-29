@@ -135,13 +135,29 @@ type ManifestRefs struct {
 	// to the set of keys referenced from it. A key of "" (present in the set)
 	// means a whole-Secret reference (envFrom secretRef, a volume mount, an
 	// imagePullSecret) — verify existence only.
+	//
+	// Only REQUIRED references are here: every consumer that reads Secrets
+	// as demand (the live check, the render-time supply gate, the secrets
+	// lint) reads this map. A reference marked `optional: true` is in
+	// OptionalSecrets instead.
 	Secrets map[ResourceRef]map[string]struct{}
+	// OptionalSecrets is Secrets for references marked `optional: true`.
+	// Such a reference has two modes. While the Secret is ABSENT it demands
+	// nothing: kubelet starts the pod without it, so no gate may report it.
+	// Once the Secret is PRESENT it is a real input of the pod: the pod
+	// template is pinned to it like any other (secret_pins.go), and the live
+	// check reads the Secret and warns about a referenced key it lacks.
+	OptionalSecrets map[ResourceRef]map[string]struct{}
 	// ConfigMaps maps a ConfigMap, located like Secrets, to the set of keys
 	// referenced from it. A key of "" means a whole-ConfigMap reference
 	// (envFrom configMapRef or a whole-ConfigMap volume mount) — verify
 	// existence only. A missing ConfigMap key fails a pod identically to a
-	// missing Secret key (CreateContainerConfigError).
+	// missing Secret key (CreateContainerConfigError). Required references
+	// only, like Secrets.
 	ConfigMaps map[ResourceRef]map[string]struct{}
+	// OptionalConfigMaps is ConfigMaps for `optional: true` references, with
+	// OptionalSecrets' two modes (a ConfigMap pins nothing).
+	OptionalConfigMaps map[ResourceRef]map[string]struct{}
 	// Images is the set of distinct container image refs in the bundle.
 	Images map[string]struct{}
 	// ImagePullSecrets is the set of distinct Secrets referenced via a pod
@@ -158,10 +174,12 @@ type ManifestRefs struct {
 
 func newManifestRefs() ManifestRefs {
 	return ManifestRefs{
-		Secrets:          map[ResourceRef]map[string]struct{}{},
-		ConfigMaps:       map[ResourceRef]map[string]struct{}{},
-		Images:           map[string]struct{}{},
-		ImagePullSecrets: map[ResourceRef]struct{}{},
+		Secrets:            map[ResourceRef]map[string]struct{}{},
+		OptionalSecrets:    map[ResourceRef]map[string]struct{}{},
+		ConfigMaps:         map[ResourceRef]map[string]struct{}{},
+		OptionalConfigMaps: map[ResourceRef]map[string]struct{}{},
+		Images:             map[string]struct{}{},
+		ImagePullSecrets:   map[ResourceRef]struct{}{},
 	}
 }
 
@@ -211,20 +229,28 @@ type refSink struct {
 	contexts  []string
 }
 
-func (s refSink) secret(name, key string) {
+func (s refSink) secret(name, key string, optional bool) {
+	into := s.refs.Secrets
+	if optional {
+		into = s.refs.OptionalSecrets
+	}
 	for _, c := range s.contexts {
-		addRef(s.refs.Secrets, ResourceRef{Context: c, Namespace: s.namespace, Name: name}, key)
+		addRef(into, ResourceRef{Context: c, Namespace: s.namespace, Name: name}, key)
 	}
 }
 
-func (s refSink) configMap(name, key string) {
+func (s refSink) configMap(name, key string, optional bool) {
+	into := s.refs.ConfigMaps
+	if optional {
+		into = s.refs.OptionalConfigMaps
+	}
 	for _, c := range s.contexts {
-		addRef(s.refs.ConfigMaps, ResourceRef{Context: c, Namespace: s.namespace, Name: name}, key)
+		addRef(into, ResourceRef{Context: c, Namespace: s.namespace, Name: name}, key)
 	}
 }
 
 func (s refSink) pullSecret(name string) {
-	s.secret(name, "")
+	s.secret(name, "", false)
 	for _, c := range s.contexts {
 		s.refs.ImagePullSecrets[ResourceRef{Context: c, Namespace: s.namespace, Name: name}] = struct{}{}
 	}
@@ -254,6 +280,14 @@ func (s refSink) pullSecret(name string) {
 // same name, in its namespace, on a cluster it is applied to. Matching on the
 // bare name let a Secret in one namespace hide a reference from another that
 // nothing provides.
+//
+// A cert-manager Certificate and an external-secrets.io ExternalSecret
+// PROVIDE their Secret the same way (operatorProvidedSecret): their operator
+// writes it when it reconciles the object this apply creates. The no-cluster
+// gate (CheckSecretSupply) already counted them; this live path did not, so a
+// release that added a Certificate and the pod mounting its Secret was refused
+// with "the Secret does not exist" and could ship only with --skip-preflight,
+// which disables every other check too.
 func dropSelfProvided(manifests string, place RefPlacement, refs *ManifestRefs) {
 	for _, doc := range splitDocs(manifests) {
 		var node any
@@ -264,25 +298,56 @@ func dropSelfProvided(manifests string, place RefPlacement, refs *ManifestRefs) 
 		if !ok {
 			continue
 		}
-		var into map[ResourceRef]map[string]struct{}
-		switch stringAt(root, "kind") {
-		case "Secret":
-			into = refs.Secrets
-		case "ConfigMap":
-			into = refs.ConfigMaps
-		default:
-			continue
-		}
 		md, _ := mapAt(root, "metadata")
 		name := stringAt(md, "name")
+		var into []map[ResourceRef]map[string]struct{}
+		switch stringAt(root, "kind") {
+		case "Secret":
+			into = []map[ResourceRef]map[string]struct{}{refs.Secrets, refs.OptionalSecrets}
+		case "ConfigMap":
+			into = []map[ResourceRef]map[string]struct{}{refs.ConfigMaps, refs.OptionalConfigMaps}
+		default:
+			provided, ok := operatorProvidedSecret(root)
+			if !ok {
+				continue
+			}
+			name = provided
+			into = []map[ResourceRef]map[string]struct{}{refs.Secrets, refs.OptionalSecrets}
+		}
 		if name == "" {
 			continue
 		}
 		namespace, contexts := place.place(doc, node)
 		for _, c := range contexts {
-			delete(into, ResourceRef{Context: c, Namespace: namespace, Name: name})
+			for _, m := range into {
+				delete(m, ResourceRef{Context: c, Namespace: namespace, Name: name})
+			}
 		}
 	}
+}
+
+// operatorProvidedSecret is the Secret an operator writes for doc, the
+// document's root: a cert-manager.io Certificate's spec.secretName, or an
+// external-secrets.io ExternalSecret's spec.target.name, else its own name
+// (ESO names the Secret after the ExternalSecret when no target name is
+// given). The Secret lands in the document's own namespace. The same rules
+// as CollectCertManagerSecretNames and CollectExternalSecretsNames, which the
+// no-cluster gate reads.
+func operatorProvidedSecret(root map[string]any) (string, bool) {
+	group, _, _ := strings.Cut(strings.TrimSpace(stringAt(root, "apiVersion")), "/")
+	spec, _ := mapAt(root, "spec")
+	switch kind := stringAt(root, "kind"); {
+	case kind == "Certificate" && strings.EqualFold(group, "cert-manager.io"):
+		return stringAt(spec, "secretName"), true
+	case kind == "ExternalSecret" && strings.EqualFold(group, "external-secrets.io"):
+		target, _ := mapAt(spec, "target")
+		if name := stringAt(target, "name"); name != "" {
+			return name, true
+		}
+		md, _ := mapAt(root, "metadata")
+		return stringAt(md, "name"), true
+	}
+	return "", false
 }
 
 // CollectManifestGVKs walks a `---`-separated multi-doc YAML manifest stream
@@ -349,37 +414,40 @@ func collectRefs(node any, sink refSink) {
 // NOT mint — mounted via a secret volume — so the gate catches it instead of
 // letting the pod crash on first schedule.
 //
-// A reference marked `optional: true` is NOT recorded, in any shape. It is not
-// a schedule-time dependency: kubelet starts the container without it (an
-// optional secretKeyRef yields no env var, an optional envFrom or volume
-// projects nothing). Recording it made a deliberately-absent Secret — a
-// break-glass token that exists for minutes, once, ever — block every ordinary
-// deploy in the live preflight and report as a pod that "will FailedMount" in
-// the render-time supply gate, both false. imagePullSecrets carry no
-// `optional` field and are unaffected.
+// A reference marked `optional: true` is recorded apart, in OptionalSecrets,
+// never as demand. It is not a schedule-time dependency: kubelet starts the
+// container without it (an optional secretKeyRef yields no env var, an
+// optional envFrom or volume projects nothing). Recording it as demand made a
+// deliberately-absent Secret — a break-glass token that exists for minutes,
+// once, ever — block every ordinary deploy in the live preflight and report
+// as a pod that "will FailedMount" in the render-time supply gate, both false.
+// Dropping it outright went too far the other way: a PRESENT optional Secret
+// is still read by the pod, so its version pin must still roll the pod and a
+// key it lacks is still worth saying. imagePullSecrets carry no `optional`
+// field and are unaffected.
 func collectSecretRefs(v map[string]any, sink refSink) {
 	// secretKeyRef: {name, key} — a single (Secret, key) projection.
-	if skr, ok := mapAt(v, "secretKeyRef"); ok && !isOptional(skr) {
+	if skr, ok := mapAt(v, "secretKeyRef"); ok {
 		if name := stringAt(skr, "name"); name != "" {
-			sink.secret(name, stringAt(skr, "key"))
+			sink.secret(name, stringAt(skr, "key"), isOptional(skr))
 		}
 	}
 	// envFrom secretRef: {name} — projects the WHOLE Secret. Existence only.
-	if sr, ok := mapAt(v, "secretRef"); ok && !isOptional(sr) {
+	if sr, ok := mapAt(v, "secretRef"); ok {
 		if name := stringAt(sr, "name"); name != "" {
-			sink.secret(name, "")
+			sink.secret(name, "", isOptional(sr))
 		}
 	}
 	// volumes[].secret.secretName — a secret-backed volume mount.
-	if sv, ok := mapAt(v, "secret"); ok && !isOptional(sv) {
+	if sv, ok := mapAt(v, "secret"); ok {
 		// A pod-volume secret source keys the name as `secretName`; a
 		// projected source keys it as `name`. Accept either so both the
 		// `volumes[].secret` and `sources[].secret` shapes are covered.
 		if name := stringAt(sv, "secretName"); name != "" {
-			sink.secret(name, "")
+			sink.secret(name, "", isOptional(sv))
 		}
 		if name := stringAt(sv, "name"); name != "" {
-			sink.secret(name, "")
+			sink.secret(name, "", isOptional(sv))
 		}
 	}
 	// imagePullSecrets[].name — a list of {name} Secret references. Recorded
@@ -407,26 +475,26 @@ func collectSecretRefs(v map[string]any, sink refSink) {
 // ConfigMaps, so a missing ConfigMap key is a real CreateContainerConfigError
 // class the gate must catch.
 //
-// `optional: true` references are skipped for the reason collectSecretRefs
-// gives: kubelet schedules the pod without them.
+// `optional: true` references go to OptionalConfigMaps for the reason
+// collectSecretRefs gives: kubelet schedules the pod without them.
 func collectConfigMapRefs(v map[string]any, sink refSink) {
 	// configMapKeyRef: {name, key} — a single (ConfigMap, key) projection.
-	if ckr, ok := mapAt(v, "configMapKeyRef"); ok && !isOptional(ckr) {
+	if ckr, ok := mapAt(v, "configMapKeyRef"); ok {
 		if name := stringAt(ckr, "name"); name != "" {
-			sink.configMap(name, stringAt(ckr, "key"))
+			sink.configMap(name, stringAt(ckr, "key"), isOptional(ckr))
 		}
 	}
 	// envFrom configMapRef / volumes[].configMap / sources[].configMap:
 	// each is {name} — existence only. All three use the `configMap` key
 	// EXCEPT envFrom, which uses `configMapRef`; handle both.
-	if cmr, ok := mapAt(v, "configMapRef"); ok && !isOptional(cmr) {
+	if cmr, ok := mapAt(v, "configMapRef"); ok {
 		if name := stringAt(cmr, "name"); name != "" {
-			sink.configMap(name, "")
+			sink.configMap(name, "", isOptional(cmr))
 		}
 	}
-	if cm, ok := mapAt(v, "configMap"); ok && !isOptional(cm) {
+	if cm, ok := mapAt(v, "configMap"); ok {
 		if name := stringAt(cm, "name"); name != "" {
-			sink.configMap(name, "")
+			sink.configMap(name, "", isOptional(cm))
 		}
 	}
 }
@@ -1020,6 +1088,17 @@ type PreflightResult struct {
 	// be read (a transport or permission failure). They do NOT block, and are
 	// printed so a clean-looking run is not mistaken for a checked one.
 	VolumeResizeWarnings []string
+	// OptionalKeyWarnings are the keys an `optional: true` reference reads
+	// from a Secret or ConfigMap that EXISTS on the live target but lacks
+	// them, one "<Kind> <subject>: <key>" entry each, plus optional
+	// resources that could not be read. They do NOT block: the reference is
+	// optional down to the key (kubelet starts the pod with the variable
+	// unset), and a key absent by design — an optional integration's
+	// credential in a shared Secret — is exactly what `optional` is for. A
+	// key the Secret must carry blocks through a declaration instead: a
+	// required reference, or a forge.ExternalSecret's `keys`. An ABSENT
+	// optional resource is not listed at all.
+	OptionalKeyWarnings []string
 	// MissingRequiredSecretKeys maps "<namespace>/<secret>" (as
 	// "<context>:<namespace>/<secret>" when the run spans more than one
 	// cluster) to the sorted list
@@ -1127,8 +1206,14 @@ func PreflightReport(ctx context.Context, opts PreflightOpts) (PreflightResult, 
 	for _, w := range result.VolumeResizeWarnings {
 		fmt.Printf("preflight: %s\n", w)
 	}
+	for _, w := range result.OptionalKeyWarnings {
+		fmt.Printf("preflight: %s\n", w)
+	}
 	for _, w := range result.Store.Warnings {
 		fmt.Printf("preflight: %s\n", w)
+	}
+	for _, w := range result.Store.Adoptions {
+		fmt.Printf("preflight: WARNING: %s\n", w)
 	}
 	if result.OK() {
 		return result, nil
@@ -1162,11 +1247,10 @@ func spansClusters(opts PreflightOpts, refs ManifestRefs) bool {
 			add(c)
 		}
 	}
-	for ref := range refs.Secrets {
-		add(ref.Context)
-	}
-	for ref := range refs.ConfigMaps {
-		add(ref.Context)
+	for _, m := range []map[ResourceRef]map[string]struct{}{refs.Secrets, refs.OptionalSecrets, refs.ConfigMaps, refs.OptionalConfigMaps} {
+		for ref := range m {
+			add(ref.Context)
+		}
 	}
 	return len(spanned) > 1
 }
@@ -1233,9 +1317,10 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts) (PreflightResul
 	// does NOT mint.
 	if opts.Secrets != nil && hasContext {
 		checkKeyedResources(ctx, keyedResourceCheck{
-			wg:   &wg,
-			refs: withoutProvisionedSecrets(refs.Secrets, opts.ProvisionedByDeploy, opts.Namespace),
-			kind: "Secret",
+			wg:       &wg,
+			refs:     withoutProvisionedSecrets(refs.Secrets, opts.ProvisionedByDeploy, opts.Namespace),
+			optional: withoutProvisionedSecrets(refs.OptionalSecrets, opts.ProvisionedByDeploy, opts.Namespace),
+			kind:     "Secret",
 			getKeys: func(ctx context.Context, ref ResourceRef) (map[string]struct{}, bool, error) {
 				return opts.Secrets.GetSecretKeys(ctx, ref.Context, ref.Namespace, ref.Name)
 			},
@@ -1247,7 +1332,7 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts) (PreflightResul
 	// fails a pod identically (CreateContainerConfigError).
 	if opts.ConfigMaps != nil && hasContext {
 		checkKeyedResources(ctx, keyedResourceCheck{
-			wg: &wg, refs: refs.ConfigMaps, kind: "ConfigMap",
+			wg: &wg, refs: refs.ConfigMaps, optional: refs.OptionalConfigMaps, kind: "ConfigMap",
 			getKeys: func(ctx context.Context, ref ResourceRef) (map[string]struct{}, bool, error) {
 				return opts.ConfigMaps.GetConfigMapKeys(ctx, ref.Context, ref.Namespace, ref.Name)
 			},
@@ -1370,6 +1455,7 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts) (PreflightResul
 	sort.Strings(result.MissingCRDs)
 	sort.Strings(result.VolumeResizeRefusals)
 	sort.Strings(result.VolumeResizeWarnings)
+	sort.Strings(result.OptionalKeyWarnings)
 	return result, nil
 }
 
@@ -1578,7 +1664,7 @@ func checkServedKinds(ctx context.Context, opts PreflightOpts, wg *sync.WaitGrou
 			sink.recordErr(fmt.Errorf("preflight: discover served resource kinds on %q: %w", opts.Context, derr))
 			return
 		}
-		missing := missingCRDs(gvks, served)
+		missing := missingCRDs(gvks, withBundleCRDs(served, opts.Manifests))
 		if len(missing) == 0 {
 			return
 		}
@@ -1888,6 +1974,48 @@ func checkByteMatchGroups(
 // The first manifest name seen for a missing kind is named in the line so the
 // report points the author at WHAT to install the CRD for. Output order is the
 // caller's responsibility (the result is sorted before formatting).
+// withBundleCRDs returns served plus every (group, kind) a
+// CustomResourceDefinition in manifests defines. The apply sends a stream's
+// CRDs in their own early batch before anything else (partitionEarlyBatch /
+// applyEarlyBatch), so a kind whose CRD ships in the same bundle is served by
+// the time its objects are applied. Without this, a release that introduces
+// a CRD together with its first object (control-plane's DaemonRollout) was
+// blocked on "CRD not served" by the very deploy that installs it. served is
+// not modified.
+func withBundleCRDs(served map[string]struct{}, manifests string) map[string]struct{} {
+	var out map[string]struct{}
+	for _, doc := range splitDocs(manifests) {
+		if !strings.Contains(doc, "CustomResourceDefinition") {
+			continue
+		}
+		var crd struct {
+			APIVersion string `yaml:"apiVersion"`
+			Kind       string `yaml:"kind"`
+			Spec       struct {
+				Group string `yaml:"group"`
+				Names struct {
+					Kind string `yaml:"kind"`
+				} `yaml:"names"`
+			} `yaml:"spec"`
+		}
+		if err := yaml.Unmarshal([]byte(doc), &crd); err != nil || crd.Kind != "CustomResourceDefinition" ||
+			!strings.HasPrefix(crd.APIVersion, "apiextensions.k8s.io/") || crd.Spec.Group == "" || crd.Spec.Names.Kind == "" {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]struct{}, len(served)+1)
+			for k := range served {
+				out[k] = struct{}{}
+			}
+		}
+		out[servedKindKey(crd.Spec.Group, crd.Spec.Names.Kind)] = struct{}{}
+	}
+	if out == nil {
+		return served
+	}
+	return out
+}
+
 func missingCRDs(gvks []ManifestGVK, served map[string]struct{}) []string {
 	// De-dupe by (group, kind): a bundle renders many GRPCRoutes but the CRD is
 	// either installed or not — report it once. Keep the first name seen so the
@@ -2102,12 +2230,14 @@ func archList(archs []string) string {
 // result map findings land in, and the shared sink (mutex / error / subject
 // qualification) the goroutines report into.
 type keyedResourceCheck struct {
-	wg      *sync.WaitGroup
-	refs    map[ResourceRef]map[string]struct{}
-	kind    string
-	getKeys func(ctx context.Context, ref ResourceRef) (map[string]struct{}, bool, error)
-	out     map[string][]string
-	sink    preflightSink
+	wg   *sync.WaitGroup
+	refs map[ResourceRef]map[string]struct{}
+	// optional are the `optional: true` references (ManifestRefs.Optional*).
+	optional map[ResourceRef]map[string]struct{}
+	kind     string
+	getKeys  func(ctx context.Context, ref ResourceRef) (map[string]struct{}, bool, error)
+	out      map[string][]string
+	sink     preflightSink
 }
 
 // checkKeyedResources fans out one existence/key lookup per distinct
@@ -2117,30 +2247,99 @@ type keyedResourceCheck struct {
 // c.getKeys returns (presentKeys, exists, err); a lookup error aborts the
 // preflight via the sink. Shared by the Secret and ConfigMap checks so both
 // behave identically.
+//
+// An optional reference is checked in its two modes (ManifestRefs.
+// OptionalSecrets): an absent resource is no finding at all, and a present
+// one that lacks a key the reference reads is an OptionalKeyWarning. A
+// whole-resource optional reference has no key to miss, so it costs no
+// lookup; nor does a failed lookup of an optional-only resource abort the
+// run — it is reported as a warning, because what it would have found does
+// not block either.
 func checkKeyedResources(ctx context.Context, c keyedResourceCheck) {
-	for ref, keys := range c.refs {
-		ref, keys := ref, keys
+	for _, ref := range keyedLookups(c.refs, c.optional) {
+		required, isRequired := c.refs[ref]
+		optional := optionalOnlyKeys(c.optional[ref], required)
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
 			present, exists, err := c.getKeys(ctx, ref)
 			if err != nil {
-				c.sink.recordErr(fmt.Errorf("preflight: read %s %s/%s in %s: %w", c.kind, ref.Namespace, ref.Name, ref.Context, err))
+				if isRequired {
+					c.sink.recordErr(fmt.Errorf("preflight: read %s %s/%s in %s: %w", c.kind, ref.Namespace, ref.Name, ref.Context, err))
+					return
+				}
+				c.sink.mu.Lock()
+				c.sink.result.OptionalKeyWarnings = append(c.sink.result.OptionalKeyWarnings, fmt.Sprintf(
+					"%s %s: could not be read (%v), so the optional keys %s were not checked",
+					c.kind, ref.subject(c.sink.multiCluster), err, strings.Join(optional, ", ")))
+				c.sink.mu.Unlock()
 				return
 			}
-			missing := []string{absentMarker(c.kind)}
+			var missing []string
+			if isRequired {
+				missing = []string{absentMarker(c.kind)}
+				if exists {
+					missing = missingSecretKeys(required, present, true)
+				}
+				sort.Strings(missing)
+			}
+			var warnings []string
 			if exists {
-				missing = missingSecretKeys(keys, present, true)
+				for _, k := range optional {
+					if _, ok := present[k]; !ok {
+						warnings = append(warnings, fmt.Sprintf(
+							"%s %s: optional key %q is absent; the pods that read it start without it (an `optional: true` reference)",
+							c.kind, ref.subject(c.sink.multiCluster), k))
+					}
+				}
 			}
-			if len(missing) == 0 {
+			if len(missing) == 0 && len(warnings) == 0 {
 				return
 			}
-			sort.Strings(missing)
 			c.sink.mu.Lock()
-			c.out[ref.subject(c.sink.multiCluster)] = missing
+			if len(missing) > 0 {
+				c.out[ref.subject(c.sink.multiCluster)] = missing
+			}
+			c.sink.result.OptionalKeyWarnings = append(c.sink.result.OptionalKeyWarnings, warnings...)
 			c.sink.mu.Unlock()
 		}()
 	}
+}
+
+// keyedLookups is every resource checkKeyedResources reads, in a stable
+// order: each required reference, and each optional one that names a key
+// (a whole-resource optional reference has nothing to check once present).
+func keyedLookups(required, optional map[ResourceRef]map[string]struct{}) []ResourceRef {
+	var out []ResourceRef
+	for ref := range required {
+		out = append(out, ref)
+	}
+	for ref, keys := range optional {
+		if _, dup := required[ref]; dup {
+			continue
+		}
+		for k := range keys {
+			if k != "" {
+				out = append(out, ref)
+				break
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].subject(true) < out[j].subject(true) })
+	return out
+}
+
+// optionalOnlyKeys is the sorted named keys in optional that no required
+// reference also reads: a key a required reference reads is already demand.
+func optionalOnlyKeys(optional, required map[string]struct{}) []string {
+	var out []string
+	for k := range optional {
+		if _, req := required[k]; k != "" && !req {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // absentMarker is the placeholder listed under a referenced resource that

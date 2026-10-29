@@ -92,6 +92,14 @@
 // default and is MUTUALLY EXCLUSIVE with that collection: it does not replace
 // stdout, so enabling both ships every line twice.
 //
+// A line read from stdout has no SDK resource, so each JSON line carries the
+// process resource under LogKeyResource ("resource"): the LogResourceKeys
+// (service.name, service.version, service.namespace,
+// deployment.environment.name, service.instance.id) of the resource Setup
+// builds for traces and metrics, encoded once per logger. Collectors lift
+// them into the record's resource (forge's node agent and local forwarder do;
+// see pkg/deploy). A panic or any line without the field carries no version.
+//
 // # Error records
 //
 // A log record at ERROR or above is a server error event, and NewLogHandler
@@ -107,9 +115,22 @@
 //     then Unwrap to the end, the first branch of a multi-error). Type is
 //     %T; the message is bounded to MaxExceptionMessage (1 KiB). Attributes
 //     the call site already set are kept.
-//   - exception.stacktrace, from LogPanic only. LogPanic is what every
-//     recover path in forge calls; its record's PC is the panicking frame, so
-//     panics group by where they happened, not by where they were recovered.
+//   - exception.stacktrace, from LogPanic and from svcerr. LogPanic is what
+//     every recover path in forge calls; its record's PC is the panicking
+//     frame, so panics group by where they happened, not by where they were
+//     recovered. svcerr captures a bounded stack (32 frames, 8 KiB,
+//     module-relative paths) where a server fault — Internal, Unknown,
+//     DataLoss or Unavailable — is first built or wrapped, and the record
+//     carries it, with its innermost application frame as the call site above
+//     (so an "rpc failed" issue groups by the handler's failing code, not by
+//     the interceptor that logged it). Client-class errors capture none, and a
+//     stack never crosses the wire to the client. The same stack rides the
+//     span's exception event and the log.error event.
 //   - error.group, from ErrorGroup(ctx, name) only: an explicit issue name
 //     for the failure whose derived grouping is wrong.
+//
+// A record at any level becomes an issue event of a named source when it
+// carries issue.source (IssueSource(ctx, name)). Such issues are listed apart
+// from errors (`forge obs issues --source <name>`), and never count as errors
+// unless the record is also at ERROR.
 package observe

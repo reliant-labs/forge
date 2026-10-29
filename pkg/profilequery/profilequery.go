@@ -57,7 +57,7 @@ type Query struct {
 	From, To time.Time
 	// TraceID, when set, reads the RAW tier for that trace instead of the
 	// per-minute aggregate: the samples whose goroutine was serving the trace's
-	// spans. Raw rows live 72h; the aggregate 30d.
+	// spans. Raw rows live 24h; the aggregate 30d.
 	TraceID string
 	// SpanID narrows a trace query to one span.
 	SpanID string

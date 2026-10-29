@@ -323,6 +323,44 @@ func TestEnvAppliesManifestsToCluster(t *testing.T) {
 }`,
 			false,
 		},
+		{
+			// A MIXED env: a hosted static site beside a cluster workload.
+			// The hosted part is the platform's; the cluster workload is
+			// still applied from this machine, so its mounts are demand.
+			"hosted frontend beside a cluster workload (forge applies the workload)",
+			`{
+  "output": {
+    "control_plane": {
+      "type": "reliant",
+      "endpoint": "https://cp"
+    },
+    "frontends": [
+      {
+        "name": "web",
+        "runtime": {
+          "type": "hosted"
+        }
+      }
+    ],
+    "workloads": [
+      {
+        "name": "api",
+        "kind": "service",
+        "runtime": {
+          "type": "cluster",
+          "cluster": "prod",
+          "namespace": "app"
+        },
+        "spec": {
+          "kind": "service",
+          "image": "i"
+        }
+      }
+    ]
+  }
+}`,
+			true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

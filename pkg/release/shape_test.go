@@ -14,9 +14,13 @@ func TestShape_Validate(t *testing.T) {
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("valid shape refused: %v", err)
 	}
+	// No kind at all is valid: the kind is being retired, and placement is
+	// per workload (docs/design/per-workload-placement.md).
+	if err := (Shape{Objects: []ShapeObject{obj("Deployment", "api", "a")}}).Validate(); err != nil {
+		t.Fatalf("a shape with no kind refused: %v", err)
+	}
 	cases := map[string]Shape{
 		"unknown kind":     {Kind: "cluster"},
-		"empty kind":       {},
 		"tag not digest":   {Kind: EnvLocal, Objects: []ShapeObject{{Cluster: "c", Kind: "Deployment", Name: "a", Hash: "latest"}}},
 		"duplicate object": {Kind: EnvLocal, Objects: []ShapeObject{obj("Deployment", "a", "a"), obj("Deployment", "a", "b")}},
 		"duplicate secret": {Kind: EnvLocal, Secrets: []ShapeSecret{{Name: "A"}, {Name: "A"}}},
@@ -172,9 +176,11 @@ func TestEnvKind(t *testing.T) {
 		t.Fatalf("unknown kind must be refused, got %v", err)
 	}
 	now := time.Now()
-	r := EnvRecord{Name: "prod", Kind: EnvSelfManaged, DeclaredShape: &Shape{Kind: EnvLocal}, DeclaredAt: &now}
-	if err := r.Validate(); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("a declared shape disagreeing with the kind must be refused, got %v", err)
+	// A record and its declared shape may disagree about the retired kind:
+	// a self-managed env that gained a hosted part is the same env.
+	r := EnvRecord{Name: "prod", Kind: EnvSelfManaged, DeclaredShape: &Shape{Kind: EnvPersistent}, DeclaredAt: &now}
+	if err := r.Validate(); err != nil {
+		t.Fatalf("a self-managed record whose declaration gained a hosted part was refused: %v", err)
 	}
 }
 

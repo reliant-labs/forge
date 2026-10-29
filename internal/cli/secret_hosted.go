@@ -113,7 +113,7 @@ func (w cloudSecretWriter) Delete(ctx context.Context, name string) error {
 // false: an env the control plane has not seen has no secrets, and listing
 // must not create it.
 var newHostedSecretWriter = func(ctx context.Context, envName string, entities *KCLEntities, ensure bool) (hostedSecretWriter, cloud.Endpoint, error) {
-	ep, err := cloud.ResolveEndpoint(envName, declarationFromEntities(entities))
+	ep, err := projectEndpoint(envName, declarationFromEntities(entities))
 	if err != nil {
 		return nil, cloud.Endpoint{}, err
 	}

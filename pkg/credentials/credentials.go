@@ -82,6 +82,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/gofrs/flock"
 )
 
 // FileName is the credentials file's base name.
@@ -94,6 +96,8 @@ const formatVersion = 1
 
 // Credential is what one endpoint's login produced.
 type Credential struct {
+	// Kind distinguishes human identities from delegated capabilities.
+	Kind string `json:"kind,omitempty"`
 	// Token is the bearer credential. Opaque; never logged.
 	Token string `json:"token"`
 	// TokenPrefix is the issuer's display prefix (e.g. "rlat_A3f9Kd2p") —
@@ -111,6 +115,30 @@ type Credential struct {
 	// from the endpoint it is presented to (reliant logs in at the control
 	// plane and presents the token to its API server). Informational.
 	Issuer string `json:"issuer,omitempty"`
+	// Claimable is set only on an entry stored under a claimable-deploy client
+	// id (forge-cli-claimable…): the anonymous deploy this token belongs to.
+	// It sits beside the token because the claim link is as sensitive as the
+	// token is (whoever opens it first owns the deploy), and the file is
+	// already 0600. Nil on every ordinary login.
+	Claimable *Claimable `json:"claimable,omitempty"`
+}
+
+// Claimable is the anonymous deploy a claimable-deploy credential belongs to.
+// Everything here is what `forge env status --claimable` reprints, so it is
+// stored rather than re-fetched: the agent that holds it has no account to ask
+// the control plane with.
+type Claimable struct {
+	// ClaimURL is the link a human opens to take the deploy over.
+	ClaimURL string `json:"claim_url"`
+	// OrgID is the anonymous user's personal org.
+	OrgID string `json:"org_id,omitempty"`
+	// URL is the deploy's live address, as last observed. Empty until the
+	// first deploy has gone live.
+	URL string `json:"url,omitempty"`
+	// ExpiresAt is when the deploy goes offline; PurgeAfter when it is
+	// deleted (and when the token stops being accepted).
+	ExpiresAt  time.Time `json:"expires_at"`
+	PurgeAfter time.Time `json:"purge_after"`
 }
 
 // Expired reports whether the issuer-reported expiry has passed.
@@ -335,25 +363,85 @@ func Lookup(path, endpoint, client string) (Credential, error) {
 	return f.Get(endpoint, client)
 }
 
-// Store is the one-call write: put c for (endpoint, client) into the file at
-// path and save it, preserving every other entry.
-func Store(path, endpoint, client string, c Credential) error {
+// Update serializes a credential-file read/modify/write transaction across all
+// participating processes. The callback must not perform network operations.
+func Update(path string, mutate func(*File) error) error {
+	unlock, err := lockMutation(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	f, err := Load(path)
 	if err != nil {
 		return err
 	}
-	if err := f.Put(endpoint, client, c); err != nil {
+	before, err := json.Marshal(f)
+	if err != nil {
 		return err
 	}
+	if err := mutate(f); err != nil {
+		return err
+	}
+	after, err := json.Marshal(f)
+	if err != nil {
+		return err
+	}
+	if string(before) == string(after) {
+		return nil
+	}
 	return Save(path, f)
+}
+
+// Store is the one-call write: put c for (endpoint, client) into the file at
+// path and save it, preserving every other entry.
+func Store(path, endpoint, client string, c Credential) error {
+	return Update(path, func(f *File) error { return f.Put(endpoint, client, c) })
 }
 
 // Remove is the one-call delete: drop (endpoint, client) from the file at
 // path. Reports whether an entry existed. Every other entry is untouched.
 func Remove(path, endpoint, client string) (bool, error) {
+	return removeMatching(path, endpoint, client, "", false)
+}
+
+// RemoveRevoked removes only the exact session the caller revoked. A newer
+// login or a different namespace is never erased by an older logout.
+func RemoveRevoked(path, endpoint, client, revokedToken string) (bool, error) {
+	return removeMatching(path, endpoint, client, revokedToken, true)
+}
+
+func lockMutation(path string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, err
+	}
+	lock := flock.New(path + ".lock")
+	if err := lock.Lock(); err != nil {
+		return nil, err
+	}
+	return func() { _ = lock.Unlock() }, nil
+}
+
+func removeMatching(path, endpoint, client, token string, conditional bool) (bool, error) {
+	unlock, err := lockMutation(path)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	f, err := Load(path)
 	if err != nil {
 		return false, err
+	}
+	if conditional {
+		current, err := f.Get(endpoint, client)
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if current.Token != token {
+			return false, errors.New("credential changed during logout; newer login retained")
+		}
 	}
 	existed, err := f.Delete(endpoint, client)
 	if err != nil || !existed {

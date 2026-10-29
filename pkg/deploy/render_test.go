@@ -1933,3 +1933,87 @@ func TestReadOnlyRoleSecret(t *testing.T) {
 		t.Error("an invalid database name was accepted")
 	}
 }
+
+// TestVersionStamp: app.kubernetes.io/version is the release, on the pod
+// template of every kind that rolls with it, and never on a selector or a
+// standalone Job (whose template is immutable and whose name is a spec hash).
+func TestVersionStamp(t *testing.T) {
+	ws := append(restrictedSet(), wl("nightly", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindCron, Schedule: "@daily", Args: []string{"x"}}),
+		wl("seed", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Args: []string{"x"}}))
+	renderAt := func(version string) map[string]map[string]any {
+		c := ctx
+		c.Version = version
+		objs, err := RenderWorkloads(ws, v1alpha1.ProfileFull, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return objects(t, objs)
+	}
+
+	v1 := renderAt("20261025")
+	seen := 0
+	for k, o := range v1 {
+		got := get(o, "spec", "template", "metadata", "labels", LabelVersion)
+		switch o["kind"] {
+		case "CronJob":
+			got = get(o, "spec", "jobTemplate", "spec", "template", "metadata", "labels", LabelVersion)
+		case "Job":
+			if got != nil {
+				t.Errorf("%s: standalone Job pod template stamped with a version", k)
+			}
+			continue
+		}
+		if podOf(o) == nil {
+			continue
+		}
+		seen++
+		if got != "20261025" {
+			t.Errorf("%s: pod template version label = %v, want 20261025", k, got)
+		}
+		if get(o, "spec", "selector", "matchLabels", LabelVersion) != nil || get(o, "spec", "selector", LabelVersion) != nil {
+			t.Errorf("%s: version label on a selector (immutable)", k)
+		}
+		if get(o, "metadata", "labels", LabelVersion) != nil {
+			t.Errorf("%s: version label on the object itself", k)
+		}
+	}
+	if seen == 0 {
+		t.Fatal("rendered no pod templates")
+	}
+
+	// Stable for a release, so a re-render does not roll; moves with it.
+	if !reflect.DeepEqual(v1, renderAt("20261025")) {
+		t.Error("same release rendered different bytes")
+	}
+	if reflect.DeepEqual(v1, renderAt("20261026")) {
+		t.Error("a new release did not change the pod template")
+	}
+
+	// No release, no label: output is byte-identical to a render that never
+	// heard of versions.
+	if !reflect.DeepEqual(renderAt(""), objects(t, render(t, v1alpha1.ProfileFull, ws...))) {
+		t.Error("an empty version changed the render")
+	}
+	for k, o := range renderAt("") {
+		if get(o, "spec", "template", "metadata", "labels", LabelVersion) != nil {
+			t.Errorf("%s: label emitted for an empty version", k)
+		}
+	}
+}
+
+func TestLabelValue(t *testing.T) {
+	for in, want := range map[string]string{
+		"20261025":                        "20261025",
+		"v1.2.3":                          "v1.2.3",
+		"1.2.3+build.5":                   "1.2.3-build.5",
+		"-weird-":                         "weird",
+		"":                                "",
+		"///":                             "",
+		strings.Repeat("a", 70):           strings.Repeat("a", 63),
+		strings.Repeat("a", 62) + "-zzzz": strings.Repeat("a", 62),
+	} {
+		if got := labelValue(in); got != want {
+			t.Errorf("labelValue(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

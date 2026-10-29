@@ -3,10 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -99,6 +101,39 @@ func TestEnvHistory_MarksAPromotionWhoseApplyFailed(t *testing.T) {
 // A hosted env's client-side apply files its verdict on the promotion it
 // realized, so every reader of the control plane's ledger — not just this
 // machine — can tell a recorded release from a running one.
+//
+// A mixed env whose hosted half is STILL APPLYING records no apply gate at
+// all: a passed one would claim a hosted bundle nobody has confirmed applied,
+// and a failed one would make the next plan report a live release NOT APPLIED.
+func TestDeployRelease_StillApplyingRecordsNoApplyGate(t *testing.T) {
+	var wait capturedWait
+	wait.install(t)
+	pending := &deploytarget.ApplyPendingError{Env: "prod", Bundle: "sha256:new", Waited: 10 * time.Minute}
+	apply := capturedClientDeploy{err: fmt.Errorf("deploy hosted: %w", pending)}
+	apply.install(t)
+	fake, store := hostedPromoteFixture(t, "v1")
+	gstore := newGateTestStore(t, fake)
+	useGateBackend(t, gateBackend{hosted: true, store: gstore, bindings: store})
+
+	_, err := runHostedPromote(t, store, "v2", promoteOptions{
+		Ledger: envLedger{Bindings: store, Releases: store, Hosted: true, Mixed: true, HostedTiers: []hostedTier{{Name: "api", Kind: hostedTierWorkload}}},
+		Follow: waitByDefault(),
+	})
+	if got := exitCodeForError(err); got != exitTimedOut {
+		t.Errorf("exit code = %d (err %v), want %d (still applying)", got, err, exitTimedOut)
+	}
+	cur, _, _ := store.Current(context.Background(), "prod")
+	gates, lerr := gstore.listGates(context.Background(), cur.ID)
+	if lerr != nil {
+		t.Fatalf("list gates: %v", lerr)
+	}
+	for _, g := range gates {
+		if g.Name == applyGateName {
+			t.Fatalf("a still-applying deploy recorded an apply gate %+v; want none", g)
+		}
+	}
+}
+
 func TestDeployRelease_HostedApplyVerdictIsRecordedOnThePromotion(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

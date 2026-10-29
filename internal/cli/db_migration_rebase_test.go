@@ -84,6 +84,14 @@ func TestMissingMigrationErrorSuggestsTheRealCommand(t *testing.T) {
 	if !resolves(t, suggested) {
 		t.Errorf("refusal suggests %q, which is not a real command; got:\n%s", suggested, msg)
 	}
+	// The second fix — replacing a file that already merged — names the
+	// create command, held to the same standard.
+	if !strings.Contains(msg, "`"+migratekit.NewMigrationCommand+" <name>`") {
+		t.Errorf("refusal does not carry the merged-file fix (`%s <name>`); got:\n%s", migratekit.NewMigrationCommand, msg)
+	}
+	if !resolves(t, migratekit.NewMigrationCommand) {
+		t.Errorf("migratekit.NewMigrationCommand %q is not a real command", migratekit.NewMigrationCommand)
+	}
 }
 
 // The lint remediation a reviewer reads, same check.

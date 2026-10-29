@@ -39,7 +39,7 @@ _envof = lambda n: str -> {str:} {
 }
 
 assert_unset_renders_nothing = "FORGE_PROFILES" not in _envof("plain") and "FORGE_PROFILES_HEAP_INTERVAL" not in _envof("plain")
-assert_declared_defaults = _envof("defaults")["FORGE_PROFILES"] == "cpu,heap" and _envof("defaults")["FORGE_PROFILES_HEAP_INTERVAL"] == "15m"
+assert_declared_defaults = _envof("defaults")["FORGE_PROFILES"] == "cpu,heap" and _envof("defaults")["FORGE_PROFILES_HEAP_INTERVAL"] == "2h"
 assert_every_type = _envof("debugging")["FORGE_PROFILES"] == "cpu,heap,alloc,goroutine,mutex,block" and _envof("debugging")["FORGE_PROFILES_HEAP_INTERVAL"] == "1m"
 assert_all_off_is_none = _envof("silent")["FORGE_PROFILES"] == "none"
 assert_own_env_wins = _envof("own-env")["FORGE_PROFILES"] == "cpu" and _envof("own-env")["FORGE_PROFILES_HEAP_INTERVAL"] == "2h"

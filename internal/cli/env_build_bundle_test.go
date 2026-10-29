@@ -26,6 +26,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/internal/cloud"
+	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -59,6 +60,7 @@ func stubEnvShape(t *testing.T, project string) {
 			Project: project, Env: env, Kind: string(shape.Kind), Shape: shape,
 			Provenance: release.Provenance{Commit: rep40('c'), Tree: rep40('a')},
 			manifests:  bundleTestStream,
+			entities:   &KCLEntities{Workloads: []WorkloadEntity{{Name: "api", Build: BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/app"}}, Spec: deployv1alpha1.WorkloadSpec{Args: []string{"api"}}}}},
 		}, nil
 	}
 	t.Cleanup(func() { projectEnvShapeFn = prev })
@@ -200,6 +202,9 @@ func TestEnvBuildBundle_IsIdempotentOnItsOwnBytes(t *testing.T) {
 // and labelled the result twice, and the second env's deploy would apply the
 // first env's manifests.
 func TestEnvBuildBundle_BundleEnvsWritesOnePerEnv(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes the on-disk release ledger for real; runs in task test")
+	}
 	dir := newLedgerTestProject(t, "bundle-multi-project")
 	stubEnvShape(t, "bundle-multi-project")
 

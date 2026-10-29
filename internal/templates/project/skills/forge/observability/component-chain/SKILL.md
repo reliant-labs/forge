@@ -1,6 +1,6 @@
 ---
 name: observability/component-chain
-description: The in-process middleware chain — RPC-edge interceptors, the generated middleware_gen.go component decorator, the owned observe_chain.go seam, success-log sampling, and opting out.
+description: The in-process middleware chain — RPC-edge interceptors and whose traceparent the edge adopts (observe.TrustRemoteBy), the generated middleware_gen.go component decorator, the owned observe_chain.go seam, success-log sampling, and opting out.
 ---
 
 # Observability: the component middleware chain
@@ -49,6 +49,10 @@ Service`, named after the constructor's concrete return type: the canonical
 `func New() Service { return &service{} }` yields `NewServiceWithForgeMiddleware`,
 and the composition site emits `pkg.NewServiceWithForgeMiddleware(pkg.New(...))`
 around your untouched `New`.
+
+### Whose `traceparent` the edge adopts
+
+It is the chain's Trace slot's choice (`serverkit.ChainDeps.Trace` / `observe.Deps.Trace`). The default adopts every caller's — right when the browser is first-party. A server reachable by callers who must not choose its trace ids uses `observe.TrustRemoteBy(classify)`, whose classifier authenticates each caller from its headers and grants one of three levels: `TrustAll` (an internal service: ids, sampled flag, tracestate, baggage), `TrustIDs` (a signed-in end user: the trace and parent span ids only — the server makes its own sampling decision from `OTEL_TRACES_SAMPLER`, and tracestate and baggage are dropped), or `TrustNone` (a new trace linked to the caller's). `observe.TrustRemoteFrom(predicate)` is the two-level form. The threat model is in `pkg/observe/trust_remote.go`.
 
 ### The owned seam: `observe_chain.go`
 

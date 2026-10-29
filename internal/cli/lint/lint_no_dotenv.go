@@ -40,7 +40,8 @@ var dotenvSkipDirs = map[string]bool{
 	".forge":       true,
 }
 
-// dotenvFinding is one offending file, relative to the project root.
+// dotenvFinding is one offending file, relative to the project root in slash
+// form (the path every finding reports, on every OS).
 type dotenvFinding struct {
 	Path string
 	Why  string
@@ -79,7 +80,7 @@ func findDotenvFiles(root string) ([]dotenvFinding, error) {
 			rel = path
 		}
 		found = append(found, dotenvFinding{
-			Path: rel,
+			Path: filepath.ToSlash(rel),
 			Why:  classifyDotenv(name),
 		})
 		return nil

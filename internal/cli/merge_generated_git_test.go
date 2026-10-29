@@ -131,7 +131,8 @@ func observabilityFiles(t *testing.T, dir string) map[string]string {
 
 // assertConvergesToBothServices checks a merged tree carries no conflict;
 // that its observability outputs ARE what a generate over both services
-// writes, certified by the merged hashes.json, with no generate in between;
+// writes, with generated outputs certified by the merged hashes.json and the
+// owned overview recorded only in the birth ledger, with no generate in between;
 // and that the next generate renders both services without refusing a
 // single file as a hand edit.
 func assertConvergesToBothServices(t *testing.T, dir string) {
@@ -174,10 +175,31 @@ func assertConvergesToBothServices(t *testing.T, dir string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ownedOverview := obsdash.OverridePath("app", obsdash.Dashboard{ID: "overview"})
+	if _, ok := merged[ownedOverview]; !ok {
+		t.Fatalf("owned overview %s missing after merge", ownedOverview)
+	}
+	if !checksums.ScaffoldRecorded(dir, ownedOverview) {
+		t.Error("merged birth ledger lost the owned overview")
+	}
 	for rel, body := range merged {
+		if rel == ownedOverview {
+			if _, generated := cs.Unstampable[rel]; generated {
+				t.Error("owned overview incorrectly remains a generated checksum target")
+			}
+			continue
+		}
 		if cs.Unstampable[rel] != checksums.BodyHash([]byte(body)) {
 			t.Errorf("%s is not certified by the merged hashes.json: generate would refuse it as a hand edit", rel)
 		}
+	}
+	if drift := checksums.ScanTier1Drift(dir, cs); len(drift) != 0 {
+		t.Fatalf("real stomp guard sees drift after merge: %v", drift)
+	}
+	ownedEdit := []byte(`{"name":"user-owned after merge","tiles":[]}` + "\n")
+	writeTreeFileT(t, filepath.Join(dir, ownedOverview), string(ownedEdit))
+	if drift := checksums.ScanTier1Drift(dir, cs); len(drift) != 0 {
+		t.Fatalf("editing an owned overview must not create Tier-1 drift: %v", drift)
 	}
 
 	// "generate": render the merged inputs. Every shared file must be one
@@ -186,6 +208,9 @@ func assertConvergesToBothServices(t *testing.T, dir string) {
 		t.Errorf("mounts_gen.go must stay a pristine render:\n%s", mounts)
 	}
 	renderServices(t, dir, "question", "run", "system")
+	if got, err := os.ReadFile(filepath.Join(dir, ownedOverview)); err != nil || string(got) != string(ownedEdit) {
+		t.Fatalf("regeneration changed the owned overview edit: %q, %v", got, err)
+	}
 	got, _ := os.ReadFile(filepath.Join(dir, "internal/app/mounts_gen.go"))
 	wantMounts, _ := os.ReadFile(filepath.Join(fresh, "internal/app/mounts_gen.go"))
 	if string(got) != string(wantMounts) {

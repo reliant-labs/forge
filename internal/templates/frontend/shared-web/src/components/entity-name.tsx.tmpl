@@ -43,12 +43,13 @@ import type { ReactNode } from "react";
  * The error is ConnectClientError, not React Query's default `Error`, and it
  * is NOT a type parameter — see the same note on EntityListHook in
  * entity-picker.tsx. This seam accepts a GENERATED hook, and a generated hook
- * is bound to the transport that throws that shape.
+ * is bound to the transport that throws that shape. It is generic in TData
+ * for the same reason EntityListHook is: a generated query hook is.
  */
-export type EntityGetHook<TReq, TRes> = (
+export type EntityGetHook<TReq, TRes> = <TData = TRes>(
   req: TReq,
-  options?: Partial<UseQueryOptions<TRes, ConnectClientError>>,
-) => UseQueryResult<TRes, ConnectClientError>;
+  options?: Partial<UseQueryOptions<TRes, ConnectClientError, TData>>,
+) => UseQueryResult<TData, ConnectClientError>;
 
 export interface EntityNameProps<TReq, TRes> {
   /** The foreign-key value to resolve. */

@@ -63,11 +63,16 @@ func hostedErrorReason(err error) string {
 }
 
 const (
-	procCutRelease     = "controlplane.v1.DeployService/CutRelease"
-	procGetRelease     = "controlplane.v1.DeployService/GetRelease"
-	procListReleases   = "controlplane.v1.DeployService/ListReleases"
-	procPromote        = "controlplane.v1.DeployService/Promote"
-	procListPromotions = "controlplane.v1.DeployService/ListPromotions"
+	procCutRelease   = "controlplane.v1.DeployService/CutRelease"
+	procGetRelease   = "controlplane.v1.DeployService/GetRelease"
+	procListReleases = "controlplane.v1.DeployService/ListReleases"
+	// procRecordReleaseMigrations fills a release's migration manifest when
+	// it has none — the backfill for releases cut before the cut recorded
+	// one. Never a rewrite: a release that holds a different manifest is
+	// refused.
+	procRecordReleaseMigrations = "controlplane.v1.DeployService/RecordReleaseMigrations"
+	procPromote                 = "controlplane.v1.DeployService/Promote"
+	procListPromotions          = "controlplane.v1.DeployService/ListPromotions"
 )
 
 // hostedReleaseListLimit bounds a release listing. The promote plan orders
@@ -137,6 +142,27 @@ type wireRelease struct {
 	// release adds over the release it was cut after, recorded at the cut
 	// because no reader of a hosted ledger has the repository.
 	Commits *wireCommitRange `json:"commits,omitempty"`
+	// Migrations is DeployRelease.migrations: the migration directories the
+	// release embeds (release.MigrationManifest), recorded at the cut so
+	// a cut and a deploy can refuse a release an env's schema has already
+	// passed. The proto message (DeployMigrationManifest: sets[] of
+	// source/commit/files) has the JSON shape of the Go type exactly, so
+	// it is sent and read as that type. A control plane that predates the
+	// field drops it on write and never returns it; the guard then notes
+	// "records no migrations" rather than refusing.
+	Migrations *release.MigrationManifest `json:"migrations,omitempty"`
+}
+
+// migrationsFromWire is the manifest a control plane returned, or nil when it
+// returned none or one that does not validate — evidence about the release,
+// never a reason its ledger cannot be read.
+func migrationsFromWire(m *release.MigrationManifest) *release.MigrationManifest {
+	if m == nil || m.Validate() != nil {
+		return nil
+	}
+	out := *m
+	out.Normalize()
+	return &out
 }
 
 // wireCommitRange is controlplane.v1.DeployCommitRange.
@@ -641,7 +667,13 @@ func releaseToWire(r release.Release) []wireArtifact {
 // as one read from disk.
 func releaseFromWire(w wireRelease) (release.Release, error) {
 	if len(w.SnapshotRelease) > 0 && string(w.SnapshotRelease) != "null" {
-		return snapshotReleaseFromJSON(w.SnapshotRelease, w.Version)
+		r, err := snapshotReleaseFromJSON(w.SnapshotRelease, w.Version)
+		// Cut sends a snapshot release's manifest BESIDE the document (see
+		// Cut), so it comes back in the release's own column.
+		if err == nil && r.Migrations == nil {
+			r.Migrations = migrationsFromWire(w.Migrations)
+		}
+		return r, err
 	}
 	r := release.Release{
 		Version:   w.Version,
@@ -665,6 +697,7 @@ func releaseFromWire(w wireRelease) (release.Release, error) {
 	if commits := commitRangeFromWire(w.Commits); commits != nil && commits.Validate() == nil {
 		r.Commits = commits
 	}
+	r.Migrations = migrationsFromWire(w.Migrations)
 	for _, row := range w.Artifacts {
 		a, seen := r.Artifacts[row.Name]
 		if !seen {
@@ -997,6 +1030,7 @@ func (s *hostedStore) Append(ctx context.Context, p release.Promotion, guard app
 	written, err := s.promotionFromWire(p.Env, resp.Promotion)
 	if err == nil {
 		s.remember(ctx, p.Env, written, true)
+		noteDeployPromotion(ctx, written.ID)
 	}
 	if err == nil && len(resp.Holds) > 0 {
 		s.mu.Lock()
@@ -1059,7 +1093,18 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 		}
 		// Exclusive typed document: no lossy legacy artifact flattening or
 		// duplicated provenance/run fields against the strict server adapter.
-		req = map[string]any{"version": r.Version, "project": r.Project, "snapshotRelease": r}
+		//
+		// The migration manifest rides BESIDE the document, not in it. The
+		// server decodes the document strictly into its pinned forge's
+		// Release, so a field that forge predates would refuse the whole
+		// cut; beside it, an older server ignores it like any unknown
+		// field, and a newer one stores it in the release's column.
+		doc := r
+		doc.Migrations = nil
+		req = map[string]any{"version": r.Version, "project": r.Project, "snapshotRelease": doc}
+	}
+	if r.Migrations != nil {
+		req["migrations"] = r.Migrations
 	}
 	var resp struct {
 		Created bool `json:"created"`
@@ -1107,6 +1152,34 @@ func (s *hostedStore) Get(ctx context.Context, version string) (*release.Release
 		return nil, err
 	}
 	return &r, nil
+}
+
+// RecordMigrations calls RecordReleaseMigrations: record m as the migration
+// manifest of a release cut without one. recorded is false when the release
+// already holds an equal manifest; a different one is
+// release.ErrReleaseConflict. A control plane that predates the rpc answers
+// Unimplemented, which is returned as it is — the caller says what to do.
+func (s *hostedStore) RecordMigrations(ctx context.Context, version string, m release.MigrationManifest) (bool, error) {
+	if err := m.Validate(); err != nil {
+		return false, err
+	}
+	req := map[string]any{"version": version, "migrations": m}
+	if s.project != "" {
+		req["project"] = s.project
+	}
+	var resp struct {
+		Recorded bool `json:"recorded"`
+	}
+	if err := s.client.Call(ctx, procRecordReleaseMigrations, req, &resp); err != nil {
+		switch {
+		case hostedErrorHasCode(err, cloud.CodeAlreadyExists):
+			return false, fmt.Errorf("release %q: %w: it already records a different migration manifest: %v", version, release.ErrReleaseConflict, err)
+		case hostedErrorHasCode(err, cloud.CodeNotFound):
+			return false, fmt.Errorf("release %q was never cut in %s", version, s.Location())
+		}
+		return false, err
+	}
+	return resp.Recorded, nil
 }
 
 // List calls ListReleases and orders the result the way the file backend

@@ -14,7 +14,8 @@ import type { UseQueryOptions } from "@tanstack/react-query";
 // error-normalize interceptor throws, same paged/filtered response shape.
 // The error type is part of the signature being stood in for: typed as a bare
 // `Error` this stand-in stops satisfying EntityListHook, and the test would be
-// exercising a shape `forge generate` never emits.
+// exercising a shape `forge generate` never emits. So is the TData generic: a
+// generated query hook types `data` by `select`.
 interface Patient {
   id: string;
   fullName: string;
@@ -33,11 +34,11 @@ const roster: Patient[] = [
   { id: "p_2", fullName: "Grace Hopper" },
 ];
 
-function useListPatients(
+function useListPatients<TData = ListPatientsResponse>(
   req: ListPatientsRequest,
-  options?: Partial<UseQueryOptions<ListPatientsResponse, ConnectClientError>>,
+  options?: Partial<UseQueryOptions<ListPatientsResponse, ConnectClientError, TData>>,
 ) {
-  return useQuery<ListPatientsResponse, ConnectClientError>({
+  return useQuery<ListPatientsResponse, ConnectClientError, TData>({
     queryKey: ["patients", req.search ?? ""],
     // The SERVER does the filtering — mirrored here so the assertions prove
     // the search text reached the request, not a client-side array filter.
@@ -45,9 +46,7 @@ function useListPatients(
       const term = (req.search ?? "").toLowerCase();
       return Promise.resolve({
         patients:
-          term === ""
-            ? roster
-            : roster.filter((p) => p.fullName.toLowerCase().includes(term)),
+          term === "" ? roster : roster.filter((p) => p.fullName.toLowerCase().includes(term)),
         nextPageToken: "",
       });
     },
@@ -89,9 +88,7 @@ describe("EntityPicker", () => {
       transport: mockTransport(),
     });
     open();
-    await waitFor(() =>
-      expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy(),
-    );
+    await waitFor(() => expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy());
     expect(screen.getByRole("option", { name: "Grace Hopper" })).toBeTruthy();
   });
 
@@ -100,16 +97,12 @@ describe("EntityPicker", () => {
       transport: mockTransport(),
     });
     open();
-    await waitFor(() =>
-      expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy(),
-    );
+    await waitFor(() => expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy());
 
     fireEvent.change(screen.getByRole("combobox"), {
       target: { value: "grace" },
     });
-    await waitFor(() =>
-      expect(screen.queryByRole("option", { name: "Ada Lovelace" })).toBeNull(),
-    );
+    await waitFor(() => expect(screen.queryByRole("option", { name: "Ada Lovelace" })).toBeNull());
     expect(screen.getByRole("option", { name: "Grace Hopper" })).toBeTruthy();
   });
 
@@ -119,9 +112,7 @@ describe("EntityPicker", () => {
       transport: mockTransport(),
     });
     open();
-    await waitFor(() =>
-      expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy(),
-    );
+    await waitFor(() => expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy());
 
     const search = screen.getByRole("combobox");
     fireEvent.keyDown(search, { key: "ArrowDown" });
@@ -130,9 +121,7 @@ describe("EntityPicker", () => {
     expect(picked).toEqual(["p_2"]);
     // Closed, and showing the picked row's NAME rather than its id.
     expect(screen.queryByRole("listbox")).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Patient" }).textContent,
-    ).toContain("Grace Hopper");
+    expect(screen.getByRole("button", { name: "Patient" }).textContent).toContain("Grace Hopper");
   });
 
   // A List RPC with no free-text filter has nowhere to put the search text,
@@ -156,9 +145,7 @@ describe("EntityPicker", () => {
       { transport: mockTransport() },
     );
     open();
-    await waitFor(() =>
-      expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy(),
-    );
+    await waitFor(() => expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy());
     expect(screen.queryByRole("combobox")).toBeNull();
 
     const listbox = screen.getByRole("listbox");
@@ -173,9 +160,7 @@ describe("EntityPicker", () => {
       transport: mockTransport(),
     });
     open();
-    await waitFor(() =>
-      expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy(),
-    );
+    await waitFor(() => expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy());
     fireEvent.click(screen.getByRole("option", { name: "Ada Lovelace" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Clear selection" }));

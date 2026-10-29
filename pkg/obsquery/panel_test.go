@@ -118,14 +118,14 @@ func TestPanelRejections(t *testing.T) {
 func TestMetricQueryWithPanelPredicates(t *testing.T) {
 	h := "x') OR 1=1 --"
 	st, err := MetricQuery{
-		Scope: scope(), Name: "m", Type: MetricSum, Agg: AggIncrease, GroupBy: []string{"service.name"}, StepSeconds: 60,
+		Scope: scope(), Name: "m", Info: MetricInfo{Type: MetricSum, Monotonic: true}, Agg: AggIncrease, GroupBy: []string{"service.name"}, StepSeconds: 60,
 		Where: []PanelPredicate{{Field: "metric.attr.k", Op: "eq", Value: h}, {Field: "service.name", Op: "in", Values: []string{h}}},
 	}.Compile()
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertParameterized(t, st, h)
-	if _, err := (MetricQuery{Scope: scope(), Name: "m", Type: MetricGauge, Agg: AggAvg, StepSeconds: 60,
+	if _, err := (MetricQuery{Scope: scope(), Name: "m", Info: MetricInfo{Type: MetricGauge}, Agg: AggAvg, StepSeconds: 60,
 		Where: []PanelPredicate{{Field: "span.name", Op: "eq", Value: "x"}}}).Compile(); !isInvalid(err) {
 		t.Errorf("a traces field in a metrics panel: %v", err)
 	}

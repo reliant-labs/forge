@@ -72,3 +72,30 @@ func TestExpandTierDeclarationsCarriesTheDeliveryUnit(t *testing.T) {
 		}
 	}
 }
+
+// A Workload record's app.kubernetes.io/version label (Bundle.release) reaches
+// the pod template, so a file-scraping node agent can report service.version.
+func TestExpandTierDeclarationsStampsTheReleaseOnPodTemplates(t *testing.T) {
+	rec := workloadRecord("api", "")
+	rec["metadata"].(map[string]any)["labels"].(map[string]any)[deploy.LabelVersion] = "20261025"
+	out, err := expandTierDeclarations([]any{rec}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range out {
+		m := it.(map[string]any)
+		if m["kind"] != "Deployment" {
+			continue
+		}
+		tmpl := m["spec"].(map[string]any)["template"].(map[string]any)["metadata"].(map[string]any)["labels"].(map[string]any)
+		if tmpl[deploy.LabelVersion] != "20261025" {
+			t.Errorf("pod template labels = %v, want %s=20261025", tmpl, deploy.LabelVersion)
+		}
+		sel := m["spec"].(map[string]any)["selector"].(map[string]any)["matchLabels"].(map[string]any)
+		if _, ok := sel[deploy.LabelVersion]; ok {
+			t.Errorf("selector carries the version: %v", sel)
+		}
+		return
+	}
+	t.Fatal("no Deployment rendered")
+}

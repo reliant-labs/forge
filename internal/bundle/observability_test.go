@@ -3,12 +3,14 @@ package bundle
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/servicecatalog"
 )
 
 func withObservability(files ...ObservabilityFile) BuildInput {
@@ -129,17 +131,46 @@ func TestObservabilityPathsAreConfined(t *testing.T) {
 }
 
 func TestObservabilityFilesAreBounded(t *testing.T) {
-	big := bytes.Repeat([]byte("a"), maxObservabilityFileBytes+1)
-	if _, err := Build(t.Context(), withObservability(ObservabilityFile{Path: "observability/big.json", Data: big})); !errors.Is(err, release.ErrInvalid) {
-		t.Errorf("one file over the bound: err = %v", err)
-	}
-	var many []ObservabilityFile
-	chunk := bytes.Repeat([]byte("a"), maxObservabilityFileBytes)
-	for i := 0; i < 5; i++ {
-		many = append(many, ObservabilityFile{Path: "observability/dashboards/" + string(rune('a'+i)) + ".json", Data: chunk})
-	}
-	if _, err := Build(t.Context(), withObservability(many...)); !errors.Is(err, release.ErrInvalid) {
+	half := bytes.Repeat([]byte("a"), maxObservabilityBytes/2+1)
+	two := []ObservabilityFile{{Path: "observability/dashboards/a.json", Data: half}, {Path: "observability/dashboards/b.json", Data: half}}
+	if _, err := Build(t.Context(), withObservability(two...)); !errors.Is(err, release.ErrInvalid) {
 		t.Errorf("the total over the bound: err = %v", err)
+	}
+}
+
+// A service catalog grows with its project (reliant's is 2.1 MB compact): one
+// over the manifest bound, and one over the old 16 MiB unpack bound, builds,
+// validates as a layer, and unpacks — every party agrees on one contract.
+func TestALargeServiceCatalogBuildsValidatesAndUnpacks(t *testing.T) {
+	for _, components := range []int{4000, 40000} {
+		if components > 4000 && testing.Short() {
+			t.Skip("an ~19 MB catalog takes seconds to build and scan; runs in task test")
+		}
+		c := servicecatalog.Catalog{Schema: servicecatalog.Schema, Module: "example.com/big"}
+		for len(c.Components) < components {
+			c.Components = append(c.Components, servicecatalog.Component{ID: "c", Name: "c", Kind: "service", Type: strings.Repeat("t", 400)})
+		}
+		raw, err := json.Marshal(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(raw) <= release.ManifestsLayerMaxFileBytes {
+			t.Fatalf("fixture is %d bytes; it must exceed the %d-byte manifest bound", len(raw), release.ManifestsLayerMaxFileBytes)
+		}
+		built, err := Build(t.Context(), withObservability(ObservabilityFile{Path: servicecatalog.BundlePath, Data: raw}))
+		if err != nil {
+			t.Fatalf("a %d-byte catalog must build: %v", len(raw), err)
+		}
+		layer, ok := built.Layer(release.BundleManifestsLayer)
+		if !ok {
+			t.Fatal("no manifests layer")
+		}
+		if _, err := release.ValidateManifestsLayer(bytes.NewReader(layer)); err != nil {
+			t.Fatalf("its layer must validate: %v", err)
+		}
+		if _, err := Unpack(bytes.NewReader(layer), t.TempDir()); err != nil {
+			t.Fatalf("a %d-byte catalog must unpack: %v", len(raw), err)
+		}
 	}
 }
 

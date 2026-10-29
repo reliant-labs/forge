@@ -28,6 +28,8 @@ func FuncMap() template.FuncMap {
 	caser := cases.Title(language.English)
 	return template.FuncMap{
 		"lower": strings.ToLower,
+		// pnpmVersion is the pnpm a scaffolded frontend pins (PnpmVersion).
+		"pnpmVersion": func() string { return PnpmVersion },
 		"humanize": func(s string) string {
 			words := strings.Fields(naming.Humanize(s))
 			for i, w := range words {
@@ -397,6 +399,39 @@ func (d CIWorkflowData) withDefaults() interface{} {
 type FrontendCIConfig struct {
 	Name string
 	Path string
+	// PackageManager owns the frontend's install: "pnpm", "npm" or "yarn".
+	// Empty means pnpm, the manager a scaffolded frontend pins.
+	PackageManager string
+}
+
+// PM is the frontend's package manager, defaulting to pnpm.
+func (f FrontendCIConfig) PM() string {
+	if f.PackageManager == "" {
+		return "pnpm"
+	}
+	return f.PackageManager
+}
+
+// Lockfile is the lockfile the frontend's package manager writes.
+func (f FrontendCIConfig) Lockfile() string {
+	switch f.PM() {
+	case "npm":
+		return "package-lock.json"
+	case "yarn":
+		return "yarn.lock"
+	}
+	return "pnpm-lock.yaml"
+}
+
+// FrozenInstall is the lockfile-exact install CI runs in the frontend.
+func (f FrontendCIConfig) FrozenInstall() string {
+	switch f.PM() {
+	case "npm":
+		return "npm ci"
+	case "yarn":
+		return "yarn install --frozen-lockfile"
+	}
+	return "pnpm install --frozen-lockfile"
 }
 
 // DeployEnv represents a single deploy environment (e.g. staging, prod).
@@ -416,9 +451,11 @@ type DeployWorkflowData struct {
 	Environments []DeployEnv
 	HasFrontends bool
 	// FrontendPath is the first frontend's directory: setup-node reads its
-	// package.json `engines.node`, and `npm ci` there installs what
-	// `forge build <env>` needs to build it.
-	FrontendPath     string
+	// package.json `engines.node`, and its frozen install there installs
+	// what `forge build <env>` needs to build it.
+	FrontendPath string
+	// Frontend is that first frontend, for its package manager.
+	Frontend         FrontendCIConfig
 	FrontendDeploy   string // "firebase", "vercel", "none"
 	MigrationTest    bool   // test migrations before deploy
 	Concurrency      bool   // per-env concurrency groups
@@ -513,6 +550,8 @@ type E2EWorkflowData struct {
 	// when there are no frontends — the template then falls back to a
 	// fixed node-version.
 	FrontendPath string
+	// Frontend is that first frontend, for its package manager.
+	Frontend FrontendCIConfig
 }
 
 // NavPageData describes a single page entry for the frontend navigation.
@@ -755,6 +794,13 @@ func (d FrontendTemplateData) withDefaults() interface{} {
 		d.RepoPath = "frontends/" + d.FrontendName
 	}
 	return d
+}
+
+// TelemetryServiceName is the service.name this frontend's browser telemetry
+// reports (otel_gen.ts's SERVICE_NAME): naming.FrontendServiceName, the same
+// derivation the generated dashboards and alert defaults filter on.
+func (d FrontendTemplateData) TelemetryServiceName() string {
+	return naming.FrontendServiceName(d.ProjectName, d.FrontendName)
 }
 
 // WebhookTemplateData holds data for webhook template rendering.

@@ -13,6 +13,7 @@ package kcleval_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,12 +65,12 @@ func TestEvalResolvesTheForgeModuleFromTheBinary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Eval of a file importing forge must resolve the module from the binary; got: %v", err)
 	}
-	doc, ok := res.Value.(map[string]any)
+	doc, ok := res.Value.(kcleval.Object)
 	if !ok {
 		t.Fatalf("whole-document Eval = %T, want an object", res.Value)
 	}
-	if doc["has_bundle"] != true {
-		t.Errorf("has_bundle = %v, want true (the forge module did not resolve)", doc["has_bundle"])
+	if v, _ := member(doc, "has_bundle"); v != true {
+		t.Errorf("has_bundle = %v, want true (the forge module did not resolve)", v)
 	}
 	if res.Scalar {
 		t.Error("a whole document is not a scalar")
@@ -107,7 +108,7 @@ _forge_is_present = forge.Bundle is not None
 		want any
 	}{
 		{"nested string", "sbd.image_family", "workspace-sbd"},
-		{"nested int", "sbd.disk_size_gb", float64(200)},
+		{"nested int", "sbd.disk_size_gb", json.Number("200")},
 		{"nested bool", "sbd.enabled", true},
 		{"second object", "pool_defaults.node_label_key", "reliant.dev/pool"},
 		{"list index", "tiers.1", "large"},
@@ -173,11 +174,13 @@ _p = forge.Bundle is not None
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, ok := res.Value.(map[string]any)
+	got, ok := res.Value.(kcleval.Object)
 	if !ok {
 		t.Fatalf("repeated -S = %T, want an object", res.Value)
 	}
-	if got["cloudnative_pg.name"] != "cloudnative-pg" || got["cloudnative_pg.namespace"] != "cnpg-system" {
+	name, _ := member(got, "cloudnative_pg.name")
+	ns, _ := member(got, "cloudnative_pg.namespace")
+	if name != "cloudnative-pg" || ns != "cnpg-system" || got[0].Key != "cloudnative_pg.name" {
 		t.Errorf("repeated -S = %#v", got)
 	}
 	if res.Scalar {
@@ -294,13 +297,15 @@ func TestEvalRefusesAFileOutsideTheProject(t *testing.T) {
 	}
 }
 
-// TestEvalDirectoryPointsAtEnvRender: naming a directory is the mistake of
-// someone who wanted an environment, so the refusal names that command.
-func TestEvalDirectoryPointsAtEnvRender(t *testing.T) {
-	dir := project(t, map[string]string{"deploy/kcl/kcl.mod": kclMod})
-	_, err := kcleval.Eval(kcleval.Request{ProjectDir: dir, File: "deploy/kcl"})
-	if err == nil || !strings.Contains(err.Error(), "env render") {
-		t.Fatalf("Eval of a directory = %v; want a refusal pointing at `env render`", err)
+func TestEvalDirectoryIncludesEveryKCLFile(t *testing.T) {
+	dir := project(t, map[string]string{
+		"deploy/kcl/kcl.mod": kclMod,
+		"deploy/kcl/a.k":     "first = 1\n",
+		"deploy/kcl/b.k":     "second = first + 1\n",
+	})
+	res, err := kcleval.Eval(kcleval.Request{ProjectDir: dir, File: "deploy/kcl", Selectors: []string{"second"}})
+	if err != nil || fmt.Sprint(res.Value) != "2" {
+		t.Fatalf("directory evaluation = %+v, %v", res, err)
 	}
 }
 
@@ -324,8 +329,8 @@ func TestEvalIsReadOnly(t *testing.T) {
 // TestSelectDecodedDocument pins the traversal without paying for a render —
 // the cheap unit half, for the cases a real KCL file cannot easily produce.
 func TestSelectDecodedDocument(t *testing.T) {
-	var doc any
-	if err := json.Unmarshal([]byte(`{"a":{"b":[{"c":"deep"}]},"n":null,"num":7}`), &doc); err != nil {
+	doc, err := kcleval.Decode([]byte(`{"a":{"b":[{"c":"deep"}]},"n":null,"num":7}`))
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got, err := kcleval.Select(doc, "a.b.0.c"); err != nil || got != "deep" {
@@ -341,4 +346,16 @@ func TestSelectDecodedDocument(t *testing.T) {
 			t.Errorf("Select(%q) succeeded; want a refusal", bad)
 		}
 	}
+}
+
+// member returns the value of key in o. A key may itself contain dots (a
+// repeated -S keeps each selector as its key), so this is a flat lookup, not
+// a Select.
+func member(o kcleval.Object, key string) (any, bool) {
+	for _, m := range o {
+		if m.Key == key {
+			return m.Value, true
+		}
+	}
+	return nil, false
 }

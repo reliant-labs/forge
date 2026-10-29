@@ -137,10 +137,15 @@ func renderKCLPure(ctx context.Context, projectDir, env string) (*KCLEntities, [
 	if err != nil {
 		return nil, nil, err
 	}
-	if before == nil {
-		return entities, nil, nil // not a git checkout — guard disarmed
-	}
+	return entities, restoreImpureKCLWrites(projectDir, before), nil
+}
 
+// restoreImpureKCLWrites is shared by environment renders and structural
+// library evaluation on the generate path.
+func restoreImpureKCLWrites(projectDir string, before map[string]bool) []string {
+	if before == nil {
+		return nil
+	}
 	var restored []string
 	for path := range dirtyTrackedFiles(projectDir) {
 		if before[path] {
@@ -154,7 +159,7 @@ func renderKCLPure(ctx context.Context, projectDir, env string) (*KCLEntities, [
 		restored = append(restored, path)
 	}
 	sort.Strings(restored)
-	return entities, restored, nil
+	return restored
 }
 
 // reportImpureRender explains a restored write. The message has to carry the

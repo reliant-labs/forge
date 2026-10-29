@@ -104,7 +104,7 @@ const (
 func init() {
 	register(Codemod{
 		Name:    "connect-errors",
-		Version: "v0.1.47",
+		Version: "v1.0.0",
 		Short:   "Rewrite fixed-message connect.NewError calls to pkg/svcerr, wire-identically, and list the rest",
 		Long: `Move hand-built Connect errors onto pkg/svcerr where that changes nothing a client reads.
 

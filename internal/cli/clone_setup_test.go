@@ -85,6 +85,9 @@ func TestReadOnlyCommandsLeaveTheCloneGitSetupAlone(t *testing.T) {
 // for. `project disown` writes .forge/disowned.json; the path need not exist
 // for the root pre-run to have configured the clone first.
 func TestWritingCommandsStillSetUpTheClone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	repo := cloneSetupRepo(t)
 	clearProjectDir(t)
 	_, _ = runForge(t, "-C", repo, "project", "disown", "no-such-file_gen.go", "--reason", "test")
@@ -109,11 +112,17 @@ func TestConfiguresCloneCommandSet(t *testing.T) {
 		{path: "generate", want: true},
 		{path: "generate", flags: map[string]string{"check": "true"}, want: false},
 		{path: "generate", flags: map[string]string{"plan": "true"}, want: false},
+		{path: "generate", flags: map[string]string{"dry-run": "true"}, want: false},
 		{path: "scaffold", want: true},
+		{path: "scaffold", flags: map[string]string{"dry-run": "true"}, want: false},
 		{path: "scaffold service", want: true},
+		{path: "scaffold package", flags: map[string]string{"dry-run": "true"}, want: false},
 		{path: "project disown", want: true},
+		{path: "project disown", flags: map[string]string{"dry-run": "true"}, want: false},
 		{path: "project delete service", want: true},
+		{path: "project delete service", flags: map[string]string{"dry-run": "true"}, want: false},
 		{path: "package new", want: true},
+		{path: "package new", flags: map[string]string{"dry-run": "true"}, want: false},
 		{path: "slot run", want: false},
 		{path: "env status", want: false},
 		{path: "env render", want: false},

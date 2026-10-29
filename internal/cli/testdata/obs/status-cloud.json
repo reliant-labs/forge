@@ -48,6 +48,7 @@
       "last_version": "v1.4.0",
       "events": 42,
       "affected": 9,
+      "affected_unit": "traces",
       "regressed_at": "2026-10-22T09:00:00Z"
     }
   ],

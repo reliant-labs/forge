@@ -12,6 +12,9 @@ import (
 // with a describable tag. This is the contract that lets `--tag v1.2.3`
 // pin the embedded version to the release number.
 func TestResolveBuildVersion_OverrideWins(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	dir := newGitRepo(t)
 	withDir(t, dir, func() {
 		info := resolveBuildVersion(context.Background(), "v9.9.9-release")
@@ -33,6 +36,9 @@ func TestResolveBuildVersion_OverrideWins(t *testing.T) {
 // git repo yields the `git describe --tags --always --dirty` value (a
 // commit-ish for an untagged repo) and a real commit hash.
 func TestResolveBuildVersion_GitDescribe(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	dir := newGitRepo(t)
 	withDir(t, dir, func() {
 		info := resolveBuildVersion(context.Background(), "")

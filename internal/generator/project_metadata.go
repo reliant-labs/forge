@@ -26,7 +26,7 @@ import (
 //     .reliant/project.json, .reliant/README.md.
 //
 //   - User-owned (written only if absent, never touched if present):
-//     <memory-file>, .mcp.json, .mcp.json.example.
+//     the agent files (see writeAgentSurfaces), .mcp.json, .mcp.json.example.
 //
 // Skills and conventions are served via `forge skill list/load` from embedded
 // templates — no files are written to disk for them.
@@ -44,30 +44,11 @@ func (g *ProjectGenerator) writeProjectMetadata() error {
 		return fmt.Errorf("failed to write .reliant/README.md: %w", err)
 	}
 
-	templateData := struct {
-		Name string
-		CLI  string
-	}{Name: g.Name, CLI: cliName()}
-
-	// User-owned top-level memory file — path depends on --harness.
-	// Skipped for the reliant harness: reliant loads the framework
-	// content in-memory via forgecli.RenderProjectMemory whenever it
-	// detects forge.yaml, so a stale on-disk copy would just create
-	// upgrade drift. Other harnesses (claude/cursor/copilot/codex) have
-	// no such auto-discovery path and still need the file written.
-	if g.Harness != HarnessReliant && g.Harness != "" {
-		memoryFile := g.Harness.MemoryFilePath()
-		memoryDest := filepath.Join(g.Path, memoryFile)
-		// Ensure parent directory exists (needed for copilot: .github/).
-		if dir := filepath.Dir(memoryDest); dir != g.Path {
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				return fmt.Errorf("failed to create directory for %s: %w", memoryFile, err)
-			}
-		}
-		if err := writeIfAbsent(memoryDest, "reliant.md.tmpl", templateData); err != nil {
-			return fmt.Errorf("failed to write %s: %w", memoryFile, err)
-		}
+	if err := writeAgentSurfaces(g.Path, g.Name, g.Harness, false); err != nil {
+		return err
 	}
+
+	templateData := ProjectMemoryData{Name: g.Name, CLI: cliName()}
 
 	// User-owned MCP config — write only if absent.
 	if err := writeIfAbsent(filepath.Join(g.Path, ".mcp.json"), "mcp.json.tmpl", templateData); err != nil {
@@ -81,6 +62,24 @@ func (g *ProjectGenerator) writeProjectMetadata() error {
 	}
 
 	return nil
+}
+
+// ProjectMemoryData is what the framework memory template
+// (project/reliant.md.tmpl) renders from — on disk for a harness that reads a
+// file, and live for reliant (cli.RenderProjectMemory).
+type ProjectMemoryData struct {
+	// Name is the project's name (forge.yaml `name:`).
+	Name string
+	// CLI is how the user invokes forge: "forge", or "reliant forge" when
+	// embedded.
+	CLI string
+	// Site reports a static site: a project with no Go module, made of the
+	// app at its root and its deploy envs (`forge project new --kind site`).
+	// Its memory is the frontend-only quick reference; every other project's
+	// is the Go one. Derived from the tree (config.DiscoverRootFrontend),
+	// like every other fact about a project's shape, so no flag can disagree
+	// with what is on disk.
+	Site bool
 }
 
 // writeProjectJSON writes the immutable project metadata JSON under .reliant/.
@@ -118,6 +117,56 @@ func projectCreatedAt(path string) string {
 		return existing.CreatedAt
 	}
 	return time.Now().Format(time.RFC3339)
+}
+
+// agentFile is one agent-facing file forge scaffolds: where it goes and the
+// template that renders it.
+type agentFile struct{ path, tmpl string }
+
+// agentFiles lists what a harness needs so its tool finds the project guide.
+//
+// AGENTS.md is the cross-tool standard and carries the guide for EVERY
+// harness; it is the one rendered copy (reliant.md.tmpl), so nothing can
+// drift. The harness-specific files are thin pointers to it, and the skills
+// pointer says only to run the forge binary: skill bodies never leave the
+// binary.
+func (h Harness) agentFiles() []agentFile {
+	files := []agentFile{{"AGENTS.md", "reliant.md.tmpl"}}
+	switch h {
+	case HarnessClaude:
+		// Claude Code reads AGENTS.md only when no CLAUDE.md exists, so the
+		// import keeps the one copy.
+		files = append(files,
+			agentFile{h.MemoryFilePath(), "agent-claude.md.tmpl"},
+			agentFile{".claude/skills/forge/SKILL.md", "agent-skill.md.tmpl"})
+	case HarnessCursor:
+		files = append(files,
+			agentFile{h.MemoryFilePath(), "agent-pointer.md.tmpl"},
+			agentFile{".cursor/rules/forge.mdc", "agent-cursor.mdc.tmpl"})
+	case HarnessCopilot:
+		files = append(files, agentFile{h.MemoryFilePath(), "agent-pointer.md.tmpl"})
+	}
+	return files
+}
+
+// writeAgentSurfaces writes the harness's agent files under root, each only if
+// absent: they are user-owned from birth. Reliant needs no file of its own
+// (it renders the guide in memory from forge.yaml) but still gets AGENTS.md
+// for every other tool that opens the project. site renders AGENTS.md as a
+// static site's memory (the frontend-only quick reference) rather than the Go
+// one; the harness pointers import it, so they follow.
+func writeAgentSurfaces(root, name string, h Harness, site bool) error {
+	data := ProjectMemoryData{Name: name, CLI: cliName(), Site: site}
+	for _, f := range h.agentFiles() {
+		dest := filepath.Join(root, f.path)
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return fmt.Errorf("failed to create directory for %s: %w", f.path, err)
+		}
+		if err := writeIfAbsent(dest, f.tmpl, data); err != nil {
+			return fmt.Errorf("failed to write %s: %w", f.path, err)
+		}
+	}
+	return nil
 }
 
 // writeIfAbsent renders the given template to destPath only if destPath does

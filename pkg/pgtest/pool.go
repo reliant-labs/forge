@@ -56,8 +56,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
 )
 
 // pool state-file layout, alongside the per-instance runtime dirs under
@@ -96,7 +94,7 @@ var (
 	// server runs. Teardown is by data dir (stopSharedByPort), not this
 	// handle, because the LAST user may be a process that only REUSED the
 	// server and never held a handle.
-	retained []*embeddedpostgres.EmbeddedPostgres
+	retained []*Embedded
 )
 
 // AcquireShared returns the base maintenance DSN of the postgres server this
@@ -348,7 +346,7 @@ func stopSharedByPort(port uint32) {
 }
 
 // retainEmbedded keeps a booted handle reachable for the process lifetime.
-func retainEmbedded(ep *embeddedpostgres.EmbeddedPostgres) {
+func retainEmbedded(ep *Embedded) {
 	if ep != nil {
 		retained = append(retained, ep)
 	}

@@ -592,6 +592,13 @@ type promotePlan struct {
 	// why, and the action URL. The envelope's exit_code is then 7. Nil for
 	// every deploy that is not queued.
 	Queued *deployQueuedJSON `json:"queued,omitempty"`
+	// Applying is set when the deploy was published and the platform had
+	// not reported it applied when the wait ended, with no failure reported
+	// (deploy_applying.go). The envelope's exit_code is then 8.
+	Applying *deployApplyingJSON `json:"applying,omitempty"`
+	// Claim is set only on a `--claimable` deploy: the live address and the
+	// link a human opens to own the deploy (deploy_claimable.go).
+	Claim *deployClaimJSON `json:"claim,omitempty"`
 
 	// targetSources is the source-built frontend snapshot the binding will be
 	// written with, the non-container half of targetResolved. Carried on the
@@ -1340,6 +1347,16 @@ func renderPromotePlanHeadline(out io.Writer, plan promotePlan) {
 		// this whole path exists to prevent.
 		fmt.Fprintf(out, "REFUSED (%s — nothing was written): promote env %q → release %s\n",
 			plan.Refusal.Reason, plan.Env, plan.Target.Release)
+	case plan.Applied && plan.Applying != nil:
+		// Published and accepted, not yet reported applied. Not a failure,
+		// so neither "FAILED" nor "re-plan and re-approve": re-running
+		// would cut a new release for one that is already on its way.
+		fmt.Fprintf(out, "PUBLISHED, STILL APPLYING: env %q is now bound to release %s, and the platform accepted it but had not reported it applied after %ds. Nothing has failed.\n",
+			plan.Env, plan.Target.Release, plan.Applying.WaitedSeconds)
+		renderShippedStages(out, plan)
+		fmt.Fprintf(out, "  waiting   bundle %s (platform currently reports %s)\n",
+			shortDigest(plan.Applying.Bundle), emptyOr(shortDigest(plan.Applying.CurrentApplied), "none"))
+		fmt.Fprintf(out, "  Watch:    %s   (exit 8: still in progress, not a failure)\n", plan.Applying.Watch)
 	case plan.Applied && plan.FollowError != "" && plan.shippedAnything():
 		// The deploy failed AFTER part of it went live. Saying "nothing
 		// shipped" here is the claim an operator acts on — they re-run, or

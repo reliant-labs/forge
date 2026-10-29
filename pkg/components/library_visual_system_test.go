@@ -54,7 +54,7 @@ var surfaceShadow = regexp.MustCompile(`(^|[\s"` + "`" + `:])shadow-(sm|md|lg|xl
 // shadow. Everything else is a surface, told apart by border and fill.
 var overlays = map[string]bool{
 	"modal": true, "confirmation_dialog": true, "dropdown_menu": true, "command_bar": true,
-	"toast_notification": true, "row_actions_menu": true,
+	"toast_notification": true, "row_actions_menu": true, "popover": true, "context_menu": true, "tooltip": true, "combobox": true,
 	// The knob of a switch is a physical affordance, not a panel.
 	"toggle_switch": true,
 	// Marketing pages, not app chrome.
@@ -134,6 +134,28 @@ func TestSidebarLayoutBecomesADrawerOnPhones(t *testing.T) {
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("sidebar_layout.tsx no longer contains %q", want)
+		}
+	}
+}
+
+// TestDataTableStacksOnPhones pins `stacked`: below `md` a console list is a
+// list of cards — header kept for screen readers only, each non-title cell
+// labelled by its column header — instead of eight columns squeezed to 390px.
+func TestDataTableStacksOnPhones(t *testing.T) {
+	src, err := NewLibrary().Get("data_table")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"stacked?: boolean",
+		"stackTitle?: boolean",
+		`head: "max-md:sr-only"`,                   // the header stays readable to a screen reader
+		"max-md:before:content-[attr(data-label)]", // each line led by its column's name
+		"data-label={stacked && !isTitle ? col.header : undefined}",
+		"getRowLabel?: (row: T, index: number) => string | undefined",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("data_table.tsx no longer contains %q", want)
 		}
 	}
 }

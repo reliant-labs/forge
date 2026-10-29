@@ -135,7 +135,16 @@ func TestExplainCompilesWithoutRunning(t *testing.T) {
 			return r.Statements, e
 		},
 		"metric": func() ([]Statement, error) {
-			r, e := l.MetricsQuery(context.Background(), MetricsQueryRequest{Narrow: n, Name: "m", Agg: "rate"})
+			r, e := l.MetricsQuery(context.Background(), MetricsQueryRequest{Narrow: n, Panel: obsquery.Panel{Kind: "line", Signal: "metrics",
+				Series: []obsquery.PanelSeries{{Label: "A", Field: "m", Agg: "rate", MetricType: "sum"}}}})
+			return r.Statements, e
+		},
+		"metric describe": func() ([]Statement, error) {
+			r, e := l.MetricsDescribe(context.Background(), MetricsDescribeRequest{Narrow: n, Name: "m"})
+			return r.Statements, e
+		},
+		"metric exemplars": func() ([]Statement, error) {
+			r, e := l.MetricsExemplars(context.Background(), MetricsExemplarsRequest{Narrow: n, Name: "m", From: n.Range.From, To: n.Range.To})
 			return r.Statements, e
 		},
 	} {
@@ -260,56 +269,6 @@ func TestEndpointsRanksAndCaps(t *testing.T) {
 	}
 }
 
-func TestMetricsListAndQuery(t *testing.T) {
-	fr := &fakeRunner{answers: []fakeAnswer{
-		{"UNION ALL\nSELECT", Result{Rows: [][]any{{"rpc.server.calls", "{call}", "calls", num64("2")}, {"heap", "By", "", num64("1")}}}},
-	}}
-	l := Local{Env: "dev", Runner: fr}
-	res, err := l.MetricsList(context.Background(), MetricsListRequest{Narrow: rng(), Limit: 5})
-	if err != nil || len(res.Metrics) != 2 || res.Metrics[0].Type != "sum" || res.Metrics[1].Type != "gauge" || res.Truncated {
-		t.Fatalf("%+v %v", res, err)
-	}
-
-	fr = &fakeRunner{answers: []fakeAnswer{
-		{"HAVING count() > 0", Result{Rows: [][]any{{num64("2"), "{call}", num64("1")}}}},
-		{"AS g0", Result{Rows: [][]any{
-			{"2026-10-22 10:01:00", []any{"/a"}, num64("5")},
-			{"2026-10-22 10:00:00", []any{"/a"}, num64("3")},
-			{"2026-10-22 10:00:00", []any{"/b"}, num64("100")},
-		}}},
-	}}
-	q, err := (Local{Env: "dev", Runner: fr}).MetricsQuery(context.Background(), MetricsQueryRequest{Narrow: rng(), Name: "rpc.server.calls", GroupBy: []string{"rpc.method"}, MaxSeries: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if q.Type != "sum" || q.Agg != "rate" || q.Unit != "{call}" || q.StepSeconds < 1 {
-		t.Errorf("type/agg/unit/step = %s/%s/%s/%d", q.Type, q.Agg, q.Unit, q.StepSeconds)
-	}
-	if len(q.Series) != 1 || q.Series[0].Labels["rpc.method"] != "/b" || q.SeriesOmitted != 1 {
-		t.Errorf("the largest series first, capped and counted: %+v omitted %d", q.Series, q.SeriesOmitted)
-	}
-	// points are time-ordered within a series
-	if q2, _ := (Local{Env: "dev", Runner: fr}).MetricsQuery(context.Background(), MetricsQueryRequest{Narrow: rng(), Name: "rpc.server.calls", GroupBy: []string{"rpc.method"}}); q2.Series[1].Points[0].Time.After(q2.Series[1].Points[1].Time) {
-		t.Errorf("points out of order: %+v", q2.Series[1].Points)
-	}
-}
-
-func TestMetricsQueryUnknownMetricAndBadAgg(t *testing.T) {
-	l := Local{Env: "dev", Runner: &fakeRunner{}}
-	_, err := l.MetricsQuery(context.Background(), MetricsQueryRequest{Narrow: rng(), Name: "nope"})
-	if be, ok := err.(*Error); !ok || be.ExitCode() != ExitWrong || !strings.Contains(be.Error(), `no metric "nope"`) || len(be.Suggested) == 0 {
-		t.Errorf("err = %#v", err)
-	}
-	if _, err := l.MetricsQuery(context.Background(), MetricsQueryRequest{Narrow: rng(), Name: "m", Agg: "median"}); err == nil || !strings.Contains(err.Error(), "p99") {
-		t.Errorf("an unknown --agg lists the real ones: %v", err)
-	}
-	fr := &fakeRunner{answers: []fakeAnswer{{"HAVING count() > 0", Result{Rows: [][]any{{num64("1"), "By", num64("0")}}}}}}
-	_, err = (Local{Env: "dev", Runner: fr}).MetricsQuery(context.Background(), MetricsQueryRequest{Narrow: rng(), Name: "heap", Agg: "p95"})
-	if err == nil || err.(*Error).ExitCode() != ExitWrong {
-		t.Errorf("a percentile of a gauge is the caller's mistake: %v", err)
-	}
-}
-
 func TestQuerySQLBindsTheScopeAndRefusesWrites(t *testing.T) {
 	fr := &fakeRunner{answers: []fakeAnswer{{"otel_logs", Result{Columns: []Column{{Name: "n", Type: "UInt64"}}, Rows: [][]any{{num64("1")}, {num64("2")}, {num64("3")}}}}}}
 	l := Local{Env: "dev", Runner: fr}
@@ -377,7 +336,6 @@ func TestQueryPanelCompilesAndFlattens(t *testing.T) {
 
 	for name, bad := range map[string]obsquery.Panel{
 		"issues":  {Kind: "issues"},
-		"metrics": {Kind: "line", Signal: "metrics", Series: []obsquery.PanelSeries{{Label: "x", Agg: "avg", Field: "m"}}},
 		"invalid": {Kind: "table", Signal: "traces"},
 	} {
 		bad := bad

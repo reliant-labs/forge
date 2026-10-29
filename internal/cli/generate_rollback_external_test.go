@@ -293,6 +293,7 @@ func TestGenerateStepsDeclareExternalToolOutputs(t *testing.T) {
 		"generate hooks (forge.yaml)",
 		"go mod tidy (gen/)",
 		"go mod tidy (root)",
+		"go mod tidy (after generate hooks)",
 	}
 	var got []string
 	for _, s := range generateSteps() {

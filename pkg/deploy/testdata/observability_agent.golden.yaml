@@ -116,6 +116,9 @@ data:
           - from: pod
             key: forge.dev/env
             tag_name: deployment.environment.name
+          - from: pod
+            key: app.kubernetes.io/version
+            tag_name: service.version
           metadata:
           - k8s.namespace.name
           - k8s.pod.name
@@ -135,6 +138,27 @@ data:
         check_interval: 1s
         limit_mib: 204
         spike_limit_mib: 51
+      transform/line_resource:
+        error_mode: ignore
+        log_statements:
+        - context: resource
+          statements:
+          - set(attributes["service.name"], attributes["forge.line.service.name"]) where
+            attributes["service.name"] == nil and attributes["forge.line.service.name"]
+            != nil
+          - set(attributes["service.version"], attributes["forge.line.service.version"])
+            where attributes["service.version"] == nil and attributes["forge.line.service.version"]
+            != nil
+          - set(attributes["service.namespace"], attributes["forge.line.service.namespace"])
+            where attributes["service.namespace"] == nil and attributes["forge.line.service.namespace"]
+            != nil
+          - set(attributes["deployment.environment.name"], attributes["forge.line.deployment.environment.name"])
+            where attributes["deployment.environment.name"] == nil and attributes["forge.line.deployment.environment.name"]
+            != nil
+          - set(attributes["service.instance.id"], attributes["forge.line.service.instance.id"])
+            where attributes["service.instance.id"] == nil and attributes["forge.line.service.instance.id"]
+            != nil
+          - delete_matching_keys(attributes, "^forge[.]line[.]")
       transform/strip_client_identity:
         error_mode: ignore
         log_statements:
@@ -195,6 +219,34 @@ data:
           if: attributes.msg != nil
           to: body
           type: move
+        - from: attributes.resource["service.name"]
+          if: type(attributes.resource) == "map" && attributes.resource["service.name"]
+            != nil && resource["forge.line.service.name"] == nil
+          to: resource["forge.line.service.name"]
+          type: move
+        - from: attributes.resource["service.version"]
+          if: type(attributes.resource) == "map" && attributes.resource["service.version"]
+            != nil && resource["forge.line.service.version"] == nil
+          to: resource["forge.line.service.version"]
+          type: move
+        - from: attributes.resource["service.namespace"]
+          if: type(attributes.resource) == "map" && attributes.resource["service.namespace"]
+            != nil && resource["forge.line.service.namespace"] == nil
+          to: resource["forge.line.service.namespace"]
+          type: move
+        - from: attributes.resource["deployment.environment.name"]
+          if: type(attributes.resource) == "map" && attributes.resource["deployment.environment.name"]
+            != nil && resource["forge.line.deployment.environment.name"] == nil
+          to: resource["forge.line.deployment.environment.name"]
+          type: move
+        - from: attributes.resource["service.instance.id"]
+          if: type(attributes.resource) == "map" && attributes.resource["service.instance.id"]
+            != nil && resource["forge.line.service.instance.id"] == nil
+          to: resource["forge.line.service.instance.id"]
+          type: move
+        - field: attributes.resource
+          if: type(attributes.resource) == "map"
+          type: remove
         start_at: end
         storage: file_storage
       kubeletstats:
@@ -220,6 +272,7 @@ data:
           processors:
           - memory_limiter
           - k8sattributes
+          - transform/line_resource
           - batch
           receivers:
           - filelog

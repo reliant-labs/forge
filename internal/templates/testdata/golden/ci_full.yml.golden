@@ -56,7 +56,7 @@ permissions:
 # keeps at most one PENDING run per group and a newer push replaces it, so a
 # burst of merges costs one extra run, not one per merge.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Go version is read from go.mod's `go` directive via setup-go's
@@ -152,6 +152,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          # The release this frontend's package.json `packageManager` pins,
+          # so CI, the Dockerfile and local installs run one pnpm.
+          package_json_file: "frontends/web/package.json"
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -159,16 +165,16 @@ jobs:
           # `engines.node` field. Keeps CI, the Dockerfile, and local
           # dev aligned without a duplicated Node version in the workflow.
           node-version-file: "frontends/web/package.json"
-          cache: "npm"
+          cache: "pnpm"
           cache-dependency-path: |
-            frontends/web/package-lock.json
-      # `npm ci` (lockfile-exact install) is the workflow's job, not the
+            frontends/web/pnpm-lock.yaml
+      # The lockfile-exact install is the workflow's job, not the
       # Taskfile's: the workflow owns how the environment is PREPARED,
       # Taskfile.yml owns what the lane IS. The gate's deps row sees
       # node_modules and does nothing.
       - name: Install web dependencies
         working-directory: frontends/web
-        run: npm ci
+        run: pnpm install --frozen-lockfile
       # Task is the single definition of the lane: this job and your terminal
       # run the same commands out of Taskfile.yml.
       - uses: arduino/setup-task@v2
@@ -259,6 +265,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          # The release this frontend's package.json `packageManager` pins,
+          # so CI, the Dockerfile and local installs run one pnpm.
+          package_json_file: "frontends/web/package.json"
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -266,16 +278,16 @@ jobs:
           # `engines.node` field. Keeps CI, the Dockerfile, and local
           # dev aligned without a duplicated Node version in the workflow.
           node-version-file: "frontends/web/package.json"
-          cache: "npm"
+          cache: "pnpm"
           cache-dependency-path: |
-            frontends/web/package-lock.json
-      # `npm ci` (lockfile-exact install) is the workflow's job, not the
+            frontends/web/pnpm-lock.yaml
+      # The lockfile-exact install is the workflow's job, not the
       # Taskfile's: the workflow owns how the environment is PREPARED,
       # Taskfile.yml owns what the lane IS. The gate's deps row sees
       # node_modules and does nothing.
       - name: Install web dependencies
         working-directory: frontends/web
-        run: npm ci
+        run: pnpm install --frozen-lockfile
       # Task is the single definition of the test suite: this job, the local
       # edit loop, and `task test:all` all run the same commands out of
       # Taskfile.yml. The workflow deliberately does NOT re-spell `go test`

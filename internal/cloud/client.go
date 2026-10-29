@@ -86,7 +86,7 @@ func (c *Client) Call(ctx context.Context, procedure string, req, out any) error
 	}
 	token, elevErr := c.elevatedToken(ctx, scope)
 	if elevErr != nil {
-		return annotateElevation(err, scope, elevErr)
+		return c.loginLacksScope(annotateElevation(err, scope, elevErr), scope)
 	}
 	err = c.call(ctx, procedure, req, out, token)
 	if rejectedAsUnauthenticated(err) {
@@ -114,6 +114,22 @@ func (c *Client) credential() Credential {
 
 // call is one HTTP round trip with an explicit bearer.
 func (c *Client) call(ctx context.Context, procedure string, req, out any, token string) error {
+	// Resolve the server target before any human operation, including reads.
+	// The session has no org default that can stand in for project ownership.
+	projectID := c.Endpoint.ProjectID
+	if token != "" && c.credential().Kind == "human" && projectID == "" && c.Endpoint.ProjectName != "" && !strings.HasSuffix(procedure, "/ResolveHostedProject") {
+		var target struct {
+			ProjectID string `json:"projectId"`
+			OrgID     string `json:"orgId"`
+		}
+		if err := c.call(ctx, "controlplane.v1.DeployService/ResolveHostedProject", map[string]any{"name": c.Endpoint.ProjectName}, &target, token); err != nil {
+			return err
+		}
+		if target.ProjectID == "" || target.OrgID == "" {
+			return fmt.Errorf("control plane returned incomplete project identity")
+		}
+		projectID = target.ProjectID
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("encode %s request: %w", procedure, err)
@@ -125,17 +141,22 @@ func (c *Client) call(ctx context.Context, procedure string, req, out any, token
 		return fmt.Errorf("build %s request: %w", procedure, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if token != "" && projectID != "" && !strings.HasSuffix(procedure, "/ResolveHostedProject") {
+		httpReq.Header.Set("Forge-Project-ID", projectID)
+	}
 	// The credential is an OPAQUE bearer string. forge does not inspect
 	// it, does not validate a prefix, and does not decode it — the issuer
 	// owns its format, and a forge-side assumption about it would break
 	// the day that format changed.
-	httpReq.Header.Set("Authorization", "Bearer "+token)
+	if token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+token)
+	}
 	// Forge-Via names the client to the server's activity stream
 	// (forge/pkg/activity): the same command reads "via CLI" from a
 	// terminal and "via CI" from a pipeline.
 	httpReq.Header.Set(activity.ViaHeader, via())
 
-	resp, err := c.httpClient().Do(httpReq)
+	resp, err := c.httpClientFor(procedure).Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("call %s at %s: %w", procedure, c.Endpoint.URL, err)
 	}
@@ -166,6 +187,39 @@ func (c *Client) httpClient() *http.Client {
 		return c.HTTP
 	}
 	return http.DefaultClient
+}
+
+// ContentScannedTimeout is the request timeout for the procedures in
+// contentScannedProcedures. The control plane scans an unclaimed org's
+// uploaded artifacts (ClamAV, Web Risk) inside these requests, within a 10m
+// budget (control-plane contentscan.ScanBudget), and its gateway gives them
+// 11m (CONTENT_SCAN_ROUTE_TIMEOUT). A container image's scan routinely
+// exceeds the client's 30s default. A shorter client timeout only abandons a
+// scan the server is still running and turns its verdict into a bare
+// "context deadline exceeded".
+const ContentScannedTimeout = 12 * time.Minute
+
+// contentScannedProcedures are the control-plane procedures that may run the
+// content scan before they answer.
+var contentScannedProcedures = map[string]bool{
+	"controlplane.v1.DeployService/RecordBundle":     true,
+	"controlplane.v1.DeployService/Promote":          true,
+	"controlplane.v1.DeployService/CreateDeployment": true,
+	"controlplane.v1.DeployService/UpdateDeployment": true,
+}
+
+// httpClientFor is httpClient with the timeout procedure needs: a
+// content-scanned procedure gets at least ContentScannedTimeout, and a
+// configured transport is kept.
+func (c *Client) httpClientFor(procedure string) *http.Client {
+	base := c.httpClient()
+	if !contentScannedProcedures[strings.TrimPrefix(procedure, "/")] ||
+		base.Timeout == 0 || base.Timeout >= ContentScannedTimeout {
+		return base
+	}
+	longer := *base
+	longer.Timeout = ContentScannedTimeout
+	return &longer
 }
 
 // via is the Forge-Via value for this process: "ci" under a CI runner, "cli"

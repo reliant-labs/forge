@@ -90,20 +90,20 @@ func TestE2ERouteToOnHostWorkloadReachesHostProcess(t *testing.T) {
 	// ── Throwaway cluster, named and deleted by name ───────────────────
 	cluster := e2eClusterName(t)
 	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
-	gatewayHostPort := createK3dClusterF2(t, ctx, cluster, listenerPort, kubeconfig)
+	gatewayHostPort := createK3dClusterF2(ctx, t, cluster, listenerPort, kubeconfig)
 
-	installEnvoyGateway(t, ctx, kubeconfig)
+	installEnvoyGateway(ctx, t, kubeconfig)
 
 	// ── Apply what forge rendered ──────────────────────────────────────
-	kubectlApplyManifests(t, ctx, kubeconfig, manifests)
+	kubectlApplyManifests(ctx, t, kubeconfig, manifests)
 
 	// The route must RESOLVE. This is the assertion ExternalName failed,
 	// and the one the Backend-API prerequisite fails.
-	waitForRouteResolved(t, ctx, kubeconfig, "adr3-f2", "host-route")
+	waitForRouteResolved(ctx, t, kubeconfig, "adr3-f2", "host-route")
 
 	// ── The actual proof: traffic reaches the host process ─────────────
 	url := fmt.Sprintf("http://127.0.0.1:%d/probe", gatewayHostPort)
-	body := getWithRetryF2(t, ctx, url, 90*time.Second)
+	body := getWithRetryF2(ctx, t, url, 90*time.Second)
 	if !strings.Contains(body, wantBody) {
 		t.Fatalf("gateway did not reach the host process.\nGET %s\nbody: %q\nwant it to contain %q",
 			url, body, wantBody)
@@ -149,17 +149,17 @@ func TestE2ERouteTrafficHealthCheckExpects401(t *testing.T) {
 
 	cluster := e2eClusterName(t)
 	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
-	createK3dClusterF2(t, ctx, cluster, listenerPort, kubeconfig)
+	createK3dClusterF2(ctx, t, cluster, listenerPort, kubeconfig)
 
-	installEnvoyGateway(t, ctx, kubeconfig)
-	kubectlApplyManifests(t, ctx, kubeconfig, manifests)
+	installEnvoyGateway(ctx, t, kubeconfig)
+	kubectlApplyManifests(ctx, t, kubeconfig, manifests)
 
-	waitForRouteResolved(t, ctx, kubeconfig, "adr3-f2", "healthy-route")
-	waitForPolicyAccepted(t, ctx, kubeconfig, "adr3-f2", "healthy-route")
+	waitForRouteResolved(ctx, t, kubeconfig, "adr3-f2", "healthy-route")
+	waitForPolicyAccepted(ctx, t, kubeconfig, "adr3-f2", "healthy-route")
 
 	// Envoy's counters are the authority. The 401 backend must accumulate
 	// successes; the 404 backend must accumulate failures.
-	stats := waitForHealthCheckStats(t, ctx, kubeconfig, 3*time.Minute)
+	stats := waitForHealthCheckStats(ctx, t, kubeconfig, 3*time.Minute)
 
 	healthySuccess := stats.counter("healthy-route", "health_check.success")
 	healthyFailure := stats.counter("healthy-route", "health_check.failure")
@@ -481,7 +481,7 @@ func e2eClusterName(t *testing.T) string {
 // port from the same range. CI hit exactly that: "Bind for 0.0.0.0:34433
 // failed: port is already allocated" (E2E Suite run 39510866508). A port no
 // one chose ahead of time cannot be taken first.
-func createK3dClusterF2(t *testing.T, ctx context.Context, name string, listenerPort int, kubeconfig string) int {
+func createK3dClusterF2(ctx context.Context, t *testing.T, name string, listenerPort int, kubeconfig string) int {
 	t.Helper()
 	// Registered BEFORE the create, so a create that fails partway is still
 	// deleted by name.
@@ -519,14 +519,14 @@ func createK3dClusterF2(t *testing.T, ctx context.Context, name string, listener
 	// --kubeconfig-switch-context=false is explicit even here: it defaults
 	// to TRUE on this subcommand, and writing to a private --output does
 	// not exempt it from touching the default kubeconfig's current-context.
-	out := runE2E(t, ctx, "", nil, "k3d", "kubeconfig", "write", name,
+	out := runE2E(ctx, t, "", nil, "k3d", "kubeconfig", "write", name,
 		"--output", kubeconfig, "--overwrite", "--kubeconfig-switch-context=false")
 	if _, err := os.Stat(kubeconfig); err != nil {
 		t.Fatalf("k3d did not write a kubeconfig to %s: %v\n%s", kubeconfig, err, out)
 	}
 
 	lb := "k3d-" + name + "-serverlb"
-	published := runE2E(t, ctx, "", nil, "docker", "port", lb, fmt.Sprintf("%d/tcp", listenerPort))
+	published := runE2E(ctx, t, "", nil, "docker", "port", lb, fmt.Sprintf("%d/tcp", listenerPort))
 	for _, line := range strings.Split(strings.TrimSpace(published), "\n") {
 		if i := strings.LastIndex(line, ":"); i >= 0 {
 			if port, err := strconv.Atoi(strings.TrimSpace(line[i+1:])); err == nil && port > 0 {
@@ -560,24 +560,24 @@ func deleteK3dClusterF2(t *testing.T, name string) {
 // installEnvoyGateway installs Gateway API + Envoy Gateway the way forge
 // installs them, AND the two things F2 additionally requires: EG's own
 // CRDs (which --skip-crds suppresses) and the Backend API enabled.
-func installEnvoyGateway(t *testing.T, ctx context.Context, kubeconfig string) {
+func installEnvoyGateway(ctx context.Context, t *testing.T, kubeconfig string) {
 	t.Helper()
 
 	env := []string{"KUBECONFIG=" + kubeconfig}
 
 	// 1. Pinned standard-channel Gateway API CRDs (forge applies these
 	//    explicitly so the CRD surface matches the cloud install).
-	runE2E(t, ctx, "", env, "kubectl", "apply", "--server-side", "-f",
+	runE2E(ctx, t, "", env, "kubectl", "apply", "--server-side", "-f",
 		"https://github.com/kubernetes-sigs/gateway-api/releases/download/"+
 			e2eGatewayAPIVersion+"/standard-install.yaml")
-	runE2E(t, ctx, "", env, "kubectl", "wait", "--for=condition=Established",
+	runE2E(ctx, t, "", env, "kubectl", "wait", "--for=condition=Established",
 		"crd/gateways.gateway.networking.k8s.io",
 		"crd/httproutes.gateway.networking.k8s.io", "--timeout=120s")
 
 	// 2. The controller, with the Backend API ENABLED. Without the
 	//    extensionApis value, a Backend backendRef is refused at apply
 	//    time: "Backend is disabled in Envoy Gateway configuration."
-	runE2E(t, ctx, "", env, "helm", "upgrade", "--install", "eg",
+	runE2E(ctx, t, "", env, "helm", "upgrade", "--install", "eg",
 		"oci://docker.io/envoyproxy/gateway-helm", "--version", e2eEnvoyGatewayVersion,
 		"-n", "envoy-gateway-system", "--create-namespace", "--skip-crds",
 		"--set", "config.envoyGateway.extensionApis.enableBackend=true",
@@ -588,20 +588,20 @@ func installEnvoyGateway(t *testing.T, ctx context.Context, kubeconfig string) {
 	//    without this step the cluster has no gateway.envoyproxy.io CRDs
 	//    and both resources F2 renders fail to apply. Pulled from the
 	//    pinned chart rather than a URL so the version cannot drift.
-	installEnvoyGatewayCRDs(t, ctx, env)
+	installEnvoyGatewayCRDs(ctx, t, env)
 
-	runE2E(t, ctx, "", env, "kubectl", "wait", "--for=condition=Established",
+	runE2E(ctx, t, "", env, "kubectl", "wait", "--for=condition=Established",
 		"crd/backends.gateway.envoyproxy.io",
 		"crd/backendtrafficpolicies.gateway.envoyproxy.io", "--timeout=120s")
 
 	// The controller reads its config at start.
-	runE2E(t, ctx, "", env, "kubectl", "-n", "envoy-gateway-system",
+	runE2E(ctx, t, "", env, "kubectl", "-n", "envoy-gateway-system",
 		"rollout", "restart", "deploy/envoy-gateway")
-	runE2E(t, ctx, "", env, "kubectl", "-n", "envoy-gateway-system",
+	runE2E(ctx, t, "", env, "kubectl", "-n", "envoy-gateway-system",
 		"rollout", "status", "deploy/envoy-gateway", "--timeout=300s")
 
 	// The `eg` GatewayClass forge's Gateways name.
-	applyYAML(t, ctx, env, `apiVersion: gateway.networking.k8s.io/v1
+	applyYAML(ctx, t, env, `apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
   name: eg
@@ -610,11 +610,11 @@ spec:
 `)
 }
 
-func installEnvoyGatewayCRDs(t *testing.T, ctx context.Context, env []string) {
+func installEnvoyGatewayCRDs(ctx context.Context, t *testing.T, env []string) {
 	t.Helper()
 
 	dir := t.TempDir()
-	runE2E(t, ctx, "", env, "helm", "pull", "oci://docker.io/envoyproxy/gateway-helm",
+	runE2E(ctx, t, "", env, "helm", "pull", "oci://docker.io/envoyproxy/gateway-helm",
 		"--version", e2eEnvoyGatewayVersion, "-d", dir, "--untar")
 
 	// Only EG's own generated CRDs. Deliberately NOT the subchart's
@@ -637,14 +637,14 @@ func installEnvoyGatewayCRDs(t *testing.T, ctx context.Context, env []string) {
 	if len(args) == 2 {
 		t.Fatalf("no CRD yaml found under %s", generated)
 	}
-	runE2E(t, ctx, "", env, "kubectl", args...)
+	runE2E(ctx, t, "", env, "kubectl", args...)
 }
 
-func kubectlApplyManifests(t *testing.T, ctx context.Context, kubeconfig string, manifests []map[string]any) {
+func kubectlApplyManifests(ctx context.Context, t *testing.T, kubeconfig string, manifests []map[string]any) {
 	t.Helper()
 
 	env := []string{"KUBECONFIG=" + kubeconfig}
-	applyYAML(t, ctx, env, "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: adr3-f2\n")
+	applyYAML(ctx, t, env, "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: adr3-f2\n")
 
 	// Apply as a JSON List — the manifests are already decoded JSON, and
 	// a List avoids re-serializing each object separately.
@@ -662,17 +662,17 @@ func kubectlApplyManifests(t *testing.T, ctx context.Context, kubeconfig string,
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
 		t.Fatalf("write manifests: %v", err)
 	}
-	runE2E(t, ctx, "", env, "kubectl", "apply", "--server-side", "-f", path)
+	runE2E(ctx, t, "", env, "kubectl", "apply", "--server-side", "-f", path)
 }
 
-func applyYAML(t *testing.T, ctx context.Context, env []string, yaml string) {
+func applyYAML(ctx context.Context, t *testing.T, env []string, yaml string) {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "apply.yaml")
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
-	runE2E(t, ctx, "", env, "kubectl", "apply", "--server-side", "-f", path)
+	runE2E(ctx, t, "", env, "kubectl", "apply", "--server-side", "-f", path)
 }
 
 // ---------------------------------------------------------------------------
@@ -683,7 +683,7 @@ func applyYAML(t *testing.T, ctx context.Context, env []string, yaml string) {
 // ResolvedRefs=True. This is the assertion an ExternalName Service backend
 // FAILS, and the one a missing Backend API fails, so its message quotes
 // the controller's own reason.
-func waitForRouteResolved(t *testing.T, ctx context.Context, kubeconfig, ns, name string) {
+func waitForRouteResolved(ctx context.Context, t *testing.T, kubeconfig, ns, name string) {
 	t.Helper()
 
 	env := []string{"KUBECONFIG=" + kubeconfig}
@@ -711,7 +711,7 @@ func waitForRouteResolved(t *testing.T, ctx context.Context, kubeconfig, ns, nam
 		"config.envoyGateway.extensionApis.enableBackend=true.", ns, name, last)
 }
 
-func waitForPolicyAccepted(t *testing.T, ctx context.Context, kubeconfig, ns, name string) {
+func waitForPolicyAccepted(ctx context.Context, t *testing.T, kubeconfig, ns, name string) {
 	t.Helper()
 
 	env := []string{"KUBECONFIG=" + kubeconfig}
@@ -759,11 +759,11 @@ func (s envoyStats) counter(route, suffix string) int {
 
 // waitForHealthCheckStats polls the Envoy proxy's admin stats until active
 // health checking has actually run, then returns the whole filtered dump.
-func waitForHealthCheckStats(t *testing.T, ctx context.Context, kubeconfig string, within time.Duration) envoyStats {
+func waitForHealthCheckStats(ctx context.Context, t *testing.T, kubeconfig string, within time.Duration) envoyStats {
 	t.Helper()
 
 	env := []string{"KUBECONFIG=" + kubeconfig}
-	pod := waitForEnvoyProxyPod(t, ctx, env)
+	pod := waitForEnvoyProxyPod(ctx, t, env)
 
 	// The envoy container has no shell, so the admin endpoint is read
 	// through a port-forward rather than an exec.
@@ -800,7 +800,7 @@ func waitForHealthCheckStats(t *testing.T, ctx context.Context, kubeconfig strin
 	return envoyStats{}
 }
 
-func waitForEnvoyProxyPod(t *testing.T, ctx context.Context, env []string) string {
+func waitForEnvoyProxyPod(ctx context.Context, t *testing.T, env []string) string {
 	t.Helper()
 
 	deadline := time.Now().Add(5 * time.Minute)
@@ -832,7 +832,7 @@ func requireE2EBinaries(t *testing.T, names ...string) {
 	}
 }
 
-func getWithRetryF2(t *testing.T, ctx context.Context, url string, within time.Duration) string {
+func getWithRetryF2(ctx context.Context, t *testing.T, url string, within time.Duration) string {
 	t.Helper()
 
 	deadline := time.Now().Add(within)
@@ -870,7 +870,7 @@ func httpGet(ctx context.Context, url string) (string, error) {
 	return string(b), nil
 }
 
-func runE2E(t *testing.T, ctx context.Context, dir string, env []string, name string, args ...string) string {
+func runE2E(ctx context.Context, t *testing.T, dir string, env []string, name string, args ...string) string {
 	t.Helper()
 
 	out, err := runE2ESoft(ctx, dir, env, name, args...)

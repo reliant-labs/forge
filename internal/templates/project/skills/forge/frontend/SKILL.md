@@ -23,7 +23,7 @@ prefix; hand-built URLs then go through `joinBasePath`. Both are in
 
 ## Generated TypeScript hooks
 
-`forge generate` produces per-service React Query hooks in `src/hooks/` — read RPCs get `useQuery`, mutating RPCs `useMutation`. Import from the barrel: `import { useGetTask, useListTasks } from "@/hooks"`. Base wrappers `useApiQuery` / `useApiMutation` cover composite operations.
+`forge generate` writes per-service React Query hooks to `src/hooks/`: reads get `useQuery`, paged reads also `use<Rpc>Infinite`, writes `useMutation`; outside React, `fetchQuery(<svc>Queries.<rpc>(req))`. Import from `@/hooks`. `useApiQuery` / `useApiMutation` cover composite operations. Kinds, `select`, paging, rollback: `proto`.
 
 ## The component library
 
@@ -35,9 +35,9 @@ forge component list             # the whole catalog, grouped by category
 forge component install card_grid
 ```
 
-**What is already in `src/components/ui/` is not the catalog** — it is the 31 the scaffold auto-installs. Reading the directory and concluding the library is exhausted is the failure mode; search instead.
+**What is already in `src/components/ui/` is not the catalog** — it is the 31 the scaffold auto-installs. Search the catalog; never conclude from the directory.
 
-**Every component already uses this project's theme tokens** (`ink`, `surface`, `border`, `accent`, `danger`, `success`, `warning` and their `-surface`/`-border`/`-ink` variants), so installing one never means re-theming it. A raw palette class like `bg-blue-600` in a component is a forge bug to report — not a reason to hand-write your own.
+**Every component already uses this project's theme tokens** (`ink`, `surface`, `border`, `accent`, `danger`, `success`, `warning` and their `-surface`/`-border`/`-ink` variants), so installing one never means re-theming it. A raw palette class (`bg-blue-600`) in one is a forge bug to report, not a reason to hand-write your own.
 
 **✓ already ships in `src/components/ui/`** — import it, do not rebuild it; the rest are one `forge component install` away:
 
@@ -50,11 +50,11 @@ forge component install card_grid
 | A filter/search bar for a list page | ✓ `filter_bar` |
 | A board, timeline, tile grid | `kanban_board`, `timeline`, `card_grid` |
 | A conversion / stage funnel | `funnel_chart` |
-| A dropdown, breadcrumb, toggle | `dropdown_menu`, `breadcrumb`, `toggle_switch` |
+| A menu, context menu, picker, breadcrumb, toggle, anchored panel, tooltip | `dropdown_menu`, `context_menu`, `combobox`, `breadcrumb`, `toggle_switch`, `popover`, `tooltip` |
 
 A search that returns nothing is a real answer: there is no drawer/sheet or quantity-stepper, so those you write yourself. (The `component_library` MCP tool is the same catalog.)
 
-**Data viz: use Recharts, not the library.** For commodity charts (bar/line/area/donut/pie/scatter/sparkline) `npm i recharts`. The library ships only **narrative** charts (`quadrant_chart`, `concentric_circles`, `funnel_chart`) and `slide_*` deck charts. Dashboard → Recharts; slide / marketing page → check the library first.
+**Data viz: use Recharts, not the library.** For commodity charts (bar, line, pie, sparkline…) `npm i recharts`. The library ships only **narrative** charts (`quadrant_chart`, `concentric_circles`, `funnel_chart`) and `slide_*` deck charts. Dashboard → Recharts; slide / marketing page → check the library first.
 
 ### Base UI primitives (always available)
 
@@ -62,8 +62,9 @@ Every frontend ships low-level primitives under `src/components/ui/`. Compose th
 
 | Primitive | What it is |
 |-----------|-----------|
-| `button` | `primary`/`secondary`/`outline`/`ghost`/`danger` variants, sizes, loading state |
+| `button` | `primary`/`secondary`/`outline`/`ghost`/`danger`, `xs`–`xl`, `leftIcon`/`rightIcon`, icon-only, `loading`, `href` |
 | `input`, `label`, `form` | Text input, field label, and `Form`/`FormField`/`FormError`/`FormActions`. `<FormField>` mints an id via `useId()`, so child `<Label>`/`<Input>`/`<Select>` auto-bind without `htmlFor`/`id` |
+| `textarea`, `toggle_switch` | On demand: `forge component install textarea toggle_switch`. ToggleSwitch is `role="switch"` with `label` or `ariaLabel`; both auto-bind inside `<FormField>` |
 | `card` | Generic surface primitive |
 | `status`, `tag`, `mono` | State (dot + word), kind label, copyable sha |
 | `avatar`, `tabs`, `chip` | Avatar, tab nav (underline/pills/boxed), filter chip. `Tabs`/`FilterBar`: pass `activeTab`/`values` to control them from the URL |
@@ -194,11 +195,11 @@ const req = create(CreateTaskRequestSchema, { name: "My Task" }); // NOT new Cre
 @theme { --color-brand: #3b82f6; --font-sans: "Inter", sans-serif; }
 ```
 
-Use `@theme`/scoped CSS variables for reusable tokens rather than one-off colors, and keep global CSS small. `npm run lint:styles` catches `!important` and invalid v4 at-rules. Full rules in `frontend/patterns`.
+Prefer `@theme` tokens over one-off colors; keep global CSS small. `npm run lint:styles` catches `!important` and invalid v4 at-rules. Full rules in `frontend/patterns`.
 
 ## Visual verification
 
-**Use BOTH `take_snapshot` AND `take_screenshot` (Chrome DevTools) before declaring frontend work complete.** The a11y-tree snapshot cannot detect layout shifts, wrong colors, z-index or overflow; only screenshots catch those. Screenshot at multiple breakpoints. `frontend/design` carries the overflow probe.
+**Use BOTH `take_snapshot` AND `take_screenshot` (Chrome DevTools) before declaring frontend work complete.** The a11y snapshot misses layout shifts, wrong colors, z-index and overflow; screenshots catch them. Screenshot at multiple breakpoints. `frontend/design` carries the overflow probe.
 
 ## Component patterns
 
@@ -222,7 +223,7 @@ Created by `forge scaffold frontend`, yours to modify:
 
 - **Auth** (`src/lib/auth/`) — native sign-in: the browser POSTs credentials to this app's own API and gets an HttpOnly session cookie; the server runs the OIDC flow. `useAuth()` gives `{ identity, isAuthenticated, isLoading, refresh, logout }` — an identity for rendering, and deliberately no token. See `auth/frontend`.
 - **Event bus** (`src/lib/events.ts`; hooks in `src/lib/use-event.ts`) — typed pub/sub for imperative cross-cutting actions (`toast:show`, `auth:expired`, `navigate`). Extend `EventMap`; use `useEvent(name, handler)`. Not a source of truth.
-- **UI store** (`src/stores/ui-store.ts`) — Zustand baseline for client state (`sidebarCollapsed`, `commandPaletteOpen`). Add domain stores in `src/stores/`. **Subscribe to slices, not the whole store.** Server data stays in the React Query hooks, never copied into Zustand.
+- **UI store** (`src/stores/ui-store.ts`) — Zustand baseline for client state (`sidebarCollapsed`, `commandPaletteOpen`). Add domain stores in `src/stores/` (rules below).
 - **`src/lib/format-utils.ts`** — see **Formatting**.
 - Also scaffolded: `src/lib/admin-url.ts` (`adminUrl`/`absoluteAdminUrl` over `basepath_gen.ts` — use these or `joinBasePath` for any string handed to an external system that round-trips back).
 
@@ -233,7 +234,7 @@ forge env up dev   # infra + services (hot reload) + frontends; reads deploy/kcl
 forge generate     # After any .proto change
 ```
 
-`forge env up` dev-serves each declared frontend via `npm run dev` (`npm run build` is for `forge build` / `forge env deploy`). Each serves on its own KCL-declared port (`forge.Frontend.port`), **force-injected as `PORT`** into the child, so the browser URL matches the declaration even if a stale `PORT` bled in from the shell. There is no dev reverse proxy. To route a service under the prod Gateway, declare an `HTTPRoute` with a `host:` in `deploy/kcl/<env>/main.k`.
+`forge env up` dev-serves each declared frontend via `npm run dev` (`npm run build` is for `forge build` / `forge env deploy`). Each serves on its own KCL-declared port (`forge.Frontend.port`), **force-injected as `PORT`** into the child (a stale shell `PORT` never wins). There is no dev reverse proxy. To route a service under the prod Gateway, declare an `HTTPRoute` with a `host:` in `deploy/kcl/<env>/main.k`.
 
 ## File naming inside `frontends/<name>/src/`
 

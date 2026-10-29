@@ -16,7 +16,7 @@ import (
 	"github.com/reliant-labs/forge/internal/configproto"
 )
 
-// configproto.go — `forge fix config-proto-package`, the v0.1.47 move of a
+// configproto.go — `forge fix config-proto-package`, the v1.0.0 move of a
 // project's config proto off the package every forge project shared.
 //
 // Every project declared `package config.v1` at proto/config/v1, so the
@@ -37,15 +37,15 @@ import (
 func init() {
 	register(Codemod{
 		Name:    configproto.LegacyCodemod,
-		Version: "v0.1.47",
-		Short:   "Move the config protos to proto/<project>/config/v1, package <project>.config.v1 (no shared config.v1 since v0.1.47)",
+		Version: "v1.0.0",
+		Short:   "Move the config protos to proto/<project>/config/v1, package <project>.config.v1 (no shared config.v1 since v1.0.0)",
 		Long: `Move the project's config protos off the proto package every forge project shared.
 
 Every forge project declared package config.v1 at proto/config/v1/config.proto,
 so two projects' generated config packages could not be linked into one binary:
 protobuf registers each file by path and each message by full name, process-wide,
 and Go's runtime panics at init on the second ("file config/v1/config.proto is
-already registered"). forge v0.1.47 derives both from the project's name
+already registered"). forge v1.0.0 derives both from the project's name
 (forge.yaml name: "control-plane" is control_plane):
 
   proto/config/v1/<file>.proto        → proto/<project>/config/v1/<file>.proto

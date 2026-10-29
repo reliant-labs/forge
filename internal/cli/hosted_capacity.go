@@ -35,7 +35,7 @@ func hostedCapacityPreflight(ctx context.Context, envName string, entities *KCLE
 	}
 	demand := deploytarget.DemandOf(items, builds)
 
-	ep, err := cloud.ResolveEndpoint(envName, declarationFromEntities(entities))
+	ep, err := projectEndpoint(envName, declarationFromEntities(entities))
 	if err != nil {
 		return nil, err
 	}

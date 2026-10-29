@@ -14,7 +14,7 @@ forge uses `forge login`; CI sets the env's token variable.
 ```
 forge env stop prod [--target api] [--wait]    # suspend; never refused
 forge env start prod [--target api] [--wait]   # resume; refused with the billing reason if not entitled
-forge env delete preview [--yes]               # tear the env down
+forge env delete preview [--yes] [--keep-data] # tear the env down, data included
 ```
 
 - `--target` takes a workload name (resolved to its deployment id); without it
@@ -24,9 +24,12 @@ forge env delete preview [--yes]               # tear the env down
   default 5m) and exits non-zero on timeout.
 - A refused `start` prints the server's reason and the fix; nothing is started.
 - `delete` prompts you to type the env name. With no TTY or `CI=1` it fails
-  fast unless you pass `--yes`. It removes the env, its deployments, Flux
-  objects, custom resources and namespaces. A ManagedDatabase's data is
-  RETAINED but orphaned: a re-deploy creates a NEW env and does not reattach it.
+  fast unless you pass `--yes`. It removes EVERYTHING the env runs: its
+  deployments, workloads, URLs, Flux objects, custom resources, namespaces and
+  its managed databases' data (irreversible). `--keep-data` retains each
+  managed database instead: it keeps running and billing as storage and is
+  listed as a retained database until purged; a re-deploy creates a NEW env and
+  does not reattach it. The project's registry images are kept either way.
 - All three refuse an env that is not hosted. `forge env down` only stops local
   host processes and never touches a control plane.
 
@@ -55,6 +58,7 @@ authority: none implies another product's, and `forge cloud token create
 |---|---|---|
 | `obs:read` | every telemetry read: traces, logs, metrics, issues, release health | the one an org automation token carries to gate CI on a release's health; needs no acting user |
 | `obs:triage` | changing an issue's triage state (resolve, ignore, unresolve) | implies `obs:read` at the point of use; a read-only token cannot silence an issue |
+| `obs:write` | authoring the org's observability workspace (dashboards: save, restore, archive, promote) | implies `obs:read` at the point of use; implies nothing else (not `obs:triage`); cannot be bound to one environment |
 | `db:query` | one read-only query against an env's database | implies nothing and is implied by nothing: app data is not telemetry. A real env may restrict it further to people |
 
 `accesstoken.AllScopes` is the closed set; a store's `access_tokens` CHECK must

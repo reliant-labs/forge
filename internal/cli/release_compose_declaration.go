@@ -34,7 +34,11 @@ func compositionConsumers(e *KCLEntities) ([]release.Consumer, error) {
 			c.Slots = []string{"container:" + w.Name}
 		}
 		for _, sidecar := range w.Spec.Sidecars {
-			c.Slots = append(c.Slots, "container:"+sidecar.Name)
+			prefix := "container:"
+			if sidecar.Native {
+				prefix = "init:"
+			}
+			c.Slots = append(c.Slots, prefix+sidecar.Name)
 		}
 		for name := range w.ReleaseInputs {
 			c.Slots = append(c.Slots, "input:"+name)
@@ -57,18 +61,36 @@ func compositionConsumers(e *KCLEntities) ([]release.Consumer, error) {
 		}
 		out = append(out, c)
 	}
+	if e.OpenBao != nil {
+		provider := e.OpenBao
+		if provider.ReleaseOwner == "" || provider.Cluster == "" || len(provider.ReleaseInputs) == 0 {
+			return nil, fmt.Errorf("native OpenBao provider lacks compiled snapshot image contract")
+		}
+		key := release.ConsumerKey{Cluster: provider.Cluster, Workload: provider.ReleaseOwner}
+		for _, consumer := range out {
+			if consumer.Key == key {
+				return nil, fmt.Errorf("native OpenBao consumer %q collides with an authored consumer", key.Workload)
+			}
+		}
+		if provider.ReleaseInputs["container:openbao"] == "" || provider.ReleaseInputs["container:converge"] == "" {
+			return nil, fmt.Errorf("native OpenBao provider lacks required server or convergence image input")
+		}
+		consumer := release.Consumer{Key: key, DependenciesDeclared: true}
+		for slot := range provider.ReleaseInputs {
+			if slot != "container:openbao" && slot != "container:converge" && slot != "init:cloud-sql-proxy" {
+				return nil, fmt.Errorf("native OpenBao provider declares unknown runtime slot %q", slot)
+			}
+			consumer.Slots = append(consumer.Slots, slot)
+		}
+		out = append(out, consumer)
+	}
 	for i := range out {
 		for _, fe := range e.Frontends {
 			if fe.Name != out[i].Key.Workload {
 				continue
 			}
 			for peer, contract := range fe.ReleaseDependencies {
-				var keys []release.ConsumerKey
-				for _, c := range out {
-					if c.Key.Workload == peer {
-						keys = append(keys, c.Key)
-					}
-				}
+				keys := compositionDependencyKeys(out, peer)
 				if len(keys) != 1 || contract == "" {
 					return nil, fmt.Errorf("frontend %q has unknown dependency %q", fe.Name, peer)
 				}
@@ -80,12 +102,7 @@ func compositionConsumers(e *KCLEntities) ([]release.Consumer, error) {
 				continue
 			}
 			for peer, contract := range w.ReleaseDependencies {
-				var keys []release.ConsumerKey
-				for _, c := range out {
-					if c.Key.Workload == peer {
-						keys = append(keys, c.Key)
-					}
-				}
+				keys := compositionDependencyKeys(out, peer)
 				if len(keys) != 1 || contract == "" {
 					return nil, fmt.Errorf("consumer %q has unknown/ambiguous dependency %q", w.Name, peer)
 				}
@@ -94,6 +111,18 @@ func compositionConsumers(e *KCLEntities) ([]release.Consumer, error) {
 		}
 	}
 	return out, nil
+}
+
+// compositionDependencyKeys retains every matching runtime slot: callers must
+// reject ambiguous workload names rather than silently select a placement.
+func compositionDependencyKeys(consumers []release.Consumer, workload string) []release.ConsumerKey {
+	var keys []release.ConsumerKey
+	for _, c := range consumers {
+		if c.Key.Workload == workload {
+			keys = append(keys, c.Key)
+		}
+	}
+	return keys
 }
 
 // resolveCompositionArtifact verifies the descriptor and platforms even for an
@@ -107,15 +136,12 @@ func resolveCompositionArtifact(ctx context.Context, ref, version string, receip
 	if !release.ValidDigest(digest) || len(platforms) == 0 {
 		return release.SnapshotArtifact{}, fmt.Errorf("snapshot artifact %s lacks immutable digest/platforms", ref)
 	}
-	repo := ref
-	if i := strings.Index(repo, "@"); i >= 0 {
-		if repo[i+1:] != digest {
-			return release.SnapshotArtifact{}, fmt.Errorf("registry descriptor differs from pinned digest")
-		}
-		repo = repo[:i]
-	} else if i := strings.LastIndex(repo, ":"); i > strings.LastIndex(repo, "/") {
-		repo = repo[:i]
+	if i := strings.Index(ref, "@"); i >= 0 && ref[i+1:] != digest {
+		return release.SnapshotArtifact{}, fmt.Errorf("registry descriptor differs from pinned digest")
 	}
+	// A valid OCI reference may carry BOTH a tag and a digest. Normalize its
+	// identity with the same canonical helper the build/deploy paths use.
+	repo := imageRepository(ref)
 	a := release.SnapshotArtifact{Kind: release.KindOCI, Location: repo, Content: digest, Platforms: platforms, Origin: release.ArtifactOrigin{Release: version, Source: source, Receipt: receipt}}
 	if receipt == nil && source == nil {
 		a.Origin.External = &release.ExternalArtifact{Verifier: "forge.registry-descriptor/v1", DescriptorDigest: digest}

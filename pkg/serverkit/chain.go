@@ -171,8 +171,9 @@ type ChainDeps struct {
 	// rejects still has a span and every log line carries its trace_id. nil
 	// is otelconnect with WithTrustRemote — an inbound traceparent (the
 	// browser's) becomes the span's parent. A chain facing callers that
-	// must not choose its trace ids passes its own otelconnect interceptor
-	// without that option. NoTrace drops it.
+	// must not choose its trace ids passes observe.TrustRemoteBy, which
+	// adopts as much of each caller's context as it authenticates to.
+	// NoTrace drops it.
 	Trace connect.Interceptor
 
 	// Deadline bounds every RPC's time and reports one still running past

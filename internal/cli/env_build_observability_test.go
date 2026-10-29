@@ -17,9 +17,13 @@ import (
 
 func seedGeneratedDashboards(t *testing.T, dir, project string) {
 	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/app\n\ngo 1.25\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	in := obsdash.Input{
-		Project:  project,
-		Services: []obsdash.Service{{Name: "orders", Package: "orders.v1", ProtoService: "OrdersService", Methods: []obsdash.Method{{Name: "GetOrder"}}}},
+		Project:   project,
+		Services:  []obsdash.Service{{Name: "orders", Package: "orders.v1", ProtoService: "OrdersService", Methods: []obsdash.Method{{Name: "GetOrder"}}}},
+		Processes: []obsdash.Process{{Name: "app-api", Binary: "app", Args: []string{"api"}, ServiceNames: []string{"app-api"}, Workloads: []string{"app-api"}, RPCServices: []string{"orders.v1.OrdersService"}}},
 	}
 	if _, err := obsdash.Write(dir, in, &checksums.FileChecksums{}); err != nil {
 		t.Fatal(err)
@@ -91,7 +95,7 @@ func TestEnvBuildBundle_CarriesTheDashboardsAndTheMetricsSchema(t *testing.T) {
 		t.Error("the generated overview shipped beside the file that overrides it")
 	}
 	for _, want := range []string{
-		"observability/dashboards/obs-bundle-project-service-orders_gen.json",
+		"observability/dashboards/obs-bundle-project-process-app-api_gen.json",
 		"observability/dashboards/obs-bundle-project-workloads_gen.json",
 		"observability/dashboards/obs-bundle-project-releases_gen.json",
 		"observability/dashboards/obs-bundle-project-custom-metrics_gen.json",
@@ -153,7 +157,7 @@ func TestObserveDashboardsCheckListsWhatWouldShip(t *testing.T) {
 	t.Chdir(dir)
 	seedGeneratedDashboards(t, dir, "obs-check-project")
 	var out bytes.Buffer
-	if err := runObsDashboardsCheck(&out, "bin"); err != nil {
+	if err := runObsDashboardsCheck(context.Background(), obsDeps{}, &out, obsDashboardsCheckOpts{outputDir: "bin"}); err != nil {
 		t.Fatalf("check: %v", err)
 	}
 	for _, want := range []string{"observability/dashboards/obs-check-project-overview_gen.json", "would ship"} {

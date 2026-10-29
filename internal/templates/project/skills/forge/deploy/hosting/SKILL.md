@@ -14,7 +14,7 @@ plane (Reliant cloud). `dev` stays local (`forge.OnHost` + `forge.HostInfra`).
 | `_db = forge.ManagedDatabase {runtime = forge.OnHosted {}}` | a dedicated Postgres, `deletionPolicy` RETAIN |
 | `_hosted(_api)` | THE API: the binary's `server` — every service and worker — as one workload |
 | `_hosted(wl.<name>)` | a workload `server` does not run (a job such as `migrate`; one you split out) |
-| `_hosted_frontend(_web_frontend)` | the static export on platform static hosting + CDN |
+| `_hosted_frontend(_web_frontend)` | the static export on platform static hosting: the platform owns the bucket, the CDN and the hostname |
 | `secret_provider = forge.HostedSecrets {}` | write-only store: `forge secret set --env <env> <KEY>` |
 
 `_hosted` also:
@@ -46,6 +46,45 @@ Signed in to Reliant (`reliant forge …`, or a Reliant agent's shell) there is 
 `forge login`; CI sets the env's token variable. Deploy `staging` first, then
 promote the same release to `prod`; check with `forge env status <env>`.
 
+### No account: `--claimable`
+
+An agent with no Reliant account (standalone forge, nothing signed in) can still
+publish:
+
+```bash
+forge env deploy prod --claimable
+```
+
+forge gets an anonymous identity from the control plane, deploys as it, and
+exits **0** with the live URL and a `claim` block: the claim link, when the
+deploy goes offline (72h; then deleted 7 days later) and an instruction for you.
+**Give the claim link to your user and tell them it expires.** Opening it signs
+them up for free and makes the deploy theirs, with nothing to copy. Treat the
+link like a password (whoever claims first owns the deploy) and never post it
+publicly. `forge env status <env> --claimable` prints it again; `--json` carries
+it as `claim` (`state`, `url`, `claim_url`, `expires_at`, `purge_after`,
+`agent_instructions`).
+
+| Rule | Detail |
+|---|---|
+| Only with the flag | There is no auto-detection. With no credential, a plain `forge env deploy` fails and its error names `--claimable` |
+| Signed in? Refused (exit 1) | A user with a login or `$FORGE_CREDENTIAL_HELPER` deploys to their own org: drop the flag |
+| Fits | one static site, or one service (1 replica, at most 125m / 128 MiB, request and limit, no burst) with one managed database (256 MiB of data on a 1 GiB volume) and that service's migration job (a gating `before = [fw.BEFORE_ALL]` job, or a standalone pre-rollout one). No workers, cron, second service or database, custom domains or remote builds: exit 4, naming each with its KCL fix |
+| **No outbound internet until claimed** | An unclaimed **service** (not a static site) serves requests and uses its own database, but every call out of it fails: a payment, an LLM, a webhook, a package download, and any DNS lookup of a name outside the cluster (the connection errors, or the name does not resolve). That is the platform, not a bug in the app, so do not debug it or work around it; it ends the moment the deploy is claimed, when the normal hosted network (TCP 80/443 to the public internet) applies. Plan for it: an app that needs an external API at startup will not come up unclaimed. The claim block, `--json` (`claim.no_outbound_internet`, and `claim.agent_instructions`) and `--plan-only` all say so |
+| Not the shape band | The billed plan's 4 GiB-per-vCPU band does not apply to an anonymous deploy (it is never billed); the caps above do. `forge env shape <env> --claimable` judges an env that way |
+| Preview first | `forge env deploy <env> --claimable --plan-only` checks everything locally (the caps, the hosted plan, the resources) and asks the platform whether it takes anonymous deploys right now. No identity, nothing created; exit 0 when the env fits |
+| Scaffold for it | `forge project new <name> --claimable ...` writes a prod that fits: `control_plane = forge.ControlPlane {claimable = True}` (every check then judges it under this plan, and a signed-in deploy is refused until you remove the line) and `_claimable_resources` on its hosted services and jobs |
+| Unavailable: exit 4 `claimable_unavailable` | The platform cannot take it: `disabled by operator`, an `unavailable dependency (<component>)`, `not supported yet` (a cause the platform reserves for a capability it lacks), or `not deployed` (no ClaimableService). Checked before any build; `--json` carries `unavailable_cause` and `unavailable_component`. Not your project: retry later, or deploy to your own account |
+| Never queued | An unclaimed deploy is refused (exit 4), never held for billing; **exit 7 does not occur** |
+| Throttled: exit 4 `claimable_throttled` | Our rate limits or the platform's anonymous sign-up limit. The block prints a scope (`network`, `device`, `platform`), a retry-after and the `forge login` alternative; `--json` carries `retry_after_seconds`, `retry_at`, `throttle_scope`. **forge never retries on its own, and neither should you in a loop**: wait, or `forge login` |
+| Claimed: exit 4 `claimable_claimed` | A human claimed it. Deploy as them: `forge login`, then `forge env deploy <env>` without the flag |
+| Redeploys | Re-running reuses this machine's deploy and its claim link and does not extend the expiry |
+
+The anonymous token is stored beside your logins under its own credentials-file
+client id (`forge-cli-claimable/<project>/<env>`), so it can never pass for a
+`forge login` and `forge logout` leaves it alone. It carries only
+`deploy:read` and `deploy:write`.
+
 ### Gates: what holds a deploy, and how each clears
 
 | Gate | What happens | Clear it |
@@ -65,7 +104,7 @@ older control plane (no holds) still refuses with the billing reason.
 | `ports` (the `expose = True` one is routed) | `operator`, `namespacedRBAC`, `clusterRBAC`, `crds`, ServiceAccount fields: no Kubernetes API on shared nodes |
 | env from a literal, `forge.ManagedSecret`, `forge.DatabaseRef`, `forge.WorkloadURL`; a config-projected `forge.SecretRef` lowers to a ManagedSecret | `sidecars`, `volumes`, `securityContext`, `terminationGracePeriodSeconds`, `podAnnotations`: the platform composes the pod |
 | a managed Postgres (`forge.ManagedDatabase`) | `nodeSelector`, `tolerations`, `priorityClassName`: the platform decides placement |
-| static frontends on hosted hosting + CDN (static export only) | `ports.domains` (use `forge domain`); raw `secretRef`/`configMapRef`/`fieldRef` env; a hostless or unpinned image |
+| static frontends on hosted static hosting (static export only) | `ports.domains` (use `forge domain`); raw `secretRef`/`configMapRef`/`fieldRef` env; a hostless or unpinned image |
 
 ## The API is one workload
 

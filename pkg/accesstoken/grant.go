@@ -54,9 +54,9 @@ func PortResourceID(daemonID string, port int32) string {
 //	           is a user registering a new daemon; a bound one is a managed
 //	           daemon that may authenticate as that daemon only.
 //
-// A scope with no entry may not be bound at all unless some binding kind
-// admits it via daemonBindableScopes: a deploy token bound to a PORT is a
-// contradiction, and refusing it keeps a binding's meaning exact.
+// A scope with no entry may not be bound at all, except to a DAEMON (see
+// admitsOnDaemon): a deploy token bound to a PORT is a contradiction, and
+// refusing it keeps a binding's meaning exact.
 var scopeResourceRules = map[Scope]struct {
 	kind     ResourceKind
 	required bool
@@ -75,9 +75,23 @@ var scopeResourceRules = map[Scope]struct {
 	ScopeDBQuery:   {kind: ResourceEnvironment, required: false},
 }
 
-// daemonBindableScopes are the USER-AUTHORITY scopes a token bound to a DAEMON
-// may additionally carry. They are the authority the acting user already holds
-// over their own resources, exercised from inside their own daemon.
+// admitsOnDaemon reports whether scope may ride a token bound to a DAEMON:
+// every scope in the catalog EXCEPT one whose own binding rule requires a
+// different kind of resource (a port share, a connector credential). It is
+// the authority the acting user already holds, exercised from inside their
+// own daemon.
+//
+// ── A RULE, NOT A LIST ────────────────────────────────────────────────
+//
+// This was an allow-list (daemonBindableScopes) and every scope added to the
+// catalog had to be remembered here too, or no daemon could carry it: a
+// daemon credential holds EVERY scope (owner decision, 2026-10-29) and the
+// store resolves that against this rule at use (Grant.Admissible), so a scope
+// left off the list silently went missing from every daemon on the machine.
+// Deriving it from scopeResourceRules makes a new scope ride a daemon by
+// default; a scope that must not is one that requires its own binding kind,
+// which it has to declare anyway. TestAdmissible_DaemonCarriesEveryScope holds
+// it.
 //
 // ── WHY A DAEMON BINDING IS DIFFERENT FROM A PORT OR CONNECTOR ────────
 //
@@ -99,19 +113,41 @@ var scopeResourceRules = map[Scope]struct {
 // all and may be held by anyone with the URL. Carrying deploy authority on one
 // would be authority attributed to nobody, which is why the kinds are
 // distinguished here rather than the rule being relaxed for every binding.
-var daemonBindableScopes = []Scope{
-	ScopeReliantAPI,
-	ScopeDeployRead, ScopeDeployWrite,
-	ScopeSecretRead, ScopeSecretWrite,
-	ScopeDomainRead, ScopeDomainWrite,
-	ScopeIdentityRead, ScopeIdentityManage,
-	ScopeObsRead, ScopeObsTriage,
-	ScopeDBQuery,
+//
+// Org administration (cluster:manage, token:read, token:write) rides it too.
+// That is a CEILING, not a grant: the authority clips a daemon credential to
+// its user's current org grants at every use, an exchange attenuates to the
+// caller's held scopes, and token:write can never mint a scope its holder
+// lacks (Covers).
+//
+// The one other exception is a person-only scope (personOnlyScopes).
+func admitsOnDaemon(scope Scope) bool {
+	if personOnly(scope) {
+		return false
+	}
+	rule, ok := scopeResourceRules[scope]
+	return !ok || !rule.required || rule.kind == ResourceDaemon
 }
 
-// bindableToDaemon reports whether scope may ride a daemon-bound token.
-func bindableToDaemon(scope Scope) bool {
-	for _, s := range daemonBindableScopes {
+// personOnlyScopes are held only when a PERSON's grant names them (a CLI
+// login): no binding admits them, and a wildcard credential — a daemon's,
+// bound or not — never resolves to them (Grant.Admissible).
+//
+// ── THE EXCEPTION TO "A DAEMON HOLDS EVERY SCOPE" ─────────────────────
+//
+// A daemon credential is what an agent running on that daemon holds. A scope
+// here is one whose use spends the person's money with nobody approving it,
+// so the owner decided (2026-10-29) that an agent reaches it only through an
+// approval card in chat, never through its machine's credential. It is a
+// list, not a rule, because nothing structural distinguishes such a scope;
+// TestAdmissible_DaemonCarriesEveryScope names each member.
+var personOnlyScopes = []Scope{
+	ScopeDaemonManage,
+}
+
+// personOnly reports whether scope is in personOnlyScopes.
+func personOnly(scope Scope) bool {
+	for _, s := range personOnlyScopes {
 		if s == scope {
 			return true
 		}
@@ -131,6 +167,8 @@ var actingUserScopes = []Scope{
 	// A wake is billed to, and authorized as, the person who owns the
 	// daemon; the consumer resolves ownership from the acting user.
 	ScopeDaemonResume,
+	// Machines are owned by, and billed to, a person.
+	ScopeDaemonManage,
 }
 
 // RequiresActingUser reports whether a scope acts as a person.
@@ -222,6 +260,52 @@ func (g Grant) Validate(now time.Time) error {
 	return nil
 }
 
+// Admissible returns every scope in AllScopes that a grant shaped like g — its
+// acting user and its binding; its scopes, org, name and expiry are ignored —
+// may carry. It is what "every scope" MEANS for a credential of that shape.
+//
+// ── THE WILDCARD IS RESOLVED, NEVER STORED AS A LIST ──────────────────
+//
+// A credential that holds every scope (a daemon's: Principal.AllScopes) must
+// not be written down as the catalog of the day it was minted, or every scope
+// added later is missing from it until somebody re-mints or migrates. A store
+// keeps the wildcard as a flag and resolves it with this at each use, so a
+// scope this binary learns is held from the next request. The resolution is
+// still bounded by Validate's structural rules — a daemon binding never
+// resolves to a port share (proxy:port) — and the caller still clips it to
+// what the acting user currently holds.
+func (g Grant) Admissible() Set {
+	out := Set{}
+	for _, scope := range AllScopes {
+		if personOnly(scope) {
+			continue
+		}
+		probe := Grant{OrgID: "probe", Name: "probe", ActingUserID: g.ActingUserID,
+			Resource: g.Resource, Scopes: SetOf(scope)}
+		if probe.Validate(time.Time{}) == nil {
+			out[scope] = struct{}{}
+		}
+	}
+	return out
+}
+
+// KnownScopes builds a Set from the strings this binary recognises and SKIPS
+// the rest. It is for a WILDCARD credential's resolved scopes only (see
+// Principal.AllScopes): a newer authority lists scopes this binary has never
+// heard of, which the credential holds by definition and nothing here can
+// exercise, so dropping them narrows nothing. Every explicit scope list goes
+// through NewSet, which refuses an unknown scope rather than authenticating
+// with the understood subset.
+func KnownScopes(raw []string) Set {
+	out := Set{}
+	for _, s := range raw {
+		if scope, ok := ParseScope(s); ok {
+			out[scope] = struct{}{}
+		}
+	}
+	return out
+}
+
 func (g Grant) validateResource() error {
 	if g.Resource != nil {
 		if !isResourceKind(g.Resource.Kind) {
@@ -237,10 +321,10 @@ func (g Grant) validateResource() error {
 		}
 		rule, bindable := scopeResourceRules[scope]
 		// A DAEMON binding additionally admits the user-authority scopes —
-		// see daemonBindableScopes for why this kind and no other. Checked
+		// see admitsOnDaemon for why this kind and no other. Checked
 		// before the scope's own rule: obs:read binds to an environment, and
 		// may still ride the acting user's daemon credential.
-		if g.Resource != nil && g.Resource.Kind == ResourceDaemon && bindableToDaemon(scope) {
+		if g.Resource != nil && g.Resource.Kind == ResourceDaemon && admitsOnDaemon(scope) {
 			continue
 		}
 		switch {
@@ -275,6 +359,13 @@ type Principal struct {
 	// one; it never substitutes the creator.
 	ActingUserID string
 	Scopes       Set
+	// AllScopes marks a credential that holds EVERY scope — a daemon's —
+	// rather than a list. Scopes is then its resolution against this binary's
+	// catalog (Grant.Admissible), clipped by the authority to what the acting
+	// user holds; a validator reading a remote authority's answer builds it
+	// with KnownScopes, so a scope only a newer authority knows is skipped
+	// rather than failing the credential.
+	AllScopes bool
 	// Resource is the binding, or nil for an unbound token.
 	Resource  *Resource
 	Ephemeral bool

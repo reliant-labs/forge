@@ -82,13 +82,17 @@ type Request struct {
 	// Options are `key=value` top-level option bindings, as `-D` passes
 	// them to kcl.
 	Options []string
+	// ProcessRooted is for an isolated CLI child already started with its cwd
+	// at ProjectDir. It avoids even a temporary process-global chdir.
+	ProcessRooted bool
 }
 
 // Result is what an evaluation produced.
 type Result struct {
 	// Value is the selected value: the whole document when no selector was
 	// given, the selected value for exactly one, and an object keyed by
-	// selector for several.
+	// selector for several. It is built from Object, []any, string,
+	// json.Number, bool and nil, so key order and number text survive.
 	Value any
 	// Scalar reports whether Value is a single non-composite value, which is
 	// what --format raw is allowed to print.
@@ -126,12 +130,27 @@ func Eval(req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	raw, err := kclrender.RunInWorkDir(req.ProjectDir, abs, req.Options)
+	run := kclrender.RunInWorkDir
+	if req.ProcessRooted {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return Result{}, err
+		}
+		root, err := filepath.Abs(req.ProjectDir)
+		if err != nil {
+			return Result{}, err
+		}
+		if filepath.Clean(cwd) != filepath.Clean(root) {
+			return Result{}, fmt.Errorf("isolated KCL evaluation cwd %s is not project root %s", cwd, root)
+		}
+		run = kclrender.Run
+	}
+	raw, err := run(req.ProjectDir, abs, req.Options)
 	if err != nil {
 		return Result{}, err
 	}
-	var doc any
-	if err := json.Unmarshal(raw, &doc); err != nil {
+	doc, err := Decode(raw)
+	if err != nil {
 		return Result{}, fmt.Errorf("decode the render of %s: %w", req.File, err)
 	}
 	return selectFrom(doc, req.Selectors)
@@ -166,8 +185,7 @@ func resolveFile(projectDir, file string) (string, error) {
 		return "", fmt.Errorf("read %s: %w", file, err)
 	}
 	if info.IsDir() {
-		return "", fmt.Errorf("%s is a directory; name a .k file "+
-			"(to evaluate an environment package, use `env render <env>`)", file)
+		return abs, nil
 	}
 	if filepath.Ext(abs) != ".k" {
 		return "", fmt.Errorf("%s is not a .k file", file)
@@ -191,13 +209,13 @@ func selectFrom(doc any, selectors []string) (Result, error) {
 	// what repeated `-S` means to kcl. It is never scalar, whatever the
 	// members are, so --format raw refuses it rather than inventing a
 	// separator between two values.
-	out := make(map[string]any, len(selectors))
+	out := make(Object, 0, len(selectors))
 	for _, s := range selectors {
 		v, err := Select(doc, s)
 		if err != nil {
 			return Result{}, err
 		}
-		out[s] = v
+		out = append(out, Member{Key: s, Value: v})
 	}
 	return Result{Value: out}, nil
 }
@@ -235,8 +253,8 @@ func step(cur any, seg, path string, walked []string) (any, error) {
 		at = "the document"
 	}
 	switch c := cur.(type) {
-	case map[string]any:
-		if v, ok := c[seg]; ok {
+	case Object:
+		if v, ok := c.get(seg); ok {
 			return v, nil
 		}
 		return nil, fmt.Errorf("%w: %s has no field %q; it has %s",
@@ -261,10 +279,10 @@ func step(cur any, seg, path string, walked []string) (any, error) {
 // fieldList names a map's fields so a refusal shows what WAS available. It is
 // capped: a document with 200 top-level keys would bury the message it is
 // attached to.
-func fieldList(m map[string]any) string {
+func fieldList(m Object) string {
 	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
+	for _, e := range m {
+		keys = append(keys, e.Key)
 	}
 	sort.Strings(keys)
 	const max = 12
@@ -283,13 +301,13 @@ func kindOf(v any) string {
 		return "None"
 	case bool:
 		return "a bool"
-	case float64:
+	case json.Number:
 		return "a number"
 	case string:
 		return "a string"
 	case []any:
 		return "a list"
-	case map[string]any:
+	case Object:
 		return "an object"
 	}
 	return "a value"
@@ -297,7 +315,7 @@ func kindOf(v any) string {
 
 func isScalar(v any) bool {
 	switch v.(type) {
-	case nil, bool, float64, string:
+	case nil, bool, json.Number, string:
 		return true
 	}
 	return false

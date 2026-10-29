@@ -99,6 +99,19 @@ type domainWire struct {
 	VerifiedAt      string             `json:"verifiedAt,omitempty"`
 	LiveSince       string             `json:"liveSince,omitempty"`
 	Binding         *domainWireBinding `json:"binding,omitempty"`
+	// ServingPath is the DeployServingPath value NAME: which platform path
+	// the domain's DNS reaches, as the control plane resolves it. Decode it
+	// with deploytarget.ServingPathName, like State.
+	ServingPath string `json:"servingPath,omitempty"`
+}
+
+// servingPathCell is a domain's serving path for the ls table: "-" when the
+// control plane did not say.
+func servingPathCell(wire string) string {
+	if p := deploytarget.ServingPathName(wire); p != "" {
+		return p
+	}
+	return "-"
 }
 
 // domainSourceName renders a DomainSource value name in forge's lower-case
@@ -263,6 +276,9 @@ func writeDomainDetail(out io.Writer, d domainWire) {
 	fmt.Fprintf(out, "  state:   %s\n", deploytarget.DomainStateName(d.State))
 	fmt.Fprintf(out, "  source:  %s\n", domainSourceName(d.Source))
 	fmt.Fprintf(out, "  serving: %s\n", bindingSummary(d.Binding))
+	if path := deploytarget.DescribeServingPath(deploytarget.ServingPathName(d.ServingPath)); path != "" {
+		fmt.Fprintf(out, "  path:    %s\n", path)
+	}
 	if d.LiveSince != "" {
 		fmt.Fprintf(out, "  live:    since %s\n", d.LiveSince)
 	}
@@ -339,8 +355,14 @@ func newDomainListCmd() *cobra.Command {
 		Long: `List every domain your organization holds, with its state and binding.
 
 Every domain, not just this env's: a domain is org-scoped and has no
-environment. The BINDING column names the environment each one serves, so
-scoping by eye is possible without a second call.`,
+environment. The SERVING column names the environment each one serves, so
+scoping by eye is possible without a second call.
+
+PATH is where the domain's DNS sends its traffic, as the control plane
+resolves it: edge (the CDN in front of hosted static sites), ingress (the
+regional ingress, no CDN) or elsewhere (not pointed at the platform). A
+static-site domain moves to the edge when you set the records
+` + "`forge domain show`" + ` prints.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := domainClient(cmd.Context(), env, token)
@@ -370,9 +392,10 @@ func runDomainList(ctx context.Context, c cloudCaller, jsonOutput bool, out io.W
 		return nil
 	}
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "HOSTNAME\tSTATE\tSERVING")
+	fmt.Fprintln(tw, "HOSTNAME\tSTATE\tSERVING\tPATH")
 	for _, d := range resp.Domains {
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", d.Hostname, deploytarget.DomainStateName(d.State), bindingSummary(d.Binding))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", d.Hostname, deploytarget.DomainStateName(d.State), bindingSummary(d.Binding),
+			servingPathCell(d.ServingPath))
 	}
 	return tw.Flush()
 }

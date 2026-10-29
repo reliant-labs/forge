@@ -100,21 +100,74 @@ func Run(ctx context.Context, script string, opts Options) error {
 
 // PortableCommands returns in-process grep and rg (minimal)
 // implementations for scripts that must run where those tools are absent.
-// Supported: -q -i -F -E -r -e PATTERN, then FILE... (directories need -r).
+// Supported: -q -i -s -n -F -E -r -e PATTERN, --include/--exclude/
+// --exclude-dir, then FILE... (directories need -r). Without -E or -F a
+// grep pattern is a POSIX basic regular expression, as GNU grep reads it.
 func PortableCommands() map[string]CommandFunc {
 	return map[string]CommandFunc{
 		"grep": portableGrep,
-		// rg searches directories recursively by default.
+		// rg searches directories recursively by default, and its patterns
+		// are extended syntax.
 		"rg": func(ctx context.Context, dir string, args []string, in io.Reader, out, errw io.Writer) int {
-			return portableGrep(ctx, dir, append([]string{"-r"}, args...), in, out, errw)
+			return portableGrep(ctx, dir, append([]string{"-r", "-E"}, args...), in, out, errw)
 		},
 	}
 }
 
-func portableGrep(_ context.Context, dir string, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	var quiet, fold, fixed, recursive bool
-	var patterns []string
-	var filter treeFilter
+// basicToRE2 rewrites a POSIX basic regular expression (grep without -E)
+// into RE2 syntax. In a BRE `( ) { } | ? +` are literal characters and their
+// backslashed forms are the operators — the reverse of RE2 — so a detection
+// written for GNU grep, `grep -q 'connect\.NewError('`, must not be compiled
+// as-is: RE2 rejects the unbalanced paren, and a detection that fails reads
+// as "does not apply", silently. Bracket expressions pass through untouched.
+func basicToRE2(bre string) string {
+	var b strings.Builder
+	inBracket := false
+	for i := 0; i < len(bre); i++ {
+		c := bre[i]
+		if inBracket {
+			b.WriteByte(c)
+			// `]` closes the bracket unless it is the first member (`[]a]`, `[^]a]`).
+			if c == ']' && !(bre[i-1] == '[' || (bre[i-1] == '^' && i >= 2 && bre[i-2] == '[')) {
+				inBracket = false
+			}
+			continue
+		}
+		switch {
+		case c == '[':
+			inBracket = true
+			b.WriteByte(c)
+		case c == '\\' && i+1 < len(bre):
+			i++
+			if strings.IndexByte("(){}|?+", bre[i]) >= 0 {
+				b.WriteByte(bre[i]) // \( is the BRE group operator
+			} else {
+				b.WriteByte('\\')
+				b.WriteByte(bre[i])
+			}
+		case strings.IndexByte("(){}|?+", c) >= 0:
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// grepOpts is a parsed grep command line.
+type grepOpts struct {
+	quiet, fold, fixed, extended, recursive bool
+	patterns                                []string
+	filter                                  treeFilter
+	// files are the operands after the flags and the pattern.
+	files []string
+}
+
+// parseGrepArgs reads grep's flags and pattern. A usage error is reported on
+// stderr, and ok is false: grep exits 2.
+func parseGrepArgs(args []string, stderr io.Writer) (grepOpts, bool) {
+	var o grepOpts
 	i := 0
 	for ; i < len(args) && strings.HasPrefix(args[i], "-") && args[i] != "-"; i++ {
 		// GNU grep's file-selection flags, which detection scripts use to
@@ -125,13 +178,13 @@ func portableGrep(_ context.Context, dir string, args []string, stdin io.Reader,
 			value = strings.Trim(value, `'"`)
 			switch name {
 			case "--include":
-				filter.include = append(filter.include, value)
+				o.filter.include = append(o.filter.include, value)
 				continue
 			case "--exclude":
-				filter.exclude = append(filter.exclude, value)
+				o.filter.exclude = append(o.filter.exclude, value)
 				continue
 			case "--exclude-dir":
-				filter.excludeDir = append(filter.excludeDir, value)
+				o.filter.excludeDir = append(o.filter.excludeDir, value)
 				continue
 			}
 		}
@@ -142,56 +195,76 @@ func portableGrep(_ context.Context, dir string, args []string, stdin io.Reader,
 		case "-e":
 			if i+1 >= len(args) {
 				fmt.Fprintln(stderr, "grep: -e needs a pattern")
-				return 2
+				return o, false
 			}
 			i++
-			patterns = append(patterns, args[i])
+			o.patterns = append(o.patterns, args[i])
 		default:
 			for _, c := range a[1:] {
 				switch c {
 				case 'q':
-					quiet = true
+					o.quiet = true
 				case 'i':
-					fold = true
+					o.fold = true
 				case 'F':
-					fixed = true
-				case 'E', 'n', 's':
+					o.fixed = true
+				case 'E':
+					o.extended = true
+				case 'n', 's':
 				case 'r', 'R':
-					recursive = true
+					o.recursive = true
 				default:
 					fmt.Fprintf(stderr, "grep: unsupported flag -%c\n", c)
-					return 2
+					return o, false
 				}
 			}
 		}
 	}
 done:
-	if len(patterns) == 0 {
+	if len(o.patterns) == 0 {
 		if i >= len(args) {
 			fmt.Fprintln(stderr, "grep: missing pattern")
-			return 2
+			return o, false
 		}
-		patterns = append(patterns, args[i])
+		o.patterns = append(o.patterns, args[i])
 		i++
 	}
-	exprs := make([]string, len(patterns))
-	for n, p := range patterns {
-		if fixed {
+	o.files = args[i:]
+	return o, true
+}
+
+// compile is the patterns as one RE2 expression: -F quotes them, a basic
+// expression (no -E) is translated, -i folds case.
+func (o grepOpts) compile() (*regexp.Regexp, error) {
+	exprs := make([]string, len(o.patterns))
+	for n, p := range o.patterns {
+		switch {
+		case o.fixed:
 			p = regexp.QuoteMeta(p)
+		case !o.extended:
+			p = basicToRE2(p)
 		}
 		exprs[n] = p
 	}
 	expr := strings.Join(exprs, "|")
-	if fold {
+	if o.fold {
 		expr = "(?i)" + expr
 	}
-	re, err := regexp.Compile("(?m)" + expr)
+	return regexp.Compile("(?m)" + expr)
+}
+
+func portableGrep(_ context.Context, dir string, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	o, ok := parseGrepArgs(args, stderr)
+	if !ok {
+		return 2
+	}
+	re, err := o.compile()
 	if err != nil {
 		fmt.Fprintf(stderr, "grep: bad pattern: %v\n", err)
 		return 2
 	}
-	files := args[i:]
-	matched := false
+	quiet, recursive, filter, files := o.quiet, o.recursive, o.filter, o.files
+	matched, failed := false, false
 	scan := func(r io.Reader, name string) {
 		data, _ := io.ReadAll(r)
 		for _, line := range strings.Split(string(data), "\n") {
@@ -211,13 +284,19 @@ done:
 		if !strings.HasPrefix(p, "/") && !(len(p) > 1 && p[1] == ':') && dir != "" {
 			p = dir + string(os.PathSeparator) + p
 		}
+		// A file grep cannot read is an error, but not the end of the search:
+		// GNU grep reports it, searches the remaining operands, and exits 0
+		// when -q found a match anyway — so `grep -rqs X frontends packages`
+		// matches in a project with no packages/ directory.
 		if st, serr := os.Stat(p); serr != nil {
 			fmt.Fprintf(stderr, "grep: %s: %v\n", f, serr)
-			return 2
+			failed = true
+			continue
 		} else if st.IsDir() {
 			if !recursive {
 				fmt.Fprintf(stderr, "grep: %s: is a directory\n", f)
-				return 2
+				failed = true
+				continue
 			}
 			grepTree(p, filter, scan)
 			continue
@@ -225,13 +304,17 @@ done:
 		fh, oerr := os.Open(p)
 		if oerr != nil {
 			fmt.Fprintf(stderr, "grep: %s: %v\n", f, oerr)
-			return 2
+			failed = true
+			continue
 		}
 		scan(fh, f)
 		_ = fh.Close()
 	}
-	if matched {
+	switch {
+	case matched && (quiet || !failed):
 		return 0
+	case failed:
+		return 2
 	}
 	return 1
 }

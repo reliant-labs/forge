@@ -10,6 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
@@ -99,7 +100,10 @@ func NewRootCmd() *cobra.Command {
 	rootCmd = &cobra.Command{
 		Use:   "forge",
 		Short: "Build, run and ship static sites, SPAs, web/mobile apps and APIs, LLM-first",
-		Long: `Forge takes a project from an empty directory to production, purpose-built
+		Long: `Reliant Forge (github.com/reliant-labs/forge) — not Atlassian Forge, Foundry's
+forge (Solidity) or Laravel Forge.
+
+Forge takes a project from an empty directory to production, purpose-built
 for LLM-driven development: environments, build-once releases, hosting,
 observability and linters from day 0.
 
@@ -127,6 +131,12 @@ from an empty directory to authored protos, in one call.`,
 		// PersistentPreRun fires once per invocation regardless of
 		// which subcommand the user typed.
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			// A prior embedded command's launch privileges must never leak into
+			// a subsequent diagnostic command in this process.
+			kclContexts.Lock()
+			clear(kclContexts.byTarget)
+			kclContexts.Unlock()
+			cmd.SetContext(cluster.WithKCLRunner(cmd.Context(), evalKCLSubprocess))
 			// Install (or clear) the project resolution root before
 			// anything below can resolve a project. Clearing on the
 			// empty value matters for in-process embedders, which
@@ -211,6 +221,7 @@ from an empty directory to authored protos, in one call.`,
 	// The git merge driver forge configures for its generated files
 	// (merge_generated.go). Hidden: git runs it, people do not.
 	rootCmd.AddCommand(newMergeGeneratedCmd())
+	rootCmd.AddCommand(newMergeDriverCmd())
 	// `forge env up` was REMOVED. It was a thin alias over the same runUp that
 	// `forge env up <env>` calls, and its one distinct feature — forwarding
 	// tokens after `--` to the frontend dev servers — moved onto `env up`
@@ -250,11 +261,17 @@ from an empty directory to authored protos, in one call.`,
 	rootCmd.AddCommand(newCloudCmd())
 	rootCmd.AddCommand(newDomainCmd())
 	rootCmd.AddCommand(newDoctorCmd())
+	// `report-bug` files a defect in forge itself with the Reliant team. It
+	// is the only way forge ever sends a report (internal/bugreport).
+	rootCmd.AddCommand(newReportBugCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newProtocGenForgeCmd())
 	// `component` migrated to the internal/cli/component group (registered
 	// via the factory registry below).
 	rootCmd.AddCommand(newSkillCmd())
+	// `mcp` serves the introspection, skill, lint and generate verbs to an
+	// agent harness over stdio (mcp.go).
+	rootCmd.AddCommand(newMCPCmd())
 	rootCmd.AddCommand(newCICmd())
 	rootCmd.AddCommand(newToolsCmd())
 	rootCmd.AddCommand(newClusterCmd())

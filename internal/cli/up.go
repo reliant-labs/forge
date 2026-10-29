@@ -504,6 +504,7 @@ func buildUpServicesReport(ctx context.Context, in buildUpServicesInput) (upServ
 	rep.Destination, rep.Endpoint, rep.EnvironmentID = dest.Destination, dest.Endpoint, dest.EnvironmentID
 	rep.ControlPlaneKind = dest.ControlPlaneKind
 	rep.Verdict, rep.HostedWorkloads, rep.HostedNote = dest.Verdict, dest.Workloads, dest.Note
+	rep.Placements = dest.Placements
 	return rep, nil
 }
 
@@ -902,7 +903,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	_, restorePortStore := activateDevStack(ctx, projectDir, opts.env, renderToLaunch, claimNewBlocks)
 	// Bringing the env up IS materializing it, so the module's generated
 	// files (fp.write_file) are written by these renders.
-	armMaterializer(projectDir)
+	armMaterializer(projectDir, opts.env)
 
 	// Arm the -D render options BEFORE the first render. Validated against
 	// what the env's KCL declares so a typo'd name fails here rather than
@@ -972,6 +973,16 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	if err := validateDeployTargets(entities, opts.targets); err != nil {
 		return err
 	}
+	// No Docker daemon: drop what the env declares optional (local
+	// observability) and say so once, or fail naming Docker if something
+	// required needs it. Before the plan, the pre-flights and every phase
+	// below, so they all see the env that will actually run.
+	if err := degradeWithoutDocker(ctx, entities, opts.env, opts.targets, os.Stdout); err != nil {
+		return err
+	}
+	// --target: the optional infra (local observability) runs only when a
+	// target names or requires it, and the plan says what starts and why.
+	scopeOptionalInfra(ctx, entities, projectDirForKCL(), opts.env, opts.targets, os.Stdout)
 	planEntities := entities
 	if len(opts.targets) > 0 {
 		planEntities = filterEntitiesByTarget(entities, opts.targets)
@@ -1624,6 +1635,7 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 				skipFrontend: true, skipClusterApply: !required.cluster,
 				targets: opts.targets, purpose: renderToLaunch,
 				infraConverged: converged,
+				omitWorkloads:  entities.OptionalSkipped,
 			}); err != nil {
 				return fmt.Errorf("deploy: %w", err)
 			}
@@ -1839,6 +1851,9 @@ type upServicesReport struct {
 	Verdict          string                              `json:"verdict,omitempty"`
 	HostedWorkloads  []deploytarget.HostedWorkloadStatus `json:"hosted_workloads,omitempty"`
 	HostedNote       string                              `json:"hosted_note,omitempty"`
+	// Placements is every part of the env and where it runs; see
+	// env_destination.go.
+	Placements []partPlacement `json:"placements,omitempty"`
 }
 
 // collectUpServices builds the ordered host-then-frontend rows for env,
@@ -3284,10 +3299,11 @@ func ensureFrontendDeps(ctx context.Context, fe FrontendEntity, noInstall bool) 
 // dev server binds the port forge reported in the summary; Port stays 0 only
 // when that allocation failed, in which case the dev server picks its own.
 //
-// frontendArgs are passthrough tokens forwarded to the dev server after a
-// `--` separator (`npm run dev -- <frontendArgs>`), so
-// `forge env up dev -- --host 0.0.0.0` reaches Vite/Next. Empty (no `--` on
-// the invocation) leaves the command untouched.
+// frontendArgs are passthrough tokens forwarded to the dev server. npm needs
+// a separator (`npm run dev -- <frontendArgs>`); pnpm/yarn forward arguments
+// after the script name directly (a separator there reaches Vite/Next as a
+// literal `--` and stops their flag parsing). Empty passthrough leaves the
+// command untouched.
 func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parentEnv, frontendArgs []string, apiBaseURL string) *exec.Cmd {
 	runner := fe.DevRunner
 	if runner == "" {
@@ -3295,13 +3311,15 @@ func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parent
 	}
 	runArgs := []string{"run", "dev"}
 	if len(frontendArgs) > 0 {
-		// `npm run dev -- <args>` forwards <args> to the underlying dev
-		// server (vite / next dev) rather than to npm itself. The `--`
-		// terminator is required for npm/pnpm/yarn to stop consuming flags.
-		runArgs = append(runArgs, "--")
+		// Only npm consumes the separator; pnpm and yarn would pass it
+		// literally to the script, hiding all following server flags.
+		if runner == "npm" {
+			runArgs = append(runArgs, "--")
+		}
 		runArgs = append(runArgs, frontendArgs...)
 	}
-	cmd := exec.CommandContext(ctx, runner, runArgs...)
+	argv := frontenddeps.ExecArgv(fe.Path, runner, runArgs...)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = fe.Path
 
 	envFile := fe.EnvFile

@@ -24,6 +24,11 @@ const (
 	// promote). Implies deploy:read at the point of use.
 	ScopeDeployWrite Scope = "deploy:write"
 
+	// ScopeBillingRead reads the org's billing-backed cost and usage. It grants
+	// no billing management rights and is not implied by deploy or telemetry
+	// authority. Consumers must check the tenant and current grants at use.
+	ScopeBillingRead Scope = "billing:read"
+
 	// ScopeClusterManage registers, rotates and removes the org's BYO
 	// clusters — the credentials the platform uses to reach infrastructure
 	// the org owns. Its own product, not a deploy action: deploy:write moves
@@ -70,6 +75,21 @@ const (
 	// anything on it, or read anything from it; the worst a leaked one does
 	// is start a machine its owner already pays for.
 	ScopeDaemonResume Scope = "daemon:resume"
+
+	// ScopeDaemonManage lists, starts, stops and resizes the daemons its
+	// acting user owns, as the machine settings page does: a person's CLI
+	// login managing their own machines. Always acting as a user, and never
+	// bound to anything — in particular never to a daemon, so no daemon's
+	// own credential (a daemon wildcard resolves through Grant.Admissible)
+	// and nothing an agent running on a daemon holds can carry it. Starting
+	// and resizing spend the person's money, which is why a machine must not
+	// be able to do it for itself or its siblings.
+	//
+	// It implies nothing and nothing implies it: not daemon:resume (one
+	// bound machine, wake only), not daemon:connect, not reliant:api. The
+	// consumer still resolves ownership, plan and funding from the acting
+	// user exactly as for the person's own session.
+	ScopeDaemonManage Scope = "daemon:manage"
 
 	// ScopeSecretRead lists the org's managed secrets' METADATA (names,
 	// versions) for every environment, and — for LOCAL environments ONLY —
@@ -119,6 +139,15 @@ const (
 	// able to silence an alert, so triage is held explicitly even by a
 	// holder that reads.
 	ScopeObsTriage Scope = "obs:triage"
+	// ScopeObsWrite authors the org's observability workspace: dashboards
+	// (save, restore, archive, promote) and anything else a person edits in
+	// the telemetry console. Implies obs:read at the point of use.
+	//
+	// ITS OWN SCOPE, NOT TRIAGE. obs:triage changes the state of an issue; this
+	// changes shared, versioned artifacts the whole org reads. Neither implies
+	// the other, so a token that silences alerts cannot rewrite dashboards and
+	// the reverse. Never bound to an environment: what it writes is org-wide.
+	ScopeObsWrite Scope = "obs:write"
 
 	// ScopeDBQuery runs a read-only query against an environment's database.
 	// Not implied by any other scope and implying none: the data in an
@@ -133,6 +162,7 @@ const (
 var AllScopes = []Scope{
 	ScopeDeployRead,
 	ScopeDeployWrite,
+	ScopeBillingRead,
 	ScopeClusterManage,
 	ScopeTokenRead,
 	ScopeTokenWrite,
@@ -142,6 +172,7 @@ var AllScopes = []Scope{
 	ScopeProxyPort,
 	ScopeMCPConnector,
 	ScopeDaemonResume,
+	ScopeDaemonManage,
 	ScopeSecretRead,
 	ScopeSecretWrite,
 	ScopeDomainRead,
@@ -150,6 +181,7 @@ var AllScopes = []Scope{
 	ScopeIdentityManage,
 	ScopeObsRead,
 	ScopeObsTriage,
+	ScopeObsWrite,
 	ScopeDBQuery,
 }
 
@@ -242,7 +274,7 @@ func (s Set) Permits(want Scope) bool {
 	case ScopeIdentityRead:
 		return s.Has(ScopeIdentityManage)
 	case ScopeObsRead:
-		return s.Has(ScopeObsTriage)
+		return s.Has(ScopeObsTriage) || s.Has(ScopeObsWrite)
 	default:
 		return false
 	}

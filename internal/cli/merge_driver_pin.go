@@ -15,11 +15,13 @@ package cli
 //
 //   - the pinned forge: it merges;
 //   - another forge: it hands the merge to the pinned one, if that has run in
-//     this clone (every pinned forge records its own driver command, below);
-//   - and when no pinned forge is known, it merges as git would without a
-//     driver — a plain three-way text merge, a normal conflict where the
-//     sides overlap — and says why, rather than apply a mismatched forge's
-//     rules.
+//     this clone (every pinned forge records its own driver command, below),
+//     else to the pinned one it installs (installedForge: `go install` of the
+//     pin into the durable-copy directory, once per pin per machine);
+//   - and when the pinned forge can be neither found nor installed, it merges
+//     as git would without a driver — a plain three-way text merge, a normal
+//     conflict where the sides overlap — and says why, rather than apply a
+//     mismatched forge's rules.
 //
 // And every writing forge command run by the pinned forge (re)points the
 // driver at the pin, so the first `forge generate` after a pin bump repairs a
@@ -67,11 +69,18 @@ var mergeDriverPinCheck = func(root string) (pin, binary string, skewed bool) {
 }
 
 // mergeDriverIdentity is the identity this binary registers under.
-var mergeDriverIdentity = func() string { return forgeIdentity(buildinfo.Version()) }
+var mergeDriverIdentity = func() string { return forgeIdentity(mergeDriverVersion()) }
+
+// mergeDriverVersion is this binary's forge module version: what a driver
+// command reinstalls when the binary it names is gone (driverCommandLine).
+// A seam for tests.
+var mergeDriverVersion = buildinfo.Version
 
 // registerPinnedDriver records command as the driver of this binary's
 // identity in the clone at root, and reports whether that changed anything.
-func registerPinnedDriver(root, command string, scope configScope) bool {
+// The key is per identity, so worktrees on different pins never contend for
+// it: it lives in the shared config, where every worktree's driver finds it.
+func registerPinnedDriver(root, command string) bool {
 	id := mergeDriverIdentity()
 	if id == "" {
 		return false
@@ -81,7 +90,7 @@ func registerPinnedDriver(root, command string, scope configScope) bool {
 	if strings.TrimSpace(string(cur)) == command {
 		return false
 	}
-	return exec.CommandContext(context.Background(), "git", "-C", root, "config", scope.flag(), key, command).Run() == nil
+	return exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local", key, command).Run() == nil
 }
 
 // pinnedDriverCommand returns the driver command a forge of pin's identity
@@ -143,8 +152,17 @@ func pinnedMerge(ctx context.Context, stderr io.Writer, args []string, relPath s
 			fmt.Fprintf(stderr, "forge merge-generated %s: this driver is forge %s; merging with the pinned forge %s\n", relPath, binary, pin)
 			return true, runDelegatedDriver(ctx, command, args) == nil, nil
 		}
+		// No pinned forge has run in this clone (a fresh worktree, or a
+		// checkout whose scripts opt out of the driver wiring): install the
+		// pin and merge with it, rather than merge without its rules.
+		bin, ierr := installedForge(ctx, stderr, pin)
+		if ierr == nil {
+			fmt.Fprintf(stderr, "forge merge-generated %s: this driver is forge %s; merging with the pinned forge %s (%s)\n", relPath, binary, pin, bin)
+			return true, runDelegatedDriver(ctx, shellQuote(bin)+" merge-generated %O %A %B %L %P", args) == nil, nil
+		}
+		fmt.Fprintf(stderr, "forge merge-generated %s: could not install the pinned forge %s: %v\n", relPath, pin, ierr)
 	}
-	merged, clean, err := plainMerge(ctx, base, ours, theirs, marker)
+	merged, _, err := plainMerge(ctx, base, ours, theirs, marker)
 	if err != nil {
 		return true, false, err
 	}
@@ -152,9 +170,9 @@ func pinnedMerge(ctx context.Context, stderr io.Writer, args []string, relPath s
 		return true, false, err
 	}
 	fmt.Fprintf(stderr, "forge merge-generated %s: this driver is forge %s, but forge.yaml pins %s, and that forge has not run in "+
-		"this clone; merged as git does without a driver instead. Run any command with the pinned forge (`%s generate`) "+
+		"this clone; preserved git's text merge but left it unresolved because the pinned forge did not run. Run any command with the pinned forge (`%s generate`) "+
 		"to point the driver at it.\n", relPath, binary, pin, Name())
-	return true, clean, nil
+	return true, false, nil
 }
 
 // runDelegatedDriver runs another driver command the way git runs one —

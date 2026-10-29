@@ -284,3 +284,87 @@ func TestLookupsIgnoreAnInheritedGitEnvironment(t *testing.T) {
 		t.Errorf("MergeBaseMax = %d, want 20260101120000", max)
 	}
 }
+
+// A migration allocated on a long-lived branch must clear the default
+// branch's TIP, not just the directory the branch sees. main's newest
+// migration landed AFTER the branch was cut, so the branch's directory does
+// not contain it; a wall-clock (or directory-max) allocation can sort under
+// it, and golang-migrate then never applies the file on a database that has
+// run the newer one (reliant#1399).
+func TestNextNClearsAHeadThatLandedOnMainAfterTheBranchWasCut(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
+	repoRoot, migDir := repo(t,
+		[]string{"20260101120000_add_users.up.sql"},
+		[]string{"20260501000000_add_sessions.up.sql"},
+	)
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoRoot
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	// A head far above any clock: only the default-branch floor can clear it.
+	const mainHead = "21000101000000"
+	git("checkout", "-q", "main")
+	if err := os.WriteFile(filepath.Join(migDir, mainHead+"_later_on_main.up.sql"), []byte("SELECT 1;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "later on main")
+	git("checkout", "-q", "feature")
+
+	got, err := NextN(migDir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("NextN returned %d versions, want 2", len(got))
+	}
+	for _, v := range got {
+		if v <= mainHead {
+			t.Errorf("allocated %s, which is not above main's head %s", v, mainHead)
+		}
+	}
+	if got[0] >= got[1] {
+		t.Errorf("batch %v is not ascending", got)
+	}
+}
+
+// Healthy case: main's head is in the past, so the clock decides and the
+// version is a current timestamp, exactly as before.
+func TestNextNStaysWallClockWhenMainsHeadIsInThePast(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
+	_, migDir := repo(t, []string{"20260101120000_add_users.up.sql"}, nil)
+
+	got, err := NextN(migDir, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0] <= "20260101120000" {
+		t.Errorf("allocated %s, want a version above main's head", got[0])
+	}
+	if got[0] > "21000101000000" {
+		t.Errorf("allocated %s, want the wall clock when main's head is in the past", got[0])
+	}
+}
+
+// Outside git there is nothing to clear but the directory itself.
+func TestNextNWithoutGitFallsBackToTheDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "21000101000000_x.up.sql"), []byte("SELECT 1;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NextN(dir, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0] <= "21000101000000" {
+		t.Errorf("allocated %s, want above the directory's own future-dated max", got[0])
+	}
+}

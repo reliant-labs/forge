@@ -61,6 +61,5 @@ export const useUiStore = create<UiState>((set) => ({
   // Command palette
   commandPaletteOpen: false,
   setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
-  toggleCommandPalette: () =>
-    set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
+  toggleCommandPalette: () => set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
 }));

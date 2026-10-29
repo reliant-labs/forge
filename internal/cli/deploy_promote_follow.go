@@ -181,6 +181,7 @@ func validatePromoteFollow(o promoteFollowOptions) error {
 // on, and spending the hosted wait's budget after it has already failed buys
 // nothing.
 func followPromote(ctx context.Context, env string, plan promotePlan, ledger envLedger, o promoteFollowOptions) error {
+	noteDeployPhase(ctx, "rollout")
 	// QUEUED ON A PERSON? The control plane says so on the write itself
 	// (the Promote response's holds) — so this is known with no extra call,
 	// before anything waits. See deploy_queued.go.
@@ -194,6 +195,9 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 		// The LEDGER's account of a failed apply names what it shipped
 		// first: "failed" alone reads as "the previous release still runs",
 		// which is false once a cluster has rolled.
+		// A STILL-APPLYING hosted half reaches recordApplyOutcome as the
+		// error it is, which then records no apply gate: neither passed
+		// (the hosted half is not confirmed) nor failed (nothing failed).
 		evidence := o.clientDeploy.shipped.annotate(err)
 		finish(evidence)
 		recordApplyOutcome(ctx, env, plan, ledger, started, evidence, o)

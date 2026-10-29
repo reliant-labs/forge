@@ -132,215 +132,50 @@ func TestGolangciLintCache(t *testing.T) {
 	}
 }
 
-func TestGoimportsIndexKeepsLinkedAndRecent(t *testing.T) {
+// TestGolangciLintCacheHasItsOwnBudget: the lint cache is trimmed to
+// golangci_cache_gib, not the build cache's go_cache_gib, which a lint cache
+// never reaches: under it, one that lints all day was never trimmed.
+func TestGolangciLintCacheHasItsOwnBudget(t *testing.T) {
+	build, lint := t.TempDir(), t.TempDir()
+	fillShards(t, build, 2, 2, func(int, int) time.Duration { return 3 * time.Hour })
+	fillShards(t, lint, 2, 2, func(int, int) time.Duration { return 3 * time.Hour })
+	var out strings.Builder
+	r := goRunner(t, &out)
+	r.GoCacheRoot, r.GolangciCacheRoot = build, lint
+	r.Policy.GoCacheGiB, r.Policy.GolangciCacheGiB, r.Policy.GoCacheVolumePercent = 60, 2, 100
+	budgets := map[string]uint64{}
+	r.OnGoCacheTrim = func(tr GoCacheTrim) { budgets[tr.Cache] = tr.BudgetBytes }
+	if err := r.SharedGoCache(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.GolangciLintCache(true); err != nil {
+		t.Fatal(err)
+	}
+	if budgets["shared go build cache"] != 60*GiB || budgets["golangci-lint cache"] != 2*GiB {
+		t.Fatalf("budgets = %v, want the build cache on go_cache_gib (60 GiB) and the lint cache on golangci_cache_gib (2 GiB)\n%s", budgets, out.String())
+	}
+}
+
+// TestGoCacheEntriesAreSizedByAllocatedBlocks: a budget bounds disk, so an
+// entry counts what it occupies. A 100-byte entry occupies a whole block;
+// counted by length, a cache of such entries read as a twelfth of its size.
+func TestGoCacheEntriesAreSizedByAllocatedBlocks(t *testing.T) {
+	prev := entryDiskBytes
+	entryDiskBytes = allocatedBytes
+	t.Cleanup(func() { entryDiskBytes = prev })
 	root := t.TempDir()
-	mk := func(name string, age time.Duration) string {
-		p := filepath.Join(root, name)
-		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		at := time.Now().Add(-age)
-		_ = os.Chtimes(p, at, at)
-		return p
-	}
-	current := mk("index-0-1", 500*time.Hour) // old but linked
-	stale := mk("index-0-2", 500*time.Hour)
-	recent := mk("index-0-3", time.Hour)
-	if err := os.WriteFile(filepath.Join(root, "index-name-0-abc"), []byte("index-0-1"), 0o600); err != nil {
+	makeBuildCache(t, root)
+	p := putEntry(t, root, "ab", hexName(1, "-a"), 100, 3*time.Hour)
+	info, err := os.Stat(p)
+	if err != nil {
 		t.Fatal(err)
 	}
-	var out strings.Builder
-	r := goRunner(t, &out)
-	r.GoimportsRoot = root
-	if err := r.GoimportsIndex(false); err != nil || !exists(stale) {
-		t.Fatalf("dry-run deleted: %v", err)
+	entries, err := readGoCacheShard(root, "ab")
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries = %+v, %v", entries, err)
 	}
-	if err := r.GoimportsIndex(true); err != nil {
-		t.Fatal(err)
-	}
-	if exists(stale) || !exists(current) || !exists(recent) {
-		t.Fatalf("stale=%v current=%v recent=%v", exists(stale), exists(current), exists(recent))
-	}
-}
-
-func TestGoimportsIndexWithoutLinksKeepsNewestTwo(t *testing.T) {
-	root := t.TempDir()
-	var paths []string
-	for i, age := range []time.Duration{900, 800, 700, 600} {
-		p := filepath.Join(root, "index-0-"+string(rune('1'+i)))
-		_ = os.WriteFile(p, []byte("x"), 0o600)
-		at := time.Now().Add(-age * time.Hour)
-		_ = os.Chtimes(p, at, at)
-		paths = append(paths, p)
-	}
-	var out strings.Builder
-	r := goRunner(t, &out)
-	r.GoimportsRoot = root
-	if err := r.GoimportsIndex(true); err != nil {
-		t.Fatal(err)
-	}
-	if exists(paths[0]) || exists(paths[1]) || !exists(paths[2]) || !exists(paths[3]) {
-		t.Fatal("expected only the newest two kept")
-	}
-}
-
-// orphan fixtures
-
-type orphanFixture struct {
-	scan, shared, orphan, young, live, held string
-	r                                       Runner
-	out                                     *strings.Builder
-}
-
-func newOrphanFixture(t *testing.T, procText string, open []string, procErr error) orphanFixture {
-	t.Helper()
-	scan := t.TempDir()
-	scan = resolved(t, scan)
-	f := orphanFixture{scan: scan, out: &strings.Builder{}}
-	f.shared = filepath.Join(scan, "shared-gocache")
-	makeBuildCache(t, f.shared)
-	putEntry(t, f.shared, "ab", hexName(1, "-a"), 10, 100*time.Hour)
-
-	f.orphan = filepath.Join(scan, ".gocache-old")
-	makeBuildCache(t, f.orphan)
-	putEntry(t, f.orphan, "ab", hexName(1, "-a"), 10, 100*time.Hour)
-
-	f.young = filepath.Join(scan, ".gocache-young")
-	makeBuildCache(t, f.young)
-	putEntry(t, f.young, "ab", hexName(1, "-a"), 10, time.Hour)
-
-	f.live = filepath.Join(scan, ".gocache-live")
-	makeBuildCache(t, f.live)
-	putEntry(t, f.live, "ab", hexName(1, "-a"), 10, 100*time.Hour)
-
-	f.held = filepath.Join(scan, "held-gocache")
-	makeBuildCache(t, f.held)
-	heldFile := putEntry(t, f.held, "ab", hexName(1, "-a"), 10, 100*time.Hour)
-
-	r := goRunner(t, f.out)
-	r.GoCacheRoot = f.shared
-	r.GoModCacheRoot = filepath.Join(scan, "shared-mod")
-	r.Policy.HostPaths = []string{scan}
-	r.ProcessEnv = func(context.Context) (string, error) {
-		if procErr != nil {
-			return "", procErr
-		}
-		return strings.ReplaceAll(procText, "LIVE", f.live), nil
-	}
-	paths := open
-	r.OpenPaths = func(context.Context) (openfiles.Snapshot, error) {
-		return openfiles.FromPaths(append(paths, heldFile)), nil
-	}
-	f.r = r
-	return f
-}
-
-func TestOrphanedGoCachesReapsOnlyIdleUnreferenced(t *testing.T) {
-	f := newOrphanFixture(t, "FOO=1 GOCACHE=LIVE/ go build\n", nil, nil)
-	if err := f.r.OrphanedGoCaches(false); err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range []string{f.orphan, f.young, f.live, f.held, f.shared} {
-		if !exists(p) {
-			t.Fatalf("dry-run removed %s", p)
-		}
-	}
-	if !strings.Contains(f.out.String(), "would remove build cache "+f.orphan) {
-		t.Fatalf("dry-run did not list the orphan:\n%s", f.out.String())
-	}
-	if err := f.r.OrphanedGoCaches(true); err != nil {
-		t.Fatal(err)
-	}
-	if exists(f.orphan) {
-		t.Fatal("orphan not reaped")
-	}
-	for _, p := range []string{f.young, f.live, f.held, f.shared} {
-		if !exists(p) {
-			t.Fatalf("wrongly removed %s", p)
-		}
-	}
-}
-
-func TestOrphanedGoCachesFailClosed(t *testing.T) {
-	f := newOrphanFixture(t, "", nil, os.ErrPermission)
-	if err := f.r.OrphanedGoCaches(true); err != nil {
-		t.Fatal(err)
-	}
-	if !exists(f.orphan) || !strings.Contains(f.out.String(), "skipped") {
-		t.Fatal("unreadable process listing must skip the layer")
-	}
-	f = newOrphanFixture(t, "x", nil, nil)
-	f.r.OpenPaths = func(context.Context) (openfiles.Snapshot, error) { return openfiles.Snapshot{}, os.ErrPermission }
-	if err := f.r.OrphanedGoCaches(true); err != nil {
-		t.Fatal(err)
-	}
-	if !exists(f.orphan) {
-		t.Fatal("failed lsof must skip the layer")
-	}
-}
-
-func TestOrphanedGoCachesModCacheAndEmptyParent(t *testing.T) {
-	f := newOrphanFixture(t, "x", nil, nil)
-	holder := filepath.Join(f.scan, ".gocache-both")
-	build := filepath.Join(holder, "build")
-	makeBuildCache(t, build)
-	putEntry(t, build, "ab", hexName(1, "-a"), 10, 100*time.Hour)
-	mod := filepath.Join(holder, "mod")
-	dl := filepath.Join(mod, "cache", "download", "example.com", "m", "@v")
-	if err := os.MkdirAll(dl, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	ro := filepath.Join(dl, "v1.zip")
-	_ = os.WriteFile(ro, []byte("z"), 0o444)
-	at := time.Now().Add(-100 * time.Hour)
-	_ = os.Chtimes(ro, at, at)
-	_ = os.Chmod(dl, 0o555)
-	if err := f.r.OrphanedGoCaches(true); err != nil {
-		t.Fatal(err)
-	}
-	if exists(holder) {
-		t.Fatal("holder with only build+mod must be removed entirely")
-	}
-	if !exists(f.scan) || !exists(f.shared) {
-		t.Fatal("scan root or shared cache removed")
-	}
-}
-
-func TestOrphanedGoCachesNeverTouchesSharedAncestors(t *testing.T) {
-	f := newOrphanFixture(t, "x", nil, nil)
-	// A recognised cache that CONTAINS the shared cache must be left alone.
-	outer := filepath.Join(f.scan, "outer")
-	makeBuildCache(t, outer)
-	putEntry(t, outer, "ab", hexName(1, "-a"), 10, 100*time.Hour)
-	f.r.GoCacheRoot = filepath.Join(outer, "inner")
-	makeBuildCache(t, f.r.GoCacheRoot)
-	if err := f.r.OrphanedGoCaches(true); err != nil {
-		t.Fatal(err)
-	}
-	if !exists(outer) || !exists(f.r.GoCacheRoot) {
-		t.Fatal("cache containing the shared cache was removed")
-	}
-}
-
-func TestOrphanedGoCachesRefusedUnderTestWhenUnset(t *testing.T) {
-	var out strings.Builder
-	r := goRunner(t, &out)
-	if err := r.OrphanedGoCaches(true); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "skip") {
-		t.Fatalf("unset roots must be refused: %q", out.String())
-	}
-}
-
-func TestOrphanedGoCachesStopsAtDeadline(t *testing.T) {
-	f := newOrphanFixture(t, "x", nil, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	f.r.Ctx = ctx
-	_ = f.r.OrphanedGoCaches(true)
-	if !exists(f.orphan) {
-		t.Fatal("removed after the deadline")
+	if got, want := entries[0].size, allocatedBytes(info); got != want || got < 100 {
+		t.Fatalf("entry sized %d bytes, want its allocation %d (and never under its 100-byte length)", got, want)
 	}
 }
 
@@ -482,9 +317,7 @@ func TestGoCachePartialPassIsNotAFailure(t *testing.T) {
 	r := goRunner(t, &out)
 	r.GoCacheRoot = root
 	r.GolangciCacheRoot = t.TempDir()
-	r.GoimportsRoot = t.TempDir()
 	r.OpenPaths = func(context.Context) (openfiles.Snapshot, error) { return openfiles.FromPaths(nil), nil }
-	r.ProcessEnv = func(context.Context) (string, error) { return "x", nil }
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
 	time.Sleep(5 * time.Millisecond) // deadline already passed
@@ -497,7 +330,7 @@ func TestGoCachePartialPassIsNotAFailure(t *testing.T) {
 		t.Fatalf("a cut-off pass must not be a failure: %v", err)
 	}
 	res := NewGCResult(time.Now(), err)
-	if !res.OK || !slices.Contains(res.CutOffLayers, "go caches: shared build cache") || len(res.CutOffLayers) != 4 {
+	if !res.OK || !slices.Contains(res.CutOffLayers, "go caches: shared build cache") || len(res.CutOffLayers) != 2 {
 		t.Fatalf("every step the deadline stopped must be recorded as cut off: %+v", res)
 	}
 	// And a live pass over a real cache that finishes reports no error and says so.
@@ -567,9 +400,7 @@ func TestGoCacheGCGivesTheGoCachesTheWholeBudget(t *testing.T) {
 	r.GolangciCacheRoot = t.TempDir()
 	makeBuildCache(t, r.GolangciCacheRoot)
 	putEntry(t, r.GolangciCacheRoot, "ab", hexName(1, "-a"), 10, 100*time.Hour)
-	r.GoimportsRoot = t.TempDir()
 	r.OpenPaths = func(context.Context) (openfiles.Snapshot, error) { return openfiles.FromPaths(nil), nil }
-	r.ProcessEnv = func(context.Context) (string, error) { return "x", nil }
 	r.Command = func(_ context.Context, name string, _ ...string) ([]byte, error) {
 		t.Errorf("the Go-cache pass ran %s; it must not touch Docker or anything outside the Go caches", name)
 		return nil, errors.New("refused")
@@ -805,9 +636,7 @@ func TestGoCacheBudgetReachableIsSilent(t *testing.T) {
 func TestGoCachesRecordsCutOffAndUnreachableTogether(t *testing.T) {
 	r, _, out := overBudgetCache(t, 30, 10)
 	r.GolangciCacheRoot = t.TempDir()
-	r.GoimportsRoot = t.TempDir()
 	r.OpenPaths = func(context.Context) (openfiles.Snapshot, error) { return openfiles.FromPaths(nil), nil }
-	r.ProcessEnv = func(context.Context) (string, error) { return "x", nil }
 	err := r.GoCaches(true)
 	res := NewGCResult(time.Now(), errors.Join(err, layerErr("temp sweep", &CutOffError{Err: context.DeadlineExceeded})))
 	if !res.OK || len(res.OverBudget) != 1 || strings.Join(res.CutOffLayers, ",") != "temp sweep" {
@@ -946,5 +775,66 @@ func TestGoCacheExecutableEntriesAreMeasuredAndEvicted(t *testing.T) {
 	}
 	if exists(oldExec) || exists(small) || !exists(newExec) {
 		t.Fatalf("oldExec=%v small=%v newExec=%v\n%s", exists(oldExec), exists(small), exists(newExec), out.String())
+	}
+}
+
+// An entry listed as old but reused while the pass works through its shard must
+// survive: cmd/go restamps an entry when a build uses it, and a paced pass
+// reaches an entry minutes after the shard was listed. The floor cannot cover
+// this — the entry was old when listed.
+func TestGoCacheEntryTouchedAfterListingSurvives(t *testing.T) {
+	root := t.TempDir()
+	makeBuildCache(t, root)
+	first := putEntry(t, root, "ab", hexName(1, "-a"), 10, 100*time.Hour)
+	second := putEntry(t, root, "ab", hexName(2, "-a"), 10, 90*time.Hour)
+	third := putEntry(t, root, "ab", hexName(3, "-d"), 10, 80*time.Hour)
+	var out strings.Builder
+	r := goRunner(t, &out)
+	r.GoCacheRoot = root
+	r.Policy.DeleteRatePerSec = 1_000_000_000
+	r.removeFn = func(p string) error {
+		if p == first { // a build uses the other two entries while this unlink is in flight
+			now := time.Now()
+			for _, q := range []string{second, third} {
+				_ = os.Chtimes(q, now, now)
+			}
+		}
+		return os.Remove(p)
+	}
+	var trims []GoCacheTrim
+	r.OnGoCacheTrim = func(tr GoCacheTrim) { trims = append(trims, tr) }
+	if err := r.SharedGoCache(true); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if exists(first) || !exists(second) || !exists(third) {
+		t.Fatalf("first=%v second=%v third=%v: want only the entry nobody used removed\n%s", exists(first), exists(second), exists(third), out.String())
+	}
+	if len(trims) != 1 || trims[0].Removed != 1 {
+		t.Fatalf("an entry spared because it was reused must not be counted as removed: %+v", trims)
+	}
+}
+
+// Least recently used first within a shard: a pass the delete cap stops
+// partway must have taken the oldest entries, not the ones that sort first by
+// name.
+func TestGoCacheRemovesLeastRecentlyUsedFirst(t *testing.T) {
+	root := t.TempDir()
+	makeBuildCache(t, root)
+	ages := map[int]time.Duration{1: 60 * time.Hour, 2: 100 * time.Hour, 3: 70 * time.Hour, 4: 120 * time.Hour, 5: 80 * time.Hour}
+	paths := map[int]string{}
+	for n, age := range ages {
+		paths[n] = putEntry(t, root, "ab", hexName(n, "-a"), 10, age)
+	}
+	var out strings.Builder
+	r := goRunner(t, &out)
+	r.GoCacheRoot = root
+	r.Policy.MaxDeletesPerPass = 2
+	r.Policy.DeleteRatePerSec = 1_000_000_000
+	_ = r.SharedGoCache(true) // the cap stops it: a cut-off, not a failure
+	for n, p := range paths {
+		oldest := n == 4 || n == 2
+		if exists(p) == oldest {
+			t.Errorf("entry %d (%s old): exists=%v; the cap of 2 must take the two oldest (120h, 100h)\n%s", n, ages[n], exists(p), out.String())
+		}
 	}
 }

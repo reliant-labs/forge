@@ -200,24 +200,37 @@ func TestEnvDiff_ReportsRuntimeMoves(t *testing.T) {
 	}
 }
 
-// A kind change is an ERROR, not a change: a kind is immutable, so it cannot
-// be deployed at all, and the output has to say so rather than listing it
-// among the diffs.
-func TestEnvDiff_KindChangeIsReportedAsAnError(t *testing.T) {
-	liveShape := release.Shape{Kind: release.EnvPersistent}
-	candidate := release.Shape{Kind: release.EnvSelfManaged}
+// An env whose candidate gains a hosted part beside its cluster parts is NOT a
+// different env: placement is per workload, so the diff lists the new part and
+// nothing else — no kind error (docs/design/per-workload-placement.md).
+func TestEnvDiff_GainingAHostedPartIsAChangeNotAnError(t *testing.T) {
+	liveShape := release.Shape{Kind: release.EnvSelfManaged, Workloads: []release.ShapeWorkload{{Name: "api", Runtime: "cluster"}}}
+	candidate := release.Shape{Kind: release.EnvPersistent, Workloads: []release.ShapeWorkload{{Name: "api", Runtime: "cluster"}, {Name: "web", Runtime: "hosted"}}}
 
 	entry := runDiffEntry(t, "prod",
 		liveSide{Known: true, Source: "bundle", Shape: &liveShape},
 		map[string]stubbedRender{"prod": {shape: candidate}})
 
-	if entry.Diff.KindChanged == nil {
-		t.Fatal("a kind disagreement must be reported")
+	// Assert the wire contract without depending on the retired Go field:
+	// placement changes must not emit the legacy env-wide kind category.
+	diffJSON, err := json.Marshal(entry.Diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diffFields map[string]json.RawMessage
+	if err := json.Unmarshal(diffJSON, &diffFields); err != nil {
+		t.Fatal(err)
+	}
+	if kindChange, exists := diffFields["kind_changed"]; exists {
+		t.Fatalf("a placement mix must not read as a kind change: %s", kindChange)
+	}
+	if got := entry.Diff.WorkloadsAdded; len(got) != 1 || got[0] != "web" {
+		t.Errorf("workloads added = %v, want [web]", got)
 	}
 	var out bytes.Buffer
 	writeOneEnvDiff(&out, entry)
-	if !strings.Contains(out.String(), "ERROR kind is immutable") {
-		t.Errorf("a kind change must read as an error, got:\n%s", out.String())
+	if strings.Contains(out.String(), "ERROR") {
+		t.Errorf("a gained hosted part must not read as an error, got:\n%s", out.String())
 	}
 }
 

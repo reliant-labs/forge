@@ -14,6 +14,8 @@ import (
 // the render fixture seam and checks the facts, and then the decision.
 func TestObsFactsFromRenderedDeclaration(t *testing.T) {
 	cp := `"control_plane": {"type": "reliant", "endpoint": "https://cp.example.com"}`
+	host := `"workloads": [{"name": "api", "kind": "service", "runtime": {"type": "host"}, "spec": {"kind": "service"}}]`
+	cluster := `"workloads": [{"name": "api", "kind": "service", "runtime": {"type": "cluster"}, "spec": {"kind": "service"}}]`
 	cases := []struct {
 		name    string
 		output  string
@@ -35,15 +37,42 @@ func TestObsFactsFromRenderedDeclaration(t *testing.T) {
 		},
 		{
 			name:    "local stack",
-			output:  `{"observability": {"enabled": true}}`,
-			want:    obsbackend.Facts{Env: "e", Declared: true, Enabled: true},
+			output:  `{"observability": {"enabled": true}, ` + host + `}`,
+			want:    obsbackend.Facts{Env: "e", Declared: true, Enabled: true, HasLocal: true},
 			backend: "local",
 		},
 		{
 			name:    "a control plane alone does not move telemetry off the machine",
-			output:  `{"observability": {"enabled": true}, ` + cp + `}`,
-			want:    obsbackend.Facts{Env: "e", Declared: true, Enabled: true, ControlPlane: "https://cp.example.com"},
+			output:  `{"observability": {"enabled": true}, ` + cp + `, ` + host + `}`,
+			want:    obsbackend.Facts{Env: "e", Declared: true, Enabled: true, ControlPlane: "https://cp.example.com", HasLocal: true},
 			backend: "local",
+		},
+		{
+			// control-plane prod: every workload on a cluster, no destination.
+			// The local ClickStack never saw its telemetry.
+			name:    "a cluster-only env automatically queries its control plane",
+			output:  `{"observability": {"enabled": true}, ` + cp + `, ` + cluster + `}`,
+			want:    obsbackend.Facts{Env: "e", Declared: true, Enabled: true, ControlPlane: "https://cp.example.com", HasCluster: true},
+			backend: "cloud",
+		},
+		{
+			name:   "mixed local and cluster needs a destination",
+			output: `{"observability":{"enabled":true}, ` + cp + `, "workloads":[{"name":"api","kind":"service","runtime":{"type":"cluster"},"spec":{"kind":"service"}},{"name":"tools","kind":"worker","runtime":{"type":"host"},"spec":{"kind":"worker"}}]}`,
+			want:   obsbackend.Facts{Env: "e", Declared: true, Enabled: true, HasLocal: true, HasCluster: true, ControlPlane: "https://cp.example.com"},
+			errHas: "mixes local and cluster",
+		},
+		{
+			// control-plane dev: host services plus local k3d workloads.
+			name:    "explicit local lifecycle keeps mixed host and k3d local",
+			output:  `{"lifecycle":"local","observability":{"enabled":true}, ` + cp + `, "workloads":[{"name":"api","kind":"service","runtime":{"type":"host"},"spec":{"kind":"service"}},{"name":"operator","kind":"service","runtime":{"type":"cluster"},"spec":{"kind":"service"}}]}`,
+			want:    obsbackend.Facts{Env: "e", Declared: true, Enabled: true, HasLocal: true, HasCluster: true, LocalLifecycle: true, ControlPlane: "https://cp.example.com"},
+			backend: "local",
+		},
+		{
+			name:   "missing runtime never guesses local",
+			output: `{"observability":{"enabled":true}, ` + cp + `}`,
+			want:   obsbackend.Facts{Env: "e", Declared: true, Enabled: true, ControlPlane: "https://cp.example.com"},
+			errHas: "declares no runtime",
 		},
 		{
 			name:    "destination fed by the control plane",
@@ -65,7 +94,7 @@ func TestObsFactsFromRenderedDeclaration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Env != c.want.Env || got.Declared != c.want.Declared || got.Enabled != c.want.Enabled || got.ControlPlane != c.want.ControlPlane ||
+			if got.Env != c.want.Env || got.Declared != c.want.Declared || got.Enabled != c.want.Enabled || got.ControlPlane != c.want.ControlPlane || got.HasLocal != c.want.HasLocal || got.HasCluster != c.want.HasCluster || got.LocalLifecycle != c.want.LocalLifecycle ||
 				(got.Destination == nil) != (c.want.Destination == nil) || (got.Destination != nil && *got.Destination != *c.want.Destination) {
 				t.Errorf("facts = %+v (destination %+v), want %+v (destination %+v)", got, got.Destination, c.want, c.want.Destination)
 			}

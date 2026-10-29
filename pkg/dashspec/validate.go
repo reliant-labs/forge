@@ -243,7 +243,7 @@ func (v *validator) oneOf(path string, obj map[string]any, key string, required 
 }
 
 func (v *validator) dashboard(d map[string]any) {
-	v.known("", d, "version", "id", "title", "description", "filters", "annotations", "panels")
+	v.known("", d, "version", "id", "title", "description", "filters", "annotations", "panels", "sections", "defaultRange")
 	if ver := v.str("", d, "version", false); ver != "" && ver != SpecVersion {
 		v.add("version", "%q is not the spec version this forge reads (%s)", ver, SpecVersion)
 	}
@@ -252,6 +252,11 @@ func (v *validator) dashboard(d map[string]any) {
 	}
 	v.str("", d, "title", true)
 	v.str("", d, "description", false)
+	if r := v.str("", d, "defaultRange", false); r != "" {
+		if _, err := ParseSpan(r); err != nil {
+			v.add("defaultRange", "%v", err)
+		}
+	}
 
 	if fs, ok := v.list("", d, "filters"); ok {
 		v.filters(fs)
@@ -296,6 +301,7 @@ func (v *validator) dashboard(d map[string]any) {
 			v.panel(p, o, ids)
 		}
 	}
+	v.sectionTargets(d, ps, ids)
 }
 
 func (v *validator) filters(fs []any) {
@@ -306,7 +312,7 @@ func (v *validator) filters(fs []any) {
 		if !ok {
 			continue
 		}
-		v.known(p, f, "id", "label", "field", "signal")
+		v.known(p, f, "id", "label", "field", "signal", "panelIds")
 		if id := v.str(p, f, "id", true); id != "" {
 			if ids[id] {
 				v.add(childPath(p, "id"), "duplicate filter id %q", id)
@@ -355,7 +361,7 @@ func (v *validator) stringList(path string, obj map[string]any, key string, sig 
 }
 
 func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
-	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql")
+	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql", "section", "minStep")
 	if id := v.str(path, o, "id", true); id != "" {
 		if !idPattern.MatchString(id) {
 			v.add(childPath(path, "id"), "%q is not a valid id (letters, digits, '-', '_' and '.', starting with a letter or digit)", id)
@@ -370,6 +376,9 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	kind := v.oneOf(path, o, "kind", true, string(KindNumber), string(KindLine), string(KindTable), string(KindSearch), string(KindBar), string(KindHeatmap), string(KindSQL), string(KindIssues), string(KindSessions), string(KindFunnel))
 	sigName := v.oneOf(path, o, "signal", kind != string(KindSQL), string(Traces), string(Metrics), string(Logs))
 	sig := Signal(sigName)
+	if _, has := o["minStep"]; has && kind != string(KindSQL) {
+		v.add(childPath(path, "minStep"), "only a sql panel takes \"minStep\"")
+	}
 	v.oneOf(path, o, "unit", false, string(UnitCount), string(UnitMillis), string(UnitBytes), string(UnitPercent), string(UnitSeconds))
 	if w, ok := v.number(path, o, "width"); ok && (w < 0 || w > GridColumns || w != float64(int(w))) {
 		v.add(childPath(path, "width"), "must be a whole number of grid columns from 1 to %d", GridColumns)
@@ -511,6 +520,11 @@ func (v *validator) sqlPanel(path string, o map[string]any) {
 	if err := CheckSQL(s); err != nil {
 		v.add(childPath(path, "sql"), "%v", err)
 	}
+	if m := v.str(path, o, "minStep", false); m != "" {
+		if _, err := ParseSpan(m); err != nil {
+			v.add(childPath(path, "minStep"), "%v", err)
+		}
+	}
 }
 
 // nonNumericFields are the semantic fields that never hold a number, so a
@@ -637,6 +651,12 @@ func (v *validator) searchPanel(path string, o map[string]any, sig Signal) {
 	v.stringList(path, o, "columns", sig)
 }
 
+// hasObservations reports whether a metric kind records observations (a count
+// and a distribution) rather than a single value.
+func hasObservations(metricType string) bool {
+	return metricType == "histogram" || metricType == "exp_histogram" || metricType == "summary"
+}
+
 func (v *validator) series(path string, s map[string]any, sig Signal, labels map[string]bool) {
 	v.known(path, s, "label", "agg", "quantile", "field", "metricType", "where", "thresholds")
 	if l := v.str(path, s, "label", true); l != "" {
@@ -645,9 +665,9 @@ func (v *validator) series(path string, s map[string]any, sig Signal, labels map
 		}
 		labels[l] = true
 	}
-	agg := v.oneOf(path, s, "agg", true, string(AggCount), string(AggCountDistinct), string(AggSum), string(AggAvg), string(AggMax), string(AggQuantile), string(AggLast))
+	agg := v.oneOf(path, s, "agg", true, string(AggCount), string(AggCountDistinct), string(AggSum), string(AggAvg), string(AggMax), string(AggQuantile), string(AggLast), string(AggRate), string(AggIncrease), string(AggMin))
 	field := v.str(path, s, "field", false)
-	metricType := v.oneOf(path, s, "metricType", false, "sum", "gauge", "histogram")
+	metricType := v.oneOf(path, s, "metricType", false, "sum", "gauge", "histogram", "exp_histogram", "summary")
 	q, hasQ := v.number(path, s, "quantile")
 	if agg == string(AggQuantile) {
 		if !hasQ || q <= 0 || q > 1 {
@@ -665,17 +685,26 @@ func (v *validator) series(path string, s map[string]any, sig Signal, labels map
 			v.add(path, "a metrics series names its metric in \"field\"")
 		}
 		if metricType == "" {
-			v.add(path, "a metrics series needs \"metricType\" (sum, gauge or histogram)")
+			v.add(path, "a metrics series needs \"metricType\" (sum, gauge, histogram, exp_histogram or summary)")
 		}
-		if agg == string(AggQuantile) && metricType != "histogram" {
-			v.add(childPath(path, "agg"), "a quantile over a metric needs metricType \"histogram\"")
+		if agg == string(AggQuantile) && !hasObservations(metricType) {
+			v.add(childPath(path, "agg"), "a quantile over a metric needs metricType \"histogram\", \"exp_histogram\" or \"summary\"")
 		}
-		if agg == string(AggCount) || agg == string(AggCountDistinct) {
-			v.add(childPath(path, "agg"), "%s is not defined over a metric; use sum, avg, max, last or quantile", agg)
+		if agg == string(AggCountDistinct) {
+			v.add(childPath(path, "agg"), "%s is not defined over a metric; use rate, increase, sum, avg, min, max, last, quantile or (histograms) count", agg)
+		}
+		if agg == string(AggCount) && !hasObservations(metricType) {
+			v.add(childPath(path, "agg"), "count over a metric needs a histogram, exp_histogram or summary metricType (its observations); a sum's growth is rate or increase (agg sum on a monotonic sum is its increase)")
+		}
+		if (agg == string(AggRate) || agg == string(AggIncrease)) && metricType == "gauge" {
+			v.add(childPath(path, "agg"), "%s needs metricType \"sum\" (a monotonic counter) or a histogram or summary, not a gauge", agg)
 		}
 	case Traces, Logs:
 		if metricType != "" {
 			v.add(childPath(path, "metricType"), "only a metrics series takes metricType")
+		}
+		if agg == string(AggRate) || agg == string(AggIncrease) || agg == string(AggMin) {
+			v.add(childPath(path, "agg"), "%s is defined for metrics; use count, sum, avg, max or quantile over a %s field", agg, sig)
 		}
 		if agg != "" && agg != string(AggCount) && field == "" {
 			v.add(path, "aggregate %q needs a \"field\"", agg)

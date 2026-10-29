@@ -49,10 +49,11 @@ func LintFrontendHookTests(rootDir string) (Result, error) {
 			}
 			return nil
 		}
-		// Match: frontends/<name>/src/hooks/<svc>-hooks.ts (NOT .test.ts,
-		// NOT .test.tsx, NOT .tsx.starter — only the generated hooks
-		// file itself).
-		if !strings.HasSuffix(p, "-hooks.ts") {
+		// Match: frontends/<name>/src/hooks/<svc>-hooks_gen.ts, or the
+		// pre-rename <svc>-hooks.ts (NOT .test.ts, NOT .test.tsx, NOT
+		// .tsx.starter — only the generated hooks file itself). Matching
+		// only the old spelling left every current project unchecked.
+		if !isGeneratedHooksFile(p) {
 			return nil
 		}
 		// Filter to files actually inside src/hooks/. The naive suffix
@@ -108,8 +109,7 @@ func shouldSkipFrontendSubdir(name string) bool {
 // lintFrontendHookFile checks one hooks file for a sibling test.
 // Returns (finding, true) when there isn't one.
 func lintFrontendHookFile(hookPath, relRoot string) (Finding, bool) {
-	base := strings.TrimSuffix(hookPath, ".ts")
-	testPath := base + ".test.tsx"
+	testPath := siblingTestPath(hookPath)
 
 	if _, err := os.Stat(testPath); err == nil {
 		return Finding{}, false
@@ -124,7 +124,7 @@ func lintFrontendHookFile(hookPath, relRoot string) (Finding, bool) {
 		Message: "generated hooks file has no sibling test (.test.tsx) — re-run " +
 			"`forge generate` to scaffold one, or write a test using " +
 			"mockTransport/renderWithTransport from src/lib/test-utils.",
-		Remediation: "add `" + filepath.Base(base) + ".test.tsx` next to the hooks file. " +
+		Remediation: "add `" + filepath.Base(testPath) + "` next to the hooks file. " +
 			"See the `frontend-testing` skill for recipes and the mockTransport seam.",
 	}, true
 }

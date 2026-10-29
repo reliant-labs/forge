@@ -109,15 +109,17 @@ permissions:
 # job's wall time and the run's critical path to the run summary.
 
 # Cancel a superseded run on a pull request only. On main the run in progress
-# always finishes: every push to main shares one group, so cancelling there let
-# each merge kill the run before it — usually while its jobs were still queued
-# for a runner. control-plane lost every main run for 2.5 hours that way on
-# 2026-10-11 (control-plane#831). GitHub keeps at most one PENDING run per
-# group and a newer push replaces it, so a burst of merges costs one extra
-# run, not one per merge. Every workflow here follows the same rule, and
-# internal/templates/ci_concurrency_test.go holds them to it.
+# always finishes, and so does every other one: a push run's group is its own
+# commit. A shared main group let each merge kill the run before it
+# (control-plane lost every main run for 2.5 hours on 2026-10-11,
+# control-plane#831), and even without cancel-in-progress GitHub keeps at most
+# one PENDING run per group and a newer push REPLACES it, so a burst of merges
+# left most main commits with no verdict at all and nothing releasable. A
+# release tags the newest commit whose run is green (release-forge.sh
+# --commit), so every commit needs one. Every workflow here follows the same
+# rule, and internal/templates/ci_concurrency_test.go holds them to it.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Go version is read from go.mod's `go` directive via setup-go's
@@ -126,12 +128,23 @@ concurrency:
 #
 # Build-cache note (the "Restore Go build cache" steps below).
 #
-# The pull-request jobs (test-short, checks) restore through
-# .github/actions/restore-go-caches with setup-go's `cache: false`: one
-# go-mod entry per go.sum plus a build scope — go-build-short, saved by
-# test-short-warm, and go-build-tools, saved by checks' own run on main
-# (save-go-caches). The main-only jobs below still spell their restores out;
-# what follows applies to both.
+# Every Linux job restores through .github/actions/restore-go-caches with
+# setup-go's `cache: false`: one go-mod entry per go.sum plus a build scope.
+# FOUR scopes are saved, each by one job, and the budget is planned around
+# them (10 GB for the repository):
+#
+#   go-build-short   test-short-warm, every push   test-short, lint     ~1.3 GB
+#   go-build-tools   checks, every push            checks, build, e2e   ~1.0 GB
+#   go-build-test    test, once a UTC day          test, test-cli       ~2.2 GB
+#   go-build-windows windows, once a UTC day       windows              ~1.0 GB
+#
+# plus e2e-prepare (daily, ~0.5 GB) and the consumer canary (daily, ~1.5 GB).
+# The two the pull-request tier restores are refreshed by every push; every
+# other scope once a day (restore-go-caches, "<rev> IS THE COMMIT OR THE
+# DAY"). Before that every job saved its own scope on every push, ~9.5 GB per
+# push, and each push evicted the pull-request tier's entries: Checks then
+# ran cold, 400-620s instead of ~185s. A job that would add a scope restores
+# one of these instead, unless its artifacts share nothing with them.
 #
 # setup-go's own `cache: true` DOES cache the build cache — it saves
 # `go env GOCACHE` alongside `go env GOMODCACHE`. What it does not do is
@@ -196,24 +209,16 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
-      - name: Note when the Go build cache was restored
-        run: echo "GOCACHE_RESTORED_AT=$(date +%s)" >> "$GITHUB_ENV"
+          cache: false
       # golangci-lint type-checks the whole repo, which is a full compile
-      # in all but name. Its own action caches the analyzer results; this
-      # caches the Go build artifacts underneath them.
-      - name: Restore Go build cache
-        id: restore-gocache
-        uses: actions/cache/restore@v6
+      # in all but name. Its own action caches the analyzer results; the
+      # -short scope holds the Go build artifacts underneath them — the same
+      # non-race linux compile `go vet` needs. Restore only: a scope of its
+      # own (go-build-lint, ~0.7 GB a push) bought a few seconds over this
+      # one and was evicted from the budget before its next run anyway.
+      - uses: ./.github/actions/restore-go-caches
         with:
-          path: ~/.cache/go-build
-          key: go-build-lint-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
-          # The -short scope is the fallback: the same non-race linux
-          # compile `go vet` needs.
-          restore-keys: |
-            go-build-lint-${{ runner.os }}-${{ hashFiles('go.sum') }}-
-            go-build-lint-${{ runner.os }}-
-            go-build-short-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+          scope: short
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -286,16 +291,6 @@ jobs:
           fi
           printf '%s\n' "${pkgs[@]}"
           go vet -tags e2e "${pkgs[@]}"
-      - name: Trim the Go build cache (main only)
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        uses: ./.github/actions/trim-go-build-cache
-      # Main only; see "Build-cache note" at the top of this file.
-      - name: Save Go build cache
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        uses: actions/cache/save@v6
-        with:
-          path: ~/.cache/go-build
-          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
   # ── The pull-request test tier: -short, the guards, the flake gate ──────
   #
@@ -377,6 +372,12 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Install golang-migrate CLI
         uses: ./.github/actions/install-migrate
+      # Match test-short-warm's PATH for cache-sound result replay.
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.52.0
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Go tests (-short)
         if: ${{ matrix.args != '' }}
         env:
@@ -452,23 +453,21 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
-      - name: Note when the Go build cache was restored
-        run: echo "GOCACHE_RESTORED_AT=$(date +%s)" >> "$GITHUB_ENV"
+          cache: false
       # This job compiles far more than it looks: the suite scaffolds real
       # projects and runs real `go build` / `go mod tidy` inside them, and
       # it runs under -race, which is a separate set of build artifacts
       # from the non-race ones every other job produces. It is the job
       # that benefits most from a warm GOCACHE.
-      - name: Restore Go build cache
-        id: restore-gocache
-        uses: actions/cache/restore@v6
+      #
+      # Refreshed DAILY, not per push (restore-go-caches says why): a day-old
+      # -race cache still holds every dependency, and costs only the forge
+      # packages that changed since. test-cli restores this same scope.
+      - uses: ./.github/actions/restore-go-caches
+        id: go-caches
         with:
-          path: ~/.cache/go-build
-          key: go-build-test-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
-          restore-keys: |
-            go-build-test-${{ runner.os }}-${{ hashFiles('go.sum') }}-
-            go-build-test-${{ runner.os }}-
+          scope: test
+          refresh: daily
       # pkg/pgtest boots postgres for the DB-backed tests; see the action.
       - uses: ./.github/actions/embedded-postgres-cache
       # internal/tierguard renders real fixture projects, which drives the
@@ -505,16 +504,21 @@ jobs:
         run: go test -race -count=1 -timeout 30m $(scripts/ci-test-packages.sh unit)
       - name: Local registry maintenance integration
         run: go test -race -tags=integration -count=1 -timeout=5m ./internal/storage
-      - name: Trim the Go build cache (main only)
+      # Main only: keeps any archive this job had to fetch, so the next run
+      # does not (see embedded-postgres-cache's header).
+      - name: Save the embedded postgres archives (main only)
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        uses: ./.github/actions/trim-go-build-cache
-      # Main only; see "Build-cache note" at the top of this file.
-      - name: Save Go build cache
+        uses: ./.github/actions/embedded-postgres-cache-save
+      # Main only; see "Build-cache note" at the top of this file. Skipped
+      # when today's entry already exists (build-hit).
+      - name: Save the Go caches (main only, once a day)
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        uses: actions/cache/save@v6
+        uses: ./.github/actions/save-go-caches
         with:
-          path: ~/.cache/go-build
-          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
+          build-key: ${{ steps.go-caches.outputs.build-key }}
+          build-hit: ${{ steps.go-caches.outputs.build-hit }}
+          mod-key: ${{ steps.go-caches.outputs.mod-key }}
+          mod-hit: ${{ steps.go-caches.outputs.mod-hit }}
 
   test-cli:
     name: Test (internal/cli)
@@ -525,22 +529,15 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
-      - name: Note when the Go build cache was restored
-        run: echo "GOCACHE_RESTORED_AT=$(date +%s)" >> "$GITHUB_ENV"
-      # Its own scope: internal/cli's -race test binary and the projects its
-      # tests scaffold and build. It falls back to `test`'s scope, which holds
-      # the same -race artifacts for every package internal/cli imports.
-      - name: Restore Go build cache
-        id: restore-gocache
-        uses: actions/cache/restore@v6
+          cache: false
+      # `test`'s scope, restore only: it holds the -race artifacts of every
+      # package internal/cli imports. A scope of its own (go-build-test-cli,
+      # ~1 GB a push) is what pushed the pull-request tier's caches out of
+      # the 10 GB budget (restore-go-caches says how).
+      - uses: ./.github/actions/restore-go-caches
         with:
-          path: ~/.cache/go-build
-          key: go-build-test-cli-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
-          restore-keys: |
-            go-build-test-cli-${{ runner.os }}-${{ hashFiles('go.sum') }}-
-            go-build-test-cli-${{ runner.os }}-
-            go-build-test-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+          scope: test
+          refresh: daily
       # The same toolchain as `test`, for the same reasons: postgres for the
       # DB-backed tests, buf for the generate pipeline, migrate for
       # TestDBReset_* (internal/cli/db_reset*_test.go).
@@ -552,22 +549,24 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Install golang-migrate CLI
         uses: ./.github/actions/install-migrate
+      # Full CLI tests execute rendered Taskfiles; do not skip them when a
+      # runner lacks Task. Pin the version exercised by these fixtures.
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.52.0
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Check the test-job partition
         run: scripts/ci-test-packages.sh check
       - name: Go tests (internal/cli)
         # The same 30m budget as `test`: internal/cli alone measured
         # 665-692s under -race, so this is a hang detector, not a speed bound.
         run: go test -race -count=1 -timeout 30m $(scripts/ci-test-packages.sh cli)
-      - name: Trim the Go build cache (main only)
+      # Main only: keeps any archive this job had to fetch, so the next run
+      # does not (see embedded-postgres-cache's header).
+      - name: Save the embedded postgres archives (main only)
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        uses: ./.github/actions/trim-go-build-cache
-      # Main only: a PR's cache is visible to that PR alone.
-      - name: Save Go build cache
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        uses: actions/cache/save@v6
-        with:
-          path: ~/.cache/go-build
-          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
+        uses: ./.github/actions/embedded-postgres-cache-save
 
   # The pull-request tier, run whole on main, then the guards. Three jobs in
   # one: main's own check that the tier pull requests are judged by still
@@ -607,6 +606,12 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Install golang-migrate CLI
         uses: ./.github/actions/install-migrate
+      # Full-tier changed-test repetition can include the Taskfile fixtures.
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.52.0
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       # The pull request's command, flags and all: a result is keyed on the
       # test flags, so any other spelling would replay nothing there.
       - name: Go tests (-short, every package)
@@ -628,6 +633,11 @@ jobs:
         # -p 1, and -p 1 was not slower (132s against 217s). Full mode and
         # -count=1: the guards' whole-repo work skips under -short.
         run: go test -p 1 -count=1 -timeout 30m $(scripts/ci-test-packages.sh guards)
+      # Main only: keeps any archive this job had to fetch, so the next run
+      # does not (see embedded-postgres-cache's header).
+      - name: Save the embedded postgres archives (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/embedded-postgres-cache-save
       # Main only, and after the tests so the entry carries their results.
       - name: Save the Go caches (main only)
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -699,12 +709,17 @@ jobs:
         run: echo "dir=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
       - name: Note when the Go build cache was restored
         run: echo "GOCACHE_RESTORED_AT=$(date +%s)" >> "$GITHUB_ENV"
+      # Refreshed once per UTC day, not per push: restore-go-caches says why
+      # (this job's own NTFS paths keep it off that action).
+      - name: The build cache's day
+        id: day
+        run: echo "rev=day-$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
       - name: Restore Go build cache
         id: restore-gocache
         uses: actions/cache/restore@v6
         with:
           path: ${{ steps.gocache.outputs.dir }}
-          key: go-build-windows-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          key: go-build-windows-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ steps.day.outputs.rev }}
           restore-keys: |
             go-build-windows-${{ runner.os }}-${{ hashFiles('go.sum') }}-
             go-build-windows-${{ runner.os }}-
@@ -753,20 +768,25 @@ jobs:
       - name: Scaffold + render smoke
         run: scripts/ci-windows-smoke.sh
       - name: Trim the Go build cache (main only)
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.restore-gocache.outputs.cache-hit != 'true' }}
         uses: ./.github/actions/trim-go-build-cache
         with:
           path: ${{ steps.gocache.outputs.dir }}
       # Main only, and after the tests so the entry carries their results.
-      # !cancelled(): a red main still compiled everything, and the next PR
-      # restores the artifacts whether or not a test failed. The key carries
-      # the sha, so this never collides with the entry it restored from.
+      # !cancelled(): a red main still compiled everything, and the next run
+      # restores the artifacts whether or not a test failed. Once a day: an
+      # exact hit means today's entry already exists.
       - name: Save Go build cache
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.restore-gocache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6
         with:
           path: ${{ steps.gocache.outputs.dir }}
           key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
+      # Main only: keeps any archive this job had to fetch, so the next run
+      # does not (see embedded-postgres-cache's header).
+      - name: Save the embedded postgres archives (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/embedded-postgres-cache-save
 
   # PUSH TO MAIN ONLY. On a pull request every package is already compiled
   # by test-short; what this adds is the release flags (-buildvcs), which a
@@ -782,21 +802,16 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
-      - name: Note when the Go build cache was restored
-        run: echo "GOCACHE_RESTORED_AT=$(date +%s)" >> "$GITHUB_ENV"
-      - name: Restore Go build cache
-        id: restore-gocache
-        uses: actions/cache/restore@v6
+          cache: false
+      # -trimpath below is part of the cache identity: artifacts built with
+      # it do not match the tests'. `checks` saves the scope that does match
+      # — verify-generated builds through goexec, which adds -trimpath, and
+      # both install the same non-trimpath forge — so this job restores
+      # that one and saves none of its own (~0.7 GB a push; restore-go-caches
+      # says why that mattered).
+      - uses: ./.github/actions/restore-go-caches
         with:
-          # -trimpath below is part of the cache identity: artifacts built
-          # with it do not match ones built without, so this job keeps its
-          # own scope rather than sharing the test job's.
-          path: ~/.cache/go-build
-          key: go-build-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
-          restore-keys: |
-            go-build-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-
-            go-build-build-${{ runner.os }}-
+          scope: tools
       - name: Go build
         # -trimpath makes builds reproducible across runners;
         # -buildvcs=true stamps the commit/dirty flag into runtime
@@ -843,16 +858,6 @@ jobs:
       - name: Go vulnerability check
         if: ${{ !cancelled() }}
         run: forge ci vuln-scan --go
-      - name: Trim the Go build cache (main only)
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        uses: ./.github/actions/trim-go-build-cache
-      # Main only; see "Build-cache note" at the top of this file.
-      - name: Save Go build cache
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        uses: actions/cache/save@v6
-        with:
-          path: ~/.cache/go-build
-          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
   # Every check that is not a Go test, in one job (they were the Verify
   # Generated Code and Quick checks jobs, and before those the pre-commit and
@@ -892,6 +897,12 @@ jobs:
     name: Checks (generated code, KCL, pre-commit, licenses)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # pull-requests: read for the apigate step, which reads the pull request's
+    # labels and body live (a label added after the run started is seen on a
+    # re-run). Declaring any permission resets the others, so contents says it.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       # Depth 2 for the CHANGELOG.md guard below: the merge commit and its
       # first parent, the base branch's tip.
@@ -930,6 +941,20 @@ jobs:
         # release, so no change to a template or an emitter could ever go
         # green until after it shipped. Build from the working tree instead.
         run: go install ./cmd/forge
+      # forge may break pkg/ freely; a breaking pull request must declare the
+      # break (the `api-break` label, or an `API-BREAK:` line in its body) and
+      # ship the codemod or migration playbook in the same diff. A step of this
+      # job, not a job of its own: it reuses the forge build above and adds no
+      # runner to queue for. A diff that cannot change pkg/'s API exits in
+      # about a second. dev-docs/api-breaks.md. Pull requests only: a
+      # merge-queue entry was judged when its pull request opened, and a push
+      # to main is already merged.
+      - name: pkg/ API compatibility (undeclared breaks fail)
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: go run ./internal/apigate -base HEAD^1 -pr "$PR"
       # verify-generated runs `forge generate`, whose "buf generate (Go
       # stubs)" step regenerates pkg/forgepb from proto/forge/v1/forge.proto
       # (buf.gen.yaml). Without buf on PATH the job dies with
@@ -939,8 +964,10 @@ jobs:
       # visible here and cannot move under a byte-identical check. 1.50.0 is
       # the version every other buf install in these workflows resolves to
       # (buf-setup-action@v1's default); Taskfile.yml and the Makefile pin
-      # none. Bump them together.
+      # none. Bump them together. pre-commit runs after failures too, so
+      # its formatter prerequisites must not be skipped after an API refusal.
       - name: Install buf
+        if: ${{ !cancelled() }}
         uses: bufbuild/buf-setup-action@v1
         with:
           version: "1.50.0"
@@ -954,6 +981,7 @@ jobs:
       # must not stand in for go.mod's version. Same step as the scaffolded
       # verify-generated job (internal/templates/ci/github/ci.yml.tmpl).
       - name: Install codegen tools
+        if: ${{ !cancelled() }}
         run: forge tools install --force
       - name: Verify generated code
         run: forge ci verify-generated
@@ -979,7 +1007,7 @@ jobs:
       # whole workflow.
       - name: Install KCL
         env:
-          KCL_VERSION: v0.13.1
+          KCL_VERSION: v0.13.2
         run: |
           curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
           command -v kcl
@@ -1033,6 +1061,40 @@ jobs:
           mod-key: ${{ steps.go-caches.outputs.mod-key }}
           mod-hit: ${{ steps.go-caches.outputs.mod-hit }}
 
+  # Review marker: the merge itself checks the review. In the merge queue every
+  # pull request in the group must carry pr-review's pass marker for its
+  # CURRENT head, posted by the pipeline's reviewer (scripts/ci-review-marker.sh;
+  # control-plane docs/pr-pipeline.md). pr-disarm reacts to a push only after
+  # the webhook, so a head pushed after a pass, with its checks already green,
+  # could otherwise ride the armed auto-merge in. On a pull request it only
+  # reports: the review comes after CI, and a red here would keep the PR out of
+  # the queue it is meant to guard.
+  review-marker:
+    name: Review marker
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts
+      - name: pr-review passed every head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          GROUP_REF: ${{ github.event.merge_group.head_ref }}
+          GROUP_SHA: ${{ github.event.merge_group.head_sha }}
+        run: |
+          if [ "$EVENT_NAME" = merge_group ]; then
+            scripts/ci-review-marker.sh group "$GROUP_REF" "$GROUP_SHA"
+          else
+            scripts/ci-review-marker.sh pr "$PR" || echo "::notice::the merge queue will require pr-review's pass marker on this exact head"
+          fi
+
   # CI gate: one check that is red exactly when any job above failed or was
   # cancelled (a skipped job — a main-only lane on a pull request — is not a
   # failure). It is the main ruleset's required check and the one the merge
@@ -1052,6 +1114,7 @@ jobs:
       - test-short-warm
       - windows
       - build
+      - review-marker
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1085,6 +1148,11 @@ jobs:
           fi
           echo "not every job passed:"
           echo "$red"
+          # A missing review is never one of main's reds.
+          if [ "$(jq -r '."review-marker".result' <<<"$RESULTS")" != success ] && [ "$GITHUB_EVENT_NAME" = merge_group ]; then
+            echo "::error::Review marker: pr-review has not passed every head in this merge group"
+            exit 1
+          fi
           if scripts/ci-main-red.sh; then
             echo "::warning::CI gate passed over main's reds (ci:main-red); see the run summary"
             exit 0

@@ -24,11 +24,10 @@ import (
 // pins that set exactly, so a new generated file that starts conflicting
 // fails here.
 //
-// The observability outputs are one file per service, so the merge alone
-// is their render: the generate after it must not touch deploy/observability.
-// When they were whole-project aggregates the merge kept one side, and every
-// rebase of a reliant lane was followed by a ~1,500-line regenerate and an
-// amend (F16).
+// Alert inputs are one file per RPC service and merge disjointly. A shared
+// process part necessarily changes when both branches add mounted RPCs; a
+// generate reconciles that bounded inventory and the next run is a fixed point.
+// No obsolete per-RPC-service dashboard or saved search is resurrected.
 func TestE2EParallelServiceBranchesMerge(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
@@ -126,11 +125,13 @@ message Ping%[2]sResponse {
 	mustGit("add", "-A")
 	mustGit("commit", "-q", "--no-verify", "--no-edit")
 
-	// forge generate renders both sides' inputs over the merged tree, and
-	// finds the observability outputs already rendered.
+	// Adding an RPC changes the process that mounts it. Its part is rebuilt
+	// from both branches, while independent alert inputs merge unchanged.
 	runCmd(t, projectDir, forgeBin, "generate")
-	if st := strings.TrimSpace(mustGit("status", "--porcelain", "--", "deploy/observability")); st != "" {
-		t.Errorf("generate after the merge rewrote observability outputs the merge should already have rendered:\n%s", st)
+	// Reusable fragments merge/reconcile without claiming process ownership.
+	// The selected environment's rendered workload supplies that at bundle time.
+	if matches, _ := filepath.Glob(filepath.Join(projectDir, "deploy/observability/spec/process-*_gen.json")); len(matches) != 0 {
+		t.Fatalf("ordinary generate emitted environment process parts: %v", matches)
 	}
 	compose := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "compose.go"))
 	for _, want := range []string{"alpha.New(", "beta.New("} {
@@ -143,7 +144,7 @@ message Ping%[2]sResponse {
 		if !strings.Contains(strings.ToLower(body), svc) {
 			t.Errorf("routes_gen.go after generate does not carry %s", svc)
 		}
-		readFileE2E(t, filepath.Join(projectDir, "deploy", "observability", "spec", "service-"+svc+"_gen.json"))
+		readFileE2E(t, filepath.Join(projectDir, "deploy", "observability", "spec", "alert-service-"+svc+"_gen.json"))
 	}
 	commit("regenerate")
 

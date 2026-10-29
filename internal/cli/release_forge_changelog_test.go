@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -102,6 +103,9 @@ func section(t *testing.T, changelog, ver string) string {
 }
 
 func TestChangelogRelease_GroupsByTypeAndFlagsBreaking(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script under bash against a git fixture; runs in task test")
+	}
 	repo := newForgeFixtureRepo(t) // tagged v0.1.0
 	writeRepoFile(t, repo, "CHANGELOG.md", unreleasedChangelog)
 	gitIn(t, repo, "add", "CHANGELOG.md")
@@ -158,6 +162,9 @@ func TestChangelogRelease_GroupsByTypeAndFlagsBreaking(t *testing.T) {
 }
 
 func TestChangelogRelease_FoldsUnreleasedOnceAndLeavesItEmpty(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script under bash against a git fixture; runs in task test")
+	}
 	repo := newForgeFixtureRepo(t)
 	writeRepoFile(t, repo, "CHANGELOG.md", unreleasedChangelog)
 	gitIn(t, repo, "add", "CHANGELOG.md")
@@ -198,6 +205,9 @@ func TestChangelogRelease_FoldsUnreleasedOnceAndLeavesItEmpty(t *testing.T) {
 }
 
 func TestChangelogRelease_EmptyReleaseSaysSo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script under bash against a git fixture; runs in task test")
+	}
 	repo := newForgeFixtureRepo(t)
 	writeRepoFile(t, repo, "CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-01-01\n")
 	runChangelogScript(t, repo, "--changelog", "CHANGELOG.md", "--version", "v0.2.0", "--date", "2026-02-03", "--prev-tag", "v0.1.0")
@@ -221,7 +231,7 @@ func fakeGH(t *testing.T, breakingPRs string, failRelease bool) (bin, log string
 	}
 	script := `#!/usr/bin/env bash
 echo "ARGS: $*" >> "` + log + `"
-if [ "$1 $2" = "run list" ]; then printf '123 completed success %s\n' "$(git rev-parse HEAD)"; exit 0; fi
+if [ "$1 $2" = "run list" ]; then printf '123|completed|success|%s\n' "$(git rev-parse HEAD)"; exit 0; fi
 if [ "$1 $2" = "run view" ]; then echo success; exit 0; fi
 if [ "$1 $2" = "pr list" ]; then printf '%s\n' ` + breakingPRs + `; exit 0; fi
 if [ "$1 $2" = "release create" ]; then
@@ -231,6 +241,7 @@ if [ "$1 $2" = "release create" ]; then
   done
   [ "` + fail + `" = "1" ] && { echo "boom" >&2; exit 1; }
 fi
+if [ "$1" = "api" ]; then exit 0; fi
 exit 0
 `
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
@@ -483,5 +494,78 @@ func TestReleaseForgeScript_ChangelogIsPrettierClean(t *testing.T) {
 	}
 	if out, err := exec.Command(npx, "--yes", "prettier@"+pinVer, "--check", filepath.Join(repo, "CHANGELOG.md")).CombinedOutput(); err != nil {
 		t.Fatalf("the released CHANGELOG.md is not prettier-clean: %v\n%s", err, out)
+	}
+}
+
+// The GitHub release must carry the prebuilt archives and checksums that
+// install.sh, install.ps1, the npm shim and the Homebrew formula download, the
+// npm shim's version must move with the release, and the Homebrew tap must be
+// asked to update. A release without them leaves every installer failing.
+func TestReleaseForgeScript_AttachesBinariesSyncsNpmAndDispatchesBrew(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs a build and a git push")
+	}
+	repo, origin := githubFixtureRepo(t)
+	gh, ghLog := fakeGH(t, "", false)
+
+	out, err := runForgeScriptEnv(t, repo, []string{"FORGE_RELEASE_GH=" + gh}, "v0.2.0")
+	if err != nil {
+		t.Fatalf("release failed: %v\n%s", err, out)
+	}
+
+	logged, _ := os.ReadFile(ghLog)
+	log := string(logged)
+	create := ""
+	for _, line := range strings.Split(log, "\n") {
+		if strings.HasPrefix(line, "ARGS: release create") {
+			create = line
+		}
+	}
+	for _, want := range []string{
+		"forge_" + runtime.GOOS + "_" + runtime.GOARCH + ".tar.gz",
+		"checksums.txt",
+	} {
+		if !strings.Contains(create, want) {
+			t.Errorf("gh release create does not attach %s:\n%s", want, create)
+		}
+	}
+	if !strings.Contains(log, "ARGS: api repos/reliant-labs/homebrew-reliant/dispatches -f event_type=forge-release-published -f client_payload[version]=0.2.0") {
+		t.Errorf("the Homebrew tap was not dispatched for 0.2.0:\n%s", log)
+	}
+
+	if got := gitOut(t, origin, "show", "main:npm/package.json"); !strings.Contains(got, `"version": "0.2.0"`) || strings.Contains(got, `"version": "0.1.0"`) {
+		t.Errorf("npm/package.json was not synced to 0.2.0:\n%s", got)
+	}
+	// Only the manifest's own version line moves.
+	if got := gitOut(t, origin, "show", "main:npm/package.json"); !strings.Contains(got, `"node": ">=18"`) {
+		t.Errorf("syncing npm/package.json clobbered other fields:\n%s", got)
+	}
+	if !strings.Contains(out, "npm shim not published") {
+		t.Errorf("without --publish-npm the script must say it did not publish:\n%s", out)
+	}
+}
+
+func TestReleaseForgeScript_PublishNpmRunsPublishAndVerify(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs a build and a git push")
+	}
+	repo, _ := githubFixtureRepo(t)
+	gh, _ := fakeGH(t, "", false)
+	dir := t.TempDir()
+	npmLog := filepath.Join(dir, "npm.log")
+	npm := filepath.Join(dir, "npm")
+	if err := os.WriteFile(npm, []byte("#!/usr/bin/env bash\necho \"NPM(cwd=$(basename \"$PWD\")): $*\" >> '"+npmLog+"'\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runForgeScriptEnv(t, repo, []string{"FORGE_RELEASE_GH=" + gh, "FORGE_RELEASE_NPM=" + npm}, "--publish-npm", "v0.2.0")
+	if err != nil {
+		t.Fatalf("release failed: %v\n%s", err, out)
+	}
+	logged, _ := os.ReadFile(npmLog)
+	for _, want := range []string{"NPM(cwd=npm): publish --access public", "view @reliantlabs/forge@0.2.0 version"} {
+		if !strings.Contains(string(logged), want) {
+			t.Errorf("npm was not driven as expected; missing %q in:\n%s", want, logged)
+		}
 	}
 }

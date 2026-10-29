@@ -814,7 +814,7 @@ message ListItemsResponse { repeated Item items = 1; string next_page_token = 2;
 	// up front so parallel tests do not race that bootstrap.
 	prebuildWebRuntimeE2E(t)
 	runCmdTimeout(t, feDir, 5*time.Minute,
-		"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
+		"pnpm", "install", "--no-frozen-lockfile", "--prefer-offline")
 
 	// Generate again, AFTER that install. The buf TypeScript pass runs
 	// protoc-gen-es out of the frontend's OWN node_modules and, when it is
@@ -831,7 +831,7 @@ message ListItemsResponse { repeated Item items = 1; string next_page_token = 2;
 	// 3a. Fail-loud guard FIRST (near-instant: the throw happens while
 	// next.config.ts is evaluated, before any compilation).
 	out, err := runCorpusCmdEnv(feDir, 2*time.Minute,
-		[]string{"NEXT_PUBLIC_BASE_PATH="}, "npm", "run", "build")
+		[]string{"NEXT_PUBLIC_BASE_PATH="}, "pnpm", "run", "build")
 	if err == nil {
 		t.Fatalf("npm run build with NEXT_PUBLIC_BASE_PATH=\"\" must FAIL (static-export fail-loud guard); output:\n%s", out)
 	}
@@ -842,7 +842,7 @@ message ListItemsResponse { repeated Item items = 1; string next_page_token = 2;
 	// 3b. The real build, prefix explicit. The package.json build script
 	// sets NODE_ENV=production, so the static branch emits out/.
 	out, err = runCorpusCmdEnv(feDir, 8*time.Minute,
-		[]string{"NEXT_PUBLIC_BASE_PATH=/admin"}, "npm", "run", "build")
+		[]string{"NEXT_PUBLIC_BASE_PATH=/admin"}, "pnpm", "run", "build")
 	if err != nil {
 		t.Fatalf("npm run build (NEXT_PUBLIC_BASE_PATH=/admin) failed: %v\n%s", err, out)
 	}
@@ -1501,26 +1501,6 @@ func assertNoForkNoise(t *testing.T, label, out string) {
 		if strings.Contains(out, needle) {
 			t.Errorf("%s: unexpected ownership-machinery output (%q) in:\n%s", label, needle, out)
 		}
-	}
-}
-
-// assertFieldWired pins the deps-matcher fix at the grep level: the
-// name-matched Deps field must wire `Field: app.Field` and must NOT be
-// a silent typed-zero (`Field: nil`) or carry an unresolved TODO.
-// gofmt column-aligns struct-literal values, so match `Field:` followed
-// by any run of spaces.
-func assertFieldWired(t *testing.T, file, content, field string) {
-	t.Helper()
-	wired := regexp.MustCompile(regexp.QuoteMeta(field) + `: +app\.` + regexp.QuoteMeta(field))
-	if !wired.MatchString(content) {
-		t.Errorf("%s: missing `%s: app.%s` — name-matched dep was not wired", file, field, field)
-	}
-	nilWire := regexp.MustCompile(regexp.QuoteMeta(field) + `: +nil`)
-	if nilWire.MatchString(content) {
-		t.Errorf("%s: contains silent `%s: nil` — the deps-matcher downgrade bug class", file, field)
-	}
-	if strings.Contains(content, "TODO: wire "+field) {
-		t.Errorf("%s: contains `TODO: wire %s` — field should have resolved", file, field)
 	}
 }
 
@@ -2826,14 +2806,14 @@ func bootCRUDAuthEnforced(t *testing.T, projectDir string) {
 	}
 	var created struct {
 		Item struct {
-			Id   string `json:"id"`
+			ID   string `json:"id"`
 			Name string `json:"name"`
 		} `json:"item"`
 	}
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatalf("parse CreateItem response %q: %v", string(body), err)
 	}
-	if created.Item.Id == "" || created.Item.Name != "auth-proof" {
+	if created.Item.ID == "" || created.Item.Name != "auth-proof" {
 		t.Errorf("authed CreateItem response missing the created row: %s", body)
 	}
 }
@@ -2912,21 +2892,6 @@ func bootCustomReadRPC(t *testing.T, projectDir string) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("wired custom-read ListItems = HTTP %d, want 200 — the scaffolded custom body did not run its real query out of the box\nresponse: %s\nserver output:\n%s",
 			resp.StatusCode, body.String(), serverOut.String())
-	}
-}
-
-// appendToCorpusFile appends content to an existing file — used to add
-// explicit override sections (e.g. database.driver) to the minimal
-// scaffolded forge.yaml, whose derived-default sections aren't written
-// to disk and so can't be string-replaced.
-func appendToCorpusFile(t *testing.T, path, content string) {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	if err := os.WriteFile(path, append(data, []byte(content)...), 0o644); err != nil {
-		t.Fatalf("write %s: %v", path, err)
 	}
 }
 
@@ -3225,12 +3190,6 @@ func mustReplaceInFile(t *testing.T, path, old, new string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
-}
-
-// mustReplaceFirstInFile is mustReplaceInFile for anchors that appear
-// multiple times — only the FIRST occurrence is replaced.
-func mustReplaceFirstInFile(t *testing.T, path, old, new string) {
-	mustReplaceInFile(t, path, old, new)
 }
 
 // runCorpusCmd runs a command and returns its combined output and error

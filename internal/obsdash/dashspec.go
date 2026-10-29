@@ -39,6 +39,8 @@ type (
 	Annotation = dashspec.Annotation
 	// Dashboard is dashspec.Dashboard.
 	Dashboard = dashspec.Dashboard
+	// Section is dashspec.Section.
+	Section = dashspec.Section
 	// Problem is dashspec.Problem.
 	Problem = dashspec.Problem
 )
@@ -69,6 +71,9 @@ const (
 	AggMax              = dashspec.AggMax
 	AggQuantile         = dashspec.AggQuantile
 	AggLast             = dashspec.AggLast
+	AggRate             = dashspec.AggRate
+	AggIncrease         = dashspec.AggIncrease
+	AggMin              = dashspec.AggMin
 	UnitNone            = dashspec.UnitNone
 	UnitCount           = dashspec.UnitCount
 	UnitMillis          = dashspec.UnitMillis

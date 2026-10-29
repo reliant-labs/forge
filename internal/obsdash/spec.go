@@ -9,7 +9,7 @@
 //     column, no HyperDX field and no chart library. Build derives it from the
 //     project's services, rpcs, frontends and database. It is also serialized
 //     (deploy/observability/spec/, one file for the project and one per
-//     service — see ServicePart) so a second renderer — the Reliant console,
+//     service — see ProcessPart) so a second renderer — the Reliant console,
 //     drawing with uPlot — can consume exactly the same model, through the
 //     release bundle, without parsing HyperDX JSON. The panel vocabulary and
 //     its validator are published as pkg/dashspec (aliased in dashspec.go), so
@@ -28,11 +28,14 @@ package obsdash
 import (
 	"fmt"
 	"sort"
+	"strings"
+
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // PartsVersion identifies the shape of the files the Spec is written to
-// disk as (ProjectPart, ServicePart).
-const PartsVersion = "forge.dashboard-parts/v1"
+// disk as (ProjectPart, ProcessPart).
+const PartsVersion = "forge.dashboard-parts/v2"
 
 // withReleaseMarkers declares the releases annotation on d when it has a
 // time-series panel to draw it on and does not declare one already.
@@ -84,16 +87,11 @@ type Service struct {
 	Methods      []Method
 }
 
-// procedure returns the full procedure name of m: the span name the
-// otelconnect server interceptor uses.
-func procedure(s Service, m Method) string {
-	return s.Package + "." + s.ProtoService + "/" + m.Name
-}
-
 // Input is what Build reads from the project.
 type Input struct {
 	Project   string
 	Services  []Service
+	Processes []Process
 	Frontends []string
 	// HasDatabase adds the database panels: true once the project has a
 	// migration, since the panels read spans the ORM's query hook emits.
@@ -101,6 +99,20 @@ type Input struct {
 	// Funnels are the declared product funnels. Each becomes one panel on the
 	// frontend dashboard, so they only matter when Frontends is non-empty.
 	Funnels []FrontendFunnel
+	// Deployed scopes the overview, together with Processes' own identities,
+	// when the per-process inventory is not being built: forge generate knows
+	// every environment's deployed service.names and workloads, but per-process
+	// parts are the selected environment's alone (built at bundle time, see
+	// ProcessPart). Without it a generate-time overview filtered on the
+	// no-deployed-process sentinel and drew nothing.
+	Deployed Identities
+}
+
+// Identities are the telemetry and workload names deployed processes run
+// under: what the overview's panels are scoped to.
+type Identities struct {
+	ServiceNames []string
+	Workloads    []string
 }
 
 // FrontendFunnel is one declared funnel (forge.Funnel in KCL).
@@ -110,14 +122,16 @@ type FrontendFunnel struct {
 	Funnel
 }
 
-// maxPerRPCRows bounds the per-rpc RED rows: past this a service gets the
-// RED table only, because 3 tiles per rpc stops being readable (and
-// HyperDX caps a dashboard at 500 tiles).
-const maxPerRPCRows = 25
-
-// FrontendServiceName is the service.name the scaffolded frontends report
-// (src/lib/otel_gen.ts: '<project>-frontend').
-func FrontendServiceName(project string) string { return project + "-frontend" }
+// frontendServices are the service.names the project's web frontends report,
+// in declaration order: naming.FrontendServiceName per frontend, the same
+// derivation that bakes SERVICE_NAME into each frontend's otel_gen.ts.
+func frontendServices(project string, frontends []string) []string {
+	var out []string
+	for _, fe := range frontends {
+		out = append(out, naming.FrontendServiceName(project, fe))
+	}
+	return out
+}
 
 // Build derives the project's Spec.
 func Build(in Input) Spec {
@@ -126,63 +140,78 @@ func Build(in Input) Spec {
 
 // ProjectPart is the part of the Spec that belongs to the project as a
 // whole: the overview, which leads, and the dashboards that follow the
-// services' (Workloads, Releases, the frontend's). See ServicePart.
+// services' (Workloads, Releases, the frontend's). See ProcessPart.
 type ProjectPart struct {
+	// Input retains reusable generation fragments; selected-env assembly fills
+	// Processes from rendered KCL, never from stale disk process parts.
+	Input      *Fragments  `json:"input,omitempty"`
 	Version    string      `json:"version"`
 	Project    string      `json:"project"`
 	Overview   Dashboard   `json:"overview"`
 	Dashboards []Dashboard `json:"dashboards"`
 }
 
-// ServicePart is everything forge derives for one service's observability:
-// its dashboard, its saved searches, and what the default alerts know of it.
-//
-// The Spec is written to disk as one ProjectPart and one ServicePart per
-// service (SpecDir) rather than as one file, because a file that lists every
-// service is one that two branches each adding a service both change — at
-// the same sorted position whenever the two services are neighbours, and in
-// JSON so repetitive that git aligns even distant insertions onto each
-// other. The merge then kept one side, and every rebase of a lane that
-// adopted a service was followed by a generate that rewrote ~1,500 lines and
-// an amend (reliant, P3b). One file per service is disjoint from every other
-// branch's, so git merges it — with or without forge's merge driver — into
-// exactly what a generate over both branches writes.
-type ServicePart struct {
-	Version       string        `json:"version"`
-	Service       string        `json:"service"`
-	Dashboard     Dashboard     `json:"dashboard"`
-	SavedSearches []SavedSearch `json:"savedSearches"`
-	Alert         AlertService  `json:"alert"`
+// Fragments holds only project-wide generation inputs. Per-service alert
+// inputs live in separate parts, and dashboard RPC ownership comes from the
+// rendered workloads (Process.RPCServices). Duplicating the service inventory
+// here would make independent service additions change the same shared JSON;
+// the merge driver keeps one side's certified render, losing the other addition.
+type Fragments struct {
+	Frontends   []string
+	HasDatabase bool
+	Funnels     []FrontendFunnel
 }
 
-// BuildParts derives the project's Spec as the parts it is written in. A
-// service with no rpc has no part. Parts are sorted by service name.
-func BuildParts(in Input) (ProjectPart, []ServicePart) {
+// ProcessPart holds one deployed executable/role's dashboard and saved searches.
+// Separate files keep unrelated process changes disjoint; RPC alert inputs are
+// independent alert-service parts, never duplicated for each mounting process.
+type ProcessPart struct {
+	Version       string        `json:"version"`
+	Process       Process       `json:"process"`
+	Dashboard     Dashboard     `json:"dashboard"`
+	SavedSearches []SavedSearch `json:"savedSearches"`
+}
+
+// Process is a deployed executable and command/root, with the exact telemetry
+// and workload identities it owns across environments. No RPC ownership is
+// inferred from a package name, a workload name, or handler reach alone.
+type Process struct {
+	Name         string   `json:"name"`
+	Binary       string   `json:"binary"`
+	Args         []string `json:"args,omitempty"`
+	Root         string   `json:"root,omitempty"`
+	ServiceNames []string `json:"serviceNames"`
+	Workloads    []string `json:"workloads"`
+	RPCServices  []string `json:"rpcServices,omitempty"`
+	HasDatabase  bool     `json:"hasDatabase,omitempty"`
+}
+
+// BuildParts derives the project's Spec as process parts, sorted by process
+// identity. RPC-free workers and gateways retain their runtime/workload panels.
+func BuildParts(in Input) (ProjectPart, []ProcessPart) {
+	fragments := Fragments{Frontends: in.Frontends, HasDatabase: in.HasDatabase, Funnels: in.Funnels}
 	project := ProjectPart{
+		Input:    &fragments,
 		Version:  PartsVersion,
 		Project:  in.Project,
 		Overview: withReleaseMarkers(buildOverview(in)),
 	}
 
-	services := append([]Service(nil), in.Services...)
-	sort.Slice(services, func(i, j int) bool { return services[i].Name < services[j].Name })
-	var parts []ServicePart
-	for _, s := range services {
-		if len(s.Methods) == 0 {
-			continue
-		}
-		parts = append(parts, ServicePart{
+	processes := append([]Process(nil), in.Processes...)
+	sort.Slice(processes, func(i, j int) bool { return processes[i].Name < processes[j].Name })
+	var parts []ProcessPart
+	for _, p := range processes {
+		parts = append(parts, ProcessPart{
 			Version:   PartsVersion,
-			Service:   s.Name,
-			Dashboard: withReleaseMarkers(buildService(in, s)),
+			Process:   p,
+			Dashboard: withReleaseMarkers(buildProcess(in, p)),
 			SavedSearches: []SavedSearch{{
-				ID:      "errors-" + s.Name,
-				Title:   fmt.Sprintf("%s: error logs", s.Name),
+				ID:      "errors-process-" + p.Name,
+				Title:   fmt.Sprintf("%s: error logs", p.Name),
 				Signal:  Logs,
-				Where:   append(serviceLogScope(s), errorLogs),
+				Where:   scoped(processScope(p), errorLogs),
 				Columns: logColumns,
 			}},
-			Alert: AlertService{Name: s.Name, RPCService: s.Package + "." + s.ProtoService},
 		})
 	}
 
@@ -199,9 +228,9 @@ func BuildParts(in Input) (ProjectPart, []ServicePart) {
 // Assemble is the Spec its parts make: the overview, then each service's
 // dashboard in service-name order, then the project's other dashboards; the
 // saved searches in the same service order.
-func Assemble(project ProjectPart, services []ServicePart) Spec {
-	sorted := append([]ServicePart(nil), services...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Service < sorted[j].Service })
+func Assemble(project ProjectPart, processes []ProcessPart) Spec {
+	sorted := append([]ProcessPart(nil), processes...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Process.Name < sorted[j].Process.Name })
 
 	sp := Spec{Version: SpecVersion, Project: project.Project, SavedSearches: []SavedSearch{}}
 	sp.Dashboards = append(sp.Dashboards, project.Overview)
@@ -239,10 +268,6 @@ func commonFilters() []Filter {
 	}
 }
 
-func serviceLogScope(s Service) []Predicate {
-	return []Predicate{{Field: "log.attr.procedure", Op: OpPrefix, Value: "/" + s.Package + "." + s.ProtoService + "/"}}
-}
-
 func latencySeries() []Series {
 	return []Series{
 		{Label: "p50", Agg: AggQuantile, Quantile: 0.5, Field: "span.duration"},
@@ -259,36 +284,47 @@ func redTableSeries() []Series {
 	return append(s, latencySeries()...)
 }
 
-func errorRatioSeries() []Series {
-	return []Series{
-		{Label: "errors", Agg: AggCount, Where: []Predicate{errorSpans}},
-		{Label: "requests", Agg: AggCount},
-	}
-}
-
 func buildOverview(in Input) Dashboard {
 	d := Dashboard{
 		ID:          "overview",
 		Title:       in.Project + ": overview",
-		Description: "Request rate, error rate and latency per service, top errors and recent error logs. Generated by forge from the project's services; narrow with the service.name and deployment.environment.name filters.",
+		Description: "Metric-backed request, server-fault and duration health across deployed processes; saturation, errors and releases. Counters are unsampled; trace drilldowns may be sampled.",
 		Filters:     commonFilters(),
 	}
-	d.Panels = []Panel{
-		{ID: "requests", Title: "Requests", Kind: KindNumber, Signal: Traces, Where: rpcServer, Series: []Series{{Label: "requests", Agg: AggCount}}, Unit: UnitCount, Width: 6, Height: 4},
-		{ID: "errors", Title: "Server errors", Kind: KindNumber, Signal: Traces, Where: scoped(rpcServer, errorSpans), Series: []Series{{Label: "errors", Agg: AggCount}}, Unit: UnitCount, Width: 6, Height: 4},
-		{ID: "p95", Title: "p95 latency", Kind: KindNumber, Signal: Traces, Where: rpcServer, Series: []Series{{Label: "p95", Agg: AggQuantile, Quantile: 0.95, Field: "span.duration"}}, Unit: UnitMillis, Width: 6, Height: 4},
-		{ID: "p99", Title: "p99 latency", Kind: KindNumber, Signal: Traces, Where: rpcServer, Series: []Series{{Label: "p99", Agg: AggQuantile, Quantile: 0.99, Field: "span.duration"}}, Unit: UnitMillis, Width: 6, Height: 4},
-		{ID: "request-rate", Title: "Requests per service", Description: "Count per time bucket.", Kind: KindLine, Signal: Traces, Where: rpcServer, Series: []Series{{Label: "requests", Agg: AggCount}}, GroupBy: []string{FieldService}, Unit: UnitCount, Width: 12, Height: 7},
-		{ID: "error-rate", Title: "Error rate per service", Description: "Server faults (span status Error) over all requests. Client errors such as NotFound are not counted.", Kind: KindLine, Signal: Traces, Where: rpcServer, Series: errorRatioSeries(), Ratio: true, GroupBy: []string{FieldService}, Unit: UnitPercent, Width: 12, Height: 7},
-		{ID: "latency", Title: "Latency p50 / p95 / p99", Kind: KindLine, Signal: Traces, Where: rpcServer, Series: latencySeries(), Unit: UnitMillis, Width: 24, Height: 7},
-		{ID: "red-by-service", Title: "Rate, errors and latency by service", Kind: KindTable, Signal: Traces, Where: rpcServer, Series: redTableSeries(), GroupBy: []string{FieldService}, Width: 24, Height: 8},
-		{ID: "top-errors", Title: "Top errors", Kind: KindTable, Signal: Traces, Where: scoped(rpcServer, errorSpans), Series: []Series{{Label: "count", Agg: AggCount}}, GroupBy: []string{"span.name", "span.status_message"}, Width: 24, Height: 8},
-	}
-	if in.HasDatabase {
-		d.Panels = append(d.Panels, dbPanels(24)...)
+	d.Panels = rpcHealthPanels()
+	for i := range d.Panels {
+		if d.Panels[i].Kind == KindLine {
+			d.Panels[i].GroupBy = []string{FieldService}
+		}
 	}
 	d.Panels = append(d.Panels,
-		Panel{ID: "error-logs", Title: "Recent error logs", Kind: KindSearch, Signal: Logs, Where: []Predicate{errorLogs}, Columns: logColumns, Width: 24, Height: 9},
+		Panel{ID: "top-errors", Title: "Top server faults", Kind: KindTable, Signal: Traces, Where: scoped(rpcServer, errorSpans), Series: []Series{{Label: "sampled faults", Agg: AggCount}}, GroupBy: []string{FieldService, "span.name", "span.status_message"}, Limit: 20, Width: 24, Height: 7})
+	services := append([]string(nil), in.Deployed.ServiceNames...)
+	workloads := append([]string(nil), in.Deployed.Workloads...)
+	for _, p := range in.Processes {
+		services = append(services, p.ServiceNames...)
+		workloads = append(workloads, p.Workloads...)
+	}
+	services = sortedIdentities(services)
+	workloads = sortedIdentities(workloads)
+	for i := range d.Panels {
+		d.Panels[i].Where = scoped(identityScope(FieldService, services), d.Panels[i].Where...)
+	}
+	for _, p := range BuildWorkloads(in.Project).Panels {
+		switch p.ID {
+		case "cpu-vs-limit", "memory-vs-limit", "restarts":
+			p.Where = scoped(identityScope(fieldWorkload, workloads), p.Where...)
+			d.Panels = append(d.Panels, p)
+		}
+	}
+	for _, p := range BuildReleases(in.Project).Panels {
+		if p.ID == "request-rate-by-version" {
+			p.Where = scoped(identityScope(FieldService, services), p.Where...)
+			d.Panels = append(d.Panels, p)
+		}
+	}
+	d.Panels = append(d.Panels,
+		Panel{ID: "error-logs", Title: "Recent error logs", Kind: KindSearch, Signal: Logs, Where: scoped(identityScope(FieldService, services), errorLogs), Columns: logColumns, Width: 24, Height: 9},
 	)
 	return d
 }
@@ -309,42 +345,63 @@ func dbPanels(width int) []Panel {
 	}
 }
 
-func buildService(in Input, s Service) Dashboard {
-	prefix := Predicate{Field: "span.name", Op: OpPrefix, Value: s.Package + "." + s.ProtoService + "/"}
-	base := scoped(rpcServer, prefix)
-	d := Dashboard{
-		ID:          "service-" + s.Name,
-		Title:       fmt.Sprintf("%s: %s service", in.Project, s.Name),
-		Description: fmt.Sprintf("RED per rpc of %s.%s (server spans named %s.%s/<Method>), Go runtime and logs. The Go runtime panels describe the PROCESS that serves this service: narrow with the service.name filter.", s.Package, s.ProtoService, s.Package, s.ProtoService),
-		Filters:     commonFilters(),
+func buildProcess(in Input, p Process) Dashboard {
+	d := Dashboard{ID: "process-" + p.Name, Title: in.Project + ": " + p.Name,
+		Description: "Deployed process " + p.Binary + " " + strings.Join(p.Args, " ") + ". Runtime and workload panels appear once, independent of RPC breakdowns.", Filters: commonFilters()}
+	d.Sections = []Section{{ID: "runtime", Title: "Runtime"}, {ID: "workload", Title: "Workload saturation"}, {ID: "logs", Title: "Logs"}}
+	if len(p.RPCServices) > 0 {
+		d.Sections = append([]Section{{ID: "rpc", Title: "RPC health"}}, d.Sections...)
+		d.Panels = rpcHealthPanels()
+		d.Panels = append(d.Panels,
+			Panel{ID: "red-by-rpc", Title: "Rate, errors and latency by RPC", Kind: KindTable, Signal: Traces, Where: rpcServer, Series: redTableSeries(), GroupBy: []string{"span.name"}, Limit: 50, Width: 24, Height: 8})
 	}
-	d.Panels = []Panel{
-		{ID: "requests", Title: "Requests", Kind: KindNumber, Signal: Traces, Where: base, Series: []Series{{Label: "requests", Agg: AggCount}}, Unit: UnitCount, Width: 8, Height: 4},
-		{ID: "errors", Title: "Server errors", Kind: KindNumber, Signal: Traces, Where: scoped(base, errorSpans), Series: []Series{{Label: "errors", Agg: AggCount}}, Unit: UnitCount, Width: 8, Height: 4},
-		{ID: "p95", Title: "p95 latency", Kind: KindNumber, Signal: Traces, Where: base, Series: []Series{{Label: "p95", Agg: AggQuantile, Quantile: 0.95, Field: "span.duration"}}, Unit: UnitMillis, Width: 8, Height: 4},
-		{ID: "red-by-rpc", Title: "Rate, errors and latency by rpc", Kind: KindTable, Signal: Traces, Where: base, Series: redTableSeries(), GroupBy: []string{"span.name"}, Width: 24, Height: 8},
+	for i := range d.Panels {
+		d.Panels[i].Section = "rpc"
 	}
-	if len(s.Methods) <= maxPerRPCRows {
-		methods := append([]Method(nil), s.Methods...)
-		sort.Slice(methods, func(i, j int) bool { return methods[i].Name < methods[j].Name })
-		for _, m := range methods {
-			w := scoped(rpcServer, Predicate{Field: "span.name", Op: OpEq, Value: procedure(s, m)})
-			d.Panels = append(d.Panels,
-				Panel{ID: "rpc-" + m.Name + "-rate", Title: m.Name + ": requests", Kind: KindLine, Signal: Traces, Where: w, Series: []Series{{Label: "requests", Agg: AggCount}}, Unit: UnitCount, Width: 8, Height: 6},
-				Panel{ID: "rpc-" + m.Name + "-errors", Title: m.Name + ": error rate", Kind: KindLine, Signal: Traces, Where: w, Series: errorRatioSeries(), Ratio: true, Unit: UnitPercent, Width: 8, Height: 6},
-				Panel{ID: "rpc-" + m.Name + "-latency", Title: m.Name + ": latency", Kind: KindLine, Signal: Traces, Where: w, Series: latencySeries(), Unit: UnitMillis, Width: 8, Height: 6},
-			)
+	if p.HasDatabase {
+		d.Sections = append(d.Sections, Section{ID: "database", Title: "Database"})
+		for _, panel := range dbPanels(24) {
+			panel.Section = "database"
+			d.Panels = append(d.Panels, panel)
 		}
 	}
-	if in.HasDatabase {
-		d.Panels = append(d.Panels, dbPanels(24)...)
+	for _, panel := range runtimePanels() {
+		panel.Section = "runtime"
+		d.Panels = append(d.Panels, panel)
 	}
-	d.Panels = append(d.Panels, runtimePanels()...)
 	d.Panels = append(d.Panels,
-		Panel{ID: "error-logs", Title: "Error logs", Kind: KindSearch, Signal: Logs, Where: append(serviceLogScope(s), errorLogs), Columns: logColumns, Width: 24, Height: 9},
-		Panel{ID: "logs", Title: "Logs", Description: "Every record whose rpc procedure belongs to this service.", Kind: KindSearch, Signal: Logs, Where: serviceLogScope(s), Columns: logColumns, Width: 24, Height: 9},
-	)
+		Panel{ID: "error-logs", Section: "logs", Title: "Error logs", Kind: KindSearch, Signal: Logs, Where: []Predicate{errorLogs}, Columns: logColumns, Width: 24, Height: 8},
+		Panel{ID: "logs", Section: "logs", Title: "Process logs", Kind: KindSearch, Signal: Logs, Columns: logColumns, Width: 24, Height: 8})
+	for i := range d.Panels {
+		d.Panels[i].Where = append(processScope(p), d.Panels[i].Where...)
+	}
+	// Node-derived metadata is keyed by workload, not the application's
+	// service.name. A renamed OTEL_SERVICE_NAME must not blank saturation.
+	for _, panel := range BuildWorkloads(in.Project).Panels {
+		switch panel.ID {
+		case "cpu-vs-limit", "memory-vs-limit", "restarts":
+			panel.Section = "workload"
+			panel.Where = scoped(identityScope(fieldWorkload, p.Workloads), panel.Where...)
+			d.Panels = append(d.Panels, panel)
+		}
+	}
+	if len(p.RPCServices) > 0 {
+		var metricPanels []string
+		for _, panel := range d.Panels {
+			if panel.Section == "rpc" && panel.Signal == Metrics {
+				metricPanels = append(metricPanels, panel.ID)
+			}
+		}
+		d.Filters = append(d.Filters,
+			Filter{ID: "rpc-procedure", Label: "RPC procedure (metrics)", Field: "metric.attr.procedure", Signal: Metrics, PanelIDs: metricPanels},
+			Filter{ID: "rpc-service", Label: "RPC service (traces)", Field: "span.attr.rpc.service", Signal: Traces, PanelIDs: []string{"red-by-rpc"}},
+			Filter{ID: "rpc-method", Label: "RPC method (traces)", Field: "span.attr.rpc.method", Signal: Traces, PanelIDs: []string{"red-by-rpc"}})
+	}
 	return d
+}
+
+func processScope(p Process) []Predicate {
+	return identityScope(FieldService, p.ServiceNames)
 }
 
 // runtimePanels are the Go runtime metrics the OTel runtime instrumentation
@@ -359,19 +416,26 @@ func runtimePanels() []Panel {
 }
 
 var (
-	browserSpans = []Predicate{{Field: "resource.attr.rum.sessionId", Op: OpExists}}
-	pageLoads    = Predicate{Field: "span.name", Op: OpIn, Values: []string{"documentLoad", "routeChange"}}
-	ajax         = Predicate{Field: "span.attr.component", Op: OpIn, Values: []string{"fetch", "xml-http-request"}}
-	notAjax      = Predicate{Field: "span.attr.component", Op: OpNotIn, Values: []string{"fetch", "xml-http-request"}}
-	ajaxFailed   = Predicate{Field: "span.attr.http.status_code", Op: OpGTE, Value: "400"}
+	pageLoads  = Predicate{Field: "span.name", Op: OpIn, Values: []string{"documentLoad", "routeChange"}}
+	ajax       = Predicate{Field: "span.attr.component", Op: OpIn, Values: []string{"fetch", "xml-http-request"}}
+	notAjax    = Predicate{Field: "span.attr.component", Op: OpNotIn, Values: []string{"fetch", "xml-http-request"}}
+	ajaxFailed = Predicate{Field: "span.attr.http.status_code", Op: OpGTE, Value: "400"}
 )
 
 func buildFrontend(in Input) Dashboard {
+	services := frontendServices(in.Project, in.Frontends)
 	d := Dashboard{
 		ID:          "frontend",
 		Title:       in.Project + ": frontend",
-		Description: fmt.Sprintf("Browser errors, page loads, web vitals and API calls from the HyperDX browser SDK (service.name %s). Panels follow HyperDX's Browser RUM template: a browser span carries the rum.sessionId resource attribute.", FrontendServiceName(in.Project)),
+		Description: fmt.Sprintf("Browser errors, page loads, web vitals and API calls from the HyperDX browser SDK (service.name %s). Panels follow HyperDX's Browser RUM template: a browser span carries the rum.sessionId resource attribute.", strings.Join(services, ", ")),
 		Filters:     commonFilters(),
+	}
+	// A browser span is one of THIS project's frontends' (service.name, the
+	// value otel_gen.ts reports) that carries a RUM session. The service scope
+	// keeps another project's browser spans in the same store off the panels.
+	browserSpans := []Predicate{
+		{Field: FieldService, Op: OpIn, Values: services},
+		{Field: "resource.attr.rum.sessionId", Op: OpExists},
 	}
 	js := scoped(browserSpans, errorSpans, notAjax)
 	loads := scoped(browserSpans, Predicate{Field: "span.name", Op: OpEq, Value: "documentLoad"})

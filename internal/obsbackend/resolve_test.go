@@ -20,8 +20,22 @@ func TestResolveTable(t *testing.T) {
 	}{
 		{"observability undeclared", Facts{Env: "dev"}, "", "", 2, "telemetry is off for dev: its observability is not declared"},
 		{"observability disabled", Facts{Env: "dev", Declared: true}, "", "", 2, "its observability is disabled"},
-		{"no destination: local", Facts{Env: "dev", Declared: true, Enabled: true}, "", BackendLocal, 0, ""},
-		{"no destination, control_plane set, nothing hosted: still local", Facts{Env: "dev", Declared: true, Enabled: true, ControlPlane: cp}, "", BackendLocal, 0, ""},
+		{"hosted env with no observability block: on by default", Facts{Env: "prod", ControlPlane: cp, HasHosted: true}, "", BackendCloud, 0, ""},
+		{"hosted env that disables observability: off", Facts{Env: "prod", Declared: true, ControlPlane: cp, HasHosted: true}, "", "", 2, "its observability is disabled"},
+		{"no destination: local", Facts{Env: "dev", Declared: true, Enabled: true, HasLocal: true}, "", BackendLocal, 0, ""},
+		{"no destination, control_plane set, nothing hosted: still local", Facts{Env: "dev", Declared: true, Enabled: true, ControlPlane: cp, HasLocal: true}, "", BackendLocal, 0, ""},
+		// A cluster-only env never fed the local ClickStack: falling back to
+		// it reported "not running — start it with `forge env up prod`"
+		// against a production env (control-plane prod, 2026-10-25).
+		{"cluster-only env, control_plane set: automatic remote", Facts{Env: "canary-blue", Declared: true, Enabled: true, ControlPlane: cp, HasCluster: true}, "", BackendCloud, 0, ""},
+		{"cluster-only env named dev is remote", Facts{Env: "dev", Declared: true, Enabled: true, ControlPlane: cp, HasCluster: true}, "", BackendCloud, 0, ""},
+		{"local env named prod stays local", Facts{Env: "prod", Declared: true, Enabled: true, ControlPlane: cp, HasLocal: true}, "", BackendLocal, 0, ""},
+		{"cluster-only env, no control_plane: not local", Facts{Env: "prod", Declared: true, Enabled: true, HasCluster: true}, "", "", 2, "declares no control_plane"},
+		{"no runtime with control plane is not evidence of a location", Facts{Env: "blue", Declared: true, Enabled: true, ControlPlane: cp}, "", "", 2, "declares no runtime"},
+		{"mixed local and cluster without destination is ambiguous", Facts{Env: "mixed", Declared: true, Enabled: true, HasLocal: true, HasCluster: true, ControlPlane: cp}, "", "", 2, "mixes local and cluster"},
+		{"explicit local mixed host and k3d", Facts{Env: "prod", Declared: true, Enabled: true, HasLocal: true, HasCluster: true, LocalLifecycle: true, ControlPlane: cp}, "", BackendLocal, 0, ""},
+		{"mixed with explicit destination is remote", Facts{Env: "mixed", Declared: true, Enabled: true, HasLocal: true, HasCluster: true, ControlPlane: cp, Destination: &Destination{TokenFromControlPlane: true}}, "", BackendCloud, 0, ""},
+		{"hosted and local use declared hosted destination", Facts{Env: "blue", Declared: true, Enabled: true, HasLocal: true, HasHosted: true, ControlPlane: cp}, "", BackendCloud, 0, ""},
 		{"token_from_control_plane: cloud", Facts{Env: "prod", Declared: true, Enabled: true, ControlPlane: cp, Destination: &Destination{TokenFromControlPlane: true}}, "", BackendCloud, 0, ""},
 		{"hosted workload: cloud", Facts{Env: "prod", Declared: true, Enabled: true, ControlPlane: cp, HasHosted: true}, "", BackendCloud, 0, ""},
 		{"hosted but no control_plane", Facts{Env: "prod", Declared: true, Enabled: true, HasHosted: true}, "", "", 2, "declares no control_plane"},
@@ -54,6 +68,13 @@ func TestResolveTable(t *testing.T) {
 				t.Errorf("exit code %d, want %d", code, c.code)
 			}
 		})
+	}
+}
+
+func TestResolveRemoteDoesNotRequireBackendFlag(t *testing.T) {
+	got, err := Resolve(Facts{Env: "arbitrary", Declared: true, Enabled: true, HasCluster: true, ControlPlane: "https://cp.example.com"}, "")
+	if err != nil || got.Backend != BackendCloud {
+		t.Fatalf("the env declares its location: got %+v, %v", got, err)
 	}
 }
 

@@ -31,7 +31,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -47,6 +46,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/configproto"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/nodeengine"
@@ -132,6 +132,20 @@ func addNounCmds(cmd *cobra.Command, f *factory.Factory) {
 // only makes sense for server-shaped projects — CLI and library kinds have
 // no Connect-RPC server to attach handlers to.
 func requireServiceKind(root, action string) error {
+	// A static site (`forge project new --kind site`) has no Go module: its
+	// frontend is the app at its root and nothing else is there — the shape
+	// config.DiscoverRootFrontend admits. Every scaffold behind this check
+	// writes Go and proto into a module the site does not have, and used to
+	// fail half-way through its generate, leaving proto/ behind. Refuse
+	// first, and say what to do instead.
+	if _, site := config.DiscoverRootFrontend(root); site {
+		return cliutil.UserErr(fmt.Sprintf("forge scaffold %s", action),
+			fmt.Sprintf("'forge scaffold %s' needs a Go module, and this project is a static site (no go.mod): its frontend is the app at the project root, with no backend", action),
+			"",
+			"give the API its own forge project beside the site — 'forge project new <name>-api --service <entity>' — deploy it, "+
+				"and point the site at its URL with a build-time env_vars entry (NEXT_PUBLIC_* / VITE_*) or runtime_config "+
+				"on the frontend in deploy/kcl/<env>/main.k; 'forge skill load deploy/static-site' (Growing a backend)")
+	}
 	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
@@ -540,6 +554,13 @@ func wireComponentIntoTree(cfg *config.ProjectConfig, root, name string, w compo
 	} else {
 		fmt.Printf("  • cmd/%s/cmd/%s/%s.go already exists (left untouched)\n", bin, w.group, name)
 	}
+	// The subcommand runs its accessor through the binding next door, written
+	// NOW rather than at the next generate: the tree must compile straight
+	// after the scaffold, --no-generate included, and on a project that owns
+	// its composition the accessor does not exist yet.
+	if err := codegen.GenerateComponentAccessors(root, bin, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write the %s subcommand's accessor binding: %v\n", w.group, err)
+	}
 
 	ctor := "New" + field + "Cmd"
 	outcome, werr := codegen.WireComponentIntoMain(root, bin, module, w.group, ctor)
@@ -561,9 +582,60 @@ func wireComponentIntoTree(cfg *config.ProjectConfig, root, name string, w compo
 `, bin, w.group, module, field)
 	}
 
-	fmt.Printf("  • internal/app/{compose,lifecycle}.go are handled by `forge generate`: it discovers\n" +
-		"    the component from its package directory and reconciles the field, the\n" +
-		"    construction, and the typed accessor into those owned files for you.\n")
+	reportComponentWiring(root, bin, name, w)
+}
+
+// reportComponentWiring says who wires the component into internal/app.
+//
+// Normally `forge generate` does: it discovers the component from its package
+// directory and reconciles the Components field, its construction and the
+// typed accessor into compose.go and lifecycle.go. A project that DISOWNED
+// those files owns its composition, so forge leaves them alone and the
+// subcommand's binding is a placeholder until the three are added by hand —
+// say exactly what, here, instead of letting the first `<bin> <name>` find out.
+func reportComponentWiring(root, bin, name string, w componentCmdWiring) {
+	kind := strings.TrimSuffix(w.group, "s")
+	pending := codegen.PendingComponentAccessor(root, bin, w.group, name)
+	disowned := disownedCompositionFiles(root)
+	if pending == "" || len(disowned) == 0 {
+		fmt.Printf("  • internal/app/{compose,lifecycle}.go are handled by `forge generate`: it discovers\n" +
+			"    the component from its package directory and reconciles the field, the\n" +
+			"    construction, and the typed accessor into those owned files for you.\n")
+		return
+	}
+	aggregate := "AllWorkers"
+	if kind == "operator" {
+		aggregate = "AllOperators"
+	}
+	fmt.Printf(`
+⚠️  This project owns its composition (%[1]s disowned), so forge does not
+   wire the %[2]s %[3]q into internal/app. Until you do, `+"`%[4]s %[3]s`"+` refuses to start with
+   this instruction; the tree compiles, and every other command is unaffected. Add:
+
+     internal/app/compose.go    a %[5]s field on Components holding internal/%[6]s/%[3]s,
+                                constructed in NewComponents
+     internal/app/lifecycle.go  %[7]s
+                                and c.%[8]s() in %[9]s()
+
+   then re-run `+"`forge generate`"+`: cmd/%[4]s/cmd/%[6]s/%[3]s_accessor_gen.go then names the accessor.
+`, strings.Join(disowned, " and "), kind, name, bin, naming.ToPascalCase(name), w.group,
+		codegen.ComponentAccessorSnippet(kind, name), pending, aggregate)
+}
+
+// disownedCompositionFiles lists which of internal/app's composition pair the
+// project has disowned (.forge/disowned.json), in a stable order.
+func disownedCompositionFiles(root string) []string {
+	cs, err := generator.LoadChecksums(root)
+	if err != nil || cs == nil {
+		return nil
+	}
+	var out []string
+	for _, rel := range []string{"internal/app/compose.go", "internal/app/lifecycle.go"} {
+		if cs.IsDisowned(rel) {
+			out = append(out, rel)
+		}
+	}
+	return out
 }
 
 // --- scaffold service ---
@@ -1081,14 +1153,20 @@ The --type flag picks the scaffold shape:
               third-party system. Marker: '// forge:outbound-io'.
               Skill: forge skill load adapter
 
+An adapter has no configuration until you ask for it: --base-url composes a
+config block with one base_url leaf (bound to <NAME>_BASE_URL, or to the env
+var --base-url-env names) for an HTTP API with one base URL.
+
 It ends with a 'forge generate' run, which writes the package's mock and
 middleware_gen.go and wires it into internal/app/compose.go, so the next
-'forge lint' is green. --no-generate skips it.
+'forge lint' is green. --no-generate skips it; --dry-run prints the plan and
+writes nothing.
 
 Example:
   forge scaffold package cache
   forge scaffold package events --kind eventbus
-  forge scaffold package stripe-adapter --type adapter`,
+  forge scaffold package stripe-adapter --type adapter --base-url
+  forge scaffold package pubsub --type adapter --dry-run`,
 		Args: cobra.ExactArgs(1),
 		RunE: packageNewThenGenerate(f),
 	}
@@ -1096,6 +1174,7 @@ Example:
 	cmd.Flags().String("kind", "", "package kind template (e.g. eventbus, client)")
 	cmd.Flags().String("type", "service", "package shape: service|adapter (see --help)")
 	cmd.Flags().Bool("no-generate", false, noGenerateFlagUsage)
+	cmdutil.AddPackageScaffoldFlags(cmd)
 
 	return cmd
 }
@@ -1110,6 +1189,9 @@ func packageNewThenGenerate(f *factory.Factory) func(*cobra.Command, []string) e
 	return func(cmd *cobra.Command, args []string) error {
 		if err := f.Gen.RunPackageNew(cmd, args); err != nil {
 			return err
+		}
+		if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
+			return nil // RunPackageNew printed the plan; nothing was written to derive from
 		}
 		root, err := projectRoot()
 		if err != nil {
@@ -1994,19 +2076,14 @@ func runFrontendNpmInstall(ctx context.Context, frontendDir string) error {
 	if os.Getenv("FORGE_SKIP_NPM_INSTALL") != "" {
 		return nil
 	}
+	pm := frontenddeps.PackageManager(frontendDir, "")
 	if err := nodeengine.Check(frontendDir); err != nil {
-		return fmt.Errorf("npm install not run: %w", err)
+		return fmt.Errorf("%s install not run: %w", pm, err)
 	}
-	cmd := exec.CommandContext(ctx, "npm", "install")
-	cmd.Dir = frontendDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	fmt.Printf("\nRunning `npm install` in %s ...\n", frontendDir)
-	if err := cmd.Run(); err != nil {
-		if errors.Is(err, exec.ErrNotFound) {
-			return fmt.Errorf("npm not found on PATH; run `npm install` in %s manually", frontendDir)
-		}
-		return fmt.Errorf("npm install failed in %s: %v (run it manually to see full output)", frontendDir, err)
+	install := frontenddeps.InstallCommand(frontendDir, "", false)
+	fmt.Printf("\nRunning `%s` in %s ...\n", install, frontendDir)
+	if err := frontenddeps.Install(ctx, frontendDir, "", false); err != nil {
+		return fmt.Errorf("%s failed in %s: %v (run it there to see full output)", install, frontendDir, err)
 	}
 	return nil
 }

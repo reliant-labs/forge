@@ -32,7 +32,7 @@ assert_ports = _o.alertmanager_port == 9093 and _o.alerts_port == 9095
 assert_receivers_in_order = [r.name for r in _r] == ["hook", "slack", "autopilot"]
 assert_webhook = _r[0].type == "webhook" and _r[0].url == "http://localhost:9999/alerts" and _r[0].secret == None
 assert_slack = _r[1].secret == "SLACK_WEBHOOK_URL" and _r[1].channel == "#alerts" and _r[1].url == None
-assert_autopilot_filter = _r[2].severities == ["*"] and _r[2].always_alertnames == ["NewIssue", "IssueRegressed", "IssueSpike"]
+assert_autopilot_filter = _r[2].severities == ["*"] and _r[2].always_alertnames == ["NewIssue", "IssueRegressed", "IssueSpike", "ReleaseRegressed", "ServiceAnomaly"]
 assert_default_filter = _r[0].severities == ["critical", "error"]
 
 # With a destination there is no local ClickStack to evaluate against, so no

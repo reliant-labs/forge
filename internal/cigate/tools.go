@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/reliant-labs/forge/internal/goexec"
+	"github.com/reliant-labs/forge/internal/toolcache"
 )
 
 // Tool is a binary the gate runs at a pinned version. CI installs these at the
@@ -90,17 +91,15 @@ func NewResolver(projectDir string, note io.Writer) *Resolver {
 	return r
 }
 
-// toolsCacheRoot honors the same override forge lint uses for its own
-// golangci-lint build, so one variable relocates every tool forge installs.
+// toolsCacheRoot is the gate's kind directory in forge's shared tool cache
+// (internal/toolcache), which FORGE_TOOLS_CACHE relocates along with every
+// other tool forge installs.
 func toolsCacheRoot() string {
-	if d := os.Getenv("FORGE_TOOLS_CACHE"); d != "" {
-		return filepath.Join(d, "gate")
-	}
-	base, err := os.UserCacheDir()
+	dir, err := toolcache.KindDir(toolcache.KindGate)
 	if err != nil {
-		base = os.TempDir()
+		return filepath.Join(os.TempDir(), "forge", "tools", toolcache.KindGate)
 	}
-	return filepath.Join(base, "forge", "tools", "gate")
+	return dir
 }
 
 // Ensure returns the directory to prepend to PATH so t resolves at its pin, or
@@ -148,27 +147,24 @@ func (r *Resolver) ensure(ctx context.Context, t Tool) (string, error) {
 	}
 	dir := filepath.Join(r.CacheRoot, name)
 	bin := filepath.Join(dir, t.Binary+exeSuffix())
-	if sameVersion(r.Probe(bin, t), t.Version) && r.goOK(bin, t) {
-		return dir, nil
+	ready := func(dir string) bool {
+		bin := filepath.Join(dir, t.Binary+exeSuffix())
+		return sameVersion(r.Probe(bin, t), t.Version) && r.goOK(bin, t)
 	}
-
-	r.note("pin: %s must be %s (%s) — installing into %s (one time)…", t.Binary, t.Version, have, dir)
-	stage, err := os.MkdirTemp(mkdirParent(r.CacheRoot), ".build-")
-	if err != nil {
+	built := false
+	// The install lands by one rename, so a concurrent gate that wants the
+	// same pin never runs a half-written binary (internal/toolcache).
+	if _, err := toolcache.Ensure(ctx, r.CacheRoot, name, ready, func(ctx context.Context, stage string) error {
+		built = true
+		r.note("pin: %s must be %s (%s) — installing into %s (one time)…", t.Binary, t.Version, have, dir)
+		return r.Install(ctx, t, stage, tc)
+	}); err != nil {
 		return "", err
 	}
-	defer func() { _ = os.RemoveAll(stage) }()
-	if err := r.Install(ctx, t, stage, tc); err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	if err := replaceFile(filepath.Join(stage, t.Binary+exeSuffix()), bin); err != nil {
-		return "", err
-	}
-	if got := r.Probe(bin, t); !sameVersion(got, t.Version) {
-		return "", fmt.Errorf("installed %s reports version %q, want %s", t.Binary, got, t.Version)
+	if built {
+		if got := r.Probe(bin, t); !sameVersion(got, t.Version) {
+			return "", fmt.Errorf("installed %s reports version %q, want %s", t.Binary, got, t.Version)
+		}
 	}
 	return dir, nil
 }
@@ -236,23 +232,6 @@ func builtWithGo(path string) string {
 		return f[len(f)-1]
 	}
 	return ""
-}
-
-// replaceFile moves src to dst, replacing dst if it exists. os.Rename replaces
-// on Unix but fails on Windows when dst exists (a stale or half-installed
-// binary from an earlier run), so dst is removed first. A dst that is a running
-// executable cannot be removed on Windows; that surfaces as the error rather
-// than a silently kept old binary.
-func replaceFile(src, dst string) error {
-	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("replace %s: %w", dst, err)
-	}
-	return os.Rename(src, dst)
-}
-
-func mkdirParent(dir string) string {
-	_ = os.MkdirAll(dir, 0o755)
-	return dir
 }
 
 func (r *Resolver) note(format string, a ...any) {

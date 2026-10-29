@@ -29,6 +29,9 @@
 #                       release, a runner image — is reported even on a day
 #                       nothing merged.
 #
+#   consumer canary    consumer-canary.yml: reliant and control-plane at main,
+#                       built against this forge (`-force`: no diff to judge).
+#
 # NOT HERE: ci.yml's slow tier (full-mode tests under -race, the guards,
 # native Windows). It runs on every push to main, and workflow_dispatch runs
 # it on any branch.
@@ -69,7 +72,13 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      # The module cache alone: no scope holds windows/arm64 artifacts, and
+      # one run a day does not earn a scope of its own (ci.yml's "Build-cache
+      # note").
+      - uses: ./.github/actions/restore-go-caches
+        with:
+          scope: ""
       - name: go vet ./... (windows/arm64)
         env:
           CGO_ENABLED: "0"
@@ -87,9 +96,18 @@ jobs:
     name: e2e scaffold
     uses: ./.github/workflows/e2e-scaffold.yml
 
+  # reliant and control-plane at their main, built against this forge, whether
+  # or not forge changed: a consumer that moved under an unchanged forge is the
+  # other half of the pin cost (consumer-canary.yml). `secrets: inherit` hands
+  # the called workflow CONTROL_PLANE_DEPLOY_KEY.
+  consumer-canary:
+    name: consumer canary
+    uses: ./.github/workflows/consumer-canary.yml
+    secrets: inherit
+
   report:
     name: report (issue on red)
-    needs: [windows-arm64-vet, e2e, e2e-scaffold]
+    needs: [windows-arm64-vet, e2e, e2e-scaffold, consumer-canary]
     # Always: a red job is exactly when this has something to say. Only for
     # main, so a dispatch on a feature branch never files an issue.
     if: ${{ always() && github.ref == 'refs/heads/main' }}

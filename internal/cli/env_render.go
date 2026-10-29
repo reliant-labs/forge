@@ -67,6 +67,7 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/kclplugin"
+	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
 
@@ -336,19 +337,12 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		reportDeclinedWrites(errOut, kclplugin.SuppressedWrites())
 	}()
 
-	entities, kerr := declarationFor(ctx, projectDir, envName, probed)
+	entities, kerr := dashboardDeclarationFor(ctx, projectDir, envName, probed)
 	if kerr != nil {
 		return kerr
 	}
 
-	namespace := opts.namespace
-	if namespace == "" {
-		if ns := k8sClusterFieldFromEntities(entities, "namespace"); ns != "" {
-			namespace = ns
-		} else {
-			namespace = store.Meta().Name + "-" + envName
-		}
-	}
+	namespace := renderEnvNamespace(opts.namespace, entities, store.Meta().Name, envName)
 
 	imageTag, tagSource := renderImageTag(ctx, projectDir, envName, opts.imageTag)
 	var (
@@ -403,6 +397,12 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		fmt.Fprintf(errOut, "warning: image digests unresolved (%v) — rendering on tag %q instead\n", derr, imageTag)
 		digests = nil
 	}
+	// The release this env is promoted to is the version its pods report:
+	// runDeploy binds it before its render, so this render must too, or every
+	// workload's OTEL_RESOURCE_ATTRIBUTES lacks service.version and
+	// `forge env render <env> | kubectl diff -f -` reports a change to every
+	// pod that no deploy would make.
+	ctx = kclrender.WithRelease(ctx, boundRelease)
 
 	manifests, appliedOverrides, rerr := cluster.RenderManifestsWithOverrides(ctx, mainK, imageTag, namespace, envName, loadDeployEnvConfigKV(projectDir, envName), digests)
 	if rerr != nil {
@@ -484,6 +484,17 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		}
 	}
 	return nil
+}
+
+// renderEnvNamespace honors the flag, then the declaration, then the project default.
+func renderEnvNamespace(flag string, entities *KCLEntities, project, env string) string {
+	if flag != "" {
+		return flag
+	}
+	if ns := k8sClusterFieldFromEntities(entities, "namespace"); ns != "" {
+		return ns
+	}
+	return project + "-" + env
 }
 
 // renderImageTag resolves the tag the manifests are rendered with.
@@ -925,9 +936,14 @@ func pinFile(path string) func() {
 // the original.
 //
 // So this is evidence instead of a promise. Stat every file under the
-// project before and after the render and report what moved. It is honest
-// about its own limits: it cannot attribute a change to the render (a
-// concurrent process writing in the same tree also shows up), and it reads
+// project before and after the render and report what moved. The bracket
+// holds the project's generate lock as a reader (observeGenerateLock), so a
+// concurrent `forge generate` or `forge scaffold` — the forge processes that
+// write this tree — finishes before the first scan or waits until after the
+// second; its writes (and its transient .forge-tmp-* files) are never reported
+// as the render's. It is honest about its remaining limits: it cannot
+// attribute a change to the render (any OTHER process writing in the same
+// tree also shows up), and it reads
 // size and modification time rather than content, because hashing a real
 // project tree costs an order of magnitude more than the render it is
 // watching (measured on a 47k-file repo: 0.3s to stat, 7s to hash).
@@ -958,6 +974,10 @@ type renderWriteScan struct {
 	// disagree about what happened (and so a second walk is not paid for).
 	after   []renderTreeChange
 	settled bool
+	// unlock releases the generate lock held across the bracket; nil once
+	// released. lockErr says why the bracket ran without it.
+	unlock  func()
+	lockErr error
 }
 
 // renderScanSkipDirs are directories excluded from the walk, and both
@@ -991,17 +1011,34 @@ func newRenderWriteScan(root string, disabled bool) *renderWriteScan {
 	if !s.enabled {
 		return s
 	}
+	// Taken BEFORE the first scan and released after the second (changes):
+	// a generate running when the render starts finishes first, and one
+	// started during the render waits for the verdict.
+	s.unlock, s.lockErr = observeGenerateLock(root)
 	s.before, s.scanned, s.err = scanRenderTree(root)
 	return s
 }
 
+// releaseLock ends the bracket's hold on the generate lock. Idempotent.
+func (s *renderWriteScan) releaseLock() {
+	if s.unlock != nil {
+		s.unlock()
+		s.unlock = nil
+	}
+}
+
 // changes walks the tree a second time and diffs it against the before
-// picture. Memoised: the first call settles the verdict.
+// picture, then releases the generate lock. Memoised: the first call settles
+// the verdict.
 func (s *renderWriteScan) changes() []renderTreeChange {
-	if !s.enabled || s.err != nil || s.settled {
+	if !s.enabled || s.settled {
 		return s.after
 	}
 	s.settled = true
+	defer s.releaseLock()
+	if s.err != nil {
+		return nil
+	}
 	after, _, err := scanRenderTree(s.root)
 	if err != nil {
 		s.err = err
@@ -1016,6 +1053,7 @@ func (s *renderWriteScan) changes() []renderTreeChange {
 // that only speaks when it fails cannot be distinguished from one that was
 // never run.
 func (s *renderWriteScan) report(w io.Writer, envName string) {
+	defer s.releaseLock()
 	if !s.enabled {
 		fmt.Fprintln(w, "[render] write check skipped (--no-write-check): forge cannot say whether this render wrote files")
 		return
@@ -1044,7 +1082,11 @@ func (s *renderWriteScan) report(w io.Writer, envName string) {
 	}
 	fmt.Fprintln(w, "[render] KCL evaluates file.write during rendering and forge cannot suppress a project's own writes.")
 	fmt.Fprintln(w, "[render] Caveats: size and mtime are compared, not content, so a rewrite may be byte-identical;")
-	fmt.Fprintln(w, "[render] .git/, .forge/logs/ and .forge/hostinfra/ are not scanned; a concurrent process writing here also appears above.")
+	fmt.Fprintln(w, "[render] .git/, .forge/logs/ and .forge/hostinfra/ are not scanned. A concurrent forge generate or scaffold was waited for;")
+	fmt.Fprintln(w, "[render] any other process writing here also appears above.")
+	if s.lockErr != nil {
+		fmt.Fprintf(w, "[render] This render could not take the project's generate lock (%v), so a concurrent forge generate or scaffold may also appear above.\n", s.lockErr)
+	}
 }
 
 // scanRenderTree stats every regular file under root, keyed by root-relative

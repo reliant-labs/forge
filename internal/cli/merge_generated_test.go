@@ -272,6 +272,9 @@ func TestMergeGeneratedPath_PristineConflictKeepsOurs(t *testing.T) {
 // place with no forge .gitattributes, or a project in a repository
 // subdirectory. The command names the binary by absolute path.
 func TestEnsureGeneratedMergeDriver_WiresAnyForgeClone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
@@ -288,8 +291,26 @@ func TestEnsureGeneratedMergeDriver_WiresAnyForgeClone(t *testing.T) {
 		t.Setenv(env, "")
 	}
 
-	ensureGeneratedMergeDriver(project)
-	ensureGeneratedMergeDriver(project) // idempotent
+	// The automatic wiring leaves an enclosing repository alone: it is not
+	// the project's own, and a scratch project under someone's checkout must
+	// not rewrite that checkout's git config. It says so in one line.
+	configBefore, _ := os.ReadFile(filepath.Join(repo, ".git", "config"))
+	var auto strings.Builder
+	ensureGeneratedMergeDriverTo(&auto, project)
+	if configAfter, _ := os.ReadFile(filepath.Join(repo, ".git", "config")); string(configAfter) != string(configBefore) {
+		t.Errorf("the enclosing repository's config was rewritten:\n--- before\n%s\n--- after\n%s", configBefore, configAfter)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".git", "info", "attributes")); err == nil {
+		t.Error("the enclosing repository got forge's info/attributes routes")
+	}
+	if got := auto.String(); strings.Count(got, "\n") != 1 || !strings.Contains(got, "not this project's own") || !strings.Contains(got, "merge-driver install") {
+		t.Errorf("want one line saying the enclosing repository was left alone and how to wire it anyway, got:\n%s", got)
+	}
+
+	// `forge merge-driver install` wires it on purpose (a monorepo that
+	// commits the project in a subdirectory), scoped to the project.
+	wireGeneratedMergeDriver(io.Discard, project, true)
+	wireGeneratedMergeDriver(io.Discard, project, true) // idempotent
 
 	got, err := exec.Command("git", "-C", repo, "config", "--get", "merge.forge-generated.driver").Output()
 	if err != nil {
@@ -324,6 +345,9 @@ func TestEnsureGeneratedMergeDriver_WiresAnyForgeClone(t *testing.T) {
 // previous pin's driver. An ephemeral binary is never written, because it is
 // gone by the next merge.
 func TestEnsureGeneratedMergeDriver_OptOutsAndEphemeralBinaries(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
@@ -383,6 +407,10 @@ func TestEnsureGeneratedMergeDriver_OptOutsAndEphemeralBinaries(t *testing.T) {
 	dir := clone()
 	kept := filepath.Join(t.TempDir(), "forge")
 	writeTreeFileT(t, kept, "#!/bin/sh\n")
+	// A live driver must be executable, not merely present on disk.
+	if err := os.Chmod(kept, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	want := "'" + kept + "' merge-generated %O %A %B %L %P"
 	if out, err := exec.Command("git", "-C", dir, "config", "merge.forge-generated.driver", want).CombinedOutput(); err != nil {
 		t.Fatalf("seed config: %v\n%s", err, out)
@@ -402,6 +430,9 @@ func TestEnsureGeneratedMergeDriver_OptOutsAndEphemeralBinaries(t *testing.T) {
 // written, where, to how many worktrees, and how to undo it; and say nothing
 // when nothing changed.
 func TestEnsureGeneratedMergeDriver_NoticeNamesWhatChangedAndWhoSharesIt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
@@ -437,8 +468,9 @@ func TestEnsureGeneratedMergeDriver_NoticeNamesWhatChangedAndWhoSharesIt(t *test
 		common,
 		attributes,
 		"merge.forge-generated.driver = [ -x '/opt/forge/bin/forge' ] ",
-		"this worktree only; was: unset",
-		"git config --worktree --unset merge.forge-generated.driver",
+		"(was: unset)",
+		"for every worktree of this repository",
+		"git config --unset merge.forge-generated.driver",
 		"delete the \"forge merge-generated\" block from info/attributes",
 		"FORGE_NO_MERGE_DRIVER=1",
 	} {
@@ -447,13 +479,15 @@ func TestEnsureGeneratedMergeDriver_NoticeNamesWhatChangedAndWhoSharesIt(t *test
 		}
 	}
 
-	// The scope the notice describes is real: the driver is this worktree's
-	// alone, and the primary worktree is untouched.
-	if got := gitConfig(t, other, "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '/opt/forge/bin/forge' ]") {
-		t.Errorf("the worktree that ran does not have the driver: %q", got)
+	// The scope the notice describes is real: one shared command, which the
+	// primary worktree reads too, and no per-worktree config switched on.
+	for _, wt := range []string{other, repo} {
+		if got := gitConfig(t, wt, "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '/opt/forge/bin/forge' ]") {
+			t.Errorf("worktree %s does not merge through the driver: %q", wt, got)
+		}
 	}
-	if got := gitConfig(t, repo, "merge.forge-generated.driver"); got != "" {
-		t.Errorf("a worktree-scoped driver reached the primary worktree: %q", got)
+	if ext := gitConfig(t, repo, "extensions.worktreeConfig"); ext != "" {
+		t.Errorf("extensions.worktreeConfig = %q: the driver needs no per-worktree config", ext)
 	}
 
 	var second strings.Builder
@@ -476,12 +510,19 @@ func TestEnsureGeneratedMergeDriver_NoticeNamesWhatChangedAndWhoSharesIt(t *test
 	}
 }
 
-// The driver command is a per-checkout fact: it names ONE forge binary, and
-// worktrees of a repository are on different branches with different pins.
-// Written to the shared .git/config, the last forge to run decided the driver
-// for every worktree and one agent's command changed another agent's merges.
-// It goes to this worktree's own config instead.
-func TestEnsureGeneratedMergeDriver_DriverCommandIsPerWorktree(t *testing.T) {
+// ONE driver command serves every worktree of a repository, whatever each
+// pins, because the driver hands each merge to the forge the merged file's
+// project pins (pinnedMerge). Each pinned forge records itself under its own
+// identity — a key per pin, so worktrees on different pins never contend —
+// and the command is rewritten only when it cannot do the hand-off: it names a
+// forge that is gone, or predates the hand-off. An earlier forge kept the
+// command per worktree, which enabled extensions.worktreeConfig in the shared
+// config of every clone it ran in; none of that is needed, and a per-worktree
+// command it left behind is removed so the shared one applies.
+func TestEnsureGeneratedMergeDriver_OneCommandServesEveryWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
@@ -496,60 +537,86 @@ func TestEnsureGeneratedMergeDriver_DriverCommandIsPerWorktree(t *testing.T) {
 	gitT(t, repo, "worktree", "add", "-q", "-b", "a", wtA)
 	gitT(t, repo, "worktree", "add", "-q", "-b", "b", wtB)
 
-	prevExe, prevCheck := mergeDriverExecutable, mergeDriverPinCheck
-	t.Cleanup(func() { mergeDriverExecutable, mergeDriverPinCheck = prevExe, prevCheck })
+	prevExe, prevCheck, prevID := mergeDriverExecutable, mergeDriverPinCheck, mergeDriverIdentity
+	t.Cleanup(func() { mergeDriverExecutable, mergeDriverPinCheck, mergeDriverIdentity = prevExe, prevCheck, prevID })
 	mergeDriverPinCheck = func(string) (string, string, bool) { return "", "", false }
-	for _, e := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS", "FORGE_NO_HOOKS", mergeDriverSharedEnv} {
+	for _, e := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS", "FORGE_NO_HOOKS"} {
 		t.Setenv(e, "")
 	}
 
-	mergeDriverExecutable = func() (string, error) { return "/pins/a/forge", nil }
+	pins := t.TempDir()
+	// The binaries live under the real temp dir; point TMPDIR elsewhere so
+	// the wiring does not refuse them as ephemeral.
+	t.Setenv("TMPDIR", t.TempDir())
+	forgeA, forgeB := filepath.Join(pins, "a", "forge"), filepath.Join(pins, "b", "forge")
+	for _, f := range []string{forgeA, forgeB} {
+		writeTreeFileT(t, f, "#!/bin/sh\n")
+		if err := os.Chmod(f, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Worktree A pins forge A, worktree B pins forge B.
+	mergeDriverExecutable, mergeDriverIdentity = func() (string, error) { return forgeA, nil }, func() string { return "pin-a" }
 	var noticeA strings.Builder
 	ensureGeneratedMergeDriverTo(&noticeA, wtA)
-	mergeDriverExecutable = func() (string, error) { return "/pins/b/forge", nil }
+	mergeDriverExecutable, mergeDriverIdentity = func() (string, error) { return forgeB, nil }, func() string { return "pin-b" }
 	var noticeB strings.Builder
 	ensureGeneratedMergeDriverTo(&noticeB, wtB)
 
-	if got := gitConfig(t, wtA, "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '/pins/a/forge' ]") {
-		t.Errorf("worktree A merges with %q, want its own forge", got)
+	for _, wt := range []string{wtA, wtB, repo} {
+		if got := gitT(t, wt, "config", "--get", "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '"+forgeA+"' ]") {
+			t.Errorf("worktree %s merges with %q: want the one shared command, from the first forge that ran", wt, got)
+		}
 	}
-	if got := gitConfig(t, wtB, "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '/pins/b/forge' ]") {
-		t.Errorf("worktree B merges with %q: A's run overwrote it, or B's never landed", got)
+	for id, bin := range map[string]string{"pin-a": forgeA, "pin-b": forgeB} {
+		if got := gitT(t, repo, "config", "--get", pinnedDriverSection+"."+id+".command"); !strings.HasPrefix(got, "[ -x '"+bin+"' ]") {
+			t.Errorf("%s registered %q, want its own forge: the hand-off needs every pin's command", id, got)
+		}
 	}
-	if got := gitConfig(t, repo, "merge.forge-generated.driver"); got != "" {
-		t.Errorf("the primary worktree inherited a driver another worktree set: %q", got)
+	if strings.Contains(noticeB.String(), "merge.forge-generated.driver =") {
+		t.Errorf("a usable, delegating command was taken over by another pin:\n%s", noticeB.String())
 	}
-	if out, err := exec.Command("git", "-C", repo, "config", "--local", "--get", "merge.forge-generated.driver").Output(); err == nil {
-		t.Errorf("the driver command leaked into the shared config: %s", out)
-	}
-	if !strings.Contains(noticeA.String(), "extensions.worktreeConfig = true (shared)") ||
-		!strings.Contains(noticeA.String(), "(this worktree only; was: unset)") {
-		t.Errorf("the first run must say it flipped the one shared switch, and that the driver is this worktree's:\n%s", noticeA.String())
-	}
-	if strings.Contains(noticeB.String(), "extensions.worktreeConfig") {
-		t.Errorf("the switch is flipped once, not announced again:\n%s", noticeB.String())
+	if ext := gitConfig(t, repo, "extensions.worktreeConfig"); ext != "" {
+		t.Errorf("extensions.worktreeConfig = %q: the driver needs no per-worktree config", ext)
 	}
 
-	t.Run("opt back into the shared config", func(t *testing.T) {
-		repo2 := t.TempDir()
-		gitT(t, repo2, "init", "-q", "-b", "main")
-		writeTreeFileT(t, filepath.Join(repo2, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\n")
-		t.Setenv(mergeDriverSharedEnv, "1")
-		mergeDriverExecutable = func() (string, error) { return "/pins/s/forge", nil }
-		ensureGeneratedMergeDriverTo(io.Discard, repo2)
-		if got := gitT(t, repo2, "config", "--local", "--get", "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '/pins/s/forge' ]") {
-			t.Errorf("%s=1 did not keep the command in the shared config: %q", mergeDriverSharedEnv, got)
-		}
-		if ext := gitConfig(t, repo2, "extensions.worktreeConfig"); ext != "" {
-			t.Errorf("%s=1 still flipped extensions.worktreeConfig", mergeDriverSharedEnv)
-		}
-	})
+	// A command naming a gone forge is replaced, by any forge that runs.
+	if err := os.Remove(forgeA); err != nil {
+		t.Fatal(err)
+	}
+	ensureGeneratedMergeDriverTo(io.Discard, wtB)
+	if got := gitT(t, repo, "config", "--local", "--get", "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '"+forgeB+"' ]") {
+		t.Errorf("a command naming a gone forge was not replaced: %q", got)
+	}
+
+	// A command from before the hand-off (no `[ -x ]` guard) merges by its own
+	// rules, so the pinned forge replaces it even though its binary exists.
+	gitT(t, repo, "config", "--local", "merge.forge-generated.driver", shellQuote(forgeB)+" merge-generated %O %A %B %L %P")
+	ensureGeneratedMergeDriverTo(io.Discard, wtB)
+	if got := gitT(t, repo, "config", "--local", "--get", "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '"+forgeB+"' ]") {
+		t.Errorf("a pre-hand-off command was kept: %q", got)
+	}
+
+	// A per-worktree command an earlier forge wrote is removed, and says so.
+	gitT(t, repo, "config", "--local", "extensions.worktreeConfig", "true")
+	gitT(t, wtB, "config", "--worktree", "merge.forge-generated.driver", "[ -x '/gone/forge' ] && exec '/gone/forge' merge-generated %O %A %B %L %P")
+	var legacy strings.Builder
+	ensureGeneratedMergeDriverTo(&legacy, wtB)
+	if got := gitT(t, wtB, "config", "--get", "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '"+forgeB+"' ]") {
+		t.Errorf("worktree B still merges with its own stale command: %q", got)
+	}
+	if !strings.Contains(legacy.String(), "removed this worktree's own merge.forge-generated.driver") {
+		t.Errorf("removing the per-worktree command must be announced:\n%s", legacy.String())
+	}
 }
 
 // A project whose committed .gitattributes already routes forge's files
 // (every scaffolded project) needs no second copy in the shared
 // info/attributes.
 func TestEnsureGeneratedMergeDriver_CommittedRoutesNeedNoSharedCopy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
@@ -564,7 +631,7 @@ func TestEnsureGeneratedMergeDriver_CommittedRoutesNeedNoSharedCopy(t *testing.T
 	prev := mergeDriverExecutable
 	t.Cleanup(func() { mergeDriverExecutable = prev })
 	mergeDriverExecutable = func() (string, error) { return "/opt/forge/bin/forge", nil }
-	for _, e := range []string{"FORGE_NO_MERGE_DRIVER", mergeDriverSharedEnv} {
+	for _, e := range []string{"FORGE_NO_MERGE_DRIVER"} {
 		t.Setenv(e, "")
 	}
 	var out strings.Builder

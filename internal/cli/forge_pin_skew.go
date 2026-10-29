@@ -57,7 +57,7 @@ var pinGatedCommands = map[string][]string{
 	// `lint` is deliberately absent: its auto-fix pass runs gofmt, golangci,
 	// prettier and eslint, whose output does not depend on forge's templates.
 	"generate":           {"dry-run", "check"},
-	"package new":        nil,
+	"package new":        {"dry-run"},
 	"component install":  nil,
 	"env new":            {"check"},
 	"project rescaffold": nil,
@@ -117,17 +117,20 @@ func readOnlyRun(cmd *cobra.Command, readOnlyFlags []string) bool {
 // allowVersionSkewEnv proceeds past the refusal, like --allow-version-skew.
 const allowVersionSkewEnv = "FORGE_ALLOW_VERSION_SKEW"
 
-// allowVersionSkewFlag is registered on exactly the pin-gated commands (it
-// means nothing anywhere else) by registerVersionSkewFlags.
+// allowVersionSkewFlag is registered on exactly the commands the pin decides
+// for (it means nothing anywhere else) by registerVersionSkewFlags.
 const allowVersionSkewFlag = "allow-version-skew"
 
-// registerVersionSkewFlags adds --allow-version-skew to each pin-gated
-// command under root.
+// registerVersionSkewFlags adds --allow-version-skew to each command under
+// root that is pin-gated or handed to the pinned forge. The hand-off's
+// notice names the flag, so a delegated command without it (forge lint,
+// forge ci gate) answered the advice with "unknown flag".
 func registerVersionSkewFlags(root *cobra.Command) {
 	var walk func(c *cobra.Command)
 	walk = func(c *cobra.Command) {
 		rel := strings.TrimSpace(strings.TrimPrefix(c.CommandPath(), root.CommandPath()))
-		if _, gated := pinGateFor(rel); gated && c.Flags().Lookup(allowVersionSkewFlag) == nil {
+		_, gated := pinGateFor(rel)
+		if (gated || pinDelegateOnlyFor(rel)) && c.Flags().Lookup(allowVersionSkewFlag) == nil {
 			c.Flags().Bool(allowVersionSkewFlag, false,
 				"Run even though this forge is not the forge_version forge.yaml pins (also "+allowVersionSkewEnv+"=1)")
 		}
@@ -197,8 +200,8 @@ func pinSkewFor(projectRoot string) (pin, binary string, skewed, devAgainstTag b
 	}
 	// A project bridged (go.work) to the local forge checkout this very
 	// binary was built from is someone running the forge they are working
-	// on — the e2e lanes, a forge developer. Its pin follows go.mod (often
-	// the published floor) and says nothing about that binary. A bridged
+	// on — the e2e lanes, a forge developer. Its pin follows that checkout
+	// (stepReconcileForgePin), and the skew that matters is the bridge's own. A bridged
 	// project run by a binary that is NOT its checkout's — a stale
 	// ~/go/bin/forge, the 2026-10-07 case — is checked like any other.
 	if rep := forgecompat.InspectBridge(projectRoot); rep.Bridged && rep.CheckoutOK && !rep.Skewed {

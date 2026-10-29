@@ -20,10 +20,12 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/scaffold"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/nodeengine"
+	"github.com/reliant-labs/forge/pkg/deploy"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
@@ -38,6 +40,7 @@ func newNewCmd() *cobra.Command {
 		frontendNames   []string
 		frontendOutput  string
 		frontendRoutes  []string
+		frontendKind    string
 		goVersion       string
 		inPlace         bool
 		force           bool
@@ -62,11 +65,13 @@ func newNewCmd() *cobra.Command {
 		// verify keeps the compile check at the end of the bootstrap
 		// generate. Off by default: see bootstrapPipelineFlags.
 		verify bool
+		// claimable scaffolds prod for an anonymous deploy.
+		claimable bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "new [project-name] --mod [module-path]",
-		Short: "Create a new Forge project (service / CLI / library)",
+		Short: "Create a new Forge project (service / CLI / library / static site)",
 		Long: `Create a new project with the Forge framework structure.
 
 By default no service is scaffolded: the binary is a deployment unit
@@ -84,9 +89,14 @@ Pick a project kind with --kind:
                             no proto/services, no deploy/.
   --kind library            Pure Go module: pkg/<name>/ skeleton, no cmd/,
                             no CI workflows by default.
-  --kind site               A static site: adopt the frontend at the root of
-                            the current directory (with --in-place). Writes
-                            forge.yaml and deploy/kcl envs only — no Go.
+  --kind site               A static site — a landing page, marketing or docs
+                            site, SPA — with no backend: the frontend at the
+                            project root plus forge.yaml and deploy/kcl
+                            dev/staging/prod envs, bound to hosted static
+                            hosting. No Go module, no server. A new site gets
+                            a starter app (--frontend-kind nextjs, the default:
+                            a static export; or vite-spa); --in-place inside an
+                            existing Vite or Next.js app adopts it untouched.
 
 Use --disable to turn features off at creation time. Each is pinned off in
 forge.yaml's features: block, so a later change to the tree does not turn it
@@ -103,6 +113,9 @@ Example:
   forge project new my-project --mod github.com/example/my-project --frontend web
   forge project new mycli      --mod github.com/example/mycli --kind cli
   forge project new mylib      --mod github.com/example/mylib --kind library
+  forge project new landing    --kind site                          # new static site (Next.js export)
+  forge project new landing    --kind site --frontend-kind vite-spa # new static site (Vite SPA)
+  cd my-vite-app && forge project new --in-place --kind site --name landing   # adopt an existing site
   forge project new --in-place --mod github.com/example/my-project
   forge project new --in-place --name my-project --mod github.com/example/my-project
 
@@ -123,8 +136,12 @@ built from: a gitignored, machine-local go.work 'use', plus the npm twin for
 @reliantlabs/forge-web-runtime (.forge-link/). The project then compiles the
 library from that checkout instead of a published version — what a forge
 contributor wants, and something nobody else should get by accident, so it
-is never written unless asked for. An unreleased forge build cannot pin
-itself in go.mod, so a service scaffold from one is refused without it. Once
+is written only when asked for or when nothing else works: an unreleased
+forge build cannot pin itself in go.mod, so a service scaffold from one is
+linked to the checkout that build came from automatically (one line says
+so), and refused when that checkout cannot be found or with
+--link-forge=false. A linked project's forge_version follows the checkout,
+not go.mod's placeholder require. Once
 bridged, generate, lint and doctor warn whenever this binary and the
 checkout stop being the same source; drop the bridge with
 'go work edit -dropuse=<checkout>'.`,
@@ -133,35 +150,35 @@ checkout stop being the same source; drop the bridge with
 		// repository it creates, and an existing one is left alone.
 		Annotations: map[string]string{skipHookActivationAnnotation: ""},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			projectName := nameFlag
-			if len(args) > 0 {
-				if nameFlag != "" && nameFlag != args[0] {
-					return cliutil.UserErr("forge project new",
-						fmt.Sprintf("project named twice: %q positionally and %q via --name", args[0], nameFlag),
-						"",
-						"pass the name once — as the positional arg, or as --name")
-				}
-				projectName = args[0]
+			projectName, err := newProjectName(nameFlag, args)
+			if err != nil {
+				return err
 			}
 			frontendOutput = strings.ToLower(strings.TrimSpace(frontendOutput))
 			frontendRoutes = scaffold.NormalizeRouteSlugs(frontendRoutes)
-			if (cmd.Flags().Changed("output") || cmd.Flags().Changed("routes")) && len(frontendNames) == 0 {
-				return fmt.Errorf("--output and --routes require --frontend")
+			if err := validateNewFrontendFlags(cmd, kindFlag, frontendOutput, frontendNames); err != nil {
+				return err
 			}
-			if frontendOutput != "" && frontendOutput != "static" && frontendOutput != "standalone" && frontendOutput != "server" {
-				return fmt.Errorf("invalid --output %q: use static, standalone, or server", frontendOutput)
+			resolvedHarness, err := resolveNewHarness(harness)
+			if err != nil {
+				return err
 			}
+			harness = resolvedHarness
 			explicitForgeRoot = forgeRoot
-			defer func() { explicitForgeRoot = "" }()
-			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces, linkForgeRequested(linkForge), verbose, verify, newFrontendOptions{output: frontendOutput, routes: frontendRoutes})
+			linkForgeDeclined = cmd.Flags().Changed("link-forge") && !linkForge
+			defer func() { explicitForgeRoot, linkForgeDeclined = "", false }()
+			newClaimable = claimable
+			defer func() { newClaimable = false }()
+			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces, linkForgeRequested(linkForge), verbose, verify, newFrontendOptions{output: frontendOutput, routes: frontendRoutes, kind: strings.ToLower(strings.TrimSpace(frontendKind))})
 		},
 	}
 
 	cmd.Flags().StringVarP(&projectPath, "path", "p", ".", "Path where to create the project")
 	cmd.Flags().StringVar(&modulePath, "mod", "", "Go module path (e.g., github.com/example/my-project). Defaults to example.com/<name>, so a first project needs no flag; set it to the path you will publish under")
-	cmd.Flags().StringVar(&kindFlag, "kind", "", "Project kind: service (default), cli, library, site (adopt the static frontend at this directory's root, with --in-place)")
+	cmd.Flags().StringVar(&kindFlag, "kind", "", "Project kind: service (default), cli, library, site (a static site with no backend: a new starter app, or with --in-place the Vite/Next.js app already here)")
 	cmd.Flags().StringSliceVar(&serviceNames, "service", nil, "Name(s) of initial Go services (repeatable or comma-separated). Name services after domain entities (item, order), not the binary. Omit to scaffold zero services and add them later via 'forge scaffold service <entity>'")
-	cmd.Flags().StringSliceVar(&frontendNames, "frontend", nil, "Name(s) of Next.js frontends (can be repeated or comma-separated)")
+	cmd.Flags().StringSliceVar(&frontendNames, "frontend", nil, "Name(s) of Next.js frontends (can be repeated or comma-separated). With --kind site: the one name the site's frontend is declared under (default web)")
+	cmd.Flags().StringVar(&frontendKind, "frontend-kind", "", "With --kind site: the starter a new site gets — nextjs (default; a static export, one HTML file per route) or vite-spa (a single-page app)")
 	cmd.Flags().StringVar(&frontendOutput, "output", "", "Output for every --frontend: static (default), standalone, or server")
 	cmd.Flags().StringSliceVar(&frontendRoutes, "routes", nil, "CRUD route allowlist for every --frontend; none generates no CRUD pages")
 	cmd.Flags().StringVar(&goVersion, "go-version", "", "Go version to use in go.mod (e.g., 1.24); defaults to detected version")
@@ -169,17 +186,82 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().StringVar(&nameFlag, "name", "", "Project name. Same as the positional arg, and the way to name an --in-place project whose directory (a worktree, a branch checkout) is not the product name; defaults to the directory name")
 	cmd.Flags().BoolVar(&force, "force", false, "With --in-place: scaffold over an existing forge.yaml, and REPLACE every pre-existing file the scaffold writes (README.md, go.mod, Taskfile.yml, …) with forge's version. Without it, existing files are kept and listed. .gitignore is always merged, never replaced")
 	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to leave out of the scaffold (comma-separated): "+strings.Join(disableableFeatures, ", ")+". Each is pinned off in forge.yaml's features: block (orm, which has no key, only steers this scaffold).")
-	cmd.Flags().StringVar(&harness, "harness", "reliant", "AI harness conventions to scaffold for. Each writes a memory file; Forge never writes skill files for any harness. reliant (default): reliant.md — skills are read from the forge binary ('forge skill search|load') and discovered via forge.yaml. claude: CLAUDE.md. For non-reliant harnesses, add your own skill telling the agent to run 'forge skill search <query>'. cursor: .cursorrules. copilot: .github/copilot-instructions.md. codex: AGENTS.md. Recorded as 'harness:' in forge.yaml and honored by every later generate")
+	cmd.Flags().StringVar(&harness, "harness", "", "AI harness to scaffold for: reliant, claude, cursor, copilot or codex. Default: detected from the agent running this command (RELIANT_AGENT_SHELL, CLAUDECODE, CODEX_THREAD_ID, CURSOR_AGENT), else reliant. Every harness gets AGENTS.md, the project guide; claude adds CLAUDE.md (imports AGENTS.md) and a .claude/skills/forge pointer skill, cursor adds .cursorrules and .cursor/rules/forge.mdc, copilot adds .github/copilot-instructions.md, reliant renders the guide in memory from forge.yaml. The pointers hold no skill bodies: skills are read from the forge binary ('forge skill search|load'). Recorded as 'harness:' in forge.yaml and honored by every later generate")
 	cmd.Flags().BoolVar(&skipTools, "skip-tools", false, "Skip auto-installing protoc-gen-go / protoc-gen-connect-go (run 'forge tools install' later)")
 	cmd.Flags().StringVar(&bufPlugins, "buf-plugins", "local", "Default proto plugin source: 'local' (resolved from PATH; no BSR auth needed) or 'remote' (BSR-hosted, requires login under load)")
 	cmd.Flags().StringVar(&binaryMode, "binary", "per-service", "Binary packaging: 'per-service' (default — canonical cmd/server.go cobra root, one Application per service) or 'shared' (one Go binary, cobra subcommand per service, KCL MultiServiceApplication for deploy)")
 	cmd.Flags().BoolVar(&frontendWorkspaces, "frontend-workspaces", false, "Opt into pnpm-workspaces layout: emit packages/api + packages/hooks + packages/ui-web shared across all frontends. Off by default; recommended once you have 2+ frontends (web + mobile).")
-	cmd.Flags().BoolVar(&linkForge, "link-forge", false, "Bridge the project to the forge checkout this binary was built from (gitignored go.work 'use' + .forge-link/ for the web runtime). Off by default; required for a service scaffold from an unreleased forge build (also: "+linkForgeEnv+"=1)")
+	cmd.Flags().BoolVar(&linkForge, "link-forge", false, "Bridge the project to the forge checkout this binary was built from (gitignored go.work 'use' + .forge-link/ for the web runtime). Off by default, except for a service scaffold from an unreleased forge build, which is linked automatically when its checkout is found (--link-forge=false refuses instead; also: "+linkForgeEnv+"=1)")
 	cmd.Flags().StringVar(&forgeRoot, "forge-root", "", "The forge checkout --link-forge bridges to (also: "+buildinfo.ForgeRootEnv+"). Default: the checkout this binary was built from, else the go.mod replace it embeds forge through, else the checkout it sits or was started in")
 	cmd.Flags().BoolVar(&verify, "verify", false, "Compile the scaffold before returning: the bootstrap generate then ends with its go build check and a render of every deploy env (adds ~1s warm, ~40s on a cold build cache, and saturates the CPU while it runs). Off by default: the scaffold is deterministic and forge's own e2e corpus compiles it, and your first go build or forge generate pays for the same compile")
+	cmd.Flags().BoolVar(&claimable, "claimable", false, "Scaffold prod for an ANONYMOUS deploy: forge env deploy prod --claimable then publishes with no account and prints a claim link. prod declares control_plane = forge.ControlPlane {claimable = True} and sizes its hosted services and jobs to the claimable plan ("+deploy.ClaimableLimitsFallback().WorkloadShape()+", request and limit) instead of the billed shape band. A static site needs nothing extra")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print the raw output behind a step forge summarizes in one line (e.g. git's explanation when the initial commit is skipped for want of a git identity)")
 
 	return cmd
+}
+
+// validateNewFrontendFlags refuses frontend flags that cannot apply: site-only
+// flags without --kind site, --output/--routes without a --frontend, and an
+// unknown --output.
+func validateNewFrontendFlags(cmd *cobra.Command, kindFlag, output string, frontendNames []string) error {
+	if err := checkSiteFrontendFlags(cmd, kindFlag); err != nil {
+		return err
+	}
+	if (cmd.Flags().Changed("output") || cmd.Flags().Changed("routes")) && len(frontendNames) == 0 {
+		return fmt.Errorf("--output and --routes require --frontend")
+	}
+	if output != "" && output != "static" && output != "standalone" && output != "server" {
+		return fmt.Errorf("invalid --output %q: use static, standalone, or server", output)
+	}
+	return nil
+}
+
+// newProjectName reconciles the two supported spellings without changing the
+// empty-name default that runNew resolves from the directory.
+func newProjectName(flag string, args []string) (string, error) {
+	if len(args) == 0 {
+		return flag, nil
+	}
+	if flag != "" && flag != args[0] {
+		return "", cliutil.UserErr("forge project new",
+			fmt.Sprintf("project named twice: %q positionally and %q via --name", args[0], flag),
+			"",
+			"pass the name once — as the positional arg, or as --name")
+	}
+	return args[0], nil
+}
+
+func resolveNewHarness(harness string) (string, error) {
+	resolved, detectedVia, err := generator.ResolveHarness(harness, os.Getenv)
+	if err != nil {
+		return "", err
+	}
+	if detectedVia != "" {
+		fmt.Printf("Harness: %s (detected from $%s; pass --harness to override)\n", resolved, detectedVia)
+	}
+	return string(resolved), nil
+}
+
+// checkSiteFrontendFlags refuses the frontend flags that do not fit the
+// project kind: --output/--routes shape an app frontend, never a site;
+// --frontend-kind picks a site's starter, so it needs --kind site.
+func checkSiteFrontendFlags(cmd *cobra.Command, kindFlag string) error {
+	if strings.EqualFold(strings.TrimSpace(kindFlag), projectKindSite) {
+		if cmd.Flags().Changed("output") || cmd.Flags().Changed("routes") {
+			return cliutil.UserErr("forge project new --kind site",
+				"--output and --routes shape an app frontend; a site is always a static export with no generated pages",
+				"",
+				"drop them (--frontend-kind nextjs|vite-spa picks the site's starter)")
+		}
+		return nil
+	}
+	if cmd.Flags().Changed("frontend-kind") {
+		return cliutil.UserErr("forge project new",
+			"--frontend-kind picks a static site's starter, so it needs --kind site",
+			"",
+			"add --kind site, or drop --frontend-kind (an app's frontend kind is chosen by `forge scaffold frontend --kind`)")
+	}
+	return nil
 }
 
 // defaultModulePath returns the Go module path a new project uses: --mod when
@@ -223,7 +305,7 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 		return "", "", "", cliutil.UserErr("forge project new",
 			fmt.Sprintf("invalid --kind %q: valid values are service, cli, library, site", kindFlag),
 			"",
-			"pass --kind=service for a Connect-RPC server, --kind=cli for a Cobra binary, --kind=library for a pure Go module, or --kind=site (with --in-place) to adopt a static frontend")
+			"pass --kind=service for a Connect-RPC server, --kind=cli for a Cobra binary, --kind=library for a pure Go module, or --kind=site for a static site with no backend")
 	}
 
 	// Validate --buf-plugins. Default 'local' (no BSR auth required); the
@@ -270,7 +352,13 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 				"",
 				"drop --service, or change to --kind service")
 		}
-		if len(frontendNames) > 0 {
+		if len(frontendNames) > 1 && kind == projectKindSite {
+			return "", "", "", cliutil.UserErr("forge project new --kind site",
+				fmt.Sprintf("a site has one frontend, at its root; got --frontend %s", strings.Join(frontendNames, ",")),
+				"",
+				"pass at most one --frontend name (the one the deploy envs declare it under)")
+		}
+		if len(frontendNames) > 0 && kind != projectKindSite {
 			return "", "", "", cliutil.UserErr("forge project new",
 				fmt.Sprintf("--frontend is only meaningful with --kind service (got --kind %s)", kind),
 				"",
@@ -289,6 +377,8 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 type newFrontendOptions struct {
 	output string
 	routes []string
+	// kind is --frontend-kind: a --kind site starter (nextjs, vite-spa).
+	kind string
 }
 
 //nolint:revive,cyclop // Existing cobra flag fan-out; frontend settings travel together.
@@ -298,14 +388,24 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		return err
 	}
 	if kindNormalized == projectKindSite {
-		if !inPlace {
-			return runNewSite("", projectName, false, force, harness)
-		}
 		targetPath, name, err := resolveNewTargetPath(projectName, projectPath, inPlace, force)
 		if err != nil {
 			return err
 		}
-		return runNewSite(targetPath, name, inPlace, force, harness)
+		frontendName := ""
+		if len(frontendNames) > 0 {
+			frontendName = frontendNames[0]
+		}
+		return runNewSite(ctx, newSiteInput{
+			targetPath:   targetPath,
+			projectName:  name,
+			inPlace:      inPlace,
+			force:        force,
+			harness:      harness,
+			frontendName: frontendName,
+			frontendKind: frontend.kind,
+			verbose:      verbose,
+		})
 	}
 	targetPath, projectName, err := resolveNewTargetPath(projectName, projectPath, inPlace, force)
 	if err != nil {
@@ -334,6 +434,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 			adopted = &a
 		}
 	}
+	linkForge = autoLinkForge(kindNormalized, linkForge, adopted)
 	if err := checkScaffoldCanResolveForge(kindNormalized, linkForge, adopted); err != nil {
 		return err
 	}
@@ -374,17 +475,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		}
 	}
 
-	fmt.Printf("Creating new project '%s' at %s\n", projectName, targetPath)
-	if len(serviceNames) > 0 {
-		if len(serviceNames) == 1 {
-			fmt.Printf("  Service: %s\n", serviceNames[0])
-		} else {
-			fmt.Printf("  Services: %s\n", strings.Join(serviceNames, ", "))
-		}
-	}
-	if len(frontendNames) > 0 {
-		fmt.Printf("  Frontend: %s\n", strings.Join(frontendNames, ", "))
-	}
+	announceNewProject(projectName, targetPath, serviceNames, frontendNames)
 
 	scaffold, err := beginScaffold(targetPath, inPlace)
 	if err != nil {
@@ -719,6 +810,7 @@ func configureProjectGenerator(c newGeneratorConfig) (*generator.ProjectGenerato
 	gen.ForgePin = c.forgePin
 	gen.GenInRootModule = c.genInRootModule
 	gen.Adopting = c.adopting
+	gen.Claimable = newClaimable
 	if len(c.frontendNames) > 0 {
 		gen.FrontendName = c.frontendNames[0]
 	}
@@ -860,7 +952,10 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	// and non-service kinds.
 	if !in.skipTools && in.bufPlugins == "local" && in.kind == config.ProjectKindService {
 		fmt.Println("\n🔧 Ensuring proto codegen plugins are installed (use --skip-tools to skip)...")
-		if err := runToolsInstall(ctx, "latest", false); err != nil {
+		stopBeat := cliutil.Heartbeat(os.Stderr, "project new: installing proto codegen plugins")
+		err := runToolsInstall(ctx, "latest", false)
+		stopBeat()
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "⚠️  Plugin install incomplete: %v\n", err)
 			fmt.Fprintf(os.Stderr, "    Run '%s tools install' manually before '%s generate'.\n", Name(), Name())
 		}
@@ -870,11 +965,14 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	// runs, because the scaffolded buf.gen.yaml uses a `local:` plugin path
 	// pointing at frontends/<name>/node_modules/.bin/protoc-gen-es.
 	if len(in.frontendNames) > 0 {
-		fmt.Println("🔧 Installing frontend dependencies (this generates package-lock.json)...")
-		if err := runNpmInstall(ctx, in.targetPath, in.frontendNames); err != nil {
-			fmt.Printf("Warning: npm install failed: %v\n", err)
-			fmt.Println("    @bufbuild/protoc-gen-es will be missing — run 'npm install' in each frontends/<name>/ before 'forge generate'.")
-			fmt.Println("    CI also requires package-lock.json to exist.")
+		fmt.Println("🔧 Installing frontend dependencies (this writes each frontend's lockfile)...")
+		stopBeat := cliutil.Heartbeat(os.Stderr, "project new: frontend install")
+		err := runFrontendInstalls(ctx, in.targetPath, in.frontendNames)
+		stopBeat()
+		if err != nil {
+			fmt.Printf("Warning: frontend install failed: %v\n", err)
+			fmt.Println("    @bufbuild/protoc-gen-es will be missing — run 'pnpm install' in each frontends/<name>/ before 'forge generate'.")
+			fmt.Println("    CI also requires each frontend's pnpm-lock.yaml to exist.")
 		}
 		// The install just decided the node_modules layout AND made each
 		// pinned package's manifest readable, so this is the one moment the
@@ -900,7 +998,9 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	// leave is the one the re-run completes. It is reported, not swallowed.
 	if in.kind == config.ProjectKindService {
 		fmt.Println("\n🔧 Bootstrapping generated proto code...")
+		stopBeat := cliutil.Heartbeat(os.Stderr, "project new: bootstrap generate")
 		genErr = bootstrapGenerate(in.targetPath, in.verify)
+		stopBeat()
 	}
 
 	// Re-record frozen-file checksums after bootstrap (goimports -w reformats
@@ -923,7 +1023,10 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	}
 
 	fmt.Println("🔧 Running go mod tidy...")
-	if err := runGoModTidy(ctx, in.targetPath); err != nil {
+	stopTidyBeat := cliutil.Heartbeat(os.Stderr, "project new: go mod tidy")
+	tidyErr := runGoModTidy(ctx, in.targetPath)
+	stopTidyBeat()
+	if err := tidyErr; err != nil {
 		fmt.Printf("Warning: go mod tidy failed: %v\n", err)
 		fmt.Println("You can run 'go mod tidy' manually later")
 	}
@@ -1218,8 +1321,59 @@ func writeDevForgeGoWork(targetPath string, link bool) {
 	fmt.Printf("🔗 --link-forge: wrote go.work bridging this project to %s (gitignored, machine-local; undo: go work edit -dropuse=%s)\n", root, root)
 }
 
+// announceNewProject prints the project, and the services and frontends it
+// starts with, before anything is written.
+func announceNewProject(projectName, targetPath string, serviceNames, frontendNames []string) {
+	fmt.Printf("Creating new project '%s' at %s\n", projectName, targetPath)
+	if len(serviceNames) == 1 {
+		fmt.Printf("  Service: %s\n", serviceNames[0])
+	} else if len(serviceNames) > 1 {
+		fmt.Printf("  Services: %s\n", strings.Join(serviceNames, ", "))
+	}
+	if len(frontendNames) > 0 {
+		fmt.Printf("  Frontend: %s\n", strings.Join(frontendNames, ", "))
+	}
+}
+
 // explicitForgeRoot is --forge-root for the `project new` run in progress.
 var explicitForgeRoot string
+
+// linkForgeDeclined is an explicit --link-forge=false for the `project new`
+// run in progress: refuse rather than link automatically (autoLinkForge).
+var linkForgeDeclined bool
+
+// autoLinkForge reports whether the scaffold is bridged to a forge checkout:
+// link (--link-forge), or — when this binary could not resolve forge for the
+// project any other way and the bridge would — the checkout it was built
+// from, announced in one line.
+//
+// That case is an unreleased build (a pseudo-version no module proxy can
+// serve) whose checkout is known. It used to be refused with "re-run with
+// --link-forge --forge-root <the root forge had just found>": a command forge
+// could have run itself, and the only way that scaffold could ever succeed.
+// --link-forge=false keeps the refusal.
+func autoLinkForge(kind string, link bool, adopted *adoptedForge) bool {
+	// Only a build no proxy serves: a released forge refused here (an adopted
+	// go.mod's stale pin) has a published answer, and is never bridged to
+	// a checkout behind the user's back.
+	if link || linkForgeDeclined || buildinfo.InstallableVersion() != "" {
+		return link
+	}
+	root, ok, err := buildinfo.ResolveForgeRoot(explicitForgeRoot)
+	if err != nil || !ok {
+		return false // checkScaffoldCanResolveForge reports a bad --forge-root
+	}
+	if checkScaffoldCanResolveForge(kind, false, adopted) == nil || checkScaffoldCanResolveForge(kind, true, adopted) != nil {
+		return false
+	}
+	fmt.Printf("🔗 this forge (%s) is an unreleased build no module proxy can serve: linking the project to %s "+
+		"(%s), as --link-forge does (--link-forge=false refuses instead)\n", buildinfo.Version(), root.Dir, root.Source)
+	return true
+}
+
+// newClaimable is --claimable for the `project new` run in progress
+// (generator.ProjectGenerator.Claimable).
+var newClaimable bool
 
 // devForgeBridgeRoot is the local forge checkout --link-forge bridges a
 // scaffold to, or "" when none can be found. A path stated by --forge-root or
@@ -1260,7 +1414,7 @@ func checkScaffoldCanResolveForge(kind string, link bool, adopted *adoptedForge)
 	if link {
 		bridgeRoot = root
 	}
-	return scaffoldForgeResolution(kind, buildinfo.InstallableVersion(), bridgeRoot, root)
+	return scaffoldForgeResolution(kind, buildinfo.InstallableVersion(), bridgeRoot, root, forgeInvocationArgs())
 }
 
 // scaffoldForgeResolution is the pure decision behind
@@ -1282,8 +1436,9 @@ func checkScaffoldCanResolveForge(kind string, link bool, adopted *adoptedForge)
 // package, so they are unaffected.
 //
 // linkableRoot is the checkout --link-forge WOULD bridge to ("" when this
-// binary cannot locate one); it decides which fix the refusal offers.
-func scaffoldForgeResolution(kind, pinnedVersion, bridgeRoot, linkableRoot string) error {
+// binary cannot locate one); it decides which fix the refusal offers. args is
+// the command the user ran, so the fix can be that same command, runnable.
+func scaffoldForgeResolution(kind, pinnedVersion, bridgeRoot, linkableRoot string, args []string) error {
 	if kind != config.ProjectKindService || pinnedVersion != "" || bridgeRoot != "" {
 		return nil
 	}
@@ -1294,9 +1449,10 @@ func scaffoldForgeResolution(kind, pinnedVersion, bridgeRoot, linkableRoot strin
 			fmt.Sprintf("this forge (%s) is an unreleased build no module proxy can serve, so go.mod cannot "+
 				"require it, and the project was not bridged to its source. %s", buildinfo.Version(), retired),
 			"",
-			fmt.Sprintf("re-run with --link-forge to bridge the project to the checkout this forge was built from "+
-				"(%s; a gitignored go.work — generate, lint and doctor then warn when the two drift apart), "+
-				"or install a published forge (`go install github.com/reliant-labs/forge/cmd/forge@<version>`)", linkableRoot))
+			fmt.Sprintf("bridge the project to the checkout this forge was built from (%s; a gitignored go.work — "+
+				"generate, lint and doctor then warn when the two drift apart):\n    %s\n"+
+				"  or install a published forge (`go install github.com/reliant-labs/forge/cmd/forge@<version>`)",
+				linkableRoot, linkForgeRerun(args, linkableRoot)))
 	}
 	return cliutil.UserErr(Name()+" project new (forge version)",
 		fmt.Sprintf("this forge (%s) cannot tell a new project where to get forge: it is not a version a "+
@@ -1304,31 +1460,50 @@ func scaffoldForgeResolution(kind, pinnedVersion, bridgeRoot, linkableRoot strin
 			"was built from, so go.work cannot bridge to it. %s", buildinfo.Version(), retired),
 		"",
 		"use a forge that can resolve itself: install a published one "+
-			"(`go install github.com/reliant-labs/forge/cmd/forge@<version>`), or, from a forge checkout, "+
-			"`task install:dev` / `make dev` (which records the checkout) and scaffold with --link-forge")
+			"(`go install github.com/reliant-labs/forge/cmd/forge@<version>`), or name your forge checkout:\n    "+
+			linkForgeRerun(args, ""))
 }
 
-// initGitRepository initializes a git repository and makes initial commit
+// initGitRepository initializes a git repository, activates forge's
+// committed hooks, and makes the initial commit.
 func initGitRepository(ctx context.Context, path string) error {
+	return initGitRepositoryWith(ctx, path, true)
+}
+
+// initGitRepositoryWith is initGitRepository with the hook activation
+// optional: a static site ships no .githooks/ to point core.hooksPath at.
+func initGitRepositoryWith(ctx context.Context, path string, activateHooks bool) error {
 	cmd := exec.CommandContext(ctx, "git", "init")
 	cmd.Dir = path
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git init failed: %s", string(output))
 	}
+	if activateHooks {
+		if err := activateGitHooks(ctx, path); err != nil {
+			return err
+		}
+	}
+	return commitInitialScaffold(ctx, path)
+}
 
+func activateGitHooks(ctx context.Context, path string) error {
 	// Activate forge's committed git hooks (.githooks/pre-push runs
 	// `forge lint` + `forge project audit`; pre-commit stays fast). core.hooksPath
 	// is set RELATIVE so it resolves against each worktree's own checkout —
 	// one setting in the shared .git/config makes the hooks fire in every
 	// linked worktree. Set here, before the initial commit, so the repo
 	// ships activated; fresh clones self-heal via ensureGitHooksActivated.
-	cmd = exec.CommandContext(ctx, "git", "config", "--local", "core.hooksPath", ".githooks")
+	cmd := exec.CommandContext(ctx, "git", "config", "--local", "core.hooksPath", ".githooks")
 	cmd.Dir = path
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git config core.hooksPath failed: %s", string(output))
 	}
+	return nil
+}
 
-	cmd = exec.CommandContext(ctx, "git", "add", ".")
+// commitInitialScaffold stages everything and makes forge's initial commit.
+func commitInitialScaffold(ctx context.Context, path string) error {
+	cmd := exec.CommandContext(ctx, "git", "add", ".")
 	cmd.Dir = path
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git add failed: %s", string(output))
@@ -1404,7 +1579,7 @@ func reportGitInitError(w io.Writer, err error, verbose bool) {
 	}
 }
 
-// npmInstallAttempts is how many times a frontend's `npm install` is tried
+// frontendInstallAttempts is how many times a frontend's install is tried
 // before giving up. The registry is a network dependency on the critical path
 // of the very first command a new user runs, and a single transient 429 or
 // reset connection there does not leave a clean failure: the scaffold
@@ -1412,50 +1587,86 @@ func reportGitInitError(w io.Writer, err error, verbose bool) {
 // much later as some other tool reporting a package it cannot find — for tsc,
 // an npx fallback that names a 2016 package nobody asked for. One retry turns
 // most of that class into a slower success.
-const npmInstallAttempts = 2
+const frontendInstallAttempts = 2
 
-// runNpmInstall runs `npm install` in each frontend directory so that a
-// package-lock.json exists before first commit. CI relies on `npm ci` which
-// requires the lockfile.
-func runNpmInstall(ctx context.Context, root string, frontends []string) error {
-	if _, err := exec.LookPath("npm"); err != nil {
-		return fmt.Errorf("npm not found on PATH: %w", err)
-	}
+// runFrontendInstalls installs each frontend's dependencies with the package
+// manager its package.json pins (pnpm for a scaffold; frontenddeps decides),
+// so a lockfile exists before the first commit: CI's frozen install requires
+// it.
+func runFrontendInstalls(ctx context.Context, root string, frontends []string) error {
 	for _, name := range frontends {
 		feDir := filepath.Join(root, "frontends", name)
 		if _, err := os.Stat(filepath.Join(feDir, "package.json")); err != nil {
 			continue
 		}
+		pm := frontenddeps.PackageManager(feDir, "")
 		// A Node below the frontend's floor is not flaky: no retry passes,
-		// and npm's own failure ("reading 'edgesOut'") never names Node.
+		// and the package manager's own failure (npm: "reading 'edgesOut'")
+		// never names Node.
 		if err := nodeengine.Check(feDir); err != nil {
-			return fmt.Errorf("npm install (%s) not run: %w", name, err)
+			return fmt.Errorf("%s install (%s) not run: %w", pm, name, err)
 		}
 		var lastErr error
-		for attempt := 1; attempt <= npmInstallAttempts; attempt++ {
-			cmd := exec.CommandContext(ctx, "npm", "install", "--no-audit", "--no-fund")
-			cmd.Dir = feDir
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			lastErr = cmd.Run()
+		for attempt := 1; attempt <= frontendInstallAttempts; attempt++ {
+			lastErr = frontenddeps.Install(ctx, feDir, "", false)
 			if lastErr == nil {
 				break
 			}
 			// A cancelled context is the user or a timeout, not a flaky
 			// registry — retrying only makes them wait for the same answer.
-			if ctx.Err() != nil {
-				return fmt.Errorf("npm install (%s) failed: %w", name, lastErr)
+			// Nor is a package manager that will not start: a retry runs
+			// the same executable.
+			if ctx.Err() != nil || errors.Is(lastErr, frontenddeps.ErrRunnerUnusable) {
+				return fmt.Errorf("%s install (%s) failed: %w", pm, name, lastErr)
 			}
-			if attempt < npmInstallAttempts {
-				fmt.Printf("  ⚠️  npm install in frontends/%s/ failed (attempt %d/%d): %v — retrying\n",
-					name, attempt, npmInstallAttempts, lastErr)
+			if attempt < frontendInstallAttempts {
+				fmt.Printf("  ⚠️  %s install in frontends/%s/ failed (attempt %d/%d): %v — retrying\n",
+					pm, name, attempt, frontendInstallAttempts, lastErr)
 			}
 		}
 		if lastErr != nil {
-			return fmt.Errorf("npm install (%s) failed after %d attempts: %w", name, npmInstallAttempts, lastErr)
+			return fmt.Errorf("%s install (%s) failed after %d attempts: %w", pm, name, frontendInstallAttempts, lastErr)
+
 		}
 	}
 	return nil
+}
+
+// npmInstallAttempts preserves the site starter's npm-specific retry policy.
+const npmInstallAttempts = frontendInstallAttempts
+
+// npmInstallIn runs `npm install` in dir, retrying a transient failure once
+// (npmInstallAttempts). label names dir in what it prints.
+func npmInstallIn(ctx context.Context, dir, label string) error {
+	if _, err := exec.LookPath("npm"); err != nil {
+		return fmt.Errorf("npm not found on PATH: %w", err)
+	}
+	// A Node below the frontend's floor is not flaky: no retry passes,
+	// and npm's own failure ("reading 'edgesOut'") never names Node.
+	if err := nodeengine.Check(dir); err != nil {
+		return fmt.Errorf("npm install (%s) not run: %w", label, err)
+	}
+	var lastErr error
+	for attempt := 1; attempt <= npmInstallAttempts; attempt++ {
+		cmd := exec.CommandContext(ctx, "npm", "install", "--no-audit", "--no-fund")
+		cmd.Dir = dir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		lastErr = cmd.Run()
+		if lastErr == nil {
+			return nil
+		}
+		// A cancelled context is the user or a timeout, not a flaky
+		// registry — retrying only makes them wait for the same answer.
+		if ctx.Err() != nil {
+			return fmt.Errorf("npm install (%s) failed: %w", label, lastErr)
+		}
+		if attempt < npmInstallAttempts {
+			fmt.Printf("  ⚠️  npm install in %s failed (attempt %d/%d): %v — retrying\n",
+				label, attempt, npmInstallAttempts, lastErr)
+		}
+	}
+	return fmt.Errorf("npm install (%s) failed after %d attempts: %w", label, npmInstallAttempts, lastErr)
 }
 
 // runGoModTidy runs go mod tidy in the project root and gen/ directories when safe.

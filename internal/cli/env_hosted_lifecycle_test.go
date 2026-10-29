@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
-	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 
 type lifecycleCall struct {
@@ -140,24 +139,50 @@ func TestRunLifecycle_WaitTimesOutNonZero(t *testing.T) {
 	}
 }
 
+// The default delete destroys the data and says so; it never asks the control
+// plane to keep it.
 func TestRunEnvDelete_CallsDeleteEnvironmentForce(t *testing.T) {
 	f := &fakeLifecycleCaller{replies: map[string]string{"ListDeployments": twoDeployments}}
 	var out bytes.Buffer
-	if err := runEnvDelete(context.Background(), f, "env_1", "preview", true, strings.NewReader(""), &out); err != nil {
+	if err := runEnvDelete(context.Background(), f, "env_1", "preview", envDeleteOptions{Yes: true}, strings.NewReader(""), &out); err != nil {
 		t.Fatal(err)
 	}
 	last := f.calls[len(f.calls)-1]
 	if last.proc != procDeleteEnvironment || last.req["environmentId"] != "env_1" || last.req["force"] != true {
 		t.Errorf("delete call = %+v", last)
 	}
-	if !strings.Contains(out.String(), "NOT reattached") {
-		t.Errorf("data-retention caveat missing:\n%s", out.String())
+	if _, asked := last.req["keepData"]; asked {
+		t.Errorf("a default delete asked to keep the data: %+v", last.req)
+	}
+	for _, want := range []string{"AND its managed databases' data", "IRREVERSIBLE", "--keep-data", "release images"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("delete summary is missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+// --keep-data asks the control plane to retain the databases and says what
+// that costs.
+func TestRunEnvDelete_KeepDataRetainsTheDatabases(t *testing.T) {
+	f := &fakeLifecycleCaller{replies: map[string]string{"ListDeployments": twoDeployments}}
+	var out bytes.Buffer
+	if err := runEnvDelete(context.Background(), f, "env_1", "preview", envDeleteOptions{Yes: true, KeepData: true}, strings.NewReader(""), &out); err != nil {
+		t.Fatal(err)
+	}
+	last := f.calls[len(f.calls)-1]
+	if last.proc != procDeleteEnvironment || last.req["keepData"] != true {
+		t.Errorf("delete call = %+v, want keepData=true", last)
+	}
+	for _, want := range []string{"Kept (--keep-data)", "billed as storage", "NOT reattached"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("--keep-data summary is missing %q:\n%s", want, out.String())
+		}
 	}
 }
 
 func TestRunEnvDelete_TypedNameMustMatch(t *testing.T) {
 	f := &fakeLifecycleCaller{replies: map[string]string{"ListDeployments": twoDeployments}}
-	err := runEnvDelete(context.Background(), f, "env_1", "preview", false, strings.NewReader("prod\n"), &bytes.Buffer{})
+	err := runEnvDelete(context.Background(), f, "env_1", "preview", envDeleteOptions{}, strings.NewReader("prod\n"), &bytes.Buffer{})
 	if err == nil {
 		t.Fatal("a wrong typed name must abort")
 	}
@@ -167,7 +192,7 @@ func TestRunEnvDelete_TypedNameMustMatch(t *testing.T) {
 		}
 	}
 	f = &fakeLifecycleCaller{replies: map[string]string{"ListDeployments": twoDeployments}}
-	if err := runEnvDelete(context.Background(), f, "env_1", "preview", false, strings.NewReader("preview\n"), &bytes.Buffer{}); err != nil {
+	if err := runEnvDelete(context.Background(), f, "env_1", "preview", envDeleteOptions{}, strings.NewReader("preview\n"), &bytes.Buffer{}); err != nil {
 		t.Fatalf("matching name should proceed: %v", err)
 	}
 }
@@ -195,14 +220,30 @@ func TestEnvDelete_NonInteractiveWithoutYesFailsFastBeforeAnyNetwork(t *testing.
 }
 
 func TestRequireHostedEnv_RefusesLocalAndPointsAtDown(t *testing.T) {
-	for _, kind := range []deploytarget.HostedEnvKind{deploytarget.HostedEnvLocal, deploytarget.HostedEnvSelfManaged, ""} {
-		err := requireHostedEnv("dev", "delete", kind)
+	for _, parts := range []placementSummary{{}, {Cluster: true}} {
+		err := requireHostedEnv("dev", "delete", parts)
 		if err == nil || !strings.Contains(err.Error(), "forge env down dev") {
-			t.Errorf("kind %q: err = %v", kind, err)
+			t.Errorf("parts %+v: err = %v", parts, err)
 		}
 	}
-	if err := requireHostedEnv("prod", "stop", deploytarget.HostedEnvPersistent); err != nil {
+	if err := requireHostedEnv("prod", "stop", placementSummary{Hosted: true}); err != nil {
 		t.Errorf("hosted env refused: %v", err)
+	}
+}
+
+// A MIXED env (hosted parts beside cluster parts) is a hosted env for
+// stop/start, which act on the hosted parts only, and is refused for delete,
+// which would drop the ledger of the cluster parts it never tears down.
+func TestRequireHostedEnv_MixedEnv(t *testing.T) {
+	mixed := placementSummary{Hosted: true, Cluster: true}
+	for _, verb := range []string{"stop", "start"} {
+		if err := requireHostedEnv("prod", verb, mixed); err != nil {
+			t.Errorf("%s on a mixed env refused: %v", verb, err)
+		}
+	}
+	err := requireHostedEnv("prod", "delete", mixed)
+	if err == nil || !strings.Contains(err.Error(), "clusters you operate") {
+		t.Fatalf("delete on a mixed env: err = %v, want the cluster-parts refusal", err)
 	}
 }
 

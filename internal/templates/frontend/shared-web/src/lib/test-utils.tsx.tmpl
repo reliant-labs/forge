@@ -8,9 +8,15 @@
 //   - mockTransport(handlers): a Connect-compatible Transport whose unary
 //     responses are keyed on "<ServiceTypeName>/<MethodName>" or the
 //     "<ServiceName>.<MethodName>" shorthand. Per-handler entries may be:
-//       { response: <any> }            — return a typed message
+//       { response: <any> }            — return a typed message (an init
+//                                        shape is fine: it is create()d into
+//                                        the full response, as a real
+//                                        transport would parse it)
 //       { error: <Error | string> }    — reject with a ConnectError
-//       (input) => <any | Promise<any>> — compute the response from the request
+//       (input) => <any | Promise<any>> — compute the response from the
+//                                        request, which arrives as the FULL
+//                                        message (create()d), never the
+//                                        caller's partial init
 //     Unmatched RPCs reject with Code.Unimplemented so missing fixtures
 //     surface as a clear error.
 //
@@ -23,20 +29,14 @@
 //
 // See the `frontend-testing` skill for recipes and anti-patterns.
 
+import { create, type DescMessage } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
-import {
-  QueryClient,
-  QueryClientProvider,
-} from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, type RenderOptions, type RenderResult } from "@testing-library/react";
 
 import { setTransport } from "@/lib/connect";
 
-import type {
-  Transport,
-  UnaryResponse,
-  StreamResponse,
-} from "@connectrpc/connect";
+import type { Transport, UnaryResponse, StreamResponse } from "@connectrpc/connect";
 import type { ReactElement } from "react";
 
 // MockHandler is what a caller writes for a single RPC. A `response` entry
@@ -71,7 +71,7 @@ function toConnectError(err: Error | string | ConnectError): ConnectError {
 }
 
 function makeUnaryResponse(
-  method: { name: string; parent: { typeName: string } },
+  method: { name: string; parent: { typeName: string }; output: DescMessage },
   message: unknown,
 ): UnaryResponse<never, never> {
   return {
@@ -79,7 +79,10 @@ function makeUnaryResponse(
     method: method as never,
     stream: false,
     header: new Headers(),
-    message: message as never,
+    // A real transport parses the response into a full message (every field
+    // set, repeated fields []), so a fixture may be written as an init shape
+    // and the caller still reads `res.items.length` safely.
+    message: create(method.output, (message ?? {}) as never) as never,
     trailer: new Headers(),
   };
 }
@@ -120,7 +123,10 @@ export function mockTransport(handlers: MockHandlers = {}): Transport {
         );
       }
       if (typeof handler === "function") {
-        const result = await handler(input as unknown);
+        // A real transport serializes the request, so the server always sees
+        // every field (an unset repeated field is [], not undefined). Hand the
+        // handler the same: the full message, not the caller's init shape.
+        const result = await handler(create(method.input, input as never) as unknown);
         return makeUnaryResponse(method, result);
       }
       if ("error" in handler) {

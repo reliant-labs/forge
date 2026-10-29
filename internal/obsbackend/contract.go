@@ -16,6 +16,8 @@ type Backend interface {
 	Endpoints(ctx context.Context, req EndpointsRequest) (EndpointsResult, error)
 	MetricsList(ctx context.Context, req MetricsListRequest) (MetricsListResult, error)
 	MetricsQuery(ctx context.Context, req MetricsQueryRequest) (MetricsQueryResult, error)
+	MetricsDescribe(ctx context.Context, req MetricsDescribeRequest) (MetricsDescribeResult, error)
+	MetricsExemplars(ctx context.Context, req MetricsExemplarsRequest) (MetricsExemplarsResult, error)
 	Query(ctx context.Context, req QueryRequest) (QueryResult, error)
 }
 
@@ -30,6 +32,20 @@ type IssueReader interface {
 	GetIssue(ctx context.Context, req GetIssueRequest) (GetIssueResult, error)
 	ListIssueEvents(ctx context.Context, req ListIssueEventsRequest) (ListIssueEventsResult, error)
 	UpdateIssueStatus(ctx context.Context, req UpdateIssueStatusRequest) (UpdateIssueStatusResult, error)
+	ListIssueTimeline(ctx context.Context, req ListIssueTimelineRequest) (ListIssueTimelineResult, error)
+	AddIssueComment(ctx context.Context, req AddIssueCommentRequest) (AddIssueCommentResult, error)
+	AssignIssue(ctx context.Context, req AssignIssueRequest) (AssignIssueResult, error)
+}
+
+// SessionReader reads browser sessions: the list, and one session's summary
+// with its timeline (`forge obs sessions|session`). Both backends implement
+// it. A local ClickStack has no browser tables, so its reads answer "could not
+// look"; the cloud one is the control plane's RumService.
+//
+//forge:contract
+type SessionReader interface {
+	ListSessions(ctx context.Context, req ListSessionsRequest) (ListSessionsResult, error)
+	GetSession(ctx context.Context, req GetSessionRequest) (GetSessionResult, error)
 }
 
 // HealthReader judges a release: the windows before and after a promotion,

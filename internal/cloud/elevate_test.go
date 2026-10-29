@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/cloudcred"
 )
 
 // elevatingServer plays a control plane whose stored credential is narrow:
@@ -154,6 +156,40 @@ func TestCall_RefusedElevationExplainsItself(t *testing.T) {
 	}
 }
 
+// A `forge login` credential that lacks the scope and cannot be elevated,
+// on a machine with a credential helper, names both ways out — log out to
+// fall through to the helper, or log in again — instead of only "re-run forge
+// login". forge never switches identity itself: the call is not retried.
+func TestCall_LoginLackingScopeWithAHelperNamesLogout(t *testing.T) {
+	t.Setenv(cloudcred.HelperEnv, `["/bin/helper"]`)
+	srv := newElevatingServer(t, http.StatusForbidden, "this credential does not carry obs:read, and an exchange cannot widen a credential")
+	err := srv.client(t, SourceLogin).Call(context.Background(), "controlplane.v1.DomainService/ListDomains", map[string]any{}, nil)
+	if err == nil {
+		t.Fatal("expected the refusal")
+	}
+	want := "your `forge login` credential (test, for " + srv.URL + ") lacks domain:read; run `forge logout --endpoint " + srv.URL + "` to use the Reliant credential helper"
+	if !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "or `forge login` again") {
+		t.Errorf("error lacks the remedy %q:\n%v", want, err)
+	}
+	if len(srv.calls) != 2 {
+		t.Fatalf("calls %v: want the refused call and one exchange; forge must not switch to the helper itself", srv.calls)
+	}
+}
+
+// Without a helper there is nothing to log out TO, and a helper's own token
+// is not a `forge login`: neither gets the remedy.
+func TestCall_LogoutRemedyNeedsALoginAndAHelper(t *testing.T) {
+	srv := newElevatingServer(t, http.StatusForbidden, "refused")
+	t.Setenv(cloudcred.HelperEnv, "")
+	if err := srv.client(t, SourceLogin).Call(context.Background(), "controlplane.v1.DomainService/ListDomains", map[string]any{}, nil); err == nil || strings.Contains(err.Error(), "forge logout") {
+		t.Errorf("no helper: err = %v, want no logout remedy", err)
+	}
+	t.Setenv(cloudcred.HelperEnv, `["/bin/helper"]`)
+	if err := srv.client(t, SourceHelper).Call(context.Background(), "controlplane.v1.DomainService/ListDomains", map[string]any{}, nil); err == nil || strings.Contains(err.Error(), "forge logout") {
+		t.Errorf("helper credential: err = %v, want no logout remedy", err)
+	}
+}
+
 func TestCall_ElevationAgainstAnOlderControlPlaneSaysSo(t *testing.T) {
 	srv := newElevatingServer(t, http.StatusNotFound, "")
 	err := srv.client(t, SourceLogin).Call(context.Background(), "controlplane.v1.DomainService/ListDomains", map[string]any{}, nil)
@@ -190,5 +226,89 @@ func TestMissingScopeRegexKnowsTheFeedbackLoopScopes(t *testing.T) {
 		if m == nil || m[1] != scope {
 			t.Errorf("%s: match = %v", scope, m)
 		}
+	}
+}
+
+// scopeServer plays a control plane that admits a bearer carrying want and
+// refuses every other one for want of it; its exchange can only attenuate, as
+// the real one does, so it always refuses to widen.
+func scopeServer(t *testing.T, want string) (*httptest.Server, *[]string) {
+	t.Helper()
+	var mu sync.Mutex
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		mu.Lock()
+		calls = append(calls, strings.TrimPrefix(r.URL.Path, "/")+" "+bearer)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "AccessTokenService/ExchangeToken"):
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "permission_denied",
+				"message": "this credential does not carry " + want + ", and an exchange cannot widen a credential"})
+		case strings.Contains(bearer, want):
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "permission_denied",
+				"message": "this credential does not carry the " + want + " scope"})
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+// The bug: under Reliant every cloud `forge obs` verb failed "lacks obs:read".
+// The helper's token is minted for LoginScopes, and the exchange only narrows
+// the credential it is called with, so it could never add obs:read — though
+// the session behind the helper held it. forge now asks the helper itself for
+// the missing scope, and only falls back to the exchange when that fails.
+func TestCall_HelperCredentialElevatesThroughTheHelper(t *testing.T) {
+	t.Setenv("FORGE_HOME", t.TempDir())
+	useFakeHelper(t, "scoped", "deploy:read", "deploy:write", "obs:read")
+	srv, calls := scopeServer(t, "obs:read")
+	ep, err := ResolveEndpoint("prod", &Declaration{Endpoint: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := NewClient(ep, Credential{Token: "rlat_helper:deploy:read,deploy:write", Source: SourceHelper, From: "test"})
+	var out struct{ OK bool }
+	for i := 0; i < 2; i++ {
+		if err := c.Call(context.Background(), "controlplane.v1.ObservabilityService/GetServiceOverview", map[string]any{}, &out); err != nil {
+			t.Fatalf("Call %d: %v", i, err)
+		}
+	}
+	if !out.OK {
+		t.Fatal("the retried call did not succeed")
+	}
+	want := []string{
+		"controlplane.v1.ObservabilityService/GetServiceOverview rlat_helper:deploy:read,deploy:write",
+		"controlplane.v1.ObservabilityService/GetServiceOverview rlat_helper:deploy:read,deploy:write,obs:read",
+		"controlplane.v1.ObservabilityService/GetServiceOverview rlat_helper:deploy:read,deploy:write",
+		"controlplane.v1.ObservabilityService/GetServiceOverview rlat_helper:deploy:read,deploy:write,obs:read",
+	}
+	if strings.Join(*calls, "|") != strings.Join(want, "|") {
+		t.Fatalf("calls:\n got %v\nwant %v (no exchange; the helper's token reused)", *calls, want)
+	}
+}
+
+// A helper whose session does not hold the scope either answers without it;
+// forge then tries the exchange and reports why neither helped.
+func TestCall_HelperWithoutTheScopeFallsBackToTheExchange(t *testing.T) {
+	t.Setenv("FORGE_HOME", t.TempDir())
+	useFakeHelper(t, "scoped", "deploy:read", "deploy:write")
+	srv, calls := scopeServer(t, "obs:read")
+	ep, err := ResolveEndpoint("prod", &Declaration{Endpoint: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := NewClient(ep, Credential{Token: "rlat_helper:deploy:read,deploy:write", Source: SourceHelper, From: "test"})
+	err = c.Call(context.Background(), "controlplane.v1.ObservabilityService/GetServiceOverview", map[string]any{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "elevation:") {
+		t.Fatalf("err = %v, want the refusal with the elevation note", err)
+	}
+	if len(*calls) != 2 || !strings.Contains((*calls)[1], "ExchangeToken") {
+		t.Fatalf("calls %v: want the refused call and one exchange", *calls)
 	}
 }

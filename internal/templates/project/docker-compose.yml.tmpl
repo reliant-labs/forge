@@ -132,7 +132,11 @@ services:
         required: false
 {{- end}}
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q --spider http://localhost:8080/healthz || exit 1",
+        ]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -165,7 +169,11 @@ services:
       clickstack:
         condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q --spider http://localhost:8080/healthz || exit 1",
+        ]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -429,7 +437,7 @@ services:
     # of the image's entrypoint and would otherwise be reparented to a shell.
     init: true
     ports:
-      - "127.0.0.1:${CLICKSTACK_UI_PORT:-8180}:8080"      # HyperDX UI + API
+      - "127.0.0.1:${CLICKSTACK_UI_PORT:-8180}:8080" # HyperDX UI + API
       - "127.0.0.1:${CLICKSTACK_OTLP_HTTP_PORT:-4318}:4318" # OTLP/HTTP, for host processes
       - "127.0.0.1:${CLICKSTACK_OTLP_GRPC_PORT:-4317}:4317" # OTLP/gRPC, for host processes
     environment:
@@ -547,7 +555,11 @@ services:
     restart: unless-stopped
     # The gate lets a destination that accepts profiles get them
     # (`signals.profiles = True`); it is inert while no profiles pipeline exists.
-    command: ["--config=/etc/otel/forwarder.yaml", "--feature-gates=+service.profilesSupport"]
+    command:
+      [
+        "--config=/etc/otel/forwarder.yaml",
+        "--feature-gates=+service.profilesSupport",
+      ]
     ports:
       - "127.0.0.1:${OTEL_FORWARDER_HTTP_PORT:-4318}:4318"
       - "127.0.0.1:${OTEL_FORWARDER_GRPC_PORT:-4317}:4317"

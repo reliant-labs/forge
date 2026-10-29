@@ -63,12 +63,12 @@ import (
 
 // Flux's prune-exemption annotation, and its value.
 //
-// Spelled here rather than imported from internal/flux because the dependency
-// would point the wrong way: internal/flux consumes the bundle's layout (it
+// Spelled here rather than imported from pkg/flux because the dependency
+// would point the wrong way: pkg/flux consumes the bundle's layout (it
 // reads [release.BundleManifestsLayer] and [release.BundleClusterPath]), so a
 // bundle that imported it back would make the two mutually dependent. The
 // string is Flux's, not forge's — it is a published annotation, stable across
-// Flux's v1 API — and internal/flux's own copy carries the cross-reference.
+// Flux's v1 API — and pkg/flux's own copy carries the cross-reference.
 const (
 	annotationPrune  = "kustomize.toolkit.fluxcd.io/prune"
 	pruneDisabled    = "disabled"

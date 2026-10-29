@@ -103,8 +103,19 @@ const (
 	exitQueued = 7
 
 	// exitTimedOut: the budget expired while the rollout was still
-	// progressing. Wait only. (Was 5 before O-13 — see the header.)
+	// progressing. Wait, and a deploy whose hosted bundle the platform had
+	// not yet reported applied (deploy_applying.go). (Was 5 before O-13 —
+	// see the header.)
 	exitTimedOut = 8
+
+	// exitNeedsHuman: `forge project upgrade` applied every mechanical fix it
+	// knows and the project still needs a person — a lint error, a playbook
+	// whose old shape remains, a codemod that listed what it could not
+	// decide. Nothing failed: the tree is as far along as automation can take
+	// it, and the report (--json: needs_human) names each item and its fix.
+	// A pin bot opens its PR as a draft on 9 and as a merge candidate on 0;
+	// it never retries a 9, because re-running changes nothing.
+	exitNeedsHuman = 9
 )
 
 // The domain reasons a control plane sends on a refused promote, under

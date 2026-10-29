@@ -29,8 +29,10 @@ and the CDN — one static site per org is free (each environment's site
 counts). An existing Vite or Next.js app
 is adopted in place with `forge project new --in-place --kind site`
 (`forge skill load deploy/static-site`). For a PWA, forge builds, hosts and
-ships it; the service worker and manifest are yours. When the site grows a
-waitlist or a checkout, the API goes in the same project.
+ships it; the service worker and manifest are yours. A new site is
+`forge project new <name> --kind site`: the app at the root, no Go. When it
+grows a waitlist or a checkout, the API is its own forge project beside it,
+reached by URL.
 
 ## Why teams pick it up
 
@@ -69,6 +71,9 @@ incident — not because a style guide recommended them:
 ## The first sixty seconds
 
 ```bash
+# Install (macOS / Linux; Windows, Homebrew, npm and go install are under Install)
+curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh
+
 forge project new my-app && cd my-app
 forge scaffold service billing
 forge generate
@@ -94,6 +99,52 @@ The table includes the HyperDX UI too (ClickStack runs by default; set
 receiving the app's traces, metrics and logs.
 
 No signup, no external accounts, no cloud project, no cluster.
+
+When you want it online, `forge env deploy staging` builds a release once and
+deploys it. A new project's staging and prod are bound to Reliant hosting; the
+same environments deploy to a Kubernetes cluster you run, or as host processes,
+by changing where each workload is bound.
+
+## Works in any agent: it's just a CLI
+
+Forge has no plugin, editor extension, SDK or server to run. It is one binary on
+your `PATH`, so anything that can run a shell command can drive it: Claude Code,
+Codex, Cursor, Copilot, Gemini CLI, Aider, a harness you wrote yourself, or a CI
+job. A person at a terminal uses exactly the same commands, so there is nothing
+an agent can do that you can't check by hand.
+
+What makes a plain CLI work well for a model:
+
+- **It explains itself.** `forge start` prints the path from an empty directory
+  to authored protos. `forge project capabilities --json` lists every verb, lint
+  analyzer and marker, enumerated from the binary, so it can't go stale.
+- **Skills live in the binary.** `forge skill search <topic>` and
+  `forge skill load <name>` print the playbook for an area, matched to the
+  version installed. Nothing to paste into a prompt, nothing to drift.
+- **Failures are instructions.** A finding names the file, the line, the rule
+  and the fix. `forge lint --quiet` prints only what failed and ends with the
+  verdict, so the agent reads one line to know whether it is done.
+- **Production is one command away.** `forge obs status`, `forge obs issues` and
+  `forge obs trace` read a running app's logs, traces, errors and alerts, so a
+  fix starts from what happened rather than a guess
+  ([section 3](#3-feedback-loops-so-an-agent-can-see-what-it-built) has the rest).
+- **The project tells the agent all of this.** `forge project new` writes
+  `AGENTS.md` and a pointer for the agent it detects
+  ([Conventions & skills](#conventions--skills)).
+
+To use it from any agent, put this in the prompt or the agent's instructions
+file:
+
+```text
+Use Forge (github.com/reliant-labs/forge) for this project.
+Run `forge start` first and follow it. Load depth with
+`forge skill search <topic>` and `forge skill load <name>`.
+A change is done when `forge lint`, `go build ./...` and `task test` pass.
+```
+
+[Reliant](https://reliantlabs.io) is the agent harness we build around Forge:
+it reads the skills automatically, runs `reliant forge` already signed in, and
+hosts what you deploy. It is never required.
 
 ---
 
@@ -489,6 +540,46 @@ week three:
 
 ## Install
 
+Pick one. All of them give you a single `forge` binary; none needs a C toolchain, and the
+first four need no Go toolchain either.
+
+```bash
+# macOS / Linux (amd64, arm64): one command, no sudo, no prompts.
+# Installs to ~/.local/bin (set FORGE_INSTALL_DIR to change it) and checks the
+# release's sha256 before installing. Pin a release with FORGE_VERSION=v1.0.0.
+curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh
+```
+
+```powershell
+# Windows (amd64, arm64)
+irm https://raw.githubusercontent.com/reliant-labs/forge/main/install.ps1 | iex
+```
+
+```bash
+# Homebrew (macOS and Linux)
+brew install reliant-labs/reliant/forge
+
+# npm / npx: downloads the same verified binary on first run
+npx @reliantlabs/forge version
+npm install -g @reliantlabs/forge
+
+# Go toolchain
+go install github.com/reliant-labs/forge/cmd/forge@latest
+```
+
+For a non-interactive sandbox or CI image, the `curl | sh` line is the whole
+setup. Pin the version so the image is reproducible:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | FORGE_VERSION=v1.0.0 sh
+export PATH="$HOME/.local/bin:$PATH"   # the installer prints this if it is needed
+```
+
+Releases attach `forge_<os>_<arch>.tar.gz` for linux, darwin and windows on amd64
+and arm64, plus `checksums.txt`, if you would rather download one yourself.
+
+### From a clone
+
 ```bash
 # Build the binary into ./bin/forge
 task build
@@ -500,9 +591,6 @@ forge version
 # Run straight from source without installing
 go run ./cmd/forge version
 ```
-
-Forge is a single cgo-free binary, so `go install github.com/reliant-labs/forge/cmd/forge@<version>`
-works on macOS, Linux and Windows (amd64 and arm64) with no C toolchain.
 
 On first render forge extracts KCL's native library (`libkcl.so`/`.dylib`, or
 `kcl.dll` on Windows) into your user cache dir — `%TEMP%\kcl` on Windows — and
@@ -563,10 +651,25 @@ forge skill search <term>   # find one by keyword
 ```
 
 Skills are embedded **in the binary**, so `forge skill load` always matches the
-Forge you are running. Forge never writes skill files into your project.
-Reliant reads them from the binary automatically; for any other harness
-(claude, cursor, copilot, codex), write your own skill or instruction telling
-the agent to run `forge skill search <query>` and `forge skill load <name>`.
+Forge you are running. Forge never writes skill bodies into your project.
+Reliant reads them from the binary automatically. Every project gets
+`AGENTS.md` (the cross-tool project guide); `forge project new` also detects
+the agent running it (`--harness` overrides) and adds a thin pointer for it:
+`CLAUDE.md` importing `AGENTS.md` plus `.claude/skills/forge/SKILL.md` for
+Claude Code, `.cursorrules` plus `.cursor/rules/forge.mdc` for Cursor,
+`.github/copilot-instructions.md` for Copilot. Each pointer only tells the agent
+to run `forge skill load forge`, `forge skill search <query>` and
+`forge project capabilities`.
+
+Any MCP-capable harness can skip the instruction file entirely: `forge mcp`
+serves the introspection verbs, the skills, lint and generate as tools, with
+instructions that say what forge is and to load the `forge` skill first.
+
+```bash
+claude mcp add forge -- forge mcp      # Codex: codex mcp add forge -- forge mcp
+```
+
+Config for Claude Code, Codex and Cursor: [docs/mcp.md](docs/mcp.md).
 
 `reliant.md` at the repo root captures the critical rules and testing tiers in
 brief.

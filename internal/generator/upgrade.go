@@ -52,6 +52,9 @@ type UpgradeResult struct {
 	// nothing — which is a different (and cheaper) act than refreshing
 	// a file that exists, so the report ranks it separately.
 	Absent bool
+	// LeftDeleted marks a scaffold-once file that is absent because the
+	// project deleted, declined or disowned it. Upgrade leaves it so.
+	LeftDeleted bool
 }
 
 // ForceSelection names which user-modified files an upgrade run is allowed to
@@ -906,6 +909,37 @@ func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly
 	return UpgradeSelection(projectDir, cfg, selection, checkOnly)
 }
 
+// upgradeAbsentManagedFile treats a missing file as a pure addition, except
+// that a Tier-2 scaffold's recorded absence belongs to the project. Check-only
+// reports the same delta without writing the file or recording its birth.
+func upgradeAbsentManagedFile(projectDir string, f managedFile, expected []byte, cs *FileChecksums, checkOnly bool) (UpgradeResult, error) {
+	if f.tier == Tier2 && !checksums.ScaffoldMayBeBorn(projectDir, f.destPath) {
+		return UpgradeResult{
+			Path:        f.destPath,
+			Status:      UpgradeSkipped,
+			LeftDeleted: true,
+		}, nil
+	}
+	// The whole template is missing: a zero-line delta would misleadingly
+	// describe a safe first adoption as having nothing to adopt.
+	result := UpgradeResult{
+		Path:    f.destPath,
+		Status:  UpgradeUpdated,
+		Diff:    simpleDiff(f.destPath, nil, expected),
+		Absent:  true,
+		Missing: len(lineBag(expected)),
+	}
+	if !checkOnly {
+		if err := writeManagedFile(projectDir, f.destPath, expected, cs); err != nil {
+			return UpgradeResult{}, fmt.Errorf("write %s: %w", f.destPath, err)
+		}
+		if f.tier == Tier2 {
+			checksums.RecordScaffold(projectDir, f.destPath)
+		}
+	}
+	return result, nil
+}
+
 // UpgradeSelection is Upgrade with a per-path force selection: only the files
 // the selection covers have user edits overwritten, everything else follows
 // the ordinary rules (pristine renders auto-update, user-modified files are
@@ -942,9 +976,10 @@ func UpgradeSelection(projectDir string, cfg *config.ProjectConfig, force ForceS
 			continue
 		}
 		// Disowned entries are user-owned: upgrade never touches them
-		// while the file exists. A missing file falls through — deletion
-		// is the documented re-adoption path, and upgrade re-emitting it
-		// is the same contract as `forge generate`.
+		// while the file exists. A missing Tier-1 file falls through —
+		// deletion is its documented re-adoption path. A missing Tier-2
+		// file is scaffold-once and handled below by ScaffoldMayBeBorn,
+		// which counts a disowned path as the project's to leave absent.
 		if cs.IsDisowned(f.destPath) {
 			if _, statErr := os.Stat(filepath.Join(projectDir, f.destPath)); statErr == nil {
 				results = append(results, UpgradeResult{
@@ -965,33 +1000,15 @@ func UpgradeSelection(projectDir string, cfg *config.ProjectConfig, force ForceS
 		diskPath := filepath.Join(projectDir, f.destPath)
 		existing, err := os.ReadFile(diskPath)
 		if err != nil {
-			if os.IsNotExist(err) {
-				// File doesn't exist — treat as needing update.
-				//
-				// Sized as the pure add it is: the whole template is
-				// "missing" here. Leaving these at zero made a new
-				// managed file report a delta of no lines, which reads
-				// as "nothing to see" for the one case where adoption
-				// is unambiguously safe.
-				result := UpgradeResult{
-					Path:    f.destPath,
-					Status:  UpgradeSkipped,
-					Diff:    simpleDiff(f.destPath, nil, expected),
-					Absent:  true,
-					Missing: len(lineBag(expected)),
-				}
-				if !checkOnly {
-					if writeErr := writeManagedFile(projectDir, f.destPath, expected, cs); writeErr != nil {
-						return nil, fmt.Errorf("write %s: %w", f.destPath, writeErr)
-					}
-					result.Status = UpgradeUpdated
-				} else {
-					result.Status = UpgradeUpdated // would be updated
-				}
-				results = append(results, result)
-				continue
+			if !os.IsNotExist(err) {
+				return nil, fmt.Errorf("read %s: %w", f.destPath, err)
 			}
-			return nil, fmt.Errorf("read %s: %w", f.destPath, err)
+			result, err := upgradeAbsentManagedFile(projectDir, f, expected, cs, checkOnly)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+			continue
 		}
 
 		// Compare rendered template with what's on disk. The on-disk

@@ -1,7 +1,7 @@
 """
 Negative test — cache_control on a frontend the platform serves.
 
-The platform owns the bucket, the CDN and the headers: a cache rule on an
+The platform owns the bucket and sets the headers: a cache rule on an
 OnHosted frontend has no carrier and is refused rather than dropped. (A
 `cdn` cannot be written at all: OnHosted has no such field — see
 closedschema_frontend_hosted_bucket.k.)

@@ -278,6 +278,9 @@ func TestRefusalIsScopedToTheEnvsOwnHistory(t *testing.T) {
 // not the release they bind would resolve `forge env deploy prod v1.7.12`
 // to "no such release", so a missing BOUND release still refuses.
 func TestRefusalCountsAReleaseItsPromotionsBindButTheLedgerLacks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	dir := newLedgerTestProject(t, "half-imported")
 	promotions := []release.Promotion{retiredPromotion("prod", "v1.7.12", "p-1")}
 	writeRetiredLedger(t, dir, "prod", promotions, []string{"v1.7.12"})
@@ -321,6 +324,9 @@ func TestNoRefusalWithoutARetiredLedger(t *testing.T) {
 // Otherwise `rm -rf .forge/promotions` would look like a fix while the
 // history — and the hazard — stayed in the repository.
 func TestRefusalReadsHeadNotTheWorkingTree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	dir := newLedgerTestProject(t, "head-project")
 	writeRetiredLedger(t, dir, "prod", []release.Promotion{
 		retiredPromotion("prod", "v1.0.0", "p-1"),

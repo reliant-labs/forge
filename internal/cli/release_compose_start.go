@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/reliant-labs/forge/pkg/release"
@@ -18,14 +17,25 @@ func prepareComposition(ctx context.Context, opts *buildOptions, base string, bo
 	if !bootstrap && base == "" {
 		return fmt.Errorf("snapshot composition requires --base-promotion or --snapshot-bootstrap")
 	}
-	lookup, cancel := boundCompositionLookup(ctx)
-	defer cancel()
-	e, err := RenderKCL(lookup, projectDirForKCL(), opts.env)
+	// Local declaration evaluation can outlast the remote lookup budget on a
+	// busy machine. It inherits caller cancellation, not the network deadline.
+	e, err := RenderKCL(ctx, projectDirForKCL(), opts.env)
 	if err != nil {
 		return err
 	}
-	ledger, err := ledgerFor(lookup, projectDirForKCL(), opts.env)
+	// Selection/authentication and archived checkout reads are local work too.
+	// Preserve caller cancellation without charging them to the RPC budget.
+	ledger, err := selectLedgerRendered(ctx, projectDirForKCL(), opts.env, e)
 	if err != nil {
+		return err
+	}
+	held, provenance, err := prepareCompositionCheckout(ctx, projectDirForKCL(), opts.env)
+	if err != nil {
+		return err
+	}
+	lookup, cancel := boundCompositionLookup(ctx)
+	defer cancel()
+	if err := checkCompositionCheckoutImported(lookup, held, projectDirForKCL(), opts.env, ledger); err != nil {
 		return err
 	}
 	// The file ledger lacks transactional immutable seals and frozen snapshot
@@ -77,15 +87,6 @@ func prepareComposition(ctx context.Context, opts *buildOptions, base string, bo
 			return err
 		}
 		run.BaseSnapshot = fetched.Doc.Snapshot
-	}
-	provenance, err := release.CaptureProvenance(lookup, projectDirForKCL(), release.CaptureOptions{})
-	// An unhashed tree is a dirty one, refused just below with the message
-	// that says what to do about it.
-	if err != nil && !errors.Is(err, release.ErrUnhashed) {
-		return err
-	}
-	if provenance.Dirty || provenance.Repo == "" || !release.ValidObjectID(provenance.Commit) {
-		return fmt.Errorf("snapshot composition requires a clean resolved source checkout")
 	}
 	// Conservative policy identity is a versioned fixed policy, not a claimed
 	// compatibility proof. All partial dependency validation remains hard-fail.

@@ -243,16 +243,19 @@ export default function SidebarLayout({
   const drawerShown = narrow && drawerOpen;
   const navRef = useRef<HTMLElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!narrow) setDrawerOpen(false);
-  }, [narrow]);
   // Following a link closes the drawer, or it would stay open over the page
   // the reader just chose. The layout knows no router, but it does know which
-  // entry is current: when that changes, the reader has navigated.
+  // entry is current: when that changes, the reader has navigated. Widening
+  // past the drawer closes it too, so narrowing again does not bring it back.
+  // Both are adjusted while rendering, React's pattern for state that follows
+  // a prop: an effect would commit the stale open drawer first and render
+  // twice.
   const current = activeHrefs(navItems).concat(activeHrefs(footerItems)).join(" ");
-  useEffect(() => {
-    setDrawerOpen(false);
-  }, [current]);
+  const [drawerContext, setDrawerContext] = useState({ narrow, current });
+  if (drawerContext.narrow !== narrow || drawerContext.current !== current) {
+    setDrawerContext({ narrow, current });
+    if (drawerOpen && (drawerContext.current !== current || !narrow)) setDrawerOpen(false);
+  }
   // Focus moves into the drawer when it opens and back to the menu button when
   // it closes, so a keyboard or screen-reader user is never left behind it.
   const wasShown = useRef(false);

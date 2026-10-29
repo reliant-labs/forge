@@ -1,5 +1,7 @@
 package dashspec
 
+import "time"
+
 // SpecVersion identifies the serialized shape of Spec. Bump it on a breaking
 // change so a consumer can refuse a spec it does not understand.
 const SpecVersion = "forge.dashboards/v1"
@@ -131,6 +133,12 @@ const (
 	AggMax           Agg = "max"
 	AggQuantile      Agg = "quantile"
 	AggLast          Agg = "last"
+	// AggRate, AggIncrease and AggMin are metrics-only. A rate is per second,
+	// an increase is per bucket, and both are time-weighted per series; on a
+	// monotonic sum, AggSum still means the increase.
+	AggRate     Agg = "rate"
+	AggIncrease Agg = "increase"
+	AggMin      Agg = "min"
 )
 
 // Unit is how a panel's values are formatted.
@@ -196,7 +204,8 @@ type Series struct {
 	// (span.duration, span.attr.lcp), the metric NAME for metrics. Empty for
 	// AggCount.
 	Field string `json:"field,omitempty"`
-	// MetricType is "sum" or "gauge" (metrics only).
+	// MetricType is "sum", "gauge", "histogram", "exp_histogram" or "summary"
+	// (metrics only).
 	MetricType string `json:"metricType,omitempty"`
 	// Where narrows this series alone (e.g. only the failed requests).
 	Where []Predicate `json:"where,omitempty"`
@@ -206,6 +215,9 @@ type Series struct {
 
 // Panel is one tile.
 type Panel struct {
+	// Section is an optional declared dashboard section, for temporary viewer
+	// toggles. Empty retains the unsectioned layout.
+	Section     string    `json:"section,omitempty"`
 	ID          string    `json:"id"`
 	Title       string    `json:"title"`
 	Description string    `json:"description,omitempty"`
@@ -230,6 +242,13 @@ type Panel struct {
 	// telemetry tables, which may use the SQLParam* query parameters. Only
 	// that kind takes it.
 	SQL string `json:"sql,omitempty"`
+	// MinStep is the narrowest bucket a KindSQL panel's statement produces,
+	// in the same form as DefaultRange ("1d"): set it when the statement
+	// groups by a fixed bucket (toDate, toStartOfWeek) rather than by the
+	// {step} parameter. A range shorter than two buckets can draw only one
+	// point, so a renderer widens such a panel's range to hold two, and says
+	// so. Only a sql panel takes it.
+	MinStep string `json:"minStep,omitempty"`
 	// Where narrows every series of the panel.
 	Where   []Predicate `json:"where,omitempty"`
 	GroupBy []string    `json:"groupBy,omitempty"`
@@ -249,9 +268,12 @@ type Panel struct {
 
 // Filter is a dashboard-level dropdown that narrows every panel.
 type Filter struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
-	Field string `json:"field"`
+	// PanelIDs restricts this filter to declared panels. Empty preserves the
+	// dashboard-wide default. RPC filters must not blank runtime/billing panels.
+	PanelIDs []string `json:"panelIds,omitempty"`
+	ID       string   `json:"id"`
+	Label    string   `json:"label"`
+	Field    string   `json:"field"`
 	// Signal is the telemetry the dropdown reads its values from. Empty is
 	// Traces, which every dashboard but the metrics ones draws.
 	Signal Signal `json:"signal,omitempty"`
@@ -275,12 +297,30 @@ type Annotation struct {
 	Label  string           `json:"label,omitempty"`
 }
 
+// Section is a named, ordered group of panels. It changes presentation only;
+// filtering remains explicit through Filter.PanelIDs.
+type Section struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
 // Dashboard is an ordered list of panels under a shared set of filters.
 type Dashboard struct {
+	Sections    []Section    `json:"sections,omitempty"`
 	ID          string       `json:"id"`
 	Title       string       `json:"title"`
 	Description string       `json:"description,omitempty"`
 	Filters     []Filter     `json:"filters,omitempty"`
 	Annotations []Annotation `json:"annotations,omitempty"`
-	Panels      []Panel      `json:"panels"`
+	// DefaultRange is the time range the dashboard opens on when the viewer
+	// picked none: a number and a unit of s, m, h or d ("24h", "7d"), at most
+	// MaxDefaultRange. A dashboard whose panels bucket by day declares "7d";
+	// without it a renderer opens on its own default (an hour, in the console).
+	// A renderer with fixed presets rounds up to the nearest one.
+	DefaultRange string  `json:"defaultRange,omitempty"`
+	Panels       []Panel `json:"panels"`
 }
+
+// MaxDefaultRange bounds Dashboard.DefaultRange: the longest range a
+// dashboard's panels may be read over.
+const MaxDefaultRange = 30 * 24 * time.Hour

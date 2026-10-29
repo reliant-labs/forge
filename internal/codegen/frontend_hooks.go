@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"unicode"
@@ -22,6 +23,9 @@ type FrontendHookTemplateData struct {
 	// query-only services, tripping no-unused-vars in eslint configs.
 	HasQueries   bool
 	HasMutations bool
+	// HasPaged gates the createInfiniteQueryHook import: true when any
+	// method is Paged.
+	HasPaged bool
 	// SchemaImports groups input-message `Schema` value imports by their
 	// declaring proto file's TS import path. The template emits one
 	// `import { ...Schema }` statement per entry. Same-file schemas land
@@ -78,10 +82,15 @@ type FrontendHookMethod struct {
 	ClientMethod string
 	InputType    string // "GetUserRequest"
 	OutputType   string // "GetUserResponse"
-	IsQuery      bool   // true for Get/List/Search, false for mutations
+	IsQuery      bool   // true for NO_SIDE_EFFECTS rpcs and Get/List/Search…, false for mutations (isQueryRPC)
+	// Paged reports a query that follows forge's list-pagination shape
+	// (isPagedRPC): it also gets `use<Name>Infinite`, a useInfiniteQuery
+	// hook that owns the page token, keyed under the same scopes.
+	Paged bool
 	// EntityScope is the camelCase singular CRUD entity this method
 	// operates on ("task" for ListTasks/GetTask/CreateTask), derived
-	// from the RPC-name CRUD pattern. Empty for non-CRUD methods.
+	// from the RPC-name CRUD pattern, or declared on a custom read with
+	// `// forge:query-scope <Entity>` (ApplyQueryScopes). Empty otherwise.
 	// Queries embed it in their query key ([service, entity, method,
 	// req]); mutations invalidate the [service, entity] scope when set,
 	// falling back to the whole-service scope when empty (a bespoke
@@ -125,7 +134,8 @@ var queryPrefixes = []string{
 //
 // An imperative RPC that genuinely opens with a read word — or a bespoke
 // verb this cannot know about — carries `// forge:mutation` in the proto;
-// see internal/cli/generate_frontend_hooks.go.
+// see internal/cli/generate_frontend_hooks.go. A read whose name is no verb
+// at all (Health, Version) declares NO_SIDE_EFFECTS; see isQueryRPC.
 func isQueryMethod(name string) bool {
 	for _, prefix := range queryPrefixes {
 		rest, ok := strings.CutPrefix(name, prefix)
@@ -138,6 +148,71 @@ func isQueryMethod(name string) bool {
 		r, _ := utf8.DecodeRuneInString(rest)
 		if unicode.IsUpper(r) || unicode.IsDigit(r) {
 			return true
+		}
+	}
+	return false
+}
+
+// isQueryRPC decides whether m's generated hook is a useQuery.
+//
+// The proto's own declaration comes first: `option idempotency_level =
+// NO_SIDE_EFFECTS;` is protobuf's standard statement that an rpc only reads,
+// the one connect-es already acts on, and the one forge/pkg/activity reads
+// to exempt a read from declaring an activity event. Without it a read named
+// as a noun — Health, Ready, Info, Version — fell through the verb list and
+// came out a useMutation, so a caller had to hand-build its query key.
+//
+// Only NO_SIDE_EFFECTS reads as a read. IDEMPOTENT is a write that is safe
+// to repeat (SetFlag), and the unset default promises nothing, so both leave
+// the decision to the name, exactly as before the option was consulted.
+// `// forge:mutation` is applied after this and still wins.
+func isQueryRPC(m Method) bool {
+	return m.NoSideEffects || isQueryMethod(m.Name)
+}
+
+// pageTokenField / nextPageTokenField are forge's list-pagination
+// convention (AIP-158; the proto skill's "List Request Conventions"), the
+// shape every scaffolded List rpc is born with.
+const (
+	pageTokenField     = "page_token"
+	nextPageTokenField = "next_page_token"
+)
+
+// isPagedRPC reports whether a read follows forge's list-pagination shape:
+// a singular `string page_token` on the request and a singular
+// `string next_page_token` on the response. Such an rpc also gets an
+// infinite-query hook.
+//
+// The SHAPE is the opt-in, not the name and not a marker. The two fields
+// are exactly what useInfiniteQuery needs — the request's token is the page
+// param, the response's is getNextPageParam — so any rpc carrying both can
+// be paged correctly, whatever it is called (SearchCatalog pages the same
+// way ListTasks does), and an rpc without them cannot be paged by the hook
+// at all. A marker would only let an author withhold a hook that costs
+// nothing unused; the extra export tree-shakes away.
+//
+// A method already named `<Name>Infinite` would collide with the generated
+// hook's name, so its sibling gets no infinite hook rather than a duplicate
+// export.
+func isPagedRPC(svc ServiceDef, m Method) bool {
+	if !hasStringField(svc.Messages[m.InputType], pageTokenField) ||
+		!hasStringField(svc.Messages[m.OutputType], nextPageTokenField) {
+		return false
+	}
+	for _, other := range svc.Methods {
+		if other.Name == m.Name+"Infinite" {
+			return false
+		}
+	}
+	return true
+}
+
+// hasStringField reports a singular string field named name. Repeated
+// fields are recorded as "[]string" and so never match.
+func hasStringField(fields []MessageFieldDef, name string) bool {
+	for _, f := range fields {
+		if f.Name == name {
+			return f.ProtoType == "string"
 		}
 	}
 	return false
@@ -224,11 +299,15 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 			continue
 		}
 
-		isQuery := isQueryMethod(m.Name)
+		isQuery := isQueryRPC(m)
 		if isQuery {
 			data.HasQueries = true
 		} else {
 			data.HasMutations = true
+		}
+		paged := isQuery && isPagedRPC(svc, m)
+		if paged {
+			data.HasPaged = true
 		}
 
 		// The Service value still lives in the service's own _pb.ts, so
@@ -258,6 +337,7 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 			InputType:      m.InputType,
 			OutputType:     m.OutputType,
 			IsQuery:        isQuery,
+			Paged:          paged,
 			EntityScope:    methodEntityScope(svc, m),
 			inputPath:      ProtoFileToTSImportPath(inPath),
 			outputPath:     ProtoFileToTSImportPath(outPath),
@@ -299,6 +379,87 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 	sort.Strings(data.EntityScopes)
 
 	return data
+}
+
+// ApplyQueryScopes keys each custom read named in scopes (rpc name →
+// entity message name, from `// forge:query-scope <Entity>`; see
+// ProtoMarkerQueryScope) under that entity's scope, and recomputes the
+// service's EntityScopes so the key factory declares it. Call it after the
+// `// forge:mutation` overrides: the marker applies to whatever is a read
+// once they have been applied.
+//
+// It refuses — rather than ignores — a marker it cannot honour, because a
+// scope that silently does nothing is the stale read the author wrote it to
+// prevent: one naming no entity, one on a mutation, one contradicting a CRUD
+// rpc's own scope, and one naming an entity the service neither serves CRUD
+// for nor declares a message of (a typo, with the nearest name suggested).
+func ApplyQueryScopes(data *FrontendHookTemplateData, svc ServiceDef, scopes map[string]string) error {
+	if len(scopes) == 0 {
+		return nil
+	}
+	known := queryScopeCandidates(svc)
+	for i := range data.Methods {
+		m := &data.Methods[i]
+		entity, ok := scopes[m.Name]
+		if !ok {
+			continue
+		}
+		where := fmt.Sprintf("%s.%s: `// %s %s`", svc.Name, m.Name, ProtoMarkerQueryScope, entity)
+		if entity == "" {
+			return fmt.Errorf("%s.%s: `// %s` names no entity — write the entity's message name after it, e.g. `// %s Task`",
+				svc.Name, m.Name, ProtoMarkerQueryScope, ProtoMarkerQueryScope)
+		}
+		if !m.IsQuery {
+			return fmt.Errorf("%s: the marker scopes a READ's query key, and %s generates a useMutation hook — "+
+				"a custom mutation already invalidates every query on %s, so a scope could only narrow that. "+
+				"Declare `option idempotency_level = NO_SIDE_EFFECTS;` if the rpc only reads, or delete the marker",
+				where, m.Name, svc.Name)
+		}
+		first, _ := utf8.DecodeRuneInString(entity)
+		if !unicode.IsUpper(first) || !declaresEntityMessage(svc, entity) && !known[entity] {
+			hint := ""
+			names := make([]string, 0, len(known))
+			for n := range known {
+				names = append(names, n)
+			}
+			sort.Strings(names)
+			if near := ClosestFrom(entity, names); near != "" {
+				hint = fmt.Sprintf(" — did you mean %s?", near)
+			}
+			return fmt.Errorf("%s: %s is not an entity of %s — name the entity's proto MESSAGE, exactly as declared "+
+				"(a CRUD entity of the service, or a message it declares)%s", where, entity, svc.Name, hint)
+		}
+		scope := toCamelCaseFromPascal(entity)
+		if m.EntityScope != "" && m.EntityScope != scope {
+			return fmt.Errorf("%s: %s is CRUD for %s and already keyed under %q; a second scope would split it from "+
+				"its own entity's invalidation. Delete the marker", where, m.Name, m.EntityScope, m.EntityScope)
+		}
+		m.EntityScope = scope
+	}
+	set := map[string]struct{}{}
+	for _, m := range data.Methods {
+		if m.EntityScope != "" {
+			set[m.EntityScope] = struct{}{}
+		}
+	}
+	data.EntityScopes = data.EntityScopes[:0]
+	for s := range set {
+		data.EntityScopes = append(data.EntityScopes, s)
+	}
+	sort.Strings(data.EntityScopes)
+	return nil
+}
+
+// queryScopeCandidates is the set of entity message names a query scope
+// may name without further evidence: the CRUD entities of the service.
+func queryScopeCandidates(svc ServiceDef) map[string]bool {
+	out := map[string]bool{}
+	for _, m := range svc.Methods {
+		if _, entity := crudEntity(svc, m); entity != "" {
+			out[entity] = true
+		}
+	}
+	return out
 }
 
 // methodEntityScope derives the camelCase singular entity name from a CRUD

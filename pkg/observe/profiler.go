@@ -1,22 +1,22 @@
 // File: profiler.go — continuous profiling, pushed as OTLP profiles.
 //
 // Setup starts one background goroutine per process (when an OTLP endpoint is
-// set and OTEL_PROFILES_EXPORTER is not "none"). About once a minute it
-// captures a 10s CPU profile, and every 15 minutes a live-heap snapshot
+// set and OTEL_PROFILES_EXPORTER is not "none"). Every five minutes it
+// captures a 5s CPU profile, and every two hours a live-heap snapshot
 // (inuse_space / inuse_objects); it converts them with profiles_convert.go and
 // POSTs them to the collector's profiles endpoint. Allocation counters,
 // goroutine, mutex and block profiles are opt-in (profiles_config.go): the
 // opt-in ones that are enabled are captured every cycle, except allocation,
 // which rides on the heap snapshot. Measured cost of converting a full
 // heap+goroutine cycle: ~90 ms CPU and 1.5 MB allocated, i.e. ~0.15% of one
-// core, plus the runtime's own ~100 Hz CPU sampling during the 10s window.
+// core, plus the runtime's own ~100 Hz CPU sampling during the CPU window.
 //
 // The loop is built so it can never hurt the application:
 //
 //   - it runs on its own goroutine and nothing in the request path waits on it;
 //   - a panic inside a cycle is recovered and counted as a failed cycle;
 //   - every cycle starts with a cheap TCP reachability probe, so an unreachable
-//     collector costs one dial, not a 10s CPU profile;
+//     collector costs one dial, not a CPU profile;
 //   - consecutive failures back off exponentially (to 15 minutes) and the first
 //     is logged once at WARN, the rest at DEBUG;
 //   - if another CPU profile is already running (an operator on /debug/pprof),
@@ -52,8 +52,6 @@ import (
 )
 
 const (
-	profilerInterval   = 60 * time.Second
-	profilerCPUWindow  = 10 * time.Second
 	profilerMaxBackoff = 15 * time.Minute
 	profilerProbeWait  = 2 * time.Second
 	profilerJitter     = 0.2
@@ -108,8 +106,8 @@ func startProfiler(ctx context.Context, cfg Config, res *resource.Resource) (fun
 	}
 	p := &profiler{
 		res:      res,
-		interval: profilerInterval,
-		window:   profilerCPUWindow,
+		interval: settings.cpuInterval,
+		window:   settings.cpuDuration,
 		settings: settings,
 		probe:    tcpProbe(tgt),
 		send:     send,
@@ -117,7 +115,7 @@ func startProfiler(ctx context.Context, cfg Config, res *resource.Resource) (fun
 		sleep:    sleepCtx,
 		now:      time.Now,
 	}
-	log.DebugContext(ctx, "continuous profiling on", "types", joinProfileTypes(settings.types()), "heap_interval", settings.heapInterval)
+	log.DebugContext(ctx, "continuous profiling on", "types", joinProfileTypes(settings.types()), "heap_interval", settings.heapInterval, "cpu_interval", settings.cpuInterval, "cpu_duration", settings.cpuDuration)
 	restoreRates := enableContentionSampling(settings)
 	loopCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	done := make(chan struct{})
@@ -166,7 +164,7 @@ func enableContentionSampling(s profileSettings) func() {
 func (p *profiler) run(ctx context.Context) {
 	// First capture lands somewhere in [interval/4, interval): soon enough to
 	// see the process, spread enough that replicas do not align.
-	if !p.sleep(ctx, p.interval/4+rand.N(p.interval*3/4)) {
+	if !p.sleep(ctx, initialProfileWait(p.interval)) {
 		return
 	}
 	for {
@@ -194,17 +192,40 @@ func (p *profiler) run(ctx context.Context) {
 }
 
 // nextWait is the pause before the next cycle: the interval, doubled per
-// consecutive failure up to profilerMaxBackoff, jittered by ±profilerJitter.
+// consecutive failure up to the greater of the interval and profilerMaxBackoff,
+// jittered by ±profilerJitter. A deliberately slow cadence never speeds up.
 func (p *profiler) nextWait() time.Duration {
+	cap := max(p.interval, profilerMaxBackoff)
 	d := p.interval
-	for i := 0; i < p.failures && d < profilerMaxBackoff; i++ {
-		d *= 2
+	for i := 0; i < p.failures && d < cap; i++ {
+		if d > cap/2 {
+			d = cap
+		} else {
+			d *= 2
+		}
 	}
-	if d > profilerMaxBackoff {
-		d = profilerMaxBackoff
+	// Integer jitter avoids float rounding and saturates at Duration's
+	// maximum instead of wrapping near MaxInt64. Invalid internal intervals
+	// fall back to the same positive default as configuration resolution.
+	if d <= 0 {
+		d = DefaultCPUInterval
 	}
-	j := 1 + profilerJitter*(2*rand.Float64()-1)
-	return time.Duration(float64(d) * j)
+	spread := d / 5 // profilerJitter = 20%
+	offset := rand.N(spread*2+1) - spread
+	const maxDuration = time.Duration(1<<63 - 1)
+	if offset > 0 && d > maxDuration-offset {
+		return maxDuration
+	}
+	return d + offset
+}
+
+func initialProfileWait(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		interval = DefaultCPUInterval
+	}
+	lo := interval / 4
+	// Subtract after division; interval*3 would overflow for valid durations.
+	return lo + rand.N(interval-lo)
 }
 
 // safeCycle runs one cycle and turns a panic into an error.

@@ -851,6 +851,7 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	out = append(out, validateDevStack(cfg, root)...)
 	out = append(out, validateAPIProtoPackage(cfg, root)...)
 	out = append(out, validateGenerateHooks(cfg, root)...)
+	out = append(out, validateUpgradeConfig(cfg, root)...)
 	return out
 }
 

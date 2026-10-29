@@ -57,6 +57,15 @@ func runDisownAbsent(w io.Writer, args []string, reason string, dryRun bool) err
 	if err != nil {
 		return err
 	}
+	if dryRun {
+		// A dry run writes nothing, the lock file included.
+		release, err := observeGenerateLock(root)
+		if err != nil {
+			return err
+		}
+		defer release()
+		return declineScaffolds(w, root, args, reason, dryRun)
+	}
 	return withGenerateLock(root, func() error {
 		return declineScaffolds(w, root, args, reason, dryRun)
 	})

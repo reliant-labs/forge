@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/configproto"
 	"github.com/reliant-labs/forge/internal/goexec"
 )
 
@@ -235,13 +236,15 @@ func TestE2EComponentScaffoldsLintClean(t *testing.T) {
 	addCorpusForgePkgReplace(t, projectDir)
 
 	// The three nouns, each of which was independently red. The adapter is
-	// scaffolded through both of its spellings: each composes its own config
-	// block on AppConfig, so the second must take the next free field number.
+	// scaffolded through both of its spellings and in both of its shapes:
+	// blobstore with --base-url (its own config block on AppConfig), pricing
+	// without (no config at all: an adapter over a queue or an SDK has no
+	// base URL to bind).
 	runCmd(t, projectDir, forgeBin, "scaffold", "worker", "share_expiry")
 	// The webhook reads the current service descriptor. Add it before the
 	// adapters change config.proto (and make that descriptor stale until generate).
 	runCmd(t, projectDir, forgeBin, "scaffold", "webhook", "scanner", "--service", "documents")
-	runCmd(t, projectDir, forgeBin, "scaffold", "package", "blobstore", "--type", "adapter")
+	runCmd(t, projectDir, forgeBin, "scaffold", "package", "blobstore", "--type", "adapter", "--base-url")
 	runCmd(t, projectDir, forgeBin, "scaffold", "adapter", "pricing")
 
 	// A full generate, then build. The generate matters for more than
@@ -267,16 +270,21 @@ func TestE2EComponentScaffoldsLintClean(t *testing.T) {
 	// An adapter's base URL is a leaf of its own config block, not a scalar
 	// Deps field (#748): the scaffold used to declare `BaseURL string`, which
 	// forge's own forge-config-deps lint reported on every fresh adapter while
-	// compose.go wired it to `BaseURL: "", // TODO`. Zero findings, and both
-	// adapters take their block from the loaded config by type.
+	// compose.go wired it to `BaseURL: "", // TODO`. Zero findings; the
+	// --base-url adapter takes its block from the loaded config by type, and
+	// the other has no block at all.
 	if !strings.Contains(out, "✓ config-deps lint") || strings.Contains(out, "[forge-config-deps]") {
 		t.Errorf("a freshly scaffolded adapter must not trip forge-config-deps:\n%s", out)
 	}
 	compose := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "compose.go"))
-	for _, want := range []string{"g.Cfg.GetBlobstore()", "g.Cfg.GetPricing()"} {
-		if !strings.Contains(compose, want) {
-			t.Errorf("compose.go must fill the adapter's config block from the loaded config (%s):\n%s", want, compose)
-		}
+	if !strings.Contains(compose, "g.Cfg.GetBlobstore()") {
+		t.Errorf("compose.go must fill the --base-url adapter's config block from the loaded config (g.Cfg.GetBlobstore()):\n%s", compose)
+	}
+	if strings.Contains(compose, "GetPricing()") {
+		t.Errorf("compose.go wires a config block into the adapter scaffolded without --base-url:\n%s", compose)
+	}
+	if cfgProto := readFileE2E(t, filepath.Join(projectDir, filepath.FromSlash(configproto.ForProject(projectDir).RootPath()))); strings.Contains(cfgProto, "PRICING_BASE_URL") {
+		t.Errorf("the adapter scaffolded without --base-url declared a base_url leaf:\n%s", cfgProto)
 	}
 	if strings.Contains(compose, "TODO") {
 		t.Errorf("compose.go carries a TODO for a freshly scaffolded component:\n%s", compose)

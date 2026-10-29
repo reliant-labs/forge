@@ -70,7 +70,13 @@ func resolveCloudTarget(ctx context.Context, envName, flagToken string) (cloud.E
 	if err != nil {
 		return cloud.Endpoint{}, cloud.Credential{}, err
 	}
-	ep, err := cloud.ResolveEndpoint(envName, decl)
+	return resolveCloudTargetFor(envName, decl, flagToken)
+}
+
+// resolveCloudTargetFor is resolveCloudTarget with the declaration already in
+// hand, for a caller that read it without a render (obs_target.go).
+func resolveCloudTargetFor(envName string, decl *cloud.Declaration, flagToken string) (cloud.Endpoint, cloud.Credential, error) {
+	ep, err := projectEndpoint(envName, decl)
 	if err != nil {
 		return cloud.Endpoint{}, cloud.Credential{}, err
 	}
@@ -360,7 +366,11 @@ func loginOne(ctx context.Context, p declaredControlPlane, token string, noVerif
 			return err
 		}
 	}
-	if err := credentials.Store(path, ep.URL, cloud.ClientID, stored); err != nil {
+	clientID := cloud.ClientID
+	if stored.Kind == "human" {
+		clientID = cloud.HumanClientID
+	}
+	if err := credentials.Store(path, ep.URL, clientID, stored); err != nil {
 		return fmt.Errorf("store credential: %w", err)
 	}
 	key, _ := credentials.Normalize(ep.URL)
@@ -374,7 +384,8 @@ func loginOne(ctx context.Context, p declaredControlPlane, token string, noVerif
 	if stored.ExpiresAt != nil {
 		fmt.Fprintf(out, "  Expires:     %s\n", stored.ExpiresAt.Format(time.RFC3339))
 	}
-	fmt.Fprintf(out, "  Credential:  %s\n", path)
+	fmt.Fprintf(out, "  Credential:  %s, stored in %s (inspect with `forge cloud status <env>`, never by opening the file)\n",
+		cloud.TokenIdentity(stored.Token), path)
 	fmt.Fprintf(out, "In CI, set %s instead — it takes precedence over this file.\n", ep.TokenEnv)
 	return nil
 }
@@ -382,9 +393,9 @@ func loginOne(ctx context.Context, p declaredControlPlane, token string, noVerif
 // newLogoutCmd is `forge logout`: drop the stored credential of the control
 // plane(s) — the ones this project declares, or one --endpoint — from the
 // shared credentials file. Every other endpoint's entry (including
-// reliant's) is untouched. The token itself stays valid server-side until it
-// expires or is revoked in the web UI; logout forgets it locally, which is
-// all a CLI can honestly promise.
+// reliant's) is untouched. Human logout revokes the device identity across all
+// organizations at the endpoint, then forgets it. Delegated capabilities are
+// deliberately separate and are never revoked or removed by human logout.
 func newLogoutCmd() *cobra.Command {
 	var endpoint string
 	cmd := &cobra.Command{
@@ -401,7 +412,36 @@ func newLogoutCmd() *cobra.Command {
 				return err
 			}
 			for _, p := range planes {
-				existed, err := credentials.Remove(path, p.Endpoint.URL, cloud.ClientID)
+				stored, lookupErr := credentials.Lookup(path, p.Endpoint.URL, cloud.HumanClientID)
+				if lookupErr != nil && !errors.Is(lookupErr, credentials.ErrNotFound) {
+					return lookupErr
+				}
+				if lookupErr == nil && stored.Kind != "human" {
+					return errors.New("human credential entry contains a delegated capability; refusing to remove it without revocation")
+				}
+				if lookupErr == nil {
+					if err := cloud.RevokeIdentity(cmd.Context(), p.Endpoint, stored.Token); err != nil {
+						return err
+					}
+				}
+				if errors.Is(lookupErr, credentials.ErrNotFound) {
+					// An org-bound browser login (a control plane that
+					// predates human identities) is what `forge login`
+					// stored, so logout forgets it. A pasted --token or any
+					// other delegated entry is left alone.
+					legacy, err := credentials.Lookup(path, p.Endpoint.URL, cloud.ClientID)
+					if err == nil && legacy.Kind == cloud.KindOrgLogin {
+						if _, err := credentials.RemoveRevoked(path, p.Endpoint.URL, cloud.ClientID, legacy.Token); err != nil {
+							return err
+						}
+						key, _ := credentials.Normalize(p.Endpoint.URL)
+						fmt.Fprintf(cmd.OutOrStdout(), "Logged out of %s (removed from %s)\n", key, path)
+						continue
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "Not logged in to %s (nothing in %s)\n", p.Endpoint.URL, path)
+					continue
+				}
+				existed, err := credentials.RemoveRevoked(path, p.Endpoint.URL, cloud.HumanClientID, stored.Token)
 				if err != nil {
 					return err
 				}
@@ -479,7 +519,7 @@ func newCloudStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ep, err := cloud.ResolveEndpoint(envName, decl)
+			ep, err := projectEndpoint(envName, decl)
 			if err != nil {
 				return err
 			}
@@ -492,12 +532,19 @@ func newCloudStatusCmd() *cobra.Command {
 				fmt.Fprintf(out, "  credential: NONE\n")
 				return err
 			}
-			// The SOURCE, never the token. Printing a bearer credential
-			// to a terminal puts it in scrollback and in CI logs.
-			fmt.Fprintf(out, "  credential: present, from %s (%s)\n", cred.From, cred.Source)
+			// The IDENTITY and the source, never the token. Printing a
+			// bearer credential to a terminal puts it in scrollback, CI
+			// logs and agent transcripts. This command exists so nobody
+			// has to open the credentials file to learn which credential
+			// is in use — the file holds the secret.
+			fmt.Fprintf(out, "  credential: %s, from %s (%s)\n", cred.Identity(), cred.From, cred.Source)
+			if len(cred.Scopes) > 0 {
+				fmt.Fprintf(out, "  scopes:     %s\n", strings.Join(cred.Scopes, " "))
+			}
 			if cred.ExpiresAt != nil {
 				fmt.Fprintf(out, "  expires:    %s\n", cred.ExpiresAt.Format(time.RFC3339))
 			}
+			fmt.Fprintf(out, "  (the secret is never printed; match the prefix in `forge cloud token list --env %s` or the console)\n", ep.Env)
 			return nil
 		},
 	}

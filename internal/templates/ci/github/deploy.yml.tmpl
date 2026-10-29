@@ -117,12 +117,20 @@ jobs:
           go-version-file: go.mod
 {{- if .HasFrontends}}
 
+{{- if eq .Frontend.PM "pnpm"}}
+
+      - uses: pnpm/action-setup@v4
+        if: steps.select.outputs.run == 'true'
+        with:
+          package_json_file: "{{.FrontendPath}}/package.json"
+{{- end}}
+
       - uses: actions/setup-node@v4
         if: steps.select.outputs.run == 'true'
         with:
           node-version-file: "{{.FrontendPath}}/package.json"
-          cache: "npm"
-          cache-dependency-path: "{{.FrontendPath}}/package-lock.json"
+          cache: "{{.Frontend.PM}}"
+          cache-dependency-path: "{{.FrontendPath}}/{{.Frontend.Lockfile}}"
 {{- end}}
 
       - name: Install forge
@@ -139,7 +147,7 @@ jobs:
       - name: Install frontend dependencies
         if: steps.select.outputs.run == 'true'
         working-directory: {{.FrontendPath}}
-        run: npm ci
+        run: {{.Frontend.FrozenInstall}}
 {{- end}}
 
       - name: Log in to the declared registry

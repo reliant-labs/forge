@@ -10,6 +10,10 @@ everything to it, and `forge env deploy prod` is the whole procedure. What it
 provides, what it refuses, and the gates (billing, unset secrets):
 `deploy/hosting`. A cluster you operate is the secondary path, below.
 
+**No Reliant account yet?** `forge env deploy <env> --claimable` publishes
+anyway and prints a live URL plus a claim link for your user (see
+`deploy/hosting`, "No account: `--claimable`"; an unclaimed backend has no outbound internet). It needs no `forge login`.
+
 ## The model: declare once, bind per env
 
 Everything that runs is a `fw.Workload`, declared ONCE in
@@ -36,7 +40,7 @@ of bindings.
 | `forge.OnHost {runner}` | a local process | `forge env up` runs `go run ./cmd/<p> <args>` (or air / a built binary / delve) |
 | `forge.OnCluster {target}` | a Kubernetes cluster you operate | renders a `forge.dev/v1alpha1 Workload` record and expands it through `pkg/deploy.RenderWorkloads` (Full profile) |
 | `forge.OnHosted {}` | the forge control plane | publishes the spec as a Workload CR; the platform renders it (Restricted profile) |
-| `forge.OnCompose {service}` | a docker-compose service | `docker compose up` of that service (`shared = True`: from the primary checkout) |
+| `forge.OnCompose {service}` | a docker-compose service | `docker compose up` of that service (`shared = True`: from the primary checkout; `optional = True`: `forge env up` skips it with one warning when no Docker daemon answers, instead of failing — a workload that only makes sense beside it says `requires = ["<name>"]`) |
 | `forge.BuildOnly {}` | nowhere | builds and ships it (a CLI, an image others pull) |
 
 A binding is the same `|` an env uses for any refinement. Env NAMES mean
@@ -181,6 +185,8 @@ denied-push triage.
 
 A non-hosted env declares no registry: each workload — and each hosted
 frontend, via `forge.Frontend.image` — names its own.
+
+Every image is built with `docker build`, so building one needs a running Docker daemon.
 
 ### Docker build contexts
 
@@ -351,6 +357,9 @@ an ordinary promote labelled `direction BEHIND`; see `db/deploy-migrations`.
   workload's command, ports or build is a second copy that will drift.
 - Never `kubectl apply` a hand render — everything through `forge env deploy`.
   To read a VALUE KCL declares, `forge kcl eval`; see `deploy/kcl-eval`.
+- Deploying another forge project's workloads? Import its `workloads.k` at the
+  go.mod pin (`[forge_projects]` in kcl.mod) instead of copying it; see
+  `deploy/kcl-imports`.
 - Image tags are immutable — commit SHA by default, digest-pinned on deploy.
 - Secrets never live in KCL — it is checked in. Reference them
   (`config_secrets`, `forge.SecretRef`, `forge.ManagedSecret`).

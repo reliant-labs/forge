@@ -213,7 +213,15 @@ func lintPipeline() []linterStep {
 				return true, ""
 			},
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				return collectContractLintJSON(rc.ctx, rc.paths, contractExcludesFromConfig(rc.cfg), contractGateOptions(rc.cfg, rc.strict))
+				// The analysis loads the untagged build only: a scope reaching
+				// nothing but tagged Go has nothing for it, and go/packages
+				// fails such a package ("build constraints exclude all Go
+				// files") rather than reporting nothing.
+				paths, run := defaultPassPackages(rc.moduleDir(), rc.paths, nil)
+				if !run {
+					return nil, false, nil
+				}
+				return collectContractLintJSON(rc.ctx, paths, contractExcludesFromConfig(rc.cfg), contractGateOptions(rc.cfg, rc.strict))
 			},
 		},
 
@@ -299,6 +307,24 @@ func lintPipeline() []linterStep {
 			collect: collectFrontendTypecheckJSON,
 		},
 
+		// 5c. Frontend lockfile drift. A package.json whose dependency
+		// ranges the lockfile does not record fails every frozen install
+		// (`npm ci`), and forge's own web-runtime floor bump used to cause
+		// it. Offline and cheap: it reads two files per frontend. See
+		// lint_frontend_lock.go.
+		{
+			name:  "frontend lockfile",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if rc.skipFrontends {
+					return false, "--skip-frontends — skipping frontend lockfile check"
+				}
+				return rc.cwd != "" && len(frontendTypecheckTargets(rc.cfg)) > 0, ""
+			},
+			collect: collectFrontendLockJSON,
+		},
+
 		// 7. SQL migration safety lint.
 		{
 			name:  "migration safety lint",
@@ -377,14 +403,14 @@ func lintPipeline() []linterStep {
 			},
 		},
 
-		// 11. Test-convention lint. The handler and hook-test-presence
-		// rules are warnings, but the hook-test SHAPE rule gates: a
-		// scaffolded test asserting the opposite shape from its hook can
-		// never pass, so letting it through would be reporting green over
-		// a permanently red suite.
+		// 11. Test-convention lint: the handler and hook-test PRESENCE
+		// rules, both warnings. The hook-test SHAPE rule, which gates (a
+		// starter row asserting the opposite kind from its hook can never
+		// pass), runs in the forge convention lint (step 8) — the lane
+		// projects gate on.
 		{
 			name:  "test convention lint",
-			gates: true,
+			gates: false,
 			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if dirExists("internal/handlers") || dirExists("frontends") {

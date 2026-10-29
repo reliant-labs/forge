@@ -17,12 +17,12 @@ import (
 //
 // # WHY THIS EXISTS
 //
-// A dev forge build writes a `file:` specifier for @reliantlabs/forge-web-runtime
-// pointing at THIS REPO's web-runtime/ directory (generator.webRuntimeFileSpec).
-// npm's file: protocol symlinks the link target and then runs its `prepare`
-// script IN THE TARGET — so every scaffolded frontend's `npm install`, in
-// every e2e test, executes web-runtime/scripts/build.mjs in the SAME shared
-// directory.
+// Every frontend e2e test installs THIS checkout's web-runtime: under CI
+// through the npm overlay (npm_overlay_e2e_test.go), which packs it, and on a
+// maintainer's machine through the --link-forge dev bridge, whose `npm
+// install` runs the package's `prepare` script IN THE SHARED web-runtime/
+// directory. Either way something builds web-runtime/dist, and the build is
+// not reentrant.
 //
 // build.mjs bootstraps a missing toolchain by running `npm install` in that
 // directory when node_modules/typescript is absent. The e2e tests are
@@ -45,17 +45,26 @@ import (
 // path. Instead, do the shared, non-reentrant work exactly once, up front:
 // after this returns, node_modules/typescript and dist/ both exist, every
 // per-test `npm install` finds the prepare script's fast path, and the
-// concurrent installs never overlap.
+// concurrent installs never overlap. The overlay's pack runs this same once
+// (its Prepare hook) and then packs with --ignore-scripts, so the two never
+// build at the same time either.
 //
 // It is safe (and cheap) for a test to call this more than once, and safe on
 // a contributor's machine where the build has already been done — build.mjs
 // is idempotent and the sync.Once makes repeat calls free.
 func prebuildWebRuntimeE2E(t *testing.T) {
 	t.Helper()
+	if err := prebuildWebRuntime(findRepoRoot(t)); err != nil {
+		t.Fatalf("web-runtime prebuild failed — every frontend e2e test installs "+
+			"this checkout's web-runtime and would race building it:\n%v", err)
+	}
+}
 
+// prebuildWebRuntime is prebuildWebRuntimeE2E's once, without a *testing.T,
+// for the overlay's Prepare hook. repoRoot is the forge checkout.
+func prebuildWebRuntime(repoRoot string) error {
 	webRuntimePrebuildOnce.Do(func() {
-		root := findRepoRoot(t)
-		dir := filepath.Join(root, "web-runtime")
+		dir := filepath.Join(repoRoot, "web-runtime")
 		if _, err := os.Stat(dir); err != nil {
 			// No web-runtime in this checkout: nothing to prebuild, and the
 			// frontend tests that need it will fail with their own message.
@@ -110,12 +119,7 @@ func prebuildWebRuntimeE2E(t *testing.T) {
 			}
 		}
 	})
-
-	if webRuntimePrebuildErr != nil {
-		t.Fatalf("web-runtime prebuild failed — every frontend e2e test installs "+
-			"this package over a file: link and would race building it:\n%v",
-			webRuntimePrebuildErr)
-	}
+	return webRuntimePrebuildErr
 }
 
 var (

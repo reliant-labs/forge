@@ -93,8 +93,10 @@ func gradableRules() []string {
 		"forgeconv-tx-lock-under-serializable", "forgeconv-unwrapped-domain-error",
 		string(contractcheck.RuleInternalPackageContractNames), string(contractcheck.RuleDepsAreInterfaces),
 		string(contractcheck.RuleOutboundIONoRPC), string(contractcheck.RuleInternalPackageMissingContract),
+		// hook-test rows against their hooks (forge conventions lane)
+		"forgeconv-frontend-hook-test-shape",
 		// test conventions
-		"forgeconv-handler-tests-use-tdd", "forgeconv-frontend-hook-tests", "forgeconv-frontend-hook-test-shape",
+		"forgeconv-handler-tests-use-tdd", "forgeconv-frontend-hook-tests",
 		// frontend stores
 		"forgeconv-frontend-stores-no-server-data",
 		// scaffold ownership
@@ -108,7 +110,7 @@ func gradableRules() []string {
 		// composition graph
 		codegen.GraphRuleUnreachable, codegen.GraphRuleAudience, codegen.GraphRuleAssemble,
 		// component drift
-		"component-drift/orphan-entry", "component-drift/undeclared-component",
+		"component-drift/orphan-entry", "component-drift/undeclared-component", ruleComponentDriftNoCommand,
 		// deploy
 		"hosted-image-base/host-bearing-image", pdbRuleID,
 		release.RuleJobTTL, release.RuleJobUnhashed, release.RuleForceData,
@@ -129,12 +131,16 @@ func gradableRules() []string {
 		tracinglint.RuleContractUninstrumented,
 		// commit policy
 		commitpolicy.RuleGeneratedIgnored, commitpolicy.RuleLocalStateTracked,
+		// frontend lockfile
+		ruleFrontendLockDrift,
 		// cross-lane workarounds
 		"workaround-testing-extras", "workaround-cmd-not-in-binaries",
 		// config reach
 		"forge-config-unreachable",
 		// slow tests
 		slowtest.RuleUnmarked, slowtest.RuleInputs,
+		// golangci-lint's build-tag passes (rolled out as one unit)
+		rolloutGolangciBuildTags,
 	}
 	rules = append(rules, staticexport.RuleIDs()...)
 	return rules

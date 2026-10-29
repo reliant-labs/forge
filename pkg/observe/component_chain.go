@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -68,7 +69,8 @@ type ComponentMiddleware interface {
 // method call runs last. This matches the Connect chain's outer-to-inner
 // ordering.
 type ComponentChain struct {
-	mw []ComponentMiddleware
+	mw        []ComponentMiddleware
+	methodIDs map[string]string
 }
 
 // DefaultComponentChain is the chain a generated decorator uses when its
@@ -125,7 +127,7 @@ func (c *ComponentChain) dispatch(ctx context.Context, i int, method string, nex
 // closure — for methods with multiple non-error results. A nil chain runs
 // next directly.
 func (c *ComponentChain) Run(ctx context.Context, method string, next ComponentOp) error {
-	return c.dispatch(ctx, 0, method, next)
+	return c.dispatch(c.identityContext(ctx, method), 0, method, next)
 }
 
 // Around routes a value-returning method through the chain. T is the method's
@@ -139,7 +141,7 @@ func (c *ComponentChain) Run(ctx context.Context, method string, next ComponentO
 // the chain as an argument, since only functions could carry type parameters.
 func (c *ComponentChain) Around[T any](ctx context.Context, method string, next func(context.Context) (T, error)) (T, error) {
 	var out T
-	err := c.dispatch(ctx, 0, method, func(ctx context.Context) error {
+	err := c.dispatch(c.identityContext(ctx, method), 0, method, func(ctx context.Context) error {
 		var e error
 		out, e = next(ctx)
 		return e
@@ -194,6 +196,9 @@ func (m traceMiddleware) WrapComponent(ctx context.Context, method string, next 
 		return next(ctx)
 	}
 	ctx, span := m.tracer.Start(ctx, method)
+	if id, _ := ctx.Value(componentMethodIDKey{}).(string); id != "" {
+		span.SetAttributes(attribute.String("forge.method.id", id))
+	}
 	defer span.End()
 	err := next(ctx)
 	RecordSpanError(span, err)

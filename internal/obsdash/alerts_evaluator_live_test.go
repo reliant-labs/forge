@@ -67,7 +67,7 @@ func TestDefaultAlertsThroughTheEvaluator(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("seed: %v\n%s", err, out)
 	}
-	in := obsdash.AlertInput{FrontendService: "shop-frontend", Services: []obsdash.AlertService{
+	in := obsdash.AlertInput{FrontendServices: []string{"shop-web"}, Services: []obsdash.AlertService{
 		{Name: "api", RPCService: "a.v1.S"}, {Name: "quiet", RPCService: "q.v1.Q"}, {Name: "reset", RPCService: "r.v1.R"}, {Name: "delta", RPCService: "d.v1.D"}, {Name: "fast", RPCService: "f.v1.F"},
 		{Name: "stopped", RPCService: "s.v1.T"}, {Name: "healthy", RPCService: "h.v1.H"}, {Name: "sparse", RPCService: "p.v1.P"}, {Name: "young", RPCService: "y.v1.Y"}}}
 	rules, err := obsdash.ResolveAlertDefaults(in, "dev", nil)
@@ -103,7 +103,7 @@ func TestDefaultAlertsThroughTheEvaluator(t *testing.T) {
 		sort.Strings(got[r.ID])
 	}
 	want := map[string]string{
-		"error-rate": "api,delta", "p95-latency": "api", "service-silent": "stopped", "frontend-js-errors": "shop-frontend",
+		"error-rate": "api,delta", "p95-latency": "api", "service-silent": "stopped", "frontend-js-errors": "shop-web",
 	}
 	for id, w := range want {
 		if strings.Join(got[id], ",") != w {

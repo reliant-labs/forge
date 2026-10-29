@@ -288,3 +288,141 @@ func TestEnvRender_ChartNamespaceCarriesLabelsAndOwnerStamp(t *testing.T) {
 		t.Errorf("render is missing the chart Namespace or Deployment: ns=%v controller=%v\n%s", sawNS, sawController, stdout)
 	}
 }
+
+// fakeHelmNamespaceLess installs a `helm` that, like flux2 (0 of 40 objects
+// stamped), renders namespace-less objects. The output is keyed on the release
+// name, so one project can declare two charts.
+func fakeHelmNamespaceLess(t *testing.T) {
+	t.Helper()
+	requirePOSIXFake(t, "helm")
+	dir := t.TempDir()
+	script := `#!/bin/sh
+case " $* " in *' --include-crds '*) exit 0 ;; esac
+case "$2" in
+flux)
+cat <<'EOF2'
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: source-controller
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: source-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: crd-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-reconciler
+EOF2
+;;
+*)
+cat <<'EOF2'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cm-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cm-controller
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: cm-webhook
+EOF2
+;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "helm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// `forge env render` output is self-describing: every namespaced chart object
+// carries the namespace its deploy puts it in (each chart's own), cluster-scoped
+// objects carry none, so the stream can be applied by hand with no `-n`.
+//
+// Mutation that fails it: drop stampChartNamespace from renderSelectedCharts.
+func TestEnvRender_ChartObjectsCarryTheirDeployNamespace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL and drives a fake helm through shell subprocesses; runs in task test")
+	}
+	kclplugin.Register()
+	fakeHelmNamespaceLess(t)
+	dir := writeChartRenderProject(t)
+	main := filepath.Join(dir, "deploy/kcl/prod/main.k")
+	src, err := os.ReadFile(main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withSecond := strings.Replace(string(src), "    helm_charts = [forge.HelmChart {", `    helm_charts = [forge.HelmChart {
+        name = "cert-manager"
+        oci = "oci://example/cert-manager"
+        version = "1.0.0"
+        namespace = "cert-manager"
+    }, forge.HelmChart {`, 1)
+	if withSecond == string(src) {
+		t.Fatal("fixture edit did not apply")
+	}
+	if err := os.WriteFile(main, []byte(withSecond), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		target string
+		want   map[string]string
+	}{
+		{"flux", map[string]string{
+			"ServiceAccount/source-controller":      "flux-system",
+			"Deployment/source-controller":          "flux-system",
+			"Namespace/flux-system":                 "",
+			"ClusterRole/crd-controller":            "",
+			"ClusterRoleBinding/cluster-reconciler": "",
+		}},
+		{"cert-manager", map[string]string{
+			"ConfigMap/cm-config":                       "cert-manager",
+			"Deployment/cm-controller":                  "cert-manager",
+			"Namespace/cert-manager":                    "",
+			"ValidatingWebhookConfiguration/cm-webhook": "",
+		}},
+	}
+	for _, tc := range cases {
+		stdout, stderr, err := runRenderCapturingProcessStdout(t, dir, "prod", "--target", tc.target)
+		if err != nil {
+			t.Fatalf("render --target %s: %v\nstderr:\n%s", tc.target, err, stderr)
+		}
+		got := map[string]string{}
+		dec := yaml.NewDecoder(strings.NewReader(stdout))
+		for {
+			var d struct {
+				Kind     string `yaml:"kind"`
+				Metadata struct {
+					Name      string `yaml:"name"`
+					Namespace string `yaml:"namespace"`
+				} `yaml:"metadata"`
+			}
+			if derr := dec.Decode(&d); derr != nil {
+				break
+			}
+			got[d.Kind+"/"+d.Metadata.Name] = d.Metadata.Namespace
+		}
+		for k, w := range tc.want {
+			if g, ok := got[k]; !ok || g != w {
+				t.Errorf("--target %s: %s namespace = %q (present=%v), want %q\n%s", tc.target, k, g, ok, w, stdout)
+			}
+		}
+		if len(got) != len(tc.want) {
+			t.Errorf("--target %s: rendered %v", tc.target, got)
+		}
+	}
+}

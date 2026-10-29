@@ -17,12 +17,17 @@ time with Forge depends on.
 
 ## Before you start
 
-You need Go, Docker (for the local cluster and for tests that use a real
-Postgres), and the `forge` binary on your `$PATH`:
+You need Docker (for the local cluster and for tests that use a real
+Postgres) and the `forge` binary on your `$PATH`. No Go toolchain is needed to
+install it:
 
 ```bash
-task install && forge version
+curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh
+forge version
 ```
+
+(Homebrew, npm, Windows and `go install` are listed under
+[Install](../README.md#install). From a clone: `task install && forge version`.)
 
 Forge installs the proto plugins it needs on first use. If you want to check
 your toolchain up front, `forge doctor` will tell you what is missing and how
@@ -62,20 +67,14 @@ after the binary or the layer.
 forge scaffold service bookmark
 ```
 
-That writes a proto stub, the handler package, a cobra subcommand and a
-test-harness entry, and appends the service's constructor to the
-`cmd.Execute(...)` call in `cmd/bookmarks/main.go`:
-
-```
-✅ wired services.NewBookmarkCmd into cmd/bookmarks/main.go — `bookmarks bookmark` is live
-```
-
-`bookmarks server` serves every service on one port, so the new one is
-already reachable there; the standalone `bookmarks bookmark` subcommand runs
-it alone. If forge cannot find the `cmd.Execute(...)` call (you restructured
-`main.go`), it leaves the file alone and prints the import and argument to
-add by hand. It also binds nothing new in the deploy files: in every
-environment, the binary's `server` already runs the new service.
+That writes a proto stub, the handler package and a test-harness entry, and
+the next `forge generate` adds the service to the composition graph
+(`internal/app`). `bookmarks server` serves every service on one port, so the
+new one is reachable there; there is no command per service. It also declares
+and binds nothing new in the deploy files: in every environment, the binary's
+`server` (the env's `_api` workload) already runs the new service. To run a
+service in a process of its own, declare a root for it (`architecture` skill,
+"Roots and commands").
 
 ## 3. Declare an entity
 

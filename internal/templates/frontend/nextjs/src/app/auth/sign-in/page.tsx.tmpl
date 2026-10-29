@@ -73,8 +73,7 @@ function SignIn() {
       await refresh();
       window.location.assign(returnTo);
     } catch (err) {
-      const message =
-        err instanceof AuthError ? err.message : "Sign-in failed. Please try again.";
+      const message = err instanceof AuthError ? err.message : "Sign-in failed. Please try again.";
       // The issuer reports a missing second factor as a rejection; showing
       // the field on the retry turns a dead end into a completable form.
       if (/(totp|factor|otp)/i.test(message)) setNeedsTotp(true);
@@ -141,10 +140,7 @@ function SignIn() {
               turn password reset off.
             */
             <p className="mt-1 text-right text-xs">
-              <a
-                className="font-medium text-accent underline"
-                href={joinBasePath("/auth/forgot")}
-              >
+              <a className="font-medium text-accent underline" href={joinBasePath("/auth/forgot")}>
                 Forgot your password?
               </a>
             </p>
@@ -177,7 +173,7 @@ function SignIn() {
             </p>
           ) : null}
 
-          <Button type="submit" disabled={submitting} className="mt-6 w-full">
+          <Button type="submit" size="xl" fullWidth loading={submitting} className="mt-6">
             {submitting
               ? signingUp
                 ? "Creating your account…"

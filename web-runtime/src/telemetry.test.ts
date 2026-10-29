@@ -251,6 +251,23 @@ describe("buildSdkOptions", () => {
     expect(opts.disableReplay).toBe(true);
   });
 
+  it("disables automatic DOM spans without disabling masked replay or network tracing", async () => {
+    const { t } = await load();
+    const opts = t.buildSdkOptions(
+      { ...base, replay: true },
+      `${ORIGIN}/_otel`,
+      ORIGIN,
+    );
+    expect(opts.instrumentations).toMatchObject({
+      interactions: false,
+      fetch: { propagateTraceHeaderCorsUrls: expect.any(Array) },
+      xhr: { propagateTraceHeaderCorsUrls: expect.any(Array) },
+    });
+    expect(opts.disableReplay).toBe(false);
+    expect(opts.maskAllInputs).toBe(true);
+    expect(opts.maskAllText).toBe(true);
+  });
+
   it("forces masking and media blocking whatever the config says", async () => {
     const { t } = await load();
     for (const replay of [undefined, false, true]) {

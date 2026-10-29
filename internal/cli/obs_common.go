@@ -8,12 +8,15 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -22,6 +25,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/obsbackend"
 	"github.com/reliant-labs/forge/internal/obsout"
+	"github.com/reliant-labs/forge/pkg/observe/metrics"
 )
 
 // obsDeps are the seams a verb reaches the world through. The zero value is
@@ -47,7 +51,7 @@ func defaultObsDeps(cmd *cobra.Command) obsDeps {
 	d := obsDeps{
 		Facts: obsFactsFromKCL,
 		Local: func(env string) obsbackend.Backend {
-			return obsbackend.Local{Env: env, Runner: obsbackend.DockerRunner{Exec: localClickstackExec(env), Env: env}, Ledger: openObsLedger}
+			return obsbackend.Local{Env: env, Runner: obsbackend.DockerRunner{Exec: localClickstackExec(env), Env: env}, Ledger: openObsLedger, Declared: declaredMetricSchemas}
 		},
 		Cloud:   openObsCloud,
 		Release: liveReleaseAt,
@@ -78,6 +82,10 @@ func defaultObsDeps(cmd *cobra.Command) obsDeps {
 			d.Stderr = o.Stderr
 		}
 	}
+	// Every verb's output carries telemetry written by whoever holds the public
+	// ingest key; this is the one place it is made safe for a terminal.
+	d.Stdout = obsout.NewSanitizingWriter(d.Stdout)
+	d.Stderr = obsout.NewSanitizingWriter(d.Stderr)
 	return d
 }
 
@@ -94,25 +102,17 @@ func localClickstackExec(env string) obsbackend.ExecFunc {
 	}
 }
 
-// obsFactsFromKCL renders env's declaration and reads the facts the resolver
-// needs. An env that does not exist is an error that lists the ones that do.
+// obsFactsFromKCL reads what env's declaration says about where its telemetry
+// goes. It renders the declaration only when the stamped copy of the last read
+// no longer matches (obs_target.go). An env that does not exist is an error that
+// lists the ones that do.
 func obsFactsFromKCL(ctx context.Context, errOut io.Writer, env string) (obsbackend.Facts, error) {
-	e, err := RenderKCL(ctx, projectDirForKCL(), env)
+	t, err := resolveObsTarget(ctx, env)
 	if err != nil {
 		return obsbackend.Facts{}, obsbackend.Undetermined("cannot read env %q's declaration: %v", env, err).
 			With(obsbackend.Cmd("forge", "env", "list"))
 	}
-	f := obsbackend.Facts{Env: env, HasHosted: e.HasHosted(), ReleaseHealth: e.ReleaseHealth}
-	if o := e.Observability; o != nil {
-		f.Declared, f.Enabled = true, o.Enabled
-		if d := o.Destination; d != nil {
-			f.Destination = &obsbackend.Destination{Endpoint: d.Endpoint, TokenFromControlPlane: d.TokenFromControlPlane}
-		}
-	}
-	if e.ControlPlane != nil {
-		f.ControlPlane = e.ControlPlane.Endpoint
-	}
-	return f, nil
+	return t.Facts, nil
 }
 
 // obsCommon are the flags and state every telemetry verb shares.
@@ -285,4 +285,73 @@ func paramNames(m map[string]string) []string { return slices.Sorted(maps.Keys(m
 // openObsLedger opens this machine's release ledger for the change feed.
 func openObsLedger() (obsbackend.LedgerReader, error) {
 	return openMachineLedger(projectDirForKCL())
+}
+
+// declaredMetricSchemas reads the metrics schema `forge build` wrote
+// (bin/observability/metrics-schema.json) for the catalog's declared join. A
+// project that has not built, or whose build could not run its binary, has none:
+// the catalog is then what was observed, which is the honest answer.
+func declaredMetricSchemas() []metrics.Schema {
+	raw, err := os.ReadFile(filepath.Join(projectDirForKCL(), "bin", filepath.FromSlash(MetricsSchemaArtifact)))
+	if err != nil {
+		return nil
+	}
+	s, err := metrics.ParseSchema(raw)
+	if err != nil {
+		return nil
+	}
+	return []metrics.Schema{s}
+}
+
+// pageCursorPrefix marks a next_page_token forge wrapped with the window it
+// was issued for (pageCursor).
+const pageCursorPrefix = "fp1."
+
+// pageCursor is what forge hands out as next_page_token: the backend's own
+// token plus the exact window it belongs to.
+//
+// WHY WRAP IT. A backend's token is bound to the request that produced it,
+// window included, and the default window is RELATIVE (--since 72h): re-running
+// the same command with --page-token computes a new "now", so the next page was
+// refused "page_token belongs to a different request" and the only way through
+// was copying scope.from/scope.to into --from/--to by hand. Carrying the window
+// in the token makes `--page-token <next_page_token>` resume exactly the
+// listing it came from, whatever --since says. The inner token stays opaque.
+type pageCursor struct {
+	From  time.Time `json:"f"`
+	To    time.Time `json:"t"`
+	Token string    `json:"k"`
+}
+
+// wrapPageToken is next_page_token for a backend token issued over rng; empty
+// stays empty.
+func wrapPageToken(rng obsbackend.Range, token string) string {
+	if token == "" {
+		return ""
+	}
+	b, err := json.Marshal(pageCursor{From: rng.From.UTC(), To: rng.To.UTC(), Token: token})
+	if err != nil {
+		return token
+	}
+	return pageCursorPrefix + base64.RawURLEncoding.EncodeToString(b)
+}
+
+// resumePage unwraps a --page-token: the backend's token, with n's range
+// pinned to the window the token was issued for. A token forge did not wrap
+// (an older forge's, or one copied from elsewhere) passes through unchanged.
+func resumePage(n *obsbackend.Narrow, token string) (string, error) {
+	raw, ok := strings.CutPrefix(token, pageCursorPrefix)
+	if !ok {
+		return token, nil
+	}
+	b, err := base64.RawURLEncoding.DecodeString(raw)
+	var c pageCursor
+	if err == nil {
+		err = json.Unmarshal(b, &c)
+	}
+	if err != nil || c.Token == "" || !c.To.After(c.From) {
+		return "", obsbackend.Wrong("--page-token is not a next_page_token forge issued (it is damaged or truncated)")
+	}
+	n.Range = obsbackend.Range{From: c.From, To: c.To}
+	return c.Token, nil
 }

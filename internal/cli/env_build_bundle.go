@@ -211,7 +211,7 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		return bundleWriteOutcome{Env: env, Skipped: true}, nil
 	}
 
-	observability, err := bundleObservabilityFiles(projectDir, in)
+	observability, err := bundleObservabilityFiles(projectDir, in, doc.entities)
 	if err != nil {
 		return bundleWriteOutcome{}, err
 	}
@@ -244,6 +244,13 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 	reader, err := bundleReaderFor(ctx, projectDir, env, ledger)
 	if err != nil {
 		return bundleWriteOutcome{}, err
+	}
+	// The service catalog is a layer artifact with the same rule: a control
+	// plane whose layer validator predates it refuses the WHOLE bundle.
+	var withheld bool
+	observability, withheld = withholdServiceCatalog(observability, reader)
+	if withheld {
+		noteServiceCatalogWithheld(in.errWriter(), env)
 	}
 
 	built, err := bundle.Build(ctx, bundle.BuildInput{
@@ -398,6 +405,7 @@ func bundleShapeInputOf(doc envShapeDoc) bundle.ShapeInput {
 		DeliveryPolicy:      doc.Shape.DeliveryPolicy,
 		DataAccess:          doc.Shape.DataAccess,
 		ReleaseHealth:       doc.Shape.ReleaseHealth,
+		UptimeChecks:        doc.Shape.UptimeChecks,
 		Identity:            doc.Shape.Identity,
 		Applier:             doc.Shape.Applier,
 		Units:               doc.Shape.Units,

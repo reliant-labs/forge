@@ -8,7 +8,79 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/obsdash"
 )
+
+func TestOwnedOverviewMigrationSettlesRealPendingDrift(t *testing.T) {
+	for _, bothEdited := range []bool{false, true} {
+		t.Run(map[bool]string{false: "migration", true: "independent-edits"}[bothEdited], func(t *testing.T) {
+			checksums.ResetPerRunState()
+			t.Cleanup(checksums.ResetPerRunState)
+			dir := t.TempDir()
+			cs := &checksums.FileChecksums{}
+			legacy := obsdash.DashboardsDir + "/shop-overview_gen.json"
+			owned := obsdash.OverridePath("shop", obsdash.Dashboard{ID: "overview"})
+			if _, err := checksums.WriteGeneratedFile(dir, legacy, []byte(`{"name":"pristine"}`), cs, true); err != nil {
+				t.Fatal(err)
+			}
+			edited := []byte(`{"name":"edited legacy"}`)
+			if err := os.WriteFile(filepath.Join(dir, legacy), edited, 0644); err != nil {
+				t.Fatal(err)
+			}
+			if bothEdited {
+				if err := os.WriteFile(filepath.Join(dir, owned), []byte(`{"name":"owned override"}`), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// A previous generation created the certified file. Start the new
+			// invocation with clean target/written sets, exactly as production.
+			checksums.ResetSkipWrite()
+			checksums.ResetPerRunState()
+			drift := checksums.ScanTier1Drift(dir, cs)
+			if len(drift) != 1 || drift[0].Path != legacy {
+				t.Fatalf("tracked legacy edit was not detected: %v", drift)
+			}
+			ctx := &pipelineContext{AbsPath: dir, Checksums: cs}
+			quarantineDriftForRescue(ctx, drift)
+			if _, err := obsdash.Write(dir, obsdash.Input{Project: "shop"}, cs); err != nil {
+				t.Fatal(err)
+			}
+			if checksums.IsTier1Target(legacy) {
+				t.Fatal("legacy ownership must not be a current generated target")
+			}
+			if err := stepRetireObsoleteDisowns(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if cs.IsDisowned(legacy) {
+				t.Fatal("obsolete legacy disown did not retire before adjudication")
+			}
+			if err := stepRehashTracked(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := stepAdjudicateTier1Drift(ctx); err != nil {
+				t.Fatalf("complete ownership lifecycle left pending Tier-1 drift: %v", err)
+			}
+			got, err := os.ReadFile(filepath.Join(dir, owned))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bothEdited && string(got) != string(edited) {
+				t.Fatalf("edit lost: %s", got)
+			}
+			if bothEdited {
+				if string(got) != `{"name":"owned override"}` {
+					t.Fatal("owned edit overwritten")
+				}
+				if old, err := os.ReadFile(filepath.Join(dir, legacy)); err != nil || string(old) != string(edited) {
+					t.Fatal("independent legacy edit lost")
+				}
+			}
+			if len(checksums.ScanTier1Drift(dir, cs)) != 0 {
+				t.Fatal("subsequent generate still considers owned legacy edited Tier-1")
+			}
+		})
+	}
+}
 
 // checkTier1DriftAndAdjudicate runs the stomp guard and its fresh-render
 // check back to back, as a run whose emitters rendered none of the drifted
@@ -82,6 +154,9 @@ func writeHashesLedger(t *testing.T, dir string, files map[string]string) {
 // byte-for-byte what that next run renders, so it re-records them and
 // succeeds, and the run after it sees no drift at all.
 func TestGenerate_KilledRunLedgerIsRescued(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the full generate pipeline; runs in task test")
+	}
 	dir := t.TempDir()
 	v1 := map[string]string{
 		"observability/dashboards/api_gen.json":     `{"title":"api","v":1}` + "\n",

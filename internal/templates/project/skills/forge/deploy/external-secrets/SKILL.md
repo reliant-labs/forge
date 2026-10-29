@@ -60,6 +60,15 @@ matches for kind GeneratorState". That CRD is therefore in the bundle (and the
 controller keeps its read of the generators API); no generator kind is
 creatable, because their CRDs are absent.
 
+Re-checked against v2.13.0 (the SC7 rehearsal asked whether generators being
+off made it droppable): it is still required. `cmd/controller/root.go`
+registers the GeneratorState reconciler unconditionally, and
+`--enable-generator-state=false` only reaches the ExternalSecret reconciler, so
+the flag cannot remove the dependency. `TestGeneratorsGroupHoldsOnlyGeneratorState`
+pins that the bundle carries no generator kind beside it. On a pin bump, read
+`root.go` again: drop the CRD only when the reconciler is gated on a flag the
+install can set.
+
 ## P2 — the cosign identity
 
 The controller image is signed keyless by GitHub Actions. For the pinned digest:
@@ -101,9 +110,9 @@ never wedges a deletion.
 
 | Policy | Refuses |
 |---|---|
-| `eso-writers` | a create, update or delete of an ExternalSecret or SecretStore by anyone but `admission.writers`, `admission.writer_groups` (default `system:masters`), the operator, and the cluster's garbage collector and namespace controller. Name your apply identity: a GKE binding's Google service account email, or the `forge-connect-<cluster>-<env>` ServiceAccount `forge cluster connect` mints. |
+| `eso-writers` | a create, update or delete of an ExternalSecret or SecretStore by anyone but `admission.writers`, `admission.writer_groups` (default `system:masters`), the operator, and the cluster's garbage collector and namespace controller. Name your apply identity: the `system:serviceaccount:forge-system:forge-connect-<cluster>-<env>` ServiceAccount `forge cluster connect` mints. |
 | `eso-store-pin` | any SecretStore except a `vault` provider that dials a server in `admission.servers` with JWT auth on a mount in `jwt_mounts`, with a projected token for `admission.store_service_account` (default `reliant-secrets`, in the store's own namespace) and exactly one audience from `admission.audiences`; or a `gcpsm` provider over Workload Identity for a project in `gcp_projects`. A `webhook` provider is refused: it is an exfiltration channel. |
-| `eso-es-policy` | `dataFrom`; a `ClusterSecretStore` reference; a `creationPolicy` other than Orphan or Merge (including the default, Owner); a `deletionPolicy` other than Retain; a `target.name` other than the ExternalSecret's own; a generic target; a per-entry `sourceRef`; a refresh under 5m. |
+| `eso-es-policy` | `dataFrom`; a `ClusterSecretStore` reference; a `creationPolicy` other than Orphan or Merge (including the default, Owner); a `deletionPolicy` other than Retain (Merge only when `spec.data` is empty: a Secret made of templates alone, which ESO would never create under Retain); a `target.name` other than the ExternalSecret's own; a generic target; a per-entry `sourceRef`; a refresh under 5m. |
 
 `TestESOAdmissionPolicies` runs all three against a real kube-apiserver with the
 embedded CRDs (`KUBEBUILDER_ASSETS`, see `setup-envtest`); it skips without them.
@@ -140,6 +149,31 @@ that exists, so it keeps the ordinary existence check; Orphan (the default) does
 A hub-reconciled env (`ControlPlane`) is not refused for a Secret the operator
 delivers; for one nothing delivers, the refusal names `source = forge.StoreSource`
 first, then `forge env secrets sync`. `--skip-preflight` bypasses all of it.
+
+## Flux ordering and pin rotations
+
+A v2 bundle includes each awaited `external-secrets.io` ExternalSecret in its
+existing tree's health list. The hub's Kustomization uses `healthCheckExprs`:
+`Ready=True` **and** `status.syncedResourceVersion` starting with the current
+`metadata.generation` plus `-`. A previous sync's Ready condition cannot release
+a pin bump's consumer rollout. The existing `dependsOn` chain holds downstream
+trees; Flux also requires same-source dependencies to have applied the current
+artifact revision. Timeouts, retries and observer budgets remain tree-owned.
+
+`forge.dev/secret-sync: shadow` and `deferred` copies are applied but not awaited,
+just as with direct apply. Other trees retain their existing health checks.
+
+Flux applies **all objects in a tree before checking health**. It cannot sequence
+an ExternalSecret ahead of a pre-rollout Job in that same tree. Put secrets in an
+upstream delivery unit when a Job needs them before it starts. Likewise, a cold
+store bootstrap must use units ordered along ESO → bootstrap secrets → store →
+application secrets → consumers; do not put a store workload downstream of a
+same-unit secret that needs that store to start. This gate adds no new phases or
+within-tree rollout engine.
+
+The hub must support ExternalSecret custom health before consuming these bundle
+health entries. Older bundles without them must be rebuilt; updating the hub
+alone cannot infer health entries an artifact did not publish.
 
 ## Residual risk
 

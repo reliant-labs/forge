@@ -66,19 +66,18 @@ type Runner struct {
 	// Go-cache layer roots (gocache.go). Empty means the real machine
 	// location in production and is REFUSED under `go test`.
 	GoCacheRoot       string // shared GOCACHE
-	GoModCacheRoot    string // shared GOMODCACHE
 	GolangciCacheRoot string
-	GoimportsRoot     string
-	// ProcessEnv returns the text of every live process's environment; an error
-	// makes the orphan layer skip. OpenPaths is the lsof snapshot. Both are
-	// REFUSED under test when unset.
-	ProcessEnv func(context.Context) (string, error)
-	OpenPaths  func(context.Context) (openfiles.Snapshot, error)
+	// OpenPaths is the lsof snapshot. REFUSED under test when unset.
+	OpenPaths func(context.Context) (openfiles.Snapshot, error)
 	// OnGoCacheTrim, when set, receives what each Go-format cache trim
 	// measured and did (gocache.go). The CLI collects them into the pass's
 	// record. It may be called from the layer's goroutine; it is never called
 	// concurrently.
 	OnGoCacheTrim func(GoCacheTrim)
+	// LiveToolchainAges lists how long each running Go toolchain process has
+	// lived (gocache_livebuild.go). Nil reads the process table in
+	// production and means "no builds" under test.
+	LiveToolchainAges func(context.Context) ([]time.Duration, error)
 
 	// Per-pass state, set by beginPass (passctx.go).
 	passTotal  time.Duration

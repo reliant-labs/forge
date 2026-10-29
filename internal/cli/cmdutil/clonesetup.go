@@ -21,7 +21,15 @@ import (
 //
 // The annotation's value is a comma-separated list of boolean flags that
 // make a run of the command read-only (generate's --check and --plan).
+// --dry-run needs no listing: on any command that has it, a dry run is a
+// promise to write nothing, git configuration included (DryRunFlag).
 const ConfiguresCloneAnnotation = "forge.configures-clone"
+
+// DryRunFlag is the flag every forge command spells a dry run with. Set, it
+// makes the run read-only for ConfiguresCloneFor whatever the annotation
+// lists: `forge scaffold --dry-run` used to enable extensions.worktreeConfig
+// and write the merge driver into .git/config, then print "nothing written".
+const DryRunFlag = "dry-run"
 
 // ConfiguresClone marks cmd, and through it every subcommand, as one that
 // may set up the clone's git configuration — unless one of readOnlyFlags is
@@ -38,6 +46,9 @@ func ConfiguresClone(cmd *cobra.Command, readOnlyFlags ...string) *cobra.Command
 // git configuration: cmd or one of its parents carries
 // ConfiguresCloneAnnotation, and none of the read-only flags it names is set.
 func ConfiguresCloneFor(cmd *cobra.Command) bool {
+	if IsDryRun(cmd) {
+		return false
+	}
 	for c := cmd; c != nil; c = c.Parent() {
 		readOnly, ok := c.Annotations[ConfiguresCloneAnnotation]
 		if !ok {
@@ -54,4 +65,10 @@ func ConfiguresCloneFor(cmd *cobra.Command) bool {
 		return true
 	}
 	return false
+}
+
+// IsDryRun reports whether this run of cmd was asked for with --dry-run.
+func IsDryRun(cmd *cobra.Command) bool {
+	f := cmd.Flags().Lookup(DryRunFlag)
+	return f != nil && f.Changed && f.Value.String() == "true"
 }

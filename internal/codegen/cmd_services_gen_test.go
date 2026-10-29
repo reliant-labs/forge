@@ -260,7 +260,7 @@ func TestScaffoldWorkerCmd(t *testing.T) {
 		t.Fatalf("read reaper.go: %v", err)
 	}
 	content := string(raw)
-	for _, want := range []string{"func NewReaperCmd(deps cmd.Deps)", `Use:   "reaper",`, "package workers", "cmd.MountNone", "cmd.ServeSpec{", `[]serverkit.Worker{c.WorkerReaper()}`} {
+	for _, want := range []string{"func NewReaperCmd(deps cmd.Deps)", `Use:   "reaper",`, "package workers", "cmd.MountNone", "cmd.ServeSpec{", `[]serverkit.Worker{workerReaper(c)}`} {
 		if !strings.Contains(content, want) {
 			t.Errorf("reaper.go missing %q\n%s", want, content)
 		}
@@ -300,7 +300,7 @@ func TestScaffoldOperatorCmd(t *testing.T) {
 		t.Fatalf("read syncer.go: %v", err)
 	}
 	content := string(raw)
-	for _, want := range []string{"func NewSyncerCmd(deps cmd.Deps)", `Use:   "syncer",`, "package operators", "cmd.MountNone", "cmd.ServeSpec{", `[]app.OperatorEntry{c.OperatorSyncer()}`} {
+	for _, want := range []string{"func NewSyncerCmd(deps cmd.Deps)", `Use:   "syncer",`, "package operators", "cmd.MountNone", "cmd.ServeSpec{", `[]app.OperatorEntry{operatorSyncer(c)}`} {
 		if !strings.Contains(content, want) {
 			t.Errorf("syncer.go missing %q\n%s", want, content)
 		}

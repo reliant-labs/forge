@@ -13,13 +13,48 @@ Dockerfile** to bump.
 See `docs/versioning.md` for the dev-vs-release dependency model. This file is
 the operational checklist for cutting a version.
 
+## 0. Who releases: the release workflow
+
+**Maintainers and agents do not cut forge releases by hand.** The Reliant workflow
+`release` (control-plane `.reliant/workflows/release.yaml`) does, on the flagship
+Claude model following control-plane's `release` skill: when a merge is the 10th
+first-parent commit on main since the newest `v*` tag, when a PR labelled
+`release:asap` merges, or when started from a chat. It cuts forge first, then the
+consumers:
+
+- **web-runtime**, when `web-runtime/package.json` is ahead of its newest
+  `web-runtime/v*` tag: `scripts/release-web-runtime.sh vX.Y.Z`, then the tag push
+  that publishes it. The version bump itself is a reviewed PR; the release never
+  invents one.
+- **forge**, when main's tip has a green full `ci.yml` run on push (the proof
+  `scripts/check-release-tests.sh` reads): `scripts/release-forge.sh` with no
+  version, which cuts the release `NEXT_VERSION` names (see below). The release
+  never computes a version from the last tag.
+- **the consumer bumps** (step 2 below), as one pull request per downstream repo
+  labelled `merge:queue`, when a consumer does not already pin a forge that contains
+  the release. pin-bot normally has.
+
+Need a forge change released sooner: label its PR **`release:asap`**. There is no
+release lock: the tag push decides a race (a second cutter's push of the same tag is
+refused, and `release-forge.sh` refuses an existing tag before it builds anything). The
+steps below are what the train runs, for whoever fixes it.
+
 ## 1. Tag forge (from a clean `main`) — ONE command
 
 ```sh
 cd forge
-task release:forge -- vX.Y.Z --dry-run   # optional: every validation, no side effects
-task release:forge -- vX.Y.Z
+task release:forge -- --dry-run   # optional: every validation, no side effects
+task release:forge                # cuts the version NEXT_VERSION names
 ```
+
+**`NEXT_VERSION` declares the next release.** It is not always the last tag's
+patch+1: v0.1.46 was followed by v1.0.0. Lint rollout rows (`IntroducedIn`),
+codemods (`Version`) and migration playbooks (`migrations/<version>/`) for
+unreleased work are keyed to it, and their tests fail a key that is neither
+shipped (at or before `VERSION`) nor `NEXT_VERSION`. The script refuses a version
+that is not `NEXT_VERSION` or a pre-release of it (`vX.Y.Z-rc.1`); to cut a
+minor or major release, change `NEXT_VERSION` (and those keys) in a pull request
+first. A final release writes `NEXT_VERSION`'s next patch in the release commit.
 
 What it does, in order:
 
@@ -99,6 +134,31 @@ mechanisms, all of which are now gone:
 A single module cannot require itself, so there is no unpushed version to
 resolve, no second tag to order, and no hand-maintained pin to drift.
 `scripts/release-pkg.sh` and `task release:pkg` are deleted.
+
+### Installers (what the release script ships beyond the tag)
+
+`release-forge.sh` also publishes what lets someone with no Go toolchain install
+forge. All of it hangs off one naming contract, owned by
+`scripts/build-release-assets.sh`: `forge_<os>_<arch>.tar.gz` for
+linux/darwin/windows × amd64/arm64 (the binary, `LICENSE`, `NOTICE`) plus
+`checksums.txt`, attached to the GitHub release. Change a name there and you must
+change `install.sh`, `install.ps1`, `npm/lib/install.js` and
+`scripts/render-homebrew-formula.sh` in the same pull request;
+`internal/installers` fails if they drift.
+
+| Channel                                                   | What the release does                                                                                                                                                                     | Needs a human                                                                                                                                                        |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `curl \| sh` (`install.sh`), `irm \| iex` (`install.ps1`) | Nothing: they read `main` and download the release's assets.                                                                                                                              | No                                                                                                                                                                   |
+| GitHub release assets                                     | `build-release-assets.sh` runs before the release commit; `gh release create` attaches the archives and `checksums.txt`.                                                                  | No                                                                                                                                                                   |
+| Homebrew `reliant-labs/reliant/forge`                     | Dispatches `forge-release-published` to `reliant-labs/homebrew-reliant`; its `update-forge-formula.yml` renders `Formula/forge.rb` (`scripts/render-homebrew-formula.sh`) and opens a PR. | Yes: the tap's ruleset requires an approving review, same as the cask. The workflow lives in the tap; see `docs/installers/update-forge-formula.yml` for the source. |
+| npm `@reliantlabs/forge`                                  | `npm/package.json` is synced to the release version in the release commit. Publishing happens only with `--publish-npm` (then `verify-npm-published.sh` waits for the registry).          | Yes: `npm publish` needs an npm login with rights to the `@reliantlabs` scope (and its OTP), or a trusted-publisher registration like web-runtime's.                 |
+
+Publish npm by hand after any release with `(cd npm && npm publish --access public)`.
+A prerelease tag gets assets but is never sent to Homebrew or npm.
+
+If the GitHub release step fails after the tag is pushed, the script prints the
+retry command; build the archives again with
+`scripts/build-release-assets.sh vX.Y.Z dist/` and attach `dist/*` to it.
 
 ## 2. Bump the consumers
 

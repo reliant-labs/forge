@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +24,17 @@ func codegenServiceDefForStarterTest() codegen.ServiceDef {
 			{Name: "GetUser", InputType: "GetUserRequest", OutputType: "GetUserResponse"},
 			{Name: "CreateUser", InputType: "CreateUserRequest", OutputType: "CreateUserResponse"},
 		},
+	}
+}
+
+// writeHookFixture writes content to path, creating its directory.
+func writeHookFixture(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -443,7 +456,7 @@ service OrderService {
 		t.Fatal(err)
 	}
 
-	got := mutationMarkedMethods(path)
+	got := scanRPCHookMarkers(path).Mutation
 	for _, want := range []string{"IssueRefund", "CheckoutCart", "PlaceOrder"} {
 		if !got[want] {
 			t.Errorf("expected %s to be marked as mutation, got %+v", want, got)
@@ -456,11 +469,203 @@ service OrderService {
 	}
 }
 
+// TestScanRPCHookMarkers_QueryScopeShapes: `forge:query-scope` attaches
+// exactly as forge:mutation does — leading block or trailing — a bare marker
+// is recorded (for generate to refuse), a longer token is not the marker,
+// and a blank line detaches it.
+func TestScanRPCHookMarkers_QueryScopeShapes(t *testing.T) {
+	dir := t.TempDir()
+	proto := `syntax = "proto3";
+package run.v1;
+
+service RunService {
+  // Most recent run per workflow.
+  //
+  // forge:query-scope Run — a run write must refresh it.
+  rpc LastRunPerWorkflow(LastRunPerWorkflowRequest) returns (LastRunPerWorkflowResponse);
+
+  rpc RunStats(RunStatsRequest) returns (RunStatsResponse); // forge:query-scope Run
+
+  // forge:query-scope
+  rpc Bare(BareRequest) returns (BareResponse);
+
+  // forge:query-scoped Run
+  rpc Longer(LongerRequest) returns (LongerResponse);
+
+  // forge:query-scope Run
+
+  rpc Detached(DetachedRequest) returns (DetachedResponse);
+}
+`
+	path := filepath.Join(dir, "run.proto")
+	if err := os.WriteFile(path, []byte(proto), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := scanRPCHookMarkers(path).QueryScope
+	want := map[string]string{"LastRunPerWorkflow": "Run", "RunStats": "Run", "Bare": ""}
+	if len(got) != len(want) {
+		t.Fatalf("query scopes = %+v, want %+v", got, want)
+	}
+	for rpc, entity := range want {
+		if e, ok := got[rpc]; !ok || e != entity {
+			t.Errorf("%s: scope = %q (present %v), want %q", rpc, e, ok, entity)
+		}
+	}
+}
+
+// TestGenerateFrontendHooks_MarkersReadFromTheModuleRelativeProtoPath: the
+// descriptor records ProtoFile relative to the buf module (proto/), as
+// `services/orders/v1/orders.proto`. The scanner joined that to the project
+// root, found no file, and dropped every marker without a word — so neither
+// forge:mutation nor forge:query-scope ever applied in a real project.
+func TestGenerateFrontendHooks_MarkersReadFromTheModuleRelativeProtoPath(t *testing.T) {
+	dir := t.TempDir()
+	writeHookFixture(t, filepath.Join(dir, "proto", "services", "orders", "v1", "orders.proto"), `syntax = "proto3";
+package orders.v1;
+
+service OrderService {
+  // forge:mutation
+  rpc FindAndHoldSeat(FindAndHoldSeatRequest) returns (FindAndHoldSeatResponse);
+  // forge:query-scope Order
+  rpc OrderTotals(OrderTotalsRequest) returns (OrderTotalsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+`)
+	cfg := &config.ProjectConfig{
+		Name:      "myapp",
+		Frontends: []config.FrontendConfig{config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir("frontends/web")},
+	}
+	services := []codegen.ServiceDef{{
+		Name:      "OrderService",
+		ProtoFile: "services/orders/v1/orders.proto", // as the descriptor writes it
+		Methods: []codegen.Method{
+			{Name: "FindAndHoldSeat", InputType: "FindAndHoldSeatRequest", OutputType: "FindAndHoldSeatResponse"},
+			{Name: "OrderTotals", InputType: "OrderTotalsRequest", OutputType: "OrderTotalsResponse", NoSideEffects: true},
+		},
+	}}
+	if err := generateFrontendHooks(cfg, services, dir, nil); err != nil {
+		t.Fatalf("generateFrontendHooks: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "frontends/web/src/hooks/order-service-hooks_gen.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"export const useFindAndHoldSeat = createMutationHook<",
+		`orderTotals: keys.query("orderTotals", OrderTotalsRequestSchema, "order")`,
+		`order: keys.entity("order")`,
+	} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("hooks missing %q — the proto's markers were not read:\n%s", want, got)
+		}
+	}
+}
+
+// TestGenerateFrontendHooks_QueryScopeRefusalFailsTheStep: a scope generate
+// cannot honour fails the hooks step, naming the proto — never a silent
+// no-op, which is the stale read the marker exists to prevent.
+func TestGenerateFrontendHooks_QueryScopeRefusalFailsTheStep(t *testing.T) {
+	dir := t.TempDir()
+	protoRel := "proto/services/orders/v1/orders.proto"
+	writeHookFixture(t, filepath.Join(dir, protoRel), `syntax = "proto3";
+package orders.v1;
+
+service OrderService {
+  // forge:query-scope Order
+  rpc PlaceOrder(PlaceOrderRequest) returns (PlaceOrderResponse);
+}
+`)
+	cfg := &config.ProjectConfig{
+		Name:      "myapp",
+		Frontends: []config.FrontendConfig{config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir("frontends/web")},
+	}
+	services := []codegen.ServiceDef{{
+		Name:      "OrderService",
+		ProtoFile: protoRel,
+		Methods:   []codegen.Method{{Name: "PlaceOrder", InputType: "PlaceOrderRequest", OutputType: "PlaceOrderResponse"}},
+	}}
+	err := generateFrontendHooks(cfg, services, dir, nil)
+	if err == nil || !strings.Contains(err.Error(), protoRel) || !strings.Contains(err.Error(), "useMutation") {
+		t.Fatalf("want a refusal naming %s and the mutation, got %v", protoRel, err)
+	}
+}
+
+// TestGenerateFrontendHooks_ReportsStaleStarterRowsOnAKindFlip is the
+// generate half of #1508: the hook flips under an owned starter test, and
+// the run's closing summary names the row's line and its replacement body
+// instead of leaving vitest to find it.
+func TestGenerateFrontendHooks_ReportsStaleStarterRowsOnAKindFlip(t *testing.T) {
+	checksums.ResetPerRunState()
+	t.Cleanup(checksums.ResetPerRunState)
+	dir := t.TempDir()
+	protoRel := "proto/run/v1/run.proto"
+	writeHookFixture(t, filepath.Join(dir, protoRel), "syntax = \"proto3\";\npackage run.v1;\nservice RunService {}\n")
+	cfg := &config.ProjectConfig{
+		Name:      "myapp",
+		Frontends: []config.FrontendConfig{config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir("frontends/web")},
+	}
+	svc := func(noSideEffects bool) []codegen.ServiceDef {
+		return []codegen.ServiceDef{{
+			Name:      "RunService",
+			ProtoFile: protoRel,
+			Methods: []codegen.Method{
+				{Name: "LastRunPerWorkflow", InputType: "LastRunPerWorkflowRequest", OutputType: "LastRunPerWorkflowResponse", NoSideEffects: noSideEffects},
+				{Name: "PauseRun", InputType: "PauseRunRequest", OutputType: "PauseRunResponse"},
+			},
+		}}
+	}
+	// First generate: LastRunPerWorkflow is a mutation, and the starter
+	// test is written for it.
+	if err := generateFrontendHooks(cfg, svc(false), dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if left := checksums.LeftAloneThisRun(); len(left) != 0 {
+		t.Fatalf("a fresh starter agrees with its hooks; nothing to report, got %+v", left)
+	}
+	testRel := "frontends/web/src/hooks/run-service-hooks.test.tsx"
+	starter, err := os.ReadFile(filepath.Join(dir, testRel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLine := strings.Count(string(starter[:strings.Index(string(starter), `it("useLastRunPerWorkflow`)]), "\n") + 1
+
+	// The rpc declares NO_SIDE_EFFECTS: the hook flips, the test does not.
+	out := captureStdout(t, func() {
+		if err := generateFrontendHooks(cfg, svc(true), dir, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "useLastRunPerWorkflow is now a useQuery (was a useMutation)") {
+		t.Errorf("generate must name the flip as it makes it, got:\n%s", out)
+	}
+	if after, _ := os.ReadFile(filepath.Join(dir, testRel)); string(after) != string(starter) {
+		t.Fatal("the starter test is the user's file; generate must not rewrite it")
+	}
+	left := checksums.LeftAloneThisRun()
+	if len(left) != 1 || !strings.HasSuffix(left[0].Path, testRel) {
+		t.Fatalf("want the stale test in the closing summary, got %+v", left)
+	}
+	detail := strings.Join(left[0].Detail, "\n")
+	for _, want := range []string{
+		fmt.Sprintf("line %d: useLastRunPerWorkflow is now a useQuery", wantLine),
+		"renderHook(() => useLastRunPerWorkflow({} as never), { wrapper });",
+		"await waitFor(() => expect(result.current.isSuccess).toBe(true));",
+	} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("summary detail missing %q:\n%s", want, detail)
+		}
+	}
+	if strings.Contains(detail, "waitForSettled helper") {
+		t.Errorf("PauseRun is still a mutation row; the helper is not orphaned:\n%s", detail)
+	}
+}
+
 // TestMutationMarkedMethods_MissingFileIsNotAnError asserts a proto path with
 // no file on disk yields an empty set rather than failing — hooks fall back to
 // heuristic classification.
 func TestMutationMarkedMethods_MissingFileIsNotAnError(t *testing.T) {
-	if got := mutationMarkedMethods(filepath.Join(t.TempDir(), "nope.proto")); len(got) != 0 {
+	if got := scanRPCHookMarkers(filepath.Join(t.TempDir(), "nope.proto")).Mutation; len(got) != 0 {
 		t.Errorf("expected empty set for missing proto, got %+v", got)
 	}
 }
@@ -805,5 +1010,116 @@ func TestWriteHookStarterTest_RemovesALeftoverStarterBesideALiveTest(t *testing.
 	got, _ := os.ReadFile(filepath.Join(dir, "user-service-hooks.test.tsx"))
 	if string(got) != "// mine" {
 		t.Errorf("the user's live test was touched: %s", got)
+	}
+}
+
+// updateHookGoldens rewrites testdata/hooks/ from the current generator:
+// `go test ./internal/cli/ -run TestGenerateFrontendHooks_Golden -update-hooks`.
+var updateHookGoldens = flag.Bool("update-hooks", false, "rewrite the generated-hooks golden files")
+
+// TestGenerateFrontendHooks_Golden pins the whole rendered hooks file and its
+// starter test for a service whose rpcs exercise every classification path:
+// NO_SIDE_EFFECTS reads named as nouns (Health, Version), an undeclared noun
+// (Ready, still a mutation), a read verb (GetInfo), a NO_SIDE_EFFECTS rpc the
+// author also marked `// forge:mutation` (the marker wins), and an ordinary
+// write (Restart). One classification feeds three artifacts — the hook's
+// factory, its entry (or not) in the key factory, and the starter test's
+// idiom — so the golden shows all three moving together.
+//
+// The paged reads ride the same golden: ListEvents and SearchLogs carry
+// forge's list-pagination shape (page_token in, next_page_token out) and
+// gain a use<Name>Infinite hook, key entry and starter row; ListNodes reads
+// a list with no tokens and gains none; FindPeers has the shape but is marked
+// `// forge:mutation`, and a mutation is never paged. SearchLogs, a custom
+// read, declares `// forge:query-scope Event`: both of its keys move under
+// the event scope ListEvents already has.
+func TestGenerateFrontendHooks_Golden(t *testing.T) {
+	dir := t.TempDir()
+	protoRel := "proto/system/v1/system.proto"
+	protoAbs := filepath.Join(dir, protoRel)
+	if err := os.MkdirAll(filepath.Dir(protoAbs), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(protoAbs, []byte(`syntax = "proto3";
+package system.v1;
+
+service SystemService {
+  rpc Health(HealthRequest) returns (HealthResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc Ready(ReadyRequest) returns (ReadyResponse);
+  rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
+  rpc Version(VersionRequest) returns (VersionResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // forge:mutation — reads nothing the cache could hold.
+  rpc Drain(DrainRequest) returns (DrainResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc Restart(RestartRequest) returns (RestartResponse);
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse);
+  // forge:query-scope Event — log lines are events, so an event write refreshes it.
+  rpc SearchLogs(SearchLogsRequest) returns (SearchLogsResponse);
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+  // forge:mutation — claims the peers it finds.
+  rpc FindPeers(FindPeersRequest) returns (FindPeersResponse);
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	method := func(name string, noSideEffects bool) codegen.Method {
+		return codegen.Method{Name: name, InputType: name + "Request", OutputType: name + "Response", NoSideEffects: noSideEffects}
+	}
+	services := []codegen.ServiceDef{{
+		Name:      "SystemService",
+		ProtoFile: protoRel,
+		Methods: []codegen.Method{
+			method("Health", true), method("Ready", false), method("GetInfo", false),
+			method("Version", true), method("Drain", true), method("Restart", false),
+			method("ListEvents", false), method("SearchLogs", false), method("ListNodes", false),
+			method("FindPeers", false),
+		},
+		Messages: map[string][]codegen.MessageFieldDef{
+			"ListEventsRequest":  {{Name: "page_size", ProtoType: "int32"}, {Name: "page_token", ProtoType: "string"}},
+			"ListEventsResponse": {{Name: "events", ProtoType: "[]message"}, {Name: "next_page_token", ProtoType: "string"}},
+			"SearchLogsRequest":  {{Name: "query", ProtoType: "string"}, {Name: "page_token", ProtoType: "string", IsOptional: true}},
+			"SearchLogsResponse": {{Name: "lines", ProtoType: "[]string"}, {Name: "next_page_token", ProtoType: "string"}},
+			"ListNodesRequest":   {{Name: "region", ProtoType: "string"}},
+			"ListNodesResponse":  {{Name: "nodes", ProtoType: "[]message"}},
+			"FindPeersRequest":   {{Name: "page_token", ProtoType: "string"}},
+			"FindPeersResponse":  {{Name: "next_page_token", ProtoType: "string"}},
+		},
+	}}
+	cfg := &config.ProjectConfig{
+		Name:      "myapp",
+		Frontends: []config.FrontendConfig{config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir("frontends/web")},
+	}
+	if err := generateFrontendHooks(cfg, services, dir, nil); err != nil {
+		t.Fatalf("generateFrontendHooks: %v", err)
+	}
+
+	hooksDir := filepath.Join(dir, "frontends", "web", "src", "hooks")
+	for _, name := range []string{"system-service-hooks_gen.ts", "system-service-hooks.test.tsx"} {
+		got, err := os.ReadFile(filepath.Join(hooksDir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		golden := filepath.Join("testdata", "hooks", name+".golden")
+		if *updateHookGoldens {
+			if err := os.MkdirAll(filepath.Dir(golden), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(golden, got, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		want, err := os.ReadFile(golden)
+		if err != nil {
+			t.Fatalf("read golden %s (run with -update-hooks to create it): %v", golden, err)
+		}
+		if string(got) != string(want) {
+			t.Errorf("%s differs from %s (run with -update-hooks to accept):\n--- got ---\n%s", name, golden, got)
+		}
 	}
 }

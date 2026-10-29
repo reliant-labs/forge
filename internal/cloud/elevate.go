@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/cloudcred"
 )
 
 // procExchangeToken is the control plane's on-demand elevation: a credential
@@ -45,6 +49,9 @@ type elevatedToken struct {
 // forge asks for exactly the scope a command just proved it needs, for an hour,
 // instead of every stored token carrying every permission forever.
 func (c *Client) elevationScope(err error) (string, bool) {
+	if c.credential().Kind == "human" {
+		return "", false
+	}
 	var apiErr *Error
 	if !errors.As(err, &apiErr) || apiErr.HTTPStatus != 403 {
 		return "", false
@@ -64,6 +71,14 @@ func (c *Client) elevatedToken(ctx context.Context, scope string) (string, error
 	defer c.elevated.mu.Unlock()
 	if cached, ok := c.elevated.entries[scope]; ok && time.Until(cached.expiresAt) > elevationReuseMargin {
 		return cached.token, nil
+	}
+
+	if tok, ok := c.helperScopedToken(scope); ok {
+		if c.elevated.entries == nil {
+			c.elevated.entries = map[string]elevatedToken{}
+		}
+		c.elevated.entries[scope] = tok
+		return tok.token, nil
 	}
 
 	var resp struct {
@@ -89,6 +104,49 @@ func (c *Client) elevatedToken(ctx context.Context, scope string) (string, error
 	}
 	c.elevated.entries[scope] = elevatedToken{token: resp.Secret, expiresAt: expires}
 	return resp.Secret, nil
+}
+
+// helperScopedToken asks the credential helper — the host session behind a
+// SourceHelper credential — for a token that also carries scope.
+//
+// WHY THE HELPER FIRST. The helper's token is minted for LoginScopes only, and
+// ExchangeToken only ever ATTENUATES the credential it is called with, so
+// exchanging that token for obs:read is refused ("an exchange cannot widen a
+// credential") even when the session behind it holds obs:read. The helper is
+// asked from that session, so it can mint the wider token; the control plane
+// still clips it to what the session and the person's role hold. It reports
+// ok only when the helper produced a different token that carries scope (or
+// does not say what it carries), so a helper that cannot grant it falls
+// through to the exchange and its refusal explains itself.
+func (c *Client) helperScopedToken(scope string) (elevatedToken, bool) {
+	cur := c.credential()
+	if cur.Source != SourceHelper {
+		return elevatedToken{}, false
+	}
+	helperValue := os.Getenv(cloudcred.HelperEnv)
+	if strings.TrimSpace(helperValue) == "" {
+		return elevatedToken{}, false
+	}
+	argv, err := cloudcred.ParseCommand(helperValue)
+	if err != nil {
+		return elevatedToken{}, false
+	}
+	if slices.Contains(LoginScopes(), scope) {
+		// The helper was already asked for it; asking again repeats the answer.
+		return elevatedToken{}, false
+	}
+	got, err := helperCredentialFor(argv, c.Endpoint, append(LoginScopes(), scope))
+	if err != nil || strings.TrimSpace(got.Token) == "" || got.Token == cur.Token {
+		return elevatedToken{}, false
+	}
+	if len(got.Scopes) > 0 && !slices.Contains(got.Scopes, scope) {
+		return elevatedToken{}, false
+	}
+	expires := time.Now().Add(helperReuseMargin * 2)
+	if got.ExpiresAt != nil {
+		expires = *got.ExpiresAt
+	}
+	return elevatedToken{token: got.Token, expiresAt: expires}, true
 }
 
 // reelevatedToken forgets rejected for scope and exchanges again. The cache is
@@ -123,5 +181,30 @@ func annotateElevation(original error, scope string, elevErr error) error {
 	}
 	apiErr.message = strings.TrimRight(apiErr.Error(), "\n") +
 		fmt.Sprintf("\n  elevation: forge asked the control plane for %s on demand and was refused: %s", scope, reason)
+	return apiErr
+}
+
+// loginLacksScope names the way out when a stored `forge login` credential
+// lacks scope, could not be elevated, and a credential helper is configured.
+//
+// The file credential outranks the helper by design (ResolveCredential: a
+// login the user chose is never displaced by an ambient session), so forge
+// does not switch identity on its own. But a login made before a scope
+// existed is then a permanent 403 even though the helper — the Reliant
+// session on this machine — could authorize the call. That was every agent's
+// `forge obs` against prod on 2026-10-25: the error said "re-run forge login",
+// which an agent cannot do, and never mentioned the helper. Say both options.
+func (c *Client) loginLacksScope(err error, scope string) error {
+	cred := c.credential()
+	if cred.Source != SourceLogin || strings.TrimSpace(os.Getenv(cloudcred.HelperEnv)) == "" {
+		return err
+	}
+	var apiErr *Error
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	apiErr.message = strings.TrimRight(apiErr.Error(), "\n") + fmt.Sprintf(
+		"\n  remedy: your `forge login` credential (%s, for %s) lacks %s; run `forge logout --endpoint %s` to use the Reliant credential helper ($%s), or `forge login` again",
+		cred.From, c.Endpoint.URL, scope, c.Endpoint.URL, cloudcred.HelperEnv)
 	return apiErr
 }

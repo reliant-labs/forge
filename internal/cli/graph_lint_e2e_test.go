@@ -32,6 +32,21 @@ func TestE2EGraphLintAndNarrowDeps(t *testing.T) {
 	addCorpusForgePkgReplace(t, projectDir)
 	runCmd(t, projectDir, forgeBin, "generate")
 
+	// The rules this test pins are warn-first (#1272: each gates from the
+	// release lint_rollout_table.go names), so a fresh scaffold pinned below
+	// that release only warns on them. The rollout has its own test
+	// (TestE2ENewRuleWarnsUntilPinReachesGatesFrom); this one pins what the
+	// rules find, so it gates them explicitly rather than depending on which
+	// release the tree is.
+	forgeYAML := filepath.Join(projectDir, "forge.yaml")
+	if cfg := readFileE2E(t, forgeYAML); strings.Contains(cfg, "\nlint:") {
+		t.Fatalf("the scaffolded forge.yaml has a lint block already; extend the fixture:\n%s", cfg)
+	}
+	appendFileE2E(t, forgeYAML, "\nlint:\n  rules:\n"+
+		"    forge-graph-unreachable: error\n"+
+		"    forge-graph-audience: error\n"+
+		"    forgeconv-deps-surface: error\n")
+
 	lint := func(args ...string) (string, error) {
 		t.Helper()
 		cmd := exec.Command(forgeBin, append([]string{"lint"}, args...)...)

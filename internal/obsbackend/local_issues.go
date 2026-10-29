@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/reliant-labs/forge/pkg/obsquery"
 )
@@ -33,18 +34,28 @@ func (l Local) ListIssues(ctx context.Context, req ListIssuesRequest) (ListIssue
 	if req.SincePromotion != "" {
 		return ListIssuesResult{}, errLocalOnly("--since-deploy")
 	}
-	q := obsquery.ServerIssues{Scope: LocalScope(req.Narrow, l.Env), Limit: req.Limit, Sort: req.Sort}
+	q := obsquery.ServerIssues{Scope: LocalScope(req.Narrow, l.Env), Source: req.Source, Limit: req.Limit, Sort: req.Sort}
 	st, err := q.Compile()
 	if err != nil {
 		return ListIssuesResult{}, compileErr(err)
 	}
 	res := ListIssuesResult{Statements: []Statement{stmt("issues", st)}}
+	// Source issues are reports, not errors: they form no incident.
+	incidents := req.Source == ""
+	var inc obsquery.Stmt
+	if incidents {
+		if inc, err = l.incidentStmt(req.Narrow); err != nil {
+			return ListIssuesResult{}, err
+		}
+		res.Statements = append(res.Statements, stmt("incidents", inc))
+	}
 	if req.Explain {
 		return res, nil
 	}
-	// Every local issue is unresolved and server-side: a filter for another
-	// status or for browser issues matches nothing, truthfully.
-	if req.Platform == PlatformBrowser || (len(req.Statuses) > 0 && !slices.Contains(req.Statuses, IssueUnresolved) && !slices.Contains(req.Statuses, IssueNew)) {
+	// Every local issue is unresolved, server-side and unassigned: a filter for
+	// another status, for browser issues or for an assignee matches nothing,
+	// truthfully.
+	if req.Platform == PlatformBrowser || req.Assignee != "" || (len(req.Statuses) > 0 && !slices.Contains(req.Statuses, IssueUnresolved) && !slices.Contains(req.Statuses, IssueNew)) {
 		return res, nil
 	}
 	r, err := l.run(ctx, st, DefaultLimits())
@@ -61,7 +72,50 @@ func (l Local) ListIssues(ctx context.Context, req ListIssuesRequest) (ListIssue
 		}
 		res.Issues = append(res.Issues, localIssue(row))
 	}
+	if incidents && len(res.Issues) > 0 {
+		groups, err := l.incidents(ctx, inc, req.IncidentWindow)
+		if err != nil {
+			return res, err
+		}
+		byID := obsquery.IncidentOf(groups)
+		for i := range res.Issues {
+			if g, ok := byID[res.Issues[i].ID]; ok {
+				res.Issues[i].IncidentKey, res.Issues[i].RelatedCount = g.Key, g.RelatedCount()
+			}
+		}
+	}
 	return res, nil
+}
+
+// incidentStmt is the statement that reads every error issue's cause and first
+// sighting in the range. It ignores the request's service narrowing: an
+// incident spans services, and the member in the list you asked for may be
+// related to one you did not.
+func (l Local) incidentStmt(n Narrow) (obsquery.Stmt, error) {
+	n.Services = nil
+	st, err := obsquery.ServerIssueIncidents{Scope: LocalScope(n, l.Env)}.Compile()
+	if err != nil {
+		return obsquery.Stmt{}, compileErr(err)
+	}
+	return st, nil
+}
+
+// incidents runs the candidates statement and clusters its rows.
+func (l Local) incidents(ctx context.Context, st obsquery.Stmt, window time.Duration) ([]obsquery.IncidentGroup, error) {
+	r, err := l.run(ctx, st, DefaultLimits())
+	if err != nil {
+		return nil, err
+	}
+	cands := make([]obsquery.IncidentCandidate, 0, len(r.Rows))
+	for _, row := range r.Rows {
+		if len(row) < len(obsquery.ServerIssueIncidentColumns) {
+			return nil, Undetermined("the local ClickStack returned %d columns for incidents, want %d", len(row), len(obsquery.ServerIssueIncidentColumns))
+		}
+		cands = append(cands, obsquery.IncidentCandidate{
+			ID: obsquery.LocalIssueID(AsString(row[0])), Cause: AsString(row[2]), FirstSeen: AsTime(row[3]),
+		})
+	}
+	return obsquery.GroupIncidents(cands, window), nil
 }
 
 func localIssue(row []any) Issue {
@@ -69,9 +123,10 @@ func localIssue(row []any) Issue {
 	return Issue{
 		ID: obsquery.LocalIssueID(fp), Platform: PlatformServer, Fingerprint: fp, Status: IssueUnresolved,
 		Service: AsString(row[1]), Title: AsString(row[2]), Culprit: AsString(row[3]), ExceptionType: AsString(row[4]),
-		Events: AsInt(row[5]), Affected: AsInt(row[6]),
+		Events: AsInt(row[5]), Affected: AsInt(row[6]), AffectedUnit: AsString(row[13]),
 		FirstSeen: AsTime(row[7]), LastSeen: AsTime(row[8]),
 		LatestTraceID: AsString(row[9]), LastVersion: AsString(row[10]), FirstVersion: AsString(row[11]),
+		Source: AsString(row[12]),
 	}
 }
 
@@ -112,8 +167,13 @@ func (l Local) GetIssue(ctx context.Context, req GetIssueRequest) (GetIssueResul
 	if err != nil {
 		return GetIssueResult{}, compileErr(err)
 	}
+	inc, err := l.incidentStmt(req.Narrow)
+	if err != nil {
+		return GetIssueResult{}, err
+	}
 	res := GetIssueResult{Statements: []Statement{
 		stmt("issue", one), stmt("latest event", latest), stmt("events per version", versions), stmt("issues sharing its traces", co),
+		stmt("incidents", inc),
 	}}
 	if req.Explain {
 		return res, nil
@@ -145,12 +205,12 @@ func (l Local) GetIssue(ctx context.Context, req GetIssueRequest) (GetIssueResul
 		return res, err
 	}
 	for _, row := range r.Rows {
-		if len(row) < 5 {
+		if len(row) < 6 {
 			continue
 		}
 		res.ByVersion = append(res.ByVersion, IssueVersion{
 			Version: AsString(row[0]), Events: AsInt(row[1]), Affected: AsInt(row[2]),
-			FirstSeen: AsTime(row[3]), LastSeen: AsTime(row[4]),
+			FirstSeen: AsTime(row[3]), LastSeen: AsTime(row[4]), AffectedUnit: AsString(row[5]),
 		})
 	}
 	if r, err = l.run(ctx, co, lim); err != nil {
@@ -159,6 +219,18 @@ func (l Local) GetIssue(ctx context.Context, req GetIssueRequest) (GetIssueResul
 	for _, row := range r.Rows {
 		if len(row) >= 1 {
 			res.CoOccurring = append(res.CoOccurring, obsquery.LocalIssueID(AsString(row[0])))
+		}
+	}
+	groups, err := l.incidents(ctx, inc, 0)
+	if err != nil {
+		return res, err
+	}
+	if g, ok := obsquery.IncidentOf(groups)[res.Issue.ID]; ok {
+		res.Issue.IncidentKey, res.Issue.RelatedCount = g.Key, g.RelatedCount()
+		for _, id := range g.IDs {
+			if id != res.Issue.ID {
+				res.Incident = append(res.Incident, id)
+			}
 		}
 	}
 	return res, nil
@@ -208,4 +280,19 @@ func (l Local) ListIssueEvents(ctx context.Context, req ListIssueEventsRequest) 
 // UpdateIssueStatus implements IssueReader: local issues carry no state.
 func (l Local) UpdateIssueStatus(context.Context, UpdateIssueStatusRequest) (UpdateIssueStatusResult, error) {
 	return UpdateIssueStatusResult{}, errNoLocalTriage()
+}
+
+// ListIssueTimeline implements IssueReader: a local issue has no discussion.
+func (l Local) ListIssueTimeline(_ context.Context, req ListIssueTimelineRequest) (ListIssueTimelineResult, error) {
+	return ListIssueTimelineResult{IssueID: req.ID}, nil
+}
+
+// AddIssueComment implements IssueReader: local issues carry no state.
+func (l Local) AddIssueComment(context.Context, AddIssueCommentRequest) (AddIssueCommentResult, error) {
+	return AddIssueCommentResult{}, errNoLocalTriage()
+}
+
+// AssignIssue implements IssueReader: local issues carry no state.
+func (l Local) AssignIssue(context.Context, AssignIssueRequest) (AssignIssueResult, error) {
+	return AssignIssueResult{}, errNoLocalTriage()
 }

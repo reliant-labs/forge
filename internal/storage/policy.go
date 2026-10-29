@@ -44,6 +44,11 @@ type Policy struct {
 	// on a 1 TB laptop: the budget is the smaller of go_cache_gib and this
 	// share. Zero means the default (15); 100 leaves go_cache_gib alone.
 	GoCacheVolumePercent int `json:"go_cache_volume_percent,omitempty"`
+	// GolangciCacheGiB is the size the golangci-lint cache is trimmed down
+	// to, least recently used first, like go_cache_gib for the build cache
+	// and capped the same way. Its own budget because its entries are tiny
+	// and recomputed in seconds: under go_cache_gib it was never trimmed.
+	GolangciCacheGiB uint64 `json:"golangci_cache_gib"`
 	// SourceCacheUnused is how long a cross-repo source clone may go
 	// unresolved before it becomes an eviction candidate. Longer than the
 	// image and build-cache windows because the cost of being wrong is a
@@ -54,14 +59,26 @@ type Policy struct {
 	// keeps an idle project's current pin warm, so it is validated at 1 or
 	// more: a policy that can empty a repository's only pin is not a policy
 	// anyone wants by accident.
-	SourceCacheKeep int        `json:"source_cache_keep"`
-	RegistryDays    int        `json:"registry_days"`
-	RegistryKeep    int        `json:"registry_keep"`
-	DockerContext   string     `json:"docker_context,omitempty"`
-	Builders        []string   `json:"builders"`
-	Registries      []Registry `json:"registries,omitempty"`
-	Clusters        []string   `json:"clusters,omitempty"`
-	Pins            []string   `json:"pins,omitempty"`
+	SourceCacheKeep int `json:"source_cache_keep"`
+	// SourceCacheGiB is the size the source cache is evicted down to, least
+	// recently used clone first, never touching the newest source_cache_keep
+	// clones of a repository. The age rule alone does not bound it: a project
+	// that bumps its pin every few hours produces more clones in
+	// source_cache_unused than any age can hold.
+	SourceCacheGiB uint64 `json:"source_cache_gib"`
+	// SourceCacheSlimAfter is how long a clone beyond the newest
+	// source_cache_keep of its repository may sit unused before its installed
+	// dependencies (node_modules) are removed. Those are 80% of a clone's
+	// bytes and a build reinstalls them (frontenddeps.Ensure); the pristine
+	// checkout stays.
+	SourceCacheSlimAfter string     `json:"source_cache_slim_after"`
+	RegistryDays         int        `json:"registry_days"`
+	RegistryKeep         int        `json:"registry_keep"`
+	DockerContext        string     `json:"docker_context,omitempty"`
+	Builders             []string   `json:"builders"`
+	Registries           []Registry `json:"registries,omitempty"`
+	Clusters             []string   `json:"clusters,omitempty"`
+	Pins                 []string   `json:"pins,omitempty"`
 
 	// Repos are git repositories whose linked worktrees the worktree layer
 	// reclaims, beyond the repository of each registered project: sibling
@@ -119,7 +136,7 @@ type Registry struct {
 
 // DefaultPolicy returns conservative local development budgets.
 func DefaultPolicy() Policy {
-	return Policy{LogBudgetGiB: 1, HostReserveGiB: 20, BuildCacheGiB: 20, BuildCacheUnused: "168h", GoCacheUnused: "48h", GoCacheGiB: 60, ImageUnused: "168h", SourceCacheUnused: "336h", SourceCacheKeep: 2, RegistryDays: 14, RegistryKeep: 5, Builders: []string{"default"},
+	return Policy{LogBudgetGiB: 1, HostReserveGiB: 20, BuildCacheGiB: 20, BuildCacheUnused: "168h", GoCacheUnused: "48h", GoCacheGiB: 60, GolangciCacheGiB: 4, ImageUnused: "168h", SourceCacheUnused: "168h", SourceCacheKeep: 2, SourceCacheGiB: 6, SourceCacheSlimAfter: "24h", RegistryDays: 14, RegistryKeep: 5, Builders: []string{"default"},
 		MaxDeletesPerPass: defaultMaxDeletesPerPass, DeleteRatePerSec: defaultDeleteRatePerSec,
 		AnonymousVolumeUnused: "336h", MaxDockerRemovalsPerPass: defaultMaxDockerRemovalsPerPass}
 }
@@ -157,10 +174,22 @@ func Load(path string) (Policy, error) {
 // does not know (written by a newer or older forge, or misspelled). Per-machine
 // state is shared across forge versions, so an unknown key must never fail an
 // unrelated command; strictness belongs to forge.yaml. Unknown keys fall back to
-// defaults here and are dropped on the next Save. Warned once per path.
+// defaults here but are preserved on Save for other versions. Warned once per path.
 var PolicyWarnings io.Writer = os.Stderr
 
 var warnedPolicyPaths sync.Map
+
+// retiredPolicyKeys are keys an older forge wrote and this one no longer
+// reads: the module-cache bound and the tool-cache eviction, both removed when
+// forge stopped managing the Go module cache and its own tool installs. A
+// machine's storage.json keeps them (Save preserves unknown keys, so an older
+// forge sharing the file still sees its settings), and they are not worth a
+// warning on every command.
+var retiredPolicyKeys = map[string]bool{
+	"go_mod_cache_gib":  true,
+	"tool_cache_unused": true,
+	"tool_cache_keep":   true,
+}
 
 func warnUnknownPolicyKeys(path string, doc []byte) {
 	var raw map[string]json.RawMessage
@@ -174,7 +203,7 @@ func warnUnknownPolicyKeys(path string, doc []byte) {
 	}
 	var unknown []string
 	for k := range raw {
-		if !known[k] {
+		if !known[k] && !retiredPolicyKeys[k] {
 			unknown = append(unknown, k)
 		}
 	}
@@ -190,7 +219,7 @@ func warnUnknownPolicyKeys(path string, doc []byte) {
 
 // Validate rejects unbounded budgets and unscoped registry targets.
 func (p Policy) Validate() error {
-	if p.LogBudgetGiB == 0 || p.HostReserveGiB == 0 || p.BuildCacheGiB == 0 || p.GoCacheGiB == 0 || p.RegistryDays < 1 || p.RegistryKeep < 2 {
+	if p.LogBudgetGiB == 0 || p.HostReserveGiB == 0 || p.BuildCacheGiB == 0 || p.GoCacheGiB == 0 || p.GolangciCacheGiB == 0 || p.SourceCacheGiB == 0 || p.RegistryDays < 1 || p.RegistryKeep < 2 {
 		return fmt.Errorf("storage: positive budgets and retention, and at least two registry versions are required")
 	}
 	if p.SourceCacheKeep < 1 {
@@ -205,7 +234,7 @@ func (p Policy) Validate() error {
 	if _, err := p.anonymousVolumeUnused(); err != nil {
 		return err
 	}
-	for _, v := range []string{p.ImageUnused, p.BuildCacheUnused, p.SourceCacheUnused, p.GoCacheUnused} {
+	for _, v := range []string{p.ImageUnused, p.BuildCacheUnused, p.SourceCacheUnused, p.SourceCacheSlimAfter, p.GoCacheUnused} {
 		d, err := time.ParseDuration(v)
 		if err != nil || d < time.Hour {
 			return fmt.Errorf("storage: invalid unused duration %q (minimum 1h)", v)
@@ -263,7 +292,47 @@ func guardMachinePolicy(path string) error {
 	return nil
 }
 
-// Save atomically replaces a validated policy file.
+// marshalPolicyPreservingUnknown keeps settings owned by other Forge versions.
+// Read at save time (not only Load): registration can construct a fresh Policy,
+// and must not silently reset retention understood by an older running daemon.
+// Callers serialize read-modify-write through WithLock; atomic rename alone is
+// not a transaction with writers that do not participate in that lock.
+func marshalPolicyPreservingUnknown(path string, p Policy) ([]byte, error) {
+	known, err := json.Marshal(p)
+	if err != nil {
+		return nil, err
+	}
+	var next map[string]json.RawMessage
+	if err := json.Unmarshal(known, &next); err != nil {
+		return nil, err
+	}
+	existing, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read existing storage policy: %w", err)
+	}
+	if err == nil {
+		var previous map[string]json.RawMessage
+		if err := json.Unmarshal(existing, &previous); err != nil || previous == nil {
+			return nil, fmt.Errorf("storage: cannot preserve settings from invalid policy %s", path)
+		}
+		// Include omitempty fields in the known set: their deliberate removal
+		// must not resurrect them from the previous document.
+		typ := reflect.TypeOf(p)
+		knownKeys := make(map[string]bool, typ.NumField())
+		for i := 0; i < typ.NumField(); i++ {
+			knownKeys[strings.Split(typ.Field(i).Tag.Get("json"), ",")[0]] = true
+		}
+		for key, value := range previous {
+			if !knownKeys[key] {
+				next[key] = value
+			}
+		}
+	}
+	return json.MarshalIndent(next, "", "  ")
+}
+
+// Save atomically replaces a validated policy, preserving unknown settings.
+// Read-modify-write callers must hold WithLock across their Load and Save.
 func Save(path string, p Policy) error {
 	if err := guardMachinePolicy(path); err != nil {
 		return err
@@ -274,7 +343,7 @@ func Save(path string, p Policy) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(p, "", "  ")
+	b, err := marshalPolicyPreservingUnknown(path, p)
 	if err != nil {
 		return err
 	}

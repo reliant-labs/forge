@@ -12,14 +12,14 @@ import (
 )
 
 // AlertDefaultsVersion identifies the serialized shape of AlertDefaultsFile.
-// v2 dropped input.services: each service's entry is its ServicePart's Alert
-// (see ServicePart for why), and ReadAlertInput puts them back.
-const AlertDefaultsVersion = "forge.alert-defaults/v2"
+// v2 dropped input.services: each service's entry is its alertServicePart's Alert
+// (see alertServicePart for why), and ReadAlertInput puts them back.
+const AlertDefaultsVersion = "forge.alert-defaults/v3"
 
 // AlertDefaultsFile is the project-relative file `forge generate` writes: the
 // project metadata the default alert rules are derived from, plus the catalog
 // of defaults with their tunable parameters. The per-service metadata is in
-// each ServicePart. `forge env shape` reads both back (ReadAlertInput) to
+// each alertServicePart. `forge env shape` reads both back (ReadAlertInput) to
 // resolve the defaults for one env (the SQL names the env, so a default is
 // rendered per env, not once per project). It sits beside the dashboard spec,
 // not in the dashboards directory the HyperDX provisioner scans.
@@ -44,11 +44,19 @@ type AlertService struct {
 type AlertInput struct {
 	Project string `json:"project"`
 	// Services are the project's services that have at least one rpc. The
-	// generated file leaves them out (each is in its ServicePart).
+	// generated file leaves them out (each is in its alertServicePart).
 	Services []AlertService `json:"services,omitempty"`
-	// FrontendService is the browser SDK's service.name ("<project>-frontend"),
-	// empty when the project has no web frontend.
-	FrontendService string `json:"frontend_service,omitempty"`
+	// FrontendServices are the service.names the project's web frontends'
+	// browser SDK reports (naming.FrontendServiceName: "<project>-<frontend>",
+	// what each otel_gen.ts bakes as SERVICE_NAME), empty when the project has
+	// no web frontend. The frontend defaults fire per service.name.
+	FrontendServices []string `json:"frontend_services,omitempty"`
+	// UptimeChecks are the names of the env's uptime checks (the release
+	// shape's uptime_checks). They are a fact about one env, not the project,
+	// so the generated file never records them: the resolver sets them per
+	// env. The uptime defaults apply only to an env that has checks, and read
+	// only those checks' series, so a check an env opts out of cannot alert.
+	UptimeChecks []string `json:"-"`
 }
 
 // AlertInputOf derives the defaults' input from the same Input the dashboards
@@ -62,9 +70,7 @@ func AlertInputOf(in Input) AlertInput {
 		out.Services = append(out.Services, AlertService{Name: s.Name, RPCService: s.Package + "." + s.ProtoService})
 	}
 	sort.Slice(out.Services, func(i, j int) bool { return out.Services[i].Name < out.Services[j].Name })
-	if len(in.Frontends) > 0 {
-		out.FrontendService = FrontendServiceName(in.Project)
-	}
+	out.FrontendServices = frontendServices(in.Project, in.Frontends)
 	return out
 }
 
@@ -130,6 +136,21 @@ type alertDef struct {
 	sql func(env string, in AlertInput, p map[string]float64) string
 	// platform lists the rules a platform default stands for.
 	platform []platformRule
+	// needs is a per-env gate on top of applies: applies decides whether the
+	// project has anything the default could watch (and so whether the
+	// generated catalog lists it), needs whether this env does. Nil = always.
+	needs func(AlertInput) bool
+	// levels, when set, make one default several rules, one per severity:
+	// the sql runs once per level with the param pCritical set to 1 for a
+	// critical level and 0 otherwise, and decides its band from that. The
+	// levels share the default's params, so a threshold is tuned once.
+	levels []alertLevel
+}
+
+// alertLevel is one severity of a default with levels.
+type alertLevel struct {
+	alert, severity string
+	critical        bool
 }
 
 type platformRule struct{ key, alert, severity string }
@@ -138,6 +159,14 @@ const (
 	pWindow      = "window_minutes"
 	pMinRequests = "min_requests"
 	pMinSamples  = "min_samples"
+	// pCritical is the synthetic param a default with levels is given: 1 for
+	// the rule of its critical level, 0 for the others. It is not tunable.
+	pCritical = "critical_level"
+
+	pFailures         = "failures"
+	pCriticalFailures = "critical_failures"
+	pWarnDays         = "warn_days"
+	pCriticalDays     = "critical_days"
 )
 
 // Platform default ids: alerts the control plane raises from events it owns (a
@@ -152,12 +181,31 @@ const (
 	PlatformNewIssue       = "new-issue"
 	PlatformIssueRegressed = "issue-regressed"
 	PlatformIssueSpike     = "issue-spike"
+	// PlatformReleaseRegressed fires when a promotion's after-window closes
+	// and the release-health verdict is FAIL: the env's release_health.fail_on
+	// findings, evaluated by the control plane with the same rule as
+	// `forge obs check`. It stays silent on PASS and on INCONCLUSIVE.
+	PlatformReleaseRegressed = "release-regressed"
+	// PlatformServiceAnomaly fires when a service's request rate, error rate
+	// or p95 leaves its seasonal baseline: the same hour of the week over the
+	// previous 4 weeks (obsquery.EvalAnomalies, over the rpc.server.* metrics,
+	// never spans). The control plane evaluates it; its limits (4 MADs, 50
+	// requests, a 1 point error-rate rise or a 1.5x p95 rise, 7 days of
+	// history) are obsquery.DefaultAnomalyParams, not tunable params. The
+	// alert is one per service and release (labels: service, env, release,
+	// dedupe_key), with every signal that moved a finding in its why payload,
+	// so a summary can quote no signal label.
+	PlatformServiceAnomaly = "service-anomaly"
 )
 
 // hasIssues reports whether the env has anything that can raise an issue.
-func hasIssues(in AlertInput) bool { return len(in.Services) > 0 || in.FrontendService != "" }
+func hasIssues(in AlertInput) bool { return len(in.Services) > 0 || hasFrontends(in) }
+
+func hasFrontends(in AlertInput) bool { return len(in.FrontendServices) > 0 }
 
 func hasServices(in AlertInput) bool { return len(in.Services) > 0 }
+
+func hasUptimeChecks(in AlertInput) bool { return len(in.UptimeChecks) > 0 }
 
 // The defaults. Where the signal is rpc traffic they read the RPC server
 // METRICS (rpc.server.calls / .errors / .duration, pkg/observe), never spans:
@@ -222,7 +270,7 @@ var alertDefs = []alertDef{
 			},
 		},
 		annotations: map[string]string{"summary": "{{ $labels.service }} reported {{ $value }} JS errors in the current window, over the spike factor times its baseline"},
-		applies:     func(in AlertInput) bool { return in.FrontendService != "" },
+		applies:     hasFrontends,
 		sql:         frontendErrorsSQL,
 	},
 	{
@@ -236,7 +284,7 @@ var alertDefs = []alertDef{
 			},
 		},
 		annotations: map[string]string{"summary": "{{ $labels.service }} p75 LCP is {{ $value }} ms, over the poor threshold"},
-		applies:     func(in AlertInput) bool { return in.FrontendService != "" },
+		applies:     hasFrontends,
 		sql:         frontendLCPSQL,
 	},
 	{
@@ -268,6 +316,60 @@ var alertDefs = []alertDef{
 		annotations: map[string]string{"summary": "Issue spiking in {{ $labels.service }} ({{ $labels.env }}): {{ $labels.title }}, {{ $value }} events/hour, over 5 times its rate the day before. Details: {{ $labels.console_url }}"},
 		applies:     hasIssues,
 		platform:    []platformRule{{PlatformIssueSpike, "IssueSpike", SeverityWarning}},
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: PlatformReleaseRegressed, Alert: "ReleaseRegressed", Title: "A promoted release made the env worse once its health window closed",
+			Severity: SeverityWarning, For: "0s", Interval: "1m", Signal: "platform",
+			Params: []AlertParam{},
+		},
+		annotations: map[string]string{"summary": "Release {{ $labels.release }} regressed {{ $labels.env }}: {{ $value }} failing release-health findings after its window closed. Check it: forge obs check {{ $labels.env }} --release {{ $labels.release }}"},
+		applies:     func(in AlertInput) bool { return len(in.Services) > 0 },
+		platform:    []platformRule{{PlatformReleaseRegressed, "ReleaseRegressed", SeverityWarning}},
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: PlatformServiceAnomaly, Alert: "ServiceAnomaly", Title: "A service's traffic, errors or latency left what is usual for this hour of the week",
+			Severity: SeverityWarning, For: "0s", Interval: "5m", Signal: "platform",
+			Params: []AlertParam{},
+		},
+		annotations: map[string]string{"summary": "{{ $labels.service }} left what is usual for this hour of the week ({{ $labels.env }}). What moved, against what, and the evidence are in the alert's why payload: forge obs alerts --json"},
+		applies:     hasServices,
+		platform:    []platformRule{{PlatformServiceAnomaly, "ServiceAnomaly", SeverityWarning}},
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: "uptime-check-failing", Alert: "UptimeCheckFailing", AlertNames: []string{"UptimeCheckDown"},
+			Title:    "An uptime check failed several probes in a row (warning), then many (critical)",
+			Severity: SeverityWarning, For: "0s", Interval: "1m", Signal: "metrics", Requires: "metrics",
+			Params: []AlertParam{
+				{pFailures, 3, "consecutive failed probes that raise UptimeCheckFailing (warning)"},
+				{pCriticalFailures, 10, "consecutive failed probes that raise UptimeCheckDown (critical) instead"},
+				{pWindow, 30, "minutes of probes considered; keep it above failures times the check's interval"},
+			},
+		},
+		annotations: map[string]string{"summary": "{{ $labels.check }} has failed {{ $value }} probes in a row"},
+		applies:     func(AlertInput) bool { return true },
+		needs:       hasUptimeChecks,
+		levels:      []alertLevel{{"UptimeCheckFailing", SeverityWarning, false}, {"UptimeCheckDown", SeverityCritical, true}},
+		sql:         uptimeFailingSQL,
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: "certificate-expiring", Alert: "CertificateExpiring", AlertNames: []string{"CertificateExpiringSoon"},
+			Title:    "A probed certificate expires within 14 days (warning) or 3 days (critical)",
+			Severity: SeverityWarning, For: "10m", Interval: "5m", Signal: "metrics", Requires: "metrics",
+			Params: []AlertParam{
+				{pWarnDays, 14, "days to expiry at or below which CertificateExpiring (warning) fires"},
+				{pCriticalDays, 3, "days to expiry at or below which CertificateExpiringSoon (critical) fires instead, an expired certificate included"},
+				{pWindow, 30, "minutes of probes considered"},
+			},
+		},
+		annotations: map[string]string{"summary": "The certificate {{ $labels.check }} serves expires in {{ $value }} days"},
+		applies:     func(AlertInput) bool { return true },
+		needs:       hasUptimeChecks,
+		levels:      []alertLevel{{"CertificateExpiring", SeverityWarning, false}, {"CertificateExpiringSoon", SeverityCritical, true}},
+		sql:         certificateExpiringSQL,
 	},
 	{
 		AlertDefaultInfo: AlertDefaultInfo{
@@ -430,7 +532,7 @@ func AlertDefaults(in AlertInput) AlertDefaultsDoc {
 }
 
 // MarshalAlertDefaults is the file's bytes: the catalog for in, with the
-// services left to their ServiceParts.
+// services left to their alertServiceParts.
 func MarshalAlertDefaults(in AlertInput) ([]byte, error) {
 	doc := AlertDefaults(in)
 	doc.Input.Services = nil
@@ -455,7 +557,7 @@ func ParseAlertDefaults(b []byte) (AlertInput, error) {
 }
 
 // ReadAlertInput reads the alert defaults' input forge generate last wrote
-// under projectDir: AlertDefaultsFile, with each ServicePart's Alert as its
+// under projectDir: AlertDefaultsFile, with each alertServicePart's Alert as its
 // services. ok is false when there is no AlertDefaultsFile — a project that
 // has not run `forge generate` since alerting landed has no defaults, which
 // is not an error.
@@ -470,13 +572,9 @@ func ReadAlertInput(projectDir string) (in AlertInput, ok bool, err error) {
 	if in, err = ParseAlertDefaults(b); err != nil {
 		return AlertInput{}, false, err
 	}
-	_, parts, _, err := readParts(projectDir)
+	in.Services, err = readAlertServices(projectDir)
 	if err != nil {
 		return AlertInput{}, false, err
-	}
-	in.Services = []AlertService{}
-	for _, p := range parts {
-		in.Services = append(in.Services, p.Alert)
 	}
 	sort.Slice(in.Services, func(i, j int) bool { return in.Services[i].Name < in.Services[j].Name })
 	return in, true, nil
@@ -514,7 +612,7 @@ func ResolveAlertDefaultsFor(in AlertInput, env string, tuning map[string]AlertT
 		skipped []AlertSkip
 	)
 	for _, d := range alertDefs {
-		if !d.applies(in) {
+		if !d.applies(in) || (d.needs != nil && !d.needs(in)) {
 			continue
 		}
 		t, tuned := tuning[d.ID]
@@ -553,22 +651,35 @@ func ResolveAlertDefaultsFor(in AlertInput, env string, tuning map[string]AlertT
 			}
 			continue
 		}
-		r := AlertRule{
-			ID: d.ID, Alert: d.Alert, Expr: d.sql(env, in, params),
-			For: d.For, Interval: d.Interval,
-			Labels:      map[string]string{"severity": d.Severity},
-			Annotations: map[string]string{},
+		levels := d.levels
+		if levels == nil {
+			levels = []alertLevel{{d.Alert, d.Severity, false}}
 		}
-		for k, v := range d.annotations {
-			r.Annotations[k] = v
+		for _, lv := range levels {
+			lp := map[string]float64{}
+			for k, v := range params {
+				lp[k] = v
+			}
+			if lv.critical {
+				lp[pCritical] = 1
+			}
+			r := AlertRule{
+				ID: d.ID, Alert: lv.alert, Expr: d.sql(env, in, lp),
+				For: d.For, Interval: d.Interval,
+				Labels:      map[string]string{"severity": lv.severity},
+				Annotations: map[string]string{},
+			}
+			for k, v := range d.annotations {
+				r.Annotations[k] = v
+			}
+			if t.For != "" {
+				r.For = t.For
+			}
+			for k, v := range t.Labels {
+				r.Labels[k] = v
+			}
+			out = append(out, r)
 		}
-		if t.For != "" {
-			r.For = t.For
-		}
-		for k, v := range t.Labels {
-			r.Labels[k] = v
-		}
-		out = append(out, r)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Alert < out[j].Alert })
 	return out, skipped, nil
@@ -618,6 +729,14 @@ func num(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
 
 func sqlQuote(s string) string {
 	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s) + "'"
+}
+
+func frontendServiceList(in AlertInput) string {
+	q := make([]string, len(in.FrontendServices))
+	for i, s := range in.FrontendServices {
+		q[i] = sqlQuote(s)
+	}
+	return strings.Join(q, ", ")
 }
 
 func rpcServiceList(in AlertInput) string {
@@ -729,7 +848,7 @@ func frontendErrorsSQL(env string, in AlertInput, p map[string]float64) string {
 	return fmt.Sprintf(`SELECT ServiceName AS service,
        countIf(Timestamp >= now() - INTERVAL %[1]s MINUTE) AS value
 FROM otel_traces
-WHERE ServiceName = %[2]s
+WHERE ServiceName IN (%[2]s)
   AND Timestamp >= now() - INTERVAL %[1]s MINUTE - INTERVAL %[3]s MINUTE
   AND ResourceAttributes['deployment.environment.name'] = %[4]s
   AND ResourceAttributes['rum.sessionId'] != ''
@@ -739,7 +858,7 @@ WHERE ServiceName = %[2]s
 GROUP BY ServiceName
 HAVING value >= %[5]s
    AND value > %[6]s * countIf(Timestamp < now() - INTERVAL %[1]s MINUTE) * %[1]s / %[3]s
-ORDER BY service`, num(p[pWindow]), sqlQuote(in.FrontendService), num(p["baseline_minutes"]), sqlQuote(env), num(p["min_errors"]), num(p["spike_factor"]))
+ORDER BY service`, num(p[pWindow]), frontendServiceList(in), num(p["baseline_minutes"]), sqlQuote(env), num(p["min_errors"]), num(p["spike_factor"]))
 }
 
 // frontendLCPSQL fires per frontend when the p75 of its LCP web-vitals spans
@@ -752,7 +871,7 @@ func frontendLCPSQL(env string, in AlertInput, p map[string]float64) string {
        quantile(0.75)(toFloat64OrZero(SpanAttributes['lcp'])) AS value,
        count() AS samples
 FROM otel_traces
-WHERE ServiceName = %[1]s
+WHERE ServiceName IN (%[1]s)
   AND Timestamp >= now() - INTERVAL %[2]s MINUTE
   AND ResourceAttributes['deployment.environment.name'] = %[3]s
   AND ResourceAttributes['rum.sessionId'] != ''
@@ -760,7 +879,7 @@ WHERE ServiceName = %[1]s
   AND SpanAttributes['lcp'] != ''
 GROUP BY ServiceName
 HAVING samples >= %[4]s AND value > %[5]s
-ORDER BY service`, sqlQuote(in.FrontendService), num(p[pWindow]), sqlQuote(env), num(p[pMinSamples]), num(p["threshold_ms"]))
+ORDER BY service`, frontendServiceList(in), num(p[pWindow]), sqlQuote(env), num(p[pMinSamples]), num(p["threshold_ms"]))
 }
 
 // ── customer metadata ────────────────────────────────────────────────────────

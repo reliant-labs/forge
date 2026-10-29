@@ -167,8 +167,14 @@ func (c *checker) esPolicy() {
 		default:
 			problems = append(problems, fmt.Sprintf("target.creationPolicy is %q: only Orphan or Merge keep the Secret when the ExternalSecret goes", creation))
 		}
-		if dp := d.str("spec", "target", "deletionPolicy"); dp != "" && dp != "Retain" {
-			problems = append(problems, fmt.Sprintf("target.deletionPolicy is %q: a store outage or a deleted store entry would delete the Secret; it must be Retain", dp))
+		// Merge is admitted only for a Secret that reads no store value: ESO returns
+		// early on a sync whose provider returned no data and Retain, so a Secret made
+		// of templates alone would never be created.
+		switch dp := d.str("spec", "target", "deletionPolicy"); {
+		case dp == "" || dp == "Retain":
+		case dp == "Merge" && len(d.list("spec", "data")) == 0:
+		default:
+			problems = append(problems, fmt.Sprintf("target.deletionPolicy is %q: a store outage or a deleted store entry would delete the Secret; it must be Retain (Merge only for a Secret that reads no store value)", dp))
 		}
 		if k := d.str("spec", "secretStoreRef", "kind"); k != "" && k != "SecretStore" {
 			problems = append(problems, fmt.Sprintf("secretStoreRef.kind is %q: only a namespaced SecretStore is allowed", k))
@@ -671,23 +677,46 @@ func (c *checker) escrow() {
 
 // A Secret has one owner. Two declarations that both produce it fight over its
 // keys on every sync, and the loser's keys disappear without an error.
+//
+// One sharing is declared, not a fight: a store-backed declaration with
+// creation_policy Merge updates only its own keys of a Secret something else
+// writes (design 7.1: adopting a shared Secret one key at a time). So a Secret
+// whose owners are Merge declarations plus at most one out-of-band declaration
+// is fine when no key is claimed twice. A `shadow` source owns
+// `<name>-eso-shadow`, which is the Secret ESO actually writes.
 func (c *checker) singleOwner() {
 	type id struct{ ns, name string }
-	owners := map[id][]string{}
+	type owner struct {
+		kind string
+		// keys is set for the owners that may share (Merge, out of band).
+		keys     []string
+		merge    bool
+		outOfBnd bool
+	}
+	owners := map[id][]owner{}
 	var order []id
-	add := func(ns, name, kind string) {
+	addOwner := func(ns, name string, o owner) {
 		k := id{c.ns(ns), name}
 		if _, seen := owners[k]; !seen {
 			order = append(order, k)
 		}
-		owners[k] = append(owners[k], kind)
+		owners[k] = append(owners[k], o)
 	}
+	add := func(ns, name, kind string) { addOwner(ns, name, owner{kind: kind}) }
 	for _, s := range c.env.Render.RequiredSecrets {
-		kind := "forge.ExternalSecret (out of band)"
-		if s.Source != nil {
-			kind = "forge.ExternalSecret (" + s.Source.Store.Type + " store)"
+		if s.Source == nil {
+			addOwner(s.Namespace, s.Name, owner{kind: "forge.ExternalSecret (out of band)", keys: s.Keys, outOfBnd: true})
+			continue
 		}
-		add(s.Namespace, s.Name, kind)
+		if s.Source.Shadow {
+			addOwner(s.Namespace, s.Name+"-eso-shadow", owner{kind: "forge.ExternalSecret (" + s.Source.Store.Type + " store, shadow)"})
+			continue
+		}
+		if s.Source.CreationPolicy == "Merge" {
+			addOwner(s.Namespace, s.Name, owner{kind: "forge.ExternalSecret (" + s.Source.Store.Type + " store, Merge)", keys: s.Keys, merge: true})
+			continue
+		}
+		add(s.Namespace, s.Name, "forge.ExternalSecret ("+s.Source.Store.Type+" store)")
 	}
 	for _, s := range c.env.Render.ControlPlaneSecrets {
 		add(s.Namespace, s.Name, "forge.ControlPlaneSecret")
@@ -723,12 +752,41 @@ func (c *checker) singleOwner() {
 		}
 	}
 	for _, k := range order {
-		if len(owners[k]) < 2 {
+		os := owners[k]
+		if len(os) < 2 {
 			continue
 		}
-		c.add(finding.SeverityError, RuleSingleOwner,
-			fmt.Sprintf("Secret %s/%s has %d owners: %s. They fight over its keys on every sync, and the loser's keys disappear without an error.", k.ns, k.name, len(owners[k]), strings.Join(owners[k], "; ")),
-			"Keep one declaration for it. To split its keys between sources, give each source its own Secret name and have the workload read both.",
+		kinds := make([]string, 0, len(os))
+		shareable, outOfBand := true, 0
+		claimed := map[string]int{}
+		for _, o := range os {
+			kinds = append(kinds, o.kind)
+			switch {
+			case o.outOfBnd:
+				outOfBand++
+			case !o.merge:
+				shareable = false
+			}
+			for _, key := range o.keys {
+				claimed[key]++
+			}
+		}
+		var twice []string
+		for key, n := range claimed {
+			if n > 1 {
+				twice = append(twice, key)
+			}
+		}
+		sort.Strings(twice)
+		if shareable && outOfBand <= 1 && len(twice) == 0 {
+			continue
+		}
+		msg := fmt.Sprintf("Secret %s/%s has %d owners: %s. They fight over its keys on every sync, and the loser's keys disappear without an error.", k.ns, k.name, len(os), strings.Join(kinds, "; "))
+		if shareable && outOfBand <= 1 {
+			msg = fmt.Sprintf("Secret %s/%s is shared by %s, and key(s) %s are claimed by more than one of them. Each sync overwrites the other's value.", k.ns, k.name, strings.Join(kinds, "; "), strings.Join(twice, ", "))
+		}
+		c.add(finding.SeverityError, RuleSingleOwner, msg,
+			"Keep one declaration for it. To split its keys between sources, give each source its own Secret name and have the workload read both, or (to adopt a shared Secret one key at a time) declare the store's keys with creation_policy = \"Merge\" and drop them from the out-of-band declaration's keys.",
 			nameDecl(k.name, "ExternalSecret"), quoted(k.name))
 	}
 }

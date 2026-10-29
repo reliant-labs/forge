@@ -51,8 +51,8 @@ type Config struct {
 
 	// ProfilesDisabled turns continuous profiling off, like
 	// OTEL_PROFILES_EXPORTER=none. Profiling is ON by default whenever an OTLP
-	// endpoint is configured: a CPU profile for 10s of every minute plus a
-	// live-heap snapshot every 15 minutes. See profiler.go.
+	// endpoint is configured: a 5s CPU profile every 5 minutes plus a
+	// live-heap snapshot every two hours. See profiler.go.
 	ProfilesDisabled bool
 
 	// Profiles chooses which profiles are captured and how often the heap is
@@ -113,15 +113,19 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, http.H
 	wantLogs := exportEnabled(signalLogs, cfg)
 	wantProfiles := exportEnabled(signalProfiles, cfg)
 
+	// The one resource every signal is filed under: the providers below, and
+	// every log line NewLogHandler writes (LogKeyResource), with export on or
+	// off — stdout is shipped either way.
+	res, err := resourceFromConfig(ctx, cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating otel resource: %w", err)
+	}
+	publishResource(res)
+
 	if !wantTraces && !wantMetrics && !wantLogs && !wantProfiles {
 		mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(promReader), sdkmetric.WithView(unitViews()...))
 		otel.SetMeterProvider(mp)
 		return func(ctx context.Context) error { return mp.Shutdown(ctx) }, metricsHandler, nil
-	}
-
-	res, err := resourceFromConfig(ctx, cfg)
-	if err != nil {
-		return nil, nil, fmt.Errorf("creating otel resource: %w", err)
 	}
 
 	var shutdowns []func(context.Context) error

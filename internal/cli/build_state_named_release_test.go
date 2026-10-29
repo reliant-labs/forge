@@ -58,6 +58,9 @@ func namedReleaseFixture(t *testing.T) (dir, boundCommit, namedCommit string) {
 // alone: the same state with no release named is `forge env deploy prod`,
 // which re-applies v1.4.0, and a build of v1.5.0 is not that.
 func TestResolveDeployImageTag_NamedReleaseIsTheAnchorNotTheBoundOne(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	dir, boundCommit, namedCommit := namedReleaseFixture(t)
 	if err := WriteBuildState(dir, "prod", BuildState{
 		Tag: "v1.5.0", Image: "app", Commit: namedCommit, GitTag: "v1.5.0",
@@ -89,6 +92,9 @@ func TestResolveDeployImageTag_NamedReleaseIsTheAnchorNotTheBoundOne(t *testing.
 // neither release is stale for the deploy, and the refusal names the release
 // it was measured against — the one being deployed.
 func TestResolveDeployImageTag_NamedReleaseRefusesABuildOfNeither(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	dir, _, namedCommit := namedReleaseFixture(t)
 	gitCommitEmpty(t, dir, "work in neither release")
 	strayCommit := gitHeadSHA(t, dir)
@@ -113,6 +119,9 @@ func TestResolveDeployImageTag_NamedReleaseRefusesABuildOfNeither(t *testing.T) 
 // Anchored on the binding, the old guard PASSED this one — it would have
 // shipped v1.4.0's image under v1.5.0's name.
 func TestResolveDeployImageTag_NamedReleaseRefusesTheBoundReleasesBuild(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	dir, boundCommit, namedCommit := namedReleaseFixture(t)
 	if err := WriteBuildState(dir, "prod", BuildState{
 		Tag: "v1.4.0", Image: "app", Commit: boundCommit, GitTag: "v1.4.0",
@@ -136,6 +145,9 @@ func TestResolveDeployImageTag_NamedReleaseRefusesTheBoundReleasesBuild(t *testi
 // puts one ahead of its images. That is the false refusal the release anchor
 // exists to remove, so the named release anchors here too.
 func TestResolveDeployImageTag_NamedReleaseAnchorsAFirstDeploy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	dir := newGitRepo(t)
 	gitignoreForgeState(t, dir)
 	builtCommit := gitHeadSHA(t, dir)
@@ -159,6 +171,9 @@ func TestResolveDeployImageTag_NamedReleaseAnchorsAFirstDeploy(t *testing.T) {
 // the exemption keyed that on the env being BOUND — which an env's first
 // release deploy is not, until after the preflight has refused it.
 func TestResolveDeployImageTag_DirtyDefaultRecordDoesNotBlockAFirstReleaseDeploy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	dir := newGitRepo(t)
 	gitignoreForgeState(t, dir)
 	localCommit := gitHeadSHA(t, dir)
@@ -183,6 +198,9 @@ func TestResolveDeployImageTag_DirtyDefaultRecordDoesNotBlockAFirstReleaseDeploy
 // false refusal) is a fallback, so the guard stands down without error and
 // the deploy's digest resolution refuses the unknown release in its own words.
 func TestResolveFreshnessAnchor_NamedReleaseNotInLedgerStandsDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
 	dir := newGitRepo(t)
 	gitignoreForgeState(t, dir)
 	bindEnvToRelease(t, dir, "prod", "v1.4.0", gitHeadSHA(t, dir))

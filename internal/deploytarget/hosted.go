@@ -17,8 +17,9 @@ package deploytarget
 // everything is known to be admissible:
 //
 //  1. pin every workload's image to the digest the env's bound release froze
-//  2. Workload.Validate(ProfileRestricted) + CheckShapeBand EVERY workload,
-//     and render the hosted set as the platform will — a refusal here costs
+//  2. Workload.Validate(ProfileRestricted) + CheckShapeBand EVERY workload
+//     (the band is skipped for an anonymous --claimable deploy, which has its
+//     own caps), and render the hosted set as the platform will — a refusal here costs
 //     zero RPCs
 //  3. EnsureEnvironment (by name)
 //  4. record the bundle (the RecordBundle hook: build, push, record)
@@ -148,6 +149,11 @@ type HostedTarget struct {
 	// untouched server-side.
 	Shape      *release.Shape
 	DeclaredBy *release.Provenance
+	// Kind is the env's control-plane kind as the CLI derived it from the
+	// whole render (hostedEnvKindOf). "" means "not derived", which the
+	// provider reads as PERSISTENT. It is the legacy wire field the control
+	// plane is retiring; placement itself is per workload.
+	Kind HostedEnvKind
 }
 
 // ClusterBinding is one rendered cluster and the connected cluster it maps to.
@@ -203,12 +209,15 @@ type wireEnvironment struct {
 }
 
 type wireObserved struct {
-	State       string     `json:"state,omitempty"`
-	Replicas    int        `json:"replicas,omitempty"`
-	ImageDigest string     `json:"imageDigest,omitempty"`
-	LastError   string     `json:"lastError,omitempty"`
-	URL         string     `json:"url,omitempty"`
-	StableSince *time.Time `json:"stableSince,omitempty"`
+	State       string `json:"state,omitempty"`
+	Replicas    int    `json:"replicas,omitempty"`
+	ImageDigest string `json:"imageDigest,omitempty"`
+	LastError   string `json:"lastError,omitempty"`
+	URL         string `json:"url,omitempty"`
+	// URLServingPath is the DeployServingPath value NAME for URL's host:
+	// which platform path its DNS reaches, as the control plane resolves it.
+	URLServingPath string     `json:"urlServingPath,omitempty"`
+	StableSince    *time.Time `json:"stableSince,omitempty"`
 	// Domains is the per-domain convergence state for every custom
 	// hostname this deployment declares. Absent from a control plane that
 	// does not serve custom domains — which is also the one that does not
@@ -458,7 +467,7 @@ func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvR
 		// same bytes `forge env shape` printed, rather than whatever
 		// Go's marshaller happened to emit for the struct.
 		declared := *ref.Shape
-		if declared.HasFrontendTelemetry() {
+		if declared.HasOptionalParts() {
 			// The control plane strict-decodes this shape, so a part it
 			// predates would be refused whole. Asked only when there is
 			// something to withhold: every other declaration costs no call.
@@ -756,8 +765,11 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 				errs = append(errs, fmt.Errorf("%s: %w", svc.Name, err))
 				continue
 			}
-			if err := deploy.CheckShapeBand(spec.Resources); err != nil {
-				errs = append(errs, fmt.Errorf("%s: %w", svc.Name, err))
+			// The plan's resource rule: the shape band (a billing rule) for
+			// the standard plan, the caps for the never-billed claimable plan
+			// (the control plane exempts it from the band, control-plane#1359).
+			if err := deploy.CheckHostedResourcesWithin(group.HostedPlan, group.ClaimableCaps(), spec.Resources); err != nil {
+				errs = append(errs, hostedResourcesError(group, svc.Name, err))
 				continue
 			}
 			out = append(out, hostedPlanItem{Name: svc.Name, Tier: w.Tier, Spec: spec, DesiredDigest: digest, Artifact: artifact})
@@ -831,6 +843,19 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 			group.Env, len(errs), errors.Join(errs...))
 	}
 	return out, nil
+}
+
+// hostedResourcesError is a plan's resources refusal of one workload, with
+// the exact KCL that fixes it. The binding is where the scaffold declares a
+// hosted workload's resources (the env's `_hosted` binder, or the workload's
+// own line), so that is where the fix points.
+func hostedResourcesError(group ServiceGroup, name string, err error) error {
+	var r *deploy.ResourcesRefusal
+	if !errors.As(err, &r) {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	return fmt.Errorf("%s: %w.\n  fix: in deploy/kcl/%s/main.k, set on workload %q (its binding, e.g. `_hosted(...) | {...}`):\n      %s",
+		name, err, group.Env, name, r.Fix())
 }
 
 // hostedArtifactOf is the release artifact a pinned workload's digest is
@@ -1112,6 +1137,10 @@ type HostedProvider struct {
 	Rollout cluster.RolloutPolicy
 	// PollInterval is the GetStatus cadence. Zero means 3s.
 	PollInterval time.Duration
+	// ApplyBudget is the shortest wait for the platform to report the
+	// recorded bundle applied; the wait is the longer of it and
+	// Rollout.Timeout. Zero means HostedApplyBudget.
+	ApplyBudget time.Duration
 	// OnRollout, when set, receives one outcome per published workload.
 	OnRollout func(cluster.RolloutObservation)
 	// OnEnvironment, when set, receives the control plane's environment id
@@ -1151,9 +1180,19 @@ func (p HostedProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	if err != nil {
 		return err
 	}
+	// The env's kind is the CLI's derivation over the WHOLE env, carried on
+	// the group. Never assumed from the fact that this group is hosted: a
+	// hosted group is one placement of an env that may also hold cluster
+	// parts (docs/design/per-workload-placement.md), and a hard-coded
+	// PERSISTENT here told the control plane a self-managed env had become a
+	// different env. PERSISTENT remains the answer only for a caller that
+	// rendered nothing to derive from.
 	ref := HostedEnvRef{Project: groupProject(group), Name: group.Env, Kind: HostedEnvPersistent}
 	if group.Hosted != nil {
 		ref.Shape, ref.DeclaredBy = group.Hosted.Shape, group.Hosted.DeclaredBy
+		if group.Hosted.Kind != "" {
+			ref.Kind = group.Hosted.Kind
+		}
 	}
 	env, created, err := ensureHostedEnvironment(ctx, c, ref)
 	if err != nil {
@@ -1259,9 +1298,16 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 	// the bundle lands. The platform re-observes an env every
 	// EnvironmentInterval (2m, control-plane reconcile/worker.go); a promote
 	// nudges it within one 15s sweep, but if that wake is missed the apply
-	// alone can take ~2m. Charging that to the readiness budget would spend
-	// the (default 5m) timeout before any workload was looked at.
-	applyDeadline := time.Now().Add(policy.Timeout)
+	// alone can take ~2m, and Flux's own apply and health checks come on top.
+	// Charging that to the readiness budget would spend the (default 5m)
+	// timeout before any workload was looked at, so the apply budget is at
+	// least HostedApplyBudget.
+	floor := p.ApplyBudget
+	if floor <= 0 {
+		floor = HostedApplyBudget
+	}
+	applyBudget := max(policy.Timeout, floor)
+	applyDeadline := time.Now().Add(applyBudget)
 	for {
 		if !applied {
 			state, perr := pollBundleApplied(ctx, c, envID, promotionID, bundleDigest)
@@ -1285,8 +1331,9 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 				deadline = time.Now().Add(policy.Timeout)
 			default:
 				progress.announce(state, bundleDigest)
+				progress.heartbeat(time.Now(), state, bundleDigest, applyBudget)
 				if time.Now().After(applyDeadline) || ctx.Err() != nil {
-					return p.applyNotLanded(envName, bundleDigest, state, plan, policy.Mode)
+					return p.applyNotLanded(envName, promotionID, bundleDigest, state, time.Since(progress.started).Round(time.Second), plan, policy.Mode)
 				}
 				select {
 				case <-ctx.Done():
@@ -1422,8 +1469,42 @@ func (p HostedProvider) readinessTimedOut(envName string, last map[string]string
 }
 
 // applyProgress is what wait has already printed about the platform's apply,
-// so each change is announced once rather than on every poll.
-type applyProgress struct{ current, failure string }
+// so each change is announced once rather than on every poll, plus the
+// periodic "still waiting" line that shows a long apply is still being watched.
+type applyProgress struct {
+	current, failure string
+	// started is when the apply wait began; lastBeat when the last "still
+	// waiting" line was printed (or the wait began).
+	started, lastBeat time.Time
+}
+
+// applyHeartbeat is how often a still-unapplied bundle is reported while
+// nothing about it changes.
+const applyHeartbeat = time.Minute
+
+// heartbeat prints one "still waiting" line per applyHeartbeat, naming the
+// elapsed time against the apply budget.
+func (a *applyProgress) heartbeat(now time.Time, state bundleApplyState, bundleDigest string, budget time.Duration) {
+	if a.started.IsZero() {
+		a.started, a.lastBeat = now, now
+		return
+	}
+	if now.Sub(a.lastBeat) < applyHeartbeat {
+		return
+	}
+	a.lastBeat = now
+	fmt.Printf("  still waiting for the platform to apply %s (currently %s; %s elapsed, waiting up to %s)\n",
+		shortDigest(bundleDigest), emptyOr(shortDigest(state.current), "none"),
+		now.Sub(a.started).Round(time.Second), budget)
+}
+
+// HostedApplyBudget is the shortest time a hosted deploy waits for the
+// platform to report its bundle applied, whatever the readiness timeout. The
+// apply is the platform's work, not the workloads': the control plane
+// re-points Flux, Flux fetches and applies the bundle and runs its health
+// checks, and the control plane records the result. A readiness timeout tuned
+// for the workloads must not cut that short. A longer --timeout extends it.
+const HostedApplyBudget = 10 * time.Minute
 
 // announce prints what changed since the last poll: a reconciler failure of
 // this promotion, and the revision the platform currently has applied.
@@ -1439,23 +1520,32 @@ func (a *applyProgress) announce(state bundleApplyState, bundleDigest string) {
 }
 
 // applyNotLanded ends a wait whose apply budget ran out before the platform
-// applied the recorded bundle. Every workload is observed TIMED OUT, and the
-// error names the missing — or failed — apply rather than any workload's
-// state, which still describes the previous revision. Under --rollout warn
-// the error is printed and nil returned.
-func (p HostedProvider) applyNotLanded(envName, bundleDigest string, state bundleApplyState, plan []hostedPlanItem, mode cluster.RolloutMode) error {
-	cause := errBundleNotApplied
-	msg := fmt.Sprintf("the platform has not applied this release yet (waiting for %s, currently %s); workloads were not judged",
-		shortDigest(bundleDigest), emptyOr(shortDigest(state.current), "none"))
+// applied the recorded bundle. The error names the missing or failed apply
+// rather than any workload's state, which still describes the previous
+// revision. Under --rollout warn the error is printed and nil returned.
+//
+// A FAILED APPLY AND A SLOW ONE END DIFFERENTLY. When the reconciler reported
+// a failure for this promotion, the deploy failed: every workload is observed
+// TIMED OUT carrying the reconciler's words. When it reported nothing, nothing
+// is known to be wrong. The platform accepted the bundle and is still
+// applying it, so the wait returns an *ApplyPendingError ("still applying").
+// The CLI renders that as its own outcome, not as a failure.
+func (p HostedProvider) applyNotLanded(envName, promotionID, bundleDigest string, state bundleApplyState, waited time.Duration, plan []hostedPlanItem, mode cluster.RolloutMode) error {
+	var werr error
 	if state.failure != "" {
-		cause = fmt.Errorf("the platform failed to apply this release: %s", state.failure)
-		msg = fmt.Sprintf("the platform failed to apply this release (%s, currently %s): %s",
-			shortDigest(bundleDigest), emptyOr(shortDigest(state.current), "none"), state.failure)
+		cause := fmt.Errorf("the platform failed to apply this release: %s", state.failure)
+		for _, item := range plan {
+			p.observe(item.Name, cluster.RolloutStateTimedOut, cause)
+		}
+		werr = fmt.Errorf("hosted env %q: the platform failed to apply this release (%s, currently %s): %s",
+			envName, shortDigest(bundleDigest), emptyOr(shortDigest(state.current), "none"), state.failure)
+	} else {
+		pending := &ApplyPendingError{Env: envName, PromotionID: promotionID, Bundle: bundleDigest, Current: state.current, Waited: waited}
+		for _, item := range plan {
+			p.observe(item.Name, cluster.RolloutStateNotWaited, pending)
+		}
+		werr = pending
 	}
-	for _, item := range plan {
-		p.observe(item.Name, cluster.RolloutStateTimedOut, cause)
-	}
-	werr := fmt.Errorf("hosted env %q: TIMED OUT waiting for the platform to apply: %s", envName, msg)
 	if mode == cluster.RolloutWarn {
 		fmt.Printf("  Warning: %v\n", werr)
 		return nil
@@ -1517,11 +1607,12 @@ func (p HostedProvider) reportHeld(plan []hostedPlanItem, held *HeldError) error
 	return held
 }
 
-// hostedPublished is where one workload answers: its platform URL and its
-// custom domains, as of one status read.
+// hostedPublished is where one workload answers: its platform URL, the path
+// that URL's DNS reaches, and its custom domains, as of one status read.
 type hostedPublished struct {
-	URL     string
-	Domains []HostedCustomDomain
+	URL         string
+	ServingPath string
+	Domains     []HostedCustomDomain
 }
 
 // pollOnce reads status once and returns the names still not ready, with a
@@ -1548,7 +1639,7 @@ func (p HostedProvider) pollOnce(ctx context.Context, c HostedCaller, envID stri
 		}
 		pub := hostedPublished{Domains: customDomainsOf(st.Deployment.Observed)}
 		if obs := st.Deployment.Observed; obs != nil {
-			pub.URL = obs.URL
+			pub.URL, pub.ServingPath = obs.URL, ServingPathName(obs.URLServingPath)
 		}
 		published[item.Name] = pub
 		if envConverged || hostedDeploymentReady(st, item.DesiredDigest) {
@@ -1567,7 +1658,8 @@ func (p HostedProvider) pollOnce(ctx context.Context, c HostedCaller, envID stri
 func printHostedURLs(plan []hostedPlanItem, published map[string]hostedPublished) {
 	ws := make([]HostedWorkloadStatus, 0, len(plan))
 	for _, item := range plan {
-		ws = append(ws, HostedWorkloadStatus{Name: item.Name, URL: published[item.Name].URL})
+		pub := published[item.Name]
+		ws = append(ws, HostedWorkloadStatus{Name: item.Name, URL: pub.URL, ServingPath: pub.ServingPath})
 	}
 	fmt.Print(FormatHostedURLs("  ", ws))
 }
@@ -1582,7 +1674,11 @@ func FormatHostedURLs(indent string, workloads []HostedWorkloadStatus) string {
 		if w.URL == "" {
 			continue
 		}
-		fmt.Fprintf(&b, "%surl %s: %s\n", indent, w.Name, w.URL)
+		fmt.Fprintf(&b, "%surl %s: %s", indent, w.Name, w.URL)
+		if path := DescribeServingPath(w.ServingPath); path != "" {
+			fmt.Fprintf(&b, " (%s)", path)
+		}
+		b.WriteString("\n")
 	}
 	return b.String()
 }
@@ -1679,6 +1775,10 @@ type HostedWorkloadStatus struct {
 	URL string `json:"url,omitempty"`
 	// Hostname is URL's host, for a badge that has no room for a scheme.
 	Hostname string `json:"hostname,omitempty"`
+	// ServingPath is where Hostname's DNS sends its traffic, as the control
+	// plane resolves it: edge | ingress | elsewhere, or empty when it did
+	// not say (ServingPathName).
+	ServingPath string `json:"serving_path,omitempty"`
 	// Verdict is the control plane's lower-case deploystate verdict:
 	// unknown | converging | converged | diverged | degraded.
 	Verdict       string `json:"verdict"`
@@ -1737,6 +1837,7 @@ func ReadHostedStatus(ctx context.Context, c HostedCaller, project, envName stri
 			ws.ObservedDigest = obs.ImageDigest
 			ws.LastError = obs.LastError
 			ws.URL = obs.URL
+			ws.ServingPath = ServingPathName(obs.URLServingPath)
 			if u, perr := url.Parse(obs.URL); perr == nil {
 				ws.Hostname = u.Hostname()
 			}

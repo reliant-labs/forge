@@ -10,11 +10,10 @@ import (
 	"github.com/reliant-labs/forge/internal/hostedimage"
 )
 
-// The organization an env's hosted artifacts belong to is the organization the
-// control-plane CREDENTIAL acts for. forge asks the control plane
-// (cloud.ResolveOrganization) rather than reading a declaration: a declared
-// copy could only agree with the token or be wrong, and the registry's realm
-// scopes a push to the token's own org either way.
+// Hosted artifact ownership comes from the server's immutable project record,
+// not the signed-in person's default org or a persistent org selection. The
+// human credential identifies a user across memberships; only delegated
+// automation/claimable capabilities have an org of their own.
 //
 // Two ways to read it, because the surfaces differ:
 //
@@ -137,11 +136,11 @@ var orgResolver = resolveDeclarationOrg
 // resolveDeclarationOrg is the call behind it, shared with the commands that
 // hold a bare declaration rather than an entity (promote --from).
 func resolveDeclarationOrg(ctx context.Context, env string, decl *cloud.Declaration) (string, error) {
-	ep, err := cloud.ResolveEndpoint(env, decl)
+	ep, err := projectEndpoint(env, decl)
 	if err != nil {
 		return "", err
 	}
-	key := ep.URL + "\x00" + ep.TokenEnv
+	key := ep.URL + "\x00" + ep.TokenEnv + "\x00" + ep.ProjectID + "\x00" + ep.ProjectName
 	if v, ok := orgCache.Load(key); ok {
 		return v.(string), nil
 	}

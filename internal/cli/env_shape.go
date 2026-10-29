@@ -51,6 +51,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/kclplugin"
+	"github.com/reliant-labs/forge/pkg/deploy"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -94,6 +95,9 @@ type envShapeDoc struct {
 	// precisely the "what was applied is not what was recorded" failure
 	// the bundle exists to close. One render, both halves.
 	manifests string
+	// entities is the same selected-env declaration used for this shape.
+	// Dashboard assembly consumes it without a second render or disk writes.
+	entities *KCLEntities
 	// syncedSecrets names the Secrets forge supplies from the env's secret
 	// store rather than the render; names only, and they ride the bundle
 	// document so a deploy knows what to sync.
@@ -137,7 +141,7 @@ func (d envShapeDoc) reconciledUnits() []string {
 }
 
 func newEnvShapeCmd() *cobra.Command {
-	var asJSON bool
+	var asJSON, claimable bool
 
 	cmd := &cobra.Command{
 		Use:   "shape <environment>",
@@ -166,18 +170,38 @@ while the value itself is not recorded.
 READ-ONLY, AND CHECKED. No cluster is contacted, no image is built, nothing
 is pushed. forge cannot promise the render is side-effect-free, because KCL
 evaluates ` + "`" + `file.write` + "`" + ` — so this scans the project before and after, and a
-render that wrote anything FAILS, naming the paths. A declaration derived
+render that wrote anything FAILS, naming the paths. A forge generate or
+scaffold running in the project is waited for (it holds .forge/forge.lock),
+so its writes are never mistaken for the render's. A declaration derived
 from an impure render is one nobody can reproduce.
 
 Examples:
   ` + Name() + ` env shape prod               # the human summary
-  ` + Name() + ` env shape prod --json        # {project, env, kind, shape, provenance}`,
+  ` + Name() + ` env shape prod --json        # {project, env, kind, shape, provenance}
+  ` + Name() + ` env shape prod --claimable   # judged as an anonymous deploy would be
+
+HOSTED RESOURCES ARE JUDGED BY THE PLAN THE ENV DEPLOYS UNDER. An
+organization's own deploy is held to the hosted shape band (4 GiB per vCPU,
+exactly). An anonymous deploy (` + "`" + Name() + ` env deploy <env> --claimable` + "`" + `) is not
+billed, so the band does not apply; it is held to the claimable plan's caps
+instead: one service (at most the CPU and memory its control plane publishes in
+GetClaimableAvailability, request and limit; ` + deploy.ClaimableLimitsFallback().WorkloadShape() + ` as of this forge,
+the copy used offline) with its migration job, one database, one static site. --claimable judges the env that
+way, and so does an env that declares
+` + "`" + `control_plane = forge.ControlPlane {claimable = True}` + "`" + `.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if claimable {
+				defer useClaimablePreview()()
+			}
+			// A claimable env (by flag or by declaration) is judged by the
+			// caps its control plane publishes, asked for once it is rendered.
+			defer resolveClaimableLimitsOnDemand()()
 			return runEnvShape(cmd, args[0], asJSON)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Print {project, env, kind, shape, provenance} as JSON (the form the reliant daemon's forge.env_shape hook returns)")
+	cmd.Flags().BoolVar(&claimable, "claimable", false, "Judge the env as an anonymous deploy (env deploy --claimable) is judged: the claimable plan's caps instead of the hosted shape band, and its eligibility checks")
 	return cmd
 }
 
@@ -195,6 +219,16 @@ func runEnvShape(cmd *cobra.Command, envName string, asJSON bool) error {
 	doc, err := projectEnvShapeFn(cmd.Context(), cmd.ErrOrStderr(), envName)
 	if err != nil {
 		return err
+	}
+	// Under the claimable plan the env must also FIT it: the plan's caps
+	// beyond resources (one service, one database, ...). The resource rule
+	// itself already ran in the projection's hosted plan.
+	if doc.entities != nil && hostedPlanOf(doc.entities) == deploy.HostedPlanClaimable {
+		limits := claimableLimitsFor(envName, doc.entities)
+		fmt.Fprintln(cmd.ErrOrStderr(), limits.note())
+		if reasons := claimableIneligibility(doc.entities, limits.limits); len(reasons) > 0 {
+			return claimableIneligibleError(envName, limits.limits, reasons)
+		}
 	}
 	if asJSON {
 		enc := json.NewEncoder(out)
@@ -389,6 +423,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		DeliveryPolicy:      shapeDeliveryPolicyOf(entities),
 		DataAccess:          shapeDataAccessOf(entities),
 		ReleaseHealth:       shapeReleaseHealthOf(entities),
+		UptimeChecks:        shapeUptimeChecksOf(entities),
 		Identity:            shapeIdentityOf(entities),
 		Applier:             shapeApplierOf(entities),
 		Units:               split.ShapeUnits(),
@@ -405,6 +440,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		Shape:             shape,
 		Provenance:        captureBuildProvenance(ctx, projectDir).ForHosted(),
 		manifests:         stream,
+		entities:          entities,
 		syncedSecrets:     syncedSecrets,
 		units:             entities.DeliveryUnits,
 		images:            digests,
@@ -685,6 +721,15 @@ func shapeReleaseHealthOf(e *KCLEntities) *release.ShapeReleaseHealth {
 	return e.ReleaseHealth
 }
 
+// shapeUptimeChecksOf projects the env's uptime checks, resolved by the render.
+// Nil when the env has none, so the shape encodes as it did before the field.
+func shapeUptimeChecksOf(e *KCLEntities) []release.ShapeUptimeCheck {
+	if e == nil || len(e.UptimeChecks) == 0 {
+		return nil
+	}
+	return e.UptimeChecks
+}
+
 // shapeIdentityOf projects the env's managed identity. The render already
 // resolved it into the shape's own vocabulary (derived applications and
 // consumers, the deliveries, the reserved managed-secret names), so this is a
@@ -856,7 +901,7 @@ func recordEnvDeclaration(ctx context.Context, envName string, entities *KCLEnti
 // else exists for it.
 var envDeclarationClient = func(envName string, entities *KCLEntities) (cloudCaller, string, error) {
 	decl := declarationFromEntities(entities)
-	ep, err := cloud.ResolveEndpoint(envName, decl)
+	ep, err := projectEndpoint(envName, decl)
 	if err != nil {
 		return nil, "", err
 	}

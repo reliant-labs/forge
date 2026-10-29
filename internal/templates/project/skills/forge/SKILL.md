@@ -9,14 +9,16 @@ Self-sufficient for greenfield work: empty directory to a running app without
 loading another skill. Depth is named at the point you would need it — load it
 then, not before.
 
+pnpm: `migrations/v1.0.0/pnpm`.
+
 ## Two paths, both first-class
 
 **A frontend with no backend of its own** — a landing page, marketing site,
 docs site, SPA or PWA — is a **static site**, and it is a complete forge
 project, not a stripped-down one. It gets dev/staging/prod envs from day 0,
 `forge env up dev` with no database or cluster, build-once releases promoted by
-digest, hosted static hosting (the platform owns the bucket, the CDN and the
-hostname; one static site per org is free, and each env's site counts), custom
+digest, hosted static hosting (the platform owns the bucket, the CDN and the hostname;
+one static site per org is free, and each env's site counts), custom
 domains, per-env runtime
 config without a rebuild, and the component library. Adopt an existing Vite or
 Next.js app in place with `forge project new --in-place --kind site`. Either
@@ -43,13 +45,11 @@ forge env up dev             # host services + frontends, on a fresh seeded DB
 
 ### Name every service up front
 
-`forge project new --service a --service b --frontend web` writes
-`cmd/<bin>/main.go` with every service constructor already in the
-`cmd.Execute(...)` arg list.
-
-A later `forge scaffold service <name>` appends its constructor to that same
-call; if it cannot find `cmd.Execute(...)` it declines and prints the
-import and argument to add by hand.
+`forge project new --service a --service b --frontend web` composes every
+service into one graph; `<bin> server`, its default root, serves them all on
+one mux. `main.go`'s `cmd.Execute(...)` builds the command tree, with no
+command per service: every env runs `server` as `_api`. A later
+`forge scaffold service <name>` joins the same way.
 
 Batch later ones: `forge scaffold service sales jobs billing` generates once.
 
@@ -302,7 +302,7 @@ hand-wrote and then deleted.
 | You are about to… | forge already does it | Load |
 |---|---|---|
 | add a **database entity** | mark the message `// forge:entity`, run bare `forge scaffold`. You get the create-table migration, the CRUD quintet, the managed fields, the entity struct + ORM, CRUD ops, a lifecycle test, the list/detail/new/edit pages, nav, and mock data | `db`, `proto` |
-| add a **service** | `forge scaffold service <name>` — proto stub, `internal/handlers/<svc>/`, the typed mount, its own cobra subcommand, a test-harness entry, and the append into `cmd/<bin>/main.go` | `services` |
+| add a **service** | `forge scaffold service <name>` — proto stub, `internal/handlers/<svc>/`, its compose.go entry (the `server` root runs it — no per-service subcommand or workload), and a test-harness entry | `services` |
 | add a **custom rpc** | declare it in the proto, then `forge scaffold rpc <svc> <Name>` — a correctly-signed pb-through method plus a self-destructing test row. Never hand-write the stub | `api` |
 | write a **query the generated CRUD can't express** | `internal/db/<entity>_repo_ext.go` is already there, with the repo delegates, the `db.Bun()` raw-SQL handle and `orm.Context` documented in its header | `db`, `db/crud-overrides` |
 | build a **UI control** | check `src/components/` and `forge component search <thing>` first. A status badge, an enum select, and the foreign-key picker/name pair are already scaffolded and enum-aware; the library ships 70+ more | `frontend`, `frontend/pages` |
@@ -328,8 +328,9 @@ set — check there before hand-rolling.
 ## Skills come from the binary
 
 `forge skill load <name>` always matches the forge you are running. Forge never
-writes skill files into a project. Non-reliant harnesses: add your own skill
-that tells the agent to run `forge skill search <query>` / `forge skill load <name>`.
+writes skill bodies into a project. Non-reliant harnesses get a thin pointer
+(`.claude/skills/forge/SKILL.md`, `.cursor/rules/forge.mdc`) that only tells the
+agent to run `forge skill search <query>` / `forge skill load <name>`.
 
 ```bash
 forge skill list              # the catalog: every skill, scope, one-line description
@@ -347,6 +348,7 @@ forge skill search migration  # find one by keyword
 - Parallel agents in one checkout may each run `forge generate` and `forge scaffold`. Every run takes the project's lock (`.forge/forge.lock`); a second run prints one `waiting for pid N` line and starts when the first finishes. The OS releases the lock when its holder exits, so never delete the file.
 - Declare schema in migrations, never in proto; the ORM follows the schema.
 - Use `forge scaffold` to scaffold — never copy-paste an existing directory.
+- Hit a defect in forge itself — a command that fails, hangs or generates something wrong, or a wrong lint, skill or doc? Report it: `forge report-bug --severity <low|medium|high|critical> --title "<one line>" --actual "<exact error>" --evidence "<commands, output, paths>"` (or the `report_bug` tool of `forge mcp`). Not for bugs in the user's own code, their failing tests, or your own mistakes; never put credentials or file contents in it. It is the only way forge sends anything (`--dry-run` shows exactly what).
 - Uncertain proto/migration/annotation syntax: draft it, run `forge generate`, read the error, fix. Never reverse-engineer forge's `internal/**` source.
 - One service per proto package; its owned and generated files co-locate in one `internal/handlers/<svc>/`.
 - Use `task test` (what CI runs), not raw `go test`; iterate on `task test:short -- ./internal/<pkg>/...`.

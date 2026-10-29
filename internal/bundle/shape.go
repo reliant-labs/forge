@@ -81,6 +81,8 @@ type ShapeInput struct {
 	// ReleaseHealth is the env's release-health policy, or nil for the
 	// defaults.
 	ReleaseHealth *release.ShapeReleaseHealth
+	// UptimeChecks are the env's uptime checks, or nil when it has none.
+	UptimeChecks []release.ShapeUptimeCheck
 	// Identity is the env's managed identity declaration, or nil when it
 	// declares none.
 	Identity *release.ShapeIdentity
@@ -139,6 +141,7 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		DeliveryPolicy:      in.DeliveryPolicy,
 		DataAccess:          in.DataAccess,
 		ReleaseHealth:       in.ReleaseHealth,
+		UptimeChecks:        in.UptimeChecks,
 		Identity:            in.Identity,
 		Applier:             in.Applier,
 		Units:               in.Units,

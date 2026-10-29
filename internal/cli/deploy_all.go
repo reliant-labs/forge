@@ -59,6 +59,10 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 		return err
 	}
 
+	if err := prepareHostedProjectForWrite(ctx, projectDir, envName, &f); err != nil {
+		return err
+	}
+
 	// The capacity pre-flight, before the build: a no-plan org must learn it
 	// in seconds, not after the images are built and pushed. Read-only, and first of all.
 	capacity, err := hostedCapacityPreflightForEnv(ctx, projectDir, envName, true, progressWriter(f.jsonOut))
@@ -132,16 +136,18 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 		return err
 	}
 	return runPromote(ctx, cut.Version, envName, promoteOptions{
-		Ledger:        ledger,
-		Capacity:      capacity,
-		JSON:          f.jsonOut,
-		ProjectDir:    projectDir,
-		Note:          p.note,
-		Actor:         p.actor,
-		ExpectCurrent: p.expectCurrent,
-		Supersede:     p.supersede,
-		Gates:         p.gates,
-		Run:           p.run,
+		Ledger:                ledger,
+		Capacity:              capacity,
+		JSON:                  f.jsonOut,
+		ProjectDir:            projectDir,
+		Note:                  p.note,
+		Actor:                 p.actor,
+		ExpectCurrent:         p.expectCurrent,
+		Supersede:             p.supersede,
+		AllowPassedMigrations: p.allowPassedMigrations,
+		Gates:                 p.gates,
+		Run:                   p.run,
+		Claim:                 f.claim,
 		// AutoVersion is stated so the gate's refusal and its --plan-only
 		// line can say "release X was cut and pushed; approving it needs no
 		// rebuild" — without it a CI author reads "pass --yes" and re-runs
@@ -163,6 +169,7 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 			FailFast:     p.failFast,
 			skipHubCheck: p.skipHubCheck,
 			clientDeploy: deployOptions{
+				organization:  f.organization,
 				imageTag:      f.tag,
 				namespace:     f.namespace,
 				targetArch:    f.targetArch,
@@ -196,7 +203,8 @@ type deployCutResult struct {
 // without producing new ones; a rebuild would (see its comment — 2026-10-09,
 // prod). The choice is printed first, either way.
 func buildAndCutForDeploy(ctx context.Context, projectDir, envName string, f deployCmdFlags, ledger envLedger) (deployCutResult, error) {
-	choice := decideDeployRelease(ctx, projectDir, envName, f.renderOptions, ledger)
+	noteDeployPhase(ctx, "build")
+	choice := decideDeployRelease(ctx, projectDir, envName, ledger)
 	choice.announce(os.Stdout, envName, false)
 	if dirtyCutNeedsConfirmation(ctx, projectDir, envName, choice) {
 		if err := gateDirtyCut(envName, choice, *newDeployConfirm(f.promote, choice.Version), progressWriter(f.jsonOut)); err != nil {
@@ -239,9 +247,13 @@ func buildAndCutForDeploy(ctx context.Context, projectDir, envName string, f dep
 		// The deploy ran the capacity pre-flight before it got here.
 		capacityChecked: true,
 		release:         choice.Version,
-		targetArch:      f.targetArch,
-		targets:         f.targets,
-		run:             f.promote.run,
+		// The cut this deploy makes is held to the migration-order guard
+		// like any release cut, with the deploy's waivers.
+		allowPassedMigrations:   f.promote.allowPassedMigrations,
+		allowUnmergedMigrations: f.promote.allowUnmergedMigrations,
+		targetArch:              f.targetArch,
+		targets:                 f.targets,
+		run:                     f.promote.run,
 	}
 	if err := runDeployBuild(ctx, opts); err != nil {
 		return deployCutResult{}, fmt.Errorf("build env %s for deploy: %w", envName, err)

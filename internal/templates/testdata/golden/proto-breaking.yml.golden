@@ -21,7 +21,7 @@ permissions:
 # forge workflow, so it stays right if this one ever runs on main (ci.yml says
 # why).
 concurrency:
-  group: proto-breaking-${{ github.ref }}
+  group: proto-breaking-${{ github.ref }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

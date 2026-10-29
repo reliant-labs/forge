@@ -305,9 +305,11 @@ func (r *resolver) checkForgeSkew(res Resolved, at string) error {
 		"  this project pins forge     %s\n"+
 		"  The imported KCL's `import forge` resolves to THIS render's forge KCL module, so it would be evaluated against\n"+
 		"  a schema it was not written for, and a mismatch would surface as a KCL error on its own line numbers.\n"+
-		"  Make the pins agree: move %s to a version that pins forge %s (go get %s@<version>), or move this project's\n"+
-		"  forge to %s. (%s=1 renders anyway.)",
-		res.Name, at, res.ForgePin, r.importerPin, res.Module, r.importerPin, res.Module, res.ForgePin, forgecompat.SkewOverrideEnv)
+		"  Make the pins agree, the imported project FIRST — upgrading forge moves the dependency before its consumer:\n"+
+		"    1. in %s itself, pin forge %s (forge.yaml forge_version and go.mod) and publish that commit;\n"+
+		"    2. here, go get %s@<that commit or tag>, and render again.\n"+
+		"  Or keep %s as it is and pin this project's forge to %s. (%s=1 renders anyway.)",
+		res.Name, at, res.ForgePin, r.importerPin, res.Module, r.importerPin, res.Module, res.Module, res.ForgePin, forgecompat.SkewOverrideEnv)
 }
 
 func describeAt(r Resolved) string {

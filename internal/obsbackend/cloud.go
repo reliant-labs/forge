@@ -111,6 +111,7 @@ type wireAttrFilter struct {
 
 type wireScope struct {
 	OrgID     string           `json:"orgId"`
+	ProjectID string           `json:"projectId,omitempty"`
 	EnvIDs    []string         `json:"envIds,omitempty"`
 	Services  []string         `json:"services,omitempty"`
 	TimeRange wireTimeRange    `json:"timeRange"`

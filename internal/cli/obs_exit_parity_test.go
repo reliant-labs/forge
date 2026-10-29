@@ -32,6 +32,7 @@ var obsParityVerbs = []struct {
 	{"trace", []string{"trace", "0af7651916cd43dd8448eb211c80319c", "prod"}},
 	{"endpoints", []string{"endpoints", "prod"}},
 	{"query", []string{"query", "prod", "--sql", "select 1"}},
+	{"dashboards audit", []string{"dashboards", "audit", "prod"}},
 	{"issues", []string{"issues", "prod"}},
 	{"issue", []string{"issue", "ISS-1", "prod"}},
 	{"sessions", []string{"sessions", "prod"}},

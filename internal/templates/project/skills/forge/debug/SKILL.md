@@ -87,6 +87,7 @@ rows. Each step should narrow the hypothesis:
 | Available metrics, then values | `forge obs metrics list prod --contains rpc --since 15m`, then `forge obs metrics query prod rpc.server.call.duration --agg quantile --quantile 0.95 --since 15m` |
 | A question beyond the structured verbs | `forge obs endpoints dev --explain --json`, then adapt its SQL with `forge obs query dev --sql-file investigation.sql` |
 | A dashboard panel's data | `forge obs query dev --panel panel.json --since 15m` |
+| A dashboard that looks empty | `forge obs dashboards audit prod --dashboard <id> --json` (recipe below) |
 | Continuous CPU/heap evidence | `forge obs profile --env dev --service api --since 15m -o /tmp/api.pb.gz` (local ClickStack; see below) |
 
 `api` is an example **telemetry service.name**, not necessarily a workload or
@@ -188,6 +189,56 @@ hatch. The managed read-only role excludes secret columns; select explicit
 safe columns or aggregates, not `SELECT *`. Never reset, seed, migrate or write
 production data to investigate it. `select 1` proves connectivity only, not
 that app records or schema are correct. Full transport/policy rules: `db/query`.
+
+#### An empty dashboard: do we have the data, and why isn't it showing?
+
+Two different questions, and one command answers both. `forge obs dashboards
+audit` lists the dashboards the console lists for the env and sends each panel
+to the same server-side `QueryPanel` the console calls, over the console's
+default last hour with the step left to the control plane. It rebuilds no panel
+SQL, so it cannot disagree with the console about what a panel asks for.
+
+```bash
+forge obs dashboards audit prod                                  # every panel, failures first
+forge obs dashboards audit prod --dashboard product-usage --json  # one dashboard, as a document
+forge obs dashboards audit prod --dashboard product-usage --panel workflows-by-outcome --since 24h
+```
+
+Read each panel's `status`, `reason` and `probable_cause`, not just the status:
+
+| status | meaning | next |
+|---|---|---|
+| `ok` | data the console can draw (`all_zero` in `note` means it is zero, not missing) | none |
+| `partial` | data, but a series' metric is absent or stored as another kind, or the answer is **one bucket** where a line needs two (a day-wide bucket under the 1h default) | widen `--since`, or fix the panel's bucketing |
+| `empty` | nothing came back; `probe.verdict` says whether the data exists | by verdict, below |
+| `error` | the read failed; `error.class` names it | by class, below |
+
+An empty panel is probed over `--probe-window` (default 7d): the same panel in
+every env of the project, and without its `where` filters, plus a metric catalog
+lookup. The verdict separates **no data** from **data outside the window, scope
+or filter**:
+
+- `data_outside_window`: the data exists; the window is shorter than its cadence
+  or the emitter went quiet. Widen `--since`.
+- `data_in_other_env`: it exists in another env; rows carry that env's id, or none
+  (an env-scoped panel cannot see untagged rows).
+- `data_excluded_by_filters`: it exists without the panel's `where`; the filter
+  value matches nothing the emitter writes.
+- `metric_never_seen` / `no_data_anywhere`: the emitter is not shipping it, or the
+  name is wrong. `forge obs metrics describe <env> <metric> --since 168h`, then
+  `forge obs query` for the table itself.
+- `probe_failed` / `not_probed`: the follow-up could not look; this is **not** "no
+  data". Fix the cause in `probe.steps[].error`, or raise `--probe-window`.
+
+Failure classes are never "no data": `auth` (HTTP 403 or a missing scope such as
+`obs:read`: a credential problem for an org admin, not an outage), `quota` (the
+org's hourly allowance is spent; the audit stops reading and says so), `in_flight`
+and `rate_limited` (retried, then reported; wait and rerun, or audit one
+`--dashboard` at a time), `timeout`, `storage`, `invalid` (a spec or range the
+control plane refused). Exit 0 means every panel is `ok`, **2** that some panel is
+empty or partial (or the audit could not look), **1** that a panel or dashboard
+could not be read. A local env has no dashboards to replay: use
+`forge obs dashboards check --against <env>` for its metric names.
 
 #### Tool API versus CLI
 

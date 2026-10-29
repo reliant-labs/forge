@@ -52,7 +52,17 @@ type componentDriftFinding struct {
 	Kind       string
 	Undeclared bool
 	Stanza     string
+	// NoCommand is set, with Args, when the workload runs the project binary
+	// with args selecting no command it has: a project composed with the
+	// graph has one command per root and none per component, so a
+	// scaffolded `args = ["<service>"]` crash-loops on "unknown command".
+	NoCommand bool
+	Args      []string
 }
+
+// ruleComponentDriftNoCommand is a workload whose args select no command of
+// the project binary.
+const ruleComponentDriftNoCommand = "component-drift/no-such-command"
 
 // workloadNameInKCL matches a `name = "<x>"` field — the component-name
 // declaration inside a typed literal. Anchored on the field rather than a
@@ -162,6 +172,11 @@ func collectComponentDrift(projectDir string, cfg *config.ProjectConfig) ([]comp
 		if declaredAs[naming.KCLIdentifier(c.Name)] {
 			continue
 		}
+		// Run by the composition graph's `server` root, which every env
+		// binds as its `_api`: there is no subcommand to declare it with.
+		if codegen.RunByGraphRoot(projectDir, c) {
+			continue
+		}
 		// Run by another workload's process — named in its `serves`, one
 		// `server` that runs everything, or its own subcommand under
 		// another name. Declaring it again would deploy it twice, so its
@@ -206,6 +221,26 @@ func collectComponentDrift(projectDir string, cfg *config.ProjectConfig) ([]comp
 	for _, name := range orphans {
 		findings = append(findings, componentDriftFinding{Name: name})
 	}
+
+	// A workload of the project binary whose args select no command the
+	// binary has. Only a project composed with the graph is judged, and
+	// only once its cmd tree is on disk: its commands are its roots, the
+	// built-ins and its own (commands.go), all literal cobra `Use:` fields.
+	if commands := codegen.BinaryCommandWords(projectDir, cfg.Name); len(commands) > 0 && codegen.GraphComposition(projectDir) {
+		names := make([]string, 0, len(runs))
+		for name := range runs {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			w := runs[name]
+			if !codegen.ProjectBinaryRuns(cfg.Name, w.BuildCmd) || len(w.Args) == 0 ||
+				codegen.RunsBuiltinSubcommand(w.Args) || commands[w.Args[0]] {
+				continue
+			}
+			findings = append(findings, componentDriftFinding{Name: name, NoCommand: true, Args: w.Args})
+		}
+	}
 	return findings, nil
 }
 
@@ -218,6 +253,20 @@ func collectComponentDriftJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) 
 	}
 	out := make([]lintJSONFinding, 0, len(findings))
 	for _, f := range findings {
+		if f.NoCommand {
+			out = append(out, lintJSONFinding{
+				File:     codegen.WorkloadsKCLRelPath,
+				Severity: "warning",
+				Rule:     ruleComponentDriftNoCommand,
+				Message: fmt.Sprintf("workload %q runs `%s %s`, but the binary has no %q command: its commands are the roots of its composition graph "+
+					"(cmd/%s/cmd/roots_gen.go), never one per service or worker, so the process exits \"unknown command\" wherever it is deployed",
+					f.Name, rc.cfg.Name, strings.Join(f.Args, " "), f.Args[0], rc.cfg.Name),
+				FixHint: "a service or worker the `server` root runs needs no workload of its own — every env runs it as `_api`: delete the declaration and its entry in ALL " +
+					"(and any `wl." + naming.KCLIdentifier(f.Name) + "` binding). To run it as a process of its own, declare a `//forge:root " + f.Args[0] + "` struct in internal/app, " +
+					"run `forge generate`, and bind the workload with `config_gen.root_of(\"" + f.Args[0] + "\")`",
+			})
+			continue
+		}
 		if !f.Undeclared {
 			out = append(out, lintJSONFinding{
 				File:     codegen.WorkloadsKCLRelPath,

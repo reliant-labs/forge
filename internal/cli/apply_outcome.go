@@ -59,7 +59,9 @@ func recordApplyOutcome(ctx context.Context, env string, plan promotePlan, ledge
 		recordOfflineApplyOutcome(env, plan, ledger, started, applyErr, o)
 		return
 	}
-	if !ledger.Hosted || plan.Recorded == nil || o.clientDeploy.dryRun || queuedOf(applyErr) != nil {
+	// A still-applying publish is not a failed apply either: filing it as
+	// one makes the next plan report the live release as NOT APPLIED.
+	if !ledger.Hosted || plan.Recorded == nil || o.clientDeploy.dryRun || queuedOf(applyErr) != nil || applyingOf(applyErr) != nil {
 		return
 	}
 	gate := applyOutcomeGate(started, time.Now(), applyErr,

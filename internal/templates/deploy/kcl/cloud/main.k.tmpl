@@ -187,6 +187,16 @@ _build_only = lambda w: fw.Workload -> fw.Workload {
 # service would leave the frontend reaching one of them, signed in to none
 # of the others.
 #
+{{- if .Roots}}
+# `server` runs every service and worker (dev runs the same `_api`, under
+# air), so `forge scaffold service|worker` declares no workload and adds no
+# line below for one. The binary has no command per service: splitting one
+# out — a service no browser calls, a worker that needs its own capacity —
+# is a root of its own (a `//forge:root` struct in internal/app, then a
+# workload bound with `config_gen.root_of("<root>")`, see workloads.k) and
+# its own line here. (`server` runs no operator here — with no Kubernetes
+# API it logs that operators are disabled and serves on.)
+{{- else}}
 # workloads.k still declares each service and worker; here `server` runs
 # them (dev runs the same `_api`, under air). So `forge scaffold
 # service|worker` adds no line below for one. Splitting one out — a service
@@ -194,6 +204,7 @@ _build_only = lambda w: fw.Workload -> fw.Workload {
 # `_hosted(wl.<name>)`, and taking it out of `server`'s mount or worker list:
 # cmd/{{.ProjectName}}/cmd/server.go. (`server` runs no operator here — with
 # no Kubernetes API it logs that operators are disabled and serves on.)
+{{- end}}
 {{.APIWorkload}}
 
 # Every workload this env runs, one binding each. `forge scaffold` appends

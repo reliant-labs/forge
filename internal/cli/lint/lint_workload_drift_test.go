@@ -27,7 +27,7 @@ func scaffoldedWorkloadsProject(t *testing.T, name string, hasFrontend bool) str
 func orphanNames(findings []componentDriftFinding) []string {
 	var out []string
 	for _, f := range findings {
-		if !f.Undeclared {
+		if !f.Undeclared && !f.NoCommand {
 			out = append(out, f.Name)
 		}
 	}
@@ -107,6 +107,107 @@ all_in_one = fw.Workload {
 	}
 }
 
+// withLegacyComposition gives the project an internal/app on the legacy
+// composition (an owned `type Infra struct`), whose binary has a subcommand
+// per component — the shape the per-component workload tests model. Without
+// it a fixture composes with the graph, which has none (RunByGraphRoot).
+func withLegacyComposition(t *testing.T, dir string) {
+	t.Helper()
+	app := filepath.Join(dir, "internal", "app")
+	if err := os.MkdirAll(app, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(app, "compose.go"), []byte("package app\n\ntype Infra struct{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// withCmdTree writes a cmd/<bin>/cmd tree declaring the given top-level
+// commands, as roots_gen.go and commands.go do.
+func withCmdTree(t *testing.T, dir, bin string, uses ...string) {
+	t.Helper()
+	tree := filepath.Join(dir, "cmd", bin, "cmd")
+	if err := os.MkdirAll(tree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	b.WriteString("package cmd\n\nimport \"github.com/spf13/cobra\"\n\nvar cmds = []*cobra.Command{\n")
+	for _, u := range uses {
+		b.WriteString("\t{\n\t\tUse:   \"" + u + "\",\n\t},\n")
+	}
+	b.WriteString("}\n\n// An example is not a command:\n//\tUse: \"orders\",\n")
+	if err := os.WriteFile(filepath.Join(tree, "roots_gen.go"), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestComponentDrift_GraphServicesNeedNoWorkload: on the composition graph
+// the binary has no command per service or worker — `server` runs them all,
+// as every env's `_api` — so none is undeclared, and a stale per-service
+// workload (what `forge project new --service orders` used to scaffold,
+// `args = ["orders"]`) is reported as running a command the binary does not
+// have: its pod crash-loops on "unknown command orders". A user command
+// (commands.go) and a root of the project's own are commands.
+func TestComponentDrift_GraphServicesNeedNoWorkload(t *testing.T) {
+	dir := scaffoldedWorkloadsProject(t, "demo", false)
+	withWorkers(t, dir, "reaper")
+	withCmdTree(t, dir, "demo", "server", "version", "db", "report <month>", "billing")
+	appendWorkloads(t, dir, `
+_demo_build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}
+
+reaper = fw.Workload {
+    name = "reaper"
+    kind = "worker"
+    build = _demo_build
+    args = ["reaper"]
+}
+
+report = fw.Workload {
+    name = "report"
+    kind = "job"
+    build = _demo_build
+    args = ["report", "2026-10"]
+}
+
+billing = fw.Workload {
+    name = "billing"
+    kind = "service"
+    build = _demo_build
+    args = ["billing"]
+}
+`)
+	rc := &lintRunCtx{cwd: dir, cfg: &config.ProjectConfig{Name: "demo"}}
+	findings, err := collectComponentDrift(rc.cwd, rc.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := undeclaredNames(findings); len(got) != 0 {
+		t.Errorf("undeclared = %v, want none (the server root runs every worker)", got)
+	}
+	var noCommand []string
+	for _, f := range findings {
+		if f.NoCommand {
+			noCommand = append(noCommand, f.Name)
+		}
+	}
+	if got := strings.Join(noCommand, ","); got != "reaper" {
+		t.Errorf("no-such-command = %q, want only reaper (report and billing are commands of the binary)", got)
+	}
+	out, _, err := collectComponentDriftJSON(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hit *lintJSONFinding
+	for i := range out {
+		if out[i].Rule == ruleComponentDriftNoCommand {
+			hit = &out[i]
+		}
+	}
+	if hit == nil || !strings.Contains(hit.Message, `no "reaper" command`) || !strings.Contains(hit.FixHint, "//forge:root reaper") {
+		t.Errorf("no-such-command finding = %+v, want one naming the missing command and the root that would add it", hit)
+	}
+}
+
 // withWorkers adds one discoverable worker package per name — discovery
 // counts any internal/workers/<name> holding a non-test Go file.
 func withWorkers(t *testing.T, dir string, names ...string) {
@@ -154,6 +255,7 @@ func undeclaredNames(findings []componentDriftFinding) []string {
 // to say why that was fine.
 func TestComponentDrift_ServedComponentsAreDeclared(t *testing.T) {
 	dir := scaffoldedWorkloadsProject(t, "demo", false)
+	withLegacyComposition(t, dir)
 	withWorkers(t, dir, "reaper", "billing_sweep", "forgotten")
 	appendWorkloads(t, dir, `
 _demo_build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}
@@ -187,6 +289,7 @@ background = fw.Workload {
 // spellings are one workload: neither undeclared nor an orphan.
 func TestComponentDrift_AMultiWordComponentMatchesItsWorkload(t *testing.T) {
 	dir := scaffoldedWorkloadsProject(t, "demo", false)
+	withLegacyComposition(t, dir)
 	withWorkers(t, dir, "billing_sweep")
 	appendWorkloads(t, dir, codegen.WorkloadStanza("github.com/acme/demo", "demo",
 		config.ComponentConfig{Name: "billing_sweep", Kind: config.ComponentKindWorker}))
@@ -226,6 +329,7 @@ app = fw.Workload {
 // component another process already runs.
 func TestComponentDrift_UndeclaredSaysHowToMarkServed(t *testing.T) {
 	dir := scaffoldedWorkloadsProject(t, "demo", false)
+	withLegacyComposition(t, dir)
 	withWorkers(t, dir, "reaper")
 	rc := &lintRunCtx{cwd: dir, cfg: &config.ProjectConfig{Name: "demo"}}
 	out, _, err := collectComponentDriftJSON(rc)
@@ -246,6 +350,7 @@ func TestComponentDrift_UndeclaredSaysHowToMarkServed(t *testing.T) {
 // judged as before.
 func TestComponentDrift_ComposedProcessesDeclareTheirKind(t *testing.T) {
 	dir := scaffoldedWorkloadsProject(t, "demo", false)
+	withLegacyComposition(t, dir)
 	withWorkers(t, dir, "reaper", "billing_sweep", "sweeper", "spend_snapshot")
 	appendWorkloads(t, dir, `
 _demo_build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}

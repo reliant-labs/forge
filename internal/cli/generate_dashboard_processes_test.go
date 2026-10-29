@@ -331,3 +331,32 @@ func TestProcessLessEnvironmentGetsOnlyItsFrontendDashboard(t *testing.T) {
 		t.Error("the frontend dashboard is scoped to the frontend the env serves")
 	}
 }
+
+// The same workload name may run different commands in different environments
+// (dev runs `server`, prod runs `server api`). Generate derives the deployed
+// identities across all of them; it must not fail on the shared name.
+func TestDeployedIdentitiesAcceptTheSameWorkloadNameWithDifferentArgsAcrossEnvironments(t *testing.T) {
+	dev := wl("api", "service", "server")
+	prod := wl("api", "service", "server", "api")
+	prod.Spec.Env = []deployv1.EnvVar{{Name: "OTEL_SERVICE_NAME", Value: "api-prod"}}
+	ctx := &pipelineContext{AbsPath: t.TempDir(), Cfg: &config.ProjectConfig{Name: "app"}, graphRootsSet: true}
+	id, err := deployedIdentities(ctx, []WorkloadEntity{dev, prod})
+	if err != nil {
+		t.Fatalf("cross-environment inventory rejected: %v", err)
+	}
+	if want := []string{"api", "api-prod"}; !reflect.DeepEqual(id.ServiceNames, want) {
+		t.Errorf("service names = %v, want the union %v", id.ServiceNames, want)
+	}
+	if want := []string{"api"}; !reflect.DeepEqual(id.Workloads, want) {
+		t.Errorf("workloads = %v, want %v", id.Workloads, want)
+	}
+	// Within ONE environment two different commands cannot share a name, and
+	// the single-environment path still says so if it ever happened.
+	ps, err := processesForWorkloads("app", nil, []WorkloadEntity{dev, prod})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkUniqueProcessNames(ps); err == nil {
+		t.Error("two commands under one name in one environment must be refused")
+	}
+}

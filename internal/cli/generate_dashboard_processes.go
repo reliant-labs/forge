@@ -89,6 +89,9 @@ func renderedDashboardProcesses(ctx *pipelineContext, entities *KCLEntities) ([]
 	if err != nil {
 		return nil, err
 	}
+	if err := checkUniqueProcessNames(processes); err != nil {
+		return nil, err
+	}
 	for i := range processes {
 		p := &processes[i]
 		if p.Root != "" {
@@ -116,12 +119,26 @@ func renderedDashboardProcesses(ctx *pipelineContext, entities *KCLEntities) ([]
 // environment-wide part on disk would claim ownership no single environment
 // has, and conflict whenever two branches add an rpc.
 func deployedIdentities(ctx *pipelineContext, workloads []WorkloadEntity) (obsdash.Identities, error) {
-	processes, err := renderedDashboardProcesses(ctx, &KCLEntities{Workloads: workloads})
+	// Every environment's workloads together: only identities are wanted, and
+	// the same workload name may run different commands in different
+	// environments, so process names are not required to be unique here.
+	roots := ctx.graphRoots
+	if !ctx.graphRootsSet {
+		var err error
+		if roots, err = codegen.GraphRoots(ctx.AbsPath); err != nil {
+			roots = nil // the graph is read for RPC ownership only; a project mid-edit still has identities
+		}
+	}
+	processes, err := processesForWorkloads(bootstrapBinaryName(ctx.AbsPath), roots, workloads)
 	if err != nil {
-		// The graph is read for RPC ownership only; a project mid-edit still
-		// has identities.
-		if processes, err = processesForWorkloads(bootstrapBinaryName(ctx.AbsPath), nil, workloads); err != nil {
-			return obsdash.Identities{}, err
+		return obsdash.Identities{}, err
+	}
+	for i := range processes {
+		p := &processes[i]
+		if p.Root == "" && len(p.RPCServices) == 0 {
+			if svcs, err := codegen.CommandRPCServices(ctx.AbsPath, ctx.Cfg.ModulePath, p.Binary, p.Args, ctx.Services); err == nil {
+				p.RPCServices = svcs
+			}
 		}
 	}
 	var id obsdash.Identities
@@ -257,12 +274,22 @@ func processesForWorkloads(primary string, roots []codegen.GraphRoot, workloads 
 		out = append(out, p)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	for i := 1; i < len(out); i++ {
-		if out[i].Name == out[i-1].Name {
-			return nil, fmt.Errorf("dashboard process name collision %q: two different executables or commands share the workload name", out[i].Name)
+	return out, nil
+}
+
+// checkUniqueProcessNames fails when two different executables or commands of
+// ONE environment share a process name. A workload name is unique within an
+// environment, so this cannot happen there; it can across environments (dev and
+// prod may run the same workload name with different arguments), which is why
+// only the single-environment path checks it and the cross-environment identity
+// union (deployedIdentities) does not.
+func checkUniqueProcessNames(ps []obsdash.Process) error {
+	for i := 1; i < len(ps); i++ {
+		if ps[i].Name == ps[i-1].Name {
+			return fmt.Errorf("dashboard process name collision %q: two different executables or commands share the workload name", ps[i].Name)
 		}
 	}
-	return out, nil
+	return nil
 }
 
 var processIDUnsafe = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)

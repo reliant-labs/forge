@@ -160,41 +160,44 @@ func perJobLines(id, title string, names []string, where []Predicate) []Panel {
 }
 
 // jobsSummarySQL is the per-job table: one row per forge job, from the run
-// events. The names are forge workload names (DNS labels), embedded as
+// events. An EXECUTION is one Kubernetes Job in one environment: the inner
+// query groups by (reliant.env.id, Job name), because identical specs deployed
+// to two environments share a hashed Job name, and a cron's scheduled-time
+// stamp can coincide. Collapsing them would report a run that both succeeded
+// and failed, with a duration assembled across environments. The names are forge workload names (DNS labels), embedded as
 // literals; the time range and environments are the dashboard's own query
 // parameters.
 func jobsSummarySQL(names []string) string {
 	list := "['" + strings.Join(names, "', '") + "']"
-	var b strings.Builder
-	fmt.Fprintf(&b, `SELECT job,
+	return fmt.Sprintf(`SELECT job,
        count() AS runs,
        countIf(finished > 0) AS succeeded,
        countIf(failed) AS failed,
        max(started) AS last_started,
        argMax(if(finished > 0 AND started > 0, dateDiff('second', started, finished), NULL), started) AS last_duration_s,
-       round(avgIf(dateDiff('second', started, finished), finished > 0 AND started > 0), 1) AS avg_duration_s,
-       maxIf(dateDiff('second', started, finished), finished > 0 AND started > 0) AS max_duration_s
+       if(countIf(finished > 0 AND started > 0) = 0, NULL, round(avgIf(dateDiff('second', started, finished), finished > 0 AND started > 0), 1)) AS avg_duration_s,
+       if(countIf(finished > 0 AND started > 0) = 0, NULL, maxIf(dateDiff('second', started, finished), finished > 0 AND started > 0)) AS max_duration_s
 FROM (
-  SELECT run,
+  SELECT env, run,
          arrayFirst(n -> match(run, concat('^', n, '%s$')), %s) AS job,
          minIf(Timestamp, reason = '%s') AS started,
          maxIf(Timestamp, reason = '%s') AS finished,
          countIf(reason IN ('%s')) > 0 AS failed
   FROM (
-    SELECT Timestamp, ResourceAttributes['k8s.workload.name'] AS run, LogAttributes['k8s.event.reason'] AS reason
+    SELECT Timestamp, ResourceAttributes['reliant.env.id'] AS env,
+           ResourceAttributes['k8s.workload.name'] AS run, LogAttributes['k8s.event.reason'] AS reason
     FROM otel_logs
     WHERE Timestamp >= {from:DateTime64(9)} AND Timestamp < {to:DateTime64(9)}
       AND LogAttributes['k8s.event.reason'] != ''
       AND if(mapContains(LogAttributes, 'k8s.object.kind'), LogAttributes['k8s.object.kind'], ResourceAttributes['k8s.object.kind']) = 'Job'
       AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, ResourceAttributes['reliant.env.id']))
   )
-  GROUP BY run
+  GROUP BY env, run
 )
 WHERE job != ''
 GROUP BY job
 ORDER BY last_started DESC, job
 `, jobRunSuffix, list, jobEventCreated, jobEventCompleted, strings.Join(jobFailureReasons, "', '"))
-	return b.String()
 }
 
 func jobNames(jobs []Process) []string {

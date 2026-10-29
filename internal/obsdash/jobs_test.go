@@ -418,3 +418,15 @@ func TestJobsDashboardReplacesTheOldPerJobDashboards(t *testing.T) {
 		}
 	}
 }
+
+// A run is one Kubernetes Job in one ENVIRONMENT: identical specs deployed to
+// two environments share a hashed Job name, and must not collapse into one run.
+func TestJobsSummaryGroupsRunsByEnvironmentAndJob(t *testing.T) {
+	sql := jobsSummarySQL([]string{"db-migrate-up"})
+	if !strings.Contains(sql, "GROUP BY env, run") || !strings.Contains(sql, "ResourceAttributes['reliant.env.id'] AS env") {
+		t.Errorf("the per-run grouping must carry the environment:\n%s", sql)
+	}
+	if !strings.Contains(sql, "has({env_ids:Array(String)}, ResourceAttributes['reliant.env.id'])") {
+		t.Errorf("the summary must honour the dashboard's environments:\n%s", sql)
+	}
+}

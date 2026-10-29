@@ -216,3 +216,60 @@ func TestMetadataAlertSQLOnClickHouse(t *testing.T) {
 		}
 	}
 }
+
+// TestJobsSummarySQLOnClickHouse runs the Jobs dashboard's per-job table against
+// a real ClickHouse holding the exporter's otel_logs: the same hashed Job name
+// in two environments (one succeeds, one fails) is TWO runs, a Pod's event
+// about a Job-named object and another project's job are not counted, and a job
+// with no completed run has NULL durations. Same gate as the alert defaults.
+func TestJobsSummarySQLOnClickHouse(t *testing.T) {
+	container := os.Getenv("FORGE_ALERT_CLICKHOUSE")
+	if testing.Short() || container == "" {
+		t.Skip("needs a ClickHouse container; set FORGE_ALERT_CLICKHOUSE=<container>")
+	}
+	run := func(sql string) string {
+		t.Helper()
+		cmd := exec.Command("docker", "exec", "-i", container, "clickhouse-client", "--password", "pw", "--multiquery", "--format", "TSV")
+		cmd.Stdin = strings.NewReader(sql)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("clickhouse: %v\n%s\n--- sql ---\n%s", err, out, sql)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	seed, err := os.ReadFile("testdata/clickhouse-jobs-seed.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run(string(seed))
+	bind := func(envs string) string {
+		q := jobsSummarySQL([]string{"cloudsql-backup-prune", "db-migrate-up"})
+		q = strings.ReplaceAll(q, "{from:DateTime64(9)}", "now() - INTERVAL 1 DAY")
+		q = strings.ReplaceAll(q, "{to:DateTime64(9)}", "now() + INTERVAL 1 DAY")
+		return strings.ReplaceAll(q, "{env_ids:Array(String)}", envs)
+	}
+	row := func(out, job string) []string {
+		for _, l := range strings.Split(out, "\n") {
+			if f := strings.Split(l, "\t"); f[0] == job {
+				return f
+			}
+		}
+		return nil
+	}
+	all := run(bind("[]"))
+	if r := row(all, "db-migrate-up"); r == nil || r[1] != "2" || r[2] != "1" || r[3] != "1" {
+		t.Errorf("db-migrate-up over both envs = %v, want 2 runs, 1 succeeded, 1 failed:\n%s", r, all)
+	}
+	if r := row(all, "cloudsql-backup-prune"); r == nil || r[1] != "1" || r[2] != "1" || r[5] != "90" {
+		t.Errorf("cloudsql-backup-prune = %v, want 1 run, 1 succeeded, 90s (the Pod event must not count):\n%s", r, all)
+	}
+	if strings.Contains(all, "other-thing") {
+		t.Errorf("another project's job is listed:\n%s", all)
+	}
+	if r := row(run(bind("['stg']")), "db-migrate-up"); r == nil || r[1] != "1" || r[3] != "1" || r[5] != `\N` || r[6] != `\N` {
+		t.Errorf("a failed-only environment = %v, want 1 failed run and NULL durations", r)
+	}
+	if r := row(run(bind("['prod']")), "db-migrate-up"); r == nil || r[1] != "1" || r[2] != "1" || r[3] != "0" {
+		t.Errorf("prod alone = %v, want 1 succeeded run", r)
+	}
+}

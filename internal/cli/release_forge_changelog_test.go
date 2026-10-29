@@ -231,7 +231,7 @@ func fakeGH(t *testing.T, breakingPRs string, failRelease bool) (bin, log string
 	}
 	script := `#!/usr/bin/env bash
 echo "ARGS: $*" >> "` + log + `"
-if [ "$1 $2" = "run list" ]; then printf '123 completed success %s\n' "$(git rev-parse HEAD)"; exit 0; fi
+if [ "$1 $2" = "run list" ]; then printf '123|completed|success|%s\n' "$(git rev-parse HEAD)"; exit 0; fi
 if [ "$1 $2" = "run view" ]; then echo success; exit 0; fi
 if [ "$1 $2" = "pr list" ]; then printf '%s\n' ` + breakingPRs + `; exit 0; fi
 if [ "$1 $2" = "release create" ]; then

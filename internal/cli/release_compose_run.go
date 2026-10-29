@@ -311,8 +311,7 @@ func sealComposition(ctx context.Context, cfg *config.ProjectConfig, entities *K
 	}
 	var withheld bool
 	if assets, withheld = withholdServiceCatalog(assets, reader); withheld {
-		fmt.Fprintf(os.Stderr, "[bundle] Note: the service catalog was not uploaded: this control plane does not accept it yet, "+
-			"so the RPC explorer will lack env %s's declared routes. The deploy is unaffected.\n", opts.env)
+		noteServiceCatalogWithheld(os.Stderr, opts.env)
 	}
 	if doc.Provenance.Commit != candidate.Source.Commit || doc.Provenance.Dirty {
 		return fmt.Errorf("composition source changed during build")

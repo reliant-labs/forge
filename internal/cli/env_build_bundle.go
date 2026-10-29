@@ -250,9 +250,7 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 	var withheld bool
 	observability, withheld = withholdServiceCatalog(observability, reader)
 	if withheld {
-		fmt.Fprintf(in.errWriter(),
-			"[bundle] Note: the service catalog was not uploaded: this control plane does not accept it yet, "+
-				"so the RPC explorer will lack env %s's declared routes. The deploy is unaffected.\n", env)
+		noteServiceCatalogWithheld(in.errWriter(), env)
 	}
 
 	built, err := bundle.Build(ctx, bundle.BuildInput{

@@ -17,8 +17,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/internal/obsdash"
@@ -86,6 +88,21 @@ func withholdServiceCatalog(files []bundle.ObservabilityFile, reader *release.Bu
 		}
 	}
 	return out, len(out) != len(files)
+}
+
+// catalogWithheldNoted holds the envs whose withheld-catalog note this
+// process has printed: a deploy renders the bundle more than once (plan,
+// then write), and the fact is worth saying once.
+var catalogWithheldNoted sync.Map
+
+// noteServiceCatalogWithheld prints, once per env, that the catalog stayed
+// behind.
+func noteServiceCatalogWithheld(w io.Writer, env string) {
+	if _, seen := catalogWithheldNoted.LoadOrStore(env, true); seen {
+		return
+	}
+	fmt.Fprintf(w, "[bundle] Note: the service catalog was not uploaded: this control plane does not accept it yet, "+
+		"so the RPC explorer will lack env %s's declared routes. The deploy is unaffected.\n", env)
 }
 
 // bundleObservabilityFiles is the set as bundle files. A set that does not

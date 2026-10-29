@@ -157,15 +157,45 @@ func declareProject(t *testing.T, workloadsK string) (string, string) {
 }
 
 // declareProjectBeside is declareProject in a project that already has the
-// named workers.
+// named workers. The project is on the legacy composition (an owned `type
+// Infra struct`), whose binary has a subcommand per component: a worker of a
+// project on the composition graph is never declared (declareGraphProject).
 func declareProjectBeside(t *testing.T, workloadsK string, workers ...string) (string, string) {
 	t.Helper()
-	root := t.TempDir()
-	files := map[string]string{
-		"internal/workers/reaper/worker.go": "package reaper\n",
-		codegen.WorkloadsKCLRelPath:         workloadsK,
-		"deploy/kcl/dev/main.k":             devMainK,
+	return declareProjectFiles(t, map[string]string{
+		"internal/app/compose.go":   "package app\n\ntype Infra struct{}\n",
+		codegen.WorkloadsKCLRelPath: workloadsK,
+		"deploy/kcl/dev/main.k":     devMainK,
+	}, workers...)
+}
+
+// TestDeclareWorkload_GraphProjectDeclaresNothing pins bug 42f7f65b: on the
+// composition graph a worker has no subcommand of its own — the `server`
+// root runs it — so `forge scaffold worker` declares no workload (one with
+// `args = ["reaper"]` crash-loops on "unknown command") and binds nothing
+// beside the env's `_api`.
+func TestDeclareWorkload_GraphProjectDeclaresNothing(t *testing.T) {
+	dev := codegen.APIWorkloadStanza("github.com/acme/demo", "demo") + "\n\n_workloads = [\n    _on_host_job(wl.migrate)\n    _on_host(_api)\n]\n"
+	in := migrateDecl + "\nALL: [fw.Workload] = [migrate]\n"
+	workloads, gotDev := declareProjectFiles(t, map[string]string{
+		codegen.WorkloadsKCLRelPath: in,
+		"deploy/kcl/dev/main.k":     dev,
+	})
+	if workloads != in {
+		t.Errorf("workloads.k changed on the composition graph:\n%s", workloads)
 	}
+	if gotDev != dev {
+		t.Errorf("dev/main.k changed although _api runs the worker:\n%s", gotDev)
+	}
+}
+
+// declareProjectFiles writes files plus the worker `reaper` and the named
+// workers, runs the declaration step for reaper, and returns workloads.k and
+// dev/main.k as they are left.
+func declareProjectFiles(t *testing.T, files map[string]string, workers ...string) (string, string) {
+	t.Helper()
+	root := t.TempDir()
+	files["internal/workers/reaper/worker.go"] = "package reaper\n"
 	for _, w := range workers {
 		files["internal/workers/"+w+"/worker.go"] = "package " + w + "\n"
 	}

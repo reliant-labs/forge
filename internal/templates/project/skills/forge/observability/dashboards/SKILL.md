@@ -10,7 +10,11 @@ and alert inputs without claiming process ownership. It scopes the overview to
 the service.names and workloads every environment that renders declares (the
 same derivation a bundle uses), so the local stack's overview draws your
 processes; an environment that does not render is skipped, so a newly scaffolded
-operator can still generate while prod's cluster is unbound.
+operator can still generate while prod's cluster is unbound. The local overview
+(`<project>-overview.json`) is yours once written, but while it is still the
+untouched render of "nothing deployed" (every panel on
+`__forge_no_deployed_process__`) the next generate that finds workloads
+replaces it; an edited one is never touched.
 
 `forge env render <env>` validates, and `forge env build <env>` assembles the
 process dashboards from the selected environment's already-rendered

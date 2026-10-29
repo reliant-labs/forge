@@ -45,13 +45,11 @@ forge env up dev             # host services + frontends, on a fresh seeded DB
 
 ### Name every service up front
 
-`forge project new --service a --service b --frontend web` writes
-`cmd/<bin>/main.go` with every service constructor already in the
-`cmd.Execute(...)` arg list.
-
-A later `forge scaffold service <name>` appends its constructor to that same
-call; if it cannot find `cmd.Execute(...)` it declines and prints the
-import and argument to add by hand.
+`forge project new --service a --service b --frontend web` composes every
+service into one graph; `<bin> server`, its default root, serves them all on
+one mux. `main.go`'s `cmd.Execute(...)` builds the command tree, with no
+command per service: every env runs `server` as `_api`. A later
+`forge scaffold service <name>` joins the same way.
 
 Batch later ones: `forge scaffold service sales jobs billing` generates once.
 
@@ -304,7 +302,7 @@ hand-wrote and then deleted.
 | You are about to… | forge already does it | Load |
 |---|---|---|
 | add a **database entity** | mark the message `// forge:entity`, run bare `forge scaffold`. You get the create-table migration, the CRUD quintet, the managed fields, the entity struct + ORM, CRUD ops, a lifecycle test, the list/detail/new/edit pages, nav, and mock data | `db`, `proto` |
-| add a **service** | `forge scaffold service <name>` — proto stub, `internal/handlers/<svc>/`, the typed mount, its own cobra subcommand, a test-harness entry, and the append into `cmd/<bin>/main.go` | `services` |
+| add a **service** | `forge scaffold service <name>` — proto stub, `internal/handlers/<svc>/`, its compose.go entry (the `server` root runs it — no per-service subcommand or workload), and a test-harness entry | `services` |
 | add a **custom rpc** | declare it in the proto, then `forge scaffold rpc <svc> <Name>` — a correctly-signed pb-through method plus a self-destructing test row. Never hand-write the stub | `api` |
 | write a **query the generated CRUD can't express** | `internal/db/<entity>_repo_ext.go` is already there, with the repo delegates, the `db.Bun()` raw-SQL handle and `orm.Context` documented in its header | `db`, `db/crud-overrides` |
 | build a **UI control** | check `src/components/` and `forge component search <thing>` first. A status badge, an enum select, and the foreign-key picker/name pair are already scaffolded and enum-aware; the library ships 70+ more | `frontend`, `frontend/pages` |

@@ -44,7 +44,7 @@ func TestCheckHostedResources(t *testing.T) {
 			"resources = fw.Resources {cpuRequestMillicores = 125, cpuLimitMillicores = 125, memoryRequestBytes = forge.mib(128), memoryLimitBytes = forge.mib(128)}"},
 	}
 	for _, c := range cases {
-		err := CheckHostedResources(c.plan, ClaimableLimitsFallback(), c.in)
+		err := CheckHostedResourcesWithin(c.plan, ClaimableLimitsFallback(), c.in)
 		if c.wantFix == "" {
 			if err != nil {
 				t.Errorf("%s: refused: %v", c.name, err)
@@ -63,7 +63,7 @@ func TestCheckHostedResources(t *testing.T) {
 			t.Errorf("%s: %q does not name the plan", c.name, err)
 		}
 		// The suggested fix is itself admitted: following it converges.
-		if again := CheckHostedResources(c.plan, ClaimableLimitsFallback(), rr.Want); again != nil {
+		if again := CheckHostedResourcesWithin(c.plan, ClaimableLimitsFallback(), rr.Want); again != nil {
 			t.Errorf("%s: the suggested fix is refused too: %v", c.name, again)
 		}
 	}
@@ -100,10 +100,10 @@ func TestClaimableLimitsArePublishedNotCompiled(t *testing.T) {
 	published := ClaimableLimitsFallback()
 	published.WorkloadCPUMillicores, published.WorkloadMemoryBytes = 250, 256*mib
 	in := v1alpha1.Resources{CPURequestMillicores: 250, CPULimitMillicores: 250, MemoryRequestBytes: 256 * mib, MemoryLimitBytes: 256 * mib}
-	if err := CheckHostedResources(HostedPlanClaimable, published, in); err != nil {
+	if err := CheckHostedResourcesWithin(HostedPlanClaimable, published, in); err != nil {
 		t.Errorf("a shape at the published cap is refused: %v", err)
 	}
-	if err := CheckHostedResources(HostedPlanClaimable, ClaimableLimitsFallback(), in); err == nil {
+	if err := CheckHostedResourcesWithin(HostedPlanClaimable, ClaimableLimitsFallback(), in); err == nil {
 		t.Error("the compiled-in fallback admitted a shape over its own cap")
 	}
 	if (ClaimableLimits{}).Valid() || !ClaimableLimitsFallback().Valid() {

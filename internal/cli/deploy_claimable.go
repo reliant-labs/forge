@@ -435,7 +435,7 @@ func claimableIneligibility(e *KCLEntities, caps deploy.ClaimableLimits) []strin
 		}
 		if w.Spec.EffectiveKind() == v1alpha1.KindService || w.Spec.EffectiveKind() == v1alpha1.KindJob {
 			// The hosted shape band does not apply to this plan; these caps do.
-			if err := deploy.CheckHostedResources(deploy.HostedPlanClaimable, caps, w.Spec.Resources); err != nil {
+			if err := deploy.CheckHostedResourcesWithin(deploy.HostedPlanClaimable, caps, w.Spec.Resources); err != nil {
 				var r *deploy.ResourcesRefusal
 				if errors.As(err, &r) {
 					out = append(out, fmt.Sprintf("workload %q %s\n      fix: give it, in its binding (deploy/kcl/<env>/main.k): %s",

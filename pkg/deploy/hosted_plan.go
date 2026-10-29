@@ -87,7 +87,8 @@ type ClaimableLimits struct {
 
 // ClaimableLimitsFallback is forge's compiled-in copy of the claimable plan's
 // caps (control-plane, 2026-10-29), for when the control plane cannot be
-// asked. A caller that uses it says so: the platform's own answer wins.
+// asked. A caller that uses it
+// says so: the platform's own answer wins.
 func ClaimableLimitsFallback() ClaimableLimits {
 	return ClaimableLimits{
 		MaxServices: 1, MaxReplicas: 1, MaxMigrationJobs: 1,
@@ -156,11 +157,11 @@ func kclBytes(b int64) string {
 	return fmt.Sprintf("%d", b)
 }
 
-// CheckHostedResources judges one hosted workload's resources under plan:
-// the shape band for the standard plan, the claimable caps (claimable) for
-// the claimable one. A refusal is a *ResourcesRefusal naming the conformant
-// block.
-func CheckHostedResources(plan HostedPlan, claimable ClaimableLimits, r v1alpha1.Resources) error {
+// CheckHostedResourcesWithin judges one hosted workload's resources under
+// plan: the shape band for the standard plan, the claimable caps (claimable)
+// for the claimable one. A refusal is a *ResourcesRefusal naming the
+// conformant block.
+func CheckHostedResourcesWithin(plan HostedPlan, claimable ClaimableLimits, r v1alpha1.Resources) error {
 	if plan == HostedPlanClaimable {
 		return claimable.CheckResources(r)
 	}

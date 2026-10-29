@@ -504,6 +504,11 @@ jobs:
         run: go test -race -count=1 -timeout 30m $(scripts/ci-test-packages.sh unit)
       - name: Local registry maintenance integration
         run: go test -race -tags=integration -count=1 -timeout=5m ./internal/storage
+      # Main only: keeps any archive this job had to fetch, so the next run
+      # does not (see embedded-postgres-cache's header).
+      - name: Save the embedded postgres archives (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/embedded-postgres-cache-save
       # Main only; see "Build-cache note" at the top of this file. Skipped
       # when today's entry already exists (build-hit).
       - name: Save the Go caches (main only, once a day)
@@ -557,6 +562,11 @@ jobs:
         # The same 30m budget as `test`: internal/cli alone measured
         # 665-692s under -race, so this is a hang detector, not a speed bound.
         run: go test -race -count=1 -timeout 30m $(scripts/ci-test-packages.sh cli)
+      # Main only: keeps any archive this job had to fetch, so the next run
+      # does not (see embedded-postgres-cache's header).
+      - name: Save the embedded postgres archives (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/embedded-postgres-cache-save
 
   # The pull-request tier, run whole on main, then the guards. Three jobs in
   # one: main's own check that the tier pull requests are judged by still
@@ -623,6 +633,11 @@ jobs:
         # -p 1, and -p 1 was not slower (132s against 217s). Full mode and
         # -count=1: the guards' whole-repo work skips under -short.
         run: go test -p 1 -count=1 -timeout 30m $(scripts/ci-test-packages.sh guards)
+      # Main only: keeps any archive this job had to fetch, so the next run
+      # does not (see embedded-postgres-cache's header).
+      - name: Save the embedded postgres archives (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/embedded-postgres-cache-save
       # Main only, and after the tests so the entry carries their results.
       - name: Save the Go caches (main only)
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -767,6 +782,11 @@ jobs:
         with:
           path: ${{ steps.gocache.outputs.dir }}
           key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
+      # Main only: keeps any archive this job had to fetch, so the next run
+      # does not (see embedded-postgres-cache's header).
+      - name: Save the embedded postgres archives (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/embedded-postgres-cache-save
 
   # PUSH TO MAIN ONLY. On a pull request every package is already compiled
   # by test-short; what this adds is the release flags (-buildvcs), which a

@@ -75,7 +75,7 @@ func TestSourceFormsRoundTripAndValidate(t *testing.T) {
 	if unknown, _ := json.Marshal(Source{}); string(unknown) != `{"path":"","line":0}` {
 		t.Fatalf("unknown form: %s", unknown)
 	}
-	for _, s := range []Source{{}, {Path: "a.go", Symbol: "T.M"}, {Path: "a.go", Line: 1}} {
+	for _, s := range []Source{{}, {Path: "a.go", Symbol: "T.M"}, {Path: "a.go", Symbol: "Café.Größe"}, {Path: "a.go", Line: 1}} {
 		if !validSource(s) {
 			t.Errorf("refused %+v", s)
 		}

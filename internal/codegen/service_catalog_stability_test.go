@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -265,4 +266,55 @@ func TestServiceCatalogBundleLocatesTheBuiltSource(t *testing.T) {
 	at(c.Components[0].ImplementationCandidates[0].Methods[0].Source, "func (*Impl) Get(")
 	at(c.Components[1].Source, "func NewOrders(")
 	at(c.Clients[0].Source, "func NewOrders(")
+}
+
+// Go identifiers may be Unicode. A symbol the generator emits for one must
+// decode and locate, or the bundle build would fail on a valid project.
+func TestServiceCatalogUnicodeSymbolsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	const rel = "internal/app/café.go"
+	src := "package app\n\ntype Café interface {\n\tGröße() int\n}\n\ntype Ünit struct{}\n\nfunc (Ünit) Größe() int { return 1 }\n"
+	if err := os.MkdirAll(filepath.Join(dir, "internal/app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, rel), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, filepath.Join(dir, rel), src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := new(types.Config).Check("example.com/shop/internal/app", fset, []*ast.File{f}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &packages.Package{Types: pkg, Fset: fset}
+	u := &graphUniverse{app: p}
+	iface := pkg.Scope().Lookup("Café").Type()
+	c := servicecatalog.Catalog{Schema: servicecatalog.Schema, Module: "example.com/shop", Components: []servicecatalog.Component{{
+		ID: "Café", Name: "Café", Kind: "component", Source: catalogSource(dir, fset, pkg.Scope().Lookup("Café")),
+		Methods: catalogMethods(dir, u, iface), ImplementationCandidates: catalogImplementations(dir, u, p, iface)}}}
+	raw, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := servicecatalog.Decode(raw)
+	if err != nil {
+		t.Fatalf("a Unicode symbol does not decode: %v\n%s", err, raw)
+	}
+	comp := decoded.Components[0]
+	if comp.Source.Symbol != "Café" || comp.Methods[0].Source.Symbol != "Café.Größe" || len(comp.ImplementationCandidates) != 1 || comp.ImplementationCandidates[0].Methods[0].Source.Symbol != "Ünit.Größe" {
+		t.Fatalf("symbols: %s", raw)
+	}
+	servicecatalog.Locate(&decoded, func(rel string) ([]byte, error) { return os.ReadFile(filepath.Join(dir, rel)) })
+	comp = decoded.Components[0]
+	got := []int{comp.Source.Line, comp.Methods[0].Source.Line, comp.ImplementationCandidates[0].Source.Line, comp.ImplementationCandidates[0].Methods[0].Source.Line}
+	if want := []int{3, 4, 7, 9}; !slices.Equal(got, want) {
+		t.Fatalf("located lines %v, want %v", got, want)
+	}
+	located, _ := json.Marshal(decoded)
+	if _, err := servicecatalog.DecodeLocated(located); err != nil {
+		t.Fatal(err)
+	}
 }

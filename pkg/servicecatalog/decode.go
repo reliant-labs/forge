@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"go/token"
 	"io"
 	"path"
 	"strings"
@@ -86,14 +87,16 @@ func validSource(s Source) bool {
 	return s.Line > 0
 }
 
-// validSymbol accepts "Name" and "Type.Name", each part a Go identifier.
+// validSymbol accepts "Name" and "Type.Name", each part a Go identifier —
+// Unicode letters included, as Go allows (protoRef stays ASCII: protobuf
+// names are).
 func validSymbol(sym string) bool {
 	parts := strings.Split(sym, ".")
 	if len(parts) > 2 {
 		return false
 	}
 	for _, p := range parts {
-		if !identifier(p) {
+		if !token.IsIdentifier(p) {
 			return false
 		}
 	}

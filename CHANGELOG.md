@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.0.5] - 2026-10-29
+
+### Added
+
+- **release:** placement prerequisite wire contract and validation ([#1504](https://github.com/reliant-labs/forge/pull/1504))
+- **env:** forge env delete removes the env's data too, and --keep-data retains it ([#1505](https://github.com/reliant-labs/forge/pull/1505))
+
+### Fixed
+
+- **obs:** a scaffolded overview no longer freezes the no-deployed-process sentinel ([#1495](https://github.com/reliant-labs/forge/pull/1495))
+- **deploy:** a graph-composed project declares no per-service workload — its binary has no such command ([#1501](https://github.com/reliant-labs/forge/pull/1501))
+- **observe:** seconds histograms get seconds bucket boundaries ([#1506](https://github.com/reliant-labs/forge/pull/1506))
+
 ## [v1.0.4] - 2026-10-29
 
 ### Fixed
@@ -8233,7 +8246,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.4...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.5...HEAD
+[v1.0.5]: https://github.com/reliant-labs/forge/compare/v1.0.4...v1.0.5
 [v1.0.4]: https://github.com/reliant-labs/forge/compare/v1.0.3...v1.0.4
 [v1.0.3]: https://github.com/reliant-labs/forge/compare/v1.0.2...v1.0.3
 [v1.0.2]: https://github.com/reliant-labs/forge/compare/v1.0.1...v1.0.2

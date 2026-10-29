@@ -8,7 +8,7 @@
 # checksums.txt, and installs one `forge` binary. It never prompts.
 #
 # Environment:
-#   FORGE_VERSION      release to install, e.g. v0.1.46 or 0.1.46 (default: latest)
+#   FORGE_VERSION      release to install, e.g. v1.0.0 or 1.0.0 (default: latest)
 #   FORGE_INSTALL_DIR  directory to install into (default: $HOME/.local/bin)
 #
 # Testing seam (not for general use):
@@ -70,7 +70,7 @@ esac
 if [ -n "${FORGE_VERSION:-}" ]; then
   tag="v${FORGE_VERSION#v}"
   case "$tag" in
-    *[!0-9A-Za-z.+-]* | v) die "FORGE_VERSION must look like v0.1.46 (got: $FORGE_VERSION)" ;;
+    *[!0-9A-Za-z.+-]* | v) die "FORGE_VERSION must look like v1.0.0 (got: $FORGE_VERSION)" ;;
   esac
   release_url="$BASE_URL/download/$tag"
   wanted="$tag"

@@ -286,11 +286,11 @@ available app names. Targeting an operator (e.g. workspace-controller)
 applies just that operator's Deployment + cluster RBAC.
 
 k8s-only deploy: naming only backend apps via --target is itself the
-"k8s without touching the frontend" path — a Firebase frontend isn't in
-the --target set, so its build+deploy step never runs. To ship the WHOLE
+"k8s without touching the frontend" path — a static frontend (hosted
+static hosting, a bucket or Firebase) isn't in the --target set, so its build+deploy step never runs. To ship the WHOLE
 backend bundle while skipping the frontend (without enumerating every
 service), pass --skip-frontend: the k8s apply runs as normal and the
-Frontend (e.g. Firebase) build+deploy dispatch is skipped.
+static frontend build+ship step is skipped.
 
 Examples:
   forge env deploy dev                          # Deploy to dev (local k3d)
@@ -300,7 +300,7 @@ Examples:
   forge env deploy dev --namespace custom-ns    # Override namespace
   forge env deploy dev --target admin-server    # Deploy only the admin-server app
   forge env deploy prod --target workspace-controller # Deploy only that operator
-  forge env deploy prod --skip-frontend         # Deploy backend k8s, skip Firebase`
+  forge env deploy prod --skip-frontend         # Deploy the backend, skip the static frontend`
 
 func newDeployCmd() *cobra.Command {
 	// ONE struct and not twenty locals: the flag targets ARE the fields
@@ -350,8 +350,8 @@ func registerDeployApplyFlags(cmd *cobra.Command, f *deployCmdFlags) {
 	flags.StringVar(&f.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64)")
 	flags.BoolVar(&f.prune, "prune", false, "Delete forge-managed Deployments in the namespace that the current KCL render no longer produces (opt-in)")
 	flags.StringArrayVar(&f.targets, "target", nil, "Deploy ONLY the named application(s) (service/operator/frontend name; repeatable). Scopes K8sCluster apply to the app's workload + shared resources, and External/Compose dispatch to the named apps. Empty = deploy the whole env bundle (default).")
-	flags.BoolVar(&f.skipFrontend, "skip-frontend", false, "Run the k8s apply but skip the Frontend (e.g. Firebase) build+deploy dispatch. The k8s-only path for the whole backend bundle without enumerating every --target.")
-	flags.BoolVar(&f.frontendsOnly, "frontends-only", false, "Deploy ONLY the env's shippable frontend(s) — build + ship to Firebase Hosting or a static-site bucket, skipping the entire k8s apply (Services, Operators, CronJobs, gateways). The inverse of --skip-frontend; the native 'ship just the frontend' path that doesn't touch kubectl. Mutually exclusive with --skip-frontend and --target.")
+	flags.BoolVar(&f.skipFrontend, "skip-frontend", false, "Deploy every backend workload but skip the static frontend build+ship (hosted static hosting, a bucket or Firebase). The backend-only path without enumerating every --target.")
+	flags.BoolVar(&f.frontendsOnly, "frontends-only", false, "Deploy ONLY the env's shippable frontend(s) — build + ship to hosted static hosting, a bucket or Firebase Hosting, skipping every backend workload (Services, Operators, CronJobs, gateways). The inverse of --skip-frontend; the native 'ship just the frontend' path that doesn't touch kubectl. Mutually exclusive with --skip-frontend and --target.")
 	flags.BoolVar(&f.skipPreflight, "skip-preflight", false, "Skip the deploy preflight (verify referenced Secret keys + container images exist on the live target BEFORE applying). Default-on for remote/cloud clusters; bypass at your own risk.")
 	flags.BoolVar(&f.noDigest, "no-digest", false, "Deploy by the mutable :tag even when the build state captured an immutable image digest. By default forge pins the manifest to <image>@sha256:... so a re-tagged/cached layer can't ship; this escape hatch restores tag-based references.")
 	flags.BoolVar(&f.offlineLedger, "offline-ledger", false, "Break-glass for a control plane that is down: deploy the env's cached CURRENT release by its recorded digests (nothing is built, the ledger is not contacted) and queue the promotion record, replayed idempotently on the next successful ledger contact. Refuses a hosted tier and a hub-converged env, and a move to any other release. Prints the cache's age; the cache is refreshed by every successful ledger read or write")
@@ -2125,7 +2125,7 @@ func renderAndScopeEntities(ctx context.Context, projectDir, envName string, tar
 	}
 	if frontendsOnly {
 		if entities == nil || !hasShippableFrontend(entities) {
-			return nil, nil, fmt.Errorf("--frontends-only: environment %q declares no shippable frontend to deploy (a forge.FirebaseHosting or forge.StaticSite deploy block)", envName)
+			return nil, nil, fmt.Errorf("--frontends-only: environment %q declares no shippable frontend to deploy (a frontend whose runtime is forge.OnHosted, forge.OnBucket or forge.OnFirebase)", envName)
 		}
 		entities = filterEntitiesToFrontendsOnly(entities)
 	}

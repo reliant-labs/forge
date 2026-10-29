@@ -546,7 +546,7 @@ first four need no Go toolchain either.
 ```bash
 # macOS / Linux (amd64, arm64): one command, no sudo, no prompts.
 # Installs to ~/.local/bin (set FORGE_INSTALL_DIR to change it) and checks the
-# release's sha256 before installing. Pin a release with FORGE_VERSION=v0.1.46.
+# release's sha256 before installing. Pin a release with FORGE_VERSION=v1.0.0.
 curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh
 ```
 
@@ -571,7 +571,7 @@ For a non-interactive sandbox or CI image, the `curl | sh` line is the whole
 setup. Pin the version so the image is reproducible:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | FORGE_VERSION=v0.1.46 sh
+curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | FORGE_VERSION=v1.0.0 sh
 export PATH="$HOME/.local/bin:$PATH"   # the installer prints this if it is needed
 ```
 

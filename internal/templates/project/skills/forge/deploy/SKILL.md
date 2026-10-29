@@ -187,7 +187,7 @@ denied-push triage.
 A non-hosted env declares no registry: each workload — and each hosted
 frontend, via `forge.Frontend.image` — names its own.
 
-No Docker daemon? The project image still builds and pushes (`--image-builder`); load `deploy/daemonless-build`.
+Every image is built with `docker build`, so building one needs a running Docker daemon.
 
 ### Docker build contexts
 

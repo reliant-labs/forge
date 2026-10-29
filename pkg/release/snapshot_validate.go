@@ -273,12 +273,14 @@ func (s Snapshot) Validate() error {
 	assetPaths := map[string]bool{}
 	assetBytes := 0
 	for _, a := range s.Assets {
-		if (a.Path != BundleFrontendDeclarationsPath && !strings.HasPrefix(a.Path, BundleObservabilityPrefix+"/")) || path.Clean(a.Path) != a.Path || strings.Contains(a.Path, "..") || assetPaths[a.Path] || SpecDigest(a.Data) != a.Digest {
+		if (a.Path != BundleFrontendDeclarationsPath && a.Path != BundleServiceCatalogPath && !strings.HasPrefix(a.Path, BundleObservabilityPrefix+"/")) || path.Clean(a.Path) != a.Path || strings.Contains(a.Path, "..") || assetPaths[a.Path] || SpecDigest(a.Data) != a.Digest {
 			return snapshotBad("invalid/duplicate snapshot asset")
 		}
 		assetPaths[a.Path] = true
 		assetBytes += len(a.Data)
-		if len(a.Data) > 1<<20 || assetBytes > 4<<20 {
+		// The layer's artifact bound (ValidateManifestsLayer): a service
+		// catalog grows with its project, so no per-asset bound sits below it.
+		if assetBytes > ManifestsLayerMaxBytes {
 			return snapshotBad("oversized snapshot assets")
 		}
 	}

@@ -269,6 +269,9 @@ func EnsureDevWebRuntimeLink(projectDir string) {
 		fmt.Fprintf(os.Stderr, "warning: could not link %s into %s: %v\n", WebRuntimePackage, link, err)
 		return
 	}
+	// The link resolves through the checkout's dist/, a build output: make
+	// it current before anything installs or typechecks against it.
+	ensureWebRuntimeDist(target)
 	if changed || pnpmChanged {
 		install := "npm install"
 		switch {

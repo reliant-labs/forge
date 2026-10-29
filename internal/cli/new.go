@@ -153,14 +153,8 @@ checkout stop being the same source; drop the bridge with
 			}
 			frontendOutput = strings.ToLower(strings.TrimSpace(frontendOutput))
 			frontendRoutes = scaffold.NormalizeRouteSlugs(frontendRoutes)
-			if err := checkSiteFrontendFlags(cmd, kindFlag); err != nil {
+			if err := validateNewFrontendFlags(cmd, kindFlag, frontendOutput, frontendNames); err != nil {
 				return err
-			}
-			if (cmd.Flags().Changed("output") || cmd.Flags().Changed("routes")) && len(frontendNames) == 0 {
-				return fmt.Errorf("--output and --routes require --frontend")
-			}
-			if frontendOutput != "" && frontendOutput != "static" && frontendOutput != "standalone" && frontendOutput != "server" {
-				return fmt.Errorf("invalid --output %q: use static, standalone, or server", frontendOutput)
 			}
 			resolvedHarness, err := resolveNewHarness(harness)
 			if err != nil {
@@ -198,6 +192,22 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print the raw output behind a step forge summarizes in one line (e.g. git's explanation when the initial commit is skipped for want of a git identity)")
 
 	return cmd
+}
+
+// validateNewFrontendFlags refuses frontend flags that cannot apply: site-only
+// flags without --kind site, --output/--routes without a --frontend, and an
+// unknown --output.
+func validateNewFrontendFlags(cmd *cobra.Command, kindFlag, output string, frontendNames []string) error {
+	if err := checkSiteFrontendFlags(cmd, kindFlag); err != nil {
+		return err
+	}
+	if (cmd.Flags().Changed("output") || cmd.Flags().Changed("routes")) && len(frontendNames) == 0 {
+		return fmt.Errorf("--output and --routes require --frontend")
+	}
+	if output != "" && output != "static" && output != "standalone" && output != "server" {
+		return fmt.Errorf("invalid --output %q: use static, standalone, or server", output)
+	}
+	return nil
 }
 
 // newProjectName reconciles the two supported spellings without changing the
@@ -459,17 +469,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		}
 	}
 
-	fmt.Printf("Creating new project '%s' at %s\n", projectName, targetPath)
-	if len(serviceNames) > 0 {
-		if len(serviceNames) == 1 {
-			fmt.Printf("  Service: %s\n", serviceNames[0])
-		} else {
-			fmt.Printf("  Services: %s\n", strings.Join(serviceNames, ", "))
-		}
-	}
-	if len(frontendNames) > 0 {
-		fmt.Printf("  Frontend: %s\n", strings.Join(frontendNames, ", "))
-	}
+	announceNewProject(projectName, targetPath, serviceNames, frontendNames)
 
 	scaffold, err := beginScaffold(targetPath, inPlace)
 	if err != nil {
@@ -1312,6 +1312,20 @@ func writeDevForgeGoWork(targetPath string, link bool) {
 		return
 	}
 	fmt.Printf("🔗 --link-forge: wrote go.work bridging this project to %s (gitignored, machine-local; undo: go work edit -dropuse=%s)\n", root, root)
+}
+
+// announceNewProject prints the project, and the services and frontends it
+// starts with, before anything is written.
+func announceNewProject(projectName, targetPath string, serviceNames, frontendNames []string) {
+	fmt.Printf("Creating new project '%s' at %s\n", projectName, targetPath)
+	if len(serviceNames) == 1 {
+		fmt.Printf("  Service: %s\n", serviceNames[0])
+	} else if len(serviceNames) > 1 {
+		fmt.Printf("  Services: %s\n", strings.Join(serviceNames, ", "))
+	}
+	if len(frontendNames) > 0 {
+		fmt.Printf("  Frontend: %s\n", strings.Join(frontendNames, ", "))
+	}
 }
 
 // explicitForgeRoot is --forge-root for the `project new` run in progress.

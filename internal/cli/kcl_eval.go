@@ -87,16 +87,21 @@ subcommands are how anything outside forge reads a value out of project KCL.`,
 	return cmdutil.StrictGroup(cmd)
 }
 
+// kclEvalFlags is the parsed flag set of `forge kcl eval`. The render-*
+// fields are the hidden internal transport an env render's isolated child
+// receives; a user invocation leaves them zero.
+type kclEvalFlags struct {
+	selectors                []string
+	format                   string
+	options                  []string
+	renderEnv, renderContext string
+	materialize              bool
+	processRooted            bool
+	renderActive             bool
+}
+
 func newKCLEvalCmd() *cobra.Command {
-	var (
-		selectors                []string
-		format                   string
-		options                  []string
-		renderEnv, renderContext string
-		materialize              bool
-		processRooted            bool
-		renderActive             bool
-	)
+	var f kclEvalFlags
 
 	cmd := &cobra.Command{
 		Use:   "eval <file-or-directory> [-S <path>]...",
@@ -152,24 +157,24 @@ Examples:
   ` + Name() + ` kcl eval deploy/kcl/lib/platform_local.k -S cloudnative_pg.name -S cloudnative_pg.namespace
   ` + Name() + ` kcl eval deploy/kcl/lib/kata_pool.k                       # the whole document`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runKCLEvalContext(cmd, args[0], selectors, format, options, renderEnv, renderContext, materialize, processRooted, renderActive)
+			return runKCLEval(cmd, args[0], f)
 		},
 	}
 
-	cmd.Flags().StringArrayVarP(&selectors, "select", "S", nil,
+	cmd.Flags().StringArrayVarP(&f.selectors, "select", "S", nil,
 		"Print only this dotted field path (repeatable; repeated paths yield an object keyed by path)")
-	cmd.Flags().StringVar(&format, "format", string(kcleval.FormatJSON),
+	cmd.Flags().StringVar(&f.format, "format", string(kcleval.FormatJSON),
 		fmt.Sprintf("Output format: %v (raw prints a scalar's own text, unquoted and with no trailing newline)", kcleval.Formats()))
-	cmd.Flags().StringArrayVarP(&options, "option", "D", nil,
+	cmd.Flags().StringArrayVarP(&f.options, "option", "D", nil,
 		"Bind a top-level KCL option, key=value (repeatable)")
 
 	// Internal transport for env renders. Never read these capabilities from
 	// a project option or an environment variable.
-	cmd.Flags().StringVar(&renderEnv, "render-env", "", "Environment of an isolated env evaluation")
-	cmd.Flags().StringVar(&renderContext, "render-context", "", "Plugin capabilities: read | inspect | claim")
-	cmd.Flags().BoolVar(&materialize, "materialize", false, "Allow launch-time forge.write_file materialization")
-	cmd.Flags().BoolVar(&processRooted, "process-rooted", false, "Internal child already started in the project root")
-	cmd.Flags().BoolVar(&renderActive, "render-active", false, "Carry operation-armed dev-stack git facts")
+	cmd.Flags().StringVar(&f.renderEnv, "render-env", "", "Environment of an isolated env evaluation")
+	cmd.Flags().StringVar(&f.renderContext, "render-context", "", "Plugin capabilities: read | inspect | claim")
+	cmd.Flags().BoolVar(&f.materialize, "materialize", false, "Allow launch-time forge.write_file materialization")
+	cmd.Flags().BoolVar(&f.processRooted, "process-rooted", false, "Internal child already started in the project root")
+	cmd.Flags().BoolVar(&f.renderActive, "render-active", false, "Carry operation-armed dev-stack git facts")
 	for _, flag := range []string{"render-env", "render-context", "materialize", "process-rooted", "render-active"} {
 		_ = cmd.Flags().MarkHidden(flag)
 	}
@@ -183,11 +188,11 @@ Examples:
 // `V="$(forge kcl eval … --format raw)"` and one stray line of prose there
 // becomes part of V. `env render` learned this the hard way when a `Note:` on
 // stdout became the first YAML document of a stream piped to kubectl.
-func runKCLEval(cmd *cobra.Command, file string, selectors []string, format string, options []string) error {
-	return runKCLEvalContext(cmd, file, selectors, format, options, "", "", false, false, false)
-}
+func runKCLEval(cmd *cobra.Command, file string, f kclEvalFlags) error {
+	selectors, format, options := f.selectors, f.format, f.options
+	renderEnv, renderContext := f.renderEnv, f.renderContext
+	materialize, processRooted, renderActive := f.materialize, f.processRooted, f.renderActive
 
-func runKCLEvalContext(cmd *cobra.Command, file string, selectors []string, format string, options []string, renderEnv, renderContext string, materialize, processRooted, renderActive bool) error {
 	projectDir, err := evalProjectRoot()
 	if renderEnv != "" {
 		// Raw environment render callers may intentionally evaluate a bare

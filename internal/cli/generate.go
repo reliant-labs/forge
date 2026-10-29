@@ -666,43 +666,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		default:
 		}
 		if err != nil {
-			// --explain-drift cleanup still runs on a mid-pipeline
-			// failure: whatever renders were parked are diffed, and the
-			// snapshot restore keeps the deferred SaveChecksums honest.
-			// The step error wins over the drift error.
-			if expErr := finishExplainDrift(ctx); expErr != nil {
-				fmt.Fprintf(os.Stderr, "%v\n", expErr)
-			}
-			// Same for the legacy-migration quarantine: stamp the
-			// unverified sentinels now so the next run's guard still
-			// names the unresolved files. Done BEFORE the rollback so the
-			// sentinel stamps survive — they describe the user's pre-run
-			// drifted files, not this run's reverted output.
-			if migErr := finishLegacyMigration(ctx); migErr != nil {
-				fmt.Fprintf(os.Stderr, "%v\n", migErr)
-			}
-			// Stage-then-validate rollback: a step failed AFTER writes
-			// landed (the classic case: the final `go build` validate),
-			// so the tree is mid-regen. Rewind every forge-written file to
-			// its pre-run state and tell the user the tree is clean rather
-			// than leaving them a `git checkout` to find (fr-40f7ec9bd9).
-			//
-			// --no-revert opts OUT: a forge/codegen developer debugging a
-			// generator bug needs to READ the output that failed to build,
-			// which the rewind would delete. Keep the artifacts on disk (drop
-			// the journal instead of restoring it) and say so; the run still
-			// fails with the underlying error.
-			if flags.NoRevert {
-				checksums.CommitRollback()
-				fmt.Fprintln(os.Stderr, "\n🔎 --no-revert: leaving this run's generated files on disk for inspection (the tree was NOT rewound). Re-run without --no-revert to restore the clean pre-run tree.")
-				// The compiler output scrolls away behind the pipeline's
-				// own tail output — repeat it here so the last thing on
-				// screen is the thing to fix (same rationale as the
-				// rollback branch).
-				reprintCompilerOutput(err, "")
-			} else {
-				rolledBack = rollbackGeneratedTreeVerified(ctx.AbsPath, err, onlyReadOnlyRan, preRun)
-			}
+			rolledBack = cleanUpFailedStep(ctx, flags, err, onlyReadOnlyRan, preRun)
 			return fmt.Errorf("step %q: %w", step.Name, err)
 		}
 	}
@@ -754,6 +718,48 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// produced, let alone checked.
 	cache.record(os.Stdout, ctx, ran, summary)
 	return softFailureOutcome(os.Stdout, ctx.SoftFailures)
+}
+
+// cleanUpFailedStep finishes a run whose step failed mid-pipeline and
+// reports whether the tree was rolled back to its pre-run state.
+func cleanUpFailedStep(ctx *pipelineContext, flags pipelineFlags, err error, onlyReadOnlyRan bool, preRun *workTreeSnapshot) bool {
+	// --explain-drift cleanup still runs on a mid-pipeline
+	// failure: whatever renders were parked are diffed, and the
+	// snapshot restore keeps the deferred SaveChecksums honest.
+	// The step error wins over the drift error.
+	if expErr := finishExplainDrift(ctx); expErr != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", expErr)
+	}
+	// Same for the legacy-migration quarantine: stamp the
+	// unverified sentinels now so the next run's guard still
+	// names the unresolved files. Done BEFORE the rollback so the
+	// sentinel stamps survive — they describe the user's pre-run
+	// drifted files, not this run's reverted output.
+	if migErr := finishLegacyMigration(ctx); migErr != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", migErr)
+	}
+	// Stage-then-validate rollback: a step failed AFTER writes
+	// landed (the classic case: the final `go build` validate),
+	// so the tree is mid-regen. Rewind every forge-written file to
+	// its pre-run state and tell the user the tree is clean rather
+	// than leaving them a `git checkout` to find (fr-40f7ec9bd9).
+	//
+	// --no-revert opts OUT: a forge/codegen developer debugging a
+	// generator bug needs to READ the output that failed to build,
+	// which the rewind would delete. Keep the artifacts on disk (drop
+	// the journal instead of restoring it) and say so; the run still
+	// fails with the underlying error.
+	if !flags.NoRevert {
+		return rollbackGeneratedTreeVerified(ctx.AbsPath, err, onlyReadOnlyRan, preRun)
+	}
+	checksums.CommitRollback()
+	fmt.Fprintln(os.Stderr, "\n🔎 --no-revert: leaving this run's generated files on disk for inspection (the tree was NOT rewound). Re-run without --no-revert to restore the clean pre-run tree.")
+	// The compiler output scrolls away behind the pipeline's
+	// own tail output — repeat it here so the last thing on
+	// screen is the thing to fix (same rationale as the
+	// rollback branch).
+	reprintCompilerOutput(err, "")
+	return false
 }
 
 // generateInterruptedError fails a run that received SIGINT/SIGTERM. It

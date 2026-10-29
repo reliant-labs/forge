@@ -13,9 +13,10 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/tools/go/packages"
+
 	"github.com/reliant-labs/forge/internal/generator/contract"
 	"github.com/reliant-labs/forge/pkg/servicecatalog"
-	"golang.org/x/tools/go/packages"
 )
 
 // One fixture crosses BOTH real generators: embedded Reader.Get is exposed by

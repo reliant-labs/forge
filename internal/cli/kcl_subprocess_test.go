@@ -13,8 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 )
 
 func isolatedKCLProject(t *testing.T, name string) string {

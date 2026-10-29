@@ -136,12 +136,13 @@ func (r *Registry) Float64UpDownCounter(s Spec) metric.Float64UpDownCounter {
 }
 
 // Int64Histogram declares s as a histogram and returns its instrument.
-// Spec.Buckets, when set, replaces the default bucket boundaries.
+// Spec.Buckets, when set, replaces the default bucket boundaries; a histogram
+// in seconds that sets none gets SecondsBuckets.
 func (r *Registry) Int64Histogram(s Spec) metric.Int64Histogram {
 	g, opts := r.instrument(s, Histogram)
 	o := counterOpts[metric.Int64HistogramOption](opts)
-	if len(s.Buckets) > 0 {
-		o = append(o, metric.WithExplicitBucketBoundaries(s.Buckets...))
+	if b := s.normalized().Buckets; len(b) > 0 {
+		o = append(o, metric.WithExplicitBucketBoundaries(b...))
 	}
 	inst, err := r.meter.Int64Histogram(s.Name, o...)
 	return &int64Histogram{g: g, inst: mustCreate(inst, err, s.Name)}
@@ -152,8 +153,8 @@ func (r *Registry) Int64Histogram(s Spec) metric.Int64Histogram {
 func (r *Registry) Float64Histogram(s Spec) metric.Float64Histogram {
 	g, opts := r.instrument(s, Histogram)
 	o := counterOpts[metric.Float64HistogramOption](opts)
-	if len(s.Buckets) > 0 {
-		o = append(o, metric.WithExplicitBucketBoundaries(s.Buckets...))
+	if b := s.normalized().Buckets; len(b) > 0 {
+		o = append(o, metric.WithExplicitBucketBoundaries(b...))
 	}
 	inst, err := r.meter.Float64Histogram(s.Name, o...)
 	return &float64Histogram{g: g, inst: mustCreate(inst, err, s.Name)}

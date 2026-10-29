@@ -241,12 +241,54 @@ fi
 # could not reach the proxy" are the same empty output and must never be
 # conflated, so curl's exit status is inspected before its body: unreachable
 # is a hard error, and --skip-proxy-check is the only way past it.
+#
+# THE QUESTION IS ASKED OF @v/list, NOT OF <version>.info. proxy.golang.org
+# caches a 404 for a version nobody has requested yet for up to 30 minutes
+# ("if someone requested the version before the tag was pushed, it may take up
+# to 30 minutes for the mirror's cache to expire"). This check runs BEFORE the
+# tag is pushed, so asking for <version>.info planted exactly that negative
+# entry: v1.0.4 was pushed at 17:48Z and `go install ...@v1.0.4` failed for
+# everyone while /@v/list already named it. Every release was uninstallable for
+# half an hour, by our own hand.
+#
+# @v/list is a different resource (the module's known versions, no version in
+# the URL; Go modules reference, GOPROXY protocol), so reading it plants nothing
+# for the new version. A version that is not listed is unpublished, and we stop
+# there without ever requesting its .info. Only a version that IS listed has
+# been requested already, so there is no cache left to poison, and its .info is
+# fetched to compare the origin commit.
 proxy_published_commit() {
   # Echoes the published commit hash, or nothing if the version is unpublished.
   # Exits 1 (with a diagnosis on stderr) if the proxy could not be consulted.
-  local module="$1" version="$2" body http_code curl_status hash
+  local module="$1" version="$2" body http_code curl_status hash url
   # -sS keeps the progress meter off but lets curl's own diagnosis reach
   # stderr, which is worth more than the exit code alone when this fails.
+  url="$PROXY_BASE/$module/@v/list"
+  body="$(curl -sS -w '\n%{http_code}' --max-time 30 "$url")" && curl_status=0 || curl_status=$?
+  if [ "$curl_status" -ne 0 ]; then
+    echo "error: could not reach the Go module proxy to check whether $version is already published" >&2
+    echo "       (curl exited $curl_status for $url)" >&2
+    echo "hint: this check is NOT optional — publishing over an existing version is" >&2
+    echo "      unrecoverable, so a proxy it cannot read is a hard stop. Fix the" >&2
+    echo "      network, or pass --skip-proxy-check if you have verified BY HAND" >&2
+    echo "      that $version has never been published." >&2
+    return 1
+  fi
+  http_code="$(printf '%s' "$body" | tail -n 1)"
+  body="$(printf '%s' "$body" | sed '$d')"
+  if [ "$http_code" != "200" ]; then
+    echo "error: the Go module proxy returned HTTP $http_code for $url" >&2
+    echo "       $body" >&2
+    echo "hint: this check cannot be answered, and publishing over an existing" >&2
+    echo "      version is unrecoverable. Retry, or pass --skip-proxy-check if" >&2
+    echo "      you have verified BY HAND that $version has never been published." >&2
+    return 1
+  fi
+  if ! printf '%s\n' "$body" | grep -qxF -- "$version"; then
+    # Not listed: unpublished. Deliberately NO .info request (see above).
+    return 0
+  fi
+
   body="$(curl -sS -w '\n%{http_code}' --max-time 30 \
     "$PROXY_BASE/$module/@v/$version.info")" && curl_status=0 || curl_status=$?
 
@@ -264,9 +306,6 @@ proxy_published_commit() {
   body="$(printf '%s' "$body" | sed '$d')"
 
   case "$http_code" in
-    404|410)
-      # The proxy is authoritative that this version does not exist. Free.
-      return 0 ;;
     200)
       ;;
     *)
@@ -278,7 +317,8 @@ proxy_published_commit() {
       return 1 ;;
   esac
 
-  # Published. Pull Origin.Hash out of the .info JSON without a jq dependency.
+  # Published (the list named it, so a 404 here is as unanswerable as a 500).
+  # Pull Origin.Hash out of the .info JSON without a jq dependency.
   hash="$(printf '%s' "$body" | grep -o '"Hash":"[0-9a-fA-F]*"' | head -n 1 | cut -d'"' -f4)"
   if [ -z "$hash" ]; then
     # Published but the origin commit is unknown, so equality cannot be
@@ -666,9 +706,11 @@ NPM_FAILED="${NPM_FAILED:-0}"
 # release is a lane nobody believes, which is how a genuinely broken tag
 # ships unnoticed.
 #
-# Step 5 makes the window longer than ingestion alone: it asked the proxy for
-# this very version before the tag existed, and proxy.golang.org caches that
-# 404 for up to 30 minutes. wait-for-go-proxy.sh's default window covers it.
+# Step 5 used to make the window far longer than ingestion alone: it asked the
+# proxy for <version>.info before the tag existed, and proxy.golang.org cached
+# that 404 for up to 30 minutes. It now reads @v/list instead, which plants no
+# entry for the new version, so what is left is ingestion itself (about a
+# minute) and wait-for-go-proxy.sh's default window is sized for that.
 #
 # So the release does not report DONE until the version is actually
 # resolvable. Everything downstream — the consumer bump in docs/releasing.md

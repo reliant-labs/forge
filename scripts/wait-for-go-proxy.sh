@@ -50,18 +50,18 @@
 #
 # ── The window, and the two outcomes ──────────────────────────────────
 #
-# 35 minutes with capped exponential backoff. The common case resolves in
+# 10 minutes with capped exponential backoff. The common case resolves in
 # seconds and stays fast; the slow case must not hammer the endpoints.
 #
-# The window is set by proxy.golang.org's NEGATIVE cache, not by ingestion
-# lag. "If someone requested the version before the tag was pushed, it may take
-# up to 30 minutes for the mirror's cache to expire" (sum.golang.org). Someone
-# always has: release-forge.sh's immutable-version gate asks the proxy for
-# exactly this version moments before it tags, and the proxy caches the 404.
-# v0.1.45 showed the effect: gate at 02:06Z, push at 02:07:45Z, served from
-# 02:37Z. A ten-minute window timed out on every such release and left
-# E2E Scaffold red on the release commit. A window shorter than the cache
-# reintroduces exactly the false red this script exists to remove.
+# The window covers ingestion lag alone. It used to be 35 minutes, sized for
+# proxy.golang.org's NEGATIVE cache: "if someone requested the version before
+# the tag was pushed, it may take up to 30 minutes for the mirror's cache to
+# expire" (proxy.golang.org FAQ), and release-forge.sh's immutable-version gate
+# requested exactly this version's .info moments before tagging it (v0.1.45:
+# gate at 02:06Z, push at 02:07:45Z, served from 02:37Z). That gate now reads
+# @v/list and never requests the new version's .info, so no negative entry is
+# planted and ingestion is the only delay left. A caller that DID ask for the
+# version before the tag existed can raise GOPROXY_WAIT_MAX_SECONDS.
 #
 # On timeout the message must say WHICH state we are in, because the two have
 # opposite remedies:
@@ -98,7 +98,7 @@ or the window elapses.
 Environment (testing seams):
   GOPROXY_WAIT_BASE         proxy base URL     (default: https://proxy.golang.org)
   GOSUMDB_WAIT_BASE         sumdb base URL     (default: https://sum.golang.org)
-  GOPROXY_WAIT_MAX_SECONDS  total window, seconds (default: 2100)
+  GOPROXY_WAIT_MAX_SECONDS  total window, seconds (default: 600)
   GOPROXY_WAIT_FIRST_DELAY  first backoff delay, seconds (default: 5)
   GOPROXY_WAIT_MAX_DELAY    cap on any single sleep, seconds (default: 30)
 EOF
@@ -126,7 +126,7 @@ done
 
 PROXY_BASE="${GOPROXY_WAIT_BASE:-https://proxy.golang.org}"
 SUMDB_BASE="${GOSUMDB_WAIT_BASE:-https://sum.golang.org}"
-MAX_SECONDS="${GOPROXY_WAIT_MAX_SECONDS:-2100}"
+MAX_SECONDS="${GOPROXY_WAIT_MAX_SECONDS:-600}"
 DELAY="${GOPROXY_WAIT_FIRST_DELAY:-5}"
 MAX_DELAY="${GOPROXY_WAIT_MAX_DELAY:-30}"
 

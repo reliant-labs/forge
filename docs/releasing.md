@@ -114,6 +114,12 @@ So the script asks the proxy before a tag exists. A network failure is a hard
 stop, not a pass; `--skip-proxy-check` is the only way past it, and only when
 you have verified by hand that the version was never published.
 
+It asks `@v/list` (the module's known versions), never the new version's
+`.info`: proxy.golang.org caches a 404 for an unrequested version for up to 30
+minutes, and requesting `.info` before the tag is pushed would make the release
+uninstallable for that long. The `.info` is fetched only when the version is
+already listed, to compare its origin commit.
+
 ### What this step used to involve
 
 forge shipped a second module — `github.com/reliant-labs/forge/pkg`, tagged

@@ -12,8 +12,7 @@ provides, what it refuses, and the gates (billing, unset secrets):
 
 **No Reliant account yet?** `forge env deploy <env> --claimable` publishes
 anyway and prints a live URL plus a claim link for your user (see
-`deploy/hosting`, "No account: `--claimable`"). It is the only deploy that
-needs no `forge login`.
+`deploy/hosting`, "No account: `--claimable`"; an unclaimed backend has no outbound internet). It needs no `forge login`.
 
 ## The model: declare once, bind per env
 

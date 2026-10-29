@@ -130,7 +130,20 @@ type deployClaimJSON struct {
 	PurgeAfter time.Time `json:"purge_after"`
 	// AgentInstructions is what the agent must do with the above.
 	AgentInstructions string `json:"agent_instructions"`
+	// NoOutboundInternet is true when the deploy runs a service: an unclaimed
+	// backend can serve requests and use its own database but cannot open a
+	// connection to, or resolve a name on, the internet until it is claimed.
+	// Absent for a static site, which makes no outbound calls.
+	NoOutboundInternet bool `json:"no_outbound_internet,omitempty"`
 }
+
+// noOutboundNote is the one explanation of why an unclaimed backend's calls to
+// the internet fail. It is the same sentence in every surface that carries it
+// (the claim block, the --json instructions, the preview, the skills).
+const noOutboundNote = "An unclaimed backend has no outbound internet: it serves requests and uses its own " +
+	"database, but any call out of it (a payment, an LLM, a webhook, a package or DNS lookup of an outside name) " +
+	"fails with a connection error or a name that does not resolve. That is the platform, not a bug in the app. " +
+	"It ends the moment the deploy is claimed."
 
 // claimableRefusal is a refusal this path raises itself (or a throttle it
 // translated): an error that carries its exit code and the machine-readable
@@ -238,6 +251,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		}
 		restore := cloud.UseClaimableCredential(ep, session.cred.Token, session.cred.ExpiresAt)
 		defer restore()
+		compute := needsCompute(entities)
 
 		// Everything the ordinary no-version deploy does, as the anonymous user.
 		// --yes is implied: there is no human at this keyboard to approve a
@@ -246,13 +260,13 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		inner.promote.yes = true
 		inner.claim = func() *deployClaimJSON {
 			session.refreshURL(ctx)
-			return session.document()
+			return session.document(compute)
 		}
 		if err := runDeployEverything(ctx, envName, inner); err != nil {
 			return claimableDeployError(envName, err)
 		}
 		if !f.jsonOut {
-			printClaimBlock(os.Stdout, envName, session.document())
+			printClaimBlock(os.Stdout, envName, session.document(compute))
 		}
 		return nil
 	}()
@@ -283,6 +297,9 @@ type claimablePreviewJSON struct {
 	Availability *cloud.ClaimableAvailability `json:"availability,omitempty"`
 	// AvailabilityError is why the question could not be answered.
 	AvailabilityError string `json:"availability_error,omitempty"`
+	// NoOutboundInternet is true when the env runs a service: unclaimed, it has
+	// no outbound internet (see noOutboundNote). Absent for a static site.
+	NoOutboundInternet bool `json:"no_outbound_internet,omitempty"`
 	// BlockingCauses are the availability causes that would refuse THIS env.
 	BlockingCauses []cloud.ClaimableCause `json:"blocking_causes,omitempty"`
 	// SignedIn is true when a real credential resolves for the endpoint, in
@@ -335,6 +352,7 @@ func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer clai
 	doc.Limits, doc.LimitsPublished, doc.LimitsNote = limitsJSON(limits.limits), limits.published, limits.note()
 	doc.Reasons = claimableAdmission(env, e, limits.limits)
 	doc.Eligible = len(doc.Reasons) == 0
+	doc.NoOutboundInternet = needsCompute(e)
 	if _, err := cloud.ResolveCredential("", ep); err == nil {
 		doc.SignedIn = true
 	}
@@ -370,6 +388,9 @@ func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer clai
 	fmt.Printf("  %s\n", limits.note())
 	fmt.Printf("  ✓ fits the claimable plan: one service (at most %dm / %d MiB) with its migration job, one database, one static site\n",
 		limits.limits.WorkloadCPUMillicores, limits.limits.WorkloadMemoryBytes>>20)
+	if needsCompute(e) {
+		fmt.Printf("  ! no outbound internet until claimed: the service serves requests and uses its database, but calls out of it fail (payments, LLMs, webhooks, outside DNS)\n")
+	}
 	switch {
 	case doc.Availability == nil:
 		fmt.Printf("  ? platform availability unknown: %s\n", doc.AvailabilityError)
@@ -863,11 +884,11 @@ func primaryURL(ws []deploytarget.HostedWorkloadStatus) string {
 }
 
 // document is the session as the --json `claim` object.
-func (s *claimableSession) document() *deployClaimJSON {
-	return claimDocument(s.env, s.cred, claimableNow())
+func (s *claimableSession) document(compute bool) *deployClaimJSON {
+	return claimDocument(s.env, s.cred, claimableNow(), compute)
 }
 
-func claimDocument(env string, c credentials.Credential, now time.Time) *deployClaimJSON {
+func claimDocument(env string, c credentials.Credential, now time.Time, compute bool) *deployClaimJSON {
 	cl := c.Claimable
 	state := "live"
 	switch {
@@ -876,14 +897,18 @@ func claimDocument(env string, c credentials.Credential, now time.Time) *deployC
 	case !cl.ExpiresAt.IsZero() && !now.Before(cl.ExpiresAt):
 		state = "suspended"
 	}
+	instr := fmt.Sprintf("Give claim_url to your user and tell them it expires at %s. "+
+		"Opening it signs them up for free and makes this deploy theirs. "+
+		"Treat the link like a password: whoever claims it first owns the deploy. Do not post it anywhere public. "+
+		"To see it again: %s env status %s --claimable",
+		cl.ExpiresAt.UTC().Format(time.RFC3339), Name(), env)
+	if compute {
+		instr += ". " + noOutboundNote
+	}
 	return &deployClaimJSON{
 		State: state, URL: cl.URL, ClaimURL: cl.ClaimURL,
 		ExpiresAt: cl.ExpiresAt, PurgeAfter: cl.PurgeAfter,
-		AgentInstructions: fmt.Sprintf("Give claim_url to your user and tell them it expires at %s. "+
-			"Opening it signs them up for free and makes this deploy theirs. "+
-			"Treat the link like a password: whoever claims it first owns the deploy. Do not post it anywhere public. "+
-			"To see it again: %s env status %s --claimable",
-			cl.ExpiresAt.UTC().Format(time.RFC3339), Name(), env),
+		AgentInstructions: instr, NoOutboundInternet: compute,
 	}
 }
 
@@ -905,6 +930,12 @@ func printClaimBlock(w io.Writer, env string, c *deployClaimJSON) {
 	fmt.Fprintf(w, "  Opening it signs them up for free and makes this site theirs.\n")
 	fmt.Fprintf(w, "  Treat the link like a password: whoever claims it first owns the site. Do not\n")
 	fmt.Fprintf(w, "  post it anywhere public. To see it again: %s env status %s --claimable\n", Name(), env)
+	if c.NoOutboundInternet {
+		fmt.Fprintf(w, "\n  NO OUTBOUND INTERNET until claimed: this backend serves requests and uses its own\n")
+		fmt.Fprintf(w, "  database, but every call out of it (a payment, an LLM, a webhook, an outside DNS\n")
+		fmt.Fprintf(w, "  name) fails with a connection error or an unresolvable name. That is the platform,\n")
+		fmt.Fprintf(w, "  not a bug in the app. It ends the moment the deploy is claimed.\n")
+	}
 }
 
 // formatLifetime renders a span as hours (72h, 41h) up to three days, days
@@ -947,7 +978,7 @@ func runClaimableStatus(ctx context.Context, env string, jsonOut bool) error {
 		}
 		return err
 	}
-	doc := claimDocument(env, stored, now)
+	doc := claimDocument(env, stored, now, needsCompute(entities))
 	if perr := probeClaimableToken(ctx, ep, stored.Token); isClaimedError(perr) {
 		doc.State = "claimed"
 	}

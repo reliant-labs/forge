@@ -66,6 +66,9 @@ func bufMissingProject(t *testing.T) string {
 	inDir(t, dir)
 	noForgeYAML()
 	t.Setenv("PATH", t.TempDir())
+	// No pinned buf in forge's tool cache either (the lane falls back to
+	// it), and with no go on PATH none can be built.
+	t.Setenv("FORGE_TOOLS_CACHE", t.TempDir())
 	return dir
 }
 

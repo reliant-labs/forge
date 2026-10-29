@@ -1167,11 +1167,12 @@ func collectBufLintJSON(ctx context.Context) ([]lintJSONFinding, bool) {
 	if _, err := os.Stat("buf.yaml"); os.IsNotExist(err) {
 		return nil, false
 	}
-	if _, err := exec.LookPath("buf"); err != nil {
+	bin, ok := lintBufBinary(ctx)
+	if !ok {
 		return []lintJSONFinding{{Severity: lintSevWarning, Rule: ruleBufLintUnavailable,
 			Message: bufMissingReason, FixHint: bufMissingFix()}}, false
 	}
-	cmd := exec.CommandContext(ctx, "buf", "lint")
+	cmd := exec.CommandContext(ctx, bin, "lint")
 	var buf strings.Builder
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf

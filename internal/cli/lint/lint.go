@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cigate"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
@@ -999,6 +1002,25 @@ const typedAccessGuardUnavailableHint = "read the golangci-lint output above —
 
 // bufMissingReason completes "buf lint did NOT run: …".
 const bufMissingReason = "buf is not on PATH, so the buf lint lane cannot run"
+
+// lintBufBinary is the buf the buf lint lane runs: the one on PATH, else the
+// project's pin built into forge's tool cache (the build `forge generate`
+// already made on a machine with no buf), so a fresh machine's lint runs the
+// lane instead of failing it. ok is false only when neither is available.
+func lintBufBinary(ctx context.Context) (string, bool) {
+	if p, err := exec.LookPath("buf"); err == nil {
+		return p, true
+	}
+	dir, err := cigate.NewResolver(".", os.Stderr).Ensure(ctx, cigate.BufTool("."))
+	if err != nil || dir == "" {
+		return "", false
+	}
+	bin := filepath.Join(dir, "buf")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	return bin, true
+}
 
 // bufMissingFix is the command that installs the buf forge pins.
 func bufMissingFix() string {

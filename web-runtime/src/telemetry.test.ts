@@ -351,6 +351,25 @@ describe("benign browser errors", () => {
     );
   });
 
+  it("treats a DOMException that is not an Error as an exception, either way", async () => {
+    await start();
+    // Some browsers' DOMException is not instanceof Error.
+    const notAnError = (name: string, message: string) => {
+      const ex = Object.create(DOMException.prototype) as object;
+      Object.defineProperty(ex, "name", { value: name });
+      Object.defineProperty(ex, "message", { value: message });
+      Object.setPrototypeOf(ex, { [Symbol.toStringTag]: "DOMException" });
+      return ex;
+    };
+    const abort = notAnError("AbortError", "aborted");
+    console.error(abort);
+    expect(sdkSaw).not.toHaveBeenCalled();
+
+    const real = notAnError("NotAllowedError", "denied");
+    console.error(new TypeError("Failed to fetch"), real);
+    expect(sdkSaw).toHaveBeenCalledTimes(1);
+  });
+
   it("does not record a benign error handed to reportException, but says the SDK has it", async () => {
     const { r } = await start();
     expect(r.reportException(new TypeError("Load failed"))).toBe(true);

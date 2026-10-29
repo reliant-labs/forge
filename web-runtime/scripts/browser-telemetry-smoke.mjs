@@ -237,6 +237,9 @@ window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoi
       Promise.reject(new Error("REAL_REJECTION"));
       console.error("auth:", new TypeError("Failed to fetch (dash.example.io)"));
       console.error(new TypeError("REAL_CONSOLE_TYPEERROR"));
+      // A DOMException is an exception whatever its prototype chain says.
+      console.error(new DOMException("signal is aborted without reason", "AbortError"));
+      console.error(new TypeError("Failed to fetch"), new DOMException("REAL_DOMEXCEPTION", "NotAllowedError"));
       await new Promise((done) => setTimeout(done, 50));
       window.dispatchEvent(new Event("pagehide"));
       await window.tracing.getTracerProvider().getDelegate().forceFlush();
@@ -252,10 +255,11 @@ window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoi
     assert.ok(messages.includes("[unavailable] Failed to fetch"), "a ConnectError is never filtered");
     assert.equal(messages.some((m) => m?.startsWith("signal is aborted")), false, "an AbortError is not recorded");
     assert.equal(messages.includes("Failed to fetch (dash.example.io)"), false, "a generic fetch failure is not recorded");
+    assert.ok(messages.some((m) => m?.includes("REAL_DOMEXCEPTION")), `a real DOMException beside a fetch failure keeps the call: ${JSON.stringify(messages)}`);
     const counts = spans.filter((span) => span.name === "forge.errors_filtered")
       .map((span) => `${attr(span, "kind")?.stringValue}/${attr(span, "source")?.stringValue}`)
       .sort();
-    assert.deepEqual(counts, ["abort/unhandledrejection", "network/console.error"], "what was filtered is counted");
+    assert.deepEqual(counts, ["abort/console.error", "abort/unhandledrejection", "network/console.error"], "what was filtered is counted");
   } finally {
     await browser?.close();
     await close(server);

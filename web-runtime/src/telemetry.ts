@@ -405,7 +405,7 @@ function tapSdkInputs(
     // without the SDK, and is counted instead of recorded. One real Error
     // anywhere in the call (a ConnectError after a fetch failure) keeps the
     // whole call on the SDK's path.
-    const errors = args.filter((arg): arg is Error => arg instanceof Error);
+    const errors = args.filter(isExceptionLike);
     if (
       errors.length > 0 &&
       errors.every((err) => benign.classify(err) !== null)
@@ -511,6 +511,24 @@ function installBenignEventFilter(benign: BenignFilter): void {
     onEvent("error", (e) => (e as ErrorEvent).error),
     true,
   );
+}
+
+// An exception value as console.error receives it: an Error, a DOMException
+// (not an Error in every browser), or either from another realm (an iframe),
+// which fails instanceof but keeps its [object Error] / [object DOMException]
+// tag.
+function isExceptionLike(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  if (value instanceof Error) {
+    return true;
+  }
+  if (typeof DOMException !== "undefined" && value instanceof DOMException) {
+    return true;
+  }
+  const tag = Object.prototype.toString.call(value);
+  return tag === "[object Error]" || tag === "[object DOMException]";
 }
 
 function alreadyRecorded(error: unknown): boolean {

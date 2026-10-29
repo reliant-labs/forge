@@ -63,10 +63,7 @@ export class EventBus {
     }
   }
 
-  on<K extends keyof EventMap>(
-    event: K,
-    handler: EventHandler<EventMap[K]>,
-  ): () => void {
+  on<K extends keyof EventMap>(event: K, handler: EventHandler<EventMap[K]>): () => void {
     const key = event as string;
     if (!this.listeners.has(key)) {
       this.listeners.set(key, new Set());
@@ -79,13 +76,8 @@ export class EventBus {
     };
   }
 
-  off<K extends keyof EventMap>(
-    event: K,
-    handler: EventHandler<EventMap[K]>,
-  ): void {
-    this.listeners
-      .get(event as string)
-      ?.delete(handler as EventHandler<unknown>);
+  off<K extends keyof EventMap>(event: K, handler: EventHandler<EventMap[K]>): void {
+    this.listeners.get(event as string)?.delete(handler as EventHandler<unknown>);
   }
 }
 
@@ -101,9 +93,7 @@ export function initEventBus(devMode = false): EventBus {
 
 export function getEventBus(): EventBus {
   if (!_bus) {
-    throw new Error(
-      "EventBus not initialized — call initEventBus() in EventBusProvider first",
-    );
+    throw new Error("EventBus not initialized — call initEventBus() in EventBusProvider first");
   }
   return _bus;
 }

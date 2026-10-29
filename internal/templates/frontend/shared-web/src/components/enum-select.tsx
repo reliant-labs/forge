@@ -31,14 +31,9 @@ export interface EnumSelectProps extends Omit<SelectProps, "options"> {
   includeUnspecified?: boolean;
 }
 
-export const EnumSelect = React.forwardRef<HTMLSelectElement, EnumSelectProps>(
-  function EnumSelect({ enumObject, includeUnspecified, ...rest }, ref) {
-    return (
-      <Select
-        ref={ref}
-        options={enumOptions(enumObject, { includeUnspecified })}
-        {...rest}
-      />
-    );
-  },
-);
+export const EnumSelect = React.forwardRef<HTMLSelectElement, EnumSelectProps>(function EnumSelect(
+  { enumObject, includeUnspecified, ...rest },
+  ref,
+) {
+  return <Select ref={ref} options={enumOptions(enumObject, { includeUnspecified })} {...rest} />;
+});

@@ -136,6 +136,23 @@ func (q TraceQuery) perTrace(b *builder, withCursor, withGroups bool) (string, e
 		return "", err
 	}
 	conds = append(conds, sc...)
+	// Narrow the traces to aggregate before aggregating them. The per-trace
+	// GROUP BY reads every span in the range, which over days of traffic
+	// outlasts any request budget; a trace with an error, or whose root is
+	// named X, has at least one span with an error status, or named X, so
+	// these candidate sets are supersets of what the HAVING keeps and the
+	// result is unchanged. (A root is the earliest parentless span, or the
+	// earliest span of an orphaned trace, so the name test is over any span.)
+	prefilter := func(pred string) {
+		sub := append([]string{b.rangeCond("Timestamp", q.Scope), pred}, sc...)
+		conds = append(conds, "TraceId IN (SELECT TraceId FROM "+b.table(q.Scope, "otel_traces")+" "+where(sub)+")")
+	}
+	if q.ErrorsOnly {
+		prefilter(spanErrorExpr)
+	}
+	if q.RootSpanName != "" {
+		prefilter("positionCaseInsensitive(SpanName, " + b.str(q.RootSpanName) + ") > 0")
+	}
 
 	having := append([]string{}, spanHaving...)
 	if q.ErrorsOnly {
@@ -335,9 +352,15 @@ var errNotOnLogs = invalid("group key does not apply to logs")
 // IsNotOnLogs reports whether err is the not-applicable-to-logs marker.
 func IsNotOnLogs(err error) bool { return err == errNotOnLogs }
 
+// StreamTypeAttr is the span attribute serverkit stamps on the server span of
+// a streaming RPC: "server", "client" or "bidi".
+const StreamTypeAttr = "forge.rpc.stream_type"
+
 // RED builds the per-service request statement over server spans. Columns:
 // ServiceName, requests, errors, q (p50,p95,p99 in ms), source, then one
-// String column per group-by key.
+// String column per group-by key. Requests and errors count every server
+// span; the latency quantiles are over unary ones only, since a streaming
+// RPC's span lasts as long as the stream (spanStreamExpr).
 func (q Overview) RED() (Stmt, error) {
 	if err := q.Scope.validate(MaxRangeOverview); err != nil {
 		return Stmt{}, err
@@ -353,7 +376,7 @@ func (q Overview) RED() (Stmt, error) {
 	}
 	conds := append([]string{b.rangeCond("Timestamp", q.Scope), spanServerExpr}, sc...)
 	return b.stmt("SELECT ServiceName, toUInt64(round(sum(" + spanWeightExpr + "))) AS requests, toUInt64(round(sumIf(" + spanWeightExpr + ", " + spanErrorExpr + "))) AS errors,\n" +
-		"       quantilesExactWeighted(0.5, 0.95, 0.99)(Duration / 1000000, " + spanWeightInt + ") AS q,\n" +
+		"       quantilesExactWeightedIf(0.5, 0.95, 0.99)(Duration / 1000000, " + spanWeightInt + ", NOT " + spanStreamExpr + ") AS q,\n" +
 		"       maxIf(ResourceAttributes['reliant.source'], ResourceAttributes['reliant.source'] != '') AS source" + gsel + "\n" +
 		"FROM " + b.table(q.Scope, "otel_traces") + "\n" + where(conds) + "\n" +
 		"GROUP BY ServiceName" + gnames + "\nORDER BY requests DESC, ServiceName" + gnames + "\nLIMIT 200"), nil

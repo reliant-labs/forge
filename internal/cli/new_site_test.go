@@ -2,11 +2,13 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // viteApp lays down an existing Vite SPA at the root of a fresh directory —
@@ -195,10 +197,15 @@ func TestGreenfieldSiteIsFrontendOnly(t *testing.T) {
 			if !strings.Contains(pkg, `"name": "landing"`) || !strings.Contains(pkg, "@reliantlabs/forge-web-runtime") {
 				t.Errorf("package.json must name the site and declare the web runtime (installDevLogging):\n%s", pkg)
 			}
-			for _, bad := range []string{"@connectrpc", "@bufbuild", "{{"} {
-				if strings.Contains(pkg, bad) {
-					t.Errorf("a site's package.json carries %q:\n%s", bad, pkg)
+			// The runtime's barrel imports these at module top level and
+			// marks them optional peers, so the site must declare them.
+			for _, want := range []string{"@connectrpc/connect", "@bufbuild/protobuf", "@opentelemetry/api"} {
+				if !strings.Contains(pkg, `"`+want+`"`) {
+					t.Errorf("a site's package.json must declare %s:\n%s", want, pkg)
 				}
+			}
+			if strings.Contains(pkg, "{{") {
+				t.Errorf("a site's package.json has an unrendered action:\n%s", pkg)
 			}
 			for _, env := range []string{"dev", "staging", "prod"} {
 				main := readFile(t, filepath.Join(root, "deploy", "kcl", env, "main.k"))
@@ -341,5 +348,36 @@ func TestGenerateSkipsTheGoStepsForASite(t *testing.T) {
 	}
 	for name := range goSteps {
 		t.Errorf("step %q is no longer in the plan; update this test", name)
+	}
+}
+
+// A greenfield site's production build must work from a clean install of what
+// the starter declares: the runtime's barrel imports @connectrpc/connect,
+// @bufbuild/protobuf and @opentelemetry/api, which it marks optional peers, so
+// a starter that omits them builds nowhere but a machine that has them hoisted.
+// Resolves the runtime from the registry (the starter's published range).
+func TestGreenfieldSiteProductionBuilds(t *testing.T) {
+	testkit.Slow(t, "scaffolds each site kind, runs npm install and its production build (network)")
+	if _, err := exec.LookPath("npm"); err != nil {
+		t.Skip("npm not on PATH")
+	}
+	for _, kind := range []string{"nextjs", "vite-spa"} {
+		t.Run(kind, func(t *testing.T) {
+			parent := t.TempDir()
+			cmd := newNewCmd()
+			cmd.SetArgs([]string{"landing", "--kind", "site", "--path", parent, "--frontend-kind", kind})
+			if err := cmd.ExecuteContext(t.Context()); err != nil {
+				t.Fatalf("project new: %v", err)
+			}
+			root := filepath.Join(parent, "landing")
+			if _, err := os.Stat(filepath.Join(root, "node_modules")); err != nil {
+				t.Fatalf("project new did not install dependencies: %v", err)
+			}
+			build := exec.CommandContext(t.Context(), "npm", "run", "build")
+			build.Dir = root
+			if out, err := build.CombinedOutput(); err != nil {
+				t.Fatalf("npm run build failed for a fresh %s site: %v\n%s", kind, err, out)
+			}
+		})
 	}
 }

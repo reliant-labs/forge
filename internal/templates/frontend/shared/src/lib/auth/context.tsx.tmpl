@@ -112,13 +112,23 @@ export function AuthContextProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
 {{- if eq .Platform "react-native"}}
     const user = provider.getUser();
-    setIdentity({ authenticated: user !== null, email: user?.email, name: user?.name, subject: user?.id });
+    setIdentity({
+      authenticated: user !== null,
+      email: user?.email,
+      name: user?.name,
+      subject: user?.id,
+    });
     setIsLoading(false);
   }, [provider]);
 {{- else}}
     if (mockSession) {
       const user = mockSession.getUser();
-      setIdentity({ authenticated: user !== null, email: user?.email, name: user?.name, subject: user?.id });
+      setIdentity({
+        authenticated: user !== null,
+        email: user?.email,
+        name: user?.name,
+        subject: user?.id,
+      });
     } else {
       setIdentity(await fetchIdentity());
     }

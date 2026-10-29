@@ -16,8 +16,7 @@ import { DEV_API_URL } from "./apiurl_gen";
 // page origin to proxy through: on a device or emulator "localhost" is the
 // device itself, so point EXPO_PUBLIC_API_URL at an address the device can
 // reach (the dev machine's LAN IP, or a tunnel to the API port).
-const baseUrl =
-  process.env.EXPO_PUBLIC_API_URL ?? DEV_API_URL;
+const baseUrl = process.env.EXPO_PUBLIC_API_URL ?? DEV_API_URL;
 
 // Module-level token getter. Nothing wires it by default: this tree ships
 // the mock session provider, whose fixture token no server accepts, so the

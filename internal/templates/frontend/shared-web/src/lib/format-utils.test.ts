@@ -48,14 +48,7 @@ describe("enumBadgeVariant", () => {
   });
 
   it("still renders the affirmative form as success", () => {
-    for (const status of [
-      "active",
-      "completed",
-      "enabled",
-      "healthy",
-      "verified",
-      "connected",
-    ]) {
+    for (const status of ["active", "completed", "enabled", "healthy", "verified", "connected"]) {
       expect(enumBadgeVariant(status)).toBe("success");
     }
   });
@@ -63,12 +56,8 @@ describe("enumBadgeVariant", () => {
   // The inversion also reached the badge through the enum object, which is how
   // every generated page calls it.
   it("does not invert a negated member name resolved from an enum object", () => {
-    expect(enumBadgeVariant(PatientStatus.ACTIVE, PatientStatus)).toBe(
-      "success",
-    );
-    expect(enumBadgeVariant(PatientStatus.INACTIVE, PatientStatus)).not.toBe(
-      "success",
-    );
+    expect(enumBadgeVariant(PatientStatus.ACTIVE, PatientStatus)).toBe("success");
+    expect(enumBadgeVariant(PatientStatus.INACTIVE, PatientStatus)).not.toBe("success");
   });
 
   it("is neutral for an unset value", () => {
@@ -109,9 +98,7 @@ describe("enumBadgeVariant", () => {
 
       expect(fresh.enumBadgeVariant("sent_to_pharmacy")).toBe("info");
       expect(fresh.enumBadgeVariant("SENT_TO_PHARMACY")).toBe("info");
-      expect(
-        fresh.enumBadgeVariant(PatientStatus.SENT_TO_PHARMACY, PatientStatus),
-      ).toBe("info");
+      expect(fresh.enumBadgeVariant(PatientStatus.SENT_TO_PHARMACY, PatientStatus)).toBe("info");
       expect(fresh.enumBadgeVariant("capture_failed")).toBe("error");
       expect(fresh.enumBadgeVariant("renewal_required")).toBe("warning");
 
@@ -141,9 +128,7 @@ describe("formatValue for a bytes column", () => {
     // remembered example.
     for (const len of [1, 2, 3, 17, 999, 1000, 4096, 5_000_000]) {
       const blob = new Uint8Array(len).fill(7);
-      expect(formatValue(blob)).not.toContain(
-        Array.from(blob.slice(0, 3)).join(","),
-      );
+      expect(formatValue(blob)).not.toContain(Array.from(blob.slice(0, 3)).join(","));
     }
   });
 
@@ -183,9 +168,7 @@ describe("formatMoneyCents with a row's currency", () => {
   // `sample_currency_3`), and a throw in a table cell blanked the whole page.
   it("renders an unusable code as the amount beside the raw value", () => {
     expect(() => formatMoneyCents(1899n, "sample_currency_3")).not.toThrow();
-    expect(formatMoneyCents(1899n, "sample_currency_3")).toContain(
-      "sample_currency_3",
-    );
+    expect(formatMoneyCents(1899n, "sample_currency_3")).toContain("sample_currency_3");
     expect(formatMoneyCents(1899n, "")).toContain("18.99");
     expect(formatMoneyCents(1899n, null)).toContain("18.99");
   });

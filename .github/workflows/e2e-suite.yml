@@ -129,7 +129,7 @@ permissions:
 # gets a group of its own (the run id), so it cannot cancel a `ci:e2e` run in
 # progress; all of its jobs then skip.
 concurrency:
-  group: e2e-suite-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci:e2e' && format('-{0}', github.run_id) || '' }}
+  group: e2e-suite-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci:e2e' && format('-{0}', github.run_id) || '' }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -341,6 +341,14 @@ jobs:
       - name: Put $HOME/go/bin on PATH
         run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
 
+      # pre-commit runs a scaffold's own hooks on its first commit
+      # (TestE2EScaffoldFirstCommitPassesItsHooks). Pinned, so the install
+      # cannot change the verdict without a commit.
+      - name: Install pre-commit
+        run: |
+          pipx install pre-commit==4.7.0
+          pre-commit --version
+
       # golangci-lint at templates.GolangciLintVersion — the same pin as
       # ci.yml's lint job, scripts/bootstrap.sh, and the CI workflow and
       # bootstrap forge SCAFFOLDS (TestGolangciLintVersionIsPinnedEverywhere
@@ -410,7 +418,7 @@ jobs:
           # docker: TestE2ENextjsDockerfileStaticImageBuilds builds a real
           # frontend image. ubuntu-latest ships the engine; the `docker info`
           # below proves the daemon answers, which `command -v` cannot.
-          for tool in go node npm npx kcl golangci-lint buf protoc-gen-go protoc-gen-connect-go goimports forge git migrate docker k3d kubectl helm; do
+          for tool in go node npm npx pnpm kcl golangci-lint buf protoc-gen-go protoc-gen-connect-go goimports pre-commit forge git migrate docker k3d kubectl helm; do
             if command -v "$tool" >/dev/null 2>&1; then
               printf '  ok       %-24s %s\n' "$tool" "$(command -v "$tool")"
             else
@@ -555,6 +563,12 @@ jobs:
           path: /tmp/TestE2E*
           retention-days: 7
           if-no-files-found: ignore
+
+      # Main only: keeps any archive this job had to fetch, so the next run
+      # does not (see embedded-postgres-cache's header).
+      - name: Save the embedded postgres archives (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/embedded-postgres-cache-save
 
   ledger:
     name: coverage ledger

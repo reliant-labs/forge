@@ -195,8 +195,12 @@ func (c Cloud) Trace(ctx context.Context, req TraceRequest) (TraceResult, error)
 	res := TraceResult{TraceID: id, SpansTruncated: out.Truncated}
 	for _, s := range out.Spans {
 		sp := Span{
-			SpanID: s.SpanID, ParentID: s.ParentSpanID, Name: s.Name, Kind: s.Kind, Service: s.Service,
-			Start: s.StartTime.UTC(), DurationNs: int64(s.DurationNs), StatusCode: s.StatusCode,
+			// Kind and status are spelled as the local backend spells them
+			// ("server", "error"): the control plane answers "Server",
+			// "Error", and a reader comparing one backend's output with the
+			// other's must not see two vocabularies.
+			SpanID: s.SpanID, ParentID: s.ParentSpanID, Name: s.Name, Kind: spanEnum(s.Kind, "SPAN_KIND_"), Service: s.Service,
+			Start: s.StartTime.UTC(), DurationNs: int64(s.DurationNs), StatusCode: spanEnum(s.StatusCode, "STATUS_CODE_"),
 			StatusMessage: s.StatusMessage, Attributes: s.Attributes,
 		}
 		for _, e := range s.Events {
@@ -777,4 +781,10 @@ func (j *jsonInt) UnmarshalJSON(b []byte) error {
 	}
 	*j = jsonInt(n)
 	return nil
+}
+
+// spanEnum is an OTLP enum value as the local ClickStack's rows spell it:
+// lower case, without its STATUS_CODE_ / SPAN_KIND_ prefix.
+func spanEnum(v, prefix string) string {
+	return strings.ToLower(strings.TrimPrefix(strings.ToUpper(v), prefix))
 }

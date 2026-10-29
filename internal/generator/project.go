@@ -60,6 +60,14 @@ type ProjectGenerator struct {
 	// upgrade re-render with the live forge.yaml value.
 	BuildVersionVar string
 
+	// Claimable scaffolds the prod env for an ANONYMOUS deploy (`forge env
+	// deploy prod --claimable`, `forge project new --claimable`): its
+	// control plane declares `claimable = True`, and its hosted binder sizes
+	// every service and job to the claimable plan (deploy.ClaimableLimitsFallback().Resources())
+	// instead of the band-conformant entry shape, so the default full-stack
+	// scaffold deploys with no account and no edits.
+	Claimable bool
+
 	// ForgePin is the forge version the project ALREADY requires, set when
 	// `forge project new --in-place` adopts a module whose go.mod pins forge.
 	// It is then the version forge.yaml's forge_version records and the

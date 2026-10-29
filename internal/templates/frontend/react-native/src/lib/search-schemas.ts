@@ -22,9 +22,7 @@ import { useLocalSearchParams } from "expo-router";
 import { useMemo } from "react";
 import type { z } from "zod";
 
-export function useTypedSearchParams<S extends z.ZodTypeAny>(
-  schema: S,
-): z.infer<S> {
+export function useTypedSearchParams<S extends z.ZodTypeAny>(schema: S): z.infer<S> {
   const sp = useLocalSearchParams();
   return useMemo(() => schema.parse(sp), [sp, schema]);
 }

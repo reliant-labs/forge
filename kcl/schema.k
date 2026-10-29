@@ -1408,6 +1408,14 @@ schema ControlPlane:
     # where the author does not choose the registry, because the platform
     # admits exactly one.
     registry_host: str = RELIANT_REGISTRY_HOST
+    # True declares this env an ANONYMOUS deploy, published with no account
+    # by `forge env deploy <env> --claimable` (an agent gets a live URL and a
+    # claim link for its human). Every check judges the env under the
+    # claimable plan — one service of at most 250m / 256 MiB (request and
+    # limit) with its migration job, one database, one static site — instead
+    # of the billed plan's shape band, and a signed-in deploy is refused until
+    # the line is removed. `forge project new --claimable` scaffolds it.
+    claimable?: bool
 
     check:
         type == "control_plane", "ControlPlane.type must be 'control_plane'"
@@ -4751,7 +4759,10 @@ schema ESOAdmission:
     bounds where the operator may dial on 443 and 6443 (the API server and
     the store). Narrow it to your API server and store addresses when they are
     stable. `egress_ports` lists those ports (the API server, and the store:
-    8200 is OpenBao's default listener). `store_service_account` is the one
+    8200 is OpenBao's default listener). An ipBlock never matches a pod
+    address under Cilium (GKE Dataplane V2), so the Bundle's own in-cluster
+    forge.OpenBao is admitted by a separate selector rule (its namespace and
+    pods, its TLS port) whatever these say. `store_service_account` is the one
     service account a SecretStore may ask a token for."""
     writers: [str] = []
     writer_groups: [str] = ["system:masters"]

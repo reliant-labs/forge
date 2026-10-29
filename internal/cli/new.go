@@ -25,6 +25,7 @@ import (
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/nodeengine"
+	"github.com/reliant-labs/forge/pkg/deploy"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
@@ -64,6 +65,8 @@ func newNewCmd() *cobra.Command {
 		// verify keeps the compile check at the end of the bootstrap
 		// generate. Off by default: see bootstrapPipelineFlags.
 		verify bool
+		// claimable scaffolds prod for an anonymous deploy.
+		claimable bool
 	)
 
 	cmd := &cobra.Command{
@@ -164,6 +167,8 @@ checkout stop being the same source; drop the bridge with
 			explicitForgeRoot = forgeRoot
 			linkForgeDeclined = cmd.Flags().Changed("link-forge") && !linkForge
 			defer func() { explicitForgeRoot, linkForgeDeclined = "", false }()
+			newClaimable = claimable
+			defer func() { newClaimable = false }()
 			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces, linkForgeRequested(linkForge), verbose, verify, newFrontendOptions{output: frontendOutput, routes: frontendRoutes, kind: strings.ToLower(strings.TrimSpace(frontendKind))})
 		},
 	}
@@ -189,6 +194,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().BoolVar(&linkForge, "link-forge", false, "Bridge the project to the forge checkout this binary was built from (gitignored go.work 'use' + .forge-link/ for the web runtime). Off by default, except for a service scaffold from an unreleased forge build, which is linked automatically when its checkout is found (--link-forge=false refuses instead; also: "+linkForgeEnv+"=1)")
 	cmd.Flags().StringVar(&forgeRoot, "forge-root", "", "The forge checkout --link-forge bridges to (also: "+buildinfo.ForgeRootEnv+"). Default: the checkout this binary was built from, else the go.mod replace it embeds forge through, else the checkout it sits or was started in")
 	cmd.Flags().BoolVar(&verify, "verify", false, "Compile the scaffold before returning: the bootstrap generate then ends with its go build check and a render of every deploy env (adds ~1s warm, ~40s on a cold build cache, and saturates the CPU while it runs). Off by default: the scaffold is deterministic and forge's own e2e corpus compiles it, and your first go build or forge generate pays for the same compile")
+	cmd.Flags().BoolVar(&claimable, "claimable", false, "Scaffold prod for an ANONYMOUS deploy: forge env deploy prod --claimable then publishes with no account and prints a claim link. prod declares control_plane = forge.ControlPlane {claimable = True} and sizes its hosted services and jobs to the claimable plan ("+deploy.ClaimableLimitsFallback().WorkloadShape()+", request and limit) instead of the billed shape band. A static site needs nothing extra")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print the raw output behind a step forge summarizes in one line (e.g. git's explanation when the initial commit is skipped for want of a git identity)")
 
 	return cmd
@@ -804,6 +810,7 @@ func configureProjectGenerator(c newGeneratorConfig) (*generator.ProjectGenerato
 	gen.ForgePin = c.forgePin
 	gen.GenInRootModule = c.genInRootModule
 	gen.Adopting = c.adopting
+	gen.Claimable = newClaimable
 	if len(c.frontendNames) > 0 {
 		gen.FrontendName = c.frontendNames[0]
 	}
@@ -1364,6 +1371,10 @@ func autoLinkForge(kind string, link bool, adopted *adoptedForge) bool {
 	return true
 }
 
+// newClaimable is --claimable for the `project new` run in progress
+// (generator.ProjectGenerator.Claimable).
+var newClaimable bool
+
 // devForgeBridgeRoot is the local forge checkout --link-forge bridges a
 // scaffold to, or "" when none can be found. A path stated by --forge-root or
 // $FORGE_ROOT that is not a forge checkout is an error. How the rest is
@@ -1603,7 +1614,9 @@ func runFrontendInstalls(ctx context.Context, root string, frontends []string) e
 			}
 			// A cancelled context is the user or a timeout, not a flaky
 			// registry — retrying only makes them wait for the same answer.
-			if ctx.Err() != nil {
+			// Nor is a package manager that will not start: a retry runs
+			// the same executable.
+			if ctx.Err() != nil || errors.Is(lastErr, frontenddeps.ErrRunnerUnusable) {
 				return fmt.Errorf("%s install (%s) failed: %w", pm, name, lastErr)
 			}
 			if attempt < frontendInstallAttempts {

@@ -31,7 +31,27 @@ cluster you operate (`_on_cluster`) and your own bucket (`_on_bucket`) are
 declared below, unused, each saying what to fill in.
 
 Render and deploy through forge: `forge env render {{.EnvName}}`,
+{{- if .Claimable}}
+`forge env deploy {{.EnvName}} --claimable`.
+
+ANONYMOUS, AS SCAFFOLDED (`forge project new --claimable`). This env
+deploys with NO account: `forge env deploy {{.EnvName}} --claimable` prints a
+live URL and a claim link for a human, who signs up by opening it. The
+control plane says so (`claimable = True` below), so every check judges the
+env under the claimable plan — one service with its migration job, one
+database, one static site — and `_hosted` sizes each service and job to the
+plan's cap (`_claimable_resources`: {{.ClaimableShape}}, request and limit,
+no burst) instead of the billed plan's 4 GiB-per-vCPU shape band, and the
+database to {{.ClaimableDatabaseStorageGiB}} GiB. The control plane publishes the caps
+(GetClaimableAvailability) and every check reads them from it.
+
+Once the deploy is claimed and you deploy it to your organization, delete
+`claimable = True`, the `resources` line in `_hosted` (the default 250m /
+1 GiB is on the band) and the database's `spec`, then
 `forge env deploy {{.EnvName}}`.
+{{- else}}
+`forge env deploy {{.EnvName}}`.
+{{- end}}
 """
 
 import forge
@@ -56,6 +76,11 @@ import .config as appcfg
 {{if not .DatabaseDisabled}}_db = forge.ManagedDatabase {
     name = "{{.ProjectName}}"
     runtime = forge.OnHosted {}
+{{- if .Claimable}}
+    # The claimable plan's database (the platform sizes its server and
+    # provisions its volume; a declaration over this is refused).
+    spec = {storageGiB = {{.ClaimableDatabaseStorageGiB}}}
+{{- end}}
 }{{end}}
 
 # This env's layer over a workload: the typed config projected into its env
@@ -80,6 +105,16 @@ _configured = lambda w: fw.Workload -> fw.Workload {
 # allocates, and CORS_ALLOW_CREDENTIALS lets the browser send the session
 # cookie /auth/login sets: the site and the API are different origins, so
 # without it sign-in answers 200 and every call after it 401s{{end}}.
+{{- if .Claimable}}
+# The claimable plan's largest shape (the control plane's published caps): what
+# an anonymous service or job may ask for, request and limit, no burst.{{if not .DatabaseDisabled}}
+# Its database allows {{.ClaimableDBConnections}} connections, three of them reserved for the
+# platform, so `_hosted` caps each workload's pool at {{.ClaimableDBPool}} (the default 25
+# fails requests with "too many clients" under load).{{end}}
+_claimable_resources = fw.Resources {
+{{.ClaimableResources}}
+}
+{{- end}}
 _hosted = lambda w: fw.Workload -> fw.Workload {
     _c = _configured(w)
     _c | {
@@ -87,6 +122,11 @@ _hosted = lambda w: fw.Workload -> fw.Workload {
         env = _c.env \
             | ({{if .DatabaseDisabled}}{}{{else}}{DATABASE_URL = forge.DatabaseRef {name = _db.name}} if "DATABASE_URL" in w.config_secrets else {}{{end}}){{if .HasFrontend}} \
             | ({CORS_ORIGINS = forge.WorkloadURL {workload = "{{.FrontendName}}"}, CORS_ALLOW_CREDENTIALS = "true"} if w.kind == "service" else {}){{end}}
+{{- if .Claimable}}{{if not .DatabaseDisabled}} \
+            | ({DB_MAX_OPEN_CONNS = "{{.ClaimableDBPool}}", DB_MAX_IDLE_CONNS = "2"} if "DATABASE_URL" in w.config_secrets else {}){{end}}
+        if w.kind in ["service", "job"]:
+            resources = _claimable_resources
+{{- end}}
         runtime = forge.OnHosted {}
     }
 }
@@ -211,7 +251,14 @@ _bundle = forge.Bundle {
     project = "{{.ProjectName}}"
     # Where hosted workloads, the database{{if .HasFrontend}} and the site{{end}} are published:
     # Reliant cloud (set `endpoint` for another control plane).
+{{- if .Claimable}}
+    # `claimable = True`: an anonymous deploy (`forge env deploy {{.EnvName}}
+    # --claimable`), judged under the claimable plan. Remove it to deploy to
+    # your organization.
+    control_plane = forge.ControlPlane {claimable = True}
+{{- else}}
     control_plane = forge.ControlPlane {}
+{{- end}}
     workloads = _workloads
 {{if not .DatabaseDisabled}}    databases = [_db]{{end}}
 {{- if .HasFrontend}}

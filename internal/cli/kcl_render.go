@@ -299,6 +299,11 @@ type ControlPlaneEntity struct {
 	// subtree a BARE hosted image is composed under, which is the one case
 	// the author does not choose because the platform admits exactly one.
 	RegistryHost string `json:"registry_host,omitempty"`
+	// Claimable declares the env an ANONYMOUS deploy (`forge env deploy
+	// <env> --claimable`): it is judged under the claimable plan
+	// (deploy.HostedPlanClaimable) by every preview and check, and a
+	// signed-in deploy of it is refused until the declaration is removed.
+	Claimable bool `json:"claimable,omitempty"`
 }
 
 // RenderedSecretEntity mirrors the kcl/schema.k RenderedSecret — one k8s

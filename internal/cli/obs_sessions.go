@@ -143,6 +143,10 @@ func runObsSessions(ctx context.Context, d obsDeps, env string, o obsSessionsOpt
 	if err != nil {
 		return fail(err)
 	}
+	pageToken, err := resumePage(&n, o.pageToken)
+	if err != nil {
+		return fail(err)
+	}
 	if n.Range.To.Sub(n.Range.From) > obsquery.MaxRangeSessions {
 		return fail(obsbackend.Wrong("the range is longer than the %s sessions are kept", obsquery.MaxRangeSessions))
 	}
@@ -156,7 +160,7 @@ func runObsSessions(ctx context.Context, d obsDeps, env string, o obsSessionsOpt
 	}
 	res, err := r.ListSessions(ctx, obsbackend.ListSessionsRequest{
 		Narrow: n, HasError: o.hasError, HasReplay: o.hasReplay, UserID: o.user, PathContains: o.path,
-		Limit: o.out.Limit, PageToken: o.pageToken,
+		Limit: o.out.Limit, PageToken: pageToken,
 	})
 	if err != nil {
 		return fail(err)
@@ -168,6 +172,7 @@ func runObsSessions(ctx context.Context, d obsDeps, env string, o obsSessionsOpt
 	for _, s := range res.Sessions {
 		doc.Sessions = append(doc.Sessions, sessionDoc(s))
 	}
+	res.NextPageToken = wrapPageToken(n.Range, res.NextPageToken)
 	doc.Page = obsout.Page{Truncated: res.NextPageToken != "", NextPageToken: res.NextPageToken}
 	doc.Suggested = sessionsSuggestions(env, res.Sessions)
 	doc.Stamp(schemaObsSessions, nil)

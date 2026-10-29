@@ -247,6 +247,10 @@ func runObsIssues(ctx context.Context, d obsDeps, env string, o obsIssuesOpts) e
 	if err != nil {
 		return fail(err)
 	}
+	pageToken, err := resumePage(&n, o.pageToken)
+	if err != nil {
+		return fail(err)
+	}
 	b, _, err := o.open(ctx, d, env, "issues")
 	if err != nil {
 		return fail(err)
@@ -265,7 +269,7 @@ func runObsIssues(ctx context.Context, d obsDeps, env string, o obsIssuesOpts) e
 	}
 	res, err := r.ListIssues(ctx, obsbackend.ListIssuesRequest{
 		Narrow: n, Statuses: o.statuses, Platform: o.platform, Source: o.source, SinceRelease: o.sinceRelease, SincePromotion: o.sinceDeploy,
-		Sort: o.sort, Limit: o.out.Limit, PageToken: o.pageToken, IncidentWindow: o.incidentWindow,
+		Sort: o.sort, Limit: o.out.Limit, PageToken: pageToken, IncidentWindow: o.incidentWindow,
 		Assignee: assignee, Unassigned: unassigned,
 	})
 	if err != nil {
@@ -282,6 +286,7 @@ func runObsIssues(ctx context.Context, d obsDeps, env string, o obsIssuesOpts) e
 	for _, i := range shown {
 		doc.Issues = append(doc.Issues, issueRowDoc(i))
 	}
+	res.NextPageToken = wrapPageToken(n.Range, res.NextPageToken)
 	doc.Page = obsout.Page{Truncated: res.Truncated || res.NextPageToken != "", NextPageToken: res.NextPageToken}
 	doc.Suggested = issuesSuggestions(env, shown)
 	doc.Stamp(schemaObsIssues, nil)

@@ -29,9 +29,7 @@ function Reset() {
       // A full navigation, as the sign-in screen does: every provider
       // re-initialises with the new session in place. If the follow-up
       // sign-in failed the password is still set, so go to sign in.
-      onDone={(signedIn) =>
-        window.location.assign(joinBasePath(signedIn ? "/" : "/auth/sign-in"))
-      }
+      onDone={(signedIn) => window.location.assign(joinBasePath(signedIn ? "/" : "/auth/sign-in"))}
     />
   );
 }

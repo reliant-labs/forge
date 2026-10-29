@@ -18,7 +18,7 @@ on:
 # Cancel a superseded run on a pull request only; a run on main always finishes
 # (ci.yml says why).
 concurrency:
-  group: e2e-${{"{{"}} github.ref {{"}}"}}
+  group: e2e-${{"{{"}} github.ref {{"}}"}}${{"{{"}} github.event_name != 'pull_request' && format('-{0}', github.sha) || '' {{"}}"}}
   cancel-in-progress: ${{"{{"}} github.event_name == 'pull_request' {{"}}"}}
 
 # Go version is read from go.mod via setup-go's `go-version-file` input

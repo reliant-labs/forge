@@ -303,6 +303,15 @@ func sealComposition(ctx context.Context, cfg *config.ProjectConfig, entities *K
 	if err != nil {
 		return err
 	}
+	// A snapshot carries its assets inline, base64, in the bundle's config
+	// blob, which both ends bound at bundle.MaxManifestBytes (1 MiB): a
+	// catalog grows with its project and does not belong there. Until it
+	// travels by layer reference, a composition bundle ships without it.
+	var withheld bool
+	if assets, withheld = dropServiceCatalog(assets); withheld {
+		fmt.Fprintf(os.Stderr, "[bundle] Note: the service catalog was not uploaded: a composition bundle does not carry it yet, "+
+			"so the RPC explorer will lack env %s's declared routes. The deploy is unaffected.\n", opts.env)
+	}
 	if doc.Provenance.Commit != candidate.Source.Commit || doc.Provenance.Dirty {
 		return fmt.Errorf("composition source changed during build")
 	}

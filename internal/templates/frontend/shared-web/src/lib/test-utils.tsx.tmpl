@@ -31,19 +31,12 @@
 
 import { create, type DescMessage } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
-import {
-  QueryClient,
-  QueryClientProvider,
-} from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, type RenderOptions, type RenderResult } from "@testing-library/react";
 
 import { setTransport } from "@/lib/connect";
 
-import type {
-  Transport,
-  UnaryResponse,
-  StreamResponse,
-} from "@connectrpc/connect";
+import type { Transport, UnaryResponse, StreamResponse } from "@connectrpc/connect";
 import type { ReactElement } from "react";
 
 // MockHandler is what a caller writes for a single RPC. A `response` entry

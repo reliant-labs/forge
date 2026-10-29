@@ -7,6 +7,7 @@ package frontenddeps
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -43,10 +44,13 @@ func Ensure(ctx context.Context, logPrefix, name, dir, runner string, frozen boo
 		return nil
 	}
 	runner = PackageManager(dir, runner)
+	if err := VerifyPinnedRunner(ctx, dir, runner); err != nil {
+		return fmt.Errorf("install deps in %s: %w", dir, err)
+	}
 	args := installArgs(runner, dir, frozen)
 	fmt.Printf("%s %s: node_modules missing/stale — running `%s %s`\n", logPrefix, name, runner, strings.Join(args, " "))
 	err := runInstall(ctx, runner, dir, args)
-	if err != nil && transientFailure(err.Error()) {
+	if err != nil && !errors.Is(err, ErrRunnerUnusable) && transientFailure(err.Error()) {
 		// The package manager reported ITS OWN internal failure, not a problem
 		// with the tree — retrying converges where failing the whole run does
 		// not. Without this a known npm bug ends a run that had already spent
@@ -198,6 +202,10 @@ func runInstall(ctx context.Context, runner, dir string, args []string) error {
 	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
 	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
 	if err := cmd.Run(); err != nil {
+		if unstartableExecutable(buf.String(), err) != "" {
+			// The executable itself will not start: every retry runs it again.
+			return fmt.Errorf("%w: %w: %s", ErrRunnerUnusable, err, strings.TrimSpace(buf.String()))
+		}
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(buf.String()))
 	}
 	if warning := copiedFromStoreWarning(buf.String()); warning != "" {

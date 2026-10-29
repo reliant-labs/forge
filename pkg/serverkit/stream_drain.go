@@ -8,9 +8,17 @@ import (
 	"sync"
 
 	"connectrpc.com/connect"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/reliant-labs/forge/pkg/svcerr"
 )
+
+// StreamTypeAttr is the attribute StreamDrainInterceptor stamps on the server
+// span of a streaming RPC ("server", "client" or "bidi"). obsquery reads the
+// same key (obsquery.StreamTypeAttr) to keep a stream's lifetime out of
+// latency quantiles.
+const StreamTypeAttr = "forge.rpc.stream_type"
 
 // stream_drain.go — Connect streaming RPCs end cleanly when the server drains.
 //
@@ -71,6 +79,11 @@ func (i *streamDrainInterceptor) WrapStreamingClient(next connect.StreamingClien
 func (i *streamDrainInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
 		spec := conn.Spec()
+		// Mark the server span as a stream, so latency SLOs (obsquery's RED)
+		// do not read a stream's lifetime as a request's latency.
+		if st := streamTypeName(spec.StreamType); st != "" {
+			trace.SpanFromContext(ctx).SetAttributes(attribute.String(StreamTypeAttr, st))
+		}
 		if spec.StreamType != connect.StreamTypeServer && spec.StreamType != connect.StreamTypeBidi {
 			return next(ctx, conn)
 		}
@@ -94,6 +107,18 @@ func (i *streamDrainInterceptor) WrapStreamingHandler(next connect.StreamingHand
 		}
 		return nil
 	}
+}
+
+func streamTypeName(t connect.StreamType) string {
+	switch t {
+	case connect.StreamTypeServer:
+		return "server"
+	case connect.StreamTypeClient:
+		return "client"
+	case connect.StreamTypeBidi:
+		return "bidi"
+	}
+	return ""
 }
 
 // isCancellation reports whether err is how a handler reports that its

@@ -67,9 +67,10 @@ const (
 
 // The ClaimableService procedures forge calls.
 const (
-	ProcStartClaimableDeploy    = "controlplane.v1.ClaimableService/StartClaimableDeploy"
-	ProcGetClaimableChallenge   = "controlplane.v1.ClaimableService/GetClaimableChallenge"
-	claimableThrottleDetailType = "controlplane.v1.ClaimableThrottle"
+	ProcStartClaimableDeploy     = "controlplane.v1.ClaimableService/StartClaimableDeploy"
+	ProcGetClaimableChallenge    = "controlplane.v1.ClaimableService/GetClaimableChallenge"
+	ProcGetClaimableAvailability = "controlplane.v1.ClaimableService/GetClaimableAvailability"
+	claimableThrottleDetailType  = "controlplane.v1.ClaimableThrottle"
 )
 
 // ClaimableChallenge is the proof-of-work puzzle: find a decimal nonce such
@@ -101,9 +102,67 @@ type ClaimableDeploy struct {
 	Reused      bool      `json:"reused"`
 }
 
+// ClaimableCause is one reason claimable deploys, or their compute, are
+// unavailable (GetClaimableAvailability, and the metadata of a
+// claimable_unavailable refusal).
+type ClaimableCause struct {
+	// Code is disabled | dependency_unavailable | not_supported.
+	Code string `json:"code"`
+	// Component is the switch or the dependency (claim_secret,
+	// anonymous_signup, content_scan_web_risk, network_policing, ...).
+	Component string `json:"component,omitempty"`
+	Message   string `json:"message"`
+}
+
+// The cause codes (control-plane internal/claimable).
+const (
+	ClaimableCauseDisabled              = "disabled"
+	ClaimableCauseDependencyUnavailable = "dependency_unavailable"
+	ClaimableCauseNotSupported          = "not_supported"
+	// ClaimableCauseNotDeployed is forge's own: the control plane does not
+	// serve the ClaimableService at all.
+	ClaimableCauseNotDeployed = "not_deployed"
+)
+
+// ClaimableAvailability is GetClaimableAvailability's answer: can a start be
+// admitted now (enough for a static site), can an unclaimed service and
+// database run, and every reason not.
+type ClaimableAvailability struct {
+	Available        bool             `json:"available"`
+	Causes           []ClaimableCause `json:"causes,omitempty"`
+	ComputeAvailable bool             `json:"computeAvailable"`
+	ComputeCauses    []ClaimableCause `json:"computeCauses,omitempty"`
+	// Limits are the claimable plan's caps, as the control plane enforces
+	// them. Nil from a control plane that predates publishing them.
+	Limits *ClaimableLimits `json:"limits,omitempty"`
+}
+
+// ClaimableLimits is the control plane's ClaimableLimits message (Connect's
+// JSON names): what one unclaimed deploy may run. Every value is a hard cap;
+// "per workload" holds for the service and, separately, its migration job,
+// each request = limit.
+type ClaimableLimits struct {
+	MaxStaticSites              int32 `json:"maxStaticSites,omitempty"`
+	MaxStaticStoredMib          int32 `json:"maxStaticStoredMib,omitempty"`
+	MaxServices                 int32 `json:"maxServices,omitempty"`
+	MaxReplicas                 int32 `json:"maxReplicas,omitempty"`
+	MaxMigrationJobs            int32 `json:"maxMigrationJobs,omitempty"`
+	WorkloadCPUMillicores       int32 `json:"workloadCpuMillicores,omitempty"`
+	WorkloadMemoryMib           int32 `json:"workloadMemoryMib,omitempty"`
+	WorkloadEphemeralStorageMib int32 `json:"workloadEphemeralStorageMib,omitempty"`
+	MaxDatabases                int32 `json:"maxDatabases,omitempty"`
+	DatabaseInstances           int32 `json:"databaseInstances,omitempty"`
+	DatabaseCPUMillicores       int32 `json:"databaseCpuMillicores,omitempty"`
+	DatabaseMemoryMib           int32 `json:"databaseMemoryMib,omitempty"`
+	DatabaseStorageMib          int32 `json:"databaseStorageMib,omitempty"`
+	DatabaseMaxConnections      int32 `json:"databaseMaxConnections,omitempty"`
+	DatabaseDeclaredStorageGib  int32 `json:"databaseDeclaredStorageGib,omitempty"`
+}
+
 // ClaimableAPI is the unauthenticated half of the ClaimableService. A seam so
 // a test states the control plane's answers; production is ClaimableClient.
 type ClaimableAPI interface {
+	Availability(ctx context.Context) (ClaimableAvailability, error)
 	Challenge(ctx context.Context) (ClaimableChallenge, error)
 	Start(ctx context.Context, req ClaimableStartRequest) (ClaimableDeploy, error)
 }
@@ -118,6 +177,31 @@ type ClaimableClient struct {
 // NewClaimableClient builds the client for ep.
 func NewClaimableClient(ep Endpoint) *ClaimableClient {
 	return &ClaimableClient{client: NewClient(ep, Credential{})}
+}
+
+// Availability asks whether a claimable deploy can start now. It creates
+// nothing and costs no proof of work.
+func (c *ClaimableClient) Availability(ctx context.Context) (ClaimableAvailability, error) {
+	var out ClaimableAvailability
+	if err := c.client.CallAnonymous(ctx, ProcGetClaimableAvailability, map[string]any{}, &out); err != nil {
+		return ClaimableAvailability{}, err
+	}
+	return out, nil
+}
+
+// ClaimableUnavailableCauseOf reads the cause a claimable_unavailable refusal
+// carries in its metadata. ok is false for any other error, or a refusal from
+// a control plane that names no cause.
+func ClaimableUnavailableCauseOf(err error) (ClaimableCause, bool) {
+	var ce *Error
+	if !errors.As(err, &ce) || !ce.HasReason(ReasonClaimableUnavailable) || ce.Header == nil {
+		return ClaimableCause{}, false
+	}
+	code := strings.TrimSpace(ce.Header.Get("x-forge-error-unavailable-cause"))
+	if code == "" {
+		return ClaimableCause{}, false
+	}
+	return ClaimableCause{Code: code, Component: strings.TrimSpace(ce.Header.Get("x-forge-error-unavailable-component")), Message: ce.Message}, true
 }
 
 // Challenge fetches a fresh proof-of-work puzzle.

@@ -25,7 +25,6 @@ import { SessionNav } from "@/components/session_nav";
 import { ThemeToggle } from "@/components/theme-toggle";
 {{if .HasMockAPI}}import { loadConfig } from "@/lib/config_gen";
 {{end}}
-
 import type { ReactNode } from "react";
 
 /** Product name and its monogram, for the header brand. Yours to replace with a logo. */
@@ -85,9 +84,7 @@ export default function App({ children }: { children: ReactNode }) {
           >
             {APP_MONOGRAM}
           </span>
-          <span className="text-sm font-semibold tracking-tight text-ink">
-            {APP_NAME}
-          </span>
+          <span className="text-sm font-semibold tracking-tight text-ink">{APP_NAME}</span>
         </Link>
         <div className="flex items-center gap-3">
           <ThemeToggle />

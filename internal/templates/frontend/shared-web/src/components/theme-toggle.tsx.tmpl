@@ -50,8 +50,7 @@ export function ThemeToggle({ className = "" }: { className?: string }) {
     if (!forward && !back) return;
     event.preventDefault();
     const index = OPTIONS.findIndex((o) => o.value === theme);
-    const next =
-      (index + (forward ? 1 : -1) + OPTIONS.length) % OPTIONS.length;
+    const next = (index + (forward ? 1 : -1) + OPTIONS.length) % OPTIONS.length;
     const option = OPTIONS[next];
     // `next` is a modulo of OPTIONS.length so this cannot miss, but
     // noUncheckedIndexedAccess types every index read as possibly

@@ -457,7 +457,12 @@ repos:
       - id: check-merge-conflict
       - id: check-added-large-files
         args: ["--maxkb=1024"]
+      # pnpm-lock.yaml is two YAML documents once package.json pins pnpm
+      # (the pinned pnpm, then the project), and a multi-document stream
+      # is valid YAML; without the flag check-yaml rejects the lockfile
+      # every frontend commits.
       - id: check-yaml
+        args: ["--allow-multiple-documents"]
       - id: check-json
 
   - repo: https://github.com/gitleaks/gitleaks
@@ -503,8 +508,16 @@ repos:
         # Forge-generated files are excluded (see the top), and so is
         # forge.yaml: forge rewrites it in place when a command updates the
         # manifest, and a prettier pass on top is a diff forge then fights.
+        #
+        # Lockfiles are the package manager's output: it rewrites them on
+        # every install, so a prettier pass is a diff the next install
+        # reverts. AGENTS.md and CLAUDE.md are the agent guide, kept compact
+        # because it is loaded into every agent's context: prettier pads its
+        # tables to the column width, the same inflation as skills/.
+        # deploy/observability/dashboards/ holds HyperDX dashboards in the
+        # JSON shape forge renders and HyperDX exports, not prettier's.
         files: \.(ts|tsx|js|jsx|json|md|yml|yaml|css)$
-        exclude: ` + forgeGeneratedPathPattern + `|\.pb\.go$|/skills/.*\.md$|^forge\.yaml$
+        exclude: ` + forgeGeneratedPathPattern + `|\.pb\.go$|/skills/.*\.md$|^forge\.yaml$|(^|/)(pnpm-lock\.yaml|package-lock\.json)$|^(AGENTS|CLAUDE)\.md$|^deploy/observability/dashboards/
 
   # go vet as a LOCAL hook rather than dnephin's go-vet. Two reasons:
   # v0.5.1 ships no go-vet-mod (the module-wide id), and its go-vet runs
@@ -533,20 +546,29 @@ repos:
         files: \.proto$
         pass_filenames: false
 
-  # Conventional Commits enforcement.
-  - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
-    rev: v9.18.0
+  # Conventional Commits enforcement, as a LOCAL node hook on registry
+  # packages at exact versions. A hook repo (the commitlint-pre-commit-hook
+  # mirror) is installed by npm as a git dependency, which npm refuses under
+  # its EALLOWGIT policy ("Fetching non-root packages of type git have been
+  # disabled") — the first commit then fails before commitlint runs.
+  - repo: local
     hooks:
       - id: commitlint
+        name: commitlint
+        entry: commitlint --edit
+        language: node
         stages: [commit-msg]
-        additional_dependencies: ["@commitlint/config-conventional"]
+        additional_dependencies:
+          - "@commitlint/cli@` + templates.CommitlintVersion + `"
+          - "@commitlint/config-conventional@` + templates.CommitlintVersion + `"
 `
 	if err := atomicfile.WriteFile(filepath.Join(g.Path, ".pre-commit-config.yaml"), []byte(content), 0o644); err != nil {
 		return err
 	}
 
 	// commitlint config so the pre-commit hook knows which ruleset to use.
-	commitlintRC := `module.exports = { extends: ['@commitlint/config-conventional'] };
+	// Double-quoted: the prettier hook checks .js files too.
+	commitlintRC := `module.exports = { extends: ["@commitlint/config-conventional"] };
 `
 	return atomicfile.WriteFile(filepath.Join(g.Path, ".commitlintrc.js"), []byte(commitlintRC), 0o644)
 }
@@ -925,12 +947,13 @@ Hand-authored (or agent-authored) demo data. Applied AFTER the runtime
 scaffolded once and owned by you — forge never regenerates it.
 
 Rules:
-  - Make every row idempotent: a stable key + ` + "`ON CONFLICT ... DO NOTHING`" + `.
-  - Overriding a generated row is sanctioned: the runtime PKs are stable
-    deterministic UUIDv5 values, so ` + "`ON CONFLICT (id) DO UPDATE SET ...`" + `
-    against one lets you re-title/flavor it without forking the dataset.
-  - A row that violates a constraint (dropped column, bad enum) fails loudly
-    at apply — the fix is yours, exactly like a migration.
+
+- Make every row idempotent: a stable key + ` + "`ON CONFLICT ... DO NOTHING`" + `.
+- Overriding a generated row is sanctioned: the runtime PKs are stable
+  deterministic UUIDv5 values, so ` + "`ON CONFLICT (id) DO UPDATE SET ...`" + `
+  against one lets you re-title/flavor it without forking the dataset.
+- A row that violates a constraint (dropped column, bad enum) fails loudly
+  at apply — the fix is yours, exactly like a migration.
 
 See example.sql for the shape.
 `
@@ -991,27 +1014,27 @@ func (g *ProjectGenerator) generateBenchmarks() error {
 // Run with:
 //     k6 run --env BASE_URL=%[1]s benchmarks/k6/smoke.js
 
-import http from 'k6/http';
-import { check, sleep } from 'k6';
+import http from "k6/http";
+import { check, sleep } from "k6";
 
 export const options = {
   stages: [
-    { duration: '10s', target: 5 },
-    { duration: '20s', target: 10 },
-    { duration: '10s', target: 0 },
+    { duration: "10s", target: 5 },
+    { duration: "20s", target: 10 },
+    { duration: "10s", target: 0 },
   ],
   thresholds: {
-    http_req_failed: ['rate<0.01'],
-    http_req_duration: ['p(95)<300'],
+    http_req_failed: ["rate<0.01"],
+    http_req_duration: ["p(95)<300"],
   },
 };
 
-const BASE_URL = __ENV.BASE_URL || '%[1]s';
+const BASE_URL = __ENV.BASE_URL || "%[1]s";
 
 export default function () {
   const healthz = http.get(`+"`"+`${BASE_URL}/healthz`+"`"+`);
   check(healthz, {
-    'healthz 200': (r) => r.status === 200,
+    "healthz 200": (r) => r.status === 200,
   });
 
   sleep(1);

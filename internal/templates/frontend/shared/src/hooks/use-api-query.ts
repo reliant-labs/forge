@@ -35,10 +35,7 @@ import type { ConnectClientError } from "@reliantlabs/forge-web-runtime";
 export function useApiQuery<TData, TError = ConnectClientError>(
   key: readonly unknown[],
   fetcher: () => Promise<TData>,
-  options?: Omit<
-    UseQueryOptions<TData, TError, TData, readonly unknown[]>,
-    "queryKey" | "queryFn"
-  >,
+  options?: Omit<UseQueryOptions<TData, TError, TData, readonly unknown[]>, "queryKey" | "queryFn">,
 ) {
   return useQuery<TData, TError, TData, readonly unknown[]>({
     queryKey: key,

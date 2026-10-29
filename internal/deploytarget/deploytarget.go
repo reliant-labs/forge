@@ -46,6 +46,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/pkg/deploy"
 )
 
 // Provider is the dispatch surface for one deploy target type. Each
@@ -130,6 +132,19 @@ type ServiceGroup struct {
 	// provider. Services carry the per-workload tier specs.
 	Hosted *HostedTarget
 
+	// HostedPlan is the plan a hosted group is admitted under: the
+	// standard (billed) plan, judged by the shape band, or the anonymous
+	// claimable plan, judged by its caps (deploy.CheckHostedResources). A
+	// field rather than a property of the credential, so a preview with no
+	// credential (`forge env shape --claimable`, `--claimable --plan-only`)
+	// is judged exactly as the deploy will be.
+	HostedPlan deploy.HostedPlan
+	// ClaimableLimits are the claimable plan's caps HostedPlanClaimable is
+	// judged by: the control plane's published answer, or forge's
+	// compiled-in copy when it could not be asked. Zero (an unset field)
+	// means the compiled-in copy.
+	ClaimableLimits deploy.ClaimableLimits
+
 	// ImageTag is the tag forge built (or is about to build) for
 	// these services. Passed through to the provider so it can stamp
 	// the image references correctly.
@@ -150,6 +165,15 @@ type ServiceGroup struct {
 	// through ApplyOpts; Compose checks this field
 	// directly because they don't go through cluster.Apply).
 	DryRun bool
+}
+
+// ClaimableCaps is the caps a claimable group is judged by: ClaimableLimits,
+// or the compiled-in copy when none were resolved.
+func (g ServiceGroup) ClaimableCaps() deploy.ClaimableLimits {
+	if g.ClaimableLimits.Valid() {
+		return g.ClaimableLimits
+	}
+	return deploy.ClaimableLimitsFallback()
 }
 
 // ResolvedService is one service in a group, with its deploy block

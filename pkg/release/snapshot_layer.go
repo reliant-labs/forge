@@ -96,7 +96,8 @@ func ReadSnapshotAssets(layer []byte) ([]SnapshotAsset, error) {
 		if !wanted[h.Name] {
 			continue
 		}
-		b, e := io.ReadAll(io.LimitReader(tr, ManifestsLayerMaxFileBytes+1))
+		// Artifacts are bounded by the layer total, as in ValidateManifestsLayer.
+		b, e := io.ReadAll(io.LimitReader(tr, ManifestsLayerMaxBytes+1))
 		if e != nil {
 			return nil, e
 		}

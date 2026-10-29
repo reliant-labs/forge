@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -52,14 +54,14 @@ import (
 //
 //	<os.UserCacheDir()>/forge/embedded-postgres/embedded-postgres-binaries-<os>-<arch>-<version>.txz
 //
-// which is ~/.cache/forge/embedded-postgres on a Linux runner. Caching that
-// directory keyed on the embedded-postgres module version (it fixes the
-// default postgres version) makes every later run offline for this step:
-//
-//	- uses: actions/cache@v4
-//	  with:
-//	    path: ~/.cache/forge/embedded-postgres
-//	    key: embedded-postgres-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/go.sum') }}
+// which is ~/.cache/forge/embedded-postgres on a Linux runner. Cache that
+// directory, and key the saved entry on what is IN it — its file names carry
+// every version — not on go.sum alone. A go.sum key holds whichever archives
+// the first job to save it happened to fetch, and a hit is never saved again:
+// forge's own cache held only the default 18.3.0, so every main run of a
+// test that boots postgres 16 fetched 16.9.0 from Maven Central until a 429
+// failed it. forge's CI does this in .github/actions/embedded-postgres-cache
+// (restore) and .github/actions/embedded-postgres-cache-save (save on main).
 
 // defaultBinaryRepositoryURL is the library's own default (DefaultConfig's
 // binaryRepositoryURL). Restated here because the library exposes a setter
@@ -68,18 +70,28 @@ const defaultBinaryRepositoryURL = "https://repo1.maven.org/maven2"
 
 // fetchPolicy bounds the retries. Package-level so a test can shrink the
 // waits; production never changes it.
+//
+// Sized for Maven Central's rate limit, the failure CI actually meets: a
+// 429 answered four tries spread over 7s (1+2+4s) on forge's main, all
+// inside the same throttling window. Six tries backing off 2s to 30s wait up
+// to ~60s in all, which outlasts a burst of parallel jobs; each wait is
+// jittered so processes that were throttled together do not come back
+// together, and a Retry-After the registry sends is honored up to
+// maxRetryAfter.
 var fetchPolicy = struct {
-	attempts    int
-	firstDelay  time.Duration
-	maxDelay    time.Duration
-	perAttempt  time.Duration
-	upstreamURL string
+	attempts      int
+	firstDelay    time.Duration
+	maxDelay      time.Duration
+	maxRetryAfter time.Duration
+	perAttempt    time.Duration
+	upstreamURL   string
 }{
-	attempts:    4,
-	firstDelay:  1 * time.Second,
-	maxDelay:    8 * time.Second,
-	perAttempt:  2 * time.Minute,
-	upstreamURL: defaultBinaryRepositoryURL,
+	attempts:      6,
+	firstDelay:    2 * time.Second,
+	maxDelay:      30 * time.Second,
+	maxRetryAfter: 60 * time.Second,
+	perAttempt:    2 * time.Minute,
+	upstreamURL:   defaultBinaryRepositoryURL,
 }
 
 // FetchError is a postgres binary download that failed. It replaces the
@@ -206,11 +218,12 @@ func (r *fetchRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	_, _ = io.Copy(w, resp.Body)
 }
 
-// getWithRetry GETs target, retrying transient failures with exponential
-// backoff. It returns the final response (whatever its status) or the final
-// transport error, and how many attempts were made.
+// getWithRetry GETs target, retrying transient failures with jittered
+// exponential backoff, waiting at least as long as a Retry-After asks. It
+// returns the final response (whatever its status) or the final transport
+// error, and how many attempts were made.
 func (r *fetchRelay) getWithRetry(ctx context.Context, target string) (*http.Response, int, error) {
-	delay := fetchPolicy.firstDelay
+	backoff := fetchPolicy.firstDelay
 	var lastErr error
 	for attempt := 1; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -224,17 +237,48 @@ func (r *fetchRelay) getWithRetry(ctx context.Context, target string) (*http.Res
 		case attempt >= fetchPolicy.attempts:
 			return resp, attempt, err
 		}
+		wait := jittered(backoff)
 		if err == nil {
+			if after, ok := retryAfter(resp.Header, time.Now()); ok {
+				wait = max(wait, min(after, fetchPolicy.maxRetryAfter))
+			}
 			_ = resp.Body.Close()
 		}
 		lastErr = err
 		select {
 		case <-ctx.Done():
 			return nil, attempt, errors.Join(ctx.Err(), lastErr)
-		case <-time.After(delay):
+		case <-time.After(wait):
 		}
-		delay = min(delay*2, fetchPolicy.maxDelay)
+		backoff = min(backoff*2, fetchPolicy.maxDelay)
 	}
+}
+
+// jittered spreads a backoff step over [d/2, d), so processes throttled by
+// the same burst retry at different moments instead of in a second burst.
+func jittered(d time.Duration) time.Duration {
+	if d <= 1 {
+		return d
+	}
+	half := d / 2
+	return half + rand.N(d-half)
+}
+
+// retryAfter reads a Retry-After header (RFC 9110 §10.2.3): delay-seconds or
+// an HTTP-date. ok is false when there is none or it does not parse; a date
+// already past is a zero wait.
+func retryAfter(h http.Header, now time.Time) (wait time.Duration, ok bool) {
+	v := strings.TrimSpace(h.Get("Retry-After"))
+	if v == "" {
+		return 0, false
+	}
+	if secs, err := strconv.ParseUint(v, 10, 32); err == nil {
+		return time.Duration(secs) * time.Second, true
+	}
+	if at, err := http.ParseTime(v); err == nil {
+		return max(at.Sub(now), 0), true
+	}
+	return 0, false
 }
 
 // StartEmbedded builds and starts an embedded postgres from cfg, fetching

@@ -157,8 +157,9 @@ func TestMergeGenerated_InstallsThePinnedForgeWhenNoneHasRun(t *testing.T) {
 	var installed []string
 	installForge = func(_ context.Context, _ io.Writer, version, gobin string) error {
 		installed = append(installed, version)
-		writeTreeFileT(t, filepath.Join(gobin, "forge"), "#!/bin/sh\n[ \"$"+delegatedDriverEnv+"\" = 1 ] || exit 3\nprintf 'merged by the installed pin\\n' > \"$3\"\n")
-		return os.Chmod(filepath.Join(gobin, "forge"), 0o755)
+		bin := filepath.Join(gobin, "forge"+exeSuffix()) // go install's name for the host
+		writeTreeFileT(t, bin, "#!/bin/sh\n[ \"$"+delegatedDriverEnv+"\" = 1 ] || exit 3\nprintf 'merged by the installed pin\\n' > \"$3\"\n")
+		return os.Chmod(bin, 0o755)
 	}
 	for i := 0; i < 2; i++ {
 		merged, err := runMergeDriver(t, repo, "svc/x_gen.go", "a\n", "b\n", "c\n")

@@ -324,4 +324,11 @@ func OperatorSource(source string) bool {
 const (
 	spanErrorExpr  = "StatusCode IN ('Error', 'STATUS_CODE_ERROR')"
 	spanServerExpr = "SpanKind IN ('Server', 'SPAN_KIND_SERVER')"
+	// spanStreamExpr matches the server span of a streaming RPC, whose
+	// duration is the stream's lifetime (minutes to hours), not a request's
+	// latency. serverkit stamps StreamTypeAttr on it; spans from emitters
+	// that predate the stamp are recognised by a Connect procedure named
+	// Stream<Name> (".../StreamChatUpdates"). Latency quantiles exclude it;
+	// request and error counts keep it.
+	spanStreamExpr = "(SpanAttributes['" + StreamTypeAttr + "'] != '' OR match(SpanName, '/Stream[A-Z][^/]*$'))"
 )

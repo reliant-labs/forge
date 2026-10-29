@@ -77,9 +77,7 @@ const RESET_PATH = "/auth/reset";
 const publicPaths = [SIGN_IN_PATH, FORGOT_PATH, RESET_PATH];
 
 function isPublicPath(pathname: string): boolean {
-  return publicPaths.some(
-    (p) => pathname === p || pathname.startsWith(`${p}/`),
-  );
+  return publicPaths.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
 /**
@@ -107,8 +105,7 @@ export function RouteGuard({
   // because the browser has no issuer config: the server holds it and
   // answers "who is signed in?" over this app's own API.
   const enforcing = true;
-  const blocked =
-    enforcing && !isLoading && !isAuthenticated && !isPublicPath(pathname);
+  const blocked = enforcing && !isLoading && !isAuthenticated && !isPublicPath(pathname);
 
   // Redirect from an effect, not during render: navigating while rendering is
   // a side effect in the render phase, which React is entitled to run twice

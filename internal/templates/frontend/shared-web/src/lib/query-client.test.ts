@@ -19,11 +19,7 @@ import { bigintSafeHashKey } from "@/lib/query-client";
 describe("bigintSafeHashKey", () => {
   it("hashes a key carrying a bigint that the default hasher rejects", () => {
     // A generated list key with a proto Timestamp filter.
-    const key = [
-      "posts",
-      "list",
-      { createdAfter: { seconds: 1721800000n, nanos: 0 }, limit: 50 },
-    ];
+    const key = ["posts", "list", { createdAfter: { seconds: 1721800000n, nanos: 0 }, limit: 50 }];
 
     expect(() => hashKey(key)).toThrow(TypeError);
     expect(() => bigintSafeHashKey(key)).not.toThrow();
@@ -49,13 +45,9 @@ describe("bigintSafeHashKey", () => {
   });
 
   it("stays stable across object-key ordering, like the default hasher", () => {
-    expect(bigintSafeHashKey([{ a: 1n, b: 2n }])).toBe(
-      bigintSafeHashKey([{ b: 2n, a: 1n }]),
-    );
+    expect(bigintSafeHashKey([{ a: 1n, b: 2n }])).toBe(bigintSafeHashKey([{ b: 2n, a: 1n }]));
     // Two different bigint assignments to the same fields must NOT collapse.
-    expect(bigintSafeHashKey([{ a: 1n, b: 2n }])).not.toBe(
-      bigintSafeHashKey([{ a: 2n, b: 1n }]),
-    );
+    expect(bigintSafeHashKey([{ a: 1n, b: 2n }])).not.toBe(bigintSafeHashKey([{ a: 2n, b: 1n }]));
   });
 
   it("matches React Query's default hash for bigint-free keys", () => {

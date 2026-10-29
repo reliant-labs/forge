@@ -341,6 +341,19 @@ func TestGoldenSnapshots(t *testing.T) {
 				})
 			},
 		},
+		// `forge project new --claimable`: prod declares the anonymous plan
+		// and sizes its hosted services and jobs to it.
+		{
+			name: "env_cloud_prod_claimable.k",
+			render: func(t *testing.T) []byte {
+				return renderDeployTemplate(t, "kcl/cloud/main.k.tmpl", EnvTemplateData{
+					ProjectName: "shop", EnvName: "prod", Claimable: true,
+					HasFrontend: true, FrontendName: "web",
+					Bindings:    "    _hosted(wl.migrate)\n    _hosted(_api)",
+					APIWorkload: goldenAPIWorkload,
+				})
+			},
+		},
 		{
 			name: "env_cloud_staging_bare.k",
 			render: func(t *testing.T) []byte {

@@ -129,9 +129,7 @@ export function SessionNav() {
         className="gap-2"
       >
         <Avatar size="xs" name={identity.name ?? identity.email ?? undefined} />
-        <span className="max-w-[12rem] truncate">
-          {identity.name ?? identity.email ?? "User"}
-        </span>
+        <span className="max-w-[12rem] truncate">{identity.name ?? identity.email ?? "User"}</span>
       </Button>
 
       {open ? (

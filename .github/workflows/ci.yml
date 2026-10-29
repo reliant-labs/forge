@@ -109,15 +109,17 @@ permissions:
 # job's wall time and the run's critical path to the run summary.
 
 # Cancel a superseded run on a pull request only. On main the run in progress
-# always finishes: every push to main shares one group, so cancelling there let
-# each merge kill the run before it — usually while its jobs were still queued
-# for a runner. control-plane lost every main run for 2.5 hours that way on
-# 2026-10-11 (control-plane#831). GitHub keeps at most one PENDING run per
-# group and a newer push replaces it, so a burst of merges costs one extra
-# run, not one per merge. Every workflow here follows the same rule, and
-# internal/templates/ci_concurrency_test.go holds them to it.
+# always finishes, and so does every other one: a push run's group is its own
+# commit. A shared main group let each merge kill the run before it
+# (control-plane lost every main run for 2.5 hours on 2026-10-11,
+# control-plane#831), and even without cancel-in-progress GitHub keeps at most
+# one PENDING run per group and a newer push REPLACES it, so a burst of merges
+# left most main commits with no verdict at all and nothing releasable. A
+# release tags the newest commit whose run is green (release-forge.sh
+# --commit), so every commit needs one. Every workflow here follows the same
+# rule, and internal/templates/ci_concurrency_test.go holds them to it.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Go version is read from go.mod's `go` directive via setup-go's
@@ -502,6 +504,11 @@ jobs:
         run: go test -race -count=1 -timeout 30m $(scripts/ci-test-packages.sh unit)
       - name: Local registry maintenance integration
         run: go test -race -tags=integration -count=1 -timeout=5m ./internal/storage
+      # Main only: keeps any archive this job had to fetch, so the next run
+      # does not (see embedded-postgres-cache's header).
+      - name: Save the embedded postgres archives (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/embedded-postgres-cache-save
       # Main only; see "Build-cache note" at the top of this file. Skipped
       # when today's entry already exists (build-hit).
       - name: Save the Go caches (main only, once a day)
@@ -555,6 +562,11 @@ jobs:
         # The same 30m budget as `test`: internal/cli alone measured
         # 665-692s under -race, so this is a hang detector, not a speed bound.
         run: go test -race -count=1 -timeout 30m $(scripts/ci-test-packages.sh cli)
+      # Main only: keeps any archive this job had to fetch, so the next run
+      # does not (see embedded-postgres-cache's header).
+      - name: Save the embedded postgres archives (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/embedded-postgres-cache-save
 
   # The pull-request tier, run whole on main, then the guards. Three jobs in
   # one: main's own check that the tier pull requests are judged by still
@@ -621,6 +633,11 @@ jobs:
         # -p 1, and -p 1 was not slower (132s against 217s). Full mode and
         # -count=1: the guards' whole-repo work skips under -short.
         run: go test -p 1 -count=1 -timeout 30m $(scripts/ci-test-packages.sh guards)
+      # Main only: keeps any archive this job had to fetch, so the next run
+      # does not (see embedded-postgres-cache's header).
+      - name: Save the embedded postgres archives (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/embedded-postgres-cache-save
       # Main only, and after the tests so the entry carries their results.
       - name: Save the Go caches (main only)
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -765,6 +782,11 @@ jobs:
         with:
           path: ${{ steps.gocache.outputs.dir }}
           key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
+      # Main only: keeps any archive this job had to fetch, so the next run
+      # does not (see embedded-postgres-cache's header).
+      - name: Save the embedded postgres archives (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/embedded-postgres-cache-save
 
   # PUSH TO MAIN ONLY. On a pull request every package is already compiled
   # by test-short; what this adds is the release flags (-buildvcs), which a
@@ -1039,6 +1061,40 @@ jobs:
           mod-key: ${{ steps.go-caches.outputs.mod-key }}
           mod-hit: ${{ steps.go-caches.outputs.mod-hit }}
 
+  # Review marker: the merge itself checks the review. In the merge queue every
+  # pull request in the group must carry pr-review's pass marker for its
+  # CURRENT head, posted by the pipeline's reviewer (scripts/ci-review-marker.sh;
+  # control-plane docs/pr-pipeline.md). pr-disarm reacts to a push only after
+  # the webhook, so a head pushed after a pass, with its checks already green,
+  # could otherwise ride the armed auto-merge in. On a pull request it only
+  # reports: the review comes after CI, and a red here would keep the PR out of
+  # the queue it is meant to guard.
+  review-marker:
+    name: Review marker
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts
+      - name: pr-review passed every head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          GROUP_REF: ${{ github.event.merge_group.head_ref }}
+          GROUP_SHA: ${{ github.event.merge_group.head_sha }}
+        run: |
+          if [ "$EVENT_NAME" = merge_group ]; then
+            scripts/ci-review-marker.sh group "$GROUP_REF" "$GROUP_SHA"
+          else
+            scripts/ci-review-marker.sh pr "$PR" || echo "::notice::the merge queue will require pr-review's pass marker on this exact head"
+          fi
+
   # CI gate: one check that is red exactly when any job above failed or was
   # cancelled (a skipped job — a main-only lane on a pull request — is not a
   # failure). It is the main ruleset's required check and the one the merge
@@ -1058,6 +1114,7 @@ jobs:
       - test-short-warm
       - windows
       - build
+      - review-marker
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1091,6 +1148,11 @@ jobs:
           fi
           echo "not every job passed:"
           echo "$red"
+          # A missing review is never one of main's reds.
+          if [ "$(jq -r '."review-marker".result' <<<"$RESULTS")" != success ] && [ "$GITHUB_EVENT_NAME" = merge_group ]; then
+            echo "::error::Review marker: pr-review has not passed every head in this merge group"
+            exit 1
+          fi
           if scripts/ci-main-red.sh; then
             echo "::warning::CI gate passed over main's reds (ci:main-red); see the run summary"
             exit 0

@@ -4759,7 +4759,10 @@ schema ESOAdmission:
     bounds where the operator may dial on 443 and 6443 (the API server and
     the store). Narrow it to your API server and store addresses when they are
     stable. `egress_ports` lists those ports (the API server, and the store:
-    8200 is OpenBao's default listener). `store_service_account` is the one
+    8200 is OpenBao's default listener). An ipBlock never matches a pod
+    address under Cilium (GKE Dataplane V2), so the Bundle's own in-cluster
+    forge.OpenBao is admitted by a separate selector rule (its namespace and
+    pods, its TLS port) whatever these say. `store_service_account` is the one
     service account a SecretStore may ask a token for."""
     writers: [str] = []
     writer_groups: [str] = ["system:masters"]

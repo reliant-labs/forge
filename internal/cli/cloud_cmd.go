@@ -425,6 +425,19 @@ func newLogoutCmd() *cobra.Command {
 					}
 				}
 				if errors.Is(lookupErr, credentials.ErrNotFound) {
+					// An org-bound browser login (a control plane that
+					// predates human identities) is what `forge login`
+					// stored, so logout forgets it. A pasted --token or any
+					// other delegated entry is left alone.
+					legacy, err := credentials.Lookup(path, p.Endpoint.URL, cloud.ClientID)
+					if err == nil && legacy.Kind == cloud.KindOrgLogin {
+						if _, err := credentials.RemoveRevoked(path, p.Endpoint.URL, cloud.ClientID, legacy.Token); err != nil {
+							return err
+						}
+						key, _ := credentials.Normalize(p.Endpoint.URL)
+						fmt.Fprintf(cmd.OutOrStdout(), "Logged out of %s (removed from %s)\n", key, path)
+						continue
+					}
 					fmt.Fprintf(cmd.OutOrStdout(), "Not logged in to %s (nothing in %s)\n", p.Endpoint.URL, path)
 					continue
 				}

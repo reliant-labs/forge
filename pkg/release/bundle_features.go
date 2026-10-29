@@ -95,9 +95,10 @@ func (r *BundleReader) Supports(feature string) bool {
 	return r == nil || slices.Contains(r.Features, feature)
 }
 
-// Limit returns d without every optional part the reader does not decode.
-// The parts are omitted entirely (their fields are `omitempty`), never sent
-// empty: an empty key is still an unknown key to a decoder that predates it.
+// Limit removes optional browse-only parts the reader does not decode.
+// PlacementPrerequisites is a safety contract and is NEVER removed: producers
+// must refuse unsupported readers before effects rather than drop dependencies.
+// Omitted browse-only fields use omitempty; empty unknown fields still fail.
 func (r *BundleReader) Limit(d BundleDoc) BundleDoc {
 	if !r.Supports(BundleFeatureCommitIdentity) {
 		d.Provenance.CommitSubject = ""

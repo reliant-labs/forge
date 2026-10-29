@@ -59,6 +59,7 @@ type PlacementBinding struct {
 const KubernetesJobCompleteV1 = "kubernetes-job-complete-v1"
 
 var placementName = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`)
+var placementNamespace = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 var placementKind = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*$`)
 
 func placementToken(s string) bool {
@@ -69,8 +70,11 @@ func (k PlacementKey) validate() error {
 	if !((k.Runtime == "cluster" && k.Actuator == "forge") || (k.Runtime == "hosted" && k.Actuator == "platform")) {
 		return fmt.Errorf("%w: unsupported placement runtime/actuator %q/%q", ErrInvalid, k.Runtime, k.Actuator)
 	}
-	if !placementToken(k.Cluster) || !placementName.MatchString(k.Namespace) || len(k.Namespace) > 63 || !placementKind.MatchString(k.Kind) || !placementName.MatchString(k.Name) || len(k.Name) > 253 {
+	if !placementToken(k.Cluster) || (k.Namespace == "" && k.Runtime != "hosted") || (k.Namespace != "" && !placementNamespace.MatchString(k.Namespace)) || len(k.Namespace) > 63 || !placementKind.MatchString(k.Kind) || !placementName.MatchString(k.Name) || len(k.Name) > 253 {
 		return fmt.Errorf("%w: invalid placement identity %+v", ErrInvalid, k)
+	}
+	if (k.Runtime == "hosted" && k.Cluster != BundleHostedCluster) || (k.Runtime == "cluster" && k.Cluster == BundleHostedCluster) {
+		return fmt.Errorf("%w: reserved hosted placement cluster misuse", ErrInvalid)
 	}
 	if k.Cluster == "_" || BundlePathSegment(k.Cluster) == "-" {
 		return fmt.Errorf("%w: invalid placement cluster %q", ErrInvalid, k.Cluster)

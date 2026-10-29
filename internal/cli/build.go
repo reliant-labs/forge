@@ -702,6 +702,9 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		}
 		return runBuildPlan(ctx, cfg, entities, targets, opts, resolvedTag, projectTag)
 	}
+	if err := preflightPlacementBuild(ctx, entities, opts); err != nil {
+		return err
+	}
 	if err := preflightRealBuild(ctx, entities, opts); err != nil {
 		return err
 	}

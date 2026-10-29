@@ -246,7 +246,12 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		return bundleWriteOutcome{}, err
 	}
 
+	placements, err := bundlePlacementDeclarations(doc.entities)
+	if err != nil {
+		return bundleWriteOutcome{}, err
+	}
 	built, err := bundle.Build(ctx, bundle.BuildInput{
+		Placements: placements,
 		Project:    doc.Project,
 		Env:        env,
 		Release:    in.Release,

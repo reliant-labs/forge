@@ -21,6 +21,8 @@ func TestPlacementPrerequisitesValidation(t *testing.T) {
 		"namespace traversal": func(p *PlacementPrerequisites) { p.Items[0].Key.Namespace = "../app" },
 		"cluster traversal":   func(p *PlacementPrerequisites) { p.Items[0].Key.Cluster = "../prod" },
 		"duplicate":           func(p *PlacementPrerequisites) { p.Items = append(p.Items, p.Items[0]) },
+		"reserved cluster":    func(p *PlacementPrerequisites) { p.Items[0].Key.Cluster = BundleHostedCluster },
+		"namespace dot":       func(p *PlacementPrerequisites) { p.Items[0].Key.Namespace = "bad.ns" },
 		"missing target":      func(p *PlacementPrerequisites) { p.Edges[0].Predecessor.Name = "absent" },
 		"self":                func(p *PlacementPrerequisites) { p.Edges[0].Predecessor = p.Edges[0].Dependent },
 		"duplicate edge":      func(p *PlacementPrerequisites) { p.Edges = append(p.Edges, p.Edges[0]) },
@@ -41,6 +43,12 @@ func TestPlacementPrerequisitesValidation(t *testing.T) {
 	}
 	if err := placementFixture().Validate(); err != nil {
 		t.Fatal(err)
+	}
+	hosted := placementFixture()
+	hosted.Edges = nil
+	hosted.Items[1].Key.Namespace = ""
+	if err := hosted.Validate(); err != nil {
+		t.Fatalf("sealed hosted tree has no invented namespace: %v", err)
 	}
 	if err := (&PlacementPrerequisites{Version: 1}).Validate(); err != nil {
 		t.Fatal(err)

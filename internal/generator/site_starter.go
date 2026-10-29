@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/internal/webruntimepeers"
 )
 
 // A greenfield static site (`forge project new <name> --kind site`) is
@@ -65,6 +66,15 @@ type siteStarterData struct {
 	// starter declares — the same floor every forge frontend declares
 	// (webRuntimePublishedRange). The site uses it for installDevLogging.
 	WebRuntimeRange string
+	// Connect, Protobuf and OTelAPI are the peers the runtime's barrel
+	// imports at module top level (interceptors, errors, trace). The
+	// runtime marks the first two optional because every forge frontend
+	// declares them itself, so a site that imports the barrel must too, or
+	// its production build cannot resolve them. Specifiers come from the
+	// runtime's own peerDependencies, so they cannot drift from it.
+	Connect  string
+	Protobuf string
+	OTelAPI  string
 }
 
 // WriteSiteStarter writes the starter app of a greenfield static site into
@@ -81,7 +91,13 @@ func WriteSiteStarter(dir, projectName string, fe SiteFrontend) error {
 	if len(files) == 0 {
 		return fmt.Errorf("no site starter for frontend type %q", fe.Type)
 	}
-	data := siteStarterData{ProjectName: projectName, WebRuntimeRange: webRuntimePublishedRange}
+	data := siteStarterData{
+		ProjectName:     projectName,
+		WebRuntimeRange: webRuntimePublishedRange,
+		Connect:         webRuntimePeer("@connectrpc/connect"),
+		Protobuf:        webRuntimePeer("@bufbuild/protobuf"),
+		OTelAPI:         webRuntimePeer("@opentelemetry/api"),
+	}
 	for _, rel := range files {
 		content, err := templates.FrontendTemplates().Render(path.Join(root, rel), data)
 		if err != nil {
@@ -101,4 +117,15 @@ func WriteSiteStarter(dir, projectName string, fe SiteFrontend) error {
 		}
 	}
 	return nil
+}
+
+// webRuntimePeer is the specifier the runtime declares for one of its peers.
+// A peer the runtime stops declaring is a drifted starter, so it panics
+// rather than render an empty version.
+func webRuntimePeer(name string) string {
+	spec, ok := webruntimepeers.PeerSpec(name)
+	if !ok {
+		panic("web runtime declares no peer " + name)
+	}
+	return spec
 }

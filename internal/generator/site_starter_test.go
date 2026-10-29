@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/webruntimepeers"
 )
 
 // Each site starter renders a complete, self-contained app: no unrendered
@@ -46,7 +48,13 @@ func TestWriteSiteStarter(t *testing.T) {
 					return err
 				}
 				body := string(b)
-				for _, bad := range []string{"{{", "@connectrpc", "@bufbuild", "_gen", "config_gen", "@/lib/connect"} {
+				// package.json declares the runtime's peers; no source file
+				// may use them.
+				bads := []string{"{{", "_gen", "config_gen", "@/lib/connect"}
+				if filepath.Base(path) != "package.json" {
+					bads = append(bads, "@connectrpc", "@bufbuild")
+				}
+				for _, bad := range bads {
 					if strings.Contains(body, bad) {
 						t.Errorf("%s contains %q", path, bad)
 					}
@@ -59,6 +67,12 @@ func TestWriteSiteStarter(t *testing.T) {
 			pkg, _ := os.ReadFile(filepath.Join(dir, "package.json"))
 			if !strings.Contains(string(pkg), `"@reliantlabs/forge-web-runtime": "`+webRuntimePublishedRange+`"`) {
 				t.Errorf("package.json must declare the web runtime at forge's floor:\n%s", pkg)
+			}
+			for _, peer := range []string{"@connectrpc/connect", "@bufbuild/protobuf", "@opentelemetry/api"} {
+				spec, _ := webruntimepeers.PeerSpec(peer)
+				if !strings.Contains(string(pkg), `"`+peer+`": "`+spec+`"`) {
+					t.Errorf("package.json must declare the runtime's peer %s at %q:\n%s", peer, spec, pkg)
+				}
 			}
 		})
 	}

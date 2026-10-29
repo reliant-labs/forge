@@ -40,22 +40,60 @@ import (
 // the server end had already torn down.
 
 // openPool is sql.Open, except that the pgx driver's connections ride through
-// a draining pooler (see above), and every statement is an OpenTelemetry span
+// a draining pooler (see above), pool.SpareConns connections are kept dialled
+// ahead of need (spare_conns.go), and every statement is an OpenTelemetry span
 // under the caller's span (pkg/observe/dbtrace) — whatever the driver.
-func openPool(driverName, dsn string) (*sql.DB, error) {
-	if driverName != "pgx" && driverName != "pgx/v5" {
-		return dbtrace.Open(driverName, dsn)
-	}
-	pgxDriver, ok := stdlib.GetDefaultDriver().(driver.DriverContext)
-	if !ok {
-		return nil, errors.New("the pgx driver cannot open a connector")
-	}
-	connector, err := pgxDriver.OpenConnector(dsn)
+func openPool(driverName, dsn string, pool DBPoolTuning) (*sql.DB, error) {
+	connector, err := openConnector(driverName, dsn)
 	if err != nil {
 		return nil, err
 	}
-	return dbtrace.OpenDB(poolerDrainConnector{Connector: connector}), nil
+	n := spareConnsFor(pool)
+	if n == 0 {
+		return dbtrace.OpenDB(connector), nil
+	}
+	spares := newSpareConnector(connector, n, spareMaxAgeFor(pool))
+	db := dbtrace.OpenDB(spares)
+	spares.db.Store(db)
+	return db, nil
 }
+
+// openConnector is the connector sql.Open would use, with the pgx driver's
+// connections wrapped to ride through a draining pooler.
+func openConnector(driverName, dsn string) (driver.Connector, error) {
+	if driverName == "pgx" || driverName == "pgx/v5" {
+		pgxDriver, ok := stdlib.GetDefaultDriver().(driver.DriverContext)
+		if !ok {
+			return nil, errors.New("the pgx driver cannot open a connector")
+		}
+		connector, err := pgxDriver.OpenConnector(dsn)
+		if err != nil {
+			return nil, err
+		}
+		return poolerDrainConnector{Connector: connector}, nil
+	}
+	// sql.Open is the only way to look a registered driver up by name.
+	probe, err := sql.Open(driverName, dsn)
+	if err != nil {
+		return nil, err
+	}
+	d := probe.Driver()
+	_ = probe.Close()
+	if dc, ok := d.(driver.DriverContext); ok {
+		return dc.OpenConnector(dsn)
+	}
+	return dsnConnector{dsn: dsn, driver: d}, nil
+}
+
+// dsnConnector is database/sql's own fallback for a driver without
+// DriverContext.
+type dsnConnector struct {
+	dsn    string
+	driver driver.Driver
+}
+
+func (c dsnConnector) Connect(context.Context) (driver.Conn, error) { return c.driver.Open(c.dsn) }
+func (c dsnConnector) Driver() driver.Driver                        { return c.driver }
 
 // poolerDrainConnector hands database/sql poolerDrainConns.
 type poolerDrainConnector struct {

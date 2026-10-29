@@ -14,6 +14,13 @@ package cli
 // that keeps watching, and exit 8 (exitTimedOut), the code every wait uses
 // for "still in progress when the budget ran out". A pipeline that needs the
 // release live branches on 8 and runs `forge env status <env> --wait`.
+//
+// ONLY WHEN NOTHING IS LEFT FOR THIS MACHINE TO DO. In a mixed env the hosted
+// stage can come before a local apply or a bucket/Firebase frontend (the
+// default order, or a declared dependency), and a stage that stopped on the
+// pending apply never ran those. The platform cannot run them, so watching
+// can never finish the deploy: that is deployStagesNotRunError, a failure
+// naming the stages that did not run, never "still applying".
 
 import (
 	"errors"
@@ -78,4 +85,38 @@ func applyingDocument(p *deploytarget.ApplyPendingError) *deployApplyingJSON {
 		WaitedSeconds: int(p.Waited.Seconds()),
 		Watch:         "forge env status " + p.Env + " --wait",
 	}
+}
+
+// deployStagesNotRunError is a deploy whose hosted stage was still applying
+// when its wait ended, with stages after it that never ran. It deliberately
+// does not unwrap to the pending apply: it is an incomplete deploy (exit 1),
+// not a still-applying one.
+type deployStagesNotRunError struct {
+	env    string
+	cause  error
+	notRun []string
+}
+
+func (e *deployStagesNotRunError) Error() string {
+	return fmt.Sprintf("INCOMPLETE: %v; the stages after it did not run, and the platform cannot run them: %s. "+
+		"Once it is applied (forge env status %s --wait), deploy again to ship them",
+		e.cause, strings.Join(e.notRun, ", "), e.env)
+}
+
+// stageStopError is the error a deploy returns when a stage fails with err and
+// the stages in later never run. A still-applying hosted stage with work left
+// in a later stage becomes a deployStagesNotRunError; every other error is
+// returned as it is.
+func stageStopError(env string, err error, later []deployStage, work map[deployStage][]string) error {
+	if applyingOf(err) == nil {
+		return err
+	}
+	var notRun []string
+	for _, stage := range later {
+		notRun = append(notRun, work[stage]...)
+	}
+	if len(notRun) == 0 {
+		return err
+	}
+	return &deployStagesNotRunError{env: env, cause: err, notRun: notRun}
 }

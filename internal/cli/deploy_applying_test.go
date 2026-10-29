@@ -76,3 +76,43 @@ func TestShipLog_StillApplyingIsShipped(t *testing.T) {
 		t.Fatalf("shipped %v partial %v, want the publish shipped", log.Shipped(), log.Partial())
 	}
 }
+
+// A hosted stage still applying with a later machine-owned stage left (a
+// local apply, a bucket/Firebase frontend) is an INCOMPLETE deploy: exit 1,
+// naming what did not run, never "still applying" (review of #1499).
+func TestStageStopError_PendingHostedWithLaterStagesIsIncomplete(t *testing.T) {
+	pending := fmt.Errorf("deploy hosted: %w", pendingApply())
+	work := map[deployStage][]string{
+		stageLocal:     {"[k8s-cluster] cluster=prod ns=app"},
+		stageFrontends: {"frontend web"},
+	}
+	err := stageStopError("prod", pending, []deployStage{stageFrontends}, work)
+	if applyingOf(err) != nil || applyingOf(asApplying(err)) != nil {
+		t.Fatalf("an incomplete deploy was classified as still applying: %v", err)
+	}
+	if got := exitCodeForError(asApplying(err)); got != exitWrong {
+		t.Errorf("exit code = %d, want %d", got, exitWrong)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "INCOMPLETE") || !strings.Contains(msg, "frontend web") ||
+		!strings.Contains(msg, "deploy again") {
+		t.Errorf("message = %q, want the stages that did not run and how to ship them", msg)
+	}
+	var log shipLog
+	_ = log.run([]string{"[hosted] published"}, func() error { return pending })
+	if len(log.Shipped()) != 1 {
+		t.Errorf("the hosted publish itself still shipped: %v", log.Shipped())
+	}
+
+	// Nothing left for this machine: still applying.
+	if err := stageStopError("prod", pending, []deployStage{stageFrontends}, map[deployStage][]string{}); applyingOf(err) == nil {
+		t.Errorf("a pending hosted stage with nothing after it must stay still-applying: %v", err)
+	}
+	if err := stageStopError("prod", pending, nil, work); applyingOf(err) == nil {
+		t.Errorf("a pending hosted stage that ran last must stay still-applying: %v", err)
+	}
+	// Any other error is untouched.
+	other := errors.New("boom")
+	if stageStopError("prod", other, []deployStage{stageFrontends}, work) != other {
+		t.Error("a non-pending error was rewritten")
+	}
+}

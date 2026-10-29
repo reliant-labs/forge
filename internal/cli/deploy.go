@@ -1679,10 +1679,22 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 			})
 		},
 	}
+	// What each stage would still ship, for a deploy that stops before it:
+	// a stage with nothing to ship is not work left undone.
+	stageWork := map[deployStage][]string{
+		stageLocal: applyStageLabels(groups, hasK8sServices && !opts.skipClusterApply, deployContext, namespace),
+	}
+	if !opts.skipFrontend {
+		stageWork[stageFrontends] = shippableFrontendNames(entities)
+	}
 	workloadStagesLeft := 2
-	for _, stage := range stageOrder {
+	for i, stage := range stageOrder {
 		if err := runStage[stage](); err != nil {
-			return err
+			// A hosted part STILL APPLYING stops the stages after it, which
+			// may depend on it. Then the deploy is incomplete, not merely
+			// pending: the platform cannot run this machine's stages, so no
+			// amount of watching finishes it (deploy_applying.go).
+			return stageStopError(envName, err, stageOrder[i+1:], stageWork)
 		}
 		if stage == stageLocal || stage == stageHosted {
 			workloadStagesLeft--
@@ -2733,6 +2745,20 @@ func checkFrontendDeploys(ctx context.Context, entities *KCLEntities, projectDir
 // Used to recognise a frontend-only env (skip the cluster pipeline) and
 // gates nothing else. A hosted frontend ships through the control plane, a
 // build-only one ships nowhere, and a host one is the dev server.
+// shippableFrontendNames names the frontends this machine builds and ships.
+func shippableFrontendNames(e *KCLEntities) []string {
+	if e == nil {
+		return nil
+	}
+	var names []string
+	for _, f := range e.Frontends {
+		if f.Runtime.Ships() {
+			names = append(names, "frontend "+f.Name)
+		}
+	}
+	return names
+}
+
 func hasShippableFrontend(e *KCLEntities) bool {
 	if e == nil {
 		return false

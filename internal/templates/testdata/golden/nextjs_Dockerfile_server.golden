@@ -1,7 +1,11 @@
 # syntax=docker/dockerfile:1
 
 # --- Build ---
-FROM node:22-alpine AS builder
+# Base images are pulled through mirror.gcr.io, Google's public pull-through
+# cache of Docker Hub: the same images, without Docker Hub's anonymous pull
+# rate limit (`429 Too Many Requests` on a shared builder). Drop the
+# `mirror.gcr.io/...` prefix to pull from Docker Hub directly.
+FROM mirror.gcr.io/library/node:22-alpine AS builder
 
 # The frontend builds at the SAME project-relative path it has in the
 # repository (frontends/web), not at /app. Every relative path the committed
@@ -39,7 +43,7 @@ ENV NODE_ENV=production
 RUN pnpm run build
 
 # --- Run ---
-FROM node:22-alpine AS runner
+FROM mirror.gcr.io/library/node:22-alpine AS runner
 WORKDIR /app
 
 ENV NEXT_TELEMETRY_DISABLED=1

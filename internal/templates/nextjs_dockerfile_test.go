@@ -63,7 +63,7 @@ func TestNextjsDockerfileFollowsOutputMode(t *testing.T) {
 		{
 			output: "standalone",
 			want: []string{
-				"FROM node:22-alpine AS runner",
+				"FROM mirror.gcr.io/library/node:22-alpine AS runner",
 				"COPY --from=builder --chown=node:node /src/frontends/web/.next-prod/standalone ./",
 				`CMD ["node", "server.js"]`,
 			},
@@ -73,7 +73,7 @@ func TestNextjsDockerfileFollowsOutputMode(t *testing.T) {
 		{
 			output: "static",
 			want: []string{
-				"FROM nginxinc/nginx-unprivileged:1.30-alpine AS runner",
+				"FROM mirror.gcr.io/nginxinc/nginx-unprivileged:1.30-alpine AS runner",
 				"COPY --from=builder /src/frontends/web/out /usr/share/nginx/html",
 			},
 			mustNot:  []string{".next-prod/standalone", "server.js", "USER node"},

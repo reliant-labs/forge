@@ -1,5 +1,5 @@
 ---
-name: migration-v1.0.0-claimable-limits
+name: migration-v1.0.1-claimable-limits
 description: The anonymous (claimable) plan's caps come from the control plane's GetClaimableAvailability limits; pkg/deploy's Claimable* constants and ClaimableResources are a ClaimableLimits value (ClaimableLimitsFallback is the offline copy, 125m / 128 MiB), and CheckHostedResources(plan, r) is CheckHostedResourcesWithin(plan, limits, r). Use when Go code names deploy.CheckHostedResources, deploy.ClaimableCPUMillicores, deploy.ClaimableMemoryBytes, deploy.ClaimableMax* or deploy.ClaimableResources.
 relevance: migration
 ---

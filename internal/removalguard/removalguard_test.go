@@ -2205,6 +2205,11 @@ var skipFiles = map[string]bool{
 	"pnpm-lock.yaml":    true,
 	"yarn.lock":         true,
 	"kcl.mod.lock":      true,
+	// The release history, written only by scripts/release-forge.sh from the
+	// titles of merged PRs. Its old entries name removed features by design
+	// (that is what "removed X" means), and the release commit rewrites the
+	// whole file, so scanning it turned main red on every release.
+	"CHANGELOG.md": true,
 }
 
 // skipFilePrefixes are basename prefixes that are never a forge surface.

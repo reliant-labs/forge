@@ -359,6 +359,17 @@ func postgresConfig(spec Spec, dataDir string) embeddedpostgres.Config {
 		// project needs later (the dev IdP's) without re-initializing the
 		// cluster.
 		Database("postgres").
+		// initdb names its locale instead of deriving one from LANG/LC_*.
+		// Left to the environment, a shell exporting LC_ALL=C.UTF-8 on macOS
+		// (which has no such locale) failed every first `forge env up` with
+		// initdb's "invalid locale settings; check LANG and LC_* environment
+		// variables". C exists on every platform postgres runs on — the same
+		// choice pgtest makes for the embedded test databases — and UTF8
+		// keeps the encoding production's, where C alone means SQL_ASCII.
+		// Only a fresh data directory is initialized, so an existing dev
+		// cluster keeps whatever locale it was created with.
+		Locale("C").
+		Encoding("UTF8").
 		Port(uint32(spec.Port)). //nolint:gosec // the KCL schema bounds port to 1..65535
 		// DATA and RUNTIME are separate directories, and that is load-bearing:
 		// Start() does RemoveAll(RuntimePath) every time, and an unset DataPath

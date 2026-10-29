@@ -227,12 +227,20 @@ func preflightPlacementDeploy(ctx context.Context, projectDir, env string, e *KC
 	return requirePlacementReader(ctx, projectDir, env, e, ledger)
 }
 
+// preflightPlacementBuild negotiates the recording reader for every bundle a
+// build will seal or publish (--release, --push), before any build, push or
+// cut. A compile-only build publishes nothing and never asks a control
+// plane: its local bundle step skips a mixed bundle the reader cannot take
+// (writeEnvBundle) instead.
 func preflightPlacementBuild(ctx context.Context, e *KCLEntities, opts buildOptions) error {
+	if opts.env == "" || opts.plan || (opts.release == "" && !opts.push && !opts.pushIfDeclared) {
+		return nil
+	}
 	for _, env := range parseBundleEnvs(opts.bundleEnvs, opts.env) {
 		declaration := e
 		if env != opts.env {
 			var err error
-			declaration, err = RenderKCL(ctx, projectDirForKCL(), env)
+			declaration, err = renderKCLForDeclaration(ctx, projectDirForKCL(), env)
 			if err != nil {
 				return err
 			}

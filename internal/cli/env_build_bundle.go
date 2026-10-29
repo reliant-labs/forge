@@ -257,6 +257,14 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 	if err != nil {
 		return bundleWriteOutcome{}, err
 	}
+	// A compile-only build publishes nothing, so a recorder that cannot
+	// decode mixed prerequisites costs it this local bundle, not the build.
+	// Publishing builds were refused before any effect (preflightPlacementBuild).
+	if placements != nil && in.Release == "" && !in.Pushed && !reader.Supports(release.BundleFeaturePlacementPrerequisites) {
+		fmt.Fprintf(in.errWriter(), "[bundle] Warning: env %s's bundle was not written: its recording control plane does not decode %s.\n",
+			env, release.BundleFeaturePlacementPrerequisites)
+		return bundleWriteOutcome{Env: env, Skipped: true}, nil
+	}
 	built, err := bundle.Build(ctx, bundle.BuildInput{
 		Placements: placements,
 		Project:    doc.Project,

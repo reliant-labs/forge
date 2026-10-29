@@ -31,7 +31,7 @@ var waitEndingsPlan = []hostedPlanItem{{Name: "api"}, {Name: "web"}}
 func TestApplyNotLanded(t *testing.T) {
 	t.Run("not applied yet is still applying, not a timeout or a failure", func(t *testing.T) {
 		seen := map[string]recordedObservation{}
-		err := observingProvider(seen).applyNotLanded("prod", newBundle, bundleApplyState{known: true, current: oldBundle}, 10*time.Minute, waitEndingsPlan, cluster.RolloutWait)
+		err := observingProvider(seen).applyNotLanded("prod", "promo-1", newBundle, bundleApplyState{known: true, current: oldBundle}, 10*time.Minute, waitEndingsPlan, cluster.RolloutWait)
 		var pending *ApplyPendingError
 		if !errors.As(err, &pending) || pending.Bundle != newBundle || pending.Current != oldBundle || pending.Waited != 10*time.Minute {
 			t.Fatalf("err = %#v, want an *ApplyPendingError naming both bundles and the wait", err)
@@ -42,7 +42,7 @@ func TestApplyNotLanded(t *testing.T) {
 		msg := err.Error()
 		if strings.Contains(msg, "TIMED OUT") || strings.Contains(msg, "fail ") ||
 			!strings.Contains(msg, "still applying") || !strings.Contains(msg, "nothing has failed") ||
-			!strings.Contains(msg, shortDigest(oldBundle)) || !strings.Contains(msg, "forge env status prod --wait") {
+			!strings.Contains(msg, shortDigest(oldBundle)) || !strings.Contains(msg, "forge env status prod --wait --promotion promo-1") {
 			t.Fatalf("err = %q, want a still-applying message with the current revision and the watch command", msg)
 		}
 		for _, item := range waitEndingsPlan {
@@ -55,7 +55,7 @@ func TestApplyNotLanded(t *testing.T) {
 	t.Run("a failed apply reports the reconciler's reason, not not-yet-applied", func(t *testing.T) {
 		seen := map[string]recordedObservation{}
 		state := bundleApplyState{known: true, current: oldBundle, failure: "BuildFailed: kustomize build failed"}
-		err := observingProvider(seen).applyNotLanded("prod", newBundle, state, time.Minute, waitEndingsPlan, cluster.RolloutWait)
+		err := observingProvider(seen).applyNotLanded("prod", "promo-1", newBundle, state, time.Minute, waitEndingsPlan, cluster.RolloutWait)
 		var pending *ApplyPendingError
 		if errors.As(err, &pending) {
 			t.Errorf("a failed apply was reported as still applying: %v", err)
@@ -74,7 +74,7 @@ func TestApplyNotLanded(t *testing.T) {
 	t.Run("--rollout warn prints the error and does not fail", func(t *testing.T) {
 		var err error
 		out := captureStdout(t, func() {
-			err = observingProvider(map[string]recordedObservation{}).applyNotLanded("prod", newBundle, bundleApplyState{known: true}, time.Minute, waitEndingsPlan, cluster.RolloutWarn)
+			err = observingProvider(map[string]recordedObservation{}).applyNotLanded("prod", "", newBundle, bundleApplyState{known: true}, time.Minute, waitEndingsPlan, cluster.RolloutWarn)
 		})
 		if err != nil {
 			t.Fatalf("err = %v, want nil under --rollout warn", err)

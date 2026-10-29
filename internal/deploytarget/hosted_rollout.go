@@ -336,6 +336,10 @@ var errBundleNotApplied = errors.New("the platform has not applied this release 
 // CLI renders it as "still applying" with the command that keeps watching.
 type ApplyPendingError struct {
 	Env string
+	// PromotionID is the promotion this deploy recorded and waited on. The
+	// watch command names it, so a newer deploy landing meanwhile cannot make
+	// the watch report success for a release this deploy never shipped.
+	PromotionID string
 	// Bundle is the digest this deploy recorded; Current the one the
 	// platform last reported applied ("" when it has reported none).
 	Bundle, Current string
@@ -344,8 +348,19 @@ type ApplyPendingError struct {
 
 func (e *ApplyPendingError) Error() string {
 	return fmt.Sprintf("hosted env %q: still applying: the platform accepted bundle %s and had not reported it applied after %s "+
-		"(currently %s); nothing has failed. Keep watching with: forge env status %s --wait",
-		e.Env, shortDigest(e.Bundle), e.Waited, emptyOr(shortDigest(e.Current), "none"), e.Env)
+		"(currently %s); nothing has failed. Keep watching with: %s",
+		e.Env, shortDigest(e.Bundle), e.Waited, emptyOr(shortDigest(e.Current), "none"), e.WatchCommand())
+}
+
+// WatchCommand is the command that keeps watching THIS deploy: pinned to its
+// promotion when it has one, so it can never report a later release's
+// rollout as this one's.
+func (e *ApplyPendingError) WatchCommand() string {
+	cmd := "forge env status " + e.Env + " --wait"
+	if e.PromotionID != "" {
+		cmd += " --promotion " + e.PromotionID
+	}
+	return cmd
 }
 
 // Unwrap makes errors.Is(err, errBundleNotApplied) hold for a pending apply.

@@ -13,7 +13,8 @@ package cli
 // So it is its own outcome: one block saying what is known and the command
 // that keeps watching, and exit 8 (exitTimedOut), the code every wait uses
 // for "still in progress when the budget ran out". A pipeline that needs the
-// release live branches on 8 and runs `forge env status <env> --wait`.
+// release live branches on 8 and runs `.applying.watch`:
+// `forge env status <env> --wait --promotion <id>`, pinned to this deploy.
 //
 // ONLY WHEN NOTHING IS LEFT FOR THIS MACHINE TO DO. In a mixed env the hosted
 // stage can come before a local apply or a bucket/Firebase frontend (the
@@ -72,18 +73,29 @@ func asApplying(err error) error {
 
 // deployApplyingJSON is the `applying` object of the deploy document.
 type deployApplyingJSON struct {
-	Env            string `json:"env"`
+	Env string `json:"env"`
+	// PromotionID is the promotion this deploy recorded. Watch is pinned to
+	// it, so a pipeline following .applying.watch waits on THIS release even
+	// after a newer deploy moves the env.
+	PromotionID    string `json:"promotion_id,omitempty"`
 	Bundle         string `json:"bundle"`
 	CurrentApplied string `json:"current_applied,omitempty"`
 	WaitedSeconds  int    `json:"waited_seconds"`
 	Watch          string `json:"watch"`
 }
 
-func applyingDocument(p *deploytarget.ApplyPendingError) *deployApplyingJSON {
+// applyingDocument renders a pending apply. recorded is the promotion this
+// command recorded; it fills in a provider error that carried none, and never
+// overrides one that did.
+func applyingDocument(p *deploytarget.ApplyPendingError, recorded string) *deployApplyingJSON {
+	pinned := *p
+	if pinned.PromotionID == "" {
+		pinned.PromotionID = recorded
+	}
 	return &deployApplyingJSON{
-		Env: p.Env, Bundle: p.Bundle, CurrentApplied: p.Current,
-		WaitedSeconds: int(p.Waited.Seconds()),
-		Watch:         "forge env status " + p.Env + " --wait",
+		Env: pinned.Env, PromotionID: pinned.PromotionID, Bundle: pinned.Bundle, CurrentApplied: pinned.Current,
+		WaitedSeconds: int(pinned.Waited.Seconds()),
+		Watch:         pinned.WatchCommand(),
 	}
 }
 
@@ -98,9 +110,13 @@ type deployStagesNotRunError struct {
 }
 
 func (e *deployStagesNotRunError) Error() string {
+	watch := "forge env status " + e.env + " --wait"
+	if p := applyingOf(e.cause); p != nil {
+		watch = p.WatchCommand()
+	}
 	return fmt.Sprintf("INCOMPLETE: %v; the stages after it did not run, and the platform cannot run them: %s. "+
-		"Once it is applied (forge env status %s --wait), deploy again to ship them",
-		e.cause, strings.Join(e.notRun, ", "), e.env)
+		"Once it is applied (%s), deploy again to ship them",
+		e.cause, strings.Join(e.notRun, ", "), watch)
 }
 
 // stageStopError is the error a deploy returns when a stage fails with err and

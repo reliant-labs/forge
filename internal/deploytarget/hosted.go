@@ -1333,7 +1333,7 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 				progress.announce(state, bundleDigest)
 				progress.heartbeat(time.Now(), state, bundleDigest, applyBudget)
 				if time.Now().After(applyDeadline) || ctx.Err() != nil {
-					return p.applyNotLanded(envName, bundleDigest, state, time.Since(progress.started).Round(time.Second), plan, policy.Mode)
+					return p.applyNotLanded(envName, promotionID, bundleDigest, state, time.Since(progress.started).Round(time.Second), plan, policy.Mode)
 				}
 				select {
 				case <-ctx.Done():
@@ -1530,7 +1530,7 @@ func (a *applyProgress) announce(state bundleApplyState, bundleDigest string) {
 // is known to be wrong. The platform accepted the bundle and is still
 // applying it, so the wait returns an *ApplyPendingError ("still applying").
 // The CLI renders that as its own outcome, not as a failure.
-func (p HostedProvider) applyNotLanded(envName, bundleDigest string, state bundleApplyState, waited time.Duration, plan []hostedPlanItem, mode cluster.RolloutMode) error {
+func (p HostedProvider) applyNotLanded(envName, promotionID, bundleDigest string, state bundleApplyState, waited time.Duration, plan []hostedPlanItem, mode cluster.RolloutMode) error {
 	var werr error
 	if state.failure != "" {
 		cause := fmt.Errorf("the platform failed to apply this release: %s", state.failure)
@@ -1540,7 +1540,7 @@ func (p HostedProvider) applyNotLanded(envName, bundleDigest string, state bundl
 		werr = fmt.Errorf("hosted env %q: the platform failed to apply this release (%s, currently %s): %s",
 			envName, shortDigest(bundleDigest), emptyOr(shortDigest(state.current), "none"), state.failure)
 	} else {
-		pending := &ApplyPendingError{Env: envName, Bundle: bundleDigest, Current: state.current, Waited: waited}
+		pending := &ApplyPendingError{Env: envName, PromotionID: promotionID, Bundle: bundleDigest, Current: state.current, Waited: waited}
 		for _, item := range plan {
 			p.observe(item.Name, cluster.RolloutStateNotWaited, pending)
 		}

@@ -377,7 +377,11 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	// A STILL-APPLYING deploy is applied:true with exit_code 8, and
 	// `applying` names the bundle and the command that keeps watching.
 	if p := applyingOf(writeErr); p != nil {
-		plan.Applying = applyingDocument(p)
+		recorded := ""
+		if plan.Recorded != nil {
+			recorded = plan.Recorded.ID
+		}
+		plan.Applying = applyingDocument(p, recorded)
 	}
 	if opts.Claim != nil && writeErr == nil {
 		plan.Claim = opts.Claim()

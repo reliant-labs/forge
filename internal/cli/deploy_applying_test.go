@@ -13,10 +13,11 @@ import (
 
 func pendingApply() *deploytarget.ApplyPendingError {
 	return &deploytarget.ApplyPendingError{
-		Env:     "prod",
-		Bundle:  "sha256:badfa995129f7cd83b1db0a44b80733f5bd29a130705cafb6e9962f8eda40721",
-		Current: "sha256:4750cbaa564172e82a0b51ef319a08ddd6a48ad09eab602d1e0ce3f55c95e3f6",
-		Waited:  10 * time.Minute,
+		Env:         "prod",
+		PromotionID: "promo-1",
+		Bundle:      "sha256:badfa995129f7cd83b1db0a44b80733f5bd29a130705cafb6e9962f8eda40721",
+		Current:     "sha256:4750cbaa564172e82a0b51ef319a08ddd6a48ad09eab602d1e0ce3f55c95e3f6",
+		Waited:      10 * time.Minute,
 	}
 }
 
@@ -50,12 +51,12 @@ func TestRenderPromotePlan_StillApplyingIsNotAFailure(t *testing.T) {
 	plan := promotePlan{Env: "prod", Applied: true, FollowError: err.Error(),
 		Target:   promotePlanTarget{Release: "v2"},
 		Shipped:  []string{"[hosted] published to the control plane: api, web"},
-		Applying: applyingDocument(pendingApply())}
+		Applying: applyingDocument(pendingApply(), "promo-1")}
 	plan.followed = true
 	var out bytes.Buffer
 	renderPromotePlanText(&out, plan)
 	got := out.String()
-	for _, want := range []string{"PUBLISHED, STILL APPLYING", "Nothing has failed", "forge env status prod --wait",
+	for _, want := range []string{"PUBLISHED, STILL APPLYING", "Nothing has failed", "forge env status prod --wait --promotion promo-1",
 		"shipped   [hosted] published", "sha256:badfa995129f", "sha256:4750cbaa5641"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the plan does not say %q:\n%s", want, got)
@@ -114,5 +115,32 @@ func TestStageStopError_PendingHostedWithLaterStagesIsIncomplete(t *testing.T) {
 	other := errors.New("boom")
 	if stageStopError("prod", other, []deployStage{stageFrontends}, work) != other {
 		t.Error("a non-pending error was rewritten")
+	}
+}
+
+// The watch hint stays pinned to the promotion this deploy recorded when the
+// env advances: a pipeline following .applying.watch must keep waiting on
+// promo-1, never succeed on a newer deploy's promo-2 (review of #1499).
+func TestApplyingWatchKeepsTheOriginalPromotionWhenTheEnvAdvances(t *testing.T) {
+	pinned := pendingApply() // the provider's error names promo-1
+	doc := applyingDocument(pinned, "promo-2")
+	if doc.PromotionID != "promo-1" || doc.Watch != "forge env status prod --wait --promotion promo-1" {
+		t.Errorf("document = %+v, want the watch pinned to promo-1", doc)
+	}
+	// A provider error that carried no promotion takes the one this command
+	// recorded, never an unpinned watch.
+	bare := pendingApply()
+	bare.PromotionID = ""
+	if doc := applyingDocument(bare, "promo-1"); doc.Watch != "forge env status prod --wait --promotion promo-1" {
+		t.Errorf("watch = %q, want it pinned to the recorded promo-1", doc.Watch)
+	}
+	for name, err := range map[string]error{
+		"still applying": asApplying(pinned),
+		"incomplete": stageStopError("prod", pinned, []deployStage{stageFrontends},
+			map[deployStage][]string{stageFrontends: {"frontend web"}}),
+	} {
+		if !strings.Contains(err.Error(), "--wait --promotion promo-1") {
+			t.Errorf("%s: hint %q is not pinned to promo-1", name, err.Error())
+		}
 	}
 }

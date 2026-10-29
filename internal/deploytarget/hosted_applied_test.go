@@ -127,6 +127,27 @@ func TestHostedWaitTimeoutNamesTheMissingApplyNotTheOldRevisionsErrors(t *testin
 	}
 }
 
+// A deploy that waited on a promotion and ran out of apply budget hands back
+// a watch command pinned to THAT promotion: a newer deploy moving the env in
+// the meantime must not let `env status --wait` succeed on its release.
+func TestHostedWaitStillApplyingPinsTheWatchToThisPromotion(t *testing.T) {
+	cp := &appliedCP{revisions: []string{oldBundle}, staleStatus: imageRejectedStatus}
+	p := HostedProvider{Client: cp, PollInterval: time.Millisecond, ApplyBudget: 100 * time.Millisecond,
+		Rollout:      cluster.RolloutPolicy{Mode: cluster.RolloutWait, Timeout: 100 * time.Millisecond},
+		RecordBundle: func(context.Context, string) (string, error) { return newBundle, nil }}
+	group := hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{})
+	group.Hosted.PromotionID = "promo-1"
+	var err error
+	_ = captureStdout(t, func() { err = p.Deploy(context.Background(), group) })
+	var pending *ApplyPendingError
+	if !errors.As(err, &pending) {
+		t.Fatalf("err = %v, want still applying", err)
+	}
+	if pending.PromotionID != "promo-1" || !strings.Contains(err.Error(), "forge env status prod --wait --promotion promo-1") {
+		t.Errorf("err = %q (promotion %q), want the watch pinned to promo-1", err, pending.PromotionID)
+	}
+}
+
 // The apply wait is at least ApplyBudget even when the readiness timeout is
 // shorter: a platform that applies after the readiness budget, but inside the
 // apply budget, is a successful deploy.

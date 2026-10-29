@@ -93,7 +93,8 @@ type obsStatusTelemetry struct {
 	LastSpanAt time.Time `json:"last_span_at,omitzero"`
 	Lookback   string    `json:"lookback"`
 	// DeliveriesEnabled and Deliveries are the control plane's telemetry
-	// token deliveries (hosted envs).
+	// token deliveries: the env's declared forge.ControlPlaneSecrets on
+	// connected clusters. A hosted env's own token is not one of them.
 	DeliveriesEnabled *bool                          `json:"deliveries_enabled,omitempty"`
 	Deliveries        []obsbackend.TelemetryDelivery `json:"deliveries,omitzero"`
 }
@@ -556,8 +557,16 @@ func writeStatusTelemetry(w io.Writer, now time.Time, t *obsStatusTelemetry) {
 			fmt.Fprintf(w, "telemetry: %s\n", strings.Join(parts, ", "))
 		}
 	}
-	if t.DeliveriesEnabled != nil && !*t.DeliveriesEnabled {
-		fmt.Fprintln(w, "telemetry token: the control plane's delivery reconciler is off; nothing keeps the token valid")
+	// THE DELIVERY RECONCILER ONLY SERVES DECLARED SECRETS. It writes the
+	// token into a forge.ControlPlaneSecret on a cluster the env CONNECTED.
+	// A hosted env's own token is minted and renewed by the platform's
+	// workload operator and is not a delivery. So the reconciler being off
+	// is news only to an env that declared one; for any other env it says
+	// nothing about the token. Saying "nothing keeps the token valid" there
+	// was false, and alarming.
+	if t.DeliveriesEnabled != nil && !*t.DeliveriesEnabled && len(t.Deliveries) > 0 {
+		fmt.Fprintf(w, "telemetry token: %d declared Secret(s) on connected clusters are not delivered: "+
+			"the control plane's external delivery reconciler is off, so nothing writes or renews them\n", len(t.Deliveries))
 	}
 	for _, dl := range t.Deliveries {
 		if dl.State == obsbackend.DeliveryDelivered || dl.State == obsbackend.DeliveryWithdrawn {

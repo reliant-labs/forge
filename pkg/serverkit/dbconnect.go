@@ -199,8 +199,10 @@ func RetryConnect(ctx context.Context, p ConnectPolicy, attempt func(ctx context
 }
 
 // OpenDB opens a *sql.DB, applies the pool tuning, and verifies connectivity
-// with RetryConnect. The pool is closed on failure, so a database that never
-// comes up does not leak a half-open pool into the exit path.
+// with RetryConnect. With pool.SpareConns set, that many connections are kept
+// dialled ahead of need for the life of the pool (spare_conns.go). The pool
+// is closed on failure, so a database that never comes up does not leak a
+// half-open pool into the exit path.
 //
 // The "pgx" driver (the default) is opened so that the pool rides through a
 // pooler's rollout: a statement a draining PgBouncer refused is run again on
@@ -210,7 +212,7 @@ func OpenDB(ctx context.Context, driver, dsn string, pool DBPoolTuning, p Connec
 	if driver == "" {
 		driver = "pgx"
 	}
-	db, err := openPool(driver, dsn)
+	db, err := openPool(driver, dsn, pool)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", driver, err)
 	}

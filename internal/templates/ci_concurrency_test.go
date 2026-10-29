@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -129,6 +130,28 @@ func TestCIWorkflows_CancelInProgressOnlyOnPullRequests(t *testing.T) {
 		got := workflowConcurrency(t, wf.name, out)
 		if got["cancel-in-progress"] != prOnlyCancel {
 			t.Errorf("%s: workflow concurrency = %v, want cancel-in-progress: %s", wf.name, got, prOnlyCancel)
+		}
+		if g, _ := got["group"].(string); !strings.Contains(g, perCommitPushGroup) {
+			t.Errorf("%s: group %q shares one group across pushes; GitHub REPLACES a pending run in a group, so most main commits would get no verdict. Append %s", wf.name, g, perCommitPushGroup)
+		}
+	}
+}
+
+// perCommitPushGroup gives every non-PR run a group of its own commit, so no
+// push to main replaces another's pending run and each commit gets a verdict.
+const perCommitPushGroup = "${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}"
+
+// TestForgeOwnWorkflows_EveryMainCommitGetsAVerdict: forge's own push-to-main
+// workflows group per commit (see perCommitPushGroup); release-forge.sh
+// --commit tags the newest green one.
+func TestForgeOwnWorkflows_EveryMainCommitGetsAVerdict(t *testing.T) {
+	for _, name := range []string{"ci.yml", "e2e-suite.yml", "e2e-scaffold.yml"} {
+		content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if g, _ := workflowConcurrency(t, name, content)["group"].(string); !strings.Contains(g, perCommitPushGroup) {
+			t.Errorf("%s: group %q must end with %s", name, g, perCommitPushGroup)
 		}
 	}
 }

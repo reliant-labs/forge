@@ -109,15 +109,17 @@ permissions:
 # job's wall time and the run's critical path to the run summary.
 
 # Cancel a superseded run on a pull request only. On main the run in progress
-# always finishes: every push to main shares one group, so cancelling there let
-# each merge kill the run before it — usually while its jobs were still queued
-# for a runner. control-plane lost every main run for 2.5 hours that way on
-# 2026-10-11 (control-plane#831). GitHub keeps at most one PENDING run per
-# group and a newer push replaces it, so a burst of merges costs one extra
-# run, not one per merge. Every workflow here follows the same rule, and
-# internal/templates/ci_concurrency_test.go holds them to it.
+# always finishes, and so does every other one: a push run's group is its own
+# commit. A shared main group let each merge kill the run before it
+# (control-plane lost every main run for 2.5 hours on 2026-10-11,
+# control-plane#831), and even without cancel-in-progress GitHub keeps at most
+# one PENDING run per group and a newer push REPLACES it, so a burst of merges
+# left most main commits with no verdict at all and nothing releasable. A
+# release tags the newest commit whose run is green (release-forge.sh
+# --commit), so every commit needs one. Every workflow here follows the same
+# rule, and internal/templates/ci_concurrency_test.go holds them to it.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Go version is read from go.mod's `go` directive via setup-go's

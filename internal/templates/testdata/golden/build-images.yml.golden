@@ -17,7 +17,7 @@ on:
 # every image push and its signing finish instead of dying half-done (ci.yml
 # says why). Only a pull_request run would ever be cancelled.
 concurrency:
-  group: build-images-${{ github.ref }}
+  group: build-images-${{ github.ref }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Supply chain hardening (M-12):

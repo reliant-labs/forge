@@ -35,6 +35,11 @@
 #                 then RESTORE the working tree and create no commit or tag.
 #   --repo DIR    operate on DIR instead of the enclosing git repo (tests).
 #   --branch NAME the branch to push (default: main).
+#   --commit SHA  tag SHA, a commit already on origin/<branch> whose full CI
+#                 is green, instead of the branch tip. Main keeps merging: the
+#                 tag goes on SHA itself (so it stays reachable from main) and
+#                 the bookkeeping (VERSION, NEXT_VERSION, CHANGELOG.md) lands
+#                 as a release/vX.Y.Z pull request through the merge queue.
 #   --publish-npm after the GitHub release exists, `npm publish` npm/ (the
 #                 @reliantlabs/forge shim) and wait for the registry to serve
 #                 it. Off by default: it needs a logged-in npm account with
@@ -82,9 +87,10 @@ SKIP_PROXY_CHECK=0
 PROXY_BASE="${FORGE_RELEASE_PROXY_BASE:-https://proxy.golang.org}"
 
 PUBLISH_NPM=0
+COMMIT=""
 
 usage() {
-  echo "usage: $0 [--dry-run] [--repo <dir>] [--branch <name>] [--skip-proxy-check] [--publish-npm] [vX.Y.Z]" >&2
+  echo "usage: $0 [--dry-run] [--repo <dir>] [--branch <name>] [--commit <sha>] [--skip-proxy-check] [--publish-npm] [vX.Y.Z]" >&2
   echo "       the version defaults to NEXT_VERSION's, and must be it (or a pre-release of it)" >&2
   exit 2
 }
@@ -96,6 +102,7 @@ while [ $# -gt 0 ]; do
     --publish-npm) PUBLISH_NPM=1; shift ;;
     --repo)    [ $# -ge 2 ] || usage; REPO_ROOT="$2"; shift 2 ;;
     --branch)  [ $# -ge 2 ] || usage; BRANCH="$2"; shift 2 ;;
+    --commit)  [ $# -ge 2 ] || usage; COMMIT="$2"; shift 2 ;;
     -h|--help) usage ;;
     -*)        echo "error: unknown flag $1" >&2; usage ;;
     *)
@@ -189,6 +196,18 @@ if [ -n "$(git status --porcelain)" ]; then
   echo "error: working tree is not clean; commit or set aside your changes before releasing" >&2
   git status --short >&2
   exit 1
+fi
+
+# ── 3b. --commit: release a green commit of main, not its tip ──────
+if [ -n "$COMMIT" ]; then
+  git fetch -q origin "$BRANCH"
+  COMMIT="$(git rev-parse --verify "$COMMIT^{commit}")"
+  if ! git merge-base --is-ancestor "$COMMIT" "origin/$BRANCH"; then
+    echo "error: --commit $COMMIT is not on origin/$BRANCH" >&2
+    exit 1
+  fi
+  git checkout -q --detach "$COMMIT"
+  echo "→ releasing $COMMIT (origin/$BRANCH is $(git rev-parse --short "origin/$BRANCH"))"
 fi
 
 # ── 4. The tag may not already exist ────────────────────────────────
@@ -522,6 +541,16 @@ RELEASE_SHA="$(git rev-parse HEAD)"
 # From here the tree is intentionally changed; do not restore it on exit.
 RESTORE_ON_EXIT=0
 
+if [ -n "$COMMIT" ]; then
+  # The tag names the green commit; the release commit becomes a PR.
+  RELEASE_SHA="$COMMIT"
+  git tag -a "$RELEASE_TAG" -m "forge $VERSION" "$COMMIT"
+  git push --atomic origin "refs/tags/$RELEASE_TAG" "HEAD:refs/heads/release/$VERSION"
+  "$GH_BIN" pr create --repo "$GITHUB_REPO" --base "$BRANCH" --head "release/$VERSION" \
+    --title "chore: release $VERSION" --body "Bookkeeping for $RELEASE_TAG, tagged at $COMMIT." &&
+    "$GH_BIN" pr merge --repo "$GITHUB_REPO" --squash --auto "release/$VERSION" ||
+    echo "⚠️  open the release/$VERSION bookkeeping PR by hand; $RELEASE_TAG is pushed" >&2
+else
 git tag -a "$RELEASE_TAG" -m "forge $VERSION"
 
 echo ""
@@ -539,6 +568,7 @@ echo "→ pushing atomically (branch + tag, all-or-nothing)"
 # it as non-fast-forward and the atomic push dropped the tag with it (v0.1.18
 # hit exactly this).
 git push --atomic origin "$RELEASE_SHA:refs/heads/$BRANCH" "refs/tags/$RELEASE_TAG"
+fi
 
 echo ""
 echo "✅ committed and pushed $VERSION at $RELEASE_SHA"

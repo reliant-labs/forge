@@ -56,7 +56,7 @@ permissions:
 # keeps at most one PENDING run per group and a newer push replaces it, so a
 # burst of merges costs one extra run, not one per merge.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Go version is read from go.mod's `go` directive via setup-go's

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -182,6 +183,115 @@ func TestCaptureProvenanceTellsAnUnbornHeadFromAnUnreadableCommit(t *testing.T) 
 				t.Fatalf("no commit may be recorded from an unreadable HEAD: %+v", p)
 			}
 		})
+	}
+}
+
+// A user's log.showSignature=true makes `git log` print a signed commit's
+// verification ahead of the --format record, colored under color.ui=always.
+// The capture and the commit range must read a signed history exactly as an
+// unsigned one. Signs for real with a throwaway ssh key; the parse itself is
+// covered without signing tools by TestLogParsersIgnoreTextOutsideRecords.
+func TestCaptureReadsASignedHistoryWithShowSignatureOn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and signs commits; runs in task test")
+	}
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen not on PATH, so no commit can be signed here; TestLogParsersIgnoreTextOutsideRecords covers the parse with an injected signature")
+	}
+	t.Parallel()
+	ctx := context.Background()
+	dir, headTree := initRepo(t)
+	keys := t.TempDir()
+	key := filepath.Join(keys, "key")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "t", "-f", key).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v\n%s", err, out)
+	}
+	pub, err := os.ReadFile(key + ".pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := filepath.Join(keys, "allowed_signers")
+	if err := os.WriteFile(allowed, []byte(`t namespaces="git" `+string(pub)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The user configuration under test, written straight into the
+	// repository's config rather than through five `git config` processes.
+	cfg, err := os.OpenFile(filepath.Join(dir, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fmt.Fprintf(cfg, "[user]\n\tsigningkey = %s\n[gpg]\n\tformat = ssh\n[gpg \"ssh\"]\n\tallowedSignersFile = %s\n[log]\n\tshowSignature = true\n[color]\n\tui = always\n[commit]\n\tgpgSign = true\n", key+".pub", allowed)
+	if cerr := cfg.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "commit", "-q", "--amend", "--no-edit")
+	gitRun(t, dir, "commit", "-q", "--allow-empty", "-m", "second")
+
+	// The fixture really does what a signing user's checkout does: plain
+	// `git log` prints the signature before the record.
+	plain, err := exec.Command("git", "-C", dir, "log", "-1", "--format=%x1e%H").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	preamble, head, _ := strings.Cut(string(plain), "\x1e")
+	head = strings.TrimSpace(head)
+	if !strings.Contains(preamble, "Good \"git\" signature") || !ValidObjectID(head) {
+		t.Fatalf("fixture shows no signature, so it tests nothing: %q", plain)
+	}
+
+	p, err := CaptureProvenance(ctx, dir, CaptureOptions{treeBudget: testTreeBudget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Commit != head || p.Tree != headTree || p.CommitSubject != "second" || p.CommitAuthor != "t" || p.Dirty {
+		t.Fatalf("signed HEAD %s: %+v", head, p)
+	}
+	r, err := CaptureCommitRange(ctx, dir, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(subjects(r.Commits), ","); got != "second,init" || r.Commits[0].SHA != head || r.Total != 2 {
+		t.Fatalf("signed range = %v (total %d), want second,init", got, r.Total)
+	}
+}
+
+// The log parsers read only what is inside their record markers, so text git
+// prints around a record — a signature check, colored — cannot shift a field,
+// and a record that never closes is an error rather than a dropped commit.
+func TestLogParsersIgnoreTextOutsideRecords(t *testing.T) {
+	commit, tree := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	sig := "\x1b[32mGood \"git\" signature for t with ED25519 key SHA256:abc\x1b[m\n"
+
+	f, err := parseHead([]byte(sig + "\x1e" + commit + "\x1f" + tree + "\x1f1700000000\x1fbob\x1ffix: a\x1fb\x1d\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.commit != commit || f.tree != tree || f.author != "bob" || f.subject != "fix: a\x1fb" || f.time == nil || f.time.Unix() != 1700000000 {
+		t.Fatalf("parseHead = %+v", f)
+	}
+
+	cs, err := parseCommits([]byte(sig + "\x1e" + commit + "\x1f1700000060\x1fbob\x1fc2\x1d\n" + sig + "\x1e" + tree + "\x1f1700000000\x1falice\x1fc1\x1d\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs) != 2 || cs[0].SHA != commit || cs[0].Subject != "c2" || cs[1].SHA != tree || cs[1].Author != "alice" {
+		t.Fatalf("parseCommits = %+v", cs)
+	}
+
+	for name, out := range map[string]string{
+		"unterminated": "\x1e" + commit + "\x1f" + tree + "\x1f1\x1fbob\x1fs",
+		"no record":    sig,
+		"two records":  "\x1e" + commit + "\x1f" + tree + "\x1f1\x1fa\x1fs\x1d\x1e" + commit + "\x1f" + tree + "\x1f1\x1fa\x1fs\x1d",
+	} {
+		if _, err := parseHead([]byte(out)); err == nil {
+			t.Errorf("parseHead(%s) = nil error", name)
+		}
+	}
+	if _, err := parseCommits([]byte("\x1e" + commit + "\x1f1\x1fbob\x1fc2")); err == nil {
+		t.Error("parseCommits of an unterminated record = nil error")
 	}
 }
 

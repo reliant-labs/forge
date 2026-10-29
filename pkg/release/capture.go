@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -182,27 +183,73 @@ type headFacts struct {
 // should never produce: a commit recorded without its tree would be an
 // unhashed record that no bound explains.
 //
-// Read as raw bytes split on a unit separator, the subject LAST, so a
-// subject's content can never shift another field. The committer date is a
-// unix timestamp so the result does not depend on git's date configuration.
+// Read as one marked record (logRecords) split on a unit separator, the
+// subject LAST, so a subject's content can never shift another field. The
+// committer date is a unix timestamp so the result does not depend on git's
+// date configuration.
 func readHead(ctx context.Context, top string) (f headFacts, born bool, err error) {
-	out, err := gitRaw(ctx, top, nil, "log", "-1", "--format=%H%x1f%T%x1f%ct%x1f%an%x1f%s", "HEAD")
+	out, err := gitRaw(ctx, top, nil, "log", "-1", "--no-show-signature", "--format="+logRecordFormat("%H%x1f%T%x1f%ct%x1f%an%x1f%s"), "HEAD")
 	if err != nil {
 		if ctx.Err() == nil && unbornHead(ctx, top) {
 			return headFacts{}, false, nil
 		}
 		return headFacts{}, false, fmt.Errorf("read HEAD commit: %w", err)
 	}
-	fields := strings.SplitN(strings.TrimRight(string(out), "\n"), "\x1f", 5)
-	if len(fields) != 5 || !ValidObjectID(fields[0]) || !ValidObjectID(fields[1]) {
-		return headFacts{}, false, fmt.Errorf("git log -1 HEAD: unexpected output %q", out)
+	f, err = parseHead(out)
+	if err != nil {
+		return headFacts{}, false, err
 	}
-	f = headFacts{commit: fields[0], tree: fields[1], author: fields[3], subject: fields[4]}
+	return f, true, nil
+}
+
+// parseHead is readHead's parse of `git log -1` output.
+func parseHead(out []byte) (headFacts, error) {
+	recs, err := logRecords(out)
+	if err != nil {
+		return headFacts{}, err
+	}
+	if len(recs) != 1 {
+		return headFacts{}, fmt.Errorf("git log -1 HEAD: unexpected output %q", out)
+	}
+	fields := strings.SplitN(recs[0], "\x1f", 5)
+	if len(fields) != 5 || !ValidObjectID(fields[0]) || !ValidObjectID(fields[1]) {
+		return headFacts{}, fmt.Errorf("git log -1 HEAD: unexpected output %q", out)
+	}
+	f := headFacts{commit: fields[0], tree: fields[1], author: fields[3], subject: fields[4]}
 	if secs, err := strconv.ParseInt(fields[2], 10, 64); err == nil && secs > 0 {
 		t := time.Unix(secs, 0).UTC()
 		f.time = &t
 	}
-	return f, true, nil
+	return f, nil
+}
+
+// logRecordFormat wraps a `git log --format` body in the markers logRecords
+// reads: a record separator before it and a group separator after.
+func logRecordFormat(body string) string { return "%x1e" + body + "%x1d" }
+
+// logRecords is every record of `git log --format=logRecordFormat(...)`
+// output, in order. Whatever git prints OUTSIDE the markers is ignored: the
+// signature verification log.showSignature adds before each commit, and the
+// newline after each one. machineReadConfig and --no-show-signature already
+// turn the known sources off; this keeps an unforeseen one from shifting a
+// field. A record that opens and never closes is an error, not a commit
+// quietly dropped.
+func logRecords(out []byte) ([]string, error) {
+	var recs []string
+	rest := string(out)
+	for {
+		start := strings.IndexByte(rest, '\x1e')
+		if start < 0 {
+			return recs, nil
+		}
+		rest = rest[start+1:]
+		end := strings.IndexByte(rest, '\x1d')
+		if end < 0 {
+			return nil, fmt.Errorf("git log: unterminated record %q", rest)
+		}
+		recs = append(recs, rest[:end])
+		rest = rest[end+1:]
+	}
 }
 
 // unbornHead reports whether HEAD names a branch that does not exist yet: it
@@ -403,10 +450,23 @@ func gitOutEnv(ctx context.Context, dir string, env []string, args ...string) (s
 	return strings.TrimSpace(string(out)), err
 }
 
+// machineReadConfig overrides the user configuration that changes what git
+// prints, for every call this package parses. log.showSignature=true makes
+// `git log` print a signed commit's verification text on stdout ahead of the
+// --format record; color.ui=always colors that text; i18n.logOutputEncoding
+// re-encodes subjects and names away from the UTF-8 the ledger records.
+// (log.mailmap needs no override: %an is the raw author, %aN the mapped one.)
+var machineReadConfig = []string{
+	"-c", "log.showSignature=false",
+	"-c", "color.ui=never",
+	"-c", "i18n.logOutputEncoding=UTF-8",
+}
+
 // gitRaw is git's stdout untouched: a leading space is meaningful in
-// `status --porcelain` and trimming it shifts every field.
+// `status --porcelain` and trimming it shifts every field. It runs git under
+// machineReadConfig.
 func gitRaw(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", append(slices.Clone(machineReadConfig), args...)...)
 	cmd.Dir = dir
 	if env != nil {
 		cmd.Env = env

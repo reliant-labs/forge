@@ -68,6 +68,11 @@ Read this before proposing a design. It rules out whole categories of answer:
 - **The 20% are never disempowered.** Every default is overridable, every
   generated file has an owned seam beside it, and no convenience is implemented
   as a wall.
+- **Never stand in for another tool.** forge never parses, interprets or
+  emulates a Dockerfile, or any other tool's input format, to do that tool's
+  job: a re-implementation drifts from the real semantics and becomes a second
+  builder to maintain. If docker or buildx is missing, fail with a clear error
+  naming the fix.
 
 ## Package boundaries: the worked example in this repo
 

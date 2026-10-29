@@ -78,7 +78,7 @@ func TestMain(m *testing.M) {
 	}
 	buildxAvailable = func(context.Context) bool { return false }
 	// A unit test builds images through the (fake) docker on PATH, so the
-	// daemon answers; a test of the daemonless path sets its own answer.
+	// daemon answers; a test of the no-daemon error sets its own answer.
 	dockerDaemonReachable = func(context.Context) error { return nil }
 	// Nor does any test ask the host's docker about compose. `forge env
 	// status` / `env up`'s summary run doctor's runtime checks and list

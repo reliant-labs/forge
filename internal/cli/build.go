@@ -159,11 +159,6 @@ type buildOptions struct {
 	// deploy.target_arch (default amd64) for docker builds". See
 	// resolveBuildArch.
 	targetArch string
-	// imageBuilder is --image-builder: how the project image is made. "" and
-	// "auto" use docker when a daemon answers and assemble the image
-	// in-process (internal/imagebuild) when none does; "docker" and
-	// "in-process" force one. See build_image_inprocess.go.
-	imageBuilder string
 	// env, when set, scopes the build to a specific deploy environment.
 	// Reads `deploy/kcl/<env>/` to determine which services run as host
 	// processes (deploy: "host" in the rendered KCL) and excludes them
@@ -336,7 +331,6 @@ mirror config inside k3d resolves that reference at pull time).`,
 	cmd.Flags().BoolVar(&opts.push, "push", false, "Moved to 'forge env build <env> --push' — a push destination is declared per workload in an env's render, so publishing is an environment act")
 	_ = cmd.Flags().MarkHidden("push")
 	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64 for docker builds)")
-	cmd.Flags().StringVar(&opts.imageBuilder, imageBuilderFlag, "", imageBuilderUsage)
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag of every image this build writes (default: the tag a workload's image pins, else the env's image_tag, else git describe --tags --always --dirty). Refused when it differs from the tag a selected workload's image pins — the deploy pulls the pin. Recorded in .forge/state so forge env deploy uses the same value.")
 	// No backticks in a usage string: cobra reads the first backticked span
 	// as the flag's argument-name placeholder, so a quoted command rendered
@@ -614,9 +608,6 @@ func preflightBuildCapacity(ctx context.Context, opts buildOptions, entities *KC
 }
 
 func runBuild(ctx context.Context, opts buildOptions) error {
-	if err := validateImageBuilder(opts.imageBuilder); err != nil {
-		return err
-	}
 	cfg, err := prepareBuild(opts)
 	if err != nil {
 		return err
@@ -736,6 +727,14 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	goTargets := targets.goTargets
 	skipProjectDocker := targets.skipProjectDocker
 	cfgArchForDocker := targets.cfgArchForDocker
+
+	// Images are built with docker: without a daemon, say so now rather than
+	// after minutes of go and frontend builds whose images cannot be made.
+	if opts.buildDocker && ((len(goTargets) > 0 && !skipProjectDocker) || len(dockerFrontends) > 0) {
+		if err := requireImageDaemon(ctx, "this build's images"); err != nil {
+			return err
+		}
+	}
 
 	// Re-render every frontend's runtime config document (public/config.js)
 	// from THIS env's KCL before the frontend build reads it.
@@ -1957,7 +1956,7 @@ func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
 		dockerArch := resolveBuildArch(cfgArchForDocker, opts.targetArch, true)
 		if len(goTargets) > 0 && !skipProjectDocker {
 			projectImageArch := resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
-			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), binaries: projectImageBinaries(goTargets), envLabel: opts.env, imageBuilder: opts.imageBuilder}
+			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), envLabel: opts.env}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -2024,7 +2023,7 @@ func buildSequential(ctx context.Context, plan buildPlan) []buildResult {
 		if len(goTargets) > 0 && !skipProjectDocker {
 			// Image platform == the arch the project binaries were built for.
 			projectImageArch := resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
-			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), binaries: projectImageBinaries(goTargets), envLabel: opts.env, imageBuilder: opts.imageBuilder}
+			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), envLabel: opts.env}
 			r := dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, guard)
 			r.goTargets = goTargets
 			results = append(results, r)
@@ -2422,12 +2421,7 @@ func withForcedEnv(env []string, key, value string) []string {
 type projectImageGuard struct {
 	outputDir   string
 	binaryNames []string
-	// binaries maps a binary's name inside the image to the host-built file
-	// (projectImageBinaries); the in-process image builder reads it.
-	binaries map[string]string
-	envLabel string
-	// imageBuilder is --image-builder (auto, docker or in-process).
-	imageBuilder string
+	envLabel    string
 }
 
 // projectImageBinaryNames returns the output basenames of the go-build
@@ -2487,10 +2481,8 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 		}
 	}
 
-	// No Docker daemon (or --image-builder in-process): assemble the image from
-	// the binaries just built and push it, without one.
-	if r, handled := projectImageInProcess(ctx, cfg, tags, crossArch, resolvedVersion, guard); handled {
-		return r
+	if err := requireImageDaemon(ctx, "the project image ("+dockerfile+")"); err != nil {
+		return buildResult{name: cfg.Name + " (docker)", kind: "docker", duration: time.Since(start), err: err}
 	}
 
 	// The project image's context is the whole repository, so its epoch is
@@ -2722,7 +2714,7 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path stri
 	fmt.Printf("[build] %s: docker build (%d tags)\n", name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, path)
 
-	if err := requireDaemonForDockerOnlyImage(ctx, "frontend image "+name, dockerfile); err != nil {
+	if err := requireImageDaemon(ctx, "frontend image "+name+" ("+dockerfile+")"); err != nil {
 		return buildResult{name: name + " (docker)", kind: "docker", image: name, duration: time.Since(start), err: err}
 	}
 	if err := prepareDockerBuildStorage(ctx, projectDirForKCL()); err != nil {
@@ -3355,7 +3347,7 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 	dockerArgs = appendSourceDateEpoch(dockerArgs, resolveSourceDateEpoch(ctx, ".", serviceDockerContext(d), dockerfile))
 	fmt.Printf("[build] %s: docker build -f %s %s (%d tags)\n", svcName, dockerfile, serviceDockerContext(d), countTags(dockerArgs))
 
-	if err := requireDaemonForDockerOnlyImage(ctx, "service "+svcName, dockerfile); err != nil {
+	if err := requireImageDaemon(ctx, "service "+svcName+" ("+dockerfile+")"); err != nil {
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: err}
 	}
 	if err := prepareDockerBuildStorage(ctx, projectDirForKCL()); err != nil {

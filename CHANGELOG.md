@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.0.1] - 2026-10-29
+
+### Added
+
+- **claimable:** one hosted resource policy that knows the anonymous plan; --claimable --plan-only preview; project new --claimable; named unavailability preflight ([#1454](https://github.com/reliant-labs/forge/pull/1454))
+- **claimable:** read the anonymous plan's caps from the control plane; project new --claimable writes 125m / 128 MiB, a 1 GiB database and a pool that fits it ([#1470](https://github.com/reliant-labs/forge/pull/1470))
+
+### Changed
+
+- **merge-queue:** a merge group lands only if pr-review passed every PR's current head ([#1467](https://github.com/reliant-labs/forge/pull/1467))
+- **obsquery:** prefilter candidate traces so wide-window trace lists finish ([#1479](https://github.com/reliant-labs/forge/pull/1479))
+
+### Fixed
+
+- **scaffold:** a new project's first commit passes its scaffolded hooks, and an unrunnable pinned pnpm is repaired once, never retried ([#1457](https://github.com/reliant-labs/forge/pull/1457))
+- **cloud:** a helper credential lacking obs:read asks the helper for it instead of an exchange that cannot widen ([#1466](https://github.com/reliant-labs/forge/pull/1466))
+- **frontenddeps:** satisfy quoted diagnostic lint for release ([#1468](https://github.com/reliant-labs/forge/pull/1468))
+- **obs:** --page-token resumes the listing it came from, even with a relative --since ([#1471](https://github.com/reliant-labs/forge/pull/1471))
+- **kcl:** ESO reaches an in-cluster OpenBao on Cilium (selector egress rule) ([#1473](https://github.com/reliant-labs/forge/pull/1473))
+- **obs:** status finds the newest log and span in a 15m probe before the 24h lookback ([#1476](https://github.com/reliant-labs/forge/pull/1476))
+- **release:** removalguard skips the release history, and #1470's claimable-limits playbook moves to migrations/v1.0.1 ([#1480](https://github.com/reliant-labs/forge/pull/1480))
+
 ## [v1.0.0] - 2026-10-29
 
 ### Breaking changes
@@ -8175,6 +8197,7 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.1...HEAD
+[v1.0.1]: https://github.com/reliant-labs/forge/compare/v1.0.0...v1.0.1
 [v1.0.0]: https://github.com/reliant-labs/forge/compare/v0.1.46...v1.0.0
 [0.1.0]: https://github.com/reliant-labs/forge/compare/v0.0.8...v0.1.0

@@ -31,7 +31,7 @@ Forge ships an extensive skill catalog (architecture, proto, db, api, services, 
 - **Never search the filesystem for forge's own source.** `{{.CLI}} project libraries` lists every `forge/pkg` package and what it is for; **`{{.CLI}} project libraries <pkg>`** prints that package's full exported API — every signature — without opening a file. Prefer it to `go doc <pkg>`, which renders structs and interfaces as `struct{ ... }` and lists no methods. Run it before porting a utility — the equivalent usually already exists.
 - Discover what's available: `{{.CLI}} skill list`
 - Load one: `{{.CLI}} skill load <name>`. Skills are never written to disk; they come from the binary.
-- Upgrading the pinned forge version? `{{.CLI}} upgrade list` surfaces the one-time migration playbooks that apply to this project (hidden from `{{.CLI}} skill list` by default; pass --include-migrations to see them all).
+- Upgrading the pinned forge version? `{{.CLI}} project upgrade list` surfaces the one-time migration playbooks that apply to this project (hidden from `{{.CLI}} skill list` by default; pass --include-migrations to see them all).
 - Reach for one whenever you're about to touch proto, handlers, services, the DB layer, the frontend, tests, or anything cross-cutting. The cost of loading is tiny; the cost of writing code that fights the conventions is not.
 
 If a skill's content seems out of date relative to what you observe in this project, trust the project — and flag it. See the **Forge bug rule** below.

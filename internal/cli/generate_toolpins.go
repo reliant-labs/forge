@@ -191,11 +191,15 @@ func pinCodegenTools(ctx context.Context, projectDir string) (*codegenTools, err
 // (internal/toolpin), resolved exactly as `forge ci gate` resolves it — the
 // buf on PATH when it already is that version, else a build in the gate's
 // tool cache. A project that declares no buf keeps whichever buf PATH has:
-// the gate still holds that one to forge's pin.
+// the gate still holds that one to forge's pin. With no buf on PATH at all
+// (a fresh machine's first `forge project new`, whose go.mod is not tidied
+// yet) it builds forge's pin, so a new user never needs buf preinstalled.
 func pinBuf(ctx context.Context, projectDir string, res *codegenTools) error {
 	b := toolpin.BufFor(projectDir)
 	if !b.Declared() {
-		return nil
+		if _, err := exec.LookPath("buf"); err == nil {
+			return nil
+		}
 	}
 	dir, err := cigate.NewResolver(projectDir, os.Stdout).Ensure(ctx, cigate.BufTool(projectDir))
 	if err != nil {

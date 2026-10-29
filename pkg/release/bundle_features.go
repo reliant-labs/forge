@@ -36,6 +36,9 @@ import (
 // TestEveryBundleDocAdditionIsAFeature (bundle_features_test.go) fails until
 // it is mapped.
 const (
+	// BundleFeaturePlacementPrerequisites gates required mixed dependency evidence.
+	// Unlike browse-only additions, Limit must NEVER discard this safety contract.
+	BundleFeaturePlacementPrerequisites = "placement-prerequisites-v1"
 	// BundleFeatureCommitIdentity is Provenance.CommitSubject and
 	// Provenance.CommitAuthor (forge#850).
 	BundleFeatureCommitIdentity = "provenance-commit-identity"
@@ -76,7 +79,7 @@ const (
 // [DecodeBundleDoc] accepts. A control plane advertises exactly this list, so
 // what it claims to decode and what its decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeaturePlacementPrerequisites}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the

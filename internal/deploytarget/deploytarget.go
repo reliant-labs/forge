@@ -46,6 +46,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/pkg/deploy"
 )
 
 // Provider is the dispatch surface for one deploy target type. Each
@@ -129,6 +131,14 @@ type ServiceGroup struct {
 	// endpoint and the bound release's digests. Nil for every other
 	// provider. Services carry the per-workload tier specs.
 	Hosted *HostedTarget
+
+	// HostedPlan is the plan a hosted group is admitted under: the
+	// standard (billed) plan, judged by the shape band, or the anonymous
+	// claimable plan, judged by its caps (deploy.CheckHostedResources). A
+	// field rather than a property of the credential, so a preview with no
+	// credential (`forge env shape --claimable`, `--claimable --plan-only`)
+	// is judged exactly as the deploy will be.
+	HostedPlan deploy.HostedPlan
 
 	// ImageTag is the tag forge built (or is about to build) for
 	// these services. Passed through to the provider so it can stamp

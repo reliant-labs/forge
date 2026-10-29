@@ -765,14 +765,12 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 				errs = append(errs, fmt.Errorf("%s: %w", svc.Name, err))
 				continue
 			}
-			// The band is a billing rule, and the claimable plan is never
-			// billed: the control plane exempts it (control-plane#1359), and
-			// its own caps are checked before any build (claimableIneligibility).
-			if !cloud.ClaimableActive() {
-				if err := deploy.CheckShapeBand(spec.Resources); err != nil {
-					errs = append(errs, fmt.Errorf("%s: %w", svc.Name, err))
-					continue
-				}
+			// The plan's resource rule: the shape band (a billing rule) for
+			// the standard plan, the caps for the never-billed claimable plan
+			// (the control plane exempts it from the band, control-plane#1359).
+			if err := deploy.CheckHostedResources(group.HostedPlan, spec.Resources); err != nil {
+				errs = append(errs, hostedResourcesError(group, svc.Name, err))
+				continue
 			}
 			out = append(out, hostedPlanItem{Name: svc.Name, Tier: w.Tier, Spec: spec, DesiredDigest: digest, Artifact: artifact})
 		case HostedTierStatic:
@@ -845,6 +843,19 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 			group.Env, len(errs), errors.Join(errs...))
 	}
 	return out, nil
+}
+
+// hostedResourcesError is a plan's resources refusal of one workload, with
+// the exact KCL that fixes it. The binding is where the scaffold declares a
+// hosted workload's resources (the env's `_hosted` binder, or the workload's
+// own line), so that is where the fix points.
+func hostedResourcesError(group ServiceGroup, name string, err error) error {
+	var r *deploy.ResourcesRefusal
+	if !errors.As(err, &r) {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	return fmt.Errorf("%s: %w.\n  fix: in deploy/kcl/%s/main.k, set on workload %q (its binding, e.g. `_hosted(...) | {...}`):\n      %s",
+		name, err, group.Env, name, r.Fix())
 }
 
 // hostedArtifactOf is the release artifact a pinned workload's digest is

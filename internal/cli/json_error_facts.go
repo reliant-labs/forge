@@ -41,6 +41,11 @@ type jsonErrorFacts struct {
 	RetryAfterSeconds int64  `json:"retry_after_seconds,omitempty"`
 	RetryAt           string `json:"retry_at,omitempty"`
 	ThrottleScope     string `json:"throttle_scope,omitempty"`
+	// An unavailable claimable deploy (reason claimable_unavailable): why,
+	// as the control plane's cause code (disabled | dependency_unavailable |
+	// not_supported, or forge's not_deployed) and the switch or dependency.
+	UnavailableCause     string `json:"unavailable_cause,omitempty"`
+	UnavailableComponent string `json:"unavailable_component,omitempty"`
 }
 
 // errorFactsOf reads err's structure. The control plane's own answer wins
@@ -57,6 +62,9 @@ func errorFactsOf(err error) jsonErrorFacts {
 			facts.RetryAfterSeconds = int64(t.retryAfter / time.Second)
 			facts.RetryAt = t.retryAt.UTC().Format(time.RFC3339)
 			facts.ThrottleScope = t.scope
+		}
+		if c := cr.cause; c != nil {
+			facts.UnavailableCause, facts.UnavailableComponent = c.Code, c.Component
 		}
 		return facts
 	}

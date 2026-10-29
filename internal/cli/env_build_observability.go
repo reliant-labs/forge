@@ -142,6 +142,10 @@ func bundleObservabilityFiles(projectDir string, in bundleBuildInputs, entities 
 		if err != nil {
 			return nil, err
 		}
+		// The bundle copy is what a control plane serves to a browser: only
+		// what its readers use, so it does not grow past their bounds with
+		// the project (reliant's: 2.1 MB compact in full, ~0.4 MB reduced).
+		servicecatalog.ForBundle(&catalog)
 		// gen/ names each declaration by symbol, so unrelated edits never
 		// make it stale; the bundle carries the line, resolved here against
 		// the very source being built.

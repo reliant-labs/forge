@@ -132,6 +132,31 @@ type ClaimableAvailability struct {
 	Causes           []ClaimableCause `json:"causes,omitempty"`
 	ComputeAvailable bool             `json:"computeAvailable"`
 	ComputeCauses    []ClaimableCause `json:"computeCauses,omitempty"`
+	// Limits are the claimable plan's caps, as the control plane enforces
+	// them. Nil from a control plane that predates publishing them.
+	Limits *ClaimableLimits `json:"limits,omitempty"`
+}
+
+// ClaimableLimits is the control plane's ClaimableLimits message (Connect's
+// JSON names): what one unclaimed deploy may run. Every value is a hard cap;
+// "per workload" holds for the service and, separately, its migration job,
+// each request = limit.
+type ClaimableLimits struct {
+	MaxStaticSites              int32 `json:"maxStaticSites,omitempty"`
+	MaxStaticStoredMib          int32 `json:"maxStaticStoredMib,omitempty"`
+	MaxServices                 int32 `json:"maxServices,omitempty"`
+	MaxReplicas                 int32 `json:"maxReplicas,omitempty"`
+	MaxMigrationJobs            int32 `json:"maxMigrationJobs,omitempty"`
+	WorkloadCPUMillicores       int32 `json:"workloadCpuMillicores,omitempty"`
+	WorkloadMemoryMib           int32 `json:"workloadMemoryMib,omitempty"`
+	WorkloadEphemeralStorageMib int32 `json:"workloadEphemeralStorageMib,omitempty"`
+	MaxDatabases                int32 `json:"maxDatabases,omitempty"`
+	DatabaseInstances           int32 `json:"databaseInstances,omitempty"`
+	DatabaseCPUMillicores       int32 `json:"databaseCpuMillicores,omitempty"`
+	DatabaseMemoryMib           int32 `json:"databaseMemoryMib,omitempty"`
+	DatabaseStorageMib          int32 `json:"databaseStorageMib,omitempty"`
+	DatabaseMaxConnections      int32 `json:"databaseMaxConnections,omitempty"`
+	DatabaseDeclaredStorageGib  int32 `json:"databaseDeclaredStorageGib,omitempty"`
 }
 
 // ClaimableAPI is the unauthenticated half of the ClaimableService. A seam so

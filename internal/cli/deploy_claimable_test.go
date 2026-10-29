@@ -14,6 +14,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/pkg/deploy"
 	v1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
@@ -405,7 +406,7 @@ func TestClaimableIneligibility(t *testing.T) {
 	svc := func(name, kind string) WorkloadEntity {
 		w := WorkloadEntity{Name: name, Runtime: RuntimeEntity{Type: RuntimeHosted}}
 		w.Spec.Kind = v1alpha1.WorkloadKind(kind)
-		w.Spec.Resources = v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 256 << 20}
+		w.Spec.Resources = v1alpha1.Resources{CPURequestMillicores: 125, MemoryRequestBytes: 128 << 20}
 		return w
 	}
 	gating := func(name string) WorkloadEntity {
@@ -417,6 +418,9 @@ func TestClaimableIneligibility(t *testing.T) {
 		w := svc(name, "job")
 		w.Spec.DeployPhase = v1alpha1.DeployPhasePostRollout
 		return w
+	}
+	small := func(name string) DatabaseEntity {
+		return DatabaseEntity{Name: name, Runtime: RuntimeHosted, Spec: v1alpha1.ManagedDatabaseSpec{StorageGiB: 1}}
 	}
 	cases := []struct {
 		name string
@@ -434,10 +438,17 @@ func TestClaimableIneligibility(t *testing.T) {
 		{"a worker", &KCLEntities{Workloads: []WorkloadEntity{svc("api", "service"), svc("w", "worker")}}, []string{"worker \"w\""}},
 		{"two services", &KCLEntities{Workloads: []WorkloadEntity{svc("a", "service"), svc("b", "service")}}, []string{"2 services"}},
 		{"a cron", &KCLEntities{Workloads: []WorkloadEntity{svc("c", "cron")}}, []string{"cron \"c\""}},
-		{"two databases", &KCLEntities{Databases: []DatabaseEntity{{Runtime: RuntimeHosted}, {Runtime: RuntimeHosted}}}, []string{"2 databases"}},
+		{"two databases", &KCLEntities{Databases: []DatabaseEntity{small("a"), small("b")}}, []string{"2 databases"}},
+		{"a 1 GiB database", &KCLEntities{Databases: []DatabaseEntity{small("db")}}, nil},
+		// The scaffold default (10 GiB) is what an anonymous database may not
+		// declare, and the refusal names the edit.
+		{"a default 10 GiB database", &KCLEntities{Databases: []DatabaseEntity{{Name: "db", Runtime: RuntimeHosted}}},
+			[]string{`database "db" asks for 10 GiB of storage (at most 1 GiB; the platform provisions 256 MiB)`, "spec = {storageGiB = 1}"}},
+		{"a database with a standby", &KCLEntities{Databases: []DatabaseEntity{{Name: "db", Runtime: RuntimeHosted, Spec: v1alpha1.ManagedDatabaseSpec{StorageGiB: 1, Instances: 2}}}},
+			[]string{`database "db" asks for 2 instances (1 is allowed)`}},
 	}
 	for _, c := range cases {
-		got := strings.Join(claimableIneligibility(c.e), "|")
+		got := strings.Join(claimableIneligibility(c.e, deploy.ClaimableLimitsFallback()), "|")
 		if len(c.want) == 0 && got != "" {
 			t.Errorf("%s: unexpected reasons %q", c.name, got)
 		}
@@ -447,14 +458,15 @@ func TestClaimableIneligibility(t *testing.T) {
 			}
 		}
 	}
-	err := claimableIneligibleError("prod", []string{"worker \"w\" (only one service may run)"})
+	err := claimableIneligibleError("prod", deploy.ClaimableLimitsFallback(), []string{"worker \"w\" (only one service may run)"})
 	if exitCodeForError(err) != exitRefused || !strings.Contains(err.Error(), "deploy it to your own account instead: forge login") {
 		t.Errorf("ineligible error: code=%d %s", exitCodeForError(err), err)
 	}
 }
 
-// The claimable caps are 250m / 256 MiB / one replica, per workload with no
-// burst, in control-plane's words (planlimits/claimable.go, computegate).
+// The claimable caps (here forge's compiled-in copy, 125m / 128 MiB / one
+// replica) are per workload with no burst, in control-plane's words
+// (planlimits/claimable.go, computegate).
 func TestClaimableIneligibilityChecksTheClaimableCaps(t *testing.T) {
 	t.Parallel()
 	svc := func(res v1alpha1.Resources, replicas int32) *KCLEntities {
@@ -470,26 +482,26 @@ func TestClaimableIneligibilityChecksTheClaimableCaps(t *testing.T) {
 		e    *KCLEntities
 		want []string
 	}{
-		{"250m / 256Mi passes", svc(v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 256 * mib}, 1), nil},
-		{"unset replicas pass", svc(v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 256 * mib}, 0), nil},
-		{"500m / 256Mi is refused", svc(v1alpha1.Resources{CPURequestMillicores: 500, MemoryRequestBytes: 256 * mib}, 1),
-			[]string{`workload "api" asks for 500m of CPU (at most 250m, no burst)`}},
-		{"250m / 512Mi is refused", svc(v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 512 * mib}, 1),
-			[]string{`workload "api" asks for 512 MiB of memory (at most 256 MiB, no burst)`}},
-		{"a limit above the cap is a burst", svc(v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 256 * mib, MemoryLimitBytes: 1024 * mib}, 1),
+		{"125m / 128Mi passes", svc(v1alpha1.Resources{CPURequestMillicores: 125, MemoryRequestBytes: 128 * mib}, 1), nil},
+		{"unset replicas pass", svc(v1alpha1.Resources{CPURequestMillicores: 125, MemoryRequestBytes: 128 * mib}, 0), nil},
+		{"250m / 128Mi is refused", svc(v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 128 * mib}, 1),
+			[]string{`workload "api" asks for 250m of CPU (at most 125m, no burst)`}},
+		{"125m / 256Mi is refused", svc(v1alpha1.Resources{CPURequestMillicores: 125, MemoryRequestBytes: 256 * mib}, 1),
+			[]string{`workload "api" asks for 256 MiB of memory (at most 128 MiB, no burst)`}},
+		{"a limit above the cap is a burst", svc(v1alpha1.Resources{CPURequestMillicores: 125, MemoryRequestBytes: 128 * mib, MemoryLimitBytes: 1024 * mib}, 1),
 			[]string{"1024 MiB of memory"}},
-		{"the entry shape (250m / 1Gi) is over the memory cap, with the exact fix", svc(v1alpha1.Resources{}, 1),
-			[]string{"1024 MiB of memory (at most 256 MiB, no burst)",
-				"resources = fw.Resources {cpuRequestMillicores = 250, cpuLimitMillicores = 250, memoryRequestBytes = forge.mib(256), memoryLimitBytes = forge.mib(256)}"}},
+		{"the entry shape (250m / 1Gi) is over the caps, with the exact fix", svc(v1alpha1.Resources{}, 1),
+			[]string{"1024 MiB of memory (at most 128 MiB, no burst)",
+				"resources = fw.Resources {cpuRequestMillicores = 125, cpuLimitMillicores = 125, memoryRequestBytes = forge.mib(128), memoryLimitBytes = forge.mib(128)}"}},
 		// Off the hosted shape band (125m needs exactly 512 MiB there), and
 		// inside the claimable caps: the band is not this plan's rule.
-		{"125m / 256Mi passes: the shape band does not apply", svc(v1alpha1.Resources{CPURequestMillicores: 125, MemoryRequestBytes: 256 * mib}, 1), nil},
-		{"100m / 256Mi passes: no 125m granularity either", svc(v1alpha1.Resources{CPURequestMillicores: 100, MemoryRequestBytes: 256 * mib}, 1), nil},
-		{"two replicas", svc(v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 256 * mib}, 2),
+		{"125m / 64Mi passes: the shape band does not apply", svc(v1alpha1.Resources{CPURequestMillicores: 125, MemoryRequestBytes: 64 * mib}, 1), nil},
+		{"100m / 128Mi passes: no 125m granularity either", svc(v1alpha1.Resources{CPURequestMillicores: 100, MemoryRequestBytes: 128 * mib}, 1), nil},
+		{"two replicas", svc(v1alpha1.Resources{CPURequestMillicores: 125, MemoryRequestBytes: 128 * mib}, 2),
 			[]string{`workload "api" asks for 2 replicas (1 is allowed)`}},
 	}
 	for _, c := range cases {
-		got := strings.Join(claimableIneligibility(c.e), "|")
+		got := strings.Join(claimableIneligibility(c.e, deploy.ClaimableLimitsFallback()), "|")
 		if len(c.want) == 0 && got != "" {
 			t.Errorf("%s: unexpected reasons %q", c.name, got)
 		}
@@ -499,9 +511,53 @@ func TestClaimableIneligibilityChecksTheClaimableCaps(t *testing.T) {
 			}
 		}
 	}
-	err := claimableIneligibleError("prod", claimableIneligibility(svc(v1alpha1.Resources{CPURequestMillicores: 500, MemoryRequestBytes: 256 * mib}, 1)))
+	err := claimableIneligibleError("prod", deploy.ClaimableLimitsFallback(), claimableIneligibility(svc(v1alpha1.Resources{CPURequestMillicores: 500, MemoryRequestBytes: 256 * mib}, 1), deploy.ClaimableLimitsFallback()))
 	if exitCodeForError(err) != exitRefused || !strings.Contains(err.Error(), "does not fit an anonymous deploy") {
 		t.Errorf("ineligible error: code=%d %s", exitCodeForError(err), err)
+	}
+}
+
+// The caps are the control plane's: an answer that publishes them is what
+// every check judges by, and one that does not falls back to the compiled-in
+// copy and says so.
+func TestClaimableLimitsFromTheControlPlane(t *testing.T) {
+	t.Parallel()
+	ep := cloud.Endpoint{URL: "https://cp.example"}
+	published := cloud.ClaimableLimits{MaxServices: 1, MaxReplicas: 1, MaxMigrationJobs: 1,
+		WorkloadCPUMillicores: 250, WorkloadMemoryMib: 256, MaxDatabases: 1, DatabaseInstances: 1,
+		DatabaseDeclaredStorageGib: 1, DatabaseStorageMib: 256, MaxStaticSites: 1}
+	s := claimableLimitsFrom(ep, cloud.ClaimableAvailability{Limits: &published}, true, nil)
+	if !s.published || s.limits.WorkloadMemoryBytes != 256<<20 || !strings.Contains(s.note(), "published by the control plane at https://cp.example") {
+		t.Fatalf("published limits not used: %+v %s", s, s.note())
+	}
+	w := WorkloadEntity{Name: "api", Runtime: RuntimeEntity{Type: RuntimeHosted}}
+	w.Spec.Kind = v1alpha1.KindService
+	w.Spec.Resources = v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 256 << 20}
+	e := &KCLEntities{Workloads: []WorkloadEntity{w}}
+	if got := claimableIneligibility(e, s.limits); len(got) != 0 {
+		t.Errorf("a shape at the published caps is refused: %v", got)
+	}
+	if got := claimableIneligibility(e, deploy.ClaimableLimitsFallback()); len(got) == 0 {
+		t.Error("the compiled-in copy admitted a shape over its caps")
+	}
+	for name, c := range map[string]struct {
+		av  cloud.ClaimableAvailability
+		ok  bool
+		err error
+		why string
+	}{
+		"offline":      {err: errors.New("dial tcp: no route"), why: "could not ask https://cp.example"},
+		"no rpc":       {ok: false, why: "does not answer GetClaimableAvailability"},
+		"no limits":    {ok: true, why: "does not publish its claimable limits"},
+		"empty limits": {ok: true, av: cloud.ClaimableAvailability{Limits: &cloud.ClaimableLimits{}}, why: "incomplete"},
+	} {
+		s := claimableLimitsFrom(ep, c.av, c.ok, c.err)
+		if s.published || s.limits != deploy.ClaimableLimitsFallback() {
+			t.Errorf("%s: want the compiled-in copy, got %+v", name, s)
+		}
+		if n := s.note(); !strings.Contains(n, "compiled-in copy (offline: ") || !strings.Contains(n, c.why) {
+			t.Errorf("%s: note %q does not say it is offline and why (%q)", name, n, c.why)
+		}
 	}
 }
 

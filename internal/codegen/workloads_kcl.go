@@ -249,9 +249,11 @@ func WorkloadStanza(modulePath, projectName string, c config.ComponentConfig) st
 	// it builds its own cmd/<binpkg> package and runs with no subcommand.
 	// Every other component is a subcommand of the project binary
 	// (`<bin> <component>`, generated under cmd/<bin>/cmd/{services,workers,
-	// operators}/), which runs exactly that component — one service's
-	// routes, one worker, one operator — rather than `server`, which runs
-	// them all.
+	// operators}/ in a project on the legacy composition), which runs
+	// exactly that component — one service's routes, one worker, one
+	// operator — rather than `server`, which runs them all. A project on the
+	// composition graph has no such command for a service or worker, so its
+	// callers never declare one (RunByGraphRoot).
 	if c.EffectiveKind() == config.ComponentKindBinary {
 		binPkg := naming.ServicePackage(c.Name)
 		fmt.Fprintf(&b, "    build = %s\n", goBuild("./cmd/"+binPkg, binPkg))

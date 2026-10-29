@@ -43,6 +43,17 @@ func declareWorkloadInKCL(root string, cfg *config.ProjectConfig, spec component
 		return
 	}
 
+	// A service or worker of a project composed with the graph has no
+	// subcommand of its own: the binary's `server` root runs it. A workload
+	// of its own would name a command the binary does not have, so none is
+	// declared; each env's `_api` runs it (bound here if it was not yet).
+	if codegen.RunByGraphRoot(root, comp) {
+		fmt.Printf("   - %s (%s '%s' runs in the binary's `server` root — it has no subcommand of its own; nothing to declare)\n",
+			codegen.WorkloadsKCLRelPath, codegen.WorkloadKindFor(comp.EffectiveKind()), comp.Name)
+		bindWorkloadInEnvs(root, cfg.Name, comp)
+		return
+	}
+
 	// A component another workload's process already runs gets no workload
 	// of its own: one would deploy it a second time, as its own Deployment.
 	// And in a project that groups components (`serves`), forge cannot see
@@ -146,6 +157,10 @@ func bindWorkloadInEnvs(root, projectName string, comp config.ComponentConfig) {
 		switch {
 		case err != nil:
 			fmt.Printf("\n⚠️  could not update deploy/kcl/%s/main.k: %v\n\n%s\n", e.Name(), err, codegen.EnvBindingHint(e.Name(), kind, comp.Name))
+		case res.NoServer:
+			fmt.Printf("\n📝 deploy/kcl/%s/main.k binds no workload running the binary's `server`, which is what runs %s '%s'.\n"+
+				"   Bind one to run it in %s — `_api`, a fw.Workload of the project binary with `config_gen.root_of(\"server\")`.\n",
+				e.Name(), kind, comp.Name, e.Name())
 		case res.ServedBy != "":
 			fmt.Printf("   - deploy/kcl/%s/main.k (%s '%s' runs in %s, the binary's `server`; nothing to bind)\n", e.Name(), kind, comp.Name, res.ServedBy)
 		case res.Applied && res.Bound != "wl."+naming.KCLIdentifier(comp.Name):

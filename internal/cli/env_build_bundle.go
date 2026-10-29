@@ -255,6 +255,11 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 
 	placements, err := bundlePlacementDeclarations(doc.entities)
 	if err != nil {
+		if in.Release == "" && !in.Pushed {
+			// Compile-only: an unsupported mixed shape costs the local bundle.
+			fmt.Fprintf(in.errWriter(), "[bundle] Warning: env %s's bundle was not written: %v\n", env, err)
+			return bundleWriteOutcome{Env: env, Skipped: true}, nil
+		}
 		return bundleWriteOutcome{}, err
 	}
 	// A compile-only build publishes nothing, so a recorder that cannot

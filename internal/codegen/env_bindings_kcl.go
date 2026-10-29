@@ -234,6 +234,11 @@ type EnvBindingResult struct {
 	// ServedBy names the env's own API workload when it is already bound and
 	// already runs the new workload, so nothing was written.
 	ServedBy string
+	// NoServer is set when the workload runs only inside the composition
+	// graph's `server` root (RunByGraphRoot) and the env declares no
+	// workload running `server`: there is nothing to bind, so nothing was
+	// written.
+	NoServer bool
 }
 
 // AppendEnvBinding adds the binding for a new workload to one env's main.k,
@@ -272,7 +277,12 @@ func AppendEnvBinding(projectDir, projectName, env, kind, workloadName string) (
 	res := EnvBindingResult{Binder: envBinderIn(body, env, kind), Bound: "wl." + naming.KCLIdentifier(workloadName)}
 	line := bindingLine(res.Binder, workloadName)
 	ownLine := true
-	if api, ok := EnvServerWorkload(content, projectName); ok && RunsInServer(kind) {
+	api, hasAPI := EnvServerWorkload(content, projectName)
+	if !hasAPI && RunsInServer(kind) && GraphComposition(projectDir) {
+		// No command of its own to bind (RunByGraphRoot).
+		return EnvBindingResult{NoServer: true}, nil
+	}
+	if hasAPI && RunsInServer(kind) {
 		if identRef(api).MatchString(body) {
 			return EnvBindingResult{ServedBy: api}, nil
 		}

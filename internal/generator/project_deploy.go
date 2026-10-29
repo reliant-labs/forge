@@ -264,6 +264,17 @@ func ScaffoldWorkloadsKCL(projectDir, modulePath, projectName string, components
 	if codegen.WorkloadsKCLExists(projectDir) {
 		return nil
 	}
+	// A service or worker the composition graph's `server` root runs has no
+	// subcommand of its own, so a workload of its own would name a command
+	// the binary does not have (codegen.RunByGraphRoot). Every env runs it
+	// through its `_api` instead.
+	declared := make(codegen.Inventory, 0, len(components))
+	for _, c := range components {
+		if !codegen.RunByGraphRoot(projectDir, c) {
+			declared = append(declared, c)
+		}
+	}
+	components = declared
 	var stanzas strings.Builder
 	for i, c := range components {
 		if i > 0 {
@@ -308,11 +319,13 @@ func ScaffoldWorkloadsKCL(projectDir, modulePath, projectName string, components
 
 	content, err := templates.DeployTemplates().Render("kcl/workloads.k.tmpl", struct {
 		ProjectName    string
+		Graph          bool
 		Workloads      string
 		PrimaryIdent   string
 		WorkloadIdents string
 	}{
 		ProjectName:    projectName,
+		Graph:          codegen.GraphComposition(projectDir),
 		Workloads:      strings.TrimRight(stanzas.String(), "\n"),
 		PrimaryIdent:   primaryIdent,
 		WorkloadIdents: strings.Join(idents, ", "),

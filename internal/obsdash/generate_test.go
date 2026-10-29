@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
@@ -50,6 +51,89 @@ func TestOwnedOverviewMigratesEditsWithoutDroppingIndependentOverride(t *testing
 			}
 		})
 	}
+}
+
+// TestOwnedOverviewDoesNotFreezeTheNoDeployedSentinel pins the fix for the
+// overview a fresh `forge project new` shipped: its first generate ran before
+// any environment's workloads rendered, scaffolded the owned overview with
+// every panel on the no-deployed-process sentinel, and no later generate
+// refreshed it, so the local overview drew nothing forever. An untouched
+// scaffold (and a pristine legacy render) takes the current render; a file the
+// user edited is still never touched.
+func TestOwnedOverviewDoesNotFreezeTheNoDeployedSentinel(t *testing.T) {
+	const sentinel = "__forge_no_deployed_process__"
+	undeployed := fixture()
+	undeployed.Processes = nil
+	deployed := undeployed
+	deployed.Deployed = Identities{ServiceNames: []string{"shop-api"}, Workloads: []string{"shop-api"}}
+	owned := OverridePath("shop", Dashboard{ID: "overview"})
+	read := func(t *testing.T, dir, rel string) string {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(dir, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	contains := strings.Contains
+
+	t.Run("untouched scaffold is refreshed", func(t *testing.T) {
+		dir := t.TempDir()
+		cs := &checksums.FileChecksums{}
+		if _, err := Write(dir, undeployed, cs); err != nil {
+			t.Fatal(err)
+		}
+		if !contains(read(t, dir, owned), sentinel) {
+			t.Fatal("fixture: an undeployed project's overview should use the sentinel")
+		}
+		if _, err := Write(dir, deployed, cs); err != nil {
+			t.Fatal(err)
+		}
+		got := read(t, dir, owned)
+		if contains(got, sentinel) || !contains(got, "shop-api") {
+			t.Fatalf("the scaffolded overview kept the sentinel once workloads were known:\n%s", got)
+		}
+	})
+
+	t.Run("edited overview is left alone", func(t *testing.T) {
+		dir := t.TempDir()
+		cs := &checksums.FileChecksums{}
+		if _, err := Write(dir, undeployed, cs); err != nil {
+			t.Fatal(err)
+		}
+		edited := read(t, dir, owned) + "\n"
+		if err := os.WriteFile(filepath.Join(dir, owned), []byte(edited), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Write(dir, deployed, cs); err != nil {
+			t.Fatal(err)
+		}
+		if got := read(t, dir, owned); got != edited {
+			t.Fatal("an edited owned overview was rewritten")
+		}
+	})
+
+	t.Run("pristine legacy render is not migrated verbatim", func(t *testing.T) {
+		dir := t.TempDir()
+		legacy := DashboardsDir + "/shop-overview_gen.json"
+		if err := os.MkdirAll(filepath.Join(dir, DashboardsDir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		old := []byte(`{"name":"shop: overview","tiles":[{"config":{"where":"ServiceName = '` + sentinel + `'"}}]}`)
+		if err := os.WriteFile(filepath.Join(dir, legacy), old, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cs := &checksums.FileChecksums{Unstampable: map[string]string{legacy: checksums.BodyHash(old)}}
+		if _, err := Write(dir, deployed, cs); err != nil {
+			t.Fatal(err)
+		}
+		if got := read(t, dir, owned); contains(got, sentinel) {
+			t.Fatalf("the pristine legacy overview was migrated with its sentinel:\n%s", got)
+		}
+		if _, err := os.Stat(filepath.Join(dir, legacy)); !os.IsNotExist(err) {
+			t.Fatal("the pristine legacy overview remains")
+		}
+	})
 }
 
 func TestWriteIsIdempotentHonoursOverridesAndRetiresStaleFiles(t *testing.T) {

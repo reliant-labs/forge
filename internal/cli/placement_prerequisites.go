@@ -141,24 +141,10 @@ func declaredPlacementEdges(e *KCLEntities) ([]stageEdge, error) {
 
 // bundlePlacementDeclarations is used at the bundle boundary, before any cut,
 // push or record. Pure deployments retain their historical bytes and behavior.
-//
-// Native providers are listed (placementDeclarations) but not yet placed:
-// what they render is owned through forge.dev/release-owners, which this
-// bundle projection does not read, so sealing would fail after the build.
-// They are refused here, before any effect, instead.
+// Native providers are placed like any cluster component: the bundle reads
+// their forge.dev/release-owners ownership (internal/bundle placementOwners).
 func bundlePlacementDeclarations(e *KCLEntities) ([]bundle.PlacementDeclaration, error) {
-	out, err := placementDeclarations(e)
-	if err != nil || out == nil {
-		return out, err
-	}
-	providers, err := nativeProviders(e)
-	if err != nil {
-		return nil, err
-	}
-	if len(providers) > 0 {
-		return nil, fmt.Errorf("unsupported mixed placement: native provider %s (Bundle.openbao) cannot yet be a placement prerequisite; nothing was built", providers[0].Owner)
-	}
-	return out, nil
+	return placementDeclarations(e)
 }
 
 // placementDeclarations is the complete runtime inventory of a mixed env:

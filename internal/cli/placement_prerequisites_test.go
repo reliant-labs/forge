@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/bundle"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -193,6 +194,46 @@ func TestPlacementPrerequisitesCompositionWithBuildOnly(t *testing.T) {
 	}
 }
 
+// The native OpenBao provider is a composition consumer, so it is declared
+// as an ordinary cluster placement under its release owner, and a frontend
+// with absent release_dependencies waits for it like any server.
+func TestPlacementPrerequisitesNativeOpenBao(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	e := &KCLEntities{
+		Workloads: []WorkloadEntity{{Name: "api", Runtime: RuntimeEntity{Type: RuntimeCluster, Cluster: &ClusterRuntime{Cluster: "prod"}}}},
+		Frontends: []FrontendEntity{orderFrontend("web", FrontendRuntimeHosted, nil)},
+		OpenBao:   &OpenBaoEntity{Name: "store", Namespace: "secrets", Cluster: "prod", ReleaseOwner: "openbao-secrets-store", ReleaseInputs: map[string]string{"container:openbao": "registry.example/openbao@" + digest, "container:converge": "registry.example/converge@" + digest}},
+	}
+	consumers, err := compositionConsumers(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decl, err := bundlePlacementDeclarations(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]int{}
+	for i, d := range decl {
+		byName[d.Workload] = i
+	}
+	for _, c := range consumers {
+		if _, ok := byName[c.Key.Workload]; !ok {
+			t.Errorf("composition consumer %s has no placement declaration", c.Key.Workload)
+		}
+	}
+	bao := decl[byName["openbao-secrets-store"]]
+	if bao.Runtime != "cluster" || bao.Actuator != "forge" {
+		t.Errorf("OpenBao placement = %+v", bao)
+	}
+	if web := decl[byName["web"]]; !slices.Contains(web.Dependencies, "openbao-secrets-store") || !slices.Contains(web.Dependencies, "api") {
+		t.Errorf("absent frontend dependencies must include every server, OpenBao too: %+v", web)
+	}
+	e.OpenBao.ReleaseOwner = ""
+	if _, err := bundlePlacementDeclarations(e); err == nil {
+		t.Error("an OpenBao with no release owner cannot be placed")
+	}
+}
+
 func TestPlacementPrerequisitesSameStageCycle(t *testing.T) {
 	e := &KCLEntities{Workloads: []WorkloadEntity{orderClusterWorkload("a", map[string]string{"b": "v1"}), orderClusterWorkload("b", map[string]string{"a": "v1"})}}
 	if _, err := deployStageOrder(e); err == nil || !strings.Contains(err.Error(), "cycle") {
@@ -276,19 +317,33 @@ func TestPlacementInventoryIsCompositionConsumers(t *testing.T) {
 	}
 }
 
-// A mixed env with the native OpenBao provider is refused by the preflight
-// itself, so a publishing build stops before building or pushing anything.
-func TestPlacementPrerequisitesNativeProviderRefusedBeforeEffects(t *testing.T) {
+// A mixed env with the native OpenBao provider passes the preflight: the
+// provider is placed (TestPlacementPrerequisitesNativeOpenBao), not refused.
+func TestPlacementPrerequisitesNativeProviderPassesPreflight(t *testing.T) {
 	e := inventoryEntities()
 	e.Workloads = e.Workloads[:1]
 	e.ReleaseManifestConsumers = nil
 	stubPlacementReaders(t, map[string]bool{"prod": true})
-	err := preflightPlacementBuild(t.Context(), e, buildOptions{env: "prod", release: "v1", push: true})
-	if err == nil || !strings.Contains(err.Error(), "openbao-secrets-store") {
-		t.Fatalf("mixed + native provider must be refused at preflight: %v", err)
-	}
-	e.OpenBao = nil
 	if err := preflightPlacementBuild(t.Context(), e, buildOptions{env: "prod", release: "v1", push: true}); err != nil {
-		t.Fatalf("the same env without the provider is supported: %v", err)
+		t.Fatalf("mixed + native provider is supported: %v", err)
+	}
+}
+
+// `forge env build prod --target api --push` on a mixed env: the build is
+// narrowed to a pure cluster set, but the bundle it seals is the whole mixed
+// env, so the reader is negotiated against the FULL declaration and an old
+// one refuses before any login, build or push.
+func TestPlacementPrerequisitesTargetedPushNegotiatesFullDeclaration(t *testing.T) {
+	stubPlacementReaders(t, map[string]bool{})
+	prev := renderBuildEntitiesFn
+	t.Cleanup(func() { renderBuildEntitiesFn = prev })
+	renderBuildEntitiesFn = func(context.Context, *config.ProjectConfig, buildOptions) (*KCLEntities, *KCLEntities, error) {
+		full := mixedPlacementEntities()
+		return full, &KCLEntities{Workloads: full.Workloads}, nil
+	}
+	opts := buildOptions{env: "prod", push: true, buildTarget: "api"}
+	_, _, err := renderBuildInputs(t.Context(), &config.ProjectConfig{Name: "p"}, &opts)
+	if err == nil || !strings.Contains(err.Error(), release.BundleFeaturePlacementPrerequisites) {
+		t.Fatalf("a --target push of a mixed env must negotiate the full declaration's reader first: %v", err)
 	}
 }

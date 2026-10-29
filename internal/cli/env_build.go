@@ -271,6 +271,10 @@ func declarationUndeliverable(err error) bool {
 // env's declaration without a project on disk.
 var renderKCLForDeclaration = RenderKCL
 
+// cutReleaseFromBuildStateFn is the cut, as a var so a test can prove a
+// refusal came before it.
+var cutReleaseFromBuildStateFn = cutReleaseFromBuildState
+
 // runEnvBuildCutOnly records a release over the build state an earlier push
 // left behind, with no build of its own. This is what `forge release cut`
 // was: the artifact set is discovered exactly as a full --release build
@@ -288,11 +292,15 @@ func runEnvBuildCutOnly(ctx context.Context, opts buildOptions) error {
 			"every declared artifact is accounted for")
 	}
 	projectDir := projectDirForKCL()
-	entities, err := RenderKCL(ctx, projectDir, opts.env)
+	entities, err := renderKCLForDeclaration(ctx, projectDir, opts.env)
 	if err != nil {
 		return fmt.Errorf("render deploy/kcl/%s: %w", opts.env, err)
 	}
-	if _, err := cutReleaseFromBuildState(ctx, projectDir, opts.env, opts.release, opts.outputDir, entities, opts); err != nil {
+	// The cut is permanent, so every bundle env's reader is negotiated first.
+	if err := preflightPlacementBuild(ctx, entities, opts); err != nil {
+		return err
+	}
+	if _, err := cutReleaseFromBuildStateFn(ctx, projectDir, opts.env, opts.release, opts.outputDir, entities, opts); err != nil {
 		return err
 	}
 	// The cut-only job writes the bundle too. It is the half of a split

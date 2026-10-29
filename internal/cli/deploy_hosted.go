@@ -50,6 +50,9 @@ func dispatchHostedDeploy(ctx context.Context, projectDir, envName string, opts 
 		}
 		return false, nil
 	}
+	if err := preflightPlacementDeploy(ctx, projectDir, envName, entities); err != nil {
+		return true, err
+	}
 	if !opts.dryRun {
 		if _, err := bindHostedProject(ctx, envName, declarationFromEntities(entities), opts.organization); err != nil {
 			return true, err

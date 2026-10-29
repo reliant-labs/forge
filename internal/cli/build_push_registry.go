@@ -157,6 +157,10 @@ func (p pushPlan) hosts() []string {
 	return out
 }
 
+// renderBuildEntitiesFn is renderBuildEntities, as a var so a test can state
+// the full and the narrowed declaration without a project on disk.
+var renderBuildEntitiesFn = renderBuildEntities
+
 // renderBuildInputs renders the env (renderBuildEntities) and resolves where
 // each image goes from the FULL render — a --target narrowing can drop the
 // workload whose image the header should name. The resolved plan is written
@@ -171,8 +175,15 @@ func (p pushPlan) hosts() []string {
 // and `forge env deploy`, which builds through runBuild — so there is one
 // hook rather than one per push path.
 func renderBuildInputs(ctx context.Context, cfg *config.ProjectConfig, opts *buildOptions) (*KCLEntities, pushPlan, error) {
-	declared, entities, err := renderBuildEntities(ctx, cfg, *opts)
+	declared, entities, err := renderBuildEntitiesFn(ctx, cfg, *opts)
 	if err != nil {
+		return nil, pushPlan{}, err
+	}
+	// Mixed-placement reader negotiation, on the FULL declaration: --target
+	// narrows what this run builds, not the bundle a publishing build seals,
+	// so a narrowed set that looks pure must not skip it. Before any login,
+	// build, push or cut.
+	if err := preflightPlacementBuild(ctx, declared, *opts); err != nil {
 		return nil, pushPlan{}, err
 	}
 	plan, err := resolvePushPlan(*opts, declared)

@@ -315,7 +315,15 @@ func sealComposition(ctx context.Context, cfg *config.ProjectConfig, entities *K
 	if doc.Provenance.Commit != candidate.Source.Commit || doc.Provenance.Dirty {
 		return fmt.Errorf("composition source changed during build")
 	}
-	input := bundle.BuildInput{Project: cfg.Name, Env: opts.env, Release: opts.release, Provenance: doc.Provenance, Shape: bundleShapeInputOf(doc), CreatedAt: now, Units: doc.units, Reconciled: doc.reconciled(), ReconciledUnits: doc.reconciledUnits(), Observability: assets}
+	placements, err := bundlePlacementDeclarations(doc.entities)
+	if err != nil {
+		return err
+	}
+	reader, err := bundleReaderFor(ctx, projectDirForKCL(), opts.env, run.Ledger)
+	if err != nil {
+		return err
+	}
+	input := bundle.BuildInput{Project: cfg.Name, Env: opts.env, Release: opts.release, Provenance: doc.Provenance, Shape: bundleShapeInputOf(doc), CreatedAt: now, Units: doc.units, Reconciled: doc.reconciled(), ReconciledUnits: doc.reconciledUnits(), Observability: assets, Placements: placements, Reader: reader}
 	candidate, err = bundle.SnapshotInventory(pinned, input, candidate)
 	if err != nil {
 		return err

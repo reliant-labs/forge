@@ -36,9 +36,29 @@ and where it runs. In Kubernetes terms, what becomes ONE Deployment.
 
 A workload is NOT a proto service. One binary can mount a dozen Connect
 services on a shared mux and still be ONE workload, because it is one
-process with one image and one set of args. `args = ["server"]` runs
+process with one image and one set of args.
+{{- if .Graph}} The binary's commands are
+the roots of its composition graph (cmd/{{.ProjectName}}/cmd/roots_gen.go):
+`args = ["server"]` runs the default root — every service and worker in
+one process — and there is NO command per service. So no service or
+worker is declared here: each env runs them all as its `_api` (the
+binary's `server`), in deploy/kcl/<env>/main.k.
+
+Splitting one into a process of its own is a new root: a `//forge:root`
+struct in internal/app (forge generate gives it a command), then a
+workload bound to it (`import config_gen` above), which renders only
+if the root exists:
+
+    billing = fw.Workload {
+        name = "billing"
+        kind = "service"
+        build = forge.GoBuild {cmd = "./cmd/{{.ProjectName}}", output_name = "{{.ProjectName}}"}
+        ports = [fw.Port {name = "http", port = 8080, expose = True}]
+    } | config_gen.root_of("billing")
+{{- else}} `args = ["server"]` runs
 every service, worker and operator in one process; `args = ["<name>"]`
 runs exactly one.
+{{- end}}
 
 A subcommand of your own that mounts SEVERAL components (an `admin-api`
 serving every admin service, say) is one workload too. List what it
@@ -100,6 +120,12 @@ import forge.workloads as fw
 {{.Workloads}}
 {{- else}}
 
+{{- if .Graph}}
+# No workloads yet: every service and worker runs in the binary's `server`,
+# which each env declares as `_api`. Declare a workload here for a root of
+# your own (see WHAT A WORKLOAD IS, above), or for anything that is not Go
+# code.
+{{- else}}
 # No workloads yet. `forge scaffold service <name>` appends the first
 # one — or write it by hand:
 #
@@ -110,6 +136,7 @@ import forge.workloads as fw
 #         ports = [fw.Port {name = "http", port = 8080, expose = True}]
 #         config_secrets = ["DATABASE_URL"]
 #     }
+{{- end}}
 {{- end}}
 
 # Every workload this project ships. `forge scaffold` appends to this

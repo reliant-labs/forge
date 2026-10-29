@@ -198,6 +198,9 @@ var newRules = []rolloutGroup{
 	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{rolloutGolangciBuildTags}},
 	// The frontend lockfile lane: package.json ranges the lockfile does not record.
 	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{"forge-frontend-lock-drift"}},
+	// A workload whose args select no command of the project binary (the
+	// per-service workloads a graph-composed project was scaffolded with).
+	{IntroducedIn: "v1.0.3", GatesFrom: "v1.0.4", Rules: []string{ruleComponentDriftNoCommand}},
 }
 
 // lintRollouts is the declaration of every rule, by ID.

@@ -110,7 +110,7 @@ func gradableRules() []string {
 		// composition graph
 		codegen.GraphRuleUnreachable, codegen.GraphRuleAudience, codegen.GraphRuleAssemble,
 		// component drift
-		"component-drift/orphan-entry", "component-drift/undeclared-component",
+		"component-drift/orphan-entry", "component-drift/undeclared-component", ruleComponentDriftNoCommand,
 		// deploy
 		"hosted-image-base/host-bearing-image", pdbRuleID,
 		release.RuleJobTTL, release.RuleJobUnhashed, release.RuleForceData,

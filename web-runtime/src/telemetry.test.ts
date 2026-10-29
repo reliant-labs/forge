@@ -241,6 +241,139 @@ describe("reportException de-duplication", () => {
   });
 });
 
+describe("benign browser errors", () => {
+  // A fake of the SDK's error capture: like the real one it registers its
+  // window listeners and wraps console.error inside init.
+  const sdkSaw = vi.fn();
+  const consoleUnderSdk = vi.fn();
+  let originalConsoleError: typeof console.error;
+
+  function dispatchEvent(type: string, fields: Record<string, unknown>) {
+    let stopped = false;
+    const event = {
+      ...fields,
+      stopImmediatePropagation: () => {
+        stopped = true;
+      },
+    };
+    for (const fn of listeners.get(type) ?? []) {
+      if (stopped) break;
+      fn(event);
+    }
+  }
+
+  async function start(config: Record<string, unknown> = {}) {
+    stubDom();
+    init.mockImplementation(() => {
+      window.addEventListener("unhandledrejection", (e: Event) =>
+        sdkSaw("unhandledrejection", (e as PromiseRejectionEvent).reason),
+      );
+      window.addEventListener("error", (e: Event) =>
+        sdkSaw("error", (e as ErrorEvent).error),
+      );
+      const below = console.error;
+      console.error = (...args: unknown[]) => {
+        sdkSaw("console.error", args[0]);
+        below(...args);
+      };
+    });
+    const loaded = await load();
+    await loaded.t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      ...config,
+    });
+    return loaded;
+  }
+
+  beforeEach(() => {
+    sdkSaw.mockReset();
+    consoleUnderSdk.mockReset();
+    originalConsoleError = console.error;
+    console.error = consoleUnderSdk;
+  });
+
+  afterEach(() => {
+    console.error = originalConsoleError;
+  });
+
+  it("keeps an unhandled AbortError from the SDK, and records any other rejection", async () => {
+    await start();
+    dispatchEvent("unhandledrejection", {
+      reason: new DOMException(
+        "signal is aborted without reason",
+        "AbortError",
+      ),
+    });
+    expect(sdkSaw).not.toHaveBeenCalled();
+
+    const real = new Error("boom");
+    dispatchEvent("unhandledrejection", { reason: real });
+    expect(sdkSaw).toHaveBeenCalledWith("unhandledrejection", real);
+  });
+
+  it("never filters a ConnectError, even one whose message is a fetch failure", async () => {
+    await start();
+    const rpc = new Error("[unavailable] Failed to fetch");
+    rpc.name = "ConnectError";
+    dispatchEvent("unhandledrejection", { reason: rpc });
+    expect(sdkSaw).toHaveBeenCalledWith("unhandledrejection", rpc);
+  });
+
+  it("sends a console.error of the browser's generic fetch failure to the console, not the SDK", async () => {
+    await start();
+    const offline = new TypeError("Failed to fetch (dash.example.io)");
+    console.error("auth refresh:", offline);
+    expect(sdkSaw).not.toHaveBeenCalled();
+    expect(consoleUnderSdk).toHaveBeenCalledWith("auth refresh:", offline);
+
+    const bug = new TypeError("Cannot read properties of undefined");
+    console.error(bug);
+    expect(sdkSaw).toHaveBeenCalledWith("console.error", bug);
+    expect(consoleUnderSdk).toHaveBeenCalledWith(bug);
+  });
+
+  it("does not record a benign error handed to reportException, but says the SDK has it", async () => {
+    const { r } = await start();
+    expect(r.reportException(new TypeError("Load failed"))).toBe(true);
+    expect(recordException).not.toHaveBeenCalled();
+  });
+
+  it("counts what it filtered and emits the counts when the page is hidden", async () => {
+    await start();
+    dispatchEvent("unhandledrejection", {
+      reason: new DOMException("x", "AbortError"),
+    });
+    dispatchEvent("unhandledrejection", {
+      reason: new DOMException("y", "AbortError"),
+    });
+    console.error(new TypeError("Failed to fetch"));
+    expect(addAction).not.toHaveBeenCalledWith(
+      "forge.errors_filtered",
+      expect.anything(),
+    );
+
+    dispatchEvent("pagehide", {});
+    expect(addAction).toHaveBeenCalledWith("forge.errors_filtered", {
+      kind: "abort",
+      source: "unhandledrejection",
+      count: 2,
+    });
+    expect(addAction).toHaveBeenCalledWith("forge.errors_filtered", {
+      kind: "network",
+      source: "console.error",
+      count: 1,
+    });
+  });
+
+  it("records everything with classifyBenignError: () => null", async () => {
+    await start({ classifyBenignError: () => null });
+    const abort = new DOMException("x", "AbortError");
+    dispatchEvent("unhandledrejection", { reason: abort });
+    expect(sdkSaw).toHaveBeenCalledWith("unhandledrejection", abort);
+  });
+});
+
 describe("buildSdkOptions", () => {
   const base = { serviceName: "web" };
 

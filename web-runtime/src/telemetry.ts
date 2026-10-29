@@ -77,6 +77,12 @@ import {
   detectAppClient,
   takeIdentifyProps,
 } from "./attribution.js";
+import {
+  type BenignErrorClassifier,
+  type BenignErrorSource,
+  classifyBenignError,
+  FilteredErrorCounter,
+} from "./benign-errors.js";
 import { setExceptionReporter } from "./error-reporter.js";
 import { registerTelemetryStartup } from "./telemetry-gate.js";
 import {
@@ -84,6 +90,13 @@ import {
   setTelemetrySink,
   type TrackValue,
 } from "./track.js";
+
+export {
+  type BenignErrorClassifier,
+  type BenignErrorKind,
+  classifyBenignError,
+  FILTERED_ERRORS_ACTION,
+} from "./benign-errors.js";
 
 /** Where the browser ships telemetry: this origin's `/_otel`. */
 export const DEFAULT_INGEST_PATH = "/_otel";
@@ -183,6 +196,15 @@ export interface BrowserTelemetryConfig {
    * site attributing acquisition to the campaign that first brought a visitor.
    */
   attributionTouch?: AttributionTouch;
+  /**
+   * Decides which errors are benign browser noise: kept out of the error
+   * pipeline and counted as `forge.errors_filtered` actions instead
+   * (benign-errors.ts). Default classifyBenignError: an AbortError, and the
+   * browser's generic "Failed to fetch" TypeError; never a ConnectError. It
+   * applies to unhandled rejections, uncaught errors, console.error and
+   * reportException. Pass `() => null` to record everything.
+   */
+  classifyBenignError?: BenignErrorClassifier;
 }
 
 /** The slice of the SDK this module calls. Typed here, not imported, so the module loads without it. */
@@ -280,10 +302,16 @@ async function start(
       return false;
     }
     const replay = decideReplay(config, sessionStorageOrNull(), Math.random);
+    const benign = benignFilter(config, hdx);
+    // Both BEFORE init: the rejection/error filter must be the first listener
+    // the SDK's own ones follow, and the console.error the SDK is about to wrap
+    // is where a filtered call goes instead of the SDK.
+    installBenignEventFilter(benign);
+    const consoleBeforeSdk = console.error;
     hdx.init(
       buildSdkOptions({ ...config, replay }, ingest, window.location.origin),
     );
-    tapSdkInputs();
+    tapSdkInputs(benign, consoleBeforeSdk);
     // Every span carries where it came from and which visitor made it; the
     // product-event view reads these as app.client and visitor.id.
     // With attribution deferred (attribution: false), visitor.id joins them
@@ -301,7 +329,7 @@ async function start(
     runningClient = hdx;
     runningConfig = config;
     setExceptionReporter((error, attributes) => {
-      if (alreadyRecorded(error)) {
+      if (alreadyRecorded(error) || benign.filtered(error, "reportException")) {
         return;
       }
       hdx.recordException(error, attributes);
@@ -363,13 +391,25 @@ function noteSeen(value: unknown): void {
   }
 }
 
-function tapSdkInputs(): void {
+function tapSdkInputs(
+  benign: BenignFilter,
+  consoleBeforeSdk: (...args: unknown[]) => void,
+): void {
   if (tapped) {
     return;
   }
   tapped = true;
   const wrapped = console.error;
   console.error = function (this: unknown, ...args: unknown[]) {
+    // A benign error goes to the console as it would without the SDK, and is
+    // counted instead of recorded.
+    const firstError = args.find((arg) => arg instanceof Error);
+    if (
+      firstError !== undefined &&
+      benign.filtered(firstError, "console.error")
+    ) {
+      return consoleBeforeSdk.apply(this, args);
+    }
     for (const arg of args) {
       if (arg instanceof Error) {
         noteSeen(arg);
@@ -381,6 +421,85 @@ function tapSdkInputs(): void {
   window.addEventListener(
     "unhandledrejection",
     (e) => noteSeen(e.reason),
+    true,
+  );
+}
+
+// ── Benign browser errors (benign-errors.ts) ────────────────────────────
+//
+// The SDK records what reaches window "error", "unhandledrejection" and
+// console.error, and offers no hook to drop one. So the runtime stands in
+// front of each: console.error through the tap above (a filtered call skips
+// the SDK's wrapper and goes to the console underneath it), and the two window
+// events through a capture-phase listener registered BEFORE the SDK's. For a
+// benign one it stops the event reaching the listeners after it on window
+// (stopImmediatePropagation) — the SDK's, and any an app adds later — and
+// leaves the browser's default (the "Uncaught (in promise)" console line)
+// alone. Listeners registered before telemetry started still see it.
+interface BenignFilter {
+  /** Count and report true when `error` is benign; false to record it. */
+  filtered(error: unknown, source: BenignErrorSource): boolean;
+}
+
+function benignFilter(
+  config: BrowserTelemetryConfig,
+  hdx: HyperDXClient,
+): BenignFilter {
+  const classify = config.classifyBenignError ?? classifyBenignError;
+  const counter = new FilteredErrorCounter((name, attributes) => {
+    if (!isTelemetryDisabled()) {
+      hdx.addAction?.(name, attributes);
+    }
+  });
+  if (typeof window.addEventListener === "function") {
+    window.addEventListener("pagehide", () => counter.flush());
+  }
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        counter.flush();
+      }
+    });
+  }
+  return {
+    filtered(error, source) {
+      let kind: string | null = null;
+      try {
+        kind = classify(error);
+      } catch {
+        // A classifier that throws keeps the error.
+      }
+      if (!kind) {
+        return false;
+      }
+      counter.note(kind, source);
+      return true;
+    },
+  };
+}
+
+let benignEventFilterInstalled = false;
+
+function installBenignEventFilter(benign: BenignFilter): void {
+  if (benignEventFilterInstalled) {
+    return;
+  }
+  benignEventFilterInstalled = true;
+  const onEvent =
+    (source: BenignErrorSource, valueOf: (e: Event) => unknown) =>
+    (event: Event) => {
+      if (benign.filtered(valueOf(event), source)) {
+        event.stopImmediatePropagation();
+      }
+    };
+  window.addEventListener(
+    "unhandledrejection",
+    onEvent("unhandledrejection", (e) => (e as PromiseRejectionEvent).reason),
+    true,
+  );
+  window.addEventListener(
+    "error",
+    onEvent("error", (e) => (e as ErrorEvent).error),
     true,
   );
 }

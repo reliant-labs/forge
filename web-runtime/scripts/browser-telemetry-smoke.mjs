@@ -179,3 +179,85 @@ document.querySelector('#action').addEventListener('click', () => {
     await close(backend);
   }
 });
+
+// The benign-error filter (src/benign-errors.ts) stands in front of the REAL
+// SDK's error capture: its listener order and console.error wrapping are the
+// SDK's internals, so only a real browser and the real SDK prove it.
+test("benign browser errors are counted, not recorded; real ones and ConnectErrors still are", { timeout: 30000 }, async () => {
+  const traces = [];
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, "http://localhost").pathname;
+      if (url.startsWith("/_otel/")) {
+        const chunks = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const raw = Buffer.concat(chunks);
+        const decoded = req.headers["content-encoding"] === "gzip" ? gunzipSync(raw) : raw;
+        if (url.endsWith("traces")) traces.push(JSON.parse(decoded.toString()));
+        res.setHeader("content-type", "application/json");
+        res.end("{}");
+      } else if (url === "/sdk.js") {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await readFile(sdk));
+      } else if (url === "/hyperdx.js") {
+        res.setHeader("content-type", "text/javascript");
+        res.end("export default globalThis.HyperDX;");
+      } else if (url === "/") {
+        res.setHeader("content-type", "text/html");
+        res.end(`<!doctype html>
+<script src="/sdk.js"></script>
+<script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="module">
+import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
+window.tracing = trace;
+window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', consoleCapture: false });
+</script>`);
+      } else {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await moduleFile(url));
+      }
+    } catch (error) {
+      res.statusCode = 500;
+      res.end(String(error));
+    }
+  });
+  const origin = await listen(server);
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    await page.goto(origin);
+    await page.waitForFunction(() => window.ready === true, undefined, { timeout: 5000 });
+    await page.evaluate(async () => {
+      // Unawaited, so each reaches window "unhandledrejection".
+      Promise.reject(new DOMException("signal is aborted without reason", "AbortError"));
+      const rpc = new Error("[unavailable] Failed to fetch");
+      rpc.name = "ConnectError";
+      Promise.reject(rpc);
+      Promise.reject(new Error("REAL_REJECTION"));
+      console.error("auth:", new TypeError("Failed to fetch (dash.example.io)"));
+      console.error(new TypeError("REAL_CONSOLE_TYPEERROR"));
+      await new Promise((done) => setTimeout(done, 50));
+      window.dispatchEvent(new Event("pagehide"));
+      await window.tracing.getTracerProvider().getDelegate().forceFlush();
+    });
+    const spans = traces.flatMap((batch) => batch.resourceSpans ?? [])
+      .flatMap((resource) => resource.scopeSpans ?? [])
+      .flatMap((scope) => scope.spans ?? []);
+    const attr = (span, key) => span.attributes?.find((a) => a.key === key)?.value;
+    const errorSpans = spans.filter((span) => ["unhandledrejection", "console.error", "onerror"].includes(span.name));
+    const messages = errorSpans.map((span) => attr(span, "error.message")?.stringValue);
+    assert.ok(messages.includes("REAL_REJECTION"), `a real rejection is recorded: ${JSON.stringify(messages)}`);
+    assert.ok(messages.includes("REAL_CONSOLE_TYPEERROR"), "a real console.error TypeError is recorded");
+    assert.ok(messages.includes("[unavailable] Failed to fetch"), "a ConnectError is never filtered");
+    assert.equal(messages.some((m) => m?.startsWith("signal is aborted")), false, "an AbortError is not recorded");
+    assert.equal(messages.includes("Failed to fetch (dash.example.io)"), false, "a generic fetch failure is not recorded");
+    const counts = spans.filter((span) => span.name === "forge.errors_filtered")
+      .map((span) => `${attr(span, "kind")?.stringValue}/${attr(span, "source")?.stringValue}`)
+      .sort();
+    assert.deepEqual(counts, ["abort/unhandledrejection", "network/console.error"], "what was filtered is counted");
+  } finally {
+    await browser?.close();
+    await close(server);
+  }
+});

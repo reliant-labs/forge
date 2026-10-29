@@ -1,7 +1,6 @@
 package bundle
 
 import (
-	"encoding/json"
 	"fmt"
 	"slices"
 	"sort"
@@ -311,27 +310,21 @@ var placementPassiveKinds = map[string]bool{
 	"ExternalSecret": true, "SecretStore": true, "Issuer": true, "Certificate": true,
 }
 
-// placementOwners is each sealed object's release owners, by the rule the
-// snapshot inventory uses (SnapshotInventory): the forge.dev/release-owners
-// annotation a native provider (OpenBao, a StatefulSet resize Job) stamps on
-// what it renders; else the explicit forge.dev/workload label; else a
-// forge-managed app.kubernetes.io/name that names a declared component. An
-// object with none is env-level (unowned). No other name inference.
+// placementOwners is each sealed object's owners by releaseOwnershipOf, the
+// rule SnapshotInventory uses. A forge-managed app name counts only when it
+// names a declared component; an object with no owner is env-level.
 func placementOwners(docs []parsedDoc, declared map[string]PlacementDeclaration) (map[release.ObjectKey][]string, error) {
 	out := map[release.ObjectKey][]string{}
 	for _, doc := range docs {
 		body, _ := doc.body.(map[string]any)
-		labels := mapAt(mapAt(body, "metadata"), "labels")
-		var names []string
-		if raw := doc.meta.annotations[releaseOwnersAnnotation]; raw != "" {
-			if err := json.Unmarshal([]byte(raw), &names); err != nil {
-				return nil, fmt.Errorf("%s %s: %s: %w", doc.meta.kind, doc.meta.name, releaseOwnersAnnotation, err)
-			}
-		} else if explicit := stringAt(labels, forgeWorkloadLabel); explicit != "" {
-			names = []string{explicit}
-		} else if name := stringAt(labels, appNameLabel); name != "" && stringAt(labels, "app.kubernetes.io/managed-by") == "forge" {
-			if _, ok := declared[name]; ok {
-				names = []string{name}
+		own, err := releaseOwnershipOf(mapAt(body, "metadata"))
+		if err != nil {
+			return nil, fmt.Errorf("%s %s: %w", doc.meta.kind, doc.meta.name, err)
+		}
+		names := own.Owners
+		if own.Owners == nil && own.Label != "" {
+			if _, ok := declared[own.Label]; own.Explicit || ok {
+				names = []string{own.Label}
 			}
 		}
 		for _, c := range doc.clusters {
@@ -340,8 +333,6 @@ func placementOwners(docs []parsedDoc, declared map[string]PlacementDeclaration)
 	}
 	return out, nil
 }
-
-const releaseOwnersAnnotation = "forge.dev/release-owners"
 
 func placementPrimary(kind string, hosted bool) bool {
 	if hosted {

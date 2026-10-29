@@ -63,7 +63,16 @@ func graphCatalog(in GraphGenInput, m *graphModel) servicecatalog.Catalog {
 	})
 	sort.Slice(c.Diagnostics, func(i, j int) bool {
 		a, b := c.Diagnostics[i], c.Diagnostics[j]
-		return a.Code+a.Component+a.Source.Path < b.Code+b.Component+b.Source.Path
+		if a.Code != b.Code {
+			return a.Code < b.Code
+		}
+		if a.Component != b.Component {
+			return a.Component < b.Component
+		}
+		if a.Source.Path != b.Source.Path {
+			return a.Source.Path < b.Source.Path
+		}
+		return a.Source.Symbol < b.Source.Symbol
 	})
 	return c
 }
@@ -76,13 +85,13 @@ func catalogServices(services []ServiceDef) []servicecatalog.Service {
 		raw, _ := json.Marshal(s)
 		svc := servicecatalog.Service{Name: s.Package + "." + s.Name, ProtoFile: s.ProtoFile, Descriptor: raw, Methods: []servicecatalog.Method{}}
 		for _, method := range s.Methods {
+			// The descriptor spells protobuf's level ("IDEMPOTENCY_UNKNOWN");
+			// the catalog's closed set is UNKNOWN, IDEMPOTENT, NO_SIDE_EFFECTS.
 			idem := method.Idempotency
-			if idem == "" {
-				idem = "UNKNOWN"
-				if method.NoSideEffects {
-					idem = "NO_SIDE_EFFECTS"
-				}
+			if idem == "" && method.NoSideEffects {
+				idem = "NO_SIDE_EFFECTS"
 			}
+			idem = servicecatalog.Idempotency(idem)
 			svc.Methods = append(svc.Methods, servicecatalog.Method{ID: svc.Name + "/" + method.Name, Name: method.Name, Input: method.InputTypeFQ, Output: method.OutputTypeFQ, ClientStreaming: method.ClientStreaming, ServerStreaming: method.ServerStreaming, Idempotency: idem, AuthRequired: method.AuthRequired})
 		}
 		sort.Slice(svc.Methods, func(i, j int) bool { return svc.Methods[i].ID < svc.Methods[j].ID })
@@ -115,7 +124,11 @@ func parseCatalogCompose(src string) catalogCompose {
 func catalogComponent(dir string, m *graphModel, n *graphNode) servicecatalog.Component {
 	t := m.u.produced[n.Name]
 	kind := map[nodeKind]string{nodeComponent: "component", nodeProvider: "provider", nodeRoutes: "route_set", nodeOperators: "operators"}[n.Kind]
-	comp := servicecatalog.Component{ID: n.Name, Name: n.Name, Kind: kind, Type: catalogType(t), Source: servicecatalog.Source{Path: n.File, Line: n.Line}, Methods: catalogMethods(dir, m.u, t)}
+	comp := servicecatalog.Component{ID: n.Name, Name: n.Name, Kind: kind, Type: catalogType(t), Methods: catalogMethods(dir, m.u, t)}
+	if n.Kind == nodeProvider && n.File != "" {
+		// A provider is its New<Name> func in internal/app.
+		comp.Source = servicecatalog.Source{Path: n.File, Symbol: "New" + n.Name}
+	}
 	comp.ImplementationCandidates = []servicecatalog.Implementation{}
 	if n.Comp == nil {
 		return comp
@@ -125,7 +138,7 @@ func catalogComponent(dir string, m *graphModel, n *graphNode) servicecatalog.Co
 		return comp
 	}
 	if ctor := p.Types.Scope().Lookup(n.Comp.compConstructor); ctor != nil {
-		comp.Source = catalogSource(dir, p.Fset, ctor.Pos())
+		comp.Source = catalogSource(dir, p.Fset, ctor)
 	}
 	if t != nil {
 		if _, ok := t.Underlying().(*types.Interface); ok {
@@ -152,7 +165,7 @@ func catalogImplementations(dir string, u *graphUniverse, p *packages.Package, i
 			ct = types.NewPointer(ct)
 		}
 		if types.AssignableTo(ct, iface) {
-			out = append(out, servicecatalog.Implementation{Type: catalogType(ct), Source: catalogSource(dir, p.Fset, obj.Pos()), Methods: catalogMethods(dir, u, ct)})
+			out = append(out, servicecatalog.Implementation{Type: catalogType(ct), Source: catalogSource(dir, p.Fset, obj), Methods: catalogMethods(dir, u, ct)})
 		}
 	}
 	return out
@@ -228,8 +241,8 @@ func catalogBindingProviders(m *graphModel, n *graphNode, df DepsField, compose 
 func catalogProcess(module string, m *graphModel, r graphRootView, services []ServiceDef, clients []servicecatalog.Client) servicecatalog.Process {
 	p := servicecatalog.Process{ID: module + "#" + r.Name, Root: r.TypeName, Command: r.Command, Components: append([]string{}, r.Reach...), Serves: []servicecatalog.Serve{}, Clients: []string{}}
 	for _, decl := range m.roots {
-		if decl.Name == r.Name {
-			p.Source = servicecatalog.Source{Path: decl.File, Line: decl.Line}
+		if decl.Name == r.Name && decl.File != "" {
+			p.Source = servicecatalog.Source{Path: decl.File, Symbol: decl.TypeName}
 		}
 	}
 	reach := map[string]bool{}
@@ -265,17 +278,58 @@ func catalogType(t types.Type) string {
 	return types.TypeString(t, func(p *types.Package) string { return p.Path() })
 }
 
-func catalogSource(dir string, fset *token.FileSet, pos token.Pos) servicecatalog.Source {
+// catalogSource names obj's declaration: its module-relative file and its
+// symbol. Never its line: the catalog is committed, and a line moves with
+// every unrelated edit above it (servicecatalog.Source; the bundle's copy is
+// located at build time). A declaration outside the module, or one with no
+// name to find it by (a method of an unnamed interface), is unknown.
+func catalogSource(dir string, fset *token.FileSet, obj types.Object) servicecatalog.Source {
+	if obj == nil {
+		return servicecatalog.Source{}
+	}
+	path, sym := catalogPath(dir, fset, obj.Pos()), catalogSymbol(obj)
+	if path == "" || sym == "" {
+		return servicecatalog.Source{}
+	}
+	return servicecatalog.Source{Path: path, Symbol: sym}
+}
+
+// catalogPath is pos's file relative to dir, or "" outside it.
+func catalogPath(dir string, fset *token.FileSet, pos token.Pos) string {
 	if fset == nil || !pos.IsValid() {
-		return servicecatalog.Source{}
+		return ""
 	}
-	p := fset.Position(pos)
 	abs, _ := filepath.Abs(dir)
-	rel, err := filepath.Rel(abs, p.Filename)
+	rel, err := filepath.Rel(abs, fset.Position(pos).Filename)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return servicecatalog.Source{}
+		return ""
 	}
-	return servicecatalog.Source{Path: filepath.ToSlash(rel), Line: p.Line}
+	return filepath.ToSlash(rel)
+}
+
+// catalogSymbol is the name servicecatalog.Locate finds obj's declaration by:
+// "Name" for a func or type, "Type.Name" for a method — of a concrete type,
+// or of the named interface that declares it. "" when there is none.
+func catalogSymbol(obj types.Object) string {
+	if obj == nil {
+		return ""
+	}
+	fn, ok := obj.(*types.Func)
+	if !ok {
+		return obj.Name()
+	}
+	recv := fn.Signature().Recv()
+	if recv == nil {
+		return fn.Name()
+	}
+	t := types.Unalias(recv.Type())
+	if ptr, ok := t.(*types.Pointer); ok {
+		t = types.Unalias(ptr.Elem())
+	}
+	if named, ok := t.(*types.Named); ok {
+		return named.Obj().Name() + "." + fn.Name()
+	}
+	return ""
 }
 
 func catalogMethods(dir string, u *graphUniverse, t types.Type) []servicecatalog.CodeMethod {
@@ -304,7 +358,7 @@ func catalogMethods(dir string, u *graphUniverse, t types.Type) []servicecatalog
 		source := servicecatalog.Source{}
 		// Positions come from the shared go/types universe, not a live LSP.
 		if u.app != nil {
-			source = catalogSource(dir, u.app.Fset, fn.Pos())
+			source = catalogSource(dir, u.app.Fset, fn)
 		}
 		id, legacy := servicecatalog.MethodIdentity(scope, owner, namespace, fn.Name())
 		out = append(out, servicecatalog.CodeMethod{ID: id, Name: fn.Name(), Signature: catalogType(sig), Scope: scope, LegacyName: legacy, Source: source})

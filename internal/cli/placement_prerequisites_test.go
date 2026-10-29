@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/bundle"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -325,5 +326,24 @@ func TestPlacementPrerequisitesNativeProviderPassesPreflight(t *testing.T) {
 	stubPlacementReaders(t, map[string]bool{"prod": true})
 	if err := preflightPlacementBuild(t.Context(), e, buildOptions{env: "prod", release: "v1", push: true}); err != nil {
 		t.Fatalf("mixed + native provider is supported: %v", err)
+	}
+}
+
+// `forge env build prod --target api --push` on a mixed env: the build is
+// narrowed to a pure cluster set, but the bundle it seals is the whole mixed
+// env, so the reader is negotiated against the FULL declaration and an old
+// one refuses before any login, build or push.
+func TestPlacementPrerequisitesTargetedPushNegotiatesFullDeclaration(t *testing.T) {
+	stubPlacementReaders(t, map[string]bool{})
+	prev := renderBuildEntitiesFn
+	t.Cleanup(func() { renderBuildEntitiesFn = prev })
+	renderBuildEntitiesFn = func(context.Context, *config.ProjectConfig, buildOptions) (*KCLEntities, *KCLEntities, error) {
+		full := mixedPlacementEntities()
+		return full, &KCLEntities{Workloads: full.Workloads}, nil
+	}
+	opts := buildOptions{env: "prod", push: true, buildTarget: "api"}
+	_, _, err := renderBuildInputs(t.Context(), &config.ProjectConfig{Name: "p"}, &opts)
+	if err == nil || !strings.Contains(err.Error(), release.BundleFeaturePlacementPrerequisites) {
+		t.Fatalf("a --target push of a mixed env must negotiate the full declaration's reader first: %v", err)
 	}
 }

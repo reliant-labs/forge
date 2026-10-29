@@ -14,6 +14,41 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
+// releaseOwnership is an object's ownership claim: the one rule the snapshot
+// inventory and the placement projection share. An explicit
+// forge.dev/release-owners list wins, which is how a native provider
+// (OpenBao) or a raw manifest consumer names its owner; else the
+// forge.dev/workload label; else a forge-managed app.kubernetes.io/name.
+// These are explicit forge ownership labels, never inference from an
+// object's name or a container's position.
+type releaseOwnership struct {
+	Owners   []string // forge.dev/release-owners, nil when absent
+	Label    string   // the workload label, or a forge-managed app name
+	Explicit bool     // Label is the forge.dev/workload label itself
+}
+
+const releaseOwnersAnnotation = "forge.dev/release-owners"
+
+func releaseOwnershipOf(meta map[string]any) (releaseOwnership, error) {
+	ann, _ := meta["annotations"].(map[string]any)
+	if raw, _ := ann[releaseOwnersAnnotation].(string); raw != "" {
+		names := []string{}
+		if err := json.Unmarshal([]byte(raw), &names); err != nil {
+			return releaseOwnership{}, fmt.Errorf("release-owners: %w", err)
+		}
+		return releaseOwnership{Owners: names}, nil
+	}
+	labels, _ := meta["labels"].(map[string]any)
+	if explicit, _ := labels[forgeWorkloadLabel].(string); explicit != "" {
+		return releaseOwnership{Label: explicit, Explicit: true}, nil
+	}
+	if managed, _ := labels["app.kubernetes.io/managed-by"].(string); managed == "forge" {
+		name, _ := labels[appNameLabel].(string)
+		return releaseOwnership{Label: name}, nil
+	}
+	return releaseOwnership{}, nil
+}
+
 // SnapshotInventory captures the final candidate resource bytes, after the
 // normal safety transforms. Explicit owner annotations win; unannotated objects
 // are conservatively owned by every consumer on the destination, never guessed
@@ -65,27 +100,18 @@ func SnapshotInventory(ctx context.Context, in BuildInput, declaration release.S
 		}
 		meta, _ := body["metadata"].(map[string]any)
 		ann, _ := meta["annotations"].(map[string]any)
-		if raw, _ := ann["forge.dev/release-owners"].(string); raw != "" {
-			var names []string
-			if err := json.Unmarshal([]byte(raw), &names); err != nil {
-				return release.Snapshot{}, fmt.Errorf("release-owners: %w", err)
-			}
-			for _, name := range names {
+		own, err := releaseOwnershipOf(meta)
+		if err != nil {
+			return release.Snapshot{}, err
+		}
+		if own.Owners != nil {
+			for _, name := range own.Owners {
 				r.Owners = append(r.Owners, release.ConsumerKey{Cluster: cluster, Workload: name})
 			}
 		} else {
-			// These are existing explicit Forge workload ownership labels, not
-			// inference from an object's name or a container list position.
-			labels, _ := meta["labels"].(map[string]any)
-			name, _ := labels["app.kubernetes.io/name"].(string)
-			managed, _ := labels["app.kubernetes.io/managed-by"].(string)
-			if explicit, _ := labels["forge.dev/workload"].(string); explicit != "" {
-				name = explicit
-				managed = "forge"
-			}
-			if managed == "forge" {
+			if own.Label != "" {
 				for _, owner := range owners[cluster] {
-					if owner.Workload == name {
+					if owner.Workload == own.Label {
 						r.Owners = append(r.Owners, owner)
 					}
 				}

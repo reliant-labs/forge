@@ -200,7 +200,10 @@ Exit codes (release deploys):
      database it runs). Nothing failed and nothing is to be re-run: it goes
      live on its own once they act. The output names what it waits on and
      the action URL (--json: .queued). --wait blocks until it is live instead
-  8  the wait's budget expired while the rollout was still progressing
+  8  the wait's budget expired while the rollout was still progressing, or
+     a hosted deploy is STILL APPLYING: published and accepted, and not yet
+     reported applied by the platform. Nothing failed (--json: .applying);
+     keep watching with forge env status <env> --wait
 
 5 USED TO MEAN THE TIMEOUT, which is now 8. The confirmation gate took 5
 because it is the one outcome that must be impossible to misread as success:
@@ -1676,10 +1679,22 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 			})
 		},
 	}
+	// What each stage would still ship, for a deploy that stops before it:
+	// a stage with nothing to ship is not work left undone.
+	stageWork := map[deployStage][]string{
+		stageLocal: applyStageLabels(groups, hasK8sServices && !opts.skipClusterApply, deployContext, namespace),
+	}
+	if !opts.skipFrontend {
+		stageWork[stageFrontends] = shippableFrontendNames(entities)
+	}
 	workloadStagesLeft := 2
-	for _, stage := range stageOrder {
+	for i, stage := range stageOrder {
 		if err := runStage[stage](); err != nil {
-			return err
+			// A hosted part STILL APPLYING stops the stages after it, which
+			// may depend on it. Then the deploy is incomplete, not merely
+			// pending: the platform cannot run this machine's stages, so no
+			// amount of watching finishes it (deploy_applying.go).
+			return stageStopError(envName, err, stageOrder[i+1:], stageWork)
 		}
 		if stage == stageLocal || stage == stageHosted {
 			workloadStagesLeft--
@@ -2730,6 +2745,20 @@ func checkFrontendDeploys(ctx context.Context, entities *KCLEntities, projectDir
 // Used to recognise a frontend-only env (skip the cluster pipeline) and
 // gates nothing else. A hosted frontend ships through the control plane, a
 // build-only one ships nowhere, and a host one is the dev server.
+// shippableFrontendNames names the frontends this machine builds and ships.
+func shippableFrontendNames(e *KCLEntities) []string {
+	if e == nil {
+		return nil
+	}
+	var names []string
+	for _, f := range e.Frontends {
+		if f.Runtime.Ships() {
+			names = append(names, "frontend "+f.Name)
+		}
+	}
+	return names
+}
+
 func hasShippableFrontend(e *KCLEntities) bool {
 	if e == nil {
 		return false

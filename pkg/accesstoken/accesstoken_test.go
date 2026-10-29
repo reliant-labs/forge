@@ -423,7 +423,7 @@ func TestGrant_Validate(t *testing.T) {
 // credential: ONE token, bound to the daemon so teardown revokes it, carrying
 // the authority its acting user already holds.
 //
-// Before daemonBindableScopes this grant was REFUSED ("scope deploy:read
+// Before daemons admitted user authority this grant was REFUSED ("scope deploy:read
 // cannot be bound to a resource"), which left a managed daemon's forge unable
 // to authenticate at all — `forge env status` returned 403 permission_denied
 // on DeployService/ListEnvironments. The alternative was minting UNBOUND,
@@ -443,9 +443,9 @@ func TestGrant_DaemonBindingCarriesUserAuthority(t *testing.T) {
 		t.Fatalf("the managed-daemon credential was refused: %v", err)
 	}
 
-	// Each user-authority scope is independently bindable to a daemon, so a
+	// Each scope a daemon admits is independently bindable to it, so a
 	// member clipped down to a subset still mints.
-	for _, s := range daemonBindableScopes {
+	for s := range managed.Admissible() {
 		clipped := managed
 		clipped.Scopes = SetOf(ScopeDaemonConnect, s)
 		if err := clipped.Validate(now); err != nil {
@@ -458,6 +458,52 @@ func TestGrant_DaemonBindingCarriesUserAuthority(t *testing.T) {
 	p := &Principal{Resource: &Resource{Kind: ResourceDaemon, ID: "d1"}, Scopes: managed.Scopes}
 	if !p.MayActOn(ResourceDaemon, "d1") || p.MayActOn(ResourceDaemon, "d2") {
 		t.Fatal("a wide daemon-bound token escaped its binding")
+	}
+}
+
+// TestAdmissible_DaemonCarriesEveryScope is the owner's rule: a daemon
+// credential holds EVERY scope, so adding a scope to AllScopes must never
+// again leave daemons without it. It FAILS when a scope is added that a
+// daemon-bound credential acting as its user cannot carry, unless that scope
+// requires a binding of another kind (and so names it in scopeResourceRules).
+func TestAdmissible_DaemonCarriesEveryScope(t *testing.T) {
+	daemon := Grant{ActingUserID: "user", Resource: &Resource{Kind: ResourceDaemon, ID: "d1"}}
+	got := daemon.Admissible()
+	for _, s := range AllScopes {
+		rule, bound := scopeResourceRules[s]
+		elsewhere := bound && rule.required && rule.kind != ResourceDaemon
+		if got.Has(s) == elsewhere {
+			t.Errorf("daemon wildcard holds %s = %v; it must hold every scope that does not require a %s binding",
+				s, got.Has(s), rule.kind)
+		}
+	}
+	// The two that bind elsewhere, by name, so the exclusion cannot grow
+	// silently.
+	if got.Has(ScopeProxyPort) || got.Has(ScopeMCPConnector) {
+		t.Fatalf("a daemon wildcard resolved to a port share or connector credential: %s", got)
+	}
+
+	// Unbound (a laptop daemon's registration) holds everything that does not
+	// require a binding at all.
+	unbound := Grant{ActingUserID: "user"}.Admissible()
+	for _, s := range AllScopes {
+		rule, bound := scopeResourceRules[s]
+		if unbound.Has(s) == (bound && rule.required) {
+			t.Errorf("unbound wildcard holds %s = %v", s, unbound.Has(s))
+		}
+	}
+	// No acting user: nothing that acts as a person.
+	for s := range (Grant{}).Admissible() {
+		if RequiresActingUser(s) {
+			t.Errorf("an org automation wildcard resolved to the person-scope %s", s)
+		}
+	}
+}
+
+func TestKnownScopes_SkipsWhatThisBinaryCannotEvaluate(t *testing.T) {
+	got := KnownScopes([]string{"deploy:read", "future:scope", "daemon:connect"})
+	if len(got) != 2 || !got.Has(ScopeDeployRead) || !got.Has(ScopeDaemonConnect) {
+		t.Fatalf("KnownScopes = %s", got)
 	}
 }
 

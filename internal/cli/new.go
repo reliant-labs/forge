@@ -133,8 +133,12 @@ built from: a gitignored, machine-local go.work 'use', plus the npm twin for
 @reliantlabs/forge-web-runtime (.forge-link/). The project then compiles the
 library from that checkout instead of a published version — what a forge
 contributor wants, and something nobody else should get by accident, so it
-is never written unless asked for. An unreleased forge build cannot pin
-itself in go.mod, so a service scaffold from one is refused without it. Once
+is written only when asked for or when nothing else works: an unreleased
+forge build cannot pin itself in go.mod, so a service scaffold from one is
+linked to the checkout that build came from automatically (one line says
+so), and refused when that checkout cannot be found or with
+--link-forge=false. A linked project's forge_version follows the checkout,
+not go.mod's placeholder require. Once
 bridged, generate, lint and doctor warn whenever this binary and the
 checkout stop being the same source; drop the bridge with
 'go work edit -dropuse=<checkout>'.`,
@@ -164,7 +168,8 @@ checkout stop being the same source; drop the bridge with
 			}
 			harness = resolvedHarness
 			explicitForgeRoot = forgeRoot
-			defer func() { explicitForgeRoot = "" }()
+			linkForgeDeclined = cmd.Flags().Changed("link-forge") && !linkForge
+			defer func() { explicitForgeRoot, linkForgeDeclined = "", false }()
 			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces, linkForgeRequested(linkForge), verbose, verify, newFrontendOptions{output: frontendOutput, routes: frontendRoutes, kind: strings.ToLower(strings.TrimSpace(frontendKind))})
 		},
 	}
@@ -187,7 +192,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().StringVar(&bufPlugins, "buf-plugins", "local", "Default proto plugin source: 'local' (resolved from PATH; no BSR auth needed) or 'remote' (BSR-hosted, requires login under load)")
 	cmd.Flags().StringVar(&binaryMode, "binary", "per-service", "Binary packaging: 'per-service' (default — canonical cmd/server.go cobra root, one Application per service) or 'shared' (one Go binary, cobra subcommand per service, KCL MultiServiceApplication for deploy)")
 	cmd.Flags().BoolVar(&frontendWorkspaces, "frontend-workspaces", false, "Opt into pnpm-workspaces layout: emit packages/api + packages/hooks + packages/ui-web shared across all frontends. Off by default; recommended once you have 2+ frontends (web + mobile).")
-	cmd.Flags().BoolVar(&linkForge, "link-forge", false, "Bridge the project to the forge checkout this binary was built from (gitignored go.work 'use' + .forge-link/ for the web runtime). Off by default; required for a service scaffold from an unreleased forge build (also: "+linkForgeEnv+"=1)")
+	cmd.Flags().BoolVar(&linkForge, "link-forge", false, "Bridge the project to the forge checkout this binary was built from (gitignored go.work 'use' + .forge-link/ for the web runtime). Off by default, except for a service scaffold from an unreleased forge build, which is linked automatically when its checkout is found (--link-forge=false refuses instead; also: "+linkForgeEnv+"=1)")
 	cmd.Flags().StringVar(&forgeRoot, "forge-root", "", "The forge checkout --link-forge bridges to (also: "+buildinfo.ForgeRootEnv+"). Default: the checkout this binary was built from, else the go.mod replace it embeds forge through, else the checkout it sits or was started in")
 	cmd.Flags().BoolVar(&verify, "verify", false, "Compile the scaffold before returning: the bootstrap generate then ends with its go build check and a render of every deploy env (adds ~1s warm, ~40s on a cold build cache, and saturates the CPU while it runs). Off by default: the scaffold is deterministic and forge's own e2e corpus compiles it, and your first go build or forge generate pays for the same compile")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print the raw output behind a step forge summarizes in one line (e.g. git's explanation when the initial commit is skipped for want of a git identity)")
@@ -413,6 +418,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 			adopted = &a
 		}
 	}
+	linkForge = autoLinkForge(kindNormalized, linkForge, adopted)
 	if err := checkScaffoldCanResolveForge(kindNormalized, linkForge, adopted); err != nil {
 		return err
 	}
@@ -1310,6 +1316,39 @@ func writeDevForgeGoWork(targetPath string, link bool) {
 
 // explicitForgeRoot is --forge-root for the `project new` run in progress.
 var explicitForgeRoot string
+
+// linkForgeDeclined is an explicit --link-forge=false for the `project new`
+// run in progress: refuse rather than link automatically (autoLinkForge).
+var linkForgeDeclined bool
+
+// autoLinkForge reports whether the scaffold is bridged to a forge checkout:
+// link (--link-forge), or — when this binary could not resolve forge for the
+// project any other way and the bridge would — the checkout it was built
+// from, announced in one line.
+//
+// That case is an unreleased build (a pseudo-version no module proxy can
+// serve) whose checkout is known. It used to be refused with "re-run with
+// --link-forge --forge-root <the root forge had just found>": a command forge
+// could have run itself, and the only way that scaffold could ever succeed.
+// --link-forge=false keeps the refusal.
+func autoLinkForge(kind string, link bool, adopted *adoptedForge) bool {
+	// Only a build no proxy serves: a released forge refused here (an adopted
+	// go.mod's stale pin) has a published answer, and is never bridged to
+	// a checkout behind the user's back.
+	if link || linkForgeDeclined || buildinfo.InstallableVersion() != "" {
+		return link
+	}
+	root, ok, err := buildinfo.ResolveForgeRoot(explicitForgeRoot)
+	if err != nil || !ok {
+		return false // checkScaffoldCanResolveForge reports a bad --forge-root
+	}
+	if checkScaffoldCanResolveForge(kind, false, adopted) == nil || checkScaffoldCanResolveForge(kind, true, adopted) != nil {
+		return false
+	}
+	fmt.Printf("🔗 this forge (%s) is an unreleased build no module proxy can serve: linking the project to %s "+
+		"(%s), as --link-forge does (--link-forge=false refuses instead)\n", buildinfo.Version(), root.Dir, root.Source)
+	return true
+}
 
 // devForgeBridgeRoot is the local forge checkout --link-forge bridges a
 // scaffold to, or "" when none can be found. A path stated by --forge-root or

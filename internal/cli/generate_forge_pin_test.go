@@ -2,7 +2,9 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -118,5 +120,67 @@ func TestReconcileForgePin_HopNeedingUpgradeIsLeftToUpgrade(t *testing.T) {
 	})
 	if got, _ := os.ReadFile(filepath.Join(clean, "forge.yaml")); !strings.Contains(string(got), "forge_version: v0.1.46") {
 		t.Errorf("a hop with no codemod work left must move the pin:\n%s", got)
+	}
+}
+
+// A project linked to a forge checkout (go.work `use`, what --link-forge
+// writes) compiles against that checkout; its go.mod require is the published
+// floor tidy resolves without the workspace. Generate used to "follow" that
+// floor and move the pin BACK from the version project new wrote (owner's
+// dogfood: "forge_version v0.1.47-0.…-67ceee830b1b → v0.1.46"). The pin
+// follows the linked checkout's commit instead.
+func TestReconcileForgePin_LinkedCheckoutIsThePin(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a git checkout to derive its pseudo-version; runs in task test")
+	}
+	checkout := t.TempDir()
+	writeFileForTest(t, filepath.Join(checkout, "go.mod"), "module github.com/reliant-labs/forge\n\ngo 1.24\n")
+	writeFileForTest(t, filepath.Join(checkout, "pkg", "doc.go"), "package pkg\n")
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.email=t@forge.test", "-c", "user.name=t"}, args...)...)
+		cmd.Dir = checkout
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q")
+	git("add", ".")
+	git("commit", "-q", "-m", "init")
+	git("tag", "v0.1.46")
+	writeFileForTest(t, filepath.Join(checkout, "pkg", "more.go"), "package pkg\n")
+	git("add", ".")
+	git("commit", "-q", "-m", "after the tag")
+	sha := git("rev-parse", "--short=12", "HEAD")
+
+	const forgeYAML = "name: app\nmodule_path: example.com/app\nforge_version: v0.1.46\n"
+	dir, ctx := writePinProject(t, forgeYAML,
+		"module example.com/app\n\ngo 1.24\n\nrequire github.com/reliant-labs/forge v0.1.46\n")
+	writeFileForTest(t, filepath.Join(dir, "go.work"), "go 1.24\n\nuse (\n\t.\n\t"+checkout+"\n)\n")
+
+	out := captureStdout(t, func() {
+		if err := stepReconcileForgePin(ctx); err != nil {
+			t.Fatalf("stepReconcileForgePin: %v", err)
+		}
+	})
+	got, _ := os.ReadFile(filepath.Join(dir, "forge.yaml"))
+	want := regexp.MustCompile(`(?m)^forge_version: v0\.1\.47-0\.\d{14}-` + sha + `$`)
+	if !want.Match(got) {
+		t.Fatalf("forge_version does not name the linked checkout's commit %s (no +dev/+dirty either):\n%s\noutput:\n%s", sha, got, out)
+	}
+	if !strings.Contains(out, "the forge checkout go.work links") {
+		t.Errorf("the pin change must name the linked checkout as its source:\n%s", out)
+	}
+
+	// Converged: a second run says nothing and writes nothing.
+	again := captureStdout(t, func() {
+		if err := stepReconcileForgePin(ctx); err != nil {
+			t.Fatalf("stepReconcileForgePin: %v", err)
+		}
+	})
+	if again != "" {
+		t.Errorf("a converged pin must be left alone, got:\n%s", again)
 	}
 }

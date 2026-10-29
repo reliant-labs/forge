@@ -4,7 +4,6 @@ import (
 	"context"
 	"slices"
 	"testing"
-	"time"
 
 	"connectrpc.com/connect"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -27,7 +26,6 @@ func TestRPCServerDurationHasSecondsBuckets(t *testing.T) {
 
 	ic := MetricsInterceptor(mp.Meter("test"))
 	unary := ic.WrapUnary(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
-		time.Sleep(60 * time.Millisecond)
 		return nil, nil
 	})
 	if _, err := unary(context.Background(), connect.NewRequest(&struct{}{})); err != nil {
@@ -57,11 +55,8 @@ func TestRPCServerDurationHasSecondsBuckets(t *testing.T) {
 	if !slices.Equal(dp.Bounds, metrics.SecondsBuckets()) {
 		t.Fatalf("bounds = %v, want metrics.SecondsBuckets %v", dp.Bounds, metrics.SecondsBuckets())
 	}
-	// 60ms falls in (0.05, 0.075]: a bucket 25ms wide, not the old [0, 5].
-	i := slices.Index(dp.Bounds, 0.075)
-	if dp.BucketCounts[i] != 1 {
-		t.Fatalf("a 60ms call is not in the (0.05, 0.075] bucket: counts %v", dp.BucketCounts)
-	}
+	// Where a value lands is pinned with a recorded value, not a timed call:
+	// metrics.TestSecondsHistogramsGetSecondsBuckets.
 }
 
 // Every built-in seconds histogram gets the seconds boundaries; one that

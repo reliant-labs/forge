@@ -310,6 +310,13 @@ _check_source = lambda b: any, pt: any, s: any -> bool {
 #   gcp_projects the Google project of each gcpsm store
 #   gcp_service_accounts the extra service accounts a gcpsm store may use: the
 #                component's bootstrap reader
+#   store_peers  the in-cluster OpenBao the operator dials, as a pod peer
+#                ({namespace, name, port}) for its egress NetworkPolicy. An
+#                ipBlock cannot stand in for it: Cilium (GKE Dataplane V2)
+#                never matches a pod's address against an ipBlock, so
+#                0.0.0.0/0 silently drops the dial and the SecretStore times
+#                out ("could not get provider client: context deadline
+#                exceeded")
 #
 # The component's own server/mount/audience are admitted even when no
 # ExternalSecret reads from it yet, so adding the first one needs no policy
@@ -334,6 +341,7 @@ admission_defaults = lambda b: any, pt: any, ctx: str -> any {
         "audiences": sorted({x: 0 for x in [st.audience for st in _vault] + (["${_openbao_audience_base(b.openbao)}/c/${_id}"] if _ob else [])})
         "gcp_projects": sorted({x: 0 for x in [st.project for st in _recs if st.type == "gcpsm"] + _boot})
         "gcp_service_accounts": _boot_sa
+        "store_peers": [{"namespace": b.openbao.namespace, "name": b.openbao.name, "port": [l.port for l in b.openbao.listeners if l.tls][0]}] if _ob else []
     }
 }
 

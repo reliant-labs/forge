@@ -2,10 +2,12 @@ package cli
 
 import (
 	"context"
+	"io"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -34,6 +36,96 @@ func TestPlacementPrerequisitesReaderFirst(t *testing.T) {
 				t.Fatalf("effect before compatibility: %v", fake.calls)
 			}
 		}
+	}
+}
+
+// stubPlacementReaders answers each env's recorder with its own feature
+// list, and reports which envs were asked.
+func stubPlacementReaders(t *testing.T, supports map[string]bool) *[]string {
+	t.Helper()
+	var asked []string
+	prevLedger, prevRecorder := bundleLedgerFor, bundleRecorderForEnv
+	t.Cleanup(func() { bundleLedgerFor, bundleRecorderForEnv = prevLedger, prevRecorder })
+	bundleLedgerFor = func(context.Context, string, string) (envLedger, error) {
+		return envLedger{Bindings: hostedBindingsStub{}, Releases: hostedReleasesStub{}, Hosted: true}, nil
+	}
+	bundleRecorderForEnv = func(_ context.Context, _, env string, _ envLedger) (bundleRecorder, error) {
+		asked = append(asked, env)
+		features := []string{}
+		if supports[env] {
+			features = release.BundleDocFeatures()
+		}
+		return hostedRecordStoreFor(&fakeDSOTCaller{replies: map[string]any{procDeployCapabilities: map[string]any{"bundleDocumentFeatures": features}}}, "p"), nil
+	}
+	return &asked
+}
+
+func mixedPlacementEntities() *KCLEntities {
+	return &KCLEntities{Workloads: []WorkloadEntity{orderClusterWorkload("api", nil)}, Frontends: []FrontendEntity{orderFrontend("web", FrontendRuntimeHosted, nil)}}
+}
+
+// `forge env build <env> --release v --no-build` cuts a release over earlier
+// build state. The cut is permanent, so every --bundle-envs destination's
+// reader is negotiated first, and one that cannot decode the mixed graph
+// refuses before any cut.
+func TestPlacementPrerequisitesCutOnlyRefusesBeforeTheCut(t *testing.T) {
+	asked := stubPlacementReaders(t, map[string]bool{"prod": true, "prod-eu": false})
+	prevRender, prevCut := renderKCLForDeclaration, cutReleaseFromBuildStateFn
+	t.Cleanup(func() { renderKCLForDeclaration, cutReleaseFromBuildStateFn = prevRender, prevCut })
+	renderKCLForDeclaration = func(context.Context, string, string) (*KCLEntities, error) { return mixedPlacementEntities(), nil }
+	cut := false
+	cutReleaseFromBuildStateFn = func(context.Context, string, string, string, string, *KCLEntities, buildOptions) (releaseCutOutcome, error) {
+		cut = true
+		return releaseCutOutcome{}, nil
+	}
+	err := runEnvBuildCutOnly(t.Context(), buildOptions{env: "prod", release: "v1.2.3", bundleEnvs: "prod,prod-eu", outputDir: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), release.BundleFeaturePlacementPrerequisites) {
+		t.Fatalf("an old reader on a bundle env must refuse the cut-only release: %v", err)
+	}
+	if cut {
+		t.Fatal("the release was cut before the reader refused it")
+	}
+	if !slices.Equal(*asked, []string{"prod", "prod-eu"}) {
+		t.Fatalf("readers asked = %v, want every --bundle-envs destination", *asked)
+	}
+}
+
+// Top-level `forge build <env>` is compile-only: it never asks a control
+// plane what it decodes, even for a mixed env, and its local bundle step
+// skips a mixed bundle an old reader cannot take rather than failing.
+func TestPlacementPrerequisitesCompileOnlyNeverNegotiates(t *testing.T) {
+	prevLedger := bundleLedgerFor
+	t.Cleanup(func() { bundleLedgerFor = prevLedger })
+	bundleLedgerFor = func(context.Context, string, string) (envLedger, error) {
+		t.Fatal("a compile-only build opened its ledger")
+		return envLedger{}, nil
+	}
+	if err := preflightPlacementBuild(t.Context(), mixedPlacementEntities(), buildOptions{env: "prod"}); err != nil {
+		t.Fatalf("compile-only build refused: %v", err)
+	}
+}
+
+func TestPlacementPrerequisitesCompileOnlyBundleSkipsOldReader(t *testing.T) {
+	dir := newLedgerTestProject(t, "mixed-compile-project")
+	prevShape := projectEnvShapeFn
+	t.Cleanup(func() { projectEnvShapeFn = prevShape })
+	stream := bundleTestStream + "---\n# cluster: hosted\napiVersion: forge.dev/v1alpha1\nkind: StaticSite\nmetadata:\n  name: web\nspec: {}\n"
+	projectEnvShapeFn = func(_ context.Context, _ io.Writer, env string) (envShapeDoc, error) {
+		shape, err := bundle.ProjectShape(bundle.ShapeInput{Kind: release.EnvSelfManaged, Clusters: []string{"prod-ctx", release.BundleHostedCluster}, Manifests: stream})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return envShapeDoc{Project: "mixed-compile-project", Env: env, Kind: string(shape.Kind), Shape: shape,
+			Provenance: release.Provenance{Commit: rep40('c'), Tree: rep40('a')}, manifests: stream, entities: mixedPlacementEntities()}, nil
+	}
+	stubPlacementReaders(t, map[string]bool{})
+	var warned strings.Builder
+	written, err := writeEnvBundles(t.Context(), dir, []string{"prod"}, bundleBuildInputs{Now: bundleTestNow, errOut: &warned})
+	if err != nil || len(written) != 1 || !written[0].Skipped || !strings.Contains(warned.String(), release.BundleFeaturePlacementPrerequisites) {
+		t.Fatalf("compile-only mixed bundle with an old reader: written=%+v err=%v warning=%q", written, err, warned.String())
+	}
+	if _, err := writeEnvBundles(t.Context(), dir, []string{"prod"}, bundleBuildInputs{Release: "v1", Pushed: true, Now: bundleTestNow, errOut: io.Discard}); err == nil {
+		t.Fatal("a publishing bundle must still refuse an old reader")
 	}
 }
 

@@ -378,3 +378,16 @@ func mustMarshal(t *testing.T, v any) string {
 	}
 	return string(b)
 }
+
+func TestJobsDashboardIsNotWrittenIntoTheProjectTree(t *testing.T) {
+	dir := t.TempDir()
+	written, err := Write(dir, fleet(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range written {
+		if strings.Contains(w, "-jobs_gen") || strings.Contains(w, "db-migrate-up") || strings.Contains(w, "process-db-migrate") {
+			t.Errorf("Write emitted %s: jobs read cluster events a local stack lacks, and a job has no dashboard of its own", w)
+		}
+	}
+}

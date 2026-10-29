@@ -58,12 +58,12 @@ const (
 )
 
 // hostedOnly reports whether d is a dashboard with nothing to draw in the local
-// stack, and so no HyperDX file: Workloads reads what a node agent delivers
-// and Releases reads the release ledger, and neither exists under
+// stack, and so no HyperDX file: Workloads reads what a node agent delivers,
+// Jobs the Kubernetes Job events it delivers, and Releases reads the release ledger, and neither exists under
 // `forge env up`. They are also constant text, independent of the project's
 // services, so writing them would put library code in the project's tree
 // behind a do-not-edit banner. They ship in the spec and in the release bundle.
-func hostedOnly(d Dashboard) bool { return d.ID == WorkloadsID || d.ID == ReleasesID }
+func hostedOnly(d Dashboard) bool { return d.ID == WorkloadsID || d.ID == ReleasesID || d.ID == JobsID }
 
 // OverridePath is the file that, when present, replaces the generated
 // dashboard d: forge neither writes nor refreshes its _gen twin. The file is

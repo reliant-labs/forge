@@ -257,6 +257,10 @@ plugins:
 	cmd := exec.Command("buf", args...)
 	cmd.Dir = projectDir
 	cmd.Env = env
+	// The same pinned buf the Go step runs (a fresh machine has none on PATH).
+	if err := withPinnedTools(cmd, projectDir); err != nil {
+		return err
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -385,6 +389,10 @@ plugins:
 	cmd := exec.Command("buf", args...)
 	cmd.Dir = projectDir
 	cmd.Env = env
+	// The same pinned buf the Go step runs (a fresh machine has none on PATH).
+	if err := withPinnedTools(cmd, projectDir); err != nil {
+		return err
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

@@ -8,6 +8,8 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -299,4 +301,57 @@ func declaredMetricSchemas() []metrics.Schema {
 		return nil
 	}
 	return []metrics.Schema{s}
+}
+
+// pageCursorPrefix marks a next_page_token forge wrapped with the window it
+// was issued for (pageCursor).
+const pageCursorPrefix = "fp1."
+
+// pageCursor is what forge hands out as next_page_token: the backend's own
+// token plus the exact window it belongs to.
+//
+// WHY WRAP IT. A backend's token is bound to the request that produced it,
+// window included, and the default window is RELATIVE (--since 72h): re-running
+// the same command with --page-token computes a new "now", so the next page was
+// refused "page_token belongs to a different request" and the only way through
+// was copying scope.from/scope.to into --from/--to by hand. Carrying the window
+// in the token makes `--page-token <next_page_token>` resume exactly the
+// listing it came from, whatever --since says. The inner token stays opaque.
+type pageCursor struct {
+	From  time.Time `json:"f"`
+	To    time.Time `json:"t"`
+	Token string    `json:"k"`
+}
+
+// wrapPageToken is next_page_token for a backend token issued over rng; empty
+// stays empty.
+func wrapPageToken(rng obsbackend.Range, token string) string {
+	if token == "" {
+		return ""
+	}
+	b, err := json.Marshal(pageCursor{From: rng.From.UTC(), To: rng.To.UTC(), Token: token})
+	if err != nil {
+		return token
+	}
+	return pageCursorPrefix + base64.RawURLEncoding.EncodeToString(b)
+}
+
+// resumePage unwraps a --page-token: the backend's token, with n's range
+// pinned to the window the token was issued for. A token forge did not wrap
+// (an older forge's, or one copied from elsewhere) passes through unchanged.
+func resumePage(n *obsbackend.Narrow, token string) (string, error) {
+	raw, ok := strings.CutPrefix(token, pageCursorPrefix)
+	if !ok {
+		return token, nil
+	}
+	b, err := base64.RawURLEncoding.DecodeString(raw)
+	var c pageCursor
+	if err == nil {
+		err = json.Unmarshal(b, &c)
+	}
+	if err != nil || c.Token == "" || !c.To.After(c.From) {
+		return "", obsbackend.Wrong("--page-token is not a next_page_token forge issued (it is damaged or truncated)")
+	}
+	n.Range = obsbackend.Range{From: c.From, To: c.To}
+	return c.Token, nil
 }

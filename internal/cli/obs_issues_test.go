@@ -290,7 +290,7 @@ func TestObsIssuesCloudJSONGoldenAndRequestShape(t *testing.T) {
 		}
 	}
 	doc := decode(t, out)
-	if doc["truncated"] != true || doc["next_page_token"] != "tok2" {
+	if doc["truncated"] != true || doc["next_page_token"] != wrapPageToken(cloudTestRange, "tok2") {
 		t.Errorf("page = %v %v", doc["truncated"], doc["next_page_token"])
 	}
 	if sc := doc["scope"].(map[string]any); sc["backend"] != "cloud" || sc["env_id"] != "env-prod" {

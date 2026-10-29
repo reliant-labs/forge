@@ -141,13 +141,17 @@ func runObsLogs(ctx context.Context, d obsDeps, env, query string, o obsLogsOpts
 	if err != nil {
 		return fail(err)
 	}
+	pageToken, err := resumePage(&n, o.pageToken)
+	if err != nil {
+		return fail(err)
+	}
 	b, _, err := o.open(ctx, d, env, "logs")
 	if err != nil {
 		return fail(err)
 	}
 	req := obsbackend.LogsRequest{
 		Narrow: n, Query: query, Severities: o.severities, TraceID: o.trace,
-		Oldest: o.oldest, Limit: o.out.Limit, PageToken: o.pageToken,
+		Oldest: o.oldest, Limit: o.out.Limit, PageToken: pageToken,
 	}
 	if o.follow {
 		return followLogs(ctx, d, b, req, o, fields)
@@ -156,6 +160,7 @@ func runObsLogs(ctx context.Context, d obsDeps, env, query string, o obsLogsOpts
 	if err != nil {
 		return fail(err)
 	}
+	res.NextPageToken = wrapPageToken(n.Range, res.NextPageToken)
 	doc := obsLogsDoc{Scope: obsScope(b.Info(), n), Query: query, QueryMode: QueryModeStructured, Logs: []obsLogRecordDoc{}}
 	if n.Explain {
 		doc.Statements = res.Statements

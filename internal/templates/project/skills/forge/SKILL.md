@@ -47,7 +47,9 @@ forge env up dev             # host services + frontends, on a fresh seeded DB
 
 `forge project new --service a --service b --frontend web` composes every
 service into one graph; `<bin> server`, its default root, serves them all on
-one mux. No command per service: every env runs `server` as `_api`. A later
+one mux. `cmd/<bin>/main.go` hands the scaffolded constructors to
+`cmd.Execute(...)`, which builds the command tree; there is no command per
+service, and every env runs `server` as `_api`. A later
 `forge scaffold service <name>` joins the same way.
 
 Batch later ones: `forge scaffold service sales jobs billing` generates once.

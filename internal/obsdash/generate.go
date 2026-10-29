@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
+
 	"github.com/reliant-labs/forge/internal/checksums"
 )
 
@@ -240,7 +242,7 @@ func writeOwnedOverview(root, owned, legacy string, content, undeployed []byte, 
 		}
 		if err == nil && bytes.Equal(onDisk, undeployed) {
 			checksums.RecordPreWrite(root, owned)
-			if err := os.WriteFile(filepath.Join(root, owned), content, 0o644); err != nil {
+			if err := atomicfile.WriteFile(filepath.Join(root, owned), content, 0o644); err != nil {
 				return err
 			}
 			checksums.MarkWrittenThisRun(owned)

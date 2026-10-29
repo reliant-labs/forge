@@ -89,8 +89,9 @@ commands, so there is nothing an agent can do that you can't check by hand.
   analyzer and marker, enumerated from the binary, so it can't go stale.
 - **Scaffolding and lints are guardrails against AI slop.** `forge scaffold`
   lands each service, rpc, worker or entity in the right place, already wired.
-  `forge lint` rejects what review misses: handlers doing business logic,
-  unwrapped errors, edited generated files, unsafe migrations. A finding names
+  `forge lint` rejects what review misses: errors that could leak internals,
+  list filters that silently do nothing, edited generated files, unsafe
+  migrations. A finding names
   the file, line, rule and fix, and `forge lint --quiet` prints only what
   failed and ends with the verdict, so the agent reads one line to know whether
   it is done.

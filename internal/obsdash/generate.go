@@ -104,7 +104,11 @@ func Write(projectDir string, in Input, cs *checksums.FileChecksums) ([]string, 
 		rel := DashboardsDir + "/" + f.File
 		if d.ID == "overview" {
 			owned := OverridePath(sp.Project, d)
-			if err := writeOwnedOverview(projectDir, owned, rel, f.Content, cs); err != nil {
+			undeployed, err := undeployedOverview(in, f.File)
+			if err != nil {
+				return nil, err
+			}
+			if err := writeOwnedOverview(projectDir, owned, rel, f.Content, undeployed, cs); err != nil {
 				return nil, err
 			}
 			out = append(out, owned)
@@ -182,20 +186,65 @@ func emitJSON(emit func(string, []byte) error, rel string, v any) error {
 	return emit(rel, append(b, '\n'))
 }
 
-// writeOwnedOverview gives the constant local overview the same ownership as
-// an explicit dashboard override. Existing generated edits are migrated verbatim
-// before retiring their old name; an existing owned override always wins.
-func writeOwnedOverview(root, owned, legacy string, content []byte, cs *checksums.FileChecksums) error {
+// undeployedOverview is the overview's HyperDX file as forge renders it when it
+// knows no deployed process: every identity predicate on the
+// no-deployed-process sentinel. An owned overview still byte-equal to it is an
+// untouched scaffold that froze that answer, not a user's dashboard.
+func undeployedOverview(in Input, file string) ([]byte, error) {
+	in.Deployed = Identities{}
+	in.Processes = nil
+	project, parts := BuildParts(in)
+	files, err := RenderHyperDX(Assemble(project, parts))
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range files {
+		if f.File == file {
+			return f.Content, nil
+		}
+	}
+	return nil, nil
+}
+
+// writeOwnedOverview gives the local overview the same ownership as an
+// explicit dashboard override. Edits to a legacy generated file are migrated
+// verbatim before retiring its old name; an existing owned override wins.
+//
+// Two cases are NOT the user's edits and so are not preserved: a legacy file
+// that is pristine forge output, and an owned file still byte-equal to the
+// undeployed render (undeployed). Both froze the overview's identity scope as
+// the no-deployed-process sentinel, typically because `forge project new`'s
+// first generate ran before any environment's workloads rendered; once owned,
+// no later generate refreshed it, and every panel of the local overview drew
+// nothing forever. They take the current render instead.
+func writeOwnedOverview(root, owned, legacy string, content, undeployed []byte, cs *checksums.FileChecksums) error {
 	old, err := os.ReadFile(filepath.Join(root, legacy))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err == nil {
+	if err != nil {
+		old = nil
+	}
+	pristine := old != nil && cs != nil && cs.Unstampable[legacy] == checksums.BodyHash(old)
+	if old != nil && !pristine {
 		content = old
 	}
-	_, err = checksums.WriteScaffoldIfMissing(root, owned, content)
+	written, err := checksums.WriteScaffoldIfMissing(root, owned, content)
 	if err != nil {
 		return err
+	}
+	if !written && undeployed != nil && !bytes.Equal(content, undeployed) {
+		onDisk, err := os.ReadFile(filepath.Join(root, owned))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err == nil && bytes.Equal(onDisk, undeployed) {
+			checksums.RecordPreWrite(root, owned)
+			if err := os.WriteFile(filepath.Join(root, owned), content, 0o644); err != nil {
+				return err
+			}
+			checksums.MarkWrittenThisRun(owned)
+		}
 	}
 	// A deliberately deleted scaffold must not resurrect or erase its legacy
 	// source. Only retire after the owned destination is present.
@@ -206,7 +255,6 @@ func writeOwnedOverview(root, owned, legacy string, content []byte, cs *checksum
 		return err
 	}
 	if old != nil {
-		pristine := cs != nil && cs.Unstampable[legacy] == checksums.BodyHash(old)
 		// The pre-emitter guard may already have quarantined this legacy
 		// path. Record the explicit one-way ownership transfer so final
 		// adjudication does not demand a render for a now user-owned file.

@@ -1,95 +1,153 @@
 package release
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
-func gitInit(t *testing.T) string {
-	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	dir := t.TempDir()
-	run := func(args ...string) {
-		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	run("init", "-q", "-b", "main")
-	run("remote", "add", "origin", "git@github.com:acme/app.git")
-	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	run("add", "a.txt")
-	run("commit", "-q", "-m", "init")
-	return dir
-}
+// testTreeBudget is the hashing budget of every test that asserts WHAT a
+// dirty capture hashes. CaptureTreeTimeout is wall-clock, and on a loaded
+// machine three git process starts outlast it on a two-file tree, so a test
+// under the default budget passed or failed with the machine's load. The
+// budget path itself is pinned, deterministically, by
+// TestCaptureProvenanceReportsAnUnhashedTree.
+const testTreeBudget = 10 * time.Minute
 
+// The capture tests run git for real, so they are slow tests: a git process
+// start costs about a second on a loaded machine. Each takes its repository
+// from a per-process template (gitfixture_test.go) and runs in parallel with
+// the others, and the capture itself runs its independent git reads at once.
 func TestCaptureProvenance(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds real git repositories and worktrees; runs in task test")
 	}
-	dir := gitInit(t)
 	ctx := context.Background()
-	opts := CaptureOptions{ForgeVersion: "v0.1.44", WorktreeKey: "", Host: "h1"}
+	opts := CaptureOptions{ForgeVersion: "v0.1.44", WorktreeKey: "", Host: "h1", treeBudget: testTreeBudget}
 
-	clean, err := CaptureProvenance(ctx, dir, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if clean.Dirty || clean.Branch != "main" || clean.Repo != "github.com/acme/app" || clean.ForgeVersion != "v0.1.44" || clean.Worktree.Label != "main" {
-		t.Fatalf("clean capture: %+v", clean)
-	}
-	headTree, _ := gitOut(ctx, dir, "rev-parse", "HEAD^{tree}")
-	if clean.Tree != headTree {
-		t.Fatalf("a clean tree must equal HEAD^{tree}: %s vs %s", clean.Tree, headTree)
-	}
-	if err := clean.Validate(); err != nil {
-		t.Fatal(err)
-	}
+	t.Run("clean", func(t *testing.T) {
+		t.Parallel()
+		dir, headTree := initRepo(t)
+		clean, err := CaptureProvenance(ctx, dir, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if clean.Dirty || clean.Branch != "main" || clean.Repo != "github.com/acme/app" || clean.ForgeVersion != "v0.1.44" || clean.Worktree.Label != "main" {
+			t.Fatalf("clean capture: %+v", clean)
+		}
+		if clean.CommitSubject != "init" || clean.CommitAuthor != "t" || clean.CommitTime == nil {
+			t.Fatalf("clean capture must name its commit: subject %q author %q time %v", clean.CommitSubject, clean.CommitAuthor, clean.CommitTime)
+		}
+		if clean.Tree != headTree || clean.Tree != treeHash(map[string]string{"a.txt": "one\n"}) {
+			t.Fatalf("a clean tree must equal HEAD^{tree}: %s vs %s", clean.Tree, headTree)
+		}
+		if err := clean.Validate(); err != nil {
+			t.Fatal(err)
+		}
+	})
 
-	// Stage something, so we can prove the user's index is untouched.
+	t.Run("dirty", func(t *testing.T) {
+		t.Parallel()
+		dir, headTree := initRepo(t)
+		// Stage something, so we can prove the user's index is untouched.
+		if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("two\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitRun(t, dir, "add", "a.txt")
+		if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("u\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		index := filepath.Join(dir, ".git", "index")
+		indexBefore, err := os.ReadFile(index)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Two captures of one dirty state, at once — two builds of one
+		// checkout — each through its own temporary index.
+		var caps [2]Provenance
+		var errs [2]error
+		var wg sync.WaitGroup
+		for i := range caps {
+			wg.Go(func() { caps[i], errs[i] = CaptureProvenance(ctx, dir, opts) })
+		}
+		wg.Wait()
+		for _, err := range errs {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		dirty, again := caps[0], caps[1]
+		want := treeHash(map[string]string{"a.txt": "two\n", "untracked.txt": "u\n"})
+		if !dirty.Dirty || dirty.Tree != want || dirty.Tree == headTree || dirty.CommitTime != nil {
+			t.Fatalf("dirty capture must hash the built content %s: %+v", want, dirty)
+		}
+		if again.Tree != dirty.Tree {
+			t.Fatalf("two captures of one dirty state must agree: %s vs %s", again.Tree, dirty.Tree)
+		}
+		if err := dirty.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		// Byte-identical, not merely the same staged names: the capture
+		// neither stages nor refreshes anything in the user's index.
+		indexAfter, err := os.ReadFile(index)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(indexAfter, indexBefore) {
+			t.Fatal("capture rewrote the user's index")
+		}
+	})
+
+	t.Run("not a checkout", func(t *testing.T) {
+		t.Parallel()
+		// No commit, no error.
+		plain, err := CaptureProvenance(ctx, t.TempDir(), opts)
+		if err != nil || plain.Commit != "" || plain.Tree != "" {
+			t.Fatalf("non-git dir: %+v %v", plain, err)
+		}
+	})
+}
+
+// A dirty tree the budget stopped from hashing is an ERROR naming
+// ErrUnhashed, never an empty tree reported as success: under load the
+// budget used to expire on a two-file tree and the capture said nothing. The
+// rest of the provenance is still returned, and the caller's own context is
+// told apart from the capture's budget.
+func TestCaptureProvenanceReportsAnUnhashedTree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
+	t.Parallel()
+	dir, _ := initRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("two\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("git", "-C", dir, "add", "a.txt").CombinedOutput(); err != nil {
-		t.Fatalf("%v %s", err, out)
+	ctx := context.Background()
+
+	p, err := CaptureProvenance(ctx, dir, CaptureOptions{treeBudget: time.Nanosecond})
+	if !errors.Is(err, ErrUnhashed) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("an exhausted budget must return ErrUnhashed, got %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("u\n"), 0o644); err != nil {
+	if !p.Unhashed() || !p.Dirty || p.Branch != "main" || p.CommitSubject != "init" {
+		t.Fatalf("the rest of the provenance must still be captured: %+v", p)
+	}
+	if err := p.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	stagedBefore, _ := gitOut(ctx, dir, "diff", "--cached", "--name-only")
 
-	dirty, err := CaptureProvenance(ctx, dir, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !dirty.Dirty || dirty.Tree == "" || dirty.Tree == headTree {
-		t.Fatalf("dirty capture must hash the built content: %+v", dirty)
-	}
-	again, _ := CaptureProvenance(ctx, dir, opts)
-	if again.Tree != dirty.Tree {
-		t.Fatal("two captures of one dirty state must agree")
-	}
-	stagedAfter, _ := gitOut(ctx, dir, "diff", "--cached", "--name-only")
-	if stagedAfter != stagedBefore || strings.Contains(stagedAfter, "untracked.txt") {
-		t.Fatalf("capture touched the user's index: before %q after %q", stagedBefore, stagedAfter)
-	}
-
-	// Not a git checkout: no commit, no error.
-	plain, err := CaptureProvenance(ctx, t.TempDir(), opts)
-	if err != nil || plain.Commit != "" || plain.Tree != "" {
-		t.Fatalf("non-git dir: %+v %v", plain, err)
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = CaptureProvenance(cancelled, dir, CaptureOptions{})
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrUnhashed) {
+		t.Fatalf("a cancelled caller must get its own error, not ErrUnhashed: %v", err)
 	}
 }
 
@@ -110,9 +168,10 @@ func TestInspectCheckout_NestedCheckoutsAreNotDirt(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds real git repositories and worktrees; runs in task test")
 	}
+	t.Parallel()
 	dir := gitInit(t)
 	ctx := context.Background()
-	opts := CaptureOptions{ForgeVersion: "v0.1.44"}
+	opts := CaptureOptions{ForgeVersion: "v0.1.44", treeBudget: testTreeBudget}
 	clean, err := CaptureProvenance(ctx, dir, opts)
 	if err != nil || clean.Dirty {
 		t.Fatalf("baseline: %+v %v", clean, err)
@@ -170,6 +229,7 @@ func TestInspectCheckout_ParsesRenamesAndLeadingSpace(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds real git repositories; runs in task test")
 	}
+	t.Parallel()
 	dir := gitInit(t)
 	ctx := context.Background()
 	gitRun(t, dir, "mv", "a.txt", "b b.txt")
@@ -192,9 +252,10 @@ func TestCaptureProvenance_CommitTime(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds real git repositories; runs in task test")
 	}
+	t.Parallel()
 	dir := gitInit(t)
 	ctx := context.Background()
-	opts := CaptureOptions{ForgeVersion: "v0.1.44"}
+	opts := CaptureOptions{ForgeVersion: "v0.1.44", treeBudget: testTreeBudget}
 
 	// A committer date in a non-UTC zone, distinct from the author date.
 	cmd := exec.Command("git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t",
@@ -239,9 +300,10 @@ func TestCaptureProvenanceRecordsCommitSubjectAndAuthor(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds real git repositories; runs in task test")
 	}
+	t.Parallel()
 	dir, shas := gitHistory(t, 2)
 	ctx := context.Background()
-	clean, err := CaptureProvenance(ctx, dir, CaptureOptions{})
+	clean, err := CaptureProvenance(ctx, dir, CaptureOptions{treeBudget: testTreeBudget})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +313,7 @@ func TestCaptureProvenanceRecordsCommitSubjectAndAuthor(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("edited\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dirty, err := CaptureProvenance(ctx, dir, CaptureOptions{})
+	dirty, err := CaptureProvenance(ctx, dir, CaptureOptions{treeBudget: testTreeBudget})
 	if err != nil {
 		t.Fatal(err)
 	}

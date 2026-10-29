@@ -41,14 +41,18 @@ import (
 // sealed runtime refs keep their declared tag, are byte-identical in all
 // three; each server carries exactly the image its release resolved.
 //
-// With FORGE_PLACEMENT_M5_EXPORT set, the recorded bundles are written there
-// for control-plane's end-to-end converge fixture (internal/placemente2e).
+// With FORGE_PLACEMENT_M5_EXPORT set, each recorded bundle is written there as
+// it is recorded, and each next release is based on the promotion id the
+// reader writes back: control-plane's end-to-end converge fixture
+// (internal/deploystore, scripts/placement-m5-e2e.sh) records and promotes
+// every bundle through its real store in between.
 func TestCompositionHostedSPARecordNamesTheCandidateBuild(t *testing.T) {
 	if testing.Short() {
 		t.Skip("temp git project, native KCL and hosted HTTP fixture; runs in task test")
 	}
 	ctx := context.Background()
 	h := newHostedSPACompositionFixture(t, "")
+	h.exportDir = os.Getenv("FORGE_PLACEMENT_M5_EXPORT")
 
 	h.nextSite, h.external["registry.test/reliant-api"], h.external["registry.test/reliant-gateway"] = spaDigest('1'), imageDigest('a'), imageDigest('b')
 	v1 := h.compose(ctx, t, "v1", nil, nil)
@@ -88,7 +92,6 @@ func TestCompositionHostedSPARecordNamesTheCandidateBuild(t *testing.T) {
 	if err := release.ValidateSnapshotTransition(v2.Snapshot, *v3.Snapshot); err != nil {
 		t.Fatal(err)
 	}
-	h.export(t)
 }
 
 // A partial composition carries an unselected hosted SPA: no build, and its
@@ -254,6 +257,7 @@ type hostedSPACompositionFixture struct {
 	nextSite  string
 	external  map[string]string
 	promoted  int
+	exportDir string
 }
 
 // exportedBundle is one recorded bundle exactly as the control plane received
@@ -267,6 +271,8 @@ type exportedBundle struct {
 	Manifest       []byte `json:"manifest"`
 	Config         []byte `json:"config"`
 	Layer          []byte `json:"layer"`
+	// Cut is the release the composition cut before sealing it.
+	Cut release.Release `json:"cut"`
 }
 
 // newHostedSPACompositionFixture is the native composition harness of
@@ -349,7 +355,9 @@ func newHostedSPACompositionFixture(t *testing.T, webDependencies string) *hoste
 
 	h.dir = t.TempDir()
 	// prod's topology in miniature. NATS and pgbouncer are raw manifest
-	// consumers whose sealed runtime refs keep their declared tag (#1377).
+	// consumers whose sealed runtime refs keep their declared tag (#1377);
+	// their Pods meet the restricted Pod Security profile forge labels its
+	// namespaces with, as prod's do.
 	main := `import forge
 import forge.workloads as fw
 _hub = forge.ClusterTarget {cluster = "k3d-prod-hub", namespace = "app", platform = "amd64"}
@@ -363,7 +371,10 @@ _raw = lambda name: str, kind: str, image: str -> any {
         metadata = {name = name}
         spec = {
             selector = {matchLabels = {app = name}}
-            template = {metadata = {labels = {app = name}}, spec = {containers = [{name = name, image = image}]}}
+            template = {metadata = {labels = {app = name}}, spec = {
+                securityContext = {runAsNonRoot = True, seccompProfile = {type = "RuntimeDefault"}}
+                containers = [{name = name, image = image, securityContext = {allowPrivilegeEscalation = False, capabilities = {drop = ["ALL"]}}}]
+            }}
         } | ({serviceName = name} if kind == "StatefulSet" else {})
     }
 }
@@ -480,8 +491,7 @@ func (h *hostedSPACompositionFixture) compose(ctx context.Context, t *testing.T,
 		}
 	}
 	if base != nil {
-		h.promoted++
-		run.Base = &release.Promotion{ID: fmt.Sprintf("promotion-%d", h.promoted), Env: "prod", Release: base.Release, Kind: release.KindPromote, Snapshot: base.Snapshot, SnapshotDigest: base.SnapshotDigest, BundleID: base.ID, BundleDigest: base.Digest}
+		run.Base = &release.Promotion{ID: h.basePromotionID(t, base.Release), Env: "prod", Release: base.Release, Kind: release.KindPromote, Snapshot: base.Snapshot, SnapshotDigest: base.SnapshotDigest, BundleID: base.ID, BundleDigest: base.Digest}
 		run.BaseSnapshot = base.Snapshot
 	}
 	opts := buildOptions{env: "prod", release: version, composition: run}
@@ -493,7 +503,32 @@ func (h *hostedSPACompositionFixture) compose(ctx context.Context, t *testing.T,
 	if len(h.records) != before+1 {
 		t.Fatalf("compose %s recorded %d bundles", version, len(h.records)-before)
 	}
+	h.exportRelease(t, version)
 	return h.records[len(h.records)-1]
+}
+
+// basePromotionID is the id of the promotion that made base current. The
+// fixture's control plane numbers its own; exporting, the id is the one the
+// real control plane assigned when it promoted the exported bundle, which
+// its converge fixture writes to <export>/<release>.promotion.
+func (h *hostedSPACompositionFixture) basePromotionID(t *testing.T, baseRelease string) string {
+	t.Helper()
+	if h.exportDir == "" {
+		h.promoted++
+		return fmt.Sprintf("promotion-%d", h.promoted)
+	}
+	path := filepath.Join(h.exportDir, baseRelease+".promotion")
+	deadline := time.Now().Add(15 * time.Minute)
+	for {
+		raw, err := os.ReadFile(path)
+		if err == nil && len(bytes.TrimSpace(raw)) > 0 {
+			return string(bytes.TrimSpace(raw))
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the control plane never promoted %s (%s): %v", baseRelease, path, err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func (h *hostedSPACompositionFixture) takePushes() []string {
@@ -504,23 +539,27 @@ func (h *hostedSPACompositionFixture) takePushes() []string {
 	return out
 }
 
-// export writes every recorded bundle to $FORGE_PLACEMENT_M5_EXPORT, one
-// <release>.json each, for control-plane's end-to-end converge fixture.
-func (h *hostedSPACompositionFixture) export(t *testing.T) {
+// exportRelease writes the bundle just recorded for version to the export
+// directory as <release>.json, for control-plane's end-to-end converge
+// fixture. The write is a rename, so a reader never sees a partial file.
+func (h *hostedSPACompositionFixture) exportRelease(t *testing.T, version string) {
 	t.Helper()
-	dir := os.Getenv("FORGE_PLACEMENT_M5_EXPORT")
-	if dir == "" {
+	if h.exportDir == "" {
 		return
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	for version, b := range h.blobs {
-		data, err := json.Marshal(b)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, version+".json"), data, 0o644); err != nil {
-			t.Fatal(err)
-		}
+	b := h.blobs[version]
+	b.Cut = h.cuts[version]
+	h.mu.Unlock()
+	data, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(h.exportDir, "."+version+".json.tmp")
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, filepath.Join(h.exportDir, version+".json")); err != nil {
+		t.Fatal(err)
 	}
 }

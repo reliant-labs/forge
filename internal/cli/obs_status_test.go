@@ -337,3 +337,25 @@ func TestStatusFreshnessProbesBeforeTheWholeLookback(t *testing.T) {
 		})
 	}
 }
+
+// The external delivery reconciler being off is reported only for an env that
+// declared a Secret for it. A hosted env's own token is renewed by the
+// platform's workload operator, so "nothing keeps the token valid" there was
+// false (control-plane prod, 2026-10-29).
+func TestStatusTelemetryDeliveryOffNeedsADeclaredSecret(t *testing.T) {
+	off := false
+	now := time.Date(2026, 10, 29, 16, 0, 0, 0, time.UTC)
+	var hosted strings.Builder
+	writeStatusTelemetry(&hosted, now, &obsStatusTelemetry{DeliveriesEnabled: &off})
+	if strings.Contains(hosted.String(), "telemetry token") {
+		t.Errorf("an env with no declared delivery got a token warning:\n%s", hosted.String())
+	}
+
+	var declared strings.Builder
+	writeStatusTelemetry(&declared, now, &obsStatusTelemetry{DeliveriesEnabled: &off,
+		Deliveries: []obsbackend.TelemetryDelivery{{Cluster: "prod", Namespace: "obs", Name: "reliant-otel-auth", State: "disabled"}}})
+	if got := declared.String(); !strings.Contains(got, "1 declared Secret(s) on connected clusters are not delivered") ||
+		!strings.Contains(got, "reconciler is off") || !strings.Contains(got, "obs/reliant-otel-auth on prod: disabled") {
+		t.Errorf("a declared delivery with the reconciler off must say so:\n%s", got)
+	}
+}

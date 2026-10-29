@@ -360,3 +360,40 @@ func TestDeployedIdentitiesAcceptTheSameWorkloadNameWithDifferentArgsAcrossEnvir
 		t.Error("two commands under one name in one environment must be refused")
 	}
 }
+
+// A job and a long-running workload can run the same command (a `db migrate`
+// job and a worker that also runs it). They are different processes whatever
+// the order the environments rendered them in, and neither takes the other's
+// classification.
+func TestJobsAndLongRunningWorkloadsOfOneCommandStaySeparateInEitherOrder(t *testing.T) {
+	svc := wl("api", "service", "server", "api")
+	worker := wl("api-worker", "worker", "server", "api")
+	job := wl("api-warmup", "job", "server", "api")
+	cron := wl("api-sweep", "cron", "server", "api")
+	orders := map[string][]WorkloadEntity{
+		"job last":  {svc, worker, job, cron},
+		"job first": {cron, job, worker, svc},
+		"mixed":     {job, svc, cron, worker},
+	}
+	for name, in := range orders {
+		got, err := processesForWorkloads("app", nil, in)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		kinds := map[string]string{}
+		for _, p := range got {
+			kinds[p.Name] = p.Kind
+		}
+		want := map[string]string{"api": "service", "api-worker": "worker", "api-warmup": "job", "api-sweep": "cron"}
+		if !reflect.DeepEqual(kinds, want) {
+			t.Errorf("%s: process kinds = %v, want %v", name, kinds, want)
+		}
+		ids, err := deployedIdentities(&pipelineContext{AbsPath: t.TempDir(), Cfg: &config.ProjectConfig{Name: "app"}, graphRootsSet: true}, in)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if w := []string{"api", "api-worker"}; !reflect.DeepEqual(ids.Workloads, w) {
+			t.Errorf("%s: long-running workloads = %v, want %v (a job never leaks in, a service never drops out)", name, ids.Workloads, w)
+		}
+	}
+}

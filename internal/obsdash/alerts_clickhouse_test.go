@@ -243,7 +243,7 @@ func TestJobsSummarySQLOnClickHouse(t *testing.T) {
 	}
 	run(string(seed))
 	bind := func(envs string) string {
-		q := jobsSummarySQL([]string{"cloudsql-backup-prune", "db-migrate-up"})
+		q := jobsSummarySQL([]string{"cloudsql-backup-prune", "db-migrate-up", "dbrole-provision-reliant", "nightly"})
 		q = strings.ReplaceAll(q, "{from:DateTime64(9)}", "now() - INTERVAL 1 DAY")
 		q = strings.ReplaceAll(q, "{to:DateTime64(9)}", "now() + INTERVAL 1 DAY")
 		return strings.ReplaceAll(q, "{env_ids:Array(String)}", envs)
@@ -271,5 +271,14 @@ func TestJobsSummarySQLOnClickHouse(t *testing.T) {
 	}
 	if r := row(run(bind("['prod']")), "db-migrate-up"); r == nil || r[1] != "1" || r[2] != "1" || r[3] != "0" {
 		t.Errorf("prod alone = %v, want 1 succeeded run", r)
+	}
+	// The NEWEST run decides last_duration_s: an older success must not show
+	// beside a newer failed run's start (argMax skips NULL arguments), nor beside
+	// a run that is still going.
+	if r := row(all, "dbrole-provision-reliant"); r == nil || r[1] != "2" || r[2] != "1" || r[3] != "1" || r[5] != `\N` || r[6] != "40" {
+		t.Errorf("older success, newer failure = %v, want 2 runs, 1 ok, 1 failed, last_duration NULL, avg 40", r)
+	}
+	if r := row(all, "nightly"); r == nil || r[1] != "2" || r[2] != "1" || r[5] != `\N` {
+		t.Errorf("older success, newest still running = %v, want last_duration NULL", r)
 	}
 }

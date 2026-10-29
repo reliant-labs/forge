@@ -164,7 +164,12 @@ func perJobLines(id, title string, names []string, where []Predicate) []Panel {
 // query groups by (reliant.env.id, Job name), because identical specs deployed
 // to two environments share a hashed Job name, and a cron's scheduled-time
 // stamp can coincide. Collapsing them would report a run that both succeeded
-// and failed, with a duration assembled across environments. The names are forge workload names (DNS labels), embedded as
+// and failed, with a duration assembled across environments.
+//
+// last_duration_s is the NEWEST run's duration, NULL while it is running or
+// after it failed. argMax skips rows whose argument is NULL and would return the
+// previous successful run's duration beside the newest run's start, so the
+// nullable value travels in a tuple (a tuple is never NULL). The names are forge workload names (DNS labels), embedded as
 // literals; the time range and environments are the dashboard's own query
 // parameters.
 func jobsSummarySQL(names []string) string {
@@ -174,7 +179,7 @@ func jobsSummarySQL(names []string) string {
        countIf(finished > 0) AS succeeded,
        countIf(failed) AS failed,
        max(started) AS last_started,
-       argMax(if(finished > 0 AND started > 0, dateDiff('second', started, finished), NULL), started) AS last_duration_s,
+       tupleElement(argMax(tuple(if(finished > 0 AND started > 0, dateDiff('second', started, finished), NULL)), started), 1) AS last_duration_s,
        if(countIf(finished > 0 AND started > 0) = 0, NULL, round(avgIf(dateDiff('second', started, finished), finished > 0 AND started > 0), 1)) AS avg_duration_s,
        if(countIf(finished > 0 AND started > 0) = 0, NULL, maxIf(dateDiff('second', started, finished), finished > 0 AND started > 0)) AS max_duration_s
 FROM (

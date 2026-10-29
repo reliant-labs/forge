@@ -11,3 +11,12 @@ INSERT INTO otel_logs SELECT now() - INTERVAL 10 MINUTE + INTERVAL 90 SECOND, ma
 INSERT INTO otel_logs SELECT now() - INTERVAL 10 MINUTE, map('reliant.env.id','prod','k8s.workload.name','cloudsql-backup-prune-29012345','k8s.object.kind','Pod'), map('k8s.event.reason','SuccessfulCreate'), '';
 -- something that is not one of our jobs
 INSERT INTO otel_logs SELECT now() - INTERVAL 10 MINUTE, map('reliant.env.id','prod','k8s.workload.name','other-thing-0123456789','k8s.object.kind','Job'), map('k8s.event.reason','SuccessfulCreate'), '';
+-- a job whose NEWEST run failed after an older successful one, and one whose newest run is still running:
+-- last_duration_s must be the newest run's (NULL), never the older run's 40s.
+INSERT INTO otel_logs SELECT now() - INTERVAL 3 HOUR, map('reliant.env.id','prod','k8s.workload.name','dbrole-provision-reliant-aaaaaaaaaa','k8s.object.kind','Job'), map('k8s.event.reason','SuccessfulCreate'), '';
+INSERT INTO otel_logs SELECT now() - INTERVAL 3 HOUR + INTERVAL 40 SECOND, map('reliant.env.id','prod','k8s.workload.name','dbrole-provision-reliant-aaaaaaaaaa','k8s.object.kind','Job'), map('k8s.event.reason','Completed'), '';
+INSERT INTO otel_logs SELECT now() - INTERVAL 1 HOUR, map('reliant.env.id','prod','k8s.workload.name','dbrole-provision-reliant-bbbbbbbbbb','k8s.object.kind','Job'), map('k8s.event.reason','SuccessfulCreate'), '';
+INSERT INTO otel_logs SELECT now() - INTERVAL 1 HOUR + INTERVAL 5 MINUTE, map('reliant.env.id','prod','k8s.workload.name','dbrole-provision-reliant-bbbbbbbbbb','k8s.object.kind','Job'), map('k8s.event.reason','DeadlineExceeded'), '';
+INSERT INTO otel_logs SELECT now() - INTERVAL 4 HOUR, map('reliant.env.id','prod','k8s.workload.name','nightly-cccccccccc','k8s.object.kind','Job'), map('k8s.event.reason','SuccessfulCreate'), '';
+INSERT INTO otel_logs SELECT now() - INTERVAL 4 HOUR + INTERVAL 70 SECOND, map('reliant.env.id','prod','k8s.workload.name','nightly-cccccccccc','k8s.object.kind','Job'), map('k8s.event.reason','Completed'), '';
+INSERT INTO otel_logs SELECT now() - INTERVAL 2 MINUTE, map('reliant.env.id','prod','k8s.workload.name','nightly-dddddddddd','k8s.object.kind','Job'), map('k8s.event.reason','SuccessfulCreate'), '';

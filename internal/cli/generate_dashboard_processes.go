@@ -201,9 +201,17 @@ func processesForWorkloads(primary string, roots []codegen.GraphRoot, workloads 
 		args := w.Spec.Args
 		var root *codegen.GraphRoot
 		legacyID := ""
-		key := "ext\x00" + w.Name
+		// The kind is part of the identity: a job or cron and a long-running
+		// workload that run the same command are different processes (one is
+		// drawn on the Jobs dashboard, the other on its own), and workers,
+		// operators and services keep the classification they were declared with.
+		kind := string(w.Spec.EffectiveKind())
+		if w.Kind != "" {
+			kind = w.Kind
+		}
+		key := "ext\x00" + kind + "\x00" + w.Name
 		if binary != "" {
-			key = binary + "\x00" + strings.Join(args, "\x00")
+			key = binary + "\x00" + kind + "\x00" + strings.Join(args, "\x00")
 			role := strings.Join(args, "-")
 			if binary == primary {
 				for i := range roots {
@@ -234,7 +242,7 @@ func processesForWorkloads(primary string, roots []codegen.GraphRoot, workloads 
 			g.legacy[legacyID] = true
 		}
 		p := &g.p
-		p.Kind = w.Kind
+		p.Kind = kind
 		p.CPULimit = p.CPULimit || w.Spec.Resources.CPULimitMillicores > 0
 		p.MemoryLimit = p.MemoryLimit || w.Spec.Resources.MemoryLimitBytes > 0
 		p.NodeMetadata = p.NodeMetadata || w.Runtime.Type == RuntimeCluster || w.Runtime.Type == RuntimeHosted

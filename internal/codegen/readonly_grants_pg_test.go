@@ -234,3 +234,208 @@ func TestUndecidedReadOnlyColumns_AgreesWithTheGrants(t *testing.T) {
 		}
 	}
 }
+
+// ---- the dashboard role, against real Postgres ----
+
+const dashboardSchemaSQL = `
+CREATE TABLE usage_events (
+    id         TEXT PRIMARY KEY,
+    model      TEXT NOT NULL,
+    cost       BIGINT NOT NULL,
+    user_email TEXT NOT NULL,
+    api_token  TEXT NOT NULL,
+    note       TEXT NOT NULL
+);
+INSERT INTO usage_events VALUES ('e1', 'sonnet', 12, 'a@example.test', 'tok-SECRET', 'free text');
+CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL);
+INSERT INTO users VALUES ('u1', 'a@example.test');
+CREATE VIEW usage_by_model AS SELECT model, sum(cost) AS cost FROM usage_events GROUP BY model;
+COMMENT ON TABLE usage_events IS 'forge:append-only forge:dashboard';
+COMMENT ON TABLE users IS 'forge:no-entity';
+COMMENT ON COLUMN usage_events.user_email IS 'forge:no-dashboard';
+COMMENT ON COLUMN usage_events.api_token IS 'forge:secret';
+COMMENT ON VIEW usage_by_model IS 'forge:dashboard';
+`
+
+// dashboardFixture projects the schema through the production chain, converges
+// the dashboard script for a role of the test's own, and runs fn as that role.
+func dashboardFixture(t *testing.T, more string, fn func(ctx context.Context, c *sql.Conn)) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("boots real postgres; runs in task test")
+	}
+	db, cleanup, err := pgtest.New()
+	if err != nil {
+		t.Fatalf("test postgres: %v", err)
+	}
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+	for _, stmt := range []string{dashboardSchemaSQL, more} {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("apply schema: %v", err)
+		}
+	}
+	role := fmt.Sprintf("forge_dash_cg%d_%d", os.Getpid(), time.Now().UnixNano()%1_000_000_000)
+	if _, err := db.ExecContext(ctx, `CREATE ROLE `+role+` LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE`); err != nil {
+		t.Fatalf("create role: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), `DROP OWNED BY `+role)
+		_, _ = db.ExecContext(context.Background(), `DROP ROLE IF EXISTS `+role)
+	})
+	tables, err := schemadef.Introspect(db)
+	if err != nil {
+		t.Fatalf("introspect: %v", err)
+	}
+	if err := schemadef.CheckMarkers(tables); err != nil {
+		t.Fatalf("CheckMarkers: %v", err)
+	}
+	script, err := dbgrants.RenderFor(role, dbgrants.DashboardTables(ReadOnlyGrantTables(tables, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dbgrants.ApplyDashboard(ctx, db, script); err != nil {
+		t.Fatalf("apply grants: %v", err)
+	}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, `SET ROLE `+role); err != nil {
+		t.Fatalf("become %s: %v", role, err)
+	}
+	defer func() { _, _ = conn.ExecContext(ctx, `RESET ROLE`) }()
+	fn(ctx, conn)
+}
+
+// The claim is Postgres's: the dashboard role reads the marked table's allowed
+// columns and is refused everything else, however the query is phrased.
+func TestDashboardRole_ReadsOnlyMarkedTablesAndAllowedColumns(t *testing.T) {
+	dashboardFixture(t, "", func(ctx context.Context, c *sql.Conn) {
+		for _, q := range []string{
+			`SELECT id, model, cost FROM usage_events`,
+			`SELECT model, sum(cost) FROM usage_events GROUP BY model`,
+			`SELECT count(*) FROM usage_events`,
+			`SELECT note FROM usage_events`,
+		} {
+			if err := canSelect(ctx, c, q); err != nil {
+				t.Errorf("%s: %v", q, err)
+			}
+		}
+
+		// An unmarked table: not even its schema's USAGE helps.
+		mustBeDenied(t, canSelect(ctx, c, `SELECT id FROM users`), "an unmarked table")
+		mustBeDenied(t, canSelect(ctx, c, `SELECT count(*) FROM users`), "an unmarked table, counted")
+		mustBeDenied(t, canSelect(ctx, c, `SELECT * FROM (SELECT * FROM users) s`), "an unmarked table through a subquery")
+		mustBeDenied(t, canSelect(ctx, c, `WITH u AS (SELECT email FROM users) SELECT * FROM u`), "an unmarked table through a CTE")
+
+		// A forge:no-dashboard column, though forge_ro may read it.
+		for _, q := range []string{
+			`SELECT user_email FROM usage_events`,
+			`SELECT upper(user_email) FROM usage_events`,
+			`SELECT * FROM usage_events`,
+			`SELECT row_to_json(e) FROM usage_events e`,
+			`SELECT id FROM usage_events WHERE user_email = 'a@example.test'`,
+			`SELECT id FROM usage_events ORDER BY user_email`,
+		} {
+			mustBeDenied(t, canSelect(ctx, c, q), "no-dashboard column: "+q)
+		}
+		// A forge:secret column.
+		mustBeDenied(t, canSelect(ctx, c, `SELECT api_token FROM usage_events`), "a forge:secret column")
+		mustBeDenied(t, canSelect(ctx, c, `SELECT length(api_token) FROM usage_events`), "a forge:secret column through an expression")
+
+		// A view, even one marked, is never granted.
+		mustBeDenied(t, canSelect(ctx, c, `SELECT model FROM usage_by_model`), "a view marked forge:dashboard")
+
+		// No write of any kind.
+		for _, q := range []string{
+			`INSERT INTO usage_events VALUES ('e2', 'm', 1, 'x', 'y', 'z')`,
+			`UPDATE usage_events SET cost = 0`,
+			`DELETE FROM usage_events`,
+			`TRUNCATE usage_events`,
+		} {
+			_, err := c.ExecContext(ctx, q)
+			mustBeDenied(t, err, q)
+		}
+	})
+}
+
+// forge:readable on a credential-shaped column grants it to the dashboard role
+// too, on a marked table; an undecided one stays refused.
+func TestDashboardRole_CredentialShapedColumnsFollowTheReadOnlyDecision(t *testing.T) {
+	dashboardFixture(t, `
+ALTER TABLE usage_events ADD COLUMN prompt_hash TEXT NOT NULL DEFAULT 'h';
+ALTER TABLE usage_events ADD COLUMN session_token TEXT NOT NULL DEFAULT 't';
+COMMENT ON COLUMN usage_events.prompt_hash IS 'forge:readable — a content hash, not of a credential';
+`, func(ctx context.Context, c *sql.Conn) {
+		if err := canSelect(ctx, c, `SELECT prompt_hash FROM usage_events`); err != nil {
+			t.Errorf("a forge:readable column on a marked table: %v", err)
+		}
+		mustBeDenied(t, canSelect(ctx, c, `SELECT session_token FROM usage_events`), "an undecided credential-shaped column")
+	})
+}
+
+// Taking the marker off a table takes the access away on the next convergence:
+// the script is a REVOKE then GRANT, not a delta.
+func TestDashboardRole_RemovingTheMarkerRevokes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots real postgres; runs in task test")
+	}
+	db, cleanup, err := pgtest.New()
+	if err != nil {
+		t.Fatalf("test postgres: %v", err)
+	}
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, dashboardSchemaSQL); err != nil {
+		t.Fatal(err)
+	}
+	role := fmt.Sprintf("forge_dash_rv%d_%d", os.Getpid(), time.Now().UnixNano()%1_000_000_000)
+	if _, err := db.ExecContext(ctx, `CREATE ROLE `+role+` LOGIN`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), `DROP OWNED BY `+role)
+		_, _ = db.ExecContext(context.Background(), `DROP ROLE IF EXISTS `+role)
+	})
+	converge := func() {
+		t.Helper()
+		tables, err := schemadef.Introspect(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		script, err := dbgrants.RenderFor(role, dbgrants.DashboardTables(ReadOnlyGrantTables(tables, nil)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := dbgrants.ApplyDashboard(ctx, db, script); err != nil {
+			t.Fatal(err)
+		}
+	}
+	can := func() error {
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = conn.Close() }()
+		if _, err := conn.ExecContext(ctx, `SET ROLE `+role); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _, _ = conn.ExecContext(ctx, `RESET ROLE`) }()
+		return canSelect(ctx, conn, `SELECT model FROM usage_events`)
+	}
+
+	converge()
+	if err := can(); err != nil {
+		t.Fatalf("marked table not readable: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `COMMENT ON TABLE usage_events IS 'forge:append-only'`); err != nil {
+		t.Fatal(err)
+	}
+	converge()
+	mustBeDenied(t, can(), "a table whose forge:dashboard marker was removed")
+}

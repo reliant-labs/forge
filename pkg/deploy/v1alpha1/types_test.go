@@ -346,6 +346,9 @@ func TestDefaultMarkersMatchGoDefaults(t *testing.T) {
 		"DeletionPolicy":       string(DeletionPolicyRetain),
 		"Engine":               string(EnginePostgres),
 		"Invalidate":           string(InvalidateEntrypoints),
+		"RowCap":               strconv.Itoa(int(DefaultDashboardRowCap)),
+		"TimeoutMs":            strconv.Itoa(int(DefaultDashboardTimeoutMs)),
+		"MaxConcurrency":       strconv.Itoa(int(DefaultDashboardMaxConcurrency)),
 	}
 	// A default marker applies to the next non-comment line, which is the field.
 	marker := regexp.MustCompile(`^\s*// \+kubebuilder:default=(\S+)$`)
@@ -384,5 +387,41 @@ func TestDefaultMarkersMatchGoDefaults(t *testing.T) {
 		if _, ok := want[field]; !ok {
 			t.Errorf("%s has a default marker with no Go-default pin here — add it", field)
 		}
+	}
+}
+
+// TestDatabaseDashboardsValidateAndDefaults pins the limits the control plane
+// and KCL both repeat: refused out of range, never clamped.
+func TestDatabaseDashboardsValidateAndDefaults(t *testing.T) {
+	if got := (DatabaseDashboards{Enabled: true}).WithDefaults(); got != (DatabaseDashboards{Enabled: true, RowCap: 1000, TimeoutMs: 5000, MaxConcurrency: 2}) {
+		t.Errorf("defaults = %+v", got)
+	}
+	for name, tc := range map[string]struct {
+		d    DatabaseDashboards
+		want string
+	}{
+		"ok":           {DatabaseDashboards{Enabled: true}, ""},
+		"ceilings":     {DatabaseDashboards{Enabled: true, RowCap: 10000, TimeoutMs: 10000, MaxConcurrency: 4}, ""},
+		"row cap":      {DatabaseDashboards{RowCap: 10001}, "rowCap"},
+		"timeout high": {DatabaseDashboards{TimeoutMs: 10001}, "at most 10s"},
+		"timeout low":  {DatabaseDashboards{TimeoutMs: 99}, "timeoutMs"},
+		"concurrency":  {DatabaseDashboards{MaxConcurrency: 5}, "maxConcurrency"},
+		"negative":     {DatabaseDashboards{MaxConcurrency: -1}, "maxConcurrency"},
+	} {
+		err := ManagedDatabaseSpec{Dashboards: &tc.d}.Validate()
+		switch {
+		case tc.want == "" && err != nil:
+			t.Errorf("%s: %v", name, err)
+		case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+			t.Errorf("%s: err = %v, want %q", name, err, tc.want)
+		}
+	}
+	// WithDefaults on the spec fills a declared dashboards block and leaves an
+	// undeclared one nil.
+	if s := (ManagedDatabaseSpec{}).WithDefaults(); s.Dashboards != nil {
+		t.Errorf("an undeclared block was invented: %+v", s.Dashboards)
+	}
+	if s := (ManagedDatabaseSpec{Dashboards: &DatabaseDashboards{}}).WithDefaults(); s.Dashboards == nil || s.Dashboards.RowCap != 1000 {
+		t.Errorf("a declared block was not defaulted: %+v", s.Dashboards)
 	}
 }

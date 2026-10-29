@@ -1,6 +1,9 @@
 package v1alpha1
 
 import (
+	"errors"
+	"fmt"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -96,6 +99,92 @@ type ManagedDatabaseSpec struct {
 	// mistaken restore from destroying the original.
 	// +optional
 	Restore *DatabaseRestore `json:"restore,omitempty"`
+
+	// Dashboards opts the database into live dashboard panels: a second
+	// read-only Postgres role (forge_dash) that reads ONLY the tables marked
+	// forge:dashboard. Nil means disabled, and a disabled database renders the
+	// role `ensure: absent`, so declaring nothing never leaves a login behind.
+	// +optional
+	Dashboards *DatabaseDashboards `json:"dashboards,omitempty"`
+}
+
+// DatabaseDashboards is the opt-in dashboard role and the limits its queries
+// run under. The limits are enforced by whoever queries as the role (the
+// control plane, pkg/dbquery); the role itself is bounded by Postgres:
+// column-level SELECT on forge:dashboard tables, a connection limit, and a
+// read-only default transaction. See pkg/dbgrants.
+type DatabaseDashboards struct {
+	// Enabled creates the dashboard role. False renders it absent.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// RowCap is the most rows one panel query returns.
+	// +optional
+	// +kubebuilder:default=1000
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10000
+	RowCap int32 `json:"rowCap,omitempty"`
+
+	// TimeoutMs is the statement timeout of one panel query, in
+	// milliseconds.
+	// +optional
+	// +kubebuilder:default=5000
+	// +kubebuilder:validation:Minimum=100
+	// +kubebuilder:validation:Maximum=10000
+	TimeoutMs int32 `json:"timeoutMs,omitempty"`
+
+	// MaxConcurrency is how many panel queries run at once. The role's
+	// connection limit is one more than this, so a query that is being
+	// cancelled never starves the next.
+	// +optional
+	// +kubebuilder:default=2
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=4
+	MaxConcurrency int32 `json:"maxConcurrency,omitempty"`
+}
+
+// Defaults and ceilings of [DatabaseDashboards]. The KCL schema
+// (kcl/schema.k DatabaseDashboards) and the release shape
+// (release.DefaultDatabaseDashboards) hold the same numbers separately;
+// TestDatabaseDashboardsDefaultsAgreeWithKCL keeps the three from drifting.
+const (
+	DefaultDashboardRowCap         int32 = 1000
+	MaxDashboardRowCap             int32 = 10000
+	DefaultDashboardTimeoutMs      int32 = 5000
+	MinDashboardTimeoutMs          int32 = 100
+	MaxDashboardTimeoutMs          int32 = 10000
+	DefaultDashboardMaxConcurrency int32 = 2
+	MaxDashboardMaxConcurrency     int32 = 4
+)
+
+// WithDefaults fills every unset limit.
+func (d DatabaseDashboards) WithDefaults() DatabaseDashboards {
+	if d.RowCap == 0 {
+		d.RowCap = DefaultDashboardRowCap
+	}
+	if d.TimeoutMs == 0 {
+		d.TimeoutMs = DefaultDashboardTimeoutMs
+	}
+	if d.MaxConcurrency == 0 {
+		d.MaxConcurrency = DefaultDashboardMaxConcurrency
+	}
+	return d
+}
+
+// Validate refuses a limit outside its range rather than clamping it.
+func (d DatabaseDashboards) Validate() error {
+	var errs []error
+	w := d.WithDefaults()
+	if w.RowCap < 1 || w.RowCap > MaxDashboardRowCap {
+		errs = append(errs, fmt.Errorf("dashboards.rowCap %d must be 1-%d", d.RowCap, MaxDashboardRowCap))
+	}
+	if w.TimeoutMs < MinDashboardTimeoutMs || w.TimeoutMs > MaxDashboardTimeoutMs {
+		errs = append(errs, fmt.Errorf("dashboards.timeoutMs %d must be %d-%d (at most 10s: a panel query that needs longer belongs in a report, not a dashboard)", d.TimeoutMs, MinDashboardTimeoutMs, MaxDashboardTimeoutMs))
+	}
+	if w.MaxConcurrency < 1 || w.MaxConcurrency > MaxDashboardMaxConcurrency {
+		errs = append(errs, fmt.Errorf("dashboards.maxConcurrency %d must be 1-%d", d.MaxConcurrency, MaxDashboardMaxConcurrency))
+	}
+	return errors.Join(errs...)
 }
 
 // DatabaseRestore is a declarative recovery: which database's backups to
@@ -153,6 +242,10 @@ func (s ManagedDatabaseSpec) WithDefaults() ManagedDatabaseSpec {
 	}
 	if s.DeletionPolicy == "" {
 		s.DeletionPolicy = DeletionPolicyRetain
+	}
+	if s.Dashboards != nil {
+		d := s.Dashboards.WithDefaults()
+		s.Dashboards = &d
 	}
 	return s
 }

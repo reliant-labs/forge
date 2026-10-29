@@ -73,6 +73,13 @@ const (
 	// the control plane's prober runs. A control plane that predates it
 	// probes nothing for the env.
 	BundleFeatureUptimeChecks = "shape-uptime-checks"
+	// BundleFeatureDatabaseDashboards is Shape.Databases: whether live
+	// dashboard panels may query each managed database, and the row cap,
+	// timeout and concurrency they run under. A control plane that predates it
+	// cannot enforce the limits, so a shape carrying them is written only to
+	// one that names the feature; one that does not reads every database as
+	// dashboards-disabled, which is the fail-closed reading.
+	BundleFeatureDatabaseDashboards = "shape-database-dashboards"
 	// BundleFeatureServiceCatalog is the manifests layer's
 	// [BundleServiceCatalogPath] artifact, of any size up to the layer's
 	// bound. It is a layer feature, not a document one: a control plane whose
@@ -87,7 +94,7 @@ const (
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -165,6 +172,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	}
 	if !r.Supports(BundleFeatureUptimeChecks) {
 		s.UptimeChecks = nil
+	}
+	if !r.Supports(BundleFeatureDatabaseDashboards) {
+		s.Databases = nil
 	}
 	if r.Supports(BundleFeatureFrontendTelemetry) {
 		return s

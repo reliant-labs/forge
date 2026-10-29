@@ -153,12 +153,19 @@ func reportMigrateUp(w io.Writer, res migratekit.Result) {
 // database nobody provisioned the role for, and the reason `forge db query`
 // has nothing to connect as.
 func reportGrants(w io.Writer, res migratekit.Result) {
-	switch g := res.Grants; {
-	case g == nil:
+	g := res.Grants
+	if g == nil {
+		return
+	}
+	switch {
 	case g.RoleMissing:
 		_, _ = fmt.Fprintf(w, "read-only grants not applied: this database has no %s role\n", dbgrants.RoleName)
 	case g.Applied:
 		_, _ = fmt.Fprintf(w, "read-only grants applied (%s)\n", dbgrants.RoleName)
+	}
+	// The dashboard role is opt-in, so its absence is not worth a line.
+	if g.DashboardApplied {
+		_, _ = fmt.Fprintf(w, "dashboard grants applied (%s)\n", dbgrants.DashboardRoleName)
 	}
 }
 

@@ -293,6 +293,47 @@ func readOnlyRole(database string) map[string]any {
 	}
 }
 
+// dashboardRole is the CNPG managed-role entry for dbgrants.DashboardRoleName.
+//
+// ABSENT UNLESS ASKED FOR. d nil or not Enabled renders `ensure: absent`, which
+// CNPG reconciles by dropping the role if it exists, so switching dashboards
+// off removes the login rather than orphaning it, and a database that never
+// declared them carries no forge_dash. Enabled renders a login role like
+// forge_ro: no superuser, no role or database creation, no replication, no RLS
+// bypass, and no membership (inRoles is not written: pg_read_all_data would
+// make the column grants moot). Its connection limit is MaxConcurrency+1, so a
+// panel query being cancelled never starves the next one.
+//
+// What it may read is the grants the migrator applies (pkg/dbgrants), not
+// this entry.
+func dashboardRole(database string, d *v1alpha1.DatabaseDashboards) map[string]any {
+	if d == nil || !d.Enabled {
+		return map[string]any{"name": dbgrants.DashboardRoleName, "ensure": "absent"}
+	}
+	return map[string]any{
+		"name":            dbgrants.DashboardRoleName,
+		"ensure":          "present",
+		"comment":         "forge dashboard role: column grants on forge:dashboard tables only, no write privilege",
+		"login":           true,
+		"superuser":       false,
+		"createdb":        false,
+		"createrole":      false,
+		"replication":     false,
+		"bypassrls":       false,
+		"inherit":         false,
+		"connectionLimit": int64(d.WithDefaults().MaxConcurrency) + 1,
+		"passwordSecret":  map[string]any{"name": dbgrants.DashboardSecretName(database)},
+	}
+}
+
+// DashboardRoleSecret is [ReadOnlyRoleSecret] for the dashboard role: the
+// kubernetes.io/basic-auth Secret named dbgrants.DashboardSecretName(name)
+// holding forge_dash's credentials. The same rules apply: the caller supplies
+// the password and creates the Secret only if absent.
+func DashboardRoleSecret(name, password string, ctx Context) (*unstructured.Unstructured, error) {
+	return roleSecret(name, password, ctx, dbgrants.DashboardSecretName(name), dbgrants.DashboardRoleName)
+}
+
 // ReadOnlyRoleSecret renders the kubernetes.io/basic-auth Secret that carries
 // the read-only role's credentials for the ManagedDatabase called name, in
 // ctx.Namespace. CNPG reads it as the managed role's passwordSecret, and a
@@ -305,6 +346,10 @@ func readOnlyRole(database string) map[string]any {
 // `cnpg.io/reload` label makes CNPG apply a changed password immediately
 // rather than at its next reconcile.
 func ReadOnlyRoleSecret(name, password string, ctx Context) (*unstructured.Unstructured, error) {
+	return roleSecret(name, password, ctx, dbgrants.SecretName(name), dbgrants.RoleName)
+}
+
+func roleSecret(name, password string, ctx Context, secretName, role string) (*unstructured.Unstructured, error) {
 	if err := ctx.validate(); err != nil {
 		return nil, err
 	}
@@ -312,7 +357,7 @@ func ReadOnlyRoleSecret(name, password string, ctx Context) (*unstructured.Unstr
 		return nil, err
 	}
 	if password == "" {
-		return nil, errors.New("deploy.ReadOnlyRoleSecret: a read-only role needs a password")
+		return nil, fmt.Errorf("deploy: the %s role needs a password", role)
 	}
 	labels := map[string]any{"cnpg.io/reload": "true"}
 	for k, v := range managedLabels(name, ctx.PartOf) {
@@ -323,11 +368,11 @@ func ReadOnlyRoleSecret(name, password string, ctx Context) (*unstructured.Unstr
 		"kind":       "Secret",
 		"type":       "kubernetes.io/basic-auth",
 		"metadata": map[string]any{
-			"name":      dbgrants.SecretName(name),
+			"name":      secretName,
 			"namespace": ctx.Namespace,
 			"labels":    labels,
 		},
-		"stringData": map[string]any{"username": dbgrants.RoleName, "password": password},
+		"stringData": map[string]any{"username": role, "password": password},
 	}}
 	stampEnv([]*unstructured.Unstructured{obj}, ctx.Env)
 	return obj, nil
@@ -401,7 +446,7 @@ func RenderManagedDatabase(name string, spec v1alpha1.ManagedDatabaseSpec, ctx C
 			"initdb": map[string]any{"database": database, "owner": role},
 		},
 		"storage": map[string]any{"size": fmt.Sprintf("%dGi", spec.StorageGiB)},
-		"managed": map[string]any{"roles": []any{readOnlyRole(name)}},
+		"managed": map[string]any{"roles": []any{readOnlyRole(name), dashboardRole(name, spec.Dashboards)}},
 	}
 	if p := ctx.DatabasePlacement; p != nil {
 		if len(p.NodeSelector) > 0 {

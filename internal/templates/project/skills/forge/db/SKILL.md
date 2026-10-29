@@ -242,6 +242,10 @@ Every query goes through ONE data-access path: the generated store, then the own
 - Test every `_repo_ext.go` query against a real migrated database (`testing/integration`). That is what checks the SQL against the schema; nothing does it at generate time.
 - Bucketing by time has a silent timezone trap: load `db/time-buckets`.
 
+## Dashboards over your database
+
+Opt-in twice: `dashboards = forge.DatabaseDashboards {enabled = True}` on the `forge.ManagedDatabase` adds a `forge_dash` role, and `COMMENT ON TABLE t IS 'forge:dashboard'` marks each table a panel may read (`'forge:no-dashboard'` hides a column). The allowlist is Postgres privileges, not an SQL parser: a parser can disagree with Postgres about subqueries; a missing `SELECT` cannot. See `db/dashboards`.
+
 ## Forge-specific rules
 
 - **Draft, then `forge generate` — it is the fast, exact oracle.** Let `forge scaffold entity` write the first-draft migration + proto (or hand-write one), then generate, read the error, fix, repeat. A failing `CREATE TABLE`/`ALTER TABLE`, a missing import, or a List filter naming no real column fails loudly. Don't reverse-engineer forge's `internal/**` or exhaustively plan first.

@@ -51,6 +51,17 @@ const (
 	SecretSuffix = "-forge-ro"
 	// GrantsPath is the generated grants file, relative to the project root.
 	GrantsPath = "db/grants/readonly_gen.sql"
+
+	// DashboardRoleName is the dashboard Postgres role: the opt-in role live
+	// dashboard panels query as (ManagedDatabase.dashboards in KCL). It reads
+	// a strict subset of what [RoleName] reads; see [DashboardTables].
+	DashboardRoleName = "forge_dash"
+	// DashboardSecretSuffix is appended to a cluster name to name the Secret
+	// that holds [DashboardRoleName]'s password.
+	DashboardSecretSuffix = "-forge-dash"
+	// DashboardGrantsPath is the generated dashboard grants file, relative to
+	// the project root.
+	DashboardGrantsPath = "db/grants/dashboard_gen.sql"
 )
 
 // SecretName is the kubernetes.io/basic-auth Secret holding the role's
@@ -59,11 +70,18 @@ const (
 // passwordSecret) and with whoever connects as the role.
 func SecretName(cluster string) string { return cluster + SecretSuffix }
 
+// DashboardSecretName is the kubernetes.io/basic-auth Secret holding the
+// dashboard role's credentials for the ManagedDatabase called cluster, in the
+// cluster's namespace. Same contract as [SecretName], for [DashboardRoleName].
+func DashboardSecretName(cluster string) string { return cluster + DashboardSecretSuffix }
+
 // Table is one table the role may read.
 type Table struct {
 	Schema  string
 	Name    string
 	Columns []Column
+	// Dashboard: declared forge:dashboard. Only [DashboardTables] reads it.
+	Dashboard bool
 }
 
 // Column is one column of a Table, with the declarations that decide whether
@@ -78,6 +96,9 @@ type Column struct {
 	// Kind is the column's type class. The zero value, [KindText], is the
 	// stricter reading.
 	Kind ColumnKind
+	// NoDashboard: declared forge:no-dashboard. Only [DashboardTables] reads
+	// it; the read-only role is unaffected.
+	NoDashboard bool
 }
 
 // dollarTag delimits the script's single DO block. An identifier containing it
@@ -134,11 +155,15 @@ func RenderFor(role string, tables []Table) (string, error) {
 	sort.Strings(schemas)
 
 	var b strings.Builder
-	b.WriteString("-- The read-only role's grants: a convergence, not a delta. See pkg/dbgrants.\n")
+	label := "read-only"
+	if role == DashboardRoleName {
+		label = "dashboard"
+	}
+	b.WriteString("-- The " + label + " role's grants: a convergence, not a delta. See pkg/dbgrants.\n")
 	b.WriteString("DO " + dollarTag + "\n")
 	b.WriteString("DECLARE\n  r record;\n  readable text;\nBEGIN\n")
 	fmt.Fprintf(&b, "  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %s) THEN\n", quoteLiteral(role))
-	fmt.Fprintf(&b, "    RAISE NOTICE %s;\n    RETURN;\n  END IF;\n\n", quoteLiteral("role "+role+" does not exist: read-only grants not applied"))
+	fmt.Fprintf(&b, "    RAISE NOTICE %s;\n    RETURN;\n  END IF;\n\n", quoteLiteral("role "+role+" does not exist: "+label+" grants not applied"))
 
 	// Everything the role holds, in every declared schema, goes first. A column
 	// that became secret, a table that was dropped from the declaration and a
@@ -272,6 +297,15 @@ func RoleExists(ctx context.Context, c Conn, name string) (bool, error) {
 func Apply(ctx context.Context, c Conn, script string) error {
 	if _, err := c.ExecContext(ctx, script); err != nil {
 		return fmt.Errorf("dbgrants: apply read-only grants: %w", err)
+	}
+	return nil
+}
+
+// ApplyDashboard is [Apply] for a [RenderDashboard] script, so a failure names
+// the role it was converging.
+func ApplyDashboard(ctx context.Context, c Conn, script string) error {
+	if _, err := c.ExecContext(ctx, script); err != nil {
+		return fmt.Errorf("dbgrants: apply dashboard grants: %w", err)
 	}
 	return nil
 }

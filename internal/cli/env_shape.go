@@ -425,6 +425,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		ReleaseHealth:       shapeReleaseHealthOf(entities),
 		UptimeChecks:        shapeUptimeChecksOf(entities),
 		Identity:            shapeIdentityOf(entities),
+		Databases:           shapeDatabasesOf(entities),
 		Applier:             shapeApplierOf(entities),
 		Units:               split.ShapeUnits(),
 		Store:               store,
@@ -709,6 +710,30 @@ func shapeDataAccessOf(e *KCLEntities) *release.ShapeDataAccess {
 		return nil
 	}
 	return e.DataAccess
+}
+
+// shapeDatabasesOf projects what the env declares about its managed databases:
+// the live-dashboard limits of each database that enables them. A database
+// that does not records nothing, and absence reads as disabled, never open.
+func shapeDatabasesOf(e *KCLEntities) []release.ShapeDatabase {
+	if e == nil {
+		return nil
+	}
+	var out []release.ShapeDatabase
+	for _, d := range e.Databases {
+		dash := d.Spec.Dashboards
+		if dash == nil || !dash.Enabled {
+			continue
+		}
+		w := dash.WithDefaults()
+		out = append(out, release.ShapeDatabase{Name: d.Name, Dashboards: &release.ShapeDatabaseDashboards{
+			Enabled:        true,
+			RowCap:         int(w.RowCap),
+			TimeoutMs:      int(w.TimeoutMs),
+			MaxConcurrency: int(w.MaxConcurrency),
+		}})
+	}
+	return out
 }
 
 // shapeReleaseHealthOf projects the env's release-health policy. Nil when the

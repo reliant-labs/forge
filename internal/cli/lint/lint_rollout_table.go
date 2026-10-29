@@ -152,6 +152,8 @@ var newRules = []rolloutGroup{
 	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{
 		"forge-db-grants-undecided", "forge-db-grants-unverified",
 	}},
+	// db/grants/dashboard_gen.sql no longer matching the forge:dashboard markers.
+	{IntroducedIn: "v1.0.6", GatesFrom: "v1.0.7", Rules: []string{dbGrantsStaleRule}},
 	// forge lint --go-markers (#1039).
 	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{"forge-go-markers"}},
 	// forge lint --graph (#968, #1017).

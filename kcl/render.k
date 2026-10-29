@@ -1885,7 +1885,7 @@ _render_managed_database_record = lambda db: any, part_of: str -> any {
             namespace = db.namespace
             labels = labels_lib.managed_labels(db.name, part_of) | {"forge.dev/cluster" = db.cluster}
         }
-        spec = db.spec
+        spec = (tiers.managed_database_json(db.spec) | {"dashboards": _dashboards_spec(db.dashboards)}) if db.dashboards else db.spec
     }
 }
 
@@ -1898,7 +1898,7 @@ _render_database = lambda db: any, bundle: Bundle -> any {
         "runtime": "hosted" if _rt and _rt.type == "hosted" else "cluster"
         "cluster": _target.cluster if _target else None
         "namespace": (db.namespace if db.namespace else _target.namespace) if _target else None
-        "spec": tiers.managed_database_json(db.spec)
+        "spec": tiers.managed_database_json(db.spec) | ({"dashboards": _dashboards_spec(db.dashboards)} if db.dashboards else {})
     }
 }
 

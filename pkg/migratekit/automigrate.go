@@ -144,7 +144,7 @@ func ApplyWith(ctx context.Context, db *sql.DB, fsys fs.FS, dir string, run RunO
 	// openSession binds golang-migrate to a connection it checks out itself,
 	// and Close then closes only that connection, which returns it to the
 	// pool.
-	grants, _, err := grantsScript(fsys, dir)
+	grants, err := grantsScripts(fsys, dir)
 	if err != nil {
 		_ = src.Close()
 		return Result{}, err
@@ -221,6 +221,9 @@ func logRun(logger *slog.Logger, res Result, err error) {
 			logf(logger, "read-only role not provisioned in this database: read-only grants not applied", "role", dbgrants.RoleName)
 		case g.Applied:
 			logf(logger, "read-only grants applied", "role", dbgrants.RoleName)
+		}
+		if g.DashboardApplied {
+			logf(logger, "dashboard grants applied", "role", dbgrants.DashboardRoleName)
 		}
 	}
 }

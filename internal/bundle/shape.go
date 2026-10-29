@@ -86,6 +86,9 @@ type ShapeInput struct {
 	// Identity is the env's managed identity declaration, or nil when it
 	// declares none.
 	Identity *release.ShapeIdentity
+	// Databases is what the env declares about its managed databases beyond
+	// their workload entries (live dashboards), or nil when it declares none.
+	Databases []release.ShapeDatabase
 
 	// Applier is the env's declared applier (release.ApplierForge), or "".
 	Applier string
@@ -143,6 +146,7 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		ReleaseHealth:       in.ReleaseHealth,
 		UptimeChecks:        in.UptimeChecks,
 		Identity:            in.Identity,
+		Databases:           in.Databases,
 		Applier:             in.Applier,
 		Units:               in.Units,
 	}.WithStoreSecrets(in.Store).Canonical()

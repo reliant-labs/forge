@@ -22,6 +22,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/internal/obsdash"
+	"github.com/reliant-labs/forge/pkg/release"
 	"github.com/reliant-labs/forge/pkg/servicecatalog"
 )
 
@@ -69,6 +70,22 @@ func renderedObservabilitySet(projectDir, outputDir string, entities *KCLEntitie
 		return obsdash.BundleSet{}, err
 	}
 	return collectRenderedObservabilityFiles(projectDir, outputDir, resolved)
+}
+
+// withholdServiceCatalog drops the service catalog from files when reader
+// does not name [release.BundleFeatureServiceCatalog], and reports whether it
+// did. A nil reader (this forge's own) accepts it.
+func withholdServiceCatalog(files []bundle.ObservabilityFile, reader *release.BundleReader) ([]bundle.ObservabilityFile, bool) {
+	if reader.Supports(release.BundleFeatureServiceCatalog) {
+		return files, false
+	}
+	out := make([]bundle.ObservabilityFile, 0, len(files))
+	for _, f := range files {
+		if f.Path != servicecatalog.BundlePath {
+			out = append(out, f)
+		}
+	}
+	return out, len(out) != len(files)
 }
 
 // bundleObservabilityFiles is the set as bundle files. A set that does not

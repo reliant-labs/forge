@@ -20,6 +20,9 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeatureReleaseHealth:     {"shape.release_health"},
 	BundleFeatureUptimeChecks:      {"shape.uptime_checks"},
 	BundleFeatureDataAccess:        {"shape.data_access"},
+	// A layer feature: it adds BundleServiceCatalogPath to the manifests
+	// layer and no document key.
+	BundleFeatureServiceCatalog: {},
 }
 
 // snapshotKeys are not features: a snapshot bundle is its own schema, gated

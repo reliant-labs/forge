@@ -259,11 +259,12 @@ func isStringType(e ast.Expr) bool {
 }
 
 // relPath returns path relative to relRoot, falling back to path on Rel
-// failure. Forge-conv findings use rel paths so CI logs stay stable.
+// failure, in slash form. Forge-conv findings use rel slash paths so CI logs
+// stay stable on every OS.
 func relPath(path, relRoot string) string {
 	rel, err := filepath.Rel(relRoot, path)
 	if err != nil {
-		return path
+		return filepath.ToSlash(path)
 	}
-	return rel
+	return filepath.ToSlash(rel)
 }

@@ -135,12 +135,14 @@ func devPnpmWorkspaceManifest(projectDir string, members []string) (string, erro
 		if member == members[0] {
 			m.Overrides, m.AllowBuilds = own.Overrides, own.AllowBuilds
 		} else {
-			first := filepath.Join(members[0], devPnpmWorkspaceName)
+			// Both sides are named project-relative, in the slash form members
+			// are declared in, whatever the host's separator.
+			first, this := members[0]+"/"+devPnpmWorkspaceName, member+"/"+devPnpmWorkspaceName
 			if !reflect.DeepEqual(m.AllowBuilds, own.AllowBuilds) {
-				return "", fmt.Errorf("incompatible allowBuilds in %s and %s: %v versus %v; dev bridge requires identical policies (including absent approvals); keep standalone installs", first, path, m.AllowBuilds, own.AllowBuilds)
+				return "", fmt.Errorf("incompatible allowBuilds in %s and %s: %v versus %v; dev bridge requires identical policies (including absent approvals); keep standalone installs", first, this, m.AllowBuilds, own.AllowBuilds)
 			}
 			if !reflect.DeepEqual(m.Overrides, own.Overrides) {
-				return "", fmt.Errorf("incompatible overrides in %s and %s: %v versus %v; dev bridge requires identical overrides; keep standalone installs", first, path, m.Overrides, own.Overrides)
+				return "", fmt.Errorf("incompatible overrides in %s and %s: %v versus %v; dev bridge requires identical overrides; keep standalone installs", first, this, m.Overrides, own.Overrides)
 			}
 		}
 	}

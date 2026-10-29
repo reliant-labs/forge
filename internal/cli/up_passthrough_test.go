@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -133,11 +134,17 @@ func TestUpPassthroughArgs(t *testing.T) {
 }
 
 // Pin the unwrapped argv independently of the machine's installed managers.
+// The fakes are only looked up, never run. Windows' exec.LookPath resolves a
+// name only with a PATHEXT extension, so there each fake is a .bat.
 func frontendRunnerPath(t *testing.T, names ...string) string {
 	t.Helper()
 	bin := t.TempDir()
 	for _, name := range names {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		file, body := name, "#!/bin/sh\nexit 0\n"
+		if runtime.GOOS == "windows" {
+			file, body = name+".bat", "@exit /b 0\r\n"
+		}
+		if err := os.WriteFile(filepath.Join(bin, file), []byte(body), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}

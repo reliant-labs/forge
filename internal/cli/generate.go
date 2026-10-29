@@ -325,8 +325,9 @@ func newGenerateCmd() *cobra.Command {
 		"timings",           // pipeline profiling (where a run's wall time went)
 	)
 
-	// --check and --plan/--dry-run write nothing in this checkout.
-	return cmdutil.ConfiguresClone(cmd, "check", "plan", "dry-run")
+	// --check and --plan/--dry-run write nothing in this checkout
+	// (--dry-run is read-only on every command; cmdutil.DryRunFlag).
+	return cmdutil.ConfiguresClone(cmd, "check", "plan")
 }
 
 // generateRunEndsCommand reports whether the first run's error ends

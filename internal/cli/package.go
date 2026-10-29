@@ -124,6 +124,15 @@ func runPackageNewThenGenerate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return runPackageNew(cmd, args) // reports the missing project itself
 	}
+	if cmdutil.IsDryRun(cmd) {
+		// The plan alone: no lock file, no generate.
+		release, err := observeGenerateLock(root)
+		if err != nil {
+			return err
+		}
+		defer release()
+		return runPackageNew(cmd, args)
+	}
 	return withGenerateLock(root, func() error {
 		if err := runPackageNew(cmd, args); err != nil {
 			return err

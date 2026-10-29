@@ -27,6 +27,23 @@ func lockFile(f *os.File) error {
 	return flockRetryingEINTR(f, unix.LOCK_EX)
 }
 
+// tryLockFileShared takes a shared flock(2) on f without blocking: it is
+// granted alongside other shared holders and refused, false with no error,
+// while an exclusive one holds the lock. A read-only descriptor suffices.
+func tryLockFileShared(f *os.File) (bool, error) {
+	err := flockRetryingEINTR(f, unix.LOCK_SH|unix.LOCK_NB)
+	if errors.Is(err, unix.EWOULDBLOCK) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// lockFileShared takes a shared flock(2) on f, blocking while an exclusive
+// holder has it.
+func lockFileShared(f *os.File) error {
+	return flockRetryingEINTR(f, unix.LOCK_SH)
+}
+
 func unlockFile(f *os.File) error {
 	return flockRetryingEINTR(f, unix.LOCK_UN)
 }

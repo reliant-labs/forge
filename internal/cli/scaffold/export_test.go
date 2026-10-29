@@ -33,6 +33,7 @@ func testFactory() *factory.Factory {
 	return &factory.Factory{
 		Gen: factory.GenAPI{
 			HoldProjectLock:          func(string) (func(), error) { return func() {}, nil },
+			ObserveProjectLock:       func(string) (func(), error) { return func() {}, nil },
 			RunPipeline:              func(string) error { return nil },
 			RunPipelineBootstrapOnly: func(string) error { return nil },
 			LoadServiceRegistry: func(string) (factory.ServiceRegistry, error) {

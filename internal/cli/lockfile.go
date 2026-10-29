@@ -1,11 +1,15 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -70,9 +74,66 @@ func acquireGenerateLock(projectDir string) (release func(), err error) {
 	}
 
 	recordGenerateLockHolder(f)
+	generateLockHeldHere.Add(1)
+	var once sync.Once
 	return func() {
-		_ = unlockFile(f)
+		once.Do(func() {
+			generateLockHeldHere.Add(-1)
+			_ = unlockFile(f)
+			_ = f.Close()
+		})
+	}, nil
+}
+
+// generateLockHeldHere counts the generate locks this process holds right
+// now. observeGenerateLock reads it: flock belongs to the open file
+// description, so a reader in a process that already holds the exclusive
+// lock would wait for itself forever.
+var generateLockHeldHere atomic.Int32
+
+// observeGenerateLock is the READER's side of the generate lock: it waits
+// while a writer (generate, scaffold) holds the lock, and returns once none
+// does, holding a shared lock that keeps writers out until release. Readers
+// never exclude one another.
+//
+// It writes nothing. A dry run and a render whose purity is being checked are
+// both promises not to change the tree, so unlike acquireGenerateLock it
+// creates neither .forge/ nor the lock file, and records no holder: a project
+// no writer has ever locked has no lock file, and nothing to wait for. In a
+// process that already holds the exclusive lock (a scaffold command, an
+// embedding host's other goroutine) it returns at once: waiting would be
+// waiting for itself.
+func observeGenerateLock(projectDir string) (release func(), err error) {
+	noop := func() {}
+	if generateLockHeldHere.Load() > 0 {
+		return noop, nil
+	}
+	lockPath := filepath.Join(projectDir, generateLockRel)
+	f, err := os.Open(lockPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return noop, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open generate lock %s: %w", lockPath, err)
+	}
+	acquired, err := tryLockFileShared(f)
+	if err != nil {
 		_ = f.Close()
+		return nil, fmt.Errorf("lock %s: %w", lockPath, err)
+	}
+	if !acquired {
+		fmt.Fprintln(os.Stderr, generateLockWaitNotice(lockPath))
+		if err := lockFileShared(f); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("lock %s: %w", lockPath, err)
+		}
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			_ = unlockFile(f)
+			_ = f.Close()
+		})
 	}, nil
 }
 

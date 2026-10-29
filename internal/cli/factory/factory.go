@@ -136,6 +136,12 @@ type GenAPI struct {
 	// it ends with never interleave with another run's. Not reentrant.
 	HoldProjectLock func(projectDir string) (release func(), err error)
 
+	// ObserveProjectLock is HoldProjectLock for a run that writes nothing
+	// (--dry-run): it waits while a writer holds the lock and keeps writers
+	// out until release, but creates no .forge/forge.lock and records no
+	// holder, so the dry run leaves the tree byte-identical.
+	ObserveProjectLock func(projectDir string) (release func(), err error)
+
 	// RunPipeline runs the FULL generate pipeline for the project rooted at
 	// projectDir (the equivalent of `forge generate`), serialized under the
 	// internal/cli generate mutex. The caller must already hold

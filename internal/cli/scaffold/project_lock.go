@@ -3,6 +3,7 @@ package scaffold
 import (
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
 )
 
@@ -25,6 +26,10 @@ const projectLockAnnotation = "forge.scaffold/project-lock"
 //
 // Outside a project (no forge.yaml at the resolution root) there is nothing to
 // lock, so the command runs bare and reports the missing project itself.
+//
+// A --dry-run writes nothing, the lock file included: it observes the lock
+// (f.Gen.ObserveProjectLock) instead, waiting out a concurrent writer so its
+// plan reads a settled tree.
 func holdProjectLock(cmd *cobra.Command, f *factory.Factory) {
 	if run := cmd.RunE; run != nil {
 		cmd.RunE = func(c *cobra.Command, args []string) error {
@@ -32,7 +37,11 @@ func holdProjectLock(cmd *cobra.Command, f *factory.Factory) {
 			if err != nil {
 				return run(c, args)
 			}
-			release, err := f.Gen.HoldProjectLock(root)
+			hold := f.Gen.HoldProjectLock
+			if cmdutil.IsDryRun(c) {
+				hold = f.Gen.ObserveProjectLock
+			}
+			release, err := hold(root)
 			if err != nil {
 				return err
 			}

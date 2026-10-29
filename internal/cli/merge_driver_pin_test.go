@@ -16,6 +16,11 @@ import (
 // reliant's clone kept a driver naming a forge several pins old; a
 // cherry-pick warned it was not the pinned forge, then merged with it anyway.
 
+// pinTestRepo is a repository holding a forge project in its svc/
+// subdirectory — a monorepo, where the merged path decides the project — so
+// the tests wire it the way such a repository is wired: on purpose
+// (`forge merge-driver install`), since the automatic wiring leaves any
+// repository the project is not the top of alone.
 func pinTestRepo(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -75,7 +80,7 @@ func TestEnsureGeneratedMergeDriver_PinnedForgeRepairsAStaleDriver(t *testing.T)
 	mergeDriverIdentity = func() string { return "7410e351b23b" }
 
 	setPinCheck(t, false)
-	ensureGeneratedMergeDriver(filepath.Join(repo, "svc"))
+	wireGeneratedMergeDriver(os.Stderr, filepath.Join(repo, "svc"), true) // a monorepo subdirectory: wired on purpose
 	got := gitConfig(t, repo, "merge.forge-generated.driver")
 	if !strings.HasPrefix(got, "[ -x '/opt/forge/bin/forge' ]") || !strings.Contains(got, " merge-generated %O %A %B %L %P") {
 		t.Errorf("the pinned forge did not take over a stale driver: %q", got)
@@ -90,7 +95,7 @@ func TestEnsureGeneratedMergeDriver_PinnedForgeRepairsAStaleDriver(t *testing.T)
 	mergeDriverExecutable = func() (string, error) { return otherExe, nil }
 	mergeDriverIdentity = func() string { return "6f9811cb0000" }
 	setPinCheck(t, true)
-	ensureGeneratedMergeDriver(filepath.Join(repo, "svc"))
+	wireGeneratedMergeDriver(os.Stderr, filepath.Join(repo, "svc"), true) // a monorepo subdirectory: wired on purpose
 	if again := gitConfig(t, repo, "merge.forge-generated.driver"); again != got {
 		t.Errorf("a forge that is not the pin rewrote the driver: %q", again)
 	}
@@ -234,7 +239,7 @@ func TestEnsureGeneratedMergeDriver_GoRunPinRepairsTheDriver(t *testing.T) {
 			exe, cache := fakeGoRunForge(t, "7410e351b23b")
 			setPinCheck(t, false)
 
-			ensureGeneratedMergeDriver(filepath.Join(repo, "svc"))
+			wireGeneratedMergeDriver(os.Stderr, filepath.Join(repo, "svc"), true) // a monorepo subdirectory: wired on purpose
 
 			durable := filepath.Join(cache, "7410e351b23b", "forge")
 			want := gitConfig(t, repo, "merge.forge-generated.driver")
@@ -268,13 +273,13 @@ func TestEnsureGeneratedMergeDriver_GoRunCopyIsOncePerPinnedIdentity(t *testing.
 	repo := pinTestRepo(t)
 	_, cache := fakeGoRunForge(t, "7410e351b23b")
 	setPinCheck(t, false)
-	ensureGeneratedMergeDriver(filepath.Join(repo, "svc"))
+	wireGeneratedMergeDriver(os.Stderr, filepath.Join(repo, "svc"), true) // a monorepo subdirectory: wired on purpose
 	durable := filepath.Join(cache, "7410e351b23b", "forge")
 	first, err := os.Stat(durable)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ensureGeneratedMergeDriver(filepath.Join(repo, "svc"))
+	wireGeneratedMergeDriver(os.Stderr, filepath.Join(repo, "svc"), true) // a monorepo subdirectory: wired on purpose
 	second, err := os.Stat(durable)
 	if err != nil || !os.SameFile(first, second) {
 		t.Errorf("the second run replaced the copy (%v)", err)
@@ -283,7 +288,7 @@ func TestEnsureGeneratedMergeDriver_GoRunCopyIsOncePerPinnedIdentity(t *testing.
 	other := pinTestRepo(t)
 	_, otherCache := fakeGoRunForge(t, "6f9811cb0000")
 	setPinCheck(t, true)
-	ensureGeneratedMergeDriver(filepath.Join(other, "svc"))
+	wireGeneratedMergeDriver(os.Stderr, filepath.Join(other, "svc"), true) // a monorepo subdirectory: wired on purpose
 	if entries, _ := os.ReadDir(otherCache); len(entries) != 0 {
 		t.Errorf("a forge that is not the pin copied itself: %v", entries)
 	}
@@ -358,6 +363,11 @@ func TestEnsureGeneratedMergeDriver_CopiesOfThePinDoNotFightOverTheDriver(t *tes
 	second := filepath.Join(realTemp(), "worktree-b", "forge")
 	for _, exe := range []string{first, second} {
 		writeTreeFileT(t, exe, "#!/bin/sh\n")
+		// Executable, or the registered copy is "gone" (driverCommandUsable)
+		// and the second copy rightly repairs the driver.
+		if err := os.Chmod(exe, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	// Binaries under the temp directory are ephemeral and never become the
 	// driver; move the temp directory away from these two. os.TempDir reads
@@ -372,7 +382,7 @@ func TestEnsureGeneratedMergeDriver_CopiesOfThePinDoNotFightOverTheDriver(t *tes
 	}
 
 	mergeDriverExecutable = func() (string, error) { return first, nil }
-	ensureGeneratedMergeDriver(filepath.Join(repo, "svc"))
+	wireGeneratedMergeDriver(os.Stderr, filepath.Join(repo, "svc"), true) // a monorepo subdirectory: wired on purpose
 	want := gitConfig(t, repo, "merge.forge-generated.driver")
 	if !strings.HasPrefix(want, "[ -x '"+first+"' ]") {
 		t.Fatalf("driver = %q, want the first copy", want)
@@ -383,7 +393,7 @@ func TestEnsureGeneratedMergeDriver_CopiesOfThePinDoNotFightOverTheDriver(t *tes
 	}
 
 	mergeDriverExecutable = func() (string, error) { return second, nil }
-	ensureGeneratedMergeDriver(filepath.Join(repo, "svc"))
+	wireGeneratedMergeDriver(os.Stderr, filepath.Join(repo, "svc"), true) // a monorepo subdirectory: wired on purpose
 	configAfter, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
 	if err != nil {
 		t.Fatal(err)
@@ -395,7 +405,7 @@ func TestEnsureGeneratedMergeDriver_CopiesOfThePinDoNotFightOverTheDriver(t *tes
 	if err := os.Remove(first); err != nil {
 		t.Fatal(err)
 	}
-	ensureGeneratedMergeDriver(filepath.Join(repo, "svc"))
+	wireGeneratedMergeDriver(os.Stderr, filepath.Join(repo, "svc"), true) // a monorepo subdirectory: wired on purpose
 	got := gitConfig(t, repo, "merge.forge-generated.driver")
 	if !strings.HasPrefix(got, "[ -x '"+second+"' ]") {
 		t.Errorf("driver = %q after the registered copy was deleted, want the second copy", got)

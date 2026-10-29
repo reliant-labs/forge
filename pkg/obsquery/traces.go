@@ -136,6 +136,23 @@ func (q TraceQuery) perTrace(b *builder, withCursor, withGroups bool) (string, e
 		return "", err
 	}
 	conds = append(conds, sc...)
+	// Narrow the traces to aggregate before aggregating them. The per-trace
+	// GROUP BY reads every span in the range, which over days of traffic
+	// outlasts any request budget; a trace with an error, or whose root is
+	// named X, has at least one span with an error status, or named X, so
+	// these candidate sets are supersets of what the HAVING keeps and the
+	// result is unchanged. (A root is the earliest parentless span, or the
+	// earliest span of an orphaned trace, so the name test is over any span.)
+	prefilter := func(pred string) {
+		sub := append([]string{b.rangeCond("Timestamp", q.Scope), pred}, sc...)
+		conds = append(conds, "TraceId IN (SELECT TraceId FROM "+b.table(q.Scope, "otel_traces")+" "+where(sub)+")")
+	}
+	if q.ErrorsOnly {
+		prefilter(spanErrorExpr)
+	}
+	if q.RootSpanName != "" {
+		prefilter("positionCaseInsensitive(SpanName, " + b.str(q.RootSpanName) + ") > 0")
+	}
 
 	having := append([]string{}, spanHaving...)
 	if q.ErrorsOnly {

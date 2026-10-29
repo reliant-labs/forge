@@ -3,6 +3,7 @@ package cigate
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -444,8 +445,15 @@ func TestPlan_YarnOptionalStyles(t *testing.T) {
 				name += "/absent"
 			}
 			t.Run(name, func(t *testing.T) {
+				// A yarn that is only looked up, never run. Windows'
+				// exec.LookPath resolves a name only with a PATHEXT
+				// extension, so there it is a .bat.
 				bin := t.TempDir()
-				if err := os.WriteFile(filepath.Join(bin, "yarn"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+				fake, body := "yarn", "#!/bin/sh\nexit 0\n"
+				if runtime.GOOS == "windows" {
+					fake, body = "yarn.bat", "@exit /b 0\r\n"
+				}
+				if err := os.WriteFile(filepath.Join(bin, fake), []byte(body), 0o755); err != nil {
 					t.Fatal(err)
 				}
 				t.Setenv("PATH", bin)

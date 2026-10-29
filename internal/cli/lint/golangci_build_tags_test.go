@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -47,8 +48,14 @@ func TestDiscoverBuildTagSets(t *testing.T) {
 	})
 	got := discoverBuildTags(dir)
 
+	// b is `e2e && !windows`: a Windows host never builds it, under any tag,
+	// so golangci-lint there has nothing of b's to lint.
+	e2eDirs := []string{"./b", "./f"}
+	if runtime.GOOS == "windows" {
+		e2eDirs = []string{"./f"}
+	}
 	want := []buildTagPackages{
-		{tag: "e2e", dirs: []string{"./b", "./f"}},
+		{tag: "e2e", dirs: e2eDirs},
 		{tag: "integration", dirs: []string{"./a", "./f"}},
 	}
 	if !reflect.DeepEqual(got, want) {

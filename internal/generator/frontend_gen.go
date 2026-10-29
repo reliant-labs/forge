@@ -519,11 +519,14 @@ func EnsureCoreComponentsIn(frontendDir, componentsRel string) error {
 	var refused []error
 	for _, name := range coreComponents {
 		dest := filepath.Join(componentsDir, name+".tsx")
-		if !componentNeedsBirth(root, dest) {
-			continue
-		}
+		// Before the presence check: on a case-folding filesystem (macOS,
+		// Windows) stat finds the app's Button.tsx under the name button.tsx,
+		// and the app's component would pass for forge's installed one.
 		if existing := CaseCollision(componentsDir, name+".tsx"); existing != "" {
 			refused = append(refused, CaseCollisionError(componentsDir, name+".tsx", existing))
+			continue
+		}
+		if !componentNeedsBirth(root, dest) {
 			continue
 		}
 		content := componentContentForDir(frontendDir, name)

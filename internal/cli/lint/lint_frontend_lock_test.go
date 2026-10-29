@@ -47,7 +47,9 @@ func TestFrontendLockLane_FlagsDriftWithRemedy(t *testing.T) {
 			t.Errorf("message %q missing %q", f.Message, want)
 		}
 	}
-	for _, want := range []string{"npm install --package-lock-only", "--ignore-scripts", "frontends/web"} {
+	// The hint is a command to paste into this host's shell, so it names the
+	// directory in the host's own separators.
+	for _, want := range []string{"npm install --package-lock-only", "--ignore-scripts", filepath.FromSlash("frontends/web")} {
 		if !strings.Contains(f.FixHint, want) {
 			t.Errorf("fix hint %q missing %q", f.FixHint, want)
 		}

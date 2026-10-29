@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -93,7 +94,9 @@ func (h Host) AddArgs(args []string) ([]string, error) {
 	if !h.needed() {
 		return args, nil
 	}
-	file := filepath.Join(h.Dir, "kmsg")
+	// path, not filepath: the device file is made on, and mounted from, a
+	// Linux host (needed is false everywhere else), whatever OS runs forge.
+	file := path.Join(h.Dir, "kmsg")
 	if err := h.ensure(file); err != nil {
 		return nil, err
 	}

@@ -213,6 +213,30 @@ func TestSecondsHistogramsGetSecondsBuckets(t *testing.T) {
 	}
 }
 
+// An explicit Buckets on the constructor wins, even when the same metric was
+// declared earlier without any (Describe, or a built-in): buckets are not part
+// of a metric's identity, so the earlier declaration must not substitute
+// SecondsBuckets for the caller's override.
+func TestExplicitBucketsWinOverAnEarlierDeclaration(t *testing.T) {
+	reg, reader := newTestRegistry(t)
+	ctx := context.Background()
+	custom := []float64{0.1, 1}
+	for _, name := range []string{"f_custom", "i_custom"} {
+		if err := reg.Describe(Spec{Name: name, Type: Histogram, Unit: "s", Description: "x", Since: "v1.0.0"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reg.Float64Histogram(Spec{Name: "f_custom", Unit: "s", Description: "x", Since: "v1.0.0", Buckets: custom}).Record(ctx, 0.5)
+	reg.Int64Histogram(Spec{Name: "i_custom", Unit: "s", Description: "x", Since: "v1.0.0", Buckets: custom}).Record(ctx, 3)
+	got := collect(t, reader)
+	if b := got["f_custom"].Data.(metricdata.Histogram[float64]).DataPoints[0].Bounds; !slices.Equal(b, custom) {
+		t.Errorf("Float64Histogram bounds = %v, want the explicit %v", b, custom)
+	}
+	if b := got["i_custom"].Data.(metricdata.Histogram[int64]).DataPoints[0].Bounds; !slices.Equal(b, custom) {
+		t.Errorf("Int64Histogram bounds = %v, want the explicit %v", b, custom)
+	}
+}
+
 func TestUndeclaredAttributeInDevelopmentPanics(t *testing.T) {
 	reg, _ := newTestRegistry(t, WithMode(ModeDevelopment))
 	c := reg.Int64Counter(orders())

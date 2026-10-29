@@ -141,7 +141,7 @@ func (r *Registry) Float64UpDownCounter(s Spec) metric.Float64UpDownCounter {
 func (r *Registry) Int64Histogram(s Spec) metric.Int64Histogram {
 	g, opts := r.instrument(s, Histogram)
 	o := counterOpts[metric.Int64HistogramOption](opts)
-	if b := g.d.spec.normalized().Buckets; len(b) > 0 {
+	if b := histogramBuckets(s, g.d.spec); len(b) > 0 {
 		o = append(o, metric.WithExplicitBucketBoundaries(b...))
 	}
 	inst, err := r.meter.Int64Histogram(s.Name, o...)
@@ -153,7 +153,7 @@ func (r *Registry) Int64Histogram(s Spec) metric.Int64Histogram {
 func (r *Registry) Float64Histogram(s Spec) metric.Float64Histogram {
 	g, opts := r.instrument(s, Histogram)
 	o := counterOpts[metric.Float64HistogramOption](opts)
-	if b := g.d.spec.normalized().Buckets; len(b) > 0 {
+	if b := histogramBuckets(s, g.d.spec); len(b) > 0 {
 		o = append(o, metric.WithExplicitBucketBoundaries(b...))
 	}
 	inst, err := r.meter.Float64Histogram(s.Name, o...)
@@ -184,4 +184,17 @@ func counterOpts[T any](opts []metric.InstrumentOption) []T {
 		out = append(out, o.(T))
 	}
 	return out
+}
+
+// histogramBuckets is the boundaries a histogram is created with: the
+// constructor's own Spec.Buckets when it names any (an explicit override
+// always wins, even over an earlier declaration of the same metric, since
+// buckets are not part of a metric's identity), else the registered
+// declaration's — its explicit Buckets, or SecondsBuckets for a seconds
+// histogram that names none.
+func histogramBuckets(s, declared Spec) []float64 {
+	if len(s.Buckets) > 0 {
+		return append([]float64(nil), s.Buckets...)
+	}
+	return declared.normalized().Buckets
 }

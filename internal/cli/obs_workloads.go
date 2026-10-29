@@ -191,8 +191,7 @@ func failedJobsFirst(jobs []obsbackend.Job) []obsbackend.Job {
 // workloadSuggestions are the logs behind the worst workload and the newest
 // failed job.
 func workloadSuggestions(env string, n obsbackend.Narrow, doc obsWorkloadsDoc) []string {
-	since := n.Range.To.Sub(n.Range.From).Round(time.Minute).String()
-	since = strings.TrimSuffix(strings.TrimSuffix(since, "0s"), "0m")
+	since := sinceFlag(n.Range.To.Sub(n.Range.From))
 	var cmds []string
 	for _, w := range doc.Workloads {
 		if w.Unhealthy() {
@@ -207,6 +206,23 @@ func workloadSuggestions(env string, n obsbackend.Narrow, doc obsWorkloadsDoc) [
 		}
 	}
 	return obsout.Suggest(cmds...)
+}
+
+// sinceFlag renders a range as a --since value: whole minutes, no zero
+// units ("10m", "24h", "1h10m"), never shorter than a minute.
+func sinceFlag(d time.Duration) string {
+	m := int64(d.Round(time.Minute) / time.Minute)
+	if m < 1 {
+		m = 1
+	}
+	h, m := m/60, m%60
+	switch {
+	case h == 0:
+		return strconv.FormatInt(m, 10) + "m"
+	case m == 0:
+		return strconv.FormatInt(h, 10) + "h"
+	}
+	return strconv.FormatInt(h, 10) + "h" + strconv.FormatInt(m, 10) + "m"
 }
 
 // workloadLogsCommand is `obs logs` narrowed to one workload's records.

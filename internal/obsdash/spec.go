@@ -235,9 +235,14 @@ type Process struct {
 	// per-container metadata (a cluster or hosted runtime); a host or compose
 	// process has no saturation or restart series.
 	NodeMetadata bool `json:"nodeMetadata,omitempty"`
-	// ServesRPCDeclared is set for a process forge does not build: a service
-	// with a port is taken to serve RPCs, since forge cannot read its mounts.
+	// ServesRPCDeclared is set for a Go process forge does not build (a sibling
+	// repository's, built by a ShellBuild): a service with a port is taken to
+	// serve RPCs, since forge cannot read its mounts.
 	ServesRPCDeclared bool `json:"servesRpcDeclared,omitempty"`
+	// NonGo is set for a process forge can tell is not a Go program of this
+	// project or its siblings (a third-party or Docker-built image): it has no
+	// Go runtime metrics and no RPC metrics to draw.
+	NonGo bool `json:"nonGo,omitempty"`
 	// Replaces are the names (dashboard ids minus "process-") this process
 	// was known by before dashboards were named for the workload.
 	Replaces []string `json:"replaces,omitempty"`
@@ -485,9 +490,11 @@ func buildProcess(in Input, p Process) Dashboard {
 			d.Panels = append(d.Panels, panel)
 		}
 	}
-	for _, panel := range runtimePanels() {
-		panel.Section = "runtime"
-		d.Panels = append(d.Panels, panel)
+	if !p.NonGo {
+		for _, panel := range runtimePanels() {
+			panel.Section = "runtime"
+			d.Panels = append(d.Panels, panel)
+		}
 	}
 	d.Panels = append(d.Panels,
 		Panel{ID: "error-logs", Section: "logs", Title: "Error logs", Kind: KindSearch, Signal: Logs, Where: []Predicate{errorLogs}, Columns: logColumns, Width: 24, Height: 8},

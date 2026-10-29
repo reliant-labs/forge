@@ -156,9 +156,11 @@ func deployedIdentities(ctx *pipelineContext, workloads []WorkloadEntity) (obsda
 // environment, under different names) are one process, named for the first of
 // them alphabetically.
 //
-// A workload forge does not build (a sibling repository's image, a ShellBuild)
-// has no executable forge can see; it is still a process, keyed by its own
-// name. Build-only workloads and tools run nothing and are left out.
+// A workload forge does not build has no executable forge can see; it is still
+// a process, keyed by its own name. A ShellBuild is a sibling repository's Go
+// binary (it keeps the Go runtime panels and, as a service with a port, the RPC
+// ones); a Docker-built or third-party image is not known to be Go and gets
+// neither. Build-only workloads and tools run nothing and are left out.
 func processesForWorkloads(primary string, roots []codegen.GraphRoot, workloads []WorkloadEntity) ([]obsdash.Process, error) {
 	type group struct {
 		p      obsdash.Process
@@ -223,8 +225,12 @@ func processesForWorkloads(primary string, roots []codegen.GraphRoot, workloads 
 		// port serves something on it, and the RPC metrics are the only
 		// server-side series it can have; a worker, a job or a service with no
 		// port serves none.
-		if binary == "" && deployv1.WorkloadKind(w.Kind) == deployv1.KindService && len(w.Spec.Ports) > 0 {
-			p.ServesRPCDeclared = true
+		if binary == "" {
+			if w.Build.Type == "shell" {
+				p.ServesRPCDeclared = p.ServesRPCDeclared || (deployv1.WorkloadKind(w.Kind) == deployv1.KindService && len(w.Spec.Ports) > 0)
+			} else {
+				p.NonGo = true
+			}
 		}
 		service := w.Name
 		for _, e := range w.EnvVars() {

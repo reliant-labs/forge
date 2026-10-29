@@ -248,6 +248,31 @@ func TestSiblingBuiltWorkloadsAreProcesses(t *testing.T) {
 	}
 }
 
+// A third-party image or a Docker-built Next.js container is not a Go program:
+// it has no Go runtime and serves no RPC metrics, however many ports it opens.
+func TestNonGoImagesGetNeitherRPCNorGoRuntimePanels(t *testing.T) {
+	registry := WorkloadEntity{Name: "registry", Kind: "service", Spec: deployv1.WorkloadSpec{Kind: deployv1.KindService, Ports: []deployv1.Port{{Name: "http", Port: 5000}}}, Runtime: RuntimeEntity{Type: RuntimeCluster}}
+	console := WorkloadEntity{Name: "internal-console", Kind: "service", Build: BuildConfigEntity{Type: "docker", Docker: &DockerBuild{}},
+		Spec: deployv1.WorkloadSpec{Kind: deployv1.KindService, Ports: []deployv1.Port{{Name: "http", Port: 3000}}}, Runtime: RuntimeEntity{Type: RuntimeCluster}}
+	got, err := processesForWorkloads("control-plane", nil, []WorkloadEntity{registry, console})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range got {
+		if !p.NonGo || p.ServesRPC() {
+			t.Errorf("%s: %+v", p.Name, p)
+		}
+	}
+	sp := obsdash.Build(obsdash.Input{Project: "control-plane", Processes: got})
+	for _, d := range sp.Dashboards {
+		for _, p := range d.Panels {
+			if strings.HasPrefix(p.ID, "go-") || p.ID == "red-by-rpc" {
+				t.Errorf("%s has %s", d.ID, p.ID)
+			}
+		}
+	}
+}
+
 // The frontend dashboard follows the frontends the environment serves.
 func TestFrontendIdentitiesFollowWhatTheEnvironmentServes(t *testing.T) {
 	names, services := frontendIdentities("control-plane", []FrontendEntity{

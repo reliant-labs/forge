@@ -98,6 +98,7 @@ func newForgeFixtureRepo(t *testing.T) string {
 	write("pkg/svcerr/svcerr.go", "package svcerr\n\n// OK is a placeholder.\nconst OK = true\n")
 	write("cmd/forge/main.go", "package main\n\nfunc main() {}\n")
 	write("VERSION", "v0.1.0\n")
+	write("NEXT_VERSION", "v0.2.0\n")
 	write("CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-01-01\n\n### Added\n\n- first\n\n[Unreleased]: https://github.com/reliant-labs/forge/compare/v0.1.0...HEAD\n")
 	write("internal/buildinfo/VERSION", "v0.1.0\n")
 	// The release builds archives (LICENSE and NOTICE ride in each) and syncs
@@ -215,6 +216,37 @@ func TestReleaseForgeScript_DryRunLeavesNoTrace(t *testing.T) {
 	}
 }
 
+// The release to cut is declared in NEXT_VERSION, not computed from the last
+// tag (v0.1.46 was followed by v1.0.0): no version argument cuts it, and any
+// version but it (or a pre-release of it) is refused.
+func TestReleaseForgeScript_CutsTheReleaseNextVersionNames(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script, which builds the fixture module")
+	}
+	repo := newForgeFixtureRepo(t)
+	out, err := runForgeScript(t, repo, "--dry-run")
+	if err != nil {
+		t.Fatalf("dry-run with no version failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "releasing v0.2.0 (from NEXT_VERSION)") || !strings.Contains(out, "NEXT_VERSION: v0.2.0 → v0.2.1") {
+		t.Errorf("dry run did not cut NEXT_VERSION's release and name the one after it:\n%s", out)
+	}
+	if out, err := runForgeScript(t, repo, "--dry-run", "v0.2.0-rc.1"); err != nil {
+		t.Errorf("a pre-release of NEXT_VERSION was refused: %v\n%s", err, out)
+	} else if strings.Contains(out, "NEXT_VERSION: v0.2.0 →") {
+		t.Errorf("a pre-release moved NEXT_VERSION:\n%s", out)
+	}
+	for _, v := range []string{"v0.1.1", "v0.3.0"} {
+		out, err := runForgeScript(t, repo, "--dry-run", v)
+		if err == nil || !strings.Contains(out, "is not the next release: NEXT_VERSION names v0.2.0") {
+			t.Errorf("version %s: want a refusal naming NEXT_VERSION, got err=%v:\n%s", v, err, out)
+		}
+	}
+	if status := gitOut(t, repo, "status", "--porcelain"); status != "" {
+		t.Errorf("dry runs left the tree dirty:\n%s", status)
+	}
+}
+
 // TestReleaseForgeScript_TagsOnceAtTheReleaseCommit: one module, one tag, on
 // the commit that syncs the version files. This replaced a test asserting
 // that pkg/vX.Y.Z and vX.Y.Z landed on the SAME commit — an invariant that
@@ -267,6 +299,13 @@ func TestReleaseForgeScript_TagsOnceAtTheReleaseCommit(t *testing.T) {
 	embeddedV, _ := os.ReadFile(filepath.Join(repo, "internal/buildinfo/VERSION"))
 	if string(rootV) != string(embeddedV) {
 		t.Errorf("VERSION (%q) and internal/buildinfo/VERSION (%q) diverged", rootV, embeddedV)
+	}
+	// The release commit names the release after it.
+	if !strings.Contains(files, "NEXT_VERSION") {
+		t.Errorf("release commit does not touch NEXT_VERSION:\n%s", files)
+	}
+	if next, _ := os.ReadFile(filepath.Join(repo, "NEXT_VERSION")); strings.TrimSpace(string(next)) != "v0.2.1" {
+		t.Errorf("NEXT_VERSION = %q after releasing v0.2.0, want v0.2.1", strings.TrimSpace(string(next)))
 	}
 	// The push is atomic, so the remote must have the branch AND the tag.
 	if remoteTags := gitOut(t, origin, "tag", "-l"); !strings.Contains(remoteTags, "v0.2.0") {

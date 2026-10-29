@@ -1,10 +1,10 @@
 ---
-name: migration-v0.1.47-button
-description: Adopt the v0.1.47 library Button — reinstall it with forge component install button, rename isLoading to loading, re-pick sizes on the denser xs–xl scale (old sm/md/lg were 32/40/48px; new sm/md/lg/xl are 28/32/36/40px), and replace hand-rolled icon slots, icon-only buttons and link-styled anchors with leftIcon/rightIcon, icon + aria-label, and href.
+name: migration-v1.0.0-button
+description: Adopt the v1.0.0 library Button — reinstall it with forge component install button, rename isLoading to loading, re-pick sizes on the denser xs–xl scale (old sm/md/lg were 32/40/48px; new sm/md/lg/xl are 28/32/36/40px), and replace hand-rolled icon slots, icon-only buttons and link-styled anchors with leftIcon/rightIcon, icon + aria-label, and href.
 relevance: migration
 ---
 
-# v0.1.47 — the library Button
+# v1.0.0 — the library Button
 
 Use when a frontend's installed `button.tsx` (in `src/components/ui/`, or
 the directory its package.json `"forge"` block names in `components_dir`)
@@ -16,7 +16,7 @@ still declares `isLoading?: boolean`.
 touches it again, so an existing project keeps the old component until it
 reinstalls. The new one:
 
-| | before | v0.1.47 |
+| | before | v1.0.0 |
 |---|---|---|
 | loading prop | `isLoading` (disabled, spinner pushed the label) | `loading`: spinner, **same width**, `aria-busy`, disabled |
 | sizes | `sm` 32 / `md` 40 / `lg` 48px | `xs` 24 / `sm` 28 / `md` 32 / `lg` 36 / `xl` 40px |

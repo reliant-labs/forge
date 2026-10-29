@@ -1,10 +1,10 @@
 ---
-name: migration-v0.1.47-tx-isolation
-description: Upgrade v0.1.47 pkg/orm transactions to an explicit isolation level — run forge fix tx-isolation, clear what it lists, then review forgeconv-tx-lock-under-serializable.
+name: migration-v1.0.0-tx-isolation
+description: Upgrade v1.0.0 pkg/orm transactions to an explicit isolation level — run forge fix tx-isolation, clear what it lists, then review forgeconv-tx-lock-under-serializable.
 relevance: migration
 ---
 
-# v0.1.47 — explicit transaction isolation: no default level
+# v1.0.0 — explicit transaction isolation: no default level
 
 Use when Go code calls `RunTx(ctx, fn)`, `RunTxWithOptions`,
 `RunTransaction(ctx, fn)`, `RunTransactionWithOptions`, or an `*orm.Client`'s

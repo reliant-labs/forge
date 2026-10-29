@@ -60,7 +60,7 @@ func (p *cgPlan) planServe(f *cgFile) {
 		for _, fld := range st.Fields.List {
 			for _, n := range fld.Names {
 				if !stockServeSpec[n.Name] {
-					p.block(f, n.Pos(), "ServeSpec.%s is process composition the graph expresses as REACH: a root that does not reach the component it guards never builds it. Declare a root per process that sets it (`//forge:root <name> command=<cmd>`), and make what it switched a provider only the right roots reach — migrations/v0.1.47, \"ServeSpec knobs\"", n.Name)
+					p.block(f, n.Pos(), "ServeSpec.%s is process composition the graph expresses as REACH: a root that does not reach the component it guards never builds it. Declare a root per process that sets it (`//forge:root <name> command=<cmd>`), and make what it switched a provider only the right roots reach — migrations/v1.0.0, \"ServeSpec knobs\"", n.Name)
 				}
 			}
 		}

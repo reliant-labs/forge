@@ -28,8 +28,8 @@ An incompatible change passes only if both of these hold.
 
   ```
   API-BREAK: codemod=tx-isolation
-  API-BREAK: playbook=migrations/v0.1.48
-  API-BREAK: codemod=tx-isolation playbook=migrations/v0.1.48
+  API-BREAK: playbook=migrations/v1.0.0
+  API-BREAK: codemod=tx-isolation playbook=migrations/v1.0.0
   ```
 
 The marker must start the line (prose that mentions it mid-sentence declares

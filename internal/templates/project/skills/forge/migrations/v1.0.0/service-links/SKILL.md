@@ -1,10 +1,10 @@
 ---
-name: migration-v0.1.47-service-links
-description: Upgrade to v0.1.47's enableServiceLinks false on every forge-rendered pod — find code that read the Kubernetes-injected <SERVICE>_SERVICE_HOST / _SERVICE_PORT / tcp:// _PORT variables, replace them with DNS names or explicit env, opt a workload back in with enableServiceLinks = True, and delete config shadows that only existed to dodge the collision.
+name: migration-v1.0.0-service-links
+description: Upgrade to v1.0.0's enableServiceLinks false on every forge-rendered pod — find code that read the Kubernetes-injected <SERVICE>_SERVICE_HOST / _SERVICE_PORT / tcp:// _PORT variables, replace them with DNS names or explicit env, opt a workload back in with enableServiceLinks = True, and delete config shadows that only existed to dodge the collision.
 relevance: migration
 ---
 
-# v0.1.47 — pods no longer get service-link env vars (`enableServiceLinks: false`)
+# v1.0.0 — pods no longer get service-link env vars (`enableServiceLinks: false`)
 
 Use when a workload reads `<SERVICE>_SERVICE_HOST`, `<SERVICE>_SERVICE_PORT` or
 a `<SERVICE>_PORT` / `<SERVICE>_PORT_<n>_TCP*` variable that no `env` entry

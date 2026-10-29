@@ -188,7 +188,7 @@ func checkCodemod(name string, changed []string, root string) error {
 func checkPlaybook(value string, changed []string, root string) error {
 	clean := path.Clean(value)
 	if !strings.HasPrefix(clean, playbookGroup) || strings.Contains(clean, "..") {
-		return fmt.Errorf("playbook %q must be a path under %s (for example %sv0.1.48)", value, playbookGroup, playbookGroup)
+		return fmt.Errorf("playbook %q must be a path under %s (for example %sv1.0.0, the release NEXT_VERSION names)", value, playbookGroup, playbookGroup)
 	}
 	dir := playbookRoot + clean + "/"
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(dir+"SKILL.md"))); err != nil {

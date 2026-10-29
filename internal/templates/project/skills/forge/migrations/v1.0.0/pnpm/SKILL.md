@@ -1,10 +1,10 @@
 ---
-name: migration-v0.1.47-pnpm
+name: migration-v1.0.0-pnpm
 description: Optional pnpm adoption for existing frontends. New forge frontends pin pnpm 12.15.0; npm projects remain supported. Import the npm lockfile, move overrides and build-script approvals to pnpm-workspace.yaml, declare phantom dependencies exposed by isolated node_modules, and update owned Dockerfiles, CI and Taskfile commands. Keep pnpm's shared store on the same mount as worktrees for hard links.
 relevance: migration
 ---
 
-# v0.1.47 — pnpm for new frontends; optional adoption for existing ones
+# v1.0.0 — pnpm for new frontends; optional adoption for existing ones
 
 **Use when** you want an npm frontend to use pnpm's shared, hard-linked
 content-addressable store. Existing npm and yarn projects keep working: forge

@@ -1,5 +1,5 @@
 ---
-name: migration-v0.1.47-shape-bound
+name: migration-v1.0.0-shape-bound
 description: release.MaxShapeBytes, the bound Shape.Encode enforces on a bundle shape's canonical JSON, is 512 KiB (was 256 KiB). Use when Go code compares against release.MaxShapeBytes, or a database column that stores a bundle shape carries a size CHECK.
 relevance: migration
 ---

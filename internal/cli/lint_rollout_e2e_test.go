@@ -67,22 +67,22 @@ func TestE2ENewRuleWarnsUntilPinReachesGatesFrom(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a project pinned below gates_from must pass with a warning, got %v:\n%s", err, out)
 	}
-	for _, want := range []string{"is new in v0.1.47 and gates from v0.1.48", "lint.rules: {forge-column-markers: error}"} {
+	for _, want := range []string{"is new in v1.0.0 and gates from v1.0.1", "lint.rules: {forge-column-markers: error}"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output does not say %q:\n%s", want, out)
 		}
 	}
 	last := lastLine(out)
-	for _, want := range []string{"✅", "1 new-rule finding warn until they gate", "forge-column-markers ×1, gates from v0.1.48"} {
+	for _, want := range []string{"✅", "1 new-rule finding warn until they gate", "forge-column-markers ×1, gates from v1.0.1"} {
 		if !strings.Contains(last, want) {
 			t.Errorf("verdict line %q does not say %q", last, want)
 		}
 	}
 
-	pin("v0.1.48")
+	pin("v1.0.1")
 	if out, err := lint(); err == nil {
 		t.Fatalf("a project pinned at gates_from must fail on the same finding:\n%s", out)
-	} else if strings.Contains(out, "is new in v0.1.47") {
+	} else if strings.Contains(out, "is new in v1.0.0") {
 		t.Errorf("a gating finding still carries the grace note:\n%s", out)
 	}
 

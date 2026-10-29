@@ -1,10 +1,10 @@
 ---
-name: migration-v0.1.47-local-alerting
+name: migration-v1.0.0-local-alerting
 description: Upgrade a v0.1.46 dev env to local alert delivery — the compose `alertmanager`, the `alerts` evaluator workload and the alertmanager_port / alerts_port declaration, so forge.Alerts fire locally and reach forge.AlertReceivers and .forge/logs/<env>/alerts.log.
 relevance: migration
 ---
 
-# v0.1.47 — local alert delivery: an Alertmanager and an evaluator beside ClickStack
+# v1.0.0 — local alert delivery: an Alertmanager and an evaluator beside ClickStack
 
 Use when `deploy/kcl/dev/main.k` declares `_observability` but no `alertmanager_port`.
 

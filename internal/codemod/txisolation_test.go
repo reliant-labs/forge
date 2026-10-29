@@ -15,7 +15,7 @@ import (
 )
 
 // The behaviour-preservation proof. testdata/txisolation/shapes.go holds every
-// pre-v0.1.47 transaction call shape; before.txt is what its TestShapes
+// pre-v1.0.0 transaction call shape; before.txt is what its TestShapes
 // printed against forge 68d5f76fa (the last release with the old defaults):
 // the isolation, read-only and deferrable settings the server reported inside
 // each transaction, and how many times each shape ran a body that always

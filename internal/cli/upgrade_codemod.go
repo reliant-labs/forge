@@ -6,9 +6,11 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
+	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/codemod"
 )
 
@@ -61,20 +63,36 @@ func upgradeCodemods(from, to string) []codemod.Codemod {
 // the codemods land on main before the tag does; so it is the pre-release's
 // core version that is compared, not its SemVer precedence (which orders a
 // pre-release below the release it leads to). An unknown target reaches all.
+//
+// The core version is only Go's guess at that release: a pseudo-version of a
+// commit after vX.Y.Z always reads vX.Y.(Z+1)-0.…, whatever NEXT_VERSION says
+// the next release is (v0.1.46 was followed by v1.0.0). So a pseudo-version
+// whose base is the release this binary descends from (its embedded VERSION)
+// reaches every release past that base: this binary has not seen a later
+// release, so every codemod it holds past the base is keyed to the one the
+// target leads to.
 func targetReaches(target, version string) bool {
 	if baselineIsUnknown(target) {
 		return true
 	}
 	key := semverKey(target)
-	if i := strings.IndexByte(key, '-'); i >= 0 {
-		key = key[:i]
-	}
 	v := semverKey(version)
 	if key == "" || v == "" {
 		return true
 	}
+	if base, err := module.PseudoVersionBase(key); err == nil && base != "" &&
+		base == semverKey(upgradeLastRelease()) && semver.Compare(v, base) > 0 {
+		return true
+	}
+	if i := strings.IndexByte(key, '-'); i >= 0 {
+		key = key[:i]
+	}
 	return semver.Compare(key, v) >= 0
 }
+
+// upgradeLastRelease is the release this binary descends from (targetReaches).
+// A var so tests pin it instead of tracking the VERSION file.
+var upgradeLastRelease = buildinfo.PublishedFloor
 
 // runCodemodChain runs the codemods a from → to upgrade crosses, in release
 // order, and merges their reports. With write false nothing is written and

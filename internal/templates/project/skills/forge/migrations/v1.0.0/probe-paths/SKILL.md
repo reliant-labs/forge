@@ -1,10 +1,10 @@
 ---
-name: migration-v0.1.47-probe-paths
+name: migration-v1.0.0-probe-paths
 description: Upgrade a v0.1.46 server to configurable probe paths — hand serverkit.Config.Probes to serverkit.Probes.Paths, and declare liveness_paths / readiness_paths when a platform probes a path other than /healthz and /readyz.
 relevance: migration
 ---
 
-# v0.1.47 — configurable probe paths
+# v1.0.0 — configurable probe paths
 
 Use when `cmd/<bin>/cmd/serve.go` builds `&serverkit.Probes{` with no
 `Paths:`, or when a platform probes the process on a path other than

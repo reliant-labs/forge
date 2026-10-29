@@ -26,8 +26,11 @@
 #
 # Usage:
 #   scripts/release-forge.sh [--dry-run] [--repo <dir>] [--branch <name>]
-#                            [--skip-proxy-check] [--publish-npm] vX.Y.Z
+#                            [--skip-proxy-check] [--publish-npm] [vX.Y.Z]
 #
+#   vX.Y.Z        the release to cut. Defaults to NEXT_VERSION's, and must be
+#                 it or a pre-release of it (step 2b); a final release moves
+#                 NEXT_VERSION to its next patch.
 #   --dry-run     run every validation and every file edit, print the plan,
 #                 then RESTORE the working tree and create no commit or tag.
 #   --repo DIR    operate on DIR instead of the enclosing git repo (tests).
@@ -81,7 +84,8 @@ PROXY_BASE="${FORGE_RELEASE_PROXY_BASE:-https://proxy.golang.org}"
 PUBLISH_NPM=0
 
 usage() {
-  echo "usage: $0 [--dry-run] [--repo <dir>] [--branch <name>] [--skip-proxy-check] [--publish-npm] vX.Y.Z" >&2
+  echo "usage: $0 [--dry-run] [--repo <dir>] [--branch <name>] [--skip-proxy-check] [--publish-npm] [vX.Y.Z]" >&2
+  echo "       the version defaults to NEXT_VERSION's, and must be it (or a pre-release of it)" >&2
   exit 2
 }
 
@@ -100,12 +104,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$VERSION" ] || usage
-
 # ── 1. Version shape ────────────────────────────────────────────────
 # Canonical semver with optional prerelease. Reject the tag-prefixed forms
 # early — maintainers habitually paste `pkg/v1.2.3` or `v1.2.3+meta` back in.
-if ! echo "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+# No version at all means NEXT_VERSION's (step 2b).
+if [ -n "$VERSION" ] && ! echo "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
   echo "error: version must look like vX.Y.Z (got: $VERSION)" >&2
   echo "hint: pass the bare version, with the leading v and no build metadata." >&2
   exit 1
@@ -140,6 +143,42 @@ if [ ! -f CHANGELOG.md ]; then
   echo "error: expected CHANGELOG.md not found — the release script writes the new version's section into it" >&2
   exit 1
 fi
+
+# ── 2b. The next release is declared, not computed ──────────────────
+# NEXT_VERSION names the release main is building toward. It is not always
+# VERSION's patch+1 (v0.1.46 was followed by v1.0.0), and the lint rollout
+# rows, codemods and migration playbooks on main are keyed to it — their tests
+# fail a key that is neither shipped nor NEXT_VERSION — so cutting any other
+# version would ship them under a release they do not name. Omit the version
+# to cut NEXT_VERSION; a pre-release of it (vX.Y.Z-rc.1) is allowed. To cut a
+# different release, change NEXT_VERSION in a pull request first. A final
+# release moves NEXT_VERSION to its next patch in the release commit.
+NEXT_FILE="NEXT_VERSION"
+if [ ! -f "$NEXT_FILE" ]; then
+  echo "error: expected $NEXT_FILE not found — it names the release to cut" >&2
+  exit 1
+fi
+NEXT="$(tr -d '[:space:]' <"$NEXT_FILE")"
+if ! echo "$NEXT" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+  echo "error: $NEXT_FILE must hold one vX.Y.Z release (got: $NEXT)" >&2
+  exit 1
+fi
+if [ -z "$VERSION" ]; then
+  VERSION="$NEXT"
+  echo "→ releasing $VERSION (from $NEXT_FILE)"
+fi
+if [ "${VERSION%%-*}" != "$NEXT" ]; then
+  echo "error: $VERSION is not the next release: $NEXT_FILE names $NEXT." >&2
+  echo "hint: omit the version to cut $NEXT, or change $NEXT_FILE in a pull request first." >&2
+  exit 1
+fi
+RELEASE_TAG="$VERSION"
+NEXT_AFTER="$NEXT"
+case "$VERSION" in
+  *-*) ;; # a pre-release: the final release is still next
+  *) IFS=. read -r next_major next_minor next_patch <<<"${NEXT#v}"
+     NEXT_AFTER="v$next_major.$next_minor.$((next_patch + 1))" ;;
+esac
 
 # ── 3. Clean tree ───────────────────────────────────────────────────
 # The WHOLE tree, not just pkg/: this script commits root-module files, so any
@@ -296,7 +335,7 @@ BACKUP_DIR="$(mktemp -d)"
 RESTORE_ON_EXIT=1
 CHANGELOG_FILE="CHANGELOG.md"
 NPM_MANIFEST="npm/package.json"
-TOUCHED=("${VERSION_FILES[@]}" "$CHANGELOG_FILE")
+TOUCHED=("${VERSION_FILES[@]}" "$NEXT_FILE" "$CHANGELOG_FILE")
 [ -f "$NPM_MANIFEST" ] && TOUCHED+=("$NPM_MANIFEST")
 
 restore_tree() {
@@ -329,6 +368,10 @@ for f in "${VERSION_FILES[@]}"; do
   # it) — an embed directive cannot reach outside its own package directory.
   printf '%s\n' "$VERSION" > "$f"
 done
+if [ "$NEXT_AFTER" != "$NEXT" ]; then
+  echo "→ $NEXT_FILE: $NEXT → $NEXT_AFTER"
+  printf '%s\n' "$NEXT_AFTER" > "$NEXT_FILE"
+fi
 
 # The npm shim's version IS the forge version it downloads. Only the manifest's
 # own top-level "version" line is rewritten (two-space indent), never a
@@ -470,8 +513,8 @@ fi
 git add -- "${TOUCHED[@]}"
 git commit -q -m "chore: release $VERSION
 
-Sync VERSION and internal/buildinfo/VERSION; write the $VERSION section of
-CHANGELOG.md from the PR titles merged since ${PREV_TAG:-the start}.
+Sync VERSION and internal/buildinfo/VERSION; name $NEXT_AFTER in NEXT_VERSION;
+write the $VERSION section of CHANGELOG.md from the PR titles merged since ${PREV_TAG:-the start}.
 
 Tagged $RELEASE_TAG at this commit."
 

@@ -1,10 +1,10 @@
 ---
-name: migration-v0.1.47-image-registries
+name: migration-v1.0.0-image-registries
 description: Move a v0.1.46 docker-compose.yml off Docker Hub — postgres from public.ecr.aws/docker/library, the OpenTelemetry collector from ghcr, ClickStack through mirror.gcr.io, Zitadel pinned by digest — so a shared IP's anonymous pull limit cannot stop forge env up.
 relevance: migration
 ---
 
-# v0.1.47 — dev images no longer pull from Docker Hub
+# v1.0.0 — dev images no longer pull from Docker Hub
 
 Use when an `image:` in `docker-compose.yml` names no registry host, such as
 `postgres:17-alpine`, `clickhouse/clickstack-local:…` or `otel/…`.

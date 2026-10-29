@@ -28,7 +28,7 @@ The graph itself — providers, `compose.go`, roots and commands, each root's co
 
 `forge fix narrow-deps internal/handlers/<svc>` fixes the first: it declares, in the package (its `contract.go`, or `deps.go`), an interface holding exactly the methods the package uses — those it calls, with each interface it passes the value on as embedded, so every call that hands it on still type-checks — retypes the field, and writes its mock (`mock_gen.go`, kept in step by `forge generate`). `compose.go` needs no change — the value it hands the field still satisfies the narrower interface.
 
-A project scaffolded before the graph keeps its `Infra`/`OpenInfra` + `NewComponents` composition, and forge generates for it exactly as before, until it migrates: `forge fix composition-graph` converts what forge scaffolded, or lists (writing nothing) each shape of yours it cannot; `migrations/v0.1.47` is the rest of the path.
+A project scaffolded before the graph keeps its `Infra`/`OpenInfra` + `NewComponents` composition, and forge generates for it exactly as before, until it migrates: `forge fix composition-graph` converts what forge scaffolded, or lists (writing nothing) each shape of yours it cannot; `migrations/v1.0.0` is the rest of the path.
 
 ## Pinning a root's start and stop order
 

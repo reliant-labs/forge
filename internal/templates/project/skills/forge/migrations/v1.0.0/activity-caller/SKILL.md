@@ -1,10 +1,10 @@
 ---
-name: migration-v0.1.47-activity-caller
-description: Upgrade v0.1.47 chains and activity interceptors to a caller that is never guessed — activity.Deps.Principal (ClaimsPrincipal or the project's own), serverkit.Authenticator.Caller / AuthWithCaller, and NewChain's refusal of a defaulted Audit or Activity it cannot attribute.
+name: migration-v1.0.0-activity-caller
+description: Upgrade v1.0.0 chains and activity interceptors to a caller that is never guessed — activity.Deps.Principal (ClaimsPrincipal or the project's own), serverkit.Authenticator.Caller / AuthWithCaller, and NewChain's refusal of a defaulted Audit or Activity it cannot attribute.
 relevance: migration
 ---
 
-# v0.1.47 — the activity and audit caller is never guessed
+# v1.0.0 — the activity and audit caller is never guessed
 
 Use when Go code calls `activity.Interceptor` or names `activity.Deps`'s
 `ActorFrom` / `ScopeFrom` or `activity.DefaultActor` / `DefaultScope`, or when

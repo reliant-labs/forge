@@ -74,7 +74,7 @@ tasks:
       - go install -trimpath=false -buildvcs=true -ldflags "-X github.com/reliant-labs/forge/internal/buildinfo.DevForgeRoot=$(git rev-parse --show-toplevel)" ./cmd/forge
 
   release:forge:
-    desc: "Cut a forge release (one module, one tag): task release:forge -- vX.Y.Z (add --dry-run to validate only)"
+    desc: "Cut the forge release NEXT_VERSION names (one module, one tag): task release:forge (add -- --dry-run to validate only)"
     cmds:
       # THE release command. forge is one module, so a release is one tag:
       # validate the version shape, a clean tree and that the tag does not

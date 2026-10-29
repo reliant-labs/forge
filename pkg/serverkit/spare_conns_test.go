@@ -344,7 +344,11 @@ func TestOpenDB_KeepsSpareConns(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if got := openDBSpares.closes.Load() - closes; got != 4 {
-		t.Fatalf("closes = %d after the pool closed, want 4", got)
+	// Close does not wait for the filler, which may still be between a dial
+	// and handing its connection over; that connection is closed when it
+	// does. Waiting for all four also keeps a repeated run's counts clean.
+	waitFor(t, "every connection closed", func() bool { return openDBSpares.closes.Load()-closes == 4 })
+	if got := openDBSpares.dials.Load() - dials; got != 4 {
+		t.Fatalf("dials = %d, want 4", got)
 	}
 }

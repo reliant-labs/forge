@@ -311,6 +311,45 @@ func TestReleaseForgeScript_TagsOnceAtTheReleaseCommit(t *testing.T) {
 	if remoteTags := gitOut(t, origin, "tag", "-l"); !strings.Contains(remoteTags, "v0.2.0") {
 		t.Errorf("tag v0.2.0 did not reach the remote; got:\n%s", remoteTags)
 	}
+	// The release lock is dropped on the way out.
+	if locks := gitOut(t, origin, "for-each-ref", "refs/release-lock/"); locks != "" {
+		t.Errorf("the release left its lock on origin:\n%s", locks)
+	}
+}
+
+// TestReleaseForgeScript_RejectsAConcurrentRelease: while another cut of the same
+// version holds refs/release-lock/<v> on origin, the script refuses before it commits,
+// tags or pushes anything, and leaves that holder's lock alone. This is what keeps a
+// hand cut and the release workflow from both releasing one version.
+func TestReleaseForgeScript_RejectsAConcurrentRelease(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs a git push")
+	}
+	repo := newForgeFixtureRepo(t)
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	gitIn(t, repo, "clone", "--bare", "--quiet", repo, origin)
+	gitIn(t, repo, "remote", "add", "origin", origin)
+	tree := gitOut(t, repo, "mktree")
+	lock := gitOut(t, repo, "-c", "user.name=F", "-c", "user.email=f@x.invalid", "commit-tree", tree, "-m", "release lock v0.2.0: other@box")
+	gitIn(t, repo, "push", "-q", "origin", lock+":refs/release-lock/v0.2.0")
+	before := gitOut(t, repo, "rev-parse", "HEAD")
+
+	out, err := runForgeScript(t, repo, "v0.2.0")
+	if err == nil {
+		t.Fatalf("expected a refusal while another release holds the lock, got success:\n%s", out)
+	}
+	if !strings.Contains(out, "already in progress") {
+		t.Errorf("refusal does not say a release is in progress:\n%s", out)
+	}
+	if head := gitOut(t, repo, "rev-parse", "HEAD"); head != before {
+		t.Errorf("the refused release committed: HEAD %s -> %s", before, head)
+	}
+	if tags := gitOut(t, origin, "tag", "-l"); strings.Contains(tags, "v0.2.0") {
+		t.Errorf("the refused release pushed its tag")
+	}
+	if got := gitOut(t, origin, "rev-parse", "refs/release-lock/v0.2.0"); got != lock {
+		t.Errorf("the refused release touched the holder's lock: %s, want %s", got, lock)
+	}
 }
 
 // TestReleaseForgeScript_ReleasesFromABranchThatIsNotMain pins the push

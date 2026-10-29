@@ -100,67 +100,43 @@
   --radius-xl: 0.875rem; /* the largest surfaces: modals, auth card */
   --shadow-sm: 0 1px 2px 0 oklch(21% 0.012 262deg / 6%); /* resting elevation */
   --shadow-md:
-    0 4px 12px -2px oklch(21% 0.012 262deg / 8%),
-    0 2px 4px -2px oklch(21% 0.012 262deg / 5%); /* hover / raised */
+    0 4px 12px -2px oklch(21% 0.012 262deg / 8%), 0 2px 4px -2px oklch(21% 0.012 262deg / 5%); /* hover / raised */
   --shadow-lg:
-    0 12px 28px -6px oklch(21% 0.012 262deg / 12%),
-    0 4px 8px -4px oklch(21% 0.012 262deg / 6%); /* popovers, dropdowns */
+    0 12px 28px -6px oklch(21% 0.012 262deg / 12%), 0 4px 8px -4px oklch(21% 0.012 262deg / 6%); /* popovers, dropdowns */
   --color-surface: oklch(99.5% 0.002 262deg); /* page / card background */
 
   /* an inset INSIDE a surface — below it in light AND dark; see ui/card.tsx */
   --color-surface-sunken: oklch(96.6% 0.004 262deg);
-  --color-surface-muted: oklch(
-    97.7% 0.003 262deg
-  ); /* subtle fills: table head, hovers */
+  --color-surface-muted: oklch(97.7% 0.003 262deg); /* subtle fills: table head, hovers */
   --color-border: oklch(92.2% 0.005 262deg);
   --color-border-strong: oklch(86.5% 0.008 262deg);
   --color-ink: oklch(21% 0.012 262deg); /* primary text */
   --color-ink-muted: oklch(47.5% 0.012 262deg); /* secondary text */
-  --color-ink-subtle: oklch(
-    60% 0.01 262deg
-  ); /* tertiary / placeholder / icons */
+  --color-ink-subtle: oklch(60% 0.01 262deg); /* tertiary / placeholder / icons */
   --color-accent: oklch(53% 0.17 258deg); /* primary action */
   --color-accent-hover: oklch(47% 0.16 258deg);
-  --color-on-accent: oklch(
-    99.2% 0.004 258deg
-  ); /* text/icon on an accent fill */
+  --color-on-accent: oklch(99.2% 0.004 258deg); /* text/icon on an accent fill */
   --color-accent-surface: oklch(
     96% 0.016 258deg
   ); /* accent-tinted fill: info badge, active chip / tab */
   --color-accent-border: oklch(87.5% 0.052 258deg);
-  --color-accent-ink: oklch(
-    44.5% 0.15 258deg
-  ); /* accent text on an accent-surface fill */
+  --color-accent-ink: oklch(44.5% 0.15 258deg); /* accent text on an accent-surface fill */
   --color-danger: oklch(54% 0.195 27deg); /* destructive action / error */
   --color-danger-hover: oklch(48% 0.18 27deg);
   --color-on-danger: oklch(99.2% 0.004 27deg); /* text/icon on a danger fill */
-  --color-danger-surface: oklch(
-    96.4% 0.017 25deg
-  ); /* danger banner background */
+  --color-danger-surface: oklch(96.4% 0.017 25deg); /* danger banner background */
   --color-danger-border: oklch(87.5% 0.062 25deg);
-  --color-danger-ink: oklch(
-    45.5% 0.165 27deg
-  ); /* danger text on a light surface */
-  --color-success: oklch(
-    57% 0.135 155deg
-  ); /* positive status: badge dot / solid */
-  --color-success-surface: oklch(
-    96.4% 0.03 155deg
-  ); /* success badge background */
+  --color-danger-ink: oklch(45.5% 0.165 27deg); /* danger text on a light surface */
+  --color-success: oklch(57% 0.135 155deg); /* positive status: badge dot / solid */
+  --color-success-surface: oklch(96.4% 0.03 155deg); /* success badge background */
   --color-success-border: oklch(87.5% 0.07 155deg);
-  --color-success-ink: oklch(
-    44% 0.105 155deg
-  ); /* success text on a light surface */
-  --color-warning: oklch(
-    76% 0.155 75deg
-  ); /* caution status: mock-mode banner, badge dot */
+  --color-success-ink: oklch(44% 0.105 155deg); /* success text on a light surface */
+  --color-warning: oklch(76% 0.155 75deg); /* caution status: mock-mode banner, badge dot */
   --color-warning-hover: oklch(70% 0.14 72deg);
   --color-on-warning: oklch(27% 0.058 72deg); /* text/icon on a warning fill */
   --color-warning-surface: oklch(97% 0.03 85deg); /* warning badge background */
   --color-warning-border: oklch(87.5% 0.09 85deg);
-  --color-warning-ink: oklch(
-    46.5% 0.096 75deg
-  ); /* warning text on a light surface */
+  --color-warning-ink: oklch(46.5% 0.096 75deg); /* warning text on a light surface */
 }
 
 /* Dark palette — OS preference, unless data-theme forces light. */

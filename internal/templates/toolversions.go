@@ -33,6 +33,14 @@ const GolangciLintVersion = "v2.14.0"
 // on its own, one `npm install` at a time.
 const PrettierVersion = "3.5.3"
 
+// CommitlintVersion is the release of @commitlint/cli and
+// @commitlint/config-conventional the scaffolded commit-msg hook installs
+// (.pre-commit-config.yaml's local commitlint hook). The two packages are
+// released in lockstep, so one pin covers both. Exact, for the reason
+// PrettierVersion is: a ruleset that moves on its own rejects a commit
+// message the previous install accepted.
+const CommitlintVersion = "19.8.1"
+
 // PnpmVersion is the pnpm release a scaffolded frontend pins in package.json
 // `packageManager`, and so the one every install of it runs: corepack and
 // pnpm itself switch to the pinned version, the frontend Dockerfile installs

@@ -48,9 +48,7 @@ import { Nav } from "@/components/nav";
 const bareRoutes = ["/auth"];
 
 function isBare(pathname: string): boolean {
-  return bareRoutes.some(
-    (p) => pathname === p || pathname.startsWith(`${p}/`),
-  );
+  return bareRoutes.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
 export function AppShell({

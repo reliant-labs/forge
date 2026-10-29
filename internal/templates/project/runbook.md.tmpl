@@ -11,7 +11,7 @@ team knows.
   **Observability** tab (or **Observability** in the sidebar): its dashboards,
   traces, logs and the alerts that fired.
 - **Locally:** `forge env up dev` runs ClickStack. Open the **HyperDX UI** it
-  lists under *Compose services*; search Logs or Traces by `ServiceName` (the
+  lists under _Compose services_; search Logs or Traces by `ServiceName` (the
   workload name), `TraceId`, or a log attribute such as `procedure`.
 - **Dashboards:** `deploy/observability/dashboards/*_gen.json` — an overview,
   one per service (requests, errors and latency per rpc, the database, the Go
@@ -119,7 +119,7 @@ team knows.
 - **Diagnose:** the `why` payload names the last status (or how the probe
   failed: `timeout`, `dns`, `connect`, `tls`, `status`, `body`), the latency and
   when the failures began. `forge obs metrics query <env> uptime.check.up
-  --group-by check --since 3h` shows the run. A failure that started at a
+--group-by check --since 3h` shows the run. A failure that started at a
   promotion points at that release (`forge obs check <env>`).
 
 ### CertificateExpiring, CertificateExpiringSoon
@@ -128,7 +128,7 @@ team knows.
   14 days (warning) or 3 days (critical). A platform-managed hostname renews
   itself; a custom domain or a certificate you supply is the one to check.
 - **Diagnose:** `forge obs metrics query <env> tls.cert.expiry_seconds
-  --group-by check` shows the days left per check.
+--group-by check` shows the days left per check.
 
 ## Tuning
 

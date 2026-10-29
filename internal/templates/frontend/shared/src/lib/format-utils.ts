@@ -106,11 +106,7 @@ export function toDatetimeLocal(value: unknown): string {
   let d: Date | null = null;
   if (value instanceof Date) {
     d = value;
-  } else if (
-    typeof value === "object" &&
-    value !== null &&
-    "seconds" in value
-  ) {
+  } else if (typeof value === "object" && value !== null && "seconds" in value) {
     const ts = value as { seconds: bigint };
     d = new Date(Number(ts.seconds) * 1000);
   } else if (typeof value === "string" && value !== "") {
@@ -126,16 +122,7 @@ export function toDatetimeLocal(value: unknown): string {
 
 export function isEnumLike(key: string, value: unknown): boolean {
   if (typeof value !== "string") return false;
-  const enumKeys = [
-    "status",
-    "type",
-    "kind",
-    "role",
-    "state",
-    "category",
-    "priority",
-    "level",
-  ];
+  const enumKeys = ["status", "type", "kind", "role", "state", "category", "priority", "level"];
   return enumKeys.some((k) => key.toLowerCase().includes(k));
 }
 
@@ -274,9 +261,7 @@ const statusVariants: Record<string, BadgeVariant> = {
  * "nobody has assigned this a meaning yet", which is recoverable; a wrong
  * color reads "this is fine", which is not.
  */
-export function registerStatusVariants(
-  entries: Record<string, BadgeVariantInput>,
-): void {
+export function registerStatusVariants(entries: Record<string, BadgeVariantInput>): void {
   for (const [key, variant] of Object.entries(entries)) {
     statusVariants[normalizeStatusKey(key)] = normalizeVariant(variant);
   }
@@ -307,9 +292,7 @@ function screamingSnake(typeName: string): string {
 function stripEnumTypePrefix(value: string, enumTypeName?: string): string {
   if (!enumTypeName) return value;
   const prefix = `${screamingSnake(enumTypeName)}_`;
-  return value.toUpperCase().startsWith(prefix)
-    ? value.slice(prefix.length)
-    : value;
+  return value.toUpperCase().startsWith(prefix) ? value.slice(prefix.length) : value;
 }
 
 /**
@@ -337,9 +320,7 @@ export type EnumRef = ProtoEnum | string;
 
 /** Forward-mapping member names of a protobuf-es enum (value is a number). */
 function enumMemberNames(enumObject: ProtoEnum): string[] {
-  return Object.keys(enumObject).filter(
-    (k) => typeof enumObject[k] === "number",
-  );
+  return Object.keys(enumObject).filter((k) => typeof enumObject[k] === "number");
 }
 
 /**
@@ -358,8 +339,7 @@ function commonEnumPrefix(enumObject: ProtoEnum): string {
   if (names.length < 2) return "";
   let prefix = names[0] ?? "";
   for (const name of names.slice(1)) {
-    while (prefix !== "" && !name.startsWith(prefix))
-      prefix = prefix.slice(0, -1);
+    while (prefix !== "" && !name.startsWith(prefix)) prefix = prefix.slice(0, -1);
     if (prefix === "") return "";
   }
   // Only ever cut on a `_` boundary — a shared "PA" across PAID/PAUSED is a
@@ -378,10 +358,7 @@ function commonEnumPrefix(enumObject: ProtoEnum): string {
  * ("ORDER_STATUS_PAYMENT_CAPTURED" → "PAYMENT_CAPTURED"). An unmatched value is
  * returned unchanged so an unknown token still renders instead of vanishing.
  */
-function enumTokenFromObject(
-  value: string | number,
-  enumObject: ProtoEnum,
-): string {
+function enumTokenFromObject(value: string | number, enumObject: ProtoEnum): string {
   if (typeof value === "number") {
     const name = enumObject[value];
     return typeof name === "string" ? name : String(value);
@@ -409,9 +386,7 @@ function enumToken(value: string | number, enumType?: EnumRef): string {
   if (typeof enumType === "object") {
     const name = enumTokenFromObject(value, enumType);
     const prefix = commonEnumPrefix(enumType);
-    return prefix !== "" && name.startsWith(prefix)
-      ? name.slice(prefix.length)
-      : name;
+    return prefix !== "" && name.startsWith(prefix) ? name.slice(prefix.length) : name;
   }
   return stripEnumTypePrefix(String(value), enumType);
 }
@@ -436,9 +411,7 @@ export function enumBadgeVariant(
   enumType?: EnumRef,
 ): BadgeVariant {
   if (value === null || value === undefined || value === "") return "neutral";
-  return (
-    statusVariants[normalizeStatusKey(enumToken(value, enumType))] ?? "neutral"
-  );
+  return statusVariants[normalizeStatusKey(enumToken(value, enumType))] ?? "neutral";
 }
 
 /**
@@ -477,10 +450,7 @@ export function humanizeEnum(name: string | number | null | undefined): string {
  * Renders an em dash for the unset case (an out-of-range enum number
  * reverse-maps to undefined).
  */
-export function enumLabel(
-  value: string | number | null | undefined,
-  enumType?: EnumRef,
-): string {
+export function enumLabel(value: string | number | null | undefined, enumType?: EnumRef): string {
   if (value === null || value === undefined || value === "") return "—";
   return humanizeEnum(enumToken(value, enumType));
 }
@@ -519,10 +489,7 @@ export function enumOptions(
   for (const [name, value] of Object.entries(enumObject)) {
     // Skip the reverse mapping (number → name), whose value is a string.
     if (typeof value !== "number") continue;
-    if (
-      !includeUnspecified &&
-      (value === 0 || /(^|_)UNSPECIFIED$/.test(name))
-    ) {
+    if (!includeUnspecified && (value === 0 || /(^|_)UNSPECIFIED$/.test(name))) {
       continue;
     }
     out.push({ value, label: humanizeEnum(name), name });
@@ -685,9 +652,7 @@ export interface WireTimestamp {
  * a table cell. Returning null routes those through the same "—" path as an
  * unset value.
  */
-export function timestampToDate(
-  ts: WireTimestamp | undefined | null,
-): Date | null {
+export function timestampToDate(ts: WireTimestamp | undefined | null): Date | null {
   if (!ts) return null;
   const ms = Number(ts.seconds) * 1000;
   if (!Number.isFinite(ms)) return null;
@@ -724,10 +689,7 @@ export function formatDateTime(ts: WireTimestamp | undefined | null): string {
  * "3 days ago", "5 weeks ago". For a record's age, where the magnitude is the
  * signal and the exact date is not. A future timestamp renders "—".
  */
-export function formatAge(
-  ts: WireTimestamp | undefined | null,
-  now: Date = new Date(),
-): string {
+export function formatAge(ts: WireTimestamp | undefined | null, now: Date = new Date()): string {
   const date = timestampToDate(ts);
   if (!date) return "—";
   const days = Math.floor((now.getTime() - date.getTime()) / 86_400_000);

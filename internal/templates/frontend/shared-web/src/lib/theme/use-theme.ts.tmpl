@@ -146,14 +146,9 @@ export function useTheme(): {
   // happens with the tab open. Subscribed unconditionally and ignored below
   // when the user has picked a side: the media query is cheap, and gating the
   // subscription on `theme` is what a hook cannot do anyway.
-  const systemDark = useSyncExternalStore(
-    subscribeToSystemTheme,
-    prefersDark,
-    () => false,
-  );
+  const systemDark = useSyncExternalStore(subscribeToSystemTheme, prefersDark, () => false);
 
-  const resolved: ResolvedTheme =
-    theme === "system" ? (systemDark ? "dark" : "light") : theme;
+  const resolved: ResolvedTheme = theme === "system" ? (systemDark ? "dark" : "light") : theme;
 
   const setTheme = useCallback((next: ThemePreference) => {
     applyTheme(next);

@@ -78,13 +78,9 @@ interface DevLogResult {
 }
 
 function formatEntry(entry: DevLogEntry): string {
-  const level =
-    typeof entry.level === "string" && LEVELS.has(entry.level)
-      ? entry.level
-      : "log";
+  const level = typeof entry.level === "string" && LEVELS.has(entry.level) ? entry.level : "log";
   const msg = typeof entry.msg === "string" ? entry.msg : "";
-  const line =
-    msg.length > MAX_LINE ? `${msg.slice(0, MAX_LINE)}… (truncated)` : msg;
+  const line = msg.length > MAX_LINE ? `${msg.slice(0, MAX_LINE)}… (truncated)` : msg;
   return `[browser:${level}] ${line}`;
 }
 
@@ -92,17 +88,12 @@ function formatEntry(entry: DevLogEntry): string {
  * Turn a posted body into the lines to print. Pure, so it is unit-testable
  * without a dev server — the glue below is deliberately thin.
  */
-export function handleDevLogBody(
-  body: string,
-  byteLength?: number,
-): DevLogResult {
+export function handleDevLogBody(body: string, byteLength?: number): DevLogResult {
   const size = byteLength ?? Buffer.byteLength(body);
   if (size > MAX_BODY) {
     return {
       status: 413,
-      lines: [
-        `[browser:warn] [forge-devlog] dropped oversized post (${size} bytes)`,
-      ],
+      lines: [`[browser:warn] [forge-devlog] dropped oversized post (${size} bytes)`],
     };
   }
 

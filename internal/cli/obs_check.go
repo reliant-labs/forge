@@ -285,13 +285,15 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	if b.Info().Backend == obsbackend.BackendCloud && opts.FailOn != nil {
 		res.Report = releasehealth.Rejudge(res.Report, opts.FailOn)
 	}
-	// A release promoted into a firing critical alert is not proven good. The
-	// alert state is read here rather than trusted to the control plane's
-	// answer, which lists only the alerts that opened after the promotion.
+	// A release promoted into a firing critical alert is not proven good, and
+	// one that opened a critical alert fails. The alert state is read here
+	// rather than trusted to the control plane's answer, which lists only the
+	// alerts that opened after the promotion and judges them by the env's
+	// policy; a check that cannot read it is INCONCLUSIVE, never a PASS.
 	if ar, ok := b.(obsbackend.AlertReader); ok && res.Report.Verdict != releasehealth.Fail {
 		alerts, aerr := ar.Alerts(ctx)
 		if aerr != nil {
-			res.Report.NotEvaluated = append(res.Report.NotEvaluated, "standing_critical_alerts")
+			res.Report = releasehealth.WithAlertStateUnread(res.Report, aerr.Error())
 		} else {
 			res.Report = releasehealth.WithStandingAlerts(res.Report, firingHealthAlerts(alerts))
 		}

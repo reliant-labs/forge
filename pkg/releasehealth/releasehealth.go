@@ -425,7 +425,11 @@ type Report struct {
 	// and are still firing. They are not the release's doing, so they are not
 	// findings, but a release promoted into one is not proven good: they make
 	// a PASS INCONCLUSIVE.
-	StandingCritical []Alert     `json:"standing_critical_alerts,omitempty"`
+	StandingCritical []Alert `json:"standing_critical_alerts,omitempty"`
+	// AlertStateUnread says why a caller that applies the critical-alert rule
+	// itself could not read the alert state (WithAlertStateUnread): a PASS
+	// that could not look at it is not proven good.
+	AlertStateUnread string      `json:"alert_state_unread,omitempty"`
 	Workloads        []Workload  `json:"workload_findings,omitempty"`
 	Verdict          Verdict     `json:"verdict"`
 	Findings         []Finding   `json:"findings"`
@@ -514,33 +518,80 @@ func Evaluate(in Input) Report {
 	}
 
 	sortFindings(r.Findings)
-	r.Verdict = verdictOf(r.Findings, r.AfterComplete, r.Services, t.MinRequests, len(r.StandingCritical) > 0)
+	r.Verdict = verdictOf(r.Findings, r.AfterComplete, r.Services, t.MinRequests, r.unproven())
 	return r
 }
 
-// WithStandingAlerts folds the alerts firing now into a judged report: a
-// critical alert that opened before the promotion joins StandingCritical, and
-// the verdict is recomputed. It is how a caller that reads the alert state
-// itself (`forge obs check` over a control plane whose answer predates the
-// rule) applies it. Alerts already in FiringAlerts, or not firing, are
-// ignored.
+// unproven reports whether something outside the findings keeps a PASS from
+// being proven: a standing critical alert, or alert state that was not read.
+func (r Report) unproven() bool { return len(r.StandingCritical) > 0 || r.AlertStateUnread != "" }
+
+// WithStandingAlerts applies the critical-alert rule to a judged report from
+// the alerts firing now, read by the caller (`forge obs check` reads them
+// itself, so the rule holds over a control plane whose answer predates it):
+// a critical alert opened at or after the promotion is a failing alert_firing
+// finding, whatever the policy that judged the report; one opened before it
+// joins StandingCritical. The report's own FiringAlerts are applied the same
+// way. The verdict is recomputed; alerts that are not critical are ignored.
 func WithStandingAlerts(r Report, firing []Alert) Report {
 	out := r
+	out.Findings = slices.Clone(r.Findings)
+	out.StandingCritical = slices.Clone(r.StandingCritical)
 	p := r.Subject.PromotedAt
 	seen := map[string]bool{}
-	for _, a := range append(slices.Clone(r.FiringAlerts), r.StandingCritical...) {
+	for _, a := range r.StandingCritical {
 		seen[alertKey(a)] = true
 	}
-	for _, a := range firing {
+	for _, a := range append(slices.Clone(r.FiringAlerts), firing...) {
 		if !a.Critical() || seen[alertKey(a)] {
 			continue
 		}
 		seen[alertKey(a)] = true
-		if a.FiringAt.IsZero() || a.FiringAt.Before(p) {
+		if !a.FiringAt.IsZero() && a.FiringAt.Before(p) {
 			out.StandingCritical = append(out.StandingCritical, a)
+			continue
+		}
+		out.Findings = failAlert(out.Findings, a.Rule)
+		if !slices.ContainsFunc(out.FiringAlerts, func(b Alert) bool { return alertKey(b) == alertKey(a) }) {
+			out.FiringAlerts = append(out.FiringAlerts, a)
 		}
 	}
-	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds), len(out.StandingCritical) > 0)
+	sortFindings(out.Findings)
+	out.Verdict = worse(r.Verdict, verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds), out.unproven()))
+	return out
+}
+
+// worse is the less favourable verdict: these folds only ever add evidence
+// against a release, so they never upgrade the verdict they were handed.
+func worse(a, b Verdict) Verdict {
+	rank := map[Verdict]int{Pass: 0, Inconclusive: 1, Fail: 2}
+	if rank[b] > rank[a] {
+		return b
+	}
+	return a
+}
+
+// failAlert makes the alert_firing finding for rule fail, adding it when the
+// report has none. A finding that crossed a wire without its ref is matched
+// by its message, which names the rule.
+func failAlert(fs []Finding, rule string) []Finding {
+	for i, f := range fs {
+		if f.Code == release.HealthAlertFiring && (f.Ref == rule || (f.Ref == "" && strings.Contains(f.Message, "alert "+rule+" "))) {
+			fs[i].Ref, fs[i].Policy = rule, PolicyFail
+			return fs
+		}
+	}
+	return append(fs, Finding{Code: release.HealthAlertFiring, Ref: rule, Value: 1, Threshold: 1, Policy: PolicyFail,
+		Message: fmt.Sprintf("critical alert %s opened after the promotion and is still firing", rule)})
+}
+
+// WithAlertStateUnread records that the alert state could not be read, so a
+// PASS is not proven: the verdict becomes INCONCLUSIVE, naming why. A FAIL
+// stays a FAIL.
+func WithAlertStateUnread(r Report, why string) Report {
+	out := r
+	out.AlertStateUnread = why
+	out.Verdict = worse(r.Verdict, verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds), out.unproven()))
 	return out
 }
 
@@ -599,7 +650,7 @@ func Rejudge(r Report, failOn []string) Report {
 	if !set {
 		out.Thresholds = append(out.Thresholds, Threshold{ThresholdFailOn, strings.Join(failOn, ","), SourceRequest})
 	}
-	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds), len(out.StandingCritical) > 0)
+	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds), out.unproven())
 	return out
 }
 
@@ -621,13 +672,13 @@ func policyOf(code string, failOn []string) string {
 	return PolicyWarn
 }
 
-func verdictOf(findings []Finding, afterComplete bool, services []ServiceHealth, minRequests int, standingCritical bool) Verdict {
+func verdictOf(findings []Finding, afterComplete bool, services []ServiceHealth, minRequests int, unproven bool) Verdict {
 	for _, f := range findings {
 		if f.Policy == PolicyFail {
 			return Fail
 		}
 	}
-	if !afterComplete || standingCritical {
+	if !afterComplete || unproven {
 		return Inconclusive
 	}
 	for _, s := range services {
@@ -640,6 +691,9 @@ func verdictOf(findings []Finding, afterComplete bool, services []ServiceHealth,
 
 // InconclusiveWhy says why a report is INCONCLUSIVE, in one line.
 func InconclusiveWhy(r Report) string {
+	if r.AlertStateUnread != "" {
+		return "the env's alert state could not be read, so a firing critical alert cannot be ruled out: " + r.AlertStateUnread
+	}
 	if n := len(r.StandingCritical); n > 0 {
 		rules := make([]string, 0, n)
 		for _, a := range r.StandingCritical {

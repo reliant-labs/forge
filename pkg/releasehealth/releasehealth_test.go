@@ -317,3 +317,21 @@ func TestCriticalAlerts(t *testing.T) {
 		}
 	})
 }
+
+// A control plane's warn-level alert_firing finding (its ref lost on the
+// wire) for a critical alert becomes a failing one.
+func TestWithStandingAlertsFailsAPostPromotionCriticalAlert(t *testing.T) {
+	r := Evaluate(input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100)))
+	r.Findings = []Finding{{Code: release.HealthAlertFiring, Policy: PolicyWarn, Message: "alert Down opened after the promotion and is still firing"}}
+	r.FiringAlerts = []Alert{{Rule: "Down", FiringAt: t0.Add(time.Minute), Labels: map[string]string{"severity": "critical"}}}
+	w := WithStandingAlerts(r, nil)
+	if w.Verdict != Fail || len(w.Findings) != 1 || w.Findings[0].Policy != PolicyFail || w.Findings[0].Ref != "Down" {
+		t.Fatalf("verdict %s findings %+v", w.Verdict, w.Findings)
+	}
+	if r.Findings[0].Policy != PolicyWarn {
+		t.Error("WithStandingAlerts changed its input")
+	}
+	if u := WithAlertStateUnread(Evaluate(input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100))), "denied"); u.Verdict != Inconclusive {
+		t.Errorf("unread alert state: verdict %s", u.Verdict)
+	}
+}

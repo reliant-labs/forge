@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -20,6 +22,8 @@ import (
 )
 
 const procHealth = "controlplane.v1.ObservabilityService/GetReleaseHealth"
+
+const procListAlertsCheck = "controlplane.v1.AlertingService/ListAlerts"
 
 func cloudFacts() obsbackend.Facts {
 	return obsbackend.Facts{Env: "prod", Declared: true, Enabled: true, HasHosted: true, ControlPlane: "https://cp"}
@@ -59,7 +63,9 @@ func (s *seqCaller) Call(ctx context.Context, procedure string, req, out any) er
 	if s.n == nil {
 		s.n = map[string]int{}
 	}
-	fc := &fakeCloudCaller{replies: map[string]string{}, errs: s.errs}
+	// No alerts firing, unless the test says otherwise: obs check reads the
+	// alert state on every cloud check.
+	fc := &fakeCloudCaller{replies: map[string]string{procListAlertsCheck: `{"alerts":[]}`}, errs: s.errs}
 	if rs := s.replies[procedure]; len(rs) > 0 {
 		i := s.n[procedure]
 		if i >= len(rs) {
@@ -668,5 +674,50 @@ func TestObsCheckStandingCriticalAlertIsNotAPass(t *testing.T) {
 	}
 	if sc, _ := doc["standing_critical_alerts"].([]any); len(sc) != 1 {
 		t.Errorf("standing_critical_alerts = %v", doc["standing_critical_alerts"])
+	}
+}
+
+// A critical alert that opened after the promotion fails the check over a
+// control plane that judged it PASS, whatever --fail-on says.
+func TestObsCheckPostPromotionCriticalAlertFails(t *testing.T) {
+	alerts := `{"alerts":[{"rule":"Down","state":"firing","fingerprint":"f2","firingAt":"2026-10-22T11:45:00Z","labels":{"severity":"critical"}}]}`
+	for _, extra := range [][]string{nil, {"--fail-on", "latency"}} {
+		caller := &seqCaller{replies: map[string][]string{
+			procHealth: {healthReply("RELEASE_VERDICT_PASS", true, "", "")},
+			"controlplane.v1.AlertingService/ListAlerts": {alerts},
+		}}
+		env := newObsCheckHarness()
+		out, _, err := env.run(t, cloudFacts(), caller, nil, append([]string{"check", "prod", "--json"}, extra...)...)
+		if exitCodeForError(err) != exitWrong {
+			t.Fatalf("%v: exit = %d (%v), want 1", extra, exitCodeForError(err), err)
+		}
+		if doc := decode(t, out); doc["verdict"] != "FAIL" || !strings.Contains(fmt.Sprint(doc["findings"]), "Down") {
+			t.Errorf("%v: doc = %v", extra, doc)
+		}
+	}
+}
+
+// A check that cannot read the alert state cannot rule out a firing critical
+// alert: INCONCLUSIVE, exit 2, and an error gate — never a PASS.
+func TestObsCheckUnreadAlertStateIsNotAPass(t *testing.T) {
+	caller := &seqCaller{
+		replies: map[string][]string{procHealth: {healthReply("RELEASE_VERDICT_PASS", true, "", "")}},
+		errs:    map[string]error{"controlplane.v1.AlertingService/ListAlerts": errors.New("permission denied")},
+	}
+	env := newObsCheckHarness()
+	gate := filepath.Join(t.TempDir(), "gate.json")
+	out, _, err := env.run(t, cloudFacts(), caller, nil, "check", "prod", "--json", "--gate-json", gate)
+	if exitCodeForError(err) != exitUndetermined {
+		t.Fatalf("exit = %d (%v), want 2", exitCodeForError(err), err)
+	}
+	if doc := decode(t, out); doc["verdict"] != "INCONCLUSIVE" || !strings.Contains(fmt.Sprint(doc["reason"]), "alert state") {
+		t.Errorf("doc = %v", doc)
+	}
+	raw, rerr := os.ReadFile(gate)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if !strings.Contains(string(raw), `"status": "error"`) && !strings.Contains(string(raw), `"status":"error"`) {
+		t.Errorf("gate = %s, want status error", raw)
 	}
 }

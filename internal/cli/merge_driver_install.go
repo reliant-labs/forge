@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -60,7 +61,8 @@ func installedForge(ctx context.Context, w io.Writer, version string) (string, e
 		return "", err
 	}
 	dir := filepath.Join(cache, id)
-	bin := filepath.Join(dir, "forge")
+	// go install names the binary for the host: forge.exe on Windows.
+	bin := filepath.Join(dir, "forge"+exeSuffix())
 	if !isExecutableFile(bin) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return "", err
@@ -79,9 +81,16 @@ func installedForge(ctx context.Context, w io.Writer, version string) (string, e
 	return bin, nil
 }
 
+// isExecutableFile reports whether p is a file a driver command can run. On
+// Windows that is any regular file: NTFS keeps no execute bit (os.Stat never
+// reports one), and the sh git runs a driver through executes a script or an
+// .exe by its contents.
 func isExecutableFile(p string) bool {
 	info, err := os.Stat(p)
-	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	return runtime.GOOS == "windows" || info.Mode()&0o111 != 0
 }
 
 // touchDriverCopy marks the durable copy this process runs from as used, so

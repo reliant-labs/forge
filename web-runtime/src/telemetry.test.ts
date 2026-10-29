@@ -92,6 +92,11 @@ function stubDom() {
     location: { origin: ORIGIN },
     addEventListener: (type: string, fn: Listener) =>
       listeners.set(type, [...(listeners.get(type) ?? []), fn]),
+    removeEventListener: (type: string, fn: Listener) =>
+      listeners.set(
+        type,
+        (listeners.get(type) ?? []).filter((l) => l !== fn),
+      ),
   });
 }
 
@@ -262,9 +267,13 @@ describe("benign browser errors", () => {
     }
   }
 
-  async function start(config: Record<string, unknown> = {}) {
+  async function start(
+    config: Record<string, unknown> = {},
+    opts: { initThrows?: boolean } = {},
+  ) {
     stubDom();
     init.mockImplementation(() => {
+      if (opts.initThrows) throw new Error("sdk init failed");
       window.addEventListener("unhandledrejection", (e: Event) =>
         sdkSaw("unhandledrejection", (e as PromiseRejectionEvent).reason),
       );
@@ -367,6 +376,90 @@ describe("benign browser errors", () => {
 
     const real = notAnError("NotAllowedError", "denied");
     console.error(new TypeError("Failed to fetch"), real);
+    expect(sdkSaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the app's own handlers untouched when the SDK fails to start", async () => {
+    vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const { t } = await start({}, { initThrows: true });
+    void t;
+    const appSaw = vi.fn();
+    window.addEventListener("unhandledrejection", (e: Event) =>
+      appSaw((e as PromiseRejectionEvent).reason),
+    );
+    window.addEventListener("error", (e: Event) =>
+      appSaw((e as ErrorEvent).error),
+    );
+    const abort = new DOMException("x", "AbortError");
+    dispatchEvent("unhandledrejection", { reason: abort });
+    const offline = new TypeError("Failed to fetch");
+    dispatchEvent("error", { error: offline });
+    expect(appSaw.mock.calls).toEqual([[abort], [offline]]);
+    // No tap either: console.error is what it was.
+    expect(console.error).toBe(consoleUnderSdk);
+  });
+
+  it("removes the filter and the console tap when startup fails after the SDK init", async () => {
+    vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    setGlobalAttributes.mockImplementationOnce(() => {
+      throw new Error("late failure");
+    });
+    const { t } = await start();
+    void t;
+    const appSaw = vi.fn();
+    window.addEventListener("unhandledrejection", (e: Event) =>
+      appSaw((e as PromiseRejectionEvent).reason),
+    );
+    const abort = new DOMException("x", "AbortError");
+    dispatchEvent("unhandledrejection", { reason: abort });
+    expect(appSaw).toHaveBeenCalledWith(abort);
+    // The SDK's own wrapper is back on top, not the runtime's tap.
+    const offline = new TypeError("Failed to fetch");
+    console.error(offline);
+    expect(sdkSaw).toHaveBeenCalledWith("console.error", offline);
+  });
+
+  it("counts every exception of a benign console.error, of each kind", async () => {
+    await start();
+    console.error(
+      new TypeError("Failed to fetch"),
+      new DOMException("aborted", "AbortError"),
+      new TypeError("Load failed"),
+    );
+    expect(sdkSaw).not.toHaveBeenCalled();
+    dispatchEvent("pagehide", {});
+    expect(addAction).toHaveBeenCalledWith("forge.errors_filtered", {
+      kind: "network",
+      source: "console.error",
+      count: 2,
+    });
+    expect(addAction).toHaveBeenCalledWith("forge.errors_filtered", {
+      kind: "abort",
+      source: "console.error",
+      count: 1,
+    });
+  });
+
+  it("forwards a console.error whose argument cannot be inspected, without throwing", async () => {
+    await start();
+    const hostile = {
+      get [Symbol.toStringTag](): string {
+        throw new Error("toStringTag getter");
+      },
+    };
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    expect(() => console.error(hostile)).not.toThrow();
+    // Compared by identity: a matcher's deep equality would read the getter.
+    expect(sdkSaw.mock.calls.length).toBe(1);
+    expect(sdkSaw.mock.calls[0]?.[1] === hostile).toBe(true);
+    expect(consoleUnderSdk.mock.calls.length).toBe(1);
+    expect(consoleUnderSdk.mock.calls[0]?.[0] === hostile).toBe(true);
+
+    sdkSaw.mockReset();
+    expect(() =>
+      console.error(new TypeError("Failed to fetch"), proxy),
+    ).not.toThrow();
     expect(sdkSaw).toHaveBeenCalledTimes(1);
   });
 

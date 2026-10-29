@@ -355,6 +355,10 @@ async function start(
     return true;
   } catch (err) {
     // Blocked chunk, ad-blocker, SDK throw: telemetry must never break the app.
+    // Nor may it change the app once it is not running: the benign filter
+    // goes, so an AbortError or a network failure reaches the app's own
+    // handlers exactly as it would without telemetry.
+    removeBenignFilter();
     console.debug("[telemetry] disabled:", err);
     setTelemetrySink(null);
     return false;
@@ -400,32 +404,69 @@ function tapSdkInputs(
   }
   tapped = true;
   const wrapped = console.error;
-  console.error = function (this: unknown, ...args: unknown[]) {
-    // A call whose every Error is benign goes to the console as it would
-    // without the SDK, and is counted instead of recorded. One real Error
-    // anywhere in the call (a ConnectError after a fetch failure) keeps the
-    // whole call on the SDK's path.
-    const errors = args.filter(isExceptionLike);
-    if (
-      errors.length > 0 &&
-      errors.every((err) => benign.classify(err) !== null)
-    ) {
-      benign.filtered(errors[0], "console.error");
+  const tap = function (this: unknown, ...args: unknown[]) {
+    // A call whose every exception is benign goes to the console as it would
+    // without the SDK, and each exception in it is counted instead of
+    // recorded. One real exception anywhere in the call (a ConnectError after
+    // a fetch failure) keeps the whole call on the SDK's path.
+    const kinds = benignKindsOf(benign, args);
+    if (kinds) {
+      for (const kind of kinds) {
+        benign.note(kind, "console.error");
+      }
       return consoleBeforeSdk.apply(this, args);
     }
     for (const arg of args) {
-      if (arg instanceof Error) {
-        noteSeen(arg);
+      try {
+        if (arg instanceof Error) {
+          noteSeen(arg);
+        }
+      } catch {
+        // A revoked Proxy: not ours to inspect; forward it untouched.
       }
     }
     return wrapped.apply(this, args);
   };
-  window.addEventListener("error", (e) => noteSeen(e.error), true);
-  window.addEventListener(
-    "unhandledrejection",
-    (e) => noteSeen(e.reason),
-    true,
-  );
+  console.error = tap;
+  const onError = (e: ErrorEvent) => noteSeen(e.error);
+  const onRejection = (e: PromiseRejectionEvent) => noteSeen(e.reason);
+  window.addEventListener("error", onError, true);
+  window.addEventListener("unhandledrejection", onRejection, true);
+  benignTeardown.push(() => {
+    if (console.error === tap) {
+      console.error = wrapped;
+    }
+    window.removeEventListener?.("error", onError, true);
+    window.removeEventListener?.("unhandledrejection", onRejection, true);
+    tapped = false;
+  });
+}
+
+/**
+ * The kind of every exception in a console.error call when ALL of them are
+ * benign, or null to leave the call on the SDK's path: no exception, one real
+ * one, or an argument that cannot even be inspected (a throwing
+ * Symbol.toStringTag getter, a revoked Proxy).
+ */
+function benignKindsOf(benign: BenignFilter, args: unknown[]): string[] | null {
+  const kinds: string[] = [];
+  for (const arg of args) {
+    let exception: boolean;
+    try {
+      exception = isExceptionLike(arg);
+    } catch {
+      return null;
+    }
+    if (!exception) {
+      continue;
+    }
+    const kind = benign.classify(arg);
+    if (kind === null) {
+      return null;
+    }
+    kinds.push(kind);
+  }
+  return kinds.length > 0 ? kinds : null;
 }
 
 // ── Benign browser errors (benign-errors.ts) ────────────────────────────
@@ -442,6 +483,8 @@ function tapSdkInputs(
 interface BenignFilter {
   /** The kind of a benign error, or null. Counts nothing. */
   classify(error: unknown): string | null;
+  /** Count one filtered error of `kind`. */
+  note(kind: string, source: BenignErrorSource): void;
   /** Count and report true when `error` is benign; false to record it. */
   filtered(error: unknown, source: BenignErrorSource): boolean;
 }
@@ -456,16 +499,24 @@ function benignFilter(
       hdx.addAction?.(name, attributes);
     }
   });
+  const onPageHide = () => counter.flush();
+  const onVisibility = () => {
+    if (document.visibilityState === "hidden") {
+      counter.flush();
+    }
+  };
   if (typeof window.addEventListener === "function") {
-    window.addEventListener("pagehide", () => counter.flush());
+    window.addEventListener("pagehide", onPageHide);
   }
   if (typeof document !== "undefined") {
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") {
-        counter.flush();
-      }
-    });
+    document.addEventListener("visibilitychange", onVisibility);
   }
+  benignTeardown.push(() => {
+    window.removeEventListener?.("pagehide", onPageHide);
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", onVisibility);
+    }
+  });
   const kindOf = (error: unknown): string | null => {
     try {
       return classify(error) || null;
@@ -476,6 +527,7 @@ function benignFilter(
   };
   return {
     classify: kindOf,
+    note: (kind, source) => counter.note(kind, source),
     filtered(error, source) {
       const kind = kindOf(error);
       if (!kind) {
@@ -489,6 +541,22 @@ function benignFilter(
 
 let benignEventFilterInstalled = false;
 
+// What undoes the benign filter's hooks (window listeners, the console tap),
+// run when startup fails at any point after they went in.
+let benignTeardown: Array<() => void> = [];
+
+function removeBenignFilter(): void {
+  const undo = benignTeardown;
+  benignTeardown = [];
+  for (const fn of undo.reverse()) {
+    try {
+      fn();
+    } catch {
+      // Telemetry must never break the app.
+    }
+  }
+}
+
 function installBenignEventFilter(benign: BenignFilter): void {
   if (benignEventFilterInstalled) {
     return;
@@ -501,16 +569,18 @@ function installBenignEventFilter(benign: BenignFilter): void {
         event.stopImmediatePropagation();
       }
     };
-  window.addEventListener(
+  const onRejection = onEvent(
     "unhandledrejection",
-    onEvent("unhandledrejection", (e) => (e as PromiseRejectionEvent).reason),
-    true,
+    (e) => (e as PromiseRejectionEvent).reason,
   );
-  window.addEventListener(
-    "error",
-    onEvent("error", (e) => (e as ErrorEvent).error),
-    true,
-  );
+  const onError = onEvent("error", (e) => (e as ErrorEvent).error);
+  window.addEventListener("unhandledrejection", onRejection, true);
+  window.addEventListener("error", onError, true);
+  benignTeardown.push(() => {
+    window.removeEventListener?.("unhandledrejection", onRejection, true);
+    window.removeEventListener?.("error", onError, true);
+    benignEventFilterInstalled = false;
+  });
 }
 
 // An exception value as console.error receives it: an Error, a DOMException

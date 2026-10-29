@@ -1408,6 +1408,14 @@ schema ControlPlane:
     # where the author does not choose the registry, because the platform
     # admits exactly one.
     registry_host: str = RELIANT_REGISTRY_HOST
+    # True declares this env an ANONYMOUS deploy, published with no account
+    # by `forge env deploy <env> --claimable` (an agent gets a live URL and a
+    # claim link for its human). Every check judges the env under the
+    # claimable plan — one service of at most 250m / 256 MiB (request and
+    # limit) with its migration job, one database, one static site — instead
+    # of the billed plan's shape band, and a signed-in deploy is refused until
+    # the line is removed. `forge project new --claimable` scaffolds it.
+    claimable?: bool
 
     check:
         type == "control_plane", "ControlPlane.type must be 'control_plane'"

@@ -99,6 +99,10 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 			FrontendRoutes:  g.FrontendRoutes,
 			Bindings:        scaffoldEnvBindings(e.env, born, g.Features.MigrationsEnabled()),
 			APIWorkload:     codegen.APIWorkloadStanza(g.ModulePath, g.Name, apiSecrets...),
+			// Only prod is the anonymous env: an anonymous deploy is the
+			// project's one public deploy, and staging stays an ordinary
+			// signed-in env.
+			Claimable: g.Claimable && e.env == "prod",
 		}
 		if !hasBackend && !hasDatabase {
 			e.template = "kcl/frontend-only/main.k.tmpl"

@@ -51,6 +51,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/kclplugin"
+	"github.com/reliant-labs/forge/pkg/deploy"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -140,7 +141,7 @@ func (d envShapeDoc) reconciledUnits() []string {
 }
 
 func newEnvShapeCmd() *cobra.Command {
-	var asJSON bool
+	var asJSON, claimable bool
 
 	cmd := &cobra.Command{
 		Use:   "shape <environment>",
@@ -176,13 +177,27 @@ from an impure render is one nobody can reproduce.
 
 Examples:
   ` + Name() + ` env shape prod               # the human summary
-  ` + Name() + ` env shape prod --json        # {project, env, kind, shape, provenance}`,
+  ` + Name() + ` env shape prod --json        # {project, env, kind, shape, provenance}
+  ` + Name() + ` env shape prod --claimable   # judged as an anonymous deploy would be
+
+HOSTED RESOURCES ARE JUDGED BY THE PLAN THE ENV DEPLOYS UNDER. An
+organization's own deploy is held to the hosted shape band (4 GiB per vCPU,
+exactly). An anonymous deploy (` + "`" + Name() + ` env deploy <env> --claimable` + "`" + `) is not
+billed, so the band does not apply; it is held to the claimable plan's caps
+instead: one service of at most 250m / 256 MiB (request and limit) with its
+migration job, one database, one static site. --claimable judges the env that
+way, and so does an env that declares
+` + "`" + `control_plane = forge.ControlPlane {claimable = True}` + "`" + `.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if claimable {
+				defer useClaimablePreview()()
+			}
 			return runEnvShape(cmd, args[0], asJSON)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Print {project, env, kind, shape, provenance} as JSON (the form the reliant daemon's forge.env_shape hook returns)")
+	cmd.Flags().BoolVar(&claimable, "claimable", false, "Judge the env as an anonymous deploy (env deploy --claimable) is judged: the claimable plan's caps instead of the hosted shape band, and its eligibility checks")
 	return cmd
 }
 
@@ -200,6 +215,14 @@ func runEnvShape(cmd *cobra.Command, envName string, asJSON bool) error {
 	doc, err := projectEnvShapeFn(cmd.Context(), cmd.ErrOrStderr(), envName)
 	if err != nil {
 		return err
+	}
+	// Under the claimable plan the env must also FIT it: the plan's caps
+	// beyond resources (one service, one database, ...). The resource rule
+	// itself already ran in the projection's hosted plan.
+	if doc.entities != nil && hostedPlanOf(doc.entities) == deploy.HostedPlanClaimable {
+		if reasons := claimableIneligibility(doc.entities); len(reasons) > 0 {
+			return claimableIneligibleError(envName, reasons)
+		}
 	}
 	if asJSON {
 		enc := json.NewEncoder(out)

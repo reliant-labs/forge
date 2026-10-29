@@ -1,6 +1,11 @@
 package templates
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/reliant-labs/forge/pkg/deploy"
+)
 
 // EnvTemplateData is the payload of the env main.k templates
 // (deploy/kcl/dev/main.k.tmpl for the local loop, deploy/kcl/cloud/main.k.tmpl
@@ -53,6 +58,15 @@ type EnvTemplateData struct {
 	// binary's `server` as the one workload serving every service
 	// (codegen.APIWorkloadStanza). The cloud template only.
 	APIWorkload string
+	// Claimable is a prod env scaffolded for an anonymous deploy (`forge
+	// project new --claimable`): `control_plane` declares `claimable = True`
+	// and the hosted binder sizes services and jobs to the claimable plan.
+	// The cloud template only.
+	Claimable bool
+	// ClaimableResources is the body of that plan's largest shape as a KCL
+	// fw.Resources block (deploy.ClaimableResources), filled by withDefaults
+	// so the template states no number of its own.
+	ClaimableResources string
 	// Capacity floor of the cloud envs' (unused as scaffolded) `_on_cluster`
 	// binder.
 	Replicas         int
@@ -77,6 +91,12 @@ func (d EnvTemplateData) withDefaults() interface{} {
 	}
 	if d.FrontendPublicDir == "" {
 		d.FrontendPublicDir = "out"
+	}
+	if d.Claimable && d.ClaimableResources == "" {
+		r := deploy.ClaimableResources()
+		d.ClaimableResources = fmt.Sprintf("    cpuRequestMillicores = %d\n    cpuLimitMillicores = %d\n"+
+			"    memoryRequestBytes = forge.mib(%d)\n    memoryLimitBytes = forge.mib(%d)",
+			r.CPURequestMillicores, r.CPULimitMillicores, r.MemoryRequestBytes>>20, r.MemoryLimitBytes>>20)
 	}
 	if d.Replicas == 0 {
 		d.Replicas, d.CPURequest, d.CPULimit, d.MemoryRequestMiB, d.MemoryLimitMiB = 3, "0.5", "2.0", 512, 1024

@@ -24,14 +24,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/pkg/credentials"
+	"github.com/reliant-labs/forge/pkg/deploy"
 	v1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
@@ -42,18 +45,55 @@ const (
 	reasonClaimableIneligible = "claimable_ineligible"
 )
 
-// The claimable plan's caps (control-plane internal/planlimits/claimable.go,
-// design §2). The control plane enforces them at admission; they are checked
-// here too, in the same words, so a refusal costs no build. Per workload, and
-// with no burst: the limit is held to the cap as well as the request.
-const (
-	claimableMaxServices     = 1
-	claimableMaxReplicas     = 1
-	claimableMaxCPUMillicore = 250
-	claimableMaxMemoryMiB    = 256
-	claimableMaxDatabases    = 1
-	claimableMaxStaticSites  = 1
-)
+// The claimable plan's caps are pkg/deploy's (deploy.Claimable*), the one
+// definition the hosted plan's resource rule reads too.
+
+// claimablePreview is set while a credential-less preview judges an env under
+// the claimable plan (`forge env shape --claimable`, `forge env deploy
+// --claimable --plan-only`). The real deploy needs no flag: it installs the
+// anonymous credential (cloud.ClaimableActive).
+var claimablePreview atomic.Bool
+
+// useClaimablePreview judges every hosted group built until restore runs
+// under the claimable plan.
+func useClaimablePreview() (restore func()) {
+	prev := claimablePreview.Swap(true)
+	return func() { claimablePreview.Store(prev) }
+}
+
+// declaresClaimable reports whether the env declares itself an anonymous
+// deploy (`control_plane = forge.ControlPlane {claimable = True}`).
+func declaresClaimable(e *KCLEntities) bool {
+	return e != nil && e.ControlPlane != nil && e.ControlPlane.Claimable
+}
+
+// hostedPlanOf is the plan an env's hosted group is judged under: claimable
+// when this process deploys anonymously, previews an anonymous deploy, or the
+// env declares itself one; standard otherwise.
+func hostedPlanOf(e *KCLEntities) deploy.HostedPlan {
+	if cloud.ClaimableActive() || claimablePreview.Load() || declaresClaimable(e) {
+		return deploy.HostedPlanClaimable
+	}
+	return deploy.HostedPlanStandard
+}
+
+// refuseClaimableEnvSignedIn refuses a signed-in deploy of an env declared
+// anonymous: its shapes are sized for the claimable plan, which an
+// organization's own deploy is not admitted under.
+func refuseClaimableEnvSignedIn(env string, e *KCLEntities, cred cloud.Credential) error {
+	if !declaresClaimable(e) || cred.Source == cloud.SourceClaimable {
+		return nil
+	}
+	return &claimableRefusal{
+		exit: exitWrong, code: cloud.CodeFailedPrecondition, reason: reasonClaimableSignedIn,
+		msg: fmt.Sprintf("env %q is declared for an anonymous deploy (control_plane = forge.ControlPlane {claimable = True}), "+
+			"but you are signed in (%s: %s).\n"+
+			"  to deploy it to your organization: in deploy/kcl/%s/main.k remove `claimable = True` and the anonymous-plan "+
+			"`resources` of its hosted workloads (the default 250m / 1 GiB is on the hosted shape band), then %s env deploy %s\n"+
+			"  to deploy it anonymously instead: sign out (forge logout), then %s env deploy %s --claimable",
+			env, cred.Source, cred.From, env, Name(), env, Name(), env),
+	}
+}
 
 // claimableAPI builds the unauthenticated ClaimableService client. A var so the
 // CLI tests state the control plane's answers.
@@ -101,6 +141,8 @@ type claimableRefusal struct {
 	msg          string
 	// throttle is set for claimable_throttled.
 	throttle *claimableThrottleFacts
+	// cause is set for claimable_unavailable: the first reason why.
+	cause *cloud.ClaimableCause
 	// emitted is true when the deploy's own --json document already carries
 	// this outcome, so it must not be written a second time.
 	emitted bool
@@ -129,8 +171,8 @@ func refuseClaimableFlags(envName string, f deployCmdFlags) error {
 		return bad("--explain", "it describes a cluster apply, and an anonymous deploy has none")
 	case f.dryRun:
 		return bad("--dry-run", "the deploy creates the anonymous account; there is nothing to preview without it")
-	case f.promote.plan || f.promote.planOnly:
-		return bad("--plan/--plan-only", "an anonymous deploy is created by running it")
+	case f.promote.plan && !f.promote.planOnly:
+		return bad("--plan", "an anonymous deploy has no account to approve a plan for; preview it with --plan-only, which checks it locally and creates nothing")
 	case f.promote.requestedRelease():
 		return bad("a release version or --from", "--claimable ships this checkout; promote a release with your own account")
 	case len(f.targets) > 0 || f.frontendsOnly || f.skipFrontend:
@@ -164,15 +206,24 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		if err != nil {
 			return err
 		}
+		if f.promote.planOnly {
+			return previewClaimable(ctx, envName, entities, ep, f.jsonOut)
+		}
 		if err := refuseClaimableWhenSignedIn(ep); err != nil {
 			return err
 		}
-		if reasons := claimableIneligibility(entities); len(reasons) > 0 {
+		if reasons := claimableAdmission(envName, entities); len(reasons) > 0 {
 			return claimableIneligibleError(envName, reasons)
 		}
 		project := hostedProjectName()
 		if project == "" {
 			return errors.New("--claimable needs the project's name: set `name` in forge.yaml")
+		}
+		// Before any proof of work, any account and any build: can the
+		// platform take this env anonymously at all right now?
+		_, storedErr := cloud.LoadClaimable(ep, project, envName, claimableNow())
+		if err := requireClaimableAvailable(ctx, ep, envName, entities, storedErr != nil); err != nil {
+			return err
 		}
 		session, err := obtainClaimable(ctx, out, ep, project, envName)
 		if err != nil {
@@ -210,6 +261,91 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 	return err
 }
 
+// claimablePreviewJSON is `--claimable --plan-only --json`'s document.
+type claimablePreviewJSON struct {
+	jsonEnvelope
+	Env      string `json:"env"`
+	Endpoint string `json:"endpoint"`
+	// Eligible is the verdict: the env fits the claimable plan.
+	Eligible bool `json:"eligible"`
+	// Reasons are what does not fit, each with its fix where there is one.
+	Reasons []string `json:"reasons,omitempty"`
+	// Availability is the control plane's answer, when it gave one: whether a
+	// start, and this env's compute, would be admitted right now. Informational:
+	// it describes the platform, not the project.
+	Availability *cloud.ClaimableAvailability `json:"availability,omitempty"`
+	// AvailabilityError is why the question could not be answered.
+	AvailabilityError string `json:"availability_error,omitempty"`
+	// BlockingCauses are the availability causes that would refuse THIS env.
+	BlockingCauses []cloud.ClaimableCause `json:"blocking_causes,omitempty"`
+	// SignedIn is true when a real credential resolves for the endpoint, in
+	// which case `--claimable` itself is refused from this machine.
+	SignedIn bool `json:"signed_in"`
+}
+
+// previewClaimable is `forge env deploy <env> --claimable --plan-only`: the
+// local eligibility preview. It judges the render under the claimable plan —
+// the caps, the hosted plan's admission, the resource rule — and asks the
+// control plane's public availability question. It uses no identity, solves
+// no proof of work, builds nothing and creates nothing. The verdict (and the
+// exit code) is the project's eligibility; availability describes the
+// platform and is reported beside it.
+func previewClaimable(ctx context.Context, env string, e *KCLEntities, ep cloud.Endpoint, jsonOut bool) error {
+	doc := claimablePreviewJSON{Env: env, Endpoint: ep.URL}
+	doc.Reasons = claimableAdmission(env, e)
+	doc.Eligible = len(doc.Reasons) == 0
+	if _, err := cloud.ResolveCredential("", ep); err == nil {
+		doc.SignedIn = true
+	}
+	av, ok, err := claimableAvailabilityOf(ctx, ep)
+	switch {
+	case err != nil:
+		doc.AvailabilityError = err.Error()
+	case !ok:
+		doc.AvailabilityError = "this control plane does not answer GetClaimableAvailability"
+	default:
+		doc.Availability = &av
+		doc.BlockingCauses = availabilityCauses(av, true, needsCompute(e))
+	}
+	if !doc.Eligible {
+		err := claimableIneligibleError(env, doc.Reasons)
+		if jsonOut {
+			doc.stamp(err)
+			if eerr := emitJSONDocument(doc); eerr != nil {
+				return eerr
+			}
+			var r *claimableRefusal
+			if errors.As(err, &r) {
+				r.emitted = true
+			}
+		}
+		return err
+	}
+	if jsonOut {
+		doc.stamp(nil)
+		return emitJSONDocument(doc)
+	}
+	fmt.Printf("Anonymous deploy preview of env %s at %s (checked locally; no identity used, nothing created)\n", env, ep.URL)
+	fmt.Printf("  ✓ fits the claimable plan: one service (at most %dm / %d MiB) with its migration job, one database, one static site\n",
+		deploy.ClaimableCPUMillicores, deploy.ClaimableMemoryBytes>>20)
+	switch {
+	case doc.Availability == nil:
+		fmt.Printf("  ? platform availability unknown: %s\n", doc.AvailabilityError)
+	case len(doc.BlockingCauses) == 0:
+		fmt.Printf("  ✓ the platform is taking anonymous deploys of this shape right now\n")
+	default:
+		fmt.Printf("  ✗ the platform is NOT taking anonymous deploys of this shape right now:\n")
+		for _, c := range doc.BlockingCauses {
+			fmt.Printf("      %-24s %s\n", claimableCauseLabel(c), strings.TrimSuffix(c.Message, "."))
+		}
+	}
+	if doc.SignedIn {
+		fmt.Printf("  note: you are signed in to %s, so --claimable is refused from this machine; drop it to deploy to your organization\n", ep.URL)
+	}
+	fmt.Printf("\nDeploy it: %s env deploy %s --claimable\n", Name(), env)
+	return nil
+}
+
 // refuseClaimableWhenSignedIn refuses --claimable when a real credential
 // resolves: such a user deploys to their own organization.
 func refuseClaimableWhenSignedIn(ep cloud.Endpoint) error {
@@ -229,7 +365,9 @@ func refuseClaimableWhenSignedIn(ep cloud.Endpoint) error {
 
 // claimableIneligibility lists what in the render an unclaimed deploy may not
 // be (§2: "never"). The control plane enforces the same at admission; checking
-// here saves a build and says it in the author's own vocabulary.
+// here saves a build and says it in the author's own vocabulary, with the KCL
+// edit that fixes it where there is one. The resource rule is the claimable
+// plan's (deploy.CheckHostedResources), the one the hosted plan applies too.
 func claimableIneligibility(e *KCLEntities) []string {
 	var out []string
 	var services, jobs int
@@ -241,25 +379,28 @@ func claimableIneligibility(e *KCLEntities) []string {
 		case v1alpha1.KindService:
 			services++
 		case v1alpha1.KindJob:
-			if w.Spec.EffectiveDeployPhase() == v1alpha1.DeployPhasePreRollout {
+			if deploy.RunsBeforeRollout(w.Spec) {
 				jobs++
 			} else {
-				out = append(out, fmt.Sprintf("job %q is not a pre-rollout migration job", w.Name))
+				out = append(out, fmt.Sprintf("job %q runs after the rollout (deployPhase = %q); only a migration that runs "+
+					"before it is allowed: gate the service with `before = [fw.BEFORE_ALL]`, or drop the job here", w.Name, w.Spec.DeployPhase))
 			}
 		default:
 			out = append(out, fmt.Sprintf("%s %q (only one service may run)", w.Spec.EffectiveKind(), w.Name))
 		}
-		if replicas := w.Spec.Replicas; replicas > claimableMaxReplicas && w.Spec.EffectiveKind() == v1alpha1.KindService {
-			out = append(out, fmt.Sprintf("workload %q asks for %d replicas (%d is allowed)", w.Name, replicas, claimableMaxReplicas))
+		if replicas := w.Spec.Replicas; replicas > deploy.ClaimableMaxReplicas && w.Spec.EffectiveKind() == v1alpha1.KindService {
+			out = append(out, fmt.Sprintf("workload %q asks for %d replicas (%d is allowed)", w.Name, replicas, deploy.ClaimableMaxReplicas))
 		}
 		if w.Spec.EffectiveKind() == v1alpha1.KindService || w.Spec.EffectiveKind() == v1alpha1.KindJob {
 			// The hosted shape band does not apply to this plan; these caps do.
-			r := w.Spec.Resources.WithDefaults()
-			if cpu := max(r.CPURequestMillicores, r.CPULimitMillicores); cpu > claimableMaxCPUMillicore {
-				out = append(out, fmt.Sprintf("workload %q asks for %dm of CPU (at most %dm, no burst)", w.Name, cpu, claimableMaxCPUMillicore))
-			}
-			if mem := max(r.MemoryRequestBytes, r.MemoryLimitBytes); mem > claimableMaxMemoryMiB<<20 {
-				out = append(out, fmt.Sprintf("workload %q asks for %d MiB of memory (at most %d MiB, no burst)", w.Name, mem>>20, claimableMaxMemoryMiB))
+			if err := deploy.CheckHostedResources(deploy.HostedPlanClaimable, w.Spec.Resources); err != nil {
+				var r *deploy.ResourcesRefusal
+				if errors.As(err, &r) {
+					out = append(out, fmt.Sprintf("workload %q %s\n      fix: give it, in its binding (deploy/kcl/<env>/main.k): %s",
+						w.Name, r.Reason, r.Fix()))
+				} else {
+					out = append(out, fmt.Sprintf("workload %q: %v", w.Name, err))
+				}
 			}
 		}
 		if w.Spec.StorageGiB > 0 {
@@ -275,10 +416,10 @@ func claimableIneligibility(e *KCLEntities) []string {
 			}
 		}
 	}
-	if services > claimableMaxServices {
-		out = append(out, fmt.Sprintf("%d services (%d is allowed)", services, claimableMaxServices))
+	if services > deploy.ClaimableMaxServices {
+		out = append(out, fmt.Sprintf("%d services (%d is allowed)", services, deploy.ClaimableMaxServices))
 	}
-	if jobs > 1 || (jobs == 1 && services == 0) {
+	if jobs > deploy.ClaimableMaxMigrationJobs || (jobs == 1 && services == 0) {
 		out = append(out, "a job that gates no service (only a service's own migration job is allowed)")
 	}
 	var dbs, sites int
@@ -292,24 +433,148 @@ func claimableIneligibility(e *KCLEntities) []string {
 			sites++
 		}
 	}
-	if dbs > claimableMaxDatabases {
-		out = append(out, fmt.Sprintf("%d databases (%d is allowed)", dbs, claimableMaxDatabases))
+	if dbs > deploy.ClaimableMaxDatabases {
+		out = append(out, fmt.Sprintf("%d databases (%d is allowed)", dbs, deploy.ClaimableMaxDatabases))
 	}
-	if sites > claimableMaxStaticSites {
-		out = append(out, fmt.Sprintf("%d static sites (%d is allowed)", sites, claimableMaxStaticSites))
+	if sites > deploy.ClaimableMaxStaticSites {
+		out = append(out, fmt.Sprintf("%d static sites (%d is allowed)", sites, deploy.ClaimableMaxStaticSites))
 	}
 	sort.Strings(out)
 	return out
 }
 
+// claimableAdmission is every local check of an anonymous deploy: the plan's
+// structural caps (claimableIneligibility), then, if those pass, the hosted
+// plan the deploy itself will run under the claimable plan (restricted
+// profile, resources, references), so a refusal there also costs no build.
+func claimableAdmission(env string, e *KCLEntities) []string {
+	if reasons := claimableIneligibility(e); len(reasons) > 0 {
+		return reasons
+	}
+	restore := useClaimablePreview()
+	defer restore()
+	group, err := buildHostedGroup(env, e)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	if group == nil {
+		return nil
+	}
+	if _, err := deploytarget.PreflightHosted(*group); err != nil {
+		return []string{err.Error()}
+	}
+	return nil
+}
+
 func claimableIneligibleError(env string, reasons []string) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "env %q does not fit an anonymous deploy. An unclaimed deploy is one static site, or one service with one database; it cannot have:", env)
+	fmt.Fprintf(&b, "env %q does not fit an anonymous deploy. An unclaimed deploy is one static site, or one service "+
+		"(at most %dm / %d MiB, request and limit) with its migration job and one database; it cannot have:",
+		env, deploy.ClaimableCPUMillicores, deploy.ClaimableMemoryBytes>>20)
 	for _, r := range reasons {
-		fmt.Fprintf(&b, "\n  - %s", r)
+		fmt.Fprintf(&b, "\n  - %s", strings.ReplaceAll(r, "<env>", env))
 	}
-	fmt.Fprintf(&b, "\nsign up for the rest: forge login, then forge env deploy %s", env)
+	fmt.Fprintf(&b, "\nor deploy it to your own account instead: forge login, then forge env deploy %s", env)
 	return &claimableRefusal{exit: exitRefused, code: cloud.CodeFailedPrecondition, reason: reasonClaimableIneligible, msg: b.String()}
+}
+
+// needsCompute reports whether the env runs anything but a static site under
+// the claimable plan: a service, a job or a database.
+func needsCompute(e *KCLEntities) bool {
+	for _, w := range e.Workloads {
+		if w.OnRuntime(RuntimeHosted) {
+			return true
+		}
+	}
+	for _, d := range e.Databases {
+		if d.Hosted() {
+			return true
+		}
+	}
+	return false
+}
+
+// claimableAvailabilityOf asks the control plane whether this env could be
+// deployed anonymously right now. ok is false when the question could not be
+// answered (an older control plane, a network failure): the caller then lets
+// the challenge and the start answer for themselves.
+func claimableAvailabilityOf(ctx context.Context, ep cloud.Endpoint) (cloud.ClaimableAvailability, bool, error) {
+	av, err := claimableAPI(ep).Availability(ctx)
+	if err == nil {
+		return av, true, nil
+	}
+	var ce *cloud.Error
+	if errors.As(err, &ce) && ce.HasCode(cloud.CodeUnimplemented) {
+		return cloud.ClaimableAvailability{}, false, nil
+	}
+	if errors.As(err, &ce) && ce.HTTPStatus == http.StatusNotFound {
+		return cloud.ClaimableAvailability{}, false, nil
+	}
+	return cloud.ClaimableAvailability{}, false, err
+}
+
+// availabilityCauses are the causes that block THIS env: the start's when it
+// must mint a new anonymous deploy (a redeploy of a stored one is not a
+// start), plus compute's when the env runs a service or a database.
+func availabilityCauses(av cloud.ClaimableAvailability, minting, compute bool) []cloud.ClaimableCause {
+	var out []cloud.ClaimableCause
+	if minting {
+		out = append(out, av.Causes...)
+	}
+	if compute && !av.ComputeAvailable {
+		out = append(out, av.ComputeCauses...)
+	}
+	return out
+}
+
+// requireClaimableAvailable is the preflight: before any proof of work, any
+// account and any build, refuse an env the platform cannot take anonymously
+// right now, saying why.
+func requireClaimableAvailable(ctx context.Context, ep cloud.Endpoint, env string, e *KCLEntities, minting bool) error {
+	av, ok, err := claimableAvailabilityOf(ctx, ep)
+	if err != nil || !ok {
+		return nil // unanswerable: the start reports for itself
+	}
+	if causes := availabilityCauses(av, minting, needsCompute(e)); len(causes) > 0 {
+		return claimableUnavailableError(env, ep, causes)
+	}
+	return nil
+}
+
+// claimableUnavailableError renders why the platform cannot take an
+// anonymous deploy, cause by cause, in the platform's own words. An anonymous
+// deploy was asked for, so signing in is offered only as the alternative.
+func claimableUnavailableError(env string, ep cloud.Endpoint, causes []cloud.ClaimableCause) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Claimable (anonymous) deploys are not available at %s for env %q. Nothing was created.", ep.URL, env)
+	retry := false
+	for _, c := range causes {
+		fmt.Fprintf(&b, "\n  %-24s %s", claimableCauseLabel(c), strings.TrimSuffix(c.Message, "."))
+		retry = retry || c.Code == cloud.ClaimableCauseDependencyUnavailable
+	}
+	if retry {
+		b.WriteString("\n  This is the platform's configuration, not your project: retry once it is fixed.")
+	}
+	fmt.Fprintf(&b, "\n  alternative: deploy to your own account instead: forge login, then %s env deploy %s", Name(), env)
+	first := causes[0]
+	return &claimableRefusal{
+		exit: exitRefused, code: cloud.CodeUnavailable, reason: cloud.ReasonClaimableUnavailable,
+		msg: b.String(), cause: &first,
+	}
+}
+
+func claimableCauseLabel(c cloud.ClaimableCause) string {
+	switch c.Code {
+	case cloud.ClaimableCauseDisabled:
+		return "disabled by operator:"
+	case cloud.ClaimableCauseDependencyUnavailable:
+		return "unavailable dependency (" + c.Component + "):"
+	case cloud.ClaimableCauseNotSupported:
+		return "not supported yet:"
+	case cloud.ClaimableCauseNotDeployed:
+		return "not deployed:"
+	}
+	return c.Code + ":"
 }
 
 // obtainClaimable returns this machine's anonymous deploy for (project, env):
@@ -345,7 +610,7 @@ func obtainClaimable(ctx context.Context, out io.Writer, ep cloud.Endpoint, proj
 	for attempt := 0; ; attempt++ {
 		ch, err := api.Challenge(ctx)
 		if err != nil {
-			return nil, claimableStartError(env, err)
+			return nil, claimableStartError(ep, env, err)
 		}
 		fmt.Fprintf(out, "Requesting an anonymous deploy for %s/%s (solving a %d-bit proof of work)…\n", project, env, ch.DifficultyBits)
 		nonce, err := cloud.SolvePoW(ctx, ch)
@@ -364,7 +629,7 @@ func obtainClaimable(ctx context.Context, out io.Writer, ep cloud.Endpoint, proj
 		if attempt == 0 && errors.As(err, &ce) && ce.HasReason(cloud.ReasonClaimableInvalidPoW) {
 			continue
 		}
-		return nil, claimableStartError(env, err)
+		return nil, claimableStartError(ep, env, err)
 	}
 	cred, err := cloud.StoreClaimable(ep, project, env, started, now)
 	if err != nil {
@@ -418,20 +683,25 @@ func claimableDeployError(env string, err error) error {
 	return err
 }
 
-// claimableStartError renders a refusal of StartClaimableDeploy.
-func claimableStartError(env string, err error) error {
+// claimableStartError renders a refusal of StartClaimableDeploy (or of its
+// challenge).
+func claimableStartError(ep cloud.Endpoint, env string, err error) error {
 	if th, ok := cloud.ClaimableThrottleOf(err); ok {
 		return newClaimableThrottle(env, th)
 	}
 	var ce *cloud.Error
 	if errors.As(err, &ce) {
 		switch {
+		case ce.HasCode(cloud.CodeUnimplemented) || ce.HTTPStatus == http.StatusNotFound:
+			return claimableUnavailableError(env, ep, []cloud.ClaimableCause{{Code: cloud.ClaimableCauseNotDeployed,
+				Message: "this control plane does not serve claimable deploys (no ClaimableService)"}})
 		case ce.HasReason(cloud.ReasonClaimableUnavailable):
-			return &claimableRefusal{
-				exit: exitRefused, code: ce.Code, reason: cloud.ReasonClaimableUnavailable,
-				msg: fmt.Sprintf("Claimable deploys are not available right now. Nothing was created.\n"+
-					"  instead  forge login, then forge env deploy %s (your own free account)", env),
+			cause, ok := cloud.ClaimableUnavailableCauseOf(err)
+			if !ok {
+				// A control plane that names no cause: say what it said.
+				cause = cloud.ClaimableCause{Code: "unavailable", Message: emptyAs(ce.Message, "the control plane refused anonymous deploys without saying why")}
 			}
+			return claimableUnavailableError(env, ep, []cloud.ClaimableCause{cause})
 		case ce.HasReason(cloud.ReasonClaimableTakenDown), ce.HasReason(cloud.ReasonClaimableExpired), ce.HasReason(cloud.ReasonClaimableClaimed):
 			return &claimableRefusal{exit: exitRefused, code: ce.Code, reason: ce.Reason, msg: fmt.Sprintf("%s\n  (reason: %s)", ce.Message, ce.Reason)}
 		case ce.HasCode(cloud.CodeInvalidArgument), ce.HasCode(cloud.CodeFailedPrecondition):

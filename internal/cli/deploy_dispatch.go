@@ -746,6 +746,7 @@ func buildHostedGroup(envName string, entities *KCLEntities) (*deploytarget.Serv
 		Env:        envName,
 		ProviderID: deploytarget.HostedProviderID,
 		Services:   services,
+		HostedPlan: hostedPlanOf(entities),
 	}, nil
 }
 

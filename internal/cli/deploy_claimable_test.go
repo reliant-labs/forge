@@ -40,10 +40,24 @@ type fakeClaimableControlPlane struct {
 	authSeen []string
 	// startedWithAuth is true if StartClaimableDeploy ever carried a bearer.
 	startedWithAuth bool
+	// availability is GetClaimableAvailability's answer; nil is "available".
+	availability      *cloud.ClaimableAvailability
+	availabilityCalls int
 }
 
 func (f *fakeClaimableControlPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
+	case "/" + cloud.ProcGetClaimableAvailability:
+		f.mu.Lock()
+		f.availabilityCalls++
+		av := cloud.ClaimableAvailability{Available: true, ComputeAvailable: true}
+		if f.availability != nil {
+			av = *f.availability
+		}
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(av)
+		return
 	case "/" + cloud.ProcGetClaimableChallenge:
 		f.mu.Lock()
 		f.challenges++
@@ -394,6 +408,16 @@ func TestClaimableIneligibility(t *testing.T) {
 		w.Spec.Resources = v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 256 << 20}
 		return w
 	}
+	gating := func(name string) WorkloadEntity {
+		w := svc(name, "job")
+		w.Spec.Before = []string{v1alpha1.BeforeAll}
+		return w
+	}
+	postRollout := func(name string) WorkloadEntity {
+		w := svc(name, "job")
+		w.Spec.DeployPhase = v1alpha1.DeployPhasePostRollout
+		return w
+	}
 	cases := []struct {
 		name string
 		e    *KCLEntities
@@ -401,6 +425,12 @@ func TestClaimableIneligibility(t *testing.T) {
 	}{
 		{"one service", &KCLEntities{Workloads: []WorkloadEntity{svc("api", "service")}}, nil},
 		{"service and its pre-rollout migration", &KCLEntities{Workloads: []WorkloadEntity{svc("api", "service"), svc("migrate", "job")}}, nil},
+		// The scaffold's migrate job gates every workload (`before =
+		// [fw.BEFORE_ALL]`): it has no deployPhase of its own, and IS the
+		// service's migration.
+		{"service and its gating migration", &KCLEntities{Workloads: []WorkloadEntity{svc("api", "service"), gating("migrate")}}, nil},
+		{"a post-rollout job", &KCLEntities{Workloads: []WorkloadEntity{svc("api", "service"), postRollout("seed")}},
+			[]string{`job "seed" runs after the rollout`}},
 		{"a worker", &KCLEntities{Workloads: []WorkloadEntity{svc("api", "service"), svc("w", "worker")}}, []string{"worker \"w\""}},
 		{"two services", &KCLEntities{Workloads: []WorkloadEntity{svc("a", "service"), svc("b", "service")}}, []string{"2 services"}},
 		{"a cron", &KCLEntities{Workloads: []WorkloadEntity{svc("c", "cron")}}, []string{"cron \"c\""}},
@@ -418,7 +448,7 @@ func TestClaimableIneligibility(t *testing.T) {
 		}
 	}
 	err := claimableIneligibleError("prod", []string{"worker \"w\" (only one service may run)"})
-	if exitCodeForError(err) != exitRefused || !strings.Contains(err.Error(), "sign up for the rest: forge login") {
+	if exitCodeForError(err) != exitRefused || !strings.Contains(err.Error(), "deploy it to your own account instead: forge login") {
 		t.Errorf("ineligible error: code=%d %s", exitCodeForError(err), err)
 	}
 }
@@ -448,8 +478,13 @@ func TestClaimableIneligibilityChecksTheClaimableCaps(t *testing.T) {
 			[]string{`workload "api" asks for 512 MiB of memory (at most 256 MiB, no burst)`}},
 		{"a limit above the cap is a burst", svc(v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 256 * mib, MemoryLimitBytes: 1024 * mib}, 1),
 			[]string{"1024 MiB of memory"}},
-		{"the entry shape (250m / 1Gi) is over the memory cap", svc(v1alpha1.Resources{}, 1),
-			[]string{"1024 MiB of memory (at most 256 MiB, no burst)"}},
+		{"the entry shape (250m / 1Gi) is over the memory cap, with the exact fix", svc(v1alpha1.Resources{}, 1),
+			[]string{"1024 MiB of memory (at most 256 MiB, no burst)",
+				"resources = fw.Resources {cpuRequestMillicores = 250, cpuLimitMillicores = 250, memoryRequestBytes = forge.mib(256), memoryLimitBytes = forge.mib(256)}"}},
+		// Off the hosted shape band (125m needs exactly 512 MiB there), and
+		// inside the claimable caps: the band is not this plan's rule.
+		{"125m / 256Mi passes: the shape band does not apply", svc(v1alpha1.Resources{CPURequestMillicores: 125, MemoryRequestBytes: 256 * mib}, 1), nil},
+		{"100m / 256Mi passes: no 125m granularity either", svc(v1alpha1.Resources{CPURequestMillicores: 100, MemoryRequestBytes: 256 * mib}, 1), nil},
 		{"two replicas", svc(v1alpha1.Resources{CPURequestMillicores: 250, MemoryRequestBytes: 256 * mib}, 2),
 			[]string{`workload "api" asks for 2 replicas (1 is allowed)`}},
 	}
@@ -477,18 +512,128 @@ func TestRefuseClaimableFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, mod := range map[string]func(*deployCmdFlags){
-		"--dry-run":  func(f *deployCmdFlags) { f.dryRun = true },
-		"--explain":  func(f *deployCmdFlags) { f.explain = true },
-		"--target":   func(f *deployCmdFlags) { f.targets = []string{"api"} },
-		"a release":  func(f *deployCmdFlags) { f.promote.version = "v1" },
-		"--plan":     func(f *deployCmdFlags) { f.promote.plan = true },
-		"--offline-": func(f *deployCmdFlags) { f.offlineLedger = true },
+		"--dry-run":                  func(f *deployCmdFlags) { f.dryRun = true },
+		"--explain":                  func(f *deployCmdFlags) { f.explain = true },
+		"--target":                   func(f *deployCmdFlags) { f.targets = []string{"api"} },
+		"a release":                  func(f *deployCmdFlags) { f.promote.version = "v1" },
+		"--plan":                     func(f *deployCmdFlags) { f.promote.plan = true },
+		"--dry-run with --plan-only": func(f *deployCmdFlags) { f.dryRun, f.promote.planOnly = true, true },
+		"--offline-":                 func(f *deployCmdFlags) { f.offlineLedger = true },
 	} {
 		g := deployCmdFlags{}
 		mod(&g)
 		if err := refuseClaimableFlags("prod", g); err == nil || !strings.Contains(err.Error(), "--claimable cannot be combined") {
 			t.Errorf("%s: err = %v", name, err)
 		}
+	}
+	// --plan-only is the local eligibility preview, with or without --plan.
+	for _, g := range []deployCmdFlags{{promote: promoteCmdFlags{planOnly: true}}, {promote: promoteCmdFlags{plan: true, planOnly: true}}} {
+		if err := refuseClaimableFlags("prod", g); err != nil {
+			t.Errorf("--plan-only must be allowed: %v", err)
+		}
+	}
+}
+
+// An unavailable platform is named cause by cause, and an anonymous deploy is
+// never told to sign up as its remedy: that is offered only as the
+// alternative.
+func TestClaimableUnavailableError_NamesEachCause(t *testing.T) {
+	t.Parallel()
+	ep := cloud.Endpoint{URL: "https://admin.example.test"}
+	err := claimableUnavailableError("prod", ep, []cloud.ClaimableCause{
+		{Code: cloud.ClaimableCauseDisabled, Component: "claimable_deploys.enabled", Message: "an operator has switched off anonymous (claimable) deploys on this platform (its configured default)"},
+		{Code: cloud.ClaimableCauseDependencyUnavailable, Component: "content_scan_web_risk", Message: "the Web Risk reputation scan every anonymous upload must pass is required but not configured"},
+		{Code: cloud.ClaimableCauseNotSupported, Component: "network_policing", Message: "anonymous services and databases cannot run on this platform yet"},
+	})
+	for _, want := range []string{
+		`Claimable (anonymous) deploys are not available at https://admin.example.test for env "prod". Nothing was created.`,
+		"disabled by operator:",
+		"unavailable dependency (content_scan_web_risk):",
+		"not supported yet:",
+		"alternative: deploy to your own account instead: forge login",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error lacks %q:\n%s", want, err)
+		}
+	}
+	if exitCodeForError(err) != exitRefused {
+		t.Errorf("exit = %d, want 4", exitCodeForError(err))
+	}
+	facts := errorFactsOf(err)
+	if facts.ErrorReason != cloud.ReasonClaimableUnavailable || facts.UnavailableCause != "disabled" || facts.UnavailableComponent != "claimable_deploys.enabled" {
+		t.Errorf("facts = %+v", facts)
+	}
+}
+
+// The preflight: a redeploy of a stored deploy is not a start, so only the
+// compute causes can refuse it; a new deploy is refused by every cause.
+func TestAvailabilityCauses(t *testing.T) {
+	t.Parallel()
+	av := cloud.ClaimableAvailability{
+		Causes:        []cloud.ClaimableCause{{Code: "disabled", Component: "claimable_deploys.enabled"}},
+		ComputeCauses: []cloud.ClaimableCause{{Code: "not_supported", Component: "network_policing"}},
+	}
+	if got := availabilityCauses(av, true, false); len(got) != 1 || got[0].Component != "claimable_deploys.enabled" {
+		t.Errorf("new static site: %+v", got)
+	}
+	if got := availabilityCauses(av, true, true); len(got) != 2 {
+		t.Errorf("new service: %+v", got)
+	}
+	if got := availabilityCauses(av, false, false); len(got) != 0 {
+		t.Errorf("redeploy of a static site: %+v", got)
+	}
+	if got := availabilityCauses(av, false, true); len(got) != 1 || got[0].Component != "network_policing" {
+		t.Errorf("redeploy of a service: %+v", got)
+	}
+}
+
+// An unavailable platform refuses BEFORE any proof of work, start or build.
+func TestClaimableDeploy_UnavailableIsRefusedBeforeAnythingIsCreated(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL and runs the whole CLI; skipped in -short")
+	}
+	fake, _ := claimableFixture(t)
+	fake.availability = &cloud.ClaimableAvailability{Causes: []cloud.ClaimableCause{
+		{Code: "disabled", Component: "claimable_deploys.enabled", Message: "an operator has switched off anonymous (claimable) deploys on this platform"}}}
+
+	out, err := runForge(t, "env", "deploy", "hosted", "--claimable", "--json")
+	if err == nil || exitCodeForError(err) != exitRefused {
+		t.Fatalf("want exit 4; err=%v\n%s", err, out)
+	}
+	if !strings.Contains(err.Error(), "disabled by operator:") {
+		t.Errorf("refusal text:\n%s", err)
+	}
+	if fake.challenges != 0 || fake.starts != 0 {
+		t.Errorf("an unavailable platform still got challenges=%d starts=%d", fake.challenges, fake.starts)
+	}
+	if doc := decodeClaimDoc(t, out); doc["error_reason"] != "claimable_unavailable" || doc["unavailable_cause"] != "disabled" {
+		t.Errorf("json facts = %v", doc)
+	}
+}
+
+// --claimable --plan-only is a local preview: eligibility plus the platform's
+// answer, with no identity, no challenge and no start.
+func TestClaimableDeploy_PlanOnlyPreviewsAndCreatesNothing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL and runs the whole CLI; skipped in -short")
+	}
+	fake, _ := claimableFixture(t)
+	fake.availability = &cloud.ClaimableAvailability{Causes: []cloud.ClaimableCause{
+		{Code: "dependency_unavailable", Component: "claim_secret", Message: "the platform's claim-link signing secret is not configured"}}}
+
+	out, err := runForge(t, "env", "deploy", "hosted", "--claimable", "--plan-only", "--json")
+	if err != nil {
+		t.Fatalf("an eligible env must preview with exit 0: %v\n%s", err, out)
+	}
+	doc := decodeClaimDoc(t, out)
+	if doc["ok"] != true || doc["eligible"] != true {
+		t.Fatalf("doc = %v", doc)
+	}
+	if bc, _ := doc["blocking_causes"].([]any); len(bc) != 1 {
+		t.Errorf("blocking_causes = %v, want the platform's one cause reported", doc["blocking_causes"])
+	}
+	if fake.challenges != 0 || fake.starts != 0 || len(fake.authSeen) != 0 {
+		t.Errorf("a preview touched the account path: challenges=%d starts=%d authed=%d", fake.challenges, fake.starts, len(fake.authSeen))
 	}
 }
 

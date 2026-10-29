@@ -81,6 +81,12 @@ func withholdServiceCatalog(files []bundle.ObservabilityFile, reader *release.Bu
 	if reader.Supports(release.BundleFeatureServiceCatalog) {
 		return files, false
 	}
+	return dropServiceCatalog(files)
+}
+
+// dropServiceCatalog returns files without the service catalog, and whether
+// it was there.
+func dropServiceCatalog(files []bundle.ObservabilityFile) ([]bundle.ObservabilityFile, bool) {
 	out := make([]bundle.ObservabilityFile, 0, len(files))
 	for _, f := range files {
 		if f.Path != servicecatalog.BundlePath {

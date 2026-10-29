@@ -44,4 +44,8 @@ func TestServiceCatalogIsWithheldFromAReaderThatDoesNotNameIt(t *testing.T) {
 	if _, withheld := withholdServiceCatalog(files[:1], &release.BundleReader{}); withheld {
 		t.Error("a bundle with no catalog reports nothing withheld")
 	}
+	// A composition bundle never carries it: its assets ride the 1 MiB config blob.
+	if got, dropped := dropServiceCatalog(files); !dropped || len(got) != 1 || got[0].Path == servicecatalog.BundlePath {
+		t.Errorf("dropServiceCatalog = %v, %v; want the catalog dropped", got, dropped)
+	}
 }

@@ -58,8 +58,9 @@ func TestPlacementCompositionHostedSPAOnlyWithOpenBaoSeals(t *testing.T) {
 		bao("apps/v1", "Deployment", "store", container("openbao")) +
 		bao("batch/v1", "Job", "store-converge-abcd1234", strings.Replace(container("converge"), "    spec:\n", "    spec:\n      restartPolicy: Never\n", 1)) +
 		bao("v1", "ConfigMap", "store-config", "data: {config.hcl: x}\n") +
-		// The record hostedBundleObjects seals for a hosted frontend.
-		"---\n# cluster: hosted\napiVersion: forge.dev/v1alpha1\nkind: StaticSite\nmetadata:\n  name: web\n  labels:\n    app.kubernetes.io/name: web\nspec: {}\n"
+		// The record hostedBundleObjects seals for a hosted frontend: it
+		// serves exactly the site release the snapshot binds web to.
+		"---\n# cluster: hosted\napiVersion: forge.dev/v1alpha1\nkind: StaticSite\nmetadata:\n  name: web\n  labels:\n    app.kubernetes.io/name: web\nspec:\n  releaseRepository: registry.test/reliant\n  liveDigest: " + digest + "\n"
 	in := bundle.BuildInput{Project: "shop", Env: "prod", CreatedAt: time.Unix(1700000000, 0).UTC(), Placements: placements,
 		Provenance: release.Provenance{Repo: "r", Commit: strings.Repeat("c", 40), Tree: strings.Repeat("0", 40), ForgeVersion: "v"},
 		Shape:      bundle.ShapeInput{Kind: release.EnvPersistent, Clusters: []string{"prod", release.BundleHostedCluster}, Manifests: stream}}

@@ -1,4 +1,5 @@
-# shellcheck shell=bash
+#!/usr/bin/env bash
+# Sourced, not run; the shebang names its dialect for shellcheck.
 # release-lock.sh — one release of a version at a time, across machines. Sourced by the
 # release scripts (forge scripts/release-forge.sh, reliant scripts/release-tag.sh,
 # control-plane scripts/cut-release.sh; the same file in each repo).

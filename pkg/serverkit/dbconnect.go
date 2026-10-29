@@ -199,7 +199,8 @@ func RetryConnect(ctx context.Context, p ConnectPolicy, attempt func(ctx context
 }
 
 // OpenDB opens a *sql.DB, applies the pool tuning, and verifies connectivity
-// with RetryConnect. The pool is closed on failure, so a database that never
+// with RetryConnect. With pool.MinIdleConns set it then keeps that many
+// connections dialled (KeepIdleWarm) for the life of the pool. The pool is closed on failure, so a database that never
 // comes up does not leak a half-open pool into the exit path.
 //
 // The "pgx" driver (the default) is opened so that the pool rides through a
@@ -218,6 +219,9 @@ func OpenDB(ctx context.Context, driver, dsn string, pool DBPoolTuning, p Connec
 	if err := RetryConnect(ctx, p, db.PingContext); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	if n := minIdleFor(pool); n > 0 {
+		go KeepIdleWarm(db, n)
 	}
 	return db, nil
 }

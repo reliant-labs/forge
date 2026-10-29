@@ -326,10 +326,10 @@ type Operator interface {
 	Name() string
 }
 
-// DBPoolTuning groups the four sql.DB pool knobs the caller applies to
-// its migration connection via ApplyDBPoolTuning. Values come from the
-// project config so operators can tune them per environment without
-// recompiling. A zero/empty field leaves the corresponding setting at
+// DBPoolTuning groups the sql.DB pool knobs: the four ApplyDBPoolTuning
+// sets on a pool, and MinIdleConns, which OpenDB keeps warm. Values come
+// from the project config so operators can tune them per environment
+// without recompiling. A zero/empty field leaves the corresponding setting at
 // Go's default.
 type DBPoolTuning struct {
 	// MaxOpenConns caps total open connections. 0 = unlimited.
@@ -345,6 +345,12 @@ type DBPoolTuning struct {
 	// ConnMaxLifetime is the absolute lifetime of any connection.
 	// Zero disables the limit.
 	ConnMaxLifetime time.Duration
+
+	// MinIdleConns keeps this many connections dialled and idle, so a
+	// request finds one ready instead of waiting for a dial (see
+	// KeepIdleWarm). Capped at the pool's idle and open limits. 0 = off,
+	// database/sql's own behavior: dial on demand.
+	MinIdleConns int
 }
 
 // Config bundles every knob Run reads from the project's *config.Config.

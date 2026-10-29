@@ -77,7 +77,7 @@ func spareMaxAgeFor(t DBPoolTuning) time.Duration {
 // database sees at most MaxOpenConns connections from this pool, give or
 // take a dial racing a request's. database/sql closes the connector when the
 // pool closes (it calls io.Closer on its connector), which stops the filler
-// and closes the spares.
+// and closes the spares, without waiting on a dial in flight.
 type spareConnector struct {
 	driver.Connector
 
@@ -253,11 +253,15 @@ func (c *spareConnector) Close() error {
 	spares := c.spares
 	c.spares = nil
 	c.mu.Unlock()
+	// Close does not wait for the filler. Cancelling ends a dial in flight
+	// when the connector honours its context; one that does not (a driver
+	// without DriverContext dials with Driver.Open) could otherwise hold
+	// DB.Close for as long as its dial hangs. Whatever such a dial returns,
+	// put refuses and the filler closes before it exits.
 	c.cancel()
 	// The filler may never have started; starting it now as a no-op makes
 	// done close either way.
 	c.start.Do(func() { close(c.done) })
-	<-c.done
 	for _, s := range spares {
 		_ = s.conn.Close()
 	}

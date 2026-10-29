@@ -2,6 +2,7 @@ package obsbackend
 
 import (
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -33,6 +34,27 @@ type TreeNode struct {
 	// Hidden counts descendants not rendered because of a cap, so the output
 	// can say "… 12 more spans" instead of dropping them silently.
 	Hidden int
+	// Uninstrumented is how much of the span no child span covers, when that
+	// is enough to be where the time went (see [IsGap]); zero otherwise. A
+	// handler that took 10s with 15ms of children spent the rest in code that
+	// emitted no span, and the reader should look there, not at the children.
+	// Gap is the largest such stretch, as offsets from the span's start.
+	Uninstrumented time.Duration
+	Gap            [2]time.Duration
+}
+
+// Thresholds for reporting a span's uninstrumented time: at least
+// GapMinDuration, and at least GapMinShare of the span. Smaller gaps are the
+// ordinary cost of code between calls.
+const (
+	GapMinDuration = 50 * time.Millisecond
+	GapMinShare    = 0.2
+)
+
+// IsGap reports whether uninstrumented time gap in a span of duration dur is
+// worth pointing at.
+func IsGap(gap, dur time.Duration) bool {
+	return gap >= GapMinDuration && float64(gap) >= GapMinShare*float64(dur)
 }
 
 // Tree is a rendered trace.
@@ -221,6 +243,7 @@ func (b *treeBuilder) build(s *Span, depth int) *TreeNode {
 	b.t.Shown++
 	cs := b.kids[s.SpanID]
 	orderSpans(cs)
+	nd.Uninstrumented, nd.Gap = uninstrumented(s, cs)
 	if !b.full && depth >= MaxTreeDepth {
 		for _, c := range cs {
 			nd.Hidden += b.size(c)
@@ -279,9 +302,54 @@ func collapse(ms []*Span, first time.Time, budget, shown *int) *TreeNode {
 	}
 }
 
+// uninstrumented is the part of s no child covers, and its largest stretch,
+// when [IsGap] says it matters. A leaf counts only when its kind says the work
+// was its own: a client or producer span's time is spent by the peer it
+// called, which is not a gap in this service's instrumentation.
+func uninstrumented(s *Span, kids []*Span) (time.Duration, [2]time.Duration) {
+	dur := time.Duration(s.DurationNs)
+	if len(kids) == 0 {
+		switch strings.ToLower(s.Kind) {
+		case "client", "producer", "":
+			return 0, [2]time.Duration{}
+		}
+		if IsGap(dur, dur) {
+			return dur, [2]time.Duration{0, dur}
+		}
+		return 0, [2]time.Duration{}
+	}
+	// kids are ordered by start; walk the union of their intervals, clipped
+	// to the parent.
+	var covered, cursor time.Duration
+	var largest [2]time.Duration
+	note := func(from, to time.Duration) {
+		if to-from > largest[1]-largest[0] {
+			largest = [2]time.Duration{from, to}
+		}
+	}
+	for _, k := range kids {
+		from := min(max(k.Start.Sub(s.Start), 0), dur)
+		to := min(max(from+time.Duration(k.DurationNs), from), dur)
+		if from > cursor {
+			note(cursor, from)
+		}
+		if to > cursor {
+			covered += to - max(from, cursor)
+			cursor = to
+		}
+	}
+	if cursor < dur {
+		note(cursor, dur)
+	}
+	gap := dur - covered
+	if !IsGap(gap, dur) {
+		return 0, [2]time.Duration{}
+	}
+	return gap, largest
+}
+
 func isErrorSpan(s *Span) bool {
-	switch s.StatusCode {
-	case "error":
+	if strings.EqualFold(strings.TrimPrefix(strings.ToUpper(s.StatusCode), "STATUS_CODE_"), "error") {
 		return true
 	}
 	for _, e := range s.Events {

@@ -333,11 +333,6 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
 	}
 
-	prerequisites, err := placementPrerequisites(in, docs, shape.Objects)
-	if err != nil {
-		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
-	}
-
 	extra, err := observabilityEntries(in.Observability)
 	if err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
@@ -348,6 +343,11 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 	}
 	if err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: pack manifests: %w", in.Project, in.Env, err)
+	}
+	// From the same parse and the sealed trees, so unit order is PlanTrees'.
+	prerequisites, err := placementPrerequisites(in, docs, shape.Objects, trees)
+	if err != nil {
+		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
 	}
 	// THE INGEST GATE, run at build so forge refuses to cut a bundle the
 	// control plane would refuse to record. It is the same function, over the

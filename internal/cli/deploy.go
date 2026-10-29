@@ -1342,9 +1342,6 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		return err
 	}
 	entities, fullEntities = withoutWorkloads(entities, opts.omitWorkloads), withoutWorkloads(fullEntities, opts.omitWorkloads)
-	if err := preflightPlacementDeploy(ctx, projectDir, envName, fullEntities); err != nil {
-		return err
-	}
 
 	// A targeted deploy is still a deploy INTO the whole env's topology: a
 	// target may be a group of raw manifests that no entity owns (so the

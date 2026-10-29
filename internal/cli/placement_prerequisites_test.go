@@ -59,6 +59,47 @@ func TestPlacementPrerequisitesFrontendDeclarations(t *testing.T) {
 	}
 }
 
+// The composition snapshot keeps a build-only artifact consumer; the
+// placement declarations (the preflight, before any build) omit it, and every
+// runtime consumer of the snapshot has a declaration, so sealing cannot fail.
+func TestPlacementPrerequisitesCompositionWithBuildOnly(t *testing.T) {
+	e := &KCLEntities{
+		Workloads: []WorkloadEntity{
+			{Name: "api", Runtime: RuntimeEntity{Type: RuntimeCluster, Cluster: &ClusterRuntime{Cluster: "prod"}}},
+			{Name: "cli", Runtime: RuntimeEntity{Type: RuntimeBuildOnly}},
+		},
+		Frontends: []FrontendEntity{orderFrontend("web", FrontendRuntimeHosted, nil)},
+	}
+	consumers, err := compositionConsumers(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decl, err := bundlePlacementDeclarations(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := map[string]bool{}
+	for _, d := range decl {
+		declared[d.Workload] = true
+	}
+	if declared["cli"] || !declared["api"] || !declared["web"] {
+		t.Fatalf("declarations = %+v", decl)
+	}
+	sawBuildOnly := false
+	for _, c := range consumers {
+		if c.Key.Workload == "cli" {
+			sawBuildOnly = true
+			continue
+		}
+		if !declared[c.Key.Workload] {
+			t.Errorf("runtime consumer %s has no placement declaration", c.Key.Workload)
+		}
+	}
+	if !sawBuildOnly {
+		t.Fatal("build-only artifact dropped from the composition snapshot")
+	}
+}
+
 func TestPlacementPrerequisitesSameStageCycle(t *testing.T) {
 	e := &KCLEntities{Workloads: []WorkloadEntity{orderClusterWorkload("a", map[string]string{"b": "v1"}), orderClusterWorkload("b", map[string]string{"a": "v1"})}}
 	if _, err := deployStageOrder(e); err == nil || !strings.Contains(err.Error(), "cycle") {

@@ -2,6 +2,7 @@ package bundle
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/reliant-labs/forge/pkg/release"
@@ -17,7 +18,7 @@ type PlacementDeclaration struct {
 	Unit         string
 }
 
-func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.ShapeObject) (*release.PlacementPrerequisites, error) {
+func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.ShapeObject, trees []release.BundleTree) (*release.PlacementPrerequisites, error) {
 	cluster, hosted := false, false
 	for _, o := range objects {
 		if o.Cluster == release.BundleHostedCluster {
@@ -108,9 +109,11 @@ func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.S
 			}
 		}
 	}
-	// Unit constraints use actual sealed object labels, including same-stage
-	// edges. Missing units are errors, never dropped as irrelevant stage edges.
-	units := map[string][]release.PlacementKey{}
+	// Unit order is the sealed trees' own (release.PlanTrees over the complete
+	// inventory, typos already refused there): the implicit base dependency
+	// exists only when base renders, and a unit holding only support objects
+	// passes ordering through without becoming an invented readiness item.
+	unitItems := map[string][]release.PlacementKey{}
 	objectUnits := map[release.ObjectKey]string{}
 	for _, doc := range docs {
 		for _, c := range doc.clusters {
@@ -120,42 +123,48 @@ func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.S
 	for _, item := range p.Items {
 		k := item.Key
 		if k.Runtime == "hosted" {
-			continue
-		} // hosted records carry no cluster delivery-unit declaration
+			continue // hosted records are flat: no delivery unit
+		}
 		u := objectUnits[release.ObjectKey{Cluster: k.Cluster, Kind: k.Kind, Namespace: k.Namespace, Name: k.Name}]
-		if u == "" {
-			u = release.DefaultDeliveryUnit
-		}
-		units[u] = append(units[u], k)
+		unitItems[u] = append(unitItems[u], k)
 	}
-	declaredUnits := map[string]release.DeliveryUnit{}
-	for _, u := range in.Units {
-		if _, exists := declaredUnits[u.Name]; exists {
-			return nil, fmt.Errorf("duplicate placement unit %s", u.Name)
-		}
-		declaredUnits[u.Name] = u
+	treeAt := map[string]release.BundleTree{}
+	for _, t := range trees {
+		treeAt[t.Path] = t
 	}
-	for name := range units {
-		if _, exists := declaredUnits[name]; !exists {
-			declaredUnits[name] = release.DeliveryUnit{Name: name}
-		}
-	}
-	for _, u := range declaredUnits {
-		peers := u.After
-		if peers == nil && u.Name != release.DefaultDeliveryUnit {
-			peers = []string{release.DefaultDeliveryUnit}
-		}
-		for _, peer := range peers {
-			if len(units[peer]) == 0 {
-				return nil, fmt.Errorf("placement unit %s has missing predecessor unit %s", u.Name, peer)
-			}
-			if len(units[u.Name]) == 0 {
-				return nil, fmt.Errorf("placement unit %s has no sealed items", u.Name)
-			}
-			for _, a := range units[peer] {
-				for _, b := range units[u.Name] {
-					add(a, b)
+	unitAfter := map[string]map[string]bool{}
+	for _, t := range trees {
+		for _, path := range t.DependsOn {
+			if dep, ok := treeAt[path]; ok && dep.Unit != t.Unit {
+				if unitAfter[t.Unit] == nil {
+					unitAfter[t.Unit] = map[string]bool{}
 				}
+				unitAfter[t.Unit][dep.Unit] = true
+			}
+		}
+	}
+	// predecessors are the nearest units with items, walking through
+	// support-only units; their own predecessors order them transitively.
+	var predecessors func(unit string, seen map[string]bool) []release.PlacementKey
+	predecessors = func(unit string, seen map[string]bool) []release.PlacementKey {
+		var out []release.PlacementKey
+		for dep := range unitAfter[unit] {
+			if seen[dep] {
+				continue
+			}
+			seen[dep] = true
+			if len(unitItems[dep]) > 0 {
+				out = append(out, unitItems[dep]...)
+			} else {
+				out = append(out, predecessors(dep, seen)...)
+			}
+		}
+		return out
+	}
+	for unit, items := range unitItems {
+		for _, a := range predecessors(unit, map[string]bool{}) {
+			for _, b := range items {
+				add(a, b)
 			}
 		}
 	}
@@ -245,6 +254,11 @@ func snapshotPlacements(s release.Snapshot, declarations []PlacementDeclaration)
 	}
 	var out []PlacementDeclaration
 	for _, c := range s.Consumers {
+		// A build-only artifact has no runtime placement: it stays in the
+		// snapshot's artifacts and is no prerequisite item.
+		if slices.Equal(c.Slots, []string{"build-only"}) {
+			continue
+		}
 		d, ok := byName[c.Key.Workload]
 		if !ok {
 			return nil, fmt.Errorf("snapshot consumer %s lacks placement declaration", c.Key.Workload)

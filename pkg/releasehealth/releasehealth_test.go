@@ -353,3 +353,29 @@ func TestWithStandingAlertsIsBoundedByTheAfterWindow(t *testing.T) {
 		t.Errorf("an alert opened inside the after window: verdict %s", w.Verdict)
 	}
 }
+
+// Evaluate attributes alerts to the release only inside [P, after.To), as
+// WithStandingAlerts does: an older release does not fail for a later
+// incident, critical or not.
+func TestEvaluateAlertsAreBoundedByTheAfterWindow(t *testing.T) {
+	in := input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100))
+	end := in.Windows.After.To
+	crit := map[string]string{"severity": "critical"}
+	in.Alerts = []Alert{
+		{Rule: "AtTheEnd", FiringAt: end, Labels: crit},
+		{Rule: "Later", FiringAt: end.Add(time.Hour), Labels: crit},
+		{Rule: "LaterWarn", FiringAt: end.Add(time.Hour)},
+		{Rule: "Before", FiringAt: t0.Add(-time.Hour), Labels: crit},
+	}
+	in.Thresholds.FailOn = nil
+	r := Evaluate(in)
+	if len(r.Findings) != 0 || len(r.FiringAlerts) != 0 {
+		t.Errorf("findings %+v firing %+v", r.Findings, r.FiringAlerts)
+	}
+	if r.Verdict != Inconclusive || len(r.StandingCritical) != 1 || r.StandingCritical[0].Rule != "Before" {
+		t.Errorf("verdict %s standing %+v", r.Verdict, r.StandingCritical)
+	}
+	if j := Rejudge(r, nil); j.Verdict != Inconclusive {
+		t.Errorf("rejudge verdict %s", j.Verdict)
+	}
+}

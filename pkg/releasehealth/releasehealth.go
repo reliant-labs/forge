@@ -25,8 +25,9 @@
 //   - Findings: error_rate, latency, new_issue, regressed_issue, alert_firing,
 //     workload_restarts. A finding's policy is "fail" when its code is in
 //     fail_on, "warn" otherwise.
-//   - A critical alert (label severity=critical) that opened after the
-//     promotion fails the release whatever fail_on says.
+//   - Alerts count when they opened in the after window [P, after.To); a
+//     critical one (label severity=critical) fails the release whatever
+//     fail_on says. One that opened after the window is not the release's.
 //   - Verdict: FAIL when any finding's policy is fail; else INCONCLUSIVE when
 //     the after window has not finished, every service is below
 //     min_requests, or a critical alert that opened before the promotion is
@@ -447,7 +448,7 @@ func Evaluate(in Input) Report {
 		Subject: in.Subject, Before: in.Windows.Before, After: in.Windows.After, AfterComplete: in.Windows.AfterComplete,
 		Services: in.Services, Findings: []Finding{}, Thresholds: t.List(), NotEvaluated: in.NotEvaluated,
 	}
-	critical := criticalRules(in.Alerts, p)
+	critical := criticalRules(in.Alerts, p, in.Windows.After.To)
 	add := func(f Finding) {
 		f.Policy = findingPolicy(f, t.FailOn, critical)
 		r.Findings = append(r.Findings, f)
@@ -494,6 +495,9 @@ func Evaluate(in Input) Report {
 			Message: fmt.Sprintf("issue %s regressed: %s", is.ID, firstNonEmpty(is.Title, is.Culprit))})
 	}
 	for _, a := range in.Alerts {
+		if afterWindow(a, in.Windows.After.To) {
+			continue // a later promotion's, or later still: not this release's
+		}
 		if !a.FiringAt.IsZero() && a.FiringAt.Before(p) {
 			if a.Critical() {
 				r.StandingCritical = append(r.StandingCritical, a)
@@ -611,11 +615,17 @@ func alertKey(a Alert) string {
 	return a.Rule + "\x00" + strings.Join(keys, ",")
 }
 
-// criticalRules are the rules with a critical alert opened at or after p.
-func criticalRules(alerts []Alert, p time.Time) map[string]bool {
+// afterWindow reports whether a opened at or after end, the after window's
+// end: [P, end) is what a release answers for. A zero end bounds nothing.
+func afterWindow(a Alert, end time.Time) bool {
+	return !end.IsZero() && !a.FiringAt.IsZero() && !a.FiringAt.Before(end)
+}
+
+// criticalRules are the rules with a critical alert opened in [p, end).
+func criticalRules(alerts []Alert, p, end time.Time) map[string]bool {
 	out := map[string]bool{}
 	for _, a := range alerts {
-		if a.Critical() && (a.FiringAt.IsZero() || !a.FiringAt.Before(p)) {
+		if a.Critical() && !afterWindow(a, end) && (a.FiringAt.IsZero() || !a.FiringAt.Before(p)) {
 			out[a.Rule] = true
 		}
 	}
@@ -638,7 +648,7 @@ func Rejudge(r Report, failOn []string) Report {
 	failOn = normalizeCodes(failOn)
 	out := r
 	out.Findings = make([]Finding, len(r.Findings))
-	critical := criticalRules(r.FiringAlerts, r.Subject.PromotedAt)
+	critical := criticalRules(r.FiringAlerts, r.Subject.PromotedAt, r.After.To)
 	for i, f := range r.Findings {
 		f.Policy = findingPolicy(f, failOn, critical)
 		out.Findings[i] = f

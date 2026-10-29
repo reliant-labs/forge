@@ -10,8 +10,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/reliant-labs/forge/pkg/servicecatalog"
 	"golang.org/x/tools/go/packages"
+
+	"github.com/reliant-labs/forge/pkg/servicecatalog"
 )
 
 func TestServiceCatalogClientTypedMarkerFixture(t *testing.T) {

@@ -6,8 +6,11 @@ description: Process/role dashboards derived from deployed executable and compos
 # Observability: generated dashboards
 
 `forge generate` writes reusable RPC, frontend and metric dashboard fragments
-and alert inputs without rendering any environment or claiming process ownership.
-A newly scaffolded operator can therefore generate while prod's cluster is unbound.
+and alert inputs without claiming process ownership. It scopes the overview to
+the service.names and workloads every environment that renders declares (the
+same derivation a bundle uses), so the local stack's overview draws your
+processes; an environment that does not render is skipped, so a newly scaffolded
+operator can still generate while prod's cluster is unbound.
 
 `forge env render <env>` validates, and `forge env build <env>` assembles the
 process dashboards from the selected environment's already-rendered

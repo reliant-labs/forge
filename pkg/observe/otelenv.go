@@ -9,7 +9,9 @@
 //   - which signals are exported at all (an endpoint is present, the SDK is not
 //     disabled, the signal's exporter is not "none"),
 //   - which wire protocol to build (the SDK has one package per protocol),
-//   - whether the opt-in OTLP logs exporter is on.
+//   - whether the opt-in OTLP logs exporter is on,
+//   - the head-sampling ratio of a trace the server starts itself, which the
+//     SDK applies but does not expose (rootSampleRatio).
 //
 // pkg/.golangci.yml exempts exactly this file from the os.Getenv rule.
 
@@ -51,6 +53,12 @@ const (
 	// exists because profiles need a collector built with the profiles feature
 	// gate and a profiles-capable exporter, which the traces collector may not be.
 	EnvOTLPProfilesEndpoint = "OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT"
+
+	// EnvTracesSampler and EnvTracesSamplerArg are the SDK's sampler switch and
+	// its argument. forge renders parentbased_traceidratio + the ratio when an
+	// env's sampling.traces_ratio is below 1.
+	EnvTracesSampler    = "OTEL_TRACES_SAMPLER"
+	EnvTracesSamplerArg = "OTEL_TRACES_SAMPLER_ARG"
 )
 
 const (
@@ -77,6 +85,30 @@ func envValue(name string) string { return strings.TrimSpace(os.Getenv(name)) }
 
 func (s signal) env(suffix string) string {
 	return envValue("OTEL_EXPORTER_OTLP_" + string(s) + "_" + suffix)
+}
+
+// rootSampleRatio is the fraction of the traces this process starts itself
+// that its tracer provider samples: the root sampler OTEL_TRACES_SAMPLER names,
+// read exactly as the SDK reads it (sdk/trace samplerFromEnv). Unset, and a
+// sampler the SDK does not support, are its default parentbased_always_on; a
+// ratio that is missing or invalid is 1, as the SDK falls back to.
+//
+// TrustRemoteBy decides a TrustIDs trace with it, because the SDK samples a
+// span with a remote parent by the parent's flag and offers no way to ask the
+// root sampler instead.
+func rootSampleRatio() float64 {
+	switch strings.ToLower(envValue(EnvTracesSampler)) {
+	case "always_off", "parentbased_always_off":
+		return 0
+	case "traceidratio", "parentbased_traceidratio":
+		r, err := strconv.ParseFloat(envValue(EnvTracesSamplerArg), 64)
+		if err != nil || r < 0 || r > 1 {
+			return 1
+		}
+		return r
+	default:
+		return 1
+	}
 }
 
 // sdkDisabled reports OTEL_SDK_DISABLED=true.

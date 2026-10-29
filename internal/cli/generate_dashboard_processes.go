@@ -71,6 +71,33 @@ func renderedDashboardProcesses(ctx *pipelineContext, entities *KCLEntities) ([]
 	return processes, nil
 }
 
+// deployedIdentities is what forge generate scopes the overview with: the
+// service.names and workload names of the processes every environment
+// declares (workloads, as rendered across all of them), derived exactly as a
+// release bundle derives its one environment's processes. Without it the
+// overview's identity filter matched nothing, and every panel of the local
+// dashboards drew nothing.
+//
+// It is identities only. Per-process parts (RPC ownership, process
+// dashboards) stay the selected environment's, built at bundle time
+// (dashboardSpecForEntities): an environment-wide part on disk would claim
+// ownership no single environment has, and conflict whenever two branches
+// add an rpc. So no graph roots are needed: they decide a process's role and
+// RPCs, never which service.names and workloads it has.
+func deployedIdentities(projectDir string, workloads []WorkloadEntity) (obsdash.Identities, error) {
+	processes, err := processesForWorkloads(bootstrapBinaryName(projectDir), nil, workloads)
+	if err != nil {
+		return obsdash.Identities{}, err
+	}
+	var id obsdash.Identities
+	for _, p := range processes {
+		id.ServiceNames = append(id.ServiceNames, p.ServiceNames...)
+		id.Workloads = append(id.Workloads, p.Workloads...)
+	}
+	id.ServiceNames, id.Workloads = uniqueSorted(id.ServiceNames), uniqueSorted(id.Workloads)
+	return id, nil
+}
+
 func processesForWorkloads(primary string, roots []codegen.GraphRoot, workloads []WorkloadEntity) ([]obsdash.Process, error) {
 	byID := map[string]*obsdash.Process{}
 	for _, w := range workloads {

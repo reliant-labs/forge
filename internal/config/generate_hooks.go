@@ -16,16 +16,20 @@ type GenerateConfig struct {
 	Hooks []GenerateHook `yaml:"hooks,omitempty"`
 }
 
-// GenerateHook is one command `forge generate` runs, after forge's own code
-// generation (proto stubs, ORM, mocks, composition) and before the `go mod
+// GenerateHook is one command `forge generate` runs, after every step that
+// writes forge's own output (proto stubs, ORM, mocks, composition, the
+// goimports pass, the stale-codegen sweep) — so a hook that compiles the
+// tree sees this run's output in its final form — and before the `go mod
 // tidy` and `go build` that validate the result. Code a hook emits is
 // therefore tidied and compiled in the same run that produced it.
 //
 // It is the escape hatch for a generator forge does not own: a query
 // generator kept while a project ports onto the ORM (sqlc), a project's own
 // codegen tool, a second buf template, a schema or docs dump. forge does not
-// interpret the command; it runs it, streams its output, and fails the
-// generate if it exits non-zero. The command runs with the codegen tools
+// interpret the command; it runs it, streams its output (and keeps it in
+// .forge/generate-hooks/<name>.log), and fails the generate if it exits
+// non-zero, repeating the tail of that output in the failure report. The
+// command runs with the codegen tools
 // go.mod pins (buf, protoc-gen-go, protoc-gen-connect-go) first on its PATH,
 // the same ones forge's own buf step runs.
 //

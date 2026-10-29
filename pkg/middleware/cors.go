@@ -193,9 +193,15 @@ func writePreflightHeaders(w http.ResponseWriter, allowHeaders string) {
 // cross-origin: Connect's protocol headers, the bearer token, the trace
 // context and request id the generated clients attach, and Forge-Via, which
 // names the client to the activity stream (forge/pkg/activity.ViaHeader).
+//
+// The trace context is all three W3C headers the browser SDK's propagator can
+// write — traceparent, tracestate AND baggage (@reliantlabs/forge-web-runtime
+// installs HyperDX, whose propagator is trace-context plus baggage). A header
+// missing here does not lose one trace: the preflight refuses it, and the
+// browser then refuses EVERY cross-origin RPC that carries it.
 var DefaultCORSAllowHeaders = []string{
 	"Content-Type", "Connect-Protocol-Version", "Connect-Timeout-Ms",
-	"Authorization", "Traceparent", "Tracestate", "X-Request-Id", "Forge-Via",
+	"Authorization", "Traceparent", "Tracestate", "Baggage", "X-Request-Id", "Forge-Via",
 }
 
 // DefaultCORSExposeHeaders are the response headers every forge server lets a

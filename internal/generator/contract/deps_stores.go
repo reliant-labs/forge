@@ -6,10 +6,13 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Mocks for dep interfaces that live in ANOTHER package of this module.
@@ -170,11 +173,49 @@ type ImportDef struct {
 // Declaration renders one import spec, preserving explicit or synthesized
 // aliases. The path is quoted here so the template cannot accidentally quote
 // the whole `alias "path"` declaration.
+//
+// The name is also spelled whenever it is not the one goimports assumes from
+// the path (assumedImportName) — `reliantv1 ".../gen/reliant/v1"` — because
+// that is the spec goimports rewrites the import to. The pipeline used to
+// leave that to its goimports pass, so the bytes the mock writer put on disk
+// were not the run's final bytes: a run that failed before goimports (a
+// generate hook, say) exposed them to everything reading the tree meanwhile,
+// and reported them as the "broken aliases" it had written. Rendering the
+// fixed point directly makes the write final, and makes the output the same
+// whichever way the qualifier was resolved.
 func (i ImportDef) Declaration() string {
-	if i.Explicit {
+	if i.Name != "" && (i.Explicit || i.Name != assumedImportName(i.Path)) {
 		return i.Name + " " + strconv.Quote(i.Path)
 	}
 	return strconv.Quote(i.Path)
+}
+
+// assumedImportName is the package name goimports assumes an import path
+// binds when no name is spelled (x/tools' ImportPathToAssumedName): the last
+// element — or the one before a /vN major-version suffix — without a "go-"
+// prefix, cut at the first character that cannot be in an identifier. When
+// the real name differs, goimports writes it out as an explicit name.
+func assumedImportName(importPath string) string {
+	base := path.Base(importPath)
+	if strings.HasPrefix(base, "v") {
+		if _, err := strconv.Atoi(base[1:]); err == nil {
+			if dir := path.Dir(importPath); dir != "." {
+				base = path.Base(dir)
+			}
+		}
+	}
+	base = strings.TrimPrefix(base, "go-")
+	if i := strings.IndexFunc(base, notIdentifierRune); i >= 0 {
+		base = base[:i]
+	}
+	return base
+}
+
+func notIdentifierRune(ch rune) bool {
+	return !('a' <= ch && ch <= 'z' || 'A' <= ch && ch <= 'Z' ||
+		'0' <= ch && ch <= '9' ||
+		ch == '_' ||
+		ch >= utf8.RuneSelf && (unicode.IsLetter(ch) || unicode.IsDigit(ch)))
 }
 
 type importAliases struct {
@@ -199,6 +240,26 @@ func (r *importAliases) packageName(path string) string {
 		return name
 	}
 	return r.resolver.packageName(path)
+}
+
+// declaredName is the name an unaliased import of path binds, when it is
+// known exactly (learned from a type-checked package or resolved by the
+// toolchain) rather than guessed from the path.
+func (r *importAliases) declaredName(path string) (string, bool) {
+	if name, ok := r.declared[path]; ok {
+		return name, true
+	}
+	if r.resolver != nil {
+		if name, ok := r.resolver.names[path]; ok && name != "" {
+			return name, true
+		}
+	}
+	if isStdlibPath(path) {
+		// The convention is exact for the standard library (see
+		// conventionalPackageName), which is why it is never asked.
+		return conventionalPackageName(path), true
+	}
+	return "", false
 }
 
 func newImportAliases(imports map[string]string, explicit map[string]bool, resolver *Resolver) *importAliases {
@@ -554,7 +615,19 @@ func (p *foreignPackage) qualify(expr ast.Expr, qualifier string, imports map[st
 	case *ast.SelectorExpr:
 		if id, ok := t.X.(*ast.Ident); ok {
 			if ref, found := imports[id.Name]; found {
-				name := aliases.use(ref.path, id.Name, ref.explicit)
+				// The package's declared name, as the type-checked path
+				// (useNamed) qualifies it — not the foreign file's own
+				// alias. This path runs when the declaring package did not
+				// type-check, and the mock must not come out spelled
+				// differently because some package was mid-edit. The
+				// file's identifier stands in only when the declared name
+				// is unknown: it is at least a valid identifier, where the
+				// path's last element ("nats.go") need not be.
+				preferred, explicit := id.Name, ref.explicit
+				if declared, known := aliases.declaredName(ref.path); known {
+					preferred, explicit = declared, false
+				}
+				name := aliases.use(ref.path, preferred, explicit)
 				return name + "." + t.Sel.Name
 			}
 		}

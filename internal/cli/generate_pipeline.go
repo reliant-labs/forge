@@ -264,9 +264,10 @@ type pipelineContext struct {
 	EntityDefs       []codegen.EntityDef
 	ConfigFields     map[string]bool
 
-	// rendered caches renderedFrontends for the run: the frontends each
-	// environment's KCL declares, read once however many steps ask.
-	rendered     []renderedEnvFrontend
+	// rendered caches renderEnvironments for the run: the frontends and
+	// workloads each environment's KCL declares, read once however many
+	// steps ask.
+	rendered     renderedEnvironments
 	renderedRead bool
 
 	// registry is the memoized parse of the user-owned
@@ -423,12 +424,6 @@ func generateSteps() []GenStep {
 		{Name: "cmd/commands.go (user extension point)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepCmdCommands, Tag: "codegen"},
 		{Name: "per-service test helpers", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrapTesting, Tag: "codegen"},
 		{Name: "db/embed.go (embedded migrations)", Gate: gateMigrateHasDriver, GateReason: "database.driver unset or features.migrations=false", Run: stepBootstrapMigrate, Tag: "codegen"},
-		// The project's own commands (forge.yaml generate.hooks): after
-		// forge's codegen, so a hook can read what forge emitted, and before
-		// both tidies and the validation build, so what a hook emits is
-		// tidied and compiled in this same run.
-		{Name: generateHooksStep, Gate: hasGenerateHooks, GateReason: "no generate.hooks in forge.yaml", Run: stepGenerateHooks, Tag: "tools", Writes: writesGenerateHooks},
-		{Name: "go mod tidy (gen/)", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepGoModTidyGen, Tag: "tools", Writes: writesGenTidy},
 		// NOT gated on features.deploy. The Tier-1 files this sweep writes
 		// each carry their own enabledFor predicate and none is a deploy
 		// artifact (deploy/alloy-config.alloy gates on observability, not
@@ -521,6 +516,27 @@ func generateSteps() []GenStep {
 		// spends time validating: settle the drift the stomp guard
 		// quarantined. See generate_drift_rescue.go.
 		{Name: adjudicateDriftStep, Gate: always, Run: stepAdjudicateTier1Drift, Tag: "validate"},
+		// The project's own commands (forge.yaml generate.hooks) run AFTER
+		// every step that writes forge's output, in its final form: the
+		// last emitters (infra, cmd groups), the root tidy, goimports, the
+		// stale-codegen sweep, and the drift adjudication that settles a
+		// quarantined file. A hook that compiles the tree (`go generate`,
+		// `go run ./cmd/...`) must compile what this run produced: run
+		// earlier, it compiled a tree forge had not finished writing — a
+		// generated file still in its pre-goimports form, a stale one the
+		// sweep was about to delete, a cmd group not yet emitted — and its
+		// failure was blamed on the user's code. And a hand-edit the
+		// adjudication reports is the root cause, not whatever the hook
+		// tripped over first.
+		{Name: generateHooksStep, Gate: hasGenerateHooks, GateReason: "no generate.hooks in forge.yaml", Run: stepGenerateHooks, Tag: "tools", Writes: writesGenerateHooks},
+		// Before the validation build, so what a hook emits is tidied and
+		// compiled in this same run: into gen/ (a second buf template)…
+		{Name: "go mod tidy (gen/)", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepGoModTidyGen, Tag: "tools", Writes: writesGenTidy},
+		// …or into the root module. The root was tidied before the hooks
+		// ran, so they compile against a tidy module; this pass picks up a
+		// requirement only hook output introduced, and is a fast no-op when
+		// there is none.
+		{Name: generateHooksTidyStep, Gate: and(hasGenerateHooks, hasGoModule), GateReason: "no generate.hooks in forge.yaml, or " + noGoModuleReason, Run: stepGoModTidyRoot, Tag: "tools", Writes: writesRootTidy},
 		{Name: "post-gen validation", Gate: always, Run: stepPostGenValidate, Tag: "validate"},
 		{Name: "detect renamed Tier-1 exports", Gate: always, Run: stepDetectRenamedExports, Tag: "validate"},
 		{Name: "check disowned-sibling dangling refs", Gate: always, Run: stepCheckDisownedDanglingRefs, Tag: "validate"},
@@ -2588,6 +2604,10 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 			return err
 		}
 		in.Funnels = funnels
+		in.Deployed, err = deployedIdentities(ctx.AbsPath, ctx.renderedEnvs().workloads)
+		if err != nil {
+			return fmt.Errorf("deriving the deployed processes from deploy/kcl: %w", err)
+		}
 		written, err := obsdash.Write(ctx.AbsPath, in, ctx.Checksums)
 		if err != nil {
 			return err

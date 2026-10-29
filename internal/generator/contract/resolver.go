@@ -102,8 +102,8 @@ func NewResolver(contractPaths ...string) *Resolver {
 	// unaliased. In-module packages are named by their package clause on
 	// disk, which is exact and free; standard-library paths follow the
 	// convention exactly; only the rest are batched for `go list`.
-	need := func(moduleRoot string, w *moduleWork, dir string) {
-		for _, path := range unaliasedImports(fset, dir) {
+	need := func(moduleRoot string, w *moduleWork, dir string, aliasedToo bool) {
+		for _, path := range importedPaths(fset, dir, aliasedToo) {
 			if _, known := r.names[path]; known {
 				continue
 			}
@@ -123,7 +123,7 @@ func NewResolver(contractPaths ...string) *Resolver {
 	for _, root := range roots {
 		w := byRoot[root]
 		for _, dir := range w.dirs {
-			need(root, w, dir)
+			need(root, w, dir, false)
 		}
 		// Deps qualifiers are resolved through the names just recorded,
 		// so a dep whose package is not named after its directory is
@@ -135,9 +135,11 @@ func NewResolver(contractPaths ...string) *Resolver {
 					continue
 				}
 				w.foreign[f.importPath] = true
-				// The syntax fallback renders the foreign package's own
-				// import spellings, so their names are needed too.
-				need(root, w, pkgDir)
+				// The syntax fallback qualifies the foreign package's
+				// signatures by each package's DECLARED name — aliased
+				// imports included — so the mock reads the same whether
+				// or not the package type-checked.
+				need(root, w, pkgDir, true)
 			}
 		}
 		r.loadNames(root, sortedKeys(w.names))
@@ -385,9 +387,10 @@ func isStdlibPath(importPath string) bool {
 	return !strings.Contains(first, ".")
 }
 
-// unaliasedImports returns the import paths that non-test, non-generated Go
-// files in dir import without an explicit name.
-func unaliasedImports(fset *token.FileSet, dir string) []string {
+// importedPaths returns the import paths that non-test, non-generated Go
+// files in dir import without an explicit name — or with one too, when
+// aliasedToo.
+func importedPaths(fset *token.FileSet, dir string, aliasedToo bool) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -404,7 +407,7 @@ func unaliasedImports(fset *token.FileSet, dir string) []string {
 			continue
 		}
 		for _, imp := range file.Imports {
-			if imp.Name != nil {
+			if imp.Name != nil && !aliasedToo {
 				continue
 			}
 			if path, err := strconv.Unquote(imp.Path.Value); err == nil {

@@ -13,7 +13,9 @@ package cli
 // because a dashboard that fails in the console is found by a customer.
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -94,7 +96,14 @@ func bundleObservabilityFiles(projectDir string, in bundleBuildInputs, entities 
 		if _, err := servicecatalog.Decode(raw); err != nil {
 			return nil, err
 		}
-		out = append(out, bundle.ObservabilityFile{Path: servicecatalog.BundlePath, Data: raw})
+		// gen/ keeps the indented form for reviewable diffs; the bundle, which
+		// the control plane serves to a browser, carries the compact one (a
+		// third smaller for a large project).
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, raw); err != nil {
+			return nil, err
+		}
+		out = append(out, bundle.ObservabilityFile{Path: servicecatalog.BundlePath, Data: compact.Bytes()})
 	} else if !os.IsNotExist(readErr) {
 		return nil, readErr
 	}

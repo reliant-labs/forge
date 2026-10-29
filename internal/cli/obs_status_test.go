@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -108,8 +109,8 @@ func TestObsStatusCloudReadsEverySection(t *testing.T) {
 	if c := callTo(caller.calls, procOverview); c == nil || !strings.Contains(c.body, `"timeRange":{"start":"2026-10-22T11:00:00Z","end":"2026-10-22T12:00:00Z"}`) {
 		t.Errorf("the overview reads --since (1h): %+v", c)
 	}
-	if c := callTo(caller.calls, procSearchLogs); c == nil || !strings.Contains(c.body, `"start":"2026-10-21T12:00:00Z"`) || !strings.Contains(c.body, `"pageSize":1`) {
-		t.Errorf("freshness looks back 24h for one record: %+v", c)
+	if c := callTo(caller.calls, procSearchLogs); c == nil || !strings.Contains(c.body, `"start":"2026-10-22T11:45:00Z"`) || !strings.Contains(c.body, `"pageSize":1`) {
+		t.Errorf("freshness probes the last 15m for one record first: %+v", c)
 	}
 }
 
@@ -301,5 +302,38 @@ func TestObsStatusFieldsAndFlags(t *testing.T) {
 	}
 	if _, _, err := newObsCheckHarness().run(t, cloudFacts(), statusCaller(), nil, "status", "prod", "--since", "-1h"); exitCodeForError(err) != 1 {
 		t.Errorf("a bad range is a wrong request: %v", err)
+	}
+}
+
+// The newest record is looked for in the cheap 15m probe first, and over the
+// whole 24h lookback only when the probe found nothing or failed: prod's
+// ListTraces timed out sorting a day of spans, so every status was partial.
+func TestStatusFreshnessProbesBeforeTheWholeLookback(t *testing.T) {
+	fn := obsbackend.Narrow{Range: obsbackend.Range{From: obsNow.Add(-24 * time.Hour), To: obsNow}}
+	for name, tc := range map[string]struct {
+		probeHas  bool
+		probeErr  error
+		wantReads int
+	}{
+		"fresh":        {probeHas: true, wantReads: 1},
+		"quiet 15m":    {wantReads: 2},
+		"probe failed": {probeErr: errors.New("504"), wantReads: 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var windows []time.Duration
+			at, err := newestWithin(fn, func(n obsbackend.Narrow) (time.Time, bool, error) {
+				windows = append(windows, n.Range.To.Sub(n.Range.From))
+				if len(windows) == 1 {
+					return obsNow.Add(-time.Minute), tc.probeHas, tc.probeErr
+				}
+				return obsNow.Add(-time.Hour), true, nil
+			})
+			if err != nil || len(windows) != tc.wantReads || windows[0] != statusFreshnessProbe {
+				t.Fatalf("reads %v err %v, want %d reads starting with the %s probe", windows, err, tc.wantReads, statusFreshnessProbe)
+			}
+			if tc.wantReads == 2 && (windows[1] != 24*time.Hour || !at.Equal(obsNow.Add(-time.Hour))) {
+				t.Fatalf("widened read %v at %v, want 24h", windows, at)
+			}
+		})
 	}
 }

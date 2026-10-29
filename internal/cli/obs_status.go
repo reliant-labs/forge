@@ -71,6 +71,13 @@ const (
 	// statusFreshnessLookback is how far back the newest log and span are
 	// looked for, at least: a quiet hour is not "telemetry stopped".
 	statusFreshnessLookback = 24 * time.Hour
+	// statusFreshnessProbe is the first, cheap window the newest log and span
+	// are looked for in. Telemetry that is arriving answers from it; only a
+	// signal with nothing that recent pays for the whole lookback. Asking a
+	// hosted backend for "the newest span of the last 24h" outright sorted a
+	// day of spans and timed out (HTTP 504) on prod, which made every status
+	// partial.
+	statusFreshnessProbe = 15 * time.Minute
 	// statusChangesLookback bounds the change feed; the release in force is
 	// found whatever its age.
 	statusChangesLookback = 7 * 24 * time.Hour
@@ -349,14 +356,21 @@ func statusFreshness(ctx context.Context, b obsbackend.Backend, n obsbackend.Nar
 	look := max(statusFreshnessLookback, n.Range.To.Sub(n.Range.From))
 	fn := obsbackend.Narrow{Range: obsbackend.Range{From: n.Range.To.Add(-look), To: n.Range.To}, Services: n.Services}
 	t := &obsStatusTelemetry{Lookback: look.String()}
-	logs, lerr := b.Logs(ctx, obsbackend.LogsRequest{Narrow: fn, Limit: 1})
-	if lerr == nil && len(logs.Logs) > 0 {
-		t.LastLogAt = logs.Logs[0].Time
-	}
-	traces, terr := b.Traces(ctx, obsbackend.TracesRequest{Narrow: fn, Limit: 1})
-	if terr == nil && len(traces.Traces) > 0 {
-		t.LastSpanAt = traces.Traces[0].Start
-	}
+	var lerr, terr error
+	t.LastLogAt, lerr = newestWithin(fn, func(n obsbackend.Narrow) (time.Time, bool, error) {
+		logs, err := b.Logs(ctx, obsbackend.LogsRequest{Narrow: n, Limit: 1})
+		if err != nil || len(logs.Logs) == 0 {
+			return time.Time{}, false, err
+		}
+		return logs.Logs[0].Time, true, nil
+	})
+	t.LastSpanAt, terr = newestWithin(fn, func(n obsbackend.Narrow) (time.Time, bool, error) {
+		traces, err := b.Traces(ctx, obsbackend.TracesRequest{Narrow: n, Limit: 1})
+		if err != nil || len(traces.Traces) == 0 {
+			return time.Time{}, false, err
+		}
+		return traces.Traces[0].Start, true, nil
+	})
 	switch {
 	case lerr != nil && terr != nil:
 		return nil, nil, lerr
@@ -366,6 +380,21 @@ func statusFreshness(ctx context.Context, b obsbackend.Backend, n obsbackend.Nar
 		return t, []string{fmt.Sprintf("%s: the newest span is unknown: %v", statusTelemetry, terr)}, nil
 	}
 	return t, nil, nil
+}
+
+// newestWithin asks read for the newest record over the last
+// statusFreshnessProbe of fn first, and over all of fn only when that probe
+// found nothing (or failed: a failing probe says nothing about the wider read).
+func newestWithin(fn obsbackend.Narrow, read func(obsbackend.Narrow) (time.Time, bool, error)) (time.Time, error) {
+	if fn.Range.To.Sub(fn.Range.From) > statusFreshnessProbe {
+		probe := fn
+		probe.Range.From = fn.Range.To.Add(-statusFreshnessProbe)
+		if at, ok, err := read(probe); err == nil && ok {
+			return at, nil
+		}
+	}
+	at, _, err := read(fn)
+	return at, err
 }
 
 // mergeStatusPart copies what one section read into doc. Sections fill

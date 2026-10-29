@@ -417,6 +417,17 @@ func statusSuggestions(env string, doc obsStatusDoc) []string {
 	if r := doc.CurrentRelease; r != nil && r.PromotionID != "" {
 		cmds = append(cmds, obsout.Command("forge", "obs", "check", env, "--promotion", r.PromotionID))
 	}
+	// The logs behind the longest-firing alert, narrowed to its subject, and
+	// the workloads view (restarts, crash loops, failed jobs).
+	for _, a := range doc.Alerts {
+		if a.State == obsbackend.AlertFiring {
+			if ns := a.Labels["namespace"]; ns != "" {
+				cmds = append(cmds, workloadLogsCommand(env, "1h", ns, firstNonEmptyString(a.Labels["workload"], a.Labels["job"], a.Labels["deployment"])))
+			}
+			cmds = append(cmds, obsout.Command("forge", "obs", "workloads", env))
+			break
+		}
+	}
 	return obsout.Suggest(cmds...)
 }
 

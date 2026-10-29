@@ -401,13 +401,16 @@ function tapSdkInputs(
   tapped = true;
   const wrapped = console.error;
   console.error = function (this: unknown, ...args: unknown[]) {
-    // A benign error goes to the console as it would without the SDK, and is
-    // counted instead of recorded.
-    const firstError = args.find((arg) => arg instanceof Error);
+    // A call whose every Error is benign goes to the console as it would
+    // without the SDK, and is counted instead of recorded. One real Error
+    // anywhere in the call (a ConnectError after a fetch failure) keeps the
+    // whole call on the SDK's path.
+    const errors = args.filter((arg): arg is Error => arg instanceof Error);
     if (
-      firstError !== undefined &&
-      benign.filtered(firstError, "console.error")
+      errors.length > 0 &&
+      errors.every((err) => benign.classify(err) !== null)
     ) {
+      benign.filtered(errors[0], "console.error");
       return consoleBeforeSdk.apply(this, args);
     }
     for (const arg of args) {
@@ -437,6 +440,8 @@ function tapSdkInputs(
 // leaves the browser's default (the "Uncaught (in promise)" console line)
 // alone. Listeners registered before telemetry started still see it.
 interface BenignFilter {
+  /** The kind of a benign error, or null. Counts nothing. */
+  classify(error: unknown): string | null;
   /** Count and report true when `error` is benign; false to record it. */
   filtered(error: unknown, source: BenignErrorSource): boolean;
 }
@@ -461,14 +466,18 @@ function benignFilter(
       }
     });
   }
+  const kindOf = (error: unknown): string | null => {
+    try {
+      return classify(error) || null;
+    } catch {
+      // A classifier that throws keeps the error.
+      return null;
+    }
+  };
   return {
+    classify: kindOf,
     filtered(error, source) {
-      let kind: string | null = null;
-      try {
-        kind = classify(error);
-      } catch {
-        // A classifier that throws keeps the error.
-      }
+      const kind = kindOf(error);
       if (!kind) {
         return false;
       }

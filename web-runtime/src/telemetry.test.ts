@@ -333,6 +333,24 @@ describe("benign browser errors", () => {
     expect(consoleUnderSdk).toHaveBeenCalledWith(bug);
   });
 
+  it("keeps a console.error on the SDK's path when any Error in it is real", async () => {
+    await start();
+    const offline = new TypeError("Failed to fetch");
+    const rpc = new Error("[unavailable] upstream");
+    rpc.name = "ConnectError";
+    console.error(offline, rpc);
+    expect(sdkSaw).toHaveBeenCalledWith("console.error", offline);
+
+    sdkSaw.mockReset();
+    console.error(new DOMException("x", "AbortError"), new Error("real bug"));
+    expect(sdkSaw).toHaveBeenCalledTimes(1);
+    dispatchEvent("pagehide", {});
+    expect(addAction).not.toHaveBeenCalledWith(
+      "forge.errors_filtered",
+      expect.anything(),
+    );
+  });
+
   it("does not record a benign error handed to reportException, but says the SDK has it", async () => {
     const { r } = await start();
     expect(r.reportException(new TypeError("Load failed"))).toBe(true);

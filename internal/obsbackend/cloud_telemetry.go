@@ -348,6 +348,10 @@ type wirePanelResponse struct {
 	SeriesMeta  []wireSeriesMeta `json:"seriesMeta"`
 	SeriesTotal int              `json:"seriesTotal"`
 	Warnings    []string         `json:"warnings"`
+	// Sent by control planes that report a sql panel's bucket; absent on older
+	// ones, and never required.
+	BucketSeconds  jsonInt `json:"bucketSeconds"`
+	BucketTimezone string  `json:"bucketTimezone"`
 }
 
 func (c Cloud) queryPanel(ctx context.Context, n Narrow, p obsquery.Panel, step int64) (wirePanelResponse, error) {

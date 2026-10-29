@@ -50,11 +50,11 @@ var obsDashboardsAuditSchema = obsout.Schema{
 	Name: schemaObsDashboardsAudit,
 	Fields: []string{
 		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services",
-		"query_mode", "project", "window", "window.since", "window.from", "window.to", "window.probe_since",
+		"query_mode", "project", "window", "window.since", "window.source", "window.from", "window.to", "window.probe_since",
 		"summary", "summary.dashboards", "summary.panels", "summary.ok", "summary.partial", "summary.empty",
 		"summary.error", "summary.not_applicable", "summary.all_zero", "summary.dashboards_unread",
 		"dashboards", "dashboards.id", "dashboards.title", "dashboards.source", "dashboards.release_version",
-		"dashboards.status", "dashboards.error", "dashboards.error.class", "dashboards.error.code",
+		"dashboards.status", "dashboards.default_range", "dashboards.range", "dashboards.error", "dashboards.error.class", "dashboards.error.code",
 		"dashboards.error.reason", "dashboards.error.http_status", "dashboards.error.message",
 		"dashboards.error.missing_scope", "dashboards.error.retry_after_seconds", "dashboards.error.resets_at",
 		"dashboards.panels", "dashboards.panels.id", "dashboards.panels.title", "dashboards.panels.kind",
@@ -63,7 +63,8 @@ var obsDashboardsAuditSchema = obsout.Schema{
 		"dashboards.panels.series", "dashboards.panels.rows", "dashboards.panels.points",
 		"dashboards.panels.non_null_points", "dashboards.panels.non_zero_points", "dashboards.panels.buckets",
 		"dashboards.panels.items", "dashboards.panels.last_data_at", "dashboards.panels.from", "dashboards.panels.to",
-		"dashboards.panels.step_seconds", "dashboards.panels.truncated", "dashboards.panels.series_total",
+		"dashboards.panels.window_source", "dashboards.panels.widened", "dashboards.panels.widened_from", "dashboards.panels.min_step",
+		"dashboards.panels.bucket_seconds", "dashboards.panels.bucket_timezone", "dashboards.panels.step_seconds", "dashboards.panels.truncated", "dashboards.panels.series_total",
 		"dashboards.panels.warnings", "dashboards.panels.attempts",
 		"dashboards.panels.error", "dashboards.panels.error.class", "dashboards.panels.error.code",
 		"dashboards.panels.error.reason", "dashboards.panels.error.http_status", "dashboards.panels.error.message",
@@ -103,6 +104,58 @@ const (
 	verdictProbeFailed    = "probe_failed"
 	verdictNotProbed      = "not_probed"
 )
+
+// Where a window came from.
+const (
+	auditWindowSince   = "since"
+	auditWindowConsole = "console_default"
+	auditWindowDefault = "dashboard_default_range"
+	auditWindowWidened = "widened_for_min_step"
+)
+
+// consoleDefaultRange is the range the console opens a dashboard on when it
+// declares none (reliant services/controlPlane/observability/window.ts
+// DEFAULT_RANGE).
+const consoleDefaultRange = time.Hour
+
+// consolePresets are the ranges the console offers (window.ts RANGE_PRESETS);
+// it rounds a declared defaultRange, and a widened window, up to one of them.
+var consolePresets = []time.Duration{15 * time.Minute, time.Hour, 6 * time.Hour, 24 * time.Hour, 7 * 24 * time.Hour}
+
+// presetCovering is the smallest preset that covers d; the longest when none
+// does (window.ts presetCovering).
+func presetCovering(d time.Duration) time.Duration {
+	for _, p := range consolePresets {
+		if p >= d {
+			return p
+		}
+	}
+	return consolePresets[len(consolePresets)-1]
+}
+
+// dashboardRange is the range a dashboard opens on: its defaultRange rounded
+// up to a preset, else an hour (window.ts dashboardDefaultRange). An
+// unparseable declaration is the console's default too; validation refuses it
+// before a release ships.
+func dashboardRange(defaultRange string) (time.Duration, string) {
+	if d, err := dashspec.ParseSpan(defaultRange); err == nil && defaultRange != "" {
+		return presetCovering(d), auditWindowDefault
+	}
+	return consoleDefaultRange, auditWindowConsole
+}
+
+// rangeForBucket is the range a panel with a fixed bucket (minStep) is read
+// over: a window narrower than one bucket can return only that bucket, so the
+// console widens it to the smallest preset holding two (window.ts
+// rangeForBucket).
+func rangeForBucket(window time.Duration, minStep string) (time.Duration, bool) {
+	bucket, err := dashspec.ParseSpan(minStep)
+	if err != nil || minStep == "" || window >= bucket {
+		return window, false
+	}
+	next := presetCovering(2 * bucket)
+	return next, next != window
+}
 
 // The wider window an empty panel is probed over.
 const auditProbeWindow = 7 * 24 * time.Hour
@@ -174,32 +227,38 @@ type auditProbe struct {
 }
 
 type auditPanel struct {
-	ID            string        `json:"id"`
-	Title         string        `json:"title"`
-	Kind          string        `json:"kind"`
-	Signal        string        `json:"signal,omitempty"`
-	Metrics       []string      `json:"metrics,omitempty"`
-	Status        string        `json:"status"`
-	Reason        string        `json:"reason,omitempty"`
-	ProbableCause string        `json:"probable_cause,omitempty"`
-	Note          string        `json:"note,omitempty"`
-	Series        int           `json:"series"`
-	Rows          int           `json:"rows"`
-	Points        int           `json:"points"`
-	NonNull       int           `json:"non_null_points"`
-	NonZero       int           `json:"non_zero_points"`
-	Buckets       int           `json:"buckets"`
-	Items         int           `json:"items"`
-	LastDataAt    time.Time     `json:"last_data_at,omitzero"`
-	From          time.Time     `json:"from"`
-	To            time.Time     `json:"to"`
-	StepSeconds   int64         `json:"step_seconds,omitempty"`
-	Truncated     bool          `json:"truncated,omitempty"`
-	SeriesTotal   int           `json:"series_total,omitempty"`
-	Warnings      []string      `json:"warnings,omitempty"`
-	Attempts      int           `json:"attempts,omitempty"`
-	Error         *auditFailure `json:"error,omitempty"`
-	Probe         *auditProbe   `json:"probe,omitempty"`
+	ID             string        `json:"id"`
+	Title          string        `json:"title"`
+	Kind           string        `json:"kind"`
+	Signal         string        `json:"signal,omitempty"`
+	Metrics        []string      `json:"metrics,omitempty"`
+	Status         string        `json:"status"`
+	Reason         string        `json:"reason,omitempty"`
+	ProbableCause  string        `json:"probable_cause,omitempty"`
+	Note           string        `json:"note,omitempty"`
+	Series         int           `json:"series"`
+	Rows           int           `json:"rows"`
+	Points         int           `json:"points"`
+	NonNull        int           `json:"non_null_points"`
+	NonZero        int           `json:"non_zero_points"`
+	Buckets        int           `json:"buckets"`
+	Items          int           `json:"items"`
+	LastDataAt     time.Time     `json:"last_data_at,omitzero"`
+	From           time.Time     `json:"from"`
+	To             time.Time     `json:"to"`
+	WindowSource   string        `json:"window_source"`
+	Widened        bool          `json:"widened,omitempty"`
+	WidenedFrom    string        `json:"widened_from,omitempty"`
+	MinStep        string        `json:"min_step,omitempty"`
+	BucketSeconds  int64         `json:"bucket_seconds,omitempty"`
+	BucketTimezone string        `json:"bucket_timezone,omitempty"`
+	StepSeconds    int64         `json:"step_seconds,omitempty"`
+	Truncated      bool          `json:"truncated,omitempty"`
+	SeriesTotal    int           `json:"series_total,omitempty"`
+	Warnings       []string      `json:"warnings,omitempty"`
+	Attempts       int           `json:"attempts,omitempty"`
+	Error          *auditFailure `json:"error,omitempty"`
+	Probe          *auditProbe   `json:"probe,omitempty"`
 
 	// firstColumnType is a sql panel's first result column type.
 	firstColumnType string
@@ -211,6 +270,8 @@ type auditDashboard struct {
 	Source         string        `json:"source"`
 	ReleaseVersion string        `json:"release_version,omitempty"`
 	Status         string        `json:"status"`
+	DefaultRange   string        `json:"default_range,omitempty"`
+	Range          string        `json:"range,omitempty"`
 	Error          *auditFailure `json:"error,omitempty"`
 	Panels         []auditPanel  `json:"panels"`
 }
@@ -229,6 +290,7 @@ type auditSummary struct {
 
 type auditWindow struct {
 	Since      string    `json:"since"`
+	Source     string    `json:"source"`
 	From       time.Time `json:"from"`
 	To         time.Time `json:"to"`
 	ProbeSince string    `json:"probe_since,omitempty"`
@@ -309,8 +371,8 @@ plane (a local ClickStack has no dashboards to replay).
 	f.StringVar(&o.backend, "backend", "", "local | cloud (default: from the env's declaration)")
 	f.StringVar(&o.dashboard, "dashboard", "", "only this dashboard (its id)")
 	f.StringVar(&o.panel, "panel", "", "only this panel (its id)")
-	f.DurationVar(&o.since, "since", time.Hour, "the window each panel is run over (the console opens on 1h)")
-	f.DurationVar(&o.probeSince, "probe-window", auditProbeWindow, "the wider window an empty panel is probed over")
+	f.DurationVar(&o.since, "since", 0, "run every panel over this window, as a viewer who picked a range (default: each dashboard's own defaultRange, else 1h, as the console opens it)")
+	f.DurationVar(&o.probeSince, "probe-window", auditProbeWindow, "the wider window an empty panel is probed over (widened to 4x the panel's window when that is not wider)")
 	f.BoolVar(&o.noProbe, "no-probe", false, "do not probe empty panels")
 	f.BoolVar(&o.all, "all", false, "list the ok panels too (text output; --json always lists every panel)")
 	return cmd
@@ -325,7 +387,14 @@ func runObsDashboardsAudit(ctx context.Context, d obsDeps, env string, o obsDash
 		return obsFail(d, o.out.JSON, schemaObsDashboardsAudit, err)
 	}
 	fail := func(err error) error { return obsFail(d, o.out.JSON, schemaObsDashboardsAudit, err) }
-	rng, err := resolveRange(d.Now(), o.since, "", "")
+	if o.since < 0 {
+		return fail(obsbackend.Wrong("--since must be positive"))
+	}
+	base, source := o.since, auditWindowSince
+	if base == 0 {
+		base, source = consoleDefaultRange, auditWindowConsole
+	}
+	rng, err := resolveRange(d.Now(), base, "", "")
 	if err != nil {
 		return fail(err)
 	}
@@ -343,7 +412,7 @@ func runObsDashboardsAudit(ctx context.Context, d obsDeps, env string, o obsDash
 	narrow := obsbackend.Narrow{Range: rng}
 	doc := obsDashboardsAuditDoc{
 		Scope: obsScope(b.Info(), narrow), QueryMode: QueryModeStructured, Project: project,
-		Window:    auditWindow{Since: durText(o.since), From: rng.From, To: rng.To},
+		Window:    auditWindow{Since: durText(base), Source: source, From: rng.From, To: rng.To},
 		Dashboard: []auditDashboard{},
 	}
 	if !o.noProbe {
@@ -359,7 +428,7 @@ func runObsDashboardsAudit(ctx context.Context, d obsDeps, env string, o obsDash
 		return fail(err)
 	}
 
-	a := &dashAudit{dr: dr, b: b, ctx: ctx, rng: rng, opts: o, project: project, sem: make(chan struct{}, auditConcurrency), catalog: map[string]*auditCatalog{}}
+	a := &dashAudit{dr: dr, b: b, ctx: ctx, now: rng.To, opts: o, project: project, sem: make(chan struct{}, auditConcurrency), catalog: map[string]*auditCatalog{}}
 	doc.Dashboard = a.run(picked)
 	if o.panel != "" && doc.panelCount() == 0 {
 		return fail(obsbackend.Wrong("no panel %q in the selected dashboard(s)", o.panel).
@@ -423,7 +492,7 @@ type dashAudit struct {
 	dr      obsbackend.DashboardReader
 	b       obsbackend.Backend
 	ctx     context.Context
-	rng     obsbackend.Range
+	now     time.Time
 	opts    obsDashboardsAuditOpts
 	project string
 	sem     chan struct{}
@@ -482,6 +551,11 @@ func (a *dashAudit) dashboard(di obsbackend.DashboardInfo) auditDashboard {
 	if ad.Title == "" {
 		ad.Title = spec.Title
 	}
+	base, source := a.opts.since, auditWindowSince
+	if base == 0 {
+		base, source = dashboardRange(spec.DefaultRange)
+	}
+	ad.DefaultRange, ad.Range = spec.DefaultRange, durText(base)
 	var wg sync.WaitGroup
 	panels := make([]auditPanel, 0, len(spec.Panels))
 	for _, p := range spec.Panels {
@@ -493,7 +567,7 @@ func (a *dashAudit) dashboard(di obsbackend.DashboardInfo) auditDashboard {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			panels[i] = a.panel(p)
+			panels[i] = a.panel(p, base, source)
 		}()
 	}
 	wg.Wait()
@@ -564,10 +638,17 @@ func (a *dashAudit) failureOf(err error) obsbackend.Failure {
 	return obsbackend.FailureOf(err)
 }
 
-func (a *dashAudit) panel(p dashspec.Panel) auditPanel {
-	ap := auditPanel{
-		ID: p.ID, Title: p.Title, Kind: string(p.Kind), Signal: string(p.Signal), From: a.rng.From, To: a.rng.To,
+func (a *dashAudit) panel(p dashspec.Panel, base time.Duration, source string) auditPanel {
+	window := base
+	ap := auditPanel{ID: p.ID, Title: p.Title, Kind: string(p.Kind), Signal: string(p.Signal), WindowSource: source, MinStep: p.MinStep}
+	if p.Kind == dashspec.KindSQL && p.MinStep != "" {
+		if w, widened := rangeForBucket(window, p.MinStep); widened {
+			ap.Widened, ap.WidenedFrom, ap.WindowSource = true, durText(window), auditWindowWidened
+			window = w
+		}
 	}
+	rng := obsbackend.Range{From: a.now.Add(-window), To: a.now}
+	ap.From, ap.To = rng.From, rng.To
 	for _, s := range p.Series {
 		if p.Signal == dashspec.Metrics && s.Field != "" && !slices.Contains(ap.Metrics, s.Field) {
 			ap.Metrics = append(ap.Metrics, s.Field)
@@ -582,14 +663,14 @@ func (a *dashAudit) panel(p dashspec.Panel) auditPanel {
 	var ro obsbackend.PanelReadout
 	attempts, err := a.guarded(func() error {
 		var err error
-		ro, err = a.dr.QueryPanelReadout(a.ctx, obsbackend.PanelReadoutRequest{Narrow: obsbackend.Narrow{Range: a.rng}, Panel: op, ProjectID: a.project})
+		ro, err = a.dr.QueryPanelReadout(a.ctx, obsbackend.PanelReadoutRequest{Narrow: obsbackend.Narrow{Range: rng}, Panel: op, ProjectID: a.project})
 		return err
 	})
 	ap.Attempts = attempts
 	if err != nil {
 		f := a.failureOf(err)
 		ap.Status, ap.Reason, ap.Error = auditError, string(f.Class), auditFailureOf(f)
-		ap.ProbableCause = failureCause(f, a.rng)
+		ap.ProbableCause = failureCause(f, rng)
 		return ap
 	}
 	ap.fill(ro)
@@ -601,6 +682,7 @@ func (ap *auditPanel) fill(ro obsbackend.PanelReadout) {
 	ap.Series, ap.Rows, ap.Points, ap.NonNull, ap.NonZero = ro.Series, ro.Rows, ro.Points, ro.NonNull, ro.NonZero
 	ap.Buckets, ap.Items, ap.LastDataAt, ap.StepSeconds = ro.Buckets, ro.Items, ro.LastDataAt, ro.StepSeconds
 	ap.Truncated, ap.SeriesTotal, ap.Warnings = ro.Truncated, ro.SeriesTotal, ro.Warnings
+	ap.BucketSeconds, ap.BucketTimezone = ro.BucketSeconds, ro.BucketTimezone
 	if len(ro.SQLColumns) > 0 {
 		ap.firstColumnType = ro.SQLColumns[0].Type
 	}
@@ -609,7 +691,7 @@ func (ap *auditPanel) fill(ro obsbackend.PanelReadout) {
 // judge sets the status of a panel whose read succeeded, probing it when it is
 // empty.
 func (a *dashAudit) judge(ap *auditPanel, op obsquery.Panel, ro obsbackend.PanelReadout) {
-	window := a.rng.To.Sub(a.rng.From)
+	window := ap.To.Sub(ap.From)
 	absent := warningDetails(ro.Warnings, "metric_absent")
 	mismatch := append(warningDetails(ro.Warnings, "metric_kind_mismatch"), warningDetails(ro.Warnings, "metric_stored_as_n_kinds")...)
 	switch {
@@ -654,10 +736,22 @@ func singleBucket(ap *auditPanel, ro obsbackend.PanelReadout) bool {
 }
 
 func singleBucketCause(ap *auditPanel, window time.Duration) string {
-	if ap.Kind == "sql" && strings.HasPrefix(ap.firstColumnType, "Date") && !strings.HasPrefix(ap.firstColumnType, "DateTime") {
-		return fmt.Sprintf("the panel buckets by calendar day (its first column is %s) but the window is %s, so it can hold one bucket, which a line cannot draw and the console places at UTC midnight; widen the window, or bucket by the {step} parameter", ap.firstColumnType, durText(window))
+	bucket := ""
+	if ap.BucketSeconds > 0 {
+		bucket = ", bucket " + stepText(ap.BucketSeconds)
 	}
-	return fmt.Sprintf("the answer holds one bucket (step %s over %s), and a line needs two to draw; widen the window or lower the step", stepText(ap.StepSeconds), durText(window))
+	over := fmt.Sprintf("%s%s", durText(window), bucket)
+	if ap.Widened {
+		over += fmt.Sprintf(", already widened from %s for minStep %s", ap.WidenedFrom, ap.MinStep)
+	}
+	day := ap.Kind == "sql" && strings.HasPrefix(ap.firstColumnType, "Date") && !strings.HasPrefix(ap.firstColumnType, "DateTime")
+	switch {
+	case ap.Kind == "sql" && ap.MinStep == "" && day:
+		return fmt.Sprintf("the panel buckets by calendar day (its first column is %s) over %s and declares no minStep, so the console cannot widen it: it holds one bucket, which a line cannot draw; declare \"minStep\": \"1d\" on the panel, or bucket by the {step} parameter", ap.firstColumnType, over)
+	case ap.Kind == "sql" && ap.MinStep != "":
+		return fmt.Sprintf("only one bucket holds data over %s (minStep %s): the signal has rows in a single bucket, so a line cannot be drawn; the emitter went quiet outside it, or has only just started", over, ap.MinStep)
+	}
+	return fmt.Sprintf("the answer holds one bucket (step %s over %s), and a line needs two to draw; widen the window or lower the step", stepText(ap.StepSeconds), over)
 }
 
 // warningDetails returns the detail of every warning with the given code
@@ -679,13 +773,17 @@ func warningDetails(warnings []string, code string) []string {
 // ── the probe ───────────────────────────────────────────────────────────
 
 func (a *dashAudit) probe(ap *auditPanel, op obsquery.Panel) *auditProbe {
-	to := a.rng.To
-	from := to.Add(-a.opts.probeSince)
+	to := ap.To
+	span := a.opts.probeSince
+	if panelWindow := ap.To.Sub(ap.From); span <= panelWindow {
+		span = 4 * panelWindow
+	}
+	from := to.Add(-span)
 	if mr, err := op.MaxRange(); err == nil && to.Sub(from) > mr {
 		from = to.Add(-mr)
 	}
 	pr := &auditProbe{From: from, To: to, Steps: []auditProbeStep{}}
-	if !from.Before(a.rng.From) {
+	if !from.Before(ap.From) {
 		// Nothing wider than the window the panel already ran over.
 		pr.Verdict = verdictNotProbed
 		pr.Steps = append(pr.Steps, auditProbeStep{Name: "wider_window", Error: &auditFailure{Class: "skipped", Message: "the probe window is not wider than the audit window (or than the signal allows); pass --probe-window larger than --since"}})
@@ -995,7 +1093,11 @@ func auditSuggestions(env string, d obsDashboardsAuditDoc) []string {
 
 func writeAuditText(w io.Writer, env string, doc obsDashboardsAuditDoc, all bool) {
 	s := doc.Summary
-	fmt.Fprintf(w, "%s dashboards audit  window %s (%s .. %s)", env, doc.Window.Since, doc.Window.From.Format(time.RFC3339), doc.Window.To.Format(time.RFC3339))
+	if doc.Window.Source == auditWindowSince {
+		fmt.Fprintf(w, "%s dashboards audit  window %s (--since)  ending %s", env, doc.Window.Since, doc.Window.To.Format(time.RFC3339))
+	} else {
+		fmt.Fprintf(w, "%s dashboards audit  window as the console opens each dashboard (its defaultRange, else %s; a panel with a minStep is widened)  ending %s", env, doc.Window.Since, doc.Window.To.Format(time.RFC3339))
+	}
 	if doc.Window.ProbeSince != "" {
 		fmt.Fprintf(w, "  probe %s", doc.Window.ProbeSince)
 	}
@@ -1021,6 +1123,9 @@ func writeAuditText(w io.Writer, env string, doc obsDashboardsAuditDoc, all bool
 			}
 			name := db.ID + "/" + p.ID
 			rows = append(rows, []string{p.Status, name, p.Kind, dataText(p), stepText(p.StepSeconds), p.Reason})
+			if p.Widened {
+				why = append(why, fmt.Sprintf("%s: window smaller than the panel's %s bucket: ran over %s instead of %s, as the console does", name, p.MinStep, durText(p.To.Sub(p.From)), p.WidenedFrom))
+			}
 			if c := causeText(p); c != "" {
 				why = append(why, name+": "+c)
 			}

@@ -39,9 +39,10 @@ type auditCP struct {
 type auditQuery struct {
 	Proc    string
 	PanelID string
-	Wide    bool // the window is wider than the audit's 1h
-	AllEnvs bool // not bounded to one env
-	Bare    bool // the panel carries no predicates
+	Window  time.Duration // the width of the requested window
+	Wide    bool          // the window is wider than the audit's 1h
+	AllEnvs bool          // not bounded to one env
+	Bare    bool          // the panel carries no predicates
 	Step    int64
 	Panel   map[string]any
 }
@@ -78,7 +79,8 @@ func (c *auditCP) Call(_ context.Context, procedure string, req, out any) error 
 		tr, _ := scope["timeRange"].(map[string]any)
 		start, _ := time.Parse(time.RFC3339, tr["start"].(string))
 		end, _ := time.Parse(time.RFC3339, tr["end"].(string))
-		q.Wide = end.Sub(start) > 2*time.Hour
+		q.Window = end.Sub(start)
+		q.Wide = q.Window > 2*time.Hour
 		q.Bare = !hasPredicates(panel)
 		if s, ok := in["stepSeconds"].(float64); ok {
 			q.Step = int64(s)
@@ -647,7 +649,7 @@ func TestAuditFailureClasses(t *testing.T) {
 func TestAuditProbeIsBoundedByTheWindow(t *testing.T) {
 	cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": auditSpec(linePanel("p"))},
 		panel: func(auditQuery) (string, error) { return respEmpty, nil }}
-	out, _, _ := auditRun(t, cp, "--since", "24h", "--probe-window", "1h")
+	out, _, _ := auditRun(t, cp, "--since", "168h", "--probe-window", "1h")
 	p := decodeAudit(t, out).Dashboards[0].Panels[0]
 	if p.Status != "empty" || p.Probe == nil || p.Probe.Steps[0].HasData {
 		t.Errorf("%+v", p)
@@ -684,4 +686,337 @@ func TestAuditTextGolden(t *testing.T) {
 		t.Fatalf("exit = %d, want 1 (a refused panel outranks the empty ones)", exitcode.Of(err))
 	}
 	obsGolden(t, "dashboards.audit.txt", out)
+}
+
+func specWith(defaultRange string, panels ...string) string {
+	dr := ""
+	if defaultRange != "" {
+		dr = fmt.Sprintf(`,"defaultRange":%q`, defaultRange)
+	}
+	return fmt.Sprintf(`{"summary":{"ref":{"source":"DASHBOARD_SOURCE_GENERATED","key":"d1"},"title":"Usage"},"spec":{"id":"d1","title":"Usage"%s,"panels":[%s]}}`, dr, strings.Join(panels, ","))
+}
+
+func sqlPanel(id, minStep string) string {
+	ms := ""
+	if minStep != "" {
+		ms = fmt.Sprintf(`,"minStep":%q`, minStep)
+	}
+	return fmt.Sprintf(`{"id":%q,"title":%q,"kind":"sql","sql":"select 1"%s}`, id, id, ms)
+}
+
+// a day-bucketed sql answer: points at UTC midnights, first column a Date
+func dayAnswer(days int, withBucket bool) string {
+	var pts []string
+	for i := 0; i < days; i++ {
+		pts = append(pts, fmt.Sprintf(`{"time":"2026-10-%02dT00:00:00Z","value":%d}`, 20+i, 5+i))
+	}
+	extra := ""
+	if withBucket {
+		extra = `,"bucketSeconds":86400,"bucketTimezone":"UTC"`
+	}
+	return fmt.Sprintf(`{"kind":"sql","stepSeconds":120,"series":[{"label":"runs","points":[%s]}],"sqlColumns":[{"name":"day","type":"Date","time":true},{"name":"runs","type":"UInt64","numeric":true}]%s}`, strings.Join(pts, ","), extra)
+}
+
+// windowDoc is just the window facts of an audit document.
+type windowDoc struct {
+	Window     struct{ Since, Source string }
+	Dashboards []struct {
+		ID           string
+		DefaultRange string `json:"default_range"`
+		Range        string
+		Panels       []struct {
+			ID            string
+			Status        string
+			Reason        string
+			ProbableCause string `json:"probable_cause"`
+			WindowSource  string `json:"window_source"`
+			Widened       bool
+			WidenedFrom   string `json:"widened_from"`
+			MinStep       string `json:"min_step"`
+			From, To      time.Time
+			BucketSeconds int64  `json:"bucket_seconds"`
+			BucketTZ      string `json:"bucket_timezone"`
+		}
+	}
+}
+
+func (w windowDoc) panel(t *testing.T, id string) (p struct {
+	ID            string
+	Status        string
+	Reason        string
+	ProbableCause string `json:"probable_cause"`
+	WindowSource  string `json:"window_source"`
+	Widened       bool
+	WidenedFrom   string `json:"widened_from"`
+	MinStep       string `json:"min_step"`
+	From, To      time.Time
+	BucketSeconds int64  `json:"bucket_seconds"`
+	BucketTZ      string `json:"bucket_timezone"`
+}) {
+	t.Helper()
+	for _, d := range w.Dashboards {
+		for _, p := range d.Panels {
+			if p.ID == id {
+				return p
+			}
+		}
+	}
+	t.Fatalf("no panel %q", id)
+	return
+}
+
+func decodeWindows(t *testing.T, out string) windowDoc {
+	t.Helper()
+	var d windowDoc
+	if err := json.Unmarshal([]byte(out), &d); err != nil {
+		t.Fatalf("decode: %v\n%s", err, out)
+	}
+	return d
+}
+
+// widthsSeen are the distinct windows QueryPanel was asked for, per panel id.
+func (c *auditCP) widths(id string) []time.Duration {
+	var out []time.Duration
+	for _, q := range c.calls {
+		if q.Proc == cpQueryPanel && q.PanelID == id {
+			out = append(out, q.Window)
+		}
+	}
+	return out
+}
+
+// A dashboard that declares defaultRange is replayed over it (rounded up to a
+// preset, as the console does); one that declares none, over an hour. --since
+// overrides both, as a viewer who picked a range.
+func TestAuditUsesTheDashboardsDefaultRange(t *testing.T) {
+	cases := []struct {
+		name         string
+		defaultRange string
+		args         []string
+		wantWindow   time.Duration
+		wantSource   string
+	}{
+		{"none declared: the console's hour", "", nil, time.Hour, "console_default"},
+		{"7d", "7d", nil, 7 * 24 * time.Hour, "dashboard_default_range"},
+		{"90m rounds up to the 6h preset", "90m", nil, 6 * time.Hour, "dashboard_default_range"},
+		{"2d rounds up to 7d", "2d", nil, 7 * 24 * time.Hour, "dashboard_default_range"},
+		{"30d is capped at the longest preset", "30d", nil, 7 * 24 * time.Hour, "dashboard_default_range"},
+		{"--since beats the declaration", "7d", []string{"--since", "15m"}, 15 * time.Minute, "since"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": specWith(tc.defaultRange, linePanel("p"))},
+				panel: func(auditQuery) (string, error) { return respData, nil }}
+			out, _, err := auditRun(t, cp, append([]string{"--no-probe"}, tc.args...)...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cp.widths("p"); len(got) != 1 || got[0] != tc.wantWindow {
+				t.Errorf("QueryPanel windows = %v, want [%v]", got, tc.wantWindow)
+			}
+			doc := decodeWindows(t, out)
+			p := doc.panel(t, "p")
+			if p.To.Sub(p.From) != tc.wantWindow || p.WindowSource != tc.wantSource {
+				t.Errorf("reported window %v from %q, want %v from %q", p.To.Sub(p.From), p.WindowSource, tc.wantWindow, tc.wantSource)
+			}
+			if d := doc.Dashboards[0]; d.DefaultRange != tc.defaultRange {
+				t.Errorf("default_range = %q", d.DefaultRange)
+			}
+		})
+	}
+}
+
+// Two dashboards, two defaults: each is replayed over its own.
+func TestAuditDefaultRangeIsPerDashboard(t *testing.T) {
+	index := `{"dashboards":[
+	 {"ref":{"source":"DASHBOARD_SOURCE_GENERATED","key":"d1"},"title":"A","source":"DASHBOARD_SOURCE_GENERATED"},
+	 {"ref":{"source":"DASHBOARD_SOURCE_GENERATED","key":"d2"},"title":"B","source":"DASHBOARD_SOURCE_GENERATED"}]}`
+	cp := &auditCP{dashboards: index, specs: map[string]string{
+		"d1": specWith("7d", linePanel("weekly")), "d2": specWith("", linePanel("hourly"))},
+		panel: func(auditQuery) (string, error) { return respData, nil }}
+	if _, _, err := auditRun(t, cp, "--no-probe"); err != nil {
+		t.Fatal(err)
+	}
+	if w := cp.widths("weekly"); len(w) != 1 || w[0] != 7*24*time.Hour {
+		t.Errorf("weekly %v", w)
+	}
+	if w := cp.widths("hourly"); len(w) != 1 || w[0] != time.Hour {
+		t.Errorf("hourly %v", w)
+	}
+}
+
+// A sql panel whose minStep is wider than the window is widened to the smallest
+// preset holding two buckets, as the console does, and says so.
+func TestAuditWidensAPanelForItsMinStep(t *testing.T) {
+	cases := []struct {
+		name         string
+		defaultRange string
+		minStep      string
+		want         time.Duration
+		widened      bool
+		from         string
+	}{
+		{"1d under the 1h default -> 7d (two days need the 7d preset)", "", "1d", 7 * 24 * time.Hour, true, "1h"},
+		{"1d under 24h already holds one bucket: left alone", "24h", "1d", 24 * time.Hour, false, ""},
+		{"1d under 7d is left alone", "7d", "1d", 7 * 24 * time.Hour, false, ""},
+		{"6h under 1h -> 24h", "", "6h", 24 * time.Hour, true, "1h"},
+		{"30m under 15m -> the 1h preset holds two buckets", "15m", "30m", time.Hour, true, "15m"},
+		{"no minStep: not widened", "", "", time.Hour, false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": specWith(tc.defaultRange, sqlPanel("s", tc.minStep))},
+				panel: func(auditQuery) (string, error) { return dayAnswer(3, false), nil }}
+			out, _, err := auditRun(t, cp, "--no-probe")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if w := cp.widths("s"); len(w) != 1 || w[0] != tc.want {
+				t.Errorf("QueryPanel windows = %v, want [%v]", w, tc.want)
+			}
+			p := decodeWindows(t, out).panel(t, "s")
+			if p.Widened != tc.widened || p.WidenedFrom != tc.from || p.To.Sub(p.From) != tc.want {
+				t.Errorf("widened=%v from=%q window=%v, want widened=%v from=%q window=%v", p.Widened, p.WidenedFrom, p.To.Sub(p.From), tc.widened, tc.from, tc.want)
+			}
+			if tc.widened && p.WindowSource != "widened_for_min_step" {
+				t.Errorf("window_source = %q", p.WindowSource)
+			}
+		})
+	}
+	// the widening note reaches the text output
+	cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": specWith("", sqlPanel("s", "1d"), linePanel("empty"))},
+		panel: func(q auditQuery) (string, error) {
+			if q.PanelID == "s" {
+				return dayAnswer(3, false), nil
+			}
+			return respEmpty, nil
+		}}
+	text, _, _ := mxRun(t, mxCloud(cp), "dashboards", "audit", "prod", "--no-probe", "--all")
+	if !strings.Contains(text, "window smaller than the panel's 1d bucket: ran over 7d instead of 1h") {
+		t.Errorf("text lacks the widening note:\n%s", text)
+	}
+}
+
+// With minStep declared, a day-bucketed panel reads several buckets and is ok;
+// the 1h-default one-bucket verdict no longer fires on it.
+func TestAuditSingleBucketNoLongerFiresOnAWidenedPanel(t *testing.T) {
+	cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": specWith("", sqlPanel("s", "1d"))},
+		panel: func(auditQuery) (string, error) { return dayAnswer(6, true), nil }}
+	out, _, err := auditRun(t, cp)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	p := decodeWindows(t, out).panel(t, "s")
+	if p.Status != "ok" || p.BucketSeconds != 86400 || p.BucketTZ != "UTC" {
+		t.Errorf("%+v", p)
+	}
+}
+
+// A panel that really gets one bucket under the console's own behavior is
+// still flagged: declared range, widening and all.
+func TestAuditSingleBucketStillFlaggedWhenTheRangeYieldsOne(t *testing.T) {
+	cases := []struct {
+		name  string
+		spec  string
+		panel func(auditQuery) (string, error)
+		id    string
+		want  []string
+	}{
+		{
+			name: "a day-bucketed sql panel with no minStep: the console cannot widen it",
+			spec: specWith("", sqlPanel("s", "")), id: "s",
+			panel: func(auditQuery) (string, error) { return dayAnswer(1, false), nil },
+			want:  []string{"declares no minStep", "the console cannot widen it", `"minStep": "1d"`},
+		},
+		{
+			name: "minStep declared and widened, yet the data sits in one day",
+			spec: specWith("", sqlPanel("s", "1d")), id: "s",
+			panel: func(auditQuery) (string, error) { return dayAnswer(1, true), nil },
+			want:  []string{"already widened from 1h", "minStep 1d", "bucket 1d"},
+		},
+		{
+			name: "a line panel whose declared 15m range holds one bucket",
+			spec: specWith("15m", linePanel("l")), id: "l",
+			panel: func(auditQuery) (string, error) { return respOne, nil },
+			want:  []string{"one bucket", "15m"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": tc.spec}, panel: tc.panel}
+			out, _, err := auditRun(t, cp)
+			if exitcode.Of(err) != 2 {
+				t.Fatalf("exit = %d, want 2", exitcode.Of(err))
+			}
+			p := decodeWindows(t, out).panel(t, tc.id)
+			if p.Status != "partial" || p.Reason != "single_bucket" {
+				t.Fatalf("status %q reason %q\n%s", p.Status, p.Reason, out)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(p.ProbableCause, w) {
+					t.Errorf("probable_cause %q lacks %q", p.ProbableCause, w)
+				}
+			}
+		})
+	}
+}
+
+// bucket_seconds / bucket_timezone are reported when the server sends them and
+// everything works without them.
+func TestAuditReadsTheBucketWhenSent(t *testing.T) {
+	for _, sent := range []bool{true, false} {
+		cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": specWith("7d", sqlPanel("s", "1d"))},
+			panel: func(auditQuery) (string, error) { return dayAnswer(4, sent), nil }}
+		out, _, err := auditRun(t, cp)
+		if err != nil {
+			t.Fatalf("sent=%v: %v", sent, err)
+		}
+		p := decodeWindows(t, out).panel(t, "s")
+		if p.Status != "ok" {
+			t.Errorf("sent=%v: status %q", sent, p.Status)
+		}
+		if sent && (p.BucketSeconds != 86400 || p.BucketTZ != "UTC") {
+			t.Errorf("bucket = %d %q", p.BucketSeconds, p.BucketTZ)
+		}
+		if !sent && (p.BucketSeconds != 0 || p.BucketTZ != "") {
+			t.Errorf("bucket reported without being sent: %d %q", p.BucketSeconds, p.BucketTZ)
+		}
+	}
+}
+
+// The probe is relative to the panel's own window: an empty panel on a 7d
+// dashboard is probed wider than 7d (a metrics signal allows 30d), never "not
+// probed" for being equal.
+func TestAuditProbeIsWiderThanThePanelsOwnWindow(t *testing.T) {
+	cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": specWith("7d", metricPanel("p", "rpc.server.calls"))},
+		metrics: `{"metrics":[{"name":"rpc.server.calls","type":"METRIC_TYPE_SUM","seen":true,"queryable":true}]}`,
+		panel: func(q auditQuery) (string, error) {
+			if q.Window > 7*24*time.Hour {
+				return respData, nil
+			}
+			return respEmpty, nil
+		}}
+	out, _, _ := auditRun(t, cp)
+	p := decodeWindows(t, out).panel(t, "p")
+	if p.Reason != "data_outside_window" {
+		t.Errorf("reason %q\n%s", p.Reason, out)
+	}
+	if w := cp.widths("p"); len(w) < 2 || w[1] <= w[0] {
+		t.Errorf("probe windows %v", w)
+	}
+}
+
+// A traces panel cannot be read past 7d, so a 7d dashboard has nothing wider to
+// probe: the verdict says so instead of claiming there is no data.
+func TestAuditProbeCannotExceedTheSignalsMaximum(t *testing.T) {
+	cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": specWith("7d", linePanel("p"))},
+		panel: func(auditQuery) (string, error) { return respEmpty, nil }}
+	out, _, _ := auditRun(t, cp)
+	p := decodeWindows(t, out).panel(t, "p")
+	if p.Status != "empty" || !strings.Contains(p.ProbableCause, "could not look wider") {
+		t.Errorf("%+v", p)
+	}
+	if w := cp.widths("p"); len(w) != 1 {
+		t.Errorf("a probe no wider than the window is not sent: %v", w)
+	}
 }

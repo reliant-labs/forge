@@ -164,6 +164,11 @@ type PanelReadout struct {
 	// HasData is true when the console would draw something rather than its
 	// empty state.
 	HasData bool
+	// BucketSeconds and BucketTimezone are the bucket width and zone a sql
+	// time series reports; zero and empty when the control plane sends none
+	// (older ones do not, and nothing here depends on them).
+	BucketSeconds  int64
+	BucketTimezone string
 	// Truncated says a cap cut the answer; SeriesTotal is how many series
 	// matched before the cap (0: unknown).
 	Truncated   bool
@@ -219,6 +224,7 @@ func (r wirePanelResponse) readout(kind string) PanelReadout {
 	out := PanelReadout{
 		Kind: kind, StepSeconds: r.StepSeconds, Series: len(r.Series), Rows: len(r.Rows),
 		Truncated: r.Truncated, SeriesTotal: r.SeriesTotal, Warnings: r.Warnings,
+		BucketSeconds: int64(r.BucketSeconds), BucketTimezone: r.BucketTimezone,
 	}
 	for _, c := range r.SQLColumns {
 		out.SQLColumns = append(out.SQLColumns, Column{Name: c.Name, Type: c.Type})

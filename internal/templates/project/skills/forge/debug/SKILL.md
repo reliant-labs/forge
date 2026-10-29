@@ -194,9 +194,13 @@ that app records or schema are correct. Full transport/policy rules: `db/query`.
 
 Two different questions, and one command answers both. `forge obs dashboards
 audit` lists the dashboards the console lists for the env and sends each panel
-to the same server-side `QueryPanel` the console calls, over the console's
-default last hour with the step left to the control plane. It rebuilds no panel
-SQL, so it cannot disagree with the console about what a panel asks for.
+to the same server-side `QueryPanel` the console calls, over the range the
+console opens each dashboard on (its `defaultRange` rounded up to a preset, else
+the last hour; `--since` replaces it, as a viewer who picked a range), with the
+step left to the control plane. A sql panel whose `minStep` is wider than that
+window is widened the way the console widens it (to the smallest preset holding
+two buckets), and the panel reports `widened` and the window it really ran over.
+It rebuilds no panel SQL, so it cannot disagree with the console.
 
 ```bash
 forge obs dashboards audit prod                                  # every panel, failures first
@@ -209,7 +213,7 @@ Read each panel's `status`, `reason` and `probable_cause`, not just the status:
 | status | meaning | next |
 |---|---|---|
 | `ok` | data the console can draw (`all_zero` in `note` means it is zero, not missing) | none |
-| `partial` | data, but a series' metric is absent or stored as another kind, or the answer is **one bucket** where a line needs two (a day-wide bucket under the 1h default) | widen `--since`, or fix the panel's bucketing |
+| `partial` | data, but a series' metric is absent or stored as another kind, or the answer is **one bucket** where a line needs two *under the console's own window* (a day-bucketed sql panel with no `minStep`, which the console cannot widen) | declare `minStep` / `defaultRange`, or fix the panel's bucketing |
 | `empty` | nothing came back; `probe.verdict` says whether the data exists | by verdict, below |
 | `error` | the read failed; `error.class` names it | by class, below |
 

@@ -1,4 +1,4 @@
-prod dashboards audit  window 1h (2026-10-22T11:00:00Z .. 2026-10-22T12:00:00Z)  probe 7d
+prod dashboards audit  window as the console opens each dashboard (its defaultRange, else 1h; a panel with a minStep is widened)  ending 2026-10-22T12:00:00Z  probe 7d
 1 dashboard(s), 5 panel(s): 1 error, 2 empty, 1 partial, 1 ok, 0 n/a
 
 STATUS   PANEL              KIND  DATA                        STEP  REASON

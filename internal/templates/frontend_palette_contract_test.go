@@ -491,10 +491,9 @@ func TestScaffoldedThemeTokenizesGeometry(t *testing.T) {
 					"can only be changed by editing each of the ~160 call sites.", rel, name)
 				continue
 			}
-			// Whitespace-normalized: each stylesheet is formatted by its own
-			// frontend's prettier (nextjs at printWidth 100, vite-spa at the
-			// default 80), which wraps a long shadow list at different points.
-			// A line break between two shadows is not geometry.
+			// Whitespace-normalized: a line break between two shadows is
+			// not geometry, and prettier wraps a long shadow list wherever
+			// the print width falls.
 			found[name] = strings.Join(strings.Fields(m[1]), " ")
 		}
 		values[kind] = found

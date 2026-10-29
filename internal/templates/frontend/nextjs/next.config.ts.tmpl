@@ -98,9 +98,8 @@ if (process.env.NODE_ENV === "production" && basePath === "") {
 // the ingress's job (the hosted gateway, or your cluster's ingress). Until
 // that route exists, leave the frontend's otel_endpoint unset and the
 // production bundle sends nothing.
-const otelUpstream = (
-  process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318"
-).replace(/\/+$/, "");
+const otelEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318";
+const otelUpstream = otelEndpoint.replace(/\/+$/, "");
 
 // ── API proxy (DEV ONLY) ────────────────────────────────────────────────
 //
@@ -280,7 +279,7 @@ const nextConfig: NextConfig = {
     // Next.js with moduleResolution: bundler can't resolve .js to .ts files
     // without this alias mapping.
     config.resolve.extensionAlias = {
-      '.js': ['.ts', '.tsx', '.js', '.jsx'],
+      ".js": [".ts", ".tsx", ".js", ".jsx"],
     };
 
     // A dev build of forge bridges @reliantlabs/forge-web-runtime with a `file:`
@@ -416,9 +415,8 @@ const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "{{.BasePath}}";
 // the ingress's job (the hosted gateway, or your cluster's ingress). Until
 // that route exists, leave the frontend's otel_endpoint unset and the
 // production bundle sends nothing.
-const otelUpstream = (
-  process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318"
-).replace(/\/+$/, "");
+const otelEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318";
+const otelUpstream = otelEndpoint.replace(/\/+$/, "");
 
 // ── API proxy (DEV ONLY) ────────────────────────────────────────────────
 //
@@ -570,7 +568,7 @@ const nextConfig: NextConfig = {
     // Next.js with moduleResolution: bundler can't resolve .js to .ts files
     // without this alias mapping.
     config.resolve.extensionAlias = {
-      '.js': ['.ts', '.tsx', '.js', '.jsx'],
+      ".js": [".ts", ".tsx", ".js", ".jsx"],
     };
 
     // A dev build of forge bridges @reliantlabs/forge-web-runtime with a `file:`
@@ -706,9 +704,8 @@ const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "{{.BasePath}}";
 // the ingress's job (the hosted gateway, or your cluster's ingress). Until
 // that route exists, leave the frontend's otel_endpoint unset and the
 // production bundle sends nothing.
-const otelUpstream = (
-  process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318"
-).replace(/\/+$/, "");
+const otelEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318";
+const otelUpstream = otelEndpoint.replace(/\/+$/, "");
 
 // ── API proxy (DEV ONLY) ────────────────────────────────────────────────
 //
@@ -924,7 +921,7 @@ const nextConfig: NextConfig = {
     // Next.js with moduleResolution: bundler can't resolve .js to .ts files
     // without this alias mapping.
     config.resolve.extensionAlias = {
-      '.js': ['.ts', '.tsx', '.js', '.jsx'],
+      ".js": [".ts", ".tsx", ".js", ".jsx"],
     };
 
     // A dev build of forge bridges @reliantlabs/forge-web-runtime with a `file:`

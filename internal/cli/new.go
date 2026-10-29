@@ -1603,7 +1603,9 @@ func runFrontendInstalls(ctx context.Context, root string, frontends []string) e
 			}
 			// A cancelled context is the user or a timeout, not a flaky
 			// registry — retrying only makes them wait for the same answer.
-			if ctx.Err() != nil {
+			// Nor is a package manager that will not start: a retry runs
+			// the same executable.
+			if ctx.Err() != nil || errors.Is(lastErr, frontenddeps.ErrRunnerUnusable) {
 				return fmt.Errorf("%s install (%s) failed: %w", pm, name, lastErr)
 			}
 			if attempt < frontendInstallAttempts {

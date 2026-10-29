@@ -43,7 +43,6 @@ function apiBaseUrl(): string {
   return apiBase((import.meta.env.VITE_API_URL as string | undefined) ?? DEV_API_URL);
 }
 {{end}}
-
 // The forge frontend runtime owns the interceptor stack: brand headers, W3C
 // traceparent propagation (so backend spans join the same trace — always on,
 // no collector required), and typed error normalization. It ships as

@@ -104,12 +104,7 @@ export interface Registration {
 }
 
 /** One clause of the password policy. The names are the server's wire spelling. */
-export type PasswordRule =
-  | "min_length"
-  | "uppercase"
-  | "lowercase"
-  | "number"
-  | "symbol";
+export type PasswordRule = "min_length" | "uppercase" | "lowercase" | "number" | "symbol";
 
 /**
  * What a password must contain, as the identity provider enforces it.

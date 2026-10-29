@@ -125,7 +125,7 @@ export function createSessionAuthProvider(): AuthProvider {
     console.warn(
       "[auth] No credential: this bundle is driving a real backend with nothing to present, " +
         "so every request that needs identity will 401. Implement AuthProvider over your IdP " +
-        "and use it in src/lib/auth/context.tsx."
+        "and use it in src/lib/auth/context.tsx.",
     );
   };
 

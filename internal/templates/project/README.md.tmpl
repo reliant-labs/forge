@@ -5,6 +5,7 @@ A Go application project built with [Forge](https://github.com/reliant-labs/forg
 ## Quick Start
 
 ### 1. Install dependencies
+
 ```bash
 task deps
 ```
@@ -27,6 +28,7 @@ forge scaffold frontend mobile --kind mobile
 ```
 
 If you created the project with an initial service, define your proto by editing `proto/services/myservice/v1/myservice.proto`:
+
 ```protobuf
 syntax = "proto3";
 
@@ -48,11 +50,13 @@ message HelloResponse {
 ```
 
 ### 3. Generate code from protos
+
 ```bash
 forge generate
 ```
 
 ### 4. Build and run
+
 ```bash
 task build
 task dev
@@ -60,38 +64,38 @@ task dev
 
 ## CLI Commands
 
-| Command | Description |
-|---|---|
-| `forge project new` | Create a new project |
-| `forge scaffold service <name>` | Add a Go service |
-| `forge scaffold worker <name>` | Add a background worker; use `--kind cron --schedule "..."` for scheduled workers |
-| `forge scaffold frontend <name>` | Add a Next.js frontend app; use `--kind mobile` for React Native |
-| `forge generate` | Generate code from proto files |
-| `forge lint` | Lint proto and Go code |
-| `forge build` | Build the project |
-| `forge env up dev` | Run the dev environment |
-| `forge env deploy <env>` | Deploy to an environment |
-| `forge db` | Database commands |
+| Command                          | Description                                                                       |
+| -------------------------------- | --------------------------------------------------------------------------------- |
+| `forge project new`              | Create a new project                                                              |
+| `forge scaffold service <name>`  | Add a Go service                                                                  |
+| `forge scaffold worker <name>`   | Add a background worker; use `--kind cron --schedule "..."` for scheduled workers |
+| `forge scaffold frontend <name>` | Add a Next.js frontend app; use `--kind mobile` for React Native                  |
+| `forge generate`                 | Generate code from proto files                                                    |
+| `forge lint`                     | Lint proto and Go code                                                            |
+| `forge build`                    | Build the project                                                                 |
+| `forge env up dev`               | Run the dev environment                                                           |
+| `forge env deploy <env>`         | Deploy to an environment                                                          |
+| `forge db`                       | Database commands                                                                 |
 
 ## Task Commands
 
-| Command | Description |
-|---|---|
-| `task deps` | Install Go (and frontend) dependencies |
-| `task build` | Build Go binaries (and frontend bundle) |
-| `task test` | Run Go + every frontend's tests (integration/e2e excluded by build tag). This is the test suite — there is no `forge test`; CI runs this same target |
-| `task test -- ./internal/foo/...` | Scope to Go packages, or pass `go test` flags (`-- -v ./...`) |
-| `task test:integration` | Run the `integration`-tagged lane |
-| `task test:e2e` | Run end-to-end tests (requires docker compose) |
-| `task test:all` | Unit + frontend + integration |
-| `task coverage` | Emit `coverage.out` + `coverage.html` |
-| `task lint` | Run `golangci-lint`, `buf lint`, and frontend lint |
-| `task dev` | Start dev infra and Air hot-reload |
-| `task dev-up` | Bring up local dev infra with `app-debug` (Delve on :2345) |
-| `task dev-up-prod` | Bring up local dev infra with the production `app` image |
-| `task dev-down` | Tear down local dev infra (`docker compose --profile '*' down`) |
-| `task generate` | Regenerate everything forge generates, with the forge `forge.yaml` pins |
-| `task clean` | Clean generated files and build artifacts |
+| Command                           | Description                                                                                                                                          |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `task deps`                       | Install Go (and frontend) dependencies                                                                                                               |
+| `task build`                      | Build Go binaries (and frontend bundle)                                                                                                              |
+| `task test`                       | Run Go + every frontend's tests (integration/e2e excluded by build tag). This is the test suite — there is no `forge test`; CI runs this same target |
+| `task test -- ./internal/foo/...` | Scope to Go packages, or pass `go test` flags (`-- -v ./...`)                                                                                        |
+| `task test:integration`           | Run the `integration`-tagged lane                                                                                                                    |
+| `task test:e2e`                   | Run end-to-end tests (requires docker compose)                                                                                                       |
+| `task test:all`                   | Unit + frontend + integration                                                                                                                        |
+| `task coverage`                   | Emit `coverage.out` + `coverage.html`                                                                                                                |
+| `task lint`                       | Run `golangci-lint`, `buf lint`, and frontend lint                                                                                                   |
+| `task dev`                        | Start dev infra and Air hot-reload                                                                                                                   |
+| `task dev-up`                     | Bring up local dev infra with `app-debug` (Delve on :2345)                                                                                           |
+| `task dev-up-prod`                | Bring up local dev infra with the production `app` image                                                                                             |
+| `task dev-down`                   | Tear down local dev infra (`docker compose --profile '*' down`)                                                                                      |
+| `task generate`                   | Regenerate everything forge generates, with the forge `forge.yaml` pins                                                                              |
+| `task clean`                      | Clean generated files and build artifacts                                                                                                            |
 
 Run `task --list` (or just `task`) at any time to see the full set of
 automation entry points the scaffold ships with.

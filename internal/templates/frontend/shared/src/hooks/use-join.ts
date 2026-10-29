@@ -58,10 +58,7 @@ import type { UseQueryResult } from "@tanstack/react-query";
  * indexBy builds a `key → item` map (one-to-one). Later items with the same
  * key win, matching the "last row for this id" semantics of a keyed fetch.
  */
-export function indexBy<T, K>(
-  items: readonly T[],
-  keyFn: (item: T) => K,
-): Map<K, T> {
+export function indexBy<T, K>(items: readonly T[], keyFn: (item: T) => K): Map<K, T> {
   const map = new Map<K, T>();
   for (const item of items) {
     map.set(keyFn(item), item);
@@ -73,10 +70,7 @@ export function indexBy<T, K>(
  * groupBy buckets items under their key (one-to-many). Preserves input order
  * within each bucket.
  */
-export function groupBy<T, K>(
-  items: readonly T[],
-  keyFn: (item: T) => K,
-): Map<K, T[]> {
+export function groupBy<T, K>(items: readonly T[], keyFn: (item: T) => K): Map<K, T[]> {
   const map = new Map<K, T[]>();
   for (const item of items) {
     const key = keyFn(item);
@@ -106,9 +100,7 @@ export function joinOneToOne<P, R, K, O>(
   attach: (parent: P, related: R | undefined) => O,
 ): O[] {
   const byKey = indexBy(related, relatedKey);
-  return parents.map((parent) =>
-    attach(parent, byKey.get(parentForeignKey(parent))),
-  );
+  return parents.map((parent) => attach(parent, byKey.get(parentForeignKey(parent))));
 }
 
 /**
@@ -123,17 +115,14 @@ export function joinOneToMany<P, C, K, O>(
   attach: (parent: P, children: C[]) => O,
 ): O[] {
   const byForeignKey = groupBy(children, childForeignKey);
-  return parents.map((parent) =>
-    attach(parent, byForeignKey.get(parentKey(parent)) ?? []),
-  );
+  return parents.map((parent) => attach(parent, byForeignKey.get(parentKey(parent)) ?? []));
 }
 
 // ---------------------------------------------------------------------------
 // Combine a fixed set of query results into one tristate resource
 // ---------------------------------------------------------------------------
 
-type ExtractQueryData<T> =
-  T extends UseQueryResult<infer D, unknown> ? D : never;
+type ExtractQueryData<T> = T extends UseQueryResult<infer D, unknown> ? D : never;
 
 // Maps a tuple of UseQueryResult into the tuple of their data types.
 type CombinedData<T extends readonly UseQueryResult<unknown, unknown>[]> = {
@@ -164,9 +153,9 @@ export type CombinedResource<TData> =
  * Not a hook — it derives from results the caller already produced, exactly
  * like `useQueryResource`, so it is safe to call conditionally.
  */
-export function combineQueries<
-  T extends readonly UseQueryResult<unknown, ConnectClientError>[],
->(...queries: T): CombinedResource<CombinedData<T>> {
+export function combineQueries<T extends readonly UseQueryResult<unknown, ConnectClientError>[]>(
+  ...queries: T
+): CombinedResource<CombinedData<T>> {
   const refetch = () => {
     for (const query of queries) {
       void query.refetch();
@@ -175,9 +164,7 @@ export function combineQueries<
   if (queries.some((query) => query.isPending)) {
     return { status: "loading" };
   }
-  const errored = queries.find(
-    (query) => query.isError && query.data === undefined,
-  );
+  const errored = queries.find((query) => query.isError && query.data === undefined);
   if (errored) {
     return {
       status: "error",
@@ -245,9 +232,7 @@ export function useJoinedQueries<TData>(
   if (results.some((result) => result.isPending)) {
     return { status: "loading" };
   }
-  const errored = results.find(
-    (result) => result.isError && result.data === undefined,
-  );
+  const errored = results.find((result) => result.isError && result.data === undefined);
   if (errored) {
     return {
       status: "error",

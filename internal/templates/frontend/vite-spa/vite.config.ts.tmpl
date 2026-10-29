@@ -43,9 +43,7 @@ const readWebRuntimePeers = (): string[] => {
       "package.json",
     );
     if (fs.existsSync(manifest)) {
-      return Object.keys(
-        JSON.parse(fs.readFileSync(manifest, "utf8")).peerDependencies ?? {},
-      );
+      return Object.keys(JSON.parse(fs.readFileSync(manifest, "utf8")).peerDependencies ?? {});
     }
     const parent = path.dirname(dir);
     if (parent === dir) return []; // not installed — nothing to dedupe
@@ -87,9 +85,8 @@ const webRuntimePeers: string[] = readWebRuntimePeers();
 // ingress's job (the hosted gateway, or your cluster's ingress). Until that
 // route exists, leave the frontend's otel_endpoint unset and the production
 // bundle sends nothing.
-const OTEL_UPSTREAM = (
-  process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318"
-).replace(/\/+$/, "");
+const OTEL_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318";
+const OTEL_UPSTREAM = OTEL_ENDPOINT.replace(/\/+$/, "");
 
 // ── API proxy (DEV ONLY) ────────────────────────────────────────────────
 //

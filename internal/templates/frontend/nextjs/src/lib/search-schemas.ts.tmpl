@@ -28,12 +28,7 @@ import { useMemo } from "react";
 
 import type { z } from "zod";
 
-export function useTypedSearchParams<S extends z.ZodTypeAny>(
-  schema: S,
-): z.infer<S> {
+export function useTypedSearchParams<S extends z.ZodTypeAny>(schema: S): z.infer<S> {
   const sp = useSearchParams();
-  return useMemo(
-    () => schema.parse(Object.fromEntries(sp.entries())),
-    [sp, schema],
-  );
+  return useMemo(() => schema.parse(Object.fromEntries(sp.entries())), [sp, schema]);
 }

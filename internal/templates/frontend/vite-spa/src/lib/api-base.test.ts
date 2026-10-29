@@ -62,9 +62,7 @@ describe("apiBase", () => {
 
   it("goes through this origin under the dev server", async () => {
     const apiBase = await apiBaseUnder(true, "/_api");
-    expect(apiBase("http://localhost:8080")).toBe(
-      `${window.location.origin}/_api`,
-    );
+    expect(apiBase("http://localhost:8080")).toBe(`${window.location.origin}/_api`);
   });
 
   it("reads the configured URL in a build, even if the variable leaked", async () => {

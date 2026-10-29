@@ -42,9 +42,25 @@ export type RouteSpec = {
 // Seeded with the entities that existed at scaffold time. The dashboard
 // imports this, so pruning here prunes there too.
 export const ALL_ROUTES: Array<RouteSpec & { icon?: string }> = [
-  { path: "/", label: "Dashboard", labelLower: "dashboard", slug: "", labelSingular: "Dashboard", hasCreate: false, icon: "dashboard" },
+  {
+    path: "/",
+    label: "Dashboard",
+    labelLower: "dashboard",
+    slug: "",
+    labelSingular: "Dashboard",
+    hasCreate: false,
+    icon: "dashboard",
+  },
 {{- range .Pages}}
-  { path: "/{{.Slug}}", label: "{{.Label}}", labelLower: "{{.LabelLower}}", slug: "{{.Slug}}", labelSingular: "{{.LabelSingular}}", hasCreate: {{.HasCreate}}, icon: "entity" },
+  {
+    path: "/{{.Slug}}",
+    label: "{{.Label}}",
+    labelLower: "{{.LabelLower}}",
+    slug: "{{.Slug}}",
+    labelSingular: "{{.LabelSingular}}",
+    hasCreate: {{.HasCreate}},
+    icon: "entity",
+  },
 {{- end}}
 ];
 
@@ -127,8 +143,7 @@ export function Nav({ variant = "rail" }: { variant?: "rail" | "drawer" }) {
         <ul className="space-y-0.5">
           {navItems.map((item) => {
             const isActive =
-              pathname === item.path ||
-              (item.path !== "/" && pathname.startsWith(item.path));
+              pathname === item.path || (item.path !== "/" && pathname.startsWith(item.path));
             return (
               <li key={item.path}>
                 <Link
@@ -176,17 +191,17 @@ export function Nav({ variant = "rail" }: { variant?: "rail" | "drawer" }) {
         way out.
       */}
       {inDrawer ? null : (
-      <div className="border-t border-border px-3 py-3">
-        <button
-          onClick={toggleSidebar}
-          className={`flex w-full items-center rounded-md px-3 py-2 text-sm text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink ${
-            collapsed ? "justify-center" : "gap-2.5"
-          }`}
-        >
-          <CollapseIcon collapsed={collapsed} />
-          {!collapsed && "Collapse"}
-        </button>
-      </div>
+        <div className="border-t border-border px-3 py-3">
+          <button
+            onClick={toggleSidebar}
+            className={`flex w-full items-center rounded-md px-3 py-2 text-sm text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink ${
+              collapsed ? "justify-center" : "gap-2.5"
+            }`}
+          >
+            <CollapseIcon collapsed={collapsed} />
+            {!collapsed && "Collapse"}
+          </button>
+        </div>
       )}
     </nav>
   );

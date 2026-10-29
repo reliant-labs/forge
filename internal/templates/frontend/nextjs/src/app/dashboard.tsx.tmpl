@@ -95,7 +95,11 @@ export function EntityTiles() {
         </span>
         <p className="mt-4 text-sm font-medium text-ink">No resources yet</p>
         <p className="mx-auto mt-1 max-w-sm text-sm text-ink-muted">
-          Add services with CRUD RPCs and run <code className="rounded-md bg-surface-muted px-1.5 py-0.5 font-mono text-xs text-ink">forge generate</code> to populate this dashboard.
+          Add services with CRUD RPCs and run{" "}
+          <code className="rounded-md bg-surface-muted px-1.5 py-0.5 font-mono text-xs text-ink">
+            forge generate
+          </code>{" "}
+          to populate this dashboard.
         </p>
       </div>
     );
@@ -105,11 +109,15 @@ export function EntityTiles() {
   // and the grid decides the column count, so one entity does not stretch a
   // card across the viewport and seven do not cram.
   return (
+{{- if .Pages}}
     <div className="mb-8 grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(15rem,1fr))]">
       {{- range .Pages}}
       <{{.ComponentIdent}}Tile />
       {{- end}}
     </div>
+{{- else}}
+    <div className="mb-8 grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(15rem,1fr))]"></div>
+{{- end}}
   );
 }
 

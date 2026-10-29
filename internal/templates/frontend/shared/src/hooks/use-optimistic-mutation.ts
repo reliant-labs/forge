@@ -47,12 +47,7 @@ import type { UseMutationOptions } from "@tanstack/react-query";
  */
 export interface OptimisticMutationOptions<TData, TVariables, TSnapshot>
   extends Omit<
-    UseMutationOptions<
-      TData,
-      ConnectClientError,
-      TVariables,
-      { previous?: TSnapshot }
-    >,
+    UseMutationOptions<TData, ConnectClientError, TVariables, { previous?: TSnapshot }>,
     "mutationFn" | "onMutate" | "onError" | "onSettled"
   > {
   /** The mutation call. May be a stub while the domain RPC isn't implemented. */
@@ -93,12 +88,7 @@ export function useOptimisticMutation<TData, TVariables, TSnapshot = unknown>(
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
 
-  const mutation = useMutation<
-    TData,
-    ConnectClientError,
-    TVariables,
-    { previous?: TSnapshot }
-  >({
+  const mutation = useMutation<TData, ConnectClientError, TVariables, { previous?: TSnapshot }>({
     mutationFn,
     // Inline error is the affordance here; silence the global toast by default
     // so a failure isn't reported twice. Callers can re-enable per call.

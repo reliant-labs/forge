@@ -169,7 +169,9 @@ while the value itself is not recorded.
 READ-ONLY, AND CHECKED. No cluster is contacted, no image is built, nothing
 is pushed. forge cannot promise the render is side-effect-free, because KCL
 evaluates ` + "`" + `file.write` + "`" + ` — so this scans the project before and after, and a
-render that wrote anything FAILS, naming the paths. A declaration derived
+render that wrote anything FAILS, naming the paths. A forge generate or
+scaffold running in the project is waited for (it holds .forge/forge.lock),
+so its writes are never mistaken for the render's. A declaration derived
 from an impure render is one nobody can reproduce.
 
 Examples:

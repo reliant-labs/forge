@@ -173,7 +173,7 @@ merge forge's files; check reports the same without changing anything.`,
 			if err != nil || root == "" {
 				return errors.New("merge-driver install: not inside a forge project")
 			}
-			wireGeneratedMergeDriver(cmd.ErrOrStderr(), root)
+			wireGeneratedMergeDriver(cmd.ErrOrStderr(), root, true)
 			return checkMergeDriver(root).write(cmd.OutOrStdout(), root)
 		},
 	})

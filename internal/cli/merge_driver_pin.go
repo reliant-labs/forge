@@ -78,7 +78,9 @@ var mergeDriverVersion = buildinfo.Version
 
 // registerPinnedDriver records command as the driver of this binary's
 // identity in the clone at root, and reports whether that changed anything.
-func registerPinnedDriver(root, command string, scope configScope) bool {
+// The key is per identity, so worktrees on different pins never contend for
+// it: it lives in the shared config, where every worktree's driver finds it.
+func registerPinnedDriver(root, command string) bool {
 	id := mergeDriverIdentity()
 	if id == "" {
 		return false
@@ -88,7 +90,7 @@ func registerPinnedDriver(root, command string, scope configScope) bool {
 	if strings.TrimSpace(string(cur)) == command {
 		return false
 	}
-	return exec.CommandContext(context.Background(), "git", "-C", root, "config", scope.flag(), key, command).Run() == nil
+	return exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local", key, command).Run() == nil
 }
 
 // pinnedDriverCommand returns the driver command a forge of pin's identity

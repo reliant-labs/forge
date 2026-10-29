@@ -35,6 +35,21 @@ func lockFile(f *os.File) error {
 	return lockFileEx(f, windows.LOCKFILE_EXCLUSIVE_LOCK)
 }
 
+// tryLockFileShared and lockFileShared are the shared (reader) lock on the
+// same byte: LockFileEx without LOCKFILE_EXCLUSIVE_LOCK, which a read-only
+// handle may take.
+func tryLockFileShared(f *os.File) (bool, error) {
+	err := lockFileEx(f, windows.LOCKFILE_FAIL_IMMEDIATELY)
+	if errors.Is(err, windows.ERROR_LOCK_VIOLATION) || errors.Is(err, windows.ERROR_IO_PENDING) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func lockFileShared(f *os.File) error {
+	return lockFileEx(f, 0)
+}
+
 func unlockFile(f *os.File) error {
 	ol := &windows.Overlapped{OffsetHigh: lockByteOffsetHigh}
 	return windows.UnlockFileEx(windows.Handle(f.Fd()), 0, lockByteLength, 0, ol)

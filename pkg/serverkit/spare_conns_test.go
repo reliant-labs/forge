@@ -18,6 +18,9 @@ import (
 type gateConnector struct {
 	dials, closes atomic.Int64
 	bad           atomic.Bool // every connection fails its session reset
+	// ignoreCtx makes a held dial wait for release alone, as Driver.Open
+	// does: it has no context to cancel.
+	ignoreCtx bool
 
 	mu      sync.Mutex
 	allow   int64         // dials that pass at once; <0 = all
@@ -51,9 +54,13 @@ func (g *gateConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	g.mu.Unlock()
 	if wait {
 		g.blocked <- struct{}{}
+		done := ctx.Done()
+		if g.ignoreCtx {
+			done = nil
+		}
 		select {
 		case <-gate:
-		case <-ctx.Done():
+		case <-done:
 			return nil, ctx.Err()
 		}
 	}
@@ -260,6 +267,35 @@ func TestSpareConns_CloseStopsTheFiller(t *testing.T) {
 	}
 }
 
+// A connector that ignores its context cannot have its dial cancelled, so
+// closing the pool does not wait for it; the connection that dial eventually
+// returns is closed, not leaked.
+func TestSpareConns_CloseDoesNotWaitOnAnUncancellableDial(t *testing.T) {
+	g := newGateConnector()
+	g.ignoreCtx = true
+	spares := newSpareConnector(g, 1, time.Hour)
+	db := sql.OpenDB(spares)
+	spares.db.Store(db)
+	g.hold(1) // the Ping passes; the spare's dial hangs
+	if err := db.PingContext(shortCtx(t)); err != nil {
+		t.Fatal(err)
+	}
+	<-g.blocked
+
+	closed := make(chan error, 1)
+	go func() { closed <- db.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("closing the pool waited on a dial it cannot cancel")
+	}
+	g.release() // the hung dial finally returns a connection
+	waitFor(t, "the late spare to be closed", func() bool { return g.closes.Load() == g.dials.Load() })
+}
+
 func TestSpareConnsFor_CapsAtMaxOpenConns(t *testing.T) {
 	for _, tc := range []struct {
 		tuning DBPoolTuning
@@ -308,7 +344,11 @@ func TestOpenDB_KeepsSpareConns(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if got := openDBSpares.closes.Load() - closes; got != 4 {
-		t.Fatalf("closes = %d after the pool closed, want 4", got)
+	// Close does not wait for the filler, which may still be between a dial
+	// and handing its connection over; that connection is closed when it
+	// does. Waiting for all four also keeps a repeated run's counts clean.
+	waitFor(t, "every connection closed", func() bool { return openDBSpares.closes.Load()-closes == 4 })
+	if got := openDBSpares.dials.Load() - dials; got != 4 {
+		t.Fatalf("dials = %d, want 4", got)
 	}
 }

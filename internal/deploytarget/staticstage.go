@@ -271,15 +271,15 @@ func runStagePlan(ctx context.Context, runner commandRunner, plan StagePlan) (St
 		return StageResult{}, fmt.Errorf("%s: assemble: %w", plan.Name, err)
 	}
 	res := StageResult{BuildID: plan.BuildID}
-	if plan.Sourcemaps != SourcemapsPublic {
-		n, err := extractSourcemaps(plan)
-		if err != nil {
-			return StageResult{}, fmt.Errorf("%s: extract source maps: %w", plan.Name, err)
-		}
-		res.Sourcemaps = n
-		if n > 0 && plan.Sourcemaps == SourcemapsPublish {
-			res.SourcemapsDir = SourcemapsDir(plan.StagingDir)
-		}
+	// Every mode but off files its maps: publish moves them out of the served
+	// tree, public copies them (and serves the originals).
+	n, err := extractSourcemaps(plan)
+	if err != nil {
+		return StageResult{}, fmt.Errorf("%s: extract source maps: %w", plan.Name, err)
+	}
+	res.Sourcemaps = n
+	if n > 0 && plan.Sourcemaps != SourcemapsOff {
+		res.SourcemapsDir = SourcemapsDir(plan.StagingDir)
 	}
 	if err := guardNoSourceMaps(plan.StagingDir, plan.Sourcemaps); err != nil {
 		return StageResult{}, fmt.Errorf("%s: %w", plan.Name, err)
@@ -383,7 +383,7 @@ func printStagePlanBuild(w io.Writer, plan StagePlan) {
 	}
 	switch plan.Sourcemaps {
 	case SourcemapsPublic:
-		_, _ = fmt.Fprintf(w, "    source maps:  served publicly (sourcemaps = %q)\n", SourcemapsPublic)
+		_, _ = fmt.Fprintf(w, "    source maps:  served publicly (sourcemaps = %q), and copied to %s to be filed\n", SourcemapsPublic, SourcemapsDir(plan.StagingDir))
 	case SourcemapsOff:
 		_, _ = fmt.Fprintf(w, "    source maps:  dropped (sourcemaps = %q)\n", SourcemapsOff)
 	default:

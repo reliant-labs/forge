@@ -168,13 +168,13 @@ type ObservabilityFile struct {
 	Data []byte
 }
 
-const (
-	// maxObservabilityFileBytes and maxObservabilityBytes bound what a project
-	// can put in a bundle. They sit far under the control plane's 8 MiB layer
-	// bound so a bundle forge builds is one the platform records.
-	maxObservabilityFileBytes = 1 << 20
-	maxObservabilityBytes     = 4 << 20
-)
+// maxObservabilityBytes bounds the observability files together, and so any
+// one of them: the shared layer contract, [release.ManifestsLayerMaxBytes],
+// the bound [release.ValidateManifestsLayer] holds every artifact to. A
+// service catalog grows with the project it describes, so a per-file bound
+// below the layer's refuses a large project for nothing. (The control
+// plane's 8 MiB bound is on the COMPRESSED layer, and these files are JSON.)
+const maxObservabilityBytes = release.ManifestsLayerMaxBytes
 
 // observabilityEntries validates the files and turns them into layer entries.
 func observabilityEntries(files []ObservabilityFile) ([]tarEntry, error) {
@@ -190,8 +190,6 @@ func observabilityEntries(files []ObservabilityFile) ([]tarEntry, error) {
 			return nil, fmt.Errorf("%w: observability path %q is not under %s/", release.ErrInvalid, f.Path, release.BundleObservabilityPrefix)
 		case seen[clean]:
 			return nil, fmt.Errorf("%w: observability path %q appears twice", release.ErrInvalid, f.Path)
-		case len(f.Data) > maxObservabilityFileBytes:
-			return nil, fmt.Errorf("%w: %s is %d bytes, over the %d-byte bound for one observability file", release.ErrInvalid, f.Path, len(f.Data), maxObservabilityFileBytes)
 		}
 		seen[clean] = true
 		total += len(f.Data)

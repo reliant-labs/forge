@@ -56,6 +56,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 const (
@@ -67,8 +69,11 @@ const (
 	// MaxFileBytes caps any SINGLE file. Redundant against MaxLayerBytes
 	// for a one-file bomb and not redundant for the shape that matters: it
 	// localises the error to the offending entry instead of reporting "the
-	// archive is too big" after a well-formed archive was half written.
-	MaxFileBytes int64 = 16 << 20
+	// archive is too big" after a well-formed archive was half written. It is
+	// the shared layer contract, [release.ManifestsLayerMaxBytes], because an
+	// artifact (a service catalog) may be that large and still validate: a
+	// bundle forge builds and the control plane admits must also unpack.
+	MaxFileBytes int64 = release.ManifestsLayerMaxBytes
 	// MaxManifestBytes caps an OCI manifest and a config blob. The server
 	// bounds both at 1 MiB (doc §6.3's RecordBundle), and forge refuses
 	// the same size rather than a larger one: a bundle forge would push

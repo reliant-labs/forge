@@ -9,14 +9,14 @@ import (
 	"strings"
 )
 
-// Decode validates bounded catalog bytes before a browser/hosted ingest consumes
-// them. It authenticates no provenance: callers must verify the containing OCI
+// Decode validates catalog bytes before a browser/hosted ingest consumes them.
+// It has no size bound of its own: a catalog grows with the project it
+// describes, and the bytes are already in memory, so the bound belongs to the
+// reader that fetched them (a bundle layer's total, a registry blob read).
+// It authenticates no provenance: callers must verify the containing OCI
 // bundle digest and apply their existing project/environment authorization.
 func Decode(raw []byte) (Catalog, error) {
 	var c Catalog
-	if len(raw) > MaxBytes {
-		return c, fmt.Errorf("service catalog exceeds %d bytes", MaxBytes)
-	}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&c); err != nil {

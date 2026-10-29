@@ -12,7 +12,6 @@ const (
 	Schema        = "forge.dev/service-catalog/v1"
 	GeneratedPath = "gen/forge_service_catalog.json"
 	BundlePath    = "forge/service-catalog.json"
-	MaxBytes      = 1 << 20
 )
 
 // Catalog is generated from the same typed composition model and wire descriptor

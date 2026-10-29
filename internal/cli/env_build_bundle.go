@@ -245,6 +245,13 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 	if err != nil {
 		return bundleWriteOutcome{}, err
 	}
+	// The service catalog is a layer artifact with the same rule: a control
+	// plane whose layer validator predates it refuses the WHOLE bundle.
+	var withheld bool
+	observability, withheld = withholdServiceCatalog(observability, reader)
+	if withheld {
+		noteServiceCatalogWithheld(in.errWriter(), env)
+	}
 
 	built, err := bundle.Build(ctx, bundle.BuildInput{
 		Project:    doc.Project,

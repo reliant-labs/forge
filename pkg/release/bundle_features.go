@@ -70,13 +70,21 @@ const (
 	// the control plane's prober runs. A control plane that predates it
 	// probes nothing for the env.
 	BundleFeatureUptimeChecks = "shape-uptime-checks"
+	// BundleFeatureServiceCatalog is the manifests layer's
+	// [BundleServiceCatalogPath] artifact, of any size up to the layer's
+	// bound. It is a layer feature, not a document one: a control plane whose
+	// [ValidateManifestsLayer] predates it refuses the whole layer ("only the
+	// dedicated frozen frontend declaration asset is permitted under forge/"),
+	// so forge uploads the catalog only to one that names it.
+	BundleFeatureServiceCatalog = "layer-service-catalog"
 )
 
-// BundleDocFeatures is every optional bundle-document feature this version's
-// [DecodeBundleDoc] accepts. A control plane advertises exactly this list, so
-// what it claims to decode and what its decoder accepts are one fact.
+// BundleDocFeatures is every optional bundle feature this version's
+// [DecodeBundleDoc] and [ValidateManifestsLayer] accept. A control plane
+// advertises exactly this list, so what it claims to decode and what its
+// decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureServiceCatalog}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the

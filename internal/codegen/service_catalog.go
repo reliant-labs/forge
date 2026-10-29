@@ -317,8 +317,5 @@ func emitGraphCatalog(in GraphGenInput, m *graphModel) error {
 	if err != nil {
 		return err
 	}
-	if len(b) > servicecatalog.MaxBytes {
-		return fmt.Errorf("service catalog exceeds %d bytes", servicecatalog.MaxBytes)
-	}
 	return writeForgeOwned(in.ProjectDir, servicecatalog.GeneratedPath, append(b, '\n'), in.Checksums)
 }

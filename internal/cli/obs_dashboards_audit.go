@@ -556,14 +556,17 @@ func (a *dashAudit) dashboard(di obsbackend.DashboardInfo) auditDashboard {
 		base, source = dashboardRange(spec.DefaultRange)
 	}
 	ad.DefaultRange, ad.Range = spec.DefaultRange, durText(base)
-	var wg sync.WaitGroup
-	panels := make([]auditPanel, 0, len(spec.Panels))
+	var picked []dashspec.Panel
 	for _, p := range spec.Panels {
-		if a.opts.panel != "" && p.ID != a.opts.panel {
-			continue
+		if a.opts.panel == "" || p.ID == a.opts.panel {
+			picked = append(picked, p)
 		}
-		panels = append(panels, auditPanel{})
-		i := len(panels) - 1
+	}
+	// The result slice is fully sized before any goroutine starts, so each one
+	// writes its own element and nothing touches the slice header.
+	panels := make([]auditPanel, len(picked))
+	var wg sync.WaitGroup
+	for i, p := range picked {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -800,7 +803,9 @@ func (a *dashAudit) probe(ap *auditPanel, op obsquery.Panel) *auditProbe {
 		if err != nil {
 			return auditProbeStep{Name: name, Error: auditFailureOf(a.failureOf(err))}
 		}
-		return auditProbeStep{Name: name, HasData: ro.HasData && (ro.NonZero > 0 || ro.Items > 0), NonZero: ro.NonZero, LastDataAt: ro.LastDataAt}
+		// Presence is the initial read's own test: a zero-valued point or a
+		// string-only table is data. NonZero is descriptive.
+		return auditProbeStep{Name: name, HasData: ro.HasData, NonZero: ro.NonZero, LastDataAt: ro.LastDataAt}
 	}
 
 	var catalogMissing bool

@@ -1020,3 +1020,62 @@ func TestAuditProbeCannotExceedTheSignalsMaximum(t *testing.T) {
 		t.Errorf("a probe no wider than the window is not sent: %v", w)
 	}
 }
+
+// A wider-window answer made of zero-valued points is data that exists, as the
+// initial read counts it; so is a sql table with only string columns.
+func TestAuditProbeCountsZeroValuedAndStringOnlyDataAsPresent(t *testing.T) {
+	zeroWide := `{"kind":"line","stepSeconds":600,"series":[{"label":"n","points":[{"time":"2026-10-20T00:00:00Z"},{"time":"2026-10-20T00:10:00Z"}]}]}`
+	stringOnly := `{"kind":"sql","rows":[{"group":{"name":"alpha"}},{"group":{"name":"beta"}}],"sqlColumns":[{"name":"name","type":"String"}]}`
+	cases := []struct {
+		name  string
+		panel string
+		wide  string
+	}{
+		{"zero-valued points", linePanel("p"), zeroWide},
+		{"string-only sql table", sqlPanel("p", ""), stringOnly},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": specWith("", tc.panel)},
+				panel: func(q auditQuery) (string, error) {
+					if q.Wide {
+						return tc.wide, nil
+					}
+					return respEmpty, nil
+				}}
+			out, _, _ := auditRun(t, cp)
+			p := decodeWindows(t, out).panel(t, "p")
+			if p.Status != "empty" || p.Reason != "data_outside_window" {
+				t.Errorf("status %q reason %q: data that exists was reported absent\n%s", p.Status, p.Reason, out)
+			}
+		})
+	}
+}
+
+// Many panels at once: run under -race, this is the coverage for the result
+// slice being written by one goroutine per panel.
+func TestAuditManyPanelsConcurrently(t *testing.T) {
+	var panels []string
+	for i := 0; i < 24; i++ {
+		panels = append(panels, linePanel(fmt.Sprintf("p%02d", i)))
+	}
+	cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": specWith("", panels...)},
+		panel: func(q auditQuery) (string, error) {
+			if q.PanelID < "p12" {
+				return respData, nil
+			}
+			return respEmpty, nil
+		}}
+	out, _, _ := auditRun(t, cp, "--no-probe")
+	doc := decodeAudit(t, out)
+	if doc.Summary.Panels != 24 || doc.Summary.OK != 12 || doc.Summary.Empty != 12 {
+		t.Errorf("summary %+v", doc.Summary)
+	}
+	seen := map[string]bool{}
+	for _, p := range doc.Dashboards[0].Panels {
+		if p.ID == "" || seen[p.ID] {
+			t.Fatalf("panel %q missing or duplicated", p.ID)
+		}
+		seen[p.ID] = true
+	}
+}

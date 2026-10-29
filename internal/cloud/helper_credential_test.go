@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -80,6 +81,18 @@ func runCloudFakeHelper(mode string, args []string) int {
 	case "echo": // the token spells out the request it received
 		_ = cloudcred.Serve(context.Background(), os.Stdin, os.Stdout, func(_ context.Context, req cloudcred.Request) (cloudcred.Token, error) {
 			return cloudcred.Token{Token: req.Endpoint + "|" + strings.Join(req.Scopes, " ")}, nil
+		})
+		return 0
+	case "scoped": // scoped <held scope>...: grants the asked scopes the session holds, and reports them
+		_ = cloudcred.Serve(context.Background(), os.Stdin, os.Stdout, func(_ context.Context, req cloudcred.Request) (cloudcred.Token, error) {
+			var granted []string
+			for _, s := range req.Scopes {
+				if slices.Contains(args, s) {
+					granted = append(granted, s)
+				}
+			}
+			exp := time.Now().Add(time.Hour)
+			return cloudcred.Token{Token: "rlat_helper:" + strings.Join(granted, ","), Scopes: granted, ExpiresAt: &exp}, nil
 		})
 		return 0
 	case "refuse": // refuse <code> <message>

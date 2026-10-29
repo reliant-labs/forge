@@ -352,9 +352,15 @@ var errNotOnLogs = invalid("group key does not apply to logs")
 // IsNotOnLogs reports whether err is the not-applicable-to-logs marker.
 func IsNotOnLogs(err error) bool { return err == errNotOnLogs }
 
+// StreamTypeAttr is the span attribute serverkit stamps on the server span of
+// a streaming RPC: "server", "client" or "bidi".
+const StreamTypeAttr = "forge.rpc.stream_type"
+
 // RED builds the per-service request statement over server spans. Columns:
 // ServiceName, requests, errors, q (p50,p95,p99 in ms), source, then one
-// String column per group-by key.
+// String column per group-by key. Requests and errors count every server
+// span; the latency quantiles are over unary ones only, since a streaming
+// RPC's span lasts as long as the stream (spanStreamExpr).
 func (q Overview) RED() (Stmt, error) {
 	if err := q.Scope.validate(MaxRangeOverview); err != nil {
 		return Stmt{}, err
@@ -370,7 +376,7 @@ func (q Overview) RED() (Stmt, error) {
 	}
 	conds := append([]string{b.rangeCond("Timestamp", q.Scope), spanServerExpr}, sc...)
 	return b.stmt("SELECT ServiceName, toUInt64(round(sum(" + spanWeightExpr + "))) AS requests, toUInt64(round(sumIf(" + spanWeightExpr + ", " + spanErrorExpr + "))) AS errors,\n" +
-		"       quantilesExactWeighted(0.5, 0.95, 0.99)(Duration / 1000000, " + spanWeightInt + ") AS q,\n" +
+		"       quantilesExactWeightedIf(0.5, 0.95, 0.99)(Duration / 1000000, " + spanWeightInt + ", NOT " + spanStreamExpr + ") AS q,\n" +
 		"       maxIf(ResourceAttributes['reliant.source'], ResourceAttributes['reliant.source'] != '') AS source" + gsel + "\n" +
 		"FROM " + b.table(q.Scope, "otel_traces") + "\n" + where(conds) + "\n" +
 		"GROUP BY ServiceName" + gnames + "\nORDER BY requests DESC, ServiceName" + gnames + "\nLIMIT 200"), nil

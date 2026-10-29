@@ -2,6 +2,7 @@ package releasehealth
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -266,5 +267,115 @@ func TestInconclusiveWhy(t *testing.T) {
 	thin := Evaluate(input(t, true, svc("api", 1000, 3, 0, 0, 100, 100)))
 	if got := InconclusiveWhy(thin); got == "" || thin.Verdict != Inconclusive {
 		t.Errorf("thin: %s %q", thin.Verdict, got)
+	}
+}
+
+func TestCriticalAlerts(t *testing.T) {
+	crit := map[string]string{"severity": "critical"}
+	t.Run("a critical alert opened before the promotion keeps a PASS from passing", func(t *testing.T) {
+		in := input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100))
+		in.Alerts = []Alert{{Rule: "SecretStoreNotReady", FiringAt: t0.Add(-15 * time.Hour), Labels: crit}, {Rule: "Warn", FiringAt: t0.Add(-time.Hour)}}
+		r := Evaluate(in)
+		if r.Verdict != Inconclusive || len(r.StandingCritical) != 1 || len(r.Findings) != 0 {
+			t.Fatalf("verdict %s standing %+v findings %+v", r.Verdict, r.StandingCritical, r.Findings)
+		}
+		if why := InconclusiveWhy(r); !strings.Contains(why, "SecretStoreNotReady") {
+			t.Errorf("why = %q", why)
+		}
+		if j := Rejudge(r, nil); j.Verdict != Inconclusive {
+			t.Errorf("rejudge verdict = %s", j.Verdict)
+		}
+	})
+	t.Run("a critical alert opened after the promotion fails whatever fail_on says", func(t *testing.T) {
+		in := input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100))
+		in.Alerts = []Alert{{Rule: "Down", FiringAt: t0.Add(time.Minute), Labels: crit}}
+		in.Thresholds.FailOn = nil
+		r := Evaluate(in)
+		if r.Verdict != Fail {
+			t.Fatalf("verdict = %s %+v", r.Verdict, r.Findings)
+		}
+		if j := Rejudge(r, []string{release.HealthLatency}); j.Verdict != Fail {
+			t.Errorf("rejudge verdict = %s", j.Verdict)
+		}
+	})
+	t.Run("WithStandingAlerts folds alerts the judged report did not carry", func(t *testing.T) {
+		r := Evaluate(input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100)))
+		if r.Verdict != Pass {
+			t.Fatalf("verdict = %s", r.Verdict)
+		}
+		firing := []Alert{
+			{Rule: "SecretStoreNotReady", Fingerprint: "a", FiringAt: t0.Add(-time.Hour), Labels: crit},
+			{Rule: "SecretStoreNotReady", Fingerprint: "a", FiringAt: t0.Add(-time.Hour), Labels: crit},
+			{Rule: "Backup", FiringAt: t0.Add(-time.Hour), Labels: map[string]string{"severity": "warning"}},
+		}
+		w := WithStandingAlerts(r, firing)
+		if w.Verdict != Inconclusive || len(w.StandingCritical) != 1 {
+			t.Errorf("verdict %s standing %+v", w.Verdict, w.StandingCritical)
+		}
+		if r.Verdict != Pass || r.StandingCritical != nil {
+			t.Error("WithStandingAlerts changed its input")
+		}
+	})
+}
+
+// A control plane's warn-level alert_firing finding (its ref lost on the
+// wire) for a critical alert becomes a failing one.
+func TestWithStandingAlertsFailsAPostPromotionCriticalAlert(t *testing.T) {
+	r := Evaluate(input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100)))
+	r.Findings = []Finding{{Code: release.HealthAlertFiring, Policy: PolicyWarn, Message: "alert Down opened after the promotion and is still firing"}}
+	r.FiringAlerts = []Alert{{Rule: "Down", FiringAt: t0.Add(time.Minute), Labels: map[string]string{"severity": "critical"}}}
+	w := WithStandingAlerts(r, nil)
+	if w.Verdict != Fail || len(w.Findings) != 1 || w.Findings[0].Policy != PolicyFail || w.Findings[0].Ref != "Down" {
+		t.Fatalf("verdict %s findings %+v", w.Verdict, w.Findings)
+	}
+	if r.Findings[0].Policy != PolicyWarn {
+		t.Error("WithStandingAlerts changed its input")
+	}
+	if u := WithAlertStateUnread(Evaluate(input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100))), "denied"); u.Verdict != Inconclusive {
+		t.Errorf("unread alert state: verdict %s", u.Verdict)
+	}
+}
+
+// Checking an older promotion must not fail it for a critical alert a later
+// promotion opened after the judged after window ended.
+func TestWithStandingAlertsIsBoundedByTheAfterWindow(t *testing.T) {
+	r := Evaluate(input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100)))
+	crit := map[string]string{"severity": "critical"}
+	w := WithStandingAlerts(r, []Alert{
+		{Rule: "Later", FiringAt: r.After.To.Add(time.Hour), Labels: crit},
+		{Rule: "AtTheEnd", FiringAt: r.After.To, Labels: crit},
+		{Rule: "NoTime", Labels: crit},
+	})
+	if w.Verdict != Pass || len(w.Findings) != 0 || len(w.StandingCritical) != 0 {
+		t.Errorf("verdict %s findings %+v standing %+v", w.Verdict, w.Findings, w.StandingCritical)
+	}
+	if w := WithStandingAlerts(r, []Alert{{Rule: "In", FiringAt: r.After.To.Add(-time.Second), Labels: crit}}); w.Verdict != Fail {
+		t.Errorf("an alert opened inside the after window: verdict %s", w.Verdict)
+	}
+}
+
+// Evaluate attributes alerts to the release only inside [P, after.To), as
+// WithStandingAlerts does: an older release does not fail for a later
+// incident, critical or not.
+func TestEvaluateAlertsAreBoundedByTheAfterWindow(t *testing.T) {
+	in := input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100))
+	end := in.Windows.After.To
+	crit := map[string]string{"severity": "critical"}
+	in.Alerts = []Alert{
+		{Rule: "AtTheEnd", FiringAt: end, Labels: crit},
+		{Rule: "Later", FiringAt: end.Add(time.Hour), Labels: crit},
+		{Rule: "LaterWarn", FiringAt: end.Add(time.Hour)},
+		{Rule: "Before", FiringAt: t0.Add(-time.Hour), Labels: crit},
+	}
+	in.Thresholds.FailOn = nil
+	r := Evaluate(in)
+	if len(r.Findings) != 0 || len(r.FiringAlerts) != 0 {
+		t.Errorf("findings %+v firing %+v", r.Findings, r.FiringAlerts)
+	}
+	if r.Verdict != Inconclusive || len(r.StandingCritical) != 1 || r.StandingCritical[0].Rule != "Before" {
+		t.Errorf("verdict %s standing %+v", r.Verdict, r.StandingCritical)
+	}
+	if j := Rejudge(r, nil); j.Verdict != Inconclusive {
+		t.Errorf("rejudge verdict %s", j.Verdict)
 	}
 }

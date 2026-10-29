@@ -74,11 +74,17 @@ func renderedObservabilitySet(projectDir, outputDir string, entities *KCLEntitie
 	return collectRenderedObservabilityFiles(projectDir, outputDir, resolved)
 }
 
-// withholdServiceCatalog drops the service catalog from files when reader
-// does not name [release.BundleFeatureServiceCatalog], and reports whether it
-// did. A nil reader (this forge's own) accepts it.
+// withholdServiceCatalog drops the service catalog from files unless reader
+// is a control plane that POSITIVELY names [release.BundleFeatureServiceCatalog],
+// and reports whether it did. Default deny: a nil reader — a bundle built
+// against the machine ledger, which is how a claimable deploy builds before it
+// records the bytes on a control plane it never asked — withholds it too. A
+// bundle may reach a control plane by a path that never consulted its
+// capabilities, and one whose layer validator predates the catalog refuses
+// the whole bundle. Only a control plane reads the catalog, so withholding it
+// from a local bundle costs nothing.
 func withholdServiceCatalog(files []bundle.ObservabilityFile, reader *release.BundleReader) ([]bundle.ObservabilityFile, bool) {
-	if reader.Supports(release.BundleFeatureServiceCatalog) {
+	if reader != nil && reader.Supports(release.BundleFeatureServiceCatalog) {
 		return files, false
 	}
 	return dropServiceCatalog(files)

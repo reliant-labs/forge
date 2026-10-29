@@ -14,7 +14,7 @@ forge uses `forge login`; CI sets the env's token variable.
 ```
 forge env stop prod [--target api] [--wait]    # suspend; never refused
 forge env start prod [--target api] [--wait]   # resume; refused with the billing reason if not entitled
-forge env delete preview [--yes]               # tear the env down
+forge env delete preview [--yes] [--keep-data] # tear the env down, data included
 ```
 
 - `--target` takes a workload name (resolved to its deployment id); without it
@@ -24,9 +24,12 @@ forge env delete preview [--yes]               # tear the env down
   default 5m) and exits non-zero on timeout.
 - A refused `start` prints the server's reason and the fix; nothing is started.
 - `delete` prompts you to type the env name. With no TTY or `CI=1` it fails
-  fast unless you pass `--yes`. It removes the env, its deployments, Flux
-  objects, custom resources and namespaces. A ManagedDatabase's data is
-  RETAINED but orphaned: a re-deploy creates a NEW env and does not reattach it.
+  fast unless you pass `--yes`. It removes EVERYTHING the env runs: its
+  deployments, workloads, URLs, Flux objects, custom resources, namespaces and
+  its managed databases' data (irreversible). `--keep-data` retains each
+  managed database instead: it keeps running and billing as storage and is
+  listed as a retained database until purged; a re-deploy creates a NEW env and
+  does not reattach it. The project's registry images are kept either way.
 - All three refuse an env that is not hosted. `forge env down` only stops local
   host processes and never touches a control plane.
 

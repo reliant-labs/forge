@@ -7,7 +7,7 @@
 # It does not edit PATH; it prints the one line that does.
 #
 # Environment:
-#   FORGE_VERSION      release to install, e.g. v0.1.46 or 0.1.46 (default: latest)
+#   FORGE_VERSION      release to install, e.g. v1.0.0 or 1.0.0 (default: latest)
 #   FORGE_INSTALL_DIR  directory to install into (default: $HOME\.local\bin)
 #
 # Testing seam: FORGE_RELEASE_BASE_URL replaces https://github.com/reliant-labs/forge/releases.
@@ -29,7 +29,7 @@ switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToSt
 
 if ($env:FORGE_VERSION) {
   $tag = 'v' + $env:FORGE_VERSION.TrimStart('v')
-  if ($tag -notmatch '^v[0-9A-Za-z.+-]+$') { Fail "FORGE_VERSION must look like v0.1.46 (got: $($env:FORGE_VERSION))" }
+  if ($tag -notmatch '^v[0-9A-Za-z.+-]+$') { Fail "FORGE_VERSION must look like v1.0.0 (got: $($env:FORGE_VERSION))" }
   $releaseUrl = "$base/download/$tag"
   $wanted = $tag
 } else {

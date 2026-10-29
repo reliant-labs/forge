@@ -90,3 +90,42 @@ func TestHostedProjectBindingIdentityAcrossOrganizations(t *testing.T) {
 		t.Fatalf("unexpected wire sequence: %d", calls)
 	}
 }
+
+// A delegated capability (a CI/automation token) is scoped server-side and
+// keeps the GetTenant contract: binding must neither call the control plane
+// nor write a project binding, and --org still cannot retarget it.
+func TestHostedProjectBindingSkipsDelegatedCapability(t *testing.T) {
+	path := isolatedCredentials(t)
+	t.Setenv("FORGE_CREDENTIAL_HELPER", "")
+	t.Setenv(cloud.DefaultTokenEnv, "")
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "forge.yaml"), []byte("name: shop\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	withProjectName(t, "shop")
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		t.Errorf("delegated binding called the control plane: %s", r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	if err := credentials.Store(path, srv.URL, cloud.ClientID, credentials.Credential{Token: "rlat_delegated"}); err != nil {
+		t.Fatal(err)
+	}
+	decl := &cloud.Declaration{Endpoint: srv.URL}
+	ep, err := bindHostedProject(context.Background(), "prod", decl, "")
+	if err != nil || ep.ProjectID != "" {
+		t.Fatalf("delegated bind = %+v, %v; want no project identity and no error", ep, err)
+	}
+	if _, err := bindHostedProject(context.Background(), "prod", decl, "A"); err == nil || !strings.Contains(err.Error(), "delegated capability") {
+		t.Fatalf("--org with a delegated capability must be refused: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, hostedProjectBindingFile)); !os.IsNotExist(err) {
+		t.Fatalf("delegated bind wrote %s: %v", hostedProjectBindingFile, err)
+	}
+	if calls != 0 {
+		t.Fatalf("control plane calls = %d, want 0", calls)
+	}
+}

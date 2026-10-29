@@ -471,7 +471,7 @@ func TestAdmissible_DaemonCarriesEveryScope(t *testing.T) {
 	got := daemon.Admissible()
 	for _, s := range AllScopes {
 		rule, bound := scopeResourceRules[s]
-		elsewhere := bound && rule.required && rule.kind != ResourceDaemon
+		elsewhere := (bound && rule.required && rule.kind != ResourceDaemon) || personOnly(s)
 		if got.Has(s) == elsewhere {
 			t.Errorf("daemon wildcard holds %s = %v; it must hold every scope that does not require a %s binding",
 				s, got.Has(s), rule.kind)
@@ -482,13 +482,17 @@ func TestAdmissible_DaemonCarriesEveryScope(t *testing.T) {
 	if got.Has(ScopeProxyPort) || got.Has(ScopeMCPConnector) {
 		t.Fatalf("a daemon wildcard resolved to a port share or connector credential: %s", got)
 	}
+	// The person-only scopes, by name, for the same reason.
+	if len(personOnlyScopes) != 1 || personOnlyScopes[0] != ScopeDaemonManage {
+		t.Fatalf("personOnlyScopes changed: %v; name the new member here on purpose", personOnlyScopes)
+	}
 
 	// Unbound (a laptop daemon's registration) holds everything that does not
 	// require a binding at all.
 	unbound := Grant{ActingUserID: "user"}.Admissible()
 	for _, s := range AllScopes {
 		rule, bound := scopeResourceRules[s]
-		if unbound.Has(s) == (bound && rule.required) {
+		if unbound.Has(s) == ((bound && rule.required) || personOnly(s)) {
 			t.Errorf("unbound wildcard holds %s = %v", s, unbound.Has(s))
 		}
 	}
@@ -656,5 +660,56 @@ func TestOrgAdministrationRidesADaemonBinding(t *testing.T) {
 		if err := g.Validate(now); err == nil {
 			t.Errorf("%s accepted an environment binding", s)
 		}
+	}
+}
+
+// TestDaemonManage_IsAPersonsOwnUnboundAuthority pins the CLI machine-
+// management credential (see ScopeDaemonManage): it acts as a person, is
+// never bound — so no daemon's own credential can carry it — and implies and
+// is implied by nothing.
+func TestDaemonManage_IsAPersonsOwnUnboundAuthority(t *testing.T) {
+	now := time.Now()
+	if got, ok := ParseScope("daemon:manage"); !ok || got != ScopeDaemonManage {
+		t.Fatalf("ParseScope(daemon:manage) = %q, %v", got, ok)
+	}
+	login := Grant{OrgID: "o", Name: "laptop", ActingUserID: "u",
+		Scopes: SetOf(ScopeReliantAPI, ScopeDaemonManage)}
+	if err := login.Validate(now); err != nil {
+		t.Fatalf("a person's unbound CLI login carrying daemon:manage was refused: %v", err)
+	}
+	refused := map[string]func(*Grant){
+		"no acting user":       func(g *Grant) { g.ActingUserID = "" },
+		"bound to a daemon":    func(g *Grant) { g.Resource = &Resource{Kind: ResourceDaemon, ID: "d1"} },
+		"bound to a port":      func(g *Grant) { g.Resource = &Resource{Kind: ResourcePort, ID: PortResourceID("d1", 80)} },
+		"bound to a connector": func(g *Grant) { g.Resource = &Resource{Kind: ResourceConnector, ID: "c1"} },
+		"bound to an env":      func(g *Grant) { g.Resource = &Resource{Kind: ResourceEnvironment, ID: "e1"} },
+	}
+	for name, mutate := range refused {
+		g := login
+		mutate(&g)
+		if err := g.Validate(now); !errors.Is(err, ErrInvalidGrant) {
+			t.Errorf("%s: got %v, want ErrInvalidGrant", name, err)
+		}
+	}
+	// A wildcard credential (a daemon's, bound or not) never resolves to it.
+	for _, shape := range []Grant{
+		{ActingUserID: "u", Resource: &Resource{Kind: ResourceDaemon, ID: "d1"}},
+		{ActingUserID: "u"},
+	} {
+		if shape.Admissible().Has(ScopeDaemonManage) {
+			t.Fatalf("a wildcard credential shaped %+v resolves to daemon:manage", shape)
+		}
+	}
+	manage := SetOf(ScopeDaemonManage)
+	for _, other := range AllScopes {
+		if other == ScopeDaemonManage {
+			continue
+		}
+		if manage.Permits(other) || SetOf(other).Permits(ScopeDaemonManage) {
+			t.Errorf("daemon:manage and %s imply each other", other)
+		}
+	}
+	if SetOf(ScopeTokenWrite, ScopeDaemonConnect, ScopeDaemonResume).Covers(manage) {
+		t.Fatal("a daemon credential could mint daemon:manage")
 	}
 }

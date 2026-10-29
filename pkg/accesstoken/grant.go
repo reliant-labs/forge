@@ -119,9 +119,40 @@ var scopeResourceRules = map[Scope]struct {
 // its user's current org grants at every use, an exchange attenuates to the
 // caller's held scopes, and token:write can never mint a scope its holder
 // lacks (Covers).
+//
+// The one other exception is a person-only scope (personOnlyScopes).
 func admitsOnDaemon(scope Scope) bool {
+	if personOnly(scope) {
+		return false
+	}
 	rule, ok := scopeResourceRules[scope]
 	return !ok || !rule.required || rule.kind == ResourceDaemon
+}
+
+// personOnlyScopes are held only when a PERSON's grant names them (a CLI
+// login): no binding admits them, and a wildcard credential — a daemon's,
+// bound or not — never resolves to them (Grant.Admissible).
+//
+// ── THE EXCEPTION TO "A DAEMON HOLDS EVERY SCOPE" ─────────────────────
+//
+// A daemon credential is what an agent running on that daemon holds. A scope
+// here is one whose use spends the person's money with nobody approving it,
+// so the owner decided (2026-10-29) that an agent reaches it only through an
+// approval card in chat, never through its machine's credential. It is a
+// list, not a rule, because nothing structural distinguishes such a scope;
+// TestAdmissible_DaemonCarriesEveryScope names each member.
+var personOnlyScopes = []Scope{
+	ScopeDaemonManage,
+}
+
+// personOnly reports whether scope is in personOnlyScopes.
+func personOnly(scope Scope) bool {
+	for _, s := range personOnlyScopes {
+		if s == scope {
+			return true
+		}
+	}
+	return false
 }
 
 // actingUserScopes are the scopes that ACT AS A PERSON: their authority is the
@@ -136,6 +167,8 @@ var actingUserScopes = []Scope{
 	// A wake is billed to, and authorized as, the person who owns the
 	// daemon; the consumer resolves ownership from the acting user.
 	ScopeDaemonResume,
+	// Machines are owned by, and billed to, a person.
+	ScopeDaemonManage,
 }
 
 // RequiresActingUser reports whether a scope acts as a person.
@@ -244,6 +277,9 @@ func (g Grant) Validate(now time.Time) error {
 func (g Grant) Admissible() Set {
 	out := Set{}
 	for _, scope := range AllScopes {
+		if personOnly(scope) {
+			continue
+		}
 		probe := Grant{OrgID: "probe", Name: "probe", ActingUserID: g.ActingUserID,
 			Resource: g.Resource, Scopes: SetOf(scope)}
 		if probe.Validate(time.Time{}) == nil {

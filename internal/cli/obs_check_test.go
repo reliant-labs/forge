@@ -247,8 +247,8 @@ func TestObsCheckWaitPollsUntilTheWindowFinishes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, errOut)
 	}
-	if env.sleeps != 2 || len(caller.calls) != 3 {
-		t.Errorf("sleeps = %d calls = %d, want 2 and 3", env.sleeps, len(caller.calls))
+	if env.sleeps != 2 || caller.n[procHealth] != 3 {
+		t.Errorf("sleeps = %d health calls = %d, want 2 and 3", env.sleeps, caller.n[procHealth])
 	}
 	if got := env.now.Sub(obsNow); got != 2*obsCheckPollEvery {
 		t.Errorf("clock advanced %s, want 2 polls of %s", got, obsCheckPollEvery)
@@ -645,5 +645,28 @@ func TestObsChangesLocalReadsTheMachineLedger(t *testing.T) {
 	}
 	if doc["scope"].(map[string]any)["backend"] != "local" {
 		t.Errorf("scope = %v", doc["scope"])
+	}
+}
+
+// A release promoted into a critical alert that is still firing is not proven
+// good: the PASS the control plane computed becomes INCONCLUSIVE (exit 2).
+func TestObsCheckStandingCriticalAlertIsNotAPass(t *testing.T) {
+	alerts := `{"alerts":[{"rule":"SecretStoreNotReady","state":"firing","fingerprint":"f1","firingAt":"2020-01-01T00:00:00Z","labels":{"severity":"critical","namespace":"ns","name":"store"}},` +
+		`{"rule":"Backup","state":"firing","firingAt":"2020-01-01T00:00:00Z","labels":{"severity":"warning"}}]}`
+	caller := &seqCaller{replies: map[string][]string{
+		procHealth: {healthReply("RELEASE_VERDICT_PASS", true, "", "")},
+		"controlplane.v1.AlertingService/ListAlerts": {alerts},
+	}}
+	env := newObsCheckHarness()
+	out, _, err := env.run(t, cloudFacts(), caller, nil, "check", "prod", "--json")
+	if exitCodeForError(err) != exitUndetermined {
+		t.Fatalf("exit = %d (%v), want 2", exitCodeForError(err), err)
+	}
+	doc := decode(t, out)
+	if doc["verdict"] != "INCONCLUSIVE" || !strings.Contains(fmt.Sprint(doc["reason"]), "SecretStoreNotReady") {
+		t.Errorf("doc = %v", doc)
+	}
+	if sc, _ := doc["standing_critical_alerts"].([]any); len(sc) != 1 {
+		t.Errorf("standing_critical_alerts = %v", doc["standing_critical_alerts"])
 	}
 }

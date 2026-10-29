@@ -631,5 +631,17 @@ func TestTraceQueryPrefiltersCandidateTraces(t *testing.T) {
 	}
 	if strings.Contains(st.SQL, "TraceId IN (") {
 		t.Errorf("an unfiltered page has nothing to prefilter by:\n%s", st.SQL)
+// A streaming RPC's server span lasts as long as the stream, so the RED
+// latency quantiles are over unary spans only, while requests count both.
+func TestREDLatencyExcludesStreams(t *testing.T) {
+	st, err := Overview{Scope: scope()}.RED()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(st.SQL, "quantilesExactWeightedIf(0.5, 0.95, 0.99)(Duration / 1000000, ") || !strings.Contains(st.SQL, "NOT "+spanStreamExpr) {
+		t.Errorf("latency is not limited to unary spans:\n%s", st.SQL)
+	}
+	if !strings.Contains(spanStreamExpr, "'"+StreamTypeAttr+"'") {
+		t.Errorf("stream predicate does not read %s", StreamTypeAttr)
 	}
 }

@@ -25,10 +25,14 @@
 //   - Findings: error_rate, latency, new_issue, regressed_issue, alert_firing,
 //     workload_restarts. A finding's policy is "fail" when its code is in
 //     fail_on, "warn" otherwise.
+//   - A critical alert (label severity=critical) that opened after the
+//     promotion fails the release whatever fail_on says.
 //   - Verdict: FAIL when any finding's policy is fail; else INCONCLUSIVE when
-//     the after window has not finished or every service is below
-//     min_requests; else PASS. A clear failure is a failure even while the
-//     window is still open.
+//     the after window has not finished, every service is below
+//     min_requests, or a critical alert that opened before the promotion is
+//     still firing (the release was promoted into it, so nothing proves it
+//     good); else PASS. A clear failure is a failure even while the window is
+//     still open.
 package releasehealth
 
 import (
@@ -349,6 +353,9 @@ type Alert struct {
 	Labels      map[string]string `json:"labels,omitempty"`
 }
 
+// Critical reports whether the alert is labelled severity=critical.
+func (a Alert) Critical() bool { return strings.EqualFold(a.Labels["severity"], "critical") }
+
 // Workload is a restart or OOM kill during the after window.
 type Workload struct {
 	Workload             string `json:"workload"`
@@ -376,9 +383,11 @@ type Input struct {
 	// count (see the finding rules).
 	NewIssues       []Issue
 	RegressedIssues []Issue
-	Alerts          []Alert
-	Workloads       []Workload
-	Thresholds      Thresholds
+	// Alerts are the alerts firing now. Those opened after the promotion are
+	// findings; critical ones opened before it are StandingCritical.
+	Alerts     []Alert
+	Workloads  []Workload
+	Thresholds Thresholds
 	// NotEvaluated names the checks the backend could not run (a local env has
 	// no alert state or workload restarts), so a PASS is not read as covering
 	// them.
@@ -412,11 +421,16 @@ type Report struct {
 	NewIssues       []Issue         `json:"new_issues,omitempty"`
 	RegressedIssues []Issue         `json:"regressed_issues,omitempty"`
 	FiringAlerts    []Alert         `json:"firing_alerts,omitempty"`
-	Workloads       []Workload      `json:"workload_findings,omitempty"`
-	Verdict         Verdict         `json:"verdict"`
-	Findings        []Finding       `json:"findings"`
-	Thresholds      []Threshold     `json:"thresholds"`
-	NotEvaluated    []string        `json:"not_evaluated,omitempty"`
+	// StandingCritical are critical alerts that opened before the promotion
+	// and are still firing. They are not the release's doing, so they are not
+	// findings, but a release promoted into one is not proven good: they make
+	// a PASS INCONCLUSIVE.
+	StandingCritical []Alert     `json:"standing_critical_alerts,omitempty"`
+	Workloads        []Workload  `json:"workload_findings,omitempty"`
+	Verdict          Verdict     `json:"verdict"`
+	Findings         []Finding   `json:"findings"`
+	Thresholds       []Threshold `json:"thresholds"`
+	NotEvaluated     []string    `json:"not_evaluated,omitempty"`
 }
 
 // ── evaluation ──────────────────────────────────────────────────────────
@@ -429,8 +443,9 @@ func Evaluate(in Input) Report {
 		Subject: in.Subject, Before: in.Windows.Before, After: in.Windows.After, AfterComplete: in.Windows.AfterComplete,
 		Services: in.Services, Findings: []Finding{}, Thresholds: t.List(), NotEvaluated: in.NotEvaluated,
 	}
+	critical := criticalRules(in.Alerts, p)
 	add := func(f Finding) {
-		f.Policy = policyOf(f.Code, t.FailOn)
+		f.Policy = findingPolicy(f, t.FailOn, critical)
 		r.Findings = append(r.Findings, f)
 	}
 
@@ -476,6 +491,9 @@ func Evaluate(in Input) Report {
 	}
 	for _, a := range in.Alerts {
 		if !a.FiringAt.IsZero() && a.FiringAt.Before(p) {
+			if a.Critical() {
+				r.StandingCritical = append(r.StandingCritical, a)
+			}
 			continue
 		}
 		r.FiringAlerts = append(r.FiringAlerts, a)
@@ -496,8 +514,65 @@ func Evaluate(in Input) Report {
 	}
 
 	sortFindings(r.Findings)
-	r.Verdict = verdictOf(r.Findings, r.AfterComplete, r.Services, t.MinRequests)
+	r.Verdict = verdictOf(r.Findings, r.AfterComplete, r.Services, t.MinRequests, len(r.StandingCritical) > 0)
 	return r
+}
+
+// WithStandingAlerts folds the alerts firing now into a judged report: a
+// critical alert that opened before the promotion joins StandingCritical, and
+// the verdict is recomputed. It is how a caller that reads the alert state
+// itself (`forge obs check` over a control plane whose answer predates the
+// rule) applies it. Alerts already in FiringAlerts, or not firing, are
+// ignored.
+func WithStandingAlerts(r Report, firing []Alert) Report {
+	out := r
+	p := r.Subject.PromotedAt
+	seen := map[string]bool{}
+	for _, a := range append(slices.Clone(r.FiringAlerts), r.StandingCritical...) {
+		seen[alertKey(a)] = true
+	}
+	for _, a := range firing {
+		if !a.Critical() || seen[alertKey(a)] {
+			continue
+		}
+		seen[alertKey(a)] = true
+		if a.FiringAt.IsZero() || a.FiringAt.Before(p) {
+			out.StandingCritical = append(out.StandingCritical, a)
+		}
+	}
+	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds), len(out.StandingCritical) > 0)
+	return out
+}
+
+func alertKey(a Alert) string {
+	if a.Fingerprint != "" {
+		return a.Fingerprint
+	}
+	keys := make([]string, 0, len(a.Labels))
+	for k, v := range a.Labels {
+		keys = append(keys, k+"="+v)
+	}
+	sort.Strings(keys)
+	return a.Rule + "\x00" + strings.Join(keys, ",")
+}
+
+// criticalRules are the rules with a critical alert opened at or after p.
+func criticalRules(alerts []Alert, p time.Time) map[string]bool {
+	out := map[string]bool{}
+	for _, a := range alerts {
+		if a.Critical() && (a.FiringAt.IsZero() || !a.FiringAt.Before(p)) {
+			out[a.Rule] = true
+		}
+	}
+	return out
+}
+
+// findingPolicy is policyOf, except that a critical alert always fails.
+func findingPolicy(f Finding, failOn []string, critical map[string]bool) string {
+	if f.Code == release.HealthAlertFiring && critical[f.Ref] {
+		return PolicyFail
+	}
+	return policyOf(f.Code, failOn)
 }
 
 // Rejudge applies a different fail-on set to a judged report: each finding's
@@ -508,8 +583,9 @@ func Rejudge(r Report, failOn []string) Report {
 	failOn = normalizeCodes(failOn)
 	out := r
 	out.Findings = make([]Finding, len(r.Findings))
+	critical := criticalRules(r.FiringAlerts, r.Subject.PromotedAt)
 	for i, f := range r.Findings {
-		f.Policy = policyOf(f.Code, failOn)
+		f.Policy = findingPolicy(f, failOn, critical)
 		out.Findings[i] = f
 	}
 	out.Thresholds = slices.Clone(r.Thresholds)
@@ -523,7 +599,7 @@ func Rejudge(r Report, failOn []string) Report {
 	if !set {
 		out.Thresholds = append(out.Thresholds, Threshold{ThresholdFailOn, strings.Join(failOn, ","), SourceRequest})
 	}
-	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds))
+	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds), len(out.StandingCritical) > 0)
 	return out
 }
 
@@ -545,13 +621,13 @@ func policyOf(code string, failOn []string) string {
 	return PolicyWarn
 }
 
-func verdictOf(findings []Finding, afterComplete bool, services []ServiceHealth, minRequests int) Verdict {
+func verdictOf(findings []Finding, afterComplete bool, services []ServiceHealth, minRequests int, standingCritical bool) Verdict {
 	for _, f := range findings {
 		if f.Policy == PolicyFail {
 			return Fail
 		}
 	}
-	if !afterComplete {
+	if !afterComplete || standingCritical {
 		return Inconclusive
 	}
 	for _, s := range services {
@@ -564,6 +640,15 @@ func verdictOf(findings []Finding, afterComplete bool, services []ServiceHealth,
 
 // InconclusiveWhy says why a report is INCONCLUSIVE, in one line.
 func InconclusiveWhy(r Report) string {
+	if n := len(r.StandingCritical); n > 0 {
+		rules := make([]string, 0, n)
+		for _, a := range r.StandingCritical {
+			if !slices.Contains(rules, a.Rule) {
+				rules = append(rules, a.Rule)
+			}
+		}
+		return fmt.Sprintf("promoted into %d firing critical alert(s) (%s) that opened before the promotion; resolve them, then check again", n, strings.Join(rules, ", "))
+	}
 	if !r.AfterComplete {
 		return fmt.Sprintf("the after window has not finished (it ends %s)", r.After.To.UTC().Format(time.RFC3339))
 	}

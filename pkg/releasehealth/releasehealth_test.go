@@ -2,6 +2,7 @@ package releasehealth
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -267,4 +268,52 @@ func TestInconclusiveWhy(t *testing.T) {
 	if got := InconclusiveWhy(thin); got == "" || thin.Verdict != Inconclusive {
 		t.Errorf("thin: %s %q", thin.Verdict, got)
 	}
+}
+
+func TestCriticalAlerts(t *testing.T) {
+	crit := map[string]string{"severity": "critical"}
+	t.Run("a critical alert opened before the promotion keeps a PASS from passing", func(t *testing.T) {
+		in := input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100))
+		in.Alerts = []Alert{{Rule: "SecretStoreNotReady", FiringAt: t0.Add(-15 * time.Hour), Labels: crit}, {Rule: "Warn", FiringAt: t0.Add(-time.Hour)}}
+		r := Evaluate(in)
+		if r.Verdict != Inconclusive || len(r.StandingCritical) != 1 || len(r.Findings) != 0 {
+			t.Fatalf("verdict %s standing %+v findings %+v", r.Verdict, r.StandingCritical, r.Findings)
+		}
+		if why := InconclusiveWhy(r); !strings.Contains(why, "SecretStoreNotReady") {
+			t.Errorf("why = %q", why)
+		}
+		if j := Rejudge(r, nil); j.Verdict != Inconclusive {
+			t.Errorf("rejudge verdict = %s", j.Verdict)
+		}
+	})
+	t.Run("a critical alert opened after the promotion fails whatever fail_on says", func(t *testing.T) {
+		in := input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100))
+		in.Alerts = []Alert{{Rule: "Down", FiringAt: t0.Add(time.Minute), Labels: crit}}
+		in.Thresholds.FailOn = nil
+		r := Evaluate(in)
+		if r.Verdict != Fail {
+			t.Fatalf("verdict = %s %+v", r.Verdict, r.Findings)
+		}
+		if j := Rejudge(r, []string{release.HealthLatency}); j.Verdict != Fail {
+			t.Errorf("rejudge verdict = %s", j.Verdict)
+		}
+	})
+	t.Run("WithStandingAlerts folds alerts the judged report did not carry", func(t *testing.T) {
+		r := Evaluate(input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100)))
+		if r.Verdict != Pass {
+			t.Fatalf("verdict = %s", r.Verdict)
+		}
+		firing := []Alert{
+			{Rule: "SecretStoreNotReady", Fingerprint: "a", FiringAt: t0.Add(-time.Hour), Labels: crit},
+			{Rule: "SecretStoreNotReady", Fingerprint: "a", FiringAt: t0.Add(-time.Hour), Labels: crit},
+			{Rule: "Backup", FiringAt: t0.Add(-time.Hour), Labels: map[string]string{"severity": "warning"}},
+		}
+		w := WithStandingAlerts(r, firing)
+		if w.Verdict != Inconclusive || len(w.StandingCritical) != 1 {
+			t.Errorf("verdict %s standing %+v", w.Verdict, w.StandingCritical)
+		}
+		if r.Verdict != Pass || r.StandingCritical != nil {
+			t.Error("WithStandingAlerts changed its input")
+		}
+	})
 }

@@ -42,7 +42,7 @@ var obsCheckSchema = obsout.Schema{
 		"windows", "windows.before", "windows.before.from", "windows.before.to", "windows.after", "windows.after.from", "windows.after.to", "windows.after_complete",
 		"services", "services.service", "services.before", "services.after", "services.version_share",
 		"findings", "findings.code", "findings.service", "findings.ref", "findings.value", "findings.threshold", "findings.policy", "findings.message",
-		"new_issues", "regressed_issues", "firing_alerts", "workload_findings",
+		"new_issues", "regressed_issues", "firing_alerts", "standing_critical_alerts", "workload_findings",
 		"thresholds", "thresholds.name", "thresholds.value", "thresholds.source",
 		"not_evaluated", "waited", "statements", "statements.purpose", "statements.sql", "statements.params.*",
 		"suggested",
@@ -66,17 +66,20 @@ type obsCheckDoc struct {
 	QueryMode string       `json:"query_mode"`
 	Verdict   string       `json:"verdict,omitempty"`
 	// Reason says why the verdict is INCONCLUSIVE.
-	Reason           string                        `json:"reason,omitempty"`
-	Subject          *releasehealth.Subject        `json:"subject,omitempty"`
-	Windows          *obsCheckWindows              `json:"windows,omitempty"`
-	Services         []releasehealth.ServiceHealth `json:"services,omitempty"`
-	Findings         []releasehealth.Finding       `json:"findings"`
-	NewIssues        []releasehealth.Issue         `json:"new_issues,omitempty"`
-	RegressedIssues  []releasehealth.Issue         `json:"regressed_issues,omitempty"`
-	FiringAlerts     []releasehealth.Alert         `json:"firing_alerts,omitempty"`
-	WorkloadFindings []releasehealth.Workload      `json:"workload_findings,omitempty"`
-	Thresholds       []releasehealth.Threshold     `json:"thresholds,omitempty"`
-	NotEvaluated     []string                      `json:"not_evaluated,omitempty"`
+	Reason          string                        `json:"reason,omitempty"`
+	Subject         *releasehealth.Subject        `json:"subject,omitempty"`
+	Windows         *obsCheckWindows              `json:"windows,omitempty"`
+	Services        []releasehealth.ServiceHealth `json:"services,omitempty"`
+	Findings        []releasehealth.Finding       `json:"findings"`
+	NewIssues       []releasehealth.Issue         `json:"new_issues,omitempty"`
+	RegressedIssues []releasehealth.Issue         `json:"regressed_issues,omitempty"`
+	FiringAlerts    []releasehealth.Alert         `json:"firing_alerts,omitempty"`
+	// StandingCritical are critical alerts that opened before the promotion
+	// and still fire: not findings, but they keep the verdict from PASS.
+	StandingCritical []releasehealth.Alert     `json:"standing_critical_alerts,omitempty"`
+	WorkloadFindings []releasehealth.Workload  `json:"workload_findings,omitempty"`
+	Thresholds       []releasehealth.Threshold `json:"thresholds,omitempty"`
+	NotEvaluated     []string                  `json:"not_evaluated,omitempty"`
 	// Waited is how long --wait polled, when it did.
 	Waited     string                 `json:"waited,omitempty"`
 	Statements []obsbackend.Statement `json:"statements,omitempty"`
@@ -282,8 +285,31 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	if b.Info().Backend == obsbackend.BackendCloud && opts.FailOn != nil {
 		res.Report = releasehealth.Rejudge(res.Report, opts.FailOn)
 	}
+	// A release promoted into a firing critical alert is not proven good. The
+	// alert state is read here rather than trusted to the control plane's
+	// answer, which lists only the alerts that opened after the promotion.
+	if ar, ok := b.(obsbackend.AlertReader); ok && res.Report.Verdict != releasehealth.Fail {
+		alerts, aerr := ar.Alerts(ctx)
+		if aerr != nil {
+			res.Report.NotEvaluated = append(res.Report.NotEvaluated, "standing_critical_alerts")
+		} else {
+			res.Report = releasehealth.WithStandingAlerts(res.Report, firingHealthAlerts(alerts))
+		}
+	}
 	fillCheckDoc(&doc, b.Info(), env, res, o)
 	return doc, verdictError(res.Report, o.allowInconclusive)
+}
+
+// firingHealthAlerts maps the firing alerts onto the rule's vocabulary.
+func firingHealthAlerts(alerts []obsbackend.Alert) []releasehealth.Alert {
+	var out []releasehealth.Alert
+	for _, a := range alerts {
+		if a.State != obsbackend.AlertFiring {
+			continue
+		}
+		out = append(out, releasehealth.Alert{Rule: a.Rule, Fingerprint: a.Fingerprint, FiringAt: a.FiringAt, Labels: a.Labels})
+	}
+	return out
 }
 
 // checkOptions parses and validates the threshold flags, so a bad flag is
@@ -410,6 +436,7 @@ func fillCheckDoc(doc *obsCheckDoc, info obsbackend.Info, env string, res obsbac
 	}
 	doc.NewIssues, doc.RegressedIssues = r.NewIssues, r.RegressedIssues
 	doc.FiringAlerts, doc.WorkloadFindings = r.FiringAlerts, r.Workloads
+	doc.StandingCritical = r.StandingCritical
 	doc.Thresholds, doc.NotEvaluated = r.Thresholds, r.NotEvaluated
 	doc.Statements = res.Statements
 	if !o.explain {
@@ -417,6 +444,8 @@ func fillCheckDoc(doc *obsCheckDoc, info obsbackend.Info, env string, res obsbac
 	}
 	if r.Verdict == releasehealth.Fail {
 		doc.Suggested = checkSuggestions(env, r)
+	} else if len(r.StandingCritical) > 0 {
+		doc.Suggested = obsout.Suggest(obsout.Command("forge", "obs", "status", env), obsout.Command("forge", "obs", "workloads", env))
 	}
 }
 
@@ -517,6 +546,12 @@ func writeCheckText(w io.Writer, doc obsCheckDoc) {
 			fmt.Fprintf(w, "%-4s %-17s %s\n", f.Policy, f.Code, f.Message)
 		}
 	}
+	if len(doc.StandingCritical) > 0 {
+		fmt.Fprintln(w)
+		for _, a := range doc.StandingCritical {
+			fmt.Fprintf(w, "critical alert %s firing since %s (before the promotion)%s\n", a.Rule, a.FiringAt.UTC().Format(time.RFC3339), alertSubject(a.Labels))
+		}
+	}
 	if len(doc.NotEvaluated) > 0 {
 		fmt.Fprintf(w, "\nnot evaluated on this backend: %s\n", strings.Join(doc.NotEvaluated, ", "))
 	}
@@ -525,6 +560,20 @@ func writeCheckText(w io.Writer, doc obsCheckDoc) {
 			fmt.Fprintf(w, "threshold %s=%s (from this call)\n", th.Name, th.Value)
 		}
 	}
+}
+
+// alertSubject names what an alert is about, from its namespace/name labels.
+func alertSubject(labels map[string]string) string {
+	var parts []string
+	for _, k := range []string{"namespace", "name", "workload", "job", "pod"} {
+		if v := labels[k]; v != "" {
+			parts = append(parts, k+"="+v)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "  " + strings.Join(parts, " ")
 }
 
 // explainRunner answers every statement with no rows, so a local check

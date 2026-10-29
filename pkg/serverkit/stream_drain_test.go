@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
+	"github.com/reliant-labs/forge/pkg/obsquery"
 	"github.com/reliant-labs/forge/pkg/serverkit"
 )
 
@@ -296,5 +297,12 @@ func TestStreamDrainInterceptor_LeavesUnaryAndClientStreamsToTheDrain(t *testing
 	}
 	if err := <-drained; err != nil {
 		t.Fatalf("DrainHTTP = %v", err)
+	}
+}
+
+// The stream-type attribute obsquery reads must be the one serverkit stamps.
+func TestStreamTypeAttrMatchesObsquery(t *testing.T) {
+	if serverkit.StreamTypeAttr != obsquery.StreamTypeAttr {
+		t.Fatalf("serverkit stamps %q, obsquery reads %q", serverkit.StreamTypeAttr, obsquery.StreamTypeAttr)
 	}
 }

@@ -74,7 +74,7 @@ plugins:
 	}
 	defer func() { _ = os.Remove(tmpFile) }()
 
-	args := []string{"generate", "--template", "buf.gen.descriptor.yaml"}
+	args := bufGenerateArgs("--template", "buf.gen.descriptor.yaml")
 	for _, p := range protoPaths {
 		args = append(args, "--path", p)
 	}

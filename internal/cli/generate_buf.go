@@ -40,7 +40,7 @@ func runBufGenerateGo(projectDir string) error {
 		return err
 	}
 
-	cmd := exec.Command("buf", "generate")
+	cmd := exec.Command("buf", bufGenerateArgs()...)
 	cmd.Dir = projectDir
 	if err := withPinnedTools(cmd, projectDir); err != nil {
 		return err
@@ -245,7 +245,7 @@ plugins:
 		return err
 	}
 
-	args := []string{"generate", "--template", template}
+	args := bufGenerateArgs("--template", template)
 
 	// Include every proto/<sub>/ with .proto files so pack-emitted services
 	// (e.g. proto/audit/ from audit-log) participate in TypeScript codegen,
@@ -377,7 +377,7 @@ plugins:
 
 	fmt.Println("🔨 Generating TypeScript stubs into packages/api/src/gen...")
 	relativeTemplate := filepath.Join("packages", "api", "buf.gen.yaml")
-	args := []string{"generate", "--template", relativeTemplate}
+	args := bufGenerateArgs("--template", relativeTemplate)
 	for _, p := range discoverProtoSubdirs(projectDir) {
 		args = append(args, "--path", p)
 	}
@@ -545,4 +545,11 @@ func usesLocalTSPlugin(bufGenPath string) bool {
 		}
 	}
 	return false
+}
+
+// bufGenerateArgs builds a `buf generate` argv. buf kills the run after two
+// minutes by default, but a `go tool protoc-gen-*` plugin compiles itself on
+// first use and can legitimately take longer, so the timeout is disabled.
+func bufGenerateArgs(extra ...string) []string {
+	return append([]string{"generate", "--timeout", "0"}, extra...)
 }

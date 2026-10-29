@@ -14,6 +14,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/database"
 	"github.com/reliant-labs/forge/internal/migrationver"
+	"github.com/reliant-labs/forge/pkg/migratekit"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
@@ -744,14 +745,34 @@ Examples:
 
 func newDBMigrateUpCommand() *cobra.Command {
 	var (
-		dsn    string
-		migDir string
+		dsn              string
+		migDir           string
+		lockTimeout      string
+		statementTimeout string
+		lockAttempts     int
 	)
 
 	upCmd := &cobra.Command{
 		Use:   "up",
 		Short: "Apply pending migrations",
+		Long: `Apply pending migrations.
+
+Every migration runs under a lock_timeout (default 5s) and a statement_timeout
+(default 30m): a migration that cannot get its lock fails fast instead of
+queueing every query on the table behind it. A timed-out migration is rolled
+back and tried again with a growing wait, up to --lock-attempts times (default
+5), then fails the run with the schema unchanged. One migration overrides the
+timeouts for itself with a header comment:
+
+  -- forge:lock-timeout 30s
+  -- forge:statement-timeout 2h
+
+A duration is 500ms, 30s, 5m, 1h; "off" disables the timeout.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			limits, err := migratekit.ParseLimits(lockTimeout, statementTimeout, lockAttempts)
+			if err != nil {
+				return err
+			}
 			resolved, err := resolveDSN(dsn)
 			if err != nil {
 				return err
@@ -760,12 +781,15 @@ func newDBMigrateUpCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runMigrateUp(cmd.OutOrStdout(), resolved, dir)
+			return runMigrateUpWith(cmd.OutOrStdout(), resolved, dir, limits)
 		},
 	}
 
 	upCmd.Flags().StringVar(&dsn, "dsn", "", "Database connection string (falls back to $DATABASE_URL)")
 	upCmd.Flags().StringVar(&migDir, "dir", "", migrationsDirFlagUsage)
+	upCmd.Flags().StringVar(&lockTimeout, "lock-timeout", "", "How long one attempt at a migration waits for a lock, e.g. 5s, 30s, off (default 5s; a migration's own -- forge:lock-timeout wins)")
+	upCmd.Flags().StringVar(&statementTimeout, "statement-timeout", "", "Longest one statement may run, e.g. 30m, 2h, off (default 30m; a migration's own -- forge:statement-timeout wins)")
+	upCmd.Flags().IntVar(&lockAttempts, "lock-attempts", 0, "Attempts at a migration whose lock times out, the first included (default 5; 1 never retries)")
 
 	return upCmd
 }

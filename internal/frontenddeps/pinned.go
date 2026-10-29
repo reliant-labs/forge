@@ -126,11 +126,11 @@ func probeDiagnosis(argv []string, got, out string, err error, pin string) strin
 	cmd := strings.Join(argv, " ") + " --version"
 	if err != nil {
 		if out == "" {
-			return fmt.Sprintf("`%s` failed: %v", cmd, err)
+			return fmt.Sprintf("%#q failed: %v", cmd, err)
 		}
-		return fmt.Sprintf("`%s` failed (%v):\n%s", cmd, err, indent(out))
+		return fmt.Sprintf("%#q failed (%v):\n%s", cmd, err, indent(out))
 	}
-	return fmt.Sprintf("`%s` printed %q, not %s", cmd, got, pin)
+	return fmt.Sprintf("%#q printed %q, not %s", cmd, got, pin)
 }
 
 func indent(s string) string {

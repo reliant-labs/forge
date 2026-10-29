@@ -20,7 +20,8 @@ RPC execution endpoint, endpoint registry or new database is involved.
   Each service's `descriptor` is the existing `forge_descriptor.json` ServiceDef:
   `Schemas`, `SchemaFiles`, `Enums`, `validate` and `validate_options` are reused
   verbatim. There is no second validation/form dialect or invocation handle.
-- Components expose typed method signatures and module-relative source locations.
+- Components expose typed method signatures and module-relative source locations
+  (see "Source locations" below).
   Consumed interfaces expose their method sets. Assignable producers and local
   concrete `implementation_candidates` are **candidates**, not proof a constructor
   selected that concrete type. `bindings.providers` lists graph accessors in that
@@ -30,6 +31,26 @@ RPC execution endpoint, endpoint registry or new database is involved.
   one candidate happens to exist. Missing types carry diagnostics, not guesses.
 - Client reach means **can-call a service**, never “called every method”. Observed
   calls still come from telemetry. No static per-method call edges are fabricated.
+
+## Source locations
+
+The committed `gen/` file names each declaration by **path and symbol**, never by
+line: `{"path": "internal/handlers/orders/service.go", "symbol": "Service.Get"}`.
+A symbol is `Name` (a func or type) or `Type.Name` (a method of a concrete type,
+or of the named interface that declares it). A line number moves whenever code
+above it does, so a committed catalog that recorded one went stale on every
+merge ahead of yours that touched a handler file, and failed `verify-generated`
+in the merge group. Moving, reordering or editing around declarations now
+leaves the file byte-identical; only a change to what is declared (an rpc, a
+method, a signature, a binding) changes it.
+
+The bundle copy (`forge/service-catalog.json`) carries the line its readers
+expect, `{"path": ..., "line": N}`: the build resolves each symbol against the
+source being built (`servicecatalog.Locate`) and drops the symbol. A symbol the
+build cannot find becomes the unknown source `{"path": "", "line": 0}`. The
+bundle's layer gate (`servicecatalog.DecodeLocated`) refuses a symbolic source.
+A client registration is located at the provider func that makes it, and its
+id is `<provider>:<func>#<n>`, the n-th registration in that func.
 
 Generation is deterministic for the same source/build inputs. External-module
 source locations are omitted; no machine paths, URL values, config defaults,
@@ -81,7 +102,7 @@ Build/cut collects the generated catalog into **the existing manifest layer** at
 of `forge/frontend-declarations.json`, outside every reconciler-applied
 `manifests/` tree. It affects the existing OCI bundle digest, not config digest,
 shape, workload images or version assignments. The ingest layer gate validates
-its schema and relative sources with `servicecatalog.Decode`. The catalog obeys
+its schema and relative, located sources with `servicecatalog.DecodeLocated`. The catalog obeys
 the existing 1 MiB per-file bound; oversize generation fails explicitly.
 
 A hosted consumer verifies the existing bundle's digest/layer using existing

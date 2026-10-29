@@ -47,8 +47,8 @@ func TestDegradeWithoutDocker_SkipsOptionalAndDependents(t *testing.T) {
 	if got := workloadNames(e); got != "api" {
 		t.Errorf("kept %q, want only api", got)
 	}
-	if got := strings.Join(e.NoDockerSkipped, ","); got != "alertmanager,alerts,clickstack,worker" {
-		t.Errorf("NoDockerSkipped = %q", got)
+	if got := strings.Join(e.OptionalSkipped, ","); got != "alertmanager,alerts,clickstack,worker" {
+		t.Errorf("OptionalSkipped = %q", got)
 	}
 	if n := strings.Count(out.String(), "⚠"); n != 1 {
 		t.Errorf("want exactly one warning, got %d:\n%s", n, out.String())
@@ -75,8 +75,8 @@ func TestDegradeWithoutDocker_RequiredServiceFailsNamingDocker(t *testing.T) {
 	if strings.Contains(err.Error(), "clickstack") {
 		t.Errorf("the error should name only the services that need Docker: %v", err)
 	}
-	if len(e.NoDockerSkipped) != 0 || workloadNames(e) != "postgres,clickstack" {
-		t.Errorf("a failed run must not mutate the env: %v / %s", e.NoDockerSkipped, workloadNames(e))
+	if len(e.OptionalSkipped) != 0 || workloadNames(e) != "postgres,clickstack" {
+		t.Errorf("a failed run must not mutate the env: %v / %s", e.OptionalSkipped, workloadNames(e))
 	}
 }
 
@@ -87,7 +87,7 @@ func TestDegradeWithoutDocker_NoopWhenDockerAnswers(t *testing.T) {
 	if err := degradeWithoutDocker(context.Background(), e, "dev", nil, &out); err != nil {
 		t.Fatal(err)
 	}
-	if workloadNames(e) != "clickstack,alerts" || out.Len() != 0 || e.NoDockerSkipped != nil {
+	if workloadNames(e) != "clickstack,alerts" || out.Len() != 0 || e.OptionalSkipped != nil {
 		t.Errorf("a reachable daemon must change nothing: %s %q", workloadNames(e), out.String())
 	}
 }

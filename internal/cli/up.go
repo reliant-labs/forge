@@ -980,6 +980,9 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	if err := degradeWithoutDocker(ctx, entities, opts.env, opts.targets, os.Stdout); err != nil {
 		return err
 	}
+	// --target: the optional infra (local observability) runs only when a
+	// target names or requires it, and the plan says what starts and why.
+	scopeOptionalInfra(ctx, entities, projectDirForKCL(), opts.env, opts.targets, os.Stdout)
 	planEntities := entities
 	if len(opts.targets) > 0 {
 		planEntities = filterEntitiesByTarget(entities, opts.targets)
@@ -1632,7 +1635,7 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 				skipFrontend: true, skipClusterApply: !required.cluster,
 				targets: opts.targets, purpose: renderToLaunch,
 				infraConverged: converged,
-				omitWorkloads:  entities.NoDockerSkipped,
+				omitWorkloads:  entities.OptionalSkipped,
 			}); err != nil {
 				return fmt.Errorf("deploy: %w", err)
 			}

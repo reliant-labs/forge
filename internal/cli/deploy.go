@@ -1078,9 +1078,9 @@ type deployOptions struct {
 	infraConverged bool
 
 	// omitWorkloads names workloads this deploy leaves out of the rendered
-	// env. `forge env up` sets it to what it skipped for want of a Docker
-	// daemon (KCLEntities.NoDockerSkipped): the deploy phase renders the env
-	// again and must not bring them back.
+	// env. `forge env up` sets it to the optional workloads it skipped
+	// (KCLEntities.OptionalSkipped): the deploy phase renders the env again
+	// and must not bring them back.
 	omitWorkloads []string
 
 	// purpose is why this deploy renders the env. `forge env deploy` leaves

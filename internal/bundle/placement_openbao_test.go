@@ -19,7 +19,8 @@ func openbaoDoc(apiVersion, kind, name, extra string) string {
 		"  annotations:\n    forge.dev/release-owners: '[\"" + openbaoOwner + "\"]'\n" + extra + "---\n"
 }
 
-// A cluster + hosted + OpenBao composition seals, and OpenBao's real
+// The web consumer is keyed at the hosted tree, as compositionFrontendKey
+// keys a hosted frontend. A cluster + hosted + OpenBao composition seals, and OpenBao's real
 // controller is an ordinary item that precedes the hosted frontend under
 // the absent-release_dependencies default (every server, providers included).
 func TestPlacementPrerequisitesOpenBaoCompositionSeals(t *testing.T) {

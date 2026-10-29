@@ -107,6 +107,22 @@ func (l ClaimableLimits) Valid() bool {
 	return l.WorkloadCPUMillicores > 0 && l.WorkloadMemoryBytes > 0 && l.MaxServices > 0
 }
 
+// WorkloadShape is each workload's cap as prose: "125m / 128 MiB".
+func (l ClaimableLimits) WorkloadShape() string {
+	return fmt.Sprintf("%dm / %d MiB", l.WorkloadCPUMillicores, l.WorkloadMemoryBytes>>20)
+}
+
+// DatabaseStorage is the database's storage as prose, stating both numbers:
+// the data the platform provisions and the whole-GiB volume that holds it
+// ("256 MiB of data (1 GiB volume)").
+func (l ClaimableLimits) DatabaseStorage() string {
+	data := fmt.Sprintf("%d MiB of data", l.DatabaseStorageBytes>>20)
+	if l.DatabaseDeclaredStorageGiB <= 0 {
+		return data
+	}
+	return fmt.Sprintf("%s (%d GiB volume)", data, l.DatabaseDeclaredStorageGiB)
+}
+
 // Resources is the largest shape the claimable plan admits, request equal to
 // limit. It is what a refusal suggests.
 func (l ClaimableLimits) Resources() v1alpha1.Resources {

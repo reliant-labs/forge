@@ -41,8 +41,7 @@ type claimableLimitsSource struct {
 // note is the one line every claimable check prints about its caps.
 func (s claimableLimitsSource) note() string {
 	l := s.limits
-	caps := fmt.Sprintf("%dm / %d MiB per workload, %d MiB of Postgres storage",
-		l.WorkloadCPUMillicores, l.WorkloadMemoryBytes>>20, l.DatabaseStorageBytes>>20)
+	caps := fmt.Sprintf("%s per workload, Postgres storage %s", l.WorkloadShape(), l.DatabaseStorage())
 	if s.published {
 		return fmt.Sprintf("claimable limits: %s, as published by the control plane at %s", caps, s.endpoint)
 	}

@@ -25,6 +25,7 @@ import (
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/nodeengine"
+	"github.com/reliant-labs/forge/pkg/deploy"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
@@ -193,7 +194,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().BoolVar(&linkForge, "link-forge", false, "Bridge the project to the forge checkout this binary was built from (gitignored go.work 'use' + .forge-link/ for the web runtime). Off by default, except for a service scaffold from an unreleased forge build, which is linked automatically when its checkout is found (--link-forge=false refuses instead; also: "+linkForgeEnv+"=1)")
 	cmd.Flags().StringVar(&forgeRoot, "forge-root", "", "The forge checkout --link-forge bridges to (also: "+buildinfo.ForgeRootEnv+"). Default: the checkout this binary was built from, else the go.mod replace it embeds forge through, else the checkout it sits or was started in")
 	cmd.Flags().BoolVar(&verify, "verify", false, "Compile the scaffold before returning: the bootstrap generate then ends with its go build check and a render of every deploy env (adds ~1s warm, ~40s on a cold build cache, and saturates the CPU while it runs). Off by default: the scaffold is deterministic and forge's own e2e corpus compiles it, and your first go build or forge generate pays for the same compile")
-	cmd.Flags().BoolVar(&claimable, "claimable", false, "Scaffold prod for an ANONYMOUS deploy: forge env deploy prod --claimable then publishes with no account and prints a claim link. prod declares control_plane = forge.ControlPlane {claimable = True} and sizes its hosted services and jobs to the claimable plan (250m / 256 MiB, request and limit) instead of the billed shape band. A static site needs nothing extra")
+	cmd.Flags().BoolVar(&claimable, "claimable", false, "Scaffold prod for an ANONYMOUS deploy: forge env deploy prod --claimable then publishes with no account and prints a claim link. prod declares control_plane = forge.ControlPlane {claimable = True} and sizes its hosted services and jobs to the claimable plan ("+deploy.ClaimableLimitsFallback().WorkloadShape()+", request and limit) instead of the billed shape band. A static site needs nothing extra")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print the raw output behind a step forge summarizes in one line (e.g. git's explanation when the initial commit is skipped for want of a git identity)")
 
 	return cmd

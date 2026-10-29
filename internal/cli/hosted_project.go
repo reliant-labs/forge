@@ -117,8 +117,14 @@ func bindHostedProjectLocked(ctx context.Context, env string, decl *cloud.Declar
 	if err != nil {
 		return ep, err
 	}
-	if cred.Kind != "human" && org != "" {
-		return ep, fmt.Errorf("--org cannot retarget a delegated capability")
+	if cred.Kind != "human" {
+		if org != "" {
+			return ep, fmt.Errorf("--org cannot retarget a delegated capability")
+		}
+		// A delegated capability is already scoped server-side to its org
+		// and keeps the GetTenant contract: there is no project to bind,
+		// and asking the server to create one would be a human-only act.
+		return ep, nil
 	}
 	if ep.ProjectID != "" {
 		if org != "" {

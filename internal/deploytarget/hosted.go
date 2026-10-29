@@ -768,7 +768,7 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 			// The plan's resource rule: the shape band (a billing rule) for
 			// the standard plan, the caps for the never-billed claimable plan
 			// (the control plane exempts it from the band, control-plane#1359).
-			if err := deploy.CheckHostedResources(group.HostedPlan, spec.Resources); err != nil {
+			if err := deploy.CheckHostedResourcesWithin(group.HostedPlan, group.ClaimableCaps(), spec.Resources); err != nil {
 				errs = append(errs, hostedResourcesError(group, svc.Name, err))
 				continue
 			}

@@ -37,12 +37,15 @@ live URL and a claim link for a human, who signs up by opening it. The
 control plane says so (`claimable = True` below), so every check judges the
 env under the claimable plan — one service with its migration job, one
 database, one static site — and `_hosted` sizes each service and job to the
-plan's cap (`_claimable_resources`: 250m / 256 MiB, request and limit, no
-burst) instead of the billed plan's 4 GiB-per-vCPU shape band.
+plan's cap (`_claimable_resources`: 125m / 128 MiB, request and limit,
+no burst) instead of the billed plan's 4 GiB-per-vCPU shape band, and the
+database to 1 GiB. The control plane publishes the caps
+(GetClaimableAvailability) and every check reads them from it.
 
 Once the deploy is claimed and you deploy it to your organization, delete
-`claimable = True` and the `resources` line in `_hosted` (the default 250m /
-1 GiB is on the band), then `forge env deploy prod`.
+`claimable = True`, the `resources` line in `_hosted` (the default 250m /
+1 GiB is on the band) and the database's `spec`, then
+`forge env deploy prod`.
 """
 
 import forge
@@ -65,6 +68,9 @@ import .config as appcfg
 _db = forge.ManagedDatabase {
     name = "shop"
     runtime = forge.OnHosted {}
+    # The claimable plan's database (the platform sizes its server and
+    # provisions its volume; a declaration over this is refused).
+    spec = {storageGiB = 1}
 }
 
 # This env's layer over a workload: the typed config projected into its env
@@ -89,13 +95,16 @@ _configured = lambda w: fw.Workload -> fw.Workload {
 # allocates, and CORS_ALLOW_CREDENTIALS lets the browser send the session
 # cookie /auth/login sets: the site and the API are different origins, so
 # without it sign-in answers 200 and every call after it 401s.
-# The claimable plan's largest shape (pkg/deploy.ClaimableResources): what
+# The claimable plan's largest shape (the control plane's published caps): what
 # an anonymous service or job may ask for, request and limit, no burst.
+# Its database allows 10 connections, three of them reserved for the
+# platform, so `_hosted` caps each workload's pool at 5 (the default 25
+# fails requests with "too many clients" under load).
 _claimable_resources = fw.Resources {
-    cpuRequestMillicores = 250
-    cpuLimitMillicores = 250
-    memoryRequestBytes = forge.mib(256)
-    memoryLimitBytes = forge.mib(256)
+    cpuRequestMillicores = 125
+    cpuLimitMillicores = 125
+    memoryRequestBytes = forge.mib(128)
+    memoryLimitBytes = forge.mib(128)
 }
 _hosted = lambda w: fw.Workload -> fw.Workload {
     _c = _configured(w)
@@ -103,7 +112,8 @@ _hosted = lambda w: fw.Workload -> fw.Workload {
         image = w.image[w.image.rfind("/") + 1:] if w.image else w.image
         env = _c.env \
             | ({DATABASE_URL = forge.DatabaseRef {name = _db.name}} if "DATABASE_URL" in w.config_secrets else {}) \
-            | ({CORS_ORIGINS = forge.WorkloadURL {workload = "web"}, CORS_ALLOW_CREDENTIALS = "true"} if w.kind == "service" else {})
+            | ({CORS_ORIGINS = forge.WorkloadURL {workload = "web"}, CORS_ALLOW_CREDENTIALS = "true"} if w.kind == "service" else {}) \
+            | ({DB_MAX_OPEN_CONNS = "5", DB_MAX_IDLE_CONNS = "2"} if "DATABASE_URL" in w.config_secrets else {})
         if w.kind in ["service", "job"]:
             resources = _claimable_resources
         runtime = forge.OnHosted {}

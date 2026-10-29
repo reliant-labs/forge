@@ -17,19 +17,21 @@ import (
 //     because the bill is the max of the request and what the band implies.
 //   - HostedPlanClaimable, an anonymous deploy (`forge env deploy <env>
 //     --claimable`): the platform pays and never bills, so the band does not
-//     apply. Its rule is a CEILING: at most ClaimableCPUMillicores and
-//     ClaimableMemoryBytes, request AND limit, no burst.
+//     apply. Its rule is a CEILING: at most ClaimableLimits'
+//     WorkloadCPUMillicores and WorkloadMemoryBytes, request AND limit, no
+//     burst.
 //
 // The two rules used to live in different places (the band in the hosted
 // plan, the caps in the CLI's eligibility check), so `forge env shape` judged
 // an anonymous env by the band and told an author that 125m needs exactly
-// 512 MiB while the anonymous plan refused anything above 256 MiB. No shape
+// 512 MiB while the anonymous plan refused anything above its cap. No shape
 // satisfies both, and none needs to: an env is judged by the plan it deploys
 // under, and CheckHostedResources is the only entry point.
 //
 // The numbers are control-plane's (internal/planlimits/claimable.go, design
-// §2); the control plane enforces them at admission and these are checked
-// first, in the same words, so a refusal costs no build.
+// §2), read from its public GetClaimableAvailability answer; the control
+// plane enforces them at admission and forge checks them first, in the same
+// words, so a refusal costs no build.
 
 // HostedPlan is the plan a hosted environment is admitted under.
 type HostedPlan string
@@ -51,26 +53,66 @@ func (p HostedPlan) String() string {
 	return "standard"
 }
 
-// The claimable plan's caps (control-plane internal/planlimits/claimable.go).
-// Per workload, and with no burst: a limit is held to the cap as well as the
-// request.
-const (
-	ClaimableMaxServices      = 1
-	ClaimableMaxMigrationJobs = 1
-	ClaimableMaxReplicas      = 1
-	ClaimableCPUMillicores    = int64(250)
-	ClaimableMemoryBytes      = int64(256) << 20
-	ClaimableMaxDatabases     = 1
-	ClaimableMaxStaticSites   = 1
-)
+// ClaimableLimits is the claimable plan's caps as the control plane publishes
+// them (GetClaimableAvailability's `limits`; control-plane
+// internal/planlimits/claimable.go is their one declaration). Per workload,
+// and with no burst: a limit is held to the cap as well as the request.
+//
+// forge does not own these numbers. A caller asks the control plane for them
+// (internal/cli's claimable limits) and falls back to
+// ClaimableLimitsFallback only when it cannot, saying so.
+type ClaimableLimits struct {
+	MaxServices      int
+	MaxReplicas      int
+	MaxMigrationJobs int
+	// WorkloadCPUMillicores and WorkloadMemoryBytes are each workload's
+	// request AND limit cap (the service, and separately its migration job).
+	WorkloadCPUMillicores int64
+	WorkloadMemoryBytes   int64
 
-// ClaimableResources is the largest shape the claimable plan admits, request
-// equal to limit. It is what `forge project new --claimable` scaffolds and
-// what a refusal suggests.
-func ClaimableResources() v1alpha1.Resources {
+	MaxDatabases      int
+	DatabaseInstances int
+	// DatabaseDeclaredStorageGiB is the largest storageGiB a ManagedDatabase
+	// may declare. The platform provisions DatabaseStorageBytes whatever it
+	// declares, and sizes the Postgres pod itself (DatabaseCPUMillicores,
+	// DatabaseMemoryBytes, DatabaseMaxConnections): informational here.
+	DatabaseDeclaredStorageGiB int32
+	DatabaseCPUMillicores      int64
+	DatabaseMemoryBytes        int64
+	DatabaseStorageBytes       int64
+	DatabaseMaxConnections     int
+
+	MaxStaticSites int
+}
+
+// ClaimableLimitsFallback is forge's compiled-in copy of the claimable plan's
+// caps (control-plane, 2026-10-29), for when the control plane cannot be
+// asked. A caller that uses it
+// says so: the platform's own answer wins.
+func ClaimableLimitsFallback() ClaimableLimits {
+	return ClaimableLimits{
+		MaxServices: 1, MaxReplicas: 1, MaxMigrationJobs: 1,
+		WorkloadCPUMillicores: 125, WorkloadMemoryBytes: 128 << 20,
+		MaxDatabases: 1, DatabaseInstances: 1, DatabaseDeclaredStorageGiB: 1,
+		DatabaseCPUMillicores: 125, DatabaseMemoryBytes: 128 << 20,
+		DatabaseStorageBytes: 256 << 20, DatabaseMaxConnections: 10,
+		MaxStaticSites: 1,
+	}
+}
+
+// Valid reports whether l can judge anything: a published answer that left
+// the workload caps zero (an older or broken control plane) cannot, and the
+// caller falls back instead of refusing every workload.
+func (l ClaimableLimits) Valid() bool {
+	return l.WorkloadCPUMillicores > 0 && l.WorkloadMemoryBytes > 0 && l.MaxServices > 0
+}
+
+// Resources is the largest shape the claimable plan admits, request equal to
+// limit. It is what a refusal suggests.
+func (l ClaimableLimits) Resources() v1alpha1.Resources {
 	return v1alpha1.Resources{
-		CPURequestMillicores: ClaimableCPUMillicores, CPULimitMillicores: ClaimableCPUMillicores,
-		MemoryRequestBytes: ClaimableMemoryBytes, MemoryLimitBytes: ClaimableMemoryBytes,
+		CPURequestMillicores: l.WorkloadCPUMillicores, CPULimitMillicores: l.WorkloadCPUMillicores,
+		MemoryRequestBytes: l.WorkloadMemoryBytes, MemoryLimitBytes: l.WorkloadMemoryBytes,
 	}
 }
 
@@ -115,12 +157,13 @@ func kclBytes(b int64) string {
 	return fmt.Sprintf("%d", b)
 }
 
-// CheckHostedResources judges one hosted workload's resources under plan:
-// the shape band for the standard plan, the claimable caps for the claimable
-// one. A refusal is a *ResourcesRefusal naming the conformant block.
-func CheckHostedResources(plan HostedPlan, r v1alpha1.Resources) error {
+// CheckHostedResourcesWithin judges one hosted workload's resources under
+// plan: the shape band for the standard plan, the claimable caps (claimable)
+// for the claimable one. A refusal is a *ResourcesRefusal naming the
+// conformant block.
+func CheckHostedResourcesWithin(plan HostedPlan, claimable ClaimableLimits, r v1alpha1.Resources) error {
 	if plan == HostedPlanClaimable {
-		return checkClaimableResources(r)
+		return claimable.CheckResources(r)
 	}
 	if err := CheckShapeBand(r); err != nil {
 		return &ResourcesRefusal{Plan: plan, Reason: err.Error(), Want: bandFix(r)}
@@ -128,21 +171,22 @@ func CheckHostedResources(plan HostedPlan, r v1alpha1.Resources) error {
 	return nil
 }
 
-func checkClaimableResources(r v1alpha1.Resources) error {
+// CheckResources holds one workload's resources to the claimable caps.
+func (l ClaimableLimits) CheckResources(r v1alpha1.Resources) error {
 	d := r.WithDefaults()
 	var why []string
-	if cpu := max(d.CPURequestMillicores, d.CPULimitMillicores); cpu > ClaimableCPUMillicores {
-		why = append(why, fmt.Sprintf("%dm of CPU (at most %dm, no burst)", cpu, ClaimableCPUMillicores))
+	if cpu := max(d.CPURequestMillicores, d.CPULimitMillicores); cpu > l.WorkloadCPUMillicores {
+		why = append(why, fmt.Sprintf("%dm of CPU (at most %dm, no burst)", cpu, l.WorkloadCPUMillicores))
 	}
-	if mem := max(d.MemoryRequestBytes, d.MemoryLimitBytes); mem > ClaimableMemoryBytes {
-		why = append(why, fmt.Sprintf("%d MiB of memory (at most %d MiB, no burst)", mem>>20, ClaimableMemoryBytes>>20))
+	if mem := max(d.MemoryRequestBytes, d.MemoryLimitBytes); mem > l.WorkloadMemoryBytes {
+		why = append(why, fmt.Sprintf("%d MiB of memory (at most %d MiB, no burst)", mem>>20, l.WorkloadMemoryBytes>>20))
 	}
 	if len(why) == 0 {
 		return nil
 	}
 	want := v1alpha1.Resources{
-		CPURequestMillicores: min(d.CPURequestMillicores, ClaimableCPUMillicores),
-		MemoryRequestBytes:   min(d.MemoryRequestBytes, ClaimableMemoryBytes),
+		CPURequestMillicores: min(d.CPURequestMillicores, l.WorkloadCPUMillicores),
+		MemoryRequestBytes:   min(d.MemoryRequestBytes, l.WorkloadMemoryBytes),
 	}
 	want.CPULimitMillicores, want.MemoryLimitBytes = want.CPURequestMillicores, want.MemoryRequestBytes
 	return &ResourcesRefusal{Plan: HostedPlanClaimable, Reason: "asks for " + strings.Join(why, " and "), Want: want}

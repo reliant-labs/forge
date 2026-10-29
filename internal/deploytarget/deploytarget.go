@@ -139,6 +139,11 @@ type ServiceGroup struct {
 	// credential (`forge env shape --claimable`, `--claimable --plan-only`)
 	// is judged exactly as the deploy will be.
 	HostedPlan deploy.HostedPlan
+	// ClaimableLimits are the claimable plan's caps HostedPlanClaimable is
+	// judged by: the control plane's published answer, or forge's
+	// compiled-in copy when it could not be asked. Zero (an unset field)
+	// means the compiled-in copy.
+	ClaimableLimits deploy.ClaimableLimits
 
 	// ImageTag is the tag forge built (or is about to build) for
 	// these services. Passed through to the provider so it can stamp
@@ -160,6 +165,15 @@ type ServiceGroup struct {
 	// through ApplyOpts; Compose checks this field
 	// directly because they don't go through cluster.Apply).
 	DryRun bool
+}
+
+// ClaimableCaps is the caps a claimable group is judged by: ClaimableLimits,
+// or the compiled-in copy when none were resolved.
+func (g ServiceGroup) ClaimableCaps() deploy.ClaimableLimits {
+	if g.ClaimableLimits.Valid() {
+		return g.ClaimableLimits
+	}
+	return deploy.ClaimableLimitsFallback()
 }
 
 // ResolvedService is one service in a group, with its deploy block

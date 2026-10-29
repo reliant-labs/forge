@@ -304,8 +304,34 @@ type Section struct {
 	Title string `json:"title"`
 }
 
+// Scope says which telemetry a dashboard's panels read. It is one enum: the
+// default and the two wider reads.
+type Scope string
+
+// The dashboard scopes.
+const (
+	// ScopeProject is the default (the empty value): panels read the
+	// environments the viewer has selected within the route's project, and the
+	// reader narrows every query to them.
+	ScopeProject Scope = "project"
+	// ScopeOrg reads across every project of the organization: all of the
+	// org's environments, still narrowed to the environments the viewer
+	// selected. The reader names no project, and a console lists the
+	// environments as project/env.
+	ScopeOrg Scope = "org"
+	// ScopePlatform marks a dashboard whose signals are platform or
+	// infrastructure telemetry that belongs to no environment (a database, a
+	// message bus, a collector, a GitOps controller). That telemetry carries
+	// no reliant.env.id, so an environment filter would match nothing. A
+	// reader drops only that environment predicate: who may read, and from
+	// which organization's data, is still the reader's decision.
+	ScopePlatform Scope = "platform"
+)
+
 // Dashboard is an ordered list of panels under a shared set of filters.
 type Dashboard struct {
+	// Scope is empty for ScopeProject.
+	Scope       Scope        `json:"scope,omitempty"`
 	Sections    []Section    `json:"sections,omitempty"`
 	ID          string       `json:"id"`
 	Title       string       `json:"title"`

@@ -266,11 +266,27 @@ var helperMemo = struct {
 // helperCredential runs the helper for ep, or returns this process's memo of
 // its last answer while that is not about to expire.
 func helperCredential(argv []string, ep Endpoint) (Credential, error) {
+	return helperCredentialFor(argv, ep, LoginScopes())
+}
+
+// helperMemoKey is the memo slot for one (endpoint, helper, scopes) request.
+// The default request (LoginScopes) keeps the historical key, so
+// forgetHelperCredential drops exactly the base credential.
+func helperMemoKey(endpointKey string, argv, scopes []string) string {
+	key := endpointKey + "\x00" + cloudcred.FormatCommand(argv)
+	if strings.Join(scopes, " ") != strings.Join(LoginScopes(), " ") {
+		key += "\x00" + strings.Join(scopes, " ")
+	}
+	return key
+}
+
+// helperCredentialFor is helperCredential asking the helper for scopes.
+func helperCredentialFor(argv []string, ep Endpoint, scopes []string) (Credential, error) {
 	endpointKey, err := credentials.Normalize(ep.URL)
 	if err != nil {
 		return Credential{}, err
 	}
-	memoKey := endpointKey + "\x00" + cloudcred.FormatCommand(argv)
+	memoKey := helperMemoKey(endpointKey, argv, scopes)
 
 	helperMemo.Lock()
 	defer helperMemo.Unlock()
@@ -286,7 +302,7 @@ func helperCredential(argv []string, ep Endpoint) (Credential, error) {
 	defer cancel()
 	tok, err := cloudcred.Exec(ctx, argv, cloudcred.Request{
 		Endpoint: endpointKey,
-		Scopes:   LoginScopes(),
+		Scopes:   scopes,
 	})
 	if err != nil {
 		return Credential{}, err
@@ -295,7 +311,7 @@ func helperCredential(argv []string, ep Endpoint) (Credential, error) {
 	if from == "" {
 		from = "$" + cloudcred.HelperEnv + " (" + argv[0] + ")"
 	}
-	cred := Credential{Token: tok.Token, Source: SourceHelper, From: from, ExpiresAt: tok.ExpiresAt}
+	cred := Credential{Token: tok.Token, Source: SourceHelper, From: from, ExpiresAt: tok.ExpiresAt, Scopes: tok.Scopes}
 	helperMemo.entries[memoKey] = cred
 	return cred, nil
 }

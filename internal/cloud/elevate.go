@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -72,6 +73,14 @@ func (c *Client) elevatedToken(ctx context.Context, scope string) (string, error
 		return cached.token, nil
 	}
 
+	if tok, ok := c.helperScopedToken(scope); ok {
+		if c.elevated.entries == nil {
+			c.elevated.entries = map[string]elevatedToken{}
+		}
+		c.elevated.entries[scope] = tok
+		return tok.token, nil
+	}
+
 	var resp struct {
 		Secret string `json:"secret"`
 		Token  struct {
@@ -95,6 +104,49 @@ func (c *Client) elevatedToken(ctx context.Context, scope string) (string, error
 	}
 	c.elevated.entries[scope] = elevatedToken{token: resp.Secret, expiresAt: expires}
 	return resp.Secret, nil
+}
+
+// helperScopedToken asks the credential helper — the host session behind a
+// SourceHelper credential — for a token that also carries scope.
+//
+// WHY THE HELPER FIRST. The helper's token is minted for LoginScopes only, and
+// ExchangeToken only ever ATTENUATES the credential it is called with, so
+// exchanging that token for obs:read is refused ("an exchange cannot widen a
+// credential") even when the session behind it holds obs:read. The helper is
+// asked from that session, so it can mint the wider token; the control plane
+// still clips it to what the session and the person's role hold. It reports
+// ok only when the helper produced a different token that carries scope (or
+// does not say what it carries), so a helper that cannot grant it falls
+// through to the exchange and its refusal explains itself.
+func (c *Client) helperScopedToken(scope string) (elevatedToken, bool) {
+	cur := c.credential()
+	if cur.Source != SourceHelper {
+		return elevatedToken{}, false
+	}
+	helperValue := os.Getenv(cloudcred.HelperEnv)
+	if strings.TrimSpace(helperValue) == "" {
+		return elevatedToken{}, false
+	}
+	argv, err := cloudcred.ParseCommand(helperValue)
+	if err != nil {
+		return elevatedToken{}, false
+	}
+	if slices.Contains(LoginScopes(), scope) {
+		// The helper was already asked for it; asking again repeats the answer.
+		return elevatedToken{}, false
+	}
+	got, err := helperCredentialFor(argv, c.Endpoint, append(LoginScopes(), scope))
+	if err != nil || strings.TrimSpace(got.Token) == "" || got.Token == cur.Token {
+		return elevatedToken{}, false
+	}
+	if len(got.Scopes) > 0 && !slices.Contains(got.Scopes, scope) {
+		return elevatedToken{}, false
+	}
+	expires := time.Now().Add(helperReuseMargin * 2)
+	if got.ExpiresAt != nil {
+		expires = *got.ExpiresAt
+	}
+	return elevatedToken{token: got.Token, expiresAt: expires}, true
 }
 
 // reelevatedToken forgets rejected for scope and exchanges again. The cache is

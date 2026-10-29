@@ -20,7 +20,11 @@ func TestReleaseRequiresExactFullGreen(t *testing.T) {
 		{"green", "123 completed success exact", "success", true},
 		{"missing", "missing", "success", false},
 		{"running", "123 in_progress success exact", "success", false},
-		{"failed", "123 completed failure exact", "success", false},
+		// A red Windows or Lint job fails the run; the verdict is the three
+		// full Test jobs, so that run is releasable when they are green.
+		{"failed-elsewhere", "123 completed failure exact", "success", true},
+		{"failed-tests", "123 completed failure exact", "failure", false},
+		{"cancelled", "123 completed cancelled exact", "success", false},
 		{"other-sha", "123 completed success older", "success", false},
 		{"waived-tests", "123 completed success exact", "failure", false},
 		{"api-error", "api-error", "success", false},

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.0.2] - 2026-10-29
+
+### Added
+
+- **obs:** forge obs workloads — restarts, crash loops, last exit reason and failed jobs per workload ([#1478](https://github.com/reliant-labs/forge/pull/1478))
+- **claimable:** tell an agent that an unclaimed backend has no outbound internet ([#1481](https://github.com/reliant-labs/forge/pull/1481))
+- **serverkit:** SpareConns keeps connections dialled ahead of need ([#1474](https://github.com/reliant-labs/forge/pull/1474))
+- **obs:** obs trace says why a span ended and where untraced time went; ClickHouse statement spans ([#1472](https://github.com/reliant-labs/forge/pull/1472))
+
+### Fixed
+
+- **release:** check-release-tests.sh judges the three full Test jobs even while the run's CI gate waits for a runner ([#1483](https://github.com/reliant-labs/forge/pull/1483))
+- **serverkit:** closing a pool does not wait on a spare dial it cannot cancel ([#1482](https://github.com/reliant-labs/forge/pull/1482))
+- **obs:** check is not a PASS while critical alerts fire, and streaming RPCs are not latency ([#1477](https://github.com/reliant-labs/forge/pull/1477))
+- **claimable:** the anonymous plan's help and preview state its real limits, derived from the fallback constants ([#1487](https://github.com/reliant-labs/forge/pull/1487))
+- **pgtest:** retry a throttled postgres download with Retry-After and jitter; CI caches every archive it fetches ([#1486](https://github.com/reliant-labs/forge/pull/1486))
+- **kcl:** the version-skew refusal says to pin the imported project first ([#1489](https://github.com/reliant-labs/forge/pull/1489))
+- **tests:** repair release CI fixture and removed-feature guard ([#1490](https://github.com/reliant-labs/forge/pull/1490))
+- **bundle:** the service catalog has no 1 MiB cap, and reaches only a control plane that accepts it ([#1488](https://github.com/reliant-labs/forge/pull/1488))
+
 ## [v1.0.1] - 2026-10-29
 
 ### Added
@@ -8197,7 +8217,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.2...HEAD
+[v1.0.2]: https://github.com/reliant-labs/forge/compare/v1.0.1...v1.0.2
 [v1.0.1]: https://github.com/reliant-labs/forge/compare/v1.0.0...v1.0.1
 [v1.0.0]: https://github.com/reliant-labs/forge/compare/v0.1.46...v1.0.0
 [0.1.0]: https://github.com/reliant-labs/forge/compare/v0.0.8...v0.1.0

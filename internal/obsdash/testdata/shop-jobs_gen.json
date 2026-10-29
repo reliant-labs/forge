@@ -1,0 +1,265 @@
+{
+  "name": "shop: jobs",
+  "tags": [
+    "forge",
+    "generated"
+  ],
+  "tiles": [
+    {
+      "id": "t-runs-started",
+      "x": 0,
+      "y": 0,
+      "w": 8,
+      "h": 4,
+      "config": {
+        "name": "Runs started",
+        "source": "Logs",
+        "displayType": "number",
+        "select": [
+          {
+            "aggFn": "count",
+            "valueExpression": "",
+            "alias": "started"
+          }
+        ],
+        "where": "ResourceAttributes['k8s.object.kind'] = 'Job' AND match(ResourceAttributes['k8s.workload.name'], '^(shop-migrate|shop-prune)-[a-z0-9]{6,12}$') AND LogAttributes['k8s.event.reason'] IN ('SuccessfulCreate')",
+        "whereLanguage": "sql",
+        "numberFormat": {
+          "output": "number",
+          "mantissa": 0,
+          "thousandSeparated": true
+        }
+      }
+    },
+    {
+      "id": "t-runs-succeeded",
+      "x": 8,
+      "y": 0,
+      "w": 8,
+      "h": 4,
+      "config": {
+        "name": "Runs succeeded",
+        "source": "Logs",
+        "displayType": "number",
+        "select": [
+          {
+            "aggFn": "count",
+            "valueExpression": "",
+            "alias": "succeeded"
+          }
+        ],
+        "where": "ResourceAttributes['k8s.object.kind'] = 'Job' AND match(ResourceAttributes['k8s.workload.name'], '^(shop-migrate|shop-prune)-[a-z0-9]{6,12}$') AND LogAttributes['k8s.event.reason'] IN ('Completed')",
+        "whereLanguage": "sql",
+        "numberFormat": {
+          "output": "number",
+          "mantissa": 0,
+          "thousandSeparated": true
+        }
+      }
+    },
+    {
+      "id": "t-runs-failed",
+      "x": 16,
+      "y": 0,
+      "w": 8,
+      "h": 4,
+      "config": {
+        "name": "Runs failed",
+        "source": "Logs",
+        "displayType": "number",
+        "select": [
+          {
+            "aggFn": "count",
+            "valueExpression": "",
+            "alias": "failed"
+          }
+        ],
+        "where": "ResourceAttributes['k8s.object.kind'] = 'Job' AND match(ResourceAttributes['k8s.workload.name'], '^(shop-migrate|shop-prune)-[a-z0-9]{6,12}$') AND LogAttributes['k8s.event.reason'] IN ('BackoffLimitExceeded', 'DeadlineExceeded', 'PodFailurePolicy')",
+        "whereLanguage": "sql",
+        "numberFormat": {
+          "output": "number",
+          "mantissa": 0,
+          "thousandSeparated": true
+        }
+      }
+    },
+    {
+      "id": "t-runs-by-job",
+      "x": 0,
+      "y": 4,
+      "w": 12,
+      "h": 7,
+      "config": {
+        "name": "Runs started by job",
+        "source": "Logs",
+        "displayType": "line",
+        "select": [
+          {
+            "aggFn": "count",
+            "valueExpression": "",
+            "aggCondition": "match(ResourceAttributes['k8s.workload.name'], '^shop-migrate-[a-z0-9]{6,12}$')",
+            "aggConditionLanguage": "sql",
+            "alias": "shop-migrate"
+          },
+          {
+            "aggFn": "count",
+            "valueExpression": "",
+            "aggCondition": "match(ResourceAttributes['k8s.workload.name'], '^shop-prune-[a-z0-9]{6,12}$')",
+            "aggConditionLanguage": "sql",
+            "alias": "shop-prune"
+          }
+        ],
+        "where": "ResourceAttributes['k8s.object.kind'] = 'Job' AND match(ResourceAttributes['k8s.workload.name'], '^(shop-migrate|shop-prune)-[a-z0-9]{6,12}$') AND LogAttributes['k8s.event.reason'] IN ('SuccessfulCreate')",
+        "whereLanguage": "sql",
+        "granularity": "auto",
+        "numberFormat": {
+          "output": "number",
+          "mantissa": 0,
+          "thousandSeparated": true
+        }
+      }
+    },
+    {
+      "id": "t-failures-by-job",
+      "x": 12,
+      "y": 4,
+      "w": 12,
+      "h": 7,
+      "config": {
+        "name": "Failed runs by job",
+        "source": "Logs",
+        "displayType": "line",
+        "select": [
+          {
+            "aggFn": "count",
+            "valueExpression": "",
+            "aggCondition": "match(ResourceAttributes['k8s.workload.name'], '^shop-migrate-[a-z0-9]{6,12}$')",
+            "aggConditionLanguage": "sql",
+            "alias": "shop-migrate"
+          },
+          {
+            "aggFn": "count",
+            "valueExpression": "",
+            "aggCondition": "match(ResourceAttributes['k8s.workload.name'], '^shop-prune-[a-z0-9]{6,12}$')",
+            "aggConditionLanguage": "sql",
+            "alias": "shop-prune"
+          }
+        ],
+        "where": "ResourceAttributes['k8s.object.kind'] = 'Job' AND match(ResourceAttributes['k8s.workload.name'], '^(shop-migrate|shop-prune)-[a-z0-9]{6,12}$') AND LogAttributes['k8s.event.reason'] IN ('BackoffLimitExceeded', 'DeadlineExceeded', 'PodFailurePolicy')",
+        "whereLanguage": "sql",
+        "granularity": "auto",
+        "numberFormat": {
+          "output": "number",
+          "mantissa": 0,
+          "thousandSeparated": true
+        }
+      }
+    },
+    {
+      "id": "t-run-events",
+      "x": 0,
+      "y": 11,
+      "w": 24,
+      "h": 8,
+      "config": {
+        "name": "Run events",
+        "source": "Logs",
+        "displayType": "search",
+        "select": "Timestamp, ResourceAttributes['k8s.workload.name'], LogAttributes['k8s.event.reason'], Body",
+        "where": "ResourceAttributes['k8s.object.kind'] = 'Job' AND match(ResourceAttributes['k8s.workload.name'], '^(shop-migrate|shop-prune)-[a-z0-9]{6,12}$') AND LogAttributes['k8s.event.reason'] IN ('SuccessfulCreate', 'Completed', 'BackoffLimitExceeded', 'DeadlineExceeded', 'PodFailurePolicy')",
+        "whereLanguage": "sql"
+      }
+    },
+    {
+      "id": "t-restarts",
+      "x": 0,
+      "y": 19,
+      "w": 12,
+      "h": 7,
+      "config": {
+        "name": "Container restarts",
+        "source": "Metrics",
+        "displayType": "line",
+        "select": [
+          {
+            "aggFn": "max",
+            "valueExpression": "",
+            "alias": "restarts",
+            "metricName": "k8s.container.restarts",
+            "metricType": "gauge"
+          }
+        ],
+        "where": "ResourceAttributes['k8s.workload.name'] IN ('shop-migrate', 'shop-prune')",
+        "whereLanguage": "sql",
+        "groupBy": "ResourceAttributes['k8s.workload.name']",
+        "granularity": "auto",
+        "numberFormat": {
+          "output": "number",
+          "mantissa": 0,
+          "thousandSeparated": true
+        }
+      }
+    },
+    {
+      "id": "t-warning-events",
+      "x": 0,
+      "y": 26,
+      "w": 24,
+      "h": 7,
+      "config": {
+        "name": "Warning events by job",
+        "source": "Logs",
+        "displayType": "line",
+        "select": [
+          {
+            "aggFn": "count",
+            "valueExpression": "",
+            "alias": "warnings"
+          }
+        ],
+        "where": "ResourceAttributes['k8s.workload.name'] IN ('shop-migrate', 'shop-prune') AND LogAttributes['k8s.event.type'] = 'Warning'",
+        "whereLanguage": "sql",
+        "groupBy": "ResourceAttributes['k8s.workload.name']",
+        "granularity": "auto",
+        "numberFormat": {
+          "output": "number",
+          "mantissa": 0,
+          "thousandSeparated": true
+        }
+      }
+    },
+    {
+      "id": "t-error-logs",
+      "x": 0,
+      "y": 33,
+      "w": 24,
+      "h": 8,
+      "config": {
+        "name": "Error logs",
+        "source": "Logs",
+        "displayType": "search",
+        "select": "Timestamp, ServiceName, SeverityText, Body",
+        "where": "ServiceName IN ('shop-migrate', 'shop-prune') AND lower(SeverityText) = 'error'",
+        "whereLanguage": "sql"
+      }
+    }
+  ],
+  "filters": [
+    {
+      "id": "filter-service",
+      "type": "QUERY_EXPRESSION",
+      "name": "service.name",
+      "expression": "ServiceName",
+      "source": "Logs",
+      "whereLanguage": "sql"
+    },
+    {
+      "id": "filter-env",
+      "type": "QUERY_EXPRESSION",
+      "name": "deployment.environment.name",
+      "expression": "ResourceAttributes['deployment.environment.name']",
+      "source": "Logs",
+      "whereLanguage": "sql"
+    }
+  ]
+}

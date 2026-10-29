@@ -36,6 +36,7 @@ func BuildCustomMetrics(project string, schema metrics.Schema) (Dashboard, bool)
 	d := Dashboard{
 		ID:          CustomMetricsID,
 		Title:       project + ": custom metrics",
+		Group:       GroupCustom,
 		Description: "Every metric this project declares in internal/metrics, drawn by type: counters as a rate, histograms as p50/p95/p99, gauges as the last value, grouped by their enumerated attributes. Generated from the metrics schema (`metrics schema --json`).",
 	}
 	for _, f := range commonFilters() {

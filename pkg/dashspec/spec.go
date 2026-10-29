@@ -335,14 +335,58 @@ const (
 	ScopePlatform Scope = "platform"
 )
 
+// Group is the list section a dashboard belongs to. It is presentation data
+// only: it never affects identity, scope or a query.
+type Group string
+
+// The groups. A dashboard that declares none, or one a reader does not know,
+// is GroupCustom.
+const (
+	GroupOverview Group = "overview"
+	GroupServices Group = "services"
+	GroupJobs     Group = "jobs"
+	GroupProduct  Group = "product"
+	GroupPlatform Group = "platform"
+	GroupReleases Group = "releases"
+	GroupCustom   Group = "custom"
+)
+
+// Groups lists every group in display order.
+var Groups = []Group{GroupOverview, GroupServices, GroupJobs, GroupProduct, GroupPlatform, GroupReleases, GroupCustom}
+
+// MaxTags bounds Dashboard.Tags.
+const MaxTags = 8
+
+// MaxReplaces bounds Dashboard.Replaces.
+const MaxReplaces = 32
+
+// GroupOf is the group d is listed under: its own, else GroupCustom.
+func GroupOf(d Dashboard) Group {
+	for _, g := range Groups {
+		if d.Group == g {
+			return g
+		}
+	}
+	return GroupCustom
+}
+
 // Dashboard is an ordered list of panels under a shared set of filters.
 type Dashboard struct {
 	// Scope is empty for ScopeProject.
-	Scope       Scope        `json:"scope,omitempty"`
-	Sections    []Section    `json:"sections,omitempty"`
-	ID          string       `json:"id"`
-	Title       string       `json:"title"`
-	Description string       `json:"description,omitempty"`
+	Scope       Scope     `json:"scope,omitempty"`
+	Sections    []Section `json:"sections,omitempty"`
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description,omitempty"`
+	// Group is the list section (see Group); Tags are free-form labels
+	// (lowercase letters, digits, '.', '_' and '-', at most MaxTags).
+	Group Group    `json:"group,omitempty"`
+	Tags  []string `json:"tags,omitempty"`
+	// Replaces lists the ids of dashboards this one supersedes (a renamed
+	// generated dashboard, or several consolidated into one). A reader that
+	// keeps per-dashboard state (stars, copies) moves it from a replaced id
+	// to this one. It never changes what the dashboard draws.
+	Replaces    []string     `json:"replaces,omitempty"`
 	Filters     []Filter     `json:"filters,omitempty"`
 	Annotations []Annotation `json:"annotations,omitempty"`
 	// DefaultRange is the time range the dashboard opens on when the viewer

@@ -6,6 +6,7 @@
       "id": "overview",
       "title": "shop: overview",
       "description": "Metric-backed request, server-fault and duration health across deployed processes; saturation, errors and releases. Counters are unsampled; trace drilldowns may be sampled.",
+      "group": "overview",
       "filters": [
         {
           "id": "service",
@@ -43,8 +44,7 @@
               "field": "service.name",
               "op": "in",
               "values": [
-                "shop-api",
-                "shop-worker"
+                "shop-api"
               ]
             }
           ],
@@ -77,8 +77,7 @@
               "field": "service.name",
               "op": "in",
               "values": [
-                "shop-api",
-                "shop-worker"
+                "shop-api"
               ]
             }
           ],
@@ -105,8 +104,7 @@
               "field": "service.name",
               "op": "in",
               "values": [
-                "shop-api",
-                "shop-worker"
+                "shop-api"
               ]
             }
           ],
@@ -132,8 +130,7 @@
               "field": "service.name",
               "op": "in",
               "values": [
-                "shop-api",
-                "shop-worker"
+                "shop-api"
               ]
             }
           ],
@@ -176,8 +173,7 @@
               "field": "service.name",
               "op": "in",
               "values": [
-                "shop-api",
-                "shop-worker"
+                "shop-api"
               ]
             }
           ],
@@ -207,8 +203,7 @@
               "field": "service.name",
               "op": "in",
               "values": [
-                "shop-api",
-                "shop-worker"
+                "shop-api"
               ]
             }
           ],
@@ -236,8 +231,7 @@
               "field": "service.name",
               "op": "in",
               "values": [
-                "shop-api",
-                "shop-worker"
+                "shop-api"
               ]
             },
             {
@@ -283,8 +277,7 @@
               "field": "resource.attr.k8s.workload.name",
               "op": "in",
               "values": [
-                "shop-api",
-                "shop-worker"
+                "shop-api"
               ]
             }
           ],
@@ -314,8 +307,7 @@
               "field": "resource.attr.k8s.workload.name",
               "op": "in",
               "values": [
-                "shop-api",
-                "shop-worker"
+                "shop-api"
               ]
             }
           ],
@@ -446,7 +438,11 @@
       ],
       "id": "process-shop-api",
       "title": "shop: shop-api",
-      "description": "Deployed process shop api. Runtime and workload panels appear once, independent of RPC breakdowns.",
+      "description": "The service shop-api. Panels are chosen by what it does: RPC health if it serves RPCs, worker runs if it runs workers, saturation against the limits it declares; runtime and logs always.",
+      "group": "services",
+      "tags": [
+        "service"
+      ],
       "filters": [
         {
           "id": "service",
@@ -1091,6 +1087,10 @@
     {
       "sections": [
         {
+          "id": "runs",
+          "title": "Worker runs"
+        },
+        {
           "id": "runtime",
           "title": "Runtime"
         },
@@ -1105,7 +1105,11 @@
       ],
       "id": "process-shop-worker",
       "title": "shop: shop-worker",
-      "description": "Deployed process shop worker. Runtime and workload panels appear once, independent of RPC breakdowns.",
+      "description": "The worker shop-worker. Panels are chosen by what it does: RPC health if it serves RPCs, worker runs if it runs workers, saturation against the limits it declares; runtime and logs always.",
+      "group": "services",
+      "tags": [
+        "worker"
+      ],
       "filters": [
         {
           "id": "service",
@@ -1125,6 +1129,141 @@
         }
       ],
       "panels": [
+        {
+          "section": "runs",
+          "id": "worker-runs",
+          "title": "Worker runs",
+          "description": "Root spans of the process's worker loops (worker.\u003cname\u003e.*), one line per loop.",
+          "kind": "line",
+          "signal": "traces",
+          "series": [
+            {
+              "label": "runs",
+              "agg": "count"
+            }
+          ],
+          "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-worker"
+              ]
+            },
+            {
+              "field": "span.name",
+              "op": "prefix",
+              "value": "worker."
+            }
+          ],
+          "groupBy": [
+            "span.name"
+          ],
+          "unit": "count",
+          "width": 12,
+          "height": 7
+        },
+        {
+          "section": "runs",
+          "id": "worker-failures",
+          "title": "Worker run failures",
+          "description": "Runs that ended with an error, one line per loop.",
+          "kind": "line",
+          "signal": "traces",
+          "series": [
+            {
+              "label": "failed",
+              "agg": "count"
+            }
+          ],
+          "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-worker"
+              ]
+            },
+            {
+              "field": "span.name",
+              "op": "prefix",
+              "value": "worker."
+            },
+            {
+              "field": "span.status",
+              "op": "eq",
+              "value": "error"
+            }
+          ],
+          "groupBy": [
+            "span.name"
+          ],
+          "unit": "count",
+          "width": 12,
+          "height": 7
+        },
+        {
+          "section": "runs",
+          "id": "worker-duration",
+          "title": "Worker run duration",
+          "kind": "table",
+          "signal": "traces",
+          "series": [
+            {
+              "label": "runs",
+              "agg": "count"
+            },
+            {
+              "label": "failed",
+              "agg": "count",
+              "where": [
+                {
+                  "field": "span.status",
+                  "op": "eq",
+                  "value": "error"
+                }
+              ]
+            },
+            {
+              "label": "p50",
+              "agg": "quantile",
+              "quantile": 0.5,
+              "field": "span.duration"
+            },
+            {
+              "label": "p95",
+              "agg": "quantile",
+              "quantile": 0.95,
+              "field": "span.duration"
+            },
+            {
+              "label": "p99",
+              "agg": "quantile",
+              "quantile": 0.99,
+              "field": "span.duration"
+            }
+          ],
+          "limit": 50,
+          "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-worker"
+              ]
+            },
+            {
+              "field": "span.name",
+              "op": "prefix",
+              "value": "worker."
+            }
+          ],
+          "groupBy": [
+            "span.name"
+          ],
+          "width": 24,
+          "height": 8
+        },
         {
           "section": "runtime",
           "id": "go-memory",
@@ -1268,16 +1407,16 @@
         },
         {
           "section": "workload",
-          "id": "cpu-vs-limit",
-          "title": "CPU against its limit",
-          "description": "The busiest container of each workload as a fraction of its CPU limit. Near 1 the container is being throttled.",
+          "id": "cpu-vs-request",
+          "title": "CPU against its request",
+          "description": "The busiest container of each workload as a fraction of the CPU it requested (1 = at the request).",
           "kind": "line",
           "signal": "metrics",
           "series": [
             {
-              "label": "of limit",
+              "label": "of request",
               "agg": "max",
-              "field": "k8s.container.cpu_limit_utilization",
+              "field": "k8s.container.cpu_request_utilization",
               "metricType": "gauge"
             }
           ],
@@ -1299,16 +1438,16 @@
         },
         {
           "section": "workload",
-          "id": "memory-vs-limit",
-          "title": "Memory against its limit",
-          "description": "The fullest container of each workload as a fraction of its memory limit. Near 1 the container is about to be OOM-killed.",
+          "id": "memory-vs-request",
+          "title": "Memory against its request",
+          "description": "The fullest container of each workload as a fraction of the memory it requested.",
           "kind": "line",
           "signal": "metrics",
           "series": [
             {
-              "label": "of limit",
+              "label": "of request",
               "agg": "max",
-              "field": "k8s.container.memory_limit_utilization",
+              "field": "k8s.container.memory_request_utilization",
               "metricType": "gauge"
             }
           ],
@@ -1365,6 +1504,10 @@
       "id": "workloads",
       "title": "shop: workloads",
       "description": "Per-workload customer metadata from the node agent: CPU and memory against requests and limits, restarts and the last exit reason, the image versions that ran, and Kubernetes events. Present in deployed environments only (a local forge env up has no node agent).",
+      "group": "platform",
+      "tags": [
+        "k8s"
+      ],
       "filters": [
         {
           "id": "service",
@@ -1715,6 +1858,7 @@
       "id": "releases",
       "title": "shop: releases",
       "description": "Request rate, error rate and latency split by service.version, so a deploy shows as one version replacing another. Deploy markers come from the release ledger. Narrow with the service.name and deployment.environment.name filters.",
+      "group": "releases",
       "filters": [
         {
           "id": "service",
@@ -1933,9 +2077,419 @@
       ]
     },
     {
+      "sections": [
+        {
+          "id": "runs",
+          "title": "Runs"
+        },
+        {
+          "id": "health",
+          "title": "Health"
+        },
+        {
+          "id": "logs",
+          "title": "Logs"
+        }
+      ],
+      "id": "jobs",
+      "title": "shop: jobs",
+      "description": "Every job and cron job of the project: runs, failures, duration and last run per job, from the Kubernetes Job events, plus container restarts, warning events and error logs. Present in deployed environments only.",
+      "group": "jobs",
+      "tags": [
+        "jobs"
+      ],
+      "filters": [
+        {
+          "id": "service",
+          "label": "service.name",
+          "field": "service.name",
+          "signal": "logs"
+        },
+        {
+          "id": "env",
+          "label": "deployment.environment.name",
+          "field": "deployment.environment.name",
+          "signal": "logs"
+        }
+      ],
+      "annotations": [
+        {
+          "source": "releases",
+          "label": "Releases"
+        }
+      ],
+      "panels": [
+        {
+          "section": "runs",
+          "id": "jobs-summary",
+          "title": "Runs per job",
+          "description": "Per job over the selected range: runs started, succeeded and failed, the latest run's start, and run durations (seconds, start to completion). One row per forge job.",
+          "kind": "sql",
+          "sql": "SELECT job,\n       count() AS runs,\n       countIf(finished \u003e 0) AS succeeded,\n       countIf(failed) AS failed,\n       max(started) AS last_started,\n       argMax(if(finished \u003e 0 AND started \u003e 0, dateDiff('second', started, finished), NULL), started) AS last_duration_s,\n       round(avgIf(dateDiff('second', started, finished), finished \u003e 0 AND started \u003e 0), 1) AS avg_duration_s,\n       maxIf(dateDiff('second', started, finished), finished \u003e 0 AND started \u003e 0) AS max_duration_s\nFROM (\n  SELECT run,\n         arrayFirst(n -\u003e match(run, concat('^', n, '-[a-z0-9]{6,12}$')), ['shop-migrate', 'shop-prune']) AS job,\n         minIf(Timestamp, reason = 'SuccessfulCreate') AS started,\n         maxIf(Timestamp, reason = 'Completed') AS finished,\n         countIf(reason IN ('BackoffLimitExceeded', 'DeadlineExceeded', 'PodFailurePolicy')) \u003e 0 AS failed\n  FROM (\n    SELECT Timestamp, ResourceAttributes['k8s.workload.name'] AS run, LogAttributes['k8s.event.reason'] AS reason\n    FROM otel_logs\n    WHERE Timestamp \u003e= {from:DateTime64(9)} AND Timestamp \u003c {to:DateTime64(9)}\n      AND LogAttributes['k8s.event.reason'] != ''\n      AND if(mapContains(LogAttributes, 'k8s.object.kind'), LogAttributes['k8s.object.kind'], ResourceAttributes['k8s.object.kind']) = 'Job'\n      AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, ResourceAttributes['reliant.env.id']))\n  )\n  GROUP BY run\n)\nWHERE job != ''\nGROUP BY job\nORDER BY last_started DESC, job\n",
+          "width": 24,
+          "height": 8
+        },
+        {
+          "section": "runs",
+          "id": "runs-started",
+          "title": "Runs started",
+          "kind": "number",
+          "signal": "logs",
+          "series": [
+            {
+              "label": "started",
+              "agg": "count"
+            }
+          ],
+          "where": [
+            {
+              "field": "resource.attr.k8s.object.kind",
+              "op": "eq",
+              "value": "Job"
+            },
+            {
+              "field": "resource.attr.k8s.workload.name",
+              "op": "match",
+              "value": "^(shop-migrate|shop-prune)-[a-z0-9]{6,12}$"
+            },
+            {
+              "field": "log.attr.k8s.event.reason",
+              "op": "in",
+              "values": [
+                "SuccessfulCreate"
+              ]
+            }
+          ],
+          "unit": "count",
+          "width": 8,
+          "height": 4
+        },
+        {
+          "section": "runs",
+          "id": "runs-succeeded",
+          "title": "Runs succeeded",
+          "kind": "number",
+          "signal": "logs",
+          "series": [
+            {
+              "label": "succeeded",
+              "agg": "count"
+            }
+          ],
+          "where": [
+            {
+              "field": "resource.attr.k8s.object.kind",
+              "op": "eq",
+              "value": "Job"
+            },
+            {
+              "field": "resource.attr.k8s.workload.name",
+              "op": "match",
+              "value": "^(shop-migrate|shop-prune)-[a-z0-9]{6,12}$"
+            },
+            {
+              "field": "log.attr.k8s.event.reason",
+              "op": "in",
+              "values": [
+                "Completed"
+              ]
+            }
+          ],
+          "unit": "count",
+          "width": 8,
+          "height": 4
+        },
+        {
+          "section": "runs",
+          "id": "runs-failed",
+          "title": "Runs failed",
+          "kind": "number",
+          "signal": "logs",
+          "series": [
+            {
+              "label": "failed",
+              "agg": "count"
+            }
+          ],
+          "where": [
+            {
+              "field": "resource.attr.k8s.object.kind",
+              "op": "eq",
+              "value": "Job"
+            },
+            {
+              "field": "resource.attr.k8s.workload.name",
+              "op": "match",
+              "value": "^(shop-migrate|shop-prune)-[a-z0-9]{6,12}$"
+            },
+            {
+              "field": "log.attr.k8s.event.reason",
+              "op": "in",
+              "values": [
+                "BackoffLimitExceeded",
+                "DeadlineExceeded",
+                "PodFailurePolicy"
+              ]
+            }
+          ],
+          "unit": "count",
+          "width": 8,
+          "height": 4
+        },
+        {
+          "section": "runs",
+          "id": "runs-by-job",
+          "title": "Runs started by job",
+          "kind": "line",
+          "signal": "logs",
+          "series": [
+            {
+              "label": "shop-migrate",
+              "agg": "count",
+              "where": [
+                {
+                  "field": "resource.attr.k8s.workload.name",
+                  "op": "match",
+                  "value": "^shop-migrate-[a-z0-9]{6,12}$"
+                }
+              ]
+            },
+            {
+              "label": "shop-prune",
+              "agg": "count",
+              "where": [
+                {
+                  "field": "resource.attr.k8s.workload.name",
+                  "op": "match",
+                  "value": "^shop-prune-[a-z0-9]{6,12}$"
+                }
+              ]
+            }
+          ],
+          "where": [
+            {
+              "field": "resource.attr.k8s.object.kind",
+              "op": "eq",
+              "value": "Job"
+            },
+            {
+              "field": "resource.attr.k8s.workload.name",
+              "op": "match",
+              "value": "^(shop-migrate|shop-prune)-[a-z0-9]{6,12}$"
+            },
+            {
+              "field": "log.attr.k8s.event.reason",
+              "op": "in",
+              "values": [
+                "SuccessfulCreate"
+              ]
+            }
+          ],
+          "unit": "count",
+          "width": 12,
+          "height": 7
+        },
+        {
+          "section": "runs",
+          "id": "failures-by-job",
+          "title": "Failed runs by job",
+          "kind": "line",
+          "signal": "logs",
+          "series": [
+            {
+              "label": "shop-migrate",
+              "agg": "count",
+              "where": [
+                {
+                  "field": "resource.attr.k8s.workload.name",
+                  "op": "match",
+                  "value": "^shop-migrate-[a-z0-9]{6,12}$"
+                }
+              ]
+            },
+            {
+              "label": "shop-prune",
+              "agg": "count",
+              "where": [
+                {
+                  "field": "resource.attr.k8s.workload.name",
+                  "op": "match",
+                  "value": "^shop-prune-[a-z0-9]{6,12}$"
+                }
+              ]
+            }
+          ],
+          "where": [
+            {
+              "field": "resource.attr.k8s.object.kind",
+              "op": "eq",
+              "value": "Job"
+            },
+            {
+              "field": "resource.attr.k8s.workload.name",
+              "op": "match",
+              "value": "^(shop-migrate|shop-prune)-[a-z0-9]{6,12}$"
+            },
+            {
+              "field": "log.attr.k8s.event.reason",
+              "op": "in",
+              "values": [
+                "BackoffLimitExceeded",
+                "DeadlineExceeded",
+                "PodFailurePolicy"
+              ]
+            }
+          ],
+          "unit": "count",
+          "width": 12,
+          "height": 7
+        },
+        {
+          "section": "runs",
+          "id": "run-events",
+          "title": "Run events",
+          "description": "Job create, completion and failure events, newest first.",
+          "kind": "search",
+          "signal": "logs",
+          "where": [
+            {
+              "field": "resource.attr.k8s.object.kind",
+              "op": "eq",
+              "value": "Job"
+            },
+            {
+              "field": "resource.attr.k8s.workload.name",
+              "op": "match",
+              "value": "^(shop-migrate|shop-prune)-[a-z0-9]{6,12}$"
+            },
+            {
+              "field": "log.attr.k8s.event.reason",
+              "op": "in",
+              "values": [
+                "SuccessfulCreate",
+                "Completed",
+                "BackoffLimitExceeded",
+                "DeadlineExceeded",
+                "PodFailurePolicy"
+              ]
+            }
+          ],
+          "columns": [
+            "timestamp",
+            "resource.attr.k8s.workload.name",
+            "log.attr.k8s.event.reason",
+            "log.body"
+          ],
+          "width": 24,
+          "height": 8
+        },
+        {
+          "section": "health",
+          "id": "restarts",
+          "title": "Container restarts",
+          "description": "The highest restart count among each workload's containers; a step is a restart.",
+          "kind": "line",
+          "signal": "metrics",
+          "series": [
+            {
+              "label": "restarts",
+              "agg": "max",
+              "field": "k8s.container.restarts",
+              "metricType": "gauge"
+            }
+          ],
+          "where": [
+            {
+              "field": "resource.attr.k8s.workload.name",
+              "op": "in",
+              "values": [
+                "shop-migrate",
+                "shop-prune"
+              ]
+            }
+          ],
+          "groupBy": [
+            "resource.attr.k8s.workload.name"
+          ],
+          "unit": "count",
+          "width": 12,
+          "height": 7
+        },
+        {
+          "section": "health",
+          "id": "warning-events",
+          "title": "Warning events by job",
+          "description": "Warning-type Kubernetes events of the jobs' pods: failed image pulls, evictions, failed scheduling, back-offs.",
+          "kind": "line",
+          "signal": "logs",
+          "series": [
+            {
+              "label": "warnings",
+              "agg": "count"
+            }
+          ],
+          "where": [
+            {
+              "field": "resource.attr.k8s.workload.name",
+              "op": "in",
+              "values": [
+                "shop-migrate",
+                "shop-prune"
+              ]
+            },
+            {
+              "field": "log.attr.k8s.event.type",
+              "op": "eq",
+              "value": "Warning"
+            }
+          ],
+          "groupBy": [
+            "resource.attr.k8s.workload.name"
+          ],
+          "unit": "count",
+          "width": 24,
+          "height": 7
+        },
+        {
+          "section": "logs",
+          "id": "error-logs",
+          "title": "Error logs",
+          "kind": "search",
+          "signal": "logs",
+          "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-migrate",
+                "shop-prune"
+              ]
+            },
+            {
+              "field": "log.severity",
+              "op": "eq",
+              "value": "error"
+            }
+          ],
+          "columns": [
+            "timestamp",
+            "service.name",
+            "log.severity",
+            "log.body"
+          ],
+          "width": 24,
+          "height": 8
+        }
+      ]
+    },
+    {
       "id": "frontend",
       "title": "shop: frontend",
       "description": "Browser errors, page loads, web vitals and API calls from the HyperDX browser SDK (service.name shop-web). Panels follow HyperDX's Browser RUM template: a browser span carries the rum.sessionId resource attribute.",
+      "group": "product",
+      "tags": [
+        "browser"
+      ],
       "filters": [
         {
           "id": "service",

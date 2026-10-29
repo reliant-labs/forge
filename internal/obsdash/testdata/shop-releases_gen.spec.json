@@ -3,6 +3,7 @@
   "id": "releases",
   "title": "shop: releases",
   "description": "Request rate, error rate and latency split by service.version, so a deploy shows as one version replacing another. Deploy markers come from the release ledger. Narrow with the service.name and deployment.environment.name filters.",
+  "group": "releases",
   "filters": [
     {
       "id": "service",

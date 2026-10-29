@@ -95,7 +95,7 @@ func TestEnvBuildBundle_CarriesTheDashboardsAndTheMetricsSchema(t *testing.T) {
 		t.Error("the generated overview shipped beside the file that overrides it")
 	}
 	for _, want := range []string{
-		"observability/dashboards/obs-bundle-project-process-app-api_gen.json",
+		"observability/dashboards/obs-bundle-project-process-api_gen.json",
 		"observability/dashboards/obs-bundle-project-workloads_gen.json",
 		"observability/dashboards/obs-bundle-project-releases_gen.json",
 		"observability/dashboards/obs-bundle-project-custom-metrics_gen.json",

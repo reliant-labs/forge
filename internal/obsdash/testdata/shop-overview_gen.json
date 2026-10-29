@@ -24,7 +24,7 @@
             "metricType": "sum"
           }
         ],
-        "where": "ServiceName IN ('shop-api', 'shop-worker')",
+        "where": "ServiceName IN ('shop-api')",
         "whereLanguage": "sql",
         "numberFormat": {
           "output": "number",
@@ -54,7 +54,7 @@
             "metricType": "sum"
           }
         ],
-        "where": "ServiceName IN ('shop-api', 'shop-worker')",
+        "where": "ServiceName IN ('shop-api')",
         "whereLanguage": "sql",
         "numberFormat": {
           "output": "number",
@@ -83,7 +83,7 @@
             "metricType": "histogram"
           }
         ],
-        "where": "ServiceName IN ('shop-api', 'shop-worker')",
+        "where": "ServiceName IN ('shop-api')",
         "whereLanguage": "sql",
         "numberFormat": {
           "output": "number",
@@ -112,7 +112,7 @@
             "metricType": "sum"
           }
         ],
-        "where": "ServiceName IN ('shop-api', 'shop-worker')",
+        "where": "ServiceName IN ('shop-api')",
         "whereLanguage": "sql",
         "groupBy": "ServiceName",
         "granularity": "auto",
@@ -151,7 +151,7 @@
             "metricType": "sum"
           }
         ],
-        "where": "ServiceName IN ('shop-api', 'shop-worker')",
+        "where": "ServiceName IN ('shop-api')",
         "whereLanguage": "sql",
         "groupBy": "ServiceName",
         "granularity": "auto",
@@ -182,7 +182,7 @@
             "metricType": "histogram"
           }
         ],
-        "where": "ServiceName IN ('shop-api', 'shop-worker')",
+        "where": "ServiceName IN ('shop-api')",
         "whereLanguage": "sql",
         "groupBy": "ServiceName",
         "granularity": "auto",
@@ -211,7 +211,7 @@
             "alias": "sampled faults"
           }
         ],
-        "where": "ServiceName IN ('shop-api', 'shop-worker') AND SpanKind IN ('Server', 'SPAN_KIND_SERVER') AND match(SpanName, '^[A-Za-z0-9_.]+/[A-Za-z0-9_]+$') AND lower(StatusCode) = 'error'",
+        "where": "ServiceName IN ('shop-api') AND SpanKind IN ('Server', 'SPAN_KIND_SERVER') AND match(SpanName, '^[A-Za-z0-9_.]+/[A-Za-z0-9_]+$') AND lower(StatusCode) = 'error'",
         "whereLanguage": "sql",
         "groupBy": "ServiceName, SpanName, StatusMessage"
       }
@@ -235,7 +235,7 @@
             "metricType": "gauge"
           }
         ],
-        "where": "ResourceAttributes['k8s.workload.name'] IN ('shop-api', 'shop-worker')",
+        "where": "ResourceAttributes['k8s.workload.name'] IN ('shop-api')",
         "whereLanguage": "sql",
         "groupBy": "ResourceAttributes['k8s.workload.name']",
         "granularity": "auto",
@@ -264,7 +264,7 @@
             "metricType": "gauge"
           }
         ],
-        "where": "ResourceAttributes['k8s.workload.name'] IN ('shop-api', 'shop-worker')",
+        "where": "ResourceAttributes['k8s.workload.name'] IN ('shop-api')",
         "whereLanguage": "sql",
         "groupBy": "ResourceAttributes['k8s.workload.name']",
         "granularity": "auto",

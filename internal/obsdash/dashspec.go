@@ -39,6 +39,8 @@ type (
 	Annotation = dashspec.Annotation
 	// Dashboard is dashspec.Dashboard.
 	Dashboard = dashspec.Dashboard
+	// Group is dashspec.Group.
+	Group = dashspec.Group
 	// Section is dashspec.Section.
 	Section = dashspec.Section
 	// Problem is dashspec.Problem.
@@ -47,6 +49,13 @@ type (
 
 // The spec constants, from pkg/dashspec.
 const (
+	GroupOverview       = dashspec.GroupOverview
+	GroupServices       = dashspec.GroupServices
+	GroupJobs           = dashspec.GroupJobs
+	GroupProduct        = dashspec.GroupProduct
+	GroupPlatform       = dashspec.GroupPlatform
+	GroupReleases       = dashspec.GroupReleases
+	GroupCustom         = dashspec.GroupCustom
 	Traces              = dashspec.Traces
 	Metrics             = dashspec.Metrics
 	Logs                = dashspec.Logs

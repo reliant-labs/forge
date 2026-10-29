@@ -18,7 +18,10 @@ run=$("$gh" run list --repo "$repo" --workflow ci.yml --commit "$sha" --limit 10
 read -r id status conclusion head <<<"$run"
 # The run must have finished (not cancelled); its verdict is the three jobs
 # below, so a red lint or Windows job elsewhere in the run does not block it.
-[[ "$status" == completed && "$conclusion" != cancelled && "$head" == "$sha" ]] || refusal "$run"
+# The run may still be finishing an unrelated job (CI gate, the aggregator,
+# waiting for a runner); the three jobs below are the verdict either way. A
+# cancelled run is refused: its jobs may have been cut short.
+[[ "$conclusion" != cancelled && "$head" == "$sha" ]] || refusal "$run"
 # CI gate may waive known main failures; the actual full test jobs cannot be
 # skipped, cancelled, failed, or waived for a release, even if the gate is green.
 verdict=$("$gh" run view "$id" --repo "$repo" --json jobs \

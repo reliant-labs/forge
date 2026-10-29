@@ -19,7 +19,10 @@ func TestReleaseRequiresExactFullGreen(t *testing.T) {
 	}{
 		{"green", "123 completed success exact", "success", true},
 		{"missing", "missing", "success", false},
-		{"running", "123 in_progress success exact", "success", false},
+		// Still running (the CI gate job queued for a runner) but the three
+		// full Test jobs are done and green: releasable.
+		{"running-tests-green", "123 in_progress success exact", "success", true},
+		{"running-tests-not-done", "123 in_progress success exact", "failure", false},
 		// A red Windows or Lint job fails the run; the verdict is the three
 		// full Test jobs, so that run is releasable when they are green.
 		{"failed-elsewhere", "123 completed failure exact", "success", true},

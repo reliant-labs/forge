@@ -128,6 +128,24 @@ if [ -z "$REPO_ROOT" ]; then
 fi
 cd "$REPO_ROOT"
 
+# ── 2a. --commit: release a green commit of main, not its tip ──────
+if [ -n "$COMMIT" ]; then
+  git fetch -q origin "$BRANCH"
+  COMMIT="$(git rev-parse --verify "$COMMIT^{commit}")"
+  if ! git merge-base --is-ancestor "$COMMIT" "origin/$BRANCH"; then
+    echo "error: --commit $COMMIT is not on origin/$BRANCH" >&2
+    exit 1
+  fi
+  # A private detached worktree, never `git checkout` here: this script is
+  # being read by bash as it runs, and checking out an older commit would
+  # swap the file under it mid-run.
+  REPO_ROOT="$(mktemp -d)/forge-$COMMIT"
+  git worktree add -q --detach "$REPO_ROOT" "$COMMIT"
+  cd "$REPO_ROOT"
+  echo "→ releasing $COMMIT in $REPO_ROOT (origin/$BRANCH is $(git rev-parse --short "origin/$BRANCH"))"
+fi
+
+
 if [ ! -f go.mod ]; then
   echo "error: $REPO_ROOT/go.mod not found — not a forge repo checkout?" >&2
   exit 1
@@ -196,18 +214,6 @@ if [ -n "$(git status --porcelain)" ]; then
   echo "error: working tree is not clean; commit or set aside your changes before releasing" >&2
   git status --short >&2
   exit 1
-fi
-
-# ── 3b. --commit: release a green commit of main, not its tip ──────
-if [ -n "$COMMIT" ]; then
-  git fetch -q origin "$BRANCH"
-  COMMIT="$(git rev-parse --verify "$COMMIT^{commit}")"
-  if ! git merge-base --is-ancestor "$COMMIT" "origin/$BRANCH"; then
-    echo "error: --commit $COMMIT is not on origin/$BRANCH" >&2
-    exit 1
-  fi
-  git checkout -q --detach "$COMMIT"
-  echo "→ releasing $COMMIT (origin/$BRANCH is $(git rev-parse --short "origin/$BRANCH"))"
 fi
 
 # ── 4. The tag may not already exist ────────────────────────────────
@@ -520,7 +526,11 @@ if [ "$DRY_RUN" = "1" ]; then
   fi
   echo "DRY RUN: would attach: $(for f in "${ASSET_FILES[@]}"; do basename "$f"; done | tr '\n' ' ')"
   echo "DRY RUN: would tag $RELEASE_TAG at that commit"
-  echo "DRY RUN: would push:   git push --atomic origin <release commit>:refs/heads/$BRANCH refs/tags/$RELEASE_TAG"
+  if [ -n "$COMMIT" ]; then
+    echo "DRY RUN: would push:   git push --atomic origin refs/tags/$RELEASE_TAG (at $COMMIT) <release commit>:refs/heads/release/$VERSION, then open + auto-merge that PR"
+  else
+    echo "DRY RUN: would push:   git push --atomic origin <release commit>:refs/heads/$BRANCH refs/tags/$RELEASE_TAG"
+  fi
   echo ""
   echo "DRY RUN: restoring the working tree; no commit, tag or push was created."
   exit 0

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -476,7 +477,7 @@ func TestPinStorageRelease_WaitsForARunningMaintenancePass(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("a", 64)
 	err := pinStorageRelease(release.Release{Version: "v1", Artifacts: map[string]release.Artifact{
 		"app": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{release.SharedVariant: digest}},
-	}})
+	}}, io.Discard)
 	if err != nil {
 		t.Fatalf("the cut was refused because maintenance held the lock briefly: %v", err)
 	}
@@ -493,5 +494,123 @@ func TestPinStorageRelease_WaitsForARunningMaintenancePass(t *testing.T) {
 	}
 	if !pinned {
 		t.Errorf("the release's digest was not pinned after waiting: pins = %v", got.Pins)
+	}
+}
+
+// The v1.7.82 control-plane cut: every image built and pushed, then the pin
+// failed with "storage maintenance is already running" because the machine's
+// hourly `forge storage auto-gc` held the lock for longer than the cut's wait.
+// The pass here never finishes on its own inside the cut's bound, so the cut
+// succeeds only if the waiting cut makes the pass yield at a safe point.
+func TestPinStorageRelease_AutoGCYieldsToAWaitingCut(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "storage.json")
+	p := storage.DefaultPolicy()
+	p.Registries = []storage.Registry{{Container: "k3d-registry", Repositories: []string{"app"}, Aliases: []string{"k3d-registry:5000"}, Contexts: []string{"k3d-demo"}}}
+	if err := storage.Save(path, p); err != nil {
+		t.Fatalf("save policy: %v", err)
+	}
+	t.Setenv("FORGE_STORAGE_POLICY", path)
+
+	prevPoll, prevWait := storage.LockWaitPoll, releasePinLockWait
+	storage.LockWaitPoll, releasePinLockWait = 10*time.Millisecond, 3*time.Second
+	t.Cleanup(func() { storage.LockWaitPoll, releasePinLockWait = prevPoll, prevWait })
+
+	// A pass that runs until its context ends: like a real one, it stops at
+	// its next safe point once cancelled. The 20s cap only keeps a broken
+	// build from hanging the test; it is far past the cut's 3s bound.
+	running := make(chan struct{})
+	origGC := nonDisruptiveGCFn
+	nonDisruptiveGCFn = func(ctx context.Context, _ storage.Runner) error {
+		close(running)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(20 * time.Second):
+			return nil
+		}
+	}
+	t.Cleanup(func() { nonDisruptiveGCFn = origGC })
+
+	var gcOut bytes.Buffer
+	gcDone := make(chan error, 1)
+	go func() { gcDone <- runAutoGC(t.Context(), path, &gcOut) }()
+	<-running
+
+	var cutOut bytes.Buffer
+	digest := "sha256:" + strings.Repeat("b", 64)
+	start := time.Now()
+	err := pinStorageRelease(release.Release{Version: "v2", Artifacts: map[string]release.Artifact{
+		"app": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{release.SharedVariant: digest}},
+	}}, &cutOut)
+	if err != nil {
+		t.Fatalf("the cut failed behind a running auto-gc pass instead of making it yield: %v", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("the cut waited %v: the pass did not yield promptly", d)
+	}
+	if want := fmt.Sprintf("waiting for storage maintenance (pid %d)", os.Getpid()); !strings.Contains(cutOut.String(), want) {
+		t.Errorf("the cut did not say what it was waiting for; want %q in:\n%s", want, cutOut.String())
+	}
+	if err := <-gcDone; err != nil {
+		t.Fatalf("a pass that yielded reported a failure: %v", err)
+	}
+	if !strings.Contains(gcOut.String(), "yielded the lock") {
+		t.Errorf("the pass did not say it yielded:\n%s", gcOut.String())
+	}
+	attempt, ok := storage.LastAutoGC(path)
+	if !ok || !attempt.OK || len(attempt.CutOffLayers) == 0 {
+		t.Errorf("a yielded pass must be recorded as a successful, cut-off attempt; got %+v (recorded %v)", attempt, ok)
+	}
+	got, err := storage.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Pins, digest) {
+		t.Errorf("the release's digest was not pinned: pins = %v", got.Pins)
+	}
+}
+
+// While a cut is waiting, a new auto-gc pass does not start at all.
+func TestRunAutoGC_DoesNotStartWhileAWriterWaits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "storage.json")
+	if err := storage.Save(path, storage.DefaultPolicy()); err != nil {
+		t.Fatalf("save policy: %v", err)
+	}
+	prevPoll := storage.LockWaitPoll
+	storage.LockWaitPoll = 10 * time.Millisecond
+	t.Cleanup(func() { storage.LockWaitPoll = prevPoll })
+	origGC := nonDisruptiveGCFn
+	nonDisruptiveGCFn = func(context.Context, storage.Runner) error {
+		t.Error("the pass started while a writer was waiting for the lock")
+		return nil
+	}
+	t.Cleanup(func() { nonDisruptiveGCFn = origGC })
+
+	// A holder that is not a maintenance pass (so it never yields), and a
+	// writer queued behind it.
+	held, free := make(chan struct{}), make(chan struct{})
+	holderDone := make(chan error, 1)
+	go func() { holderDone <- storage.WithLock(path, func() error { close(held); <-free; return nil }) }()
+	<-held
+	writerDone := make(chan error, 1)
+	go func() { writerDone <- storage.WithLockWait(path, 5*time.Second, nil, func() error { return nil }) }()
+	time.Sleep(100 * time.Millisecond) // the writer is announced
+
+	var out bytes.Buffer
+	if err := runAutoGC(t.Context(), path, &out); err != nil {
+		t.Fatalf("a pass skipped for a waiting writer is not a failure: %v", err)
+	}
+	if !strings.Contains(out.String(), "skipped") {
+		t.Errorf("the skipped pass said nothing:\n%s", out.String())
+	}
+	if _, ok := storage.LastAutoGC(path); ok {
+		t.Error("a pass that never started was recorded as an attempt")
+	}
+	close(free)
+	if err := <-holderDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-writerDone; err != nil {
+		t.Fatalf("the waiting writer failed: %v", err)
 	}
 }

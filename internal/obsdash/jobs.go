@@ -14,6 +14,9 @@ const JobsID = "jobs"
 // this spread over several panels.
 const maxSeriesPerJobsPanel = 10
 
+// maxReplaces is dashspec.MaxReplaces.
+const maxReplaces = 32
+
 // The Job controller's event reasons (see obsquery.Workloads.Jobs).
 const (
 	jobEventCreated   = "SuccessfulCreate"
@@ -86,6 +89,7 @@ func BuildJobs(project string, jobs []Process) Dashboard {
 		d.Filters[i].Signal = Logs
 	}
 	d.Sections = []Section{{ID: "runs", Title: "Runs"}, {ID: "health", Title: "Health"}, {ID: "logs", Title: "Logs"}}
+	d.Replaces = jobReplaces(jobs)
 
 	runScope := jobRunScope(names)
 	reasonIs := func(reasons ...string) Predicate {
@@ -217,5 +221,36 @@ func quoted(names []string) []string {
 		out[i] = regexpQuote(n)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// jobReplaces are the ids of the per-job dashboards this one replaces: each
+// job's own "process-<name>" and the id it was generated under before
+// dashboards were named for the workload. A reader moves stars and copies of
+// any of them here. At most MaxReplaces (the spec's bound) are named; the
+// newest names come first so the cap drops the oldest.
+func jobReplaces(jobs []Process) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range jobs {
+		for _, id := range append([]string{ProcessDashboardID(p.Name)}, prefixed("process-", p.Replaces)...) {
+			if id != JobsID && !seen[id] {
+				seen[id] = true
+				out = append(out, id)
+			}
+		}
+	}
+	sort.Strings(out)
+	if len(out) > maxReplaces {
+		out = out[:maxReplaces]
+	}
+	return out
+}
+
+func prefixed(prefix string, names []string) []string {
+	out := make([]string, len(names))
+	for i, n := range names {
+		out[i] = prefix + n
+	}
 	return out
 }

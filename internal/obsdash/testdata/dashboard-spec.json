@@ -2098,6 +2098,10 @@
       "tags": [
         "jobs"
       ],
+      "replaces": [
+        "process-shop-migrate",
+        "process-shop-prune"
+      ],
       "filters": [
         {
           "id": "service",

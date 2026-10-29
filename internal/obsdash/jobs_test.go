@@ -391,3 +391,30 @@ func TestJobsDashboardIsNotWrittenIntoTheProjectTree(t *testing.T) {
 		}
 	}
 }
+
+// The Jobs dashboard names every per-job dashboard it replaces, under the id
+// each had before and the id it would have had under the workload name, so a
+// reader can move stars and copies of any of them here.
+func TestJobsDashboardReplacesTheOldPerJobDashboards(t *testing.T) {
+	in := Input{Project: "shop", Processes: []Process{
+		{Name: "db-migrate-up", Kind: "job", Binary: "app", ServiceNames: []string{"db-migrate-up"}, Workloads: []string{"db-migrate-up"}, Replaces: []string{"app-db-migrate-up"}},
+		{Name: "cloudsql-backup-prune", Kind: "cron", Binary: "app", ServiceNames: []string{"x"}, Workloads: []string{"cloudsql-backup-prune"}, Replaces: []string{"app-cloudsql-prune-backups---project-p-bcbc04b8f7e4"}},
+	}}
+	d := dashboardByID(t, Build(in), "jobs")
+	want := []string{
+		"process-app-cloudsql-prune-backups---project-p-bcbc04b8f7e4", "process-app-db-migrate-up",
+		"process-cloudsql-backup-prune", "process-db-migrate-up",
+	}
+	if !reflect.DeepEqual(d.Replaces, want) {
+		t.Fatalf("replaces = %v, want %v", d.Replaces, want)
+	}
+	b, _ := json.Marshal(d)
+	if _, err := ParseDashboard("jobs", b); err != nil {
+		t.Fatalf("a Jobs dashboard with replaces must validate: %v", err)
+	}
+	for _, id := range d.Replaces {
+		if id == "jobs" {
+			t.Error("a dashboard never replaces itself")
+		}
+	}
+}

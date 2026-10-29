@@ -55,6 +55,14 @@ Sections are presentation groups, not authorization or implicit filter scope.
 HyperDX cannot target a filter to a subset of tiles, so it omits those dropdowns
 rather than silently applying them globally.
 
+Optional viewer defaults: `defaultRange` on a dashboard (`"7d"`: a number and
+a unit of s, m, h or d, at most 30d) is the range it opens on when the viewer
+picked none. A `sql` panel whose statement groups by a fixed bucket
+(`toDate`, `toStartOfWeek`) rather than by `{step}` declares `minStep` (`"1d"`):
+a range shorter than two such buckets draws one point, so the console widens
+that panel's range to hold two and says so. Prefer `{step}` in the statement
+when the panel can follow the range.
+
 ## What the panels match
 
 Panels are keyed on what the runtime really emits, not on a convention:

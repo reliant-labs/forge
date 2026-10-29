@@ -64,7 +64,11 @@ var removals = []removal{
 				Name:   "external control-plane identifiers and deployment prose",
 				Reason: "These spans describe the separately owned control-plane schema and platform telemetry, not a forge tenancy API. Exact spellings and paths keep TenantID/auth context regressions visible.",
 				Token:  regexp.MustCompile(`tenant_cluster_id|Tenant cluster|ensureTenant|GetTenant|tenant zero|tenant schema|tenant reads|tenant service|check the tenant`),
-				Paths:  []string{"docs/design/per-workload-placement.md", "internal/cli/deploy_claimable_test.go", "internal/obsdash/process_health.go", "internal/templates/project/skills/forge/deploy/openbao/SKILL.md", "pkg/accesstoken/scope.go", "pkg/alerting/evaluator.go", "pkg/observe/PROFILES.md", "pkg/obsquery/fingerprint.go"},
+				Paths: []string{"docs/design/per-workload-placement.md", "internal/cli/deploy_claimable_test.go", "internal/obsdash/process_health.go", "internal/templates/project/skills/forge/deploy/openbao/SKILL.md", "pkg/accesstoken/scope.go", "pkg/alerting/evaluator.go", "pkg/observe/PROFILES.md", "pkg/obsquery/fingerprint.go",
+					// GetTenant is the control plane's RPC name for "which organization does
+					// this delegated credential act for" (cloud.ProcGetOrganization).
+					"docs/organizations.md", "internal/cli/hosted_project.go", "internal/cli/hosted_project_test.go",
+					"internal/cli/login_org_bound_test.go", "internal/cloud/browser_identity_test.go", "internal/cloud/login.go"},
 			},
 			{
 				Name: "the OAuth issuer's own multi-tenant URL shape",

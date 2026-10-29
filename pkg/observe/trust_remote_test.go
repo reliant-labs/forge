@@ -128,7 +128,7 @@ func callWithContext(t *testing.T, url string, caller trace.SpanContext) {
 	req := connect.NewRequest(&structpb.Struct{})
 	propagation.TraceContext{}.Inject(trace.ContextWithRemoteSpanContext(context.Background(), caller), propagation.HeaderCarrier(req.Header()))
 	req.Header().Set("Tracestate", "vendor=caller-chosen")
-	req.Header().Set("Baggage", "tenant=someone-else")
+	req.Header().Set("Baggage", "org=someone-else")
 	client := connect.NewClient[structpb.Struct, structpb.Struct](http.DefaultClient, url+trustProcedure)
 	if _, err := client.CallUnary(context.Background(), req); err != nil {
 		t.Fatal(err)

@@ -85,13 +85,13 @@ func catalogServices(services []ServiceDef) []servicecatalog.Service {
 		raw, _ := json.Marshal(s)
 		svc := servicecatalog.Service{Name: s.Package + "." + s.Name, ProtoFile: s.ProtoFile, Descriptor: raw, Methods: []servicecatalog.Method{}}
 		for _, method := range s.Methods {
+			// The descriptor spells protobuf's level ("IDEMPOTENCY_UNKNOWN");
+			// the catalog's closed set is UNKNOWN, IDEMPOTENT, NO_SIDE_EFFECTS.
 			idem := method.Idempotency
-			if idem == "" {
-				idem = "UNKNOWN"
-				if method.NoSideEffects {
-					idem = "NO_SIDE_EFFECTS"
-				}
+			if idem == "" && method.NoSideEffects {
+				idem = "NO_SIDE_EFFECTS"
 			}
+			idem = servicecatalog.Idempotency(idem)
 			svc.Methods = append(svc.Methods, servicecatalog.Method{ID: svc.Name + "/" + method.Name, Name: method.Name, Input: method.InputTypeFQ, Output: method.OutputTypeFQ, ClientStreaming: method.ClientStreaming, ServerStreaming: method.ServerStreaming, Idempotency: idem, AuthRequired: method.AuthRequired})
 		}
 		sort.Slice(svc.Methods, func(i, j int) bool { return svc.Methods[i].ID < svc.Methods[j].ID })

@@ -386,8 +386,8 @@ func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer clai
 	}
 	fmt.Printf("Anonymous deploy preview of env %s at %s (checked locally; no identity used, nothing created)\n", env, ep.URL)
 	fmt.Printf("  %s\n", limits.note())
-	fmt.Printf("  ✓ fits the claimable plan: one service (at most %dm / %d MiB) with its migration job, one database, one static site\n",
-		limits.limits.WorkloadCPUMillicores, limits.limits.WorkloadMemoryBytes>>20)
+	fmt.Printf("  ✓ fits the claimable plan: one service (at most %s) with its migration job, one database, one static site\n",
+		limits.limits.WorkloadShape())
 	if needsCompute(e) {
 		fmt.Printf("  ! no outbound internet until claimed: the service serves requests and uses its database, but calls out of it fail (payments, LLMs, webhooks, outside DNS)\n")
 	}
@@ -496,9 +496,9 @@ func claimableIneligibility(e *KCLEntities, caps deploy.ClaimableLimits) []strin
 			out = append(out, fmt.Sprintf("database %q asks for %d instances (%d is allowed)", d.Name, spec.Instances, caps.DatabaseInstances))
 		}
 		if spec.StorageGiB > caps.DatabaseDeclaredStorageGiB {
-			out = append(out, fmt.Sprintf("database %q asks for %d GiB of storage (at most %d GiB; the platform provisions %d MiB)\n"+
+			out = append(out, fmt.Sprintf("database %q asks for %d GiB of storage (at most %d GiB); the platform provisions %s\n"+
 				"      fix: give it, in deploy/kcl/<env>/main.k: spec = {storageGiB = %d}",
-				d.Name, spec.StorageGiB, caps.DatabaseDeclaredStorageGiB, caps.DatabaseStorageBytes>>20, caps.DatabaseDeclaredStorageGiB))
+				d.Name, spec.StorageGiB, caps.DatabaseDeclaredStorageGiB, caps.DatabaseStorage(), caps.DatabaseDeclaredStorageGiB))
 		}
 		if spec.Restore != nil {
 			out = append(out, fmt.Sprintf("database %q restores from a backup (an anonymous database has none)", d.Name))
@@ -545,8 +545,8 @@ func claimableAdmission(env string, e *KCLEntities, caps deploy.ClaimableLimits)
 func claimableIneligibleError(env string, caps deploy.ClaimableLimits, reasons []string) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "env %q does not fit an anonymous deploy. An unclaimed deploy is one static site, or one service "+
-		"(at most %dm / %d MiB, request and limit) with its migration job and one database (at most %d GiB declared); it cannot have:",
-		env, caps.WorkloadCPUMillicores, caps.WorkloadMemoryBytes>>20, caps.DatabaseDeclaredStorageGiB)
+		"(at most %s, request and limit) with its migration job and one database (at most %d GiB declared); it cannot have:",
+		env, caps.WorkloadShape(), caps.DatabaseDeclaredStorageGiB)
 	for _, r := range reasons {
 		fmt.Fprintf(&b, "\n  - %s", strings.ReplaceAll(r, "<env>", env))
 	}

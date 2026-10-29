@@ -487,7 +487,7 @@ func TestClaimableIneligibility(t *testing.T) {
 		// The scaffold default (10 GiB) is what an anonymous database may not
 		// declare, and the refusal names the edit.
 		{"a default 10 GiB database", &KCLEntities{Databases: []DatabaseEntity{{Name: "db", Runtime: RuntimeHosted}}},
-			[]string{`database "db" asks for 10 GiB of storage (at most 1 GiB; the platform provisions 256 MiB)`, "spec = {storageGiB = 1}"}},
+			[]string{`database "db" asks for 10 GiB of storage (at most 1 GiB); the platform provisions 256 MiB of data (1 GiB volume)`, "spec = {storageGiB = 1}"}},
 		{"a database with a standby", &KCLEntities{Databases: []DatabaseEntity{{Name: "db", Runtime: RuntimeHosted, Spec: v1alpha1.ManagedDatabaseSpec{StorageGiB: 1, Instances: 2}}}},
 			[]string{`database "db" asks for 2 instances (1 is allowed)`}},
 	}
@@ -744,5 +744,60 @@ func TestClaimableDeployError_QueuedIsRefusedNotHeld(t *testing.T) {
 	var r *claimableRefusal
 	if !errors.As(err, &r) || r.exit != exitRefused {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// Every user-facing statement of the anonymous plan's caps is derived from
+// the compiled-in fallback, so a change to its numbers cannot leave a string
+// behind: the `project new --claimable` help, the note every claimable check
+// prints, and the --plan-only preview.
+func TestClaimableUserFacingTextDerivesFromTheFallbackLimits(t *testing.T) {
+	t.Parallel()
+	fb := deploy.ClaimableLimitsFallback()
+	shape := fb.WorkloadShape()
+	storage := fb.DatabaseStorage()
+	if want := "125m / 128 MiB"; shape != want {
+		t.Fatalf("WorkloadShape() = %q, want %q", shape, want)
+	}
+	if want := "256 MiB of data (1 GiB volume)"; storage != want {
+		t.Fatalf("DatabaseStorage() = %q, want %q", storage, want)
+	}
+
+	flag := newNewCmd().Flags().Lookup("claimable")
+	if flag == nil || !strings.Contains(flag.Usage, "("+shape+", request and limit)") {
+		t.Errorf("`project new --claimable` help does not state the fallback shape %q: %v", shape, flag)
+	}
+
+	n := claimableLimitsSource{limits: fb, why: "test"}.note()
+	for _, want := range []string{shape + " per workload", "Postgres storage " + storage} {
+		if !strings.Contains(n, want) {
+			t.Errorf("note %q lacks %q", n, want)
+		}
+	}
+	if err := claimableIneligibleError("prod", fb, []string{"x"}); !strings.Contains(err.Error(), "at most "+shape+", request and limit") {
+		t.Errorf("ineligible error does not state %q: %v", shape, err)
+	}
+}
+
+// The human --plan-only preview prints the caps it judged by, from the
+// fallback when the control plane publishes none.
+func TestClaimableDeploy_PlanOnlyPreviewStatesTheFallbackLimits(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL and runs the whole CLI; skipped in -short")
+	}
+	claimableFixture(t)
+	out, err := runForge(t, "env", "deploy", "hosted", "--claimable", "--plan-only")
+	if err != nil {
+		t.Fatalf("preview: %v\n%s", err, out)
+	}
+	fb := deploy.ClaimableLimitsFallback()
+	for _, want := range []string{
+		"Postgres storage " + fb.DatabaseStorage(),
+		fb.WorkloadShape() + " per workload",
+		"one service (at most " + fb.WorkloadShape() + ")",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("preview lacks %q:\n%s", want, out)
+		}
 	}
 }

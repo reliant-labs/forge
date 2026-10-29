@@ -185,7 +185,7 @@ organization's own deploy is held to the hosted shape band (4 GiB per vCPU,
 exactly). An anonymous deploy (` + "`" + Name() + ` env deploy <env> --claimable` + "`" + `) is not
 billed, so the band does not apply; it is held to the claimable plan's caps
 instead: one service (at most the CPU and memory its control plane publishes in
-GetClaimableAvailability, request and limit; 125m / 128 MiB as of this forge,
+GetClaimableAvailability, request and limit; ` + deploy.ClaimableLimitsFallback().WorkloadShape() + ` as of this forge,
 the copy used offline) with its migration job, one database, one static site. --claimable judges the env that
 way, and so does an env that declares
 ` + "`" + `control_plane = forge.ControlPlane {claimable = True}` + "`" + `.`,

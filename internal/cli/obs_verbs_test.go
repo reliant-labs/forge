@@ -576,7 +576,7 @@ func (b richTraceBackend) Trace(_ context.Context, req obsbackend.TraceRequest) 
 		Spans: []obsbackend.Span{
 			{SpanID: "r", Name: "a.v1.Obs/GetServiceSignals", Kind: "server", Service: "admin", Start: at(0), DurationNs: 10_000 * 1e6, StatusCode: "unset",
 				Attributes: map[string]string{"rpc.method": "a.v1.Obs/GetServiceSignals", "rpc.response.status_code": "CANCELED", "error.type": "CANCELED"}},
-			{SpanID: "c", ParentID: "r", Name: "SELECT tenants", Kind: "client", Service: "admin", Start: at(11), DurationNs: 3e6, StatusCode: "unset"},
+			{SpanID: "c", ParentID: "r", Name: "SELECT accounts", Kind: "client", Service: "admin", Start: at(11), DurationNs: 3e6, StatusCode: "unset"},
 			{SpanID: "q", ParentID: "r", Name: "SELECT t.otel_logs", Kind: "client", Service: "admin", Start: at(1), DurationNs: 2e6, StatusCode: "error",
 				StatusMessage: "context canceled", Attributes: map[string]string{"db.query.summary": "SELECT t.otel_logs", "db.clickhouse.query_id": "q-1", "db.clickhouse.read_rows": "2500000"}},
 		},

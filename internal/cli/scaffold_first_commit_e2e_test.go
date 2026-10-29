@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
@@ -66,7 +67,7 @@ func TestE2EScaffoldFirstCommitPassesItsHooks(t *testing.T) {
 	run := func(dir string, extraEnv []string, name string, args ...string) (string, error) {
 		cmd := exec.Command(name, args...)
 		cmd.Dir = dir
-		cmd.Env = append(append([]string{}, env...), extraEnv...)
+		cmd.Env = goexec.WithTrimpath(append(append([]string{}, env...), extraEnv...))
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}

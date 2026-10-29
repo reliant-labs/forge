@@ -97,6 +97,8 @@ func TestSanitizeClickHouseNeverLeaksALiteral(t *testing.T) {
 	escapes := []func(string) string{
 		func(s string) string { return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s) + "'" },
 		func(s string) string { return "'" + strings.NewReplacer(`\`, `\\`, `'`, `''`).Replace(s) + "'" },
+		// A ‘…’ literal has no escape: ClickHouse ends it at the first ’
+		// (TestSanitizeClickHouseCurlyQuotesHaveNoEscape), so it cannot hold one.
 		func(s string) string { return "‘" + strings.ReplaceAll(s, "’", "") + "’" },
 		func(s string) string { return "$x$" + strings.ReplaceAll(s, "$x$", "") + "$x$" },
 	}
@@ -134,5 +136,20 @@ func TestSummarizeClickHouse(t *testing.T) {
 		if op != tc.op || table != tc.table {
 			t.Errorf("ClickHouse.Summarize(%q) = (%q, %q), want (%q, %q)", tc.in, op, table, tc.op, tc.table)
 		}
+	}
+}
+
+// ClickHouse ends a ‘…’ literal at the first ’, backslash or not
+// (quotedStringWithUnicodeQuotes in its src/Parsers/Lexer.cpp searches for
+// the closing quote alone). The sanitizer must end it there too: honouring a
+// backslash would run the literal past the server's end, and the text after
+// a ’ inside a following ASCII literal would be read as SQL.
+func TestSanitizeClickHouseCurlyQuotesHaveNoEscape(t *testing.T) {
+	q := `SELECT ‘a\’, 'x’ SECRET', 'y' FROM t`
+	if got, want := ClickHouse.Sanitize(q), "SELECT ?, ?, ? FROM t"; got != want {
+		t.Errorf("ClickHouse.Sanitize(%q)\n got %q\nwant %q", q, got, want)
+	}
+	if _, table := ClickHouse.Summarize(q); table != "t" {
+		t.Errorf("ClickHouse.Summarize(%q) table = %q, want t", q, table)
 	}
 }

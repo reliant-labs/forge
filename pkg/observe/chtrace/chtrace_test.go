@@ -33,7 +33,7 @@ func (f *fakeConn) Query(_ context.Context, q string, _ ...any) (driver.Rows, er
 	if f.err != nil {
 		return nil, f.err
 	}
-	return &fakeRows{left: f.rows, err: f.rowsErr}, nil
+	return &fakeRows{left: f.rows, err: f.rowsErr, scanErr: f.scanErr}, nil
 }
 
 func (f *fakeConn) Exec(_ context.Context, q string, _ ...any) error {
@@ -53,9 +53,13 @@ func (f *fakeConn) QueryRow(_ context.Context, q string, _ ...any) driver.Row {
 
 type fakeRows struct {
 	driver.Rows
-	left int
-	err  error
+	left         int
+	err, scanErr error
 }
+
+func (r *fakeRows) Scan(...any) error    { return r.scanErr }
+func (r *fakeRows) ScanStruct(any) error { return r.scanErr }
+func (r *fakeRows) Totals(...any) error  { return r.scanErr }
 
 func (r *fakeRows) Next() bool {
 	if r.left == 0 {
@@ -293,6 +297,35 @@ func TestEscapedLiteralsNeverRecorded(t *testing.T) {
 	for _, a := range attrs {
 		if strings.Contains(a.Value.Emit(), "secret") {
 			t.Errorf("%s = %q carries the literal", a.Key, a.Value.Emit())
+		}
+	}
+}
+
+// A row that fails to scan fails the Query's span, though the rows report no
+// error and close cleanly: conversion errors never reach Rows.Err.
+func TestQueryRowsScanFailureFailsTheSpan(t *testing.T) {
+	ctx, rec := underSpan(t)
+	bad := errors.New("converting String to *int64 is unsupported")
+	for i, scan := range []func(driver.Rows) error{
+		func(r driver.Rows) error { return r.Scan(new(int64)) },
+		func(r driver.Rows) error { return r.ScanStruct(&struct{}{}) },
+		func(r driver.Rows) error { return r.Totals(new(int64)) },
+	} {
+		rows, err := Wrap(&fakeConn{rows: 2, scanErr: bad}).Query(ctx, "SELECT a FROM t")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			if err := scan(rows); !errors.Is(err, bad) {
+				t.Fatalf("scan %d returned %v, want the conversion error", i, err)
+			}
+		}
+		if rows.Err() != nil || rows.Close() != nil {
+			t.Fatal("the fake rows must report no error of their own")
+		}
+		s := rec.Ended()[i]
+		if s.Status().Code != codes.Error || s.Status().Description != bad.Error() {
+			t.Errorf("scan %d: status = %v, want Error %q", i, s.Status(), bad)
 		}
 	}
 }

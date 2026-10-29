@@ -274,11 +274,34 @@ func ErrorType(err error) string {
 	return "_OTHER"
 }
 
-// tracedRows ends the statement's span when the caller is done reading.
+// tracedRows ends the statement's span when the caller is done reading. A
+// row that fails to scan into the caller's values is the statement's failure
+// even when the rows themselves report none: Scan's conversion errors never
+// reach Rows.Err.
 type tracedRows struct {
 	driver.Rows
-	st *statement
-	n  int64
+	st      *statement
+	n       int64
+	scanErr error // the first Scan, ScanStruct or Totals failure
+}
+
+func (r *tracedRows) Scan(dest ...any) error {
+	return r.noteScan(r.Rows.Scan(dest...))
+}
+
+func (r *tracedRows) ScanStruct(dest any) error {
+	return r.noteScan(r.Rows.ScanStruct(dest))
+}
+
+func (r *tracedRows) Totals(dest ...any) error {
+	return r.noteScan(r.Rows.Totals(dest...))
+}
+
+func (r *tracedRows) noteScan(err error) error {
+	if err != nil && r.scanErr == nil {
+		r.scanErr = err
+	}
+	return err
 }
 
 func (r *tracedRows) Next() bool {
@@ -292,9 +315,12 @@ func (r *tracedRows) Next() bool {
 func (r *tracedRows) Close() error {
 	err := r.Rows.Close()
 	r.st.returned.Store(r.n)
-	if rerr := r.Rows.Err(); rerr != nil {
+	switch rerr := r.Rows.Err(); {
+	case rerr != nil:
 		r.st.end(rerr)
-	} else {
+	case r.scanErr != nil:
+		r.st.end(r.scanErr)
+	default:
 		r.st.end(err)
 	}
 	return err

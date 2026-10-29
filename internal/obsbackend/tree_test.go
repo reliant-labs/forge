@@ -296,6 +296,12 @@ func TestTreeIgnoresSmallOrCoveredGaps(t *testing.T) {
 	if g := BuildTree(skew, false).Roots[0].Uninstrumented; g != 0 {
 		t.Errorf("a skewed child covering the parent left a gap of %v", g)
 	}
+	// One that starts before its parent and ends inside it covers only the
+	// overlap: parent 100ms-1100ms, child 0-200ms covers 100-200ms.
+	early := []Span{sp("r", "", "api", "GET /x", 100, 1000, "unset"), sp("a", "r", "db", "q", 0, 200, "unset")}
+	if n := BuildTree(early, false).Roots[0]; n.Uninstrumented != 900*time.Millisecond || n.Gap != [2]time.Duration{100 * time.Millisecond, time.Second} {
+		t.Errorf("a child overlapping the parent's first 100ms: %v %v, want 900ms in 100ms → 1s", n.Uninstrumented, n.Gap)
+	}
 }
 
 // The control plane spells status codes "Error"; the local store "error".

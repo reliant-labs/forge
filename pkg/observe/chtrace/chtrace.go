@@ -11,8 +11,10 @@
 //   - db.system.name / db.system "clickhouse", db.operation.name,
 //     db.collection.name, and db.query.summary ("SELECT t_org.otel_logs"),
 //     which is also the span name;
-//   - db.query.text, the statement with every literal replaced by ?
-//     (dbtrace.SanitizeSQL). Bound parameters are never recorded;
+//   - db.query.text, the statement with every literal replaced by ?, read
+//     by ClickHouse's lexical rules (dbtrace.ClickHouse.Sanitize: a
+//     backslash escapes inside every quoted string). Bound parameters are
+//     never recorded;
 //   - db.clickhouse.query_id, the id the statement runs under, so the span
 //     joins system.query_log (`WHERE query_id = '…'`) for the server's side:
 //     its read rows, memory, exception and profile events;
@@ -24,7 +26,8 @@
 //     and db.response.status_code (the ClickHouse exception code).
 //
 // A Query span lasts until its rows are closed: streaming the result is part
-// of the statement's cost.
+// of the statement's cost. A QueryRow span lasts until the row is scanned
+// (Scan or ScanStruct), and records a scan's failure.
 //
 // Like dbtrace, a span is only opened under an existing span, so a statement
 // with no span in its context (a startup migration) stays out of the traces.
@@ -98,11 +101,14 @@ func (c *tracedConn) Query(ctx context.Context, query string, args ...any) (driv
 func (c *tracedConn) QueryRow(ctx context.Context, query string, args ...any) driver.Row {
 	ctx, st := start(ctx, query)
 	row := c.Conn.QueryRow(ctx, query, args...)
-	if st != nil {
-		st.returned.Store(-1)
-		st.end(row.Err())
+	if st == nil {
+		return row
 	}
-	return row
+	if err := row.Err(); err != nil {
+		st.end(err) // nothing to scan: the statement failed
+		return row
+	}
+	return &tracedRow{Row: row, st: st}
 }
 
 func (c *tracedConn) Select(ctx context.Context, dest any, query string, args ...any) error {
@@ -164,12 +170,12 @@ func start(ctx context.Context, query string) (context.Context, *statement) {
 // sanitized. An `EXECUTE AS <user>` prefix is not the operation: the summary
 // is the statement it runs.
 func Describe(query string) (summary string, attrs []attribute.KeyValue) {
-	op, table := dbtrace.Summarize(stripExecuteAs(query))
+	op, table := dbtrace.ClickHouse.Summarize(stripExecuteAs(query))
 	attrs = []attribute.KeyValue{
 		attribute.String("db.system.name", System),
 		attribute.String("db.system", System),
 	}
-	if text := dbtrace.SanitizeSQL(query); text != "" {
+	if text := dbtrace.ClickHouse.Sanitize(query); text != "" {
 		// db.statement is the pre-1.26 name of db.query.text.
 		attrs = append(attrs, attribute.String("db.query.text", text), attribute.String("db.statement", text))
 	}
@@ -291,6 +297,26 @@ func (r *tracedRows) Close() error {
 	} else {
 		r.st.end(err)
 	}
+	return err
+}
+
+// tracedRow ends the statement's span when the caller scans the row: the
+// conversion into the caller's values is part of the statement, and a value
+// that does not convert is its failure.
+type tracedRow struct {
+	driver.Row
+	st *statement
+}
+
+func (r *tracedRow) Scan(dest ...any) error {
+	err := r.Row.Scan(dest...)
+	r.st.end(err)
+	return err
+}
+
+func (r *tracedRow) ScanStruct(dest any) error {
+	err := r.Row.ScanStruct(dest)
+	r.st.end(err)
 	return err
 }
 

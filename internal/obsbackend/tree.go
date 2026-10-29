@@ -328,8 +328,12 @@ func uninstrumented(s *Span, kids []*Span) (time.Duration, [2]time.Duration) {
 		}
 	}
 	for _, k := range kids {
-		from := min(max(k.Start.Sub(s.Start), 0), dur)
-		to := min(max(from+time.Duration(k.DurationNs), from), dur)
+		// Clip the child's own start and end to the parent independently: a
+		// child that starts before its parent (clock skew across services)
+		// covers only the part of it that overlaps.
+		start := k.Start.Sub(s.Start)
+		from := min(max(start, 0), dur)
+		to := min(max(start+time.Duration(k.DurationNs), from), dur)
 		if from > cursor {
 			note(cursor, from)
 		}

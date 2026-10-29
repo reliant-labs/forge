@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -22,6 +23,8 @@ type fakeConn struct {
 	rows int
 	// rowsErr is what the rows report after the last one.
 	rowsErr error
+	// scanErr is what QueryRow's row reports from Scan and ScanStruct.
+	scanErr error
 	got     []string
 }
 
@@ -45,7 +48,7 @@ func (f *fakeConn) Select(_ context.Context, _ any, q string, _ ...any) error {
 
 func (f *fakeConn) QueryRow(_ context.Context, q string, _ ...any) driver.Row {
 	f.got = append(f.got, q)
-	return fakeRow{err: f.err}
+	return fakeRow{err: f.err, scanErr: f.scanErr}
 }
 
 type fakeRows struct {
@@ -66,10 +69,12 @@ func (r *fakeRows) Err() error   { return r.err }
 
 type fakeRow struct {
 	driver.Row
-	err error
+	err, scanErr error
 }
 
-func (r fakeRow) Err() error { return r.err }
+func (r fakeRow) Err() error           { return r.err }
+func (r fakeRow) Scan(...any) error    { return r.scanErr }
+func (r fakeRow) ScanStruct(any) error { return r.scanErr }
 
 func underSpan(t *testing.T) (context.Context, *tracetest.SpanRecorder) {
 	t.Helper()
@@ -196,7 +201,7 @@ func TestSelectQueryRowAndExecAreSpans(t *testing.T) {
 	ctx, rec := underSpan(t)
 	conn := Wrap(&fakeConn{})
 	_ = conn.Select(ctx, &[]int{}, "SELECT n FROM numbers")
-	_ = conn.QueryRow(ctx, "SELECT count() FROM t").Err()
+	_ = conn.QueryRow(ctx, "SELECT count() FROM t").Scan(new(uint64))
 	_ = conn.Exec(ctx, "ALTER TABLE t DELETE WHERE 1")
 	var names []string
 	for _, s := range rec.Ended() {
@@ -241,5 +246,53 @@ func TestStripExecuteAs(t *testing.T) {
 	}
 	if ErrorType(errors.New("x")) != "_OTHER" {
 		t.Error("an unclassified error is not _OTHER")
+	}
+}
+
+// A QueryRow span lasts until the row is scanned, and a scan that fails is
+// the statement's failure; a statement that failed outright ends at once.
+func TestQueryRowSpanEndsAtScan(t *testing.T) {
+	ctx, rec := underSpan(t)
+	row := Wrap(&fakeConn{}).QueryRow(ctx, "SELECT count() FROM t")
+	if n := len(rec.Ended()); n != 0 {
+		t.Fatalf("the span ended before the row was scanned (%d ended)", n)
+	}
+	if err := row.Scan(new(uint64)); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(rec.Ended()); n != 1 {
+		t.Fatalf("%d spans after Scan, want 1", n)
+	}
+	if s := rec.Ended()[0]; s.Status().Code == codes.Error {
+		t.Errorf("a successful scan is marked failed: %v", s.Status())
+	}
+
+	bad := errors.New("converting UInt64 to *string is unsupported")
+	_ = Wrap(&fakeConn{scanErr: bad}).QueryRow(ctx, "SELECT count() FROM t").ScanStruct(&struct{}{})
+	if s := rec.Ended()[1]; s.Status().Code != codes.Error || s.Status().Description != bad.Error() {
+		t.Errorf("a failed ScanStruct: status = %v, want Error %q", s.Status(), bad)
+	}
+
+	timeout := &clickhouse.Exception{Code: 159, Name: "TIMEOUT_EXCEEDED", Message: "Timeout exceeded"}
+	row = Wrap(&fakeConn{err: timeout}).QueryRow(ctx, "SELECT count() FROM t")
+	if n := len(rec.Ended()); n != 3 {
+		t.Fatalf("a QueryRow that failed outright left its span open (%d ended)", n)
+	}
+	if err := row.Scan(new(uint64)); err != nil {
+		t.Fatal(err) // the fake's row scans nothing; the point is no second end
+	}
+	if n := len(rec.Ended()); n != 3 {
+		t.Errorf("a failed QueryRow's span ended twice: %d ended", n)
+	}
+}
+
+// A ClickHouse literal whose quote is backslash-escaped stays out of both
+// recorded texts: read by Postgres's rules it would end at the escape.
+func TestEscapedLiteralsNeverRecorded(t *testing.T) {
+	_, attrs := Describe(`SELECT a FROM t WHERE b = 'x\'secret' AND c = ‘secret’ -- secret`)
+	for _, a := range attrs {
+		if strings.Contains(a.Value.Emit(), "secret") {
+			t.Errorf("%s = %q carries the literal", a.Key, a.Value.Emit())
+		}
 	}
 }

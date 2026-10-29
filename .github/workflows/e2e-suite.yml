@@ -564,6 +564,12 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+      # Main only: keeps any archive this job had to fetch, so the next run
+      # does not (see embedded-postgres-cache's header).
+      - name: Save the embedded postgres archives (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/embedded-postgres-cache-save
+
   ledger:
     name: coverage ledger
     runs-on: ubuntu-latest

@@ -155,6 +155,101 @@ func TestStartEmbedded_UnreachableRepositoryNamesTheURL(t *testing.T) {
 	}
 }
 
+// TestStartEmbedded_HonorsRetryAfter: Maven Central throttles with 429, and a
+// retry inside the window it names is wasted — forge's main failed four tries
+// spread over 7s. A Retry-After is waited out even when the backoff (1ms
+// here) is shorter.
+func TestStartEmbedded_HonorsRetryAfter(t *testing.T) {
+	var hits atomic.Int32
+	var gap atomic.Int64
+	var last atomic.Int64
+	repo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha256") {
+			http.NotFound(w, r)
+			return
+		}
+		now := time.Now().UnixNano()
+		if prev := last.Swap(now); prev != 0 {
+			gap.Store(now - prev)
+		}
+		if hits.Add(1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "slow down", http.StatusTooManyRequests)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(repo.Close)
+	withFetchPolicy(t, repo.URL, 4)
+
+	_, _ = StartEmbedded(coldConfig(t))
+	if got := hits.Load(); got != 2 {
+		t.Fatalf("archive fetched %d time(s), want the 429 retried once and the 404 taken", got)
+	}
+	if got := time.Duration(gap.Load()); got < time.Second {
+		t.Errorf("retried %s after a 429 that said Retry-After: 1", got)
+	}
+}
+
+// TestStartEmbedded_RetryAfterIsCapped: a Retry-After longer than the policy
+// allows does not park the fetch for that long.
+func TestStartEmbedded_RetryAfterIsCapped(t *testing.T) {
+	repo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "3600")
+		http.Error(w, "slow down", http.StatusTooManyRequests)
+	}))
+	t.Cleanup(repo.Close)
+	withFetchPolicy(t, repo.URL, 2)
+	fetchPolicy.maxRetryAfter = 10 * time.Millisecond
+
+	start := time.Now()
+	_, err := StartEmbedded(coldConfig(t))
+	var fe *FetchError
+	if !errors.As(err, &fe) || fe.Status != http.StatusTooManyRequests || fe.Attempts != 2 {
+		t.Fatalf("want a FetchError for 2 attempts ending in 429, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("a Retry-After of an hour held the fetch for %s; it is capped by maxRetryAfter", elapsed)
+	}
+}
+
+// TestRetryAfter pins both Retry-After forms RFC 9110 allows.
+func TestRetryAfter(t *testing.T) {
+	now := time.Date(2026, 10, 29, 9, 38, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		header string
+		want   time.Duration
+		ok     bool
+	}{
+		{"", 0, false},
+		{"5", 5 * time.Second, true},
+		{" 120 ", 2 * time.Minute, true},
+		{now.Add(30 * time.Second).Format(http.TimeFormat), 30 * time.Second, true},
+		{now.Add(-time.Minute).Format(http.TimeFormat), 0, true},
+		{"-1", 0, false},
+		{"soon", 0, false},
+	} {
+		h := http.Header{}
+		if tc.header != "" {
+			h.Set("Retry-After", tc.header)
+		}
+		got, ok := retryAfter(h, now)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("retryAfter(%q) = %s, %v; want %s, %v", tc.header, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// TestJittered keeps every wait inside [d/2, d).
+func TestJittered(t *testing.T) {
+	const d = 8 * time.Second
+	for range 1000 {
+		if got := jittered(d); got < d/2 || got >= d {
+			t.Fatalf("jittered(%s) = %s, outside [%s, %s)", d, got, d/2, d)
+		}
+	}
+}
+
 // TestRetryableStatus pins which answers are worth waiting for.
 func TestRetryableStatus(t *testing.T) {
 	for code, want := range map[int]bool{

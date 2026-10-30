@@ -421,6 +421,10 @@ type wireWorkloadRollout struct {
 	// `kubectl rollout status` applies.
 	UpdatedReplicas int32 `json:"updatedReplicas,omitempty"`
 	DesiredReplicas int32 `json:"desiredReplicas,omitempty"`
+	// Reason is one human line explaining this row's phase, written by the
+	// control plane. On a ForgeApplied row it is "applied by forge (not
+	// observed by the control plane)".
+	Reason string `json:"reason,omitempty"`
 }
 
 // wireRollout is controlplane.v1.DeployRollout: the single server-computed
@@ -434,9 +438,16 @@ type wireRollout struct {
 	// Unpinned are workloads the promotion does not pin: databases,
 	// third-party images. REPORTED, never gating — a database that cannot
 	// be release-bound must not be able to fail a release.
-	Unpinned   []wireWorkloadRollout `json:"unpinned,omitempty"`
-	StartedAt  *time.Time            `json:"startedAt,omitempty"`
-	FinishedAt *time.Time            `json:"finishedAt,omitempty"`
+	Unpinned []wireWorkloadRollout `json:"unpinned,omitempty"`
+	// ForgeApplied are the runtime slots on clusters FORGE applies (a
+	// self-managed environment the hub does not converge). The control
+	// plane makes no observation of them: each row's phase and verdict are
+	// UNSPECIFIED ("not judged here", which is not UNKNOWN) and its Reason
+	// says so. REPORTED, never gating — Phase is judged over what the
+	// control plane converges. Name is `<cluster>/<workload>/<slot>`.
+	ForgeApplied []wireWorkloadRollout `json:"forgeApplied,omitempty"`
+	StartedAt    *time.Time            `json:"startedAt,omitempty"`
+	FinishedAt   *time.Time            `json:"finishedAt,omitempty"`
 	// 64-bit proto scalar: protojson sends a STRING. See wireInt64.
 	StabilityWindowMS wireInt64 `json:"stabilityWindowMs,omitempty"`
 	// ConvergesPromotions false means nothing will move without a

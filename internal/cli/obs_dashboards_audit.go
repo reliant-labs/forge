@@ -428,7 +428,7 @@ func runObsDashboardsAudit(ctx context.Context, d obsDeps, env string, o obsDash
 		return fail(err)
 	}
 
-	a := &dashAudit{dr: dr, b: b, ctx: ctx, now: rng.To, opts: o, project: project, sem: make(chan struct{}, auditConcurrency), catalog: map[string]*auditCatalog{}}
+	a := &dashAudit{dr: dr, b: b, ctx: ctx, now: rng.To, opts: o, project: project, sem: make(chan struct{}, auditConcurrency), catalog: map[catalogKey]*catalogEntry{}}
 	doc.Dashboard = a.run(picked)
 	if o.panel != "" && doc.panelCount() == 0 {
 		return fail(obsbackend.Wrong("no panel %q in the selected dashboard(s)", o.panel).
@@ -499,7 +499,7 @@ type dashAudit struct {
 
 	mu      sync.Mutex
 	quota   *obsbackend.Failure
-	catalog map[string]*auditCatalog
+	catalog map[catalogKey]*catalogEntry
 	skipped int
 }
 
@@ -786,11 +786,15 @@ func (a *dashAudit) probe(ap *auditPanel, op obsquery.Panel) *auditProbe {
 		from = to.Add(-mr)
 	}
 	pr := &auditProbe{From: from, To: to, Steps: []auditProbeStep{}}
-	if !from.Before(ap.From) {
-		// Nothing wider than the window the panel already ran over.
-		pr.Verdict = verdictNotProbed
-		pr.Steps = append(pr.Steps, auditProbeStep{Name: "wider_window", Error: &auditFailure{Class: "skipped", Message: "the probe window is not wider than the audit window (or than the signal allows); pass --probe-window larger than --since"}})
-		return pr
+	// The probe span is always wider than the panel's window unless the signal's
+	// maximum caps it (a 7d traces dashboard): then nothing older can be read,
+	// but the other dimensions — another env, the panel without its filters, the
+	// metric catalog — are as valid over the window the panel already ran over,
+	// and are probed there.
+	widen := from.Before(ap.From)
+	if !widen {
+		from = ap.From
+		pr.From = from
 	}
 	wide := obsbackend.Narrow{Range: obsbackend.Range{From: from, To: to}}
 	step := func(name string, req obsbackend.PanelReadoutRequest) auditProbeStep {
@@ -819,24 +823,31 @@ func (a *dashAudit) probe(ap *auditPanel, op obsquery.Panel) *auditProbe {
 		}
 	}
 
-	w := step("wider_window", obsbackend.PanelReadoutRequest{Narrow: wide, Panel: op, ProjectID: a.project})
-	pr.Steps = append(pr.Steps, w)
-	switch {
-	case w.Error != nil:
-		pr.Verdict = verdictProbeFailed
-		return pr
-	case w.HasData:
-		pr.Verdict = verdictOutsideWindow
-		return pr
+	if widen {
+		w := step("wider_window", obsbackend.PanelReadoutRequest{Narrow: wide, Panel: op, ProjectID: a.project})
+		pr.Steps = append(pr.Steps, w)
+		switch {
+		case w.Error != nil:
+			pr.Verdict = verdictProbeFailed
+			return pr
+		case w.HasData:
+			pr.Verdict = verdictOutsideWindow
+			return pr
+		}
+	} else {
+		pr.Steps = append(pr.Steps, auditProbeStep{Name: "wider_window", Error: &auditFailure{Class: "skipped", Message: fmt.Sprintf("the panel's window (%s) is already the longest this signal allows; there is nothing older to read", durText(to.Sub(from)))}})
 	}
 	var other, filtered auditProbeStep
+	probed := len(pr.Catalog) > 0
 	if a.project != "" {
 		other = step("all_envs", obsbackend.PanelReadoutRequest{Narrow: wide, Panel: op, AllEnvs: true, ProjectID: a.project})
 		pr.Steps = append(pr.Steps, other)
+		probed = true
 	}
 	if bare, changed := withoutFilters(op); changed {
 		filtered = step("without_filters", obsbackend.PanelReadoutRequest{Narrow: wide, Panel: bare, ProjectID: a.project})
 		pr.Steps = append(pr.Steps, filtered)
+		probed = true
 	}
 	switch {
 	case other.HasData:
@@ -848,6 +859,9 @@ func (a *dashAudit) probe(ap *auditPanel, op obsquery.Panel) *auditProbe {
 		pr.Verdict = verdictProbeFailed
 	case catalogMissing:
 		pr.Verdict = verdictMetricNever
+	case !widen && !probed:
+		// Not one dimension could be checked.
+		pr.Verdict = verdictNotProbed
 	default:
 		pr.Verdict = verdictNoneAnywhere
 	}
@@ -871,21 +885,49 @@ func withoutFilters(op obsquery.Panel) (obsquery.Panel, bool) {
 	return bare, changed
 }
 
-// metricCatalog looks one metric up in the env's catalog over the probe window.
-// One lookup per metric per run.
+// metricCatalog looks one metric up in the env's catalog over the probe range.
+// One lookup per metric and range per run: the answer depends on the range (a
+// 7d and a 28d probe can disagree), so that is the key, and concurrent panels
+// asking the same question share one read. The declared type is the panel's
+// own, never cached.
 func (a *dashAudit) metricCatalog(name string, wide obsbackend.Narrow, op obsquery.Panel) auditCatalog {
+	key := catalogKey{metric: name, from: wide.Range.From.UnixNano(), to: wide.Range.To.UnixNano()}
 	a.mu.Lock()
-	if c, ok := a.catalog[name]; ok {
-		a.mu.Unlock()
-		return *c
+	e, ok := a.catalog[key]
+	if !ok {
+		e = &catalogEntry{done: make(chan struct{})}
+		a.catalog[key] = e
 	}
 	a.mu.Unlock()
-	c := auditCatalog{Metric: name}
+	if ok {
+		<-e.done
+	} else {
+		e.c = a.lookupMetric(name, wide)
+		close(e.done)
+	}
+	c := e.c
 	for _, s := range op.Series {
 		if s.Field == name && s.MetricType != "" {
 			c.DeclaredType = s.MetricType
 		}
 	}
+	return c
+}
+
+// catalogKey is one catalog question: a metric over a range.
+type catalogKey struct {
+	metric   string
+	from, to int64
+}
+
+// catalogEntry is a catalog answer, ready once done is closed.
+type catalogEntry struct {
+	done chan struct{}
+	c    auditCatalog
+}
+
+func (a *dashAudit) lookupMetric(name string, wide obsbackend.Narrow) auditCatalog {
+	c := auditCatalog{Metric: name}
 	var res obsbackend.MetricsListResult
 	_, err := a.guarded(func() error {
 		var err error
@@ -901,9 +943,6 @@ func (a *dashAudit) metricCatalog(name string, wide obsbackend.Narrow, op obsque
 			break
 		}
 	}
-	a.mu.Lock()
-	a.catalog[name] = &c
-	a.mu.Unlock()
 	return c
 }
 
@@ -971,9 +1010,12 @@ func emptyCause(ap *auditPanel, pr *auditProbe, window, probeWindow time.Duratio
 	case verdictMetricNever:
 		return fmt.Sprintf("no data in any env over %s, and the metric catalog has no such metric (%s): a misspelt name, a metric the collector drops, or an emitter that has not shipped", span, strings.Join(missingMetrics(pr), ", "))
 	case verdictNoneAnywhere:
+		if probeCapped(pr) {
+			span += " (the longest window this signal allows: the probe could not look wider)"
+		}
 		return fmt.Sprintf("no data in any env over %s, and the panel's own filters are not the cause: the emitter is not shipping this signal, the name it reads is wrong, or its rows carry no env id (an env-scoped read cannot see those; query the table directly with `forge obs query`). A metric that only exists once something fails reads this way too", span)
 	case verdictNotProbed:
-		return "nothing came back, and the probe could not look wider: its window is not wider than the audit window or than the signal allows; raise --probe-window above --since"
+		return "nothing came back, and the probe had nothing to check: the panel's window is already the longest this signal allows, and with no project, filters or metric there is no other scope to read"
 	case verdictProbeFailed:
 		for _, s := range pr.Steps {
 			if s.Error != nil {
@@ -982,6 +1024,17 @@ func emptyCause(ap *auditPanel, pr *auditProbe, window, probeWindow time.Duratio
 		}
 	}
 	return "nothing came back"
+}
+
+// probeCapped reports whether the probe could not look wider than the panel's
+// own window, the signal's maximum capping it.
+func probeCapped(pr *auditProbe) bool {
+	for _, s := range pr.Steps {
+		if s.Name == "wider_window" && s.Error != nil && s.Error.Class == "skipped" {
+			return true
+		}
+	}
+	return false
 }
 
 func missingMetrics(pr *auditProbe) []string {

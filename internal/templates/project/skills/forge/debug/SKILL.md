@@ -220,7 +220,9 @@ Read each panel's `status`, `reason` and `probable_cause`, not just the status:
 An empty panel is probed over `--probe-window` (default 7d): the same panel in
 every env of the project, and without its `where` filters, plus a metric catalog
 lookup. The verdict separates **no data** from **data outside the window, scope
-or filter**:
+or filter**. A panel whose window is already the longest its signal allows (a 7d
+traces dashboard) cannot look further back; the env, filter and catalog probes
+still run over its own window, and the skipped step says why:
 
 - `data_outside_window`: the data exists; the window is shorter than its cadence
   or the emitter went quiet. Widen `--since`.
@@ -231,8 +233,9 @@ or filter**:
 - `metric_never_seen` / `no_data_anywhere`: the emitter is not shipping it, or the
   name is wrong. `forge obs metrics describe <env> <metric> --since 168h`, then
   `forge obs query` for the table itself.
-- `probe_failed` / `not_probed`: the follow-up could not look; this is **not** "no
-  data". Fix the cause in `probe.steps[].error`, or raise `--probe-window`.
+- `probe_failed` / `not_probed`: the follow-up could not look (a read failed, or
+  nothing was left to check); this is **not** "no data". Fix the cause in
+  `probe.steps[].error`.
 
 Failure classes are never "no data": `auth` (HTTP 403 or a missing scope such as
 `obs:read`: a credential problem for an org admin, not an outage), `quota` (the

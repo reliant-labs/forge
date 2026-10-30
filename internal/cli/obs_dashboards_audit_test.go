@@ -30,10 +30,12 @@ type auditCP struct {
 	specs      map[string]string
 	// panel answers QueryPanel for (panel id, shape of the request).
 	panel func(q auditQuery) (string, error)
-	// metrics is the ListMetrics reply.
-	metrics string
-	errs    map[string]error
-	calls   []auditQuery
+	// metrics is the ListMetrics reply; metricsFor, when set, answers by the
+	// width of the requested window instead.
+	metrics    string
+	metricsFor func(window time.Duration) string
+	errs       map[string]error
+	calls      []auditQuery
 }
 
 type auditQuery struct {
@@ -69,6 +71,15 @@ func (c *auditCP) Call(_ context.Context, procedure string, req, out any) error 
 		}
 	case cpListMetrics:
 		reply = c.metrics
+		if c.metricsFor != nil {
+			scope, _ := in["scope"].(map[string]any)
+			tr, _ := scope["timeRange"].(map[string]any)
+			start, _ := time.Parse(time.RFC3339, tr["start"].(string))
+			end, _ := time.Parse(time.RFC3339, tr["end"].(string))
+			reply = c.metricsFor(end.Sub(start))
+			c.calls = append(c.calls, auditQuery{Proc: procedure, Window: end.Sub(start)})
+			return json.Unmarshal([]byte(reply), out)
+		}
 	case cpQueryPanel:
 		q := auditQuery{Proc: procedure}
 		panel, _ := in["panel"].(map[string]any)
@@ -191,8 +202,9 @@ type auditDocT struct {
 					HasData bool `json:"has_data"`
 				}
 				Catalog []struct {
-					Metric string
-					Seen   bool
+					Metric       string
+					Seen         bool
+					DeclaredType string `json:"declared_type"`
 				}
 			}
 		}
@@ -645,17 +657,21 @@ func TestAuditFailureClasses(t *testing.T) {
 }
 
 // The probe is never wider than the signal allows, and never narrower than the
-// window it follows.
+// window it follows: at the signal's maximum it skips only the wider read, and
+// says so, while the env and filter probes still run.
 func TestAuditProbeIsBoundedByTheWindow(t *testing.T) {
 	cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": auditSpec(linePanel("p"))},
 		panel: func(auditQuery) (string, error) { return respEmpty, nil }}
 	out, _, _ := auditRun(t, cp, "--since", "168h", "--probe-window", "1h")
 	p := decodeAudit(t, out).Dashboards[0].Panels[0]
-	if p.Status != "empty" || p.Probe == nil || p.Probe.Steps[0].HasData {
-		t.Errorf("%+v", p)
+	if p.Status != "empty" || p.Probe == nil || p.Probe.Steps[0].Name != "wider_window" || p.Probe.Steps[0].HasData {
+		t.Fatalf("%+v", p)
 	}
-	if p.Probe.Verdict != "not_probed" || !strings.Contains(out, "not wider than the audit window") {
-		t.Errorf("a probe that cannot be wider says so:\n%s", out)
+	if p.Probe.Verdict != "no_data_anywhere" || !strings.Contains(out, "already the longest this signal allows") {
+		t.Errorf("a probe at the signal's maximum says it could not look wider, and still rules the env out:\n%s", out)
+	}
+	if strings.Contains(p.ProbableCause, "--probe-window") {
+		t.Errorf("recommends --probe-window, which cannot exceed the signal's maximum: %s", p.ProbableCause)
 	}
 }
 
@@ -1007,7 +1023,9 @@ func TestAuditProbeIsWiderThanThePanelsOwnWindow(t *testing.T) {
 }
 
 // A traces panel cannot be read past 7d, so a 7d dashboard has nothing wider to
-// probe: the verdict says so instead of claiming there is no data.
+// probe: no wider read is sent, the verdict says the probe could not look wider
+// instead of claiming there is no data older than the window, and the env probe
+// still runs over the panel's own 7d.
 func TestAuditProbeCannotExceedTheSignalsMaximum(t *testing.T) {
 	cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": specWith("7d", linePanel("p"))},
 		panel: func(auditQuery) (string, error) { return respEmpty, nil }}
@@ -1016,8 +1034,94 @@ func TestAuditProbeCannotExceedTheSignalsMaximum(t *testing.T) {
 	if p.Status != "empty" || !strings.Contains(p.ProbableCause, "could not look wider") {
 		t.Errorf("%+v", p)
 	}
-	if w := cp.widths("p"); len(w) != 1 {
-		t.Errorf("a probe no wider than the window is not sent: %v", w)
+	week := 7 * 24 * time.Hour
+	if w := cp.widths("p"); len(w) != 2 || w[0] != week || w[1] != week {
+		t.Errorf("want the run and the all-env probe, both over 7d: %v", w)
+	}
+	if n := cp.count(func(q auditQuery) bool { return q.PanelID == "p" && q.AllEnvs }); n != 1 {
+		t.Errorf("all-env probes = %d, want 1", n)
+	}
+}
+
+// At the signal's maximum the other dimensions are still diagnosed: data in
+// another env, or excluded by the panel's filters, on a 7d traces dashboard.
+func TestAuditProbeAtTheSignalsMaximumStillFindsOtherEnvAndFilteredData(t *testing.T) {
+	cases := []struct {
+		name, panel, want string
+		answer            func(q auditQuery) bool
+	}{
+		{"another env", linePanel("p"), "data_in_other_env", func(q auditQuery) bool { return q.AllEnvs }},
+		{"excluded by filters", filteredPanel("p"), "data_excluded_by_filters", func(q auditQuery) bool { return q.Bare }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": specWith("7d", tc.panel)},
+				panel: func(q auditQuery) (string, error) {
+					if tc.answer(q) {
+						return respData, nil
+					}
+					return respEmpty, nil
+				}}
+			out, _, _ := auditRun(t, cp)
+			p := decodeAudit(t, out).Dashboards[0].Panels[0]
+			if p.Status != "empty" || p.Probe == nil || p.Probe.Verdict != tc.want || p.Reason != tc.want {
+				t.Fatalf("want %s:\n%s", tc.want, out)
+			}
+			if strings.Contains(p.ProbableCause, "--probe-window") {
+				t.Errorf("recommends --probe-window: %s", p.ProbableCause)
+			}
+			for _, w := range cp.widths("p") {
+				if w != 7*24*time.Hour {
+					t.Errorf("a probe read over %v, past the signal's 7d", w)
+				}
+			}
+		})
+	}
+}
+
+// The catalog answer depends on the range it was asked over, so two dashboards
+// probing one metric over different ranges each get their own answer, and each
+// panel reports its own declared type. Panels asking the same question share
+// one read.
+func TestAuditCatalogIsPerRangeAndDeclaredTypeIsPerPanel(t *testing.T) {
+	typed := func(id, typ string) string {
+		return fmt.Sprintf(`{"id":%q,"title":%q,"kind":"line","signal":"metrics","series":[{"label":"n","agg":"rate","field":"jobs.runs","metricType":%q}]}`, id, id, typ)
+	}
+	index := `{"dashboards":[
+	 {"ref":{"source":"DASHBOARD_SOURCE_GENERATED","key":"d1"},"title":"A","source":"DASHBOARD_SOURCE_GENERATED"},
+	 {"ref":{"source":"DASHBOARD_SOURCE_GENERATED","key":"d2"},"title":"B","source":"DASHBOARD_SOURCE_GENERATED"}]}`
+	week := 7 * 24 * time.Hour
+	cp := &auditCP{dashboards: index, specs: map[string]string{
+		// 1h windows: probed over 7d. 7d window: probed over 28d.
+		"d1": specWith("", typed("hourly-a", "sum"), typed("hourly-b", "sum")),
+		"d2": specWith("7d", typed("weekly", "gauge"))},
+		// The metric was last seen more than a week ago.
+		metricsFor: func(w time.Duration) string {
+			if w > week {
+				return `{"metrics":[{"name":"jobs.runs","type":"METRIC_TYPE_SUM","seen":true,"queryable":true}]}`
+			}
+			return `{"metrics":[]}`
+		},
+		panel: func(auditQuery) (string, error) { return respEmpty, nil }}
+	out, _, _ := auditRun(t, cp)
+	doc := decodeAudit(t, out)
+	verdicts, declared := map[string]string{}, map[string]string{}
+	for _, d := range doc.Dashboards {
+		for _, p := range d.Panels {
+			if p.Probe == nil || len(p.Probe.Catalog) != 1 {
+				t.Fatalf("panel %s: no catalog lookup\n%s", p.ID, out)
+			}
+			verdicts[p.ID], declared[p.ID] = p.Probe.Verdict, p.Probe.Catalog[0].DeclaredType
+		}
+	}
+	if verdicts["hourly-a"] != "metric_never_seen" || verdicts["hourly-b"] != "metric_never_seen" || verdicts["weekly"] != "no_data_anywhere" {
+		t.Errorf("verdicts %v: each panel judged by the catalog over its own probe range", verdicts)
+	}
+	if declared["hourly-a"] != "sum" || declared["weekly"] != "gauge" {
+		t.Errorf("declared types %v: each panel's own", declared)
+	}
+	if n := cp.count(func(q auditQuery) bool { return q.Proc == cpListMetrics }); n != 2 {
+		t.Errorf("ListMetrics calls = %d, want 2 (one per metric and range)", n)
 	}
 }
 

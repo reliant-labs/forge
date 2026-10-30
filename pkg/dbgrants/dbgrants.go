@@ -25,7 +25,22 @@
 // the role holds on tables and sequences, then grants exactly the declared
 // columns, in one transaction. A delta would leave a table dropped from the
 // declaration, or a column that became secret, readable until someone noticed.
-// Revoking a table's privileges also revokes its column-level ones.
+//
+// "Everything the role holds" is read from the catalog, not from the
+// declaration, so a privilege the declaration never named converges too:
+//
+//   - schema, table, view, sequence and routine privileges in every declared
+//     schema, and column privileges column by column (a table-level REVOKE
+//     cascades to them in Postgres, but the script does not rely on that);
+//   - ALTER DEFAULT PRIVILEGES entries that name the role, in any schema, which
+//     would otherwise hand it every object created later;
+//   - a leftover verification: a privilege the migrating role cannot revoke (it
+//     was granted by another role, or sits on an object the migrator does not
+//     own) fails the run instead of standing behind a converged-looking script.
+//
+// What a per-role script cannot touch is named in the package tests and the
+// PR that introduced them: privileges PUBLIC holds (default EXECUTE on
+// functions), role memberships, and database-level privileges.
 //
 // What the role is never given: INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES,
 // TRIGGER, any sequence privilege, any view (a view can expose a secret column
@@ -161,9 +176,11 @@ func RenderFor(role string, tables []Table) (string, error) {
 	}
 	b.WriteString("-- The " + label + " role's grants: a convergence, not a delta. See pkg/dbgrants.\n")
 	b.WriteString("DO " + dollarTag + "\n")
-	b.WriteString("DECLARE\n  r record;\n  readable text;\nBEGIN\n")
+	b.WriteString("DECLARE\n  r record;\n  readable text;\n  leftover text;\n  declared text[] := ARRAY[]::text[];\n  role_oid oid;\nBEGIN\n")
 	fmt.Fprintf(&b, "  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %s) THEN\n", quoteLiteral(role))
 	fmt.Fprintf(&b, "    RAISE NOTICE %s;\n    RETURN;\n  END IF;\n\n", quoteLiteral("role "+role+" does not exist: "+label+" grants not applied"))
+
+	fmt.Fprintf(&b, "  SELECT oid INTO role_oid FROM pg_roles WHERE rolname = %s;\n\n", quoteLiteral(role))
 
 	// Everything the role holds, in every declared schema, goes first. A column
 	// that became secret, a table that was dropped from the declaration and a
@@ -182,10 +199,96 @@ func RenderFor(role string, tables []Table) (string, error) {
 		b.WriteString("    (NULL::text)\n")
 	}
 	b.WriteString("  ) AS s(nspname) WHERE s.nspname IS NOT NULL AND EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = s.nspname) LOOP\n")
+	b.WriteString("    declared := declared || r.schema;\n")
+	fmt.Fprintf(&b, "    EXECUTE format('REVOKE ALL ON SCHEMA %%I FROM %%I', r.schema, %s);\n", quoteLiteral(role))
 	fmt.Fprintf(&b, "    EXECUTE format('GRANT USAGE ON SCHEMA %%I TO %%I', r.schema, %s);\n", quoteLiteral(role))
 	fmt.Fprintf(&b, "    EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA %%I FROM %%I', r.schema, %s);\n", quoteLiteral(role))
 	fmt.Fprintf(&b, "    EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA %%I FROM %%I', r.schema, %s);\n", quoteLiteral(role))
 	b.WriteString("  END LOOP;\n\n")
+
+	// Routines are revoked from the catalog's own list rather than with ALL
+	// FUNCTIONS IN SCHEMA, which also visits functions the migrating role does
+	// not own and holds nothing on (an extension's), and fails on those.
+	b.WriteString("  -- routines: every function, procedure and aggregate the role was granted EXECUTE on\n")
+	b.WriteString("  FOR r IN SELECT n.nspname AS schema, p.oid::regprocedure::text AS proc, p.prokind AS kind\n")
+	b.WriteString("             FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace\n")
+	b.WriteString("            WHERE n.nspname = ANY (declared) AND p.proacl IS NOT NULL\n")
+	b.WriteString("              AND EXISTS (SELECT 1 FROM aclexplode(p.proacl) x WHERE x.grantee = role_oid)\n")
+	b.WriteString("            ORDER BY 1, 2 LOOP\n")
+	fmt.Fprintf(&b, "    EXECUTE format('REVOKE ALL ON %%s %%s FROM %%I', CASE r.kind WHEN 'p' THEN 'PROCEDURE' ELSE 'FUNCTION' END, r.proc, %s);\n", quoteLiteral(role))
+	b.WriteString("  END LOOP;\n\n")
+
+	// A table-level REVOKE already removes the column privileges recorded on
+	// the table's columns (Postgres documents it), so this sweep is not what
+	// makes the columns converge. It makes that independent of the cascade: it
+	// reads the privileges the catalog actually records, column by column, and
+	// revokes each one, so the result cannot depend on which tables the
+	// statement above reached or on how a server version cascades.
+	b.WriteString("  -- columns: every column privilege the catalog records for the role, in the declared schemas\n")
+	b.WriteString("  FOR r IN SELECT n.nspname AS schema, c.relname AS tbl, a.attname AS col\n")
+	b.WriteString("             FROM pg_attribute a\n")
+	b.WriteString("             JOIN pg_class c ON c.oid = a.attrelid\n")
+	b.WriteString("             JOIN pg_namespace n ON n.oid = c.relnamespace\n")
+	b.WriteString("            WHERE a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL\n")
+	b.WriteString("              AND n.nspname = ANY (declared)\n")
+	b.WriteString("              AND EXISTS (SELECT 1 FROM aclexplode(a.attacl) x WHERE x.grantee = role_oid)\n")
+	b.WriteString("            ORDER BY 1, 2, 3 LOOP\n")
+	fmt.Fprintf(&b, "    EXECUTE format('REVOKE ALL (%%I) ON TABLE %%I.%%I FROM %%I', r.col, r.schema, r.tbl, %s);\n", quoteLiteral(role))
+	b.WriteString("  END LOOP;\n\n")
+
+	// Default privileges name the role for objects that do not exist yet, so a
+	// table created after this run would be readable the moment it appears.
+	// They are per creating role and per schema (or global), and none of the
+	// statements above touches them. Every entry that names the role goes, in
+	// any schema, because a default is not scoped to the declared schemas.
+	// Changing another role's defaults needs membership in that role; when the
+	// migrating role has none the run fails rather than leaving the boundary
+	// open.
+	b.WriteString("  -- default privileges: what the role would be given on objects created later\n")
+	b.WriteString("  FOR r IN SELECT pg_get_userbyid(d.defaclrole) AS creator, n.nspname AS schema, d.defaclobjtype AS kind\n")
+	b.WriteString("             FROM pg_default_acl d\n")
+	b.WriteString("             LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace\n")
+	b.WriteString("            WHERE EXISTS (SELECT 1 FROM aclexplode(d.defaclacl) x WHERE x.grantee = role_oid)\n")
+	b.WriteString("            ORDER BY 1, 2, 3 LOOP\n")
+	b.WriteString("    BEGIN\n")
+	fmt.Fprintf(&b, "      EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %%I %%s REVOKE ALL ON %%s FROM %%I',\n")
+	b.WriteString("                     r.creator,\n")
+	b.WriteString("                     CASE WHEN r.schema IS NULL THEN '' ELSE format('IN SCHEMA %I', r.schema) END,\n")
+	b.WriteString("                     CASE r.kind WHEN 'r' THEN 'TABLES' WHEN 'S' THEN 'SEQUENCES' WHEN 'f' THEN 'FUNCTIONS' WHEN 'T' THEN 'TYPES' WHEN 'n' THEN 'SCHEMAS' WHEN 'L' THEN 'LARGE OBJECTS' END,\n")
+	fmt.Fprintf(&b, "                     %s);\n", quoteLiteral(role))
+	b.WriteString("    EXCEPTION WHEN insufficient_privilege THEN\n")
+	fmt.Fprintf(&b, "      RAISE EXCEPTION 'cannot revoke the default privileges of role %%s (schema %%) that name %%: the migrating role is not a member of it', r.creator, coalesce(r.schema, '<all>'), %s\n", quoteLiteral(role))
+	b.WriteString("        USING ERRCODE = 'insufficient_privilege';\n")
+	b.WriteString("    END;\n")
+	b.WriteString("  END LOOP;\n\n")
+
+	// A REVOKE issued by the migrating role removes only the privileges
+	// recorded as granted by it (or by a role it is a member of). One recorded
+	// under another grantor (a role holding a grant option), or on an object
+	// the migrating role does not own, survives with at most a WARNING. The
+	// boundary must not look converged while such a privilege stands, so what
+	// is left fails the run, naming the object.
+	b.WriteString("  -- verify: nothing the role was given before this run may still stand\n")
+	b.WriteString("  SELECT string_agg(o.what, ', ' ORDER BY o.what) INTO leftover FROM (\n")
+	b.WriteString("    SELECT format('%s.%s', n.nspname, c.relname) AS what\n")
+	b.WriteString("      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace\n")
+	b.WriteString("     WHERE n.nspname = ANY (declared) AND c.relkind IN ('r','p','v','m','f','S') AND c.relacl IS NOT NULL\n")
+	b.WriteString("       AND EXISTS (SELECT 1 FROM aclexplode(c.relacl) x WHERE x.grantee = role_oid)\n")
+	b.WriteString("    UNION ALL\n")
+	b.WriteString("    SELECT format('%s.%s.%s', n.nspname, c.relname, a.attname)\n")
+	b.WriteString("      FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace\n")
+	b.WriteString("     WHERE n.nspname = ANY (declared) AND a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL\n")
+	b.WriteString("       AND EXISTS (SELECT 1 FROM aclexplode(a.attacl) x WHERE x.grantee = role_oid)\n")
+	b.WriteString("    UNION ALL\n")
+	b.WriteString("    SELECT format('%s.%s()', n.nspname, p.proname)\n")
+	b.WriteString("      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace\n")
+	b.WriteString("     WHERE n.nspname = ANY (declared) AND p.proacl IS NOT NULL\n")
+	b.WriteString("       AND EXISTS (SELECT 1 FROM aclexplode(p.proacl) x WHERE x.grantee = role_oid)\n")
+	b.WriteString("  ) o;\n")
+	b.WriteString("  IF leftover IS NOT NULL THEN\n")
+	fmt.Fprintf(&b, "    RAISE EXCEPTION 'privileges of role %%s could not be revoked (granted by another role, or on an object the migrating role does not own): %%', %s, leftover\n", quoteLiteral(role))
+	b.WriteString("      USING ERRCODE = 'insufficient_privilege';\n")
+	b.WriteString("  END IF;\n\n")
 
 	b.WriteString("  -- tables: the columns the role may read. A forge:secret column, and a credential-shaped one nobody decided, is not listed.\n")
 	b.WriteString("  FOR r IN SELECT g.* FROM (VALUES\n")

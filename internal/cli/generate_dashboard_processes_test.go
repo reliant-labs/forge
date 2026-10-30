@@ -3,12 +3,13 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/reliant-labs/forge/internal/naming"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/naming"
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"

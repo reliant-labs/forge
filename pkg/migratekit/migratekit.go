@@ -109,6 +109,9 @@ type Options struct {
 	// DSN is the database URL. Passed through NormalizeDSN, so callers
 	// hand over the DATABASE_URL they already have.
 	DSN string
+	// Run says how the run guards the locks and the time its migrations take
+	// (locktimeout.go). The zero value is the defaults.
+	Run RunOptions
 }
 
 // Migrator is an open migration session — ONE Postgres session, from Open to
@@ -127,6 +130,9 @@ type Migrator struct {
 	db *sql.DB
 	// source is what this binary embeds, parsed once at Open.
 	source sourceSet
+	// run is the limits every statement the run issues is guarded by
+	// (locktimeout.go): its migrations, through bindMigrate, and its grants.
+	run RunOptions
 	// grants is the read-only grants script this binary embeds beside its
 	// migrations, "" when it embeds none (grants.go).
 	grants string
@@ -180,7 +186,7 @@ func Open(opts Options) (*Migrator, error) {
 	// The cap states the invariant, so a second session is a deadlock in
 	// every test rather than a surprise behind a production pooler.
 	db.SetMaxOpenConns(1)
-	mg, err := openSession(context.Background(), db, src, embedded, cfg)
+	mg, err := openSession(context.Background(), db, src, embedded, opts.Run, cfg)
 	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("open migrator: %w", err)
@@ -195,7 +201,7 @@ func Open(opts Options) (*Migrator, error) {
 // concurrent run building its own would otherwise race. See runlock.go. On
 // error it closes the connection and src (whose handle golang-migrate never
 // took ownership of); db stays the caller's.
-func openSession(ctx context.Context, db *sql.DB, src source.Driver, embedded sourceSet, cfg *postgres.Config) (*Migrator, error) {
+func openSession(ctx context.Context, db *sql.DB, src source.Driver, embedded sourceSet, run RunOptions, cfg *postgres.Config) (*Migrator, error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		_ = src.Close()
@@ -203,7 +209,7 @@ func openSession(ctx context.Context, db *sql.DB, src source.Driver, embedded so
 	}
 	var m *migrate.Migrate
 	err = withRunLock(ctx, conn, func() (err error) {
-		m, err = bindMigrate(ctx, conn, src, cfg)
+		m, err = bindMigrate(ctx, conn, src, embedded, cfg, run)
 		return err
 	})
 	if err != nil {
@@ -211,7 +217,7 @@ func openSession(ctx context.Context, db *sql.DB, src source.Driver, embedded so
 		_ = conn.Close()
 		return nil, err
 	}
-	return &Migrator{m: m, conn: conn, source: embedded}, nil
+	return &Migrator{m: m, conn: conn, source: embedded, run: run}, nil
 }
 
 // sqlDSN turns the DSN a caller handed Open into one database/sql's pgx
@@ -427,7 +433,7 @@ func (mg *Migrator) up(ctx context.Context) (res Result, err error) {
 	if err := recordApplied(ctx, mg.conn, mg.source, res.Before, res.After); err != nil {
 		return res, err
 	}
-	res.Grants, err = applyGrants(ctx, mg.conn, mg.grants)
+	res.Grants, err = applyGrants(ctx, mg.conn, mg.grants, mg.run)
 	return res, err
 }
 

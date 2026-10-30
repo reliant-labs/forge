@@ -99,3 +99,28 @@ func TestExpandTierDeclarationsStampsTheReleaseOnPodTemplates(t *testing.T) {
 	}
 	t.Fatal("no Deployment rendered")
 }
+
+func databaseRecord(name, namespace string) map[string]any {
+	return map[string]any{
+		"apiVersion": "forge.dev/v1alpha1",
+		"kind":       "ManagedDatabase",
+		"metadata": map[string]any{"name": name, "namespace": namespace, "labels": map[string]any{
+			deploy.LabelName: name, deploy.LabelManagedBy: "forge", deploy.LabelPartOf: "shop",
+			ClusterRoutingLabel: "gke-prod",
+		}},
+		"spec": map[string]any{},
+	}
+}
+
+// A Workload and a ManagedDatabase of one name in one namespace would run as
+// one ServiceAccount (deploy.CheckDatabaseIdentityNames). The same name in
+// another namespace is a different ServiceAccount, and is fine.
+func TestExpandTierDeclarationsRefusesAWorkloadNamedLikeADatabase(t *testing.T) {
+	_, err := expandTierDeclarations([]any{workloadRecord("orders", ""), databaseRecord("orders", "shop-prod")}, nil, nil)
+	if err == nil {
+		t.Fatal("expanded workload \"orders\" beside database \"orders\" in shop-prod: the workload would run as the database's ServiceAccount")
+	}
+	if _, err := expandTierDeclarations([]any{workloadRecord("orders", ""), databaseRecord("orders", "shop-data")}, nil, nil); err != nil {
+		t.Errorf("a database in another namespace was refused: %v", err)
+	}
+}

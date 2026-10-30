@@ -150,11 +150,12 @@ type WorkloadSpec struct {
 	// +optional
 	Resources Resources `json:"resources,omitempty"`
 
-	// Env is the container environment.
+	// Env is the container environment. There is no portable entry-count limit:
+	// exec limits apply to the resolved environment and arguments in bytes,
+	// including values supplied by secret references at runtime.
 	// +optional
 	// +listType=map
 	// +listMapKey=name
-	// +kubebuilder:validation:MaxItems=256
 	Env []EnvVar `json:"env,omitempty"`
 
 	// Ports are the ports the container listens on. A service's ports are

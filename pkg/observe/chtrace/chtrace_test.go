@@ -2,10 +2,15 @@ package chtrace
 
 import (
 	"context"
+	sqldriver "database/sql/driver"
 	"errors"
+	"fmt"
+	"net"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -198,6 +203,114 @@ func TestFailuresAreRecordedOnTheSpan(t *testing.T) {
 		if !exception {
 			t.Errorf("%s: no exception event", s.Name())
 		}
+	}
+}
+
+// expiringConn is a driver that, like clickhouse-go under load, waits for the
+// statement's context to end and then returns its own error rather than
+// ctx.Err(): the socket read that timed out, or the connection the cancel broke.
+type expiringConn struct {
+	driver.Conn
+	err error
+}
+
+func (c expiringConn) Exec(ctx context.Context, _ string, _ ...any) error {
+	<-ctx.Done()
+	return c.err
+}
+
+func (c expiringConn) Query(ctx context.Context, _ string, _ ...any) (driver.Rows, error) {
+	<-ctx.Done()
+	return nil, c.err
+}
+
+func (c expiringConn) QueryRow(ctx context.Context, _ string, _ ...any) driver.Row {
+	<-ctx.Done()
+	return fakeRow{scanErr: c.err}
+}
+
+// pastDeadline is a context whose deadline has passed but whose timer has not
+// yet marked it done: the instant clickhouse-go's socket deadline (set to
+// ctx's) fires first, so the read fails while ctx.Err() is still nil.
+type pastDeadline struct{ context.Context }
+
+func (pastDeadline) Deadline() (time.Time, bool) { return time.Now().Add(-time.Millisecond), true }
+
+// clickhouse-go's text around a socket read that hit ctx's deadline.
+func readTimeout() error {
+	return fmt.Errorf("query processing: failed to read packet from 127.0.0.1:9000 (conn_id=1): %w",
+		&net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded})
+}
+
+// A statement that ran out of its context's time is context_deadline_exceeded
+// however the driver spelled the failure — an i/o timeout, a broken
+// connection, an opaque string — and its status says the deadline ended it.
+// A network timeout with the context still live is the driver's own: timeout.
+func TestAnExpiredStatementIsItsContextsVerdict(t *testing.T) {
+	parent, rec := underSpan(t)
+	for _, tc := range []struct {
+		name    string
+		ctx     func() (context.Context, context.CancelFunc)
+		err     error
+		errType string
+		status  string
+	}{
+		{"opaque error after the deadline", deadline(parent), sqldriver.ErrBadConn, "context_deadline_exceeded", "deadline exceeded"},
+		{"read timeout after the deadline", deadline(parent), readTimeout(), "context_deadline_exceeded", "deadline exceeded"},
+		{"read timeout before ctx's timer fired", func() (context.Context, context.CancelFunc) {
+			return pastDeadline{parent}, func() {} // never done: ctx.Err() stays nil
+		}, readTimeout(), "context_deadline_exceeded", "deadline exceeded"},
+		{"opaque error after a cancel", func() (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(parent)
+			cancel()
+			return ctx, cancel
+		}, errors.New("EOF"), "context_canceled", "canceled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := len(rec.Ended())
+			ctx, cancel := tc.ctx()
+			defer cancel()
+			conn := Wrap(expiringConn{err: tc.err})
+			if ctx.Done() == nil {
+				conn = Wrap(&fakeConn{err: tc.err}) // never done: the driver returns at once
+			}
+			_ = conn.Exec(ctx, "SELECT sleepEachRow(1) FROM numbers(5)")
+			_, _ = conn.Query(ctx, "SELECT sleepEachRow(1) FROM numbers(5)")
+			_ = conn.QueryRow(ctx, "SELECT sum(sleepEachRow(1)) FROM numbers(5)").Scan(new(uint64))
+			ended := rec.Ended()[before:]
+			if len(ended) != 3 {
+				t.Fatalf("%d spans, want 3", len(ended))
+			}
+			for _, s := range ended {
+				if got := attrs(s)["error.type"].AsString(); got != tc.errType {
+					t.Errorf("%s: error.type = %q, want %q", s.Name(), got, tc.errType)
+				}
+				if d := s.Status().Description; s.Status().Code != codes.Error ||
+					!strings.Contains(d, tc.err.Error()) || !strings.Contains(d, tc.status) {
+					t.Errorf("%s: status = %v, want Error with the driver's message and %q", s.Name(), s.Status(), tc.status)
+				}
+			}
+		})
+	}
+
+	// The context is still live: the driver's own read timeout is not the
+	// caller's deadline, and a ClickHouse exception is the server's verdict
+	// even when the context expired by the time the rows were closed.
+	if got := ErrorTypeContext(parent, readTimeout()); got != "timeout" {
+		t.Errorf("a read timeout under a live context = %q, want timeout", got)
+	}
+	expired, cancel := context.WithCancel(parent)
+	cancel()
+	mem := &clickhouse.Exception{Code: 241, Name: "MEMORY_LIMIT_EXCEEDED"}
+	if got := ErrorTypeContext(expired, fmt.Errorf("read: %w", mem)); got != "MEMORY_LIMIT_EXCEEDED" {
+		t.Errorf("an exception under an expired context = %q, want the exception's name", got)
+	}
+}
+
+// deadline returns a ctx factory: parent with a deadline that has passed.
+func deadline(parent context.Context) func() (context.Context, context.CancelFunc) {
+	return func() (context.Context, context.CancelFunc) {
+		return context.WithDeadline(parent, time.Now().Add(-time.Second))
 	}
 }
 

@@ -68,11 +68,11 @@ type Container struct {
 	// +kubebuilder:validation:items:MaxLength=4096
 	Args []string `json:"args,omitempty"`
 
-	// Env is the sidecar's environment.
+	// Env is the sidecar's environment. Like WorkloadSpec.Env, it has no
+	// portable entry-count limit; exec byte limits depend on resolved values.
 	// +optional
 	// +listType=map
 	// +listMapKey=name
-	// +kubebuilder:validation:MaxItems=256
 	Env []EnvVar `json:"env,omitempty"`
 
 	// Ports are the sidecar's container ports.

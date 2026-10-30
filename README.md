@@ -1,130 +1,101 @@
 # Forge
 
-**Forge gives you, on day one, the system most teams don't finish building
-until year two** — a dev environment that comes up with one command and real
-data in it, tracing and metrics on every boundary, multiple deploy
-environments, secrets that never land in git, errors that can't leak your
-database password to a stranger, and linters that catch the bugs review
-doesn't.
+**Forge is an opinionated, open-source Go + React framework and deploy platform
+that ships the production system — dev environments, tests, secrets, multiple
+environments, releases, observability and hosting — from the first commit, built
+for AI agents to work in.**
 
-It covers the whole range: a landing page, marketing or docs site, SPA or PWA
-with no backend at all; a web or mobile app over a Go API, generated as Go plus
-Next.js, Vite or Expo wired over [Connect RPC](https://connectrpc.com); and
-anything in between. And it deploys anything — including code it never compiled.
+Most teams build that system in year two, under deadline, on top of a codebase
+that wasn't shaped for it. With Forge the first commit already has it, wired
+into files you own and can change.
 
-That second half matters more than it sounds, so it's worth saying plainly up
-front: Forge has opinions, and none of them are walls. It ships an ORM you can
-drop out of, a middleware chain in a file you own, and one deploy model that
-binds each workload to wherever it should run: a host process, a cluster you
-operate, or hosted infrastructure we operate for you. Our own control plane
-builds three services out of a **separate repository** that Forge never
-compiles.
+## Everything included
 
-A frontend with no backend is a first-class forge project, not a degenerate
-one. A landing page, a marketing or docs site, an SPA or a PWA is a project with
-one static frontend and no services. It gets the same environments, build-once
-releases and promotion, a dev loop with no database or cluster, custom domains,
-per-env config without a rebuild, and hosted static hosting that owns the bucket
-and the CDN — one static site per org is free (each environment's site
-counts). An existing Vite or Next.js app
-is adopted in place with `forge project new --in-place --kind site`
-(`forge skill load deploy/static-site`). For a PWA, forge builds, hosts and
-ships it; the service worker and manifest are yours. A new site is
-`forge project new <name> --kind site`: the app at the root, no Go. When it
-grows a waitlist or a checkout, the API is its own forge project beside it,
-reached by URL.
+What a new app would otherwise stitch together from separate tools:
 
-## Why teams pick it up
+|                                      | What you get                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Build**                            | Go services over [Connect RPC](https://connectrpc.com), plus workers, jobs, Kubernetes operators and CLIs · Next.js (static export), Vite and Expo React Native frontends with generated typed hooks · SQL migrations as the schema, a generated ORM, [migration safety checks](#linting-for-bug-classes-not-just-style) and seeded, foreign-key-coherent dev data · managed sign-in, with a local identity provider in dev · custom linters and generated CI |
+| **Test**                             | A real Postgres test harness, a generated mock for every interface, table-driven RPC tests, frontend mock scenarios                                                                                                                                                                                                                                                                                                                                           |
+| **Dev**                              | `forge env up dev`: the whole stack on one command, under hot reload; every git worktree gets its own stack on its own port block, so ten agents can run ten stacks on one machine                                                                                                                                                                                                                                                                            |
+| **Ship**                             | Any number of environments, each a directory under `deploy/kcl/<env>/` · secrets declared once and bound per environment, never in a `.env` file · container builds · releases built once and promoted by digest · a release timeline (`forge env releases`) · deploys to host processes, Docker Compose, a Kubernetes cluster you run, or Reliant hosting                                                                                                    |
+| **Host** (optional, Reliant hosting) | Services, workers and jobs · managed Postgres · static hosting with a CDN · custom domains · a container registry                                                                                                                                                                                                                                                                                                                                             |
+| **Run**                              | Logs, traces, metrics, continuous profiles, frontend errors and session replay · dashboards generated from your services · default alerts (error rate, p95 latency, a silent service, crash loops, OOM kills, failed deploys, browser error spikes) · release markers                                                                                                                                                                                         |
 
-Every project eventually pays for the same plumbing: observability, a staging
-environment, deploy promotion, secret management, a dev setup a new hire can
-actually run. Teams almost never build that at the start — there's a product to
-ship — so they build it in year two, under deadline, on top of a codebase that
-wasn't shaped for it. That's a rewrite nobody enjoys and everybody schedules
-twice.
+Add [Reliant](https://reliantlabs.io) and the list grows an agent harness,
+cloud dev machines, AI code and security review, and an on-call agent. Forge
+doesn't need any of them.
 
-Forge's pitch is that you skip that quarter. The first commit already has the
-things that rewrite would have added, wired into files you own and can change.
+## Opinionated, never a wall
 
-The second reason is newer. When an agent writes most of the code, the
-bottleneck stops being how fast you can write it and becomes **knowing whether
-it's right**. So Forge optimizes for something narrower than productivity: it
-makes a project legible to whoever works on it next, human or model. Every
-boundary is instrumented, every convention is enforced by a linter, every
-generated file knows whether you edited it, and the binary can describe its own
-surface on demand.
-
-And several of the defaults exist because the unsafe version caused a real
-incident — not because a style guide recommended them:
+The opinions come from a principal engineer with more than a decade of building
+reliable systems, and several exist because the unsafe version caused a real
+incident:
 
 - **An error message once shipped a database password** to an unauthenticated
-  caller. `connect.Error.Message()` is literally `err.Error()`, so any error
-  text you didn't write is text you publish. Now `svcerr.Wrap` replaces
-  unrecognized errors with `internal server error` and keeps the original
-  server-side.
+  caller. Now `svcerr.Wrap` replaces unrecognized errors with
+  `internal server error` and keeps the original server-side.
 - **Images built on an arm64 laptop once got pushed to amd64 nodes.** Now cloud
   targets require an explicit `platform`, and it fails at author time.
 - **Replicas once half-migrated a schema.** Now migrations apply from an
   initContainer under a Postgres advisory lock, and a failed one stalls the
   rollout with the old pods still serving.
 
-## The first sixty seconds
+Every default is overridable and every generated file has an owned seam beside
+it. You get an ORM you can drop out of, a middleware chain in a `serve.go` you
+own, and `pkg/` as a library you import rather than a framework you live inside.
+Bring your own infrastructure or use ours: each workload binds to a host
+process, Compose, a cluster you operate or Reliant hosting, in the same KCL.
+Forge is container- and Kubernetes-first, and it deploys code it never compiled,
+in any language. Our own control plane builds three services out of a
+**separate repository** that Forge never compiles. More in
+[Opinions with an exit](#5-opinions-with-an-exit).
 
-```bash
-# Install (macOS / Linux; Windows, Homebrew, npm and go install are under Install)
-curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh
+## Scales with you
 
-forge project new my-app && cd my-app
-forge scaffold service billing
-forge generate
-forge env up dev
-```
+A frontend on a hosted database is a fine place to start and a hard place to
+stay. Forge's starting point is the one you'd grow into: multi-service
+backends, background workers, jobs, operators and CRDs, CLIs and mobile apps,
+over a real Postgres you manage with migrations that are safety-checked before
+they run (every migration declares whether the previous release survives it).
+Environments multiply without a rewrite: `forge env new` derives staging, prod
+or a customer's environment from one you already have, and `forge env diff`
+shows how each differs from what is deployed.
 
-That last command brings up Postgres, runs your migrations, and starts your
-services and frontends. You get back a table of URLs and a log file for each
-process. With a frontend (`forge project new my-app --frontend web`) it also
-brings up a local identity provider, so the app's own sign-in page works on the
-first run.
+It covers the whole range, from the small end up. A landing page, docs site, SPA
+or PWA with no backend is a first-class project: one static frontend, the same
+environments and build-once releases, a dev loop with no database or cluster,
+and hosted static hosting with a CDN (one static site per org is free; each
+environment's site counts). Start one with `forge project new <name> --kind site`,
+or adopt an existing Vite or Next.js app in place with `forge project new
+--in-place --kind site` (`forge skill load deploy/static-site`). When it grows a
+waitlist or a checkout, the API is its own forge project beside it.
 
-Once you add tables (a `// forge:entity` message and `forge scaffold`), a fresh
-database is **seeded with foreign-key-coherent rows that satisfy every
-constraint your schema declares**, so the app boots alive instead of booting
-empty. Text forge cannot derive from the schema reads as `sample_<column>_<n>`
-until you name your domain's words in `db/seeds/vocab.yaml`
-(`orders.currency: [USD, EUR]`, `orders.customer_email: {type: email}`); from
-then on the rows read like your product.
+## Built for your agent
 
-The table includes the HyperDX UI too (ClickStack runs by default; set
-`_observability = False` in `deploy/kcl/dev/main.k` to turn it off), already
-receiving the app's traces, metrics and logs.
+When an agent writes most of the code, the bottleneck stops being how fast you
+can write it and becomes **knowing whether it's right**. Forge is one binary on
+your `PATH` with no plugin, editor extension or server, so anything that can run
+a shell command can drive it: Claude Code, Codex, Cursor, Copilot, Gemini CLI,
+Aider, a harness you wrote, or a CI job. A person at a terminal uses the same
+commands, so there is nothing an agent can do that you can't check by hand.
 
-No signup, no external accounts, no cloud project, no cluster.
-
-When you want it online, `forge env deploy staging` builds a release once and
-deploys it. A new project's staging and prod are bound to Reliant hosting; the
-same environments deploy to a Kubernetes cluster you run, or as host processes,
-by changing where each workload is bound.
-
-## Works in any agent: it's just a CLI
-
-Forge has no plugin, editor extension, SDK or server to run. It is one binary on
-your `PATH`, so anything that can run a shell command can drive it: Claude Code,
-Codex, Cursor, Copilot, Gemini CLI, Aider, a harness you wrote yourself, or a CI
-job. A person at a terminal uses exactly the same commands, so there is nothing
-an agent can do that you can't check by hand.
-
-What makes a plain CLI work well for a model:
-
+- **Skills live in the binary.** `forge skill search <topic>` and
+  `forge skill load <name>` print the playbook for an area, about 150 of them,
+  matched to the installed version. Nothing to paste into a prompt, nothing to
+  drift.
 - **It explains itself.** `forge start` prints the path from an empty directory
   to authored protos. `forge project capabilities --json` lists every verb, lint
   analyzer and marker, enumerated from the binary, so it can't go stale.
-- **Skills live in the binary.** `forge skill search <topic>` and
-  `forge skill load <name>` print the playbook for an area, matched to the
-  version installed. Nothing to paste into a prompt, nothing to drift.
-- **Failures are instructions.** A finding names the file, the line, the rule
-  and the fix. `forge lint --quiet` prints only what failed and ends with the
-  verdict, so the agent reads one line to know whether it is done.
-- **Production is one command away.** `forge obs status`, `forge obs issues` and
+- **Scaffolding and lints are guardrails against AI slop.** `forge scaffold`
+  lands each service, rpc, worker or entity in the right place, already wired.
+  `forge lint` rejects what review misses: errors that could leak internals,
+  list filters that silently do nothing, edited generated files, unsafe
+  migrations. A finding names
+  the file, line, rule and fix, and `forge lint --quiet` prints only what
+  failed and ends with the verdict, so the agent reads one line to know whether
+  it is done.
+- **It debugs from real telemetry.** `forge obs status`, `forge obs issues` and
   `forge obs trace` read a running app's logs, traces, errors and alerts, so a
   fix starts from what happened rather than a guess
   ([section 3](#3-feedback-loops-so-an-agent-can-see-what-it-built) has the rest).
@@ -142,9 +113,52 @@ Run `forge start` first and follow it. Load depth with
 A change is done when `forge lint`, `go build ./...` and `task test` pass.
 ```
 
-[Reliant](https://reliantlabs.io) is the agent harness we build around Forge:
-it reads the skills automatically, runs `reliant forge` already signed in, and
-hosts what you deploy. It is never required.
+## Greenfield, or bring your own app
+
+Forge is best from an empty directory, where the whole structure is yours from
+the first commit. An existing app doesn't have to wait for that. Forge builds
+and deploys code it never compiled, so a service in any language gets
+environments, secrets, release promotion and some monitoring as it is, and a Vite or Next.js app is adopted in
+place. Move code onto Forge's structure over time as it earns it:
+`forge skill load migration` is the playbook.
+
+## The first sixty seconds
+
+```bash
+# Install (macOS / Linux; Windows, Homebrew, npm and go install are under Install)
+curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh
+
+forge project new my-app && cd my-app
+forge scaffold service billing
+forge generate
+forge env up dev
+```
+
+That last command brings up Postgres, runs your migrations, and starts your
+services and frontends, then prints a table of URLs and a log file for each
+process. The table includes the HyperDX UI, already receiving the app's traces,
+metrics and logs (set `_observability = False` in `deploy/kcl/dev/main.k` to turn
+it off). With a frontend (`forge project new my-app --frontend web`) it also
+starts a local identity provider, so the app's own sign-in page works on the
+first run. No signup, no external accounts, no cloud project, no cluster.
+
+Once you add tables (a `// forge:entity` message and `forge scaffold`), a fresh
+database is **seeded with foreign-key-coherent rows that satisfy every
+constraint your schema declares**, so the app boots alive instead of booting
+empty. Text forge cannot derive reads as `sample_<column>_<n>` until you name
+your domain's words in `db/seeds/vocab.yaml` (`orders.currency: [USD, EUR]`,
+`orders.customer_email: {type: email}`).
+
+When you want it online, `forge env deploy staging` builds a release once and
+deploys it. A new project's staging and prod are bound to Reliant hosting; the
+same environments deploy to a Kubernetes cluster you run, or as host processes,
+by changing where each workload is bound.
+
+## With Reliant
+
+[Reliant](https://reliantlabs.io) is the agent harness we build around Forge. It
+already knows every Forge skill, runs `reliant forge` signed in to hosting, and
+ships Autopilot workflows that react to errors and alerts. It is never required.
 
 ---
 

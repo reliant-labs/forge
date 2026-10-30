@@ -90,7 +90,7 @@ func TestCommitOfVersion(t *testing.T) {
 	}
 }
 
-// 2026-10-27: `reliant forge generate` in a project pinned to v1.0.4 ran the
+// Forge report 86c6fd64: `reliant forge generate` in a project pinned to v1.0.4 ran the
 // forge reliant embeds (v0.1.47-0.20261027041513-dd9a973c5fbf) and rewrote
 // hundreds of generated lines. The pin check took the embedded pseudo-version
 // for "a development forge" and tolerated it. A pseudo-version is not a local

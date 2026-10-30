@@ -13,7 +13,7 @@ package cli
 // except the few that are about THIS forge or this machine rather than the
 // project (handOffExempt). Reads included: `skill load`, `project shapes` and
 // a `generate --dry-run` plan are all functions of the binary, and an answer
-// from the wrong forge is a wrong answer that looks right. 2026-10-27: an
+// from the wrong forge is a wrong answer that looks right. Forge report 86c6fd64: an
 // agent's `reliant forge generate` in a project pinned to v1.0.4 ran the forge
 // reliant embedded (a v0.1.47 pseudo-version) and rewrote hundreds of
 // generated lines, because that pairing was tolerated as "a development forge".

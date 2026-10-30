@@ -60,7 +60,7 @@ func TestHandOffToPinned_APinnedProjectRunsThePinnedForge(t *testing.T) {
 	}
 }
 
-// 2026-10-27, the incident: reliant embedded forge at a pseudo-version, the
+// Forge report 86c6fd64, the incident: reliant embedded forge at a pseudo-version, the
 // project pinned a tag, and `reliant forge generate` ran the embedded forge
 // with a warning — the pairing passed for "a development forge against a tag
 // pin". A forge that is a module version is handed over like any other; only

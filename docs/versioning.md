@@ -167,7 +167,7 @@ forge developer), keeps running the rewriting commands itself, with a warning;
 the build/deploy commands are still handed over. That tolerance is for a
 LOCAL build only: a forge that is a module version — `go install …@<pseudo>`,
 or a host whose go.mod requires forge at a pseudo-version — is exactly the
-commit it names, and is handed over like any other. (2026-10-27: `reliant
+commit it names, and is handed over like any other. (Forge report 86c6fd64: `reliant
 forge generate` in a project pinned to v1.0.4 ran reliant's embedded
 v0.1.47-0.… forge under that tolerance and rewrote hundreds of generated lines.)
 

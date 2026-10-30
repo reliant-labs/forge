@@ -15,22 +15,60 @@
 # The release workflow reads the same ref before it starts a captain: a live lock makes
 # the run exit at once as "release in progress by <owner>; coalesced".
 #
-# When the holder releases it, it RE-CHECKS main (release_lock_recheck): if main moved
-# while it held the lock (the merges whose runs were coalesced) and main is now due (a
-# release:asap PR, or RELEASE_EVERY merges since the newest tag), it re-applies
-# release:asap to main's newest merged PR, which starts the release workflow again,
-# judged at main's tip. So a coalesced run is never lost, and a failed cut with nothing
-# merged behind it never re-starts itself.
+# A run that was DUE but coalesced records that on origin (refs/release-lock/coalesced).
+# When the holder releases the lock it acts on that record (release_lock_recheck): it
+# re-applies release:asap to main's newest merged PR, which starts the release workflow
+# again, judged at main's tip. So a coalesced run is never lost, whenever it was asked
+# for (a pending asap merge whose run lands mid-release included), and a failed cut
+# nobody asked to repeat never re-starts itself.
+#
+# The lock FAILS CLOSED. A heartbeat that finds the lock on origin is no longer ours, or
+# that cannot renew it for RELEASE_LOCK_RENEW_DEADLINE_SECS (default: 3 min before it
+# would go stale), marks it LOST and stops the release: TERM to the holder's process
+# tree. And every publication step (a tag push, a prod deploy) first calls
+# release_lock_assert, which proves on origin that the lock is still ours.
 #
 #   release_lock_acquire <version>   take it, or print who holds it and return 1
+#   release_lock_assert              0 only if the lock is ours on origin right now:
+#                                    call it before every irreversible publication
 #   release_lock_release             drop it if still ours, stop the heartbeat, re-check main
 #
 # A script that re-runs itself (cut-release.sh --cut-recorded) exports
-# RELEASE_LOCK_HELD=1 to its child, which then neither takes nor drops it.
+# RELEASE_LOCK_HELD=<state dir> to its child, which then neither takes nor drops it, and
+# asserts against the parent's state.
 # RELEASE_LOCK=off skips it (fixtures with no remote only); RELEASE_LOCK_RECHECK=off skips
 # the re-check (tests).
 RELEASE_LOCK_REF="refs/release-lock/release" RELEASE_LOCK_STATE="" RELEASE_LOCK_HB_PID=""
-RELEASE_LOCK_MSG="" RELEASE_LOCK_MAIN=""
+RELEASE_LOCK_MSG=""
+# Where the release workflow records a request it coalesced into a live lock.
+RELEASE_LOCK_COALESCED_REF="refs/release-lock/coalesced"
+
+# How long the holder may go without a confirmed renewal before it stops: comfortably
+# inside the stale window, so no other cutter can have replaced a lock we still act on.
+_release_lock_deadline() {
+  local stale=$((${RELEASE_LOCK_STALE_MINUTES:-15} * 60)) hb="${RELEASE_LOCK_HEARTBEAT_SECS:-60}" margin
+  margin=$((3 * hb > 180 ? 3 * hb : 180))
+  echo "${RELEASE_LOCK_RENEW_DEADLINE_SECS:-$((stale - margin > hb ? stale - margin : hb))}"
+}
+
+# The descendants of <pid>, never <self> (the heartbeat) or anything below it.
+_release_lock_descendants() { # <pid> <self>
+  local c
+  for c in $(pgrep -P "$1" 2> /dev/null); do
+    [ "$c" = "$2" ] || { echo "$c"; _release_lock_descendants "$c" "$2"; }
+  done
+}
+
+# Stop the holder's release: TERM the holder FIRST (so it runs no further command, and
+# its EXIT trap reports the loss), then everything it had started, from a snapshot taken
+# before (a dead holder's children are re-parented and could no longer be found).
+_release_lock_stop() { # <holder> <self>
+  local tree p
+  trap '' TERM # the holder's EXIT trap stops this heartbeat; finish the stop first
+  tree="$(_release_lock_descendants "$1" "$2")"
+  kill -TERM "$1" 2> /dev/null || true
+  for p in $tree; do kill -TERM "$p" 2> /dev/null || true; done
+}
 
 _release_lock_commit() { # <message> -> a fresh commit sha (nonce: never the same sha twice)
   local tree nonce
@@ -48,12 +86,12 @@ _release_lock_commit() { # <message> -> a fresh commit sha (nonce: never the sam
 # ref private to this call, so what is judged (age, owner) and the sha a caller leases
 # on are one immutable commit: never a shared scratch ref another process in this
 # checkout, or a linked worktree, may have moved in between.
-_release_lock_read() {
-  local remote="${RELEASE_LOCK_REMOTE:-origin}" tmp line ls
+_release_lock_read() { # [ref, default the lock]
+  local remote="${RELEASE_LOCK_REMOTE:-origin}" ref="${1:-$RELEASE_LOCK_REF}" tmp line ls
   tmp="refs/release-chain/lock-read/$$-${RANDOM}${RANDOM}"
-  if ! timeout 30 git fetch -q --no-write-fetch-head "$remote" "+${RELEASE_LOCK_REF}:${tmp}" 2> /dev/null; then
+  if ! timeout 30 git fetch -q --no-write-fetch-head "$remote" "+${ref}:${tmp}" 2> /dev/null; then
     # No such ref on origin is a free lock; anything else is not knowing.
-    ls="$(timeout 30 git ls-remote "$remote" "$RELEASE_LOCK_REF" 2> /dev/null)" || return 1
+    ls="$(timeout 30 git ls-remote "$remote" "$ref" 2> /dev/null)" || return 1
     [ -z "$ls" ] || return 1
     return 0
   fi
@@ -101,26 +139,89 @@ release_lock_acquire() {
         return 1 ;;
     esac
   fi
-  RELEASE_LOCK_STATE="$(mktemp)" && printf '%s\n' "$sha" > "$RELEASE_LOCK_STATE"
+  RELEASE_LOCK_STATE="$(mktemp -d)" || return 1
+  printf '%s\n' "$sha" > "$RELEASE_LOCK_STATE/sha" && date +%s > "$RELEASE_LOCK_STATE/ok" || return 1
   RELEASE_LOCK_MSG="$msg"
-  RELEASE_LOCK_MAIN="$(timeout 30 git ls-remote "$remote" refs/heads/main 2> /dev/null | cut -f1 || true)"
-  export RELEASE_LOCK_HELD=1
+  export RELEASE_LOCK_HELD="$RELEASE_LOCK_STATE"
   # The heartbeat: replace our own lock commit (CAS on the previous one) until released,
-  # or until this shell is gone. Detached from every output, so it never holds a pipe.
-  # TERM ends it between commands, never inside a push (bash runs a trap only after the
-  # foreground child), and at once while it sleeps (wait is interruptible).
+  # or until the holder is gone; fail closed when it cannot (see the header). Detached
+  # from every output, so it never holds a pipe. TERM ends it between commands, never
+  # inside a push (bash runs a trap only after the foreground child), and at once while
+  # it sleeps (wait is interruptible).
+  local holder="${BASHPID:-$$}"
   (
     trap 'exit 0' TERM
-    parent=$$ hb="${RELEASE_LOCK_HEARTBEAT_SECS:-60}"
-    while sleep "$hb" & wait $!; do
-      kill -0 "$parent" 2> /dev/null || exit 0
-      [ -f "$RELEASE_LOCK_STATE" ] || exit 0
-      cur="$(cat "$RELEASE_LOCK_STATE")" next="$(_release_lock_commit "$msg")" || continue
-      git push -q "$remote" "${next}:${RELEASE_LOCK_REF}" --force-with-lease="${RELEASE_LOCK_REF}:${cur}" > /dev/null 2>&1 \
-        && printf '%s\n' "$next" > "$RELEASE_LOCK_STATE"
+    # Hold no descriptor of the holder's beyond 0-2 (bash keeps copies of redirected
+    # ones, 10 and up): a pipe the heartbeat kept open would keep the holder's reader
+    # waiting after the holder itself is gone.
+    for fd in $(ls "/proc/${BASHPID:-self}/fd" 2> /dev/null || ls /dev/fd 2> /dev/null); do
+      [ "$fd" -gt 2 ] 2> /dev/null && eval "exec ${fd}>&-" 2> /dev/null
+    done
+    st="$RELEASE_LOCK_STATE" hb="${RELEASE_LOCK_HEARTBEAT_SECS:-60}" t="${RELEASE_LOCK_GIT_TIMEOUT:-30}"
+    deadline="$(_release_lock_deadline)" self="${BASHPID:-$(sh -c 'echo "$PPID"')}"
+    lost() { [ -e "$st/lost" ] || printf '%s\n' "$1" > "$st/lost"; }
+    # Wait one heartbeat, looking every few seconds for a holder that is gone.
+    beat() {
+      local left="$hb" step
+      while [ "$left" -gt 0 ]; do
+        step=$((left < 5 ? left : 5)) left=$((left - step))
+        sleep "$step" & wait $!
+        kill -0 "$holder" 2> /dev/null && [ -d "$st" ] || return 1
+      done
+    }
+    while beat; do
+      [ ! -e "$st/lost" ] || exit 0
+      cur="$(cat "$st/sha")" next=""
+      if next="$(_release_lock_commit "$msg")" \
+        && timeout "$t" git push -q "$remote" "${next}:${RELEASE_LOCK_REF}" --force-with-lease="${RELEASE_LOCK_REF}:${cur}" > /dev/null 2>&1; then
+        printf '%s\n' "$next" > "$st/sha" && date +%s > "$st/ok"
+        continue
+      fi
+      # Not renewed. Ask origin whose lock it is: a push that landed but timed out here is
+      # still ours (every lock commit is distinct); any other sha, or none, is not.
+      if have="$(timeout "$t" git ls-remote "$remote" "$RELEASE_LOCK_REF" 2> /dev/null)"; then
+        have="${have%%[[:space:]]*}"
+        if [ -n "$next" ] && [ "$have" = "$next" ]; then
+          printf '%s\n' "$next" > "$st/sha" && date +%s > "$st/ok"
+          continue
+        fi
+        [ "$have" = "$cur" ] || lost "the lock on origin is no longer ours (it is ${have:-gone})"
+      fi
+      [ $(($(date +%s) - $(cat "$st/ok"))) -lt "$deadline" ] || lost "it could not be renewed for ${deadline}s (origin unreachable?)"
+      if [ -e "$st/lost" ]; then
+        _release_lock_stop "$holder" "$self"
+        exit 0
+      fi
     done
   ) < /dev/null > /dev/null 2>&1 &
   RELEASE_LOCK_HB_PID=$!
+  return 0
+}
+
+# release_lock_assert: prove on origin, now, that this release still holds the lock.
+# Fails closed: lost, not renewed in time, origin unreachable or another sha all refuse.
+release_lock_assert() {
+  [ "${RELEASE_LOCK:-on}" != off ] || return 0
+  local st="${RELEASE_LOCK_STATE:-${RELEASE_LOCK_HELD:-}}" remote="${RELEASE_LOCK_REMOTE:-origin}" before after have deadline
+  if [ -z "$st" ] || [ ! -d "$st" ]; then
+    echo "release-lock: this release does not hold ${RELEASE_LOCK_REF}; refusing to publish" >&2; return 1
+  fi
+  if [ -e "$st/lost" ]; then
+    echo "release-lock: this release lost the release lock ($(cat "$st/lost" 2> /dev/null)); refusing to publish" >&2; return 1
+  fi
+  deadline="$(_release_lock_deadline)"
+  if [ $(($(date +%s) - $(cat "$st/ok" 2> /dev/null || echo 0))) -ge "$deadline" ]; then
+    echo "release-lock: the release lock was not renewed for ${deadline}s; refusing to publish" >&2; return 1
+  fi
+  # The heartbeat may renew while we ask: our sha before or after the read is ours.
+  before="$(cat "$st/sha" 2> /dev/null || true)"
+  if ! have="$(timeout "${RELEASE_LOCK_GIT_TIMEOUT:-30}" git ls-remote "$remote" "$RELEASE_LOCK_REF" 2> /dev/null)"; then
+    echo "release-lock: cannot confirm on ${remote} that the release lock is still ours; refusing to publish" >&2; return 1
+  fi
+  have="${have%%[[:space:]]*}" after="$(cat "$st/sha" 2> /dev/null || true)"
+  if [ -z "$have" ] || { [ "$have" != "$before" ] && [ "$have" != "$after" ]; }; then
+    echo "release-lock: the release lock on ${remote} is no longer ours (it is ${have:-gone}); refusing to publish" >&2; return 1
+  fi
   return 0
 }
 
@@ -133,8 +234,18 @@ release_lock_release() {
     kill "$RELEASE_LOCK_HB_PID" 2> /dev/null || true
     wait "$RELEASE_LOCK_HB_PID" 2> /dev/null || true
   fi
-  cur="$(cat "$RELEASE_LOCK_STATE" 2> /dev/null || true)"
-  rm -f "$RELEASE_LOCK_STATE"
+  local st="$RELEASE_LOCK_STATE" lost=""
+  [ ! -e "$st/lost" ] || lost="$(cat "$st/lost" 2> /dev/null || echo '?')"
+  cur="$(cat "$st/sha" 2> /dev/null || true)"
+  rm -rf "$st"
+  if [ -n "$lost" ]; then
+    # Whatever holds the lock now is someone else's release: leave it, and do not re-check
+    # main on its behalf.
+    echo "release-lock: this release LOST ${RELEASE_LOCK_REF} (${lost}) and was stopped: nothing was published after that." >&2
+    RELEASE_LOCK_STATE="" RELEASE_LOCK_HB_PID=""
+    unset RELEASE_LOCK_HELD
+    return 0
+  fi
   if ! git push -q "$remote" --force-with-lease="${RELEASE_LOCK_REF}:${cur}" ":${RELEASE_LOCK_REF}" > /dev/null 2>&1; then
     # The heartbeat may have been stopped after its push landed but before it recorded
     # the new sha: a lock carrying our own message is still ours to drop.
@@ -156,39 +267,37 @@ release_lock_release() {
   return 0
 }
 
-# release_lock_recheck: what merged while the lock was held may be due. Re-apply
-# release:asap to main's newest merged PR when it is: an untagged release:asap PR, or
-# RELEASE_EVERY (10) first-parent merges since origin's newest tag. Best effort, quiet;
-# the label event starts the release workflow, which judges main's tip itself.
+# release_lock_recheck: a release run that came due while this lock was held was
+# coalesced into it, and recorded that on origin (refs/release-lock/coalesced: the release
+# workflow's coalesce node). Act on it: consume it (CAS) and re-apply release:asap to
+# main's newest merged PR, which starts the release workflow again, judged at main's tip
+# (a no-op when this release already shipped everything). Nothing recorded, nothing to
+# do: a failed cut never re-starts itself, and a hand cut with no workflow behind it is
+# left alone. Best effort; a request this misses stays on origin for the next release.
 # Like release_lock_release, safe under set -e (it runs from EXIT traps).
 release_lock_recheck() {
   [ "${RELEASE_LOCK_RECHECK:-on}" != off ] || return 0
   command -v gh > /dev/null 2>&1 || return 0
-  local remote="${RELEASE_LOCK_REMOTE:-origin}" slug tag n due="" asap newest oid main
+  local remote="${RELEASE_LOCK_REMOTE:-origin}" slug out sha why asap newest
   slug="${RELEASE_LOCK_SLUG:-$(git remote get-url "$remote" 2> /dev/null | sed -n 's|.*github\.com[:/]\([^/]*/[^/.]*\)\(\.git\)\{0,1\}$|\1|p')}"
   [ -n "$slug" ] || return 0
-  timeout 60 git fetch -q --prune "$remote" '+refs/heads/main:refs/release-chain/main' '+refs/tags/v*:refs/release-chain/origin-tags/v*' 2> /dev/null || return 0
-  main="$(git rev-parse -q --verify refs/release-chain/main)" || return 0
-  # Nothing merged while we held the lock: no run was coalesced behind us, and a cut
-  # that failed must not re-start itself.
-  [ "$main" != "$RELEASE_LOCK_MAIN" ] || return 0
-  tag="$(git for-each-ref --sort=-v:refname --format='%(refname)' refs/release-chain/origin-tags/ | head -n 1)"
-  [ -n "$tag" ] || return 0
-  n="$(git rev-list --first-parent --count "$(git merge-base "$tag" "$main")..$main" 2> /dev/null || echo 0)"
-  [ "$n" -gt 0 ] || return 0
-  [ "$n" -lt "${RELEASE_EVERY:-10}" ] || due="$n merges since the newest tag"
-  if [ -z "$due" ]; then
-    for oid in $(timeout 60 gh pr list -R "$slug" --state merged --base main --label release:asap --limit 1000 --json mergeCommit --jq '.[].mergeCommit.oid' 2> /dev/null); do
-      git merge-base --is-ancestor "$oid" "$main" 2> /dev/null && ! git merge-base --is-ancestor "$oid" "$tag" 2> /dev/null && { due="an untagged release:asap PR"; break; }
-    done
-  fi
-  [ -n "$due" ] || return 0
+  out="$(_release_lock_read "$RELEASE_LOCK_COALESCED_REF" || true)"
+  [ -n "$out" ] || return 0
+  read -r sha _ why <<< "$out"
+  # Consumed by exactly one releaser: a newer request (another sha) stays for the next.
+  timeout 30 git push -q "$remote" --force-with-lease="${RELEASE_LOCK_COALESCED_REF}:${sha}" ":${RELEASE_LOCK_COALESCED_REF}" > /dev/null 2>&1 || return 0
   newest="$(timeout 60 gh pr list -R "$slug" --state merged --base main --limit 1 --json number --jq '.[0].number' 2> /dev/null || true)"
-  [ -n "$newest" ] || return 0
+  if [ -z "$newest" ]; then
+    echo "release-lock: ${why}; no merged PR was found to re-label: add release:asap to one" >&2
+    return 0
+  fi
   asap="$(timeout 30 gh pr view "$newest" -R "$slug" --json labels --jq '[.labels[].name] | index("release:asap") != null' 2> /dev/null || true)"
   # Removed first, so the add is a fresh `labeled` event that starts the workflow.
   [ "$asap" != true ] || timeout 30 gh pr edit "$newest" -R "$slug" --remove-label release:asap > /dev/null 2>&1 || true
-  timeout 30 gh pr edit "$newest" -R "$slug" --add-label release:asap > /dev/null 2>&1 \
-    && echo "release-lock: main has more to release ($due); labelled #$newest release:asap to start the next release" >&2
+  if timeout 30 gh pr edit "$newest" -R "$slug" --add-label release:asap > /dev/null 2>&1; then
+    echo "release-lock: ${why}; labelled #$newest release:asap to start that release" >&2
+  else
+    echo "release-lock: ${why}; labelling #$newest release:asap failed: add it by hand" >&2
+  fi
   return 0
 }

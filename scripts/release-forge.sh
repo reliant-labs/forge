@@ -558,6 +558,8 @@ if [ -n "$COMMIT" ]; then
   # The tag names the green commit; the release commit becomes a PR.
   RELEASE_SHA="$COMMIT"
   git tag -a "$RELEASE_TAG" -m "forge $VERSION" "$COMMIT"
+  # Publish only while this release provably still holds the lock (release-lock.sh).
+  release_lock_assert || exit 1
   git push --atomic origin "refs/tags/$RELEASE_TAG" "HEAD:refs/heads/release/$VERSION"
   "$GH_BIN" pr create --repo "$GITHUB_REPO" --base "$BRANCH" --head "release/$VERSION" \
     --title "chore: release $VERSION" --body "Bookkeeping for $RELEASE_TAG, tagged at $COMMIT." &&
@@ -580,6 +582,8 @@ echo "→ pushing atomically (branch + tag, all-or-nothing)"
 # checkout whose `main` lags origin, it pushed a stale tip; the remote rejected
 # it as non-fast-forward and the atomic push dropped the tag with it (v0.1.18
 # hit exactly this).
+# Publish only while this release provably still holds the lock (release-lock.sh).
+release_lock_assert || exit 1
 git push --atomic origin "$RELEASE_SHA:refs/heads/$BRANCH" "refs/tags/$RELEASE_TAG"
 fi
 

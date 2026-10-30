@@ -103,7 +103,7 @@ func TestE2EScaffoldNounsLeaveLintGreen(t *testing.T) {
 				feDir := filepath.Join(projectDir, "frontends", tc.frontend)
 				// The scaffold's own install is best-effort by design (it warns
 				// and carries on), so it cannot be this test's precondition.
-				runCmdTimeout(t, feDir, 5*time.Minute, "npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
+				runCmdTimeout(t, feDir, 5*time.Minute, "pnpm", "install", "--no-frozen-lockfile", "--prefer-offline")
 				assertScaffoldIsEslintCleanAsEmitted(t, feDir)
 			}
 

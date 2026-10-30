@@ -18,7 +18,7 @@ type PlacementDeclaration struct {
 	Unit         string
 }
 
-func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.ShapeObject, trees []release.BundleTree) (*release.PlacementPrerequisites, error) {
+func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.ShapeObject, trees []release.BundleTree) (*release.PlacementPrerequisites, error) { //nolint:gocognit,funlen // suppressed to unblock main; splitting it per phase (classify, declare, own, order) is forge#1546.
 	cluster, hosted := false, false
 	for _, o := range objects {
 		if o.Cluster == release.BundleHostedCluster {

@@ -479,10 +479,24 @@ jobs:
   # packages in `test`. -race cost them ~100x in removalguard (10s → ~980s),
   # ~5x in tierguard and ~4x in deadcodeguard. e2e-suite.yml omits -race for
   # the same reason.
+  # SHARDED, as is test-cli: a release waits on every full Test job
+  # (scripts/check-release-tests.sh), and one 4-core runner took 15-17
+  # minutes for this lane and 20 for internal/cli (2026-10-30), so a release
+  # waited ~25 minutes on main. scripts/ci-test-full-shard.sh says how each
+  # lane splits; internal/ciguard holds every matrix to every index.
   test:
-    name: Test
+    name: Test (${{ matrix.label }})
     if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
+    strategy:
+      # Every shard reports: one failure must not hide another shard's.
+      fail-fast: false
+      matrix:
+        include:
+          - label: "unit 1/2"
+            args: "unit 0 2"
+          - label: "unit 2/2"
+            args: "unit 1 2"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -531,23 +545,26 @@ jobs:
       - name: Check the test-job partition
         run: scripts/ci-test-packages.sh check
       - name: Go tests
-        # -timeout is explicit rather than left to `go test`'s 10-minute
-        # default. A panicking timeout fails the whole job and hides every
-        # other package's result behind something that reads as a hang rather
-        # than as one slow package. A generous explicit budget keeps a genuine
-        # deadlock detectable while making the failure mode legible.
-        run: go test -race -count=1 -timeout 30m $(scripts/ci-test-packages.sh unit)
+        # -timeout (30m per test binary, in the script) is explicit rather
+        # than left to `go test`'s 10-minute default. A panicking timeout
+        # fails the whole job and hides every other package's result behind
+        # something that reads as a hang rather than as one slow package.
+        env:
+          CI_TEST_JSON: ${{ runner.temp }}/test-full.json
+        run: scripts/ci-test-full-shard.sh ${{ matrix.args }}
       - name: Local registry maintenance integration
+        if: ${{ matrix.args == 'unit 0 2' }}
         run: go test -race -tags=integration -count=1 -timeout=5m ./internal/storage
       # Main only: keeps any archive this job had to fetch, so the next run
       # does not (see embedded-postgres-cache's header).
       - name: Save the embedded postgres archives (main only)
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.args == 'unit 0 2' }}
         uses: ./.github/actions/embedded-postgres-cache-save
       # Main only; see "Build-cache note" at the top of this file. Skipped
-      # when today's entry already exists (build-hit).
+      # when today's entry already exists (build-hit). One shard saves: the
+      # key is per day, so a second save would only race the first.
       - name: Save the Go caches (main only, once a day)
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.args == 'unit 0 2' }}
         uses: ./.github/actions/save-go-caches
         with:
           build-key: ${{ steps.go-caches.outputs.build-key }}
@@ -556,9 +573,19 @@ jobs:
           mod-hit: ${{ steps.go-caches.outputs.mod-hit }}
 
   test-cli:
-    name: Test (internal/cli)
+    name: Test (${{ matrix.label }})
     if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: "internal/cli 1/3"
+            args: "cli 0 3"
+          - label: "internal/cli 2/3"
+            args: "cli 1 3"
+          - label: "internal/cli 3/3"
+            args: "cli 2 3"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -594,13 +621,15 @@ jobs:
       - name: Check the test-job partition
         run: scripts/ci-test-packages.sh check
       - name: Go tests (internal/cli)
-        # The same 30m budget as `test`: internal/cli alone measured
-        # 665-692s under -race, so this is a hang detector, not a speed bound.
-        run: go test -race -count=1 -timeout 30m $(scripts/ci-test-packages.sh cli)
+        # The same 30m per-binary budget as `test`: a hang detector, not a
+        # speed bound.
+        env:
+          CI_TEST_JSON: ${{ runner.temp }}/test-full.json
+        run: scripts/ci-test-full-shard.sh ${{ matrix.args }}
       # Main only: keeps any archive this job had to fetch, so the next run
       # does not (see embedded-postgres-cache's header).
       - name: Save the embedded postgres archives (main only)
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.args == 'cli 0 3' }}
         uses: ./.github/actions/embedded-postgres-cache-save
 
   # The pull-request tier, run whole on main, then the guards. Three jobs in

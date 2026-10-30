@@ -7,7 +7,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-func prepareComposition(ctx context.Context, opts *buildOptions, base string, bootstrap bool, selectors []string) error {
+func prepareComposition(ctx context.Context, opts *buildOptions, base string, bootstrap bool, selectors []string) error { //nolint:funlen // the composition preamble in order: load, select, resolve sources, seal. The sequence is the contract, as in runDeploy.
 	if opts.release == "" {
 		return fmt.Errorf("snapshot composition requires --release")
 	}

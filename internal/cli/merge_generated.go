@@ -339,9 +339,10 @@ func mergeGeneratedPath(ctx context.Context, relPath string, base, ours, theirs 
 		if unstampableRenderOfOurs(relPath, ours) {
 			return ours, true, keep, nil
 		}
-		// The descriptor is rewritten whole on every generate and certified
-		// by nothing: a clean merge stands, a conflict takes this side.
-		if path.Base(relPath) == "forge_descriptor.json" && !clean {
+		// The descriptor and the service catalog are rewritten whole on
+		// every generate and certified by nothing: a clean merge stands, a
+		// conflict takes this side.
+		if wholeRenders[path.Base(relPath)] && !clean {
 			return ours, true, keep, nil
 		}
 	case !clean && checksums.Verify(ours) == checksums.Pristine && checksums.Verify(theirs) == checksums.Pristine:
@@ -972,11 +973,21 @@ const (
 	mergeAttributesEnd   = "# <<< forge merge-generated"
 )
 
+// wholeRenders are the comment-incapable outputs forge rewrites whole on
+// every generate and certifies with nothing: gen/forge_descriptor.json and
+// gen/forge_service_catalog.json (servicecatalog.GeneratedPath). Two branches
+// that each add a service both change them, so a conflict keeps this side's
+// and the next `forge generate` renders both.
+var wholeRenders = map[string]bool{
+	"forge_descriptor.json":      true,
+	"forge_service_catalog.json": true,
+}
+
 // generatedMergePatterns are the files routed to the driver, relative to
 // the project root: forge's generated outputs and its committed state.
 var generatedMergePatterns = []string{
 	"*_gen.go", "*_gen.ts", "*_gen.test.ts", "*_gen.json", "*_gen.ndjson",
-	"forge_descriptor.json",
+	"forge_descriptor.json", "forge_service_catalog.json",
 	".forge/scaffolded.json", ".forge/hashes.json", ".forge/disowned.json",
 }
 

@@ -12,7 +12,7 @@ import (
 
 // declaredPlacementEdges retains same-stage edges and refuses missing peers.
 // Stage aggregation cannot establish whether the actual item graph is cyclic.
-func declaredPlacementEdges(e *KCLEntities) ([]stageEdge, error) {
+func declaredPlacementEdges(e *KCLEntities) ([]stageEdge, error) { //nolint:funlen // one pass per declaring entity kind (workloads, frontends, manifests, …) over the same edge rules; splitting it per kind would scatter one rule set.
 	if e == nil {
 		return nil, nil
 	}

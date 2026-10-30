@@ -190,7 +190,7 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 	// it once up front so parallel tests do not race that bootstrap.
 	prebuildWebRuntimeE2E(t)
 	runCmdTimeout(t, webDir, 5*time.Minute,
-		"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
+		"pnpm", "install", "--no-frozen-lockfile", "--prefer-offline")
 	runCmdTimeout(t, webDir, 5*time.Minute, "npm", "run", "build")
 	runCmdTimeout(t, webDir, 5*time.Minute, "npm", "test")
 	runCmdTimeout(t, webDir, 2*time.Minute, "npx", "--no-install", "tsc", "--noEmit")

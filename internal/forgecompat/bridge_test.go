@@ -244,6 +244,15 @@ func TestReadCheckout(t *testing.T) {
 	if _, ok := ReadCheckout(t.TempDir()); ok {
 		t.Error("a directory that is not a git checkout must not read as one")
 	}
+
+	// A directory INSIDE a checkout (a project's vendored `.forge-pkg`) is
+	// not a checkout of its own: git would answer with the enclosing repo's
+	// HEAD, and forge would try to build itself from it.
+	nested := filepath.Join(dir, ".forge-pkg")
+	writeFile(t, filepath.Join(nested, "go.mod"), "module github.com/reliant-labs/forge\n")
+	if _, ok := ReadCheckout(nested); ok {
+		t.Error("a subdirectory of another repository must not read as a checkout")
+	}
 }
 
 // Reading a bridged checkout must not write it. `git status` normally

@@ -1269,7 +1269,7 @@ func activateDeployRender(ctx context.Context, projectDir, envName string, opts 
 	}
 }
 
-func runDeploy(ctx context.Context, envName string, opts deployOptions) error { //nolint:funlen // the `forge env deploy` lifecycle in order: resolve, dispatch hosted, render, guard, apply, verify. The sequence is the contract, as in runUp.
+func runDeploy(ctx context.Context, envName string, opts deployOptions) error { //nolint:funlen,gocognit // the `forge env deploy` lifecycle in order: resolve, dispatch hosted, render, guard, apply, verify. The sequence is the contract, as in runUp.
 	dryRun := opts.dryRun
 	namespace := opts.namespace
 	targetArchFlag := opts.targetArch

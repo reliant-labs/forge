@@ -312,8 +312,7 @@ func TestHandOffToPinned_AFlagValueIsNotTheCommand(t *testing.T) {
 			}
 		}
 	}
-	r := NewRootCmd()
-	resetCmdRoute(t)
+	r := newTestRootCmd(t)
 	for want, args := range map[string][]string{
 		"future":  {"-C", "version", "future"},
 		"future2": {"--project-dir=version", "future2"},

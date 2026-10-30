@@ -107,6 +107,7 @@ func (s Snapshot) Validate() error {
 	if s.Base == nil && len(selected) != len(consumers) {
 		return snapshotBad("bootstrap must select every consumer")
 	}
+	platformNeutral := map[ArtifactID]bool{}
 	for id, a := range s.Artifacts {
 		actual, e := ArtifactIdentity(a)
 		if e != nil {
@@ -119,7 +120,9 @@ func (s Snapshot) Validate() error {
 			return snapshotBad("artifact %s lacks origin release", id)
 		}
 		if a.Kind == KindOCI && len(a.Platforms) == 0 {
-			return snapshotBad("artifact %s lacks verified platforms", id)
+			// Only a hosted frontend's site release is platform-neutral (it
+			// has no os/architecture); every binding of it is checked below.
+			platformNeutral[id] = true
 		}
 		seen := map[string]bool{}
 		for _, p := range a.Platforms {
@@ -192,6 +195,9 @@ func (s Snapshot) Validate() error {
 				return snapshotBad("missing binding %v/%s", key, slot)
 			}
 		}
+	}
+	if err := checkPlatformNeutralBindings(s, platformNeutral); err != nil {
+		return err
 	}
 	resources := map[ResourceKey]bool{}
 	total := 0
@@ -354,6 +360,29 @@ func (s Snapshot) Validate() error {
 		}
 		if e.Contract == "" || e.Validator == "" || e.PolicyDigest != s.PolicyDigest || !ValidDigest(e.ReportDigest) || !ValidDigest(e.BaseConsumer) || !ValidDigest(e.CandidateConsumer) || !ValidDigest(e.BasePeer) || !ValidDigest(e.CandidatePeer) {
 			return snapshotBad("incomplete compatibility evidence")
+		}
+	}
+	return nil
+}
+
+// checkPlatformNeutralBindings admits an OCI artifact without verified
+// platforms only as a hosted frontend's site release: bound, and bound ONLY
+// to the "frontend" slot of a consumer in the hosted tree. An image that runs
+// somewhere still needs the platforms its consumer is checked against.
+func checkPlatformNeutralBindings(s Snapshot, neutral map[ArtifactID]bool) error {
+	used := map[ArtifactID]bool{}
+	for _, b := range s.Bindings {
+		if !neutral[b.Artifact] {
+			continue
+		}
+		if b.Slot != "frontend" || b.Consumer.Cluster != BundleHostedCluster {
+			return snapshotBad("artifact %s lacks verified platforms", b.Artifact)
+		}
+		used[b.Artifact] = true
+	}
+	for id := range neutral {
+		if !used[id] {
+			return snapshotBad("artifact %s lacks verified platforms", id)
 		}
 	}
 	return nil

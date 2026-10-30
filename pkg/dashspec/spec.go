@@ -60,13 +60,17 @@ const (
 	// KindFunnel is a product-event funnel over Panel.Funnel. Served from the
 	// product_events table with ClickHouse windowFunnel.
 	KindFunnel PanelKind = "funnel"
+	// KindPostgres is drawn from a read-only SELECT the panel carries in
+	// Postgres, run live against one of the project's databases (see
+	// PostgresQuery). The console runs it; HyperDX cannot.
+	KindPostgres PanelKind = "postgres"
 )
 
 // IsConsoleKind reports whether k is drawn only by the Reliant console, so the
 // HyperDX renderer has nothing to emit for it.
 func IsConsoleKind(k PanelKind) bool {
 	switch k {
-	case KindIssues, KindSessions, KindFunnel:
+	case KindIssues, KindSessions, KindFunnel, KindPostgres:
 		return true
 	}
 	return false
@@ -256,6 +260,9 @@ type Panel struct {
 	Columns []string `json:"columns,omitempty"`
 	// Funnel is what a KindFunnel panel draws; only that kind takes it.
 	Funnel *Funnel `json:"funnel,omitempty"`
+	// Postgres is the query a KindPostgres panel draws; only that kind takes
+	// it, and it takes no Signal, Series or SQL.
+	Postgres *PostgresQuery `json:"postgres,omitempty"`
 	// HasError narrows a KindSessions panel to sessions that hit an error;
 	// only that kind takes it.
 	HasError bool `json:"hasError,omitempty"`
@@ -304,8 +311,34 @@ type Section struct {
 	Title string `json:"title"`
 }
 
+// Scope says which telemetry a dashboard's panels read. It is one enum: the
+// default and the two wider reads.
+type Scope string
+
+// The dashboard scopes.
+const (
+	// ScopeProject is the default (the empty value): panels read the
+	// environments the viewer has selected within the route's project, and the
+	// reader narrows every query to them.
+	ScopeProject Scope = "project"
+	// ScopeOrg reads across every project of the organization: all of the
+	// org's environments, still narrowed to the environments the viewer
+	// selected. The reader names no project, and a console lists the
+	// environments as project/env.
+	ScopeOrg Scope = "org"
+	// ScopePlatform marks a dashboard whose signals are platform or
+	// infrastructure telemetry that belongs to no environment (a database, a
+	// message bus, a collector, a GitOps controller). That telemetry carries
+	// no reliant.env.id, so an environment filter would match nothing. A
+	// reader drops only that environment predicate: who may read, and from
+	// which organization's data, is still the reader's decision.
+	ScopePlatform Scope = "platform"
+)
+
 // Dashboard is an ordered list of panels under a shared set of filters.
 type Dashboard struct {
+	// Scope is empty for ScopeProject.
+	Scope       Scope        `json:"scope,omitempty"`
 	Sections    []Section    `json:"sections,omitempty"`
 	ID          string       `json:"id"`
 	Title       string       `json:"title"`

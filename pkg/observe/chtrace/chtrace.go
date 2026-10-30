@@ -22,8 +22,10 @@
 //     (progress packets), and db.response.returned_rows;
 //   - on failure: the error recorded as an exception event, the span status
 //     Error with the message, error.type (the ClickHouse exception name such
-//     as TIMEOUT_EXCEEDED, or context_canceled / context_deadline_exceeded),
-//     and db.response.status_code (the ClickHouse exception code).
+//     as TIMEOUT_EXCEEDED, or context_canceled / context_deadline_exceeded —
+//     also when the driver reports the statement's expired context as an
+//     i/o timeout or a broken connection), and db.response.status_code (the
+//     ClickHouse exception code).
 //
 // A Query span lasts until its rows are closed: streaming the result is part
 // of the statement's cost. A QueryRow span lasts until the row is scanned
@@ -43,9 +45,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"net"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -127,6 +131,9 @@ func (c *tracedConn) Exec(ctx context.Context, query string, args ...any) error 
 
 // statement is one traced statement's span and what the server reported.
 type statement struct {
+	// ctx is the context the statement ran under: when it expired, its
+	// deadline explains a failure the driver reported opaquely.
+	ctx                 context.Context
 	span                trace.Span
 	readRows, readBytes atomic.Uint64
 	// returned is the rows the caller read (Query), or -1 to take the
@@ -162,6 +169,7 @@ func start(ctx context.Context, query string) (context.Context, *statement) {
 			st.profileRows.Add(p.Rows)
 		}),
 	)
+	st.ctx = ctx
 	return ctx, st
 }
 
@@ -236,42 +244,113 @@ func (st *statement) end(err error) {
 	}
 	st.span.SetAttributes(attrs...)
 	if err != nil {
-		RecordError(st.span, err)
+		RecordErrorContext(st.ctx, st.span, err)
 	}
 	st.span.End()
 }
 
 // RecordError marks span failed by err: the exception event, status Error
 // with the message, error.type, and the ClickHouse code when there is one.
+// It knows only err; RecordErrorContext also reads the statement's context,
+// which is what says a statement the driver failed opaquely ran out of time.
 func RecordError(span trace.Span, err error) {
+	RecordErrorContext(context.Background(), span, err)
+}
+
+// RecordErrorContext is RecordError for a statement that ran under ctx. When
+// ctx, not err, is what explains the failure — the driver returned an i/o
+// timeout or a broken connection because ctx's deadline passed — error.type
+// names the context's verdict and the status message carries it after err's.
+func RecordErrorContext(ctx context.Context, span trace.Span, err error) {
 	if err == nil {
 		return
 	}
+	errType, ctxCause := classify(ctx, err)
 	span.RecordError(err)
-	span.SetStatus(codes.Error, err.Error())
-	span.SetAttributes(attribute.String("error.type", ErrorType(err)))
+	msg := err.Error()
+	if ctxCause != nil {
+		msg += " (" + ctxCause.Error() + ")"
+	}
+	span.SetStatus(codes.Error, msg)
+	span.SetAttributes(attribute.String("error.type", errType))
 	var ex *clickhouse.Exception
 	if errors.As(err, &ex) {
 		span.SetAttributes(attribute.String("db.response.status_code", strconv.Itoa(int(ex.Code))))
 	}
 }
 
-// ErrorType is err's low-cardinality class for error.type: the ClickHouse
-// exception name (TIMEOUT_EXCEEDED, QUOTA_EXCEEDED, ...), context_canceled,
-// context_deadline_exceeded, or _OTHER.
+// ErrorType is err's low-cardinality class for error.type: context_canceled,
+// context_deadline_exceeded, the ClickHouse exception name (TIMEOUT_EXCEEDED,
+// QUOTA_EXCEEDED, ...), timeout (a network timeout), or _OTHER. It knows
+// only err; ErrorTypeContext also reads the statement's context.
 func ErrorType(err error) string {
-	var ex *clickhouse.Exception
+	return ErrorTypeContext(context.Background(), err)
+}
+
+// ErrorTypeContext is ErrorType for a statement that ran under ctx: an error
+// that does not itself say why the statement ended is the context's verdict
+// when ctx was canceled or its deadline has passed.
+func ErrorTypeContext(ctx context.Context, err error) string {
+	errType, _ := classify(ctx, err)
+	return errType
+}
+
+// classify returns err's error.type, and ctx's error when the class came
+// from ctx rather than from err. In order:
+//
+//  1. err says it is a context error (errors.Is);
+//  2. a ClickHouse exception: the server's own named verdict, which a
+//     context that expired later — rows closed after the deadline — must not
+//     overwrite;
+//  3. ctx is done or past its deadline. The driver does not always return
+//     ctx.Err(): clickhouse-go sets the socket deadline to ctx's deadline and
+//     races the read against ctx.Done(), so under load the read's
+//     "i/o timeout" (or a connection broken by the cancel) wins, wrapped in
+//     the driver's own text. Its deadline is the cause whatever the driver
+//     returned. The deadline is compared with the clock, not only read from
+//     ctx.Err(): the socket's timer can fire before ctx's has marked it done;
+//  4. a network timeout with ctx still live: the driver's own read timeout;
+//  5. _OTHER.
+func classify(ctx context.Context, err error) (string, error) {
 	switch {
-	case errors.As(err, &ex) && ex.Name != "":
-		return ex.Name
-	case errors.As(err, &ex):
-		return "clickhouse_" + strconv.Itoa(int(ex.Code))
 	case errors.Is(err, context.Canceled):
-		return "context_canceled"
+		return "context_canceled", nil
 	case errors.Is(err, context.DeadlineExceeded):
-		return "context_deadline_exceeded"
+		return "context_deadline_exceeded", nil
 	}
-	return "_OTHER"
+	var ex *clickhouse.Exception
+	if errors.As(err, &ex) {
+		if ex.Name != "" {
+			return ex.Name, nil
+		}
+		return "clickhouse_" + strconv.Itoa(int(ex.Code)), nil
+	}
+	if ctxErr := contextVerdict(ctx); ctxErr != nil {
+		if errors.Is(ctxErr, context.Canceled) {
+			return "context_canceled", ctxErr
+		}
+		return "context_deadline_exceeded", ctxErr
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return "timeout", nil
+	}
+	return "_OTHER", nil
+}
+
+// contextVerdict is ctx's error, or context.DeadlineExceeded when ctx's
+// deadline has passed though its timer has not yet marked it done.
+func contextVerdict(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 // tracedRows ends the statement's span when the caller is done reading. A

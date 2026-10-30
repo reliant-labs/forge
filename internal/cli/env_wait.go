@@ -181,6 +181,22 @@ type envWaitWorkloadJSON struct {
 	// most diagnostic pair on a rollout that looks ready and is not.
 	UpdatedReplicas int32 `json:"updated_replicas"`
 	DesiredReplicas int32 `json:"desired_replicas"`
+	// Reason is the control plane's one line explaining the row's phase.
+	Reason string `json:"reason,omitempty"`
+}
+
+// envWaitForgeAppliedJSON is one runtime slot forge applies itself, as --json
+// reports it. It carries NO phase or verdict on purpose: the control plane
+// does not judge these slots (their wire phase is UNSPECIFIED), and printing
+// "unspecified" or "unknown" beside them would read as a rollout problem.
+type envWaitForgeAppliedJSON struct {
+	// Name is `<cluster>/<workload>/<slot>`.
+	Name     string `json:"name"`
+	Artifact string `json:"artifact,omitempty"`
+	// PinnedDigest is the snapshot's content for this slot.
+	PinnedDigest string `json:"pinned_digest,omitempty"`
+	// Reason is "applied by forge (not observed by the control plane)".
+	Reason string `json:"reason,omitempty"`
 }
 
 // envWaitPromotionJSON names the promotion the wait was scoped to. Carried
@@ -231,8 +247,11 @@ type envWaitReport struct {
 	// non-nil, so a consumer sees [] rather than null.
 	Workloads []envWaitWorkloadJSON `json:"workloads"`
 	// Unpinned are reported and (without --include-unpinned) do not gate.
-	Unpinned    []envWaitWorkloadJSON `json:"unpinned,omitempty"`
-	Transitions []envWaitTransition   `json:"transitions,omitempty"`
+	Unpinned []envWaitWorkloadJSON `json:"unpinned,omitempty"`
+	// ForgeApplied are the slots forge applies itself: reported, never
+	// gating, and never judged by the control plane.
+	ForgeApplied []envWaitForgeAppliedJSON `json:"forge_applied,omitempty"`
+	Transitions  []envWaitTransition       `json:"transitions,omitempty"`
 	// Queued is set while the promotion is HELD: accepted and recorded,
 	// waiting on a human action, with the action URL. Exit 7 when the
 	// wait ends there.
@@ -634,6 +653,7 @@ func applyRolloutToReport(report *envWaitReport, rollout wireRollout, includeUnp
 	report.ConvergesPromotions = rollout.ConvergesPromotions
 	report.Workloads = waitWorkloadsJSON(rollout.Workloads)
 	report.Unpinned = waitWorkloadsJSON(rollout.Unpinned)
+	report.ForgeApplied = waitForgeAppliedJSON(rollout.ForgeApplied)
 	report.Queued = nil
 	if rollout.Phase == wireRolloutPhaseHeld {
 		report.Queued = (&deployQueuedError{
@@ -675,6 +695,23 @@ func waitWorkloadsJSON(in []wireWorkloadRollout) []envWaitWorkloadJSON {
 			LastError:       w.LastError,
 			UpdatedReplicas: w.UpdatedReplicas,
 			DesiredReplicas: w.DesiredReplicas,
+			Reason:          w.Reason,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// waitForgeAppliedJSON reads only what a forge-applied row reports. Its phase
+// and verdict are deliberately not read: see envWaitForgeAppliedJSON.
+func waitForgeAppliedJSON(in []wireWorkloadRollout) []envWaitForgeAppliedJSON {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]envWaitForgeAppliedJSON, 0, len(in))
+	for _, w := range in {
+		out = append(out, envWaitForgeAppliedJSON{
+			Name: w.Name, Artifact: w.Artifact, PinnedDigest: w.PinnedDigest, Reason: w.Reason,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -892,6 +929,15 @@ func renderEnvWaitText(out io.Writer, report envWaitReport) {
 		fmt.Fprintln(out, "  not pinned by this release (reported, does not gate):")
 		for _, w := range report.Unpinned {
 			fmt.Fprintf(out, "    %-22s %s\n", w.Name, emptyOr(w.ObservedState, w.Phase))
+		}
+	}
+	// Apart from both lists above: the control plane neither applies nor
+	// observes these, so each row carries its reason rather than a phase
+	// it was never judged on.
+	if len(report.ForgeApplied) > 0 {
+		fmt.Fprintln(out, "  applied by forge (reported, not judged by the control plane; does not gate):")
+		for _, w := range report.ForgeApplied {
+			fmt.Fprintf(out, "    %-22s %s\n", w.Name, emptyOr(w.Reason, "applied by forge (not observed by the control plane)"))
 		}
 	}
 	fmt.Fprintf(out, "  waited %s\n", time.Duration(report.WaitedMS)*time.Millisecond)

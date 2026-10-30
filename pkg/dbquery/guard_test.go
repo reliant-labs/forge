@@ -183,21 +183,69 @@ func TestClassify(t *testing.T) {
 
 func TestOptionsLimits(t *testing.T) {
 	t.Parallel()
-	rows, timeout, err := Options{}.limits()
-	if err != nil || rows != DefaultMaxRows || timeout != DefaultTimeout {
-		t.Fatalf("defaults: %d %s %v", rows, timeout, err)
+	b, err := Options{}.limits()
+	want := bounds{rows: DefaultMaxRows, timeout: DefaultTimeout, lockTimeout: DefaultLockTimeout, idleTimeout: DefaultIdleTimeout, maxBytes: MaxResponseBytes}
+	if err != nil || b != want {
+		t.Fatalf("defaults: %+v %v", b, err)
 	}
-	if rows, timeout, err = (Options{MaxRows: MaxRowsLimit, Timeout: MaxTimeout}).limits(); err != nil || rows != MaxRowsLimit || timeout != MaxTimeout {
-		t.Fatalf("maxima must be accepted: %d %s %v", rows, timeout, err)
+	max := Options{MaxRows: MaxRowsLimit, Timeout: MaxTimeout, LockTimeout: MaxLockTimeout, IdleTimeout: MaxTimeout, MaxBytes: MaxResponseBytes}
+	if b, err = max.limits(); err != nil || b.rows != MaxRowsLimit || b.timeout != MaxTimeout || b.lockTimeout != MaxLockTimeout || b.idleTimeout != MaxTimeout || b.maxBytes != MaxResponseBytes {
+		t.Fatalf("maxima must be accepted: %+v %v", b, err)
 	}
 	for name, o := range map[string]Options{
 		"rows over":     {MaxRows: MaxRowsLimit + 1},
 		"rows negative": {MaxRows: -1},
 		"timeout over":  {Timeout: MaxTimeout + 1},
 		"timeout neg":   {Timeout: -1},
+		"lock over":     {LockTimeout: MaxLockTimeout + 1},
+		"lock neg":      {LockTimeout: -1},
+		"idle over":     {IdleTimeout: MaxTimeout + 1},
+		"idle neg":      {IdleTimeout: -1},
+		"bytes over":    {MaxBytes: MaxResponseBytes + 1},
+		"bytes neg":     {MaxBytes: -1},
 	} {
-		if _, _, err := o.limits(); err == nil || err.Kind != KindRefused {
+		if _, err := o.limits(); err == nil || err.Kind != KindRefused {
 			t.Errorf("%s: limits = %v, want refused", name, err)
+		}
+	}
+}
+
+func TestParamRefs(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, sql string
+		want      int
+	}{
+		{"none", `SELECT 1`, 0},
+		{"one", `SELECT $1`, 1},
+		{"highest wins, any order", `SELECT $3, $1, $2 + $3`, 3},
+		{"gap is the highest", `SELECT $1, $4`, 4},
+		{"cast", `SELECT $2::timestamptz`, 2},
+		{"multi digit", `SELECT $12`, 12},
+		{"in a string", `SELECT '$1', 'it''s $9'`, 0},
+		{"in an escape string", `SELECT E'\\'' $7'`, 0},
+		{"in a quoted identifier", `SELECT "$5" FROM t`, 0},
+		{"in a line comment", "SELECT 1 -- $8\n", 0},
+		{"in a block comment", `SELECT /* $8 /* $9 */ $9 */ 1`, 0},
+		{"in a dollar quote", `SELECT $$ $1 $$, $tag$ $2 $tag$`, 0},
+		{"after a dollar quote", `SELECT $$ $1 $$, $2`, 2},
+		{"in an identifier", `SELECT a$1 FROM t`, 0},
+		{"real beside fake", `SELECT '$9', $1 -- $8`, 1},
+		{"in a subquery", `SELECT * FROM (SELECT $2) x WHERE y = $1`, 2},
+	} {
+		got, err := ParamRefs(tc.sql)
+		if err != nil || got != tc.want {
+			t.Errorf("%s: ParamRefs(%q) = %d, %v; want %d", tc.name, tc.sql, got, err, tc.want)
+		}
+	}
+	for name, sql := range map[string]string{
+		"zero":         `SELECT $0`,
+		"over the max": `SELECT $65536`,
+		"huge":         `SELECT $99999999999999999999`,
+		"unterminated": `SELECT $1 'oops`,
+	} {
+		if _, err := ParamRefs(sql); err == nil || KindOf(err) != KindRefused {
+			t.Errorf("%s: ParamRefs(%q) err = %v, want refused", name, sql, err)
 		}
 	}
 }

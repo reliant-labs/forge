@@ -278,3 +278,143 @@ func TestCheckSQLIsTheAlertRuleGuard(t *testing.T) {
 		}
 	}
 }
+
+const pgOK = `"kind":"postgres","postgres":{"database":"app","sql":"SELECT 1"}`
+
+func TestPostgresPanelIsAConsoleKind(t *testing.T) {
+	if !IsConsoleKind(KindPostgres) {
+		t.Fatal("a postgres panel must be skipped by the HyperDX export")
+	}
+}
+
+func TestValidationAcceptsPostgresPanels(t *testing.T) {
+	ok := []struct{ name, src string }{
+		{"minimal", onePanel(pgOK)},
+		{"with a unit and size", onePanel(`"kind":"postgres","unit":"count","width":12,"height":6,"postgres":{"database":"control_plane","sql":"SELECT 1"}`)},
+		{"line", onePanel(`"kind":"postgres","postgres":{"database":"app","draw":"line","time":"t","values":["n"],"group":["plan"],"sql":"SELECT date_trunc('hour', created_at) AS t, plan, count(*) AS n FROM users WHERE created_at >= $1 AND created_at < $2 GROUP BY 1, 2 ORDER BY 1"}`)},
+		{"all three params", onePanel(`"kind":"postgres","postgres":{"database":"app","sql":"SELECT $1::timestamptz, $2::timestamptz, $3::int4"}`)},
+		{"no params used", onePanel(`"kind":"postgres","postgres":{"database":"app","sql":"SELECT count(*) FROM users"}`)},
+		{"explicit auto", onePanel(`"kind":"postgres","postgres":{"database":"app","draw":"auto","sql":"SELECT 1"}`)},
+		{"number with one value", onePanel(`"kind":"postgres","postgres":{"database":"app","draw":"number","values":["n"],"sql":"SELECT 1 AS n"}`)},
+		{"number with none", onePanel(`"kind":"postgres","postgres":{"database":"app","draw":"number","sql":"SELECT 1 AS n"}`)},
+		{"table", onePanel(`"kind":"postgres","postgres":{"database":"app","draw":"table","sql":"TABLE users"}`)},
+		{"bar", onePanel(`"kind":"postgres","postgres":{"database":"app","draw":"bar","group":["plan"],"values":["n"],"sql":"SELECT plan, count(*) AS n FROM users GROUP BY 1"}`)},
+		{"database with dashes and digits", onePanel(`"kind":"postgres","postgres":{"database":"a1-b_2","sql":"SELECT 1"}`)},
+		{"database at 63 bytes", onePanel(`"kind":"postgres","postgres":{"database":"` + strings.Repeat("a", 63) + `","sql":"SELECT 1"}`)},
+		{"column at 63 bytes", onePanel(`"kind":"postgres","postgres":{"database":"app","draw":"line","time":"` + strings.Repeat("t", 63) + `","sql":"SELECT 1"}`)},
+		{"a $4 inside a string", onePanel(`"kind":"postgres","postgres":{"database":"app","sql":"SELECT '$4', $1::timestamptz"}`)},
+	}
+	for _, tc := range ok {
+		t.Run(tc.name, func(t *testing.T) {
+			d, err := ParseDashboard("f.json", []byte(tc.src))
+			if err != nil {
+				t.Fatalf("rejected: %v", err)
+			}
+			if p := d.Panels[0]; p.Kind != KindPostgres || p.Postgres == nil || p.Postgres.Database == "" || p.Signal != "" || p.SQL != "" || p.Series != nil {
+				t.Errorf("decoded %+v", p)
+			}
+		})
+	}
+}
+
+func TestValidationRefusesMisusedPostgresPanels(t *testing.T) {
+	pg := func(q string) string { return onePanel(`"kind":"postgres","postgres":{` + q + `}`) }
+	bad := []struct{ name, src, path, want string }{
+		{"no postgres block", onePanel(`"kind":"postgres"`), "", `needs a "postgres" block`},
+		{"postgres not an object", onePanel(`"kind":"postgres","postgres":"SELECT 1"`), "postgres", "must be an object"},
+		{"unknown postgres field", pg(`"database":"app","sql":"SELECT 1","bogus":1`), "postgres.bogus", `unknown field "bogus"`},
+		{"no database", pg(`"sql":"SELECT 1"`), "postgres", `missing required field "database"`},
+		{"empty database", pg(`"database":"","sql":"SELECT 1"`), "postgres.database", "must not be empty"},
+		{"uppercase database", pg(`"database":"App","sql":"SELECT 1"`), "postgres.database", "is not a database name"},
+		{"database with a space", pg(`"database":"my db","sql":"SELECT 1"`), "postgres.database", "is not a database name"},
+		{"database with a dot", pg(`"database":"a.b","sql":"SELECT 1"`), "postgres.database", "is not a database name"},
+		{"database starting with a dash", pg(`"database":"-a","sql":"SELECT 1"`), "postgres.database", "is not a database name"},
+		{"database ending with an underscore", pg(`"database":"a_","sql":"SELECT 1"`), "postgres.database", "is not a database name"},
+		{"database over 63", pg(`"database":"` + strings.Repeat("a", 64) + `","sql":"SELECT 1"`), "postgres.database", "is not a database name"},
+		{"database not a string", pg(`"database":7,"sql":"SELECT 1"`), "postgres.database", "must be a string"},
+		{"no sql", pg(`"database":"app"`), "postgres", `needs "sql"`},
+		{"sql not a string", pg(`"database":"app","sql":7`), "postgres.sql", "must be a string"},
+		{"empty sql", pg(`"database":"app","sql":""`), "postgres.sql", "empty"},
+		{"sql that writes", pg(`"database":"app","sql":"DELETE FROM users"`), "postgres.sql", "only SELECT"},
+		{"two statements", pg(`"database":"app","sql":"SELECT 1; SELECT 2"`), "postgres.sql", "only one statement"},
+		{"explain analyze of a write", pg(`"database":"app","sql":"EXPLAIN ANALYZE DELETE FROM users"`), "postgres.sql", "EXPLAIN may only describe"},
+		{"sql over 16 KiB", pg(`"database":"app","sql":"SELECT '` + strings.Repeat("x", 16<<10) + `'"`), "postgres.sql", "the limit is"},
+		{"a $4", pg(`"database":"app","sql":"SELECT $1::int4, $4::int4"`), "postgres.sql", "references $4"},
+		{"a $4 after a skipped one", pg(`"database":"app","sql":"SELECT $4::int4"`), "postgres.sql", "references $4"},
+		{"a $0", pg(`"database":"app","sql":"SELECT $0"`), "postgres.sql", "not a valid parameter"},
+		{"bad draw", pg(`"database":"app","sql":"SELECT 1","draw":"pie"`), "postgres.draw", `"pie" is not one of`},
+		{"line without time", pg(`"database":"app","sql":"SELECT 1","draw":"line"`), "postgres", `needs "time"`},
+		{"line with empty time", pg(`"database":"app","sql":"SELECT 1","draw":"line","time":""`), "postgres.time", "1 to 63 bytes"},
+		{"time over 63", pg(`"database":"app","sql":"SELECT 1","time":"` + strings.Repeat("t", 64) + `"`), "postgres.time", "1 to 63 bytes"},
+		{"time not a string", pg(`"database":"app","sql":"SELECT 1","time":1`), "postgres.time", "must be a string"},
+		{"number with two values", pg(`"database":"app","sql":"SELECT 1","draw":"number","values":["a","b"]`), "postgres.values", "shows one value"},
+		{"empty value name", pg(`"database":"app","sql":"SELECT 1","values":[""]`), "postgres.values[0]", "1 to 63 bytes"},
+		{"long value name", pg(`"database":"app","sql":"SELECT 1","values":["` + strings.Repeat("v", 64) + `"]`), "postgres.values[0]", "1 to 63 bytes"},
+		{"value not a string", pg(`"database":"app","sql":"SELECT 1","values":[1]`), "postgres.values[0]", "must be a string"},
+		{"values not a list", pg(`"database":"app","sql":"SELECT 1","values":"n"`), "postgres.values", "must be an array"},
+		{"too many values", pg(`"database":"app","sql":"SELECT 1","values":["a","b","c","d","e","f","g","h","i","j","k"]`), "postgres.values", "over the 10 allowed"},
+		{"empty group name", pg(`"database":"app","sql":"SELECT 1","group":[""]`), "postgres.group[0]", "1 to 63 bytes"},
+		{"too many groups", pg(`"database":"app","sql":"SELECT 1","group":["a","b","c","d"]`), "postgres.group", "over the 3 allowed"},
+		{"signal", onePanel(`"kind":"postgres","signal":"traces","postgres":{"database":"app","sql":"SELECT 1"}`), "signal", `takes no "signal"`},
+		{"series", onePanel(`"kind":"postgres","series":[{"label":"a","agg":"count"}],"postgres":{"database":"app","sql":"SELECT 1"}`), "series", `takes no "series"`},
+		{"sql beside postgres", onePanel(`"kind":"postgres","sql":"SELECT 1","postgres":{"database":"app","sql":"SELECT 1"}`), "sql", `takes no "sql"`},
+		{"where", onePanel(`"kind":"postgres","where":[{"field":"service.name","op":"eq","value":"a"}],"postgres":{"database":"app","sql":"SELECT 1"}`), "where", `takes no "where"`},
+		{"postgres on a line", onePanel(`"kind":"line","signal":"traces","postgres":{"database":"app","sql":"SELECT 1"},` + twoCounts), "postgres", `only a postgres panel takes "postgres"`},
+		{"postgres on a sql panel", onePanel(`"kind":"sql","sql":"SELECT 1","postgres":{"database":"app","sql":"SELECT 1"}`), "postgres", `only a postgres panel takes "postgres"`},
+		{"postgres on issues", onePanel(`"kind":"issues","signal":"traces","postgres":{"database":"app","sql":"SELECT 1"}`), "postgres", `takes no "postgres"`},
+	}
+	for _, tc := range bad {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseDashboard("f.json", []byte(tc.src))
+			if err == nil {
+				t.Fatalf("validated; want %q at %q", tc.want, tc.path)
+			}
+			path := "panels[0]"
+			if tc.path != "" {
+				path += "." + tc.path
+			}
+			for _, p := range ProblemsOf(err) {
+				if p.Path == path && strings.Contains(p.Message, tc.want) {
+					return
+				}
+			}
+			t.Errorf("no problem %q at %s; got:\n%v", tc.want, path, err)
+		})
+	}
+}
+
+func TestPostgresPanelRoundTripsAndStaysOutOfOtherPanels(t *testing.T) {
+	d, err := ParseDashboard("f.json", []byte(onePanel(`"kind":"postgres","postgres":{"database":"app","draw":"line","time":"t","values":["n"],"group":["g"],"sql":"SELECT 1"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := d.Panels[0].Postgres
+	if q.Database != "app" || q.Draw != PostgresDrawLine || q.Time != "t" || len(q.Values) != 1 || len(q.Group) != 1 || q.SQL != "SELECT 1" {
+		t.Fatalf("decoded %+v", q)
+	}
+	out, err := json.Marshal(d.Panels[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseDashboard("f.json", []byte(`{"id":"x","title":"X","panels":[`+string(out)+`]}`)); err != nil {
+		t.Errorf("a marshalled panel does not validate: %v\n%s", err, out)
+	}
+	// A panel of any other kind marshals with no postgres key.
+	old := Panel{ID: "p", Title: "P", Kind: KindLine, Signal: Traces, Series: []Series{{Label: "a", Agg: AggCount}}}
+	got, _ := json.Marshal(old)
+	if strings.Contains(string(got), "postgres") {
+		t.Errorf("marshal grew a postgres key: %s", got)
+	}
+}
+
+func TestPostgresParamsAreTheDocumentedPositions(t *testing.T) {
+	if PostgresParamFrom != 1 || PostgresParamTo != 2 || PostgresParamStep != 3 || PostgresParamCount != 3 {
+		t.Fatalf("params = %d %d %d (%d)", PostgresParamFrom, PostgresParamTo, PostgresParamStep, PostgresParamCount)
+	}
+	if err := CheckPostgresSQL("SELECT $3"); err != nil {
+		t.Errorf("$3 refused: %v", err)
+	}
+	if err := CheckPostgresSQL("SELECT $4"); err == nil || !strings.Contains(err.Error(), "$4") {
+		t.Errorf("$4 = %v, want refused", err)
+	}
+}

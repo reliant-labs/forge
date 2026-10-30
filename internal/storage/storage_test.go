@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -288,7 +289,7 @@ func TestWithLockWaitRunsOnceTheHolderReleases(t *testing.T) {
 
 	ran := false
 	start := time.Now()
-	if err := WithLockWait(path, 5*time.Second, func() error { ran = true; return nil }); err != nil {
+	if err := WithLockWait(path, 5*time.Second, nil, func() error { ran = true; return nil }); err != nil {
 		t.Fatalf("a bounded wait for a lock that frees in 80ms failed: %v", err)
 	}
 	if !ran {
@@ -311,7 +312,7 @@ func TestWithLockWaitGivesUpAfterItsBound(t *testing.T) {
 
 	err := WithLock(path, func() error {
 		start := time.Now()
-		werr := WithLockWait(path, 120*time.Millisecond, func() error {
+		werr := WithLockWait(path, 120*time.Millisecond, nil, func() error {
 			t.Fatal("ran while the lock was held")
 			return nil
 		})
@@ -352,5 +353,85 @@ func TestPolicyFileWithoutSourceBudgetKeysGetsDefaults(t *testing.T) {
 	bad.GolangciCacheGiB = 0
 	if bad.Validate() == nil {
 		t.Fatal("an unbounded golangci-lint cache must be rejected")
+	}
+}
+
+// A maintenance pass gives way to a writer: once one starts waiting, the
+// pass's context is cancelled with ErrWriterWaiting, the pass returns, and the
+// writer runs well inside its bound.
+func TestWithMaintenanceYieldsToAWaitingWriter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	prev := LockWaitPoll
+	LockWaitPoll = 10 * time.Millisecond
+	t.Cleanup(func() { LockWaitPoll = prev })
+
+	running := make(chan struct{})
+	var cause error
+	passDone := make(chan error, 1)
+	go func() {
+		passDone <- WithMaintenance(t.Context(), path, nil, func(ctx context.Context) error {
+			close(running)
+			select {
+			case <-ctx.Done():
+				cause = context.Cause(ctx)
+				return ctx.Err()
+			case <-time.After(20 * time.Second):
+				return nil
+			}
+		})
+	}()
+	<-running
+	start := time.Now()
+	if err := WithLockWait(path, 3*time.Second, nil, func() error { return nil }); err != nil {
+		t.Fatalf("the writer failed behind a pass that should have yielded: %v", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("the writer waited %v: the pass did not yield promptly", d)
+	}
+	if err := <-passDone; !errors.Is(err, context.Canceled) {
+		t.Errorf("pass returned %v, want its cancelled context", err)
+	}
+	if !errors.Is(cause, ErrWriterWaiting) {
+		t.Errorf("pass cancelled with cause %v, want ErrWriterWaiting", cause)
+	}
+	if writerWaiting(path) {
+		t.Error("the writer's announcement outlived its wait")
+	}
+}
+
+// A test binary started from a shell that exports FORGE_STORAGE_POLICY (a
+// Reliant agent's does) inherits the HOST's policy. Writing it from a test
+// put fake pins in the machine policy and queued release-cut tests behind the
+// host's own maintenance pass; the inherited path is refused like the default.
+func TestGuardRefusesTheInheritedPolicyPath(t *testing.T) {
+	host := filepath.Join(t.TempDir(), "host-storage.json")
+	prev := inheritedPolicyPath
+	inheritedPolicyPath = host
+	t.Cleanup(func() { inheritedPolicyPath = prev })
+	t.Setenv("FORGE_STORAGE_POLICY", host)
+
+	if err := WithLock(host, func() error { t.Fatal("ran against the host's policy"); return nil }); !errors.Is(err, ErrMachinePolicyUnderTest) {
+		t.Fatalf("WithLock on the inherited policy = %v, want ErrMachinePolicyUnderTest", err)
+	}
+	fixture := filepath.Join(t.TempDir(), "storage.json")
+	t.Setenv("FORGE_STORAGE_POLICY", fixture)
+	if err := WithLock(fixture, func() error { return nil }); err != nil {
+		t.Fatalf("a test's own policy was refused: %v", err)
+	}
+}
+
+// The holder record names the CURRENT holder or nobody: it is removed on
+// release, so a later holder that records nothing is not misnamed.
+func TestLockHolderIsClearedOnRelease(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	var during string
+	if err := WithLock(path, func() error { during = lockHolder(path); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if want := "pid " + strconv.Itoa(os.Getpid()); during != want {
+		t.Errorf("holder while held = %q, want %q", during, want)
+	}
+	if after := lockHolder(path); after != "holder unknown" {
+		t.Errorf("holder after release = %q, want it cleared", after)
 	}
 }

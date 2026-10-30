@@ -77,6 +77,12 @@ import {
   detectAppClient,
   takeIdentifyProps,
 } from "./attribution.js";
+import {
+  type BenignErrorClassifier,
+  type BenignErrorSource,
+  classifyBenignError,
+  FilteredErrorCounter,
+} from "./benign-errors.js";
 import { setExceptionReporter } from "./error-reporter.js";
 import { registerTelemetryStartup } from "./telemetry-gate.js";
 import {
@@ -84,6 +90,13 @@ import {
   setTelemetrySink,
   type TrackValue,
 } from "./track.js";
+
+export {
+  type BenignErrorClassifier,
+  type BenignErrorKind,
+  classifyBenignError,
+  FILTERED_ERRORS_ACTION,
+} from "./benign-errors.js";
 
 /** Where the browser ships telemetry: this origin's `/_otel`. */
 export const DEFAULT_INGEST_PATH = "/_otel";
@@ -183,6 +196,18 @@ export interface BrowserTelemetryConfig {
    * site attributing acquisition to the campaign that first brought a visitor.
    */
   attributionTouch?: AttributionTouch;
+  /**
+   * Decides which errors are benign browser noise: kept out of the error
+   * pipeline and counted as `forge.errors_filtered` actions instead
+   * (benign-errors.ts). Default classifyBenignError: an AbortError, and the
+   * browser's generic "Failed to fetch" TypeError; never a ConnectError. It
+   * applies to what the SDK records from unhandled rejections, uncaught
+   * errors, console.error and reportException; the app's own handlers see
+   * every event unchanged. For an unhandled rejection or uncaught error it is
+   * handed `{ name, message }` as the SDK recorded them, not the original
+   * value. Pass `() => null` to record everything.
+   */
+  classifyBenignError?: BenignErrorClassifier;
 }
 
 /** The slice of the SDK this module calls. Typed here, not imported, so the module loads without it. */
@@ -283,7 +308,10 @@ async function start(
     hdx.init(
       buildSdkOptions({ ...config, replay }, ingest, window.location.origin),
     );
-    tapSdkInputs();
+    // After init: both hook what the SDK RECORDS, never what the app sees.
+    const benign = benignFilter(config, hdx);
+    filterSdkErrorSpans(benign);
+    tapSdkInputs(benign);
     // Every span carries where it came from and which visitor made it; the
     // product-event view reads these as app.client and visitor.id.
     // With attribution deferred (attribution: false), visitor.id joins them
@@ -301,7 +329,7 @@ async function start(
     runningClient = hdx;
     runningConfig = config;
     setExceptionReporter((error, attributes) => {
-      if (alreadyRecorded(error)) {
+      if (alreadyRecorded(error) || benign.filtered(error, "reportException")) {
         return;
       }
       hdx.recordException(error, attributes);
@@ -327,6 +355,8 @@ async function start(
     return true;
   } catch (err) {
     // Blocked chunk, ad-blocker, SDK throw: telemetry must never break the app.
+    // A startup that failed after the hooks went in takes them out again.
+    removeBenignFilter();
     console.debug("[telemetry] disabled:", err);
     setTelemetrySink(null);
     return false;
@@ -363,26 +393,284 @@ function noteSeen(value: unknown): void {
   }
 }
 
-function tapSdkInputs(): void {
+function tapSdkInputs(benign: BenignFilter): void {
   if (tapped) {
     return;
   }
   tapped = true;
   const wrapped = console.error;
-  console.error = function (this: unknown, ...args: unknown[]) {
+  const tap = function (this: unknown, ...args: unknown[]) {
     for (const arg of args) {
-      if (arg instanceof Error) {
-        noteSeen(arg);
+      try {
+        if (arg instanceof Error) {
+          noteSeen(arg);
+        }
+      } catch {
+        // A revoked Proxy: not ours to inspect; forward it untouched.
       }
     }
-    return wrapped.apply(this, args);
+    // The call always goes on to the SDK and the console, exactly as without
+    // this tap. Only the verdict on the SDK's RECORD of it is decided here,
+    // where the real arguments are: the SDK opens its console.error span
+    // synchronously inside wrapped(), and filterSdkErrorSpans reads it.
+    const previous = consoleVerdict;
+    consoleVerdict = benignKindsOf(benign, args);
+    try {
+      return wrapped.apply(this, args);
+    } finally {
+      consoleVerdict = previous;
+    }
   };
-  window.addEventListener("error", (e) => noteSeen(e.error), true);
-  window.addEventListener(
-    "unhandledrejection",
-    (e) => noteSeen(e.reason),
-    true,
-  );
+  console.error = tap;
+  const onError = (e: ErrorEvent) => noteSeen(e.error);
+  const onRejection = (e: PromiseRejectionEvent) => noteSeen(e.reason);
+  window.addEventListener("error", onError, true);
+  window.addEventListener("unhandledrejection", onRejection, true);
+  benignTeardown.push(() => {
+    if (console.error === tap) {
+      console.error = wrapped;
+    }
+    window.removeEventListener?.("error", onError, true);
+    window.removeEventListener?.("unhandledrejection", onRejection, true);
+    tapped = false;
+  });
+}
+
+/**
+ * The kind of every exception in a console.error call when ALL of them are
+ * benign, or null to record the call: no exception, one real one, or an
+ * argument that cannot even be inspected (a throwing Symbol.toStringTag
+ * getter, a revoked Proxy).
+ */
+function benignKindsOf(benign: BenignFilter, args: unknown[]): string[] | null {
+  const kinds: string[] = [];
+  for (const arg of args) {
+    let exception: boolean;
+    try {
+      exception = isExceptionLike(arg);
+    } catch {
+      return null;
+    }
+    if (!exception) {
+      continue;
+    }
+    const kind = benign.classify(arg);
+    if (kind === null) {
+      return null;
+    }
+    kinds.push(kind);
+  }
+  return kinds.length > 0 ? kinds : null;
+}
+
+// ── Benign browser errors (benign-errors.ts) ────────────────────────────
+//
+// Filtered at the SDK's RECORDING boundary, never at the app's: every window
+// "error" / "unhandledrejection" event and every console.error call reaches
+// every app handler (window.onerror, onunhandledrejection, listeners of any
+// phase, registered before telemetry started or after) and the console
+// exactly as it would with no telemetry at all.
+//
+// The SDK's error capture opens one span per failure on its `errors` tracer —
+// named onerror, unhandledrejection or console.error — and ends it once the
+// exception is attached; only an ENDED span is ever exported. The SDK has no
+// drop hook (its exporter options are not reachable through @hyperdx/browser,
+// and an OTel 2.x provider takes no span processor after construction), so the
+// runtime wraps that tracer's startSpan: a benign failure's span is counted
+// and simply never ended, so it is never exported. Everything else ends as
+// the SDK meant.
+//
+//   - window events: the span describes one value, so it is classified from
+//     what the SDK recorded on it (error.object = the error's name,
+//     error.message). A String (a non-Error throw) is never benign.
+//   - console.error: one call can carry several values, and the span names
+//     only the first exception, so the verdict comes from the console tap,
+//     which classifies every argument (consoleVerdict).
+interface BenignFilter {
+  /** The kind of a benign error, or null. Counts nothing. */
+  classify(error: unknown): string | null;
+  /** Count one filtered error of `kind`. */
+  note(kind: string, source: BenignErrorSource): void;
+  /** Count and report true when `error` is benign; false to record it. */
+  filtered(error: unknown, source: BenignErrorSource): boolean;
+}
+
+function benignFilter(
+  config: BrowserTelemetryConfig,
+  hdx: HyperDXClient,
+): BenignFilter {
+  const classify = config.classifyBenignError ?? classifyBenignError;
+  const counter = new FilteredErrorCounter((name, attributes) => {
+    if (!isTelemetryDisabled()) {
+      hdx.addAction?.(name, attributes);
+    }
+  });
+  const onPageHide = () => counter.flush();
+  const onVisibility = () => {
+    if (document.visibilityState === "hidden") {
+      counter.flush();
+    }
+  };
+  if (typeof window.addEventListener === "function") {
+    window.addEventListener("pagehide", onPageHide);
+  }
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", onVisibility);
+  }
+  benignTeardown.push(() => {
+    window.removeEventListener?.("pagehide", onPageHide);
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", onVisibility);
+    }
+  });
+  const kindOf = (error: unknown): string | null => {
+    try {
+      return classify(error) || null;
+    } catch {
+      // A classifier that throws keeps the error.
+      return null;
+    }
+  };
+  return {
+    classify: kindOf,
+    note: (kind, source) => counter.note(kind, source),
+    filtered(error, source) {
+      const kind = kindOf(error);
+      if (!kind) {
+        return false;
+      }
+      counter.note(kind, source);
+      return true;
+    },
+  };
+}
+
+/** The scope (name, version) the SDK's error capture records under. */
+const SDK_ERRORS_SCOPE = { name: "errors", version: "1" } as const;
+
+/** The spans that scope opens, one per captured failure, and their source. */
+const SDK_ERROR_SPANS: Record<string, BenignErrorSource> = {
+  onerror: "error",
+  unhandledrejection: "unhandledrejection",
+  "console.error": "console.error",
+};
+
+// The console tap's verdict on the call now inside the SDK's wrapper: the
+// benign kinds, null to record it, undefined when no tapped call is running.
+let consoleVerdict: string[] | null | undefined;
+
+interface RecordingSpan {
+  end(...args: unknown[]): unknown;
+  attributes?: Record<string, unknown>;
+}
+
+interface StartSpanTracer {
+  startSpan(name: string, ...rest: unknown[]): unknown;
+}
+
+function filterSdkErrorSpans(benign: BenignFilter): void {
+  const proxy = trace.getTracerProvider() as { getDelegate?: () => unknown };
+  const provider = (proxy.getDelegate?.() ?? proxy) as {
+    getTracer?: (name: string, version?: string) => unknown;
+  };
+  const tracer = provider.getTracer?.(
+    SDK_ERRORS_SCOPE.name,
+    SDK_ERRORS_SCOPE.version,
+  ) as StartSpanTracer | undefined;
+  if (!tracer || typeof tracer.startSpan !== "function") {
+    // No seam: record everything, as without the filter.
+    return;
+  }
+  const original = tracer.startSpan;
+  const startSpan = function (
+    this: unknown,
+    name: string,
+    ...rest: unknown[]
+  ): unknown {
+    const span = original.call(this, name, ...rest) as RecordingSpan;
+    const source = SDK_ERROR_SPANS[name];
+    if (!source || typeof span?.end !== "function") {
+      return span;
+    }
+    const verdict = name === "console.error" ? consoleVerdict : undefined;
+    const end = span.end;
+    span.end = function (this: unknown, ...args: unknown[]) {
+      const kinds =
+        name === "console.error"
+          ? (verdict ?? null)
+          : recordedKind(benign, span);
+      if (kinds) {
+        for (const kind of kinds) {
+          benign.note(kind, source);
+        }
+        // Never ended, so never exported.
+        return undefined;
+      }
+      return end.apply(this, args);
+    };
+    return span;
+  };
+  tracer.startSpan = startSpan;
+  benignTeardown.push(() => {
+    if (tracer.startSpan === startSpan) {
+      tracer.startSpan = original;
+    }
+  });
+}
+
+/** The benign kind of the one failure a window-event span recorded, or null. */
+function recordedKind(
+  benign: BenignFilter,
+  span: RecordingSpan,
+): string[] | null {
+  try {
+    const name = span.attributes?.["error.object"];
+    const message = span.attributes?.["error.message"];
+    if (typeof name !== "string" || name === "String") {
+      return null;
+    }
+    const kind = benign.classify({
+      name,
+      message: typeof message === "string" ? message : "",
+    });
+    return kind ? [kind] : null;
+  } catch {
+    return null;
+  }
+}
+
+// What undoes the benign filter's hooks (the tracer wrap, the console tap, the
+// flush listeners), run when startup fails at any point after they went in.
+let benignTeardown: Array<() => void> = [];
+
+function removeBenignFilter(): void {
+  const undo = benignTeardown;
+  benignTeardown = [];
+  for (const fn of undo.reverse()) {
+    try {
+      fn();
+    } catch {
+      // Telemetry must never break the app.
+    }
+  }
+}
+
+// An exception value as console.error receives it: an Error, a DOMException
+// (not an Error in every browser), or either from another realm (an iframe),
+// which fails instanceof but keeps its [object Error] / [object DOMException]
+// tag.
+function isExceptionLike(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  if (value instanceof Error) {
+    return true;
+  }
+  if (typeof DOMException !== "undefined" && value instanceof DOMException) {
+    return true;
+  }
+  const tag = Object.prototype.toString.call(value);
+  return tag === "[object Error]" || tag === "[object DOMException]";
 }
 
 function alreadyRecorded(error: unknown): boolean {

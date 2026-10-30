@@ -89,7 +89,7 @@ build_one() {
 # that fails fails the script after every build has finished, naming it, with
 # its log; checksums.txt is written only when all succeeded, in $TARGETS order.
 jobs_max="${FORGE_RELEASE_JOBS:-0}"
-pids=() names=()
+pids=()
 for target in $TARGETS; do
   goos="${target%/*}"
   goarch="${target#*/}"

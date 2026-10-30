@@ -58,8 +58,8 @@
 # the tag was pushed, it may take up to 30 minutes for the mirror's cache to
 # expire" (proxy.golang.org FAQ), and release-forge.sh's immutable-version gate
 # requested exactly this version's .info moments before tagging it (v0.1.45:
-# gate at 02:06Z, push at 02:07:45Z, served from 02:37Z). That gate now reads
-# @v/list and never requests the new version's .info, so no negative entry is
+# gate at 02:06Z, push at 02:07:45Z, served from 02:37Z). That gate now asks
+# the proxy's cache (/cached-only), which never fetches, so no negative entry is
 # planted and ingestion is the only delay left. A caller that DID ask for the
 # version before the tag existed can raise GOPROXY_WAIT_MAX_SECONDS.
 #

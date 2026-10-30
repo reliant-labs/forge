@@ -169,11 +169,6 @@ func ingestingRegistry(t *testing.T, repo string) string {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		version := ""
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/@v/list"):
-			for _, tag := range originTags(repo) {
-				fmt.Fprintln(w, tag)
-			}
-			return
 		case strings.Contains(r.URL.Path, "/@v/") && strings.HasSuffix(r.URL.Path, ".info"):
 			version = strings.TrimSuffix(r.URL.Path[strings.LastIndex(r.URL.Path, "/@v/")+len("/@v/"):], ".info")
 		case strings.HasPrefix(r.URL.Path, "/lookup/") && strings.Contains(r.URL.Path, "@"):
@@ -187,23 +182,6 @@ func ingestingRegistry(t *testing.T, repo string) string {
 	}))
 	t.Cleanup(srv.Close)
 	return srv.URL
-}
-
-// originTags lists the repo's origin tags (none when there is no origin).
-func originTags(repo string) []string {
-	cmd := exec.CommandContext(context.Background(), "git", "ls-remote", "--tags", "origin")
-	cmd.Dir = repo
-	out, err := cmd.Output()
-	if err != nil {
-		return nil
-	}
-	var tags []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if _, ref, ok := strings.Cut(line, "	refs/tags/"); ok && !strings.HasSuffix(ref, "^{}") {
-			tags = append(tags, ref)
-		}
-	}
-	return tags
 }
 
 // originHasTag reports whether the repo's origin remote holds tag. Errors

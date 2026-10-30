@@ -201,7 +201,8 @@ jobs:
       # ingested, so this costs exactly one HTTP probe and no sleep. On a
       # release commit it takes as long as the proxy needs to ingest the
       # new tag (scripts/wait-for-go-proxy.sh sizes its window for it);
-      # release-forge.sh reads @v/list before tagging, so no 404 is cached.
+      # release-forge.sh asks only the proxy's cache before tagging, so no 404
+      # is cached.
       #
       # The version is read from the GENERATED go.mod rather than from VERSION,
       # so this tracks whatever the scaffold actually pinned instead of

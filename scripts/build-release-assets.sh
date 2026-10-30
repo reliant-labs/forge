@@ -67,18 +67,21 @@ trap 'rm -rf "$STAGE"' EXIT
 export COPYFILE_DISABLE=1
 
 # build_one <goos> <goarch>: one archive, its log in $STAGE/<goos>-<goarch>.log.
+# Every step propagates its own failure (`|| return`): build_one runs as the left
+# operand of `&&` below, where bash disables `set -e` for the whole function, so
+# without them a failed go build, cp or chmod is ignored whenever tar succeeds.
 build_one() {
   local goos=$1 goarch=$2 bin=forge name dir
-  [ "$goos" = "windows" ] && bin="forge.exe"
+  if [ "$goos" = "windows" ]; then bin="forge.exe"; fi
   name="forge_${goos}_${goarch}.tar.gz"
   dir="$STAGE/$goos-$goarch"
-  mkdir -p "$dir"
+  mkdir -p "$dir" || return
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
     -ldflags "-s -w -X main.Version=$VERSION -X main.GitCommit=$COMMIT -X main.BuildDate=$DATE" \
-    -o "$dir/$bin" ./cmd/forge
-  cp LICENSE NOTICE "$dir/"
-  chmod 755 "$dir/$bin"
-  tar -C "$dir" -czf "$OUT/$name" "$bin" LICENSE NOTICE
+    -o "$dir/$bin" ./cmd/forge || return
+  cp LICENSE NOTICE "$dir/" || return
+  chmod 755 "$dir/$bin" || return
+  tar -C "$dir" -czf "$OUT/$name" "$bin" LICENSE NOTICE || return
 }
 
 # The targets build CONCURRENTLY, at most $FORGE_RELEASE_JOBS at once (default:

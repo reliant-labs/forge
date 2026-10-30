@@ -439,3 +439,126 @@ func TestDashboardRole_RemovingTheMarkerRevokes(t *testing.T) {
 	converge()
 	mustBeDenied(t, can(), "a table whose forge:dashboard marker was removed")
 }
+
+// dashboardConvergence drives the production chain (introspect, project,
+// render, apply) repeatedly against ONE database, so a marker change between
+// runs is judged against what the previous run granted.
+type dashboardConvergence struct {
+	t    *testing.T
+	db   *sql.DB
+	role string
+}
+
+func newDashboardConvergence(t *testing.T) *dashboardConvergence {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("boots real postgres; runs in task test")
+	}
+	db, cleanup, err := pgtest.New()
+	if err != nil {
+		t.Fatalf("test postgres: %v", err)
+	}
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, dashboardSchemaSQL); err != nil {
+		t.Fatal(err)
+	}
+	role := fmt.Sprintf("forge_dash_cv%d_%d", os.Getpid(), time.Now().UnixNano()%1_000_000_000)
+	if _, err := db.ExecContext(ctx, `CREATE ROLE `+role+` LOGIN`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), `DROP OWNED BY `+role)
+		_, _ = db.ExecContext(context.Background(), `DROP ROLE IF EXISTS `+role)
+	})
+	return &dashboardConvergence{t: t, db: db, role: role}
+}
+
+func (d *dashboardConvergence) exec(q string) {
+	d.t.Helper()
+	if _, err := d.db.ExecContext(context.Background(), q); err != nil {
+		d.t.Fatalf("%s: %v", q, err)
+	}
+}
+
+func (d *dashboardConvergence) converge() {
+	d.t.Helper()
+	tables, err := schemadef.Introspect(d.db)
+	if err != nil {
+		d.t.Fatal(err)
+	}
+	script, err := dbgrants.RenderFor(d.role, dbgrants.DashboardTables(ReadOnlyGrantTables(tables, nil)))
+	if err != nil {
+		d.t.Fatal(err)
+	}
+	if err := dbgrants.ApplyDashboard(context.Background(), d.db, script); err != nil {
+		d.t.Fatal(err)
+	}
+}
+
+func (d *dashboardConvergence) can(q string) error {
+	d.t.Helper()
+	ctx := context.Background()
+	conn, err := d.db.Conn(ctx)
+	if err != nil {
+		d.t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, `SET ROLE `+d.role); err != nil {
+		d.t.Fatal(err)
+	}
+	defer func() { _, _ = conn.ExecContext(ctx, `RESET ROLE`) }()
+	return canSelect(ctx, conn, q)
+}
+
+// A column that gains forge:no-dashboard after the role could read it loses the
+// access on the next convergence, and keeps its neighbours.
+func TestDashboardRole_AddingNoDashboardRevokesTheColumn(t *testing.T) {
+	d := newDashboardConvergence(t)
+	d.exec(`COMMENT ON COLUMN usage_events.user_email IS NULL`)
+	d.converge()
+	if err := d.can(`SELECT user_email FROM usage_events`); err != nil {
+		t.Fatalf("not readable before the marker: %v", err)
+	}
+	d.exec(`COMMENT ON COLUMN usage_events.user_email IS 'forge:no-dashboard'`)
+	d.converge()
+	mustBeDenied(t, d.can(`SELECT user_email FROM usage_events`), "a column that gained forge:no-dashboard")
+	mustBeDenied(t, d.can(`SELECT upper(user_email) FROM usage_events`), "the same, through an expression")
+	if err := d.can(`SELECT id, model, cost FROM usage_events`); err != nil {
+		t.Errorf("a neighbouring column was revoked: %v", err)
+	}
+}
+
+// A column that is newly marked forge:secret after the role could read it is
+// refused on the next convergence.
+func TestDashboardRole_NewlySecretColumnRevokes(t *testing.T) {
+	d := newDashboardConvergence(t)
+	d.converge()
+	if err := d.can(`SELECT note FROM usage_events`); err != nil {
+		t.Fatalf("not readable before it became secret: %v", err)
+	}
+	d.exec(`COMMENT ON COLUMN usage_events.note IS 'forge:secret'`)
+	d.converge()
+	mustBeDenied(t, d.can(`SELECT note FROM usage_events`), "a column that became forge:secret")
+	mustBeDenied(t, d.can(`SELECT length(note) FROM usage_events`), "the same, through an expression")
+	if err := d.can(`SELECT model FROM usage_events`); err != nil {
+		t.Errorf("a neighbouring column was revoked: %v", err)
+	}
+}
+
+// The whole marker is dropped, as opposed to rewritten, and every column the
+// role held goes with it.
+func TestDashboardRole_RemovingTheMarkerRevokesEveryColumn(t *testing.T) {
+	d := newDashboardConvergence(t)
+	d.converge()
+	for _, q := range []string{`SELECT id FROM usage_events`, `SELECT model FROM usage_events`, `SELECT cost FROM usage_events`} {
+		if err := d.can(q); err != nil {
+			t.Fatalf("%s before: %v", q, err)
+		}
+	}
+	d.exec(`COMMENT ON TABLE usage_events IS 'forge:append-only'`)
+	d.converge()
+	for _, q := range []string{`SELECT id FROM usage_events`, `SELECT model FROM usage_events`, `SELECT cost FROM usage_events`} {
+		mustBeDenied(t, d.can(q), "after the marker was removed: "+q)
+	}
+}

@@ -3,6 +3,7 @@ package migratekit
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -254,3 +255,41 @@ func TestApplyAppliesTheDashboardGrantsToo(t *testing.T) {
 }
 
 func contains(s, sub string) bool { return strings.Contains(s, sub) }
+
+// TestDashboardGrantsFailFastBehindABlockerAndTheNextRunAppliesThem: the
+// dashboard script is REVOKE/GRANT and takes locks like the read-only one, so
+// behind a session holding what it converges it waits for lock_timeout, fails
+// the run as the dashboard grants (not the read-only ones, which applied), and
+// is applied by the next run.
+func TestDashboardGrantsFailFastBehindABlockerAndTheNextRunAppliesThem(t *testing.T) {
+	dsn := requirePG(t)
+	// forge_ro is not created, so its script is skipped and the blocker below
+	// can only be met by the dashboard script.
+	useRole(t)
+	dash := useDashboardRole(t)
+	withDashboardRole(t, dsn, dash)
+	fsys := dashboardRelease(map[string]string{"1_users.up.sql": usersSQL, "2_notes.up.sql": notesSQL},
+		mustRender(t, dashTables()...), mustRenderDashboard(t, dash, dashTables()))
+	releaseBlocker := grantsBlocker(t, dsn)
+
+	var err error
+	took := timed(func() {
+		_, err = upWith(fsys, dsn, RunOptions{Limits: Limits{LockTimeout: 300 * time.Millisecond, LockAttempts: 2, RetryBackoff: 50 * time.Millisecond}})
+	})
+	var lerr *LockTimeoutError
+	if !errors.As(err, &lerr) || !lerr.Grants || lerr.Attempts != 2 {
+		t.Fatalf("Up returned %v, want a grants *LockTimeoutError after 2 attempts", err)
+	}
+	if !strings.Contains(err.Error(), "dashboard grants") {
+		t.Errorf("the error does not name the dashboard grants: %v", err)
+	}
+	if took > 15*time.Second {
+		t.Errorf("Up took %s behind a blocker with a 300ms lock timeout", took)
+	}
+
+	releaseBlocker()
+	res, err := upWith(fsys, dsn, RunOptions{})
+	if err != nil || res.Grants == nil || !res.Grants.DashboardApplied {
+		t.Fatalf("rerun: %+v, %v, want the dashboard grants applied", res.Grants, err)
+	}
+}

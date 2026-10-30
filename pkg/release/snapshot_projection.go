@@ -126,7 +126,10 @@ func SnapshotDelivery(s Snapshot) ([]BundleClusterTree, []BundleTree, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		if string(phase) != r.Phase {
+		// A flat tree (hosted, unclustered) has no phases: the layer reader
+		// records every flat object as rollout whatever its kind, so the
+		// kind-derived phase is compared only for phased trees.
+		if !FlatCluster(r.Key.Cluster) && string(phase) != r.Phase {
 			return nil, nil, snapshotBad("resource phase differs from exact bytes")
 		}
 		counts[r.Key.Cluster]++

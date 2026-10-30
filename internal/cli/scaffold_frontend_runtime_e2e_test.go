@@ -395,7 +395,7 @@ func materializeShadowedRuntimeE2E(t *testing.T, tmpRoot, runtimeSrc string) str
 	dst := filepath.Join(tmpRoot, "web-runtime-shadowed")
 	copyTreeE2E(t, runtimeSrc, dst, "node_modules")
 	runCmdTimeout(t, dst, 5*time.Minute,
-		"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
+		"pnpm", "install", "--no-frozen-lockfile", "--prefer-offline")
 
 	shadowed := 0
 	for _, peer := range runtimePeersE2E(t, filepath.Join(dst, "package.json")) {

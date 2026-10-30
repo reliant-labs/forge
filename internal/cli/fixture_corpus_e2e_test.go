@@ -115,6 +115,8 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"maps"
@@ -124,6 +126,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -1324,11 +1327,89 @@ func vendorCorpusForgeModule(t *testing.T, repoRoot, projectDir string) {
 		}
 	}
 
-	// Only pkg/ is copied, not the whole repo: pkg/* is all a scaffold
-	// imports, and copying internal/ and cmd/ would multiply every e2e
-	// fixture by forge's entire source tree for no added coverage.
-	src := filepath.Join(repoRoot, "pkg")
-	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+	// pkg/ is copied, plus the internal/ packages pkg/ imports (and theirs),
+	// not the whole repo: pkg/* is all a scaffold imports, and copying all of
+	// internal/ and cmd/ would multiply every e2e fixture by forge's entire
+	// source tree for no added coverage. The internal closure is not
+	// optional: pkg/pgtest imports internal/openfiles, and a .forge-pkg
+	// without it failed every scaffold's `go mod tidy` with "module ...
+	// replaced by ./.forge-pkg, but does not contain package
+	// .../internal/openfiles" (main's e2e suite, 2026-10-30).
+	if err := copyForgeTree(filepath.Join(repoRoot, "pkg"), filepath.Join(dst, "pkg")); err != nil {
+		t.Fatalf("vendor the forge module into %s: %v", dst, err)
+	}
+	internalDeps, err := forgeInternalImportClosure(repoRoot, filepath.Join(repoRoot, "pkg"))
+	if err != nil {
+		t.Fatalf("resolve the internal packages forge/pkg imports: %v", err)
+	}
+	for _, rel := range internalDeps {
+		if err := copyForgeDir(filepath.Join(repoRoot, rel), filepath.Join(dst, rel)); err != nil {
+			t.Fatalf("vendor %s into %s: %v", rel, dst, err)
+		}
+	}
+}
+
+const forgeInternalImportPrefix = "github.com/reliant-labs/forge/internal/"
+
+// forgeInternalImportClosure returns, relative to repoRoot, every
+// internal/ package directory the non-test Go files under root import,
+// directly or through another internal package.
+func forgeInternalImportClosure(repoRoot, root string) ([]string, error) {
+	seen := map[string]bool{}
+	var queue []string
+	collect := func(dir string, recursive bool) error {
+		return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if path != dir && (!recursive || d.Name() == "testdata" || d.Name() == ".git") {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			f, perr := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+			if perr != nil {
+				return perr
+			}
+			for _, imp := range f.Imports {
+				p, _ := strconv.Unquote(imp.Path.Value)
+				if !strings.HasPrefix(p, forgeInternalImportPrefix) {
+					continue
+				}
+				rel := filepath.Join("internal", filepath.FromSlash(strings.TrimPrefix(p, forgeInternalImportPrefix)))
+				if !seen[rel] {
+					seen[rel] = true
+					queue = append(queue, rel)
+				}
+			}
+			return nil
+		})
+	}
+	if err := collect(root, true); err != nil {
+		return nil, err
+	}
+	for len(queue) > 0 {
+		rel := queue[0]
+		queue = queue[1:]
+		if err := collect(filepath.Join(repoRoot, rel), false); err != nil {
+			return nil, err
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for rel := range seen {
+		out = append(out, rel)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// copyForgeTree copies src to dst recursively, skipping .git/ and testdata/.
+func copyForgeTree(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -1340,7 +1421,7 @@ func vendorCorpusForgeModule(t *testing.T, repoRoot, projectDir string) {
 			if d.Name() == ".git" || d.Name() == "testdata" {
 				return filepath.SkipDir
 			}
-			return os.MkdirAll(filepath.Join(dst, "pkg", rel), 0o755)
+			return os.MkdirAll(filepath.Join(dst, rel), 0o755)
 		}
 		if !d.Type().IsRegular() {
 			return nil
@@ -1349,11 +1430,33 @@ func vendorCorpusForgeModule(t *testing.T, repoRoot, projectDir string) {
 		if rerr != nil {
 			return rerr
 		}
-		return os.WriteFile(filepath.Join(dst, "pkg", rel), data, 0o644)
+		return os.WriteFile(filepath.Join(dst, rel), data, 0o644)
 	})
+}
+
+// copyForgeDir copies one package directory's regular non-test files (not
+// its subdirectories: each is its own package, copied when imported).
+func copyForgeDir(src, dst string) error {
+	entries, err := os.ReadDir(src)
 	if err != nil {
-		t.Fatalf("vendor the forge module into %s: %v", dst, err)
+		return err
 	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if !e.Type().IsRegular() || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(src, e.Name()))
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dst, e.Name()), data, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // generateTwiceIdempotent runs `forge generate` twice and asserts the

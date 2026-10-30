@@ -233,7 +233,17 @@ type Checkout struct {
 
 // ReadCheckout reads dir with git. ok is false when dir is not a git
 // checkout (or git is missing): there is no HEAD to compare against.
+//
+// dir must be the ROOT of its checkout. A directory that merely sits inside
+// some other repository (a vendored copy of forge's module under a project,
+// `replace ... => ./.forge-pkg`) is not a forge checkout: git would answer
+// with the enclosing project's HEAD, and forge would then try to build
+// itself from a directory with no cmd/forge.
 func ReadCheckout(dir string) (Checkout, bool) {
+	top, err := gitIn(dir, "rev-parse", "--show-toplevel")
+	if err != nil || !samePath(top, dir) {
+		return Checkout{}, false
+	}
 	head, err := gitIn(dir, "rev-parse", "HEAD")
 	if err != nil || head == "" {
 		return Checkout{}, false

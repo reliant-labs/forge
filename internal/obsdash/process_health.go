@@ -81,7 +81,8 @@ func splitServiceFilter(d *Dashboard, nodePanels, serviceNames, workloads []stri
 		}
 		filters = append(filters, f)
 	}
-	d.Filters = append(filters, Filter{ID: "workload", Label: "k8s.workload.name", Field: fieldWorkload, Signal: Metrics, PanelIDs: nodePanels})
+	filters = append(filters, Filter{ID: "workload", Label: "k8s.workload.name", Field: fieldWorkload, Signal: Metrics, PanelIDs: nodePanels})
+	d.Filters = filters
 }
 
 func sameNames(a, b []string) bool {

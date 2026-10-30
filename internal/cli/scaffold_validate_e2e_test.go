@@ -227,7 +227,7 @@ message Widget {
 	// into the shared repo checkout and runs its prepare script there; build
 	// it once up front so parallel tests do not race that bootstrap.
 	prebuildWebRuntimeE2E(t)
-	runCmdTimeout(t, webDir, 5*time.Minute, "npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
+	runCmdTimeout(t, webDir, 5*time.Minute, "pnpm", "install", "--no-frozen-lockfile", "--prefer-offline")
 
 	// Generate AGAIN, after the install. The buf TypeScript pass runs
 	// protoc-gen-es out of the frontend's OWN node_modules and, when it is

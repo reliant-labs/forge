@@ -30,7 +30,7 @@ import (
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
-func newNewCmd() *cobra.Command {
+func newNewCmd() *cobra.Command { //nolint:funlen // one cobra command: its flag table and help text are declarations, not logic.
 	var (
 		projectPath     string
 		nameFlag        string

@@ -708,7 +708,7 @@ func groupDigests(group ServiceGroup) map[string]string {
 	return group.Hosted.Digests
 }
 
-func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlanItem, error) {
+func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlanItem, error) { //nolint:funlen // one switch over the hosted tiers (workload, static, database), each case a short projection, then one cross-item namespace check.
 	if group.Hosted == nil {
 		return nil, errors.New("hosted deploy: the group carries no hosted target")
 	}

@@ -410,7 +410,7 @@ enum ProductStatus {
 	// it once up front so parallel tests do not race that bootstrap.
 	prebuildWebRuntimeE2E(t)
 	runCmdTimeout(t, feDir, 5*time.Minute,
-		"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
+		"pnpm", "install", "--no-frozen-lockfile", "--prefer-offline")
 
 	// ── Defect D: the scaffolded style-lint autofix must not corrupt CSS.
 	//    This drives the scaffold's OWN npm scripts and restores globals.css

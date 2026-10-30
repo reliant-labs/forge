@@ -66,15 +66,11 @@ trap 'rm -rf "$STAGE"' EXIT
 # macOS tar would add AppleDouble ._* members for files with extended attributes.
 export COPYFILE_DISABLE=1
 
-: >"$OUT/checksums.txt"
-for target in $TARGETS; do
-  goos="${target%/*}"
-  goarch="${target#*/}"
-  bin="forge"
+# build_one <goos> <goarch>: one archive, its log in $STAGE/<goos>-<goarch>.log.
+build_one() {
+  local goos=$1 goarch=$2 bin=forge name dir
   [ "$goos" = "windows" ] && bin="forge.exe"
   name="forge_${goos}_${goarch}.tar.gz"
-
-  echo "→ building $name"
   dir="$STAGE/$goos-$goarch"
   mkdir -p "$dir"
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
@@ -83,7 +79,48 @@ for target in $TARGETS; do
   cp LICENSE NOTICE "$dir/"
   chmod 755 "$dir/$bin"
   tar -C "$dir" -czf "$OUT/$name" "$bin" LICENSE NOTICE
+}
+
+# The targets build CONCURRENTLY, at most $FORGE_RELEASE_JOBS at once (default:
+# all of them). Each target is a separate compile of the whole program (a
+# different GOOS/GOARCH shares no build-cache entry with another), so one after
+# another the six took ~25 minutes on a loaded shared host (v1.0.5) while the
+# release waited; side by side the wall time is the slowest target's. A target
+# that fails fails the script after every build has finished, naming it, with
+# its log; checksums.txt is written only when all succeeded, in $TARGETS order.
+jobs_max="${FORGE_RELEASE_JOBS:-0}"
+pids=() names=()
+for target in $TARGETS; do
+  goos="${target%/*}"
+  goarch="${target#*/}"
+  if [ "$jobs_max" -gt 0 ] && [ "${#pids[@]}" -ge "$jobs_max" ]; then
+    # Bounded: wait for the oldest before starting another.
+    wait "${pids[0]}" || true
+    pids=("${pids[@]:1}")
+  fi
+  echo "→ building forge_${goos}_${goarch}.tar.gz"
+  (build_one "$goos" "$goarch" && touch "$STAGE/$goos-$goarch.ok") >"$STAGE/$goos-$goarch.log" 2>&1 &
+  pids+=($!)
+done
+wait || true
+
+: >"$OUT/checksums.txt"
+failed=0
+for target in $TARGETS; do
+  goos="${target%/*}"
+  goarch="${target#*/}"
+  name="forge_${goos}_${goarch}.tar.gz"
+  if [ ! -f "$STAGE/$goos-$goarch.ok" ]; then
+    echo "error: building $name failed:" >&2
+    sed 's/^/  /' "$STAGE/$goos-$goarch.log" >&2
+    failed=1
+    continue
+  fi
   printf '%s  %s\n' "$(sha256_of "$OUT/$name")" "$name" >>"$OUT/checksums.txt"
 done
+if [ "$failed" = 1 ]; then
+  rm -f "$OUT"/forge_*.tar.gz "$OUT/checksums.txt"
+  exit 1
+fi
 
 echo "→ wrote $(wc -l <"$OUT/checksums.txt" | tr -d ' ') archives and checksums.txt to $OUT"

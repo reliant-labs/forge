@@ -169,7 +169,7 @@ func preparePromoteFollow(follow *promoteFollowOptions, jsonOut bool) error {
 // this build does not support, a malformed gate, a bad run id: each refuses
 // the whole command, rather than moving the pointer and then failing on the
 // part the caller actually asked for.
-func runPromote(ctx context.Context, version, env string, opts promoteOptions) error {
+func runPromote(ctx context.Context, version, env string, opts promoteOptions) error { //nolint:funlen // the promotion in order: resolve, validate every input, gate, move the pointer, record. Validating everything before the move is the contract (above).
 	if ctx == nil {
 		ctx = context.Background()
 	}

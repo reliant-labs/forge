@@ -76,6 +76,8 @@
 # See docs/releasing.md.
 set -euo pipefail
 RELEASE_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/release-lock.sh
+. "$RELEASE_SCRIPT_DIR/release-lock.sh"
 
 DRY_RUN=0
 REPO_ROOT=""
@@ -215,6 +217,7 @@ if [ -n "$(git status --porcelain)" ]; then
   git status --short >&2
   exit 1
 fi
+START_HEAD="$(git rev-parse HEAD)"
 
 # ── 4. The tag may not already exist ────────────────────────────────
 if git rev-parse -q --verify "refs/tags/$RELEASE_TAG" >/dev/null; then
@@ -375,12 +378,49 @@ fi
 # than usual here: the tree is shared with other agents, and the alternative
 # cleanup (`git checkout -- <path>`) is exactly the destructive verb that is
 # forbidden in this repo.
+#
+# Two locks are taken BEFORE anything is backed up or edited, with the cleanup
+# that drops them registered first:
+#   - the checkout lock: one run of this script edits this working tree at a
+#     time, dry runs included. Without it two runs in one shared checkout both
+#     pass the clean-tree gate, both rewrite the release files, and the loser's
+#     restore clobbers the winner's edits while the winner commits them.
+#   - the release lock (release-lock.sh, real runs only): one release of this
+#     repository at a time, across machines and pipelines; the release workflow
+#     coalesces into a live one.
+# Until the backups exist there is nothing to restore: RESTORE_ON_EXIT stays 0,
+# so a run refused a lock never touches a file.
 BACKUP_DIR="$(mktemp -d)"
-RESTORE_ON_EXIT=1
+RESTORE_ON_EXIT=0
 CHANGELOG_FILE="CHANGELOG.md"
 NPM_MANIFEST="npm/package.json"
 TOUCHED=("${VERSION_FILES[@]}" "$NEXT_FILE" "$CHANGELOG_FILE")
 [ -f "$NPM_MANIFEST" ] && TOUCHED+=("$NPM_MANIFEST")
+
+# The checkout lock is flock(1) on a file in this worktree's git dir: the kernel
+# arbitrates it, and drops it when its holder dies, however it dies. There is no
+# fallback: a pid-file or mkdir lock must decide when a dead holder's lock may be
+# taken over, and two runs that judge the same dead holder can both take it —
+# exactly the concurrent edit this lock exists to prevent. So no flock, no
+# release (Linux has it in util-linux; macOS: `brew install flock`).
+CHECKOUT_LOCK="$(git rev-parse --absolute-git-dir)/release-forge.lock"
+checkout_lock_acquire() {
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "error: flock(1) is not installed, and this script will not edit a shared checkout without it" >&2
+    echo "hint: install it (Linux: util-linux; macOS: brew install flock), then re-run" >&2
+    return 1
+  fi
+  # fd 9 is held for the rest of the run; the lock goes with the process.
+  exec 9>>"$CHECKOUT_LOCK"
+  flock -n 9 && return 0
+  echo "error: another release-forge.sh run is editing this checkout ($CHECKOUT_LOCK); wait for it to finish" >&2
+  return 1
+}
+checkout_lock_release() {
+  # Dropped before the EXIT trap ends, not left to the processes this run
+  # started that still hold fd 9.
+  flock -u 9 2>/dev/null || true
+}
 
 restore_tree() {
   if [ "$RESTORE_ON_EXIT" = "1" ]; then
@@ -398,12 +438,41 @@ restore_tree() {
     done
   fi
   rm -rf "$BACKUP_DIR" "${CLONE_DIR:-}"
+  release_lock_release
+  checkout_lock_release
 }
 trap restore_tree EXIT
+
+checkout_lock_acquire || exit 1
+# Re-judge under the lock what was judged before it: a run that held it until just
+# now may have committed (HEAD moved) or tagged.
+if [ -n "$(git status --porcelain)" ]; then
+  echo "error: working tree is not clean; commit or set aside your changes before releasing" >&2
+  git status --short >&2
+  exit 1
+fi
+if [ "$(git rev-parse HEAD)" != "$START_HEAD" ]; then
+  echo "error: HEAD moved while this release was validating ($START_HEAD -> $(git rev-parse HEAD)); re-run it" >&2
+  exit 1
+fi
+if git rev-parse -q --verify "refs/tags/$RELEASE_TAG" >/dev/null; then
+  echo "error: tag $RELEASE_TAG already exists (another cut made it)" >&2
+  exit 1
+fi
+if [ "$DRY_RUN" != "1" ]; then
+  # One release of this repository at a time (see above). Then re-check origin, since
+  # a holder that just finished has released the lock and pushed the tag.
+  release_lock_acquire "$VERSION" || exit 1
+  if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+    echo "error: $RELEASE_TAG is already on origin (another cut released it)" >&2
+    exit 1
+  fi
+fi
 
 for f in "${TOUCHED[@]}"; do
   [ -f "$f" ] && cp "$f" "$BACKUP_DIR/$(echo "$f" | tr '/' '_')"
 done
+RESTORE_ON_EXIT=1
 
 echo "→ syncing version files to $VERSION"
 for f in "${VERSION_FILES[@]}"; do
@@ -574,6 +643,9 @@ if [ -n "$COMMIT" ]; then
   # The tag names the green commit; the release commit becomes a PR.
   RELEASE_SHA="$COMMIT"
   git tag -a "$RELEASE_TAG" -m "forge $VERSION" "$COMMIT"
+  # Publish only while this release provably still holds the lock (release-lock.sh);
+  # a refusal leaves no local tag behind (see the push below).
+  release_lock_assert || { git tag -d "$RELEASE_TAG" >/dev/null; exit 1; }
   git push --atomic origin "refs/tags/$RELEASE_TAG" "HEAD:refs/heads/release/$VERSION"
   "$GH_BIN" pr create --repo "$GITHUB_REPO" --base "$BRANCH" --head "release/$VERSION" \
     --title "chore: release $VERSION" --body "Bookkeeping for $RELEASE_TAG, tagged at $COMMIT." &&
@@ -603,6 +675,11 @@ echo "→ pushing atomically (branch + tag, all-or-nothing)"
 # namespace. On the release machine a losing v1.0.5 cut left a second v1.0.5 tag
 # in the shared forge checkout, so every later `git fetch --tags` there failed
 # with "would clobber existing tag" and the next release could not start (forge#1524).
+# Publish only while this release provably still holds the lock (release-lock.sh).
+if ! release_lock_assert; then
+  git tag -d "$RELEASE_TAG" >/dev/null
+  exit 1
+fi
 if ! git push --atomic origin "$RELEASE_SHA:refs/heads/$BRANCH" "refs/tags/$RELEASE_TAG"; then
   git tag -d "$RELEASE_TAG" >/dev/null
   echo "error: the push was refused, so nothing was released; deleted the local tag $RELEASE_TAG" >&2

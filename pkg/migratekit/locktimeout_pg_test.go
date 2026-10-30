@@ -768,13 +768,13 @@ func TestDropIndexConcurrentlyThatTimesOutIsNotRetriedAndStaysDirty(t *testing.T
 // x-multi-statement a file may SET search_path and then build its index in
 // that schema. The cleanup before the file resolves names in the session as it
 // was, so it would drop public's invalid items_v for a build that targets
-// tenant_a. Cleanup only runs for a lone CREATE INDEX CONCURRENTLY, whose
+// schema_a. Cleanup only runs for a lone CREATE INDEX CONCURRENTLY, whose
 // names mean the same thing before and during the statement.
 func TestConcurrentlyCleanupDoesNotFollowASessionSearchPath(t *testing.T) {
 	dsn := baseSchema(t)
 	db := openRecordDB(t, dsn)
 	files := map[string]string{
-		"2_tenant.up.sql": "CREATE SCHEMA tenant_a; CREATE TABLE tenant_a.items (id INT, v TEXT);",
+		"2_schema.up.sql": "CREATE SCHEMA schema_a; CREATE TABLE schema_a.items (id INT, v TEXT);",
 	}
 	mustUp(t, release(merged(lockBase, files)), dsn)
 	for _, q := range []string{
@@ -785,7 +785,7 @@ func TestConcurrentlyCleanupDoesNotFollowASessionSearchPath(t *testing.T) {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	files["3_a.up.sql"] = "SET search_path TO tenant_a;\nCREATE INDEX CONCURRENTLY items_v ON items (v);"
+	files["3_a.up.sql"] = "SET search_path TO schema_a;\nCREATE INDEX CONCURRENTLY items_v ON items (v);"
 	sep := "?"
 	if strings.Contains(dsn, "?") {
 		sep = "&"
@@ -793,7 +793,7 @@ func TestConcurrentlyCleanupDoesNotFollowASessionSearchPath(t *testing.T) {
 	if _, err := upWith(release(merged(lockBase, files)), dsn+sep+"x-multi-statement=true", RunOptions{}); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
-	for schema, want := range map[string]bool{"public": false, "tenant_a": true} {
+	for schema, want := range map[string]bool{"public": false, "schema_a": true} {
 		var valid bool
 		if err := db.QueryRow(`SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
 			JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = 'items_v' AND n.nspname = $1`, schema).Scan(&valid); err != nil {
@@ -806,17 +806,17 @@ func TestConcurrentlyCleanupDoesNotFollowASessionSearchPath(t *testing.T) {
 }
 
 // TestConcurrentlyCleanupStaysInItsOwnSchema: two schemas each hold an invalid
-// items_v. A migration building tenant_a.items_v drops tenant_a's and leaves
-// tenant_b's, which it did not build and its file does not name.
+// items_v. A migration building schema_a.items_v drops schema_a's and leaves
+// schema_b's, which it did not build and its file does not name.
 func TestConcurrentlyCleanupStaysInItsOwnSchema(t *testing.T) {
 	dsn := requirePG(t)
 	files := map[string]string{
-		"1_tenants.up.sql": "CREATE SCHEMA tenant_a; CREATE SCHEMA tenant_b;\n" +
-			"CREATE TABLE tenant_a.items (id INT, v TEXT); CREATE TABLE tenant_b.items (id INT, v TEXT);",
+		"1_schemas.up.sql": "CREATE SCHEMA schema_a; CREATE SCHEMA schema_b;\n" +
+			"CREATE TABLE schema_a.items (id INT, v TEXT); CREATE TABLE schema_b.items (id INT, v TEXT);",
 	}
 	mustUp(t, release(files), dsn)
 	db := openRecordDB(t, dsn)
-	for _, s := range []string{"tenant_a", "tenant_b"} {
+	for _, s := range []string{"schema_a", "schema_b"} {
 		for _, q := range []string{
 			"CREATE INDEX items_v ON " + s + ".items (v)",
 			"UPDATE pg_index SET indisvalid = false WHERE indexrelid = '" + s + ".items_v'::regclass",
@@ -826,11 +826,11 @@ func TestConcurrentlyCleanupStaysInItsOwnSchema(t *testing.T) {
 			}
 		}
 	}
-	files["2_a.up.sql"] = "CREATE INDEX CONCURRENTLY items_v ON tenant_a.items (v);"
+	files["2_a.up.sql"] = "CREATE INDEX CONCURRENTLY items_v ON schema_a.items (v);"
 	if _, err := upWith(release(files), dsn, RunOptions{}); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
-	for schema, want := range map[string]bool{"tenant_a": true, "tenant_b": false} {
+	for schema, want := range map[string]bool{"schema_a": true, "schema_b": false} {
 		var valid bool
 		if err := db.QueryRow(`SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
 			JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = 'items_v' AND n.nspname = $1`, schema).Scan(&valid); err != nil {

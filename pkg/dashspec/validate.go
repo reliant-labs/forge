@@ -75,6 +75,8 @@ func formatProblem(p Problem, file string) string {
 
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 
+var tagPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
+
 // ParseDashboard decodes and validates one dashboard file: a single Dashboard
 // object in the renderer-neutral spec vocabulary (the objects of
 // the spec's dashboards). name is only used in errors.
@@ -243,7 +245,7 @@ func (v *validator) oneOf(path string, obj map[string]any, key string, required 
 }
 
 func (v *validator) dashboard(d map[string]any) {
-	v.known("", d, "version", "id", "title", "description", "scope", "filters", "annotations", "panels", "sections", "defaultRange")
+	v.known("", d, "version", "id", "title", "description", "scope", "group", "tags", "replaces", "filters", "annotations", "panels", "sections", "defaultRange")
 	if ver := v.str("", d, "version", false); ver != "" && ver != SpecVersion {
 		v.add("version", "%q is not the spec version this forge reads (%s)", ver, SpecVersion)
 	}
@@ -258,6 +260,13 @@ func (v *validator) dashboard(d map[string]any) {
 		}
 	}
 	v.oneOf("", d, "scope", false, string(ScopeProject), string(ScopeOrg), string(ScopePlatform))
+	groups := make([]string, len(Groups))
+	for i, g := range Groups {
+		groups[i] = string(g)
+	}
+	v.oneOf("", d, "group", false, groups...)
+	v.tags(d)
+	v.replaces(d)
 
 	if fs, ok := v.list("", d, "filters"); ok {
 		v.filters(fs)
@@ -1047,4 +1056,59 @@ func (ix *jsonIndex) syntaxProblem(err error) Problem {
 	}
 	line, col := ix.lineCol(off)
 	return Problem{Line: line, Col: col, Message: "invalid JSON: " + err.Error()}
+}
+
+// tags checks Dashboard.Tags: at most MaxTags unique lowercase labels.
+func (v *validator) tags(d map[string]any) {
+	ts, ok := v.list("", d, "tags")
+	if !ok {
+		return
+	}
+	if len(ts) > MaxTags {
+		v.add("tags", "has %d tags, over the %d allowed", len(ts), MaxTags)
+	}
+	seen := map[string]bool{}
+	for i, raw := range ts {
+		p := indexPath("tags", i)
+		t, ok := raw.(string)
+		switch {
+		case !ok:
+			v.add(p, "must be a string")
+		case !tagPattern.MatchString(t):
+			v.add(p, "%q is not a valid tag (lowercase letters, digits, '.', '_' and '-', 1 to 32 characters, starting with a letter or digit)", t)
+		case seen[t]:
+			v.add(p, "tag %q repeats an earlier tag", t)
+		default:
+			seen[t] = true
+		}
+	}
+}
+
+// replaces checks Dashboard.Replaces: unique dashboard ids other than its own.
+func (v *validator) replaces(d map[string]any) {
+	rs, ok := v.list("", d, "replaces")
+	if !ok {
+		return
+	}
+	if len(rs) > MaxReplaces {
+		v.add("replaces", "has %d ids, over the %d allowed", len(rs), MaxReplaces)
+	}
+	self, _ := d["id"].(string)
+	seen := map[string]bool{}
+	for i, raw := range rs {
+		p := indexPath("replaces", i)
+		id, ok := raw.(string)
+		switch {
+		case !ok:
+			v.add(p, "must be a string")
+		case !idPattern.MatchString(id):
+			v.add(p, "%q is not a valid dashboard id", id)
+		case id == self:
+			v.add(p, "a dashboard cannot replace itself")
+		case seen[id]:
+			v.add(p, "id %q repeats an earlier id", id)
+		default:
+			seen[id] = true
+		}
+	}
 }

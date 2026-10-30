@@ -278,7 +278,7 @@ type exportedBundle struct {
 // newHostedSPACompositionFixture is the native composition harness of
 // TestCompositionNativeBootstrapWorkerAndStaleBase over prod's topology. The
 // recording control plane advertises every bundle feature this forge writes
-// (placement-prerequisites-v1 included): a mixed bundle must not seal without
+// (placement-prerequisites-v2 included): a mixed bundle must not seal without
 // it.
 func newHostedSPACompositionFixture(t *testing.T, webDependencies string) *hostedSPACompositionFixture {
 	t.Helper()

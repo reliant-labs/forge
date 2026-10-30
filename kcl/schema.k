@@ -3314,6 +3314,15 @@ schema BrowserTelemetry:
     # Product funnels rendered as `funnel` panels on the project's frontend
     # dashboard. A funnel id is unique within a frontend.
     funnels: [Funnel] = []
+    # The service.name the frontend's browser SDK reports. ONLY for a frontend
+    # built from another repository (`source`): that repository's own
+    # `forge generate` baked the name into src/lib/otel_gen.ts as
+    # naming.FrontendServiceName(<its project>, <its frontend>), which forge
+    # cannot read from here, and it is neither this project's name nor the
+    # name this environment gives the frontend. The generated dashboard and
+    # alerts filter on it, so it must equal the baked value (e.g. "shop-web").
+    # An in-repo frontend reports <project>-<name> and declares nothing.
+    service_name: str = ""
 
     check:
         replay_sample_rate >= 0.0 and replay_sample_rate <= 1.0, \
@@ -3322,6 +3331,8 @@ schema BrowserTelemetry:
             "BrowserTelemetry.sourcemaps must be 'publish' | 'public' | 'off'"
         len({f.id: True for f in funnels}) == len(funnels), \
             "BrowserTelemetry.funnels declares a funnel id twice: each funnel needs its own id"
+        not service_name or regex.match(service_name, "^[A-Za-z0-9][A-Za-z0-9._-]*$"), \
+            "BrowserTelemetry.service_name must be a service name: letters, digits, '.', '_' and '-', starting with a letter or digit"
 
 schema Frontend:
     """A web or mobile frontend: a dev server, or a static build forge
@@ -3526,6 +3537,8 @@ schema Frontend:
         port > 0 and port < 65536, "Frontend.port must be 1..65535"
         telemetry == Undefined or type != "rn", \
             "Frontend '${name}'.telemetry is for a browser frontend; a 'rn' frontend runs no browser SDK"
+        telemetry == Undefined or not telemetry.service_name or source, \
+            "Frontend '${name}'.telemetry.service_name is for a frontend built from another repository (`source`): an in-repo frontend reports <project>-<name> and declares nothing"
         "none" not in routes or len(routes) == 1, \
             "Frontend '${name}'.routes combines \"none\" with route slugs ${routes}: use [\"none\"] for no generated pages, OR list the slugs you want — not both"
         not public_dir or not public_dir.startswith("/"), \

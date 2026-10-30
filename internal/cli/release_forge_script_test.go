@@ -23,6 +23,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -311,6 +312,143 @@ func TestReleaseForgeScript_TagsOnceAtTheReleaseCommit(t *testing.T) {
 	if remoteTags := gitOut(t, origin, "tag", "-l"); !strings.Contains(remoteTags, "v0.2.0") {
 		t.Errorf("tag v0.2.0 did not reach the remote; got:\n%s", remoteTags)
 	}
+	// The release lock is dropped on the way out.
+	if locks := gitOut(t, origin, "for-each-ref", "refs/release-lock/"); locks != "" {
+		t.Errorf("the release left its lock on origin:\n%s", locks)
+	}
+}
+
+// TestReleaseForgeScript_RejectsAConcurrentRelease: while another release of this
+// repository (any version) holds a live refs/release-lock/release on origin, the script
+// refuses before it commits, tags or pushes anything, and leaves that holder's lock
+// alone. This is what keeps a hand cut and the release workflow from racing.
+func TestReleaseForgeScript_RejectsAConcurrentRelease(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs a git push")
+	}
+	repo := newForgeFixtureRepo(t)
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	gitIn(t, repo, "clone", "--bare", "--quiet", repo, origin)
+	gitIn(t, repo, "remote", "add", "origin", origin)
+	tree := gitOut(t, repo, "mktree")
+	lock := gitOut(t, repo, "-c", "user.name=F", "-c", "user.email=f@x.invalid", "commit-tree", tree, "-m", "release lock: v0.1.9 by other@box pid 1 release-forge.sh")
+	gitIn(t, repo, "push", "-q", "origin", lock+":refs/release-lock/release")
+	before := gitOut(t, repo, "rev-parse", "HEAD")
+
+	out, err := runForgeScript(t, repo, "v0.2.0")
+	if err == nil {
+		t.Fatalf("expected a refusal while another release holds the lock, got success:\n%s", out)
+	}
+	if !strings.Contains(out, "already in progress: release lock: v0.1.9 by other@box") {
+		t.Errorf("refusal does not say a release is in progress:\n%s", out)
+	}
+	if head := gitOut(t, repo, "rev-parse", "HEAD"); head != before {
+		t.Errorf("the refused release committed: HEAD %s -> %s", before, head)
+	}
+	if tags := gitOut(t, origin, "tag", "-l"); strings.Contains(tags, "v0.2.0") {
+		t.Errorf("the refused release pushed its tag")
+	}
+	if got := gitOut(t, origin, "rev-parse", "refs/release-lock/release"); got != lock {
+		t.Errorf("the refused release touched the holder's lock: %s, want %s", got, lock)
+	}
+	// Refused before it edited anything: the lock is taken ahead of the backups.
+	if status := gitOut(t, repo, "status", "--porcelain"); status != "" {
+		t.Errorf("the refused release left the tree dirty:\n%s", status)
+	}
+}
+
+// TestReleaseForgeScript_OneRunEditsACheckoutAtATime: two runs in one shared
+// checkout both pass the clean-tree gate before either edits a file, so the
+// release files are guarded by a checkout lock taken BEFORE they are backed up.
+// While another run holds it, a dry run and a real release are both refused
+// without touching a file (a refused run used to restore its backups over the
+// holder's edits), and neither takes the release lock on origin. Without
+// flock(1) at all the script refuses to edit.
+func TestReleaseForgeScript_OneRunEditsACheckoutAtATime(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script, which builds the fixture module")
+	}
+	if _, err := exec.LookPath("flock"); err != nil {
+		t.Skip("flock not on PATH")
+	}
+	repo := newForgeFixtureRepo(t)
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	gitIn(t, repo, "clone", "--bare", "--quiet", repo, origin)
+	gitIn(t, repo, "remote", "add", "origin", origin)
+
+	// Another run of the script, mid-release: it holds the checkout lock.
+	lockPath := filepath.Join(gitOut(t, repo, "rev-parse", "--absolute-git-dir"), "release-forge.lock")
+	holder := exec.CommandContext(context.Background(), "bash", "-c", `exec 9>>"$1"; flock 9; echo held; exec sleep 300`, "_", lockPath)
+	stdout, err := holder.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = holder.Process.Kill(); _ = holder.Wait() })
+	buf := make([]byte, 5)
+	if _, err := io.ReadFull(stdout, buf); err != nil || string(buf) != "held\n" {
+		t.Fatalf("the holder did not take the lock: %q %v", buf, err)
+	}
+
+	before := gitOut(t, repo, "rev-parse", "HEAD")
+	version, _ := os.ReadFile(filepath.Join(repo, "VERSION"))
+	for _, args := range [][]string{{"--dry-run", "v0.2.0"}, {"v0.2.0"}} {
+		out, err := runForgeScript(t, repo, args...)
+		if err == nil {
+			t.Fatalf("%v: expected a refusal while another run edits this checkout, got success:\n%s", args, out)
+		}
+		if !strings.Contains(out, "another release-forge.sh run is editing this checkout") {
+			t.Errorf("%v: the refusal does not say why:\n%s", args, out)
+		}
+		if status := gitOut(t, repo, "status", "--porcelain"); status != "" {
+			t.Errorf("%v: the refused run touched the tree:\n%s", args, status)
+		}
+		if got, _ := os.ReadFile(filepath.Join(repo, "VERSION")); string(got) != string(version) {
+			t.Errorf("%v: the refused run rewrote VERSION: %q", args, got)
+		}
+		if head := gitOut(t, repo, "rev-parse", "HEAD"); head != before {
+			t.Errorf("%v: the refused run committed: HEAD %s -> %s", args, before, head)
+		}
+		if locks := gitOut(t, origin, "for-each-ref", "refs/release-lock/"); locks != "" {
+			t.Errorf("%v: the refused run took the release lock:\n%s", args, locks)
+		}
+	}
+
+	// Without flock(1) there is no checkout lock, and the script refuses rather
+	// than edit unguarded: a pid-file fallback lets two runs that judge the same
+	// dead holder both take the lock.
+	noFlock := t.TempDir()
+	seen := map[string]bool{"flock": true}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			if seen[e.Name()] {
+				continue
+			}
+			seen[e.Name()] = true
+			_ = os.Symlink(filepath.Join(dir, e.Name()), filepath.Join(noFlock, e.Name()))
+		}
+	}
+	// An empty PATH copy would refuse for want of bash or git, not flock.
+	if !seen["git"] {
+		t.Fatalf("no git found on PATH to copy into the flock-less PATH (%d tools seen)", len(seen))
+	}
+	out, err := runForgeScriptEnv(t, repo, []string{"PATH=" + noFlock}, "--dry-run", "v0.2.0")
+	if err == nil || !strings.Contains(out, "flock(1) is not installed") {
+		t.Errorf("without flock the script must refuse to edit the checkout; err=%v:\n%s", err, out)
+	}
+	if status := gitOut(t, repo, "status", "--porcelain"); status != "" {
+		t.Errorf("the run without flock touched the tree:\n%s", status)
+	}
+
+	// The holder finishes: the next run proceeds.
+	_ = holder.Process.Kill()
+	_ = holder.Wait()
+	if out, err := runForgeScript(t, repo, "--dry-run", "v0.2.0"); err != nil {
+		t.Fatalf("a dry run after the holder finished failed: %v\n%s", err, out)
+	}
 }
 
 // TestReleaseForgeScript_ReleasesFromABranchThatIsNotMain pins the push
@@ -404,5 +542,23 @@ func TestReleaseForgeScript_RejectsExistingTag(t *testing.T) {
 	}
 	if !strings.Contains(out, "already exists") {
 		t.Errorf("unexpected error output:\n%s", out)
+	}
+}
+
+// TestReleaseLockScript runs scripts/test-release-lock.sh, the hermetic self-test of the
+// lock every release script sources (the same file in forge, reliant and control-plane):
+// refusal naming the holder, heartbeat, a nested holder, stale replacement, and the
+// holder's re-check of main with a fake gh.
+func TestReleaseLockScript(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs git pushes against throwaway remotes; runs in task test")
+	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", filepath.Join(root, "scripts", "test-release-lock.sh"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("scripts/test-release-lock.sh: %v\n%s", err, out)
 	}
 }

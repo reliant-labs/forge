@@ -394,7 +394,7 @@ func (g *lockGuard) Run(migration io.Reader) error {
 //
 // The table is resolved by postgres (to_regclass, so search_path and schema
 // qualification mean what they mean to the file itself) and an index lives in
-// its table's schema, so `tenant_a.items_v` never selects `tenant_b.items_v`.
+// its table's schema, so `schema_a.items_v` never selects `schema_b.items_v`.
 // An invalid index of any other name, schema or table was not built by this
 // file and stays, whatever else is failing in the database. One of the file's
 // own name that predates the run is a leftover of an earlier failed run of it,

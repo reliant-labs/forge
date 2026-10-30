@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# The pull-request tier, on this machine: what a merge steward runs to gate a
+# The merge tier, on this machine: what a merge steward runs to gate a
 # forge pull request (`task ci`). Target: about five minutes.
 #
 #   scripts/ci-premerge.sh [BASE]     BASE defaults to $CI_BASE, else the merge
 #                                     base of HEAD and origin/main (fetched)
 #
-# It runs what ci.yml's pull-request tier runs (`test-short` and `checks`),
+# It runs what ci.yml's merge tier and pull request checks run (`test-short`,
+# `checks` and `pr-checks`),
 # with the same flags, concurrently, and prints one table:
 #
 #   test-short       go test -short over every package (scripts/ci-test-shard.sh 0 1):

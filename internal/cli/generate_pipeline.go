@@ -2604,7 +2604,13 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 			return err
 		}
 		in.Funnels = funnels
-		in.Deployed, err = deployedIdentities(ctx.AbsPath, ctx.renderedEnvs().workloads)
+		// The frontends the environments serve, when any declares one: a
+		// frontends/ directory that is only run as a container (an operator
+		// console) is not a served frontend and reports no browser telemetry.
+		if served, services := frontendIdentities(ctx.Cfg.Name, renderedFrontendEntities(ctx.renderedFrontends())); len(served) > 0 {
+			in.Frontends, in.FrontendServices = served, services
+		}
+		in.Deployed, err = deployedIdentities(ctx, ctx.renderedEnvs().workloads)
 		if err != nil {
 			return fmt.Errorf("deriving the deployed processes from deploy/kcl: %w", err)
 		}
@@ -2615,6 +2621,15 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 		fmt.Printf("  ✅ Generated %d observability file(s) under deploy/observability/\n", len(written))
 		return nil
 	}())
+}
+
+// renderedFrontendEntities flattens rendered per-env frontends.
+func renderedFrontendEntities(rendered []renderedEnvFrontend) []FrontendEntity {
+	out := make([]FrontendEntity, 0, len(rendered))
+	for _, r := range rendered {
+		out = append(out, r.Frontend)
+	}
+	return out
 }
 
 // observedFrontends are the frontends the generated observability covers: the

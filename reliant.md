@@ -161,20 +161,35 @@ See the comment block at the top of `internal/cli/fixture_corpus_e2e_test.go` fo
 
 ### CI: what runs where
 
-Two tiers. A **pull request** gets the fast tier: a five-minute MEDIAN wall time, runner
-queue included. A **push to main** gets the slow tier as well. Nothing left CI when the
-tiers split: every check that is off the pull request runs on every push to main. Each
-workflow's header says why its lanes are shaped the way they are; read it before moving a
-check between lanes. `ci.yml`'s `CI gate` job prints every job's wall time and the critical
-path on each run — watch it when you add a test.
+Review first, then three moments (owner, 2026-10-30: no CI minutes on a head nobody has
+reviewed). A **pull request push** runs almost nothing; the **merge queue** runs the fast
+merge tier once, on main plus the entry, and that run decides the merge; a **push to main**
+runs the slow tier after the merge, and a red there never blocks a merge — pipeline-health
+files and fixes it (`pipeline:slo`), and `scripts/release-forge.sh` refuses to cut a release
+until it is green. Each workflow's header says why its lanes are shaped the way they are;
+read it before moving a check between lanes. `ci.yml`'s `CI gate` job prints every job's
+wall time and the critical path on each run — watch it when you add a test.
 
-**The rule for the pull-request tier: a check that cannot fit the budget is not on it.** A
-slow test skips under `-short` and runs on main; a slow job (a linter, a scanner, another
-OS) runs on main. Every job a pull request adds is another runner to queue for (the org
-runs 20 jobs at once, and was saturated half of 2026-10-21), so add a step to an existing
-job before adding a job.
+**The rule for the merge tier: a check that cannot fit the budget is not on it** (a
+five-minute median, ten at worst). A slow test skips under `-short` and runs on main; a
+slow job (a linter, a scanner, another OS) runs on main. Every job the queue adds is
+another runner to queue for (the org runs 20 jobs at once, and was saturated half of
+2026-10-21), so add a step to an existing job before adding a job.
 
-**Pull request** and **merge-queue entry** (`ci.yml`, 5 jobs, on every pull request — no path filter):
+**Pull request push** (`ci.yml`, no path filter; ~2 runner-minutes):
+
+- **Pull request checks** (`pr-checks`) — the CHANGELOG.md guard and the pkg/ API gate
+  (`internal/apigate`), the two checks that read the pull request itself (its branch name,
+  labels and body). Neither can go red for anything but the pull request's own diff.
+- **Review marker** — a notice; enforced in the queue (below).
+- `CI gate` is green as soon as those pass, which is what lets GitHub enqueue the pull
+  request once `pr-review` passes it. The reviewer reads the diff, not CI results.
+- **`ci:run`** runs the whole merge tier on the pull request too, read on the next push
+  (an empty commit will do; `ci.yml` does not trigger on `labeled`, because a label run
+  would replace the head's `CI gate` verdict). `ci:e2e` and `ci:canary` still start their
+  own workflows on `labeled`.
+
+**Merge-queue entry** (`merge_group`; the merge tier, 4 jobs):
 
 - **Test** — three entries: the `-short` tier, no `-race`, as 2 package shards
   (`scripts/ci-test-shard.sh` over `scripts/ci-test-packages.sh short I N`), and the
@@ -188,17 +203,22 @@ job before adding a job.
   content).
 - **Checks** — `forge ci verify-generated`, `forge ci validate-kcl`, the pre-commit hooks
   (go-vet-mod skipped), and the Go and npm dependency-license allowlists.
-- **The same tier, locally: `task ci`.** The pull-request tier in about five minutes
-  (`scripts/ci-premerge.sh`): the whole `-short` tier, the flake gate and the checks
-  above, concurrently, one table, non-zero on any FAIL or unwaived SKIP. `PR=<n> task ci`
-  also reads the pull request's labels for the pkg/ API gate. It is not a pre-merge
-  ritual for contributors (GitHub's merge queue gates every PR): verify your change with
-  `task test:short -- <your packages>`. `internal/ciguard` holds it to `ci.yml`.
+- **Review marker** — every pull request in the group must carry `pr-review`'s pass marker
+  for its current head (`scripts/ci-review-marker.sh`), so a head pushed after a pass cannot
+  ride an armed auto-merge in.
+- **The same tier, locally: `task ci`.** The merge tier plus the pull request checks in
+  about five minutes (`scripts/ci-premerge.sh`): the whole `-short` tier, the flake gate and
+  the checks above, concurrently, one table, non-zero on any FAIL or unwaived SKIP.
+  `PR=<n> task ci` also reads the pull request's labels for the pkg/ API gate. It is not a
+  pre-merge ritual for contributors (GitHub's merge queue gates every PR): verify your
+  change with `task test:short -- <your packages>`. `internal/ciguard` holds it to `ci.yml`.
 - `CI gate` is the main ruleset's required check, and `main` merges through a merge queue:
-  each queued pull request runs this tier again (`merge_group`) over main plus the entries
-  ahead of it, and lands only if `CI gate` is green there. So `ci.yml` has no path filter
-  (a skipped workflow never reports the required check), and a job picks its tier with one
-  of the two `if:` spellings in its header; `internal/ciguard` holds both.
+  each queued pull request runs this tier (`merge_group`) over main plus the entries ahead
+  of it, and lands only if `CI gate` is green there; it also fails if a merge-tier job
+  skipped there. A failure dequeues the pull request, which the pipeline's fixer picks up.
+  So `ci.yml` has no path filter (a skipped workflow never reports the required check), and
+  a job says when it runs with one of the `if:` spellings in its header; `internal/ciguard`
+  holds them, and fails a job that would run on every pull request push before review.
 - **Merging: push, label `merge:queue`, stop.** Authors open the PR, add
   **`merge:queue`** ("done: review and merge it"), and report the PR URL as done. The
   Reliant workflow `pr-review` (control-plane `.reliant/workflows/`, design in
@@ -220,18 +240,18 @@ job before adding a job.
 - **Lint** — golangci-lint over the root and over `pkg/` (under `pkg/.golangci.yml`),
   `go vet ./...`, and `go vet -tags e2e` over the e2e-tagged packages. Main only: run
   `forge lint` locally to see a finding first.
-- **Test (-short whole tier, then guards)** — the pull-request tier in one job, which saves
-  the `go-build-short` and `go-mod` caches the pull-request jobs restore
+- **Test (-short whole tier, then guards)** — the merge tier's tests in one job, which saves
+  the `go-build-short` and `go-mod` caches the merge-tier jobs restore
   (`.github/actions/restore-go-caches`; Checks saves `go-build-tools` on main, which
   Build and the e2e workflows restore);
   then the guards (tierguard, removalguard,
-  deadcodeguard, writeguard; `-p 1`, full mode, no `-race`), whose whole-repo work pull
-  requests skip.
+  deadcodeguard, writeguard; `-p 1`, full mode, no `-race`), whose whole-repo work the
+  merge tier skips.
 - **Build (-trimpath) + go-licenses + govulncheck** — the release build flags, the second
-  license opinion (Checks covers dependency licenses on every pull request), and
+  license opinion (Checks covers dependency licenses on every merge-queue entry), and
   `forge ci vuln-scan --go`.
 - **Windows** — native: build, vet, the `-short` tier of Unit + internal/cli, and a
-  scaffold+render smoke. (A pull request no longer cross-compiles for Windows.)
+  scaffold+render smoke. (The merge tier does not cross-compile for Windows.)
 - **e2e** — `e2e-suite.yml`: `prepare` builds the e2e test binary, forge and the codegen
   plugins once and plans 4 shards by recorded duration (`.github/e2e-timings.json`,
   `internal/e2eshard`); the shards run only `TestE2E*` tests, minus `TestE2ENightly*`; a
@@ -241,15 +261,16 @@ job before adding a job.
   whole e2e suite (`select: all`, so `TestE2ENightly*` too) and E2E Scaffold. A red nightly
   on main opens, or comments on, the "Nightly CI is red" issue; the next green one closes it.
 
-So a test gated with `if testing.Short()` runs on main, not on pull requests: mark the slow
-ones, and a red main is bisected from the merge that caused it.
+So a test gated with `if testing.Short()` runs on main, not in the merge queue: mark the
+slow ones, and a red main is bisected from the merge that caused it. A red main does not
+block merges; it blocks the next release until it is fixed.
 
 e2e naming is load-bearing: a test in an e2e-tagged file must be named `TestE2E*` and no
 untagged test may be — `internal/e2eshard`'s guard fails the test shards otherwise, because
 the e2e shards select by that prefix. A test with no recorded duration is planned at the
 median; `scripts/e2e-timings.sh` refreshes the file from a CI run.
 
-A check moves off the pull request only when it is slow AND a failure is rare and cheap to
+A check moves off the merge tier only when it is slow AND a failure is rare and cheap to
 bisect from main. Say why in its job comment.
 
 **Fewer, larger jobs, and caches that fit.** The org runs at most 20 jobs at once across
@@ -267,7 +288,7 @@ shards and changed-test gate share this wrapper. Repository-wide guard scans use
 not the metadata of skipped `.git`/`.forge` state. Its full-mode regression test
 runs cmd/go repeatedly and proves both replay and invalidation on real input edits.
 
-Build caches: a PR job restores main's cache and never saves one; only pushes to main
+Build caches: a merge-tier job restores main's cache and never saves one; only pushes to main
 save (`ci.yml`'s "Build-cache note"). A PR's cache is visible to that PR alone, and PR
 saves were evicting main's entries from the repository's 10 GB budget. Main saves four
 build scopes, each from one job: `short` and `tools` (what a pull request restores) on

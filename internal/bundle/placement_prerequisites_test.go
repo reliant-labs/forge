@@ -350,3 +350,152 @@ func TestPlacementPrerequisitesAnnotationOwnedConsumers(t *testing.T) {
 		t.Fatal("an ESO object is applied inventory, never a readiness binding")
 	}
 }
+
+// clusterDoc is an unowned cluster object in namespace app (or cluster-scoped
+// when namespaced is false), with extra metadata lines verbatim.
+func clusterDoc(apiVersion, kind, name string, namespaced bool, meta string) string {
+	ns := ""
+	if namespaced {
+		ns = "\n  namespace: app"
+	}
+	return "---\n# cluster: prod\napiVersion: " + apiVersion + "\nkind: " + kind + "\nmetadata:\n  name: " + name + ns + "\n" + meta + "spec: {}\n"
+}
+
+// What a real two-cluster env renders beside its controllers: scheduled work,
+// the cluster's API and scheduling vocabulary, admission, every route and
+// policy attachment, and custom resources. No kind is refused for being
+// unknown: each is applied inventory, the bundle composes, and none of them
+// becomes an item or a binding.
+func TestPlacementPrerequisitesPassiveKinds(t *testing.T) {
+	in := placementBuildInput()
+	for _, d := range []struct {
+		apiVersion, kind string
+		namespaced       bool
+	}{
+		{"batch/v1", "CronJob", true},
+		{"apiextensions.k8s.io/v1", "CustomResourceDefinition", false},
+		{"scheduling.k8s.io/v1", "PriorityClass", false},
+		{"storage.k8s.io/v1", "StorageClass", false},
+		{"node.k8s.io/v1", "RuntimeClass", false},
+		{"admissionregistration.k8s.io/v1", "ValidatingAdmissionPolicy", false},
+		{"admissionregistration.k8s.io/v1", "ValidatingAdmissionPolicyBinding", false},
+		{"admissionregistration.k8s.io/v1", "MutatingWebhookConfiguration", false},
+		{"admissionregistration.k8s.io/v1", "ValidatingWebhookConfiguration", false},
+		{"gateway.networking.k8s.io/v1", "GRPCRoute", true},
+		{"gateway.envoyproxy.io/v1alpha1", "EnvoyProxy", true},
+		{"networking.gke.io/v1", "HealthCheckPolicy", true},
+		// A custom resource: its controller is an item of its own.
+		{"reliant.dev/v1alpha1", "DaemonRollout", true},
+	} {
+		in.Shape.Manifests += clusterDoc(d.apiVersion, d.kind, strings.ToLower(d.kind), d.namespaced, "")
+	}
+	b, err := Build(t.Context(), in)
+	if err != nil {
+		t.Fatalf("passive inventory must compose: %v", err)
+	}
+	p := b.Doc.PlacementPrerequisites
+	for _, it := range p.Items {
+		if !release.PlacementRuntimeKind(it.Key.Kind) && it.Key.Kind != "StaticSite" {
+			t.Errorf("applied inventory became an item: %+v", it.Key)
+		}
+	}
+	for _, bd := range p.Bindings {
+		if bd.Object.Cluster != release.BundleHostedCluster && release.PlacementPassiveKind(bd.Object.Kind) {
+			t.Errorf("applied inventory became a readiness binding: %+v", bd.Object)
+		}
+	}
+}
+
+// A raw manifest consumer that renders only routes and policies (no
+// controller) is applied inventory: it is no item, a frontend waiting on
+// every server does not wait on it, and its objects are env-level. A hosted
+// part with no record is still refused.
+func TestPlacementPrerequisitesInventoryOnlyConsumer(t *testing.T) {
+	in := placementBuildInput()
+	in.Placements = []PlacementDeclaration{
+		{Workload: "api", Runtime: "cluster", Actuator: "forge"},
+		{Workload: "routes", Runtime: "cluster", Actuator: "forge"},
+		{Workload: "web", Runtime: "hosted", Actuator: "platform", Dependencies: []string{"api", "routes"}},
+	}
+	in.Shape.Manifests += ownedDoc("routes", "gateway.networking.k8s.io/v1", "HTTPRoute", "api-route", "spec: {}\n") +
+		ownedDoc("routes", "v1", "ConfigMap", "route-limits", "data: {rps: '10'}\n")
+	b, err := Build(t.Context(), in)
+	if err != nil {
+		t.Fatalf("a controller-less manifest consumer must compose: %v", err)
+	}
+	p := b.Doc.PlacementPrerequisites
+	for _, it := range p.Items {
+		if it.Workload == "routes" {
+			t.Fatalf("an inventory-only consumer became an item: %+v", it)
+		}
+	}
+	limits := false
+	for _, bd := range p.Bindings {
+		limits = limits || (bd.Object.Name == "route-limits" && bd.Item.Name == "api")
+	}
+	if !limits {
+		t.Fatalf("an inventory-only consumer's ConfigMap is env-level and binds to its namespace's items: %+v", p.Bindings)
+	}
+
+	in.Placements[1].Dependencies = []string{"absent"}
+	if _, err := Build(t.Context(), in); err == nil || !strings.Contains(err.Error(), "missing predecessor") {
+		t.Fatalf("a typo'd peer is still refused, got %v", err)
+	}
+	in = placementBuildInput()
+	in.Placements = append(in.Placements, PlacementDeclaration{Workload: "docs", Runtime: "hosted", Actuator: "platform"})
+	if _, err := Build(t.Context(), in); err == nil || !strings.Contains(err.Error(), "no sealed controller/record") {
+		t.Fatalf("a hosted part with no record, got %v", err)
+	}
+}
+
+// A ConfigMap whose only owner runs in another namespace would be bound to
+// nothing, which a control plane's reader refuses; the producer refuses it
+// first, naming it.
+func TestPlacementPrerequisitesRefusesAnUnboundConfigMap(t *testing.T) {
+	in := placementBuildInput()
+	in.Shape.Manifests += strings.Replace(ownedDoc("api", "v1", "ConfigMap", "api-elsewhere", "data: {k: v}\n"), "namespace: app", "namespace: other", 1)
+	if _, err := Build(t.Context(), in); err == nil || !strings.Contains(err.Error(), "bound to no placement item") {
+		t.Fatalf("got %v, want the unbound ConfigMap refused", err)
+	}
+}
+
+// web -> routes (no controller) -> api: the dependency resolves THROUGH the
+// inventory-only component, so web still waits for api.
+func TestPlacementPrerequisitesDependencyThroughInventoryOnly(t *testing.T) {
+	in := placementBuildInput()
+	in.Placements = []PlacementDeclaration{
+		{Workload: "api", Runtime: "cluster", Actuator: "forge"},
+		{Workload: "routes", Runtime: "cluster", Actuator: "forge", Dependencies: []string{"api"}},
+		{Workload: "web", Runtime: "hosted", Actuator: "platform", Dependencies: []string{"routes"}},
+	}
+	in.Shape.Manifests += ownedDoc("routes", "gateway.networking.k8s.io/v1", "HTTPRoute", "api-route", "spec: {}\n")
+	b, err := Build(t.Context(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waits := false
+	for _, e := range b.Doc.PlacementPrerequisites.Edges {
+		waits = waits || (e.Predecessor.Name == "api" && e.Dependent.Name == "web")
+	}
+	if !waits {
+		t.Fatalf("web no longer waits for api through routes: %+v", b.Doc.PlacementPrerequisites.Edges)
+	}
+
+	// A cycle that closes on an item through the inventory-only component is
+	// refused, never dropped.
+	in.Placements[0].Dependencies = []string{"routes"}
+	if _, err := Build(t.Context(), in); err == nil {
+		t.Fatal("api -> routes -> api accepted")
+	}
+}
+
+// A control plane that advertises only the retired placement-prerequisites-v1
+// (its decoder predates the shared passive set and Passive) is refused before
+// composition: it is never handed a graph it would reject or under-check.
+func TestPlacementPrerequisitesRefusesAV1OnlyReader(t *testing.T) {
+	in := placementBuildInput()
+	in.Reader = &release.BundleReader{Features: []string{"placement-prerequisites-v1"}}
+	if _, err := Build(t.Context(), in); err == nil || !strings.Contains(err.Error(), release.BundleFeaturePlacementPrerequisites) {
+		t.Fatalf("a v1-only reader: got %v, want a refusal naming %s", err, release.BundleFeaturePlacementPrerequisites)
+	}
+}

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.0.7] - 2026-10-30
+
+### Added
+
+- **env:** env status --wait reports forge-applied slots under their own heading ([#1531](https://github.com/reliant-labs/forge/pull/1531))
+- **cloud:** every control-plane call names its forge release in Forge-Version; a client_upgrade_required refusal prints as the upgrade instruction ([#1534](https://github.com/reliant-labs/forge/pull/1534))
+- **dbquery,dashspec:** postgres dashboard panels and bound query args ([#1513](https://github.com/reliant-labs/forge/pull/1513))
+
+### Changed
+
+- **readme:** lead with what Forge is and what's included, built around the whole-stack pitch ([#1503](https://github.com/reliant-labs/forge/pull/1503))
+
+### Fixed
+
+- **deploy:** remove arbitrary environment entry-count limit ([#1515](https://github.com/reliant-labs/forge/pull/1515))
+- **lint:** a secrets finding is never anchored in another env's KCL ([#1533](https://github.com/reliant-labs/forge/pull/1533))
+- **deploy:** read a cross-name restore from the SOURCE database's backup prefix ([#1535](https://github.com/reliant-labs/forge/pull/1535))
+- **deploy:** refuse a Workload and a ManagedDatabase of one name in one namespace ([#1537](https://github.com/reliant-labs/forge/pull/1537))
+- **observe:** a statement that hits its deadline is recorded as context_deadline_exceeded, not \_OTHER ([#1538](https://github.com/reliant-labs/forge/pull/1538))
+- **migrate:** migrations run under lock_timeout and statement_timeout, and retry when their lock times out ([#1526](https://github.com/reliant-labs/forge/pull/1526))
+- **compose:** a hosted SPA's sealed record serves the build its snapshot binds ([#1519](https://github.com/reliant-labs/forge/pull/1519))
+- **pin:** every command in a pinned project runs the pinned forge — an embedded pseudo-version is no dev build, and an unobtainable pin fails ([#1536](https://github.com/reliant-labs/forge/pull/1536))
+- **release:** the pre-push publication check asks the proxy's cache, so it no longer plants a 30-minute proxy 404 for the new version ([#1509](https://github.com/reliant-labs/forge/pull/1509))
+- **kcl:** positive_large_environment fixture declares its assertions ([#1539](https://github.com/reliant-labs/forge/pull/1539))
+- **release:** an unhashed provenance tree is an error, and capture runs its git reads at once ([#1514](https://github.com/reliant-labs/forge/pull/1514))
+- **release:** one release of the repo at a time; a fail-closed, heartbeated lock the release workflow coalesces into ([#1475](https://github.com/reliant-labs/forge/pull/1475))
+- **ci:** main is green again — a directory ref is never an unborn HEAD, and three guard findings ([#1543](https://github.com/reliant-labs/forge/pull/1543))
+
 ## [v1.0.6] - 2026-10-30
 
 ### Added
@@ -8266,7 +8294,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.6...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.7...HEAD
+[v1.0.7]: https://github.com/reliant-labs/forge/compare/v1.0.6...v1.0.7
 [v1.0.6]: https://github.com/reliant-labs/forge/compare/v1.0.5...v1.0.6
 [v1.0.5]: https://github.com/reliant-labs/forge/compare/v1.0.4...v1.0.5
 [v1.0.4]: https://github.com/reliant-labs/forge/compare/v1.0.3...v1.0.4

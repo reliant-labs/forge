@@ -1253,7 +1253,10 @@ type FrontendTelemetryEntity struct {
 	ConsoleCapture   bool    `json:"console_capture"`
 	ReplaySampleRate float64 `json:"replay_sample_rate"`
 	Sourcemaps       string  `json:"sourcemaps,omitempty"`
-	Errors           struct {
+	// ServiceName is the service.name a sourced frontend's SDK reports, as
+	// declared (BrowserTelemetry.service_name). Empty for an in-repo frontend.
+	ServiceName string `json:"service_name,omitempty"`
+	Errors      struct {
 		Ignore []string `json:"ignore,omitempty"`
 	} `json:"errors"`
 	Funnels []FunnelEntity `json:"funnels,omitempty"`

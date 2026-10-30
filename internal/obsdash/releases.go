@@ -22,6 +22,7 @@ func BuildReleases(project string) Dashboard {
 	d := Dashboard{
 		ID:    ReleasesID,
 		Title: project + ": releases",
+		Group: GroupReleases,
 		Description: "Request rate, error rate and latency split by service.version, so a deploy shows as one version replacing another. " +
 			"Deploy markers come from the release ledger. Narrow with the service.name and deployment.environment.name filters.",
 		Filters: commonFilters(),

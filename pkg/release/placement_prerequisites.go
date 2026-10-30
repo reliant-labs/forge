@@ -6,6 +6,10 @@ import (
 	"strings"
 )
 
+// PlacementPrerequisitesVersion is the graph version BundleFeaturePlacementPrerequisites
+// names (placement-prerequisites-v2).
+const PlacementPrerequisitesVersion = 2
+
 // PlacementPrerequisites is sealed dependency evidence, not an assertion of readiness.
 // Absence is unknown; a present empty graph declares independence.
 type PlacementPrerequisites struct {
@@ -13,6 +17,34 @@ type PlacementPrerequisites struct {
 	Items    []PlacementItem    `json:"items"`
 	Edges    []PlacementEdge    `json:"edges"`
 	Bindings []PlacementBinding `json:"bindings"`
+}
+
+// PlacementRuntimeKind reports whether kind runs something on a cluster. A
+// mixed bundle observes each such object (Deployment, StatefulSet, DaemonSet,
+// Job) or refuses it (ReplicaSet, Pod: owned by a controller in a real
+// render).
+func PlacementRuntimeKind(kind string) bool {
+	switch kind {
+	case "Deployment", "ReplicaSet", "StatefulSet", "DaemonSet", "Pod", "Job":
+		return true
+	}
+	return false
+}
+
+// PlacementPassiveKind reports whether a cluster object of kind is applied
+// inventory in a mixed bundle (a hosted record is always an item): it has no readiness item of its own. That is every kind
+// except the runtime kinds, ConfigMap (bound to the items of its namespace)
+// and Secret (never in the bundle). A Service, an RBAC object, a route or a
+// policy attachment affects ordinary rollout readiness only through the
+// healthy Pods of the component that uses it; a CRD, an admission policy or a
+// scheduling class changes the cluster's API; a CronJob's spec is applied and
+// starts nothing; a custom resource is its controller's input, and the
+// controller is an item of its own. No kind is refused for being unknown.
+//
+// forge's producer and a control plane's reader share this rule, at the forge
+// the control plane pins, so the two can never disagree about one bundle.
+func PlacementPassiveKind(kind string) bool {
+	return !PlacementRuntimeKind(kind) && kind != "ConfigMap" && kind != "Secret"
 }
 
 // PlacementKey identifies an actual placement independently of its logical workload.
@@ -88,7 +120,7 @@ func (p *PlacementPrerequisites) Validate() error {
 	if p == nil {
 		return nil
 	}
-	if p.Version != 1 {
+	if p.Version != PlacementPrerequisitesVersion {
 		return fmt.Errorf("%w: placement prerequisites version %d", ErrInvalid, p.Version)
 	}
 	items := make(map[PlacementKey]bool, len(p.Items))

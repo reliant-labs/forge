@@ -51,6 +51,8 @@ func BuildWorkloads(project string) Dashboard {
 	d := Dashboard{
 		ID:    WorkloadsID,
 		Title: project + ": workloads",
+		Group: GroupPlatform,
+		Tags:  []string{"k8s"},
 		Description: "Per-workload customer metadata from the node agent: CPU and memory against requests and limits, " +
 			"restarts and the last exit reason, the image versions that ran, and Kubernetes events. " +
 			"Present in deployed environments only (a local forge env up has no node agent).",

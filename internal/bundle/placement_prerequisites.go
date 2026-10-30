@@ -40,7 +40,7 @@ func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.S
 	if in.Placements == nil {
 		return nil, fmt.Errorf("mixed placements require complete placement dependency declarations")
 	}
-	p := &release.PlacementPrerequisites{Version: 1, Items: []release.PlacementItem{}, Edges: []release.PlacementEdge{}, Bindings: []release.PlacementBinding{}}
+	p := &release.PlacementPrerequisites{Version: release.PlacementPrerequisitesVersion, Items: []release.PlacementItem{}, Edges: []release.PlacementEdge{}, Bindings: []release.PlacementBinding{}}
 	if in.Snapshot != nil {
 		var err error
 		in.Placements, err = snapshotPlacements(*in.Snapshot, in.Placements)
@@ -100,9 +100,17 @@ func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.S
 		keys[workload] = append(keys[workload], k)
 		p.Items = append(p.Items, release.PlacementItem{Key: k, Workload: workload})
 	}
+	// A cluster component that renders no controller (a raw manifest consumer
+	// of routes or policies, a release-input contract with no objects) is
+	// applied inventory: it has nothing of its own to observe, so it is no
+	// item and no predecessor. A hosted one without its record is refused.
+	inventoryOnly := map[string]bool{}
 	for _, d := range in.Placements {
 		if len(keys[d.Workload]) == 0 {
-			return nil, fmt.Errorf("placement workload %q has no sealed controller/record", d.Workload)
+			if d.Runtime != "cluster" {
+				return nil, fmt.Errorf("placement workload %q has no sealed controller/record", d.Workload)
+			}
+			inventoryOnly[d.Workload] = true
 		}
 	}
 	edgeSet := map[release.PlacementEdge]bool{}
@@ -113,12 +121,39 @@ func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.S
 			p.Edges = append(p.Edges, e)
 		}
 	}
+	// A dependency on an inventory-only component resolves THROUGH it to the
+	// nearest components with items: web -> routes (no controller) -> api
+	// still makes web wait for api. A cycle that closes on an item surfaces
+	// as a self or cyclic edge, which Validate refuses.
+	var declaredPredecessors func(peer string, seen map[string]bool) ([]release.PlacementKey, error)
+	declaredPredecessors = func(peer string, seen map[string]bool) ([]release.PlacementKey, error) {
+		if !inventoryOnly[peer] {
+			if len(keys[peer]) == 0 {
+				return nil, fmt.Errorf("missing predecessor %q", peer)
+			}
+			return keys[peer], nil
+		}
+		if seen[peer] {
+			return nil, nil
+		}
+		seen[peer] = true
+		var out []release.PlacementKey
+		for _, next := range decl[peer].Dependencies {
+			ks, err := declaredPredecessors(next, seen)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, ks...)
+		}
+		return out, nil
+	}
 	for _, d := range in.Placements {
 		for _, peer := range d.Dependencies {
-			if len(keys[peer]) == 0 {
-				return nil, fmt.Errorf("placement %s has missing predecessor %q", d.Workload, peer)
+			resolved, err := declaredPredecessors(peer, map[string]bool{})
+			if err != nil {
+				return nil, fmt.Errorf("placement %s has %w", d.Workload, err)
 			}
-			for _, a := range keys[peer] {
+			for _, a := range resolved {
 				for _, b := range keys[d.Workload] {
 					add(a, b)
 				}
@@ -189,13 +224,18 @@ func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.S
 	bindingSet := map[release.PlacementBinding]bool{}
 	for _, o := range objects {
 		var targets []release.PlacementKey
+		owned := false
 		for _, owner := range owners(o) {
+			if inventoryOnly[owner] {
+				continue // its objects are env-level, as an unowned object's are
+			}
 			if len(keys[owner]) == 0 {
 				return nil, fmt.Errorf("sealed object %s/%s has undeclared placement owner %q", o.Kind, o.Name, owner)
 			}
+			owned = true
 			targets = append(targets, keys[owner]...)
 		}
-		if len(owners(o)) == 0 && o.Cluster != release.BundleHostedCluster && (placementPrimary(o.Kind, false) || o.Kind == "ConfigMap") {
+		if !owned && o.Cluster != release.BundleHostedCluster && (placementPrimary(o.Kind, false) || o.Kind == "ConfigMap") {
 			for _, item := range p.Items {
 				if item.Key.Cluster == o.Cluster && item.Key.Namespace == o.Namespace && item.Key.Runtime == "cluster" {
 					targets = append(targets, item.Key)
@@ -209,9 +249,6 @@ func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.S
 			return nil, fmt.Errorf("unsupported/unbound hosted sealed record %s/%s", o.Kind, o.Name)
 		}
 		if o.Cluster != release.BundleHostedCluster && !placementPrimary(o.Kind, false) && o.Kind != "ConfigMap" {
-			if !placementPassiveKinds[o.Kind] {
-				return nil, fmt.Errorf("unsupported mixed prerequisite resource kind %s (%s)", o.Kind, o.Name)
-			}
 			continue // applied inventory, not an invented readiness status
 		}
 		for _, k := range targets {
@@ -226,6 +263,20 @@ func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.S
 				bindingSet[b] = true
 				p.Bindings = append(p.Bindings, b)
 			}
+		}
+	}
+	// Every clustered runtime object and ConfigMap is bound to an item of its
+	// own namespace, the rule a control plane's reader admits by: an object
+	// left unbound (its only owner's controllers live in another namespace)
+	// would be refused there, after the release was built.
+	bound := map[release.ObjectKey]bool{}
+	for _, b := range p.Bindings {
+		bound[release.ObjectKey{Cluster: b.Object.Cluster, Kind: b.Object.Kind, Namespace: b.Object.Namespace, Name: b.Object.Name}] = true
+	}
+	for _, o := range objects {
+		if o.Cluster != "" && o.Cluster != release.BundleHostedCluster && (placementPrimary(o.Kind, false) || o.Kind == "ConfigMap") && !bound[o.Key()] {
+			return nil, fmt.Errorf("sealed %s %s/%s is bound to no placement item in its namespace: its owners %v have no controller there",
+				o.Kind, o.Namespace, o.Name, owners(o))
 		}
 	}
 	if err := p.Validate(); err != nil {
@@ -293,23 +344,6 @@ func snapshotPlacements(s release.Snapshot, declarations []PlacementDeclaration)
 	return out, nil
 }
 
-// placementPassiveKinds is the closed set of applied-inventory kinds a mixed
-// bundle may carry without a readiness item of their own: their effect on
-// ordinary rollout readiness is observed through the owning component's
-// healthy Pods (an ExternalSecret or Certificate a Pod mounts, a route to
-// it). Any other kind is refused rather than silently treated as ready.
-var placementPassiveKinds = map[string]bool{
-	"Namespace": true, "Service": true, "ServiceAccount": true, "Role": true, "RoleBinding": true,
-	"ClusterRole": true, "ClusterRoleBinding": true, "PersistentVolumeClaim": true, "NetworkPolicy": true,
-	"Ingress": true, "PodDisruptionBudget": true, "HorizontalPodAutoscaler": true,
-	// Gateway API and Envoy Gateway policy attachments.
-	"Gateway": true, "HTTPRoute": true, "ReferenceGrant": true, "BackendTLSPolicy": true,
-	"BackendTrafficPolicy": true, "ClientTrafficPolicy": true,
-	// External Secrets Operator and cert-manager: names and references only;
-	// no Secret value is read or recorded.
-	"ExternalSecret": true, "SecretStore": true, "Issuer": true, "Certificate": true,
-}
-
 // placementOwners is each sealed object's owners by releaseOwnershipOf, the
 // rule SnapshotInventory uses. A forge-managed app name counts only when it
 // names a declared component; an object with no owner is env-level.
@@ -338,11 +372,7 @@ func placementPrimary(kind string, hosted bool) bool {
 	if hosted {
 		return kind == "StaticSite" || kind == "Workload" || kind == "ManagedDatabase"
 	}
-	switch kind {
-	case "Deployment", "ReplicaSet", "StatefulSet", "DaemonSet", "Pod", "Job":
-		return true
-	}
-	return false
+	return release.PlacementRuntimeKind(kind)
 }
 
 func placementKeyOrder(k release.PlacementKey) string {

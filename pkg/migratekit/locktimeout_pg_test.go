@@ -688,6 +688,49 @@ func TestAMigrationThatCommitsPartOfItselfIsNotRetried(t *testing.T) {
 	}
 }
 
+// committingSetup creates the audit table and a procedure that inserts a row,
+// COMMITs it, and then asks for a lock the held reader blocks: the lock
+// timeout lands after work that is already committed.
+const committingSetup = "CREATE TABLE audit (n INT);\n" +
+	"CREATE PROCEDURE commit_then_lock() LANGUAGE plpgsql AS $$\n" +
+	"BEGIN INSERT INTO audit VALUES (1); COMMIT; LOCK TABLE items IN ACCESS EXCLUSIVE MODE; END $$;"
+
+// TestAProcedureThatCommitsBeforeTimingOutIsNotRetried: a top-level CALL runs
+// outside a transaction block, so the procedure's COMMIT is real. Retrying
+// would insert twice and "clean at the previous version" would hide the row.
+func TestAProcedureThatCommitsBeforeTimingOutIsNotRetried(t *testing.T) {
+	assertCommittedThenTimedOut(t, "CALL commit_then_lock();")
+}
+
+// TestADoBlockThatCommitsBeforeTimingOutIsNotRetried is the same for DO.
+func TestADoBlockThatCommitsBeforeTimingOutIsNotRetried(t *testing.T) {
+	assertCommittedThenTimedOut(t, "DO $$ BEGIN INSERT INTO audit VALUES (1); COMMIT; LOCK TABLE items IN ACCESS EXCLUSIVE MODE; END $$;")
+}
+
+func assertCommittedThenTimedOut(t *testing.T, file string) {
+	t.Helper()
+	dsn := baseSchema(t)
+	mustUp(t, release(merged(lockBase, map[string]string{"2_audit.up.sql": committingSetup})), dsn)
+	holdReader(t, dsn)
+	var logs bytes.Buffer
+	_, err := upWith(release(merged(lockBase, map[string]string{"2_audit.up.sql": committingSetup, "3_commit.up.sql": file})), dsn,
+		RunOptions{Logger: logTo(&logs), Limits: Limits{LockTimeout: 200 * time.Millisecond, LockAttempts: 5, RetryBackoff: 10 * time.Millisecond}})
+	var lerr *LockTimeoutError
+	if !errors.As(err, &lerr) || lerr.Attempts != 1 || !lerr.PartlyApplied {
+		t.Fatalf("Up returned %v, want a *LockTimeoutError after ONE attempt, marked partly applied", err)
+	}
+	if strings.Contains(logs.String(), "retrying") {
+		t.Errorf("a migration that commits part of itself was retried:\n%s", logs.String())
+	}
+	var n int
+	if err := openRecordDB(t, dsn).QueryRow("SELECT count(*) FROM audit").Scan(&n); err != nil || n != 1 {
+		t.Errorf("audit has %d rows (err %v), want exactly the one committed row", n, err)
+	}
+	if st := stateAt(t, dsn); !st.Dirty || st.Version != 3 {
+		t.Errorf("schema is %+v, want dirty at 3: part of the file is committed", st)
+	}
+}
+
 // TestConcurrentlyCleanupStaysInItsOwnSchema: two schemas each hold an invalid
 // items_v. A migration building tenant_a.items_v drops tenant_a's and leaves
 // tenant_b's, which it did not build and its file does not name.

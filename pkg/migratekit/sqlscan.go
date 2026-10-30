@@ -190,6 +190,11 @@ type filePlan struct {
 	// endsTransaction is true when a statement controls the transaction
 	// itself: after one, a failure no longer rolls the whole file back.
 	endsTransaction bool
+	// runsProcedural is true when a top-level CALL or DO runs code: a
+	// procedure or DO block may COMMIT on its own outside a transaction
+	// block, and what it commits is invisible to this scan (the body is
+	// quoted), so a failure after it is not proven to have rolled back.
+	runsProcedural bool
 	// unretryableConcurrently is true when the file holds a CONCURRENTLY
 	// statement other than CREATE INDEX or DROP INDEX: REINDEX leaves
 	// `_ccnew` indexes behind and DETACH PARTITION leaves the partition in a
@@ -204,7 +209,7 @@ type filePlan struct {
 
 // retryable reports whether a failed attempt at the file can be run again.
 func (p filePlan) retryable() bool {
-	return !p.endsTransaction && !p.unretryableConcurrently && !p.unnamed
+	return !p.endsTransaction && !p.runsProcedural && !p.unretryableConcurrently && !p.unnamed
 }
 
 // transactionControl are the statements that start, end or divide a
@@ -221,6 +226,9 @@ func planFile(body []byte) filePlan {
 		if first.kind == tokWord && (transactionControl[first.text] ||
 			first.text == "prepare" && len(s) > 1 && s[1].isWord("transaction")) {
 			p.endsTransaction = true
+		}
+		if first.kind == tokWord && (first.text == "call" || first.text == "do") {
+			p.runsProcedural = true
 		}
 		concurrently := false
 		for _, t := range s {

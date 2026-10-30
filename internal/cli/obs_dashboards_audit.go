@@ -812,12 +812,15 @@ func (a *dashAudit) probe(ap *auditPanel, op obsquery.Panel) *auditProbe {
 		return auditProbeStep{Name: name, HasData: ro.HasData, NonZero: ro.NonZero, LastDataAt: ro.LastDataAt}
 	}
 
-	var catalogMissing bool
+	var catalogMissing, catalogFailed bool
 	if len(ap.Metrics) > 0 {
 		for _, m := range ap.Metrics {
 			c := a.metricCatalog(m, wide, op)
 			pr.Catalog = append(pr.Catalog, c)
-			if c.Error == "" && !c.Seen {
+			switch {
+			case c.Error != "":
+				catalogFailed = true
+			case !c.Seen:
 				catalogMissing = true
 			}
 		}
@@ -854,8 +857,9 @@ func (a *dashAudit) probe(ap *auditPanel, op obsquery.Panel) *auditProbe {
 		pr.Verdict = verdictOtherEnv
 	case filtered.HasData:
 		pr.Verdict = verdictExcludedFilter
-	case other.Error != nil || filtered.Error != nil:
-		// A follow-up that could not be read cannot rule its scope out.
+	case other.Error != nil || filtered.Error != nil || catalogFailed:
+		// A follow-up that could not be read (a catalog lookup included)
+		// cannot rule its scope out: absence is not established.
 		pr.Verdict = verdictProbeFailed
 	case catalogMissing:
 		pr.Verdict = verdictMetricNever
@@ -937,11 +941,21 @@ func (a *dashAudit) lookupMetric(name string, wide obsbackend.Narrow) auditCatal
 	if err != nil {
 		c.Error = string(a.failureOf(err).Class) + ": " + a.failureOf(err).Message
 	}
+	found := false
 	for _, m := range res.Metrics {
-		if m.Name == name && m.Seen {
-			c.Seen, c.Type, c.LastSeen, c.Services = true, m.Type, m.LastSeen, m.Services
+		if m.Name == name {
+			found = true
+			if m.Seen {
+				c.Seen, c.Type, c.LastSeen, c.Services = true, m.Type, m.LastSeen, m.Services
+			}
 			break
 		}
+	}
+	// The lookup is a substring search capped at a page: when the page was cut
+	// short and the exact name is not on it, the metric may be past the cap.
+	// That is no answer, not absence.
+	if err == nil && !found && res.Truncated {
+		c.Error = fmt.Sprintf("incomplete: the catalog search for %q was truncated at %d names before reaching it", name, len(res.Metrics))
 	}
 	return c
 }
@@ -1018,8 +1032,13 @@ func emptyCause(ap *auditPanel, pr *auditProbe, window, probeWindow time.Duratio
 		return "nothing came back, and the probe had nothing to check: the panel's window is already the longest this signal allows, and with no project, filters or metric there is no other scope to read"
 	case verdictProbeFailed:
 		for _, s := range pr.Steps {
-			if s.Error != nil {
+			if s.Error != nil && s.Error.Class != "skipped" {
 				return fmt.Sprintf("nothing came back, and the follow-up read failed (%s: %s), so whether the data exists is not known", s.Error.Class, s.Error.Message)
+			}
+		}
+		for _, c := range pr.Catalog {
+			if c.Error != "" {
+				return fmt.Sprintf("nothing came back, and the catalog lookup of %s did not answer (%s), so whether the metric exists is not known", c.Metric, c.Error)
 			}
 		}
 	}

@@ -1183,3 +1183,37 @@ func TestAuditManyPanelsConcurrently(t *testing.T) {
 		seen[p.ID] = true
 	}
 }
+
+// A catalog lookup that did not answer — refused, or a substring search cut
+// off at its cap before reaching the exact name — establishes nothing: with
+// the panel probes empty, the verdict is probe_failed and names the lookup,
+// never metric_never_seen or no_data_anywhere.
+func TestAuditCatalogWithoutAnAnswerIsNotAbsence(t *testing.T) {
+	cases := []struct {
+		name    string
+		metrics string
+		err     error
+		want    string
+	}{
+		{"the lookup was refused", "", &cloud.Error{HTTPStatus: http.StatusNotFound, Code: cloud.CodeNotFound, Message: "no such catalog"}, "catalog lookup of rpc.server.calls did not answer"},
+		{"a truncated page without the exact name", `{"metrics":[{"name":"rpc.server.calls.total","seen":true}],"truncated":true}`, nil, "truncated"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": auditSpec(metricPanel("p", "rpc.server.calls"))},
+				metrics: tc.metrics,
+				panel:   func(auditQuery) (string, error) { return respEmpty, nil }}
+			if tc.err != nil {
+				cp.errs = map[string]error{cpListMetrics: tc.err}
+			}
+			out, _, _ := auditRun(t, cp)
+			p := decodeAudit(t, out).Dashboards[0].Panels[0]
+			if p.Probe == nil || p.Probe.Verdict != "probe_failed" {
+				t.Fatalf("want probe_failed:\n%s", out)
+			}
+			if !strings.Contains(p.ProbableCause, tc.want) {
+				t.Errorf("probable_cause %q lacks %q", p.ProbableCause, tc.want)
+			}
+		})
+	}
+}

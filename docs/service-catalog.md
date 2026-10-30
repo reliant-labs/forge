@@ -63,9 +63,10 @@ any input, so two branches whose catalog changes are disjoint lines still
 conflicted on its hashes.json line, and git's server-side merge runs no merge
 driver to settle it. Two such branches now merge as plain lines into exactly
 forge's render of the merged inputs. The forge merge driver routes the file
-(`.gitattributes`: `forge_service_catalog.json merge=forge-generated`): a line
-both sides changed takes this side, and the next `forge generate` renders over
-it.
+(`.gitattributes`: `forge_service_catalog.json merge=forge-generated`). A line
+both sides changed stays a conflict: the catalog is disownable, and a merge
+driver cannot see the other side's ownership record while git runs it.
+Regenerating on the merged tree settles it.
 
 The bundle copy (`forge/service-catalog.json`) carries the line its readers
 expect, `{"path": ..., "line": N}`: the build resolves each symbol against the

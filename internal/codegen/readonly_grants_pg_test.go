@@ -293,7 +293,7 @@ func dashboardFixture(t *testing.T, more string, fn func(ctx context.Context, c 
 	if err := schemadef.CheckMarkers(tables); err != nil {
 		t.Fatalf("CheckMarkers: %v", err)
 	}
-	script, err := dbgrants.RenderFor(role, dbgrants.DashboardTables(ReadOnlyGrantTables(tables, nil)))
+	script, err := dbgrants.RenderDashboardFor(role, ReadOnlyGrantTables(tables, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,7 +408,7 @@ func TestDashboardRole_RemovingTheMarkerRevokes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		script, err := dbgrants.RenderFor(role, dbgrants.DashboardTables(ReadOnlyGrantTables(tables, nil)))
+		script, err := dbgrants.RenderDashboardFor(role, ReadOnlyGrantTables(tables, nil))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -487,7 +487,7 @@ func (d *dashboardConvergence) converge() {
 	if err != nil {
 		d.t.Fatal(err)
 	}
-	script, err := dbgrants.RenderFor(d.role, dbgrants.DashboardTables(ReadOnlyGrantTables(tables, nil)))
+	script, err := dbgrants.RenderDashboardFor(d.role, ReadOnlyGrantTables(tables, nil))
 	if err != nil {
 		d.t.Fatal(err)
 	}

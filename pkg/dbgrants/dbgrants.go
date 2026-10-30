@@ -5,7 +5,13 @@
 // control plane's QueryDatabase — can look at data without being able to change
 // it or to read what the application marked secret. The boundary is POSTGRES,
 // not a redactor: a redactor cannot follow `upper(secret_col)`, but a column the
-// role has no SELECT privilege on cannot be read through any expression.
+// role has no SELECT privilege on cannot be read through any expression the
+// ROLE evaluates. A SECURITY DEFINER function is the exception: it evaluates
+// its body as its owner, so one the role may execute (PUBLIC holds EXECUTE on
+// every new function by default) returns whatever its body selects, secret
+// columns included. forge generates none; [SecurityDefinerExposure] finds them
+// and the migrator logs a warning. Revoke PUBLIC's EXECUTE on such a function,
+// or do not write one over a table with a secret column.
 //
 // # The three pieces
 //
@@ -41,7 +47,8 @@
 // What a script about ONE role cannot converge, and does not try to:
 //
 //   - privileges PUBLIC holds, which every role inherits (Postgres grants
-//     EXECUTE on new functions to PUBLIC by default);
+//     EXECUTE on new functions to PUBLIC by default, which is how a SECURITY
+//     DEFINER function becomes a way around the column grants, above);
 //   - the role's memberships in other roles (pg_read_all_data, an application
 //     role): revoking one needs ADMIN OPTION on it, and the ManagedDatabase
 //     render declares none (pkg/deploy);
@@ -59,6 +66,7 @@ package dbgrants
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -148,7 +156,12 @@ func Render(tables []Table) (string, error) { return RenderFor(RoleName, tables)
 // RenderFor is Render for a named role. Production has exactly one role,
 // [RoleName]; the parameter exists because roles are cluster-wide, so tests
 // that share a Postgres server cannot all create forge_ro.
-func RenderFor(role string, tables []Table) (string, error) {
+func RenderFor(role string, tables []Table) (string, error) { return renderFor(role, tables, false) }
+
+// renderFor is [RenderFor]. gateOnLogin makes the script serve the role only
+// while it can log in: a role with rolcanlogin = false gets every privilege
+// revoked and nothing granted (see [RenderDashboardFor]).
+func renderFor(role string, tables []Table, gateOnLogin bool) (string, error) {
 	if err := checkIdent(role); err != nil {
 		return "", err
 	}
@@ -183,11 +196,17 @@ func RenderFor(role string, tables []Table) (string, error) {
 	}
 	b.WriteString("-- The " + label + " role's grants: a convergence, not a delta. See pkg/dbgrants.\n")
 	b.WriteString("DO " + dollarTag + "\n")
-	b.WriteString("DECLARE\n  r record;\n  readable text;\n  leftover text;\n  declared text[] := ARRAY[]::text[];\n  role_oid oid;\nBEGIN\n")
+	b.WriteString("DECLARE\n  r record;\n  readable text;\n  leftover text;\n  declared text[] := ARRAY[]::text[];\n  role_oid oid;\n  role_login boolean;\nBEGIN\n")
 	fmt.Fprintf(&b, "  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %s) THEN\n", quoteLiteral(role))
 	fmt.Fprintf(&b, "    RAISE NOTICE %s;\n    RETURN;\n  END IF;\n\n", quoteLiteral("role "+role+" does not exist: "+label+" grants not applied"))
 
-	fmt.Fprintf(&b, "  SELECT oid INTO role_oid FROM pg_roles WHERE rolname = %s;\n\n", quoteLiteral(role))
+	fmt.Fprintf(&b, "  SELECT oid, rolcanlogin INTO role_oid, role_login FROM pg_roles WHERE rolname = %s;\n", quoteLiteral(role))
+	if gateOnLogin {
+		fmt.Fprintf(&b, "  IF NOT role_login THEN\n    RAISE NOTICE %s;\n  END IF;\n", quoteLiteral("role "+role+" cannot log in: "+label+" access revoked, nothing granted"))
+	} else {
+		b.WriteString("  role_login := true;\n")
+	}
+	b.WriteString("\n")
 
 	// Everything the role holds, in every declared schema, goes first. A column
 	// that became secret, a table that was dropped from the declaration and a
@@ -208,7 +227,9 @@ func RenderFor(role string, tables []Table) (string, error) {
 	b.WriteString("  ) AS s(nspname) WHERE s.nspname IS NOT NULL AND EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = s.nspname) LOOP\n")
 	b.WriteString("    declared := declared || r.schema;\n")
 	fmt.Fprintf(&b, "    EXECUTE format('REVOKE ALL ON SCHEMA %%I FROM %%I', r.schema, %s);\n", quoteLiteral(role))
-	fmt.Fprintf(&b, "    EXECUTE format('GRANT USAGE ON SCHEMA %%I TO %%I', r.schema, %s);\n", quoteLiteral(role))
+	b.WriteString("    IF role_login THEN\n")
+	fmt.Fprintf(&b, "      EXECUTE format('GRANT USAGE ON SCHEMA %%I TO %%I', r.schema, %s);\n", quoteLiteral(role))
+	b.WriteString("    END IF;\n")
 	fmt.Fprintf(&b, "    EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA %%I FROM %%I', r.schema, %s);\n", quoteLiteral(role))
 	fmt.Fprintf(&b, "    EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA %%I FROM %%I', r.schema, %s);\n", quoteLiteral(role))
 	b.WriteString("  END LOOP;\n\n")
@@ -344,7 +365,7 @@ func RenderFor(role string, tables []Table) (string, error) {
 		rows = []string{"    (NULL::text, NULL::text, ARRAY[]::text[])"}
 	}
 	b.WriteString(strings.Join(rows, ",\n") + "\n")
-	b.WriteString("  ) AS g(schema, tbl, cols) WHERE g.schema IS NOT NULL LOOP\n")
+	b.WriteString("  ) AS g(schema, tbl, cols) WHERE g.schema IS NOT NULL AND role_login LOOP\n")
 	b.WriteString("    SELECT string_agg(format('%I', a.attname), ', ' ORDER BY a.attname) INTO readable\n")
 	b.WriteString("      FROM pg_attribute a\n")
 	b.WriteString("     WHERE a.attrelid = to_regclass(format('%I.%I', r.schema, r.tbl))\n")
@@ -404,6 +425,48 @@ func RoleExists(ctx context.Context, c Conn, name string) (bool, error) {
 		return false, fmt.Errorf("dbgrants: look up role %s: %w", name, err)
 	}
 	return exists, nil
+}
+
+// RoleLogin reports whether the cluster has a role called name and whether it
+// can log in. The dashboard role is rendered NOLOGIN while dashboards are off
+// (pkg/deploy), which is how the migrator, which never sees the KCL, learns the
+// role is switched off.
+func RoleLogin(ctx context.Context, c Conn, name string) (exists, canLogin bool, err error) {
+	err = c.QueryRowContext(ctx, `SELECT rolcanlogin FROM pg_roles WHERE rolname = $1`, name).Scan(&canLogin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("dbgrants: look up role %s: %w", name, err)
+	}
+	return true, canLogin, nil
+}
+
+// SecurityDefinerExposure lists the SECURITY DEFINER functions role can execute
+// in a schema it can see: the one way a column the role has no SELECT on is
+// still readable, because the function runs as its owner. It is a WARNING for
+// the caller to log, not a failure: forge generates no such function, and
+// revoking PUBLIC's default EXECUTE would change the application's own
+// semantics. Names come back as regprocedure text, already quoted.
+func SecurityDefinerExposure(ctx context.Context, c Conn, role string) ([]string, error) {
+	var raw []byte
+	err := c.QueryRowContext(ctx, `
+SELECT coalesce(json_agg(f.name ORDER BY f.name), '[]'::json) FROM (
+  SELECT p.oid::regprocedure::text AS name
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+   WHERE p.prosecdef
+     AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\_toast%'
+     AND has_schema_privilege($1::name, n.oid, 'USAGE')
+     AND has_function_privilege($1::name, p.oid, 'EXECUTE')
+) f`, role).Scan(&raw)
+	if err != nil {
+		return nil, fmt.Errorf("dbgrants: look up security definer functions for %s: %w", role, err)
+	}
+	var out []string
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("dbgrants: decode security definer functions: %w", err)
+	}
+	return out, nil
 }
 
 // Apply runs script, a [Render] result, on c. The script is one statement, so

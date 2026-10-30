@@ -175,3 +175,27 @@ func TestDashboardTablesDoesNotAliasItsInput(t *testing.T) {
 		t.Error("DashboardTables modified its input")
 	}
 }
+
+// Only the dashboard script is gated on the role's login attribute; the
+// read-only script renders without it, byte for byte as before.
+func TestOnlyTheDashboardScriptIsLoginGated(t *testing.T) {
+	dash, err := RenderDashboard(dashFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ro, err := Render(dashFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(dash, "IF NOT role_login THEN") || !strings.Contains(dash, "AND role_login LOOP") {
+		t.Errorf("the dashboard script is not gated on login:\n%s", dash)
+	}
+	// The guards exist in both scripts' text, but the read-only one pins the
+	// flag true and never reads the role's login attribute into it.
+	if strings.Contains(ro, "IF NOT role_login") || !strings.Contains(ro, "role_login := true;") {
+		t.Errorf("the read-only script is gated on login:\n%s", ro)
+	}
+	if strings.Contains(dash, "role_login := true;") {
+		t.Errorf("the dashboard script pins the login flag:\n%s", dash)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"sort"
 
 	"github.com/reliant-labs/forge/pkg/dbgrants"
 )
@@ -38,6 +39,14 @@ import (
 // case and the script is skipped silently (Grants.DashboardRoleMissing, which
 // callers do not report as a fault). A project that predates the file embeds
 // none and migrates as before.
+//
+// THE MIGRATOR DOES NOT SEE THE KCL, SO THE ROLE IS THE SWITCH. Dashboards off
+// render forge_dash present but NOLOGIN with no password (pkg/deploy), and the
+// dashboard script grants nothing to a role that cannot log in and revokes what
+// it held (pkg/dbgrants, "Switching dashboards off"). The script runs for such
+// a role too, which is what takes the access away; Grants.DashboardRoleDisabled
+// says so. Turning dashboards back on makes the role login-capable and the next
+// run grants again.
 //
 // A FAILURE IS THE RUN'S FAILURE. The migrations are committed by then, but a
 // column that has become secret keeps its old grant until the script succeeds,
@@ -75,6 +84,14 @@ type Grants struct {
 
 	// DashboardApplied is true when the dashboard role's script ran.
 	DashboardApplied bool
+	// DashboardRoleDisabled is true when the role exists but cannot log in,
+	// which is how dashboards being off reaches the database. The script ran
+	// and revoked everything the role held; it granted nothing.
+	DashboardRoleDisabled bool
+	// SecurityDefiner lists the SECURITY DEFINER functions a granted role can
+	// execute (dbgrants.SecurityDefinerExposure): a way around its column
+	// grants. A warning for the caller to log, never a failure.
+	SecurityDefiner []string
 	// DashboardRoleMissing is true when the binary embeds the dashboard script
 	// but the database has no [dbgrants.DashboardRoleName], so it was not run.
 	// The role is opt-in: this is the normal state, said by nobody.
@@ -137,7 +154,7 @@ func applyGrants(ctx context.Context, conn *sql.Conn, scripts grantScripts, run 
 		}
 	}
 	if scripts.dashboard != "" {
-		exists, err := dbgrants.RoleExists(ctx, conn, dashboardGrantsRole)
+		exists, canLogin, err := dbgrants.RoleLogin(ctx, conn, dashboardGrantsRole)
 		if err != nil {
 			return g, err
 		}
@@ -149,8 +166,38 @@ func applyGrants(ctx context.Context, conn *sql.Conn, scripts grantScripts, run 
 			}); err != nil {
 				return g, err
 			}
-			g.DashboardApplied = true
+			g.DashboardApplied = canLogin
+			g.DashboardRoleDisabled = !canLogin
 		}
 	}
+	// Read after the grants, from the catalog, on the same session: a function
+	// created by this very run is seen. Informational, so a failed lookup does
+	// not fail a run whose grants succeeded.
+	for _, role := range []struct {
+		name string
+		on   bool
+	}{{grantsRole, g.Applied}, {dashboardGrantsRole, g.DashboardApplied}} {
+		if !role.on {
+			continue
+		}
+		if fns, err := dbgrants.SecurityDefinerExposure(ctx, conn, role.name); err == nil {
+			g.SecurityDefiner = append(g.SecurityDefiner, fns...)
+		}
+	}
+	g.SecurityDefiner = uniqueSorted(g.SecurityDefiner)
 	return g, nil
+}
+
+func uniqueSorted(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	sort.Strings(in)
+	out := in[:1]
+	for _, v := range in[1:] {
+		if v != out[len(out)-1] {
+			out = append(out, v)
+		}
+	}
+	return out
 }

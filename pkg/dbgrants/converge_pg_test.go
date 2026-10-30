@@ -468,3 +468,101 @@ func TestConvergeFailsClosedOnASchemaPrivilegeItCannotRevoke(t *testing.T) {
 		t.Errorf("the failure does not name the schema privilege: %v", err)
 	}
 }
+
+func (f *pgFixture) convergeDashboard(tables []Table) {
+	f.t.Helper()
+	script, err := RenderDashboardFor(f.role, tables)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if err := ApplyDashboard(context.Background(), f.db, script); err != nil {
+		f.t.Fatalf("apply: %v\n%s", err, script)
+	}
+}
+
+func dashTablesFor() []Table {
+	return []Table{
+		{Schema: "public", Name: "events", Dashboard: true, Columns: []Column{{Name: "id"}, {Name: "model"}}},
+		{Schema: "public", Name: "other"},
+	}
+}
+
+// The dashboard script serves a role only while it can log in: a NOLOGIN role
+// is revoked and granted nothing, and the same role granted again once it can.
+func TestDashboardScriptFollowsTheRolesLoginAttribute(t *testing.T) {
+	f := newPGFixture(t, convergeSchemaSQL)
+	f.exec(`ALTER ROLE ` + f.role + ` LOGIN`)
+	f.convergeDashboard(dashTablesFor())
+	f.allowed(`SELECT model FROM events`, "enabled")
+
+	f.exec(`ALTER ROLE ` + f.role + ` NOLOGIN`)
+	f.convergeDashboard(dashTablesFor())
+	f.denied(`SELECT model FROM events`, "disabled")
+	if n := f.privilegeRows("disabled"); n != 0 {
+		t.Errorf("%d table/column privileges remain on a disabled role", n)
+	}
+	var schemaPriv int
+	if err := f.db.QueryRowContext(context.Background(), `
+SELECT count(*) FROM pg_namespace n, aclexplode(n.nspacl) x
+ WHERE x.grantee = (SELECT oid FROM pg_roles WHERE rolname = $1)`, f.role).Scan(&schemaPriv); err != nil {
+		t.Fatal(err)
+	}
+	if schemaPriv != 0 {
+		t.Errorf("%d schema privileges remain on a disabled role", schemaPriv)
+	}
+
+	// Idempotent while off, then back on.
+	f.convergeDashboard(dashTablesFor())
+	f.exec(`ALTER ROLE ` + f.role + ` LOGIN`)
+	f.convergeDashboard(dashTablesFor())
+	f.allowed(`SELECT model FROM events`, "re-enabled")
+	f.denied(`SELECT user_email FROM events`, "re-enabled, undeclared column")
+}
+
+// forge_ro's script is not gated on login: only the dashboard role's is.
+func TestReadOnlyScriptIsNotGatedOnLogin(t *testing.T) {
+	f := newPGFixture(t, convergeSchemaSQL)
+	f.exec(`ALTER ROLE ` + f.role + ` NOLOGIN`)
+	f.converge(eventsTable(Column{Name: "id"}))
+	f.allowed(`SELECT id FROM events`, "read-only role, declared column")
+}
+
+func TestRoleLoginReportsExistenceAndLogin(t *testing.T) {
+	f := newPGFixture(t, convergeSchemaSQL)
+	ctx := context.Background()
+	exists, login, err := RoleLogin(ctx, f.db, f.role)
+	if err != nil || !exists || !login {
+		t.Fatalf("login role: exists=%v login=%v err=%v", exists, login, err)
+	}
+	f.exec(`ALTER ROLE ` + f.role + ` NOLOGIN`)
+	if exists, login, err = RoleLogin(ctx, f.db, f.role); err != nil || !exists || login {
+		t.Fatalf("nologin role: exists=%v login=%v err=%v", exists, login, err)
+	}
+	if exists, login, err = RoleLogin(ctx, f.db, f.role+"_nope"); err != nil || exists || login {
+		t.Fatalf("missing role: exists=%v login=%v err=%v", exists, login, err)
+	}
+}
+
+func TestSecurityDefinerExposureNamesOnlyWhatTheRoleCanExecute(t *testing.T) {
+	f := newPGFixture(t, convergeSchemaSQL+`
+CREATE FUNCTION open_definer() RETURNS int LANGUAGE sql SECURITY DEFINER AS $$ SELECT 1 $$;
+CREATE FUNCTION invoker() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;
+CREATE FUNCTION closed_definer() RETURNS int LANGUAGE sql SECURITY DEFINER AS $$ SELECT 1 $$;
+REVOKE EXECUTE ON FUNCTION closed_definer() FROM PUBLIC;
+CREATE SCHEMA hidden;
+CREATE FUNCTION hidden.definer_no_usage() RETURNS int LANGUAGE sql SECURITY DEFINER AS $$ SELECT 1 $$;
+REVOKE USAGE ON SCHEMA hidden FROM PUBLIC;
+`)
+	f.exec(`GRANT USAGE ON SCHEMA public TO ` + f.role)
+	got, err := SecurityDefinerExposure(context.Background(), f.db, f.role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "open_definer()"; len(got) != 1 || got[0] != want {
+		t.Errorf("exposure = %v, want [%s]", got, want)
+	}
+	f.exec(`REVOKE EXECUTE ON FUNCTION open_definer() FROM PUBLIC`)
+	if got, _ = SecurityDefinerExposure(context.Background(), f.db, f.role); len(got) != 0 {
+		t.Errorf("exposure after revoking PUBLIC = %v, want none", got)
+	}
+}

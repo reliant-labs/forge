@@ -3,7 +3,7 @@ Positive test — ManagedDatabase.dashboards is opt-in and fails closed.
 
   1. Absent, or declared with enabled = False, the ManagedDatabase record
      carries no enabled dashboards (the Go renderer then renders forge_dash
-     `ensure: absent`).
+     present but NOLOGIN with its password disabled).
   2. Enabled with nothing else declared carries the documented defaults:
      row_cap 1000, timeout 5s = 5000 ms, max_concurrency 2.
   3. Declared limits reach the record in the Go spec's vocabulary, with the

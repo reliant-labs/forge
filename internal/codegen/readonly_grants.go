@@ -85,7 +85,8 @@ func DashboardGrantsFile(script string) []byte {
 		"-- The grants of the " + dbgrants.DashboardRoleName + " role, the opt-in role live dashboard panels query as\n" +
 		"-- (ManagedDatabase.dashboards). It reads ONLY tables marked forge:dashboard, and on them only\n" +
 		"-- the columns " + dbgrants.RoleName + " may read minus forge:no-dashboard ones. The migrator applies this file\n" +
-		"-- after the read-only grants whenever the role exists; Postgres refuses everything else.\n" +
+		"-- after the read-only grants whenever the role exists. While the role cannot log in (dashboards\n" +
+		"-- are off) it revokes everything the role held and grants nothing. Postgres refuses everything else.\n" +
 		script)
 }
 

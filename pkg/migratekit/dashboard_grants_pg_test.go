@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -62,7 +63,7 @@ func dashTables() []dbgrants.Table {
 
 func mustRenderDashboard(t *testing.T, role string, tables []dbgrants.Table) string {
 	t.Helper()
-	script, err := dbgrants.RenderFor(role, dbgrants.DashboardTables(tables))
+	script, err := dbgrants.RenderDashboardFor(role, tables)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,4 +293,167 @@ func TestDashboardGrantsFailFastBehindABlockerAndTheNextRunAppliesThem(t *testin
 	if err != nil || res.Grants == nil || !res.Grants.DashboardApplied {
 		t.Fatalf("rerun: %+v, %v, want the dashboard grants applied", res.Grants, err)
 	}
+}
+
+// roleDSN is dsn with the user and password swapped for the role's, so a test
+// can actually try to log in as it.
+func roleDSN(t *testing.T, dsn, role, password string) string {
+	t.Helper()
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.User = url.UserPassword(role, password)
+	return u.String()
+}
+
+// loginAs reports whether a connection as role succeeds and runs q.
+func loginAs(t *testing.T, dsn, role, password, q string) error {
+	t.Helper()
+	db, err := sql.Open("pgx/v5", sqlDSN(roleDSN(t, dsn, role, password)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	rows, err := db.QueryContext(context.Background(), q)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+	}
+	return rows.Err()
+}
+
+func privilegeRowsOf(t *testing.T, dsn, role string) int {
+	t.Helper()
+	var n int
+	err := openRecordDB(t, dsn).QueryRow(`
+SELECT (SELECT count(*) FROM information_schema.table_privileges  WHERE grantee = $1)
+     + (SELECT count(*) FROM information_schema.column_privileges WHERE grantee = $1)
+     + (SELECT count(*) FROM pg_namespace n, aclexplode(n.nspacl) x WHERE x.grantee = (SELECT oid FROM pg_roles WHERE rolname = $1))`, role).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TestDashboardsOffRevokesEverythingAndTheRoleCannotLogIn is the disable path
+// end to end, against what CNPG does to the role on each side of the switch:
+// on = LOGIN with a password; off = NOLOGIN with no password (pkg/deploy
+// renders it present, never absent). The migrator never sees the KCL: the
+// role's own login attribute is the switch.
+//
+//	enable  -> migrate: the role logs in and reads the marked columns
+//	disable -> migrate: it cannot log in, holds no privilege, nothing re-granted
+//	enable  -> migrate: it reads again
+func TestDashboardsOffRevokesEverythingAndTheRoleCannotLogIn(t *testing.T) {
+	dsn := requirePG(t)
+	useRole(t)
+	dash := useDashboardRole(t)
+	withDashboardRole(t, dsn, dash)
+	admin := openRecordDB(t, dsn)
+	exec := func(q string) {
+		t.Helper()
+		if _, err := admin.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	fsys := dashboardRelease(map[string]string{"1_users.up.sql": usersSQL, "2_notes.up.sql": notesSQL},
+		"", mustRenderDashboard(t, dash, dashTables()))
+
+	// ON.
+	const pw = "s3cret-on"
+	exec(fmt.Sprintf(`ALTER ROLE %s LOGIN PASSWORD '%s'`, dash, pw))
+	res := mustUp(t, fsys, dsn)
+	if res.Grants == nil || !res.Grants.DashboardApplied || res.Grants.DashboardRoleDisabled {
+		t.Fatalf("enabled: Grants = %+v, want applied", res.Grants)
+	}
+	seed(t, dsn)
+	if err := loginAs(t, dsn, dash, pw, `SELECT id, email FROM users`); err != nil {
+		t.Fatalf("the enabled role cannot read what it was granted: %v", err)
+	}
+	if privilegeRowsOf(t, dsn, dash) == 0 {
+		t.Fatal("the enabled role holds no privilege: the test would prove nothing")
+	}
+	// The reason `ensure: absent` cannot be the off switch: CNPG would run
+	// exactly this DROP ROLE, and Postgres refuses it.
+	if _, err := admin.Exec(`DROP ROLE ` + dash); err == nil || !strings.Contains(err.Error(), "2BP01") {
+		t.Fatalf("DROP ROLE of a role that holds grants: %v, want SQLSTATE 2BP01", err)
+	}
+
+	// OFF: what CNPG converges the rendered role to.
+	exec(fmt.Sprintf(`ALTER ROLE %s NOLOGIN PASSWORD NULL`, dash))
+	res = mustUp(t, fsys, dsn)
+	if res.Grants == nil || !res.Grants.DashboardRoleDisabled || res.Grants.DashboardApplied {
+		t.Fatalf("disabled: Grants = %+v, want the role reported disabled and not applied", res.Grants)
+	}
+	if err := loginAs(t, dsn, dash, pw, `SELECT 1`); err == nil {
+		t.Error("the disabled role logged in with its old password")
+	}
+	if err := loginAs(t, dsn, dash, "", `SELECT 1`); err == nil {
+		t.Error("the disabled role logged in without a password")
+	}
+	if n := privilegeRowsOf(t, dsn, dash); n != 0 {
+		t.Errorf("the disabled role still holds %d privileges", n)
+	}
+	asDashboardRole(t, dsn, dash, func(ctx context.Context, c *sql.Conn) {
+		wantDenied(t, readable(ctx, c, `SELECT id FROM users`), "the disabled role reading a marked table")
+		wantDenied(t, readable(ctx, c, `SELECT id FROM notes`), "the disabled role reading an unmarked table")
+	})
+	// And it stays off: every further migration revokes rather than re-grants.
+	mustUp(t, fsys, dsn)
+	if n := privilegeRowsOf(t, dsn, dash); n != 0 {
+		t.Errorf("a later run re-granted the disabled role: %d privileges", n)
+	}
+
+	// ON again: the same role entry flipped back.
+	const pw2 = "s3cret-back"
+	exec(fmt.Sprintf(`ALTER ROLE %s LOGIN PASSWORD '%s'`, dash, pw2))
+	res = mustUp(t, fsys, dsn)
+	if res.Grants == nil || !res.Grants.DashboardApplied || res.Grants.DashboardRoleDisabled {
+		t.Fatalf("re-enabled: Grants = %+v, want applied", res.Grants)
+	}
+	if err := loginAs(t, dsn, dash, pw2, `SELECT id, email FROM users`); err != nil {
+		t.Errorf("the re-enabled role cannot read: %v", err)
+	}
+	if err := loginAs(t, dsn, dash, pw2, `SELECT api_token FROM users`); err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("the re-enabled role reads a secret column: %v", err)
+	}
+	if err := loginAs(t, dsn, dash, pw, `SELECT 1`); err == nil {
+		t.Error("the password from before the role was disabled works again")
+	}
+}
+
+// TestSecurityDefinerFunctionsAreReported: a SECURITY DEFINER function the
+// converged role may execute is a way around its column grants. The run still
+// succeeds; it says so.
+func TestSecurityDefinerFunctionsAreReported(t *testing.T) {
+	dsn := requirePG(t)
+	useRole(t)
+	withRole(t, dsn)
+	fsys := grantsRelease(map[string]string{
+		"1_users.up.sql": usersSQL,
+		"2_definer.up.sql": `CREATE FUNCTION get_token(uid TEXT) RETURNS TEXT LANGUAGE sql SECURITY DEFINER AS $$ SELECT api_token FROM users WHERE id = uid $$;
+CREATE FUNCTION invoker_fn() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;
+CREATE FUNCTION locked_definer() RETURNS int LANGUAGE sql SECURITY DEFINER AS $$ SELECT 1 $$;
+REVOKE EXECUTE ON FUNCTION locked_definer() FROM PUBLIC;`,
+	}, mustRender(t, usersTable(true)))
+	res := mustUp(t, fsys, dsn)
+	if res.Grants == nil || !res.Grants.Applied {
+		t.Fatalf("the run did not apply the grants: %+v", res.Grants)
+	}
+	if got := strings.Join(res.Grants.SecurityDefiner, ","); got != "get_token(text)" {
+		t.Fatalf("SecurityDefiner = %q, want only get_token(text) (not the invoker's function, not the one PUBLIC cannot execute)", got)
+	}
+	if _, err := openRecordDB(t, dsn).Exec(`INSERT INTO users (id, email, api_token) VALUES ('u1', 'a@example.test', 'tok-SECRET-1')`); err != nil {
+		t.Fatal(err)
+	}
+	// The warning is accurate: the role really does read the secret through it.
+	asRole(t, dsn, func(ctx context.Context, c *sql.Conn) {
+		wantDenied(t, readable(ctx, c, `SELECT api_token FROM users`), "the column directly")
+		if err := readable(ctx, c, `SELECT get_token('u1')`); err != nil {
+			t.Errorf("the exposure the warning describes does not exist: %v", err)
+		}
+	})
 }

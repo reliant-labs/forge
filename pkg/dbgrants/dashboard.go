@@ -18,8 +18,20 @@ package dbgrants
 //
 // The script is [RenderFor] with [DashboardRoleName] over [DashboardTables], so
 // it is the same convergence as forge_ro's (REVOKE, then GRANT exactly the
-// declared columns), no-ops when the role does not exist, and sets
-// default_transaction_read_only.
+// declared columns), no-ops when the role does not exist, and tries to set
+// default_transaction_read_only (a notice, not a failure, when the migrating
+// role may not: the caller's READ ONLY transaction is the boundary).
+//
+// # Switching dashboards off
+//
+// Off is a role that CANNOT LOG IN. The deploy renders forge_dash as
+// `ensure: present, login: false, disablePassword: true` (pkg/deploy), never
+// `absent`: CNPG removes a role with a plain DROP ROLE, which Postgres refuses
+// (2BP01) once the role holds a grant, so an absent role would keep its login
+// and password. The script reads the role's own rolcanlogin as the switch:
+// while it is false the script revokes everything and grants nothing, and it
+// grants again the run after the role can log in. The migrator never sees the
+// KCL; the role it finds is the declaration.
 
 // DashboardTables projects tables (every applied base table, as
 // [Table]/[Column] declare them) onto the dashboard role: the same tables, each
@@ -53,5 +65,12 @@ func DashboardTables(tables []Table) []Table {
 // set [Render] takes (every base table, marked or not); it is deterministic,
 // like [Render].
 func RenderDashboard(tables []Table) (string, error) {
-	return RenderFor(DashboardRoleName, DashboardTables(tables))
+	return RenderDashboardFor(DashboardRoleName, tables)
+}
+
+// RenderDashboardFor is [RenderDashboard] for a named role, which roles being
+// cluster-wide only tests need. It is the one place the login gate is on: see
+// "Switching dashboards off" above.
+func RenderDashboardFor(role string, tables []Table) (string, error) {
+	return renderFor(role, DashboardTables(tables), true)
 }

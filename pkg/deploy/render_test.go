@@ -1105,7 +1105,7 @@ func TestRenderManagedDatabase(t *testing.T) {
 		"enableSuperuserAccess": false,
 		"bootstrap":             map[string]any{"initdb": map[string]any{"database": "order_db", "owner": "order_db_app"}},
 		"storage":               map[string]any{"size": "50Gi"},
-		"managed":               map[string]any{"roles": []any{wantReadOnlyRole("order-db"), wantAbsentDashboardRole()}},
+		"managed":               map[string]any{"roles": []any{wantReadOnlyRole("order-db"), wantOffDashboardRole()}},
 	}
 	if !reflect.DeepEqual(c["spec"], want) {
 		t.Errorf("Cluster spec = %#v\nwant %#v", c["spec"], want)
@@ -1980,11 +1980,25 @@ func TestRenderManagedDatabaseRestoreKeepsTheReadOnlyRole(t *testing.T) {
 	}
 }
 
-// wantAbsentDashboardRole is what a database that declares no dashboards
-// carries: the role named and told to be absent, so CNPG drops a forge_dash a
-// previous declaration left behind.
-func wantAbsentDashboardRole() map[string]any {
-	return map[string]any{"name": "forge_dash", "ensure": "absent"}
+// wantOffDashboardRole is what a database that declares no dashboards carries:
+// the role present but unable to log in and without a password. It is NOT
+// `ensure: absent`: CNPG drops an absent role with a plain DROP ROLE, which
+// Postgres refuses once the role holds a grant, so the role would keep its
+// login and password.
+func wantOffDashboardRole() map[string]any {
+	return map[string]any{
+		"name":            "forge_dash",
+		"ensure":          "present",
+		"comment":         "forge dashboard role: OFF (cannot log in, no password); dashboards are not enabled on this database",
+		"login":           false,
+		"disablePassword": true,
+		"superuser":       false,
+		"createdb":        false,
+		"createrole":      false,
+		"replication":     false,
+		"bypassrls":       false,
+		"inherit":         false,
+	}
 }
 
 // wantDashboardRole is the enabled role, written out in full like the
@@ -2017,7 +2031,7 @@ func dashboardRolesOf(t *testing.T, name string, spec v1alpha1.ManagedDatabaseSp
 }
 
 // TestRenderManagedDatabaseDashboardRole: disabled (nil, or declared but not
-// enabled) renders the role absent; enabled renders a login role with no
+// enabled) renders the role NOLOGIN with no password, never absent; enabled renders a login role with no
 // membership, a connection limit of max_concurrency+1 and a password Secret
 // named like forge_ro's.
 func TestRenderManagedDatabaseDashboardRole(t *testing.T) {
@@ -2027,9 +2041,15 @@ func TestRenderManagedDatabaseDashboardRole(t *testing.T) {
 		"declared-no-use": {Dashboards: &v1alpha1.DatabaseDashboards{}},
 	} {
 		roles := dashboardRolesOf(t, "order-db", spec)
-		if len(roles) != 2 || !reflect.DeepEqual(roles[1], wantAbsentDashboardRole()) {
-			t.Errorf("%s: managed.roles = %#v, want forge_ro then forge_dash absent", name, roles)
+		if len(roles) != 2 || !reflect.DeepEqual(roles[1], wantOffDashboardRole()) {
+			t.Errorf("%s: managed.roles = %#v, want forge_ro then forge_dash off", name, roles)
 		}
+	}
+
+	if r := wantOffDashboardRole(); r["ensure"] == "absent" || r["login"] != false || r["disablePassword"] != true {
+		t.Error("the off role must be present, NOLOGIN and passwordless")
+	} else if _, ok := r["passwordSecret"]; ok {
+		t.Error("CNPG refuses a role that both sets and disables a password")
 	}
 
 	for name, tc := range map[string]struct {

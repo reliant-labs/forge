@@ -960,8 +960,10 @@ schema DatabaseDashboards:
     marked `COMMENT ON TABLE t IS 'forge:dashboard'`, and on them only the
     columns `forge_ro` may read, minus any `forge:no-dashboard` column. The
     allowlist is Postgres privileges, not a parser, so no panel query can read
-    past it. Disabled, the role is rendered `ensure: absent`, so turning this
-    off removes the login.
+    past it. Disabled, the role is rendered present but `login: false` with
+    its password disabled (never `ensure: absent`: CNPG's DROP ROLE is refused
+    once the role holds a grant), and the migrator revokes everything it held
+    and grants nothing until the role can log in again.
 
     The limits are enforced by whatever queries as the role:
 

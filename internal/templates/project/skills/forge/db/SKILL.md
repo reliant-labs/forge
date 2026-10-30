@@ -241,10 +241,7 @@ Every query goes through ONE data-access path: the generated store, then the own
 - Anything else: `internal/db/<entity>_repo_ext.go`, the custom-query seam forge scaffolds beside every entity, once, and never rewrites. Its header names the tools: the generated delegates with `orm.QueryOption` filters, SQL via `db.Bun()`, and the `orm.Context` that runs a method in or out of a transaction. bun takes joins, CTEs (`NewSelect().With(...)`), `FOR UPDATE SKIP LOCKED`, advisory locks and fully raw statements (`NewRaw`), so a hand-tuned hot-path query stays hand-tuned SQL.
 - Test every `_repo_ext.go` query against a real migrated database (`testing/integration`). That is what checks the SQL against the schema; nothing does it at generate time.
 - Bucketing by time has a silent timezone trap: load `db/time-buckets`.
-
-## Dashboards over your database
-
-Opt-in twice: `dashboards = forge.DatabaseDashboards {enabled = True}` on the `forge.ManagedDatabase` adds a `forge_dash` role, and `COMMENT ON TABLE t IS 'forge:dashboard'` marks each table a panel may read (`'forge:no-dashboard'` hides a column). The allowlist is Postgres privileges, not an SQL parser: a parser can disagree with Postgres about subqueries; a missing `SELECT` cannot. See `db/dashboards`.
+- Dashboard panels over this database: `db/dashboards`.
 
 ## Forge-specific rules
 

@@ -1225,6 +1225,86 @@ func TestRenderManagedDatabaseRestore(t *testing.T) {
 	}
 }
 
+// TestRenderManagedDatabaseRestoreUnderANewName pins WHERE a restore reads.
+// The source's backups were written to <bucket>/<source>/<stream>/; a
+// database restored under a different name archives to <bucket>/<new>/, so
+// reading through its own store would look in <bucket>/<new>/<source>/ —
+// an empty prefix — and the recovery job would find no base backup.
+func TestRenderManagedDatabaseRestoreUnderANewName(t *testing.T) {
+	spec := v1alpha1.ManagedDatabaseSpec{Restore: &v1alpha1.DatabaseRestore{
+		SourceDatabase: "order-db",
+		PointInTime:    "2026-01-02T15:04:05Z",
+	}}
+	objs, err := RenderManagedDatabase("order-db-pitr", spec, backupCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := objects(t, objs)
+	c := all["Cluster/order-db-pitr"]
+
+	// The archive side is untouched: the new database writes under its own
+	// prefix, with retention, exactly as a database that was never restored.
+	if got := get(c, "spec", "plugins", 0, "parameters", "barmanObjectName"); got != "order-db-pitr" {
+		t.Errorf("archive store = %v, want the database's own order-db-pitr", got)
+	}
+	own := all["ObjectStore/order-db-pitr"]
+	if got := get(own, "spec", "configuration", "destinationPath"); got != "s3://forge-db-backups/org-acme/prod/order-db-pitr" {
+		t.Errorf("archive destinationPath = %v", got)
+	}
+
+	// The read side resolves to the SOURCE's location.
+	ext := get(c, "spec", "externalClusters", 0, "plugin", "parameters")
+	storeName, _ := get(ext, "barmanObjectName").(string)
+	if storeName == "order-db-pitr" {
+		t.Fatal("recovery reads through the NEW database's store: that is <bucket>/order-db-pitr/order-db/, which is empty")
+	}
+	read, ok := all["ObjectStore/"+storeName]
+	if !ok {
+		t.Fatalf("recovery names ObjectStore %q, which was not rendered; got %v", storeName, objs)
+	}
+	if got := get(read, "spec", "configuration", "destinationPath"); got != "s3://forge-db-backups/org-acme/prod/order-db" {
+		t.Errorf("recovery destinationPath = %v, want the SOURCE's prefix s3://forge-db-backups/org-acme/prod/order-db", got)
+	}
+	if got := get(ext, "serverName"); got != "order-db" {
+		t.Errorf("recovery serverName = %v, want the source's stream order-db", got)
+	}
+	// Retention belongs to whoever archives to a store, never to a reader.
+	if got := get(read, "spec", "retentionPolicy"); got != nil {
+		t.Errorf("restore-source store carries retentionPolicy %v; only the archiving store may", got)
+	}
+	// It is the restoring database's object: pruned with it, not the source.
+	if got := get(read, "metadata", "labels", LabelName); got != "order-db-pitr" {
+		t.Errorf("restore-source store labelled %s=%v, want the restoring database order-db-pitr", LabelName, got)
+	}
+	// No database can own this name, so the read store never overwrites
+	// another database's archive store.
+	if err := v1alpha1.ValidateDatabaseName(storeName); err == nil {
+		t.Errorf("restore-source store %q is a valid database name, so a database of that name would share it", storeName)
+	}
+}
+
+// TestRenderManagedDatabaseRestoreInPlace: restoring a database onto its own
+// name reads through its own store, which already points at the source's
+// prefix — no second store.
+func TestRenderManagedDatabaseRestoreInPlace(t *testing.T) {
+	spec := v1alpha1.ManagedDatabaseSpec{Restore: &v1alpha1.DatabaseRestore{SourceDatabase: "order-db"}}
+	objs, err := RenderManagedDatabase("order-db", spec, backupCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := objects(t, objs)
+	if len(objs) != 2 {
+		t.Errorf("want the archive ObjectStore and the Cluster, got %d objects", len(objs))
+	}
+	c := all["Cluster/order-db"]
+	if got := get(c, "spec", "externalClusters", 0, "plugin", "parameters", "barmanObjectName"); got != "order-db" {
+		t.Errorf("recovery store = %v, want order-db", got)
+	}
+	if got := get(all["ObjectStore/order-db"], "spec", "configuration", "destinationPath"); got != "s3://forge-db-backups/org-acme/prod/order-db" {
+		t.Errorf("destinationPath = %v", got)
+	}
+}
+
 // TestRenderManagedDatabaseServerNameOverride: a platform that can restore the
 // same database twice allocates the stream itself, because the derived name
 // would collide on the second restore and fail it mid-incident.

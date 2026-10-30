@@ -29,12 +29,17 @@ import (
 // bindMigrate builds golang-migrate over src and conn. The caller holds the
 // run lock on conn: building the driver creates schema_migrations. On error,
 // conn and src are the caller's to close; nothing here closes either.
-func bindMigrate(ctx context.Context, conn *sql.Conn, src source.Driver, cfg *postgres.Config) (*migrate.Migrate, error) {
+//
+// Every migration runs under the run's lock_timeout and statement_timeout and
+// is retried when its lock times out (locktimeout.go). The guard sits inside
+// pgxErrors, so it sees postgres's own errors.
+func bindMigrate(ctx context.Context, conn *sql.Conn, src source.Driver, embedded sourceSet, cfg *postgres.Config, run RunOptions) (*migrate.Migrate, error) {
 	drv, err := postgres.WithConnection(ctx, conn, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("creating migration db driver: %w", err)
 	}
-	m, err := migrate.NewWithInstance("iofs", src, "postgres", pgxErrors{drv})
+	guarded := newLockGuard(conn, drv, embedded, run, !cfg.MultiStatementEnabled)
+	m, err := migrate.NewWithInstance("iofs", src, "postgres", pgxErrors{guarded})
 	if err != nil {
 		return nil, fmt.Errorf("creating migrator: %w", err)
 	}

@@ -195,3 +195,18 @@ func TestHostedDeployRefusesADanglingReference(t *testing.T) {
 		t.Fatalf("planHosted = %v, want the dangling databaseRef refused", err)
 	}
 }
+
+// A workload named like a database in the same hosted environment would run
+// as the database's ServiceAccount (deploy.CheckDatabaseIdentityNames), so
+// the plan refuses the pair before anything is published.
+func TestPreflightHostedRefusesAWorkloadNamedLikeADatabase(t *testing.T) {
+	g := preflightGroup(publicBackend())
+	g.Services[0].Name = "hounders"
+	_, err := PreflightHosted(g)
+	if err == nil {
+		t.Fatal("PreflightHosted admitted workload \"hounders\" beside database \"hounders\": the workload would run as the database's ServiceAccount")
+	}
+	if !strings.Contains(err.Error(), `"hounders": a Workload and a ManagedDatabase may not share a name`) {
+		t.Errorf("error = %v; want the name-pair refusal", err)
+	}
+}

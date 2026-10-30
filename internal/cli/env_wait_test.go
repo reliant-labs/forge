@@ -45,8 +45,9 @@ type fakeRolloutService struct {
 	converges bool
 	// workloads, when set, replaces the default one-workload set. The
 	// phase of each is the scripted env phase unless stated here.
-	workloads []wireWorkloadRollout
-	unpinned  []wireWorkloadRollout
+	workloads    []wireWorkloadRollout
+	unpinned     []wireWorkloadRollout
+	forgeApplied []wireWorkloadRollout
 	// err, when set, is returned instead of an answer.
 	err error
 
@@ -138,7 +139,7 @@ func (f *fakeRolloutService) Call(_ context.Context, procedure string, req, out 
 			ID: f.promotionID, EnvironmentID: "env-prod-uuid", ReleaseVersion: f.release,
 			Kind: wireKindPromote, CreatedAt: parseFixtureTime("2026-09-23T01:00:00Z"),
 		},
-		Phase: phase, Workloads: workloads, Unpinned: f.unpinned,
+		Phase: phase, Workloads: workloads, Unpinned: f.unpinned, ForgeApplied: f.forgeApplied,
 		StabilityWindowMS: 120000, ConvergesPromotions: f.converges,
 		Reason: "api: " + rolloutPhaseName(phase),
 	}
@@ -392,6 +393,71 @@ func TestEnvWait_UnpinnedWorkloadsDoNotGate(t *testing.T) {
 	captureStdout(t, func() { err = runEnvWait(context.Background(), "prod", opts) })
 	if got := exitCodeForError(err); got != exitWrong {
 		t.Fatalf("--include-unpinned must let a degraded database fail the gate (exit %d), got %d (%v)", exitWrong, got, err)
+	}
+}
+
+// TestEnvWait_ForgeAppliedSlotsAreReportedApart: in a forge-applied
+// environment the control plane lists the runtime slots forge applies itself
+// with phase and verdict UNSPECIFIED and a reason. They must print under their
+// own heading WITH that reason, carry no phase in the document (neither
+// "unspecified" nor "unknown" is true of them), and never gate the wait.
+func TestEnvWait_ForgeAppliedSlotsAreReportedApart(t *testing.T) {
+	const reason = "applied by forge (not observed by the control plane)"
+	forgeApplied := []wireWorkloadRollout{{
+		Name: "edge-us/web/api", Artifact: "ghcr.io/acme/web", PinnedDigest: sha("2"),
+		Phase: wireRolloutPhaseUnspecified, Verdict: "DEPLOY_VERDICT_UNSPECIFIED", Reason: reason,
+	}}
+
+	fake := newFakeRollout(wireRolloutPhaseSucceeded)
+	fake.forgeApplied = forgeApplied
+	var err error
+	out := captureStdout(t, func() { err = runEnvWait(context.Background(), "prod", waitOpts(fake)) })
+	if err != nil {
+		t.Fatalf("a forge-applied slot must not gate the wait, got %v", err)
+	}
+	heading := strings.Index(out, "applied by forge (reported, not judged by the control plane; does not gate):")
+	if heading < 0 {
+		t.Fatalf("forge-applied slots must print under their own heading, got:\n%s", out)
+	}
+	row := strings.Index(out, "edge-us/web/api")
+	if row < heading || !strings.Contains(out[row:], reason) {
+		t.Errorf("the slot must be listed under the heading with its reason, got:\n%s", out)
+	}
+	if strings.Contains(out[heading:], "unspecified") || strings.Contains(out[heading:], "unknown") {
+		t.Errorf("a slot the control plane does not judge must not print a phase, got:\n%s", out)
+	}
+
+	jsonFake := newFakeRollout(wireRolloutPhaseSucceeded)
+	jsonFake.forgeApplied = forgeApplied
+	opts := waitOpts(jsonFake)
+	opts.JSON = true
+	out = captureStdout(t, func() { err = runEnvWait(context.Background(), "prod", opts) })
+	if err != nil {
+		t.Fatalf("--json: a forge-applied slot must not gate the wait, got %v", err)
+	}
+	var doc struct {
+		Workloads    []map[string]any `json:"workloads"`
+		ForgeApplied []map[string]any `json:"forge_applied"`
+	}
+	if jerr := json.Unmarshal([]byte(out), &doc); jerr != nil {
+		t.Fatalf("stdout must be exactly one JSON document: %v\n%s", jerr, out)
+	}
+	if len(doc.ForgeApplied) != 1 {
+		t.Fatalf("forge_applied = %v, want the one slot", doc.ForgeApplied)
+	}
+	slot := doc.ForgeApplied[0]
+	if slot["name"] != "edge-us/web/api" || slot["reason"] != reason || slot["pinned_digest"] != sha("2") {
+		t.Errorf("forge_applied[0] = %v", slot)
+	}
+	for _, judged := range []string{"phase", "verdict"} {
+		if _, set := slot[judged]; set {
+			t.Errorf("forge_applied[0] must carry no %s: the control plane does not judge it, got %v", judged, slot)
+		}
+	}
+	for _, w := range doc.Workloads {
+		if w["name"] == "edge-us/web/api" {
+			t.Errorf("a forge-applied slot must not be listed among the gating workloads: %v", doc.Workloads)
+		}
 	}
 }
 

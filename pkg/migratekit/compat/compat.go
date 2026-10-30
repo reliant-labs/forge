@@ -193,6 +193,10 @@ type Migration struct {
 	// Adopts is the foreign history this migration replaces, from its
 	// AdoptsDirective lines; nil when it declares none. See adopt.go.
 	Adopts *Adoption
+	// Timeouts is the file's lock_timeout / statement_timeout override, from
+	// its TimeoutDirectives lines; the zero value declares none. See
+	// timeouts.go.
+	Timeouts Timeouts
 }
 
 // Scan reads every up migration in dir of fsys, in version order.
@@ -231,11 +235,15 @@ func Scan(fsys fs.FS, dir string) ([]Migration, error) {
 		if aerr != nil {
 			return nil, fmt.Errorf("migration %s: %w", e.Name(), aerr)
 		}
+		timeouts, terr := ParseTimeouts(upSQL)
+		if terr != nil {
+			return nil, fmt.Errorf("migration %s: %w", e.Name(), terr)
+		}
 		compatible, breaks := Declarations(upSQL)
 		out = append(out, Migration{Version: uint(v), Name: e.Name(), Descriptor: m[2],
 			// Declared's rule: a file that also declares breaks-rollback is
 			// read the safe way, as not compatible.
-			BackwardCompatible: len(compatible) > 0 && len(breaks) == 0, BreaksRollback: len(breaks) > 0, Adopts: adopts})
+			BackwardCompatible: len(compatible) > 0 && len(breaks) == 0, BreaksRollback: len(breaks) > 0, Adopts: adopts, Timeouts: timeouts})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
 	return out, nil

@@ -209,9 +209,11 @@ func DetectConstructorType(dir string) (string, error) {
 		}
 		return "", err
 	}
+	constructor := DetectConstructorName(dir)
 	fset := token.NewFileSet()
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") ||
+			strings.HasSuffix(entry.Name(), "_test.go") || strings.HasSuffix(entry.Name(), "_gen.go") {
 			continue
 		}
 		file, perr := parser.ParseFile(fset, filepath.Join(dir, entry.Name()), nil, parser.SkipObjectResolution)
@@ -220,7 +222,7 @@ func DetectConstructorType(dir string) (string, error) {
 		}
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || !IsComponentConstructor(fn) {
+			if !ok || fn.Recv != nil || fn.Name.Name != constructor {
 				continue
 			}
 			if fn.Type.Results == nil || len(fn.Type.Results.List) == 0 {
@@ -246,12 +248,13 @@ func DetectFallibleConstructor(dir string) (bool, error) {
 		return false, err
 	}
 
+	constructor := DetectConstructorName(dir)
 	fset := token.NewFileSet()
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
 			continue
 		}
-		if strings.HasSuffix(entry.Name(), "_test.go") {
+		if strings.HasSuffix(entry.Name(), "_test.go") || strings.HasSuffix(entry.Name(), "_gen.go") {
 			continue
 		}
 
@@ -263,7 +266,7 @@ func DetectFallibleConstructor(dir string) (bool, error) {
 
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || !IsComponentConstructor(fn) {
+			if !ok || fn.Recv != nil || fn.Name.Name != constructor {
 				continue
 			}
 

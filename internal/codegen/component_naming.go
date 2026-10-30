@@ -2,6 +2,9 @@ package codegen
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,9 +18,12 @@ import (
 // generated test-factory namespace (`app.NewTest<X>`).
 //
 // A wired component is a package forge itself constructs, which means all
-// four of:
+// the following:
 //
-//   - it declares a contract.go (the Service/Deps/New triple lives there);
+//   - it declares a contract.go;
+//   - its hand-authored source declares a Deps struct and the selected
+//     constructor takes that Deps value and returns an instance (the return
+//     type need not be called Service); a filename alone proves none of this;
 //   - it is not opted out with `//forge:exclude-contract` — a types-only
 //     package (internal/db, internal/deploy) carries this precisely because
 //     there is nothing to construct;
@@ -54,7 +60,71 @@ func IsWiredComponentDir(dir string) bool {
 	if HasExcludeContractDirective(dir) {
 		return false // types-only / library shape, opted out by its own source
 	}
-	return !HasExternalComponentDirective(dir) && !HasNotAComponentDirective(dir)
+	return !HasExternalComponentDirective(dir) && !HasNotAComponentDirective(dir) && hasComponentHelperShape(dir)
+}
+
+// hasComponentHelperShape checks the symbols the test-factory template actually
+// uses. Do not use DetectConstructorName's default as proof that New exists,
+// or ParseServiceDeps' empty slice as proof that an empty Deps was declared.
+// Tests and generated files cannot bootstrap their own eligibility.
+func hasComponentHelperShape(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	constructor := DetectConstructorName(dir)
+	var hasDeps, hasConstructor bool
+	fset := token.NewFileSet()
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") ||
+			strings.HasSuffix(name, "_test.go") || strings.HasSuffix(name, "_gen.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
+		if err != nil {
+			continue
+		}
+		for _, decl := range file.Decls {
+			switch d := decl.(type) {
+			case *ast.GenDecl:
+				if d.Tok != token.TYPE {
+					continue
+				}
+				for _, spec := range d.Specs {
+					ts, ok := spec.(*ast.TypeSpec)
+					if !ok || ts.Name.Name != "Deps" {
+						continue
+					}
+					if _, ok := ts.Type.(*ast.StructType); ok {
+						hasDeps = true
+					}
+				}
+			case *ast.FuncDecl:
+				if d.Recv != nil || d.Name.Name != constructor ||
+					d.Type.TypeParams.NumFields() != 0 || d.Type.Params.NumFields() != 1 ||
+					d.Type.Results.NumFields() == 0 || d.Type.Results.NumFields() > 2 {
+					continue
+				}
+				param, ok := d.Type.Params.List[0].Type.(*ast.Ident)
+				if !ok || param.Name != "Deps" {
+					continue
+				}
+				results := d.Type.Results.List
+				if first, ok := results[0].Type.(*ast.Ident); ok && first.Name == "error" {
+					continue
+				}
+				if d.Type.Results.NumFields() == 2 {
+					last, ok := results[len(results)-1].Type.(*ast.Ident)
+					if !ok || last.Name != "error" {
+						continue
+					}
+				}
+				hasConstructor = true
+			}
+		}
+	}
+	return hasDeps && hasConstructor
 }
 
 // ComputeTestHelperName returns the suffix used by the `app.NewTest<X>` and

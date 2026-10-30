@@ -32,8 +32,10 @@ import (
 // Internal-package kinds. There are exactly two, and the distinction is
 // read off the package's own source rather than a registry: a package
 // either claims to be an outbound I/O boundary (`//forge:outbound-io`) or
-// it does not. Every contract package is Service/Deps/New-shaped — what
-// varies is whether it calls OUT, which is the only part a rule can check.
+// it does not. These describe the boundary claim, not proof that a
+// contract.go actually declares a Service/Deps/New component. Discovery
+// preserves contract packages for contract codegen; test factories separately
+// require the constructible shape checked by IsWiredComponentDir.
 // Whether the SERVER constructs it is a separate fact: see Composition*.
 const (
 	// InternalPackageService is the default: a Service/Deps/New contract

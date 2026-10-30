@@ -1269,8 +1269,8 @@ func removeRetiredBootstrapTesting(projectDir string, cs *checksums.FileChecksum
 // anything hand-built in providers.go / OpenInfra
 // (`//forge:external-component`), anything the server does not have
 // (`//forge:not-a-component`) and anything with no component to construct
-// at all — a types-only package carrying `//forge:exclude-contract`, or a
-// directory with no contract.go. None of those get a NewTest<Pkg> factory, so
+// at all — a types-only package, a contract without a Deps/constructor shape,
+// or a directory with no contract.go. None get a NewTest<Pkg> factory, so
 // none of them participate in the cross-role collision count.
 //
 // The membership test is IsWiredComponentDir, the SAME predicate

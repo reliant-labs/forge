@@ -146,6 +146,7 @@ func newSkillListCmd() *cobra.Command {
 		jsonOut           bool
 		includeMigrations bool
 		all               bool
+		withBodies        bool
 	)
 	cmd := &cobra.Command{
 		Use:   "list [group]",
@@ -187,6 +188,9 @@ apply to this project's pinned forge_version.`,
 			}
 			// --json is the sub-agent contract: a flat array of every
 			// skill, unchanged by the grouping the human-facing view does.
+			if jsonOut && withBodies {
+				return writeSkillsWithBodiesJSON(cmd.OutOrStdout(), skills)
+			}
 			if jsonOut {
 				return writeSkillsJSON(cmd.OutOrStdout(), skills)
 			}
@@ -219,6 +223,7 @@ apply to this project's pinned forge_version.`,
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output JSON instead of a tab-separated table")
 	cmd.Flags().BoolVar(&all, "all", false, "Print the exhaustive flat table (every sub-skill, full descriptions) instead of the grouped view")
 	cmd.Flags().BoolVar(&includeMigrations, "include-migrations", false, "Include one-time migration skills (relevance: migration) in the listing")
+	cmd.Flags().BoolVar(&withBodies, "with-bodies", false, "With --json: carry each skill's body, exactly as `skill load <path>` prints it (one call for a whole catalog)")
 	return cmd
 }
 
@@ -944,6 +949,29 @@ func writeSearchJSON(w interface{ Write([]byte) (int, error) }, query string, re
 	}{Query: query, Results: make([]jsonResult, 0, len(results))}
 	for _, r := range results {
 		out.Results = append(out.Results, jsonResult{Score: r.Score, Skill: toJSONSkill(r.Skill)})
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
+}
+
+// writeSkillsWithBodiesJSON is writeSkillsJSON with each skill's body, as
+// `skill load <path>` prints it: the same renderer, project root and command
+// name. A host that mirrors a forge's whole catalog (reliant reading the
+// project's pinned forge) reads it in one call rather than one per skill.
+func writeSkillsWithBodiesJSON(w interface{ Write([]byte) (int, error) }, skills []skillMeta) error {
+	type withBody struct {
+		jsonSkill
+		Body string `json:"body"`
+	}
+	root, _ := findProjectRoot()
+	out := make([]withBody, 0, len(skills))
+	for _, s := range skills {
+		body, err := RenderSkillContentAt(root, s.Path, SkillAudienceAll, Name())
+		if err != nil {
+			return fmt.Errorf("render skill %q: %w", s.Path, err)
+		}
+		out = append(out, withBody{jsonSkill: toJSONSkill(s), Body: string(body)})
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")

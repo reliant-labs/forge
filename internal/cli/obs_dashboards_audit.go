@@ -340,9 +340,10 @@ chose are reported as returned. No panel SQL is rebuilt here.
 Each panel is one of:
 
   ok              it returned data the console can draw
-  partial         data came back, but not all of it: a series whose metric is
-                  absent, a metric stored as another kind, or one bucket where a
-                  line needs two (a day-wide bucket under a short window)
+  partial         data came back, but not all of it: an answer the control
+                  plane cut off, a series whose metric is absent, a metric
+                  stored as another kind, or one bucket where a line needs two
+                  (a day-wide bucket under a short window)
   empty           nothing came back; the probe says whether the data exists
   error           the read failed; the class says auth, quota, in flight,
                   storage, ...: a failed read is never reported as no data
@@ -722,6 +723,9 @@ func (a *dashAudit) judge(ap *auditPanel, op obsquery.Panel, ro obsbackend.Panel
 	case len(absent) > 0:
 		ap.Status, ap.Reason = auditPartial, "metric_absent_some_series"
 		ap.ProbableCause = fmt.Sprintf("some series have no data in this window (%s); the control plane found no data for those metrics in the env over %s", strings.Join(absent, ", "), durText(window))
+	case ro.Truncated:
+		ap.Status, ap.Reason = auditPartial, "truncated"
+		ap.ProbableCause = truncatedCause(ro)
 	case len(mismatch) > 0:
 		ap.Status, ap.Reason = auditPartial, "metric_kind_mismatch"
 		ap.ProbableCause = "a metric is stored as a different kind than the panel declares (" + strings.Join(mismatch, "; ") + "); the panel reads the wrong table or refuses its aggregation"
@@ -734,6 +738,14 @@ func (a *dashAudit) judge(ap *auditPanel, op obsquery.Panel, ro obsbackend.Panel
 	default:
 		ap.Status = auditOK
 	}
+}
+
+// truncatedCause says how much of a cut-off answer came back.
+func truncatedCause(ro obsbackend.PanelReadout) string {
+	if ro.SeriesTotal > ro.Series {
+		return fmt.Sprintf("the control plane cut the answer off: %d of %d series came back, so the console draws only part of the panel; group by fewer values or add a limit", ro.Series, ro.SeriesTotal)
+	}
+	return "the control plane cut the answer off at its row or series cap, so the console draws only part of the panel; narrow the window, group by fewer values or add a limit"
 }
 
 // singleBucket: a time-series panel whose data is one bucket cannot draw a

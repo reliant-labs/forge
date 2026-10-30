@@ -1346,3 +1346,23 @@ func TestAuditProbeLiftsTheSessionsErrorFilter(t *testing.T) {
 		t.Fatalf("want data_excluded_by_filters:\n%s", out)
 	}
 }
+
+// An answer the control plane cut off is partial, not ok: exit 2, and listed
+// in the default text output.
+func TestAuditTruncatedAnswerIsPartial(t *testing.T) {
+	cut := `{"kind":"line","stepSeconds":30,"truncated":true,"seriesTotal":12,"series":[{"label":"a","points":[{"time":"2026-10-22T11:30:00Z","value":3},{"time":"2026-10-22T11:31:00Z","value":4}]},{"label":"b","points":[{"time":"2026-10-22T11:30:00Z","value":1},{"time":"2026-10-22T11:31:00Z","value":2}]}]}`
+	cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": auditSpec(linePanel("cut"))},
+		panel: func(auditQuery) (string, error) { return cut, nil }}
+	out, _, err := auditRun(t, cp)
+	if exitcode.Of(err) != 2 {
+		t.Fatalf("exit = %d, want 2\n%s", exitcode.Of(err), out)
+	}
+	p := decodeAudit(t, out).Dashboards[0].Panels[0]
+	if p.Status != "partial" || p.Reason != "truncated" || !strings.Contains(p.ProbableCause, "2 of 12 series") {
+		t.Errorf("status %q reason %q cause %q", p.Status, p.Reason, p.ProbableCause)
+	}
+	text, _, _ := mxRun(t, mxCloud(cp), "dashboards", "audit", "prod")
+	if !strings.Contains(text, "cut") || !strings.Contains(text, "truncated") {
+		t.Errorf("a truncated panel is missing from the default text output:\n%s", text)
+	}
+}

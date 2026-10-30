@@ -63,7 +63,10 @@ func fullyDeclaredShape() release.Shape {
 		}},
 		DeliveryPolicy: &policy,
 		DataAccess:     &release.ShapeDataAccess{DBQuery: release.DBQueryDeny},
-		UptimeChecks:   []release.ShapeUptimeCheck{{Name: "web", Target: "web", Method: "GET", IntervalSeconds: 60, TimeoutSeconds: 10, Source: release.UptimeSourceDefault}},
+		Databases: []release.ShapeDatabase{{Name: "app-db", Dashboards: &release.ShapeDatabaseDashboards{
+			Enabled: true, RowCap: 500, TimeoutMs: 3000, MaxConcurrency: 1,
+		}}},
+		UptimeChecks: []release.ShapeUptimeCheck{{Name: "web", Target: "web", Method: "GET", IntervalSeconds: 60, TimeoutSeconds: 10, Source: release.UptimeSourceDefault}},
 		ReleaseHealth: &release.ShapeReleaseHealth{
 			WindowSeconds: 1800, MinRequests: 100, MaxErrorRateIncrease: 0.02, MaxP95Ratio: 2,
 			NewIssueMinEvents: 5, FailOn: []string{release.HealthErrorRate, release.HealthLatency},

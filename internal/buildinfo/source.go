@@ -89,6 +89,51 @@ func sourceFrom(info *debug.BuildInfo, stampedCommit string) Source {
 	return s
 }
 
+// LocalBuild reports whether this forge was compiled from a local source tree
+// — a checkout built where it stands, or a host that embeds forge through a
+// go.work `use` or a directory replace — rather than from a published module
+// version (`go install …/cmd/forge@<version>`, or a host whose go.mod requires
+// forge at a version, as every released `reliant` does).
+//
+// A pseudo-version alone cannot tell the two apart: a checkout build and a
+// `go install …@<pseudo>` both report one. What tells them apart is where the
+// bytes came from. Only a local build is "the forge someone is working on";
+// a module build is exactly the forge its version names, and nothing more.
+func LocalBuild() bool { return localBuildFrom(rawBuildInfo()) }
+
+// localBuildFrom is the pure decision behind LocalBuild.
+//
+//   - standalone: the main module is "(devel)" (a build with -buildvcs=false),
+//     or the build recorded a vcs.revision, which Go records only when the
+//     main module was built inside its own repository. `go install
+//     module@version` builds from the module cache and records neither.
+//   - embedded: forge resolved to "(devel)" (a go.work `use`) or through a
+//     directory replace. A host requiring forge at a version is a module build.
+func localBuildFrom(info *debug.BuildInfo) bool {
+	if info == nil {
+		return false
+	}
+	if info.Main.Path == forgeModulePath {
+		if v := info.Main.Version; v == "" || v == "(devel)" {
+			return true
+		}
+		for _, kv := range info.Settings {
+			if kv.Key == "vcs.revision" && kv.Value != "" {
+				return true
+			}
+		}
+		return false
+	}
+	dep, embedded := forgeModuleDep(info)
+	if !embedded {
+		return false
+	}
+	if dep.Replace != nil {
+		return dep.Replace.Version == ""
+	}
+	return dep.Version == "" || dep.Version == "(devel)"
+}
+
 // commitOfVersion extracts what a module version says about its commit: a
 // pseudo-version's revision, or a release tag to be resolved elsewhere.
 // "(devel)", "" and build-metadata-only shapes say nothing.

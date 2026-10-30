@@ -91,8 +91,9 @@ func runMCP(ctx context.Context, in io.Reader, protocolOut *os.File) error {
 	os.Stdout = os.Stderr
 
 	// Every tool call must run the forge this binary is, never exec the
-	// project's pinned one: that replaces this process mid-request.
-	pinDelegationDisabled = true
+	// project's pinned one: that replaces this process mid-request. And
+	// each is checked against its own project's pin.
+	serveRequestsUnderTheirOwnPins()
 
 	r, err := newMCPRunner(NewRootCmd)
 	if err != nil {

@@ -122,10 +122,10 @@ func TestDelegation_RewritingCommandRunsUnderThePinnedForge(t *testing.T) {
 	}
 	hasMarker := false
 	for _, kv := range h.env {
-		hasMarker = hasMarker || kv == forgedelegate.MarkerEnv+"=1"
+		hasMarker = hasMarker || kv == forgedelegate.MarkerEntry(os.Getpid(), "forge_version "+skewTestPin)
 	}
 	if !hasMarker {
-		t.Error("the delegated forge is not told it is one")
+		t.Errorf("the delegated forge is not told it is one: %v", h.env)
 	}
 	if n := strings.Count(out, "running "); n != 1 || !strings.Contains(out, skewTestPin) || !strings.Contains(out, "--allow-version-skew") {
 		t.Errorf("want exactly one notice naming the pin and the escape hatch:\n%s", out)
@@ -150,23 +150,29 @@ func TestDelegation_RenderCommandsAreHandedOver(t *testing.T) {
 	}
 }
 
-// Reading is never rerouted: plans, lists and inspection run here. (Judging
-// the project — lint, the CI gate — is not reading: see pinDelegateJudges.)
-func TestDelegation_ReadOnlyRunsStayLocal(t *testing.T) {
+// Reads are handed over too: a plan, an audit and a skill are functions of the
+// binary, and the wrong forge's answer looks right. Only the commands about
+// this forge or this machine stay here.
+func TestDelegation_ReadsAreHandedOverAndExemptCommandsStayLocal(t *testing.T) {
 	skewedProject(t)
-	t.Setenv(forgetDelegated(), "")
-	for _, args := range [][]string{{"generate", "--dry-run"}, {"generate", "--check"}, {"scaffold", "--dry-run"}, {"env", "list"}, {"project", "audit"}, {"version"}, {"skill", "list"}} {
-		h, installs := armDelegation(t)
+	t.Setenv(forgedelegate.MarkerEnv, "")
+	for _, args := range [][]string{{"generate", "--dry-run"}, {"generate", "--check"}, {"scaffold", "--dry-run"}, {"env", "list"}, {"project", "audit"}, {"skill", "list"}} {
+		h, _ := armDelegation(t)
 		if _, err := runCheck(t, args...); err != nil {
 			t.Errorf("forge %v: %v", args, err)
 		}
+		if h.path == "" {
+			t.Errorf("forge %v ran under a forge the project does not pin", args)
+		}
+	}
+	for _, args := range [][]string{{"version"}, {"env", "ps"}, {"env", "down"}, {"project", "upgrade"}, {"report-bug"}, {"slot", "status"}} {
+		h, installs := armDelegation(t)
+		_, _ = runCheck(t, args...)
 		if h.path != "" || len(*installs) != 0 {
 			t.Errorf("forge %v was handed over (built %v)", args, *installs)
 		}
 	}
 }
-
-func forgetDelegated() string { return forgedelegate.MarkerEnv }
 
 // Every way of saying "run THIS forge" keeps the old behaviour, and a forge
 // that was itself delegated to never hands off again.
@@ -188,7 +194,7 @@ func TestDelegation_EscapeHatchesAndNoLoop(t *testing.T) {
 		}
 	})
 	t.Run("already delegated", func(t *testing.T) {
-		t.Setenv(forgedelegate.MarkerEnv, "1")
+		actAsDelegate(t)
 		h, _ := armDelegation(t)
 		if out, err := runCheck(t, "generate"); err != nil || h.path != "" || out != "" {
 			t.Errorf("a delegated forge handed off again or complained: err %v, %q, %q", err, h.path, out)
@@ -204,12 +210,33 @@ func TestDelegation_EscapeHatchesAndNoLoop(t *testing.T) {
 	})
 }
 
-// Offline, or a pin nobody published: the build fails, and the old refusal
-// (the runbook) comes back carrying the reason — never a bare failure.
-func TestDelegation_UnavailablePinFallsBackToTheRunbook(t *testing.T) {
+// Offline, or a pin nobody published: the build fails, and so does the
+// command, with the reason — reads as well as writes. Falling back to this
+// forge is the silent rewrite the hand-off exists to prevent.
+func TestDelegation_UnavailablePinFailsAndRunsNothing(t *testing.T) {
 	skewedProject(t)
 	t.Setenv(forgedelegate.MarkerEnv, "")
-	h, _ := armDelegation(t)
+	for _, args := range [][]string{{"generate"}, {"skill", "list"}, {"project", "shapes"}} {
+		h, _ := armDelegation(t)
+		unobtainablePin(t)
+		_, err := runCheck(t, args...)
+		if err == nil {
+			t.Fatalf("forge %v ran although the pinned forge could not be had", args)
+		}
+		for _, want := range []string{"no such host", skewTestPin, "Nothing ran", "--allow-version-skew"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("forge %v: the failure does not mention %q:\n%v", args, want, err)
+			}
+		}
+		if h.path != "" {
+			t.Error("handed over a forge that was never built")
+		}
+	}
+}
+
+// unobtainablePin makes every build of a pinned forge fail as it does offline.
+func unobtainablePin(t *testing.T) {
+	t.Helper()
 	pinDelegateResolver = func(w io.Writer) *forgedelegate.Resolver {
 		return &forgedelegate.Resolver{
 			Log: w,
@@ -217,18 +244,6 @@ func TestDelegation_UnavailablePinFallsBackToTheRunbook(t *testing.T) {
 				return errors.New("dial tcp: lookup proxy.golang.org: no such host")
 			},
 		}
-	}
-	_, err := runCheck(t, "generate")
-	if err == nil {
-		t.Fatal("a command that could neither be delegated nor run was allowed")
-	}
-	for _, want := range []string{"no such host", skewTestPin, "--allow-version-skew"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("fallback does not mention %q:\n%v", want, err)
-		}
-	}
-	if h.path != "" {
-		t.Error("handed over a forge that was never built")
 	}
 }
 
@@ -246,16 +261,19 @@ func TestDelegationTargetFor_PrefersLinkedCheckout(t *testing.T) {
 	}
 }
 
-func TestPinDelegateOnlyFor(t *testing.T) {
+func TestHandOffWanted(t *testing.T) {
 	for rel, want := range map[string]bool{
-		"env render": true, "env shape": true, "env config": true, "env diff": true, "env up": true,
-		"kcl eval": true, "doctor": true, "project frontends": true,
-		"lint": true, "ci gate": true, "ci verify-generated": true,
-		"env list": false, "env down": false, "env ps": false, "env devstack": false,
-		"version": false, "project audit": false, "generate": false, "ci summarize": false, "slot run": false,
+		"env render": true, "env shape": true, "env config": true, "env diff": true, "env up": true, "env list": true,
+		"kcl eval": true, "doctor": true, "project frontends": true, "project audit": true, "project shapes": true,
+		"lint": true, "ci gate": true, "ci summarize": true, "generate": true, "skill load": true, "mcp": false,
+		"a-command-this-forge-lacks": true, "project a-subcommand-this-forge-lacks": true,
+		"": false, "version": false, "help": false, "help generate": false, "completion bash": false, "__complete": false,
+		"env down": false, "env ps": false, "env devstack": false,
+		"project upgrade": false, "project new": false, "report-bug": false,
+		"storage gc": false, "slot run": false,
 	} {
-		if got := pinDelegateOnlyFor(rel); got != want {
-			t.Errorf("pinDelegateOnlyFor(%q) = %v, want %v", rel, got, want)
+		if got := handOffWanted(rel); got != want {
+			t.Errorf("handOffWanted(%q) = %v, want %v", rel, got, want)
 		}
 	}
 }
@@ -317,8 +335,8 @@ func TestDelegation_StorageCommandsAreNeverHandedToAPinnedForge(t *testing.T) {
 
 	for _, p := range paths {
 		rel := strings.Join(p, " ")
-		if delegationWanted(rel, false) || delegationWanted(rel, true) {
-			t.Errorf("delegationWanted(%q): a storage command would be handed to the pinned forge", rel)
+		if handOffWanted(rel) {
+			t.Errorf("handOffWanted(%q): a storage command would be handed to the pinned forge", rel)
 		}
 		*h = handoff{}
 		*installs = nil
@@ -332,17 +350,17 @@ func TestDelegation_StorageCommandsAreNeverHandedToAPinnedForge(t *testing.T) {
 }
 
 // The exclusion holds even if a later edit lists storage among the pin-gated
-// groups or the delegated commands: it is checked first.
+// groups: the hand-off does not consult the gate.
 func TestDelegation_StorageIsExcludedEvenWhenListedAsPinGated(t *testing.T) {
 	prev := pinGatedGroups
 	t.Cleanup(func() { pinGatedGroups = prev })
 	pinGatedGroups = map[string][]string{"storage": nil}
 	for _, rel := range []string{"storage", "storage gc", "storage gocache", "storage auto-gc"} {
-		if delegationWanted(rel, false) {
-			t.Errorf("delegationWanted(%q) = true with storage in pinGatedGroups", rel)
+		if handOffWanted(rel) {
+			t.Errorf("handOffWanted(%q) = true with storage in pinGatedGroups", rel)
 		}
 	}
-	if !delegationWanted("generate", false) {
+	if !handOffWanted("generate") {
 		t.Error("the exclusion swallowed generate")
 	}
 }

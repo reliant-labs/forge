@@ -39,7 +39,6 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/forgecompat"
-	"github.com/reliant-labs/forge/internal/forgedelegate"
 )
 
 // pinGatedCommands are the commands, relative to forge's root, that refuse
@@ -130,7 +129,7 @@ func registerVersionSkewFlags(root *cobra.Command) {
 	walk = func(c *cobra.Command) {
 		rel := strings.TrimSpace(strings.TrimPrefix(c.CommandPath(), root.CommandPath()))
 		_, gated := pinGateFor(rel)
-		if (gated || pinDelegateOnlyFor(rel)) && c.Flags().Lookup(allowVersionSkewFlag) == nil {
+		if (gated || handOffWanted(rel)) && c.Flags().Lookup(allowVersionSkewFlag) == nil {
 			c.Flags().Bool(allowVersionSkewFlag, false,
 				"Run even though this forge is not the forge_version forge.yaml pins (also "+allowVersionSkewEnv+"=1)")
 		}
@@ -215,7 +214,12 @@ func pinSkewFor(projectRoot string) (pin, binary string, skewed, devAgainstTag b
 	if !ok || !skew {
 		return "", "", false, false
 	}
-	devAgainstTag = !buildinfo.IsDevVersion(pin) && buildinfo.IsDevVersion(binary)
+	// A development forge against a tag pin is tolerated only when it IS a
+	// development forge: built from a local tree. A pseudo-version says
+	// nothing about that — `reliant forge` embedding forge at
+	// v0.1.47-0.<ts>-dd9a973c5fbf is exactly that published commit, not
+	// someone's checkout, and tolerating it rewrote a v1.0.4 project.
+	devAgainstTag = !buildinfo.IsDevVersion(pin) && buildinfo.IsDevVersion(binary) && forgeIsLocalBuild()
 	return pin, binary, true, devAgainstTag
 }
 
@@ -259,54 +263,46 @@ func pinSkewRefusal(projectRoot, pin, binary, what string) error {
 	return fmt.Errorf("%s", b.String())
 }
 
-// checkForgePinSkew is the root command's check, for cmd. A command that
-// depends on which forge ran it is handed to the forge the project wants
-// (forge_pin_delegate.go); when that is not possible, or the command is not
-// one of those, it warns on w, and returns a refusal for a pin-gated command
-// unless allowed.
+// checkForgePinSkew is the root command's check, for cmd. Unless the
+// entrypoint already decided (HandOffToPinned), a command run in a project
+// that pins another forge is handed to that forge, or fails when it cannot be
+// had (forge_pin_delegate.go). What runs here anyway — an override, a local
+// development forge against a tag pin, an in-process run with the hand-off
+// disabled — warns on w, and a pin-gated command is refused unless allowed.
 func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error {
-	if forgedelegate.Delegated() {
-		return nil
-	}
-	projectRoot, err := cmdutil.FindProjectRoot()
-	if err != nil || projectRoot == "" {
+	if isDelegate() {
 		return nil
 	}
 	rel := strings.TrimSpace(strings.TrimPrefix(cmd.CommandPath(), root.CommandPath()))
+	projectRoot, err := cmdutil.FindProjectRoot()
+	if err != nil {
+		projectRoot = ""
+	}
+	if !handOffDecided && !pinDelegationDisabled {
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		handed, err := handOff(ctx, w, rel, allow, projectRoot, forgeInvocationArgs())
+		if err != nil || handed {
+			return err
+		}
+	}
+	if projectRoot == "" {
+		return nil
+	}
 	readOnlyFlags, gated := pinGateFor(rel)
 	readOnly := readOnlyRun(cmd, readOnlyFlags)
 	overridden := allow || forgecompat.SkewOverridden()
-
-	var delegateErr error
-	if !overridden && delegationWanted(rel, readOnly) && !pinDelegationDisabled {
-		if t, ok := delegateTargetFor(projectRoot); ok && !t.devAgainstTag(rel) {
-			ctx := cmd.Context()
-			if ctx == nil {
-				ctx = context.Background()
-			}
-			handed, err := delegateToPinned(ctx, w, projectRoot, t, forgeInvocationArgs())
-			if handed {
-				return nil
-			}
-			delegateErr = err
-		}
-	}
 
 	pin, binary, skewed, devAgainstTag := pinSkewFor(projectRoot)
 	if !skewed {
 		return nil
 	}
 	if gated && !readOnly && !(devAgainstTag && !pinBuildCommands[rel]) && !overridden {
-		err := pinSkewRefusal(projectRoot, pin, binary, "forge "+rel)
-		if note := delegationFailure(delegateErr); note != "" {
-			return fmt.Errorf("%s\n%s", err, strings.TrimSuffix(note, "\n"))
-		}
-		return err
+		return pinSkewRefusal(projectRoot, pin, binary, "forge "+rel)
 	}
 	_, _ = fmt.Fprint(w, pinSkewWarning(projectRoot, pin, binary, buildinfo.Current()))
-	if note := delegationFailure(delegateErr); note != "" {
-		_, _ = fmt.Fprint(w, "  "+strings.TrimPrefix(note, "  "))
-	}
 	return nil
 }
 

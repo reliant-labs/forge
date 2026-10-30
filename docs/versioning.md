@@ -119,13 +119,13 @@ KCL schemas and analyzers live inside the binary, so the wrong forge either
 rewrites a project with the wrong output or fails with an error that blames
 the project (`Cannot add member 'release_dependencies' to schema ...`).
 
-So forge does not refuse and print a recipe. It runs the right forge. Before a
-command that writes the project (`generate`, `scaffold`, `package new`,
-`component install`, `env new`, `project rescaffold`/`delete`/`migrate`, and
-the build/deploy commands) or renders its KCL (`env render|shape|config|diff|up`,
-`kcl`, `doctor`) runs under a forge other than the project's, it execs the
-project's forge with the same arguments, environment, stdio and exit status, and
-prints one line on stderr saying so:
+So forge does not refuse and print a recipe. It runs the right forge. Before
+any command runs inside a project that pins another forge — the writers
+(`generate`, `scaffold`, the build/deploy commands), the KCL renderers, the
+linters and the gate, and the reads too (`skill load`, `project shapes`, a
+`--dry-run` plan: each is a function of the binary, and the wrong forge's
+answer looks right) — forge execs the project's forge with the same arguments,
+environment, stdio and exit status, and prints one line on stderr saying so:
 
 ```
 forge: this forge is v0.1.45-…, but the project wants forge_version v0.1.46-… — running forge v0.1.46-… (just built) instead (--allow-version-skew, or FORGE_ALLOW_VERSION_SKEW=1, to run this one)
@@ -146,17 +146,47 @@ github.com/reliant-labs/forge/cmd/forge@<forge_version>` into a
    happens once (about a minute), is renamed into place only when complete, and
    the cache keeps the newest few versions.
 
-Read-only runs (`--dry-run`, `--check`, `lint`, `project audit`, `env list`,
-every inspection verb) stay on the forge you ran and only warn, as before.
+The decision is made before forge parses the command line (`forge` through its
+entrypoint, a host such as `reliant forge` through `cli.HandOffToPinned`), so a
+command or flag the pinned forge has and this one lacks still reaches the
+pinned forge. `-C`/`--project-dir` names the project, and so the pin.
+
+The commands about THIS forge or this machine always run here: `version`,
+`help`, `completion`, `project upgrade` (it moves the pin, and must work when
+the old pin cannot be built), `project new`, `report-bug`, `storage`, `slot`,
+`env ps|down|devstack`, and `mcp`: a server whose every tool call names its own
+project, so each call is checked against that project's pin instead.
+
+**When the pinned forge cannot be had** — offline, a version nobody published,
+a linked checkout that does not build — the command fails with the reason and
+nothing runs. It never falls back to the forge you ran: that fallback is how a
+stale forge rewrites a project.
+
+**A development forge against a published pin.** A forge built from a local
+checkout, run in a project pinned to a release tag (forge's own e2e lanes, every
+forge developer), keeps running the rewriting commands itself, with a warning;
+the build/deploy commands are still handed over. That tolerance is for a
+LOCAL build only: a forge that is a module version — `go install …@<pseudo>`,
+or a host whose go.mod requires forge at a pseudo-version — is exactly the
+commit it names, and is handed over like any other. (Forge report 86c6fd64: `reliant
+forge generate` in a project pinned to v1.0.4 ran reliant's embedded
+v0.1.47-0.… forge under that tolerance and rewrote hundreds of generated lines.)
+
+**No pin.** Outside a project, or in one whose forge.yaml pins no
+`forge_version`, the forge you ran runs. An embedded forge says which on stderr
+(`reliant forge: not inside a forge project — running the forge built into
+reliant, v1.0.5`), since nothing else on screen names it.
 
 The explicit "run THIS forge" is `--allow-version-skew` or
-`FORGE_ALLOW_VERSION_SKEW=1`: no hand-off, and the old warn/refuse rules apply
-(a rewriting command under the wrong forge is refused with the exact
-`go run …@<pin>` line, which now also carries the reason the pinned forge could
-not be used, if that is why: offline, or a version nobody published). A
-delegated forge sets `FORGE_VERSION_DELEGATED=1` and never hands off again, so
-the two cannot loop. On Windows, which has no `exec`, the old process stays as
-the parent and relays the exit status.
+`FORGE_ALLOW_VERSION_SKEW=1`: no hand-off, and the warn/refuse rules apply (a
+rewriting command under the wrong forge is refused with the exact
+`go run …@<pin>` line). The hand-off sets `FORGE_VERSION_DELEGATED=<pid>:<target>`
+for the forge it starts, which then never hands off again, so the two cannot
+loop. The marker is good for that one process: it names the pid it is for (the
+exec'd process on Unix, whose parent is the relaying forge on Windows, which has
+no `exec`), and the delegate removes it from its environment as it starts. So
+nothing the delegate runs — `forge env up`'s services, a daemon, a `reliant
+forge` in another project — inherits a pass on the pin check.
 
 ## The compatibility gate
 

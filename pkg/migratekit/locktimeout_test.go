@@ -161,7 +161,7 @@ func TestPlanFileProvesAtomicity(t *testing.T) {
 		"refresh":                  {"REFRESH MATERIALIZED VIEW mv;", true},
 		"copy":                     {"COPY t FROM '/x';", false},
 		"unknown statement":        {"FROBNICATE t;", false},
-		"set then ddl":             {"SET search_path TO tenant_a; ALTER TABLE items ADD c INT;", true},
+		"set then ddl":             {"SET search_path TO schema_a; ALTER TABLE items ADD c INT;", true},
 		"concurrent among others":  {"SET search_path TO a; CREATE INDEX CONCURRENTLY ix ON items (v);", false},
 		"reindex concurrently":     {"REINDEX INDEX CONCURRENTLY ix;", false},
 		"detach concurrently":      {"ALTER TABLE p DETACH PARTITION c CONCURRENTLY;", false},
@@ -180,8 +180,8 @@ func TestPlanFileReadsTheIndexTarget(t *testing.T) {
 	}{
 		"plain":                   {"CREATE INDEX CONCURRENTLY items_v ON items (v);", "items_v", `"items"`},
 		"unique, if not":          {"CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS items_v ON ONLY items (v)", "items_v", `"items"`},
-		"qualified table":         {"CREATE INDEX CONCURRENTLY items_v ON tenant_a.items (v);", "items_v", `"tenant_a"."items"`},
-		"quoted":                  {`CREATE INDEX CONCURRENTLY "Items V" ON "Tenant A"."Items" (v);`, "Items V", `"Tenant A"."Items"`},
+		"qualified table":         {"CREATE INDEX CONCURRENTLY items_v ON schema_a.items (v);", "items_v", `"schema_a"."items"`},
+		"quoted":                  {`CREATE INDEX CONCURRENTLY "Items V" ON "Schema A"."Items" (v);`, "Items V", `"Schema A"."Items"`},
 		"name in a string, alone": {"/* CREATE INDEX CONCURRENTLY x ON y */ CREATE INDEX CONCURRENTLY real ON items (v) WHERE v <> 'CREATE INDEX CONCURRENTLY z ON w';", "real", `"items"`},
 	} {
 		plan := planFile([]byte(c.sql))

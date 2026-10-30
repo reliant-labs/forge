@@ -431,6 +431,10 @@ func TestReleaseForgeScript_OneRunEditsACheckoutAtATime(t *testing.T) {
 			_ = os.Symlink(filepath.Join(dir, e.Name()), filepath.Join(noFlock, e.Name()))
 		}
 	}
+	// An empty PATH copy would refuse for want of bash or git, not flock.
+	if !seen["git"] {
+		t.Fatalf("no git found on PATH to copy into the flock-less PATH (%d tools seen)", len(seen))
+	}
 	out, err := runForgeScriptEnv(t, repo, []string{"PATH=" + noFlock}, "--dry-run", "v0.2.0")
 	if err == nil || !strings.Contains(out, "flock(1) is not installed") {
 		t.Errorf("without flock the script must refuse to edit the checkout; err=%v:\n%s", err, out)

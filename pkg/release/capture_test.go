@@ -117,6 +117,35 @@ func TestCaptureProvenance(t *testing.T) {
 	})
 }
 
+// loosePathPresent confirms a `show-ref --exists` exit 2 (which git version
+// returns it differs: newer git reports a ref path that is a directory as
+// absent, 2.43 fails the lookup), so it is pinned here on its own rather than
+// through whichever git the test machine has.
+func TestLoosePathPresent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a real git repository; runs in task test")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-q", "-b", "main")
+	heads := filepath.Join(dir, ".git", "refs", "heads")
+	if loosePathPresent(ctx, dir, "refs/heads/main") {
+		t.Error("an unborn branch has no loose path")
+	}
+	if err := os.MkdirAll(filepath.Join(heads, "main", "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !loosePathPresent(ctx, dir, "refs/heads/main") {
+		t.Error("a ref path that is a directory is present (damage), never unborn")
+	}
+	if err := os.WriteFile(filepath.Join(heads, "stub"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if loosePathPresent(ctx, dir, "refs/heads/stub/main") {
+		t.Error("a ref under a non-directory parent (reftable's stub) is not present")
+	}
+}
+
 // Only a genuinely unborn HEAD is "no commits yet": a HEAD that resolves to a
 // commit git cannot read, or a broken branch ref, is an error, never an empty
 // provenance that passes for a fresh repository.

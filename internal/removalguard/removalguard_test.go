@@ -772,10 +772,10 @@ var removals = []removal{
 		},
 		Allowances: []allowance{
 			{
-				Name:   "real sibling release scripts in placement design",
-				Reason: "These spans name existing control-plane release scripts, not a generated raw-curl release job.",
+				Name:   "real sibling release scripts in placement design and the release lock",
+				Reason: "These spans name control-plane's existing scripts/cut-release.sh (a holder of the shared release lock), not a generated raw-curl release job.",
 				Token:  regexp.MustCompile(`cut-release`),
-				Paths:  []string{"docs/design/per-workload-placement.md"},
+				Paths:  []string{"docs/design/per-workload-placement.md", "scripts/release-lock.sh", "scripts/test-release-lock.sh"},
 			},
 			{
 				Name: "the tests that pin the removal",
@@ -1911,7 +1911,7 @@ var removals = []removal{
 			Name:   "owned CLI capability MCP server, not a generated per-API manifest",
 			Reason: "The new stdio host exposes forge's fixed CLI capabilities and explicit report tool. It emits no generated per-service API manifest. Only the reused command/constructor spellings are permitted in its owned implementation, docs and license record; old manifest/bridge/token identifiers remain forbidden.",
 			Token:  regexp.MustCompile(`\bforge mcp\b|\bnewMCPCmd\b`),
-			Paths:  []string{".license-allowlist", "README.md", "docs/mcp.md", "internal/cli/mcp.go", "internal/cli/mcp_test.go", "internal/cli/root.go", "internal/templates/project/reliant.md.tmpl", "internal/templates/project/skills/forge/SKILL.md", "internal/templates/project/skills/forge/debug/SKILL.md"},
+			Paths:  []string{".license-allowlist", "README.md", "docs/mcp.md", "internal/cli/mcp.go", "internal/cli/mcp_test.go", "internal/cli/root.go", "internal/cli/forge_pin_delegate.go", "internal/cli/forge_pin_marker_test.go", "internal/templates/project/reliant.md.tmpl", "internal/templates/project/skills/forge/SKILL.md", "internal/templates/project/skills/forge/debug/SKILL.md"},
 		}},
 	},
 	{

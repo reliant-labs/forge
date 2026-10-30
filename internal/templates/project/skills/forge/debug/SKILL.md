@@ -190,64 +190,12 @@ safe columns or aggregates, not `SELECT *`. Never reset, seed, migrate or write
 production data to investigate it. `select 1` proves connectivity only, not
 that app records or schema are correct. Full transport/policy rules: `db/query`.
 
-#### An empty dashboard: do we have the data, and why isn't it showing?
+#### An empty dashboard
 
-Two different questions, and one command answers both. `forge obs dashboards
-audit` lists the dashboards the console lists for the env and sends each panel
-to the same server-side `QueryPanel` the console calls, over the range the
-console opens each dashboard on (its `defaultRange` rounded up to a preset, else
-the last hour; `--since` replaces it, as a viewer who picked a range), with the
-step left to the control plane. A sql panel whose `minStep` is wider than that
-window is widened the way the console widens it (to the smallest preset holding
-two buckets), and the panel reports `widened` and the window it really ran over.
-It rebuilds no panel SQL, so it cannot disagree with the console.
-
-```bash
-forge obs dashboards audit prod                                  # every panel, failures first
-forge obs dashboards audit prod --dashboard product-usage --json  # one dashboard, as a document
-forge obs dashboards audit prod --dashboard product-usage --panel workflows-by-outcome --since 24h
-```
-
-Read each panel's `status`, `reason` and `probable_cause`, not just the status:
-
-| status | meaning | next |
-|---|---|---|
-| `ok` | data the console can draw (`all_zero` in `note` means it is zero, not missing) | none |
-| `partial` | data, but a series' metric is absent or stored as another kind, or the answer is **one bucket** where a line needs two *under the console's own window* (a day-bucketed sql panel with no `minStep`, which the console cannot widen) | declare `minStep` / `defaultRange`, or fix the panel's bucketing |
-| `empty` | nothing came back; `probe.verdict` says whether the data exists | by verdict, below |
-| `error` | the read failed; `error.class` names it | by class, below |
-
-An empty panel is probed over `--probe-window` (default 7d): the same panel in
-every env of the project, and without its `where` filters, plus a metric catalog
-lookup. The verdict separates **no data** from **data outside the window, scope
-or filter**. A panel whose window is already the longest its signal allows (a 7d
-traces dashboard) cannot look further back; the env, filter and catalog probes
-still run over its own window, and the skipped step says why:
-
-- `data_outside_window`: the data exists; the window is shorter than its cadence
-  or the emitter went quiet. Widen `--since`.
-- `data_in_other_env`: it exists in another env; rows carry that env's id, or none
-  (an env-scoped panel cannot see untagged rows).
-- `data_excluded_by_filters`: it exists without the panel's `where`; the filter
-  value matches nothing the emitter writes.
-- `data_in_other_env_without_filters`: it exists only with both lifted: another
-  env, and the filter matches nothing there either.
-- `metric_never_seen` / `no_data_anywhere`: the emitter is not shipping it, or the
-  name is wrong. `forge obs metrics describe <env> <metric> --since 168h`, then
-  `forge obs query` for the table itself.
-- `probe_failed` / `not_probed`: the follow-up could not look (a read failed, or
-  nothing was left to check); this is **not** "no data". Fix the cause in
-  `probe.steps[].error`.
-
-Failure classes are never "no data": `auth` (HTTP 403 or a missing scope such as
-`obs:read`: a credential problem for an org admin, not an outage), `quota` (the
-org's hourly allowance is spent; the audit stops reading and says so), `in_flight`
-and `rate_limited` (retried, then reported; wait and rerun, or audit one
-`--dashboard` at a time), `timeout`, `storage`, `invalid` (a spec or range the
-control plane refused). Exit 0 means every panel is `ok`, **2** that some panel is
-empty or partial (or the audit could not look), **1** that a panel or dashboard
-could not be read. A local env has no dashboards to replay: use
-`forge obs dashboards check --against <env>` for its metric names.
+Run `forge obs dashboards audit <env>` to replay the console's panels. Empty
+panels are probed to distinguish absent data from data outside the window,
+environment or filters; failed probes are not evidence of absence. Load
+`forge skill load debug/dashboards` for verdicts, failure classes and remedies.
 
 #### Tool API versus CLI
 
@@ -371,30 +319,7 @@ The three investigation tracks above each have a dedicated forge sub-skill with 
 - `investigate` — hypothesis formation and code tracing.
 - `multi-cluster-e2e` — a workload stuck `Pending` / not-ready, or a flow that fails only in a k3d multi-cluster e2e env: read the pod status before the network, hold the pod up on failure, and the nested-cluster image-pull / host-gateway-DNS / path-MTU gotchas.
 
-## Observability (ClickStack)
-
-`forge env up dev` runs ClickStack (the `clickstack` compose service: ClickHouse, the HyperDX UI and an OTLP collector) with traces, metrics and logs. It is on by default and off with `_observability = False` in `deploy/kcl/dev/main.k`; see the `observability` skill.
-
-- **HyperDX UI:** the URL `forge env up dev` / `forge env status dev` lists under **Compose services**. No login.
-- **Traces:** HyperDX → Search → Traces. Find slow requests, trace cross-service calls.
-- **Metrics:** HyperDX → Search → Metrics. Query `rpc.server.call.duration` (the otelconnect RPC edge histogram; attributes `rpc.method`, `rpc.response.status_code`) etc.
-- **Logs:** HyperDX → Search → Logs. The collector tails `.forge/logs/<env>/*.log`, so a host process's logs are here and in the file; a log with a `TraceId` links to its trace.
-- **Profiles:** continuous profiles are collected locally when enabled; export them with `forge obs profile` (local ClickStack only, `--env <env>` rather than a positional env). Load `forge skill load observability/profiles` for sample types, retention and collection settings. Use `--list` to discover services; no samples is not proof the process used no CPU. For a live process, pprof below remains available.
-
-Host processes are pointed at it by `forge env up`, which sets `OTEL_EXPORTER_OTLP_ENDPOINT` to the loopback OTLP/HTTP port the compose service publishes (`_otlp_http_port` in `dev/main.k`) and `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, unless you set them yourself.
-
-**pprof is always on.** It binds its own listener, separate from the app port, defaulting to `127.0.0.1:6060` — live in every environment and routable from none (no k8s Service, no route, no published port). You never have to redeploy to start profiling:
-
-```bash
-go tool pprof http://localhost:6060/debug/pprof/heap    # what is this process holding?
-go tool pprof http://localhost:6060/debug/pprof/goroutine
-curl -o cpu.pb.gz 'http://localhost:6060/debug/pprof/profile?seconds=30'
-
-kubectl port-forward <pod> 6060:6060                    # in a cluster, then the above
-```
-
-Reach for the heap profile the moment a process is being OOMKilled: the cgroup's `memory.stat` tells you HOW MUCH it holds and never WHAT, and the answer only exists while the process is still alive.
-
-Change the address with `PPROF_ADDR` / `--pprof-addr`; the scaffolded `docker-compose.yml` sets `0.0.0.0:6060` for the container's own network namespace (nothing publishes it). Pass `--pprof-addr=` to switch pprof off: an empty `PPROF_ADDR` counts as unset, like every empty config env var, so it keeps the default.
+For local ClickStack endpoints and live pprof, load `forge skill load debug/telemetry`.
+Continuous profiles: `forge skill load observability/profiles`.
 
 <!-- @forge-only:end -->

@@ -22,7 +22,7 @@ func TestDebugSkillRunningSystemExamples(t *testing.T) {
 		"observability/query", "db/query", "observability/profiles",
 		"not obs or db query tools", ".forge/logs/<env>/frontend_<name>.log",
 		`\[browser:error\]`, "installDevLogging()",
-		"obs dashboards audit", "data_outside_window", "data_in_other_env", "probe_failed",
+		"obs dashboards audit", "debug/dashboards",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("rendered debug skill lacks %q", want)

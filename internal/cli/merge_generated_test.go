@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -210,15 +211,20 @@ func TestMergeGenerated_HandEditedSideStaysModified(t *testing.T) {
 	}
 }
 
-// The scaffold declares the driver for forge's generated files.
+// The scaffold declares the driver for every file the driver is wired for
+// (generatedMergePatterns): a scaffolded project's committed .gitattributes
+// is what makes committedRoutesCover skip the per-clone copy, so a pattern
+// missing from it would route that file nowhere in a scaffolded project.
 func TestGitattributesTemplateDeclaresTheDriver(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "templates", "project", ".gitattributes"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"*_gen.ts merge=forge-generated", "forge_descriptor.json merge=forge-generated",
-		"*_gen.json merge=forge-generated", ".forge/scaffolded.json merge=forge-generated", ".forge/hashes.json merge=forge-generated"} {
-		if !strings.Contains(string(b), want) {
+	if !slices.Contains(generatedMergePatterns, "forge_service_catalog.json") {
+		t.Fatal("gen/forge_service_catalog.json is not routed to the driver")
+	}
+	for _, p := range generatedMergePatterns {
+		if want := p + " merge=forge-generated"; !strings.Contains(string(b), want) {
 			t.Errorf(".gitattributes template lacks %q", want)
 		}
 	}
@@ -657,5 +663,86 @@ func TestEnsureGeneratedMergeDriver_CommittedRoutesNeedNoSharedCopy(t *testing.T
 	ensureGeneratedMergeDriverTo(io.Discard, repo2)
 	if data, _ := os.ReadFile(filepath.Join(repo2, ".git", "info", "attributes")); !strings.Contains(string(data), mergeAttributesBegin) {
 		t.Errorf("a project with no committed routes lost them:\n%s", data)
+	}
+}
+
+// gen/forge_service_catalog.json, through the installed driver in a real
+// `git merge`: two branches' disjoint changes merge cleanly into both, and a
+// line both changed stays a conflict (the catalog is disownable, and a driver
+// cannot see the other side's ownership while git runs it).
+func TestMergeGenerated_ServiceCatalogRealMerge(t *testing.T) {
+	if testing.Short() {
+		t.Skip("-short: runs real git merges that exec the test binary as the driver; runs in task test")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	const rel = "gen/forge_service_catalog.json"
+	catalog := func(a, b string) string {
+		return "{\n  \"services\": [\n    \"" + a + "\",\n    \"x1\",\n    \"x2\",\n    \"x3\",\n    \"" + b + "\"\n  ]\n}\n"
+	}
+	setup := func(t *testing.T, ours, theirs string) string {
+		t.Helper()
+		dir := t.TempDir()
+		gitT(t, dir, "init", "-q", "-b", "main")
+		writeTreeFileT(t, filepath.Join(dir, "forge.yaml"), "name: app\nmodule_path: example.com/app\n")
+		exe, err := filepath.Abs(os.Args[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		gitT(t, dir, "config", "merge.forge-generated.driver", "'"+exe+"' merge-generated %O %A %B %L %P")
+		if _, ok := writeMergeAttributes(dir); !ok {
+			t.Fatal("precondition: the attributes block was written")
+		}
+		writeTreeFileT(t, filepath.Join(dir, rel), catalog("billing", "users"))
+		gitT(t, dir, "add", "-A")
+		gitT(t, dir, "commit", "-qm", "base")
+		gitT(t, dir, "checkout", "-qb", "theirs")
+		writeTreeFileT(t, filepath.Join(dir, rel), theirs)
+		gitT(t, dir, "commit", "-qam", "theirs")
+		gitT(t, dir, "checkout", "-q", "main")
+		writeTreeFileT(t, filepath.Join(dir, rel), ours)
+		gitT(t, dir, "commit", "-qam", "ours")
+		return dir
+	}
+	t.Run("disjoint lines merge clean", func(t *testing.T) {
+		dir := setup(t, catalog("billing+list", "users"), catalog("billing", "users+list"))
+		gitT(t, dir, "merge", "--no-edit", "theirs")
+		got, err := os.ReadFile(filepath.Join(dir, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != catalog("billing+list", "users+list") {
+			t.Fatalf("merged catalog:\n%s", got)
+		}
+	})
+	t.Run("a line both changed stays a conflict", func(t *testing.T) {
+		dir := setup(t, catalog("billing+a", "users"), catalog("billing+b", "users"))
+		cmd := exec.Command("git", "-c", "user.name=t", "-c", "user.email=t@t", "merge", "--no-edit", "theirs")
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err == nil {
+			t.Fatalf("a catalog line both sides changed merged silently:\n%s", out)
+		}
+		got, _ := os.ReadFile(filepath.Join(dir, rel))
+		if !strings.Contains(string(got), "billing+b") {
+			t.Fatalf("the incoming side's line was dropped:\n%s", got)
+		}
+	})
+}
+
+// gen/forge_descriptor.json has no hashes.json entry and is not a Tier-1
+// write (checksums.Uncertified names only the catalog), yet a conflict in it
+// is still forge's to settle: this side's render, for generate to refresh.
+func TestMergeGenerated_DescriptorConflictKeepsThisSide(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: app\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	body := func(v string) []byte { return []byte("{\n  \"services\": [\n    \"" + v + "\"\n  ]\n}\n") }
+	ours := body("ours")
+	merged, clean, note, err := mergeGeneratedPath(context.Background(), "gen/forge_descriptor.json", body("base"), ours, body("theirs"), 7)
+	if err != nil || !clean || string(merged) != string(ours) || note == "" {
+		t.Fatalf("descriptor conflict: clean=%v err=%v note=%q\n%s", clean, err, note, merged)
 	}
 }

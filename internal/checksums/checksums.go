@@ -560,6 +560,13 @@ func Load(root string) (*FileChecksums, error) {
 		}
 		if h.Files != nil {
 			cs.Unstampable = slashKeys(h.Files)
+			// An earlier forge certified gen/'s aggregates here; nothing
+			// does now (Uncertified), and the next Save drops the entry.
+			for p := range cs.Unstampable {
+				if Uncertified(p) {
+					delete(cs.Unstampable, p)
+				}
+			}
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
@@ -681,9 +688,11 @@ func WriteDerivedFileOutcome(root, relPath string, content []byte, cs *FileCheck
 	return writeGeneratedFileOutcome(root, relPath, content, cs, force, true)
 }
 
-func writeGeneratedFileOutcome(root, relPath string, content []byte, cs *FileChecksums, force, derived bool) (WriteOutcome, error) {
-	relPath = slashKey(relPath)
-
+// tier1Preamble is what every Tier-1 write decides before it looks at the
+// bytes: it records the path as this run's target, and reports whether the
+// write may proceed (not blocked, not disowned) and whether it re-adopts a
+// disowned path the user handed back by deleting it.
+func tier1Preamble(root, relPath string, cs *FileChecksums) (proceed, reAdopting bool, err error) {
 	// Record the Tier-1 emit TARGET before any disown-skip below: forge
 	// would regenerate this path this run, whether or not it's disowned.
 	// The obsolete-disown retirement consults this set — a disowned path
@@ -698,7 +707,7 @@ func writeGeneratedFileOutcome(root, relPath string, content []byte, cs *FileChe
 	// with the same symbols, which is the exact collision the carry-over
 	// exists to prevent. The conflict was already reported as a runbook.
 	if WriteBlocked(relPath) {
-		return WriteOutcome{}, nil
+		return false, false, nil
 	}
 
 	// Disowned: user-owned — never overwrite, even with force=true
@@ -706,14 +715,86 @@ func writeGeneratedFileOutcome(root, relPath string, content []byte, cs *FileChe
 	// does not undo a recorded ownership transfer). Exception —
 	// re-adoption: if the file is GONE the user deleted it to hand it
 	// back to forge. Fall through, re-emit, and clear the record.
-	reAdopting := false
 	if cs.IsDisowned(relPath) {
 		if _, statErr := os.Stat(filepath.Join(root, relPath)); statErr == nil {
-			return WriteOutcome{}, nil
+			return false, false, nil
 		} else if !os.IsNotExist(statErr) {
-			return WriteOutcome{}, statErr
+			return false, false, statErr
 		}
-		reAdopting = true
+		return true, true, nil
+	}
+	return true, false, nil
+}
+
+// Uncertified reports whether relPath is a Tier-1 output that NOTHING
+// certifies: a comment-incapable forge aggregate in forge's wholly-owned
+// gen/ tree (uncertifiedOutputs). .forge/hashes.json never records one (Load drops
+// a leftover entry), so it is regenerated whole on every run and is never a
+// stomp-guard or cleanup candidate. gen/forge_descriptor.json has never had a
+// certificate either; gen/forge_service_catalog.json is the Tier-1 one.
+//
+// WHY. gen/'s JSON files are aggregates of the whole project, and a
+// certificate of an aggregate is a fingerprint of every input at once: it
+// changes on every branch that changes any of them. Any two such branches
+// then conflict on the certificate even when their changes to the file are
+// disjoint lines that merge cleanly, and git's server-side merge (a merge
+// queue, GitHub's "update branch") runs no merge driver to settle it.
+// reliant's catalog line in hashes.json conflicted between every pair of
+// proto-changing pull requests; after a local merge the merged catalog
+// matched neither side's recorded hash, so the stomp guard refused it as a
+// hand edit. What the certificate bought (refusing to overwrite a hand edit
+// of a generated file nobody edits) is not worth that: `forge ci
+// verify-generated` already fails a tree whose copy is not forge's render,
+// and `forge project disown` still takes the path over (it admits Uncertified
+// paths, and a disowned path is never written).
+func Uncertified(relPath string) bool {
+	return uncertifiedOutputs[slashKey(relPath)]
+}
+
+// uncertifiedOutputs are the paths Uncertified names: forge's own
+// comment-incapable aggregates, by exact path, so a user's file is never
+// mistaken for one (`forge project disown` admits these by this list).
+// gen/forge_descriptor.json is not here: it is written outside the Tier-1
+// writer (codegen's descriptor merge), has never had a certificate, and is
+// not disownable.
+var uncertifiedOutputs = map[string]bool{
+	"gen/forge_service_catalog.json": true,
+}
+
+// writeUncertified is the Tier-1 write of an Uncertified path, after the
+// preamble: write the render, and drop any record an earlier forge kept.
+func writeUncertified(root, relPath string, content []byte, cs *FileChecksums, reAdopting bool) (WriteOutcome, error) {
+	if sideRenderOnly[relPath] {
+		return WriteOutcome{}, WriteSideRenderNoBase(root, relPath, content)
+	}
+	fullPath := filepath.Join(root, relPath)
+	onDisk, readErr := os.ReadFile(fullPath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return WriteOutcome{}, readErr
+	}
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		return WriteOutcome{}, err
+	}
+	recordPreWrite(root, relPath)
+	if err := atomicfile.WriteFile(fullPath, content, 0o644); err != nil {
+		return WriteOutcome{}, err
+	}
+	MarkWrittenThisRun(relPath)
+	if cs != nil {
+		delete(cs.Unstampable, relPath)
+		if reAdopting {
+			delete(cs.Disowned, relPath)
+		}
+	}
+	return WriteOutcome{Wrote: true, Changed: readErr != nil || !bytes.Equal(onDisk, content)}, nil
+}
+
+func writeGeneratedFileOutcome(root, relPath string, content []byte, cs *FileChecksums, force, derived bool) (WriteOutcome, error) {
+	relPath = slashKey(relPath)
+
+	proceed, reAdopting, err := tier1Preamble(root, relPath, cs)
+	if !proceed || err != nil {
+		return WriteOutcome{}, err
 	}
 
 	// Canonical-format Go BEFORE stamping (see goformat.go): the embedded
@@ -724,6 +805,9 @@ func writeGeneratedFileOutcome(root, relPath string, content []byte, cs *FileChe
 	// that the stomp guard misreads as a hand-edit.
 	content = canonicalizeGoForWrite(root, relPath, content)
 
+	if Uncertified(relPath) {
+		return writeUncertified(root, relPath, content, cs, reAdopting)
+	}
 	stamped, stampable := Stamp(relPath, content)
 	if !stampable {
 		return writeUnstampable(root, relPath, content, cs, force)

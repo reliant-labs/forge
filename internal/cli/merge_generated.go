@@ -339,10 +339,14 @@ func mergeGeneratedPath(ctx context.Context, relPath string, base, ours, theirs 
 		if unstampableRenderOfOurs(relPath, ours) {
 			return ours, true, keep, nil
 		}
-		// The descriptor and the service catalog are rewritten whole on
-		// every generate and certified by nothing: a clean merge stands, a
-		// conflict takes this side.
-		if wholeRenders[path.Base(relPath)] && !clean {
+		// The descriptor is rewritten whole on every generate, certified by
+		// nothing and never disownable: a clean merge stands, a conflict
+		// takes this side for the next generate to render over. The service
+		// catalog is not settled here: it is disownable, and a merge driver
+		// cannot see the other side's ownership record (git runs it before
+		// MERGE_HEAD exists), so a line both sides changed stays a conflict.
+		// Its disjoint changes merge as lines, which is the common case.
+		if path.Base(relPath) == "forge_descriptor.json" && !clean {
 			return ours, true, keep, nil
 		}
 	case !clean && checksums.Verify(ours) == checksums.Pristine && checksums.Verify(theirs) == checksums.Pristine:
@@ -360,6 +364,29 @@ func mergeGeneratedPath(ctx context.Context, relPath string, base, ours, theirs 
 // the work tree, and relPath is relative to it); this side's hashes come
 // from HEAD, which is this side in a merge, a rebase and a cherry-pick alike.
 func unstampableRenderOfOurs(relPath string, ours []byte) bool {
+	rel, ok := projectRelative(relPath)
+	if !ok {
+		return false
+	}
+	prefix := strings.TrimSuffix(filepath.ToSlash(relPath), rel)
+	data, err := exec.CommandContext(context.Background(), "git", "cat-file", "blob", "HEAD:"+prefix+checksums.HashesFile).Output()
+	if err != nil {
+		return false
+	}
+	var h struct {
+		Files map[string]string `json:"files"`
+	}
+	if json.Unmarshal(data, &h) != nil {
+		return false
+	}
+	recorded, ok := h.Files[rel]
+	return ok && recorded == checksums.BodyHash(ours)
+}
+
+// projectRelative is relPath (relative to the top of the work tree, where git
+// runs the driver) made relative to the forge project holding it: the nearest
+// directory above it with a forge.yaml. ok is false outside any project.
+func projectRelative(relPath string) (string, bool) {
 	rel := filepath.ToSlash(relPath)
 	for dir := path.Dir(rel); ; dir = path.Dir(dir) {
 		prefix := ""
@@ -367,21 +394,10 @@ func unstampableRenderOfOurs(relPath string, ours []byte) bool {
 			prefix = dir + "/"
 		}
 		if _, err := os.Stat(filepath.FromSlash(prefix + "forge.yaml")); err == nil {
-			data, err := exec.CommandContext(context.Background(), "git", "cat-file", "blob", "HEAD:"+prefix+checksums.HashesFile).Output()
-			if err != nil {
-				return false
-			}
-			var h struct {
-				Files map[string]string `json:"files"`
-			}
-			if json.Unmarshal(data, &h) != nil {
-				return false
-			}
-			recorded, ok := h.Files[strings.TrimPrefix(rel, prefix)]
-			return ok && recorded == checksums.BodyHash(ours)
+			return strings.TrimPrefix(rel, prefix), true
 		}
 		if dir == "." || dir == "/" {
-			return false
+			return "", false
 		}
 	}
 }
@@ -972,16 +988,6 @@ const (
 	mergeAttributesBegin = "# >>> forge merge-generated (managed by forge; FORGE_NO_MERGE_DRIVER=1 stops it)"
 	mergeAttributesEnd   = "# <<< forge merge-generated"
 )
-
-// wholeRenders are the comment-incapable outputs forge rewrites whole on
-// every generate and certifies with nothing: gen/forge_descriptor.json and
-// gen/forge_service_catalog.json (servicecatalog.GeneratedPath). Two branches
-// that each add a service both change them, so a conflict keeps this side's
-// and the next `forge generate` renders both.
-var wholeRenders = map[string]bool{
-	"forge_descriptor.json":      true,
-	"forge_service_catalog.json": true,
-}
 
 // generatedMergePatterns are the files routed to the driver, relative to
 // the project root: forge's generated outputs and its committed state.

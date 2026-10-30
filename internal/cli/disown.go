@@ -164,7 +164,9 @@ func runDisown(args []string, reason string, dryRun bool) error {
 		}
 		_, hasMarker := checksums.ExtractMarker(content)
 		_, hasFallback := cs.Unstampable[path]
-		if !hasMarker && !hasFallback && !isVendoredProtoPath(path) && !isHooksBarrelRelPath(path) &&
+		// gen/'s uncertified aggregates (the service catalog) carry neither
+		// by design, and are still forge's Tier-1 output.
+		if !hasMarker && !hasFallback && !checksums.Uncertified(path) && !isVendoredProtoPath(path) && !isHooksBarrelRelPath(path) &&
 			!isFrontendManifestRelPath(root, path) {
 			unknown = append(unknown, path)
 			continue

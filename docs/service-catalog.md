@@ -20,9 +20,9 @@ RPC execution endpoint, endpoint registry or new database is involved.
   Each service's `descriptor` is the existing `forge_descriptor.json` ServiceDef:
   `Schemas`, `SchemaFiles`, `Enums`, `validate` and `validate_options` are reused
   verbatim. There is no second validation/form dialect or invocation handle.
-- Components expose typed method signatures and module-relative source locations
-  (see "Source locations" below).
-  Consumed interfaces expose their method sets. Assignable producers and local
+- Components expose their type and module-relative source location (see
+  "Source locations" below), never their Go method sets (see "What it does not
+  record"). Bindings name the consumed interface. Assignable producers and local
   concrete `implementation_candidates` are **candidates**, not proof a constructor
   selected that concrete type. `bindings.providers` lists graph accessors in that
   field's composition expression; `composition_expression` describes that evidence,
@@ -42,7 +42,31 @@ above it does, so a committed catalog that recorded one went stale on every
 merge ahead of yours that touched a handler file, and failed `verify-generated`
 in the merge group. Moving, reordering or editing around declarations now
 leaves the file byte-identical; only a change to what is declared (an rpc, a
-method, a signature, a binding) changes it.
+component, a binding, a client) changes it.
+
+## What it does not record
+
+The catalog records no code method sets: every component's, implementation
+candidate's and binding's `methods` list is empty, and the `bundle_method_sets_omitted`
+diagnostic says so (an empty list means "not recorded", never "has no
+methods"). A method set is a function of arbitrary Go in its package: an
+unexported helper added to a router type changed reliant's catalog. No forge
+input sees such a change, so a pull request that made one merged with the
+catalog stale, and every pull request after it failed "forge generate is not a
+no-op" in the merge queue. Nothing read them (the bundle copy never carried
+them); `go doc` answers the question for a person.
+
+The file is also certified by nothing, like `gen/forge_descriptor.json`
+(`checksums.Uncertified`): no `forge:hash`, no `.forge/hashes.json` entry. A
+certificate of a whole-project aggregate changes on every branch that changes
+any input, so two branches whose catalog changes are disjoint lines still
+conflicted on its hashes.json line, and git's server-side merge runs no merge
+driver to settle it. Two such branches now merge as plain lines into exactly
+forge's render of the merged inputs. The forge merge driver routes the file
+(`.gitattributes`: `forge_service_catalog.json merge=forge-generated`). A line
+both sides changed stays a conflict: the catalog is disownable, and a merge
+driver cannot see the other side's ownership record while git runs it.
+Regenerating on the merged tree settles it.
 
 The bundle copy (`forge/service-catalog.json`) carries the line its readers
 expect, `{"path": ..., "line": N}`: the build resolves each symbol against the
@@ -115,13 +139,12 @@ surface rather than the code graph:
 - each service's `descriptor` keeps only `Schemas`, the request/response shapes
   the RPC explorer renders;
 - the code method sets of components, implementation candidates and bindings
-  are empty, and the `bundle_method_sets_omitted` diagnostic says so: an empty
-  list there means "not carried", not "no methods". Every component, binding,
-  candidate, provider, client and process stays;
+  are empty, and the `bundle_method_sets_omitted` diagnostic says so (`gen/` records
+  none either; a catalog an earlier forge committed still had them). Every
+  component, binding, candidate, provider, client and process stays;
 - `idempotency` is the closed set `UNKNOWN`, `IDEMPOTENT`, `NO_SIDE_EFFECTS`.
 
-It is still schema v1. For reliant this is 2.1 MB → 0.38 MB compact. The full
-code graph (signatures, method ids, scopes) stays in `gen/forge_service_catalog.json`.
+It is still schema v1. For reliant this is 2.1 MB → 0.38 MB compact.
 
 A hosted consumer verifies the existing bundle's digest/layer using existing
 artifact admission, authorizes project/environment access, and then reads that
@@ -138,12 +161,12 @@ using `servicecatalog.MethodID(scope, interfaceName, methodName)`. It is stable
 across line/body/signature changes and contains no build/request IDs. Generated
 IDs decorate the existing chain rather than replacing owned middleware. Span
 names, tracer scopes and metric `method` dimensions stay unchanged. When IDs are
-absent (older/disowned/custom instrumentation), use the catalog's `scope` and
-`legacy_name` as fallback evidence; ambiguity remains unknown. Concrete candidate
-methods have their own receiver IDs and are not silently equated to interfaces.
-The method sets that carry these ids are in `gen/`'s catalog; the bundle copy
-omits them (see "The bundle copy is reduced"), so a hosted join that needs them
-must ship them in their own artifact rather than re-grow this one.
+absent (older/disowned/custom instrumentation), ambiguity remains unknown.
+Concrete candidate methods have their own receiver IDs and are not silently
+equated to interfaces. Neither copy of the catalog carries method sets (see
+"What it does not record"), so a join that needs them computes
+`servicecatalog.MethodID` from the span's own scope and name, or ships them in
+an artifact of its own rather than re-growing this one.
 
 ## Adoption remaining
 

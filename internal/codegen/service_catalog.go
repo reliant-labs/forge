@@ -29,6 +29,8 @@ func graphCatalog(in GraphGenInput, m *graphModel) servicecatalog.Catalog {
 	// The typed graph proves generated route-set reach, not arbitrary runtime
 	// mux registration, reflection, proxy routes, or unregistered API clients.
 	c.Diagnostics = append(c.Diagnostics, servicecatalog.Diagnostic{Code: "coverage_generated_routes_and_registered_clients_only"})
+	// The committed catalog records no code method sets (catalogNoMethods).
+	c.Diagnostics = append(c.Diagnostics, servicecatalog.Diagnostic{Code: servicecatalog.DiagnosticBundleMethodSetsOmitted})
 	if len(services) == 0 {
 		services = in.Services
 	}
@@ -41,7 +43,7 @@ func graphCatalog(in GraphGenInput, m *graphModel) servicecatalog.Catalog {
 		}
 		c.Components = append(c.Components, comp)
 		for _, df := range n.Deps {
-			b, ok := catalogBinding(in.ProjectDir, m, n, df, compose)
+			b, ok := catalogBinding(m, n, df, compose)
 			if !ok {
 				continue
 			}
@@ -119,12 +121,24 @@ func parseCatalogCompose(src string) catalogCompose {
 	return cx
 }
 
-// catalogComponent projects one built graph node: its kind, type, source
-// (the constructor's, when it resolves) and method set.
+// catalogNoMethods is every code method set the committed catalog carries:
+// none. A component's, candidate's or binding's method set is a function of
+// arbitrary Go in its package — an unexported helper added to a router type
+// changed reliant's catalog — so recording it made gen/ stale on every Go
+// change no forge input saw, and turned unrelated pull requests into
+// "forge generate is not a no-op" failures in the merge queue. Nothing reads
+// it: the bundle copy never carried it (servicecatalog.ForBundle), and a
+// person reads Go with `go doc`. The empty list is kept so the document stays
+// schema v1, and the bundle_method_sets_omitted diagnostic says empty means "not
+// recorded", never "has no methods".
+func catalogNoMethods() []servicecatalog.CodeMethod { return []servicecatalog.CodeMethod{} }
+
+// catalogComponent projects one built graph node: its kind, type and source
+// (the constructor's, when it resolves).
 func catalogComponent(dir string, m *graphModel, n *graphNode) servicecatalog.Component {
 	t := m.u.produced[n.Name]
 	kind := map[nodeKind]string{nodeComponent: "component", nodeProvider: "provider", nodeRoutes: "route_set", nodeOperators: "operators"}[n.Kind]
-	comp := servicecatalog.Component{ID: n.Name, Name: n.Name, Kind: kind, Type: catalogType(t), Methods: catalogMethods(dir, m.u, t)}
+	comp := servicecatalog.Component{ID: n.Name, Name: n.Name, Kind: kind, Type: catalogType(t), Methods: catalogNoMethods()}
 	if n.Kind == nodeProvider && n.File != "" {
 		// A provider is its New<Name> func in internal/app.
 		comp.Source = servicecatalog.Source{Path: n.File, Symbol: "New" + n.Name}
@@ -142,7 +156,7 @@ func catalogComponent(dir string, m *graphModel, n *graphNode) servicecatalog.Co
 	}
 	if t != nil {
 		if _, ok := t.Underlying().(*types.Interface); ok {
-			comp.ImplementationCandidates = catalogImplementations(dir, m.u, p, t)
+			comp.ImplementationCandidates = catalogImplementations(dir, p, t)
 		}
 	}
 	return comp
@@ -150,7 +164,7 @@ func catalogComponent(dir string, m *graphModel, n *graphNode) servicecatalog.Co
 
 // catalogImplementations lists the concrete types of the component's own
 // package that satisfy its interface type, by value or by pointer.
-func catalogImplementations(dir string, u *graphUniverse, p *packages.Package, iface types.Type) []servicecatalog.Implementation {
+func catalogImplementations(dir string, p *packages.Package, iface types.Type) []servicecatalog.Implementation {
 	out := []servicecatalog.Implementation{}
 	for _, name := range p.Types.Scope().Names() {
 		obj, ok := p.Types.Scope().Lookup(name).(*types.TypeName)
@@ -165,7 +179,7 @@ func catalogImplementations(dir string, u *graphUniverse, p *packages.Package, i
 			ct = types.NewPointer(ct)
 		}
 		if types.AssignableTo(ct, iface) {
-			out = append(out, servicecatalog.Implementation{Type: catalogType(ct), Source: catalogSource(dir, p.Fset, obj), Methods: catalogMethods(dir, u, ct)})
+			out = append(out, servicecatalog.Implementation{Type: catalogType(ct), Source: catalogSource(dir, p.Fset, obj), Methods: catalogNoMethods()})
 		}
 	}
 	return out
@@ -173,7 +187,7 @@ func catalogImplementations(dir string, u *graphUniverse, p *packages.Package, i
 
 // catalogBinding projects one interface-typed Deps field of n. It reports
 // false for a field that is not a non-empty interface: only those bind.
-func catalogBinding(dir string, m *graphModel, n *graphNode, df DepsField, compose catalogCompose) (servicecatalog.Binding, bool) {
+func catalogBinding(m *graphModel, n *graphNode, df DepsField, compose catalogCompose) (servicecatalog.Binding, bool) {
 	want := m.u.deps[n.Name][df.Name]
 	if want == nil {
 		return servicecatalog.Binding{}, false
@@ -182,7 +196,7 @@ func catalogBinding(dir string, m *graphModel, n *graphNode, df DepsField, compo
 	if !ok || iface.Empty() {
 		return servicecatalog.Binding{}, false
 	}
-	b := servicecatalog.Binding{Consumer: n.Name, Field: df.Name, Interface: catalogType(want), Methods: catalogMethods(dir, m.u, want), Candidates: []string{}, Providers: []string{}, Resolution: "unresolved"}
+	b := servicecatalog.Binding{Consumer: n.Name, Field: df.Name, Interface: catalogType(want), Methods: catalogNoMethods(), Candidates: []string{}, Providers: []string{}, Resolution: "unresolved"}
 	// All assignable typed producers are candidates. Identical matches must
 	// not erase alternate interface implementations from browse metadata.
 	for _, candidate := range m.built() {
@@ -330,40 +344,6 @@ func catalogSymbol(obj types.Object) string {
 		return named.Obj().Name() + "." + fn.Name()
 	}
 	return ""
-}
-
-func catalogMethods(dir string, u *graphUniverse, t types.Type) []servicecatalog.CodeMethod {
-	out := []servicecatalog.CodeMethod{}
-	if t == nil {
-		return out
-	}
-	// The decorator wraps t's complete method set, including embedded methods.
-	// Its scope/owner/namespace belong to t, while source/signature still locate
-	// the original declaration. A declaring method's receiver is not this owner.
-	rt := types.Unalias(t)
-	if ptr, ok := rt.(*types.Pointer); ok {
-		rt = types.Unalias(ptr.Elem())
-	}
-	scope, owner, namespace := "", "", ""
-	if named, ok := rt.(*types.Named); ok {
-		owner = named.Obj().Name()
-		if pkg := named.Obj().Pkg(); pkg != nil {
-			scope, namespace = pkg.Path(), pkg.Name()
-		}
-	}
-	ms := types.NewMethodSet(t)
-	for i := 0; i < ms.Len(); i++ {
-		fn := ms.At(i).Obj().(*types.Func)
-		sig := fn.Type().(*types.Signature)
-		source := servicecatalog.Source{}
-		// Positions come from the shared go/types universe, not a live LSP.
-		if u.app != nil {
-			source = catalogSource(dir, u.app.Fset, fn)
-		}
-		id, legacy := servicecatalog.MethodIdentity(scope, owner, namespace, fn.Name())
-		out = append(out, servicecatalog.CodeMethod{ID: id, Name: fn.Name(), Signature: catalogType(sig), Scope: scope, LegacyName: legacy, Source: source})
-	}
-	return out
 }
 
 func emitGraphCatalog(in GraphGenInput, m *graphModel) error {

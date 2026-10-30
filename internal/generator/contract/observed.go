@@ -216,7 +216,7 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 	}
 
 	// Attach a generated constant map without changing any Run/Around call or
-	// the owned chain seam. Scope+interface+method matches the typed catalog.
+	// the owned chain seam. Scope+interface+method is servicecatalog.MethodID.
 	root, module := findModule(dir)
 	scope := importPathOf(root, module, dir)
 	if scope != "" {

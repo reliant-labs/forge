@@ -13,6 +13,69 @@ type PlacementPrerequisites struct {
 	Items    []PlacementItem    `json:"items"`
 	Edges    []PlacementEdge    `json:"edges"`
 	Bindings []PlacementBinding `json:"bindings"`
+	// Passive names, by exact identity, the cluster objects of a kind outside
+	// PlacementPassiveKind that the declaration marks as applied inventory
+	// (PlacementReadinessAnnotation = "passive"): a custom resource whose
+	// effect is its controller's, observed through that controller's own
+	// item. Never a runtime kind, a ConfigMap or a Secret.
+	Passive []PlacementObject `json:"passive,omitempty"`
+}
+
+// PlacementReadinessAnnotation, set to "passive" on a cluster object, declares
+// that the object has no readiness of its own: it is applied inventory, like a
+// Service or an RBAC object. It is how a custom resource (whose kind no closed
+// list can know) joins a mixed bundle; a runtime kind, a ConfigMap or a Secret
+// cannot be declared passive.
+const PlacementReadinessAnnotation = "forge.dev/placement-readiness"
+
+// PlacementRuntimeKind reports whether kind runs something on a cluster. A
+// mixed bundle observes each such object (Deployment, StatefulSet, DaemonSet,
+// Job) or refuses it (ReplicaSet, Pod: owned by a controller in a real
+// render); it can never be passive.
+func PlacementRuntimeKind(kind string) bool {
+	switch kind {
+	case "Deployment", "ReplicaSet", "StatefulSet", "DaemonSet", "Pod", "Job":
+		return true
+	}
+	return false
+}
+
+// PlacementPassiveKind reports whether kind is applied inventory in a mixed
+// bundle: an object of it has no readiness item of its own, because its effect
+// on ordinary rollout readiness is observed through the healthy Pods of the
+// component that uses it (a route to it, an ExternalSecret it mounts, the RBAC
+// it runs as), or because it changes the cluster's API rather than running
+// anything (a CRD, an admission policy, a scheduling class).
+//
+// The set is closed and shared: forge's producer refuses any other kind, and a
+// control plane's reader admits exactly this set at the forge it pins, so the
+// two can never disagree about one bundle.
+//
+// CronJob is here because a release applies its spec and starts nothing: its
+// Jobs run on its schedule, never as a step of the rollout a dependent waits on.
+func PlacementPassiveKind(kind string) bool {
+	return placementPassiveKinds[kind]
+}
+
+var placementPassiveKinds = map[string]bool{
+	"Namespace": true, "Service": true, "ServiceAccount": true, "Role": true, "RoleBinding": true,
+	"ClusterRole": true, "ClusterRoleBinding": true, "PersistentVolumeClaim": true, "NetworkPolicy": true,
+	"Ingress": true, "PodDisruptionBudget": true, "HorizontalPodAutoscaler": true,
+	// Scheduled work: the spec is applied, nothing starts.
+	"CronJob": true,
+	// The cluster's API and scheduling vocabulary.
+	"CustomResourceDefinition": true, "PriorityClass": true, "StorageClass": true, "RuntimeClass": true,
+	"ValidatingAdmissionPolicy": true, "ValidatingAdmissionPolicyBinding": true,
+	"MutatingWebhookConfiguration": true, "ValidatingWebhookConfiguration": true,
+	// Gateway API routes and Envoy Gateway / GKE policy attachments.
+	"Gateway": true, "HTTPRoute": true, "GRPCRoute": true, "TLSRoute": true, "TCPRoute": true, "UDPRoute": true,
+	"ReferenceGrant": true, "BackendTLSPolicy": true,
+	"BackendTrafficPolicy": true, "ClientTrafficPolicy": true, "SecurityPolicy": true, "EnvoyProxy": true,
+	"HealthCheckPolicy": true,
+	// External Secrets Operator and cert-manager: names and references only;
+	// no Secret value is read or recorded.
+	"ExternalSecret": true, "SecretStore": true, "ClusterSecretStore": true,
+	"Issuer": true, "ClusterIssuer": true, "Certificate": true,
 }
 
 // PlacementKey identifies an actual placement independently of its logical workload.
@@ -180,6 +243,21 @@ func (p *PlacementPrerequisites) Validate() error {
 			return fmt.Errorf("%w: conflicting placement binding hash", ErrInvalid)
 		}
 		seen[key], objects[id], hashes[o] = true, o, b.ManifestHash
+	}
+	passive := map[[4]string]bool{}
+	for _, o := range p.Passive {
+		id := [4]string{o.Cluster, o.Namespace, o.Kind, o.Name}
+		if !placementToken(o.Cluster) || o.Cluster == BundleHostedCluster || (o.Namespace != "" && (!placementNamespace.MatchString(o.Namespace) || len(o.Namespace) > 63)) ||
+			!placementKind.MatchString(o.Kind) || !placementName.MatchString(o.Name) || len(o.Name) > 253 || !validPlacementAPIVersion(o.APIVersion) {
+			return fmt.Errorf("%w: invalid passive placement object %+v", ErrInvalid, o)
+		}
+		if PlacementRuntimeKind(o.Kind) || PlacementPassiveKind(o.Kind) || o.Kind == "ConfigMap" || o.Kind == "Secret" {
+			return fmt.Errorf("%w: %s %s cannot be declared passive", ErrInvalid, o.Kind, o.Name)
+		}
+		if passive[id] || objects[id] != (PlacementObject{}) {
+			return fmt.Errorf("%w: duplicate or bound passive placement object %+v", ErrInvalid, o)
+		}
+		passive[id] = true
 	}
 	return nil
 }

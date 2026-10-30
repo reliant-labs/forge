@@ -428,9 +428,24 @@ func tail(s string, n int) string {
 func RunVersion(ctx context.Context, path string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	// A path (not a bare name looked up on PATH) is made absolute first: the
+	// probe runs in another directory (below).
+	if filepath.Base(path) != path {
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+	}
 	// No marker: `version` runs as the forge it is in every forge that has
 	// the hand-off, and a marker is good only for a process exec'd in place.
 	cmd := exec.CommandContext(ctx, path, "version")
+	// Probed from OUTSIDE every project. A forge run inside a project whose
+	// pin it does not match checks that skew even for `version`, and its
+	// warning's remedy probes the project's .tools/bin/forge — this very
+	// binary, when it is the stale one — through RunVersion again: each probe
+	// launched the next until timeouts or process limits stopped them. With no
+	// forge.yaml up the tree there is no pin, so no skew check, no hand-off
+	// and no remedy, in this forge and in every older one.
+	cmd.Dir = outsideAnyProject()
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -443,6 +458,13 @@ func RunVersion(ctx context.Context, path string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("unrecognised version output %q", first)
+}
+
+// outsideAnyProject is a directory no project lookup can resolve from: the
+// root of the temp directory's volume, which holds no forge.yaml. (The temp
+// directory itself may sit inside a project, when TMPDIR points into one.)
+func outsideAnyProject() string {
+	return filepath.VolumeName(os.TempDir()) + string(filepath.Separator)
 }
 
 // Env is the environment to give the delegated forge: ours, plus the marker.

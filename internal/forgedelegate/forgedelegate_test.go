@@ -259,6 +259,57 @@ func TestRunVersion(t *testing.T) {
 	}
 }
 
+// A stale .tools/bin/forge inside a project pinned to another forge: run in
+// the project, that forge's skew warning resolves its remedy by probing
+// .tools/bin/forge — itself — through RunVersion, which launched the next
+// probe, and so on. The stand-in below does exactly that whenever it can find
+// the project's forge.yaml from its working directory. Probed through
+// LocalPinned it must run once and stop, its answer simply not the pin.
+func TestLocalPinned_ProbesAStaleLocalForgeOnceWithoutRecursing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script stand-in")
+	}
+	project := t.TempDir()
+	if err := atomicfile.WriteFile(filepath.Join(project, "forge.yaml"), []byte("forge_version: "+pin+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	launches := filepath.Join(t.TempDir(), "launches")
+	local := filepath.Join(project, ".tools", "bin", exeName())
+	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Recurses (bounded, so a regression fails instead of forking forever)
+	// while a forge.yaml is visible from its working directory, as the real
+	// skew check's remedy does.
+	script := `#!/bin/sh
+echo x >> "` + launches + `"
+[ "$(wc -l < "` + launches + `")" -lt 5 ] || exit 3
+d="$PWD"
+while :; do
+  if [ -f "$d/forge.yaml" ]; then "$0" version >/dev/null 2>&1; break; fi
+  [ "$d" = / ] && break
+  d="$(dirname "$d")"
+done
+echo 'forge version v0.0.1-stale'
+`
+	if err := atomicfile.WriteFile(local, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(project)
+
+	r := &Resolver{Version: RunVersion, Same: func(a, b string) bool { return a == b }}
+	if got, ok := r.LocalPinned(context.Background(), project, pin); ok {
+		t.Errorf("a stale local forge was taken for the pin: %q", got)
+	}
+	data, err := os.ReadFile(launches)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(data), "\n"); n != 1 {
+		t.Errorf("probing the local forge launched it %d times, want 1 (it recursed through its own skew remedy)", n)
+	}
+}
+
 func TestSafeName(t *testing.T) {
 	if got := safeName("v1/../x y+dirty"); strings.ContainsAny(got, "/ +") {
 		t.Errorf("unsafe: %q", got)

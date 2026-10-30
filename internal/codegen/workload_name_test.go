@@ -99,6 +99,7 @@ func TestAppendOperatorCRD_FindsAMultiWordOperator(t *testing.T) {
 // multi-word service that claims the API port key is written as its label.
 func TestAppendEnvBinding_AMultiWordServiceClaimsTheKeyByItsWorkloadName(t *testing.T) {
 	dir := t.TempDir()
+	legacyComposition(t, dir)
 	p := filepath.Join(dir, "deploy", "kcl", "dev", "main.k")
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatal(err)

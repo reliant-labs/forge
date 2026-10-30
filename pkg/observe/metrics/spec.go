@@ -205,7 +205,20 @@ func (s Spec) normalized() Spec {
 		out.Attributes[i] = Attribute{Key: a.Key, Values: append([]string(nil), a.Values...)}
 	}
 	out.Buckets = append([]float64(nil), s.Buckets...)
+	if len(out.Buckets) == 0 && out.Type == Histogram && out.Unit == "s" {
+		out.Buckets = SecondsBuckets()
+	}
 	return out
+}
+
+// SecondsBuckets returns the bucket boundaries of every histogram declared in
+// seconds that names none of its own: OpenTelemetry's recommendation for
+// request durations, 5ms to 10s. The SDK's default boundaries (0, 5, 10, 25
+// ... 10000) are sized for milliseconds; against seconds they put every request
+// from 5ms to 5s in the first bucket, so each quantile interpolates to a
+// fraction of 5 (p95 = 4.75s whatever the traffic).
+func SecondsBuckets() []float64 {
+	return []float64{0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10}
 }
 
 // sameDeclaration reports whether a and b declare the same metric. Only the

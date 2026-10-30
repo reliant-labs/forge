@@ -617,7 +617,19 @@ echo "→ pushing atomically (branch + tag, all-or-nothing)"
 # checkout whose `main` lags origin, it pushed a stale tip; the remote rejected
 # it as non-fast-forward and the atomic push dropped the tag with it (v0.1.18
 # hit exactly this).
-git push --atomic origin "$RELEASE_SHA:refs/heads/$BRANCH" "refs/tags/$RELEASE_TAG"
+#
+# A refused push deletes the local tag this run just made (step 4 proved it did
+# not exist before). Otherwise a cutter that lost a race leaves its own tag
+# object under refs/tags/, and every git worktree of a checkout shares that
+# namespace. On the release machine a losing v1.0.5 cut left a second v1.0.5 tag
+# in the shared forge checkout, so every later `git fetch --tags` there failed
+# with "would clobber existing tag" and the next release could not start (forge#1524).
+if ! git push --atomic origin "$RELEASE_SHA:refs/heads/$BRANCH" "refs/tags/$RELEASE_TAG"; then
+  git tag -d "$RELEASE_TAG" >/dev/null
+  echo "error: the push was refused, so nothing was released; deleted the local tag $RELEASE_TAG" >&2
+  echo "       (if origin now has $RELEASE_TAG, another cut won the race: fetch it, don't re-cut)" >&2
+  exit 1
+fi
 fi
 
 echo ""

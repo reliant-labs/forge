@@ -104,7 +104,10 @@ func (l *shipLog) run(labels []string, fn func() error) error {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if err != nil {
+	// A publish whose apply is still pending COMPLETED: the platform holds
+	// the bundle and is applying it. Reporting it as "failed part-way" is
+	// the misreading deploy_applying.go exists to prevent.
+	if err != nil && applyingOf(err) == nil {
 		l.partial = append(l.partial, labels...)
 	} else {
 		l.shipped = append(l.shipped, labels...)

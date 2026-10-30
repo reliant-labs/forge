@@ -57,19 +57,50 @@ func word(w string) needle {
 
 // find returns the first line matching the needles, in order. Files in the
 // env's own directory are searched before the rest of the KCL (shared libs).
+// Another env's directory is never searched: its KCL is not part of this env's
+// render, so a line there that happens to name the same Secret (dev's rendered
+// `control-plane-nats`, say) would anchor a prod finding in a file prod never
+// reads — and a suppression written above that line would silence the wrong
+// env.
 func (l *Locator) find(env Env, needles ...needle) (string, int) {
 	if l != nil {
 		dir := path.Dir(env.File)
+		others := l.otherEnvDirs(dir)
+		own := func(p string) bool { return strings.HasPrefix(p, dir+"/") }
+		shared := func(p string) bool { return !underAny(p, others) }
 		for _, n := range needles {
-			if f, line := l.search(n, func(p string) bool { return strings.HasPrefix(p, dir+"/") }); line > 0 {
+			if f, line := l.search(n, own); line > 0 {
 				return f, line
 			}
-			if f, line := l.search(n, func(string) bool { return true }); line > 0 {
+			if f, line := l.search(n, shared); line > 0 {
 				return f, line
 			}
 		}
 	}
 	return env.File, 1
+}
+
+// otherEnvDirs names the env directories beside dir: the siblings of an env's
+// directory that hold a main.k of their own, as the lane discovers envs.
+func (l *Locator) otherEnvDirs(dir string) map[string]bool {
+	root := path.Dir(dir)
+	out := map[string]bool{}
+	for _, f := range l.files {
+		d := path.Dir(f.Path)
+		if path.Base(f.Path) == "main.k" && d != dir && path.Dir(d) == root {
+			out[d] = true
+		}
+	}
+	return out
+}
+
+func underAny(p string, dirs map[string]bool) bool {
+	for d := range dirs {
+		if strings.HasPrefix(p, d+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (l *Locator) search(n needle, accept func(string) bool) (string, int) {

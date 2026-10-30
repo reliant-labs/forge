@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.0.6] - 2026-10-30
+
+### Added
+
+- **dashspec:** dashboard defaultRange and sql panel minStep ([#1516](https://github.com/reliant-labs/forge/pull/1516))
+- **dashspec:** dashboard scope enum project|org|platform; platform is telemetry that belongs to no environment ([#1523](https://github.com/reliant-labs/forge/pull/1523))
+- **web-runtime:** keep benign browser errors (AbortError, generic Failed to fetch) out of the error pipeline and count them ([#1510](https://github.com/reliant-labs/forge/pull/1510))
+- **release:** emit sealed placement prerequisites for mixed bundles ([#1465](https://github.com/reliant-labs/forge/pull/1465))
+
+### Fixed
+
+- **deploy:** a hosted deploy the platform is still applying says so and exits 8, not TIMED OUT ([#1499](https://github.com/reliant-labs/forge/pull/1499))
+- **deploy:** sourcemaps = "public" files its maps too, so its errors still symbolicate ([#1512](https://github.com/reliant-labs/forge/pull/1512))
+- **generate:** the service catalog records no source lines, so unrelated merges no longer make it stale ([#1517](https://github.com/reliant-labs/forge/pull/1517))
+- **bundle:** the bundle's service catalog carries what its readers use, so reliant's is 0.38 MB, not 2.1 MB ([#1520](https://github.com/reliant-labs/forge/pull/1520))
+- **deploy:** the hosted deploy sets ApplyBudget, so TestNoDeadClaims is green on main again ([#1528](https://github.com/reliant-labs/forge/pull/1528))
+- **storage:** a release waits for storage maintenance instead of failing on its lock ([#1527](https://github.com/reliant-labs/forge/pull/1527))
+- **release:** a refused release push deletes its local tag, so a lost race cannot break the next fetch ([#1529](https://github.com/reliant-labs/forge/pull/1529))
+- **compose:** a hosted frontend is keyed at its sealed hosted destination ([#1508](https://github.com/reliant-labs/forge/pull/1508))
+
+## [v1.0.5] - 2026-10-29
+
+### Added
+
+- **release:** placement prerequisite wire contract and validation ([#1504](https://github.com/reliant-labs/forge/pull/1504))
+- **env:** forge env delete removes the env's data too, and --keep-data retains it ([#1505](https://github.com/reliant-labs/forge/pull/1505))
+
+### Fixed
+
+- **obs:** a scaffolded overview no longer freezes the no-deployed-process sentinel ([#1495](https://github.com/reliant-labs/forge/pull/1495))
+- **deploy:** a graph-composed project declares no per-service workload — its binary has no such command ([#1501](https://github.com/reliant-labs/forge/pull/1501))
+- **observe:** seconds histograms get seconds bucket boundaries ([#1506](https://github.com/reliant-labs/forge/pull/1506))
+
+## [v1.0.4] - 2026-10-29
+
+### Fixed
+
+- **deploy:** a static build installs with the frontend's own package manager ([#1493](https://github.com/reliant-labs/forge/pull/1493))
+- **obs:** a hosted env with no observability block is queried, not refused ([#1494](https://github.com/reliant-labs/forge/pull/1494))
+- **site:** site starters declare the web runtime's connect, protobuf and otel peers so the production build resolves ([#1497](https://github.com/reliant-labs/forge/pull/1497))
+- **obs:** 'delivery reconciler is off' only for an env that declared an external delivery ([#1500](https://github.com/reliant-labs/forge/pull/1500))
+- **cloud:** content-scanned control-plane calls get a 12m timeout, not 30s ([#1502](https://github.com/reliant-labs/forge/pull/1502))
+
 ## [v1.0.3] - 2026-10-29
 
 ### Fixed
@@ -8223,7 +8266,10 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.6...HEAD
+[v1.0.6]: https://github.com/reliant-labs/forge/compare/v1.0.5...v1.0.6
+[v1.0.5]: https://github.com/reliant-labs/forge/compare/v1.0.4...v1.0.5
+[v1.0.4]: https://github.com/reliant-labs/forge/compare/v1.0.3...v1.0.4
 [v1.0.3]: https://github.com/reliant-labs/forge/compare/v1.0.2...v1.0.3
 [v1.0.2]: https://github.com/reliant-labs/forge/compare/v1.0.1...v1.0.2
 [v1.0.1]: https://github.com/reliant-labs/forge/compare/v1.0.0...v1.0.1

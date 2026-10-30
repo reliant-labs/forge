@@ -3243,7 +3243,8 @@ schema BrowserTelemetry:
     replay_sample_rate: float = 1.0
     # What happens to the build's source maps. "publish" moves them out of the
     # served tree and keeps them for symbolicating errors; "public" serves
-    # them (an open-source app that wants that); "off" drops them.
+    # them too (an open-source app that wants that) and still keeps them for
+    # symbolicating; "off" drops them, and errors stay minified.
     sourcemaps: str = "publish"
     # Errors that are not issues.
     errors: FrontendErrors = FrontendErrors {}

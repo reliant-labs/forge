@@ -28,6 +28,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -50,7 +51,15 @@ func projectMigrations(migDir string) ([]compat.Migration, error) {
 // already been decided, and turning a failed cleanup into a non-zero exit
 // would fail a run whose schema change landed.
 func withProjectMigrator(w io.Writer, dsn, migDir string, fn func(*migratekit.Migrator) error) error {
-	m, err := migratekit.Open(projectMigratorOptions(migDir, dsn))
+	return withProjectMigratorLimits(w, dsn, migDir, migratekit.Limits{}, fn)
+}
+
+// withProjectMigratorLimits is withProjectMigrator with the run's lock and
+// statement timeouts and retry set.
+func withProjectMigratorLimits(w io.Writer, dsn, migDir string, limits migratekit.Limits, fn func(*migratekit.Migrator) error) error {
+	opts := projectMigratorOptions(migDir, dsn)
+	opts.Run = migratekit.RunOptions{Limits: limits, Logger: slog.New(slog.NewTextHandler(w, nil))}
+	m, err := migratekit.Open(opts)
 	if err != nil {
 		return err
 	}
@@ -83,6 +92,12 @@ func projectMigratorOptions(migDir, dsn string) migratekit.Options {
 // schema dirty as it fails, and forcing past SQL that never ran is worse than
 // the raw error.
 func runMigrateUp(w io.Writer, dsn, migDir string) error {
+	return runMigrateUpWith(w, dsn, migDir, migratekit.Limits{})
+}
+
+// runMigrateUpWith is runMigrateUp under the given lock and statement
+// timeouts and retry limits (pkg/migratekit/locktimeout.go).
+func runMigrateUpWith(w io.Writer, dsn, migDir string, limits migratekit.Limits) error {
 	ms, err := projectMigrations(migDir)
 	if err != nil {
 		return err
@@ -91,7 +106,7 @@ func runMigrateUp(w io.Writer, dsn, migDir string) error {
 		_, _ = fmt.Fprintf(w, "no migrations in %s — nothing to apply (write one with `forge db migration new <name>`)\n", migDir)
 		return nil
 	}
-	return withProjectMigrator(w, dsn, migDir, func(m *migratekit.Migrator) error {
+	return withProjectMigratorLimits(w, dsn, migDir, limits, func(m *migratekit.Migrator) error {
 		state, err := m.State()
 		if err != nil {
 			return err

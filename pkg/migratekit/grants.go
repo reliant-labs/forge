@@ -76,7 +76,12 @@ func grantsScript(fsys fs.FS, dir string) (script string, ok bool, err error) {
 
 // applyGrants applies the run's grants script on conn, or reports nil when the
 // project has none.
-func applyGrants(ctx context.Context, conn *sql.Conn, script string) (*Grants, error) {
+//
+// REVOKE and GRANT take locks, so the script runs under the run's limits
+// (guardedStatement): it waits behind a long reader for lock_timeout, is
+// retried, and fails the run with a *LockTimeoutError if the reader outlasts
+// the attempts. A script added to a run must go through guardedStatement too.
+func applyGrants(ctx context.Context, conn *sql.Conn, script string, run RunOptions) (*Grants, error) {
 	if script == "" {
 		return nil, nil
 	}
@@ -87,7 +92,9 @@ func applyGrants(ctx context.Context, conn *sql.Conn, script string) (*Grants, e
 	if !exists {
 		return &Grants{RoleMissing: true}, nil
 	}
-	if err := dbgrants.Apply(ctx, conn, script); err != nil {
+	if err := guardedStatement(ctx, conn, run, "read-only grants", func() error {
+		return dbgrants.Apply(ctx, conn, script)
+	}); err != nil {
 		return nil, err
 	}
 	return &Grants{Applied: true}, nil

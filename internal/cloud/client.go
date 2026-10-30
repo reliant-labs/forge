@@ -155,6 +155,11 @@ func (c *Client) call(ctx context.Context, procedure string, req, out any, token
 	// (forge/pkg/activity): the same command reads "via CLI" from a
 	// terminal and "via CI" from a pipeline.
 	httpReq.Header.Set(activity.ViaHeader, via())
+	// Forge-Version names this release, so a control plane that no longer
+	// serves it refuses it with an upgrade instruction
+	// (ReasonClientUpgradeRequired) instead of running a request whose
+	// meaning has changed since this forge was built.
+	httpReq.Header.Set(VersionHeader, buildinfo.Version())
 
 	resp, err := c.httpClientFor(procedure).Do(httpReq)
 	if err != nil {
@@ -221,6 +226,10 @@ func (c *Client) httpClientFor(procedure string) *http.Client {
 	longer.Timeout = ContentScannedTimeout
 	return &longer
 }
+
+// VersionHeader is the request header this client names its forge release
+// in, on every control-plane call.
+const VersionHeader = "Forge-Version"
 
 // via is the Forge-Via value for this process: "ci" under a CI runner, "cli"
 // otherwise.

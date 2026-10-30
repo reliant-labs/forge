@@ -550,7 +550,7 @@ func (v *layerValidator) classifyFile(name string, segs []string) (place, bool) 
 
 func (v *layerValidator) artifact(name string, data []byte) {
 	if name == BundleServiceCatalogPath {
-		if _, err := servicecatalog.Decode(data); err != nil {
+		if _, err := servicecatalog.DecodeLocated(data); err != nil {
 			v.fail(name, "%s", err)
 			return
 		}

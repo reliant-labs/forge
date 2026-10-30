@@ -42,12 +42,22 @@ func graphCatalogClients(in GraphGenInput, m *graphModel, diagnostics *[]service
 			if m.byName[provider] == nil {
 				continue
 			}
+			// A registration is located by the provider func that makes it:
+			// the call's own line would make the committed catalog move with
+			// every edit above it (catalogSource).
+			source := servicecatalog.Source{}
+			if path := catalogPath(in.ProjectDir, p.Fset, fd.Pos()); path != "" {
+				if sym := catalogFuncSymbol(fd); sym != "" {
+					source = servicecatalog.Source{Path: path, Symbol: sym}
+				}
+			}
+			calls := 0
 			ast.Inspect(fd.Body, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok || !isCatalogNewClient(p.TypesInfo, call) {
 					return true
 				}
-				source := catalogSource(in.ProjectDir, p.Fset, call.Pos())
+				calls++
 				cl := catalogClient(p.TypesInfo, call)
 				cl.Provider, cl.Source, cl.Resolution = provider, source, "unresolved"
 				// Only proto identities, never arbitrary URLs or secret-like strings.
@@ -58,7 +68,10 @@ func graphCatalogClients(in GraphGenInput, m *graphModel, diagnostics *[]service
 				} else {
 					cl.Resolution = "declared"
 				}
-				cl.ID = fmt.Sprintf("%s:%s:%d", provider, source.Path, source.Line)
+				// The provider, the func making the call, and the call's
+				// ordinal in it: stable while that func's registrations are,
+				// whatever moves around them.
+				cl.ID = fmt.Sprintf("%s:%s#%d", provider, fd.Name.Name, calls)
 				out = append(out, cl)
 				return true
 			})
@@ -66,6 +79,31 @@ func graphCatalogClients(in GraphGenInput, m *graphModel, diagnostics *[]service
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// catalogFuncSymbol is fd's servicecatalog.Source symbol: "Name", or
+// "Recv.Name" for a method ("" for a receiver it cannot name).
+func catalogFuncSymbol(fd *ast.FuncDecl) string {
+	if fd.Recv == nil || len(fd.Recv.List) == 0 {
+		return fd.Name.Name
+	}
+	e := fd.Recv.List[0].Type
+	for {
+		switch t := e.(type) {
+		case *ast.StarExpr:
+			e = t.X
+		case *ast.ParenExpr:
+			e = t.X
+		case *ast.IndexExpr:
+			e = t.X
+		case *ast.IndexListExpr:
+			e = t.X
+		case *ast.Ident:
+			return t.Name + "." + fd.Name.Name
+		default:
+			return ""
+		}
+	}
 }
 
 // catalogConfigFields is the set of non-sensitive string config fields a

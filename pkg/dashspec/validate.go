@@ -243,7 +243,7 @@ func (v *validator) oneOf(path string, obj map[string]any, key string, required 
 }
 
 func (v *validator) dashboard(d map[string]any) {
-	v.known("", d, "version", "id", "title", "description", "filters", "annotations", "panels", "sections")
+	v.known("", d, "version", "id", "title", "description", "scope", "filters", "annotations", "panels", "sections", "defaultRange")
 	if ver := v.str("", d, "version", false); ver != "" && ver != SpecVersion {
 		v.add("version", "%q is not the spec version this forge reads (%s)", ver, SpecVersion)
 	}
@@ -252,6 +252,12 @@ func (v *validator) dashboard(d map[string]any) {
 	}
 	v.str("", d, "title", true)
 	v.str("", d, "description", false)
+	if r := v.str("", d, "defaultRange", false); r != "" {
+		if _, err := ParseSpan(r); err != nil {
+			v.add("defaultRange", "%v", err)
+		}
+	}
+	v.oneOf("", d, "scope", false, string(ScopeProject), string(ScopeOrg), string(ScopePlatform))
 
 	if fs, ok := v.list("", d, "filters"); ok {
 		v.filters(fs)
@@ -356,7 +362,7 @@ func (v *validator) stringList(path string, obj map[string]any, key string, sig 
 }
 
 func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
-	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql", "section")
+	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql", "section", "minStep")
 	if id := v.str(path, o, "id", true); id != "" {
 		if !idPattern.MatchString(id) {
 			v.add(childPath(path, "id"), "%q is not a valid id (letters, digits, '-', '_' and '.', starting with a letter or digit)", id)
@@ -371,6 +377,9 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	kind := v.oneOf(path, o, "kind", true, string(KindNumber), string(KindLine), string(KindTable), string(KindSearch), string(KindBar), string(KindHeatmap), string(KindSQL), string(KindIssues), string(KindSessions), string(KindFunnel))
 	sigName := v.oneOf(path, o, "signal", kind != string(KindSQL), string(Traces), string(Metrics), string(Logs))
 	sig := Signal(sigName)
+	if _, has := o["minStep"]; has && kind != string(KindSQL) {
+		v.add(childPath(path, "minStep"), "only a sql panel takes \"minStep\"")
+	}
 	v.oneOf(path, o, "unit", false, string(UnitCount), string(UnitMillis), string(UnitBytes), string(UnitPercent), string(UnitSeconds))
 	if w, ok := v.number(path, o, "width"); ok && (w < 0 || w > GridColumns || w != float64(int(w))) {
 		v.add(childPath(path, "width"), "must be a whole number of grid columns from 1 to %d", GridColumns)
@@ -511,6 +520,11 @@ func (v *validator) sqlPanel(path string, o map[string]any) {
 	}
 	if err := CheckSQL(s); err != nil {
 		v.add(childPath(path, "sql"), "%v", err)
+	}
+	if m := v.str(path, o, "minStep", false); m != "" {
+		if _, err := ParseSpan(m); err != nil {
+			v.add(childPath(path, "minStep"), "%v", err)
+		}
 	}
 }
 

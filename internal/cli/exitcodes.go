@@ -103,7 +103,9 @@ const (
 	exitQueued = 7
 
 	// exitTimedOut: the budget expired while the rollout was still
-	// progressing. Wait only. (Was 5 before O-13 — see the header.)
+	// progressing. Wait, and a deploy whose hosted bundle the platform had
+	// not yet reported applied (deploy_applying.go). (Was 5 before O-13 —
+	// see the header.)
 	exitTimedOut = 8
 
 	// exitNeedsHuman: `forge project upgrade` applied every mechanical fix it

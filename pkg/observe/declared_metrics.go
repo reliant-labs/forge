@@ -6,7 +6,8 @@ import (
 	"github.com/reliant-labs/forge/pkg/observe/metrics"
 )
 
-// declaredOpts returns the unit and description options of a metric the default
+// declaredOpts returns the unit, description and (for a histogram) bucket
+// boundary options of a metric the default
 // registry has declared, typed for one instrument constructor. The built-in
 // instruments are created from the caller's meter (tests and callers pass their
 // own), so they bypass the registry's guard — forge controls their attributes —
@@ -16,10 +17,17 @@ func declaredOpts[T any](name string) []T {
 	if !ok {
 		return nil
 	}
-	opts := []metric.InstrumentOption{metric.WithUnit(s.Unit), metric.WithDescription(s.Description)}
+	opts := []any{metric.WithUnit(s.Unit), metric.WithDescription(s.Description)}
+	if len(s.Buckets) > 0 {
+		// Only a histogram option type accepts boundaries; the type switch
+		// below drops them for any other instrument.
+		opts = append(opts, metric.WithExplicitBucketBoundaries(s.Buckets...))
+	}
 	out := make([]T, 0, len(opts))
 	for _, o := range opts {
-		out = append(out, o.(T))
+		if t, ok := o.(T); ok {
+			out = append(out, t)
+		}
 	}
 	return out
 }

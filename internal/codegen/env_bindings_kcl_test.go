@@ -7,11 +7,59 @@ import (
 	"testing"
 )
 
+// legacyComposition gives dir an internal/app on the legacy composition (an
+// owned `type Infra struct`), whose binary has a subcommand per component, so
+// a service or worker is bound as a workload of its own. Without it a
+// fixture composes with the graph (RunByGraphRoot).
+func legacyComposition(t *testing.T, dir string) {
+	t.Helper()
+	app := filepath.Join(dir, "internal", "app")
+	if err := os.MkdirAll(app, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(app, "compose.go"), []byte("package app\n\ntype Infra struct{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAppendEnvBinding_GraphServiceNeedsTheServerWorkload: on the composition
+// graph a service has no command of its own, so an env with no workload
+// running `server` gets no `wl.<service>` line (it would deploy a process
+// that exits "unknown command"); one with `_api` binds that instead.
+func TestAppendEnvBinding_GraphServiceNeedsTheServerWorkload(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "deploy", "kcl", "prod", "main.k")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "_workloads = [\n    _hosted(wl.migrate)\n]\n"
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := AppendEnvBinding(dir, "shop", "prod", WorkloadKindService, "billing")
+	if err != nil || res.Applied || !res.NoServer {
+		t.Fatalf("no server workload: res=%+v err=%v, want nothing applied and NoServer", res, err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != body {
+		t.Errorf("main.k changed:\n%s", b)
+	}
+
+	withAPI := APIWorkloadStanza("github.com/acme/shop", "shop") + "\n\n" + body
+	if err := os.WriteFile(p, []byte(withAPI), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err = AppendEnvBinding(dir, "shop", "prod", WorkloadKindService, "billing")
+	if err != nil || !res.Applied || res.Bound != APIWorkloadIdent {
+		t.Fatalf("with _api: res=%+v err=%v, want _api bound", res, err)
+	}
+}
+
 // There is no env-level runtime, so a workload `forge scaffold` declares runs
 // nowhere until each env binds it. AppendEnvBinding adds that one line, the
 // way the env binds its other workloads, and never rewrites anything.
 func TestAppendEnvBinding(t *testing.T) {
 	dir := t.TempDir()
+	legacyComposition(t, dir)
 	write := func(env, body string) string {
 		p := filepath.Join(dir, "deploy", "kcl", env, "main.k")
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -239,6 +287,7 @@ func TestAppendEnvBinding_FirstServiceClaimsTheAPIPortKey(t *testing.T) {
 }
 `
 	dir := t.TempDir()
+	legacyComposition(t, dir)
 	p := filepath.Join(dir, "deploy", "kcl", "dev", "main.k")
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatal(err)

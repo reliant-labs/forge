@@ -362,7 +362,8 @@ func TestReleaseForgeScript_RejectsAConcurrentRelease(t *testing.T) {
 // release files are guarded by a checkout lock taken BEFORE they are backed up.
 // While another run holds it, a dry run and a real release are both refused
 // without touching a file (a refused run used to restore its backups over the
-// holder's edits), and neither takes the release lock on origin.
+// holder's edits), and neither takes the release lock on origin. Without
+// flock(1) at all the script refuses to edit.
 func TestReleaseForgeScript_OneRunEditsACheckoutAtATime(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the release script, which builds the fixture module")
@@ -413,6 +414,29 @@ func TestReleaseForgeScript_OneRunEditsACheckoutAtATime(t *testing.T) {
 		if locks := gitOut(t, origin, "for-each-ref", "refs/release-lock/"); locks != "" {
 			t.Errorf("%v: the refused run took the release lock:\n%s", args, locks)
 		}
+	}
+
+	// Without flock(1) there is no checkout lock, and the script refuses rather
+	// than edit unguarded: a pid-file fallback lets two runs that judge the same
+	// dead holder both take the lock.
+	noFlock := t.TempDir()
+	seen := map[string]bool{"flock": true}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			if seen[e.Name()] {
+				continue
+			}
+			seen[e.Name()] = true
+			_ = os.Symlink(filepath.Join(dir, e.Name()), filepath.Join(noFlock, e.Name()))
+		}
+	}
+	out, err := runForgeScriptEnv(t, repo, []string{"PATH=" + noFlock}, "--dry-run", "v0.2.0")
+	if err == nil || !strings.Contains(out, "flock(1) is not installed") {
+		t.Errorf("without flock the script must refuse to edit the checkout; err=%v:\n%s", err, out)
+	}
+	if status := gitOut(t, repo, "status", "--porcelain"); status != "" {
+		t.Errorf("the run without flock touched the tree:\n%s", status)
 	}
 
 	// The holder finishes: the next run proceeds.

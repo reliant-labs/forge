@@ -378,40 +378,29 @@ NPM_MANIFEST="npm/package.json"
 TOUCHED=("${VERSION_FILES[@]}" "$NEXT_FILE" "$CHANGELOG_FILE")
 [ -f "$NPM_MANIFEST" ] && TOUCHED+=("$NPM_MANIFEST")
 
-# The checkout lock. flock where the system has it (the kernel drops it when the
-# holder dies, however it dies); otherwise an atomic mkdir naming its holder's pid,
-# which is taken over only when that pid is gone.
+# The checkout lock is flock(1) on a file in this worktree's git dir: the kernel
+# arbitrates it, and drops it when its holder dies, however it dies. There is no
+# fallback: a pid-file or mkdir lock must decide when a dead holder's lock may be
+# taken over, and two runs that judge the same dead holder can both take it —
+# exactly the concurrent edit this lock exists to prevent. So no flock, no
+# release (Linux has it in util-linux; macOS: `brew install flock`).
 CHECKOUT_LOCK="$(git rev-parse --absolute-git-dir)/release-forge.lock"
-CHECKOUT_LOCK_DIR=""
 checkout_lock_acquire() {
-  local holder
-  if command -v flock >/dev/null 2>&1; then
-    exec 9>>"$CHECKOUT_LOCK"
-    flock -n 9 && return 0
-    echo "error: another release-forge.sh run is editing this checkout ($CHECKOUT_LOCK); wait for it to finish" >&2
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "error: flock(1) is not installed, and this script will not edit a shared checkout without it" >&2
+    echo "hint: install it (Linux: util-linux; macOS: brew install flock), then re-run" >&2
     return 1
   fi
-  if mkdir "$CHECKOUT_LOCK.d" 2>/dev/null; then
-    CHECKOUT_LOCK_DIR="$CHECKOUT_LOCK.d"
-    echo "$$" >"$CHECKOUT_LOCK_DIR/pid"
-    return 0
-  fi
-  holder="$(cat "$CHECKOUT_LOCK.d/pid" 2>/dev/null || true)"
-  if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null &&
-    mv "$CHECKOUT_LOCK.d" "$CHECKOUT_LOCK.d.stale.$$" 2>/dev/null; then
-    rm -rf "$CHECKOUT_LOCK.d.stale.$$"
-    checkout_lock_acquire
-    return
-  fi
-  echo "error: another release-forge.sh run (pid ${holder:-?}) is editing this checkout ($CHECKOUT_LOCK.d); wait for it to finish" >&2
+  # fd 9 is held for the rest of the run; the lock goes with the process.
+  exec 9>>"$CHECKOUT_LOCK"
+  flock -n 9 && return 0
+  echo "error: another release-forge.sh run is editing this checkout ($CHECKOUT_LOCK); wait for it to finish" >&2
   return 1
 }
 checkout_lock_release() {
-  if [ -n "$CHECKOUT_LOCK_DIR" ]; then
-    rm -rf "$CHECKOUT_LOCK_DIR"
-    CHECKOUT_LOCK_DIR=""
-  fi
-  # A flock on fd 9 is dropped when the process exits.
+  # Dropped before the EXIT trap ends, not left to the processes this run
+  # started that still hold fd 9.
+  flock -u 9 2>/dev/null || true
 }
 
 restore_tree() {

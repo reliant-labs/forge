@@ -31,7 +31,8 @@ func TestPlacementPrerequisitesOpenBaoCompositionSeals(t *testing.T) {
 		openbaoDoc("v1", "ConfigMap", "store-config", "data: {config.hcl: x}\n") +
 		openbaoDoc("cert-manager.io/v1", "Issuer", "store-ca", "spec: {}\n") +
 		openbaoDoc("external-secrets.io/v1", "ExternalSecret", "store-bootstrap", "spec: {}\n") +
-		"# cluster: hosted\napiVersion: forge.dev/v1alpha1\nkind: StaticSite\nmetadata:\n  name: web\nspec: {}\n"
+		// The record serves exactly the site release the snapshot binds web to.
+		"# cluster: hosted\napiVersion: forge.dev/v1alpha1\nkind: StaticSite\nmetadata:\n  name: web\nspec:\n  releaseRepository: registry.test/reliant\n  liveDigest: " + snapDigest("a") + "\n"
 	in.Shape.Manifests = strings.ReplaceAll(in.Shape.Manifests, "# cluster: prod\n", "# cluster: cluster\n")
 	provider := release.ConsumerKey{Cluster: "cluster", Workload: openbaoOwner}
 	web := release.ConsumerKey{Cluster: release.BundleHostedCluster, Workload: "web"}

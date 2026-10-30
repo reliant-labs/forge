@@ -107,6 +107,14 @@ func finishComposition(ctx context.Context, cfg *config.ProjectConfig, entities 
 	}
 	candidate.Selected = run.Selected
 	candidate.Closure = run.Selected
+	// A selected hosted frontend is built here, after the images: its site
+	// release is an output of THIS invocation, bound into the snapshot like
+	// any other, and the record the platform applies is rendered from it.
+	sites, err := compositionHostedSites(ctx, run, entities, opts)
+	if err != nil {
+		return err
+	}
+	results = append(append([]buildResult(nil), results...), sites...)
 	if err := populateCompositionBindings(ctx, &candidate, run, entities, opts, results); err != nil {
 		return err
 	}
@@ -205,6 +213,14 @@ func addSelectedCompositionBinding(ctx context.Context, candidate *release.Snaps
 				s = release.Source{Repo: fe.Source.Repo, Ref: fe.Source.Ref, Subdir: fe.Source.Subdir, Commit: fe.SourceCommit}
 			}
 			artifact = release.SnapshotArtifact{Kind: release.KindGit, Location: s.Repo, Content: s.Commit, Origin: release.ArtifactOrigin{Release: opts.release, Source: &s}}
+			// A hosted frontend's release is the site this invocation
+			// pushed, not its source: the platform serves those bytes.
+			if platformPublishedFrontend(c.Key) {
+				var err error
+				if artifact, err = hostedSiteArtifact(fe.Name, results, s, opts.release); err != nil {
+					return err
+				}
+			}
 			found = true
 		}
 		if !found {
@@ -289,9 +305,14 @@ func sealComposition(ctx context.Context, cfg *config.ProjectConfig, entities *K
 	if err != nil {
 		return err
 	}
-	doc, err := renderEnvShape(pinned, os.Stderr, projectDirForKCL(), opts.env)
+	// The hosted records are rendered from the snapshot's bindings under
+	// THIS release; nothing is read from the ledger in snapshot mode.
+	doc, err := renderEnvShape(withHostedPinRelease(pinned, opts.release), os.Stderr, projectDirForKCL(), opts.env)
 	if err != nil {
 		return err
+	}
+	if doc.hostedPlaceholder {
+		return fmt.Errorf("composition rendered hosted records over placeholder digests; no seal recorded")
 	}
 	now := time.Now().UTC()
 	if prior, err := run.Ledger.Releases.Get(ctx, opts.release); err != nil {

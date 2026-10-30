@@ -26,9 +26,11 @@ package cli
 //
 // Beyond fingerprints, the driver settles the two kinds of file every branch
 // that adds a service changes (P3b friction F16, 33 parallel lanes):
-//   - forge's committed state files (.forge/scaffolded.json, hashes.json,
-//     disowned.json) merge key by key (checksums.MergeStateFile), so two
-//     lanes' births and hashes never conflict;
+//   - forge's committed state files (.forge/scaffolded.json, disowned.json)
+//     merge key by key (checksums.MergeStateFile), so two lanes' births never
+//     conflict. A JSON output's certificate is its own file under
+//     .forge/hashes/, which conflicts only when both sides re-rendered that
+//     output; the driver then keeps this side's, with this side's render;
 //   - a forge render both sides changed whose line merge still conflicts —
 //     the service mount list — is not content a person resolves either.
 //     When both sides are forge's own renders, the driver keeps this side's
@@ -359,17 +361,22 @@ func mergeGeneratedPath(ctx context.Context, relPath string, base, ours, theirs 
 
 // unstampableRenderOfOurs reports whether ours is forge's render of a
 // comment-incapable output: its body hash is the one THIS side's
-// .forge/hashes.json records for it. The project root is the nearest
-// directory above relPath holding forge.yaml (the driver runs at the top of
-// the work tree, and relPath is relative to it); this side's hashes come
-// from HEAD, which is this side in a merge, a rebase and a cherry-pick alike.
+// certificate (.forge/hashes/<path>.sha256, or a legacy .forge/hashes.json)
+// records for it. The project root is the nearest directory above relPath
+// holding forge.yaml (the driver runs at the top of the work tree, and
+// relPath is relative to it); this side's certificate comes from HEAD, which
+// is this side in a merge, a rebase and a cherry-pick alike.
 func unstampableRenderOfOurs(relPath string, ours []byte) bool {
 	rel, ok := projectRelative(relPath)
 	if !ok {
 		return false
 	}
 	prefix := strings.TrimSuffix(filepath.ToSlash(relPath), rel)
-	data, err := exec.CommandContext(context.Background(), "git", "cat-file", "blob", "HEAD:"+prefix+checksums.HashesFile).Output()
+	if data, err := exec.CommandContext(context.Background(), "git", "cat-file", "blob", "HEAD:"+prefix+checksums.HashCertPath(rel)).Output(); err == nil {
+		recorded, ok := checksums.ParseHashCert(data)
+		return ok && recorded == checksums.BodyHash(ours)
+	}
+	data, err := exec.CommandContext(context.Background(), "git", "cat-file", "blob", "HEAD:"+prefix+checksums.LegacyHashesFile).Output()
 	if err != nil {
 		return false
 	}
@@ -994,7 +1001,7 @@ const (
 var generatedMergePatterns = []string{
 	"*_gen.go", "*_gen.ts", "*_gen.test.ts", "*_gen.json", "*_gen.ndjson",
 	"forge_descriptor.json", "forge_service_catalog.json",
-	".forge/scaffolded.json", ".forge/hashes.json", ".forge/disowned.json",
+	".forge/scaffolded.json", ".forge/hashes/**", ".forge/disowned.json",
 }
 
 // writeMergeAttributes writes forge's block into the clone's

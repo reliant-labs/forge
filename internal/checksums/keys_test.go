@@ -21,7 +21,7 @@ func TestLoad_NormalizesBackslashedKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	hashes := `{"files": {"web\\gen\\api.json": "abc123"}}`
-	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(HashesFile)), []byte(hashes), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(LegacyHashesFile)), []byte(hashes), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

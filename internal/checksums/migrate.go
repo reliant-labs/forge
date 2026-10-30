@@ -295,7 +295,7 @@ func migrateGitignoreNegation(root string) {
 	if !strings.Contains(content, "!"+LegacyChecksumFile) {
 		return
 	}
-	replacement := "!" + DisownedFile + "\n!" + HashesFile
+	replacement := "!" + DisownedFile + "\n!" + HashesDir + "/"
 	content = strings.Replace(content, "!"+LegacyChecksumFile, replacement, 1)
 	// Drop any duplicate negations a previous partial migration left.
 	content = strings.ReplaceAll(content, "!"+LegacyChecksumFile+"\n", "")

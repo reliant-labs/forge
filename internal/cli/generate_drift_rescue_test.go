@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -123,28 +122,19 @@ func rescuePlan(t *testing.T, emitted map[string]string) []GenStep {
 
 func readHashesLedger(t *testing.T, dir string) map[string]string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(dir, checksums.HashesFile))
+	cs, err := checksums.Load(dir)
 	if err != nil {
-		t.Fatalf("read %s: %v", checksums.HashesFile, err)
+		t.Fatalf("load certificates: %v", err)
 	}
-	var h struct {
-		Files map[string]string `json:"files"`
-	}
-	if err := json.Unmarshal(data, &h); err != nil {
-		t.Fatalf("parse %s: %v", checksums.HashesFile, err)
-	}
-	return h.Files
+	return cs.Unstampable
 }
 
+// writeHashesLedger writes one certificate file per entry, as Save does.
 func writeHashesLedger(t *testing.T, dir string, files map[string]string) {
 	t.Helper()
-	data, err := json.MarshalIndent(struct {
-		Files map[string]string `json:"files"`
-	}{files}, "", "  ")
-	if err != nil {
-		t.Fatal(err)
+	for rel, hash := range files {
+		writeTreeFileT(t, filepath.Join(dir, filepath.FromSlash(checksums.HashCertPath(rel))), hash+"\n")
 	}
-	writeTreeFileT(t, filepath.Join(dir, checksums.HashesFile), string(data)+"\n")
 }
 
 // TestGenerate_KilledRunLedgerIsRescued is the finding. A generate killed

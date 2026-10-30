@@ -38,10 +38,12 @@
 //   - timestamp per `forge project disown`. Generate skips these paths while
 //     the file exists; deleting the file re-adopts it. Committed.
 //
-//   - .forge/hashes.json — the scoped fallback for the few Tier-1
-//     output formats that cannot carry comments (JSON). path → body
-//     hash of the last render. Deliberately minimal: this exception
-//     must not regrow the global manifest. Committed.
+//   - .forge/hashes/ — the scoped fallback for the few Tier-1 output
+//     formats that cannot carry comments (JSON): one certificate file
+//     per output, holding the body hash of its last render (hashdir.go).
+//     One file per output, never one shared manifest, so only that
+//     output's changes touch its certificate and parallel branches do
+//     not conflict in it. Committed.
 //
 //   - .forge/scaffolded.json — the scaffold-once BIRTH LEDGER: every
 //     path forge has ever scaffolded here. It is what lets a DELETED
@@ -76,20 +78,25 @@ import (
 const (
 	// DisownedFile records one-way ownership transfers (`forge project disown`).
 	DisownedFile = ".forge/disowned.json"
-	// HashesFile is the scoped fallback manifest for comment-incapable
-	// Tier-1 outputs only (see package doc).
-	HashesFile = ".forge/hashes.json"
+	// HashesDir holds one certificate file per comment-incapable Tier-1
+	// output (see hashdir.go).
+	HashesDir = ".forge/hashes"
+	// LegacyHashesFile is the one-manifest predecessor of HashesDir. Load
+	// still reads it and the next Save deletes it (hashdir.go).
+	LegacyHashesFile = ".forge/hashes.json"
 	// LegacyChecksumFile is the dead global manifest. Only the one-time
 	// migration (migrate.go) reads it; nothing writes it.
 	LegacyChecksumFile = ".forge/checksums.json"
 )
 
-// CommittedStateFiles are the files under .forge/ that a project commits:
-// the ownership state and the scaffold birth ledger. Everything else there
-// (the lock, logs, side renders, a failed run's output) is per-clone
-// scratch. A caller that sets .forge/ aside as scratch keeps these.
+// CommittedStateFiles are the single files under .forge/ that a project
+// commits: the ownership state and the scaffold birth ledger. The
+// certificate files under HashesDir are committed too (IsCommittedState,
+// CommittedStatePaths). Everything else there (the lock, logs, side
+// renders, a failed run's output) is per-clone scratch. A caller that sets
+// .forge/ aside as scratch keeps these.
 func CommittedStateFiles() []string {
-	return []string{DisownedFile, HashesFile, ScaffoldedFile}
+	return []string{DisownedFile, ScaffoldedFile}
 }
 
 // ResetSkipWrite clears the written-this-run set. Called at the start of
@@ -495,8 +502,9 @@ type FileChecksums struct {
 
 	// Unstampable maps project-relative paths of comment-incapable
 	// Tier-1 outputs (JSON, …) to the BodyHash of forge's last render.
-	// Loaded from / saved to .forge/hashes.json. The ONLY paths allowed
-	// here are ones Stampable() rejects — the writer enforces it.
+	// Loaded from / saved to one certificate file per path under
+	// .forge/hashes/ (hashdir.go). The ONLY paths allowed here are ones
+	// Stampable() rejects — the writer enforces it.
 	Unstampable map[string]string `json:"-"`
 }
 
@@ -527,16 +535,17 @@ type disownedJSON struct {
 	Files map[string]DisownedEntry `json:"files"`
 }
 
-// Same for hashesJSON: its forge_version was write-only too, and it is the
-// same committed-file-versus-build-identity problem.
+// hashesJSON is the legacy one-manifest shape of the certificates
+// (LegacyHashesFile), read by Load until the next Save migrates it.
 type hashesJSON struct {
 	Files map[string]string `json:"files"`
 }
 
-// Load reads the project ownership state (.forge/disowned.json +
-// .forge/hashes.json). Missing files yield empty maps — a project with
-// no disowns and no comment-incapable outputs has NO forge state files
-// at all, by design.
+// Load reads the project ownership state (.forge/disowned.json + the
+// certificate files under .forge/hashes/, and a legacy .forge/hashes.json
+// whose entries a certificate file does not already hold). Missing files
+// yield empty maps — a project with no disowns and no comment-incapable
+// outputs has NO forge state files at all, by design.
 func Load(root string) (*FileChecksums, error) {
 	cs := &FileChecksums{
 		Disowned:    map[string]DisownedEntry{},
@@ -553,31 +562,38 @@ func Load(root string) (*FileChecksums, error) {
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
-	if data, err := os.ReadFile(filepath.Join(root, HashesFile)); err == nil {
+	if data, err := os.ReadFile(filepath.Join(root, LegacyHashesFile)); err == nil {
 		var h hashesJSON
 		if jerr := json.Unmarshal(data, &h); jerr != nil {
-			return nil, fmt.Errorf("parse %s: %w", HashesFile, jerr)
+			return nil, fmt.Errorf("parse %s: %w", LegacyHashesFile, jerr)
 		}
 		if h.Files != nil {
 			cs.Unstampable = slashKeys(h.Files)
-			// An earlier forge certified gen/'s aggregates here; nothing
-			// does now (Uncertified), and the next Save drops the entry.
-			for p := range cs.Unstampable {
-				if Uncertified(p) {
-					delete(cs.Unstampable, p)
-				}
-			}
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
+	certs, err := loadHashCerts(root)
+	if err != nil {
+		return nil, err
+	}
+	// A certificate file is newer than the legacy manifest by construction
+	// (the Save that wrote it deleted the manifest), so it wins.
+	maps.Copy(cs.Unstampable, certs)
+	// An earlier forge certified gen/'s aggregates; nothing does now
+	// (Uncertified), and the next Save drops the record.
+	for p := range cs.Unstampable {
+		if Uncertified(p) {
+			delete(cs.Unstampable, p)
+		}
+	}
 	return cs, nil
 }
 
-// Save persists the ownership state. Empty maps DELETE their state file
-// — the steady state for most projects is no .forge state files at all,
-// so regeneration produces zero bookkeeping diff (the manifest-era
-// "22/69 commits were pure bookkeeping" failure mode).
+// Save persists the ownership state. Empty state DELETES its files — the
+// steady state for most projects is no .forge state files at all, so
+// regeneration produces zero bookkeeping diff (the manifest-era "22/69
+// commits were pure bookkeeping" failure mode).
 func Save(root string, cs *FileChecksums) error {
 	if cs == nil {
 		return nil
@@ -585,7 +601,7 @@ func Save(root string, cs *FileChecksums) error {
 	if err := saveStateFile(root, DisownedFile, len(cs.Disowned), disownedJSON{Files: cs.Disowned}); err != nil {
 		return err
 	}
-	return saveStateFile(root, HashesFile, len(cs.Unstampable), hashesJSON{Files: cs.Unstampable})
+	return saveHashCerts(root, cs.Unstampable)
 }
 
 // saveStateFile writes one state file, or removes it when its map is

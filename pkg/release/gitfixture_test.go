@@ -87,9 +87,10 @@ func templateRepo(t *testing.T, key string, build func(dir string) ([]string, er
 
 // fixtureGit runs git for a template build, with a fixed identity.
 func fixtureGit(dir, stdin string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	// The identity as -c flags, not an environment built from os.Environ:
+	// pkg/ reads no ambient environment, tests included (internal/pkgguard).
+	cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}

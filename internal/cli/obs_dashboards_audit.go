@@ -908,9 +908,11 @@ func (a *dashAudit) readout(ap auditPanel, n obsbackend.Narrow, op obsquery.Pane
 // withoutFilters is op with every panel and series predicate removed, and
 // whether there was anything to remove.
 func withoutFilters(op obsquery.Panel) (obsquery.Panel, bool) {
-	changed := len(op.Where) > 0
+	// HasError is a filter too: a sessions panel keeping only sessions with an
+	// error is empty in an env whose sessions are all healthy.
+	changed := len(op.Where) > 0 || op.HasError
 	bare := op
-	bare.Where = nil
+	bare.Where, bare.HasError = nil, false
 	bare.Series = make([]obsquery.PanelSeries, len(op.Series))
 	for i, s := range op.Series {
 		if len(s.Where) > 0 {

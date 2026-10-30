@@ -115,6 +115,9 @@ func (c *auditCP) Call(_ context.Context, procedure string, req, out any) error 
 }
 
 func hasPredicates(panel map[string]any) bool {
+	if he, _ := panel["hasError"].(bool); he {
+		return true
+	}
 	if w, ok := panel["where"].([]any); ok && len(w) > 0 {
 		return true
 	}
@@ -1309,5 +1312,37 @@ func TestAuditProbeLiftsEnvAndFiltersTogether(t *testing.T) {
 	}
 	if !strings.Contains(p.ProbableCause, "neither lift alone") {
 		t.Errorf("probable_cause %q", p.ProbableCause)
+	}
+}
+
+// A line of one valued point among null points (formula gaps) draws one point:
+// it is one bucket, flagged, never a healthy multi-bucket line.
+func TestAuditNullPointsAreNotBuckets(t *testing.T) {
+	oneAmongNulls := `{"kind":"line","stepSeconds":60,"series":[{"label":"n","points":[{"time":"2026-10-22T11:30:00Z","null":true},{"time":"2026-10-22T11:31:00Z","value":4},{"time":"2026-10-22T11:32:00Z","null":true}]}]}`
+	cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": auditSpec(linePanel("p"))},
+		panel: func(auditQuery) (string, error) { return oneAmongNulls, nil }}
+	out, _, _ := auditRun(t, cp)
+	p := decodeAudit(t, out).Dashboards[0].Panels[0]
+	if p.Status != "partial" || p.Reason != "single_bucket" {
+		t.Errorf("status %q reason %q, want partial single_bucket:\n%s", p.Status, p.Reason, out)
+	}
+}
+
+// A sessions panel that keeps only sessions with an error is lifted off that
+// filter too: healthy sessions found without it are data_excluded_by_filters,
+// never no_data_anywhere.
+func TestAuditProbeLiftsTheSessionsErrorFilter(t *testing.T) {
+	sessions := `{"id":"s","title":"s","kind":"sessions","hasError":true}`
+	cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": auditSpec(sessions)},
+		panel: func(q auditQuery) (string, error) {
+			if q.Bare {
+				return `{"kind":"sessions","sessions":[{"sessionId":"a"}]}`, nil
+			}
+			return `{"kind":"sessions"}`, nil
+		}}
+	out, _, _ := auditRun(t, cp)
+	p := decodeAudit(t, out).Dashboards[0].Panels[0]
+	if p.Probe == nil || p.Probe.Verdict != "data_excluded_by_filters" {
+		t.Fatalf("want data_excluded_by_filters:\n%s", out)
 	}
 }

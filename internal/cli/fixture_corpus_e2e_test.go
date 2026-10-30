@@ -115,6 +115,8 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"maps"
@@ -1324,23 +1326,96 @@ func vendorCorpusForgeModule(t *testing.T, repoRoot, projectDir string) {
 		}
 	}
 
-	// Only pkg/ is copied, not the whole repo: pkg/* is all a scaffold
-	// imports, and copying internal/ and cmd/ would multiply every e2e
-	// fixture by forge's entire source tree for no added coverage.
-	src := filepath.Join(repoRoot, "pkg")
-	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+	// pkg/ is copied whole: pkg/* is all a scaffold imports. Copying all of
+	// internal/ and cmd/ would multiply every e2e fixture by forge's entire
+	// source tree for no added coverage, but pkg/ may import forge's own
+	// internal packages (pkg/pgtest -> internal/openfiles, pkg/hostslot ->
+	// internal/procguard), and a module missing one fails `go mod tidy` with
+	// "does not contain package". So copy pkg/ plus the internal packages its
+	// non-test files reach, transitively — exactly what the project compiles.
+	if err := copyForgePackageTree(repoRoot, "pkg", dst, true); err != nil {
+		t.Fatalf("vendor the forge module into %s: %v", dst, err)
+	}
+	for _, rel := range forgeInternalClosure(t, repoRoot, "pkg") {
+		if err := copyForgePackageTree(repoRoot, rel, dst, false); err != nil {
+			t.Fatalf("vendor forge's %s into %s: %v", rel, dst, err)
+		}
+	}
+}
+
+// forgeInternalClosure returns, as repo-relative directories, every forge
+// internal/ package reachable from the non-test Go files under root (itself
+// repo-relative), following internal -> internal imports too. Test files are
+// skipped: a consumer compiles pkg/'s non-test files only.
+func forgeInternalClosure(t *testing.T, repoRoot, root string) []string {
+	t.Helper()
+	seen := map[string]bool{}
+	var queue []string
+	enqueueImports := func(dir string, recurse bool) {
+		err := filepath.WalkDir(filepath.Join(repoRoot, dir), func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if path != filepath.Join(repoRoot, dir) && (!recurse || d.Name() == "testdata" || d.Name() == ".git") {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			f, perr := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+			if perr != nil {
+				return perr
+			}
+			for _, imp := range f.Imports {
+				p := strings.Trim(imp.Path.Value, `"`)
+				rel, ok := strings.CutPrefix(p, forgeModulePath+"/")
+				if !ok || !strings.HasPrefix(rel, "internal/") || seen[rel] {
+					continue
+				}
+				seen[rel] = true
+				queue = append(queue, rel)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan forge imports under %s: %v", dir, err)
+		}
+	}
+	enqueueImports(root, true)
+	for len(queue) > 0 {
+		next := queue[0]
+		queue = queue[1:]
+		enqueueImports(next, false)
+	}
+	out := make([]string, 0, len(seen))
+	for rel := range seen {
+		out = append(out, rel)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// copyForgePackageTree copies repoRoot/rel into dst/rel, skipping .git/ and
+// testdata/. With recurse false it copies only the directory's own files —
+// one package, not the packages nested under it.
+func copyForgePackageTree(repoRoot, rel, dst string, recurse bool) error {
+	src := filepath.Join(repoRoot, rel)
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, rerr := filepath.Rel(src, path)
+		sub, rerr := filepath.Rel(src, path)
 		if rerr != nil {
 			return rerr
 		}
 		if d.IsDir() {
-			if d.Name() == ".git" || d.Name() == "testdata" {
+			if d.Name() == ".git" || d.Name() == "testdata" || (!recurse && path != src) {
 				return filepath.SkipDir
 			}
-			return os.MkdirAll(filepath.Join(dst, "pkg", rel), 0o755)
+			return os.MkdirAll(filepath.Join(dst, rel, sub), 0o755)
 		}
 		if !d.Type().IsRegular() {
 			return nil
@@ -1349,11 +1424,8 @@ func vendorCorpusForgeModule(t *testing.T, repoRoot, projectDir string) {
 		if rerr != nil {
 			return rerr
 		}
-		return os.WriteFile(filepath.Join(dst, "pkg", rel), data, 0o644)
+		return os.WriteFile(filepath.Join(dst, rel, sub), data, 0o644)
 	})
-	if err != nil {
-		t.Fatalf("vendor the forge module into %s: %v", dst, err)
-	}
 }
 
 // generateTwiceIdempotent runs `forge generate` twice and asserts the

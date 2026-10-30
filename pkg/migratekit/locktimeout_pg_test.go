@@ -731,6 +731,80 @@ func assertCommittedThenTimedOut(t *testing.T, file string) {
 	}
 }
 
+// TestDropIndexConcurrentlyThatTimesOutIsNotRetriedAndStaysDirty: DROP INDEX
+// CONCURRENTLY commits the index as INVALID and only then waits for readers.
+// When that wait times out the index is already unusable, so "nothing was
+// applied, clean at the version before" would be false. The run makes one
+// attempt and leaves the schema dirty; the index is invalid, as postgres
+// left it.
+func TestDropIndexConcurrentlyThatTimesOutIsNotRetriedAndStaysDirty(t *testing.T) {
+	dsn := baseSchema(t)
+	files := map[string]string{"2_items_v.up.sql": concurrentlyIndex}
+	mustUp(t, release(merged(lockBase, files)), dsn)
+	if exists, valid := indexState(t, openRecordDB(t, dsn)); !exists || !valid {
+		t.Fatalf("setup: items_v exists=%v valid=%v, want a valid index", exists, valid)
+	}
+	holdReader(t, dsn)
+	files["3_drop.up.sql"] = "-- forge:backward-compatible\nDROP INDEX CONCURRENTLY items_v;"
+	var logs bytes.Buffer
+	_, err := upWith(release(merged(lockBase, files)), dsn,
+		RunOptions{Logger: logTo(&logs), Limits: Limits{LockTimeout: 200 * time.Millisecond, LockAttempts: 5, RetryBackoff: 10 * time.Millisecond}})
+	var lerr *LockTimeoutError
+	if !errors.As(err, &lerr) || lerr.Attempts != 1 || !lerr.PartlyApplied {
+		t.Fatalf("Up returned %v, want a *LockTimeoutError after ONE attempt, marked partly applied", err)
+	}
+	if strings.Contains(logs.String(), "retrying") {
+		t.Errorf("DROP INDEX CONCURRENTLY was retried:\n%s", logs.String())
+	}
+	if exists, valid := indexState(t, openRecordDB(t, dsn)); !exists || valid {
+		t.Errorf("items_v exists=%v valid=%v, want the invalid index postgres committed before it timed out", exists, valid)
+	}
+	if st := stateAt(t, dsn); !st.Dirty || st.Version != 3 {
+		t.Errorf("schema is %+v, want dirty at 3: the index is already invalid", st)
+	}
+}
+
+// TestConcurrentlyCleanupDoesNotFollowASessionSearchPath: with
+// x-multi-statement a file may SET search_path and then build its index in
+// that schema. The cleanup before the file resolves names in the session as it
+// was, so it would drop public's invalid items_v for a build that targets
+// tenant_a. Cleanup only runs for a lone CREATE INDEX CONCURRENTLY, whose
+// names mean the same thing before and during the statement.
+func TestConcurrentlyCleanupDoesNotFollowASessionSearchPath(t *testing.T) {
+	dsn := baseSchema(t)
+	db := openRecordDB(t, dsn)
+	files := map[string]string{
+		"2_tenant.up.sql": "CREATE SCHEMA tenant_a; CREATE TABLE tenant_a.items (id INT, v TEXT);",
+	}
+	mustUp(t, release(merged(lockBase, files)), dsn)
+	for _, q := range []string{
+		"CREATE INDEX items_v ON public.items (v)",
+		"UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'public.items_v'::regclass",
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	files["3_a.up.sql"] = "SET search_path TO tenant_a;\nCREATE INDEX CONCURRENTLY items_v ON items (v);"
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	if _, err := upWith(release(merged(lockBase, files)), dsn+sep+"x-multi-statement=true", RunOptions{}); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	for schema, want := range map[string]bool{"public": false, "tenant_a": true} {
+		var valid bool
+		if err := db.QueryRow(`SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+			JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = 'items_v' AND n.nspname = $1`, schema).Scan(&valid); err != nil {
+			t.Fatalf("%s.items_v: %v (it must exist)", schema, err)
+		}
+		if valid != want {
+			t.Errorf("%s.items_v valid = %v, want %v", schema, valid, want)
+		}
+	}
+}
+
 // TestConcurrentlyCleanupStaysInItsOwnSchema: two schemas each hold an invalid
 // items_v. A migration building tenant_a.items_v drops tenant_a's and leaves
 // tenant_b's, which it did not build and its file does not name.

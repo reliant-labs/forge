@@ -458,6 +458,11 @@ func (g *lockGuard) runWithRetry(body []byte) error {
 	// the migrator cannot clean up after.
 	plan := planFile(body)
 	retryable := g.atomic && plan.retryable()
+	if !retryable {
+		// Cleanup is for a file proven to be a lone concurrent build; a file
+		// that is not proven is not touched on its behalf (sqlscan.go).
+		plan.creates = nil
+	}
 	attempts := g.limits.LockAttempts
 	if !retryable {
 		attempts = 1

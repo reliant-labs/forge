@@ -187,49 +187,72 @@ type createIndexTarget struct {
 
 // filePlan is what a migration file is, from its statements.
 type filePlan struct {
-	// endsTransaction is true when a statement controls the transaction
-	// itself: after one, a failure no longer rolls the whole file back.
-	endsTransaction bool
-	// runsProcedural is true when a top-level CALL or DO runs code: a
-	// procedure or DO block may COMMIT on its own outside a transaction
-	// block, and what it commits is invisible to this scan (the body is
-	// quoted), so a failure after it is not proven to have rolled back.
-	runsProcedural bool
-	// unretryableConcurrently is true when the file holds a CONCURRENTLY
-	// statement other than CREATE INDEX or DROP INDEX: REINDEX leaves
-	// `_ccnew` indexes behind and DETACH PARTITION leaves the partition in a
-	// state only FINALIZE resolves, so neither is run twice blindly.
-	unretryableConcurrently bool
-	// creates are the CREATE INDEX CONCURRENTLY statements; unnamed is true
-	// when one names no index (postgres picks the name), so there is nothing
-	// to clean up by name.
+	// atomic is true only when every statement of the file is on the
+	// allowlist below and none ends the transaction, runs code that may
+	// commit, or runs outside a transaction block. Anything the scan cannot
+	// place is not atomic: the default is "not proven".
+	atomic bool
+	// creates is the one CREATE INDEX CONCURRENTLY a file consisting of
+	// nothing else builds. It is set only for such a lone statement: with
+	// anything around it the build would run in a different session state
+	// than the cleanup that looks for its leftover (a SET search_path in the
+	// same file changes what its table name means), and a file that is not
+	// proven all-or-nothing is never cleaned up behind.
 	creates []createIndexTarget
-	unnamed bool
 }
 
 // retryable reports whether a failed attempt at the file can be run again.
-func (p filePlan) retryable() bool {
-	return !p.endsTransaction && !p.runsProcedural && !p.unretryableConcurrently && !p.unnamed
+func (p filePlan) retryable() bool { return p.atomic }
+
+// atomicStatements are the first words of statements that postgres runs in
+// the file's implicit transaction and rolls back whole on failure. The list is
+// deliberately an allowlist: a statement it does not name (BEGIN/COMMIT,
+// CALL and DO, which may COMMIT inside, VACUUM, REINDEX, CLUSTER, ALTER SYSTEM,
+// CREATE DATABASE …) makes the file unproven, so the first lock timeout fails
+// the run and leaves the schema dirty for a human.
+var atomicStatements = map[string]bool{
+	"create": true, "alter": true, "drop": true, "insert": true, "update": true,
+	"delete": true, "merge": true, "truncate": true, "comment": true,
+	"grant": true, "revoke": true, "select": true, "with": true, "set": true,
+	"reset": true, "lock": true, "analyze": true, "refresh": true,
+	"security": true, "reassign": true,
 }
 
-// transactionControl are the statements that start, end or divide a
-// transaction, as the first word of a statement.
-var transactionControl = map[string]bool{
-	"begin": true, "start": true, "commit": true, "end": true, "abort": true,
-	"rollback": true, "savepoint": true, "release": true,
+// notAtomic reports whether a CREATE, ALTER or DROP statement is one of the
+// few that cannot run in a transaction block or commits on its own.
+func notAtomic(s []sqlTok) bool {
+	if len(s) < 2 {
+		return false
+	}
+	switch s[0].text {
+	case "create", "drop":
+		for _, w := range []string{"database", "tablespace", "subscription"} {
+			if s[1].isWord(w) {
+				return true
+			}
+		}
+	case "alter":
+		for _, w := range []string{"system", "database", "subscription"} {
+			if s[1].isWord(w) {
+				return true
+			}
+		}
+		if s[1].isWord("type") {
+			for i := 2; i+1 < len(s); i++ {
+				if s[i].isWord("add") && s[i+1].isWord("value") {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func planFile(body []byte) filePlan {
-	var p filePlan
-	for _, s := range splitStatements(string(body)) {
+	stmts := splitStatements(string(body))
+	p := filePlan{atomic: len(stmts) > 0}
+	for _, s := range stmts {
 		first := s[0]
-		if first.kind == tokWord && (transactionControl[first.text] ||
-			first.text == "prepare" && len(s) > 1 && s[1].isWord("transaction")) {
-			p.endsTransaction = true
-		}
-		if first.kind == tokWord && (first.text == "call" || first.text == "do") {
-			p.runsProcedural = true
-		}
 		concurrently := false
 		for _, t := range s {
 			if t.isWord("concurrently") {
@@ -237,22 +260,25 @@ func planFile(body []byte) filePlan {
 				break
 			}
 		}
-		if !concurrently {
-			continue
-		}
 		switch {
-		case createsIndex(s):
+		case first.kind != tokWord || !atomicStatements[first.text] || notAtomic(s):
+			p.atomic = false
+		case concurrently && createsIndex(s) && len(stmts) == 1:
+			// A lone CREATE INDEX CONCURRENTLY runs outside a transaction
+			// block; a timed-out build leaves only an INVALID index, which
+			// the cleanup drops. DROP INDEX CONCURRENTLY is not this: it can
+			// commit the index invalid before it times out waiting.
 			if t, ok := createIndexOf(s); ok {
-				p.creates = append(p.creates, t)
+				p.creates = []createIndexTarget{t}
 			} else {
-				p.unnamed = true
+				p.atomic = false
 			}
-		case first.isWord("drop") && len(s) > 2 && s[1].isWord("index"):
-			// DROP INDEX CONCURRENTLY is safe to run again: a failed one
-			// leaves the index invalid and the next attempt finishes it.
-		default:
-			p.unretryableConcurrently = true
+		case concurrently:
+			p.atomic = false
 		}
+	}
+	if !p.atomic {
+		p.creates = nil
 	}
 	return p
 }

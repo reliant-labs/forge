@@ -60,13 +60,20 @@ stops the drop, the error lists it (`Leftover`) and the next run drops it first.
 **When a migration is NOT retried.** A retry is safe only if a failed attempt
 rolled back completely, and the migrator proves that from the file (it lexes the
 SQL: comments, strings and function bodies do not count) instead of assuming it.
-A file is **not** retried, and its first lock timeout fails the run with the
-schema left dirty at that version, when it has its own `BEGIN` / `COMMIT` /
-`END` / `ROLLBACK` / `SAVEPOINT` / `PREPARE TRANSACTION` (part of it may already
-be committed), runs statement by statement (`x-multi-statement`), has a
-`CREATE INDEX CONCURRENTLY` with no name, or has a `REINDEX … CONCURRENTLY` /
-`DETACH PARTITION … CONCURRENTLY`. Keep a migration to plain DDL, or give a
-`CONCURRENTLY` statement a file of its own, to get the retry.
+A file is retried only when every statement is plain transactional work
+(`CREATE`/`ALTER`/`DROP`, `INSERT`/`UPDATE`/`DELETE`, `GRANT`/`REVOKE`, `SET`, …)
+or it is a lone `CREATE INDEX CONCURRENTLY`. Everything else is **not** retried,
+and its first lock timeout fails the run with the schema left dirty at that
+version: its own `BEGIN` / `COMMIT` / `END` / `ROLLBACK` / `SAVEPOINT` /
+`PREPARE TRANSACTION`; `CALL` and `DO` (a procedure or block may `COMMIT` inside);
+`DROP INDEX CONCURRENTLY` (it commits the index invalid before it waits);
+`REINDEX`, `VACUUM`, `CLUSTER`, `REFRESH … CONCURRENTLY`,
+`ALTER TYPE … ADD VALUE`, `DETACH PARTITION … CONCURRENTLY`; and any statement
+the migrator does not recognise. The same goes for a file run statement by
+statement (`x-multi-statement`). Such a file also gets no invalid-index cleanup:
+the cleanup resolves names in the session as it was before the file ran, so it
+only runs for a lone `CREATE INDEX CONCURRENTLY`. Keep a migration to plain DDL,
+or give a `CREATE INDEX CONCURRENTLY` a file of its own, to get the retry.
 
 Grants (`db/grants/*_gen.sql`, applied after the migrations) take locks too, so
 they run under the same limits and the same retry. They are one statement, so a

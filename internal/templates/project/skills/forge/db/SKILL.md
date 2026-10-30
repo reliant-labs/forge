@@ -241,6 +241,7 @@ Every query goes through ONE data-access path: the generated store, then the own
 - Anything else: `internal/db/<entity>_repo_ext.go`, the custom-query seam forge scaffolds beside every entity, once, and never rewrites. Its header names the tools: the generated delegates with `orm.QueryOption` filters, SQL via `db.Bun()`, and the `orm.Context` that runs a method in or out of a transaction. bun takes joins, CTEs (`NewSelect().With(...)`), `FOR UPDATE SKIP LOCKED`, advisory locks and fully raw statements (`NewRaw`), so a hand-tuned hot-path query stays hand-tuned SQL.
 - Test every `_repo_ext.go` query against a real migrated database (`testing/integration`). That is what checks the SQL against the schema; nothing does it at generate time.
 - Bucketing by time has a silent timezone trap: load `db/time-buckets`.
+- Dashboard panels over this database: `db/dashboards`.
 
 ## Forge-specific rules
 

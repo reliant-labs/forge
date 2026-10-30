@@ -340,6 +340,11 @@ func (s ManagedDatabaseSpec) Validate() error {
 	if d.DeletionPolicy != DeletionPolicyRetain && d.DeletionPolicy != DeletionPolicyDelete {
 		errs = append(errs, fmt.Errorf("deletionPolicy %q must be retain or delete", s.DeletionPolicy))
 	}
+	if d.Dashboards != nil {
+		if err := d.Dashboards.Validate(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	if r := d.Restore; r != nil {
 		if err := ValidateDatabaseName(r.SourceDatabase); err != nil {
 			errs = append(errs, fmt.Errorf("restore.sourceDatabase: %w", err))

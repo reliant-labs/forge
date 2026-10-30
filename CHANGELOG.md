@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.0.8] - 2026-10-30
+
+No notable changes.
+
 ## [v1.0.7] - 2026-10-30
 
 ### Added
@@ -8294,7 +8298,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.7...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.8...HEAD
+[v1.0.8]: https://github.com/reliant-labs/forge/compare/v1.0.7...v1.0.8
 [v1.0.7]: https://github.com/reliant-labs/forge/compare/v1.0.6...v1.0.7
 [v1.0.6]: https://github.com/reliant-labs/forge/compare/v1.0.5...v1.0.6
 [v1.0.5]: https://github.com/reliant-labs/forge/compare/v1.0.4...v1.0.5

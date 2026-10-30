@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/reliant-labs/forge/pkg/dbgrants"
 	"github.com/reliant-labs/forge/pkg/migratekit"
@@ -153,12 +154,25 @@ func reportMigrateUp(w io.Writer, res migratekit.Result) {
 // database nobody provisioned the role for, and the reason `forge db query`
 // has nothing to connect as.
 func reportGrants(w io.Writer, res migratekit.Result) {
-	switch g := res.Grants; {
-	case g == nil:
+	g := res.Grants
+	if g == nil {
+		return
+	}
+	switch {
 	case g.RoleMissing:
 		_, _ = fmt.Fprintf(w, "read-only grants not applied: this database has no %s role\n", dbgrants.RoleName)
 	case g.Applied:
 		_, _ = fmt.Fprintf(w, "read-only grants applied (%s)\n", dbgrants.RoleName)
+	}
+	// The dashboard role is opt-in, so its absence is not worth a line.
+	if g.DashboardApplied {
+		_, _ = fmt.Fprintf(w, "dashboard grants applied (%s)\n", dbgrants.DashboardRoleName)
+	}
+	if g.DashboardRoleDisabled {
+		_, _ = fmt.Fprintf(w, "dashboards are off: %s cannot log in, its grants were revoked\n", dbgrants.DashboardRoleName)
+	}
+	if len(g.SecurityDefiner) > 0 {
+		_, _ = fmt.Fprintf(w, "warning: SECURITY DEFINER functions are executable by a grants role and run as their owner, so they can return columns the role has no SELECT on: %s\n", strings.Join(g.SecurityDefiner, ", "))
 	}
 }
 

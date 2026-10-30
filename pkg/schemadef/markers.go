@@ -40,7 +40,7 @@ const (
 func SiteMarkers(site MarkerSite) []string {
 	switch site {
 	case SiteTable:
-		return []string{TableMarkerAppendOnly, TableMarkerNoEntity, TableMarkerEntityName}
+		return []string{TableMarkerAppendOnly, TableMarkerNoEntity, TableMarkerEntityName, TableMarkerDashboard}
 	case SiteView:
 		return []string{ViewMarkerEntity, TableMarkerEntityName}
 	case SiteColumn:

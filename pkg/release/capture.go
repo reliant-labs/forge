@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -286,11 +287,32 @@ func unbornHead(ctx context.Context, top string) bool {
 	}
 	switch exit.ExitCode() {
 	case 2:
-		return true
+		// Newer git's files backend reports a loose ref path that is a
+		// DIRECTORY as "does not exist" (exit 2) where 2.43 fails the lookup
+		// (exit 1). That is damage, not an unborn branch, so the exit is
+		// confirmed against the loose path. A path git cannot name (a
+		// non-files store) leaves git's answer standing.
+		return !loosePathPresent(ctx, top, target)
 	case 129:
 		return refAbsentFromFiles(ctx, top, target)
 	}
 	return false
+}
+
+// loosePathPresent reports whether ref's loose path exists on disk in any
+// form (a file, a directory, a symlink). A missing path, or a parent that is
+// not a directory (reftable's stub `refs/heads` file), is not present; a path
+// it cannot stat is, since unborn is only ever a positive finding.
+func loosePathPresent(ctx context.Context, top, ref string) bool {
+	p, err := gitOut(ctx, top, "rev-parse", "--git-path", ref)
+	if err != nil || p == "" {
+		return false
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(top, p)
+	}
+	_, err = os.Lstat(p)
+	return !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR)
 }
 
 // refAbsentFromFiles is unbornHead's check on a git without `show-ref

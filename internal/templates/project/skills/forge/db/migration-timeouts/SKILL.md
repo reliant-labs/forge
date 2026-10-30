@@ -53,8 +53,8 @@ the migrator **drops it before each retry** (`DROP INDEX CONCURRENTLY`), so a
 retry never meets "already exists" and a `CREATE INDEX CONCURRENTLY IF NOT EXISTS`
 never quietly keeps a broken index. It drops exactly the index each
 `CREATE INDEX CONCURRENTLY` in the file names, in the schema of the table it is
-`ON` (resolved by postgres, so `tenant_a.items_v` never touches
-`tenant_b.items_v`); every other invalid index is left alone. If the blocker also
+`ON` (resolved by postgres, so `schema_a.items_v` never touches
+`schema_b.items_v`); every other invalid index is left alone. If the blocker also
 stops the drop, the error lists it (`Leftover`) and the next run drops it first.
 
 **When a migration is NOT retried.** A retry is safe only if a failed attempt

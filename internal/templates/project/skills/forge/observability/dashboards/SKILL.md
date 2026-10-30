@@ -38,7 +38,7 @@ stable ID/filename. Old disk-generated process parts never contaminate that set.
 | `.../<project>-process-<workload>_gen.json` | One long-running service, worker or operator, named for its forge workload. Panels follow what it does: RPC health only if it serves RPCs, worker runs for workers and operators, database when reached, a `*_limit_utilization` panel only for a declared limit, runtime and logs always |
 | `.../<project>-frontend_gen.json`                             | with a web frontend: JS errors, sessions, page views, failed API calls, LCP/INP/CLS p75, page-load percentiles, browser API latency and calls by URL — scoped to the web frontends' `service.name`s (`<project>-<frontend>`, otel_gen.ts's `SERVICE_NAME`) |
 | `.../<project>-process-<workload>_gen.ndjson` | Process error-log saved search |
-| `.../<project>-jobs_gen.json` (bundle only) | ONE dashboard for every job and cron job: runs, failures, duration and last run per job from the Kubernetes Job events, restarts, warnings, error logs. Jobs get no dashboard of their own |
+| `.../<project>-jobs_gen.json` (bundle only) | ONE dashboard for every job and cron job: runs (one per Kubernetes Job and environment, however many pods it created), failures, duration and last run per job from the Kubernetes Job events, restarts, warnings, error logs. Jobs get no dashboard of their own |
 | `deploy/observability/spec/*_gen.json` | `project_gen.json`, one `process-<workload>_gen.json` per long-running process and independent `alert-service-<svc>_gen.json` inputs |
 
 A process's aliases across environments share a dashboard. Obsolete generated

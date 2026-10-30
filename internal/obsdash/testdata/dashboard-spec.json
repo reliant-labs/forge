@@ -2127,169 +2127,29 @@
           "section": "runs",
           "id": "jobs-summary",
           "title": "Runs per job",
-          "description": "Per job over the selected range: runs started, succeeded and failed, the latest run's start, and run durations (seconds, start to completion). One row per forge job.",
+          "description": "Per job over the selected range: runs seen, succeeded and failed, the latest run's start, and run durations (seconds, start to completion). One row per forge job. A run is one Kubernetes Job in one environment, however many pods it created.",
           "kind": "sql",
-          "sql": "SELECT job,\n       count() AS runs,\n       countIf(finished \u003e 0) AS succeeded,\n       countIf(failed) AS failed,\n       max(started) AS last_started,\n       tupleElement(argMax(tuple(if(finished \u003e 0 AND started \u003e 0, dateDiff('second', started, finished), NULL)), started), 1) AS last_duration_s,\n       if(countIf(finished \u003e 0 AND started \u003e 0) = 0, NULL, round(avgIf(dateDiff('second', started, finished), finished \u003e 0 AND started \u003e 0), 1)) AS avg_duration_s,\n       if(countIf(finished \u003e 0 AND started \u003e 0) = 0, NULL, maxIf(dateDiff('second', started, finished), finished \u003e 0 AND started \u003e 0)) AS max_duration_s\nFROM (\n  SELECT env, run,\n         arrayFirst(n -\u003e match(run, concat('^', n, '-[a-z0-9]{6,12}$')), ['shop-migrate', 'shop-prune']) AS job,\n         minIf(Timestamp, reason = 'SuccessfulCreate') AS started,\n         maxIf(Timestamp, reason = 'Completed') AS finished,\n         countIf(reason IN ('BackoffLimitExceeded', 'DeadlineExceeded', 'PodFailurePolicy')) \u003e 0 AS failed\n  FROM (\n    SELECT Timestamp, ResourceAttributes['reliant.env.id'] AS env,\n           ResourceAttributes['k8s.workload.name'] AS run, LogAttributes['k8s.event.reason'] AS reason\n    FROM otel_logs\n    WHERE Timestamp \u003e= {from:DateTime64(9)} AND Timestamp \u003c {to:DateTime64(9)}\n      AND LogAttributes['k8s.event.reason'] != ''\n      AND if(mapContains(LogAttributes, 'k8s.object.kind'), LogAttributes['k8s.object.kind'], ResourceAttributes['k8s.object.kind']) = 'Job'\n      AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, ResourceAttributes['reliant.env.id']))\n  )\n  GROUP BY env, run\n)\nWHERE job != ''\nGROUP BY job\nORDER BY last_started DESC, job\n",
+          "sql": "SELECT job,\n       count() AS runs,\n       countIf(finished \u003e 0) AS succeeded,\n       countIf(failed) AS failed,\n       max(started) AS last_started,\n       tupleElement(argMax(tuple(if(finished \u003e 0 AND started \u003e 0, dateDiff('second', started, finished), NULL)), started), 1) AS last_duration_s,\n       if(countIf(finished \u003e 0 AND started \u003e 0) = 0, NULL, round(avgIf(dateDiff('second', started, finished), finished \u003e 0 AND started \u003e 0), 1)) AS avg_duration_s,\n       if(countIf(finished \u003e 0 AND started \u003e 0) = 0, NULL, maxIf(dateDiff('second', started, finished), finished \u003e 0 AND started \u003e 0)) AS max_duration_s\nFROM (\n  SELECT env, run,\n         arrayFirst(n -\u003e match(run, concat('^', n, '-[0-9a-f]{6,12}$')), ['shop-migrate', 'shop-prune']) AS job,\n         minIf(Timestamp, reason = 'SuccessfulCreate') AS started,\n         maxIf(Timestamp, reason = 'Completed') AS finished,\n         maxIf(Timestamp, reason IN ('BackoffLimitExceeded', 'DeadlineExceeded', 'PodFailurePolicy')) AS failed_at,\n         countIf(reason IN ('BackoffLimitExceeded', 'DeadlineExceeded', 'PodFailurePolicy')) \u003e 0 AS failed\n  FROM (\n    SELECT Timestamp, ResourceAttributes['reliant.env.id'] AS env,\n           ResourceAttributes['k8s.workload.name'] AS run, LogAttributes['k8s.event.reason'] AS reason\n    FROM otel_logs\n    WHERE Timestamp \u003e= {from:DateTime64(9)} AND Timestamp \u003c {to:DateTime64(9)}\n      AND LogAttributes['k8s.event.reason'] != ''\n      AND if(mapContains(LogAttributes, 'k8s.object.kind'), LogAttributes['k8s.object.kind'], ResourceAttributes['k8s.object.kind']) = 'Job'\n      AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, ResourceAttributes['reliant.env.id']))\n  )\n  GROUP BY env, run\n)\nWHERE job != ''\nGROUP BY job\nORDER BY last_started DESC, job\n",
           "width": 24,
           "height": 8
         },
         {
           "section": "runs",
-          "id": "runs-started",
-          "title": "Runs started",
-          "kind": "number",
-          "signal": "logs",
-          "series": [
-            {
-              "label": "started",
-              "agg": "count"
-            }
-          ],
-          "where": [
-            {
-              "field": "resource.attr.k8s.object.kind",
-              "op": "eq",
-              "value": "Job"
-            },
-            {
-              "field": "resource.attr.k8s.workload.name",
-              "op": "match",
-              "value": "^(shop-migrate|shop-prune)-[a-z0-9]{6,12}$"
-            },
-            {
-              "field": "log.attr.k8s.event.reason",
-              "op": "in",
-              "values": [
-                "SuccessfulCreate"
-              ]
-            }
-          ],
-          "unit": "count",
-          "width": 8,
-          "height": 4
-        },
-        {
-          "section": "runs",
-          "id": "runs-succeeded",
-          "title": "Runs succeeded",
-          "kind": "number",
-          "signal": "logs",
-          "series": [
-            {
-              "label": "succeeded",
-              "agg": "count"
-            }
-          ],
-          "where": [
-            {
-              "field": "resource.attr.k8s.object.kind",
-              "op": "eq",
-              "value": "Job"
-            },
-            {
-              "field": "resource.attr.k8s.workload.name",
-              "op": "match",
-              "value": "^(shop-migrate|shop-prune)-[a-z0-9]{6,12}$"
-            },
-            {
-              "field": "log.attr.k8s.event.reason",
-              "op": "in",
-              "values": [
-                "Completed"
-              ]
-            }
-          ],
-          "unit": "count",
-          "width": 8,
-          "height": 4
-        },
-        {
-          "section": "runs",
-          "id": "runs-failed",
-          "title": "Runs failed",
-          "kind": "number",
-          "signal": "logs",
-          "series": [
-            {
-              "label": "failed",
-              "agg": "count"
-            }
-          ],
-          "where": [
-            {
-              "field": "resource.attr.k8s.object.kind",
-              "op": "eq",
-              "value": "Job"
-            },
-            {
-              "field": "resource.attr.k8s.workload.name",
-              "op": "match",
-              "value": "^(shop-migrate|shop-prune)-[a-z0-9]{6,12}$"
-            },
-            {
-              "field": "log.attr.k8s.event.reason",
-              "op": "in",
-              "values": [
-                "BackoffLimitExceeded",
-                "DeadlineExceeded",
-                "PodFailurePolicy"
-              ]
-            }
-          ],
-          "unit": "count",
-          "width": 8,
+          "id": "runs-totals",
+          "title": "Runs in range",
+          "description": "Runs started in the selected range, and how many of the runs seen in it succeeded and failed, across every job. A run is one Kubernetes Job in one environment, however many pods it created.",
+          "kind": "sql",
+          "sql": "SELECT countIf(started \u003e 0) AS runs_started,\n       countIf(finished \u003e 0) AS runs_succeeded,\n       countIf(failed) AS runs_failed\nFROM (\n  SELECT env, run,\n         arrayFirst(n -\u003e match(run, concat('^', n, '-[0-9a-f]{6,12}$')), ['shop-migrate', 'shop-prune']) AS job,\n         minIf(Timestamp, reason = 'SuccessfulCreate') AS started,\n         maxIf(Timestamp, reason = 'Completed') AS finished,\n         maxIf(Timestamp, reason IN ('BackoffLimitExceeded', 'DeadlineExceeded', 'PodFailurePolicy')) AS failed_at,\n         countIf(reason IN ('BackoffLimitExceeded', 'DeadlineExceeded', 'PodFailurePolicy')) \u003e 0 AS failed\n  FROM (\n    SELECT Timestamp, ResourceAttributes['reliant.env.id'] AS env,\n           ResourceAttributes['k8s.workload.name'] AS run, LogAttributes['k8s.event.reason'] AS reason\n    FROM otel_logs\n    WHERE Timestamp \u003e= {from:DateTime64(9)} AND Timestamp \u003c {to:DateTime64(9)}\n      AND LogAttributes['k8s.event.reason'] != ''\n      AND if(mapContains(LogAttributes, 'k8s.object.kind'), LogAttributes['k8s.object.kind'], ResourceAttributes['k8s.object.kind']) = 'Job'\n      AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, ResourceAttributes['reliant.env.id']))\n  )\n  GROUP BY env, run\n)\nWHERE job != ''\n",
+          "width": 24,
           "height": 4
         },
         {
           "section": "runs",
           "id": "runs-by-job",
           "title": "Runs started by job",
-          "kind": "line",
-          "signal": "logs",
-          "series": [
-            {
-              "label": "shop-migrate",
-              "agg": "count",
-              "where": [
-                {
-                  "field": "resource.attr.k8s.workload.name",
-                  "op": "match",
-                  "value": "^shop-migrate-[a-z0-9]{6,12}$"
-                }
-              ]
-            },
-            {
-              "label": "shop-prune",
-              "agg": "count",
-              "where": [
-                {
-                  "field": "resource.attr.k8s.workload.name",
-                  "op": "match",
-                  "value": "^shop-prune-[a-z0-9]{6,12}$"
-                }
-              ]
-            }
-          ],
-          "where": [
-            {
-              "field": "resource.attr.k8s.object.kind",
-              "op": "eq",
-              "value": "Job"
-            },
-            {
-              "field": "resource.attr.k8s.workload.name",
-              "op": "match",
-              "value": "^(shop-migrate|shop-prune)-[a-z0-9]{6,12}$"
-            },
-            {
-              "field": "log.attr.k8s.event.reason",
-              "op": "in",
-              "values": [
-                "SuccessfulCreate"
-              ]
-            }
-          ],
-          "unit": "count",
+          "description": "Runs started over time, one line per job. A run is one Kubernetes Job in one environment, however many pods it created.",
+          "kind": "sql",
+          "sql": "SELECT toStartOfInterval(started, toIntervalSecond({step:UInt32})) AS t, job, count() AS runs\nFROM (\n  SELECT env, run,\n         arrayFirst(n -\u003e match(run, concat('^', n, '-[0-9a-f]{6,12}$')), ['shop-migrate', 'shop-prune']) AS job,\n         minIf(Timestamp, reason = 'SuccessfulCreate') AS started,\n         maxIf(Timestamp, reason = 'Completed') AS finished,\n         maxIf(Timestamp, reason IN ('BackoffLimitExceeded', 'DeadlineExceeded', 'PodFailurePolicy')) AS failed_at,\n         countIf(reason IN ('BackoffLimitExceeded', 'DeadlineExceeded', 'PodFailurePolicy')) \u003e 0 AS failed\n  FROM (\n    SELECT Timestamp, ResourceAttributes['reliant.env.id'] AS env,\n           ResourceAttributes['k8s.workload.name'] AS run, LogAttributes['k8s.event.reason'] AS reason\n    FROM otel_logs\n    WHERE Timestamp \u003e= {from:DateTime64(9)} AND Timestamp \u003c {to:DateTime64(9)}\n      AND LogAttributes['k8s.event.reason'] != ''\n      AND if(mapContains(LogAttributes, 'k8s.object.kind'), LogAttributes['k8s.object.kind'], ResourceAttributes['k8s.object.kind']) = 'Job'\n      AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, ResourceAttributes['reliant.env.id']))\n  )\n  GROUP BY env, run\n)\nWHERE job != '' AND started \u003e 0\nGROUP BY t, job\nORDER BY t, job\n",
           "width": 12,
           "height": 7
         },
@@ -2297,54 +2157,9 @@
           "section": "runs",
           "id": "failures-by-job",
           "title": "Failed runs by job",
-          "kind": "line",
-          "signal": "logs",
-          "series": [
-            {
-              "label": "shop-migrate",
-              "agg": "count",
-              "where": [
-                {
-                  "field": "resource.attr.k8s.workload.name",
-                  "op": "match",
-                  "value": "^shop-migrate-[a-z0-9]{6,12}$"
-                }
-              ]
-            },
-            {
-              "label": "shop-prune",
-              "agg": "count",
-              "where": [
-                {
-                  "field": "resource.attr.k8s.workload.name",
-                  "op": "match",
-                  "value": "^shop-prune-[a-z0-9]{6,12}$"
-                }
-              ]
-            }
-          ],
-          "where": [
-            {
-              "field": "resource.attr.k8s.object.kind",
-              "op": "eq",
-              "value": "Job"
-            },
-            {
-              "field": "resource.attr.k8s.workload.name",
-              "op": "match",
-              "value": "^(shop-migrate|shop-prune)-[a-z0-9]{6,12}$"
-            },
-            {
-              "field": "log.attr.k8s.event.reason",
-              "op": "in",
-              "values": [
-                "BackoffLimitExceeded",
-                "DeadlineExceeded",
-                "PodFailurePolicy"
-              ]
-            }
-          ],
-          "unit": "count",
+          "description": "Runs that ended in failure over time, one line per job, at the time of the failure. A run is one Kubernetes Job in one environment, however many pods it created.",
+          "kind": "sql",
+          "sql": "SELECT toStartOfInterval(failed_at, toIntervalSecond({step:UInt32})) AS t, job, count() AS runs\nFROM (\n  SELECT env, run,\n         arrayFirst(n -\u003e match(run, concat('^', n, '-[0-9a-f]{6,12}$')), ['shop-migrate', 'shop-prune']) AS job,\n         minIf(Timestamp, reason = 'SuccessfulCreate') AS started,\n         maxIf(Timestamp, reason = 'Completed') AS finished,\n         maxIf(Timestamp, reason IN ('BackoffLimitExceeded', 'DeadlineExceeded', 'PodFailurePolicy')) AS failed_at,\n         countIf(reason IN ('BackoffLimitExceeded', 'DeadlineExceeded', 'PodFailurePolicy')) \u003e 0 AS failed\n  FROM (\n    SELECT Timestamp, ResourceAttributes['reliant.env.id'] AS env,\n           ResourceAttributes['k8s.workload.name'] AS run, LogAttributes['k8s.event.reason'] AS reason\n    FROM otel_logs\n    WHERE Timestamp \u003e= {from:DateTime64(9)} AND Timestamp \u003c {to:DateTime64(9)}\n      AND LogAttributes['k8s.event.reason'] != ''\n      AND if(mapContains(LogAttributes, 'k8s.object.kind'), LogAttributes['k8s.object.kind'], ResourceAttributes['k8s.object.kind']) = 'Job'\n      AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, ResourceAttributes['reliant.env.id']))\n  )\n  GROUP BY env, run\n)\nWHERE job != '' AND failed\nGROUP BY t, job\nORDER BY t, job\n",
           "width": 12,
           "height": 7
         },
@@ -2364,7 +2179,7 @@
             {
               "field": "resource.attr.k8s.workload.name",
               "op": "match",
-              "value": "^(shop-migrate|shop-prune)-[a-z0-9]{6,12}$"
+              "value": "^(shop-migrate|shop-prune)-[0-9a-f]{6,12}$"
             },
             {
               "field": "log.attr.k8s.event.reason",
@@ -2405,11 +2220,8 @@
           "where": [
             {
               "field": "resource.attr.k8s.workload.name",
-              "op": "in",
-              "values": [
-                "shop-migrate",
-                "shop-prune"
-              ]
+              "op": "match",
+              "value": "^(shop-migrate|shop-prune)(-[0-9a-f]{6,12})?$"
             }
           ],
           "groupBy": [
@@ -2423,7 +2235,7 @@
           "section": "health",
           "id": "warning-events",
           "title": "Warning events by job",
-          "description": "Warning-type Kubernetes events of the jobs' pods: failed image pulls, evictions, failed scheduling, back-offs.",
+          "description": "Warning-type Kubernetes events of the jobs and their pods: failed image pulls, evictions, failed scheduling, back-offs, and a run that hit its backoff limit or deadline.",
           "kind": "line",
           "signal": "logs",
           "series": [
@@ -2435,11 +2247,8 @@
           "where": [
             {
               "field": "resource.attr.k8s.workload.name",
-              "op": "in",
-              "values": [
-                "shop-migrate",
-                "shop-prune"
-              ]
+              "op": "match",
+              "value": "^(shop-migrate|shop-prune)(-[0-9a-f]{6,12})?$"
             },
             {
               "field": "log.attr.k8s.event.type",

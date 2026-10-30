@@ -3,6 +3,7 @@ package obsdash
 import (
 	"encoding/json"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -115,7 +116,7 @@ func TestNoJobsMeansNoJobsDashboard(t *testing.T) {
 
 func TestJobsDashboardContents(t *testing.T) {
 	jobs := dashboardByID(t, Build(fleet()), "jobs")
-	for _, id := range []string{"jobs-summary", "runs-started", "runs-succeeded", "runs-failed", "runs-by-job", "failures-by-job", "run-events", "restarts", "warning-events", "error-logs"} {
+	for _, id := range []string{"jobs-summary", "runs-totals", "runs-by-job", "failures-by-job", "run-events", "restarts", "warning-events", "error-logs"} {
 		if !hasPanel(jobs, id) {
 			t.Errorf("Jobs dashboard lacks panel %q; has %v", id, panelIDs(jobs))
 		}
@@ -145,28 +146,140 @@ func TestJobsDashboardContents(t *testing.T) {
 			t.Errorf("summary SQL lacks %q:\n%s", want, summary.SQL)
 		}
 	}
-	// One series per job on the per-job lines, matched on the run name shape.
-	byJob, _ := findPanel(jobs, "runs-by-job")
-	var labels []string
-	for _, s := range byJob.Series {
-		labels = append(labels, s.Label)
-		if len(s.Where) != 1 || s.Where[0].Op != OpMatch || !strings.HasPrefix(s.Where[0].Value, "^"+s.Label) {
-			t.Errorf("series %s is not scoped to its own job's runs: %+v", s.Label, s.Where)
+	// The per-job charts and the totals count EXECUTIONS (one Job in one
+	// environment), not events: they are SQL panels over the grouped runs.
+	for _, id := range []string{"runs-totals", "runs-by-job", "failures-by-job"} {
+		p, _ := findPanel(jobs, id)
+		if p.Kind != KindSQL || !strings.Contains(p.SQL, "GROUP BY env, run") {
+			t.Errorf("%s must count distinct (env, Job) executions, got kind %q:\n%s", id, p.Kind, p.SQL)
 		}
 	}
-	if want := []string{"cloudsql-backup-prune", "db-migrate-up", "dbrole-provision-reliant"}; !reflect.DeepEqual(labels, want) {
-		t.Errorf("per-job series = %v, want %v", labels, want)
-	}
-	// The run events must be Job events: a pod's own events would count twice.
-	started, _ := findPanel(jobs, "runs-started")
+	// The run events are Job events: a pod's own events would count twice.
+	events, _ := findPanel(jobs, "run-events")
 	var kind bool
-	for _, w := range started.Where {
+	for _, w := range events.Where {
 		if w.Field == "resource.attr.k8s.object.kind" && w.Value == "Job" {
 			kind = true
 		}
 	}
 	if !kind {
-		t.Errorf("runs-started is not restricted to Job objects: %+v", started.Where)
+		t.Errorf("run-events is not restricted to Job objects: %+v", events.Where)
+	}
+}
+
+// The Job controller emits SuccessfulCreate once per POD: a parallel Job, or a
+// pod replaced after a failure, repeats it for one run. No panel may count
+// those events as runs; every run count is over distinct executions.
+func TestJobsDashboardNeverCountsCreateEventsAsRuns(t *testing.T) {
+	jobs := dashboardByID(t, Build(fleet()), "jobs")
+	for _, p := range jobs.Panels {
+		counts := false
+		for _, s := range p.Series {
+			counts = counts || s.Agg == AggCount
+		}
+		for _, w := range p.Where {
+			if counts && w.Field == fieldEventWhy && strings.Contains(strings.Join(append(w.Values, w.Value), " "), jobEventCreated) {
+				t.Errorf("panel %q counts %s events, which are per pod, not per run", p.ID, jobEventCreated)
+			}
+		}
+	}
+	started, ok := findPanel(jobs, "runs-totals")
+	if !ok || !strings.Contains(started.SQL, "GROUP BY env, run") || strings.Contains(started.SQL, "count() AS runs_started") {
+		t.Errorf("runs started must count executions:\n%s", started.SQL)
+	}
+}
+
+// Job runs and their pods carry different k8s.workload.name values. The node
+// agent takes the pod's app.kubernetes.io/name label first (forge renders it as
+// the bare forge name on every Job and CronJob pod), then the owner chain; an
+// event about a Job OBJECT is named for the object (forge name + run suffix).
+// The restarts and warning panels must select every one of these, and nothing
+// that merely starts with a job's name.
+func TestJobsHealthPanelsMatchRealRunIdentities(t *testing.T) {
+	jobs := dashboardByID(t, Build(fleet()), "jobs")
+	type identity struct {
+		what, workload string
+		want           bool
+	}
+	for _, id := range []identity{
+		// a standalone Job (forge: <name>-<10 hex spec hash>)
+		{"Job object event, spec-hashed name", "db-migrate-up-0123456789", true},
+		{"its pod, via the app.kubernetes.io/name label", "db-migrate-up", true},
+		{"its pod, label-less: the owner chain names the Job", "db-migrate-up-a1b2c3d4e5", true},
+		{"another job's hashed run", "dbrole-provision-reliant-aaaaaaaaaa", true},
+		// a CronJob (<name>-<scheduled minutes since epoch>)
+		{"cron-spawned Job object event", "cloudsql-backup-prune-29012345", true},
+		{"cron pod via the label", "cloudsql-backup-prune", true},
+		{"cron pod, label-less: the owner chain names the CronJob", "cloudsql-backup-prune", true},
+		// not this project's jobs
+		{"another project's job", "other-thing-0123456789", false},
+		{"a longer job name sharing the prefix", "db-migrate-up-worker", false},
+		{"a long-running workload sharing the prefix", "db-migrate-up-api-0123456789", false},
+		{"an unresolved pod name", "db-migrate-up-0123456789-x7k2p", false},
+		{"a prefix of a job name", "db-migrate", false},
+	} {
+		for _, panelID := range []string{"restarts-1", "warning-events-1", "restarts", "warning-events"} {
+			p, ok := findPanel(jobs, panelID)
+			if !ok {
+				continue
+			}
+			var re *regexp.Regexp
+			for _, w := range p.Where {
+				if w.Field == fieldWorkload {
+					if w.Op != OpMatch {
+						t.Fatalf("%s selects workloads with %q, which cannot match a suffixed run name", panelID, w.Op)
+					}
+					re = regexp.MustCompile(w.Value)
+				}
+			}
+			if re == nil {
+				t.Fatalf("%s has no workload scope: %+v", panelID, p.Where)
+			}
+			if got := re.MatchString(id.workload); got != id.want {
+				t.Errorf("%s: %s (%q) matched = %v, want %v (regex %s)", panelID, id.what, id.workload, got, id.want, re)
+			}
+		}
+	}
+}
+
+// A project with many jobs cannot fit one spec regex (256 bytes): the health
+// panels split by job group, and every job lands in exactly one group.
+func TestJobsHealthPanelsSplitWhenTheNamesDoNotFitOneRegex(t *testing.T) {
+	many := fleet()
+	var all []string
+	for i := 0; i < 23; i++ {
+		n := "batch-job-with-a-long-name-" + string(rune('a'+i))
+		all = append(all, n)
+		many.Processes = append(many.Processes, Process{Name: n, Kind: "job", Binary: "app", ServiceNames: []string{n}, Workloads: []string{n}})
+	}
+	d := dashboardByID(t, Build(many), "jobs")
+	var res []*regexp.Regexp
+	for _, p := range d.Panels {
+		if !strings.HasPrefix(p.ID, "restarts-") {
+			continue
+		}
+		for _, w := range p.Where {
+			if w.Field == fieldWorkload {
+				if len(w.Value) > maxPredicateRegex {
+					t.Errorf("%s regex is %d bytes, over the spec's %d", p.ID, len(w.Value), maxPredicateRegex)
+				}
+				res = append(res, regexp.MustCompile(w.Value))
+			}
+		}
+	}
+	if len(res) < 2 {
+		t.Fatalf("26 jobs must not share one regex: %v", panelIDs(d))
+	}
+	for _, n := range append(all, "db-migrate-up", "dbrole-provision-reliant", "cloudsql-backup-prune") {
+		hits := 0
+		for _, re := range res {
+			if re.MatchString(n) && re.MatchString(n+"-0123456789") {
+				hits++
+			}
+		}
+		if hits != 1 {
+			t.Errorf("job %s is covered by %d health groups, want 1", n, hits)
+		}
 	}
 }
 
@@ -190,8 +303,10 @@ func TestEveryGeneratedDashboardValidates(t *testing.T) {
 	if _, err := ParseDashboard("jobs", b); err != nil {
 		t.Fatalf("a Jobs dashboard with many jobs must still validate: %v", err)
 	}
-	if !hasPanel(d, "runs-by-job-3") {
-		t.Errorf("26 jobs split over three per-job panels of at most ten series: %v", panelIDs(d))
+	for _, id := range []string{"runs-by-job", "failures-by-job", "restarts-2", "warning-events-2"} {
+		if !hasPanel(d, id) {
+			t.Errorf("26 jobs: Jobs dashboard lacks %q: %v", id, panelIDs(d))
+		}
 	}
 }
 

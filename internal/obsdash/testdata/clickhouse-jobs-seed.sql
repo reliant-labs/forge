@@ -20,3 +20,13 @@ INSERT INTO otel_logs SELECT now() - INTERVAL 1 HOUR + INTERVAL 5 MINUTE, map('r
 INSERT INTO otel_logs SELECT now() - INTERVAL 4 HOUR, map('reliant.env.id','prod','k8s.workload.name','nightly-cccccccccc','k8s.object.kind','Job'), map('k8s.event.reason','SuccessfulCreate'), '';
 INSERT INTO otel_logs SELECT now() - INTERVAL 4 HOUR + INTERVAL 70 SECOND, map('reliant.env.id','prod','k8s.workload.name','nightly-cccccccccc','k8s.object.kind','Job'), map('k8s.event.reason','Completed'), '';
 INSERT INTO otel_logs SELECT now() - INTERVAL 2 MINUTE, map('reliant.env.id','prod','k8s.workload.name','nightly-dddddddddd','k8s.object.kind','Job'), map('k8s.event.reason','SuccessfulCreate'), '';
+-- ONE run, several SuccessfulCreate events: the Job controller emits one per POD, so a parallel Job (3 pods)
+-- and a pod replaced after a failure both repeat it. "indexer" is ONE execution: 1 run, never 4.
+INSERT INTO otel_logs SELECT now() - INTERVAL 30 MINUTE, map('reliant.env.id','prod','k8s.workload.name','indexer-eeeeeeeeee','k8s.object.kind','Job'), map('k8s.event.reason','SuccessfulCreate'), 'pod 1';
+INSERT INTO otel_logs SELECT now() - INTERVAL 30 MINUTE + INTERVAL 1 SECOND, map('reliant.env.id','prod','k8s.workload.name','indexer-eeeeeeeeee','k8s.object.kind','Job'), map('k8s.event.reason','SuccessfulCreate'), 'pod 2';
+INSERT INTO otel_logs SELECT now() - INTERVAL 30 MINUTE + INTERVAL 2 SECOND, map('reliant.env.id','prod','k8s.workload.name','indexer-eeeeeeeeee','k8s.object.kind','Job'), map('k8s.event.reason','SuccessfulCreate'), 'pod 3';
+INSERT INTO otel_logs SELECT now() - INTERVAL 30 MINUTE + INTERVAL 20 SECOND, map('reliant.env.id','prod','k8s.workload.name','indexer-eeeeeeeeee','k8s.object.kind','Job'), map('k8s.event.reason','SuccessfulCreate'), 'replacement pod';
+INSERT INTO otel_logs SELECT now() - INTERVAL 30 MINUTE + INTERVAL 80 SECOND, map('reliant.env.id','prod','k8s.workload.name','indexer-eeeeeeeeee','k8s.object.kind','Job'), map('k8s.event.reason','Completed'), '';
+-- the same pods' own events carry the bare forge name (the node agent reads the pod's app.kubernetes.io/name label first)
+-- and must not count as runs either
+INSERT INTO otel_logs SELECT now() - INTERVAL 30 MINUTE, map('reliant.env.id','prod','k8s.workload.name','indexer','k8s.object.kind','Pod','k8s.pod.name','indexer-eeeeeeeeee-x7k2p'), map('k8s.event.reason','SuccessfulCreate'), '';

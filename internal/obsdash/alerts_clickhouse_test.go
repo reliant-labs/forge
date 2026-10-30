@@ -3,6 +3,7 @@ package obsdash
 import (
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -242,12 +243,14 @@ func TestJobsSummarySQLOnClickHouse(t *testing.T) {
 		t.Fatal(err)
 	}
 	run(string(seed))
-	bind := func(envs string) string {
-		q := jobsSummarySQL([]string{"cloudsql-backup-prune", "db-migrate-up", "dbrole-provision-reliant", "nightly"})
+	jobs := []string{"cloudsql-backup-prune", "db-migrate-up", "dbrole-provision-reliant", "indexer", "nightly"}
+	bindSQL := func(q, envs string) string {
 		q = strings.ReplaceAll(q, "{from:DateTime64(9)}", "now() - INTERVAL 1 DAY")
 		q = strings.ReplaceAll(q, "{to:DateTime64(9)}", "now() + INTERVAL 1 DAY")
+		q = strings.ReplaceAll(q, "{step:UInt32}", "3600")
 		return strings.ReplaceAll(q, "{env_ids:Array(String)}", envs)
 	}
+	bind := func(envs string) string { return bindSQL(jobsSummarySQL(jobs), envs) }
 	row := func(out, job string) []string {
 		for _, l := range strings.Split(out, "\n") {
 			if f := strings.Split(l, "\t"); f[0] == job {
@@ -280,5 +283,33 @@ func TestJobsSummarySQLOnClickHouse(t *testing.T) {
 	}
 	if r := row(all, "nightly"); r == nil || r[1] != "2" || r[2] != "1" || r[5] != `\N` {
 		t.Errorf("older success, newest still running = %v, want last_duration NULL", r)
+	}
+	// One execution is one run however many pods the Job controller created
+	// for it: "indexer" emitted four SuccessfulCreate events (three parallel
+	// pods and a replacement) and is ONE run.
+	if r := row(all, "indexer"); r == nil || r[1] != "1" || r[2] != "1" || r[3] != "0" || r[5] != "80" {
+		t.Errorf("indexer = %v, want 1 run (4 SuccessfulCreate events), 1 succeeded, 80s:\n%s", r, all)
+	}
+	// The totals count the same executions: db-migrate-up 2 (prod, stg),
+	// cloudsql-backup-prune 1, dbrole-provision-reliant 2, indexer 1, nightly 2
+	// = 8 started; succeeded 1+1+1+1+1 = 5; failed 1+1 = 2.
+	if out := run(bindSQL(jobsTotalsSQL(jobs), "[]")); out != "8\t5\t2" {
+		t.Errorf("totals = %q, want 8 started, 5 succeeded, 2 failed (one per execution, not per event)", out)
+	}
+	// Per job over time: each execution is one point, so indexer sums to 1.
+	byJob := run(bindSQL(jobsByJobSQL(jobs, "started", "started > 0"), "[]"))
+	idx := 0
+	for _, l := range strings.Split(byJob, "\n") {
+		if f := strings.Split(l, "\t"); len(f) == 3 && f[1] == "indexer" {
+			n, _ := strconv.Atoi(f[2])
+			idx += n
+		}
+	}
+	if idx != 1 {
+		t.Errorf("runs-by-job counts indexer %d times, want 1:\n%s", idx, byJob)
+	}
+	failedBy := run(bindSQL(jobsByJobSQL(jobs, "failed_at", "failed"), "[]"))
+	if n := strings.Count(failedBy, "\n") + 1; strings.TrimSpace(failedBy) == "" || n != 2 {
+		t.Errorf("failures-by-job rows = %d, want 2 (db-migrate-up in stg, dbrole-provision-reliant):\n%s", n, failedBy)
 	}
 }

@@ -254,7 +254,6 @@ COMMENT ON TABLE usage_events IS 'forge:append-only forge:dashboard';
 COMMENT ON TABLE users IS 'forge:no-entity';
 COMMENT ON COLUMN usage_events.user_email IS 'forge:no-dashboard';
 COMMENT ON COLUMN usage_events.api_token IS 'forge:secret';
-COMMENT ON VIEW usage_by_model IS 'forge:dashboard';
 `
 
 // dashboardFixture projects the schema through the production chain, converges

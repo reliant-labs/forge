@@ -63,8 +63,15 @@ const ForceCommand = "forge db migrate force"
 // schema ahead at WARN). A caller that wants the facts as values — a `db
 // migrate up` command printing what it did — calls Apply.
 func AutoMigrate(fsys fs.FS, dir string) func(*sql.DB, *slog.Logger) error {
+	return AutoMigrateWith(fsys, dir, Limits{})
+}
+
+// AutoMigrateWith is AutoMigrate with the run's lock and statement timeouts
+// and retry set (locktimeout.go). Its retries are logged on the logger it is
+// handed.
+func AutoMigrateWith(fsys fs.FS, dir string, limits Limits) func(*sql.DB, *slog.Logger) error {
 	return func(db *sql.DB, logger *slog.Logger) error {
-		res, err := Apply(context.Background(), db, fsys, dir)
+		res, err := ApplyWith(context.Background(), db, fsys, dir, RunOptions{Limits: limits, Logger: logger})
 		logRun(logger, res, err)
 		return err
 	}
@@ -87,6 +94,12 @@ func AutoMigrate(fsys fs.FS, dir string) func(*sql.DB, *slog.Logger) error {
 // caps it at one connection, and hands it here: one session, and the boot
 // path's verdicts.
 func Apply(ctx context.Context, db *sql.DB, fsys fs.FS, dir string) (Result, error) {
+	return ApplyWith(ctx, db, fsys, dir, RunOptions{})
+}
+
+// ApplyWith is Apply with the run's lock and statement timeouts and retry set
+// (locktimeout.go).
+func ApplyWith(ctx context.Context, db *sql.DB, fsys fs.FS, dir string, run RunOptions) (Result, error) {
 	if fsys == nil {
 		// See the AutoMigrate doc comment: absent migrations are a normal
 		// state at BOOT (the project has not written its first one), unlike
@@ -136,7 +149,7 @@ func Apply(ctx context.Context, db *sql.DB, fsys fs.FS, dir string) (Result, err
 		_ = src.Close()
 		return Result{}, err
 	}
-	mg, err := openSession(ctx, db, src, embedded, &postgres.Config{})
+	mg, err := openSession(ctx, db, src, embedded, run, &postgres.Config{})
 	if err != nil {
 		return Result{}, err
 	}

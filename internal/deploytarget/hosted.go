@@ -833,6 +833,20 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 		}
 	}
 	errs = append(errs, hostedReferenceErrors(group)...)
+	// Every hosted item lands in the environment's one namespace, so a
+	// workload and a database of one name would share a ServiceAccount.
+	var workloadNames, databaseNames []string
+	for _, item := range out {
+		switch item.Spec.(type) {
+		case v1alpha1.WorkloadSpec:
+			workloadNames = append(workloadNames, item.Name)
+		case v1alpha1.ManagedDatabaseSpec:
+			databaseNames = append(databaseNames, item.Name)
+		}
+	}
+	if err := deploy.CheckDatabaseIdentityNames(workloadNames, databaseNames); err != nil {
+		errs = append(errs, err)
+	}
 	if len(errs) == 0 {
 		if err := renderHostedSet(out); err != nil {
 			errs = append(errs, err)

@@ -72,44 +72,9 @@ func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KC
 		return err
 	}
 	for _, f := range sites {
-		if err := checkDeployableFrontendMock(f); err != nil {
-			return err
-		}
-		f.Project = entities.Project
-		fe := frontendToStaticSite(f)
-		// Environment-agnostic by construction: no document written, and
-		// any travelling in the built bundle removed.
-		fe.RuntimeConfigJS = ""
-		fe.StripRuntimeConfig = true
-		// A record left by an earlier build must not be mistaken for this one's.
-		if err := deploytarget.ClearSourcemapsState(projectDir, opts.env, f.Name); err != nil {
-			return fmt.Errorf("hosted static site %s: %w", f.Name, err)
-		}
-		fe.SourcemapPublisher = sourcemapPublisherFor(projectDir, opts.env, entities)
-		// THE REPOSITORY COMES FROM THE RESOLVED PUSH PLAN, not from the
-		// declaration. They agree for a host-bearing reference and differ for
-		// a bare one, which ADR-0003 F1 now permits: a bare hosted image
-		// resolves to `<image_push_base>/<name>`, and the layout segment is
-		// appended to the RESULT.
-		//
-		// Recomposing it from f.Image here is exactly the "two independent
-		// derivations of one address" defect the release-ref rule exists to
-		// prevent (see internal/deploytarget's
-		// hosted_static_release_ref_test.go): it pushed `web/static.v1`, with
-		// no registry at all, while the release and the published spec named
-		// the resolved address. Reading the plan means the build pushes to
-		// the one place every other half already looks.
-		//
-		// ONE rule, called here and by the push plan, rather than a lookup
-		// into the plan: the plan is resolved from the FULL render and this
-		// loop runs over the --target-narrowed set, so a lookup would also
-		// have to answer "absent because narrowed" — which is not a
-		// question the push needs to ask.
-		repository := hostedStaticDestination(opts.pushPlan.pushBase, f.Image)
-		fmt.Printf("[build] %s: hosted static site → %s\n", f.Name, repository)
-		digest, err := hostedStaticPusher(ctx, projectDir, repository, fe)
+		repository, digest, err := pushHostedStaticSite(ctx, projectDir, entities, opts, f)
 		if err != nil {
-			return fmt.Errorf("hosted static site %s: %w%s", f.Name, err, deniedPushHint(err, "", repository))
+			return err
 		}
 		state := buildtarget.State{
 			Service: f.Name,
@@ -129,6 +94,55 @@ func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KC
 		fmt.Printf("[build]   %s release %s\n", f.Name, digest)
 	}
 	return nil
+}
+
+// pushHostedStaticSite builds, packs and pushes ONE hosted frontend as an
+// environment-agnostic site release and returns the repository it was pushed
+// to and the release digest. It is the push half both a release build
+// (buildHostedStaticSites, which records build state) and a snapshot
+// composition (compositionHostedSites, which binds the output into the
+// snapshot and never reads build state) share.
+func pushHostedStaticSite(ctx context.Context, projectDir string, entities *KCLEntities, opts buildOptions, f FrontendEntity) (repository, digest string, err error) {
+	if err := checkDeployableFrontendMock(f); err != nil {
+		return "", "", err
+	}
+	f.Project = entities.Project
+	fe := frontendToStaticSite(f)
+	// Environment-agnostic by construction: no document written, and
+	// any travelling in the built bundle removed.
+	fe.RuntimeConfigJS = ""
+	fe.StripRuntimeConfig = true
+	// A record left by an earlier build must not be mistaken for this one's.
+	if err := deploytarget.ClearSourcemapsState(projectDir, opts.env, f.Name); err != nil {
+		return "", "", fmt.Errorf("hosted static site %s: %w", f.Name, err)
+	}
+	fe.SourcemapPublisher = sourcemapPublisherFor(projectDir, opts.env, entities)
+	// THE REPOSITORY COMES FROM THE RESOLVED PUSH PLAN, not from the
+	// declaration. They agree for a host-bearing reference and differ for
+	// a bare one, which ADR-0003 F1 now permits: a bare hosted image
+	// resolves to `<image_push_base>/<name>`, and the layout segment is
+	// appended to the RESULT.
+	//
+	// Recomposing it from f.Image here is exactly the "two independent
+	// derivations of one address" defect the release-ref rule exists to
+	// prevent (see internal/deploytarget's
+	// hosted_static_release_ref_test.go): it pushed `web/static.v1`, with
+	// no registry at all, while the release and the published spec named
+	// the resolved address. Reading the plan means the build pushes to
+	// the one place every other half already looks.
+	//
+	// ONE rule, called here and by the push plan, rather than a lookup
+	// into the plan: the plan is resolved from the FULL render and this
+	// loop runs over the --target-narrowed set, so a lookup would also
+	// have to answer "absent because narrowed" — which is not a
+	// question the push needs to ask.
+	repository = hostedStaticDestination(opts.pushPlan.pushBase, f.Image)
+	fmt.Printf("[build] %s: hosted static site → %s\n", f.Name, repository)
+	digest, err = hostedStaticPusher(ctx, projectDir, repository, fe)
+	if err != nil {
+		return "", "", fmt.Errorf("hosted static site %s: %w%s", f.Name, err, deniedPushHint(err, "", repository))
+	}
+	return repository, digest, nil
 }
 
 // hostedStaticSites is the set of frontends a build publishes as hosted

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/pkg/accesstoken"
 )
 
@@ -38,6 +39,10 @@ const (
 	// token. NOT a verdict on it: retrying later is the right response, and
 	// signing in again is not.
 	ReasonAccessTokenUnavailable = "access_token_unavailable"
+	// ReasonClientUpgradeRequired: this forge is older than the control plane
+	// serves (it reads VersionHeader). The server's message names the oldest
+	// release it accepts and how to upgrade; nothing was executed.
+	ReasonClientUpgradeRequired = "client_upgrade_required"
 )
 
 // Error is a failed control-plane call, as a TYPE rather than a sentence.
@@ -247,6 +252,14 @@ func (c *Client) connectError(procedure string, resp *http.Response, raw []byte)
 	}
 	if len(detail) > 500 {
 		detail = detail[:500] + "…"
+	}
+
+	if out.Reason == ReasonClientUpgradeRequired {
+		// Not a failure of this procedure, so the procedure and HTTP status
+		// are noise: the whole remedy is the server's sentence.
+		out.message = fmt.Sprintf("the control plane at %s refused this forge (%s): %s",
+			c.Endpoint.URL, buildinfo.Version(), detail)
+		return out
 	}
 
 	cred := c.credential()

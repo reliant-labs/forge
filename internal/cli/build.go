@@ -587,7 +587,7 @@ func refreshBuildRuntimeConfigs(cfg *config.ProjectConfig, entities *KCLEntities
 		}
 		return
 	}
-	if changed, err := refreshFrontendRuntimeConfigs(cfg, projectDirForKCL(), env, frontendRuntimeOverlays(entities)); err != nil {
+	if changed, err := refreshFrontendRuntimeConfigs(cfg, projectDirForKCL(), env, entities); err != nil {
 		fmt.Printf("[build]   Warning: frontend runtime config: %v (building with the previously generated config.js)\n", err)
 	} else if changed > 0 {
 		fmt.Printf("[build]   Refreshed %d frontend runtime config(s) from env %q\n", changed, env)

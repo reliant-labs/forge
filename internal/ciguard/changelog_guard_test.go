@@ -14,7 +14,7 @@ import (
 
 // CHANGELOG.md is written only at release time, by scripts/release-forge.sh,
 // from the merged PR titles. A pull request that edits it is the merge-queue
-// conflict that policy removed, so ci.yml's `checks` job runs
+// conflict that policy removed, so ci.yml's `pr-checks` job runs
 // scripts/check-changelog-untouched.sh on pull requests. These tests pin the
 // script's verdicts and that the workflow still runs it, in an existing job.
 
@@ -30,7 +30,7 @@ type stepsWorkflow struct {
 	} `yaml:"jobs"`
 }
 
-func TestChangelogGuardRunsOnPullRequestsInTheChecksJob(t *testing.T) {
+func TestChangelogGuardRunsOnPullRequestsInThePRChecksJob(t *testing.T) {
 	raw, err := os.ReadFile(ciWorkflow)
 	if err != nil {
 		t.Fatal(err)
@@ -39,9 +39,9 @@ func TestChangelogGuardRunsOnPullRequestsInTheChecksJob(t *testing.T) {
 	if err := yaml.Unmarshal(raw, &wf); err != nil {
 		t.Fatal(err)
 	}
-	checks, ok := wf.Jobs["checks"]
+	checks, ok := wf.Jobs["pr-checks"]
 	if !ok {
-		t.Fatal("ci.yml has no checks job")
+		t.Fatal("ci.yml has no pr-checks job")
 	}
 	found := false
 	for _, s := range checks.Steps {
@@ -57,12 +57,12 @@ func TestChangelogGuardRunsOnPullRequestsInTheChecksJob(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("ci.yml's checks job does not run scripts/check-changelog-untouched.sh: a pull request could edit CHANGELOG.md again")
+		t.Error("ci.yml's pr-checks job does not run scripts/check-changelog-untouched.sh: a pull request could edit CHANGELOG.md again")
 	}
 	for name, j := range wf.Jobs {
 		for _, s := range j.Steps {
-			if strings.Contains(s.Run, "check-changelog-untouched.sh") && name != "checks" {
-				t.Errorf("job %q runs the CHANGELOG guard; it belongs in checks, so no job is added to the pull-request tier", name)
+			if strings.Contains(s.Run, "check-changelog-untouched.sh") && name != "pr-checks" {
+				t.Errorf("job %q runs the CHANGELOG guard; it belongs in pr-checks, so no job is added to the review-first pull request", name)
 			}
 		}
 	}

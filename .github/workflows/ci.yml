@@ -10,15 +10,20 @@ on:
   # report, but it needs a detect-changes job that every other job waits
   # behind — one more runner queue (median 7 minutes on 2026-10-20) on every
   # pull request, to save a few runner-minutes on the ~4% that are prose only
-  # (5 of the 120 merged before 2026-10-21). So a prose-only pull request runs
-  # the whole pull-request tier, which also covers what docs-skills.yml used
-  # to: the skills and docs/ readers run in the -short shards, and the
-  # pre-commit hooks in checks.
+  # (5 of the 120 merged before 2026-10-21). A pull request runs only the
+  # cheap review-first jobs (REVIEW FIRST, below), so the filter would save
+  # nothing anyway.
+  #
+  # Default activity types only (opened, synchronize, reopened), NOT
+  # `labeled`: every pipeline label (merge:queue, review:passed, ...) would
+  # start a run, and a run on an unchanged head REPLACES that head's `CI gate`
+  # result, so a label event could turn a red pr-checks verdict green. The
+  # `ci:run` label is read on the next push (an empty commit will do).
   pull_request:
     branches: [main]
   # The merge queue: each queued pull request is tested as main plus the
-  # entries ahead of it, and lands only if `CI gate` passes on that. It gets
-  # the pull-request tier (see `tier` below), not the push-to-main one.
+  # entries ahead of it, and lands only if `CI gate` passes on that. This is
+  # the first time the merge tier runs for an unlabelled pull request.
   merge_group:
   # Run the push-to-main tier (full mode, -race, Windows) on any branch.
   workflow_dispatch:
@@ -26,9 +31,36 @@ on:
 permissions:
   contents: read
 
-# ── TWO TIERS ──────────────────────────────────────────────────────────────
+# ── REVIEW FIRST ───────────────────────────────────────────────────────────
 #
-# A PULL REQUEST gets the fast tier: a five-minute MEDIAN wall time, queue
+# The owner's rule (2026-10-30): CI minutes are not spent on a head nobody has
+# reviewed yet. The reviewer (control-plane pr-review) reads the diff, not CI
+# results, and most pull requests are pushed more than once before they pass
+# (1.7 pull-request runs per merged pull request, 2026-10-30). So:
+#
+#   pull request      pr-checks (CHANGELOG guard + pkg/ API gate: they read
+#                     the pull request itself, ~1-2 min) and review-marker
+#                     (a notice). `CI gate` is green on the head as soon as
+#                     they pass, which is what lets GitHub enqueue it.
+#   merge queue       the merge tier below, ONCE, on main plus the entry:
+#                     the run that decides whether the commit lands.
+#   push to main      the slow tier, after the merge. Never blocks a merge:
+#                     a red main is filed and fixed by pipeline-health, and
+#                     a release needs a green record (release-forge.sh).
+#
+# A pull request labelled `ci:run` also gets the merge tier on every push
+# (read at push time; see `pull_request:` above for why not on `labeled`),
+# and `ci:e2e` / `ci:canary` still start their own workflows.
+#
+# A required check that never runs on the PULL REQUEST cannot hold a pull
+# request out of the queue for reasons that are not its own (16 reliant pull
+# requests sat with review:passed and auto-merge armed on 2026-10-30, red for
+# main-wide reasons). Only pr-checks can fail there, and both of its checks
+# judge the pull request's own diff and description.
+#
+# ── THE MERGE TIER AND THE SLOW TIER ───────────────────────────────────────
+#
+# THE MERGE QUEUE gets the fast tier: a five-minute MEDIAN wall time, queue
 # included, from jobs of about three minutes each:
 #
 #   test-short        two -short shards, no -race (scripts/ci-test-shard.sh),
@@ -53,15 +85,18 @@ permissions:
 # tests, so a pull request is not unvetted; golangci-lint's findings and a
 # windows-only compile break are found on main and bisected from there.
 #
-# A MERGE-QUEUE entry (merge_group) gets exactly the pull-request tier, run
-# over main plus the entries ahead of it. The slow tier stays on main: in the
-# queue it would hold every merge behind a 30-minute run, so a failure only it
-# finds (e2e, the guards, full -race, native Windows) is still bisected from
-# main. Jobs select their tier with
-#   pull-request tier: github.event_name == 'pull_request' || github.event_name == 'merge_group'
-#   push-to-main tier: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-# and internal/ciguard holds every job to one of the two (or to neither: a job
-# with no `if:` runs in both).
+# The merge tier runs over main plus the entries ahead of it. The slow tier
+# stays on main: in the queue it would hold every merge behind a 30-minute
+# run, so a failure only it finds (e2e, the guards, full -race, native
+# Windows) is bisected from main, and a release cannot be cut until it is
+# fixed. Jobs select when they run with exactly one of these spellings
+# (internal/ciguard holds every job to them; a job with no `if:` runs always):
+#   merge tier:   github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:run'))
+#   push-to-main: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+#   all but an unlabelled pull request (checks, which also saves main's tools cache):
+#                 github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run')
+#   pull request only (pr-checks): github.event_name == 'pull_request'
+#   pull request and queue (review-marker): github.event_name == 'pull_request' || github.event_name == 'merge_group'
 #
 # A PUSH TO MAIN (and workflow_dispatch) gets `checks`, plus the slow tier
 # (test-short-warm stands in for test-short there):
@@ -139,10 +174,10 @@ concurrency:
 #   go-build-windows windows, once a UTC day       windows              ~1.0 GB
 #
 # plus e2e-prepare (daily, ~0.5 GB) and the consumer canary (daily, ~1.5 GB).
-# The two the pull-request tier restores are refreshed by every push; every
+# The two the merge tier restores are refreshed by every push; every
 # other scope once a day (restore-go-caches, "<rev> IS THE COMMIT OR THE
 # DAY"). Before that every job saved its own scope on every push, ~9.5 GB per
-# push, and each push evicted the pull-request tier's entries: Checks then
+# push, and each push evicted the merge tier's entries: Checks then
 # ran cold, 400-620s instead of ~185s. A job that would add a scope restores
 # one of these instead, unless its artifacts share nothing with them.
 #
@@ -324,7 +359,7 @@ jobs:
   # and three-run work to either shard's critical path.
   test-short:
     name: Test (${{ matrix.label }})
-    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+    if: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:run')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -822,7 +857,7 @@ jobs:
         run: go build -trimpath -buildvcs=true ./cmd/...
       # The second license opinion (formerly the License Compliance job).
       # checks' scripts/check-licenses.sh checks every Go dependency's
-      # license on each pull request in seconds; this go-licenses pass (~2 min,
+      # license on each merge-queue entry in seconds; this go-licenses pass (~2 min,
       # most of it compiling go-licenses) is kept on main.
       - name: Install go-licenses
         if: ${{ !cancelled() }}
@@ -893,10 +928,17 @@ jobs:
   # checkout and validates it with forge's go invocations, which build with
   # -trimpath (goexec), so what it compiles is keyed apart from the tests'
   # artifacts. Restored from the -short scope it ran 250s cold against ~47s.
-  checks:
-    name: Checks (generated code, KCL, pre-commit, licenses)
+  # The two checks that judge the pull request itself rather than the code:
+  # they read its head branch name, labels and body, which a merge-queue entry
+  # does not carry. They are the whole of what an unlabelled pull request runs
+  # (REVIEW FIRST, above): both are cheap, and neither can go red for a reason
+  # outside the pull request's own diff and description, so neither can hold
+  # a reviewed pull request out of the queue for main's sake.
+  pr-checks:
+    name: Pull request checks (CHANGELOG, pkg/ API)
+    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     # pull-requests: read for the apigate step, which reads the pull request's
     # labels and body live (a label added after the run started is seen on a
     # re-run). Declaring any permission resets the others, so contents says it.
@@ -904,22 +946,52 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      # Depth 2 for the CHANGELOG.md guard below: the merge commit and its
-      # first parent, the base branch's tip.
+      # Depth 2: the merge commit and its first parent, the base branch's tip,
+      # so HEAD^1..HEAD is exactly what the pull request changes.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
       # CHANGELOG.md is written only at release time, by scripts/release-forge.sh,
       # from the merged PR titles. A pull request that edits it is the conflict
       # that policy removes (203 of the last 319 commits on main appended under
-      # [Unreleased]), so it fails here, in seconds, before the slow steps. A
-      # step of this job rather than a job of its own: every job a pull request
-      # adds is another runner to queue for. Pull requests only — a merge-queue
-      # entry has no head branch name for the release/* exemption, and the
-      # pull request was already judged when it opened.
+      # [Unreleased]), so it fails here, in seconds. Pull requests only — a
+      # merge-queue entry has no head branch name for the release/* exemption.
       - name: CHANGELOG.md is not edited by pull requests
         if: ${{ github.event_name == 'pull_request' }}
         run: scripts/check-changelog-untouched.sh HEAD^1
+      - uses: actions/setup-go@v7
+        if: ${{ !cancelled() }}
+        with:
+          go-version-file: go.mod
+          cache: false
+      # The tools scope (saved by `checks` on main) holds apigate's
+      # dependencies compiled, so `go run` builds one small package.
+      - uses: ./.github/actions/restore-go-caches
+        if: ${{ !cancelled() }}
+        with:
+          scope: tools
+      # forge may break pkg/ freely; a breaking pull request must declare the
+      # break (the `api-break` label, or an `API-BREAK:` line in its body) and
+      # ship the codemod or migration playbook in the same diff. A diff that
+      # cannot change pkg/'s API exits in about a second.
+      # dev-docs/api-breaks.md. Pull requests only: it reads the pull
+      # request's labels and body, and a push to main is already merged.
+      - name: pkg/ API compatibility (undeclared breaks fail)
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: go run ./internal/apigate -base HEAD^1 -pr "$PR"
+
+  # Merge tier and push-to-main; an unlabelled pull request skips it (REVIEW
+  # FIRST). On main it also saves the tools cache pr-checks and e2e restore.
+  checks:
+    name: Checks (generated code, KCL, pre-commit, licenses)
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -941,20 +1013,6 @@ jobs:
         # release, so no change to a template or an emitter could ever go
         # green until after it shipped. Build from the working tree instead.
         run: go install ./cmd/forge
-      # forge may break pkg/ freely; a breaking pull request must declare the
-      # break (the `api-break` label, or an `API-BREAK:` line in its body) and
-      # ship the codemod or migration playbook in the same diff. A step of this
-      # job, not a job of its own: it reuses the forge build above and adds no
-      # runner to queue for. A diff that cannot change pkg/'s API exits in
-      # about a second. dev-docs/api-breaks.md. Pull requests only: a
-      # merge-queue entry was judged when its pull request opened, and a push
-      # to main is already merged.
-      - name: pkg/ API compatibility (undeclared breaks fail)
-        if: ${{ github.event_name == 'pull_request' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        run: go run ./internal/apigate -base HEAD^1 -pr "$PR"
       # verify-generated runs `forge generate`, whose "buf generate (Go
       # stubs)" step regenerates pkg/forgepb from proto/forge/v1/forge.proto
       # (buf.gen.yaml). Without buf on PATH the job dies with
@@ -965,7 +1023,7 @@ jobs:
       # the version every other buf install in these workflows resolves to
       # (buf-setup-action@v1's default); Taskfile.yml and the Makefile pin
       # none. Bump them together. pre-commit runs after failures too, so
-      # its formatter prerequisites must not be skipped after an API refusal.
+      # its formatter prerequisites must not be skipped after an earlier failure.
       - name: Install buf
         if: ${{ !cancelled() }}
         uses: bufbuild/buf-setup-action@v1
@@ -1067,8 +1125,8 @@ jobs:
   # control-plane docs/pr-pipeline.md). pr-disarm reacts to a push only after
   # the webhook, so a head pushed after a pass, with its checks already green,
   # could otherwise ride the armed auto-merge in. On a pull request it only
-  # reports: the review comes after CI, and a red here would keep the PR out of
-  # the queue it is meant to guard.
+  # reports: the review comes after this run, and a red here would keep the PR
+  # out of the queue it is meant to guard.
   review-marker:
     name: Review marker
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
@@ -1108,6 +1166,7 @@ jobs:
     needs:
       - lint
       - test-short
+      - pr-checks
       - checks
       - test
       - test-cli
@@ -1142,6 +1201,17 @@ jobs:
         run: |
           set -euo pipefail
           red=$(jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "\(.key): \(.value.result)"' <<<"$RESULTS")
+          # The merge queue is where the merge tier decides the merge: a tier
+          # job that skipped there (a broken `if:`) is a gate that judged
+          # nothing, never a pass.
+          if [ "$GITHUB_EVENT_NAME" = merge_group ]; then
+            unrun=$(jq -r 'to_entries[] | select(.key == "test-short" or .key == "checks" or .key == "review-marker") | select(.value.result == "skipped") | "\(.key): skipped in the merge queue"' <<<"$RESULTS")
+            if [ -n "$unrun" ]; then
+              echo "::error::the merge tier did not run:"
+              echo "$unrun"
+              exit 1
+            fi
+          fi
           if [ -z "$red" ]; then
             echo "every job passed or was skipped"
             exit 0

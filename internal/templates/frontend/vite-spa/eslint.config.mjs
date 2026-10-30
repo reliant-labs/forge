@@ -239,6 +239,20 @@ const config = [
       ],
     },
   },
+  {
+    // data_table.tsx exports STACK, the class map that lets a table DataTable
+    // cannot draw stack the same way on a phone. It is an object, which
+    // allowConstantExport does not cover, so the rule warns on every new
+    // project. Exempted here by path, not in the file: the component ships
+    // byte-identical into the Next.js tree, whose config does not load
+    // react-refresh, and a directive naming an unloaded rule is a hard error
+    // there (frontend_cross_kind_lint_test.go). The cost is HMR falling back
+    // to a full reload when that one file is edited.
+    files: ["src/components/ui/data_table.tsx"],
+    rules: {
+      "react-refresh/only-export-components": "off",
+    },
+  },
 ];
 
 export default config;

@@ -98,10 +98,14 @@ func TestE2EScaffoldServiceIntoComposedProcess(t *testing.T) {
 			t.Errorf("%s changed: a service that has no workload must not be bound:\n%s", path, got)
 		}
 	}
+	// A scaffolded project is composed with the graph, so since #1501 the new
+	// service is reported as run by the binary's `server` root, ahead of the
+	// composed-process hint (whose wording workloads_served_test.go pins).
+	// What #1106 needs is unchanged and asserted above: nothing declared,
+	// nothing bound.
 	for _, want := range []string{
-		"processes it composes itself (admin-api, public-api)",
-		"`serves`",
-		"billing = fw.Workload {",
+		"service 'billing' runs in the binary's `server` root",
+		"nothing to declare",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("scaffold output lacks %q:\n%s", want, out)

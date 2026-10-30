@@ -5,7 +5,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -528,5 +530,131 @@ func TestMalformedTimeoutDirectiveRefusesTheRun(t *testing.T) {
 	_, err := upWith(release(map[string]string{"1_a.up.sql": "-- forge:lock-timeout whenever\nCREATE TABLE a (id INT);"}), dsn, RunOptions{})
 	if err == nil || !strings.Contains(err.Error(), "forge:lock-timeout") {
 		t.Fatalf("got %v, want an error naming the directive", err)
+	}
+}
+
+// grantsBlocker is a session with an open transaction that granted on the
+// public schema: it holds the schema's catalog row, so the grants script's
+// own GRANT USAGE ON SCHEMA public waits for it exactly as it would behind any
+// session that touched what the script converges.
+func grantsBlocker(t *testing.T, dsn string) (release func()) {
+	t.Helper()
+	admin := openRecordDB(t, dsn)
+	name := fmt.Sprintf("forge_blk_t%d_%d", os.Getpid(), time.Now().UnixNano()%1_000_000_000)
+	if _, err := admin.Exec("CREATE ROLE " + name + " NOLOGIN"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = admin.Exec("DROP OWNED BY " + name)
+		_, _ = admin.Exec("DROP ROLE IF EXISTS " + name)
+	})
+	return holdLock(t, dsn, "READ COMMITTED", "GRANT USAGE ON SCHEMA public TO "+name)
+}
+
+func grantsFixture(t *testing.T) (dsn string, fsys fstest.MapFS) {
+	t.Helper()
+	dsn = requirePG(t)
+	useRole(t)
+	withRole(t, dsn)
+	grants := mustRender(t, usersTable(true), notesTable)
+	return dsn, grantsRelease(map[string]string{"1_users.up.sql": usersSQL, "2_notes.up.sql": notesSQL}, grants)
+}
+
+// TestGrantsFailFastBehindABlockerAndTheNextRunAppliesThem: the grants script
+// is REVOKE/GRANT, and takes locks too. Behind a session holding what it
+// converges it waits for lock_timeout, not for as long as that session lives;
+// the run fails with a *LockTimeoutError that says it was the grants, the
+// migrations stay committed, and the next run applies the grants.
+func TestGrantsFailFastBehindABlockerAndTheNextRunAppliesThem(t *testing.T) {
+	dsn, fsys := grantsFixture(t)
+	releaseBlocker := grantsBlocker(t, dsn)
+
+	var err error
+	took := timed(func() {
+		_, err = upWith(fsys, dsn, RunOptions{Limits: Limits{LockTimeout: 300 * time.Millisecond, LockAttempts: 2, RetryBackoff: 50 * time.Millisecond}})
+	})
+	var lerr *LockTimeoutError
+	if !errors.As(err, &lerr) || !lerr.Grants || lerr.Attempts != 2 {
+		t.Fatalf("Up returned %v, want a grants *LockTimeoutError after 2 attempts", err)
+	}
+	if !strings.Contains(err.Error(), "read-only grants") {
+		t.Errorf("the error does not name the grants: %v", err)
+	}
+	if took > 15*time.Second {
+		t.Errorf("Up took %s behind a blocker with a 300ms lock timeout", took)
+	}
+	if st := stateAt(t, dsn); st.Dirty || st.Version != 2 {
+		t.Errorf("schema is %+v, want the run's migrations committed, clean at 2", st)
+	}
+
+	releaseBlocker()
+	res, err := upWith(fsys, dsn, RunOptions{})
+	if err != nil || res.Grants == nil || !res.Grants.Applied {
+		t.Fatalf("rerun: %+v, %v, want the grants applied", res.Grants, err)
+	}
+}
+
+// TestGrantsRetryUntilTheBlockerReleases: the same blocker, ended between
+// attempts. The run succeeds and the role has its grants.
+func TestGrantsRetryUntilTheBlockerReleases(t *testing.T) {
+	dsn, fsys := grantsFixture(t)
+	time.AfterFunc(800*time.Millisecond, grantsBlocker(t, dsn))
+
+	var logs bytes.Buffer
+	res, err := upWith(fsys, dsn, RunOptions{Logger: logTo(&logs),
+		Limits: Limits{LockTimeout: 200 * time.Millisecond, LockAttempts: 10, RetryBackoff: 100 * time.Millisecond}})
+	if err != nil || res.Grants == nil || !res.Grants.Applied {
+		t.Fatalf("Up: %+v, %v\n%s", res.Grants, err, logs.String())
+	}
+	if !strings.Contains(logs.String(), "statement=\"read-only grants\"") || !strings.Contains(logs.String(), "retrying") {
+		t.Errorf("no retry of the grants was logged:\n%s", logs.String())
+	}
+	asRole(t, dsn, func(ctx context.Context, c *sql.Conn) {
+		if err := readable(ctx, c, `SELECT id, email FROM users`); err != nil {
+			t.Errorf("the role cannot read what the grants gave it: %v", err)
+		}
+	})
+}
+
+// TestGrantsRunUnderTheDefaultLimitsAndLeaveNoneBehind: with nothing
+// configured the script runs under the defaults, and a connection borrowed
+// from the application's pool goes back without them, on success and on
+// failure.
+func TestGrantsRunUnderTheDefaultLimitsAndLeaveNoneBehind(t *testing.T) {
+	dsn, fsys := grantsFixture(t)
+	pool := openRecordDB(t, dsn)
+	pool.SetMaxOpenConns(1)
+	show := func() string {
+		var v string
+		if err := pool.QueryRow("SHOW lock_timeout").Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	was := show()
+	if _, err := ApplyWith(context.Background(), pool, fsys, "migrations", RunOptions{Limits: Limits{LockTimeout: 7 * time.Second}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := show(); got != was {
+		t.Errorf("the pooled connection kept lock_timeout=%s after the grants, was %s", got, was)
+	}
+
+	releaseBlocker := grantsBlocker(t, dsn)
+	defer releaseBlocker()
+	// A new table changes nothing the blocker holds, but the grants converge
+	// the schema again, so the script runs and times out.
+	more := release(map[string]string{"1_users.up.sql": usersSQL, "2_notes.up.sql": notesSQL, "3_t.up.sql": "CREATE TABLE extra (id INT);"})
+	for name, f := range fsys {
+		if strings.HasPrefix(name, grantsDir+"/") {
+			more[name] = f
+		}
+	}
+	_, err := ApplyWith(context.Background(), pool, more, "migrations",
+		RunOptions{Limits: Limits{LockTimeout: 200 * time.Millisecond, LockAttempts: 1}})
+	if !errors.As(err, new(*LockTimeoutError)) {
+		t.Fatalf("Apply returned %v, want a grants *LockTimeoutError", err)
+	}
+	if got := show(); got != was {
+		t.Errorf("a failed grants run left lock_timeout=%s on the connection, was %s", got, was)
 	}
 }

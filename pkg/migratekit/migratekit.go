@@ -130,6 +130,9 @@ type Migrator struct {
 	db *sql.DB
 	// source is what this binary embeds, parsed once at Open.
 	source sourceSet
+	// run is the limits every statement the run issues is guarded by
+	// (locktimeout.go): its migrations, through bindMigrate, and its grants.
+	run RunOptions
 	// grants is the read-only grants script this binary embeds beside its
 	// migrations, "" when it embeds none (grants.go).
 	grants string
@@ -214,7 +217,7 @@ func openSession(ctx context.Context, db *sql.DB, src source.Driver, embedded so
 		_ = conn.Close()
 		return nil, err
 	}
-	return &Migrator{m: m, conn: conn, source: embedded}, nil
+	return &Migrator{m: m, conn: conn, source: embedded, run: run}, nil
 }
 
 // sqlDSN turns the DSN a caller handed Open into one database/sql's pgx
@@ -430,7 +433,7 @@ func (mg *Migrator) up(ctx context.Context) (res Result, err error) {
 	if err := recordApplied(ctx, mg.conn, mg.source, res.Before, res.After); err != nil {
 		return res, err
 	}
-	res.Grants, err = applyGrants(ctx, mg.conn, mg.grants)
+	res.Grants, err = applyGrants(ctx, mg.conn, mg.grants, mg.run)
 	return res, err
 }
 

@@ -182,8 +182,12 @@ func timeoutSetting(d time.Duration) string {
 // the version before it, clean, so running again simply tries the migration
 // again.
 type LockTimeoutError struct {
-	Version  uint
-	Name     string
+	Version uint
+	Name    string
+	// Grants is true when the statement that timed out was a grants script
+	// (grants.go) and not a migration. The run's migrations are committed by
+	// then, and the next run applies the grants again.
+	Grants   bool
 	Attempts int
 	Timeout  time.Duration
 	// Leftover names the INVALID indexes a CONCURRENTLY attempt left behind
@@ -199,6 +203,11 @@ type LockTimeoutError struct {
 
 func (e *LockTimeoutError) Error() string {
 	var b strings.Builder
+	if e.Grants {
+		fmt.Fprintf(&b, "the %s could not get their lock in %d attempt(s) of %s each: another session holds a conflicting lock on a table or schema they change. The migrations of this run are committed and the grants are unchanged (the script is one statement, so it is atomic); running again applies them. Find the blocker with `SELECT pid, state, xact_start, query FROM pg_stat_activity WHERE state <> 'idle' ORDER BY xact_start`: %v",
+			e.Name, e.Attempts, e.Timeout, e.Err)
+		return b.String()
+	}
 	fmt.Fprintf(&b, "migration %s could not get its lock in %d attempt(s) of %s each: another session holds a conflicting lock — an open transaction or a long query on a table it changes",
 		e.Name, e.Attempts, e.Timeout)
 	b.WriteString(". Nothing was applied and the schema is unchanged, so running again retries it")
@@ -523,4 +532,52 @@ func (g *lockGuard) exhausted(ctx context.Context, name string, attempts int, ca
 // retry together.
 func jitter(d time.Duration) time.Duration {
 	return d - d/4 + time.Duration(rand.Int64N(int64(d/2)+1))
+}
+
+// retrySleep is time.Sleep; a test swaps it.
+var retrySleep = time.Sleep
+
+// guardedStatement runs fn, one atomic statement on conn, under the run's
+// lock_timeout and statement_timeout, retrying it when its lock times out and
+// resetting the session's limits when it is done. It is the lockGuard's
+// treatment of a migration file, for the statements a run issues itself.
+//
+// THE SEAM. Anything a run executes that takes a lock the application's
+// queries also take — the grants scripts today (grants.go) — goes through
+// here, so a REVOKE/GRANT convergence queues behind a long reader for at most
+// lock_timeout and not for as long as the reader runs. fn MUST be a single
+// statement (or otherwise all-or-nothing): a retry runs it again from the
+// start. name says what it was, for the log and the error.
+func guardedStatement(ctx context.Context, conn *sql.Conn, run RunOptions, name string, fn func() error) (err error) {
+	limits := run.Limits.resolved()
+	log := run.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	if _, serr := conn.ExecContext(ctx, "SELECT set_config('lock_timeout', $1, false), set_config('statement_timeout', $2, false)",
+		timeoutSetting(limits.LockTimeout), timeoutSetting(limits.StatementTimeout)); serr != nil {
+		return fmt.Errorf("set the lock_timeout and statement_timeout for %s: %w", name, serr)
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.Background(), "RESET lock_timeout; RESET statement_timeout")
+	}()
+
+	backoff := limits.RetryBackoff
+	for attempt := 1; ; attempt++ {
+		if err = fn(); err == nil {
+			return nil
+		}
+		if !isLockTimeout(err) {
+			return err
+		}
+		if attempt >= limits.LockAttempts {
+			return &LockTimeoutError{Name: name, Grants: true, Attempts: attempt, Timeout: limits.LockTimeout, Err: lockTimeoutCause(err)}
+		}
+		wait := jitter(backoff)
+		log.Warn("lock wait timed out; retrying",
+			"statement", name, "attempt", attempt, "attempts", limits.LockAttempts,
+			"lock_timeout", timeoutSetting(limits.LockTimeout), "retry_in", wait.String(), "error", err.Error())
+		retrySleep(wait)
+		backoff = min(backoff*2, retryBackoffMax)
+	}
 }

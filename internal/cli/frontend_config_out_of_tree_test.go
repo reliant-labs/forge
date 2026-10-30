@@ -59,6 +59,48 @@ func TestWriteFrontendRuntimeDocs_OutOfTreeFrontendGoesToDotForge(t *testing.T) 
 	}
 }
 
+// The refresh `forge env up` and `forge build <env>` run must write the
+// document of a frontend the env's render declares but the loaded inventory
+// lacks. An out-of-tree frontend is declared only in KCL, so the loaded
+// inventory never has it: the refresh used to render its runtime_config and
+// then drop it, and control-plane's dev reliant-web booted with
+// SUPABASE_ANON_KEY unset.
+func TestRefreshFrontendRuntimeConfigs_WritesAKCLOnlyOutOfTreeFrontend(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "control-plane")
+	if err := os.MkdirAll(filepath.Join(projectDir, "frontends", "internal-console"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// What ResolveInventoryAtLoad yields: the in-tree frontend only.
+	cfg := &config.ProjectConfig{
+		Name:      "control-plane",
+		Frontends: []config.FrontendConfig{config.FrontendConfig{Name: "internal-console", Type: "nextjs"}.WithDir("frontends/internal-console")},
+	}
+	entities := &KCLEntities{Frontends: []FrontendEntity{
+		{Name: "internal-console", Type: "nextjs", Path: "frontends/internal-console"},
+		{Name: "reliant-web", Type: "vite", Path: "../reliant/frontends/web", RuntimeConfig: map[string]string{"SUPABASE_ANON_KEY": "sb_publishable_test"}},
+	}}
+
+	if _, err := refreshFrontendRuntimeConfigs(cfg, projectDir, "dev", entities); err != nil {
+		t.Fatalf("refreshFrontendRuntimeConfigs: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(projectDir, outOfTreeRuntimeConfigRel("reliant-web")))
+	if err != nil {
+		t.Fatalf("no out-of-tree document for the KCL-only frontend: %v", err)
+	}
+	if !strings.Contains(string(got), "sb_publishable_test") {
+		t.Fatalf("document lacks the declared runtime_config:\n%s", got)
+	}
+	if len(cfg.Frontends) != 1 {
+		t.Fatalf("caller's inventory was mutated: %d frontends", len(cfg.Frontends))
+	}
+	// The sibling repository's tree is never written.
+	if _, err := os.Stat(filepath.Join(root, "reliant")); !os.IsNotExist(err) {
+		t.Fatalf("wrote into the sibling repo (stat err %v)", err)
+	}
+}
+
 // A frontend that moves INTO the tree must stop being shadowed by the copy
 // rendered while it was outside.
 func TestWriteFrontendRuntimeDocs_InTreeFrontendDropsAStaleOutOfTreeCopy(t *testing.T) {

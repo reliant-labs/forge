@@ -58,19 +58,66 @@ import (
 // run` on it would trade a working stack with a stale client id for no
 // stack at all.
 //
-// overlays is each frontend's render-resolved runtime_config (see
-// frontendRuntimeOverlays); the caller has already rendered the env, so it
-// passes them rather than this function rendering the whole env a second
-// time. nil means none.
-func refreshFrontendRuntimeConfigs(cfg *config.ProjectConfig, projectDir, envName string, overlays map[string]map[string]string) (int, error) {
+// entities is the env's render, which the caller already has: it supplies
+// each frontend's resolved runtime_config (see frontendRuntimeOverlays) and
+// the frontends the env declares beyond the loaded inventory (see
+// runtimeDocInventory), without this function rendering the env a second
+// time. nil means no render (the dev document before any env is up).
+func refreshFrontendRuntimeConfigs(cfg *config.ProjectConfig, projectDir, envName string, entities *KCLEntities) (int, error) {
+	cfg = runtimeDocInventory(cfg, entities)
 	if cfg == nil || len(cfg.Frontends) == 0 {
 		return 0, nil
 	}
-	docs, err := renderFrontendRuntimeDocsWith(projectDir, envName, overlays)
+	docs, err := renderFrontendRuntimeDocsWith(projectDir, envName, frontendRuntimeOverlays(entities))
 	if err != nil {
 		return 0, fmt.Errorf("render frontend runtime config: %w", err)
 	}
 	return writeFrontendRuntimeDocs(cfg, projectDir, docs)
+}
+
+// runtimeDocInventory is the frontend set an env's runtime documents are
+// written for: the loaded inventory plus every frontend the env's render
+// declares that it lacks.
+//
+// The loaded inventory (config.ResolveInventoryAtLoad) is what is on disk in
+// THIS tree — frontends/<name> and a root site. A frontend whose code lives in
+// another repository (`path = "../reliant/frontends/web"`) is declared only in
+// KCL, so it is never in it. Writing documents for the loaded inventory alone
+// rendered that frontend's runtime_config and then dropped it: no
+// .forge/runtime-config/<fe>/config.js, no FORGE_RUNTIME_CONFIG_FILE for its
+// dev server, and the SPA booted with every runtime key unset (a dev sign-in
+// screen failing on SUPABASE_ANON_KEY). The out-of-tree writer existed; it was
+// just never handed the frontend.
+//
+// cfg is not mutated: the result is a shallow copy when anything is added.
+func runtimeDocInventory(cfg *config.ProjectConfig, entities *KCLEntities) *config.ProjectConfig {
+	if cfg == nil || entities == nil || len(entities.Frontends) == 0 {
+		return cfg
+	}
+	known := make(map[string]bool, len(cfg.Frontends))
+	for _, fe := range cfg.Frontends {
+		known[fe.Name] = true
+	}
+	var added []config.FrontendConfig
+	for _, fe := range entities.Frontends {
+		if fe.Name == "" || known[fe.Name] {
+			continue
+		}
+		known[fe.Name] = true
+		derived := config.FrontendConfig{Name: fe.Name, Type: fe.Type}.WithDir(fe.Path)
+		if fe.Source != nil && fe.Source.Repo != "" {
+			// Set after WithDir, which clears it: a pinned frontend has no
+			// directory here, so its document goes out of tree too.
+			derived.Source = fe.Source
+		}
+		added = append(added, derived)
+	}
+	if len(added) == 0 {
+		return cfg
+	}
+	out := *cfg
+	out.Frontends = append(append([]config.FrontendConfig(nil), cfg.Frontends...), added...)
+	return &out
 }
 
 // writeFrontendRuntimeDocs writes each rendered document to the path its

@@ -223,54 +223,6 @@ func (r Runner) clusterStatus(ctx context.Context, cluster string) error {
 	return nil
 }
 
-// LockWaitPoll is how often WithLockWait retries a held lock.
-var LockWaitPoll = 200 * time.Millisecond
-
-// WithLock serializes policy updates and maintenance on this machine. It does
-// not wait: a held lock is an immediate error, which is right for a pass that
-// would only duplicate the holder's work.
-func WithLock(policyPath string, fn func() error) error {
-	return withLock(policyPath, 0, fn)
-}
-
-// WithLockWait is WithLock for a caller that must not be turned away by
-// maintenance. It retries a held lock until wait elapses, then fails with the
-// same "already running" error. The bound is the point: an unbounded wait would
-// let a wedged maintenance pass hang a release cut forever, and no wait at all
-// failed a cut — after a six-minute build — because a background pass happened
-// to hold a lock for the few milliseconds the cut needs.
-func WithLockWait(policyPath string, wait time.Duration, fn func() error) error {
-	return withLock(policyPath, wait, fn)
-}
-
-func withLock(policyPath string, wait time.Duration, fn func() error) error {
-	// Refused before the mkdir: the lock file would otherwise be created
-	// beside the real machine policy even when every write inside is refused.
-	if err := guardMachinePolicy(policyPath); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(policyPath), 0700); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(policyPath+".lock", os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
-	deadline := time.Now().Add(wait)
-	for {
-		err := lock(f)
-		if err == nil {
-			break
-		}
-		if !time.Now().Before(deadline) {
-			return fmt.Errorf("storage maintenance is already running: %w", err)
-		}
-		time.Sleep(LockWaitPoll)
-	}
-	return fn()
-}
-
 // GC previews or applies the registered cache and registry policy.
 //
 // Every layer runs even when an earlier one failed: a layer's error is

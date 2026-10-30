@@ -136,7 +136,7 @@ func newStorageCmd() *cobra.Command {
 		}
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return storage.WithLock(path, func() error {
+		return storage.WithMaintenance(ctx, path, cmd.OutOrStdout(), func(ctx context.Context) error {
 			return runFullGC(ctx, p, path, cmd.OutOrStdout(), apply, !scheduled)
 		})
 	}}
@@ -160,7 +160,7 @@ func newStorageCmd() *cobra.Command {
 			if err == nil {
 				// A periodic pass is not an explicit one: it never removes
 				// worktrees.
-				err = storage.WithLock(path, func() error {
+				err = storage.WithMaintenance(ctx, path, cmd.OutOrStdout(), func(ctx context.Context) error {
 					return runFullGC(ctx, p, path, cmd.OutOrStdout(), true, false)
 				})
 			}
@@ -389,18 +389,23 @@ func declaredRegistryContainer(clusters []ClusterEntity) string {
 // releasePinLockWait bounds how long a release cut waits for a running
 // maintenance pass. Pinning is milliseconds of work, so any real wait is a pass
 // that is mid-flight; waiting keeps the guarantee (pins land BEFORE maintenance
-// can delete) without failing a cut that already paid for its build.
-var releasePinLockWait = 5 * time.Minute
+// can delete) without failing a cut that already paid for its build. A waiting
+// cut makes the pass yield at its next safe point (storage.WithMaintenance), so
+// the wait is normally seconds; the bound is for a pass wedged inside one step,
+// and it is longer than an unyielding auto-gc pass (about eight minutes under
+// load) because a five-minute bound once burned a release behind one.
+var releasePinLockWait = 10 * time.Minute
 
 // Pin before publishing the ledger entry. If maintenance owns the lock, the
-// cut WAITS (bounded) rather than racing deletion or failing instantly. Failed
-// cuts can leave safe pins.
-func pinStorageRelease(rel release.Release) error {
+// cut WAITS (bounded) and makes it yield, rather than racing deletion or
+// failing instantly; out gets the "waiting for storage maintenance" line.
+// Failed cuts can leave safe pins.
+func pinStorageRelease(rel release.Release, out io.Writer) error {
 	path, err := storage.DefaultPath()
 	if err != nil {
 		return err
 	}
-	err = storage.WithLockWait(path, releasePinLockWait, func() error {
+	err = storage.WithLockWait(path, releasePinLockWait, out, func() error {
 		p, err := storage.Load(path)
 		if err != nil {
 			return err

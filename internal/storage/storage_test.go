@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -395,5 +396,42 @@ func TestWithMaintenanceYieldsToAWaitingWriter(t *testing.T) {
 	}
 	if writerWaiting(path) {
 		t.Error("the writer's announcement outlived its wait")
+	}
+}
+
+// A test binary started from a shell that exports FORGE_STORAGE_POLICY (a
+// Reliant agent's does) inherits the HOST's policy. Writing it from a test
+// put fake pins in the machine policy and queued release-cut tests behind the
+// host's own maintenance pass; the inherited path is refused like the default.
+func TestGuardRefusesTheInheritedPolicyPath(t *testing.T) {
+	host := filepath.Join(t.TempDir(), "host-storage.json")
+	prev := inheritedPolicyPath
+	inheritedPolicyPath = host
+	t.Cleanup(func() { inheritedPolicyPath = prev })
+	t.Setenv("FORGE_STORAGE_POLICY", host)
+
+	if err := WithLock(host, func() error { t.Fatal("ran against the host's policy"); return nil }); !errors.Is(err, ErrMachinePolicyUnderTest) {
+		t.Fatalf("WithLock on the inherited policy = %v, want ErrMachinePolicyUnderTest", err)
+	}
+	fixture := filepath.Join(t.TempDir(), "storage.json")
+	t.Setenv("FORGE_STORAGE_POLICY", fixture)
+	if err := WithLock(fixture, func() error { return nil }); err != nil {
+		t.Fatalf("a test's own policy was refused: %v", err)
+	}
+}
+
+// The holder record names the CURRENT holder or nobody: it is removed on
+// release, so a later holder that records nothing is not misnamed.
+func TestLockHolderIsClearedOnRelease(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	var during string
+	if err := WithLock(path, func() error { during = lockHolder(path); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if want := "pid " + strconv.Itoa(os.Getpid()); during != want {
+		t.Errorf("holder while held = %q, want %q", during, want)
+	}
+	if after := lockHolder(path); after != "holder unknown" {
+		t.Errorf("holder after release = %q, want it cleared", after)
 	}
 }

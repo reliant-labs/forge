@@ -134,6 +134,7 @@ func withLock(policyPath string, wait time.Duration, out io.Writer, fn func() er
 		}
 	}
 	recordHolder(policyPath)
+	defer clearHolder(policyPath)
 	return fn()
 }
 
@@ -203,7 +204,12 @@ func recordHolder(policyPath string) {
 	_ = atomicfile.WriteFile(policyPath+".lock.holder", []byte(strconv.Itoa(os.Getpid())+"\n"), 0600)
 }
 
-// lockHolder describes the lock's last recorded holder.
+// clearHolder removes the record while the lock is still held, so a waiter
+// behind a holder that records nothing (an older forge) reads "holder unknown"
+// rather than the pid of whoever held the lock before it.
+func clearHolder(policyPath string) { _ = os.Remove(policyPath + ".lock.holder") }
+
+// lockHolder describes the lock's recorded holder.
 func lockHolder(policyPath string) string {
 	b, err := os.ReadFile(policyPath + ".lock.holder")
 	if err != nil {

@@ -1409,3 +1409,43 @@ func TestAuditDashboardSkippedForQuotaSaysQuota(t *testing.T) {
 		t.Errorf("status %q error %+v, want a quota error", ad.Status, ad.Error)
 	}
 }
+
+// An empty answer that carries the control plane's kind-mismatch warning is
+// reported as the mismatch, never probed into a claim about the emitter.
+func TestAuditEmptyPanelWithKindMismatchIsTheMismatch(t *testing.T) {
+	for _, w := range []string{
+		"metric_kind_mismatch: rpc.server.calls declared sum, stored gauge",
+		"metric_stored_as_n_kinds: rpc.server.calls stored as 2 kinds",
+	} {
+		cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": auditSpec(metricPanel("p", "rpc.server.calls"))},
+			metrics: `{"metrics":[]}`,
+			panel: func(auditQuery) (string, error) {
+				return fmt.Sprintf(`{"kind":"line","stepSeconds":30,"warnings":[%q]}`, w), nil
+			}}
+		out, _, _ := auditRun(t, cp)
+		p := decodeAudit(t, out).Dashboards[0].Panels[0]
+		if p.Status != "empty" || p.Reason != "metric_kind_mismatch" || p.Probe != nil || !strings.Contains(p.ProbableCause, "different kind") {
+			t.Errorf("%s: status %q reason %q probe %v cause %q", w, p.Status, p.Reason, p.Probe != nil, p.ProbableCause)
+		}
+	}
+}
+
+// Lines are drawn per series: disjoint single-point series draw nothing
+// (single_bucket), while a healthy series beside a single-point one draws and
+// is ok, with a note.
+func TestAuditBucketsAreCountedPerSeries(t *testing.T) {
+	disjoint := `{"kind":"line","stepSeconds":60,"series":[{"label":"a","points":[{"time":"2026-10-22T11:30:00Z","value":1}]},{"label":"b","points":[{"time":"2026-10-22T11:31:00Z","value":2}]}]}`
+	mixed := `{"kind":"line","stepSeconds":60,"series":[{"label":"a","points":[{"time":"2026-10-22T11:30:00Z","value":1},{"time":"2026-10-22T11:31:00Z","value":3}]},{"label":"b","points":[{"time":"2026-10-22T11:31:00Z","value":2}]}]}`
+	for _, tc := range []struct{ name, answer, status, reason, note string }{
+		{"disjoint singletons", disjoint, "partial", "single_bucket", ""},
+		{"healthy beside a singleton", mixed, "ok", "", "single_bucket_series: 1 of 2"},
+	} {
+		cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": auditSpec(linePanel("p"))},
+			panel: func(auditQuery) (string, error) { return tc.answer, nil }}
+		out, _, _ := auditRun(t, cp)
+		p := decodeAudit(t, out).Dashboards[0].Panels[0]
+		if p.Status != tc.status || p.Reason != tc.reason || !strings.Contains(p.Note, tc.note) {
+			t.Errorf("%s: status %q reason %q note %q", tc.name, p.Status, p.Reason, p.Note)
+		}
+	}
+}

@@ -720,7 +720,13 @@ func (a *dashAudit) judge(ap *auditPanel, op obsquery.Panel, ro obsbackend.Panel
 	window := ap.To.Sub(ap.From)
 	absent := warningDetails(ro.Warnings, "metric_absent")
 	mismatch := append(warningDetails(ro.Warnings, "metric_kind_mismatch"), warningDetails(ro.Warnings, "metric_stored_as_n_kinds")...)
+	mismatchCause := "a metric is stored as a different kind than the panel declares (" + strings.Join(mismatch, "; ") + "); the panel reads the wrong table or refuses its aggregation"
 	switch {
+	case !ro.HasData && len(mismatch) > 0:
+		// The control plane said why nothing came back: the declared kind is
+		// wrong. Probing the same mistyped panel wider would only find
+		// nothing again and blame the emitter.
+		ap.Status, ap.Reason, ap.ProbableCause = auditEmpty, "metric_kind_mismatch", mismatchCause
 	case !ro.HasData:
 		ap.Status = auditEmpty
 		if len(absent) > 0 {
@@ -745,7 +751,7 @@ func (a *dashAudit) judge(ap *auditPanel, op obsquery.Panel, ro obsbackend.Panel
 		ap.ProbableCause = truncatedCause(ro)
 	case len(mismatch) > 0:
 		ap.Status, ap.Reason = auditPartial, "metric_kind_mismatch"
-		ap.ProbableCause = "a metric is stored as a different kind than the panel declares (" + strings.Join(mismatch, "; ") + "); the panel reads the wrong table or refuses its aggregation"
+		ap.ProbableCause = mismatchCause
 	case singleBucket(ap, ro):
 		ap.Status, ap.Reason = auditPartial, "single_bucket"
 		ap.ProbableCause = singleBucketCause(ap, window)
@@ -754,7 +760,21 @@ func (a *dashAudit) judge(ap *auditPanel, op obsquery.Panel, ro obsbackend.Panel
 		ap.Note = "all_zero: every value in the window is zero (a counter that did not move, or a rate with no failures)"
 	default:
 		ap.Status = auditOK
+		if n := singletonSeries(ro); n > 0 {
+			ap.Note = fmt.Sprintf("single_bucket_series: %d of %d series hold one bucket and draw no line; the others draw", n, len(ro.SeriesBuckets))
+		}
 	}
+}
+
+// singletonSeries is how many of the series holding data hold one bucket.
+func singletonSeries(ro obsbackend.PanelReadout) int {
+	n := 0
+	for _, b := range ro.SeriesBuckets {
+		if b == 1 {
+			n++
+		}
+	}
+	return n
 }
 
 // truncatedCause says how much of a cut-off answer came back.
@@ -769,7 +789,15 @@ func truncatedCause(ro obsbackend.PanelReadout) string {
 // line, and the bucket is usually a coarser grain than the window.
 func singleBucket(ap *auditPanel, ro obsbackend.PanelReadout) bool {
 	timeSeries := ap.Kind == "line" || ap.Kind == "heatmap" || (ap.Kind == "sql" && ro.Series > 0)
-	return timeSeries && ro.Buckets == 1
+	if !timeSeries {
+		return false
+	}
+	// A line is drawn per series: the panel draws nothing when every series
+	// holding data has one bucket, even if their buckets differ.
+	if len(ro.SeriesBuckets) > 0 {
+		return singletonSeries(ro) == len(ro.SeriesBuckets)
+	}
+	return ro.Buckets == 1
 }
 
 func singleBucketCause(ap *auditPanel, window time.Duration) string {
@@ -787,6 +815,9 @@ func singleBucketCause(ap *auditPanel, window time.Duration) string {
 		return fmt.Sprintf("the panel buckets by calendar day (its first column is %s) over %s and declares no minStep, so the console cannot widen it: it holds one bucket, which a line cannot draw; declare \"minStep\": \"1d\" on the panel, or bucket by the {step} parameter", ap.firstColumnType, over)
 	case ap.Kind == "sql" && ap.MinStep != "":
 		return fmt.Sprintf("only one bucket holds data over %s (minStep %s): the signal has rows in a single bucket, so a line cannot be drawn; the emitter went quiet outside it, or has only just started", over, ap.MinStep)
+	}
+	if ap.Series > 1 {
+		return fmt.Sprintf("each of its %d series holds one bucket (step %s over %s), and a line needs two to draw; widen the window or lower the step", ap.Series, stepText(ap.StepSeconds), over)
 	}
 	return fmt.Sprintf("the answer holds one bucket (step %s over %s), and a line needs two to draw; widen the window or lower the step", stepText(ap.StepSeconds), over)
 }

@@ -158,6 +158,10 @@ type PanelReadout struct {
 	// point: null formula results and gaps draw nothing, so a line of one
 	// valued point among nulls is one bucket.
 	Buckets int
+	// SeriesBuckets is, per series that holds a drawable point, how many
+	// distinct bucket times it holds: a line is drawn per series, so a series
+	// of one bucket draws nothing whatever the others hold.
+	SeriesBuckets []int
 	// LastDataAt is the newest bucket holding a non-zero value; zero when the
 	// answer has no time axis or nothing non-zero.
 	LastDataAt time.Time
@@ -241,12 +245,14 @@ func (r wirePanelResponse) readout(kind string) PanelReadout {
 	}
 	buckets := map[time.Time]bool{}
 	for _, s := range r.Series {
+		own := map[time.Time]bool{}
 		for _, p := range s.Points {
 			out.Points++
 			if p.Null {
 				continue
 			}
 			buckets[p.Time.UTC()] = true
+			own[p.Time.UTC()] = true
 			out.NonNull++
 			if p.Value != 0 {
 				out.NonZero++
@@ -254,6 +260,9 @@ func (r wirePanelResponse) readout(kind string) PanelReadout {
 					out.LastDataAt = t
 				}
 			}
+		}
+		if len(own) > 0 {
+			out.SeriesBuckets = append(out.SeriesBuckets, len(own))
 		}
 		if kind == "number" && s.Value != 0 {
 			out.NonZero++

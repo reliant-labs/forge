@@ -1,11 +1,13 @@
 package obsdash
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestDefaultAlertSQLOnClickHouse runs every generated default against a real
@@ -242,7 +244,11 @@ func TestJobsSummarySQLOnClickHouse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run(string(seed))
+	// Every INSERT would evaluate now() at its own instant, and on a loaded
+	// host those drift apart by seconds, turning a 90s run into 91s. One anchor
+	// keeps the seeded offsets exact.
+	anchor := fmt.Sprintf("toDateTime64(%d, 9, 'UTC')", time.Now().Unix())
+	run(strings.ReplaceAll(string(seed), "now()", anchor))
 	jobs := []string{"cloudsql-backup-prune", "db-migrate-up", "dbrole-provision-reliant", "indexer", "nightly"}
 	bindSQL := func(q, envs string) string {
 		q = strings.ReplaceAll(q, "{from:DateTime64(9)}", "now() - INTERVAL 1 DAY")

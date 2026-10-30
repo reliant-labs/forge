@@ -243,7 +243,7 @@ func (v *validator) oneOf(path string, obj map[string]any, key string, required 
 }
 
 func (v *validator) dashboard(d map[string]any) {
-	v.known("", d, "version", "id", "title", "description", "filters", "annotations", "panels", "sections", "defaultRange")
+	v.known("", d, "version", "id", "title", "description", "scope", "filters", "annotations", "panels", "sections", "defaultRange")
 	if ver := v.str("", d, "version", false); ver != "" && ver != SpecVersion {
 		v.add("version", "%q is not the spec version this forge reads (%s)", ver, SpecVersion)
 	}
@@ -257,6 +257,7 @@ func (v *validator) dashboard(d map[string]any) {
 			v.add("defaultRange", "%v", err)
 		}
 	}
+	v.oneOf("", d, "scope", false, string(ScopeProject), string(ScopeOrg), string(ScopePlatform))
 
 	if fs, ok := v.list("", d, "filters"); ok {
 		v.filters(fs)

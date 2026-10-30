@@ -217,7 +217,9 @@ func maybeOpportunisticGC(_ context.Context, out io.Writer) {
 // runAutoGC is the body of `forge storage auto-gc`: one bounded,
 // non-disruptive pass under the maintenance lock, recorded as an attempt.
 // A busy lock means another pass is already doing this work, which is not a
-// failure and not an attempt.
+// failure and not an attempt. The pass yields to a waiting writer (a release
+// cut pinning its images): it does not start while one waits, and stops at its
+// next safe point when one starts to (storage.WithMaintenance).
 func runAutoGC(ctx context.Context, path string, out io.Writer) error {
 	policy, err := storage.Load(path)
 	if err != nil {
@@ -225,7 +227,7 @@ func runAutoGC(ctx context.Context, path string, out io.Writer) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, opportunisticGCBudget)
 	defer cancel()
-	return storage.WithLock(path, func() error {
+	err = storage.WithMaintenance(ctx, path, out, func(ctx context.Context) error {
 		r, trims := recordingGoCacheTrims(maintenanceRunner(policy, path, out))
 		gcErr := nonDisruptiveGCFn(ctx, r)
 		// Recorded whether or not it succeeded: the interval rate-limits
@@ -243,6 +245,11 @@ func runAutoGC(ctx context.Context, path string, out io.Writer) error {
 		}
 		return storage.RealFailure(gcErr)
 	})
+	if errors.Is(err, storage.ErrWriterWaiting) {
+		fmt.Fprintf(out, "storage auto-gc: skipped, %v; the next pass runs it\n", err)
+		return nil
+	}
+	return err
 }
 
 // newStorageAutoGCCmd is the hidden `forge storage auto-gc`, the process
@@ -296,7 +303,7 @@ func runGoCacheGC(ctx context.Context, p storage.Policy, path string, out io.Wri
 	}
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	return storage.WithLock(path, func() error {
+	err := storage.WithMaintenance(ctx, path, out, func(ctx context.Context) error {
 		r, trims := recordingGoCacheTrims(maintenanceRunner(p, path, out))
 		gcErr := goCacheGCFn(ctx, r, apply)
 		result := storage.NewGCResult(time.Now(), gcErr)
@@ -309,6 +316,11 @@ func runGoCacheGC(ctx context.Context, p storage.Policy, path string, out io.Wri
 		fmt.Fprintf(out, "storage gocache: %s\n", result.Summary())
 		return storage.RealFailure(gcErr)
 	})
+	if errors.Is(err, storage.ErrWriterWaiting) {
+		fmt.Fprintf(out, "storage gocache: skipped, %v; the next pass runs it\n", err)
+		return nil
+	}
+	return err
 }
 
 // newStorageGoCacheCmd is `forge storage gocache`: trim the Go-toolchain

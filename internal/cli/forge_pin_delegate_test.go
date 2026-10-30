@@ -265,7 +265,7 @@ func TestHandOffWanted(t *testing.T) {
 	for rel, want := range map[string]bool{
 		"env render": true, "env shape": true, "env config": true, "env diff": true, "env up": true, "env list": true,
 		"kcl eval": true, "doctor": true, "project frontends": true, "project audit": true, "project shapes": true,
-		"lint": true, "ci gate": true, "ci summarize": true, "generate": true, "skill load": true, "mcp": true,
+		"lint": true, "ci gate": true, "ci summarize": true, "generate": true, "skill load": true, "mcp": false,
 		"a-command-this-forge-lacks": true, "project a-subcommand-this-forge-lacks": true,
 		"": false, "version": false, "help": false, "help generate": false, "completion bash": false, "__complete": false,
 		"env down": false, "env ps": false, "env devstack": false,

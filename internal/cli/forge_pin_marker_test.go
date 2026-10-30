@@ -252,3 +252,77 @@ func TestScanProjectDir(t *testing.T) {
 		}
 	}
 }
+
+// Review of #1536: forge mcp serves every tool call for its own project, in
+// process. Handed at start-up to the forge its starting directory pins, the
+// server was a delegate for good, and a delegate skips the pin check — so a
+// generate for a project pinned to another forge ran under the wrong one.
+// mcp is never handed off, and each request is checked against its own pin
+// even in a process that was.
+func TestMCP_EachRequestIsCheckedAgainstItsOwnProjectsPin(t *testing.T) {
+	prevVersion, prevCommit := buildinfo.Version(), buildinfo.GitCommit()
+	buildinfo.Set(skewTestBinary, "", "6c0c3edb1322")
+	t.Cleanup(func() { buildinfo.Set(prevVersion, "", prevCommit) })
+	const pinA = "v0.1.40-0.20261001000000-aaaaaaaaaaaa"
+	a, b := t.TempDir(), t.TempDir()
+	writeForgeYAML(t, a, "name: a\nmodule_path: example.com/a\nforge_version: "+pinA+"\n")
+	writeForgeYAML(t, b, "name: b\nmodule_path: example.com/b\nforge_version: "+skewTestPin+"\n")
+	t.Chdir(a)
+
+	// The server is never handed to A's forge.
+	h, installs := armDelegation(t)
+	if handed, _, err := handOffForTest(t, "mcp"); handed || err != nil || h.path != "" || len(*installs) != 0 {
+		t.Fatalf("forge mcp was handed off: handed %v, err %v, built %v", handed, err, *installs)
+	}
+
+	// And a server that is a delegate anyway checks each request.
+	actAsDelegate(t)
+	prevDisabled := pinDelegationDisabled
+	t.Cleanup(func() { pinDelegationDisabled = prevDisabled })
+	serveRequestsUnderTheirOwnPins()
+	cs := connectMCP(t, a)
+	out, isErr := callMCP(t, cs, "generate", map[string]any{"dir": b})
+	if !isErr || !strings.Contains(out, "pins forge_version "+skewTestPin) {
+		t.Errorf("generate for B ran in a server started in A (error %v):\n%s", isErr, out)
+	}
+}
+
+// Review of #1536: the command a line names skips root's flags AND their
+// values, so `forge -C version future-command` (a project directory called
+// version) names future-command, which reaches the pinned forge.
+func TestHandOffToPinned_AFlagValueIsNotTheCommand(t *testing.T) {
+	skewedProject(t)
+	root, _ := os.Getwd()
+	parent := filepath.Dir(root)
+	for _, exempt := range []string{"version", "help", "storage", "slot", "mcp", "report-bug"} {
+		dir := filepath.Join(parent, exempt)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeForgeYAML(t, dir, "name: x\nmodule_path: example.com/x\nforge_version: "+skewTestPin+"\n")
+		t.Chdir(parent)
+		for _, args := range [][]string{
+			{"-C", exempt, "a-command-from-the-future"},
+			{"--project-dir", exempt, "a-command-from-the-future"},
+		} {
+			h, _ := armDelegation(t)
+			handed, _, err := handOffForTest(t, args...)
+			if err != nil || !handed || h.path == "" {
+				t.Errorf("%v: handed %v, err %v — the flag's value was taken for the command", args, handed, err)
+			}
+		}
+	}
+	r := NewRootCmd()
+	resetCmdRoute(t)
+	for want, args := range map[string][]string{
+		"future":  {"-C", "version", "future"},
+		"future2": {"--project-dir=version", "future2"},
+		"future3": {"-Cversion", "future3"},
+		"future4": {"--help", "future4"},
+		"":        {"-C", "x", "--", "future"},
+	} {
+		if got := firstCommandWord(r, args); got != want {
+			t.Errorf("firstCommandWord(%q) = %q, want %q", args, got, want)
+		}
+	}
+}

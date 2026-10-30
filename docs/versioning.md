@@ -154,7 +154,8 @@ pinned forge. `-C`/`--project-dir` names the project, and so the pin.
 The commands about THIS forge or this machine always run here: `version`,
 `help`, `completion`, `project upgrade` (it moves the pin, and must work when
 the old pin cannot be built), `project new`, `report-bug`, `storage`, `slot`,
-and `env ps|down|devstack`.
+`env ps|down|devstack`, and `mcp`: a server whose every tool call names its own
+project, so each call is checked against that project's pin instead.
 
 **When the pinned forge cannot be had** — offline, a version nobody published,
 a linked checkout that does not build — the command fails with the reason and

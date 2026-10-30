@@ -58,6 +58,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/forgecompat"
@@ -76,12 +77,18 @@ import (
 //     forge's rules. A pinned forge older than the 2h floor and the
 //     live-build lease (#1231, #1243, #1245) would trim the Go build cache
 //     down to now-20m, under running builds.
+//   - mcp: a long-lived server whose every tool call names its own project
+//     (each may pin a different forge), run in-process. Handing the server
+//     to the forge its STARTING directory pins would make every later
+//     request run under that forge, past its own pin check (a delegate does
+//     not check). Each request is checked against its own project instead
+//     (serveRequestsUnderTheirOwnPins).
 //   - env ps, env down, env devstack: they list, stop and allocate ports for
 //     the stacks on this machine, across projects, and stopping one must not
 //     need the network.
 var handOffExempt = []string{
 	"", "version", "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd,
-	"project upgrade", "project new", "report-bug", "storage", "slot",
+	"project upgrade", "project new", "report-bug", "storage", "slot", "mcp",
 	"env ps", "env down", "env devstack",
 }
 
@@ -191,7 +198,7 @@ func parseInvocation(args []string) invocation {
 	if err != nil || cmd == nil {
 		// An unknown top-level command: this forge cannot run it, the
 		// pinned one may.
-		return invocation{rel: firstWord(args), projectDir: scanProjectDir(args)}
+		return invocation{rel: firstCommandWord(root, args), projectDir: scanProjectDir(args)}
 	}
 	cmd.FParseErrWhitelist.UnknownFlags = true
 	_ = cmd.ParseFlags(rest)
@@ -207,13 +214,54 @@ func parseInvocation(args []string) invocation {
 	return inv
 }
 
-// firstWord is the first argument that is not a flag.
+// firstWord is the first argument that is not a flag. For positionals cobra
+// has already parsed (no flag values among them).
 func firstWord(args []string) string {
 	for _, a := range args {
 		if a == "--" {
 			return ""
 		}
 		if !strings.HasPrefix(a, "-") {
+			return a
+		}
+	}
+	return ""
+}
+
+// firstCommandWord is the command a raw command line names: its first
+// argument that is neither a flag nor the value of one. A flag of root's that
+// takes a value consumes the next argument, as cobra parses it — so
+// `forge -C version future-command` names future-command, not the exempt
+// `version` (a project directory that happens to be called that). An unknown
+// flag is taken to stand alone: this forge cannot know its arity.
+func firstCommandWord(root *cobra.Command, args []string) string {
+	takesValue := func(name string, short bool) bool {
+		var f *pflag.Flag
+		if short {
+			f = root.PersistentFlags().ShorthandLookup(name)
+			if f == nil {
+				f = root.Flags().ShorthandLookup(name)
+			}
+		} else if f = root.PersistentFlags().Lookup(name); f == nil {
+			f = root.Flags().Lookup(name)
+		}
+		return f != nil && f.NoOptDefVal == ""
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			return ""
+		case strings.HasPrefix(a, "--"):
+			if !strings.Contains(a, "=") && takesValue(strings.TrimPrefix(a, "--"), false) {
+				i++
+			}
+		case strings.HasPrefix(a, "-") && len(a) > 1:
+			// -C x takes the next argument; -Cx and -C=x carry it.
+			if len(a) == 2 && takesValue(a[1:], true) {
+				i++
+			}
+		default:
 			return a
 		}
 	}
@@ -488,4 +536,16 @@ func pinnedRunLine(projectRoot, pin string, args []string) string {
 		return forgecompat.RunBinaryCommand(local, args)
 	}
 	return forgecompat.RunPinnedCommand(pin, args)
+}
+
+// serveRequestsUnderTheirOwnPins prepares a process that serves many
+// commands, each for its own project (forge mcp): no request may replace the
+// process with another forge, and none inherits the start-up's verdict — were
+// this process itself a delegate, every request would skip its pin check and
+// run against a project pinned to a different forge. Each request's command
+// is then checked against its own project by the root's PersistentPreRun,
+// and refused or warned about there.
+func serveRequestsUnderTheirOwnPins() {
+	pinDelegationDisabled = true
+	isDelegate = func() bool { return false }
 }

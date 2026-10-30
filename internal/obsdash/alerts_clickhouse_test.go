@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
-	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -251,8 +250,9 @@ func TestJobsSummarySQLOnClickHouse(t *testing.T) {
 	// keeps the seeded offsets exact.
 	anchor := fmt.Sprintf("toDateTime64(%d, 9, 'UTC')", time.Now().Unix())
 	run(strings.ReplaceAll(string(seed), "now()", anchor))
-	// "indexer" reports under a service.name of its own (OTEL_SERVICE_NAME), as
-	// a real workload can: the service selector must still find it.
+	// "indexer" reports under a service.name of its own (OTEL_SERVICE_NAME), and
+	// "reindex" under its workload name: the two identities a selection must
+	// both resolve.
 	var jobs []Process
 	for _, n := range []string{"cloudsql-backup-prune", "db-migrate-up", "dbrole-provision-reliant", "indexer", "nightly", "reindex", "rebuild"} {
 		p := Process{Name: n, Kind: "job", ServiceNames: []string{n}, Workloads: []string{n}}
@@ -343,82 +343,103 @@ func TestJobsSummarySQLOnClickHouse(t *testing.T) {
 		t.Errorf("failures-by-job rows = %d, want 4 (db-migrate-up in stg, dbrole-provision-reliant, reindex, rebuild):\n%s", n, failedBy)
 	}
 
-	// The service selector narrows EVERY panel of the dashboard alike, the SQL
-	// ones included. A job is selected by its forge name, by a service.name its
-	// workload declares (indexer reports as search-indexer), or by the name of
-	// one of its runs (what a Job object's events are named).
-	rowsOf := func(out string) int {
-		if strings.TrimSpace(out) == "" {
-			return 0
-		}
-		return strings.Count(out, "\n") + 1
-	}
-	jobCol := func(out string) []string {
-		var got []string
-		for _, l := range strings.Split(out, "\n") {
-			if l != "" {
-				got = append(got, strings.Split(l, "\t")[0])
-			}
-		}
-		sort.Strings(got)
-		return got
+	// The service selector narrows EVERY panel of the Jobs dashboard alike, by
+	// whichever name the operator picks. The panels are the dashboard's own
+	// (BuildJobs), run with the selection bound the way the console binds it.
+	dash := BuildJobs("shop", jobs)
+	// What each panel returns for a job is read off the column that names it.
+	jobColumn := map[string]int{
+		"jobs-summary": 0, "runs-by-job": 1, "failures-by-job": 1, "recent-runs": 0,
+		"warning-events": 1, "restarts": 1, "error-logs": 0,
 	}
 	for _, tc := range []struct {
-		pick string
-		jobs []string
-		runs string // runs_started, runs_succeeded, runs_failed
+		kind, pick string
+		job        string
+		// panels that have data for the job in the seed, and what each shows
+		// (a fragment of its text, "" when only the row's existence matters)
+		has map[string]string
 	}{
-		{"['reindex']", []string{"reindex"}, "2\t1\t1"},
-		{"['search-indexer']", []string{"indexer"}, "1\t1\t0"},
-		{"['db-migrate-up-0123456789']", []string{"db-migrate-up"}, "2\t1\t1"},
-		{"['reindex', 'nightly']", []string{"nightly", "reindex"}, "4\t2\t1"},
-		{"['no-such-service']", nil, "0\t0\t0"},
+		{"custom OTEL_SERVICE_NAME", "['search-indexer']", "indexer",
+			map[string]string{"jobs-summary": "", "runs-by-job": "", "recent-runs": "", "warning-events": "", "restarts": "", "error-logs": "indexer failed to open shard"}},
+		{"bare workload name", "['indexer']", "indexer",
+			map[string]string{"jobs-summary": "", "runs-by-job": "", "recent-runs": "", "warning-events": "", "restarts": "", "error-logs": "indexer failed to open shard"}},
+		{"hashed run name", "['indexer-eeeeeeeeee']", "indexer",
+			map[string]string{"jobs-summary": "", "runs-by-job": "", "recent-runs": "", "warning-events": "", "restarts": "", "error-logs": "indexer failed to open shard"}},
+		{"forge name (reindex)", "['reindex']", "reindex",
+			map[string]string{"jobs-summary": "", "runs-by-job": "", "failures-by-job": "", "recent-runs": "", "warning-events": "", "restarts": "", "error-logs": "reindex hit the backoff limit"}},
+		{"hashed run name (reindex)", "['reindex-ffffffffff']", "reindex",
+			map[string]string{"jobs-summary": "", "runs-by-job": "", "failures-by-job": "", "recent-runs": "", "warning-events": "", "restarts": "", "error-logs": "reindex hit the backoff limit"}},
 	} {
-		// One round trip per selection: the six panels' statements run as one
-		// multi-query script, each result separated by a marker line.
-		queries := []string{
-			jobsSummarySQL(jobs), jobsTotalsSQL(jobs),
-			jobsByJobSQL(jobs, "started", "started > 0"), jobsByJobSQL(jobs, "failed_at", "failed"),
-			jobsWarningsSQL(jobs), jobsRecentRunsSQL(jobs),
-		}
+		t.Run(tc.kind, func(t *testing.T) {
+			// Run every panel in one round trip, results separated by a marker.
+			var script strings.Builder
+			for _, p := range dash.Panels {
+				script.WriteString(strings.TrimSpace(bindWith(p.SQL, "[]", tc.pick)) + ";\nSELECT '--end--';\n")
+			}
+			parts := strings.Split(run(script.String()), "--end--")
+			if len(parts) != len(dash.Panels)+1 {
+				t.Fatalf("got %d result sets for %d panels", len(parts)-1, len(dash.Panels))
+			}
+			for i, p := range dash.Panels {
+				var rows []string
+				for _, l := range strings.Split(strings.TrimSpace(parts[i]), "\n") {
+					if l != "" {
+						rows = append(rows, l)
+					}
+				}
+				if p.ID == "runs-totals" {
+					// No job column: a single row of counts. It must exist for a job that ran.
+					if len(rows) != 1 || rows[0] == "0\t0\t0" {
+						t.Errorf("runs-totals for %s = %v, want the job's runs", tc.pick, rows)
+					}
+					continue
+				}
+				col, ok := jobColumn[p.ID]
+				if !ok {
+					t.Fatalf("panel %s has no job column in this test: add it", p.ID)
+				}
+				want, expected := tc.has[p.ID]
+				if !expected && len(rows) == 0 {
+					continue
+				}
+				if expected && len(rows) == 0 {
+					t.Errorf("%s: panel %s returned nothing for %s, want %s's data", tc.kind, p.ID, tc.pick, tc.job)
+					continue
+				}
+				for _, r := range rows {
+					f := strings.Split(r, "\t")
+					if f[col] != tc.job {
+						t.Errorf("%s: panel %s returned %s's row for %s: %q", tc.kind, p.ID, f[col], tc.pick, r)
+					}
+				}
+				if want != "" && !strings.Contains(strings.Join(rows, "\n"), want) {
+					t.Errorf("%s: panel %s lacks %q:\n%s", tc.kind, p.ID, want, strings.Join(rows, "\n"))
+				}
+			}
+		})
+	}
+	// Selected by nothing that is a job, no panel returns anything.
+	{
 		var script strings.Builder
-		for _, q := range queries {
-			script.WriteString(strings.TrimSpace(bindWith(q, "[]", tc.pick)) + ";\nSELECT '--end--';\n")
+		for _, p := range dash.Panels {
+			script.WriteString(strings.TrimSpace(bindWith(p.SQL, "[]", "['no-such-service']")) + ";\nSELECT '--end--';\n")
 		}
-		parts := strings.Split(run(script.String()), "--end--")
-		if len(parts) != len(queries)+1 {
-			t.Fatalf("service %s: got %d result sets, want %d:\n%v", tc.pick, len(parts)-1, len(queries), parts)
-		}
-		rows := func(i int) []string {
-			var out []string
-			for _, l := range strings.Split(strings.TrimSpace(parts[i]), "\n") {
-				if l != "" {
-					out = append(out, l)
-				}
-			}
-			return out
-		}
-		if got := jobCol(strings.Join(rows(0), "\n")); !reflect.DeepEqual(got, tc.jobs) {
-			t.Errorf("summary for service %s lists %v, want %v", tc.pick, got, tc.jobs)
-		}
-		if got := strings.Join(rows(1), "\n"); got != tc.runs {
-			t.Errorf("totals for service %s = %q, want %q", tc.pick, got, tc.runs)
-		}
-		for i, name := range map[int]string{2: "runs-by-job", 3: "failures-by-job", 4: "warning-events"} {
-			for _, l := range rows(i) {
-				if j := strings.Split(l, "\t")[1]; !contains(tc.jobs, j) {
-					t.Errorf("%s for service %s draws job %q, want only %v", name, tc.pick, j, tc.jobs)
-				}
-			}
-		}
-		for _, l := range rows(5) {
-			if j := strings.Split(l, "\t")[0]; !contains(tc.jobs, j) {
-				t.Errorf("recent-runs for service %s lists job %q, want only %v", tc.pick, j, tc.jobs)
+		for i, part := range strings.Split(run(script.String()), "--end--")[:len(dash.Panels)] {
+			if out := strings.TrimSpace(part); out != "" && dash.Panels[i].ID != "runs-totals" {
+				t.Errorf("panel %s returned rows for a selection that is no job:\n%s", dash.Panels[i].ID, out)
+			} else if dash.Panels[i].ID == "runs-totals" && out != "0\t0\t0" {
+				t.Errorf("runs-totals for no job = %q", out)
 			}
 		}
 	}
 	// Unselected, every panel covers every job.
-	if n := rowsOf(run(bindSQL(jobsRecentRunsSQL(jobs), "[]"))); n != 12 {
+	if logs := run(bindSQL(jobsErrorLogsSQL(jobs), "[]")); strings.Contains(logs, "unrelated-service") || strings.Contains(logs, "the workload name is not a service.name here") || strings.Count(logs, "\n") != 1 {
+		t.Errorf("unselected error logs = want the 2 error records of indexer and reindex only (another service's and a workload-named record are not a job's):\n%s", logs)
+	}
+	if rs := run(bindSQL(jobsRestartsSQL(jobs), "[]")); strings.Contains(rs, "other-thing") || !strings.Contains(rs, "indexer") || !strings.Contains(rs, "reindex") {
+		t.Errorf("unselected restarts = %q, want indexer's and reindex's, not another project's", rs)
+	}
+	if n := strings.Count(strings.TrimSpace(run(bindSQL(jobsRecentRunsSQL(jobs), "[]"))), "\n") + 1; n != 12 {
 		t.Errorf("recent runs unfiltered = %d rows, want 12 (every execution)", n)
 	}
 	if r := row(run(bindSQL(jobsRecentRunsSQL(jobs), "[]")), "reindex"); r == nil || r[2] != "prod" {

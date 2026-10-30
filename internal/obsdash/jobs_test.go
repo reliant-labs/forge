@@ -3,7 +3,7 @@ package obsdash
 import (
 	"encoding/json"
 	"reflect"
-	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -133,7 +133,7 @@ func TestJobsDashboardContents(t *testing.T) {
 			}
 		}
 	}
-	if usesMetric(jobs, "k8s.container.cpu_limit_utilization") || usesMetric(jobs, "k8s.container.memory_limit_utilization") {
+	if usesMetric(jobs, "k8s.container.cpu_limit_utilization") || usesMetric(jobs, "k8s.container.memory_limit_utilization") || strings.Contains(panelSQL(jobs), "cpu_limit_utilization") {
 		t.Error("jobs declare no limit-utilization panel")
 	}
 	// The per-job table names its jobs by forge name, with run durations.
@@ -183,102 +183,6 @@ func TestJobsDashboardNeverCountsCreateEventsAsRuns(t *testing.T) {
 	}
 }
 
-// Job runs and their pods carry different k8s.workload.name values. The node
-// agent takes the pod's app.kubernetes.io/name label first (forge renders it as
-// the bare forge name on every Job and CronJob pod), then the owner chain; an
-// event about a Job OBJECT is named for the object (forge name + run suffix).
-// The restarts panel must select every one of these, and nothing that merely
-// starts with a job's name. The Warning-event panel resolves the same names in
-// SQL (see TestJobsWarningsSQLResolvesBothObjectKinds).
-func TestJobsHealthPanelsMatchRealRunIdentities(t *testing.T) {
-	jobs := dashboardByID(t, Build(fleet()), "jobs")
-	type identity struct {
-		what, workload string
-		want           bool
-	}
-	for _, id := range []identity{
-		// a standalone Job (forge: <name>-<10 hex spec hash>)
-		{"Job object event, spec-hashed name", "db-migrate-up-0123456789", true},
-		{"its pod, via the app.kubernetes.io/name label", "db-migrate-up", true},
-		{"its pod, label-less: the owner chain names the Job", "db-migrate-up-a1b2c3d4e5", true},
-		{"another job's hashed run", "dbrole-provision-reliant-aaaaaaaaaa", true},
-		// a CronJob (<name>-<scheduled minutes since epoch>)
-		{"cron-spawned Job object event", "cloudsql-backup-prune-29012345", true},
-		{"cron pod via the label", "cloudsql-backup-prune", true},
-		{"cron pod, label-less: the owner chain names the CronJob", "cloudsql-backup-prune", true},
-		// not this project's jobs
-		{"another project's job", "other-thing-0123456789", false},
-		{"a longer job name sharing the prefix", "db-migrate-up-worker", false},
-		{"a long-running workload sharing the prefix", "db-migrate-up-api-0123456789", false},
-		{"an unresolved pod name", "db-migrate-up-0123456789-x7k2p", false},
-		{"a prefix of a job name", "db-migrate", false},
-	} {
-		for _, panelID := range []string{"restarts-1", "restarts"} {
-			p, ok := findPanel(jobs, panelID)
-			if !ok {
-				continue
-			}
-			var re *regexp.Regexp
-			for _, w := range p.Where {
-				if w.Field == fieldWorkload {
-					if w.Op != OpMatch {
-						t.Fatalf("%s selects workloads with %q, which cannot match a suffixed run name", panelID, w.Op)
-					}
-					re = regexp.MustCompile(w.Value)
-				}
-			}
-			if re == nil {
-				t.Fatalf("%s has no workload scope: %+v", panelID, p.Where)
-			}
-			if got := re.MatchString(id.workload); got != id.want {
-				t.Errorf("%s: %s (%q) matched = %v, want %v (regex %s)", panelID, id.what, id.workload, got, id.want, re)
-			}
-		}
-	}
-}
-
-// A project with many jobs cannot fit one spec regex (256 bytes): the health
-// panels split by job group, and every job lands in exactly one group.
-func TestJobsHealthPanelsSplitWhenTheNamesDoNotFitOneRegex(t *testing.T) {
-	many := fleet()
-	var all []string
-	for i := 0; i < 23; i++ {
-		n := "batch-job-with-a-long-name-" + string(rune('a'+i))
-		all = append(all, n)
-		many.Processes = append(many.Processes, Process{Name: n, Kind: "job", Binary: "app", ServiceNames: []string{n}, Workloads: []string{n}})
-	}
-	d := dashboardByID(t, Build(many), "jobs")
-	var res []*regexp.Regexp
-	for _, p := range d.Panels {
-		if !strings.HasPrefix(p.ID, "restarts-") {
-			continue
-		}
-		for _, w := range p.Where {
-			if w.Field == fieldWorkload {
-				if len(w.Value) > maxPredicateRegex {
-					t.Errorf("%s regex is %d bytes, over the spec's %d", p.ID, len(w.Value), maxPredicateRegex)
-				}
-				res = append(res, regexp.MustCompile(w.Value))
-			}
-		}
-	}
-	if len(res) < 2 {
-		t.Fatalf("26 jobs must not share one regex: %v", panelIDs(d))
-	}
-	for _, n := range append(all, "db-migrate-up", "dbrole-provision-reliant", "cloudsql-backup-prune") {
-		hits := 0
-		for _, re := range res {
-			if re.MatchString(n) && re.MatchString(n+"-0123456789") {
-				hits++
-			}
-		}
-		if hits != 1 {
-			t.Errorf("job %s is covered by %d health groups, want 1", n, hits)
-		}
-	}
-}
-
-// Every generated dashboard passes the validator readers hold it to.
 func TestEveryGeneratedDashboardValidates(t *testing.T) {
 	for _, in := range []Input{fleet(), {Project: "shop"}, {Project: "shop", Frontends: []string{"web"}}} {
 		for _, d := range Build(in).Dashboards {
@@ -298,7 +202,7 @@ func TestEveryGeneratedDashboardValidates(t *testing.T) {
 	if _, err := ParseDashboard("jobs", b); err != nil {
 		t.Fatalf("a Jobs dashboard with many jobs must still validate: %v", err)
 	}
-	for _, id := range []string{"runs-by-job", "failures-by-job", "restarts-2", "warning-events", "recent-runs"} {
+	for _, id := range []string{"runs-by-job", "failures-by-job", "restarts", "warning-events", "recent-runs", "error-logs"} {
 		if !hasPanel(d, id) {
 			t.Errorf("26 jobs: Jobs dashboard lacks %q: %v", id, panelIDs(d))
 		}
@@ -560,61 +464,206 @@ func TestEveryRunCountSharesTheExecutionGrouping(t *testing.T) {
 	}
 }
 
-// The dashboard declares a service.name filter, and the console applies a
-// selection to every panel. A declarative panel is narrowed by the console; a
-// SQL panel only by a statement that binds {services:Array(String)}. Every SQL
-// panel must bind it, or a selection narrows some panels and not others.
-func TestEveryJobsPanelHonoursTheServiceFilter(t *testing.T) {
+// panelSQL is every SQL statement on d, for a search across the whole dashboard.
+func panelSQL(d Dashboard) string {
+	var b strings.Builder
+	for _, p := range d.Panels {
+		b.WriteString(p.SQL)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// The Jobs dashboard has ONE way to select a job. The console hands the
+// dashboard's service selector to every DECLARATIVE panel as ServiceName IN
+// (...) and a panel cannot opt out of it, while the telemetry a job leaves
+// carries three names (metrics the workload, logs the service.name, events the
+// Job object's). So a declarative panel is selected by a different subset than
+// its neighbours, or by nothing. Every panel here is SQL, and the selection
+// reaches a statement only through the resolver.
+func TestEveryJobsPanelSelectsThroughTheOneResolver(t *testing.T) {
 	jobs := dashboardByID(t, Build(fleet()), "jobs")
-	hasFilter := false
-	for _, f := range jobs.Filters {
-		hasFilter = hasFilter || f.Field == FieldService
+	resolver := jobResolverSQL(fleetJobs())
+	if len(jobs.Panels) != 8 {
+		t.Errorf("Jobs dashboard has %d panels, want its 8: %v", len(jobs.Panels), panelIDs(jobs))
 	}
-	if !hasFilter {
-		t.Fatalf("the Jobs dashboard has no service.name filter: %+v", jobs.Filters)
-	}
-	sqlPanels := 0
 	for _, p := range jobs.Panels {
 		if p.Kind != KindSQL {
+			t.Errorf("panel %s is %q: a declarative panel receives the raw service selector, which cannot select a job", p.ID, p.Kind)
 			continue
 		}
-		sqlPanels++
-		if !strings.Contains(p.SQL, "{services:Array(String)}") {
-			t.Errorf("SQL panel %s ignores the service filter (never binds {services:Array(String)}):\n%s", p.ID, p.SQL)
+		// The statement embeds the resolver verbatim, and has its jobs selected by it.
+		if !strings.Contains(p.SQL, resolver) {
+			t.Errorf("panel %s does not carry the shared resolver:\n%s", p.ID, p.SQL)
 		}
-		if !strings.Contains(p.SQL, "empty({services:Array(String)})") {
-			t.Errorf("SQL panel %s must treat an empty selection as every job:\n%s", p.ID, p.SQL)
+		if !strings.Contains(p.SQL, "has(selected_jobs, job)") {
+			t.Errorf("panel %s does not keep only the selected jobs:\n%s", p.ID, p.SQL)
 		}
-		if strings.Contains(p.SQL, "k8s.object.kind") == false && p.ID != "warning-events" {
-			t.Errorf("SQL panel %s does not read Job events:\n%s", p.ID, p.SQL)
+		// The raw selection is bound exactly once per resolver and never anywhere else.
+		stripped := strings.ReplaceAll(p.SQL, resolver, "")
+		if strings.Contains(stripped, "{services:") {
+			t.Errorf("panel %s binds the raw service selector outside the resolver:\n%s", p.ID, stripped)
 		}
-	}
-	if sqlPanels != 6 {
-		t.Errorf("Jobs dashboard has %d SQL panels, want the 6 run and warning panels: %v", sqlPanels, panelIDs(jobs))
-	}
-	// The selector resolves a service.name a workload declares for itself.
-	in := Process{Name: "indexer", Kind: "job", ServiceNames: []string{"search-indexer"}, Workloads: []string{"indexer"}}
-	sql := jobsSummarySQL([]Process{in})
-	for _, want := range []string{"('indexer', 'search-indexer')", "arrayExists(", "has({services:Array(String)}, run)"} {
-		if !strings.Contains(sql, want) {
-			t.Errorf("the selector does not resolve a declared service.name (%q missing):\n%s", want, sql)
+		if strings.Contains(stripped, "{envs:") {
+			t.Errorf("panel %s binds the raw environment names: the console binds {env_ids}", p.ID)
+		}
+		if p.Signal != "" || len(p.Where) > 0 || len(p.Series) > 0 {
+			t.Errorf("panel %s carries declarative selection (signal %q, where %v, series %v) beside its SQL", p.ID, p.Signal, p.Where, p.Series)
 		}
 	}
-	// A name with a quote cannot break out of its literal.
-	evil := Process{Name: "x", Kind: "job", ServiceNames: []string{"o'brien"}, Workloads: []string{"x"}}
-	if sql := jobsSummarySQL([]Process{evil}); !strings.Contains(sql, `'o\'brien'`) {
-		t.Errorf("a service name must be quoted:\n%s", sql)
+	// One filter, the service selector, and it targets every panel (no panelIds
+	// subset that would leave one with a stale value).
+	if len(jobs.Filters) != 1 || jobs.Filters[0].Field != FieldService || len(jobs.Filters[0].PanelIDs) != 0 {
+		t.Errorf("Jobs filters = %+v, want the one dashboard-wide service filter", jobs.Filters)
+	}
+	// And the resolver is defined once per statement, from the same process list.
+	for _, p := range jobs.Panels {
+		if n := strings.Count(p.SQL, "AS job_identity"); n < 1 {
+			t.Errorf("panel %s never defines job_identity", p.ID)
+		}
 	}
 }
 
-// The Warning-event panel counts events of the Job itself (named for the Job:
-// forge name + run suffix) and of its pods (named for the forge job), and
-// nothing else.
-func TestJobsWarningsSQLResolvesBothObjectKinds(t *testing.T) {
-	sql := jobsWarningsSQL([]Process{{Name: "db-migrate-up", Kind: "job", ServiceNames: []string{"db-migrate-up"}, Workloads: []string{"db-migrate-up"}}})
-	for _, want := range []string{"k8s.event.type'] = 'Warning'", "'(" + jobRunSuffix + ")?$'", "['db-migrate-up']"} {
-		if !strings.Contains(sql, want) {
-			t.Errorf("warnings SQL lacks %q:\n%s", want, sql)
+// fleetJobs are the jobs and crons of fleet(), in the order Build hands them to
+// BuildJobs (sorted by name).
+func fleetJobs() []Process {
+	var out []Process
+	for _, p := range fleet().Processes {
+		if p.IsJob() {
+			out = append(out, p)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// The resolver's identity table names every identity a job leaves: its forge
+// name, its workloads and their service.names, quoted.
+func TestJobResolverCarriesEveryIdentityOfEachJob(t *testing.T) {
+	jobs := []Process{
+		{Name: "indexer", Kind: "job", Workloads: []string{"indexer", "indexer-dev"}, ServiceNames: []string{"search-indexer", "indexer-dev"}},
+		{Name: "o'brien", Kind: "cron", Workloads: []string{"o'brien"}, ServiceNames: []string{"o'brien"}},
+	}
+	got := jobResolverSQL(jobs)
+	for _, want := range []string{
+		`('indexer', ['indexer', 'indexer-dev'], ['search-indexer', 'indexer-dev'])`,
+		`('o\'brien', ['o\'brien'], ['o\'brien'])`,
+		"{services:Array(String)}",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("resolver lacks %q:\n%s", want, got)
+		}
+	}
+	if n := strings.Count(got, "{services:Array(String)}"); n != 2 {
+		t.Errorf("the resolver binds the selector %d times, want twice (the empty test and the match), all inside it", n)
+	}
+}
+
+// Each source is filtered by the identity it carries: metrics and events the
+// workload or object name, logs the service.name.
+func TestEachJobsSourceIsFilteredByTheIdentityItCarries(t *testing.T) {
+	jobs := fleetJobs()
+	for _, tc := range []struct {
+		name, sql string
+		want      []string
+		not       []string
+	}{
+		{"restarts (metrics)", jobsRestartsSQL(jobs), []string{"FROM otel_metrics_gauge", "k8s.container.restarts", "match(ResourceAttributes['k8s.workload.name']"}, []string{"has(j.3, ServiceName)"}},
+		{"warning events", jobsWarningsSQL(jobs), []string{"FROM otel_logs", "k8s.event.type'] = 'Warning'", "match(ResourceAttributes['k8s.workload.name']"}, []string{"has(j.3, ServiceName)"}},
+		{"run events", jobsSummarySQL(jobs), []string{"k8s.object.kind", "match(ResourceAttributes['k8s.workload.name']"}, []string{"has(j.3, ServiceName)"}},
+		{"error logs", jobsErrorLogsSQL(jobs), []string{"FROM otel_logs", "has(j.3, ServiceName)", "IN ('ERROR', 'ERR')"}, []string{"k8s.workload.name"}},
+	} {
+		for _, w := range tc.want {
+			if !strings.Contains(tc.sql, w) {
+				t.Errorf("%s lacks %q:\n%s", tc.name, w, tc.sql)
+			}
+		}
+		for _, n := range tc.not {
+			if strings.Contains(tc.sql, n) {
+				t.Errorf("%s filters by an identity its source does not carry (%q):\n%s", tc.name, n, tc.sql)
+			}
+		}
+	}
+}
+
+// Across every generated dashboard: a panel that pins its own identity
+// (service.name IN, or k8s.workload.name IN) must not ALSO receive the
+// dashboard's service selector for the other identity. The node agent stamps
+// node-derived series (saturation, restarts) with the WORKLOAD name, while
+// the application's spans, metrics and logs carry its service.name
+// (OTEL_SERVICE_NAME). When a project renames a service, those differ, and a
+// dashboard-wide service filter blanks one half of the dashboard whichever
+// name is picked. Such a dashboard must split the filter by identity: the
+// service filter on the application panels, a workload filter on the node
+// panels (Filter.PanelIDs).
+func TestNoDashboardGivesAPanelAServiceSelectionItsDataCannotMatch(t *testing.T) {
+	in := fleet()
+	// Rename two services away from their workload names, as OTEL_SERVICE_NAME does.
+	for i := range in.Processes {
+		switch in.Processes[i].Name {
+		case "admin-api":
+			in.Processes[i].ServiceNames = []string{"admin-service"}
+		case "workers":
+			in.Processes[i].ServiceNames = []string{"worker-service"}
+		}
+	}
+	in.Deployed = Identities{ServiceNames: []string{"admin-service", "worker-service", "workspace"}, Workloads: []string{"admin-api", "workers", "workspace"}}
+	sp := Build(in)
+	checked := 0
+	for _, d := range sp.Dashboards {
+		var serviceFilter *Filter
+		for i := range d.Filters {
+			if d.Filters[i].Field == FieldService {
+				serviceFilter = &d.Filters[i]
+			}
+		}
+		if serviceFilter == nil || d.ID == JobsID {
+			continue
+		}
+		// A process whose service.names are its workload names has no split.
+		if proc, ok := strings.CutPrefix(d.ID, "process-"); ok {
+			unchanged := false
+			for _, p := range in.Processes {
+				if p.Name == proc && reflect.DeepEqual(p.ServiceNames, p.Workloads) {
+					unchanged = true
+				}
+			}
+			if unchanged {
+				continue
+			}
+		}
+		for _, p := range d.Panels {
+			if p.Kind == KindSQL {
+				continue
+			}
+			byWorkload := false
+			for _, w := range p.Where {
+				byWorkload = byWorkload || w.Field == fieldWorkload
+			}
+			if !byWorkload {
+				continue
+			}
+			checked++
+			// The panel is selected by workload name, so the service selector
+			// must not reach it.
+			if len(serviceFilter.PanelIDs) == 0 || contains(serviceFilter.PanelIDs, p.ID) {
+				t.Errorf("%s: the service.name filter reaches panel %s, whose data is keyed by workload (a renamed service blanks it)", d.ID, p.ID)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no workload-keyed panel was checked: the test proves nothing")
+	}
+}
+
+// When no service is renamed (every service.name is its workload name) there
+// is nothing to split and the filter stays dashboard-wide.
+func TestServiceFilterStaysDashboardWideWhenNamesAgree(t *testing.T) {
+	for _, d := range Build(fleet()).Dashboards {
+		for _, f := range d.Filters {
+			if f.Field == FieldService && len(f.PanelIDs) != 0 {
+				t.Errorf("%s: the service filter is split to %v although every service.name is its workload name", d.ID, f.PanelIDs)
+			}
 		}
 	}
 }

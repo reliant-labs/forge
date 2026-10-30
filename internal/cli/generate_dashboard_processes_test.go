@@ -493,8 +493,7 @@ func TestFrontendIdentitiesUnionServiceNamesAcrossEnvironments(t *testing.T) {
 // A limit is declared per WORKLOAD, and a process groups one command under
 // different workload names in different environments. The cross-environment
 // identities must keep each workload's own declaration, not the OR over the
-// process: prod's CPU limit says nothing about dev's. A job's workloads keep
-// their own service.names too (one reports a custom OTEL_SERVICE_NAME).
+// process: prod's CPU limit says nothing about dev's.
 func TestDeployedIdentitiesKeepPerWorkloadFacts(t *testing.T) {
 	dir := t.TempDir()
 	workload := func(name, kind string, cpuLimit int64, env ...deployv1.EnvVar) WorkloadEntity {
@@ -521,23 +520,5 @@ func TestDeployedIdentitiesKeepPerWorkloadFacts(t *testing.T) {
 	}
 	if !reflect.DeepEqual(id.Workloads, []string{"app", "app-dev"}) {
 		t.Errorf("workloads = %v", id.Workloads)
-	}
-
-	migrate := workload("migrate", "job", 0, deployv1.EnvVar{Name: "OTEL_SERVICE_NAME", Value: "db-migrator"})
-	migrateDev := workload("migrate-dev", "job", 0)
-	procs, err = processesForWorkloads("app", nil, []WorkloadEntity{migrate, migrateDev})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(procs) != 1 {
-		t.Fatalf("one command, one process: %+v", procs)
-	}
-	want := map[string][]string{"migrate": {"db-migrator"}, "migrate-dev": {"migrate-dev"}}
-	if got := procs[0].WorkloadServices; !reflect.DeepEqual(got, want) {
-		t.Errorf("per-workload services = %v, want %v", got, want)
-	}
-	// A long-running process records none: only the Jobs dashboard needs the pairing.
-	if procs, _ = processesForWorkloads("app", nil, []WorkloadEntity{prod}); procs[0].WorkloadServices != nil {
-		t.Errorf("a service records no per-workload services: %v", procs[0].WorkloadServices)
 	}
 }

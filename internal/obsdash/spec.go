@@ -225,16 +225,8 @@ type Process struct {
 	Root         string   `json:"root,omitempty"`
 	ServiceNames []string `json:"serviceNames"`
 	Workloads    []string `json:"workloads"`
-	// WorkloadServices maps each workload of a JOB or cron to every service.name
-	// it reports (its OTEL_SERVICE_NAME, else its own name; one workload name
-	// can report a different one in each environment). ServiceNames and
-	// Workloads are unordered unions over every workload the process groups, so
-	// which name belongs to which workload is only here. Empty for other kinds
-	// and when not known; the Jobs dashboard then treats every service name as
-	// every workload's.
-	WorkloadServices map[string][]string `json:"workloadServices,omitempty"`
-	RPCServices      []string            `json:"rpcServices,omitempty"`
-	HasDatabase      bool                `json:"hasDatabase,omitempty"`
+	RPCServices  []string `json:"rpcServices,omitempty"`
+	HasDatabase  bool     `json:"hasDatabase,omitempty"`
 	// CPULimit and MemoryLimit say the workload declares that resource limit,
 	// the only case the node agent's *_limit_utilization series exist.
 	CPULimit    bool `json:"cpuLimit,omitempty"`
@@ -429,10 +421,12 @@ func buildOverview(in Input) Dashboard {
 		d.Panels = append(d.Panels, rpc...)
 	}
 	limits := map[string][]string{"cpu-vs-limit": cpuLimited, "memory-vs-limit": memLimited, "restarts": workloads}
+	var nodePanels []string
 	for _, p := range BuildWorkloads(in.Project).Panels {
 		if scope, ok := limits[p.ID]; ok && (p.ID == "restarts" || len(scope) > 0) {
 			p.Where = scoped(identityScope(fieldWorkload, scope), p.Where...)
 			d.Panels = append(d.Panels, p)
+			nodePanels = append(nodePanels, p.ID)
 		}
 	}
 	for _, p := range BuildReleases(in.Project).Panels {
@@ -444,6 +438,7 @@ func buildOverview(in Input) Dashboard {
 	d.Panels = append(d.Panels,
 		Panel{ID: "error-logs", Title: "Recent error logs", Kind: KindSearch, Signal: Logs, Where: scoped(identityScope(FieldService, services), errorLogs), Columns: logColumns, Width: 24, Height: 9},
 	)
+	splitServiceFilter(&d, nodePanels, services, workloads)
 	return d
 }
 
@@ -514,6 +509,7 @@ func buildProcess(in Input, p Process) Dashboard {
 	// service.name. A renamed OTEL_SERVICE_NAME must not blank saturation.
 	// Only where the node agent reports at all, and a limit panel only for a
 	// declared limit: a request-only workload is drawn against its request.
+	var nodePanels []string
 	if p.NodeMetadata {
 		want := map[string]bool{"restarts": true}
 		if p.CPULimit {
@@ -533,6 +529,7 @@ func buildProcess(in Input, p Process) Dashboard {
 			panel.Section = "workload"
 			panel.Where = scoped(identityScope(fieldWorkload, p.Workloads), panel.Where...)
 			d.Panels = append(d.Panels, panel)
+			nodePanels = append(nodePanels, panel.ID)
 		}
 	}
 	if p.ServesRPC() {
@@ -547,6 +544,7 @@ func buildProcess(in Input, p Process) Dashboard {
 			Filter{ID: "rpc-service", Label: "RPC service (traces)", Field: "span.attr.rpc.service", Signal: Traces, PanelIDs: []string{"red-by-rpc"}},
 			Filter{ID: "rpc-method", Label: "RPC method (traces)", Field: "span.attr.rpc.method", Signal: Traces, PanelIDs: []string{"red-by-rpc"}})
 	}
+	splitServiceFilter(&d, nodePanels, p.ServiceNames, p.Workloads)
 	return d
 }
 

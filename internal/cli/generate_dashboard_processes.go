@@ -304,12 +304,6 @@ func processesForWorkloads(primary string, roots []codegen.GraphRoot, workloads 
 		}
 		p.ServiceNames = append(p.ServiceNames, service)
 		p.Workloads = append(p.Workloads, w.Name)
-		if p.IsJob() {
-			if p.WorkloadServices == nil {
-				p.WorkloadServices = map[string][]string{}
-			}
-			p.WorkloadServices[w.Name] = append(p.WorkloadServices[w.Name], service)
-		}
 	}
 	var out []obsdash.Process
 	for _, key := range order {
@@ -317,9 +311,6 @@ func processesForWorkloads(primary string, roots []codegen.GraphRoot, workloads 
 		p := g.p
 		p.ServiceNames = uniqueSorted(p.ServiceNames)
 		p.Workloads = uniqueSorted(p.Workloads)
-		for w, svcs := range p.WorkloadServices {
-			p.WorkloadServices[w] = uniqueSorted(svcs)
-		}
 		p.Name = p.Workloads[0]
 		for old := range g.legacy {
 			if old != p.Name {

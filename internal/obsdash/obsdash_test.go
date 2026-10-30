@@ -140,6 +140,16 @@ func TestEveryDashboardFiltersOnServiceAndEnvironment(t *testing.T) {
 		for _, f := range d.Filters {
 			got[f.Field] = true
 		}
+		// The Jobs dashboard is all SQL panels, which take the selection only
+		// through the service resolver and the console's own environment scope
+		// ({env_ids}). A deployment.environment.name filter would be pushed onto
+		// each SQL panel as a predicate, which a SQL panel refuses.
+		if d.ID == JobsID {
+			if !got[FieldService] || got[FieldEnv] {
+				t.Errorf("jobs: filters %v, want only service.name", d.Filters)
+			}
+			continue
+		}
 		if !got[FieldService] || !got[FieldEnv] {
 			t.Errorf("%s: filters %v lack service.name and deployment.environment.name", d.ID, d.Filters)
 		}

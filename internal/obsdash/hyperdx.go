@@ -130,6 +130,12 @@ func RenderHyperDX(sp Spec) ([]Rendered, error) {
 		if err != nil {
 			return nil, fmt.Errorf("dashboard %q: %w", d.ID, err)
 		}
+		// HyperDX refuses a dashboard with no tiles. One whose every panel is
+		// the console's own (the Jobs dashboard is all SQL panels) has nothing
+		// HyperDX can draw, so it has no HyperDX file, not an invalid one.
+		if len(hd.Tiles) == 0 {
+			continue
+		}
 		b, err := json.MarshalIndent(hd, "", "  ")
 		if err != nil {
 			return nil, err

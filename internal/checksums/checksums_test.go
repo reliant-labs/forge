@@ -302,8 +302,8 @@ func TestVerify_VintageClassification(t *testing.T) {
 func TestUncertifiedGenOutputsRecordNoHash(t *testing.T) {
 	root := t.TempDir()
 	const catalog, spec = "gen/forge_service_catalog.json", "deploy/observability/spec/x_gen.json"
-	if !Uncertified(catalog) || Uncertified(spec) || Uncertified("gen/foo_gen.go") {
-		t.Fatal("Uncertified: only gen/'s comment-incapable files")
+	if !Uncertified(catalog) || Uncertified(spec) || Uncertified("gen/foo_gen.go") || Uncertified("gen/my-own.json") {
+		t.Fatal("Uncertified: forge's named gen/ aggregates only, never a user's file")
 	}
 	if err := os.MkdirAll(filepath.Join(root, ".forge"), 0o755); err != nil {
 		t.Fatal(err)

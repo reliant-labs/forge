@@ -66,7 +66,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -728,11 +727,11 @@ func tier1Preamble(root, relPath string, cs *FileChecksums) (proceed, reAdopting
 }
 
 // Uncertified reports whether relPath is a Tier-1 output that NOTHING
-// certifies: a comment-incapable file (no embedded marker) in forge's
-// wholly-owned gen/ tree. .forge/hashes.json never records one (Load drops
+// certifies: a comment-incapable forge aggregate in forge's wholly-owned
+// gen/ tree (uncertifiedOutputs). .forge/hashes.json never records one (Load drops
 // a leftover entry), so it is regenerated whole on every run and is never a
-// stomp-guard or cleanup candidate. gen/forge_descriptor.json has always been
-// one; gen/forge_service_catalog.json is the other.
+// stomp-guard or cleanup candidate. gen/forge_descriptor.json has never had a
+// certificate either; gen/forge_service_catalog.json is the Tier-1 one.
 //
 // WHY. gen/'s JSON files are aggregates of the whole project, and a
 // certificate of an aggregate is a fingerprint of every input at once: it
@@ -746,10 +745,20 @@ func tier1Preamble(root, relPath string, cs *FileChecksums) (proceed, reAdopting
 // hand edit. What the certificate bought (refusing to overwrite a hand edit
 // of a generated file nobody edits) is not worth that: `forge ci
 // verify-generated` already fails a tree whose copy is not forge's render,
-// and `forge project disown` still takes a path over.
+// and `forge project disown` still takes the path over (it admits Uncertified
+// paths, and a disowned path is never written).
 func Uncertified(relPath string) bool {
-	relPath = slashKey(relPath)
-	return strings.HasPrefix(relPath, "gen/") && !Stampable(relPath)
+	return uncertifiedOutputs[slashKey(relPath)]
+}
+
+// uncertifiedOutputs are the paths Uncertified names: forge's own
+// comment-incapable aggregates, by exact path, so a user's file is never
+// mistaken for one (`forge project disown` admits these by this list).
+// gen/forge_descriptor.json is not here: it is written outside the Tier-1
+// writer (codegen's descriptor merge), has never had a certificate, and is
+// not disownable.
+var uncertifiedOutputs = map[string]bool{
+	"gen/forge_service_catalog.json": true,
 }
 
 // writeUncertified is the Tier-1 write of an Uncertified path, after the

@@ -389,3 +389,36 @@ func TestRunDisown_StillRefusesOrdinaryUnmarkedFile(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
+
+// gen/forge_service_catalog.json is certified by nothing (it has no
+// hashes.json entry), and is still forge's Tier-1 output: it can be
+// disowned, and a disowned catalog is never overwritten by generate's writer.
+func TestDisown_UncertifiedServiceCatalog(t *testing.T) {
+	const rel = "gen/forge_service_catalog.json"
+	userContent := "{\"schema\": \"mine\"}\n"
+	root := withDisownProjectRoot(t, &checksums.FileChecksums{})
+	seedDisownFile(t, root, rel, userContent)
+
+	if err := runDisown([]string{rel}, "the catalog forge renders does not fit our explorer", false); err != nil {
+		t.Fatalf("disown the uncertified catalog: %v", err)
+	}
+	cs, err := checksums.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cs.IsDisowned(rel) {
+		t.Fatal("the catalog was not recorded as disowned")
+	}
+	if wrote, err := checksums.WriteGeneratedFile(root, rel, []byte("{\"schema\": \"forge\"}\n"), cs, true); err != nil || wrote {
+		t.Fatalf("generate's writer touched a disowned catalog: wrote=%v err=%v", wrote, err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, rel)); string(got) != userContent {
+		t.Fatalf("disowned catalog overwritten:\n%s", got)
+	}
+	// A user's own JSON under gen/ is still not disownable: no certificate
+	// and not one of forge's uncertified outputs.
+	seedDisownFile(t, root, "gen/notes.json", "{}\n")
+	if err := runDisown([]string{"gen/notes.json"}, "x", false); err == nil {
+		t.Fatal("an arbitrary gen/ file was disownable")
+	}
+}

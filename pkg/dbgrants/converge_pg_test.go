@@ -372,3 +372,99 @@ func TestConvergeAsANonSuperuserMigratorWithForeignObjects(t *testing.T) {
 	f.denied(`SELECT user_email FROM events`, "column revoked by the owner role")
 	f.allowed(`SELECT id FROM events`, "declared column")
 }
+
+// Schema privileges beyond USAGE (CREATE would let the role make objects) are
+// revoked; USAGE is the only one the role keeps.
+func TestConvergeLeavesTheRoleOnlySchemaUsage(t *testing.T) {
+	f := newPGFixture(t, convergeSchemaSQL)
+	f.exec(`GRANT CREATE, USAGE ON SCHEMA public TO ` + f.role)
+	f.converge(eventsTable(Column{Name: "id"}))
+	var privs string
+	if err := f.db.QueryRowContext(context.Background(), `
+SELECT coalesce(string_agg(x.privilege_type, ',' ORDER BY x.privilege_type), '')
+  FROM pg_namespace n, aclexplode(n.nspacl) x
+ WHERE n.nspname = 'public' AND x.grantee = (SELECT oid FROM pg_roles WHERE rolname = $1)`, f.role).Scan(&privs); err != nil {
+		t.Fatal(err)
+	}
+	if privs != "USAGE" {
+		t.Errorf("schema privileges held by the role = %q, want USAGE only", privs)
+	}
+}
+
+// A default privilege recorded for ANOTHER creating role cannot be revoked by a
+// migrator that is not a member of it. The run fails and says so, rather than
+// leaving every table that role creates readable.
+func TestConvergeFailsClosedOnADefaultPrivilegeItCannotRevoke(t *testing.T) {
+	f := newPGFixture(t, convergeSchemaSQL)
+	ctx := context.Background()
+	creator, migrator := f.role+"_cr", f.role+"_mg"
+	for _, r := range []string{creator, migrator} {
+		f.exec(`CREATE ROLE ` + r + ` NOLOGIN NOSUPERUSER NOCREATEROLE`)
+		r := r
+		t.Cleanup(func() {
+			_, _ = f.db.ExecContext(context.Background(), `DROP OWNED BY `+r)
+			_, _ = f.db.ExecContext(context.Background(), `DROP ROLE IF EXISTS `+r)
+		})
+	}
+	f.exec(`GRANT USAGE ON SCHEMA public TO ` + f.role + `, ` + migrator)
+	for _, tbl := range []string{"events", "other"} {
+		f.exec(`ALTER TABLE ` + tbl + ` OWNER TO ` + migrator)
+	}
+	f.exec(`ALTER DEFAULT PRIVILEGES FOR ROLE ` + creator + ` IN SCHEMA public GRANT SELECT ON TABLES TO ` + f.role)
+
+	script, err := RenderFor(f.role, eventsTable(Column{Name: "id"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := f.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, `SET ROLE `+migrator); err != nil {
+		t.Fatal(err)
+	}
+	err = Apply(ctx, conn, script)
+	if err == nil {
+		t.Fatal("the run converged while another role's default privilege still names the role")
+	}
+	if !strings.Contains(err.Error(), creator) || !strings.Contains(err.Error(), "default privileges") {
+		t.Errorf("the failure does not name the creating role: %v", err)
+	}
+}
+
+// A schema privilege the migrating role cannot revoke (it neither owns the
+// schema nor holds the privilege with grant option) fails the run.
+func TestConvergeFailsClosedOnASchemaPrivilegeItCannotRevoke(t *testing.T) {
+	f := newPGFixture(t, convergeSchemaSQL+`CREATE SCHEMA other_s; CREATE TABLE other_s.t (id TEXT);`)
+	ctx := context.Background()
+	migrator := f.role + "_mg"
+	f.exec(`CREATE ROLE ` + migrator + ` NOLOGIN NOSUPERUSER`)
+	t.Cleanup(func() {
+		_, _ = f.db.ExecContext(context.Background(), `DROP OWNED BY `+migrator)
+		_, _ = f.db.ExecContext(context.Background(), `DROP ROLE IF EXISTS `+migrator)
+	})
+	f.exec(`GRANT USAGE ON SCHEMA other_s TO ` + migrator)
+	f.exec(`ALTER TABLE other_s.t OWNER TO ` + migrator)
+	f.exec(`GRANT CREATE, USAGE ON SCHEMA other_s TO ` + f.role)
+
+	script, err := RenderFor(f.role, []Table{{Schema: "other_s", Name: "t"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := f.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, `SET ROLE `+migrator); err != nil {
+		t.Fatal(err)
+	}
+	err = Apply(ctx, conn, script)
+	if err == nil {
+		t.Fatal("the run converged while a schema CREATE the migrator cannot revoke still stands")
+	}
+	if !strings.Contains(err.Error(), "schema other_s (CREATE)") {
+		t.Errorf("the failure does not name the schema privilege: %v", err)
+	}
+}

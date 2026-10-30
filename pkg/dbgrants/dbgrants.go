@@ -38,9 +38,16 @@
 //     was granted by another role, or sits on an object the migrator does not
 //     own) fails the run instead of standing behind a converged-looking script.
 //
-// What a per-role script cannot touch is named in the package tests and the
-// PR that introduced them: privileges PUBLIC holds (default EXECUTE on
-// functions), role memberships, and database-level privileges.
+// What a script about ONE role cannot converge, and does not try to:
+//
+//   - privileges PUBLIC holds, which every role inherits (Postgres grants
+//     EXECUTE on new functions to PUBLIC by default);
+//   - the role's memberships in other roles (pg_read_all_data, an application
+//     role): revoking one needs ADMIN OPTION on it, and the ManagedDatabase
+//     render declares none (pkg/deploy);
+//   - database-level privileges (CONNECT, TEMP, CREATE) and row-level
+//     security policies that name the role;
+//   - objects in a schema the declaration does not name.
 //
 // What the role is never given: INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES,
 // TRIGGER, any sequence privilege, any view (a view can expose a secret column
@@ -257,7 +264,7 @@ func RenderFor(role string, tables []Table) (string, error) {
 	b.WriteString("                     CASE r.kind WHEN 'r' THEN 'TABLES' WHEN 'S' THEN 'SEQUENCES' WHEN 'f' THEN 'FUNCTIONS' WHEN 'T' THEN 'TYPES' WHEN 'n' THEN 'SCHEMAS' WHEN 'L' THEN 'LARGE OBJECTS' END,\n")
 	fmt.Fprintf(&b, "                     %s);\n", quoteLiteral(role))
 	b.WriteString("    EXCEPTION WHEN insufficient_privilege THEN\n")
-	fmt.Fprintf(&b, "      RAISE EXCEPTION 'cannot revoke the default privileges of role %%s (schema %%) that name %%: the migrating role is not a member of it', r.creator, coalesce(r.schema, '<all>'), %s\n", quoteLiteral(role))
+	fmt.Fprintf(&b, "      RAISE EXCEPTION 'cannot revoke the default privileges of role %% (schema %%) that name %%: the migrating role is not a member of it', r.creator, coalesce(r.schema, '<all>'), %s\n", quoteLiteral(role))
 	b.WriteString("        USING ERRCODE = 'insufficient_privilege';\n")
 	b.WriteString("    END;\n")
 	b.WriteString("  END LOOP;\n\n")
@@ -270,7 +277,11 @@ func RenderFor(role string, tables []Table) (string, error) {
 	// is left fails the run, naming the object.
 	b.WriteString("  -- verify: nothing the role was given before this run may still stand\n")
 	b.WriteString("  SELECT string_agg(o.what, ', ' ORDER BY o.what) INTO leftover FROM (\n")
-	b.WriteString("    SELECT format('%s.%s', n.nspname, c.relname) AS what\n")
+	b.WriteString("    SELECT format('schema %s (%s)', n.nspname, x.privilege_type) AS what\n")
+	b.WriteString("      FROM pg_namespace n, aclexplode(n.nspacl) x\n")
+	b.WriteString("     WHERE n.nspname = ANY (declared) AND x.grantee = role_oid AND x.privilege_type <> 'USAGE'\n")
+	b.WriteString("    UNION ALL\n")
+	b.WriteString("    SELECT format('%s.%s', n.nspname, c.relname)\n")
 	b.WriteString("      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace\n")
 	b.WriteString("     WHERE n.nspname = ANY (declared) AND c.relkind IN ('r','p','v','m','f','S') AND c.relacl IS NOT NULL\n")
 	b.WriteString("       AND EXISTS (SELECT 1 FROM aclexplode(c.relacl) x WHERE x.grantee = role_oid)\n")
@@ -286,7 +297,7 @@ func RenderFor(role string, tables []Table) (string, error) {
 	b.WriteString("       AND EXISTS (SELECT 1 FROM aclexplode(p.proacl) x WHERE x.grantee = role_oid)\n")
 	b.WriteString("  ) o;\n")
 	b.WriteString("  IF leftover IS NOT NULL THEN\n")
-	fmt.Fprintf(&b, "    RAISE EXCEPTION 'privileges of role %%s could not be revoked (granted by another role, or on an object the migrating role does not own): %%', %s, leftover\n", quoteLiteral(role))
+	fmt.Fprintf(&b, "    RAISE EXCEPTION 'privileges of role %% could not be revoked (granted by another role, or on an object the migrating role does not own): %%', %s, leftover\n", quoteLiteral(role))
 	b.WriteString("      USING ERRCODE = 'insufficient_privilege';\n")
 	b.WriteString("  END IF;\n\n")
 

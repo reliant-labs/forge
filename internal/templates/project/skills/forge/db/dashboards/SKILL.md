@@ -38,7 +38,7 @@ What `forge_dash` can read is a strict subset of what `forge_ro` can:
 tables marked forge:dashboard  ∩  columns forge_ro may read  −  forge:no-dashboard columns
 ```
 
-So a `forge:secret` column, and a credential-shaped column nobody decided (`db/query`), is never reachable by a panel whatever `forge:no-dashboard` says. A view is never granted, even one marked: the catalog cannot say which base column a view exposes. Taking the last marker off a table revokes on the next run; the script is a REVOKE then GRANT, not a delta.
+So a `forge:secret` column, and a credential-shaped column nobody decided (`db/query`), is never reachable by a panel whatever `forge:no-dashboard` says. A view is never granted, even one marked: the catalog cannot say which base column a view exposes. Taking the last marker off a table revokes on the next run; the script is a REVOKE then GRANT, not a delta. The REVOKE reads what the catalog holds for the role (column, view, sequence, routine and schema privileges, and `ALTER DEFAULT PRIVILEGES` entries naming it), not what the declaration lists, so a column that gains `forge:no-dashboard` or `forge:secret` loses its access on the next run. A privilege the migrating role cannot revoke fails the run instead of standing silently. Privileges `PUBLIC` holds and role memberships are not the script's to remove: keep both empty of anything sensitive.
 
 ## Why the allowlist is Postgres privileges, not an SQL parser
 

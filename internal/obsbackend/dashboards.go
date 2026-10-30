@@ -192,6 +192,11 @@ type PanelReadoutRequest struct {
 	// AllEnvs lifts the env bound: the same panel over every environment of
 	// ProjectID, the question "does this data exist in another env?".
 	AllEnvs bool
+	// NoEnv drops the env predicate as a platform-scoped dashboard does: its
+	// telemetry belongs to no environment and carries no env id. Unlike
+	// AllEnvs it is the dashboard's own read, not a widening, so it needs no
+	// project to bound it (who may read which org's data is unchanged).
+	NoEnv bool
 }
 
 // QueryPanelReadout runs a panel the way the console does and reads the answer
@@ -211,6 +216,9 @@ func (c Cloud) QueryPanelReadout(ctx context.Context, req PanelReadoutRequest) (
 		if req.ProjectID == "" {
 			return PanelReadout{}, Wrong("an all-envs read needs the forge project to bound it")
 		}
+		scope.EnvIDs = nil
+	}
+	if req.NoEnv {
 		scope.EnvIDs = nil
 	}
 	r, err := c.queryPanelScoped(ctx, scope, panel, 0, false)

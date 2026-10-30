@@ -99,6 +99,7 @@ const (
 	verdictOutsideWindow  = "data_outside_window"
 	verdictOtherEnv       = "data_in_other_env"
 	verdictExcludedFilter = "data_excluded_by_filters"
+	verdictOtherEnvBare   = "data_in_other_env_without_filters"
 	verdictNoneAnywhere   = "no_data_anywhere"
 	verdictMetricNever    = "metric_never_seen"
 	verdictProbeFailed    = "probe_failed"
@@ -262,6 +263,8 @@ type auditPanel struct {
 
 	// firstColumnType is a sql panel's first result column type.
 	firstColumnType string
+	// scope is the dashboard's: it decides how the panel is read.
+	scope dashspec.Scope
 }
 
 type auditDashboard struct {
@@ -349,7 +352,9 @@ An empty panel is probed (--no-probe skips it): the same panel over --probe-wind
 (default 168h), over every environment of the project, and without its filters, and
 a metrics panel is looked up in the metric catalog. The verdict is one of
 data_outside_window, data_in_other_env, data_excluded_by_filters,
-metric_never_seen or no_data_anywhere.
+data_in_other_env_without_filters, metric_never_seen or no_data_anywhere. A
+dashboard is replayed in its own scope: an org dashboard names no project, a
+platform one drops the env predicate (and has no other env to probe).
 
 Failures are listed first. EXIT: 0 every panel ok; 2 any panel empty or partial;
 1 any panel could not be read. The env's telemetry must be stored by the control
@@ -570,7 +575,7 @@ func (a *dashAudit) dashboard(di obsbackend.DashboardInfo) auditDashboard {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			panels[i] = a.panel(p, base, source)
+			panels[i] = a.panel(p, base, source, spec.Scope)
 		}()
 	}
 	wg.Wait()
@@ -641,9 +646,9 @@ func (a *dashAudit) failureOf(err error) obsbackend.Failure {
 	return obsbackend.FailureOf(err)
 }
 
-func (a *dashAudit) panel(p dashspec.Panel, base time.Duration, source string) auditPanel {
+func (a *dashAudit) panel(p dashspec.Panel, base time.Duration, source string, scope dashspec.Scope) auditPanel {
 	window := base
-	ap := auditPanel{ID: p.ID, Title: p.Title, Kind: string(p.Kind), Signal: string(p.Signal), WindowSource: source, MinStep: p.MinStep}
+	ap := auditPanel{ID: p.ID, Title: p.Title, Kind: string(p.Kind), Signal: string(p.Signal), WindowSource: source, MinStep: p.MinStep, scope: scope}
 	if p.Kind == dashspec.KindSQL && p.MinStep != "" {
 		if w, widened := rangeForBucket(window, p.MinStep); widened {
 			ap.Widened, ap.WidenedFrom, ap.WindowSource = true, durText(window), auditWindowWidened
@@ -666,7 +671,7 @@ func (a *dashAudit) panel(p dashspec.Panel, base time.Duration, source string) a
 	var ro obsbackend.PanelReadout
 	attempts, err := a.guarded(func() error {
 		var err error
-		ro, err = a.dr.QueryPanelReadout(a.ctx, obsbackend.PanelReadoutRequest{Narrow: obsbackend.Narrow{Range: rng}, Panel: op, ProjectID: a.project})
+		ro, err = a.dr.QueryPanelReadout(a.ctx, a.readout(ap, obsbackend.Narrow{Range: rng}, op, false))
 		return err
 	})
 	ap.Attempts = attempts
@@ -827,7 +832,7 @@ func (a *dashAudit) probe(ap *auditPanel, op obsquery.Panel) *auditProbe {
 	}
 
 	if widen {
-		w := step("wider_window", obsbackend.PanelReadoutRequest{Narrow: wide, Panel: op, ProjectID: a.project})
+		w := step("wider_window", a.readout(*ap, wide, op, false))
 		pr.Steps = append(pr.Steps, w)
 		switch {
 		case w.Error != nil:
@@ -840,24 +845,37 @@ func (a *dashAudit) probe(ap *auditPanel, op obsquery.Panel) *auditProbe {
 	} else {
 		pr.Steps = append(pr.Steps, auditProbeStep{Name: "wider_window", Error: &auditFailure{Class: "skipped", Message: fmt.Sprintf("the panel's window (%s) is already the longest this signal allows; there is nothing older to read", durText(to.Sub(from)))}})
 	}
-	var other, filtered auditProbeStep
+	var other, filtered, both auditProbeStep
 	probed := len(pr.Catalog) > 0
-	if a.project != "" {
-		other = step("all_envs", obsbackend.PanelReadoutRequest{Narrow: wide, Panel: op, AllEnvs: true, ProjectID: a.project})
+	// Another env is a question only for a project dashboard: a platform one
+	// already reads every env (its telemetry has none), and an org one names
+	// no project to bound an all-env read.
+	envProbe := a.project != "" && (ap.scope == "" || ap.scope == dashspec.ScopeProject)
+	if envProbe {
+		other = step("all_envs", a.readout(*ap, wide, op, true))
 		pr.Steps = append(pr.Steps, other)
 		probed = true
 	}
-	if bare, changed := withoutFilters(op); changed {
-		filtered = step("without_filters", obsbackend.PanelReadoutRequest{Narrow: wide, Panel: bare, ProjectID: a.project})
+	bare, hasFilters := withoutFilters(op)
+	if hasFilters {
+		filtered = step("without_filters", a.readout(*ap, wide, bare, false))
 		pr.Steps = append(pr.Steps, filtered)
 		probed = true
+	}
+	// Each lift alone found nothing: data in another env that the filters also
+	// exclude needs both lifted at once before absence can be claimed.
+	if envProbe && hasFilters && other.Error == nil && filtered.Error == nil && !other.HasData && !filtered.HasData {
+		both = step("all_envs_without_filters", a.readout(*ap, wide, bare, true))
+		pr.Steps = append(pr.Steps, both)
 	}
 	switch {
 	case other.HasData:
 		pr.Verdict = verdictOtherEnv
 	case filtered.HasData:
 		pr.Verdict = verdictExcludedFilter
-	case other.Error != nil || filtered.Error != nil || catalogFailed:
+	case both.HasData:
+		pr.Verdict = verdictOtherEnvBare
+	case other.Error != nil || filtered.Error != nil || both.Error != nil || catalogFailed:
 		// A follow-up that could not be read (a catalog lookup included)
 		// cannot rule its scope out: absence is not established.
 		pr.Verdict = verdictProbeFailed
@@ -870,6 +888,21 @@ func (a *dashAudit) probe(ap *auditPanel, op obsquery.Panel) *auditProbe {
 		pr.Verdict = verdictNoneAnywhere
 	}
 	return pr
+}
+
+// readout is the console's request for a panel of ap's dashboard: a project
+// dashboard reads the selected env of this project; an org dashboard names no
+// project (still the selected env); a platform dashboard drops the env
+// predicate, its telemetry carrying none. allEnvs is the probe's widening.
+func (a *dashAudit) readout(ap auditPanel, n obsbackend.Narrow, op obsquery.Panel, allEnvs bool) obsbackend.PanelReadoutRequest {
+	req := obsbackend.PanelReadoutRequest{Narrow: n, Panel: op, ProjectID: a.project, AllEnvs: allEnvs}
+	switch ap.scope {
+	case dashspec.ScopeOrg:
+		req.ProjectID = ""
+	case dashspec.ScopePlatform:
+		req.NoEnv = true
+	}
+	return req
 }
 
 // withoutFilters is op with every panel and series predicate removed, and
@@ -1019,6 +1052,8 @@ func emptyCause(ap *auditPanel, pr *auditProbe, window, probeWindow time.Duratio
 		return fmt.Sprintf("the data exists: the panel has points over the last %s%s, but none in the last %s; the window is shorter than the signal's cadence, or the emitter went quiet", span, last, durText(window))
 	case verdictOtherEnv:
 		return fmt.Sprintf("the data exists in the project's other environments over %s but not in this env: the emitter tags another env, or no env id at all (an env-scoped panel drops untagged rows)", span)
+	case verdictOtherEnvBare:
+		return fmt.Sprintf("the data exists over %s only in the project's other environments and only without the panel's filters (neither lift alone finds it): the emitter tags another env, and the filter value matches nothing it writes", span)
 	case verdictExcludedFilter:
 		return fmt.Sprintf("the data exists over %s without the panel's filters (where predicates): the filter value matches nothing the emitter writes", span)
 	case verdictMetricNever:

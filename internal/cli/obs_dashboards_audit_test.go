@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -44,6 +45,7 @@ type auditQuery struct {
 	Window  time.Duration // the width of the requested window
 	Wide    bool          // the window is wider than the audit's 1h
 	AllEnvs bool          // not bounded to one env
+	Project string        // the project the read names ("" for none)
 	Bare    bool          // the panel carries no predicates
 	Step    int64
 	Panel   map[string]any
@@ -87,6 +89,7 @@ func (c *auditCP) Call(_ context.Context, procedure string, req, out any) error 
 		q.PanelID, _ = panel["id"].(string)
 		scope, _ := in["scope"].(map[string]any)
 		q.AllEnvs = scope["envIds"] == nil
+		q.Project, _ = scope["projectId"].(string)
 		tr, _ := scope["timeRange"].(map[string]any)
 		start, _ := time.Parse(time.RFC3339, tr["start"].(string))
 		end, _ := time.Parse(time.RFC3339, tr["end"].(string))
@@ -1215,5 +1218,96 @@ func TestAuditCatalogWithoutAnAnswerIsNotAbsence(t *testing.T) {
 				t.Errorf("probable_cause %q lacks %q", p.ProbableCause, tc.want)
 			}
 		})
+	}
+}
+
+// A dashboard is replayed in its own scope, as the console reads it: a project
+// dashboard names the project and the env; an org one names no project; a
+// platform one drops the env predicate (its telemetry carries no env id), so
+// untagged data is data, and there is no other env to probe.
+func TestAuditReplaysTheDashboardsScope(t *testing.T) {
+	scoped := func(key, scope string, panels ...string) string {
+		sc := ""
+		if scope != "" {
+			sc = fmt.Sprintf(`,"scope":%q`, scope)
+		}
+		return fmt.Sprintf(`{"summary":{"ref":{"source":"DASHBOARD_SOURCE_GENERATED","key":%q},"title":%q},"spec":{"id":%q,"title":%q%s,"panels":[%s]}}`, key, key, key, key, sc, strings.Join(panels, ","))
+	}
+	index := `{"dashboards":[
+	 {"ref":{"source":"DASHBOARD_SOURCE_GENERATED","key":"proj"},"title":"proj","source":"DASHBOARD_SOURCE_GENERATED"},
+	 {"ref":{"source":"DASHBOARD_SOURCE_GENERATED","key":"org"},"title":"org","source":"DASHBOARD_SOURCE_GENERATED"},
+	 {"ref":{"source":"DASHBOARD_SOURCE_GENERATED","key":"plat"},"title":"plat","source":"DASHBOARD_SOURCE_GENERATED"}]}`
+	cp := &auditCP{dashboards: index, specs: map[string]string{
+		"proj": scoped("proj", "", linePanel("p-proj")),
+		"org":  scoped("org", "org", linePanel("p-org")),
+		"plat": scoped("plat", "platform", linePanel("p-plat"), linePanel("p-plat-empty"))},
+		panel: func(q auditQuery) (string, error) {
+			// Platform telemetry has no env id: only an env-free read sees it.
+			if q.PanelID == "p-plat" && q.AllEnvs {
+				return respData, nil
+			}
+			return respEmpty, nil
+		}}
+	out, _, _ := auditRun(t, cp)
+	first := map[string]auditQuery{}
+	allEnvProbes := map[string]int{}
+	for _, q := range cp.calls {
+		if q.Proc != cpQueryPanel {
+			continue
+		}
+		if _, ok := first[q.PanelID]; !ok {
+			first[q.PanelID] = q
+		}
+		if q.AllEnvs {
+			allEnvProbes[q.PanelID]++
+		}
+	}
+	if q := first["p-proj"]; q.AllEnvs || q.Project != "proj" {
+		t.Errorf("a project dashboard reads its env and project: %+v", q)
+	}
+	if q := first["p-org"]; q.AllEnvs || q.Project != "" {
+		t.Errorf("an org dashboard reads the env and names no project: %+v", q)
+	}
+	if q := first["p-plat"]; !q.AllEnvs || q.Project != "proj" {
+		t.Errorf("a platform dashboard drops the env predicate: %+v", q)
+	}
+	statuses := map[string]string{}
+	var platEmpty []string
+	for _, d := range decodeAudit(t, out).Dashboards {
+		for _, p := range d.Panels {
+			statuses[p.ID] = p.Status
+			if p.ID == "p-plat-empty" && p.Probe != nil {
+				for _, s := range p.Probe.Steps {
+					platEmpty = append(platEmpty, s.Name)
+				}
+			}
+		}
+	}
+	if statuses["p-plat"] != "ok" {
+		t.Errorf("untagged platform telemetry was reported %q, not ok:\n%s", statuses["p-plat"], out)
+	}
+	if slices.Contains(platEmpty, "all_envs") || allEnvProbes["p-org"] != 0 {
+		t.Errorf("an all-env probe ran for a platform (%v) or org (%d) dashboard", platEmpty, allEnvProbes["p-org"])
+	}
+}
+
+// Data that only exists in another env AND only without the panel's filters is
+// found by lifting both together; neither lift alone may let the audit claim
+// it is nowhere.
+func TestAuditProbeLiftsEnvAndFiltersTogether(t *testing.T) {
+	cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": auditSpec(filteredPanel("p"))},
+		panel: func(q auditQuery) (string, error) {
+			if q.AllEnvs && q.Bare {
+				return respData, nil
+			}
+			return respEmpty, nil
+		}}
+	out, _, _ := auditRun(t, cp)
+	p := decodeAudit(t, out).Dashboards[0].Panels[0]
+	if p.Probe == nil || p.Probe.Verdict != "data_in_other_env_without_filters" {
+		t.Fatalf("want data_in_other_env_without_filters:\n%s", out)
+	}
+	if !strings.Contains(p.ProbableCause, "neither lift alone") {
+		t.Errorf("probable_cause %q", p.ProbableCause)
 	}
 }

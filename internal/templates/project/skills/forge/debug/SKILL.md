@@ -230,6 +230,8 @@ still run over its own window, and the skipped step says why:
   (an env-scoped panel cannot see untagged rows).
 - `data_excluded_by_filters`: it exists without the panel's `where`; the filter
   value matches nothing the emitter writes.
+- `data_in_other_env_without_filters`: it exists only with both lifted: another
+  env, and the filter matches nothing there either.
 - `metric_never_seen` / `no_data_anywhere`: the emitter is not shipping it, or the
   name is wrong. `forge obs metrics describe <env> <metric> --since 168h`, then
   `forge obs query` for the table itself.

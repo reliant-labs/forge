@@ -343,7 +343,7 @@ func mergeGeneratedPath(ctx context.Context, relPath string, base, ours, theirs 
 		// rewritten whole on every generate and certified by nothing
 		// (checksums.Uncertified): a clean merge stands, a conflict takes
 		// this side, and the next generate renders both sides' inputs.
-		if rel, ok := projectRelative(relPath); ok && checksums.Uncertified(rel) && !clean {
+		if rel, ok := projectRelative(relPath); ok && (checksums.Uncertified(rel) || rel == "gen/forge_descriptor.json") && !clean {
 			return ours, true, keep, nil
 		}
 	case !clean && checksums.Verify(ours) == checksums.Pristine && checksums.Verify(theirs) == checksums.Pristine:

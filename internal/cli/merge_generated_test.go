@@ -691,3 +691,20 @@ func TestMergeGenerated_ServiceCatalogMergesWithoutConflict(t *testing.T) {
 		t.Fatalf("a catalog line both sides changed must take this side for forge generate to refresh: clean=%v err=%v note=%q\n%s", clean, err, note, merged)
 	}
 }
+
+// gen/forge_descriptor.json has no hashes.json entry and is not a Tier-1
+// write (checksums.Uncertified names only the catalog), yet a conflict in it
+// is still forge's to settle: this side's render, for generate to refresh.
+func TestMergeGenerated_DescriptorConflictKeepsThisSide(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: app\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	body := func(v string) []byte { return []byte("{\n  \"services\": [\n    \"" + v + "\"\n  ]\n}\n") }
+	ours := body("ours")
+	merged, clean, note, err := mergeGeneratedPath(context.Background(), "gen/forge_descriptor.json", body("base"), ours, body("theirs"), 7)
+	if err != nil || !clean || string(merged) != string(ours) || note == "" {
+		t.Fatalf("descriptor conflict: clean=%v err=%v note=%q\n%s", clean, err, note, merged)
+	}
+}

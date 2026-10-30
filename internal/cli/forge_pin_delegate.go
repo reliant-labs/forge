@@ -220,21 +220,29 @@ func firstWord(args []string) string {
 	return ""
 }
 
-// scanProjectDir finds -C / --project-dir in args the tree could not parse.
+// scanProjectDir finds -C / --project-dir in args the tree could not parse,
+// as cobra would read it: every occurrence up to `--`, the LAST one winning.
+// Taking the first sent `forge <unknown> -C a -C b` to a's pinned forge with
+// arguments that select b in the receiver.
 func scanProjectDir(args []string) string {
-	for i, a := range args {
+	dir := ""
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		switch {
 		case a == "--":
-			return ""
-		case (a == "-C" || a == "--project-dir") && i+1 < len(args):
-			return args[i+1]
+			return dir
+		case a == "-C" || a == "--project-dir":
+			if i+1 < len(args) {
+				dir = args[i+1]
+				i++ // the value is not a flag, whatever it looks like
+			}
 		case strings.HasPrefix(a, "--project-dir="):
-			return strings.TrimPrefix(a, "--project-dir=")
+			dir = strings.TrimPrefix(a, "--project-dir=")
 		case strings.HasPrefix(a, "-C") && len(a) > 2:
-			return strings.TrimPrefix(strings.TrimPrefix(a, "-C"), "=")
+			dir = strings.TrimPrefix(strings.TrimPrefix(a, "-C"), "=")
 		}
 	}
-	return ""
+	return dir
 }
 
 // projectRootFrom is the project root THIS invocation names: the nearest

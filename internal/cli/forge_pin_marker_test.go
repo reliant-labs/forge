@@ -199,3 +199,56 @@ func TestHandOffToPinned_ConsecutiveEmbeddedInvocationsEachResolveTheirOwnProjec
 		}
 	}
 }
+
+// Review of #1536: a repeated -C/--project-dir is read as cobra reads it, the
+// last one winning, in every spelling and for commands this forge does not
+// know. Taking the first handed `forge <unknown> -C a -C b` to a's pinned forge
+// with arguments that select b in the receiver.
+func TestHandOffToPinned_RepeatedProjectDirTheLastOneWins(t *testing.T) {
+	prevVersion, prevCommit := buildinfo.Version(), buildinfo.GitCommit()
+	buildinfo.Set(skewTestBinary, "", "6c0c3edb1322")
+	t.Cleanup(func() { buildinfo.Set(prevVersion, "", prevCommit) })
+	const pinA = "v0.1.40-0.20261001000000-aaaaaaaaaaaa"
+	a, b := t.TempDir(), t.TempDir()
+	writeForgeYAML(t, a, "name: a\nmodule_path: example.com/a\nforge_version: "+pinA+"\n")
+	writeForgeYAML(t, b, "name: b\nmodule_path: example.com/b\nforge_version: "+skewTestPin+"\n")
+	t.Chdir(t.TempDir())
+
+	for _, tc := range []struct {
+		args []string
+		pin  string
+	}{
+		{[]string{"a-command-from-the-future", "-C", a, "-C", b}, skewTestPin},
+		{[]string{"a-command-from-the-future", "-C", b, "-C", a}, pinA},
+		{[]string{"a-command-from-the-future", "--project-dir", a, "--project-dir=" + b}, skewTestPin},
+		{[]string{"-C" + b, "a-command-from-the-future", "-C=" + a}, pinA},
+		{[]string{"a-command-from-the-future", "-C", a, "--project-dir=" + b, "--", "-C", a}, skewTestPin},
+		{[]string{"project", "a-subcommand-from-the-future", "-C", a, "-C", b}, skewTestPin},
+		{[]string{"generate", "-C", b, "--project-dir", a}, pinA},
+	} {
+		h, installs := armDelegation(t)
+		handed, _, err := handOffForTest(t, tc.args...)
+		if err != nil || !handed || h.path == "" {
+			t.Errorf("%v: handed %v, err %v", tc.args, handed, err)
+			continue
+		}
+		if len(*installs) != 1 || !strings.HasSuffix((*installs)[0], "@"+tc.pin) {
+			t.Errorf("%v: built %v, want %s — the receiver would run in the other project", tc.args, *installs, tc.pin)
+		}
+	}
+}
+
+func TestScanProjectDir(t *testing.T) {
+	for want, args := range map[string][]string{
+		"b":   {"x", "-C", "a", "-C", "b"},
+		"c":   {"-C", "a", "--project-dir", "b", "--project-dir=c"},
+		"d":   {"-Ca", "-C=d"},
+		"a":   {"-C", "a", "--", "-C", "b"},
+		"-Cx": {"-C", "-Cx"},
+		"":    {"x", "--", "-C", "a"},
+	} {
+		if got := scanProjectDir(args); got != want {
+			t.Errorf("scanProjectDir(%q) = %q, want %q", args, got, want)
+		}
+	}
+}
